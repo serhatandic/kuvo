@@ -20,13 +20,13 @@ use kuvo_box::BoxClient;
 use kuvo_box::accounts::said;
 use kuvo_box::areas::{Bot, Look};
 use kuvo_box::areas::DeleteLine;
-use kuvo_box::bots::{BotChange, BotsSaid, Elsewhere, Held, NewBot, Outcome, Refused, Templates, Work, WorkSession, WorkState};
+use kuvo_box::bots::{BotChange, BotsSaid, Elsewhere, Held, NewBot, Outcome, Personality, Refused, Templates, Work, WorkSession, WorkState};
 use kuvo_box::models::effort_title;
 use kuvo_box::models::Offered;
 use kuvo_box::typed::ModelRef;
 use kuvo_ui::{TextField, TextFieldEvent};
 
-use crate::areas::{Reading, doing_parts, reading};
+use crate::areas::{Reading, reading};
 use crate::time;
 
 /// How many of a bot's sessions its page lists before "Show All".
@@ -68,7 +68,7 @@ pub enum Act {
     Rename,
     EditJob,
     EditLook,
-    ChoosePersonality,
+    EditPersonality,
     SetPersonality(Option<String>),
     SetModel(ModelRef),
     /// The effort its model runs at; none: the model's own.
@@ -87,7 +87,7 @@ pub enum Act {
 /// A sheet over the page.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Sheet {
-    Personality,
+    Personality(Personality),
     /// The look being picked, and whether it's the new bot's.
     Look { look: Look, new: bool },
     Delete,
@@ -105,11 +105,12 @@ enum Editor {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Control {
     Text(String),
+    Delete,
     Busy(String),
     /// A bot's face beside a button.
     Face(Option<Look>, String, Act),
     /// What's chosen, and the choices: each one's name, a line under it, what it does, whether it's on.
-    Menu { shown: String, choices: Vec<(String, String, Act, bool)> },
+    Menu { shown: String, choices: Vec<(String, String, Act, bool)>, personality: bool },
     /// A model, from the model picker: what's shown, the model now, and whether it's New Bot's
     /// (whose first choice leaves it to the box: what `unset` says).
     Model { shown: String, current: Option<ModelRef>, new: Option<(String, String)> },
@@ -151,14 +152,11 @@ pub(crate) fn session_line(project: &str, state: WorkState) -> (String, Option<s
 enum Item {
     Title(String),
     /// A bot's head: its face, name and job, what it's doing now, and Chat.
-    Head { bot: Box<Bot>, doing: Option<crate::areas::Doing> },
+    Head(Box<Bot>),
     /// A bot that lives elsewhere: what's known of it here.
     ElsewhereHead { key: String, name: String, look: Option<Look>, line: String, editable: bool },
     Notice { key: String, tone: Tone, title: String, words: String },
     Group(String),
-    Personality { name: String, description: String, available: bool, saving: bool },
-    Job { line: String, details: String },
-    Delete,
     Row { row: Box<Row>, first: bool, last: bool },
     Session { session: WorkSession, project: String, ago: String, first: bool, last: bool },
     More { count: usize, last: bool },
@@ -239,18 +237,13 @@ impl BotsView {
         let details = cx.new(|cx| {
             TextField::new(cx)
                 .multi_line(4, 10)
-                .submits_on_enter(false)
                 .placeholder("What to do, when to do it, and what to report")
         });
         let new_name = cx.new(|cx| TextField::new(cx).placeholder("Name"));
         let subscriptions = vec![
             cx.subscribe(&name, |this: &mut BotsView, _, event: &TextFieldEvent, cx| this.editor_key(event, cx)),
             cx.subscribe(&line, |this: &mut BotsView, _, event: &TextFieldEvent, cx| this.editor_key(event, cx)),
-            cx.subscribe(&details, |this: &mut BotsView, _, event: &TextFieldEvent, cx| {
-                if matches!(event, TextFieldEvent::Cancel) {
-                    this.close_editor(cx);
-                }
-            }),
+            cx.subscribe(&details, |this: &mut BotsView, _, event: &TextFieldEvent, cx| this.editor_key(event, cx)),
             cx.subscribe(&new_name, |this: &mut BotsView, _, event: &TextFieldEvent, cx| match event {
                 TextFieldEvent::Submit(_) => this.act(Act::Create, cx),
                 TextFieldEvent::Cancel => this.act(Act::CancelNew, cx),
@@ -577,14 +570,10 @@ impl BotsView {
                 Reading::Ready(_) => vec![Item::Note { key: "bot-gone".into(), words: format!("This bot isn’t on {} any more.", self.this_box), busy: false }, Item::End],
             };
         };
-        let mut items = vec![Item::Head { bot: Box::new(bot.clone()), doing: doing_parts(&bot.now, self.now()) }];
+        let mut items = vec![Item::Head(Box::new(bot.clone()))];
         items.extend(self.notices(id));
 
-        items.push(Item::Group("Personality".into()));
-        items.push(self.personality(bot));
-        items.push(Item::Group("Job".into()));
-        items.push(Item::Job { line: bot.job.clone(), details: bot.job_details.clone() });
-        items.push(Item::Group("Model settings".into()));
+        items.push(Item::Group("Settings".into()));
         let rows = self.setting_rows(bot);
         let count = rows.len();
         items.extend(rows.into_iter().enumerate().map(|(ix, row)| Item::Row { row: Box::new(row), first: ix == 0, last: ix + 1 == count }));
@@ -621,8 +610,8 @@ impl BotsView {
             }
         }
 
-        items.push(Item::Group("Delete bot".into()));
-        items.push(Item::Delete);
+        items.push(Item::Group("Manage bot".into()));
+        items.push(Item::Row { row: Box::new(delete_row()), first: true, last: true });
         items.push(Item::End);
         items
     }
@@ -653,7 +642,7 @@ impl BotsView {
         items
     }
 
-    fn personality(&self, bot: &Bot) -> Item {
+    fn personality_row(&self, bot: &Bot) -> Row {
         let (name, description) = match (&self.templates, &bot.personality) {
             (_, None) => (OWN_WAY.into(), OWN_WAY_DESCRIPTION.into()),
             (Reading::NotYet, Some(_)) => ("Loading personality…".into(), String::new()),
@@ -667,7 +656,22 @@ impl BotsView {
             Reading::Failed(_) => "Couldn’t load personalities. Reopen this page to try again.".into(),
             _ => description,
         };
-        Item::Personality { name, description, available: self.templates().is_some(), saving: self.is_busy("bot-personality") }
+        let control = if self.is_busy("bot-personality") {
+            Control::Busy("Saving…".into())
+        } else if let Some(templates) = self.templates().filter(|_| self.can_open_editor()) {
+            let mut choices = vec![(OWN_WAY.into(), OWN_WAY_DESCRIPTION.into(), Act::SetPersonality(None), bot.personality.is_none())];
+            choices.extend(templates.personalities.iter().map(|choice| {
+                let selected = bot.personality.as_ref() == Some(&choice.id);
+                (choice.name.clone(), choice.description.clone(), Act::SetPersonality(Some(choice.id.clone())), selected)
+            }));
+            if self.editable_personality().is_some() {
+                choices.push(("Edit personality…".into(), String::new(), Act::EditPersonality, false));
+            }
+            Control::Menu { shown: name.clone(), choices, personality: true }
+        } else {
+            Control::Text(String::new())
+        };
+        Row { key: "bot-personality".into(), title: name, detail: description, control }
     }
 
     fn setting_rows(&self, bot: &Bot) -> Vec<Row> {
@@ -692,7 +696,7 @@ impl BotsView {
             Reading::Failed(_) => "Couldn’t load models. Reopen this page to try again.".into(),
             _ => String::new(),
         };
-        let mut rows = vec![Row { key: "bot-model".into(), title: "Model".into(), detail: model_line, control: busy_or("bot-model", model) }];
+        let mut rows = vec![self.personality_row(bot), Row { key: "bot-model".into(), title: "Model".into(), detail: model_line, control: busy_or("bot-model", model) }];
         // The effort its model runs at, among those the box lists for that model (none of its
         // own: no row).
         let efforts = bot.model.as_ref().and_then(|model| self.offered()?.models.iter().find(|each| each.is(model))).map(|each| each.efforts.clone()).unwrap_or_default();
@@ -701,7 +705,7 @@ impl BotsView {
             let mut choices = vec![(OWN_EFFORT.to_owned(), String::new(), Act::SetEffort(None), has.is_none())];
             choices.extend(efforts.iter().map(|effort| (effort_title(effort), String::new(), Act::SetEffort(Some(effort.clone())), has.as_ref() == Some(effort))));
             let shown = has.as_deref().map(effort_title).unwrap_or_else(|| OWN_EFFORT.to_owned());
-            let control = if locked { Control::Text(shown) } else { Control::Menu { shown, choices } };
+            let control = if locked { Control::Text(shown) } else { Control::Menu { shown, choices, personality: false } };
             rows.push(Row { key: "bot-effort".into(), title: "Effort".into(), detail: "How hard it thinks before it answers.".into(), control: busy_or("bot-effort", control) });
         }
         rows
@@ -726,8 +730,8 @@ impl BotsView {
         }];
         items.extend(self.notices(id));
         if there.listed {
-            items.push(Item::Group("Delete bot".into()));
-            items.push(Item::Delete);
+            items.push(Item::Group("Manage bot".into()));
+            items.push(Item::Row { row: Box::new(delete_row()), first: true, last: true });
             // What this box can't say of it: said plainly, with where it's said.
             items.push(Item::Note { key: "elsewhere-note".into(), words: format!("{} shows what {computer} last told it. Its job, personality, model and sessions are on {computer}.", capitalized(&self.this_box)), busy: false });
         } else {
@@ -808,7 +812,7 @@ impl BotsView {
                 key: "new-personality".into(),
                 title: "Personality".into(),
                 detail: has.map(|each| each.description.clone()).filter(|line| !line.is_empty()).unwrap_or_else(|| "How it talks.".into()),
-                control: Control::Menu { shown: has.map(|each| each.name.clone()).or(personality).unwrap_or_else(|| OWN_WAY.to_owned()), choices },
+                control: Control::Menu { shown: has.map(|each| each.name.clone()).or(personality).unwrap_or_else(|| OWN_WAY.to_owned()), choices, personality: false },
             },
             Row { key: "new-model".into(), title: "Model".into(), detail: "What it thinks with.".into(), control: Control::Model { shown: model_shown, current: self.form.model.clone(), new: Some(unset) } },
         ];
@@ -824,7 +828,7 @@ impl BotsView {
                 } else {
                     "Its own folder, or one of your projects.".into()
                 },
-                control: Control::Menu { shown: self.form.project.as_deref().map(|project| self.project_name(project)).unwrap_or_else(|| "A folder of its own".into()), choices: projects },
+                control: Control::Menu { shown: self.form.project.as_deref().map(|project| self.project_name(project)).unwrap_or_else(|| "A folder of its own".into()), choices: projects, personality: false },
             });
         }
         let count = rows.len();
@@ -909,16 +913,14 @@ impl BotsView {
         if self.client.gate().is_held() && matches!(act, Act::New | Act::Create) {
             return;
         }
-        if matches!(act, Act::Rename | Act::EditJob | Act::EditLook | Act::ChoosePersonality | Act::Delete)
+        if matches!(act, Act::Rename | Act::EditJob | Act::EditLook | Act::EditPersonality | Act::Delete)
             && !self.can_open_editor()
         {
             return;
         }
         // Replies carry the whole bot. Let one settings change finish before sending another.
         if matches!(act, Act::SetPersonality(_) | Act::SetModel(_) | Act::SetEffort(_)) {
-            let can_pick = self.editor.is_none()
-                || matches!((&act, self.sheet()), (Act::SetPersonality(_), Some(Sheet::Personality)));
-            if !can_pick || self.bot().is_some_and(|bot| self.change_pending(&bot.id)) {
+            if self.editor.is_some() || self.bot().is_some_and(|bot| self.change_pending(&bot.id)) {
                 return;
             }
         }
@@ -951,10 +953,11 @@ impl BotsView {
                 let Some(look) = self.subject().and_then(|(_, _, look)| look.or_else(|| self.first_look())) else { return };
                 self.open_editor(Editor::Sheet(Sheet::Look { look, new: false }), None);
             }
-            Act::ChoosePersonality => {
-                if self.templates().is_some() && !self.is_busy("bot-personality") {
-                    self.open_editor(Editor::Sheet(Sheet::Personality), None);
-                }
+            Act::EditPersonality => {
+                let Some(personality) = self.editable_personality().cloned() else { return };
+                self.name.update(cx, |field, cx| field.set_text(personality.name.clone(), cx));
+                self.details.update(cx, |field, cx| field.set_text(personality.description.clone(), cx));
+                self.open_editor(Editor::Sheet(Sheet::Personality(personality)), Some(self.name.focus_handle(cx)));
             }
             Act::FormLook => {
                 // From the look shown; with none, the first of each the box offers.
@@ -964,9 +967,6 @@ impl BotsView {
             }
             Act::SetEffort(effort) => self.change("bot-effort", BotChange { effort: Some(effort), ..BotChange::default() }, cx),
             Act::SetPersonality(personality) => {
-                if matches!(self.sheet(), Some(Sheet::Personality)) {
-                    self.close_editor(cx);
-                }
                 self.change("bot-personality", BotChange { personality: Some(personality), ..BotChange::default() }, cx);
             }
             Act::SetModel(model) => self.change("bot-model", BotChange { model: Some(model), ..BotChange::default() }, cx),
@@ -994,6 +994,11 @@ impl BotsView {
             Act::CancelNew => cx.emit(BotsEvent::Select(None)),
         }
         self.rebuild(cx);
+    }
+
+    fn editable_personality(&self) -> Option<&Personality> {
+        let id = self.bot()?.personality.as_ref()?;
+        self.templates()?.personalities.iter().find(|choice| choice.custom && &choice.id == id)
     }
 
     fn can_open_editor(&self) -> bool {
@@ -1054,6 +1059,10 @@ impl BotsView {
             return;
         }
         let Some(editor) = self.editor.clone() else { return };
+        if let Editor::Sheet(Sheet::Personality(personality)) = &editor {
+            self.save_personality(personality.clone(), cx);
+            return;
+        }
         let change = match &editor {
             // The new bot's look: kept for when it's made.
             Editor::Sheet(Sheet::Look { look, new: true }) => {
@@ -1065,7 +1074,7 @@ impl BotsView {
             Editor::Job => Some(BotChange { job: Some((self.line.read(cx).text().trim().to_owned(), self.details.read(cx).text().trim().to_owned())), ..BotChange::default() }),
             Editor::Sheet(Sheet::Look { look, new: false }) => Some(BotChange { look: Some(look.clone()), ..BotChange::default() }),
             Editor::Sheet(Sheet::Delete) => None,
-            Editor::Sheet(Sheet::Personality) => return,
+            Editor::Sheet(Sheet::Personality(_)) => unreachable!("saved separately"),
         };
         let Some((bot, _, _)) = self.subject() else { return };
         self.saving = true;
@@ -1114,10 +1123,56 @@ impl BotsView {
         self.rebuild(cx);
     }
 
+    fn save_personality(&mut self, personality: Personality, cx: &mut Context<Self>) {
+        let Some(bot) = self.bot().map(|bot| bot.id.clone()) else { return };
+        let name = self.name.read(cx).text().trim().to_owned();
+        let description = self.details.read(cx).text().trim().to_owned();
+        let editor = Editor::Sheet(Sheet::Personality(personality.clone()));
+        let page = self.shown.clone();
+        let key = format!("{bot}/editor");
+        self.saving = true;
+        self.edit_error = None;
+        self.disable_editor_fields(&editor, true, cx);
+        self.set_busy(&key, "Saving…");
+        self.run(
+            key.clone(),
+            move |client| client.change_personality(&personality.id, &name, &description),
+            move |this, result, cx| {
+                this.done(&key);
+                let active = this.shown == page && this.editor.as_ref() == Some(&editor);
+                if active {
+                    this.saving = false;
+                    this.disable_editor_fields(&editor, false, cx);
+                }
+                match result {
+                    Ok(changed) => {
+                        if active {
+                            this.close_editor(cx);
+                        }
+                        if let Reading::Ready(templates) = &mut this.templates {
+                            if let Some(choice) = templates.personalities.iter_mut().find(|choice| choice.id == changed.id) {
+                                *choice = changed;
+                            }
+                        }
+                        // Refresh any catalogue read begun while the change was pending.
+                        this.read_offers(cx);
+                    }
+                    Err(error) if active => {
+                        this.edit_error = Some(edit_problem(&error, "Couldn’t save the personality.", "Check the name and description, then try again."));
+                    }
+                    Err(_) => {}
+                }
+            },
+            cx,
+        );
+        self.rebuild(cx);
+    }
+
     fn disable_editor_fields(&self, editor: &Editor, disabled: bool, cx: &mut Context<Self>) {
         let fields = match editor {
             Editor::Name => &[&self.name][..],
             Editor::Job => &[&self.line, &self.details][..],
+            Editor::Sheet(Sheet::Personality(_)) => &[&self.name, &self.details][..],
             Editor::Sheet(_) => return,
         };
         for field in fields {
@@ -1188,6 +1243,10 @@ const OWN_WAY_DESCRIPTION: &str = "Uses the model’s default style.";
 
 /// How an effort left to the model is named.
 const OWN_EFFORT: &str = "The model’s own";
+
+fn delete_row() -> Row {
+    Row { key: "bot-delete".into(), title: "Delete bot".into(), detail: String::new(), control: Control::Delete }
+}
 
 fn edit_problem(error: &kuvo_box::Error, problem: &str, retry: &str) -> String {
     match error {

@@ -25,6 +25,7 @@ pub struct Bots {
     pub elsewhere: Vec<Value>,
     /// New Bot requests answered, by their id.
     made: HashMap<String, Value>,
+    edited_personality: Option<Value>,
     next: u64,
     /// Its list can't be read now (503).
     pub down: bool,
@@ -74,6 +75,7 @@ impl Bots {
                 elsewhere("bot_wren", "ses_wren", "Wren", json!({ "color": "mint", "shape": "bloom", "face": "calm" }), "Builds the nightly", ("lab", "machine")),
             ],
             made: HashMap::new(),
+            edited_personality: None,
             next: 1,
             down: false,
             unsealed: false,
@@ -190,7 +192,26 @@ impl Bots {
                 // The lists, empty too; none of the three while it can't check its seals (as a box does).
                 if self.unsealed { (200, json!({ "bots": self.listed() })) } else { (200, json!({ "bots": self.listed(), "held": self.held, "refused": self.refused, "elsewhere": self.elsewhere_said() })) }
             }
-            ("GET", ["kuvo", "bots", "templates"]) => (200, templates(projects)),
+            ("GET", ["kuvo", "bots", "templates"]) => {
+                let mut offered = templates(projects);
+                if let Some(edited) = &self.edited_personality
+                    && let Some(custom) = offered["personalities"].as_array_mut().and_then(|options| options.iter_mut().find(|option| option["id"] == edited["id"]))
+                {
+                    *custom = edited.clone();
+                    custom["custom"] = json!(true);
+                }
+                (200, offered)
+            }
+            ("PATCH", ["kuvo", "personalities", "custom.pirate"]) => {
+                match (body["name"].as_str(), body["description"].as_str()) {
+                    (Some(name), Some(description)) if !name.is_empty() && !description.is_empty() => {
+                        let changed = json!({ "id": "custom.pirate", "name": name, "description": description });
+                        self.edited_personality = Some(changed.clone());
+                        (200, changed)
+                    }
+                    _ => (400, json!({ "message": "A personality needs a name and a description." })),
+                }
+            }
             ("POST", ["kuvo", "bots"]) => self.make(body, projects, now),
             ("PATCH", ["kuvo", "bots", id]) => self.change(id, body, now),
             // Seen: what it finished or stopped on is read, so it's idle again (`bots.state`).

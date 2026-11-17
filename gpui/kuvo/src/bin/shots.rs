@@ -185,9 +185,10 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "bot-edit-top", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bots) },
     Screen { slug: "bot-edit-scrolled", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bots) },
     Screen { slug: "bot-edit-name", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_rename) },
+    Screen { slug: "bot-edit-job-editing", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_job) },
     Screen { slug: "bot-edit-avatar-hover", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bots) },
     Screen { slug: "bot-edit-long-personality", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bots) },
-    Screen { slug: "bot-edit-personality-picker", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_personality) },
+    Screen { slug: "bot-edit-personality-picker", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bots) },
     Screen { slug: "bot-edit-all-options", width: 1280., height: 1320., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bots) },
     Screen { slug: "bot-page", width: 1280., height: 1180., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bots) },
     Screen { slug: "bot-quiet", width: 1280., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_quiet) },
@@ -527,10 +528,6 @@ fn bot_rename(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<W
 fn bot_job(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     bots(workspace, window, cx);
     bots_page(workspace, cx).update(cx, |page, cx| page.act(BotAct::EditJob, cx));
-}
-fn bot_personality(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
-    bots(workspace, window, cx);
-    bots_page(workspace, cx).update(cx, |page, cx| page.act(BotAct::ChoosePersonality, cx));
 }
 fn bot_look(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     bots(workspace, window, cx);
@@ -1636,16 +1633,21 @@ fn main() -> anyhow::Result<()> {
             cx.run_until_parked();
             cx.update_window(any, |_, window, _| window.refresh())?;
             cx.run_until_parked();
-            if matches!(screen.slug, "bot-edit-scrolled" | "bot-edit-avatar-hover") {
+            if matches!(screen.slug, "bot-edit-scrolled" | "bot-edit-avatar-hover" | "bot-edit-personality-picker") {
                 cx.update_window(any, |root, window, cx| {
                     let workspace = root.downcast::<Workspace>().expect("the workspace");
                     let page = bots_page(workspace.read(cx), cx);
                     if screen.slug == "bot-edit-scrolled" {
                         page.read(cx).scroll_to_end();
                     } else {
-                        use gpui::{Modifiers, MouseMoveEvent, PlatformInput};
-                        let position = page.read(cx).avatar_center().expect("the avatar is visible");
-                        mouse(window, cx, PlatformInput::MouseMove(MouseMoveEvent { position, pressed_button: None, modifiers: Modifiers::default() }));
+                        use gpui::{Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, PlatformInput};
+                        if screen.slug == "bot-edit-avatar-hover" {
+                            let position = page.read(cx).avatar_center().expect("the avatar is visible");
+                            mouse(window, cx, PlatformInput::MouseMove(MouseMoveEvent { position, pressed_button: None, modifiers: Modifiers::default() }));
+                        } else {
+                            let position = page.read(cx).personality_menu_center().expect("the personality picker is visible");
+                            mouse(window, cx, PlatformInput::MouseDown(MouseDownEvent { position, button: MouseButton::Left, modifiers: Modifiers::default(), click_count: 1, first_mouse: false }));
+                        }
                     }
                     window.refresh();
                 })?;

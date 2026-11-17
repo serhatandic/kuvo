@@ -421,6 +421,19 @@ impl BoxClient {
         self.get("kuvo/bots/templates")
     }
 
+    /// Changes a custom personality in the shared library.
+    pub fn change_personality(&self, id: &str, name: &str, description: &str) -> Result<Personality> {
+        let mut changed: Personality = self.value(&Request {
+            method: "PATCH".into(),
+            path: format!("kuvo/personalities/{}", crate::paths::segment(id)),
+            headers: Vec::new(),
+            body: Some(json!({ "name": name, "description": description })),
+        })?;
+        // The library route returns a custom record without the templates catalogue's marker.
+        changed.custom = true;
+        Ok(changed)
+    }
+
     /// Makes a bot on this box.
     pub fn make_bot(&self, new: &NewBot) -> Result<Made> {
         let mut body = Map::new();

@@ -104,7 +104,7 @@ fn a_bots_page_shows_who_it_is_what_its_doing_and_its_sessions(cx: &mut TestAppC
 
     let page = bot(&workspace, cx, "bot_mira");
     assert_eq!(title(&workspace, cx).as_deref(), Some("Mira"));
-    assert!(shown(cx, "bot-head") && shown(cx, "bot-now"), "its face, name and job, and what it's doing now");
+    assert!(shown(cx, "bot-head") && !shown(cx, "bot-now"), "activity stays in the sidebar");
     assert_eq!(name_and_job(&page, cx).1, "Looks after the website");
     // Its sessions are the box's (`kuvo/work?bot=`), the latest first, each as the box says it stands.
     assert_eq!(stand_in.seen_at("GET", "kuvo/work").last().map(|seen| seen.path.clone()).as_deref(), Some("kuvo/work?bot=bot_mira"));
@@ -181,8 +181,8 @@ fn renaming_goes_to_the_box_and_its_answer_is_what_shows(cx: &mut TestAppContext
     assert_eq!(bodies(&stand_in, "PATCH", "kuvo/bots/bot_mira").last(), Some(&json!({ "name": "Mira Two" })));
     assert!(shown(cx, "bot-head-name") && !shown(cx, "bot-name-field"));
     assert_eq!(title(&workspace, cx).as_deref(), Some("Mira Two"), "the sidebar's list is read again");
-    // What it's doing stays as the box last said it (a change answers without it).
-    assert!(shown(cx, "bot-now"));
+    // A change answers without an activity update, so the sidebar keeps its state.
+    assert_eq!(page.read_with(cx, |page, _| page.bot().unwrap().now.asking), 1);
 }
 
 #[gpui::test]
@@ -194,7 +194,6 @@ fn escape_and_cancel_close_editors_and_send_nothing(cx: &mut TestAppContext) {
         ("bot-name-edit", "bot-name-field", "bot-name-cancel"),
         ("bot-job-edit", "bot-job-line", "bot-job-cancel"),
         ("bot-avatar-edit", "bot-sheet", "sheet-cancel"),
-        ("bot-personality-menu", "bot-sheet", "sheet-cancel"),
         ("bot-delete-button", "bot-sheet", "sheet-cancel"),
     ] {
         click(cx, opener);
@@ -206,6 +205,11 @@ fn escape_and_cancel_close_editors_and_send_nothing(cx: &mut TestAppContext) {
         click(cx, cancel);
         assert!(!shown(cx, editor));
     }
+    click(cx, "bot-personality-menu");
+    assert!(shown(cx, "menu-item-Mentor") && !shown(cx, "bot-sheet"));
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    assert!(!shown(cx, "menu-item-Mentor"));
     assert!(stand_in.seen_at("PATCH", "kuvo/bots/bot_mira").is_empty() && stand_in.seen_at("DELETE", "kuvo/bots/bot_mira").is_empty());
 }
 
@@ -217,14 +221,17 @@ fn its_job_and_look_change_through_the_box(cx: &mut TestAppContext) {
     // The job summary and instructions are edited on the page and saved together.
     click(cx, "bot-job-edit");
     assert!(!shown(cx, "bot-sheet"));
+    let head = bounds(cx, "bot-head").unwrap();
+    assert!(bounds(cx, "bot-job-details").unwrap().bottom() < head.bottom());
     cx.simulate_keystrokes("cmd-a backspace");
     cx.simulate_input("Ships a beta every Thursday");
     click(cx, "bot-job-details");
     cx.simulate_input("Tag it and wait for the build.");
-    cx.simulate_keystrokes("enter");
+    cx.simulate_keystrokes("shift-enter");
     cx.simulate_input("Post the notes.");
     assert!(bodies(&stand_in, "PATCH", "kuvo/bots/bot_release").is_empty());
-    click(cx, "bot-job-save");
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
     let instructions = "Tag it and wait for the build.\nPost the notes.";
     assert_eq!(bodies(&stand_in, "PATCH", "kuvo/bots/bot_release"), vec![json!({ "job": { "line": "Ships a beta every Thursday", "details": instructions } })]);
     assert_eq!(name_and_job(&page, cx), ("Release Captain".into(), "Ships a beta every Thursday".into(), instructions.into()));
@@ -246,18 +253,18 @@ fn personality_and_model_are_picked_from_what_the_box_offers(cx: &mut TestAppCon
     let (workspace, cx) = open(cx, stand_in.clone());
     let page = bot(&workspace, cx, "bot_mira");
     click(cx, "bot-personality-menu");
-    click(cx, "personality-preset.mentor");
-    assert!(!shown(cx, "bot-sheet"));
+    click(cx, "menu-item-Mentor");
+    assert!(!shown(cx, "menu-item-Mentor"));
     assert!(bodies(&stand_in, "PATCH", "kuvo/bots/bot_mira").is_empty(), "the current personality needs no change");
     click(cx, "bot-personality-menu");
-    let details = bounds(cx, "personality-custom.pirate-description").expect("the custom personality’s description");
+    let details = bounds(cx, "menu-item-Ship’s Cook-description").expect("the custom personality’s description");
     assert!(details.size.height > px(36.), "a long description wraps in the picker");
-    click(cx, "personality-preset.straight");
+    click(cx, "menu-item-Straight Shooter");
     assert_eq!(bodies(&stand_in, "PATCH", "kuvo/bots/bot_mira"), vec![json!({ "personality": "preset.straight" })]);
     assert_eq!(page.read_with(cx, |page, _| page.bot().and_then(|bot| bot.personality.clone())), Some("preset.straight".into()));
     // None: the model's own way, sent as null.
     click(cx, "bot-personality-menu");
-    click(cx, "personality-default");
+    click(cx, "menu-item-The model’s own way");
     assert_eq!(bodies(&stand_in, "PATCH", "kuvo/bots/bot_mira").last(), Some(&json!({ "personality": null })));
     assert_eq!(page.read_with(cx, |page, _| page.bot().and_then(|bot| bot.personality.clone())), None);
 
@@ -274,11 +281,38 @@ fn a_long_personality_description_wraps_on_the_profile(cx: &mut TestAppContext) 
     let (workspace, cx) = open(cx, StandIn::at(Replies::Never, NOW));
     bot(&workspace, cx, "bot_mira");
     let short = bounds(cx, "bot-personality-detail").unwrap();
+    assert!(bounds(cx, "bot-personality-menu").unwrap().size.width <= px(170.));
     click(cx, "bot-personality-menu");
-    click(cx, "personality-custom.pirate");
+    click(cx, "menu-item-Ship’s Cook");
     let long = bounds(cx, "bot-personality-detail").unwrap();
     assert!(long.size.height > short.size.height * 2., "the selected description wraps on the card");
-    assert!(bounds(cx, "bot-personality-menu").unwrap().top() >= long.bottom());
+    assert!(bounds(cx, "bot-personality-menu").unwrap().left() >= long.right(), "the picker sits beside the description");
+}
+
+#[gpui::test]
+fn a_custom_personality_can_be_edited_from_the_picker(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (workspace, cx) = open(cx, stand_in.clone());
+    bot(&workspace, cx, "bot_mira");
+    click(cx, "bot-personality-menu");
+    assert!(!shown(cx, "menu-item-Edit personality…"), "the selected preset is read-only");
+    click(cx, "menu-item-Ship’s Cook");
+    click(cx, "bot-personality-menu");
+    click(cx, "menu-item-Edit personality…");
+    assert!(shown(cx, "personality-edit-name") && shown(cx, "personality-edit-description"));
+    cx.simulate_keystrokes("cmd-a");
+    cx.simulate_input("Galley Guide");
+    click(cx, "personality-edit-description");
+    cx.simulate_keystrokes("cmd-a");
+    cx.simulate_input("Keeps brief notes.");
+    click(cx, "sheet-save");
+    assert!(!shown(cx, "bot-sheet"));
+    assert_eq!(bodies(&stand_in, "PATCH", "kuvo/personalities/custom.pirate"), vec![
+        json!({ "name": "Galley Guide", "description": "Keeps brief notes." })
+    ]);
+    assert_eq!(bodies(&stand_in, "PATCH", "kuvo/bots/bot_mira").len(), 1, "the bot keeps its selected personality");
+    click(cx, "bot-personality-menu");
+    assert!(shown(cx, "menu-item-Galley Guide"));
 }
 
 #[gpui::test]
@@ -288,7 +322,7 @@ fn a_change_the_box_turns_down_shows_a_problem_and_changes_nothing(cx: &mut Test
     let page = bot(&workspace, cx, "bot_mira");
     stand_in.bots_changeable(false);
     click(cx, "bot-personality-menu");
-    click(cx, "personality-preset.cheerful");
+    click(cx, "menu-item-Cheerleader");
     assert!(shown(cx, "bots-problem"), "the box's refusal, over the page");
     assert_eq!(page.read_with(cx, |page, _| page.bot().and_then(|bot| bot.personality.clone())), Some("preset.mentor".into()), "as it was");
     click(cx, "bots-problem-close");
