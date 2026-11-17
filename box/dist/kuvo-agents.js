@@ -38273,8 +38273,9 @@ function accountEntry() {
   return account;
 }
 function accountHome() {
-  return accountEntry().home;
+  return testHome ?? accountEntry().home;
 }
+var testHome;
 function isRealBridgeFolder(folder, home = accountHome()) {
   const located = (each) => {
     try {
@@ -39460,4 +39461,4 @@ if (!onMachine) {
 }
 process.on("SIGTERM", () => stop());
 process.on("SIGINT", () => stop());
-// Built from Packages/Box/src/agents 167d0c4c816d37646134ab3bba4f33b3e1aaae14d1d482b3aecce7689ff95bb1
+// Built from Packages/Box/src/agents 8a67b9ff26ff2b38b609251332f2e7f99b386f71550a055c30cd1bcc3b8ad669

@@ -221,12 +221,12 @@ function accountEntry() {
   return account;
 }
 function accountHome() {
-  return accountEntry().home;
+  return testHome ?? accountEntry().home;
 }
 function accountName() {
   return accountEntry().name;
 }
-var account;
+var account, testHome;
 var init_account = () => {};
 
 // box/src/shared/zone.ts
@@ -7491,6 +7491,7 @@ var init_models_starred = __esm(() => {
 var exports_upgrades = {};
 __export(exports_upgrades, {
   appPreferences: () => appPreferences,
+  parsePlist: () => parsePlist,
   runUpgrades: () => runUpgrades
 });
 import { spawnSync as spawnSync11 } from "node:child_process";
@@ -12728,9 +12729,11 @@ function namesIn2(folder) {
 }
 var MAC_ASKS = [...MAC_PERSONAL, "Library"];
 var macAsks;
+var macAsksHome;
 function macAsksAbout(at) {
-  if (!macAsks) {
-    const homes = [accountHome(), realish(accountHome())].map((each) => escapeRegex(each.toLowerCase())).join("|");
+  if (!macAsks || macAsksHome !== accountHome()) {
+    macAsksHome = accountHome();
+    const homes = [macAsksHome, realish(macAsksHome)].map((each) => escapeRegex(each.toLowerCase())).join("|");
     macAsks = new RegExp(`^(/system/volumes/data)?(/volumes/|(${homes})/(${MAC_ASKS.map((each) => escapeRegex(each.toLowerCase())).join("|")})(/|$))`);
   }
   return macAsks.test(at.toLowerCase());
@@ -45152,7 +45155,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "cf7b91e537bc";
+var BRIDGE_VERSION = "971a883c0cfd";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -57067,6 +57070,7 @@ import fs176 from "node:fs";
 import path186 from "node:path";
 init_database();
 init_rewrite();
+init_upgrades();
 var RUN_REWRITER = { ...PATH_REWRITER, refuses: () => null };
 var exists9 = (file) => {
   try {
@@ -57157,10 +57161,25 @@ function ancestors() {
   }
   return own;
 }
+var plists = new Map;
 function bundleSays(bundle, key) {
-  const asked = spawnSync18("/usr/bin/plutil", ["-extract", key, "raw", "-o", "-", path186.join(bundle, "Contents", "Info.plist")], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] });
-  const said = (asked.stdout ?? "").trim();
-  return asked.status === 0 && said ? said : null;
+  const file = path186.join(bundle, "Contents", "Info.plist");
+  let changed;
+  try {
+    const kind = fs176.statSync(file);
+    changed = `${kind.mtimeMs} ${kind.size} ${kind.ino}`;
+  } catch {
+    return null;
+  }
+  let kept = plists.get(file);
+  if (kept?.changed !== changed) {
+    const asked = spawnSync18("/usr/bin/plutil", ["-convert", "xml1", "-o", "-", file], { encoding: "utf8", timeout: 5000, maxBuffer: 16 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"] });
+    const read = asked.status === 0 && asked.stdout ? parsePlist(asked.stdout) : null;
+    kept = { changed, said: isObject(read) ? read : {} };
+    plists.set(file, kept);
+  }
+  const said = kept.said[key];
+  return typeof said === "string" && said.trim() ? said.trim() : null;
 }
 function touching(appFolder, app) {
   if (process.platform !== "darwin" || typeof process.getuid !== "function")
