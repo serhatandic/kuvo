@@ -45155,7 +45155,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "971a883c0cfd";
+var BRIDGE_VERSION = "8eb1c1546153";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -57176,7 +57176,8 @@ function bundleSays(bundle, key) {
     const asked = spawnSync18("/usr/bin/plutil", ["-convert", "xml1", "-o", "-", file], { encoding: "utf8", timeout: 5000, maxBuffer: 16 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"] });
     const read = asked.status === 0 && asked.stdout ? parsePlist(asked.stdout) : null;
     kept = { changed, said: isObject(read) ? read : {} };
-    plists.set(file, kept);
+    if (asked.status === 0 && !asked.error && !asked.signal)
+      plists.set(file, kept);
   }
   const said = kept.said[key];
   return typeof said === "string" && said.trim() ? said.trim() : null;
