@@ -8717,11 +8717,11 @@ async function takeSeed(input, engine = readEngineFile) {
 
 // box/src/link/main.ts
 init_text();
-import { spawn as spawn22 } from "node:child_process";
-import crypto69 from "node:crypto";
-import fs207 from "node:fs";
+import { spawn as spawn23 } from "node:child_process";
+import crypto70 from "node:crypto";
+import fs208 from "node:fs";
 import os26 from "node:os";
-import path218 from "node:path";
+import path219 from "node:path";
 import { fileURLToPath as fileURLToPath5 } from "node:url";
 
 // box/src/shared/hang.ts
@@ -44083,7 +44083,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "c5fb78a6c4b0";
+var BRIDGE_VERSION = "2d31f07e8fce";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -55413,6 +55413,7 @@ function uninstallCommand(args) {
 var HELPER_NAME2 = "Kuvo Helper";
 var helperBundle = () => path182.join(K, "bin", `${HELPER_NAME2}.app`);
 var helperProgram2 = () => path182.join(helperBundle(), "Contents", "MacOS", HELPER_NAME2);
+var HANDOVER_RECORD = () => path182.join(RUN, "helper-handover.json");
 var xml = (text) => text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 function helperPlist(app) {
   return `<?xml version="1.0" encoding="UTF-8"?>
@@ -55455,7 +55456,11 @@ function helperStatus() {
     const state = /^\s*state = (.+)$/m.exec(asked.stdout ?? "")?.[1]?.trim();
     running = loaded === false ? false : loaded && state ? state === "running" : null;
   }
-  return { helper: fs172.existsSync(helperProgram2()), agent, loaded, running };
+  let handOver = null;
+  try {
+    handOver = JSON.parse(fs172.readFileSync(HANDOVER_RECORD(), "utf8"));
+  } catch {}
+  return { helper: fs172.existsSync(helperProgram2()), agent, loaded, running, handOver };
 }
 function helperAtLogin() {
   const asking = loginItemsAsk();
@@ -55516,7 +55521,7 @@ function installHelperAgent({ load, app }) {
     message: loaded ? `${HELPER_NAME2} runs Kuvo on this Mac now, and at login.` : `${HELPER_NAME2} starts Kuvo on this Mac at login, but launchd didn't start it now: ${(started.stderr || "").trim().slice(0, 300) || "it said nothing"}.`
   };
 }
-function startHelperAgent({ app, ifMissing = false }) {
+function startHelperAgent({ app, ifMissing = false, unlessStopped = false }) {
   const mac = process.platform === "darwin" && !APP_FOLDER && recordedKind() === "mac";
   const why = refusal3();
   if (why)
@@ -55524,10 +55529,14 @@ function startHelperAgent({ app, ifMissing = false }) {
   const tools = launchTools();
   const domain = `gui/${process.getuid?.() ?? 0}`;
   const run = (args) => spawnSync16(tools.launchctl, args, { encoding: "utf8", timeout: 30000, stdio: ["ignore", "pipe", "pipe"] });
+  const stoppedNow = () => unlessStopped && (fs172.existsSync(path182.join(K, "run", "paused")) || fs172.existsSync(path182.join(K, "run", "off")));
+  const stoppedSaid = { started: false, mac, stopped: true, message: "Kuvo on this Mac was stopped: nothing was started." };
   const openedInstead = () => {
     const disabled = run(["print-disabled", domain]);
     if (disabled.status !== 0 || !SWITCHED_OFF.test(disabled.stdout ?? ""))
       return null;
+    if (stoppedNow())
+      return stoppedSaid;
     const opened = spawnSync16(tools.open, ["-g", "-j", "-n", helperBundle(), "--args", "keep", "--home", K], { encoding: "utf8", timeout: 30000, stdio: ["ignore", "ignore", "pipe"] });
     if (opened.status === 0) {
       return { started: true, mac, disabled: true, opened: true, message: `${HELPER_NAME2} is turned off in System Settings › General › Login Items, so it was opened for now, to run Kuvo on this Mac until you log out. Turn it on there to start it at login.` };
@@ -55535,6 +55544,8 @@ function startHelperAgent({ app, ifMissing = false }) {
     return { started: false, mac, disabled: true, message: `${HELPER_NAME2} is turned off in System Settings › General › Login Items, and macOS didn't open it: ${(opened.stderr || "").trim().slice(0, 300) || opened.error?.message || "it said nothing"}. Turn it on there, then try again.` };
   };
   const status = helperStatus();
+  if (stoppedNow())
+    return stoppedSaid;
   if (!status.agent) {
     const done = installHelperAgent({ load: true, app });
     return done.loaded ? { started: true, mac, message: done.message } : openedInstead() ?? { started: false, mac, message: done.message };
@@ -55552,6 +55563,8 @@ function startHelperAgent({ app, ifMissing = false }) {
     for (let waited = 0;waited < 100 && /\bpid = \d+/.test(run(["print", `${domain}/${LAUNCH_AGENT}`]).stdout ?? ""); waited++)
       Atomics.wait(pause, 0, 0, 100);
   }
+  if (stoppedNow())
+    return stoppedSaid;
   const started = run(["kickstart", `${domain}/${LAUNCH_AGENT}`]);
   return started.status === 0 ? { started: true, mac, message: `${HELPER_NAME2} runs Kuvo on this Mac.` } : refusedBy("start", started);
 }
@@ -70638,16 +70651,194 @@ function serveBox(password, handle = engineHandler(readEngineFile, { name: os25.
 // box/src/link/main.ts
 init_state();
 
-// box/src/link/updates/code-in-place.ts
-init_home();
+// box/src/link/compat/helper-handover.ts
+init_files();
+import { spawn as spawn21, spawnSync as spawnSync21 } from "node:child_process";
 import crypto68 from "node:crypto";
 import fs205 from "node:fs";
 import path215 from "node:path";
-var boxLink = (root = K) => path215.join(root, "bin", "kuvo-link.js");
+init_home();
+function helperSeal(bundle = helperBundle()) {
+  const hash = crypto68.createHash("sha256");
+  for (const part of [path215.join("Contents", "MacOS", HELPER_NAME2), path215.join("Contents", "Info.plist"), path215.join("Contents", "_CodeSignature", "CodeResources")]) {
+    try {
+      hash.update(fs205.readFileSync(path215.join(bundle, part)));
+    } catch {
+      return null;
+    }
+  }
+  return hash.digest("hex");
+}
+function bundleRenews(bundle = helperBundle()) {
+  try {
+    return /<key>KuvoHelperRenews<\/key>\s*<true\s*\/>/.test(fs205.readFileSync(path215.join(bundle, "Contents", "Info.plist"), "utf8"));
+  } catch {
+    return false;
+  }
+}
+function helperCopy(bundle = helperBundle()) {
+  try {
+    return fs205.statSync(path215.join(bundle, "Contents", "MacOS", HELPER_NAME2)).ino;
+  } catch {
+    return null;
+  }
+}
+function readHandOver() {
+  try {
+    const record = JSON.parse(fs205.readFileSync(HANDOVER_RECORD(), "utf8"));
+    return record && typeof record === "object" && typeof record.bundle === "string" ? record : null;
+  } catch {
+    return null;
+  }
+}
+var note5 = (record) => writePrivate(HANDOVER_RECORD(), JSON.stringify(record));
+var stoppedHere = () => fs205.existsSync(path215.join(RUN, "paused")) || fs205.existsSync(path215.join(RUN, "off"));
+var slashes = (text) => text.replace(/\/+/g, "/");
+var isOwnHelper = (pid) => pid > 1 && alive(pid) && slashes(commandLineOf(pid) ?? "").includes(slashes(`${helperProgram2()} keep`));
+var stillHanding = (record) => record.by ? runsAs(record.by, /kuvo-link\.js helper hand-over/) : Date.now() - record.at < 120000;
+function considerHelper(parent) {
+  if (!OWN_HOME_MAC || !launchTools() || !isOwnHelper(parent) || stoppedHere())
+    return "none";
+  if (updateUnderWay(RUN))
+    return "later";
+  const bundle = helperSeal();
+  if (!bundle)
+    return "later";
+  const copy = helperCopy();
+  if (copy === null)
+    return "later";
+  if (!bundleRenews())
+    return "none";
+  const tried = readHandOver();
+  if (tried?.bundle === bundle && tried.copy === copy) {
+    if (tried.outcome === "handing" && stillHanding(tried))
+      return "later";
+    if (!tried.stillOld) {
+      const outcome = tried.outcome === "handing" ? "failed" : tried.outcome;
+      note5({ ...tried, outcome, ...tried.outcome === "handing" ? { message: "The hand-over ended before it said how it went." } : {}, stillOld: { pid: parent, at: Date.now() } });
+      console.error(`${HELPER_NAME2} is still the one from before the update after it was handed over once (${outcome}): it moves to the new one at your next login.`);
+    }
+    return "none";
+  }
+  note5({ v: 1, bundle, copy, pid: parent, at: Date.now(), outcome: "handing" });
+  return "hand-over";
+}
+function watchHelperBuild(renews) {
+  if (renews === undefined || renews || !OWN_HOME_MAC)
+    return;
+  const parent = process.ppid;
+  const every = !REAL_BOX && Number(process.env.KUVO_TEST_CODE_EVERY) > 0 ? Number(process.env.KUVO_TEST_CODE_EVERY) : 30000;
+  let timer;
+  const look = () => {
+    let said;
+    try {
+      said = considerHelper(parent);
+    } catch {
+      said = "none";
+    }
+    if (said === "later")
+      return false;
+    if (timer)
+      clearInterval(timer);
+    if (said === "hand-over") {
+      console.error(`${HELPER_NAME2} is from before the update and doesn't move to the new one by itself: it's handed over once.`);
+      const failed = (error) => {
+        const record = readHandOver();
+        if (record?.outcome === "handing" && record.pid === parent)
+          note5({ ...record, outcome: "failed", message: error.message });
+      };
+      try {
+        const child = spawn21(process.execPath, [...OWN_RUNTIME, SCRIPT, "helper", "hand-over", "--pid", String(parent)], { detached: true, stdio: "ignore", cwd: K, env: process.env });
+        child.on("error", failed);
+        child.unref();
+        const record = readHandOver();
+        if (child.pid && record?.outcome === "handing" && record.pid === parent && !record.by)
+          note5({ ...record, by: child.pid });
+      } catch (error) {
+        failed(error);
+      }
+    }
+    return true;
+  };
+  if (look())
+    return;
+  timer = setInterval(look, every);
+  timer.unref?.();
+}
+var pause3 = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+function appOfAgent(agents) {
+  try {
+    const plist = fs205.readFileSync(path215.join(agents, `${LAUNCH_AGENT}.plist`), "utf8");
+    const found = /<key>AssociatedBundleIdentifiers<\/key>\s*<array>\s*<string>([A-Za-z0-9][A-Za-z0-9.-]*)<\/string>/.exec(plist)?.[1];
+    if (found)
+      return found;
+  } catch {}
+  return "run.kuvo.code";
+}
+function handOverCommand(args) {
+  const at = args.indexOf("--pid");
+  const pid = at >= 0 ? Number(args[at + 1]) : NaN;
+  if (!Number.isInteger(pid) || pid <= 1) {
+    console.error("Usage: kuvo-link.js helper hand-over --pid <Kuvo Helper's process>");
+    return 2;
+  }
+  const ours = () => {
+    const record = readHandOver();
+    return record?.pid === pid ? record : null;
+  };
+  const begun = ours();
+  if (begun)
+    note5({ ...begun, by: process.pid });
+  const done = (outcome, message) => {
+    const record = ours();
+    if (record)
+      note5({ ...record, outcome, message });
+    console.log(JSON.stringify({ outcome, message }));
+    return outcome === "handed" ? 0 : 1;
+  };
+  const tools = launchTools();
+  if (!tools || !OWN_HOME_MAC)
+    return done("failed", `Only Kuvo on a Mac in ~/.kuvo-code runs under ${HELPER_NAME2}.`);
+  if (stoppedHere())
+    return done("stopped", "Kuvo on this Mac was stopped: nothing was started.");
+  if (!isOwnHelper(pid))
+    return done("gone", `${HELPER_NAME2} from before the update had gone already: nothing was done.`);
+  try {
+    process.kill(pid, "SIGTERM");
+  } catch {}
+  for (let waited = 0;waited < 600 && alive(pid); waited++)
+    pause3(100);
+  if (alive(pid))
+    return done("stayed", `${HELPER_NAME2} from before the update didn't stop: it moves to the new one at your next login.`);
+  const domain = `gui/${process.getuid?.() ?? 0}`;
+  const until = Date.now() + 5000;
+  while (Date.now() < until && new RegExp(`\\bpid = ${pid}\\b`).test(spawnSync21(tools.launchctl, ["print", `${domain}/${LAUNCH_AGENT}`], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] }).stdout ?? ""))
+    pause3(100);
+  if (stoppedHere())
+    return done("stopped", "Kuvo on this Mac was stopped as it went: nothing was started.");
+  const started = startHelperAgent({ app: appOfAgent(tools.agents), unlessStopped: true });
+  if (started.started)
+    return done("handed", `${HELPER_NAME2} runs the new version now.`);
+  if (started.stopped)
+    return done("stopped", "Kuvo on this Mac was stopped as it went: nothing was started.");
+  if (!started.disabled && !stoppedHere()) {
+    const opened = spawnSync21(tools.open, ["-g", "-j", "-n", helperBundle(), "--args", "keep", "--home", K], { encoding: "utf8", timeout: 30000, stdio: ["ignore", "ignore", "pipe"] });
+    if (opened.status === 0)
+      return done("handed", `${HELPER_NAME2} runs the new version now, opened until you log out: launchd didn't start it (${started.message})`);
+  }
+  return done("failed", started.message);
+}
+
+// box/src/link/updates/code-in-place.ts
+init_home();
+import crypto69 from "node:crypto";
+import fs206 from "node:fs";
+import path216 from "node:path";
+var boxLink = (root = K) => path216.join(root, "bin", "kuvo-link.js");
 function codeInPlace(root = K) {
   let link = null;
   try {
-    link = crypto68.createHash("sha256").update(fs205.readFileSync(boxLink(root))).digest("hex");
+    link = crypto69.createHash("sha256").update(fs206.readFileSync(boxLink(root))).digest("hex");
   } catch {}
   return { version: boxVersion(), link };
 }
@@ -70658,7 +70849,7 @@ function codeCheck(started, { leaves = true, updating = isUpdating, now = codeIn
   const files = now();
   return files.version && files.link && (files.version !== started.version || files.link !== started.link) ? "leave" : "stay";
 }
-var runsBoxCode = (script) => !APP_FOLDER && path215.resolve(script) === path215.resolve(boxLink());
+var runsBoxCode = (script) => !APP_FOLDER && path216.resolve(script) === path216.resolve(boxLink());
 function leaveForNewCode(script, leave) {
   if (!runsBoxCode(script))
     return;
@@ -70676,9 +70867,9 @@ function leaveForNewCode(script, leave) {
 
 // box/src/link/updates/health.ts
 init_engines();
-import { spawn as spawn21, spawnSync as spawnSync21 } from "node:child_process";
-import fs206 from "node:fs";
-import path216 from "node:path";
+import { spawn as spawn22, spawnSync as spawnSync22 } from "node:child_process";
+import fs207 from "node:fs";
+import path217 from "node:path";
 import { performance as performance2 } from "node:perf_hooks";
 init_home();
 var PIECES = ["info", "serve", "run", "engine", "bridge"];
@@ -70689,42 +70880,42 @@ if (!REAL_BOX) {
   if (Number(process.env.KUVO_TEST_HEALTH_EVERY) > 0)
     HEALTH.every = Number(process.env.KUVO_TEST_HEALTH_EVERY);
 }
-var JUDGE_FILE = path216.join(RUN, "update-judge.pid");
-var SETTLE_TRIES = path216.join(RUN, "update-settle.tries");
+var JUDGE_FILE = path217.join(RUN, "update-judge.pid");
+var SETTLE_TRIES = path217.join(RUN, "update-settle.tries");
 function judging2() {
   let pid = 0;
   try {
-    pid = Number(fs206.readFileSync(JUDGE_FILE, "utf8"));
+    pid = Number(fs207.readFileSync(JUDGE_FILE, "utf8"));
   } catch {}
   return pid > 0 && pid !== process.pid && processRuns(pid, "kuvo-link");
 }
 var featuresNow = () => IS_MAC ? macFeatures() : [...FEATURES];
 var readJSON4 = (file) => {
   try {
-    return JSON.parse(fs206.readFileSync(file, "utf8"));
+    return JSON.parse(fs207.readFileSync(file, "utf8"));
   } catch {
     return null;
   }
 };
 var mtime5 = (file) => {
   try {
-    return fs206.statSync(file).mtimeMs;
+    return fs207.statSync(file).mtimeMs;
   } catch {
     return 0;
   }
 };
 var size = (file) => {
   try {
-    return fs206.statSync(file).size;
+    return fs207.statSync(file).size;
   } catch {
     return -1;
   }
 };
 function infoFromFiles() {
   const version = keeperEngine2(K);
-  const runtime = version ? path216.join(K, "engine", version, "opencode") : null;
-  const script = path216.join(K, "bin", "kuvo-link.js");
-  if (!runtime || !fs206.existsSync(runtime) || !fs206.existsSync(script))
+  const runtime = version ? path217.join(K, "engine", version, "opencode") : null;
+  const script = path217.join(K, "bin", "kuvo-link.js");
+  if (!runtime || !fs207.existsSync(runtime) || !fs207.existsSync(script))
     return Promise.resolve(null);
   return new Promise((resolve) => {
     let out = "", done = false;
@@ -70736,7 +70927,7 @@ function infoFromFiles() {
     };
     let child;
     try {
-      child = spawn21(runtime, ["--config=/dev/null", "--no-env-file", script, "box", "route"], { cwd: K, env: { ...process.env, BUN_BE_BUN: "1", BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0", KUVO_HOME: K }, stdio: ["pipe", "pipe", "ignore"] });
+      child = spawn22(runtime, ["--config=/dev/null", "--no-env-file", script, "box", "route"], { cwd: K, env: { ...process.env, BUN_BE_BUN: "1", BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0", KUVO_HOME: K }, stdio: ["pipe", "pipe", "ignore"] });
     } catch {
       return finish(null);
     }
@@ -70772,37 +70963,37 @@ async function lookAtPieces(trial, since, last = {}) {
   const info = await infoFromFiles();
   const had = trial.features ?? [];
   const infoOK = info !== null && info.status === 200 && had.every((feature) => info.features.includes(feature));
-  const servedRecord = readJSON4(path216.join(RUN, "serve.json"));
+  const servedRecord = readJSON4(path217.join(RUN, "serve.json"));
   const servePid = servedRecord?.pid && runsAs(servedRecord.pid, servedRecord.kept ? /kuvo-link\.js serve --kept(\s|$)/ : /kuvo-link\.js serve(\s|$)/) ? servedRecord.pid : null;
-  const serveWanted = OWN_HOME_MAC || fs206.existsSync(path216.join(RUN, "serve.needed"));
+  const serveWanted = OWN_HOME_MAC || fs207.existsSync(path217.join(RUN, "serve.needed"));
   let serveOK = !serveWanted;
   if (servePid) {
-    const fresh = mtime5(path216.join(RUN, "serve.json")) >= since;
+    const fresh = mtime5(path217.join(RUN, "serve.json")) >= since;
     serveOK = !fresh || !!servedRecord.port && !!servedRecord.password && await answers2({ port: servedRecord.port, password: servedRecord.password }, "kuvo/info");
   }
   let linkPid = null;
   try {
-    linkPid = Number(fs206.readFileSync(PID_FILE, "utf8")) || null;
+    linkPid = Number(fs207.readFileSync(PID_FILE, "utf8")) || null;
   } catch {}
   if (linkPid && !processRuns(linkPid, "kuvo-link"))
     linkPid = null;
-  const runOK = linkPid !== null || !fs206.existsSync(NEEDED_FILE);
+  const runOK = linkPid !== null || !fs207.existsSync(NEEDED_FILE);
   const engine = readJSON4(ENGINE_FILE);
   const enginePid = engine?.pid && engineRuns(engine.pid, K) ? engine.pid : null;
-  const log = size(path216.join(RUN, "engine.log"));
+  const log = size(path217.join(RUN, "engine.log"));
   let engineOK;
   if (enginePid)
     engineOK = await answers2(engine, "api/session?limit=1") || last.engineLog !== undefined && log > last.engineLog;
   else
-    engineOK = ["stopped", "paused", "off"].some((mark) => fs206.existsSync(path216.join(RUN, mark)));
+    engineOK = ["stopped", "paused", "off"].some((mark) => fs207.existsSync(path217.join(RUN, mark)));
   last.engineLog = log;
   const bridge = readJSON4(BRIDGE_FILE);
   const bridgePid = bridge?.pid && processRuns(bridge.pid, "kuvo-agents") ? bridge.pid : null;
   let keeps = false;
   try {
-    keeps = /^bridge\)/m.test(fs206.readFileSync(path216.join(K, "bin", "kuvo-start"), "utf8"));
+    keeps = /^bridge\)/m.test(fs207.readFileSync(path217.join(K, "bin", "kuvo-start"), "utf8"));
   } catch {}
-  const bridgeWanted = fs206.existsSync(path216.join(K, "bin", "kuvo-agents.js")) && enginePid !== null && (keeps || !!engine?.agentsPort);
+  const bridgeWanted = fs207.existsSync(path217.join(K, "bin", "kuvo-agents.js")) && enginePid !== null && (keeps || !!engine?.agentsPort);
   let bridgeOK = !bridgeWanted;
   if (bridgePid && bridge.renewal?.waits === "restart")
     bridgeOK = false;
@@ -70817,10 +71008,10 @@ async function lookAtPieces(trial, since, last = {}) {
   };
 }
 function rollBackCode() {
-  const start = path216.join(K, "bin", "kuvo-start");
-  if (!fs206.existsSync(start))
+  const start = path217.join(K, "bin", "kuvo-start");
+  if (!fs207.existsSync(start))
     return false;
-  const ran = spawnSync21("sh", [start, "rollback"], { cwd: K, env: { ...process.env, KUVO_UPDATER: String(process.pid) }, stdio: "ignore", timeout: 600000 });
+  const ran = spawnSync22("sh", [start, "rollback"], { cwd: K, env: { ...process.env, KUVO_UPDATER: String(process.pid) }, stdio: "ignore", timeout: 600000 });
   return ran.status === 0 && !updateOnTrial();
 }
 async function settleUpdate({ clock = () => performance2.now(), every = HEALTH.every, window = HEALTH.window, failingFor = HEALTH.failingFor, wait = sleep, look, rollBack = rollBackCode, well = () => {} } = {}) {
@@ -70831,15 +71022,15 @@ async function settleUpdate({ clock = () => performance2.now(), every = HEALTH.e
   let to = opened?.to;
   if (!to)
     try {
-      to = fs206.readFileSync(path216.join(RUN, "update-trial"), "utf8").trim();
+      to = fs207.readFileSync(path217.join(RUN, "update-trial"), "utf8").trim();
     } catch {}
   if (!to)
     return "none";
-  const trial = opened ?? { from: "", to, at: mtime5(path216.join(RUN, "update-trial")) };
+  const trial = opened ?? { from: "", to, at: mtime5(path217.join(RUN, "update-trial")) };
   const since = trial.swapped ?? trial.at;
   if (!takeJudgeMark())
     return "none";
-  if (fs206.existsSync(path216.join(RUN, "update-restore"))) {
+  if (fs207.existsSync(path217.join(RUN, "update-restore"))) {
     try {
       return putBack3(trial, to, null, rollBack);
     } finally {
@@ -70851,7 +71042,7 @@ async function settleUpdate({ clock = () => performance2.now(), every = HEALTH.e
       return putBack3(trial, to, null, rollBack);
     } finally {
       if (!updateOnTrial())
-        spawnSync21("sh", [path216.join(K, "bin", "kuvo-start"), "start"], { cwd: K, env: process.env, stdio: "ignore", timeout: 600000 });
+        spawnSync22("sh", [path217.join(K, "bin", "kuvo-start"), "start"], { cwd: K, env: process.env, stdio: "ignore", timeout: 600000 });
       dropJudgeMark();
     }
   }
@@ -70866,7 +71057,7 @@ async function settleUpdate({ clock = () => performance2.now(), every = HEALTH.e
       if (!stillOpen())
         return "none";
       const looked = await looking(trial, since);
-      fs206.rmSync(SETTLE_TRIES, { force: true });
+      fs207.rmSync(SETTLE_TRIES, { force: true });
       if (!stillOpen())
         return "none";
       const now = clock();
@@ -70927,17 +71118,17 @@ function putBack3(trial, to, why, rollBack) {
     noteTrialEnded(reason);
   return "unwell";
 }
-var stoppedOnPurpose2 = () => fs206.existsSync(path216.join(RUN, "paused")) || fs206.existsSync(path216.join(RUN, "off"));
+var stoppedOnPurpose2 = () => fs207.existsSync(path217.join(RUN, "paused")) || fs207.existsSync(path217.join(RUN, "off"));
 function takeJudgeMark() {
   for (let tries = 0;tries < 2; tries++) {
     try {
-      fs206.writeFileSync(JUDGE_FILE, String(process.pid), { flag: "wx", mode: 384 });
+      fs207.writeFileSync(JUDGE_FILE, String(process.pid), { flag: "wx", mode: 384 });
       return true;
     } catch {
       if (judging2())
         return false;
       try {
-        fs206.rmSync(JUDGE_FILE, { force: true });
+        fs207.rmSync(JUDGE_FILE, { force: true });
       } catch {}
     }
   }
@@ -70945,17 +71136,17 @@ function takeJudgeMark() {
 }
 function dropJudgeMark() {
   try {
-    if (Number(fs206.readFileSync(JUDGE_FILE, "utf8")) === process.pid)
-      fs206.rmSync(JUDGE_FILE, { force: true });
+    if (Number(fs207.readFileSync(JUDGE_FILE, "utf8")) === process.pid)
+      fs207.rmSync(JUDGE_FILE, { force: true });
   } catch {}
 }
 function startSettling() {
   const version = keeperEngine2(K);
-  const runtime = version ? path216.join(K, "engine", version, "opencode") : null;
-  if (!runtime || !fs206.existsSync(runtime))
+  const runtime = version ? path217.join(K, "engine", version, "opencode") : null;
+  if (!runtime || !fs207.existsSync(runtime))
     return;
   try {
-    const child = spawn21(runtime, ["--config=/dev/null", "--no-env-file", path216.join(K, "bin", "kuvo-link.js"), "update", "--settle"], { detached: true, stdio: "ignore", cwd: K, env: { ...process.env, BUN_BE_BUN: "1", BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0", KUVO_HOME: K } });
+    const child = spawn22(runtime, ["--config=/dev/null", "--no-env-file", path217.join(K, "bin", "kuvo-link.js"), "update", "--settle"], { detached: true, stdio: "ignore", cwd: K, env: { ...process.env, BUN_BE_BUN: "1", BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0", KUVO_HOME: K } });
     child.on("error", () => {});
     child.unref();
   } catch {}
@@ -71042,7 +71233,7 @@ init_format();
 init_home();
 
 // box/src/link/places.ts
-import path217 from "node:path";
+import path218 from "node:path";
 init_home();
 init_machines();
 init_home();
@@ -71060,11 +71251,11 @@ function boxPlaces() {
     updates: UPDATES,
     search: SEARCH,
     apps: APPS,
-    browser: path217.join(K, "browser"),
-    trash: path217.join(K, "trash"),
-    temporary: path217.join(K, "t"),
+    browser: path218.join(K, "browser"),
+    trash: path218.join(K, "trash"),
+    temporary: path218.join(K, "t"),
     engineData: ENGINE_DATA,
-    engineConfig: ENGINE_CONFIG ?? path217.join(K, "config"),
+    engineConfig: ENGINE_CONFIG ?? path218.join(K, "config"),
     settingsFile: CONFIG_FILE,
     engineLayerFile: ENGINE_LAYER_FILE,
     defaultsPlugin: DEFAULTS_PLUGIN,
@@ -71125,9 +71316,9 @@ onLinkWritten((link) => {
   if (liveHost)
     setTimeout(() => liveHost?.keepOnly(new Set((readLink()?.phones ?? []).map((phone) => phone.key))), 200).unref?.();
   if (needed(link))
-    fs207.writeFileSync(NEEDED_FILE, "", { mode: 384 });
+    fs208.writeFileSync(NEEDED_FILE, "", { mode: 384 });
   else
-    fs207.rmSync(NEEDED_FILE, { force: true });
+    fs208.rmSync(NEEDED_FILE, { force: true });
 });
 var liveHost = null;
 function machineWelcomed(host) {
@@ -71151,19 +71342,19 @@ async function updateIsWell() {
 async function run7() {
   let old = null;
   try {
-    old = Number(fs207.readFileSync(PID_FILE, "utf8"));
+    old = Number(fs208.readFileSync(PID_FILE, "utf8"));
     if (isBridge2(old))
       process.kill(old, "SIGTERM");
   } catch {}
-  fs207.mkdirSync(RUN, { recursive: true, mode: 448 });
+  fs208.mkdirSync(RUN, { recursive: true, mode: 448 });
   clearNotesLocks();
-  fs207.writeFileSync(PID_FILE, String(process.pid), { mode: 384 });
-  fs207.writeFileSync(VERSION_FILE, BRIDGE_VERSION, { mode: 384 });
+  fs208.writeFileSync(PID_FILE, String(process.pid), { mode: 384 });
+  fs208.writeFileSync(VERSION_FILE, BRIDGE_VERSION, { mode: 384 });
   const saved = savedLoginPath(K);
   if (saved)
-    process.env.PATH = joinPath(path218.join(K, "bin"), saved);
+    process.env.PATH = joinPath(path219.join(K, "bin"), saved);
   for (const folder of ["present", "connected"])
-    fs207.rmSync(path218.join(RUN, folder), { recursive: true, force: true });
+    fs208.rmSync(path219.join(RUN, folder), { recursive: true, force: true });
   try {
     keepJobs();
   } catch {}
@@ -71179,8 +71370,8 @@ async function run7() {
   });
   const cleanUp = () => {
     try {
-      if (fs207.readFileSync(PID_FILE, "utf8") === String(process.pid))
-        fs207.unlinkSync(PID_FILE);
+      if (fs208.readFileSync(PID_FILE, "utf8") === String(process.pid))
+        fs208.unlinkSync(PID_FILE);
     } catch {}
     process.exit(0);
   };
@@ -71192,7 +71383,7 @@ async function run7() {
   setInterval(() => {
     let owner = null;
     try {
-      owner = Number(fs207.readFileSync(PID_FILE, "utf8"));
+      owner = Number(fs208.readFileSync(PID_FILE, "utf8"));
     } catch {}
     const link = readLink();
     if (!needed(link)) {
@@ -71209,7 +71400,7 @@ async function run7() {
     await sleep(50);
   let held = [];
   try {
-    held = JSON.parse(fs207.readFileSync(HELD_FILE, "utf8"));
+    held = JSON.parse(fs208.readFileSync(HELD_FILE, "utf8"));
   } catch {}
   const hold = new NoticeHold({
     send: tellPhones,
@@ -71219,7 +71410,7 @@ async function run7() {
         if (entries.length)
           writePrivate(HELD_FILE, JSON.stringify(entries));
         else
-          fs207.rmSync(HELD_FILE, { force: true });
+          fs208.rmSync(HELD_FILE, { force: true });
       } catch {}
     }
   });
@@ -71294,7 +71485,7 @@ async function run7() {
     }, 50);
   };
   try {
-    fs207.mkdirSync(SENDING, { recursive: true, mode: 448 });
+    fs208.mkdirSync(SENDING, { recursive: true, mode: 448 });
   } catch {}
   let outboxWatch = watchFolders([SENDING], leftNow, { recursive: false });
   const forwardNow = () => {
@@ -71304,7 +71495,7 @@ async function run7() {
   };
   forwardsSoon.send = forwardNow;
   try {
-    fs207.mkdirSync(FORWARDS, { recursive: true, mode: 448 });
+    fs208.mkdirSync(FORWARDS, { recursive: true, mode: 448 });
   } catch {}
   let forwardsWatch = watchFolders([FORWARDS], forwardNow, { recursive: false });
   const heldNow = () => {
@@ -71443,7 +71634,7 @@ async function box(command) {
         return say({ status: 409, message: "It's updating already." });
       if (updateOnTrial())
         return say({ status: 409, message: ON_TRIAL });
-      spawn22(process.execPath, [...OWN_RUNTIME, fileURLToPath5(import.meta.url), "update", "--now", "--free"], { detached: true, stdio: "ignore", cwd: K, env: process.env }).unref();
+      spawn23(process.execPath, [...OWN_RUNTIME, fileURLToPath5(import.meta.url), "update", "--now", "--free"], { detached: true, stdio: "ignore", cwd: K, env: process.env }).unref();
       return say({ status: 202, ...updateStatus(), updating: "checking" });
     }
     case "route": {
@@ -71547,12 +71738,12 @@ async function keptServe() {
     console.error(`The box's server already runs (${other.pid}).`);
     return;
   }
-  if (!fs207.existsSync(SERVE_NEEDED())) {
+  if (!fs208.existsSync(SERVE_NEEDED())) {
     console.error("No client wants the box's server here (run/serve.needed).");
     return;
   }
-  fs207.mkdirSync(RUN, { recursive: true, mode: 448 });
-  const password = crypto69.randomBytes(24).toString("hex");
+  fs208.mkdirSync(RUN, { recursive: true, mode: 448 });
+  const password = crypto70.randomBytes(24).toString("hex");
   const server = serveBox(password, engineHandler(readEngineFile, { name: os26.hostname() }, readBridgeFile));
   await new Promise((resolve, reject) => {
     server.once("error", reject);
@@ -71564,7 +71755,7 @@ async function keptServe() {
   } catch {}
   const mine = () => {
     try {
-      return JSON.parse(fs207.readFileSync(SERVE_FILE(), "utf8"))?.pid === process.pid;
+      return JSON.parse(fs208.readFileSync(SERVE_FILE(), "utf8"))?.pid === process.pid;
     } catch {
       return false;
     }
@@ -71572,7 +71763,7 @@ async function keptServe() {
   const leave = () => {
     try {
       if (mine())
-        fs207.rmSync(SERVE_FILE(), { force: true });
+        fs208.rmSync(SERVE_FILE(), { force: true });
     } catch {}
     process.exit(0);
   };
@@ -71583,7 +71774,7 @@ async function keptServe() {
   console.log(JSON.stringify({ url: `http://127.0.0.1:${port}` }));
   const every = !REAL_BOX && Number(process.env.KUVO_TEST_SERVE_EVERY) > 0 ? Number(process.env.KUVO_TEST_SERVE_EVERY) : 30000;
   setInterval(() => {
-    if (!fs207.existsSync(SERVE_NEEDED()) || !mine())
+    if (!fs208.existsSync(SERVE_NEEDED()) || !mine())
       leave();
   }, every);
 }
@@ -71592,17 +71783,19 @@ async function serve() {
     return keptServe();
   let password = process.env.OPENCODE_PASSWORD;
   delete process.env.OPENCODE_PASSWORD;
+  let renews;
   if (!password) {
     const given = await firstLine();
     if (typeof given.password === "string")
       password = given.password;
     takeVaultSecrets(given);
+    renews = given.renews === true;
   }
   if (!password) {
     console.error('serve answers only with a password: on its stdin, {"password"}, or in OPENCODE_PASSWORD.');
     process.exit(2);
   }
-  fs207.mkdirSync(RUN, { recursive: true, mode: 448 });
+  fs208.mkdirSync(RUN, { recursive: true, mode: 448 });
   clearNotesLocks();
   if (IS_MAC)
     addMacDefaults();
@@ -71673,7 +71866,7 @@ async function serve() {
     } catch {}
   try {
     if (APP_FOLDER)
-      writePrivate(path218.join(RUN, SERVED_FILE), JSON.stringify({ app: MAC_APP_VERSION, bridge: BRIDGE_VERSION, at: Date.now() }));
+      writePrivate(path219.join(RUN, SERVED_FILE), JSON.stringify({ app: MAC_APP_VERSION, bridge: BRIDGE_VERSION, at: Date.now() }));
     else
       clearKept(K);
   } catch {}
@@ -71691,12 +71884,13 @@ async function serve() {
     if ((macLink.host?.unsent?.() ?? 0) > 0)
       console.error("Kuvo Code quit before what its link had for your phones and machines went out.");
     try {
-      if (OWN_HOME_MAC && JSON.parse(fs207.readFileSync(SERVE_FILE(), "utf8"))?.pid === process.pid)
-        fs207.rmSync(SERVE_FILE(), { force: true });
+      if (OWN_HOME_MAC && JSON.parse(fs208.readFileSync(SERVE_FILE(), "utf8"))?.pid === process.pid)
+        fs208.rmSync(SERVE_FILE(), { force: true });
     } catch {}
     process.exit(0);
   };
   leaveForNewCode(fileURLToPath5(import.meta.url), () => void leave());
+  watchHelperBuild(renews);
   const dropBackups = () => {
     try {
       dropOldBackups();
@@ -71727,7 +71921,7 @@ async function setup() {
   const replaced = mac && Array.isArray(input.replaces) ? input.replaces.filter((key) => typeof key === "string" && KEY.test(key) && key !== mac).slice(0, 8) : [];
   let formerMacs = [];
   updateLink((current) => {
-    const next = current ?? { secret: crypto69.randomBytes(32).toString("base64url"), key: newKey().toString("base64url"), phones: [] };
+    const next = current ?? { secret: crypto70.randomBytes(32).toString("base64url"), key: newKey().toString("base64url"), phones: [] };
     next.sign ??= newSigningSeed();
     if (mac) {
       next.mac = mac;
@@ -71779,7 +71973,7 @@ async function setup() {
   }
   let runningVersion = null;
   try {
-    runningVersion = fs207.readFileSync(VERSION_FILE, "utf8").trim();
+    runningVersion = fs208.readFileSync(VERSION_FILE, "utf8").trim();
   } catch {}
   const restart = old?.relay !== link.relay || old?.name !== link.name || runningVersion !== BRIDGE_VERSION;
   if (!isUpdating()) {
@@ -71838,7 +72032,7 @@ function pair(relay) {
     process.exit(3);
   }
   const link = updateLink((current) => {
-    const next = current ?? { secret: crypto69.randomBytes(32).toString("base64url"), key: newKey().toString("base64url"), name: os26.hostname(), phones: [] };
+    const next = current ?? { secret: crypto70.randomBytes(32).toString("base64url"), key: newKey().toString("base64url"), name: os26.hostname(), phones: [] };
     next.sign ??= newSigningSeed();
     if (relay)
       next.relay = relay;
@@ -71868,7 +72062,7 @@ function selftest() {
   const ok = said.toString() === "hello" && payload.toString() === "welcome" && echoed.toString() === "ping" && mail.toString() === "mail" && responder.rs.equals(publicOf(phone)) && typeof WebSocket === "function" && typeof fetch === "function";
   return ok;
 }
-var main = process.argv[1] && fs207.realpathSync(process.argv[1]) === fs207.realpathSync(fileURLToPath5(import.meta.url));
+var main = process.argv[1] && fs208.realpathSync(process.argv[1]) === fs208.realpathSync(fileURLToPath5(import.meta.url));
 if (main) {
   const [mode, argument] = process.argv.slice(2);
   if (mode === "run")
@@ -71925,7 +72119,7 @@ if (main) {
     const from = option("--from");
     const offered = args.includes("--offered");
     const test = option("--key") && (option("--url") || from || offered) && !REAL_BOX ? { url: option("--url"), keys: [option("--key")], blocked: null } : {};
-    const installer = args.includes("--installer") && !!from && path218.isAbsolute(from);
+    const installer = args.includes("--installer") && !!from && path219.isAbsolute(from);
     const now = args.includes("--now");
     let told = false;
     const step = (running) => {
@@ -71947,7 +72141,7 @@ if (main) {
         if (process.ppid === 1)
           process.exit(0);
       }
-      outcome = offered ? await takeOffer({ now, step, features: featuresNow(), ...test }) : from && !path218.isAbsolute(from) ? { result: "failed", message: "Say which folder the release is in, as a full path." } : await update({ now, whileBusy: now && !args.includes("--free"), from, step, features: featuresNow(), swapping: () => {
+      outcome = offered ? await takeOffer({ now, step, features: featuresNow(), ...test }) : from && !path219.isAbsolute(from) ? { result: "failed", message: "Say which folder the release is in, as a full path." } : await update({ now, whileBusy: now && !args.includes("--free"), from, step, features: featuresNow(), swapping: () => {
         swapped = true;
       }, ...test });
       if (installer && !now && outcome?.result === "busy")
@@ -71998,6 +72192,8 @@ if (main) {
     process.exitCode = await installCommand(process.argv.slice(3));
   } else if (mode === "uninstall") {
     process.exitCode = uninstallCommand(process.argv.slice(3));
+  } else if (mode === "helper" && process.argv[3] === "hand-over") {
+    process.exitCode = handOverCommand(process.argv.slice(4));
   } else if (mode === "helper") {
     process.exitCode = helperCommand(process.argv.slice(3));
   } else if (mode === "selftest") {
