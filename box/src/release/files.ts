@@ -15,6 +15,9 @@ export interface EnginePin {
   version: string;
   linux: Record<string, { url: string; integrity: string }>;
   darwin: Record<string, { url: string; integrity: string }>;
+  /** The engine the release before ran (N-1), for the release check (scripts/engine-check.mjs):
+   * moved here as the pin moves to a newer engine. */
+  previous?: Omit<EnginePin, "previous">;
 }
 
 /** One file of a release: its path in `~/.kuvo-code`, who may read and run it, and its bytes. */
@@ -40,16 +43,31 @@ const sha256 = (data: Buffer | string): string => crypto.createHash("sha256").up
 
 export function enginePin(root: string): EnginePin {
   const pin = JSON.parse(fs.readFileSync(path.join(root, "box/src/shared/engine-pin.json"), "utf8")) as EnginePin;
-  if (!/^\d+\.\d+\.\d+$/.test(pin.version)) throw new Error("box/src/shared/engine-pin.json names no engine version.");
-  for (const system of ["linux", "darwin"] as const) {
-    for (const kind of ["x86_64", "aarch64"]) {
-      const build = pin[system]?.[kind];
-      if (!build?.url?.endsWith(`-${pin.version}.tgz`) || !/^sha512-[A-Za-z0-9+/]{86}==$/.test(build.integrity ?? "")) {
-        throw new Error(`box/src/shared/engine-pin.json has no ${system} ${kind} build of ${pin.version}, with its integrity.`);
+  for (const each of [pin, ...(pin.previous ? [pin.previous] : [])]) {
+    if (!/^\d+\.\d+\.\d+$/.test(each.version)) throw new Error("box/src/shared/engine-pin.json names no engine version.");
+    for (const system of ["linux", "darwin"] as const) {
+      for (const kind of ["x86_64", "aarch64"]) {
+        const build = each[system]?.[kind];
+        if (!build?.url?.endsWith(`-${each.version}.tgz`) || !/^sha512-[A-Za-z0-9+/]{86}==$/.test(build.integrity ?? "")) {
+          throw new Error(`box/src/shared/engine-pin.json has no ${system} ${kind} build of ${each.version}, with its integrity.`);
+        }
       }
     }
   }
   return pin;
+}
+
+/** What the release check of its engines found (scripts/engine-check.mjs, its file named by
+ * `ENGINE_CHECK`): the engines its link and bridge answered on, the pinned one first, then the one
+ * before; and whether the one before opens what the pinned one wrote. Without a check, the pinned
+ * engine alone (a box running another takes it with its engine, once nothing's at work). */
+export function engineCheck(pin: EnginePin, file = process.env.ENGINE_CHECK): { engines: string[]; downgradeSafe?: true } {
+  if (!file) return { engines: [pin.version] };
+  const found = JSON.parse(fs.readFileSync(file, "utf8"));
+  const engines: unknown = found?.engines;
+  const expected = [pin.version, ...(pin.previous && pin.previous.version !== pin.version ? [pin.previous.version] : [])];
+  if (!Array.isArray(engines) || JSON.stringify(engines) !== JSON.stringify(expected)) throw new Error(`${file} isn't the check of engines ${expected.join(" and ")}: run scripts/engine-check.mjs again.`);
+  return { engines: expected, ...(found.downgradeSafe === true && expected.length > 1 ? { downgradeSafe: true as const } : {}) };
 }
 
 /** Those of the keeper's files that name the engine's version, each once: never a version written
@@ -120,11 +138,14 @@ export function boxFiles(root: string, version: string): BoxFile[] {
  * in `~/.kuvo-code` with its SHA-256. (A Mac's bundles are added as they're packed.) */
 export function boxManifest(root: string, version: string, files: BoxFile[]): string {
   const pin = enginePin(root);
+  const checked = engineCheck(pin);
   const builds = (system: EnginePin["linux"]) =>
     Object.fromEntries(["aarch64", "x86_64"].map(kind => [kind, { integrity: system[kind]!.integrity, url: system[kind]!.url }]));
   return JSON.stringify({
     darwin: builds(pin.darwin),
+    ...(checked.downgradeSafe ? { downgradeSafe: true } : {}),
     engine: pin.version,
+    engines: checked.engines,
     files: Object.fromEntries(files.map(file => [file.path, sha256(file.data)])),
     linux: builds(pin.linux),
     version,

@@ -88,6 +88,8 @@ fi
 real_app_guard "scripts/box-release.sh" "$BUN"
 
 # (Never with the key: writing the files needs none.)
+# (ENGINE_CHECK, where given: what scripts/engine-check.mjs found, for box.json's `engines` and
+# `downgradeSafe`; without it, box.json names the pinned engine alone.)
 files() { env -u KUVO_BOX_SIGNING_KEY BUN_BE_BUN=1 "$BUN" box/src/release/files.ts "${BOX_SOURCES:-$PWD}" "$VERSION" "$1"; }
 
 if [ "$ONLY_FILES" = 1 ]; then
