@@ -30799,10 +30799,10 @@ var fileNames = (files) => (files ?? []).flatMap((file) => {
   return typeof file.uri === "string" && !file.uri.startsWith("data:") ? [path5.basename(decodeURIComponent(file.uri.replace(/^file:\/\//, "")))] : ["file"];
 });
 var last2 = (state, item) => ({ ...state, waiting: [...state.waiting ?? [], item] });
-function keepWaiting(files, session, message, { from, words, kept: keptText } = {}, changed, place = last2) {
+function keepWaiting(files, session, message, { from, words, kept: keptText } = {}, changed, place = last2, holds = false) {
   let kept = false;
   changeQueue(files, session, (state) => {
-    if (!state.paused)
+    if (!state.paused && !holds)
       return state;
     writePrivate(waitingFile(files, message.id), JSON.stringify(keptText === undefined ? message : { ...message, text: keptText }));
     kept = true;
@@ -36754,6 +36754,37 @@ function updateUnderWay(run) {
   }
 }
 
+// box/src/shared/engine-swap.ts
+import fs11 from "fs";
+import path9 from "path";
+var HOLD_MOST = 30 * 60000;
+var SWAP_MOST = 30 * 60000;
+var swapFile = (run) => path9.join(run, "engine-swap.json");
+function readSwap(run) {
+  try {
+    const said = JSON.parse(fs11.readFileSync(swapFile(run), "utf8"));
+    if (typeof said?.from !== "string" || typeof said.to !== "string" || typeof said.pid !== "number" || !["waiting", "holding", "swapping", "back"].includes(said.stage))
+      return null;
+    return said;
+  } catch {
+    return null;
+  }
+}
+function swapUnderWay(run) {
+  const swap = readSwap(run);
+  return swap && processRuns(swap.pid, "kuvo-link") ? swap : null;
+}
+function swapHolds(run, now = Date.now()) {
+  const swap = swapUnderWay(run);
+  if (!swap || swap.stage === "waiting")
+    return false;
+  return typeof swap.holding === "number" && now - swap.holding < HOLD_MOST + SWAP_MOST;
+}
+async function untilSwapLets(run, every = 1000) {
+  while (swapHolds(run))
+    await new Promise((resolve) => setTimeout(resolve, every));
+}
+
 // box/src/agents/main.ts
 import { spawn as spawn6 } from "child_process";
 
@@ -36858,9 +36889,9 @@ class Store {
 }
 
 // box/src/shared/hang.ts
-import fs11 from "fs";
+import fs12 from "fs";
 import net from "net";
-import path9 from "path";
+import path10 from "path";
 var LOOK_EVERY = 30000;
 var ANSWER_WITHIN = 20000;
 var HUNG_AFTER = 600000;
@@ -36966,21 +36997,21 @@ class HangWatch {
   }
   server() {
     try {
-      const { pid, port } = JSON.parse(fs11.readFileSync(this.options.record, "utf8"));
+      const { pid, port } = JSON.parse(fs12.readFileSync(this.options.record, "utf8"));
       return Number.isInteger(pid) && pid > 1 && Number.isInteger(port) && port > 0 ? { pid, port } : null;
     } catch {
       return null;
     }
   }
   stoppedOnPurpose() {
-    return ["stopped", ".launching", ".updating", ".system-asking"].some((name) => fs11.existsSync(path9.join(this.options.run, name)));
+    return ["stopped", ".launching", ".updating", ".system-asking"].some((name) => fs12.existsSync(path10.join(this.options.run, name)));
   }
   endedLately() {
-    const file = path9.join(this.options.run, `hung-${this.options.name}.json`);
-    if (!fs11.existsSync(file))
+    const file = path10.join(this.options.run, `hung-${this.options.name}.json`);
+    if (!fs12.existsSync(file))
       return [];
     try {
-      const times = JSON.parse(fs11.readFileSync(file, "utf8"));
+      const times = JSON.parse(fs12.readFileSync(file, "utf8"));
       return Array.isArray(times) ? times.filter((time) => typeof time === "number" && this.now() - time < ENDED_WHILE && time <= this.now()) : null;
     } catch {
       return null;
@@ -36994,10 +37025,10 @@ class HangWatch {
       console.error(`The ${this.options.name} has said nothing for ${minutes} minutes, and it's been ended too often lately, or there's no telling how often: it's left as it is, for you to restart.`);
       return;
     }
-    const file = path9.join(this.options.run, `hung-${this.options.name}.json`);
+    const file = path10.join(this.options.run, `hung-${this.options.name}.json`);
     try {
-      fs11.writeFileSync(`${file}.new`, JSON.stringify([...lately, this.now()]), { mode: 384 });
-      fs11.renameSync(`${file}.new`, file);
+      fs12.writeFileSync(`${file}.new`, JSON.stringify([...lately, this.now()]), { mode: 384 });
+      fs12.renameSync(`${file}.new`, file);
     } catch {
       console.error(`The ${this.options.name} has said nothing for ${minutes} minutes, but that can't be noted in ${file}: it's left as it is, for you to restart.`);
       return;
@@ -37543,9 +37574,16 @@ if (groupFolders) {
   try {
     const store = new GroupStore(groupFolders.root, groupFolders.bots, agentsFile);
     boxZoneIs(store.settings()?.boxTimeZone);
+    const engineForSeats = runFolder ? {
+      request: async (method, path, body, timeout, directory) => {
+        if (method === "POST" && /^\/?api\/session\/[^/]+\/(prompt|command)$/.test(path))
+          await untilSwapLets(runFolder);
+        return link4.request(method, path, body, timeout, directory);
+      }
+    } : link4;
     const runner = new GroupRunner({
       store,
-      engine: link4,
+      engine: engineForSeats,
       bridge: () => self,
       trash: groupFolders.trash,
       listen: (session, listener) => link4.listen(session, listener),
@@ -37839,4 +37877,4 @@ if (!onMachine) {
 }
 process.on("SIGTERM", stop);
 process.on("SIGINT", stop);
-// Built from Packages/Box/src/agents 2f4e8ebde0744c412cc4e6eb3b360a9d57392b97a2b2ea5ca8f35c3be929ebd2
+// Built from Packages/Box/src/agents 2aa6b948ed2b1de51a402495691f948c8a67acc6c772bf7fec37047a478a16ff
