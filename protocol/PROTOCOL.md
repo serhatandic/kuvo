@@ -11460,7 +11460,7 @@ can go three months after 0.8.0 ships.
   #783 (built from main, never a release) treats a machine more
   than one Mac set up as someone else's, and leads its setup only once that machine says it isn't:
   a box says `shared: false` in its work queue numbering, and on every computer `kuvo/computers`
-  lists. Nothing reads it otherwise; it's decided in #717's next part.
+  lists. Nothing reads it otherwise; it goes when 0.8.0 ships.
   <!-- compat: beta.1 shared-false -->
 
 ### Antigravity conversation history

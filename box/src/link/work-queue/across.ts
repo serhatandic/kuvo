@@ -67,7 +67,7 @@ export function numberingNow(link: LinkState | null): Numbering {
     const told = primary.via ? readTold(primary.via.key)?.primary?.since : readTold(primary.peer.key)?.since;
     named = { key: primary.peer.key, kind: primary.peer.kind, ...(told ? { since: told } : {}) };
   }
-  // COMPAT(beta.1 shared-false): a Mac from before #783 leads a setup only once each machine says `shared: false`. Goes in #717's next part.
+  // COMPAT(beta.1 shared-false): a Mac from before #783 leads a setup only once each machine says `shared: false`. Goes when 0.8.0 ships.
   return { kind, since, top: topOf(), ...(named ? { primary: named } : {}), shared: false };
 }
 

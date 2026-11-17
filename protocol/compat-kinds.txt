@@ -22,4 +22,3 @@ beta.1 peers-list stays
 0.7 bot-json-job next
 0.7 limits-own-numbers next
 0.7 own-envelope next
-beta.1 shared-false next
