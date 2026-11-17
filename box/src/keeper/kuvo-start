@@ -32,6 +32,7 @@ swapping() { is "$(cat "$R/.engine-swapping/pid" 2>/dev/null)" kuvo-link; }
 pick() {
   V=$P
   [ -x "$K/engine/$V/opencode" ] || V=$(for d in "$K"/engine/*/; do [ -x "${d}opencode" ] && basename "$d"; done | sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1)
+  B=$V
   if [ -f "$R/engine-back" ] && read -r bv bf bt <"$R/engine-back" 2>/dev/null; then
     case $bt in '' | *[!0-9]*) bt=0 ;; esac
     if [ "$bv" = "$V" ] && [ -n "$bf" ] && [ -x "$K/engine/$bf/opencode" ] && [ $(($(date +%s) - bt)) -lt 86400 ]; then V=$bf; fi
@@ -225,6 +226,12 @@ keep)
   while :; do
     [ -f "$K/bin/kuvo-start" ] && [ "$(cat "$R/box.pid" 2>/dev/null)" = "$$" ] || exit 0
     hold
+    # The engine running noted as the one that ran (run/engine-ran), as it runs: a box whose engine a
+    # keeper from before started has it noted too.
+    if up; then
+      rv=$(sed -n 's/.*"version":"\([^"]*\)".*/\1/p' "$R/engine.json" 2>/dev/null)
+      if [ -n "$rv" ] && [ -x "$K/engine/$rv/opencode" ] && [ "$(tr -d ' \t\r\n' <"$R/engine-ran" 2>/dev/null)" != "$rv" ] && ! swapping; then echo "$rv" >"$R/engine-ran.new" && mv -f "$R/engine-ran.new" "$R/engine-ran"; fi
+    fi
     pick
     # COMPAT(0.7 keeper): checked each round. Goes 3 months after 0.8.0.
     # Its script replaced: a newer keeper carries on; an older Mac's gets this one back (its
@@ -385,6 +392,10 @@ engine)
   [ -f "$R/launch.env" ] && [ -f "$K/bin/kuvo-launch" ] && [ -n "$V" ] || exit 0
   up && exit 0
   notes=$(cat "$R/launch.notes" 2>/dev/null); [ -n "$notes" ] || notes='{}'
+  # The swapper's start (it holds run/.engine-swapping): noted as the engine to run from now on
+  # before it starts, so one that fails to come up (its data perhaps migrated already) is the one
+  # the keeper starts again, never the one before on what it wrote.
+  if swapping; then echo "$V" >"$R/engine-ran.new" && mv -f "$R/engine-ran.new" "$R/engine-ran"; fi
   for try in 1 2 3; do
     port=$(number); password=$(word); record="\"port\":$port,\"password\":\"$password\",\"version\":\"$V\",\"notes\":$notes"
     { cat "$R/launch.env"; printf 'KUVO_BOOT=1\nKUVO_VERSION=%s\nOPENCODE_PASSWORD=%s\nKUVO_PORT=%s\nKUVO_RECORD=%s}\n' "$V" "$password" "$port" "$record"; printf '\n'; } | sh "$K/bin/kuvo-launch" >/dev/null 2>&1 && up && { echo "$V" >"$R/engine-ran.new" && mv -f "$R/engine-ran.new" "$R/engine-ran"; exit 0; }
@@ -403,9 +414,9 @@ bridge)
   launch_noted
   [ -f "$R/launch.env" ] || exit 0
   bridge_runs && exit 0
-  # (On the keeper's own engine's runtime, W, though the engine that ran runs on until the swapper
-  # changes it: the bridge makes way for that one, and its code was checked with both.)
-  { cat "$R/launch.env"; printf 'KUVO_BRIDGE=1\nKUVO_VERSION=%s\nKUVO_AGENTS_PORT=%s\nKUVO_AGENTS_PASSWORD=%s\n\n' "$W" "$(number)" "$(word)"; } | sh "$K/bin/kuvo-launch" >/dev/null 2>&1
+  # (On the keeper's own engine's runtime, B, though the engine that ran (or the one before a new
+  # one that didn't start) runs on: the bridge makes way for that one, and its code was checked with both.)
+  { cat "$R/launch.env"; printf 'KUVO_BRIDGE=1\nKUVO_VERSION=%s\nKUVO_AGENTS_PORT=%s\nKUVO_AGENTS_PASSWORD=%s\n\n' "$B" "$(number)" "$(word)"; } | sh "$K/bin/kuvo-launch" >/dev/null 2>&1
   bridge_runs
   ;;
 serve)

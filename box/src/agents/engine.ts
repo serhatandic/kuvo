@@ -536,6 +536,12 @@ class EngineThread implements Thread {
     const active = await this.link.request("GET", "/api/session/active").catch(() => undefined)
     if (active?.data?.[id]) await this.link.request("POST", `${path}/interrupt`).catch(() => {})
 
+    // The engine being changed (PROTOCOL.md, "A new engine"): the turn waits for the new one before
+    // it begins (before it listens, or notes when it was sent), and Stop ends the wait.
+    if (this.link.beforeTurn) {
+      await Promise.race([this.link.beforeTurn(), new Promise<void>(resolve => (hooks.signal.aborted ? resolve() : hooks.signal.addEventListener("abort", () => resolve(), { once: true })))])
+      if (hooks.signal.aborted) return { outcome: "interrupted" }
+    }
     const inputID = newID("msg")
     const sentAt = Date.now()
     let step: string | undefined

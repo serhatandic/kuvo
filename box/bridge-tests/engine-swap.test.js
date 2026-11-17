@@ -95,7 +95,7 @@ setInterval(() => { if (!fs.existsSync(${JSON.stringify(home)})) process.exit(0)
 
 /** An engine of `version` in its folder: the stand-in, Bun for the box's scripts beside it (the
  * bridge and link run on the engine's own program); `starts` false for one whose server never does. */
-function engine(version, starts = true) {
+function engine(version, starts = true, migrates = false) {
   const folder = path.join(home, "engine", version);
   fs.mkdirSync(folder, { recursive: true });
   const program = bunRunsAs(bun);
@@ -106,7 +106,7 @@ function engine(version, starts = true) {
 case "$1" in
 --version) echo ${version} ;;
 *.js) case "$2" in browser) exit 0 ;; esac; BUN_BE_BUN=1 exec "${folder}/bun" --config=/dev/null --no-env-file "$@" ;;
-serve) ${starts ? `trap 'kill "$c" 2>/dev/null' TERM INT HUP; STAND_IN_VERSION=${version} '${process.execPath}' '${path.join(scratch, "engine.mjs")}' "$@" & c=$!; wait "$c"` : "echo 'this engine never starts' >&2; exit 1"} ;;
+serve) ${starts ? `trap 'kill "$c" 2>/dev/null' TERM INT HUP; STAND_IN_VERSION=${version} '${process.execPath}' '${path.join(scratch, "engine.mjs")}' "$@" & c=$!; wait "$c"` : `${migrates ? `mkdir -p '${home}/data/opencode'; echo 'migrated by ${version}' >>'${home}/data/opencode/opencode.db'; ` : ""}echo 'this engine never starts' >&2; exit 1`} ;;
 esac
 `, 0o755);
 }
@@ -154,7 +154,7 @@ function keep() {
 /** Release `version` of this checkout's code for engine `to`, checked with `from` (its `engines`),
  * the engine before opening what it writes; signed with a key of the test's, in a folder as an app
  * carries it. */
-function pack(version, to, from) {
+function pack(version, to, from, downgradeSafe = true) {
   const { privateKey, publicKey } = crypto.generateKeyPairSync("ed25519");
   const root = path.join(scratch, `sources-${version}`);
   for (const file of ["box/src/keeper/kuvo-start", "box/src/keeper/kuvo-launch", "box/src/keeper/kuvo-setsid", "box/src/keeper/kuvo-wake", "box/src/keeper/kuvo-npx", "box/src/keeper/runtime/node", "box/src/plugins/kuvo-code.js", "box/src/shared/bot-words.json", "box/dist/kuvo-browser.js", "box/dist/kuvo-agents.js"]) {
@@ -165,7 +165,7 @@ function pack(version, to, from) {
   const builds = engine => ({ x86_64: { url: `https://example.invalid/engine-${engine}.tgz`, integrity }, aarch64: { url: `https://example.invalid/engine-${engine}.tgz`, integrity } });
   write(path.join(root, "box/src/shared/engine-pin.json"), JSON.stringify({ version: to, linux: builds(to), darwin: builds(to), previous: { version: from, linux: builds(from), darwin: builds(from) } }));
   const check = path.join(scratch, `check-${version}.json`);
-  write(check, JSON.stringify({ engines: [to, from], downgradeSafe: true }));
+  write(check, JSON.stringify({ engines: [to, from], downgradeSafe }));
   const out = path.join(scratch, `release-${version}`);
   const packed = spawnSync("sh", [path.join(checkout, "scripts", "box-release.sh"), version, `https://example.invalid/releases/download/v${version}/box-${version}.tar.gz`, out], {
     env: { ...process.env, BUN: bun, NODE: process.execPath, BOX_SOURCES: root, ENGINE_CHECK: check, KUVO_BOX_SIGNING_KEY: privateKey.export({ type: "pkcs8", format: "pem" }) }, encoding: "utf8",
@@ -176,8 +176,8 @@ function pack(version, to, from) {
 
 /** Taken as the box takes a release an app offers: at once, though something works (its code stops
  * nothing), and judged well. */
-async function take(version, to, from) {
-  const { out, pinned } = pack(version, to, from);
+async function take(version, to, from, downgradeSafe = true) {
+  const { out, pinned } = pack(version, to, from, downgradeSafe);
   assert.deepEqual(link.offerUpdate(out, { keys: [pinned], blocked: null }), { status: 202, version });
   assert.deepEqual(await link.takeOffer({ keys: [pinned], blocked: null }), { result: "updated", version });
   await until(() => !fs.existsSync(path.join(RUN, "update-trial")), `${version} judged`);
@@ -336,4 +336,23 @@ test("a hold the turns don't end within its bound is let go of: what it held goe
   busy(false);
   await until(() => engineNow()?.version === "1.3.0", "the new engine at the next quiet moment");
   assert.ok(fs.readdirSync(path.join(home, "updates", "backups")).some(name => name.endsWith("1.1.0-to-1.3.0")), "its data copied first");
+});
+
+test("a new engine that doesn't start, where the one before can't open what it wrote, stays: the keeper starts it again, never the one before on its data", { skip: bun ? false : NO_BUN, timeout: 300_000 }, async () => {
+  const before = await until(engineNow, "the engine to run");
+  assert.equal(before.version, "1.3.0");
+  timing({ holdMost: 300_000 });
+  // (One that begins its migration before it fails: what it wrote, the one before can't open.)
+  engine("1.4.0", false, true);
+  await take("0.13.0", "1.4.0", "1.3.0", false);
+  await until(() => readJSON(path.join(RUN, "update.json")).engine?.to === "1.4.0", "the swap to end", 180_000);
+  const last = readJSON(path.join(RUN, "update.json")).engine;
+  assert.equal(last.result, "failed", JSON.stringify(last));
+  assert.match(last.message, /can’t open what it wrote/);
+  assert.equal(fs.readFileSync(path.join(RUN, "engine-ran"), "utf8").trim(), "1.4.0", "the engine to run from now on is the new one");
+  assert.ok(!fs.existsSync(path.join(RUN, "engine-back")), "nothing to go back to");
+  // The keeper tries the new one again (as one of its own failing), never the one before.
+  const record = readJSON(path.join(RUN, "engine.json"));
+  assert.ok(!record?.pid || !runs(record.pid) || record.version !== "1.3.0", JSON.stringify(record));
+  assert.ok(!runs(before.pid), "the engine before stays stopped");
 });

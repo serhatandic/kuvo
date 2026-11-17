@@ -25,6 +25,8 @@ export interface EngineSwap {
   letGo?: number;
   /** The swapper's process. */
   pid: number;
+  /** What keeps it waiting that holding wouldn't outlast: a terminal open, or a question waiting on you. */
+  blocked?: "terminal" | "ask";
 }
 
 /** How long a hold lasts at most before it's let go of (as the coding agents' bridge's renewal), and
@@ -64,7 +66,9 @@ export function swapHolds(run: string, now = Date.now()): boolean {
 export function swapLine(swap: EngineSwap | null): string | null {
   if (!swap) return null;
   switch (swap.stage) {
-    case "waiting": return "An update to Kuvo’s engine is ready. It installs once nothing is running.";
+    case "waiting": return swap.blocked === "terminal" ? "An update to Kuvo’s engine is ready. It installs once nothing is running: close the open terminals to let it."
+      : swap.blocked === "ask" ? "An update to Kuvo’s engine is ready. It installs once nothing is running: answer what’s waiting on you to let it."
+      : "An update to Kuvo’s engine is ready. It installs once nothing is running.";
     case "holding": return "Kuvo’s engine is updating once the running sessions finish. New messages wait and go right after.";
     case "swapping": return "Kuvo’s engine is updating. New messages wait and go once it’s back.";
     case "back": return "The engine update didn’t start, so Kuvo is going back to the engine it had. New messages go once it’s back.";

@@ -124,7 +124,7 @@ export async function* forward(target: Target, path: string, request: LinkReques
   // The engine being changed (PROTOCOL.md, "A new engine"): a message sent to it straight waits on
   // the box and goes once the new one runs, as one sent through `kuvo/sessions/<id>/send` does; a
   // command or shell, which would run on the engine stopped next, is said to wait.
-  const toEngine = method === "POST" && /^\/api\/session\/([^/]+)\/(prompt|command|shell)$/.exec(url.pathname);
+  const toEngine = method === "POST" && /^\/api\/session\/([^/]+)\/(prompt|command|shell|compact|summarize)$/.exec(url.pathname);
   if (toEngine && !toAgents && swapHoldsFor(target)) {
     let body: unknown = null;
     try { body = JSON.parse(request.body?.toString("utf8") ?? ""); } catch {}

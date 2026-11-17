@@ -685,6 +685,9 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
       // (A copy of its data, never put back by anything: for you to restore by hand, as a last resort.)
       dataKept = keepData(`${new Date(clock()).toISOString().slice(0, 10)}-${previous?.version ?? "unknown"}-to-${manifest.engine}`);
     }
+    // (Its engine changing later: the one running noted as the one that ran, for the keeper to start
+    // it again should it end before the swapper changes it, never the new one on its own.)
+    if (apart && running) writePrivate(path.join(RUN, "engine-ran"), `${running}\n`);
     swapped = true;
     const swappedAt = Date.now();
     swapping();

@@ -22,7 +22,7 @@ import { engineRuns } from "../../shared/platform";
 import type { EngineRecord, Target } from "../../shared/records";
 import { sleep } from "../../shared/wait";
 import { readAsks } from "../areas/asks";
-import { asked, readEngineFile } from "../engine/client";
+import { asked, engineGet, readEngineFile } from "../engine/client";
 import { atWork, openFolders } from "../engine/models";
 import { moveInboxToBox, releaseWaiting } from "../engine/queue";
 import { listOf, textOf, writePrivate } from "../files";
@@ -119,6 +119,23 @@ async function engineBusy(engine: Target): Promise<boolean> {
   }
 }
 
+/** What waits on you there and doesn't end by itself, which holding wouldn't outlast: an open
+ * terminal (`api/pty`), a question or permission waiting on you, the agent's browser asking. A hold
+ * isn't begun for the time that's come while one is there (only a quiet moment, or your word,
+ * changes the engine then), and the line says so. Null: none (or it can't be told). */
+async function waitsOnYou(engine: Target): Promise<"terminal" | "ask" | null> {
+  if (readAsks().length > 0) return "ask";
+  try {
+    for (const folder of await openFolders(engine)) {
+      const [forms, permissions, terminals] = await Promise.all(["api/form", "api/permission/request", "api/pty"].map(route => engineGet(engine, route, folder)));
+      const list = (answer: unknown): unknown[] => (answer && typeof answer === "object" && Array.isArray((answer as { data?: unknown }).data) ? (answer as { data: unknown[] }).data : Array.isArray(answer) ? answer : []);
+      if (list(terminals).some(each => !each || typeof each !== "object" || (each as { status?: unknown }).status === "running")) return "terminal";
+      if (list(forms).length || list(permissions).length) return "ask";
+    }
+  } catch {}
+  return null;
+}
+
 // The keeper's command `command` (its stop of the engine alone, or its start), with HOME as it runs.
 function keeper(command: string): boolean {
   return spawnSync("sh", [path.join(K, "bin", "kuvo-start"), command], { cwd: K, env: process.env, stdio: "ignore", timeout: 300_000 }).status === 0;
@@ -151,17 +168,18 @@ export async function swapEngine({ clock = Date.now, wait = sleep }: SwapOptions
   // A swapper that went while it held (the machine down, killed): what it held goes now, to the
   // engine that runs, and its state with it.
   const stale = readSwap(RUN);
-  if (stale && !swapUnderWay(RUN)) {
-    fs.rmSync(swapFile(RUN), { force: true });
-    const engine = runningEngine();
-    if (engine && stale.stage !== "waiting") await releaseWaiting(engine).catch(() => 0);
-  }
+  if (stale && swapUnderWay(RUN)) return "none";
+  fs.rmSync(swapFile(RUN), { force: true });
+  // Nothing holds now: whatever waits on the box for a conversation that isn't paused (one that went
+  // while it held, an engine that ended meanwhile, a stop) goes to the engine that runs.
+  const engine = runningEngine();
+  if (engine) await releaseWaiting(engine).catch(() => 0);
   const due = swapDue(clock());
   if (!due) return "none";
   // One at a time: another swapper at it, this one goes.
   const other = swapUnderWay(RUN);
   if (other && other.pid !== process.pid) return "none";
-  const state: EngineSwap = { from: due.from, to: due.to, since: readSwap(RUN)?.to === due.to ? readSwap(RUN)!.since : clock(), stage: "waiting", pid: process.pid };
+  const state: EngineSwap = { from: due.from, to: due.to, since: stale?.to === due.to ? stale.since : clock(), stage: "waiting", pid: process.pid };
   const say = (stage: SwapStage, change: Partial<EngineSwap> = {}) => {
     Object.assign(state, { stage }, change);
     if (stage === "waiting") delete state.holding;
@@ -190,7 +208,10 @@ export async function swapEngine({ clock = Date.now, wait = sleep }: SwapOptions
         // (Let go of once, it holds again only in a night's window, or on your word.)
         const timeCame = state.letGo === undefined ? waited >= SWAP_TIMING.longest || (waited >= SWAP_TIMING.patience && night) : rested && night;
         const nowAsked = fs.existsSync(SWAP_NOW);
-        if ((quietSince !== null && now - quietSince >= SWAP_TIMING.quiet) || (rested && nowAsked) || timeCame) {
+        // (What waits on you keeps the time that came from holding: a hold wouldn't outlast it.)
+        const blocked = !busy || (rested && nowAsked) ? null : timeCame ? await waitsOnYou(engine) : state.blocked ?? null;
+        if (blocked !== (state.blocked ?? null)) say("waiting", blocked ? { blocked } : { blocked: undefined });
+        if ((quietSince !== null && now - quietSince >= SWAP_TIMING.quiet) || (rested && nowAsked) || (timeCame && !blocked)) {
           say("holding", { holding: now });
           continue;
         }
