@@ -14,6 +14,8 @@
 	<string>6.0</string>
 	<key>LSUIElement</key>
 	<true/>
+	<key>KuvoHelperRenews</key>
+	<true/>
 	<key>NSCalendarsFullAccessUsageDescription</key>
 	<string>The Apple Calendar and Reminders integration lets the agent read and add events, when you've turned it on in Settings › Integrations.</string>
 	<key>NSRemindersFullAccessUsageDescription</key>
