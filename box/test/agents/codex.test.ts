@@ -570,6 +570,8 @@ process.stdin.on("data", (chunk) => {
     delete process.env.KUVO_FENCE
     const agent = (codex = new TestCodex(launcher, root))
     const starting = agent.rpc()
+    // (From as its holder starts it, before that says it's ready.)
+    expect(agent.outside()).toBe(true)
     await until(() => existsSync(join(root, "started")))
     expect(agent.outside()).toBe(true)
     writeFileSync(go, "")

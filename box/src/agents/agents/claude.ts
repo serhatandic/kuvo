@@ -1684,7 +1684,8 @@ class ClaudeThread implements Thread {
         },
         () => said.finish(),
       )
-      if (whole) process_.once("exit", () => void holding.then(whole.ended, () => {}))
+      // (Stopped before a holder that then failed: no process of the bridge's own ran, to end it.)
+      if (whole) process_.once("exit", () => void holding.then(whole.ended, () => process_.killed && whole.ended()))
       return process_
     }
   }

@@ -832,12 +832,14 @@ describe("Stopping an ACP agent", () => {
     expect(ended(id)).toMatchObject({ type: "idle", outcome: "succeeded" })
   })
 
-  test("one closed while its holder is still starting it (its session closed, the bridge stopping) isn't left running, nor its holder", async () => {
+  for (const when of ["its holder is still starting it", "it's still getting ready to start"] as const)
+  test(`one closed while ${when} (its session closed, the bridge stopping) isn't left running, nor its holder`, async () => {
     const script = fakeAcp([said("Hello.")])
     const folder = agentHoldFolder("grok")!
     expect(folder).toBeTruthy()
     const before = new Set(heldIn(folder).map((record) => record.id))
     let thread: AcpThread | undefined
+    let outsideAsHeld: boolean | undefined
     const agent: Agent = {
       id: "grok",
       providerID: "acp",
@@ -852,9 +854,19 @@ describe("Stopping an ACP agent", () => {
             fileSystem: false,
             authMethod: () => undefined,
             held: { kind: "grok", provider: "acp" },
-            // Closed once its holder is starting it (in the same breath: before the holder can have said it's ready).
+            // Closed as it reads its skills (its first step), or once its holder is starting it (in
+            // the same breath: before the holder can have said it's ready).
+            skills: async () => {
+              if (when === "it's still getting ready to start") thread!.close()
+              return undefined
+            },
             command: async (mode) => {
-              setImmediate(() => thread!.close())
+              if (when === "its holder is still starting it")
+                setImmediate(() => {
+                  // (Outside the sandbox, which is off, from as its holder starts it: agents keep off the vault.)
+                  outsideAsHeld = thread!.outside
+                  thread!.close()
+                })
               return { argv: [process.execPath, script, JSON.stringify(mode)], cwd: root }
             },
             selectModel: async () => {},
@@ -867,6 +879,7 @@ describe("Stopping an ACP agent", () => {
     const id = start(agent)
     await settled(id)
     expect(ended(id)).toMatchObject({ type: "idle", outcome: "failed" })
+    if (when === "its holder is still starting it") expect(outsideAsHeld).toBe(true)
     for (const { pid } of received().filter((entry) => entry.argv)) expect(() => process.kill(pid, 0)).toThrow()
     await until(() => heldIn(folder).every((record) => before.has(record.id)))
   })

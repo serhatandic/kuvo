@@ -223,8 +223,10 @@ export class AcpThread implements Thread {
     return this.fenced
   }
   get outside() {
-    return Boolean(this.rpc && !this.rpc.isClosed && !this.fenced)
+    return this.startingOutside > 0 || Boolean(this.rpc && !this.rpc.isClosed && !this.fenced)
   }
+  /** Its process outside the box's sandbox that a holder is starting now, before it's `rpc`. */
+  private startingOutside = 0
   /** The conversation it had couldn't be picked up again: a new one took its place. */
   private startedOver = false
   onOwnTurn?: (note: OwnTurn) => boolean
@@ -239,6 +241,8 @@ export class AcpThread implements Thread {
   ) {}
 
   private async open(input: RunInput, hooks: TurnHooks) {
+    // (A close from now on stops this start: all but its own, below.)
+    const closes = this.closes
     const skills = await this.flavor.skills?.(this.session.location.directory, hooks)
     const subagents = await this.flavor.subagents?.(this.session.location.directory)
     const mode = { approvesAll: hooks.approvesAll(), plan: input.plan, skills, ...(subagents ? { subagents } : {}), ...(this.flavor.whole && fenceRules() ? { whole: true } : {}) }
@@ -259,7 +263,6 @@ export class AcpThread implements Thread {
     // (What it left going in the background ends with it: the next message says so.)
     if (this.rpc && !this.rpc.isClosed && this.tasks.size) this.cut.push(...this.taskWork())
     this.close()
-    const closes = this.closes
     // (What the relay noted of its servers went with it: the key it starts with is as they are now.)
     const startedWith = JSON.stringify({ ...mode, program: this.flavor.program?.() ?? 0, tools: kuvoTools(this.session.id)?.key, fence, servers: await serversKey(this.session.id, computer) })
     const launch = await this.flavor.command(mode)
@@ -276,20 +279,28 @@ export class AcpThread implements Thread {
     // Under a holder on a box (its flavor says), so a bridge that crashes doesn't take its turn
     // with it; as a process of the bridge's own if the holder can't start.
     const holdIn = this.flavor.held ? agentHoldFolder(this.flavor.held.kind) : undefined
-    const held = holdIn
-      ? await hold(argv, { folder: holdIn, kind: "jsonrpc", cwd, env: launch.cleanEnv ? env : { ...process.env, ...env }, meta: { provider: this.flavor.held!.provider, kind: this.flavor.held!.kind, fenced: Boolean(whole), key: startedWith, turns: {} } }).catch((error) => {
-          console.error(`${this.name}'s holder didn't start:`, error?.message ?? error)
-          return undefined
-        })
-      : undefined
-    // Closed (its session closed, the bridge stopping) while it was being started: what its holder
-    // started already goes now, with its holder (its start fails once it has), and none is started.
-    if (this.closes !== closes) {
-      held?.stop()
-      await held?.exited
-      launch.onExit?.()
-      ended?.()
-      throw new Error(`${this.name} stopped.`)
+    // (One outside the sandbox counts as outside it from the moment its holder may have started it.)
+    if (holdIn && !whole) this.startingOutside++
+    let held: Held | undefined
+    try {
+      held = holdIn
+        ? await hold(argv, { folder: holdIn, kind: "jsonrpc", cwd, env: launch.cleanEnv ? env : { ...process.env, ...env }, meta: { provider: this.flavor.held!.provider, kind: this.flavor.held!.kind, fenced: Boolean(whole), key: startedWith, turns: {} } }).catch((error) => {
+            console.error(`${this.name}'s holder didn't start:`, error?.message ?? error)
+            return undefined
+          })
+        : undefined
+      // Closed (its session closed, the bridge stopping) while it was being started: what its holder
+      // started already goes now, with its holder (its start fails once it has), and none is started.
+      if (this.closes !== closes + 1) {
+        held?.stop()
+        await held?.exited
+        launch.onExit?.()
+        ended?.()
+        throw new Error(`${this.name} stopped.`)
+      }
+    } finally {
+      // (From here, as `this.rpc`, in the same breath.)
+      if (holdIn && !whole) this.startingOutside--
     }
     const rpc: RPC = new RPC(held ?? argv, {
       cwd,

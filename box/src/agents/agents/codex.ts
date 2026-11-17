@@ -316,8 +316,11 @@ export class CodexAgent implements Agent {
 
   /** Whether one of its app-servers runs outside the box's sandbox (one still starting too). */
   outside(): boolean {
-    return [...this.unfencedServers].some((server) => !server.isClosed)
+    return this.startingOutside > 0 || [...this.unfencedServers].some((server) => !server.isClosed)
   }
+
+  /** App-servers outside the box's sandbox that holders are starting now, before they're `unfencedServers`. */
+  private startingOutside = 0
 
   /** Whether `rpc` runs whole in the box's sandbox. */
 
@@ -472,19 +475,27 @@ export class CodexAgent implements Agent {
     // as a process of the bridge's own if one can't start.
     const stops = slot.stops
     const holdIn = agentHoldFolder("codex")
-    const held = holdIn
-      ? await hold(argv, { folder: holdIn, kind: "jsonrpc", cwd, env: { ...process.env, ...env }, meta: { provider: this.providerID, kind: "codex", key, fence: fenceNow, fenced: Boolean(fence), turns: {} } }).catch((error) => {
-          console.error("Codex's holder didn't start:", error?.message ?? error)
-          return undefined
-        })
-      : undefined
-    // Stopped (its session closed, the bridge stopping) while its holder was starting it: the
-    // holder had started it already, and it goes now, with its holder (its start fails once it has).
-    if (slot.stops !== stops || this.slots.get(key) !== slot) {
-      held?.stop()
-      await held?.exited
-      fence?.ended()
-      throw new Error("Codex stopped.")
+    // (One outside the sandbox counts as outside it from the moment its holder may have started it.)
+    if (holdIn && !fence) this.startingOutside++
+    let held: Held | undefined
+    try {
+      held = holdIn
+        ? await hold(argv, { folder: holdIn, kind: "jsonrpc", cwd, env: { ...process.env, ...env }, meta: { provider: this.providerID, kind: "codex", key, fence: fenceNow, fenced: Boolean(fence), turns: {} } }).catch((error) => {
+            console.error("Codex's holder didn't start:", error?.message ?? error)
+            return undefined
+          })
+        : undefined
+      // Stopped (its session closed, the bridge stopping) while its holder was starting it: the
+      // holder had started it already, and it goes now, with its holder (its start fails once it has).
+      if (slot.stops !== stops || this.slots.get(key) !== slot) {
+        held?.stop()
+        await held?.exited
+        fence?.ended()
+        throw new Error("Codex stopped.")
+      }
+    } finally {
+      // (From here, as its app-server: `serve` counts it, in the same breath.)
+      if (holdIn && !fence) this.startingOutside--
     }
     const rpc = held ? new RPC(held) : new RPC(argv, { cwd, env })
     slot.fence = fenceNow
@@ -500,8 +511,8 @@ export class CodexAgent implements Agent {
     } finally {
       if (slot.opening === rpc) slot.opening = undefined
     }
-    // Its session closed meanwhile: not left running.
-    if (this.slots.get(key) !== slot) {
+    // Its session closed, or it was stopped, meanwhile: not left running.
+    if (slot.stops !== stops || this.slots.get(key) !== slot) {
       rpc.kill()
       throw new Error("Codex stopped.")
     }
