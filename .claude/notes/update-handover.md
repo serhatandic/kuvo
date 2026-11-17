@@ -377,6 +377,15 @@ folder), `uninstall.md` and `privacy.md` (`updates/backups`, `run/agents/hold`),
   `line`; this computer's update line (`keepingSelfUp`). gpui draws the queue's `line`.
 - **Test:** `box/bridge-tests/engine-swap.test.js` (swap with held prompts and a running coding
   agent turn; a new engine that fails goes back with held prompts; a bounded hold lets go).
-- **Not done:** the phone's queue doesn't draw `line` yet; the "together" path (a release whose
+- **After two reviews:** the keeper never starts a newer engine by itself (`run/engine-ran`, noted
+  each round and before the swapper's start; `W`/`B` in `pick`); the busy rule is `models.ts`'s
+  (shells, ptys, asks), an open terminal or ask blocks the timed hold and says so; the bridge's own
+  engine turns wait before they begin (`EngineLink.beforeTurn`), and `kuvo-wake` hands wake-ups to
+  the box during a hold.
+- **Not done:** the phone's queue doesn't draw `line` yet; a group chat seat's or a review's turn on
+  the engine waits inside its request, after it began listening (the bridge's own engine turns wait
+  before); tests don't kill the swapper midway, nor cover the raw forward and seats, and they run in
+  order on one box; commands are refused (503 with the line) rather than queued during a hold;
+  child sessions' inboxes aren't moved; the "together" path (a release whose
   `engines` don't list the running engine) still stops and starts the engine with no hold;
   `untilFree` (COMPAT installer) still waits for quiet for any engine change.

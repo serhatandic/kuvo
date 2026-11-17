@@ -3316,7 +3316,9 @@ turns, what's sent meanwhile held on the box, never cut:
   - `waiting`: nothing held. It looks every ten seconds; nothing at work on the engine for half a
     minute, it holds: no conversation at work (`api/session/active`), and, in each folder it has
     open (`api/debug/location`), no question or permission waiting, no terminal and no command
-    running (as closing a folder counts them), nor a browser ask waiting. Failing such a moment,
+    running (as closing a folder counts them), nor a browser ask waiting. The time that comes (below)
+    begins no hold while an open terminal or a question waiting on you is there (holding wouldn't
+    outlast it): `blocked` (`terminal`, `ask`) says so, and its line asks you to close or answer it. Failing such a moment,
     it holds an hour on in the night's window (02:00 to 05:00 in your time zone), or a day on whatever
     the hour; at once after Update Now (`run/engine-swap.now`, which `update --now` writes).
   - `holding`: what's sent to a conversation on the engine waits on the box (below), and the turns
@@ -3339,10 +3341,13 @@ turns, what's sent meanwhile held on the box, never cut:
     back, the keeper keeps starting the new one, and what was held waits on the box until an engine
     answers (`failed`).
 - **The keeper never starts a newer engine by itself**: it notes the engine it last started
-  (`run/engine-ran`), and while one older than its `V` ran, an engine started again (a crash, a
-  restart, the machine's) is that one, until the swapper (whose start it lets through while
-  `run/.engine-swapping` is held) changes it. Its bridge starts on its own `V`'s runtime meanwhile.
-  An update that starts its engine with its code takes that note away first. A swapper started
+  (`run/engine-ran`; each round, the one running), and while one older than its `V` ran, an engine
+  started again (a crash, a restart, the machine's) is that one, until the swapper (whose start it
+  lets through while `run/.engine-swapping` is held, noting it as the one to run before it starts,
+  so a new one that fails is the one started again, never the one before on what it wrote) changes
+  it. Its bridge starts on its own `V`'s runtime meanwhile (as written, whatever rests). An update
+  that leaves its engine at work notes that one; one that starts its engine with its code takes the
+  note away first. A swapper started
   where one went while it held lets go of what that one held first.
 - **What's held**: while the swapper holds, swaps or goes back, and only while its process runs and
   for an hour at most from when it began holding, a message to a conversation on the engine (never
