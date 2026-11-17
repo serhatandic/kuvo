@@ -1,0 +1,67 @@
+<!doctype html><html><head><meta charset="utf-8"><style>
+body{margin:0;font:13px -apple-system,"SF Pro Text",sans-serif;}
+.sheet{display:grid;grid-template-columns:1fr 1fr;gap:0}
+.pane{padding:28px 36px 36px}
+.light{background:#f7f7f7;color:#1d1d1f}.dark{background:#1e1e1e;color:#ececec}
+h1{font-size:22px;margin:0 0 4px}h2{font-size:15px;margin:30px 0 4px}
+.sub{color:#86868b;margin:0 0 14px}.dark .sub{color:#98989d}
+.opt{font-size:12px;font-weight:600;letter-spacing:.04em;color:#0a7cff;margin:0 0 10px;text-transform:uppercase}
+.card{border:1px solid #e3e3e3;border-radius:12px;background:#fff}.dark .card{background:#2a2a2a;border-color:#3a3a3a}
+.row{display:flex;align-items:center;gap:16px;padding:14px 18px;border-top:1px solid #ececec}.dark .row{border-color:#3a3a3a}
+.row:first-child{border-top:0}.row .t{flex:1}.row b{display:block;font-size:14px;font-weight:600;margin-bottom:3px}
+.row span{color:#6e6e73;line-height:1.35}.dark .row span{color:#a1a1a6}
+.warn{color:#c76a00!important}.dark .warn{color:#ffa94d!important}
+.btn{border:1px solid #d2d2d7;border-radius:7px;padding:5px 12px;background:#fff;font-weight:500;white-space:nowrap}
+.dark .btn{background:#3a3a3c;border-color:#4a4a4c}
+.btn.p{background:#0a7cff;color:#fff;border-color:#0a7cff}
+.muted{color:#86868b;white-space:nowrap}
+.spin{display:inline-block;width:11px;height:11px;border:2px solid #c7c7cc;border-top-color:#0a7cff;border-radius:50%;margin-right:6px;vertical-align:-1px}
+.banner{display:flex;gap:12px;align-items:center;border-radius:10px;padding:10px 14px;background:#eaf3ff;border:1px solid #cfe3ff}
+.dark .banner{background:#1f2c3d;border-color:#2c4565}
+.banner .t{flex:1}.x{color:#86868b;margin-left:4px}
+.sheetbox{border:1px solid #e3e3e3;border-radius:12px;background:#fff;padding:18px 20px;max-width:430px;box-shadow:0 8px 30px rgba(0,0,0,.12)}
+.dark .sheetbox{background:#2a2a2a;border-color:#3a3a3a}
+.sheetbox p{color:#6e6e73;line-height:1.4;margin:6px 0 14px}.dark .sheetbox p{color:#a1a1a6}
+.right{display:flex;justify-content:flex-end;gap:8px}
+.cap{font-size:11px;color:#86868b;margin:8px 0 0}
+</style></head><body><div class="sheet"><div class="pane light">
+<div class="opt">A · a row in Settings › This Mac (recommended)</div>
+<h1>This Mac</h1><p class="sub">Kept on This Mac, the same in every app that connects to it.</p>
+<div class="card">
+<div class="row"><div class="t"><b>Running</b><span>Kuvo Helper keeps it running.</span></div><div class="btn">Restart…</div></div>
+<div class="row"><div class="t"><b>Passwords from Kuvo Code 0.7</b><span>Passwords it saved for websites are still in your Keychain. Bring them into your vault: macOS may ask once for each whether kuvo-keys may use it.</span></div><div class="btn">Bring Into Vault…</div></div>
+</div>
+<p class="cap">While it runs · after · if it couldn’t:</p>
+<div class="card">
+<div class="row"><div class="t"><b>Passwords from Kuvo Code 0.7</b><span><span class="spin"></span>Waiting for your answer in macOS’s window. Click Always Allow for each.</span></div></div>
+<div class="row"><div class="t"><b>Passwords from Kuvo Code 0.7</b><span>12 are in your vault now, and gone from your Keychain. 1 stayed there: add it yourself if you use it.</span></div><div class="btn">Open Vault</div></div>
+<div class="row"><div class="t"><b>Passwords from Kuvo Code 0.7</b><span class="warn">macOS didn’t let Kuvo read them. Try again, and click Always Allow when macOS asks.</span></div><div class="btn">Try Again…</div></div>
+</div>
+<div style="margin-top:14px" class="sheetbox"><b>Bring your saved passwords into the vault?</b><p>macOS will ask, once for each password, whether kuvo-keys may use it. Enter your Mac’s password and click Always Allow. Each one leaves your Keychain once it’s in the vault.</p><div class="right"><div class="btn">Cancel</div><div class="btn p">Continue</div></div></div>
+
+<h2 class="opt" style="margin-top:34px">B · at the top of the Vault page</h2>
+<div class="card"><div class="row"><div class="t"><b>Passwords from Kuvo Code 0.7 aren’t here yet</b><span>They’re in your Keychain. macOS asks once for each as they come over.</span></div><div class="btn">Bring Them Here…</div></div></div>
+
+<h2 class="opt" style="margin-top:34px">C · a one-time line atop the window</h2>
+<div class="banner"><div class="t"><b>Your saved passwords from Kuvo Code 0.7 can come into your vault.</b> macOS will ask about each.</div><div class="btn">Bring Them…</div><div class="btn">Not Now</div></div>
+</div><div class="pane dark">
+<div class="opt">A · a row in Settings › This Mac (recommended)</div>
+<h1>This Mac</h1><p class="sub">Kept on This Mac, the same in every app that connects to it.</p>
+<div class="card">
+<div class="row"><div class="t"><b>Running</b><span>Kuvo Helper keeps it running.</span></div><div class="btn">Restart…</div></div>
+<div class="row"><div class="t"><b>Passwords from Kuvo Code 0.7</b><span>Passwords it saved for websites are still in your Keychain. Bring them into your vault: macOS may ask once for each whether kuvo-keys may use it.</span></div><div class="btn">Bring Into Vault…</div></div>
+</div>
+<p class="cap">While it runs · after · if it couldn’t:</p>
+<div class="card">
+<div class="row"><div class="t"><b>Passwords from Kuvo Code 0.7</b><span><span class="spin"></span>Waiting for your answer in macOS’s window. Click Always Allow for each.</span></div></div>
+<div class="row"><div class="t"><b>Passwords from Kuvo Code 0.7</b><span>12 are in your vault now, and gone from your Keychain. 1 stayed there: add it yourself if you use it.</span></div><div class="btn">Open Vault</div></div>
+<div class="row"><div class="t"><b>Passwords from Kuvo Code 0.7</b><span class="warn">macOS didn’t let Kuvo read them. Try again, and click Always Allow when macOS asks.</span></div><div class="btn">Try Again…</div></div>
+</div>
+<div style="margin-top:14px" class="sheetbox"><b>Bring your saved passwords into the vault?</b><p>macOS will ask, once for each password, whether kuvo-keys may use it. Enter your Mac’s password and click Always Allow. Each one leaves your Keychain once it’s in the vault.</p><div class="right"><div class="btn">Cancel</div><div class="btn p">Continue</div></div></div>
+
+<h2 class="opt" style="margin-top:34px">B · at the top of the Vault page</h2>
+<div class="card"><div class="row"><div class="t"><b>Passwords from Kuvo Code 0.7 aren’t here yet</b><span>They’re in your Keychain. macOS asks once for each as they come over.</span></div><div class="btn">Bring Them Here…</div></div></div>
+
+<h2 class="opt" style="margin-top:34px">C · a one-time line atop the window</h2>
+<div class="banner"><div class="t"><b>Your saved passwords from Kuvo Code 0.7 can come into your vault.</b> macOS will ask about each.</div><div class="btn">Bring Them…</div><div class="btn">Not Now</div></div>
+</div></div></body></html>
