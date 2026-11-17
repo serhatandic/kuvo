@@ -3112,6 +3112,8 @@ did: the box keeps working as itself ("For released Macs").
        exits cleanly (0) only when it's stopped on purpose: the box turned off (`run/off`), Stop Kuvo
        on this Mac (`run/paused`), launchd or you quitting it, another copy running, or a refusal
        only you can clear. A crash is restarted too.
+     - A Kuvo Helper from before that doesn't leave by itself: its `serve`, started again on the new
+       code, hands it over once ("This Mac's box: its helper", A helper from before beta.31).
      - A `serve`, `serve --kept` or `run` from before this (an update into it, taken by the box's
        updater from before, or by the installer an app carries) doesn't leave by itself: while an
        update is on trial, the keeper ends the one `run/serve.json` or `run/link.pid` names, only
@@ -8596,8 +8598,8 @@ was named Kuvo Code Box, in no release.)
   it (`gui/<uid>`), three more times a second apart while launchd refuses. It prints `{written, loaded,
   message}`, exiting 0 once done, 1 when refused (not a Mac, not a Mac's own box in a home of its
   own, not the real `~/.kuvo-code`, or no helper in `bin`) or launchd didn't start it, 2 for what it
-  doesn't know. `helper status` says `{helper, agent, loaded}` (`loaded` null where launchd couldn't
-  be asked). `helper start [--if-missing] [--app <bundle ID>]` is the whole start through the helper: its
+  doesn't know. `helper status` says `{helper, agent, loaded, running, handOver}` (`loaded` and
+  `running` null where launchd couldn't be asked; `handOver` the record below, or null). `helper start [--if-missing] [--app <bundle ID>]` is the whole start through the helper: its
   launch agent put in place and loaded where it isn't there (as `install --load`), loaded where it's
   there but not loaded, and started where it isn't running (`launchctl kickstart`, leaving one
   running as it is); with `--if-missing`, one in place is left as it is, loaded or not (switched
@@ -8694,11 +8696,32 @@ was named Kuvo Code Box, in no release.)
 - **`serve`**: `kuvo-start serve`, on a Mac's own box only (else exit 3; `run/off`, exit 0), runs
   `kuvo-link.js serve` in the foreground with the engine's Bun, as the box's other processes are
   started, its output in `run/serve.log`. The helper gives it, on its stdin's first line,
-  `{"password", "hostVaultSecret", "vaultFileKey"?}` and keeps the pipe open: it goes when that
-  closes. On a Mac's box in a home of its own, `serve` says where it answers itself, in
+  `{"password", "hostVaultSecret", "vaultFileKey"?, "renews"}` and keeps the pipe open: it goes when that
+  closes. `renews: true` says the helper leaves by itself for a new build of it put in its place
+  (exit 75, "Updates"); a helper from before beta.31 says nothing of it. On a Mac's box in a home of its own, `serve` says where it answers itself, in
   `run/serve.json` (`{pid, port, password, kept: false}`, `0600`), and takes it away as it leaves.
   Started while the Keychain couldn't give the vault's file key (locked), it's started again once
   it can; one that's missing for good isn't asked for again.
+- **A helper from before beta.31** never leaves for a new build of itself, so after an update it
+  runs on, old (its menu bar item, Open Kuvo and its host interface), until the next login. Its
+  `serve`, started again on the new code, hands it over once: where the first line on its stdin
+  had no `renews`, its parent is this box's helper (`<bin/Kuvo Helper.app>/…/Kuvo Helper keep`),
+  the build in place renews itself (`KuvoHelperRenews` true in its `Info.plist`), no update is
+  under way (else it looks again every 30 seconds), and Kuvo on this Mac isn't stopped (`run/paused`,
+  `run/off`). It notes the try first, in `run/helper-handover.json` (`{v: 1, bundle, pid, at,
+  outcome, message?, stillOld?}`, `bundle` the build in place's hash as the helper's own look hashes
+  it), and starts `kuvo-link.js helper hand-over --pid <helper>` in a session of its own, which
+  outlasts it: the helper is sent SIGTERM (as launchd sends it: its `serve` and keeper stop, the
+  engine, bridge and their turns run on, and it exits 0, which launchd doesn't start again), waited
+  for (twenty seconds at most), and once launchd no longer names it, started as `helper start`
+  starts one (kickstart, or opened where Login Items is off for it). Nothing at work is cut, so it
+  doesn't wait for a quiet moment. `outcome`: `handing`, then `handed` (the new one started),
+  `stopped` (Kuvo was stopped on this Mac before or as it went: nothing started), `gone` (it had
+  gone already: nothing done), `stayed` (it didn't stop) or `failed` (`message` says launchd's or
+  macOS's answer). One try per build in place: a helper found old again for the same `bundle` is
+  noted once (`stillOld: {pid, at}`, and in `run/serve.log`) and left to your next login. A
+  helper that says `renews`, a `serve` started otherwise (`OPENCODE_PASSWORD`), and a box that
+  isn't a Mac's own in the real `~/.kuvo-code` (or a test's stand-ins) are never handed over.
 - **Host interface**: the same calls, proofs and answers as the keeper's ("Host interface",
   `HostProof` shared by both), from its own Keychain items, named by its bundle ID
   (`<helper ID>.phone-link`, `.integrations`, `.vault`), never asking you anything (a locked
@@ -11577,6 +11600,8 @@ it, goes once no box is from before beta.31:
   update` runs for a box from before `computers.update.here`. <!-- compat: beta.30 installer -->
 - An update stops an engine its record names that an older keeper's stop left running, by that
   record, once its command line says it's this box's engine. <!-- compat: beta.30 engine-record -->
+- A Kuvo Helper from before beta.31, which doesn't leave for a new build of itself, is handed over
+  once by its `serve` ("This Mac's box: its helper", A helper from before beta.31). <!-- compat: beta.30 helper-handover -->
 ## The browser's live view
 
 Feature `browser.view`, a machine's box's (until a Mac's box has a browser of its own: a Mac's

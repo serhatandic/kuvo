@@ -13,7 +13,7 @@
 import { execFile, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { APP_FOLDER, K, recordedKind } from "./home";
+import { APP_FOLDER, K, RUN, recordedKind } from "./home";
 import { LAUNCH_AGENT } from "./marks";
 import { launchTools } from "./uninstall";
 
@@ -21,6 +21,8 @@ export const HELPER_NAME = "Kuvo Helper";
 /** The helper in the box's `bin`, as its release brings it. */
 export const helperBundle = (): string => path.join(K, "bin", `${HELPER_NAME}.app`);
 export const helperProgram = (): string => path.join(helperBundle(), "Contents", "MacOS", HELPER_NAME);
+/** The one hand-over of a helper from before beta.31 to the build in place (compat/helper-handover.ts). */
+export const HANDOVER_RECORD = (): string => path.join(RUN, "helper-handover.json");
 
 const xml = (text: string) => text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
@@ -73,7 +75,10 @@ export function helperStatus() {
     const state = /^\s*state = (.+)$/m.exec(asked.stdout ?? "")?.[1]?.trim();
     running = loaded === false ? false : loaded && state ? state === "running" : null;
   }
-  return { helper: fs.existsSync(helperProgram()), agent, loaded, running };
+  // (A helper from before beta.31 handed over to the build in place, once: how that went.)
+  let handOver: unknown = null;
+  try { handOver = JSON.parse(fs.readFileSync(HANDOVER_RECORD(), "utf8")); } catch {}
+  return { helper: fs.existsSync(helperProgram()), agent, loaded, running, handOver };
 }
 
 /** Whether Kuvo Helper is switched on in System Settings › General › Login Items (`launchctl

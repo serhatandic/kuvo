@@ -63,7 +63,7 @@ test("helper install: the launch agent starts Kuvo Helper at login, with this bo
   // A real property list, as launchd reads it.
   assert.equal(spawnSync("plutil", ["-lint", plistOf(where)]).status, 0);
   assert.equal(exists(path.join(where.home, "launchctl")), false, "written, not loaded");
-  assert.deepEqual(helper(where, ["status"]).said, { helper: true, agent: true, loaded: false, running: false }, "written, not loaded: not running either");
+  assert.deepEqual(helper(where, ["status"]).said, { helper: true, agent: true, loaded: false, running: false, handOver: null }, "written, not loaded: not running either");
 
   // Loaded now: whatever had the label goes first.
   fs.rmSync(path.join(where.home, "launchctl"));
@@ -78,7 +78,7 @@ test("helper install: the launch agent starts Kuvo Helper at login, with this bo
     `bootstrap gui/${uid} ${plistOf(where)}`,
   ]);
   assert.match(read(plistOf(where)), /<string>run\.kuvo\.code<\/string>/, "the app's ID by default");
-  assert.deepEqual(helper(where, ["status"]).said, { helper: true, agent: true, loaded: true, running: null }, "loaded, launchd saying no state: whether it runs isn't known");
+  assert.deepEqual(helper(where, ["status"]).said, { helper: true, agent: true, loaded: true, running: null, handOver: null }, "loaded, launchd saying no state: whether it runs isn't known");
 });
 
 test("helper install --load waits for launchd to let go of the one before, and starts it again once it has", { skip: process.platform !== "darwin" && "only a Mac's box has the helper" }, () => {
