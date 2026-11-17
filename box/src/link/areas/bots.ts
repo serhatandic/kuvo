@@ -17,6 +17,7 @@ import { noteSeen, SEEN_FOLDER, seenFollowers } from "../bots/seen";
 import { call } from "../engine/client";
 import { botsNowHere } from "./waiting";
 import { BOTS } from "../home";
+import { readMoves } from "../moves/records";
 import type { Target } from "../../shared/records";
 import type { BotChange } from "../bots/edit";
 import type { GivenBot } from "../bots/make";
@@ -91,7 +92,9 @@ export async function* retellRoute(context: RouteContext): AsyncGenerator<Answer
 function botsWithNow(machine?: string) {
   const counts = botsNowHere();
   const at = Date.now();
-  const bots = listBots(machine);
+  // A bundle can have its bot folder in place before the source tells this computer to start it.
+  const held = new Set(readMoves().filter(move => move.role === "to" && move.kind === "bot").map(move => move.thing));
+  const bots = listBots(machine).filter(bot => !held.has(bot.id));
   keepOnly(bots.map(bot => bot.id));
   return bots.map(bot => ({ ...bot, now: nowOf(bot.id, counts[bot.id], bot, at) }));
 }

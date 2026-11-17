@@ -57,7 +57,7 @@ import { answerProjects } from "../areas/projects";
 import { settingsRoute } from "../areas/settings";
 import { SETTINGS_PAGE_ROUTE, settingsPageRoute } from "../areas/settings-pages";
 import { skillsRoute } from "../areas/skills";
-import { moveEventsRoute, movePlacesRoute, movesRoute } from "../areas/moves";
+import { moveReceiptRoute, moveEventsRoute, movePlacesRoute, movesRoute } from "../areas/moves";
 import { sessionWakesRoute, wakeEventsRoute, wakesRoute } from "../areas/wakes";
 import { worktreeEventsRoute, worktreesRoute } from "../areas/worktrees";
 import { APP_ICON_ROUTE, appIconRoute, newProjectRoute, GOALS_ROUTE, goalsRoute, WORK_ASKS_ROUTE, WORK_ROUTE, workAsksRoute, workRoute } from "../areas/work";
@@ -238,6 +238,7 @@ const ROUTES: (Route | Route<RegExpMatchArray>)[] = [
   { when: route => route === "kuvo/moves", answer: movesRoute },
   { when: route => route === "kuvo/moves/events", answer: moveEventsRoute },
   { when: route => route === "kuvo/moves/places", answer: movePlacesRoute },
+  { when: route => route === "kuvo/moves/receipt", answer: moveReceiptRoute },
   { when: route => route === "kuvo/wakes", answer: wakesRoute },
   { when: route => route === "kuvo/wakes/events", answer: wakeEventsRoute },
   { when: route => route.match(/^kuvo\/wakes\/([^/]+)(?:\/(cancel|now|pause|watch))?$/), answer: sessionWakesRoute },

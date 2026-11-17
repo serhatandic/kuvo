@@ -19,6 +19,9 @@ import { atEnd, removeAtEnd } from "./at-end.js";
 
 // What's under way, as `kuvo/moves` says it (not what moved away lately, `moved`, which stays two days).
 const underWay = ({ moved: _moved, ...rest } = {}) => rest;
+const remoteFacts = (elsewhere) => elsewhere?.map(({ box, moves }) => ({
+  box, moves: moves.map(({ progress: _progress, place: _place, ...move }) => move),
+}));
 
 // Each fails, rather than hangs, when what it waits for never comes.
 const test = (name, run) => nodeTest(name, { timeout: 10_000 }, run);
@@ -104,15 +107,19 @@ test("a move between two other computers shows here as they say it, and goes onc
   assert.deepEqual(underWay(await events.next()), { moves: [], away: [] });
   const leaving = move("mov_lp1", lab.key, pi.key, "from", "copying", { sent: 30_000, size: 90_000 });
   mail(lab, { moving: { moves: [leaving] } });
-  assert.deepEqual(underWay(await ask("kuvo/moves")), { moves: [], away: [], elsewhere: [{ box: lab.key, moves: [leaving] }] });
-  assert.deepEqual(underWay(await events.next()), { moves: [], away: [], elsewhere: [{ box: lab.key, moves: [leaving] }] }, "a client following this box hears it");
+  const listed = await ask("kuvo/moves");
+  assert.deepEqual(listed, {
+    moves: [], away: [], elsewhere: [{ box: lab.key, moves: [{ ...leaving, place: "pi", progress: "Moving to pi…" }] }],
+  });
+  assert.deepEqual(await events.next(), listed, "a client following this box hears it");
   const arriving = move("mov_lp1", lab.key, pi.key, "to", "copying");
   mail(pi, { moving: { moves: [arriving] } });
   const both = await ask("kuvo/moves");
-  assert.deepEqual(both.elsewhere.sort((one, other) => one.box.localeCompare(other.box)), [{ box: lab.key, moves: [leaving] }, { box: pi.key, moves: [arriving] }].sort((one, other) => one.box.localeCompare(other.box)));
+  assert.equal(both.elsewhere.find(each => each.box === pi.key).moves[0].progress, "Moving to pi…");
+  assert.deepEqual(remoteFacts(both.elsewhere).sort((one, other) => one.box.localeCompare(other.box)), [{ box: lab.key, moves: [leaving] }, { box: pi.key, moves: [arriving] }].sort((one, other) => one.box.localeCompare(other.box)));
   // Lab switched to pi's copy and let its own go; then pi's done too.
   mail(lab, { moving: { moves: [] } });
-  assert.deepEqual((await ask("kuvo/moves")).elsewhere, [{ box: pi.key, moves: [arriving] }]);
+  assert.deepEqual(remoteFacts((await ask("kuvo/moves")).elsewhere), [{ box: pi.key, moves: [arriving] }]);
   mail(pi, { moving: { moves: [] } });
   assert.deepEqual(underWay(await ask("kuvo/moves")), { moves: [], away: [] });
   events.stop();
@@ -125,27 +132,27 @@ test("what a computer said goes once it's been quiet a few minutes; what isn't a
   assert.deepEqual(link.movesElsewhere(undefined, Date.now() + 4 * 60_000), [], "nothing said for four minutes: gone (lab went away mid-move)");
   // What isn't a move, or isn't a list of them, isn't taken; the moves that are, are.
   mail(lab, { moving: { moves: "all of them" } });
-  assert.deepEqual((await ask("kuvo/moves")).elsewhere, [{ box: lab.key, moves: [one] }]);
+  assert.deepEqual(remoteFacts((await ask("kuvo/moves")).elsewhere), [{ box: lab.key, moves: [one] }]);
   const other = move("mov_q2", lab.key, pi.key, "from", "switching");
   mail(lab, { moving: { moves: [{ ...one, stage: "flying" }, { ...one, id: 7 }, { ...one, sessions: "ses_x" }, other] } });
-  assert.deepEqual((await ask("kuvo/moves")).elsewhere, [{ box: lab.key, moves: [other] }]);
+  assert.deepEqual(remoteFacts((await ask("kuvo/moves")).elsewhere), [{ box: lab.key, moves: [other] }]);
   // A move to or from this box is this box's own to show (in `moves`, as it hears of it): what lab
   // says of one isn't listed, so one that ended here never shows as moving while lab's word that
   // it's over is on its way.
   mail(lab, { moving: { moves: [other, move("mov_q3", lab.key, own, "from", "holding"), move("mov_q4", own, lab.key, "to", "copying")] } });
-  assert.deepEqual((await ask("kuvo/moves")).elsewhere, [{ box: lab.key, moves: [other] }]);
+  assert.deepEqual(remoteFacts((await ask("kuvo/moves")).elsewhere), [{ box: lab.key, moves: [other] }]);
   mail(pi, { moving: { moves: [move("mov_q5", own, pi.key, "to", "copying")] } });
-  assert.deepEqual((await ask("kuvo/moves")).elsewhere, [{ box: lab.key, moves: [other] }], "pi, with only a move from here, isn't listed");
+  assert.deepEqual(remoteFacts((await ask("kuvo/moves")).elsewhere), [{ box: lab.key, moves: [other] }], "pi, with only a move from here, isn't listed");
   mail(pi, { moving: { moves: [] } });
   // Mail from a computer that isn't one of yours isn't kept.
   const stranger = computer("stranger").peer;
   mail(stranger, { moving: { moves: [one] } });
-  assert.deepEqual((await ask("kuvo/moves")).elsewhere, [{ box: lab.key, moves: [other] }]);
+  assert.deepEqual(remoteFacts((await ask("kuvo/moves")).elsewhere), [{ box: lab.key, moves: [other] }]);
   // Lab's clock is set back an hour mid-move: what it says after is still taken, and its word that
   // it's over ends it.
   const finishing = { ...other, stage: "finishing" };
   link.peerMail(lab, { moving: { moves: [finishing] }, at: clock - 3_600_000 }, null);
-  assert.deepEqual((await ask("kuvo/moves")).elsewhere, [{ box: lab.key, moves: [finishing] }]);
+  assert.deepEqual(remoteFacts((await ask("kuvo/moves")).elsewhere), [{ box: lab.key, moves: [finishing] }]);
   link.peerMail(lab, { moving: { moves: [] }, at: clock - 3_599_000 }, null);
   assert.equal((await ask("kuvo/moves")).elsewhere, undefined);
 });
@@ -155,7 +162,7 @@ test("a computer gone quiet mid-move: a client following this box hears its move
   assert.deepEqual(underWay(await events.next()), { moves: [], away: [] });
   const one = move("mov_g1", lab.key, pi.key, "from", "copying");
   mail(lab, { moving: { moves: [one] } });
-  assert.deepEqual(underWay(await events.next()), { moves: [], away: [], elsewhere: [{ box: lab.key, moves: [one] }] });
+  assert.deepEqual(remoteFacts((await events.next()).elsewhere), [{ box: lab.key, moves: [one] }]);
   // A look within the few minutes changes nothing; the one after them tells it's gone (a client
   // reading lab meanwhile reads it until then, and no longer).
   link.keepMoving(Date.now() + 60_000);
@@ -200,7 +207,7 @@ test("this box tells each of your computers what it moves at its next look: as i
   // and lab, so it isn't this box's own), it's listed as pi's.
   const asPis = told[0].moving.moves.map(each => ({ ...each, from: lab.key, to: pi.key }));
   mail(pi, { moving: { moves: asPis } });
-  assert.deepEqual((await ask("kuvo/moves")).elsewhere, [{ box: pi.key, moves: asPis }]);
+  assert.deepEqual(remoteFacts((await ask("kuvo/moves")).elsewhere), [{ box: pi.key, moves: asPis }]);
   mail(pi, { moving: { moves: [] } });
   // It's over: said once, then nothing more.
   told.length = 0;

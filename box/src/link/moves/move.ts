@@ -14,10 +14,10 @@ import fs from "node:fs";
 import path from "node:path";
 import { isObject } from "../../shared/json";
 import type { Target } from "../../shared/records";
-import type { Move, MoveKind, MovePlace, MoveStays } from "../../shared/routes/moves";
+import type { Move, MoveConfirm, MoveKind, MovePlace, MoveStays } from "../../shared/routes/moves";
 import { plainName } from "../../shared/text";
 import { askGroups } from "../areas/groups";
-import { botHere, MOVING } from "../bots/here";
+import { botHere, MOVING, noteBotsChanged } from "../bots/here";
 import { signInRefusal } from "../bots/make";
 import { settleBot } from "../bots/tell";
 import { bridgeTarget, call, readBridgeFile, readEngineFile } from "../engine/client";
@@ -25,6 +25,7 @@ import { CantCarry, forgetQueue, packQueues, queueOf, resumeQueue, unpackQueues 
 import { writePrivate } from "../files";
 import { HERE, IS_MAC, K } from "../home";
 import { refreshOwn } from "../peers/agents";
+import { peerIsAway, readReach } from "../peers/reach";
 import { readPeerAgents } from "../peers/directory";
 import { mailFor, ownKey, peersOf } from "../peers/known";
 import type { MailSender, Peer } from "../peers/known";
@@ -143,6 +144,11 @@ export type MoveOutcome = { ok: true; move: Move; note?: string } | { ok: false;
 // which the running bridge moves it for.
 const waiting = new Map<string, ((outcome: MoveOutcome) => void)[]>();
 const outcomeFile = (id: string) => path.join(MOVES, `${id}.outcome.json`);
+export function readOutcome(id: string): MoveOutcome | null {
+  if (!/^mov_[A-Za-z0-9]+$/.test(id)) return null;
+  try { return JSON.parse(fs.readFileSync(outcomeFile(id), "utf8")); } catch { return null; }
+}
+
 const OUTCOME_KEPT = 10 * 60_000;
 function ended(id: string, outcome: MoveOutcome): void {
   try { writePrivate(outcomeFile(id), JSON.stringify(outcome)); } catch {}
@@ -162,7 +168,8 @@ export function outcomeOf(id: string): Promise<MoveOutcome> {
     if (watching) return;
     // Another process moves it: how it ended, once it's noted.
     timer = setInterval(() => {
-      try { done(JSON.parse(fs.readFileSync(outcomeFile(id), "utf8"))); } catch {}
+      const outcome = readOutcome(id);
+      if (outcome) done(outcome);
     }, 500);
   });
 }
@@ -340,7 +347,9 @@ export async function placesFor(kind: MoveKind, thing: string, signal?: AbortSig
   const what = await movable(kind, thing, signal);
   if (!what) return null;
   const stays = kind === "group" ? undefined : await staysOf(kind, thing, what, signal);
-  return { places: placesOf(kind, thing, what), ...(stays && Object.keys(stays).length ? { stays } : {}) };
+  const target = what.lane ? bridgeTarget() : engineTarget();
+  const busy = !what.why && what.root && target ? await activeIn(target, [what.root], signal) : false;
+  return { places: placesOf(kind, thing, what, stays, busy), ...(stays && Object.keys(stays).length ? { stays } : {}) };
 }
 
 /** What of a bot or chat stays here as it moves: none of it goes, and none of it's lost (it's here
@@ -366,19 +375,40 @@ async function staysOf(kind: MoveKind, thing: string, what: Movable, signal?: Ab
   return stays;
 }
 
-function placesOf(kind: MoveKind, thing: string, what: Movable): MovePlace[] {
+function question(kind: MoveKind, name: string, peer: Peer, place: string, stays: MoveStays | undefined, busy: boolean): MoveConfirm {
+  const words = [kind === "bot" ? "Its memory, files, wake-ups and conversation move with it."
+    : kind === "group" ? "Its messages and meeting move with it. Its bots stay where they are."
+    : "Its conversation and wake-ups move with it."];
+  if (kind === "group" && peer.kind === "mac") words.push("The group runs while that Mac is on.");
+  if (busy) words.push("A turn is running. The move waits up to a minute for it to finish.");
+  words.push(kind === "group" ? "The meeting pauses during the move." : "New messages and wake-ups wait during the move.");
+  if (stays?.startsOver) words.push(`${stays.startsOver} starts a new conversation there with what was said so far.`);
+  if (stays?.agent) words.push("A copy of the coding agent’s conversation stays here until a week after it first runs there.");
+  if (stays?.sessions) words.push("Sessions it started stay here. It can still reach them from its new computer.");
+  if (stays?.asks) words.push("Its unanswered questions stay here.");
+  if (stays?.goals) words.push("Its proposed goals stay here.");
+  if (kind !== "group") words.push("Vault items, integrations and browser sign-ins stay on this computer.");
+  words.push(kind === "group" ? "The group opens on the new computer after the move."
+    : IS_MAC ? "The original goes to the Trash after the move." : "The original goes to Kuvo Code’s trash folder after the move.");
+  const title = kind === "bot" ? `“${name}”` : name;
+  return { title: `Move ${title} to ${place}?`, message: words.join(" "), label: "Move" };
+}
+
+function placesOf(kind: MoveKind, thing: string, what: Movable, stays: MoveStays | undefined, busy: boolean): MovePlace[] {
   const moving = moveOf(thing) !== null;
   const own = ownKey(readLink() ?? {});
+  const told = readPeerAgents(), reach = readReach();
   return peersOf(readLink()).filter(peer => peer.key !== own).map(peer => {
     const name = plainName(peer.name) || (peer.kind === "mac" ? "Mac" : "Machine");
     // Why not, and the same short: the thing's own reason first, then that computer's.
     const not: [string, string] | null = moving ? [say.moving, note.moving]
       : what.why ? [what.why, what.note ?? what.why]
       : olderThanMoves(peer.key) || (what.lane && olderThanCarrying(peer.key)) ? [say.needsUpdate(name), note.needsUpdate]
+      : peerIsAway(peer.key, told[peer.key]?.heard, reach) ? [say.notConnected(name), "Can’t be reached"]
       // A group chat goes to a machine only where all its bots live (to a Mac, they stay put).
       : kind === "group" && peer.kind === "machine" && !botsLiveOn(what.members ?? [], peer) ? [say.botsNotThere(what.name, name), note.botsNotThere]
       : null;
-    return { key: peer.key, name, kind: peer.kind, ok: !not, ...(not ? { why: not[0], note: not[1] } : {}) };
+    return { key: peer.key, name, kind: peer.kind, ok: !not, ...(not ? { why: not[0], note: not[1] } : { confirm: question(kind, what.name, peer, name, stays, busy) }) };
   });
 }
 
@@ -401,6 +431,13 @@ function olderThanCarrying(key: string): boolean {
 
 /** Moves `thing` to the box whose key is `to`, as a client asks: until it's there, or why not. */
 export async function startMove(kind: MoveKind, thing: string, to: string, signal?: AbortSignal): Promise<MoveOutcome> {
+  const begun = await beginMove(kind, thing, to, signal, true);
+  return begun.ok ? begun.outcome! : begun;
+}
+
+export async function beginMove(kind: MoveKind, thing: string, to: string, signal?: AbortSignal, wait = false): Promise<
+  { ok: true; move: Move; outcome?: Promise<MoveOutcome> } | Extract<MoveOutcome, { ok: false }>
+> {
   const link = readLink();
   const own = link ? ownKey(link) : null;
   const peer = peersOf(link).find(each => each.key === to);
@@ -421,10 +458,10 @@ export async function startMove(kind: MoveKind, thing: string, to: string, signa
   // One move of a thing at a time, whoever asks (a phone and a Mac at once, through this bridge or
   // `box route`): noted under a lock, after a look again.
   if (!noteFirst(record)) return { ok: false, status: 409, message: say.moving };
-  const outcome = outcomeOf(id);
+  const outcome = wait ? outcomeOf(id) : undefined;
   // Moved by this process when it's the bridge; else by the bridge, as it next looks.
   if (watching) drive(id);
-  return outcome;
+  return { ok: true, move: shownMove(record), ...(outcome ? { outcome } : {}) };
 }
 
 /** `record` noted, unless a move of its thing is under way already: under a lock of its own (a file
@@ -470,14 +507,22 @@ function unhold(folder: string | undefined, wasPaused: boolean, pausedAs?: strin
   } catch {}
 }
 
+function engineTarget(): Target | null {
+  try { return readEngineFile(); } catch { return null; }
+}
+
+async function activeIn(target: Target, sessions: readonly string[], signal?: AbortSignal): Promise<boolean> {
+  const active = await call(target, "GET", "/api/session/active", undefined, engineWait(signal)).catch(() => ({}));
+  return isObject(active) && sessions.some(session => session in active);
+}
+
 /** Until none of its conversations is at work and nothing waits to go to them: a minute at most.
  * What the engine holds for one you stopped waits for Resume, and goes with it (`packQueues`). */
 async function settle(target: Target, sessions: readonly string[], name: string): Promise<void> {
   // (Still in a turn at the end, it's working; else only messages wait to go to it.)
   let busy = false;
   for (let tries = 0; tries < SETTLE_FOR; tries++) {
-    const active = await call(target, "GET", "/api/session/active", undefined, engineWait()).catch(() => ({}));
-    busy = isObject(active) && sessions.some(session => session in active);
+    busy = await activeIn(target, sessions);
     const inbox = sessions[0] && !queueOf(sessions[0]).paused ? await call(target, "GET", `/api/session/${encodeURIComponent(sessions[0])}/inbox`, undefined, engineWait()).catch(() => []) : [];
     if (!busy && !(Array.isArray(inbox) && inbox.length)) return;
     await new Promise(resolve => setTimeout(resolve, 1000));
@@ -792,9 +837,9 @@ async function finish(id: string): Promise<void> {
     noteLeft({ id, thing: record.thing, kind: record.kind, to: record.to, at: Date.now(), sessions: [...record.sessions], ...(record.lane ? { lane: true } : {}), ...(trash ? { trash } : {}), ...(record.leftOf?.length ? { left: record.leftOf } : {}) });
   }
   noteMovedAway(record.sessions, record.to);
-  forgetMove(id);
   outgoing.delete(id);
   ended(id, { ok: true, move: shownMove({ ...record, stage: "finishing" }), ...(record.note ? { note: record.note } : {}) });
+  forgetMove(id);
 }
 
 /** Taken back before it switched: the other box lets its copy go, and it goes on here as it was. */
@@ -1344,6 +1389,7 @@ async function moveMail(sender: MailSender, given: Record<string, unknown>, id: 
         await switchHere(mine);
         noteEnded(id, "switched", Date.now(), mine.sessions, last);
         forgetMove(id);
+        if (mine.kind === "bot") noteBotsChanged();
         // The copy is ours now (ownAgents omits moves still held here): listed before the source
         // hears it switched, not at the minute's list. Letters to it are taken while it's switched
         // here lately (`switchedHere`), even once it's older than the latest that list keeps.

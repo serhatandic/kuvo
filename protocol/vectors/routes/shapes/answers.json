@@ -11172,7 +11172,8 @@
          "place?": "string",
          "sent?": "number",
          "size?": "number",
-         "waiting?": "bool"
+         "waiting?": "bool",
+         "progress?": "string"
         }
        }
       },
@@ -11236,7 +11237,8 @@
             "place?": "string",
             "sent?": "number",
             "size?": "number",
-            "waiting?": "bool"
+            "waiting?": "bool",
+            "progress?": "string"
            }
           }
          }
@@ -11278,7 +11280,14 @@
          },
          "ok": "bool",
          "why?": "string",
-         "note?": "string"
+         "note?": "string",
+         "confirm?": {
+          "object": {
+           "title": "string",
+           "message": "string",
+           "label": "string"
+          }
+         }
         }
        }
       },
@@ -11292,6 +11301,151 @@
        }
       }
      }
+    }
+   }
+  },
+  {
+   "route": "GET kuvo/moves/receipt",
+   "answers": {
+    "200": {
+     "oneOf": [
+      {
+       "object": {
+        "state": {
+         "literal": "moving"
+        },
+        "move": {
+         "object": {
+          "id": "string",
+          "kind": {
+           "oneOf": [
+            {
+             "literal": "bot"
+            },
+            {
+             "literal": "chat"
+            },
+            {
+             "literal": "group"
+            }
+           ]
+          },
+          "thing": "string",
+          "name": "string",
+          "from": "string",
+          "to": "string",
+          "role": {
+           "oneOf": [
+            {
+             "literal": "from"
+            },
+            {
+             "literal": "to"
+            }
+           ]
+          },
+          "stage": {
+           "oneOf": [
+            {
+             "literal": "holding"
+            },
+            {
+             "literal": "copying"
+            },
+            {
+             "literal": "switching"
+            },
+            {
+             "literal": "finishing"
+            }
+           ]
+          },
+          "sessions": {
+           "list": "string"
+          },
+          "place?": "string",
+          "sent?": "number",
+          "size?": "number",
+          "waiting?": "bool",
+          "progress?": "string"
+         }
+        }
+       }
+      },
+      {
+       "object": {
+        "state": {
+         "literal": "done"
+        },
+        "move": {
+         "object": {
+          "id": "string",
+          "kind": {
+           "oneOf": [
+            {
+             "literal": "bot"
+            },
+            {
+             "literal": "chat"
+            },
+            {
+             "literal": "group"
+            }
+           ]
+          },
+          "thing": "string",
+          "name": "string",
+          "from": "string",
+          "to": "string",
+          "role": {
+           "oneOf": [
+            {
+             "literal": "from"
+            },
+            {
+             "literal": "to"
+            }
+           ]
+          },
+          "stage": {
+           "oneOf": [
+            {
+             "literal": "holding"
+            },
+            {
+             "literal": "copying"
+            },
+            {
+             "literal": "switching"
+            },
+            {
+             "literal": "finishing"
+            }
+           ]
+          },
+          "sessions": {
+           "list": "string"
+          },
+          "place?": "string",
+          "sent?": "number",
+          "size?": "number",
+          "waiting?": "bool",
+          "progress?": "string"
+         }
+        },
+        "message": "string",
+        "note?": "string"
+       }
+      },
+      {
+       "object": {
+        "state": {
+         "literal": "failed"
+        },
+        "message": "string"
+       }
+      }
+     ]
     }
    }
   },
@@ -11352,7 +11506,69 @@
         "place?": "string",
         "sent?": "number",
         "size?": "number",
-        "waiting?": "bool"
+        "waiting?": "bool",
+        "progress?": "string"
+       }
+      },
+      "note?": "string"
+     }
+    },
+    "202": {
+     "object": {
+      "move": {
+       "object": {
+        "id": "string",
+        "kind": {
+         "oneOf": [
+          {
+           "literal": "bot"
+          },
+          {
+           "literal": "chat"
+          },
+          {
+           "literal": "group"
+          }
+         ]
+        },
+        "thing": "string",
+        "name": "string",
+        "from": "string",
+        "to": "string",
+        "role": {
+         "oneOf": [
+          {
+           "literal": "from"
+          },
+          {
+           "literal": "to"
+          }
+         ]
+        },
+        "stage": {
+         "oneOf": [
+          {
+           "literal": "holding"
+          },
+          {
+           "literal": "copying"
+          },
+          {
+           "literal": "switching"
+          },
+          {
+           "literal": "finishing"
+          }
+         ]
+        },
+        "sessions": {
+         "list": "string"
+        },
+        "place?": "string",
+        "sent?": "number",
+        "size?": "number",
+        "waiting?": "bool",
+        "progress?": "string"
        }
       }
      }

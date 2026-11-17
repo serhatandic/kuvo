@@ -4038,6 +4038,9 @@ function noteHeard(key) {
   });
   return back;
 }
+function peerIsAway(key, heard, reach = readReach(), now = Date.now()) {
+  return awaySince(key, reach) !== null || heard !== undefined && now - heard > 30 * 60000;
+}
 var PEER_REACH, LOCK6, change2 = (edit, file = PEER_REACH) => {
   try {
     fs49.mkdirSync(RUN, { recursive: true, mode: 448 });
@@ -36879,6 +36882,7 @@ import fs122 from "node:fs";
 import path126 from "node:path";
 init_files2();
 init_home();
+init_reach();
 init_directory();
 init_known();
 init_state();
@@ -37406,6 +37410,15 @@ var note = {
 };
 var waiting = new Map;
 var outcomeFile = (id) => path126.join(MOVES, `${id}.outcome.json`);
+function readOutcome(id) {
+  if (!/^mov_[A-Za-z0-9]+$/.test(id))
+    return null;
+  try {
+    return JSON.parse(fs122.readFileSync(outcomeFile(id), "utf8"));
+  } catch {
+    return null;
+  }
+}
 var OUTCOME_KEPT = 10 * 60000;
 function ended2(id, outcome) {
   try {
@@ -37428,9 +37441,9 @@ function outcomeOf2(id) {
     if (watching2)
       return;
     timer = setInterval(() => {
-      try {
-        done(JSON.parse(fs122.readFileSync(outcomeFile(id), "utf8")));
-      } catch {}
+      const outcome = readOutcome(id);
+      if (outcome)
+        done(outcome);
     }, 500);
   });
 }
@@ -37582,7 +37595,9 @@ async function placesFor(kind, thing, signal) {
   if (!what)
     return null;
   const stays = kind === "group" ? undefined : await staysOf(kind, thing, what, signal);
-  return { places: placesOf(kind, thing, what), ...stays && Object.keys(stays).length ? { stays } : {} };
+  const target = what.lane ? bridgeTarget() : engineTarget();
+  const busy = !what.why && what.root && target ? await activeIn(target, [what.root], signal) : false;
+  return { places: placesOf(kind, thing, what, stays, busy), ...stays && Object.keys(stays).length ? { stays } : {} };
 }
 async function staysOf(kind, thing, what, signal) {
   const stays = {};
@@ -37611,13 +37626,37 @@ async function staysOf(kind, thing, what, signal) {
     stays.agent = true;
   return stays;
 }
-function placesOf(kind, thing, what) {
+function question(kind, name, peer, place, stays, busy) {
+  const words = [kind === "bot" ? "Its memory, files, wake-ups and conversation move with it." : kind === "group" ? "Its messages and meeting move with it. Its bots stay where they are." : "Its conversation and wake-ups move with it."];
+  if (kind === "group" && peer.kind === "mac")
+    words.push("The group runs while that Mac is on.");
+  if (busy)
+    words.push("A turn is running. The move waits up to a minute for it to finish.");
+  words.push(kind === "group" ? "The meeting pauses during the move." : "New messages and wake-ups wait during the move.");
+  if (stays?.startsOver)
+    words.push(`${stays.startsOver} starts a new conversation there with what was said so far.`);
+  if (stays?.agent)
+    words.push("A copy of the coding agent’s conversation stays here until a week after it first runs there.");
+  if (stays?.sessions)
+    words.push("Sessions it started stay here. It can still reach them from its new computer.");
+  if (stays?.asks)
+    words.push("Its unanswered questions stay here.");
+  if (stays?.goals)
+    words.push("Its proposed goals stay here.");
+  if (kind !== "group")
+    words.push("Vault items, integrations and browser sign-ins stay on this computer.");
+  words.push(kind === "group" ? "The group opens on the new computer after the move." : IS_MAC ? "The original goes to the Trash after the move." : "The original goes to Kuvo Code’s trash folder after the move.");
+  const title = kind === "bot" ? `“${name}”` : name;
+  return { title: `Move ${title} to ${place}?`, message: words.join(" "), label: "Move" };
+}
+function placesOf(kind, thing, what, stays, busy) {
   const moving = moveOf(thing) !== null;
   const own = ownKey(readLink() ?? {});
+  const told = readPeerAgents(), reach = readReach();
   return peersOf(readLink()).filter((peer) => peer.key !== own).map((peer) => {
     const name = plainName(peer.name) || (peer.kind === "mac" ? "Mac" : "Machine");
-    const not = moving ? [say.moving, note.moving] : what.why ? [what.why, what.note ?? what.why] : olderThanMoves(peer.key) || what.lane && olderThanCarrying(peer.key) ? [say.needsUpdate(name), note.needsUpdate] : kind === "group" && peer.kind === "machine" && !botsLiveOn(what.members ?? [], peer) ? [say.botsNotThere(what.name, name), note.botsNotThere] : null;
-    return { key: peer.key, name, kind: peer.kind, ok: !not, ...not ? { why: not[0], note: not[1] } : {} };
+    const not = moving ? [say.moving, note.moving] : what.why ? [what.why, what.note ?? what.why] : olderThanMoves(peer.key) || what.lane && olderThanCarrying(peer.key) ? [say.needsUpdate(name), note.needsUpdate] : peerIsAway(peer.key, told[peer.key]?.heard, reach) ? [say.notConnected(name), "Can’t be reached"] : kind === "group" && peer.kind === "machine" && !botsLiveOn(what.members ?? [], peer) ? [say.botsNotThere(what.name, name), note.botsNotThere] : null;
+    return { key: peer.key, name, kind: peer.kind, ok: !not, ...not ? { why: not[0], note: not[1] } : { confirm: question(kind, what.name, peer, name, stays, busy) } };
   });
 }
 function olderThanMoves(key) {
@@ -37630,6 +37669,10 @@ function olderThanCarrying(key) {
   return Array.isArray(features) && !features.includes("moves.agents");
 }
 async function startMove(kind, thing, to, signal) {
+  const begun = await beginMove(kind, thing, to, signal, true);
+  return begun.ok ? begun.outcome : begun;
+}
+async function beginMove(kind, thing, to, signal, wait = false) {
   const link = readLink();
   const own = link ? ownKey(link) : null;
   const peer = peersOf(link).find((each) => each.key === to);
@@ -37669,10 +37712,10 @@ async function startMove(kind, thing, to, signal) {
   };
   if (!noteFirst(record))
     return { ok: false, status: 409, message: say.moving };
-  const outcome = outcomeOf2(id);
+  const outcome = wait ? outcomeOf2(id) : undefined;
   if (watching2)
     drive(id);
-  return outcome;
+  return { ok: true, move: shownMove(record), ...outcome ? { outcome } : {} };
 }
 function noteFirst(record) {
   fs122.mkdirSync(MOVES, { recursive: true, mode: 448 });
@@ -37726,11 +37769,21 @@ function unhold(folder, wasPaused, pausedAs) {
       fs122.rmSync(PAUSED2(folder), { force: true });
   } catch {}
 }
+function engineTarget() {
+  try {
+    return readEngineFile();
+  } catch {
+    return null;
+  }
+}
+async function activeIn(target, sessions, signal) {
+  const active = await call(target, "GET", "/api/session/active", undefined, engineWait(signal)).catch(() => ({}));
+  return isObject(active) && sessions.some((session) => (session in active));
+}
 async function settle4(target, sessions, name) {
   let busy = false;
   for (let tries = 0;tries < SETTLE_FOR; tries++) {
-    const active = await call(target, "GET", "/api/session/active", undefined, engineWait()).catch(() => ({}));
-    busy = isObject(active) && sessions.some((session) => (session in active));
+    busy = await activeIn(target, sessions);
     const inbox = sessions[0] && !queueOf(sessions[0]).paused ? await call(target, "GET", `/api/session/${encodeURIComponent(sessions[0])}/inbox`, undefined, engineWait()).catch(() => []) : [];
     if (!busy && !(Array.isArray(inbox) && inbox.length))
       return;
@@ -38051,9 +38104,9 @@ async function finish2(id) {
     noteLeft2({ id, thing: record.thing, kind: record.kind, to: record.to, at: Date.now(), sessions: [...record.sessions], ...record.lane ? { lane: true } : {}, ...trash ? { trash } : {}, ...record.leftOf?.length ? { left: record.leftOf } : {} });
   }
   noteMovedAway(record.sessions, record.to);
-  forgetMove(id);
   outgoing.delete(id);
   ended2(id, { ok: true, move: shownMove({ ...record, stage: "finishing" }), ...record.note ? { note: record.note } : {} });
+  forgetMove(id);
 }
 async function takeBack2(id, message, status = 409) {
   const record = readMove(id);
@@ -38610,6 +38663,8 @@ async function moveMail(sender, given, id) {
         await switchHere(mine);
         noteEnded(id, "switched", Date.now(), mine.sessions, last);
         forgetMove(id);
+        if (mine.kind === "bot")
+          noteBotsChanged();
         await refreshOwn(readEngineFile).catch(() => {});
         return void tell2(sender.key, { op: "switched", id });
       }
@@ -45155,7 +45210,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "8eb1c1546153";
+var BRIDGE_VERSION = "d82ec2d2647e";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -48785,7 +48840,6 @@ init_state();
 init_agents_down();
 var COMPUTERS_ROUTE = /^kuvo\/computers(?:(\/events)|\/([A-Za-z0-9_-]{1,60})(\/connect|\/allow-devices)?)?$/;
 var MOST_HERE = 100;
-var HEARD_LATELY2 = 30 * 60000;
 function systemName(platform = process.platform, read = (file) => fs154.readFileSync(file, "utf8")) {
   try {
     if (platform === "darwin") {
@@ -48898,7 +48952,7 @@ function computerWords(computer, here) {
 }
 function peerReach(key, told = readPeerAgents(), reach = readReach(), tries = readTries(), now = Date.now()) {
   const said = told[key];
-  const away = awaySince(key, reach) !== null || said?.heard !== undefined && now - said.heard > HEARD_LATELY2;
+  const away = peerIsAway(key, said?.heard, reach, now);
   const trying = tryingSince(key, now, tries);
   const reaching = trying !== null && !(said?.heard !== undefined && said.heard >= trying);
   return { away, reach: reaching ? "connecting" : away ? "away" : said?.heard === undefined ? "connecting" : "connected" };
@@ -61842,6 +61896,7 @@ async function* attentionRoute(context) {
 }
 // box/src/link/areas/bots.ts
 init_home();
+init_records();
 async function* botTemplatesRoute(context) {
   const { request, signal, readEngine, info, json } = context;
   if (!["GET", "HEAD"].includes(request.method.toUpperCase()))
@@ -61904,7 +61959,8 @@ async function* retellRoute(context) {
 function botsWithNow(machine) {
   const counts = botsNowHere();
   const at = Date.now();
-  const bots = listBots(machine);
+  const held = new Set(readMoves().filter((move) => move.role === "to" && move.kind === "bot").map((move) => move.thing));
+  const bots = listBots(machine).filter((bot) => !held.has(bot.id));
   keepOnly(bots.map((bot) => bot.id));
   return bots.map((bot) => ({ ...bot, now: nowOf(bot.id, counts[bot.id], bot, at) }));
 }
@@ -70807,20 +70863,46 @@ init_records();
 init_known();
 init_state();
 var KINDS6 = ["bot", "chat", "group"];
+function withWords(move, peerName, destination) {
+  const place = plainName(peerName ?? move.place ?? "") || "the other computer";
+  const to = move.role === "from" ? place : destination ?? "this computer";
+  const progress = move.waiting ? `Waiting for ${place}…` : move.stage === "holding" ? `Getting ready to move to ${to}…` : move.stage === "copying" ? `Moving to ${to}…` : `Finishing the move to ${to}…`;
+  return { ...move, place, progress };
+}
 var movesNow = () => {
   const peers = peersOf(readLink());
+  const nameOf = (key) => peers.find((peer) => peer.key === key)?.name;
   const elsewhere = movesElsewhere(peers);
   const moved = movedAway().map(({ session, key, at }) => ({ session, key, at }));
   return {
-    moves: listedMoves().map((record) => {
-      const place = plainName(peers.find((peer) => peer.key === record.peer)?.name ?? "");
-      return { ...shownMove(record), ...place ? { place } : {} };
-    }),
+    moves: listedMoves().map((record) => withWords(shownMove(record), nameOf(record.peer))),
     away: awaySessions(),
-    ...elsewhere.length ? { elsewhere } : {},
+    ...elsewhere.length ? { elsewhere: elsewhere.map((heard) => ({ ...heard, moves: heard.moves.map((move) => {
+      const other = move.role === "from" ? move.to : move.from;
+      return withWords(move, nameOf(other), plainName(nameOf(move.to) ?? "") || "the other computer");
+    }) })) } : {},
     ...moved.length ? { moved } : {}
   };
 };
+async function* moveReceiptRoute(context) {
+  const { request, json } = context;
+  if (request.method.toUpperCase() !== "GET")
+    return yield* json(405, {});
+  const id = new URLSearchParams(request.path.split("?")[1] ?? "").get("id") ?? "";
+  const answer = readOutcome(id);
+  if (answer && !answer.ok)
+    return yield* json(200, { state: "failed", message: answer.message });
+  const record = answer ? null : readMove(id);
+  const move = answer?.move ?? (record ? shownMove(record) : null);
+  if (!move || move.role !== "from") {
+    return yield* json(404, { message: "The move’s result isn’t available. Check where it is before trying again." });
+  }
+  const place = peersOf(readLink()).find((peer) => peer.key === move.to)?.name;
+  const shown = withWords(move, place);
+  if (!answer)
+    return yield* json(200, { state: "moving", move: shown });
+  return yield* json(200, { state: "done", move: shown, message: `Moved to ${shown.place}.`, ...answer.note ? { note: answer.note } : {} });
+}
 async function* movesRoute(context) {
   const { request, signal, json } = context;
   const method = request.method.toUpperCase();
@@ -70836,6 +70918,13 @@ async function* movesRoute(context) {
   }
   if (!isObject(given) || !KINDS6.includes(given.kind) || typeof given.id !== "string" || typeof given.to !== "string") {
     return yield* json(400, { message: `Say what moves where: {"kind": "bot" | "chat" | "group", "id": …, "to": <its computer's key>}.` });
+  }
+  if (given.receipt === true) {
+    const begun = await beginMove(given.kind, given.id, given.to);
+    if (!begun.ok)
+      return yield* json(begun.status, { message: begun.message });
+    const place = peersOf(readLink()).find((peer) => peer.key === begun.move.to)?.name;
+    return yield* json(202, { move: withWords(begun.move, place) });
   }
   const outcome = await startMove(given.kind, given.id, given.to);
   if (signal?.aborted)
@@ -71301,6 +71390,7 @@ var ROUTES = [
   { when: (route) => route === "kuvo/moves", answer: movesRoute },
   { when: (route) => route === "kuvo/moves/events", answer: moveEventsRoute },
   { when: (route) => route === "kuvo/moves/places", answer: movePlacesRoute },
+  { when: (route) => route === "kuvo/moves/receipt", answer: moveReceiptRoute },
   { when: (route) => route === "kuvo/wakes", answer: wakesRoute },
   { when: (route) => route === "kuvo/wakes/events", answer: wakeEventsRoute },
   { when: (route) => route.match(/^kuvo\/wakes\/([^/]+)(?:\/(cancel|now|pause|watch))?$/), answer: sessionWakesRoute }

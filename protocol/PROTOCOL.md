@@ -877,7 +877,7 @@ another of your computers, the boxes doing it between themselves over peer mail 
 A client asks the box it lives on once, and watches; the move goes on with no client there.
 
 - `GET kuvo/moves/places?kind=bot|chat|group&id=…` → `200 {places: [{key, name, kind, ok, why?,
-  note?}]}`: each of your other computers (its box's key, its name, `mac` or `machine`), and whether
+  note?, confirm?}]}`: each of your other computers (its box's key, its name, `mac` or `machine`), and whether
   it can go there now, with why not in words to show (it works in a project, talks with a coding
   agent and this box's agents bridge isn't running, or that computer's box is from before
   `moves.agents`, is in a group chat that lives here with its bots, is working on a goal (a bot's, or a
@@ -885,7 +885,7 @@ A client asks the box it lives on once, and watches; the move goes on with no cl
   a link that wouldn't work there (absolute, climbing out of its folder on its way, or, followed
   through any link before it, ending outside it or nowhere) or anything but files, folders and such
   relative links within it (the box it goes to takes none; looked for again as it's packed), is moving already; that computer's box is
-  from before moves, as the `features` its agents' mail last gave say; a group chat's bots don't all
+  from before moves, as the `features` its agents' mail last gave say, or is away as in Computers; a group chat's bots don't all
   live on that machine, as its agents' mail says, none of them here) and `note`, the same in a few
   words for beside the computer's name in a menu. `404 {message}` when it isn't here. A group chat
   can go to any Mac (its bots stay where they are); the machine it goes to checks again. For a bot
@@ -897,7 +897,9 @@ A client asks the box it lives on once, and watches; the move goes on with no cl
   there): Claude Code's and Codex's go with it. `startsOver: "<agent>"` instead, for one whose
   coding agent can't take its own conversation along (Cursor, Grok, Antigravity): that agent starts
   a new conversation there, handed what was said so far. Clients put it in Move's question (`MoveWords.question`, its `stays`), with the words
-  that each computer's vault, integrations and browser sign-ins stay with it.
+  that each computer's vault, integrations and browser sign-ins stay with it. A destination that
+  can take it has `confirm: {title, message, label}`, including when the source sees a turn still
+  running. The source waits up to a minute for the turn to settle when it actually moves.
 - `POST kuvo/moves {kind, id, to}` (`to`: the box's key, as `places` gives it) answers once the move
   ends: `200 {move}` (it lives there now); `409 {message}` refused or taken back, as it was (still in
   a turn after a minute's wait, working on a goal,
@@ -906,6 +908,12 @@ A client asks the box it lives on once, and watches; the move goes on with no cl
   of your computers. A client that goes doesn't stop it. `note` beside `move` (feature
   `moves.check`), when there is one, says what it does differently there, in words to show (it uses
   another account of its coding agent, the one signed in there).
+- `POST kuvo/moves {kind, id, to, receipt: true}` uses the same checks and move, and answers as soon
+  as it is recorded with `202 {move}`. Read `GET kuvo/moves/receipt?id=…` on the source with that
+  move's ID. It gives `200 {state: "moving", move}`, `{state: "done", move, message, note?}`, or
+  `{state: "failed", message}`. Results are kept for ten minutes. `404 {message}` means the source
+  no longer has a result for that receipt. The move routes give `move.progress` in words for the
+  current step or for a computer that's gone quiet, alongside the copy's byte counts.
 - `GET kuvo/moves` → `200 {moves: [Move], away: [session]}`, and `GET kuvo/moves/events`, the same
   as a line now and each time it changes. `Move = {id, kind, thing, name, from, to, role, stage,
   sessions, place?, sent?, size?, waiting?}`: `from` and `to` are boxes' keys; `role`, whether this box is

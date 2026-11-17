@@ -1,7 +1,7 @@
 // Move to Computer (PROTOCOL.md, `kuvo/moves`): a bot, a chat or a group chat moved whole to another
 // of your computers, the boxes doing it between themselves; clients ask once and watch.
 
-import { bool, type Infer, list, number, object, type RouteShape, string, words } from "../shape";
+import { bool, type Infer, list, literal, number, object, oneOf, type RouteShape, string, words } from "../shape";
 
 /** What can move: a bot (by its ID), a chat (by its session) or a group chat (by its ID). */
 export const MOVE_KIND = words("bot", "chat", "group");
@@ -9,9 +9,11 @@ export const MOVE_KIND = words("bot", "chat", "group");
  * and the original going. */
 export const MOVE_STAGE = words("holding", "copying", "switching", "finishing");
 
+export const MOVE_CONFIRM = object({ title: string, message: string, label: string });
+
 /** A computer it could go to: its box's key, its name and kind, and whether it can go there now
  * (with why not, in words to show, and `note`, the same in a few words, for beside its name). */
-export const MOVE_PLACE = object({ key: string, name: string, kind: words("mac", "machine"), ok: bool, "why?": string, "note?": string });
+export const MOVE_PLACE = object({ key: string, name: string, kind: words("mac", "machine"), ok: bool, "why?": string, "note?": string, "confirm?": MOVE_CONFIRM });
 /** What of a bot or chat stays on this computer as it moves (each left out when none): the sessions
  * it started (it still reaches them from there), what it asked you that's unanswered, the goals it
  * proposed, and `agent` when its coding agent's own copy of its conversation is kept here as the way
@@ -39,6 +41,7 @@ export const MOVE = object({
   "sent?": number,
   "size?": number,
   "waiting?": bool,
+  "progress?": string,
 });
 
 /** Moves under way on another of your computers, as that computer's box last said them (its key,
@@ -56,8 +59,15 @@ export const MOVED_AWAY = object({ session: string, key: string, at: number });
  * or hears of one from it, leaves it out too, and finds it where it went. */
 export const MOVES = object({ moves: list(MOVE), away: list(string), "elsewhere?": list(MOVES_ELSEWHERE), "moved?": list(MOVED_AWAY) });
 /** A move that ended well: where it went. */
-export const MOVED = object({ move: MOVE });
+export const MOVED = object({ move: MOVE, "note?": string });
+export const MOVE_ACCEPTED = object({ move: MOVE });
+export const MOVE_RECEIPT = oneOf(
+  object({ state: literal("moving"), move: MOVE }),
+  object({ state: literal("done"), move: MOVE, message: string, "note?": string }),
+  object({ state: literal("failed"), message: string }),
+);
 
+export type MoveConfirm = Infer<typeof MOVE_CONFIRM>;
 export type MoveKind = Infer<typeof MOVE_KIND>;
 export type MoveStage = Infer<typeof MOVE_STAGE>;
 export type MovePlace = Infer<typeof MOVE_PLACE>;
@@ -67,9 +77,11 @@ export type Move = Infer<typeof MOVE>;
 export type MovesElsewhere = Infer<typeof MOVES_ELSEWHERE>;
 export type MovedAwayShown = Infer<typeof MOVED_AWAY>;
 export type Moves = Infer<typeof MOVES>;
+export type MoveReceipt = Infer<typeof MOVE_RECEIPT>;
 
 export const MOVE_ROUTES: RouteShape[] = [
   { route: "GET kuvo/moves", answers: { 200: MOVES } },
   { route: "GET kuvo/moves/places", answers: { 200: MOVE_PLACES } },
-  { route: "POST kuvo/moves", answers: { 200: MOVED } },
+  { route: "GET kuvo/moves/receipt", answers: { 200: MOVE_RECEIPT } },
+  { route: "POST kuvo/moves", answers: { 200: MOVED, 202: MOVE_ACCEPTED } },
 ];
