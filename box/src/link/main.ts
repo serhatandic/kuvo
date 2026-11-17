@@ -67,6 +67,7 @@ import { APP_FOLDER, BRIDGE_FILE, IS_MAC, K, KEYS_ON_HOST, MAC_APP_VERSION, NEED
 import { installCommand } from "./install/command";
 import { rehomeCommand } from "./rehome/command";
 import { clearKept, SERVED_FILE } from "./rehome/move";
+import { settleOwedAtStart } from "./rehome/route";
 import { isBridge, keepKeeper, needed, noLongerNeeded, runningBridge, startBridge } from "./keeper";
 import { noteRelay } from "./letters/leave";
 import { deliverLeftAnswers, outboxSoon, sendOutbox } from "./letters/outbox";
@@ -874,6 +875,8 @@ async function serve(): Promise<void> {
   // keeps them (its app did that in its folder), and its Mac kept awake while agents work, as its
   // setting says (its app's keeper did, by the app's).
   keepKeyFiles();
+  // What a move into it that's done still owes that asks nothing, settled beside it.
+  settleOwedAtStart();
   keepAwakeWhileWorking(() => agentsWorking());
   // And their conversations and places in group chats, where those weren't answering.
   finishDeletes(readEngineFile, bridgeTarget).catch(() => {});

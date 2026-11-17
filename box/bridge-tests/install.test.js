@@ -92,9 +92,19 @@ function computer({ app = APP_ID } = {}) {
   write(path.join(tools, "launchctl"), `#!/bin/sh\necho "$*" >>"${home}/launchctl-asked"\ncase "$1" in print) [ -f "${home}/loaded" ] ;; bootstrap) if [ -f "${home}/launchd-refuses" ]; then echo "Bootstrap failed: 5: Input/output error" >&2; exit 5; fi; touch "${home}/loaded" ;; bootout) rm -f "${home}/loaded" ;; print-disabled) exit 0 ;; esac\n`, 0o755);
   write(path.join(tools, "crontab"), `#!/bin/sh\nif [ "$1" = -l ]; then [ -f "${home}/crontab" ] && cat "${home}/crontab" || { echo "no crontab for you" >&2; exit 1; }; else cat >"${home}/crontab"; fi\n`, 0o755);
   write(path.join(tools, "open"), `#!/bin/sh\necho "$*" >>"${home}/open-asked"\n`, 0o755);
+  // (Your Keychain, as `security` lists it: an earlier Kuvo Code's saved sign-ins, where the test
+  // puts any; never this computer's Keychain.)
+  write(path.join(tools, "security"), `#!/bin/sh\necho "$*" >>"${home}/security-asked"\n[ -f "${home}/saved-sign-ins" ] || exit 44\n`, 0o755);
   const bundle = path.join(home, "Applications", "Kuvo Code.app");
   write(path.join(bundle, "Contents", "Info.plist"), `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict><key>CFBundleIdentifier</key><string>${app}</string></dict></plist>\n`);
   return { home, tools, bundle, K: path.join(home, ".kuvo-code"), S: path.join(home, "Library", "Application Support", app) };
+}
+/** `kuvo-link.js rehome .kuvo-code <args>`, as the box runs it in its own home, on its own engine. */
+function boxRehome(where, args) {
+  const ran = spawnSync(path.join(where.K, "engine", ENGINE, "opencode"), [path.join(where.K, "bin", "kuvo-link.js"), "rehome", ".kuvo-code", ...args], {
+    cwd: where.K, env: { PATH: process.env.PATH, HOME: where.home, TMPDIR: process.env.TMPDIR ?? os.tmpdir(), KUVO_TEST_UNINSTALL_TOOLS: where.tools, KUVO_HOME: where.K }, encoding: "utf8", timeout: 120_000,
+  });
+  return { status: ran.status, said: JSON.parse(ran.stdout.trim().split("\n").pop() || "{}"), stderr: ran.stderr };
 }
 /** `sh kuvo-install <verb>`, as the app runs it from the release it carries: its lines, the last
  * one its answer. A KUVO_ variable of the app's own never reaches the box's commands. */
@@ -406,7 +416,10 @@ test("an earlier Kuvo Code's chats and settings move with `kuvo-install move`: e
   assert.equal(read(path.join(where.K, "bin", "box-version")), VERSION);
   assert.equal(read(path.join(where.K, "engine", ENGINE, "opencode")), engineBinary);
   assert.equal(exists(path.join(where.home, "loaded")), true);
-  assert.deepEqual(read(path.join(where.home, "keys-asked")).trim().split("\n"), ["copy", "delete-originals", "passwords"]);
+  // Its saved sign-ins, never read by the move (macOS may ask about each): your Keychain lists
+  // none, by what's listed alone, so none are owed.
+  assert.deepEqual(read(path.join(where.home, "keys-asked")).trim().split("\n"), ["copy", "delete-originals"]);
+  assert.deepEqual(read(path.join(where.home, "security-asked")).trim().split("\n"), ["find-internet-password -c KUVO"]);
   assert.deepEqual(moved.said.status.owed, []);
   assert.deepEqual(moved.said.status.dropped, ["Websites you were signed in to in Kuvo Code's browser need signing in again. Your history and saved passwords come along."]);
   // The earlier Kuvo Code's folder: every file as it was. Nothing the installer staged is left.
@@ -428,7 +441,7 @@ test("an earlier Kuvo Code's chats and settings move with `kuvo-install move`: e
   assert.match(read(path.join(where.home, "launchctl-asked")), /^kickstart gui\/\d+\/run\.kuvo\.code\.machine$/m);
 });
 
-test("a move launchd wouldn't start is finished by running it again: until then the installer says to", { skip: !mac && "a Mac's app folder" }, () => {
+test("a move launchd wouldn't start: opening Kuvo again starts it with `new`, never the move again; what it still owes the box settles as it runs", { skip: !mac && "a Mac's app folder" }, () => {
   const where = computer();
   write(path.join(where.bundle, "Contents", "MacOS", "kuvo-keys"), keysStandIn, 0o755);
   write(path.join(where.S, "Chats", "c1", "notes.md"), "a chat's notes");
@@ -438,12 +451,41 @@ test("a move launchd wouldn't start is finished by running it again: until then 
   assert.deepEqual({ result: moved.said.result, started: moved.said.started, owed: moved.said.status.owed }, { result: "done", started: false, owed: ["start", "keychain", "passwords"] });
   // (In words to act on: never the helper's own, nor what launchd answered.)
   assert.equal(moved.said.message, "Your sessions are moved, but Kuvo couldn't be started on this Mac. Try again.");
-  assert.deepEqual({ verdict: install(where, "status").said.verdict, verb: install(where, "status").said.verb }, { verdict: "ours", verb: "move" });
+  assert.deepEqual({ verdict: install(where, "status").said.verdict, verb: install(where, "status").said.verb }, { verdict: "ours", verb: "new" });
   fs.rmSync(path.join(where.home, "launchd-refuses"));
-  const again = install(where, "move");
-  assert.equal(again.status, 0, again.stderr + JSON.stringify(again.lines));
-  assert.deepEqual({ result: again.said.result, started: again.said.started, owed: again.said.status.owed }, { result: "done", started: true, owed: [] });
+  const started = install(where, "new");
+  assert.equal(started.status, 0, started.stderr + JSON.stringify(started.lines));
+  assert.deepEqual({ result: started.said.result, started: started.said.started, owed: started.said.status.owed }, { result: "nothing", started: true, owed: ["keychain", "passwords"] });
   assert.equal(install(where, "status").said.verb, null);
+  // The box, as it runs: the Keychain's originals taken away, and with your Keychain found
+  // unlocked, its saved sign-ins listed (none here).
+  const settled = boxRehome(where, ["--settle"]);
+  assert.equal(settled.status, 0, settled.stderr);
+  assert.deepEqual({ result: settled.said.result, owed: settled.said.status.owed }, { result: "done", owed: [] });
+  assert.deepEqual(read(path.join(where.home, "keys-asked")).trim().split("\n"), ["copy", "delete-originals"]);
+});
+
+test("a moved Mac whose saved sign-ins are still owed opens and updates without the move or the Keychain: they wait for you, and only you start them", { skip: !mac && "a Mac's app folder" }, () => {
+  const where = computer();
+  write(path.join(where.bundle, "Contents", "MacOS", "kuvo-keys"), keysStandIn, 0o755);
+  write(path.join(where.S, "Chats", "c1", "notes.md"), "a chat's notes");
+  // Your Keychain lists some.
+  write(path.join(where.home, "saved-sign-ins"), "");
+  const moved = install(where, "move");
+  assert.equal(moved.status, 0, moved.stderr + JSON.stringify(moved.lines));
+  assert.deepEqual({ result: moved.said.result, started: moved.said.started, owed: moved.said.status.owed, signIns: moved.said.status.signIns }, { result: "done", started: true, owed: ["passwords"], signIns: null });
+  assert.equal(moved.said.message, undefined, "nothing said of them while it moves");
+  // The app opening again, after an update or not: nothing to run, and the move, asked all the
+  // same (an older app would), does nothing. Neither asks kuvo-keys anything.
+  for (let open = 0; open < 2; open++) {
+    const status = install(where, "status");
+    assert.deepEqual({ verdict: status.said.verdict, verb: status.said.verb }, { verdict: "ours", verb: null });
+    const again = install(where, "move");
+    assert.deepEqual({ status: again.status, result: again.said.result, owed: again.said.status.owed }, { status: 0, result: "nothing", owed: ["passwords"] });
+  }
+  // Nor what the box settles as it runs: nothing else is owed, so nothing's done.
+  assert.deepEqual(boxRehome(where, ["--settle"]).said.result, "nothing");
+  assert.deepEqual(read(path.join(where.home, "keys-asked")).trim().split("\n"), ["copy", "delete-originals"]);
 });
 
 test("a Mac that's one of your machines too is told so in words by the installer, and nothing is moved or stopped", { skip: !mac && "a Mac's app folder" }, () => {

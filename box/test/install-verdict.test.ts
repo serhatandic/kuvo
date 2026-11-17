@@ -53,15 +53,15 @@ test("ours: a Mac's own box in its home; `new` finishes it only while what start
   expect(here.verdict(true).verdict).toBe("ours")
 })
 
-test("ours, moved by the box itself and still owing something: `move` finishes it, whatever its helper says; nothing owed, nothing to run", () => {
+test("ours, moved by the box itself: a move that's done is never run again, whatever it still owes (opening or updating Kuvo never waits on the Keychain); its helper not in place, `new` starts it", () => {
   const moved = computer()
   moved.put(join(moved.K, "box", "kind"), "mac\n")
   moved.put(join(moved.S, "Chats", "c1", "notes.md"), "as it was: the move never changes the earlier app's folder")
   const state = (owed: string[]) => moved.put(join(moved.K, "updates", "rehome", "state.json"), JSON.stringify({ state: "done", way: "move", owed, app: { bundle: "/Applications/Kuvo Code.app", id: "run.kuvo.code" }, from: moved.S, to: moved.K }))
   for (const owed of [["start", "keychain", "passwords"], ["keychain"], ["passwords"], ["agent"]]) {
     state(owed)
-    expect({ owed, ...moved.verdict(true) }).toEqual({ owed, verdict: "ours", verb: "move" })
-    expect(moved.verdict(false).verb).toBe("move")
+    expect({ owed, ...moved.verdict(true) }).toEqual({ owed, verdict: "ours", verb: null })
+    expect(moved.verdict(false).verb).toBe("new")
   }
   state([])
   expect(moved.verdict(true)).toEqual({ verdict: "ours", verb: null })
@@ -121,6 +121,25 @@ test("waits: another process holds the move's lock; one that's gone holds nothin
     await gone
   }
   expect(held.verdict()).toEqual({ verdict: "app-box", verb: "move" })
+})
+
+test("what a move that's done left to finish holds the lock without a move: bringing saved sign-ins over, or settling what asks nothing, never keeps Kuvo from opening or updating", async () => {
+  const moved = computer()
+  moved.put(join(moved.K, "box", "kind"), "mac\n")
+  moved.put(join(moved.K, "updates", "rehome", "state.json"), JSON.stringify({ state: "done", way: "move", owed: ["passwords"], app: { bundle: "/Applications/Kuvo Code.app", id: "run.kuvo.code" }, from: moved.S, to: moved.K }))
+  for (const verb of ["--sign-ins", "--settle"]) {
+    // (As it runs: `… rehome .kuvo-code --sign-ins`, waiting on macOS's question.)
+    const task = spawn(process.execPath, ["-e", "process.stdin.resume()", "rehome", ".kuvo-code", verb], { stdio: ["pipe", "ignore", "ignore"] })
+    try {
+      moved.put(join(moved.K, "updates", "rehome", "lock", "pid"), String(task.pid))
+      expect({ task: verb, ...moved.verdict(true) }).toEqual({ task: verb, verdict: "ours", verb: null })
+      expect(judgeInstall(moved.K, moved.S).status.signIns).toEqual(verb === "--sign-ins" ? { state: "asking" } : null)
+    } finally {
+      const gone = new Promise(resolve => task.once("exit", resolve))
+      task.kill()
+      await gone
+    }
+  }
 })
 
 test("back: moved back, it moves again only when asked", () => {

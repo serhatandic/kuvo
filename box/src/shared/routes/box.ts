@@ -114,6 +114,9 @@ export const REHOME = object({
   "progress?": nullable(object({ step: REHOME_STEP, title: string, index: number, of: number })),
   "dropped?": list(string),
   "steps?": list(object({ step: REHOME_STEP, title: string })),
+  // The hand-over of an earlier Kuvo Code's saved sign-ins (`owed: passwords`), which you start
+  // from Kuvo on this Mac (`POST {signIns: true}`): `asking` while it runs, else how it last went.
+  "signIns?": nullable(object({ state: words("asking", "done", "failed"), "at?": number, "message?": string, "added?": number, "kept?": number })),
 });
 
 /** What macOS allows the program this Mac's box runs under (`kuvo/box/permissions`, PROTOCOL.md,

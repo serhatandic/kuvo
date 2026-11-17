@@ -26,13 +26,13 @@ import { readLink } from "./state";
 /** Where `launchctl`, `crontab` and `open` are, and the folder the launch agent's file is in: the
  * real ones for the real `~/.kuvo-code` alone, a test's stand-ins for a test's home, else none. (The
  * helper's launch agent is put in place with the same, and the helper opened, helper.ts.) */
-export function launchTools(): { launchctl: string; crontab: string; open: string; agents: string } | null {
+export function launchTools(): { launchctl: string; crontab: string; open: string; security: string; agents: string } | null {
   if (REAL_BOX && located(K) === located(path.join(accountHome(), ".kuvo-code"))) {
-    return { launchctl: "/bin/launchctl", crontab: "crontab", open: "/usr/bin/open", agents: path.join(accountHome(), "Library", "LaunchAgents") };
+    return { launchctl: "/bin/launchctl", crontab: "crontab", open: "/usr/bin/open", security: "/usr/bin/security", agents: path.join(accountHome(), "Library", "LaunchAgents") };
   }
   const tools = IN_TEST_FOLDER ? process.env.KUVO_TEST_UNINSTALL_TOOLS : undefined;
   if (!tools || !path.isAbsolute(tools)) return null;
-  return { launchctl: path.join(tools, "launchctl"), crontab: path.join(tools, "crontab"), open: path.join(tools, "open"), agents: path.join(homeFolder(), "Library", "LaunchAgents") };
+  return { launchctl: path.join(tools, "launchctl"), crontab: path.join(tools, "crontab"), open: path.join(tools, "open"), security: path.join(tools, "security"), agents: path.join(homeFolder(), "Library", "LaunchAgents") };
 }
 
 const run = (program: string, args: string[], input?: string) =>

@@ -865,6 +865,19 @@ helper check (§8a.3), so no signed `kuvo-keys` yet; whether 0.7's saved sign-in
 they're in the vault; what `approveAll` becomes; the steps' and refusals' wording; `S` left on
 disk for good, with its worktrees; the usage panel's API keys in the Keychain.
 
+**Changed 2026-11-17 (the update rehearsal, beta.30 → .31 → .32):** a move that's done is never
+run again. Before, `install --status` said `move` for `ours` while anything was owed, so every
+app opening re-ran `rehome --run` → `settle` → `kuvo-keys passwords`, which waited on macOS's
+question and held Kuvo's own update until it was answered or killed. Now: `ours` says only `new`
+(helper not in place) or null; the box settles `start`, `keychain` and `agent` itself as it starts
+(`rehome --settle`, a process of its own; `delete-originals` never asks); `passwords` is never the
+move's: settled at once where there can be none (`passwords.movedToVault`, or `security
+find-internet-password -c KUVO` listing none with the Keychain just found unlocked), else owed
+until you ask (`POST kuvo/box/rehome {signIns: true}` → `rehome --sign-ins`, from Kuvo on this Mac
+only), which holds the move's lock without making the installer wait (`leftoverHolder`). The user's
+11-16 decision stands: each sign-in leaves the Keychain once the vault has it, read back. Where
+the app draws this (a card, a line) is a design decision still open.
+
 ## 8f. Piece 5 plan: the desktop app's part (2026-11-15)
 
 **What's built here**, and where each piece of logic lives.

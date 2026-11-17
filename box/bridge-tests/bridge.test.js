@@ -1574,6 +1574,8 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     "box.rehome": ["GET", "kuvo/box/rehome"],
     // (And the move the box runs whole itself: its steps in its own words, and what it didn't carry.)
     "box.rehome.run": ["GET", "kuvo/box/rehome"],
+    // (And an earlier Kuvo Code's saved sign-ins, brought over when you ask: how that stands.)
+    "box.rehome.signIns": ["GET", "kuvo/box/rehome"],
     // (Its server kept for clients while one wants it.)
     "box.serve": ["GET", "kuvo/box/serve"],
     // (Kuvo Code on its computer reaching that server as `box route` does: the same route.)

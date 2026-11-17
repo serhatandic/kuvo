@@ -7,7 +7,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { isObject } from "../../shared/json";
-import { processRuns } from "../../shared/platform";
+import { processRuns, runsAs } from "../../shared/platform";
 import { locked } from "../files";
 import { sleep } from "../../shared/wait";
 import type { RehomeStatus, RehomeStep } from "../../shared/routes/box";
@@ -56,6 +56,10 @@ export interface RehomeRecord extends Partial<RehomeStatus> {
   app?: { bundle: string; id: string };
   /** What each count was before and after (`rehome --run`'s check), for support. */
   counts?: Record<string, number>;
+  /** How the last hand-over of an earlier Kuvo Code's saved sign-ins went (`rehome --sign-ins`),
+   * which you start: `done`, with how many came into the vault and how many stayed in the Keychain;
+   * or `failed`, in words to show. (While one runs, its process says so: never a record.) */
+  signInsLast?: { state: "done" | "failed"; at: number; message?: string; added?: number; kept?: number };
 }
 
 const stateFile = (home: string) => path.join(rehomeFolder(home), "state.json");
@@ -70,11 +74,13 @@ export function readRecord(home: string): RehomeRecord {
 }
 
 /** `state.json` changed: each field given, null taking it away where it's optional. */
-export function noteRecord(home: string, change: Partial<RehomeRecord>): RehomeRecord {
+export function noteRecord(home: string, change: Partial<RehomeRecord> | ((now: RehomeRecord) => Partial<RehomeRecord>)): RehomeRecord {
   fs.mkdirSync(rehomeFolder(home), { recursive: true, mode: 0o700 });
-  // (One change at a time, from the move, `--ready` and the route alike: none lost.)
+  // (One change at a time, from the move, `--ready` and the route alike: none lost. One made from
+  // what's there is made from it as it is then.)
   return locked(`${stateFile(home)}.lock`, () => {
-    const next: RehomeRecord = { ...readRecord(home), ...change };
+    const now = readRecord(home);
+    const next: RehomeRecord = { ...now, ...(typeof change === "function" ? change(now) : change) };
     writeSynced(stateFile(home), JSON.stringify(next, null, 1));
     return next;
   });
@@ -109,6 +115,23 @@ export function rehomeStatus(home: string, now = Date.now()): RehomeStatus {
     progress: underWay && underWay.way === "move" && underWay.run ? progressOf(underWay.step) : phaseProgress(home),
     dropped: Array.isArray(kept.dropped) ? kept.dropped.filter((each): each is string => typeof each === "string") : [],
     steps: STEPS.filter((each): each is Exclude<RehomeStep, "done"> => each !== "done").map(step => ({ step, title: STEP_TITLES[step] })),
+    signIns: signInsOf(home, kept),
+  };
+}
+
+/** Where the hand-over of an earlier Kuvo Code's saved sign-ins stands: `asking` while its process
+ * runs (macOS may be asking you about them), else how the last one went; null where none ran. */
+function signInsOf(home: string, kept: RehomeRecord): RehomeStatus["signIns"] {
+  if (signInsRunning(home)) return { state: "asking" };
+  const last = kept.signInsLast;
+  if (!isObject(last) || (last.state !== "done" && last.state !== "failed") || typeof last.at !== "number") return null;
+  // (One that failed says nothing once they're brought in another way: nothing's owed.)
+  if (last.state === "failed" && !kept.owed?.includes("passwords")) return null;
+  return {
+    state: last.state, at: last.at,
+    ...(typeof last.message === "string" ? { message: last.message } : {}),
+    ...(typeof last.added === "number" ? { added: last.added } : {}),
+    ...(typeof last.kept === "number" ? { kept: last.kept } : {}),
   };
 }
 
@@ -141,6 +164,8 @@ function phaseProgress(home: string): RehomeStatus["progress"] {
   let phase = "";
   try { phase = fs.readFileSync(phaseFile(home), "utf8").trim(); } catch { return null; }
   if (!holdsLock(home) && !heldByAnother(home)) return null;
+  // (Nor by what a move that's done left to finish: no move's step.)
+  if (leftoverHolder(home)) return null;
   const of = STEPS.length - 1;
   if (phase === "plan") return progressOf("plan");
   return phase === "settle" ? { step: "done", title: "Starting Kuvo on this Mac", index: of, of } : null;
@@ -334,6 +359,29 @@ export const heldByAnother = (home: string): boolean => {
   const holder = holderOf(lockFolder(home));
   return holder !== null && holder !== process.pid && holds(holder);
 };
+
+/** What another process holds the lock for when it isn't a move: what a move that's done left to
+ * finish (`settle`: `rehome --settle`, which the box starts as it runs; `sign-ins`: `rehome
+ * --sign-ins`, which you start), by its command line as read, never taken on trust. Nothing waits
+ * on either: neither changes what's moved. Null for anything else, or where it can't be told. */
+export function leftoverHolder(home: string): "settle" | "sign-ins" | null {
+  const holder = holderOf(lockFolder(home));
+  if (holder === null || holder === process.pid) return null;
+  if (runsAs(holder, SIGN_INS)) return "sign-ins";
+  if (runsAs(holder, /\brehome\b.* --settle\b/)) return "settle";
+  return null;
+}
+
+/** The hand-over of saved sign-ins that the box started, by its process (`rehome --sign-ins`), as
+ * soon as it's started: waiting for the lock too. */
+export const SIGN_INS_PID = (home: string): string => path.join(rehomeFolder(home), "sign-ins.pid");
+const SIGN_INS = /\brehome\b.* --sign-ins\b/;
+/** Whether a hand-over of saved sign-ins runs now: the one the box started, or one that holds the lock. */
+export function signInsRunning(home: string): boolean {
+  let pid = 0;
+  try { pid = Number(fs.readFileSync(SIGN_INS_PID(home), "utf8")); } catch {}
+  return (pid > 1 && runsAs(pid, SIGN_INS)) || leftoverHolder(home) === "sign-ins";
+}
 
 /** Takes the move's lock once it's free (a holder that's gone leaves it free), saying once that it
  * waits (`waiting`); false once `most` ms have gone by. One held by this process is taken again. */

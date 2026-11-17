@@ -55,15 +55,17 @@ test.if(mac)("a Mac of 0.7.2 moves whole: its sessions brought up to date and in
   const [linked] = readdirSync(join(m.repository, ".git", "worktrees"))
   expect(readFileSync(join(m.repository, ".git", "worktrees", linked, "gitdir"), "utf8").trim()).toBe(join(worktree, ".git"))
   expect(git(worktree, ["status", "--porcelain"])).toBe("")
-  // This Mac's keys: copied for the helper the release brings, read back, then the app's own taken away.
-  expect(readFileSync(join(m.home, "keys-asked"), "utf8").trim().split("\n").map(line => line.trim())).toEqual(["copy Kuvo Helper.app", "delete-originals", "passwords"])
+  // This Mac's keys: copied for the helper the release brings, read back, then the app's own taken
+  // away. Its saved sign-ins are never read by the move (macOS may ask about each): they wait for you.
+  expect(readFileSync(join(m.home, "keys-asked"), "utf8").trim().split("\n").map(line => line.trim())).toEqual(["copy Kuvo Helper.app", "delete-originals"])
   expect(readdirSync(join(m.keychain, "helper")).sort()).toEqual(["integrations.KUVO_KEY_NOTION", "phone-link.key"])
   expect(readdirSync(join(m.keychain, "app"))).toEqual([])
   // Nothing of the move's left over: no staging, no kept copy, nothing the installer staged.
   expect(existsSync(join(m.K, "updates", "rehome", "staging"))).toBe(false)
   expect(existsSync(join(m.K, "updates", "rehome", "kept"))).toBe(false)
   expect(existsSync(join(m.K, "updates", "install"))).toBe(false)
-  expect(readJSON(join(m.K, "updates", "rehome", "state.json"))).toMatchObject({ state: "done", owed: [], counts: { sessions: 5, sessionsBefore: 5, projects: 3, messages: 13 } })
+  // (Whether your Keychain has any can't be told in a copy's home: they're owed.)
+  expect(readJSON(join(m.K, "updates", "rehome", "state.json"))).toMatchObject({ state: "done", owed: ["passwords"], counts: { sessions: 5, sessionsBefore: 5, projects: 3, messages: 13 } })
 }, LIMIT)
 
 // What a clean move leaves, to hold the others to: made where the world held to it will be (what's
@@ -115,7 +117,7 @@ test.if(mac)("stopped once it can only go forward, running it again finishes it:
     expect(stopped.signal, `${point}: ${stopped.errors}`).toBe("SIGKILL")
     const again = run(m)
     expect(again.status, `${point}: ${again.errors}${JSON.stringify(again.said)}`).toBe(0)
-    expect(again.said, point).toMatchObject({ result: "done", status: { state: "done", owed: [] } })
+    expect(again.said, point).toMatchObject({ result: "done", status: { state: "done", owed: ["passwords"] } })
     expect(snapshot(m.S), point).toEqual(before)
     expect(snapshot(m.K, moveOwn), point).toEqual(clean.K)
     expect(snapshot(m.keychain), point).toEqual(clean.keychain)
@@ -390,16 +392,42 @@ test.if(mac)("run again once it's moved, nothing moves twice, and Move Back says
   expect(rehome(m, ["--back"]).said).toMatchObject({ result: "refused", message: "Kuvo on this Mac was moved from an earlier Kuvo Code, whose own folder is as it was: there's nothing to move back." })
 }, LIMIT)
 
-test.if(mac)("saved sign-ins wait for Kuvo to answer on this Mac: until then they're still owed, never written anywhere, and the installer says to run the move again", () => {
-  const m = mac07(root, m => put(join(m.home, "keychain-passwords.json"), JSON.stringify({ v: 1, logins: [{ host: "example.com", account: "me", password: "hunter22" }] })))
+test.if(mac)("saved sign-ins are never read by the move, nor by opening or updating Kuvo after it: kuvo-keys is never asked for them, even where it would wait on macOS", () => {
+  // (kuvo-keys here waits on macOS's question for as long as no one answers it, as it did at every
+  // update before: asked, it's noted, and it answers only once this test's folder is gone.)
+  const m = mac07(root, m => put(join(m.bundle, "Contents", "MacOS", "kuvo-keys"), readFileSync(join(m.bundle, "Contents", "MacOS", "kuvo-keys"), "utf8").replace("passwords)\n", "passwords)\n    while [ -d \"$HOME\" ]; do sleep 1; done; exit 1 ;;\nnever)\n"), 0o755))
   const moved = run(m)
   expect(moved.status, moved.errors).toBe(0)
   expect(moved.said).toMatchObject({ result: "done", status: { state: "done", owed: ["passwords"] } })
-  expect(moved.errors).toContain("Your saved sign-ins couldn't be brought into the vault yet: Kuvo isn't answering on this Mac yet")
-  // Nowhere in the box's home: not in a file, not in the move's own records.
-  const everything = Object.keys(snapshot(m.K)).filter(name => !name.startsWith("engine/")).map(name => { try { return readFileSync(join(m.K, name), "utf8") } catch { return "" } }).join("\n")
-  expect(everything).not.toContain("hunter22")
-  expect(judgeInstall(m.K, m.S)).toMatchObject({ verdict: "ours", verb: "move" })
+  // (Nothing's said of them here: Kuvo asks you about them when you can answer.)
+  expect(moved.said.message ?? "").not.toContain("sign-ins")
+  // Opening Kuvo again, an update or not: this Mac's own, nothing to run, and the move, asked
+  // again all the same (an older app), runs nothing and asks nothing.
+  expect(judgeInstall(m.K, m.S)).toMatchObject({ verdict: "ours", verb: null })
+  const again = run(m)
+  expect(again.status, again.errors).toBe(0)
+  expect(again.said).toMatchObject({ result: "done", status: { state: "done", owed: ["passwords"] } })
+  expect(readFileSync(join(m.home, "keys-asked"), "utf8")).not.toContain("passwords")
+  // Nor does what the box settles as it runs: what's owed that asks nothing.
+  const settled = rehome(m, ["--settle"])
+  expect(settled.status, settled.errors).toBe(0)
+  expect(settled.said).toMatchObject({ result: "nothing", status: { owed: ["passwords"] } })
+  expect(readFileSync(join(m.home, "keys-asked"), "utf8")).not.toContain("passwords")
+}, LIMIT)
+
+test.if(mac)("what a move that's done still owes that asks nothing is settled by the box as it runs, never the saved sign-ins", () => {
+  const m = mac07(root)
+  const moved = run(m)
+  expect(moved.status, moved.errors).toBe(0)
+  // (As a move that couldn't take the Keychain's originals away left it.)
+  const state = join(m.K, "updates", "rehome", "state.json")
+  put(state, JSON.stringify({ ...readJSON(state), owed: ["keychain", "passwords"] }))
+  put(join(m.keychain, "app", "phone-link.key"), "the link's key")
+  const settled = rehome(m, ["--settle"])
+  expect(settled.status, settled.errors).toBe(0)
+  expect(settled.said).toMatchObject({ result: "done", status: { owed: ["passwords"] } })
+  expect(readdirSync(join(m.keychain, "app"))).toEqual([])
+  expect(readFileSync(join(m.home, "keys-asked"), "utf8").trim().split("\n").slice(-1)).toEqual(["delete-originals"])
 }, LIMIT)
 
 /** A Mac that ran a keeper build: a box of the app's own in its folder (`S/box`), its engine's
@@ -430,7 +458,7 @@ test.if(mac)("a keeper build's own box moves the same way: its lists kept and wh
     const before = snapshot(m.S)
     const moved = run(m)
     expect(moved.status, moved.errors + JSON.stringify(moved.said)).toBe(0)
-    expect(moved.said).toMatchObject({ result: "done", status: { state: "done", owed: [] } })
+    expect(moved.said).toMatchObject({ result: "done", status: { state: "done", owed: ["passwords"] } })
     // (Asked to stop on its control, it went by itself.)
     expect(await new Promise<number | null>(resolve => (running.exitCode !== null ? resolve(running.exitCode) : running.once("exit", status => resolve(status))))).toBe(0)
     expect(snapshot(m.S)).toEqual(before)

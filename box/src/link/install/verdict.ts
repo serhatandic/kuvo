@@ -10,7 +10,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { recordedKind } from "../home";
 import { makingCutShort, runningIn } from "../rehome/move";
-import { forwardOnly, heldByAnother, readJournal, readRecord, rehomeStatus } from "../rehome/state";
+import { forwardOnly, heldByAnother, leftoverHolder, readJournal, readRecord, rehomeStatus } from "../rehome/state";
 import { foundAt, runsAt } from "../setup/judge";
 import type { RehomeStatus } from "../../shared/routes/box";
 
@@ -75,18 +75,21 @@ export interface Judgement {
 export function judgeInstall(home: string, appFolder: string | null, { helperInPlace = (): boolean | null => null } = {}): Judgement {
   const status = rehomeStatus(home);
   const say = (verdict: InstallVerdict, verb: InstallVerb = null): Judgement => ({ verdict, verb, status });
-  if (heldByAnother(home)) return say("waits");
+  // (What a move that's done left to finish, which the box or you started, holds the lock without
+  // a move: nothing here waits for it, an update least of all.)
+  if (heldByAnother(home) && !leftoverHolder(home)) return say("waits");
   let journal: ReturnType<typeof readJournal> = null;
   let unreadable = false;
   try { journal = readJournal(home); } catch { unreadable = true; }
   if (unreadable || (journal && journal.step !== "done" && forwardOnly(journal.step))) return say("stuck", "move");
   if (journal && journal.step !== "done") return say("moving", "move");
-  // (A move the box ran itself that still owes something, its start, the Keychain's originals or
-  // an earlier Kuvo Code's saved sign-ins, is finished by running it again.)
+  // A Mac's own box is made, and a move into it that's done is finished: what it still owes is
+  // never the installer's (its start is `new`'s, which starts its helper; the Keychain's originals
+  // and the old keeper are settled by the box as it runs, `rehome --settle`; an earlier Kuvo Code's
+  // saved sign-ins come over when you ask, `rehome --sign-ins`). So opening or updating Kuvo never
+  // waits on the Keychain.
   if (recordedKind(path.join(home, "box", "kind")) === "mac" && !makingCutShort(home)) {
-    const record = readRecord(home);
-    const owes = record.state === "done" && record.app !== undefined && (record.owed ?? []).length > 0;
-    return say("ours", owes ? "move" : helperInPlace() === false ? "new" : null);
+    return say("ours", helperInPlace() === false ? "new" : null);
   }
   if (readRecord(home).movedBack === true) return say("back");
   const data = appFolder !== null && (appBoxThere(appFolder) || appDataThere(appFolder));

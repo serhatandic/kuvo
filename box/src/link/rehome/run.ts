@@ -3,7 +3,9 @@
 // into this Mac's box in a home of its own by the box itself, with no keeper before it. What the
 // Swift keeper did around the move is done here: what still runs is stopped, this Mac's keys are
 // handed over (`kuvo-keys`, which the app carries), the box's helper is started, and what's owed
-// is settled. The installer starts it (`install --move`), in a session of its own.
+// is settled, but an earlier Kuvo Code's saved sign-ins, which come over when you ask
+// (`passwords.ts`). The installer starts it (`install --move`), in a session of its own, only
+// while the move isn't done: one that's done is never run again.
 //
 // The earlier Kuvo Code's folder is never changed: everything is cloned and worked on in
 // staging, so until the move is done a failure leaves this Mac exactly as it was. Nothing runs
@@ -18,16 +20,16 @@ import path from "node:path";
 import { isObject } from "../../shared/json";
 import { sleep } from "../../shared/wait";
 import { OWN_RUNTIME, accountHome, located, recordedKind } from "../home";
-import { checkedRelease } from "../install/command";
+import { checkedRelease, helperRuns } from "../install/command";
 import { appBoxThere, machineBoxThere } from "../install/verdict";
+import { readApp } from "../mac/app";
 import { launchTools } from "../uninstall";
 import { databasesIn, schemaMark } from "./database";
 import { takenSchema } from "./migrate";
 import { NOTHING_TO_MOVE, diskKind, freeBytes, locked, nearest, planMove, releaseRefusal, resumed, run, runningIn, settled, stamp, stopPoint, takeLastChanged, type Folders, type RehomeOutcome } from "./move";
 import { PATH_REWRITER, type Rewriter } from "./rewrite";
-import { handOverPasswords } from "./passwords";
 import { deleteOriginalKeys, heldRefusal } from "./run-steps";
-import { noteRecord, notePhase, readRecord, rehomeFolder, rehomeStatus, type RunPlan } from "./state";
+import { moveUnderWay, noteRecord, notePhase, readRecord, rehomeFolder, rehomeStatus, type RunPlan } from "./state";
 
 /** The rewriter of a move the box runs itself: the engine's database is judged from a clone of it
  * (`schemaRefusal` below), never opened where the earlier Kuvo Code keeps it. */
@@ -47,7 +49,7 @@ export interface RunOptions {
 }
 
 /** What `--run` says: the move's outcome, and once it's done, whether what starts the box runs
- * now and what's still owed (tried again at the next run). */
+ * now. */
 export interface RunOutcome extends RehomeOutcome {
   started?: boolean;
 }
@@ -309,18 +311,20 @@ function startHelper(home: string, app: string): { started: boolean; message?: s
   return { started, ...(message ? { message } : {}) };
 }
 
-/** What a move that's done still owes, each settled once it's done and tried again at the next
- * run where it couldn't be: first the box's start (its helper's launch agent) and the Keychain's
- * originals taken away; then (`settle`) an earlier Kuvo Code's saved sign-ins, and the old keeper's
- * launch agent let go of. What the installer staged goes once the box runs from its own files. */
-function settleStart(home: string, options: Pick<RunOptions, "bundle" | "id">) {
+/** What a move that's done still owes that needs no one's answer, each settled once it's done:
+ * the box's start (its helper's launch agent; only where `start` is asked, the move itself, since
+ * the box runs otherwise), then the Keychain's originals taken away (`kuvo-keys delete-originals`,
+ * which never asks: macOS is never to ask anything here), then the old keeper's launch agent let
+ * go of. Never an earlier Kuvo Code's saved sign-ins: reading those may have macOS ask you, so they
+ * come over only when you ask (`rehomeSignIns`). Where one can't be settled yet, the box tries
+ * again as it next runs (`rehome --settle`). Called holding the move's lock. */
+async function settleOwed(home: string, options: { bundle?: string; id?: string; start: boolean }): Promise<{ started?: boolean; message?: string }> {
   const owes = (what: string) => readRecord(home).owed?.includes(what as never) === true;
   const record = readRecord(home);
-  const bundle = exists(options.bundle) ? options.bundle : record.app?.bundle ?? options.bundle;
   const app = record.app?.id ?? options.id;
   let started: boolean | undefined;
   let message: string | undefined;
-  if (owes("start")) {
+  if (options.start && owes("start") && app) {
     const start = startHelper(home, app);
     started = start.started;
     message = start.message;
@@ -328,53 +332,93 @@ function settleStart(home: string, options: Pick<RunOptions, "bundle" | "id">) {
     if (start.started || !launchTools()) settled(home, "start");
     stopPoint("after-start");
   }
+  // (Whether your Keychain was found unlocked just now: the move's own step, or its originals
+  // taken away here, which kuvo-keys does only then.)
+  let unlocked = options.start;
   if (owes("keychain") && !owes("start")) {
-    const keys = path.join(bundle, "Contents", "MacOS", "kuvo-keys");
-    const deleted = exists(keys) ? deleteOriginalKeys(keys, home) : { done: false, why: "kuvo-keys isn't in this copy of Kuvo Code" };
+    const keys = keysOf(home, options.bundle);
+    const deleted = keys ? deleteOriginalKeys(keys, home) : { done: false, why: "kuvo-keys isn't in this copy of Kuvo" };
+    if (deleted.done) unlocked = true;
     if (deleted.done) settled(home, "keychain");
     else {
       console.error(`kuvo-keys delete-originals: ${deleted.why}`);
-      message ??= "Kuvo is moved and working. It couldn't finish with your Keychain yet, and tries again the next time it opens.";
+      if (options.start) message ??= "Kuvo is moved and working. It couldn't finish with your Keychain yet, and tries again by itself.";
     }
   }
-  return { owes, bundle, app, started, message };
-}
-
-/** And an earlier Kuvo Code's saved sign-ins, into the vault, once the box's server answers
- * (`passwords.ts`): tried again at the next run where it couldn't be yet. */
-async function settle(home: string, options: Pick<RunOptions, "bundle" | "id">): Promise<RunOutcome> {
-  notePhase(home, "settle");
-  const { owes, bundle, app, started, message } = settleStart(home, options);
-  let said = message;
-  if (owes("passwords") && !owes("start")) {
-    const keys = path.join(bundle, "Contents", "MacOS", "kuvo-keys");
-    const record = readRecord(home);
+  // An earlier Kuvo Code's saved sign-ins, owed only where there are some: none where it had
+  // brought them into a vault itself, or where your Keychain, found unlocked a moment ago, lists
+  // none. Asked by what's listed alone, never a password, so macOS asks nothing (nor about a
+  // locked Keychain, never asked of). Where there are some, or it can't be told, they wait for you
+  // (`rehomeSignIns`).
+  if (unlocked && owes("passwords") && !owes("keychain")) {
     const prefs = typeof record.from === "string" ? (await import("./upgrades")).appPreferences(record.from) : {};
-    const sites = Array.isArray(prefs["passwords.agentSignIn"]) ? prefs["passwords.agentSignIn"].filter((each): each is string => typeof each === "string") : [];
-    const accounts = isObject(prefs["passwords.agentSignInAccounts"]) ? Object.fromEntries(Object.entries(prefs["passwords.agentSignInAccounts"]).filter((each): each is [string, string] => typeof each[1] === "string")) : {};
-    // (Where nothing starts the box, a copy's home, its server never answers: not waited for.)
-    const handed = exists(keys) ? await handOverPasswords({ home, keys, agentSites: sites, agentAccounts: accounts, ...(launchTools() ? {} : { wait: 0 }) }) : { done: false, why: "kuvo-keys isn't in this copy of Kuvo Code", added: 0, short: 0, kept: 0 };
-    if (handed.done) {
-      if (handed.short) noteRecord(home, { dropped: [...(readRecord(home).dropped ?? []), `${handed.short === 1 ? "A saved password" : `${handed.short} saved passwords`} shorter than four characters ${handed.short === 1 ? "wasn't" : "weren't"} brought into the vault, which keeps none that short.`] });
-      if (handed.kept) noteRecord(home, { dropped: [...(readRecord(home).dropped ?? []), `${handed.kept === 1 ? "A saved password stays" : `${handed.kept} saved passwords stay`} in your Keychain: Kuvo couldn't be sure the vault would keep ${handed.kept === 1 ? "it" : "them"} exactly. Add any you use to the vault yourself.`] });
-      settled(home, "passwords");
-    } else {
-      // (Why goes to the move's own log, for support: it may name a site or an account.)
-      console.error(`Your saved sign-ins couldn't be brought into the vault yet: ${handed.why}`);
-      said ??= "Kuvo is moved and working. Your saved sign-ins aren't in its vault yet: it tries again the next time it opens.";
-    }
+    if (prefs["passwords.movedToVault"] === true || savedSignInsListed() === false) settled(home, "passwords");
   }
   if (owes("agent")) {
     // The old keeper's launch agent, let go of: its program is gone with the app it was in.
     const tools = launchTools();
-    if (tools) spawnSync(tools.launchctl, ["bootout", `gui/${process.getuid?.() ?? 0}/${app}.box`], { timeout: 30_000, stdio: "ignore" });
+    if (tools && app) spawnSync(tools.launchctl, ["bootout", `gui/${process.getuid?.() ?? 0}/${app}.box`], { timeout: 30_000, stdio: "ignore" });
     settled(home, "agent");
   }
+  return { ...(started !== undefined ? { started } : {}), ...(message ? { message } : {}) };
+}
+
+/** Whether your Keychain lists any sign-in an earlier Kuvo Code saved (an internet password with
+ * its creator code, `KUVO`, as `kuvo-keys passwords` finds them), asked of `security` by their
+ * attributes alone: no password is read, so there's nothing for macOS to ask about. Null where it
+ * can't be told (a copy's home, or `security` said something else). */
+function savedSignInsListed(): boolean | null {
+  const tools = launchTools();
+  if (!tools) return null;
+  const found = spawnSync(tools.security, ["find-internet-password", "-c", "KUVO"], { stdio: "ignore", timeout: 30_000 });
+  // (44: errSecItemNotFound, as `security` exits with it.)
+  return found.status === 0 ? true : found.status === 44 ? false : null;
+}
+
+/** The `kuvo-keys` the app brings, for what a move still owes: the one given (the app that runs
+ * the move), the app's whose data the move took, or Kuvo's desktop app's that last opened with
+ * this box; null where none of them has one (a copy of the app, or one moved away). */
+export function keysOf(home: string, given?: string): string | null {
+  const record = readRecord(home);
+  const bundles = [given, record.app?.bundle, readApp()?.desktop].filter((each): each is string => typeof each === "string" && path.isAbsolute(each));
+  for (const bundle of bundles) {
+    const keys = path.join(bundle, "Contents", "MacOS", "kuvo-keys");
+    if (exists(keys)) return keys;
+  }
+  return null;
+}
+
+/** The move's own last step, once it's done: what it owes settled (`settleOwed`, its start too),
+ * then what the installer staged removed, once the box runs from its own files. */
+async function settle(home: string, options: Pick<RunOptions, "bundle" | "id">): Promise<RunOutcome> {
+  notePhase(home, "settle");
+  const { started, message } = await settleOwed(home, { ...options, start: true });
   // What the installer staged, once the box runs from its own (the helper the copies trust is the
   // one in its `bin` now).
-  if (!owes("start")) fs.rmSync(path.join(home, "updates", "install"), { recursive: true, force: true });
+  if (!readRecord(home).owed?.includes("start")) fs.rmSync(path.join(home, "updates", "install"), { recursive: true, force: true });
   notePhase(home, null);
-  return { result: "done", status: rehomeStatus(home), ...(started !== undefined ? { started } : {}), ...(said ? { message: said } : {}) };
+  return { result: "done", status: rehomeStatus(home), ...(started !== undefined ? { started } : {}), ...(message ? { message } : {}) };
+}
+
+/** Whether a move the box ran itself into `home` is done, and nothing's under way there. */
+export const movedHere = (home: string): boolean => {
+  const record = readRecord(home);
+  return record.state === "done" && record.way === "move" && record.app !== undefined && !moveUnderWay(home);
+};
+
+/** `rehome --settle`: what a move that's done still owes that needs no one's answer (`settleOwed`),
+ * started by the box itself as it runs, in a process of its own, so nothing waits for it. Its
+ * start too: the box runs, through its helper. Nothing where nothing's owed. */
+export async function rehomeSettle(home: string): Promise<RehomeOutcome> {
+  const owesAny = () => (readRecord(home).owed ?? []).some(what => what !== "passwords");
+  if (process.platform !== "darwin" || !movedHere(home) || !owesAny()) return { result: "nothing", status: rehomeStatus(home) };
+  return locked(home, () => {}, async () => {
+    if (!movedHere(home) || !owesAny()) return { result: "nothing", status: rehomeStatus(home) };
+    if (!launchTools() || helperRuns()) settled(home, "start");
+    await settleOwed(home, { start: false });
+    if (!readRecord(home).owed?.includes("start")) fs.rmSync(path.join(home, "updates", "install"), { recursive: true, force: true });
+    return { result: "done", status: rehomeStatus(home) };
+  });
 }
 
 /** `rehome --run`: the earlier Kuvo Code's sessions and settings in `appFolder` moved into this

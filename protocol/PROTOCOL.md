@@ -7380,6 +7380,7 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `box.permissions.list` | `kuvo/box/permissions`'s `bundle` and `list` (each permission in words, the address of its list in System Settings, `byHand`, `asks`), and `POST {later}` putting one off ("What macOS allows"). A client that draws them shows nothing where a box hasn't this |
 | `box.rehome` | `kuvo/box/rehome`: moving this Mac's box into a home of its own, and back ("This Mac's box: moving this Mac's box"); `kuvo-link.js rehome`, and `here`'s `moving` |
 | `box.rehome.run` | the move the box runs whole itself, from an earlier Kuvo Code with no keeper (`kuvo-link.js rehome --run`, `install --move`: "Moving this Mac's box", The whole move): `kuvo/box/rehome` says `progress` (each step in the box's own words) while one is under way, `dropped` (what it didn't carry), the steps `keys`, `upgrade` and `database`, and `start` and `passwords` among what's `owed` |
+| `box.rehome.signIns` | an earlier Kuvo Code's saved sign-ins come over when you ask, never in the move nor as Kuvo opens or updates: `POST kuvo/box/rehome {signIns: true}` from Kuvo on this Mac, and `signIns` in its answer ("Moving this Mac's box", Saved sign-ins) |
 | `box.serve` | `kuvo/box/serve`: the box's server kept running for clients ("Kept for clients"); `kuvo-link.js serve --kept` |
 | `box.serve.mac` | the box's server takes Kuvo Code on its computer (`x-kuvo-from: mac`) as `box route` takes it ("Kept for clients") |
 | `box.uninstall` | `kuvo-link.js uninstall [--check]`: removing Kuvo Code from this computer ("Uninstalling") |
@@ -8031,7 +8032,7 @@ coding agents' default accounts stay yours, in your home (`~/.claude`, `~/.codex
 the app's box keeps them: only on a machine are they in the bridge's folder (`<agent>/home`).
 
 `kuvo/box/rehome`: `GET` answers `{state, way, step, tries, nextTry, waitingSince, overdue,
-failed, movedAt, keptUntil, owed, asked, from, to, progress?, dropped?, steps?}`. `state`: null before anything, `waiting`,
+failed, movedAt, keptUntil, owed, asked, from, to, progress?, dropped?, steps?, signIns?}`. `state`: null before anything, `waiting`,
 `moving` or `clearing` (under way, at `step`, or a journal that can't be read: `plan`, `install`, `keys`, `clone`, `upgrade`, `database`, `rewrite`, `check`,
 `place`, `fix`, `clear`, `done`; `keys`, `upgrade` and `database` only in a move the box runs whole itself), `done`, `failed` (gone back; `failed` (cleared as a move begins: while one's under way, why it's stuck) says `{at, step,
 message}`), or `back`; `way`, `move` or `back`; `nextTry`, `waitingSince`, `movedAt` and
@@ -8042,13 +8043,24 @@ which step it is (from 1) and of how many, else null; and `dropped`, what that m
 of what an earlier Kuvo Code kept, each in words a client shows once (none: `[]`); and `steps`,
 every step of a move the box runs itself, in order, each `{step, title}` in the same words, so a
 client lists them ahead of where the move is (`progress.index` counts into it, from 1; where it
-stopped is `failed.step`). The app's box in its folder
+stopped is `failed.step`). With `box.rehome.signIns`: `signIns`, how bringing an earlier Kuvo
+Code's saved sign-ins over stands ("Saved sign-ins", below): `{state: "asking"}` while it runs
+(macOS may be asking you about them), else how it last went, `{state: "done", at, added, kept}`
+(how many came into the vault, and how many stayed in the Keychain) or `{state: "failed", at,
+message}` (words to show as they are; said only while `passwords` is still owed), else null. The app's box in its folder
 answers for the `~/.kuvo-code` it moves to (the real app's folder alone, `run.kuvo.code`; a copy,
 only for the home `KUVO_MACHINE_ROOT` names, else nothing: it never reads or asks the real one's); a box in a home of its own, for its own. `POST
 {now: true}` asks for Move Now and `{back: true}` (once it's moved) for Move Back, answering the
 same: only from Kuvo Code itself (the app, or `box route`; 403 from a phone), 409 with why when it
 can't (a machine, nothing to move back, or a move the box ran itself, whose earlier Kuvo Code's
-folder was never changed).
+folder was never changed). With `box.rehome.signIns`, `POST {signIns: true}` brings an earlier
+Kuvo Code's saved sign-ins over now (`rehome <root> --sign-ins`, started in a process of its own;
+"Saved sign-ins", below): only from Kuvo on this same Mac, over the box's own server
+(`x-kuvo-from: app`; 403 from anything else, a phone included: macOS asks about them on the Mac),
+and only a Mac's own box in a home of its own. `202` with the status (`signIns: {state:
+"asking"}`) once it's started; `200` with it where one runs already (none is started beside it);
+409 with why where none are owed. A client asks only when you act on it, having said that macOS
+may ask about each.
 
 **The whole move, run by the box** (`box.rehome.run`, #713). Kuvo Code 0.5 to 0.7.2 and
 0.8.0-beta.1 had no box and no keeper, and the app that takes their place (the desktop app) runs
@@ -8154,18 +8166,33 @@ above. Only on a Mac.
   A failure that's the person's to act on is said as it is (`failed.message`); any other, in
   one sentence ("Kuvo couldn't move your sessions this time, and left everything as it was.
   Try again."), with what went wrong in `updates/rehome/run.log`.
-- **Done**, then what it owes is settled, each tried again at the next run where it couldn't be
-  (`install --status` says `move` while anything is owed): `start` (`helper start`, by the link
-  just put in place: `started` in the answer; in a home that isn't the real one nothing
-  outside the folder is written, and nothing's owed); `keychain` (`kuvo-keys
-  delete-originals`); `passwords` (below); `agent` (a keeper build's launch agent, `<ID>.box`,
-  let go of with `launchctl bootout`). What the installer staged (`updates/install`) goes once
-  the box has started. Where one of these couldn't be settled yet, the answer's `message` says
-  so in a sentence (why is in `run.log`, never in the answer: it may name a site or an account).
-- **Saved sign-ins** (`passwords`): `kuvo-keys passwords` says the sign-ins an earlier Kuvo
-  Code kept before the vault down its standard output, a pipe this process reads; each goes
-  from memory to the box's own server on this Mac once it answers (`run/serve.json`, waited
-  for 30 seconds; `POST kuvo/vault/items`, a sign-in of its site, to sign in with only,
+- **Done**, then what it owes that needs no one's answer is settled: `start` (`helper start`, by
+  the link just put in place: `started` in the answer; in a home that isn't the real one nothing
+  outside the folder is written, and nothing's owed); `keychain` (`kuvo-keys delete-originals`,
+  which never asks); `agent` (a keeper build's launch agent, `<ID>.box`, let go of with
+  `launchctl bootout`). What the installer staged (`updates/install`) goes once the box has
+  started. Where one of these couldn't be settled yet, the answer's `message` says so in a
+  sentence (why is in `run.log`). **A move that's done is never run again**, for what it owes or
+  anything else: `install --status` says `new` for its start where its helper isn't in place,
+  and null otherwise (`install --move` does nothing); the box settles `start`, `keychain` and
+  `agent` itself as it starts (`rehome <root> --settle`, in a process of its own; `start`
+  because it runs), so opening or updating Kuvo never waits on the Keychain. The saved sign-ins
+  are never the move's: macOS may ask you about each, so they come over only when you ask.
+- **Saved sign-ins** (`passwords`): owed only where there may be some. Where the earlier Kuvo
+  Code had brought them into a vault itself (`passwords.movedToVault` in its preferences), or
+  your Keychain, found unlocked a moment before (the move's own `keys` step, or `delete-originals`
+  just done), lists none (`security find-internet-password -c KUVO`: by what's listed alone, no
+  password read, so macOS asks nothing), `passwords` is settled as the move finishes; else it's
+  owed until you bring them over (`POST kuvo/box/rehome {signIns: true}`, above, which runs
+  `kuvo-link.js rehome <root> --sign-ins` with `KUVO_HOME` the box's home). That holds the move's
+  lock while it runs (which `kuvo-keys` checks), and nothing waits for it: `install --status`
+  takes a lock held by `--sign-ins` or `--settle` (by the holder's command line) for no move at
+  all, and its progress for none. It finds `kuvo-keys` in the app the move took its data with,
+  else in Kuvo's desktop app as it last opened with this box (`run/app.json`'s `desktop`).
+  `kuvo-keys passwords` says the sign-ins an earlier Kuvo
+  Code kept before the vault down its standard output, a pipe this process reads, macOS asking
+  you about each where it would (up to thirty minutes); each goes
+  from memory to the box's own server on this Mac (`run/serve.json`; `POST kuvo/vault/items`, a sign-in of its site, to sign in with only,
   named for its site, then its account, then numbered). One whose site and account the vault
   has is left as it is; one under four characters, which the vault keeps none of, is said
   (`dropped`); a site the earlier Kuvo Code let agents sign in to alone, with that account,
@@ -8177,9 +8204,12 @@ above. Only on a Mac.
   (it had another password for that site and account) or refuses (`400`: a site it can't keep),
   those the Keychain has more than one of for a site and account and one not valid UTF-8 (said
   with U+FFFD in its place; neither is given to the vault), and one `delete-originals` finds
-  changed (`copy-missing`) keep their originals, are counted in `dropped`, and the rest go on; a vault that can't answer the check, or a Keychain that won't
-  remove one, leaves the step owed, verified again at the next run. Short passwords stay in
-  the Keychain. Never written to a file, by either.
+  changed (`copy-missing`) keep their originals, are counted in `dropped`, and the rest go on. Done, `passwords` is
+  settled and `signIns` says `done`; otherwise it stays owed and `signIns` says `failed`, in words
+  by why: your Keychain locked; macOS didn't let `kuvo-keys` read them (you clicked Deny); its
+  question went unanswered; Kuvo's app not found on this Mac; anything else, "Try again". Why
+  itself goes to `run.log` alone (it may name a site or an account). A try cut short adds nothing
+  twice. Never written to a file, by either.
 - **What the move carries** (the `upgrade` step; each reads the app's folder and its
   preferences, `~/Library/Preferences/<ID>.plist`, asked of the system for Kuvo Code itself, and
   writes only in staging; each leaves what a box already had as it is; preferences that are
@@ -8322,10 +8352,10 @@ there.
 
 | `verdict` | What's here | `verb` |
 | --- | --- | --- |
-| `waits` | another process holds the move's lock | null |
+| `waits` | another process holds the move's lock for a move (never what a move that's done left to finish, `rehome --settle` or `--sign-ins`: nothing waits for those) | null |
 | `stuck` | a move stopped at `clear` or later, or its journal can't be read | `move` |
 | `moving` | a move stopped before `clear` | `move` |
-| `ours` | a Mac's own box in `K` (`box/kind` says `mac`) | `move` while a move the box ran itself still owes something (`status.owed`: its start, the Keychain, saved sign-ins); `new` while its helper isn't in place (its launch agent's file missing, or launchd not having it: a making cut short after the box was made, a start launchd refused, Login Items off for it); else null: the app attaches |
+| `ours` | a Mac's own box in `K` (`box/kind` says `mac`) | never `move`: a move that's done is never run again, whatever it still owes (`status.owed`: the box settles what asks nothing as it runs, and saved sign-ins come over when you ask); `new` while its helper isn't in place (its launch agent's file missing, or launchd not having it: a making cut short after the box was made, a start launchd refused, Login Items off for it); else null: the app attaches |
 | `back` | it was moved back | null: it moves again when you ask |
 | `two` | a machine's box in `K`, and an earlier Kuvo Code's data in `S` | null: both stay (putting them together isn't built yet) |
 | `machine` | a machine's box in `K`, nothing in `S` | null: the app attaches to it in place |

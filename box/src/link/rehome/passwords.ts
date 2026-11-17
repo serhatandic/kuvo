@@ -1,9 +1,15 @@
 // The sign-ins an earlier Kuvo Code saved before there was a vault (Keychain internet passwords it
-// marked as its own), taken into this Mac's vault once its server answers (#713 §3, `owed:
-// passwords`; PROTOCOL.md, "Moving this Mac's box"). Only `kuvo-keys` can read them, and only for
-// the process that holds the move's lock: it writes them to its standard output, a pipe this
-// process reads, and each goes from memory to the box's own server on this Mac (the vault's
-// routes, as a client adds an item). They're never written to a file, by either.
+// marked as its own), taken into this Mac's vault when you ask (#713 §3, `owed: passwords`;
+// PROTOCOL.md, "Moving this Mac's box"). Only `kuvo-keys` can read them, and only for the process
+// that holds the move's lock: it writes them to its standard output, a pipe this process reads, and
+// each goes from memory to the box's own server on this Mac (the vault's routes, as a client adds
+// an item). They're never written to a file, by either.
+//
+// Reading them may have macOS ask you about each one (Always Allow), so it's never part of the
+// move, nor of opening or updating Kuvo: a task of its own (`rehome --sign-ins`), which Kuvo on
+// this Mac starts when you ask it to, having said that macOS will ask (`POST kuvo/box/rehome
+// {signIns: true}`). It holds the move's lock while it runs, which nothing that opens or updates
+// Kuvo waits for (`leftoverHolder`).
 //
 // As the app's own hand-over went (`Passwords.swift`, read only): each a sign-in of its site, to
 // sign in with only; one whose site and account the vault has already is left as it is (so a
@@ -17,6 +23,10 @@ import fs from "node:fs";
 import path from "node:path";
 import { isObject } from "../../shared/json";
 import { sleep } from "../../shared/wait";
+import { launchTools } from "../uninstall";
+import { locked, NOTHING_TO_MOVE, type RehomeOutcome } from "./move";
+import { keysOf, movedHere } from "./run";
+import { noteRecord, readRecord, rehomeStatus, SIGN_INS_PID } from "./state";
 
 interface Login { host: string; account: string; password: string }
 
@@ -25,7 +35,11 @@ interface Login { host: string; account: string; password: string }
  * those left in the Keychain as they are (`kept`: the vault has another password for that site and
  * account or refuses it, two Keychain sign-ins share them, one's password couldn't be read
  * exactly, or it changed meanwhile). */
-export interface HandedOver { done: boolean; why?: string; added: number; short: number; kept: number }
+export interface HandedOver { done: boolean; why?: string; reason?: Reason; added: number; short: number; kept: number }
+/** Why it wasn't done, for the words you're shown: the Keychain locked; macOS kept them from
+ * kuvo-keys (you clicked Deny, or it wasn't allowed to ask); its question went unanswered; or
+ * anything else. */
+type Reason = "locked" | "not-allowed" | "unanswered" | "failed";
 
 /** Where the box's server answers on this Mac (`run/serve.json`), waited for a while: it starts
  * a moment after its helper does. */
@@ -66,7 +80,9 @@ export async function handOverPasswords({ home, keys, agentSites, agentAccounts,
   if (read.status !== 0 || !isObject(said) || !Array.isArray(said.logins)) {
     // (Only its one word for why: what it says besides may name a site or an account.)
     const status = isObject(said) && typeof said.status === "number" ? ` OSStatus ${said.status}` : "";
-    return { done: false, why: `kuvo-keys couldn't read them (${isObject(said) && typeof said.reason === "string" ? said.reason : read.status === null ? "it didn't answer" : `exit ${read.status}`}${status})`, added: 0, short: 0, kept: 0 };
+    const word = isObject(said) && typeof said.reason === "string" ? said.reason : null;
+    const reason: Reason = word === "locked" || word === "not-allowed" ? word : read.status === null && !word ? "unanswered" : "failed";
+    return { done: false, why: `kuvo-keys couldn't read them (${word ?? (read.status === null ? "it didn't answer" : `exit ${read.status}`)}${status})`, reason, added: 0, short: 0, kept: 0 };
   }
   const logins = said.logins.filter((each): each is Login => isObject(each) && typeof each.host === "string" && each.host.length > 0 && typeof each.account === "string" && typeof each.password === "string");
   if (!logins.length) return { done: true, added: 0, short: 0, kept: 0 };
@@ -131,4 +147,67 @@ export async function handOverPasswords({ home, keys, agentSites, agentAccounts,
     return { done: false, why: (error as Error).message, added, short, kept };
   }
   return { done: true, added, short, kept };
+}
+
+/** What you're shown when bringing them over didn't finish, by why (nothing that names a site,
+ * an account or a code: those go to the log, for support). */
+const NOT_BROUGHT: Record<Reason | "no-app", string> = {
+  locked: "Your Mac's Keychain is locked. Unlock it, then try again.",
+  "not-allowed": "macOS didn't let Kuvo read them. Try again: when macOS asks whether kuvo-keys may use each one, enter your Mac's password and click Always Allow.",
+  unanswered: "macOS's question wasn't answered, so nothing more was brought over. Try again when you're at this Mac.",
+  failed: "Kuvo couldn't bring them all over this time. Try again.",
+  "no-app": "Kuvo couldn't find its app on this Mac. Open Kuvo, then try again.",
+};
+
+/** `rehome --sign-ins`: an earlier Kuvo Code's saved sign-ins brought into the vault of the box a
+ * move took them to, now, as you asked; macOS may ask you about each. Each that's in the vault
+ * and read back there leaves the Keychain (you decided so, 2026-11-16); one the vault can't keep
+ * exactly stays, and is said. How it went is kept for Kuvo to show (`signInsLast`), and the hand-over
+ * is no longer owed once it's done. Nothing where nothing's owed. */
+export async function rehomeSignIns(home: string): Promise<RehomeOutcome> {
+  if (process.platform !== "darwin") return { result: "refused", message: NOTHING_TO_MOVE, status: rehomeStatus(home) };
+  const owed = () => movedHere(home) && readRecord(home).owed?.includes("passwords") === true;
+  let handed: HandedOver | null = null;
+  let reason: Reason | "no-app" = "failed";
+  try {
+    if (!owed()) return { result: "nothing", status: rehomeStatus(home) };
+    const outcome = await locked(home, () => console.error("Another move is under way: this one waits for it."), async () => {
+      if (!owed()) return { result: "nothing", status: rehomeStatus(home) };
+      const keys = keysOf(home);
+      if (!keys) {
+        reason = "no-app";
+        handed = { done: false, why: "kuvo-keys isn't in the app on this Mac", added: 0, short: 0, kept: 0 };
+        return { result: "failed", status: rehomeStatus(home) };
+      }
+      const record = readRecord(home);
+      const prefs = typeof record.from === "string" ? (await import("./upgrades")).appPreferences(record.from) : {};
+      const sites = Array.isArray(prefs["passwords.agentSignIn"]) ? prefs["passwords.agentSignIn"].filter((each): each is string => typeof each === "string") : [];
+      const accounts = isObject(prefs["passwords.agentSignInAccounts"]) ? Object.fromEntries(Object.entries(prefs["passwords.agentSignInAccounts"]).filter((each): each is [string, string] => typeof each[1] === "string")) : {};
+      // (Where nothing starts the box, a copy's home, its server is waited for no longer than it takes to look.)
+      handed = await handOverPasswords({ home, keys, agentSites: sites, agentAccounts: accounts, ...(launchTools() ? {} : { wait: 0 }) });
+      if (!handed.done) reason = handed.reason ?? "failed";
+      return { result: handed.done ? "done" : "failed", status: rehomeStatus(home) };
+    });
+    if (!handed) return outcome;
+  } finally {
+    // (The box's note that this runs, gone with it: before how it went is kept, so the two are
+    // never said at once.)
+    try { if (Number(fs.readFileSync(SIGN_INS_PID(home), "utf8")) === process.pid) fs.rmSync(SIGN_INS_PID(home), { force: true }); } catch {}
+  }
+  const result = handed as HandedOver;
+  if (!result.done) {
+    // (Why goes to the move's own log, for support: it may name a site or an account.)
+    console.error(`Your saved sign-ins couldn't be brought into the vault: ${result.why ?? "it didn't say why"}`);
+    noteRecord(home, { signInsLast: { state: "failed", at: Date.now(), message: NOT_BROUGHT[reason] } });
+    return { result: "failed", message: NOT_BROUGHT[reason], status: rehomeStatus(home) };
+  }
+  const said: string[] = [];
+  if (result.short) said.push(`${result.short === 1 ? "A saved password" : `${result.short} saved passwords`} shorter than four characters ${result.short === 1 ? "wasn't" : "weren't"} brought into the vault, which keeps none that short.`);
+  if (result.kept) said.push(`${result.kept === 1 ? "A saved password stays" : `${result.kept} saved passwords stay`} in your Keychain: Kuvo couldn't be sure the vault would keep ${result.kept === 1 ? "it" : "them"} exactly. Add any you use to the vault yourself.`);
+  // (How it went and that they're owed no more, in one: never one said without the other.)
+  noteRecord(home, now => ({
+    dropped: [...(now.dropped ?? []), ...said], owed: (now.owed ?? []).filter(what => what !== "passwords"),
+    signInsLast: { state: "done", at: Date.now(), added: result.added, kept: result.kept + result.short },
+  }));
+  return { result: "done", status: rehomeStatus(home) };
 }

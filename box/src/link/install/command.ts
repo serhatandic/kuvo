@@ -25,7 +25,7 @@ import { PAUSED } from "../at-work";
 import { helperStatus } from "../helper";
 import { accountHome, homeFolder, K, located, OWN_RUNTIME } from "../home";
 import { computerName } from "../mac/link";
-import { homeOfRoot, rehomeNew, runningIn } from "../rehome/move";
+import { homeOfRoot, rehomeNew, runningIn, settled } from "../rehome/move";
 import { giveLock, progressOf, rehomeFolder, rehomeStatus, takeLock } from "../rehome/state";
 import { Said } from "../rehome/said";
 import { sleep } from "../../shared/wait";
@@ -200,14 +200,13 @@ const processAlive = (pid: number): boolean => {
 /** An earlier Kuvo Code's sessions and settings moved by the box itself (`rehome --run`, "Moving
  * this Mac's box"), started in a session of its own so that the app quitting doesn't stop it,
  * and followed: a line for each step as it's reached (`{step, title, index, of}`, the box's own
- * words), then its answer. A move that's done with something still owed (its start, the
- * Keychain) is finished by running it again. */
+ * words), then its answer. Only a move that isn't done: one that's done is never run again, for
+ * what it still owes or anything else (`judgeInstall`). */
 async function moved({ home, root, bundle, release, engine }: { home: string; root: string; bundle: string; release: string; engine: string }, judged: () => Judgement, say: (value: unknown) => void): Promise<Answer> {
   const before = judged();
   if (before.verdict === "waits") return { result: "waits", verdict: "waits", message: NOT_MOVED.waits };
   if (before.verb !== "move") return { result: before.verdict === "ours" ? "nothing" : "refused", verdict: before.verdict, ...(NOT_MOVED[before.verdict] ? { message: NOT_MOVED[before.verdict] } : {}) };
-  // (A move that's done and only owes something needs no release: settling took what was staged away.)
-  if (before.verdict !== "ours") checkedRelease(release);
+  checkedRelease(release);
   const folder = rehomeFolder(home);
   fs.mkdirSync(folder, { recursive: true, mode: 0o700 });
   // (Its answer in a file of this installer's own: two at once never read each other's.)
@@ -296,6 +295,8 @@ async function newMac({ home, appFolder, app, release, engine }: NewMac, judged:
   const message = isObject(said) && typeof said.message === "string" ? said.message : started ? undefined : `Kuvo Helper couldn't be started: ${(ran?.stderr ?? "").trim().split("\n").pop() || "it said nothing"}.`;
   // (Not started: what's staged stays, and `status` says to run `new` again.)
   if (!started) return { result: "failed", verdict: "ours", started, message, ...setAside };
+  // (A move into it that owed its start owes it no more.)
+  settled(home, "start");
   clearStaging(home);
   return { result: made ? "done" : "nothing", verdict: "ours", started, ...(message ? { message } : {}), ...setAside };
 }
