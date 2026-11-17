@@ -16,7 +16,7 @@ use std::collections::{HashMap, HashSet};
 
 use gpui::{
     AnyElement, App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, InteractiveElement, IntoElement, KeyDownEvent, MouseButton, ParentElement, Pixels, Render, ScrollHandle,
-    SharedString, StatefulInteractiveElement, Styled, Subscription, Task, Window, div, prelude::FluentBuilder as _, px, svg,
+    SharedString, StatefulInteractiveElement, Styled, Subscription, Task, Window, div, prelude::FluentBuilder as _, px,
 };
 use kuvo_box::BoxClient;
 use kuvo_box::accounts::{AccountEntry, Accounts, Side, State, said};
@@ -761,8 +761,8 @@ fn mark(service: Option<&str>, name: &str, cx: &App) -> AnyElement {
     let c = &cx.theme().colors;
     let size = px(32.);
     let tile = div().flex().flex_none().items_center().justify_center().size(size).rounded(radius::PILL).bg(c.sunken).border_1().border_color(c.border);
-    match service.and_then(kuvo_ui::icon::mark_path) {
-        Some(path) => tile.child(svg().path(path).size(px(17.)).text_color(service.and_then(kuvo_ui::icon::mark_color).unwrap_or(c.text))).into_any_element(),
+    match service.and_then(kuvo_ui::icon::Mark::of_service) {
+        Some(mark) => tile.child(mark.in_tile(size)).into_any_element(),
         None => {
             let letter = name.chars().next().map(|first| first.to_uppercase().to_string()).unwrap_or_default();
             tile.text_ui(TypeSize::Small).medium().text_color(c.text_muted).child(letter).into_any_element()

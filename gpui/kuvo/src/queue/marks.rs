@@ -3,7 +3,7 @@
 //! box names (a status's or a priority's id, a label's colour, a bot's look); one this doesn't know
 //! gets a plain mark, never none.
 
-use gpui::{AnyElement, App, InteractiveElement, IntoElement, ParentElement, Pixels, Styled, div, px, svg};
+use gpui::{AnyElement, App, InteractiveElement, IntoElement, ParentElement, Pixels, Styled, div, px};
 use kuvo_box::areas::Look;
 use kuvo_ui::{ActiveTheme, Icon, IconName, StyledType, TypeSize, theme::radius, theme::space};
 
@@ -76,9 +76,9 @@ pub fn label_chip(name: &str, color: &str, cx: &App) -> AnyElement {
 
 /// The mark Kuvo has for a coding agent, by the id the box names it by (`claude-code`, `codex-cli`,
 /// `cursor`): the one the rail draws for its account.
-fn agent_mark(id: &str) -> Option<(&'static str, String)> {
+fn agent_mark(id: &str) -> Option<(kuvo_ui::icon::Mark, String)> {
     let service = id.split('-').next().unwrap_or(id);
-    [id, service].into_iter().find_map(|service| kuvo_ui::icon::mark_path(service).map(|path| (path, service.to_owned())))
+    [id, service].into_iter().find_map(|service| kuvo_ui::icon::Mark::of_service(service).map(|mark| (mark, service.to_owned())))
 }
 
 /// Who an item is for: a bot's still face where the box gave its look; a coding agent's own mark;
@@ -87,9 +87,9 @@ pub fn who_mark(look: Option<&Look>, id: &str, name: &str, size: Pixels, cx: &Ap
     let c = &cx.theme().colors;
     match (look, agent_mark(id)) {
         (Some(look), _) => bot_face(id, look, size),
-        (None, Some((path, service))) => div()
+        (None, Some(drawn)) => div()
             .debug_selector({
-                let selector = format!("agent-mark-{service}");
+                let selector = format!("agent-mark-{}", drawn.1);
                 move || selector
             })
             .flex()
@@ -97,7 +97,7 @@ pub fn who_mark(look: Option<&Look>, id: &str, name: &str, size: Pixels, cx: &Ap
             .items_center()
             .justify_center()
             .size(size)
-            .child(svg().path(path).size(size * 0.86).flex_none().text_color(kuvo_ui::icon::mark_color(&service).unwrap_or(c.text)))
+            .child(drawn.0.in_tile(size))
             .into_any_element(),
         (None, None) => div()
             .flex()
