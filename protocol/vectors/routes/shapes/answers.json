@@ -5797,6 +5797,9 @@
             "literal": "box.rehome.run"
            },
            {
+            "literal": "box.rehome.signIns"
+           },
+           {
             "literal": "box.serve"
            },
            {
@@ -6524,6 +6527,9 @@
            },
            {
             "literal": "box.rehome.run"
+           },
+           {
+            "literal": "box.rehome.signIns"
            },
            {
             "literal": "box.serve"
@@ -7957,6 +7963,32 @@
          "title": "string"
         }
        }
+      },
+      "signIns?": {
+       "oneOf": [
+        {
+         "object": {
+          "state": {
+           "oneOf": [
+            {
+             "literal": "asking"
+            },
+            {
+             "literal": "done"
+            },
+            {
+             "literal": "failed"
+            }
+           ]
+          },
+          "at?": "number",
+          "message?": "string",
+          "added?": "number",
+          "kept?": "number"
+         }
+        },
+        "null"
+       ]
       }
      }
     }
@@ -8282,6 +8314,32 @@
          "title": "string"
         }
        }
+      },
+      "signIns?": {
+       "oneOf": [
+        {
+         "object": {
+          "state": {
+           "oneOf": [
+            {
+             "literal": "asking"
+            },
+            {
+             "literal": "done"
+            },
+            {
+             "literal": "failed"
+            }
+           ]
+          },
+          "at?": "number",
+          "message?": "string",
+          "added?": "number",
+          "kept?": "number"
+         }
+        },
+        "null"
+       ]
       }
      }
     }
