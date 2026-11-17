@@ -87,9 +87,10 @@ struct BoxGateTests {
         #expect(!BoxGate.isAllowed("kuvo/projects"))
     }
 
-    // A phone says who brings a machine up to date: by itself overnight only where it can.
+    // A phone says who brings a machine up to date: by itself, from your other computers, only
+    // where it can.
     @Test func aMachineThatCantUpdateItselfIsntSaidTo() {
-        #expect(BoxGate.Words.waiting(for: "devbox", isMac: false, updatesItself: true).contains("by itself overnight"))
-        #expect(!BoxGate.Words.waiting(for: "old-box", isMac: false, updatesItself: false).contains("overnight"))
+        #expect(BoxGate.Words.waiting(for: "devbox", isMac: false, updatesItself: true).contains("by itself as soon as another of your computers has the newer version"))
+        #expect(!BoxGate.Words.waiting(for: "old-box", isMac: false, updatesItself: false).contains("by itself"))
     }
 }

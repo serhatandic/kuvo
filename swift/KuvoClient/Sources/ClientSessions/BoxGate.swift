@@ -62,11 +62,11 @@ public enum BoxGate {
 
         /// What a phone says of a computer older than it: who brings it up to date. `isMac`: a
         /// Mac's box, which updates with Kuvo Code there; a machine updates when a Mac connects to
-        /// it, and by itself overnight only where it can (`updatesItself`: its `kuvo/info` lists
-        /// `update`; a 0.7 machine's doesn't).
+        /// it, and by itself (from your other computers, or its own look every few hours) only
+        /// where it can (`updatesItself`: its `kuvo/info` lists `update`; a 0.7 machine's doesn't).
         public static func waiting(for name: String, isMac: Bool, updatesItself: Bool) -> String {
             if isMac { return "Kuvo Code on \(name) is older than this iPhone’s. Update it there, or let it finish an update under way. Nothing changes there meanwhile." }
-            let itself = updatesItself ? ", or by itself overnight" : ""
+            let itself = updatesItself ? ", or by itself as soon as another of your computers has the newer version" : ""
             return "Kuvo Code on \(name) is older than this iPhone’s. It updates when a Mac with Kuvo Code connects to it\(itself). Nothing changes there meanwhile."
         }
 
