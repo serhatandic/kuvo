@@ -889,7 +889,8 @@ fn the_theme_row_switches_light_and_dark(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn usage_lays_out_each_accounts_windows_side_by_side(cx: &mut TestAppContext) {
-    let (workspace, cx) = open(cx, StandIn::at(Replies::Never, NOW));
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (workspace, cx) = open(cx, stand_in.clone());
     let view = section(&workspace, cx, "Usage");
     for row in ["usage-0", "usage-1", "usage-2", "usage-3", "usage-4", "usage-5"] {
         assert!(shown(cx, row), "{row}");
@@ -901,7 +902,12 @@ fn usage_lays_out_each_accounts_windows_side_by_side(cx: &mut TestAppContext) {
     assert!(!shown(cx, "usage-0-window-3"));
     // Cursor's plan ended: listed, saying so, with no meters.
     assert!(shown(cx, "usage-1") && !shown(cx, "usage-1-window-0"));
-    assert!(view.read_with(cx, |view, _| view.row_detail("usage-2").unwrap().contains("mini-local · Read")));
+    assert_eq!(view.read_with(cx, |view, _| view.row_detail("usage-2")).as_deref(), Some("mini-local"));
+    assert_eq!(view.read_with(cx, |view, _| view.row_detail("usage-0")).as_deref(), Some(""));
+    assert!(!shown(cx, "settings-whose"));
+    assert!(shown(cx, "usage-updated"));
+    click(cx, "usage-refresh");
+    assert_eq!(stand_in.seen_at("POST", "kuvo/agents/api/kuvo/limits/refresh").len(), 1);
 }
 
 #[gpui::test]

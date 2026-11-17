@@ -114,7 +114,8 @@ fn update_said(updating: &Updating, name: &str) -> (Value, Option<Value>) {
 /// Its answer to `method route`, if it's one of the areas' routes. `needing`: how many of its
 /// sessions "Needs you" lists.
 pub fn answer(areas: &Areas, method: &str, route: &str, now: f64, needing: usize, bots_asking: usize) -> Option<(u16, Value)> {
-    if method != "GET" {
+    let refresh = (method, route) == ("POST", "kuvo/agents/api/kuvo/limits/refresh");
+    if method != "GET" && !refresh {
         return None;
     }
     if route == "kuvo/computers" && areas.computers_down {
@@ -122,7 +123,7 @@ pub fn answer(areas: &Areas, method: &str, route: &str, now: f64, needing: usize
     }
     let answer = match route {
         "kuvo/computers" => json!({ "computers": listed(areas) }),
-        "kuvo/agents/api/kuvo/limits" => json!({ "data": { "accounts": [], "services": ["claude", "codex", "copilot", "grok", "openrouter"], "rows": if areas.empty { Vec::new() } else { accounts(now, areas.usage) } } }),
+        "kuvo/agents/api/kuvo/limits" | "kuvo/agents/api/kuvo/limits/refresh" => json!({ "data": { "accounts": [], "services": ["claude", "codex", "copilot", "grok", "openrouter"], "rows": if areas.empty { Vec::new() } else { accounts(now, areas.usage) } } }),
         "kuvo/waiting" => json!({ "sessions": needing, "bots": bots_asking, "queue": 0 }),
         "kuvo/box/at-work" => json!({ "applies": !areas.no_menu_bar, "working": 0, "sessions": [], "asking": [], "waiting": { "sessions": needing, "bots": bots_asking, "queue": 0 }, "background": 0, "busy": false, "rings": [] }),
         _ => return None,
@@ -525,7 +526,7 @@ fn computers(alone: bool, more: usize) -> Vec<Value> {
 fn accounts(now: f64, sample: UsageSample) -> Vec<Value> {
     // Each window named as the box names it (`title`).
     let window = |id: &str, title: &str, used: f64, resets: f64, minutes: Option<u32>, model: Option<&str>, name: Option<&str>| {
-        let mut window = json!({ "id": id, "title": title, "used": used, "resetsAt": now + resets, "read": now - MINUTE, "source": "usage" });
+        let mut window = json!({ "id": id, "title": title, "used": used, "resetsAt": now + resets, "read": now - 2.0 * MINUTE, "source": "usage" });
         if let Some(minutes) = minutes {
             window["minutes"] = json!(minutes);
         }
@@ -627,23 +628,15 @@ fn accounts(now: f64, sample: UsageSample) -> Vec<Value> {
 
 /// The stand-in supplies display facts the same way the live route does.
 fn usage_display(row: &Value, now: f64) -> Value {
-    let computer = if row["boxes"][0]["here"] == json!(true) { super::NAME } else { row["boxes"][0]["name"].as_str().unwrap_or("Another computer") };
-    let plan = row["plan"].as_str().unwrap_or_default();
     let windows = row["windows"].as_array().unwrap();
-    let stamp = |at: f64| {
-        let minutes = (at / MINUTE) as i64;
-        let (_, month, day) = crate::time::civil(minutes.div_euclid(1_440));
-        let month = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][(month - 1) as usize];
-        format!("{day} {month}, {:02}:{:02} UTC", minutes.div_euclid(60).rem_euclid(24), minutes.rem_euclid(60))
-    };
-    let detail = if let Some(read) = windows.first().and_then(|window| window["read"].as_f64()) {
-        format!("{plan} · {computer} · Read {}", stamp(read))
-    } else {
-        format!("{plan} · {computer}")
-    };
+    let title = row["title"].as_str().unwrap_or_default();
+    let computer = &row["boxes"][0];
+    let name = computer["name"].as_str().unwrap_or_default();
+    let suffix = format!(" · {name}");
+    let title = title.strip_suffix(&suffix).unwrap_or(title);
     let status = match row["problem"]["kind"].as_str() {
         Some("ended") => json!({ "words": "Plan ended.", "warning": false }),
-        Some("failed") => json!({ "words": "Couldn’t read limits. Check the computer’s connection. Kuvo will try again.", "warning": true }),
+        Some("failed") => json!({ "words": "Couldn’t read limits. Check the connection, then try again.", "warning": true }),
         _ => Value::Null,
     };
     let meters: Vec<Value> = windows.iter().map(|window| {
@@ -654,14 +647,14 @@ fn usage_display(row: &Value, now: f64) -> Value {
             Some(title) => title,
             None => "Limit",
         };
-        let reset = window["resetsAt"].as_f64().unwrap_or(now);
+        let reset = window["resetsAt"].as_f64();
+        let read = window["read"].as_f64().unwrap_or(now);
         json!({
-            "title": title, "share": share, "value": format!("{:.0}% used", share * 100.0),
-            "level": window["level"], "reset": format!("Reset due {}", stamp(reset)),
-            "old": "Old reading", "freshForMs": if row["boxes"][0]["away"] == json!(true) { 0 } else { 29 * MINUTE as u64 },
+            "title": title, "share": share, "value": format!("{:.0}%", share * 100.0),
+            "level": window["level"], "resetsAt": reset, "readAt": read, "freshForMs": if row["boxes"][0]["away"] == json!(true) { 0 } else { 28 * MINUTE as u64 },
         })
     }).collect();
-    json!({ "detail": detail, "status": status, "meters": meters })
+    json!({ "title": title, "computers": [computer], "status": status, "meters": meters })
 }
 
 fn level(used: f64) -> &'static str {

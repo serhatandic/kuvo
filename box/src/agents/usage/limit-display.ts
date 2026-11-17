@@ -6,70 +6,53 @@ import type { LimitsBox, LimitLevel } from "../limits-rows"
 // Readers run every 10–15 minutes in the ordinary case. Give them one missed round.
 const FRESH_FOR = 30 * 60_000
 const DAY = 24 * 60
-const dateOptions = {
-  day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", timeZoneName: "short",
-} as const
-const date = new Intl.DateTimeFormat("en-GB", dateOptions)
-const datedYear = new Intl.DateTimeFormat("en-GB", { ...dateOptions, year: "numeric" })
 
 export interface UsageMeter {
   title: string
   share: number
   value: string
   level: LimitLevel
-  read?: string
-  reset: string
-  old: string
+  readAt: number
+  resetsAt?: number
   freshForMs: number
 }
 
 export interface LimitDisplay {
-  detail: string
+  title: string
+  computers: { name: string; here: boolean }[]
   status?: { words: string; warning: boolean }
   meters: UsageMeter[]
 }
 
 type Member = { box: LimitsBox; account: AccountLimits }
 
-const computerName = (box: LimitsBox) => box.name || (box.here ? hostname() : "Another computer")
-function atTime(at: number, now: number) {
-  const stamp = new Date(at)
-  if (Number.isNaN(stamp.getTime())) return undefined
-  return (stamp.getFullYear() === new Date(now).getFullYear() ? date : datedYear).format(stamp)
-}
-
-export function limitDisplay(account: AccountLimits, members: Member[], now: number): LimitDisplay {
+export function limitDisplay(account: AccountLimits, members: Member[], now: number, title: string): LimitDisplay {
   const problem = account.problem?.kind
+  const computers = new Set<LimitsBox>()
   const meters = problem === "ended" ? [] : account.windows.map(window => {
     // The merge keeps the winning window object, including when different windows came from
     // different computers. Use that reading's source, rather than the last account check.
     const source = members.find(member => member.account.windows.includes(window))!
-    const readTime = atTime(window.read, now)
-    const computer = computerName(source.box)
-    const read = readTime ? `${computer} · Read ${readTime}` : computer
-    const resetTime = window.resetsAt === undefined ? undefined : atTime(window.resetsAt, now)
+    computers.add(source.box)
     const share = Math.min(1, Math.max(0, window.used))
     const freshUntil = Math.min(window.read + FRESH_FOR, window.resetsAt ?? Infinity, source.box.awayAt ?? Infinity)
     return {
       title: usageTitle(window),
       share,
-      value: `${Math.round(share * 100)}% used`,
-      level: levelOf(share),
-      read,
-      reset: resetTime ? `Reset due ${resetTime}` : "Reset time unavailable",
-      old: "Old reading",
-      freshForMs: source.box.away || source.account.problem || !readTime ? 0 : Math.max(0, Math.floor(freshUntil - now)),
+      value: `${Math.round(share * 100)}%`,
+      level: share > 0.7 ? levelOf(share) : "calm",
+      readAt: window.read,
+      resetsAt: window.resetsAt,
+      freshForMs: source.box.away || source.account.problem ? 0 : Math.max(0, Math.floor(freshUntil - now)),
     }
   })
-  const firstRead = meters[0]?.read
-  const sharedRead = firstRead && meters.every(meter => meter.read === firstRead) ? firstRead : undefined
-  const signedInOn = meters.length === 0 ? [...new Set(members.map(member => computerName(member.box)))].join(", ") : undefined
-  const detail = [account.plan, sharedRead ?? signedInOn].filter(Boolean).join(" · ")
+  if (!meters.length) for (const member of members) computers.add(member.box)
   const status = statusOf(problem, meters.length > 0, account.checked !== undefined)
   return {
-    detail,
+    title,
+    computers: [...computers].map(box => ({ name: box.name || (box.here ? hostname() : "Another computer"), here: box.here })),
     ...(status ? { status } : {}),
-    meters: sharedRead ? meters.map(({ read: _, ...meter }) => meter) : meters,
+    meters,
   }
 }
 
@@ -82,10 +65,10 @@ function usageTitle(window: LimitWindow): string {
 function statusOf(problem: LimitsProblemKind | undefined, hasMeters: boolean, checked: boolean): LimitDisplay["status"] {
   switch (problem) {
     case "ended": return { words: "Plan ended.", warning: false }
-    case "expired": return { words: "Sign-in expired. Sign in again under Accounts on that computer.", warning: true }
-    case "unreadable": return { words: "This sign-in can’t read limits. Check the sign-in under Accounts on that computer.", warning: true }
-    case "rate-limited": return { words: "The provider is holding off new readings. Kuvo will try again.", warning: true }
-    case "failed": return { words: "Couldn’t read limits. Check the computer’s connection. Kuvo will try again.", warning: true }
+    case "expired": return { words: "Sign-in expired. Sign in again under Accounts.", warning: true }
+    case "unreadable": return { words: "Can’t read limits. Check the sign-in under Accounts.", warning: true }
+    case "rate-limited": return { words: "The provider paused readings. Kuvo will try again.", warning: true }
+    case "failed": return { words: "Couldn’t read limits. Check the connection, then try again.", warning: true }
     default: return hasMeters ? undefined : { words: checked ? "No limits reported." : "Waiting for the first reading.", warning: false }
   }
 }

@@ -11270,52 +11270,33 @@ async function resetRoutes(resets, method, rest, body) {
 import { hostname } from "os";
 var FRESH_FOR = 30 * 60000;
 var DAY = 24 * 60;
-var dateOptions = {
-  day: "numeric",
-  month: "short",
-  hour: "2-digit",
-  minute: "2-digit",
-  timeZoneName: "short"
-};
-var date = new Intl.DateTimeFormat("en-GB", dateOptions);
-var datedYear = new Intl.DateTimeFormat("en-GB", { ...dateOptions, year: "numeric" });
-var computerName = (box) => box.name || (box.here ? hostname() : "Another computer");
-function atTime(at, now) {
-  const stamp = new Date(at);
-  if (Number.isNaN(stamp.getTime()))
-    return;
-  return (stamp.getFullYear() === new Date(now).getFullYear() ? date : datedYear).format(stamp);
-}
-function limitDisplay(account, members, now) {
+function limitDisplay(account, members, now, title) {
   const problem = account.problem?.kind;
+  const computers = new Set;
   const meters = problem === "ended" ? [] : account.windows.map((window) => {
     const source = members.find((member) => member.account.windows.includes(window));
-    const readTime = atTime(window.read, now);
-    const computer = computerName(source.box);
-    const read = readTime ? `${computer} \xB7 Read ${readTime}` : computer;
-    const resetTime = window.resetsAt === undefined ? undefined : atTime(window.resetsAt, now);
+    computers.add(source.box);
     const share = Math.min(1, Math.max(0, window.used));
     const freshUntil = Math.min(window.read + FRESH_FOR, window.resetsAt ?? Infinity, source.box.awayAt ?? Infinity);
     return {
       title: usageTitle(window),
       share,
-      value: `${Math.round(share * 100)}% used`,
-      level: levelOf(share),
-      read,
-      reset: resetTime ? `Reset due ${resetTime}` : "Reset time unavailable",
-      old: "Old reading",
-      freshForMs: source.box.away || source.account.problem || !readTime ? 0 : Math.max(0, Math.floor(freshUntil - now))
+      value: `${Math.round(share * 100)}%`,
+      level: share > 0.7 ? levelOf(share) : "calm",
+      readAt: window.read,
+      resetsAt: window.resetsAt,
+      freshForMs: source.box.away || source.account.problem ? 0 : Math.max(0, Math.floor(freshUntil - now))
     };
   });
-  const firstRead = meters[0]?.read;
-  const sharedRead = firstRead && meters.every((meter) => meter.read === firstRead) ? firstRead : undefined;
-  const signedInOn = meters.length === 0 ? [...new Set(members.map((member) => computerName(member.box)))].join(", ") : undefined;
-  const detail = [account.plan, sharedRead ?? signedInOn].filter(Boolean).join(" \xB7 ");
+  if (!meters.length)
+    for (const member of members)
+      computers.add(member.box);
   const status = statusOf(problem, meters.length > 0, account.checked !== undefined);
   return {
-    detail,
+    title,
+    computers: [...computers].map((box) => ({ name: box.name || (box.here ? hostname() : "Another computer"), here: box.here })),
     ...status ? { status } : {},
-    meters: sharedRead ? meters.map(({ read: _, ...meter }) => meter) : meters
+    meters
   };
 }
 function usageTitle(window) {
@@ -11329,13 +11310,13 @@ function statusOf(problem, hasMeters, checked) {
     case "ended":
       return { words: "Plan ended.", warning: false };
     case "expired":
-      return { words: "Sign-in expired. Sign in again under Accounts on that computer.", warning: true };
+      return { words: "Sign-in expired. Sign in again under Accounts.", warning: true };
     case "unreadable":
-      return { words: "This sign-in can\u2019t read limits. Check the sign-in under Accounts on that computer.", warning: true };
+      return { words: "Can\u2019t read limits. Check the sign-in under Accounts.", warning: true };
     case "rate-limited":
-      return { words: "The provider is holding off new readings. Kuvo will try again.", warning: true };
+      return { words: "The provider paused readings. Kuvo will try again.", warning: true };
     case "failed":
-      return { words: "Couldn\u2019t read limits. Check the computer\u2019s connection. Kuvo will try again.", warning: true };
+      return { words: "Couldn\u2019t read limits. Check the connection, then try again.", warning: true };
     default:
       return hasMeters ? undefined : { words: checked ? "No limits reported." : "Waiting for the first reading.", warning: false };
   }
@@ -11380,7 +11361,7 @@ function limitRows(boxes, now, presentUsage = false) {
     const account = merged(members);
     const row = {
       ...ringed(account, now),
-      ...presentUsage ? { usage: limitDisplay(account, members, now) } : {},
+      ...presentUsage ? { usage: limitDisplay(account, members, now, accountTitle(account)) } : {},
       title: "",
       id,
       boxes: members.map(({ box, account }) => ({
@@ -22241,7 +22222,7 @@ var number = (value) => {
   const found = typeof value === "string" && value.trim() ? Number(value) : value;
   return typeof found === "number" && Number.isFinite(found) ? found : undefined;
 };
-var date2 = (value) => {
+var date = (value) => {
   if (typeof value !== "string" || !value.trim())
     return;
   const at = Date.parse(value);
@@ -22288,8 +22269,8 @@ async function readGrok(secret, _credential, now) {
   const config = body?.config;
   if (config && typeof config === "object" && !Array.isArray(config) && !Object.keys(config).some((key) => /period|percent|limit/i.test(key)))
     throw new LimitsProblem("ended", "Its SuperGrok plan isn't active now.");
-  const start = date2(period?.start);
-  const end = date2(period?.end);
+  const start = date(period?.start);
+  const end = date(period?.end);
   if (!start || !end || end <= start)
     throw new LimitsProblem("failed", "xAI's answer wasn't what Kuvo Code reads.");
   const used = number(body.config.creditUsagePercent) ?? 0;
@@ -22297,7 +22278,7 @@ async function readGrok(secret, _credential, now) {
 }
 async function readCopilot(secret, _credential, now) {
   const body = await fetched(engineEndpoints.copilot, { Authorization: `token ${secret}`, "Editor-Version": "vscode/1.96.2", "Editor-Plugin-Version": "copilot-chat/0.26.7", "User-Agent": "GitHubCopilotChat/0.26.7", "X-Github-Api-Version": "2025-04-01" }, now, "GitHub");
-  const resetsAt = date2(body?.quota_reset_date) ?? date2(body?.limited_user_reset_date);
+  const resetsAt = date(body?.quota_reset_date) ?? date(body?.limited_user_reset_date);
   const windows = [];
   const snapshots = body?.quota_snapshots;
   for (const [id, name] of [["premium_interactions", "Premium requests"], ["chat", "Chat"], ["completions", "Completions"]]) {
@@ -22488,7 +22469,7 @@ async function readOpenCodeGo(secret, _credential, now) {
     const percent = number(usage[id]?.percent);
     if (percent === undefined)
       continue;
-    let resetsAt = date2(usage[id].resetsAt);
+    let resetsAt = date(usage[id].resetsAt);
     if (id === "rolling" && resetsAt && resetsAt >= now + 299 * 60000)
       resetsAt = undefined;
     windows.push({ id, used: percent / 100, minutes, ...resetsAt ? { resetsAt } : {} });
@@ -39539,4 +39520,4 @@ if (!onMachine) {
 }
 process.on("SIGTERM", () => stop());
 process.on("SIGINT", () => stop());
-// Built from Packages/Box/src/agents 67c1ed9181be0e59d9fd96fbb3b22a6412be1dc19863e1b982d6739ee522a2a4
+// Built from Packages/Box/src/agents 1617ddd90098e26d2f34390445db311254631285d1eb5f73ecd1ae2ee7e74668

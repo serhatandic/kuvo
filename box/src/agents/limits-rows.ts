@@ -119,7 +119,7 @@ export function limitRows(boxes: LimitsBox[], now: number, presentUsage = false)
     const account = merged(members)
     const row: LimitRow = {
       ...ringed(account, now),
-      ...(presentUsage ? { usage: limitDisplay(account, members, now) } : {}),
+      ...(presentUsage ? { usage: limitDisplay(account, members, now, accountTitle(account)) } : {}),
       title: "",
       id,
       boxes: members.map(({ box, account }) => ({

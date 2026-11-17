@@ -261,6 +261,7 @@ enum Item {
     Title(String),
     /// Whose these settings are, said once under the title.
     Whose(String),
+    UsageSummary,
     Group { label: String, words: String },
     Row { row: Box<Row>, first: bool, last: bool },
     Note { key: String, words: String, busy: bool, warning: bool },
@@ -871,8 +872,13 @@ impl SettingsView {
             (Standing::Not { title, words }, _) if self.side == Side::Computer => items.push(Item::Aside { key: "settings-away", icon: IconName::Computer, title: title.clone(), words: words.clone() }),
             (_, Some(entry)) if entry.drawn == Drawn::Later => items.push(Item::Aside { key: "placeholder", icon: entry.icon, title: entry.title.clone(), words: LATER_WORDS.into() }),
             (_, Some(entry)) => {
+                let usage = self.side == Side::Computer && entry.id == "usage";
                 items.push(Item::Title(entry.title.clone()));
-                items.push(Item::Whose(if self.side == Side::Yours { YOURS_WORDS.to_owned() } else { format!("Kept on {name}, the same in every app that connects to it.") }));
+                if usage {
+                    items.push(Item::UsageSummary);
+                } else {
+                    items.push(Item::Whose(if self.side == Side::Yours { YOURS_WORDS.to_owned() } else { format!("Kept on {name}, the same in every app that connects to it.") }));
+                }
                 if let Some(Reading::Ready(page)) = self.pages.get(&entry.id).filter(|_| entry.drawn == Drawn::Described)
                     && let Some(line) = page.line.clone().filter(|line| !line.is_empty())
                 {
@@ -891,7 +897,9 @@ impl SettingsView {
                 for block in blocks {
                     match block {
                         Block::Group(label, words, rows) => {
-                            items.push(Item::Group { label, words });
+                            if !usage || !label.is_empty() || !words.is_empty() {
+                                items.push(Item::Group { label, words });
+                            }
                             let count = rows.len();
                             items.extend(rows.into_iter().enumerate().map(|(ix, row)| Item::Row { row: Box::new(row), first: ix == 0, last: ix + 1 == count }));
                         }
@@ -1093,6 +1101,51 @@ impl SettingsView {
         self.tasks.insert(name, task);
     }
 
+    fn usage_updated_at(&self) -> Option<f64> {
+        let Reading::Ready(accounts) = &self.limits else { return None };
+        accounts.iter()
+            .filter_map(|account| account.usage.as_ref())
+            .flat_map(|usage| &usage.meters)
+            .map(|meter| meter.read_at)
+            .max_by(f64::total_cmp)
+    }
+
+    fn refresh_usage(&mut self, cx: &mut Context<Self>) {
+        if !self.held() && self.client.is_some() && !self.usage_refreshing() {
+            self.problem = None;
+            self.set_busy("usage-refresh", "Refreshing…");
+            self.read_limits(true, cx);
+            cx.notify();
+        }
+    }
+
+    fn usage_refreshing(&self) -> bool {
+        self.busy.iter().any(|(key, _)| key == "usage-refresh")
+    }
+
+    fn read_limits(&mut self, refresh: bool, cx: &mut Context<Self>) {
+        if !refresh && self.usage_refreshing() {
+            return;
+        }
+        let started = (Instant::now(), SystemTime::now());
+        self.run("read-limits", move |client| {
+            if refresh { client.refresh_accounts() } else { client.accounts() }
+        }, move |this, read, cx| {
+            if refresh {
+                this.done("usage-refresh");
+                if read.is_err() {
+                    this.problem = Some("Couldn’t refresh usage. Check the computer’s connection and try again.".into());
+                }
+            }
+            this.usage_read_started = read.is_ok().then_some(started);
+            this.agents_limits = agents_state(&read);
+            this.limits = reading(read, &this.limits);
+            this.mark_old_usage(cx);
+            let restarting = this.agents_limits.as_ref().is_some_and(kuvo_box::Refusal::agents_restarting);
+            this.again_while_restarting("usage", restarting, cx);
+        }, cx);
+    }
+
     fn usage_elapsed(&self) -> Duration {
         // Time asleep counts even when a monotonic clock pauses. A backwards clock change must
         // also leave the snapshot ageing.
@@ -1112,9 +1165,13 @@ impl SettingsView {
             .map(|meter| Duration::from_millis(meter.fresh_for_ms))
             .min();
         self.tasks.remove(TASK);
-        let Some(next) = next.filter(|_| self.live) else { return };
+        if !self.live || self.side != Side::Computer || self.section() != "usage" {
+            return;
+        }
+        let minute = Duration::from_secs(60);
+        let delay = next.map_or(minute, |deadline| (deadline - elapsed).min(minute));
         let task = cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(next - elapsed).await;
+            cx.background_executor().timer(delay).await;
             this.update(cx, |this, cx| {
                 this.list.remeasure();
                 cx.notify();
@@ -1243,15 +1300,7 @@ impl SettingsView {
                 this.again_while_restarting("accounts", restarting, cx);
             }, cx),
             (Some(Drawn::Own), "usage") => {
-                let started = (Instant::now(), SystemTime::now());
-                self.run("read-limits", |client| client.accounts(), move |this, read, cx| {
-                    this.usage_read_started = read.is_ok().then_some(started);
-                    this.agents_limits = agents_state(&read);
-                    this.limits = reading(read, &this.limits);
-                    this.mark_old_usage(cx);
-                    let restarting = this.agents_limits.as_ref().is_some_and(kuvo_box::Refusal::agents_restarting);
-                    this.again_while_restarting("usage", restarting, cx);
-                }, cx);
+                self.read_limits(false, cx);
                 self.run("read-usage", |client| client.usage_settings(), |this, read, _| {
                     this.agents_usage = agents_state(&read);
                     this.usage = reading(read, &this.usage);

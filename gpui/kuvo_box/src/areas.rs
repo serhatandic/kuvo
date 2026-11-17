@@ -525,7 +525,8 @@ fn lenient<'de, D: serde::Deserializer<'de>, T: serde::de::DeserializeOwned>(des
 /// Display-ready plan limits for the Usage page.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct LimitDisplay {
-    pub detail: String,
+    pub title: String,
+    pub computers: Vec<RowBox>,
     pub status: Option<LimitStatus>,
     #[serde(deserialize_with = "readable")]
     pub meters: Vec<UsageMeter>,
@@ -544,9 +545,8 @@ pub struct UsageMeter {
     pub share: f32,
     pub value: String,
     pub level: Level,
-    pub read: Option<String>,
-    pub reset: String,
-    pub old: String,
+    pub read_at: f64,
+    pub resets_at: Option<f64>,
     /// Time left before the client must mark this snapshot old, as decided by the box.
     pub fresh_for_ms: u64,
 }
@@ -747,6 +747,14 @@ impl BoxClient {
 
     /// Every account across your computers, in the box's order (its limits' `rows`).
     pub fn accounts(&self) -> Result<Vec<Account>> {
+        self.read_accounts(&Request::get("kuvo/agents/api/kuvo/limits"))
+    }
+
+    pub fn refresh_accounts(&self) -> Result<Vec<Account>> {
+        self.read_accounts(&Request::post("kuvo/agents/api/kuvo/limits/refresh", serde_json::json!({})))
+    }
+
+    fn read_accounts(&self, request: &Request) -> Result<Vec<Account>> {
         #[derive(Deserialize)]
         struct Data {
             rows: Option<Vec<serde_json::Value>>,
@@ -755,7 +763,7 @@ impl BoxClient {
         struct Answer {
             data: Data,
         }
-        let answer: Answer = self.get("kuvo/agents/api/kuvo/limits")?;
+        let answer: Answer = self.value(request)?;
         // A coding agents' bridge from before `rows` (one still running after its box updated, until
         // it restarts) lists none across your computers: not "no accounts", but none it says.
         let rows = answer.data.rows.ok_or_else(|| Error::BadAnswer("This computer's Kuvo is from before it listed your accounts' limits: they show once it restarts.".into()))?;
@@ -842,22 +850,24 @@ mod tests {
         let account: Account = serde_json::from_value(serde_json::json!({
             "service": "claude",
             "usage": {
-                "detail": "Pro · Studio",
+                "title": "Claude",
+                "computers": [{ "name": "Studio", "here": true }],
                 "status": { "words": "Check the sign-in.", "warning": true },
                 "meters": [
-                    { "title": "Weekly", "share": 0.7, "value": "70% used", "level": "near", "read": "Build · Read 17 Nov, 12:00 UTC", "reset": "Reset due 19 Nov, 12:00 UTC", "old": "Old reading", "freshForMs": 500 },
+                    { "title": "Weekly", "share": 0.7, "value": "70%", "level": "calm", "readAt": 1000, "resetsAt": 2000, "freshForMs": 500 },
                     { "title": "Unreadable meter" }
                 ]
             }
         })).unwrap();
         let display = account.usage.unwrap();
-        assert_eq!(display.detail, "Pro · Studio");
+        assert_eq!(display.title, "Claude");
+        assert_eq!(display.computers[0].name, "Studio");
         assert_eq!(display.status.unwrap().words, "Check the sign-in.");
         assert_eq!(display.meters.len(), 1);
         let meter = &display.meters[0];
-        assert_eq!(meter.value, "70% used");
-        assert_eq!(meter.old, "Old reading");
-        assert_eq!(meter.read.as_deref(), Some("Build · Read 17 Nov, 12:00 UTC"));
+        assert_eq!(meter.value, "70%");
+        assert_eq!(meter.read_at, 1000.);
+        assert_eq!(meter.resets_at, Some(2000.));
         assert!(!meter.old_at(Duration::from_millis(499)));
         assert!(meter.old_at(Duration::from_millis(500)));
         let older: Account = serde_json::from_value(serde_json::json!({ "service": "claude" })).unwrap();

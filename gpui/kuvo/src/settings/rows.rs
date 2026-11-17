@@ -263,7 +263,7 @@ pub enum Control {
     /// Windows of use, each with its share and when it starts over.
     Windows(Vec<Meter>),
     /// The Usage page account row and its display-ready plan limits.
-    Usage(Vec<UsageMeter>),
+    Usage { plan: Option<String>, meters: Vec<UsageMeter> },
     /// A thing in a list: what it offers now (buttons), what asks first (a "…" menu), and its
     /// switch, last, at the edge.
     Thing { buttons: Vec<Push>, menu: Vec<Push>, switch: Option<(bool, Option<Act>)> },
@@ -693,11 +693,16 @@ fn usage(facts: &Facts) -> Vec<Block> {
                 .map(|(ix, account)| {
                     let key = format!("usage-{ix}");
                     let Some(display) = &account.usage else {
-                        return Row::new(key, account.title.clone(), "", Control::Usage(Vec::new()))
+                        return Row::new(key, account.title.clone(), "", Control::Usage { plan: account.plan.clone(), meters: Vec::new() })
                             .leading(Leading::Mark(account.service.clone()));
                     };
                     let status = display.status.as_ref();
-                    Row::new(key, account.title.clone(), display.detail.clone(), Control::Usage(display.meters.clone()))
+                    let computers = display.computers.iter()
+                        .filter(|computer| !(facts.here && computer.here))
+                        .map(|computer| computer.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    Row::new(key, display.title.clone(), computers, Control::Usage { plan: account.plan.clone(), meters: display.meters.clone() })
                         .leading(Leading::Mark(account.service.clone()))
                         .why(status.map(|status| status.words.clone()))
                         .warning(status.is_some_and(|status| status.warning))
@@ -706,7 +711,7 @@ fn usage(facts: &Facts) -> Vec<Block> {
             if limits.iter().any(|account| account.usage.is_none()) {
                 blocks.push(note("note-usage-update", "Update Kuvo on the computer selected in Settings to see usage details.", false));
             }
-            blocks.push(Block::Group("Limits".into(), String::new(), rows));
+            blocks.push(Block::Group(String::new(), String::new(), rows));
         }
         Some(Reading::Failed(_)) => blocks.push(Block::Note {
             key: "note-usage".into(), words: "Couldn’t load usage. Check the computer’s connection and reopen Usage.".into(), busy: false, warning: true,

@@ -19,24 +19,24 @@ function computer(name: string, windows: LimitWindow[], changes: Partial<Account
 const rowOn = (boxes: LimitsBox[], at = now) => limitRows(boxes, at, true)[0]!
 const displayOn = (boxes: LimitsBox[], at = now) => rowOn(boxes, at).usage!
 
-test("Usage names windows, supplies their used percentages and shares the read line when possible", () => {
+test("Usage names windows, supplies their used percentages and lists a shared source once", () => {
   const boxes = [computer("Studio", [
     window("five", 300),
     window("weekly", 10_080, { used: 0.71 }),
     window("sonnet", 10_080, { used: 0.95, model: "Sonnet" }),
-    window("monthly", 43_200, { resetsAt: undefined }),
+    window("monthly", 43_200, { used: 0.70, resetsAt: undefined }),
     window("premium", 43_200, { name: "Premium requests" }),
   ])]
   const usage = displayOn(boxes)
-  expect(usage.detail).toStartWith("Max · Studio · Read ")
+  expect(usage.computers).toEqual([{ name: "Studio", here: true }])
   expect(usage.meters.map(meter => meter.title)).toEqual(["5-hour", "Weekly", "Sonnet · Weekly", "Monthly", "Premium requests"])
   expect(usage.meters.map(({ value, level }) => [value, level])).toEqual([
-    ["43% used", "calm"], ["71% used", "near"], ["95% used", "over"], ["43% used", "calm"], ["43% used", "calm"],
+    ["43%", "calm"], ["71%", "near"], ["95%", "over"], ["70%", "calm"], ["43%", "calm"],
   ])
   expect(usage.meters[0]).toMatchObject({ share: 0.425, freshForMs: 10 * minute })
-  expect(usage.meters.every(meter => meter.read === undefined)).toBe(true)
-  expect(usage.meters[0]!.reset).toStartWith("Reset due ")
-  expect(usage.meters[3]!.reset).toBe("Reset time unavailable")
+  expect(usage.meters.every(meter => meter.readAt === now - minute)).toBe(true)
+  expect(usage.meters[0]!.resetsAt).toBe(now + 10 * minute)
+  expect(usage.meters[3]!.resetsAt).toBeUndefined()
 })
 
 test("Usage dates each merged meter by its own reading and names the computer that supplied it", () => {
@@ -44,17 +44,17 @@ test("Usage dates each merged meter by its own reading and names the computer th
     computer("Studio", [window("five", 300, { read: now - 3 * minute }), window("weekly", 10_080)]),
     computer("Build", [window("primary", 300, { read: now, used: 0.83 }), window("secondary", 10_080, { read: now - minute * 2 })]),
   ])
-  expect(usage.detail).toBe("Max")
+  expect(usage.computers.map(computer => computer.name)).toEqual(["Build", "Studio"])
   expect(usage.meters).toHaveLength(2)
-  expect(usage.meters[0]!.value).toBe("83% used")
-  expect(usage.meters[0]!.read).toStartWith("Build · Read ")
-  expect(usage.meters[1]!.read).toStartWith("Studio · Read ")
+  expect(usage.meters[0]!.value).toBe("83%")
+  expect(usage.meters[0]!.readAt).toBe(now)
+  expect(usage.meters[1]!.readAt).toBe(now - minute)
 })
 
 test("Usage marks an overdue reset and leaves the historical value intact independently of the sidebar", () => {
   const boxes = [computer("Studio", [window("five", 300, { resetsAt: now })])]
   expect(displayOn(boxes, now - 1).meters[0]!.freshForMs).toBe(1)
-  expect(displayOn(boxes).meters[0]).toMatchObject({ value: "43% used", old: "Old reading", freshForMs: 0 })
+  expect(displayOn(boxes).meters[0]).toMatchObject({ value: "43%", freshForMs: 0 })
   const row = rowOn(boxes)
   expect(row.windows[0]).toMatchObject({ used: 0, expired: true, title: "Session" })
   expect(row.rings.short!.used).toBe(0)
@@ -75,7 +75,7 @@ test("Usage ages readings by their own time and marks away or failed sources old
 test("Usage gives plain next steps instead of exposing the provider’s error", () => {
   for (const kind of ["failed", "expired", "unreadable", "rate-limited"] as const) {
     const usage = displayOn([computer("Build", [], { problem: { kind, message: "PRIVATE_ERROR" } })])
-    expect(usage.detail).toBe("Max · Build")
+    expect(usage.computers).toEqual([{ name: "Build", here: false }])
     expect(usage.status?.warning).toBe(true)
     expect(usage.status?.words).toMatch(/try again|Accounts/)
     expect(JSON.stringify(usage)).not.toContain("PRIVATE_ERROR")
