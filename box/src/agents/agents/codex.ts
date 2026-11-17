@@ -75,6 +75,8 @@ interface Slot {
   starting?: Promise<RPC>
   /** Its app-server while it's starting, before it's `server`. */
   opening?: RPC
+  /** How often it was stopped: one stopped while its holder was still starting it (before it's `opening`) isn't kept. */
+  stops?: number
   /** The one still running the old Codex, or with the box's sandbox as it was. */
   outdated?: RPC
   /** The box's sandbox as it started with it (`fenceKey`). */
@@ -468,6 +470,7 @@ export class CodexAgent implements Agent {
     const cwd = fence ? directory : this.context.temporary
     // Under a holder on a box, so a bridge that crashes doesn't take its turns with it (hold/adopt.ts):
     // as a process of the bridge's own if one can't start.
+    const stops = slot.stops
     const holdIn = agentHoldFolder("codex")
     const held = holdIn
       ? await hold(argv, { folder: holdIn, kind: "jsonrpc", cwd, env: { ...process.env, ...env }, meta: { provider: this.providerID, kind: "codex", key, fence: fenceNow, fenced: Boolean(fence), turns: {} } }).catch((error) => {
@@ -475,6 +478,14 @@ export class CodexAgent implements Agent {
           return undefined
         })
       : undefined
+    // Stopped (its session closed, the bridge stopping) while its holder was starting it: the
+    // holder had started it already, and it goes now, with its holder (its start fails once it has).
+    if (slot.stops !== stops || this.slots.get(key) !== slot) {
+      held?.stop()
+      await held?.exited
+      fence?.ended()
+      throw new Error("Codex stopped.")
+    }
     const rpc = held ? new RPC(held) : new RPC(argv, { cwd, env })
     slot.fence = fenceNow
     this.serve(rpc, slot, Boolean(fence), () => fence?.ended())
@@ -565,6 +576,7 @@ export class CodexAgent implements Agent {
 
   private stop(key: string) {
     const slot = this.slots.get(key)
+    if (slot) slot.stops = (slot.stops ?? 0) + 1
     // One still starting too (its start then fails).
     slot?.opening?.kill()
     const server = slot?.server

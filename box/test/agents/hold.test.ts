@@ -13,7 +13,7 @@ import { afterAll, describe, expect, test } from "bun:test"
 import { spawn } from "node:child_process"
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, watch, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
-import { attach, hold, heldIn, holdFolder, HOLDER, type HoldRecord } from "../../src/agents/hold/client"
+import { attach, hold, heldIn, heldProcess, holdFolder, HOLDER, type HoldRecord } from "../../src/agents/hold/client"
 import { adoptHeld } from "../../src/agents/hold/adopt"
 import { RPC } from "../../src/agents/rpc"
 
@@ -450,4 +450,18 @@ process.stdin.on("end", () => process.exit(0));
 test("a box's holders are in its run folder; one too deep for a socket's path holds none", () => {
   expect(holdFolder("/home/me/.kuvo-code")).toBe("/home/me/.kuvo-code/run/agents/hold")
   expect(holdFolder(`/Users/me/${"deep/".repeat(20)}.kuvo-code`)).toBeUndefined()
+})
+
+test("an agent stopped while its holder is starting, whose holder then can't start, isn't started as the bridge's own instead", async () => {
+  // (A holder that can't start: its folder can't be made, under a file.)
+  const blocked = join(root, "blocked")
+  writeFileSync(blocked, "")
+  const ran = join(root, "fell-back")
+  const agent = heldProcess(hold([process.execPath, "-e", ""], { folder: join(blocked, "hold"), kind: "claude", env: {} }), () => spawn(process.execPath, ["-e", `require("node:fs").writeFileSync(${JSON.stringify(ran)}, "")`], { stdio: ["pipe", "pipe", "pipe"] }))
+  const exited = new Promise<number | null>((resolve) => agent.once("exit", (code: number | null) => resolve(code)))
+  agent.on("error", () => {})
+  // Stopped (its session closed) before the holder has said anything.
+  agent.kill()
+  expect(await exited).toBe(1)
+  expect(existsSync(ran)).toBe(false)
 })

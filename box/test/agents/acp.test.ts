@@ -24,6 +24,8 @@ import { subagentEngine } from "./support/subagents"
 import { forgetServers } from "../../src/agents/servers"
 import { relayTiming } from "../../src/agents/toolrelay"
 import { noteAgentsInside } from "../../src/agents/fence"
+import { agentHoldFolder } from "../../src/agents/hold/adopt"
+import { heldIn } from "../../src/agents/hold/client"
 import type { PermissionRule } from "../../src/agents/wire"
 
 const base = mkdtempSync(join(process.env.KUVO_TEST_ROOT ?? tmpdir(), "kuvo-acp-test-"))
@@ -828,6 +830,45 @@ describe("Stopping an ACP agent", () => {
     expect(launches()).toHaveLength(2)
     expect(received().filter((message) => message.method === "session/load").map((message) => message.params.sessionId)).toEqual(["s1"])
     expect(ended(id)).toMatchObject({ type: "idle", outcome: "succeeded" })
+  })
+
+  test("one closed while its holder is still starting it (its session closed, the bridge stopping) isn't left running, nor its holder", async () => {
+    const script = fakeAcp([said("Hello.")])
+    const folder = agentHoldFolder("grok")!
+    expect(folder).toBeTruthy()
+    const before = new Set(heldIn(folder).map((record) => record.id))
+    let thread: AcpThread | undefined
+    const agent: Agent = {
+      id: "grok",
+      providerID: "acp",
+      name: "Agent",
+      instance: { id: "default" },
+      methods: () => [],
+      account: async () => ({ installed: true, signedIn: true }),
+      models: async () => [],
+      thread: (session, state) =>
+        (thread = new AcpThread(
+          {
+            fileSystem: false,
+            authMethod: () => undefined,
+            held: { kind: "grok", provider: "acp" },
+            // Closed once its holder is starting it (in the same breath: before the holder can have said it's ready).
+            command: async (mode) => {
+              setImmediate(() => thread!.close())
+              return { argv: [process.execPath, script, JSON.stringify(mode)], cwd: root }
+            },
+            selectModel: async () => {},
+          },
+          session,
+          state,
+          "Agent",
+        )),
+    }
+    const id = start(agent)
+    await settled(id)
+    expect(ended(id)).toMatchObject({ type: "idle", outcome: "failed" })
+    for (const { pid } of received().filter((entry) => entry.argv)) expect(() => process.kill(pid, 0)).toThrow()
+    await until(() => heldIn(folder).every((record) => before.has(record.id)))
   })
 
   test("Stop while it waits on your answer: the ask goes, it's told to cancel, and then what it asked is answered as cancelled (not as a no)", async () => {

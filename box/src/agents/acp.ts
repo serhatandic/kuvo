@@ -259,6 +259,7 @@ export class AcpThread implements Thread {
     // (What it left going in the background ends with it: the next message says so.)
     if (this.rpc && !this.rpc.isClosed && this.tasks.size) this.cut.push(...this.taskWork())
     this.close()
+    const closes = this.closes
     // (What the relay noted of its servers went with it: the key it starts with is as they are now.)
     const startedWith = JSON.stringify({ ...mode, program: this.flavor.program?.() ?? 0, tools: kuvoTools(this.session.id)?.key, fence, servers: await serversKey(this.session.id, computer) })
     const launch = await this.flavor.command(mode)
@@ -281,6 +282,15 @@ export class AcpThread implements Thread {
           return undefined
         })
       : undefined
+    // Closed (its session closed, the bridge stopping) while it was being started: what its holder
+    // started already goes now, with its holder (its start fails once it has), and none is started.
+    if (this.closes !== closes) {
+      held?.stop()
+      await held?.exited
+      launch.onExit?.()
+      ended?.()
+      throw new Error(`${this.name} stopped.`)
+    }
     const rpc: RPC = new RPC(held ?? argv, {
       cwd,
       env,
@@ -1190,7 +1200,11 @@ export class AcpThread implements Thread {
     if (had) emit("session.background.updated", { sessionID: this.session.id }, this.session.location.directory)
   }
 
+  /** How often it was closed: a start that a close came during isn't kept. */
+  private closes = 0
+
   close() {
+    this.closes++
     this.rpc?.kill()
     this.rpc = undefined
     this.leftRunning()
