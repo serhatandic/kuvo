@@ -11,7 +11,7 @@
 
 import type { AgentKind } from "../accounts"
 import { machineHome } from "../machine"
-import { attach, heldIn, holdFolder, type Held, type HoldRecord } from "./client"
+import { attach, forgetOldPrograms, heldIn, holdFolder, isHolder, type Held, type HoldRecord } from "./client"
 
 /**
  * The agents whose processes start under a holder, and whose turns a bridge started after one that
@@ -109,8 +109,10 @@ export interface HeldTurn {
   gate: HeldGate
 }
 
-/** A holder's process stopped (its agent first, as a bridge stops one), by its own pid. */
+/** A holder's process stopped (its agent first, as a bridge stops one), by its own pid, once it's
+ * that very holder (never a process that took its number since). */
 function stopHolder(record: HoldRecord) {
+  if (!isHolder(record.pid, record.id)) return
   try {
     process.kill(record.pid, "SIGTERM")
   } catch {}
@@ -125,6 +127,7 @@ function stopHolder(record: HoldRecord) {
 export async function adoptHeld(folder = machineHome ? holdFolder(machineHome) : undefined): Promise<Map<string, HeldTurn>> {
   const found = new Map<string, HeldTurn>()
   if (!folder) return found
+  forgetOldPrograms(folder)
   for (const record of heldIn(folder)) {
     const meta = record.meta as Partial<HeldMeta>
     const turns = Object.entries(meta.turns ?? {})

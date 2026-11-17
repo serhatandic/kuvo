@@ -1243,11 +1243,20 @@ class ClaudeThread implements Thread {
    */
   private async resumeHeld(input: RunInput, turn: Turn, hooks: TurnHooks): Promise<RunResult> {
     const taken = input.held!
-    const sdk = await this.agent.sdk()
-    this.held = taken.held
-    this.holding = Promise.resolve(taken.held)
     const opened = taken.meta.opened as ClaudeThread["opened"] | undefined
-    this.open(sdk, input.model.id, input.model.variant, input.plan, opened?.append ?? hooks.instructions(), hooks, opened?.skills, undefined, taken)
+    try {
+      const sdk = await this.agent.sdk()
+      this.held = taken.held
+      this.holding = Promise.resolve(taken.held)
+      this.open(sdk, input.model.id, input.model.variant, input.plan, opened?.append ?? hooks.instructions(), hooks, opened?.skills, undefined, taken)
+    } catch (error) {
+      // (Not taken up after all: its Claude Code stops, as the bridge before would have stopped it.)
+      taken.held.stop()
+      this.held = undefined
+      this.holding = undefined
+      throw error
+    }
+    // (What it started with, as far as it was kept: Kuvo Code's tools' key wasn't, and is told again next turn.)
     if (opened) this.opened = opened
     return new Promise<RunResult>((resolve) => {
       this.lastHooks = hooks
@@ -1651,7 +1660,10 @@ class ClaudeThread implements Thread {
     if (!folder) return whole?.spawn
     return (options: SpawnOptions) => {
       const how = whole ? whole.launch(options) : { command: options.command, args: options.args, cwd: options.cwd ?? this.session.location.directory, env: Object.fromEntries(Object.entries(options.env).filter((entry): entry is [string, string] => entry[1] !== undefined)) }
-      const holding = hold([how.command, ...how.args], { folder, kind: "claude", cwd: how.cwd, env: how.env, meta: { provider: this.agent.providerID, kind: "claude", sandboxed: Boolean(whole), opened: this.opened, turns: {} } })
+      // (What it started with, for a bridge taking it up; but Kuvo Code's tools' key, which can hold
+      // a server's environment, and is told again then.)
+      const opened = this.opened ? { ...this.opened, tools: undefined } : undefined
+      const holding = hold([how.command, ...how.args], { folder, kind: "claude", cwd: how.cwd, env: how.env, meta: { provider: this.agent.providerID, kind: "claude", sandboxed: Boolean(whole), opened, turns: {} } })
       this.holding = holding
       void holding.then(
         (held) => {

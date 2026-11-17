@@ -46,6 +46,8 @@ import { bundleBuild } from "../shared/bundle"
 import type { RenewalRecord } from "../shared/records"
 import { Sessions } from "./sessions"
 import { adoptHeld } from "./hold/adopt"
+import { stopAllHeld } from "./hold/client"
+import { runsAs } from "../shared/platform"
 import { noteAgentsInside, untilSandboxDecided } from "./fence"
 import { useSavedLoginPath } from "./proc"
 import { setSkillSource } from "./skills"
@@ -195,7 +197,16 @@ function engineAgent(providerID: string): EngineAgent | undefined {
 }
 // Agents' processes an earlier bridge left under holders (it crashed): those with turns under way
 // are taken up again, the others stopped as it would have stopped them (hold/adopt.ts).
-const heldTurns = onMachine ? await adoptHeld() : new Map()
+// (Not while another bridge runs here, which has them: this one won't get its port.)
+const otherBridge = (() => {
+  try {
+    const pid = JSON.parse(readFileSync(join(machineHome!, "run", "bridge.json"), "utf8"))?.pid
+    return pid !== process.pid && runsAs(pid, /kuvo-agents/)
+  } catch {
+    return false
+  }
+})()
+const heldTurns = onMachine && !otherBridge ? await adoptHeld() : new Map()
 const sessions = new Sessions(
   store,
   roster,
@@ -622,6 +633,8 @@ function stop() {
     if (record && JSON.parse(readFileSync(record, "utf8")).pid === process.pid) rmSync(record, { force: true })
   } catch {}
   sessions.closeAll()
+  // Every agent it holds stops with it (an app-server no session closes too), whatever exits first.
+  stopAllHeld()
   store.flush()
   server.stop(true)
   process.exit(0)

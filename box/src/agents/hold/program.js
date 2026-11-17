@@ -94,7 +94,19 @@ let lingering
 let ending = false
 const started = Date.now()
 
-const child = spawn(spec.command[0], spec.command.slice(1), { cwd: spec.cwd || undefined, env, stdio: ["pipe", "pipe", "pipe"] })
+// In a process group of its own: stopping it reaches what it started too, as stopping the bridge's
+// group did before holders.
+const child = spawn(spec.command[0], spec.command.slice(1), { cwd: spec.cwd || undefined, env, stdio: ["pipe", "pipe", "pipe"], detached: true })
+/** A signal to the agent and all it started (its group), or to it alone if that's gone. */
+function signal(name) {
+  try {
+    if (child.pid) process.kill(-child.pid, name)
+  } catch {
+    try {
+      child.kill(name)
+    } catch {}
+  }
+}
 child.stdin.on("error", () => {})
 
 function writeRecord() {
@@ -177,11 +189,12 @@ function toAgent(line) {
   if (!exited) child.stdin.write(line + "\n")
 }
 
-/** A frame to a bridge; one that stopped reading (hung) is let go, to attach again from its ack. */
+/** A frame to a bridge; one that stopped reading (hung: more than the journal's worth waits for it
+ * already) is let go, to attach again from its ack. (One long line alone never is.) */
 function send(socket, frame) {
   if (!socket || socket.destroyed) return
+  if (socket.writableLength > journalBytes) return socket.destroy()
   socket.write(JSON.stringify(frame) + "\n")
-  if (socket.writableLength > journalBytes) socket.destroy()
 }
 
 /** Lines from a stream; `exact`: as written (blank ones and carriage returns too). Returns what's left, to say at its end. */
@@ -251,11 +264,8 @@ function fromBridge(socket, frame) {
     meta = { ...meta, ...frame.meta }
     writeRecord()
   } else if (frame.end) child.stdin.end()
-  else if (typeof frame.signal === "string" && !exited) {
-    try {
-      child.kill(frame.signal)
-    } catch {}
-  } else if (frame.bye && exited) leave()
+  else if (typeof frame.signal === "string" && !exited) signal(frame.signal)
+  else if (frame.bye && exited) leave()
 }
 
 const server = net.createServer((socket) => {
@@ -292,7 +302,7 @@ const server = net.createServer((socket) => {
 })
 server.on("error", (error) => {
   console.error("kuvo-hold:", error?.message ?? error)
-  child.kill("SIGTERM")
+  signal("SIGTERM")
   process.exit(1)
 })
 rmSync(socketPath, { force: true })
@@ -357,17 +367,14 @@ function stop() {
   if (stopping) return
   stopping = true
   child.stdin.end()
-  const told = setTimeout(() => {
-    try {
-      child.kill("SIGTERM")
-    } catch {}
-  }, 5_000)
-  const made = setTimeout(() => {
-    try {
-      child.kill("SIGKILL")
-    } catch {}
-  }, 15_000)
-  child.once("exit", () => (clearTimeout(told), clearTimeout(made)))
+  const told = setTimeout(() => signal("SIGTERM"), 5_000)
+  const made = setTimeout(() => signal("SIGKILL"), 15_000)
+  child.once("exit", () => {
+    clearTimeout(told)
+    clearTimeout(made)
+    // (What it left running in its group goes with it, as the box stops.)
+    signal("SIGTERM")
+  })
 }
 
 // Asked to stop (the box stopping): its agent too, and it goes once that has.

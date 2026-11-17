@@ -12,13 +12,16 @@
 import { spawn, type ChildProcess } from "node:child_process"
 import { createHash, randomBytes } from "node:crypto"
 import { EventEmitter } from "node:events"
-import { chmodSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs"
+import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs"
 import net from "node:net"
 import { join } from "node:path"
 import { PassThrough, Writable } from "node:stream"
 import program from "./program.js" with { type: "text" }
+import { runsAs } from "../../shared/platform"
 
 export const HOLD_PROTO = "hold/1"
+/** How long a holder has to start, or to answer a bridge attaching. */
+const WITHIN = 10_000
 /** Which holder program this bridge starts (a hash of it): a newer one is a new file beside it. */
 export const HOLDER = createHash("sha256").update(program).digest("hex").slice(0, 16)
 
@@ -84,7 +87,12 @@ function programIn(folder: string): string {
   return path
 }
 
-/** The holders in a folder whose process still runs, as they recorded themselves. */
+/**
+ * The holders in a folder that still run, as they recorded themselves: each only when its process
+ * is that very holder (its command line names its program and its id) and its socket is there. A
+ * record that isn't (its holder crashed, or the computer restarted and another process has its
+ * number since) is a leftover: removed, never signalled.
+ */
 export function heldIn(folder: string): HoldRecord[] {
   let names: string[]
   try {
@@ -94,23 +102,31 @@ export function heldIn(folder: string): HoldRecord[] {
   }
   const found: HoldRecord[] = []
   for (const name of names) {
-    if (!/^[0-9a-f]{12}\.json$/.test(name)) continue
+    const id = /^([0-9a-f]{12})\.json$/.exec(name)?.[1]
+    if (!id) continue
+    let record: HoldRecord | undefined
     try {
-      const record = JSON.parse(readFileSync(join(folder, name), "utf8")) as HoldRecord
-      if (record.proto !== HOLD_PROTO || !alive(record.pid)) continue
-      found.push(record)
+      record = JSON.parse(readFileSync(join(folder, name), "utf8")) as HoldRecord
     } catch {}
+    if (record?.proto === HOLD_PROTO && record.id === id && isHolder(record.pid, id) && existsSync(join(folder, `${id}.sock`))) found.push(record)
+    else if (!record || !isHolder(record.pid, id)) {
+      rmSync(join(folder, `${id}.sock`), { force: true })
+      rmSync(join(folder, name), { force: true })
+    }
   }
   return found
 }
 
-function alive(pid: number): boolean {
+/** Whether `pid` is the holder of `id`. */
+export function isHolder(pid: unknown, id: string): boolean {
+  return /^[0-9a-f]{12}$/.test(id) && runsAs(pid, new RegExp(`kuvo-hold-[0-9a-f]+\\.js .* ${id} (jsonrpc|claude|raw)\\s*$`))
+}
+
+/** Holder programs no holder runs now (each loaded its own as it started): all but this bridge's. */
+export function forgetOldPrograms(folder: string) {
   try {
-    process.kill(pid, 0)
-    return true
-  } catch (error: any) {
-    return error?.code === "EPERM"
-  }
+    for (const name of readdirSync(folder)) if (/^kuvo-hold-[0-9a-f]+\.js(\.[0-9a-f]+)?$/.test(name) && name !== `kuvo-hold-${HOLDER}.js`) rmSync(join(folder, name), { force: true })
+  } catch {}
 }
 
 export interface HoldOptions {
@@ -167,6 +183,8 @@ export async function hold(command: string[], options: HoldOptions): Promise<Hel
     })
     starting.once("error", reject)
     starting.once("exit", (code) => reject(new Error(`The agent's holder stopped as it started (${code}).`)))
+    // (One that never says it's ready is given up on, and stopped below.)
+    setTimeout(() => reject(new Error("The agent's holder didn't start in time.")), WITHIN).unref?.()
   })
   try {
     const { pid } = await ready
@@ -192,8 +210,27 @@ async function connect(folder: string, id: string, key: string, generation: numb
   const socket = net.connect(join(folder, `${id}.sock`))
   const held = new Held(id, holder, socket)
   socket.write(JSON.stringify({ hello: HOLD_PROTO, key, generation, ...(from !== undefined ? { from } : {}) }) + "\n")
-  await held.welcomed
+  // (A holder that doesn't answer, wedged, is given up on.)
+  const late = setTimeout(() => socket.destroy(), WITHIN)
+  try {
+    await held.welcomed
+  } finally {
+    clearTimeout(late)
+  }
+  live.add(held)
+  void held.closed.then(() => live.delete(held))
   return held
+}
+
+/** The holders this bridge drives now. */
+const live = new Set<Held>()
+
+/**
+ * Every agent this bridge drives under a holder, stopped as it ends on purpose (Stop, making way
+ * for a newer build): through each holder's own process, at once, whatever it does next.
+ */
+export function stopAllHeld() {
+  for (const held of live) held.stop()
 }
 
 type Exit = { code: number | null; signal: string | null }
@@ -218,10 +255,10 @@ export class Held {
   fenced = false
   /** The last line of the agent's this bridge has taken in: where a turn it starts now begins (`from`). */
   seen = 0
-  private lineListeners: ((line: string, again: boolean) => void)[] = []
+  private lineListeners: ((line: string, again: boolean, seq: number) => void)[] = []
   private errorListeners: ((text: string) => void)[] = []
   /** What came before anyone listened (the replay right after the hello), given to the first listener. */
-  private early: { line: string; again: boolean }[] = []
+  private early: { line: string; again: boolean; seq: number }[] = []
   private earlyErrors: string[] = []
   private ended = false
   private ackTimer?: ReturnType<typeof setTimeout>
@@ -282,7 +319,7 @@ export class Held {
           // (Each line once: what came again is only what it asked and wasn't answered.)
           if (frame.s <= this.seen && !frame.again) continue
           this.seen = Math.max(this.seen, frame.s)
-          this.deliver(frame.o, frame.again === true)
+          this.deliver(frame.o, frame.again === true, frame.s)
           this.ackSoon()
         } else if (typeof frame.e === "string") {
           if (this.errorListeners.length) for (const each of this.errorListeners) each(frame.e)
@@ -298,17 +335,17 @@ export class Held {
     })
   }
 
-  private deliver(line: string, again: boolean) {
-    if (!this.lineListeners.length) return void this.early.push({ line, again })
-    for (const each of this.lineListeners) each(line, again)
+  private deliver(line: string, again: boolean, seq: number) {
+    if (!this.lineListeners.length) return void this.early.push({ line, again, seq })
+    for (const each of this.lineListeners) each(line, again, seq)
   }
 
-  /** Each line the agent wrote, from the first this bridge hasn't seen. */
-  onLine(listener: (line: string, again: boolean) => void) {
+  /** Each line the agent wrote, from the first this bridge hasn't seen, with its number. */
+  onLine(listener: (line: string, again: boolean, seq: number) => void) {
     this.lineListeners.push(listener)
     const early = this.early
     this.early = []
-    for (const { line, again } of early) listener(line, again)
+    for (const { line, again, seq } of early) listener(line, again, seq)
   }
 
   onStderr(listener: (text: string) => void) {
@@ -358,7 +395,8 @@ export class Held {
    * exiting at once could leave unsent): its stdin closed, then told, then made to; the holder goes
    * once it has. Not after a newer bridge took it over. */
   stop() {
-    if (this.fenced) return
+    // (Gone already, its number maybe another process's now: not signalled.)
+    if (this.fenced || this.ended) return
     try {
       process.kill(this.holder, "SIGTERM")
     } catch {}
@@ -380,7 +418,7 @@ export class Held {
 
 /** A holder's files, once its process is gone (it removes them itself as it ends: these are a crash's). */
 export function forgetHolder(folder: string, record: HoldRecord) {
-  if (alive(record.pid)) return
+  if (isHolder(record.pid, record.id)) return
   rmSync(join(folder, `${record.id}.sock`), { force: true })
   rmSync(join(folder, `${record.id}.json`), { force: true })
 }

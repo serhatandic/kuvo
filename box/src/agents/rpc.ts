@@ -62,7 +62,8 @@ export class RPC {
       // (From `start()`: what the holder sends again as this bridge attaches waits for its
       // handlers, or an ask would be answered "not found".)
       this.begin = () =>
-        held.onLine((line) => {
+        held.onLine((line, _again, seq) => {
+          this.lineSeq = seq
           const trimmed = line.replace(/\r$/, "")
           if (trimmed.trim() && (!this.filter || this.filter(trimmed))) this.receive(trimmed)
         })
@@ -80,6 +81,8 @@ export class RPC {
   }
 
   private begin?: () => void
+  /** Over a holder: the number of the agent's line being handled now (for what began before a turn's own lines, to set aside). */
+  lineSeq = 0
 
   /** Over a holder: its lines start coming, to the handlers set by now (a process of its own starts at once). */
   start() {

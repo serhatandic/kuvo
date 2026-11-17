@@ -472,28 +472,87 @@ older one, a journal of every line). Run them with `bun <script> <args>`, as eac
   run once. Also covered: fencing, a stale or wrong key, an agent that ended before anyone attached,
   and what each kind sends again.
 
-**Not built (8b), so nothing runs under a holder yet:**
-1. Agents started under holders: `codex.ts` `start()` (`new RPC(held)`), `acp.ts`,
-   `claude.ts` `open()`/`whole()` (`spawnClaudeCodeProcess: heldProcess(hold(...))`, also when the
-   sandbox's launcher is the command), and `!` commands (`sessions.ts` `runCommand`, kind `raw`).
-   Each records `meta` {provider, session, slot, thread/claude session, turn, sdk version, opened}.
-2. Adopting after a crash or handover. The new bridge reads `heldIn()`, and `Sessions.repair` must
-   not close a turn whose agent is held and live. The bridge's turn state is in memory (codex.ts
-   `Active`, the session's `Run`/`Turn`, permission maps), so adoption rebuilds it:
-   - attach at generation+1, with no `initialize` for Codex (refused) and a new `query()` for Claude;
-   - rebuild the open turn's message from the journal (drop what the store kept of that turn and
-     replay from its `turn/started`; if the journal has a `gap`, end the turn as today);
-   - answers to ids the old bridge sent: match them from the record (`meta`), not by `pending`;
-   - Claude asks are deduped by request_id / tool_use_id (S1), and a Claude Code whose
-     `initialize` reply lacks `pending_permission_requests` (before 2.1.268) isn't adoptable.
-   - `Held.exited` says `fenced` or `lost` for a bridge that lost the agent. RPC maps it to exit
-     -1 today, which codex.ts would read as "the server stopped": tell these apart before wiring.
-   - `heldIn` trusts a record whose pid lives; after a reboot a reused pid could look alive. Also
-     check the socket answers.
-   Without this, holding only delays the cut: a new bridge would have to end the held agents.
-3. Keeper and footprint: `kuvo-start stop` must stop holders by their record's pid (never by
-   pattern). The bridge removes `kuvo-hold-*.js` that no live holder runs and the records of dead
-   holders (`forgetHolder`). `uninstall.md`, `privacy.md` and docs/footprint.md need
-   `run/agents/hold` and the `/tmp` fallback.
-4. Renewal: a held, adoptable bridge can hand over (step 9) instead of draining; until then it
-   drains as today.
+**8b, built 2026-11-17: Codex, Claude Code and Grok run under holders, and a crash doesn't end their turns.**
+- Which agents: `HELD_KINDS` in `box/src/agents/hold/adopt.ts` (codex, claude, grok). Antigravity
+  and Cursor are left out, in code and here: no spike showed a new bridge can take theirs over, so
+  a crash ends their turns as before and Renewal waits for them. The held list is the one switch:
+  empty, everything runs as before step 8, and a starting bridge stops any held agent it finds.
+- Starting: `codex.ts` `start()`, `claude.ts` `holdSpawn()` (also through the sandbox's launcher),
+  and `acp.ts` `open()` (Grok's flavor has `held`) start the agent under `hold()`. If the holder
+  can't start, the agent runs as the bridge's own process. Each turn notes in the holder's record
+  where its lines begin (`from`), and Codex's turn id or ACP's prompt request id
+  (`noteTurn`); the note goes when the turn ends.
+- Adopting (`adoptHeld`, run in `main.ts` before sessions load):
+  - every live holder of a held kind with turns noted is attached at generation+1, from its
+    oldest turn's `from`;
+  - any other holder (idle, an unheld kind, a gap in its journal, a failed attach) is stopped by
+    its pid.
+  `Sessions` takes up a turn only if its session's last turn is still open, on that agent (not
+  Auto), and began with a message (not a summary or a subagent's task). For those, `repair` drops
+  the stored steps of the open turn and `resumeHeld` reruns it from the journal, before the bridge
+  listens. A turn not taken up is let go (`HeldGate.drop`): Codex is told `turn/interrupt` for it,
+  and an agent with nothing taken up is stopped.
+- Per agent:
+  - **Codex**: the adopted app-server becomes its key's server, without `initialize`. Its lines wait
+    until every turn taken up in it is ready (the gate: the shared server runs several sessions).
+  - **Claude Code**: a new SDK `query()` joins the held process; its open ask returns through
+    `pending_permission_requests`. Asks are de-duplicated by tool-use id, Codex's by request id. The
+    sandbox launcher isn't made again, since `fenceAgent` would clear what the live process runs with.
+  - **Grok**: the answer to the crashed bridge's `session/prompt` ends the turn (`RPC.onStray`).
+- Stopping: the keeper's `halt` (stop, restart, pause, off, so also uninstall and Stop Background
+  Work) runs `halt_held`. It stops each holder by the pid its record names, only if that pid runs
+  `kuvo-hold-`, and waits up to 20 s. The holder closes the agent's stdin, sends SIGTERM after 5 s and
+  SIGKILL after 15 s. `uninstall.ts` lists and stops holders too. A bridge that stops on purpose
+  (Renewal, SIGTERM) stops its held agents through `RPC.kill` / `heldProcess.kill`, which signal the
+  holder's own process.
+- Review fixes (2026-11-17):
+  - a bridge is dropped only once output already queued for it passes the journal size, so one long
+    line no longer cuts it off;
+  - Codex asks are keyed by app-server and id;
+  - records count only when their pid runs that holder (`isHolder`, which uses the command line),
+    and stale ones are removed, never signalled;
+  - an agent runs in its own process group, and a stop signals the group, so what it started goes
+    too;
+  - a bridge stopping on purpose stops every agent it holds (`stopAllHeld`);
+  - starting and attaching time out after 10 s;
+  - a resumed turn's stored steps are dropped only once its agent takes it (otherwise its tools are
+    closed as after a crash);
+  - Codex ignores replayed lines from before a thread's own turn, and interrupts a dropped thread's
+    turn once its id shows;
+  - `Held.stop()` does nothing once its holder is gone;
+  - old holder programs are removed;
+  - the recorded `opened` leaves out Kuvo Code's tools' key.
+- Tests:
+  - `box/bridge-tests/agents-held.test.js`: the real bridge, holders and keeper, with stand-ins that
+    speak Codex's, Claude Code's (as S1 recorded it) and ACP's protocols. For each agent, the bridge
+    is SIGKILLed with a permission ask open. The agent lives; the next bridge asks once; the answer
+    goes once; the turn ends `succeeded` as one turn, with what was said before and after the crash.
+    Then `kuvo-start stop` leaves no agent or holder running.
+  - `box/test/agents/hold*.test.ts`: the holder protocol, and an unattached agent stopped (the
+    15-minute wait is the holder's `orphan` setting, 100 ms in the test, not an injected clock: the
+    holder is a separate program on real timers).
+  - `agents-renewal.test.js`: Renewal still drains, now with Codex held.
+  - `claude.test.ts` checks the SDK's own and the launcher's spawning, so it runs unheld
+    (`holding.on = false`).
+
+**Not built, and why:**
+- **`!` commands stay unheld.** They already run in a process group of their own (`detached`), so a
+  bridge crash doesn't signal them. But their output pipe goes with the bridge, and taking one up
+  means rebuilding its shell message and output in a new bridge: a different path from agents'
+  turns. Until then a crash marks a running `!` command failed (`repair`), as before, and Renewal
+  waits for them.
+- Turns not taken up after a crash end as before (interrupted): Auto sessions, summaries, turns
+  with a message you sent partway (steered: the replay would place it wrongly), and
+  subagents' sessions. A Codex or Claude subagent's own session is repaired as interrupted while
+  its parent's turn goes on.
+- A held agent's stderr after it exits is heard for 2 s (the holder's wait), not `heardWithin`.
+- Answers to requests the crashed bridge sent are ignored, except ACP's prompt. A Codex turn that
+  crashed before Codex answered `turn/start` with an error would wait (no `turn/started` ever comes).
+- Not covered by a test: the held path with the box's sandbox on (the launcher under a holder,
+  fenced Codex). Also unchecked: whether Kuvo Code's tools reach a resumed turn's agent in the
+  sandbox after the bridge restarts (the relay's port can change; Codex reloads its thread at its
+  next turn, and Claude Code restarts at its next turn because its tools' key isn't recorded).
+- Two bridges at once: a bridge doesn't adopt while `run/bridge.json` names another live
+  `kuvo-agents` process, the one with the port.
+- Step 9 (live handoff instead of Renewal's drain) can now build on this. Adoption is crash
+  recovery; a handoff adds `handover.json` and detaching without stopping.

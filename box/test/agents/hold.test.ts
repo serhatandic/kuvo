@@ -11,9 +11,10 @@
 import "../safety"
 import { afterAll, describe, expect, test } from "bun:test"
 import { spawn } from "node:child_process"
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, watch, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, watch, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { attach, hold, heldIn, holdFolder, HOLDER, type HoldRecord } from "../../src/agents/hold/client"
+import { adoptHeld } from "../../src/agents/hold/adopt"
 import { RPC } from "../../src/agents/rpc"
 
 // (In the run's own home: short enough for a socket's path, and never /tmp.)
@@ -196,19 +197,69 @@ describe("an agent under a holder", () => {
     await third.closed
   })
 
-  test("a bridge that attaches after the agent ended hears its end, and the holder goes", async () => {
+  test("an agent that ends with no bridge attached: the next bridge hears its end, and the holder goes", async () => {
     const paths = files()
     const { bridge, gone, asked } = await firstBridge(paths)
     bridge.kill("SIGKILL")
     await gone
     const record: HoldRecord = recordOf(paths.folder, asked.id)
-    // The agent ends with no bridge attached (its stdin closed through a bridge that attaches and lets go).
-    const closing = await attach(paths.folder, record)
-    closing.end()
-    await closing.exited
-    expect(alive(asked.pid)).toBe(false)
-    await closing.closed
+    // (Ended from outside, with no bridge there: the agent this test's holder started.)
+    const ended = new Promise<void>((resolve) => {
+      const watcher = watch(paths.folder, () => {
+        if (recordOf(paths.folder, asked.id)?.exited) (watcher.close(), resolve())
+      })
+    })
+    process.kill(asked.pid, "SIGTERM")
+    await ended
+    const later = await attach(paths.folder, record)
+    expect(await later.exited).toEqual({ code: null, signal: "SIGTERM" })
+    await later.closed
     expect(existsSync(join(paths.folder, `${asked.id}.sock`))).toBe(false)
+  })
+
+  test("a line far longer than the journal reaches the bridge whole, and the bridge stays attached", async () => {
+    const { dir, folder } = shortFolder()
+    const agent = join(dir, "long.js")
+    writeFileSync(agent, `process.stdin.once("data", () => process.stdout.write(JSON.stringify({ said: "x".repeat(5_000_000) }) + "\\n")); process.stdin.on("end", () => process.exit(0));`)
+    const held = await hold([process.execPath, agent], { folder, kind: "jsonrpc", env: { BUN_BE_BUN: process.env.BUN_BE_BUN, PATH: process.env.PATH } })
+    const said = new Promise<string>((resolve) => held.onLine((line) => resolve(line)))
+    held.write("go")
+    expect(JSON.parse(await said).said.length).toBe(5_000_000)
+    expect(held.isOpen).toBe(true)
+    held.end()
+    expect((await held.exited).code).toBe(0)
+  })
+
+  test("stopping it stops what its agent started too", async () => {
+    const { dir, folder } = shortFolder()
+    const agent = join(dir, "parent.js")
+    const started = join(dir, "started")
+    // (What it starts keeps its output open, so its end is said once that's gone too.)
+    writeFileSync(agent, `const child = require("node:child_process").spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: ["ignore", "inherit", "inherit"] }); require("node:fs").writeFileSync(${JSON.stringify(started)}, String(child.pid)); process.stdout.write("{}\\n"); process.stdin.on("end", () => process.exit(0)); process.stdin.resume();`)
+    const held = await hold([process.execPath, agent], { folder, kind: "raw", env: { BUN_BE_BUN: process.env.BUN_BE_BUN, PATH: process.env.PATH } })
+    await new Promise<void>((resolve) => held.onLine(() => resolve()))
+    const grandchild = Number(readFileSync(started, "utf8"))
+    expect(alive(grandchild)).toBe(true)
+    held.stop()
+    await held.exited
+    expect(alive(grandchild)).toBe(false)
+  })
+
+  test("a record left by a holder that's gone, its number another process's now: removed, and that process left alone", async () => {
+    const { folder } = shortFolder()
+    // (A process of this test's own, standing for whatever took the number.)
+    const other = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" })
+    const gone = new Promise<void>((resolve) => other.once("exit", () => resolve()))
+    const id = "0123456789ab"
+    mkdirSync(folder, { recursive: true, mode: 0o700 })
+    writeFileSync(join(folder, `${id}.json`), JSON.stringify({ proto: "hold/1", holder: HOLDER, id, kind: "jsonrpc", pid: other.pid, child: null, generation: 1, exited: null, meta: { provider: "codex-cli", kind: "codex", turns: { t1: { session: "ses_x", from: 0 } } }, key: "k".repeat(48) }))
+    writeFileSync(join(folder, `${id}.sock`), "")
+    expect(await adoptHeld(folder)).toEqual(new Map())
+    expect(existsSync(join(folder, `${id}.json`))).toBe(false)
+    expect(existsSync(join(folder, `${id}.sock`))).toBe(false)
+    expect(alive(other.pid!)).toBe(true)
+    other.kill()
+    await gone
   })
 })
 

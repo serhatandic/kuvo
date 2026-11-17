@@ -67,6 +67,8 @@ interface Run {
   last?: Slot
   /** What the files were before each message you sent partway through it, for Undo. */
   steered: SnapshotNote[]
+  /** A turn taken up from a held agent (`resumeHeld`), once its agent took it. */
+  heldTaken?: boolean
   /** Notes in it asking its agent to pass your message on to a subagent (by their input). */
   relayed?: string[]
   /** It's a summary of the conversation, not a turn: nothing goes into it partway. */
@@ -1048,21 +1050,39 @@ export class Sessions {
     const lastUser = record.messages.findLastIndex((message) => message.type === "user" || message.type === "synthetic" || message.type === "compaction")
     const message = record.messages[lastUser]
     if (!message || message.type === "compaction") return false
-    return !record.messages.slice(lastUser).some((each) => each.type === "idle")
+    // (One you sent partway, into the turn: its turn began with the message before it, and is made
+    // again from there, around it. Not yet: such a turn ends as before.)
+    const lastIdle = record.messages.findLastIndex((each) => each.type === "idle")
+    if (lastIdle > lastUser) return false
+    return record.messages.slice(lastIdle + 1, lastUser).every((each) => each.type !== "user" && each.type !== "synthetic")
+  }
+
+  /** Its steps closed, and their tools stopped mid-way (a crash): whether any were. */
+  private closeTools(record: Record_): boolean {
+    let changed = false
+    for (const message of record.messages) {
+      if (message.type !== "assistant") continue
+      if (!message.time.completed) {
+        message.time.completed = message.time.streamed ?? message.time.created
+        changed = true
+      }
+      for (const content of message.content) {
+        if (content.type !== "tool" || (content.state.status !== "running" && content.state.status !== "streaming")) continue
+        const input = content.state.status === "streaming" ? {} : content.state.input
+        const metadata = content.state.status === "running" ? content.state.metadata : undefined
+        content.state = { status: "error", input, error: { type: "aborted", message: "Stopped." }, content: [], metadata }
+        changed = true
+      }
+    }
+    return changed
   }
 
   /** A turn the bridge stopped in the middle of (it quit): its steps and tools closed, and its end marked. */
   private repair(id: string) {
     const record = this.store.get(id)
     if (!record) return
-    // Under way still, in its agent: what it said is made again from the agent's own lines, so the
-    // steps kept of it go (`resumeHeld`).
-    if (this.resuming.has(id)) {
-      const lastUser = record.messages.findLastIndex((message) => message.type === "user" || message.type === "synthetic")
-      record.messages.splice(lastUser + 1, record.messages.length, ...record.messages.slice(lastUser + 1).filter((message) => message.type !== "assistant"))
-      this.store.save(id, true)
-      return
-    }
+    // Under way still, in its agent: left as it is, until its agent takes it up (`resumeHeld`).
+    if (this.resuming.has(id)) return
     let changed = false
     // A turn starts with your message, or with a note from the app (a mid-turn model switch), and
     // a summary you asked for is one too.
@@ -1087,19 +1107,8 @@ export class Sessions {
         message.time.completed = message.time.created
         changed = true
       }
-      if (message.type !== "assistant") continue
-      if (!message.time.completed) {
-        message.time.completed = message.time.streamed ?? message.time.created
-        changed = true
-      }
-      for (const content of message.content) {
-        if (content.type !== "tool" || (content.state.status !== "running" && content.state.status !== "streaming")) continue
-        const input = content.state.status === "streaming" ? {} : content.state.input
-        const metadata = content.state.status === "running" ? content.state.metadata : undefined
-        content.state = { status: "error", input, error: { type: "aborted", message: "Stopped." }, content: [], metadata }
-        changed = true
-      }
     }
+    if (this.closeTools(record)) changed = true
     // A subagent's session can start without a message of yours (its task given elsewhere).
     const lastStep = record.messages.findLastIndex((message) => message.type === "assistant")
     const openStep = record.session.parentID && lastStep > lastUser && !record.messages.slice(lastStep).some((message) => message.type === "idle")
@@ -2231,6 +2240,8 @@ export class Sessions {
       result = { outcome: "failed", error: failure(error) }
     }
     const outcome: Outcome = abort.signal.aborted ? "interrupted" : result.outcome
+    // Never taken up by its agent: what was kept of it stays, its tools closed as a crash's are.
+    if (!run.heldTaken) this.closeTools(record)
     const before = record.messages[record.messages.length - 1]?.id
     turn.finish(outcome, outcome === "interrupted" ? undefined : result.error)
     for (const [child, childTurn] of [...live.subagents]) {
@@ -2420,9 +2431,13 @@ export class Sessions {
     run.agent = working
     const from = record.messages.length
     try {
-      // Under way in its agent already: taken up where it is, sending nothing.
+      // Under way in its agent already: taken up where it is, sending nothing. What it said is made
+      // again from the agent's own lines, so the steps kept of it go now.
       if (input.held) {
         heldTaken = true
+        run.heldTaken = true
+        const opened = record.messages.findIndex((message) => message.id === userMessage)
+        if (opened >= 0) record.messages.splice(opened + 1, record.messages.length, ...record.messages.slice(opened + 1).filter((message) => message.type !== "assistant"))
         const result = await Promise.race([thread.run({ ...input, model }, turn, hooks), abandoned])
         if (result.outcome !== "failed" || result.taken || record.messages.slice(from).some(didWork)) slot.seen = record.messages[record.messages.length - 1]?.id
         run.last = slot
@@ -3270,6 +3285,8 @@ export class Sessions {
       const message = record?.messages.findLast((each) => each.type === "user" || each.type === "synthetic")
       if (!record || !message || live.doing.kind !== "idle") {
         held.gate.drop(held.thread)
+        // (Its turn ends as one a crash cut short.)
+        this.repair(id)
         continue
       }
       this.start(id, live, { id: message.id, text: "", files: [], delivery: "steer", resume: held })

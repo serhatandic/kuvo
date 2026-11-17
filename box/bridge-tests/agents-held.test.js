@@ -297,6 +297,7 @@ async function crashWhileAsking({ provider, model, log }) {
   assert.deepEqual(textOf(messages), ["Asking first.", "Ran it."], "what the agent said before the crash and after, once each");
   assert.deepEqual(messages.filter(each => each.type === "idle").map(each => each.outcome), ["succeeded"], "one turn, not cut");
   assert.equal(box.log(log).filter(each => "answered" in each).length, 1, "answered once");
+  assert.deepEqual((await box.api("GET", `api/session/${session}/permission`)).json?.data, [], "and nothing is left to ask, with the turn over");
   assert.equal(box.log(log).filter(each => "asked" in each).length, 1, "asked about once: the turn wasn't started again");
 
   // Stopping the box (Stop, and uninstall's `off`): the held agent stops too, its holder with it.

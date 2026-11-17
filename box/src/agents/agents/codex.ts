@@ -539,13 +539,26 @@ export class CodexAgent implements Agent {
     this.serve(rpc, slot, meta.fenced === true, () => this.adopted.delete(taken.held))
     if (!slot.server || slot.server.isClosed) slot.server = rpc
     slot.lastUse = Date.now()
-    taken.gate.onOpen((dropped) => {
-      rpc.start()
-      for (const thread of dropped) {
-        const turn = meta.turns[thread]?.turn
-        if (turn) void rpc.request("turn/interrupt", { threadId: thread, turnId: turn }, 30_000).catch(() => {})
-        noteTurn(taken.held, thread, undefined)
+    // Turns let go of (their session couldn't take them up) are stopped: now, or once the turn
+    // says its id as its lines come again.
+    const stopping = new Map<string, number>()
+    const said = rpc.onNotification
+    rpc.onNotification = (method, params) => {
+      said(method, params)
+      const from = stopping.get(params?.threadId)
+      if (method === "turn/started" && from !== undefined && rpc.lineSeq > from && params?.turn?.id) {
+        stopping.delete(params.threadId)
+        void rpc.request("turn/interrupt", { threadId: params.threadId, turnId: params.turn.id }, 30_000).catch(() => {})
       }
+    }
+    taken.gate.onOpen((dropped) => {
+      for (const thread of dropped) {
+        const note = meta.turns[thread]
+        noteTurn(taken.held, thread, undefined)
+        if (note?.turn) void rpc.request("turn/interrupt", { threadId: thread, turnId: note.turn }, 30_000).catch(() => {})
+        else if (note) stopping.set(thread, note.from)
+      }
+      rpc.start()
     })
     return rpc
   }
@@ -601,7 +614,7 @@ export class CodexAgent implements Agent {
     }
     // Codex settled an ask itself: its card goes.
     if (method === "serverRequest/resolved") {
-      this.asked.get(String(params?.requestId))?.abort()
+      if (from) this.asked.get(this.askKey(from, params?.requestId))?.abort()
       return
     }
     const threadID = params?.threadId
@@ -634,7 +647,7 @@ export class CodexAgent implements Agent {
       if (method === "mcpServer/elicitation/request") return { action: "decline" }
       throw new RPCError(-32601, `No session for ${method}.`)
     }
-    const key = String(id ?? newID("call"))
+    const key = this.askKey(rpc, id ?? newID("call"))
     // (Asked again under the same id, as it's taken up from its holder: the one ask, answered once.)
     const open = this.answering.get(key)
     if (open) return open
@@ -650,6 +663,15 @@ export class CodexAgent implements Agent {
 
   /** The answers to asks under way, by Codex's request. */
   private answering = new Map<string, Promise<unknown>>()
+
+  /** An ask's key: its app-server's and its id (each app-server numbers its asks from 0). */
+  private askKey(rpc: RPC, id: unknown) {
+    let server = this.serverNumbers.get(rpc)
+    if (server === undefined) this.serverNumbers.set(rpc, (server = ++this.servers))
+    return `${server}:${String(id)}`
+  }
+  private serverNumbers = new WeakMap<RPC, number>()
+  private servers = 0
 
   private threadFor(nativeID: string): CodexThread | undefined {
     for (const thread of this.threads.values()) if (thread.nativeID === nativeID) return thread
@@ -1023,6 +1045,8 @@ type Answer = { text: string; files: PromptFile[]; declined?: boolean }
 
 interface Active extends Lane {
   hooks: TurnHooks
+  /** Taken up from its holder: the holder's last line before this turn began. */
+  from?: number
   /** The agents it spawned, by their thread. */
   subagents: Map<string, SubagentLane>
   /** Spawn calls under way whose thread isn't known yet, oldest first. */
@@ -1578,7 +1602,7 @@ class CodexThread implements Thread {
     return new Promise<RunResult>((resolve) => {
       this.answered = []
       this.wokeUp()
-      const active: Active = { turn, hooks, resolve, streamed: new Set(), changes: new Map(), output: new Map(), toolsSinceText: false, subagents: new Map(), spawning: [], auto: input.auto, model: input.model.id, planning: input.plan, turnID: taken.note.turn }
+      const active: Active = { turn, hooks, resolve, streamed: new Set(), changes: new Map(), output: new Map(), toolsSinceText: false, subagents: new Map(), spawning: [], auto: input.auto, model: input.model.id, planning: input.plan, turnID: taken.note.turn, from: taken.note.from }
       active.resolve = (result) => {
         for (const [threadID, lane] of active.subagents) {
           if (lane.ended) continue
@@ -1736,6 +1760,9 @@ class CodexThread implements Thread {
   /** What Codex says (`from`: the app-server that said it). */
   notification(method: string, params: any, from?: RPC) {
     const active = this.active
+    // Taken up from its holder: what came before its own turn began (another thread's turn began
+    // earlier there) isn't this turn's.
+    if (active?.from !== undefined && from && from.lineSeq && from.lineSeq <= active.from) return
     // An agent it spawned: told in its session (one still at work after the turn too).
     if (params?.threadId && this.nativeID && params.threadId !== this.nativeID) return this.subagentNotification(active, params.threadId, method, params, from)
     // Codex let go of the thread: the next turn loads it again.
