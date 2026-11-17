@@ -1745,8 +1745,8 @@ var init_sessions = __esm(() => {
   TOOL_ANSWER = object({ text: string, isError: bool });
   REFUSED2 = object({ message: string });
   WAITING = object({ id: string, "from?": string, text: string, "files?": list(string), "keyword?": string, at: number });
-  QUEUE = object({ paused: bool, held: list(string), "waiting?": list(WAITING) });
-  ADDED = object({ paused: bool, held: list(string), "waiting?": list(WAITING), waits: bool });
+  QUEUE = object({ paused: bool, held: list(string), "waiting?": list(WAITING), "line?": string });
+  ADDED = object({ paused: bool, held: list(string), "waiting?": list(WAITING), "line?": string, waits: bool });
   REMOVED = object({ id: string, text: string, "files?": list(any), delivery: oneOf(literal("steer"), literal("queue")), "from?": string, words: string, keyword: nullable(string), draft: string, "before?": string });
   QUEUE_ITEM = object({
     id: string,
@@ -1758,7 +1758,7 @@ var init_sessions = __esm(() => {
     delivery: words("steer", "queue"),
     held: bool
   });
-  QUEUE_SHOWN = object({ paused: bool, held: list(string), "waiting?": list(WAITING), items: nullable(list(QUEUE_ITEM)) });
+  QUEUE_SHOWN = object({ paused: bool, held: list(string), "waiting?": list(WAITING), "line?": string, items: nullable(list(QUEUE_ITEM)) });
   QUEUE_READ = object({ paused: bool, held: list(string), "waiting?": list(WAITING), "items?": nullable(list(QUEUE_ITEM)) });
   ASK_CHOICE = object({
     answer: words("once", "always", "reject", "instead"),
@@ -43663,7 +43663,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "a28c24815a85";
+var BRIDGE_VERSION = "16c7d4711297";
 
 // box/src/link/rehome/move.ts
 init_outside();
