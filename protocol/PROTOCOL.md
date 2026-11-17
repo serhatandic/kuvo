@@ -8708,20 +8708,25 @@ was named Kuvo Code Box, in no release.)
   had no `renews`, its parent is this box's helper (`<bin/Kuvo Helper.app>/…/Kuvo Helper keep`),
   the build in place renews itself (`KuvoHelperRenews` true in its `Info.plist`), no update is
   under way (else it looks again every 30 seconds), and Kuvo on this Mac isn't stopped (`run/paused`,
-  `run/off`). It notes the try first, in `run/helper-handover.json` (`{v: 1, bundle, pid, at,
-  outcome, message?, stillOld?}`, `bundle` the build in place's hash as the helper's own look hashes
-  it), and starts `kuvo-link.js helper hand-over --pid <helper>` in a session of its own, which
-  outlasts it: the helper is sent SIGTERM (as launchd sends it: its `serve` and keeper stop, the
-  engine, bridge and their turns run on, and it exits 0, which launchd doesn't start again), waited
-  for (twenty seconds at most), and once launchd no longer names it, started as `helper start`
-  starts one (kickstart, or opened where Login Items is off for it). Nothing at work is cut, so it
-  doesn't wait for a quiet moment. `outcome`: `handing`, then `handed` (the new one started),
-  `stopped` (Kuvo was stopped on this Mac before or as it went: nothing started), `gone` (it had
-  gone already: nothing done), `stayed` (it didn't stop) or `failed` (`message` says launchd's or
-  macOS's answer). One try per build in place: a helper found old again for the same `bundle` is
-  noted once (`stillOld: {pid, at}`, and in `run/serve.log`) and left to your next login. A
-  helper that says `renews`, a `serve` started otherwise (`OPENCODE_PASSWORD`), and a box that
-  isn't a Mac's own in the real `~/.kuvo-code` (or a test's stand-ins) are never handed over.
+  `run/off`). It notes the try first, in `run/helper-handover.json` (`{v: 1, bundle, copy, pid, by?,
+  at, outcome, message?, stillOld?}`: `bundle` the build in place's hash as the helper's own look
+  hashes it, `copy` its program file's number, new with each update that puts it there, `by` the
+  process handing it over), and starts `kuvo-link.js helper hand-over --pid <helper>` in a session
+  of its own, which outlasts it: the helper is sent SIGTERM (as launchd sends it: its `serve` and
+  keeper stop, the engine, bridge and their turns run on, and it exits 0, which launchd doesn't
+  start again), waited for (a minute at most), and once launchd no longer names it, started as
+  `helper start` starts one (kickstart, or opened where Login Items is off for it), Kuvo being
+  stopped on this Mac looked at again right before; where launchd refuses otherwise, it's opened
+  (`open -g -j -n`), to run until you log out. Nothing at work is cut, so it doesn't wait for a quiet
+  moment. `outcome`: `handing`, then `handed` (the new one started; `message` says where it was
+  opened instead), `stopped` (Kuvo was stopped on this Mac before or as it went: nothing started),
+  `gone` (it had gone already: nothing done), `stayed` (it didn't stop) or `failed` (`message` says
+  launchd's or macOS's answer; or a hand-over that ended without a word). One try for each copy of a
+  build in place: a helper found old again for the same `bundle` and `copy` is noted once
+  (`stillOld: {pid, at}`, and in `run/serve.log`) and left to your next login; the same release put
+  in place again (after a rollback) is a copy of its own, and tried once more. A helper that says
+  `renews`, a `serve` started otherwise (`OPENCODE_PASSWORD`), and a box that isn't a Mac's own in
+  the real `~/.kuvo-code` (or a test's stand-ins) are never handed over.
 - **Host interface**: the same calls, proofs and answers as the keeper's ("Host interface",
   `HostProof` shared by both), from its own Keychain items, named by its bundle ID
   (`<helper ID>.phone-link`, `.integrations`, `.vault`), never asking you anything (a locked

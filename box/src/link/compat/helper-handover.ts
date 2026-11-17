@@ -26,7 +26,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { writePrivate } from "../../shared/files";
-import { alive, commandLineOf } from "../../shared/platform";
+import { alive, commandLineOf, runsAs } from "../../shared/platform";
 import { updateUnderWay } from "../../shared/updating";
 import { HANDOVER_RECORD, HELPER_NAME, helperBundle, helperProgram, startHelperAgent } from "../helper";
 import { K, OWN_HOME_MAC, OWN_RUNTIME, REAL_BOX, RUN, SCRIPT } from "../home";
@@ -53,7 +53,14 @@ export function bundleRenews(bundle = helperBundle()): boolean {
   }
 }
 
-/** The one try for a build in place: which build, the helper it was for, when, and how it went
+/** The copy of the build in place: its program's file (each update puts a copy of its own there, so
+ * the same release taken again after a rollback is a copy of its own too); null where it isn't there. */
+export function helperCopy(bundle = helperBundle()): number | null {
+  try { return fs.statSync(path.join(bundle, "Contents", "MacOS", HELPER_NAME)).ino; } catch { return null; }
+}
+
+/** The one try for a build in place: which build (and copy of it), the helper it was for, the
+ * process handing it over (`by`), when, and how it went
  * (`handing` while under way; `handed`: the new one started; `stopped`: Kuvo was stopped on this
  * Mac meanwhile, so nothing was started; `gone`: the old one had gone already, and nothing was done;
  * `stayed`: the old one didn't go; `failed`: launchd or macOS
@@ -62,7 +69,9 @@ export function bundleRenews(bundle = helperBundle()): boolean {
 export interface HandOver {
   v: 1;
   bundle: string;
+  copy: number;
   pid: number;
+  by?: number;
   at: number;
   outcome: "handing" | "handed" | "stopped" | "gone" | "stayed" | "failed";
   message?: string;
@@ -89,26 +98,37 @@ const stoppedHere = (): boolean => fs.existsSync(path.join(RUN, "paused")) || fs
 const slashes = (text: string) => text.replace(/\/+/g, "/");
 export const isOwnHelper = (pid: number): boolean => pid > 1 && alive(pid) && slashes(commandLineOf(pid) ?? "").includes(slashes(`${helperProgram()} keep`));
 
+/** Whether a hand-over noted as under way still is: its process runs (or, not noted yet, it began
+ * under two minutes ago). */
+const stillHanding = (record: HandOver): boolean =>
+  record.by ? runsAs(record.by, /kuvo-link\.js helper hand-over/) : Date.now() - record.at < 120_000;
+
 /** What `serve` does about the helper that started it (`parent`), which said nothing of renewing
- * itself on its stdin: `none` where there's nothing to do, ever (one that isn't this box's helper, Kuvo stopped here, the build in place no newer, or its try made already);
- * `later` while it can't be told yet (an update under way, the bundle being swapped in); `hand-over`
- * once it's due, its record noted first. */
+ * itself on its stdin: `none` where there's nothing to do, ever (one that isn't this box's helper,
+ * Kuvo stopped here, the build in place no newer, or its try made already); `later` while it can't
+ * be told yet (an update under way, the bundle being swapped in, a hand-over still going);
+ * `hand-over` once it's due, its record noted first. */
 export function considerHelper(parent: number): "none" | "later" | "hand-over" {
   if (!OWN_HOME_MAC || !launchTools() || !isOwnHelper(parent) || stoppedHere()) return "none";
   if (updateUnderWay(RUN)) return "later";
   const bundle = helperSeal();
   if (!bundle) return "later";
+  const copy = helperCopy();
+  if (copy === null) return "later";
   if (!bundleRenews()) return "none";
   const tried = readHandOver();
-  if (tried?.bundle === bundle) {
+  if (tried?.bundle === bundle && tried.copy === copy) {
+    // One still handing it over: it says how that went. One that went without a word ended as failed.
+    if (tried.outcome === "handing" && stillHanding(tried)) return "later";
     // Still the old one after its try: said once, never tried again (it goes at your next login).
-    if (!tried.stillOld && tried.outcome !== "handing") {
-      note({ ...tried, stillOld: { pid: parent, at: Date.now() } });
-      console.error(`${HELPER_NAME} is still the one from before the update after it was handed over once (${tried.outcome}): it moves to the new one at your next login.`);
+    if (!tried.stillOld) {
+      const outcome = tried.outcome === "handing" ? "failed" : tried.outcome;
+      note({ ...tried, outcome, ...(tried.outcome === "handing" ? { message: "The hand-over ended before it said how it went." } : {}), stillOld: { pid: parent, at: Date.now() } });
+      console.error(`${HELPER_NAME} is still the one from before the update after it was handed over once (${outcome}): it moves to the new one at your next login.`);
     }
     return "none";
   }
-  note({ v: 1, bundle, pid: parent, at: Date.now(), outcome: "handing" });
+  note({ v: 1, bundle, copy, pid: parent, at: Date.now(), outcome: "handing" });
   return "hand-over";
 }
 
@@ -128,11 +148,18 @@ export function watchHelperBuild(renews: boolean | undefined): void {
     if (timer) clearInterval(timer);
     if (said === "hand-over") {
       console.error(`${HELPER_NAME} is from before the update and doesn't move to the new one by itself: it's handed over once.`);
-      try {
-        spawn(process.execPath, [...OWN_RUNTIME, SCRIPT, "helper", "hand-over", "--pid", String(parent)], { detached: true, stdio: "ignore", cwd: K, env: process.env }).unref();
-      } catch (error) {
+      const failed = (error: Error) => {
         const record = readHandOver();
-        if (record) note({ ...record, outcome: "failed", message: (error as Error).message });
+        if (record?.outcome === "handing" && record.pid === parent) note({ ...record, outcome: "failed", message: error.message });
+      };
+      try {
+        const child = spawn(process.execPath, [...OWN_RUNTIME, SCRIPT, "helper", "hand-over", "--pid", String(parent)], { detached: true, stdio: "ignore", cwd: K, env: process.env });
+        child.on("error", failed);
+        child.unref();
+        const record = readHandOver();
+        if (child.pid && record?.outcome === "handing" && record.pid === parent && !record.by) note({ ...record, by: child.pid });
+      } catch (error) {
+        failed(error as Error);
       }
     }
     return true;
@@ -164,9 +191,12 @@ export function handOverCommand(args: string[]): number {
     console.error("Usage: kuvo-link.js helper hand-over --pid <Kuvo Helper's process>");
     return 2;
   }
-  const record = readHandOver();
+  const ours = () => { const record = readHandOver(); return record?.pid === pid ? record : null; };
+  const begun = ours();
+  if (begun) note({ ...begun, by: process.pid });
   const done = (outcome: HandOver["outcome"], message: string): number => {
-    if (record && record.pid === pid) note({ ...record, outcome, message });
+    const record = ours();
+    if (record) note({ ...record, outcome, message });
     console.log(JSON.stringify({ outcome, message }));
     return outcome === "handed" ? 0 : 1;
   };
@@ -175,14 +205,26 @@ export function handOverCommand(args: string[]): number {
   if (stoppedHere()) return done("stopped", "Kuvo on this Mac was stopped: nothing was started.");
   if (!isOwnHelper(pid)) return done("gone", `${HELPER_NAME} from before the update had gone already: nothing was done.`);
   try { process.kill(pid, "SIGTERM"); } catch {}
-  // It stops its server and keeper first (three seconds at most, then a second more), and exits.
-  for (let waited = 0; waited < 200 && alive(pid); waited++) pause(100);
+  // It stops its server and keeper first (three seconds at most, then a second more), and exits: one
+  // that has begun to go is waited for a minute (once it goes, nothing else would start it).
+  for (let waited = 0; waited < 600 && alive(pid); waited++) pause(100);
   if (alive(pid)) return done("stayed", `${HELPER_NAME} from before the update didn't stop: it moves to the new one at your next login.`);
-  // And until launchd has seen it go: a start while it still says it runs would leave it as it is.
+  // And until launchd has seen it go (five seconds at most): a start while it still says it runs
+  // would leave it as it is.
   const domain = `gui/${process.getuid?.() ?? 0}`;
-  for (let waited = 0; waited < 50 && new RegExp(`\\bpid = ${pid}\\b`).test(spawnSync(tools.launchctl, ["print", `${domain}/${LAUNCH_AGENT}`], { encoding: "utf8", timeout: 30_000, stdio: ["ignore", "pipe", "ignore"] }).stdout ?? ""); waited++) pause(100);
-  // Stopped meanwhile (Stop Kuvo on this Mac as it went): it stays stopped.
+  const until = Date.now() + 5_000;
+  while (Date.now() < until && new RegExp(`\\bpid = ${pid}\\b`).test(spawnSync(tools.launchctl, ["print", `${domain}/${LAUNCH_AGENT}`], { encoding: "utf8", timeout: 5_000, stdio: ["ignore", "pipe", "ignore"] }).stdout ?? "")) pause(100);
+  // Stopped meanwhile (Stop Kuvo on this Mac as it went): it stays stopped, up to the very start.
   if (stoppedHere()) return done("stopped", "Kuvo on this Mac was stopped as it went: nothing was started.");
-  const started = startHelperAgent({ app: appOfAgent(tools.agents) });
-  return started.started ? done("handed", `${HELPER_NAME} runs the new version now.`) : done("failed", started.message);
+  const started = startHelperAgent({ app: appOfAgent(tools.agents), unlessStopped: true });
+  if (started.started) return done("handed", `${HELPER_NAME} runs the new version now.`);
+  if (started.stopped) return done("stopped", "Kuvo on this Mac was stopped as it went: nothing was started.");
+  // launchd didn't start it (and it isn't switched off in Login Items, whose refusal is said as it
+  // is): opened instead, as Login Items off has it, so Kuvo on this Mac runs until you log out, never
+  // left without its helper.
+  if (!started.disabled && !stoppedHere()) {
+    const opened = spawnSync(tools.open, ["-g", "-j", "-n", helperBundle(), "--args", "keep", "--home", K], { encoding: "utf8", timeout: 30_000, stdio: ["ignore", "ignore", "pipe"] });
+    if (opened.status === 0) return done("handed", `${HELPER_NAME} runs the new version now, opened until you log out: launchd didn't start it (${started.message})`);
+  }
+  return done("failed", started.message);
 }
