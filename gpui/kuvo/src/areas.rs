@@ -840,13 +840,17 @@ impl AreaView {
         for bot in &bots.bots {
             let key = format!("bot:{}", bot.id);
             let selected = self.is_selected(&key);
-            // What it's doing now is the box's (`now`): its sessions at work and waiting on you,
-            // or when the newest finished; with none of them, its job. Its face shows it too (no
-            // spinner or badge beside it: the bot says it). Only what waits on you is coloured.
-            let (words, waiting) = if self.reached {
-                bot_row_words(bot, self.now())
+            let wake_status = self.reached.then(|| bot_row_wake(bot, self.now())).flatten();
+            let detail = if let Some((words, waking)) = wake_status {
+                let tint = if waking { c.accent_text } else { c.attention };
+                div().flex().items_center().gap(space::S1).text_role(TextRole::RowDetail)
+                    .text_color(tint)
+                    .child(Icon::new(kuvo_ui::IconName::Clock).size(IconSize::XSmall).color(tint))
+                    .child(div().min_w_0().truncate().child(words))
             } else {
-                (bot.job.clone(), None)
+                let doing = self.reached.then(|| doing_parts(&bot.now, self.now())).flatten();
+                let (words, waiting) = doing.map(Doing::into_parts).unwrap_or_else(|| (bot.job.clone(), None));
+                div().truncate().text_role(TextRole::RowDetail).text_color(c.text_muted).child(status_words(words, waiting, cx))
             };
             let (hover, selected_bg) = (c.hover, c.selected);
             let selector = format!("bot-{}", bot.id);
@@ -866,7 +870,7 @@ impl AreaView {
                     .hover(move |s| s.bg(if selected { selected_bg } else { hover }))
                     .on_click(self.row_click(key, cx))
                     .child(bot_face(&bot.id, &bot.look, px(BOT_FACE)))
-                    .child(two_lines(bot.name.clone(), div().truncate().text_role(TextRole::RowDetail).text_color(c.text_muted).child(status_words(words, waiting, cx)), &c))
+                    .child(two_lines(bot.name.clone(), detail, &c))
                     .into_any_element(),
             );
         }
@@ -1179,18 +1183,18 @@ impl Doing {
     }
 }
 
-fn bot_row_words(bot: &Bot, now: f64) -> (String, Option<std::ops::Range<usize>>) {
+fn bot_row_wake(bot: &Bot, now: f64) -> Option<(String, bool)> {
     let wake = wakes::Status::from(bot);
     if wake.waking && bot.now.asking == 0 && bot.now.state != kuvo_box::areas::BotState::Blocked {
-        return ("Waking up…".into(), None);
+        return Some(("Waking up…".into(), true));
     }
     if bot.now.working == 0 && bot.now.asking == 0
         && !matches!(bot.now.state, kuvo_box::areas::BotState::Blocked | kuvo_box::areas::BotState::Done)
         && let Some(words) = wake.scheduled(now)
     {
-        return (words, None);
+        return Some((words, false));
     }
-    doing_parts(&bot.now, now).map(Doing::into_parts).unwrap_or_else(|| (bot.job.clone(), None))
+    None
 }
 
 pub(crate) fn doing_parts(now: &BotNow, at: f64) -> Option<Doing> {

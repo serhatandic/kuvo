@@ -334,11 +334,12 @@ pub struct Colors {
 
     /// The accent: focus rings, links, the text cursor, switches that are on, unread badges.
     pub accent: Hsla,
+    /// The accent for small text on the sidebar, including its selection wash.
+    pub accent_text: Hsla,
     pub accent_hover: Hsla,
     pub accent_pressed: Hsla,
     /// What waits on you, in words ("1 waiting on you"): the accent's hue, calmer, so it marks
-    /// what's actionable without outshouting the name above it. Status that isn't actionable is
-    /// never coloured.
+    /// what needs attention or is scheduled without outshouting the name above it.
     pub attention: Hsla,
     /// The accent, faint, behind selected text.
     pub selection: Hsla,
@@ -429,6 +430,7 @@ impl Colors {
             // The macOS system blue, which is also the Mac app's accent unless the user picks
             // another; the accent itself is a brand decision left to the user.
             accent: hex(0x0A7AFF),
+            accent_text: hex(0x0761CC),
             accent_hover: hex(0x086DE6),
             accent_pressed: hex(0x0761CC),
             attention: hex(0x3466B2),
@@ -499,6 +501,7 @@ impl Colors {
             primary_pressed: hex(0xD4D4D4),
 
             accent: hex(0x2E8BFF),
+            accent_text: hex(0x4799FF),
             accent_hover: hex(0x4799FF),
             accent_pressed: hex(0x2479E0),
             attention: hex(0x85AEE0),
@@ -697,6 +700,19 @@ mod tests {
     fn contrast(a: Hsla, b: Hsla) -> f32 {
         let (la, lb) = (luminance(a), luminance(b));
         (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
+    }
+
+    #[test]
+    fn wake_status_contrast_on_sidebar_rows() {
+        for colors in [Colors::light(), Colors::dark()] {
+            let sidebar = colors.sidebar;
+            for background in [sidebar, sidebar.blend(colors.hover), sidebar.blend(colors.selected)] {
+                for tint in [colors.attention, colors.accent_text] {
+                    let ratio = contrast(tint, background);
+                    assert!(ratio >= 4.5, "wake-up status contrast {ratio:.2} on {background:?}");
+                }
+            }
+        }
     }
 
     /// Text people read stays readable on every surface it sits on, in both appearances: the
