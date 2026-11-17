@@ -67,7 +67,7 @@ interface Run {
   last?: Slot
   /** What the files were before each message you sent partway through it, for Undo. */
   steered: SnapshotNote[]
-  /** A turn taken up from a held agent (`resumeHeld`), once its agent took it. */
+  /** A turn taken up from a held agent (`resumeHeld`), once its agent's lines came (the steps kept of it went then). */
   heldTaken?: boolean
   /** Notes in it asking its agent to pass your message on to a subagent (by their input). */
   relayed?: string[]
@@ -2435,10 +2435,23 @@ export class Sessions {
       // again from the agent's own lines, so the steps kept of it go now.
       if (input.held) {
         heldTaken = true
-        run.heldTaken = true
+        // (Once its agent's lines come: until then, a take-up that fails leaves them as they were.)
         const opened = record.messages.findIndex((message) => message.id === userMessage)
-        if (opened >= 0) record.messages.splice(opened + 1, record.messages.length, ...record.messages.slice(opened + 1).filter((message) => message.type !== "assistant"))
-        const result = await Promise.race([thread.run({ ...input, model }, turn, hooks), abandoned])
+        const kept = new Set(record.messages.slice(opened + 1).filter((message) => message.type === "assistant").map((message) => message.id))
+        void input.held.held.firstLine.then(() => {
+          if (runOf(live.doing) !== run || run.heldTaken) return
+          run.heldTaken = true
+          record.messages.splice(0, record.messages.length, ...record.messages.filter((message) => !kept.has(message.id)))
+          this.store.save(id)
+        })
+        let result: RunResult
+        try {
+          result = await Promise.race([thread.run({ ...input, model }, turn, hooks), abandoned])
+        } catch (error) {
+          // (Its agent couldn't take it up: it stops, as the bridge before would have stopped it.)
+          input.held.held.stop()
+          throw error
+        }
         if (result.outcome !== "failed" || result.taken || record.messages.slice(from).some(didWork)) slot.seen = record.messages[record.messages.length - 1]?.id
         run.last = slot
         return result

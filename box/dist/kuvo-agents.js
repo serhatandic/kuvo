@@ -8612,12 +8612,12 @@ var program_default = `// kuvo-hold (hold/1): keeps one coding agent's process a
 // {signal: name}, {bye: true}. The holder answers {hello, pid, child, generation, seq, first, gap,
 // exited, stderr, meta} or {refused}, then sends {s: seq, o: line} (again: true for a request sent
 // again), {e: text} (stderr), {x: {code, signal}} (the agent ended, after all it wrote), {fenced:
-// true} (a newer bridge took over). Files: <folder>/<id>.sock and <id>.json (its record, with the
-// key: the folder is 0700).
+// true} (a newer bridge took over). Files: <folder>/<id>.sock, <id>.json (its record, with the
+// key) and <id>.journal (what its agent said lately, 64 MB at most); the folder is 0700.
 
 import { spawn } from "node:child_process"
 import { randomBytes, timingSafeEqual } from "node:crypto"
-import { renameSync, rmSync, writeFileSync } from "node:fs"
+import { closeSync, openSync, readSync, renameSync, rmSync, writeFileSync, writeSync } from "node:fs"
 import net from "node:net"
 import { join } from "node:path"
 
@@ -8625,6 +8625,7 @@ const PROTO = "hold/1"
 const [folder, id, kind] = process.argv.slice(2)
 const socketPath = join(folder ?? "", \`\${id}.sock\`)
 const recordPath = join(folder ?? "", \`\${id}.json\`)
+const journalPath = join(folder ?? "", \`\${id}.journal\`)
 /** Most asks it keeps open for a bridge to come (the oldest go first). */
 const MOST_PENDING = 1_000
 /** How long a bridge has to say hello, and how long its hello may be. */
@@ -8632,6 +8633,8 @@ const HELLO_WITHIN = 10_000
 const HELLO_BYTES = 64_000
 /** How long the agent's stdout may stay open after it ended (something it started holds it). */
 const OUTPUT_AFTER_END = 2_000
+/** How long a bridge may leave what's sent to it unread before it's let go (hung), to attach again. */
+const HUNG = 60_000
 
 const given = await new Promise((resolve) => {
   let text = ""
@@ -8656,14 +8659,21 @@ if (key.length < 16 || !Array.isArray(spec.command) || !spec.command.length || !
 const env = { ...process.env }
 delete env.BUN_BE_BUN
 if (typeof spec.bun === "string") env.BUN_BE_BUN = spec.bun
-const journalBytes = Number(spec.journalBytes) || 4_000_000
+// Its journal, on disk beside its record: what a turn said since it began, for a bridge taking it up
+// (a long turn of Claude Code's, its words streamed and its tools' output, runs to tens of MB).
+const journalBytes = Number(spec.journalBytes) || 64_000_000
 // How long it waits for a bridge to hear its agent ended, with none attached, before it goes.
 const linger = Number(spec.linger) || 15 * 60_000
 // How long its agent runs with no bridge attached before it's stopped (none came to adopt it).
 const orphan = Number(spec.orphan) || 15 * 60_000
 
-/** The latest lines the agent wrote, oldest first, at most \`journalBytes\` of them. */
-const journal = []
+/**
+ * The latest lines the agent wrote, oldest first: each line's number, where it is in the journal's
+ * file, and whether it's never to be replayed (\`ask\`). The file holds at most \`journalBytes\`: past
+ * that, its older half goes. Line \`s\` is \`journal[s - journal[0].s]\`.
+ */
+let journal = []
+let journalFile = openSync(journalPath, "w+", 0o600)
 let journaled = 0
 let seq = 0
 /** Requests the agent sent that no bridge has answered, by id: their line and its number. */
@@ -8747,13 +8757,44 @@ function isControlRequest(line) {
 function fromAgent(line) {
   seq++
   if (kind === "jsonrpc") noteAsks(line)
-  const bytes = Buffer.byteLength(line)
+  const text = Buffer.from(line + "\\n")
   // (Claude Code's asks and hook callbacks: the live bridge gets them, a later one never.)
   const ask = kind === "claude" && line.includes('"control_request"') && isControlRequest(line)
-  journal.push({ s: seq, line, bytes, ask })
-  journaled += bytes
-  while (journaled > journalBytes && journal.length > 1) journaled -= journal.shift().bytes
-  send(controller, { s: seq, o: line })
+  writeSync(journalFile, text, 0, text.length, journaled)
+  journal.push({ s: seq, at: journaled, bytes: text.length, ask })
+  journaled += text.length
+  if (journaled > journalBytes) prune()
+  pump(controller)
+}
+
+/** The journal's older half gone: the newer copied to a file of its own, put in its place. */
+function prune() {
+  let kept = 0
+  let from = journal.length
+  while (from > 1 && kept + journal[from - 1].bytes <= journalBytes / 2) kept += journal[--from].bytes
+  const start = journal[from].at
+  const temporary = \`\${journalPath}.\${randomBytes(4).toString("hex")}\`
+  const fresh = openSync(temporary, "w+", 0o600)
+  const chunk = Buffer.alloc(1_000_000)
+  for (let at = start; at < journaled; ) {
+    const read = readSync(journalFile, chunk, 0, Math.min(chunk.length, journaled - at), at)
+    writeSync(fresh, chunk, 0, read, at - start)
+    at += read
+  }
+  closeSync(journalFile)
+  renameSync(temporary, journalPath)
+  journalFile = fresh
+  journal = journal.slice(from).map((entry) => ({ ...entry, at: entry.at - start }))
+  journaled -= start
+}
+
+/** Line \`s\` as the journal has it, or none if it's gone from it. */
+function journalLine(s) {
+  const entry = journal[s - (journal[0]?.s ?? 0)]
+  if (!entry || entry.s !== s) return undefined
+  const text = Buffer.alloc(entry.bytes)
+  readSync(journalFile, text, 0, entry.bytes, entry.at)
+  return { entry, line: text.toString("utf8", 0, entry.bytes - 1) }
 }
 
 /** An ask no longer open: not sent again, nor replayed (a new bridge would ask it again). */
@@ -8761,8 +8802,8 @@ function settle(found) {
   const open = pending.get(found)
   if (!open) return
   pending.delete(found)
-  const entry = journal.find((each) => each.s === open.s)
-  if (entry) entry.ask = true
+  const entry = journal[open.s - (journal[0]?.s ?? 0)]
+  if (entry?.s === open.s) entry.ask = true
 }
 
 /** A line a bridge sent the agent: an answer to one of its requests is no longer open. */
@@ -8777,12 +8818,55 @@ function toAgent(line) {
   if (!exited) child.stdin.write(line + "\\n")
 }
 
-/** A frame to a bridge; one that stopped reading (hung: more than the journal's worth waits for it
- * already) is let go, to attach again from its ack. (One long line alone never is.) */
+/** A frame to a bridge, whatever's waiting for it (its hello, a refusal, its stderr). */
 function send(socket, frame) {
-  if (!socket || socket.destroyed) return
-  if (socket.writableLength > journalBytes) return socket.destroy()
-  socket.write(JSON.stringify(frame) + "\\n")
+  if (!socket || socket.destroyed) return true
+  return socket.write(JSON.stringify(frame) + "\\n")
+}
+
+/**
+ * What the bridge attached hasn't had yet, in order: the lines from the journal (those after where
+ * it started, as it attached, then each as it comes), and the agent's end once all are sent. While
+ * the bridge doesn't keep up, its socket full, the agent's stdout isn't read (the agent waits, as
+ * on any pipe); a bridge that reads nothing for a minute is let go (hung), to attach again from
+ * its ack.
+ */
+function pump(socket) {
+  if (!socket || socket !== controller || socket.destroyed || socket.waiting) return
+  while (socket.sent < seq) {
+    const next = socket.sent + 1
+    const found = journalLine(next)
+    socket.sent = next
+    if (!found) {
+      // (Gone from the journal before it was sent: this bridge can't be told all. It attaches again.)
+      if (journal[0] && next < journal[0].s) return socket.destroy()
+      continue
+    }
+    // (An ask never replayed: one said before this bridge attached, which it's told otherwise.)
+    if (found.entry.ask && next <= socket.liveFrom) continue
+    if (!socket.write(JSON.stringify({ s: next, o: found.line }) + "\\n")) return wait(socket)
+  }
+  if (exited && !socket.heardEnd) {
+    socket.heardEnd = true
+    send(socket, { x: exited })
+  }
+}
+
+/** Its socket full: the agent's output waits until the bridge reads on (or is let go). */
+function wait(socket) {
+  socket.waiting = true
+  child.stdout.pause()
+  const hung = setTimeout(() => socket.destroy(), HUNG)
+  const go = () => {
+    clearTimeout(hung)
+    socket.off("drain", go)
+    socket.off("close", go)
+    socket.waiting = false
+    child.stdout.resume()
+    pump(socket)
+  }
+  socket.on("drain", go)
+  socket.on("close", go)
 }
 
 /** Lines from a stream; \`exact\`: as written (blank ones and carriage returns too). Returns what's left, to say at its end. */
@@ -8831,16 +8915,15 @@ function welcome(socket, hello) {
   controller = socket
   generation = wanted
   clearTimeout(orphaned)
-  const from = Number.isSafeInteger(hello.from) ? hello.from : acked
+  const from = Math.min(Number.isSafeInteger(hello.from) ? hello.from : acked, seq)
   const first = journal[0]?.s ?? seq + 1
   send(socket, { hello: PROTO, pid: process.pid, child: child.pid ?? null, generation, seq, first, gap: from + 1 < first, exited, stderr: stderrTail, meta })
-  for (const entry of journal) if (entry.s > from && !entry.ask) send(socket, { s: entry.s, o: entry.line })
-  // What it asked and no bridge answered, which the new one has already seen: asked again.
+  // What it asked and no bridge answered, which the new one has already seen: asked again, first.
   for (const { s, line } of pending.values()) if (s <= from) send(socket, { s, o: line, again: true })
-  if (exited) {
-    send(socket, { x: exited })
-    socket.heardEnd = true
-  }
+  // Then what came since where it starts (what's still in the journal), and on as it comes.
+  socket.sent = Math.max(from, first - 1)
+  socket.liveFrom = seq
+  pump(socket)
   writeRecord()
 }
 
@@ -8865,8 +8948,8 @@ const server = net.createServer((socket) => {
     // (Only the bridge attached counts: one fenced off as it closes says nothing of this one.)
     if (socket !== controller) return
     controller = undefined
-    // Heard of its agent's end, and gone: nothing left to hold.
-    if (exited && socket.heardEnd) return leave()
+    // Heard of its agent's end, and gone (or asked to stop, its agent ended): nothing left to hold.
+    if (exited && (socket.heardEnd || stopping)) return leave()
     if (!ending) waitForBridge()
   })
   lines(
@@ -8917,10 +9000,7 @@ function ended(code, signal) {
     child.stdout.destroy()
     exited = { code, signal }
     writeRecord()
-    if (controller) {
-      send(controller, { x: exited })
-      controller.heardEnd = true
-    }
+    if (controller) pump(controller)
     // (Asked to stop, with no bridge there: none is waiting to hear it.)
     if (stopping && !controller) return leave()
     lingering = setTimeout(leave, linger)
@@ -8941,6 +9021,10 @@ function leave() {
   clearTimeout(orphaned)
   rmSync(socketPath, { force: true })
   rmSync(recordPath, { force: true })
+  try {
+    closeSync(journalFile)
+  } catch {}
+  rmSync(journalPath, { force: true })
   server.close()
   if (controller && !controller.destroyed) {
     // (What it was sent goes first.)
@@ -9023,8 +9107,8 @@ function heldIn(folder) {
     if (record?.proto === HOLD_PROTO && record.id === id && isHolder(record.pid, id) && existsSync8(join18(folder, `${id}.sock`)))
       found.push(record);
     else if (!record || !isHolder(record.pid, id)) {
-      rmSync7(join18(folder, `${id}.sock`), { force: true });
-      rmSync7(join18(folder, name), { force: true });
+      for (const leftover of [`${id}.sock`, `${id}.journal`, name])
+        rmSync7(join18(folder, leftover), { force: true });
     }
   }
   return found;
@@ -9078,6 +9162,8 @@ async function hold3(command, options) {
     starting.once("exit", (code) => reject(new Error(`The agent's holder stopped as it started (${code}).`)));
     setTimeout(() => reject(new Error("The agent's holder didn't start in time.")), WITHIN).unref?.();
   });
+  if (starting.pid)
+    startingHolders.add(starting.pid);
   try {
     const { pid } = await ready;
     starting.removeAllListeners("exit");
@@ -9090,8 +9176,12 @@ async function hold3(command, options) {
     } catch {}
     starting.unref();
     throw error;
+  } finally {
+    if (starting.pid)
+      startingHolders.delete(starting.pid);
   }
 }
+var startingHolders = new Set;
 async function attach(folder, record, from) {
   return connect(folder, record.id, record.key, record.generation + 1, record.pid, from);
 }
@@ -9114,6 +9204,11 @@ var live = new Set;
 function stopAllHeld() {
   for (const held of live)
     held.stop();
+  for (const pid of startingHolders) {
+    try {
+      process.kill(pid, "SIGTERM");
+    } catch {}
+  }
 }
 
 class Held {
@@ -9125,9 +9220,13 @@ class Held {
   gap = false;
   meta = {};
   welcomed;
+  firstLine;
+  firstCame = () => {};
   exited;
   closed;
   fenced = false;
+  heardEnd = false;
+  letGo = false;
   seen = 0;
   lineListeners = [];
   errorListeners = [];
@@ -9143,11 +9242,13 @@ class Held {
     let welcome = () => {};
     let refuse = () => {};
     this.welcomed = new Promise((resolve, reject) => (welcome = resolve, refuse = reject));
+    this.firstLine = new Promise((resolve) => this.firstCame = resolve);
     let exit = () => {};
     this.exited = new Promise((resolve) => exit = resolve);
     let close = () => {};
     this.closed = new Promise((resolve) => close = resolve);
     let hello = false;
+    let attached = false;
     let buffer = "";
     socket.setEncoding("utf8");
     socket.on("error", () => {});
@@ -9156,6 +9257,8 @@ class Held {
       clearTimeout(this.ackTimer);
       if (!hello)
         refuse(new Error("The agent's holder isn't there."));
+      if (attached && !this.fenced && !this.heardEnd && !this.letGo)
+        this.stopHolder();
       exit({ code: null, signal: this.fenced ? "fenced" : "lost" });
       close();
     });
@@ -9185,6 +9288,7 @@ class Held {
           this.meta = frame.meta ?? {};
           if (frame.stderr)
             this.earlyErrors.push(frame.stderr);
+          attached = true;
           welcome();
           continue;
         }
@@ -9201,6 +9305,7 @@ class Held {
           else
             this.earlyErrors.push(frame.e);
         } else if (frame.x) {
+          this.heardEnd = true;
           exit({ code: frame.x.code ?? null, signal: frame.x.signal ?? null });
           this.send({ ack: this.seen });
           this.send({ bye: true });
@@ -9213,6 +9318,7 @@ class Held {
   deliver(line, again, seq) {
     if (!this.lineListeners.length)
       return void this.early.push({ line, again, seq });
+    this.firstCame();
     for (const each of this.lineListeners)
       each(line, again, seq);
   }
@@ -9220,6 +9326,8 @@ class Held {
     this.lineListeners.push(listener);
     const early = this.early;
     this.early = [];
+    if (early.length)
+      this.firstCame();
     for (const { line, again, seq } of early)
       listener(line, again, seq);
   }
@@ -9263,7 +9371,16 @@ class Held {
       this.send({ signal });
   }
   stop() {
-    if (this.fenced || this.ended)
+    if (this.fenced || this.heardEnd)
+      return;
+    if (this.ended)
+      return this.stopHolder();
+    try {
+      process.kill(this.holder, "SIGTERM");
+    } catch {}
+  }
+  stopHolder() {
+    if (!isHolder(this.holder, this.id))
       return;
     try {
       process.kill(this.holder, "SIGTERM");
@@ -9275,6 +9392,7 @@ class Held {
       this.send({ meta });
   }
   detach() {
+    this.letGo = true;
     clearTimeout(this.ackTimer);
     if (this.seen > this.acked)
       this.send({ ack: this.seen });
@@ -9388,6 +9506,23 @@ function heldProcess(holding, fallback) {
 
 // box/src/agents/hold/adopt.ts
 var HELD_KINDS = new Set(["codex", "claude", "grok"]);
+var CLAUDE_REJOINS = "2.1.268";
+function adoptable(meta) {
+  if (!meta.kind || !HELD_KINDS.has(meta.kind))
+    return false;
+  if (meta.kind !== "claude")
+    return true;
+  return typeof meta.version === "string" && atLeast(meta.version, CLAUDE_REJOINS);
+}
+function atLeast(version, least) {
+  const parts = (text) => (text.match(/\d+(\.\d+)*/)?.[0] ?? "0").split(".").map(Number);
+  const [have, want] = [parts(version), parts(least)];
+  for (let at = 0;at < Math.max(have.length, want.length); at++) {
+    if ((have[at] ?? 0) !== (want[at] ?? 0))
+      return (have[at] ?? 0) > (want[at] ?? 0);
+  }
+  return true;
+}
 var holding2 = { on: true };
 function agentHoldFolder(kind) {
   if (!holding2.on || !HELD_KINDS.has(kind) || !machineHome)
@@ -9448,15 +9583,16 @@ async function adoptHeld(folder = machineHome ? holdFolder(machineHome) : undefi
   for (const record of heldIn(folder)) {
     const meta = record.meta;
     const turns = Object.entries(meta.turns ?? {});
-    if (!meta.kind || !meta.provider || !HELD_KINDS.has(meta.kind) || !turns.length || record.exited) {
+    if (!meta.provider || !adoptable(meta) || !turns.length || record.exited) {
       stopHolder(record);
       continue;
     }
     let held;
     try {
       held = await attach(folder, record, Math.max(0, Math.min(...turns.map(([, note]) => note.from))));
-    } catch {
-      stopHolder(record);
+    } catch (error) {
+      if (!/generation/.test(String(error?.message)))
+        stopHolder(record);
       continue;
     }
     if (held.gap) {
@@ -16798,6 +16934,8 @@ ${input.text}` } : input, this.copies());
     const taken = input.held;
     const opened = taken.meta.opened;
     try {
+      if (taken.meta.sdk !== SDK[0].version)
+        throw new Error(`Claude Code was started with another version of its SDK (${String(taken.meta.sdk)}).`);
       const sdk = await this.agent.sdk();
       this.held = taken.held;
       this.holding = Promise.resolve(taken.held);
@@ -17155,7 +17293,7 @@ ${input.text}` } : input, this.copies());
     return (options) => {
       const how = whole ? whole.launch(options) : { command: options.command, args: options.args, cwd: options.cwd ?? this.session.location.directory, env: Object.fromEntries(Object.entries(options.env).filter((entry) => entry[1] !== undefined)) };
       const opened = this.opened ? { ...this.opened, tools: undefined } : undefined;
-      const holding = hold3([how.command, ...how.args], { folder, kind: "claude", cwd: how.cwd, env: how.env, meta: { provider: this.agent.providerID, kind: "claude", sandboxed: Boolean(whole), opened, turns: {} } });
+      const holding = hold3([how.command, ...how.args], { folder, kind: "claude", cwd: how.cwd, env: how.env, meta: { provider: this.agent.providerID, kind: "claude", sandboxed: Boolean(whole), opened, sdk: SDK[0].version, turns: {} } });
       this.holding = holding;
       holding.then((held) => {
         if (this.holding === holding)
@@ -17280,6 +17418,9 @@ ${input.text}` } : input, this.copies());
   handle(message) {
     this.said?.forget();
     if (message.type === "system" && message.subtype === "init") {
+      const held = this.held;
+      if (held && typeof message.claude_code_version === "string" && held.meta.version !== message.claude_code_version)
+        held.note({ version: message.claude_code_version });
       if (!this.state.claudeStarted || this.state.claudeSession !== message.session_id) {
         if (this.sandboxedNow && typeof message.session_id === "string")
           this.environment(message.session_id);
@@ -29576,11 +29717,22 @@ ${text.slice(0, 4000)}
     try {
       if (input.held) {
         heldTaken = true;
-        run.heldTaken = true;
         const opened = record.messages.findIndex((message) => message.id === userMessage);
-        if (opened >= 0)
-          record.messages.splice(opened + 1, record.messages.length, ...record.messages.slice(opened + 1).filter((message) => message.type !== "assistant"));
-        const result = await Promise.race([thread.run({ ...input, model }, turn, hooks), abandoned]);
+        const kept = new Set(record.messages.slice(opened + 1).filter((message) => message.type === "assistant").map((message) => message.id));
+        input.held.held.firstLine.then(() => {
+          if (runOf(live.doing) !== run || run.heldTaken)
+            return;
+          run.heldTaken = true;
+          record.messages.splice(0, record.messages.length, ...record.messages.filter((message) => !kept.has(message.id)));
+          this.store.save(id);
+        });
+        let result;
+        try {
+          result = await Promise.race([thread.run({ ...input, model }, turn, hooks), abandoned]);
+        } catch (error) {
+          input.held.held.stop();
+          throw error;
+        }
         if (result.outcome !== "failed" || result.taken || record.messages.slice(from).some(didWork))
           slot.seen = record.messages[record.messages.length - 1]?.id;
         run.last = slot;
@@ -39174,4 +39326,4 @@ if (!onMachine) {
 }
 process.on("SIGTERM", stop);
 process.on("SIGINT", stop);
-// Built from Packages/Box/src/agents e2207d80d3dc8b4f9792cc8d85b301c5e34b9665af97f3f628c2f2a8bfbdaf5d
+// Built from Packages/Box/src/agents 3ef9bd4a6fbc91dcc7c3bddcd88f20d357b9bc70a819b2a84b117fe9b44af3e4

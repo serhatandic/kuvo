@@ -85,10 +85,12 @@ function holders(): number[] {
   const folder = path.join(RUN, "agents", "hold");
   let names: string[] = [];
   try { names = fs.readdirSync(folder).filter(name => /^[0-9a-f]{12}\.json$/.test(name)); } catch { return []; }
+  // (Each only once its process is that very holder: its program and its id on its command line.)
   return names.flatMap(name => {
+    const id = name.slice(0, 12);
     try {
       const pid = JSON.parse(fs.readFileSync(path.join(folder, name), "utf8"))?.pid;
-      return runsAs(pid, /kuvo-hold-/) ? [pid as number] : [];
+      return runsAs(pid, new RegExp(`kuvo-hold-[0-9a-f]+\\.js .* ${id} (jsonrpc|claude|raw)\\s*$`)) ? [pid as number] : [];
     } catch { return []; }
   });
 }
@@ -179,7 +181,7 @@ export function uninstall(): Uninstalled {
     if (pid && pid !== process.pid) try { process.kill(pid, "SIGTERM"); told.push([pid, role]); } catch {}
   }
   // (Each holder stops its agent as it's told: its stdin closed, then told, then made to after 15 s.)
-  for (const pid of holders()) try { process.kill(pid, "SIGTERM"); told.push([pid, /kuvo-hold-/]); } catch {}
+  for (const pid of holders()) try { process.kill(pid, "SIGTERM"); told.push([pid, /kuvo-hold-[0-9a-f]+\.js /]); } catch {}
   // (A moment for those to end, twenty seconds at most.)
   const pause = new Int32Array(new SharedArrayBuffer(4));
   for (let waited = 0; waited < 400 && told.some(([pid, role]) => runsAs(pid, role)); waited++) Atomics.wait(pause, 0, 0, 50);

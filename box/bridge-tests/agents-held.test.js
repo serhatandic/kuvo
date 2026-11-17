@@ -98,7 +98,7 @@ process.stdin.on("data", chunk => {
       const response = message.request.subtype === "initialize" ? { commands: [], models, agents: [], output_style: "default", available_output_styles: ["default"], account: {} } : {};
       send({ type: "control_response", response: { subtype: "success", request_id: message.request_id, response, ...(message.request.subtype === "initialize" ? { pending_permission_requests: open ? [ask] : [] } : {}) } });
     } else if (message.type === "user") {
-      send({ type: "system", subtype: "init", session_id: session, cwd: process.cwd(), tools: ["Bash"], model: "claude-opus-5-5", permissionMode: "default", uuid: "00000000-0000-4000-8000-000000000000" });
+      send({ type: "system", subtype: "init", session_id: session, claude_code_version: process.env.STAND_IN_VERSION, cwd: process.cwd(), tools: ["Bash"], model: "claude-opus-5-5", permissionMode: "default", uuid: "00000000-0000-4000-8000-000000000000" });
       assistant("m1", [{ type: "text", text: "Asking first." }, { type: "tool_use", id: "toolu_1", name: "Bash", input: { command: "touch held.txt" } }]);
       open = true;
       send(ask);
@@ -180,7 +180,7 @@ const alive = pid => { try { process.kill(pid, 0); return true; } catch { return
 
 /** A machine's box in folders of the test's own (`~/.kuvo-code` in a home of its own, for its
  * keeper), its bridge kept running as its launch keeps it. */
-async function machine() {
+async function machine({ claudeVersion = "2.1.325" } = {}) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "kh-")));
   removeAtEnd(root);
   const home = path.join(root, ".kuvo-code");
@@ -191,7 +191,7 @@ async function machine() {
   fs.writeFileSync(path.join(fake, "app-server.js"), CODEX);
   fs.writeFileSync(path.join(fake, "codex"), `#!/bin/sh\nexport BUN_BE_BUN=1\n[ "$1" = "--version" ] && { echo "codex-cli 0.169.0"; exit 0; }\nexec "${bun}" "${path.join(fake, "app-server.js")}" "${fake}"\n`, { mode: 0o755 });
   fs.writeFileSync(path.join(fake, "claude.js"), CLAUDE);
-  fs.writeFileSync(path.join(fake, "claude"), `#!/bin/sh\nexport BUN_BE_BUN=1 STAND_IN_FOLDER="${fake}"\nexec "${bun}" "${path.join(fake, "claude.js")}" "$@"\n`, { mode: 0o755 });
+  fs.writeFileSync(path.join(fake, "claude"), `#!/bin/sh\nexport BUN_BE_BUN=1 STAND_IN_FOLDER="${fake}" STAND_IN_VERSION="${claudeVersion}"\nexec "${bun}" "${path.join(fake, "claude.js")}" "$@"\n`, { mode: 0o755 });
   fs.writeFileSync(path.join(fake, "grok.js"), GROK);
   fs.writeFileSync(path.join(fake, "grok"), `#!/bin/sh\nexport BUN_BE_BUN=1 STAND_IN_FOLDER="${fake}"\nexec "${bun}" "${path.join(fake, "grok.js")}" "$@"\n`, { mode: 0o755 });
   // (Claude's SDK, as the box's own tests have it: nothing is downloaded.)
@@ -316,3 +316,22 @@ test("Claude Code: a crash while it waits on your approval, then a stop", { skip
 
 test("Grok (ACP): a crash while it waits on your approval, then a stop", { skip: bun ? false : NO_BUN }, () =>
   crashWhileAsking({ provider: "grok-cli", model: "grok-test", log: "grok.log" }));
+
+test("Claude Code older than 2.1.268 (it doesn't ask again what's open, as a new client joins): a crash ends its turn as before, and it's stopped, not left waiting", { skip: bun ? false : NO_BUN }, async () => {
+  const box = await machine({ claudeVersion: "2.1.200" });
+  const first = await box.up();
+  const made = await box.api("POST", "api/session", { title: "Older", location: { directory: path.join(box.home, "work") }, model: { providerID: "claude-code", id: "default" } });
+  const session = made.json.data.id;
+  assert.equal((await box.api("POST", `api/session/${session}/prompt`, { id: "msg_heldolder000000001", delivery: "steer", text: "run it" })).status, 200);
+  const asked = await until(() => box.log("claude.log").find(each => "asked" in each), "Claude Code to ask");
+  await until(() => box.held().find(each => each.child === asked.pid)?.meta.version === "2.1.200", "its version in its holder's record");
+  process.kill(first, "SIGKILL");
+  await box.up(first);
+  const messages = await until(async () => {
+    const page = (await box.api("GET", `api/session/${session}/message?limit=100&order=asc`)).json?.data ?? [];
+    return page.at(-1)?.type === "idle" ? page : null;
+  }, "its turn to end");
+  assert.deepEqual(messages.filter(each => each.type === "idle").map(each => each.outcome), ["interrupted"], "as a crash ended it before");
+  await until(() => !alive(asked.pid), "it to be stopped");
+  assert.equal(box.log("claude.log").filter(each => "answered" in each).length, 0);
+});

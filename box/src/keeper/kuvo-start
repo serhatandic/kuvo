@@ -125,7 +125,8 @@ halt() {
   halt_engine
 }
 # A holder's process, as its record names it (run/agents/hold/<id>.json), once it's one.
-held_pid() { h=$(sed -n 's/^{"proto":"hold\/1","holder":[^,]*,"id":"[0-9a-f]*","kind":"[a-z]*","pid":\([0-9]*\),.*/\1/p' "$1" 2>/dev/null); is "$h" kuvo-hold- && echo "$h"; }
+# (Only once that process is that very holder, its program and its id on its command line.)
+held_pid() { i=$(basename "$1" .json); h=$(sed -n 's/^{"proto":"hold\/1","holder":[^,]*,"id":"'"$i"'","kind":"[a-z]*","pid":\([0-9]*\),.*/\1/p' "$1" 2>/dev/null); is "$h" "kuvo-hold-[0-9a-f]*\.js .* $i " && echo "$h"; }
 # The coding agents' processes under holders (kuvo-agents' hold/), which outlive a bridge that
 # crashes: each holder stopped by its own pid (never by a name), stopping its agent as the bridge
 # would (its stdin closed, then told, then made to after 15 s), and waited for, 20 s at most.

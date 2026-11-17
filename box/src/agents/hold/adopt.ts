@@ -22,6 +22,25 @@ import { attach, forgetOldPrograms, heldIn, holdFolder, isHolder, type Held, typ
  */
 export const HELD_KINDS: ReadonlySet<AgentKind> = new Set<AgentKind>(["codex", "claude", "grok"])
 
+/** The first Claude Code that sends a client joining it the asks it has open (`pending_permission_requests`, spike S1). */
+export const CLAUDE_REJOINS = "2.1.268"
+
+/** Whether a held agent can be taken up: Claude Code only from the version that sends its open asks again (an older one's ask would wait forever). */
+export function adoptable(meta: Partial<HeldMeta>): boolean {
+  if (!meta.kind || !HELD_KINDS.has(meta.kind)) return false
+  if (meta.kind !== "claude") return true
+  return typeof meta.version === "string" && atLeast(meta.version, CLAUDE_REJOINS)
+}
+
+function atLeast(version: string, least: string): boolean {
+  const parts = (text: string) => (text.match(/\d+(\.\d+)*/)?.[0] ?? "0").split(".").map(Number)
+  const [have, want] = [parts(version), parts(least)]
+  for (let at = 0; at < Math.max(have.length, want.length); at++) {
+    if ((have[at] ?? 0) !== (want[at] ?? 0)) return (have[at] ?? 0) > (want[at] ?? 0)
+  }
+  return true
+}
+
 /** Whether agents start under holders at all: a test of how an agent's own process is started turns it off. */
 export const holding = { on: true }
 
@@ -131,15 +150,16 @@ export async function adoptHeld(folder = machineHome ? holdFolder(machineHome) :
   for (const record of heldIn(folder)) {
     const meta = record.meta as Partial<HeldMeta>
     const turns = Object.entries(meta.turns ?? {})
-    if (!meta.kind || !meta.provider || !HELD_KINDS.has(meta.kind) || !turns.length || record.exited) {
+    if (!meta.provider || !adoptable(meta) || !turns.length || record.exited) {
       stopHolder(record)
       continue
     }
     let held: Held
     try {
       held = await attach(folder, record, Math.max(0, Math.min(...turns.map(([, note]) => note.from))))
-    } catch {
-      stopHolder(record)
+    } catch (error) {
+      // (Another bridge starting at the same moment took it, a newer generation: it's that one's.)
+      if (!/generation/.test(String((error as Error)?.message))) stopHolder(record)
       continue
     }
     if (held.gap) {

@@ -110,8 +110,7 @@ export function heldIn(folder: string): HoldRecord[] {
     } catch {}
     if (record?.proto === HOLD_PROTO && record.id === id && isHolder(record.pid, id) && existsSync(join(folder, `${id}.sock`))) found.push(record)
     else if (!record || !isHolder(record.pid, id)) {
-      rmSync(join(folder, `${id}.sock`), { force: true })
-      rmSync(join(folder, name), { force: true })
+      for (const leftover of [`${id}.sock`, `${id}.journal`, name]) rmSync(join(folder, leftover), { force: true })
     }
   }
   return found
@@ -186,6 +185,7 @@ export async function hold(command: string[], options: HoldOptions): Promise<Hel
     // (One that never says it's ready is given up on, and stopped below.)
     setTimeout(() => reject(new Error("The agent's holder didn't start in time.")), WITHIN).unref?.()
   })
+  if (starting.pid) startingHolders.add(starting.pid)
   try {
     const { pid } = await ready
     starting.removeAllListeners("exit")
@@ -198,8 +198,13 @@ export async function hold(command: string[], options: HoldOptions): Promise<Hel
     } catch {}
     starting.unref()
     throw error
+  } finally {
+    if (starting.pid) startingHolders.delete(starting.pid)
   }
 }
+
+/** Holders this bridge started that aren't attached yet (by their own pid). */
+const startingHolders = new Set<number>()
 
 /** Attaches to a holder an earlier bridge started, one generation past the last that attached. */
 export async function attach(folder: string, record: HoldRecord, from?: number): Promise<Held> {
@@ -231,6 +236,12 @@ const live = new Set<Held>()
  */
 export function stopAllHeld() {
   for (const held of live) held.stop()
+  // (And any still starting, which no bridge would come for.)
+  for (const pid of startingHolders) {
+    try {
+      process.kill(pid, "SIGTERM")
+    } catch {}
+  }
 }
 
 type Exit = { code: number | null; signal: string | null }
@@ -248,11 +259,18 @@ export class Held {
   gap = false
   meta: Record<string, unknown> = {}
   readonly welcomed: Promise<void>
+  /** The first of the agent's lines this bridge takes in. */
+  readonly firstLine: Promise<void>
+  private firstCame: () => void = () => {}
   readonly exited: Promise<Exit>
   /** Its socket closed: the holder ended (after its agent), or a newer bridge took over. */
   readonly closed: Promise<void>
   /** A newer bridge took this agent over: nothing this one writes reaches it any more. */
   fenced = false
+  /** Its holder said the agent ended. */
+  private heardEnd = false
+  /** Let go of on purpose (`detach`): another bridge is to attach. */
+  private letGo = false
   /** The last line of the agent's this bridge has taken in: where a turn it starts now begins (`from`). */
   seen = 0
   private lineListeners: ((line: string, again: boolean, seq: number) => void)[] = []
@@ -272,11 +290,14 @@ export class Held {
     let welcome: () => void = () => {}
     let refuse: (error: Error) => void = () => {}
     this.welcomed = new Promise((resolve, reject) => ((welcome = resolve), (refuse = reject)))
+    this.firstLine = new Promise((resolve) => (this.firstCame = resolve))
     let exit: (exit: Exit) => void = () => {}
     this.exited = new Promise((resolve) => (exit = resolve))
     let close: () => void = () => {}
     this.closed = new Promise((resolve) => (close = resolve))
     let hello = false
+    /** Welcomed by its holder (not refused). */
+    let attached = false
     let buffer = ""
     socket.setEncoding("utf8")
     socket.on("error", () => {})
@@ -284,8 +305,10 @@ export class Held {
       this.ended = true
       clearTimeout(this.ackTimer)
       if (!hello) refuse(new Error("The agent's holder isn't there."))
-      // Gone with no word of its agent's end (a newer bridge took over, or the holder was killed):
-      // this bridge has no agent any more.
+      // Gone with no word of its agent's end: a newer bridge took over (it's that one's now), or this
+      // one lost its holder (let go as hung, say). Then its agent would run on with no one watching:
+      // it's stopped, through its holder, once that's still the one.
+      if (attached && !this.fenced && !this.heardEnd && !this.letGo) this.stopHolder()
       exit({ code: null, signal: this.fenced ? "fenced" : "lost" })
       close()
     })
@@ -312,6 +335,7 @@ export class Held {
           this.gap = Boolean(frame.gap)
           this.meta = frame.meta ?? {}
           if (frame.stderr) this.earlyErrors.push(frame.stderr)
+          attached = true
           welcome()
           continue
         }
@@ -325,6 +349,7 @@ export class Held {
           if (this.errorListeners.length) for (const each of this.errorListeners) each(frame.e)
           else this.earlyErrors.push(frame.e)
         } else if (frame.x) {
+          this.heardEnd = true
           exit({ code: frame.x.code ?? null, signal: frame.x.signal ?? null })
           this.send({ ack: this.seen })
           this.send({ bye: true })
@@ -337,6 +362,7 @@ export class Held {
 
   private deliver(line: string, again: boolean, seq: number) {
     if (!this.lineListeners.length) return void this.early.push({ line, again, seq })
+    this.firstCame()
     for (const each of this.lineListeners) each(line, again, seq)
   }
 
@@ -345,6 +371,7 @@ export class Held {
     this.lineListeners.push(listener)
     const early = this.early
     this.early = []
+    if (early.length) this.firstCame()
     for (const { line, again, seq } of early) listener(line, again, seq)
   }
 
@@ -395,8 +422,16 @@ export class Held {
    * exiting at once could leave unsent): its stdin closed, then told, then made to; the holder goes
    * once it has. Not after a newer bridge took it over. */
   stop() {
-    // (Gone already, its number maybe another process's now: not signalled.)
-    if (this.fenced || this.ended) return
+    if (this.fenced || this.heardEnd) return
+    // (Its socket closed: only once that's still the holder, never a process with its number since.)
+    if (this.ended) return this.stopHolder()
+    try {
+      process.kill(this.holder, "SIGTERM")
+    } catch {}
+  }
+
+  private stopHolder() {
+    if (!isHolder(this.holder, this.id)) return
     try {
       process.kill(this.holder, "SIGTERM")
     } catch {}
@@ -410,6 +445,7 @@ export class Held {
 
   /** Let go of it without stopping it (another bridge will attach). */
   detach() {
+    this.letGo = true
     clearTimeout(this.ackTimer)
     if (this.seen > this.acked) this.send({ ack: this.seen })
     this.socket.end()
@@ -419,8 +455,7 @@ export class Held {
 /** A holder's files, once its process is gone (it removes them itself as it ends: these are a crash's). */
 export function forgetHolder(folder: string, record: HoldRecord) {
   if (isHolder(record.pid, record.id)) return
-  rmSync(join(folder, `${record.id}.sock`), { force: true })
-  rmSync(join(folder, `${record.id}.json`), { force: true })
+  for (const leftover of [`${record.id}.sock`, `${record.id}.journal`, `${record.id}.json`]) rmSync(join(folder, leftover), { force: true })
 }
 
 /**

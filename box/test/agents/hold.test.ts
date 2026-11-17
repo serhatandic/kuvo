@@ -230,6 +230,67 @@ describe("an agent under a holder", () => {
     expect((await held.exited).code).toBe(0)
   })
 
+  /** An agent that, told to go, writes what `script` makes (on its stdout), then "done". */
+  async function writer(script: string) {
+    const { dir, folder } = shortFolder()
+    const agent = join(dir, "writer.js")
+    writeFileSync(agent, `process.stdin.once("data", () => { ${script}; process.stdout.write(JSON.stringify({ done: true }) + "\\n"); }); process.stdin.on("end", () => process.exit(0));`)
+    const held = await hold([process.execPath, agent], { folder, kind: "jsonrpc", env: { BUN_BE_BUN: process.env.BUN_BE_BUN, PATH: process.env.PATH } })
+    return { held, folder }
+  }
+
+  /** All it said until "done", in order. */
+  function untilDone(held: Awaited<ReturnType<typeof hold>>) {
+    return new Promise<string[]>((resolve) => {
+      const said: string[] = []
+      held.onLine((line) => {
+        said.push(line)
+        if (line.includes('"done"')) resolve(said)
+      })
+    })
+  }
+
+  test("a line longer than the journal's half, and one after it: both reach the bridge, which stays attached", async () => {
+    const { held } = await writer(`process.stdout.write(JSON.stringify({ said: "x".repeat(4_500_000) }) + "\\n"); process.stdout.write(JSON.stringify({ after: 1 }) + "\\n")`)
+    const said = untilDone(held)
+    held.write("go")
+    const lines = await said
+    expect(lines.map((line) => Object.keys(JSON.parse(line))[0])).toEqual(["said", "after", "done"])
+    expect(JSON.parse(lines[0]!).said.length).toBe(4_500_000)
+    expect(held.isOpen).toBe(true)
+    held.end()
+    expect((await held.exited).code).toBe(0)
+  })
+
+  test("a fast burst of 5 MB of lines: each reaches the bridge, in order, and it stays attached", async () => {
+    const { held } = await writer(`for (let n = 0; n < 50_000; n++) process.stdout.write(JSON.stringify({ n, pad: "y".repeat(90) }) + "\\n")`)
+    const said = untilDone(held)
+    held.write("go")
+    const lines = await said
+    expect(lines.length).toBe(50_001)
+    expect(lines.slice(0, -1).every((line, index) => JSON.parse(line).n === index)).toBe(true)
+    expect(held.isOpen).toBe(true)
+    held.end()
+    expect((await held.exited).code).toBe(0)
+  })
+
+  test("a turn longer than 4 MB comes again whole to a bridge that attaches after (the journal is on disk)", async () => {
+    const { held, folder } = await writer(`for (let n = 0; n < 100_000; n++) process.stdout.write(JSON.stringify({ n, pad: "z".repeat(90) }) + "\\n")`)
+    const said = untilDone(held)
+    held.write("go")
+    await said
+    held.detach()
+    await held.closed
+    const later = await attach(folder, heldIn(folder).find((each) => each.id === held.id)!, 0)
+    expect(later.gap).toBe(false)
+    const again = await untilDone(later)
+    expect(again.length).toBe(100_001)
+    expect(statSync(join(folder, `${held.id}.journal`)).mode & 0o777).toBe(0o600)
+    later.end()
+    await later.closed
+    expect(existsSync(join(folder, `${held.id}.journal`))).toBe(false)
+  })
+
   test("stopping it stops what its agent started too", async () => {
     const { dir, folder } = shortFolder()
     const agent = join(dir, "parent.js")
@@ -243,6 +304,25 @@ describe("an agent under a holder", () => {
     held.stop()
     await held.exited
     expect(alive(grandchild)).toBe(false)
+  })
+
+  test("two bridges taking up the same held agent at once: one has it, and the other leaves it be", async () => {
+    const { dir, folder } = shortFolder()
+    const agent = join(dir, "quiet.js")
+    writeFileSync(agent, `process.stdin.on("data", () => process.stdout.write("{}\\n")); process.stdin.on("end", () => process.exit(0));`)
+    const first = await hold([process.execPath, agent], { folder, kind: "jsonrpc", env: { BUN_BE_BUN: process.env.BUN_BE_BUN, PATH: process.env.PATH }, meta: { provider: "codex-cli", kind: "codex", turns: { t1: { session: "ses_x", from: 0 } } } })
+    first.detach()
+    await first.closed
+    const [one, other] = await Promise.all([adoptHeld(folder), adoptHeld(folder)])
+    const taken = [one, other].filter((found) => found.size)
+    expect(taken.length).toBe(1)
+    const winner = taken[0]!.get("ses_x")!.held
+    // (Its agent still answers the one that has it.)
+    const answered = new Promise<string>((resolve) => winner.onLine(() => resolve("answered")))
+    winner.write("ping")
+    expect(await Promise.race([answered, winner.exited.then(() => "stopped")])).toBe("answered")
+    winner.end()
+    await winner.closed
   })
 
   test("a record left by a holder that's gone, its number another process's now: removed, and that process left alone", async () => {

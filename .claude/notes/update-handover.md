@@ -522,6 +522,30 @@ older one, a journal of every line). Run them with `bun <script> <args>`, as eac
   - `Held.stop()` does nothing once its holder is gone;
   - old holder programs are removed;
   - the recorded `opened` leaves out Kuvo Code's tools' key.
+- Second review's fixes (2026-11-17):
+  - **Never dropped for size.** A bridge whose socket is full gets backpressure: the holder stops
+    reading the agent's stdout until it drains, and the agent waits as on any pipe. Only a bridge
+    that reads nothing for a minute is let go. A bridge that loses its holder without hearing the
+    agent's end stops it by pid (`isHolder`), so nothing runs unwatched.
+  - **The journal is on disk:** `<id>.journal` beside the record (0600, in the 0700 folder),
+    64 MB at most, pruned to its newer half, removed as the holder goes (and by `heldIn` with a
+    crash's leftovers). Why disk and not a bigger in-memory size: a long Claude Code turn
+    (streamed words, partial messages, tools' output) runs to tens of MB, and memory would cost that
+    per holder, held or not. (Not measured on real turns: estimated from S1's lines, about 300 bytes
+    per streamed delta, plus tool results.)
+  - **A take-up that fails keeps what was shown:** the turn's stored steps go only once the agent's
+    first line comes again (`Held.firstLine`). Before that, a failure (an exception from the agent,
+    the attach lost) closes their tools as a crash does, and the agent is stopped.
+  - **Claude Code's version:** the record gets `sdk` as the holder starts, and `version` from
+    `system/init` (`claude_code_version`). Adopted only from 2.1.268 (`CLAUDE_REJOINS`) and with the
+    same SDK; otherwise stopped, and its turn ends as a crash ends it.
+  - **Two bridges at once:** a "generation" refusal leaves the holder to the bridge that took it.
+  - **PID checks:** the keeper's `held_pid` and uninstall's `holders()` match the holder's program
+    and its own id.
+  - **Not handled:** a bridge that crashes while another runs isn't adopted by the running one; its
+    held agents stop after 15 minutes. There's one bridge at a time (the keeper's, and Renewal's
+    makes way before the next starts), so it takes two bridges up at once, which the generation
+    fence already sorts out.
 - Tests:
   - `box/bridge-tests/agents-held.test.js`: the real bridge, holders and keeper, with stand-ins that
     speak Codex's, Claude Code's (as S1 recorded it) and ACP's protocols. For each agent, the bridge
@@ -546,6 +570,7 @@ older one, a journal of every line). Run them with `bun <script> <args>`, as eac
   subagents' sessions. A Codex or Claude subagent's own session is repaired as interrupted while
   its parent's turn goes on.
 - A held agent's stderr after it exits is heard for 2 s (the holder's wait), not `heardWithin`.
+- Claude Code that crashed before its first `system/init` (so no version recorded) isn't adopted.
 - Answers to requests the crashed bridge sent are ignored, except ACP's prompt. A Codex turn that
   crashed before Codex answered `turn/start` with an error would wait (no `turn/started` ever comes).
 - Not covered by a test: the held path with the box's sandbox on (the launcher under a holder,

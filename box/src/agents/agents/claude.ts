@@ -1245,6 +1245,8 @@ class ClaudeThread implements Thread {
     const taken = input.held!
     const opened = taken.meta.opened as ClaudeThread["opened"] | undefined
     try {
+      // (Joined only by the SDK that started it: another may speak to it otherwise.)
+      if (taken.meta.sdk !== SDK[0]!.version) throw new Error(`Claude Code was started with another version of its SDK (${String(taken.meta.sdk)}).`)
       const sdk = await this.agent.sdk()
       this.held = taken.held
       this.holding = Promise.resolve(taken.held)
@@ -1663,7 +1665,7 @@ class ClaudeThread implements Thread {
       // (What it started with, for a bridge taking it up; but Kuvo Code's tools' key, which can hold
       // a server's environment, and is told again then.)
       const opened = this.opened ? { ...this.opened, tools: undefined } : undefined
-      const holding = hold([how.command, ...how.args], { folder, kind: "claude", cwd: how.cwd, env: how.env, meta: { provider: this.agent.providerID, kind: "claude", sandboxed: Boolean(whole), opened, turns: {} } })
+      const holding = hold([how.command, ...how.args], { folder, kind: "claude", cwd: how.cwd, env: how.env, meta: { provider: this.agent.providerID, kind: "claude", sandboxed: Boolean(whole), opened, sdk: SDK[0]!.version, turns: {} } })
       this.holding = holding
       void holding.then(
         (held) => {
@@ -1824,6 +1826,10 @@ class ClaudeThread implements Thread {
   private handle(message: any) {
     this.said?.forget()
     if (message.type === "system" && message.subtype === "init") {
+      // Which Claude Code it is, for a bridge taking it up from its holder (only one that sends its
+      // open asks again to a client joining it can be: hold/adopt.ts).
+      const held = this.held
+      if (held && typeof message.claude_code_version === "string" && held.meta.version !== message.claude_code_version) held.note({ version: message.claude_code_version })
       if (!this.state.claudeStarted || this.state.claudeSession !== message.session_id) {
         // (Its /clear: a new name it chose, for its next hooks. The one for that moment ran already.)
         if (this.sandboxedNow && typeof message.session_id === "string") this.environment(message.session_id)

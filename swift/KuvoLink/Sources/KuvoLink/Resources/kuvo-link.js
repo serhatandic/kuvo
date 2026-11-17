@@ -43267,7 +43267,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "c14ab734ee9d";
+var BRIDGE_VERSION = "3fd3e6b09afc";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -54822,9 +54822,10 @@ function holders() {
     return [];
   }
   return names.flatMap((name) => {
+    const id = name.slice(0, 12);
     try {
       const pid = JSON.parse(fs169.readFileSync(path179.join(folder, name), "utf8"))?.pid;
-      return runsAs(pid, /kuvo-hold-/) ? [pid] : [];
+      return runsAs(pid, new RegExp(`kuvo-hold-[0-9a-f]+\\.js .* ${id} (jsonrpc|claude|raw)\\s*$`)) ? [pid] : [];
     } catch {
       return [];
     }
@@ -54912,7 +54913,7 @@ function uninstall2() {
   for (const pid of holders())
     try {
       process.kill(pid, "SIGTERM");
-      told.push([pid, /kuvo-hold-/]);
+      told.push([pid, /kuvo-hold-[0-9a-f]+\.js /]);
     } catch {}
   const pause = new Int32Array(new SharedArrayBuffer(4));
   for (let waited = 0;waited < 400 && told.some(([pid, role]) => runsAs(pid, role)); waited++)
