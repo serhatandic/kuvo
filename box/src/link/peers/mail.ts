@@ -128,6 +128,9 @@ export function receiveMail(
   if (opened.vouched) {
     if (isObject(payload.limits)) takeLimits(sender, payload.limits).catch(() => {});
     if (isObject(payload.seat) || isObject(payload.seatPart)) takeSeat(sender, payload, () => {}, bridgeAsk, ["usage"]).catch(() => {});
+    // And a signed release it holds, or asks for (another of your Macs): its signature is what's
+    // trusted, never the box that hands it over (`updates/fleet.ts`).
+    if (isObject(payload.release)) try { takeReleaseMail(sender, payload.release); } catch {}
     return;
   }
   // It answers: whatever this box's tools last heard of it (PROTOCOL.md, "Peers", `run/peer-reach.json`).

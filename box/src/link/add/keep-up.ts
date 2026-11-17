@@ -22,7 +22,7 @@ import { readPeerAgents } from "../peers/directory";
 import { peersOf } from "../peers/known";
 import { mainElsewhere } from "../setup/main-only";
 import { readLink } from "../state";
-import { boxVersion, isUpdating, newerVersion, offerChangesEngine, offerFailedTwice, offerHeld, offerWaits, updateStatus } from "../updates/update";
+import { boxVersion, isUpdating, newerVersion, offerChangesEngine, offerFailedTwice, offerHeld, offerWaits, offeredSince, updateStatus } from "../updates/update";
 import { type Busy, beginUpdate, canAdd, lookAtWork, sshAddressOf } from "./flow";
 import { type Running, underWay } from "./tries";
 
@@ -40,6 +40,13 @@ const REST = 86_400_000;
 /** How long a machine that follows its peers is left to take a release by itself before this box
  * brings it up over SSH. */
 const FOLLOW_GRACE = 3_600_000;
+/** How long a release that restarts the engine waits for nothing to be at work before Update Now. */
+const ENGINE_WAIT_AT_MOST = 86_400_000;
+/** How long another computer that follows is said to update in a moment before it's said that it
+ * hasn't yet. */
+const BEHIND_AT_MOST = 86_400_000;
+/** Since when each other computer that follows has been seen behind this box's version, by key. */
+const behindSeen = new Map<string, { mine: string; since: number }>();
 /** How long a machine can't be reached over SSH, behind, before Try Again is offered. */
 export const UNREACHED_FOR = 3 * 86_400_000;
 
@@ -210,10 +217,17 @@ export function keepingUp(computer: Pick<ListedComputer, "key" | "name" | "kind"
   if (!mine || !computer.key || computer.reach === "away") return none;
   const name = computer.name || (computer.kind === "mac" ? "this Mac" : "this machine");
   const line = (state: ComputerUpdate["state"], title: string, detail = "", long = false): ComputerUpdate => ({ state, title, detail, ...(long ? { long: true as const } : {}) });
-  const soon = { update: line("waiting", `Kuvo on ${name} updates in a moment`), actions: [] };
   // One that follows its peers (it says which Kuvo it runs): behind, it takes the release by itself.
+  // Still behind a day on, that's said: it hasn't, and says why on its own page.
   const follows = !!computer.kuvo;
-  if (follows && !newerVersion(mine, computer.kuvo)) return none;
+  if (follows && !newerVersion(mine, computer.kuvo)) {
+    behindSeen.delete(computer.key);
+    return none;
+  }
+  const seen = behindSeen.get(computer.key);
+  const since = seen?.mine === mine ? seen.since : now;
+  if (follows && seen?.mine !== mine) behindSeen.set(computer.key, { mine, since });
+  const soon = { update: follows && now - since >= BEHIND_AT_MOST ? line("waiting", `Kuvo on ${name} hasn’t updated yet`, `It updates by itself once it can.`, true) : line("waiting", `Kuvo on ${name} updates in a moment`), actions: [] };
   if (computer.kind !== "machine") return follows ? soon : none;
   const can = canAdd();
   const at = can.can ? sshAddressOf(computer.key) : null;
@@ -295,10 +309,15 @@ export function keepingSelfUp(name: string, working: number | undefined, blocked
   if (status.offerFailed && status.offerFailed.version === status.offered) {
     if (offerFailedTwice(status.offered)) {
       const confirm = { title: `Update Kuvo on ${name} now?`, message: at > 0 ? `${sessions(at)} at work on ${name}: what ${at === 1 ? "it’s" : "they’re"} doing stops as Kuvo restarts there.` : `Whatever is at work on ${name} stops as Kuvo restarts there.`, label: "Update Now" };
-      return { update: line("failed", `Kuvo on ${name} couldn’t be updated twice. It tries again later.`), actions: [{ id: "update-here", label: "Update Now", ...(engine ? { confirm } : {}) }] };
+      return { update: line("failed", `Kuvo on ${name} couldn’t be updated after 2 tries. It tries again later.`), actions: [{ id: "update-here", label: "Update Now", ...(engine ? { confirm } : {}) }] };
     }
     return { update: line("waiting", `Kuvo on ${name} tries its update again in a while.`), actions: [] };
   }
   if (!engine) return { update: line("waiting", `Kuvo on ${name} updates in a moment.`), actions: [] };
-  return { update: line("waiting", at > 0 ? `Kuvo on ${name} updates once your sessions there finish.` : `Kuvo on ${name} updates as soon as nothing’s at work there.`), actions: [] };
+  const waiting = line("waiting", at > 0 ? `Kuvo on ${name} updates once your sessions there finish.` : `Kuvo on ${name} updates as soon as nothing’s at work there.`);
+  // (Nothing free there for a day, a bot always at work say: it can't get past that by itself, so
+  // Update Now, asked first.)
+  if (Date.now() - offeredSince() < ENGINE_WAIT_AT_MOST) return { update: waiting, actions: [] };
+  const confirm = { title: `Update Kuvo on ${name} now?`, message: at > 0 ? `${sessions(at)} at work on ${name}: what ${at === 1 ? "it’s" : "they’re"} doing stops as Kuvo restarts there.` : `Whatever is at work on ${name} stops as Kuvo restarts there.`, label: "Update Now" };
+  return { update: { ...waiting, long: true }, actions: [{ id: "update-here", label: "Update Now", confirm }] };
 }

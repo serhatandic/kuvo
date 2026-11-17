@@ -838,7 +838,7 @@ export function offerChangesEngine(): boolean {
 
 // Why a release with engine `engine` isn't taken: the engine running here is newer (it may have
 // written what an older one can't read); null when it isn't, or that can't be told.
-function engineBehind(engine: string): string | null {
+export function engineBehind(engine: string): string | null {
   let running: string | null | undefined = null;
   try { running = readEngineFile()?.version; } catch {}
   return running && newerVersion(running, engine) ? `Its engine (${running}) is newer than the release's (${engine}), and it never goes back to an older engine.` : null;
@@ -879,7 +879,7 @@ export function confirmUpdate(clock = Date.now): boolean {
   let engine: string | null | undefined = null;
   try { engine = readEngineFile()?.version; } catch {}
   // (How it went noted first: whoever sees the trial over finds it said.)
-  noteUpdate({ trial: null, last: { at: clock(), result: "updated", from: state.trial.from, to: state.trial.to } });
+  noteUpdate({ trial: null, last: { at: clock(), result: "updated", from: state.trial.from, to: state.trial.to }, ...(state.offerFailed && !newerVersion(state.offerFailed.version, state.trial.to) ? { offerFailed: null } : {}) });
   fs.rmSync(UPDATE_TRIAL, { force: true });
   fs.rmSync(ROLLBACK, { recursive: true, force: true });
   // (Not the one the coding agents' bridge still runs on, until it moves to the new: its agents'
@@ -1094,6 +1094,11 @@ export function offeredVersion(): string | null {
 
 const dropOffer = (): void => fs.rmSync(OFFERED, { recursive: true, force: true });
 
+/** Since when the release offered here has waited (its folder's time), or now for none. */
+export function offeredSince(): number {
+  try { return fs.statSync(path.join(OFFERED, "boxes.json")).mtimeMs; } catch { return Date.now(); }
+}
+
 // The SHA-256 of the offered release's pack, as its manifest says (checked as it was offered), or null.
 function offeredPack(): string | null {
   try {
@@ -1267,7 +1272,9 @@ export async function takeOffer(options: UpdateOptions = {}): Promise<UpdateOutc
     const tries = before?.version === version ? (before.tries ?? 1) + 1 : 1;
     noteUpdate({ offerFailed: { version, at: (options.clock ?? Date.now)(), takenBack, tries, ...(outcome.message ? { message: outcome.message } : {}) } });
   }
-  if (outcome.result === "updated" || outcome.result === "current") noteUpdate({ offerFailed: null });
+  // (Taken: forgotten once it's judged well (`confirmUpdate`), so one taken back after its trial
+  // counts with the failures before it. Here already: forgotten now.)
+  if (outcome.result === "current") noteUpdate({ offerFailed: null });
   if (outcome.result === "updated" || outcome.result === "current" || takenBack) dropOffer();
   return outcome;
 }

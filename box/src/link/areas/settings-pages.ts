@@ -750,7 +750,7 @@ async function computerPage(context: RouteContext): Promise<SettingsPage> {
     const engine = computerFacts.offerChangesEngine();
     const stuck = computerFacts.offerFailedTwice(update.offered);
     const action = engine ? now("Update Now") : { id: "update", title: "Update Now" };
-    const line = stuck ? `It couldn’t be installed twice${update.offerFailed?.message ? `: ${update.offerFailed.message}` : "."}` : engine ? "It installs once nothing’s at work." : "It installs in a moment.";
+    const line = stuck ? `It couldn’t be installed after 2 tries${update.offerFailed?.message ? `: ${update.offerFailed.message}` : "."}` : engine ? "It installs once nothing’s at work." : "It installs in a moment.";
     rows.push(row({ id: "version", title: `Kuvo Code ${update.offered} is ready`, ...(held ? { line: held, kind: "status" } : stuck ? { line, tone: "warning" as const, kind: "actions", actions: [action] } : { line, kind: "status" }), value: update.offered }));
   }
   else rows.push(row({ id: "version", title: version, line: failed ?? "Up to date. It updates itself.", ...(failed ? { tone: "warning" as const } : {}), kind: "actions", value: update.version, actions: [now("Check Now")] }));

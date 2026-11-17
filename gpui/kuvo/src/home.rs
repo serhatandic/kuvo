@@ -623,10 +623,11 @@ impl Home {
         // now, in the background (Sparkle installs it as you set it), once for each version.
         if self.live {
             let said = self.boxes.rows().into_iter().find(|row| row.computer.here).and_then(|row| row.computer.app_check.clone());
-            if crate::updates::app_check_due(said.as_deref(), &mut self.app_checked)
+            if let Some(version) = crate::updates::app_check_due(said.as_deref(), self.app_checked.as_deref()).map(str::to_owned)
                 && let Some(updates) = crate::updates::Updates::get(cx)
+                && updates.update(cx, |updates, cx| updates.check_quietly(cx))
             {
-                updates.update(cx, |updates, cx| updates.check_quietly(cx));
+                self.app_checked = Some(version);
             }
         }
         // A computer this app no longer reaches (dropped from your list, filed apart), or reaches

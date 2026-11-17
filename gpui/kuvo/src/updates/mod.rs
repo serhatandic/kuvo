@@ -169,13 +169,17 @@ impl Updates {
         self.refresh(cx);
     }
 
-    /// Looks in the background (Kuvo on this Mac runs a newer version than this app): not while a
-    /// check or an update is under way, or its window is open.
-    pub fn check_quietly(&mut self, cx: &mut Context<Self>) {
-        if self.facts.updates() && self.facts.can_check && !self.facts.busy {
-            self.updater.check_quietly();
-        }
+    /// Looks in the background (Kuvo on this Mac runs a newer version than this app), as its own
+    /// daily check would: only where you let it check by itself, and not while a check or an update
+    /// is under way, or its window is open. Whether it began one.
+    pub fn check_quietly(&mut self, cx: &mut Context<Self>) -> bool {
         self.refresh(cx);
+        let began = self.facts.updates() && self.facts.checks && self.facts.can_check && !self.facts.busy;
+        if began {
+            self.updater.check_quietly();
+            self.refresh(cx);
+        }
+        began
     }
 
     pub fn set_checks(&mut self, on: bool, cx: &mut Context<Self>) {
@@ -200,16 +204,11 @@ impl Updates {
     }
 }
 
-/// Whether the app looks for its update now, as Kuvo on this Mac says it runs version `said`, newer
-/// than this app (`appCheck`): once for each version it says, `checked` noting the last.
-pub fn app_check_due(said: Option<&str>, checked: &mut Option<String>) -> bool {
-    match said {
-        Some(version) if checked.as_deref() != Some(version) => {
-            *checked = Some(version.to_owned());
-            true
-        }
-        _ => false,
-    }
+/// The version the app is to look for its update for now, as Kuvo on this Mac says it runs `said`,
+/// newer than this app (`appCheck`): once for each version, `checked` the last it looked for (noted
+/// by the caller only once a look began, so one Sparkle wasn't ready for is tried again).
+pub fn app_check_due<'a>(said: Option<&'a str>, checked: Option<&str>) -> Option<&'a str> {
+    said.filter(|version| checked != Some(*version))
 }
 
 /// Starts the app's updater: Sparkle where this build carries it and names a feed; otherwise
@@ -307,11 +306,9 @@ mod tests {
 
     #[test]
     fn the_app_looks_for_its_update_once_for_each_newer_kuvo_on_this_mac() {
-        let mut checked = None;
-        assert!(!app_check_due(None, &mut checked), "Kuvo here isn't ahead: nothing to look for");
-        assert!(app_check_due(Some("1.0.5"), &mut checked), "Kuvo here runs 1.0.5, newer than this app");
-        assert!(!app_check_due(Some("1.0.5"), &mut checked), "looked once for 1.0.5 already");
-        assert!(!app_check_due(None, &mut checked));
-        assert!(app_check_due(Some("1.0.6"), &mut checked), "a newer one again");
+        assert_eq!(app_check_due(None, None), None, "Kuvo here isn't ahead: nothing to look for");
+        assert_eq!(app_check_due(Some("1.0.5"), None), Some("1.0.5"), "Kuvo here runs 1.0.5, newer than this app");
+        assert_eq!(app_check_due(Some("1.0.5"), Some("1.0.5")), None, "looked once for 1.0.5 already");
+        assert_eq!(app_check_due(Some("1.0.6"), Some("1.0.5")), Some("1.0.6"), "a newer one again");
     }
 }

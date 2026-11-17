@@ -57,6 +57,8 @@ const computer = (kind, name, id) => {
   return { key, pub: k(link.publicOf(key)), sender: { key: k(link.publicOf(key)), kind, ...(id ? { id } : {}) }, peer: { key: k(link.publicOf(key)), address, name, kind, ...(id ? { id } : {}) } };
 };
 const here = computer("machine", "devbox", "devbox"), mini = computer("mac", "mini"), lab = computer("machine", "lab", "lab");
+// Another of your Macs that isn't this box's peer: known through lab, a machine both set up.
+const studio = computer("mac", "studio");
 // (Lab's key the lower of the two others', so ties go to it.)
 const [first, second] = [mini, lab].sort((a, b) => (a.pub < b.pub ? -1 : 1));
 
@@ -65,6 +67,7 @@ let offers = 0;
 function box(version = "0.9.0") {
   fs.rmSync(home, { recursive: true, force: true });
   fs.mkdirSync(RUN, { recursive: true });
+  write(path.join(RUN, "update.json"), "{}");
   write(path.join(home, "bin", "box-version"), version);
   link.writeLink({
     secret: crypto.randomBytes(32).toString("base64url"), key: k(here.key), relay: "wss://relay.test", name: "devbox", id: "devbox", mac: mini.pub, macs: [mini.pub], phones: [],
@@ -165,6 +168,48 @@ test("a computer that was away takes the newer release once it hears from the ot
   exchange(mini, holding);
   assert.equal(offers, 1);
   assert.equal(offered(), "0.10.0");
+});
+
+test("another of your Macs that isn't a peer (known through a machine both set up) hands over its release too, and is told what this one holds", () => {
+  box();
+  const holding = peerHolding(release("0.10.0"));
+  follow({ [studio.pub]: holding });
+  // Lab says it knows studio: a box it vouches for, which sends no agents mail here.
+  link.peerMail(lab.sender, { agents: { at: clock++, list: [], boxes: [studio.peer], computer: { kuvo: "0.9.0" } } }, null);
+  link.takeReleaseMail(studio.sender, { holds: "0.10.0" });
+  assert.deepEqual(holding.asked, [{ want: "0.10.0" }], "asked at once, as studio said it holds it");
+  exchange(studio, holding);
+  assert.equal(offers, 1);
+  assert.equal(offered(), "0.10.0");
+
+  // The other way: what this box holds is told to studio, once, and again ten minutes on.
+  box();
+  const sent = [];
+  link.fleetWith({ keys: [pinned], blocked: null, clock: () => clock, send: (key, mail) => { sent.push([key, mail]); return true; } });
+  link.peerMail(lab.sender, { agents: { at: clock++, list: [], boxes: [studio.peer], computer: { kuvo: "0.9.0" } } }, null);
+  link.keepRelease(fs.readFileSync(path.join(release("0.9.0"), "boxes.json")), crypto.randomBytes(100));
+  link.tellHeld();
+  link.tellHeld();
+  assert.deepEqual(sent, [[studio.pub, { holds: "0.9.0" }]]);
+  clock += 10 * 60_000;
+  link.tellHeld();
+  assert.equal(sent.length, 2);
+});
+
+test("a version put back after its trial counts as a failure each time: the second time, Update Now", () => {
+  box();
+  write(path.join(RUN, "engine.json"), JSON.stringify({ version: "1.0.0" }));
+  assert.equal(link.offerUpdate(release("0.10.0"), { keys: [pinned], blocked: null }).status, 202);
+  const putBack = () => {
+    // As the keeper leaves it once its judge took the update back: the trial noted, its file gone.
+    const state = JSON.parse(fs.readFileSync(path.join(RUN, "update.json"), "utf8").trim() || "{}");
+    write(path.join(RUN, "update.json"), JSON.stringify({ ...state, trial: { from: "0.9.0", to: "0.10.0", at: Date.now() } }));
+    link.noteTrialEnded();
+  };
+  putBack();
+  assert.deepEqual(link.keepingSelfUp("devbox", 0, null).actions, [], "once: it tries again by itself");
+  putBack();
+  assert.deepEqual(link.keepingSelfUp("devbox", 0, null).actions.map(action => action.label), ["Update Now"], "twice: what it can't get past by itself");
 });
 
 test("the newest release any of your computers holds is the one taken, the same on each: the newest version, then the lowest key", () => {

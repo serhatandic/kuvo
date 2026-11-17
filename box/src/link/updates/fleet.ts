@@ -14,12 +14,12 @@ import path from "node:path";
 import { isObject } from "../../shared/json";
 import { listOf, writePrivate } from "../files";
 import { REAL_BOX, UPDATES } from "../home";
-import { readPeerAgents } from "../peers/directory";
+import { readPeerAgents, vouchedOf } from "../peers/directory";
 import { mailFor, peersOf } from "../peers/known";
 import type { LinkHost } from "../relay/host";
 import { readLink } from "../state";
 import {
-  type BoxRelease, UPDATE_KEYS, boxVersion, isUpdating, newerVersion, offerRests, offerUpdate, offeredVersion, sameVersion,
+  type BoxRelease, UPDATE_KEYS, boxVersion, engineBehind, isUpdating, newerVersion, offerHeld, offerRests, offerUpdate, offeredVersion, sameVersion,
   startOfferedUpdate, updateOnTrial, updatesBlocked, verifyBoxes,
 } from "./update";
 
@@ -103,6 +103,14 @@ interface Pull {
 let pull: Pull | null = null;
 /** Each `<peer> <version>` that couldn't be had from that peer, with when. */
 const tried = new Map<string, number>();
+/** What the boxes a peer vouches for (another of your Macs, known through a machine both set up)
+ * said they hold (`{holds}`), with when: they send no agents mail to this box. */
+const heldBy = new Map<string, { version: string; at: number }>();
+/** What this box last told each box a peer vouches for that it holds, with when. */
+const toldHeld = new Map<string, { version: string; at: number }>();
+/** How long a vouched box's word on what it holds counts, and how often it's said again. */
+const HELD_WORD = 30 * 60_000;
+const SAY_HELD_AGAIN = 10 * 60_000;
 
 /** How a box follows its peers: for a test, its keys, its block, its clock, where its mail goes and
  * what's done with a release once it's offered. */
@@ -130,7 +138,9 @@ export function followOver(host: () => Pick<LinkHost, "send"> | null | undefined
 function tell(peer: string, release: Record<string, unknown>, options: FleetOptions): boolean {
   if (options.send) return options.send(peer, release);
   const link = readLink();
-  const to = peersOf(link).find(each => each.key === peer);
+  // (A peer, or a box a peer vouches for: another of your Macs. A release's trust is its signature,
+  // never who hands it over, so `release` mail goes between them too.)
+  const to = peersOf(link).find(each => each.key === peer) ?? vouchedOf(link).find(each => each.key === peer);
   const bytes = link && to && mailFor(to, { release, at: Date.now() }, link);
   if (!bytes) return false;
   try { return hostOf()?.send(bytes) === true; } catch { return false; }
@@ -140,7 +150,7 @@ const log = (words: string) => console.error(`Kuvo updates: ${words}`);
 
 /** Why this box takes no release from a peer now, or null. */
 function inTheWay(version: string, blocked: string | null, now: number): boolean {
-  if (blocked || isUpdating() || updateOnTrial()) return true;
+  if (blocked || isUpdating() || offerHeld()) return true;
   // (One as new or newer offered already: that one's taken first.)
   const offered = offeredVersion();
   if (offered && !newerVersion(version, offered)) return true;
@@ -153,8 +163,12 @@ export function newestHeld(now = Date.now()): { peer: string; version: string } 
   const mine = boxVersion();
   if (!mine) return null;
   const told = readPeerAgents();
-  const holding = peersOf(readLink())
-    .map(peer => ({ peer: peer.key, version: told[peer.key]?.computer?.release }))
+  const link = readLink();
+  const vouched = vouchedOf(link, told).map(box => box.key).filter(key => now - (heldBy.get(key)?.at ?? -Infinity) < HELD_WORD);
+  const holding = [
+    ...peersOf(link).map(peer => ({ peer: peer.key, version: told[peer.key]?.computer?.release })),
+    ...vouched.map(key => ({ peer: key, version: heldBy.get(key)?.version })),
+  ]
     .filter((each): each is { peer: string; version: string } => typeof each.version === "string" && newerVersion(each.version, mine))
     .filter(each => now - (tried.get(`${each.peer} ${each.version}`) ?? -Infinity) >= TRIED_FOR)
     .sort((a, b) => (newerVersion(a.version, b.version) ? -1 : newerVersion(b.version, a.version) ? 1 : a.peer < b.peer ? -1 : a.peer > b.peer ? 1 : 0));
@@ -219,6 +233,12 @@ function endPull(why: string | null, now = Date.now()): void {
 export function takeReleaseMail(sender: { key: string }, given: Record<string, unknown>, asked: FleetOptions = {}): void {
   const options = { ...ownWays(), ...asked };
   const { keys = UPDATE_KEYS, clock = Date.now, blocked = updatesBlocked() } = options;
+  // Told what a box a peer vouches for holds (another of your Macs): followed as a peer's word is.
+  if (typeof given.holds === "string") {
+    if (!/^\d+\.\d+\.\d+(-beta\.\d+)?$/.test(given.holds)) return;
+    heldBy.set(sender.key, { version: given.holds, at: clock() });
+    return followPeers(asked);
+  }
   // Asked: what this box holds, if it's that version.
   if (typeof given.want === "string") {
     const held = heldRelease(keys);
@@ -252,6 +272,9 @@ export function takeReleaseMail(sender: { key: string }, given: Record<string, u
     const size = given.size;
     // (Exactly what was asked for, newer than this box, and a pack's size a box takes.)
     if (manifest.version !== current.version || !newerVersion(manifest.version, boxVersion())) return endPull(`what it sent isn't ${current.version}.`, now);
+    // (Never an older engine than the one running: refused before any part is asked.)
+    const behind = engineBehind(manifest.engine);
+    if (behind) return endPull(`${current.version} isn't taken here: ${behind}`, now);
     if (typeof size !== "number" || !Number.isInteger(size) || size <= 0 || size > MOST_PACK) return endPull(`its ${current.version} isn't a size a release can be.`, now);
     if (inTheWay(manifest.version, blocked, now)) return endPull(null);
     fs.mkdirSync(INCOMING, { recursive: true, mode: 0o700 });
@@ -293,7 +316,9 @@ function finish(current: Pull, options: FleetOptions, now: number): void {
   fs.writeFileSync(path.join(folder, name), pack, { mode: 0o600 });
   const offered = offerUpdate(folder, { keys: options.keys ?? UPDATE_KEYS, blocked: options.blocked === undefined ? updatesBlocked() : options.blocked, clock: options.clock });
   if (offered.status !== 202) {
-    endPull(`${current.version} couldn't be offered here: ${offered.message ?? offered.status}`, now);
+    // (Refused for what it is, it's that computer's no more for a while; refused for a moment here,
+    // an update starting say, it's looked at again at the next minute.)
+    endPull(offered.status === 422 ? `${current.version} couldn't be offered here: ${offered.message ?? offered.status}` : null, now);
     return;
   }
   log(`${current.version} came from another of your computers; it's taken now.`);
@@ -307,10 +332,26 @@ export function pullUnderWay(): { peer: string; version: string; got: number; pa
   return pull ? { peer: pull.peer, version: pull.version, got: pull.got.size, ...(pull.parts !== undefined ? { parts: pull.parts } : {}) } : null;
 }
 
+/** What this box holds told to each box a peer vouches for (another of your Macs, which hears no
+ * agents mail from it): when it changes, and every ten minutes. Each minute. */
+export function tellHeld(asked: FleetOptions = {}): void {
+  const options = { ...ownWays(), ...asked };
+  const now = (options.clock ?? Date.now)();
+  const held = heldRelease(options.keys ?? UPDATE_KEYS);
+  if (!held) return;
+  for (const box of vouchedOf(readLink())) {
+    const last = toldHeld.get(box.key);
+    if (last?.version === held.version && now - last.at < SAY_HELD_AGAIN) continue;
+    if (tell(box.key, { holds: held.version }, options)) toldHeld.set(box.key, { version: held.version, at: now });
+  }
+}
+
 /** Forgets what's pulled and tried, for a test. */
 export function forgetFleet(): void {
   pull = null;
   tried.clear();
+  heldBy.clear();
+  toldHeld.clear();
   fs.rmSync(INCOMING, { recursive: true, force: true });
 }
 

@@ -683,7 +683,7 @@ health rule and code-only rollback. Never older, never unsigned.
    nothing a peer says moves a box back.
 6. **Offline computers.** A computer that was away hears its peers' mail as it connects (`ask:
    agents`), and its peers hear its own: whichever side is behind pulls then. A pull cut short starts
-   again at the next minute's look; parts already here are kept for that version.
+   again at the next minute's look (a link that starts again begins the pull anew).
 7. **The release check (was "nightly").** One code path, no night window and no wait for quiet:
    every six hours at any hour, and a minute after the link starts, a box asks GitHub for the latest
    release and takes it if it's newer, as any other way in. It's needed only for a fleet where no app
@@ -694,8 +694,9 @@ health rule and code-only rollback. Never older, never unsigned.
    up over SSH when the machine doesn't follow peers itself (a box from before this: no `kuvo` in its
    mail), or is still behind an hour after a peer could hand it the release.
 9. **The Mac's app.** Not needed for the box to be current, and never started by Kuvo Helper for it.
-   The box states the fact: `kuvo/box/app` (and the app's registration) gains the desktop app's
-   version, and `GET kuvo/box/app` says `behind: true` while Kuvo on this Mac is newer than its app.
+   The box states the fact: the app's registration (`kuvo/box/app {desktop, version}`) gives its
+   version, and this Mac's row in `kuvo/computers` says `appCheck: <version>` while Kuvo on this Mac
+   is newer than its app.
    The app, seeing it, asks Sparkle for a background check once per Kuvo version
    (`checkForUpdatesInBackground`): Sparkle installs it as you set it (by itself at quit, or its own
    window). Until then the gate (`kuvo_box/src/gate.rs`, Open/Behind/Held) already lets an older app
@@ -708,15 +709,19 @@ health rule and code-only rollback. Never older, never unsigned.
     button. "Another Mac: its own app updates it" goes: another Mac follows like any computer, and the
     box listing your computers says "Kuvo on <name> updates in a moment".
 
-### Two Macs
-A Mac's box's peers are its own machines (`peersOf`: `link.macPeers`); another Mac is a peer only
-where it was added as one, and otherwise a box "vouched for" by a machine both Macs set up, which
-gets plan limits only. So the mini follows the MacBook directly where they're peers, and otherwise
-through a machine both set up: that machine takes the release from the MacBook, holds it once it's
-judged well there (the health window, about five minutes), and the mini takes it from the machine.
-Every pair of your computers that list each other is joined that way, as a vouched box exists only
-beside a machine both set up. A release's trust is its signature, not who hands it over, so taking
-it from a vouched box too would be safe; not built, as no vouched box tells which release it holds.
+### Two Macs (built after review)
+A Mac's box's peers are its own machines (`peersOf`: `link.macPeers`, all `machine`); another Mac is
+a box "vouched for" by a machine both set up, which got plan limits only. A release's trust is its
+signature, not who hands it over, so `release` mail now goes between vouched boxes too: each box
+tells the boxes its peers vouch for what it holds (`{holds}`, each minute when it changes, every ten
+minutes anyway), and they pull from it as from a peer. So the mini takes the MacBook's release
+directly, one exchange after the MacBook's update is judged well. Not covered by a test: a real
+`IS_MAC` box (`KUVO_BOX=mac`); the fleet tests drive a machine's box with a vouched Mac.
+
+### Decisions for the user (added after review)
+- Betas spread: one computer on a beta brings every computer to it (the newest signed version
+  wins, as briefed). Recommend: keep, as the private-feed betas are meant to reach the user's own
+  computers; the alternative is following only the channel each computer is on.
 
 ### What stays, and why
 - A release whose engine its code wasn't checked with (a box two engine releases behind) still waits
@@ -731,7 +736,7 @@ it from a vouched box too would be safe; not built, as no vouched box tells whic
   then needs someone's app update to spread).
 
 ### Tests
-Box (`box/test/updates/fleet*.test.ts`, fake peers, releases signed with the test key): a peer's
+Bridge (`box/bridge-tests/update-follows-peers.test.js`, fake peers, releases signed with the test key): a peer's
 newer release is pulled and offered in one exchange; unsigned, wrongly signed, older and same-version
 releases are refused before any part is asked; a peer that sends a pack not matching the signed
 SHA-256 is refused; an offline peer coming back is followed; the release check runs any hour and

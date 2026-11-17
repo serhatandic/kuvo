@@ -1141,7 +1141,7 @@ test("an offered release that fails before anything changes (its engine's downlo
   assert.equal((await take(at(1))).result, "failed");
   assert.equal(read(path.join(home, "run", "update.json")).offerFailed.tries, 2);
   // Failing again: what it can't get past by itself, said, with Update Now.
-  assert.deepEqual(link.keepingSelfUp("Studio Mac", 0, null).update, { state: "failed", title: "Kuvo on Studio Mac couldn’t be updated twice. It tries again later.", detail: "" });
+  assert.deepEqual(link.keepingSelfUp("Studio Mac", 0, null).update, { state: "failed", title: "Kuvo on Studio Mac couldn’t be updated after 2 tries. It tries again later.", detail: "" });
   assert.deepEqual(link.keepingSelfUp("Studio Mac", 0, null).actions.map(action => action.label), ["Update Now"]);
   assert.equal(await take(at(2)), null, "not an hour on");
   assert.equal(link.offeredVersion(), "0.10.0");
@@ -1149,8 +1149,9 @@ test("an offered release that fails before anything changes (its engine's downlo
   assert.equal((await take(at(26))).result, "updated");
   engines.add(read(engineFile).pid);
   assert.equal(fs.existsSync(offered), false);
-  assert.equal(read(path.join(home, "run", "update.json")).offerFailed, undefined, "forgotten once it's taken");
+  assert.equal(read(path.join(home, "run", "update.json")).offerFailed?.tries, 2, "kept while it's on trial: put back, it counts");
   assert.equal(await settle(), "well");
+  assert.equal(read(path.join(home, "run", "update.json")).offerFailed, undefined, "forgotten once it's judged well");
 });
 
 test("a download that breaks off on the way (a dropped connection, a server failing) is tried again a moment later, and the update goes through", async t => {

@@ -121,7 +121,7 @@ import { sayWhole } from "./once";
 import { featuresNow, settleUpdate, startSettling } from "./updates/health";
 import { swapEngine } from "./updates/engine-swap";
 import { type UpdateOptions, ON_TRIAL, UPDATING_ALREADY, agentsWorking, dropOldBackups, passingOutcome, updateOnTrial, checkDrift, failedInPassing, offerWaits, isUpdating, noteLauncher, noteOlderMacs, installerSteps, noteUpdate, startOfferedUpdate, startUpdate, takeOffer, untilFree, update, UPDATE_KEYS, releaseRound, updatesBlocked, updateState, updateStatus } from "./updates/update";
-import { clearIncoming, followOver, followPeers } from "./updates/fleet";
+import { clearIncoming, followOver, followPeers, tellHeld } from "./updates/fleet";
 import { BRIDGE_VERSION } from "./version";
 import type { AddressInfo } from "node:net";
 import type { SignedDoc } from "../shared/documents";
@@ -199,7 +199,8 @@ export { KEEP_UP_FILE, keepUpRound, keepingSelfUp, keepingUp } from "./add/keep-
 export { codeCheck, codeInPlace } from "./updates/code-in-place";
 export { HEALTH, lookAtPieces, rollBackCode, settleUpdate } from "./updates/health";
 export { appBehind, registerDesktop } from "./mac/app";
-export { fleetFacts, fleetWith, followPeers, forgetFleet, heldRelease, keepRelease, newestHeld, pullUnderWay, takeReleaseMail } from "./updates/fleet";
+export { noteTrialEnded } from "./updates/update";
+export { fleetFacts, fleetWith, followPeers, forgetFleet, heldRelease, keepRelease, newestHeld, pullUnderWay, takeReleaseMail, tellHeld } from "./updates/fleet";
 export { UPDATE_KEYS, agentsWorking, boxVersion, dropOldBackups, checkDrift, confirmUpdate, isUpdating, newerVersion, noteLauncher, noteOlderMacs, offerDue, offerHeld, offerUpdate, offerWaits, offeredVersion, releaseRound, startUpdate, takeOffer, update, updateStatus, updatesBlocked, verifyBoxes, versionOrder } from "./updates/update";
 export { FILE_LIMIT } from "./areas/file";
 export { firstMessageOf, jobInMemory, jobLine, keepJobs } from "./bots/jobs";
@@ -477,7 +478,7 @@ async function run(): Promise<void> {
   // well is its judge's to say (updates/health.ts).
   followOver(() => current);
   clearIncoming();
-  setInterval(() => { try { followPeers(); } catch {} }, 60_000).unref?.();
+  setInterval(() => { try { followPeers(); tellHeld(); } catch {} }, 60_000).unref?.();
   const rounds = () => {
     noteLauncher();
     noteOlderMacs();

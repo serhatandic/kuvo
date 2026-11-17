@@ -768,7 +768,7 @@ test.if(onMac)("what needs you on This Mac is a warning with the way to it: Logi
   // Failed twice: what it can't get past by itself, so Update Now, asked first where it stops work.
   thisMac({ atLogin: () => false, permissions: () => allowed(false, null), update: () => update({ offered: "1.0.2", offerFailed: { version: "1.0.2", at: 1, takenBack: true, message: "It didn’t run well here." } }), working: async () => true, offerChangesEngine: () => true, offerFailedTwice: () => true })
   const stuck = rowOf((await fromApp("GET", "kuvo/settings/computer")).json, "version")
-  expect(stuck).toMatchObject({ title: "Kuvo Code 1.0.2 is ready", line: "It couldn’t be installed twice: It didn’t run well here.", tone: "warning", kind: "actions" })
+  expect(stuck).toMatchObject({ title: "Kuvo Code 1.0.2 is ready", line: "It couldn’t be installed after 2 tries: It didn’t run well here.", tone: "warning", kind: "actions" })
   expect(stuck.actions[0]).toMatchObject({ id: "update", title: "Update Now", confirm: { button: "Update Now" } })
   // Not even on your word while its engine is stopped on purpose: said, with nothing to press.
   thisMac({ atLogin: () => false, permissions: () => allowed(false, null), update: () => update({ offered: "1.0.2" }), working: async () => true, offerHeld: () => "Its engine is stopped: start it to update it." })

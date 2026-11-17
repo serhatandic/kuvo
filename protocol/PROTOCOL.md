@@ -1735,7 +1735,8 @@ machines; a client that wants every computer's facts asks the box that has it as
   - `update?` (`computers.update`): `{state, title, detail, long?}` on another computer whose Kuvo
     is older than this box's and that follows its peers ("Updates", Your computers follow each
     other): "Kuvo on <name> updates in a moment" (`waiting`, nothing to press), a Mac or a machine
-    alike; on a machine whose Kuvo this box brings up to its own (Keeping them up to date, below): `waiting` for nothing to be at work there
+    alike, and once this box has seen it behind for a day (since its link started), "Kuvo on <name>
+    hasn’t updated yet" (`long: true`); on a machine whose Kuvo this box brings up to its own (Keeping them up to date, below): `waiting` for nothing to be at work there
     (`long: true` once that's been over a day), `updating`, or `failed` (tried again by itself
     later); `title` and `detail` the box's words, which a client shows as they are. Left out where
     there's nothing to bring up, and on every other box. On this box's own row
@@ -1744,8 +1745,9 @@ machines; a client that wants every computer's facts asks the box that has it as
     work there." (`waiting`), "Kuvo on <name> updates in a moment." (`waiting`), "Updating Kuvo on
     <name>…" (`updating`), "… tries its update again in a while." (`waiting`: it failed once, put
     back or not), "… couldn’t be updated twice. It tries again later." (`failed`: that version failed
-    here twice in a row, `offerFailed.tries`); `update-here` (Update Now, asked first where it stops
-    work) only with that last one: nothing to press while it takes the release by itself. Left out while none waits, or while it can't update (blocked, its engine
+    here twice in a row, `offerFailed.tries`, words "couldn’t be updated after 2 tries"); `update-here` (Update Now, asked first where it stops
+    work) only with that last one, or (`long: true`) a release that restarts the engine that has
+    waited a day for nothing to be at work: nothing to press while it takes the release by itself. Left out while none waits, or while it can't update (blocked, its engine
     stopped on purpose, an update on trial). On an older machine this box could add but didn't set
     up over SSH (`add`, above): "Kuvo on <name> needs an update. Set it up over SSH from <this box>
     to update it." (`waiting`).
@@ -3071,8 +3073,16 @@ did: the box keeps working as itself ("For released Macs").
     against the signed SHA-256 and offered to the box itself from a folder of its own (as above,
     checked again), and taken; the engine comes from the manifest's URL, as for any update. Only the
     box with the relay connection pulls (its link, `run`); a box that starts again begins anew.
-  - **Never** older, its own version, unsigned or signed by a key it doesn't pin, or from a box that
-    isn't one of its peers (vouched boxes get limits only).
+  - **Between two Macs**: a Mac's box's peers are its own machines, so another of your Macs is a
+    box a peer vouches for (known through a machine both set up). `release` mail goes between those
+    too, and only it beside limits: each minute a box tells each box its peers vouch for what it
+    holds (`{holds: <version>}`, when that changes and every ten minutes), which that box follows as
+    a peer's `computer.release` (for half an hour from its word). A release's trust is its
+    signature, never who hands it over.
+  - **Never** older, its own version, unsigned or signed by a key it doesn't pin, with an engine
+    older than the one running (refused before any part is asked), or from a box that isn't yours
+    (a peer, or one a peer vouches for). A refusal that's no fault of the computer that sent it (an
+    update starting here) is looked at again a minute on; one that is rests that computer an hour.
 - **This Mac's app follows** its Kuvo: the desktop app registers its version with `kuvo/box/app`
   (`{desktop, version}`), and while Kuvo on this Mac runs a newer version, this Mac's row in
   `kuvo/computers` says it (`appCheck: <version>`): the app looks for its own update then, in the
@@ -3217,7 +3227,8 @@ did: the box keeps working as itself ("For released Macs").
   - The coding agents' own data (`agents`) isn't kept for a rollback.
 - **State**: `run/update.json` holds `{latest, checked, last: {at, result, message?, from?, to?}, engine?: {at, result, from, to, message?},
   running?, trial?, round?, offerFailed?: {version, at, takenBack, tries?, message?}}` (`tries`:
-  how many times in a row that version failed here, put back or not). `trial` is
+  how many times in a row that version failed here, put back or not; kept while a take of it is on
+  trial, and forgotten once that's judged well). `trial` is
   `{from, to, at, swapped?, features?, dataKept?, judged?, healthy?}` (the judging so far, as above).
 - `kuvo/update`:
   - `GET` answers `{setUp, version, engine, latest, last, updating, blocked}`, and while a newer

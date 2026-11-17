@@ -16743,6 +16743,10 @@ function fleetFacts() {
 }
 var pull = null;
 var tried = new Map;
+var heldBy = new Map;
+var toldHeld = new Map;
+var HELD_WORD = 30 * 60000;
+var SAY_HELD_AGAIN = 10 * 60000;
 var hostOf2 = () => null;
 var ways = {};
 var ownWays = () => ways;
@@ -16756,7 +16760,7 @@ function tell(peer, release, options) {
   if (options.send)
     return options.send(peer, release);
   const link = readLink();
-  const to = peersOf(link).find((each) => each.key === peer);
+  const to = peersOf(link).find((each) => each.key === peer) ?? vouchedOf(link).find((each) => each.key === peer);
   const bytes = link && to && mailFor(to, { release, at: Date.now() }, link);
   if (!bytes)
     return false;
@@ -16768,7 +16772,7 @@ function tell(peer, release, options) {
 }
 var log = (words) => console.error(`Kuvo updates: ${words}`);
 function inTheWay(version, blocked, now) {
-  if (blocked || isUpdating() || updateOnTrial())
+  if (blocked || isUpdating() || offerHeld())
     return true;
   const offered = offeredVersion();
   if (offered && !newerVersion(version, offered))
@@ -16780,7 +16784,12 @@ function newestHeld(now = Date.now()) {
   if (!mine)
     return null;
   const told = readPeerAgents();
-  const holding = peersOf(readLink()).map((peer) => ({ peer: peer.key, version: told[peer.key]?.computer?.release })).filter((each) => typeof each.version === "string" && newerVersion(each.version, mine)).filter((each) => now - (tried.get(`${each.peer} ${each.version}`) ?? -Infinity) >= TRIED_FOR).sort((a, b) => newerVersion(a.version, b.version) ? -1 : newerVersion(b.version, a.version) ? 1 : a.peer < b.peer ? -1 : a.peer > b.peer ? 1 : 0);
+  const link = readLink();
+  const vouched = vouchedOf(link, told).map((box) => box.key).filter((key) => now - (heldBy.get(key)?.at ?? -Infinity) < HELD_WORD);
+  const holding = [
+    ...peersOf(link).map((peer) => ({ peer: peer.key, version: told[peer.key]?.computer?.release })),
+    ...vouched.map((key) => ({ peer: key, version: heldBy.get(key)?.version }))
+  ].filter((each) => typeof each.version === "string" && newerVersion(each.version, mine)).filter((each) => now - (tried.get(`${each.peer} ${each.version}`) ?? -Infinity) >= TRIED_FOR).sort((a, b) => newerVersion(a.version, b.version) ? -1 : newerVersion(b.version, a.version) ? 1 : a.peer < b.peer ? -1 : a.peer > b.peer ? 1 : 0);
   return holding[0] ?? null;
 }
 function followPeers(asked = {}) {
@@ -16835,6 +16844,12 @@ function endPull(why, now = Date.now()) {
 function takeReleaseMail(sender, given, asked = {}) {
   const options = { ...ownWays(), ...asked };
   const { keys = UPDATE_KEYS, clock = Date.now, blocked = updatesBlocked() } = options;
+  if (typeof given.holds === "string") {
+    if (!/^\d+\.\d+\.\d+(-beta\.\d+)?$/.test(given.holds))
+      return;
+    heldBy.set(sender.key, { version: given.holds, at: clock() });
+    return followPeers(asked);
+  }
   if (typeof given.want === "string") {
     const held = heldRelease(keys);
     tell(sender.key, held && held.version === given.want ? { version: held.version, boxes: held.boxes, size: held.size } : { version: given.want, none: true }, options);
@@ -16874,6 +16889,9 @@ function takeReleaseMail(sender, given, asked = {}) {
     const size = given.size;
     if (manifest.version !== current.version || !newerVersion(manifest.version, boxVersion()))
       return endPull(`what it sent isn't ${current.version}.`, now);
+    const behind = engineBehind(manifest.engine);
+    if (behind)
+      return endPull(`${current.version} isn't taken here: ${behind}`, now);
     if (typeof size !== "number" || !Number.isInteger(size) || size <= 0 || size > MOST_PACK)
       return endPull(`its ${current.version} isn't a size a release can be.`, now);
     if (inTheWay(manifest.version, blocked, now))
@@ -16926,7 +16944,7 @@ function finish(current, options, now) {
   fs42.writeFileSync(path44.join(folder, name), pack, { mode: 384 });
   const offered = offerUpdate(folder, { keys: options.keys ?? UPDATE_KEYS, blocked: options.blocked === undefined ? updatesBlocked() : options.blocked, clock: options.clock });
   if (offered.status !== 202) {
-    endPull(`${current.version} couldn't be offered here: ${offered.message ?? offered.status}`, now);
+    endPull(offered.status === 422 ? `${current.version} couldn't be offered here: ${offered.message ?? offered.status}` : null, now);
     return;
   }
   log(`${current.version} came from another of your computers; it's taken now.`);
@@ -16939,9 +16957,25 @@ function finish(current, options, now) {
 function pullUnderWay() {
   return pull ? { peer: pull.peer, version: pull.version, got: pull.got.size, ...pull.parts !== undefined ? { parts: pull.parts } : {} } : null;
 }
+function tellHeld(asked = {}) {
+  const options = { ...ownWays(), ...asked };
+  const now = (options.clock ?? Date.now)();
+  const held = heldRelease(options.keys ?? UPDATE_KEYS);
+  if (!held)
+    return;
+  for (const box of vouchedOf(readLink())) {
+    const last = toldHeld.get(box.key);
+    if (last?.version === held.version && now - last.at < SAY_HELD_AGAIN)
+      continue;
+    if (tell(box.key, { holds: held.version }, options))
+      toldHeld.set(box.key, { version: held.version, at: now });
+  }
+}
 function forgetFleet() {
   pull = null;
   tried.clear();
+  heldBy.clear();
+  toldHeld.clear();
   fs42.rmSync(INCOMING, { recursive: true, force: true });
 }
 function clearIncoming() {
@@ -17624,7 +17658,7 @@ function confirmUpdate(clock = Date.now) {
   try {
     engine = readEngineFile()?.version;
   } catch {}
-  noteUpdate({ trial: null, last: { at: clock(), result: "updated", from: state.trial.from, to: state.trial.to } });
+  noteUpdate({ trial: null, last: { at: clock(), result: "updated", from: state.trial.from, to: state.trial.to }, ...state.offerFailed && !newerVersion(state.offerFailed.version, state.trial.to) ? { offerFailed: null } : {} });
   fs43.rmSync(UPDATE_TRIAL, { force: true });
   fs43.rmSync(ROLLBACK, { recursive: true, force: true });
   const bridgeOn = bridgeEngine();
@@ -17807,6 +17841,13 @@ function offeredVersion() {
   }
 }
 var dropOffer = () => fs43.rmSync(OFFERED, { recursive: true, force: true });
+function offeredSince() {
+  try {
+    return fs43.statSync(path45.join(OFFERED, "boxes.json")).mtimeMs;
+  } catch {
+    return Date.now();
+  }
+}
 function offeredPack() {
   try {
     const given = JSON.parse(fs43.readFileSync(path45.join(OFFERED, "boxes.json"), "utf8"));
@@ -17945,7 +17986,7 @@ async function takeOffer(options = {}) {
     const tries = before?.version === version ? (before.tries ?? 1) + 1 : 1;
     noteUpdate({ offerFailed: { version, at: (options.clock ?? Date.now)(), takenBack, tries, ...outcome.message ? { message: outcome.message } : {} } });
   }
-  if (outcome.result === "updated" || outcome.result === "current")
+  if (outcome.result === "current")
     noteUpdate({ offerFailed: null });
   if (outcome.result === "updated" || outcome.result === "current" || takenBack)
     dropOffer();
@@ -24033,7 +24074,7 @@ init_known();
 init_numbers();
 init_told();
 init_record();
-function heldBy(link, now = Date.now()) {
+function heldBy2(link, now = Date.now()) {
   if (!IS_MAC || !link || followedSetup(link)?.role === "primary")
     return [];
   const gone = goneOf(link, now);
@@ -24062,7 +24103,7 @@ function setupView(link) {
   const setup = followedSetup(link);
   const own = link ? ownKey(link) : null;
   const switched = startsFromOthers(link);
-  const held = heldBy(link);
+  const held = heldBy2(link);
   const welcomed = isWelcomed();
   if (!setup || !own)
     return { setup: null, epoch: null, primary: null, you: { key: own, role: null }, computers: [], startsFromOthers: switched, heldBy: held, welcomed };
@@ -24344,7 +24385,7 @@ init_settle();
 function leadsNow(link, now = Date.now()) {
   if (!IS_MAC)
     return !macsOf(link).length && "self" in rankedPrimary(link, undefined, now);
-  return "self" in rankedPrimary(link, undefined, now) && !heldBy(link, now).length;
+  return "self" in rankedPrimary(link, undefined, now) && !heldBy2(link, now).length;
 }
 function noteKeyNow(link) {
   const own = IS_MAC ? ownKey(link) : null;
@@ -44797,7 +44838,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "57580eb23c33";
+var BRIDGE_VERSION = "37aece13e6b4";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -48192,6 +48233,9 @@ var CURRENT_FOR = 86400000;
 var RETRY = 3600000;
 var REST2 = 86400000;
 var FOLLOW_GRACE = 3600000;
+var ENGINE_WAIT_AT_MOST = 86400000;
+var BEHIND_AT_MOST = 86400000;
+var behindSeen = new Map;
 var UNREACHED_FOR = 3 * 86400000;
 function readKept9() {
   try {
@@ -48326,10 +48370,16 @@ function keepingUp(computer, here, now = Date.now()) {
     return none;
   const name = computer.name || (computer.kind === "mac" ? "this Mac" : "this machine");
   const line = (state, title, detail = "", long = false) => ({ state, title, detail, ...long ? { long: true } : {} });
-  const soon = { update: line("waiting", `Kuvo on ${name} updates in a moment`), actions: [] };
   const follows = !!computer.kuvo;
-  if (follows && !newerVersion(mine, computer.kuvo))
+  if (follows && !newerVersion(mine, computer.kuvo)) {
+    behindSeen.delete(computer.key);
     return none;
+  }
+  const seen = behindSeen.get(computer.key);
+  const since = seen?.mine === mine ? seen.since : now;
+  if (follows && seen?.mine !== mine)
+    behindSeen.set(computer.key, { mine, since });
+  const soon = { update: follows && now - since >= BEHIND_AT_MOST ? line("waiting", `Kuvo on ${name} hasn’t updated yet`, `It updates by itself once it can.`, true) : line("waiting", `Kuvo on ${name} updates in a moment`), actions: [] };
   if (computer.kind !== "machine")
     return follows ? soon : none;
   const can = canAdd();
@@ -48388,13 +48438,17 @@ function keepingSelfUp(name, working, blocked) {
   if (status.offerFailed && status.offerFailed.version === status.offered) {
     if (offerFailedTwice(status.offered)) {
       const confirm = { title: `Update Kuvo on ${name} now?`, message: at > 0 ? `${sessions(at)} at work on ${name}: what ${at === 1 ? "it’s" : "they’re"} doing stops as Kuvo restarts there.` : `Whatever is at work on ${name} stops as Kuvo restarts there.`, label: "Update Now" };
-      return { update: line("failed", `Kuvo on ${name} couldn’t be updated twice. It tries again later.`), actions: [{ id: "update-here", label: "Update Now", ...engine ? { confirm } : {} }] };
+      return { update: line("failed", `Kuvo on ${name} couldn’t be updated after 2 tries. It tries again later.`), actions: [{ id: "update-here", label: "Update Now", ...engine ? { confirm } : {} }] };
     }
     return { update: line("waiting", `Kuvo on ${name} tries its update again in a while.`), actions: [] };
   }
   if (!engine)
     return { update: line("waiting", `Kuvo on ${name} updates in a moment.`), actions: [] };
-  return { update: line("waiting", at > 0 ? `Kuvo on ${name} updates once your sessions there finish.` : `Kuvo on ${name} updates as soon as nothing’s at work there.`), actions: [] };
+  const waiting = line("waiting", at > 0 ? `Kuvo on ${name} updates once your sessions there finish.` : `Kuvo on ${name} updates as soon as nothing’s at work there.`);
+  if (Date.now() - offeredSince() < ENGINE_WAIT_AT_MOST)
+    return { update: waiting, actions: [] };
+  const confirm = { title: `Update Kuvo on ${name} now?`, message: at > 0 ? `${sessions(at)} at work on ${name}: what ${at === 1 ? "it’s" : "they’re"} doing stops as Kuvo restarts there.` : `Whatever is at work on ${name} stops as Kuvo restarts there.`, label: "Update Now" };
+  return { update: { ...waiting, long: true }, actions: [{ id: "update-here", label: "Update Now", confirm }] };
 }
 
 // box/src/link/areas/computers.ts
@@ -57764,6 +57818,10 @@ function receiveMail(body, host, peerMail = () => {}, attended = () => {}) {
       takeLimits(sender, payload.limits).catch(() => {});
     if (isObject(payload.seat) || isObject(payload.seatPart))
       takeSeat(sender, payload, () => {}, bridgeAsk, ["usage"]).catch(() => {});
+    if (isObject(payload.release))
+      try {
+        takeReleaseMail(sender, payload.release);
+      } catch {}
     return;
   }
   if (noteHeard(sender.key)) {
@@ -70120,7 +70178,7 @@ async function computerPage(context) {
     const engine = computerFacts.offerChangesEngine();
     const stuck = computerFacts.offerFailedTwice(update.offered);
     const action = engine ? now("Update Now") : { id: "update", title: "Update Now" };
-    const line = stuck ? `It couldn’t be installed twice${update.offerFailed?.message ? `: ${update.offerFailed.message}` : "."}` : engine ? "It installs once nothing’s at work." : "It installs in a moment.";
+    const line = stuck ? `It couldn’t be installed after 2 tries${update.offerFailed?.message ? `: ${update.offerFailed.message}` : "."}` : engine ? "It installs once nothing’s at work." : "It installs in a moment.";
     rows.push(row({ id: "version", title: `Kuvo Code ${update.offered} is ready`, ...held ? { line: held, kind: "status" } : stuck ? { line, tone: "warning", kind: "actions", actions: [action] } : { line, kind: "status" }, value: update.offered }));
   } else
     rows.push(row({ id: "version", title: version, line: failed ?? "Up to date. It updates itself.", ...failed ? { tone: "warning" } : {}, kind: "actions", value: update.version, actions: [now("Check Now")] }));
@@ -72029,6 +72087,7 @@ async function run7() {
   setInterval(() => {
     try {
       followPeers();
+      tellHeld();
     } catch {}
   }, 60000).unref?.();
   const rounds = () => {
@@ -73093,6 +73152,7 @@ export {
   noteSetupNow,
   noteSignIn,
   noteStopped,
+  noteTrialEnded,
   noticeFor,
   noticeJSON,
   offerDue,
@@ -73277,6 +73337,7 @@ export {
   takeSeat,
   takeWorkQueueMail,
   takeZone,
+  tellHeld,
   tellQueuesAgain,
   tellSeatPeers,
   tellWorktree,
