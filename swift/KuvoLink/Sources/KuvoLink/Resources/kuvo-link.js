@@ -44083,7 +44083,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "81cc3f392837";
+var BRIDGE_VERSION = "c5fb78a6c4b0";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -55267,8 +55267,26 @@ function recorded(file, role) {
     } catch {}
   return runsAs(pid, role) ? pid : null;
 }
+function holders() {
+  const folder = path181.join(RUN, "agents", "hold");
+  let names = [];
+  try {
+    names = fs171.readdirSync(folder).filter((name) => /^[0-9a-f]{12}\.json$/.test(name));
+  } catch {
+    return [];
+  }
+  return names.flatMap((name) => {
+    const id = name.slice(0, 12);
+    try {
+      const pid = JSON.parse(fs171.readFileSync(path181.join(folder, name), "utf8"))?.pid;
+      return runsAs(pid, new RegExp(`kuvo-hold-[0-9a-f]+\\.js .* ${id} (jsonrpc|claude|raw)\\s*$`)) ? [pid] : [];
+    } catch {
+      return [];
+    }
+  });
+}
 function running5() {
-  return RECORDS.filter(([file, role]) => recorded(file, role) !== null).map(([, , what]) => what);
+  return [...RECORDS.filter(([file, role]) => recorded(file, role) !== null).map(([, , what]) => what), ...holders().length ? ["coding agents' processes"] : []];
 }
 function ownKeeper() {
   const keeper = path181.join(K, "bin", "kuvo-start");
@@ -55346,8 +55364,13 @@ function uninstall2() {
         told.push([pid, role]);
       } catch {}
   }
+  for (const pid of holders())
+    try {
+      process.kill(pid, "SIGTERM");
+      told.push([pid, /kuvo-hold-[0-9a-f]+\.js /]);
+    } catch {}
   const pause = new Int32Array(new SharedArrayBuffer(4));
-  for (let waited = 0;waited < 200 && told.some(([pid, role]) => runsAs(pid, role)); waited++)
+  for (let waited = 0;waited < 400 && told.some(([pid, role]) => runsAs(pid, role)); waited++)
     Atomics.wait(pause, 0, 0, 50);
   const left = running5();
   stopped &&= left.length === 0;

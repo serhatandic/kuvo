@@ -46,6 +46,9 @@ import { spawn } from "node:child_process"
 import { bundleBuild } from "../shared/bundle"
 import type { RenewalRecord } from "../shared/records"
 import { Sessions } from "./sessions"
+import { adoptHeld } from "./hold/adopt"
+import { stopAllHeld } from "./hold/client"
+import { runsAs } from "../shared/platform"
 import { noteAgentsInside, untilSandboxDecided } from "./fence"
 import { useSavedLoginPath } from "./proc"
 import { setSkillSource } from "./skills"
@@ -193,6 +196,18 @@ function engineAgent(providerID: string): EngineAgent | undefined {
   if (!agent) engineAgents.set(providerID, (agent = new EngineAgent(link, providerID)))
   return agent
 }
+// Agents' processes an earlier bridge left under holders (it crashed): those with turns under way
+// are taken up again, the others stopped as it would have stopped them (hold/adopt.ts).
+// (Not while another bridge runs here, which has them: this one won't get its port.)
+const otherBridge = (() => {
+  try {
+    const pid = JSON.parse(readFileSync(join(machineHome!, "run", "bridge.json"), "utf8"))?.pid
+    return pid !== process.pid && runsAs(pid, /kuvo-agents/)
+  } catch {
+    return false
+  }
+})()
+const heldTurns = onMachine && !otherBridge ? await adoptHeld() : new Map()
 const sessions = new Sessions(
   store,
   roster,
@@ -202,6 +217,7 @@ const sessions = new Sessions(
   (name, directory) => link.agent(name, directory),
   new Snapshots(join(home, "snapshots")),
   (directory) => link.titleModel(directory),
+  heldTurns,
 )
 // Tells the box's link, as it changes, whether every agent's process here runs in its sandbox
 // (none started before it came on still runs): only then do agents use the vault.
@@ -439,6 +455,8 @@ if (artifactsFolder) {
 // listens once the box has set up its sandbox: on this Mac the app starts it before the box, so an
 // agent started then would run outside the sandbox until it stops.
 await untilSandboxDecided()
+// The turns it left under way go on here, before anything can be sent to their sessions.
+sessions.resumeHeld()
 limits.start()
 usage.start()
 const carrying = new Carrying(sessions, store, (provider) => sessions.agent(provider), (kind) => roster.all().filter((agent) => parseProvider(agent.providerID)?.kind === kind))
@@ -619,6 +637,8 @@ function stop() {
     if (record && JSON.parse(readFileSync(record, "utf8")).pid === process.pid) rmSync(record, { force: true })
   } catch {}
   sessions.closeAll()
+  // Every agent it holds stops with it (an app-server no session closes too), whatever exits first.
+  stopAllHeld()
   store.flush()
   server.stop(true)
   process.exit(0)

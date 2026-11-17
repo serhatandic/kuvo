@@ -714,6 +714,8 @@ export class AntigravityAgent implements Agent {
         noteContext(model, size) {
           if (agent.windows.note(model, size)) emit("model.updated", {})
         },
+        // (Not run under a holder: no spike has shown a new bridge can take its turn over, so a
+        // crash ends its turn as before, and an update waits for it to end: renewal.ts.)
         fileSystem: true,
         whole: { homes: (env) => agent.places(env).homes, state: ["*"], kept: [], read: (env) => agent.reads(env) },
         authenticatesFirst: true,

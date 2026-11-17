@@ -139,12 +139,36 @@ take_lock() {
   done
 }
 lock() { take_lock "${1:-2400}"; }
-# The engine and its coding agents' bridge, stopped (under the lock).
+# The engine and its coding agents' bridge, stopped (under the lock), and the agents' processes it
+# keeps under holders.
 halt() {
   a=$(cat "$R/agents.pid" 2>/dev/null)
   if is "$a" kuvo-agents; then kill -- "-$a" 2>/dev/null || kill "$a" 2>/dev/null; fi
   rm -f "$R/agents.pid"
+  halt_held
   halt_engine
+}
+# A holder's process, as its record names it (run/agents/hold/<id>.json), once it's one.
+# (Only once that process is that very holder, its program and its id on its command line.)
+held_pid() { i=$(basename "$1" .json); h=$(sed -n 's/^{"proto":"hold\/1","holder":[^,]*,"id":"'"$i"'","kind":"[a-z]*","pid":\([0-9]*\),.*/\1/p' "$1" 2>/dev/null); is "$h" "kuvo-hold-[0-9a-f]*\.js .* $i " && echo "$h"; }
+# The coding agents' processes under holders (kuvo-agents' hold/), which outlive a bridge that
+# crashes: each holder stopped by its own pid (never by a name), stopping its agent as the bridge
+# would (its stdin closed, then told, then made to after 15 s), and waited for, 20 s at most.
+halt_held() {
+  for f in "$R"/agents/hold/*.json; do
+    [ -f "$f" ] || continue
+    h=$(held_pid "$f") && [ -n "$h" ] && kill "$h" 2>/dev/null
+  done
+  n=0
+  while [ $n -lt 200 ]; do
+    left=
+    for f in "$R"/agents/hold/*.json; do
+      [ -f "$f" ] || continue
+      h=$(held_pid "$f") && [ -n "$h" ] && left=1
+    done
+    [ -z "$left" ] && break
+    sleep 0.1; n=$((n + 1))
+  done
 }
 # The engine alone (under the lock).
 halt_engine() {

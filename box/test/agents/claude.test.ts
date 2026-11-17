@@ -1,7 +1,7 @@
 // Claude Code's thread against a fake SDK: messages you send partway, taken late or never.
 
 import "../safety"
-import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test"
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test"
 import { spawnSync } from "node:child_process"
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { homedir, tmpdir } from "node:os"
@@ -24,6 +24,16 @@ import { Sessions } from "../../src/agents/sessions"
 import { shellOutput, shells } from "../../src/agents/shells"
 import { Store } from "../../src/agents/store"
 import type { Message, PermissionRule } from "../../src/agents/wire"
+import { holding } from "../../src/agents/hold/adopt"
+
+// How Claude Code's own process starts and says why it stopped, as the SDK or the sandbox's launcher
+// starts it: not under a holder (hold.test.ts, hold-claude.test.ts and agents-held.test.js are those).
+beforeAll(() => {
+  holding.on = false
+})
+afterAll(() => {
+  holding.on = true
+})
 
 // Claude Code's own sign-in, as on a machine (a Mac's own is Kuvo Code's: accounts-check.test.ts).
 const keychain = ClaudeAgent.keychain

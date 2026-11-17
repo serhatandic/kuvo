@@ -33,6 +33,11 @@ import { addShell, endShell } from "../shells"
 import { instructionsNote, toldOf } from "../told"
 import { pictureData, pictureFile, withPictures } from "../pictures"
 import type { Turn } from "../turn"
+import { hold, heldProcess, type Held } from "../hold/client"
+import { agentHoldFolder, noteTurn, type HeldTurn } from "../hold/adopt"
+
+/** How the agent SDK asks for Claude Code to be started (its `spawnClaudeCodeProcess`). */
+type SpawnOptions = { command: string; args: string[]; cwd?: string; env: Record<string, string | undefined>; signal?: AbortSignal }
 import type { FileDiff, FormField, Model, ModelRef, PermissionRule, Session, TokenUsage } from "../wire"
 
 const SDK = [{ name: "@anthropic-ai/claude-agent-sdk", version: "0.3.303" }]
@@ -1127,6 +1132,7 @@ class ClaudeThread implements Thread {
 
   async run(input: RunInput, turn: Turn, hooks: TurnHooks): Promise<RunResult> {
     if (input.adopt) return this.adopt(input, turn, hooks)
+    if (input.held) return this.resumeHeld(input, turn, hooks)
     // One it began on its own and nobody took: what's left of it goes into this turn.
     const own = this.own
     this.own = undefined
@@ -1211,11 +1217,69 @@ class ClaudeThread implements Thread {
       }
       // The turn ends with the result that answers it (one of its own before, like a command's
       // end it took up, doesn't end it). Its /compact, typed as you would, ends with the first.
-      this.active = active = this.turnFor(turn, hooks, answered, input.auto, new Map(input.compact ? [] : [[message.uuid, ""]]))
+      // Under a holder: where this turn's lines begin, for a bridge taking it up after a crash
+      // (noted before the message goes: what it says from here is the turn's; or, its holder still
+      // starting, all it has said).
+      const holding = input.compact ? undefined : this.holding
+      const turnEnds = (result: RunResult) => {
+        if (holding) void holding.then((held) => noteTurn(held, this.session.id, undefined), () => {})
+        answered(result)
+      }
+      this.active = active = this.turnFor(turn, hooks, turnEnds, input.auto, new Map(input.compact ? [] : [[message.uuid, ""]]))
+      const noted = active
+      if (holding && this.held) noteTurn(this.held, this.session.id, { session: this.session.id, from: this.held.seen })
+      else if (holding) void holding.then((held) => this.active === noted && noteTurn(held, this.session.id, { session: this.session.id, from: 0 }), () => {})
       this.active.compacting = input.compact
       this.input!.push(message)
     })
   }
+
+  /**
+   * A turn an earlier bridge left under way in this conversation's Claude Code (it crashed), taken
+   * up as it is: a new SDK client joins the same Claude Code (which takes a second `initialize`,
+   * and sends the asks it has open again in its answer: spike S1), what it said since the turn
+   * began comes again, and the turn goes on to its result. A hook it was waiting on as the bridge
+   * went is cancelled by Claude Code, which tells the model the tool didn't run, to try it again.
+   */
+  private async resumeHeld(input: RunInput, turn: Turn, hooks: TurnHooks): Promise<RunResult> {
+    const taken = input.held!
+    const opened = taken.meta.opened as ClaudeThread["opened"] | undefined
+    try {
+      // (Joined only by the SDK that started it: another may speak to it otherwise.)
+      if (taken.meta.sdk !== SDK[0]!.version) throw new Error(`Claude Code was started with another version of its SDK (${String(taken.meta.sdk)}).`)
+      const sdk = await this.agent.sdk()
+      this.held = taken.held
+      this.holding = Promise.resolve(taken.held)
+      this.open(sdk, input.model.id, input.model.variant, input.plan, opened?.append ?? hooks.instructions(), hooks, opened?.skills, undefined, taken)
+    } catch (error) {
+      // (Not taken up after all: its Claude Code stops, as the bridge before would have stopped it.)
+      taken.held.stop()
+      this.held = undefined
+      this.holding = undefined
+      throw error
+    }
+    // (What it started with, as far as it was kept: Kuvo Code's tools' key wasn't, and is told again next turn.)
+    if (opened) this.opened = opened
+    return new Promise<RunResult>((resolve) => {
+      this.lastHooks = hooks
+      this.active = this.turnFor(
+        turn,
+        hooks,
+        (result) => {
+          noteTurn(taken.held, this.session.id, undefined)
+          resolve(result)
+        },
+        input.auto,
+        new Map(),
+      )
+      taken.gate.onOpen(() => {})
+      taken.gate.ready(taken.thread)
+    })
+  }
+
+  /** This conversation's Claude Code under a holder (hold/client.ts), and the holder once it's there. */
+  private held?: Held
+  private holding?: Promise<Held>
 
   /**
    * Claude Code rendered its instructions again, as it was started with them (a new conversation,
@@ -1449,7 +1513,7 @@ class ClaudeThread implements Thread {
     for (const { id } of this.backgroundTasks) await this.query?.stopTask?.(id).catch(() => {})
   }
 
-  private open(sdk: any, modelID: string, effort: string | undefined, plan: boolean, append: string, hooks: TurnHooks, skills?: string, subagents: ReturnType<typeof claudeSubagents> = { agents: {} }) {
+  private open(sdk: any, modelID: string, effort: string | undefined, plan: boolean, append: string, hooks: TurnHooks, skills?: string, subagents: ReturnType<typeof claudeSubagents> = { agents: {} }, taken?: HeldTurn) {
     // (Without it, the SDK's own words would be about a build of its own it doesn't have.)
     if (!this.agent.executable()) throw new Error(`Install Claude Code first: ${this.agent.install}`)
     // Why an earlier one ended is not this one's.
@@ -1469,8 +1533,15 @@ class ClaudeThread implements Thread {
       hooks.saveState()
     }
     // While the box's sandbox is on, Claude Code runs whole in it, and so does all it starts: its
-    // commands, its hooks and MCP servers (yours, and a project's).
-    const whole = this.whole(skills, id)
+    // commands, its hooks and MCP servers (yours, and a project's). (One taken up from its holder
+    // runs as it started: its launcher isn't made again, which would clear what it runs with.)
+    if (taken) this.sandboxedNow = taken.meta.sandboxed === true || undefined
+    const whole = taken ? undefined : this.whole(skills, id)
+    if (!taken) {
+      this.held = undefined
+      this.holding = undefined
+    }
+    const spawning = taken ? () => this.heldSpawn(taken.held) : this.holdSpawn(whole)
     const named = botMemory(this.session)
     const ownMemory = named && existsSync(named) ? named : undefined
     this.input = new Queue()
@@ -1502,7 +1573,8 @@ class ClaudeThread implements Thread {
         env: { ...this.agent.env(), OPENCODE_SESSION_ID: this.session.id, ...(subagents.model ? { CLAUDE_CODE_SUBAGENT_MODEL: subagents.model } : {}), ...whole?.env },
         // Its own sandbox off while the box's is on (yours, or a project's settings, may turn it
         // on): one sandbox can't run inside another on a Mac, and every command would fail.
-        ...(whole ? { sandbox: { enabled: false }, spawnClaudeCodeProcess: whole.spawn } : {}),
+        ...(whole ? { sandbox: { enabled: false } } : {}),
+        ...(spawning ? { spawnClaudeCodeProcess: spawning } : {}),
         stderr: () => {},
       },
     })
@@ -1540,17 +1612,27 @@ class ClaudeThread implements Thread {
     // its commands with no shell of the box's (they're in the sandbox already, and one can't run
     // inside another), and no updates of its own, which it can't write there (Update does, outside).
     const env: Record<string, string | undefined> = { CLAUDE_CODE_TMPDIR: undefined, CLAUDE_CODE_SHELL: undefined, DISABLE_AUTOUPDATER: "1" }
+    /** How the SDK's start runs, in the sandbox: through its launcher. */
+    const launch = (options: SpawnOptions) => ({
+      command: fence.command,
+      args: options.args,
+      cwd: options.cwd ?? directory,
+      // (The program as the SDK names it.)
+      env: Object.fromEntries(Object.entries({ ...options.env, ...fence.env, KUVO_FENCE_SHELL: options.command, ...env }).filter((entry): entry is [string, string] => entry[1] !== undefined)),
+    })
+    const ended = () => {
+      fence.ended()
+      // (Not as one being replaced stops: the new one needs them.)
+      if (started === this.startsInSandbox) this.environmentsEnded()
+    }
     return {
       env,
-      spawn: (options: { command: string; args: string[]; cwd?: string; env: Record<string, string | undefined>; signal?: AbortSignal }) => {
-        // (The program as the SDK names it.)
-        const given = Object.fromEntries(Object.entries({ ...options.env, ...fence.env, KUVO_FENCE_SHELL: options.command, ...env }).filter((entry): entry is [string, string] => entry[1] !== undefined))
-        const child = spawn(fence.command, options.args, { cwd: options.cwd ?? directory, env: given, signal: options.signal, stdio: ["pipe", "pipe", "pipe"] })
-        child.once("exit", () => {
-          fence.ended()
-          // (Not as one being replaced stops: the new one needs them.)
-          if (started === this.startsInSandbox) this.environmentsEnded()
-        })
+      launch,
+      ended,
+      spawn: (options: SpawnOptions) => {
+        const how = launch(options)
+        const child = spawn(how.command, how.args, { cwd: how.cwd, env: how.env, signal: options.signal, stdio: ["pipe", "pipe", "pipe"] })
+        child.once("exit", ended)
         // What it says as it stops, for why it did (the SDK keeps that only for a process it starts
         // itself), this one's alone: one being replaced can still be writing.
         const said = new Said()
@@ -1568,6 +1650,52 @@ class ClaudeThread implements Thread {
         return child
       },
     }
+  }
+
+  /**
+   * How Claude Code starts on a box: under a holder (hold/client.ts), so a bridge that crashes
+   * doesn't take its turn with it, in the box's sandbox when it's on (its launcher is what's held);
+   * as a process of the bridge's own if the holder can't start. None off a box: the SDK starts it.
+   */
+  private holdSpawn(whole: ReturnType<ClaudeThread["whole"]>): ((options: SpawnOptions) => any) | undefined {
+    const folder = agentHoldFolder("claude")
+    if (!folder) return whole?.spawn
+    return (options: SpawnOptions) => {
+      const how = whole ? whole.launch(options) : { command: options.command, args: options.args, cwd: options.cwd ?? this.session.location.directory, env: Object.fromEntries(Object.entries(options.env).filter((entry): entry is [string, string] => entry[1] !== undefined)) }
+      // (What it started with, for a bridge taking it up; but Kuvo Code's tools' key, which can hold
+      // a server's environment, and is told again then.)
+      const opened = this.opened ? { ...this.opened, tools: undefined } : undefined
+      const holding = hold([how.command, ...how.args], { folder, kind: "claude", cwd: how.cwd, env: how.env, meta: { provider: this.agent.providerID, kind: "claude", sandboxed: Boolean(whole), opened, sdk: SDK[0]!.version, turns: {} } })
+      this.holding = holding
+      void holding.then(
+        (held) => {
+          if (this.holding === holding) this.held = held
+        },
+        (error) => console.error("Claude Code's holder didn't start:", error?.message ?? error),
+      )
+      const process_ = heldProcess(holding, () => (whole ? whole.spawn(options) : spawn(options.command, options.args, { cwd: how.cwd, env: how.env, signal: options.signal, stdio: ["pipe", "pipe", "pipe"] })))
+      // What it says as it stops, for why it did (as the SDK keeps it for a process it starts itself).
+      const said = new Said()
+      this.said = said
+      this.saidAll = holding.then(
+        (held) => {
+          held.onStderr((text) => said.add(text))
+          return held.exited.then(() => said.finish())
+        },
+        () => said.finish(),
+      )
+      if (whole) process_.once("exit", () => void holding.then(whole.ended, () => {}))
+      return process_
+    }
+  }
+
+  /** The same Claude Code, held, as an earlier bridge started it: what the SDK starts is joined to it. */
+  private heldSpawn(held: Held) {
+    const said = new Said()
+    this.said = said
+    held.onStderr((text) => said.add(text))
+    this.saidAll = held.exited.then(() => said.finish())
+    return heldProcess(held)
   }
 
   /**
@@ -1698,6 +1826,10 @@ class ClaudeThread implements Thread {
   private handle(message: any) {
     this.said?.forget()
     if (message.type === "system" && message.subtype === "init") {
+      // Which Claude Code it is, for a bridge taking it up from its holder (only one that sends its
+      // open asks again to a client joining it can be: hold/adopt.ts).
+      const held = this.held
+      if (held && typeof message.claude_code_version === "string" && held.meta.version !== message.claude_code_version) held.note({ version: message.claude_code_version })
       if (!this.state.claudeStarted || this.state.claudeSession !== message.session_id) {
         // (Its /clear: a new name it chose, for its next hooks. The one for that moment ran already.)
         if (this.sandboxedNow && typeof message.session_id === "string") this.environment(message.session_id)
@@ -2207,7 +2339,22 @@ class ClaudeThread implements Thread {
     while (!this.active && this.own && !this.own.turnedAway) await this.own.taken
   }
 
-  private async canUseTool(name: string, input: Record<string, any>, options: any): Promise<any> {
+  /** Asks open, by their tool call: one Claude Code asks again (a new SDK client joined it: spike S1) is the same ask, shown once. */
+  private asking = new Map<string, Promise<any>>()
+
+  private canUseTool(name: string, input: Record<string, any>, options: any): Promise<any> {
+    const key = typeof options?.toolUseID === "string" ? options.toolUseID : undefined
+    const open = key ? this.asking.get(key) : undefined
+    if (open) return open
+    const asked = this.askUse(name, input, options)
+    if (key) {
+      this.asking.set(key, asked)
+      void asked.finally(() => this.asking.get(key) === asked && this.asking.delete(key)).catch(() => {})
+    }
+    return asked
+  }
+
+  private async askUse(name: string, input: Record<string, any>, options: any): Promise<any> {
     await this.ownTaken()
     const active = this.active
     const toolUseID = options?.toolUseID

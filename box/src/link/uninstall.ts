@@ -79,9 +79,25 @@ function recorded(file: string, role: RegExp): number | null {
   return runsAs(pid, role) ? pid as number : null;
 }
 
+/** The coding agents' processes kept under holders (run/agents/hold, the bridge's `hold/`), by
+ * their holders' records: each holder that still runs. */
+function holders(): number[] {
+  const folder = path.join(RUN, "agents", "hold");
+  let names: string[] = [];
+  try { names = fs.readdirSync(folder).filter(name => /^[0-9a-f]{12}\.json$/.test(name)); } catch { return []; }
+  // (Each only once its process is that very holder: its program and its id on its command line.)
+  return names.flatMap(name => {
+    const id = name.slice(0, 12);
+    try {
+      const pid = JSON.parse(fs.readFileSync(path.join(folder, name), "utf8"))?.pid;
+      return runsAs(pid, new RegExp(`kuvo-hold-[0-9a-f]+\\.js .* ${id} (jsonrpc|claude|raw)\\s*$`)) ? [pid as number] : [];
+    } catch { return []; }
+  });
+}
+
 /** What runs of the box now, by its records. */
 function running(): string[] {
-  return RECORDS.filter(([file, role]) => recorded(file, role) !== null).map(([, , what]) => what);
+  return [...RECORDS.filter(([file, role]) => recorded(file, role) !== null).map(([, , what]) => what), ...(holders().length ? ["coding agents' processes"] : [])];
 }
 
 /** The box's keeper, `bin/kuvo-start`, when it names this very folder (it says `K="$HOME/<name>"`,
@@ -164,9 +180,11 @@ export function uninstall(): Uninstalled {
     const pid = recorded(file, role);
     if (pid && pid !== process.pid) try { process.kill(pid, "SIGTERM"); told.push([pid, role]); } catch {}
   }
-  // (A moment for those to end, ten seconds at most.)
+  // (Each holder stops its agent as it's told: its stdin closed, then told, then made to after 15 s.)
+  for (const pid of holders()) try { process.kill(pid, "SIGTERM"); told.push([pid, /kuvo-hold-[0-9a-f]+\.js /]); } catch {}
+  // (A moment for those to end, twenty seconds at most.)
   const pause = new Int32Array(new SharedArrayBuffer(4));
-  for (let waited = 0; waited < 200 && told.some(([pid, role]) => runsAs(pid, role)); waited++) Atomics.wait(pause, 0, 0, 50);
+  for (let waited = 0; waited < 400 && told.some(([pid, role]) => runsAs(pid, role)); waited++) Atomics.wait(pause, 0, 0, 50);
   const left = running();
   stopped &&= left.length === 0;
   const where = K.startsWith(homeFolder() + "/") ? "~" + K.slice(homeFolder().length) : K;

@@ -389,3 +389,234 @@ folder), `uninstall.md` and `privacy.md` (`updates/backups`, `run/agents/hold`),
   child sessions' inboxes aren't moved; the "together" path (a release whose
   `engines` don't list the running engine) still stops and starts the engine with no hold;
   `untilFree` (COMPAT installer) still waits for quiet for any engine change.
+
+## Spikes S1, S2 and ACP: results (step 7, 2026-11-17)
+
+Question: can a NEW controller re-attach to an agent's turn that an OLD (killed) controller started,
+without the turn noticing? All runs: the agents' real binaries, a stub model API on 127.0.0.1, a
+temporary HOME and the agent's own home under it, a made-up API key. No sign-in was read or needed.
+Each controller is its own process and is killed with SIGKILL (Claude) or has its socket closed
+(Codex, Grok) mid-turn. The scripts are in `.claude/notes/spikes/` (`hold-spike.mjs` is the
+throwaway holder: the agent as its child on pipes, a unix socket, the newest controller fences the
+older one, a journal of every line). Run them with `bun <script> <args>`, as each one's header says.
+
+**S1, Claude Code 2.1.325 with Agent SDK 0.3.303: YES, and the CLI is built for it.**
+- Setup (`s1-claude.mjs`): controller A is a `query()` whose `spawnClaudeCodeProcess` starts the
+  holder (detached) and returns the holder's socket as stdin/stdout. B and C are fresh `query()`s
+  whose `spawnClaudeCodeProcess` only connects. The stub makes the model run `echo one`, then
+  `echo two`, then stream ten words 400 ms apart.
+- A killed while its `canUseTool` was open: holder and CLI live on. B's `query()` sends a **second
+  `initialize`, which succeeds**, and the CLI puts the open ask in the reply's
+  `pending_permission_requests` (documented in sdk.d.ts: "a client joining an already-initialized
+  session learns about in-flight prompts", from Claude Code 2.1.268). B's `canUseTool` ran, the
+  command ran once (`one.txt`; the model saw exactly one tool result).
+- **The holder must not replay control requests for Claude.** With replay on, B's `canUseTool` ran
+  twice for one request_id (once from the replay, once from `pending_permission_requests`); the
+  second answer was ignored by the CLI. The SDK says receivers must tolerate a request_id arriving
+  both ways and "render it once": the bridge dedupes asks by request_id.
+- **A hook callback open at the kill is cancelled by the CLI, not executed**: on B's `initialize`
+  the CLI sends `control_cancel_request` for it and gives the model the tool result
+  `PreToolUse:Bash hook error: The SDK host reconnected before its PreToolUse hook answered, so this
+  tool call was not executed. No one denied it; retry the same tool call.` (`is_error`). The turn
+  goes on (a real model retries); nothing runs that the bridge didn't check. Replaying the hook
+  callback doesn't help: the CLI cancels it before reading the answer.
+- Hooks after the attach route to the new controller: its `initialize` registers its own
+  `hook_0` (ids are `hook_<n>` in registration order, per `query()`), and B's `PreToolUse` ran for
+  `echo two`.
+- The stream simply continues: B saw `STREAM1-2`, was killed, C attached mid-message and saw
+  `STREAM3-10`, the whole `assistant` message and `result` (`success`, `num_turns: 3`). What came
+  while no one was attached is in the holder's journal; the final `assistant` message carries the
+  whole text anyway.
+- Limits: the new `query()`'s command-line options don't apply (the process is already running:
+  model, permission mode, `resume`, plugins, settings, env stay the first bridge's). Only what
+  `initialize` carries is renewed (hooks, system prompt fields, agents, SDK MCP servers). So an
+  adopting bridge takes the recorded `opened` key from the holder's record, not its own options.
+- The CLI exits on stdin EOF (the holder closing its stdin ended it, exit 0): §1's [A] holds for
+  Claude Code.
+
+**S2, Codex 0.169.0 `app-server`: YES over stdio under a holder; NO through Codex's own socket.**
+- Holder (`MODE=holder s2-codex.mjs`): A starts a thread (`approvalPolicy: untrusted`) and a
+  turn; the model calls `exec_command`; Codex sends `item/commandExecution/requestApproval` (id 0).
+  A's socket closes. Codex sees nothing (its pipes are the holder's). B attaches: the holder replays
+  the open request, B answers `{decision: "accept"}`, the command runs once (`one.txt`), the
+  stream goes on; C attaches mid-stream and sees `STREAM3-10`, `item/completed` with the whole
+  text, and `turn/completed` (`completed`).
+- **A second `initialize` is refused** (`-32600 Already initialized`), harmlessly: an adopting
+  bridge skips `initialize`/`initialized`.
+- Ids: Codex's own request ids are its own (0, 1, …): answer them by id. Answers to requests the
+  old bridge sent go to whoever is attached: the new bridge matches them from the handover's
+  in-flight list, and starts its own ids in a range of its generation (RPC `firstID`) so they never
+  collide with an old bridge's.
+- Codex exits on stdin EOF (exit 0 when the holder closed it).
+- Codex's own multi-client transport (`app-server --listen unix://PATH`, `app-server proxy`):
+  **not usable.** It makes its real socket and a lock under `/private/tmp/codex-daemon-<uid>/` (a
+  symlink at PATH), against the footprint rule, and in 0.169.0 neither a line-JSON client nor
+  `app-server proxy --sock` got an answer to `initialize` within 90 s. Not pursued further.
+
+**ACP, Grok 1.0.77 (`grok agent stdio`): YES under a holder.** (`s3-acp.mjs`; Grok takes
+`GROK_XAI_API_BASE_URL`, `XAI_API_KEY` and an OpenAI-style `chat/completions` stub.)
+- A's turn asks `session/request_permission` (id 0) for `run_terminal_command`; A's socket closes;
+  B attaches, **sends `initialize` again, which Grok accepts**, answers the replayed ask with
+  `allow-once`; the command runs once; C attaches mid-stream, sees `STREAM3-10` and then the answer
+  to A's `session/prompt` (id 4, `stopReason: end_turn`), a request C never sent: as for Codex,
+  matched from the in-flight list.
+- **Antigravity: not run** (same ACP code path in the bridge, but I found no stub route for its
+  model in the time). Counted as not adoptable until a spike shows it. **Cursor**: its worker is
+  our own (`cursor-worker.ts`), so holding it is ours to make safe; not adopted in step 8.
+
+**What this means for steps 8-9.**
+- The holder is protocol-agnostic for transport, but replay is per kind: `jsonrpc` (Codex, ACP)
+  replays requests the agent sent that no controller answered; `claude` replays none (the CLI
+  re-sends asks on `initialize` and cancels hook callbacks itself).
+- Every adopter must tolerate an ask seen twice (same id) and answers to ids it didn't send.
+- Adoption needs, per holder: the SDK/agent version it started with (the `sdk` field), the
+  provider, the agent's own ids (Claude session, Codex thread, ACP session), and what the bridge
+  had open (`opened`, in-flight request ids, the turn's message): S1/S2 show the agent side holds;
+  the bridge side is what steps 8-9 build.
+
+## Status, 2026-11-17: step 8, holders built (8a), not yet what agents start with (8b)
+
+**Built (8a), tested on macOS and Linux:**
+- `box/src/agents/hold/program.js`: the holder (`hold/1`), plain JavaScript on Node's modules. The
+  bridge imports it as text, writes it to `run/agents/hold/kuvo-hold-<HOLDER>.js` and runs it on its
+  own Bun (about 13 MB per holder, against 35 MB for the bridge's bundle). It runs the agent as its
+  child on pipes, in a session of its own, numbers each stdout line and keeps the latest 4 MB in
+  memory. It listens on `<id>.sock` in a 0700 folder and records `<id>.json` (0600, with a
+  per-holder key). It takes one bridge at a time, by key and generation: a higher generation fences
+  off the older bridge, and a stale or keyless one is refused. On attach it replays from the last
+  `ack`.
+  - `jsonrpc` holders also send again what the agent asked that no bridge answered.
+  - `claude` holders never replay control requests, from the journal or otherwise: Claude Code
+    re-sends its asks itself (S1), so a replayed one is asked twice. The test caught this.
+  - The holder ends once its agent ended and a bridge heard it (or after 15 minutes with none). Its
+    files go with it. An agent with no bridge attached for 15 minutes is stopped as a bridge stops
+    one (stdin closed, then SIGTERM, then SIGKILL), so nothing held runs for good.
+  - Its key and spec come on its stdin, never in an environment or on a command line. Open asks
+    keep their own line (at most 1,000), and go when answered or settled (`serverRequest/resolved`,
+    `$/cancelRequest`). The agent's end is said after its last output. A bridge that stops reading
+    is dropped, to attach again from its ack.
+- `box/src/agents/hold/client.ts`: `hold()`, `attach()` (generation+1), `heldIn()`, `holdFolder()`
+  (`run/agents/hold`; on macOS, past the 104-byte socket limit, Kuvo Code's short folder in `/tmp`
+  as `SSH_AGENTS` does; elsewhere none: unheld). It also gives `Held` (lines, stderr, exit, write,
+  end, kill, `note` for record metadata, `detach`) and `heldProcess()` (a `SpawnedProcess` for
+  Claude's SDK `spawnClaudeCodeProcess`).
+- `RPC` takes a `Held` in place of a command (Codex, ACP, Cursor's worker): the same lines once
+  `start()` is called (so the handlers are set before a replayed ask arrives), and `firstID` for a
+  generation's own ids.
+- On macOS, the `/tmp` fallback folder is used only if it is this user's alone (as `safeFolder`).
+  The program file is checked against the bridge's own copy before it runs.
+- Tests (`box/test/agents/hold.test.ts`, `hold-claude.test.ts`): the first bridge, a process of its
+  own, is SIGKILLed with an approval open. The agent lives; a new bridge attaches (generation 2), is
+  asked again once, answers, and the turn ends (`turn/completed`, or the SDK's `result`), the command
+  run once. Also covered: fencing, a stale or wrong key, an agent that ended before anyone attached,
+  and what each kind sends again.
+
+**8b, built 2026-11-17: Codex, Claude Code and Grok run under holders, and a crash doesn't end their turns.**
+- Which agents: `HELD_KINDS` in `box/src/agents/hold/adopt.ts` (codex, claude, grok). Antigravity
+  and Cursor are left out, in code and here: no spike showed a new bridge can take theirs over, so
+  a crash ends their turns as before and Renewal waits for them. The held list is the one switch:
+  empty, everything runs as before step 8, and a starting bridge stops any held agent it finds.
+- Starting: `codex.ts` `start()`, `claude.ts` `holdSpawn()` (also through the sandbox's launcher),
+  and `acp.ts` `open()` (Grok's flavor has `held`) start the agent under `hold()`. If the holder
+  can't start, the agent runs as the bridge's own process. Each turn notes in the holder's record
+  where its lines begin (`from`), and Codex's turn id or ACP's prompt request id
+  (`noteTurn`); the note goes when the turn ends.
+- Adopting (`adoptHeld`, run in `main.ts` before sessions load):
+  - every live holder of a held kind with turns noted is attached at generation+1, from its
+    oldest turn's `from`;
+  - any other holder (idle, an unheld kind, a gap in its journal, a failed attach) is stopped by
+    its pid.
+  `Sessions` takes up a turn only if its session's last turn is still open, on that agent (not
+  Auto), and began with a message (not a summary or a subagent's task). For those, `repair` drops
+  the stored steps of the open turn and `resumeHeld` reruns it from the journal, before the bridge
+  listens. A turn not taken up is let go (`HeldGate.drop`): Codex is told `turn/interrupt` for it,
+  and an agent with nothing taken up is stopped.
+- Per agent:
+  - **Codex**: the adopted app-server becomes its key's server, without `initialize`. Its lines wait
+    until every turn taken up in it is ready (the gate: the shared server runs several sessions).
+  - **Claude Code**: a new SDK `query()` joins the held process; its open ask returns through
+    `pending_permission_requests`. Asks are de-duplicated by tool-use id, Codex's by request id. The
+    sandbox launcher isn't made again, since `fenceAgent` would clear what the live process runs with.
+  - **Grok**: the answer to the crashed bridge's `session/prompt` ends the turn (`RPC.onStray`).
+- Stopping: the keeper's `halt` (stop, restart, pause, off, so also uninstall and Stop Background
+  Work) runs `halt_held`. It stops each holder by the pid its record names, only if that pid runs
+  `kuvo-hold-`, and waits up to 20 s. The holder closes the agent's stdin, sends SIGTERM after 5 s and
+  SIGKILL after 15 s. `uninstall.ts` lists and stops holders too. A bridge that stops on purpose
+  (Renewal, SIGTERM) stops its held agents through `RPC.kill` / `heldProcess.kill`, which signal the
+  holder's own process.
+- Review fixes (2026-11-17):
+  - a bridge is dropped only once output already queued for it passes the journal size, so one long
+    line no longer cuts it off;
+  - Codex asks are keyed by app-server and id;
+  - records count only when their pid runs that holder (`isHolder`, which uses the command line),
+    and stale ones are removed, never signalled;
+  - an agent runs in its own process group, and a stop signals the group, so what it started goes
+    too;
+  - a bridge stopping on purpose stops every agent it holds (`stopAllHeld`);
+  - starting and attaching time out after 10 s;
+  - a resumed turn's stored steps are dropped only once its agent takes it (otherwise its tools are
+    closed as after a crash);
+  - Codex ignores replayed lines from before a thread's own turn, and interrupts a dropped thread's
+    turn once its id shows;
+  - `Held.stop()` does nothing once its holder is gone;
+  - old holder programs are removed;
+  - the recorded `opened` leaves out Kuvo Code's tools' key.
+- Second review's fixes (2026-11-17):
+  - **Never dropped for size.** A bridge whose socket is full gets backpressure: the holder stops
+    reading the agent's stdout until it drains, and the agent waits as on any pipe. Only a bridge
+    that reads nothing for a minute is let go. A bridge that loses its holder without hearing the
+    agent's end stops it by pid (`isHolder`), so nothing runs unwatched.
+  - **The journal is on disk:** `<id>.journal` beside the record (0600, in the 0700 folder),
+    64 MB at most, pruned to its newer half, removed as the holder goes (and by `heldIn` with a
+    crash's leftovers). Why disk and not a bigger in-memory size: a long Claude Code turn
+    (streamed words, partial messages, tools' output) runs to tens of MB, and memory would cost that
+    per holder, held or not. (Not measured on real turns: estimated from S1's lines, about 300 bytes
+    per streamed delta, plus tool results.)
+  - **A take-up that fails keeps what was shown:** the turn's stored steps go only once the agent's
+    first line comes again (`Held.firstLine`). Before that, a failure (an exception from the agent,
+    the attach lost) closes their tools as a crash does, and the agent is stopped.
+  - **Claude Code's version:** the record gets `sdk` as the holder starts, and `version` from
+    `system/init` (`claude_code_version`). Adopted only from 2.1.268 (`CLAUDE_REJOINS`) and with the
+    same SDK; otherwise stopped, and its turn ends as a crash ends it.
+  - **Two bridges at once:** a "generation" refusal leaves the holder to the bridge that took it.
+  - **PID checks:** the keeper's `held_pid` and uninstall's `holders()` match the holder's program
+    and its own id.
+  - **Not handled:** a bridge that crashes while another runs isn't adopted by the running one; its
+    held agents stop after 15 minutes. There's one bridge at a time (the keeper's, and Renewal's
+    makes way before the next starts), so it takes two bridges up at once, which the generation
+    fence already sorts out.
+- Tests:
+  - `box/bridge-tests/agents-held.test.js`: the real bridge, holders and keeper, with stand-ins that
+    speak Codex's, Claude Code's (as S1 recorded it) and ACP's protocols. For each agent, the bridge
+    is SIGKILLed with a permission ask open. The agent lives; the next bridge asks once; the answer
+    goes once; the turn ends `succeeded` as one turn, with what was said before and after the crash.
+    Then `kuvo-start stop` leaves no agent or holder running.
+  - `box/test/agents/hold*.test.ts`: the holder protocol, and an unattached agent stopped (the
+    15-minute wait is the holder's `orphan` setting, 100 ms in the test, not an injected clock: the
+    holder is a separate program on real timers).
+  - `agents-renewal.test.js`: Renewal still drains, now with Codex held.
+  - `claude.test.ts` checks the SDK's own and the launcher's spawning, so it runs unheld
+    (`holding.on = false`).
+
+**Not built, and why:**
+- **`!` commands stay unheld.** They already run in a process group of their own (`detached`), so a
+  bridge crash doesn't signal them. But their output pipe goes with the bridge, and taking one up
+  means rebuilding its shell message and output in a new bridge: a different path from agents'
+  turns. Until then a crash marks a running `!` command failed (`repair`), as before, and Renewal
+  waits for them.
+- Turns not taken up after a crash end as before (interrupted): Auto sessions, summaries, turns
+  with a message you sent partway (steered: the replay would place it wrongly), and
+  subagents' sessions. A Codex or Claude subagent's own session is repaired as interrupted while
+  its parent's turn goes on.
+- A held agent's stderr after it exits is heard for 2 s (the holder's wait), not `heardWithin`.
+- Claude Code that crashed before its first `system/init` (so no version recorded) isn't adopted.
+- Answers to requests the crashed bridge sent are ignored, except ACP's prompt. A Codex turn that
+  crashed before Codex answered `turn/start` with an error would wait (no `turn/started` ever comes).
+- Not covered by a test: the held path with the box's sandbox on (the launcher under a holder,
+  fenced Codex). Also unchecked: whether Kuvo Code's tools reach a resumed turn's agent in the
+  sandbox after the bridge restarts (the relay's port can change; Codex reloads its thread at its
+  next turn, and Claude Code restarts at its next turn because its tools' key isn't recorded).
+- Two bridges at once: a bridge doesn't adopt while `run/bridge.json` names another live
+  `kuvo-agents` process, the one with the port.
+- Step 9 (live handoff instead of Renewal's drain) can now build on this. Adoption is crash
+  recovery; a handoff adds `handover.json` and detaching without stopping.
