@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- In the desktop app (and the menu bar panel's rings), every provider's logo now draws at one size: Claude, OpenAI, OpenCode and the rest no longer look tiny or huge by how their artwork happened to be padded. A logo takes about 63% of the circle or tile it sits in, a round one a touch larger than a square one so they look alike.
+
 - In the desktop app's title bar, the sidebar button, the computer picker and back and forward now sit together over the sidebar, with a thin divider where the sidebar ends, and the page title starts after it. The extra + beside them is gone: New Session is still ⌘N and File › New Session, and each area keeps its own +.
 
 - In the desktop app, hover over any message, yours or the agent's, to see when it was written (the day too, in a tooltip, when it isn't today) and buttons to copy it as Markdown or add it to the chat.

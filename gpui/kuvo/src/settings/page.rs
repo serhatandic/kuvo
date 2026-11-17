@@ -6,7 +6,7 @@
 use kuvo_ui::motion::{MotionExt as _, Direction};
 use gpui::{
     AnyElement, App, AppContext as _, Context, Focusable as _, Hsla, InteractiveElement, IntoElement, ParentElement, Render, SharedString, StatefulInteractiveElement, Styled, Window, div, list,
-    prelude::FluentBuilder as _, px, svg,
+    prelude::FluentBuilder as _, px,
 };
 use kuvo_box::areas::Level;
 use kuvo_ui::{
@@ -258,8 +258,8 @@ impl SettingsView {
         let (mark, letter) = (format!("{key}-mark"), format!("{key}-initial"));
         let leading: Option<AnyElement> = match leading {
             Leading::None => None,
-            Leading::Mark(service) => Some(match kuvo_ui::icon::mark_path(&service) {
-                Some(path) => div().debug_selector(move || mark).flex().flex_none().items_center().justify_center().size(px(28.)).rounded(radius::PILL).bg(c.sunken).child(svg().path(path).size(px(16.)).text_color(kuvo_ui::icon::mark_color(&service).unwrap_or(c.text))).into_any_element(),
+            Leading::Mark(service) => Some(match kuvo_ui::icon::Mark::of_service(&service) {
+                Some(drawn) => div().debug_selector(move || mark).flex().flex_none().items_center().justify_center().size(px(28.)).rounded(radius::PILL).bg(c.sunken).child(drawn.in_tile(px(28.))).into_any_element(),
                 // A service a newer box names, with no mark here: its first letter.
                 None => div().debug_selector(move || letter).child(initial(&service, cx)).into_any_element(),
             }),
