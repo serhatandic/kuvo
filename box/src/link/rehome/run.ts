@@ -28,6 +28,7 @@ import { databasesIn, schemaMark } from "./database";
 import { takenSchema } from "./migrate";
 import { NOTHING_TO_MOVE, diskKind, freeBytes, locked, nearest, planMove, releaseRefusal, resumed, run, runningIn, settled, stamp, stopPoint, takeLastChanged, type Folders, type RehomeOutcome } from "./move";
 import { PATH_REWRITER, type Rewriter } from "./rewrite";
+import { parsePlist } from "./upgrades";
 import { deleteOriginalKeys, heldRefusal } from "./run-steps";
 import { moveUnderWay, noteRecord, notePhase, readRecord, rehomeFolder, rehomeStatus, type RunPlan } from "./state";
 
@@ -143,11 +144,28 @@ function ancestors(): Set<number> {
   return own;
 }
 
-/** What an app bundle's Info.plist says (`key`), or null. */
+/** What an app bundle's Info.plist says (`key`, a string), or null. Each Info.plist is read once
+ * (one `plutil` for all its keys), and again only once it's changed: `touching` looks at the bundle
+ * of every program of yours that runs, and a move asks it more than once. */
+const plists = new Map<string, { changed: string; said: Record<string, unknown> }>();
 function bundleSays(bundle: string, key: string): string | null {
-  const asked = spawnSync("/usr/bin/plutil", ["-extract", key, "raw", "-o", "-", path.join(bundle, "Contents", "Info.plist")], { encoding: "utf8", timeout: 5_000, stdio: ["ignore", "pipe", "ignore"] });
-  const said = (asked.stdout ?? "").trim();
-  return asked.status === 0 && said ? said : null;
+  const file = path.join(bundle, "Contents", "Info.plist");
+  let changed: string;
+  try {
+    const kind = fs.statSync(file);
+    changed = `${kind.mtimeMs} ${kind.size} ${kind.ino}`;
+  } catch {
+    return null;
+  }
+  let kept = plists.get(file);
+  if (kept?.changed !== changed) {
+    const asked = spawnSync("/usr/bin/plutil", ["-convert", "xml1", "-o", "-", file], { encoding: "utf8", timeout: 5_000, maxBuffer: 16 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"] });
+    const read = asked.status === 0 && asked.stdout ? parsePlist(asked.stdout) : null;
+    kept = { changed, said: isObject(read) ? read : {} };
+    plists.set(file, kept);
+  }
+  const said = kept.said[key];
+  return typeof said === "string" && said.trim() ? said.trim() : null;
 }
 
 /** The processes of yours that touch the earlier Kuvo Code's folder (`Toucher`), as the system
