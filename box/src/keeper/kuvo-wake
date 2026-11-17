@@ -458,6 +458,16 @@ if [ "$1" = fire ]; then
   # engine's record): its wake-ups wait there, in the list you resume, as what else arrives
   # does (`hold`); its watches wait until you resume it.
   stopped() { grep -qF "\"$session\":{\"paused\":true" "${record%/*}/queues.json" 2>/dev/null; }
+  # The engine being changed (PROTOCOL.md, "A new engine": `run/engine-swap.json` past `waiting`,
+  # its swapper running): a wake-up for a conversation on it waits on the box the same way, and
+  # goes to the new engine once it runs. (The bridge's own wait for one on the bridge.)
+  swapping() {
+    [ "$port" != "$bport" ] || return 1
+    sw="${record%/*}/engine-swap.json"
+    [ -f "$sw" ] && ! grep -q '"stage":"waiting"' "$sw" 2>/dev/null || return 1
+    sp=$(sed -n 's/.*"pid":\([0-9]*\).*/\1/p' "$sw" 2>/dev/null)
+    [ -n "$sp" ] && kill -0 "$sp" 2>/dev/null
+  }
   # A wake-up handed to the box to wait with the conversation's queue, through its own command
   # (`box route`, which the box that runs this names: `KUVO_LINK_*`); true once it's taken.
   # Sent, rather, if the conversation went on meanwhile.
@@ -625,7 +635,7 @@ if [ "$1" = fire ]; then
     settle || continue
     # Stopped: its wake-ups wait on the box (`hold`), or here, where the box can't take them.
     paused=
-    if stopped; then [ -n "${KUVO_LINK_SCRIPT-}" ] || continue; paused=1; fi
+    if stopped || swapping; then [ -n "${KUVO_LINK_SCRIPT-}" ] || continue; paused=1; fi
     failed=
     for wake in "$bot"wakes/*; do
       stop

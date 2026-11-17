@@ -66,8 +66,10 @@ export function engineCheck(pin: EnginePin, file = process.env.ENGINE_CHECK): { 
   const found = JSON.parse(fs.readFileSync(file, "utf8"));
   const engines: unknown = found?.engines;
   const expected = [pin.version, ...(pin.previous && pin.previous.version !== pin.version ? [pin.previous.version] : [])];
-  if (!Array.isArray(engines) || JSON.stringify(engines) !== JSON.stringify(expected)) throw new Error(`${file} isn't the check of engines ${expected.join(" and ")}: run scripts/engine-check.mjs again.`);
-  return { engines: expected, ...(found.downgradeSafe === true && expected.length > 1 ? { downgradeSafe: true as const } : {}) };
+  // (The pinned one alone where its code doesn't run on the one before.)
+  const alone = JSON.stringify([pin.version]);
+  if (!Array.isArray(engines) || (JSON.stringify(engines) !== JSON.stringify(expected) && JSON.stringify(engines) !== alone)) throw new Error(`${file} isn't the check of engines ${expected.join(" and ")}: run scripts/engine-check.mjs again.`);
+  return { engines: engines as string[], ...(found.downgradeSafe === true && engines.length > 1 ? { downgradeSafe: true as const } : {}) };
 }
 
 /** Those of the keeper's files that name the engine's version, each once: never a version written

@@ -23,6 +23,7 @@ import type { EngineRecord, Target } from "../../shared/records";
 import { sleep } from "../../shared/wait";
 import { readAsks } from "../areas/asks";
 import { asked, readEngineFile } from "../engine/client";
+import { atWork, openFolders } from "../engine/models";
 import { moveInboxToBox, releaseWaiting } from "../engine/queue";
 import { listOf, textOf, writePrivate } from "../files";
 import { K, REAL_BOX, RUN, UPDATES } from "../home";
@@ -102,14 +103,20 @@ export function swapDue(now = Date.now()): { from: string; to: string } | null {
   return { from, to };
 }
 
-/** Whether anything is at work on the engine: a conversation (a turn, a subagent's, one retrying, an
- * ask waiting on you), or the agent's browser waiting on you. Unknown counts as at work. */
+/** Whether anything is at work on the engine that stopping it would cut: a conversation (a turn, a
+ * subagent's, one retrying), in any folder it has open a question or permission waiting on you, a
+ * terminal or a command an agent left running (as closing a folder on it counts them,
+ * `engine/models.ts`), or the agent's browser waiting on you. Unknown counts as at work. */
 async function engineBusy(engine: Target): Promise<boolean> {
   if (readAsks().length > 0) return true;
   const active = await asked(engine, "GET", "api/session/active").then(answer => (answer as { data?: unknown } | null)?.data, () => undefined);
-  if (Array.isArray(active)) return active.length > 0;
-  if (active && typeof active === "object") return Object.keys(active).length > 0;
-  return true;
+  if (Array.isArray(active) ? active.length > 0 : active && typeof active === "object" ? Object.keys(active).length > 0 : true) return true;
+  try {
+    const folders = await openFolders(engine);
+    return (await atWork(engine, folders)).size > 0;
+  } catch {
+    return true;
+  }
 }
 
 // The keeper's command `command` (its stop of the engine alone, or its start), with HOME as it runs.
@@ -141,6 +148,14 @@ export type Swapped = "changed" | "back" | "failed" | "none";
 
 /** Changes the engine as above, staying until it's done (or there's nothing to do). */
 export async function swapEngine({ clock = Date.now, wait = sleep }: SwapOptions = {}): Promise<Swapped> {
+  // A swapper that went while it held (the machine down, killed): what it held goes now, to the
+  // engine that runs, and its state with it.
+  const stale = readSwap(RUN);
+  if (stale && !swapUnderWay(RUN)) {
+    fs.rmSync(swapFile(RUN), { force: true });
+    const engine = runningEngine();
+    if (engine && stale.stage !== "waiting") await releaseWaiting(engine).catch(() => 0);
+  }
   const due = swapDue(clock());
   if (!due) return "none";
   // One at a time: another swapper at it, this one goes.
@@ -170,9 +185,12 @@ export async function swapEngine({ clock = Date.now, wait = sleep }: SwapOptions
       if (state.stage === "waiting") {
         quietSince = busy ? null : quietSince ?? now;
         const waited = now - state.since;
+        const night = nightOf(new Date(now)) !== null;
         const rested = state.letGo === undefined || now - state.letGo >= SWAP_TIMING.patience;
+        // (Let go of once, it holds again only in a night's window, or on your word.)
+        const timeCame = state.letGo === undefined ? waited >= SWAP_TIMING.longest || (waited >= SWAP_TIMING.patience && night) : rested && night;
         const nowAsked = fs.existsSync(SWAP_NOW);
-        if ((quietSince !== null && now - quietSince >= SWAP_TIMING.quiet) || (rested && (nowAsked || waited >= SWAP_TIMING.longest || (waited >= SWAP_TIMING.patience && nightOf(new Date(now)) !== null)))) {
+        if ((quietSince !== null && now - quietSince >= SWAP_TIMING.quiet) || (rested && nowAsked) || timeCame) {
           say("holding", { holding: now });
           continue;
         }
@@ -220,7 +238,8 @@ async function swapNow(engine: EngineRecord, state: EngineSwap, say: (stage: Swa
     say("holding");
     return null;
   }
-  if (await engineBusy(engine)) {
+  // (Nor while an update began meanwhile: it goes first, and this looks again after.)
+  if (isUpdating() || await engineBusy(engine)) {
     say("holding");
     return null;
   }
@@ -242,6 +261,8 @@ async function swapNow(engine: EngineRecord, state: EngineSwap, say: (stage: Swa
   fs.rmSync(SWAPPING_MARK, { recursive: true, force: true });
   const fresh = await answering(state.to, clock, wait);
   if (fresh) return ended(state, "changed", undefined, fresh, clock);
+  // Kuvo stopped meanwhile (paused, off, stopped): not the new engine's failing; tried again later.
+  if (stoppedOnPurpose()) return ended(state, "failed", "Kuvo was stopped while its engine updated. It tries again once it starts.", null, clock);
   // Didn't start: back to the one before, where it can read what this one wrote.
   if (!downgradeSafe(state.to, state.from) && dataNow() !== kept) {
     return ended(state, "failed", `The new engine (${state.to}) didn’t start, and the one before can’t open what it wrote, so it keeps trying.`, null, clock);

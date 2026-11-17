@@ -51,7 +51,13 @@ async function until(check, what, within = 120_000) {
   }
   let log = "";
   for (const file of ["engine-swap.log", "engine.log"]) try { log += `${file}: ${fs.readFileSync(path.join(RUN, file), "utf8").slice(-2000)}\n`; } catch {}
-  assert.fail(`never: ${what}\n${log}\n${JSON.stringify(readJSON(path.join(RUN, "engine-swap.json")))}`);
+  let keeper = "";
+  try { const pid = Number(fs.readFileSync(path.join(RUN, "box.pid"), "utf8")); keeper = `keeper ${pid} ${runs(pid) ? "runs" : "gone"}`; } catch {}
+  const procs = spawnSync("ps", ["-axww", "-o", "pid,ppid,etime,command"], { encoding: "utf8" }).stdout.split("\n").filter(line => line.includes(base)).join("\n");
+  keeper += `\n${procs}`;
+  let files = "";
+  try { files = fs.readdirSync(RUN).join(" "); } catch {}
+  assert.fail(`never: ${what}\n${log}\n${JSON.stringify(readJSON(path.join(RUN, "engine-swap.json")))}\n${keeper}\n${files}\nengine-ran ${fs.existsSync(path.join(RUN, "engine-ran")) ? fs.readFileSync(path.join(RUN, "engine-ran"), "utf8") : "-"} engine ${JSON.stringify(readJSON(path.join(RUN, "engine.json"))?.version)}`);
 }
 
 // The engine: one conversation (`ses_engine`), whose own turn runs while `engine-busy` is there; each
@@ -61,11 +67,17 @@ import fs from "node:fs"; import http from "node:http";
 const port = Number(process.argv[process.argv.indexOf("--port") + 1]);
 const version = process.env.STAND_IN_VERSION;
 const scratch = ${JSON.stringify(scratch)};
+const inbox = [];
 const read = request => new Promise(resolve => { let body = ""; request.on("data", chunk => { body += chunk; }); request.on("end", () => resolve(body)); });
 http.createServer(async (request, response) => {
   const url = new URL(request.url, "http://x");
   if (url.pathname.startsWith("/api/event") || url.pathname.startsWith("/event")) { response.writeHead(200, { "content-type": "text/event-stream" }); response.write(": open\\n\\n"); return; }
   const answer = (status, body) => { response.writeHead(status, { "content-type": "application/json" }); response.end(JSON.stringify(body)); };
+  // (A test's: a message for after the run, in this engine's inbox, kept only while it runs.)
+  if (url.pathname === "/test/inbox" && request.method === "POST") { inbox.push(JSON.parse(await read(request))); return answer(200, {}); }
+  if (url.pathname === "/api/session/ses_engine/inbox") return answer(200, { data: inbox.map(each => ({ id: each.id, delivery: "queue", type: "user", payload: { text: each.text } })) });
+  const gone = /^\\/api\\/session\\/ses_engine\\/inbox\\/([^/]+)$/.exec(url.pathname);
+  if (gone && request.method === "DELETE") { const at = inbox.findIndex(each => each.id === decodeURIComponent(gone[1])); if (at < 0) return answer(404, {}); inbox.splice(at, 1); return answer(200, {}); }
   if (url.pathname === "/api/session/active") return answer(200, { data: fs.existsSync(scratch + "/engine-busy") ? { ses_engine: { type: "busy" } } : {} });
   if (url.pathname === "/api/session") return answer(200, { data: [{ id: "ses_engine", directory: ${JSON.stringify(home)}, time: { updated: Date.now() } }] });
   const one = /^\\/api\\/session\\/([^/]+)(\\/.*)?$/.exec(url.pathname);
@@ -221,6 +233,8 @@ test("an engine change waits for the turns on it, holds what's sent meanwhile on
   assert.equal(engineNow().pid, old.pid, "the engine at work was never stopped for the code");
   assert.equal(readJSON(path.join(home, "updates", "installed.json")).downgradeSafe, true);
 
+  // A message for after the run, in the old engine's inbox (which goes with it).
+  assert.equal((await fetch(`http://127.0.0.1:${old.port}/test/inbox`, { method: "POST", body: JSON.stringify({ id: "msg_swapinbox000001", text: "queued before" }) })).status, 200);
   // The swapper holds (at once, here), waiting for the engine's turn to end: what's sent waits on the box.
   await until(() => swap()?.stage === "holding", "the swapper to hold");
   for (const [id, words] of [["msg_swapfirst000001", "first"], ["msg_swapsecond00001", "second"]]) {
@@ -230,7 +244,7 @@ test("an engine change waits for the turns on it, holds what's sent meanwhile on
   }
   const queue = await served("GET", "kuvo/sessions/ses_engine/queue?items=1");
   assert.equal(queue.json.paused, false);
-  assert.deepEqual(queue.json.items.map(item => [item.words, item.on]), [["first", "box"], ["second", "box"]], "shown waiting, in order");
+  assert.deepEqual(queue.json.items.map(item => [item.words, item.on]), [["queued before", "engine"], ["first", "box"], ["second", "box"]], "shown waiting, in order");
   assert.match(queue.json.line, /engine is updating/, "with a line saying why");
   assert.match((await served("GET", "kuvo/update")).json.engineChange.line, /engine is updating/);
   assert.deepEqual(prompts(), [], "nothing reached the old engine");
@@ -240,17 +254,19 @@ test("an engine change waits for the turns on it, holds what's sent meanwhile on
   busy(false);
   const fresh = await until(() => { const now = engineNow(); return now?.version === "1.1.0" ? now : null; }, "the new engine to run");
   assert.ok(!runs(old.pid), "the old engine stopped");
-  await until(() => prompts().length >= 2, "what was held to reach the new engine");
+  await until(() => prompts().length >= 3, "what was held to reach the new engine");
   await until(() => !fs.existsSync(path.join(RUN, "engine-swap.json")), "the swap to end");
-  assert.deepEqual(prompts().map(each => [each.engine, each.id, each.text.includes("first") ? "first" : each.text.includes("second") ? "second" : each.text]), [["1.1.0", "msg_swapfirst000001", "first"], ["1.1.0", "msg_swapsecond00001", "second"]]);
+  const said = text => (text.includes("first") ? "first" : text.includes("second") ? "second" : text);
+  assert.deepEqual(prompts().map(each => [each.engine, each.id, said(each.text)]), [["1.1.0", "msg_swapinbox000001", "queued before"], ["1.1.0", "msg_swapfirst000001", "first"], ["1.1.0", "msg_swapsecond00001", "second"]],
+    "the old engine's inbox moved onto the box first, then what was sent during the hold: each once, in order, on the new engine");
   assert.equal(prompts()[0].delivery, "steer", "the first starts a turn");
   assert.equal(readJSON(path.join(RUN, "update.json")).engine?.result, "changed");
   assert.ok(fs.readdirSync(path.join(home, "updates", "backups")).some(name => name.endsWith("1.0.0-to-1.1.0")), "a copy of its data kept");
   assert.ok(fs.existsSync(path.join(home, "engine", "1.0.0", "opencode")), "the engine before kept, to go back to");
   // Sent now, it goes straight to the new engine.
   assert.deepEqual((await send("msg_swapthird000001", "third")).json?.waits ?? false, false);
-  await until(() => prompts().length === 3, "a message sent after to go at once");
-  assert.equal(prompts()[2].engine, "1.1.0");
+  await until(() => prompts().length === 4, "a message sent after to go at once");
+  assert.equal(prompts()[3].engine, "1.1.0");
 
   // The coding agent's turn ran through it, on the bridge it began on, which the swap never ended.
   assert.ok(runs(bridge.pid), "the bridge runs on");
@@ -285,10 +301,7 @@ test("a new engine that doesn't start goes back to the one before, which gets wh
   await until(() => prompts().length === sent + 1, "what was held to reach the engine before");
   assert.deepEqual(prompts().slice(sent).map(each => [each.engine, each.id]), [["1.1.0", "msg_swapback0000001"]], "once, on the engine before");
   assert.equal(fs.readFileSync(path.join(RUN, "engine-back"), "utf8").split(" ").slice(0, 2).join(" "), "1.2.0 1.1.0", "the new engine rests");
-  // Not tried again meanwhile: the keeper starts the one before, and no swapper runs.
-  await new Promise(resolve => setTimeout(resolve, 3000));
-  assert.equal(engineNow().version, "1.1.0");
-  assert.equal(swap(), null);
+  assert.equal(swap(), null, "the swapper done");
   assert.equal(readJSON(path.join(RUN, "update.json")).last?.to, "0.11.0", "the code stays");
 });
 
@@ -314,6 +327,13 @@ test("a hold the turns don't end within its bound is let go of: what it held goe
   // What's sent now goes at once: nothing is held.
   assert.equal((await send("msg_swaplong0000002", "after")).json?.waits ?? false, false);
   await until(() => prompts().length === sent + 2, "a message sent after to go at once");
+  // The engine ends meanwhile (a crash): the keeper starts the one that ran, never the new one on
+  // its own (that one's start is the swapper's, its data copied first).
+  const now = engineNow();
+  process.kill(now.pid, "SIGKILL");
+  const again = await until(() => { const record = engineNow(); return record && record.pid !== now.pid ? record : null; }, "the keeper to start the engine again");
+  assert.equal(again.version, "1.1.0");
   busy(false);
   await until(() => engineNow()?.version === "1.3.0", "the new engine at the next quiet moment");
+  assert.ok(fs.readdirSync(path.join(home, "updates", "backups")).some(name => name.endsWith("1.1.0-to-1.3.0")), "its data copied first");
 });

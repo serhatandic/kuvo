@@ -124,13 +124,14 @@ export async function* forward(target: Target, path: string, request: LinkReques
   // The engine being changed (PROTOCOL.md, "A new engine"): a message sent to it straight waits on
   // the box and goes once the new one runs, as one sent through `kuvo/sessions/<id>/send` does; a
   // command or shell, which would run on the engine stopped next, is said to wait.
-  if (sending && !toAgents && swapHoldsFor(target)) {
+  const toEngine = method === "POST" && /^\/api\/session\/([^/]+)\/(prompt|command|shell)$/.exec(url.pathname);
+  if (toEngine && !toAgents && swapHoldsFor(target)) {
     let body: unknown = null;
     try { body = JSON.parse(request.body?.toString("utf8") ?? ""); } catch {}
-    const session = decodeURIComponent(sending[1]!);
+    const session = decodeURIComponent(toEngine[1]!);
     const text = isObject(body) && typeof body.text === "string" ? body.text : null;
     const id = isObject(body) && typeof body.id === "string" && /^msg_[A-Za-z0-9]{1,80}$/.test(body.id) ? body.id : messageID();
-    const message = isObject(body) && text !== null && sending[2] === "prompt"
+    const message = isObject(body) && text !== null && toEngine[2] === "prompt"
       ? { id, text, delivery: body.delivery === "queue" ? "queue" as const : "steer" as const, ...(Array.isArray(body.files) ? { files: body.files } : {}), ...(isObject(body.metadata) ? { metadata: body.metadata } : {}) }
       : null;
     if (message && keepWaiting(session, message, {}, undefined, target)) {

@@ -651,23 +651,27 @@ export async function moveInboxToBox(target: Target, session: string): Promise<n
     const own = /^msg_[A-Za-z0-9]{1,80}$/.test(id) ? id : (renamed[id] = `msg_${crypto.createHash("sha256").update(id).digest("hex").slice(0, 32)}`);
     const files = sendableFiles(entry.payload?.files);
     const message = { id: own, text, delivery: entry.delivery, ...(files.length ? { files } : {}), ...(isObject(entry.payload?.metadata) ? { metadata: entry.payload!.metadata as Record<string, unknown> } : {}) };
+    const shown = shownOfInbox(entry);
+    const waiting: Waiting = { id: own, ...(shown.from ? { from: shown.from } : {}), text: shown.words, ...(shown.files.length ? { files: shown.files } : {}), ...(shown.keyword ? { keyword: shown.keyword } : {}), at: Date.now() };
+    // Kept on the box, in its place (after those moved before it, ahead of what waited there), before
+    // it's taken from the engine: cut off between the two, it's in both rather than in neither.
     writePrivate(waitingFile(own), JSON.stringify(message));
+    changeQueue(session, state => ({
+      ...state,
+      held: state.held.map(each => (each === id ? own : each)),
+      waiting: [...kept, waiting, ...(state.waiting ?? []).filter(each => each.id !== own && !kept.some(one => one.id === each.id))],
+    }));
     try {
       await asked(target, "DELETE", `api/session/${address(session)}/inbox/${address(id)}`);
     } catch {
-      // (Taken by the agent first, or kept by the engine: it stays where it is.)
+      // (Taken by the agent first, or kept by the engine: it stays where it is, and only there.)
+      changeQueue(session, state => ({ ...state, held: state.held.map(each => (each === own ? id : each)), waiting: (state.waiting ?? []).filter(each => each.id !== own) }));
       fs.rmSync(waitingFile(own), { force: true });
       continue;
     }
-    const shown = shownOfInbox(entry);
-    kept.push({ id: own, ...(shown.from ? { from: shown.from } : {}), text: shown.words, ...(shown.files.length ? { files: shown.files } : {}), ...(shown.keyword ? { keyword: shown.keyword } : {}), at: Date.now() });
+    kept.push(waiting);
     moved++;
   }
-  if (kept.length) changeQueue(session, state => ({
-    ...state,
-    held: state.held.map(id => renamed[id] ?? id),
-    waiting: [...kept, ...(state.waiting ?? []).filter(each => !kept.some(one => one.id === each.id))],
-  }));
   return moved;
 }
 
@@ -685,14 +689,18 @@ export async function releaseWaiting(target: Target): Promise<number> {
     } catch {
       continue;
     }
-    for (let first = true; ; first = false) {
+    // (The first starts a turn where none runs; into one that runs, each goes as it was sent.)
+    let first = !(await isRunning(target, session).catch(() => true));
+    for (;;) {
       const now = queueOf(session);
       if (now.paused || !now.waiting?.length) break;
       const taken = takeWaiting(session);
       if (!taken) break;
       if (!taken.message) continue;
+      const steer = first;
+      first = false;
       try {
-        await asked(target, "POST", `api/session/${address(session)}/prompt`, { ...taken.message, ...(first ? { delivery: "steer" } : {}) });
+        await asked(target, "POST", `api/session/${address(session)}/prompt`, { ...taken.message, ...(steer ? { delivery: "steer" } : {}) });
         sent++;
       } catch (error) {
         if (/ 404\.$/.test(String((error as Error | null)?.message))) break;

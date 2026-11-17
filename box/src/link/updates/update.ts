@@ -502,6 +502,9 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
   if (fs.existsSync(path.join(RUN, "stopped"))) return { result: "blocked", message: "Its engine is stopped: start it to update it." };
   // Never over an update still on trial: what it kept to go back to would be lost.
   if (updateOnTrial()) return { result: "blocked", message: ON_TRIAL };
+  // Nor while its engine is being changed (the old one stopped, the new one starting): a moment.
+  const changing = swapUnderWay(RUN);
+  if (changing && (changing.stage === "swapping" || changing.stage === "back")) return { result: "busy", message: "Its engine is being updated: try again in a few minutes." };
   const before = boxVersion();
   if (!before) return { result: "blocked", message: "This machine's version isn't known: connect to it from Kuvo Code on your Mac once." };
   if (!takeUpdateLock()) return { result: "busy", message: UPDATING_ALREADY };
@@ -702,6 +705,8 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
     }
     // (A newer engine about to run on the data: from here, a rollback keeps it.)
     if (newerEngine) writePrivate(ENGINE_STARTED, manifest.engine);
+    // (Its engine started with its code: the keeper starts its own, not the one that ran before.)
+    if (otherEngine) fs.rmSync(path.join(RUN, "engine-ran"), { force: true });
     // The engine started again where it was stopped; otherwise only its keeper, should it have gone
     // (it starts itself again on the new code, as `serve`, `run` and the bridge each do).
     ran("sh", [path.join(K, "bin", "kuvo-start"), otherEngine ? "start" : "box"], keeperEnv);
@@ -801,14 +806,24 @@ function runningEngineVersion(): string | null {
 
 /** Whether taking the release offered from a folder here would start another engine than the one
  * running (the one kind of update that waits for nothing to be at work); false where it can't be told. */
+let offeredBox: { stamp: string; box: Pick<BoxFiles, "engine" | "engines"> | null } | null = null;
 export function offerChangesEngine(): boolean {
   try {
     const given = JSON.parse(fs.readFileSync(path.join(OFFERED, "boxes.json"), "utf8"));
     const manifest = JSON.parse(Buffer.from(given.manifest, "base64").toString("utf8"));
     const running = runningEngineVersion();
     if (typeof manifest?.engine !== "string" || manifest.engine === running) return false;
-    // (One whose code was checked with the engine running changes its engine later, stopping nothing.)
-    try { return !engineApart(packedBox(readRelease(path.join(OFFERED, packName(manifest)), 100_000_000), manifest.version), running); } catch { return true; }
+    // (One whose code was checked with the engine running changes its engine later, stopping nothing.
+    // Its `box.json` read from the pack once for each pack there.)
+    const pack = path.join(OFFERED, packName(manifest));
+    let stamp = "";
+    try { const stat = fs.statSync(pack); stamp = `${pack} ${stat.size} ${stat.mtimeMs}`; } catch { return true; }
+    if (offeredBox?.stamp !== stamp) {
+      let box: Pick<BoxFiles, "engine" | "engines"> | null = null;
+      try { box = packedBox(readRelease(pack, 100_000_000), manifest.version); } catch {}
+      offeredBox = { stamp, box };
+    }
+    return !offeredBox.box || !engineApart(offeredBox.box, running);
   } catch { return false; }
 }
 

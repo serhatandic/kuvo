@@ -52,11 +52,15 @@ async function engine(pinned) {
   return path.join(folder, "package", "bin", "opencode");
 }
 
-function selftest(program, script, version) {
+// Whether `script` answers selftest on engine `program`; `required`: the release fails if not.
+function selftest(program, script, version, required = true) {
   const home = path.join(work, "home-selftest");
   fs.mkdirSync(home, { recursive: true });
   const ran = spawnSync(program, ["--config=/dev/null", "--no-env-file", script, "selftest"], { env: { PATH: process.env.PATH, HOME: home, KUVO_HOME: path.join(home, ".kuvo-code"), BUN_BE_BUN: "1", BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0" }, encoding: "utf8", timeout: 120_000 });
-  if (ran.status !== 0 || !/\bok\b/.test(`${ran.stdout}`)) fail(`${path.basename(script)} doesn't answer selftest on engine ${version}:\n${ran.stdout}${ran.stderr}`);
+  const ok = ran.status === 0 && /\bok\b/.test(`${ran.stdout}`);
+  if (!ok && required) fail(`${path.basename(script)} doesn't answer selftest on engine ${version}:\n${ran.stdout}${ran.stderr}`);
+  if (!ok) console.error(`${path.basename(script)} doesn't answer selftest on engine ${version}: boxes running it take this release with its engine, once nothing's at work.`);
+  return ok;
 }
 
 const freePort = () => new Promise(resolve => {
@@ -87,7 +91,10 @@ async function serving(program, home, use) {
     return await use(call);
   } finally {
     child.kill("SIGTERM");
-    await new Promise(resolve => (child.exitCode !== null ? resolve() : child.once("exit", resolve)));
+    // (One that doesn't end within half a minute is ended.)
+    const killer = setTimeout(() => child.kill("SIGKILL"), 30_000);
+    await new Promise(resolve => (child.exitCode !== null || child.signalCode !== null ? resolve() : child.once("exit", resolve)));
+    clearTimeout(killer);
     started.delete(child.pid);
   }
 }
@@ -108,6 +115,10 @@ async function downgradeSafe(before, fresh) {
       const listed = ids(await call("GET", "api/session?limit=50"));
       if (!listed.includes(first) || !listed.includes(second)) throw new Error("The engine before doesn't list both conversations.");
       for (const id of [first, second]) await call("GET", `api/session/${encodeURIComponent(id)}/message?limit=10`);
+      // (And writes there: going back, it gets what was held for it.)
+      const third = (await call("POST", "api/session", { title: "Back", location })).data.id;
+      await call("PATCH", `api/session/${encodeURIComponent(second)}`, { title: "After, renamed" });
+      if (!ids(await call("GET", "api/session?limit=50")).includes(third)) throw new Error("The engine before can't write to what the new one wrote.");
     });
     return true;
   } catch (error) {
@@ -119,11 +130,12 @@ async function downgradeSafe(before, fresh) {
 try {
   const fresh = { version: pin.version, program: await engine(pin) };
   const before = pin.previous?.version && pin.previous.version !== pin.version ? { version: pin.previous.version, program: await engine(pin.previous) } : null;
-  for (const each of [fresh, before].filter(Boolean)) {
-    selftest(each.program, link, each.version);
-    selftest(each.program, agents, each.version);
-  }
-  const found = before ? { engines: [fresh.version, before.version], downgradeSafe: await downgradeSafe(before, fresh) } : { engines: [fresh.version] };
+  selftest(fresh.program, link, fresh.version);
+  selftest(fresh.program, agents, fresh.version);
+  // The engine before: where this release's code doesn't run on it, boxes running it take the release
+  // whole (its engine with its code), as without a check.
+  const withBefore = before && selftest(before.program, link, before.version, false) && selftest(before.program, agents, before.version, false);
+  const found = withBefore ? { engines: [fresh.version, before.version], downgradeSafe: await downgradeSafe(before, fresh) } : { engines: [fresh.version] };
   fs.writeFileSync(out, JSON.stringify(found) + "\n");
   console.log(JSON.stringify(found));
   end(0);

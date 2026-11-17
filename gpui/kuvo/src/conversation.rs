@@ -1010,15 +1010,15 @@ impl ConversationView {
 }
 
 impl ConversationView {
-    /// What waits its turn, over the composer, in the order it goes: each message as you wrote it
-    /// (who it's from, when it isn't yours), with what can be done with it as 0.7 offered it: Steer
-    /// (into the run under way) or Send, Send Now for one already for the agent's next step, and
-    /// Edit (yours) and Remove under the pointer; Resume while a Stop holds it.
     /// Why what waits waits, as its box says it (its engine being updated), for tests.
     pub fn queue_line(&self) -> Option<String> {
         self.queue.line.clone()
     }
 
+    /// What waits its turn, over the composer, in the order it goes: each message as you wrote it
+    /// (who it's from, when it isn't yours), with what can be done with it as 0.7 offered it: Steer
+    /// (into the run under way) or Send, Send Now for one already for the agent's next step, and
+    /// Edit (yours) and Remove under the pointer; Resume while a Stop holds it.
     fn queue_view(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let items = self.queued_shown(cx);
         if items.is_empty() {
