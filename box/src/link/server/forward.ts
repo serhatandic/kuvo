@@ -2,6 +2,7 @@
 // What isn't the box's own goes on to the engine, or to the coding agents' bridge (`kuvo/agents/…`),
 // a phone's prompts with who they name told, and that they're from a phone.
 
+import { ROUTE_VERSION, ROUTE_VERSION_HEADER, routeVersionError } from "../../shared/route-version";
 import { BAD_WAITING_ID, isWaitingID } from "../../shared/queues";
 import { admitPrompt, MoveAdmissionClosed } from "../moves/admission";
 import { compactionFeed, compactionPage } from "../../shared/compaction-words";
@@ -66,11 +67,31 @@ export function fromPhone(body: Buffer | undefined): Buffer | undefined {
   return Buffer.from(JSON.stringify({ ...prompt, text: `${prompt.text}\n\n${FROM_PHONE}` }));
 }
 
+class UnsupportedBridgeRouteVersion extends Error {
+  constructor(readonly refusal: NonNullable<ReturnType<typeof routeVersionError>>) {
+    super(refusal.message);
+  }
+}
+
+// A bridge that predates route versions speaks v1. Validate an explicit version before any
+// caller reads the body or forwards its head. Cancel a refused stream without waiting for EOF.
+async function fetchRoute(url: URL, options: RequestInit, toAgents: boolean): Promise<Response> {
+  const response = await fetch(url, options);
+  if (toAgents) {
+    const refusal = routeVersionError(response.headers.get(ROUTE_VERSION_HEADER) ?? undefined);
+    if (refusal) {
+      response.body?.cancel().catch(() => {});
+      throw new UnsupportedBridgeRouteVersion(refusal);
+    }
+  }
+  return response;
+}
+
 // What the model of `session` takes as input, as the engine at `base` says (its own model, or the
 // engine's default): for the files a message carries (`attachedIn`).
-export function modelInput(base: URL, headers: Record<string, string>, signal: AbortSignal | undefined): ModelInput {
+export function modelInput(base: URL, headers: Record<string, string>, signal: AbortSignal | undefined, toAgents = false): ModelInput {
   const read = async (at: string): Promise<unknown> => {
-    const response = await fetch(new URL(at, base), { headers, signal });
+    const response = await fetchRoute(new URL(at, base), { headers, signal }, toAgents);
     return response.ok ? ((await response.json()) as { data?: unknown } | null)?.data ?? null : null;
   };
   type Listed = { id?: unknown; providerID?: unknown; aliases?: unknown; capabilities?: { input?: unknown } } | null;
@@ -86,12 +107,14 @@ export function modelInput(base: URL, headers: Record<string, string>, signal: A
 }
 
 // The headers of an answer that go back to whoever asked.
-export function answerHeaders(response: Response): Record<string, string> {
+export function answerHeaders(response: Response, fromAgents = false): Record<string, string> {
   const out: Record<string, string> = {};
   for (const name of RESPONSE_HEADERS) {
     const value = response.headers.get(name);
     if (value) out[name] = value;
   }
+  const version = fromAgents ? response.headers.get(ROUTE_VERSION_HEADER) : null;
+  if (version !== null) out[ROUTE_VERSION_HEADER] = version;
   return out;
 }
 
@@ -111,6 +134,7 @@ export async function* forward(target: Target, path: string, request: LinkReques
   const given = Object.fromEntries(Object.entries(request.headers ?? {}).map(([k, v]) => [k.toLowerCase(), v]));
   // (These are single headers, never a list.)
   for (const name of REQUEST_HEADERS) if (given[name]) headers[name] = given[name] as string;
+  if (toAgents) headers[ROUTE_VERSION_HEADER] = ROUTE_VERSION;
   // A message or command with files: they're kept here, and the model gets as files what it reads
   // (`attachedIn`), from a phone or a Mac alike. A phone's message also says who it names with "&"
   // (`naming`), and that it's from the phone.
@@ -173,7 +197,7 @@ export async function* forward(target: Target, path: string, request: LinkReques
   const readBefore = async () => {
     try {
       const patience = AbortSignal.timeout(NOTES_STEP);
-      const before = await fetch(url, { headers, signal: signal ? AbortSignal.any([signal, patience]) : patience });
+      const before = await fetchRoute(url, { headers, signal: signal ? AbortSignal.any([signal, patience]) : patience }, toAgents);
       if (before.ok) wasArchived = (await before.json() as { data?: EngineSession } | null)?.data?.metadata?.["kuvo.archived"] === true;
     } catch {}
   };
@@ -194,7 +218,7 @@ export async function* forward(target: Target, path: string, request: LinkReques
     }
     if (!sending) return request.body;
     const session = decodeURIComponent(sending[1]!);
-    const body = await attachedIn(request.body, session, modelInput(url, headers, delivering), request.fromMac === true, toAgents);
+    const body = await attachedIn(request.body, session, modelInput(url, headers, delivering, toAgents), request.fromMac === true, toAgents);
     if (sending[2] !== "prompt") return body;
     // (The desktop app's over the link: who it names, without the phone's block.)
     const named = prompt ? await namedIn(body, session, naming) : body;
@@ -211,15 +235,17 @@ export async function* forward(target: Target, path: string, request: LinkReques
     sending ? admitPrompt(decodeURIComponent(sending[1]!), write) : write();
   const sendingError = (error: unknown): SentAnswer => error instanceof MoveAdmissionClosed
     ? { status: 409, headers: { "content-type": "application/json" }, body: Buffer.from(JSON.stringify({ message: error.message })) }
-    : notAnswering();
+    : error instanceof UnsupportedBridgeRouteVersion
+      ? { status: 502, headers: { "content-type": "application/json" }, body: Buffer.from(JSON.stringify(error.refusal)) }
+      : notAnswering();
   const once = sending && sending[2] === "prompt" ? sentKey(toAgents ? "agents" : "engine", decodeURIComponent(sending[1]!), request.body) : null;
   if (once) {
     const answer = await sentOnce(once, async () => {
       try {
         const body = await outgoing();
         return await admitted(async () => {
-          const response = await fetch(url, { method, headers, body });
-          return { status: response.status, headers: answerHeaders(response), body: Buffer.from(await response.arrayBuffer()) };
+          const response = await fetchRoute(url, { method, headers, body }, toAgents);
+          return { status: response.status, headers: answerHeaders(response, toAgents), body: Buffer.from(await response.arrayBuffer()) };
         });
       } catch (error) {
         return sendingError(error);
@@ -231,7 +257,7 @@ export async function* forward(target: Target, path: string, request: LinkReques
   }
   const send = async () => {
     const body = method === "GET" || method === "HEAD" ? undefined : await outgoing();
-    return admitted(() => fetch(url, { method, headers, body, signal: delivering }));
+    return admitted(() => fetchRoute(url, { method, headers, body, signal: delivering }, toAgents));
   };
   let response: Response;
   try {
@@ -258,7 +284,7 @@ export async function* forward(target: Target, path: string, request: LinkReques
     yield { body: answer.body };
     return;
   }
-  const out = answerHeaders(response);
+  const out = answerHeaders(response, toAgents);
   // Archived or brought back (`kuvo.archived` in its metadata), here with the Mac closed too: its
   // wake-ups wait, or come back, as a Mac's Archive has it. Only when that changed.
   if (changed && response.ok) {
