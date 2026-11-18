@@ -357,7 +357,9 @@ test("a Claude Code bot moves with its conversation and memory, and comes back t
   assert.deepEqual(agentState(lab, "ses_ada").threads["claude-code"].state, { claudeSession: adaClaude, claudeStarted: true });
   assert.equal(agentState(lab, "ses_ada").threads["claude-code"].seen, "msg_ses_ada");
   assert.ok(await sessionThere(lab, "ses_adasub"), "its subagent's session came too");
-  assert.deepEqual(messagesOf(lab, "ses_ada"), messages("ses_ada", "Remember the deploy."));
+  const carriedMessages = messages("ses_ada", "Remember the deploy.");
+  carriedMessages[0].time.origin = macAddress;
+  assert.deepEqual(messagesOf(lab, "ses_ada"), carriedMessages);
   // Claude Code's own files, where it looks for them there, word for word.
   const placed = path.join(lab.claude, "projects", slug(work));
   assert.equal(hash(path.join(placed, `${adaClaude}.jsonl`)), before);
