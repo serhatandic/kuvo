@@ -389,6 +389,7 @@ pub fn note(key: &str, words: impl Into<String>, busy: bool) -> Block {
 /// Everything one of this app's own pages is drawn from, as read from the box.
 pub struct Facts<'a> {
     pub accounts: &'a Reading<Accounts>,
+    pub update_progress_unavailable: bool,
     pub limits: &'a Reading<Vec<Account>>,
     /// The coding agents' state, where the limits' last read was refused for it (the readings
     /// before it are kept).
@@ -618,12 +619,12 @@ fn account_row(entry: &AccountEntry, facts: &Facts) -> Row {
         }
         detail.push_str(version);
     }
-    if let Some(ProgramUpdate::Failed { message, .. }) = &update {
-        if !detail.is_empty() {
-            detail.push('\n');
-        }
-        detail.push_str(message);
-    }
+    let updating = matches!(update, Some(ProgramUpdate::Updating));
+    let notice = match &update {
+        Some(ProgramUpdate::Failed { message, .. }) => Some(format!("Couldn’t update {name}\n{message}")),
+        Some(ProgramUpdate::Updating) if facts.update_progress_unavailable => Some("Can’t check update progress".to_owned()),
+        _ => None,
+    };
     let control = facts.busy(&key).unwrap_or_else(|| {
         let offered: Vec<_> = entry.actions.iter().filter(|action| action.offered(facts.here)).collect();
         let mut others = offered.iter().filter(|action| action.id != "update");
@@ -643,14 +644,16 @@ fn account_row(entry: &AccountEntry, facts: &Facts) -> Row {
                 buttons.push(item);
             }
         }
-        let busy = matches!(update, Some(ProgramUpdate::Updating)).then(|| "Updating…".to_owned());
+        let busy = (updating && !facts.update_progress_unavailable).then(|| "Updating…".to_owned());
         if menu.is_empty() && busy.is_none() {
             if buttons.is_empty() { Control::None } else { Control::Buttons(buttons) }
         } else {
             Control::Thing { buttons, menu, switch: None, busy }
         }
     });
-    Row::new(key, name.clone(), detail, control).leading(mark(entry, name)).warning(entry.state.needs_you() || matches!(update, Some(ProgramUpdate::Failed { .. })))
+    let mut row = Row::new(key, name.clone(), detail, control).leading(mark(entry, name)).warning(entry.state.needs_you());
+    row.notice = notice.map(|words| (words, Tone::Warning));
+    row
 }
 
 /// An account's mark: the box's `service`; its name's first letter where the box names none.

@@ -1214,36 +1214,174 @@ mod live {
         let _ = host;
     }
 
-    #[gpui::test]
-    fn an_agent_update_shows_progress_until_the_new_version_is_reported(cx: &mut TestAppContext) {
+    fn open_accounts(cx: &mut TestAppContext, client: BoxClient) -> (Entity<Host>, &mut VisualTestContext) {
         cx.update(|cx| {
             Theme::init(Appearance::Light, cx);
             kuvo::bind_keys(cx);
         });
-        let stand_in = StandIn::at(Replies::Never, NOW);
-        stand_in.set_agent_metadata("claude-code", json!({ "latestVersion": "2.4.2", "outdated": true, "updates": true }));
-        let client = BoxClient::new(RequestBox(stand_in.clone()));
         let (host, cx) = cx.add_window_view(|_, cx| {
             let settings = cx.new(|cx| SettingsView::new(client, true, cx));
             Host { settings }
         });
         cx.simulate_resize(size(px(1280.), px(1400.)));
-        host.update(cx, |host, cx| host.settings.update(cx, |settings, cx| settings.set_place("Accounts", cx)));
+        host.update(cx, |host, cx| host.settings.update(cx, |settings, cx| {
+            settings.set_place("Accounts", cx);
+            settings.shown(cx);
+        }));
         cx.run_until_parked();
+        (host, cx)
+    }
+
+    fn outdated_agent(stand_in: &StandIn) {
+        stand_in.set_agent_metadata("claude-code", json!({ "latestVersion": "2.4.2", "outdated": true, "updates": true }));
+    }
+
+    fn program_update(stand_in: &StandIn, state: serde_json::Value) {
+        stand_in.set_agent_metadata("claude-code", json!({ "programUpdate": state }));
+    }
+
+    fn advance(cx: &mut VisualTestContext, seconds: u64) {
+        cx.executor().advance_clock(std::time::Duration::from_secs(seconds));
+        cx.run_until_parked();
+    }
+
+    #[gpui::test]
+    fn an_agent_update_shows_progress_until_the_new_version_is_reported(cx: &mut TestAppContext) {
+        let stand_in = StandIn::at(Replies::Never, NOW);
+        outdated_agent(&stand_in);
+        let (host, cx) = open_accounts(cx, BoxClient::new(RequestBox(stand_in.clone())));
         assert!(shown(cx, "account-claude-code-menu"));
-        click(cx, "account-claude-code-update-to-2.4.2");
-        assert_eq!(stand_in.seen_at("POST", "kuvo/agents/api/kuvo/updates/claude-code").len(), 1);
+        assert!(shown(cx, "account-claude-code-update-to-2.4.2"));
+        let view = host.read_with(cx, |host, _| host.settings.clone());
+        let update = view.read_with(cx, |view, _| view.account_act("claude-code", "update")).unwrap();
+        let route = "kuvo/agents/api/kuvo/updates/claude-code";
+        view.update(cx, |view, cx| view.act(update.clone(), cx));
+        // Run through the first POST, leaving its completion on the UI scheduler.
+        while stand_in.seen_at("POST", route).is_empty() {
+            assert!(cx.executor().tick(), "the first click should send a request");
+        }
+        assert!(view.read_with(cx, |view, _| view.account_act("claude-code", "update").is_some()));
+        view.update(cx, |view, cx| view.act(update, cx));
+        cx.run_until_parked();
+        assert_eq!(stand_in.seen_at("POST", route).len(), 1);
         assert!(shown(cx, "account-claude-code-busy-label"));
         assert!(!shown(cx, "account-claude-code-update-to-2.4.2"));
 
         stand_in.set_agent_metadata("claude-code", json!({
             "outdated": false, "programUpdate": { "state": "updated", "version": "2.4.2", "at": 2 }
         }));
-        cx.executor().advance_clock(std::time::Duration::from_secs(1));
-        cx.run_until_parked();
+        advance(cx, 1);
         assert!(!shown(cx, "account-claude-code-busy-label"));
-        let detail = host.read_with(cx, |host, cx| host.settings.read(cx).row_detail("account-claude-code")).unwrap();
+        let detail = view.read_with(cx, |view, _| view.row_detail("account-claude-code")).unwrap();
         assert!(detail.ends_with("2.4.2"), "{detail}");
+    }
+
+    #[gpui::test]
+    fn accounts_poll_for_updates_that_started_elsewhere_and_back_off_on_a_failed_progress_read(cx: &mut TestAppContext) {
+        let stand_in = StandIn::at(Replies::Never, NOW);
+        outdated_agent(&stand_in);
+        let (host, cx) = open_accounts(cx, BoxClient::new(RequestBox(stand_in.clone())));
+        let view = host.read_with(cx, |host, _| host.settings.clone());
+        assert!(shown(cx, "account-claude-code-update-to-2.4.2"));
+        program_update(&stand_in, json!({ "state": "updating", "at": 1 }));
+        advance(cx, 30);
+        assert!(shown(cx, "account-claude-code-busy-label"));
+        assert!(!shown(cx, "account-claude-code-update-to-2.4.2"));
+
+        stand_in.agents_running(false);
+        advance(cx, 1);
+        assert!(!shown(cx, "account-claude-code-busy-label"));
+        assert!(view.read_with(cx, |view, _| view.page_words()).contains("Can’t check update progress"));
+        let route = "kuvo/agents/api/integration";
+        let reads = stand_in.seen_at("GET", route).len();
+        advance(cx, 1);
+        assert_eq!(stand_in.seen_at("GET", route).len(), reads, "no retry after one second");
+        stand_in.agents_running(true);
+        advance(cx, 14);
+        assert!(shown(cx, "account-claude-code-busy-label"));
+        assert!(!shown(cx, "account-claude-code-notice"));
+
+        let reads = stand_in.seen_at("GET", route).len();
+        view.update(cx, |view, cx| view.set_place("Clock", cx));
+        advance(cx, 30);
+        assert_eq!(stand_in.seen_at("GET", route).len(), reads);
+    }
+
+    #[gpui::test]
+    fn a_failed_agent_update_names_the_agent_and_keeps_its_installed_version(cx: &mut TestAppContext) {
+        let stand_in = StandIn::at(Replies::Never, NOW);
+        outdated_agent(&stand_in);
+        program_update(&stand_in, json!({ "state": "failed", "message": "spawn npm ENOENT", "at": 2 }));
+        let (host, cx) = open_accounts(cx, BoxClient::new(RequestBox(stand_in)));
+        let view = host.read_with(cx, |host, _| host.settings.clone());
+        assert!(!shown(cx, "account-claude-code-busy-label"));
+        assert!(shown(cx, "account-claude-code-notice"));
+        assert!(view.read_with(cx, |view, _| view.page_words()).contains("Couldn’t update Claude Code\nspawn npm ENOENT"));
+        assert!(view.read_with(cx, |view, _| view.row_detail("account-claude-code")).unwrap().ends_with("2.4.1"));
+    }
+
+    #[cfg(unix)]
+    #[gpui::test]
+    fn an_integration_event_refreshes_visible_accounts_before_the_poll(cx: &mut TestAppContext) {
+        use kuvo_box::transport::{Closer, Request, Response, Stream, Transport};
+        use std::{io::{self, BufReader, Read, Write}, os::unix::net::UnixStream, sync::mpsc};
+
+        struct Events {
+            requests: RequestBox,
+            writers: mpsc::Sender<(String, UnixStream)>,
+        }
+
+        struct Listening {
+            read: UnixStream,
+            ready: Option<(mpsc::Sender<(String, UnixStream)>, String, UnixStream)>,
+        }
+
+        impl Read for Listening {
+            fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+                if let Some((ready, route, write)) = self.ready.take() {
+                    let _ = ready.send((route, write));
+                }
+                self.read.read(buf)
+            }
+        }
+
+        impl Transport for Events {
+            fn send(&self, request: &Request) -> kuvo_box::Result<Response> {
+                self.requests.send(request)
+            }
+
+            fn open(&self, request: &Request, hold: &dyn Fn(Closer) -> bool) -> kuvo_box::Result<Stream> {
+                let (read, write) = UnixStream::pair().unwrap();
+                let shutdown = read.try_clone().unwrap();
+                let closer = Closer::new(move || { let _ = shutdown.shutdown(std::net::Shutdown::Both); });
+                let ready = hold(closer.clone()).then(|| (self.writers.clone(), request.path.clone(), write));
+                let reader = Box::new(BufReader::new(Listening { read, ready }));
+                Ok(Stream { status: 200, content_type: Some("text/event-stream".into()), reader, closer })
+            }
+
+            fn streams(&self) -> bool { true }
+            fn here(&self) -> bool { true }
+            fn describe(&self) -> String { self.requests.describe() }
+        }
+
+        let stand_in = StandIn::at(Replies::Never, NOW);
+        outdated_agent(&stand_in);
+        let (writers, streams) = mpsc::channel();
+        let (_, cx) = open_accounts(cx, BoxClient::new(Events { requests: RequestBox(stand_in.clone()), writers }));
+        cx.executor().allow_parking();
+        let mut streams: std::collections::HashMap<_, _> = (0..2)
+            .map(|_| streams.recv_timeout(std::time::Duration::from_secs(5)).unwrap()).collect();
+        // Both followers have queued their initial refresh before they begin reading.
+        cx.run_until_parked();
+        assert!(shown(cx, "account-claude-code-update-to-2.4.2"));
+        program_update(&stand_in, json!({ "state": "updating", "at": 1 }));
+        streams.get_mut("kuvo/agents/api/event").unwrap().write_all(b"data: {\"type\":\"integration.updated\",\"data\":{}}\n\n").unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !shown(cx, "account-claude-code-busy-label") {
+            assert!(std::time::Instant::now() < deadline, "the event should refresh Accounts without advancing its clock");
+            std::thread::yield_now();
+            cx.run_until_parked();
+        }
     }
 
     /// Install in the app's own way, its answers coming in later: installed, the sign-in opens,

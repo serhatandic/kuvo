@@ -188,6 +188,9 @@ pub struct SettingsView {
     /// The computer picker's menu, opened from its title.
     picker: kuvo_ui::menu::PopoverMenuHandle,
     accounts: Reading<Accounts>,
+    accounts_visible: bool,
+    account_events: Vec<Follow<()>>,
+    update_progress_unavailable: bool,
     limits: Reading<Vec<Account>>,
     usage_read_started: Option<(Instant, SystemTime)>,
     usage_refresh_failed: bool,
@@ -343,6 +346,9 @@ impl SettingsView {
             picker: Default::default(),
             later_open: false,
             accounts: Reading::NotYet,
+            accounts_visible: false,
+            account_events: Vec::new(),
+            update_progress_unavailable: false,
             limits: Reading::NotYet,
             usage_read_started: None,
             usage_refresh_failed: false,
@@ -564,6 +570,8 @@ impl SettingsView {
         self.reading_sections = false;
         self.pages.clear();
         self.accounts = Reading::NotYet;
+        self.stop_account_refresh();
+        self.update_progress_unavailable = false;
         self.limits = Reading::NotYet;
         self.usage_read_started = None;
         self.usage_refresh_failed = false;
@@ -625,12 +633,16 @@ impl SettingsView {
                 self.tasks.remove("follow");
             }
         }
+        if !self.refreshing_accounts() {
+            self.stop_account_refresh();
+        }
         self.read_open(cx);
         self.rebuild(cx);
     }
 
     /// The area came on screen: the page open is read again, and the editors on this Mac.
     pub fn shown(&mut self, cx: &mut Context<Self>) {
+        self.accounts_visible = true;
         self.shortcuts = shortcuts::read(cx);
         if self.live {
             self.editors = crate::yours::editors::installed();
@@ -694,6 +706,7 @@ impl SettingsView {
     fn facts(&self) -> rows::Facts<'_> {
         rows::Facts {
             accounts: &self.accounts,
+            update_progress_unavailable: self.update_progress_unavailable,
             limits: &self.limits,
             limits_agents: self.agents_limits.as_ref().or(self.agents_usage.as_ref()),
             config: &self.config,
@@ -847,6 +860,9 @@ impl SettingsView {
         for item in &self.items {
             for row in item.rows() {
                 words.extend([row.title.as_str(), "\n", row.detail.as_str(), "\n", row.why.as_deref().unwrap_or_default(), "\n"]);
+                if let Some((notice, _)) = &row.notice {
+                    words.extend([notice.as_str(), "\n"]);
+                }
             }
             if let Item::Note { words: note, .. } = item {
                 words.extend([note.as_str(), "\n"]);
@@ -1365,9 +1381,10 @@ impl SettingsView {
         let drawn = self.entries(Side::Computer).into_iter().find(|entry| entry.id == section).map(|entry| entry.drawn);
         match (drawn, section) {
             (Some(Drawn::Described), _) => self.read_page(section, cx),
-            (Some(Drawn::Own), "accounts") => self.run("read-accounts", |client| client.sign_in_accounts(), |this, read, cx| {
-                this.take_accounts(read, cx);
-            }, cx),
+            (Some(Drawn::Own), "accounts") => {
+                self.follow_account_changes(cx);
+                self.run("read-accounts", |client| client.sign_in_accounts(), |this, read, cx| this.take_accounts(read, cx), cx);
+            }
             (Some(Drawn::Own), "usage") => {
                 if !self.usage_refreshing() {
                     self.read_limits(false, cx);
@@ -1385,13 +1402,61 @@ impl SettingsView {
         }
     }
 
+    pub(crate) fn hidden(&mut self) {
+        if std::mem::take(&mut self.accounts_visible) {
+            self.stop_account_refresh();
+        }
+    }
+
+    fn refreshing_accounts(&self) -> bool {
+        self.accounts_visible && self.side == Side::Computer && self.section == "accounts"
+    }
+
+    fn stop_account_refresh(&mut self) {
+        self.account_events.clear();
+        self.tasks.remove("account-events-engine");
+        self.tasks.remove("account-events-agents");
+        self.tasks.remove("again-accounts");
+    }
+
+    fn follow_account_changes(&mut self, cx: &mut Context<Self>) {
+        if !self.live || !self.refreshing_accounts() || !self.account_events.is_empty() {
+            return;
+        }
+        let Some(client) = self.client.as_ref().filter(|client| client.streams()) else { return };
+        for (place, task) in [(kuvo_box::Where::Engine, "account-events-engine"), (kuvo_box::Where::Agents, "account-events-agents")] {
+            let follow = client.follow_account_changes(place, Timing::default());
+            let updates = follow.updates().clone();
+            self.account_events.push(follow);
+            self.tasks.insert(task.into(), cx.spawn(async move |this, cx| {
+                while updates.recv().await.is_ok() {
+                    if this.update(cx, |this, cx| {
+                        if this.refreshing_accounts() {
+                            this.read_section("accounts", cx);
+                        }
+                    }).is_err() {
+                        break;
+                    }
+                }
+            }));
+        }
+    }
+
     fn take_accounts(&mut self, read: kuvo_box::Result<Accounts>, cx: &mut Context<Self>) {
-        self.accounts = reading(read, &self.accounts);
-        let Reading::Ready(accounts) = &self.accounts else { return };
-        let updating = accounts.agents.iter().any(|entry| matches!(entry.program_update(), Some(ProgramUpdate::Updating)));
-        let restarting = accounts.agents_down.as_ref().is_some_and(kuvo_box::Refusal::agents_restarting);
-        let delay = if updating { Duration::from_secs(1) } else { AGENTS_AGAIN };
-        self.read_again("accounts", updating || restarting, delay, cx);
+        let updating = |accounts: &Accounts| accounts.agents.iter().any(|entry| matches!(entry.program_update(), Some(ProgramUpdate::Updating)));
+        let agents_unavailable = read.as_ref().map_or(true, |accounts| accounts.agents_down.is_some());
+        self.update_progress_unavailable = agents_unavailable && matches!(&self.accounts, Reading::Ready(accounts) if updating(accounts));
+        if !self.update_progress_unavailable {
+            self.accounts = reading(read, &self.accounts);
+        }
+        // The slower poll also covers transports without a stream and events missed on reconnect.
+        let delay = match &self.accounts {
+            _ if self.update_progress_unavailable => Duration::from_secs(15),
+            Reading::Ready(accounts) if updating(accounts) => Duration::from_secs(1),
+            Reading::Ready(accounts) if accounts.agents_down.as_ref().is_some_and(kuvo_box::Refusal::agents_restarting) => AGENTS_AGAIN,
+            _ => Duration::from_secs(30),
+        };
+        self.read_again("accounts", self.refreshing_accounts(), delay, cx);
     }
 
     /// Reads a page its box describes. The one open is followed as it changes instead (another
@@ -1629,6 +1694,10 @@ impl SettingsView {
                 }, cx);
             }
             Act::UpdateAgent { account } => {
+                let key = format!("account-{account}");
+                if self.busy.iter().any(|(busy, _)| *busy == key) {
+                    return;
+                }
                 let updating = account.clone();
                 self.account_change(account, move |client| client.update_agent(&updating), "Starting update…", cx);
             }
