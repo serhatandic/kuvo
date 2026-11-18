@@ -30,6 +30,8 @@ export const queueFiles = (run: string): QueueFiles => ({
 export interface QueueState {
   paused: boolean;
   held: string[];
+  /** Explicit order among messages still waiting, separate from Stop’s held state. */
+  order?: string[];
   /** When Resume or Send Now last went on with it (ms): a Stop's look at an interrupt from before
    * that leaves it going. Kept a minute, never in a route's answer. */
   resumed?: number;
@@ -151,6 +153,8 @@ const keptState = (value: unknown): QueueState => {
     held: isObject(value) && Array.isArray(value.held) ? value.held.filter((id): id is string => typeof id === "string") : [],
     ...(isObject(value) && typeof value.resumed === "number" ? { resumed: value.resumed } : {}),
     ...(waiting.length ? { waiting } : {}),
+    ...(isObject(value) && Array.isArray(value.order) && value.order.length
+      ? { order: [...new Set(value.order.filter((id): id is string => typeof id === "string"))] } : {}),
     ...(isObject(value) && value.paused === true && value.heldFor === "goal" ? { heldFor: "goal" as const } : {}),
     ...(isObject(value) && isObject(value.arriving) && Object.keys(value.arriving).length
       ? { arriving: Object.fromEntries(Object.entries(value.arriving).filter((each): each is [string, number] => typeof each[1] === "number")) } : {}),
@@ -198,7 +202,7 @@ export function changeQueue(files: QueueFiles, session: string, change: (state: 
         for (const [message, until] of Object.entries(each.arriving)) if (until <= Date.now()) delete each.arriving[message];
         if (!Object.keys(each.arriving).length) delete each.arriving;
       }
-      if (!showsQueue(each) && !each.resumed && !each.arriving) delete all[id];
+      if (!showsQueue(each) && !each.order?.length && !each.resumed && !each.arriving) delete all[id];
     }
     writeDurablePrivate(files.file, JSON.stringify(all));
     return state;

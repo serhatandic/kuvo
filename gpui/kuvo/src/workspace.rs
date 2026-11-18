@@ -1591,7 +1591,7 @@ impl Workspace {
         // Only the composer on screen asks again for what the box couldn't say.
         self.show_composer(Some(&composer), cx);
         let view = cx.new(|cx| ConversationView::new(client, session.to_owned(), composer, live, cx));
-        // (A bot's own conversation, as the session lists say: its sessions show over its composer.)
+        // (A bot's own conversation, as the session lists say: its sessions show in Activity.)
         let bot = self.listing().facts(session).filter(|facts| facts.kind.0 == "bot").and_then(|facts| facts.bot.clone());
         self.wire_bars(&view, bot, cx);
         self.wire_wakes(&view, session, cx);
@@ -1601,17 +1601,25 @@ impl Workspace {
         cx.notify();
     }
 
-    /// The bars over a conversation's composer: the bot it is (its sessions' bar), and how a row
+    /// A conversation's Activity: the bot it is, and how a row
     /// opens its conversation (here, in Sessions).
     fn wire_bars(&self, view: &Entity<ConversationView>, bot: Option<String>, cx: &mut Context<Self>) {
+        let source = cx.entity().downgrade();
+        let bot_look: crate::work_bars::BotLook = std::rc::Rc::new(move |session, owner, cx| {
+            source.read_with(cx, |workspace, cx| {
+                let bot = workspace.listing().facts(session).and_then(|facts| facts.bot.as_deref()).or(owner);
+                let Reading::Ready(bots) = workspace.area_view(Area::Bots)?.read(cx).bots() else { return None };
+                let bot = bots.bots.iter().find(|each| Some(each.id.as_str()) == bot || each.session == session)?;
+                Some((bot.id.clone(), bot.look.clone()))
+            }).ok().flatten()
+        });
         let workspace = cx.entity().downgrade();
         let opener: crate::work_bars::Opener = std::rc::Rc::new(move |session: &str, window: &mut Window, cx: &mut App| {
             workspace.update(cx, |workspace, cx| workspace.open_session_now(session, window, cx)).ok();
         });
-        let now = self.now;
         view.read(cx).bars().clone().update(cx, |bars, cx| {
             bars.set_opener(opener);
-            bars.set_now(now);
+            bars.set_bot_look(bot_look);
             bars.set_bot(bot, cx);
         });
     }
@@ -2836,6 +2844,8 @@ impl Workspace {
             Reading::Ready(bots) => bots.bots.iter().find(|each| each.id == bot).cloned(),
             _ => None,
         });
+        let activity = chat.read(cx).bars().clone();
+        let needs_spacer = move_status.is_some() || listed.is_none();
         let strip = div()
             .debug_selector(|| "bot-chat-strip".into())
             .flex()
@@ -2858,7 +2868,9 @@ impl Workspace {
             .children(move_status.or_else(|| listed.as_ref().map(|bot| {
                 let words = bot.job.clone();
                 div().flex_1().min_w_0().truncate().text_ui(TypeSize::Small).text_color(c.text_muted).child(words).into_any_element()
-            })));
+            }))
+            .when(needs_spacer, |d| d.child(div().flex_1()))
+            .child(activity);
         div().debug_selector(|| "bot-chat".into()).size_full().flex().flex_col().child(strip).child(div().flex_1().min_h_0().child(chat.clone().cached(gpui::StyleRefinement::default().size_full()))).into_any_element()
     }
 

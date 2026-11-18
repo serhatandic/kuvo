@@ -4,7 +4,7 @@
 use gpui::{
     AnyElement, App, AppContext as _, Context, DismissEvent, ElementId, EventEmitter, FocusHandle,
     Focusable, InteractiveElement, IntoElement, KeyBinding, ParentElement, Render,
-    StatefulInteractiveElement, Styled, Task, Window, actions, div, px,
+    StatefulInteractiveElement, Styled, Task, Window, actions, div, prelude::FluentBuilder as _, px,
 };
 use kuvo_box::{
     BoxClient, Follow, Timing,
@@ -139,6 +139,7 @@ pub(crate) fn chip(
 
 pub(crate) struct WakeSchedule {
     focus: FocusHandle,
+    embedded: bool,
     source: Source,
     schedule: Option<Schedule>,
     confirm: Option<(Cancel, bool, String)>,
@@ -160,6 +161,7 @@ impl WakeSchedule {
     pub(crate) fn new(source: Source, cx: &mut Context<Self>) -> Self {
         let mut view = Self {
             focus: cx.focus_handle(),
+            embedded: false,
             source,
             schedule: None,
             confirm: None,
@@ -193,6 +195,12 @@ impl WakeSchedule {
             );
         }
         view
+    }
+
+    pub(crate) fn embedded(source: Source, cx: &mut Context<Self>) -> Self {
+        let mut schedule = Self::new(source, cx);
+        schedule.embedded = true;
+        schedule
     }
 
     fn take(&mut self, update: Followed<Schedule>, cx: &mut Context<Self>) {
@@ -424,29 +432,22 @@ impl Render for WakeSchedule {
         div()
             .id("wake-schedule")
             .debug_selector(|| "wake-schedule".into())
-            .key_context("WakeSchedule")
-            .track_focus(&self.focus)
-            .on_action(cx.listener(|_, _: &Close, _, cx| cx.emit(DismissEvent)))
-            .on_mouse_down_out(cx.listener(|_, _, _, cx| cx.emit(DismissEvent)))
-            .occlude()
-            .w(px(360.).min(window.viewport_size().width - px(16.)))
             .flex()
             .flex_col()
-            .overflow_hidden()
-            .rounded(radius::POPOVER)
-            .bg(c.elevated)
-            .border_1()
-            .border_color(c.border)
-            .shadow(cx.theme().elevated_shadow())
-            .child(
-                div()
-                    .px(space::S3)
-                    .py(space::S2)
-                    .text_ui(TypeSize::Small)
-                    .medium()
-                    .text_color(c.text)
-                    .child("Wake-ups & Watches"),
-            )
+            .when(!self.embedded, |d| d
+                .key_context("WakeSchedule")
+                .track_focus(&self.focus)
+                .on_action(cx.listener(|_, _: &Close, _, cx| cx.emit(DismissEvent)))
+                .on_mouse_down_out(cx.listener(|_, _, _, cx| cx.emit(DismissEvent)))
+                .occlude()
+                .w(px(360.).min(window.viewport_size().width - px(16.)))
+                .overflow_hidden()
+                .rounded(radius::POPOVER)
+                .bg(c.elevated)
+                .border_1()
+                .border_color(c.border)
+                .shadow(cx.theme().elevated_shadow())
+                .child(div().px(space::S3).py(space::S2).text_ui(TypeSize::Small).medium().text_color(c.text).child("Wake-ups & Watches")))
             .children(note.map(|note| {
                 div()
                     .debug_selector(move || note_selector.into())

@@ -408,12 +408,17 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "session-menu-pinned", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(session_menu_pinned) },
     Screen { slug: "session-menu-archived", width: 1280., height: 820., session: Some("ses_dark"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(session_menu_archived) },
     Screen { slug: "session-menu-held", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
-    // The bars over the composer (#764): one command left running and one subagent at work; many,
-    // one waiting on you; folded; a command's Output; a bot's sessions at work; narrow.
+    // The conversation header, its activity popover, and the composer’s message queue.
+    Screen { slug: "conversation-activity-popover", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(conversation_activity) },
+    Screen { slug: "conversation-activity-empty", width: 1280., height: 820., session: Some("ses_recipes"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(conversation_activity) },
+    Screen { slug: "conversation-header-running", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "composer-queue-two", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "composer-queue-dragging", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "composer-queue-long", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "bars-one", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "bars-many", width: 1280., height: 900., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
-    Screen { slug: "bars-folded", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bars_folded) },
-    Screen { slug: "bars-output", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bars_output) },
+    Screen { slug: "bars-folded", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(conversation_activity) },
+    Screen { slug: "bars-output", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(activity_output) },
     Screen { slug: "bars-bot", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_chat) },
     Screen { slug: "bars-narrow", width: 760., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     // The mode menu and Full Access the first time; a new session's Local or Worktree.
@@ -532,17 +537,15 @@ fn group_new_refused(workspace: &mut Workspace, window: &mut Window, cx: &mut Co
 fn bot_quiet(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     pick(workspace, Area::Bots, "bot:bot_release", window, cx);
 }
-/// The bars, the command's folded into its line.
-fn bars_folded(workspace: &mut Workspace, _window: &mut Window, cx: &mut Context<Workspace>) {
-    if let Some(view) = workspace.conversation() {
-        view.read(cx).bars().clone().update(cx, |bars, cx| bars.toggle(kuvo::work_bars::Bar::Background, cx));
-    }
+fn conversation_activity(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    let activity = workspace.conversation().expect("conversation").read(cx).bars().clone();
+    activity.update(cx, |activity, cx| activity.open_activity(window, cx));
 }
-/// The command's Output, open.
-fn bars_output(workspace: &mut Workspace, _window: &mut Window, cx: &mut Context<Workspace>) {
-    if let Some(view) = workspace.conversation() {
-        view.read(cx).bars().clone().update(cx, |bars, cx| bars.toggle_output("sh_dev", cx));
-    }
+
+fn activity_output(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    conversation_activity(workspace, window, cx);
+    let activity = workspace.conversation().expect("conversation").read(cx).bars().clone();
+    activity.update(cx, |activity, cx| activity.open_process_output("sh_dev", cx));
 }
 /// Full Access picked the first time on this computer: asked in the composer.
 fn full_access_question(workspace: &mut Workspace, _window: &mut Window, cx: &mut Context<Workspace>) {
@@ -1622,6 +1625,44 @@ fn main() -> anyhow::Result<()> {
             if screen.slug == "session-menu-held" {
                 stand_in.hold_session("ses_dark", Some("Moving to Studio…"));
             }
+            if matches!(screen.slug, "conversation-activity-popover" | "conversation-header-running") {
+                use serde_json::json;
+                let commands: Vec<_> = ["npm run dev", "npx vitest --watch", "tail -f logs/signup.log"].iter().enumerate()
+                    .map(|(index, command)| json!({ "id": format!("sh_{index}"), "command": command, "started": NOW })).collect();
+                let subagents: Vec<_> = ["Check the signup forms", "Run the browser tests", "Review the report"].iter().enumerate()
+                    .map(|(index, title)| json!({ "session": format!("ses_sub{index}"), "title": title, "since": NOW })).collect();
+                stand_in.set_background("ses_signup", json!({ "commands": commands, "subagents": subagents }), &[]);
+                for (index, (provider, model)) in [("codex-cli", "gpt-6"), ("codex-cli", "gpt-6"), ("claude-code", "opus")].iter().enumerate() {
+                    stand_in.set_model_state(&format!("ses_sub{index}"), json!({
+                        "model": { "providerID": provider, "id": model }, "runs": true
+                    }));
+                }
+
+                stand_in.add_output("ses_signup", json!({
+                    "id": "art_000000000000000000000001", "path": "/tmp/signup-review.md", "name": "signup-review.md",
+                    "kind": "document", "type": "text/markdown", "latest": { "n": 1 }
+                }), b"# Signup review");
+                stand_in.add_output("ses_signup", json!({
+                    "id": "art_000000000000000000000002", "path": "/tmp/signup-preview.svg", "name": "signup-preview.svg",
+                    "kind": "image", "type": "image/svg+xml", "latest": { "n": 1 }
+                }), include_bytes!("../../../assets/icons/activity.svg"));
+                stand_in.set_queue("ses_signup", vec![]);
+            }
+            if matches!(screen.slug, "composer-queue-two" | "composer-queue-long" | "composer-queue-dragging") {
+                use serde_json::json;
+                let messages = if screen.slug != "composer-queue-long" {
+                    vec!["Check the form on mobile", "Add a changelog entry"]
+                } else {
+                    vec![
+                        "Compare the new signup flow with the existing mobile and desktop versions, and call out any changes to field validation, focus or keyboard navigation.",
+                        "Update the accessibility checklist", "Run the browser tests", "Add a changelog entry",
+                        "Make a screenshot of the result", "Send the review summary",
+                    ]
+                };
+                stand_in.set_queue("ses_signup", messages.iter().enumerate().map(|(index, text)| {
+                    json!({ "id": format!("msg_shot{index}"), "words": text, "delivery": "queue", "on": "engine", "held": false })
+                }).collect());
+            }
             if screen.slug.starts_with("bars-") && screen.slug != "bars-bot" {
                 let many = screen.slug == "bars-many";
                 let command = |id: &str, words: &str, ago: f64| serde_json::json!({ "id": id, "command": words, "started": NOW - ago, "folder": "/Users/sam/Projects/website" });
@@ -1679,6 +1720,32 @@ fn main() -> anyhow::Result<()> {
                 });
             })?;
             cx.run_until_parked();
+            if screen.slug == "composer-queue-dragging" {
+                let to = cx.update_window(any, |root, window, cx| {
+                    let workspace = root.downcast::<Workspace>().expect("the workspace");
+                    let conversation = workspace.read(cx).conversation().expect("the conversation");
+                    let (from, to) = conversation.read(cx).queue_drag_points();
+                    let button = gpui::MouseButton::Left;
+                    mouse(window, cx, gpui::PlatformInput::MouseDown(gpui::MouseDownEvent {
+                        button, position: from, click_count: 1, ..Default::default()
+                    }));
+                    mouse(window, cx, gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent {
+                        position: from + gpui::point(px(0.), px(8.)), pressed_button: Some(button), ..Default::default()
+                    }));
+                    assert!(cx.has_active_drag(), "the pointer missed the queue row");
+                    to + gpui::point(px(12.), px(8.))
+                })?;
+                cx.run_until_parked();
+                cx.update_window(any, |_, window, cx| {
+                    mouse(window, cx, gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent {
+                        position: to, pressed_button: Some(gpui::MouseButton::Left), ..Default::default()
+                    }));
+                    window.refresh();
+                })?;
+                cx.run_until_parked();
+                cx.update_window(any, |_, window, _| window.refresh())?;
+                cx.run_until_parked();
+            }
             // Restarting after the rings and limits were read: they're kept, marked as updating.
             if matches!(screen.slug, "agents-rail-restarting" | "agents-usage-restarting") {
                 agents.agents_restarting();
@@ -1817,7 +1884,12 @@ fn main() -> anyhow::Result<()> {
             let name = format!("screens-{}-{}.png", screen.slug, if appearance.is_dark() { "dark" } else { "light" });
             image.save(out.join(&name))?;
             println!("{name}: {}x{}", image.width(), image.height());
-            cx.update_window(any, |_, window, _| window.remove_window())?;
+            cx.update_window(any, |_, window, cx| {
+                if screen.slug == "composer-queue-dragging" {
+                    cx.stop_active_drag(window);
+                }
+                window.remove_window();
+            })?;
             cx.run_until_parked();
         }
     }

@@ -669,7 +669,7 @@ fn wake_chip_opens_schedule_and_cancel_requires_confirmation(cx: &mut TestAppCon
     let (workspace, cx) = open(cx, stand_in.clone());
     bot(&workspace, cx, "bot_mira");
     click(cx, "bot-chat");
-    click(cx, "open-wake-schedule");
+    click(cx, "conversation-activity-button");
     assert!(shown(cx, "wake-schedule"));
     click(cx, "cancel-entry");
     assert!(shown(cx, "confirm-cancel-entry"));
@@ -758,7 +758,7 @@ fn wake_list_wraps_a_long_summary_and_bounds_many_entries(cx: &mut TestAppContex
     let (workspace, cx) = open(cx, stand_in);
     bot(&workspace, cx, "bot_mira");
     click(cx, "bot-chat");
-    click(cx, "open-wake-schedule");
+    click(cx, "conversation-activity-button");
     let first = bounds(cx, "wake-0").unwrap();
     let second = bounds(cx, "wake-1").unwrap();
     assert!(first.size.height > second.size.height);
@@ -795,25 +795,26 @@ fn wake_chip_drops_cached_activity_on_disconnect_until_a_fresh_bot_snapshot(cx: 
     let (workspace, cx) = open(cx, stand_in.clone());
     bot(&workspace, cx, "bot_mira");
     click(cx, "bot-chat");
-    assert!(shown(cx, "open-wake-schedule"));
+    click(cx, "conversation-activity-button");
+    assert!(shown(cx, "activity-wake-status"));
 
     stand_in.set_down(true);
     workspace.update_in(cx, |workspace, _, cx| workspace.connected(client.connect(), cx));
     cx.run_until_parked();
     assert!(shown(cx, "bot-chat-strip"));
-    assert!(!shown(cx, "open-wake-schedule"));
+    assert!(!shown(cx, "activity-wake-status"));
 
     stand_in.set_down(false);
     workspace.update_in(cx, |workspace, _, cx| workspace.connected(client.connect(), cx));
     cx.run_until_parked();
-    assert!(!shown(cx, "open-wake-schedule"), "the old snapshot stays stale after reconnect");
+    assert!(!shown(cx, "activity-wake-status"), "the old snapshot stays stale after reconnect");
     let bots = workspace.read_with(cx, |workspace, _| workspace.area_view(Area::Bots).unwrap().clone());
     bots.update(cx, |bots, cx| bots.shown(cx));
     cx.run_until_parked();
-    assert!(shown(cx, "open-wake-schedule"), "a fresh active turn can claim the chip again");
+    assert!(shown(cx, "activity-wake-status"), "a fresh active turn can claim the chip again");
 
     stand_in.set_bot_now("bot_mira", json!({"working":0,"asking":0,"state":"idle"}));
     bots.update(cx, |bots, cx| bots.shown(cx));
     cx.run_until_parked();
-    assert!(!shown(cx, "open-wake-schedule"));
+    assert!(!shown(cx, "activity-wake-status"));
 }

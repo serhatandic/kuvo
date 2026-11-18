@@ -128,6 +128,7 @@ pub fn render(workspace: &Workspace, edge: Option<Pixels>, compact: bool, cx: &m
                 .child(div().flex_1())
                 .children(update_chip(workspace, cx))
                 .children(more_menu)
+                .children(in_sessions.then(|| workspace.conversation()).flatten().map(|view| buttons(view.read(cx).bars().clone())))
                 .children(panel_button.map(buttons)),
         )
         .into_any_element()

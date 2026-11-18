@@ -43,6 +43,12 @@ fn bounds(cx: &mut VisualTestContext, selector: &str) -> Option<Bounds<Pixels>> 
     cx.debug_bounds(Box::leak(selector.to_owned().into_boxed_str()))
 }
 
+fn click(cx: &mut VisualTestContext, selector: &str) {
+    let at = bounds(cx, selector).unwrap_or_else(|| panic!("{selector} isn’t visible"));
+    cx.simulate_click(at.center(), Modifiers::default());
+    cx.run_until_parked();
+}
+
 /// Opens `session` and hands it what its follow would.
 fn open_session(workspace: &Entity<Workspace>, session: &str, cx: &mut VisualTestContext) -> Entity<Composer> {
     workspace.update_in(cx, |workspace, window, cx| workspace.open_read_at_once(session, window, cx));
@@ -1771,10 +1777,12 @@ fn the_queue_shows_what_waits_and_a_message_taken_back_comes_to_the_composer(cx:
     assert!(bounds(cx, "queued-msg_q1").is_some() && bounds(cx, "queued-msg_q2").is_some());
 
     // Edit: taken out of the queue, its words back in the composer to change.
-    let edit = bounds(cx, "edit-msg_q1").expect("yours can be edited");
-    assert!(bounds(cx, "edit-msg_q2").is_none(), "another agent's letter can't");
-    cx.simulate_click(edit.center(), Modifiers::default());
+    click(cx, "queue-more-msg_q2");
+    assert!(bounds(cx, "menu-item-Edit").is_none(), "another agent's letter can't be edited");
+    cx.simulate_keystrokes("escape");
     cx.run_until_parked();
+    click(cx, "queue-more-msg_q1");
+    click(cx, "menu-item-Edit");
     assert_eq!(stand_in.seen_at("DELETE", "kuvo/sessions/ses_signup/queue/msg_q1").len(), 1);
     assert_eq!(typed(&composer, cx).0, "Then do the same for the password field: keep it, and say what's wrong with it");
     assert!(bounds(cx, "queued-msg_q1").is_none());
@@ -1794,9 +1802,8 @@ fn a_command_taken_back_to_edit_comes_back_as_its_box_says(cx: &mut TestAppConte
     stand_in.set_queue("ses_signup", vec![json!({ "id": "msg_c1", "words": "the tests", "files": [], "keyword": "/review", "from": null, "on": "engine", "delivery": "queue", "held": false, "draft": "/review the tests" })]);
     let (workspace, cx) = open(cx, stand_in.clone());
     let composer = open_session(&workspace, "ses_signup", cx);
-    let edit = bounds(cx, "edit-msg_c1").expect("yours can be edited");
-    cx.simulate_click(edit.center(), Modifiers::default());
-    cx.run_until_parked();
+    click(cx, "queue-more-msg_c1");
+    click(cx, "menu-item-Edit");
     assert_eq!(typed(&composer, cx).0, "/review the tests");
 }
 

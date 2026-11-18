@@ -14,11 +14,13 @@ const { engineHandler } = await import("../src/link/server/router")
 const { forgetQueue, queueOf, queueWatcher, releaseWaiting, QUEUES_FILE, WAITING_DIR } = await import("../src/link/engine/queue")
 
 let activeFails: boolean, acceptsPrompt: boolean
+let beforeNextInbox: (() => Promise<void>) | undefined
 let inboxes: Record<string, any[]>, delivered: Record<string, string[]>, keeps: Set<string>, got: { method: string; path: string }[]
 beforeEach(() => {
   for (const session of ["ses_q", "ses_late"]) forgetQueue(session)
   activeFails = false
   acceptsPrompt = true
+  beforeNextInbox = undefined
   got = []
   keeps = new Set()
   delivered = {}
@@ -59,8 +61,14 @@ const engine = Bun.serve({
       if (acceptsPrompt) (delivered[id] ??= []).push(prompt.id)
       return reply({ data: { id: prompt.id } })
     }
+    if (kind === "interrupt") return reply({ data: true })
     if (kind !== "inbox") return reply({ message: "Not here." }, 404)
-    if (!item) return reply({ data: inboxes[id] })
+    if (!item) {
+      const before = beforeNextInbox
+      beforeNextInbox = undefined
+      await before?.()
+      return reply({ data: inboxes[id] })
+    }
     const entry = inboxes[id]!.find(each => each.id === item)
     if (!entry) return reply({ message: "Not in the inbox." }, 404)
     if (request.method === "PATCH") {
@@ -226,4 +234,58 @@ test("wake-ups waiting in the engine and on a stopped queue use the stored summa
   expect(json.items.filter((each: any) => each.from === "Wake-up").map((each: any) => [each.on, each.words])).toEqual([
     ["engine", "Check the release"], ["box", "Check the release"],
   ])
+})
+
+test("reordering persists across queue reads and the next drain follows it", async () => {
+  // The already-steered message keeps its slot. Swap two messages waiting for the run to end.
+  inboxes.ses_q!.push({ id: "msg_second", type: "user", delivery: "queue", payload: { text: "Second." } })
+  const path = "kuvo/sessions/ses_q/queue"
+  for (const _ of [1, 2]) {
+    expect((await ask(handler, "POST", `${path}/reorder`, { item: "msg_second", anchor: "msg_mail", before: true })).status).toBe(200)
+  }
+  const { readQueues, drain } = await import("../src/link/engine/queue")
+  expect(readQueues().ses_q?.order).toEqual(["msg_second", "msg_mail"])
+  const reopened = await ask(handler, "GET", `${path}?items=1`)
+  expect(reopened.json.items.map((row: { id: string }) => row.id)).toEqual(["msg_steer", "msg_second", "msg_mail"])
+  inboxes.ses_q = inboxes.ses_q!.filter(row => row.id !== "msg_steer")
+  await drain(target, "ses_q")
+  expect(inboxes.ses_q.find(row => row.delivery === "steer")?.id).toBe("msg_second")
+})
+
+test("reorder interleaved with enqueue and Send Now delivers each message once in the chosen order", async () => {
+  inboxes.ses_q = []
+  const route = "kuvo/sessions/ses_q/queue"
+  const add = (id: string) => ask(handler, "POST", `${route}/add`, { id, text: id, kept: true })
+  const reorder = () => ask(handler, "POST", `${route}/reorder`, { item: "msg_c", anchor: "msg_b", before: true })
+  const sendNow = () => ask(handler, "POST", `${route}/msg_a/now`)
+  const listed = async () => (await ask(handler, "GET", `${route}?items=1`)).json.items.map((row: { id: string }) => row.id)
+  expect((await ask(handler, "POST", "kuvo/sessions/ses_q/stop")).status).toBe(200)
+  for (const id of ["msg_a", "msg_b", "msg_c"]) expect((await add(id)).json.waits).toBe(true)
+
+  let restore = interceptSync(file => file.startsWith(`${QUEUES_FILE}.`))
+  try { expect((await reorder()).status).toBe(502) } finally { restore() }
+  expect(await listed()).toEqual(["msg_a", "msg_b", "msg_c"])
+
+  const readingInbox = Promise.withResolvers<void>()
+  const finishReading = Promise.withResolvers<void>()
+  beforeNextInbox = () => {
+    readingInbox.resolve()
+    return finishReading.promise
+  }
+  const reordering = reorder()
+  await readingInbox.promise
+  try {
+    expect((await add("msg_d")).json.waits).toBe(true)
+    // The engine takes A, but the box can't seal the removal yet. Retrying must reuse the receipt.
+    restore = interceptSync(file => file.startsWith(`${QUEUES_FILE}.`))
+    try { expect((await sendNow()).status).toBe(502) } finally { restore() }
+    expect((await sendNow()).status).toBe(200)
+  } finally {
+    finishReading.resolve()
+  }
+  expect((await reordering).status).toBe(200)
+  expect(await listed()).toEqual(["msg_c", "msg_b", "msg_d"])
+  expect(await releaseWaiting(target)).toBe(3)
+  expect(delivered.ses_q).toEqual(["msg_a", "msg_c", "msg_b", "msg_d"])
+  expect(await listed()).toEqual([])
 })
