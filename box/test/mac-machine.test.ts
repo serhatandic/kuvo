@@ -7,7 +7,7 @@ import { join } from "node:path"
 // A Mac can be a machine, with or without the app on it: what's kept from commands is decided by
 // which box this is, not which system it's on. Run as a box runs it, in a process of its own.
 const mac = process.platform === "darwin"
-const root = realpathSync(mkdtempSync(join(tmpdir(), "kuvo-mac-machine-")))
+const root = realpathSync(mkdtempSync(mac ? "/tmp/km-" : join(tmpdir(), "kuvo-mac-machine-")))
 afterAll(() => rmSync(root, { recursive: true, force: true }))
 
 const LINK = join(import.meta.dir, "..", "src", "link")

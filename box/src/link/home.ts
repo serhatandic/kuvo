@@ -74,12 +74,18 @@ export const VERSION_FILE = path.join(RUN, "link.version");
 export const SOCKET_KEY_FILE = path.join(RUN, "socket.key");
 /** Private locations for the sandbox's SSH notes and agents. */
 export const SSH_FOR = path.join(RUN, "ssh-for");
-export const SSH_HOME = path.join(homeFolder(), ".kuvo-ssh");
-const OWN_SSH_AGENTS = path.join(RUN, "ssh-agents");
-// Shorten the path on macOS when the box is deep in the app's support folder.
-export const SSH_AGENTS = process.platform === "darwin" && Buffer.byteLength(OWN_SSH_AGENTS) > 68
-  ? path.join(SSH_HOME, crypto.createHash("sha256").update(path.resolve(K)).digest("hex").slice(0, 12))
-  : OWN_SSH_AGENTS;
+export const UNIX_SOCKET_PATH_BYTES = process.platform === "darwin" ? 103 : 107;
+export const SSH_AGENT_PREFIX = 16;
+export const SSH_AGENT_RANDOM_BYTES = 9;
+export const SSH_AGENT_SUFFIX = ".sock";
+const exampleAgent = "0".repeat(SSH_AGENT_PREFIX) + Buffer.alloc(SSH_AGENT_RANDOM_BYTES).toString("base64url") + SSH_AGENT_SUFFIX;
+const ownSshAgents = path.join(RUN, "ssh-agents");
+const sshBox = crypto.createHash("sha256").update(path.resolve(K)).digest("hex").slice(0, 12);
+const shortSshAgents = path.join(homeFolder(), ".kuvo-ssh", sshBox);
+const agentFits = (folder: string) => Buffer.byteLength(path.join(folder, exampleAgent)) <= UNIX_SOCKET_PATH_BYTES;
+export const SSH_AGENTS = process.platform !== "darwin" || agentFits(ownSshAgents) ? ownSshAgents
+  : agentFits(shortSshAgents) ? shortSshAgents
+  : path.join("/private/tmp", `kuvo-ssh-${process.getuid?.()}`, sshBox);
 /** What the engine tells its agents of the sandbox, as it's on here or not (fence/state.ts writes it),
  * named in the settings each box starts its engine with (engine/compatibility.ts). */
 export const SANDBOX_NOTE = path.join(RUN, "fence", "agents.md");

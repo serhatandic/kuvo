@@ -20,7 +20,7 @@ import type { VaultItem } from "../../shared/routes/vault";
 import { watchFolder } from "../../shared/watch";
 import { listBots } from "../bots/list";
 import { readBridgeFile, readEngineFile } from "../engine/client";
-import { SSH_AGENTS, SSH_FOR } from "../home";
+import { SSH_AGENT_PREFIX, SSH_AGENT_RANDOM_BYTES, SSH_AGENT_SUFFIX, SSH_AGENTS, SSH_FOR } from "../home";
 import { agentsUseVault } from "./gate";
 import { type AgentKey, privateKeyOf, serveAgent } from "./ssh-agent";
 import { isLocked, itemByID, pausedFor, readGrants, readItems, valuesOf } from "./store";
@@ -36,14 +36,18 @@ const NOTE_KEPT = 30 * 24 * 60 * 60_000;
 const IDLE = 60 * 60_000;
 
 /** The macOS socket parent must be private and owned by this account. */
-function safeFolder(): boolean {
+function safeFolder(create = false): boolean {
   if (process.platform !== "darwin") return true;
   const parent = path.dirname(SSH_AGENTS);
+  if (create) {
+    try { fs.mkdirSync(parent, { mode: 0o700 }); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") return false; }
+  }
   try {
     const seen = fs.lstatSync(parent);
     return seen.isDirectory() && seen.uid === process.getuid?.() && (seen.mode & 0o077) === 0;
   } catch {
-    return true;
+    return false;
   }
 }
 // Where any conversation's commands can reach any conversation's agent (see above).
@@ -156,7 +160,7 @@ export function keepSshAgents(watch = watchFolder): () => void {
     }
   };
   const lookNow = () => {
-    if (!agentsUseVault() || !safeFolder()) {
+    if (!agentsUseVault() || !safeFolder(true)) {
       for (const note of [...agents.keys()]) close(note);
       if (safeFolder()) fs.rmSync(SSH_AGENTS, { recursive: true, force: true });
       return;
@@ -178,9 +182,9 @@ export function keepSshAgents(watch = watchFolder): () => void {
       if (!path.isAbsolute(folder) || (note.startsWith("dir-") && note !== `dir-${sumOf(folder)}`)) continue;
       if (agents.get(note)?.folder === folder) continue;
       close(note);
-      const prefix = sumOf(note).slice(0, 16);
+      const prefix = sumOf(note).slice(0, SSH_AGENT_PREFIX);
       for (const old of fs.readdirSync(SSH_AGENTS)) if (old.startsWith(prefix)) fs.rmSync(path.join(SSH_AGENTS, old), { force: true });
-      const socket = path.join(SSH_AGENTS, `${prefix}${crypto.randomBytes(9).toString("base64url")}.sock`);
+      const socket = path.join(SSH_AGENTS, `${prefix}${crypto.randomBytes(SSH_AGENT_RANDOM_BYTES).toString("base64url")}${SSH_AGENT_SUFFIX}`);
       const agent = { folder, server: serveAgent(socket, sourceFor(callerFor(note, folder))), used: Date.now() };
       agent.server.on("connection", () => { agent.used = Date.now(); });
       // One that couldn't open (its socket couldn't be put at its name) is made anew at the next look.

@@ -281,7 +281,7 @@ test("this Mac's static key made anew: setting a machine up again lets the old k
   // up before the next step, so setting up again finds it running rather than starting a second.
   const setUp = async () => {
     const given = (await route("GET", "kuvo/link/setup")).json;
-    const result = spawnSync(process.execPath, [script, "setup"], { input: JSON.stringify({ relay: "wss://relay.invalid", name: "lab", id: "lab", ...given }), env, encoding: "utf8" });
+    const result = spawnSync(process.execPath, [script, "setup"], { input: JSON.stringify({ relay: "wss://relay.invalid", name: "lab", id: "lab", ...given }), env: { ...env, BUN_BE_BUN: process.env.BUN_BE_BUN }, encoding: "utf8" });
     assert.equal(result.status, 0, result.stderr);
     // (Its version too, written just after: without it, setting up again starts a newer one.)
     await until(() => alive(bridgePid()) && bridgeVersion() !== "", "the machine's bridge never started");

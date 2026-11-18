@@ -4,7 +4,7 @@
 // ever seeing a value. (This Mac's vault, in its Keychain: vault-host.test.js.)
 //
 // Run with `node --test box/bridge-tests/vault.test.js`.
-import { testsFolder } from "./test-safety.js";
+import { ownPath, testsFolder } from "./test-safety.js";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import crypto from "node:crypto";
@@ -875,6 +875,29 @@ test("on a box whose agents' commands aren't fenced, agents get none of the vaul
     const state = await fromMac("GET", "kuvo/vault", undefined, key);
     assert.equal(state.value.state.agents, false, "your Vault page can say so");
     assert.equal(state.value.items.length, 4, "your items are all still there");
+  } finally {
+    await box.stop();
+  }
+});
+
+test("a conversation can connect to its SSH agent from a long multibyte macOS home", async t => {
+  if (process.platform !== "darwin") return t.skip("macOS socket path limit");
+  const account = path.join(root, "é".repeat(Math.max(1, Math.ceil((72 - Buffer.byteLength(root) - 1) / 2))));
+  const boxHome = path.join(account, "box");
+  const hash = crypto.createHash("sha256").update(boxHome).digest("hex").slice(0, 12);
+  const agents = ownPath(path.join("/private/tmp", `kuvo-ssh-${process.getuid()}`, hash));
+  removeAtEnd(agents);
+  const box = await start({ HOME: account, KUVO_HOME: boxHome });
+  try {
+    noteConversation(folderNote(account), account, boxHome);
+    const socket = await appears(agents, () => {
+      const name = fs.existsSync(agents) && fs.readdirSync(agents).find(name => name.endsWith(".sock"));
+      return name && path.join(agents, name);
+    });
+    assert.ok(Buffer.byteLength(socket) <= 103);
+    const result = await sshTool("ssh-add", ["-l"], socket);
+    assert.equal(result.status, 1, result.stderr);
+    assert.match(result.stdout, /no identities/i);
   } finally {
     await box.stop();
   }

@@ -5,6 +5,7 @@
 // the vault. Keys are the vault's `key` items with a `private_key` (OpenSSH's own format, or PEM),
 // unencrypted.
 
+import { UNIX_SOCKET_PATH_BYTES } from "../home";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import net from "node:net";
@@ -200,7 +201,7 @@ async function answer(request: Buffer, source: AgentSource, signal: AbortSignal)
 }
 
 // A socket's path is at most this long, in bytes (with its ending zero, 104 on macOS, 108 on Linux).
-const LONGEST_PATH = process.platform === "darwin" ? 103 : 107;
+
 // Requests a connection may have waiting: one at a time is how SSH asks.
 const WAITING = 4;
 
@@ -251,7 +252,7 @@ export function serveAgent(socket: string, source: AgentSource): net.Server {
   // Bound under a hidden name beside it, then moved to its own: macOS never tells a folder's watch
   // of a socket bound in it, only of a rename, so what waits for this agent hears of it.
   const bound = path.join(path.dirname(socket), `.${crypto.randomBytes(6).toString("base64url")}`);
-  if (Math.max(Buffer.byteLength(socket), Buffer.byteLength(bound)) > LONGEST_PATH) {
+  if (Math.max(Buffer.byteLength(socket), Buffer.byteLength(bound)) > UNIX_SOCKET_PATH_BYTES) {
     queueMicrotask(() => server.emit("error", new Error(`An SSH agent's socket can't be this long: ${socket}`)));
     return server;
   }

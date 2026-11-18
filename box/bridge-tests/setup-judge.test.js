@@ -153,7 +153,7 @@ test("an older box, with no card, is judged by its link.json: set up from iMac, 
 test("the probe's lines are what a box's link.json says: a box writes it as the probe reads it", () => {
   const folder = path.join(support, "older");
   const written = spawnSync(process.execPath, ["--input-type=module", "-e", `const link = await import(${JSON.stringify(script)}); link.writeLink(JSON.parse(process.env.LINK));`],
-    { env: { PATH: process.env.PATH, HOME: support, TMPDIR: support, KUVO_HOME: folder, LINK: JSON.stringify(vector.link) }, encoding: "utf8" });
+    { env: { PATH: process.env.PATH, BUN_BE_BUN: process.env.BUN_BE_BUN, HOME: support, TMPDIR: support, KUVO_HOME: folder, LINK: JSON.stringify(vector.link) }, encoding: "utf8" });
   assert.equal(written.status, 0, written.stderr);
   assert.equal(fs.readFileSync(path.join(folder, "run", "link.json"), "utf8"), vector.files[".kuvo-code/run/link.json"]);
 });
@@ -169,7 +169,7 @@ function here(setUp, { root = ".kuvo-code", own = true, startable = true } = {})
   const engineData = path.join(mac, "Library", "Application Support", "run.kuvo.code", "opencode", "data", "opencode");
   setUp({ machine: path.join(mac, ".kuvo-code", "run"), app: path.join(appBox, "run"), appBox, engineData, mac });
   if (startable && fs.existsSync(path.join(mac, ".kuvo-code", "run")) && !fs.existsSync(path.join(mac, ".kuvo-code", "bin", "kuvo-start"))) write(path.join(mac, ".kuvo-code", "bin", "kuvo-start"), "#!/bin/sh\n");
-  const result = spawnSync(process.execPath, [script, "here", ...(root ? [root] : [])], { env: { PATH: process.env.PATH, HOME: mac, TMPDIR: support, ...(own ? { KUVO_HOME: appBox, KUVO_ENGINE_DATA: engineData } : {}) }, encoding: "utf8" });
+  const result = spawnSync(process.execPath, [script, "here", ...(root ? [root] : [])], { env: { PATH: process.env.PATH, BUN_BE_BUN: process.env.BUN_BE_BUN, HOME: mac, TMPDIR: support, ...(own ? { KUVO_HOME: appBox, KUVO_ENGINE_DATA: engineData } : {}) }, encoding: "utf8" });
   if (result.status === 2) return { refused: result.stderr };
   assert.equal(result.status, 0, result.stderr);
   return { said: JSON.parse(result.stdout), appBox };
@@ -280,7 +280,7 @@ test("Kuvo Code attached to a box in place says so to it (box route, as the app 
   const machine = fs.mkdtempSync(path.join(support, "attached-"));
   const route = request => spawnSync(process.execPath, [script, "box", "route"], {
     input: JSON.stringify(request), cwd: machine, encoding: "utf8",
-    env: { PATH: process.env.PATH, HOME: support, TMPDIR: support, KUVO_HOME: machine },
+    env: { PATH: process.env.PATH, BUN_BE_BUN: process.env.BUN_BE_BUN, HOME: support, TMPDIR: support, KUVO_HOME: machine },
   });
   const said = route({ method: "POST", path: "kuvo/setup/attached" });
   assert.equal(said.status, 0, said.stderr);

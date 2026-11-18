@@ -123,7 +123,7 @@ import { swapEngine } from "./updates/engine-swap";
 import { type UpdateOptions, ON_TRIAL, UPDATING_ALREADY, agentsWorking, dropOldBackups, passingOutcome, updateOnTrial, checkDrift, failedInPassing, offerWaits, isUpdating, noteLauncher, noteOlderMacs, installerSteps, noteUpdate, startOfferedUpdate, startUpdate, takeOffer, untilFree, update, UPDATE_KEYS, releaseRound, updatesBlocked, updateState, updateStatus } from "./updates/update";
 import { clearIncoming, followOver, followPeers, watchHeld } from "./updates/fleet";
 import { BRIDGE_VERSION } from "./version";
-import { SETUP_OCCUPIED } from "./marks";
+import { ADD_RESERVATION, SETUP_OCCUPIED } from "./marks";
 import type { AddressInfo } from "node:net";
 import type { SignedDoc } from "../shared/documents";
 import type { EngineRecord } from "../shared/records";
@@ -1005,6 +1005,12 @@ async function setup(): Promise<void> {
   let formerMacs: string[] = [];
   let alreadySetUp = false;
   updateLink(current => {
+    let reserved: string | undefined;
+    try { reserved = fs.readlinkSync(path.join(path.dirname(K), ADD_RESERVATION)); } catch {}
+    if (reserved !== process.argv[3]) {
+      alreadySetUp = true;
+      return null;
+    }
     if (mac && current && macsOf(current).length && !macsOf(current).some(key => key === mac || replaced.includes(key))) {
       alreadySetUp = true;
       return null;

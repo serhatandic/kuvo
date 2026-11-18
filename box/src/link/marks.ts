@@ -9,3 +9,5 @@ export const REBOOT_TAG = "# kuvo-code: starts its engine again after a restart"
 
 /** SSH setup found a different setup already on this account. */
 export const SETUP_OCCUPIED = 4;
+
+export const ADD_RESERVATION = ".kuvo-code-adding";

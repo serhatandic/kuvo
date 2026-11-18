@@ -13,8 +13,11 @@ export const script = fileURLToPath(new URL("../../swift/KuvoLink/Sources/KuvoLi
 /** Where a box keeps its conversations' SSH agents (vault/ssh.ts). */
 export const sshAgentsOf = (box, home) => {
   const agents = path.join(box, "run", "ssh-agents");
-  if (process.platform !== "darwin" || Buffer.byteLength(agents) <= 68) return agents;
-  return path.join(home, ".kuvo-ssh", crypto.createHash("sha256").update(path.resolve(box)).digest("hex").slice(0, 12));
+  const fits = folder => Buffer.byteLength(path.join(folder, "0".repeat(33))) <= 103;
+  if (process.platform !== "darwin" || fits(agents)) return agents;
+  const boxID = crypto.createHash("sha256").update(path.resolve(box)).digest("hex").slice(0, 12);
+  const short = path.join(home, ".kuvo-ssh", boxID);
+  return fits(short) ? short : path.join("/private/tmp", `kuvo-ssh-${process.getuid()}`, boxID);
 };
 /** A route as a client reaches it over SSH (`box route`), in a process of its own. */
 export async function boxRoute(request, env) {

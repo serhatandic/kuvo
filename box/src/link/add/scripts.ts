@@ -7,9 +7,27 @@
 
 import { appDataProbe } from "../install/app-data";
 import { quote } from "../../shared/text";
-import { LAUNCH_AGENT, REBOOT_TAG } from "../marks";
+import { ADD_RESERVATION, LAUNCH_AGENT, REBOOT_TAG } from "../marks";
 
 const K = 'K="$HOME/.kuvo-code"';
+// A symlink records the whole reservation in one operation, even before Kuvo is installed.
+const reservation = `R="$HOME/${ADD_RESERVATION}"`;
+const owns = (token: string) => `[ "$(readlink "$R" 2>/dev/null)" = ${quote(token)} ]`;
+
+export const reserve = (token: string): string => `set -e
+${K}
+${reservation}
+[ ! -e "$R" ] && [ ! -L "$R" ] && ln -s ${quote(token)} "$R" 2>/dev/null && ${owns(token)} || exit 8`;
+
+export const release = (token: string): string => `${K}
+${reservation}
+if ${owns(token)}; then rm -f "$R"; fi`;
+
+export const reserved = (token: string, script: string): string => `${K}
+${reservation}
+${owns(token)} || exit 8
+${script}`;
+
 /** A dollar sign, where a script's own `${…}` stands in a template here. */
 const D = "$";
 
@@ -207,9 +225,9 @@ else
 fi`;
 
 /** `kuvo-link.js setup` there, its input (JSON) on its standard input: its answer is the last line. */
-export const join = (version: string): string => `${K}
+export const join = (version: string, token: string): string => `${K}
 ${engineOf(version)}
-${link("setup")}`;
+${link(`setup ${quote(token)}`)}`;
 
 /** The accounts a computer starts with, on its standard input (`{credentials}`), taken by its own
  * box (`kuvo-link.js box seed`): its answer is the last line, which says how many, never what. */
@@ -273,7 +291,9 @@ KUVO_AT_WORK
  * keeps, and the folder of Kuvo Code's app there (`desktop`, the key it's paired by as one of
  * your devices). The rest of its folder stays, with its sessions. Prints `kept` (another Mac uses it), or what its
  * uninstall said (JSON); exit 1 when that couldn't stop everything. */
-export const uninstall = (version: string, key: string, only: boolean): string => String.raw`${K}
+export const uninstall = (version: string, key: string, only: boolean, token?: string): string => String.raw`${K}
+${reservation}
+${token ? owns(token) : '[ ! -L "$R" ]'} || exit 8
 ${engineOf(version)}
 # (The key Kuvo Code's app there is known by among your devices, which the box that removes this
 # computer takes off them too: with or without a Kuvo Code that runs. On a Mac the app keeps it in

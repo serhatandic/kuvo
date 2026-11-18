@@ -167,9 +167,10 @@ if [ -f "$F/fail" ]; then
   text=$(printf %s "$cmd" | sed -n 's/.*printf %s \\([A-Za-z0-9+/=]*\\) | base64 -d.*/\\1/p' | base64 -d 2>/dev/null)
   case "$text" in *"$(cat "$F/fail")"*) cat >/dev/null; echo "it broke" >&2; exit 1 ;; esac
 fi
-if [ -f "$F/hold" ]; then
+hold="$F/hold-$dest"; [ -f "$hold" ] || hold="$F/hold"
+if [ -f "$hold" ]; then
   text=$(printf %s "$cmd" | sed -n 's/.*printf %s \\([A-Za-z0-9+/=]*\\) | base64 -d.*/\\1/p' | base64 -d 2>/dev/null)
-  case "$text" in *"$(cat "$F/hold")"*) while [ -f "$F/hold" ]; do sleep 0.05; done ;; esac
+  case "$text" in *"$(cat "$hold")"*) while [ -f "$hold" ]; do sleep 0.05; done ;; esac
 fi
 HOME="$FAKE_SSH_HOME" exec sh -c "$cmd"
 `, 0o755);
@@ -263,7 +264,7 @@ const over = id => until(id, found => !found || found.state === "done" || found.
 const steps = found => found.steps.map(step => `${step.id}:${step.state}`);
 const sshLog = () => (fs.existsSync(path.join(fake, "log")) ? fs.readFileSync(path.join(fake, "log"), "utf8").trim().split("\n") : []);
 // (Two more computers, each a home of its own: a Mac that has Kuvo Code's app, and one with nothing.)
-const homes = { macbook: path.join(base, "macbook"), mini: path.join(base, "mini"), nas: path.join(base, "nas"), attic: path.join(base, "attic"), race: path.join(base, "race") };
+const homes = { macbook: path.join(base, "macbook"), mini: path.join(base, "mini"), nas: path.join(base, "nas"), attic: path.join(base, "attic"), race: path.join(base, "race"), claim: path.join(base, "claim"), rotate: path.join(base, "rotate") };
 for (const [name, folder] of Object.entries(homes)) {
   fs.mkdirSync(folder, { recursive: true });
   fs.writeFileSync(path.join(fake, `home-${name}`), folder);
@@ -1053,4 +1054,53 @@ test("an account enrolled after the probe keeps its data when the second setup i
   assert.match(refused.failure.message, /connect over SSH to your own OS account/);
   assert.equal(fs.readFileSync(saved, "utf8"), state);
   assert.equal(fs.readFileSync(keyFile, "utf8"), "existing-key");
+});
+
+test("a second SSH add cannot install or seed an account reserved by the first", async () => {
+  const folder = homes.claim;
+  const hold = path.join(fake, "hold-claim");
+  write(path.join(fake, "home-claim-alias"), folder);
+  write(hold, "tar xf - -C");
+  let first;
+  try {
+    first = await added("claim", found => found?.steps.find(step => step.id === "files")?.state === "now");
+    const second = await added("claim-alias");
+    assert.equal(second.state, "failed");
+    assert.match(second.failure.message, /already being added/);
+    assert.equal(fs.existsSync(path.join(folder, ".kuvo-code", "box", "keys")), false);
+    assert.equal(fs.existsSync(path.join(folder, "engine-credentials.json")), false);
+  } finally {
+    fs.rmSync(hold);
+    if (first) await over(first.id);
+  }
+  assert.equal((await over(first.id)).state, "done");
+  assert.equal(fs.lstatSync(path.join(folder, ".kuvo-code-adding"), { throwIfNoEntry: false }), undefined);
+  const uninstall = await ask("POST", `kuvo/computers/${(await over(first.id)).computer.key}/uninstall`);
+  assert.equal((await over(uninstall.body.try.id)).state, "done");
+});
+
+test("a saved offline computer reconnects over SSH after its Mac rotates keys", async () => {
+  const original = link.macLink.overlay;
+  const addedBox = await added("rotate");
+  assert.equal(addedBox.state, "done");
+  const remote = path.join(homes.rotate, ".kuvo-code", "run");
+  const card = path.join(remote, "setup-card.json");
+  const oldKey = k(link.publicOf(Buffer.from(original.key, "base64url")));
+  const oldSetup = link.newSetupID();
+  write(card, JSON.stringify({ ...read(card), setup: oldSetup, role: "member", primary: { key: oldKey, name: "Studio", kind: "mac" } }));
+  const rotated = link.newKey();
+  const newKey = k(link.publicOf(rotated));
+  link.macLink.overlay = { ...original, key: k(rotated), sign: link.newSigningSeed() };
+  try {
+    link.updateLink(state => ({ ...state, keyNow: newKey, keysBefore: [oldKey], setup: {
+      id: link.newSetupID(), epoch: 1, primary: newKey, sign: link.ownSign(state), role: "primary",
+    } }));
+    const reconnect = await ask("POST", "kuvo/computers/add", { destination: "rotate" });
+    const done = await over(reconnect.body.try.id);
+    assert.equal(done.state, "done", JSON.stringify(done.failure));
+    assert.equal(done.computer.key, addedBox.computer.key);
+    assert.deepEqual(read(path.join(remote, "link.json")).macs, [newKey]);
+  } finally {
+    link.macLink.overlay = original;
+  }
 });

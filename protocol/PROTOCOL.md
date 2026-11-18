@@ -1879,9 +1879,13 @@ client connected: a client's Computers area and its switcher draw it, and ask no
     off there again (stopped, its start after a restart removed, the keys and sign-ins copied
     there deleted), and a failure's words say so; where that couldn't be done the try fails,
     saying it may still run there.
+  - The reservation covers installation, copying keys and sign-ins, and joining the setup.
+    Only its owner can roll back a failed addition. If SSH drops during a write and the box cannot
+    confirm that it ended, the reservation stays in place to protect the account.
   - **What it does**, in order: connects with the keys and agent of the box's computer (never a
     password; refused, it tries once through an agent of its own that offers the first few SSH keys
-    in the vault, "Vault"); probes the computer, changing nothing (its system and kind, what the engine needs,
+    in the vault, "Vault"); takes an atomic reservation on the SSH account, then probes the
+    computer (its system and kind, what the engine needs,
     its `machine-id` where it has one, what Kuvo Code it has); refuses a Mac with an earlier Kuvo
     Code's data its installer would move (`app-07`, `app-box`: updated to Kuvo there first),
     unless that Mac has a box of its own (`box/kind` says `mac`; the probe doesn't look at the

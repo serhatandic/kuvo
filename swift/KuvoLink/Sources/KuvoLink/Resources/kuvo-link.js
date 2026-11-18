@@ -364,7 +364,7 @@ function takeVaultSecrets(given) {
   if (typeof given.vaultFileKey === "string" && given.vaultFileKey)
     MAC_VAULT_FILE_KEY = Buffer.from(given.vaultFileKey, "base64url");
 }
-var K, KIND_FILE, IS_MAC, APP_FOLDER, OWN_HOME_MAC, RUN, LINK_FILE, ENGINE_FILE, BRIDGE_FILE, PID_FILE, NEEDED_FILE, VERSION_FILE, SOCKET_KEY_FILE, SSH_FOR, SSH_HOME, OWN_SSH_AGENTS, SSH_AGENTS, SANDBOX_NOTE, KEY_SHAPE, madeKey = () => crypto3.randomBytes(32).toString("hex") + `
+var K, KIND_FILE, IS_MAC, APP_FOLDER, OWN_HOME_MAC, RUN, LINK_FILE, ENGINE_FILE, BRIDGE_FILE, PID_FILE, NEEDED_FILE, VERSION_FILE, SOCKET_KEY_FILE, SSH_FOR, UNIX_SOCKET_PATH_BYTES, SSH_AGENT_PREFIX = 16, SSH_AGENT_RANDOM_BYTES = 9, SSH_AGENT_SUFFIX = ".sock", exampleAgent, ownSshAgents, sshBox, shortSshAgents, agentFits = (folder) => Buffer.byteLength(path4.join(folder, exampleAgent)) <= UNIX_SOCKET_PATH_BYTES, SSH_AGENTS, SANDBOX_NOTE, KEY_SHAPE, madeKey = () => crypto3.randomBytes(32).toString("hex") + `
 `, BOX, VAULT_FOLDER, KEPT_DAYS = 365, home, shownRoot, BOX_KEYS, BOT_KEYS, UPDATES, SEARCH, INTEGRATION_DATA, ENGINE_DATA, SESSION_WAKES, WAKE_COMMAND, APP_KEY_FILES, REAL_BOX, IN_TEST_FOLDER, CONFIG_LOCK, BOTS, CHATS, MAC_ATTACHMENTS, attachmentRoots = () => [path4.join(K, "attachments"), ...MAC_ATTACHMENTS ? [MAC_ATTACHMENTS] : []], MAC_APP_VERSION, MAC_ENGINE_VERSION, HERE, ENGINE_CONFIG, writesKeyFiles = () => OWN_HOME_MAC && KEYS_ON_HOST && !APP_KEY_FILES, LAUNCH_HOST, KEYS_ON_HOST, HOST_VAULT_SECRET, MAC_VAULT_FILE_KEY, OWN_RUNTIME, SCRIPT = "", scriptIs = (file) => {
   SCRIPT = file;
 };
@@ -389,9 +389,12 @@ var init_home = __esm(() => {
   VERSION_FILE = path4.join(RUN, "link.version");
   SOCKET_KEY_FILE = path4.join(RUN, "socket.key");
   SSH_FOR = path4.join(RUN, "ssh-for");
-  SSH_HOME = path4.join(homeFolder(), ".kuvo-ssh");
-  OWN_SSH_AGENTS = path4.join(RUN, "ssh-agents");
-  SSH_AGENTS = process.platform === "darwin" && Buffer.byteLength(OWN_SSH_AGENTS) > 68 ? path4.join(SSH_HOME, crypto3.createHash("sha256").update(path4.resolve(K)).digest("hex").slice(0, 12)) : OWN_SSH_AGENTS;
+  UNIX_SOCKET_PATH_BYTES = process.platform === "darwin" ? 103 : 107;
+  exampleAgent = "0".repeat(SSH_AGENT_PREFIX) + Buffer.alloc(SSH_AGENT_RANDOM_BYTES).toString("base64url") + SSH_AGENT_SUFFIX;
+  ownSshAgents = path4.join(RUN, "ssh-agents");
+  sshBox = crypto3.createHash("sha256").update(path4.resolve(K)).digest("hex").slice(0, 12);
+  shortSshAgents = path4.join(homeFolder(), ".kuvo-ssh", sshBox);
+  SSH_AGENTS = process.platform !== "darwin" || agentFits(ownSshAgents) ? ownSshAgents : agentFits(shortSshAgents) ? shortSshAgents : path4.join("/private/tmp", `kuvo-ssh-${process.getuid?.()}`, sshBox);
   SANDBOX_NOTE = path4.join(RUN, "fence", "agents.md");
   KEY_SHAPE = /^[0-9a-f]{64}$/;
   BOX = path4.join(K, "box");
@@ -24673,6 +24676,8 @@ function judgeBox(found, ours) {
       return "ours";
     if (card.setup && ours.key && card.primary?.key === ours.key)
       return "ours";
+    if (!found.app && ours.rotated?.machine === card.self.key && card.primary?.key && ours.rotated.keys.has(card.primary.key))
+      return "ours";
     if (card.setup && card.role === "member")
       return "elsewhere";
     if (card.setup && card.role === "primary")
@@ -45333,7 +45338,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "c274e918b1ee";
+var BRIDGE_VERSION = "0561bd947171";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -46793,9 +46798,23 @@ init_text();
 var LAUNCH_AGENT = "run.kuvo.code.machine";
 var REBOOT_TAG = "# kuvo-code: starts its engine again after a restart";
 var SETUP_OCCUPIED = 4;
+var ADD_RESERVATION = ".kuvo-code-adding";
 
 // box/src/link/add/scripts.ts
 var K2 = 'K="$HOME/.kuvo-code"';
+var reservation = `R="$HOME/${ADD_RESERVATION}"`;
+var owns = (token) => `[ "$(readlink "$R" 2>/dev/null)" = ${quote(token)} ]`;
+var reserve = (token) => `set -e
+${K2}
+${reservation}
+[ ! -e "$R" ] && [ ! -L "$R" ] && ln -s ${quote(token)} "$R" 2>/dev/null && ${owns(token)} || exit 8`;
+var release = (token) => `${K2}
+${reservation}
+if ${owns(token)}; then rm -f "$R"; fi`;
+var reserved = (token, script) => `${K2}
+${reservation}
+${owns(token)} || exit 8
+${script}`;
 var D = "$";
 var SUM = `sum_of() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi; }`;
 var engineOf2 = (version) => `E="$K/engine/${version}/opencode"; [ -x "$E" ] || E=$(for d in "$K"/engine/*/; do [ -x "\${d}opencode" ] && printf '%s\\n' "\${d}opencode"; done | tail -n 1)`;
@@ -46947,9 +46966,9 @@ else
   tail -n 5 "$R/engine.log" >&2 2>/dev/null
   exit 3
 fi`;
-var join2 = (version) => `${K2}
+var join2 = (version, token) => `${K2}
 ${engineOf2(version)}
-${link2("setup")}`;
+${link2(`setup ${quote(token)}`)}`;
 var seed = (version) => `${K2}
 ${engineOf2(version)}
 ${link2("box seed")}`;
@@ -46990,7 +47009,9 @@ const runs = (pid, program) => {
 })();
 KUVO_AT_WORK
 (cd "$K" && KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$E" --config=/dev/null --no-env-file "$S") 2>/dev/null | grep '^working ' || echo "working unknown"`;
-var uninstall = (version, key, only) => String.raw`${K2}
+var uninstall = (version, key, only, token) => String.raw`${K2}
+${reservation}
+${token ? owns(token) : '[ ! -L "$R" ]'} || exit 8
 ${engineOf2(version)}
 # (The key Kuvo Code's app there is known by among your devices, which the box that removes this
 # computer takes off them too: with or without a Kuvo Code that runs. On a Mac the app keeps it in
@@ -47027,6 +47048,7 @@ import path158 from "node:path";
 init_home();
 
 // box/src/link/vault/ssh-agent.ts
+init_home();
 import crypto50 from "node:crypto";
 import fs147 from "node:fs";
 import net5 from "node:net";
@@ -47230,7 +47252,6 @@ async function answer6(request, source, signal) {
   } catch {}
   return message(FAILURE);
 }
-var LONGEST_PATH = process.platform === "darwin" ? 103 : 107;
 var WAITING2 = 4;
 function serveAgent(socket, source) {
   const open = new Set;
@@ -47280,7 +47301,7 @@ function serveAgent(socket, source) {
     return close(done);
   };
   const bound = path156.join(path156.dirname(socket), `.${crypto50.randomBytes(6).toString("base64url")}`);
-  if (Math.max(Buffer.byteLength(socket), Buffer.byteLength(bound)) > LONGEST_PATH) {
+  if (Math.max(Buffer.byteLength(socket), Buffer.byteLength(bound)) > UNIX_SOCKET_PATH_BYTES) {
     queueMicrotask(() => server.emit("error", new Error(`An SSH agent's socket can't be this long: ${socket}`)));
     return server;
   }
@@ -47466,15 +47487,23 @@ var sumOf2 = (text) => crypto51.createHash("sha256").update(text).digest("hex").
 var REFUSED_FOR = 30000;
 var NOTE_KEPT = 30 * 24 * 60 * 60000;
 var IDLE = 60 * 60000;
-function safeFolder() {
+function safeFolder(create = false) {
   if (process.platform !== "darwin")
     return true;
   const parent = path158.dirname(SSH_AGENTS);
+  if (create) {
+    try {
+      fs149.mkdirSync(parent, { mode: 448 });
+    } catch (error) {
+      if (error.code !== "EEXIST")
+        return false;
+    }
+  }
   try {
     const seen = fs149.lstatSync(parent);
     return seen.isDirectory() && seen.uid === process.getuid?.() && (seen.mode & 63) === 0;
   } catch {
-    return true;
+    return false;
   }
 }
 var EVERYONE_ONLY = process.platform !== "darwin";
@@ -47583,7 +47612,7 @@ function keepSshAgents(watch = watchFolder) {
     }
   };
   const lookNow = () => {
-    if (!agentsUseVault() || !safeFolder()) {
+    if (!agentsUseVault() || !safeFolder(true)) {
       for (const note of [...agents.keys()])
         close(note);
       if (safeFolder())
@@ -47613,11 +47642,11 @@ function keepSshAgents(watch = watchFolder) {
       if (agents.get(note)?.folder === folder)
         continue;
       close(note);
-      const prefix = sumOf2(note).slice(0, 16);
+      const prefix = sumOf2(note).slice(0, SSH_AGENT_PREFIX);
       for (const old of fs149.readdirSync(SSH_AGENTS))
         if (old.startsWith(prefix))
           fs149.rmSync(path158.join(SSH_AGENTS, old), { force: true });
-      const socket = path158.join(SSH_AGENTS, `${prefix}${crypto51.randomBytes(9).toString("base64url")}.sock`);
+      const socket = path158.join(SSH_AGENTS, `${prefix}${crypto51.randomBytes(SSH_AGENT_RANDOM_BYTES).toString("base64url")}${SSH_AGENT_SUFFIX}`);
       const agent = { folder, server: serveAgent(socket, sourceFor(callerFor(note, folder))), used: Date.now() };
       agent.server.on("connection", () => {
         agent.used = Date.now();
@@ -47960,7 +47989,15 @@ function troubleOf(ran) {
   return { kind: "unreachable", said: lastLine(said) };
 }
 async function vaultAgent() {
-  const parent = socketFolder(path159.dirname(SSH_AGENTS));
+  fs150.mkdirSync(RUN, { recursive: true, mode: 448 });
+  const parentPath = path159.dirname(SSH_AGENTS);
+  try {
+    fs150.mkdirSync(parentPath, { mode: 448 });
+  } catch (error) {
+    if (error.code !== "EEXIST")
+      return null;
+  }
+  const parent = socketFolder(parentPath);
   if (!parent)
     return null;
   const folder = socketFolder(path159.join(parent, `a-${crypto52.createHash("sha256").update(path159.resolve(K)).digest("hex").slice(0, 12)}`));
@@ -48400,12 +48437,31 @@ var launcherID = (key) => crypto53.createHash("sha256").update(`kuvo-launcher
 ${key}`).digest("hex").slice(0, 32);
 async function setUp2(tell, destination, name, kind) {
   const reach = new Reach(destination, name, tell, kind === "add" ? [] : otherAddressesOf(destination));
+  const token = crypto53.randomBytes(24).toString("hex");
+  let reserving = false;
+  let mutationFinished = true;
+  const occupied = () => new Failed(`Kuvo Code is already being added on ${name}. Try again once that finishes.`);
+  const reserved2 = async (script, options) => {
+    tell.check();
+    mutationFinished = false;
+    const ran = await reach.run(reserved(token, script), options);
+    mutationFinished = ran.status !== null;
+    if (ran.status === 8)
+      throw occupied();
+    return ran;
+  };
   try {
     tell.step("checking", `Connecting to ${name}`);
     const mine = boxVersion();
     const files = ownFiles();
     if (!files || !mine)
       throw new Failed(`Kuvo Code on ${ownName()} has no files of its own to give another computer yet. Update Kuvo Code here, then try again.`);
+    reserving = true;
+    const claim = await reach.run(reserve(token));
+    if (claim.status === 8)
+      throw occupied();
+    if (claim.status !== 0)
+      throw new Failed(`Kuvo Code couldn’t reserve the OS account on ${name}. ${lastLine(claim.stderr)}`.trim());
     const answer = await reach.run(probe2(ENGINE_VERSION), { cut: true, most: 120000 });
     if (answer.status !== 0)
       throw new Failed(`${name} couldn’t be checked. ${lastLine(answer.stderr)}`.trim());
@@ -48420,13 +48476,19 @@ async function setUp2(tell, destination, name, kind) {
     if (/^app-(?:07|box)$/m.test(answer.stdout) && !machineBoxProbed(probe))
       throw new Failed(`${name} still has Kuvo Code 0.7’s sessions. Update it to Kuvo first — its sessions move over then — and add it again.`, false);
     const link = readLink();
-    const judged = judgeComputer(foundOf(probe.lines), oursNow(link), appsOf(probe.lines));
-    if (judged.verdict === "self")
-      throw new Failed(`That’s ${ownName()} itself. Add another computer.`, false);
+    if (link)
+      noteKeyNow(link);
+    const foundBoxes = foundOf(probe.lines);
     const saved = savedMachines();
     if (!saved)
       throw new Failed(`${ownName()}’s list of machines can’t be read right now.`);
-    const found = foundOf(probe.lines).find((box) => !box.app);
+    const found = foundBoxes.find((box) => !box.app);
+    const savedHere = saved.find((each) => each.destination === destination && each.identity && each.identity === probe.id);
+    const known = savedHere && peersOf(link).find((peer) => peer.id === savedHere.destination);
+    const ours = { ...oursNow(link), ...known ? { rotated: { machine: known.key, keys: new Set(link?.keysBefore ?? []) } } : {} };
+    const judged = judgeComputer(foundBoxes, ours, appsOf(probe.lines));
+    if (judged.verdict === "self")
+      throw new Failed(`That’s ${ownName()} itself. Add another computer.`, false);
     const sameID = kind === "add" && probe.id ? saved.find((each) => each.identity === probe.id && each.destination !== destination) : undefined;
     const itsPeer = sameID ? peersOf(link).find((each) => each.id === sameID.destination) : undefined;
     const same = sameID && (!found?.card?.self.key || !itsPeer || found.card.self.key === itsPeer.key) ? sameID : undefined;
@@ -48453,7 +48515,7 @@ async function setUp2(tell, destination, name, kind) {
       if (has.status === 0 && has.stdout.trim() === "same")
         tell.skip("files", "It has them already");
       else {
-        const placed = await reach.run(filesInstall(files), { input: tarOf(files), sent: tell.sent, cut: true, most: 900000 });
+        const placed = await reserved2(filesInstall(files), { input: tarOf(files), sent: tell.sent, most: 900000 });
         if (placed.status !== 0)
           throw new Failed(`Kuvo Code’s files couldn’t be put on ${name}. ${lastLine(placed.stderr)}`.trim());
       }
@@ -48465,7 +48527,7 @@ async function setUp2(tell, destination, name, kind) {
           throw new Failed(error instanceof Error ? error.message : String(error));
         });
         tell.step("engine", megabytes(engine.size));
-        const placed = await reach.run(engineInstall(ENGINE_VERSION, engine.sum, engine.packed), { input: { file: engine.file }, sent: tell.sent, cut: true, most: 3600000 });
+        const placed = await reserved2(engineInstall(ENGINE_VERSION, engine.sum, engine.packed), { input: { file: engine.file }, sent: tell.sent, most: 3600000 });
         if (placed.status !== 0)
           throw new Failed(`The engine couldn’t be put on ${name}. ${lastLine(placed.stderr)}`.trim());
       }
@@ -48478,7 +48540,7 @@ async function setUp2(tell, destination, name, kind) {
     let unjoined = false;
     try {
       unjoined = fresh;
-      const started = await reach.run(start(ENGINE_VERSION, name, notes), { most: 600000, ...given ? { input: Buffer.from(JSON.stringify({ settings: given.settings, keys: given.keys })) } : {} });
+      const started = await reserved2(start(ENGINE_VERSION, name, notes), { most: 600000, ...given ? { input: Buffer.from(JSON.stringify({ settings: given.settings, keys: given.keys })) } : {} });
       if (started.status === 7)
         throw new Failed(`${name} was removed from Kuvo Code while it was starting, so it wasn’t started. Add it again to use it.`);
       if (started.status === 6)
@@ -48493,7 +48555,7 @@ async function setUp2(tell, destination, name, kind) {
         const settings = /^seeded$/m.test(started.stdout);
         let taken = 0;
         if (given.credentials.length) {
-          const ran = await reach.run(seed(ENGINE_VERSION), { input: Buffer.from(JSON.stringify({ credentials: given.credentials })), most: 300000 });
+          const ran = await reserved2(seed(ENGINE_VERSION), { input: Buffer.from(JSON.stringify({ credentials: given.credentials })), most: 300000 });
           let said = null;
           try {
             said = JSON.parse(ran.stdout.trim().split(`
@@ -48507,13 +48569,15 @@ async function setUp2(tell, destination, name, kind) {
       }
       tell.step("joining");
       const identity = /^id ([0-9a-f]{32})$/m.exec(started.stdout)?.[1] ?? probe.id;
-      const computer = await join3(reach, destination, name, identity);
+      const computer = await join3(reserved2, destination, name, identity, token);
       unjoined = false;
       tell.came(computer);
     } catch (error) {
-      if (!unjoined || error instanceof AccountOccupied)
+      if (!unjoined || !mutationFinished || error instanceof AccountOccupied)
         throw error;
-      const undone = await reach.run(uninstall(ENGINE_VERSION, own ?? "", true), { most: 600000, anyway: true }).catch(() => null);
+      mutationFinished = false;
+      const undone = await reach.run(uninstall(ENGINE_VERSION, own ?? "", true, token), { most: 600000, anyway: true }).catch(() => null);
+      mutationFinished = undone !== null && undone.status !== null;
       const still = `Kuvo Code may still be running on ${name}, with the keys and sign-ins copied there. Add ${name} again, then uninstall it from its page.`;
       if (error instanceof Stopped || tell.signal.aborted) {
         if (undone?.status !== 0)
@@ -48524,17 +48588,19 @@ async function setUp2(tell, destination, name, kind) {
       throw new Failed(`${failure.message} ${undone?.status === 0 ? `Kuvo Code was stopped on ${name} again, and the keys and sign-ins copied there were deleted.` : still}`, failure.again, failure.title);
     }
   } finally {
+    if (reserving && mutationFinished)
+      await reach.run(release(token), { anyway: true, most: 15000 }).catch(() => {});
     await reach.close();
   }
 }
-async function join3(reach, destination, name, identity) {
+async function join3(run, destination, name, identity, token) {
   const relay = macLink.config?.relay;
   const before = peersOf(readLink()).find((peer) => peer.id === destination);
   const gift = await setupGift(before?.key ?? null);
   if (!relay || !gift?.mac)
     throw new Failed(`${ownName()} isn’t linked to your other computers yet, so it couldn’t add ${name}.`);
   const input = { relay, name, mac: gift.mac, macSign: gift.macSign, docs: gift.docs, id: destination, tolerates: 1, macID: launcherID(gift.mac), macName: ownName(), replaces: gift.replaces };
-  const ran = await reach.run(join2(ENGINE_VERSION), { input: Buffer.from(JSON.stringify(input)), most: 300000 });
+  const ran = await run(join2(ENGINE_VERSION, token), { input: Buffer.from(JSON.stringify(input)), most: 300000 });
   if (ran.status === SETUP_OCCUPIED)
     throw new AccountOccupied(name);
   let said = null;
@@ -73344,6 +73410,14 @@ async function setup() {
   let formerMacs = [];
   let alreadySetUp = false;
   updateLink((current) => {
+    let reserved;
+    try {
+      reserved = fs212.readlinkSync(path221.join(path221.dirname(K), ADD_RESERVATION));
+    } catch {}
+    if (reserved !== process.argv[3]) {
+      alreadySetUp = true;
+      return null;
+    }
     if (mac && current && macsOf(current).length && !macsOf(current).some((key) => key === mac || replaced.includes(key))) {
       alreadySetUp = true;
       return null;

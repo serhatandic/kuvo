@@ -299,7 +299,12 @@ export function troubleOf(ran: Ran): Trouble | null {
  * your own asking (adding a computer): its socket, and what closes it. Null while the vault is
  * locked, has no SSH key, or there's nowhere safe for its socket. */
 export async function vaultAgent(): Promise<{ way: Way; close: () => void } | null> {
-  const parent = socketFolder(path.dirname(SSH_AGENTS));
+  fs.mkdirSync(RUN, { recursive: true, mode: 0o700 });
+  const parentPath = path.dirname(SSH_AGENTS);
+  // Create the uid-scoped directory itself before trusting it, without following a symlink.
+  try { fs.mkdirSync(parentPath, { mode: 0o700 }); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") return null; }
+  const parent = socketFolder(parentPath);
   if (!parent) return null;
   const folder = socketFolder(path.join(parent, `a-${crypto.createHash("sha256").update(path.resolve(K)).digest("hex").slice(0, 12)}`));
   if (!folder) return null;
