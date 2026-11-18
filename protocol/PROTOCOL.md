@@ -2340,8 +2340,10 @@ start on a model by the same rule.
   its starred models along (its `favoriteModels` preference).
 - `known`: whether the engine's models, and the coding agents' with Custom Auto's lists, could be
   said. One that couldn't (not answering, an engine that hasn't loaded yet, or the bridge not
-  running: starting, or started again) has none in `models`, rather than none at all: a client
-  keeps what the box said of that side before, and asks again in a moment.
+  running: starting, or started again) has none in `models`, rather than none at all. A client
+  keeps the engine's previous models if the engine could not answer. It keeps an unavailable
+  coding agent's models only when the box confirms the same account generation, and asks again
+  in a moment when either side could not answer.
 - `listing`: the coding agents' accounts whose list isn't all they run yet (signed in and
   installed, with none listed, only their agent's usual ones, or from a bridge or agent that can't
   say its list is whole): one of theirs not in `models` may still run, so a client doesn't turn

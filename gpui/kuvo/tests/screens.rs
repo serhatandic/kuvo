@@ -506,19 +506,20 @@ fn a_conversations_model_menu_offers_its_own_sides_models(cx: &mut TestAppContex
 }
 
 #[gpui::test]
-fn what_a_side_couldnt_say_is_kept_and_the_chip_stays(cx: &mut TestAppContext) {
+fn an_unverified_agent_catalog_is_left_out_and_the_conversation_chip_stays(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
     let (workspace, cx) = open(cx, stand_in.clone());
     let composer = open_session(&workspace, "ses_limits", cx);
     let landing = workspace.read_with(cx, |workspace, _| workspace.landing().clone());
-    // The bridge starts again and its models can't be said; the session's model can't be read.
+    assert!(landing.read_with(cx, |composer, _| composer.menu_models().iter().any(|model| model.provider_id == "claude-code")));
+    // The bridge starts again without confirming which accounts are in use.
     stand_in.agents_known(false);
     stand_in.models_readable(false);
     composer.update(cx, |composer, cx| composer.read_models(cx));
     landing.update(cx, |composer, cx| composer.read_models(cx));
     cx.run_until_parked();
-    // What was said before stays: the agents' models, the conversation's model and its chip.
-    assert!(landing.read_with(cx, |composer, _| composer.menu_models().iter().any(|model| model.provider_id == "claude-code")));
+    // The picker leaves out the unverified catalog, while the conversation keeps its model chip.
+    assert!(landing.read_with(cx, |composer, _| composer.menu_models().iter().all(|model| model.provider_id != "claude-code")));
     assert_eq!(composer.read_with(cx, |composer, _| composer.chip_label()), Some("Claude Opus 5.5".to_owned()));
     assert_eq!(composer.read_with(cx, |composer, _| composer.efforts()).len(), 4);
 }
