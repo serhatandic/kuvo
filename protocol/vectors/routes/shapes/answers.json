@@ -8465,6 +8465,8 @@
          },
          "settings": "string",
          "byHand": "bool",
+         "byHandLine": "string",
+         "unknownLine": "string",
          "asks": "bool"
         }
        }
@@ -8530,6 +8532,8 @@
          },
          "settings": "string",
          "byHand": "bool",
+         "byHandLine": "string",
+         "unknownLine": "string",
          "asks": "bool"
         }
        }

@@ -8816,8 +8816,12 @@ was named Kuvo Code Box, in no release.)
 
 A Darwin machine box uses the same signed Helper and launch agent with `keep-machine --home <box>`.
 Helper starts its keeper and the box continues to use its machine credentials. An existing machine
-switches its launch agent when work is quiet. At the next quiet moment Kuvo holds incoming
-messages, hands over the bridge and restarts both workers under Helper.
+switches its launch agent when work is quiet, with the previous launch job saved on disk.
+With a recent Files grant from the running Helper, Kuvo waits for quiet again, holds incoming
+messages, keeps all pending engine inbox messages, and restarts both workers. The previous launch
+job stays available until the new engine and bridge answer. A failed or interrupted replacement
+restores it and checks service before releasing held messages. A failed adoption backs off so an
+ordinary engine update can proceed through the restored keeper.
 
 - **Started** by the launch agent `run.kuvo.code.machine` (one per computer): `kuvo-link.js helper install [--load] [--app <bundle ID>]` writes
   `~/Library/LaunchAgents/run.kuvo.code.machine.plist` (`ProgramArguments`: the helper, `keep
@@ -8888,8 +8892,8 @@ messages, hands over the bridge and restarts both workers under Helper.
   (`Kuvo Helper permissions`, its own child, which says `{"screenRecording", "accessibility", "fullDiskAccess"}` and
   exits), one at a time: macOS answers Screen Recording once for each process, so a running helper
   asking itself would never see a change you make. Where that process can't say (within five
-  seconds), the note stays as it is. It writes `run/permissions.json` when that changes or the note's gone: `{"v": 1, "pid": <its own>, "started": <when its process started, in
-  seconds>, "screenRecording": bool, "accessibility": bool, "fullDiskAccess": bool}`, `0600`, taken away as it goes. The box says it:
+  seconds), the note reports unknown. Old observations expire. It writes `run/permissions.json` after each check: `{"v": 1, "pid": <its own>, "started": <when its process started, in
+  seconds>, "observedAt": <milliseconds since epoch>, "screenRecording": bool, "accessibility": bool, "fullDiskAccess": bool or null}`, `0600`, taken away as it goes. A failed check writes just the process identity and observation time. The box says it:
   - `GET kuvo/box/permissions` → `{applies, name, known, screenRecording, accessibility, bundle, list}`,
     the helper asked to look again first (above), so what you just switched on in System Settings
     is said at once; where it can't be asked, or hasn't answered within two seconds, the note as it
@@ -8904,13 +8908,15 @@ messages, hands over the bridge and restarts both workers under Helper.
   - `bundle`: that program on the Mac (a full path to `bin/Kuvo Helper.app` in the box's home),
     what you drag into a list in System Settings; null where it doesn't apply.
   - `list`: each permission in words, for a client to draw without naming any itself:
-    `[{id, name, line, allowed, settings, byHand, asks}]`. `id` is `screenRecording`, `accessibility` or `fullDiskAccess`;
+    `[{id, name, line, allowed, settings, byHand, byHandLine, unknownLine, asks}]`. `id` is `screenRecording`, `accessibility` or `fullDiskAccess`;
     `name` what System Settings calls it; `line` what agents need it for, in a sentence (a client
-    draws it under the name; one from an older box may be missing it); `allowed` as above; `settings` the address that opens
+    draws it under the name); `allowed` as above; `settings` the address that opens
     its list in System Settings (`x-apple.systempreferences:…`), which only an app on that Mac
     can open; `byHand`: macOS asks nothing for it, you add the program to the list yourself; `asks`: whether a client brings it up now, true while it's
-    known not to be allowed and you haven't put it off. Empty where it doesn't apply.
-    The Files row opens Privacy & Security › Full Disk Access. Helper checks the grant with a
+    known not to be allowed and you haven't put it off. `byHandLine` gives the instruction for
+    granting it, and `unknownLine` is shown while the box can't say. Empty where it doesn't apply.
+    The Files row opens Privacy & Security › Full Disk Access. Helper uses a filesystem probe and
+    reports unknown when the result is inconclusive. It tries a
     one-byte read of `/Library/Application Support/com.apple.TCC/TCC.db`, falling back to the
     per-user database if the system one is absent.
   - `POST kuvo/box/permissions {later: "<id>"}` puts one off (a client's "Not Now"), kept in the

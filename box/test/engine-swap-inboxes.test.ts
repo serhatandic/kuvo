@@ -1,0 +1,52 @@
+import "./safety"
+import { expect, test } from "bun:test"
+import { keepInboxes } from "../src/link/updates/engine-swap"
+import { queueOf } from "../src/link/engine/queue"
+
+test("a restart keeps pending messages beyond the first page and defers on incomplete inventory", async () => {
+  const first = Array.from({ length: 100 }, (_, n) => ({ id: `ses_scan_${n}`, time: { updated: 1 } }))
+  const older = "ses_scan_101"
+  let complete = false
+  let pending = true
+  let lostReply = true
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch(request) {
+      const url = new URL(request.url)
+      if (url.pathname === "/api/session") {
+        if (url.searchParams.has("archived")) return Response.json({ data: [] })
+        if (!url.searchParams.has("cursor")) return Response.json({ data: first, cursor: { next: "page two" } })
+        return Response.json(complete ? { data: [{ id: older, time: { updated: 1 } }] } : {})
+      }
+      if (url.pathname === `/api/session/${older}/inbox/msg_restart` && request.method === "DELETE") {
+        pending = false
+        if (lostReply) return new Response("Reply lost", { status: 502 })
+        return Response.json({})
+      }
+      if (url.pathname.endsWith("/inbox")) {
+        const data = pending && url.pathname === `/api/session/${older}/inbox`
+          ? [{ id: "msg_restart", delivery: "queue", type: "user", payload: { text: "Keep this" } }]
+          : []
+        return Response.json({ data })
+      }
+      return new Response(null, { status: 404 })
+    },
+  })
+  try {
+    const target = { port: server.port!, password: "test" }
+    expect(await keepInboxes(target)).toBe(false)
+    expect(pending).toBe(true)
+    complete = true
+    expect(await keepInboxes(target)).toBe(false)
+    expect(pending).toBe(false)
+    expect(queueOf(older).waiting?.map(message => message.id)).toEqual(["msg_restart"])
+    pending = true
+    lostReply = false
+    expect(await keepInboxes(target)).toBe(true)
+    expect(pending).toBe(false)
+    expect(queueOf(older).waiting?.map(message => message.id)).toEqual(["msg_restart"])
+  } finally {
+    server.stop(true)
+  }
+})

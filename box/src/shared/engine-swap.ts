@@ -52,7 +52,15 @@ export function readSwap(run: string): EngineSwap | null {
 /** The swap under way, while its swapper runs (one that went holds nothing). */
 export function swapUnderWay(run: string): EngineSwap | null {
   const swap = readSwap(run);
-  return swap && processRuns(swap.pid, "kuvo-link") ? swap : null;
+  if (!swap) return null;
+  if (processRuns(swap.pid, "kuvo-link")) return swap;
+  if (swap.machineHelper && swap.holding && Date.now() - swap.holding < HOLD_MOST + SWAP_MOST) {
+    try {
+      const job = JSON.parse(fs.readFileSync(path.join(run, "machine-helper-job.json"), "utf8"));
+      if (job.version && (job.phase === "workers" || job.phase === "restoring")) return { ...swap, stage: "back" };
+    } catch { /* no recovery pending */ }
+  }
+  return null;
 }
 
 /** Whether what's sent into a conversation on the engine waits on the box now: while a swapper that

@@ -37,7 +37,6 @@ public final class BoxHelper {
     /// (`Permissions.afresh`). Nil where that couldn't be told: the note stays as it is, never
     /// written from what this process was told once (which would undo what you switched on since).
     var allowed: @Sendable () async -> Permissions? = { await Permissions.afresh() }
-    private var notedPermissions: Permissions?
     /// The last look asked for, and one asked for that hasn't begun (waiting for the one before),
     /// which a later ask shares: one process at a time, and an earlier look's answer never written
     /// over a later one's.
@@ -137,6 +136,9 @@ public final class BoxHelper {
         // `permissions`: what macOS allows this program, asked by this process, which has never asked
         // before (macOS answers Screen Recording once for each process: `Permissions.afresh`).
         if words == ["permissions"] {
+            #if DEBUG
+            if let saidFile, !FileManager.default.fileExists(atPath: saidFile) { exit(1) }
+            #endif
             say(inThisProcess().said)
             exit(0)
         }
@@ -423,7 +425,7 @@ public final class BoxHelper {
         signal(SIGINT, SIG_IGN)
         for number in [SIGTERM, SIGINT] {
             let source = DispatchSource.makeSignalSource(signal: number, queue: .main)
-            source.setEventHandler { MainActor.assumeIsolated { self.finish(0) } }
+            source.setEventHandler { @Sendable in Task { @MainActor in self.finish(0) } }
             source.resume()
             signals.append(source)
         }
@@ -579,15 +581,19 @@ public final class BoxHelper {
     }
 
     private func lookAtPermissions() async {
-        guard let now = await allowed(), !finishing else { return }
-        // (Written again where the note's gone: whatever took it away, the box hears again.)
-        guard now != notedPermissions || !FileManager.default.fileExists(atPath: permissionsFile.path(percentEncoded: false)) else { return }
+        let now = await allowed()
+        guard !finishing else { return }
         var info = proc_bsdinfo()
         let size = Int32(MemoryLayout<proc_bsdinfo>.size)
         guard proc_pidinfo(getpid(), PROC_PIDTBSDINFO, 0, &info, size) == size else { return }
-        let record: [String: Any] = ["v": 1, "pid": Int(getpid()), "started": Int(info.pbi_start_tvsec), "screenRecording": now.screenRecording, "accessibility": now.accessibility, "fullDiskAccess": now.fullDiskAccess]
-        guard let data = try? JSONSerialization.data(withJSONObject: record, options: [.sortedKeys]), (try? PrivateFile.write(data, to: permissionsFile)) != nil else { return }
-        notedPermissions = now
+        var record = now?.said ?? [:]
+        record["v"] = 1
+        record["pid"] = Int(getpid())
+        record["started"] = Int(info.pbi_start_tvsec)
+        record["observedAt"] = Int(Date().timeIntervalSince1970 * 1000)
+        if let data = try? JSONSerialization.data(withJSONObject: record, options: [.sortedKeys]) {
+            try? PrivateFile.write(data, to: permissionsFile)
+        }
     }
 
     /// Everything it started, told to stop (`serve` by its stdin closing, the keeper by SIGTERM: the
@@ -642,7 +648,7 @@ final class HelperApp: NSObject, NSApplicationDelegate {
 struct Permissions: Equatable, Sendable {
     var screenRecording: Bool
     var accessibility: Bool
-    var fullDiskAccess: Bool
+    var fullDiskAccess: Bool?
 
     /// As macOS says of this process now. Neither call asks you anything. (macOS answers Screen
     /// Recording once for each process, and keeps to that answer however it changes after: only
@@ -654,20 +660,20 @@ struct Permissions: Equatable, Sendable {
 
     /// Full Disk Access protects the system TCC database. Probe a read without querying it.
     /// The older per-user database is a fallback if the system database is missing.
-    private nonisolated static var canReadPrivacyDatabase: Bool {
+    private nonisolated static var canReadPrivacyDatabase: Bool? {
         let relative = "Library/Application Support/com.apple.TCC/TCC.db"
         var descriptor = Darwin.open("/" + relative, O_RDONLY | O_CLOEXEC)
         if descriptor < 0, errno == ENOENT, let home = BoxHelper.accountHome() {
             descriptor = Darwin.open(home.appending(path: relative).path(percentEncoded: false), O_RDONLY | O_CLOEXEC)
         }
-        guard descriptor >= 0 else { return false }
+        guard descriptor >= 0 else { return errno == EPERM ? false : nil }
         defer { Darwin.close(descriptor) }
         var byte: UInt8 = 0
-        return Darwin.read(descriptor, &byte, 1) == 1
+        return Darwin.read(descriptor, &byte, 1) == 1 ? true : nil
     }
 
     /// As said in JSON (`permissions`).
-    var said: [String: Any] { ["screenRecording": screenRecording, "accessibility": accessibility, "fullDiskAccess": fullDiskAccess] }
+    var said: [String: Any] { ["screenRecording": screenRecording, "accessibility": accessibility, "fullDiskAccess": fullDiskAccess.map { $0 as Any } ?? NSNull()] }
 
     /// As macOS says of this program now, asked by a process of its own that never asked before
     /// (`Kuvo Helper permissions`, its own child, so macOS asks about the same program): what you
@@ -692,9 +698,8 @@ struct Permissions: Equatable, Sendable {
                 // (A line of a few dozen bytes, all there once it has ended; it leaves nothing running.)
                 let data = output.fileHandleForReading.readDataToEndOfFile()
                 guard ended.terminationStatus == 0, let said = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-                      let screenRecording = said["screenRecording"] as? Bool, let accessibility = said["accessibility"] as? Bool,
-                      let fullDiskAccess = said["fullDiskAccess"] as? Bool else { return answer(nil) }
-                answer(Permissions(screenRecording: screenRecording, accessibility: accessibility, fullDiskAccess: fullDiskAccess))
+                      let screenRecording = said["screenRecording"] as? Bool, let accessibility = said["accessibility"] as? Bool else { return answer(nil) }
+                answer(Permissions(screenRecording: screenRecording, accessibility: accessibility, fullDiskAccess: said["fullDiskAccess"] as? Bool))
             }
             do { try process.run() } catch { return answer(nil) }
             // No answer at five seconds (still running, or its output held open by something else):
@@ -736,7 +741,7 @@ final class Child {
     /// `executable` started with `arguments`, its stdin `input` (kept open after it, for as long as
     /// it runs) or nothing, its output nowhere; `session`: in a session of its own.
     static func spawn(_ executable: String, _ arguments: [String], environment: [String: String], directory: URL, session: Bool,
-                      input: Data? = nil, previous: Child? = nil, ended: @escaping (Child) -> Void) -> Child? {
+                      input: Data? = nil, previous: Child? = nil, ended: @escaping @MainActor (Child) -> Void) -> Child? {
         var pipe: [Int32] = [-1, -1]
         if input != nil {
             guard Darwin.pipe(&pipe) == 0 else { return nil }
@@ -754,7 +759,12 @@ final class Child {
         posix_spawn_file_actions_adddup2(&actions, input != nil ? pipe[0] : null, 0)
         posix_spawn_file_actions_adddup2(&actions, null, 1)
         posix_spawn_file_actions_adddup2(&actions, null, 2)
-        posix_spawn_file_actions_addchdir(&actions, directory.path(percentEncoded: false))
+        let folder = directory.path(percentEncoded: false)
+        if #available(macOS 26, *) {
+            posix_spawn_file_actions_addchdir(&actions, folder)
+        } else {
+            posix_spawn_file_actions_addchdir_np(&actions, folder)
+        }
         var attributes: posix_spawnattr_t?
         posix_spawnattr_init(&attributes)
         defer { posix_spawnattr_destroy(&attributes) }
@@ -789,8 +799,8 @@ final class Child {
             child.input = pipe[1]
         }
         let source = DispatchSource.makeProcessSource(identifier: pid, eventMask: .exit, queue: .main)
-        source.setEventHandler { [weak child] in
-            MainActor.assumeIsolated {
+        source.setEventHandler { @Sendable [weak child] in
+            Task { @MainActor in
                 guard let child, child.isRunning else { return }
                 // (It has exited: collected now, however soon the notice came.)
                 var status: Int32 = 0
@@ -817,7 +827,7 @@ final class Child {
             child.closeInput()
             source.cancel()
             child.source = nil
-            DispatchQueue.main.async { MainActor.assumeIsolated { ended(child) } }
+            Task { @MainActor in ended(child) }
         }
         return child
     }

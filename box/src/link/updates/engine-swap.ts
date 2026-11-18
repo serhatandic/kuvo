@@ -26,7 +26,8 @@ import { asked, engineGet, readBridgeFile, readEngineFile } from "../engine/clie
 import { atWork, openFolders } from "../engine/models";
 import { moveInboxToBox, releaseWaiting } from "../engine/queue";
 import { listOf, textOf, writePrivate } from "../files";
-import { forgetMachineCron, machineHandoverDone, machineHelperAvailable, machineKeeperRuns, startMachineHelper } from "../helper";
+import { forgetMachineCron, machineHandoverDone, machineHelperAvailable, machineJob, machineJobFile, machineKeeperIdentity, machineKeeperRuns, machineRetryFile, restoreMachineJob, saveMachineJob, startMachineHelper } from "../helper";
+import { machineFilesAllowed } from "../permissions";
 import { K, REAL_BOX, RUN, UPDATES } from "../home";
 import { agentsWorking, dataNow, isUpdating, keepData, newerVersion, noteUpdate, roomForData, takeUpdateLock, UPDATE_LOCK, updateOnTrial, versionOrder } from "./update";
 
@@ -223,7 +224,6 @@ export async function swapEngine({ clock = Date.now, wait = sleep }: SwapOptions
           if (!(await engineBusy(engine))) {
             const done = await swapNow(engine, state, say, clock, wait);
             if (done !== null) return done;
-            continue;
           }
         }
         if (now - state.holding! >= SWAP_TIMING.holdMost) {
@@ -244,37 +244,133 @@ export async function swapEngine({ clock = Date.now, wait = sleep }: SwapOptions
 }
 
 /** Keeps pending engine messages on the box before either kind of restart. */
-async function keepInboxes(engine: Target, now: number): Promise<boolean> {
+export async function keepInboxes(engine: Target): Promise<boolean> {
   try {
-    const page = await asked(engine, "GET", "api/session?parentID=null&limit=100&order=desc") as { data?: { id?: string; time?: { updated?: number } }[] } | null;
-    const week = now - 7 * 86_400_000;
-    for (const session of page?.data ?? []) {
-      if (typeof session.id === "string" && (session.time?.updated ?? now) >= week) await moveInboxToBox(engine, session.id);
+    const sessions = new Set<string>();
+    for (const archived of [false, true]) {
+      const seen = new Set<string>();
+      let cursor = "";
+      for (;;) {
+        const page = await asked(engine, "GET", `api/session?limit=100&order=desc${archived ? "&archived=true" : ""}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`) as {
+          data?: unknown; cursor?: { next?: unknown } | null;
+        } | null;
+        if (!Array.isArray(page?.data) || (page.cursor != null && (typeof page.cursor !== "object" || Array.isArray(page.cursor)))) return false;
+        for (const entry of page.data) {
+          if (typeof entry?.id !== "string" || !entry.id) return false;
+          sessions.add(entry.id);
+        }
+        const next = page.cursor?.next;
+        if (next == null) {
+          if (page.data.length >= 100 && !Object.hasOwn(page, "cursor")) return false;
+          break;
+        }
+        if (typeof next !== "string" || !next || !page.data.length || seen.has(next)) return false;
+        seen.add(next);
+        cursor = next;
+      }
     }
+    for (const session of sessions) await moveInboxToBox(engine, session);
     return true;
   } catch {
     return false;
   }
 }
 
-/** Moves a legacy Darwin machine to the signed keeper. The first quiet hand-over only switches
- * the launch job. Existing processes serve normally until the workers are ready to hand over.
- * The second quiet hand-over restarts the detached engine and bridge under the signed keeper. */
+const restartWorkers = path.join(RUN, ".machine-handover.pid");
+const backOffMachine = () => writePrivate(machineRetryFile, String(Date.now() + SWAP_TIMING.patience));
+
+function workerHelper(role: "engine" | "agents", pid: number) {
+  const [worker, helper] = (textOf(path.join(RUN, `${role}.launch`)) ?? "").trim().split(/\s+/).map(Number);
+  return worker === pid ? helper : null;
+}
+
+async function serviceReady(version: string | undefined, helper: number | null, old: { engine?: number; bridge?: number }, clock: () => number, wait: (ms: number) => Promise<unknown>): Promise<EngineRecord | null> {
+  const until = clock() + Math.min(SWAP_TIMING.startMost, 120_000);
+  do {
+    if (stoppedOnPurpose()) return null;
+    const engine = runningEngine();
+    let bridge;
+    try { bridge = readBridgeFile(); } catch { /* still starting */ }
+    if (engine?.pid && engine.pid !== old.engine && (!version || engine.version === version) &&
+        bridge?.pid && bridge.pid !== old.bridge && processRuns(bridge.pid, "kuvo-agents") &&
+        (helper === null || (machineKeeperIdentity()?.helper === helper &&
+          workerHelper("engine", engine.pid) === helper && workerHelper("agents", bridge.pid) === helper))) {
+      const [engineOK, bridgeOK] = await Promise.all([
+        asked(engine, "GET", "api/session?limit=1").then(() => true, () => false),
+        asked(bridge, "GET", "api/session/active").then(() => true, () => false),
+      ]);
+      if (engineOK && bridgeOK) return engine;
+    }
+    await wait(Math.min(SWAP_TIMING.every, 1000));
+  } while (clock() < until);
+  return null;
+}
+
+/** Recovers a replacement interrupted before its workers were verified. The keeper, and a
+ * start from cron or from a client, invoke this even when the engine is down. */
+export async function recoverMachineJob({ clock = Date.now, wait = sleep }: SwapOptions = {}, owner = false): Promise<EngineRecord | null> {
+  const job = machineJob();
+  if (!job || job.phase === "waiting" || stoppedOnPurpose()) return null;
+  if (fs.existsSync(machineHandoverDone)) {
+    fs.rmSync(machineJobFile, { force: true });
+    forgetMachineCron();
+    return null;
+  }
+  if (!owner && (processRuns(job.owner, "kuvo-link") || !takeUpdateLock())) return null;
+  try {
+    const helper = job.helper ?? machineKeeperIdentity()?.helper;
+    if (!restoreMachineJob(job)) return null;
+    if (job.version && helper) {
+      const engine = runningEngine();
+      if (engine?.pid && workerHelper("engine", engine.pid) === helper &&
+          !await asked(engine, "GET", "api/session?limit=1").then(() => true, () => false)) keeper("engine-halt");
+      const pid = Number(textOf(path.join(RUN, "agents.pid")));
+      if (processRuns(pid, "kuvo-agents") && workerHelper("agents", pid) === helper) {
+        let answering = false;
+        try {
+          const bridge = readBridgeFile();
+          answering = bridge.pid === pid && await asked(bridge, "GET", "api/session/active").then(() => true, () => false);
+        } catch { /* the bridge did not finish starting */ }
+        if (!answering && processRuns(pid, "kuvo-agents")) process.kill(pid, "SIGTERM");
+      }
+    }
+    fs.rmSync(restartWorkers, { force: true });
+    const target = job.legacy ? await serviceReady(job.version, null, {}, clock, wait) : null;
+    if (job.legacy && !target) return null;
+    fs.rmSync(machineJobFile, { force: true });
+    backOffMachine();
+    if (target && !owner) await releaseAfterHold(target);
+    return target;
+  } finally {
+    if (!owner) fs.rmSync(UPDATE_LOCK, { recursive: true, force: true });
+  }
+}
+
+/** Moves the launch job at a quiet point, then its old workers at a quiet point with a fresh grant. */
 export async function handOverMachine({ clock = Date.now, wait = sleep }: SwapOptions = {}): Promise<void> {
   if (!machineHelperAvailable() || fs.existsSync(machineHandoverDone) || swapUnderWay(RUN)) return;
-  const installed = machineKeeperRuns();
+  const job = machineJob();
+  if (job && job.phase !== "waiting") {
+    await recoverMachineJob({ clock, wait });
+    return;
+  }
+  if (Number(textOf(machineRetryFile)) > clock()) return;
+  const owner = machineKeeperIdentity();
+  const installed = owner !== null;
+  if (installed && (!job?.legacy || !machineFilesAllowed())) return;
   const engine = runningEngine();
   if (!engine?.version || !engine.pid) return;
   const blocked = () => stoppedOnPurpose() || isUpdating() || updateOnTrial() || fs.existsSync(path.join(RUN, ".rolling-back"));
   const busy = async () => await engineBusy(engine) || await agentsWorking() !== false;
-  const valid = () => !blocked() && runningEngine()?.pid === engine.pid && machineKeeperRuns() === installed;
+  const valid = () => !blocked() && runningEngine()?.pid === engine.pid && machineKeeperIdentity()?.helper === owner?.helper;
   if (!valid()) return;
 
   const state: EngineSwap = { from: engine.version, to: engine.version, pid: process.pid, since: clock(), stage: "waiting", machineHelper: true };
   const say = () => writePrivate(swapFile(RUN), JSON.stringify(state));
-  const restarting = path.join(RUN, ".machine-handover.pid");
   let locked = false;
   let held = false;
+  let retiring = false;
+  let ready: EngineRecord | null = null;
   say();
   try {
     let quietSince: number | undefined;
@@ -289,16 +385,17 @@ export async function handOverMachine({ clock = Date.now, wait = sleep }: SwapOp
     say();
     held = true;
     await wait(Math.min(1000, SWAP_TIMING.every));
-    if (await busy() || !valid()) return;
+    if (await busy() || !valid() || (installed && !machineFilesAllowed())) return;
 
+    const bridge = Number(textOf(path.join(RUN, "agents.pid")));
     if (installed) {
-      // Before asking the bridge to leave, require its cooperative hand-over. The older bridge
-      // can take its normal renewal first. An unrecorded bridge still starting gets another round.
-      const pid = Number(textOf(path.join(RUN, "agents.pid")));
-      if (processRuns(pid, "kuvo-agents")) {
-        try { if (readBridgeFile().machineHandover !== true) return; } catch { return; }
+      if (processRuns(bridge, "kuvo-agents")) {
+        try {
+          const noted = readBridgeFile();
+          if (noted.pid !== bridge || noted.machineHandover !== true) return;
+        } catch { return; }
       }
-      if (!(await keepInboxes(engine, clock())) || await busy() || !valid()) return;
+      if (!(await keepInboxes(engine)) || await busy() || !valid()) return;
     }
     state.stage = "swapping";
     say();
@@ -306,27 +403,38 @@ export async function handOverMachine({ clock = Date.now, wait = sleep }: SwapOp
     locked = true;
     if (stoppedOnPurpose() || updateOnTrial()) return;
     if (!installed) {
-      if (!startMachineHelper()) console.error("Kuvo Helper’s machine launch agent couldn’t start.");
+      if (!startMachineHelper()) {
+        console.error("Kuvo Helper’s machine launch agent couldn’t start.");
+        backOffMachine();
+        await recoverMachineJob({ clock, wait }, true);
+      }
       return;
     }
+    if (!machineFilesAllowed() || !job) return;
 
-    // The bridge uses the same quiet check and persisted queue as renewal, then stops its held
-    // agents cleanly. The keeper waits until the old engine has been stopped before replacing it.
-    writePrivate(restarting, String(process.pid));
-    const bridge = Number(textOf(path.join(RUN, "agents.pid")));
+    saveMachineJob({ ...job, phase: "workers", owner: process.pid, version: engine.version, helper: owner!.helper });
+    retiring = true;
+    writePrivate(restartWorkers, String(process.pid));
     for (let i = 0; i < 45 && processRuns(bridge, "kuvo-agents"); i++) await wait(1000);
-    if (processRuns(bridge, "kuvo-agents") || stoppedOnPurpose() || await engineBusy(engine)) return;
-    if (!keeper("engine-halt")) return;
-    writePrivate(machineHandoverDone, "");
-    fs.rmSync(restarting, { force: true });
-    // Bounded by the same startup checks as an engine update. The keeper runs the start itself.
-    await answering(engine.version, clock, wait);
+    if (!processRuns(bridge, "kuvo-agents") && !stoppedOnPurpose() && machineFilesAllowed() && !await engineBusy(engine) && keeper("engine-halt")) {
+      fs.rmSync(restartWorkers, { force: true });
+      ready = await serviceReady(engine.version, owner!.helper, { engine: engine.pid, bridge }, clock, wait);
+      if (ready) {
+        writePrivate(machineHandoverDone, "");
+        fs.rmSync(machineJobFile, { force: true });
+      }
+    }
   } finally {
+    if (retiring && !ready) {
+      state.stage = "back";
+      say();
+      ready = await recoverMachineJob({ clock, wait }, true);
+    }
     if (locked) fs.rmSync(UPDATE_LOCK, { recursive: true, force: true });
-    fs.rmSync(restarting, { force: true });
-    await releaseAfterHold(held ? runningEngine() : null);
+    fs.rmSync(restartWorkers, { force: true });
+    if (!retiring || ready) await releaseAfterHold(ready ?? (held ? runningEngine() : null));
   }
-  forgetMachineCron();
+  if (fs.existsSync(machineHandoverDone)) forgetMachineCron();
 }
 
 // The swap itself, nothing at work: what the engine's inboxes hold onto the box, the old engine
@@ -335,7 +443,7 @@ export async function handOverMachine({ clock = Date.now, wait = sleep }: SwapOp
 // on holding.
 async function swapNow(engine: EngineRecord, state: EngineSwap, say: (stage: SwapStage, change?: Partial<EngineSwap>) => void, clock: () => number, wait: (ms: number) => Promise<unknown>): Promise<Swapped | null> {
   say("swapping");
-  if (!(await keepInboxes(engine, clock()))) {
+  if (!(await keepInboxes(engine))) {
     say("holding");
     return null;
   }
@@ -412,6 +520,9 @@ async function ended(state: EngineSwap, result: EngineChangeLast["result"], mess
 async function releaseAfterHold(engine: Target | null): Promise<void> {
   if (engine) await releaseWaiting(engine).catch(() => 0);
   // Send anything that arrived during the first drain once the hold is gone.
-  if (readSwap(RUN)?.pid === process.pid) fs.rmSync(swapFile(RUN), { force: true });
+  const record = readSwap(RUN);
+  if (record && (record.pid === process.pid || (record.machineHelper && !processRuns(record.pid, "kuvo-link")))) {
+    fs.rmSync(swapFile(RUN), { force: true });
+  }
   if (engine) await releaseWaiting(engine).catch(() => 0);
 }

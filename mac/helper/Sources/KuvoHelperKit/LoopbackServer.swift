@@ -38,29 +38,29 @@ public final class LoopbackServer {
         parameters.requiredLocalEndpoint = .hostPort(host: .ipv4(.loopback), port: .any)
         let listener = try NWListener(using: parameters)
         self.listener = listener
-        listener.newConnectionHandler = { [weak self] connection in
-            MainActor.assumeIsolated { self?.accept(connection) }
+        listener.newConnectionHandler = { @Sendable [weak self] connection in
+            Task { @MainActor in self?.accept(connection) }
         }
         let port: UInt16 = try await withCheckedThrowingContinuation { continuation in
-            var resumed = false
-            listener.stateUpdateHandler = { [weak self] state in
-                MainActor.assumeIsolated {
-                    guard !resumed else {
+            let startup = ListenerStartup()
+            listener.stateUpdateHandler = { @Sendable [weak self] state in
+                Task { @MainActor in
+                    guard !startup.resumed else {
                         // Failed once it was listening: gone, said to whoever keeps it up.
                         if case .failed = state { self?.lost(listener) }
                         return
                     }
                     switch state {
                     case .ready:
-                        resumed = true
+                        startup.resumed = true
                         continuation.resume(returning: listener.port?.rawValue ?? 0)
                     // One that can't listen now (waiting for a network that may never come) fails.
                     case .failed(let error), .waiting(let error):
-                        resumed = true
+                        startup.resumed = true
                         listener.cancel()
                         continuation.resume(throwing: error)
                     case .cancelled:
-                        resumed = true
+                        startup.resumed = true
                         continuation.resume(throwing: CancellationError())
                     default:
                         break
@@ -73,6 +73,11 @@ public final class LoopbackServer {
         guard self.listener === listener else { throw CancellationError() }
         self.port = port
         return port
+    }
+
+    @MainActor
+    private final class ListenerStartup {
+        var resumed = false
     }
 
     /// It stopped listening by itself: as if stopped, then said.
@@ -183,8 +188,8 @@ final class HTTPConnection {
     }
 
     func start() {
-        connection.stateUpdateHandler = { [weak self] state in
-            MainActor.assumeIsolated {
+        connection.stateUpdateHandler = { @Sendable [weak self] state in
+            Task { @MainActor in
                 guard let self else { return }
                 switch state {
                 case .failed, .cancelled:
@@ -200,8 +205,8 @@ final class HTTPConnection {
     }
 
     private func receive() {
-        connection.receive(minimumIncompleteLength: 1, maximumLength: 1 << 20) { [weak self] data, _, complete, error in
-            MainActor.assumeIsolated {
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 1 << 20) { @Sendable [weak self] data, _, complete, error in
+            Task { @MainActor in
                 guard let self, !self.closing else { return }
                 if let data { self.buffer.append(data) }
                 if self.answering == nil { self.process() }
@@ -257,8 +262,8 @@ final class HTTPConnection {
         closing = true
         buffer = Data()
         let head = "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-        connection.send(content: Data(head.utf8), completion: .contentProcessed { [weak self] _ in
-            MainActor.assumeIsolated { self?.connection.cancel() }
+        connection.send(content: Data(head.utf8), completion: .contentProcessed { @Sendable [weak self] _ in
+            Task { @MainActor in self?.connection.cancel() }
         })
     }
 
@@ -269,7 +274,7 @@ final class HTTPConnection {
     private func send(head: Data, stream: AsyncThrowingStream<Data, Error>) {
         let connection = connection, gone = gone
         connection.send(content: head, completion: .contentProcessed { _ in })
-        answering = Task.detached {
+        answering = Task.detached { [weak self] in
             var whole = false
             do {
                 let sending = InFlight()
@@ -291,8 +296,8 @@ final class HTTPConnection {
             }
             // Whole: its last chunk ends it, and the connection stays for the client's next request,
             // which URLSession and Node's fetch send on it at once (a POST lost if it were closed).
-            connection.send(content: Data("0\r\n\r\n".utf8), completion: .contentProcessed { [weak self] _ in
-                MainActor.assumeIsolated { self?.answered() }
+            connection.send(content: Data("0\r\n\r\n".utf8), completion: .contentProcessed { @Sendable [weak self = self] _ in
+                Task { @MainActor in self?.answered() }
             })
         }
     }
@@ -336,8 +341,8 @@ final class HTTPConnection {
         head += "\r\n"
         guard !closing else { return }
         if let stream = response.stream { return send(head: Data(head.utf8), stream: stream) }
-        connection.send(content: Data(head.utf8) + response.body, completion: .contentProcessed { [weak self] _ in
-            MainActor.assumeIsolated { self?.answered() }
+        connection.send(content: Data(head.utf8) + response.body, completion: .contentProcessed { @Sendable [weak self] _ in
+            Task { @MainActor in self?.answered() }
         })
     }
 }

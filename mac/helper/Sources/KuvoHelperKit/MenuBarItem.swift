@@ -5,6 +5,15 @@ import SwiftUI
 
 nonisolated private let log = Logger(subsystem: "run.kuvo.code", category: "menu-bar")
 
+@MainActor
+private func activateHelper() {
+    if #available(macOS 14, *) {
+        NSApp.activate()
+    } else {
+        NSApp.activate(ignoringOtherApps: true)
+    }
+}
+
 /// Kuvo in the menu bar (PROTOCOL.md, "In the menu bar"), drawn by Kuvo Helper for as long as it
 /// runs Kuvo on this Mac: it's the part that always runs, so the item is there whenever Kuvo is,
 /// with the app open or not, and goes with it. What it shows is the box's (`AtWorkFeed`): every one
@@ -77,7 +86,7 @@ public final class MenuBarItem: NSObject {
         if popover.isShown { return popover.performClose(nil) }
         guard let button = item.button else { return }
         panelDrawn()
-        NSApp.activate()
+        activateHelper()
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         popover.contentViewController?.view.window?.makeKey()
     }
@@ -124,7 +133,7 @@ public final class MenuBarItem: NSObject {
         guard look.canStop else { return }
         let appOpen = !openApps.isEmpty
         if look.stopAsks(appOpen: appOpen) {
-            NSApp.activate()
+            activateHelper()
             let alert = NSAlert()
             let question = look.stopQuestion(appOpen: appOpen)
             alert.messageText = question.title
@@ -152,7 +161,7 @@ public final class MenuBarItem: NSObject {
     }
 
     private func say(_ title: String, _ detail: String) {
-        NSApp.activate()
+        activateHelper()
         let alert = NSAlert()
         alert.messageText = title
         alert.informativeText = detail

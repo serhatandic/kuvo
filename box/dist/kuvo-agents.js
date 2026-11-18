@@ -38505,7 +38505,18 @@ function readSwap(run) {
 }
 function swapUnderWay(run) {
   const swap = readSwap(run);
-  return swap && processRuns(swap.pid, "kuvo-link") ? swap : null;
+  if (!swap)
+    return null;
+  if (processRuns(swap.pid, "kuvo-link"))
+    return swap;
+  if (swap.machineHelper && swap.holding && Date.now() - swap.holding < HOLD_MOST + SWAP_MOST) {
+    try {
+      const job = JSON.parse(fs11.readFileSync(path9.join(run, "machine-helper-job.json"), "utf8"));
+      if (job.version && (job.phase === "workers" || job.phase === "restoring"))
+        return { ...swap, stage: "back" };
+    } catch {}
+  }
+  return null;
 }
 function swapHolds(run, now = Date.now()) {
   const swap = swapUnderWay(run);
@@ -39656,4 +39667,4 @@ if (!onMachine) {
 }
 process.on("SIGTERM", () => stop());
 process.on("SIGINT", () => stop());
-// Built from Packages/Box/src/agents e76f184b9d64fad4e9ae091143aee31d9ba8a22afa468498e8170a9dcf316ad0
+// Built from Packages/Box/src/agents c38480256f7eaf559ccb0fcff787d24aa468ce5e5798dee3b66c727e9c24b713

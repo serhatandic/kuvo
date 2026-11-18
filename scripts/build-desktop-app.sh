@@ -176,7 +176,7 @@ test -s "$work/icon/AppIcon.icns" || { echo "actool made no AppIcon.icns from sw
 # (A private feed's build: both signed with its identity, kuvo-keys kept, as the user's copy needs it.)
 if [ "$IDENTITY" = "-" ]; then SIGNED_KEYS=""; else SIGNED_KEYS=1; fi
 env -u HELPER_EXECUTABLE -u KEYS_EXECUTABLE KUVO_SIGNED_KEYS="$SIGNED_KEYS" SIGN_IDENTITY="$IDENTITY" APP_ID="$APP_ID" VERSION="$VERSION" BUILD="$BUILD" \
-    MIN_SYSTEM="$MIN_SYSTEM" ICON="$work/icon/AppIcon.icns" ./scripts/build-helper.sh "$work/helper"
+    ICON="$work/icon/AppIcon.icns" ./scripts/build-helper.sh "$work/helper"
 # Sparkle, as this checkout pins it.
 SPARKLE=$(./scripts/sparkle.sh)
 

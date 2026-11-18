@@ -50,7 +50,7 @@ impl Permissions {
         }
         let allowed = |allowed: bool| if self.known { json!(allowed) } else { Value::Null };
         let each = |id: &str, name: &str, line: &str, pane: &str, is: bool| {
-            json!({ "id": id, "name": name, "line": line, "allowed": allowed(is), "settings": settings_pane(pane), "byHand": true, "asks": self.known && !is && !self.later.iter().any(|later| later == id) })
+            json!({ "id": id, "name": name, "line": line, "allowed": allowed(is), "settings": settings_pane(pane), "byHand": true, "byHandLine": "Drag Kuvo Helper into the list in System Settings, then switch it on.", "unknownLine": "Kuvo Helper hasn’t said yet.", "asks": self.known && !is && !self.later.iter().any(|later| later == id) })
         };
         json!({
             "applies": true, "name": "Kuvo Helper", "known": self.known,

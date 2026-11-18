@@ -14,7 +14,6 @@
 #   VERSION, BUILD     the helper's version and build number (default 0.0.0 and 0: a local build)
 #   ICON               an .icns for the helper (Kuvo Code's: what Login Items and macOS's
 #                      questions show); none, and it has macOS's plain one
-#   MIN_SYSTEM         the oldest macOS it runs on (default 26.0)
 #   KUVO_SIGNED_KEYS   1: kuvo-keys built and signed with SIGN_IDENTITY too. Without it, a build
 #                      signed with a real identity makes NO kuvo-keys, and nothing asks for one
 #                      yet (scripts/build-app.sh never does): signed as Kuvo Code by its team, it
@@ -67,6 +66,12 @@ if [ "$SIGN_IDENTITY" != "-" ] && [ -n "${HELPER_EXECUTABLE:-}${KEYS_EXECUTABLE:
     exit 2
 fi
 if [ -n "${HELPER_EXECUTABLE:-}" ]; then EXECUTABLE=$HELPER_EXECUTABLE; else EXECUTABLE=$(built KuvoHelper); fi
+if [ -z "${HELPER_EXECUTABLE:-}" ]; then
+    for arch in arm64 x86_64; do
+        minimum=$(xcrun vtool -arch "$arch" -show-build "$EXECUTABLE" | awk '$1 == "minos" {print $2}')
+        [ "$minimum" = 13.0 ] || { echo "Kuvo Helper ($arch) must target macOS 13.0, got ${minimum:-no slice}." >&2; exit 1; }
+    done
+fi
 WITH_KEYS=0
 if [ "$SIGN_IDENTITY" = "-" ] || [ "${KUVO_SIGNED_KEYS:-}" = 1 ]; then WITH_KEYS=1; fi
 KEYS_BUILT=""
@@ -96,7 +101,7 @@ put() { plutil -insert "$1" "-$2" "$3" "$INFO"; }
 put CFBundleIdentifier string "$HELPER_ID"
 put CFBundleShortVersionString string "$VERSION"
 put CFBundleVersion string "$BUILD"
-put LSMinimumSystemVersion string "${MIN_SYSTEM:-26.0}"
+put LSMinimumSystemVersion string 13.0
 # The services' marks for its menu bar panel's rings: the desktop app's own (gpui/assets/marks),
 # one set for both, read by the service's id (`ServiceMark`).
 mkdir -p "$NEW/Contents/Resources/Marks"

@@ -126,7 +126,7 @@ cat >"$S/helper.tar"
 [ "$(sum_of "$S/helper.tar")" = "${sum}" ] || { echo "Kuvo Helper didn't arrive whole." >&2; exit 9; }
 tar xf "$S/helper.tar" -C "$S"
 A="Kuvo Helper.app"
-codesign --verify --strict --deep "$S/$A"
+codesign --verify --strict --deep -R='identifier "run.kuvo.code.box" and anchor apple generic and certificate leaf[subject.OU] = "C8Y523R7T5"' "$S/$A"
 if [ -d "$K/bin/$A" ] && diff -qr "$S/$A" "$K/bin/$A" >/dev/null; then exit 0; fi
 [ ! -e "$K/bin/$A" ] || mv "$K/bin/$A" "$S/before"
 if ! mv "$S/$A" "$K/bin/$A"; then

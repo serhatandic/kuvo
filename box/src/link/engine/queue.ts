@@ -77,9 +77,11 @@ export const changeQueue = (session: string, change: (state: QueueState) => Queu
 
 const address = (session: string) => encodeURIComponent(session);
 
-async function inboxOf(target: Target, session: string, patience?: number): Promise<InboxEntry[]> {
+async function inboxOf(target: Target, session: string, patience?: number, strict = false): Promise<InboxEntry[]> {
   const answer = await asked(target, "GET", `api/session/${address(session)}/inbox`, undefined, patience) as { data?: unknown } | null;
-  return Array.isArray(answer?.data) ? answer.data.filter((item): item is InboxEntry => isObject(item) && typeof item.id === "string" && (item.delivery === "steer" || item.delivery === "queue")) : [];
+  const valid = (item: unknown): item is InboxEntry => isObject(item) && typeof item.id === "string" && (item.delivery === "steer" || item.delivery === "queue");
+  if (strict && (!Array.isArray(answer?.data) || !answer.data.every(valid))) throw new Error("The engine did not list the whole inbox.");
+  return Array.isArray(answer?.data) ? answer.data.filter(valid) : [];
 }
 
 // (As the engine and the agents' bridge answer it: the sessions at work, as a list or by id.)
@@ -645,26 +647,27 @@ function goesFirst(session: string, item: string): boolean {
  * another (PROTOCOL.md, "A new engine"), so nothing it held is lost with it. One the engine gave to
  * the agent first is left. It throws when the inbox can't be read. */
 export async function moveInboxToBox(target: Target, session: string): Promise<number> {
-  const inbox = messagesIn(await inboxOf(target, session));
+  const inbox = messagesIn(await inboxOf(target, session, undefined, true));
   if (!inbox.length) return 0;
   let moved = 0;
   // (In the order they'd go, ahead of what waits on the box already.)
-  const order = orderOf(inbox, queueOf(session)).filter(id => inbox.some(entry => entry.id === id));
-  const renamed: Record<string, string> = {};
+  const order = new Set(orderOf(inbox, queueOf(session)).filter(id => inbox.some(entry => entry.id === id)));
   const kept: Waiting[] = [];
   for (const id of order) {
     const entry = inbox.find(each => each.id === id)!;
     const text = typeof entry.payload?.text === "string" ? entry.payload.text : typeof entry.text === "string" ? entry.text : null;
     if (text === null) continue;
     // (An ID the box can't name a file by: one of its own, the same each time.)
-    const own = /^msg_[A-Za-z0-9]{1,80}$/.test(id) ? id : (renamed[id] = `msg_${crypto.createHash("sha256").update(id).digest("hex").slice(0, 32)}`);
+    const own = /^msg_[A-Za-z0-9]{1,80}$/.test(id) ? id : `msg_${crypto.createHash("sha256").update(id).digest("hex").slice(0, 32)}`;
     const files = sendableFiles(entry.payload?.files);
     const message = { id: own, text, delivery: entry.delivery, ...(files.length ? { files } : {}), ...(isObject(entry.payload?.metadata) ? { metadata: entry.payload!.metadata as Record<string, unknown> } : {}) };
     const shown = shownOfInbox(entry);
     const waiting: Waiting = { id: own, ...(shown.from ? { from: shown.from } : {}), text: shown.words, ...(shown.files.length ? { files: shown.files } : {}), ...(shown.keyword ? { keyword: shown.keyword } : {}), at: Date.now() };
     // Kept on the box, in its place (after those moved before it, ahead of what waited there), before
     // it's taken from the engine: cut off between the two, it's in both rather than in neither.
-    writePrivate(waitingFile(own), JSON.stringify(message));
+    const saved = waitingFile(own);
+    const alreadyKept = fs.existsSync(saved);
+    writePrivate(saved, JSON.stringify(message));
     changeQueue(session, state => ({
       ...state,
       held: state.held.map(each => (each === id ? own : each)),
@@ -672,15 +675,18 @@ export async function moveInboxToBox(target: Target, session: string): Promise<n
     }));
     try {
       await asked(target, "DELETE", `api/session/${address(session)}/inbox/${address(id)}`);
-    } catch {
-      // (Taken by the agent first, or kept by the engine: it stays where it is, and only there.)
+    } catch (error) {
+      // Lost replies can follow a successful delete. Keep the saved copy and defer the restart.
+      if (alreadyKept || !(error instanceof Error) || error.message !== "It answered 404.") throw error;
+      // (The agent took it first.)
       changeQueue(session, state => ({ ...state, held: state.held.map(each => (each === own ? id : each)), waiting: (state.waiting ?? []).filter(each => each.id !== own) }));
-      fs.rmSync(waitingFile(own), { force: true });
+      fs.rmSync(saved, { force: true });
       continue;
     }
     kept.push(waiting);
     moved++;
   }
+  if (messagesIn(await inboxOf(target, session, undefined, true)).length) throw new Error("The engine still holds pending messages.");
   return moved;
 }
 

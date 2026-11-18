@@ -96,7 +96,7 @@ private final class InTheTests {}
         try FileManager.default.createDirectory(at: contents.appending(path: "Resources"), withIntermediateDirectories: true)
         let info: [String: Any] = [
             "CFBundleIdentifier": Self.app, "CFBundleName": "Kuvo Code", "CFBundleExecutable": "Kuvo Code", "CFBundlePackageType": "APPL",
-            "CFBundleShortVersionString": "0.0.4", "CFBundleVersion": "4", "LSMinimumSystemVersion": "26.0",
+            "CFBundleShortVersionString": "0.0.4", "CFBundleVersion": "4", "LSMinimumSystemVersion": "13.0",
             "NSCalendarsFullAccessUsageDescription": "The agent reads your calendar when you've turned it on.",
             "NSMicrophoneUsageDescription": "Kuvo Code listens while you talk.",
         ]
@@ -818,6 +818,11 @@ private final class InTheTests {}
         #expect(json(facts)["accessibility"] as? Bool == false)
         #expect(json(facts)["pid"] as? Int == Int(helper.process.processIdentifier), "still the helper's own word, which the box checks")
         #expect(helper.isRunning, "never started again for it")
+        // A subprocess that failed to answer clears its last successful grant.
+        try FileManager.default.removeItem(at: said)
+        #expect(try await post(json(run.appending(path: "host.json")), "/permissions", [:]).status == 200)
+        #expect(json(facts)["fullDiskAccess"] as? Bool == nil)
+        #expect(json(facts)["observedAt"] as? Int != nil)
         // Switched off again: said as it's next asked.
         try write(said, "")
         #expect(try await post(json(run.appending(path: "host.json")), "/permissions", [:]).status == 200)

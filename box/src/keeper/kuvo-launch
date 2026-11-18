@@ -228,6 +228,7 @@ if [ -n "$bridge_only" ]; then
     KUVO_AGENTS_REMOTE=1 KUVO_AGENTS_KEPT=1 KUVO_AGENTS_HOME="$K/agents" KUVO_HOME="$K" KUVO_AGENTS_PORT="$aport" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$S" "$K/engine/$V/opencode" --config=/dev/null --no-env-file "$K/bin/kuvo-agents.js" >>"$R/agents.log" 2>&1 </dev/null &
     apid=$!
     echo "$apid" >"$R/agents.pid"
+    [ -z "${KUVO_MACHINE_HELPER_PID-}" ] || printf '%s %s\n' "$apid" "$KUVO_MACHINE_HELPER_PID" >"$R/agents.launch"
     i=0; until grep -q '"url"' "$R/agents.log" 2>/dev/null || ! kill -0 "$apid" 2>/dev/null || [ $i -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
     kill -0 "$apid" 2>/dev/null && exit 0
     try=$((try + 1)); [ $try -ge 3 ] && exit 3
@@ -243,6 +244,7 @@ until grep -q "server listening" "$R/engine.log" 2>/dev/null; do
 done
 # Noted, or it's stopped (by the trap): one nothing knows of would run on unseen.
 (umask 077; printf '{"pid":%s,%s\n' "$pid" "$record" >"$R/engine.json") || { echo "Its engine couldn't be noted down there." >&2; exit 3; }
+[ -z "${KUVO_MACHINE_HELPER_PID-}" ] || printf '%s %s\n' "$pid" "$KUVO_MACHINE_HELPER_PID" >"$R/engine.launch"
 noted=1
 : >"$R/engines/$pid"
 # (Its coding agents' bridge isn't started, nor ended, here: the keeper keeps it, apart from any one

@@ -17,9 +17,8 @@ pub struct Permission {
     pub id: String,
     /// What System Settings calls it.
     pub name: String,
-    /// What agents need it for, in a sentence (none from a box older than these words).
-    #[serde(default)]
-    pub line: Option<String>,
+    /// What agents need it for, in a sentence.
+    pub line: String,
     /// Whether it's allowed; none while the box can't say.
     pub allowed: Option<bool>,
     /// The address that opens its list in System Settings, on the box's own Mac.
@@ -27,6 +26,8 @@ pub struct Permission {
     /// macOS asks nothing for it: you add the program to the list yourself.
     #[serde(default)]
     pub by_hand: bool,
+    pub by_hand_line: String,
+    pub unknown_line: String,
     /// Whether a client brings it up now (not allowed, and not put off).
     #[serde(default)]
     pub asks: bool,
@@ -46,7 +47,7 @@ pub struct Permissions {
     /// The program's bundle on that Mac: what's dragged into a list in System Settings.
     #[serde(default)]
     pub bundle: Option<String>,
-    /// Each permission in words (none from a box older than these words).
+    /// Each permission in words.
     #[serde(default)]
     pub list: Vec<Permission>,
 }

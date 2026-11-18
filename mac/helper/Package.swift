@@ -7,7 +7,7 @@ import PackageDescription
 // scripts/build-helper.sh.
 let package = Package(
     name: "KuvoHelper",
-    platforms: [.macOS(.v26)],
+    platforms: [.macOS(.v13)],
     products: [
         .library(name: "KuvoHelperKit", targets: ["KuvoHelperKit"]),
         .executable(name: "KuvoHelper", targets: ["KuvoHelper"]),

@@ -423,13 +423,12 @@ impl HeadsUp {
     /// System Settings.
     fn row(&self, permission: &Permission, cx: &mut Context<Self>) -> AnyElement {
         let c = cx.theme().colors.clone();
-        let program = self.program();
         let asking = self.asking() == Some(permission.id.as_str());
         let (detail, color) = match permission.allowed {
-            Some(true) => (permission.line.clone().unwrap_or_default(), c.text_muted),
-            _ if asking && permission.by_hand => (format!("Drag {program} into the list in System Settings, then switch it on."), c.text),
-            Some(false) => (permission.line.clone().unwrap_or_else(|| "Not allowed yet.".into()), c.text_muted),
-            None => (format!("{program} hasn’t said yet."), c.text_muted),
+            Some(true) => (permission.line.clone(), c.text_muted),
+            _ if asking && permission.by_hand => (permission.by_hand_line.clone(), c.text),
+            Some(_) => (permission.line.clone(), c.text_muted),
+            None => (permission.unknown_line.clone(), c.text_muted),
         };
         let icon = match permission.id.as_str() {
             "screenRecording" => IconName::Computer,
