@@ -8,7 +8,7 @@ import type { PAIRING } from "../../shared/routes/box";
 import type { Infer } from "../../shared/shape";
 import { noteDocsChanged } from "../documents/changed";
 import { IS_MAC } from "../home";
-import { newPairingToken, pairingLink, removeAsMac, removePhones } from "../phones";
+import { canIssuePairing, newPairingToken, pairedPhone, pairingLink, removeAsMac, removePhones } from "../phones";
 import { mainElsewhere, pairElsewhere } from "../setup/main-only";
 import { pairDeviceFromHere } from "../peers/devices";
 import { fromLocalApp } from "../server/context";
@@ -58,7 +58,7 @@ const SWITCH_OFF = "“Let my devices connect” is off on this Mac.";
 // A link for another phone to pair with this machine, as `kuvo-link.js pair` shows one: good
 // once, for a while; a new one takes the place of the last. DELETE ends it.
 export async function* pairingRoute(context: RouteContext): AsyncGenerator<AnswerPiece> {
-  const { request, json } = context;
+  const { request, phone, json } = context;
   const method = request.method.toUpperCase();
   // This Mac's Settings › Phone has one of its own, apart from a phone's.
   const slot = IS_MAC && request.fromApp ? "appPairing" : "pairing";
@@ -75,10 +75,21 @@ export async function* pairingRoute(context: RouteContext): AsyncGenerator<Answe
   }
   if (method !== "POST") return yield* json(405, {});
   // Only your setup's main computer pairs phones: a member names it (PROTOCOL.md, "Your setup").
-  const main = mainElsewhere(readLink());
-  if (main) return yield* json(409, pairElsewhere(main));
-  if (IS_MAC && !macLink.config?.phones) return yield* json(409, { message: SWITCH_OFF });
-  const link = updateLink(current => current?.relay && current?.secret ? { ...current, [slot]: newPairingToken() } : null);
+  let refusal: { message: string; primary?: string } | undefined;
+  const link = updateLink(current => {
+    const main = mainElsewhere(current);
+    if (main) { refusal = pairElsewhere(main); return null; }
+    if (IS_MAC && !macLink.config?.phones) { refusal = { message: SWITCH_OFF }; return null; }
+    if (!current?.relay || !current.secret) return null;
+    const key = phone?.key;
+    const device = key && pairedPhone(current, key.toString("base64url"), phone.pairing);
+    if (key && (!device || !canIssuePairing(device))) {
+      refusal = { message: "Ask for a pairing link on the computer that paired this device." };
+      return null;
+    }
+    return { ...current, [slot]: newPairingToken(device ? { key: device.key, pairing: device.pairing ?? "" } : null) };
+  });
+  if (refusal) return yield* json(409, refusal);
   if (!link) return yield* json(409, { message: IS_MAC ? "This Mac isn't ready for your devices yet. Try again in a moment." : "This machine has no relay to pair through." });
   macLink.wake?.();
   // (A box with a relay to pair through has its keys and name too.)

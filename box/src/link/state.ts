@@ -30,8 +30,7 @@ export interface Phone {
   /** What it is, as it said (`clients.kind`): Kuvo Code's desktop app; none for a phone. */
   kind?: "desktop";
   /** The box that vouched for it (its static key), on the main computer that paired it on that
-   * box's word (`kuvo/devices/pair`); none for one paired by this box's own app or by token. Kept
-   * here alone, never in the phones document. */
+   * box's word (`kuvo/devices/pair`), or inherited from the issuer of a pairing link. */
   by?: string;
 }
 
@@ -39,6 +38,8 @@ export interface Phone {
 export interface Pairing {
   token: string;
   expires: number;
+  /** The relay pairing that requested this link, or null for a link issued locally. */
+  issuer?: { key: string; pairing: string } | null;
 }
 
 export interface LinkState {
@@ -82,7 +83,7 @@ export interface LinkState {
   /** The names you gave this Mac's machines, by key, over what its app says (`kuvo/computers/<key>`). */
   peerNames?: Record<string, string>;
   /** Machines removed through `kuvo/computers` (by key), which this Mac's app saying its machines
-   * doesn't bring back: only setting one up again does (`kuvo/link/setup?key=`). */
+   * doesn't bring back: only completing an explicit add does. */
   removedHere?: string[];
   /** Machines this Mac removed that haven't heard it yet (they hear it once it's back on the relay). */
   untold?: Peer[];

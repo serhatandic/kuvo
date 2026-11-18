@@ -173,35 +173,40 @@ export function renameHere(key: string, name: string): Acted {
  * phones document then says to your other computers. It keeps running there, as a box of its own. */
 export function removeHere(key: string): Acted {
   let gone: Peer[] = [];
-  let id: string | undefined;
   let already = false;
+  let listSaved = true;
   const changed = updateLink(link => {
     const peer = link ? peersOf(link).find(each => each.key === key) : undefined;
     // (Removed already, from here: the same again, as when it's asked again after a restart.)
     already = Boolean(link?.removedHere?.includes(key));
     // (One removed before its devices went with it, #753: they go when it's asked again.)
     if (!link || !peer) return link && already && takeOffVouched(link, key) ? link : null;
-    id = peer.id;
-    link.removedHere = [...(link.removedHere ?? []).filter(each => each !== key), key].slice(-64);
     const made = setMacPeers(link, { peers: (Array.isArray(link.macPeers) ? link.macPeers : []).filter(each => each?.key !== key), moved: link.macMoved, removed: [key] });
     if (!made.link) return null;
     gone = made.gone;
     if (made.link.peerNames) delete made.link.peerNames[key];
+    if (peer.id) listSaved = forgetSaved(peer.id);
     return made.link;
   });
   if (!gone.length && !already) return answer(404, { message: `That isn't one of ${ownName()}'s machines.` });
-  if (id) forgetSaved(id);
   macDocsChanged({ closeRemoved: changed });
   tellGone(gone);
+  if (!listSaved) return answer(503, { message: "The computer’s access was removed, but the saved machines list couldn’t be updated." });
   return answer(200, {});
 }
 
 // The machine `id` gone from this Mac's list of machines (`machines.json`), as its app would take
 // it off: what `kuvo/machines` and whether the link meets machines go by. One that won't read stays.
-export function forgetSaved(id: string): void {
+export function forgetSaved(id: string): boolean {
   const saved = savedMachines();
-  if (!saved?.some(each => each.destination === id)) return;
-  try { writePrivate(LIST_FILE, JSON.stringify(saved.filter(each => each.destination !== id), null, 2)); } catch {}
+  if (!saved) return false;
+  if (!saved.some(each => each.destination === id)) return true;
+  try {
+    writePrivate(LIST_FILE, JSON.stringify(saved.filter(each => each.destination !== id), null, 2));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** What another of your computers' box handed here (`area: "computers"`): done as this box's own

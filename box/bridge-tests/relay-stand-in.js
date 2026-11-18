@@ -63,6 +63,7 @@ export async function relayStandIn({ addressOf }, { changed: told = () => {} } =
   const answers = { push: null };
   // Each connection, and what it knows of its device.
   const sockets = new Map();
+  const offline = new Set();
   const deliver = (from, to, payload) => {
     const device = devices.get(to.toString("hex"));
     if (!device) return devices.get(from.toString("hex"))?.(Buffer.concat([Buffer.from([3]), to]));
@@ -74,7 +75,9 @@ export async function relayStandIn({ addressOf }, { changed: told = () => {} } =
   const take = (message, state, give) => {
     const kind = message[0];
     if (kind === 1 && message.length === 33 && !state.address) {
-      state.address = addressOf(message.subarray(1));
+      const address = addressOf(message.subarray(1));
+      if (offline.has(address.toString("hex"))) return;
+      state.address = address;
       devices.set(state.address.toString("hex"), give);
       give(Buffer.concat([Buffer.from([1]), state.address]));
       changed();
@@ -133,6 +136,13 @@ export async function relayStandIn({ addressOf }, { changed: told = () => {} } =
     delivered,
     // Whether a device is on it at `address`.
     has: address => devices.has(address.toString("hex")),
+    // Take one box off the relay and hold it there until it can connect again.
+    disconnect(address) {
+      const key = address.toString("hex");
+      offline.add(key);
+      for (const [socket, state] of sockets) if (state.address?.equals(address)) socket.destroy();
+      return () => offline.delete(key);
+    },
     // A device in this process: what comes for it, in order (`next`), and what it sends.
     device(secret = crypto.randomBytes(32)) {
       const inbox = [];

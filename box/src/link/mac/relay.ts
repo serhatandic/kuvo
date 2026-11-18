@@ -16,7 +16,7 @@ import { docsChanged } from "../documents/exchange";
 import { peerPlaces, readBridgeFile, readEngineFile } from "../engine/client";
 import { announce } from "../peers/agents";
 import { peerMail, receiveMail } from "../peers/mail";
-import { authorizePhone, confirmPhone } from "../phones";
+import { authorizePhonePairing, confirmPhone } from "../phones";
 import { connectOnce, nextTry } from "../relay/connection";
 import { LinkHost } from "../relay/host";
 import { engineHandler } from "../server/router";
@@ -112,7 +112,7 @@ export async function runMacLink(): Promise<void> {
         key: Buffer.from(link.key, "base64url"),
         hello: { v: 1, kind: "mac", name: config!.name, app: config!.app, engine: engine.version ?? null },
         // Phones only while the phone link's on (the relay can be up for your machines alone).
-        authorize: (key, hello, address) => Boolean(macLink.config?.phones) && authorizePhone(key, hello, address),
+        authorize: (key, hello, address) => Boolean(macLink.config?.phones) && authorizePhonePairing(key, hello, address),
         confirmed: confirmPhone,
         // Mail from your machines, taken here as a machine takes it (`peerMail`).
         mail: (_from, body) => receiveMail(body, host, (sender, payload) => peerMail(sender, payload, host, peerPlaces)),

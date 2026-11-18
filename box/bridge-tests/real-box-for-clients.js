@@ -27,7 +27,7 @@ const token = crypto.randomBytes(16).toString("base64url");
 const name = "real-box";
 fs.writeFileSync(path.join(box, "run", "link.json"), JSON.stringify({
   relay: relay.url, secret: secret.toString("base64url"), key: key.toString("base64url"), sign: link.newSigningSeed(), name, phones: [],
-  pairing: { token, expires: Date.now() + 600_000 },
+  pairing: { token, expires: Date.now() + 600_000, issuer: null },
 }), { mode: 0o600 });
 
 // As a machine runs its link: on Bun where there's one (a box's own runtime), else this Node.

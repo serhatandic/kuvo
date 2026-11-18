@@ -103,7 +103,7 @@ import { peerMail, receiveMail } from "./peers/mail";
 import { tellSeatPeers, watchSeats, whereChanged } from "./peers/seats";
 import { changePersonalities, mergePersonalities, readPersonalities } from "./personalities/library";
 import { takePersonalities } from "./personalities/take";
-import { authorizePhone, confirmPhone, foldPhones, newPairingToken, PAIRING_MINUTES, pairingLink } from "./phones";
+import { authorizePhonePairing, confirmPhone, foldPhones, newPairingToken, PAIRING_MINUTES, pairingLink } from "./phones";
 import { connectOnce, nextTry } from "./relay/connection";
 import { LinkHost } from "./relay/host";
 import { engineHandler } from "./server/router";
@@ -587,7 +587,7 @@ async function run(): Promise<void> {
     const host = new LinkHost({
       key: Buffer.from(link!.key!, "base64url"),
       hello: { v: 1, kind: "machine", name: link!.name || os.hostname(), app: BRIDGE_VERSION, engine: engine.version ?? null },
-      authorize: authorizePhone,
+      authorize: authorizePhonePairing,
       confirmed: confirmPhone,
       mail: (_from, body) => receiveMail(body, host, (sender, payload) => peerMail(sender, payload, host, peerPlaces), (mac, given, at) => hold.attend(`mac:${mac}`, given, at)),
       handle: engineHandler(readEngineFile, { name: link!.name || os.hostname() }, readBridgeFile, changed => host.keepOnly(new Set((changed.phones ?? []).map(phone => phone.key))), hold),

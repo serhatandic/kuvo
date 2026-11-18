@@ -956,8 +956,19 @@ test("a phone's Remove, Uninstall and Forget (the old Mac app's `kuvo/machines/<
   const hosts = async () => (await ask("GET", "kuvo/hosts")).body.hosts.map(each => [each.machine, each.removed]);
   assert.deepEqual(await hosts(), [["macbook", false], ["studio", true]]);
 
-  // Remove: off this Mac's list and your computers', running on there; your phones still reach it, marked removed.
-  assert.equal((await ask("DELETE", "kuvo/machines/macbook")).status, 200);
+  // Remove while Set Up Again is in flight. Its old join cannot restore this peer.
+  fs.writeFileSync(path.join(fake, "hold"), 'bin/kuvo-start" start');
+  let setup;
+  try {
+    setup = await ask("POST", `kuvo/computers/${peer().key}/setup`);
+    await until(setup.body.try.id, found => found?.steps.find(step => step.id === "starting")?.state === "now");
+    assert.equal((await ask("DELETE", "kuvo/machines/macbook")).status, 200);
+  } finally {
+    fs.rmSync(path.join(fake, "hold"));
+  }
+  const ended = await over(setup.body.try.id);
+  assert.equal(ended.state, "failed");
+  assert.match(ended.failure.message, /was removed from your computers/);
   assert.deepEqual(read(path.join(home, "machines.json")), []);
   assert.equal(peer(), undefined);
   assert.ok(pidsThere(path.join(homes.macbook, ".kuvo-code")).filter(alive).length > 0, "it runs on");

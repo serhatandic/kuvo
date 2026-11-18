@@ -169,7 +169,7 @@ function phoneFor(host, hostKey) {
 
 test("the host lets in a phone with the pairing token once, then by its key", async () => {
   const hostKey = link.newKey();
-  link.writeLink({ relay: "wss://relay.test", secret: "", key: hostKey.toString("base64url"), phones: [], pairing: { token: Buffer.alloc(16, 7).toString("base64url"), expires: Date.now() + 60_000 } });
+  link.writeLink({ relay: "wss://relay.test", secret: "", key: hostKey.toString("base64url"), phones: [], pairing: { token: Buffer.alloc(16, 7).toString("base64url"), expires: Date.now() + 60_000, issuer: null } });
   const host = new link.LinkHost({ key: hostKey, hello: { v: 1, kind: "machine", name: "my-server", app: "0", engine: "2.0.30" }, authorize: link.authorizePhone, confirmed: link.confirmPhone, handle: async function* () {} });
 
   const stranger = phoneFor(host, hostKey);
@@ -1927,7 +1927,7 @@ test("a phone lists the phones paired with a machine and removes a lost one ther
 
   // Pairing it again lets it back in, though its key is one the machine has.
   const token = crypto.randomBytes(16).toString("base64url");
-  link.updateLink(current => ({ ...current, pairing: { token, expires: Date.now() + 60_000 } }));
+  link.updateLink(current => ({ ...current, pairing: { token, expires: Date.now() + 60_000, issuer: null } }));
   assert.equal(link.authorizePhone(lost, { pair: token, name: "Found" }, undefined), true);
   const found = link.readLink().phones.find(phone => phone.key === lost.toString("base64url"));
   assert.ok(found && found.pairing && found.pairing !== "b", "a pairing of its own");
@@ -1990,7 +1990,7 @@ test("a machine pairs phones by itself while it leads its own setup, and not as 
   assert.equal(link.readLink().pairing, undefined);
   // A link it made before it was a member pairs no one now, and is done with.
   const token = crypto.randomBytes(16).toString("base64url");
-  link.updateLink(current => ({ ...current, pairing: { token, expires: Date.now() + 60_000 } }));
+  link.updateLink(current => ({ ...current, pairing: { token, expires: Date.now() + 60_000, issuer: null } }));
   const late = crypto.randomBytes(32);
   assert.equal(link.authorizePhone(late, { pair: token, name: "Late" }, undefined), false);
   assert.equal(link.readLink().pairing, undefined);

@@ -3,7 +3,6 @@
 // and agents of this Mac's conversations.
 
 import fs from "node:fs";
-import { savedMachines } from "./machines";
 import path from "node:path";
 import { isObject, parsed } from "../../shared/json";
 import type { Body } from "../../shared/json";
@@ -67,20 +66,18 @@ const macPhones = (): MacPhones => {
 // isn't a peer now, and nothing more; one set up again is no longer removed. One that isn't a
 // machine's record is left out (a line in the box's log says so), never the rest with it. No link
 // for what isn't a list.
-export function setMacPeers(link: LinkState, given: unknown): MacPeersSet {
+export function setMacPeers(link: LinkState, given: unknown, rejoined?: string): MacPeersSet {
   if (!isObject(given) || !Array.isArray(given.peers)) return { link: null, gone: [] };
-  // (One you removed from any of your computers stays removed until it's added again, back on this
-  // Mac's list of machines: an app that still lists it, or sets it up as it connects, doesn't bring
-  // it back.)
+  // Only a completed SSH add can restore a removed peer. The app or its saved list can be stale.
   const removedHere = Array.isArray(link.removedHere) ? link.removedHere : [];
-  const listed = savedIds();
-  const keeps = (peer: { key: string; id?: unknown }) => !removedHere.includes(peer.key) || (typeof peer.id === "string" && listed.has(peer.id));
+  const keeps = (key: string) => key === rejoined || !removedHere.includes(key);
   const now = given.peers.slice(0, MOST_PEERS).map(peer => ({ ...peer, kind: "machine" }))
-    .filter(peer => fitsPeer(peer) && typeof peer.sign === "string" && SIGN.test(peer.sign) && keeps(peer)).map(cleanPeer);
-  const skipped = given.peers.slice(0, MOST_PEERS).filter(peer => !(isObject(peer) && typeof peer.key === "string" && !keeps(peer as { key: string; id?: unknown }))).length - now.length;
+    .filter(peer => fitsPeer(peer) && typeof peer.sign === "string" && SIGN.test(peer.sign) && keeps(peer.key)).map(cleanPeer);
+  const skipped = given.peers.slice(0, MOST_PEERS).filter(peer => !(isObject(peer) && typeof peer.key === "string" && !keeps(peer.key))).length - now.length;
   if (skipped) console.error(`${skipped} of this Mac's machines weren't records the box could take, and were left out.`);
   const removed = (Array.isArray(given.removed) ? given.removed : []).filter((key: unknown): key is string => typeof key === "string" && KEY.test(key) && !now.some(peer => peer.key === key));
   const gone = peersOf(link).filter(peer => removed.includes(peer.key));
+  if (removed.length) link.removedHere = [...new Set([...removedHere, ...removed])];
   const kept = (Array.isArray(link.left) ? link.left : []).filter(key => !now.some(peer => peer.key === key) && !removed.includes(key));
   link.left = [...kept, ...removed].slice(-64);
   // Kuvo Code's app on a computer you removed goes from your devices with it: every device that
@@ -97,8 +94,8 @@ export function setMacPeers(link: LinkState, given: unknown): MacPeersSet {
     if (!Object.keys(link.peerNames).length) delete link.peerNames;
   }
   // (Added again: no longer among those removed.)
-  if (link.removedHere) {
-    link.removedHere = link.removedHere.filter(key => !now.some(peer => peer.key === key));
+  if (link.removedHere && rejoined && now.some(peer => peer.key === rejoined)) {
+    link.removedHere = link.removedHere.filter(key => key !== rejoined);
     if (!link.removedHere.length) delete link.removedHere;
   }
   link.macPeers = now;
@@ -107,11 +104,6 @@ export function setMacPeers(link: LinkState, given: unknown): MacPeersSet {
   return { link, gone };
 }
 
-
-// The machines on this Mac's list of machines (`machines.json`), by their ids there.
-function savedIds(): Set<string> {
-  return new Set((savedMachines() ?? []).map(each => each.destination));
-}
 
 /** What setting up a machine over SSH gives it (`kuvo/link/setup`; `add/flow.ts`, the box adding
  * one itself): this Mac's key, the key its documents are signed with, its own documents as they
@@ -124,7 +116,7 @@ export async function setupGift(again: string | null): Promise<{ mac: string | n
   let docs: SignedDoc[] = [];
   const link = updateLink(link => {
     if (!link?.sign) return null;
-    if (again && Array.isArray(link.left)) link.left = link.left.filter(key => key !== again);
+    if (again && !link.removedHere?.includes(again) && Array.isArray(link.left)) link.left = link.left.filter(key => key !== again);
     noteKeyNow(link);
     const own = ownDocs({ link, library });
     docs = [...Object.values(own).map(made => made.envelope), ...Object.values(link.docs ?? {}).sort((a, b) => (a.d < b.d ? -1 : 1))];

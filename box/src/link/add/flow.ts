@@ -28,6 +28,7 @@ import { oldAppAttached, removeHere } from "../peers/manage";
 import { appsOf, foundOf, judgeComputer, oursNow } from "../setup/judge";
 import { addElsewhere, mainElsewhere } from "../setup/main-only";
 import { macLink, readLink, updateLink } from "../state";
+import type { LinkState } from "../state";
 import { boxVersion, newerVersion } from "../updates/update";
 import { addressProblem } from "./address";
 import { ENGINE_VERSION, RELEASE_FILES, engineFor, ownFiles, tarOf, type Kind } from "./files";
@@ -266,7 +267,7 @@ const UNINSTALL_STEPS = [["checking", "Reaching it"], ["removing", "Stopping and
 const launcherID = (key: string): string => crypto.createHash("sha256").update(`kuvo-launcher\n${key}`).digest("hex").slice(0, 32);
 
 // Sets a computer up at `destination`, or again: everything to its box running there as one of yours.
-async function setUp(tell: Telling, destination: string, name: string, kind: "add" | "setup" | "update"): Promise<void> {
+async function setUp(tell: Telling, destination: string, name: string, kind: "add" | "setup" | "update", expectedKey?: string): Promise<void> {
   const reach = new Reach(destination, name, tell, kind === "add" ? [] : otherAddressesOf(destination));
   try {
     tell.step("checking", `Connecting to ${name}`);
@@ -295,7 +296,7 @@ async function setUp(tell: Telling, destination: string, name: string, kind: "ad
     const found = foundOf(probe.lines).find(box => !box.app);
     const sameID = kind === "add" && probe.id ? saved.find(each => each.identity === probe.id && each.destination !== destination) : undefined;
     const itsPeer = sameID ? peersOf(link).find(each => each.id === sameID.destination) : undefined;
-    const same = sameID && (!found?.card?.self.key || !itsPeer || found.card.self.key === itsPeer.key) ? sameID : undefined;
+    const same = sameID && itsPeer && (!found?.card?.self.key || found.card.self.key === itsPeer.key) ? sameID : undefined;
     if (same) {
       const peer = itsPeer;
       writePrivate(LIST_FILE, JSON.stringify(saved.map(each => (each === same ? { ...each, otherAddresses: [...new Set([...(each.otherAddresses ?? []), destination])] } : each)), null, 2));
@@ -388,7 +389,7 @@ async function setUp(tell: Telling, destination: string, name: string, kind: "ad
       }
       tell.step("joining");
       const identity = /^id ([0-9a-f]{32})$/m.exec(started.stdout)?.[1] ?? probe.id;
-      const computer = await join(reach, destination, name, identity);
+      const computer = await join(reach, destination, name, identity, expectedKey);
       unjoined = false;
       tell.came(computer);
     } catch (error) {
@@ -412,9 +413,13 @@ async function setUp(tell: Telling, destination: string, name: string, kind: "ad
 // Signs the computer into your setup: this box's keys and documents given over SSH (the trust
 // between them), its own taken back, and its record written here, for your other computers and
 // phones to take from this box.
-async function join(reach: Reach, destination: string, name: string, identity: string | null): Promise<{ key: string; name: string }> {
+async function join(reach: Reach, destination: string, name: string, identity: string | null, expectedKey?: string): Promise<{ key: string; name: string }> {
   const relay = macLink.config?.relay;
-  const before = peersOf(readLink()).find(peer => peer.id === destination);
+  const beforeLink = readLink();
+  const removedWhileAdding = (link: LinkState | null) => expectedKey && link?.removedHere?.includes(expectedKey);
+  const removed = () => new Failed(`${name} was removed from your computers. Add it again to restore access.`);
+  if (removedWhileAdding(beforeLink)) throw removed();
+  const before = peersOf(beforeLink).find(peer => peer.id === destination);
   const gift = await setupGift(before?.key ?? null);
   if (!relay || !gift?.mac) throw new Failed(`${ownName()} isn’t linked to your other computers yet, so it couldn’t add ${name}.`);
   const input = { relay, name, mac: gift.mac, macSign: gift.macSign, docs: gift.docs, id: destination, tolerates: 1, macID: launcherID(gift.mac), macName: ownName(), replaces: gift.replaces };
@@ -425,21 +430,22 @@ async function join(reach: Reach, destination: string, name: string, identity: s
     throw new Failed(`Kuvo Code on ${name} couldn’t join your computers. ${lastLine(ran.stderr)}`.trim());
   }
   const peer = { key: said.key, sign: said.sign, address: said.address, name, id: destination };
-  // Its record: on this box's list of machines first (which a peer it removed before is taken back by).
-  const saved = savedMachines();
-  if (!saved) throw new Failed(`${ownName()}’s list of machines can’t be read right now.`);
-  const had = saved.find(each => each.destination === destination);
-  writePrivate(LIST_FILE, JSON.stringify(had ? saved.map(each => (each === had && identity ? { ...each, identity } : each)) : [...saved, { destination, ...(identity ? { identity } : {}) }], null, 2));
-  keepHost(destination, { name, address: peer.address, key: peer.key, sign: peer.sign });
   let named = name;
   const changed = updateLink(link => {
+    if (removedWhileAdding(link)) throw removed();
+    // Save the machine record and bridge before restoring trust on a fresh Add.
+    const saved = savedMachines();
+    if (!saved) throw new Failed(`${ownName()}’s list of machines can’t be read right now.`);
+    const had = saved.find(each => each.destination === destination);
+    writePrivate(LIST_FILE, JSON.stringify(had ? saved.map(each => (each === had && identity ? { ...each, identity } : each)) : [...saved, { destination, ...(identity ? { identity } : {}) }], null, 2));
+    keepHost(destination, { name, address: peer.address, key: peer.key, sign: peer.sign });
     const state = link ?? { phones: [] };
     // (Under its id here, or its key, once: set up again with keys made anew, it's the same machine.)
     const peers = (Array.isArray(state.macPeers) ? state.macPeers : []).filter(isObject);
     const others = peers.filter(each => each.key !== peer.key && each.id !== destination);
     // (And what's kept by the key it had goes by the one it has now: the devices its box vouched for.)
     for (const each of peers) if (each.id === destination && typeof each.key === "string") vouchMoved(state, each.key, peer.key);
-    return setMacPeers(state, { peers: [...others, peer], moved: state.macMoved }).link;
+    return setMacPeers(state, { peers: [...others, peer], moved: state.macMoved }, expectedKey ? undefined : peer.key).link;
   });
   if (!changed || !peersOf(changed).some(each => each.key === peer.key)) throw new Failed(`${ownName()} couldn’t keep ${name}’s record.`);
   named = peersOf(changed).find(each => each.key === peer.key)?.name ?? name;
@@ -475,7 +481,8 @@ const uninstalling = (now: Running | undefined): Busy | null => (now?.seen.kind 
  * being added or set up there already is answered as it is; one being stopped is waited for. */
 export function beginAdd(destination: string): Running | Busy {
   const now = underWay(destination);
-  return uninstalling(now) ?? now ?? begin("add", destination, destination, SETUP_STEPS, tell => setUp(tell, destination, destination, "add"));
+  const expected = peersOf(readLink()).find(peer => peer.id === destination)?.key;
+  return uninstalling(now) ?? now ?? begin("add", destination, destination, SETUP_STEPS, tell => setUp(tell, destination, destination, "add", expected));
 }
 
 /** The address this box set the computer `key` up at, and its name: null for one it didn't. */
@@ -491,7 +498,7 @@ export function beginSetup(key: string): Running | Busy | null {
   const at = sshAddressOf(key);
   if (!at) return null;
   const now = underWay(at.destination);
-  return uninstalling(now) ?? now ?? begin("setup", at.destination, at.name, AGAIN_STEPS, tell => setUp(tell, at.destination, at.name, "setup"));
+  return uninstalling(now) ?? now ?? begin("setup", at.destination, at.name, AGAIN_STEPS, tell => setUp(tell, at.destination, at.name, "setup", key));
 }
 
 /** What Kuvo the computer `key` has, and how many conversations are at work there now (null: that
@@ -534,7 +541,7 @@ export function beginUpdate(key: string, auto = false): Running | Busy | null {
   return begin("update", at.destination, at.name, UPDATE_STEPS, tell => setUp(auto ? {
     ...tell,
     ask: async () => { throw new Failed(`${at.name} needs you to answer something before it’s updated. Choose Update Now on its page in Computers.`); },
-  } : tell, at.destination, at.name, "update"));
+  } : tell, at.destination, at.name, "update", key));
 }
 
 /** Begins uninstalling Kuvo Code from the computer `key` (one being uninstalled already is

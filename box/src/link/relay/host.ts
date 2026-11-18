@@ -29,7 +29,7 @@ export interface BoxHello {
 }
 
 /** A phone with a session here: its static key, the name it gave, and where it is on the relay. */
-export type SessionPhone = Required<Pick<Asker, "key" | "name" | "address">> & Pick<Asker, "kind">;
+export type SessionPhone = Required<Pick<Asker, "key" | "name" | "address">> & Pick<Asker, "kind" | "pairing">;
 
 /** A socket opened for a phone, as the box's side gives it: what the phone sends, and its end. */
 export interface SocketHandle {
@@ -49,7 +49,7 @@ export interface SocketEvents {
 export interface LinkHostOptions {
   key: Buffer;
   hello: BoxHello;
-  authorize: (key: Buffer, hello: PhoneHello, address: Buffer) => boolean | Promise<boolean>;
+  authorize: (key: Buffer, hello: PhoneHello, address: Buffer) => boolean | string | Promise<boolean | string>;
   handle: (request: LinkRequest, phone: SessionPhone, signal: AbortSignal) => Answer;
   connect?: (request: LinkRequest, phone: SessionPhone, events: SocketEvents) => SocketHandle;
   send: (bytes: Buffer) => boolean | void;
@@ -115,7 +115,8 @@ export class LinkHost {
   /** What's queued for the relay and not sent yet, in bytes. */
   declare unsent?: () => number;
 
-  // authorize(key, hello, address) → whether to let the phone in; handle(request, phone, signal) → an
+  // authorize(key, hello, address) → the pairing id, or whether to let the phone in;
+  // handle(request, phone, signal) → an
   // async iterable of { head: { status, headers } } and { body }; connect(request, phone,
   // { open, text, binary, end }) → a socket's { send, close } (PROTOCOL.md, "Sockets");
   // send(bytes) → to the relay; confirmed(phone) → its session proved its own: its first message
@@ -196,11 +197,14 @@ export class LinkHost {
     } catch {
       return refuse();
     }
-    if (hello?.v !== 1 || !(await this.authorize(responder.rs, hello, from))) return refuse();
+    if (hello?.v !== 1) return refuse();
+    const authorized = await this.authorize(responder.rs, hello, from);
+    if (typeof authorized !== "string" && !authorized) return refuse();
+    const pairing = typeof authorized === "string" ? authorized : undefined;
     const { message, transport } = responder.writeMessage2(Buffer.from(JSON.stringify(this.hello)));
     // One session per phone: a new one replaces what's left of the last.
     for (const old of this.sessions.values()) if (old.from.equals(from)) this.end(old, false);
-    const phone: SessionPhone = { key: responder.rs, name: String(hello.name ?? ""), address: from, ...(hello.client === "desktop" ? { kind: "desktop" as const } : {}) };
+    const phone: SessionPhone = { key: responder.rs, name: String(hello.name ?? ""), address: from, pairing, ...(hello.client === "desktop" ? { kind: "desktop" as const } : {}) };
     this.sessions.set(id, { id, from, number, phone, transport, incoming: new Map(), running: new Map(), sockets: new Map() });
     this.send(relaySend(from, frame(Frame.handshake2, number, message)));
   }

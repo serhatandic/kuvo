@@ -219,10 +219,10 @@ each box pairs and removes (`phones`), and each box's view of your personalities
   mails them on its relay connection, as a machine's bridge does; its peers are the machines its
   app set up (`kuvo/link/peers`, "This Mac's box: the relay"). It takes `peers` only of its own (a
   copy it lost count of), and `phones` and `personalities` from its machines and itself.
-- **`phones`**, one per box: `{phones: [{key, name, address?, pairing, kind?}], removed: [{key,
+- **`phones`**, one per box: `{phones: [{key, name, address?, pairing, kind?, by?}], removed: [{key,
   pairing}]}`: the phones paired there, and every removal it knows of ("Paired phones"); `kind:
   "desktop"` on Kuvo Code's desktop app (`clients.kind`; left out for a phone, and a box that
-  doesn't know it reads the entry as a phone's). A box
+  doesn't know it reads the entry as a phone's). `by` is the voucher's box key. A box
   lets in its own and its Macs' phones, less every pairing removed in any phones document it
   takes, which it notes as its own removal too. A Mac with the phone link off signs none.
 - **`personalities`**, each box's view: the library (`{personalities, removed}`, "Personalities").
@@ -1788,8 +1788,9 @@ machines; a client that wants every computer's facts asks the box that has it as
     document, named among those you removed (`left`, which the machine hears and lets that Mac go),
     and off that Mac's list of machines (`machines.json`); its app listing it again
     (`kuvo/link/peers`), or setting it up as it connects (`kuvo/link/setup?key=`), doesn't bring it
-    back (`removedHere` in link.json) until it's added again: on that Mac's list of machines
-    (`machines.json`) once more. It keeps running there, as a box of its own, with its sessions.
+    back (`removedHere` in link.json). Only a completed SSH add restores that peer. If saving the
+    machines list fails, the removal still revokes access and the request reports the incomplete
+    change. It keeps running there, as a box of its own, with its sessions.
     **Kuvo Code's app on it goes from your devices with it** (#753): every device that computer's
     box vouched for (`by`, "Paired phones", `kuvo/devices/pair`) is taken off the writer's list,
     each by the pairing it has now and noted among the removals as any removal is, so the
@@ -11374,6 +11375,10 @@ On both, for a paired phone:
   it pairs is the machine's own (as `kuvo-link.js pair` pairs one), and `409` when the machine has
   no relay. On a member of a setup, `409 {"message", primary}`: only its main computer pairs
   ("Your setup", `setup.mainOnly`).
+  A link requested over the relay is valid only while the requesting key still has the same
+  pairing. A device it pairs inherits the requesting device's voucher, if any. A device vouched
+  for by another box requests links on the box that paired it. An inherited desktop pairing from
+  before vouchers were included in phones documents follows the same rule.
 - `POST kuvo/devices/pair` with `{"key": "<the app's static key, 32 bytes, base64url>", "name":
   "<up to 100 characters>", "kind": "desktop"}` (`devices.pair`, #742): Kuvo Code's desktop app on
   this computer paired as one of your devices, with no link to paste and no token (it ends no
@@ -11418,16 +11423,14 @@ On both, for a paired phone:
   - **And the computer that vouched adds no other** (`devices.allow`), so whoever sits at it
     can't have its app make a new key and come back. The main computer keeps who vouched on the
     device it pairs on a member's word (`by`, that box's static key, on its entry in the main
-    computer's link.json alone: never in a phones document; none on one its own app or a token
+    computer's link.json and its phones document; none on one its own app or a local token
     paired). When that device is removed, by any way the removal reaches the main computer's box
     (`kuvo/phones/remove` from a paired device there, from Kuvo Code's app beside it, or a removal
     another box's phones document brings), the main computer's box:
     - **removes every other device that same box vouched for** (all with that `by`), each by the
       pairing it has now, noted among the removals as any removal is: its phones document carries
       them, so they're out on every computer and their sessions end, and none is paired again by
-      asking (`reason: "removed"`). A second key someone there had the box vouch for earlier is
-      no way back in. What another computer vouched for, a phone, and what the main computer
-      paired itself are untouched;
+      asking (`reason: "removed"`). Pairings from other vouchers and independent pairings stay;
     - notes the box that vouched (`vouchBlocked` in link.json: `[{key, device, at}]`, the box's
       key, the removed device's name and when, in milliseconds; one entry a box, the newest 64)
       and from then on answers that box's vouch, for any new key, `409 {"message": "<Device> on

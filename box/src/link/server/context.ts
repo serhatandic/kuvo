@@ -29,6 +29,8 @@ export interface LinkRequest {
 /** Who asks: a phone, by its static key and where it is on the relay; nothing for this Mac's app. */
 export interface Asker {
   key?: Buffer;
+  /** The pairing in use when the relay session opened. */
+  pairing?: string;
   name?: string;
   address?: Buffer;
   /** What it said it is as its session opened (`client`): Kuvo Code's desktop app; none for a phone. */

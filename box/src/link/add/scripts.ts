@@ -278,8 +278,15 @@ ${engineOf(version)}
 # (The key Kuvo Code's app there is known by among your devices, which the box that removes this
 # computer takes off them too: with or without a Kuvo Code that runs. On a Mac the app keeps it in
 # its Keychain, which isn't reached from here: there, being taken off your devices keeps it out.)
-${only ? 'rm -rf "$K/desktop"' : ""}
-if [ ! -x "$E" ] || [ ! -f "$K/bin/kuvo-link.js" ]; then echo '{"result":"none"}'; exit 0; fi
+desktop_failed=0
+${only ? 'rm -rf "$K/desktop" || desktop_failed=1' : ""}
+check_desktop() {
+  if [ "$desktop_failed" -ne 0 ]; then
+    echo '{"result":"incomplete","message":"Kuvo Code couldn’t delete the desktop identity folder. Check its permissions and try again."}'
+    exit 1
+  fi
+}
+if [ ! -x "$E" ] || [ ! -f "$K/bin/kuvo-link.js" ]; then check_desktop; echo '{"result":"none"}'; exit 0; fi
 ${link(`leave ${quote(key)}`)} >/dev/null 2>&1 || true
 ${only ? "" : "echo kept; exit 0"}
 ${link("uninstall")} 2>/dev/null; did=$?
@@ -292,5 +299,6 @@ rm -f "$K/run/launch.env" "$K/run/launch.notes"
 if [ -d "$K/agents" ]; then
   find "$K/agents" -path "$K/agents/runtime" -prune -o -type f \( -name .credentials.json -o -name 'auth.json*' -o -name 'acp_token.json*' -o -name 'oauth-token.json*' -o -path '*/claude/tokens/*' \) -exec rm -f {} + 2>/dev/null
 fi
+check_desktop
 [ $did -eq 0 ] || exit 1
 true`;

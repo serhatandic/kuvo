@@ -76,23 +76,40 @@ const switchOffWords = () => ({ message: `“Let my devices connect” is off on
 
 /** `device` paired on this box, which pairs phones itself: at once, as a paired device of its own.
  * Refused as a phone's pairing is: a Mac that lets no device in, or a box with no relay. `by`: the
- * member's box that vouches for it (its key and name), which is kept with it, and refused while
- * that box is kept from vouching. */
-export function pairHere(device: AskingDevice, by?: { key: string; name: string }): Acted {
+ * member's box key. Its membership and permission to vouch are checked under the pairing lock. */
+export function pairHere(device: AskingDevice, by?: string): Acted {
   if (switchOff()) return answer(409, switchOffWords());
   let made: ReturnType<typeof pairDevice> | null = null;
   let fresh = false;
+  let refusal: Acted | undefined;
+  let computer: string | undefined;
   updateLink(link => {
+    if (by) {
+      if (!link || followedSetup(link)?.role !== "primary") {
+        refusal = answer(409, { message: `${ownName()} isn't your setup's main computer, so it adds no devices for your other computers.` });
+        return null;
+      }
+      if (link.removedHere?.includes(by) || !ownMachines(link).has(by)) {
+        refusal = answer(409, { message: `Only computers in ${ownName()}'s own setup can add your devices.` });
+        return null;
+      }
+      computer = peersOf(link).find(peer => peer.key === by)?.name;
+    }
+    if (!givenDevice(device, link)) {
+      refusal = answer(400, NOT_GIVEN);
+      return null;
+    }
     if (!link?.relay || !link.secret) return null;
     const before = (link.phones ?? []).length;
-    made = pairDevice(link, { ...device, ...(by ? { by: by.key } : {}) });
+    made = pairDevice(link, { ...device, by });
     fresh = (link.phones ?? []).length !== before;
     return fresh ? link : null;
   });
+  if (refusal) return refusal;
   const paired = made as ReturnType<typeof pairDevice> | null;
   if (!paired) return answer(409, { message: IS_MAC ? `${ownName()} isn't ready for your devices yet. Try again in a moment.` : "This machine has no relay to pair through." });
   if ("removed" in paired) return answer(409, REMOVED);
-  if ("blocked" in paired) return answer(409, blockedVouch(paired.blocked.device, by?.name || "that computer", ownName()));
+  if ("blocked" in paired) return answer(409, blockedVouch(paired.blocked.device, computer || "that computer", ownName()));
   if ("full" in paired) return answer(409, { message: "You have as many desktop apps among your devices as Kuvo Code keeps. Remove one you no longer use, then try again." });
   if (fresh) {
     noteDocsChanged();
@@ -109,15 +126,9 @@ const ownMachines = (link: LinkState): Set<string> => new Set(IS_MAC ? macPeersB
 /** A member's box vouching for the app on its computer (`area: "devices"`, by mail): paired here
  * only on the setup's main computer, for a box its own peers document names. */
 export async function deviceAct(sender: MailSender, act: Act): Promise<Acted> {
-  const here = ownName();
-  const link = readLink();
-  const device = act.method === "POST" ? givenDevice({ key: act.item, ...(act.body ?? {}) }, link) : null;
+  const device = act.method === "POST" ? givenDevice({ ...(act.body ?? {}), key: act.item }, null) : null;
   if (!device) return answer(400, NOT_GIVEN);
-  const setup = followedSetup(link);
-  if (!link || setup?.role !== "primary") return answer(409, { message: `${here} isn't your setup's main computer, so it adds no devices for your other computers.` });
-  if (!ownMachines(link).has(sender.key)) return answer(409, { message: `Only computers in ${here}'s own setup can add your devices.` });
-  // (Named as `kuvo/computers` lists it, where you allow it again.)
-  return pairHere(device, { key: sender.key, name: peersOf(link).find(peer => peer.key === sender.key)?.name || "that computer" });
+  return pairHere(device, sender.key);
 }
 
 /** `kuvo/devices/pair` as this box answers Kuvo Code's app beside it: paired here, or, on a member
