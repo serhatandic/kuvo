@@ -39,20 +39,33 @@ struct QueueDrag {
     owner: gpui::EntityId,
     item: String,
     words: String,
+    action: &'static str,
 }
 
-struct QueueDragPreview(QueueDrag, gpui::Pixels);
+struct QueueDragPreview {
+    drag: QueueDrag,
+    row: gpui::Bounds<gpui::Pixels>,
+    pointer_offset_x: gpui::Pixels,
+}
 
 impl Render for QueueDragPreview {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let c = &theme.colors;
+        // GPUI places the preview at the pointer minus its initial grab offset.
+        let left = self.row.left() - (window.mouse_position().x - self.pointer_offset_x);
         div().debug_selector(|| "queue-drag-preview".into())
-            .relative().top(px(-3.)).w(self.1).h(px(QUEUE_ROW_HEIGHT))
+            .relative().left(left).top(px(-3.)).w(self.row.size.width).h(px(QUEUE_ROW_HEIGHT))
             .flex().items_center().gap(space::S2).px(space::S2)
-            .rounded(radius::NAV).border_1().border_color(c.border).bg(c.elevated).shadow(theme.elevated_shadow())
-            .child(Icon::new(IconName::QueuedMessage).size(IconSize::Nav).color(c.text_muted))
-            .child(div().min_w_0().truncate().text_ui(TypeSize::Small).text_color(c.text).child(self.0.words.clone()))
+            .rounded(radius::NAV).bg(c.elevated).shadow(theme.card_shadow())
+            .child(Icon::new(IconName::QueuedMessage).size(IconSize::Nav).color(c.text_faint))
+            .child(div().flex_1().min_w_0().truncate().text_ui(TypeSize::Small).text_color(c.text).child(self.drag.words.clone()))
+            .child(Button::new("drag-queue-action", self.drag.action).ghost().quiet().size(ButtonSize::Small)
+                .when(self.drag.action == "Steer", |button| button.icon(IconName::Steer).icon_size(IconSize::Nav)))
+            .child(Button::icon_only("drag-queue-remove", IconName::Trash, "Remove").ghost().quiet()
+                .size(ButtonSize::Small).icon_size(IconSize::Nav))
+            .child(Button::icon_only("drag-queue-more", IconName::More, "More actions").ghost().quiet()
+                .size(ButtonSize::Small).icon_size(IconSize::Nav))
     }
 }
 
@@ -1375,7 +1388,7 @@ impl ConversationView {
             let keyboard = item.id.clone();
             let drag = QueueDrag {
                 owner: cx.entity().entity_id(), item: item.id.clone(),
-                words: item.words.lines().next().unwrap_or("").to_owned(),
+                words: item.words.lines().next().unwrap_or("").to_owned(), action: go_label,
             };
             let owner = cx.entity().downgrade();
             let row = div()
@@ -1398,14 +1411,14 @@ impl ConversationView {
                             cx.stop_propagation();
                         }
                     }))
-                    .on_drag(drag, move |drag, _, _, cx| {
-                        let width = owner.update(cx, |this, cx| {
+                    .on_drag(drag, move |drag, offset, _, cx| {
+                        let row = owner.update(cx, |this, cx| {
                             this.queue_dragging = Some(drag.item.clone());
                             this.queue_drag = None;
                             cx.notify();
-                            this.queue_scroll.bounds().size.width.max(px(180.))
-                        }).unwrap_or(px(180.));
-                        cx.new(|_| QueueDragPreview(drag.clone(), width))
+                            this.queue_scroll.bounds()
+                        }).unwrap_or_default();
+                        cx.new(|_| QueueDragPreview { drag: drag.clone(), row, pointer_offset_x: offset.x })
                     }))
                 .when(dragging_here, |d| d.opacity(0.))
                 .child(lead)
