@@ -87,7 +87,7 @@ export const SIGN_IN_ACCOUNTS = object({ accounts: list(object({ id: string, ...
 /** A sign-in started in the browser (`POST kuvo/sign-in/start`): what the engine (or the coding
  * agents' bridge) answered (`attemptID`, its page's `url`, `instructions`, how it ends: `mode`), and
  * the code its page asks for, apart (`userCode`), where it has one. */
-export const SIGN_IN_STARTED = object({ "attemptID?": string, "url?": string, "instructions?": string, "mode?": string, "acceptsCode?": bool, "userCode?": string, "time?": any });
+export const SIGN_IN_STARTED = object({ "attemptID?": string, "url?": string, "instructions?": string, "mode?": string, "acceptsCode?": bool, "pasteAddress?": bool, "userCode?": string, "time?": any });
 
 /** How a started sign-in is going, as the engine (or the coding agents' bridge) says, with, once it
  * ended without signing in (`failed`, `expired`), what a client says of it (`failure`). */
@@ -97,6 +97,7 @@ export const SIGN_IN_STATUS = object({
   "url?": string,
   "instructions?": string,
   "userCode?": string,
+  "pasteAddress?": bool,
   "failure?": string,
 });
 
@@ -129,10 +130,10 @@ export const MISC_ROUTES: RouteShape[] = [
   { route: "GET kuvo/plugins/search", answers: { 200: PLUGIN_SEARCH } },
   { route: "GET kuvo/programs", answers: { 200: PROGRAM_FOUND } },
   { route: "POST kuvo/providers/models", answers: { 200: PROVIDER_MODELS } },
-  { route: "POST kuvo/sign-in/return", answers: { 200: SIGN_IN_RETURNED } },
+  { route: "POST kuvo/sign-in/return", body: object({ url: string, "integration?": string, "attempt?": string, "agents?": bool }), answers: { 200: SIGN_IN_RETURNED, 400: object({ message: string }), 502: object({ message: string }) } },
   { route: "GET kuvo/sign-in/methods", answers: { 200: SIGN_IN_METHODS } },
   { route: "GET kuvo/sign-in/accounts", answers: { 200: SIGN_IN_ACCOUNTS } },
   { route: "GET kuvo/sign-in/status", answers: { 200: SIGN_IN_STATUS } },
-  { route: "POST kuvo/sign-in/start", answers: { 200: SIGN_IN_STARTED, 400: object({ message: string }), 502: object({ message: string }), 503: object({ message: string }), 504: object({ message: string }) } },
+  { route: "POST kuvo/sign-in/start", answers: { 200: SIGN_IN_STARTED, 400: object({ message: string }), 409: object({ message: string }), 502: object({ message: string }), 503: object({ message: string }), 504: object({ message: string }) } },
   { route: "GET kuvo/search", answers: { 200: SEARCH_FOUND } },
 ];

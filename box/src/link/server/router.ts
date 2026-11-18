@@ -1,3 +1,4 @@
+import { GITHUB_WORK_QUEUE } from "../../shared/github";
 // The box's routes
 // What a phone, or this Mac's app, asks of this box: each route to the area that answers it, the
 // first that takes a request answering it; what none takes goes on to the engine (`engineRoute`).
@@ -52,7 +53,7 @@ import { TYPED_ROUTE, typedRoute } from "../areas/typed";
 import { PARTS_ROUTE, partsRoute, SEND_ROUTE, sendRoute } from "../areas/messages";
 import { sandboxRoute } from "../areas/sandbox";
 import { providerModelsRoute } from "../areas/providers";
-import { SIGN_IN_ACCOUNTS_ROUTE, SIGN_IN_METHODS_ROUTE, SIGN_IN_START_ROUTE, SIGN_IN_STATUS_ROUTE, signInRoute } from "../areas/sign-in";
+import { SIGN_IN_ACCOUNTS_ROUTE, SIGN_IN_METHODS_ROUTE, SIGN_IN_START_ROUTE, SIGN_IN_STATUS_ROUTE, legacySignInRoute, signInRoute, workQueueSignInRoute } from "../areas/sign-in";
 import { answerProjects } from "../areas/projects";
 import { settingsRoute } from "../areas/settings";
 import { SETTINGS_PAGE_ROUTE, settingsPageRoute } from "../areas/settings-pages";
@@ -87,7 +88,7 @@ import type { Answer, AnswerPiece, Asker, LinkHandler, LinkRequest, RouteContext
  * what its `answer(context, match)` is given: the route's match for one with a part of its own
  * (`Match` a RegExpMatchArray), else `true`. */
 export interface Route<Match = true> {
-  when: (route: string, request: LinkRequest) => Match | false | null;
+  when: (route: string, request: LinkRequest, phone?: Asker) => Match | false | null;
   answer: (context: RouteContext, match: Match) => Answer;
 }
 
@@ -95,6 +96,7 @@ export interface Route<Match = true> {
 // own); `answer(context, match)`: its answer, as it comes.
 // Their order counts where they overlap: a list and its events come before the route for one of
 // its own ("events" isn't an id), as personalities', asks' and wake-ups' do.
+const WORK_QUEUE_OAUTH = new RegExp(`^api/integration/${GITHUB_WORK_QUEUE}/connect/oauth(?:/att_[a-zA-Z0-9]+)?$`);
 const ROUTES: (Route | Route<RegExpMatchArray>)[] = [
   { when: route => route === "kuvo/info", answer: infoRoute },
   { when: route => route === "kuvo/vault" || route.startsWith("kuvo/vault/"), answer: vaultRoute },
@@ -200,6 +202,12 @@ const ROUTES: (Route | Route<RegExpMatchArray>)[] = [
   { when: route => route.match(/^kuvo\/engine\/(start|restart)$/), answer: engineControlRoute },
   // Try Again for the coding agents (PROTOCOL.md, "The coding agents' state").
   { when: route => route === AGENTS_START, answer: agentsStartRoute },
+  { when: (route, request) => (request.method === "GET" && route === `api/integration/${GITHUB_WORK_QUEUE}`) ||
+    WORK_QUEUE_OAUTH.test(route), answer: workQueueSignInRoute },
+  { when: (route, request, phone) => {
+    if (!phone?.key || phone.kind === "desktop" || request.method !== "POST") return false;
+    return /^(kuvo\/agents\/)?api\/integration\/([^/]+)\/connect\/oauth$/.exec(route);
+  }, answer: legacySignInRoute },
   { when: route => route === "kuvo/sign-in/return", answer: signInReturnRoute },
   { when: route => route === SIGN_IN_METHODS_ROUTE || route === SIGN_IN_STATUS_ROUTE || route === SIGN_IN_ACCOUNTS_ROUTE || route === SIGN_IN_START_ROUTE, answer: signInRoute },
   { when: route => route === "kuvo/claude-code", answer: claudeCodeRoute },
@@ -267,7 +275,7 @@ export function engineHandler(readEngine: () => EngineRecord = readEngineFile, i
     const route = request.path.split("?")[0];
     const context: RouteContext = { request, phone, signal, route, readEngine, readBridge, bridge, info, phonesChanged, hold, json, text };
     for (const { when, answer } of ROUTES) {
-      const match = when(route, request);
+      const match = when(route, request, phone);
       // (Each answer is given what its own `when` gave: a pairing TypeScript can't follow through
       // the loop, so `never`.)
       if (match) return yield* answer(context, match as never);

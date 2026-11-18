@@ -9,7 +9,8 @@ import { messageWordsPage } from "../../shared/message-words";
 import { agentsAway, AGENTS_RESTARTING, bridgeBack } from "../areas/agents-down";
 import { engineDown, stopShell } from "../areas/engine";
 import { RUN } from "../home";
-import { isObject } from "../../shared/json";
+import { oauthStartBody, workQueueAccount } from "../areas/sign-in";
+import { isObject, parsed } from "../../shared/json";
 import { swapLine, swapUnderWay } from "../../shared/engine-swap";
 import { keepWaiting, swapHoldsFor } from "../engine/queue";
 import { messageID } from "../engine/sessions";
@@ -182,6 +183,13 @@ export async function* forward(target: Target, path: string, request: LinkReques
   const delivering = sending && sending[2] === "prompt" ? undefined : signal;
   // What goes to the engine: a message as above, anything else as it came.
   const outgoing = async (): Promise<Buffer | undefined> => {
+    if (method === "POST" && /^\/api\/integration\/[^/]+\/connect\/oauth$/.test(url.pathname)) {
+      const given = parsed(request.body);
+      if (isObject(given)) {
+        headers["content-type"] = "application/json";
+        return Buffer.from(JSON.stringify(oauthStartBody(request, given)));
+      }
+    }
     if (!sending) return request.body;
     const session = decodeURIComponent(sending[1]!);
     const body = await attachedIn(request.body, session, modelInput(url, headers, delivering), request.fromMac === true, toAgents);
@@ -350,6 +358,21 @@ export async function* engineRoute(context: RouteContext): AsyncGenerator<Answer
     // The engine's, else a coding agent's, through their bridge.
     const runners = [engine, bridge()].filter(Boolean) as Target[];
     return yield* stopShell(decodeURIComponent(stop[1]!), runners, headers, signal);
+  }
+  if (request.method === "GET" && route === "api/integration") {
+    const github = await workQueueAccount(context);
+    if (github) {
+      try {
+        const url = new URL(`http://127.0.0.1:${engine!.port}/${request.path}`);
+        const headers = { authorization: `Basic ${Buffer.from(`opencode:${engine!.password}`).toString("base64")}` };
+        const response = await fetch(url, { headers, signal });
+        const result = await response.json();
+        if (response.ok && isObject(result) && Array.isArray(result.data)) return yield* json(200, { ...result, data: [...result.data, github] });
+        return yield* json(response.status, result);
+      } catch {
+        return yield* json(503, { message: engineDown() });
+      }
+    }
   }
   // (Read: without a stop, one that couldn't be read answered 503 above.)
   return yield* forward(engine!, request.path, request, signal, allowed, namingHere(readEngine));

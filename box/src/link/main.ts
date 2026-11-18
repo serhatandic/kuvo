@@ -680,6 +680,7 @@ async function box(command: string): Promise<void> {
       const handle = engineHandler(readEngineFile, { name: os.hostname() }, readBridgeFile);
       // With the folder it's asked about (`x-opencode-directory`), as a phone's request has it.
       const folder = (given?.headers as Record<string, unknown> | undefined)?.["x-opencode-directory"];
+      const signInClient = (given?.headers as Record<string, unknown> | undefined)?.["x-kuvo-sign-in-client"];
       // And the Mac's proof for a request to this machine's vault (or its unlock key, to unlock it),
       // which makes it a client there (areas/vault.ts); with the body as it was sent, which the proof covers.
       const vaultHeaders: Record<string, string> = {};
@@ -688,7 +689,7 @@ async function box(command: string): Promise<void> {
         if (typeof value === "string") vaultHeaders[name] = value;
       }
       const sentBody = typeof given?.bodyText === "string" ? given.bodyText : given?.body === undefined ? "" : JSON.stringify(given.body);
-      const request = { method: String(given?.method ?? "GET"), path: String(given?.path ?? ""), headers: { "content-type": "application/json", ...(typeof folder === "string" ? { "x-opencode-directory": folder } : {}), ...vaultHeaders }, body: Buffer.from(sentBody), fromMac: true };
+      const request = { method: String(given?.method ?? "GET"), path: String(given?.path ?? ""), headers: { "content-type": "application/json", ...(typeof folder === "string" ? { "x-opencode-directory": folder } : {}), ...(typeof signInClient === "string" ? { "x-kuvo-sign-in-client": signInClient } : {}), ...vaultHeaders }, body: Buffer.from(sentBody), fromMac: true };
       let status = 502;
       let type = "";
       const chunks: Buffer[] = [];

@@ -1,3 +1,4 @@
+import { GITHUB_SIGN_IN_BUSY, GITHUB_WORK_QUEUE } from "../../shared/github";
 // Signing in to an account (PROTOCOL.md, "Signing in"): the ways a client offers, in the box's order
 // and words, for one account (`kuvo/sign-in/methods`) or every one listed (`kuvo/sign-in/accounts`,
 // what Accounts' Sign In buttons and hints go by), and how a started sign-in is going, with what to say when it
@@ -6,6 +7,13 @@
 // words what it offers. Held to protocol/vectors/sign-in.json.
 
 import { isObject, parsed } from "../../shared/json";
+import { createHash } from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
+import { writeSecret } from "../files";
+import { RUN } from "../home";
+import { failureWords } from "../../shared/sign-in-failure";
+export { failureWords } from "../../shared/sign-in-failure";
 import { ENGINE_SERVICES } from "../../shared/limits";
 import type { Target } from "../../shared/records";
 import { pause } from "../../shared/wait";
@@ -14,7 +22,7 @@ import { planHides } from "../work/model-rule";
 import { readEndedSignIns } from "./accounts";
 import { agentsAway, type AgentsAway, AGENTS_RESTARTING, bridgeBack } from "./agents-down";
 import { engineDown } from "./engine";
-import type { AnswerPiece, RouteContext } from "../server/context";
+import { fromLocalApp, type AnswerPiece, type LinkRequest, type RouteContext } from "../server/context";
 import { plainName } from "../../shared/text";
 import { computerInSentence } from "../computer-name";
 import { accountState } from "./sign-in-state";
@@ -183,27 +191,10 @@ function hintOf(methods: OfferedMethod[], name: string): string {
  * ways in as the box offers them, so OpenAI, whose ChatGPT plan comes through Codex, is a key. */
 export const isPlan = (offered: OfferedMethods): boolean => offered.methods.some(method => method.type === "oauth");
 
-/** What a client says of a sign-in that ended without signing in: `expired`, or `failed` with the
- * engine's `message` (a sign-in page that sends back an error hands the engine its OAuth code, as
- * `access_denied` when you turn it down there, which the engine passes on as it is). */
-export function failureWords(status: "failed" | "expired", message?: unknown): string {
-  if (status === "expired") return "The sign-in timed out. Try again.";
-  const said = typeof message === "string" ? message.trim() : "";
-  if (!said) return "Signing in didn’t work.";
-  const lower = said.toLowerCase();
-  if (lower.includes("access_denied")) return "The sign-in was turned down on its page. Try again to sign in.";
-  if (lower.includes("server_error") || lower.includes("temporarily_unavailable")) return "The service couldn’t sign you in just now. Try again in a moment.";
-  // The page's answer was for another try: an address pasted from an earlier sign-in.
-  if (lower.includes("state mismatch") || lower.includes("state_mismatch")) return "That page was from an earlier sign-in. Try again to sign in.";
-  // Another OAuth code, on its own: in words.
-  if (/^[a-z]+(_[a-z]+)+$/i.test(said)) return `Signing in didn’t work (${lower.replaceAll("_", " ")}).`;
-  return said;
-}
-
 /** Where `query` asks about: the coding agents' bridge (`agents=1`, for an agent's account), else
  * the engine; or why it can't be asked now. */
 async function placeOf(query: URLSearchParams, context: RouteContext): Promise<{ target: Target } | { down: AgentsAway | { message: string } }> {
-  if (query.get("agents") === "1") {
+  if (query.get("agents") === "1" || query.get("integration") === GITHUB_WORK_QUEUE) {
     // (While the bridge restarts, waited for: PROTOCOL.md, "The coding agents' state".)
     const bridge = await bridgeBack(context.bridge, context.signal);
     return bridge ? { target: bridge } : { down: agentsAway() ?? { message: AGENTS_RESTARTING, reason: "agentsRestarting" } };
@@ -212,6 +203,160 @@ async function placeOf(query: URLSearchParams, context: RouteContext): Promise<{
     return { target: context.readEngine() };
   } catch {
     return { down: { message: engineDown() } };
+  }
+}
+
+/** The request's transport decides where the browser is. Older clients used to send their own hint. */
+export function oauthStartBody(request: LinkRequest, given: Record<string, unknown>) {
+  return { ...given, remote: !fromLocalApp(request) };
+}
+
+function loopback(value: string): URL | undefined {
+  try {
+    const url = new URL(value);
+    if (["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)) return url;
+  } catch {}
+  return undefined;
+}
+
+export function oauthCallback(page: unknown): { callback: URL; state: string } | undefined {
+  if (typeof page !== "string") return;
+  try {
+    const params = new URL(page).searchParams;
+    const state = params.get("state");
+    if (!state || params.getAll("state").length !== 1) return;
+    for (const name of ["redirect_uri", "redirect_url", "redirect", "callback", "return_to"]) {
+      const target = params.get(name);
+      const callback = target ? loopback(target) : undefined;
+      if (callback?.protocol === "http:" && callback.port) return { callback, state };
+    }
+  } catch {}
+  return undefined;
+}
+
+export function isOAuthReturn(value: string, callback: URL, state: string): boolean {
+  const actual = loopback(value);
+  return Boolean(actual &&
+    actual.origin === callback.origin && actual.pathname === callback.pathname &&
+    actual.searchParams.getAll("state").length === 1 && actual.searchParams.get("state") === state &&
+    [...callback.searchParams].every(([name, value]) => actual.searchParams.get(name) === value));
+}
+
+/** An OAuth page may finish by returning to a listener on the computer that started it. */
+export function oauthPage(url: unknown): { local: boolean; returns: boolean } {
+  if (typeof url !== "string") return { local: false, returns: false };
+  try {
+    const page = new URL(url);
+    const returns = [...page.searchParams].some(([name, value]) => ["redirect_uri", "redirect_url", "redirect", "callback", "return_to"].includes(name.toLowerCase()) && loopback(value));
+    return { local: !!loopback(url), returns };
+  } catch {
+    return { local: false, returns: false };
+  }
+}
+
+function ownerOf(context: RouteContext): string | undefined {
+  if (context.phone?.key) return `key:${context.phone.key.toString("hex")}`;
+  const supplied = context.request.headers?.["x-kuvo-sign-in-client"];
+  if (typeof supplied === "string" && /^[a-f0-9]{32}$/.test(supplied)) return `client:${supplied}`;
+  if (fromLocalApp(context.request)) return "local";
+  return undefined;
+}
+
+const ownerHeaders = (owner: string | undefined) => owner ? { "x-kuvo-sign-in-owner": owner } : undefined;
+interface PendingReturn { owner: string; integration: string; attempt: string; agents: boolean; callback?: string; state?: string; until: number }
+// SSH may use a new host process for each request.
+const returnFolder = path.join(RUN, "sign-in-returns");
+const returnFile = (agents: boolean, integration: string, id: string) =>
+  path.join(returnFolder, createHash("sha256").update(JSON.stringify([agents, integration, id])).digest("hex"));
+function readReturn(file: string): PendingReturn | undefined {
+  try {
+    const expected = JSON.parse(fs.readFileSync(file, "utf8")) as PendingReturn;
+    if (expected.until > Date.now()) return expected;
+  } catch {}
+  return undefined;
+}
+
+function keepReturn(file: string, expected: PendingReturn) {
+  try { writeSecret(file, JSON.stringify(expected)); } catch {}
+}
+
+function pasteAddress(attempt: Record<string, unknown>, context: RouteContext, query: URLSearchParams, id: unknown) {
+  const owner = ownerOf(context);
+  if (!owner || typeof id !== "string" || fromLocalApp(context.request) || typeof attempt.url !== "string" || attempt.acceptsCode === true || attempt.mode === "code") return {};
+  const file = returnFile(query.get("agents") === "1", query.get("integration")!.trim(), id);
+  const started = readReturn(file);
+  if (!started || started.owner !== owner) return {};
+  const expected = oauthCallback(attempt.url);
+  if (!expected) return {};
+  if (!started.callback) {
+    keepReturn(file, { ...started, callback: expected.callback.href, state: expected.state });
+    if (!readReturn(file)?.callback) return {};
+  }
+  return {
+    pasteAddress: true,
+    instructions: "Finish signing in in your browser. If the last page can’t load, copy its address and paste it here.",
+  };
+}
+
+/** Only the browser return advertised by one pending sign-in may reach a listener. */
+export async function matchesSignInReturn(context: RouteContext, given: unknown): Promise<boolean> {
+  const owner = ownerOf(context);
+  if (!owner || !isObject(given) || typeof given.url !== "string" || !loopback(given.url)) return false;
+  const url = given.url;
+  let files: string[];
+  if (typeof given.integration === "string" && typeof given.attempt === "string") {
+    files = [returnFile(given.agents === true, given.integration, given.attempt)];
+  } else if (given.integration === undefined && given.attempt === undefined && context.phone?.key) {
+    try {
+      files = fs.readdirSync(returnFolder).filter(name => /^[a-f0-9]{64}$/.test(name)).map(name => path.join(returnFolder, name));
+    } catch { return false; }
+  } else return false;
+  const matches = await Promise.all(files.map(async file => {
+    const expected = readReturn(file);
+    const callback = expected?.callback && loopback(expected.callback);
+    if (!expected?.state || !callback || expected.owner !== owner || !isOAuthReturn(url, callback, expected.state)) return false;
+    const place = await placeOf(new URLSearchParams({ integration: expected.integration, agents: expected.agents ? "1" : "0" }), context);
+    if ("down" in place) return false;
+    const current = await call(place.target, "GET", `/api/integration/${encodeURIComponent(expected.integration)}/connect/oauth/${encodeURIComponent(expected.attempt)}`, undefined, AbortSignal.timeout(5_000)).catch(() => null);
+    const latest = readReturn(file);
+    return latest?.owner === owner && latest.state === expected.state && isObject(current) && current.status === "pending";
+  }));
+  return matches.filter(Boolean).length === 1;
+}
+
+/** The phone’s existing start route expects the engine’s data envelope. */
+export async function* legacySignInRoute(context: RouteContext, match: RegExpMatchArray): AsyncGenerator<AnswerPiece> {
+  const [, side, provider] = match;
+  let integration: string;
+  try { integration = decodeURIComponent(provider!); } catch { return yield* context.json(400, {}); }
+  return yield* startRoute(context, new URLSearchParams({ integration, agents: side ? "1" : "0" }), true);
+}
+
+function useHostBrowser(request: LinkRequest): string {
+  return `Open Kuvo Code on ${computerInSentence(request)} and start the sign-in there. Your browser needs to finish on that computer.`;
+}
+
+/** GitHub for Work Queue shares the provider account sheet, and keeps its sign-in on this computer. */
+export async function workQueueAccount(context: RouteContext): Promise<ListedAccount | null> {
+  const target = context.bridge();
+  if (!target) return null;
+  return await call(target, "GET", `/api/integration/${GITHUB_WORK_QUEUE}`, undefined, AbortSignal.timeout(6_000))
+    .then(value => isObject(value) && value.id === GITHUB_WORK_QUEUE ? value : null, () => null);
+}
+
+/** Compatibility for the phone's provider API. */
+export async function* workQueueSignInRoute(context: RouteContext): AsyncGenerator<AnswerPiece> {
+  const { request, json, signal } = context;
+  const bridge = await bridgeBack(context.bridge, signal);
+  if (!bridge) return yield* json(503, { message: "GitHub sign-in is starting up on this computer. Try again in a moment." });
+  const method = request.method.toUpperCase();
+  try {
+    const body = parsed(request.body);
+    const result = await call(bridge, method, `/${context.route}`, method === "POST" && isObject(body) ? oauthStartBody(request, body) : undefined, signal, undefined, ownerHeaders(ownerOf(context)));
+    return yield* json(200, { data: result });
+  } catch (error) {
+    const status = (error as { status?: number }).status;
+    return yield* json(status ?? 502, { message: error instanceof Error && error.message === GITHUB_SIGN_IN_BUSY ? GITHUB_SIGN_IN_BUSY : "GitHub sign-in didn’t answer. Try again." });
   }
 }
 
@@ -226,8 +371,12 @@ async function* accountsRoute(context: RouteContext, query: URLSearchParams): As
   if ("down" in place) return yield* json(503, place.down);
   const deadline = AbortSignal.timeout(15_000);
   try {
-    const listed = await call(place.target, "GET", "/api/integration", undefined, signal ? AbortSignal.any([signal, deadline]) : deadline);
+    const [listed, github] = await Promise.all([
+      call(place.target, "GET", "/api/integration", undefined, signal ? AbortSignal.any([signal, deadline]) : deadline),
+      query.get("agents") === "1" ? null : workQueueAccount(context),
+    ]);
     const accounts = (Array.isArray(listed) ? listed : []).filter((each): each is ListedAccount => typeof (each as ListedAccount | null)?.id === "string");
+    if (github) accounts.push(github);
     const agents = query.get("agents") === "1";
     // The engine's plans whose saved sign-in runs were refused with, as the box keeps them.
     const ended = agents ? new Map<string, string>() : readEndedSignIns();
@@ -242,14 +391,14 @@ async function* accountsRoute(context: RouteContext, query: URLSearchParams): As
   } catch (error) {
     if (deadline.aborted) return yield* json(504, { message: "It didn't answer in time. Try again." });
     const status = (error as { status?: unknown } | null)?.status;
-    return yield* json(typeof status === "number" && status >= 400 ? status : 502, { message: error instanceof Error && error.message ? error.message : "It didn't answer." });
+    return yield* json(typeof status === "number" && status >= 400 ? status : 502, { message: "The accounts couldn’t be read. Try again." });
   }
 }
 
 /** `POST kuvo/sign-in/start?integration=<id>[&agents=1]` `{methodID, answer?}`: starts a sign-in in
  * the browser where the engine (or the bridge) does, as its own `connect/oauth` does, and answers
  * what that answered with the code its page asks for apart (`userCode`), where it has one. */
-async function* startRoute(context: RouteContext, query: URLSearchParams): AsyncGenerator<AnswerPiece> {
+async function* startRoute(context: RouteContext, query: URLSearchParams, legacy = false): AsyncGenerator<AnswerPiece> {
   const { request, signal, json } = context;
   if (request.method.toUpperCase() !== "POST") return yield* json(405, {});
   const integration = query.get("integration")?.trim() ?? "";
@@ -260,14 +409,37 @@ async function* startRoute(context: RouteContext, query: URLSearchParams): Async
   // (A coding agent's sign-in may download its program first: longer than a read.)
   const deadline = AbortSignal.timeout(120_000);
   try {
-    const started = await call(place.target, "POST", `/api/integration/${encodeURIComponent(integration)}/connect/oauth`, { methodID: given.methodID, ...(isObject(given.answer) ? { answer: given.answer } : {}) }, signal ? AbortSignal.any([signal, deadline]) : deadline);
+    const started = await call(place.target, "POST", `/api/integration/${encodeURIComponent(integration)}/connect/oauth`, oauthStartBody(request, { methodID: given.methodID, ...(isObject(given.answer) ? { answer: given.answer } : {}) }), signal ? AbortSignal.any([signal, deadline]) : deadline, undefined, ownerHeaders(ownerOf(context)));
     if (!isObject(started)) return yield* json(502, { message: "The sign-in couldn't be started." });
+    if (!fromLocalApp(request) && oauthPage(started.url).local) {
+      if (typeof started.attemptID === "string") {
+        await call(place.target, "DELETE", `/api/integration/${encodeURIComponent(integration)}/connect/oauth/${encodeURIComponent(started.attemptID)}`, undefined, AbortSignal.timeout(3_000)).catch(() => {});
+      }
+      return yield* json(409, { message: useHostBrowser(request) });
+    }
     const userCode = userCodeOf(started);
-    return yield* json(200, { ...started, ...(userCode ? { userCode } : {}) });
+    const owner = ownerOf(context);
+    if (!fromLocalApp(request) && owner && typeof started.attemptID === "string") {
+      const now = Date.now();
+      try {
+        for (const name of fs.readdirSync(returnFolder)) {
+          const old = path.join(returnFolder, name);
+          if (/^[a-f0-9]{64}$/.test(name) && fs.statSync(old).mtimeMs < now - 30 * 60_000) fs.rmSync(old, { force: true });
+        }
+      } catch {}
+      const file = returnFile(query.get("agents") === "1", integration, started.attemptID);
+      if (!readReturn(file)) keepReturn(file, { owner, integration, attempt: started.attemptID, agents: query.get("agents") === "1", until: now + 30 * 60_000 });
+    }
+    const result = { ...started, ...pasteAddress(started, context, query, started.attemptID), ...(userCode ? { userCode } : {}) };
+    return yield* json(200, legacy ? { data: result } : result);
   } catch (error) {
     if (deadline.aborted) return yield* json(504, { message: "It didn't answer in time. Try again." });
     const status = (error as { status?: unknown } | null)?.status;
-    return yield* json(typeof status === "number" && status >= 400 ? status : 502, { message: error instanceof Error && error.message ? error.message : "It didn't answer." });
+    const words = error instanceof Error ? error.message : "";
+    const message = words === GITHUB_SIGN_IN_BUSY ? GITHUB_SIGN_IN_BUSY
+      : !fromLocalApp(request) && words.endsWith("on the computer it runs on: its page comes back there.") ? useHostBrowser(request)
+      : "The sign-in couldn’t be started. Try again.";
+    return yield* json(typeof status === "number" && status >= 400 ? status : 502, { message });
   }
 }
 
@@ -292,6 +464,10 @@ export async function* signInRoute(context: RouteContext): AsyncGenerator<Answer
   try {
     if (attempt === null) {
       // The whole list, as clients list accounts (the bridge reads each agent's anew for one alone).
+      if (integration === GITHUB_WORK_QUEUE) {
+        const github = await workQueueAccount(context);
+        return github ? yield* json(200, signInMethods(github)) : yield* json(404, { message: "Install GitHub CLI on this computer to sign in for Work Queue." });
+      }
       const listed = await call(place.target, "GET", "/api/integration", undefined, asking);
       const account = (Array.isArray(listed) ? listed : []).find(each => (each as ListedAccount | null)?.id === integration) as ListedAccount | undefined;
       if (!account) return yield* json(404, { message: `There's no ${integration} to sign in to here.` });
@@ -300,7 +476,7 @@ export async function* signInRoute(context: RouteContext): AsyncGenerator<Answer
     const statusRoute = `/api/integration/${encodeURIComponent(integration)}/connect/oauth/${encodeURIComponent(attempt)}`;
     const read = async (): Promise<Record<string, unknown> | null> => {
       const each = AbortSignal.timeout(15_000);
-      return (await call(place.target, "GET", statusRoute, undefined, signal ? AbortSignal.any([signal, each]) : each)) as Record<string, unknown> | null;
+      return (await call(place.target, "GET", statusRoute, undefined, signal ? AbortSignal.any([signal, each]) : each, undefined, ownerHeaders(ownerOf(context)))) as Record<string, unknown> | null;
     };
     let said = await read();
     const wait = Math.min(Math.max(Number(query.get("wait")) || 0, 0), MOST_WAIT) * 1000;
@@ -314,12 +490,25 @@ export async function* signInRoute(context: RouteContext): AsyncGenerator<Answer
     }
     const status = said?.status;
     if (status !== "pending" && status !== "complete" && status !== "failed" && status !== "expired") return yield* json(502, { message: "The sign-in's status couldn't be read." });
+    // A remote browser can paste a callback address, but it cannot open a page that starts locally.
+    if (status === "pending" && !fromLocalApp(request) && oauthPage(said?.url).local) {
+      await call(place.target, "DELETE", statusRoute, undefined, AbortSignal.timeout(3_000)).catch(() => {});
+      return yield* json(200, { status: "failed", failure: useHostBrowser(request) });
+    }
     const userCode = userCodeOf(said);
-    return yield* json(200, { ...said, ...(userCode ? { userCode } : {}), ...(status === "failed" || status === "expired" ? { failure: failureWords(status, said?.message) } : {}) });
+    if (status !== "pending") {
+      const file = returnFile(query.get("agents") === "1", integration, attempt);
+      if (readReturn(file)?.owner === ownerOf(context)) fs.rmSync(file, { force: true });
+    }
+    if (status === "failed" || status === "expired") {
+      const message = failureWords(status, said?.message);
+      return yield* json(200, { status, message, failure: message });
+    }
+    return yield* json(200, { ...said, ...(status === "pending" && said ? pasteAddress(said, context, query, attempt) : {}), ...(userCode ? { userCode } : {}) });
   } catch (error) {
     if (attempt === null ? deadline.aborted : (error as Error | null)?.name === "TimeoutError") return yield* json(504, { message: "It didn't answer in time. Try again." });
     const status = (error as { status?: unknown } | null)?.status;
-    const message = error instanceof Error && error.message ? error.message : "It didn't answer.";
+    const message = status === 404 ? "That sign-in is over. Start it again." : "The sign-in status couldn’t be read. Try again.";
     return yield* json(typeof status === "number" && status >= 400 ? status : 502, { message });
   }
 }

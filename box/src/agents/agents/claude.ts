@@ -94,7 +94,6 @@ const PRINTED_TOKEN = /sk-ant-oat\d+-[A-Za-z0-9_-]{60,}(?=[^A-Za-z0-9_-])/
 const ANY_TOKEN = /sk-ant-[A-Za-z0-9_-]+/g
 /** What's never said back of `claude setup-token`'s output: its token, and a line that's only a
  * long run of a token's characters (one cut over two lines, the rest of it). */
-const PRINTED_SECRET = /sk-ant-[A-Za-z0-9_-]+|^[^\S\n]*[A-Za-z0-9_-]{32,}[^\S\n]*$/gm
 /** A value after a name: quoted, or up to what ends it. */
 const VALUE = `"[^"]*"|'[^']*'|[^\\s"',;]+`
 /** A name that holds a secret (`max_tokens` holds a count). */
@@ -197,6 +196,7 @@ export class ClaudeAgent implements Agent {
   turnedAway?: { written?: number }
   private modelList?: { at: number; models: Model[] }
   private loadingModels?: Promise<void>
+  private catalogGeneration = 0
   /** Told as Claude Code lists its models. */
   private listed: (() => void)[] = []
   /** Counts updates of Claude Code: a session's Claude Code started before the last one starts again. */
@@ -274,6 +274,8 @@ export class ClaudeAgent implements Agent {
   /** Its models asked of the new Claude Code (the old ones listed meanwhile); sessions start it at their next message. */
   programUpdated() {
     this.program++
+    this.catalogGeneration++
+    this.loadingModels = undefined
     if (this.modelList) this.modelList.at = 0
   }
 
@@ -551,7 +553,7 @@ export class ClaudeAgent implements Agent {
         env: this.env({ ownToken: false }),
         home: this.context.home,
         temporary: this.context.temporary,
-        instructions: "Finish signing in on Claude's page. This sign-in is Kuvo Code's own: Claude Code in Terminal stays signed in as it is.",
+        instructions: "Finish signing in on Claude’s page, then paste the code here.",
         signedIn: async () => handedOver,
         // It prints its page, and takes the code from it, only in a terminal.
         terminal: true,
@@ -563,7 +565,6 @@ export class ClaudeAgent implements Agent {
           const token = handedOver ? undefined : PRINTED_TOKEN.exec(line)?.[0]
           if (token) keep(token)
         },
-        secret: PRINTED_SECRET,
         onComplete: () => {
           this.turnedAway = undefined
           this.known.reset()
@@ -582,7 +583,7 @@ export class ClaudeAgent implements Agent {
       env,
       home: this.context.home,
       temporary: this.context.temporary,
-      instructions: "Finish signing in on Claude's page. Claude Code keeps the sign-in, as when you run claude auth login.",
+      instructions: "Finish signing in on Claude’s page. If it gives you a code, paste it here.",
       // Claude Code's word: a sign-in Claude ended still reads as signed in there, so signing in
       // again counts once the command says it worked (another Claude Code writing its settings
       // meanwhile isn't it).
@@ -729,11 +730,31 @@ export class ClaudeAgent implements Agent {
     if (executable && this.instance.home) await run(executable, ["auth", "logout"], { timeout: 20_000, env: this.env() }).catch(() => {})
   }
 
-  async models(): Promise<Model[]> {
-    if (this.modelList && Date.now() - this.modelList.at < 30 * 60_000) return this.modelList.models
+  async models(options: { refresh?: boolean } = {}): Promise<Model[]> {
+    if (this.modelList?.at && !options.refresh) return this.modelList.models
     // Claude Code says which models your account has once it starts: asked in the background, the
     // first time with Claude Code's usual ones meanwhile.
-    this.loadingModels ??= this.loadModels().finally(() => (this.loadingModels = undefined))
+    const generation = this.catalogGeneration
+    const loading = this.loadingModels ??= this.loadModels(generation).finally(() => {
+      if (this.loadingModels === loading) this.loadingModels = undefined
+    })
+    if (options.refresh) {
+      let listed: () => void = () => {}
+      const ready = new Promise<void>(resolve => {
+        listed = resolve
+        this.listed.push(listed)
+      })
+      try {
+        await Promise.race([ready, loading])
+      } catch (error) {
+        if (generation === this.catalogGeneration) throw error
+      } finally {
+        this.listed = this.listed.filter(each => each !== listed)
+      }
+      if (generation !== this.catalogGeneration) return this.models(options)
+    } else {
+      void loading.catch(() => {})
+    }
     return this.modelList?.models ?? fallbackModels(this.providerID)
   }
 
@@ -765,8 +786,9 @@ export class ClaudeAgent implements Agent {
     return models.find((model) => model.aliases?.includes(id))?.id
   }
 
-  private async loadModels() {
+  private async loadModels(generation: number) {
     const sdk = await this.sdk()
+    if (generation !== this.catalogGeneration) return
     const abort = new AbortController()
     const idle = (async function* () {
       await new Promise((resolve) => abort.signal.addEventListener("abort", resolve))
@@ -789,11 +811,12 @@ export class ClaudeAgent implements Agent {
     try {
       const init: any = await Promise.race([q.initializationResult(), Bun.sleep(30_000).then(() => undefined)])
       const list = (init?.models ?? []) as ClaudeModelInfo[]
-      if (list.length) {
+      if (!list.length && generation === this.catalogGeneration) throw new Error("Claude Code didn’t list its models.")
+      if (generation === this.catalogGeneration && list.length) {
         this.listModels(list)
         // How much each holds, which its descriptions don't say (it depends on your plan): asked
         // one by one, then listed again.
-        if (await this.askWindows(q, list)) this.listModels(list)
+        if (await this.askWindows(q, list, generation) && generation === this.catalogGeneration) this.listModels(list)
       }
     } finally {
       abort.abort()
@@ -835,10 +858,11 @@ export class ClaudeAgent implements Agent {
   }
 
   /** Each model's window, as Claude Code's /context says it, once a model (its aliases share it); true when one changed. An older Claude Code that doesn't say leaves them as they were. */
-  private async askWindows(q: any, list: ClaudeModelInfo[]): Promise<boolean> {
+  private async askWindows(q: any, list: ClaudeModelInfo[], generation: number): Promise<boolean> {
     const said = new Map<string, number>()
     let changed = false
     for (const info of list) {
+      if (generation !== this.catalogGeneration) return false
       const key = info.resolvedModel ?? info.value
       let window = said.get(key)
       if (window === undefined) {
@@ -851,13 +875,17 @@ export class ClaudeAgent implements Agent {
         if (typeof window !== "number" || window <= 0) return changed
         said.set(key, window)
       }
+      if (generation !== this.catalogGeneration) return false
       if (this.windows.note(info.value, window)) changed = true
     }
     return changed
   }
 
   forgetModels() {
+    this.catalogGeneration++
+    this.loadingModels = undefined
     this.modelList = undefined
+    this.windows = new ContextWindows()
   }
 
   thread(session: Session, state: Record<string, unknown>): Thread {
@@ -1034,6 +1062,7 @@ function subagentRoute(kind: unknown): SubagentMessages {
 }
 
 class ClaudeThread implements Thread {
+  private usageGeneration: { number: number; signIn?: string } | null = null
   private query?: any
   private input?: Queue<any>
   private active?: Active
@@ -1155,8 +1184,10 @@ class ClaudeThread implements Thread {
     this.subagents = await subagentsFor(this.session.location.directory)
     const subagents = claudeSubagents(this.subagents)
     const subagentsKey = JSON.stringify(subagents)
+    const usage = this.usageGeneration
+    const signInChanged = !usage || usage.number !== (this.agent.limits.generation?.() ?? 0) || usage.signIn !== this.agent.limits.signIn?.()
     // (What it left going in the background ends with it: this message says so.)
-    if (this.query && (this.opened?.append !== append || this.opened?.program !== this.agent.program || this.opened?.tools !== tools?.key || this.opened?.skills !== skills || this.opened?.fence !== fence || this.opened?.subagents !== subagentsKey)) {
+    if (this.query && (signInChanged || this.opened?.append !== append || this.opened?.program !== this.agent.program || this.opened?.tools !== tools?.key || this.opened?.skills !== skills || this.opened?.fence !== fence || this.opened?.subagents !== subagentsKey)) {
       this.cut.push(...this.wakingWork)
       this.close()
     }
@@ -1547,6 +1578,7 @@ class ClaudeThread implements Thread {
     this.input = new Queue()
     const tools = fenceOn() ? relayedTools(this.session.id, this) : kuvoTools(this.session.id)
     this.opened = { model: modelID, effort, plan, append, program: this.agent.program, tools: tools?.key, skills, fence: fenceKey() + fullAccessMark(this.session.id), subagents: JSON.stringify(subagents) }
+    this.usageGeneration = taken ? null : { number: this.agent.limits.generation?.() ?? 0, signIn: this.agent.limits.signIn?.() }
     this.query = sdk.query({
       prompt: this.input,
       options: {
@@ -1750,8 +1782,9 @@ class ClaudeThread implements Thread {
 
   private async read(query: any) {
     let ended: unknown
+    const usage = this.usageGeneration
     try {
-      for await (const message of query) this.handle(message)
+      for await (const message of query) this.handle(message, usage)
     } catch (error) {
       ended = error
     }
@@ -1828,7 +1861,7 @@ class ClaudeThread implements Thread {
     return { ...error, type: "signin" }
   }
 
-  private handle(message: any) {
+  private handle(message: any, usage = this.usageGeneration) {
     this.said?.forget()
     if (message.type === "system" && message.subtype === "init") {
       // Which Claude Code it is, for a bridge taking it up from its holder (only one that sends its
@@ -1855,7 +1888,7 @@ class ClaudeThread implements Thread {
     if (!active) {
       // A subagent at work in the background, after its turn: told in its session.
       const background = message.parent_tool_use_id ? this.keptLane(message.parent_tool_use_id) : undefined
-      if (background) return this.laneFrame(undefined, background, message)
+      if (background) return this.laneFrame(undefined, background, message, usage)
       return this.ownFrame(message)
     }
     if (!message.parent_tool_use_id && Array.isArray(message.user_message_uuids)) for (const uuid of message.user_message_uuids) active.steered.delete(uuid)
@@ -1868,11 +1901,11 @@ class ClaudeThread implements Thread {
     // A subagent's own work is told in its session, as the engine's subagents' is.
     const lane: Lane | undefined = message.parent_tool_use_id ? this.subagentLane(active, message.parent_tool_use_id) : active
     if (!lane) return
-    this.laneFrame(active, lane, message)
+    this.laneFrame(active, lane, message, usage)
   }
 
   /** What Claude Code said, in a lane: the turn's own, or a subagent's (between turns, `active` is none). */
-  private laneFrame(active: Active | undefined, lane: Lane, message: any) {
+  private laneFrame(active: Active | undefined, lane: Lane, message: any, usage: ClaudeThread["usageGeneration"]) {
     const turn = lane.turn
     switch (message.type) {
       case "stream_event":
@@ -1926,7 +1959,9 @@ class ClaudeThread implements Thread {
       case "rate_limit_event": {
         const info = message.rate_limit_info ?? {}
         // Where the plan stands, for its limits (limits.ts), whichever turn heard it.
-        for (const window of heardWindows(info)) this.agent.limits.heard?.(window)
+        if (usage && usage.signIn === this.agent.limits.signIn?.()) {
+          for (const window of heardWindows(info)) this.agent.limits.heard?.(window, usage.number)
+        }
         if (!active || lane !== active) return
         // A limit being used up: said once per threshold it passes, and again once it's close, so the stop doesn't come out of nowhere.
         if (info.status === "allowed_warning") {

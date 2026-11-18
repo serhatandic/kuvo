@@ -148,9 +148,10 @@ test("how each account stands and what can be done with it, in the box's words: 
   const displayName = (await answer("GET", "kuvo/computers", on)).json.computers.find(computer => computer.here).name;
   const disconnect = { id: "disconnect", label: "Disconnect", confirm: { title: "Disconnect GitHub Copilot?", message: `Its sign-ins and keys go from ${displayName}, and its models leave the model picker there. Sessions on its models stop until you sign in again.`, label: "Disconnect" } };
   const another = { id: "addAnother", label: "Add Another Account", sheetTitle: "Sign In to GitHub Copilot" };
+  const again = { id: "signInAgain", label: "Sign In Again", sheetTitle: "Sign In to GitHub Copilot" };
   let said = await copilot();
   assert.deepEqual({ state: said.state, line: said.line, actions: said.actions, connections: said.connections }, {
-    state: "signedIn", line: "Signed in as you@example.com · 2 accounts", actions: [another, disconnect],
+    state: "signedIn", line: "Signed in as you@example.com · 2 accounts", actions: [again, another, disconnect],
     connections: [{ id: "cred_1", state: "signedIn", line: "you@example.com" }, { id: "cred_2", state: "signedIn", line: "work@example.com" }],
   });
 
@@ -158,7 +159,7 @@ test("how each account stands and what can be done with it, in the box's words: 
   await link.noteSignIn({ type: "session.execution.failed", data: { sessionID: "ses_1", error: { type: "provider.auth", message: "Request failed" } } }, signedIn);
   said = await copilot();
   assert.deepEqual({ state: said.state, line: said.line, actions: said.actions, connections: said.connections.map(each => each.state) }, {
-    state: "ended", line: "Sign-in ended", actions: [{ id: "signInAgain", label: "Sign In Again", sheetTitle: "Sign In to GitHub Copilot" }, another, disconnect], connections: ["ended", "signedIn"],
+    state: "ended", line: "Sign-in ended", actions: [again, another, disconnect], connections: ["ended", "signedIn"],
   });
   // The same as `kuvo/accounts/ended` says.
   assert.deepEqual((await answer("GET", "kuvo/accounts/ended", on)).json, { providers: ["github-copilot"] });

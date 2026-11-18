@@ -50,7 +50,7 @@ export class CursorAgent implements Agent {
   get name() {
     return accountName("Cursor", this.instance)
   }
-  private modelList?: { at: number; key: string; models: Model[] }
+  private modelList?: { key: string; models: Model[] }
   private primed = false
 
   constructor(
@@ -200,7 +200,7 @@ export class CursorAgent implements Agent {
     const link = await Promise.race([url, Bun.sleep(30_000).then(() => "")])
     return {
       url: link,
-      instructions: "Finish signing in to Cursor in your browser. Cursor makes an API key for Kuvo Code, kept on this Mac.",
+      instructions: "Finish signing in to Cursor in your browser. Cursor makes an API key for Kuvo Code, kept on the computer running Cursor.",
       mode: "auto",
       status: () => status,
       cancel: () => abort.abort(),
@@ -224,17 +224,17 @@ export class CursorAgent implements Agent {
     if (!this.instance.home && process.env.CURSOR_API_KEY?.trim()) throw new Error("Cursor stays signed in with CURSOR_API_KEY from your shell’s environment. Remove it there to sign out.")
   }
 
-  async models(): Promise<Model[]> {
+  async models(options: { refresh?: boolean } = {}): Promise<Model[]> {
     const sdk = await this.sdk()
     const apiKey = await this.apiKey(sdk)
     if (!apiKey) return []
-    if (this.modelList && this.modelList.key === apiKey && Date.now() - this.modelList.at < 30 * 60_000) return this.modelList.models
+    if (this.modelList && this.modelList.key === apiKey && !options.refresh) return this.modelList.models
     let list: any[]
     try {
       list = await withTimeout(sdk.Cursor.models.list({ apiKey }), 15_000)
     } catch (error) {
       // Cursor couldn't list them just now: the ones it listed last for this sign-in.
-      if (this.modelList?.key === apiKey) return this.modelList.models
+      if (this.modelList?.key === apiKey && !options.refresh) return this.modelList.models
       throw error
     }
     const seen = new Set<string>()
@@ -250,7 +250,7 @@ export class CursorAgent implements Agent {
           released: info.id === "default" ? 2000 : 1000 - index,
         })
       })
-    this.modelList = { at: Date.now(), key: apiKey, models }
+    this.modelList = { key: apiKey, models }
     return models
   }
 

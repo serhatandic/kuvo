@@ -5,7 +5,7 @@
 
 import "../safety"
 import { afterAll, afterEach, beforeAll, describe, expect, setSystemTime, test } from "bun:test"
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { delimiter, dirname, join } from "node:path"
 import { TookTooLong, type Agent } from "../../src/agents/agent"
@@ -117,7 +117,7 @@ function codexServer() {
   return server
 }
 
-function codex(server: { request: (method: string) => Promise<unknown> } | Error) {
+function codex(server: { request: (method: string) => Promise<unknown> } | Error, ownHome?: string) {
   class TestCodex extends CodexAgent {
     override executable() {
       return "/usr/bin/true"
@@ -127,7 +127,7 @@ function codex(server: { request: (method: string) => Promise<unknown> } | Error
       return server
     }
   }
-  return new TestCodex(context())
+  return new TestCodex(context(), ownHome ? { id: "default", home: ownHome } : undefined)
 }
 
 describe("an agent's sign-in that can't be checked just now", () => {
@@ -625,7 +625,7 @@ esac
   })
 
   test("a failed sign-in's words have no terminal codes, and nothing of a token", async () => {
-    // It stops before any code is pasted: its last words are what's said.
+    // It stops before any code is pasted, with private output in its last lines.
     writeFileSync(join(bin, "claude"), `#!/bin/sh
 case "$1" in
   setup-token)
@@ -644,7 +644,7 @@ esac
       const status = sign.status()
       expect(status.status).toBe("failed")
       const message = (status as { message: string }).message
-      expect(message).toContain("OAuth error: Request failed")
+      expect(message).toBe("The sign-in ended before it finished. Try again.")
       expect(message).not.toMatch(/[\x00-\x08\x0b-\x1f\x7f]|\[<u|\(B/)
       expect(message).not.toContain(LONG.slice(20, 40))
       expect(message).not.toContain(LONG.slice(75, 95))
@@ -884,4 +884,172 @@ test("an account says whether its list is every model it runs: not while its age
   expect((await metadata(of(() => false))).modelsComplete).toBe(false)
   expect((await metadata(of(() => true))).modelsComplete).toBe(true)
   expect((await metadata(of())).modelsComplete).toBe(true)
+})
+
+test("Codex Sign In Again refreshes the provider catalog even when the account stays the same", async () => {
+  let released = "gpt-old"
+  const calls: [string, unknown][] = []
+  const agent = codex({
+    async request(method: string, params?: unknown) {
+      calls.push([method, params])
+      if (method === "account/login/start") return { loginId: "device-login", verificationUrl: "https://auth.openai.com/codex/device", userCode: "ABCD-1234" }
+      if (method === "account/read") return { account: { type: "chatgpt", email: "new@example.com", planType: "pro" } }
+      if (method === "model/list") {
+        if (!existsSync(cache)) writeFileSync(cache, released)
+        return { data: [{ id: readFileSync(cache, "utf8") }] }
+      }
+      throw new Error(method)
+    },
+  }, mkdtempSync(join(root, "codex-login-")))
+  const cache = join(agent.home, "models_cache.json")
+  const answer = handler({ roster: { all: () => [agent], find: () => agent }, password: "pw" } as any)
+  const ask = (path: string, method = "GET", body?: unknown) => answer(new Request(`http://box/api/integration/codex-cli${path}`, {
+    method, headers: { authorization: "Basic " + Buffer.from("opencode:pw").toString("base64"), "content-type": "application/json" },
+    body: body ? JSON.stringify(body) : undefined,
+  })).then(response => response.json()) as Promise<any>
+  const models = () => answer(new Request("http://box/api/model", { headers: { authorization: "Basic " + Buffer.from("opencode:pw").toString("base64") } })).then(response => response.json()) as Promise<any>
+  expect((await models()).data.map((model: any) => model.id)).toEqual(["gpt-old"])
+  released = "gpt-new"
+  const started = (await ask("/connect/oauth", "POST", { methodID: "chatgpt", remote: true })).data
+  expect(started).toMatchObject({ url: "https://auth.openai.com/codex/device", userCode: "ABCD-1234" })
+  expect(calls).toContainEqual(["account/login/start", { type: "chatgptDeviceCode" }])
+  const status = () => ask(`/connect/oauth/${started.attemptID}`).then(answer => answer.data.status)
+  expect(await status()).toBe("pending")
+  ;(agent as any).notification("account/login/completed", { loginId: "device-login", success: true })
+  expect(await status()).toBe("complete")
+  expect((await ask("")).data.connections[0].label).toBe("new@example.com · ChatGPT Pro")
+  expect((await models()).data.map((model: any) => model.id)).toEqual(["gpt-new"])
+  expect(calls.map(([method]) => method)).not.toContain("account/logout")
+})
+
+test("Work Queue GitHub sign-in waits for the browser’s device code authorization", async () => {
+  const { GitHubSignIn } = await import("../../src/agents/github-sign-in")
+  const approval = join(root, "github-approved")
+  const gh = join(bin, "gh")
+  writeFileSync(gh, `#!/bin/sh
+case "$2" in
+  status) test -f '${approval}' ;;
+  login)
+    printf 'First copy your one-time code: ABCD-1234\\nOpen this URL to continue in your web browser: https://github.com/login/device\\n' >&2
+    while [ ! -f '${approval}' ]; do sleep 0.05; done
+    ;;
+  *) exit 1 ;;
+esac
+`, { mode: 0o700 })
+  const github = new GitHubSignIn(context())
+  let attempt: Awaited<ReturnType<typeof github.begin>> | undefined
+  let started: ReturnType<typeof github.begin> | undefined
+  try {
+    expect((await github.integration())?.connections).toEqual([])
+    started = github.begin("first computer")
+    expect(() => github.begin("second computer")).toThrow("already open")
+    attempt = await started
+    expect(attempt).toMatchObject({ url: "https://github.com/login/device", userCode: "ABCD-1234" })
+    expect(github.status(attempt.attemptID, "first computer").status).toBe("pending")
+    expect(() => github.begin("second computer")).toThrow("already open")
+    expect(github.status(attempt.attemptID, "second computer").status).toBe("expired")
+    github.cancel(attempt.attemptID, "second computer")
+    expect(github.status(attempt.attemptID, "first computer").status).toBe("pending")
+    writeFileSync(approval, "")
+    for (let retries = 0; retries < 40 && github.status(attempt.attemptID, "first computer").status === "pending"; retries++) await Bun.sleep(25)
+    expect(github.status(attempt.attemptID, "first computer").status).toBe("complete")
+    expect((await github.integration())?.connections.length).toBe(1)
+  } finally {
+    attempt ??= await started?.catch(() => undefined)
+    if (attempt) github.cancel(attempt.attemptID)
+    rmSync(gh, { force: true })
+  }
+})
+
+test("Antigravity probe cleanup is confined to its own session folders", async () => {
+  const { AntigravityAgent } = await import("../../src/agents/agents/antigravity")
+  const agent = new AntigravityAgent(context(), { id: "cleanup", home: join(root, "agy-cleanup") })
+  const acp = join(agent.profile, "antigravity-acp")
+  const brain = join(acp, "brain")
+  mkdirSync(join(brain, "valid-session"), { recursive: true })
+  const protectedFolder = join(acp, "keep")
+  mkdirSync(protectedFolder)
+  writeFileSync(join(protectedFolder, "protected"), "still here")
+  const cleanup = (id: string) => (agent as unknown as { removeSessionFiles(id: string): void }).removeSessionFiles(id)
+  cleanup("../keep")
+  expect(existsSync(join(protectedFolder, "protected"))).toBe(true)
+  cleanup("valid-session")
+  expect(existsSync(join(brain, "valid-session"))).toBe(false)
+  rmSync(brain, { recursive: true })
+  mkdirSync(join(protectedFolder, "valid-session"))
+  symlinkSync(protectedFolder, brain)
+  cleanup("valid-session")
+  expect(existsSync(join(protectedFolder, "valid-session"))).toBe(true)
+})
+
+test("Antigravity reports a missing catalog after discovery and accepts an explicit empty list", async () => {
+  const { AntigravityAgent } = await import("../../src/agents/agents/antigravity")
+  const { AccountRefresh } = await import("../../src/agents/account-refresh")
+  const agent = new AntigravityAgent(context(), { id: "discovery", home: join(root, "agy-discovery") })
+  mkdirSync(join(agent.profile, "antigravity-acp"), { recursive: true })
+  writeFileSync(join(agent.profile, "antigravity-acp", "acp_token.json"), JSON.stringify({ refresh_token: "discovery-test" }))
+  const adapter = agent as unknown as { folder: string; modelConnection: () => unknown }
+  mkdirSync(adapter.folder, { recursive: true })
+  writeFileSync(join(adapter.folder, ".complete"), "")
+  let reply: unknown = { models: { availableModels: [{ modelId: "old", name: "Old" }] } }
+  adapter.modelConnection = () => ({
+    initialize: async () => {},
+    rpc: { kill() {}, request: async (method: string) => method === "session/new" ? reply : {} },
+    cwd: root, launch: { signInFile: join(root, "not-requested") },
+  })
+  const accounts = new AccountRefresh()
+  expect((await accounts.modelStatus(agent, false, true)).models.map(model => model.id)).toEqual(["old"])
+  rmSync(join(agent.profile, "kuvo-models.json"))
+  reply = {}
+  const failed = await accounts.modelStatus(agent, false, true)
+  expect(failed.unavailable).toBe(true)
+  expect(failed.models.map(model => model.id)).toEqual(["old"])
+  reply = { models: { availableModels: [] } }
+  expect(await accounts.modelStatus(agent, false, true)).toMatchObject({ models: [], unavailable: false })
+})
+
+test("Antigravity cannot attach the previous account's disk catalog to a new sign-in", async () => {
+  const { AntigravityAgent } = await import("../../src/agents/agents/antigravity")
+  const { AccountRefresh } = await import("../../src/agents/account-refresh")
+  const instance = { id: "catalog-switch", home: join(root, "agy-catalog-switch") }
+  const agent = new AntigravityAgent(context(), instance)
+  const token = join(agent.profile, "antigravity-acp", "acp_token.json")
+  mkdirSync(join(agent.profile, "antigravity-acp"), { recursive: true })
+  let signingIn = "account-A"
+  let setup: unknown = { models: { availableModels: [{ modelId: "only-A", name: "Only A" }] } }
+  const configure = (agent: InstanceType<typeof AntigravityAgent>) => {
+    const adapter = agent as unknown as { folder: string; modelConnection: () => unknown }
+    mkdirSync(adapter.folder, { recursive: true })
+    writeFileSync(join(adapter.folder, ".complete"), "")
+    adapter.modelConnection = () => ({
+      initialize: async () => {},
+      rpc: { kill() {}, request: async (method: string) => {
+        if (method === "authenticate") writeFileSync(token, JSON.stringify({ refresh_token: signingIn }))
+        return method === "session/new" ? setup : {}
+      } },
+      cwd: root, launch: { env: {}, signInFile: join(root, "not-requested") },
+    })
+  }
+  configure(agent)
+  const signIn = async () => {
+    const attempt = await agent.signIn()
+    await new Promise<void>(resolve => setImmediate(resolve))
+    expect(attempt.status().status).toBe("complete")
+  }
+  await signIn()
+  const first = new AccountRefresh()
+  const before = await first.modelStatus(agent, false, false)
+  expect(before.models.map(model => model.id)).toEqual(["only-A"])
+  // A fresh bridge can still use a catalog with verified continuity.
+  const same = new AntigravityAgent(context(), instance)
+  expect((await new AccountRefresh().modelStatus(same, false, false)).models.map(model => model.id)).toEqual(["only-A"])
+  signingIn = "account-B"
+  setup = {}
+  await signIn()
+  const restarted = new AntigravityAgent(context(), instance)
+  configure(restarted)
+  const accounts = new AccountRefresh()
+  expect(await accounts.modelStatus(restarted, false, false)).toMatchObject({ models: [], unavailable: true })
+  expect(await accounts.modelStatus(restarted, false, true)).toMatchObject({ models: [], unavailable: true })
+  expect(await first.modelStatus(agent, false, false)).toMatchObject({ models: [], unavailable: true })
 })

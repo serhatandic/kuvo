@@ -14,10 +14,23 @@
 
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
+use std::sync::OnceLock;
 
 use crate::client::BoxClient;
 use crate::error::{Error, Refusal, Result};
 use crate::paths::{query_value, segment};
+
+fn sign_in_client(request: Request) -> Request {
+    static CLIENT: OnceLock<Option<String>> = OnceLock::new();
+    match CLIENT.get_or_init(|| {
+        let mut bytes = [0; 16];
+        getrandom::fill(&mut bytes).ok()?;
+        Some(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
+    }) {
+        Some(client) => request.header("x-kuvo-sign-in-client", client.clone()),
+        None => request,
+    }
+}
 use crate::transport::Request;
 
 /// Which side of the box an account lives on: the engine's plans and providers, or the coding
@@ -250,6 +263,8 @@ pub struct Attempt {
     /// It may end on a code to paste back instead (Claude Code's).
     #[serde(default, rename = "acceptsCode")]
     pub accepts_code: bool,
+    #[serde(default, rename = "pasteAddress")]
+    pub paste_address: bool,
     /// The code its page asks for, as the box says it apart.
     #[serde(default, rename = "userCode")]
     pub user_code: Option<String>,
@@ -266,6 +281,8 @@ pub struct Status {
     pub url: Option<String>,
     #[serde(default)]
     pub instructions: Option<String>,
+    #[serde(default, rename = "pasteAddress")]
+    pub paste_address: bool,
     #[serde(default, rename = "userCode")]
     pub user_code: Option<String>,
     /// What to show once it `failed` or `expired`, in the box's words.
@@ -383,13 +400,13 @@ impl BoxClient {
         if let Some(answer) = answer.filter(|answer| !answer.is_empty()) {
             body["answer"] = Value::Object(answer.clone());
         }
-        self.value(&Request::post(format!("kuvo/sign-in/start?integration={}{}", query_value(account), side.agents_query()), body))
+        self.value(&sign_in_client(Request::post(format!("kuvo/sign-in/start?integration={}{}", query_value(account), side.agents_query()), body)))
     }
 
     /// How a sign-in goes, as the box says (the engine's status, with its failure in words).
     pub fn sign_in_status(&self, side: Side, account: &str, attempt: &str) -> Result<Status> {
         let wait = if self.streams() { "" } else { "&wait=20" };
-        self.get(&format!("kuvo/sign-in/status?integration={}&attempt={}{}{wait}", query_value(account), query_value(attempt), side.agents_query()))
+        self.value(&sign_in_client(Request::get(format!("kuvo/sign-in/status?integration={}&attempt={}{}{wait}", query_value(account), query_value(attempt), side.agents_query()))))
     }
 
     /// Hands the engine the code a sign-in's page gave.
@@ -397,8 +414,15 @@ impl BoxClient {
         self.done(&Request::post(format!("{}/integration/{}/connect/oauth/{}/complete", side.api(), segment(account), segment(attempt)), json!({ "code": code })))
     }
 
+    pub fn return_sign_in_address(&self, side: Side, account: &str, attempt: &str, address: &str) -> Result<()> {
+        self.done(&sign_in_client(Request::post("kuvo/sign-in/return?check=1", json!({ "url": address, "integration": account, "attempt": attempt, "agents": !side.agents_query().is_empty() }))))
+    }
+
     /// Gives a sign-in up.
     pub fn cancel_sign_in(&self, side: Side, account: &str, attempt: &str) -> Result<()> {
+        if account == "github-work-queue" {
+            return self.done(&sign_in_client(Request::delete(format!("api/integration/{}/connect/oauth/{}", segment(account), segment(attempt)))));
+        }
         self.done(&Request::delete(format!("{}/integration/{}/connect/oauth/{}", side.api(), segment(account), segment(attempt))))
     }
 

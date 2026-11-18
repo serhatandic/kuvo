@@ -195,7 +195,8 @@ export interface LimitsSource {
   /** Accounts whose reads share one limit at their maker (Anthropic's applies to the computer, not a sign-in): one turned away holds them all. */
   bucket?: string
   /** Set by the box: a window a turn heard of (a rate-limit event), told as it comes. */
-  heard?: (window: Omit<LimitWindow, "read" | "source">) => void
+  heard?: (window: Omit<LimitWindow, "read" | "source">, generation?: number) => void
+  generation?: () => number
   /**
    * Who the account is at its maker, as its sign-in says, the same on every computer signed in to
    * it: its maker's own account ID (`anthropic:<account>|<organization>`, `chatgpt:<account>/<user>`,
@@ -333,6 +334,7 @@ const SHARED_SLACK = 2 * MINUTE
 
 export class Limits {
   private entries = new Map<string, Entry>()
+  private generations = new Map<string, number>()
   private holds = new Map<string, number>()
   /** When each maker's bucket was last asked, in ms. */
   private asked = new Map<string, number>()
@@ -493,6 +495,10 @@ export class Limits {
     this.turnTimer.unref?.()
   }
 
+  private recent(source: LimitsSource, window: LimitWindow): boolean {
+    return this.now() - window.read <= Math.max(source.read ? 15 * MINUTE : 60 * MINUTE, 2 * source.every)
+  }
+
   /**
    * The accounts with plan limits: each agent's own sign-in first, then the ones you added, then
    * the engine's. `borrowed`: one a peer's reading stood for a read of here is listed with that
@@ -506,6 +512,8 @@ export class Limits {
       // the coding agents'), read or not yet: nothing read is no windows, never another's.
       const entry = this.entries.get(account.provider) ?? { windows: [], next: 0 }
       if (entry.problem?.kind === "none") continue
+      const identity = account.limits.identity?.()
+      if (identity && entry.identity && identityOf(identity) !== entry.identity) continue
       // One only its turns tell of, with no plan sign-in now (a Mac's Claude with an Anthropic
       // Console account): no plan limits to tell.
       if (!account.limits.read && account.limits.signIn && account.limits.signIn() === undefined) continue
@@ -520,7 +528,7 @@ export class Limits {
           ...(account.label ? { label: account.label } : {}),
           identity: entry.identity!,
           ...((peer.plan ?? entry.plan) ? { plan: peer.plan ?? entry.plan } : {}),
-          windows: peer.windows,
+          windows: peer.windows.filter(window => this.recent(account.limits, window)),
           ...((peer.balance ?? entry.balance) ? { balance: peer.balance ?? entry.balance } : {}),
           ...(peer.extras?.length ? { extras: peer.extras } : {}),
           ...(entry.checked ? { checked: entry.checked } : {}),
@@ -535,7 +543,7 @@ export class Limits {
         ...(account.label ? { label: account.label } : {}),
         ...(entry.identity ? { identity: entry.identity } : {}),
         ...(entry.plan ? { plan: entry.plan } : {}),
-        windows: entry.windows,
+        windows: entry.windows.filter(window => this.recent(account.limits, window)),
         ...(entry.notices?.length ? { notices: entry.notices.filter(n => currentNotice(n, this.now())) } : {}),
         ...(entry.noticeState ? { noticeState: entry.noticeState } : {}),
         ...(entry.balance ? { balance: entry.balance } : {}),
@@ -578,6 +586,17 @@ export class Limits {
     return raw ? `${account.service}#${identityOf(raw)}` : undefined
   }
 
+  /** Drop the previous reading before a sign-in or plan change is shown. An in-flight read
+   * keeps its old entry, so its answer cannot repopulate this account. */
+  invalidate(provider: string) {
+    this.generations.set(provider, (this.generations.get(provider) ?? 0) + 1)
+    const before = this.entries.get(provider)
+    if (!before) return
+    const held = before.problem?.kind === "rate-limited" && (before.problem.until ?? before.next) > this.now()
+    this.entries.set(provider, { windows: [], next: held ? before.next : 0, ...(held ? { problem: before.problem, refusals: before.refusals } : {}) })
+    this.changed()
+  }
+
   /** Accounts to read here at their next round whoever else read them lately (a reset was spent here). */
   private forced = new Set<string>()
 
@@ -588,13 +607,14 @@ export class Limits {
   async readAgain(provider: string): Promise<void> {
     // (Just signed in: listed once what lists the accounts says so, at the round's start.)
     if (!this.account(provider)) await this.tick()
+    const account = this.account(provider)
+    if (!account?.limits.read) return
     let entry = this.entries.get(provider)
     if (!entry) {
-      if (!this.account(provider)) return
       entry = { windows: [], next: 0 }
       this.entries.set(provider, entry)
     }
-    entry.next = 0
+    if (!this.heldBack(account.limits, entry, this.now())) entry.next = 0
     entry.elsewhere = undefined
     this.forced.add(provider)
     // (A round under way may have passed it already: one more after it.)
@@ -758,11 +778,13 @@ export class Limits {
   /** Reads one account; whether a request went to its maker. */
   private async readOne(source: LimitsSource, entry: Entry, account: LimitedAccount): Promise<boolean> {
     const started = this.now()
+    const identity = source.identity?.()
     // Not asked again before its time, even if the box stops while it waits for the answer.
     entry.next = Math.max(entry.next, started + source.every)
     this.save()
     try {
       const reading = await source.read!(started)
+      if (this.entries.get(account.provider) !== entry || (identity !== undefined && source.identity?.() !== identity)) return true
       const at = this.now()
       // (Another account's since: what was kept goes, before this one's is kept.)
       if (reading) this.identify(entry, reading.identity)
@@ -795,6 +817,7 @@ export class Limits {
       this.decide(account, entry, reading.windows.filter(w => Number.isFinite(w.used)).map(w => w.id))
       return true
     } catch (caught) {
+      if (this.entries.get(account.provider) !== entry || (identity !== undefined && source.identity?.() !== identity)) return true
       const at = this.now()
       // (Who it is may be known by now though its limits weren't: its sign-in says, as the read went.)
       if (!entry.identity) this.identify(entry, source.identity?.())
@@ -906,7 +929,9 @@ export class Limits {
   /** What a turn of this account hears (its rate-limit events), kept as the window's latest. */
   private listen(provider: string, source: LimitsSource) {
     if (source.heard) return
-    source.heard = (window) => {
+    const generation = source.generation = () => this.generations.get(provider) ?? 0
+    source.heard = (window, from) => {
+      if (from !== undefined && from !== generation()) return
       if (!Number.isFinite(window.used)) return
       let entry = this.entries.get(provider)
       if (!entry) {

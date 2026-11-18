@@ -187,7 +187,7 @@ impl SshBox {
         let headers: serde_json::Map<String, serde_json::Value> = request
             .headers
             .iter()
-            .filter(|(name, _)| name == "x-opencode-directory")
+            .filter(|(name, _)| name == "x-opencode-directory" || name == "x-kuvo-sign-in-client")
             .map(|(name, value)| (name.clone(), serde_json::Value::String(value.clone())))
             .collect();
         if !headers.is_empty() {

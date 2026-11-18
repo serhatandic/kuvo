@@ -1885,6 +1885,11 @@ impl Composer {
         let note = self.models.offered.as_ref().and_then(|offered| offered.note.clone()).map(Into::into).or_else(|| self.left_out().then(|| "This conversation can use models from its own engine or coding agent. Start a new session to use other providers.".into()));
         let (this, kept) = (cx.entity().downgrade(), cx.entity().downgrade());
         let (current, client) = (self.model(), self.client.clone());
+        let (session, side) = match &self.target {
+            Target::Session { id, place, .. } => (Some(id.clone()), Some(Side::of(*place))),
+            _ => (None, None),
+        };
+        let (before, folder) = (self.models.offered.clone(), self.offered_in());
         cx.new(|cx| {
             ModelPicker::new(
                 catalog,
@@ -1899,6 +1904,7 @@ impl Composer {
                 window,
                 cx,
             )
+            .refresh_when_opened(before, folder, session, side, window, cx)
             .notice(notice)
             .note(note)
             .on_starred(Rc::new(move |starred: Vec<Starred>, cx| {

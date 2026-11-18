@@ -39,8 +39,6 @@ export interface CommandSignInOptions {
    * for a sign-in it hands over rather than keeps (`claude setup-token`'s token), taken as soon as
    * it shows, and never a line still being drawn. */
   onLine?: (line: string) => void
-  /** What it prints that's never said back (a token it hands over): left out of a failure's words. */
-  secret?: RegExp
   /** Run in a terminal of its own, for a command that prints its page and takes a code only there
    * (`claude setup-token`): wide, so nothing it prints wraps. */
   terminal?: boolean
@@ -182,9 +180,9 @@ export async function commandSignIn(options: CommandSignInOptions): Promise<Sign
         await spawned.stdin.flush()
       }
     }
-  } catch (error) {
+  } catch {
     rmSync(own, { recursive: true, force: true })
-    throw error
+    throw new Error("The sign-in program couldn’t start. Try again.")
   }
   let status: OAuthStatus = { status: "pending" }
   let pasted = false
@@ -205,12 +203,8 @@ export async function commandSignIn(options: CommandSignInOptions): Promise<Sign
     if (signedIn && (code === 0 || signedInBefore === false)) succeed()
     else if (pasted) status = { status: "failed", message: "That code didn't work. Start again, and paste the code from the page this sign-in opens." }
     else {
-      // (Its secret first, before taking anything out can join a piece of it to other words.)
-      let words = options.secret ? output.replace(options.secret, "") : output
-      if (options.codePrompt) words = words.replace(options.codePrompt, "")
-      // No control characters (a terminal's codes are gone already).
-      words = words.replace(/[\x00-\x08\x0b-\x1f\x7f]/g, "")
-      status = { status: "failed", message: lastLines(words) || `Signing in stopped (exit code ${code}).` }
+      console.error(`The sign-in command stopped (exit code ${code}).`)
+      status = { status: "failed", message: "The sign-in ended before it finished. Try again." }
     }
   })
   // Signed in while the command lingers (it waits on something after the page): done then.
@@ -291,7 +285,11 @@ export async function commandSignIn(options: CommandSignInOptions): Promise<Sign
           if (options.refusedEnds && now.status === "failed" && now.message === options.refusedEnds) throw new Error(options.refusedEnds)
         }
       : undefined,
-    status: () => (late && status.status === "pending" ? { ...status, url: late, instructions: options.instructions } : status),
+    status: () => {
+      if (status.status !== "pending") return status
+      const code = userCode ?? options.userCode?.exec(output)?.[1]
+      return { ...status, ...(late ? { url: late, instructions: options.instructions } : {}), ...(code ? { userCode: code } : {}) }
+    },
     cancel() {
       if (status.status === "pending") status = { status: "failed", message: "Cancelled." }
       child.kill()
@@ -301,7 +299,3 @@ export async function commandSignIn(options: CommandSignInOptions): Promise<Sign
 
 /** The terminal a command runs in: wide, so nothing it prints wraps. */
 const TERMINAL = { cols: 1000, rows: 50 }
-
-function lastLines(text: string): string {
-  return text.trim().split("\n").slice(-4).join("\n").trim()
-}

@@ -87,7 +87,7 @@ interface Facts {
   settings: Record<string, unknown>;
   engine: Target | null;
   agents: EngineAgent[] | null;
-  models: { id: string; title: string; line: string }[] | null;
+  models: { id: string; title: string; line: string; model: { providerID: string; id: string } }[] | null;
 }
 
 async function facts(context: RouteContext): Promise<Facts | { status: number; value: any }> {
@@ -212,7 +212,7 @@ function agentForm(context: RouteContext, known: Facts, id: string | null): Sett
   const model = text(entry?.model);
   const models: { id: string; title: string; line?: string }[] = [
     { id: "", title: "Default", line: "A mode uses the session's model; a subagent the one Settings › Models gives subagents." },
-    ...(known.models ?? []).map(each => ({ id: each.id, title: each.title, line: each.line })),
+    ...(known.models ?? []).map(each => ({ id: each.id, title: each.title, line: each.line, model: each.model })),
     ...(model && !(known.models ?? []).some(each => each.id === model) ? [{ id: model, title: model, line: known.models ? "Not available here now" : "As the settings name it" }] : []),
   ];
   const fields: SettingField[] = [

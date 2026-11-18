@@ -670,6 +670,15 @@ impl BoxClient {
         self.get(&page_route(section))
     }
 
+    pub fn refresh_setting_model_choices(&self, section: &str, row: &str, action: &str, field: &str) -> Result<Option<Vec<Choice>>> {
+        let page: Page = self.get(&format!("{}?refresh-models=1", page_route(section)))?;
+        Ok(page.row(row)
+            .and_then(|row| row.actions.iter().chain(row.add.iter()).find(|each| each.id == action))
+            .and_then(|action| action.form.as_ref())
+            .and_then(|form| form.fields.iter().find(|each| each.id == field))
+            .map(|field| field.choices.clone()))
+    }
+
     /// Follows a section's page: as it is now, and again as it changes.
     pub fn follow_settings_page(&self, section: &str, timing: Timing) -> Follow<Followed<Page>> {
         let route = page_route(section);

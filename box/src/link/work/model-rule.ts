@@ -12,6 +12,7 @@ import { isEngineModel } from "../../shared/subagents";
 import type { Target } from "../../shared/records";
 import type { SessionModel } from "../../shared/routes/sessions";
 import { call } from "../engine/client";
+import { revalidatePickerModels } from "../engine/models";
 import { BOX } from "../home";
 import { isFree } from "./unanswering";
 
@@ -75,12 +76,32 @@ export function signInNeed(providerID: string, methods: string[][]): { missing: 
 }
 
 /** `target`'s answer to `route`; undefined when it didn't answer (not there, too slow, an error). */
-const asked = (target: Target, route: string, folder?: string): Promise<unknown> =>
-  call(target, "GET", route, undefined, AbortSignal.timeout(ASK_WAIT), folder).catch(() => undefined);
+const asked = (target: Target, route: string, folder?: string, timeout = ASK_WAIT): Promise<unknown> =>
+  call(target, "GET", route, undefined, AbortSignal.timeout(timeout), folder).catch(() => undefined);
 
 /** How long what a place listed is used again: until it says something changed, or this long. */
 const KEPT_FOR = 10_000;
 const kept = new Map<string, { at: number; lists: Promise<unknown> }>();
+const PICKER_REOPEN = 2_000;
+const pickerReads = new Map<string, { until: number; lists: Promise<unknown> }>();
+
+function pickerRead<T>(key: string, read: () => Promise<T | null>): Promise<T | null> {
+  const before = pickerReads.get(key);
+  if (before && before.until > Date.now()) return before.lists as Promise<T | null>;
+  const lists = read();
+  const entry = { lists, until: Infinity };
+  pickerReads.set(key, entry);
+  void lists.then(
+    value => {
+      entry.until = Date.now() + PICKER_REOPEN;
+      if (value === null && pickerReads.get(key) === entry) pickerReads.delete(key);
+      else if (value !== null && pickerReads.get(key) === entry) kept.set(key, { at: Date.now(), lists });
+    },
+    () => { if (pickerReads.get(key) === entry) pickerReads.delete(key); },
+  );
+  if (pickerReads.size > 200) pickerReads.delete(pickerReads.keys().next().value!);
+  return lists;
+}
 
 /** What a place lists, read again only once it's older than `KEPT_FOR` or a change was heard;
  * what it couldn't wholly say (`whole`) isn't kept. Read with its own time limit, never one
@@ -101,8 +122,13 @@ function keptOr<T>(key: string, read: () => Promise<T | null>, whole: (value: T)
 const CHANGES = new Set(["credential.updated", "credential.switched", "integration.updated", "model.updated", "provider.updated", "config.updated", "global.disposed", "kuvo.auto.updated"]);
 
 /** Told each event of the engine's and the bridge's (engine/watch.ts). */
-export function noteModelsEvent(event: { type?: string }): void {
-  if (event.type && CHANGES.has(event.type)) kept.clear();
+export function noteModelsEvent(event: { type?: string; data?: Record<string, unknown> }): void {
+  if (event.type && (CHANGES.has(event.type) || event.type === "kuvo.agent.account.changed")) {
+    kept.clear();
+    // The result publication is part of a refresh already in progress. Every other update
+    // invalidates both a completed response and permission for a pending read to cache its result.
+    if (!(event.type === "model.updated" && event.data?.pickerRefresh === true)) pickerReads.clear();
+  }
 }
 
 /** Lets go of the lists kept, to be read again (the box heard the engine or the bridge again after
@@ -110,6 +136,7 @@ export function noteModelsEvent(event: { type?: string }): void {
  * a model goes missing after just such a restart, and its refusal still names it. */
 export function forgetModelLists(): void {
   kept.clear();
+  pickerReads.clear();
 }
 
 /** Lets go of every name kept, the saved ones too (a test's own); `restart`, only as a box
@@ -270,7 +297,7 @@ const named = (ref: Ref, models: Listed[]): Listed | undefined =>
 export interface EngineLists { ready: Set<string>; models: Listed[]; accounts: Map<string, Account>; fallback: Ref | null | undefined }
 /** What the bridge lists: its accounts and their models (only signed-in ones'), and your Custom
  * Auto lists (null where it can't say). */
-export interface BridgeLists { models: Listed[]; accounts: Map<string, Account>; auto: { id: string; name: string; entries: number }[] | null }
+export interface BridgeLists { models: Listed[]; accounts: Map<string, Account>; auto: { id: string; name: string; entries: number }[] | null; unavailable?: { id: string }[]; generations?: Record<string, string> }
 /** What both places list: null for one that can't say now (not there, or not answering). */
 export interface Lists { engine: EngineLists | null; bridge: BridgeLists | null }
 
@@ -290,19 +317,22 @@ async function engineLists(engine: Target, folder: string | undefined): Promise<
   return { ready, models, accounts, fallback: given };
 }
 
-async function bridgeLists(bridge: Target): Promise<BridgeLists | null> {
+async function bridgeLists(bridge: Target, refresh = false): Promise<BridgeLists | null> {
   // (Those an agent keeps out of its picker but still runs, Codex's hidden ones, too: only one
   // absent from its list is gone.)
   // (The models first: an account's word that its list is whole is of the list it has then.)
-  const listed = await asked(bridge, "/api/model?hidden=1");
+  const listed = await asked(bridge, refresh ? "/api/model?hidden=1&refresh=1&details=1" : "/api/model?hidden=1&details=1", undefined, refresh ? 65_000 : ASK_WAIT);
   const [integrations, auto] = await Promise.all(["/api/integration", "/api/kuvo/auto"].map(route => asked(bridge, route)));
-  const models = modelsIn(listed), accounts = accountsIn(integrations);
+  const models = modelsIn(isObject(listed) ? listed.models : listed), accounts = accountsIn(integrations);
   if (!models || !accounts) return null;
   const lists = isObject(auto) && Array.isArray(auto.lists)
     ? auto.lists.flatMap(each => (isObject(each) && typeof each.id === "string" ? [{ id: each.id, name: typeof each.name === "string" && each.name ? each.name : "Custom Auto", entries: Array.isArray(each.entries) ? each.entries.length : 0 }] : []))
     : null;
   for (const list of lists ?? []) noteNames("auto", [list.id], list.name);
-  return { models, accounts, auto: lists };
+  const unavailable = isObject(listed) && Array.isArray(listed.unavailable) ? listed.unavailable.flatMap(each =>
+    isObject(each) && typeof each.id === "string" ? [{ id: each.id }] : []) : [];
+  const generations = isObject(listed) && isObject(listed.generations) ? Object.fromEntries(Object.entries(listed.generations).filter((entry): entry is [string, string] => typeof entry[1] === "string")) : {};
+  return { models, accounts, auto: lists, unavailable, generations };
 }
 
 /** What the engine lists in `folder` (nothing for none there), as kept. */
@@ -320,8 +350,14 @@ export function bridgeListsOf(bridge: Target | null): Promise<BridgeLists | null
 
 /** What both places list, for a session in `folder`. `noBridgeIsNone`: no bridge running counts as
  * no coding agents here (a session started now can't run on one), not as one that can't say yet. */
-export async function listsHere(engine: Target | null, bridge: Target | null, folder?: string, noBridgeIsNone = false): Promise<Lists> {
-  const [fromEngine, fromBridge] = await Promise.all([engineListsIn(engine, folder), bridgeListsOf(bridge)]);
+export async function listsHere(engine: Target | null, bridge: Target | null, folder?: string, noBridgeIsNone = false, refresh = false): Promise<Lists> {
+  const [fromEngine, fromBridge] = await Promise.all([
+    refresh && engine ? pickerRead(`engine:${engine.port}:${folder ?? ""}`, async () => {
+      await revalidatePickerModels(engine, folder).catch(() => {});
+      return engineLists(engine, folder);
+    }) : engineListsIn(engine, folder),
+    refresh && bridge ? pickerRead(`bridge:${bridge.port}`, () => bridgeLists(bridge, true)) : bridgeListsOf(bridge),
+  ]);
   return { engine: fromEngine, bridge: fromBridge ?? (!bridge && noBridgeIsNone ? { models: [], accounts: new Map(), auto: [] } : null) };
 }
 
@@ -370,6 +406,7 @@ function withAgents(ref: Ref, bridge: BridgeLists | null): ModelState | undefine
   if (!account.signedIn) return { runs: false, missing: "signIn", account: accountOf(account) };
   const ofIt = bridge.models.filter(model => model.providerID === ref.providerID);
   const listed = named(ref, ofIt);
+  if (!listed && bridge.unavailable?.some(each => each.id === ref.providerID)) return undefined;
   if (listed) return { name: listed.name, runs: true };
   // Signed in with none listed, or only its agent's usual ones: its models are still being read.
   // Nor from a bridge (or an agent) that can't say its list is all it runs, Codex's hidden ones

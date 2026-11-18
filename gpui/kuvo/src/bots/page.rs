@@ -491,6 +491,7 @@ impl BotsView {
                                 cx,
                             )
                             .on_effort((!is_new).then(|| on_effort.clone()))
+                            .refresh_when_opened(Some(offered), None, None, None, window, cx)
                             .on_starred(Rc::new(move |starred, cx| {
                                 kept.update(cx, |this, _| this.keep_starred(starred)).ok();
                             }))

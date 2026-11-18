@@ -2362,6 +2362,16 @@ start on a model by the same rule.
   offered though Accounts shows no sign-in, as they run. Without one, a provider whose plan goes
   through a coding agent (OpenAI, xAI) still needs its key ("A session's model").
 
+A picker can show its last list immediately and ask again with `refresh=1`. This rereads the
+engine’s current catalog and asks the coding agents to refresh their own lists. Account-backed
+provider catalogs are revalidated when the locations they depend on have no work in progress.
+Concurrent requests and pickers reopened within two seconds share a refresh on the host. An account
+that couldn't answer is listed under `unavailable`. A client can reuse its last successful list only
+when the opaque account generation matches. Antigravity’s saved list is reused only when it was read
+under the current sign-in. The bridge also
+refreshes an agent’s list after sign-in, including Sign In Again, when its plan changes, and after
+an agent update. The hourly check looks for agent program releases so Accounts can offer updates.
+
 ### Work
 
 A bot runs sessions as you would (bridge 0.9.106): it starts them in your projects on the model,
@@ -4143,7 +4153,8 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
     `message` as they come, for an agent downloaded first, Antigravity;
     `complete`; `failed` with `message`; `expired`); `POST …/connect/oauth/<attempt>/complete
     {code}` for one with `acceptsCode`; `DELETE …/connect/oauth/<attempt>` to give up. A key:
-    `POST …/connect/key {key}`. With `remote: true` the page is for another device (the phone),
+    `POST …/connect/key {key}`. The box sets `remote` from the request’s transport. With
+    `remote: true` the page is for another computer or the phone,
     so it doesn't come back to the computer's `localhost`: Claude Code's ends on a code to paste
     back (`acceptsCode`), Codex's and Grok's are device codes (`userCode`, shown beside the page,
     to copy), Cursor's finishes by itself, and Antigravity's Google page comes back to
@@ -4224,6 +4235,8 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
     …/connect/oauth/<attempt>` to give up. A page that sends the browser back to `localhost` on
     the computer (GitLab's, Poe's, ChatGPT's) finishes there with `kuvo/sign-in/return` (below).
     Device codes (Copilot, OpenCode Console, SuperGrok) and keys work from anywhere.
+    Where GitHub CLI is installed, `github-work-queue` also appears in Accounts and uses a
+    GitHub.com device code. GitHub CLI keeps the sign-in on the computer that reads the Work Queue.
   - Its sign-ins: `GET api/credential` (with what each is signed in with), or `GET
     kuvo/accounts/credentials` → `{credentials: [{id, integrationID, label, active}]}`, the list
     alone; `POST api/credential/<id>/activate` uses one; `DELETE api/credential/<id>` removes one.
@@ -4438,11 +4451,16 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
     `504` when it didn't answer in two minutes, else its place's own refusal. A client starts
     every browser sign-in here, and shows `userCode` as it is, never reading one out of the page
     or the instructions itself. `kuvo/sign-in/status` says it too wherever the status has it.
+    When start or status says `pasteAddress: true`, the desktop shows a field for the address
+    the browser ended on. It submits it to `POST kuvo/sign-in/return` with
+    `{url, integration, attempt, agents}` and
+    keeps following the attempt. A page that starts at `localhost` can only be opened on the
+    computer doing the sign-in, which the box explains.
   - `GET kuvo/sign-in/status?integration=<id>&attempt=<id>[&agents=1][&wait=<seconds>]` → the
     attempt's status as the engine (or the bridge) says it (`status`, `message?`, `url?`,
     `instructions?`, `userCode?`), with `failure` once it's `failed` or `expired`: what a client
     shows, the page's OAuth code in words (`access_denied`: turned down on its page) and the
-    engine's own words otherwise. A client asks it as the sign-in goes (every second or so), in
+    a plain fallback message otherwise. A client asks it as the sign-in goes (every second or so), in
     place of the engine's status route. With `wait` (at most 25), the box asks the engine each
     second and answers once what it says changes or it ends, else after that long: for a client
     whose every ask runs a process (a Mac asking a machine's box over SSH, with `wait=20`).
@@ -4456,9 +4474,9 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
     `SignInStatus`) and gpui's `kuvo_box`; the phone's sample Mac and tests' computers serve its recorded answers as they
     are. Every box the update gate lets through has `sign-in.methods`; a client offers no ways of
     its own.
-- `POST kuvo/sign-in/return` with `{"url"}`: where a sign-in's page sent the browser back to the
-  computer (`http://127.0.0.1:<port>/…?code=…`: a plan's that finishes there, an MCP server's at
-  `127.0.0.1:19876`, a coding agent's), which a phone can't load. The computer loads it, as the
+- `POST kuvo/sign-in/return` with `{url, integration, attempt, agents}`: where a sign-in's page
+  sent the browser back to the computer. The request must come from the client that started the
+  pending attempt. The address must match its callback and OAuth state. The computer loads it as the
   browser would have: only its own address (127.0.0.1, localhost or [::1], over http, at a port,
   with a query; a fragment is left off), and no further than it answers (a redirect isn't
   followed). `200 {"status"}` with the status it got: 2xx or 3xx, it took it; `400 {"message"}`
@@ -4466,6 +4484,8 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
   sign-in again). Send it to the computer the sign-in is on: a Mac for its own, a machine's
   bridge for the machine's, the engine's and the coding agents'. The same check on
   both (`vectors/link.json`, `signInReturns`).
+  An existing phone can send only `{url}`. It must match exactly one pending attempt started by
+  that phone, including attempts started through the engine’s original OAuth routes.
 - `kuvo/config`: the computer's own engine settings as Settings has them, the whole document
   (the same that its `opencode.json` holds). Each computer keeps its own ("Settings per box"),
   and its box answers for them, a Mac's as a machine's: change a machine's on the machine's box,

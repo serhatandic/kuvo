@@ -89,6 +89,15 @@ function told(provider: string, times = 1): Promise<void> {
 }
 
 describe("updating the agents' programs", () => {
+  test("an Accounts read that first sees an externally updated program tells all its accounts", async () => {
+    const program = new Program("external-program", "1.0.0", "2.0.0")
+    const box = bridge([program.account(), program.account("work")])
+    await box.accounts()
+    program.installed = "2.0.0"
+    await box.ask("integration/external-program-cli@work")
+    expect(program.told).toBe(2)
+  })
+
   test("Update All: the box picks each program behind that it can update, once, answers as they start, and a second client sees them under way, then how each went", async () => {
     // Claude, behind, with an account you added (the same program); Grok behind, but yours to
     // update; Codex up to date.

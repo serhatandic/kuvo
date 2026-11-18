@@ -1378,8 +1378,8 @@
     {
      "id": "addAnother",
      "label": "Add Another Account",
-     "sheetTitle": "Sign In to Codex",
-     "here": true
+     "here": true,
+     "sheetTitle": "Sign In to Codex"
     }
    ],
    "connections": []
@@ -1695,7 +1695,7 @@
      "label": "Sign Out",
      "confirm": {
       "title": "Sign out of Codex?",
-      "message": "Codex is signed out on Studio, in Terminal too, and its models leave the model picker. A turn running on it stops; your sessions stay; sign in again to use it.",
+      "message": "Codex is signed out on Studio, in other apps that use the same sign-in, and its models leave the model picker. A turn running on it stops; your sessions stay; sign in again to use it.",
       "label": "Sign Out"
      }
     }
@@ -2567,6 +2567,11 @@
    "line": "Signed in as you@example.com",
    "actions": [
     {
+     "id": "signInAgain",
+     "label": "Sign In Again",
+     "sheetTitle": "Sign In to GitHub Copilot"
+    },
+    {
      "id": "addAnother",
      "label": "Add Another Account",
      "sheetTitle": "Sign In to GitHub Copilot"
@@ -2623,6 +2628,11 @@
    "state": "signedIn",
    "line": "API key",
    "actions": [
+    {
+     "id": "signInAgain",
+     "label": "Replace Key",
+     "sheetTitle": "Replace Key · DeepSeek"
+    },
     {
      "id": "addAnother",
      "label": "Add Another Key",
@@ -2681,6 +2691,11 @@
    "line": "API key",
    "actions": [
     {
+     "id": "signInAgain",
+     "label": "Replace Key",
+     "sheetTitle": "Replace Key · DeepSeek"
+    },
+    {
      "id": "addAnother",
      "label": "Add Another Key",
      "sheetTitle": "Add Another Key · DeepSeek"
@@ -2737,6 +2752,11 @@
    "state": "signedIn",
    "line": "API key · Work",
    "actions": [
+    {
+     "id": "signInAgain",
+     "label": "Replace Key",
+     "sheetTitle": "Replace Key · DeepSeek"
+    },
     {
      "id": "addAnother",
      "label": "Add Another Key",
@@ -2796,6 +2816,11 @@
    "state": "signedIn",
    "line": "Credentials on Studio",
    "actions": [
+    {
+     "id": "signInAgain",
+     "label": "Reconnect",
+     "sheetTitle": "Reconnect · Amazon Bedrock"
+    },
     {
      "id": "addAnother",
      "label": "Add Another Account",
@@ -2987,6 +3012,11 @@
    "line": "From OPENAI_API_KEY",
    "actions": [
     {
+     "id": "signInAgain",
+     "label": "Replace Key",
+     "sheetTitle": "Replace Key · OpenAI"
+    },
+    {
      "id": "addAnother",
      "label": "Add Another Key",
      "sheetTitle": "Add Another Key · OpenAI"
@@ -3042,6 +3072,11 @@
    "state": "signedIn",
    "line": "Signed in as you@example.com · 2 accounts",
    "actions": [
+    {
+     "id": "signInAgain",
+     "label": "Sign In Again",
+     "sheetTitle": "Sign In to GitHub Copilot"
+    },
     {
      "id": "addAnother",
      "label": "Add Another Account",
@@ -3597,6 +3632,11 @@
    "line": "Signed in as you@example.com",
    "actions": [
     {
+     "id": "signInAgain",
+     "label": "Sign In Again",
+     "sheetTitle": "Sign In to GitHub Copilot"
+    },
+    {
      "id": "addAnother",
      "label": "Add Another Account",
      "sheetTitle": "Sign In to GitHub Copilot"
@@ -3682,8 +3722,8 @@
     {
      "id": "addAnother",
      "label": "Add Another Account",
-     "sheetTitle": "Sign In to Codex",
-     "here": true
+     "here": true,
+     "sheetTitle": "Sign In to Codex"
     }
    ],
    "connections": [
@@ -3951,6 +3991,11 @@
    "line": "Signed in",
    "actions": [
     {
+     "id": "signInAgain",
+     "label": "Sign In Again",
+     "sheetTitle": "Sign In to Linear"
+    },
+    {
      "id": "addAnother",
      "label": "Add Another Account",
      "sheetTitle": "Sign In to Linear"
@@ -4010,6 +4055,11 @@
    "state": "signedIn",
    "line": "API key · Work · 2 accounts",
    "actions": [
+    {
+     "id": "signInAgain",
+     "label": "Replace Key",
+     "sheetTitle": "Replace Key · OpenAI"
+    },
     {
      "id": "addAnother",
      "label": "Add Another Key",

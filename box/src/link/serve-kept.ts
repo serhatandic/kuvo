@@ -19,7 +19,7 @@ import type { AnswerPiece, RouteContext } from "./server/context";
 export const SERVE_NEEDED = () => path.join(RUN, "serve.needed");
 export const SERVE_FILE = () => path.join(RUN, "serve.json");
 
-interface ServeRecord { pid: number; port: number; kept: boolean }
+interface ServeRecord { pid: number; port: number; kept: boolean; password: string }
 /** The command line of `serve`, and of one kept for clients. */
 export const SERVE_ROLE = /kuvo-link\.js serve(\s|$)/;
 export const KEPT_ROLE = /kuvo-link\.js serve --kept(\s|$)/;
@@ -28,8 +28,8 @@ export const KEPT_ROLE = /kuvo-link\.js serve --kept(\s|$)/;
 export function runningServe(): ServeRecord | null {
   try {
     const record = JSON.parse(fs.readFileSync(SERVE_FILE(), "utf8"));
-    if (isObject(record) && Number.isInteger(record.pid) && runsAs(record.pid, record.kept === true ? KEPT_ROLE : SERVE_ROLE)) {
-      return { pid: record.pid as number, port: Number(record.port), kept: record.kept === true };
+    if (isObject(record) && Number.isInteger(record.pid) && typeof record.password === "string" && runsAs(record.pid, record.kept === true ? KEPT_ROLE : SERVE_ROLE)) {
+      return { pid: record.pid as number, port: Number(record.port), kept: record.kept === true, password: record.password };
     }
   } catch {}
   return null;

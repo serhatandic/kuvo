@@ -193,3 +193,233 @@ test("bridge bots offer provider models too; engine bots explain choosing a codi
     expect(ordinary.note).toContain("This conversation uses provider models")
   } finally { engine.stop(true); agents.stop(true); forgetModelLists() }
 })
+
+test("opening the picker bypasses the list cache and asks the bridge to refresh upstream", async () => {
+  let upstream = "old"
+  let cached = upstream
+  let refreshes = 0
+  const bridge = Bun.serve({ port: 0, fetch(request) {
+    const url = new URL(request.url)
+    if (url.searchParams.get("refresh") === "1") {
+      refreshes++
+      cached = upstream
+    }
+    const data = url.pathname === "/api/model" ? [listed("codex-cli", cached, cached, [])]
+      : url.pathname === "/api/integration" ? [{ id: "codex-cli", name: "Codex", connections: [{}] }]
+      : { lists: [] }
+    return Response.json({ data })
+  } })
+  const ask = async (refresh = false) => {
+    let answer: any
+    const context = {
+      request: { method: "GET", path: `kuvo/models/offered${refresh ? "?refresh=1" : ""}`, headers: {} },
+      readEngine: () => { throw new Error("No engine") },
+      bridge: () => ({ port: bridge.port!, password: "test", pid: process.pid }),
+      json: (status: number, value: unknown) => { expect(status).toBe(200); answer = value; return [] },
+    } as unknown as RouteContext
+    for await (const _ of modelsOfferedRoute(context)) {}
+    return answer.models.map((model: any) => model.id)
+  }
+  try {
+    expect(await ask()).toEqual(["old"])
+    upstream = "released"
+    expect(await Promise.all([ask(true), ask(true)])).toEqual([["released"], ["released"]])
+    expect(await ask(true)).toEqual(["released"])
+    expect(refreshes).toBe(1)
+  } finally {
+    bridge.stop(true)
+    forgetModelLists()
+  }
+})
+
+test("opening the picker revalidates GitLab's open catalog and leaves active folders alone", async () => {
+  const { listsHere } = await import("../src/link/work/model-rule")
+  const { settleDueModels } = await import("../src/link/engine/models")
+  let model = "stale"
+  let busy = true
+  const closed: string[] = []
+  const engine = Bun.serve({ port: 0, fetch(request) {
+    const url = new URL(request.url)
+    let data: unknown
+    switch (url.pathname) {
+      case "/api/provider": data = [{ id: "gitlab" }]; break
+      case "/api/model": data = [listed("gitlab", model, model, [])]; break
+      case "/api/model/default": data = null; break
+      case "/api/integration": data = [{ id: "gitlab", connections: [{}] }]; break
+      case "/api/debug/location":
+        if (request.method === "DELETE") {
+          closed.push(url.searchParams.get("location[directory]")!)
+          model = "released"
+          data = []
+        } else data = ["/busy", "/quiet"].filter(folder => !closed.includes(folder)).map(directory => ({ directory }))
+        break
+      case "/api/session/active": data = busy ? ["ses_busy"] : []; break
+      case "/api/session/ses_busy": data = { location: { directory: "/busy" } }; break
+      default: data = []
+    }
+    return Response.json({ data })
+  } })
+  try {
+    const target = { port: engine.port!, password: "test" }
+    const [result, overlapping] = await Promise.all([
+      listsHere(target, null, undefined, false, true),
+      listsHere(target, null, undefined, false, true),
+    ])
+    expect(result.engine?.models.map(each => each.id)).toEqual(["released"])
+    expect(overlapping.engine?.models.map(each => each.id)).toEqual(["released"])
+    expect((await listsHere(target, null, undefined, false, true)).engine?.models.map(each => each.id)).toEqual(["released"])
+    expect(closed).toEqual(["/quiet"])
+    busy = false
+    await settleDueModels(target)
+    expect(closed).toEqual(["/quiet", "/busy"])
+  } finally { engine.stop(true); forgetModelLists() }
+})
+
+test("an unanswered provider is marked separately from healthy providers", async () => {
+  const { listsHere } = await import("../src/link/work/model-rule")
+  const bridge = Bun.serve({ port: 0, fetch(request) {
+    const route = new URL(request.url).pathname
+    const data = route === "/api/model"
+      ? { models: [listed("claude-code", "sonnet", "Sonnet", [])], generations: { "codex-cli": "account-1" }, unavailable: [{ id: "codex-cli" }] }
+      : route === "/api/integration"
+        ? [{ id: "claude-code", connections: [{}] }, { id: "codex-cli", connections: [{}] }]
+        : { lists: [] }
+    return Response.json({ data })
+  } })
+  try {
+    const lists = await listsHere(null, { port: bridge.port!, password: "test" }, undefined, false, true)
+    const answer = offeredAnswer(lists, null)
+    expect(answer.models.map(each => each.id)).toEqual(["sonnet"])
+    expect(answer.unavailable).toEqual([{ id: "codex-cli" }])
+    expect(answer.generations).toEqual({ "codex-cli": "account-1" })
+  } finally { bridge.stop(true); forgetModelLists() }
+})
+
+test.each(["github-copilot", "digitalocean", "modal", "opencode"])("picker refresh revalidates %s while the engine stays running", async provider => {
+  const { listsHere } = await import("../src/link/work/model-rule")
+  let open = true
+  let active = true
+  let available = "old"
+  let closes = 0
+  const engine = Bun.serve({ port: 0, fetch(request) {
+    const url = new URL(request.url)
+    let data: unknown = []
+    if (url.pathname === "/api/provider") data = [{ id: provider }]
+    if (url.pathname === "/api/model") data = [listed(provider, available, available, [])]
+    if (url.pathname === "/api/model/default") data = null
+    if (url.pathname === "/api/debug/location") {
+      if (request.method === "DELETE") { open = false; available = "new"; closes++ }
+      else data = open ? [{ directory: "/project" }] : []
+    }
+    if (url.pathname === "/api/session/active") data = active ? ["ses_busy"] : []
+    if (url.pathname === "/api/session/ses_busy") data = { location: { directory: "/project" } }
+    return Response.json({ data })
+  } })
+  try {
+    const target = { port: engine.port!, password: "test" }
+    expect((await listsHere(target, null, undefined, false, true)).engine?.models[0]?.id).toBe("old")
+    expect(closes).toBe(0)
+    active = false
+    noteModelsEvent({ type: "provider.updated" })
+    expect((await listsHere(target, null, undefined, false, true)).engine?.models[0]?.id).toBe("new")
+    expect(closes).toBe(1)
+  } finally { engine.stop(true); forgetModelLists() }
+})
+
+test("a model update publishes a newer picker response even inside the reopen window", async () => {
+  const { listsHere } = await import("../src/link/work/model-rule")
+  let upstream = "old"
+  let reads = 0
+  const bridge = Bun.serve({ port: 0, fetch(request) {
+    const route = new URL(request.url).pathname
+    if (route === "/api/model") reads++
+    return Response.json({ data: route === "/api/model" ? [listed("codex-cli", upstream, upstream, [])] : route === "/api/integration" ? [{ id: "codex-cli", connections: [{}] }] : { lists: [] } })
+  } })
+  try {
+    const target = { port: bridge.port!, password: "test" }
+    const get = async () => (await listsHere(null, target, undefined, false, true)).bridge?.models[0]?.id
+    expect(await get()).toBe("old")
+    upstream = "new"
+    noteModelsEvent({ type: "model.updated" })
+    expect(await get()).toBe("new")
+    expect(reads).toBe(2)
+  } finally { bridge.stop(true); forgetModelLists() }
+})
+
+test("a GitLab folder that finishes before its deferred refresh is recorded is settled", async () => {
+  const { revalidatePickerModels } = await import("../src/link/engine/models")
+  let open = true
+  let first = true
+  let done!: () => void
+  const closed = new Promise<void>(resolve => { done = resolve })
+  const engine = Bun.serve({ port: 0, fetch(request) {
+    const route = new URL(request.url).pathname
+    let data: unknown = []
+    if (route === "/api/provider") data = [{ id: "gitlab" }]
+    if (route === "/api/session/active" && first) { first = false; data = ["ses_finishing"] }
+    if (route === "/api/session/ses_finishing") data = { location: { directory: "/finishing" } }
+    if (route === "/api/debug/location") {
+      if (request.method === "DELETE") { open = false; done() }
+      else data = open ? [{ directory: "/finishing" }] : []
+    }
+    return Response.json({ data })
+  } })
+  try {
+    await revalidatePickerModels({ port: engine.port!, password: "test" })
+    await closed
+    expect(open).toBe(false)
+  } finally { engine.stop(true); forgetModelLists() }
+})
+
+test.each(["kuvo/models/offered?refresh=1", "kuvo/settings/commands?refresh-models=1"])("two independent SSH route processes share the host's picker refresh for %s", async path => {
+  const { holdVault } = await import("../src/link/vault/holder")
+  const { engineHandler } = await import("../src/link/server/router")
+  const { ENGINE_FILE } = await import("../src/link/home")
+  const { join } = await import("node:path")
+  const { mkdirSync, readFileSync, rmSync, writeFileSync } = await import("node:fs")
+  let reads = 0
+  const hostPaths: string[] = []
+  const engine = Bun.serve({ port: 0, fetch(request) {
+    const route = new URL(request.url).pathname
+    if (route === "/api/provider") reads++
+    return Response.json({ data: route === "/api/model" ? [listed("openai", "latest", "Latest", [])] : route === "/api/provider" ? [{ id: "openai" }] : route === "/api/model/default" ? null : [] })
+  } })
+  const record = { port: engine.port!, password: "test" }
+  const handle = engineHandler(() => record, undefined, () => { throw new Error("No bridge") })
+  const host = holdVault(async function* (request, asker, signal) {
+    hostPaths.push(request.path)
+    yield* handle(request, asker, signal)
+  }, () => () => {})
+  const old = (() => { try { return readFileSync(ENGINE_FILE) } catch { return undefined } })()
+  writeFileSync(ENGINE_FILE, JSON.stringify(record))
+  try {
+    const home = process.env.KUVO_HOME!
+    const routeHome = join(home, "picker-route-home")
+    mkdirSync(routeHome, { recursive: true })
+    const request = JSON.stringify({ method: "GET", path })
+    const ask = async () => {
+      const child = Bun.spawn([process.execPath, join(import.meta.dir, "../src/link/main.ts"), "box", "route"], {
+        env: { PATH: process.env.PATH, HOME: routeHome, TMPDIR: routeHome, KUVO_HOME: home, BUN_BE_BUN: "1" },
+        stdin: new Blob([request]), stdout: "pipe", stderr: "inherit",
+      })
+      const out = await new Response(child.stdout).text()
+      expect(await child.exited).toBe(0)
+      return JSON.parse(out.trim().split("\n").at(-1)!)
+    }
+    for (let i = 0; i < 2; i++) {
+      const result = await ask()
+      expect(result.status).toBe(200)
+      const page = JSON.parse(result.body)
+      if (path.includes("/settings/")) expect(page.id).toBe("commands")
+      else expect(page.models[0].id).toBe("latest")
+    }
+    expect(hostPaths).toEqual([path, path])
+    expect(reads).toBe(2)
+  } finally {
+    if (old) writeFileSync(ENGINE_FILE, old)
+    else rmSync(ENGINE_FILE, { force: true })
+    host.close()
+    engine.stop(true)
+    forgetModelLists()
+  }
+})

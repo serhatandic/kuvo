@@ -555,6 +555,7 @@ impl SettingsView {
                                 window,
                                 cx,
                             )
+                            .refresh_when_opened(Some(offered), None, None, Some(kuvo_box::models::Side::Engine), window, cx)
                             .on_starred(std::rc::Rc::new(move |starred, cx| {
                                 kept.update(cx, |this, _| {
                                     if let Reading::Ready(offered) = &mut this.offered {

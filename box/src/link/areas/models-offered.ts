@@ -14,6 +14,7 @@ import { targetsOf } from "../letters/tools";
 import { listsHere, needsNoAccount, offeredHere, startingModel, stillListing, type Lists, type Ref } from "../work/model-rule";
 import type { AnswerPiece, RouteContext } from "../server/context";
 import { starredModels, type Starred } from "./models-starred";
+import { heldRead } from "../vault/holder";
 
 export const MODELS_OFFERED_ROUTE = "kuvo/models/offered";
 
@@ -52,12 +53,14 @@ function isKnown(folder: string): boolean {
 export async function* modelsOfferedRoute(context: RouteContext): AsyncGenerator<AnswerPiece> {
   const { request, readEngine, bridge, json, signal } = context;
   if (request.method.toUpperCase() !== "GET") return yield* json(405, {});
+  const query = new URLSearchParams(request.path.split("?")[1] ?? "");
+  if (query.get("refresh") === "1" && (yield* heldRead(request, signal))) return;
   const folder = await folderIn(request.path);
   if (!targetsOf({ readEngine, bridge }).length) return yield* json(503, { message: "The engine isn't running." });
   let engine: Target | null = null;
   try { engine = readEngine(); } catch {}
   const agents = bridge();
-  const session = new URLSearchParams(request.path.split("?")[1] ?? "").get("session")?.trim();
+  const session = query.get("session")?.trim();
   let place: Awaited<ReturnType<typeof sessionHere>> = null;
   if (session) {
     try {
@@ -68,7 +71,7 @@ export async function* modelsOfferedRoute(context: RouteContext): AsyncGenerator
     }
     if (!place) return yield* json(404, { message: "This conversation is no longer available." });
   }
-  const lists = await listsHere(engine, agents, place?.data.location?.directory ?? place?.data.directory ?? folder);
+  const lists = await listsHere(engine, agents, place?.data.location?.directory ?? place?.data.directory ?? folder, false, query.get("refresh") === "1");
   const answer = offeredAnswer(lists, wantedIn(request.path), starredModels());
   if (!place) return yield* json(200, answer);
   const bot = typeof place.data.metadata?.kuvo?.bot === "string";
@@ -116,6 +119,8 @@ export function offeredAnswer(lists: Lists, wanted: Ref | null, starred: Starred
     providers: providersOf(offered, lists),
     starred,
     known: { engine: lists.engine !== null, agents: lists.bridge !== null },
+    ...(lists.bridge?.generations ? { generations: lists.bridge.generations } : {}),
+    ...(lists.bridge?.unavailable?.length ? { unavailable: lists.bridge.unavailable } : {}),
     ...(listing.length ? { listing } : {}),
     ...(starting !== undefined ? { starting: starting?.model ?? null } : {}),
   };

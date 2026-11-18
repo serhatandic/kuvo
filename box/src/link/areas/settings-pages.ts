@@ -23,6 +23,7 @@ import { WORKTREES_FILE, readWorktrees } from "./worktree-records";
 import { worktreesRoute } from "./worktrees";
 import { isObject, parsed, sortedJSON } from "../../shared/json";
 import { actionsOf, asked, expectedRevision, item, mtime, noActions, refusal, revised, row, rowsOf, said, STALE, staleOrRefusal, unreadPage } from "./settings-kit";
+import { listsHere } from "../work/model-rule";
 import type { Refused, Section } from "./settings-kit";
 import { skillsSection } from "./settings-skills";
 import { customAutoSection } from "./settings-custom-auto";
@@ -58,7 +59,7 @@ import type { BoxPermissions } from "../../shared/routes/box";
 import { macLink } from "../state";
 import { agentsWorking, newerVersion, offerChangesEngine, offerFailedTwice, offerHeld, updateRoute, updateStatus } from "../updates/update";
 import { boxAnswers } from "../mac/keeper-runs";
-import { askHolder, holdsVault } from "../vault/holder";
+import { askHolder, heldRead, holdsVault } from "../vault/holder";
 import { hasZoneRules, readZoneSetting, setZone, ZONE_FILE, zoneFilesFor, zoneHere } from "../zone/setting";
 import { ownClock } from "../../shared/zone";
 import type { AnswerPiece, RouteContext } from "../server/context";
@@ -905,7 +906,16 @@ export async function* settingsPageRoute(context: RouteContext, match: RegExpMat
     return yield* followedLive(() => section.read(context), listen, signal, { look: section.look });
   }
 
-  if (method === "GET" && rowPart === undefined) return yield* json(200, await section.read(context));
+  if (method === "GET" && rowPart === undefined) {
+    const query = new URLSearchParams(request.path.split("?")[1]);
+    if (query.get("refresh-models") === "1" && (id === "agents" || id === "commands" || id === "custom-auto")) {
+      if (yield* heldRead(request, signal)) return;
+      let engine = null;
+      try { engine = context.readEngine(); } catch {}
+      await listsHere(engine, id === "custom-auto" ? context.bridge() : null, undefined, false, true);
+    }
+    return yield* json(200, await section.read(context));
+  }
   if (checkPart !== undefined) return yield* json(...(await checked(context, section, rowPart!, actionPart!)));
   if (rowPart !== undefined ? method !== "POST" : method !== "PATCH") {
     return yield* json(405, { message: rowPart !== undefined ? "Do it with POST." : "Read it with GET, or change a row with PATCH." });

@@ -3,7 +3,7 @@
 // serves every Codex session, each one of its threads; while the box's sandbox is on, each session
 // has one of its own, run whole in it.
 
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync } from "node:fs"
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, unlinkSync } from "node:fs"
 import { homedir } from "node:os"
 import { basename, join } from "node:path"
 import { providerID, type AgentAccount } from "../accounts"
@@ -144,7 +144,7 @@ export class CodexAgent implements Agent {
   /** One-off answers under way (`generate`), by their thread: what each is told. */
   private oneOffs = new Map<string, { rpc: RPC; notify: (method: string, params: any) => void; fail: (error: Error) => void }>()
   private logins = new Map<string, (status: OAuthStatus) => void>()
-  private modelList?: { at: number; models: Model[] }
+  private modelList?: { models: Model[] }
   /**
    * Each session's folder of Settings › Skills' skills. Codex takes extra skills for its whole
    * app-server, not a thread, so it has all of them (they differ only by a project's own).
@@ -204,16 +204,13 @@ export class CodexAgent implements Agent {
     return this.resetsRead && this.resetsRead.as === as ? this.resetsRead.extra : undefined
   }
 
-  /** Its limits were read since the box started, and with which sign-in (`chatGPTAccount`). */
-  private limitsRead?: { as: string | undefined }
   /** Who each app-server is signed in as: it reads its sign-in as it starts, and keeps it. */
   private signedInAs = new WeakMap<RPC, string | undefined>()
+  private planRead?: { as: string | undefined; plan: string }
+  private tokenPlan?: string
+  private noPlan = false
 
-  /**
-   * Read once as the box starts (its app-server then stops when it's idle, as any), then only through
-   * one already running for its sessions, never marked as used: a read never keeps one running, nor
-   * starts one again for an account nobody uses. Between, what its turns hear keeps them current.
-   */
+  /** Read on the plan's schedule, starting the account's app-server if there is no active one. */
   private async readLimits(at: number): Promise<LimitReading | null> {
     if (!this.executable()) throw new LimitsProblem("none", "Codex isn't installed here.")
     // Only through a Codex signed in as its home is now: one started before you signed in to
@@ -221,11 +218,10 @@ export class CodexAgent implements Agent {
     const now = this.chatGPTAccount()
     const current = (server: RPC | undefined): server is RPC => !!server && !server.isClosed && this.signedInAs.get(server) === now
     const running = [...this.slots.values()].map((slot) => slot.server).find(current)
+    if (!now && this.noPlan && !running) throw new LimitsProblem("none", "No ChatGPT plan is signed in here.")
     // Its reset credits, from ChatGPT, whether or not Codex is asked now.
     const resets = await this.readResets(at)
     const onlyResets = (): LimitReading | null => (resets ? { windows: [], extras: [resets], extrasOnly: true } : null)
-    // (Signed in to another account since it was read: read once more, as at the box's start.)
-    if (this.limitsRead && this.limitsRead.as === now && !running) return onlyResets()
     let rpc: RPC
     let account: any
     try {
@@ -235,10 +231,9 @@ export class CodexAgent implements Agent {
     } catch (caught) {
       throw new LimitsProblem("failed", `Codex couldn't say: ${caught instanceof Error ? caught.message : String(caught)}`)
     }
-    // It answered: not started again for this, whatever it said.
-    this.limitsRead = { as: now }
     // Signed out, or an API key: no plan to read.
-    if (account?.type !== "chatgpt") throw new LimitsProblem("none", account ? "An API key has no plan limits." : "Not signed in to Codex here.")
+    this.noPlan = account?.type !== "chatgpt"
+    if (this.noPlan) throw new LimitsProblem("none", account ? "An API key has no plan limits." : "Not signed in to Codex here.")
     let result: any
     try {
       result = await rpc.request("account/rateLimits/read", {}, 30_000)
@@ -250,7 +245,9 @@ export class CodexAgent implements Agent {
     }
     const snapshots: any[] = result?.rateLimitsByLimitId ? Object.values(result.rateLimitsByLimitId) : result?.rateLimits ? [result.rateLimits] : []
     const windows = snapshots.flatMap((snapshot) => codexWindows(snapshot))
-    const type = account.planType ?? snapshots.find((snapshot) => snapshot?.planType)?.planType
+    const reported = snapshots.find((snapshot) => snapshot?.planType && snapshot.planType !== "unknown")?.planType
+    if (reported && now === this.chatGPTAccount()) this.notePlan(reported, now)
+    const type = reported ?? account.planType
     // Its credits (the plan's own snapshot's), and its reset credits.
     const credits = codexCredits(snapshots.find((snapshot) => snapshot?.credits)?.credits)
     const extras = [credits, resets].filter((extra): extra is LimitExtra => !!extra)
@@ -407,7 +404,7 @@ export class CodexAgent implements Agent {
     // The box's sandbox changed (its rules, the folders you let this session's commands write in):
     // Codex starts again with it once it's quiet.
     const fence = key === SHARED ? "" : key === ACCOUNT ? fenceKey() : fenceKey() + JSON.stringify(allowedFolders(thread!.session.location.directory)) + fullAccessMark(thread!.session.id)
-    if (slot.server && !slot.server.isClosed && slot.fence !== fence) slot.outdated ??= slot.server
+    if (slot.server && !slot.server.isClosed && (slot.fence !== fence || this.signedInAs.get(slot.server) !== this.chatGPTAccount())) slot.outdated ??= slot.server
     // A turn starting while agents it spawned still work in the Codex its thread is in: there, as
     // long as that's as safe (one outside the box's sandbox, now that it's on, isn't); it starts
     // again once they're done.
@@ -468,7 +465,7 @@ export class CodexAgent implements Agent {
     const fence = key === SHARED ? undefined : this.fenced(directory, key === ACCOUNT ? undefined : key, seatBot(thread?.session))
     if (key !== SHARED && !fence) throw new Error("Codex runs in the sandbox here, and it isn't ready: restart Kuvo Code.")
     const args = ["app-server", ...noComputerUse.flatMap((plugin) => ["-c", `plugins.${plugin}.enabled=false`])]
-    const env = { ...(this.instance.home ? { CODEX_HOME: this.instance.home } : {}), ...(thread ? { OPENCODE_SESSION_ID: thread.session.id } : {}), ...fence?.env }
+    const env = { CODEX_INTERNAL_ORIGINATOR_OVERRIDE: process.env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE ?? "kuvo-code", ...(this.instance.home ? { CODEX_HOME: this.instance.home } : {}), ...(thread ? { OPENCODE_SESSION_ID: thread.session.id } : {}), ...fence?.env }
     const argv = fence ? [fence.command, ...args] : [executable, ...args]
     const cwd = fence ? directory : this.context.temporary
     // Under a holder on a box, so a bridge that crashes doesn't take its turns with it (hold/adopt.ts):
@@ -607,18 +604,24 @@ export class CodexAgent implements Agent {
         this.logins.delete(params.loginId)
         done(params.success ? { status: "complete" } : { status: "failed", message: params.error ?? "Signing in didn't work." })
       }
-      this.known.reset()
       return
     }
     if (method === "account/updated") {
-      this.known.reset()
+      const identity = this.chatGPTAccount()
+      const plan = params?.planType
+      if (from && this.signedInAs.get(from) === identity && typeof plan === "string" && plan !== "unknown" && this.notePlan(plan, identity)) return
+      this.known.stale()
+      emit("kuvo.agent.account.changed", { integrationID: this.providerID })
       return
     }
     if (method === "account/rateLimits/updated") {
       const snapshot = params?.rateLimits
-      if (snapshot) this.rateLimits.set(snapshot.limitId ?? "codex", snapshot)
-      // Where the plan stands, for its limits (limits.ts): its sign-in's, as it is now.
-      if (snapshot && from && this.signedInAs.get(from) === this.chatGPTAccount()) for (const window of codexWindows(snapshot)) this.limits.heard?.(window)
+      const identity = this.chatGPTAccount()
+      if (snapshot && from && this.signedInAs.get(from) === identity) {
+        this.rateLimits.set(snapshot.limitId ?? "codex", snapshot)
+        if (snapshot.planType && snapshot.planType !== "unknown") this.notePlan(snapshot.planType, identity)
+        for (const window of codexWindows(snapshot)) this.limits.heard?.(window)
+      }
       return
     }
     // An agent a session's Codex spawned: its thread says which it came from as it starts.
@@ -729,19 +732,36 @@ export class CodexAgent implements Agent {
   /** Its sign-in as Codex last said, for 30 seconds (one it couldn't say, starting or busy, isn't a sign-out). */
   private known = new KnownAccount(30_000)
 
+  private notePlan(plan: string, identity: string | undefined): boolean {
+    if (this.planRead?.as === identity && this.planRead?.plan === plan) return false
+    this.planRead = { as: identity, plan }
+    this.known.stale()
+    emit("kuvo.agent.account.changed", { integrationID: this.providerID })
+    return true
+  }
+
+  private nextTokenRefresh = 0
+
   async account(fresh = false): Promise<Account> {
     if (!this.executable()) return { installed: false, signedIn: false, message: "Install Codex, then sign in here." }
     return this.known.read(fresh, async () => {
       const rpc = await this.rpc()
-      const result: any = await rpc.request("account/read", {}, 20_000)
+      const identity = this.chatGPTAccount()
+      const refreshToken = !!identity && fresh && Date.now() >= this.nextTokenRefresh
+      if (refreshToken) this.nextTokenRefresh = Date.now() + 10 * 60_000
+      const result: any = await rpc.request("account/read", refreshToken ? { refreshToken } : {}, 20_000)
       if (!result || typeof result !== "object") throw new Error("Codex couldn't say whether it's signed in.")
       const info = result.account
       let account: Account
       if (!info) {
         account = { installed: true, signedIn: false, message: "Sign in to Codex with ChatGPT or an OpenAI API key." }
       } else if (info.type === "chatgpt") {
-        const plan = info.planType ? `ChatGPT ${String(info.planType).charAt(0).toUpperCase()}${String(info.planType).slice(1)}` : "ChatGPT"
-        account = { installed: true, signedIn: true, label: [info.email, plan].filter(Boolean).join(" · "), ...(info.email ? {} : { what: true }) }
+        this.noPlan = false
+        if (this.tokenPlan !== undefined && this.tokenPlan !== info.planType) this.planRead = undefined
+        this.tokenPlan = info.planType
+        const type = this.planRead?.as === identity ? this.planRead?.plan ?? info.planType : info.planType
+        const plan = type && type !== "unknown" ? codexPlan(type) : undefined
+        account = { installed: true, signedIn: true, identity, label: [info.email, plan ? `ChatGPT ${plan}` : "ChatGPT"].filter(Boolean).join(" · "), ...(info.email ? {} : { what: true }) }
       } else {
         account = { installed: true, signedIn: true, label: info.type === "apiKey" ? "OpenAI API key" : String(info.type), what: true }
       }
@@ -758,11 +778,14 @@ export class CodexAgent implements Agent {
     if (options.remote) {
       const device: any = await rpc.request("account/login/start", { type: "chatgptDeviceCode" }, 30_000)
       let status: OAuthStatus = { status: "pending" }
-      this.logins.set(device.loginId, (done) => (status = done))
+      this.logins.set(device.loginId, (done) => {
+        if (done.status === "complete") this.signedIn(rpc)
+        status = done
+      })
       return {
         url: device.verificationUrl,
         userCode: device.userCode,
-        instructions: `Open ChatGPT's page, sign in, and enter the code ${device.userCode}. Codex keeps the sign-in, as when you run codex login.`,
+        instructions: `Open ChatGPT's page, sign in, and enter the code ${device.userCode}.`,
         mode: "auto",
         status: () => status,
         cancel: () => {
@@ -773,10 +796,13 @@ export class CodexAgent implements Agent {
     }
     const result: any = await rpc.request("account/login/start", { type: "chatgpt" }, 30_000)
     let status: OAuthStatus = { status: "pending" }
-    this.logins.set(result.loginId, (done) => (status = done))
+    this.logins.set(result.loginId, (done) => {
+      if (done.status === "complete") this.signedIn(rpc)
+      status = done
+    })
     return {
       url: result.authUrl,
-      instructions: "Finish signing in with ChatGPT in your browser. Codex keeps the sign-in, as when you run codex login.",
+      instructions: "Finish signing in with ChatGPT in your browser.",
       mode: "auto",
       status: () => status,
       cancel: () => {
@@ -789,18 +815,34 @@ export class CodexAgent implements Agent {
   async signInWithKey(key: string) {
     const rpc = await this.rpc()
     await rpc.request("account/login/start", { type: "apiKey", apiKey: key }, 30_000)
-    this.known.reset()
+    this.signedIn(rpc)
   }
 
-  async models(options: { hidden?: boolean } = {}): Promise<Model[]> {
+  private signedIn(rpc: RPC) {
+    this.signedInAs.set(rpc, this.chatGPTAccount())
+    this.rateLimits.clear()
+    this.planRead = undefined
+    this.tokenPlan = undefined
+    this.noPlan = false
+    this.known.reset()
+    this.forgetModels()
+    this.nextTokenRefresh = Date.now() + 10 * 60_000
+    for (const slot of this.slots.values()) {
+      if (slot.server && slot.server !== rpc) slot.outdated = slot.server
+    }
+  }
+
+  private catalogGeneration = 0
+
+  async models(options: { hidden?: boolean; refresh?: boolean } = {}): Promise<Model[]> {
     // (Those Codex hides from its picker it still runs: listed only when asked for.)
     const shown = (models: Model[]) => (options.hidden ? models : models.filter((each) => !each.hidden))
-    if (this.modelList && Date.now() - this.modelList.at < 30 * 60_000) return shown(this.modelList.models)
+    if (this.modelList && !options.refresh) return shown(this.modelList.models)
     try {
-      return shown(await this.listModels())
+      return shown(await this.listModels(options.refresh === true))
     } catch (error) {
       // Codex couldn't list them just now (busy, or starting): the ones it listed last.
-      if (this.modelList) return shown(this.modelList.models)
+      if (this.modelList && !options.refresh) return shown(this.modelList.models)
       throw error
     }
   }
@@ -811,8 +853,19 @@ export class CodexAgent implements Agent {
     return this.modelList?.models.some((model) => model.hidden) === true
   }
 
-  private async listModels(): Promise<Model[]> {
+  private async listModels(refresh: boolean): Promise<Model[]> {
+    const generation = this.catalogGeneration
     const rpc = await this.rpc()
+    if (refresh) {
+      // model/list uses OnlineIfUncached. Remove only Codex's cache directory entry, after
+      // initialization and before its first page. Codex owns discovery, auth and pagination.
+      // unlink does not follow a symlink or remove a directory.
+      try {
+        unlinkSync(join(this.home, "models_cache.json"))
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+      }
+    }
     const models: Model[] = []
     let cursor: string | undefined
     let order = 1000
@@ -834,11 +887,12 @@ export class CodexAgent implements Agent {
       cursor = page?.nextCursor ?? undefined
     } while (cursor)
     // Not kept from the old Codex's app-server: asked again of the new one.
-    if (rpc !== this.slots.get(SHARED)?.outdated && rpc !== this.slots.get(ACCOUNT)?.outdated) this.modelList = { at: Date.now(), models }
+    if (generation === this.catalogGeneration && rpc !== this.slots.get(SHARED)?.outdated && rpc !== this.slots.get(ACCOUNT)?.outdated) this.modelList = { models }
     return models
   }
 
   forgetModels() {
+    this.catalogGeneration++
     this.modelList = undefined
   }
 

@@ -16,6 +16,7 @@ import type { EngineRecord, Target } from "../../shared/records";
 import { canonicalPath, signInReturn, socketAllowed } from "../server/paths";
 import { HERE, IS_MAC, K, OWN_HOME_MAC, RUN } from "../home";
 import { plainName } from "../../shared/text";
+import { matchesSignInReturn } from "./sign-in";
 import { macLink, readLink } from "../state";
 import { phoneHere } from "../compat/leave-running";
 import { readEngineFile } from "../engine/client";
@@ -105,7 +106,7 @@ export const toolRun = (): Promise<unknown> => {
 // machine (an MCP server's, or a coding agent's), which a phone can't load, loaded here as the
 // browser would have: only this machine's own address (`signInReturn`), and no further than it
 // answers (a redirect isn't followed). Answers with the status it got: 2xx or 3xx, it took it.
-export async function* loadSignInReturn(body: Buffer | undefined, signal: AbortSignal | undefined): AsyncGenerator<AnswerPiece> {
+export async function* loadSignInReturn(body: Buffer | undefined, signal: AbortSignal | undefined, requireAccepted = false): AsyncGenerator<AnswerPiece> {
   const json = (status: number, value: unknown): AnswerPiece[] => [{ head: { status, headers: { "content-type": "application/json" } } }, { body: Buffer.from(JSON.stringify(value)) }];
   let given: { url?: unknown } | null = {};
   try {
@@ -120,6 +121,9 @@ export async function* loadSignInReturn(body: Buffer | undefined, signal: AbortS
   try {
     const response = await fetch(url, { redirect: "manual", signal: stop.signal });
     await response.arrayBuffer().catch(() => {});
+    if (requireAccepted && (response.status < 200 || response.status >= 400)) {
+      return yield* json(400, { message: "That address didn’t finish signing in. Paste the address from this sign-in or start again." });
+    }
     return yield* json(200, { status: response.status });
   } catch {
     return yield* json(502, { message: "Nothing on this computer took it. Start the sign-in again." });
@@ -241,5 +245,8 @@ export async function* engineControlRoute(context: RouteContext, control: RegExp
 export async function* signInReturnRoute(context: RouteContext): AsyncGenerator<AnswerPiece> {
   const { request, signal, json } = context;
   if (request.method.toUpperCase() !== "POST") return yield* json(405, {});
-  return yield* loadSignInReturn(request.body, signal);
+  let given: unknown;
+  try { given = JSON.parse(request.body?.toString("utf8") ?? ""); } catch {}
+  if (!await matchesSignInReturn(context, given)) return yield* json(400, { message: "Paste the address from this sign-in, or start again." });
+  return yield* loadSignInReturn(request.body, signal, true);
 }

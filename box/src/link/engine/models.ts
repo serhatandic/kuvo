@@ -31,7 +31,8 @@ export const MODELS_DUE_FILE = path.join(RUN, "models-due.json");
 
 /** The providers whose models opencode (2.2.6) reads from your account, and again only as said
  * above: those a refresh brings new models to. (The rest come from models.dev's catalog, which the
- * engine reads again by itself every few minutes.) */
+ * pinned engine checks every five minutes. Its models.dev plugin reloads the active catalog
+ * when the response changes. Usage pricing checks a separate snapshot hourly.) */
 export const REFRESHABLE = ["digitalocean", "github-copilot", "gitlab", "modal", "opencode"];
 
 /** Of those, the ones whose list is the whole engine's, with how long it takes at most to read
@@ -94,7 +95,8 @@ export async function atWork(engine: Target, folders: string[]): Promise<Set<str
   try {
     const active = await engineGet(engine, "api/session/active");
     const data = isObject(active) ? active.data : null;
-    const sessions = Array.isArray(data) ? data : isObject(data) ? Object.keys(data) : [];
+    if (!Array.isArray(data) && !isObject(data)) return new Set(folders);
+    const sessions = Array.isArray(data) ? data : Object.keys(data);
     for (const id of sessions) {
       if (typeof id !== "string") continue;
       const session = await engineGet(engine, `api/session/${encodeURIComponent(id)}`).catch(() => null);
@@ -152,6 +154,26 @@ async function closeQuiet(engine: Target, folders: string[]): Promise<string[]> 
   return waiting;
 }
 
+/** Ask for account-backed catalogs again, keeping any location where work is still in progress. */
+export async function revalidatePickerModels(engine: EngineRecord, folder?: string): Promise<void> {
+  const providers = listOf(await engineGet(engine, "api/provider", folder)).flatMap(provider =>
+    isObject(provider) && typeof provider.id === "string" && REFRESHABLE.includes(provider.id) ? [provider.id] : []);
+  if (!providers.length) return;
+  const open = await openFolders(engine);
+  const shared = providers.find(provider => provider in ENGINE_WIDE);
+  if (shared && (await refreshEngineWide(engine, shared, open)).status === 200) return;
+  if (!providers.includes("gitlab")) return;
+  const waiting = await closeQuiet(engine, folder ? open.filter(each => path.resolve(each) === path.resolve(folder)) : open);
+  if (waiting.length) deferModels(engine, waiting, MODELS_DUE_FILE);
+}
+
+function deferModels(engine: EngineRecord, waiting: string[], file: string): void {
+  const before = readDue(file);
+  const kept = before?.engine === engineOf(engine) ? before.folders : [];
+  writeDue(file, { engine: engineOf(engine), folders: [...new Set([...kept, ...waiting])] });
+  // The completion event can arrive while closeQuiet is still checking.
+  if (waiting.length) void settleDueModels(engine, file).catch(() => {});
+}
 /** `provider`'s models asked of again on `engine`, with every other provider's: each folder it has
  * open closed where nothing's going on, the rest noted for once their work is done; then what
  * providers need learned from its list as it is now, and applied. */
@@ -184,9 +206,7 @@ export async function refreshModels(engine: EngineRecord, provider: string, file
     if (error instanceof CantClose) return { status: 503, message: "This engine can't ask for its models again without restarting. Restart it in Settings › Engine." };
     throw error;
   }
-  const before = readDue(file);
-  const kept = before?.engine === engineOf(engine) ? before.folders : [];
-  writeDue(file, { engine: engineOf(engine), folders: [...new Set([...kept, ...waiting])] });
+  deferModels(engine, waiting, file);
   // (The folder it opens first, its own, opens afresh for it.)
   await learnCompatibility(engine).catch(() => {});
   return { status: 200, waiting };
