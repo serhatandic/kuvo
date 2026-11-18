@@ -712,9 +712,9 @@ test("what reaches the engine and the agents' bridge is the path as it was check
       asked.length = 0;
       const { status } = await answer(handle, r.method ?? "GET", prefix + r.path);
       assert.equal(status, 200, r.path);
-      const calls = !prefix && r.forwarded === "api/integration"
-        ? ["/api/integration/github-work-queue", "/api/integration"]
-        : [`/${r.forwarded}`];
+      const forwarded = `/${r.forwarded}`;
+      const listsIntegrations = !prefix && forwarded.split("?")[0] === "/api/integration";
+      const calls = listsIntegrations ? ["/api/integration/github-work-queue", forwarded] : [forwarded];
       assert.deepEqual(asked, calls, r.path);
     }
   }
