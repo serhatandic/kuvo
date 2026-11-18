@@ -2868,7 +2868,7 @@ impl Workspace {
             .children(move_status.or_else(|| listed.as_ref().map(|bot| {
                 let words = bot.job.clone();
                 div().flex_1().min_w_0().truncate().text_ui(TypeSize::Small).text_color(c.text_muted).child(words).into_any_element()
-            }))
+            })))
             .when(needs_spacer, |d| d.child(div().flex_1()))
             .child(activity);
         div().debug_selector(|| "bot-chat".into()).size_full().flex().flex_col().child(strip).child(div().flex_1().min_h_0().child(chat.clone().cached(gpui::StyleRefinement::default().size_full()))).into_any_element()
