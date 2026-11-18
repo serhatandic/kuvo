@@ -149,6 +149,7 @@ pub struct Menu {
     selected_by_pointer: bool,
     focus: FocusHandle,
     width: Pixels,
+    _source: Option<Subscription>,
 }
 
 impl EventEmitter<DismissEvent> for Menu {}
@@ -161,7 +162,7 @@ impl Focusable for Menu {
 
 impl Menu {
     pub fn new(cx: &mut Context<Self>) -> Self {
-        Self { items: Vec::new(), selected: None, selected_by_pointer: false, focus: cx.focus_handle(), width: px(240.) }
+        Self { items: Vec::new(), selected: None, selected_by_pointer: false, focus: cx.focus_handle(), width: px(240.), _source: None }
     }
 
     pub fn entry(mut self, entry: MenuEntry) -> Self {
@@ -181,6 +182,26 @@ impl Menu {
 
     pub fn width(mut self, width: Pixels) -> Self {
         self.width = width;
+        self
+    }
+
+    /// Refreshes the open menu in place when its source changes what it shows.
+    pub fn follow<T: 'static, S: PartialEq + 'static>(
+        mut self,
+        source: &Entity<T>,
+        state: impl Fn(&T) -> S + 'static,
+        items: impl Fn(&S) -> Vec<MenuItem> + 'static,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let mut shown = state(source.read(cx));
+        self.items = items(&shown);
+        self._source = Some(cx.observe(source, move |menu, source, cx| {
+            let next = state(source.read(cx));
+            if shown != next {
+                menu.set_items(items(&next), cx);
+                shown = next;
+            }
+        }));
         self
     }
 

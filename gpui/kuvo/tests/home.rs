@@ -132,6 +132,50 @@ fn a_computer_this_app_doesnt_reach_says_why_and_cant_be_picked(cx: &mut TestApp
 }
 
 #[gpui::test]
+fn an_open_computer_menu_clears_its_checking_status_when_the_pairing_is_confirmed(cx: &mut TestAppContext) {
+    use kuvo_box::boxes::Pairing;
+    let (home, cx) = open(cx, StandIn::at(Replies::Never, NOW));
+    let workspace = workspace(&home, cx);
+    let set_pairing = |pairing, cx: &mut VisualTestContext| {
+        workspace.update_in(cx, |workspace, _, cx| {
+            let mut switching = workspace.switching().cloned().unwrap();
+            switching.pairing = pairing;
+            workspace.set_switching(Some(switching), cx);
+        });
+        cx.run_until_parked();
+    };
+    set_pairing(Pairing::Checking("Checking this app with your other computers…".into()), cx);
+    click(cx, "computer-switcher");
+    let checking = "menu-item-Checking this app with your other computers…";
+    assert!(shown(cx, checking));
+    set_pairing(Pairing::Paired, cx);
+    assert!(shown(cx, "menu-item-devbox"), "the menu stays open");
+    assert!(!shown(cx, checking));
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    assert!(!shown(cx, "menu-item-devbox"), "the open menu still has keyboard focus");
+}
+
+#[gpui::test]
+fn the_computer_menu_offers_pair_again_from_a_computers_reply_for_a_saved_pairing(cx: &mut TestAppContext) {
+    use kuvo_box::{Refusal, boxes::{Pairing, Reach}};
+    let (home, cx) = open(cx, StandIn::at(Replies::Never, NOW));
+    let workspace = workspace(&home, cx);
+    workspace.update_in(cx, |workspace, _, cx| {
+        let mut switching = workspace.switching().cloned().unwrap();
+        switching.pairing = Pairing::Paired;
+        let devbox = switching.rows.iter_mut().find(|row| row.key() == "key_devbox").unwrap();
+        devbox.reach = Reach::Readd(Refusal::from_answer(409, br#"{"reason":"pairing-readd","message":"Pair this app again","action":{"label":"Pair Again","route":"kuvo/devices/pair"}}"#));
+        workspace.set_switching(Some(switching), cx);
+    });
+    click(cx, "computer-switcher");
+    assert!(shown(cx, "menu-item-devbox"));
+    click(cx, "menu-item-Pair Again");
+    assert!(!shown(cx, "menu-item-Pair Again"));
+    assert_ne!(workspace.read_with(cx, |workspace, _| workspace.switching().unwrap().pairing.clone()), Pairing::Paired);
+}
+
+#[gpui::test]
 fn computers_shows_a_quiet_pairing_check_then_the_boxs_readd_action(cx: &mut TestAppContext) {
     use kuvo_box::{Refusal, boxes::Pairing};
     let (home, cx) = open(cx, StandIn::at(Replies::Never, NOW));
