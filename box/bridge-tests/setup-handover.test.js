@@ -110,7 +110,14 @@ async function network(t, takeover = false) {
         const wire = JSON.parse(out.trim().split("\n").at(-1));
         return { status: wire.status, value: JSON.parse(wire.body) };
       },
-      start() { this.child = start(env, ["run"], ["ignore", "ignore", "inherit"]); },
+      start() {
+        this.output = "";
+        const child = this.child = start(env, ["run"], ["ignore", "pipe", "inherit"]);
+        child.stdout.on("data", chunk => {
+          if (this.child === child) this.output = (this.output + chunk).slice(-16_000);
+        });
+      },
+      observing(epoch) { return this.output.includes(`Standby watching epoch ${epoch} `); },
       async stop(signal = "SIGKILL") {
         const stopped = once(this.child, "exit");
         this.child.kill(signal);
@@ -378,9 +385,8 @@ test("failure bench: a saved change survives killing the primary before it publi
   delete saved.docs?.[`${a.sign} phones`];
   fs.writeFileSync(path.join(b.run, "link.json"), JSON.stringify(saved));
   b.start();
-  await until("standby restarted", () => relay.has(b.address), t.signal);
+  await until("restarted standby has begun observing epoch 2", () => b.observing(2), t.signal);
   reconnect.forEach(resume => resume());
-  await delay(450);
   b.clock(3 * HOUR + 5_000);
   await see(b, 3, b);
   await see(c, 3, b);

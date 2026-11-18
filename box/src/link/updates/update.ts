@@ -581,8 +581,11 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
     fs.mkdirSync(path.join(stage, "files"), { recursive: true, mode: 0o700 });
     const pack = from ? readRelease(path.join(from, packName(manifest)), 100_000_000) : await download(() => fetchedPatiently(manifest.pack.url, 100_000_000, 300_000));
     if (hexSHA256(pack) !== manifest.pack.sha256) throw new Error("The release's files aren't what it says.");
-    // Signed and checked: held from now, for your other computers to take at once, each judging it
-    // for itself, whatever comes of taking it here (`updates/fleet.ts`).
+    const authority = localSetupValue(RUN, "setupSecurityAndReleaseChoice");
+    if (authority?.id !== setup?.id || authority?.epoch !== setup?.epoch || authority?.sequence !== setup?.sequence) {
+      return { result: "waiting", version: manifest.version, message: "The setup changed while this release was being checked." };
+    }
+    // A candidate pack can wait on disk. The fleet advertises only the accepted choice.
     keepRelease(released, pack);
     if (setup && !alreadyChosen) {
       const response = await askSetupSave(RUN, {

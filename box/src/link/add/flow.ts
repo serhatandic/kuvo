@@ -754,11 +754,15 @@ export function beginUninstall(key: string): Running | null {
         console.error("Uninstall local revocation failed:", error);
         throw new Failed("Kuvo Code couldn’t confirm that access was revoked. Try uninstalling again.");
       }
-      const listCleanup = removed.status === 503 ? " The saved machines list still needs to be updated." : "";
-      if (removed.status !== 200 && removed.status !== 503) {
+      if (removed.status === 202) throw new Failed(PENDING_SAVE);
+      const current = readLink();
+      const cleanupOnly = removed.status === 503 && current?.removedHere?.includes(key)
+        && !peersOf(current).some(peer => peer.key === key);
+      if (removed.status !== 200 && !cleanupOnly) {
         console.error("Uninstall local revocation returned", removed);
         throw new Failed("Kuvo Code couldn’t confirm that access was revoked. Try uninstalling again.");
       }
+      const listCleanup = cleanupOnly ? " The saved machines list still needs to be updated." : "";
       tell.commit?.();
       let cleanup = "";
       // Never cut short: let the remote removal finish even if the client stops waiting.
