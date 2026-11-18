@@ -347,10 +347,10 @@ fn the_rings_show_each_account_and_the_rest_wait_behind_more(cx: &mut TestAppCon
         assert!(bounds(cx, ring).is_some(), "{ring}");
     }
     assert!(bounds(cx, "ring-4").is_none(), "four at most");
-    // "+2" opens Settings › Usage.
+    // "+2" opens Insights.
     click(cx, "more-rings");
-    assert_eq!(area(&workspace, cx), Area::Settings);
-    assert_eq!(title(&workspace, cx).as_deref(), Some("Usage"));
+    assert_eq!(area(&workspace, cx), Area::Insights);
+    assert_eq!(title(&workspace, cx).as_deref(), Some("Insights"));
 }
 
 /// Two rings an account, as the box picks them (`rows[].rings`): its short window outside, its
