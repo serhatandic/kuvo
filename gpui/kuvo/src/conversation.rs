@@ -110,7 +110,7 @@ pub struct ConversationView {
     queue_scroll: gpui::ScrollHandle,
     queue_drag: Option<QueueMove>,
     queue_move_pending: Option<QueueMove>,
-    queue_drag_started: bool,
+    queue_dragging: Option<String>,
     queue_drag_motion: u64,
     /// Why what it asks couldn't be read (what was shown stays meanwhile).
     asks_failed: Option<String>,
@@ -191,7 +191,7 @@ impl ConversationView {
             queue_scroll: gpui::ScrollHandle::new(),
             queue_drag: None,
             queue_move_pending: None,
-            queue_drag_started: false,
+            queue_dragging: None,
             queue_drag_motion: 0,
             asks_failed: None,
             card_took_keys: false,
@@ -667,7 +667,7 @@ impl ConversationView {
     }
 
     fn cancel_queue_drag(&mut self, cx: &mut Context<Self>) {
-        self.queue_drag_started = false;
+        self.queue_dragging = None;
         self.queue_drag = None;
         cx.notify();
     }
@@ -1370,7 +1370,7 @@ impl ConversationView {
             };
             let more = format!("queue-more-{}", item.id);
             let draggable = can_drag && item.can_reorder();
-            let dragging_here = self.queue_drag.as_ref().is_some_and(|drag| drag.item == item.id);
+            let dragging_here = self.queue_dragging.as_deref() == Some(item.id.as_str());
             let row_id: SharedString = format!("queued-{}", item.id).into();
             let keyboard = item.id.clone();
             let drag = QueueDrag {
@@ -1400,14 +1400,14 @@ impl ConversationView {
                     }))
                     .on_drag(drag, move |drag, _, _, cx| {
                         let width = owner.update(cx, |this, cx| {
-                            this.queue_drag_started = true;
+                            this.queue_dragging = Some(drag.item.clone());
                             this.queue_drag = None;
                             cx.notify();
                             this.queue_scroll.bounds().size.width.max(px(180.))
                         }).unwrap_or(px(180.));
                         cx.new(|_| QueueDragPreview(drag.clone(), width))
                     }))
-                .when(dragging_here, |d| d.opacity(0.25))
+                .when(dragging_here, |d| d.opacity(0.))
                 .child(lead)
                 .children(item.keyword.clone().map(|keyword| div().flex_none().text_ui(TypeSize::Caption).text_color(c.accent).child(keyword)))
                 .child(div().flex_1().min_w_0().truncate().text_ui(TypeSize::Small).text_color(c.text).child(item.words.lines().next().unwrap_or("").to_owned()))
@@ -1479,7 +1479,7 @@ impl ConversationView {
                         this.cancel_queue_drag(cx);
                     }))
                     .on_mouse_up_out(gpui::MouseButton::Left, cx.listener(|this, _, _, cx| {
-                        if this.queue_drag_started { this.cancel_queue_drag(cx); }
+                        if this.queue_dragging.is_some() { this.cancel_queue_drag(cx); }
                     }))
                     .children(rows))
                 .children(self.queue_failed.clone().map(|why| div().px(space::S2).pb(space::S1).text_ui(TypeSize::Caption).text_color(c.warning).child(why)))
@@ -1595,7 +1595,7 @@ impl Render for ConversationView {
         div()
             .track_focus(&self.focus)
             .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
-                if event.keystroke.key == "escape" && this.queue_drag_started && cx.has_active_drag() {
+                if event.keystroke.key == "escape" && this.queue_dragging.is_some() && cx.has_active_drag() {
                     cx.stop_active_drag(window);
                     this.cancel_queue_drag(cx);
                     cx.stop_propagation();

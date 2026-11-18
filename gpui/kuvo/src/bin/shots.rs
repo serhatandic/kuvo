@@ -1697,7 +1697,7 @@ fn main() -> anyhow::Result<()> {
                     window.dispatch_event(gpui::PlatformInput::MouseDown(gpui::MouseDownEvent {
                         button, position: from, click_count: 1, ..Default::default()
                     }), cx);
-                    for position in [to, to] {
+                    for position in [from + gpui::point(px(0.), px(8.)), to + gpui::point(px(12.), px(8.))] {
                         window.dispatch_event(gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent {
                             position, pressed_button: Some(button), ..Default::default()
                         }), cx);
