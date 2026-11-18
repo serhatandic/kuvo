@@ -248,6 +248,9 @@ each box pairs and removes (`phones`), and each box's view of your personalities
   `origin` is the Mac's signing key). Any peer can send the signed peers and phones documents
   it has, then `phoneSync: {id, list, peers?, ack: true}` with each document identified as `n:h`.
   The member verifies the signatures and accepts replies matching the documents it has installed.
+  If an older signing Mac replies with only a phones fingerprint, the member requests that Mac's
+  signed peers document through the normal digest exchange and waits until it has verified the
+  document and it matches the one installed.
   Inherited desktop and voucher-bound pairings wait for confirmation unless the relay reports
   every known peer unreachable. A member using its cached list keeps asking and closes revoked
   sessions as soon as it takes a signed removal. Independent phones connect throughout.

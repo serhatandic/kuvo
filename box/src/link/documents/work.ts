@@ -271,7 +271,7 @@ export function docMails(docs: DocsMail): DocsMail[] {
 // one it came from; its own that changed, to all of them; and for a digest, what the sender lacks,
 // and, unless it's an answer, this box's own digest when the sender has something newer.
 // `stay`: a Mac whose removal of this box it doesn't take (the Mac setting it up over SSH now).
-export function docsWork(state: DocsState, sender: DocSender, docs: DocsMail, { stay = null }: { stay?: string | null } = {}): { took: TakenDoc[]; left: string[]; send: DocSend[] } {
+export function docsWork(state: DocsState, sender: DocSender, docs: DocsMail, { stay = null }: { stay?: string | null } = {}): { took: TakenDoc[]; given: SignedDoc[]; left: string[]; send: DocSend[] } {
   const { link } = state;
   const sends = new Map<string, Outgoing>();
   const to = (peer: DocTarget, change: (docs: Outgoing) => void) => {
@@ -375,6 +375,7 @@ export function docsWork(state: DocsState, sender: DocSender, docs: DocsMail, { 
   }
   return {
     took,
+    given,
     left: left.filter(each => each !== stay),
     send: [...sends.values()].filter(docs => docs.give.length || docs.have).map(({ peer, ...docs }) => ({ to: peer, docs: { ...docs, give: dedupe(docs.give) } })),
   };

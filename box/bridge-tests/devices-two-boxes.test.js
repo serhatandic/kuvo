@@ -567,6 +567,7 @@ test("the desktop app on a member's computer is paired through its own box and r
   assert.ok(!(await ask("GET", "kuvo/phones")).json.phones.some(each => each.key === loft.public));
   const resume = relay.pause(macAddress, member.address);
   try {
+    const mailStart = relay.delivered.length;
     reconnect();
     await eventually(() => relay.has(member.address));
     assert.ok(labLink().phones.some(each => each.key === loft.public), "the member only has its cached list");
@@ -576,6 +577,40 @@ test("the desktop app on a member's computer is paired through its own box and r
     assert.equal((await phone.open(member)).kind, "machine", "independent phones don't wait");
     assert.deepEqual(await labApp("POST", "kuvo/devices/pair", { key: studio.public, name: "Studio screen", kind: "desktop" }), {
       status: 503, json: { message },
+    });
+
+    await t.test("a phones-only reply leaves the desktop waiting for signed membership", async () => {
+      const asks = () => relay.delivered.slice(mailStart).flatMap(({ from, to, payload }) => {
+        if (!from.equals(member.address) || !to.equals(macAddress)) return [];
+        const frame = link.readFrame(payload);
+        if (frame?.kind !== link.Frame.mail) return [];
+        return [JSON.parse(link.openOneWay(frame.body, macKey, member.key).payload.toString())];
+      });
+      const id = await eventually(() => asks().find(each => each.phoneSync?.origin === link.ownSign(link.readLink()))?.phoneSync.id);
+      const oldMac = relay.device();
+      const reply = payload => oldMac.send(member.address, link.frame(link.Frame.mail, 0,
+        link.sealOneWay(Buffer.from(JSON.stringify(payload)), macKey, member.key).message));
+      try {
+        const current = link.readLink();
+        const phones = link.ownDoc(current, "phones", link.ownPhones(current)).envelope;
+        const { n, h, origin } = link.readDoc(phones);
+        reply({ docs: { give: [phones] } });
+        reply({ phoneSync: { id, list: `${n}:${h}`, ack: true } });
+        await memberHeardRemoved(loft.public);
+        const oldPeers = link.readDoc(labLink().docs[`${origin} peers`]);
+        assert.ok(oldPeers.body.boxes.some(each => each.key === attic.pub), "the member still trusts the removed box");
+        assert.deepEqual(await studio.open(member), { waiting: message });
+
+        const docs = await eventually(() => asks().find(each => each.docs?.reply === true && !each.docs.have.some(([key, kind]) => key === origin && kind === "peers"))?.docs);
+        assert.ok(docs.have.some(([key, kind]) => key === origin && kind === "phones"));
+        // The older Mac answers the ordinary document request over the same authenticated mail.
+        const sender = { key: lab.key, address: lab.address, sign: lab.sign, kind: "machine" };
+        await link.receiveDocs(sender, docs, { send: bytes => oldMac.send(member.address, bytes.subarray(17)) });
+        await openOnMember(studio, member);
+        assert.ok(!link.readDoc(labLink().docs[`${origin} peers`]).body.boxes.some(each => each.key === attic.pub));
+      } finally {
+        oldMac.leave();
+      }
     });
   } finally {
     resume();

@@ -17,11 +17,16 @@ import { authorizePhonePairing, ownPhones, pairedPhone, removeAsMac } from "../p
 import type { LinkHost, PhoneHello } from "../relay/host";
 import { mainElsewhere } from "../setup/main-only";
 import { docKey, held, ownSign, readDoc, SIGN } from "./format";
-import { docMails, macPeersBody, ownDoc } from "./work";
+import { digestOf, docMails, macPeersBody, ownDoc } from "./work";
+import type { DocSender } from "./work";
 import type { SignedDoc } from "../../shared/documents";
 
 const challenge = (): string => randomBytes(16).toString("base64url");
-interface ListCheck { id: string; ready: boolean }
+interface ListCheck {
+  id: string;
+  ready: boolean;
+  legacyPhones?: string;
+}
 interface PhoneTrust {
   lists: Map<string, ListCheck>;
   asked: number;
@@ -131,6 +136,21 @@ export function authorizeDesktopConnection(host: LinkHost, key: Buffer, hello: P
   return waiting ? { waiting } : authorizePhonePairing(key, hello, address);
 }
 
+/** A signing Mac with an older phoneSync sends its membership in the normal document exchange.
+ * It must give the signed document itself, even when it is the same version we already had. */
+export function confirmPhoneMembership(host: LinkHost, sender: DocSender, link: LinkState, given: readonly SignedDoc[]): void {
+  const pending = freshness.get(host);
+  const origin = authoritySign(link, sender.key);
+  const check = origin && pending?.lists.get(origin);
+  if (!origin || !pending || !check || check.ready || !check.legacyPhones) return;
+  const peers = readDoc(link.docs?.[docKey(origin, "peers")]);
+  if (peers?.origin !== origin || peers.kind !== "peers" || !given.some(each => each?.d === peers.envelope.d && each.s === peers.envelope.s)) return;
+  const phones = readDoc(link.docs?.[docKey(origin, "phones")]);
+  if (phones?.origin !== origin || phones.kind !== "phones" || fingerprint(phones) !== check.legacyPhones) return;
+  check.ready = true;
+  keepTrust(pending);
+}
+
 /** The caller has already been authenticated by peer mail. A proof is accepted only after the
  * signed document preceding it was installed. A receipt confirms the installed list. */
 export function takePhoneSync(sender: MailSender, given: unknown, host: LinkHost | null | undefined): void {
@@ -146,16 +166,22 @@ export function takePhoneSync(sender: MailSender, given: unknown, host: LinkHost
     if (!pending) return;
     for (const [origin, check] of pending.lists) {
       if (check.id !== id) continue;
-      // An older list can't replace the one this box has. Only the signed list it now holds
-      // can confirm the challenge, including when both boxes already held that same list.
-      const doc = readDoc(link.docs?.[docKey(origin, "phones")]);
-      const peers = typeof given.peers === "string" ? readDoc(link.docs?.[docKey(origin, "peers")]) : null;
-      const hasPeers = given.peers === undefined || (peers?.origin === origin && peers.kind === "peers" && fingerprint(peers) === given.peers);
-      if (hasPeers && doc?.origin === origin && doc.kind === "phones" && fingerprint(doc) === given.list) {
+      if (check.ready) return;
+      // Both signed documents must match the ones installed here. An older list can't replace
+      // the one this box holds, and a phones-only answer can't confirm who's still a peer.
+      const phones = readDoc(link.docs?.[docKey(origin, "phones")]);
+      if (phones?.origin !== origin || phones.kind !== "phones" || fingerprint(phones) !== given.list) return;
+      if (typeof given.peers === "string") {
+        const peers = readDoc(link.docs?.[docKey(origin, "peers")]);
+        if (peers?.origin !== origin || peers.kind !== "peers" || fingerprint(peers) !== given.peers) return;
         check.ready = true;
         keepTrust(pending);
+      } else if (given.peers === undefined && authoritySign(link, sender.key) === origin) {
+        check.legacyPhones = given.list;
+        const have = digestOf(link).filter(([key, kind]) => key !== origin || kind !== "peers");
+        send(host, link, sender, { docs: { have, reply: true } });
       }
-      break;
+      return;
     }
     return;
   }

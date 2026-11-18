@@ -4990,6 +4990,7 @@ function docsWork(state, sender, docs, { stay = null } = {}) {
   }
   return {
     took,
+    given,
     left: left.filter((each) => each !== stay),
     send: [...sends.values()].filter((docs) => docs.give.length || docs.have).map(({ peer, ...docs }) => ({ to: peer, docs: { ...docs, give: dedupe(docs.give) } }))
   };
@@ -35058,74 +35059,6 @@ function answerPersonalities(method, id, body, file = PERSONALITIES_FILE, lock =
 
 // box/src/link/documents/exchange.ts
 init_state();
-init_work2();
-var docParts = new Map;
-function sendDocs(host, link, sends) {
-  if (!host || !link?.key)
-    return;
-  for (const { to, docs } of sends ?? []) {
-    for (const payload of docMails(docs)) {
-      const bytes = mailFor(to, { docs: payload, at: Date.now() }, link);
-      if (bytes)
-        try {
-          host.send(bytes);
-        } catch {}
-    }
-  }
-}
-async function receiveDocs(sender, docs, host) {
-  const before = readPersonalities();
-  let work = null, library = before, setup = "";
-  const link = updateLink((link) => {
-    if (!link)
-      return null;
-    setup = JSON.stringify(link.setup ?? null);
-    const state = { link, library: before, parts: docParts };
-    work = docsWork(state, sender, docs);
-    library = state.library;
-    return link;
-  });
-  if (!work || !link)
-    return;
-  if (JSON.stringify(link.setup ?? null) !== setup)
-    try {
-      writeCard();
-    } catch {}
-  await afterDocs(work, before, library, link, host);
-}
-async function afterDocs(work, before, library, link, host) {
-  host?.keepOnly?.(new Set((link.phones ?? []).map((phone) => phone.key)));
-  if (library !== before)
-    await takePersonalities(library).catch(() => {});
-  for (const mac of work.left)
-    forgetMacsAgents(mac, link);
-  writeAgents(link);
-  sendDocs(host, link, work.send);
-}
-function docsChanged(host, { greet = false, tell = false } = {}) {
-  const library = readPersonalities();
-  let work = null;
-  const link = updateLink((link) => {
-    if (!link?.sign)
-      return null;
-    work = greet ? greetWork({ link, library }) : changedWork({ link, library }, tell);
-    return link;
-  });
-  if (work && link) {
-    if (!IS_MAC)
-      host?.keepOnly?.(new Set((link.phones ?? []).map((phone) => phone.key)));
-    sendDocs(host, link, work.send);
-  }
-}
-function macDocsChanged({ closeRemoved } = {}) {
-  const host = macLink.host;
-  if (closeRemoved)
-    host?.keepOnly?.(new Set((closeRemoved.phones ?? []).map((phone) => phone.key)));
-  if (host?.welcomed)
-    try {
-      docsChanged(host);
-    } catch {}
-}
 
 // box/src/link/documents/phone-sync.ts
 init_files();
@@ -35241,6 +35174,21 @@ function authorizeDesktopConnection(host, key, hello, address) {
   const waiting = phoneTrustWait(readLink(), key.toString("base64url"), host);
   return waiting ? { waiting } : authorizePhonePairing(key, hello, address);
 }
+function confirmPhoneMembership(host, sender, link, given) {
+  const pending = freshness.get(host);
+  const origin = authoritySign(link, sender.key);
+  const check = origin && pending?.lists.get(origin);
+  if (!origin || !pending || !check || check.ready || !check.legacyPhones)
+    return;
+  const peers = readDoc(link.docs?.[docKey(origin, "peers")]);
+  if (peers?.origin !== origin || peers.kind !== "peers" || !given.some((each) => each?.d === peers.envelope.d && each.s === peers.envelope.s))
+    return;
+  const phones = readDoc(link.docs?.[docKey(origin, "phones")]);
+  if (phones?.origin !== origin || phones.kind !== "phones" || fingerprint(phones) !== check.legacyPhones)
+    return;
+  check.ready = true;
+  keepTrust(pending);
+}
 function takePhoneSync(sender, given, host) {
   if (!host?.welcomed || !isObject(given) || typeof given.id !== "string" || !/^[A-Za-z0-9_-]{22}$/.test(given.id))
     return;
@@ -35260,14 +35208,23 @@ function takePhoneSync(sender, given, host) {
     for (const [origin, check] of pending.lists) {
       if (check.id !== id)
         continue;
-      const doc = readDoc(link.docs?.[docKey(origin, "phones")]);
-      const peers = typeof given.peers === "string" ? readDoc(link.docs?.[docKey(origin, "peers")]) : null;
-      const hasPeers = given.peers === undefined || peers?.origin === origin && peers.kind === "peers" && fingerprint(peers) === given.peers;
-      if (hasPeers && doc?.origin === origin && doc.kind === "phones" && fingerprint(doc) === given.list) {
+      if (check.ready)
+        return;
+      const phones = readDoc(link.docs?.[docKey(origin, "phones")]);
+      if (phones?.origin !== origin || phones.kind !== "phones" || fingerprint(phones) !== given.list)
+        return;
+      if (typeof given.peers === "string") {
+        const peers = readDoc(link.docs?.[docKey(origin, "peers")]);
+        if (peers?.origin !== origin || peers.kind !== "peers" || fingerprint(peers) !== given.peers)
+          return;
         check.ready = true;
         keepTrust(pending);
+      } else if (given.peers === undefined && authoritySign(link, sender.key) === origin) {
+        check.legacyPhones = given.list;
+        const have = digestOf(link).filter(([key, kind]) => key !== origin || kind !== "peers");
+        send(host, link, sender, { docs: { have, reply: true } });
       }
-      break;
+      return;
     }
     return;
   }
@@ -35346,6 +35303,78 @@ async function publishDesktopRemoval(host, key, signal) {
   } finally {
     requests.delete(id);
   }
+}
+
+// box/src/link/documents/exchange.ts
+init_work2();
+var docParts = new Map;
+function sendDocs(host, link, sends) {
+  if (!host || !link?.key)
+    return;
+  for (const { to, docs } of sends ?? []) {
+    for (const payload of docMails(docs)) {
+      const bytes = mailFor(to, { docs: payload, at: Date.now() }, link);
+      if (bytes)
+        try {
+          host.send(bytes);
+        } catch {}
+    }
+  }
+}
+async function receiveDocs(sender, docs, host) {
+  const before = readPersonalities();
+  let work = null, library = before, setup = "";
+  const link = updateLink((link) => {
+    if (!link)
+      return null;
+    setup = JSON.stringify(link.setup ?? null);
+    const state = { link, library: before, parts: docParts };
+    work = docsWork(state, sender, docs);
+    library = state.library;
+    return link;
+  });
+  if (!work || !link)
+    return;
+  if (host?.welcomed && work.given.length)
+    confirmPhoneMembership(host, sender, link, work.given);
+  if (JSON.stringify(link.setup ?? null) !== setup)
+    try {
+      writeCard();
+    } catch {}
+  await afterDocs(work, before, library, link, host);
+}
+async function afterDocs(work, before, library, link, host) {
+  host?.keepOnly?.(new Set((link.phones ?? []).map((phone) => phone.key)));
+  if (library !== before)
+    await takePersonalities(library).catch(() => {});
+  for (const mac of work.left)
+    forgetMacsAgents(mac, link);
+  writeAgents(link);
+  sendDocs(host, link, work.send);
+}
+function docsChanged(host, { greet = false, tell = false } = {}) {
+  const library = readPersonalities();
+  let work = null;
+  const link = updateLink((link) => {
+    if (!link?.sign)
+      return null;
+    work = greet ? greetWork({ link, library }) : changedWork({ link, library }, tell);
+    return link;
+  });
+  if (work && link) {
+    if (!IS_MAC)
+      host?.keepOnly?.(new Set((link.phones ?? []).map((phone) => phone.key)));
+    sendDocs(host, link, work.send);
+  }
+}
+function macDocsChanged({ closeRemoved } = {}) {
+  const host = macLink.host;
+  if (closeRemoved)
+    host?.keepOnly?.(new Set((closeRemoved.phones ?? []).map((phone) => phone.key)));
+  if (host?.welcomed)
+    try {
+      docsChanged(host);
+    } catch {}
 }
 
 // box/src/link/peers/devices.ts
@@ -45778,7 +45807,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "b3ffcdaa8aaf";
+var BRIDGE_VERSION = "e7a3e17428dc";
 
 // box/src/link/rehome/move.ts
 init_outside();
