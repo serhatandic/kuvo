@@ -6836,6 +6836,14 @@ before (a linked item is its owner's to change). A client shows them first, as "
   it last told it, with `computer`; null for one no computer told this box of. A client reads each
   on its own (one it can't read is as null, the others still chips), and keeps what it learns by
   the ref as asked, not by a number.
+- `POST kuvo/work-queue/refs {text}` → `{mentions: [{start, end, number}]}` for a client
+  editing a description. Ranges use UTF-16 code units. Code and Markdown links are skipped.
+- A whole item can include `bodyMentions` and `notes[].mentions`. Each uses the same ranges into
+  the corresponding text and names its target as `item`, the stable item ID. Use that ID when
+  showing or opening the chip. The box saves the binding with the text so an item keeps its
+  references when it moves or the number changes. `itemRelations: [{id, title, number?, kind}]`
+  lists `mentions` and `mentioned-in` from the saved descriptions and notes. The link goes away
+  when the last mention is removed.
 - `GET kuvo/work-queue/labels` → `{labels}`.
 
 **What you do** (a paired phone, this Mac's app, or Kuvo Code on another computer through `box
@@ -6851,6 +6859,22 @@ relay (said at once, nothing sent), or when no answer came in 20 seconds (a file
 computer stopped answering meanwhile (it may have been done: a client looks again); 409 for one that doesn't take it
 from another box (an older box), changed there. One on its way to another computer (`handing`) is refused (400) until it's there,
 but for `DELETE`, which calls its hand-off off (a note says so) and deletes it.
+A client can send `PATCH kuvo/work-queue/items/<id> {itemRelation: {item, kind}}`
+for two items kept on the same computer. `item` is the other item's ID and `kind` is
+`related`, `blocks`, `blocked-by`, or `duplicate-of`. A new kind replaces the pair's
+previous relation. `null` removes it from either end. Both items show the relation from
+their own side, including `duplicated-by` on the inverse end. The response includes
+`itemRelationApplied: true`.
+
+An attachment can appear in a description as
+`![Attachment](kuvo-attachment:draft/<index>/<encoded original name>)` during a client
+save. The zero-based index refers to the `files` in that request. The box substitutes
+`![<stored name>](kuvo-attachment:file/<anchor>)` and includes that `anchor` on the stored
+file. A file's anchor stays with it when the item moves. To remove a picture from the item
+page, use `PATCH` with `removeInlineImages: [{url, name}]`, where `url` is the picture marker
+and `name` is the saved file name. The box applies it to the current description under the queue
+lock and answers `inlineImagesApplied: true`. The file stays attached.
+
 `POST kuvo/work-queue/items` `{title, body?, status?, priority?, labels?, assignee?, due?, top?,
 owner?, files?}` → `{item}`: an item added, `todo` and `normal` unless said, numbered as an agent's is. The
 box decides whose queue it's in: `owner`'s where a client names one (the conversation whose queue
@@ -7089,7 +7113,8 @@ item on its way to another computer (`handing`) goes with the move and is sent f
 - **Told**: each box tells every such peer its Work Queue, unasked, so the others have it while it
   sleeps: `{workQueue: {told: {id, at, kind, since, top, primary?: {key, kind, since?}, shared?,
   items, owners, labels}}}`. `items` are its items as a view gives them (without `can`) (not deleted ones; the
-  100 latest Done; 1,500 at most), each with `handedFrom` (who handed it on), an issue's or pull
+  100 latest Done; 1,500 at most), each with `handedFrom` (who handed it on) and
+  `mentionTargets` (stable IDs it mentions), an issue's or pull
   request's with `seen` and `keptIn` as this box last read it (`seen.checked`, when it last asked
   GitHub); `owners` names their
   owners; `labels` its labels (`[{id, name, color}]`); `kind`, `since` and `top` how it numbers, `primary` the

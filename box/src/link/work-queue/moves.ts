@@ -9,7 +9,8 @@ import { isObject } from "../../shared/json";
 import { keepLabel, labels } from "./labels";
 import { statusNamed } from "./statuses";
 import { intoTodo } from "./ops";
-import { changeQueues, FILE_NAME, filesOf, itemOf, OWNER, readKeptQueue, readQueueSettingAside, type Item } from "./store";
+import { pruneRelations } from "./relations";
+import { allItems, changeQueues, FILE_NAME, filesOf, itemOf, OWNER, readKeptQueue, readQueueSettingAside, type Item } from "./store";
 
 /** What a move carries: each owner's items, the labels they have, and which items
  * have files (packed beside `move.json`, in `work-queue/<item>/`). */
@@ -22,8 +23,15 @@ export interface CarriedQueues {
 /** The queues of `owners`, as a move carries them; null for none. */
 export function packWorkQueues(owners: readonly string[]): CarriedQueues | null {
   // (One of a kind a newer box keeps goes only when it reads whole here: else it stays, as it is.)
-  const items = owners.flatMap(owner => (OWNER.test(owner) ? readQueueSettingAside(owner).items : readKeptQueue(owner)?.items ?? []));
+  const wanted = new Set(owners);
+  // Preserve the corrupt-queue check on the owners being moved.
+  for (const owner of wanted) if (OWNER.test(owner)) readQueueSettingAside(owner);
+  const items = allItems().filter(item => wanted.has(item.owner));
+  for (const owner of wanted) if (!OWNER.test(owner)) items.push(...readKeptQueue(owner)?.items ?? []);
   if (!items.length) return null;
+  const travelling = new Set(items.map(item => item.id));
+  const split = new Set(items.flatMap(item => (item.relations ?? []).map(link => link.item)).filter(id => !travelling.has(id)));
+  pruneRelations(items, split);
   const used = new Set(items.flatMap(item => item.labels));
   return {
     items,

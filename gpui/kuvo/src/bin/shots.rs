@@ -252,6 +252,15 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "queue-item-elsewhere", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_item_elsewhere) },
     Screen { slug: "queue-item-done", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_item_done) },
     Screen { slug: "queue-new", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_new) },
+    Screen { slug: "queue-new-empty", width: 1280., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_new_empty) },
+    Screen { slug: "queue-new-picture", width: 1280., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_new_picture) },
+    Screen { slug: "queue-new-enlarged", width: 1280., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_new_enlarged) },
+    Screen { slug: "queue-edit-pictures", width: 1280., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_edit) },
+    Screen { slug: "queue-item-hover-card", width: 1280., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_item) },
+    Screen { slug: "queue-item-status-tooltip", width: 1280., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_item) },
+    Screen { slug: "queue-item-references", width: 1280., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_item) },
+    Screen { slug: "queue-item-links", width: 1280., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_item) },
+    Screen { slug: "queue-collapsed-lanes", width: 1280., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_collapsed_lanes) },
     Screen { slug: "queue-new-status", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_new_status) },
     Screen { slug: "queue-new-priority", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_new_priority) },
     Screen { slug: "queue-new-assignee", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_new_assignee) },
@@ -675,6 +684,38 @@ fn queue_writing(workspace: &mut Workspace, window: &mut Window, cx: &mut Contex
 fn queue_new(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     queue_writing(workspace, window, cx);
 }
+fn queue_new_empty(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    queue_all(workspace, window, cx);
+    queue_page(workspace, cx).update(cx, |page, cx| page.act(QueueAct::New, cx));
+}
+
+fn queue_new_enlarged(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    queue_new_empty(workspace, window, cx);
+    queue_page(workspace, cx).update(cx, |page, cx| page.act(QueueAct::ToggleEditorSize, cx));
+}
+
+fn queue_new_picture(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    queue_new_empty(workspace, window, cx);
+    let page = queue_page(workspace, cx);
+    let (title, body, composer) = page.read_with(cx, |page, _| {
+        (page.item_fields().0.clone(), page.item_fields().1.clone(), page.item_composer().clone())
+    });
+    title.update(cx, |field, cx| field.set_text("Tighten the Work Queue layout", cx));
+    body.update(cx, |field, cx| field.set_text("The current Work Queue leaves a large gap between groups.", cx));
+    let image = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../shots/sidebar-c-queue-light.png");
+    composer.update(cx, |composer, cx| composer.attach_named([image], cx));
+    body.update(cx, |field, cx| field.replace_selection("Keep the group names and counts visible.", cx));
+}
+
+fn queue_collapsed_lanes(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    queue_all(workspace, window, cx);
+    queue_page(workspace, cx).update(cx, |page, cx| {
+        for status in ["needs-you", "in-review", "in-progress", "waiting", "todo", "backlog"] {
+            page.act(QueueAct::Fold(status.into()), cx);
+        }
+    });
+}
+
 /// New Item with one of its chips' menus open.
 fn queue_new_with(field: Field, workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     let page = queue_writing(workspace, window, cx);
@@ -1518,6 +1559,53 @@ fn main() -> anyhow::Result<()> {
             }
             // One computer turned down a change held for it, in its words.
             // A queue with many more labels than a menu shows at once.
+            if screen.slug == "queue-edit-pictures" {
+                stand_in.work_item_fixture("wqi_231", serde_json::json!({
+                    "body": "The email field should keep its value if the address is taken.\n\n![signup.png](kuvo-attachment:file/signup)\n\nCheck the other fields after submitting.\n\n![signup-wide.png](kuvo-attachment:file/signup-wide)",
+                    "files": [{"name": "signup.png", "type": "image/png", "anchor": "signup", "at": 1},
+                              {"name": "signup-wide.png", "type": "image/png", "anchor": "signup-wide", "at": 2}],
+                }), Some(("signup.png", include_bytes!("../../../shots/screens-composer-row-light.png").to_vec())));
+                stand_in.work_item_fixture("wqi_231", serde_json::json!({}), Some(("signup-wide.png", include_bytes!("../../../shots/screens-composer-row-dark.png").to_vec())));
+            }
+            if matches!(screen.slug, "queue-item-references" | "queue-item-links" | "queue-item-hover-card") {
+                let body = "Coordinate the error copy with #234 before merging. The page ranked #1.";
+                let mention = |body: &str, number: u64| {
+                    let tag = format!("#{number}");
+                    let start = body.find(&tag).unwrap();
+                    serde_json::json!({"start": start, "end": start + tag.len(), "number": number})
+                };
+                let current_title = "Keep what was typed when the sign-up email is taken";
+                let target_title = "Dark mode for the settings page";
+                stand_in.work_item_fixture("wqi_234", serde_json::json!({
+                    "title": target_title,
+                    "body": "Use the new theme tokens throughout Settings. Check the sidebar and permission panels in both appearances.",
+                    "status": "in-progress", "priority": "high", "labels": ["lbl_design"],
+                    "assignee": {"kind": "bot", "id": "bot_mira", "name": "Mira"},
+                    "itemRelations": [{"kind": "mentioned-in", "id": "wqi_231", "number": 231, "title": current_title}],
+                    "canLinkItems": true,
+                }), None);
+                let mut links = vec![serde_json::json!({
+                    "kind": "mentions", "id": "wqi_234", "number": 234, "title": target_title,
+                })];
+                if screen.slug == "queue-item-links" {
+                    let post = "Write the launch post, with the three screenshots and the short video from the design review";
+                    let post_body = "Include the sign-up fix from #231 in the launch post.";
+                    stand_in.work_item_fixture("wqi_235", serde_json::json!({
+                        "title": post, "body": post_body, "bodyMentions": [mention(post_body, 231)],
+                        "itemRelations": [{"kind": "mentions", "id": "wqi_231", "number": 231, "title": current_title}],
+                        "canLinkItems": true,
+                    }), None);
+                    links.extend([
+                        serde_json::json!({"kind": "mentioned-in", "id": "wqi_235", "number": 235, "title": post}),
+                        serde_json::json!({"kind": "blocks", "id": "wqi_236", "number": 236, "title": "Nightly builds for the Linux packages"}),
+                        serde_json::json!({"kind": "related", "id": "wqi_237", "number": 237, "title": "Get the Lighthouse score above 90"}),
+                    ]);
+                }
+                stand_in.work_item_fixture("wqi_231", serde_json::json!({
+                    "title": current_title, "body": body, "bodyMentions": [mention(body, 234)],
+                    "itemRelations": links, "canLinkItems": true, "files": [], "links": [], "notes": [],
+                }), None);
+            }
             if screen.slug == "queue-new-many-labels" {
                 stand_in.many_labels();
             }
@@ -1816,6 +1904,38 @@ fn main() -> anyhow::Result<()> {
             cx.advance_clock(kuvo_ui::motion::MotionDuration::Fast.duration());
             cx.update_window(any, |_, window, _| window.refresh())?;
             cx.run_until_parked();
+            if screen.slug == "queue-new-picture" {
+                use gpui::{Modifiers, MouseMoveEvent, PlatformInput};
+                cx.update_window(any, |_, window, cx| {
+                    mouse(window, cx, PlatformInput::MouseMove(MouseMoveEvent {
+                        position: gpui::point(px(800.), px(300.)), pressed_button: None, modifiers: Modifiers::default(),
+                    }));
+                })?;
+                cx.run_until_parked();
+            }
+            use kuvo::queue::{ShotHoverPoint, ShotHoverTarget};
+            let hover = match screen.slug {
+                "queue-item-hover-card" => Some((ShotHoverTarget::Reference(234), 320)),
+                "queue-item-status-tooltip" => Some((ShotHoverTarget::ItemStatus, 520)),
+                _ => None,
+            };
+            if let Some((target, delay_ms)) = hover {
+                use gpui::{Modifiers, MouseMoveEvent, PlatformInput};
+                cx.update(|cx| cx.set_global(ShotHoverPoint { target, point: Default::default() }));
+                cx.update_window(any, |_, window, _| window.refresh())?;
+                cx.run_until_parked();
+                cx.update_window(any, |_, window, cx| {
+                    let point = cx.global::<ShotHoverPoint>().point.get().expect("the Work Queue hover target");
+                    mouse(window, cx, PlatformInput::MouseMove(MouseMoveEvent {
+                        position: point, pressed_button: None, modifiers: Modifiers::default(),
+                    }));
+                })?;
+                cx.run_until_parked();
+                cx.advance_clock(std::time::Duration::from_millis(delay_ms));
+                cx.update_window(any, |_, window, _| window.refresh())?;
+                cx.run_until_parked();
+                cx.update(|cx| { cx.remove_global::<ShotHoverPoint>(); });
+            }
             let image = cx.capture_screenshot(any)?;
             let name = format!("screens-{}-{}.png", screen.slug, if appearance.is_dark() { "dark" } else { "light" });
             image.save(out.join(&name))?;

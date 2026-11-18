@@ -1514,3 +1514,59 @@ test("a deleted item never stands for its issue while another item is it: adding
   write(path.join(queues, "queues", "ses_someone.json"), { ...whole, owner: "ses_someone", items: [{ ...live, id: "wqi_someoneslive00000012", owner: "ses_someone", order: 9 }] });
   assert.deepEqual(await tool("queue_update", { item: "gh:kuvo-test/app#12", note: "More" }, "ses_lead"), { isError: true, text: 'gh:kuvo-test/app#12 "Issue 12" isn\'t in your Work Queue, nor in a session\'s you oversee: ask the conversation it belongs to, or the user.' });
 });
+
+test("a file replaced by a symlink is skipped in a hand-off and refused in a peer fetch", async () => {
+  write(path.join(queues, "numbers.json"), { primary: mac.pub, leases: [[100, 149]] });
+  const added = await route("POST", "kuvo/work-queue/items", {
+    owner: "ses_lead", title: "Attachment kept here",
+    files: [{ name: "photo.png", uri: "data:image/png;base64,bG9jYWw=" }],
+  });
+  assert.equal(added.status, 200);
+  const id = added.body.item.id;
+  const file = path.join(queues, "files", id, "photo.png");
+  const outside = path.join(run, "outside-item.png");
+  write(outside, "other bytes");
+  fs.unlinkSync(file);
+  fs.symlinkSync(outside, file);
+  await takeFrom(lab, { act: { id: actID(), method: "GET", action: "file", name: "photo.png", item: id, at: Date.now() } });
+  assert.equal(mailTo(lab)[0].workQueue.acted.status, 404);
+  assert.equal((await tool("queue_hand", { item: "#100", to: "ses_far" }, "ses_lead")).isError, false);
+  await link.pushQueues(host, link.readLink(), targets, Date.now());
+  const hand = mailTo(lab).map(each => each.workQueue.hand).find(Boolean);
+  assert.ok(hand);
+  assert.deepEqual(hand.files, []);
+});
+
+test("a split mention follows its original item through the move despite the destination reusing its number", async () => {
+  write(path.join(queues, "numbers.json"), { primary: mac.pub, leases: [[42, 61]] });
+  const target = (await route("POST", "kuvo/work-queue/items", { owner: "ses_lead", title: "Original #42" })).body.item;
+  const source = (await route("POST", "kuvo/work-queue/items", { owner: "ses_child", title: "Follow-up", body: "See #42" })).body.item;
+  const relationIds = async id => (await route("GET", `kuvo/work-queue/items/${id}`)).body.item.itemRelations.map(({ kind, id }) => [kind, id]);
+  assert.deepEqual(await relationIds(target.id), [["mentioned-in", source.id]]);
+
+  const manual = await route("PATCH", `kuvo/work-queue/items/${source.id}`, { itemRelation: { item: target.id, kind: "blocks" } });
+  assert.equal(manual.status, 200);
+  const packed = link.packWorkQueues(["ses_child"]);
+  assert.equal(packed.items[0].relations, undefined, "manual links do not travel across a split");
+  link.forgetWorkQueues(["ses_child"]);
+  assert.equal(read(path.join(queues, "queues", "ses_lead.json")).items[0].relations, undefined, "manual links are pruned on the origin too");
+  const summary = told(source.number, "ses_far", { id: source.id, title: "Follow-up", mentionTargets: packed.items[0].mentionIndex?.targets });
+  await takeFrom(lab, telling([summary, told(42, "ses_far", { title: "Different #42" })]));
+  assert.deepEqual(await relationIds(target.id), [["mentioned-in", source.id]], "the source computer still sees the backlink");
+
+  // Replay the bundle and peer summaries as seen on the receiving computer.
+  link.forgetWorkQueues(["ses_lead"]);
+  await takeFrom(lab, telling([told(target.number, "ses_far", { id: target.id, title: target.title })]));
+  write(path.join(queues, "queues", "ses_lead.json"), {
+    owner: "ses_lead", items: [{ ...told(42, "ses_lead"), title: "Different #42" }],
+  });
+  link.placeWorkQueues(packed, ["ses_child"], null);
+  assert.deepEqual(await relationIds(source.id), [["mentions", target.id]]);
+  const rewritten = await route("PATCH", `kuvo/work-queue/items/${source.id}`, { body: "Later edit. See #42." });
+  assert.equal(rewritten.status, 200);
+  const moved = (await route("GET", `kuvo/work-queue/items/${source.id}`)).body.item;
+  assert.equal(moved.bodyMentions[0].item, target.id);
+  assert.deepEqual(await relationIds(told(42).id), []);
+  await link.pushQueues(host, link.readLink(), targets, Date.now());
+  assert.deepEqual(mailTo(lab).flatMap(mail => mail.workQueue.told?.items ?? []).find(item => item.id === source.id)?.mentionTargets, [target.id]);
+});

@@ -7,6 +7,7 @@
 //
 // (Named apart from `engine/queue.ts`, which is a conversation's queue of messages.)
 
+import { mentionIndexOf, mentionLinkOf, mentionSnapshot, pruneRelations, relationOf, syncMentions, type MentionIndex, type MentionLink, type MentionSnapshot, type Relation } from "./relations";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -70,7 +71,7 @@ export interface Note { at: number; by: Who; text: string }
  * (as its agent said), it `moved` (`from` and `to` its statuses, `top` when it went to the top),
  * it was `done`. A newer box may keep other kinds, kept as they came. */
 export interface ItemEvent { at: number; by: Who; kind: string; from?: string; to?: string; top?: true }
-export interface KeptFile { name: string; size: number; type: string; at: number }
+export interface KeptFile { name: string; size: number; type: string; at: number; anchor?: string }
 /** An outside link; `kind` (`pr`, `mr`, `issue`, `doc`) and `ref` kept for outside sources later. */
 export interface Link { url: string; title?: string; kind?: string; ref?: string }
 /** A session linked to an item; `box` where it runs, when that's another computer (kept as given). */
@@ -124,6 +125,9 @@ export interface Item {
   events?: ItemEvent[];
   files: KeptFile[];
   links: Link[];
+  relations?: Relation[];
+  mentionLinks?: MentionLink[]; // Used to recover bindings from earlier queue files.
+  mentionIndex?: MentionIndex;
   sessions: Linked[];
   handed?: Handed[];
   /** The first owner that handed it on: it stays in that one's view for good. */
@@ -173,7 +177,7 @@ export const whoOf = (given: unknown): Who | null => {
 export const FILE_NAME = /^(?!\.\.?$)[^/\\\0]{1,200}$/;
 
 // What this box knows of an item: every other field a newer box wrote is kept as it was.
-const KNOWN = new Set(["id", "number", "owner", "title", "body", "category", "status", "priority", "labels", "assignee", "due", "order", "progress", "notes", "events", "files", "links", "sessions", "handed", "handedBy", "wanted", "importedAs", "backGranted", "stays", "source", "handing", "created", "updated", "doneAt", "removed"]);
+const KNOWN = new Set(["id", "number", "owner", "title", "body", "category", "status", "priority", "labels", "assignee", "due", "order", "progress", "notes", "events", "files", "links", "relations", "mentionLinks", "mentionIndex", "sessions", "handed", "handedBy", "wanted", "importedAs", "backGranted", "stays", "source", "handing", "created", "updated", "doneAt", "removed"]);
 
 const handingOf = (given: unknown): Handing | null => {
   if (!isObject(given) || typeof given.id !== "string" || !/^wqh_[A-Za-z0-9_-]{8,40}$/.test(given.id) || typeof given.to !== "string" || !OWNER.test(given.to)
@@ -200,13 +204,16 @@ export function itemOf(given: unknown, owner: string): Item | null {
   const updated = isObject(given.updated) && typeof given.updated.at === "number" ? { at: given.updated.at, by: whoOf(given.updated.by) ?? created.by } : created;
   const list = <T>(value: unknown, keep: (each: Record<string, unknown>) => boolean): T[] => (Array.isArray(value) ? value.filter(each => isObject(each) && keep(each)) as T[] : []);
   const unknown = Object.fromEntries(Object.entries(given).filter(([key]) => !KNOWN.has(key)));
+  const body = typeof given.body === "string" ? given.body : "";
+  const notes = list<Note>(given.notes, each => typeof each.at === "number" && typeof each.text === "string" && whoOf(each.by) !== null);
+  const mentionIndex = mentionIndexOf(given.mentionIndex, body, notes);
   return {
     ...unknown,
     id: given.id,
     ...(typeof given.number === "number" && Number.isInteger(given.number) && given.number > 0 ? { number: given.number } : {}),
     owner,
     title: given.title,
-    body: typeof given.body === "string" ? given.body : "",
+    body,
     status: before ? before.status : (given.status as string).slice(0, 40),
     order: typeof given.order === "number" && Number.isFinite(given.order) ? given.order : 0,
     ...(typeof given.priority === "string" && PRIORITY_ID.test(given.priority) && given.priority !== "normal" ? { priority: given.priority } : {}),
@@ -214,9 +221,12 @@ export function itemOf(given: unknown, owner: string): Item | null {
     ...(assigneeOf(given.assignee) ? { assignee: assigneeOf(given.assignee)! } : {}),
     ...(dayOf(given.due) ? { due: dayOf(given.due)! } : {}),
     ...(isObject(given.progress) ? { progress: { ...(typeof given.progress.value === "number" ? { value: given.progress.value } : {}), ...(typeof given.progress.note === "string" ? { note: given.progress.note } : {}) } } : {}),
-    notes: list<Note>(given.notes, each => typeof each.at === "number" && typeof each.text === "string" && whoOf(each.by) !== null),
+    notes,
+    ...(mentionIndex ? { mentionIndex } : {}),
     ...(Array.isArray(given.events) ? { events: list<ItemEvent>(given.events, eventKept).slice(-MOST_EVENTS) } : {}),
     files: list<KeptFile>(given.files, each => typeof each.name === "string" && FILE_NAME.test(each.name) && typeof each.size === "number"),
+    ...(Array.isArray(given.relations) ? { relations: list<Relation>(given.relations, relationOf) } : {}),
+    ...(Array.isArray(given.mentionLinks) ? { mentionLinks: list<MentionLink>(given.mentionLinks, mentionLinkOf) } : {}),
     links: list<Link>(given.links, each => typeof each.url === "string"),
     sessions: list<Linked>(given.sessions, each => typeof each.session === "string" && SESSION.test(each.session)),
     ...(Array.isArray(given.handed) ? { handed: list<Handed>(given.handed, each => typeof each.from === "string" && typeof each.to === "string") } : {}),
@@ -382,16 +392,23 @@ function onceEach(queues: Queue[]): Queue[] {
 }
 
 /** Every item here, of every owner (deleted ones too). */
-export const allItems = (): Item[] => readAll().flatMap(queue => queue.items);
+export function allItems(): Item[] {
+  const items = readAll().flatMap(queue => queue.items);
+  // Legacy or recovered queue files gain their saved index at the next write.
+  if (items.some(item => !item.mentionIndex)) syncMentions(items);
+  return items;
+}
 
 /** The queues here as one change sees them: each read once, written back if it changed. */
 export class Book {
   private readonly queues = new Map<string, Queue>();
   private readonly before = new Map<string, string>();
+  private readonly mentionsBefore = new Map<string, MentionSnapshot>();
 
   constructor() {
     for (const owner of owners()) this.load(owner);
     onceEach([...this.queues.values()]);
+    for (const item of this.items()) this.mentionsBefore.set(item.id, mentionSnapshot(item));
   }
 
   private load(owner: string): Queue {
@@ -443,6 +460,11 @@ export class Book {
   /** What changed, written: the queues that gained items first, so a write cut off between two
    * leaves an item in both (read once, see `items`) rather than in neither. */
   save(): boolean {
+    const items = this.items();
+    const live = new Set(items.map(item => item.id));
+    const gone = new Set([...this.mentionsBefore.keys()].filter(id => !live.has(id)));
+    pruneRelations(items, gone);
+    syncMentions(items, this.mentionsBefore);
     let any = false;
     const changed = [...this.queues].filter(([owner, queue]) => JSON.stringify(queue.items) !== this.before.get(owner));
     const gained = (owner: string, queue: Queue) => {

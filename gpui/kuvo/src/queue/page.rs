@@ -5,21 +5,21 @@
 use kuvo_ui::anchor::{Placement, Popover};
 use kuvo_ui::motion::{MotionExt as _, Direction};
 use gpui::{
-    AnyElement, App, AppContext as _, Context, InteractiveElement, IntoElement, MouseButton, ParentElement, Render, SharedString, StatefulInteractiveElement, Styled, WeakEntity, Window, anchored, deferred,
-    div, img, list, point, prelude::FluentBuilder as _, px,
+    AnyElement, App, AppContext as _, Context, Focusable as _, InteractiveElement, IntoElement, MouseButton, ParentElement, Render, SharedString, StatefulInteractiveElement, Styled, WeakEntity, Window, anchored, deferred,
+    div, list, point, prelude::FluentBuilder as _, px,
 };
 use kuvo_box::work_queue::{File, Item, ItemChange, ItemSession, Link};
 use kuvo_ui::{
     ActiveTheme, Icon, IconName, IconSize, StyledType, TypeSize,
     button::{Button, ButtonSize},
-    markdown::Markdown,
     menu::{Menu, MenuEntry, PopoverMenu, Tooltip},
     small::{Chip, Switch, spinner},
     theme::{radius, space},
 };
 
+use super::{attachments, editor};
 use super::marks::{label_chip, label_dot, priority_mark, status_mark, who_mark};
-use super::{Act, DELETED, Field, NORMAL, QueueView, Row, Scope, Sheet, Shown, Target, Tone, size_words, source_name};
+use super::{Act, DELETED, Field, NORMAL, QueueView, Row, Scope, Sheet, Shown, Target, Tone, source_name};
 use crate::areas::look_tint;
 use crate::bots::dim;
 use crate::time;
@@ -102,8 +102,8 @@ impl QueueView {
                 let selector = format!("group-{key}");
                 let act = Act::Fold(key.clone());
                 div()
-                    .pt(if first { space::S2 } else { space::S5 })
-                    .pb(space::S1_5)
+                    .pt(if first { space::S2 } else if folded { space::S0_5 } else { space::S5 })
+                    .pb(if folded { space::S0_5 } else { space::S1_5 })
                     .child(
                         div()
                             .id(SharedString::from(selector.clone()))
@@ -111,7 +111,7 @@ impl QueueView {
                             .flex()
                             .items_center()
                             .gap(space::S2)
-                            .h(px(40.))
+                            .h(px(if folded { 36. } else { 40. }))
                             .px(space::S3)
                             .rounded(radius::POPOVER)
                             .cursor_pointer()
@@ -200,36 +200,13 @@ impl QueueView {
                     )
                     .into_any_element()
             }
-            Row::Progress { value, note } => div()
-                .pt(space::S3)
-                .child(
-                    div()
-                        .debug_selector(|| "item-progress".into())
-                        .flex()
-                        .flex_col()
-                        .gap(space::S2)
-                        .px(space::S5)
-                        .py(space::S4)
-                        .rounded(radius::POPOVER)
-                        .bg(c.card)
-                        .shadow(cx.theme().card_shadow())
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap(space::S3)
-                                .child(div().flex_1().min_w_0().text_ui(TypeSize::Body).text_color(c.text).child(if note.is_empty() { "Progress".to_owned() } else { note }))
-                                .children(value.map(|value| div().debug_selector(|| "item-progress-value".into()).flex_none().text_ui(TypeSize::Small).text_color(c.text_muted).child(format!("{}%", (value.clamp(0., 1.) * 100.).round() as u32)))),
-                        )
-                        .children(value.map(|value| bar(value, None, cx))),
-                )
-                .into_any_element(),
             Row::Section(label) => div().pt(space::S6).pb(space::S2).text_ui(TypeSize::Body).text_color(c.text_muted).child(label).into_any_element(),
-            Row::Body(text) => div().debug_selector(|| "item-body".into()).px(space::S5).py(space::S4).rounded(radius::POPOVER).bg(c.card).shadow(cx.theme().card_shadow()).child(Markdown::new("item-body", &text)).into_any_element(),
+            Row::Body(text) => div().debug_selector(|| "item-body".into()).px(space::S5).py(space::S4).rounded(radius::POPOVER).bg(c.card).shadow(cx.theme().card_shadow()).child(self.item_description(&text, cx)).into_any_element(),
+            Row::ItemLinks { relations, can_link, count } => self.relation_section(&relations, can_link, count, cx),
             Row::Session { session, first, last } => self.session_row(session, first, last, cx),
             Row::Link { link, first, last } => self.link_row(link, first, last, cx),
             Row::File { file, first, last } => self.file_row(file, first, last, cx),
-            Row::Said { ix, who, ago, text, first, last } => card_row(first, last, cx)
+            Row::Said { ix, who, ago, text, mentions, first, last } => card_row(first, last, cx)
                 .debug_selector(move || format!("item-note-{ix}"))
                 .px(space::S5)
                 .py(space::S3)
@@ -244,7 +221,7 @@ impl QueueView {
                         .when(!who.is_empty(), |d| d.child(div().text_ui(TypeSize::Small).medium().text_color(c.text).child(who)))
                         .child(div().text_ui(TypeSize::Caption).text_color(c.text_faint).child(ago)),
                 )
-                .child(Markdown::new(SharedString::from(format!("item-note-{ix}")), &text))
+                .child(self.item_reference_markdown(SharedString::from(format!("item-note-{ix}")), &text, &mentions, &[], cx))
                 .into_any_element(),
             Row::Facts(words) => div().debug_selector(|| "item-facts".into()).pt(space::S5).text_ui(TypeSize::Caption).text_color(c.text_faint).child(words).into_any_element(),
             Row::End => div().h(space::S10).into_any_element(),
@@ -486,10 +463,11 @@ impl QueueView {
 
     /// One chip: its mark and what it says, opening its menu where the box says it may be changed.
     #[allow(clippy::too_many_arguments)]
-    fn chip(&mut self, target: &Target, field: Field, mark: AnyElement, words: String, set: bool, enabled: bool, danger: bool, why: Option<&String>, cx: &mut Context<Self>) -> AnyElement {
+    fn chip(&mut self, target: &Target, field: Field, mark: AnyElement, words: String, set: bool, enabled: bool, danger: bool, why: Option<&String>, in_sheet: bool, cx: &mut Context<Self>) -> AnyElement {
         let c = cx.theme().colors.clone();
         let selector = format!("chip-{}", field.slug());
-        let open = self.picker.as_ref().is_some_and(|picker| &picker.target == target && picker.field == field);
+        let open = (in_sheet || !matches!(self.sheet, Some(Sheet::Edit(_))))
+            && self.picker.as_ref().is_some_and(|picker| &picker.target == target && picker.field == field);
         let act = Act::Pick { target: target.clone(), field };
         let chip = div()
             .id(SharedString::from(selector.clone()))
@@ -500,12 +478,12 @@ impl QueueView {
             .h(px(28.))
             .max_w(px(240.))
             .px(px(10.))
-            .rounded(radius::NAV)
+            .rounded(if in_sheet { radius::PILL } else { radius::NAV })
             .text_ui(TypeSize::Small)
             // One that opens a menu is a control: a card with an edge (a stronger one on a dark
             // sheet, where the quiet one is lost). One that can't be changed is a fact: no edge,
             // no fill, quieter words.
-            .when(enabled, |d| d.border_1().border_color(if open || cx.theme().appearance.is_dark() { c.border_strong } else { c.border }).bg(c.card).text_color(if danger { c.danger } else if set { c.text } else { c.text_muted }))
+            .when(enabled, |d| d.border_1().border_color(if open || (!in_sheet && cx.theme().appearance.is_dark()) { c.border_strong } else { c.border }).bg(if in_sheet { c.sunken } else { c.card }).text_color(if danger { c.danger } else if set { c.text } else { c.text_muted }))
             .when(!enabled, |d| {
                 let selector = format!("chip-{}-fact", field.slug());
                 d.px(space::S1).text_color(if danger { c.danger } else { c.text_muted }).child(div().debug_selector(move || selector))
@@ -526,7 +504,7 @@ impl QueueView {
 
     /// An item's chips (a new one's, or one that's there): its status, priority, who it's for, when
     /// it's due and its labels. One that says nothing and can't be changed isn't drawn.
-    pub(super) fn chips(&mut self, target: Target, cx: &mut Context<Self>) -> AnyElement {
+    fn chips(&mut self, target: Target, in_sheet: bool, cx: &mut Context<Self>) -> AnyElement {
         let c = cx.theme().colors.clone();
         let Some(facts) = self.facts(&target) else { return div().into_any_element() };
         let quiet = |icon: IconName| div().flex().flex_none().items_center().justify_center().size(px(16.)).child(Icon::new(icon).color(c.icon)).into_any_element();
@@ -534,25 +512,25 @@ impl QueueView {
         {
             let words = facts.status_words.clone().or_else(|| facts.status.as_ref().and_then(|id| self.status_name(id))).unwrap_or_else(|| "Status".into());
             let mark = facts.status.as_ref().map_or_else(|| status_mark("", cx), |id| status_mark(id, cx));
-            chips.push(self.chip(&target, Field::Status, mark, words, facts.status.is_some(), facts.set || facts.close, false, facts.why.as_ref(), cx));
+            chips.push(self.chip(&target, Field::Status, mark, words, facts.status.is_some(), facts.set || facts.close, false, facts.why.as_ref(), in_sheet, cx));
         }
         if facts.priority.is_some() || facts.set {
             let words = facts.priority.as_ref().and_then(|id| self.priority_name(id)).unwrap_or_else(|| "Priority".into());
             let mark = priority_mark(facts.priority.as_deref().unwrap_or_default(), cx);
-            chips.push(self.chip(&target, Field::Priority, mark, words, facts.priority.is_some(), facts.set, false, facts.why.as_ref(), cx));
+            chips.push(self.chip(&target, Field::Priority, mark, words, facts.priority.is_some(), facts.set, false, facts.why.as_ref(), in_sheet, cx));
         }
         if facts.assignee.is_some() || facts.assign {
             let (mark, words) = match &facts.assignee {
                 Some((_, id, name)) => (who_mark(facts.look.as_ref(), id, name, px(16.), cx), name.clone()),
                 None => (quiet(IconName::User), "Assignee".to_owned()),
             };
-            chips.push(self.chip(&target, Field::Assignee, mark, words, facts.assignee.is_some(), facts.assign, false, facts.why.as_ref(), cx));
+            chips.push(self.chip(&target, Field::Assignee, mark, words, facts.assignee.is_some(), facts.assign, false, facts.why.as_ref(), in_sheet, cx));
         }
         if facts.due.is_some() || facts.set {
             let late = facts.late;
             let words = facts.due.as_ref().map_or_else(|| "Due date".to_owned(), |due| time::due_words(due, &self.today(0)));
             let selector = format!("chip-due:{words}");
-            let chip = self.chip(&target, Field::Due, quiet(IconName::Clock), words, facts.due.is_some(), facts.set, late, facts.why.as_ref(), cx);
+            let chip = self.chip(&target, Field::Due, quiet(IconName::Clock), words, facts.due.is_some(), facts.set, late, facts.why.as_ref(), in_sheet, cx);
             chips.push(div().debug_selector(move || selector).flex_none().child(chip).into_any_element());
         }
         // Its labels, as the box's view names them: one by name, more by their dots and how many.
@@ -564,9 +542,11 @@ impl QueueView {
                 [one] => (dots.into_any_element(), one.name.clone()),
                 many => (dots.into_any_element(), format!("{} labels", many.len())),
             };
-            chips.push(self.chip(&target, Field::Labels, mark, words, !labels.is_empty(), facts.set, false, facts.why.as_ref(), cx));
+            chips.push(self.chip(&target, Field::Labels, mark, words, !labels.is_empty(), facts.set, false, facts.why.as_ref(), in_sheet, cx));
         }
-        div().debug_selector(|| "item-chips".into()).flex().flex_wrap().items_center().gap(space::S2).children(chips).into_any_element()
+        div().id("item-property-chips").debug_selector(|| "item-chips".into()).flex()
+            .when(in_sheet, |d| d.w_full().overflow_x_scroll())
+            .when(!in_sheet, |d| d.flex_wrap()).items_center().gap(space::S2).children(chips).into_any_element()
     }
 
     /// An item's page's head: what names it and whether it's at work, what you do to it (only what
@@ -574,10 +554,17 @@ impl QueueView {
     fn head(&mut self, item: Item, busy: bool, cx: &mut Context<Self>) -> AnyElement {
         let c = cx.theme().colors.clone();
         let this = cx.entity().downgrade();
-        let state: Option<(AnyElement, &str)> = if busy {
-            Some((spinner("head-busy", IconSize::Nav, c.text_muted).into_any_element(), "Saving…"))
+        let progress = item.progress.as_ref().map(|progress| {
+            let note = progress.note.as_deref().filter(|note| !note.trim().is_empty());
+            let value = progress.value.map(|value| format!("{:.0}%", value.clamp(0., 1.) * 100.));
+            note.into_iter().chain(value.as_deref()).collect::<Vec<_>>().join(" · ")
+        }).filter(|text| !text.is_empty());
+        let state: Option<(AnyElement, String)> = if busy {
+            Some((spinner("head-busy", IconSize::Nav, c.text_muted).into_any_element(), "Saving…".to_owned()))
         } else if item.at_work() {
-            Some((spinner("head-spin", IconSize::Nav, c.text_muted).into_any_element(), "At work"))
+            Some((spinner("head-spin", IconSize::Nav, c.text_muted).into_any_element(), "At work".to_owned()))
+        } else if progress.is_some() {
+            Some((status_mark(&item.status, cx), self.status_name(&item.status).unwrap_or_else(|| "Progress".to_owned())))
         } else {
             None
         };
@@ -605,8 +592,8 @@ impl QueueView {
             }
         });
         // (What it says is changed where the box says it may be, once it's read whole.)
-        let can_edit = item.can.edit && self.whole().is_some_and(|whole| !whole.told);
-        let chips = self.chips(Target::Item(item.id.clone()), cx);
+        let can_edit = self.return_to_draft.is_none() && item.can.edit && self.whole().is_some_and(|whole| !whole.told);
+        let chips = self.chips(Target::Item(item.id.clone()), false, cx);
         div()
             .debug_selector(|| "item-head".into())
             .pt(space::S3)
@@ -620,7 +607,14 @@ impl QueueView {
                     .gap(space::S2)
                     .h(px(30.))
                     .children(label(&item, cx))
-                    .children(state.map(|(mark, words)| div().debug_selector(|| "item-state".into()).flex().items_center().gap(space::S1_5).child(mark).child(div().text_ui(TypeSize::Small).text_color(c.text_muted).child(words.to_owned()))))
+                    .children(state.map(|(mark, words)| {
+                        let words = div().text_ui(TypeSize::Small).text_color(c.text_muted).child(words);
+                        #[cfg(feature = "shots")]
+                        let words = super::ShotHoverPoint::capture(super::ShotHoverTarget::ItemStatus, words);
+                        div().id("item-state").debug_selector(|| "item-state".into())
+                            .flex().items_center().gap(space::S1_5).child(mark).child(words)
+                            .when_some(progress, |d, progress| d.tooltip(move |_, cx| Tooltip::new(progress.clone()).build(cx)))
+                    }))
                     .child(div().flex_1())
                     .when_some(finish, |d, (id, name)| {
                         let finish = status(&id);
@@ -697,37 +691,43 @@ impl QueueView {
             .into_any_element()
     }
 
-    fn file_row(&mut self, file: File, first: bool, last: bool, cx: &mut Context<Self>) -> AnyElement {
-        let c = cx.theme().colors.clone();
-        let image = file.kind.starts_with("image/");
-        let key = self.whole().map(|whole| format!("{}/{}", whole.item.id, file.name)).unwrap_or_default();
-        if image && !self.picture_reads.contains_key(&key) {
-            if let Some(whole) = self.whole() {
-                let (item, name, read_key) = (whole.item.id.clone(), file.name.clone(), key.clone());
-                self.picture_reads.insert(key.clone(), crate::pictures::Read::Reading);
-                self.run(format!("picture-{key}"), move |client| {
-                    match client.work_item_file(&item, &name) {
-                        Ok(bytes) => crate::pictures::shown(bytes),
-                        Err(error) => crate::pictures::Read::Failed { why: error.to_string(), again: false },
-                    }
-                }, move |this, read, cx| { this.picture_reads.insert(read_key, read); cx.notify(); }, cx);
-            }
+    fn item_description(&mut self, text: &str, cx: &mut Context<Self>) -> AnyElement {
+        let (files, mentions) = self.whole().map(|whole| (attachments::kept(whole), whole.mentions.clone())).unwrap_or_default();
+        for (_, url) in attachments::anchors(text, &files) {
+            if let Some(file) = attachments::resolve(&url, &files) { self.load_attachment(file, false, cx); }
         }
-        let thumb = match self.picture_reads.get(&key) {
-            Some(crate::pictures::Read::Shown { thumb, .. }) => img(thumb.clone()).size(px(52.)).into_any_element(),
-            _ => Icon::new(if image { IconName::Image } else { IconName::File }).color(c.icon).into_any_element(),
-        };
-        let picture = kuvo_box::pictures::Picture { id: key, source: kuvo_box::pictures::Source::File(String::new()), name: Some(file.name.clone()), caption: None };
-        let selector = format!("item-file-{}", file.name);
-        card_row(first, last, cx)
-            .debug_selector(move || selector)
-            .id(SharedString::from(format!("queue-file-{}", file.name)))
-            .when(image, |row| row.cursor_pointer().on_click(cx.listener(move |this, _, window, cx| { this.viewing = Some(picture.clone()); window.focus(&this.focus, cx); cx.notify(); })))
-            .flex().items_center().gap(space::S3).px(space::S5).py(space::S3)
-            .child(thumb)
-            .child(div().flex_1().min_w_0().truncate().text_ui(TypeSize::Body).text_color(c.text).child(file.name.clone()))
-            .child(div().flex_none().text_ui(TypeSize::Small).text_color(c.text_muted).child(size_words(file.size)))
+        let cards = self.attachment_cards(cx);
+        let width = (f32::from(self.viewport.width) - 380.).clamp(160., PAGE_WIDTH - 40.);
+        let can_remove = self.whole().is_some_and(|whole| whole.item.can.edit && !whole.told);
+        let extras = attachments::anchors(text, &files).into_iter().filter_map(|(_, url)| {
+            attachments::resolve(&url, &files).filter(|file| !file.image)
+        }).collect::<Vec<_>>();
+        let mut seen = std::collections::HashSet::new();
+        let extras = extras.into_iter().filter(|file| seen.insert(file.key()))
+            .map(|file| cards.draw(file, width, 0., None, cx)).collect::<Vec<_>>();
+        let markdown = self.item_reference_markdown("item-body", text, &mentions, &files, cx)
+            .pictures(std::rc::Rc::new(move |url, alt, cx| {
+                match attachments::resolve(url, &files) {
+                    Some(file) if file.image => cards.draw(file, width, 450., can_remove.then(|| (url.to_owned(), false)), cx),
+                    Some(_) => div().into_any_element(),
+                    None if url.starts_with("kuvo-attachment:") => attachments::unavailable(cx),
+                    None => div().child(alt.to_owned()).into_any_element(),
+                }
+            }));
+        div().flex().flex_col().gap(space::S2).child(markdown)
+            .when(!extras.is_empty(), |d| d.child(div().flex().flex_wrap().gap(space::S2).children(extras)))
             .into_any_element()
+    }
+
+    fn file_row(&mut self, file: File, first: bool, last: bool, cx: &mut Context<Self>) -> AnyElement {
+        let selector = format!("item-file-{}", file.name);
+        let file = self.whole().and_then(|whole| attachments::kept(whole).into_iter().find(|each| each.name == file.name));
+        let width = (f32::from(self.viewport.width) - 380.).clamp(160., PAGE_WIDTH - 40.);
+        let card = file.map(|file| {
+            self.load_attachment(&file, false, cx);
+            self.attachment_cards(cx).draw(&file, width, 260., None, cx)
+        });
+        card_row(first, last, cx).debug_selector(move || selector).px(space::S5).py(space::S3).children(card).into_any_element()
     }
 
     // MARK: The list's head
@@ -932,11 +932,21 @@ impl QueueView {
 
     /// New Item and Edit Item, as a composer: a title line, a description under it, a new item's
     /// chips, and what's done with it at the foot (⌘↩).
-    fn item_sheet(&mut self, new: bool, cx: &mut Context<Self>) -> AnyElement {
+    fn item_sheet(&mut self, new: bool, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let c = cx.theme().colors.clone();
         let saving = self.saving;
-        let chips = new.then(|| self.chips(Target::New, cx));
+        let item = self.whole().map(|whole| whole.item.clone()).filter(|_| !new);
+        let computer = item.as_ref().and_then(|item| item.computer.as_ref()).map_or_else(|| self.this_box.clone(), |computer| computer.name.clone());
+        let breadcrumb = if new { "New item".into() } else {
+            item.as_ref().and_then(|item| item.number).map_or_else(|| "Edit item".into(), |number| format!("Edit #{number}"))
+        };
+        let target = item.map_or(Target::New, |item| Target::Item(item.id));
+        let chips = self.chips(target, true, cx);
         let create_more = self.create_more;
+        let enlarged = self.enlarged;
+        let attaching = self.body_composer.read(cx).item_attaching();
+        let suggestions = self.suggestions(window, cx);
+        let extras = self.decorate_editor(new, !suggestions.is_empty(), cx);
         div()
             .flex()
             .flex_col()
@@ -944,15 +954,27 @@ impl QueueView {
                 div()
                     .flex()
                     .items_center()
-                    .pl(space::S5)
-                    .pr(space::S3)
-                    .pt(space::S3)
-                    .child(div().debug_selector(|| "sheet-title".into()).flex_1().text_ui(TypeSize::Small).text_color(c.text_muted).child(if new { "New Item" } else { "Edit Item" }))
+                    .gap(space::S1)
+                    .px(space::S4)
+                    .pt(space::S4)
+                    .pb(space::S5)
+                    .child(div().flex().items_center().gap(space::S1_5).min_w_0().max_w(px(210.))
+                        .px(space::S2).py(space::S0_5).rounded(radius::PILL).bg(c.sunken)
+                        .text_ui(TypeSize::Small).text_color(c.text_muted)
+                        .child(Icon::new(IconName::Computer).color(c.icon))
+                        .child(div().truncate().child(computer)))
+                    .child(Icon::new(IconName::ChevronRight).color(c.icon))
+                    .child(div().debug_selector(|| "sheet-title".into()).flex_1().text_ui(TypeSize::Small).text_color(c.text).child(breadcrumb))
+                    .child(Button::icon_only("sheet-size", if enlarged { IconName::CollapseEditor } else { IconName::ExpandEditor }, if enlarged { "Shrink editor" } else { "Enlarge editor" })
+                        .ghost().size(ButtonSize::Small).on_click(cx.listener(|this, _, _, cx| this.act(Act::ToggleEditorSize, cx))))
                     .child(Button::icon_only("sheet-close", IconName::Close, "Close").ghost().size(ButtonSize::Small).disabled(saving).on_click(cx.listener(|this, _, _, cx| this.close_sheet(cx)))),
             )
-            .child(div().debug_selector(|| "sheet-title-field".into()).px(space::S5).pt(space::S1).child(self.title.clone()))
+            .child(div().debug_selector(|| "sheet-title-field".into()).px(space::S5).pb(space::S2).child(self.title.clone()))
             .child(div().debug_selector(|| "sheet-body-field".into()).px(space::S5).pt(space::S1).pb(space::S3).child(self.body_composer.clone()))
-            .children(chips.map(|chips| div().px(space::S5).pb(space::S4).child(chips)))
+            .when(!suggestions.is_empty(), |d| d.child(self.suggestions_menu(suggestions, cx)))
+            .when(!extras.is_empty(), |d| d.child(div().id("edit-kept-files").mx(space::S5).mb(space::S3)
+                .max_h(px(84.)).overflow_y_scroll().flex().flex_wrap().gap(space::S2).children(extras)))
+            .child(div().px(space::S4).pb(space::S3).child(chips))
             // Why the box turned it down, in its words.
             .children(self.sheet_error.clone().map(|error| div().debug_selector(|| "sheet-error".into()).px(space::S5).pb(space::S3).text_ui(TypeSize::Small).text_color(c.danger).child(error)))
             .child(
@@ -962,9 +984,11 @@ impl QueueView {
                     .gap(space::S4)
                     .px(space::S5)
                     .py(space::S3)
-                    .border_t_1()
-                    // (On a dark sheet the quiet edge is lost: the stronger one.)
-                    .border_color(if cx.theme().appearance.is_dark() { c.border_strong } else { c.border })
+                    .when(attaching, |d| d.child(Button::icon_only("sheet-attach", IconName::Paperclip, "Attach files")
+                        .style(kuvo_ui::button::ButtonStyle::Secondary).pill().size(ButtonSize::Medium).disabled(saving)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.body_composer.update(cx, |composer, cx| composer.pick_files(cx));
+                        }))))
                     // What it last made, while it stays open for the next.
                     .child(div().flex_1().min_w_0().truncate().text_ui(TypeSize::Small).text_color(c.text_muted).children(self.created.clone().filter(|_| new).map(|made| div().debug_selector(|| "sheet-created".into()).child(made))))
                     .when(new, |d| {
@@ -975,7 +999,7 @@ impl QueueView {
                             }
                         }))
                     })
-                    .child(div().debug_selector(|| "sheet-save".into()).child(Button::new("sheet-save", if new { "Create" } else { "Save" }).primary().shortcut("⌘↩").loading(saving).on_click(cx.listener(|this, _, _, cx| this.save_sheet(cx))))),
+                    .child(div().debug_selector(|| "sheet-save".into()).child(Button::new("sheet-save", if new { "Create" } else { "Save" }).primary().pill().shortcut("⌘↵").loading(saving).on_click(cx.listener(|this, _, _, cx| this.save_sheet(cx))))),
             )
             .into_any_element()
     }
@@ -1051,11 +1075,13 @@ impl QueueView {
             .into_any_element()
     }
 
-    fn sheet_content(&mut self, sheet: Sheet, cx: &mut Context<Self>) -> AnyElement {
+    fn sheet_content(&mut self, sheet: Sheet, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let c = cx.theme().colors.clone();
+        let editing = matches!(sheet, Sheet::New | Sheet::Edit(_));
+        let editor_width = if self.enlarged { f32::from(self.viewport.width) } else { 748. };
         let (width, body) = match &sheet {
-            Sheet::New => (640., self.item_sheet(true, cx)),
-            Sheet::Edit(_) => (640., self.item_sheet(false, cx)),
+            Sheet::New => (editor_width, self.item_sheet(true, window, cx)),
+            Sheet::Edit(_) => (editor_width, self.item_sheet(false, window, cx)),
             Sheet::NewLabel | Sheet::EditLabel(_) | Sheet::RemoveLabel(_) => (400., self.label_sheet(&sheet, cx)),
         };
         // Return confirms a label's sheet from anywhere in it (a colour just picked, a removal asked).
@@ -1064,6 +1090,30 @@ impl QueueView {
             .id(gpui::SharedString::from(format!("queue-sheet-{sheet:?}")))
             .debug_selector(|| "queue-sheet".into())
             .track_focus(&self.sheet_focus)
+            .when(editing, |d| d.key_context("QueueEditor")
+                .on_action(cx.listener(|this, _: &editor::NextField, window, cx| {
+                    this.focus_field(!this.body.focus_handle(cx).is_focused(window), window, cx);
+                }))
+                .on_action(cx.listener(|this, _: &editor::PreviousField, window, cx| {
+                    this.focus_field(false, window, cx);
+                })))
+            .when(editing && !self.suggestions(window, cx).is_empty(), |d| d.key_context("QueueEditor QueueReferences")
+                .on_action(cx.listener(|this, _: &editor::SelectReference, window, cx| {
+                    let choices = this.suggestions(window, cx);
+                    if let Some((number, _)) = choices.get(this.suggestion_at.min(choices.len().saturating_sub(1))) {
+                        this.take_suggestion(*number, cx);
+                    } else { cx.propagate(); }
+                }))
+                .on_action(cx.listener(|this, _: &editor::NextReference, window, cx| {
+                    if !this.move_suggestion(1, window, cx) { cx.propagate(); }
+                }))
+                .on_action(cx.listener(|this, _: &editor::PreviousReference, window, cx| {
+                    if !this.move_suggestion(-1, window, cx) { cx.propagate(); }
+                }))
+                .on_action(cx.listener(|this, _: &editor::HideReferences, _, cx| {
+                    this.suggestions_dismissed = true;
+                    cx.notify();
+                })))
             .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, _, cx| match event.keystroke.key.as_str() {
                 "escape" => this.close_sheet(cx),
                 // ⌘↩ (Ctrl and Return elsewhere) saves from any of its fields.
@@ -1184,17 +1234,41 @@ impl Render for QueueView {
                     }))),
             )
         });
-        let sheet = self.sheet.clone().map(|sheet| {
-            // An item is written near the top, so its chips' menus have room under them.
-            let high = matches!(sheet, Sheet::New | Sheet::Edit(_));
-            let content = self.sheet_content(sheet, cx);
-            div().id("queue-sheet-layer").absolute().inset_0().flex().justify_center().p(space::S6).when(high, |d| d.items_start().pt(px(88.))).when(!high, |d| d.items_center()).bg(dim(cx)).occlude().child(content)
+        let expanded = self.enlarged && self.return_to_draft.is_none() && matches!(self.sheet, Some(Sheet::New | Sheet::Edit(_)));
+        let sheet = self.sheet.clone().filter(|_| self.return_to_draft.is_none()).map(|sheet| {
+            let item = matches!(sheet, Sheet::New | Sheet::Edit(_));
+            let content = self.sheet_content(sheet, window, cx);
+            let layer = div().id("queue-sheet-layer").flex().justify_center()
+                .when(item, |d| d.items_start()).when(!item, |d| d.items_center())
+                .bg(dim(cx)).occlude().child(content);
+            if expanded {
+                deferred(anchored().position(point(px(0.), px(0.))).child(
+                    layer.w(viewport.width).h(viewport.height).p(px(40.)),
+                )).into_any_element()
+            } else {
+                layer.absolute().inset_0().p(space::S6).when(item, |d| d.pt(px(44.))).into_any_element()
+            }
         });
         let viewer = self.viewing.as_ref().map(|picture| {
-            div().id("queue-picture-viewer").absolute().inset_0()
-                .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| { if event.keystroke.key == "escape" { this.viewing = None; cx.notify(); } }))
-                .on_click(cx.listener(|this, _, _, cx| { this.viewing = None; cx.notify(); }))
+            let layer = div().id("queue-picture-viewer").occlude().track_focus(&self.viewer_focus)
+                .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                    if event.keystroke.key == "escape" { this.close_picture(window, cx); cx.stop_propagation(); }
+                }))
+                .on_click(cx.listener(|this, _, window, cx| this.close_picture(window, cx)))
                 .child(crate::pictures::viewer(picture, 0, 1, self.picture_reads.get(&picture.id), window))
+                .child(div().absolute().top(space::S4).right(space::S4)
+                    .child(Button::icon_only("close-queue-picture", IconName::Close, "Close image")
+                        .size(ButtonSize::Small).on_click(cx.listener(|this, _, window, cx| {
+                            cx.stop_propagation();
+                            this.close_picture(window, cx);
+                        }))));
+            if expanded {
+                deferred(anchored().position(point(px(0.), px(0.))).child(
+                    layer.w(viewport.width).h(viewport.height),
+                )).with_priority(3).into_any_element()
+            } else {
+                layer.absolute().inset_0().into_any_element()
+            }
         });
         div()
             .id("queue-page")
@@ -1209,6 +1283,7 @@ impl Render for QueueView {
             .children(head)
             .child(div().flex_1().min_h_0().child(page))
             .children(sheet)
+            .children(self.relation_sheet(cx))
             .children(scrim)
             .children(viewer)
     }

@@ -60,6 +60,7 @@ pub fn bind_keys(cx: &mut App) {
     wakes::bind_keys(cx);
     kuvo_ui::bind_keys(cx);
     composer::bind_keys(cx);
+    queue::bind_keys(cx);
     model_picker::bind_keys(cx);
     sidebar::bind_keys(cx);
     session_menu::bind_keys(cx);

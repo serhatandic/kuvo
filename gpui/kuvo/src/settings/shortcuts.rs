@@ -83,6 +83,12 @@ pub fn title(name: &str) -> Option<(&'static str, &'static str)> {
         "session_menu::RenameSession" => ("Sessions", "Rename session"),
         "session_menu::ArchiveSession" => ("Sessions", "Archive session"),
         "session_menu::DeleteSession" => ("Sessions", "Delete session"),
+        "queue_editor::NextField" => ("Work Queue", "Focus description"),
+        "queue_editor::PreviousField" => ("Work Queue", "Focus title"),
+        "queue_editor::SelectReference" => ("Work Queue", "Insert selected item reference"),
+        "queue_editor::NextReference" => ("Work Queue", "Next item reference"),
+        "queue_editor::PreviousReference" => ("Work Queue", "Previous item reference"),
+        "queue_editor::HideReferences" => ("Work Queue", "Close item suggestions"),
         "wakes::Close" => ("Wake-ups", "Close wake-up schedule"),
         "changes::Commit" => ("Changes", "Commit changes"),
         "changes::Back" => ("Changes", "Go back in Changes"),
@@ -135,6 +141,8 @@ pub fn description(context: &str) -> &'static str {
     if context.contains("ComposerSlash") { "While choosing a command" }
     else if context.contains("Composer") { "While writing a message" }
     else if context.contains("KuvoMenu") { "While a menu is open" }
+    else if context.contains("QueueReferences") { "While choosing an item reference" }
+    else if context.contains("QueueEditor") { "While editing a Work Queue item" }
     else if context.contains("WakeSchedule") { "In the wake-up schedule" }
     else if context.contains("Sidebar") { "In the sidebar" }
     else if context.contains("!KuvoTextField") { "Outside text fields" }
