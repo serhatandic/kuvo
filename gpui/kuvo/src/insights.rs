@@ -413,13 +413,11 @@ impl InsightsView {
         let last = days.saturating_sub(1);
         card(cx).flex_1()
             .debug_selector(|| "insights-chart-card".into())
-            .child(div().flex().items_center().justify_between().gap(space::S2)
+            .child(div().flex().items_center().justify_between().gap(space::S2).min_h(px(24.))
                 .child(div().flex_none().font_weight(gpui::FontWeight::SEMIBOLD).child(if metric == Metric::Cost { "Daily cost" } else { "Daily tokens" }))
                 .child(div().flex_1().min_w_0().truncate().text_align(gpui::TextAlign::Right).text_color(c.text_muted).text_ui(TypeSize::Caption)
                     .children(active.map(|row| div().debug_selector(|| "insights-chart-reading".into())
-                        .child(format!("{} · {}", date_label(&row.name, false), day_value(&row.usage, metric))))))
-                .child(Button::new("insights-view-daily", "View daily data").ghost().quiet().size(ButtonSize::Small)
-                    .on_click(cx.listener(|this, _, _, cx| { this.breakdown = Breakdown::Day; cx.notify(); }))))
+                        .child(format!("{} · {}", date_label(&row.name, false), day_value(&row.usage, metric)))))))
             .child(div().flex().flex_1().min_h(px(152.)).my(px(7.)).gap(space::S2)
                 .child(div().w(axis_width).flex_none().relative().text_color(c.text_muted).text_ui(TypeSize::Caption)
                     .children((0..=axis.intervals).map(|i| div().absolute().right_0().top(gpui::relative(axis.position(i)))
@@ -490,24 +488,25 @@ impl InsightsView {
         ];
         let agents = overview.breakdowns.agent.iter().map(|row| {
             let name = agent_label(row);
-            div().flex().items_center().gap(space::S1_5).children(row.provider.as_deref().and_then(provider_mark))
+            div().flex().items_center().min_h(px(28.)).gap(space::S1_5).children(row.provider.as_deref().and_then(provider_mark))
                 .child(div().flex_1().min_w_0().truncate().child(name))
                 .child(format_metric(value(&row.usage, metric), metric))
         });
         let narrow = window.viewport_size().width < px(640.);
-        let summary = card(cx).when(!narrow, |d| d.w(px(292.)).flex_none())
+        let summary = card(cx).p(space::S4).when(!narrow, |d| d.w(px(292.)).flex_none())
             .debug_selector(|| "insights-summary".into())
-            .child(div().debug_selector(|| "insights-total-label".into()).text_color(c.text_muted).child(if metric == Metric::Cost { "Estimated API cost · USD" } else { "Tokens without cache reads" }))
-            .child(div().debug_selector(|| "insights-total-value".into()).text_size(px(30.)).line_height(px(36.)).my(space::S0_5).font_weight(gpui::FontWeight::SEMIBOLD).child(format_metric(known, metric)))
-            .child(div().debug_selector(|| "insights-total-sessions".into()).text_ui(TypeSize::Caption).text_color(c.text_muted).child(format!("{session_count} {}", if session_count == 1 { "session" } else { "sessions" })))
-            .when(!overview.breakdowns.agent.is_empty(), |d| d.child(div().flex().flex_col().gap(space::S0_5).mt(space::S2).children(agents)))
-            .child(div().mt(space::S2).pt(space::S1_5).border_t_1().border_color(c.border).flex().flex_col().gap(space::S0_5)
+            .child(div().flex().flex_col().gap(space::S1)
+                .child(div().debug_selector(|| "insights-total-label".into()).text_color(c.text_muted).child(if metric == Metric::Cost { "Estimated API cost · USD" } else { "Tokens without cache reads" }))
+                .child(div().debug_selector(|| "insights-total-value".into()).text_size(px(30.)).line_height(px(36.)).font_weight(gpui::FontWeight::SEMIBOLD).child(format_metric(known, metric)))
+                .child(div().debug_selector(|| "insights-total-sessions".into()).text_ui(TypeSize::Caption).text_color(c.text_muted).child(format!("{session_count} {}", if session_count == 1 { "session" } else { "sessions" }))))
+            .when(!overview.breakdowns.agent.is_empty(), |d| d.child(div().flex().flex_col().mt(space::S4).children(agents)))
+            .child(div().mt(space::S4).pt(space::S2).border_t_1().border_color(c.border).flex().flex_col()
                 .children(counts.into_iter().map(|(title, count)| {
-                    div().flex().justify_between().items_center().gap(space::S2)
+                    div().flex().justify_between().items_center().min_h(px(26.)).gap(space::S2)
                         .child(div().text_ui(TypeSize::Caption).text_color(c.text_muted).child(title))
                         .child(div().medium().child(format_count(count.or_else(|| (totals.calls == 0).then_some(0.)))))
                 })))
-            .child(div().mt(space::S1_5).text_ui(TypeSize::Caption).text_color(c.text_muted).child("Estimates use current API rates."))
+            .child(div().mt(space::S2).text_ui(TypeSize::Caption).text_color(c.text_muted).child("Estimates use current API rates."))
             .when(totals.unpriced > 0, |d| d.child(div().text_ui(TypeSize::Caption).text_color(c.text_muted).child(format!("Cost unavailable for {} calls", totals.unpriced))));
         let status = match overview.state.as_str() {
             "loading" => Some("Reading usage…"),

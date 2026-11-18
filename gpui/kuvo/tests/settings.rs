@@ -928,7 +928,8 @@ fn usage_ring_filters_insights_and_opens_a_session_from_its_calls(cx: &mut TestA
     cx.simulate_keystrokes("left");
     cx.run_until_parked();
     assert!(shown(cx, "insights-chart-reading"));
-    click(cx, "insights-view-daily");
+    assert!(!shown(cx, "insights-view-daily"));
+    click(cx, "insights-by-Day");
     assert!(shown(cx, "insights-active-tab-Day"));
     click(cx, "insights-by-Session");
     assert!(shown(cx, "insights-active-tab-Session"));
