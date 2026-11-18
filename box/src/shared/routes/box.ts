@@ -470,7 +470,7 @@ export const BOX_ROUTES: RouteShape[] = [
   { route: "GET kuvo/file", feature: "file", answers: { 200: BYTES } },
   { route: "GET kuvo/file/text", feature: "file.text", answers: { 200: FILE_TEXT, 400: FILE_REFUSED, 403: FILE_REFUSED, 404: FILE_REFUSED, 413: FILE_REFUSED } },
   { route: "GET kuvo/phones", feature: "phones", answers: { 200: PHONES } },
-  { route: "POST kuvo/phones/remove", feature: "devices.pair", answers: { 200: NOTHING } },
+  { route: "POST kuvo/phones/remove", feature: "phones", answers: { 200: NOTHING } },
   { route: "POST kuvo/phones/pair", feature: "phones.pair", answers: { 200: PAIRING } },
   { route: "POST kuvo/devices/pair", feature: "devices.pair", answers: { 200: DEVICE_PAIRED, 400: object({ message: string }), 403: object({ message: string }), 409: object({ message: string, "reason?": words("removed", "blocked") }), 503: object({ message: string }) } },
   { route: "DELETE kuvo/phones/pair", feature: "phones.pair", answers: { 200: NOTHING } },

@@ -141,7 +141,8 @@ const ROUTES: (Route | Route<RegExpMatchArray>)[] = [
   { feature: "plugins.search", when: route => route === "kuvo/plugins/search", answer: pluginSearchRoute },
   { feature: "programs", when: route => route === "kuvo/programs", answer: programsRoute },
   { feature: "providers.models", when: route => route === "kuvo/providers/models", answer: providerModelsRoute },
-  { feature: "skills", when: (route, request) => /^kuvo\/(skills|skill-library|skill-trash)(\/|\?|$)/.test(request.path), answer: skillsRoute },
+  { feature: "skills", when: route => /^kuvo\/(skills|skill-library)(\/|$)/.test(route), answer: skillsRoute },
+  { feature: "skills.trash", when: route => /^kuvo\/skill-trash(\/|$)/.test(route), answer: skillsRoute },
   { feature: "config", when: (route, request) => /^kuvo\/(config|mcp\/catalog|keys)(\/|\?|$)/.test(request.path), answer: settingsRoute },
   // The box's settings as it describes them, for any client to draw (PROTOCOL.md, "A box's settings").
   { feature: "settings", when: route => route.match(SETTINGS_PAGE_ROUTE), answer: settingsPageRoute },
@@ -153,7 +154,7 @@ const ROUTES: (Route | Route<RegExpMatchArray>)[] = [
   { feature: "machines", when: route => OWN_HOME_MAC && isMachinesRoute(route), answer: ownMachinesRoute },
   { feature: "mac", when: route => OWN_HOME_MAC && route === "kuvo/mac", answer: ownMacRoute },
   { feature: "phones", when: route => route === "kuvo/phones", answer: phonesRoute },
-  { feature: "devices.pair", when: route => route === "kuvo/phones/remove", answer: phonesRemoveRoute },
+  { feature: "phones", when: route => route === "kuvo/phones/remove", answer: phonesRemoveRoute },
   { feature: "phones.pair", when: route => route === "kuvo/phones/pair", answer: pairingRoute },
   { feature: "devices.pair", when: route => route === "kuvo/devices/pair", answer: devicesPairRoute },
   { feature: "box.ownHome", when: route => route === "kuvo/link" || route.startsWith("kuvo/link/"), answer: linkRoute },
@@ -257,6 +258,15 @@ const ROUTES: (Route | Route<RegExpMatchArray>)[] = [
   { feature: "wakes.edit", when: route => route.match(/^kuvo\/wakes\/([^/]+)(?:\/(cancel|now|pause|watch|events))?$/), answer: sessionWakesRoute },
 ];
 
+/** The first dispatcher entry that accepts this route and request. */
+export function matchBoxRoute(route: string, request: LinkRequest, phone?: Asker) {
+  for (const entry of ROUTES) {
+    const match = entry.when(route, request, phone);
+    if (match) return { entry, match };
+  }
+  return null;
+}
+
 // The handler LinkHost runs for each request. `hold`: the running bridge's notices held while
 // you're at a computer (none in `box route`, a command of its own). `info`: every box passes its
 // name; only a test's handler leaves it out (and its `kuvo/info` has none), so its `{}` is cast.
@@ -279,12 +289,9 @@ export function engineHandler(readEngine: () => EngineRecord = readEngineFile, i
     if (phone?.kind === "desktop") request = { ...request, desktop: true };
     const route = request.path.split("?")[0];
     const context: RouteContext = { request, phone, signal, route, readEngine, readBridge, bridge, info, phonesChanged, hold, json, text };
-    for (const { when, answer } of ROUTES) {
-      const match = when(route, request, phone);
-      // (Each answer is given what its own `when` gave: a pairing TypeScript can't follow through
-      // the loop, so `never`.)
-      if (match) return yield* answer(context, match as never);
-    }
+    const matched = matchBoxRoute(route, request, phone);
+    // Each answer receives its own predicate's match, a pairing TypeScript cannot follow.
+    if (matched) return yield* matched.entry.answer(context, matched.match as never);
     return yield* engineRoute(context);
   });
 }
