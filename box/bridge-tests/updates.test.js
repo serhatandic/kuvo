@@ -290,7 +290,7 @@ test("a well update, with no link running and no relay, is judged well by a judg
   assert.equal(fs.existsSync(path.join(home, "run", "update-judge.pid")), false, "its mark goes with it");
 });
 
-test("a judge cut off midway is taken up again where it was; time the computer slept doesn't count", async () => {
+test("failure bench: a judge cut off midway is taken up again where it was; time the computer slept doesn't count", async () => {
   machine();
   release();
   assert.equal((await update()).result, "updated");
@@ -373,25 +373,47 @@ test("a rollback begun that didn't get it all back is carried on by the next jud
   engines.add(read(engineFile).pid);
 });
 
-test("an updater cut off with the engine stopped for a new one is never judged: put back, and the old engine started again on the data as it was", async () => {
+test("failure bench: an updater killed during a file swap rolls back and preserves the engine data", { timeout: 90_000 }, async () => {
   machine();
   release();
-  assert.equal((await update()).result, "updated");
-  // As if it had been cut off after it stopped the engine and swapped some files: the new engine
-  // never started.
-  stopEngine();
-  const state = read(path.join(home, "run", "update.json"));
-  write(path.join(home, "run", "update.json"), JSON.stringify({ ...state, trial: { ...state.trial, engineStopped: true } }));
-  fs.rmSync(path.join(home, "updates", "rollback", "engine-started"), { force: true });
-  fs.writeFileSync(path.join(home, "run", "stopped"), "");
+  const cut = path.join(home, "bin", "kuvo-link.js");
+  const boot = path.join(scratch, "update-until-first-rename.mjs");
+  // Let the updater finish the first atomic rename. Kill its process there, before the second
+  // file or the new engine can run. This leaves the actual on-disk trial and rollback journal.
+  write(boot, `
+import fs from "node:fs";
+const rename = fs.renameSync;
+fs.renameSync = (from, to) => {
+  rename(from, to);
+  if (to === ${JSON.stringify(path.join(home, "bin", "box-version"))}) process.kill(process.pid, "SIGKILL");
+};
+const link = await import(${JSON.stringify(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url).href)});
+const result = await link.update({ now: true, keys: [${JSON.stringify(pinned)}], url: ${JSON.stringify(`${base}/boxes.json`)}, blocked: null });
+throw new Error("The updater did not reach the cut: " + JSON.stringify(result));
+`);
+  const child = spawn(process.execPath, [boot], { stdio: ["ignore", "ignore", "inherit"] });
+  const ended = new Promise((resolve, reject) => {
+    child.once("error", reject);
+    child.once("exit", (code, signal) => resolve({ code, signal }));
+  });
+  atEnd(() => {
+    if (child.exitCode === null && child.signalCode === null) child.kill();
+  });
+  assert.deepEqual(await ended, { code: null, signal: "SIGKILL" });
+  assert.equal(boxVersion(), "0.10.0", "one file is already new");
+  assert.equal(fs.readFileSync(cut, "utf8"), "// the old link\n", "the remaining files are still old");
+  assert.equal(fs.existsSync(engineFile), false, "neither engine is running");
+
   looks = 0;
   assert.equal(await settle(), "unwell");
-  assert.equal(looks, 0, "never judged");
+  assert.equal(looks, 0, "the partial update never runs for health checks");
   assert.equal(boxVersion(), "0.9.0");
+  assert.equal(fs.readFileSync(cut, "utf8"), "// the old link\n");
   await waitFor(() => fs.existsSync(engineFile) && read(engineFile).version === "1.0.0", "the old engine runs again");
   engines.add(read(engineFile).pid);
   assert.equal(fs.readFileSync(path.join(home, "data", "opencode", "opencode.db"), "utf8"), "the old engine's data");
   assert.equal(fs.existsSync(path.join(home, "run", "update-trial")), false);
+  assert.equal(fs.existsSync(path.join(home, "updates", "rollback")), false);
 });
 
 test("a bridge that won't take the new build (it doesn't run here) isn't well", async t => {
