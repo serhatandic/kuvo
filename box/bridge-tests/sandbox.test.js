@@ -1470,7 +1470,9 @@ test("a command reaches its own conversation's SSH agent from the sandbox (the v
   // (On macOS, this Mac's box: its agents are in a folder the sandbox hides.)
   const box = boxAt("ssh", !linux);
   if (!linux) {
-    // The nested app box exercises the short socket path. Give it a home short enough for
+    // The app's keeper gives the socket parent this private mode.
+    fs.chmodSync(path.join(box.home, "run"), 0o700);
+    // The nested app box can need the short socket path. Give it a home short enough for
     // the socket itself, independently of the test runner's HOME and TMPDIR.
     box.env.HOME = fs.realpathSync(fs.mkdtempSync("/tmp/k-ssh-"));
     removeAtEnd(box.env.HOME);
