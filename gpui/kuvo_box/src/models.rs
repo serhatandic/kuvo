@@ -172,7 +172,7 @@ pub struct Known {
 #[serde(rename_all = "camelCase")]
 pub struct Unavailable {
     pub id: String,
-    pub keep_previous: bool,
+
 }
 
 /// A provider of the models offered, named as its side names it (`models.offered.providers`).
@@ -216,6 +216,8 @@ pub struct Offered {
     pub listing: Vec<String>,
     #[serde(default)]
     pub unavailable: Vec<Unavailable>,
+    #[serde(default)]
+    pub generations: std::collections::HashMap<String, String>,
     /// The model a new session starts on (`None` left out: the box couldn't say; `Some(None)`:
     /// nothing runs there).
     #[serde(default, deserialize_with = "present")]
@@ -245,13 +247,9 @@ impl Offered {
             self.models.splice(0..0, kept);
             self.known.engine = true;
         }
-        if !self.known.agents && before.known.agents {
-            self.models.extend(before.models.iter().filter(on(Side::Agents)).cloned());
-            self.listing = before.listing.clone();
-            self.known.agents = true;
-        }
         for each in &self.unavailable {
-            if each.keep_previous && !self.models.iter().any(|model| model.side == Side::Agents && model.provider_id == each.id) {
+            let same_account = self.generations.get(&each.id).is_some_and(|generation| before.generations.get(&each.id) == Some(generation));
+            if same_account && !self.models.iter().any(|model| model.side == Side::Agents && model.provider_id == each.id) {
                 self.models.extend(before.models.iter().filter(|model| model.side == Side::Agents && model.provider_id == each.id).cloned());
             }
         }
@@ -450,9 +448,8 @@ mod tests {
         let before = offered(json!({ "models": [engine, agents], "known": { "engine": true, "agents": true }, "listing": ["codex"] }));
         // The bridge started again: its side isn't said now; what it said before stays.
         let now = offered(json!({ "models": [engine], "known": { "engine": true, "agents": false } })).keeping(Some(&before));
-        assert_eq!(now.models.iter().map(|model| model.provider_id.as_str()).collect::<Vec<_>>(), ["anthropic", "claude-code"]);
-        assert_eq!((now.known.agents, now.listing.clone()), (true, vec!["codex".to_owned()]));
-        assert!(now.is_whole());
+        assert_eq!(now.models.iter().map(|model| model.provider_id.as_str()).collect::<Vec<_>>(), ["anthropic"]);
+        assert!(!now.is_whole());
         assert_eq!(now.models[0].efforts, ["low", "high"]);
         // The engine's, the same, ahead.
         let now = offered(json!({ "models": [agents], "known": { "engine": false, "agents": true } })).keeping(Some(&before));
@@ -464,10 +461,11 @@ mod tests {
     #[test]
     fn a_failed_provider_keeps_only_its_own_previous_models_if_allowed() {
         let model = |provider: &str, id: &str| json!({ "providerID": provider, "id": id, "name": id, "side": "agents", "efforts": [], "aliases": [] });
-        let before = offered(json!({ "models": [model("claude", "old"), model("codex", "kept"), model("grok", "other-account")], "known": { "engine": true, "agents": true } }));
+        let before = offered(json!({ "models": [model("claude", "old"), model("codex", "kept"), model("grok", "other-account")], "generations": { "codex": "codex-A", "grok": "grok-A" }, "known": { "engine": true, "agents": true } }));
         let now = offered(json!({
             "models": [model("claude", "new")], "known": { "engine": true, "agents": true },
-            "unavailable": [{ "id": "codex", "keepPrevious": true }, { "id": "grok", "keepPrevious": false }]
+            "generations": { "codex": "codex-A", "grok": "grok-B" },
+            "unavailable": [{ "id": "codex" }, { "id": "grok" }]
         })).keeping(Some(&before));
         assert_eq!(now.models.iter().map(|model| model.id.as_str()).collect::<Vec<_>>(), ["new", "kept"]);
         assert!(!now.is_whole());

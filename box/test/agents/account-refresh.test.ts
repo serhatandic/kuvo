@@ -203,11 +203,40 @@ test("failed models are reported per account, with the last successful list of t
     },
   } as unknown as Agent
   const accounts = new AccountRefresh()
-  await accounts.models(agent)
+  const initial = await accounts.modelStatus(agent, false, false)
   fail = true
   accounts.catalogChanged([agent])
-  expect(await accounts.modelStatus(agent, false, true)).toMatchObject({ models: [{ id: "one" }], unavailable: true, keepPrevious: true })
-  expect(await new AccountRefresh().modelStatus(agent, false, true)).toEqual({ models: [], unavailable: true, keepPrevious: true })
+  expect(await accounts.modelStatus(agent, false, true)).toMatchObject({ models: [{ id: "one" }], unavailable: true, generation: initial.generation })
+  const restarted = await new AccountRefresh().modelStatus(agent, false, true)
+  expect(restarted).toMatchObject({ models: [], unavailable: true })
+  expect(restarted.generation).not.toBe(initial.generation)
   await accounts.signedIn(agent)
-  expect(await accounts.modelStatus(agent, false, true)).toEqual({ models: [], unavailable: true, keepPrevious: false })
+  const signedIn = await accounts.modelStatus(agent, false, true)
+  expect(signedIn).toMatchObject({ models: [], unavailable: true })
+  expect(signedIn.generation).not.toBe(initial.generation)
+})
+
+test("a model change during a read leaves the next ordinary read due", async () => {
+  let provider = "old"
+  let release!: () => void
+  let started!: () => void
+  const firstRead = new Promise<void>(resolve => { started = resolve })
+  const pending = new Promise<void>(resolve => { release = resolve })
+  const agent = {
+    providerID: "changed-in-flight",
+    account: async () => ({ installed: true, signedIn: true }),
+    models: async () => {
+      const id = provider
+      if (id === "old") { started(); await pending }
+      return [{ id }] as Model[]
+    },
+  } as unknown as Agent
+  const accounts = new AccountRefresh()
+  const first = accounts.models(agent, false, true)
+  await firstRead
+  provider = "new"
+  accounts.catalogChanged([agent])
+  release()
+  expect((await first)[0]?.id).toBe("old")
+  expect((await accounts.models(agent))[0]?.id).toBe("new")
 })

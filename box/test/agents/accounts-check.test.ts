@@ -981,3 +981,29 @@ test("Antigravity probe cleanup is confined to its own session folders", async (
   cleanup("valid-session")
   expect(existsSync(join(protectedFolder, "valid-session"))).toBe(true)
 })
+
+test("Antigravity reports a missing catalog after discovery and accepts an explicit empty list", async () => {
+  const { AntigravityAgent } = await import("../../src/agents/agents/antigravity")
+  const { AccountRefresh } = await import("../../src/agents/account-refresh")
+  const agent = new AntigravityAgent(context(), { id: "discovery", home: join(root, "agy-discovery") })
+  mkdirSync(join(agent.profile, "antigravity-acp"), { recursive: true })
+  writeFileSync(join(agent.profile, "antigravity-acp", "acp_token.json"), "{}")
+  const adapter = agent as unknown as { folder: string; modelConnection: () => unknown }
+  mkdirSync(adapter.folder, { recursive: true })
+  writeFileSync(join(adapter.folder, ".complete"), "")
+  let reply: unknown = { models: { availableModels: [{ modelId: "old", name: "Old" }] } }
+  adapter.modelConnection = () => ({
+    initialize: async () => {},
+    rpc: { kill() {}, request: async (method: string) => method === "session/new" ? reply : {} },
+    cwd: root, launch: { signInFile: join(root, "not-requested") },
+  })
+  const accounts = new AccountRefresh()
+  expect((await accounts.modelStatus(agent, false, true)).models.map(model => model.id)).toEqual(["old"])
+  rmSync(join(agent.profile, "kuvo-models.json"))
+  reply = {}
+  const failed = await accounts.modelStatus(agent, false, true)
+  expect(failed.unavailable).toBe(true)
+  expect(failed.models.map(model => model.id)).toEqual(["old"])
+  reply = { models: { availableModels: [] } }
+  expect(await accounts.modelStatus(agent, false, true)).toMatchObject({ models: [], unavailable: false })
+})

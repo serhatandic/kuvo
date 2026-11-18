@@ -123,11 +123,11 @@ const CHANGES = new Set(["credential.updated", "credential.switched", "integrati
 
 /** Told each event of the engine's and the bridge's (engine/watch.ts). */
 export function noteModelsEvent(event: { type?: string; data?: Record<string, unknown> }): void {
-  if (event.type && CHANGES.has(event.type)) kept.clear();
-  if (event.type === "integration.updated" || event.type === "kuvo.agent.account.changed" ||
-    event.type === "credential.updated" || event.type === "credential.switched" ||
-    (event.type === "model.updated" && typeof event.data?.program === "string")) {
-    pickerReads.clear();
+  if (event.type && (CHANGES.has(event.type) || event.type === "kuvo.agent.account.changed")) {
+    kept.clear();
+    // The result publication is part of a refresh already in progress. Every other update
+    // invalidates both a completed response and permission for a pending read to cache its result.
+    if (!(event.type === "model.updated" && event.data?.pickerRefresh === true)) pickerReads.clear();
   }
 }
 
@@ -297,7 +297,7 @@ const named = (ref: Ref, models: Listed[]): Listed | undefined =>
 export interface EngineLists { ready: Set<string>; models: Listed[]; accounts: Map<string, Account>; fallback: Ref | null | undefined }
 /** What the bridge lists: its accounts and their models (only signed-in ones'), and your Custom
  * Auto lists (null where it can't say). */
-export interface BridgeLists { models: Listed[]; accounts: Map<string, Account>; auto: { id: string; name: string; entries: number }[] | null; unavailable?: { id: string; keepPrevious: boolean }[] }
+export interface BridgeLists { models: Listed[]; accounts: Map<string, Account>; auto: { id: string; name: string; entries: number }[] | null; unavailable?: { id: string }[]; generations?: Record<string, string> }
 /** What both places list: null for one that can't say now (not there, or not answering). */
 export interface Lists { engine: EngineLists | null; bridge: BridgeLists | null }
 
@@ -330,8 +330,9 @@ async function bridgeLists(bridge: Target, refresh = false): Promise<BridgeLists
     : null;
   for (const list of lists ?? []) noteNames("auto", [list.id], list.name);
   const unavailable = isObject(listed) && Array.isArray(listed.unavailable) ? listed.unavailable.flatMap(each =>
-    isObject(each) && typeof each.id === "string" ? [{ id: each.id, keepPrevious: each.keepPrevious === true }] : []) : [];
-  return { models, accounts, auto: lists, unavailable };
+    isObject(each) && typeof each.id === "string" ? [{ id: each.id }] : []) : [];
+  const generations = isObject(listed) && isObject(listed.generations) ? Object.fromEntries(Object.entries(listed.generations).filter((entry): entry is [string, string] => typeof entry[1] === "string")) : {};
+  return { models, accounts, auto: lists, unavailable, generations };
 }
 
 /** What the engine lists in `folder` (nothing for none there), as kept. */

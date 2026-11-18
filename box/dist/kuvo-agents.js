@@ -15523,10 +15523,12 @@ ${rpc.stderr.trim()}`);
       for (const info of setup?.models?.availableModels ?? [])
         flat.push({ value: info.modelId, name: info.name ?? info.modelId });
     }
-    if (flat.length) {
-      writeFileSync17(this.modelsFile, JSON.stringify({ current: option?.currentValue, models: flat }));
-      this.listedHere = true;
-    }
+    const listed = flat.length || Array.isArray(setup?.models?.availableModels) && !setup.models.availableModels.length || Array.isArray(option?.options) && !option.options.length;
+    if (!listed || flat.some((info) => typeof info.value !== "string" || !info.value || typeof info.name !== "string"))
+      return false;
+    writeFileSync17(this.modelsFile, JSON.stringify({ current: option?.currentValue, models: flat }));
+    this.listedHere = true;
+    return true;
   }
   listedHere = false;
   listsEveryModel() {
@@ -15596,7 +15598,8 @@ ${rpc.stderr.trim()}`);
       const setup = await rpc.request("session/new", { cwd, mcpServers: [] }, 20000);
       if (setup?.sessionId)
         this.removeSessionFiles(setup.sessionId);
-      this.saveModels(setup);
+      if (!this.saveModels(setup))
+        throw new Error("Antigravity didn\u2019t list its models.");
     } finally {
       clearInterval(watch);
       rpc.kill();
@@ -15605,12 +15608,11 @@ ${rpc.stderr.trim()}`);
   async models(options = {}) {
     if (options.refresh && this.isInstalled)
       await this.discoverModels();
-    try {
-      const saved = JSON.parse(readFileSync23(this.modelsFile, "utf8"));
-      return saved.models.map((info, index) => model(this.providerID, info.value, info.name, { images: true, released: info.value === saved.current ? 2000 : 1000 - index, context: this.windows.get(info.value) ?? 1e6 }));
-    } catch {
-      return [];
+    const saved = JSON.parse(readFileSync23(this.modelsFile, "utf8"));
+    if (!Array.isArray(saved?.models) || saved.models.some((info) => !info || typeof info.value !== "string" || !info.value || typeof info.name !== "string")) {
+      throw new Error("Antigravity\u2019s model list couldn\u2019t be read.");
     }
+    return saved.models.map((info, index) => model(this.providerID, info.value, info.name, { images: true, released: info.value === saved.current ? 2000 : 1000 - index, context: this.windows.get(info.value) ?? 1e6 }));
   }
   windows = new ContextWindows;
   thread(session, state) {
@@ -17262,7 +17264,7 @@ class ClaudeThread {
     const subagents = claudeSubagents(this.subagents);
     const subagentsKey = JSON.stringify(subagents);
     const usage = this.usageGeneration;
-    const signInChanged = usage && (usage.number !== (this.agent.limits.generation?.() ?? 0) || usage.signIn !== this.agent.limits.signIn?.());
+    const signInChanged = !usage || usage.number !== (this.agent.limits.generation?.() ?? 0) || usage.signIn !== this.agent.limits.signIn?.();
     if (this.query && (signInChanged || this.opened?.append !== append || this.opened?.program !== this.agent.program || this.opened?.tools !== tools?.key || this.opened?.skills !== skills || this.opened?.fence !== fence || this.opened?.subagents !== subagentsKey)) {
       this.cut.push(...this.wakingWork);
       this.close();
@@ -23248,6 +23250,9 @@ function failureWords(status, message) {
   return "Signing in didn\u2019t work.";
 }
 
+// box/src/agents/account-refresh.ts
+import { randomUUID as randomUUID2 } from "crypto";
+
 // box/src/agents/sign-ins.ts
 var ASK_WITHIN = 20000;
 
@@ -23330,7 +23335,7 @@ class AccountRefresh {
   snapshot(agent) {
     let found = this.snapshots.get(agent);
     if (!found)
-      this.snapshots.set(agent, found = {});
+      this.snapshots.set(agent, found = { generation: randomUUID2(), revision: 0 });
     return found;
   }
   read(agent, fresh = false) {
@@ -23363,7 +23368,7 @@ class AccountRefresh {
     const changed = previous && !account.unchecked && (previous.signedIn !== account.signedIn || previous.label !== account.label || switched);
     if (changed) {
       this.invalidate(agent, snapshot);
-      this.snapshots.set(agent, { account, identity, accountChanged: true });
+      this.snapshots.set(agent, { account, identity, generation: randomUUID2(), revision: 0 });
     }
     if (!account.unchecked)
       signIns.record(agent.providerID, account);
@@ -23374,7 +23379,7 @@ class AccountRefresh {
   async signedIn(agent) {
     const previous = this.snapshot(agent);
     this.invalidate(agent, previous);
-    this.snapshots.set(agent, { accountChanged: true });
+    this.snapshots.set(agent, { generation: randomUUID2(), revision: 0 });
     const account = await this.read(agent, true);
     await this.publish(agent, account);
   }
@@ -23391,46 +23396,47 @@ class AccountRefresh {
     else
       emit("model.updated", { accountRefresh: true });
   }
-  async models(agent, hidden = false, refresh = false) {
+  async models(agent, hidden = false, refresh = false, picker = false) {
     const snapshot = this.snapshot(agent);
     const account = await this.read(agent);
     if (!account.signedIn)
       return [];
     if (this.snapshot(agent) !== snapshot)
-      return this.models(agent, hidden, refresh);
-    const value = await this.catalog(agent, snapshot, refresh);
+      return this.models(agent, hidden, refresh, picker);
+    const value = await this.catalog(agent, snapshot, refresh, picker);
     if (this.snapshot(agent) !== snapshot)
-      return this.models(agent, hidden, refresh);
+      return this.models(agent, hidden, refresh, picker);
     return hidden ? value : value.filter((model) => !model.hidden);
   }
   async modelStatus(agent, hidden, refresh) {
     let models;
     try {
-      models = await this.models(agent, hidden, refresh);
+      models = await this.models(agent, hidden, refresh, refresh);
     } catch {
-      return { models: [], unavailable: true, keepPrevious: !this.snapshot(agent).accountChanged };
+      return { models: [], unavailable: true, generation: this.snapshot(agent).generation };
     }
     const snapshot = this.snapshot(agent);
-    return { models, unavailable: snapshot.account?.signedIn === true && snapshot.modelFailed === true, keepPrevious: !snapshot.accountChanged };
+    return { models, unavailable: snapshot.account?.signedIn === true && snapshot.modelFailed === true, generation: snapshot.generation };
   }
-  catalog(agent, snapshot, refresh) {
+  catalog(agent, snapshot, refresh, picker = false) {
     const cached = snapshot.models;
-    if (!refresh && cached && !snapshot.modelDirty)
+    if (!refresh && cached && snapshot.listedRevision === snapshot.revision)
       return Promise.resolve(cached);
     const listing = snapshot.listing;
     if (listing) {
       if (!refresh || listing.refresh)
         return listing.pending;
-      return listing.pending.catch(() => []).then((value) => this.snapshot(agent) === snapshot ? this.catalog(agent, snapshot, true) : value);
+      return listing.pending.catch(() => []).then((value) => this.snapshot(agent) === snapshot ? this.catalog(agent, snapshot, true, picker) : value);
     }
+    const revision = snapshot.revision;
     const pending = agent.models({ hidden: true, refresh }).then((value) => {
       if (snapshot.listing?.pending !== pending || this.snapshot(agent) !== snapshot)
         return value;
       snapshot.models = value;
       snapshot.modelFailed = false;
-      snapshot.modelDirty = false;
+      snapshot.listedRevision = revision;
       if (JSON.stringify(cached) !== JSON.stringify(value))
-        emit("model.updated", { accountRefresh: true });
+        emit("model.updated", { accountRefresh: true, ...picker ? { pickerRefresh: true } : {} });
       return value;
     }).catch((error) => {
       if (snapshot.listing?.pending === pending && this.snapshot(agent) === snapshot)
@@ -23448,11 +23454,11 @@ class AccountRefresh {
   catalogChanged(agents, programUpdated) {
     for (const agent of agents) {
       const snapshot = this.snapshot(agent);
-      if (programUpdated === agent.id) {
-        this.snapshots.set(agent, { account: snapshot.account, identity: snapshot.identity, models: snapshot.models, accountChanged: snapshot.accountChanged });
+      if (programUpdated && programUpdated === agent.id) {
+        this.snapshots.set(agent, { account: snapshot.account, identity: snapshot.identity, models: snapshot.models, generation: snapshot.generation, revision: snapshot.revision + 1 });
         this.models(agent, false, true).catch(() => {});
       } else if (!programUpdated) {
-        snapshot.modelDirty = true;
+        snapshot.revision++;
       }
     }
   }
@@ -38319,7 +38325,7 @@ function handler(context) {
         const results = await Promise.all(roster.all().map(async (agent) => ({ id: agent.providerID, ...await accounts.modelStatus(agent, hidden, refresh) })));
         const models = results.flatMap((each) => each.models);
         if (url.searchParams.get("details") === "1") {
-          return located({ models, unavailable: results.filter((each) => each.unavailable).map(({ id, keepPrevious }) => ({ id, keepPrevious })) });
+          return located({ models, generations: Object.fromEntries(results.map(({ id, generation }) => [id, generation])), unavailable: results.filter((each) => each.unavailable).map(({ id }) => ({ id })) });
         }
         return located(models);
       }
@@ -40154,4 +40160,4 @@ if (!onMachine) {
 }
 process.on("SIGTERM", () => stop());
 process.on("SIGINT", () => stop());
-// Built from Packages/Box/src/agents ae3241fc58ed4dcf674ab8cc343c1e011a353666f46474d217c5b4c843257ea0
+// Built from Packages/Box/src/agents 5d16fd7613e03e14a4eaaed96ea7e6467c308a5502d3cd886f46dd77438ed221

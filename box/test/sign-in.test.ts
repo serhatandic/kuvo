@@ -215,3 +215,43 @@ test("pasting a callback requires the starting client, account, attempt, callbac
     engine.stop(true)
   }
 })
+
+test("an existing phone starts, polls and returns a browser sign-in with just its URL", async () => {
+  const { engineHandler } = await import("../src/link/server/router")
+  let callbacks = 0
+  let late = false
+  const engine = Bun.serve({ port: 0, fetch(request) {
+    const url = new URL(request.url)
+    if (url.pathname === "/callback") {
+      callbacks++
+      return new Response("OK")
+    }
+    const state = url.pathname.includes("/later/") ? "later" : "browser"
+    const page = `https://provider.example/auth?${new URLSearchParams({ redirect_uri: `${url.origin}/callback`, state })}`
+    if (request.method === "POST") return Response.json({ data: { attemptID: "att_legacy", url: late ? "" : page } })
+    return Response.json({ data: { status: "pending", url: page } })
+  } })
+  try {
+    const handler = engineHandler(() => ({ port: engine.port!, password: "pw" }))
+    const ask = async (method: string, path: string, given?: unknown, device = 1) => {
+      let status = 0, body: any
+      for await (const piece of handler({ method, path, headers: { "content-type": "application/json" }, body: given ? Buffer.from(JSON.stringify(given)) : undefined }, { key: Buffer.alloc(32, device) })) {
+        if ("head" in piece) status = piece.head.status
+        if ("body" in piece) body = JSON.parse(piece.body.toString())
+      }
+      return { status, body }
+    }
+    const endpoint = "kuvo/sign-in/return"
+    for (const account of ["legacy", "later", "ambiguous"]) {
+      late = account === "later"
+      const address = `http://127.0.0.1:${engine.port}/callback?code=ok&state=${late ? "later" : "browser"}`
+      const route = `api/integration/${account}/connect/oauth`
+      expect((await ask("POST", route, { methodID: "browser" })).body.data.attemptID).toBe("att_legacy")
+      expect((await ask("GET", `kuvo/sign-in/status?integration=${account}&attempt=att_legacy`)).body.status).toBe("pending")
+      expect((await ask("POST", endpoint, { url: "" })).status).toBe(400)
+      expect((await ask("POST", endpoint, { url: address }, 2)).status).toBe(400)
+      expect((await ask("POST", endpoint, { url: address })).status).toBe(account === "ambiguous" ? 400 : 200)
+    }
+    expect(callbacks).toBe(2)
+  } finally { engine.stop(true) }
+})

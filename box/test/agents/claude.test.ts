@@ -2469,6 +2469,26 @@ describe("Claude Code, instructions that changed as its conversation goes on", (
 })
 
 describe("the plan's limits a turn hears", () => {
+  test("the next Claude turn reopens a query whose credentials could not be attributed on adoption", async () => {
+    const makeThread = claude.thread.bind(claude)
+    let query!: { usageGeneration: unknown }
+    claude.thread = (...args) => {
+      const thread = makeThread(...args)
+      query = thread as unknown as typeof query
+      return thread
+    }
+    const { id, first } = await begin()
+    // The same unattributed state resumeHeld gives the SDK query for an adopted turn.
+    query.usageGeneration = null
+    fake.result([first])
+    await until(() => idles(id).length === 1)
+    fake.out = new Queue()
+    sessions.prompt(id, { id: "msg_next_after_adoption", text: "next", files: [], delivery: "steer" })
+    await until(() => fake.sent.length === 2)
+    expect(fake.closed).toBe(true)
+    expect(query.usageGeneration).not.toBeNull()
+  })
+
   test("a Claude query from before a sign-in change cannot refill the old account's ring", async () => {
     const limits = new Limits(() => agentAccounts([claude]))
     await limits.tick()

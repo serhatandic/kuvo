@@ -1185,7 +1185,7 @@ class ClaudeThread implements Thread {
     const subagents = claudeSubagents(this.subagents)
     const subagentsKey = JSON.stringify(subagents)
     const usage = this.usageGeneration
-    const signInChanged = usage && (usage.number !== (this.agent.limits.generation?.() ?? 0) || usage.signIn !== this.agent.limits.signIn?.())
+    const signInChanged = !usage || usage.number !== (this.agent.limits.generation?.() ?? 0) || usage.signIn !== this.agent.limits.signIn?.()
     // (What it left going in the background ends with it: this message says so.)
     if (this.query && (signInChanged || this.opened?.append !== append || this.opened?.program !== this.agent.program || this.opened?.tools !== tools?.key || this.opened?.skills !== skills || this.opened?.fence !== fence || this.opened?.subagents !== subagentsKey)) {
       this.cut.push(...this.wakingWork)

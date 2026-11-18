@@ -391,7 +391,7 @@ export function handler(context: Context) {
         const results = await Promise.all(roster.all().map(async agent => ({ id: agent.providerID, ...await accounts.modelStatus(agent, hidden, refresh) })))
         const models = results.flatMap(each => each.models)
         if (url.searchParams.get("details") === "1") {
-          return located({ models, unavailable: results.filter(each => each.unavailable).map(({ id, keepPrevious }) => ({ id, keepPrevious })) })
+          return located({ models, generations: Object.fromEntries(results.map(({ id, generation }) => [id, generation])), unavailable: results.filter(each => each.unavailable).map(({ id }) => ({ id })) })
         }
         return located(models)
       }

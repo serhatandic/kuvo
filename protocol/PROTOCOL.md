@@ -2365,11 +2365,11 @@ start on a model by the same rule.
   through a coding agent (OpenAI, xAI) still needs its key ("A session's model").
 
 A picker can show its last list immediately and ask again with `refresh=1`. This rereads the
-engine’s current catalog and asks the coding agents to refresh their own lists. It revalidates
-GitLab’s catalog for each affected project once it has no work in progress. Concurrent requests and pickers
-reopened within two seconds share a refresh. An account that couldn't answer is listed under
-`unavailable`. Its last successful list may still be present, and a client can keep the rows
-it showed before when that account has `keepPrevious: true`. The bridge also
+engine’s current catalog and asks the coding agents to refresh their own lists. Account-backed
+provider catalogs are revalidated when the locations they depend on have no work in progress.
+Concurrent requests and pickers reopened within two seconds share a refresh on the host. An account
+that couldn't answer is listed under `unavailable`. A client can reuse its last successful list only
+when the opaque account generation matches. The bridge also
 refreshes an agent’s list after sign-in, including Sign In Again, when its plan changes, and after
 an agent update. The hourly check looks for agent program releases so Accounts can offer updates.
 
@@ -4495,6 +4495,8 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
   sign-in again). Send it to the computer the sign-in is on: a Mac for its own, a machine's
   bridge for the machine's, the engine's and the coding agents'. The same check on
   both (`vectors/link.json`, `signInReturns`).
+  An existing phone can send only `{url}`. It must match exactly one pending attempt started by
+  that phone, including attempts started through the engine’s original OAuth routes.
 - `kuvo/config`: the computer's own engine settings as Settings has them, the whole document
   (the same that its `opencode.json` holds). Each computer keeps its own ("Settings per box"),
   and its box answers for them, a Mac's as a machine's: change a machine's on the machine's box,

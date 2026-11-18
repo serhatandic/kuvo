@@ -2170,7 +2170,8 @@ var init_sessions = __esm(() => {
     "providers?": list(object({ id: string, name: string, "label?": string })),
     "starred?": list(STARRED),
     "listing?": list(string),
-    "unavailable?": list(object({ id: string, keepPrevious: bool })),
+    "unavailable?": list(object({ id: string })),
+    "generations?": map(string),
     "scoped?": bool,
     "note?": string,
     "starting?": nullable(MODEL_REF)
@@ -16755,18 +16756,25 @@ async function closeQuiet(engine, folders) {
   return waiting;
 }
 async function revalidatePickerModels(engine, folder) {
-  const providers = listOf2(await engineGet(engine, "api/provider"));
-  if (!providers.some((provider) => isObject(provider) && provider.id === "gitlab"))
+  const providers = listOf2(await engineGet(engine, "api/provider", folder)).flatMap((provider) => isObject(provider) && typeof provider.id === "string" && REFRESHABLE.includes(provider.id) ? [provider.id] : []);
+  if (!providers.length)
     return;
   const open = await openFolders(engine);
+  const shared = providers.find((provider) => (provider in ENGINE_WIDE));
+  if (shared && (await refreshEngineWide(engine, shared, open)).status === 200)
+    return;
+  if (!providers.includes("gitlab"))
+    return;
   const waiting = await closeQuiet(engine, folder ? open.filter((each) => path43.resolve(each) === path43.resolve(folder)) : open);
   if (waiting.length)
-    keepDue(engine, waiting, MODELS_DUE_FILE);
+    deferModels(engine, waiting, MODELS_DUE_FILE);
 }
-function keepDue(engine, waiting, file) {
+function deferModels(engine, waiting, file) {
   const before = readDue(file);
   const kept = before?.engine === engineOf(engine) ? before.folders : [];
   writeDue(file, { engine: engineOf(engine), folders: [...new Set([...kept, ...waiting])] });
+  if (waiting.length)
+    settleDueModels(engine, file).catch(() => {});
 }
 async function refreshModels(engine, provider, file = MODELS_DUE_FILE) {
   if (!REFRESHABLE.includes(provider))
@@ -16806,7 +16814,7 @@ async function refreshModels(engine, provider, file = MODELS_DUE_FILE) {
       return { status: 503, message: "This engine can't ask for its models again without restarting. Restart it in Settings › Engine." };
     throw error;
   }
-  keepDue(engine, waiting, file);
+  deferModels(engine, waiting, file);
   await learnCompatibility(engine).catch(() => {});
   return { status: 200, waiting };
 }
@@ -21750,10 +21758,10 @@ function keptOr(key, read, whole) {
 }
 var CHANGES = new Set(["credential.updated", "credential.switched", "integration.updated", "model.updated", "provider.updated", "config.updated", "global.disposed", "kuvo.auto.updated"]);
 function noteModelsEvent(event) {
-  if (event.type && CHANGES.has(event.type))
+  if (event.type && (CHANGES.has(event.type) || event.type === "kuvo.agent.account.changed")) {
     kept5.clear();
-  if (event.type === "integration.updated" || event.type === "kuvo.agent.account.changed" || event.type === "credential.updated" || event.type === "credential.switched" || event.type === "model.updated" && typeof event.data?.program === "string") {
-    pickerReads.clear();
+    if (!(event.type === "model.updated" && event.data?.pickerRefresh === true))
+      pickerReads.clear();
   }
 }
 function forgetModelLists() {
@@ -21924,8 +21932,9 @@ async function bridgeLists(bridge, refresh = false) {
   const lists = isObject(auto) && Array.isArray(auto.lists) ? auto.lists.flatMap((each) => isObject(each) && typeof each.id === "string" ? [{ id: each.id, name: typeof each.name === "string" && each.name ? each.name : "Custom Auto", entries: Array.isArray(each.entries) ? each.entries.length : 0 }] : []) : null;
   for (const list of lists ?? [])
     noteNames("auto", [list.id], list.name);
-  const unavailable = isObject(listed) && Array.isArray(listed.unavailable) ? listed.unavailable.flatMap((each) => isObject(each) && typeof each.id === "string" ? [{ id: each.id, keepPrevious: each.keepPrevious === true }] : []) : [];
-  return { models, accounts, auto: lists, unavailable };
+  const unavailable = isObject(listed) && Array.isArray(listed.unavailable) ? listed.unavailable.flatMap((each) => isObject(each) && typeof each.id === "string" ? [{ id: each.id }] : []) : [];
+  const generations = isObject(listed) && isObject(listed.generations) ? Object.fromEntries(Object.entries(listed.generations).filter((entry) => typeof entry[1] === "string")) : {};
+  return { models, accounts, auto: lists, unavailable, generations };
 }
 function engineListsIn(engine, folder) {
   return engine ? keptOr(`engine:${engine.port}:${folder ?? ""}`, () => engineLists(engine, folder), (lists) => lists.fallback !== undefined) : Promise.resolve(null);
@@ -22555,19 +22564,43 @@ function pasteAddress(attempt, context, query, id) {
 }
 async function matchesSignInReturn(context, given) {
   const owner = ownerOf3(context);
-  if (!owner || !isObject(given) || typeof given.integration !== "string" || typeof given.attempt !== "string" || typeof given.url !== "string")
+  if (!owner || !isObject(given) || typeof given.url !== "string" || !loopback(given.url))
     return false;
-  const agents = given.agents === true;
-  const file = returnFile(agents, given.integration, given.attempt);
-  const expected = readReturn(file);
-  const callback = expected?.callback && loopback(expected.callback);
-  if (!expected?.state || !callback || expected.owner !== owner || !isOAuthReturn(given.url, callback, expected.state))
+  const url = given.url;
+  let files;
+  if (typeof given.integration === "string" && typeof given.attempt === "string") {
+    files = [returnFile(given.agents === true, given.integration, given.attempt)];
+  } else if (given.integration === undefined && given.attempt === undefined && context.phone?.key) {
+    try {
+      files = fs70.readdirSync(returnFolder).filter((name) => /^[a-f0-9]{64}$/.test(name)).map((name) => path72.join(returnFolder, name));
+    } catch {
+      return false;
+    }
+  } else
     return false;
-  const place = await placeOf2(new URLSearchParams({ integration: given.integration, agents: agents ? "1" : "0" }), context);
-  if ("down" in place)
-    return false;
-  const current = await call(place.target, "GET", `/api/integration/${encodeURIComponent(given.integration)}/connect/oauth/${encodeURIComponent(given.attempt)}`, undefined, AbortSignal.timeout(5000)).catch(() => null);
-  return readReturn(file)?.state === expected.state && isObject(current) && current.status === "pending";
+  const matches = await Promise.all(files.map(async (file) => {
+    const expected = readReturn(file);
+    const callback = expected?.callback && loopback(expected.callback);
+    if (!expected?.state || !callback || expected.owner !== owner || !isOAuthReturn(url, callback, expected.state))
+      return false;
+    const place = await placeOf2(new URLSearchParams({ integration: expected.integration, agents: expected.agents ? "1" : "0" }), context);
+    if ("down" in place)
+      return false;
+    const current = await call(place.target, "GET", `/api/integration/${encodeURIComponent(expected.integration)}/connect/oauth/${encodeURIComponent(expected.attempt)}`, undefined, AbortSignal.timeout(5000)).catch(() => null);
+    const latest = readReturn(file);
+    return latest?.owner === owner && latest.state === expected.state && isObject(current) && current.status === "pending";
+  }));
+  return matches.filter(Boolean).length === 1;
+}
+async function* legacySignInRoute(context, match) {
+  const [, side, provider] = match;
+  let integration;
+  try {
+    integration = decodeURIComponent(provider);
+  } catch {
+    return yield* context.json(400, {});
+  }
+  return yield* startRoute(context, new URLSearchParams({ integration, agents: side ? "1" : "0" }), true);
 }
 function useHostBrowser(request) {
   return `Open Kuvo Code on ${computerInSentence(request)} and start the sign-in there. Your browser needs to finish on that computer.`;
@@ -22625,7 +22658,7 @@ async function* accountsRoute2(context, query) {
     return yield* json(typeof status === "number" && status >= 400 ? status : 502, { message: "The accounts couldn’t be read. Try again." });
   }
 }
-async function* startRoute(context, query) {
+async function* startRoute(context, query, legacy = false) {
   const { request, signal, json } = context;
   if (request.method.toUpperCase() !== "POST")
     return yield* json(405, {});
@@ -22660,9 +22693,10 @@ async function* startRoute(context, query) {
       } catch {}
       const file = returnFile(query.get("agents") === "1", integration, started.attemptID);
       if (!readReturn(file))
-        keepReturn(file, { owner, until: now + 30 * 60000 });
+        keepReturn(file, { owner, integration, attempt: started.attemptID, agents: query.get("agents") === "1", until: now + 30 * 60000 });
     }
-    return yield* json(200, { ...started, ...pasteAddress(started, context, query, started.attemptID), ...userCode ? { userCode } : {} });
+    const result = { ...started, ...pasteAddress(started, context, query, started.attemptID), ...userCode ? { userCode } : {} };
+    return yield* json(200, legacy ? { data: result } : result);
   } catch (error) {
     if (deadline.aborted)
       return yield* json(504, { message: "It didn't answer in time. Try again." });
@@ -46212,7 +46246,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "eb76ba4050d5";
+var BRIDGE_VERSION = "1ed8d0be7f11";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -57204,8 +57238,8 @@ var KEPT_ROLE = /kuvo-link\.js serve --kept(\s|$)/;
 function runningServe() {
   try {
     const record = JSON.parse(fs173.readFileSync(SERVE_FILE(), "utf8"));
-    if (isObject(record) && Number.isInteger(record.pid) && runsAs(record.pid, record.kept === true ? KEPT_ROLE : SERVE_ROLE)) {
-      return { pid: record.pid, port: Number(record.port), kept: record.kept === true };
+    if (isObject(record) && Number.isInteger(record.pid) && typeof record.password === "string" && runsAs(record.pid, record.kept === true ? KEPT_ROLE : SERVE_ROLE)) {
+      return { pid: record.pid, port: Number(record.port), kept: record.kept === true, password: record.password };
     }
   } catch {}
   return null;
@@ -63780,7 +63814,32 @@ import path202 from "node:path";
 var VAULT_SOCKET = path202.join(RUN, "vault.sock");
 var holding4 = false;
 var holdsVault = () => holding4;
-var heldHere = (route) => /^kuvo\/(vault|sandbox\/(asks|tools|allowed|stopped)|sessions\/[^/?]+\/asks|settings\/[^/?]+(\/[^/?]+\/[^/?]+)?(\?|$))(\/|\?|$)/.test(route);
+async function* heldRead(request, signal) {
+  if (!request.fromMac || request.served || holdsVault())
+    return false;
+  const reply = await askHolder(request, signal);
+  const body = reply && Buffer.from(reply.body, "base64");
+  if (reply && body && !(reply.status === 404 && body.toString() === "{}")) {
+    yield { head: { status: reply.status, headers: { "content-type": reply.type || "application/json" } } };
+    yield { body };
+    return true;
+  }
+  const server = runningServe();
+  if (!server)
+    return false;
+  const result = await fetch(`http://127.0.0.1:${server.port}/${request.path}`, {
+    headers: { authorization: `Basic ${Buffer.from("opencode:" + server.password).toString("base64")}`, "x-kuvo-from": "mac" },
+    redirect: "manual",
+    signal
+  }).catch(() => null);
+  if (!result || result.status === 401)
+    return false;
+  const served = Buffer.from(await result.arrayBuffer());
+  yield { head: { status: result.status, headers: { "content-type": result.headers.get("content-type") || "application/json" } } };
+  yield { body: served };
+  return true;
+}
+var heldHere = (route) => /^kuvo\/(vault|models\/offered|sandbox\/(asks|tools|allowed|stopped)|sessions\/[^/?]+\/asks|settings\/[^/?]+(\/[^/?]+\/[^/?]+)?(\?|$))(\/|\?|$)/.test(route);
 var MOST5 = 8 * 1024 * 1024;
 var KEY3 = "x-kuvo-vault-key";
 var AUTH = "x-kuvo-vault-auth";
@@ -65579,6 +65638,9 @@ async function* modelsOfferedRoute(context) {
   const { request, readEngine, bridge, json, signal } = context;
   if (request.method.toUpperCase() !== "GET")
     return yield* json(405, {});
+  const query = new URLSearchParams(request.path.split("?")[1] ?? "");
+  if (query.get("refresh") === "1" && (yield* heldRead(request, signal)))
+    return;
   const folder = await folderIn(request.path);
   if (!targetsOf({ readEngine, bridge }).length)
     return yield* json(503, { message: "The engine isn't running." });
@@ -65587,7 +65649,6 @@ async function* modelsOfferedRoute(context) {
     engine = readEngine();
   } catch {}
   const agents = bridge();
-  const query = new URLSearchParams(request.path.split("?")[1] ?? "");
   const session = query.get("session")?.trim();
   let place = null;
   if (session) {
@@ -65637,6 +65698,7 @@ function offeredAnswer(lists, wanted, starred = []) {
     providers: providersOf(offered, lists),
     starred,
     known: { engine: lists.engine !== null, agents: lists.bridge !== null },
+    ...lists.bridge?.generations ? { generations: lists.bridge.generations } : {},
     ...lists.bridge?.unavailable?.length ? { unavailable: lists.bridge.unavailable } : {},
     ...listing.length ? { listing } : {},
     ...starting !== undefined ? { starting: starting?.model ?? null } : {}
@@ -71346,6 +71408,8 @@ async function* settingsPageRoute(context, match) {
   if (method === "GET" && rowPart === undefined) {
     const query = new URLSearchParams(request.path.split("?")[1]);
     if (query.get("refresh-models") === "1" && (id === "agents" || id === "commands" || id === "custom-auto")) {
+      if (yield* heldRead(request, signal))
+        return;
       let engine = null;
       try {
         engine = context.readEngine();
@@ -71891,6 +71955,11 @@ var ROUTES = [
   { when: (route) => route.match(/^kuvo\/engine\/(start|restart)$/), answer: engineControlRoute },
   { when: (route) => route === AGENTS_START, answer: agentsStartRoute },
   { when: (route, request) => request.method === "GET" && route === `api/integration/${GITHUB_WORK_QUEUE}` || WORK_QUEUE_OAUTH.test(route), answer: workQueueSignInRoute },
+  { when: (route, request, phone) => {
+    if (!phone?.key || phone.kind === "desktop" || request.method !== "POST")
+      return false;
+    return /^(kuvo\/agents\/)?api\/integration\/([^/]+)\/connect\/oauth$/.exec(route);
+  }, answer: legacySignInRoute },
   { when: (route) => route === "kuvo/sign-in/return", answer: signInReturnRoute },
   { when: (route) => route === SIGN_IN_METHODS_ROUTE || route === SIGN_IN_STATUS_ROUTE || route === SIGN_IN_ACCOUNTS_ROUTE || route === SIGN_IN_START_ROUTE, answer: signInRoute },
   { when: (route) => route === "kuvo/claude-code", answer: claudeCodeRoute },
@@ -71947,7 +72016,7 @@ function engineHandler(readEngine = readEngineFile, info = {}, readBridge = read
     const route = request.path.split("?")[0];
     const context = { request, phone, signal, route, readEngine, readBridge, bridge, info, phonesChanged, hold, json, text };
     for (const { when, answer } of ROUTES) {
-      const match = when(route, request);
+      const match = when(route, request, phone);
       if (match)
         return yield* answer(context, match);
     }

@@ -1,5 +1,6 @@
 // Keep the account, its model catalog and its rings in sync for every client.
 
+import { randomUUID } from "node:crypto"
 import type { Account, Agent } from "./agent"
 import { emit } from "./events"
 import type { Limits } from "./limits"
@@ -11,8 +12,9 @@ interface Snapshot {
   identity?: string
   models?: Model[]
   modelFailed?: boolean
-  modelDirty?: boolean
-  accountChanged?: boolean
+  revision: number
+  listedRevision?: number
+  generation: string
   listing?: { refresh: boolean; pending: Promise<Model[]> }
   reading?: Promise<Account>
   rereading?: Promise<Account>
@@ -27,7 +29,7 @@ export class AccountRefresh {
 
   private snapshot(agent: Agent): Snapshot {
     let found = this.snapshots.get(agent)
-    if (!found) this.snapshots.set(agent, (found = {}))
+    if (!found) this.snapshots.set(agent, (found = { generation: randomUUID(), revision: 0 }))
     return found
   }
 
@@ -56,7 +58,7 @@ export class AccountRefresh {
     const changed = previous && !account.unchecked && (previous.signedIn !== account.signedIn || previous.label !== account.label || switched)
     if (changed) {
       this.invalidate(agent, snapshot)
-      this.snapshots.set(agent, { account, identity, accountChanged: true })
+      this.snapshots.set(agent, { account, identity, generation: randomUUID(), revision: 0 })
     }
     if (!account.unchecked) signIns.record(agent.providerID, account)
     if (changed) void this.publish(agent, account)
@@ -68,7 +70,7 @@ export class AccountRefresh {
     const previous = this.snapshot(agent)
     this.invalidate(agent, previous)
     // A read begun before the sign-in finished cannot publish an account or catalog for it.
-    this.snapshots.set(agent, { accountChanged: true })
+    this.snapshots.set(agent, { generation: randomUUID(), revision: 0 })
     const account = await this.read(agent, true)
     await this.publish(agent, account)
   }
@@ -86,40 +88,41 @@ export class AccountRefresh {
     else emit("model.updated", { accountRefresh: true })
   }
 
-  async models(agent: Agent, hidden = false, refresh = false): Promise<Model[]> {
+  async models(agent: Agent, hidden = false, refresh = false, picker = false): Promise<Model[]> {
     const snapshot = this.snapshot(agent)
     const account = await this.read(agent)
     if (!account.signedIn) return []
-    if (this.snapshot(agent) !== snapshot) return this.models(agent, hidden, refresh)
-    const value = await this.catalog(agent, snapshot, refresh)
-    if (this.snapshot(agent) !== snapshot) return this.models(agent, hidden, refresh)
+    if (this.snapshot(agent) !== snapshot) return this.models(agent, hidden, refresh, picker)
+    const value = await this.catalog(agent, snapshot, refresh, picker)
+    if (this.snapshot(agent) !== snapshot) return this.models(agent, hidden, refresh, picker)
     return hidden ? value : value.filter(model => !model.hidden)
   }
 
   async modelStatus(agent: Agent, hidden: boolean, refresh: boolean) {
     let models: Model[]
-    try { models = await this.models(agent, hidden, refresh) }
-    catch { return { models: [], unavailable: true, keepPrevious: !this.snapshot(agent).accountChanged } }
+    try { models = await this.models(agent, hidden, refresh, refresh) }
+    catch { return { models: [], unavailable: true, generation: this.snapshot(agent).generation } }
     const snapshot = this.snapshot(agent)
-    return { models, unavailable: snapshot.account?.signedIn === true && snapshot.modelFailed === true, keepPrevious: !snapshot.accountChanged }
+    return { models, unavailable: snapshot.account?.signedIn === true && snapshot.modelFailed === true, generation: snapshot.generation }
   }
 
-  private catalog(agent: Agent, snapshot: Snapshot, refresh: boolean): Promise<Model[]> {
+  private catalog(agent: Agent, snapshot: Snapshot, refresh: boolean, picker = false): Promise<Model[]> {
     const cached = snapshot.models
-    if (!refresh && cached && !snapshot.modelDirty) return Promise.resolve(cached)
+    if (!refresh && cached && snapshot.listedRevision === snapshot.revision) return Promise.resolve(cached)
     const listing = snapshot.listing
     if (listing) {
       if (!refresh || listing.refresh) return listing.pending
       // A picker may open while the first cached read is still loading.
       return listing.pending.catch(() => []).then(value =>
-        this.snapshot(agent) === snapshot ? this.catalog(agent, snapshot, true) : value)
+        this.snapshot(agent) === snapshot ? this.catalog(agent, snapshot, true, picker) : value)
     }
+    const revision = snapshot.revision
     const pending = agent.models({ hidden: true, refresh }).then(value => {
       if (snapshot.listing?.pending !== pending || this.snapshot(agent) !== snapshot) return value
       snapshot.models = value
       snapshot.modelFailed = false
-      snapshot.modelDirty = false
-      if (JSON.stringify(cached) !== JSON.stringify(value)) emit("model.updated", { accountRefresh: true })
+      snapshot.listedRevision = revision
+      if (JSON.stringify(cached) !== JSON.stringify(value)) emit("model.updated", { accountRefresh: true, ...(picker ? { pickerRefresh: true } : {}) })
       return value
     }).catch(error => {
       if (snapshot.listing?.pending === pending && this.snapshot(agent) === snapshot) snapshot.modelFailed = true
@@ -133,11 +136,11 @@ export class AccountRefresh {
   catalogChanged(agents: Agent[], programUpdated?: string) {
     for (const agent of agents) {
       const snapshot = this.snapshot(agent)
-      if (programUpdated === agent.id) {
-        this.snapshots.set(agent, { account: snapshot.account, identity: snapshot.identity, models: snapshot.models, accountChanged: snapshot.accountChanged })
+      if (programUpdated && programUpdated === agent.id) {
+        this.snapshots.set(agent, { account: snapshot.account, identity: snapshot.identity, models: snapshot.models, generation: snapshot.generation, revision: snapshot.revision + 1 })
         void this.models(agent, false, true).catch(() => {})
       } else if (!programUpdated) {
-        snapshot.modelDirty = true
+        snapshot.revision++
       }
     }
   }

@@ -53,7 +53,7 @@ import { TYPED_ROUTE, typedRoute } from "../areas/typed";
 import { PARTS_ROUTE, partsRoute, SEND_ROUTE, sendRoute } from "../areas/messages";
 import { sandboxRoute } from "../areas/sandbox";
 import { providerModelsRoute } from "../areas/providers";
-import { SIGN_IN_ACCOUNTS_ROUTE, SIGN_IN_METHODS_ROUTE, SIGN_IN_START_ROUTE, SIGN_IN_STATUS_ROUTE, signInRoute, workQueueSignInRoute } from "../areas/sign-in";
+import { SIGN_IN_ACCOUNTS_ROUTE, SIGN_IN_METHODS_ROUTE, SIGN_IN_START_ROUTE, SIGN_IN_STATUS_ROUTE, legacySignInRoute, signInRoute, workQueueSignInRoute } from "../areas/sign-in";
 import { answerProjects } from "../areas/projects";
 import { settingsRoute } from "../areas/settings";
 import { SETTINGS_PAGE_ROUTE, settingsPageRoute } from "../areas/settings-pages";
@@ -88,7 +88,7 @@ import type { Answer, AnswerPiece, Asker, LinkHandler, LinkRequest, RouteContext
  * what its `answer(context, match)` is given: the route's match for one with a part of its own
  * (`Match` a RegExpMatchArray), else `true`. */
 export interface Route<Match = true> {
-  when: (route: string, request: LinkRequest) => Match | false | null;
+  when: (route: string, request: LinkRequest, phone?: Asker) => Match | false | null;
   answer: (context: RouteContext, match: Match) => Answer;
 }
 
@@ -204,6 +204,10 @@ const ROUTES: (Route | Route<RegExpMatchArray>)[] = [
   { when: route => route === AGENTS_START, answer: agentsStartRoute },
   { when: (route, request) => (request.method === "GET" && route === `api/integration/${GITHUB_WORK_QUEUE}`) ||
     WORK_QUEUE_OAUTH.test(route), answer: workQueueSignInRoute },
+  { when: (route, request, phone) => {
+    if (!phone?.key || phone.kind === "desktop" || request.method !== "POST") return false;
+    return /^(kuvo\/agents\/)?api\/integration\/([^/]+)\/connect\/oauth$/.exec(route);
+  }, answer: legacySignInRoute },
   { when: route => route === "kuvo/sign-in/return", answer: signInReturnRoute },
   { when: route => route === SIGN_IN_METHODS_ROUTE || route === SIGN_IN_STATUS_ROUTE || route === SIGN_IN_ACCOUNTS_ROUTE || route === SIGN_IN_START_ROUTE, answer: signInRoute },
   { when: route => route === "kuvo/claude-code", answer: claudeCodeRoute },
@@ -270,7 +274,7 @@ export function engineHandler(readEngine: () => EngineRecord = readEngineFile, i
     const route = request.path.split("?")[0];
     const context: RouteContext = { request, phone, signal, route, readEngine, readBridge, bridge, info, phonesChanged, hold, json, text };
     for (const { when, answer } of ROUTES) {
-      const match = when(route, request);
+      const match = when(route, request, phone);
       // (Each answer is given what its own `when` gave: a pairing TypeScript can't follow through
       // the loop, so `never`.)
       if (match) return yield* answer(context, match as never);

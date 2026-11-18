@@ -640,10 +640,12 @@ export class AntigravityAgent implements Agent {
     if (!flat.length) {
       for (const info of setup?.models?.availableModels ?? []) flat.push({ value: info.modelId, name: info.name ?? info.modelId })
     }
-    if (flat.length) {
-      writeFileSync(this.modelsFile, JSON.stringify({ current: option?.currentValue, models: flat }))
-      this.listedHere = true
-    }
+    const listed = flat.length || (Array.isArray(setup?.models?.availableModels) && !setup.models.availableModels.length) ||
+      (Array.isArray(option?.options) && !option.options.length)
+    if (!listed || flat.some(info => typeof info.value !== "string" || !info.value || typeof info.name !== "string")) return false
+    writeFileSync(this.modelsFile, JSON.stringify({ current: option?.currentValue, models: flat }))
+    this.listedHere = true
+    return true
   }
 
   /** Its models were said by Antigravity since this bridge started: the file kept from before may
@@ -721,7 +723,7 @@ export class AntigravityAgent implements Agent {
       await rpc.request("authenticate", { methodId: "oauth-personal" }, 20_000)
       const setup: any = await rpc.request("session/new", { cwd, mcpServers: [] }, 20_000)
       if (setup?.sessionId) this.removeSessionFiles(setup.sessionId)
-      this.saveModels(setup)
+      if (!this.saveModels(setup)) throw new Error("Antigravity didn’t list its models.")
     } finally {
       clearInterval(watch)
       rpc.kill()
@@ -730,12 +732,11 @@ export class AntigravityAgent implements Agent {
 
   async models(options: { refresh?: boolean } = {}): Promise<Model[]> {
     if (options.refresh && this.isInstalled) await this.discoverModels()
-    try {
-      const saved = JSON.parse(readFileSync(this.modelsFile, "utf8")) as { current?: string; models: { value: string; name: string }[] }
-      return saved.models.map((info, index) => model(this.providerID, info.value, info.name, { images: true, released: info.value === saved.current ? 2000 : 1000 - index, context: this.windows.get(info.value) ?? 1_000_000 }))
-    } catch {
-      return []
+    const saved = JSON.parse(readFileSync(this.modelsFile, "utf8")) as { current?: string; models: { value: string; name: string }[] }
+    if (!Array.isArray(saved?.models) || saved.models.some(info => !info || typeof info.value !== "string" || !info.value || typeof info.name !== "string")) {
+      throw new Error("Antigravity’s model list couldn’t be read.")
     }
+    return saved.models.map((info, index) => model(this.providerID, info.value, info.name, { images: true, released: info.value === saved.current ? 2000 : 1000 - index, context: this.windows.get(info.value) ?? 1_000_000 }))
   }
 
   /** How much each model holds, as Antigravity says in a turn (its models aren't all Gemini's 1M). */

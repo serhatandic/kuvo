@@ -130,7 +130,7 @@ export const MISC_ROUTES: RouteShape[] = [
   { route: "GET kuvo/plugins/search", answers: { 200: PLUGIN_SEARCH } },
   { route: "GET kuvo/programs", answers: { 200: PROGRAM_FOUND } },
   { route: "POST kuvo/providers/models", answers: { 200: PROVIDER_MODELS } },
-  { route: "POST kuvo/sign-in/return", body: object({ url: string, integration: string, attempt: string, "agents?": bool }), answers: { 200: SIGN_IN_RETURNED, 400: object({ message: string }), 502: object({ message: string }) } },
+  { route: "POST kuvo/sign-in/return", body: object({ url: string, "integration?": string, "attempt?": string, "agents?": bool }), answers: { 200: SIGN_IN_RETURNED, 400: object({ message: string }), 502: object({ message: string }) } },
   { route: "GET kuvo/sign-in/methods", answers: { 200: SIGN_IN_METHODS } },
   { route: "GET kuvo/sign-in/accounts", answers: { 200: SIGN_IN_ACCOUNTS } },
   { route: "GET kuvo/sign-in/status", answers: { 200: SIGN_IN_STATUS } },

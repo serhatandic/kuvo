@@ -263,7 +263,7 @@ function ownerOf(context: RouteContext): string | undefined {
 }
 
 const ownerHeaders = (owner: string | undefined) => owner ? { "x-kuvo-sign-in-owner": owner } : undefined;
-interface PendingReturn { owner: string; callback?: string; state?: string; until: number }
+interface PendingReturn { owner: string; integration: string; attempt: string; agents: boolean; callback?: string; state?: string; until: number }
 // SSH may use a new host process for each request.
 const returnFolder = path.join(RUN, "sign-in-returns");
 const returnFile = (agents: boolean, integration: string, id: string) =>
@@ -298,19 +298,38 @@ function pasteAddress(attempt: Record<string, unknown>, context: RouteContext, q
   };
 }
 
-/** Only the browser return advertised by this pending sign-in may be sent to a listener. */
+/** Only the browser return advertised by one pending sign-in may reach a listener. */
 export async function matchesSignInReturn(context: RouteContext, given: unknown): Promise<boolean> {
   const owner = ownerOf(context);
-  if (!owner || !isObject(given) || typeof given.integration !== "string" || typeof given.attempt !== "string" || typeof given.url !== "string") return false;
-  const agents = given.agents === true;
-  const file = returnFile(agents, given.integration, given.attempt);
-  const expected = readReturn(file);
-  const callback = expected?.callback && loopback(expected.callback);
-  if (!expected?.state || !callback || expected.owner !== owner || !isOAuthReturn(given.url, callback, expected.state)) return false;
-  const place = await placeOf(new URLSearchParams({ integration: given.integration, agents: agents ? "1" : "0" }), context);
-  if ("down" in place) return false;
-  const current = await call(place.target, "GET", `/api/integration/${encodeURIComponent(given.integration)}/connect/oauth/${encodeURIComponent(given.attempt)}`, undefined, AbortSignal.timeout(5_000)).catch(() => null);
-  return readReturn(file)?.state === expected.state && isObject(current) && current.status === "pending";
+  if (!owner || !isObject(given) || typeof given.url !== "string" || !loopback(given.url)) return false;
+  const url = given.url;
+  let files: string[];
+  if (typeof given.integration === "string" && typeof given.attempt === "string") {
+    files = [returnFile(given.agents === true, given.integration, given.attempt)];
+  } else if (given.integration === undefined && given.attempt === undefined && context.phone?.key) {
+    try {
+      files = fs.readdirSync(returnFolder).filter(name => /^[a-f0-9]{64}$/.test(name)).map(name => path.join(returnFolder, name));
+    } catch { return false; }
+  } else return false;
+  const matches = await Promise.all(files.map(async file => {
+    const expected = readReturn(file);
+    const callback = expected?.callback && loopback(expected.callback);
+    if (!expected?.state || !callback || expected.owner !== owner || !isOAuthReturn(url, callback, expected.state)) return false;
+    const place = await placeOf(new URLSearchParams({ integration: expected.integration, agents: expected.agents ? "1" : "0" }), context);
+    if ("down" in place) return false;
+    const current = await call(place.target, "GET", `/api/integration/${encodeURIComponent(expected.integration)}/connect/oauth/${encodeURIComponent(expected.attempt)}`, undefined, AbortSignal.timeout(5_000)).catch(() => null);
+    const latest = readReturn(file);
+    return latest?.owner === owner && latest.state === expected.state && isObject(current) && current.status === "pending";
+  }));
+  return matches.filter(Boolean).length === 1;
+}
+
+/** The phone’s existing start route expects the engine’s data envelope. */
+export async function* legacySignInRoute(context: RouteContext, match: RegExpMatchArray): AsyncGenerator<AnswerPiece> {
+  const [, side, provider] = match;
+  let integration: string;
+  try { integration = decodeURIComponent(provider!); } catch { return yield* context.json(400, {}); }
+  return yield* startRoute(context, new URLSearchParams({ integration, agents: side ? "1" : "0" }), true);
 }
 
 function useHostBrowser(request: LinkRequest): string {
@@ -379,7 +398,7 @@ async function* accountsRoute(context: RouteContext, query: URLSearchParams): As
 /** `POST kuvo/sign-in/start?integration=<id>[&agents=1]` `{methodID, answer?}`: starts a sign-in in
  * the browser where the engine (or the bridge) does, as its own `connect/oauth` does, and answers
  * what that answered with the code its page asks for apart (`userCode`), where it has one. */
-async function* startRoute(context: RouteContext, query: URLSearchParams): AsyncGenerator<AnswerPiece> {
+async function* startRoute(context: RouteContext, query: URLSearchParams, legacy = false): AsyncGenerator<AnswerPiece> {
   const { request, signal, json } = context;
   if (request.method.toUpperCase() !== "POST") return yield* json(405, {});
   const integration = query.get("integration")?.trim() ?? "";
@@ -409,9 +428,10 @@ async function* startRoute(context: RouteContext, query: URLSearchParams): Async
         }
       } catch {}
       const file = returnFile(query.get("agents") === "1", integration, started.attemptID);
-      if (!readReturn(file)) keepReturn(file, { owner, until: now + 30 * 60_000 });
+      if (!readReturn(file)) keepReturn(file, { owner, integration, attempt: started.attemptID, agents: query.get("agents") === "1", until: now + 30 * 60_000 });
     }
-    return yield* json(200, { ...started, ...pasteAddress(started, context, query, started.attemptID), ...(userCode ? { userCode } : {}) });
+    const result = { ...started, ...pasteAddress(started, context, query, started.attemptID), ...(userCode ? { userCode } : {}) };
+    return yield* json(200, legacy ? { data: result } : result);
   } catch (error) {
     if (deadline.aborted) return yield* json(504, { message: "It didn't answer in time. Try again." });
     const status = (error as { status?: unknown } | null)?.status;

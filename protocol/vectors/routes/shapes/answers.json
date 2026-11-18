@@ -12698,8 +12698,8 @@
    "body": {
     "object": {
      "url": "string",
-     "integration": "string",
-     "attempt": "string",
+     "integration?": "string",
+     "attempt?": "string",
      "agents?": "bool"
     }
    },
@@ -15079,10 +15079,12 @@
       "unavailable?": {
        "list": {
         "object": {
-         "id": "string",
-         "keepPrevious": "bool"
+         "id": "string"
         }
        }
+      },
+      "generations?": {
+       "map": "string"
       },
       "scoped?": "bool",
       "note?": "string",

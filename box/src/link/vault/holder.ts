@@ -12,7 +12,8 @@ import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
 import { isSocketKey, RUN, socketKey } from "../home";
-import type { AnyPiece, LinkHandler, LinkRequest } from "../server/context";
+import type { AnswerPiece, AnyPiece, LinkHandler, LinkRequest } from "../server/context";
+import { runningServe } from "../serve-kept";
 import { keepSshAgents } from "./ssh";
 import { LOCKED, provesUnlock, unlockProof } from "./store";
 
@@ -23,13 +24,36 @@ let holding = false;
 /** Whether this process holds the vault. */
 export const holdsVault = () => holding;
 
+/** Share reads from short-lived SSH route processes with the server that owns the host caches. */
+export async function* heldRead(request: LinkRequest, signal?: AbortSignal): AsyncGenerator<AnswerPiece, boolean> {
+  if (!request.fromMac || request.served || holdsVault()) return false;
+  const reply = await askHolder(request, signal);
+  const body = reply && Buffer.from(reply.body, "base64");
+  if (reply && body && !(reply.status === 404 && body.toString() === "{}")) {
+    yield { head: { status: reply.status, headers: { "content-type": reply.type || "application/json" } } };
+    yield { body };
+    return true;
+  }
+  const server = runningServe();
+  if (!server) return false;
+  const result = await fetch(`http://127.0.0.1:${server.port}/${request.path}`, {
+    headers: { authorization: `Basic ${Buffer.from("opencode:" + server.password).toString("base64")}`, "x-kuvo-from": "mac" },
+    redirect: "manual", signal,
+  }).catch(() => null);
+  if (!result || result.status === 401) return false;
+  const served = Buffer.from(await result.arrayBuffer());
+  yield { head: { status: result.status, headers: { "content-type": result.headers.get("content-type") || "application/json" } } };
+  yield { body: served };
+  return true;
+}
+
 /** Whether a route is one only the holding process answers: the vault's, and the sandbox's asks
  * and its agents' tool (fence/outside.ts), whose asks wait in it, what it stopped (which the
  * engine's plugin tells it), and Also Allowed, which an ask's Always adds to there (one process
  * changes it); a conversation's asks (`kuvo/sessions/<id>/asks…`), which list and answer those
  * asks with the engine's; and a change to a settings page (`kuvo/settings/<section>…`), so each is
  * checked against the page in turn in one process, whichever process it's sent to. */
-export const heldHere = (route: string) => /^kuvo\/(vault|sandbox\/(asks|tools|allowed|stopped)|sessions\/[^/?]+\/asks|settings\/[^/?]+(\/[^/?]+\/[^/?]+)?(\?|$))(\/|\?|$)/.test(route);
+export const heldHere = (route: string) => /^kuvo\/(vault|models\/offered|sandbox\/(asks|tools|allowed|stopped)|sessions\/[^/?]+\/asks|settings\/[^/?]+(\/[^/?]+\/[^/?]+)?(\?|$))(\/|\?|$)/.test(route);
 
 /** A request as it goes over the socket, and its answer back. */
 interface Sent {

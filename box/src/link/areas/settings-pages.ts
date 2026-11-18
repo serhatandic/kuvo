@@ -59,7 +59,7 @@ import type { BoxPermissions } from "../../shared/routes/box";
 import { macLink } from "../state";
 import { agentsWorking, newerVersion, offerChangesEngine, offerFailedTwice, offerHeld, updateRoute, updateStatus } from "../updates/update";
 import { boxAnswers } from "../mac/keeper-runs";
-import { askHolder, holdsVault } from "../vault/holder";
+import { askHolder, heldRead, holdsVault } from "../vault/holder";
 import { hasZoneRules, readZoneSetting, setZone, ZONE_FILE, zoneFilesFor, zoneHere } from "../zone/setting";
 import { ownClock } from "../../shared/zone";
 import type { AnswerPiece, RouteContext } from "../server/context";
@@ -909,6 +909,7 @@ export async function* settingsPageRoute(context: RouteContext, match: RegExpMat
   if (method === "GET" && rowPart === undefined) {
     const query = new URLSearchParams(request.path.split("?")[1]);
     if (query.get("refresh-models") === "1" && (id === "agents" || id === "commands" || id === "custom-auto")) {
+      if (yield* heldRead(request, signal)) return;
       let engine = null;
       try { engine = context.readEngine(); } catch {}
       await listsHere(engine, id === "custom-auto" ? context.bridge() : null, undefined, false, true);

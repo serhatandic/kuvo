@@ -154,20 +154,25 @@ async function closeQuiet(engine: Target, folders: string[]): Promise<string[]> 
   return waiting;
 }
 
-/** GitLab's catalog belongs to the open location. Reopen only quiet locations and keep the
- * existing catalog for a location with work in progress. Engine-wide catalogs have their own TTL. */
+/** Ask for account-backed catalogs again, keeping any location where work is still in progress. */
 export async function revalidatePickerModels(engine: EngineRecord, folder?: string): Promise<void> {
-  const providers = listOf(await engineGet(engine, "api/provider"));
-  if (!providers.some(provider => isObject(provider) && provider.id === "gitlab")) return;
+  const providers = listOf(await engineGet(engine, "api/provider", folder)).flatMap(provider =>
+    isObject(provider) && typeof provider.id === "string" && REFRESHABLE.includes(provider.id) ? [provider.id] : []);
+  if (!providers.length) return;
   const open = await openFolders(engine);
+  const shared = providers.find(provider => provider in ENGINE_WIDE);
+  if (shared && (await refreshEngineWide(engine, shared, open)).status === 200) return;
+  if (!providers.includes("gitlab")) return;
   const waiting = await closeQuiet(engine, folder ? open.filter(each => path.resolve(each) === path.resolve(folder)) : open);
-  if (waiting.length) keepDue(engine, waiting, MODELS_DUE_FILE);
+  if (waiting.length) deferModels(engine, waiting, MODELS_DUE_FILE);
 }
 
-function keepDue(engine: EngineRecord, waiting: string[], file: string): void {
+function deferModels(engine: EngineRecord, waiting: string[], file: string): void {
   const before = readDue(file);
   const kept = before?.engine === engineOf(engine) ? before.folders : [];
   writeDue(file, { engine: engineOf(engine), folders: [...new Set([...kept, ...waiting])] });
+  // The completion event can arrive while closeQuiet is still checking.
+  if (waiting.length) void settleDueModels(engine, file).catch(() => {});
 }
 /** `provider`'s models asked of again on `engine`, with every other provider's: each folder it has
  * open closed where nothing's going on, the rest noted for once their work is done; then what
@@ -201,7 +206,7 @@ export async function refreshModels(engine: EngineRecord, provider: string, file
     if (error instanceof CantClose) return { status: 503, message: "This engine can't ask for its models again without restarting. Restart it in Settings › Engine." };
     throw error;
   }
-  keepDue(engine, waiting, file);
+  deferModels(engine, waiting, file);
   // (The folder it opens first, its own, opens afresh for it.)
   await learnCompatibility(engine).catch(() => {});
   return { status: 200, waiting };
