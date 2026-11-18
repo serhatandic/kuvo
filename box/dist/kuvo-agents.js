@@ -40534,7 +40534,8 @@ var init_folder_version = __esm(() => {
   init_files();
   init_format_version();
   steps = [
-    (_folder, importLegacy) => importLegacy?.()
+    (_folder, importLegacy) => importLegacy?.(),
+    () => {}
   ];
 });
 
@@ -42136,4 +42137,4 @@ if (!isMainThread && process.argv.includes("--insights-db-worker")) {
 } else {
   await init_main().then(() => ({}));
 }
-// Built from Packages/Box/src/agents 16b74952c023e1c5671d254a45d2df77eeba4565465212af833a51b51b7b4406
+// Built from Packages/Box/src/agents 380e4c958efe0dbfd5c8868ac52730dd671b37e2fb8d6a0041afaea823e4f40d

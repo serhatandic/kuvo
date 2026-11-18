@@ -6901,6 +6901,9 @@
             "literal": "setup"
            },
            {
+            "literal": "setup.handover"
+           },
+           {
             "literal": "setup.mainOnly"
            },
            {
@@ -7661,6 +7664,9 @@
            },
            {
             "literal": "setup"
+           },
+           {
+            "literal": "setup.handover"
            },
            {
             "literal": "setup.mainOnly"
@@ -10104,6 +10110,34 @@
        "list": "string"
       },
       "welcomed": "bool"
+     }
+    }
+   }
+  },
+  {
+   "route": "POST kuvo/setup/handover",
+   "feature": "setup.handover",
+   "answers": {
+    "200": {
+     "object": {
+      "primary": "string",
+      "epoch": "number"
+     }
+    },
+    "202": {
+     "object": {
+      "primary": "string",
+      "epoch": "number"
+     }
+    },
+    "409": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "503": {
+     "object": {
+      "message": "string"
      }
     }
    }

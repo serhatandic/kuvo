@@ -3314,7 +3314,7 @@ var init_noise = __esm(() => {
 // box/src/shared/documents.ts
 var DOC_KINDS;
 var init_documents = __esm(() => {
-  DOC_KINDS = ["peers", "phones", "personalities"];
+  DOC_KINDS = ["peers", "phones", "personalities", "leadership"];
 });
 
 // box/src/link/documents/format.ts
@@ -3547,7 +3547,13 @@ function followedSetup(link) {
 }
 function setupDoc(link) {
   const setup = followedSetup(link);
-  return setup?.role === "member" ? held(link.docs?.[docKey(setup.sign, "peers")]) : null;
+  if (setup?.role !== "member")
+    return null;
+  const doc = held(link.docs?.[docKey(setup.sign, "peers")]);
+  const word = doc && setupOf(doc.body);
+  if (!setup.managed || word && word.id === setup.id && word.epoch === setup.epoch && word.primary === setup.primary)
+    return doc;
+  return held(link?.leadership?.[setup.epoch]);
 }
 function lowerEpoch(link, doc) {
   const kept = link?.setup;
@@ -3598,17 +3604,25 @@ function readLink() {
     return { phones: [], ...link ?? {}, ...macLink.overlay };
   return link;
 }
-function writeLink(link) {
+function writeLink(link, durable = false) {
   const kept = IS_MAC ? Object.fromEntries(Object.entries(link).filter(([key]) => !MAC_OVERLAY.includes(key))) : link;
-  writeSecret(LINK_FILE, JSON.stringify(linkFormat.write(kept), null, 2));
+  const text = JSON.stringify(linkFormat.write(kept), null, 2);
+  if (durable) {
+    privateFolder(path16.dirname(LINK_FILE));
+    writeDurablePrivate(LINK_FILE, text);
+  } else
+    writeSecret(LINK_FILE, text);
   for (const then of written)
     then(link);
 }
-function updateLink(change) {
+function updateLink(change, { durable = false } = {}) {
   return locked(LOCK, () => {
-    const changed = change(readLink());
+    const current = readLink();
+    const managed = current?.setup?.managed;
+    const before = JSON.stringify(current?.setup ?? null);
+    const changed = change(current);
     if (changed)
-      writeLink(changed);
+      writeLink(changed, durable || before !== JSON.stringify(changed.setup ?? null) && Boolean(changed.setup?.managed || managed));
     return changed ?? null;
   }, { exclusive: true });
 }
@@ -3661,7 +3675,7 @@ function forgetOldMacs(link, keep, now = Date.now()) {
     link.macSeen[mac] ??= now;
   if (keep)
     link.macSeen[keep] = now;
-  const gone = macsOf(link).filter((mac) => mac !== keep && now - link.macSeen[mac] > MAC_GONE_AFTER);
+  const gone = macsOf(link).filter((mac) => mac !== keep && mac !== followedSetup(link)?.primary && now - link.macSeen[mac] > MAC_GONE_AFTER);
   if (!gone.length)
     return;
   for (const mac of gone)
@@ -3685,8 +3699,10 @@ function leaveMac(link, mac) {
     if (link[field])
       delete link[field][mac];
   link.phones = (link.phones ?? []).filter((phone) => !(phone.from === "mac" && phone.mac === mac));
-  if (link.setup?.role === "member" && link.setup.primary === mac)
+  if (link.setup?.role === "member" && link.setup.primary === mac) {
     delete link.setup;
+    delete link.leadership;
+  }
 }
 function takeLegacyPeers(link, mac, peers, at, moved = []) {
   if (macSign(link, mac) || !Array.isArray(peers) || typeof at !== "number")
@@ -3700,7 +3716,7 @@ function takeLegacyPeers(link, mac, peers, at, moved = []) {
 function macWords(link, only) {
   return macDocs(link).filter((each) => only === undefined || each.mac === only).map(({ mac, doc }) => {
     if (doc)
-      return { boxes: Array.isArray(doc.body.boxes) ? doc.body.boxes.slice(0, MOST_PEERS) : [], moved: doc.body.moved };
+      return { boxes: Array.isArray(doc.body.boxes) ? doc.body.boxes.slice(0, MOST_PEERS + 1) : [], moved: doc.body.moved };
     return link?.legacy?.[mac] ? { boxes: link.legacy[mac].peers ?? [], moved: link.legacy[mac].moved } : null;
   }).filter(Boolean);
 }
@@ -3768,7 +3784,7 @@ function peersOf(link) {
   return [...byKey.values()];
 }
 function namedBoxes(link, only) {
-  if (!link || IS_MAC)
+  if (!link || writesOwnPeers(link))
     return [];
   const byKey = new Map;
   for (const word of macWords(link, only))
@@ -3825,7 +3841,7 @@ var KEY, ADDRESS, macsOf = (link) => [...new Set([...Array.isArray(link?.macs) ?
     fs20.writeFileSync(`${ONLINE_FILE}.${process.pid}.tmp`, String(now), { mode: 384 });
     fs20.renameSync(`${ONLINE_FILE}.${process.pid}.tmp`, ONLINE_FILE);
   } catch {}
-}, MAC_GONE_AFTER, MOST_PEERS = 64, fitsPeer = (peer) => isObject(peer) && typeof peer.key === "string" && KEY.test(peer.key) && typeof peer.address === "string" && ADDRESS.test(peer.address) && (peer.kind === "mac" || peer.kind === "machine"), cleanPeer = ({ key, address, name, kind, id, sign }) => ({ key, address, kind, name: plainName(name).slice(0, 100), ...typeof id === "string" ? { id: id.slice(0, 200) } : {}, ...typeof sign === "string" && SIGN.test(sign) ? { sign } : {} }), cleanMoved = (moved) => (Array.isArray(moved) ? moved : []).filter((each) => isObject(each) && typeof each.session === "string" && /^ses_[A-Za-z0-9]{1,60}$/.test(each.session) && typeof each.key === "string" && KEY.test(each.key)).slice(0, 500).map(({ session, key }) => ({ session, key })), writesOwnPeers = (link) => IS_MAC || followedSetup(link)?.role === "primary", renamed = (link, peer) => {
+}, MAC_GONE_AFTER, MOST_PEERS = 64, fitsPeer = (peer) => isObject(peer) && typeof peer.key === "string" && KEY.test(peer.key) && typeof peer.address === "string" && ADDRESS.test(peer.address) && (peer.kind === "mac" || peer.kind === "machine"), cleanPeer = ({ key, address, name, kind, id, sign }) => ({ key, address, kind, name: plainName(name).slice(0, 100), ...typeof id === "string" ? { id: id.slice(0, 200) } : {}, ...typeof sign === "string" && SIGN.test(sign) ? { sign } : {} }), cleanMoved = (moved) => (Array.isArray(moved) ? moved : []).filter((each) => isObject(each) && typeof each.session === "string" && /^ses_[A-Za-z0-9]{1,60}$/.test(each.session) && typeof each.key === "string" && KEY.test(each.key)).slice(0, 500).map(({ session, key }) => ({ session, key })), writesOwnPeers = (link) => IS_MAC && !link?.setup?.managed || followedSetup(link)?.role === "primary", renamed = (link, peer) => {
   const name = link.peerNames?.[peer.key];
   return typeof name === "string" && name ? { ...peer, name } : peer;
 }, mailFormat, MAX_MAIL;
@@ -6866,6 +6882,7 @@ var init_features = __esm(() => {
     "settings.flows",
     "settings.vault",
     "setup",
+    "setup.handover",
     "setup.mainOnly",
     "setup.ready",
     "setup.welcomed",
@@ -12157,7 +12174,7 @@ function macName(link, mac) {
   return String(isObject(named) && typeof named.name === "string" && named.name || link?.macNames?.[mac] || "").slice(0, 100);
 }
 function memberHosts(link) {
-  if (IS_MAC || !mainElsewhere(link) || !link?.relay)
+  if (!mainElsewhere(link) || !link?.relay)
     return null;
   const setup = setupDoc(link);
   const docs = setup ? [setup] : link.setup.aside ? macsOf(link).map((mac) => macDoc(link, mac, "peers")).filter((doc) => doc !== null) : [];
@@ -12174,7 +12191,6 @@ function memberHosts(link) {
 }
 var named2 = (main) => main.name || "your main computer", pairElsewhere = (main) => ({ message: `Pair new phones from ${named2(main)}.`, primary: main.key }), addElsewhere = (main) => ({ message: `Add and remove computers from ${named2(main)}.`, primary: main.key });
 var init_main_only = __esm(() => {
-  init_home();
   init_known();
   init_record();
 });
@@ -12387,7 +12403,8 @@ function pairingLink(link) {
   return `kuvo-link://pair?${query}`;
 }
 var canIssuePairing = (phone) => phone.from !== "mac" || !phone.by && phone.kind !== "desktop", authorizePhone = (...args) => authorizePhonePairing(...args) !== false, PAIRING, MOST_AT_ONCE = 16, MOST_KEPT2 = 256, removedAlready = (link, key, pairing) => (link.removed ?? []).some((r) => r.key === key && r.pairing === pairing), MOST_BLOCKED = 64, vouchedWords = (link, key, name) => key && (link?.phones ?? []).some((each) => each.by === key) ? ` Kuvo Code’s app on ${name} is taken off your devices.` : "", vouchBlockOf = (link, key) => key ? (link?.vouchBlocked ?? []).find((each) => each.key === key) : undefined, fits2 = (entry, macs) => typeof entry?.key === "string" && KEY.test(entry.key) && !macs.includes(entry.key) && (entry.pairing == null || typeof entry.pairing === "string" && PAIRING.test(entry.pairing)), newPairing = () => crypto16.randomBytes(12).toString("base64url"), MOST_DESKTOPS = 16, hasVoucherSpace = (link, key) => (link.phones ?? []).filter((phone) => phone.key !== key && (phone.kind === "desktop" || phone.by)).length < MOST_DESKTOPS, ownPhones = (link) => ({
-  phones: (link.phones ?? []).filter((phone) => phone.from === "pair").map((phone) => ({ key: phone.key, name: phone.name ?? "", ...phone.address ? { address: phone.address } : {}, pairing: phone.pairing ?? "", ...phone.kind === "desktop" ? { kind: "desktop" } : {}, ...phone.by ? { by: phone.by } : {} })),
+  ...link.setup?.managed && link.setup.role === "primary" ? { epoch: link.setup.epoch } : {},
+  phones: (link.phones ?? []).filter((phone) => phone.from === "pair" && !phone.local).map((phone) => ({ key: phone.key, name: phone.name ?? "", ...phone.address ? { address: phone.address } : {}, pairing: phone.pairing ?? "", ...phone.kind === "desktop" ? { kind: "desktop" } : {}, ...phone.by ? { by: phone.by } : {} })),
   removed: (link.removed ?? []).map(({ key, pairing }) => ({ key, pairing }))
 }), PAIRING_MINUTES = 10, newPairingToken = (issuer = null) => ({ token: crypto16.randomBytes(16).toString("base64url"), expires: Date.now() + PAIRING_MINUTES * 60000, issuer }), phoneDocs = (link) => Object.values(link?.docs ?? {}).map(held).filter((doc) => doc?.kind === "phones");
 var init_phones = __esm(() => {
@@ -12398,6 +12415,90 @@ var init_phones = __esm(() => {
   init_known();
   init_state();
   PAIRING = /^[A-Za-z0-9_-]{0,32}$/;
+});
+
+// box/src/link/setup/leadership.ts
+function leadershipOf(link) {
+  const setup = link?.setup;
+  return setup?.managed ? held(link?.leadership?.[setup.epoch]) : null;
+}
+function takeLeadership(link, doc) {
+  const current = link.setup;
+  const next = setupOf(doc.body);
+  if (doc.kind !== "leadership" || !current || !next || next.id !== current.id || doc.n !== next.epoch || next.epoch !== current.epoch + 1 || doc.origin !== current.sign || doc.body.previous !== current.primary || next.primary === current.primary || !Array.isArray(doc.body.boxes) || !doc.body.boxes.every(fitsPeer))
+    return false;
+  const peers = doc.body.boxes.map(cleanPeer);
+  if (new Set(peers.map((peer) => peer.key)).size !== peers.length)
+    return false;
+  const primary = peers.find((peer) => peer.key === next.primary);
+  if (!primary?.sign || !peers.some((peer) => peer.key === current.primary && peer.sign === current.sign))
+    return false;
+  const own = ownKey(link);
+  if (!own)
+    return false;
+  const left = Array.isArray(doc.body.left) ? doc.body.left.filter((key) => typeof key === "string" && KEY.test(key)) : [];
+  if (!peers.some((peer) => peer.key === own)) {
+    if (!left.includes(own))
+      return false;
+    delete link.setup;
+    delete link.leadership;
+    link.macs = [];
+    delete link.mac;
+    delete link.macSigns;
+    link.phones = (link.phones ?? []).filter((phone) => phone.from === "pair");
+    return true;
+  }
+  const here = own === primary.key;
+  if (here && ownSign(link) !== primary.sign)
+    return false;
+  link.setup = { ...next, sign: primary.sign, role: here ? "primary" : "member", managed: true };
+  link.leadership = { ...link.leadership, [next.epoch]: doc.envelope };
+  link.macs = here ? [] : [primary.key];
+  link.macSigns = here ? {} : { [primary.key]: primary.sign };
+  link.macNames = here ? {} : { [primary.key]: primary.name };
+  link.macSeen = here ? {} : { [primary.key]: Date.now() };
+  if (here)
+    delete link.mac;
+  else
+    link.mac = primary.key;
+  if (link.docs)
+    delete link.docs[docKey(primary.sign, "phones")];
+  delete link.pairing;
+  delete link.appPairing;
+  const snapshot = isObject(doc.body.devices) ? doc.body.devices : {};
+  const local = (link.phones ?? []).filter((phone) => phone.from === "pair" && (current.role === "member" || phone.local)).map((phone) => ({ ...phone, local: true }));
+  const transferred = (Array.isArray(snapshot.phones) ? snapshot.phones : []).filter((phone) => fits2(phone, [primary.key])).map((phone) => ({ ...phone, pairing: phone.pairing ?? undefined, from: here ? "pair" : "mac", ...here ? {} : { mac: primary.key } }));
+  const transferredKeys = new Set(transferred.map((phone) => phone.key));
+  link.phones = [...transferred, ...local.filter((phone) => !transferredKeys.has(phone.key))];
+  for (const entry of Array.isArray(snapshot.removed) ? snapshot.removed : []) {
+    if (fits2(entry, []) && typeof entry.pairing === "string" && !link.removed?.some((each) => each.key === entry.key && each.pairing === entry.pairing)) {
+      (link.removed ??= []).push({ key: entry.key, pairing: entry.pairing });
+    }
+  }
+  if (here) {
+    link.macPeers = peers.filter((peer) => peer.key !== own);
+    link.macMoved = cleanMoved(doc.body.moved);
+    link.left = left;
+    link.removedHere = left;
+    delete link.peerNames;
+    link.vouchBlocked = Array.isArray(doc.body.vouchBlocked) ? doc.body.vouchBlocked : [];
+  } else {
+    delete link.macPeers;
+    delete link.macMoved;
+    delete link.left;
+    delete link.removedHere;
+    delete link.peerNames;
+    delete link.vouchBlocked;
+  }
+  foldPhones(link);
+  return true;
+}
+var PRIMARY_UNLINK = "Choose another primary first.";
+var init_leadership = __esm(() => {
+  init_format();
+  init_known();
+  init_phones();
+  init_record();
 });
 
 // box/src/shared/work-queue-owner.ts
@@ -21996,6 +22097,7 @@ function numbersOf(kept) {
     ...typeof kept.lost === "number" && Number.isFinite(kept.lost) ? { lost: kept.lost } : {},
     ...typeof kept.through === "string" ? { through: kept.through } : {},
     ...typeof kept.next === "number" && Number.isInteger(kept.next) && kept.next > 0 ? { next: kept.next } : {},
+    ...typeof kept.leadership === "string" ? { leadership: kept.leadership } : {},
     ...isObject(kept.given) ? { given: kept.given } : {},
     ...isObject(kept.granted) ? { granted: Object.fromEntries(Object.entries(kept.granted).map(([box, ranges]) => [box, cleanRanges(ranges)])) } : {},
     leases: cleanRanges(kept.leases),
@@ -22133,11 +22235,38 @@ function changeNumbers(work, file = NUMBERS_FILE) {
 function counterOf(kept) {
   return kept.next ?? Math.max(0, ...allItems().map((item) => item.number ?? 0)) + 1;
 }
+function installNumberAuthority(kept, link) {
+  const setup = followedSetup(link);
+  const numbers = leadershipOf(link)?.body.numbers;
+  if (setup?.role !== "primary" || !isObject(numbers))
+    return;
+  const stamp = `${setup.id}:${setup.epoch}`;
+  if (kept.leadership === stamp)
+    return;
+  const incoming = numbersOf(numbers);
+  kept.next = Math.max(counterOf(kept), incoming.next ?? 1, topOf(kept) + 1);
+  kept.given = incoming.given;
+  kept.granted = incoming.granted;
+  const me = setup.primary;
+  if (kept.granted?.[me]) {
+    kept.granted.self = kept.granted[me];
+    delete kept.granted[me];
+  }
+  kept.leadership = stamp;
+}
+function currentNumberAuthority(link, file) {
+  if (file !== NUMBERS_FILE)
+    return link;
+  const current = readLink();
+  return current?.setup?.managed ? current : link;
+}
 function notePrimary(kept, primary, link, now) {
   if ("away" in primary) {
     kept.primary ??= keyOf(primary, link);
     return;
   }
+  if ("self" in primary)
+    installNumberAuthority(kept, link);
   const key = keyOf(primary, link);
   const through = "peer" in primary ? primary.via?.key : undefined;
   if (through)
@@ -22173,7 +22302,10 @@ function movePast(top, { file = NUMBERS_FILE } = {}) {
 }
 function takeNumber(primary, { file = NUMBERS_FILE, now = Date.now(), link = readLink() } = {}) {
   return changeNumbers((kept) => {
-    notePrimary(kept, primary, link, now);
+    const current = currentNumberAuthority(link, file);
+    if ("self" in primary && current?.setup?.managed && current.setup.role !== "primary")
+      return null;
+    notePrimary(kept, primary, current, now);
     if ("self" in primary) {
       const number = counterOf(kept);
       kept.next = number + 1;
@@ -22227,7 +22359,10 @@ function claimNumbers(primary, numbers, { file = NUMBERS_FILE, now = Date.now(),
   if (!claims.length)
     return { granted: [] };
   return changeNumbers((kept) => {
-    notePrimary(kept, primary, link, now);
+    const current = currentNumberAuthority(link, file);
+    if ("self" in primary && current?.setup?.managed && current.setup.role !== "primary")
+      return { granted: null };
+    notePrimary(kept, primary, current, now);
     if ("self" in primary)
       return { granted: grantOn(kept, "self", claims) };
     const highest = claims[claims.length - 1][1];
@@ -22274,6 +22409,10 @@ function giveBlock(by, ask, { file = NUMBERS_FILE, now = Date.now() } = {}) {
   const top = typeof ask.top === "number" && Number.isInteger(ask.top) && ask.top > 0 && ask.top < MOST_NUMBER ? ask.top : 0;
   const id = ask.id;
   return changeNumbers((kept) => {
+    const link = file === NUMBERS_FILE ? readLink() : null;
+    if (link?.setup?.managed && link.setup.role !== "primary")
+      return null;
+    installNumberAuthority(kept, link);
     kept.primary ??= "self";
     if (top && !kept.given?.[id])
       kept.next = Math.max(counterOf(kept), cappedTop(top) + 1);
@@ -22510,6 +22649,7 @@ var init_numbers = __esm(() => {
   init_told();
   init_reach();
   init_record();
+  init_leadership();
   init_state();
   init_store();
   NUMBERS_FILE = path52.join(WORK_QUEUE2, "numbers.json");
@@ -22521,7 +22661,7 @@ var init_numbers = __esm(() => {
 
 // box/src/link/setup/settle.ts
 function settleSetup(link) {
-  if (IS_MAC)
+  if (IS_MAC || link.setup?.managed)
     return;
   const macs = macsOf(link);
   if (!macs.length) {
@@ -22546,6 +22686,8 @@ function settleSetup(link) {
       kept.id = own.setup.id;
       kept.epoch = own.setup.epoch;
       delete kept.aside;
+      if (own.doc?.body.managed === true)
+        kept.managed = true;
     } else if (doc && !ledSetup(doc))
       kept.aside = true;
     return;
@@ -22553,7 +22695,7 @@ function settleSetup(link) {
   const ranked = offers.length > 1 ? rankedPrimary(link) : null;
   const taken = offers.length === 1 ? offers[0] : offers.find((each) => ranked && ("peer" in ranked) && ranked.peer.key === each.mac);
   if (taken)
-    link.setup = { id: taken.setup.id, epoch: taken.setup.epoch, primary: taken.setup.primary, sign: taken.doc.origin, role: "member" };
+    link.setup = { id: taken.setup.id, epoch: taken.setup.epoch, primary: taken.setup.primary, sign: taken.doc.origin, role: "member", ...taken.doc.body.managed === true ? { managed: true } : {} };
 }
 function noteConflict(link, doc) {
   const setup = followedSetup(link);
@@ -22603,6 +22745,10 @@ var init_parts2 = __esm(() => {
 // box/src/link/documents/work.ts
 import crypto21 from "node:crypto";
 function takesFrom(link, origin, kind) {
+  if (kind === "leadership")
+    return Boolean(link.setup);
+  if (kind === "phones" && link.setup?.managed)
+    return origin === link.setup.sign;
   const macs = macsOf(link).map((mac) => macSign(link, mac)).filter(Boolean);
   const setup = followedSetup(link);
   if (kind === "peers")
@@ -22626,6 +22772,15 @@ function takenBy(link, to, origin, kind) {
 function takeDoc(link, envelope) {
   const doc = readDoc(envelope);
   if (!doc)
+    return null;
+  if (doc.kind === "leadership")
+    return takeLeadership(link, doc) ? doc : null;
+  if (doc.kind === "peers" && link.setup?.managed) {
+    const setup = setupOf(doc.body);
+    if (!setup || setup.id !== link.setup.id || setup.epoch !== link.setup.epoch || setup.primary !== link.setup.primary || doc.origin !== link.setup.sign)
+      return null;
+  }
+  if (doc.kind === "phones" && link.setup?.managed && doc.origin === link.setup.sign && doc.body.epoch !== link.setup.epoch)
     return null;
   if (!takesFrom(link, doc.origin, doc.kind)) {
     if (doc.kind === "peers")
@@ -22691,9 +22846,11 @@ function ownDocs(state) {
     if (peers)
       docs.peers = peers;
   }
-  const phones = ownDoc(state.link, "phones", ownPhones(state.link));
-  if (phones)
-    docs.phones = phones;
+  if (!state.link.setup?.managed || state.link.setup.role === "primary") {
+    const phones = ownDoc(state.link, "phones", ownPhones(state.link));
+    if (phones)
+      docs.phones = phones;
+  }
   const library = mergePersonalities(state.library);
   if (Buffer.byteLength(JSON.stringify(library)) <= MOST_DOC - 4096) {
     const personalities = ownDoc(state.link, "personalities", library);
@@ -22713,15 +22870,15 @@ function primaryPeersBody(link) {
   const setup = followedSetup(link);
   const leads = setup?.role === "primary" && setup.primary === me.key && setup.sign === me.sign;
   return {
-    boxes: [me, ...peers.map((peer) => ({ ...peer, kind: "machine" }))],
+    boxes: [me, ...peers.map((peer) => ({ ...peer, kind: setup?.managed ? peer.kind : "machine" }))],
     moved: cleanMoved(link.macMoved),
     left: (Array.isArray(link.left) ? link.left : []).filter((key) => !current.has(key)),
-    ...leads && setup ? { setup: { id: setup.id, epoch: setup.epoch, primary: setup.primary } } : {}
+    ...leads && setup ? { setup: { id: setup.id, epoch: setup.epoch, primary: setup.primary }, ...setup.managed ? { managed: true } : {} } : {}
   };
 }
 function digestOf(link) {
   const have = [];
-  for (const envelope of Object.values(link?.docs ?? {})) {
+  for (const envelope of [...Object.values(link?.leadership ?? {}), ...Object.values(link?.docs ?? {})]) {
     const doc = held(envelope);
     if (doc)
       have.push([doc.origin, doc.kind, doc.n, doc.h]);
@@ -22779,7 +22936,13 @@ function docsWork(state, sender, docs, { stay = null } = {}) {
       given.push(whole);
   }
   const took = [];
-  for (const kind of DOC_KINDS) {
+  const transitions = given.filter((envelope) => held(envelope)?.kind === "leadership").sort((a, b) => held(a).n - held(b).n);
+  for (const envelope of transitions) {
+    const doc = takeDoc(link, envelope);
+    if (doc)
+      took.push(doc);
+  }
+  for (const kind of ownDocumentKinds) {
     for (const envelope of given) {
       const peeked = held(envelope);
       if (peeked?.kind !== kind)
@@ -22808,11 +22971,12 @@ function docsWork(state, sender, docs, { stay = null } = {}) {
   if (personalities.length)
     state.library = mergePersonalities(state.library, ...personalities);
   let ask = false;
+  const leadershipKey = (origin, n) => `${docKey(origin, "leadership")} ${n}`;
   if (Array.isArray(docs?.have)) {
     const theirs = new Map;
     for (const entry of docs.have.slice(0, 512)) {
       if (Array.isArray(entry) && typeof entry[0] === "string" && DOC_KINDS.includes(entry[1]) && Number.isSafeInteger(entry[2]))
-        theirs.set(docKey(entry[0], entry[1]), { n: entry[2], h: String(entry[3] ?? "") });
+        theirs.set(entry[1] === "leadership" ? leadershipKey(entry[0], entry[2]) : docKey(entry[0], entry[1]), { n: entry[2], h: String(entry[3] ?? "") });
     }
     const self = ownSign(link);
     for (const kind of ownKinds(link)) {
@@ -22825,6 +22989,13 @@ function docsWork(state, sender, docs, { stay = null } = {}) {
       const there = theirs.get(key);
       return !there || there.n < n || there.n === n && there.h > h;
     };
+    if (docPeers(link).some((peer) => peer.key === sender.key)) {
+      for (const envelope of Object.values(link.leadership ?? {})) {
+        const doc = held(envelope);
+        if (doc && !theirs.has(leadershipKey(doc.origin, doc.n)))
+          to(sender, (docs) => docs.give.push(envelope));
+      }
+    }
     for (const envelope of Object.values(link.docs ?? {})) {
       const doc = held(envelope);
       if (doc && behind(docKey(doc.origin, doc.kind), doc.n, doc.h) && takenBy(link, sender.key, doc.origin, doc.kind))
@@ -22833,6 +23004,11 @@ function docsWork(state, sender, docs, { stay = null } = {}) {
     if (!docs.reply) {
       for (const [key, there] of theirs) {
         const [origin, kind] = key.split(" ");
+        if (kind === "leadership") {
+          if (link.setup && there.n > link.setup.epoch)
+            ask = true;
+          continue;
+        }
         if (origin === self || kind === "personalities" && origin !== senderSign || !takesFrom(link, origin, kind))
           continue;
         const have = kind === "personalities" ? link.views?.[origin] : held(link.docs?.[key]);
@@ -22847,7 +23023,7 @@ function docsWork(state, sender, docs, { stay = null } = {}) {
   const mine = ownSign(link);
   for (const doc of took.filter((doc) => doc.kind !== "personalities" && !doc.mine)) {
     for (const peer of peers) {
-      if (peer.key !== sender.key && peer.sign !== doc.origin && takenBy(link, peer.key, doc.origin, doc.kind))
+      if (peer.key !== sender.key && (doc.kind === "leadership" || peer.sign !== doc.origin && takenBy(link, peer.key, doc.origin, doc.kind)))
         to(peer, (docs) => docs.give.push(doc.envelope));
     }
   }
@@ -22889,6 +23065,9 @@ function greetWork(state) {
 }
 function changedWork(state, tell = false) {
   const made = Object.values(ownDocs(state)).filter((each) => each.changed).map((each) => each.envelope);
+  const leadership = leadershipOf(state.link);
+  if (leadership)
+    made.unshift(leadership.envelope);
   const mine = ownSign(state.link);
   const have = tell ? digestOf(state.link) : null;
   return {
@@ -22908,7 +23087,7 @@ function currentDigest() {
   });
   return have;
 }
-var docPeers = (link) => peersOf(link).filter((peer) => typeof peer.sign === "string"), ownKinds = (link) => writesOwnPeers(link) ? DOC_KINDS : ["phones", "personalities"], dedupe = (envelopes) => [...new Map(envelopes.map((envelope) => [envelope.d, envelope])).values()];
+var docPeers = (link) => peersOf(link).filter((peer) => typeof peer.sign === "string"), ownDocumentKinds, ownKinds = (link) => writesOwnPeers(link) ? ownDocumentKinds : link.setup?.managed ? ["personalities"] : ["phones", "personalities"], dedupe = (envelopes) => [...new Map(envelopes.map((envelope) => [envelope.d, envelope])).values()];
 var init_work2 = __esm(() => {
   init_documents();
   init_keys2();
@@ -22917,10 +23096,12 @@ var init_work2 = __esm(() => {
   init_library();
   init_phones();
   init_record();
+  init_leadership();
   init_settle();
   init_state();
   init_format();
   init_parts2();
+  ownDocumentKinds = ["peers", "phones", "personalities"];
 });
 
 // box/src/link/setup/welcomed.ts
@@ -22966,11 +23147,13 @@ function setupView(link) {
     return { setup: null, epoch: null, primary: null, you: { key: own, role: null }, computers: [], startsFromOthers: switched, heldBy: [], welcomed };
   const boxes = setup.role === "member" ? Array.isArray(setupDoc(link)?.body.boxes) ? setupDoc(link).body.boxes : [] : primaryPeersBody(link).boxes;
   const computers = [];
-  for (const box of boxes.slice(0, 64)) {
+  for (const box of boxes.slice(0, MOST_PEERS + 1)) {
     if (!isObject(box) || typeof box.key !== "string" || box.kind !== "mac" && box.kind !== "machine" || computers.some((each) => each.key === box.key))
       continue;
     computers.push({ key: box.key, name: String(box.name ?? "").slice(0, 100), kind: box.kind, role: box.key === setup.primary ? "primary" : "member", app: box.kind === "mac" });
   }
+  if (setup.managed)
+    computers.sort((a, b) => Number(b.role === "primary") - Number(a.role === "primary"));
   const main = computers.find((each) => each.key === setup.primary);
   return {
     setup: setup.id,
@@ -26317,7 +26500,7 @@ function macNeeded(link, now = Date.now()) {
   const config = macLink.config;
   if (!config)
     return false;
-  if (config.machines)
+  if (config.machines || link?.setup?.managed && peersOf(link).length)
     return true;
   const pairing = ["pairing", "appPairing"].some((slot) => link?.[slot] && now < link[slot].expires);
   return Boolean(config.phones && ((link?.phones ?? []).length || pairing));
@@ -26450,7 +26633,7 @@ function sendGone(gone) {
     return [];
   let envelope = null;
   const link = updateLink((link) => {
-    const made = link?.sign ? ownDoc(link, "peers", primaryPeersBody(link)) : null;
+    const made = link?.sign && writesOwnPeers(link) ? ownDoc(link, "peers", primaryPeersBody(link)) : null;
     envelope = made?.envelope ?? null;
     return made?.changed ? link : null;
   }) ?? readLink();
@@ -30309,6 +30492,8 @@ function noteKeyNow(link) {
 function settleOwnSetup(link, now = Date.now()) {
   noteKeyNow(link);
   settleSetup(link);
+  if (link.setup?.managed && followedSetup(link))
+    return;
   const own = ownKey(link);
   const sign = ownSign(link);
   if (!own || !sign || !IS_MAC && macsOf(link).length)
@@ -40152,7 +40337,7 @@ async function takeAct(sender, given, reply, run, now = Date.now()) {
     return answer(mine.answer);
   }
   const kept = changes ? readDone(now).get(key) : undefined;
-  const redo = kept !== undefined && kept.answer === null && act.area !== undefined;
+  const redo = kept !== undefined && kept.answer === null && act.area !== undefined && act.area !== "setup";
   if (kept && !redo) {
     const value = kept.answer ?? { status: 409, value: { message: `${here} stopped while it was doing this, so it can't tell whether it was done. Look again in a moment.` } };
     did.set(key, { until: kept.until, answer: value, answered: now });
@@ -40180,7 +40365,7 @@ function forgetActs() {
   did.clear();
   sent2.clear();
 }
-var FORWARD_FEATURE = "work-queue.forward", ATTACHMENTS = "work-queue.attachments", takesForwarded = (key, feature = FORWARD_FEATURE) => (readPeerAgents()[key]?.features ?? []).includes(feature), AREA_FEATURES, FORWARDS, forwardFormat, answerFormat, doneFormat, DONE_FILE, ID2, LEFT, forwardTiming, waitFor = (act) => act.action === "file" ? forwardTiming.file : forwardTiming.wait, AGAIN_AFTER = 5000, answerAgainAfter = (act) => act.action === "file" ? 60000 : 4000, ACT_MEMORY = 600000, AHEAD = 60000, MOST_REMEMBERED = 2000, forwardsSoon, left = (id) => path114.join(FORWARDS, `${id}.json`), answerOf2 = (id) => path114.join(FORWARDS, `${id}.answer.json`), read2 = (format, file) => {
+var FORWARD_FEATURE = "work-queue.forward", ATTACHMENTS = "work-queue.attachments", takesForwarded = (key, feature = FORWARD_FEATURE) => (readPeerAgents()[key]?.features ?? []).includes(feature), AREA_FEATURES, FORWARDS, forwardFormat, answerFormat, doneFormat, DONE_FILE, ID2, LEFT, forwardTiming, waitFor = (act) => act.action === "file" ? forwardTiming.file : act.area === "setup" && act.method === "POST" ? 2 * forwardTiming.wait + AGAIN_AFTER : forwardTiming.wait, AGAIN_AFTER = 5000, answerAgainAfter = (act) => act.action === "file" ? 60000 : 4000, ACT_MEMORY = 600000, AHEAD = 60000, MOST_REMEMBERED = 2000, forwardsSoon, left = (id) => path114.join(FORWARDS, `${id}.json`), answerOf2 = (id) => path114.join(FORWARDS, `${id}.answer.json`), read2 = (format, file) => {
   try {
     const value = JSON.parse(fs112.readFileSync(file, "utf8"));
     return isObject(value) ? format.read(value) : null;
@@ -40197,11 +40382,12 @@ var FORWARD_FEATURE = "work-queue.forward", ATTACHMENTS = "work-queue.attachment
   const { method, action, name } = given;
   const fits = method === "GET" && action === undefined || method === "DELETE" && action === undefined || method === "POST" && action === "restore" || method === "PATCH" && action === undefined || method === "GET" && action === "file" && typeof name === "string" && name.length > 0 && name.length <= 300;
   const devices = given.area === "devices" && (method === "POST" || method === "DELETE") && action === undefined;
-  if (!fits && !devices)
+  const setup = given.area === "setup" && (method === "GET" || method === "POST") && action === undefined;
+  if (!fits && !devices && !setup)
     return null;
-  if (given.area !== undefined && !devices && !(given.area === "computers" && (method === "PATCH" || method === "DELETE") && action === undefined))
+  if (given.area !== undefined && !devices && !setup && !(given.area === "computers" && (method === "PATCH" || method === "DELETE") && action === undefined))
     return null;
-  return { id: given.id, ...given.area === "computers" || given.area === "devices" ? { area: given.area } : {}, method, item: given.item, ...action ? { action } : {}, ...action === "file" ? { name } : {}, ...isObject(given.body) ? { body: given.body } : {}, at: given.at };
+  return { id: given.id, ...given.area === "computers" || devices || setup ? { area: given.area } : {}, method, item: given.item, ...action ? { action } : {}, ...action === "file" ? { name } : {}, ...isObject(given.body) ? { body: given.body } : {}, at: given.at };
 };
 var init_forward = __esm(() => {
   init_format_version();
@@ -40218,7 +40404,7 @@ var init_forward = __esm(() => {
   init_parts3();
   init_store();
   init_told();
-  AREA_FEATURES = { computers: "computers.manage", devices: "devices.pair" };
+  AREA_FEATURES = { computers: "computers.manage", devices: "devices.pair", setup: "setup.handover" };
   FORWARDS = path114.join(WORK_QUEUE2, "forward");
   forwardFormat = additiveObjectFormat("Work Queue forwarded request");
   answerFormat = additiveObjectFormat("Work Queue forwarded answer");
@@ -40509,7 +40695,7 @@ function takePhoneSync(sender, given, host) {
   }
   if (!peersOf(link).some((peer) => peer.key === sender.key))
     return;
-  const self = followedSetup(link)?.role === "primary" || IS_MAC ? ownSign(link) : null;
+  const self = mainElsewhere(link) ? null : followedSetup(link)?.role === "primary" || IS_MAC ? ownSign(link) : null;
   const origin = given.origin === undefined ? self : given.origin;
   if (typeof origin !== "string" || !SIGN.test(origin))
     return;
@@ -40519,7 +40705,7 @@ function takePhoneSync(sender, given, host) {
   if (origin === self) {
     envelope = undefined;
     const changed = updateLink((current) => {
-      if (!current || ownSign(current) !== origin || !peersOf(current).some((peer) => peer.key === sender.key))
+      if (!current || mainElsewhere(current) || ownSign(current) !== origin || !peersOf(current).some((peer) => peer.key === sender.key))
         return null;
       envelope = ownDoc(current, "phones", ownPhones(current))?.envelope;
       membership = ownDoc(current, "peers", primaryPeersBody(current))?.envelope;
@@ -40809,7 +40995,7 @@ async function pairDeviceFromHere(given, signal) {
 var DEVICES_FEATURE = "devices.pair", namedDevice = (device) => device || "Kuvo Code's app", blockedVouch = (device, computer, here) => ({
   message: `${namedDevice(device)} on ${computer} was removed from your devices, so ${computer} can't add Kuvo Code's app by itself now. Allow it again from Kuvo Code on ${here} or another computer's app: Computers, ${computer}.`,
   reason: "blocked"
-}), blockedWords = (device, computer) => `${namedDevice(device)} was removed from your devices. ${computer} can't add Kuvo Code's app again until you allow it.`, MOST_NAME2 = 100, answer3 = (status, value) => ({ status, value }), REMOVED2, NOT_GIVEN, switchOff = () => IS_MAC && !macLink.config?.phones, switchOffWords = () => ({ message: `“Let my devices connect” is off on ${ownName()}.` }), ownMachines = (link) => new Set(peersOf(link).filter((peer) => peer.kind === "machine" && peer.sign).map((peer) => peer.key));
+}), blockedWords = (device, computer) => `${namedDevice(device)} was removed from your devices. ${computer} can't add Kuvo Code's app again until you allow it.`, MOST_NAME2 = 100, answer3 = (status, value) => ({ status, value }), REMOVED2, NOT_GIVEN, switchOff = () => IS_MAC && !macLink.config?.phones, switchOffWords = () => ({ message: `“Let my devices connect” is off on ${ownName()}.` }), ownMachines = (link) => new Set(peersOf(link).filter((peer) => (link.setup?.managed || peer.kind === "machine") && peer.sign).map((peer) => peer.key));
 var init_devices = __esm(() => {
   init_text();
   init_changed();
@@ -40826,6 +41012,114 @@ var init_devices = __esm(() => {
   init_known();
   REMOVED2 = { message: "This app was removed from your devices.", reason: "removed" };
   NOT_GIVEN = { message: "Send the app's key (key), its name (name, up to 100 characters) and what it is (kind: desktop)." };
+});
+
+// box/src/link/setup/handover.ts
+async function handover(given, signal) {
+  if (!isObject(given) || typeof given.primary !== "string" || !KEY.test(given.primary))
+    return answer4(400, "Choose a computer by its key as primary.");
+  const link = readLink();
+  const setup = followedSetup(link);
+  if (!setup)
+    return answer4(409, "This computer doesn't have an active setup.");
+  if (setup.primary === given.primary)
+    return { status: 200, value: { primary: setup.primary, epoch: setup.epoch } };
+  if (given.epoch !== undefined && given.epoch !== setup.epoch)
+    return answer4(409, "The primary changed. Refresh your setup and try again.");
+  const position = { setup: setup.id, epoch: setup.epoch };
+  if (setup.role === "primary")
+    return handoverHere(given.primary, position);
+  const primary = peersOf(link).find((peer) => peer.key === setup.primary);
+  if (!primary)
+    return answer4(503, "This computer can't reach your primary.");
+  const result = await forwardAct(primary, "Changing the primary", { area: "setup", method: "POST", item: given.primary, body: position }, signal, link);
+  return "refused" in result ? answer4(result.status, result.refused) : result;
+}
+async function handoverHere(target, position, requester) {
+  const before = readLink();
+  const setup = followedSetup(before);
+  if (setup?.role !== "primary" || setup.id !== position.setup || setup.epoch !== position.epoch)
+    return answer4(409, "The primary changed. Refresh your setup and try again.");
+  const peers = peersOf(before);
+  const next = peers.find((peer) => peer.key === target);
+  if (!next?.sign)
+    return answer4(404, "Choose a member of this setup.");
+  const older = peers.find((peer) => !peer.sign || !takesForwarded(peer.key, HANDOVER_FEATURE));
+  if (older)
+    return answer4(409, `${older.name || "A member"} needs to connect with a newer Kuvo Code before you can change the primary.`);
+  const ready = await forwardAct(next, "Changing the primary", { area: "setup", method: "GET", item: target, body: position }, undefined, before, Date.now(), { backgroundRelay: true });
+  if ("refused" in ready)
+    return answer4(ready.status, ready.refused);
+  if (ready.status !== 200)
+    return ready;
+  if (!isObject(ready.value) || ready.value.sign !== next.sign)
+    return answer4(409, "The chosen computer's signing key changed. Refresh your setup and try again.");
+  const epoch = setup.epoch + 1;
+  const changed = changeNumbers((numbers) => updateLink((link) => {
+    const current = followedSetup(link);
+    if (!link?.sign || current?.role !== "primary" || current.sign !== ownSign(link) || current.id !== setup.id || current.epoch !== setup.epoch)
+      return null;
+    const members = peersOf(link);
+    if (requester && !members.some((peer) => peer.key === requester))
+      return null;
+    if (!members.some((peer) => peer.key === target && peer.sign === next.sign) || members.some((peer) => !peer.sign || !takesForwarded(peer.key, HANDOVER_FEATURE)))
+      return null;
+    installNumberAuthority(numbers, link);
+    const granted = { ...numbers.granted };
+    if (granted.self) {
+      granted[current.primary] = granted.self;
+      delete granted.self;
+    }
+    const { boxes, left, moved } = primaryPeersBody(link);
+    const envelope = signDoc(link.sign, "leadership", epoch, {
+      setup: { id: current.id, epoch, primary: target },
+      previous: current.primary,
+      boxes,
+      left,
+      moved,
+      devices: ownPhones(link),
+      vouchBlocked: link.vouchBlocked ?? [],
+      numbers: { next: topOf(numbers) + 1, given: numbers.given, granted }
+    });
+    const doc = readDoc(envelope);
+    if (!doc || !takeLeadership(link, doc))
+      return null;
+    pruneDocs(link);
+    return link;
+  }, { durable: true }));
+  if (!changed)
+    return answer4(409, "The setup changed or its state couldn't be handed over. Refresh your setup and try again.");
+  noteDocsChanged();
+  try {
+    writeCard();
+  } catch {}
+  return { status: 202, value: { primary: target, epoch } };
+}
+async function setupAct(sender, act) {
+  if (!act.body)
+    return answer4(400, "Send the setup and epoch.");
+  if (act.method === "POST")
+    return handoverHere(act.item, act.body, sender.key);
+  const link = readLink();
+  const setup = followedSetup(link);
+  if (!link || setup?.role !== "member" || setup.primary !== sender.key || setup.id !== act.body.setup || setup.epoch !== act.body.epoch || ownKey(link) !== act.item || !ownSign(link)) {
+    return answer4(409, "The chosen computer hasn't caught up with the current primary yet.");
+  }
+  return { status: 200, value: { sign: ownSign(link) } };
+}
+var HANDOVER_FEATURE = "setup.handover", answer4 = (status, message) => ({ status, value: { message } });
+var init_handover = __esm(() => {
+  init_changed();
+  init_format();
+  init_work2();
+  init_known();
+  init_phones();
+  init_state();
+  init_forward();
+  init_numbers();
+  init_card();
+  init_leadership();
+  init_record();
 });
 
 // box/src/link/rehome/moved.ts
@@ -40860,7 +41154,7 @@ function setMacPeers(link, given, rejoined) {
     return { link: null, gone: [] };
   const removedHere = Array.isArray(link.removedHere) ? link.removedHere : [];
   const keeps = (key) => key === rejoined || !removedHere.includes(key);
-  const now = given.peers.slice(0, MOST_PEERS).map((peer) => ({ ...peer, kind: "machine" })).filter((peer) => fitsPeer(peer) && typeof peer.sign === "string" && SIGN.test(peer.sign) && keeps(peer.key)).map(cleanPeer);
+  const now = given.peers.slice(0, MOST_PEERS).map((peer) => ({ ...peer, kind: link.setup?.managed && peer?.kind === "mac" ? "mac" : "machine" })).filter((peer) => fitsPeer(peer) && typeof peer.sign === "string" && SIGN.test(peer.sign) && keeps(peer.key)).map(cleanPeer);
   const skipped = given.peers.slice(0, MOST_PEERS).filter((peer) => !(isObject(peer) && typeof peer.key === "string" && !keeps(peer.key))).length - now.length;
   if (skipped)
     console.error(`${skipped} of this Mac's machines weren't records the box could take, and were left out.`);
@@ -40984,12 +41278,18 @@ async function* macLinkRoute(route, request, signal) {
     case "kuvo/link/peers": {
       if (method !== "PUT")
         return yield* json(405, {});
-      let gone = [];
+      let gone = [], refused = false;
       const changed = updateLink((link) => {
+        if (link?.setup?.managed || mainElsewhere(link)) {
+          refused = true;
+          return null;
+        }
         const made = setMacPeers(link ?? { phones: [] }, parsed(request.body));
         gone = made.gone;
         return made.link;
       });
+      if (refused)
+        return yield* json(409, { message: "Manage setup membership from Computers." });
       if (!changed)
         return yield* json(400, { message: "Send {peers: [{key, sign, address, name, id}], moved}." });
       macDocsChanged({ closeRemoved: changed });
@@ -41152,7 +41452,7 @@ function writtenMachines(link, writer) {
   if (!writer)
     return new Set;
   const boxes = writer.here ? peersOf(link) : namedBoxes(link, writer.key);
-  return new Set(boxes.filter((box) => box.kind === "machine").map((box) => box.key));
+  return new Set(boxes.filter((box) => box.kind === "machine" || link?.setup?.managed).map((box) => box.key));
 }
 function writerFacts(link = readLink()) {
   const writer = writerOf(link);
@@ -41169,7 +41469,9 @@ function writerFacts(link = readLink()) {
 function whyNot(computer, what, here, link = readLink(), facts = writerFacts(link)) {
   const name = computer.name || "This computer";
   const { writer } = facts;
-  if (computer.kind === "mac")
+  if (what === "remove" && link?.setup && computer.key === link.setup.primary)
+    return PRIMARY_UNLINK;
+  if (computer.kind === "mac" && (what === "rename" || !link?.setup?.managed))
     return what === "rename" ? `${name} is a Mac: it goes by the name it has there.` : `A Mac can't be removed from here.`;
   if (what === "remove" && computer.here)
     return `${here} can't remove itself: remove it from another of your computers.`;
@@ -41214,7 +41516,7 @@ function givenName(name) {
 function renameHere(key, name) {
   let found = false;
   updateLink((link) => {
-    if (!link || !peersOf(link).some((peer) => peer.key === key))
+    if (!link || mainElsewhere(link) || !peersOf(link).some((peer) => peer.key === key))
       return null;
     found = true;
     if (link.peerNames?.[key] === name)
@@ -41223,17 +41525,22 @@ function renameHere(key, name) {
     return link;
   });
   if (!found)
-    return answer4(404, { message: `That isn't one of ${ownName()}'s machines.` });
+    return answer5(404, { message: `That isn't one of ${ownName()}'s machines.` });
   macDocsChanged();
-  return answer4(200, { name });
+  return answer5(200, { name });
 }
 function removeHere(key, pendingOnly = false) {
+  let blocked = null;
   let gone = [];
   let already = false;
   let needsCleanup = false;
   const changed = updateLink((link) => {
     if (!link)
       return null;
+    if (link.setup?.primary === key || mainElsewhere(link)) {
+      blocked = link.setup?.primary === key ? PRIMARY_UNLINK : "Only the primary can remove a computer.";
+      return null;
+    }
     const peer = peersOf(link).find((each) => each.key === key);
     if (pendingOnly && (peer || !link.pendingMachineCleanup?.[key]))
       return null;
@@ -41252,13 +41559,15 @@ function removeHere(key, pendingOnly = false) {
       made.link.pendingMachineCleanup = { ...made.link.pendingMachineCleanup, [key]: peer.id };
     return made.link;
   });
+  if (blocked)
+    return answer5(409, { message: blocked });
   if (!gone.length && !already)
-    return answer4(404, { message: `That isn't one of ${ownName()}'s machines.` });
+    return answer5(404, { message: `That isn't one of ${ownName()}'s machines.` });
   macDocsChanged({ closeRemoved: changed });
   tellGone(gone);
   if (needsCleanup && !cleanRemovalList(key))
-    return answer4(503, { message: "The computer’s access was removed, but the saved machines list couldn’t be updated." });
-  return answer4(200, {});
+    return answer5(503, { message: "The computer’s access was removed, but the saved machines list couldn’t be updated." });
+  return answer5(200, {});
 }
 function cleanRemovalList(key) {
   let saved = true;
@@ -41298,22 +41607,24 @@ function forgetSaved(id) {
 async function writerAct(sender, act) {
   const link = readLink();
   const writer = writerOf(link);
+  if (act.method === "DELETE" && act.item === link?.setup?.primary)
+    return answer5(409, { message: PRIMARY_UNLINK });
   if (!writer?.here)
-    return answer4(409, { message: `${ownName()} doesn't keep your machines' records.` });
+    return answer5(409, { message: `${ownName()} doesn't keep your machines' records.` });
   const target = peersOf(link).find((peer) => peer.key === act.item);
   if (target && act.method === "DELETE" && oldAppAttached())
-    return answer4(409, { message: oldAppWords(ownName(), target.name) });
+    return answer5(409, { message: oldAppWords(ownName(), target.name) });
   if (act.method === "PATCH") {
     const name = givenName(act.body?.name);
     if (!name)
-      return answer4(400, { message: `Give it a name of up to ${MOST_NAME3} characters.` });
+      return answer5(400, { message: `Give it a name of up to ${MOST_NAME3} characters.` });
     return renameHere(act.item, name);
   }
   if (act.method === "DELETE")
     return removeHere(act.item, act.body?.cleanup === true);
-  return answer4(405, { message: "Rename or remove." });
+  return answer5(405, { message: "Rename or remove." });
 }
-var MANAGE_FEATURE = "computers.manage", MOST_NAME3 = 100, OLD_APP_GRACE = 60000, oldAppAttached = (now = Date.now()) => IS_MAC && !movedFromOldApp() && (macLink.statusFollowers.size > 0 || now - (macLink.appSaid ?? -Infinity) < OLD_APP_GRACE), oldAppWords = (mac, name) => `Quit the old Kuvo Code app on ${mac} first: it keeps its own list of machines, and would add ${name} back.`, answer4 = (status, value) => ({ status, value });
+var MANAGE_FEATURE = "computers.manage", MOST_NAME3 = 100, OLD_APP_GRACE = 60000, oldAppAttached = (now = Date.now()) => IS_MAC && !movedFromOldApp() && (macLink.statusFollowers.size > 0 || now - (macLink.appSaid ?? -Infinity) < OLD_APP_GRACE), oldAppWords = (mac, name) => `Quit the old Kuvo Code app on ${mac} first: it keeps its own list of machines, and would add ${name} back.`, answer5 = (status, value) => ({ status, value });
 var init_manage = __esm(() => {
   init_text();
   init_exchange();
@@ -41322,6 +41633,7 @@ var init_manage = __esm(() => {
   init_link();
   init_machines();
   init_routes2();
+  init_leadership();
   init_record();
   init_main_only();
   init_phones();
@@ -41510,7 +41822,7 @@ async function takeWorkQueueMail(sender, given, host, places) {
   if (isObject(whole.acted))
     takeActed(sender, whole.acted);
   if (isObject(whole.act))
-    await takeAct(sender, whole.act, reply, (act) => act.area === "computers" ? writerAct(sender, act) : act.area === "devices" ? deviceAct(sender, act) : actForPeer(act, places().targets)).catch(() => {});
+    await takeAct(sender, whole.act, reply, (act) => act.area === "computers" ? writerAct(sender, act) : act.area === "devices" ? deviceAct(sender, act) : act.area === "setup" ? setupAct(sender, act) : actForPeer(act, places().targets)).catch(() => {});
 }
 function itemsElsewhere(owner, link = readLink(), here, deleted, { asTold = false, linked = false } = {}) {
   if (!here || !deleted) {
@@ -41663,6 +41975,7 @@ var init_across = __esm(() => {
   init_acts();
   init_forward();
   init_devices();
+  init_handover();
   init_manage();
   init_parts3();
   init_numbers();
@@ -50348,8 +50661,13 @@ function heldAround(now) {
   if (!mine)
     return [];
   const told = readPeerAgents();
-  const peers = peersOf(readLink());
-  return peers.map(({ key }) => ({ peer: key, version: told[key]?.computer?.release })).filter((each) => typeof each.version === "string" && newerVersion(each.version, mine)).filter((each) => now - (tried.get(`${each.peer} ${each.version}`) ?? -Infinity) >= TRIED_FOR).sort((a, b) => newerVersion(a.version, b.version) ? -1 : newerVersion(b.version, a.version) ? 1 : a.peer < b.peer ? -1 : a.peer > b.peer ? 1 : 0);
+  const link = readLink();
+  const peers = peersOf(link);
+  return peers.filter((peer) => releaseAuthority(peer.key, link)).map(({ key }) => ({ peer: key, version: told[key]?.computer?.release })).filter((each) => typeof each.version === "string" && newerVersion(each.version, mine)).filter((each) => now - (tried.get(`${each.peer} ${each.version}`) ?? -Infinity) >= TRIED_FOR).sort((a, b) => newerVersion(a.version, b.version) ? -1 : newerVersion(b.version, a.version) ? 1 : a.peer < b.peer ? -1 : a.peer > b.peer ? 1 : 0);
+}
+function releaseAuthority(peer, link = readLink()) {
+  const setup = followedSetup(link);
+  return !setup?.managed || setup.role === "member" && setup.primary === peer;
 }
 function repairPull(options, now) {
   const mine = boxVersion();
@@ -50385,6 +50703,8 @@ function followPeers(asked = {}) {
     }
     endPull(null);
   }
+  if (pull && !pull.forRepair && !releaseAuthority(pull.peer))
+    endPull(null, now);
   if (pull) {
     if (!newerVersion(pull.version, boxVersion()))
       return endPull(null);
@@ -50536,6 +50856,8 @@ function finish2(current, options, now) {
     fs133.rmSync(INCOMING, { recursive: true, force: true });
     return;
   }
+  if (!releaseAuthority(current.peer))
+    return endPull(null, now);
   const offered = offerUpdate(folder, { keys: options.keys ?? UPDATE_KEYS, blocked: options.blocked === undefined ? updatesBlocked() : options.blocked, clock: options.clock });
   if (offered.status !== 202) {
     if (offered.message === UPDATING_ALREADY || isUpdating())
@@ -50569,6 +50891,7 @@ var init_fleet = __esm(() => {
   init_follow();
   init_directory();
   init_known();
+  init_record();
   init_state();
   init_update();
   HELD4 = path138.join(UPDATES, "release");
@@ -53675,7 +53998,7 @@ function vaultAskNotice(asked) {
 function watchVaultAsks(tell, answered = () => {}, after = 2000) {
   return book2.watch(vaultAskNotice, tell, answered, after);
 }
-var book2, onAsksChanged, listAsks, answer5;
+var book2, onAsksChanged, listAsks, answer6;
 var init_asks2 = __esm(() => {
   init_text();
   init_asking();
@@ -53684,7 +54007,7 @@ var init_asks2 = __esm(() => {
   book2 = askBook("q_", { answer: "no" });
   onAsksChanged = book2.onChanged;
   listAsks = book2.list;
-  answer5 = book2.answer;
+  answer6 = book2.answer;
 });
 
 // box/src/link/glance/asked.ts
@@ -55225,7 +55548,7 @@ var init_files4 = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "992982623de5";
+var BRIDGE_VERSION = "3f080b427730";
 
 // box/src/link/rehome/paths.ts
 import { createHash as createHash3 } from "node:crypto";
@@ -55725,7 +56048,8 @@ var init_folder_version = __esm(() => {
   init_files();
   init_format_version();
   steps = [
-    (_folder, importLegacy) => importLegacy?.()
+    (_folder, importLegacy) => importLegacy?.(),
+    () => {}
   ];
 });
 
@@ -59561,7 +59885,7 @@ function signWith2(agentKey, data, flags) {
   const both = crypto52.sign(hash, data, { key, dsaEncoding: "ieee-p1363" });
   return Buffer.concat([str(type), str(Buffer.concat([mpint(both.subarray(0, size)), mpint(both.subarray(size))]))]);
 }
-async function answer6(request, source, signal) {
+async function answer7(request, source, signal) {
   const type = request[0];
   const body = new Reader(request.subarray(1));
   try {
@@ -59606,7 +59930,7 @@ function serveAgent(socket, source) {
         held = held.subarray(4 + length);
         waiting++;
         working = working.then(async () => {
-          const reply = await answer6(request, source, gone.signal);
+          const reply = await answer7(request, source, gone.signal);
           if (!connection.destroyed)
             connection.write(reply);
         }).catch(() => {
@@ -61826,6 +62150,8 @@ async function* manage(context, key, action) {
   const what = connect ? method === "POST" ? "connect" : null : method === "PATCH" ? "rename" : method === "DELETE" ? "remove" : null;
   if (!what)
     return yield* json(405, { message: connect ? "Only POST." : "Rename (PATCH) or remove (DELETE)." });
+  if (what === "remove" && readLink()?.setup?.primary === key)
+    return yield* json(409, { message: PRIMARY_UNLINK });
   const computers = await listComputers(info.name ?? "", null, signal ?? undefined);
   const computer = computers.find((each) => each.key === key);
   if (!computer) {
@@ -61895,7 +62221,7 @@ async function* allowDevices(context, key) {
     return yield* json(409, { message: `${here} is the computer you're asking: it adds its own app itself.` });
   if (computer.via !== "relay")
     return yield* json(409, { message: `${computer.name} isn't one of ${here}'s own computers, so it adds none of your devices.` });
-  updateLink((kept) => kept && allowVouching(kept, key) ? kept : null);
+  updateLink((kept) => kept && followedSetup(kept)?.role === "primary" && allowVouching(kept, key) ? kept : null);
   return yield* json(200, {});
 }
 async function* computersRoute(context, match) {
@@ -61960,6 +62286,7 @@ var init_computers = __esm(() => {
   init_tries();
   init_phones();
   init_devices();
+  init_leadership();
   init_main_only();
   init_record();
   init_state();
@@ -70659,6 +70986,7 @@ init_follow();
 init_elsewhere();
 init_numbers();
 init_lead();
+init_leadership();
 init_main_only();
 init_card();
 init_judge();
@@ -72074,6 +72402,7 @@ init_computer_name();
 init_files2();
 init_home();
 init_follow();
+init_handover();
 init_card();
 init_judge();
 init_main_only();
@@ -72233,9 +72562,14 @@ async function* ownMachinesRoute(context) {
   const { request, route, signal, json } = context;
   const method = request.method.toUpperCase();
   const read = method === "GET" || method === "HEAD";
-  const main = read ? null : mainElsewhere(readLink());
-  if (main)
+  const link = readLink();
+  const main = mainElsewhere(link);
+  if (main && !read)
     return yield* json(409, addElsewhere(main));
+  if (main && route === "kuvo/hosts") {
+    const hosts = memberHosts(link);
+    return yield* json(hosts ? 200 : 503, hosts ?? { message: "This computer can't list your computers yet. Try again in a moment." });
+  }
   const parts = route.split("/").map((part) => {
     try {
       return decodeURIComponent(part);
@@ -74643,6 +74977,12 @@ onLinkWritten(() => {
 async function* setupRoute(context) {
   const { request, route, signal, json } = context;
   const method = request.method.toUpperCase();
+  if (route === "kuvo/setup/handover") {
+    if (method !== "POST")
+      return yield* json(405, {});
+    const done = await handover(parsed(request.body), signal);
+    return yield* json(done.status, done.value);
+  }
   if (route === "kuvo/setup/judge") {
     if (method !== "POST")
       return yield* json(405, {});
@@ -75722,10 +76062,18 @@ async function* phonesRemoveRoute(context) {
     return yield* json(405, {});
   const given = parsed(request.body);
   const asMac = IS_MAC && request.fromApp === true || fromLocalApp(request);
+  let primary = null;
   const changed = updateLink((kept) => {
+    if (kept?.setup?.managed && kept.setup.role === "member") {
+      primary = mainElsewhere(kept);
+      return null;
+    }
     const link = kept ?? (asMac ? { phones: [], removed: [] } : null);
     return link && (asMac ? removeAsMac(link, given?.phones) : removePhones(link, phone?.key?.toString("base64url"), given?.phones)) ? link : null;
   });
+  const main = primary;
+  if (main)
+    return yield* json(409, { message: `Remove devices from ${main.name || "your main computer"}.`, primary: main.key });
   if (!changed)
     return yield* json(400, { message: "Only phones paired here can be removed, and never your Mac." });
   noteDocsChanged();
@@ -77008,7 +77356,7 @@ async function* answerVault(context) {
     const item = typeof given.item === "string" ? given.item : undefined;
     if (item && !itemByID(item))
       return yield* json(404, { message: "That item isn't in this vault." });
-    return yield* json(answer5(idOf5(parts[3]), { answer, ...item ? { item } : {}, client: client.name, by: client.by }) ? 200 : 404, {});
+    return yield* json(answer6(idOf5(parts[3]), { answer, ...item ? { item } : {}, client: client.name, by: client.by }) ? 200 : 404, {});
   }
   if (route === "kuvo/vault/items") {
     if (method !== "POST")
@@ -77685,7 +78033,7 @@ async function* sessionAsksRoute(context, match) {
     if (found.shown.kind === "sandbox") {
       return answerSandboxAsk(found.shown.id, { answer: as, client: clientName(context) }) ? yield* json(200, {}) : yield* json(404, GONE3);
     }
-    return answer5(found.shown.id, { answer: as, ...picked.item ? { item: picked.item } : {}, client: client.name, by: client.by }) ? yield* json(200, {}) : yield* json(404, GONE3);
+    return answer6(found.shown.id, { answer: as, ...picked.item ? { item: picked.item } : {}, client: client.name, by: client.by }) ? yield* json(200, {}) : yield* json(404, GONE3);
   }
   const at = `/api/session/${encodeURIComponent(found.asker)}`;
   let sent;
@@ -84176,6 +84524,7 @@ var ROUTES = [
   { feature: "skills.trash", when: (route) => /^kuvo\/skill-trash(\/|$)/.test(route), answer: skillsRoute },
   { feature: "config", when: (route, request) => /^kuvo\/(config|mcp\/catalog|keys)(\/|\?|$)/.test(request.path), answer: settingsRoute },
   { feature: "settings", when: (route) => route.match(SETTINGS_PAGE_ROUTE), answer: settingsPageRoute },
+  { feature: "setup.handover", when: (route) => route === "kuvo/setup/handover", answer: setupRoute },
   { feature: "setup", when: (route) => route === "kuvo/setup" || route === "kuvo/setup/events" || route === "kuvo/setup/judge" || route === "kuvo/setup/attached" || route === "kuvo/setup/welcomed" || route === "kuvo/setup/ready", answer: setupRoute },
   { feature: "computers", when: (route) => !IS_MAC && isMachinesRoute(route), answer: memberComputersRoute },
   { feature: "machines", when: (route) => OWN_HOME_MAC && isMachinesRoute(route), answer: ownMachinesRoute },
@@ -86408,7 +86757,7 @@ function leave(mac) {
   if (typeof mac !== "string" || !KEY.test(mac))
     return false;
   const link = updateLink((link) => {
-    if (!link || !macsOf(link).includes(mac))
+    if (!link || link.setup?.primary === mac || !macsOf(link).includes(mac))
       return null;
     leaveMac(link, mac);
     pruneDocs(link);
@@ -86444,8 +86793,6 @@ function pair(relay) {
   const primary = main;
   if (primary) {
     console.error(pairElsewhere(primary).message);
-    const name = primary.name || "it";
-    console.error(`If ${name} is gone for good, \`kuvo-link.js leave ${primary.key}\` takes this computer out of its setup: your other computers, and phones paired with ${name}, no longer reach it here. Then it pairs phones itself, or names another main computer.`);
     process.exit(3);
   }
   if (!link) {
@@ -86499,6 +86846,10 @@ if (main) {
     const before = readLink();
     if (!before || typeof argument !== "string" || !KEY.test(argument)) {
       console.error("Kuvo Code couldn’t confirm which setup this computer should leave.");
+      process.exit(1);
+    }
+    if (before.setup?.primary === argument) {
+      console.error(PRIMARY_UNLINK);
       process.exit(1);
     }
     const name = macName(before, argument);
