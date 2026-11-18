@@ -19,6 +19,7 @@ use crate::{
     anchor::{Placement, Popover},
     button::keycap,
     icon::{Icon, IconName, IconSize},
+    small::spinner,
     theme::{ActiveTheme, StyledType, TypeSize, radius, space},
 };
 
@@ -58,6 +59,7 @@ pub struct MenuEntry {
     shortcut: Option<SharedString>,
     checked: bool,
     disabled: bool,
+    loading: bool,
     muted: bool,
     destructive: bool,
     handler: Option<Handler>,
@@ -72,6 +74,7 @@ impl MenuEntry {
             shortcut: None,
             checked: false,
             disabled: false,
+            loading: false,
             muted: false,
             destructive: false,
             handler: None,
@@ -102,6 +105,13 @@ impl MenuEntry {
 
     pub fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
+        self
+    }
+
+    /// A quiet status row that can't be picked while the work is under way.
+    pub fn loading(mut self) -> Self {
+        self.disabled = true;
+        self.loading = true;
         self
     }
 
@@ -259,7 +269,7 @@ impl Render for Menu {
         let c = &theme.colors;
         // One leading column, shared by checks and icons (as in macOS menus), so every label in
         // a menu starts at the same place.
-        let has_leading = self.items.iter().any(|i| matches!(i, MenuItem::Entry(e) if e.checked || e.icon.is_some()));
+        let has_leading = self.items.iter().any(|i| matches!(i, MenuItem::Entry(e) if e.checked || e.icon.is_some() || e.loading));
         let rows = self.items.iter().enumerate().map(|(ix, item)| -> AnyElement {
             match item {
                 MenuItem::Separator => div().h(px(1.)).mx(space::S2).my(space::S1).bg(c.border_strong).into_any_element(),
@@ -273,7 +283,9 @@ impl Render for Menu {
                     .into_any_element(),
                 MenuItem::Entry(entry) => {
                     let selected = self.selected == Some(ix);
-                    let color = if entry.disabled {
+                    let color = if entry.loading {
+                        c.text_muted
+                    } else if entry.disabled {
                         c.text_faint
                     } else if entry.muted {
                         c.text_muted
@@ -313,7 +325,9 @@ impl Render for Menu {
                             } else {
                                 entry.icon.map(|i| Icon::new(i).size(IconSize::Nav).color(icon_color))
                             };
-                            d.child(div().flex().w(IconSize::Nav.pixels()).flex_none().children(leading))
+                            d.child(div().flex().w(IconSize::Nav.pixels()).flex_none()
+                                .children(entry.loading.then(|| spinner(("menu-loading", ix), IconSize::Nav, c.text_muted)))
+                                .children(leading.filter(|_| !entry.loading)))
                         })
                         .child(div().flex_1().min_w_0().truncate().child(entry.label.clone()))
                         // (A long detail gives way too, so neither pushes the other out of the menu.)

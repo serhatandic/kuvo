@@ -350,7 +350,7 @@ test("the desktop app on a member's computer is paired through its own box and r
   const shown = (await ask("POST", "kuvo/phones/pair")).json.link;
   // Asked again (the member may not have heard of it yet): the same pairing, no second device.
   const repeated = await labApp("POST", "kuvo/devices/pair", given);
-  if (repeated.status === 503) assert.equal(repeated.json.message, "Waiting to confirm this app with your other computers…");
+  if (repeated.status === 503) assert.equal(repeated.json.message, "Checking this app with your other computers…");
   else assert.deepEqual(repeated, paired);
   assert.equal((await ask("GET", "kuvo/phones")).json.phones.filter(each => each.key === desk.public).length, 1);
   assert.equal(new URL(shown).searchParams.get("token"), link.readLink().appPairing?.token, "the link Settings shows still waits");
@@ -571,12 +571,12 @@ test("the desktop app on a member's computer is paired through its own box and r
     reconnect();
     await eventually(() => relay.has(member.address));
     assert.ok(labLink().phones.some(each => each.key === loft.public), "the member only has its cached list");
-    const message = "Waiting to confirm this app with your other computers…";
+    const message = "Checking this app with your other computers…";
     assert.deepEqual(await loft.open(member), { waiting: message });
     assert.deepEqual(await voucherPhone.open(member), { waiting: message });
     assert.equal((await phone.open(member)).kind, "machine", "independent phones don't wait");
     assert.deepEqual(await labApp("POST", "kuvo/devices/pair", { key: studio.public, name: "Studio screen", kind: "desktop" }), {
-      status: 503, json: { message },
+      status: 503, json: { reason: "pairing-wait", message },
     });
 
     await t.test("a phones-only reply leaves the desktop waiting for signed membership", async () => {

@@ -25,6 +25,8 @@ pub struct Refusal {
     pub status: u16,
     /// Its words (`{"message"}`), or what a client says when it gave none.
     pub message: String,
+    /// A title supplied by the box for a refusal with its own presentation.
+    pub title: Option<String>,
     /// Why, as a word a client maps (`{"reason"}`).
     pub reason: Option<String>,
     /// The box hasn't the route at all (`404` with nothing said): one from before it.
@@ -51,6 +53,7 @@ impl Refusal {
         let said: Option<serde_json::Value> = serde_json::from_slice(body).ok();
         let object = said.as_ref().and_then(|value| value.as_object());
         let message = object.and_then(|o| o.get("message")).and_then(|m| m.as_str()).map(str::to_owned);
+        let title = object.and_then(|o| o.get("title")).and_then(|t| t.as_str()).map(str::to_owned);
         let reason = object.and_then(|o| o.get("reason")).and_then(|r| r.as_str()).map(str::to_owned);
         let action = object.and_then(|o| o.get("action")).and_then(|a| serde_json::from_value::<Offered>(a.clone()).ok()).filter(|a| !a.label.is_empty() && !a.route.is_empty());
         let older_box = status == 404 && message.is_none();
@@ -67,7 +70,12 @@ impl Refusal {
             .or_else(|| older_box.then(|| Self::OLDER_BOX.to_owned()))
             .or(plain)
             .unwrap_or_else(|| format!("It said no ({status})."));
-        Refusal { status, message, reason, older_box, action }
+        Refusal { status, message, title, reason, older_box, action }
+    }
+
+    /// The action is carried as a route identifier. Only the app runs the existing Pair Again flow.
+    pub fn pair_again_label(&self) -> Option<&str> {
+        self.action.as_ref().filter(|action| action.route == "kuvo/devices/pair" && !action.label.is_empty()).map(|action| action.label.as_str())
     }
 
     /// The coding agents' bridge restarting, as the box says (`agentsRestarting`): not an error,

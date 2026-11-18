@@ -35155,6 +35155,13 @@ function notePhoneTrustReach(host, address, reachable) {
     pending.offline.add(at);
   keepTrust(pending);
 }
+var checking = { reason: "pairing-wait", message: "Checking this app with your other computers…" };
+var readd = {
+  reason: "pairing-readd",
+  title: "This app needs to be paired again",
+  message: "The computer that added this app was removed. Pair this app again from one of your computers.",
+  action: { label: "Pair Again…", route: "kuvo/devices/pair" }
+};
 function phoneTrustWait(link, key, host) {
   if (!link || !mainElsewhere(link))
     return;
@@ -35163,16 +35170,16 @@ function phoneTrustWait(link, key, host) {
     return;
   const origin = phone.mac && authoritySign(link, phone.mac);
   if (!origin)
-    return "This app’s pairing no longer has a signing computer. Re-add this computer from your main computer to pair again.";
+    return readd;
   const pending = host && freshness.get(host);
   const checked = pending ? knownTrust(pending) : host === undefined && !IS_MAC ? savedTrust() : undefined;
   if (checked && (checked.ready.includes(origin) || peersOf(link).every((peer) => checked.offline.includes(peer.address))))
     return;
-  return "Waiting to confirm this app with your other computers…";
+  return checking;
 }
 function authorizeDesktopConnection(host, key, hello, address) {
   const waiting = phoneTrustWait(readLink(), key.toString("base64url"), host);
-  return waiting ? { waiting } : authorizePhonePairing(key, hello, address);
+  return waiting ? { ...waiting, waiting: waiting.message } : authorizePhonePairing(key, hello, address);
 }
 function confirmPhoneMembership(host, sender, link, given) {
   const pending = freshness.get(host);
@@ -35492,7 +35499,7 @@ async function pairDeviceFromHere(given, signal) {
   const known = (link?.phones ?? []).find((phone) => phone.key === device.key);
   if (known) {
     const waiting = phoneTrustWait(link, device.key, IS_MAC ? macLink.host : undefined);
-    return waiting ? answer2(503, { message: waiting }) : answer2(200, { paired: true, pairing: known.pairing ?? "" });
+    return waiting ? answer2(waiting.reason === "pairing-readd" ? 409 : 503, waiting) : answer2(200, { paired: true, pairing: known.pairing ?? "" });
   }
   if ((link?.removed ?? []).some((each) => each.key === device.key))
     return answer2(409, REMOVED2);
@@ -38465,16 +38472,16 @@ async function carryOn(id) {
     offer(now);
 }
 var CHECK_WAIT = 45000;
-var checking = new Map;
+var checking2 = new Map;
 async function checkThere(record) {
   const answer = await new Promise((resolve) => {
     const timer = setTimeout(() => {
-      checking.delete(record.id);
+      checking2.delete(record.id);
       resolve(null);
     }, CHECK_WAIT);
-    checking.set(record.id, (given) => {
+    checking2.set(record.id, (given) => {
       clearTimeout(timer);
-      checking.delete(record.id);
+      checking2.delete(record.id);
       resolve(given);
     });
     tell2(record.peer, { op: "check", id: record.id, kind: record.kind, name: record.name, ...record.lane ? { lane: true } : {}, ...record.model ? { model: record.model } : {} });
@@ -39190,7 +39197,7 @@ async function takeMoveMail(sender, given) {
     return checkHere(sender, given, given.id);
   if (given.op === "checked") {
     if (record?.role === "from" && record.peer === sender.key)
-      checking.get(given.id)?.(given);
+      checking2.get(given.id)?.(given);
     return;
   }
   return inTurn2(given.id, () => moveMail(sender, given, given.id));
@@ -45807,7 +45814,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "e7a3e17428dc";
+var BRIDGE_VERSION = "67d356111b1e";
 
 // box/src/link/rehome/move.ts
 init_outside();

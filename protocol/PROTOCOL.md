@@ -254,8 +254,8 @@ each box pairs and removes (`phones`), and each box's view of your personalities
   Inherited desktop and voucher-bound pairings wait for confirmation unless the relay reports
   every known peer unreachable. A member using its cached list keeps asking and closes revoked
   sessions as soon as it takes a signed removal. Independent phones connect throughout.
-  A waiting pairing receives `waiting` (plain words) in the authenticated second handshake
-  message, with no session opened. On primary uninstall, the primary sends its updated signed
+  A waiting pairing receives `waiting` (the box's message) and the pairing reason in the
+  authenticated second handshake, with no session opened. On primary uninstall, the primary sends its updated signed
   list and `phoneSync: {id, list}`. Peers answer with the same `id` and `list` and `ack: true`
   after installing that list and closing sessions for devices it removes.
 - **Later**: each box's agents (`{"agents"}`, "Peers") are a list of its own too, still sent as
@@ -11432,6 +11432,14 @@ On both, for a paired phone:
     same: its box answers.
   - **A member its main computer doesn't name now** answers `409 {"message"}`: it neither pairs
     nor vouches.
+  - **A known pairing being refreshed** answers `503 {reason: "pairing-wait", message}`, “Checking
+    this app with your other computers…”. The desktop shows a quiet spinner and checks again.
+    **A known pairing whose signing computer is gone** answers `409 {reason: "pairing-readd",
+    title, message, action}`. The box supplies “This app needs to be paired again”, “The computer
+    that added this app was removed. Pair this app again from one of your computers.”, and
+    `{label: "Pair Again…", route: "kuvo/devices/pair"}`. This action runs the desktop's existing
+    Pair Again flow. Over the relay the same notice is carried in the authenticated handshake,
+    with its message also in `waiting` for older desktops.
   - **Removed stays removed**: a key with any pairing among the removals is never paired by this
     route, here or by the main computer: `409 {"message": "This app was removed from your
     devices.", "reason": "removed"}`. The app then makes a new key only on your word. (A pairing by

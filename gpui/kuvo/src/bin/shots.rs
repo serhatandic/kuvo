@@ -2001,9 +2001,15 @@ fn home_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path::Pat
                 }
             }
             let devbox = stand_in.peer_box("key_devbox").expect("devbox");
-            let pairing_message = match slug {
-                "computer-pairing-waiting" => Some("Waiting to confirm this app with your other computers…"),
-                "computer-pairing-readd" => Some("This app’s pairing no longer has a signing computer. Re-add this computer from your main computer to pair again."),
+            use kuvo_box::boxes::Pairing;
+            let pairing = match slug {
+                "computer-pairing-waiting" => Some(Pairing::Checking("Checking this app with your other computers…".into())),
+                "computer-pairing-readd" => Some(Pairing::Readd(kuvo_box::Refusal::from_answer(409, &serde_json::to_vec(&serde_json::json!({
+                    "reason": "pairing-readd",
+                    "title": "This app needs to be paired again",
+                    "message": "The computer that added this app was removed. Pair this app again from one of your computers.",
+                    "action": { "label": "Pair Again…", "route": "kuvo/devices/pair" },
+                }))?))),
                 _ => None,
             };
             let boxes = kuvo::home::stand_in_boxes(stand_in);
@@ -2015,11 +2021,11 @@ fn home_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path::Pat
                 home.update(cx, |home, cx| {
                     home.set_now(NOW, cx);
                     home.read_at_once(cx);
-                    if let Some(message) = pairing_message {
+                    if let Some(pairing) = pairing.clone() {
                         home.workspace().clone().update(cx, |workspace, cx| {
                             workspace.show_area(Area::Computers, window, cx);
                             let mut switching = workspace.switching().cloned().expect("stand-in computers were read");
-                            switching.pairing = kuvo_box::boxes::Pairing::Waiting(message.into());
+                            switching.pairing = pairing;
                             workspace.set_switching(Some(switching), cx);
                         });
                     }

@@ -72,6 +72,7 @@ pub struct Picked;
 /// Somewhere the window is to go, asked from an area's page.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Go {
+    PairAgain,
     SearchBotsAndSessions,
     /// A bot's own conversation, with `draft` in its composer where the box gave one.
     BotChat { bot: String, session: String, draft: Option<String> },
@@ -261,6 +262,7 @@ impl AreaView {
                         cx.emit(Picked);
                     }
                     ComputersEvent::Sessions => cx.emit(Go::Sessions),
+                    ComputersEvent::PairAgain => cx.emit(Go::PairAgain),
                     ComputersEvent::ReadAgain => cx.emit(Go::ReadComputers),
                     ComputersEvent::ListerChanged => cx.emit(Go::ReadList),
                     ComputersEvent::UpdateOwnBox { now } => cx.emit(Go::UpdateOwnBox { now: *now }),

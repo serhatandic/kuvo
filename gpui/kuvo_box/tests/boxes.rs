@@ -218,7 +218,7 @@ fn from_a_member_computer_the_app_pairs_through_its_own_box_and_reaches_the_othe
 #[test]
 fn a_computer_confirming_its_list_shows_waiting_for_an_already_paired_app() {
     let setup = Setup::new();
-    let waiting = "Waiting to confirm this app with your other computers…";
+    let waiting = "Checking this app with your other computers…";
     setup.mini.1.set_pairing_wait(Some(waiting));
     let boxes = setup.boxes();
     boxes.read_list().unwrap();
@@ -267,6 +267,33 @@ fn a_device_thats_removed_stays_out_until_you_pair_it_again_yourself() {
     boxes.settle();
     assert_ne!(setup.pair_asks().last().unwrap()["key"], first.as_str());
     assert_eq!(whoami(&boxes, "Mac mini").unwrap()["name"], "Mac mini");
+}
+
+#[test]
+fn a_cached_pairing_checks_again_but_a_readd_requires_the_users_action() {
+    let setup = Setup::new();
+    let checking = "Checking this app with your other computers…";
+    setup.pairs(move |_| (503, json!({"reason":"pairing-wait", "message":checking})));
+    let boxes = setup.boxes();
+    boxes.read_list().unwrap();
+    boxes.settle();
+    assert_eq!(boxes.pairing(), Pairing::Checking(checking.into()));
+    let first_key = setup.pair_asks()[0]["key"].clone();
+
+    setup.pairs(|_| (409, json!({"reason":"pairing-readd", "title":"This app needs to be paired again",
+        "message":"The computer that added this app was removed. Pair this app again from one of your computers.",
+        "action":{"label":"Pair Again…", "route":"kuvo/devices/pair"}})));
+    boxes.settle();
+    let Pairing::Readd(refusal) = boxes.pairing() else { panic!("the box asked for Pair Again") };
+    assert_eq!(refusal.title.as_deref(), Some("This app needs to be paired again"));
+    assert_eq!(refusal.pair_again_label(), Some("Pair Again…"));
+    assert_eq!(setup.pair_asks().len(), 2);
+    boxes.settle();
+    assert_eq!(setup.pair_asks().len(), 2);
+
+    setup.pairs(|_| (200, json!({"paired":true})));
+    assert_eq!(boxes.pair_again(), Pairing::Paired);
+    assert_ne!(setup.pair_asks().last().unwrap()["key"], first_key);
 }
 
 #[test]

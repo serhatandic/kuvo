@@ -162,7 +162,7 @@ export async function pairDeviceFromHere(given: unknown, signal?: AbortSignal | 
   const known = (link?.phones ?? []).find(phone => phone.key === device.key);
   if (known) {
     const waiting = phoneTrustWait(link, device.key, IS_MAC ? macLink.host : undefined);
-    return waiting ? answer(503, { message: waiting }) : answer(200, { paired: true, pairing: known.pairing ?? "" });
+    return waiting ? answer(waiting.reason === "pairing-readd" ? 409 : 503, waiting) : answer(200, { paired: true, pairing: known.pairing ?? "" });
   }
   if ((link?.removed ?? []).some(each => each.key === device.key)) return answer(409, REMOVED);
   const waiting = { message: `${named} isn't answering. This app reaches your other computers once it does.` };

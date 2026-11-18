@@ -117,23 +117,31 @@ export function notePhoneTrustReach(host: LinkHost, address: Buffer, reachable: 
   keepTrust(pending);
 }
 
+const checking = { reason: "pairing-wait", message: "Checking this app with your other computers…" } as const;
+const readd = {
+  reason: "pairing-readd",
+  title: "This app needs to be paired again",
+  message: "The computer that added this app was removed. Pair this app again from one of your computers.",
+  action: { label: "Pair Again…", route: "kuvo/devices/pair" },
+} as const;
+
 /** Accept an inherited desktop pairing once a peer confirms the signed list or the relay
  * reports all peers unreachable. Keep asking while relying on the cached authorization. */
-export function phoneTrustWait(link: LinkState | null, key: string, host?: LinkHost | null): string | undefined {
+export function phoneTrustWait(link: LinkState | null, key: string, host?: LinkHost | null): typeof checking | typeof readd | undefined {
   if (!link || !mainElsewhere(link)) return;
   const phone = pairedPhone(link, key);
   if (phone?.from !== "mac" || (phone.kind !== "desktop" && !phone.by)) return;
   const origin = phone.mac && authoritySign(link, phone.mac);
-  if (!origin) return "This app’s pairing no longer has a signing computer. Re-add this computer from your main computer to pair again.";
+  if (!origin) return readd;
   const pending = host && freshness.get(host);
   const checked = pending ? knownTrust(pending) : host === undefined && !IS_MAC ? savedTrust() : undefined;
   if (checked && (checked.ready.includes(origin) || peersOf(link).every(peer => checked.offline.includes(peer.address)))) return;
-  return "Waiting to confirm this app with your other computers…";
+  return checking;
 }
 
 export function authorizeDesktopConnection(host: LinkHost, key: Buffer, hello: PhoneHello, address: Buffer) {
   const waiting = phoneTrustWait(readLink(), key.toString("base64url"), host);
-  return waiting ? { waiting } : authorizePhonePairing(key, hello, address);
+  return waiting ? { ...waiting, waiting: waiting.message } : authorizePhonePairing(key, hello, address);
 }
 
 /** A signing Mac with an older phoneSync sends its membership in the normal document exchange.

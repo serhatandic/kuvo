@@ -151,7 +151,7 @@ test("an app removed from your devices stays out: this never pairs it again, and
   });
   // The list has the desktop, but there's no live relay here to confirm it yet.
   assert.deepEqual(await ask(APP, "POST", "kuvo/devices/pair", { key, name: "Laptop", kind: "desktop" }),
-    { status: 503, body: { message: "Waiting to confirm this app with your other computers…" } });
+    { status: 503, body: { reason: "pairing-wait", message: "Checking this app with your other computers…" } });
   assert.ok(!fs.existsSync(forwards) || !fs.readdirSync(forwards).length, "nothing left to send");
 
   // The box's CLI removes no one (as before); the app beside the box does, but never the Mac.
@@ -179,8 +179,12 @@ test("an inherited desktop whose signer is gone gets guidance for pairing again"
   const key = device();
   member({ phones: [{ key, name: "Laptop", from: "mac", mac: other.pub, pairing: "dk", kind: "desktop" }] });
   const answer = await ask(APP, "POST", "kuvo/devices/pair", { key, name: "Laptop", kind: "desktop" });
-  assert.equal(answer.status, 503);
-  assert.match(answer.body.message, /Re-add this computer from your main computer/);
+  assert.deepEqual(answer, { status: 409, body: {
+    reason: "pairing-readd",
+    title: "This app needs to be paired again",
+    message: "The computer that added this app was removed. Pair this app again from one of your computers.",
+    action: { label: "Pair Again…", route: "kuvo/devices/pair" },
+  } });
 });
 
 test("a member's box vouches for the app beside it to the main computer, and answers as that one said; with no answer it says to wait", async t => {

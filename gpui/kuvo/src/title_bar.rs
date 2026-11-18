@@ -236,6 +236,16 @@ fn computer_switcher(workspace: &Workspace, compact: bool, room: Pixels, cx: &Co
                             // Why your other computers aren't reached, in the box's words.
                             match switching.pairing {
                                 Pairing::Waiting(why) | Pairing::Refused(why) => menu = menu.separator().entry(MenuEntry::new("Your other computers aren’t reached yet").detail(why).disabled(true)),
+                                Pairing::Checking(why) => menu = menu.separator().entry(MenuEntry::new(why).loading()),
+                                Pairing::Readd(said) => {
+                                    menu = menu.separator().entry(MenuEntry::new(said.title.clone().unwrap_or_default()).detail(said.message.clone()).disabled(true));
+                                    if let Some(label) = said.pair_again_label() {
+                                        let this = this.clone();
+                                        menu = menu.entry(MenuEntry::new(label.to_owned()).on_select(move |_, cx| {
+                                            this.update(cx, |_, cx| cx.emit(Switch::PairAgain)).ok();
+                                        }));
+                                    }
+                                }
                                 Pairing::Removed(why) => {
                                     let this = this.clone();
                                     menu = menu.separator().entry(MenuEntry::new("This app was removed from your devices").detail(why).disabled(true)).entry(MenuEntry::new("Connect This App Again").on_select(move |_, cx| {
@@ -284,6 +294,7 @@ pub fn reach_line(row: &Row) -> String {
         Reach::Away(_) => row.computer.reach_title("away"),
         Reach::NotPaired => row.computer.reach_title("notPaired"),
         Reach::Waiting(message) => message.clone(),
+        Reach::Readd(said) => said.message.clone(),
         // The list itself says why where it can (it's away, it's older); else that this app has no
         // way to it.
         Reach::Unreached if row.computer.is_older() || row.computer.reach == "away" => computer_line(&row.computer),
