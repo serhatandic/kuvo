@@ -105,7 +105,7 @@ export const toolRun = (): Promise<unknown> => {
 // machine (an MCP server's, or a coding agent's), which a phone can't load, loaded here as the
 // browser would have: only this machine's own address (`signInReturn`), and no further than it
 // answers (a redirect isn't followed). Answers with the status it got: 2xx or 3xx, it took it.
-export async function* loadSignInReturn(body: Buffer | undefined, signal: AbortSignal | undefined): AsyncGenerator<AnswerPiece> {
+export async function* loadSignInReturn(body: Buffer | undefined, signal: AbortSignal | undefined, requireAccepted = false): AsyncGenerator<AnswerPiece> {
   const json = (status: number, value: unknown): AnswerPiece[] => [{ head: { status, headers: { "content-type": "application/json" } } }, { body: Buffer.from(JSON.stringify(value)) }];
   let given: { url?: unknown } | null = {};
   try {
@@ -120,6 +120,9 @@ export async function* loadSignInReturn(body: Buffer | undefined, signal: AbortS
   try {
     const response = await fetch(url, { redirect: "manual", signal: stop.signal });
     await response.arrayBuffer().catch(() => {});
+    if (requireAccepted && (response.status < 200 || response.status >= 400)) {
+      return yield* json(400, { message: "That address didn’t finish signing in. Paste the address from this sign-in or start again." });
+    }
     return yield* json(200, { status: response.status });
   } catch {
     return yield* json(502, { message: "Nothing on this computer took it. Start the sign-in again." });
@@ -241,5 +244,5 @@ export async function* engineControlRoute(context: RouteContext, control: RegExp
 export async function* signInReturnRoute(context: RouteContext): AsyncGenerator<AnswerPiece> {
   const { request, signal, json } = context;
   if (request.method.toUpperCase() !== "POST") return yield* json(405, {});
-  return yield* loadSignInReturn(request.body, signal);
+  return yield* loadSignInReturn(request.body, signal, new URLSearchParams(request.path.split("?")[1]).get("check") === "1");
 }

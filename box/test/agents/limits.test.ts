@@ -277,7 +277,7 @@ describe("Claude on Linux", () => {
     expect(anthropic.reads.every((read) => read.beta === "oauth-2025-04-20" && read.agent === "claude-cli/2.1.300 (external, cli)")).toBe(true)
   })
 
-  test("a 429 keeps the last numbers and holds every Claude login until Anthropic's time, through a restart", async () => {
+  test("a 429 holds every Claude login through a restart, and old readings stop showing", async () => {
     const [own, work] = two()
     anthropic.answers.set("token-own", usage(42, 18))
     anthropic.answers.set("token-work", usage(90, 61))
@@ -308,7 +308,7 @@ describe("Claude on Linux", () => {
     await restarted.refresh()
     await restarted.tick()
     expect(anthropic.reads).toHaveLength(3)
-    expect((await route(restarted)).accounts.map((each) => each.windows.map((window) => window.used))).toEqual([[0.42, 0.18], [0.9, 0.61]])
+    expect((await route(restarted)).accounts.map((each) => each.windows)).toEqual([[], []])
 
     // Once it's time, they're read again, one a minute.
     anthropic.answers.set("token-own", usage(50, 20))
@@ -561,18 +561,18 @@ describe("Codex", () => {
     }
   })
 
-  test("once read, it's read again only while Codex runs here anyway: a read never starts one", async () => {
+  test("Codex limits refresh on schedule after the app-server stops", async () => {
     const window = { usedPercent: 12, windowDurationMins: 300, resetsAt: 1_794_200_000 }
     codex = new TestCodex(fakeCodex(home, { type: "chatgpt", planType: "plus" }, { rateLimits: { limitId: "codex", primary: window } }), home)
     const limits = new Limits(() => agentAccounts([codex!]), undefined, clock.now)
     await limits.tick()
     const reads = () => readFileSync(join(home, "asked.txt"), "utf8").split("\n").filter((method) => method === "account/rateLimits/read").length
     expect(reads()).toBe(1)
-    // Its app-server stops (nothing used it): ten minutes on, nothing starts it again for this.
+    // Its app-server stops when idle. The next scheduled read starts it for this account.
     codex.shutdown?.()
     clock.pass(10 * 60_000)
     await limits.tick()
-    expect(reads()).toBe(1)
+    expect(reads()).toBe(2)
     expect((await route(limits)).accounts[0]!.windows.map((each) => each.used)).toEqual([0.12])
   })
 
@@ -835,7 +835,7 @@ describe("who each account is, the same from every computer", () => {
     }
   })
 
-  test("Codex signed in to another account while one still runs: not read through it, said so, then read once it starts again", async () => {
+  test("Codex starts a new app-server to read a switched account’s limits", async () => {
     const access = (user: string) => token({ "https://api.openai.com/auth": { chatgpt_account_id: `acct-${user}`, chatgpt_user_id: user } })
     const codexHome = join(home, "codex-accounts", "a1")
     mkdirSync(codexHome, { recursive: true })
@@ -852,20 +852,15 @@ describe("who each account is, the same from every computer", () => {
       const limits = new Limits(() => agentAccounts([codex]), undefined, clock.now)
       const first = (await refreshed(limits)).accounts[0]!
       expect(first.windows.map((each) => each.used)).toEqual([0.7])
-      // Signed in as Bob in Terminal; the Codex running reads Ada's sign-in still.
+      // The old app-server has Ada’s sign-in, so Bob’s limits must come from a new one.
       signIn("bob")
       clock.pass(60_000)
       await limits.tick()
       const switched = (await route(limits)).accounts[0]!
       expect(switched.identity).not.toBe(first.identity!)
-      expect(switched.windows).toEqual([])
-      expect(switched.problem?.message).toBe("Signed in to another account here: its limits show once they're read.")
-      // It stops (nothing used it); the next read starts one with Bob's sign-in.
-      codex.shutdown?.()
-      clock.pass(10 * 60_000)
-      await limits.tick()
-      const read = (await route(limits)).accounts[0]!
-      expect([read.identity, read.windows.map((each) => each.used), read.problem]).toEqual([switched.identity, [0.7], undefined])
+      expect(switched.windows.map(each => each.used)).toEqual([0.7])
+      expect(switched.problem).toBeUndefined()
+      expect(readFileSync(join(home, "starts.txt"), "utf8").trim().split("\n")).toHaveLength(2)
     } finally {
       codex.shutdown?.()
     }

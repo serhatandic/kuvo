@@ -24,6 +24,8 @@ export interface Account {
   signedIn: boolean
   /** Who's signed in, as the agent says: "you@example.com", "Max plan". */
   label?: string
+  /** The account’s identity for detecting switches, kept inside the bridge. */
+  identity?: string
   /** The label says what it's signed in with ("OpenAI API key", "Google account"), not who. */
   what?: boolean
   /** What's missing, in words: how to install it, or that it needs a sign-in. */

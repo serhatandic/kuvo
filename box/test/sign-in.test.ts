@@ -62,9 +62,9 @@ test("Accounts' list says which are providers and their marks; a sign-in started
   })
   try {
     const handler = engineHandler(() => ({ port: engine.port, password: "pw" }) as any, { name: "test" }, () => { throw new Error("none") })
-    const ask = async (method: string, path: string, body?: unknown) => {
+    const ask = async (method: string, path: string, body?: unknown, transport: Partial<import("../src/link/server/context").LinkRequest> = { fromApp: true, served: true }) => {
       let status = 0, text = ""
-      for await (const piece of handler({ method, path, headers: {}, body: body === undefined ? undefined : Buffer.from(JSON.stringify(body)), fromApp: true }, undefined)) {
+      for await (const piece of handler({ method, path, headers: {}, body: body === undefined ? undefined : Buffer.from(JSON.stringify(body)), ...transport }, undefined)) {
         if ("head" in piece) status = piece.head.status
         if ("body" in piece) text += Buffer.from(piece.body).toString()
       }
@@ -86,7 +86,19 @@ test("Accounts' list says which are providers and their marks; a sign-in started
 
     const started = await ask("POST", "kuvo/sign-in/start?integration=github-copilot", { methodID: "device" })
     expect(started).toEqual({ status: 200, body: { attemptID: "att_1", url: "https://github.com/login/device", instructions: "Enter code: 8F2A-91KQ", mode: "auto", userCode: "8F2A-91KQ" } })
-    expect(asked).toEqual([{ methodID: "device" }])
+    const path = "kuvo/sign-in/start?integration=github-copilot"
+    for (const transport of [{ fromMac: true }, { desktop: true }, {}]) {
+      expect((await ask("POST", path, { methodID: "device", remote: false }, transport)).body.userCode).toBe("8F2A-91KQ")
+    }
+    expect((await ask("POST", path, { methodID: "device", remote: true }, { fromMac: true, served: true })).status).toBe(200)
+    const legacy = await ask("POST", "api/integration/github-copilot/connect/oauth", { methodID: "device", remote: false }, {})
+    expect(legacy.body.data.attemptID).toBe("att_1")
+    expect(asked).toEqual([
+      { methodID: "device", remote: false },
+      ...Array.from({ length: 3 }, () => ({ methodID: "device", remote: true })),
+      { methodID: "device", remote: false },
+      { methodID: "device", remote: true },
+    ])
     expect((await ask("GET", "kuvo/sign-in/status?integration=github-copilot&attempt=att_1")).body.userCode).toBe("8F2A-91KQ")
     // Refused as it should be: no way in named, another method, an account the engine hasn't.
     expect((await ask("POST", "kuvo/sign-in/start?integration=github-copilot", {})).status).toBe(400)
@@ -118,4 +130,40 @@ test("an outside account request uses the display name, never the request info h
     expect(result.accounts[0].line).toBe(`Not installed on ${ownComputerName()}`)
     expect(result.accounts[0].line).not.toContain("RAW-HOSTNAME")
   } finally { engine.stop(true) }
+})
+
+test("remote provider OAuth offers the callback address field and explains a local-only page", async () => {
+  const { engineHandler } = await import("../src/link/server/router")
+  const cancelled: string[] = []
+  const engine = Bun.serve({ port: 0, fetch(request) {
+    const route = new URL(request.url).pathname
+    if (request.method === "DELETE") {
+      cancelled.push(route)
+      return Response.json({})
+    }
+    const url = route.includes("/local-only/") ? "http://localhost:1234/start" : "https://provider.example/authorize?redirect_uri=http%3A%2F%2Flocalhost%3A1234%2Fcallback"
+    return Response.json({ data: { attemptID: "att_1", url, mode: "auto" } })
+  } })
+  try {
+    const handler = engineHandler(() => ({ port: engine.port, password: "pw" }) as any)
+    const ask = async (integration: string, transport: { fromApp?: boolean; fromMac?: boolean; served?: boolean }) => {
+      let status = 0
+      let body: any
+      const request = { method: "POST", path: `kuvo/sign-in/start?integration=${integration}`, headers: {}, body: Buffer.from('{"methodID":"browser"}'), ...transport }
+      for await (const part of handler(request, undefined)) {
+        if ("head" in part) status = part.head.status
+        if ("body" in part) body = JSON.parse(part.body.toString())
+      }
+      return { status, body }
+    }
+    expect((await ask("provider", { fromApp: true, served: true })).body.pasteAddress).toBeUndefined()
+    expect((await ask("provider", { fromMac: true })).body.pasteAddress).toBe(true)
+    expect((await ask("provider", {})).body.pasteAddress).toBe(true)
+    const refused = await ask("local-only", { fromMac: true })
+    expect(refused.status).toBe(409)
+    expect(refused.body.message).toContain("Open Kuvo Code on")
+    expect(cancelled).toEqual(["/api/integration/local-only/connect/oauth/att_1"])
+  } finally {
+    engine.stop(true)
+  }
 })

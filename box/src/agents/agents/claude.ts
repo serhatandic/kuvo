@@ -551,7 +551,7 @@ export class ClaudeAgent implements Agent {
         env: this.env({ ownToken: false }),
         home: this.context.home,
         temporary: this.context.temporary,
-        instructions: "Finish signing in on Claude's page. This sign-in is Kuvo Code's own: Claude Code in Terminal stays signed in as it is.",
+        instructions: "Finish signing in on Claude’s page, then paste the code here.",
         signedIn: async () => handedOver,
         // It prints its page, and takes the code from it, only in a terminal.
         terminal: true,
@@ -582,7 +582,7 @@ export class ClaudeAgent implements Agent {
       env,
       home: this.context.home,
       temporary: this.context.temporary,
-      instructions: "Finish signing in on Claude's page. Claude Code keeps the sign-in, as when you run claude auth login.",
+      instructions: "Finish signing in on Claude’s page. If it gives you a code, paste it here.",
       // Claude Code's word: a sign-in Claude ended still reads as signed in there, so signing in
       // again counts once the command says it worked (another Claude Code writing its settings
       // meanwhile isn't it).
@@ -730,7 +730,7 @@ export class ClaudeAgent implements Agent {
   }
 
   async models(): Promise<Model[]> {
-    if (this.modelList && Date.now() - this.modelList.at < 30 * 60_000) return this.modelList.models
+    if (this.modelList && Date.now() - this.modelList.at < 5 * 60_000) return this.modelList.models
     // Claude Code says which models your account has once it starts: asked in the background, the
     // first time with Claude Code's usual ones meanwhile.
     this.loadingModels ??= this.loadModels().finally(() => (this.loadingModels = undefined))

@@ -885,3 +885,61 @@ test("an account says whether its list is every model it runs: not while its age
   expect((await metadata(of(() => true))).modelsComplete).toBe(true)
   expect((await metadata(of())).modelsComplete).toBe(true)
 })
+
+test("Codex remote sign-in uses ChatGPT device authorization and updates without signing out", async () => {
+  const calls: [string, unknown][] = []
+  const agent = codex({
+    async request(method: string, params?: unknown) {
+      calls.push([method, params])
+      if (method === "account/login/start") return { loginId: "device-login", verificationUrl: "https://auth.openai.com/codex/device", userCode: "ABCD-1234" }
+      if (method === "account/read") return { account: { type: "chatgpt", email: "new@example.com", planType: "pro" } }
+      if (method === "model/list") return { data: [] }
+      throw new Error(method)
+    },
+  })
+  const answer = handler({ roster: { all: () => [agent], find: () => agent }, password: "pw" } as any)
+  const ask = (path: string, method = "GET", body?: unknown) => answer(new Request(`http://box/api/integration/codex-cli${path}`, {
+    method, headers: { authorization: "Basic " + Buffer.from("opencode:pw").toString("base64"), "content-type": "application/json" },
+    body: body ? JSON.stringify(body) : undefined,
+  })).then(response => response.json()) as Promise<any>
+  const started = (await ask("/connect/oauth", "POST", { methodID: "chatgpt", remote: true })).data
+  expect(started).toMatchObject({ url: "https://auth.openai.com/codex/device", userCode: "ABCD-1234" })
+  expect(calls[0]).toEqual(["account/login/start", { type: "chatgptDeviceCode" }])
+  const status = () => ask(`/connect/oauth/${started.attemptID}`).then(answer => answer.data.status)
+  expect(await status()).toBe("pending")
+  ;(agent as any).notification("account/login/completed", { loginId: "device-login", success: true })
+  expect(await status()).toBe("complete")
+  expect((await ask("")).data.connections[0].label).toBe("new@example.com · ChatGPT Pro")
+  expect(calls.map(([method]) => method)).not.toContain("account/logout")
+})
+
+test("Work Queue GitHub sign-in waits for the browser’s device code authorization", async () => {
+  const { GitHubSignIn } = await import("../../src/agents/github-sign-in")
+  const approval = join(root, "github-approved")
+  const gh = join(bin, "gh")
+  writeFileSync(gh, `#!/bin/sh
+case "$2" in
+  status) test -f '${approval}' ;;
+  login)
+    printf 'First copy your one-time code: ABCD-1234\\nOpen this URL to continue in your web browser: https://github.com/login/device\\n' >&2
+    while [ ! -f '${approval}' ]; do sleep 0.05; done
+    ;;
+  *) exit 1 ;;
+esac
+`, { mode: 0o700 })
+  const github = new GitHubSignIn(context())
+  let attempt: Awaited<ReturnType<typeof github.begin>> | undefined
+  try {
+    expect((await github.integration())?.connections).toEqual([])
+    attempt = await github.begin()
+    expect(attempt).toMatchObject({ url: "https://github.com/login/device", userCode: "ABCD-1234" })
+    expect(github.status(attempt.attemptID).status).toBe("pending")
+    writeFileSync(approval, "")
+    for (let retries = 0; retries < 40 && github.status(attempt.attemptID).status === "pending"; retries++) await Bun.sleep(25)
+    expect(github.status(attempt.attemptID).status).toBe("complete")
+    expect((await github.integration())?.connections.length).toBe(1)
+  } finally {
+    if (attempt) github.cancel(attempt.attemptID)
+    rmSync(gh, { force: true })
+  }
+})

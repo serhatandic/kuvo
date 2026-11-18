@@ -12886,6 +12886,7 @@
       "url?": "string",
       "instructions?": "string",
       "userCode?": "string",
+      "pasteAddress?": "bool",
       "failure?": "string"
      }
     }
@@ -12901,6 +12902,7 @@
       "instructions?": "string",
       "mode?": "string",
       "acceptsCode?": "bool",
+      "pasteAddress?": "bool",
       "userCode?": "string",
       "time?": "any"
      }

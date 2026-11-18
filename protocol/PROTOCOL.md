@@ -4155,7 +4155,8 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
     `message` as they come, for an agent downloaded first, Antigravity;
     `complete`; `failed` with `message`; `expired`); `POST …/connect/oauth/<attempt>/complete
     {code}` for one with `acceptsCode`; `DELETE …/connect/oauth/<attempt>` to give up. A key:
-    `POST …/connect/key {key}`. With `remote: true` the page is for another device (the phone),
+    `POST …/connect/key {key}`. The box sets `remote` from the request’s transport. With
+    `remote: true` the page is for another computer or the phone,
     so it doesn't come back to the computer's `localhost`: Claude Code's ends on a code to paste
     back (`acceptsCode`), Codex's and Grok's are device codes (`userCode`, shown beside the page,
     to copy), Cursor's finishes by itself, and Antigravity's Google page comes back to
@@ -4236,6 +4237,8 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
     …/connect/oauth/<attempt>` to give up. A page that sends the browser back to `localhost` on
     the computer (GitLab's, Poe's, ChatGPT's) finishes there with `kuvo/sign-in/return` (below).
     Device codes (Copilot, OpenCode Console, SuperGrok) and keys work from anywhere.
+    Where GitHub CLI is installed, `github-work-queue` also appears in Accounts and uses a
+    GitHub.com device code. GitHub CLI keeps the sign-in on the computer that reads the Work Queue.
   - Its sign-ins: `GET api/credential` (with what each is signed in with), or `GET
     kuvo/accounts/credentials` → `{credentials: [{id, integrationID, label, active}]}`, the list
     alone; `POST api/credential/<id>/activate` uses one; `DELETE api/credential/<id>` removes one.
@@ -4450,6 +4453,10 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
     `504` when it didn't answer in two minutes, else its place's own refusal. A client starts
     every browser sign-in here, and shows `userCode` as it is, never reading one out of the page
     or the instructions itself. `kuvo/sign-in/status` says it too wherever the status has it.
+    When start or status says `pasteAddress: true`, the desktop shows a field for the address
+    the browser ended on. It submits it to `POST kuvo/sign-in/return?check=1` with `{url}` and
+    keeps following the attempt. A page that starts at `localhost` can only be opened on the
+    computer doing the sign-in, which the box explains.
   - `GET kuvo/sign-in/status?integration=<id>&attempt=<id>[&agents=1][&wait=<seconds>]` → the
     attempt's status as the engine (or the bridge) says it (`status`, `message?`, `url?`,
     `instructions?`, `userCode?`), with `failure` once it's `failed` or `expired`: what a client

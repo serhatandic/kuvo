@@ -291,7 +291,11 @@ export async function commandSignIn(options: CommandSignInOptions): Promise<Sign
           if (options.refusedEnds && now.status === "failed" && now.message === options.refusedEnds) throw new Error(options.refusedEnds)
         }
       : undefined,
-    status: () => (late && status.status === "pending" ? { ...status, url: late, instructions: options.instructions } : status),
+    status: () => {
+      if (status.status !== "pending") return status
+      const code = userCode ?? options.userCode?.exec(output)?.[1]
+      return { ...status, ...(late ? { url: late, instructions: options.instructions } : {}), ...(code ? { userCode: code } : {}) }
+    },
     cancel() {
       if (status.status === "pending") status = { status: "failed", message: "Cancelled." }
       child.kill()

@@ -172,7 +172,7 @@ export function accountState(account: ListedAccount, offered: OfferedMethods, { 
     confirm: { title: `Remove ${name}?`, message: `This account is signed out and forgotten on ${computer}: it leaves Accounts, and its models leave the model picker. A turn running on it stops; its sessions stay. Your other accounts stay signed in.`, label: "Remove Account" },
   };
   // Where the agent keeps one sign-in for you and Kuvo Code alike (Codex's and Grok's in your home
-  // on a Mac), signing out signs it out in Terminal too, and says so; otherwise only Kuvo Code's own goes.
+  // on a Mac), signing out signs it out in other apps that use the same sign-in, and says so; otherwise only Kuvo Code's own goes.
   const shared = meta.signOutShared === true;
   const stays = meta.signOutStops === true ? "A turn running on it stops; your sessions stay" : "Your sessions stay";
   const signOut: AccountAction = {
@@ -181,7 +181,7 @@ export function accountState(account: ListedAccount, offered: OfferedMethods, { 
     confirm: {
       title: `Sign out of ${name}?`,
       message: shared
-        ? `${name} is signed out on ${computer}, in Terminal too, and its models leave the model picker. ${stays}; sign in again to use it.`
+        ? `${name} is signed out on ${computer}, in other apps that use the same sign-in, and its models leave the model picker. ${stays}; sign in again to use it.`
         : `${name} is signed out in Kuvo Code on ${computer}, and its models leave the model picker. ${stays}; sign in again to use it. Outside Kuvo Code, ${name} stays as it is.`,
       label: "Sign Out",
     },
@@ -205,8 +205,7 @@ export function accountState(account: ListedAccount, offered: OfferedMethods, { 
     return finish();
   }
   if (signsIn) {
-    // Wherever one of its sign-ins ended, the one in use or another, or the one in use failed.
-    if (state === "ended" || state === "problem" || said.some(each => each.state === "ended")) actions.push({ id: "signInAgain", label: words.again });
+    actions.push({ id: "signInAgain", label: words.again });
     // (The engine uses one at a time: another is kept beside it.)
     actions.push({ id: "addAnother", label: words.another });
   }

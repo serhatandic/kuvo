@@ -13,7 +13,7 @@ import type { SettingAction, SettingBadge, SettingField, SettingFieldWords, Sett
 import { isObject } from "../../shared/json";
 import type { Target } from "../../shared/records";
 import { call } from "../engine/client";
-import type { RouteContext } from "../server/context";
+import { fromLocalApp, type RouteContext } from "../server/context";
 import { CHANGED_SINCE, CONFIG_FILE, readSettings, SERVERS, valueAt } from "./config";
 import { loadSignInReturn } from "./engine";
 import { integrationCatalog, reconnectEverywhere } from "./integrations";
@@ -23,7 +23,7 @@ import { settingsRoute } from "./settings";
 import { dropFlow, endFlow, FLOWS_FILE, flowsOf, keepFlow } from "./settings-flows";
 import { asked, item, mtime, refusal, row, said, STALE, staleOrRefusal, unreadPage } from "./settings-kit";
 import type { Refused, Section } from "./settings-kit";
-import { failureWords } from "./sign-in";
+import { failureWords, oauthPage, oauthStartBody } from "./sign-in";
 
 const TITLE = "MCP Servers";
 
@@ -262,12 +262,12 @@ function flowOf(context: RouteContext, flow: ReturnType<typeof flowsOf>[number])
   if (flow.state === "failed") return { id: flow.id, state: "failed", title, line: flow.line ?? "Signing in didn’t work.", actions: [{ id: "sign-in", title: "Try Again" }, { id: "dismiss", title: "OK" }] };
   const opens = flow.about.url;
   return {
-    id: flow.id, state: "waiting", title, line: "Finish signing in on its page in your browser.",
+    id: flow.id, state: "waiting", title, line: fromLocalApp(context.request) ? "Finish signing in on its page in your browser." : "Finish signing in in your browser. If the last page can’t load, copy its address and paste it here.",
     ...(opens ? { opens } : {}),
     // (Its page ends at an address on this box's computer: from elsewhere, pasted back.)
-    ...(context.request.fromApp ? {} : { code: { title: "Or paste the address the page ended on", placeholder: "http://127.0.0.1:19876/mcp/oauth/callback?code=…", action: "finish" } }),
+    ...(fromLocalApp(context.request) ? {} : { code: { title: "Or paste the address the page ended on", placeholder: "http://127.0.0.1:19876/mcp/oauth/callback?code=…", action: "finish" } }),
     // (`finish` takes a pasted address: offered only with the field for it.)
-    actions: [...(opens ? [{ id: "open-sign-in", title: "Open Sign-In Page", opens }] : []), ...(context.request.fromApp ? [] : [{ id: "finish", title: "Finish" }]), { id: "cancel", title: "Cancel" }],
+    actions: [...(opens ? [{ id: "open-sign-in", title: "Open Sign-In Page", opens }] : []), ...(fromLocalApp(context.request) ? [] : [{ id: "finish", title: "Finish" }]), { id: "cancel", title: "Cancel" }],
   };
 }
 
@@ -459,8 +459,9 @@ async function signIn(context: RouteContext, known: Facts, row: string, name: st
     const account = (Array.isArray(listed) ? listed : []).find((each: any) => each?.id === integration) as { methods?: { type?: string; id?: string }[] } | undefined;
     const method = account?.methods?.find(each => each?.type === "oauth" && typeof each.id === "string");
     if (!method) return { status: 409, message: `${name}'s sign-in can't be started from here.` };
-    const started = await call(known.engine, "POST", `/api/integration/${encodeURIComponent(integration)}/connect/oauth`, { methodID: method.id }, AbortSignal.timeout(30_000)) as { attemptID?: string; url?: string } | null;
+    const started = await call(known.engine, "POST", `/api/integration/${encodeURIComponent(integration)}/connect/oauth`, oauthStartBody(context.request, { methodID: method.id }), AbortSignal.timeout(30_000)) as { attemptID?: string; url?: string } | null;
     if (!started?.attemptID) return { status: 502, message: "The sign-in couldn't be started." };
+    if (!fromLocalApp(context.request) && oauthPage(started.url).local) return { status: 409, message: `Open Kuvo Code on ${computerHere(context)} and start the sign-in there. The sign-in page only opens on that computer.` };
     // (Its page is the server's to name: only a web page is kept to open.)
     const page = typeof started.url === "string" && /^https?:\/\//i.test(started.url) ? started.url : undefined;
     keepFlow({ section: "mcp", row, id: started.attemptID, about: { integration, attempt: started.attemptID, server: name, ...(page ? { url: page } : {}) } });

@@ -301,7 +301,7 @@ impl SignIn {
                     if is_page(&attempt.url) {
                         cx.open_url(&attempt.url);
                     }
-                    this.pasting = attempt.mode == "code";
+                    this.pasting = attempt.mode == "code" || attempt.paste_address;
                     this.step = Step::Waiting { attempt, status: None };
                     this.follow(cx);
                 }
@@ -376,6 +376,13 @@ impl SignIn {
             cx.write_to_clipboard(ClipboardItem::new_string(code.clone()));
             self.copied = true;
         }
+        if status.paste_address && !attempt.paste_address {
+            attempt.paste_address = true;
+            if let Some(instructions) = status.instructions.clone() {
+                attempt.instructions = instructions;
+            }
+            self.pasting = true;
+        }
         *shown = Some(status);
         true
     }
@@ -445,10 +452,18 @@ impl SignIn {
             return;
         }
         let (side, account, id) = (self.side, self.account.clone(), attempt.id.clone());
+        let paste_address = attempt.paste_address;
         self.code_error = None;
         self.run(
-            move |client| client.complete_sign_in(side, &account, &id, &code),
-            |this, done, _| match done {
+            move |client| {
+                if paste_address {
+                    client.return_sign_in_address(&code)
+                } else {
+                    client.complete_sign_in(side, &account, &id, &code)
+                }
+            },
+            move |this, done, _| match done {
+                Ok(()) if paste_address => {}
                 Ok(()) => {
                     this.poll = None;
                     this.step = Step::Done;
@@ -744,7 +759,7 @@ impl SignIn {
         }
         // A code to paste back: one that ends on it (`mode: code`), or one that may (`acceptsCode`).
         if self.pasting {
-            if attempt.mode != "code" {
+            if attempt.mode != "code" && !attempt.paste_address {
                 out.push(quiet("If the page gave you a code, paste it here.", cx));
             }
             out.push(

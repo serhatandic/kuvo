@@ -1,3 +1,4 @@
+import { GITHUB_WORK_QUEUE } from "../../shared/github";
 // Signing in to an account (PROTOCOL.md, "Signing in"): the ways a client offers, in the box's order
 // and words, for one account (`kuvo/sign-in/methods`) or every one listed (`kuvo/sign-in/accounts`,
 // what Accounts' Sign In buttons and hints go by), and how a started sign-in is going, with what to say when it
@@ -14,7 +15,7 @@ import { planHides } from "../work/model-rule";
 import { readEndedSignIns } from "./accounts";
 import { agentsAway, type AgentsAway, AGENTS_RESTARTING, bridgeBack } from "./agents-down";
 import { engineDown } from "./engine";
-import type { AnswerPiece, RouteContext } from "../server/context";
+import { fromLocalApp, type AnswerPiece, type LinkRequest, type RouteContext } from "../server/context";
 import { plainName } from "../../shared/text";
 import { computerInSentence } from "../computer-name";
 import { accountState } from "./sign-in-state";
@@ -203,7 +204,7 @@ export function failureWords(status: "failed" | "expired", message?: unknown): s
 /** Where `query` asks about: the coding agents' bridge (`agents=1`, for an agent's account), else
  * the engine; or why it can't be asked now. */
 async function placeOf(query: URLSearchParams, context: RouteContext): Promise<{ target: Target } | { down: AgentsAway | { message: string } }> {
-  if (query.get("agents") === "1") {
+  if (query.get("agents") === "1" || query.get("integration") === GITHUB_WORK_QUEUE) {
     // (While the bridge restarts, waited for: PROTOCOL.md, "The coding agents' state".)
     const bridge = await bridgeBack(context.bridge, context.signal);
     return bridge ? { target: bridge } : { down: agentsAway() ?? { message: AGENTS_RESTARTING, reason: "agentsRestarting" } };
@@ -212,6 +213,67 @@ async function placeOf(query: URLSearchParams, context: RouteContext): Promise<{
     return { target: context.readEngine() };
   } catch {
     return { down: { message: engineDown() } };
+  }
+}
+
+/** The request's transport decides where the browser is. Older clients used to send their own hint. */
+export function oauthStartBody(request: LinkRequest, given: Record<string, unknown>) {
+  return { ...given, remote: !fromLocalApp(request) };
+}
+
+function loopback(value: string): URL | undefined {
+  try {
+    const url = new URL(value);
+    if (["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)) return url;
+  } catch {}
+  return undefined;
+}
+
+/** An OAuth page may finish by returning to a listener on the computer that started it. */
+export function oauthPage(url: unknown): { local: boolean; returns: boolean } {
+  if (typeof url !== "string") return { local: false, returns: false };
+  try {
+    const page = new URL(url);
+    const returns = [...page.searchParams].some(([name, value]) => ["redirect_uri", "redirect_url", "redirect", "callback", "return_to"].includes(name.toLowerCase()) && loopback(value));
+    return { local: !!loopback(url), returns };
+  } catch {
+    return { local: false, returns: false };
+  }
+}
+
+function pasteAddress(attempt: Record<string, unknown>, request: LinkRequest) {
+  if (fromLocalApp(request) || !oauthPage(attempt.url).returns || attempt.acceptsCode === true || attempt.mode === "code") return {};
+  return {
+    pasteAddress: true,
+    instructions: "Finish signing in in your browser. If the last page can’t load, copy its address and paste it here.",
+  };
+}
+
+function useHostBrowser(request: LinkRequest): string {
+  return `Open Kuvo Code on ${computerInSentence(request)} and start the sign-in there. Your browser needs to finish on that computer.`;
+}
+
+/** GitHub for Work Queue shares the provider account sheet, and keeps its sign-in on this computer. */
+export async function workQueueAccount(context: RouteContext): Promise<ListedAccount | null> {
+  const target = context.bridge();
+  if (!target) return null;
+  return await call(target, "GET", `/api/integration/${GITHUB_WORK_QUEUE}`, undefined, AbortSignal.timeout(6_000))
+    .then(value => isObject(value) && value.id === GITHUB_WORK_QUEUE ? value : null, () => null);
+}
+
+/** Compatibility for the phone's provider API. */
+export async function* workQueueSignInRoute(context: RouteContext): AsyncGenerator<AnswerPiece> {
+  const { request, json, signal } = context;
+  const bridge = await bridgeBack(context.bridge, signal);
+  if (!bridge) return yield* json(503, { message: "GitHub sign-in is starting up on this computer. Try again in a moment." });
+  const method = request.method.toUpperCase();
+  try {
+    const body = parsed(request.body);
+    const result = await call(bridge, method, `/${context.route}`, method === "POST" && isObject(body) ? oauthStartBody(request, body) : undefined, signal);
+    return yield* json(200, { data: result });
+  } catch (error) {
+    const status = (error as { status?: number }).status;
+    return yield* json(status ?? 502, { message: error instanceof Error ? error.message : "GitHub sign-in didn’t answer." });
   }
 }
 
@@ -226,8 +288,12 @@ async function* accountsRoute(context: RouteContext, query: URLSearchParams): As
   if ("down" in place) return yield* json(503, place.down);
   const deadline = AbortSignal.timeout(15_000);
   try {
-    const listed = await call(place.target, "GET", "/api/integration", undefined, signal ? AbortSignal.any([signal, deadline]) : deadline);
+    const [listed, github] = await Promise.all([
+      call(place.target, "GET", "/api/integration", undefined, signal ? AbortSignal.any([signal, deadline]) : deadline),
+      query.get("agents") === "1" ? null : workQueueAccount(context),
+    ]);
     const accounts = (Array.isArray(listed) ? listed : []).filter((each): each is ListedAccount => typeof (each as ListedAccount | null)?.id === "string");
+    if (github) accounts.push(github);
     const agents = query.get("agents") === "1";
     // The engine's plans whose saved sign-in runs were refused with, as the box keeps them.
     const ended = agents ? new Map<string, string>() : readEndedSignIns();
@@ -260,10 +326,16 @@ async function* startRoute(context: RouteContext, query: URLSearchParams): Async
   // (A coding agent's sign-in may download its program first: longer than a read.)
   const deadline = AbortSignal.timeout(120_000);
   try {
-    const started = await call(place.target, "POST", `/api/integration/${encodeURIComponent(integration)}/connect/oauth`, { methodID: given.methodID, ...(isObject(given.answer) ? { answer: given.answer } : {}) }, signal ? AbortSignal.any([signal, deadline]) : deadline);
+    const started = await call(place.target, "POST", `/api/integration/${encodeURIComponent(integration)}/connect/oauth`, oauthStartBody(request, { methodID: given.methodID, ...(isObject(given.answer) ? { answer: given.answer } : {}) }), signal ? AbortSignal.any([signal, deadline]) : deadline);
     if (!isObject(started)) return yield* json(502, { message: "The sign-in couldn't be started." });
+    if (!fromLocalApp(request) && oauthPage(started.url).local) {
+      if (typeof started.attemptID === "string") {
+        await call(place.target, "DELETE", `/api/integration/${encodeURIComponent(integration)}/connect/oauth/${encodeURIComponent(started.attemptID)}`, undefined, AbortSignal.timeout(3_000)).catch(() => {});
+      }
+      return yield* json(409, { message: useHostBrowser(request) });
+    }
     const userCode = userCodeOf(started);
-    return yield* json(200, { ...started, ...(userCode ? { userCode } : {}) });
+    return yield* json(200, { ...started, ...pasteAddress(started, request), ...(userCode ? { userCode } : {}) });
   } catch (error) {
     if (deadline.aborted) return yield* json(504, { message: "It didn't answer in time. Try again." });
     const status = (error as { status?: unknown } | null)?.status;
@@ -292,6 +364,10 @@ export async function* signInRoute(context: RouteContext): AsyncGenerator<Answer
   try {
     if (attempt === null) {
       // The whole list, as clients list accounts (the bridge reads each agent's anew for one alone).
+      if (integration === GITHUB_WORK_QUEUE) {
+        const github = await workQueueAccount(context);
+        return github ? yield* json(200, signInMethods(github)) : yield* json(404, { message: "Install GitHub CLI on this computer to sign in for Work Queue." });
+      }
       const listed = await call(place.target, "GET", "/api/integration", undefined, asking);
       const account = (Array.isArray(listed) ? listed : []).find(each => (each as ListedAccount | null)?.id === integration) as ListedAccount | undefined;
       if (!account) return yield* json(404, { message: `There's no ${integration} to sign in to here.` });
@@ -314,8 +390,13 @@ export async function* signInRoute(context: RouteContext): AsyncGenerator<Answer
     }
     const status = said?.status;
     if (status !== "pending" && status !== "complete" && status !== "failed" && status !== "expired") return yield* json(502, { message: "The sign-in's status couldn't be read." });
+    // A remote browser can paste a callback address, but it cannot open a page that starts locally.
+    if (status === "pending" && !fromLocalApp(request) && oauthPage(said?.url).local) {
+      await call(place.target, "DELETE", statusRoute, undefined, AbortSignal.timeout(3_000)).catch(() => {});
+      return yield* json(200, { status: "failed", failure: useHostBrowser(request) });
+    }
     const userCode = userCodeOf(said);
-    return yield* json(200, { ...said, ...(userCode ? { userCode } : {}), ...(status === "failed" || status === "expired" ? { failure: failureWords(status, said?.message) } : {}) });
+    return yield* json(200, { ...said, ...(status === "pending" && said ? pasteAddress(said, request) : {}), ...(userCode ? { userCode } : {}), ...(status === "failed" || status === "expired" ? { failure: failureWords(status, said?.message) } : {}) });
   } catch (error) {
     if (attempt === null ? deadline.aborted : (error as Error | null)?.name === "TimeoutError") return yield* json(504, { message: "It didn't answer in time. Try again." });
     const status = (error as { status?: unknown } | null)?.status;

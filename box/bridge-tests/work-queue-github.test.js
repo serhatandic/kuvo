@@ -262,7 +262,7 @@ test("a pull request is an item too: Done once it's merged, or closed unmerged",
 test("what gh can't read is said in words, and nothing is added; one gone later keeps what was last read", async () => {
   fs.writeFileSync(fail, "To get started with GitHub CLI, please run:  gh auth login\n");
   const signedOut = await tool("queue_add", { issue: "gh:kuvo-test/app#12" });
-  assert.deepEqual(signedOut, { isError: true, text: "gh isn't signed in to GitHub on this machine: gh auth login signs it in." });
+  assert.deepEqual(signedOut, { isError: true, text: "On this machine, sign in under Settings → Accounts → GitHub for Work Queue." });
   github(null);
   const missing = await tool("queue_add", { issue: "gh:kuvo-test/app#404" });
   assert.deepEqual(missing, { isError: true, text: "GitHub has no issue or pull request gh:kuvo-test/app#404 that gh on this machine may see (gh auth status says which account it uses)." });

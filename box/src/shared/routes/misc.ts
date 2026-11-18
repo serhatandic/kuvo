@@ -87,7 +87,7 @@ export const SIGN_IN_ACCOUNTS = object({ accounts: list(object({ id: string, ...
 /** A sign-in started in the browser (`POST kuvo/sign-in/start`): what the engine (or the coding
  * agents' bridge) answered (`attemptID`, its page's `url`, `instructions`, how it ends: `mode`), and
  * the code its page asks for, apart (`userCode`), where it has one. */
-export const SIGN_IN_STARTED = object({ "attemptID?": string, "url?": string, "instructions?": string, "mode?": string, "acceptsCode?": bool, "userCode?": string, "time?": any });
+export const SIGN_IN_STARTED = object({ "attemptID?": string, "url?": string, "instructions?": string, "mode?": string, "acceptsCode?": bool, "pasteAddress?": bool, "userCode?": string, "time?": any });
 
 /** How a started sign-in is going, as the engine (or the coding agents' bridge) says, with, once it
  * ended without signing in (`failed`, `expired`), what a client says of it (`failure`). */
@@ -97,6 +97,7 @@ export const SIGN_IN_STATUS = object({
   "url?": string,
   "instructions?": string,
   "userCode?": string,
+  "pasteAddress?": bool,
   "failure?": string,
 });
 

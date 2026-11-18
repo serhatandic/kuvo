@@ -241,8 +241,8 @@ export function withSeen<S extends Shown>(summary: S): S {
 
 /** Why `gh` read nothing, in words for an agent. */
 export const unreadWords = (unread: Unread): string =>
-  unread === "missing" ? `GitHub's gh isn't on ${HERE}: the Work Queue reads GitHub with it (cli.github.com), signed in with gh auth login.`
-    : unread === "signed-out" ? `gh isn't signed in to GitHub on ${HERE}: gh auth login signs it in.`
+  unread === "missing" ? `Install GitHub CLI on ${HERE}, then open Settings → Accounts → GitHub for Work Queue.`
+    : unread === "signed-out" ? `On ${HERE}, sign in under Settings → Accounts → GitHub for Work Queue.`
       : "gh couldn't reach GitHub just now: try again in a moment.";
 
 /** An issue or a pull request read now, with its description, for an agent adding or linking it;

@@ -82,12 +82,12 @@ beforeEach(() => {
 /** This computer, as the box words it to the app beside it (as `ask` asks). */
 const here = process.platform === "darwin" ? "this Mac" : "this computer"
 const page = async (fromApp = true) => {
-  const { status, json } = await ask(handler, "GET", "kuvo/settings/mcp", undefined, { fromApp })
+  const { status, json } = await ask(handler, "GET", "kuvo/settings/mcp", undefined, { fromApp, served: fromApp })
   expect(status).toBe(200)
   return json
 }
 const rowOf = (shown: any, id: string): any => shown.groups.flatMap((group: any) => group.rows.flatMap((row: any) => [row, ...(row.items ?? [])])).find((row: any) => row.id === id)
-const act = (row: any, action: string, values?: unknown, was = row.revision, fromApp = true) => ask(handler, "POST", `kuvo/settings/mcp/${encodeURIComponent(row.id)}/${action}`, { was, ...(values === undefined ? {} : { values }) }, { fromApp })
+const act = (row: any, action: string, values?: unknown, was = row.revision, fromApp = true) => ask(handler, "POST", `kuvo/settings/mcp/${encodeURIComponent(row.id)}/${action}`, { was, ...(values === undefined ? {} : { values }) }, { fromApp, served: fromApp })
 /** A form's own revision, which its values and checks are sent from. */
 const formOf = (row: any, action: string) => [...(row.actions ?? []), ...(row.add ? [row.add] : [])].find((each: any) => each.id === action)?.form
 const check = (row: any, action: string, values: unknown) => ask(handler, "POST", `kuvo/settings/mcp/${encodeURIComponent(row.id)}/${action}/check`, { was: formOf(row, action).revision, values })

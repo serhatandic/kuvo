@@ -200,7 +200,7 @@ export class CursorAgent implements Agent {
     const link = await Promise.race([url, Bun.sleep(30_000).then(() => "")])
     return {
       url: link,
-      instructions: "Finish signing in to Cursor in your browser. Cursor makes an API key for Kuvo Code, kept on this Mac.",
+      instructions: "Finish signing in to Cursor in your browser. Cursor makes an API key for Kuvo Code, kept on the computer running Cursor.",
       mode: "auto",
       status: () => status,
       cancel: () => abort.abort(),
@@ -228,7 +228,7 @@ export class CursorAgent implements Agent {
     const sdk = await this.sdk()
     const apiKey = await this.apiKey(sdk)
     if (!apiKey) return []
-    if (this.modelList && this.modelList.key === apiKey && Date.now() - this.modelList.at < 30 * 60_000) return this.modelList.models
+    if (this.modelList && this.modelList.key === apiKey && Date.now() - this.modelList.at < 5 * 60_000) return this.modelList.models
     let list: any[]
     try {
       list = await withTimeout(sdk.Cursor.models.list({ apiKey }), 15_000)

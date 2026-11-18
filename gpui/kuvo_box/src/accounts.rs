@@ -250,6 +250,8 @@ pub struct Attempt {
     /// It may end on a code to paste back instead (Claude Code's).
     #[serde(default, rename = "acceptsCode")]
     pub accepts_code: bool,
+    #[serde(default, rename = "pasteAddress")]
+    pub paste_address: bool,
     /// The code its page asks for, as the box says it apart.
     #[serde(default, rename = "userCode")]
     pub user_code: Option<String>,
@@ -266,6 +268,8 @@ pub struct Status {
     pub url: Option<String>,
     #[serde(default)]
     pub instructions: Option<String>,
+    #[serde(default, rename = "pasteAddress")]
+    pub paste_address: bool,
     #[serde(default, rename = "userCode")]
     pub user_code: Option<String>,
     /// What to show once it `failed` or `expired`, in the box's words.
@@ -395,6 +399,10 @@ impl BoxClient {
     /// Hands the engine the code a sign-in's page gave.
     pub fn complete_sign_in(&self, side: Side, account: &str, attempt: &str, code: &str) -> Result<()> {
         self.done(&Request::post(format!("{}/integration/{}/connect/oauth/{}/complete", side.api(), segment(account), segment(attempt)), json!({ "code": code })))
+    }
+
+    pub fn return_sign_in_address(&self, address: &str) -> Result<()> {
+        self.done(&Request::post("kuvo/sign-in/return?check=1", json!({ "url": address })))
     }
 
     /// Gives a sign-in up.

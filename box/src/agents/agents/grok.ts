@@ -268,8 +268,8 @@ export class GrokAgent implements Agent {
       home: this.context.home,
       temporary: this.context.temporary,
       instructions: options.remote
-        ? "Open Grok's page, sign in, and enter the code it shows here. Grok's CLI keeps the sign-in, as when you run grok login."
-        : "Finish signing in to Grok in your browser. Grok's CLI keeps the sign-in, as when you run grok login.",
+        ? "Open Grok's page, sign in, and enter the code it shows here."
+        : "Finish signing in to Grok in your browser.",
       signedIn: async () => (await this.read(true)).signedIn,
       printedPage: options.remote,
       userCode: options.remote ? /\b([A-Z0-9]{4,}(?:-[A-Z0-9]{4,})+)\b/ : undefined,

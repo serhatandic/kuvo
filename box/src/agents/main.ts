@@ -1,3 +1,4 @@
+import { GitHubSignIn } from "./github-sign-in"
 // Kuvo Code's agents bridge: sessions with the coding agents you already have (Claude Code, Codex,
 // Cursor, Grok, Antigravity), signed in as you, served to the app in the engine's own API.
 //
@@ -353,7 +354,7 @@ signIns.changed = (provider) => {
 }
 // A sign-in the bridge hears of itself (Claude ending one in a run, an account removed): asked again.
 subscribe((event) => {
-  if (event.type !== "integration.updated") return
+  if (event.type !== "integration.updated" || event.data?.accountRefresh === true) return
   const agent = roster.all().find((each) => each.providerID === (event.data as { integrationID?: unknown } | undefined)?.integrationID)
   if (agent) void signIns.ask(agent, false)
   else limits.ownChanged()
@@ -463,7 +464,8 @@ const carrying = new Carrying(sessions, store, (provider) => sessions.agent(prov
 let server: ReturnType<typeof Bun.serve>
 /** Making way for a newer bridge in its place, on a machine (below). */
 let renewal: Renewal | undefined
-const answer = handler({ roster, sessions, auto, link, password, version, build, groups, peers, goals, sideQuestions, handoffs, places, reviews, voice, artifacts, noted, restartOutside, carrying, limits, usage })
+const githubSignIn = new GitHubSignIn(context)
+const answer = handler({ roster, sessions, auto, link, password, version, build, groups, peers, goals, sideQuestions, handoffs, places, reviews, voice, artifacts, noted, restartOutside, carrying, limits, usage, refreshAccounts: true, githubSignIn })
 /** Requests being answered now (but the event feed's, which stays open): a newer bridge waits for them. */
 let answering = 0
 try {
@@ -544,7 +546,7 @@ renewal =
           const here = sessions.work()
           // (An agent's program updating is cut by nothing: an installer stopped halfway can leave it broken.)
           const turns = here.turns || answering > 0 || (groups?.runner.busy() ?? false) || updatesUnderWay()
-          const other = here.other || goals.busy() || sideQuestions.busy() || reviews.busy() || handoffs.busy() || signInsWaiting()
+          const other = here.other || goals.busy() || sideQuestions.busy() || reviews.busy() || handoffs.busy() || signInsWaiting() || githubSignIn.waiting()
           return { turns, other }
         },
         hold: (on) => sessions.hold(on),
@@ -644,6 +646,7 @@ function stop(handOver = false) {
   sideQuestions.stopAll()
   reviews.stopAll()
   cancelSignIns()
+  githubSignIn.cancel()
   // (Unless a newer bridge has put its own there.)
   try {
     if (record && JSON.parse(readFileSync(record, "utf8")).pid === process.pid) rmSync(record, { force: true })
