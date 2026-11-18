@@ -140,13 +140,14 @@ class CantClose extends Error {}
 
 /** Closes those of `folders` where nothing's going on, each looked at just before it's closed (a
  * run started meanwhile in one keeps it open); the rest, it says. */
-async function closeQuiet(engine: Target, folders: string[]): Promise<string[]> {
+async function closeQuiet(engine: Target, folders: string[], current = () => true): Promise<string[]> {
   const waiting: string[] = [];
   for (const folder of folders) {
     if ((await atWork(engine, [folder])).has(folder)) {
       waiting.push(folder);
       continue;
     }
+    if (!current()) return waiting;
     const closed = await close(engine, folder);
     if (closed === "unsupported") throw new CantClose();
     if (closed === "failed") waiting.push(folder);
@@ -235,39 +236,47 @@ async function refreshEngineWide(engine: EngineRecord, provider: string, folders
   return { status: 200, waiting: [] };
 }
 
-// One look at a time in this process; one asked for meanwhile goes after it.
+// One look at a time in this process, using the latest engine supplied for each file.
+type ModelsEngine = Target & Pick<EngineRecord, "pid">;
+const pendingSettlements = new Map<string, ModelsEngine>();
 let settling: Promise<void> | null = null;
-let settleAgain = false;
 
 /** The folders still to close (`run/models-due.json`) closed where their work is done now: as the
  * box hears its engine's events. Those the engine no longer has open open afresh anyway; a list
  * noted for an engine since restarted goes. Then what providers need learned again. */
-export function settleDueModels(engine: Target & Pick<EngineRecord, "pid">, file = MODELS_DUE_FILE): Promise<void> {
-  if (settling) {
-    settleAgain = true;
-    return settling;
-  }
+export function settleDueModels(engine: ModelsEngine, file = MODELS_DUE_FILE): Promise<void> {
+  pendingSettlements.set(file, { ...engine });
+  if (settling) return settling;
   settling = (async () => {
-    // (Once `settling` is set: a call from here on waits for it, or has it look again.)
     await null;
     try {
-      do {
-        settleAgain = false;
+      for (const [file, engine] of pendingSettlements) {
+        pendingSettlements.delete(file);
         const due = readDue(file);
-        if (!due) return;
-        if (due.engine !== engineOf(engine)) return writeDue(file, null);
+        if (!due) continue;
+        if (due.engine !== engineOf(engine)) {
+          writeDue(file, null);
+          continue;
+        }
+        const current = () => {
+          const next = pendingSettlements.get(file);
+          return (!next || engineOf(next) === due.engine) && readDue(file)?.engine === due.engine;
+        };
         const open = await openFolders(engine).catch(() => null);
-        if (!open) return;
+        if (!open || !current()) continue;
         const still = due.folders.filter(folder => open.includes(folder));
-        const waiting = await closeQuiet(engine, still).catch(() => null);
-        // One that can't close them at all keeps none for later.
-        if (!waiting) return writeDue(file, null);
+        const waiting = await closeQuiet(engine, still, current).catch(() => null);
+        if (!current()) continue;
+        if (!waiting) {
+          // One that can't close them at all keeps none for later.
+          writeDue(file, null);
+          continue;
+        }
         // As it is now: one noted meanwhile stays.
-        const now = readDue(file);
-        const added = now?.engine === due.engine ? now.folders.filter(folder => !due.folders.includes(folder)) : [];
+        const added = readDue(file)?.folders.filter(folder => !due.folders.includes(folder)) ?? [];
         writeDue(file, { engine: due.engine, folders: [...waiting, ...added] });
         if (waiting.length < still.length) await learnCompatibility(engine).catch(() => {});
-      } while (settleAgain);
+      }
     } finally {
       // Cleared at once after its last look, with nothing in between: one asked for after starts anew.
       settling = null;
