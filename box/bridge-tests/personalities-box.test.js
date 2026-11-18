@@ -261,3 +261,20 @@ test("a client follows the library: a line now, then each change from a route, a
   }
   assert.equal((await ask("POST", "kuvo/personalities/events")).status, 405);
 });
+
+test("a future personality library is refused without replacing it", async () => {
+  const before = fs.existsSync(library) ? fs.readFileSync(library, "utf8") : undefined;
+  const future = JSON.stringify({ kuvo: 2, personalities: [entry("pers_future", "Future", 1)] });
+  fs.mkdirSync(path.dirname(library), { recursive: true });
+  fs.writeFileSync(library, future);
+  try {
+    assert.throws(() => link.readPersonalities(), /Personality library format version 2/);
+    const response = await take({ kuvo: 1, personalities: [], removed: [] });
+    assert.equal(response.status, 409);
+    assert.equal(response.json.code, "unsupportedFormatVersion");
+    assert.equal(fs.readFileSync(library, "utf8"), future);
+  } finally {
+    if (before === undefined) fs.rmSync(library, { force: true });
+    else fs.writeFileSync(library, before);
+  }
+});

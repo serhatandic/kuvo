@@ -1,6 +1,15 @@
 // What a box's programs write in its `run` folder for each other, as each reads it.
 
+import fs from "node:fs";
+import { additiveObjectFormat } from "./format-version";
 import type { BotLook } from "./routes/bots";
+
+export const serveRecordFormat = additiveObjectFormat("Box server rendezvous");
+export const bridgeRecordFormat = additiveObjectFormat("Coding agents bridge rendezvous");
+
+export function readRendezvous<T>(format: ReturnType<typeof additiveObjectFormat>, file: string): T {
+  return format.read(JSON.parse(fs.readFileSync(file, "utf8"))) as T;
+}
 
 /** `run/engine.json`: the engine running here, as its launch wrote it (this Mac's app, or a machine's keeper). */
 export interface EngineRecord {

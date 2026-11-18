@@ -4,13 +4,13 @@
 import fs from "node:fs";
 import { processRuns as runs } from "../../shared/platform";
 import type { Fields } from "../../shared/json";
-import type { BridgeRecord, EngineRecord, Target } from "../../shared/records";
+import { bridgeRecordFormat, readRendezvous, type BridgeRecord, type EngineRecord, type Target } from "../../shared/records";
 import { BRIDGE_FILE, ENGINE_FILE, REAL_BOX } from "../home";
 import { sleep } from "../../shared/wait";
 
 export const readEngineFile = (): EngineRecord => JSON.parse(fs.readFileSync(ENGINE_FILE, "utf8"));
 // The coding agents' bridge beside the engine, when it runs: its port and password.
-export const readBridgeFile = (): BridgeRecord => JSON.parse(fs.readFileSync(BRIDGE_FILE, "utf8"));
+export const readBridgeFile = (): BridgeRecord => readRendezvous(bridgeRecordFormat, BRIDGE_FILE);
 
 /** The coding agents' bridge beside the engine, while it runs; null otherwise. */
 export function bridgeTarget(): Target | null {

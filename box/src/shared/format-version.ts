@@ -41,3 +41,6 @@ export function objectFormat(name: string, steps: readonly Upgrade<Record<string
     },
   };
 }
+
+/** Version 1 keeps the legacy object fields in place for neighbouring writers. */
+export const additiveObjectFormat = (name: string) => objectFormat(name, [fields => fields]);

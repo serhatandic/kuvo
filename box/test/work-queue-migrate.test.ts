@@ -115,3 +115,52 @@ test("a future owner file stays in place before and after the status migration",
   expect(() => changeQueues(() => {})).toThrow(/Work Queue owner file format version 2 is unsupported/)
   expect(fs.readFileSync(file, "utf8")).toBe(future)
 })
+
+test("legacy labels keep their order and ownership when written with a version", () => {
+  keep()
+  fs.writeFileSync(path.join(WORK_QUEUE, "model.json"), JSON.stringify({ model: 2 }))
+  const file = path.join(WORK_QUEUE, "labels.json")
+  const old = { labels: [{ id: "lbl_existing", name: "Existing", color: "sky" }], fromPrimary: ["lbl_existing"], primary: "peer" }
+  fs.writeFileSync(file, JSON.stringify(old))
+  expect(labels()).toEqual(old.labels)
+  expect(addLabel("New", "mint")).toEqual({ done: { id: "lbl_new", name: "New", color: "mint" } })
+  expect(JSON.parse(fs.readFileSync(file, "utf8"))).toEqual({
+    ...old,
+    labels: [...old.labels, { id: "lbl_new", name: "New", color: "mint" }],
+    formatVersion: 1,
+  })
+})
+
+test("future labels and status models survive an older box attempting an edit", () => {
+  const original = keep()
+  const file = path.join(WORK_QUEUE, "labels.json")
+  const future = JSON.stringify({ formatVersion: 2, labels: [], additional: ["keep me"] })
+  fs.writeFileSync(file, future)
+  expect(() => labels()).toThrow(/Work Queue labels format version 2/)
+  expect(() => addLabel("New", "mint")).toThrow(/Work Queue labels format version 2/)
+  expect(fs.readFileSync(file, "utf8")).toBe(future)
+  for (const [name, text] of Object.entries(original)) expect(fs.readFileSync(path.join(WORK_QUEUE, name), "utf8")).toBe(text)
+
+  const model = path.join(WORK_QUEUE, "model.json")
+  const futureModel = JSON.stringify({ formatVersion: 1, model: 3 })
+  fs.writeFileSync(model, futureModel)
+  expect(() => allItems()).toThrow(/Work Queue status model format version 3/)
+  expect(fs.readFileSync(model, "utf8")).toBe(futureModel)
+})
+
+test("peer summaries adopt legacy fields and retain a future file even when the peer is removed", async () => {
+  const { TOLD, forgetTold, keepTold, readTold } = await import("../src/link/work-queue/told")
+  const peer = "a".repeat(43)
+  const file = path.join(TOLD, `${peer}.json`)
+  const summary = { id: "wqt_abcdefgh", at: 7, items: [], owners: [], labels: [], kind: "mac" as const }
+  fs.mkdirSync(TOLD, { recursive: true })
+  fs.writeFileSync(file, JSON.stringify({ ...summary, heard: 8 }))
+  expect(readTold(peer)).toEqual({ ...summary, heard: 8 })
+  expect(keepTold(peer, summary, 9)).toBe(true)
+  expect(JSON.parse(fs.readFileSync(file, "utf8"))).toEqual({ ...summary, heard: 9, formatVersion: 1 })
+  const future = JSON.stringify({ ...summary, formatVersion: 2 })
+  fs.writeFileSync(file, future)
+  expect(() => keepTold(peer, summary, 10)).toThrow(/Work Queue peer summary format version 2/)
+  expect(() => forgetTold(peer)).toThrow(/Work Queue peer summary format version 2/)
+  expect(fs.readFileSync(file, "utf8")).toBe(future)
+})

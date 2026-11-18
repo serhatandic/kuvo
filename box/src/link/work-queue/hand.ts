@@ -9,6 +9,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import { readAttachment } from "./attachment-file";
 import path from "node:path";
+import { additiveObjectFormat, UnsupportedFormatVersion } from "../../shared/format-version";
 import { isObject } from "../../shared/json";
 import { plainName } from "../../shared/text";
 import { locked, writePrivate } from "../files";
@@ -41,6 +42,7 @@ import type { Target } from "../../shared/records";
 /** How long a hand-off waits for the box it goes to: then it's given up, and said. */
 export const HAND_LIFE = 30 * 86_400_000;
 const HAND_ID = /^wqh_[A-Za-z0-9_-]{8,40}$/;
+const handFormat = additiveObjectFormat("Work Queue handoff receipts");
 const SEEN = path.join(WORK_QUEUE, "handed.json");
 const SEEN_LOCK = path.join(WORK_QUEUE, ".handed.lock");
 
@@ -233,15 +235,18 @@ function seenHand(id: string, now: number, note = false): boolean {
   try {
     fs.mkdirSync(WORK_QUEUE, { recursive: true, mode: 0o700 });
     return locked(SEEN_LOCK, () => {
-      let seen: Record<string, number> = {};
-      try { seen = JSON.parse(fs.readFileSync(SEEN, "utf8")) ?? {}; } catch {}
+      let seen: Record<string, unknown> = {};
+      try { seen = handFormat.read(JSON.parse(fs.readFileSync(SEEN, "utf8"))); } catch (error) {
+        if (error instanceof UnsupportedFormatVersion) throw error;
+      }
       if (!note) return id in seen;
-      for (const [key, at] of Object.entries(seen)) if (now - at > HAND_LIFE) delete seen[key];
+      for (const [key, at] of Object.entries(seen)) if (typeof at === "number" && now - at > HAND_LIFE) delete seen[key];
       seen[id] = now;
-      writePrivate(SEEN, JSON.stringify(seen));
+      writePrivate(SEEN, JSON.stringify(handFormat.write(seen)));
       return true;
     });
-  } catch {
+  } catch (error) {
+    if (error instanceof UnsupportedFormatVersion) throw error;
     return false;
   }
 }

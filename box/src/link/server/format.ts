@@ -1,3 +1,4 @@
+import { UnsupportedFormatVersion } from "../../shared/format-version";
 import { ROUTE_VERSION, ROUTE_VERSION_HEADER, routeVersionError } from "../../shared/route-version";
 import type { LinkHandler } from "./context";
 
@@ -12,8 +13,16 @@ export function versionedRoutes(handle: LinkHandler): LinkHandler {
       yield { body: Buffer.from(JSON.stringify(error)) };
       return;
     }
-    for await (const piece of handle(request, phone, signal)) {
-      yield "head" in piece ? { head: { ...piece.head, headers: { ...piece.head.headers, ...headers } } } : piece;
+    let started = false;
+    try {
+      for await (const piece of handle(request, phone, signal)) {
+        started = true;
+        yield "head" in piece ? { head: { ...piece.head, headers: { ...piece.head.headers, ...headers } } } : piece;
+      }
+    } catch (error) {
+      if (started || !(error instanceof UnsupportedFormatVersion)) throw error;
+      yield { head: { status: 409, headers: { ...headers, "content-type": "application/json" } } };
+      yield { body: Buffer.from(JSON.stringify({ code: "unsupportedFormatVersion", message: error.message })) };
     }
   };
 }

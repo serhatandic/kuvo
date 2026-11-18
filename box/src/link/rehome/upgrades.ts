@@ -16,11 +16,15 @@ import { spawnSync } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { gitPreferencesFormat } from "../areas/git-words";
+import { projectsVersion, readProjectFields } from "../areas/projects";
+import { readWorktreeFields, worktreeRecordsFormat } from "../areas/worktree-records";
 import { UsageSettings } from "../../agents/usage/settings";
 import { isObject } from "../../shared/json";
 import { accountHome, homeFolder, located } from "../home";
-import { mergePersonalities } from "../personalities/library";
+import { mergePersonalities, personalityLibraryVersion, readPersonalities } from "../personalities/library";
 import { DEFAULT_RELAY } from "../mac/link";
+import { welcomeFormat } from "../setup/welcomed";
 import { placementOf, type MoveContext } from "./rewrite";
 import { Said } from "./said";
 import type { RunPlan } from "./state";
@@ -136,8 +140,9 @@ function projects({ prefs, staged, S }: Upgrade): void {
   const folders = [...new Set([...order, ...Object.keys(settings)])].filter(folder => here(folder) && !bots(folder));
   if (!folders.length) return;
   const file = staged("box/projects.json");
-  const kept = readJSON(file);
-  const list: Record<string, unknown>[] = isObject(kept) && Array.isArray(kept.projects) ? kept.projects.filter(isObject) : [];
+  const raw = readJSON(file);
+  const kept = isObject(raw) ? readProjectFields(raw) : {};
+  const list: Record<string, unknown>[] = Array.isArray(kept.projects) ? kept.projects.filter(isObject) : [];
   const known = new Set(list.map(each => each.directory));
   for (const directory of folders) {
     if (known.has(directory)) continue;
@@ -153,7 +158,7 @@ function projects({ prefs, staged, S }: Upgrade): void {
       ...(order.includes(directory) ? {} : { removed: true }),
     });
   }
-  writeWhole(file, JSON.stringify({ version: 1, projects: list }, null, 2));
+  writeWhole(file, JSON.stringify({ version: projectsVersion, projects: list }, null, 2));
 }
 
 /** The worktrees the app kept for its sessions (`worktrees`) and those it removed
@@ -164,10 +169,10 @@ function worktrees({ prefs, staged }: Upgrade): void {
   const removed = stringMap(prefs.removedWorktrees);
   if (!Object.keys(kept).length && !Object.keys(removed).length) return;
   const file = staged("box/worktrees.json");
-  const had = readJSON(file);
-  const records: Record<string, unknown>[] = isObject(had) && Array.isArray(had.worktrees) ? had.worktrees.filter(isObject) : [];
-  const handedOver = stringMap(isObject(had) ? had.handedOver : null);
-  const gone = stringMap(isObject(had) ? had.removed : null);
+  const had = readWorktreeFields(file);
+  const records: Record<string, unknown>[] = Array.isArray(had.worktrees) ? had.worktrees.filter(isObject) : [];
+  const handedOver = stringMap(had.handedOver);
+  const gone = stringMap(had.removed);
   for (const [folder, record] of Object.entries(kept).sort(([a], [b]) => a.localeCompare(b))) {
     if (!isObject(record)) continue;
     const project = here(record.project), root = here(record.root);
@@ -180,10 +185,10 @@ function worktrees({ prefs, staged }: Upgrade): void {
     if (records.some(each => each.root === folder || each.folder === folder) || folder in gone || folder in handedOver) continue;
     handedOver[folder] = project;
   }
-  writeWhole(file, JSON.stringify({
-    worktrees: records, removed: gone, restorable: isObject(had) && Array.isArray(had.restorable) ? had.restorable : [],
+  writeWhole(file, JSON.stringify(worktreeRecordsFormat.write({
+    worktrees: records, removed: gone, restorable: Array.isArray(had.restorable) ? had.restorable : [],
     ...(Object.keys(handedOver).length ? { handedOver } : {}),
-  }, null, 2));
+  }), null, 2));
 }
 
 /** Your machines (`machines`: each one's address for `ssh`, its other addresses, its key file)
@@ -251,10 +256,11 @@ function engineSettings({ prefs, staged, home, dropped }: Upgrade): void {
   }
   let next = keysNamedIn(settings, `${shown}/box/keys`) as Record<string, unknown>;
   const gitFile = staged("box/git.json");
-  const kept = readJSON(gitFile);
-  if (offered.length && !(isObject(kept) && kept.moved === true)) {
+  const found = readJSON(gitFile);
+  const kept = isObject(found) ? gitPreferencesFormat.read(found) : {};
+  if (offered.length && kept.moved !== true) {
     for (const [key, value] of offered) if (next[key] === undefined) next = { ...next, [key]: key === "branch_prefix" ? value : value.trim() };
-    writeWhole(gitFile, JSON.stringify({ ...(isObject(kept) ? kept : {}), moved: true }));
+    writeWhole(gitFile, JSON.stringify(gitPreferencesFormat.write({ ...kept, moved: true })));
   }
   if (JSON.stringify(next) !== JSON.stringify(settings)) writeSettings(file, next);
   // A bot's own settings name its keys the same way.
@@ -318,8 +324,8 @@ function link({ prefs, staged, home }: Upgrade): void {
  * (`run/welcomed.json`, "Your setup"), so they land in their sessions, not in the Welcome's steps. */
 function welcomed({ staged }: Upgrade): void {
   const file = staged("run/welcomed.json");
-  // (No time in it: a move run again writes the same file, and only its being there is read.)
-  if (!exists(file)) writeWhole(file, JSON.stringify({ moved: true }));
+  // No time in it: a move run again writes the same file.
+  if (!exists(file)) writeWhole(file, JSON.stringify(welcomeFormat.write({ moved: true })));
 }
 
 // Bots, personalities, group chats
@@ -367,13 +373,12 @@ function personalities({ S, staged }: Upgrade): void {
   const made = readJSON(path.join(S, "personalities.json")), removed = readJSON(path.join(S, "personalities-removed.json"));
   if (!Array.isArray(made) && !Array.isArray(removed)) return;
   const file = staged("bots/personalities.json");
-  const had = readJSON(file);
-  const library = mergePersonalities(isObject(had) ? had : null, {
+  const library = mergePersonalities(readPersonalities(file), {
     personalities: (Array.isArray(made) ? made : []).filter(isObject).map(each => ({ ...each, updated: Number(each.updated) || 0 })),
     removed: Array.isArray(removed) ? removed : [],
   });
   if (!library.personalities.length && !library.removed.length) return;
-  writeWhole(file, JSON.stringify({ kuvo: 1, ...library }, null, 2) + "\n");
+  writeWhole(file, JSON.stringify({ kuvo: personalityLibraryVersion, ...library }, null, 2) + "\n");
 }
 
 const isDate = (value: unknown): value is string => typeof value === "string" && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?(Z|[+-]\d\d:?\d\d)$/.test(value) && Number.isFinite(Date.parse(value));

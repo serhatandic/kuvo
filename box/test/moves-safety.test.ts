@@ -2,6 +2,7 @@ import "./safety"
 import { afterAll, beforeEach, expect, spyOn, test } from "bun:test"
 import fs from "node:fs"
 import path from "node:path"
+import { spawnSync } from "node:child_process"
 import { once } from "node:events"
 import { ask } from "./route-answer"
 import { interceptSync } from "./disk-fault"
@@ -11,8 +12,8 @@ const { BOTS, RUN, ENGINE_FILE, BRIDGE_FILE } = await import("../src/link/home")
 const { engineHandler } = await import("../src/link/server/router")
 const { serveBox } = await import("../src/link/server/serve")
 const { forgetMovesInMemory, hold, keepMoving, resumeMoves, sendMovesWith, takeMoveMail } = await import("../src/link/moves/move")
-const { MOVES, forgetMove, noteEnded, readMove, saveMove, switchedHere } = await import("../src/link/moves/records")
-const { pack } = await import("../src/link/moves/bundle")
+const { MOVES, compactDecisionHints, endedFor, forgetMove, noteEnded, readMove, saveMove, switchedHere } = await import("../src/link/moves/records")
+const { pack, unpack } = await import("../src/link/moves/bundle")
 const { filesOf, WORK_QUEUE } = await import("../src/link/work-queue/store")
 const { forgetWorkQueues, packWorkQueues } = await import("../src/link/work-queue/moves")
 import type { CarriedQueues } from "../src/link/work-queue/moves"
@@ -572,4 +573,57 @@ test("compacting a real move's routing hint keeps its indexed decision for an of
   mail.length = 0
   await incoming.activate()
   expect(mail.at(-1)).toMatchObject({ op: "switched", generation: 1, hash: incoming.hash })
+})
+
+test("move journals adopt the legacy shape and refuse to overwrite or discard a future owner record", () => {
+  const file = path.join(MOVES, `${id}.json`)
+  const original = record()
+  fs.mkdirSync(MOVES, { recursive: true })
+  fs.writeFileSync(file, JSON.stringify(original))
+  expect(readMove(id)).toEqual(original)
+  saveMove({ ...original, tries: 1 })
+  expect(JSON.parse(fs.readFileSync(file, "utf8"))).toEqual({ ...original, tries: 1, formatVersion: 1 })
+  const future = JSON.stringify({ ...original, formatVersion: 2, ownership: "here" })
+  fs.writeFileSync(file, future)
+  try {
+    expect(() => readMove(id)).toThrow(/Move journal format version 2/)
+    expect(() => saveMove(original)).toThrow(/Move journal format version 2/)
+    expect(() => forgetMove(id)).toThrow(/Move journal format version 2/)
+    expect(fs.readFileSync(file, "utf8")).toBe(future)
+  } finally {
+    fs.rmSync(file, { force: true })
+  }
+})
+
+test("future move receipts and routing hints remain intact", () => {
+  noteEnded(id, "switched", 1, [session], undefined, peer.key, bundle)
+  expect(JSON.parse(fs.readFileSync(decisionFile, "utf8"))).toEqual({ as: "switched", at: 1, ...bundle, peer: peer.key, formatVersion: 1 })
+  expect(JSON.parse(fs.readFileSync(decisionHint, "utf8"))).toEqual({ as: "switched", at: 1, sessions: [session], formatVersion: 1 })
+  const future = JSON.stringify({ as: "switched", at: 1, formatVersion: 2 })
+  fs.writeFileSync(decisionFile, future)
+  fs.writeFileSync(decisionHint, future)
+  expect(() => endedFor(id, peer.key)).toThrow(/Move ownership receipt format version 2/)
+  expect(() => noteEnded(id, "dropped")).toThrow(/Move ownership receipt format version 2/)
+  expect(() => compactDecisionHints(Date.now())).toThrow(/Move routing hint format version 2/)
+  expect(fs.readFileSync(decisionFile, "utf8")).toBe(future)
+  expect(fs.readFileSync(decisionHint, "utf8")).toBe(future)
+})
+
+test("a move bundle can be read without a version and refuses a future manifest", async () => {
+  const contents = { kind: "group", thing: group, name: "Group", exports: [], wasPaused: false } as const
+  const manifest = { ...contents, exports: [] }
+  const { file } = await pack(id, manifest)
+  const readManifest = spawnSync("tar", ["-xOzf", file, "move.json"], { encoding: "utf8" })
+  expect(readManifest.status).toBe(0)
+  expect(JSON.parse(readManifest.stdout)).toEqual({ ...manifest, formatVersion: 1 })
+  expect((await unpack(id)).contents).toEqual(manifest)
+
+  const fixture = path.join(path.dirname(file), "fixture")
+  fs.mkdirSync(fixture)
+  for (const formatVersion of [undefined, 2]) {
+    fs.writeFileSync(path.join(fixture, "move.json"), JSON.stringify({ ...manifest, formatVersion }))
+    expect(spawnSync("tar", ["-czf", file, "-C", fixture, "move.json"]).status).toBe(0)
+    if (formatVersion === undefined) expect((await unpack(id)).contents).toEqual(manifest)
+    else await expect(unpack(id)).rejects.toThrow(/Move bundle manifest format version 2/)
+  }
 })

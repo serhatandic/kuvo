@@ -90,6 +90,7 @@ test.if(mac)("what 0.7.2 kept itself comes along: projects, worktrees, machines,
   ] })
   // Worktrees' records, where they are now; one whose folder is gone isn't one; a removed one's project.
   expect(readJSON(join(K, "box", "worktrees.json"))).toEqual({
+    formatVersion: 1,
     worktrees: [{ project: m.repository, root: worktree, folder: worktree, branch: "kuvo/feature-one", base: "main" }], removed: {}, restorable: [],
     handedOver: { [join(K, "data", "opencode", "worktree", "gone")]: m.repository },
   })
@@ -100,7 +101,7 @@ test.if(mac)("what 0.7.2 kept itself comes along: projects, worktrees, machines,
   expect(settings.mcp.servers.notion.headers.Authorization).toBe("Bearer {file:~/.kuvo-code/box/keys/KUVO_KEY_NOTION_TOKEN}")
   expect(settings).toMatchObject({ branch_prefix: "me/", commit_instructions: "Sign off every commit.", instructions: [join(K, "opencode-files", "global-prompt.md")] })
   expect(readFileSync(join(K, "opencode-files", "global-prompt.md"), "utf8")).toBe("be brief")
-  expect(readJSON(join(K, "box", "git.json"))).toEqual({ moved: true })
+  expect(readJSON(join(K, "box", "git.json"))).toEqual({ moved: true, formatVersion: 1 })
   expect(readJSON(join(K, "box", "work.json"))).toEqual({ keepsAwake: false })
   // Your starred models come along, for every client's picker.
   expect(readJSON(join(K, "box", "models.json"))).toEqual({ starred: [{ providerID: "anthropic", id: "claude-opus-5-5" }, { providerID: "openai", id: "gpt-6" }] })

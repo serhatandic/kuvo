@@ -12,6 +12,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { additiveObjectFormat, UnsupportedFormatVersion } from "../../shared/format-version";
 import { isObject } from "../../shared/json";
 import { listOf, writePrivate } from "../files";
 import { watchFolders } from "../follow";
@@ -46,6 +47,9 @@ const AREA_FEATURES = { computers: "computers.manage", devices: "devices.pair" }
 
 export const FORWARDS = path.join(WORK_QUEUE, "forward");
 // What a keeper did for the asks it took, by asker and id (changes only: a read is done again).
+const forwardFormat = additiveObjectFormat("Work Queue forwarded request");
+const answerFormat = additiveObjectFormat("Work Queue forwarded answer");
+const doneFormat = additiveObjectFormat("Work Queue forwarded action receipts");
 const DONE_FILE = path.join(WORK_QUEUE, "acted.json");
 const ID = /^wqa_[A-Za-z0-9_-]{16,40}$/;
 const LEFT = /^(wqa_[A-Za-z0-9_-]{16,40})\.json$/;
@@ -96,11 +100,12 @@ export const forwardsSoon: { send: () => void } = { send: () => {} };
 
 const left = (id: string) => path.join(FORWARDS, `${id}.json`);
 const answerOf = (id: string) => path.join(FORWARDS, `${id}.answer.json`);
-const read = (file: string): Record<string, unknown> | null => {
+const read = (format: ReturnType<typeof additiveObjectFormat>, file: string): Record<string, unknown> | null => {
   try {
     const value: unknown = JSON.parse(fs.readFileSync(file, "utf8"));
-    return isObject(value) ? value : null;
-  } catch {
+    return isObject(value) ? format.read(value) : null;
+  } catch (error) {
+    if (error instanceof UnsupportedFormatVersion) throw error;
     return null;
   }
 };
@@ -118,7 +123,7 @@ export async function forwardAct(computer: Computer, named: string, act: Omit<Ac
   if (!backgroundRelay && offRelay()) return { status: 503, refused: `${here} isn't connected to your other computers now, so nothing was changed on ${computer.name}. Try again in a moment.` };
   const id = `wqa_${crypto.randomBytes(16).toString("base64url")}`;
   try {
-    writePrivate(left(id), JSON.stringify({ to: peer.key, act: { ...act, id, at: now } }));
+    writePrivate(left(id), JSON.stringify(forwardFormat.write({ to: peer.key, act: { ...act, id, at: now } })));
   } catch {
     return { status: 503, refused: `${here} couldn't send it to ${computer.name}. Try again in a moment.` };
   }
@@ -132,6 +137,8 @@ export async function forwardAct(computer: Computer, named: string, act: Omit<Ac
     return answer;
   } finally {
     madeHere.delete(id);
+    read(forwardFormat, left(id));
+    read(answerFormat, answerOf(id));
     fs.rmSync(left(id), { force: true });
     fs.rmSync(answerOf(id), { force: true });
   }
@@ -227,22 +234,27 @@ const madeHere = new Set<string>();
 // The answer to `id` once it's left beside it; "away" once the relay finds that computer not there
 // (after it was sent), "late" past the wait or once its asker went.
 function answered(id: string, key: string, wait: number, signal?: AbortSignal | null): Promise<Acted | "away" | "late"> {
-  return new Promise(resolve => {
+  return new Promise((resolve, reject) => {
     const until = Date.now() + wait;
     let done = false;
-    const finish = (value: Acted | "away" | "late") => {
+    const finish = (value: Acted | "away" | "late" | Error) => {
       if (done) return;
       done = true;
       watch.close();
       clearInterval(timer);
       signal?.removeEventListener("abort", gone);
-      resolve(value);
+      if (value instanceof Error) reject(value);
+      else resolve(value);
     };
     const check = () => {
-      const answer = read(answerOf(id));
-      if (answer && typeof answer.status === "number") return finish({ status: answer.status, value: answer.value });
-      if (awaySince(key) !== null) return finish("away");
-      if (Date.now() >= until || signal?.aborted) finish("late");
+      try {
+        const answer = read(answerFormat, answerOf(id));
+        if (answer && typeof answer.status === "number") return finish({ status: answer.status, value: answer.value });
+        if (awaySince(key) !== null) return finish("away");
+        if (Date.now() >= until || signal?.aborted) finish("late");
+      } catch (error) {
+        finish(error instanceof Error ? error : new Error(String(error)));
+      }
     };
     const gone = () => finish("late");
     // (The system's watch, and a look every half second for what one missed.)
@@ -266,10 +278,11 @@ export function sendForwards(host: Pick<LinkHost, "send" | "welcomed"> | null | 
     const id = LEFT.exec(name)?.[1];
     if (!id) continue;
     here.add(id);
-    const kept = read(path.join(FORWARDS, name));
+    const kept = read(forwardFormat, path.join(FORWARDS, name));
     const act = isObject(kept?.act) ? kept.act : null;
     // (Its asker is gone: a process that stopped mid-wait leaves it.)
     if (!act || typeof act.at !== "number" || now - act.at > waitFor(act) + AGAIN_AFTER) {
+      read(answerFormat, answerOf(id));
       fs.rmSync(path.join(FORWARDS, name), { force: true });
       fs.rmSync(answerOf(id), { force: true });
       here.delete(id);
@@ -288,7 +301,10 @@ export function sendForwards(host: Pick<LinkHost, "send" | "welcomed"> | null | 
   // (An answer whose ask is gone.)
   for (const name of names) {
     const id = /^(wqa_[A-Za-z0-9_-]{16,40})\.answer\.json$/.exec(name)?.[1];
-    if (id && !here.has(id)) fs.rmSync(answerOf(id), { force: true });
+    if (id && !here.has(id)) {
+      read(answerFormat, answerOf(id));
+      fs.rmSync(answerOf(id), { force: true });
+    }
   }
 }
 
@@ -297,9 +313,11 @@ export function takeActed(sender: MailSender, given: unknown): void {
   if (!isObject(given) || typeof given.id !== "string" || !ID.test(given.id)) return;
   const status = given.status;
   if (typeof status !== "number" || !Number.isInteger(status) || status < 200 || status > 599) return;
-  const kept = read(left(given.id));
+  const kept = read(forwardFormat, left(given.id));
   if (kept?.to !== sender.key) return;
-  try { writePrivate(answerOf(given.id), JSON.stringify({ status, value: given.value ?? null })); } catch {}
+  const file = answerOf(given.id);
+  read(answerFormat, file);
+  try { writePrivate(file, JSON.stringify(answerFormat.write({ status, value: given.value ?? null }))); } catch {}
 }
 
 // What this box did for each ask, by asker and id, and when it last answered it: so one sent again
@@ -324,7 +342,7 @@ function prune<T extends { until: number; answer: Acted | null; answered?: numbe
 }
 
 function readDone(now: number): Map<string, { until: number; answer: Acted | null }> {
-  const kept = read(DONE_FILE) ?? {};
+  const kept = read(doneFormat, DONE_FILE) ?? {};
   const fresh = new Map<string, { until: number; answer: Acted | null }>();
   for (const [key, each] of Object.entries(kept)) {
     if (isObject(each) && typeof each.until === "number") fresh.set(key, { until: each.until, answer: isObject(each.answer) ? each.answer as unknown as Acted : null });
@@ -339,8 +357,10 @@ function keepDone(key: string, done: Done, now: number): void {
     kept.delete(key);
     kept.set(key, { until: done.until, answer: done.answer });
     prune(kept, now);
-    writePrivate(DONE_FILE, JSON.stringify(Object.fromEntries(kept)));
-  } catch {}
+    writePrivate(DONE_FILE, JSON.stringify(doneFormat.write(Object.fromEntries(kept))));
+  } catch (error) {
+    if (error instanceof UnsupportedFormatVersion) throw error;
+  }
 }
 
 /** An ask from another of your computers' boxes: done here as this box's own client's (`run`), and

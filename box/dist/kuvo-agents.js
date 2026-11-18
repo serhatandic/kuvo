@@ -38,7 +38,21 @@ function upgradeFormat(format, from, value, steps) {
     throw new UnsupportedFormatVersion(format, version, steps.length);
   return steps.slice(version).reduce((record, step) => step(record), value);
 }
-var UnsupportedFormatVersion;
+function objectFormat(name, steps) {
+  return {
+    version: steps.length,
+    read(value) {
+      if (!isObject(value))
+        throw new Error(`${name} isn't a JSON object.`);
+      const { formatVersion: from, ...fields } = value;
+      return upgradeFormat(name, from, fields, steps);
+    },
+    write(fields) {
+      return { ...fields, formatVersion: steps.length };
+    }
+  };
+}
+var UnsupportedFormatVersion, additiveObjectFormat = (name) => objectFormat(name, [(fields) => fields]);
 var init_format_version = __esm(() => {
   UnsupportedFormatVersion = class UnsupportedFormatVersion extends Error {
     constructor(format, found, current) {
@@ -27849,6 +27863,7 @@ class UsageSettings {
       return;
     try {
       const saved = JSON.parse(readFileSync32(file, "utf8"));
+      checkSettingsFormat(saved);
       this.units = unitsFrom(saved?.units);
       this.imported = saved?.imported === true;
       if (typeof saved?.setup === "string" || saved?.setup === null)
@@ -27859,7 +27874,10 @@ class UsageSettings {
         if (value !== undefined)
           this.units.codexFallback = { value, stamp: { v: Math.floor(statSync14(file).mtimeMs), by: "", imported: true } };
       }
-    } catch {}
+    } catch (error) {
+      if (error instanceof UnsupportedFormatVersion)
+        throw error;
+    }
     for (const unit of Object.values(this.units))
       if (!unit.stamp.imported)
         this.highest = Math.max(this.highest, unit.stamp.v);
@@ -27988,11 +28006,20 @@ class UsageSettings {
     if (!this.file)
       return;
     try {
+      try {
+        checkSettingsFormat(JSON.parse(readFileSync32(this.file, "utf8")));
+      } catch (error) {
+        if (error instanceof UnsupportedFormatVersion)
+          throw error;
+      }
       mkdirSync23(dirname17(this.file), { recursive: true });
       const codex = this.units.codexFallback ? { codex: { fallback: this.units.codexFallback.value } } : {};
-      writeFileSync24(this.file + ".new", JSON.stringify({ ...codex, kuvo: 1, units: this.units, ...this.imported ? { imported: true } : {}, ...this.setup !== undefined ? { setup: this.setup } : {} }), { mode: 384 });
+      writeFileSync24(this.file + ".new", JSON.stringify({ ...codex, kuvo: settingsSteps.length, units: this.units, ...this.imported ? { imported: true } : {}, ...this.setup !== undefined ? { setup: this.setup } : {} }), { mode: 384 });
       renameSync19(this.file + ".new", this.file);
-    } catch {}
+    } catch (error) {
+      if (error instanceof UnsupportedFormatVersion)
+        throw error;
+    }
   }
 }
 async function settingsRoutes(settings, choices, method, rest, body) {
@@ -28043,8 +28070,9 @@ var SETTINGS_UNITS, LAYOUT_LISTS, MOST_IDS = 1000, MOST_PROVIDERS = 200, ID, ids
   if (!Number.isSafeInteger(stamp.v) || stamp.v < 0 || typeof stamp.by !== "string" || stamp.by.length > 200)
     return null;
   return { v: stamp.v, by: stamp.by, ...stamp.imported === true ? { imported: true } : {} };
-}, FIELDS, versionOf = (stamp) => `${stamp.v}/${stamp.by}${stamp.imported ? "/i" : ""}`, json10 = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } }), answer3 = (settings, extra = {}) => json10({ data: { settings: settings.values(), versions: settings.versions(), imported: settings.imported, notificationAvailability: notificationAvailability(), ...extra } });
+}, FIELDS, versionOf = (stamp) => `${stamp.v}/${stamp.by}${stamp.imported ? "/i" : ""}`, settingsSteps, checkSettingsFormat = (value) => upgradeFormat("Usage settings", value?.kuvo, value, settingsSteps), json10 = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } }), answer3 = (settings, extra = {}) => json10({ data: { settings: settings.values(), versions: settings.versions(), imported: settings.imported, notificationAvailability: notificationAvailability(), ...extra } });
 var init_settings = __esm(() => {
+  init_format_version();
   init_notices();
   SETTINGS_UNITS = ["layout", "providers", "totalSpend", "codexFallback", "notifications"];
   LAYOUT_LISTS = ["placed", "providerOrder", "pinned", "expanded", "expandOnEnable", "seeded"];
@@ -28057,6 +28085,7 @@ var init_settings = __esm(() => {
     codexFallback: [],
     notifications: ["underTenPercent", "healthyToClose", "closeToRunningOut"]
   };
+  settingsSteps = [(value) => value];
 });
 
 // box/src/agents/usage/usage.ts
@@ -40316,6 +40345,18 @@ var init_engine_swap = __esm(() => {
   SWAP_MOST = 30 * 60000;
 });
 
+// box/src/shared/records.ts
+import fs13 from "fs";
+function readRendezvous(format, file) {
+  return format.read(JSON.parse(fs13.readFileSync(file, "utf8")));
+}
+var serveRecordFormat, bridgeRecordFormat;
+var init_records = __esm(() => {
+  init_format_version();
+  serveRecordFormat = additiveObjectFormat("Box server rendezvous");
+  bridgeRecordFormat = additiveObjectFormat("Coding agents bridge rendezvous");
+});
+
 // box/src/agents/store.ts
 import { mkdirSync as mkdirSync27, readdirSync as readdirSync22, readFileSync as readFileSync39, renameSync as renameSync24, rmSync as rmSync18, statSync as statSync18, writeFileSync as writeFileSync29 } from "fs";
 import { join as join42 } from "path";
@@ -40429,7 +40470,7 @@ var init_store3 = __esm(() => {
 });
 
 // box/src/shared/hang.ts
-import fs13 from "fs";
+import fs14 from "fs";
 import net2 from "net";
 import path10 from "path";
 function ask2(port, within) {
@@ -40529,21 +40570,21 @@ class HangWatch {
   }
   server() {
     try {
-      const { pid, port } = JSON.parse(fs13.readFileSync(this.options.record, "utf8"));
+      const { pid, port } = JSON.parse(fs14.readFileSync(this.options.record, "utf8"));
       return Number.isInteger(pid) && pid > 1 && Number.isInteger(port) && port > 0 ? { pid, port } : null;
     } catch {
       return null;
     }
   }
   stoppedOnPurpose() {
-    return ["stopped", ".launching", ".updating", ".system-asking"].some((name) => fs13.existsSync(path10.join(this.options.run, name)));
+    return ["stopped", ".launching", ".updating", ".system-asking"].some((name) => fs14.existsSync(path10.join(this.options.run, name)));
   }
   endedLately() {
     const file = path10.join(this.options.run, `hung-${this.options.name}.json`);
-    if (!fs13.existsSync(file))
+    if (!fs14.existsSync(file))
       return [];
     try {
-      const times = JSON.parse(fs13.readFileSync(file, "utf8"));
+      const times = JSON.parse(fs14.readFileSync(file, "utf8"));
       return Array.isArray(times) ? times.filter((time) => typeof time === "number" && this.now() - time < ENDED_WHILE && time <= this.now()) : null;
     } catch {
       return null;
@@ -40559,8 +40600,8 @@ class HangWatch {
     }
     const file = path10.join(this.options.run, `hung-${this.options.name}.json`);
     try {
-      fs13.writeFileSync(`${file}.new`, JSON.stringify([...lately, this.now()]), { mode: 384 });
-      fs13.renameSync(`${file}.new`, file);
+      fs14.writeFileSync(`${file}.new`, JSON.stringify([...lately, this.now()]), { mode: 384 });
+      fs14.renameSync(`${file}.new`, file);
     } catch {
       console.error(`The ${this.options.name} has said nothing for ${minutes} minutes, but that can't be noted in ${file}: it's left as it is, for you to restart.`);
       return;
@@ -41362,7 +41403,7 @@ function stop(handOver = false, startReplacement = true) {
   cancelSignIns();
   githubSignIn.cancel();
   try {
-    if (record2 && JSON.parse(readFileSync41(record2, "utf8")).pid === process.pid)
+    if (record2 && readRendezvous(bridgeRecordFormat, record2).pid === process.pid)
       rmSync19(record2, { force: true });
   } catch {}
   sessions.closeAll();
@@ -41409,10 +41450,18 @@ var version3 = "1", script, build, home3, password, kept3, ownRuntime, machineEn
   if (!record2)
     return;
   try {
-    writeSecret(record2, JSON.stringify({ pid: process.pid, port: server4.port, password, build, renewal, ...machineHandover ? { machineHandover: true } : {} }));
+    try {
+      readRendezvous(bridgeRecordFormat, record2);
+    } catch (error) {
+      if (error instanceof UnsupportedFormatVersion)
+        throw error;
+    }
+    writeSecret(record2, JSON.stringify(bridgeRecordFormat.write({ pid: process.pid, port: server4.port, password, build, renewal, ...machineHandover ? { machineHandover: true } : {} })));
   } catch (error) {
     if (first)
       throw error;
+    if (error instanceof UnsupportedFormatVersion)
+      console.error(error.message);
   }
 }, launchSaid, renewing, stopping = false;
 var init_main = __esm(async () => {
@@ -41445,6 +41494,8 @@ var init_main = __esm(async () => {
   init_updating();
   init_engine_swap();
   init_bundle();
+  init_records();
+  init_format_version();
   init_sessions();
   init_adopt();
   init_client();
@@ -41559,9 +41610,11 @@ var init_main = __esm(async () => {
   engineAgents = new Map;
   otherBridge = (() => {
     try {
-      const pid = JSON.parse(readFileSync41(join43(machineHome, "run", "bridge.json"), "utf8"))?.pid;
+      const pid = readRendezvous(bridgeRecordFormat, join43(machineHome, "run", "bridge.json")).pid;
       return pid !== process.pid && runsAs(pid, /kuvo-agents/);
-    } catch {
+    } catch (error) {
+      if (error instanceof UnsupportedFormatVersion)
+        throw error;
       return false;
     }
   })();
@@ -41891,4 +41944,4 @@ if (!isMainThread && process.argv.includes("--insights-db-worker")) {
 } else {
   await init_main().then(() => ({}));
 }
-// Built from Packages/Box/src/agents 9704c68ea7f25ab3a8694245a15cb648a6e02f2e2734a814974b407475883dfa
+// Built from Packages/Box/src/agents feef467aa9ed2877c3b3d8d3a8d516b07bd3cea985d2c07fb0b7e9480dadc619

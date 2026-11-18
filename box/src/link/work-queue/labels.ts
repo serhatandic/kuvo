@@ -3,13 +3,14 @@
 // recolour and remove them. Kept in `run/work-queue/labels.json`.
 
 import path from "node:path";
+import { UnsupportedFormatVersion } from "../../shared/format-version";
 import { isObject } from "../../shared/json";
 import { plainName } from "../../shared/text";
 import { locked, textOf, writePrivate } from "../files";
+import { LABELS_LOCK, labelsFormat } from "./migrate";
 import { migratedToChange, noteQueuesChanged, Refusal, WORK_QUEUE } from "./store";
 
 export const LABELS_FILE = path.join(WORK_QUEUE, "labels.json");
-const LOCK = path.join(WORK_QUEUE, ".labels.lock");
 export const MOST_LABELS = 60;
 /** How many labels one item carries at most. */
 export const MOST_LABELS_EACH = 10;
@@ -44,12 +45,14 @@ export function followsBy(says: () => boolean): void {
 
 function readKept(): Kept {
   try {
-    const kept = JSON.parse(textOf(LABELS_FILE) ?? "null");
+    const value: unknown = JSON.parse(textOf(LABELS_FILE) ?? "null");
+    const kept = isObject(value) ? labelsFormat.read(value) : {};
     const seen = new Set<string>();
-    const labels = (isObject(kept) && Array.isArray(kept.labels) ? kept.labels : []).map(labelOf).filter((each: Label | null): each is Label => each !== null && !seen.has(each.id) && seen.add(each.id) !== undefined);
-    const fromPrimary = isObject(kept) && Array.isArray(kept.fromPrimary) ? kept.fromPrimary.filter((each: unknown): each is string => typeof each === "string" && LABEL_ID.test(each)) : [];
-    return { labels, fromPrimary, ...(isObject(kept) && typeof kept.primary === "string" ? { primary: kept.primary } : {}) };
-  } catch {
+    const labels = (Array.isArray(kept.labels) ? kept.labels : []).map(labelOf).filter((each: Label | null): each is Label => each !== null && !seen.has(each.id) && seen.add(each.id) !== undefined);
+    const fromPrimary = Array.isArray(kept.fromPrimary) ? kept.fromPrimary.filter((each: unknown): each is string => typeof each === "string" && LABEL_ID.test(each)) : [];
+    return { labels, fromPrimary, ...(typeof kept.primary === "string" ? { primary: kept.primary } : {}) };
+  } catch (error) {
+    if (error instanceof UnsupportedFormatVersion) throw error;
     return { labels: [], fromPrimary: [] };
   }
 }
@@ -84,13 +87,13 @@ const change = (work: (kept: Kept) => LabelOutcome): LabelOutcome => {
     if (error instanceof Refusal) return { refused: error.message };
     throw error;
   }
-  const outcome = locked(LOCK, () => {
+  const outcome = locked(LABELS_LOCK, () => {
     const kept = readKept();
     const outcome = work(kept);
     const fromPrimary = kept.fromPrimary.filter(id => kept.labels.some(each => each.id === id));
-    if ("done" in outcome) writePrivate(LABELS_FILE, JSON.stringify({ labels: kept.labels, ...(fromPrimary.length ? { fromPrimary } : {}), ...(kept.primary ? { primary: kept.primary } : {}) }));
+    if ("done" in outcome) writePrivate(LABELS_FILE, JSON.stringify(labelsFormat.write({ labels: kept.labels, ...(fromPrimary.length ? { fromPrimary } : {}), ...(kept.primary ? { primary: kept.primary } : {}) })));
     return outcome;
-  });
+  }, { required: true });
   // (Every queue's view names them.)
   if ("done" in outcome) noteQueuesChanged();
   return outcome;

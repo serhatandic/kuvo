@@ -34,7 +34,9 @@ An absent JSON format marker denotes the pre-marker layout (version 0). The link
 (`run/link.json`) and Work Queue number ledger (`run/work-queue/numbers.json`) now write
 `formatVersion: 1` beside their existing fields. Readers upgrade old files in memory and persist
 the version with a normal atomic write. The ledger commits it under the writer lock. Work Queue
-owner files also write version 1 with the existing item shape. Insights
+owner files, labels, handoff and forwarded action receipts use additive version 1. Setup cards,
+welcome files, move journals and manifests, and server and bridge rendezvous records also add
+version 1 beside their existing fields. Insights
 adopts its existing database as SQLite `user_version = 1` in the same transaction as its schema
 step. These readers report unsupported versions before writing any replacement.
 
@@ -43,10 +45,12 @@ includes `formatVersion: 1`. An absent field is the original body, which has the
 shape. A box ignores an unsupported explicit version before dispatch, without acknowledging the
 mail, and logs the refusal. The signed document's `v` still applies to its signed bytes.
 
-Routed HTTP and relay requests may send `x-kuvo-route-version: 1`. If the header is absent,
+The desktop writes `x-kuvo-route-version: 1` on routed HTTP, relay and SSH requests. If the header is absent,
 the original route body shapes apply. Routed replies advertise version 1 in the response
 headers (`routeVersion: "1"` in a `box route` reply over SSH). An unsupported explicit request
-gets HTTP 400 and `code: "unsupportedFormatVersion"` before dispatch. Route features still
+gets HTTP 400 and `code: "unsupportedFormatVersion"` before dispatch. An unsupported stored
+format found before the reply starts gets HTTP 409 with the same code and the format name.
+The desktop accepts legacy replies with no marker and declines an explicit unknown version. Route features still
 govern whether a route exists. Socket handshakes and upstream protocols retain their own rules.
 
 A storage change declares and tests a step from n to n+1. For compatible changes, put the marker

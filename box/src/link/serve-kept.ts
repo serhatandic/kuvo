@@ -9,6 +9,8 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { UnsupportedFormatVersion } from "../shared/format-version";
+import { readRendezvous, serveRecordFormat } from "../shared/records";
 import { runsAs } from "../shared/platform";
 import { isObject, parsed } from "../shared/json";
 import { writePrivate } from "../shared/files";
@@ -19,6 +21,15 @@ import type { AnswerPiece, RouteContext } from "./server/context";
 export const SERVE_NEEDED = () => path.join(RUN, "serve.needed");
 export const SERVE_FILE = () => path.join(RUN, "serve.json");
 
+export const readServeRecord = () => readRendezvous<Partial<ServeRecord>>(serveRecordFormat, SERVE_FILE());
+
+export function writeServeRecord(record: ServeRecord): void {
+  try { readServeRecord(); } catch (error) {
+    if (error instanceof UnsupportedFormatVersion) throw error;
+  }
+  writePrivate(SERVE_FILE(), JSON.stringify(serveRecordFormat.write(record)));
+}
+
 interface ServeRecord { pid: number; port: number; kept: boolean; password: string }
 /** The command line of `serve`, and of one kept for clients. */
 export const SERVE_ROLE = /kuvo-link\.js serve(\s|$)/;
@@ -27,11 +38,13 @@ export const KEPT_ROLE = /kuvo-link\.js serve --kept(\s|$)/;
  * taken since by another process isn't believed). */
 export function runningServe(): ServeRecord | null {
   try {
-    const record = JSON.parse(fs.readFileSync(SERVE_FILE(), "utf8"));
+    const record = readServeRecord();
     if (isObject(record) && Number.isInteger(record.pid) && typeof record.password === "string" && runsAs(record.pid, record.kept === true ? KEPT_ROLE : SERVE_ROLE)) {
       return { pid: record.pid as number, port: Number(record.port), kept: record.kept === true, password: record.password };
     }
-  } catch {}
+  } catch (error) {
+    if (error instanceof UnsupportedFormatVersion) throw error;
+  }
   return null;
 }
 

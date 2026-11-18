@@ -12,6 +12,7 @@
 import { waitForPromptWrites } from "./admission";
 import crypto from "node:crypto";
 import fs from "node:fs";
+import { additiveObjectFormat, UnsupportedFormatVersion } from "../../shared/format-version";
 import path from "node:path";
 import { isObject } from "../../shared/json";
 import { moveHold, moveMarker } from "../../shared/move-hold";
@@ -165,16 +166,23 @@ export type MoveOutcome = { ok: true; move: Move; note?: string } | { ok: false;
 // (`<id>.outcome.json`), for a client that asked through another process (a Mac's `box route`),
 // which the running bridge moves it for.
 const waiting = new Map<string, ((outcome: MoveOutcome) => void)[]>();
+const outcomeFormat = additiveObjectFormat("Move outcome");
 const outcomeFile = (id: string) => path.join(MOVES, `${id}.outcome.json`);
 export function readOutcome(id: string): MoveOutcome | null {
   if (!/^mov_[A-Za-z0-9]+$/.test(id)) return null;
-  try { return JSON.parse(fs.readFileSync(outcomeFile(id), "utf8")); } catch { return null; }
+  try {
+    return outcomeFormat.read(JSON.parse(fs.readFileSync(outcomeFile(id), "utf8"))) as unknown as MoveOutcome;
+  } catch (error) {
+    if (error instanceof UnsupportedFormatVersion) throw error;
+    return null;
+  }
 }
 
 const OUTCOME_KEPT = 90 * 24 * 3600_000;
 let lastDecisionSweep = -Infinity;
 function ended(id: string, outcome: MoveOutcome): void {
-  writeDurablePrivate(outcomeFile(id), JSON.stringify(outcome), path.dirname(MOVES));
+  readOutcome(id);
+  writeDurablePrivate(outcomeFile(id), JSON.stringify(outcomeFormat.write(outcome)), path.dirname(MOVES));
   for (const resolve of waiting.get(id) ?? []) resolve(outcome);
   waiting.delete(id);
 }
@@ -191,8 +199,12 @@ export function outcomeOf(id: string): Promise<MoveOutcome> {
     if (watching) return;
     // Another process moves it: how it ended, once it's noted.
     timer = setInterval(() => {
-      const outcome = readOutcome(id);
-      if (outcome) done(outcome);
+      try {
+        const outcome = readOutcome(id);
+        if (outcome) done(outcome);
+      } catch (error) {
+        done({ ok: false, status: 409, message: (error as Error).message });
+      }
     }, 500);
   });
 }
@@ -1725,7 +1737,18 @@ export function keepMoving(now = Date.now(), ticks = performance.now()): void {
   const peers = new Set(peersOf(readLink()).map(peer => peer.key));
   let names: string[] = [];
   try { names = fs.readdirSync(MOVES).filter(name => name.endsWith(".outcome.json")); } catch {}
-  for (const name of names) try { if (now - fs.statSync(path.join(MOVES, name)).mtimeMs > OUTCOME_KEPT) fs.rmSync(path.join(MOVES, name), { force: true }); } catch {}
+  for (const name of names) {
+    const file = path.join(MOVES, name);
+    try {
+      if (now - fs.statSync(file).mtimeMs <= OUTCOME_KEPT) continue;
+      const id = name.slice(0, -".outcome.json".length);
+      if (!/^mov_[A-Za-z0-9]+$/.test(id)) continue;
+      readOutcome(id);
+      fs.rmSync(file, { force: true });
+    } catch (error) {
+      if (error instanceof UnsupportedFormatVersion) console.error(error.message);
+    }
+  }
   // A move's folder no move here has any more (a step under way as it was taken back made it again):
   // gone once it's been seen so for longer than a step's given.
   let folders: string[] = [];

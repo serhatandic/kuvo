@@ -6,6 +6,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { additiveObjectFormat, UnsupportedFormatVersion } from "../../shared/format-version";
 import { isObject } from "../../shared/json";
 import { cut, plainName } from "../../shared/text";
 import { listOf, locked, writePrivate } from "../files";
@@ -140,15 +141,18 @@ export function toldOf(given: unknown, now = Date.now()): Omit<Told, "heard"> | 
   return { id: given.id, at: Math.min(given.at, now), items, owners, labels, ...numberingOf(given) };
 }
 
+const toldFormat = additiveObjectFormat("Work Queue peer summary");
+
 /** What the computer `key` last told, or null. */
 export function readTold(key: string): Told | null {
   if (!KEY.test(key)) return null;
   try {
-    const kept = JSON.parse(fs.readFileSync(fileOf(key), "utf8"));
-    if (!isObject(kept) || typeof kept.at !== "number" || !Array.isArray(kept.items)) return null;
+    const kept = toldFormat.read(JSON.parse(fs.readFileSync(fileOf(key), "utf8")));
+    if (typeof kept.at !== "number" || !Array.isArray(kept.items)) return null;
     if (!Array.isArray(kept.labels)) return null;
     return kept as unknown as Told;
-  } catch {
+  } catch (error) {
+    if (error instanceof UnsupportedFormatVersion) throw error;
     return null;
   }
 }
@@ -165,9 +169,9 @@ export function keepTold(key: string, told: Omit<Told, "heard">, now = Date.now(
     // Older than what's kept: mail come late, unless it's a good while older (its clock was set
     // back), when it's the newer word after all.
     if (kept && kept.at > told.at && kept.at - told.at < 600_000 && kept.id !== told.id) return false;
-    writePrivate(fileOf(key), JSON.stringify({ ...told, heard: now } satisfies Told));
+    writePrivate(fileOf(key), JSON.stringify(toldFormat.write({ ...told, heard: now } satisfies Told)));
     return true;
-  });
+  }, { required: true });
 }
 
 /** A change you made to item `id` on the computer `key`, through this box, put in what that computer
@@ -189,9 +193,11 @@ export function patchTold(key: string, id: string, item: unknown, deleted: boole
       const others = kept.items.filter(each => each.id !== id);
       const items = deleted ? others
         : [...others, before ? { ...before, ...fresh, sessions: before.sessions, ...(before.progress ? { progress: before.progress } : {}), ...(before.handedFrom ? { handedFrom: before.handedFrom } : {}) } : fresh];
-      writePrivate(fileOf(key), JSON.stringify({ ...kept, items }));
-    });
-  } catch {}
+      writePrivate(fileOf(key), JSON.stringify(toldFormat.write({ ...kept, items })));
+    }, { required: true });
+  } catch (error) {
+    if (error instanceof UnsupportedFormatVersion) console.error(error.message);
+  }
 }
 
 /** The computers that told this one, by key. */
@@ -199,5 +205,9 @@ export const toldKeys = (): string[] => listOf(TOLD).filter(name => name.endsWit
 
 /** What a computer told, gone (one you removed). */
 export const forgetTold = (key: string): void => {
-  if (KEY.test(key)) fs.rmSync(fileOf(key), { force: true });
+  if (!KEY.test(key)) return;
+  locked(LOCK, () => {
+    readTold(key);
+    fs.rmSync(fileOf(key), { force: true });
+  }, { required: true });
 };

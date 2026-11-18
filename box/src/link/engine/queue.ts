@@ -12,6 +12,7 @@ import { draftOf, keptCommand } from "../messages/commands";
 import { keptParts, partsOf, withPartsOf } from "../messages/parts";
 import crypto from "node:crypto";
 import fs from "node:fs";
+import { additiveObjectFormat, UnsupportedFormatVersion } from "../../shared/format-version";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { isObject } from "../../shared/json";
@@ -274,12 +275,14 @@ export function carryQueue(from: string, to: string, renamed: Record<string, str
   // archived again (a client sends its metadata whole), and its queue is its own by then.
   const again = locked(FILES.lock, () => {
     let carried: Record<string, unknown> = {};
-    try { carried = JSON.parse(fs.readFileSync(CARRIED_FILE, "utf8")) ?? {}; } catch {}
+    try { carried = carriedFormat.read(JSON.parse(fs.readFileSync(CARRIED_FILE, "utf8"))); } catch (error) {
+      if (error instanceof UnsupportedFormatVersion) throw error;
+    }
     if (carried[from] === to) return true;
     delete carried[from];
     carried[from] = to;
     const kept = Object.entries(carried).slice(-MOST_CARRIED);
-    try { writePrivate(CARRIED_FILE, JSON.stringify(Object.fromEntries(kept))); } catch {}
+    try { writePrivate(CARRIED_FILE, JSON.stringify(carriedFormat.write(Object.fromEntries(kept)))); } catch {}
     return false;
   });
   if (again) return;
@@ -295,6 +298,7 @@ export function carryQueue(from: string, to: string, renamed: Record<string, str
 }
 
 // The carries made, from one session to the one it went on in, the latest few hundred.
+const carriedFormat = additiveObjectFormat("Conversation queue carry receipts");
 const CARRIED_FILE = path.join(RUN, "queues-carried.json");
 const MOST_CARRIED = 300;
 
@@ -1030,6 +1034,7 @@ export function queueWatcher(target: Target, { after = DRAIN_AFTER, schedule = s
 
 // The engine (or the agents' bridge) whose queues were last looked over, by its port, kept in
 // `run/` so a box that starts again beside the same engine doesn't take it for a new one.
+const scannedFormat = additiveObjectFormat("Conversation queue scan receipts");
 const SCANNED_FILE = path.join(RUN, "queues-scanned.json");
 
 // Whether `session`'s last run was stopped or failed, as its newest message says (the run's end,
@@ -1061,10 +1066,12 @@ async function settleFound(target: Target, session: string, known: boolean): Pro
 export async function scanQueues(target: Target & { pid?: number }, found?: ScanFound): Promise<void> {
   const known = locked(FILES.lock, () => {
     let scanned: Record<string, unknown> = {};
-    try { scanned = JSON.parse(fs.readFileSync(SCANNED_FILE, "utf8")) ?? {}; } catch {}
+    try { scanned = scannedFormat.read(JSON.parse(fs.readFileSync(SCANNED_FILE, "utf8"))); } catch (error) {
+      if (error instanceof UnsupportedFormatVersion) throw error;
+    }
     if (target.pid !== undefined && scanned[target.port] === target.pid) return true;
     scanned[target.port] = target.pid;
-    try { writePrivate(SCANNED_FILE, JSON.stringify(scanned)); } catch {}
+    try { writePrivate(SCANNED_FILE, JSON.stringify(scannedFormat.write(scanned))); } catch {}
     return false;
   });
   const page = await asked(target, "GET", "api/session?parentID=null&limit=100&order=desc") as { data?: { id?: string; time?: { updated?: number } }[] } | null;

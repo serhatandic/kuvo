@@ -7,6 +7,7 @@ import { spawn } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { additiveObjectFormat, UnsupportedFormatVersion } from "../../shared/format-version";
 import { isObject } from "../../shared/json";
 import type { Target } from "../../shared/records";
 import type { MoveKind } from "../../shared/routes/moves";
@@ -54,6 +55,8 @@ export interface Contents {
   /** Where it was: the computer's name, and its folder (bots and chats). */
   was?: { place: string; folder?: string };
 }
+
+const bundleFormat = additiveObjectFormat("Move bundle manifest");
 
 // A chat's folder here: conversations of no project (this Mac's app's own, a machine's in its box).
 export { CHATS };
@@ -160,7 +163,7 @@ function bytesIn(folder: string, most: number, counted = 0): number {
 export async function pack(id: string, contents: Contents): Promise<{ file: string; size: number; hash: string }> {
   const folder = bundleOf(id);
   const staging = path.join(folder, "pack");
-  const moveJSON = JSON.stringify(contents);
+  const moveJSON = JSON.stringify(bundleFormat.write(contents));
   const original = contents.folder ? folderOf(contents.kind, contents.thing) : null;
   const carried = contents.lane ? path.join(folder, "carry") : null;
   if (Buffer.byteLength(moveJSON) + (original ? bytesIn(original, MOST_BUNDLE) : 0) + (carried ? bytesIn(carried, MOST_BUNDLE) : 0) + filesSize(contents.workQueue) > MOST_BUNDLE) throw new TooBig();
@@ -192,8 +195,9 @@ export async function unpack(id: string): Promise<{ contents: Contents; folder: 
   try {
     const file = path.join(opened, "move.json");
     if (!fs.lstatSync(file).isFile()) throw new Error();
-    contents = JSON.parse(fs.readFileSync(file, "utf8"));
-  } catch {
+    contents = bundleFormat.read(JSON.parse(fs.readFileSync(file, "utf8"))) as unknown as Contents;
+  } catch (error) {
+    if (error instanceof UnsupportedFormatVersion) throw new NotTaken(error.message);
     throw new NotTaken("What came isn’t a move.");
   }
   if (!isObject(contents) || !Array.isArray(contents.exports)) throw new NotTaken("What came isn’t a move.");

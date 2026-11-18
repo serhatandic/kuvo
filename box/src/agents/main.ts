@@ -45,7 +45,8 @@ import { updateUnderWay } from "../shared/updating"
 import { swapUnderWay, untilSwapLets } from "../shared/engine-swap"
 import { spawn } from "node:child_process"
 import { bundleBuild } from "../shared/bundle"
-import type { RenewalRecord } from "../shared/records"
+import { bridgeRecordFormat, readRendezvous, type BridgeRecord, type RenewalRecord } from "../shared/records"
+import { UnsupportedFormatVersion } from "../shared/format-version"
 import { Sessions } from "./sessions"
 import { adoptHeld } from "./hold/adopt"
 import { stopAllHeld } from "./hold/client"
@@ -206,9 +207,10 @@ function engineAgent(providerID: string): EngineAgent | undefined {
 // (Not while another bridge runs here, which has them: this one won't get its port.)
 const otherBridge = (() => {
   try {
-    const pid = JSON.parse(readFileSync(join(machineHome!, "run", "bridge.json"), "utf8"))?.pid
+    const pid = readRendezvous<BridgeRecord>(bridgeRecordFormat, join(machineHome!, "run", "bridge.json")).pid
     return pid !== process.pid && runsAs(pid, /kuvo-agents/)
-  } catch {
+  } catch (error) {
+    if (error instanceof UnsupportedFormatVersion) throw error
     return false
   }
 })()
@@ -560,9 +562,13 @@ const keeperHandover = () => {
 const writeRecord = (renewal: RenewalRecord | null, first = false) => {
   if (!record) return
   try {
-    writeSecret(record, JSON.stringify({ pid: process.pid, port: server.port, password, build, renewal, ...(machineHandover ? { machineHandover: true } : {}) }))
+    try { readRendezvous(bridgeRecordFormat, record) } catch (error) {
+      if (error instanceof UnsupportedFormatVersion) throw error
+    }
+    writeSecret(record, JSON.stringify(bridgeRecordFormat.write({ pid: process.pid, port: server.port, password, build, renewal, ...(machineHandover ? { machineHandover: true } : {}) })))
   } catch (error) {
     if (first) throw error
+    if (error instanceof UnsupportedFormatVersion) console.error(error.message)
   }
 }
 writeRecord(null, true)
@@ -689,7 +695,7 @@ function stop(handOver = false, startReplacement = true) {
   githubSignIn.cancel()
   // (Unless a newer bridge has put its own there.)
   try {
-    if (record && JSON.parse(readFileSync(record, "utf8")).pid === process.pid) rmSync(record, { force: true })
+    if (record && readRendezvous<BridgeRecord>(bridgeRecordFormat, record).pid === process.pid) rmSync(record, { force: true })
   } catch {}
   sessions.closeAll()
   // Every agent it holds stops with it (an app-server no session closes too), whatever exits first.

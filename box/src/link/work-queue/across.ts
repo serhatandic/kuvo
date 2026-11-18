@@ -8,6 +8,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { additiveObjectFormat, UnsupportedFormatVersion } from "../../shared/format-version";
 import { isObject } from "../../shared/json";
 import { IS_MAC } from "../home";
 import { computerName } from "../peers/computer-name";
@@ -344,6 +345,7 @@ export function itemElsewhere(ref: ItemRef, link: LinkState | null = readLink(),
 // Items you deleted on another computer through this box (`run/work-queue/deleted-there.json`, by
 // id: the computer's key, when, and the item as its box answered), for Undo: a day, 200 at most,
 // and only until that computer, or this box, has it again.
+const deletedThereFormat = additiveObjectFormat("Work Queue remote undo receipts");
 const DELETED_THERE = path.join(WORK_QUEUE, "deleted-there.json");
 const DELETED_LOCK = path.join(WORK_QUEUE, ".deleted-there.lock");
 const DELETED_FOR = 86_400_000;
@@ -351,11 +353,11 @@ type DeletedThere = Record<string, { key: string; at: number; item: unknown }>;
 
 function readDeletedThere(now = Date.now()): DeletedThere {
   try {
-    const kept: unknown = JSON.parse(fs.readFileSync(DELETED_THERE, "utf8"));
-    if (!isObject(kept)) return {};
+    const kept = deletedThereFormat.read(JSON.parse(fs.readFileSync(DELETED_THERE, "utf8")));
     const here = new Set(allItems().map(item => item.id));
     return Object.fromEntries(Object.entries(kept).filter(([id, each]) => isObject(each) && typeof each.key === "string" && typeof each.at === "number" && now - each.at < DELETED_FOR && !here.has(id))) as DeletedThere;
-  } catch {
+  } catch (error) {
+    if (error instanceof UnsupportedFormatVersion) throw error;
     return {};
   }
 }
@@ -363,7 +365,7 @@ function readDeletedThere(now = Date.now()): DeletedThere {
 // The latest 200 kept, or the file gone when none are.
 function keepDeletedThere(entries: [string, DeletedThere[string]][]): void {
   if (!entries.length) return void fs.rmSync(DELETED_THERE, { force: true });
-  writePrivate(DELETED_THERE, JSON.stringify(Object.fromEntries(entries.sort(([, a], [, b]) => b.at - a.at).slice(0, 200))));
+  writePrivate(DELETED_THERE, JSON.stringify(deletedThereFormat.write(Object.fromEntries(entries.sort(([, a], [, b]) => b.at - a.at).slice(0, 200)))));
 }
 
 // What's kept of items deleted there, gone for those a computer tells of again (brought back).
@@ -371,15 +373,18 @@ function keepDeletedThere(entries: [string, DeletedThere[string]][]): void {
 function forgetDeletedThere(told: Set<string>): void {
   let ids: string[];
   try {
-    const kept: unknown = JSON.parse(fs.readFileSync(DELETED_THERE, "utf8"));
-    ids = isObject(kept) ? Object.keys(kept) : [];
-  } catch {
+    const kept = deletedThereFormat.read(JSON.parse(fs.readFileSync(DELETED_THERE, "utf8")));
+    ids = Object.keys(kept);
+  } catch (error) {
+    if (error instanceof UnsupportedFormatVersion) console.error(error.message);
     return;
   }
   if (!ids.some(id => told.has(id))) return;
   try {
-    locked(DELETED_LOCK, () => keepDeletedThere(Object.entries(readDeletedThere()).filter(([id]) => !told.has(id))));
-  } catch {}
+    locked(DELETED_LOCK, () => keepDeletedThere(Object.entries(readDeletedThere()).filter(([id]) => !told.has(id))), { required: true });
+  } catch (error) {
+    if (error instanceof UnsupportedFormatVersion) console.error(error.message);
+  }
 }
 
 /** A change you made through this box to an item the computer `key` keeps, as its box answered
@@ -396,8 +401,10 @@ export function changedThere(key: string, action: "delete" | "change" | "restore
       if (action === "delete") kept[id] = { key, at: now, item };
       else delete kept[id];
       keepDeletedThere(Object.entries(kept));
-    });
-  } catch {}
+    }, { required: true });
+  } catch (error) {
+    if (error instanceof UnsupportedFormatVersion) console.error(error.message);
+  }
   for (const tell of queueFollowers) tell();
 }
 

@@ -2,6 +2,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { upgradeFormat, UnsupportedFormatVersion } from "../../shared/format-version";
 import { isObject, parsed } from "../../shared/json";
 import { processRuns as runs } from "../../shared/platform";
 import { withNotes } from "../../shared/session-notes";
@@ -25,6 +26,11 @@ import { linkedFollowers, linkedTreesOf } from "../work/project-trees";
 
 export const PROJECTS_FILE = path.join(K, "box", "projects.json");
 const PROJECTS_LOCK = PROJECTS_FILE + ".lock";
+const projectSteps = [(value: Record<string, unknown>) => value];
+export const projectsVersion = projectSteps.length;
+export function readProjectFields(value: Record<string, unknown>): Record<string, unknown> {
+  return upgradeFormat("Project list", value.version, value, projectSteps);
+}
 
 /** A project New Bot offers here: its folder and its name. */
 export interface OfferedProject {
@@ -44,7 +50,7 @@ interface SessionPage {
  * Reads never lock or write, including on a read-only disk. */
 export function readProjects(file = PROJECTS_FILE): Project[] {
   try {
-    const list = JSON.parse(fs.readFileSync(file, "utf8")).projects;
+    const list = readProjectFields(JSON.parse(fs.readFileSync(file, "utf8"))).projects;
     if (!Array.isArray(list)) return [];
     return list.filter(each => typeof each?.directory === "string" && path.isAbsolute(each.directory)).map(each => {
       const project = { ...each };
@@ -52,7 +58,8 @@ export function readProjects(file = PROJECTS_FILE): Project[] {
       project.folders = Array.isArray(each.folders) ? each.folders.filter((folder: unknown) => typeof folder === "string") : [];
       return project;
     });
-  } catch {
+  } catch (error) {
+    if (error instanceof UnsupportedFormatVersion) throw error;
     return [];
   }
 }
@@ -255,9 +262,9 @@ export function boxProjects(file = PROJECTS_FILE): OfferedProject[] {
 export function changeProjects(change: (projects: Project[]) => Project[], file = PROJECTS_FILE, lock = PROJECTS_LOCK): Project[] {
   const projects = locked(lock, () => {
     const projects = change(readProjects(file));
-    writePrivate(file, JSON.stringify({ version: 1, projects }, null, 2));
+    writePrivate(file, JSON.stringify({ version: projectsVersion, projects }, null, 2));
     return projects;
-  });
+  }, { required: true });
   for (const tell of projectFollowers) tell();
   return projects;
 }

@@ -8,6 +8,7 @@
 // (one relay connection), so the latest that came is what it says now, whatever its clock reads.
 
 import fs from "node:fs";
+import { additiveObjectFormat, UnsupportedFormatVersion } from "../../shared/format-version";
 import path from "node:path";
 import { isObject } from "../../shared/json";
 import type { Move, MovesElsewhere } from "../../shared/routes/moves";
@@ -19,6 +20,7 @@ import type { LinkHost } from "../relay/host";
 import { readLink } from "../state";
 import { listedMoves, MOVES, movesChanged, shownMove } from "./records";
 
+const elsewhereFormat = additiveObjectFormat("Moves on other computers");
 const FILE = path.join(MOVES, "elsewhere.json");
 /** The moves said, and the conversations of each, at most (so the mail fits). */
 const MOST_MOVES = 20;
@@ -79,8 +81,9 @@ export function tellMovingAgain(): void {
 function readSaid(): Record<string, Said> {
   try {
     const kept: unknown = JSON.parse(fs.readFileSync(FILE, "utf8"));
-    return isObject(kept) ? kept as Record<string, Said> : {};
-  } catch {
+    return isObject(kept) ? elsewhereFormat.read(kept) as Record<string, Said> : {};
+  } catch (error) {
+    if (error instanceof UnsupportedFormatVersion) throw error;
     return {};
   }
 }
@@ -114,7 +117,7 @@ export function takeMoving(sender: MailSender, given: unknown, now = Date.now())
   const moves = given.moves.slice(0, MOST_MOVES).map(takenMove).filter((move): move is Move => move !== null);
   if (moves.length) kept[sender.key] = { at: now, moves };
   else delete kept[sender.key];
-  try { writePrivate(FILE, JSON.stringify(kept)); } catch {}
+  try { writePrivate(FILE, JSON.stringify(elsewhereFormat.write(kept))); } catch {}
   movesChanged();
 }
 
@@ -125,7 +128,7 @@ export function forgetQuiet(now = Date.now()): void {
   const quiet = Object.keys(kept).filter(key => !fresh(kept[key], now));
   if (!quiet.length) return;
   for (const key of quiet) delete kept[key];
-  try { writePrivate(FILE, JSON.stringify(kept)); } catch {}
+  try { writePrivate(FILE, JSON.stringify(elsewhereFormat.write(kept))); } catch {}
   movesChanged();
 }
 

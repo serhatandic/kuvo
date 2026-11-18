@@ -82,6 +82,7 @@ async function until(check, what) {
 
 test("a Mac's box's server never says an update is well (its judge does, by the one health rule): the trial stays open while it runs; the old copy of the data goes", async () => {
   const first = await serve(100);
+  assert.equal(readJSON(path.join(K, "run", "serve.json")).formatVersion, 1);
   await until(() => fs.readdirSync(path.join(K, "updates", "backups")).length === 0, "the copy past its 30 days, gone");
   await first.stop();
   assert.equal(fs.existsSync(path.join(K, "run", "update-trial")), true, "still on trial");

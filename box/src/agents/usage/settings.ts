@@ -13,6 +13,7 @@ import { createHash, randomBytes } from "node:crypto"
 import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs"
 import { dirname } from "node:path"
 
+import { upgradeFormat, UnsupportedFormatVersion } from "../../shared/format-version"
 import { notificationAvailability } from "./notices"
 
 /** The parts of the settings, each changed and shared whole. */
@@ -280,6 +281,10 @@ function keeping(unit: SettingsUnit, before: unknown, given: unknown, knows?: Kn
 /** A part's version as a client names it, to say what a change of it was made from. */
 export const versionOf = (stamp: Stamp) => `${stamp.v}/${stamp.by}${stamp.imported ? "/i" : ""}`
 
+const settingsSteps = [(value: unknown) => value]
+const checkSettingsFormat = (value: { kuvo?: unknown } | null) =>
+  upgradeFormat("Usage settings", value?.kuvo, value, settingsSteps)
+
 /**
  * A box's usage settings, kept in its usage folder (`settings.json`, which keeps Codex's fallback
  * model where a box from before reads it too). `self`: this box's link key, once the link says it.
@@ -308,6 +313,7 @@ export class UsageSettings {
     if (!file) return
     try {
       const saved = JSON.parse(readFileSync(file, "utf8"))
+      checkSettingsFormat(saved)
       this.units = unitsFrom(saved?.units)
       this.imported = saved?.imported === true
       if (typeof saved?.setup === "string" || saved?.setup === null) this.setup = saved.setup
@@ -317,7 +323,9 @@ export class UsageSettings {
         const value = checked("codexFallback", codex.fallback === "" ? null : codex.fallback)
         if (value !== undefined) this.units.codexFallback = { value, stamp: { v: Math.floor(statSync(file).mtimeMs), by: "", imported: true } }
       }
-    } catch {}
+    } catch (error) {
+      if (error instanceof UnsupportedFormatVersion) throw error
+    }
     for (const unit of Object.values(this.units)) if (!unit.stamp.imported) this.highest = Math.max(this.highest, unit.stamp.v)
   }
 
@@ -475,12 +483,19 @@ export class UsageSettings {
   private save() {
     if (!this.file) return
     try {
+      try {
+        checkSettingsFormat(JSON.parse(readFileSync(this.file, "utf8")))
+      } catch (error) {
+        if (error instanceof UnsupportedFormatVersion) throw error
+      }
       mkdirSync(dirname(this.file), { recursive: true })
       // (Codex's fallback model where a box from before reads it, while it's one this box chose or took.)
       const codex = this.units.codexFallback ? { codex: { fallback: this.units.codexFallback.value } } : {}
-      writeFileSync(this.file + ".new", JSON.stringify({ ...codex, kuvo: 1, units: this.units, ...(this.imported ? { imported: true } : {}), ...(this.setup !== undefined ? { setup: this.setup } : {}) }), { mode: 0o600 })
+      writeFileSync(this.file + ".new", JSON.stringify({ ...codex, kuvo: settingsSteps.length, units: this.units, ...(this.imported ? { imported: true } : {}), ...(this.setup !== undefined ? { setup: this.setup } : {}) }), { mode: 0o600 })
       renameSync(this.file + ".new", this.file)
-    } catch {}
+    } catch (error) {
+      if (error instanceof UnsupportedFormatVersion) throw error
+    }
   }
 }
 
