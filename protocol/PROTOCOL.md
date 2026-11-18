@@ -219,12 +219,13 @@ each box pairs and removes (`phones`), and each box's view of your personalities
   mails them on its relay connection, as a machine's bridge does; its peers are the machines its
   app set up (`kuvo/link/peers`, "This Mac's box: the relay"). It takes `peers` only of its own (a
   copy it lost count of), and `phones` and `personalities` from its machines and itself.
-- **`phones`**, one per box: `{phones: [{key, name, address?, pairing, kind?}], removed: [{key,
+- **`phones`**, one per box: `{phones: [{key, name, address?, pairing, kind?, by?}], removed: [{key,
   pairing}]}`: the phones paired there, and every removal it knows of ("Paired phones"); `kind:
   "desktop"` on Kuvo Code's desktop app (`clients.kind`; left out for a phone, and a box that
-  doesn't know it reads the entry as a phone's). A box
+  doesn't know it reads the entry as a phone's). `by` is the voucher's box key. A box
   lets in its own and its Macs' phones, less every pairing removed in any phones document it
-  takes, which it notes as its own removal too. A Mac with the phone link off signs none.
+  takes, which it notes as its own removal too. The Mac's inbound switch leaves signed
+  phone lists and removals available to its peers.
 - **`personalities`**, each box's view: the library (`{personalities, removed}`, "Personalities").
   A box meets a view it takes with its own, and signs its own again if it changed; views aren't
   passed on (each box's own already has what it took). Its own goes past 512 KB never: a change
@@ -242,6 +243,21 @@ each box pairs and removes (`phones`), and each box's view of your personalities
   `personalities`). Over SSH, setup carries the
   Mac's documents (`docs`, its own and those it has of its machines) and its answer the machine's.
   A box doesn't give documents to a Mac that gave it no signing key.
+- **Phone authorization after reconnect**: a member asks its peers for the signing Mac's lists
+  with authenticated mail `phoneSync: {id, origin}` (`id` is 16 random bytes, base64url, and
+  `origin` is the Mac's signing key). Any peer can send the signed peers and phones documents
+  it has, then `phoneSync: {id, list, peers?, ack: true}` with each document identified as `n:h`.
+  The member verifies the signatures and accepts replies matching the documents it has installed.
+  If an older signing Mac replies with only a phones fingerprint, the member requests that Mac's
+  signed peers document through the normal digest exchange and waits until it has verified the
+  document and it matches the one installed.
+  Inherited desktop and voucher-bound pairings wait for confirmation unless the relay reports
+  every known peer unreachable. A member using its cached list keeps asking and closes revoked
+  sessions as soon as it takes a signed removal. Independent phones connect throughout.
+  A waiting pairing receives `waiting` (the box's message) and the pairing reason in the
+  authenticated second handshake, with no session opened. On primary uninstall, the primary sends its updated signed
+  list and `phoneSync: {id, list}`. Peers answer with the same `id` and `list` and `ack: true`
+  after installing that list and closing sessions for devices it removes.
 - **Later**: each box's agents (`{"agents"}`, "Peers") are a list of its own too, still sent as
   they change and every ten minutes; they could become a fourth kind.
 
@@ -1780,8 +1796,9 @@ client connected: a client's Computers area and its switcher draw it, and ask no
     document, named among those you removed (`left`, which the machine hears and lets that Mac go),
     and off that Mac's list of machines (`machines.json`); its app listing it again
     (`kuvo/link/peers`), or setting it up as it connects (`kuvo/link/setup?key=`), doesn't bring it
-    back (`removedHere` in link.json) until it's added again: on that Mac's list of machines
-    (`machines.json`) once more. It keeps running there, as a box of its own, with its sessions.
+    back (`removedHere` in link.json). Only a completed SSH add restores that peer. If saving the
+    machines list fails, the removal still revokes access and the request reports the incomplete
+    change. It keeps running there, as a box of its own, with its sessions.
     **Kuvo Code's app on it goes from your devices with it** (#753): every device that computer's
     box vouched for (`by`, "Paired phones", `kuvo/devices/pair`) is taken off the writer's list,
     each by the pairing it has now and noted among the removals as any removal is, so the
@@ -1795,8 +1812,8 @@ client connected: a client's Computers area and its switcher draw it, and ask no
     the devices it vouched for and its entry in `vouchBlocked`, goes by the new key as its
     record does, so removing it later still takes its app off.) `confirm.message` says
     "Kuvo Code’s app on <computer> is taken off your devices." on the box that knows of such a
-    device (the main computer alone: `by` is in no document, so a member's box that hands the
-    removal on doesn't say it, though it holds there too). `200 {}`, and the same for one removed already (whose devices,
+    device. Member boxes learn `by` from the signed phones document. The main computer writes
+    the revocation and shares it with the other boxes. `200 {}`, and the same for one removed already (whose devices,
     were any left from before this, go then).
   - `POST kuvo/computers/<key>/connect`: this box's own, for a peer that's `away`: its link tells
     that computer its agents now, asking for theirs (`run/reach-again.json`, sent by the process
@@ -11370,6 +11387,10 @@ On both, for a paired phone:
   it pairs is the machine's own (as `kuvo-link.js pair` pairs one), and `409` when the machine has
   no relay. On a member of a setup, `409 {"message", primary}`: only its main computer pairs
   ("Your setup", `setup.mainOnly`).
+  A link requested over the relay is valid only while the requesting key still has the same
+  pairing. A device it pairs inherits the requesting device's voucher, if any. A device vouched
+  for by another box requests links on the box that paired it. An inherited desktop pairing from
+  before vouchers were included in phones documents follows the same rule.
 - `POST kuvo/devices/pair` with `{"key": "<the app's static key, 32 bytes, base64url>", "name":
   "<up to 100 characters>", "kind": "desktop"}` (`devices.pair`, #742): Kuvo Code's desktop app on
   this computer paired as one of your devices, with no link to paste and no token (it ends no
@@ -11407,6 +11428,14 @@ On both, for a paired phone:
     same: its box answers.
   - **A member its main computer doesn't name now** answers `409 {"message"}`: it neither pairs
     nor vouches.
+  - **A known pairing being refreshed** answers `503 {reason: "pairing-wait", message}`, “Checking
+    this app with your other computers…”. The desktop shows a quiet spinner and checks again.
+    **A known pairing whose signing computer is gone** answers `409 {reason: "pairing-readd",
+    title, message, action}`. The box supplies “This app needs to be paired again”, “The computer
+    that added this app was removed. Pair this app again from one of your computers.”, and
+    `{label: "Pair Again…", route: "kuvo/devices/pair"}`. This action runs the desktop's existing
+    Pair Again flow. Over the relay the same notice is carried in the authenticated handshake,
+    with its message also in `waiting` for older desktops.
   - **Removed stays removed**: a key with any pairing among the removals is never paired by this
     route, here or by the main computer: `409 {"message": "This app was removed from your
     devices.", "reason": "removed"}`. The app then makes a new key only on your word. (A pairing by
@@ -11414,16 +11443,14 @@ On both, for a paired phone:
   - **And the computer that vouched adds no other** (`devices.allow`), so whoever sits at it
     can't have its app make a new key and come back. The main computer keeps who vouched on the
     device it pairs on a member's word (`by`, that box's static key, on its entry in the main
-    computer's link.json alone: never in a phones document; none on one its own app or a token
+    computer's link.json and its phones document; none on one its own app or a local token
     paired). When that device is removed, by any way the removal reaches the main computer's box
     (`kuvo/phones/remove` from a paired device there, from Kuvo Code's app beside it, or a removal
     another box's phones document brings), the main computer's box:
     - **removes every other device that same box vouched for** (all with that `by`), each by the
       pairing it has now, noted among the removals as any removal is: its phones document carries
       them, so they're out on every computer and their sessions end, and none is paired again by
-      asking (`reason: "removed"`). A second key someone there had the box vouch for earlier is
-      no way back in. What another computer vouched for, a phone, and what the main computer
-      paired itself are untouched;
+      asking (`reason: "removed"`). Pairings from other vouchers and independent pairings stay;
     - notes the box that vouched (`vouchBlocked` in link.json: `[{key, device, at}]`, the box's
       key, the removed device's name and when, in milliseconds; one entry a box, the newest 64)
       and from then on answers that box's vouch, for any new key, `409 {"message": "<Device> on
@@ -11483,7 +11510,21 @@ started while another runs leaves. `GET kuvo/box/serve` answers `{needed, servin
 own box (`409`): its server is Kuvo Code's to run.
 
 **Uninstalling** (`box.uninstall`, #333 piece 3). Removing Kuvo Code from a computer is the box's
-own command, which the app or a Terminal line runs: `kuvo-link.js uninstall`. Nothing of the box
+own command, which the app or a Terminal line runs: `kuvo-link.js uninstall`. Before stopping,
+a member asks its main computer to revoke devices it vouched for. The command removes the desktop
+identity file and, on the real Mac's own box, asks the Keychain to delete the released app's item.
+An unconfirmed revocation or failed identity deletion is reported as incomplete.
+On the primary, the live box signs and publishes the desktop removal before shutting down.
+Each peer acknowledges that it installed the signed list. If any acknowledgement is missing,
+uninstall reports that spreading could not be confirmed.
+When another computer uninstalls over SSH, the controller revokes access after a successful
+probe and before sending the destructive command. If the reply is lost, the controller keeps
+the committed revocation and reports the cleanup as unconfirmed with instructions to finish
+it on the target computer. Stopping the wait after revocation keeps the final cleanup outcome.
+Local and SSH uninstall run the same repeatable cleanup of the desktop folder, keys and sign-ins.
+For a computer also used by another Mac, SSH asks it to leave just this setup and checks that
+the command confirmed the departure before reporting it complete.
+Nothing of the box
 starts again, and nothing of it runs:
 - the launch agent that starts it at login on a Mac (`~/Library/LaunchAgents/run.kuvo.code.machine.plist`)
   is let go of (`launchctl bootout gui/<uid>/run.kuvo.code.machine`) and removed, first, so nothing

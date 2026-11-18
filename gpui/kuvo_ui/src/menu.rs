@@ -19,6 +19,7 @@ use crate::{
     anchor::{Placement, Popover},
     button::keycap,
     icon::{Icon, IconName, IconSize},
+    small::spinner,
     theme::{ActiveTheme, StyledType, TypeSize, radius, space},
 };
 
@@ -59,6 +60,7 @@ pub struct MenuEntry {
     shortcut: Option<SharedString>,
     checked: bool,
     disabled: bool,
+    loading: bool,
     muted: bool,
     destructive: bool,
     handler: Option<Handler>,
@@ -74,6 +76,7 @@ impl MenuEntry {
             shortcut: None,
             checked: false,
             disabled: false,
+            loading: false,
             muted: false,
             destructive: false,
             handler: None,
@@ -113,6 +116,13 @@ impl MenuEntry {
         self
     }
 
+    /// A quiet status row that can't be picked while the work is under way.
+    pub fn loading(mut self) -> Self {
+        self.disabled = true;
+        self.loading = true;
+        self
+    }
+
     /// Drawn quiet, and still chosen: a computer that's away.
     pub fn muted(mut self, muted: bool) -> Self {
         self.muted = muted;
@@ -148,6 +158,7 @@ pub struct Menu {
     focus: FocusHandle,
     width: Pixels,
     scroll: ScrollHandle,
+    _source: Option<Subscription>,
 }
 
 impl EventEmitter<DismissEvent> for Menu {}
@@ -160,7 +171,7 @@ impl Focusable for Menu {
 
 impl Menu {
     pub fn new(cx: &mut Context<Self>) -> Self {
-        Self { items: Vec::new(), selected: None, selected_by_pointer: false, focus: cx.focus_handle(), width: px(240.), scroll: ScrollHandle::new() }
+        Self { items: Vec::new(), selected: None, selected_by_pointer: false, focus: cx.focus_handle(), width: px(240.), scroll: ScrollHandle::new(), _source: None }
     }
 
     pub fn entry(mut self, entry: MenuEntry) -> Self {
@@ -180,6 +191,26 @@ impl Menu {
 
     pub fn width(mut self, width: Pixels) -> Self {
         self.width = width;
+        self
+    }
+
+    /// Refreshes the open menu in place when its source changes what it shows.
+    pub fn follow<T: 'static, S: PartialEq + 'static>(
+        mut self,
+        source: &Entity<T>,
+        state: impl Fn(&T) -> S + 'static,
+        items: impl Fn(&S) -> Vec<MenuItem> + 'static,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let mut shown = state(source.read(cx));
+        self.items = items(&shown);
+        self._source = Some(cx.observe(source, move |menu, source, cx| {
+            let next = state(source.read(cx));
+            if shown != next {
+                menu.set_items(items(&next), cx);
+                shown = next;
+            }
+        }));
         self
     }
 
@@ -274,7 +305,7 @@ impl Render for Menu {
         let c = &theme.colors;
         // One leading column, shared by checks and icons (as in macOS menus), so every label in
         // a menu starts at the same place.
-        let has_leading = self.items.iter().any(|i| matches!(i, MenuItem::Entry(e) if e.checked || e.icon.is_some()));
+        let has_leading = self.items.iter().any(|i| matches!(i, MenuItem::Entry(e) if e.checked || e.icon.is_some() || e.loading));
         let rows = self.items.iter().enumerate().map(|(ix, item)| -> AnyElement {
             match item {
                 MenuItem::Separator => div().h(px(1.)).mx(space::S2).my(space::S1).bg(c.border_strong).into_any_element(),
@@ -288,7 +319,9 @@ impl Render for Menu {
                     .into_any_element(),
                 MenuItem::Entry(entry) => {
                     let selected = self.selected == Some(ix);
-                    let color = if entry.disabled {
+                    let color = if entry.loading {
+                        c.text_muted
+                    } else if entry.disabled {
                         c.text_faint
                     } else if entry.muted {
                         c.text_muted
@@ -331,7 +364,9 @@ impl Render for Menu {
                             } else {
                                 entry.icon.map(|i| Icon::new(i).size(IconSize::Nav).color(icon_color))
                             };
-                            d.child(div().flex().w(IconSize::Nav.pixels()).flex_none().children(leading))
+                            d.child(div().flex().w(IconSize::Nav.pixels()).flex_none()
+                                .children(entry.loading.then(|| spinner(("menu-loading", ix), IconSize::Nav, c.text_muted)))
+                                .children(leading.filter(|_| !entry.loading)))
                         })
                         .child(div().flex_1().min_w_0().flex().flex_col()
                             .child(div().when(entry.description.is_none(), |d| d.truncate()).child(entry.label.clone()))

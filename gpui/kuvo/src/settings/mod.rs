@@ -49,7 +49,7 @@ fn agents_state<T>(read: &kuvo_box::Result<T>) -> Option<kuvo_box::Refusal> {
 
 /// What's said when you didn't confirm it was you: nothing was sent.
 pub(crate) fn not_confirmed() -> kuvo_box::Error {
-    kuvo_box::Error::Refused(kuvo_box::Refusal { status: 403, message: "It wasn’t confirmed, so nothing was done.".into(), reason: None, older_box: false, action: None })
+    kuvo_box::Error::Refused(kuvo_box::Refusal { status: 403, message: "It wasn’t confirmed, so nothing was done.".into(), title: None, reason: None, older_box: false, action: None })
 }
 use sign_in::SignIn;
 

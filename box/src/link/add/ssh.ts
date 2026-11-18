@@ -95,6 +95,8 @@ export interface Ran {
 export interface RunOptions {
   /** What its standard input gets: bytes, or a file's. */
   input?: Buffer | { file: string };
+  /** Recheck permission after waits and before starting a command or sending its buffered input. */
+  beforeInput?: () => void;
   /** Told as the input goes, in bytes. */
   sent?: (bytes: number, total: number) => void;
   /** Ends it (its own process, by its pid): only for what's safe to cut short. */
@@ -113,9 +115,10 @@ export const commandFor = (script: string): string =>
   `exec sh -c 'kuvo_script=$(printf %s ${Buffer.from(script).toString("base64")} | base64 -d) || exit 127; eval "$kuvo_script"'`;
 
 function run(args: string[], options: RunOptions): Promise<Ran> {
-  return new Promise<Ran>(resolve => {
+  return new Promise<Ran>((resolve, reject) => {
     void environment(options.way).then(env => {
       if (options.signal?.aborted) return resolve({ status: null, stdout: "", stderr: "" });
+      options.beforeInput?.();
       const child = spawn(program(), args, { env: env as NodeJS.ProcessEnv, stdio: ["pipe", "pipe", "pipe"] });
       const out: Buffer[] = [], err: Buffer[] = [];
       let kept = 0;
@@ -139,6 +142,7 @@ function run(args: string[], options: RunOptions): Promise<Ran> {
         let at = 0;
         const more = () => {
           while (at < input.length) {
+            try { options.beforeInput?.(); } catch (error) { stop(); reject(error); return; }
             const piece = input.subarray(at, at + 262_144);
             at += piece.length;
             const room = child.stdin.write(piece);
@@ -156,7 +160,7 @@ function run(args: string[], options: RunOptions): Promise<Ran> {
       stream.on("data", chunk => { at += chunk.length; options.sent?.(at, total); });
       stream.on("error", stop);
       stream.pipe(child.stdin);
-    });
+    }).catch(reject);
   });
 }
 

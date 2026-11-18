@@ -17,6 +17,7 @@ use gpui::{
 use kuvo_box::BoxClient;
 use kuvo_box::accounts::{Confirm, said};
 use kuvo_box::areas::{AddTry, Adding, Computer};
+use kuvo_box::boxes::Pairing;
 use kuvo_box::follow::{Follow, Followed, Timing};
 use kuvo_ui::{
     ActiveTheme, Icon, IconName, IconSize, StyledType, TypeSize,
@@ -60,6 +61,7 @@ impl Shown {
 }
 
 pub enum ComputersEvent {
+    PairAgain,
     /// A row picked: `this`, `computer:<key>`, `add`, or none (all of them).
     Select(Option<String>),
     /// The Sessions area, where this window's own sessions at work are.
@@ -96,6 +98,7 @@ enum Item {
     Head(Box<Computer>),
     /// What's true now, in words, and the one action that moves it on (where there's one).
     Notice { key: String, tone: Tone, title: String, words: String, action: Option<NoticeAction> },
+    PairingCheck(String),
     Fact { key: String, title: String, value: String, first: bool, last: bool },
     /// Sessions at work there, as its box counts them; `open`: they're this window's, under Sessions.
     Working { title: String, open: bool },
@@ -144,6 +147,7 @@ struct Manage {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum What {
+    PairAgain,
     Connect,
     Remove,
     AllowDevices,
@@ -164,6 +168,7 @@ impl What {
     /// Its row on the page.
     fn row(self) -> &'static str {
         match self {
+            What::PairAgain => "action-pair-again",
             What::Connect => "action-reconnect",
             What::Remove => "action-remove",
             What::AllowDevices => "action-allow-devices",
@@ -182,9 +187,8 @@ pub struct ComputersView {
     /// Run against a live box (off this thread), else at once (tests and shots).
     live: bool,
     computers: Reading<Vec<Computer>>,
-    /// Why this app doesn't reach your other computers (its pairing, as the box on this computer
-    /// said it): a title and the box's words, whole. None while it does.
-    pairing: Option<(String, String)>,
+    /// What the box says about this app's pairing.
+    pairing: Option<Item>,
     /// The actions under way, by computer and row: their words meanwhile, and the work.
     busy: HashMap<(String, &'static str), (String, Task<()>)>,
     /// What the box last refused, in its words, over the page it was asked on.
@@ -510,7 +514,21 @@ impl ComputersView {
     }
 
     /// How this app's pairing stands, where it isn't paired: said over All and This Computer.
-    pub fn set_pairing(&mut self, pairing: Option<(String, String)>, cx: &mut Context<Self>) {
+    pub fn set_pairing(&mut self, pairing: Option<Pairing>, cx: &mut Context<Self>) {
+        let notice = |title, words, action| Item::Notice { key: "notice-pairing".into(), tone: Tone::Attention, title, words, action };
+        let pairing = match pairing {
+            Some(Pairing::Checking(message)) => Some(Item::PairingCheck(message)),
+            Some(Pairing::Readd(said)) => {
+                let action = said.pair_again_label().map(|label| NoticeAction {
+                    row: What::PairAgain.row(), label: label.into(),
+                    act: Some(Manage { what: What::PairAgain, key: String::new(), confirm: None, does: None }), why: None, busy: None,
+                });
+                Some(notice(said.title.unwrap_or_default(), said.message, action))
+            }
+            Some(Pairing::Waiting(why) | Pairing::Refused(why)) => Some(notice("This app doesn’t reach your other computers yet".into(), why, None)),
+            Some(Pairing::Removed(why)) => Some(notice("This app was removed from your devices".into(), format!("{why} To add it again, choose Connect This App Again in the computer menu at the top."), None)),
+            _ => None,
+        };
         if self.pairing != pairing {
             self.pairing = pairing;
             self.rebuild(cx);
@@ -571,8 +589,8 @@ impl ComputersView {
             },
             Shown::Add => self.add_items(cx),
         };
-        if let (Some((title, words)), Shown::All | Shown::This) = (&self.pairing, &self.shown) {
-            items.insert(1.min(items.len()), Item::Notice { key: "notice-pairing".into(), tone: Tone::Attention, title: title.clone(), words: words.clone() , action: None });
+        if let (Some(pairing), Shown::All | Shown::This) = (&self.pairing, &self.shown) {
+            items.insert(1.min(items.len()), pairing.clone());
         }
         // Only the items that changed are laid out again; the rest keep their places and the page
         // keeps its scroll.
@@ -787,6 +805,7 @@ impl ComputersView {
             What::Uninstall => ("Starting…", Box::new(move |client| client.uninstall_computer(&act.key).map(|_| ()))),
             What::Update => ("Updating…", Box::new(move |client| client.update_computer(&act.key).map(|_| ()))),
             What::UpdateHere => ("Updating…", Box::new(|client| client.update_here())),
+            What::PairAgain => return cx.emit(ComputersEvent::PairAgain),
             What::AddMachine => return,
             // Asked of the box that lists your computers, which brings that one up.
             What::Offer => {
@@ -945,6 +964,11 @@ impl ComputersView {
             Item::Group(label) => div().pt(space::S6).pb(space::S2).text_ui(TypeSize::Body).text_color(c.text_muted).child(label).into_any_element(),
             Item::Row { computer, first, last } => self.row(&computer, first, last, cx),
             Item::Head(computer) => head(&computer, cx),
+            Item::PairingCheck(message) => div().debug_selector(|| "pairing-check".into())
+                .pt(space::S4).flex().items_center().gap(space::S2)
+                .text_ui(TypeSize::Small).text_color(c.text_muted)
+                .child(spinner("pairing-check-spin", IconSize::Nav, c.text_muted))
+                .child(message).into_any_element(),
             Item::Notice { key, tone, title, words, action } => {
                 let (icon, color) = match tone {
                     Tone::Waiting | Tone::Busy => (IconName::Clock, c.icon),

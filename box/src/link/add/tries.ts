@@ -31,6 +31,7 @@ export class Failed extends Error {
 export interface Running {
   seen: AddTry;
   stop: AbortController;
+  committed?: boolean;
   /** The answer its question waits for. */
   answer: ((id: string) => void) | null;
   /** When it ends (however it ends). */
@@ -86,6 +87,8 @@ export interface Telling {
   signal: AbortSignal;
   /** Stops here if the try was stopped. */
   check(): void;
+  /** An irreversible change has been saved; keep the cleanup outcome even if asked to stop. */
+  commit?(): void;
   /** The step under way now (those before it done), with what it says beside it. */
   step(id: string, detail?: string): void;
   /** How far the step under way has got, in bytes. */
@@ -120,6 +123,7 @@ export function startTry(kind: AddTry["kind"], destination: string, name: string
   const tell: Telling = {
     signal: stop.signal,
     check() { if (stop.signal.aborted) throw new Stopped(); },
+    commit() { it.committed = true; },
     step(id, detail) {
       tell.check();
       change({ steps: steady(it.seen.steps).map(step => (step.id === id ? { id: step.id, title: step.title, state: "now" as const, ...(detail ? { detail } : {}) } : step)) });
@@ -206,7 +210,7 @@ export function endTry(id: string): boolean {
 
 /** Tells a try under way to stop: it says so until what it runs there now has ended. */
 export function stopTry(it: Running): void {
-  if (it.stop.signal.aborted) return;
+  if (it.committed || it.stop.signal.aborted) return;
   const { question: _question, ...rest } = it.seen;
   it.seen = { ...rest, state: "stopping", title: "Stopping…" };
   it.stop.abort();

@@ -324,30 +324,48 @@ const runs = (pid, program) => {
 KUVO_AT_WORK
 (cd "$K" && KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$E" --config=/dev/null --no-env-file "$S") 2>/dev/null | grep '^working ' || echo "working unknown"`;
 
-/** Takes Kuvo Code off the computer: it lets this computer (`key`) go; and unless another Mac
- * still uses it (`only: false` leaves it running for them), its own `uninstall` (nothing of it
- * runs or starts again: its launch agent and crontab line too), then the sign-ins and keys it
- * keeps, and the folder of Kuvo Code's app there (`desktop`, the key it's paired by as one of
- * your devices). The rest of its folder stays, with its sessions. Prints `kept` (another Mac uses it), or what its
- * uninstall said (JSON); exit 1 when that couldn't stop everything. */
+// Shared by the local recovery command and the SSH wrapper, which can be talking to an
+// older box. K names the box and E its Bun runtime. Each step can be run again after a failure.
+export const uninstallCleanup = String.raw`
+desktop_failed=0
+cleanup_failed=0
+rm -rf "$K/desktop" || desktop_failed=1
+if [ -f "$K/data/opencode/opencode.db" ]; then
+  KUVO_DB="$K/data/opencode/opencode.db" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$E" -e '
+    const SQLite = process.versions.bun ? require("bun:sqlite").Database : require("node:sqlite").DatabaseSync;
+    const db = new SQLite(process.env.KUVO_DB);
+    try {
+      const has = db.prepare("SELECT 1 FROM sqlite_master WHERE type = ? AND name = ?").get("table", "credential");
+      if (has) db.exec("DELETE FROM credential");
+    } finally { db.close(); }
+  ' || cleanup_failed=1
+fi
+rm -rf "$K/integrations" "$K/keys" "$K/box/keys" "$K/box/bot-keys" || cleanup_failed=1
+rm -f "$K/run/launch.env" "$K/run/launch.notes" || cleanup_failed=1
+if [ -d "$K/agents" ]; then
+  find "$K/agents" -path "$K/agents/runtime" -prune -o -type f \( -name .credentials.json -o -name 'auth.json*' -o -name 'acp_token.json*' -o -name 'oauth-token.json*' -o -path '*/claude/tokens/*' \) -exec rm -f {} + || cleanup_failed=1
+fi
+if [ "$desktop_failed" -ne 0 ]; then exit 81; fi
+if [ "$cleanup_failed" -ne 0 ]; then exit 82; fi
+`;
+
+/** Takes Kuvo Code off the computer, or disconnects it from this setup if another Mac uses it. */
 export const uninstall = (version: string, key: string, only: boolean): string => String.raw`${K}
 ${engineOf(version)}
-# (The key Kuvo Code's app there is known by among your devices, which the box that removes this
-# computer takes off them too: with or without a Kuvo Code that runs. On a Mac the app keeps it in
-# its Keychain, which isn't reached from here: there, being taken off your devices keeps it out.)
-${only ? 'rm -rf "$K/desktop"' : ""}
-if [ ! -x "$E" ] || [ ! -f "$K/bin/kuvo-link.js" ]; then echo '{"result":"none"}'; exit 0; fi
-${link(`leave ${quote(key)}`)} >/dev/null 2>&1 || true
-${only ? "" : "echo kept; exit 0"}
-${link("uninstall")} 2>/dev/null; did=$?
-# (What it keeps of sign-ins and keys goes whether or not everything stopped just now.)
-if [ -f "$K/data/opencode/opencode.db" ]; then
-  KUVO_DB="$K/data/opencode/opencode.db" BUN_BE_BUN=1 "$E" -e 'const { Database } = require("bun:sqlite"); const db = new Database(process.env.KUVO_DB); try { db.run("DELETE FROM credential"); } catch {} db.close()' >/dev/null 2>&1 || true
+did=0
+said='{"result":"none"}'
+if [ -x "$E" ] && [ -f "$K/bin/kuvo-link.js" ]; then
+  if ! ${link(`leave ${quote(key)}`)} >/dev/null; then
+    ${only ? "true" : "exit 1"}
+  fi
+  ${only ? "" : "echo kept; exit 0"}
+  export KUVO_UNINSTALL_FROM_SSH=1
+  said=$( ${link("uninstall")} ); did=$?
 fi
-rm -rf "$K/integrations" "$K/keys" "$K/box/keys" "$K/box/bot-keys"
-rm -f "$K/run/launch.env" "$K/run/launch.notes"
-if [ -d "$K/agents" ]; then
-  find "$K/agents" -path "$K/agents/runtime" -prune -o -type f \( -name .credentials.json -o -name 'auth.json*' -o -name 'acp_token.json*' -o -name 'oauth-token.json*' -o -path '*/claude/tokens/*' \) -exec rm -f {} + 2>/dev/null
-fi
-[ $did -eq 0 ] || exit 1
-true`;
+${only ? "" : "exit 1"}
+(${uninstallCleanup}) || case $? in
+  81) echo '{"result":"incomplete","message":"Kuvo Code couldn’t delete the desktop identity folder. Check its permissions and try again."}'; exit 1 ;;
+  *) echo '{"result":"unfinished","message":"Kuvo Code couldn’t clear all its keys and sign-ins. Run uninstall again."}'; exit 1 ;;
+esac
+printf '%s\n' "$said"
+exit "$did"`;

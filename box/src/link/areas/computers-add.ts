@@ -67,7 +67,7 @@ export async function* computersAddRoute(context: RouteContext, match: RegExpMat
   const destination = cleanAddress((parsed(request.body) as Body<"destination">)?.destination);
   const problem = addressProblem(destination);
   if (problem) return yield* json(400, { message: problem });
-  const begun = beginAdd(destination);
+  const begun = beginAdd(destination, context.phone);
   if ("busy" in begun) return yield* json(409, { message: begun.busy });
   return yield* json(202, { try: begun.seen });
 }

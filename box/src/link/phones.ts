@@ -18,38 +18,57 @@ import type { Doc, SignedDoc } from "../shared/documents";
 import type { PhoneHello } from "./relay/host";
 import type { LinkState, Pairing, Phone } from "./state";
 
+/** The current pairing for a relay session or token issuer. Older pairings use the empty id. */
+export function pairedPhone(link: LinkState | null | undefined, key: string, pairing?: string): Phone | undefined {
+  return (link?.phones ?? []).find(phone => phone.key === key && (pairing === undefined || (phone.pairing ?? "") === pairing));
+}
+
+/** A device whose voucher is kept by another box must get its pairing links there. For old
+ * documents that lacked voucher metadata, an inherited desktop pairing is treated the same way. */
+export const canIssuePairing = (phone: Phone): boolean => phone.from !== "mac" || (!phone.by && phone.kind !== "desktop");
+
 // Lets in phones in link.json, and a new one showing the pairing token (once, in time), noting
 // where it is on the relay, for its notifications. Where a paired one is changes once its session
 // proves its own (confirmPhone): the first handshake message can be replayed from elsewhere.
-export function authorizePhone(key: Buffer, hello: PhoneHello | null | undefined, address: Buffer | undefined): boolean {
+export function authorizePhonePairing(key: Buffer, hello: PhoneHello | null | undefined, address: Buffer | undefined): string | false {
   const encoded = key.toString("base64url");
-  if (!hello?.pair) return Boolean(readLink()?.phones?.some(phone => phone.key === encoded));
+  const current = () => {
+    const phone = pairedPhone(readLink(), encoded);
+    return phone ? phone.pairing ?? "" : false;
+  };
+  if (!hello?.pair) return current();
   // Showing the token: a pairing of its own, paired before or not (one removed comes back).
-  let paired = false;
+  let paired: string | undefined;
   updateLink(link => {
     // A phone's (`kuvo/phones/pair`), or, on a Mac, the one its Settings › Phone shows: each apart,
     // so neither ends the other.
     const given = Buffer.from(String(hello!.pair), "base64url");
     const slot = (["pairing", "appPairing"] as const).find(name => {
       const pairing = link?.[name];
-      if (!pairing || Date.now() > pairing.expires) return false;
+      // Older tokens in the shared slot could have been issued over the relay without an issuer.
+      if (!pairing || Date.now() > pairing.expires || (name === "pairing" && pairing.issuer === undefined)) return false;
       const expected = Buffer.from(pairing.token, "base64url");
       return given.length === expected.length && crypto.timingSafeEqual(given, expected);
     });
     if (!slot) return null;
-    // (A link made before this box joined a setup as a member: only its main computer pairs now.)
-    if (mainElsewhere(link)) {
+    const issuer = link![slot]!.issuer;
+    const issuedBy = issuer && pairedPhone(link, issuer.key, issuer.pairing);
+    if (mainElsewhere(link) || (issuer && (!issuedBy || !canIssuePairing(issuedBy)))) {
       delete link![slot];
       return link;
     }
-    pairPhone(link!, { key: encoded, name: String(hello!.name ?? "").slice(0, 100), added: Math.floor(Date.now() / 1000), from: "pair", address: address?.toString("base64url"), pairing: newPairing(), ...(hello!.client === "desktop" ? { kind: "desktop" as const } : {}) });
+    const by = issuedBy ? issuedBy.by : undefined;
+    if (by && !hasVoucherSpace(link!, encoded)) return null;
+    paired = newPairing();
+    pairPhone(link!, { key: encoded, name: String(hello!.name ?? "").slice(0, 100), added: Math.floor(Date.now() / 1000), from: "pair", address: address?.toString("base64url"), pairing: paired, ...(hello!.client === "desktop" ? { kind: "desktop" as const } : {}), ...(by ? { by } : {}) });
     delete link![slot];
-    paired = true;
     return link;
   });
   if (paired) noteDocsChanged();
-  return paired || Boolean(readLink()?.phones?.some(phone => phone.key === encoded));
+  return paired ?? current();
 }
+
+export const authorizePhone = (...args: Parameters<typeof authorizePhonePairing>): boolean => authorizePhonePairing(...args) !== false;
 
 const PAIRING = /^[A-Za-z0-9_-]{0,32}$/;
 
@@ -83,14 +102,18 @@ const MOST_BLOCKED = 64;
 // box vouch for before, which could ask for the computer to be allowed again.
 function blockVoucher(link: LinkState, phone: Phone, now: number): void {
   if (!phone.by) return;
-  takeOffVouched(link, phone.by);
-  link.vouchBlocked = [...(link.vouchBlocked ?? []).filter(each => each.key !== phone.by), { key: phone.by, device: phone.name ?? "", at: now }].slice(-MOST_BLOCKED);
+  revokeVoucher(link, phone.by, phone.name ?? "", now);
+}
+
+export function revokeVoucher(link: LinkState, by: string, device = "", now = Date.now()): void {
+  takeOffVouched(link, by);
+  link.vouchBlocked = [...(link.vouchBlocked ?? []).filter(each => each.key !== by), { key: by, device, at: now }].slice(-MOST_BLOCKED);
 }
 
 /** Every device the box `by` vouched for taken off (in place), each by the pairing it has now and
  * noted among the removals as any removal is, so this box's phones document carries them and
- * they're out on every computer: whether any was. What another box vouched for, a phone, and what
- * this box paired itself stay. Also what removing that computer itself does (`setMacPeers`,
+ * they're out on every computer: whether any was. Other vouchers and independent pairings stay.
+ * Also what removing that computer itself does (`setMacPeers`,
  * mac/routes.ts): Kuvo Code's app there no longer reaches the others with the key it had. That
  * alone keeps no box from vouching: one that's removed is no machine of this box's, so its vouch
  * isn't taken (`deviceAct`), and added again it vouches as a new one does. */
@@ -157,9 +180,12 @@ export function pairPhone(link: LinkState, phone: Phone): void {
 /** What `kuvo/devices/pair` came to here: the pairing the device has now, or that it was removed. */
 export type DevicePaired = { pairing: string } | { removed: true } | { full: true } | { blocked: { device: string } };
 
-/** The most desktop apps paired this way at once: a box that vouches can't fill the list (a
- * phones document's readers take its first 64). */
+/** The most desktop apps and voucher-bound devices paired this way at once. The limit keeps a
+ * voucher from filling a phones document by issuing pairing links. */
 export const MOST_DESKTOPS = 16;
+
+const hasVoucherSpace = (link: LinkState, key: string): boolean =>
+  (link.phones ?? []).filter(phone => phone.key !== key && (phone.kind === "desktop" || phone.by)).length < MOST_DESKTOPS;
 
 // Kuvo Code's desktop app paired here with no token (`kuvo/devices/pair`: asked by the app beside
 // this box, or vouched for by a member's box, PROTOCOL.md "Paired phones"), in place, under
@@ -175,7 +201,7 @@ export function pairDevice(link: LinkState, device: { key: string; name: string;
   if ((link.removed ?? []).some(each => each.key === device.key)) return { removed: true };
   const blocked = vouchBlockOf(link, device.by);
   if (blocked) return { blocked: { device: blocked.device } };
-  if ((link.phones ?? []).filter(phone => phone.kind === "desktop").length >= MOST_DESKTOPS) return { full: true };
+  if (!hasVoucherSpace(link, device.key)) return { full: true };
   const pairing = newPairing();
   pairPhone(link, { key: device.key, name: device.name, added: Math.floor(now / 1000), from: "pair", pairing, kind: "desktop", ...(device.by ? { by: device.by } : {}) });
   return { pairing };
@@ -245,6 +271,7 @@ export function foldPhones(link: LinkState, now = Date.now()): void {
         address: typeof phone.address === "string" && ADDRESS.test(phone.address) ? phone.address : known.get(phone.key as string)?.address,
         pairing: typeof phone.pairing === "string" ? phone.pairing : "",
         ...(phone.kind === "desktop" ? { kind: "desktop" as const } : {}),
+        ...(typeof phone.by === "string" && KEY.test(phone.by) ? { by: phone.by } : {}),
       });
     }
   }
@@ -256,7 +283,7 @@ export function foldPhones(link: LinkState, now = Date.now()): void {
 
 // This box's own phones document: the phones paired here, and every removal it knows of.
 export const ownPhones = (link: LinkState) => ({
-  phones: (link.phones ?? []).filter(phone => phone.from === "pair").map(phone => ({ key: phone.key, name: phone.name ?? "", ...(phone.address ? { address: phone.address } : {}), pairing: phone.pairing ?? "", ...(phone.kind === "desktop" ? { kind: "desktop" as const } : {}) })),
+  phones: (link.phones ?? []).filter(phone => phone.from === "pair").map(phone => ({ key: phone.key, name: phone.name ?? "", ...(phone.address ? { address: phone.address } : {}), pairing: phone.pairing ?? "", ...(phone.kind === "desktop" ? { kind: "desktop" as const } : {}), ...(phone.by ? { by: phone.by } : {}) })),
   removed: (link.removed ?? []).map(({ key, pairing }) => ({ key, pairing })),
 });
 
@@ -277,7 +304,7 @@ export function confirmPhone(phone: { key: Buffer; address?: Buffer }): void {
 export const PAIRING_MINUTES = 10;
 
 // A pairing's token, good once, for `PAIRING_MINUTES`.
-export const newPairingToken = () => ({ token: crypto.randomBytes(16).toString("base64url"), expires: Date.now() + PAIRING_MINUTES * 60_000 });
+export const newPairingToken = (issuer: Pairing["issuer"] = null): Pairing => ({ token: crypto.randomBytes(16).toString("base64url"), expires: Date.now() + PAIRING_MINUTES * 60_000, issuer });
 
 // The link a phone pairs with, for `link`'s pairing.
 export function pairingLink(link: LinkState & { relay: string; secret: string; key: string; name: string; pairing: Pairing }): string {

@@ -8,6 +8,7 @@ import { readPersonalities } from "../personalities/library";
 import { takePersonalities } from "../personalities/take";
 import { writeCard } from "../setup/card";
 import { macLink, updateLink } from "../state";
+import { confirmPhoneMembership } from "./phone-sync";
 import { changedWork, docMails, docsWork, greetWork } from "./work";
 import type { PersonalityLibrary } from "../personalities/library";
 import type { LinkHost } from "../relay/host";
@@ -16,7 +17,7 @@ import type { PendingParts } from "./parts";
 import type { DocSend, DocSender, DocsMail, DocsState } from "./work";
 
 /** What follows documents taken (`docsWork`): the Macs that let this box go, and what goes to whom. */
-type DocsDone = Pick<ReturnType<typeof docsWork>, "left" | "send">;
+type DocsDone = Pick<ReturnType<typeof docsWork>, "given" | "left" | "send">;
 
 // Parts of documents on their way here, from each box (`assemble`).
 const docParts = new Map<string, PendingParts>();
@@ -48,15 +49,16 @@ export async function receiveDocs(sender: DocSender, docs: DocsMail, host: LinkH
     return link;
   });
   if (!work || !link) return;
+  if (host?.welcomed && work.given.length) confirmPhoneMembership(host, sender, link, work.given);
   // Its setup changed with them (taken, or set aside): its card says so now.
   if (JSON.stringify(link.setup ?? null) !== setup) try { writeCard(); } catch {}
   await afterDocs(work, before, library, link, host);
 }
 
 async function afterDocs(work: DocsDone, before: PersonalityLibrary, library: PersonalityLibrary, link: LinkState, host: LinkHost | null | undefined): Promise<void> {
+  host?.keepOnly?.(new Set((link.phones ?? []).map(phone => phone.key)));
   if (library !== before) await takePersonalities(library).catch(() => {});
   for (const mac of work.left) forgetMacsAgents(mac, link);
-  host?.keepOnly?.(new Set((link.phones ?? []).map(phone => phone.key)));
   writeAgents(link);
   sendDocs(host, link, work.send);
 }
@@ -82,7 +84,10 @@ export function docsChanged(host: LinkHost | null | undefined, { greet = false, 
 
 // Something of this Mac's documents changed (a phone, a personality, your machines): what changed
 // goes to your machines now, if it's on the relay; they get it as they meet otherwise.
-export function macDocsChanged(): void {
+export function macDocsChanged({ closeRemoved }: { closeRemoved?: LinkState | null } = {}): void {
   const host = macLink.host;
+  // Computer removals close their devices' sessions here as well as on the boxes receiving the
+  // phones document. Direct phone removal sends its answer before closing the session.
+  if (closeRemoved) host?.keepOnly?.(new Set((closeRemoved.phones ?? []).map(phone => phone.key)));
   if (host?.welcomed) try { docsChanged(host); } catch {}
 }

@@ -30,8 +30,7 @@ export interface Phone {
   /** What it is, as it said (`clients.kind`): Kuvo Code's desktop app; none for a phone. */
   kind?: "desktop";
   /** The box that vouched for it (its static key), on the main computer that paired it on that
-   * box's word (`kuvo/devices/pair`); none for one paired by this box's own app or by token. Kept
-   * here alone, never in the phones document. */
+   * box's word (`kuvo/devices/pair`), or inherited from the issuer of a pairing link. */
   by?: string;
 }
 
@@ -39,6 +38,8 @@ export interface Phone {
 export interface Pairing {
   token: string;
   expires: number;
+  /** The relay pairing that requested this link, or null for a link issued locally. */
+  issuer?: { key: string; pairing: string } | null;
 }
 
 export interface LinkState {
@@ -82,8 +83,12 @@ export interface LinkState {
   /** The names you gave this Mac's machines, by key, over what its app says (`kuvo/computers/<key>`). */
   peerNames?: Record<string, string>;
   /** Machines removed through `kuvo/computers` (by key), which this Mac's app saying its machines
-   * doesn't bring back: only setting one up again does (`kuvo/link/setup?key=`). */
+   * doesn't bring back: only completing an explicit add does. */
   removedHere?: string[];
+  /** Per-key removal revisions, retained across re-adds so an older SSH Add can't restore trust. */
+  removalRevisions?: Record<string, number>;
+  /** A removed peer's saved destination, kept until its machines-list cleanup succeeds. */
+  pendingMachineCleanup?: Record<string, string>;
   /** Machines this Mac removed that haven't heard it yet (they hear it once it's back on the relay). */
   untold?: Peer[];
   /** The setup it's in, and its role there (PROTOCOL.md, "Your setup"). */
@@ -178,13 +183,12 @@ export function writeLink(link: LinkState) {
 
 // One change to link.json at a time, here and from `setup` and `pair` (other processes): read,
 // changed and written under a lock (run/.link.lock), so none writes over another's (a removal,
-// say). `change` returns the link to write, or nothing to leave it. A lock left by one that was
-// cut off goes after ten seconds; one not had in three goes ahead all the same.
+// say). `change` returns the link to write, or nothing to leave it. A busy lock fails the update.
 const LOCK = path.join(RUN, ".link.lock");
 export function updateLink(change: (link: LinkState | null) => LinkState | null | undefined | void): LinkState | null {
   return locked(LOCK, () => {
     const changed = change(readLink());
     if (changed) writeLink(changed);
     return changed ?? null;
-  });
+  }, { exclusive: true });
 }

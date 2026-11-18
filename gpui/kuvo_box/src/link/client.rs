@@ -76,6 +76,16 @@ pub struct BoxHello {
     pub app: String,
 }
 
+#[derive(Deserialize)]
+struct HandshakeHello {
+    #[serde(flatten)]
+    hello: BoxHello,
+    waiting: Option<String>,
+    reason: Option<String>,
+    title: Option<String>,
+    action: Option<crate::error::Offered>,
+}
+
 /// Why a box couldn't be asked, in words a client shows.
 pub mod words {
     pub const RELAY: &str = "Couldn’t connect. Check that you’re online, then try again.";
@@ -86,11 +96,13 @@ pub mod words {
     pub const VERSION: &str = "It runs a version this app doesn’t know. Update both.";
     /// A refusal's `reason` when the box doesn't take this device (never paired, or removed).
     pub const UNPAIRED: &str = "unpaired";
+    pub const PAIRING_WAIT: &str = "pairing-wait";
+    pub const PAIRING_READD: &str = "pairing-readd";
 }
 
 /// The box turned this device away: it isn't paired there (any more).
 pub fn unpaired() -> Error {
-    Error::Refused(Refusal { status: 403, message: words::REFUSED.into(), reason: Some(words::UNPAIRED.into()), older_box: false, action: None })
+    Error::Refused(Refusal { status: 403, message: words::REFUSED.into(), title: None, reason: Some(words::UNPAIRED.into()), older_box: false, action: None })
 }
 
 /// Whether `error` is a box turning this device away.
@@ -600,9 +612,15 @@ impl LinkClient {
             Kind::Handshake2 => {
                 let Phase::Shaking(initiator) = &mut session.phase else { return };
                 let Some(initiator) = initiator.take() else { return };
-                let opened = initiator.read_message_2(body).ok().and_then(|(payload, transport)| Some((serde_json::from_slice::<BoxHello>(&payload).ok()?, transport)));
+                let opened = initiator.read_message_2(body).ok().and_then(|(payload, transport)| Some((serde_json::from_slice::<HandshakeHello>(&payload).ok()?, transport)));
                 match opened {
-                    Some((hello, transport)) if hello.v == 1 => {
+                    Some((HandshakeHello { hello, waiting: Some(message), reason, title, action }, _)) if hello.v == 1 => {
+                        let readd = reason.as_deref() == Some(words::PAIRING_READD);
+                        let refusal = Refusal { status: if readd { 409 } else { 503 }, message, title,
+                            reason: Some(if readd { words::PAIRING_READD } else { words::PAIRING_WAIT }.into()), older_box: false, action };
+                        self.end(state, &from, Error::Refused(refusal), false);
+                    }
+                    Some((HandshakeHello { hello, .. }, transport)) if hello.v == 1 => {
                         session.phase = Phase::Open(transport, hello);
                         session.heard = Instant::now();
                         self.inner.changed.notify_all();

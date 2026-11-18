@@ -16,6 +16,7 @@ pub mod relay;
 pub mod stand_in;
 
 pub use client::{BoxHello, LinkClient, Timing, is_unpaired};
+pub(crate) use client::words::{PAIRING_READD, PAIRING_WAIT};
 pub use keys::{Host, Identity, Keeper, Kept, MemoryKeeper};
 pub use linked::LinkBox;
 pub use relay::{Dial, WebSocketDial};

@@ -2246,7 +2246,7 @@ fn home_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path::Pat
     // (And #772's: an older machine's page with its one card, waiting with Update Now, failing with
     // Try Again, under way, and offered by the box that lists it; a computer that can't be used,
     // older or out of reach, as the window shows it.)
-    for slug in ["switcher", "elsewhere", "quit-note", "update-waiting", "update-running", "update-setup", "update-ssh", "update-own-waiting", "update-own-running", "page-update-waiting", "page-update-failed", "page-update-running", "page-older-offer", "blocked-held", "blocked-unreached"] {
+    for slug in ["switcher", "elsewhere", "quit-note", "update-waiting", "update-running", "update-setup", "update-ssh", "update-own-waiting", "update-own-running", "page-update-waiting", "page-update-failed", "page-update-running", "page-older-offer", "blocked-held", "blocked-unreached", "computer-pairing-waiting", "computer-pairing-readd"] {
         if !only.is_empty() && !only.iter().any(|only| only == slug) {
             continue;
         }
@@ -2274,6 +2274,17 @@ fn home_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path::Pat
                 }
             }
             let devbox = stand_in.peer_box("key_devbox").expect("devbox");
+            use kuvo_box::boxes::Pairing;
+            let pairing = match slug {
+                "computer-pairing-waiting" => Some(Pairing::Checking("Checking this app with your other computers…".into())),
+                "computer-pairing-readd" => Some(Pairing::Readd(kuvo_box::Refusal::from_answer(409, &serde_json::to_vec(&serde_json::json!({
+                    "reason": "pairing-readd",
+                    "title": "This app needs to be paired again",
+                    "message": "The computer that added this app was removed. Pair this app again from one of your computers.",
+                    "action": { "label": "Pair Again…", "route": "kuvo/devices/pair" },
+                }))?))),
+                _ => None,
+            };
             let boxes = kuvo::home::stand_in_boxes(stand_in);
             let first = boxes.nearest().expect("the stand-in is the nearest box");
             let window = cx.open_window(size(px(1280.), px(820.)), |window, cx| cx.new(|cx| kuvo::Home::new(boxes, first, false, window, cx)))?;
@@ -2283,6 +2294,14 @@ fn home_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path::Pat
                 home.update(cx, |home, cx| {
                     home.set_now(NOW, cx);
                     home.read_at_once(cx);
+                    if let Some(pairing) = pairing.clone() {
+                        home.workspace().clone().update(cx, |workspace, cx| {
+                            workspace.show_area(Area::Computers, window, cx);
+                            let mut switching = workspace.switching().cloned().expect("stand-in computers were read");
+                            switching.pairing = pairing;
+                            workspace.set_switching(Some(switching), cx);
+                        });
+                    }
                     if slug == "elsewhere" {
                         assert!(home.switch_to("key_devbox", window, cx));
                         home.workspace().clone().update(cx, |workspace, cx| workspace.open_read_at_once("ses_releases", window, cx));

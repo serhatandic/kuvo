@@ -148,7 +148,7 @@ export async function* ownMachinesRoute(context: RouteContext): AsyncGenerator<A
     if (peer) return yield* await removed(context, peer.key);
     // One this box never signed in to your computers (an address kept from before): only off its list.
     if (waits) return yield* json(409, { message: waits });
-    forgetSaved(machine.destination);
+    if (!forgetSaved(machine.destination)) return yield* json(503, { message: "The saved machines list couldn’t be updated." });
     return yield* json(200, {});
   }
   if (method === "POST" && action === "uninstall" && parts.length === 4) {
@@ -194,11 +194,11 @@ async function* add(context: RouteContext, here: string): AsyncGenerator<AnswerP
   // Here already, at that address or as another of a machine's, with nothing under way for it:
   // said so at once, as the Mac's app did. (Set Up Again is `kuvo/computers/<key>/setup`.)
   const had = savedMachines()?.find(each => each.destination === destination || each.otherAddresses?.includes(destination));
-  if (had && !before) {
+  if (had && !before && peersOf(readLink()).some(peer => peer.id === had.destination)) {
     const machine = ownMachines()?.machines.find(each => each.id === had.destination);
     if (machine) return yield* json(200, { machine, known: true });
   }
-  const begun = beginAdd(destination);
+  const begun = beginAdd(destination, context.phone);
   if ("busy" in begun) return yield* json(409, { message: begun.busy });
   await settled(begun);
   if (begun.seen.state === "asking") {

@@ -53,10 +53,10 @@ const handed = (from, act) => {
   const done = link.takeQueueAct(from.peer, { id: `wqa_${crypto.randomBytes(16).toString("base64url")}`, at: Date.now(), area: "computers", ...act }, reply => answers.push(reply.acted), queued => link.writerAct(from.peer, queued));
   return done.then(() => answers);
 };
-const ask = async (method, route, body) => {
+const ask = async (method, route, body, phone) => {
   const handle = link.engineHandler(() => ({ port: 1, password: "pw" }), { name: "Studio" });
   const pieces = [];
-  for await (const piece of handle({ method, path: route, headers: {}, fromApp: true, ...(body ? { body: Buffer.from(JSON.stringify(body)) } : {}) }, undefined)) pieces.push(piece);
+  for await (const piece of handle({ method, path: route, headers: {}, fromApp: !phone, ...(body ? { body: Buffer.from(JSON.stringify(body)) } : {}) }, phone)) pieces.push(piece);
   return { status: pieces.find(each => each.head).head.status, body: JSON.parse(Buffer.concat(pieces.filter(each => each.body).map(each => each.body)).toString() || "{}") };
 };
 
@@ -111,9 +111,11 @@ test("a machine removed from any of your computers stays removed when this Mac's
   assert.equal((await ask("GET", `kuvo/link/setup?key=${attic.pub}`)).status, 200);
   assert.equal((await ask("PUT", "kuvo/link/peers", { peers: [devbox.peer, mini.peer, attic.peer], moved: [] })).status, 200);
   assert.deepEqual(names(), ["devbox", "mini"]);
-  // Added again (back on this Mac's list of machines): it's one of this Mac's machines again.
+  // A stale record on disk is insufficient. Only the completed SSH join restores this peer.
   fs.writeFileSync(path.join(home, "machines.json"), JSON.stringify([{ destination: "devbox" }, { destination: "mini" }, { destination: "attic" }]));
   assert.equal((await ask("PUT", "kuvo/link/peers", { peers: [devbox.peer, mini.peer, attic.peer], moved: [] })).status, 200);
+  assert.deepEqual([names(), link.macPeersBody(link.readLink()).left], [["devbox", "mini"], [attic.pub]]);
+  link.updateLink(state => link.setMacPeers(state, { peers: [devbox.peer, mini.peer, attic.peer] }, attic.pub).link);
   assert.deepEqual(names(), ["devbox", "mini", "attic"]);
   // Removed again later, and it's removed again.
   assert.equal((await handed(devbox, { method: "DELETE", item: attic.pub }))[0].status, 200);
@@ -130,6 +132,140 @@ test("a machine removed from any of your computers stays removed when this Mac's
   assert.equal((await handed(mini, { method: "PATCH", item: devbox.pub, body: { name: "Build box" } }))[0].status, 200);
   assert.equal((await ask("PUT", "kuvo/link/peers", { peers: [{ ...devbox.peer, name: "CI" }, mini.peer, attic.peer], moved: [] })).status, 200);
   assert.deepEqual(names(), ["CI", "Mini"]);
+});
+
+test("a failed machines list write leaves the peer removed and reports the incomplete change", async () => {
+  fresh();
+  link.macLink.appSaid = undefined;
+  const list = path.join(home, "machines.json");
+  const before = fs.readFileSync(list, "utf8");
+  const rename = fs.renameSync;
+  fs.renameSync = (from, to) => {
+    if (to === list) throw Object.assign(new Error("read-only filesystem"), { code: "EROFS" });
+    return rename(from, to);
+  };
+  let removed;
+  try {
+    removed = await ask("DELETE", `kuvo/computers/${attic.pub}`);
+  } finally {
+    fs.renameSync = rename;
+  }
+  assert.equal(fs.readFileSync(list, "utf8"), before);
+  assert.equal((await ask("PUT", "kuvo/link/peers", { peers: [devbox.peer, mini.peer, attic.peer] })).status, 200);
+  assert.deepEqual({ removed, names: names(), left: link.macPeersBody(link.readLink()).left, marks: link.readLink().removedHere }, {
+    removed: { status: 503, body: { message: "The computer’s access was removed, but the saved machines list couldn’t be updated." } },
+    names: ["devbox", "mini"], left: [attic.pub], marks: [attic.pub],
+  });
+});
+
+test("a forwarded removal retries the saved list write until it succeeds", async () => {
+  fresh();
+  link.macLink.appSaid = undefined;
+  const list = path.join(home, "machines.json");
+  const remove = () => handed(devbox, { method: "DELETE", item: attic.pub });
+  const rename = fs.renameSync;
+  fs.renameSync = (from, to) => {
+    if (to === list) throw new Error("could not save the list");
+    return rename(from, to);
+  };
+  try {
+    assert.equal((await remove())[0].status, 503);
+    assert.equal((await remove())[0].status, 503, "a second failure is still incomplete");
+  } finally {
+    fs.renameSync = rename;
+  }
+  assert.ok(JSON.parse(fs.readFileSync(list, "utf8")).some(each => each.destination === "attic"));
+  assert.equal((await remove())[0].status, 200);
+  assert.equal(JSON.parse(fs.readFileSync(list, "utf8")).some(each => each.destination === "attic"), false);
+  assert.ok(link.readLink().removedHere.includes(attic.pub));
+});
+
+test("link updates time out without writing when another writer still owns the lock", () => {
+  fresh();
+  const old = link.readLink();
+  assert.equal(link.removeHere(attic.pub).status, 200);
+  const lock = path.join(run, ".link.lock");
+  fs.mkdirSync(lock);
+  fs.writeFileSync(path.join(lock, `owner-${process.pid}-0123456789abcdef`), "");
+  fs.utimesSync(lock, new Date(0), new Date(0));
+  let called = false;
+  try {
+    assert.throws(() => link.updateLink(() => {
+      called = true;
+      return old;
+    }), /updating its link.*Try again/);
+    assert.equal(called, false);
+    assert.ok(link.readLink().removedHere.includes(attic.pub));
+    assert.ok(fs.existsSync(lock));
+  } finally {
+    fs.rmSync(lock, { recursive: true, force: true });
+  }
+  assert.ok(link.updateLink(state => state), "a fresh update can retry after the lock is released");
+});
+
+test("vouching checks the membership recorded when the pairing write acquires its lock", async () => {
+  fresh();
+  link.updateLink(state => ({ ...state, setup: { id: `set_${"a".repeat(22)}`, epoch: 1, primary: k(link.publicOf(mac)), sign: link.signingKeyOf(state.sign), role: "primary" } }));
+  const key = k(link.publicOf(link.newKey()));
+  const mkdir = fs.mkdirSync;
+  let removed = false;
+  fs.mkdirSync = (folder, ...args) => {
+    if (folder === path.join(run, ".link.lock") && !removed) {
+      removed = true;
+      const state = link.readLink();
+      state.removedHere = [attic.pub];
+      link.writeLink(link.setMacPeers(state, { peers: [devbox.peer, mini.peer], removed: [attic.pub] }).link);
+    }
+    return mkdir(folder, ...args);
+  };
+  let result;
+  try {
+    result = await link.deviceAct(attic.peer, { method: "POST", item: key, body: { name: "Fresh app", kind: "desktop" } });
+  } finally {
+    fs.mkdirSync = mkdir;
+  }
+  assert.equal(removed, true);
+  assert.deepEqual(result, { status: 409, value: { message: "Only computers in Studio's own setup can add your devices." } });
+  assert.equal(link.readLink().phones.some(each => each.key === key), false);
+});
+
+test("a vouched app's pairing links inherit its voucher and expire with its pairing", async () => {
+  fresh();
+  link.macLink.appSaid = undefined;
+  const appKey = link.publicOf(link.newKey());
+  const childKey = link.publicOf(link.newKey());
+  link.updateLink(state => {
+    link.pairDevice(state, { key: k(appKey), name: "Attic screen", by: attic.pub });
+    return state;
+  });
+  const issuer = { key: appKey, pairing: link.readLink().phones.find(each => each.key === k(appKey)).pairing };
+  const issued = async () => {
+    const response = await ask("POST", "kuvo/phones/pair", undefined, issuer);
+    assert.equal(response.status, 200);
+    return new URL(response.body.link).searchParams.get("token");
+  };
+  assert.equal(link.authorizePhone(childKey, { pair: await issued(), name: "Attic phone" }), true);
+  const childVoucher = link.readLink().phones.find(each => each.key === k(childKey)).by;
+  const pending = await issued();
+  assert.equal((await ask("DELETE", `kuvo/computers/${attic.pub}`)).status, 200);
+  const afterRemoval = link.authorizePhone(appKey, { pair: pending, name: "Attic screen", client: "desktop" });
+  assert.deepEqual({ childVoucher, afterRemoval, childAccess: link.authorizePhone(childKey, {}) },
+    { childVoucher: attic.pub, afterRemoval: false, childAccess: false });
+});
+
+test("a pairing link cannot outlive its issuer's pairing even when the same key is paired again", async () => {
+  fresh();
+  const key = link.publicOf(link.newKey());
+  const first = { key: k(key), name: "Phone", from: "pair", pairing: "first" };
+  link.updateLink(state => ({ ...state, phones: [first] }));
+  const issuer = { key, pairing: first.pairing };
+  const issued = await ask("POST", "kuvo/phones/pair", undefined, issuer);
+  assert.equal(issued.status, 200);
+  const token = new URL(issued.body.link).searchParams.get("token");
+  assert.equal((await ask("POST", "kuvo/phones/remove", { phones: [first] })).status, 200);
+  link.updateLink(state => ({ ...state, phones: [{ ...first, pairing: "second" }] }));
+  assert.equal(link.authorizePhone(link.publicOf(link.newKey()), { pair: token, name: "New phone" }), false);
+  assert.equal((await ask("POST", "kuvo/phones/pair", undefined, issuer)).status, 409);
 });
 
 test("a rename or remove this Mac took and was cut short by a restart is done again when it's asked again, never left in doubt", async () => {

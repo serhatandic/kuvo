@@ -14,14 +14,24 @@
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { isObject, parsed } from "../shared/json";
 import { engineRole, runsAs } from "../shared/platform";
+import { uninstallCleanup } from "./add/scripts";
 import { allWakes } from "./areas/wakes";
 import { listBots } from "./bots/list";
-import { APP_FOLDER, IN_TEST_FOLDER, K, REAL_BOX, RUN, accountHome, homeFolder, located, recordedKind } from "./home";
-import { peersOf } from "./peers/known";
+import { APP_FOLDER, IN_TEST_FOLDER, IS_MAC, K, REAL_BOX, RUN, accountHome, homeFolder, located, recordedKind } from "./home";
+import { KEY, ownKey, peersOf } from "./peers/known";
+import { publicOf } from "./crypto/keys";
+import { noteDocsChanged } from "./documents/changed";
+import { publishDesktopRemoval } from "./documents/phone-sync";
+import { removeAsMac } from "./phones";
+import { SETUP_CARD } from "./setup/card";
+import { mainElsewhere } from "./setup/main-only";
 import { LAUNCH_AGENT, REBOOT_TAG } from "./marks";
-import { SERVE_ROLE } from "./serve-kept";
-import { readLink } from "./state";
+import { SERVE_FILE, SERVE_ROLE } from "./serve-kept";
+import { macLink, readLink, updateLink } from "./state";
+import { forwardAct } from "./work-queue/forward";
+import type { AnswerPiece, RouteContext } from "./server/context";
 
 /** Where `launchctl`, `crontab` and `open` are, and the folder the launch agent's file is in: the
  * real ones for the real `~/.kuvo-code` alone, a test's stand-ins for a test's home, else none. (The
@@ -187,7 +197,6 @@ export function uninstall(): Uninstalled {
   for (let waited = 0; waited < 400 && told.some(([pid, role]) => runsAs(pid, role)); waited++) Atomics.wait(pause, 0, 0, 50);
   const left = running();
   stopped &&= left.length === 0;
-  const where = K.startsWith(homeFolder() + "/") ? "~" + K.slice(homeFolder().length) : K;
   const ran = left.length ? `its ${left.join(", ")} still ran just now` : "it couldn't stop everything just now";
   const starts = `${startsAgain.join(" and ")} couldn't be taken away`;
   const message = !stopped && startsAgain.length
@@ -196,13 +205,110 @@ export function uninstall(): Uninstalled {
       ? `Kuvo Code won't start again on this computer, but ${ran}. Run this again in a moment.`
       : startsAgain.length
         ? `Kuvo Code is stopped on this computer, but ${starts}, so it may start again. Run this again in a moment.`
-        : `Kuvo Code is stopped on this computer and won't start again. Its folder stays, with your sessions and settings: remove ${where} to remove them too.`;
+        : "Kuvo Code is stopped on this computer and won't start again. Its folder stays, with your sessions and settings.";
   return { stopped, launchAgent, crontab: crontabLine, startsAgain, left: [K], message };
 }
 
+const identityFile = path.join(K, "desktop", "identity");
+export const DESKTOP_UNINSTALL_ROUTE = "kuvo/box/uninstall-desktop";
+
+export function logCleanup(detail: unknown): void {
+  try { fs.appendFileSync(path.join(RUN, "uninstall.log"), `${String(detail)}\n`, { mode: 0o600 }); } catch {}
+}
+
+function desktopKey(): string | undefined {
+  try {
+    const [key, secret] = fs.readFileSync(identityFile, "utf8").trim().split(".");
+    if (key && secret && KEY.test(key) && KEY.test(secret)) return publicOf(Buffer.from(key, "base64url")).toString("base64url");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") logCleanup(error);
+  }
+  try {
+    const kept: unknown = JSON.parse(fs.readFileSync(path.join(K, "desktop", "boxes.json"), "utf8"));
+    if (isObject(kept) && typeof kept.paired === "string" && KEY.test(kept.paired)) return kept.paired;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") logCleanup(error);
+  }
+  return undefined;
+}
+
+async function revokeDesktop(): Promise<boolean> {
+  try {
+    const link = readLink();
+    const main = mainElsewhere(link);
+    if (main) {
+      let key = link && ownKey(link);
+      // A Mac command may have only its public setup card; its running box holds the private keys.
+      if (!key && IS_MAC) {
+        const card: unknown = JSON.parse(fs.readFileSync(SETUP_CARD, "utf8"));
+        if (isObject(card) && isObject(card.self) && typeof card.self.key === "string") key = card.self.key;
+      }
+      if (!key || !KEY.test(key)) return false;
+      const reply = await forwardAct({ ...main, name: main.name || "your main computer", kind: "mac" }, "This computer",
+        { area: "devices", method: "DELETE", item: key }, undefined, link, Date.now(), { backgroundRelay: IS_MAC });
+      if (!("refused" in reply) && reply.status === 200) return true;
+      logCleanup("refused" in reply ? reply.refused : `Device revocation returned ${reply.status}`);
+      return false;
+    }
+    const key = desktopKey();
+    const needsPublish = IS_MAC && peersOf(link).length > 0;
+    if (key) {
+      if (needsPublish && await askLivePrimary(key)) return true;
+      const changed = updateLink(current => current && current.phones?.some(phone => phone.key === key) && removeAsMac(current, [{ key }]) ? current : null);
+      if (changed) noteDocsChanged();
+      return !needsPublish;
+    }
+    return !needsPublish || !(link?.phones ?? []).some(phone => phone.from === "pair" && phone.kind === "desktop" && !phone.by);
+  } catch (error) {
+    logCleanup(error);
+    return false;
+  }
+}
+
+async function askLivePrimary(key: string): Promise<boolean> {
+  try {
+    const record: unknown = JSON.parse(fs.readFileSync(SERVE_FILE(), "utf8"));
+    if (!isObject(record) || typeof record.port !== "number" || !Number.isInteger(record.port) || record.port < 1 || record.port > 65_535 || typeof record.password !== "string" || !record.password) return false;
+    const response = await fetch(`http://127.0.0.1:${record.port}/${DESKTOP_UNINSTALL_ROUTE}`, {
+      method: "POST", redirect: "error", signal: AbortSignal.timeout(8_000),
+      headers: { authorization: `Basic ${Buffer.from(`opencode:${record.password}`).toString("base64")}`, "x-kuvo-from": "app", "content-type": "application/json" },
+      body: JSON.stringify({ key }),
+    });
+    await response.body?.cancel();
+    return response.status === 200;
+  } catch (error) {
+    logCleanup(error);
+    return false;
+  }
+}
+
+/** Internal: only the local authenticated server can revoke and confirm against its live relay. */
+export async function* desktopUninstallRoute({ request, signal, json }: RouteContext): AsyncGenerator<AnswerPiece> {
+  if (!IS_MAC || !request.served || !request.fromApp) return yield* json(403, { message: "Run uninstall on this computer." });
+  if (request.method.toUpperCase() !== "POST") return yield* json(405, {});
+  const body = parsed(request.body);
+  if (!isObject(body) || typeof body.key !== "string" || !KEY.test(body.key)) return yield* json(400, { message: "The desktop’s key couldn’t be read." });
+  try {
+    if (await publishDesktopRemoval(macLink.host, body.key, signal)) return yield* json(200, {});
+  } catch (error) { logCleanup(error); }
+  return yield* json(503, { message: "Kuvo Code couldn’t confirm the desktop removal reached every other computer." });
+}
+
+function clearDesktopKeychain(): boolean {
+  // Only the real Mac's own root can name the released app's item. Other roots own their files.
+  if (process.platform === "darwin" && REAL_BOX && located(K) === located(path.join(accountHome(), ".kuvo-code"))) {
+    const removed = run("/usr/bin/security", ["delete-generic-password", "-s", "run.kuvo.code.desktop", "-a", "link-identity"]);
+    if (removed.status !== 0 && removed.status !== 44) {
+      logCleanup(removed.error ?? removed.stderr);
+      return false;
+    }
+  }
+  return true;
+}
+
 /** `uninstall [--check]`: prints one JSON line, says what it did on stderr, and exits 0 when it's
- * done, 1 when it was refused or couldn't stop everything, 2 for what it doesn't know. */
-export function uninstallCommand(args: string[]): number {
+ * done, 1 when refused or incomplete, 2 for what it doesn't know. */
+export async function uninstallCommand(args: string[]): Promise<number> {
   const unknown = args.filter(arg => arg !== "--check");
   if (unknown.length) {
     console.error("Usage: kuvo-link.js uninstall [--check]");
@@ -218,7 +324,7 @@ export function uninstallCommand(args: string[]): number {
   }
   // A folder that isn't a box (its keeper and run folder both missing: a name mistyped, say).
   if (!fs.existsSync(path.join(K, "bin", "kuvo-start")) && !fs.existsSync(RUN)) {
-    const message = `There's no Kuvo Code box in ${K}.`;
+    const message = "There’s no Kuvo Code box in this folder.";
     console.log(JSON.stringify({ result: "refused", message }));
     console.error(message);
     return 1;
@@ -227,8 +333,28 @@ export function uninstallCommand(args: string[]): number {
     console.log(JSON.stringify(uninstallCheck()));
     return 0;
   }
-  const done = uninstall();
-  const finished = done.stopped && done.startsAgain.length === 0;
+  // The SSH controller has already revoked access before asking its remote to stop.
+  const overSSH = process.env.KUVO_UNINSTALL_FROM_SSH === "1";
+  const publishing = IS_MAC && !mainElsewhere(readLink());
+  const revoked = overSSH || await revokeDesktop();
+  let done: Uninstalled;
+  try {
+    done = uninstall();
+  } catch (error) {
+    logCleanup(error);
+    done = { stopped: false, launchAgent: false, crontab: false, startsAgain: [], left: [K], message: "Kuvo Code couldn’t confirm it had stopped on this computer." };
+  }
+  // The SSH wrapper runs the same cleanup locally on the target, including with older boxes.
+  const cleanup = overSSH ? null : run("sh", ["-c", `K=$1\nE=$2\n${uninstallCleanup}`, "kuvo-cleanup", K, process.execPath]);
+  const identityCleared = (overSSH || clearDesktopKeychain()) && cleanup?.status !== 81;
+  const credentialsCleared = cleanup === null || cleanup.status === 0;
+  if (cleanup && !credentialsCleared) logCleanup(cleanup.error ?? cleanup.stderr);
+  if (!revoked) done.message += publishing
+    ? " Kuvo Code couldn’t confirm the desktop removal reached every other computer."
+    : " Kuvo Code couldn’t confirm that your main computer revoked this desktop’s access.";
+  if (!identityCleared) done.message += " Kuvo Code couldn’t delete this desktop’s local identity.";
+  if (!credentialsCleared && cleanup?.status !== 81) done.message += " Kuvo Code couldn’t clear all its keys and sign-ins. Run uninstall again.";
+  const finished = done.stopped && done.startsAgain.length === 0 && revoked && identityCleared && credentialsCleared;
   console.log(JSON.stringify({ result: finished ? "uninstalled" : "unfinished", ...done }));
   console.error(done.message);
   return finished ? 0 : 1;

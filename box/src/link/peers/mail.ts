@@ -4,6 +4,7 @@
 
 import { isObject } from "../../shared/json";
 import { receiveDocs } from "../documents/exchange";
+import { takePhoneSync } from "../documents/phone-sync";
 import { bridgeTarget, readEngineFile } from "../engine/client";
 import { changeBot, deleteBot } from "../bots/edit";
 import { heldBack, takeBotEdit, takeBotEdited } from "../bots/held";
@@ -59,6 +60,7 @@ export function peerMail(sender: MailSender, payload: Record<string, unknown>, h
   if (isObject(payload.zone)) takeZone(payload.zone);
   // Documents (PROTOCOL.md, "Documents"): given, in parts, or a digest of what it has.
   if (isObject(payload.docs)) receiveDocs(sender, payload.docs as DocsMail, host).catch(() => {});
+  if (isObject(payload.phoneSync)) try { takePhoneSync(sender, payload.phoneSync, host); } catch {}
   // It's just connected, and may have missed what this box told it (the relay keeps nothing):
   // told again now.
   if (payload.ask === "agents") {

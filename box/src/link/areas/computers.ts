@@ -299,7 +299,17 @@ async function* manage(context: RouteContext, key: string, action: string | unde
   if (!what) return yield* json(405, { message: connect ? "Only POST." : "Rename (PATCH) or remove (DELETE)." });
   const computers = await listComputers(info.name ?? "", null, signal ?? undefined);
   const computer = computers.find(each => each.key === key);
-  if (!computer) return yield* json(404, { message: "That isn't one of your computers." });
+  if (!computer) {
+    // A failed list write may outlive the peer in the directory. Only retry cleanup in this case.
+    const writer = what === "remove" ? writerOf(readLink()) : null;
+    if (!writer) return yield* json(404, { message: "That isn't one of your computers." });
+    if (writer.here) {
+      const done = removeHere(key, true);
+      return yield* json(done.status, done.value);
+    }
+    const there = await forwardAct({ key: writer.key, name: writer.name, kind: "mac" }, "This computer", { area: "computers", item: key, method: "DELETE", body: { cleanup: true } }, signal);
+    return yield* json(there.status, "refused" in there ? { message: there.refused } : isObject(there.value) ? there.value : {});
+  }
   const here = computers[0]!.name;
   if (what === "connect") {
     if (computer.here) return yield* json(409, { message: `${here} is the computer you're asking.` });

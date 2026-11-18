@@ -253,6 +253,65 @@ test("uninstall refuses a folder that isn't a box", async () => {
   assert.equal(exists(where.run), false, "nothing made there");
 });
 
+test("local uninstall clears the file identity and reports unconfirmed revocation when it cannot reach its primary", async () => {
+  const where = home();
+  const primary = "a".repeat(43);
+  fs.writeFileSync(path.join(where.run, "link.json"), JSON.stringify({
+    key: Buffer.alloc(32, 7).toString("base64url"),
+    setup: { role: "member", primary },
+  }));
+  const identity = path.join(where.K, "desktop", "identity");
+  fs.mkdirSync(path.dirname(identity));
+  fs.writeFileSync(identity, "a desktop identity");
+  const done = await uninstall(where);
+  assert.equal(done.status, 1);
+  const said = JSON.parse(done.stdout);
+  assert.equal(said.result, "unfinished");
+  assert.equal(said.stopped, true);
+  assert.match(said.message, /couldn’t confirm that your main computer revoked/);
+  assert.equal(fs.existsSync(identity), false);
+});
+
+test("local uninstall finishes the SSH cleanup and can safely be run again", async () => {
+  const where = home();
+  const { DatabaseSync } = await import("node:sqlite");
+  const database = path.join(where.K, "data", "opencode", "opencode.db");
+  fs.mkdirSync(path.dirname(database), { recursive: true });
+  const db = new DatabaseSync(database);
+  db.exec("CREATE TABLE credential (value TEXT); INSERT INTO credential VALUES ('account'); CREATE TABLE session (title TEXT); INSERT INTO session VALUES ('keep me');");
+  db.close();
+  const removed = ["desktop/identity", "integrations/settings", "keys/integration", "box/keys/key", "box/bot-keys/key",
+    "run/launch.env", "run/launch.notes", "agents/alice/auth.json", "agents/claude/tokens/session"];
+  const kept = ["agents/runtime/auth.json", "agents/alice/settings.json"];
+  for (const file of [...kept, ...removed]) write(path.join(where.K, file), "data");
+  for (const _attempt of [1, 2]) {
+    const done = await uninstall(where);
+    assert.equal(done.status, 0, done.stderr);
+    assert.deepEqual(removed.filter(file => exists(path.join(where.K, file))), []);
+    assert.ok(kept.every(file => exists(path.join(where.K, file))));
+    const left = new DatabaseSync(database, { readOnly: true });
+    assert.equal(left.prepare("SELECT count(*) AS n FROM credential").get().n, 0);
+    assert.equal(left.prepare("SELECT title FROM session").get().title, "keep me");
+    left.close();
+  }
+});
+
+test("local uninstall on a primary reports an unconfirmed desktop removal with no serving process", async () => {
+  const where = home("mac");
+  const key = "a".repeat(43);
+  write(path.join(where.K, "desktop", "boxes.json"), JSON.stringify({ paired: key }));
+  write(path.join(where.run, "link.json"), JSON.stringify({
+    macPeers: [{ key: "b".repeat(43), sign: "c".repeat(43), address: "d".repeat(22), kind: "machine", id: "lab", name: "Lab" }],
+    phones: [{ key, from: "pair", kind: "desktop", pairing: "desktop" }],
+  }));
+  const done = await uninstall(where);
+  assert.equal(done.status, 1);
+  const said = JSON.parse(done.stdout);
+  assert.equal(said.stopped, true);
+  assert.match(said.message, /couldn’t confirm the desktop removal reached every other computer/);
+  assert.deepEqual(JSON.parse(read(path.join(where.run, "link.json"))).removed, [{ key, pairing: "desktop" }]);
+});
+
 test("uninstall says what it doesn't know", async () => {
   const where = home();
   assert.equal((await uninstall(where, ["--all"])).status, 2);

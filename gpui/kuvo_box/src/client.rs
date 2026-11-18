@@ -292,7 +292,7 @@ impl BoxClient {
 
     /// A conversation that isn't on this box (any more).
     pub(crate) fn not_here(&self) -> Refusal {
-        Refusal { status: 404, message: format!("This conversation isn’t on {} any more.", self.describe()), reason: None, older_box: false, action: None }
+        Refusal { status: 404, message: format!("This conversation isn’t on {} any more.", self.describe()), title: None, reason: None, older_box: false, action: None }
     }
 
     /// The conversation's newest `limit` messages, oldest first.

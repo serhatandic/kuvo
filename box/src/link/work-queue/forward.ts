@@ -71,7 +71,8 @@ const MOST_REMEMBERED = 2_000;
  * renamed (`PATCH {name}`) or removed (`DELETE`) on the box that writes its record
  * (`peers/manage.ts`); `area` `devices`: Kuvo Code's desktop app on the asking box's computer
  * (`item`, its key; `body`, `{name, kind}`) paired on the setup's main computer, which the asking
- * box vouches for (`POST`, `peers/devices.ts`); a Work Queue item's otherwise. */
+ * box vouches for (`POST`), or the asking box revokes its own vouched devices (`DELETE`,
+ * `item` is the sender's box key, `peers/devices.ts`); a Work Queue item's otherwise. */
 export interface Act {
   id: string;
   area?: "computers" | "devices";
@@ -107,14 +108,14 @@ const read = (file: string): Record<string, unknown> | null => {
 /** `act` done on the computer `computer` (one of your other computers, by what it told of its
  * items), and what it answered: or, when it can't be asked, why, in words a client shows (`named`,
  * the item as they name it). */
-export async function forwardAct(computer: Computer, named: string, act: Omit<Act, "id" | "at">, signal?: AbortSignal | null, link: LinkState | null = readLink(), now = Date.now()): Promise<Forwarded> {
+export async function forwardAct(computer: Computer, named: string, act: Omit<Act, "id" | "at">, signal?: AbortSignal | null, link: LinkState | null = readLink(), now = Date.now(), { backgroundRelay = false } = {}): Promise<Forwarded> {
   const peer = peersOf(link).find(each => each.key === computer.key);
   // (One it doesn't know any more, or that doesn't take it yet: changed there, as before.)
   if (!peer || !takesForwarded(peer.key, act.area ? AREA_FEATURES[act.area] : FORWARD_FEATURE)) return { status: 409, refused: `${named} is on ${computer.name}: change it there.` };
   if (!act.area && Array.isArray(act.body?.files) && act.body.files.length && !takesForwarded(peer.key, ATTACHMENTS)) return { status: 409, refused: `${computer.name} needs an update before it can keep attached files. Update it and try again.` };
   const here = ownName();
   if (awaySince(peer.key) !== null) return { status: 503, refused: `${computer.name} isn't answering now (it may be asleep, off or offline), so nothing was changed there. Try again once it's back.` };
-  if (offRelay()) return { status: 503, refused: `${here} isn't connected to your other computers now, so nothing was changed on ${computer.name}. Try again in a moment.` };
+  if (!backgroundRelay && offRelay()) return { status: 503, refused: `${here} isn't connected to your other computers now, so nothing was changed on ${computer.name}. Try again in a moment.` };
   const id = `wqa_${crypto.randomBytes(16).toString("base64url")}`;
   try {
     writePrivate(left(id), JSON.stringify({ to: peer.key, act: { ...act, id, at: now } }));
@@ -407,7 +408,7 @@ const actOf = (given: unknown): Act | null => {
   const { method, action, name } = given;
   const fits = (method === "GET" && action === undefined) || (method === "DELETE" && action === undefined) || (method === "POST" && action === "restore") || (method === "PATCH" && action === undefined)
     || (method === "GET" && action === "file" && typeof name === "string" && name.length > 0 && name.length <= 300);
-  const devices = given.area === "devices" && method === "POST" && action === undefined;
+  const devices = given.area === "devices" && (method === "POST" || method === "DELETE") && action === undefined;
   if (!fits && !devices) return null;
   if (given.area !== undefined && !devices && !(given.area === "computers" && (method === "PATCH" || method === "DELETE") && action === undefined)) return null;
   return { id: given.id, ...(given.area === "computers" || given.area === "devices" ? { area: given.area } : {}), method, item: given.item, ...(action ? { action } : {}), ...(action === "file" ? { name } : {}), ...(isObject(given.body) ? { body: given.body } : {}), at: given.at } as Act;

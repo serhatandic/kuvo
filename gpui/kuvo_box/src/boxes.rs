@@ -45,6 +45,9 @@ pub enum Reach {
     Away(String),
     /// It turned this device away: not paired there (yet), or removed.
     NotPaired,
+    /// This computer is checking a pairing it already knows.
+    Waiting(String),
+    Readd(crate::Refusal),
     /// The list doesn't say where it is (its Kuvo Code is older, or it's known only by another
     /// computer's word): it can't be reached from here.
     Unreached,
@@ -59,6 +62,10 @@ pub enum Pairing {
     Paired,
     /// The nearest box couldn't say yet (its main computer isn't answering): asked again later.
     Waiting(String),
+    /// The box is refreshing the known pairing.
+    Checking(String),
+    /// Only the user's Pair Again action starts a new pairing.
+    Readd(crate::Refusal),
     /// Refused, in the box's words (the switch is off or the box is older).
     Refused(String),
     /// This device was removed from your devices: only your word pairs it again
@@ -80,7 +87,7 @@ impl Row {
 
     /// Whether its sessions can be opened from here now.
     pub fn usable(&self) -> bool {
-        matches!(self.reach, Reach::Nearest | Reach::Connected | Reach::Connecting | Reach::Held { .. })
+        matches!(self.reach, Reach::Nearest | Reach::Connected | Reach::Connecting | Reach::Held { .. } | Reach::Waiting(_))
     }
 }
 
@@ -504,12 +511,12 @@ impl Boxes {
                     Ok(response) if response.is_success() => Pairing::Paired,
                     Ok(response) => {
                         let refusal = crate::error::Refusal::from_answer(response.status, &response.body);
-                        if refusal.reason.as_deref() == Some("removed") {
-                            Pairing::Removed(refusal.message)
-                        } else if response.status == 503 {
-                            Pairing::Waiting(refusal.message)
-                        } else {
-                            Pairing::Refused(refusal.message)
+                        match refusal.reason.as_deref() {
+                            Some("removed") => Pairing::Removed(refusal.message),
+                            Some(link::PAIRING_WAIT) => Pairing::Checking(refusal.message),
+                            Some(link::PAIRING_READD) => Pairing::Readd(refusal),
+                            _ if response.status == 503 => Pairing::Waiting(refusal.message),
+                            _ => Pairing::Refused(refusal.message),
                         }
                     }
                     Err(error) => Pairing::Waiting(error.to_string()),
@@ -579,12 +586,14 @@ impl Boxes {
             },
             Err(Error::NeedsUpdating { missing }) => Reach::Held { missing },
             Err(error) if link::is_unpaired(&error) => Reach::NotPaired,
+            Err(Error::Refused(refusal)) if refusal.reason.as_deref() == Some(link::PAIRING_WAIT) => Reach::Waiting(refusal.message),
+            Err(Error::Refused(refusal)) if refusal.reason.as_deref() == Some(link::PAIRING_READD) => Reach::Readd(refusal),
             Err(error) => {
                 let since = *state.failing.entry(key.to_owned()).or_insert_with(Instant::now);
                 if since.elapsed() >= self.inner.timing.away_after { Reach::Away(error.to_string()) } else { Reach::Connecting }
             }
         };
-        if matches!(reach, Reach::Connected | Reach::Held { .. } | Reach::NotPaired) {
+        if matches!(reach, Reach::Connected | Reach::Held { .. } | Reach::NotPaired | Reach::Waiting(_) | Reach::Readd(_)) {
             state.failing.remove(key);
         }
         let changed = state.reach.insert(key.to_owned(), reach.clone()).as_ref() != Some(&reach);
@@ -623,12 +632,12 @@ impl Boxes {
                 }
                 match &state.pairing {
                     None => true,
-                    Some(Pairing::Waiting(_)) => waited,
+                    Some(Pairing::Waiting(_) | Pairing::Checking(_)) => waited,
                     // A computer that doesn't take a device its setup paired: asked again, which
                     // says whether it was removed.
                     Some(Pairing::Paired) => again,
                     Some(Pairing::Refused(_)) => waited,
-                    Some(Pairing::Removed(_)) | Some(Pairing::NotAsked) => false,
+                    Some(Pairing::Removed(_) | Pairing::Readd(_) | Pairing::NotAsked) => false,
                 }
             }
         };
@@ -650,7 +659,7 @@ impl Boxes {
                     match state.reach.get(*key) {
                         None | Some(Reach::Connecting) => since.is_none_or(|since| since >= timing.away_after.min(Duration::from_secs(2))) || !state.failing.contains_key(*key),
                         Some(Reach::Connected | Reach::Held { .. }) => linked.link.as_ref().is_some_and(|(link, host)| !link.is_open(host)) || matches!(state.reach.get(*key), Some(Reach::Held { .. })) && since.is_none_or(|since| since >= timing.follow.held_again),
-                        Some(Reach::NotPaired) => since.is_none_or(|since| since >= timing.away_after),
+                        Some(Reach::NotPaired | Reach::Waiting(_) | Reach::Readd(_)) => since.is_none_or(|since| since >= timing.away_after),
                         Some(Reach::Away(_)) => {
                             let back = state.list.iter().any(|computer| computer.key == **key && computer.reach == "connected");
                             since.is_none_or(|since| since >= if back { timing.away_after } else { timing.look_again })
@@ -699,7 +708,7 @@ impl Boxes {
             }
             // Again when something changes, when a computer that just stopped answering is due,
             // or after a while.
-            let soon = state.reach.iter().any(|(key, reach)| matches!(reach, Reach::Connecting | Reach::NotPaired) && state.linked.contains_key(key)) || matches!(state.pairing, Some(Pairing::Waiting(_)) | None) && Self::wants_pairing(&state);
+            let soon = state.reach.iter().any(|(key, reach)| matches!(reach, Reach::Connecting | Reach::NotPaired | Reach::Waiting(_)) && state.linked.contains_key(key)) || matches!(state.pairing, Some(Pairing::Waiting(_) | Pairing::Checking(_)) | None) && Self::wants_pairing(&state);
             let wait = if soon { timing.away_after.min(timing.look_again) } else { timing.look_again };
             let _ = self.inner.woken.wait_timeout(state, wait);
         }

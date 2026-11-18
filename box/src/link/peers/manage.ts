@@ -171,39 +171,68 @@ export function renameHere(key: string, name: string): Acted {
  * this Mac's list of machines no longer has it. Kuvo Code's app on it goes from your devices too:
  * every device its box vouched for (`setMacPeers`; `takeOffVouched`, phones.ts), as this box's
  * phones document then says to your other computers. It keeps running there, as a box of its own. */
-export function removeHere(key: string): Acted {
+export function removeHere(key: string, pendingOnly = false): Acted {
   let gone: Peer[] = [];
-  let id: string | undefined;
   let already = false;
-  updateLink(link => {
-    const peer = link ? peersOf(link).find(each => each.key === key) : undefined;
-    // (Removed already, from here: the same again, as when it's asked again after a restart.)
-    already = Boolean(link?.removedHere?.includes(key));
-    // (One removed before its devices went with it, #753: they go when it's asked again.)
-    if (!link || !peer) return link && already && takeOffVouched(link, key) ? link : null;
-    id = peer.id;
-    link.removedHere = [...(link.removedHere ?? []).filter(each => each !== key), key].slice(-64);
+  let needsCleanup = false;
+  const changed = updateLink(link => {
+    if (!link) return null;
+    const peer = peersOf(link).find(each => each.key === key);
+    if (pendingOnly && (peer || !link.pendingMachineCleanup?.[key])) return null;
+    already = Boolean(link.removedHere?.includes(key));
+    needsCleanup = Boolean(peer?.id || link.pendingMachineCleanup?.[key]);
+    if (!peer) {
+      // One removed before its devices went with it loses them when asked again.
+      return already && takeOffVouched(link, key) ? link : null;
+    }
     const made = setMacPeers(link, { peers: (Array.isArray(link.macPeers) ? link.macPeers : []).filter(each => each?.key !== key), moved: link.macMoved, removed: [key] });
     if (!made.link) return null;
     gone = made.gone;
     if (made.link.peerNames) delete made.link.peerNames[key];
+    if (peer.id) made.link.pendingMachineCleanup = { ...made.link.pendingMachineCleanup, [key]: peer.id };
     return made.link;
   });
-  // (Its devices' removals go to your other computers either way.)
-  if (!gone.length && already) macDocsChanged();
-  if (!gone.length) return already ? answer(200, {}) : answer(404, { message: `That isn't one of ${ownName()}'s machines.` });
-  if (id) forgetSaved(id);
-  macDocsChanged();
+  if (!gone.length && !already) return answer(404, { message: `That isn't one of ${ownName()}'s machines.` });
+  macDocsChanged({ closeRemoved: changed });
   tellGone(gone);
+  // Once the removal is durable, clean up its saved address. Leave a retry if the list fails.
+  if (needsCleanup && !cleanRemovalList(key)) return answer(503, { message: "The computer’s access was removed, but the saved machines list couldn’t be updated." });
   return answer(200, {});
+}
+
+function cleanRemovalList(key: string): boolean {
+  let saved = true;
+  try {
+    updateLink(link => {
+      const pending = link?.pendingMachineCleanup;
+      const destination = pending?.[key];
+      if (!link || !pending || !destination) return null;
+      // A fresh Add may have kept the destination again since revocation.
+      saved = peersOf(link).some(each => each.id === destination) || forgetSaved(destination);
+      if (!saved) return null;
+      delete pending[key];
+      if (!Object.keys(pending).length) delete link.pendingMachineCleanup;
+      return link;
+    });
+  } catch (error) {
+    console.error("Removal machines-list cleanup failed:", error);
+    return false;
+  }
+  return saved;
 }
 
 // The machine `id` gone from this Mac's list of machines (`machines.json`), as its app would take
 // it off: what `kuvo/machines` and whether the link meets machines go by. One that won't read stays.
-export function forgetSaved(id: string): void {
+export function forgetSaved(id: string): boolean {
   const saved = savedMachines();
-  if (!saved?.some(each => each.destination === id)) return;
-  try { writePrivate(LIST_FILE, JSON.stringify(saved.filter(each => each.destination !== id), null, 2)); } catch {}
+  if (!saved) return false;
+  if (!saved.some(each => each.destination === id)) return true;
+  try {
+    writePrivate(LIST_FILE, JSON.stringify(saved.filter(each => each.destination !== id), null, 2));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** What another of your computers' box handed here (`area: "computers"`): done as this box's own
@@ -220,6 +249,6 @@ export async function writerAct(sender: MailSender, act: Act): Promise<Acted> {
     if (!name) return answer(400, { message: `Give it a name of up to ${MOST_NAME} characters.` });
     return renameHere(act.item, name);
   }
-  if (act.method === "DELETE") return removeHere(act.item);
+  if (act.method === "DELETE") return removeHere(act.item, act.body?.cleanup === true);
   return answer(405, { message: "Rename or remove." });
 }
