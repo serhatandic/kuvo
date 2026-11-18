@@ -260,9 +260,9 @@ test("a member pairs no phone and adds no computer, naming the main computer, an
   assert.equal(cli.stdout, "");
   assert.match(cli.stderr, /^Pair new phones from Studio Mac\.$/m);
   assert.ok(cli.stderr.includes(`If Studio Mac is gone for good, \`kuvo-link.js leave ${macPub}\` takes this computer out of its setup: your other computers, and phones paired with Studio Mac, no longer reach it here.`), cli.stderr);
-  // (A key that isn't one of its Macs: nothing let go, and said so.)
+  // An absent Mac is already gone. Leaving it again keeps the current setup.
   const wrong = spawnSync(process.execPath, [script, "leave", lab.key], { env: machineEnv, encoding: "utf8" });
-  assert.deepEqual([wrong.status, wrong.stderr.trim()], [1, "That isn't one of the Macs that set this computer up."]);
+  assert.deepEqual([wrong.status, wrong.stderr.trim()], [0, "That Mac is let go: this computer is no longer one of its computers."]);
   assert.equal(read(linkFile).setup.primary, macPub);
   assert.equal(read(linkFile).pairing, undefined);
 

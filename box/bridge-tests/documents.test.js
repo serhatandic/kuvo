@@ -227,11 +227,12 @@ test("a machine follows the setup its Mac leads; a lower epoch of it is never ta
 });
 
 // What a phone asks a machine's box (`kuvo/hosts`, `kuvo/phones/pair`), its link.json as `box` has it.
-async function asked(box, method, route) {
+async function asked(box, method, route, { local = false } = {}) {
   link.writeLink(box.state.link);
   const handle = link.engineHandler(() => { throw new Error("none"); }, {}, () => null);
   const parts = [];
-  for await (const part of handle({ method, path: route, headers: {}, body: Buffer.alloc(0) }, { key: crypto.randomBytes(32) }, undefined)) parts.push(part);
+  const phone = local ? undefined : { key: crypto.randomBytes(32) };
+  for await (const part of handle({ method, path: route, headers: {}, body: Buffer.alloc(0) }, phone, undefined)) parts.push(part);
   const text = Buffer.concat(parts.filter(part => part.body).map(part => part.body)).toString();
   return { status: parts[0].head.status, json: text ? JSON.parse(text) : undefined };
 }
@@ -260,7 +261,7 @@ test("only a member's own Mac's list goes to a phone: set aside by its one Mac, 
   // Studio let go (`kuvo-link.js leave`): b is in no setup, and pairs phones itself.
   assert.equal(link.leave(studio.entry.key), true);
   assert.equal(link.readLink().setup, undefined);
-  assert.equal((await asked({ state: { link: link.readLink() } }, "POST", "kuvo/phones/pair")).status, 200);
+  assert.equal((await asked({ state: { link: link.readLink() } }, "POST", "kuvo/phones/pair", { local: true })).status, 200);
   // Then it takes the setup Other leads, the next time it settles: Other's to pair from now.
   const settled = link.readLink();
   delete settled.pairing;
