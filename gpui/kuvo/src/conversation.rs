@@ -672,22 +672,23 @@ impl ConversationView {
         cx.notify();
     }
 
+    fn queue_move_at(&self, drag: &QueueDrag, position: gpui::Point<gpui::Pixels>, cx: &App) -> Option<QueueMove> {
+        let bounds = self.queue_scroll.bounds();
+        if !bounds.contains(&position) { return None; }
+        let y = position.y - bounds.top() - self.queue_scroll.offset().y;
+        let index = (f32::from(y) / QUEUE_ROW_HEIGHT).floor() as usize;
+        let items = self.queued_shown(cx);
+        let from = items.iter().position(|item| item.id == drag.item && item.can_reorder())?;
+        let anchor = items.get(index)?;
+        (from != index && anchor.can_reorder()).then(|| QueueMove {
+            item: drag.item.clone(), anchor: anchor.id.clone(), before: index < from,
+        })
+    }
+
     fn drag_over_queue(&mut self, event: &gpui::DragMoveEvent<QueueDrag>, _: &mut Window, cx: &mut Context<Self>) {
         let drag = event.drag(cx);
         if drag.owner != cx.entity().entity_id() { return; }
-        let items = self.queued_shown(cx);
-        let position = event.event.position;
-        let hovered = event.bounds.contains(&position).then(|| {
-            let y = position.y - event.bounds.top() - self.queue_scroll.offset().y;
-            (f32::from(y) / QUEUE_ROW_HEIGHT).floor() as usize
-        });
-        let original = items.iter().position(|item| item.id == drag.item && item.can_reorder());
-        let change = original.zip(hovered).and_then(|(from, at)| {
-            let anchor = items.get(at)?;
-            (from != at && anchor.can_reorder()).then(|| QueueMove {
-                item: drag.item.clone(), anchor: anchor.id.clone(), before: at < from,
-            })
-        });
+        let change = self.queue_move_at(drag, event.event.position, cx);
         if self.queue_drag != change {
             self.queue_drag = change;
             self.queue_drag_motion += 1;
@@ -1470,9 +1471,9 @@ impl ConversationView {
                 .children(self.queue.line.clone().map(|line| div().debug_selector(|| "queue-line".into()).px(space::S2).pb(space::S1).text_ui(TypeSize::Caption).text_color(c.text_muted).child(line)))
                 .child(div().id("queue-rows").max_h(px(QUEUE_ROW_HEIGHT * 4.)).overflow_y_scroll().track_scroll(&self.queue_scroll)
                     .on_drag_move(cx.listener(Self::drag_over_queue))
-                    .on_drop(cx.listener(|this, drag: &QueueDrag, _, cx| {
+                    .on_drop(cx.listener(|this, drag: &QueueDrag, window, cx| {
                         if drag.owner != cx.entity().entity_id() { return; }
-                        if let Some(change) = this.queue_drag.take() {
+                        if let Some(change) = this.queue_move_at(drag, window.mouse_position(), cx) {
                             this.commit_queue_move(change, cx);
                         }
                         this.cancel_queue_drag(cx);
@@ -1594,7 +1595,7 @@ impl Render for ConversationView {
         div()
             .track_focus(&self.focus)
             .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
-                if event.keystroke.key == "escape" && this.queue_drag_started {
+                if event.keystroke.key == "escape" && this.queue_drag_started && cx.has_active_drag() {
                     cx.stop_active_drag(window);
                     this.cancel_queue_drag(cx);
                     cx.stop_propagation();
