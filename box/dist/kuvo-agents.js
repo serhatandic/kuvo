@@ -25249,7 +25249,7 @@ class Insights {
     await this.db.write("failed", false);
     await this.db.write("local", { scanned: this.now(), issues });
     this.sync();
-    for (const peer of this.peers()) {
+    for (const peer of this.directory.peerBoxes()) {
       const served = await this.db.read(`served/${peer.key}`);
       if (served)
         await this.sendPage(peer.key, served.after, served.epoch);
@@ -25266,15 +25266,12 @@ class Insights {
       return epoch;
     })();
   }
-  peers() {
-    return this.directory.peerBoxes().filter(({ key }) => this.directory.isYours(key));
-  }
   sync(force = false) {
     const now = this.now();
     const fresh = force && (this.refreshed === undefined || now - this.refreshed > 30000);
     if (fresh)
       this.refreshed = now;
-    for (const peer of this.peers()) {
+    for (const peer of this.directory.peerBoxes()) {
       if (!fresh && now - (this.requested.get(peer.key) ?? -Infinity) < 30000)
         continue;
       this.pull(peer.key, fresh).catch((error) => console.error("Insights peer sync:", error));
@@ -25301,7 +25298,7 @@ class Insights {
     return handled;
   }
   async receive(from, mail) {
-    if (!this.directory.isYours(from) || !validAt(mail.after))
+    if (!this.directory.isPeer(from) || !validAt(mail.after))
       return;
     if (mail.action === "pull") {
       const epoch = small(mail.epoch) ? mail.epoch : undefined;
@@ -25319,7 +25316,7 @@ class Insights {
     if (priorEpoch && priorEpoch !== mail.epoch && !mail.reset)
       return;
     const own = this.directory.own()?.key ?? this.local;
-    const records = mail.records.map(recordFrom).filter((record) => !!record && (record.computer === own || this.directory.isYours(record.computer)));
+    const records = mail.records.map(recordFrom).filter((record) => !!record && (record.computer === own || this.directory.isPeer(record.computer)));
     const pricing = this.pricing.current();
     await this.db.take(records, pricing, this.now(), from, mail.next, mail.epoch);
     if (!mail.more && validAt(mail.scanned) && mail.scanned <= this.now() + DAY5)
@@ -25346,7 +25343,7 @@ class Insights {
     if (!validAt(offset) || offset > 1e6 || route === "detail" && !filter.session)
       return;
     const own = this.directory.own() ?? { key: this.local, name: hostname2() };
-    const peers = this.peers();
+    const peers = this.directory.peerBoxes();
     const computers = [own, ...peers];
     const localKeys = own.key === this.local ? [own.key] : [own.key, this.local];
     const keys = [...localKeys, ...peers.map(({ key }) => key)];
@@ -41832,4 +41829,4 @@ if (!isMainThread && process.argv.includes("--insights-db-worker")) {
 } else {
   await init_main().then(() => ({}));
 }
-// Built from Packages/Box/src/agents 70dcd207e969a065ba2764b18e5fd717b0cf2fd210f838af9db6bfb310775557
+// Built from Packages/Box/src/agents e3170119651a9499e84d550784162118c204b4161549607625a69f7481b52334
