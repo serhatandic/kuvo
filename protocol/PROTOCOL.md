@@ -2369,7 +2369,8 @@ engine’s current catalog and asks the coding agents to refresh their own lists
 provider catalogs are revalidated when the locations they depend on have no work in progress.
 Concurrent requests and pickers reopened within two seconds share a refresh on the host. An account
 that couldn't answer is listed under `unavailable`. A client can reuse its last successful list only
-when the opaque account generation matches. The bridge also
+when the opaque account generation matches. Antigravity’s saved list is reused only when it was read
+under the current sign-in. The bridge also
 refreshes an agent’s list after sign-in, including Sign In Again, when its plan changes, and after
 an agent update. The hourly check looks for agent program releases so Accounts can offer updates.
 

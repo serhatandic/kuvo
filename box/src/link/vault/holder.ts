@@ -53,7 +53,7 @@ export async function* heldRead(request: LinkRequest, signal?: AbortSignal): Asy
  * changes it); a conversation's asks (`kuvo/sessions/<id>/asks…`), which list and answer those
  * asks with the engine's; and a change to a settings page (`kuvo/settings/<section>…`), so each is
  * checked against the page in turn in one process, whichever process it's sent to. */
-export const heldHere = (route: string) => /^kuvo\/(vault|models\/offered|sandbox\/(asks|tools|allowed|stopped)|sessions\/[^/?]+\/asks|settings\/[^/?]+(\/[^/?]+\/[^/?]+)?(\?|$))(\/|\?|$)/.test(route);
+export const heldHere = (route: string) => /^kuvo\/(vault|models\/offered|sandbox\/(asks|tools|allowed|stopped)|sessions\/[^/]+\/asks)(\/|$)|^kuvo\/settings\/[^/]+(?:\/[^/]+\/[^/]+)?$/.test(route.split("?", 1)[0]!);
 
 /** A request as it goes over the socket, and its answer back. */
 interface Sent {

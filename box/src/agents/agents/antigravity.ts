@@ -19,7 +19,9 @@ import { fenceAgent, fenceRules } from "../fence"
 import { emit } from "../events"
 import { withOwnFolders } from "../machine"
 import { newID } from "../ids"
-import { AntigravityPlan } from "../usage/antigravity-plan"
+import { antigravityCredential, AntigravityPlan } from "../usage/antigravity-plan"
+import { fingerprint } from "../limits"
+import { placeWhole } from "../../shared/files"
 import { run, which } from "../proc"
 import { RPC, RPCError } from "../rpc"
 import { catcher } from "../signin"
@@ -402,6 +404,16 @@ export class AntigravityAgent implements Agent {
     return join(this.profile, "kuvo-models.json")
   }
 
+  /** A refresh token stays with the sign-in when Google renews its access token. */
+  private modelCredential(): string | undefined {
+    try {
+      const credential = antigravityCredential(JSON.parse(readFileSync(this.tokenFile, "utf8")))
+      return fingerprint(credential?.refresh ?? credential?.access)
+    } catch {
+      return undefined
+    }
+  }
+
   private get isInstalled() {
     return existsSync(join(this.folder, ".complete"))
   }
@@ -439,7 +451,7 @@ export class AntigravityAgent implements Agent {
         message: this.isInstalled ? "Sign in with your Google account." : `Sign in with your Google account. Kuvo Code downloads Google's Antigravity agent (about ${Math.round(release.bytes / 1_000_000)} MB) first.`,
       }
     }
-    return { installed: this.isInstalled, signedIn: true, label: "Google account", what: true }
+    return { installed: this.isInstalled, signedIn: true, label: "Google account", what: true, identity: this.modelCredential() }
   }
 
   /** Downloads and checks Google's agent, once. */
@@ -567,9 +579,10 @@ export class AntigravityAgent implements Agent {
       try {
         await initialize(120_000)
         await rpc.request("authenticate", { methodId: "oauth-personal" }, 600_000)
+        const credential = this.modelCredential()
         // Signed in: a session to check it works, and to learn your models; then it goes.
         const setup: any = await rpc.request("session/new", { cwd, mcpServers: [] }, 120_000)
-        this.saveModels(setup)
+        this.saveModels(setup, credential)
         if (setup?.sessionId) this.removeSessionFiles(setup.sessionId)
         if (!cancelled) status = { status: "complete" }
       } catch (error) {
@@ -630,7 +643,8 @@ export class AntigravityAgent implements Agent {
     rmSync(this.modelsFile, { force: true })
   }
 
-  private saveModels(setup: any) {
+  private saveModels(setup: any, credential: string | undefined) {
+    if (!credential || credential !== this.modelCredential()) return false
     const option = (setup?.configOptions ?? []).find((option: any) => option.id === "model" || option.category === "model")
     const flat: { value: string; name: string }[] = []
     for (const entry of option?.options ?? []) {
@@ -643,18 +657,16 @@ export class AntigravityAgent implements Agent {
     const listed = flat.length || (Array.isArray(setup?.models?.availableModels) && !setup.models.availableModels.length) ||
       (Array.isArray(option?.options) && !option.options.length)
     if (!listed || flat.some(info => typeof info.value !== "string" || !info.value || typeof info.name !== "string")) return false
-    writeFileSync(this.modelsFile, JSON.stringify({ current: option?.currentValue, models: flat }))
-    this.listedHere = true
+    placeWhole(this.modelsFile, JSON.stringify({ credential, current: option?.currentValue, models: flat }))
+    this.listedHere = credential
     return true
   }
 
-  /** Its models were said by Antigravity since this bridge started: the file kept from before may
-   * be an older list. */
-  private listedHere = false
+  private listedHere?: string
 
   /** Only once Antigravity said its models in this bridge's time (its file may be an older list). */
   listsEveryModel(): boolean {
-    return this.listedHere
+    return !!this.listedHere && this.listedHere === this.modelCredential()
   }
 
   /** A session made only to check the sign-in leaves nothing behind. */
@@ -713,6 +725,7 @@ export class AntigravityAgent implements Agent {
   }
 
   private async discoverModels() {
+    const credential = this.modelCredential()
     const { rpc, cwd, launch, initialize } = this.modelConnection(() => rpc.kill())
     // This check only uses the existing sign-in. A browser request ends the probe.
     const watch = setInterval(() => {
@@ -723,7 +736,7 @@ export class AntigravityAgent implements Agent {
       await rpc.request("authenticate", { methodId: "oauth-personal" }, 20_000)
       const setup: any = await rpc.request("session/new", { cwd, mcpServers: [] }, 20_000)
       if (setup?.sessionId) this.removeSessionFiles(setup.sessionId)
-      if (!this.saveModels(setup)) throw new Error("Antigravity didn’t list its models.")
+      if (!this.saveModels(setup, credential)) throw new Error("Antigravity didn’t list its models.")
     } finally {
       clearInterval(watch)
       rpc.kill()
@@ -732,8 +745,9 @@ export class AntigravityAgent implements Agent {
 
   async models(options: { refresh?: boolean } = {}): Promise<Model[]> {
     if (options.refresh && this.isInstalled) await this.discoverModels()
-    const saved = JSON.parse(readFileSync(this.modelsFile, "utf8")) as { current?: string; models: { value: string; name: string }[] }
-    if (!Array.isArray(saved?.models) || saved.models.some(info => !info || typeof info.value !== "string" || !info.value || typeof info.name !== "string")) {
+    const credential = this.modelCredential()
+    const saved = JSON.parse(readFileSync(this.modelsFile, "utf8")) as { credential?: string; current?: string; models: { value: string; name: string }[] }
+    if (!credential || saved?.credential !== credential || !Array.isArray(saved.models) || saved.models.some(info => !info || typeof info.value !== "string" || !info.value || typeof info.name !== "string")) {
       throw new Error("Antigravity’s model list couldn’t be read.")
     }
     return saved.models.map((info, index) => model(this.providerID, info.value, info.name, { images: true, released: info.value === saved.current ? 2000 : 1000 - index, context: this.windows.get(info.value) ?? 1_000_000 }))
@@ -744,6 +758,7 @@ export class AntigravityAgent implements Agent {
 
   thread(session: Session, state: Record<string, unknown>): Thread {
     const agent = this
+    const credentials = new WeakMap<RPC, string>()
     const followers = new Map<string, AntigravityFollower>()
     return new AcpThread(
       {
@@ -771,7 +786,8 @@ export class AntigravityAgent implements Agent {
         authMethod: () => "oauth-personal",
         async command() {
           if (!agent.isInstalled) throw new Error("Sign in to Antigravity in Settings › Accounts first.")
-          return agent.launch()
+          const credential = agent.modelCredential()
+          return { ...agent.launch(), onOpen: (rpc: RPC) => { if (credential) credentials.set(rpc, credential) } }
         },
         // Settings › Skills' skills, in the skills folder of its home (Kuvo Code's): it reads
         // them from there as it starts. Its home is the account's, for all its sessions.
@@ -797,7 +813,7 @@ export class AntigravityAgent implements Agent {
           if (setup?.kuvoModel === modelID) return
           await rpc.request("session/set_config_option", { sessionId, configId: "model", value: modelID }, 30_000)
           setup.kuvoModel = modelID
-          agent.saveModels(setup)
+          agent.saveModels(setup, credentials.get(rpc))
         },
         async selectMode(rpc, sessionId, { approvesAll, plan }, setup) {
           const option = (setup?.configOptions ?? []).find((option: any) => option.id === "mode" || option.category === "mode")

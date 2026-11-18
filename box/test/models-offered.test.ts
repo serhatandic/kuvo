@@ -371,27 +371,32 @@ test("a GitLab folder that finishes before its deferred refresh is recorded is s
   } finally { engine.stop(true); forgetModelLists() }
 })
 
-test("two independent SSH route processes share the host's picker refresh", async () => {
+test.each(["kuvo/models/offered?refresh=1", "kuvo/settings/commands?refresh-models=1"])("two independent SSH route processes share the host's picker refresh for %s", async path => {
   const { holdVault } = await import("../src/link/vault/holder")
   const { engineHandler } = await import("../src/link/server/router")
   const { ENGINE_FILE } = await import("../src/link/home")
   const { join } = await import("node:path")
   const { mkdirSync, readFileSync, rmSync, writeFileSync } = await import("node:fs")
   let reads = 0
+  const hostPaths: string[] = []
   const engine = Bun.serve({ port: 0, fetch(request) {
     const route = new URL(request.url).pathname
-    if (route === "/api/model") reads++
+    if (route === "/api/provider") reads++
     return Response.json({ data: route === "/api/model" ? [listed("openai", "latest", "Latest", [])] : route === "/api/provider" ? [{ id: "openai" }] : route === "/api/model/default" ? null : [] })
   } })
   const record = { port: engine.port!, password: "test" }
-  const host = holdVault(engineHandler(() => record, undefined, () => { throw new Error("No bridge") }), () => () => {})
+  const handle = engineHandler(() => record, undefined, () => { throw new Error("No bridge") })
+  const host = holdVault(async function* (request, asker, signal) {
+    hostPaths.push(request.path)
+    yield* handle(request, asker, signal)
+  }, () => () => {})
   const old = (() => { try { return readFileSync(ENGINE_FILE) } catch { return undefined } })()
   writeFileSync(ENGINE_FILE, JSON.stringify(record))
   try {
     const home = process.env.KUVO_HOME!
     const routeHome = join(home, "picker-route-home")
     mkdirSync(routeHome, { recursive: true })
-    const request = JSON.stringify({ method: "GET", path: "kuvo/models/offered?refresh=1" })
+    const request = JSON.stringify({ method: "GET", path })
     const ask = async () => {
       const child = Bun.spawn([process.execPath, join(import.meta.dir, "../src/link/main.ts"), "box", "route"], {
         env: { PATH: process.env.PATH, HOME: routeHome, TMPDIR: routeHome, KUVO_HOME: home, BUN_BE_BUN: "1" },
@@ -404,9 +409,12 @@ test("two independent SSH route processes share the host's picker refresh", asyn
     for (let i = 0; i < 2; i++) {
       const result = await ask()
       expect(result.status).toBe(200)
-      expect(JSON.parse(result.body).models[0].id).toBe("latest")
+      const page = JSON.parse(result.body)
+      if (path.includes("/settings/")) expect(page.id).toBe("commands")
+      else expect(page.models[0].id).toBe("latest")
     }
-    expect(reads).toBe(1)
+    expect(hostPaths).toEqual([path, path])
+    expect(reads).toBe(2)
   } finally {
     if (old) writeFileSync(ENGINE_FILE, old)
     else rmSync(ENGINE_FILE, { force: true })

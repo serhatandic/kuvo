@@ -37,6 +37,7 @@ export interface AcpFlavor {
     env?: Record<string, string | undefined>
     cleanEnv?: boolean
     cwd?: string
+    onOpen?: (rpc: RPC) => void
     onExit?: () => void
     /** A file the agent writes when it wants you to sign in (its "browser" writes the page down): it can't go on. */
     signInFile?: string
@@ -331,6 +332,7 @@ export class AcpThread implements Thread {
         return flavor.filter?.(line) ?? true
       },
     })
+    launch.onOpen?.(rpc)
     rpc.onNotification = (method, params) => this.notification(method, params)
     rpc.onRequest = (method, params) => this.request(method, params)
     rpc.onExit = () => {

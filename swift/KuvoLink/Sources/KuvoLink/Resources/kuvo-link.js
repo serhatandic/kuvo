@@ -46246,7 +46246,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "1ed8d0be7f11";
+var BRIDGE_VERSION = "d0aeca1baf92";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -63839,7 +63839,7 @@ async function* heldRead(request, signal) {
   yield { body: served };
   return true;
 }
-var heldHere = (route) => /^kuvo\/(vault|models\/offered|sandbox\/(asks|tools|allowed|stopped)|sessions\/[^/?]+\/asks|settings\/[^/?]+(\/[^/?]+\/[^/?]+)?(\?|$))(\/|\?|$)/.test(route);
+var heldHere = (route) => /^kuvo\/(vault|models\/offered|sandbox\/(asks|tools|allowed|stopped)|sessions\/[^/]+\/asks)(\/|$)|^kuvo\/settings\/[^/]+(?:\/[^/]+\/[^/]+)?$/.test(route.split("?", 1)[0]);
 var MOST5 = 8 * 1024 * 1024;
 var KEY3 = "x-kuvo-vault-key";
 var AUTH = "x-kuvo-vault-auth";

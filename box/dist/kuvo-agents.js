@@ -10417,6 +10417,7 @@ class AcpThread {
         return flavor.filter?.(line) ?? true;
       }
     });
+    launch.onOpen?.(rpc);
     rpc.onNotification = (method, params) => this.notification(method, params);
     rpc.onRequest = (method, params) => this.request(method, params);
     rpc.onExit = () => {
@@ -15304,6 +15305,14 @@ class AntigravityAgent {
   get modelsFile() {
     return join24(this.profile, "kuvo-models.json");
   }
+  modelCredential() {
+    try {
+      const credential = antigravityCredential(JSON.parse(readFileSync23(this.tokenFile, "utf8")));
+      return fingerprint(credential?.refresh ?? credential?.access);
+    } catch {
+      return;
+    }
+  }
   get isInstalled() {
     return existsSync14(join24(this.folder, ".complete"));
   }
@@ -15337,7 +15346,7 @@ class AntigravityAgent {
         message: this.isInstalled ? "Sign in with your Google account." : `Sign in with your Google account. Kuvo Code downloads Google's Antigravity agent (about ${Math.round(release.bytes / 1e6)} MB) first.`
       };
     }
-    return { installed: this.isInstalled, signedIn: true, label: "Google account", what: true };
+    return { installed: this.isInstalled, signedIn: true, label: "Google account", what: true, identity: this.modelCredential() };
   }
   ensureInstalled() {
     if (this.isInstalled)
@@ -15452,8 +15461,9 @@ class AntigravityAgent {
       try {
         await initialize(120000);
         await rpc.request("authenticate", { methodId: "oauth-personal" }, 600000);
+        const credential = this.modelCredential();
         const setup = await rpc.request("session/new", { cwd, mcpServers: [] }, 120000);
-        this.saveModels(setup);
+        this.saveModels(setup, credential);
         if (setup?.sessionId)
           this.removeSessionFiles(setup.sessionId);
         if (!cancelled)
@@ -15509,7 +15519,9 @@ ${rpc.stderr.trim()}`);
     rmSync12(this.tokenFile, { force: true });
     rmSync12(this.modelsFile, { force: true });
   }
-  saveModels(setup) {
+  saveModels(setup, credential) {
+    if (!credential || credential !== this.modelCredential())
+      return false;
     const option = (setup?.configOptions ?? []).find((option) => option.id === "model" || option.category === "model");
     const flat = [];
     for (const entry of option?.options ?? []) {
@@ -15526,13 +15538,13 @@ ${rpc.stderr.trim()}`);
     const listed = flat.length || Array.isArray(setup?.models?.availableModels) && !setup.models.availableModels.length || Array.isArray(option?.options) && !option.options.length;
     if (!listed || flat.some((info) => typeof info.value !== "string" || !info.value || typeof info.name !== "string"))
       return false;
-    writeFileSync17(this.modelsFile, JSON.stringify({ current: option?.currentValue, models: flat }));
-    this.listedHere = true;
+    placeWhole(this.modelsFile, JSON.stringify({ credential, current: option?.currentValue, models: flat }));
+    this.listedHere = credential;
     return true;
   }
-  listedHere = false;
+  listedHere;
   listsEveryModel() {
-    return this.listedHere;
+    return !!this.listedHere && this.listedHere === this.modelCredential();
   }
   removeSessionFiles(sessionID) {
     if (typeof sessionID !== "string" || !/^[a-z0-9][a-z0-9_-]{0,127}$/i.test(sessionID) || !existsSync14(this.profile))
@@ -15587,6 +15599,7 @@ ${rpc.stderr.trim()}`);
     return { rpc, cwd, launch, initialize };
   }
   async discoverModels() {
+    const credential = this.modelCredential();
     const { rpc, cwd, launch, initialize } = this.modelConnection(() => rpc.kill());
     const watch = setInterval(() => {
       if (existsSync14(launch.signInFile))
@@ -15598,7 +15611,7 @@ ${rpc.stderr.trim()}`);
       const setup = await rpc.request("session/new", { cwd, mcpServers: [] }, 20000);
       if (setup?.sessionId)
         this.removeSessionFiles(setup.sessionId);
-      if (!this.saveModels(setup))
+      if (!this.saveModels(setup, credential))
         throw new Error("Antigravity didn\u2019t list its models.");
     } finally {
       clearInterval(watch);
@@ -15608,8 +15621,9 @@ ${rpc.stderr.trim()}`);
   async models(options = {}) {
     if (options.refresh && this.isInstalled)
       await this.discoverModels();
+    const credential = this.modelCredential();
     const saved = JSON.parse(readFileSync23(this.modelsFile, "utf8"));
-    if (!Array.isArray(saved?.models) || saved.models.some((info) => !info || typeof info.value !== "string" || !info.value || typeof info.name !== "string")) {
+    if (!credential || saved?.credential !== credential || !Array.isArray(saved.models) || saved.models.some((info) => !info || typeof info.value !== "string" || !info.value || typeof info.name !== "string")) {
       throw new Error("Antigravity\u2019s model list couldn\u2019t be read.");
     }
     return saved.models.map((info, index) => model(this.providerID, info.value, info.name, { images: true, released: info.value === saved.current ? 2000 : 1000 - index, context: this.windows.get(info.value) ?? 1e6 }));
@@ -15617,6 +15631,7 @@ ${rpc.stderr.trim()}`);
   windows = new ContextWindows;
   thread(session, state) {
     const agent = this;
+    const credentials = new WeakMap;
     const followers = new Map;
     return new AcpThread({
       noteContext(model, size) {
@@ -15640,7 +15655,11 @@ ${rpc.stderr.trim()}`);
       async command() {
         if (!agent.isInstalled)
           throw new Error("Sign in to Antigravity in Settings \u203A Accounts first.");
-        return agent.launch();
+        const credential = agent.modelCredential();
+        return { ...agent.launch(), onOpen: (rpc) => {
+          if (credential)
+            credentials.set(rpc, credential);
+        } };
       },
       async skills(directory, hooks) {
         return copySkillsInto(join24(agent.profile, "config", "skills"), await skillsFor(directory, agent.ownSkillFolders(directory), turnedOff(hooks)));
@@ -15659,7 +15678,7 @@ ${rpc.stderr.trim()}`);
           return;
         await rpc.request("session/set_config_option", { sessionId, configId: "model", value: modelID }, 30000);
         setup.kuvoModel = modelID;
-        agent.saveModels(setup);
+        agent.saveModels(setup, credentials.get(rpc));
       },
       async selectMode(rpc, sessionId, { approvesAll, plan }, setup) {
         const option = (setup?.configOptions ?? []).find((option) => option.id === "mode" || option.category === "mode");
@@ -40160,4 +40179,4 @@ if (!onMachine) {
 }
 process.on("SIGTERM", () => stop());
 process.on("SIGINT", () => stop());
-// Built from Packages/Box/src/agents 5d16fd7613e03e14a4eaaed96ea7e6467c308a5502d3cd886f46dd77438ed221
+// Built from Packages/Box/src/agents 65e60532775e95ac51f8a5c842b29af6acba5f5935c3ec0aa0a1d217696c3a2f
