@@ -859,6 +859,7 @@ fn resizable_sidebar_saves_width_on_this_device_and_double_click_resets_it(cx: &
 fn resizable_sidebar_handles_one_bot_and_a_computer_going_away(cx: &mut TestAppContext) {
     let stand_in = StandIn::empty(Replies::Never);
     stand_in.set_elsewhere(true);
+    stand_in.set_computer_name("Only Box");
     stand_in.add_bot("solo", "One Bot with a Very Long Name", serde_json::json!({
         "color": "mint", "shape": "round", "face": "calm",
     }));
@@ -875,7 +876,11 @@ fn resizable_sidebar_handles_one_bot_and_a_computer_going_away(cx: &mut TestAppC
     assert!(bounds(cx, "area-sidebar").is_none());
     assert!(bounds(cx, "held-area").is_some());
     click(cx, "computer-switcher");
-    assert!(bounds(cx, "menu-item-Show Computers").is_some());
+    assert!(bounds(cx, "menu-item-Only Box").is_some());
+    assert!(bounds(cx, "menu-item-Show Computers").is_none(), "there are no other computers");
+    cx.simulate_keystrokes("escape ctrl-4");
+    cx.run_until_parked();
+    assert_eq!(area(&workspace, cx), Area::Computers);
 }
 
 #[gpui::test]
