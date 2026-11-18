@@ -2852,6 +2852,7 @@ impl Workspace {
     /// The main view's title and what's beside it, as the title bar shows them: a conversation's
     /// title and its project, or the page an area shows.
     pub fn title(&self, cx: &App) -> (Option<SharedString>, Option<SharedString>) {
+        if self.area == Area::Insights { return (Some(self.area.name().into()), None); }
         if self.area != Area::Sessions {
             let Some(view) = self.area_view(self.area) else { return (None, None) };
             let title = view.read(cx).title(cx);

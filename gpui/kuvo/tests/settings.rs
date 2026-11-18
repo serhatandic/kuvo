@@ -910,9 +910,24 @@ fn usage_ring_filters_insights_and_opens_a_session_from_its_calls(cx: &mut TestA
     let asked = stand_in.seen_at("GET", route);
     assert!(asked.last().is_some_and(|read| !read.path.contains("&account=")));
 
-    // The stand-in fixture runs the same route as the visible session list.
-    workspace.update_in(cx, |workspace, window, cx| workspace.insights_sample("insights-session-drilldown", window, cx));
+    cx.simulate_resize(size(px(1180.), px(900.)));
     cx.run_until_parked();
+    let summary = bounds(cx, "insights-summary").expect("summary");
+    let chart = bounds(cx, "insights-chart-card").expect("chart card");
+    assert_eq!(summary.origin.y, chart.origin.y);
+    assert_eq!(summary.size.height, chart.size.height);
+    assert!(summary.right() < chart.left());
+    assert_eq!(workspace.read_with(cx, |workspace, cx| workspace.title(cx).0).as_deref(), Some("Insights"));
+
+    click(cx, "insights-day-28");
+    cx.simulate_keystrokes("left");
+    cx.run_until_parked();
+    assert!(shown(cx, "insights-chart-reading"));
+    click(cx, "insights-view-daily");
+    assert!(shown(cx, "insights-active-tab-Day"));
+    click(cx, "insights-by-Session");
+    assert!(shown(cx, "insights-active-tab-Session"));
+    click(cx, "insights-session-0");
     assert!(!stand_in.seen_at("GET", &format!("{route}/sessions/ses_signup")).is_empty());
     click(cx, "insights-open-session");
     assert_eq!(workspace.read_with(cx, |workspace, _| workspace.opened().map(str::to_owned)).as_deref(), Some("ses_signup"));
