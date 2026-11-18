@@ -148,8 +148,11 @@ test("failure bench: an offline member follows two handovers and the former prim
   c.start();
   await see(c, 4, b);
   assert.deepEqual(Object.keys(c.read().leadership), ["2", "3", "4"]);
+  const setupID = b.read().setup.id;
   assert.equal((await b.route("DELETE", `kuvo/computers/${a.key}`)).status, 200);
-  await until("removal received", () => !a.read().setup || a.read().setup.id !== b.read().setup.id, t.signal);
+  await until("removal received", () => a.read().setup?.id !== setupID, t.signal);
+  assert.equal(a.read().macPeers, undefined);
+  await see(b, 4, b);
 });
 
 test("failure bench: a successor that goes unreachable during handover follows the committed epoch when back", { timeout: 40_000 }, async t => {
