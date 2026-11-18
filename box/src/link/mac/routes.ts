@@ -179,8 +179,6 @@ export async function* macLinkRoute(route: string, request: LinkRequest, signal:
       await macKeys();
       macLinkCheck();
       macLink.wake?.();
-      // The phone link on or off: this Mac's phones document comes, or stops changing.
-      if (before?.phones !== config.phones) macDocsChanged();
       return yield* json(200, macLink.status);
     }
     case "kuvo/link/status":

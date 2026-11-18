@@ -14,7 +14,7 @@
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { isObject } from "../shared/json";
+import { isObject, parsed } from "../shared/json";
 import { engineRole, runsAs } from "../shared/platform";
 import { allWakes } from "./areas/wakes";
 import { listBots } from "./bots/list";
@@ -22,13 +22,15 @@ import { APP_FOLDER, IN_TEST_FOLDER, IS_MAC, K, REAL_BOX, RUN, accountHome, home
 import { KEY, ownKey, peersOf } from "./peers/known";
 import { publicOf } from "./crypto/keys";
 import { noteDocsChanged } from "./documents/changed";
+import { publishDesktopRemoval } from "./documents/phone-sync";
 import { removeAsMac } from "./phones";
 import { SETUP_CARD } from "./setup/card";
 import { mainElsewhere } from "./setup/main-only";
 import { LAUNCH_AGENT, REBOOT_TAG } from "./marks";
-import { SERVE_ROLE } from "./serve-kept";
-import { readLink, updateLink } from "./state";
+import { SERVE_FILE, SERVE_ROLE } from "./serve-kept";
+import { macLink, readLink, updateLink } from "./state";
 import { forwardAct } from "./work-queue/forward";
+import type { AnswerPiece, RouteContext } from "./server/context";
 
 /** Where `launchctl`, `crontab` and `open` are, and the folder the launch agent's file is in: the
  * real ones for the real `~/.kuvo-code` alone, a test's stand-ins for a test's home, else none. (The
@@ -207,6 +209,7 @@ export function uninstall(): Uninstalled {
 }
 
 const identityFile = path.join(K, "desktop", "identity");
+export const DESKTOP_UNINSTALL_ROUTE = "kuvo/box/uninstall-desktop";
 
 function logCleanup(detail: unknown): void {
   try { fs.appendFileSync(path.join(RUN, "uninstall.log"), `${String(detail)}\n`, { mode: 0o600 }); } catch {}
@@ -247,15 +250,47 @@ async function revokeDesktop(): Promise<boolean> {
       return false;
     }
     const key = desktopKey();
+    const needsPublish = IS_MAC && peersOf(link).length > 0;
     if (key) {
+      if (needsPublish && await askLivePrimary(key)) return true;
       const changed = updateLink(current => current && current.phones?.some(phone => phone.key === key) && removeAsMac(current, [{ key }]) ? current : null);
       if (changed) noteDocsChanged();
+      return !needsPublish;
     }
-    return true;
+    return !needsPublish || !(link?.phones ?? []).some(phone => phone.from === "pair" && phone.kind === "desktop" && !phone.by);
   } catch (error) {
     logCleanup(error);
     return false;
   }
+}
+
+async function askLivePrimary(key: string): Promise<boolean> {
+  try {
+    const record: unknown = JSON.parse(fs.readFileSync(SERVE_FILE(), "utf8"));
+    if (!isObject(record) || typeof record.port !== "number" || !Number.isInteger(record.port) || record.port < 1 || record.port > 65_535 || typeof record.password !== "string" || !record.password) return false;
+    const response = await fetch(`http://127.0.0.1:${record.port}/${DESKTOP_UNINSTALL_ROUTE}`, {
+      method: "POST", redirect: "error", signal: AbortSignal.timeout(8_000),
+      headers: { authorization: `Basic ${Buffer.from(`opencode:${record.password}`).toString("base64")}`, "x-kuvo-from": "app", "content-type": "application/json" },
+      body: JSON.stringify({ key }),
+    });
+    await response.body?.cancel();
+    return response.status === 200;
+  } catch (error) {
+    logCleanup(error);
+    return false;
+  }
+}
+
+/** Internal: only the local authenticated server can revoke and confirm against its live relay. */
+export async function* desktopUninstallRoute({ request, signal, json }: RouteContext): AsyncGenerator<AnswerPiece> {
+  if (!IS_MAC || !request.served || !request.fromApp) return yield* json(403, { message: "Run uninstall on this computer." });
+  if (request.method.toUpperCase() !== "POST") return yield* json(405, {});
+  const body = parsed(request.body);
+  if (!isObject(body) || typeof body.key !== "string" || !KEY.test(body.key)) return yield* json(400, { message: "The desktop’s key couldn’t be read." });
+  try {
+    if (await publishDesktopRemoval(macLink.host, body.key, signal)) return yield* json(200, {});
+  } catch (error) { logCleanup(error); }
+  return yield* json(503, { message: "Kuvo Code couldn’t confirm the desktop removal reached every other computer." });
 }
 
 function clearDesktopIdentity(): boolean {
@@ -301,6 +336,7 @@ export async function uninstallCommand(args: string[]): Promise<number> {
   }
   // The SSH controller has already revoked access before asking its remote to stop.
   const overSSH = process.env.KUVO_UNINSTALL_FROM_SSH === "1";
+  const publishing = IS_MAC && !mainElsewhere(readLink());
   const revoked = overSSH || await revokeDesktop();
   const identityCleared = overSSH || clearDesktopIdentity();
   let done: Uninstalled;
@@ -310,7 +346,9 @@ export async function uninstallCommand(args: string[]): Promise<number> {
     logCleanup(error);
     done = { stopped: false, launchAgent: false, crontab: false, startsAgain: [], left: [K], message: "Kuvo Code couldn’t confirm it had stopped on this computer." };
   }
-  if (!revoked) done.message += " Kuvo Code couldn’t confirm that your main computer revoked this desktop’s access.";
+  if (!revoked) done.message += publishing
+    ? " Kuvo Code couldn’t confirm the desktop removal reached every other computer."
+    : " Kuvo Code couldn’t confirm that your main computer revoked this desktop’s access.";
   if (!identityCleared) done.message += " Kuvo Code couldn’t delete this desktop’s local identity.";
   const finished = done.stopped && done.startsAgain.length === 0 && revoked && identityCleared;
   console.log(JSON.stringify({ result: finished ? "uninstalled" : "unfinished", ...done }));

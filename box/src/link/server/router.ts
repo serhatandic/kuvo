@@ -30,6 +30,7 @@ import { namedRoute } from "../areas/named";
 import { noticesRoute } from "../areas/notices";
 import { personalitiesDocumentRoute, personalityEventsRoute, personalityRoute } from "../areas/personalities";
 import { devicesPairRoute, pairingRoute, phonesRemoveRoute, phonesRoute } from "../areas/phones";
+import { DESKTOP_UNINSTALL_ROUTE, desktopUninstallRoute } from "../uninstall";
 import { QUEUE_ROUTE, queueRoute } from "../areas/queue";
 import { SESSION_ASKS_ROUTE, sessionAsksRoute } from "../areas/session-asks";
 import { GROUP_MENTIONS_ROUTE, MENTIONS_ROUTE, groupMentionsRoute, mentionsRoute } from "../areas/mentions";
@@ -114,6 +115,7 @@ const ROUTES: (Route | Route<RegExpMatchArray>)[] = [
   { when: route => route === "kuvo/box/app", answer: appRoute },
   { when: route => route === "kuvo/box/app/open", answer: appOpenRoute },
   { when: route => route === "kuvo/box/serve", answer: serveRoute },
+  { when: route => route === DESKTOP_UNINSTALL_ROUTE, answer: desktopUninstallRoute },
   // What's at work here, for what's always on screen (Kuvo Helper's menu bar item), and stopping
   // Kuvo on this Mac until it next starts (PROTOCOL.md, "In the menu bar").
   { when: route => route.match(AT_WORK_ROUTE), answer: atWorkRoute },

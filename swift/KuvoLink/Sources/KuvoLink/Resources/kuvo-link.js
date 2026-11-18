@@ -4804,7 +4804,7 @@ function ownDocs(state) {
     if (peers)
       docs.peers = peers;
   }
-  const phones = IS_MAC && !macLink.config?.phones ? null : ownDoc(state.link, "phones", ownPhones(state.link));
+  const phones = ownDoc(state.link, "phones", ownPhones(state.link));
   if (phones)
     docs.phones = phones;
   const library = mergePersonalities(state.library);
@@ -7143,7 +7143,7 @@ var init_rewrite = __esm(() => {
 });
 
 // box/src/agents/usage/settings.ts
-import { createHash as createHash4, randomBytes as randomBytes3 } from "node:crypto";
+import { createHash as createHash4, randomBytes as randomBytes4 } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { dirname as dirname2 } from "node:path";
 function newer2(a, b) {
@@ -7282,7 +7282,7 @@ class UsageSettings {
   setup;
   highest = 0;
   listeners = [];
-  unnamed = "?" + randomBytes3(8).toString("hex");
+  unnamed = "?" + randomBytes4(8).toString("hex");
   constructor(file, now = Date.now, self = () => "") {
     this.file = file;
     this.now = now;
@@ -35418,8 +35418,6 @@ async function* macLinkRoute(route, request, signal) {
       await macKeys();
       macLinkCheck();
       macLink.wake?.();
-      if (before?.phones !== config.phones)
-        macDocsChanged();
       return yield* json(200, macLink.status);
     }
     case "kuvo/link/status":
@@ -36079,6 +36077,143 @@ function changedThere(key, action, item, now = Date.now()) {
 }
 var asAway = (item, away) => away === null || !item.sessions.some((each) => each.working) ? item : { ...item, sessions: item.sessions.map((each) => ({ ...each, working: false })) };
 var newer = (a, aAt, b, bAt) => a.updated.at > b.updated.at || a.updated.at === b.updated.at && aAt > bAt;
+
+// box/src/link/documents/phone-sync.ts
+init_home();
+init_state();
+init_known();
+init_phones();
+init_main_only();
+init_format();
+init_work2();
+import { randomBytes as randomBytes3 } from "node:crypto";
+var challenge = () => randomBytes3(16).toString("base64url");
+var freshness = new WeakMap;
+var receipts = new WeakMap;
+function send(host, link, to, message) {
+  const bytes = mailFor(to, { ...message, at: Date.now() }, link);
+  if (bytes)
+    host.send(bytes);
+}
+function givePhones(host, link, peer, envelope) {
+  for (const docs of docMails({ give: [envelope] }))
+    send(host, link, peer, { docs });
+}
+var fingerprint = (doc) => `${doc.n}:${doc.h}`;
+function authoritySign(link, key) {
+  return macSign(link, key) ?? (link.setup?.primary === key ? link.setup.sign : undefined);
+}
+function refreshPhoneTrust(host) {
+  if (!host.welcomed)
+    return;
+  const link = readLink();
+  const main = mainElsewhere(link);
+  if (!link || !main)
+    return;
+  const pending = freshness.get(host) ?? new Map;
+  freshness.set(host, pending);
+  for (const key of new Set([main.key, ...macsOf(link)])) {
+    const sign = authoritySign(link, key);
+    const peer = peersOf(link).find((each) => each.key === key);
+    if (!peer || !sign)
+      continue;
+    const known = pending.get(key);
+    if (known?.sign === sign && (known.ready || Date.now() - known.asked < 2000))
+      continue;
+    const next = { id: known?.sign === sign ? known.id : challenge(), sign, asked: Date.now(), ready: false };
+    pending.set(key, next);
+    send(host, link, peer, { phoneSync: { id: next.id } });
+  }
+}
+function freshDesktopTrust(host, key) {
+  const link = readLink();
+  if (!link || !mainElsewhere(link))
+    return true;
+  const phone = pairedPhone(link, key.toString("base64url"));
+  if (phone?.from !== "mac" || phone.kind !== "desktop" && !phone.by)
+    return true;
+  const known = phone.mac && freshness.get(host)?.get(phone.mac);
+  return Boolean(known && known.ready && phone.mac && known.sign === authoritySign(link, phone.mac));
+}
+function takePhoneSync(sender, given, host) {
+  if (!host?.welcomed || !isObject(given) || typeof given.id !== "string" || !/^[A-Za-z0-9_-]{22}$/.test(given.id))
+    return;
+  const link = readLink();
+  if (!link)
+    return;
+  const { id } = given;
+  if (given.ack === true && typeof given.list === "string") {
+    const requested = receipts.get(host)?.get(id);
+    if (requested?.fingerprint === given.list)
+      requested.pending.delete(sender.key);
+    const known = freshness.get(host)?.get(sender.key);
+    if (known?.id === id && known.sign === authoritySign(link, sender.key)) {
+      const doc = held(link.docs?.[docKey(known.sign, "phones")]);
+      if (doc && fingerprint(doc) === given.list)
+        known.ready = true;
+    }
+    return;
+  }
+  if (typeof given.list === "string") {
+    const sign = authoritySign(link, sender.key);
+    const doc = sign && held(link.docs?.[docKey(sign, "phones")]);
+    if (doc && fingerprint(doc) === given.list) {
+      host.keepOnly(new Set((link.phones ?? []).map((phone) => phone.key)));
+      send(host, link, sender, { phoneSync: { id, list: given.list, ack: true } });
+    }
+    return;
+  }
+  if (!IS_MAC || !peersOf(link).some((peer) => peer.key === sender.key))
+    return;
+  let envelope;
+  const latest = updateLink((current) => {
+    if (!current || !peersOf(current).some((peer) => peer.key === sender.key))
+      return null;
+    envelope = ownDoc(current, "phones", ownPhones(current))?.envelope;
+    return envelope ? current : null;
+  });
+  const doc = envelope && readDoc(envelope);
+  if (latest && envelope && doc) {
+    givePhones(host, latest, sender, envelope);
+    send(host, latest, sender, { phoneSync: { id, list: fingerprint(doc), ack: true } });
+  }
+}
+async function publishDesktopRemoval(host, key, signal) {
+  let envelope;
+  const link = updateLink((current) => {
+    if (!current || mainElsewhere(current) || !removeAsMac(current, [{ key }]))
+      return null;
+    envelope = ownDoc(current, "phones", ownPhones(current))?.envelope;
+    return current;
+  });
+  if (!link)
+    return false;
+  host?.keepOnly(new Set((link.phones ?? []).map((phone) => phone.key)));
+  const peers = peersOf(link);
+  if (!peers.length)
+    return true;
+  const doc = envelope && readDoc(envelope);
+  if (!host?.welcomed || !doc || !envelope)
+    return false;
+  const id = challenge();
+  const receipt = { fingerprint: fingerprint(doc), pending: new Set(peers.map((peer) => peer.key)) };
+  const requests = receipts.get(host) ?? new Map;
+  receipts.set(host, requests);
+  requests.set(id, receipt);
+  const deadline = Date.now() + 5000;
+  try {
+    for (const peer of peers) {
+      givePhones(host, link, peer, envelope);
+      send(host, link, peer, { phoneSync: { id, list: receipt.fingerprint } });
+    }
+    while (receipt.pending.size && host.welcomed && !signal?.aborted && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    return !receipt.pending.size;
+  } finally {
+    requests.delete(id);
+  }
+}
 
 // box/src/link/bots/held.ts
 init_text();
@@ -38099,7 +38234,7 @@ class Refused extends Error {
     this.status = status;
   }
 }
-var fingerprint = (conversation, queues) => `${conversation}.${crypto42.createHash("sha256").update(JSON.stringify(queues, (key, value) => key === "at" ? undefined : value)).digest("base64url")}`;
+var fingerprint2 = (conversation, queues) => `${conversation}.${crypto42.createHash("sha256").update(JSON.stringify(queues, (key, value) => key === "at" ? undefined : value)).digest("base64url")}`;
 var queuesOf = (engine, sessions, name) => packQueues(engine, sessions).catch((error) => {
   throw error instanceof CantCarry ? new Refused(say.waiting(name)) : error;
 });
@@ -38207,7 +38342,7 @@ async function carryOn(id) {
     throw new Refused(say.tooBig(record.name));
   if (takenBack())
     return;
-  outgoing.set(id, { got: new Set, flying: new Map, exports: fingerprint(digest, queues), digest });
+  outgoing.set(id, { got: new Set, flying: new Map, exports: fingerprint2(digest, queues), digest });
   const now = changeMove(id, (each) => {
     Object.assign(each, { leftOf: record.leftOf, sessions: record.sessions, wasPaused: record.wasPaused, pausedAs: record.pausedAs, members: record.members, hash: bundle.hash, size: bundle.size, sent: 0, stage: "copying", step: "offer", offered: true, sentAt: Date.now(), holdSince: undefined });
   });
@@ -38330,7 +38465,7 @@ async function arrived(record, placed) {
     const before = outgoing.get(record.id)?.exports;
     if (!still())
       return;
-    if (!before || fingerprint(again, await queuesOf(target, record.sessions, record.name)) !== before) {
+    if (!before || fingerprint2(again, await queuesOf(target, record.sessions, record.name)) !== before) {
       if (record.tries >= 2)
         throw new Refused(say.busy(record.name));
       changeMove(record.id, (each) => {
@@ -39360,6 +39495,10 @@ function runMacPeers() {
       heldSoon.send();
       macReachAgain();
       const host = macLink.host;
+      if (host)
+        try {
+          refreshPhoneTrust(host);
+        } catch {}
       if (host?.welcomed)
         pushRows(host, readLink(), peerTargets()).catch(() => {});
       noteSetupNow();
@@ -45553,7 +45692,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "7d284ad856f2";
+var BRIDGE_VERSION = "f008150574ee";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -48311,6 +48450,9 @@ function startTry(kind, destination, name, steps, work) {
       if (stop.signal.aborted)
         throw new Stopped;
     },
+    commit() {
+      it.committed = true;
+    },
     step(id, detail) {
       tell.check();
       change({ steps: steady(it.seen.steps).map((step) => step.id === id ? { id: step.id, title: step.title, state: "now", ...detail ? { detail } : {} } : step) });
@@ -48404,7 +48546,7 @@ function endTry(id) {
   return true;
 }
 function stopTry(it) {
-  if (it.stop.signal.aborted)
+  if (it.committed || it.stop.signal.aborted)
     return;
   const { question: _question, ...rest } = it.seen;
   it.seen = { ...rest, state: "stopping", title: "Stopping…" };
@@ -48979,10 +49121,11 @@ function beginUninstall(key) {
         throw new Failed("Kuvo Code couldn’t confirm that access was revoked. Try uninstalling again.");
       }
       const listCleanup = removed.status === 503 ? " The saved machines list still needs to be updated." : "";
-      if (![200, 404, 503].includes(removed.status)) {
+      if (removed.status !== 200 && removed.status !== 503) {
         console.error("Uninstall local revocation returned", removed);
         throw new Failed("Kuvo Code couldn’t confirm that access was revoked. Try uninstalling again.");
       }
+      tell.commit?.();
       let cleanup = "";
       try {
         const ran = await reach.run(uninstall(ENGINE_VERSION, own, only), { most: 600000 });
@@ -49001,8 +49144,10 @@ function beginUninstall(key) {
         cleanup = "Kuvo Code couldn’t confirm whether cleanup finished on that computer.";
       }
       tell.step("forgetting");
-      if (cleanup || listCleanup)
-        throw new Failed(`${at.name}’s access to your other computers was revoked.${listCleanup}${cleanup ? ` ${cleanup}` : ""}`, false);
+      if (cleanup || listCleanup) {
+        const local = only ? "Run the local uninstall command (kuvo-link.js uninstall) on that computer to finish cleanup." : `Run kuvo-link.js leave ${own} on that computer to disconnect it from this setup.`;
+        throw new Failed(`${at.name}’s access to your other computers was revoked.${listCleanup}${cleanup ? ` ${cleanup} ${local}` : ""}`, false);
+      }
     } finally {
       await reach.close().catch((error) => console.error("Uninstall SSH close failed:", error));
     }
@@ -57000,6 +57145,7 @@ function uninstall2() {
   return { stopped, launchAgent, crontab: crontabLine, startsAgain, left: [K], message };
 }
 var identityFile = path183.join(K, "desktop", "identity");
+var DESKTOP_UNINSTALL_ROUTE = "kuvo/box/uninstall-desktop";
 function logCleanup(detail) {
   try {
     fs173.appendFileSync(path183.join(RUN, "uninstall.log"), `${String(detail)}
@@ -57045,16 +57191,55 @@ async function revokeDesktop() {
       return false;
     }
     const key = desktopKey();
+    const needsPublish = IS_MAC && peersOf(link).length > 0;
     if (key) {
+      if (needsPublish && await askLivePrimary(key))
+        return true;
       const changed = updateLink((current) => current && current.phones?.some((phone) => phone.key === key) && removeAsMac(current, [{ key }]) ? current : null);
       if (changed)
         noteDocsChanged();
+      return !needsPublish;
     }
-    return true;
+    return !needsPublish || !(link?.phones ?? []).some((phone) => phone.from === "pair" && phone.kind === "desktop" && !phone.by);
   } catch (error) {
     logCleanup(error);
     return false;
   }
+}
+async function askLivePrimary(key) {
+  try {
+    const record = JSON.parse(fs173.readFileSync(SERVE_FILE(), "utf8"));
+    if (!isObject(record) || typeof record.port !== "number" || !Number.isInteger(record.port) || record.port < 1 || record.port > 65535 || typeof record.password !== "string" || !record.password)
+      return false;
+    const response = await fetch(`http://127.0.0.1:${record.port}/${DESKTOP_UNINSTALL_ROUTE}`, {
+      method: "POST",
+      redirect: "error",
+      signal: AbortSignal.timeout(8000),
+      headers: { authorization: `Basic ${Buffer.from(`opencode:${record.password}`).toString("base64")}`, "x-kuvo-from": "app", "content-type": "application/json" },
+      body: JSON.stringify({ key })
+    });
+    await response.body?.cancel();
+    return response.status === 200;
+  } catch (error) {
+    logCleanup(error);
+    return false;
+  }
+}
+async function* desktopUninstallRoute({ request, signal, json }) {
+  if (!IS_MAC || !request.served || !request.fromApp)
+    return yield* json(403, { message: "Run uninstall on this computer." });
+  if (request.method.toUpperCase() !== "POST")
+    return yield* json(405, {});
+  const body = parsed(request.body);
+  if (!isObject(body) || typeof body.key !== "string" || !KEY.test(body.key))
+    return yield* json(400, { message: "The desktop’s key couldn’t be read." });
+  try {
+    if (await publishDesktopRemoval(macLink.host, body.key, signal))
+      return yield* json(200, {});
+  } catch (error) {
+    logCleanup(error);
+  }
+  return yield* json(503, { message: "Kuvo Code couldn’t confirm the desktop removal reached every other computer." });
 }
 function clearDesktopIdentity() {
   let cleared = true;
@@ -57096,6 +57281,7 @@ async function uninstallCommand(args) {
     return 0;
   }
   const overSSH = process.env.KUVO_UNINSTALL_FROM_SSH === "1";
+  const publishing = IS_MAC && !mainElsewhere(readLink());
   const revoked = overSSH || await revokeDesktop();
   const identityCleared = overSSH || clearDesktopIdentity();
   let done;
@@ -57106,7 +57292,7 @@ async function uninstallCommand(args) {
     done = { stopped: false, launchAgent: false, crontab: false, startsAgain: [], left: [K], message: "Kuvo Code couldn’t confirm it had stopped on this computer." };
   }
   if (!revoked)
-    done.message += " Kuvo Code couldn’t confirm that your main computer revoked this desktop’s access.";
+    done.message += publishing ? " Kuvo Code couldn’t confirm the desktop removal reached every other computer." : " Kuvo Code couldn’t confirm that your main computer revoked this desktop’s access.";
   if (!identityCleared)
     done.message += " Kuvo Code couldn’t delete this desktop’s local identity.";
   const finished = done.stopped && done.startsAgain.length === 0 && revoked && identityCleared;
@@ -58688,6 +58874,10 @@ function peerMail(sender, payload, host, places = () => ({ targets: [], bridge: 
     takeZone(payload.zone);
   if (isObject(payload.docs))
     receiveDocs(sender, payload.docs, host).catch(() => {});
+  if (isObject(payload.phoneSync))
+    try {
+      takePhoneSync(sender, payload.phoneSync, host);
+    } catch {}
   if (payload.ask === "agents") {
     toldPeers.delete(sender.key);
     tellQueuesAgain(sender.key);
@@ -71843,6 +72033,7 @@ var ROUTES = [
   { when: (route) => route === "kuvo/box/app", answer: appRoute },
   { when: (route) => route === "kuvo/box/app/open", answer: appOpenRoute },
   { when: (route) => route === "kuvo/box/serve", answer: serveRoute },
+  { when: (route) => route === DESKTOP_UNINSTALL_ROUTE, answer: desktopUninstallRoute },
   { when: (route) => route.match(AT_WORK_ROUTE), answer: atWorkRoute },
   { when: (route) => route === "kuvo/box/stop", answer: stopRoute },
   { when: (route) => route === "kuvo/box/proof", answer: proofRoute },
@@ -72025,7 +72216,7 @@ async function runMacLink() {
       const host = new LinkHost({
         key: Buffer.from(link.key, "base64url"),
         hello: { v: 1, kind: "mac", name: config.name, app: config.app, engine: engine.version ?? null },
-        authorize: (key, hello, address) => Boolean(macLink.config?.phones) && authorizePhonePairing(key, hello, address),
+        authorize: (key, hello, address) => Boolean(macLink.config?.phones) && freshDesktopTrust(host, key) && authorizePhonePairing(key, hello, address),
         confirmed: confirmPhone,
         mail: (_from, body) => receiveMail(body, host, (sender, payload) => peerMail(sender, payload, host, peerPlaces)),
         handle: macFront(engineHandler(readEngineFile, { name: config.name }, readBridgeFile, (changed) => host.keepOnly(new Set((changed.phones ?? []).map((phone) => phone.key))), macLink.hold)),
@@ -72040,6 +72231,9 @@ async function runMacLink() {
         announce(host, readEngineFile, undefined, undefined, true).catch(() => {});
         try {
           docsChanged(host, { greet: true });
+        } catch {}
+        try {
+          refreshPhoneTrust(host);
         } catch {}
         try {
           tellUntold();
@@ -73181,6 +73375,9 @@ onLinkWritten((link) => {
 });
 var liveHost = null;
 function machineWelcomed(host) {
+  try {
+    refreshPhoneTrust(host);
+  } catch {}
   announce(host, readEngineFile, undefined, undefined, true).catch(() => {});
   try {
     docsChanged(host, { greet: true });
@@ -73392,6 +73589,10 @@ async function run7() {
     forwardNow();
     heldNow();
     reachNow();
+    if (current)
+      try {
+        refreshPhoneTrust(current);
+      } catch {}
     if (current?.welcomed && docsNoted()) {
       try {
         docsChanged(current, { tell: true });
@@ -73434,7 +73635,7 @@ async function run7() {
     const host = new LinkHost({
       key: Buffer.from(link.key, "base64url"),
       hello: { v: 1, kind: "machine", name: link.name || os26.hostname(), app: BRIDGE_VERSION, engine: engine.version ?? null },
-      authorize: authorizePhonePairing,
+      authorize: (key, hello, address) => freshDesktopTrust(host, key) && authorizePhonePairing(key, hello, address),
       confirmed: confirmPhone,
       mail: (_from, body) => receiveMail(body, host, (sender, payload) => peerMail(sender, payload, host, peerPlaces), (mac, given, at) => hold.attend(`mac:${mac}`, given, at)),
       handle: engineHandler(readEngineFile, { name: link.name || os26.hostname() }, readBridgeFile, (changed) => host.keepOnly(new Set((changed.phones ?? []).map((phone) => phone.key))), hold),

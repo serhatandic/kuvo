@@ -621,10 +621,11 @@ export function beginUninstall(key: string): Running | null {
         throw new Failed("Kuvo Code couldn’t confirm that access was revoked. Try uninstalling again.");
       }
       const listCleanup = removed.status === 503 ? " The saved machines list still needs to be updated." : "";
-      if (![200, 404, 503].includes(removed.status)) {
+      if (removed.status !== 200 && removed.status !== 503) {
         console.error("Uninstall local revocation returned", removed);
         throw new Failed("Kuvo Code couldn’t confirm that access was revoked. Try uninstalling again.");
       }
+      tell.commit?.();
       let cleanup = "";
       // Never cut short: let the remote removal finish even if the client stops waiting.
       try {
@@ -643,7 +644,12 @@ export function beginUninstall(key: string): Running | null {
         cleanup = "Kuvo Code couldn’t confirm whether cleanup finished on that computer.";
       }
       tell.step("forgetting");
-      if (cleanup || listCleanup) throw new Failed(`${at.name}’s access to your other computers was revoked.${listCleanup}${cleanup ? ` ${cleanup}` : ""}`, false);
+      if (cleanup || listCleanup) {
+        const local = only
+          ? "Run the local uninstall command (kuvo-link.js uninstall) on that computer to finish cleanup."
+          : `Run kuvo-link.js leave ${own} on that computer to disconnect it from this setup.`;
+        throw new Failed(`${at.name}’s access to your other computers was revoked.${listCleanup}${cleanup ? ` ${cleanup} ${local}` : ""}`, false);
+      }
     } finally {
       await reach.close().catch(error => console.error("Uninstall SSH close failed:", error));
     }

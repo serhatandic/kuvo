@@ -281,12 +281,15 @@ function client(hello, key = link.newKey()) {
 // Mail to this Mac's box sealed with `key`, as a box holding that key mails another (PROTOCOL.md, "Mail").
 const mailToMac = (key, payload) => relay.device().send(macAddress, link.frame(link.Frame.mail, 0, link.sealOneWay(Buffer.from(JSON.stringify(payload)), key, link.publicOf(macKey)).message));
 const vouch = (item, id = `wqa_${crypto.randomBytes(16).toString("base64url")}`) => ({ id, area: "devices", method: "POST", item, body: { name: "Someone's laptop", kind: "desktop" }, at: Date.now() });
-// The member has heard, in the main computer's phones document, that the device `key` was removed
-// there. Until it has, it answers its own app from the list it has (devices.ts, "Let in already"),
-// with the pairing it knew, as it would in the moment before any removal reaches it.
-const memberHeardRemoved = key => eventually(() => {
+// The member has installed the main computer's removal of this device.
+const memberHasRemoval = key => {
   const there = labLink();
   return !!there && (there.removed ?? []).some(each => each.key === key) && !(there.phones ?? []).some(each => each.key === key);
+};
+const memberHeardRemoved = key => eventually(() => memberHasRemoval(key));
+const openOnMember = (client, member) => eventually(async () => {
+  const hello = await client.open(member);
+  return hello.kind === "machine" ? hello : null;
 });
 // What this Mac's box answered the ask `id` of the box holding `key`, at `address` on the relay.
 const actedFor = (id, key, address) => eventually(() => {
@@ -357,7 +360,7 @@ test("the desktop app on a member's computer is paired through its own box and r
   assert.deepEqual(await listed(), [["Lab screen", "desktop", true], ["My iPhone", "phone", false]]);
   assert.deepEqual(await desk.request("POST", "kuvo/devices/pair", given), onlyTheApp);
   await eventually(() => (labLink()?.phones ?? []).some(each => each.key === desk.public && each.kind === "desktop"));
-  const hello = await desk.open(member);
+  const hello = await openOnMember(desk, member);
   assert.deepEqual([hello.kind, hello.name], ["machine", "lab"]);
   assert.equal((await desk.request("GET", "kuvo/info")).json.name, "lab");
   assert.deepEqual(await listed(), [["Lab screen", "desktop", true], ["My iPhone", "phone", false]]);
@@ -554,8 +557,15 @@ test("the desktop app on a member's computer is paired through its own box and r
   assert.equal((await studio.request("GET", "kuvo/computers")).status, 200, "the current app keeps its open session");
   assert.deepEqual(await loft.open(main), { refused: true });
   assert.ok(!(await ask("GET", "kuvo/phones")).json.phones.some(each => each.key === loft.public));
-  reconnect();
-  await eventually(() => relay.has(member.address));
+  const resume = relay.pause(macAddress, member.address);
+  try {
+    reconnect();
+    await eventually(() => relay.has(member.address));
+    assert.ok(labLink().phones.some(each => each.key === loft.public), "the member only has its cached list");
+    assert.deepEqual(await loft.open(member), { refused: true }, "a cached desktop is refused before the primary answers");
+  } finally {
+    resume();
+  }
   await memberHeardRemoved(loft.public);
   assert.deepEqual(await loftOnMember.request("GET", "kuvo/computers"), { closed: true }, "the offline member lost its old session");
   assert.deepEqual(await loft.open(member), { refused: true });
@@ -566,7 +576,7 @@ test("the desktop app on a member's computer is paired through its own box and r
   assert.deepEqual(await loft.open(member), { refused: true }, "the older signed list cannot restore the pairing");
   assert.deepEqual(labLink().docs[phoneDocKey], synced);
   assert.deepEqual(await loft.open(main, { pair: pendingToken }), { refused: true }, "its old invitation cannot restore the pairing either");
-  assert.deepEqual([(await phone.open(main)).kind, (await studio.open(main)).kind, (await studio.open(member)).kind, (await phone.open(member)).kind], ["mac", "mac", "machine", "machine"]);
+  assert.deepEqual([(await phone.open(main)).kind, (await studio.open(main)).kind, (await openOnMember(studio, member)).kind, (await phone.open(member)).kind], ["mac", "mac", "machine", "machine"]);
   await eventually(async () => !(await labApp("GET", "kuvo/computers")).json.computers.some(each => each.key === attic.pub));
   assert.deepEqual(await labApp("DELETE", `kuvo/computers/${attic.pub}`), { status: 200, json: {} });
   assert.deepEqual(read(list), []);
@@ -584,6 +594,72 @@ test("the desktop app on a member's computer is paired through its own box and r
   link.macLink.config = wasConfig;
   assert.equal(off.status, 409);
   assert.match(off.json.message, /^“Let my devices connect” is off on /);
+});
+
+test("a removal reaches a member while the primary's inbound device switch stays off", { timeout: 18_000 }, async t => {
+  signal = t.signal;
+  const member = { key: Buffer.from(lab.key, "base64url"), address: Buffer.from(lab.address, "base64url") };
+  const other = { key: link.publicOf(link.newKey()).toString("base64url"), sign: link.signingKeyOf(link.newSigningSeed()), name: "Cellar",
+    id: "cellar.example", address: relay.device().address.toString("base64url") };
+  const peers = link.readLink().macPeers;
+  assert.equal((await ask("PUT", "kuvo/link/peers", { peers: [...peers, other] })).status, 200);
+  const desktop = client({ name: "Cellar desktop", client: "desktop" });
+  assert.equal((await link.deviceAct(other, vouch(desktop.public))).status, 200);
+  await eventually(() => labLink()?.phones?.some(each => each.key === desktop.public));
+  await openOnMember(desktop, member);
+  assert.equal((await desktop.request("GET", "kuvo/computers")).status, 200);
+  const config = link.macLink.config;
+  const appSaid = link.macLink.appSaid;
+  assert.equal((await ask("PUT", "kuvo/link/config", { ...config, phones: false })).status, 200);
+  link.macLink.appSaid = undefined;
+  try {
+    assert.equal((await ask("DELETE", `kuvo/computers/${other.key}`)).status, 200);
+    const until = Date.now() + 4_000;
+    assert.equal(await eventually(() => memberHasRemoval(desktop.public) ? "removed" : Date.now() >= until && "stale"), "removed",
+      "the member installed the removal while the primary switch was off");
+    assert.deepEqual(await desktop.request("GET", "kuvo/computers"), { closed: true });
+    assert.deepEqual(await desktop.open(member), { refused: true });
+    assert.equal(link.macLink.config.phones, false);
+  } finally {
+    await ask("PUT", "kuvo/link/config", config);
+    link.macLink.appSaid = appSaid;
+  }
+});
+
+test("local uninstall on the primary confirms the removal on a member holding an open session", { timeout: 25_000 }, async t => {
+  signal = t.signal;
+  const member = { key: Buffer.from(lab.key, "base64url"), address: Buffer.from(lab.address, "base64url") };
+  const key = link.newKey();
+  const desktop = client({ name: "Studio uninstall desktop", client: "desktop" }, key);
+  assert.equal((await ask("POST", "kuvo/devices/pair", { key: desktop.public, name: "Studio uninstall desktop", kind: "desktop" }, { served: true, fromApp: true })).status, 200);
+  await eventually(() => labLink()?.phones?.some(each => each.key === desktop.public));
+  await openOnMember(desktop, member);
+  assert.equal((await desktop.request("GET", "kuvo/computers")).status, 200);
+  const server = link.serveBox("local-uninstall", handle);
+  const port = await listening(server);
+  write(path.join(macHome, "run", "serve.json"), { port, password: "local-uninstall" });
+  write(path.join(macHome, "box", "kind"), "mac\n");
+  const identity = path.join(macHome, "desktop", "identity");
+  write(identity, `${key.toString("base64url")}.${crypto.randomBytes(32).toString("base64url")}`);
+  try {
+    const result = await new Promise(resolve => {
+      const child = spawn(process.execPath, [script, "uninstall"], { env: { ...machineEnv, KUVO_HOME: macHome }, stdio: ["ignore", "pipe", "pipe"] });
+      let stdout = "", stderr = "";
+      child.stdout.on("data", bytes => { stdout += bytes; });
+      child.stderr.on("data", bytes => { stderr += bytes; });
+      child.on("close", status => resolve({ status, stdout, stderr }));
+    });
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    assert.deepEqual(await desktop.request("GET", "kuvo/computers"), { closed: true });
+    assert.deepEqual(await desktop.open(member), { refused: true });
+    assert.ok(labLink()?.removed?.some(each => each.key === desktop.public));
+    assert.equal(fs.existsSync(identity), false);
+  } finally {
+    server.closeAllConnections();
+    server.close();
+    fs.rmSync(path.join(macHome, "run", "off"), { force: true });
+    fs.rmSync(path.join(macHome, "run", "serve.json"), { force: true });
+  }
 });
 
 test("local uninstall revokes its desktop before stopping the box, including a session open to its primary", { timeout: 60_000 }, async t => {

@@ -64,7 +64,10 @@ export async function relayStandIn({ addressOf }, { changed: told = () => {} } =
   // Each connection, and what it knows of its device.
   const sockets = new Map();
   const offline = new Set();
+  const paused = new Set();
+  const route = (from, to) => `${from.toString("hex")}:${to.toString("hex")}`;
   const deliver = (from, to, payload) => {
+    if (paused.has(route(from, to))) return;
     const device = devices.get(to.toString("hex"));
     if (!device) return devices.get(from.toString("hex"))?.(Buffer.concat([Buffer.from([3]), to]));
     device(Buffer.concat([Buffer.from([2]), from, payload]));
@@ -136,6 +139,11 @@ export async function relayStandIn({ addressOf }, { changed: told = () => {} } =
     delivered,
     // Whether a device is on it at `address`.
     has: address => devices.has(address.toString("hex")),
+    pause(from, to) {
+      const key = route(from, to);
+      paused.add(key);
+      return () => paused.delete(key);
+    },
     // Take one box off the relay and hold it there until it can connect again.
     disconnect(address) {
       const key = address.toString("hex");

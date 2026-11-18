@@ -171,6 +171,12 @@ if [ -f "$F/track" ] || [ -f "$F/lose-uninstall-reply" ]; then
   fi
   if [ -f "$F/lose-uninstall-reply" ]; then
     case "$text" in *'kuvo-link.js" uninstall'*)
+      if [ "$(cat "$F/lose-uninstall-reply")" = before ]; then
+        : >"$F/uninstall-entered"
+        while [ ! -f "$F/uninstall-continue" ]; do sleep 0.05; done
+        echo "the connection closed before the command ran" >&2
+        exit 255
+      fi
       HOME="$FAKE_SSH_HOME" sh -c "$cmd" >/dev/null 2>&1
       echo "lost the reply after cleaning $FAKE_SSH_HOME/.kuvo-code" >&2
       exit 255 ;;
@@ -1183,7 +1189,7 @@ test("uninstall revokes access before SSH cleanup and reports a lost reply witho
     state: result.state, message: result.failure.message,
     letsIn: link.authorizePhone(key, {}), present: Boolean(macbookPeer()),
   }, {
-    state: "failed", message: "macbook’s access to your other computers was revoked. Kuvo Code couldn’t confirm whether cleanup finished on that computer.",
+    state: "failed", message: "macbook’s access to your other computers was revoked. Kuvo Code couldn’t confirm whether cleanup finished on that computer. Run the local uninstall command (kuvo-link.js uninstall) on that computer to finish cleanup.",
     letsIn: false, present: false,
   });
   assert.deepEqual(pidsThere(path.join(homes.macbook, ".kuvo-code")).filter(alive), []);
@@ -1228,3 +1234,63 @@ for (const [destination, heldScript, step, expected] of [
     assert.deepEqual(ran, expected);
   });
 }
+
+test("SSH uninstall stops if the refreshed peer list drops the target during the probe", async () => {
+  assert.equal((await ask("POST", "kuvo/machines", { destination: "macbook" })).status, 200);
+  const computer = macbookPeer();
+  const kuvo = path.join(homes.macbook, ".kuvo-code");
+  const identity = path.join(kuvo, "desktop", "identity");
+  write(identity, "still here", 0o600);
+  const key = link.publicOf(link.newKey());
+  link.updateLink(state => { link.pairDevice(state, { key: k(key), name: "MacBook desktop", by: computer.key }); return state; });
+  const hold = path.join(fake, "hold");
+  fs.writeFileSync(hold, "kuvo kind");
+  let id;
+  try {
+    const started = await ask("POST", `kuvo/computers/${computer.key}/uninstall`);
+    assert.equal(started.status, 202, JSON.stringify(started.body));
+    id = started.body.try.id;
+    await until(id, found => found?.steps[0]?.state === "now");
+    assert.equal((await ask("PUT", "kuvo/link/peers", { peers: [] })).status, 200);
+  } finally {
+    fs.rmSync(hold);
+  }
+  const ended = await over(id);
+  assert.equal(ended.state, "failed");
+  assert.match(ended.failure.message, /couldn’t confirm that access was revoked/);
+  assert.equal(link.authorizePhone(key, {}), true, "mere absence isn't revocation");
+  assert.equal(fs.readFileSync(identity, "utf8"), "still here");
+  assert.equal(fs.existsSync(path.join(kuvo, "run", "off")), false);
+});
+
+test("Stop after committed revocation retains the unconfirmed SSH cleanup and local instructions", async () => {
+  const added = await ask("POST", "kuvo/computers/add", { destination: "macbook" });
+  assert.equal((await over(added.body.try.id)).state, "done");
+  const computer = macbookPeer();
+  const kuvo = path.join(homes.macbook, ".kuvo-code");
+  write(path.join(kuvo, "desktop", "identity"), "still here", 0o600);
+  const marker = path.join(fake, "lose-uninstall-reply");
+  const entered = path.join(fake, "uninstall-entered");
+  const release = path.join(fake, "uninstall-continue");
+  fs.writeFileSync(marker, "before");
+  let id;
+  try {
+    const started = await ask("POST", `kuvo/computers/${computer.key}/uninstall`);
+    assert.equal(started.status, 202, JSON.stringify(started.body));
+    id = started.body.try.id;
+    await until(id, found => found?.steps.find(step => step.id === "removing")?.state === "now");
+    const deadline = Date.now() + 15_000;
+    while (!fs.existsSync(entered) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 25));
+    assert.ok(fs.existsSync(entered), "the SSH command is outstanding");
+    assert.equal((await ask("DELETE", `kuvo/computers/add/${id}`)).status, 200);
+  } finally {
+    fs.writeFileSync(release, "");
+  }
+  const ended = await over(id);
+  fs.rmSync(marker);
+  assert.equal(ended?.state, "failed");
+  assert.match(ended.failure.message, /revoked.*couldn’t confirm.*Run the local uninstall command \(kuvo-link\.js uninstall\)/);
+  assert.equal(macbookPeer(), undefined);
+  assert.equal(fs.readFileSync(path.join(kuvo, "desktop", "identity"), "utf8"), "still here");
+  assert.equal(fs.existsSync(path.join(kuvo, "run", "off")), false);
+});

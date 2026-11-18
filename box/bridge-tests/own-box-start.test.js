@@ -272,6 +272,22 @@ test("local uninstall clears the file identity and reports unconfirmed revocatio
   assert.equal(fs.existsSync(identity), false);
 });
 
+test("local uninstall on a primary reports an unconfirmed desktop removal with no serving process", async () => {
+  const where = home("mac");
+  const key = "a".repeat(43);
+  write(path.join(where.K, "desktop", "boxes.json"), JSON.stringify({ paired: key }));
+  write(path.join(where.run, "link.json"), JSON.stringify({
+    macPeers: [{ key: "b".repeat(43), sign: "c".repeat(43), address: "d".repeat(22), kind: "machine", id: "lab", name: "Lab" }],
+    phones: [{ key, from: "pair", kind: "desktop", pairing: "desktop" }],
+  }));
+  const done = await uninstall(where);
+  assert.equal(done.status, 1);
+  const said = JSON.parse(done.stdout);
+  assert.equal(said.stopped, true);
+  assert.match(said.message, /couldn’t confirm the desktop removal reached every other computer/);
+  assert.deepEqual(JSON.parse(read(path.join(where.run, "link.json"))).removed, [{ key, pairing: "desktop" }]);
+});
+
 test("uninstall says what it doesn't know", async () => {
   const where = home();
   assert.equal((await uninstall(where, ["--all"])).status, 2);

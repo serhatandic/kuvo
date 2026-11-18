@@ -224,7 +224,8 @@ each box pairs and removes (`phones`), and each box's view of your personalities
   "desktop"` on Kuvo Code's desktop app (`clients.kind`; left out for a phone, and a box that
   doesn't know it reads the entry as a phone's). `by` is the voucher's box key. A box
   lets in its own and its Macs' phones, less every pairing removed in any phones document it
-  takes, which it notes as its own removal too. A Mac with the phone link off signs none.
+  takes, which it notes as its own removal too. The Mac's inbound switch leaves signed
+  phone lists and removals available to its peers.
 - **`personalities`**, each box's view: the library (`{personalities, removed}`, "Personalities").
   A box meets a view it takes with its own, and signs its own again if it changed; views aren't
   passed on (each box's own already has what it took). Its own goes past 512 KB never: a change
@@ -242,6 +243,13 @@ each box pairs and removes (`phones`), and each box's view of your personalities
   `personalities`). Over SSH, setup carries the
   Mac's documents (`docs`, its own and those it has of its machines) and its answer the machine's.
   A box doesn't give documents to a Mac that gave it no signing key.
+- **Phone authorization after reconnect**: a member asks the Mac that signed the pairing's list
+  with authenticated mail `phoneSync: {id}` (`id` is 16 random bytes, base64url). The Mac sends
+  its current signed phones document, then `phoneSync: {id, list, ack: true}`, with `list` formatted
+  as `n:h`. The member waits for both before opening sessions for that Mac's inherited desktop
+  and voucher-bound pairings. On primary uninstall, the primary sends its updated signed list
+  and `phoneSync: {id, list}`. Peers answer with the same `id` and `list` and `ack: true` after
+  installing that list and closing sessions for devices it removes.
 - **Later**: each box's agents (`{"agents"}`, "Peers") are a list of its own too, still sent as
   they change and every ten minutes; they could become a fourth kind.
 
@@ -11494,8 +11502,13 @@ own command, which the app or a Terminal line runs: `kuvo-link.js uninstall`. Be
 a member asks its main computer to revoke devices it vouched for. The command removes the desktop
 identity file and, on the real Mac's own box, asks the Keychain to delete the released app's item.
 An unconfirmed revocation or failed identity deletion is reported as incomplete.
+On the primary, the live box signs and publishes the desktop removal before shutting down.
+Each peer acknowledges that it installed the signed list. If any acknowledgement is missing,
+uninstall reports that spreading could not be confirmed.
 When another computer uninstalls over SSH, the controller revokes access after a successful
-probe and before sending the destructive command. A lost SSH reply leaves cleanup unconfirmed.
+probe and before sending the destructive command. If the reply is lost, the controller keeps
+the committed revocation and reports the cleanup as unconfirmed with instructions to finish
+it on the target computer. Stopping the wait after revocation keeps the final cleanup outcome.
 Nothing of the box
 starts again, and nothing of it runs:
 - the launch agent that starts it at login on a Mac (`~/Library/LaunchAgents/run.kuvo.code.machine.plist`)

@@ -18,7 +18,7 @@ import { mergePersonalities, MOST_COUNT, readPersonalities } from "../personalit
 import { foldPhones, ownPhones } from "../phones";
 import { followedSetup, lowerEpoch, setupDoc, type SetupWord } from "../setup/record";
 import { noteConflict, settleSetup } from "../setup/settle";
-import { macLink, macSign, updateLink } from "../state";
+import { macSign, updateLink } from "../state";
 import { bodyHash, DOC_PART, docKey, held, MOST_DOC, ownSign, readDoc, shortHash, signDoc } from "./format";
 import { assemble, type DocPart, type PendingParts } from "./parts";
 import type { MovedSession, Peer } from "../peers/known";
@@ -190,13 +190,12 @@ export function ownDoc(link: LinkState, kind: DocKind, body: object): OwnDoc | n
 // its next version where it changed: `{phones, personalities}`, each `{envelope, changed}`.
 export function ownDocs(state: Pick<DocsState, "link" | "library">): Partial<Record<DocKind, OwnDoc>> {
   const docs: Partial<Record<DocKind, OwnDoc>> = {};
-  // This Mac's: who its computers are too; its phones only while the phone link's on (its machines
-  // keep what they have meanwhile).
+  // The inbound phone switch is local. Peers still need the signed list and its removals.
   if (IS_MAC) {
     const peers = ownDoc(state.link, "peers", macPeersBody(state.link));
     if (peers) docs.peers = peers;
   }
-  const phones = IS_MAC && !macLink.config?.phones ? null : ownDoc(state.link, "phones", ownPhones(state.link));
+  const phones = ownDoc(state.link, "phones", ownPhones(state.link));
   if (phones) docs.phones = phones;
   const library = mergePersonalities(state.library);
   if (Buffer.byteLength(JSON.stringify(library)) <= MOST_DOC - 4096) {

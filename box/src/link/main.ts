@@ -51,6 +51,7 @@ import { addressOf, newKey, publicOf } from "./crypto/keys";
 import { IKInitiator, IKResponder, openOneWay, PROLOGUE, sealOneWay } from "./crypto/noise";
 import { docsNoted, noteDocsChanged, onDocsChanged } from "./documents/changed";
 import { docsChanged, macDocsChanged } from "./documents/exchange";
+import { freshDesktopTrust, refreshPhoneTrust } from "./documents/phone-sync";
 import { newSigningSeed, ownSign, SIGN } from "./documents/format";
 import { docsWork, ownDocs, pruneDocs } from "./documents/work";
 import { bridgeTarget, peerPlaces, peerTargets, readBridgeFile, readEngineFile } from "./engine/client";
@@ -334,6 +335,7 @@ let liveHost: LinkHost | null = null;
 // What a machine's link does once the relay's welcomed it: your other computers hear who's here,
 // and it tells who's there.
 function machineWelcomed(host: LinkHost): void {
+  try { refreshPhoneTrust(host); } catch {}
   announce(host, readEngineFile, undefined, undefined, true).catch(() => {});
   try { docsChanged(host, { greet: true }); } catch {}
 }
@@ -552,6 +554,7 @@ async function run(): Promise<void> {
     forwardNow();
     heldNow();
     reachNow();
+    if (current) try { refreshPhoneTrust(current); } catch {}
     if (current?.welcomed && docsNoted()) {
       try { docsChanged(current, { tell: true }); } catch {}
       // (A device removed by another process, Kuvo Code beside this box: what it has open ends now.)
@@ -584,10 +587,10 @@ async function run(): Promise<void> {
     }
     let engine: Partial<EngineRecord> = {};
     try { engine = readEngineFile(); } catch {}
-    const host = new LinkHost({
+    const host: LinkHost = new LinkHost({
       key: Buffer.from(link!.key!, "base64url"),
       hello: { v: 1, kind: "machine", name: link!.name || os.hostname(), app: BRIDGE_VERSION, engine: engine.version ?? null },
-      authorize: authorizePhonePairing,
+      authorize: (key, hello, address) => freshDesktopTrust(host, key) && authorizePhonePairing(key, hello, address),
       confirmed: confirmPhone,
       mail: (_from, body) => receiveMail(body, host, (sender, payload) => peerMail(sender, payload, host, peerPlaces), (mac, given, at) => hold.attend(`mac:${mac}`, given, at)),
       handle: engineHandler(readEngineFile, { name: link!.name || os.hostname() }, readBridgeFile, changed => host.keepOnly(new Set((changed.phones ?? []).map(phone => phone.key))), hold),
