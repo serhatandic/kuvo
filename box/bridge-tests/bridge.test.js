@@ -201,7 +201,7 @@ test("the host lets in a phone with the pairing token once, then by its key", as
 });
 
 // An engine on a free port that answers like opencode does, and records what it was asked.
-async function fakeEngine() {
+async function fakeEngine({ startSignIn } = {}) {
   const asked = [];
   // Says when a stream the bridge opened closes.
   const closes = new EventEmitter();
@@ -226,7 +226,10 @@ async function fakeEngine() {
     request.on("data", chunk => { body += chunk; });
     request.on("end", () => {
       response.writeHead(200, { "content-type": "application/json", "set-cookie": "nope" });
-      response.end(JSON.stringify({ path: request.url, body }));
+      const result = startSignIn && request.method === "POST" && request.url === "/api/integration/opencode/connect/oauth"
+        ? { data: startSignIn(JSON.parse(body)) }
+        : { path: request.url, body };
+      response.end(JSON.stringify(result));
     });
   });
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
@@ -709,43 +712,73 @@ test("what reaches the engine and the agents' bridge is the path as it was check
       asked.length = 0;
       const { status } = await answer(handle, r.method ?? "GET", prefix + r.path);
       assert.equal(status, 200, r.path);
-      assert.deepEqual(asked, [`/${r.forwarded}`], r.path);
+      const calls = !prefix && r.forwarded === "api/integration"
+        ? ["/api/integration/github-work-queue", "/api/integration"]
+        : [`/${r.forwarded}`];
+      assert.deepEqual(asked, calls, r.path);
     }
   }
 });
 
 // What a phone's request gets from the handler, read whole.
-async function answer(handle, method, p, body) {
+async function answer(handle, method, p, body, headers = {}) {
   const parts = [];
-  for await (const part of handle({ method, path: p, headers: {}, body: Buffer.from(body ?? "") }, {}, undefined)) parts.push(part);
+  for await (const part of handle({ method, path: p, headers, body: Buffer.from(body ?? "") }, {}, undefined)) parts.push(part);
   const text = Buffer.concat(parts.filter(part => part.body).map(part => part.body)).toString();
   return { status: parts[0].head.status, json: text ? JSON.parse(text) : undefined };
 }
 
 test("a sign-in that returns to the machine is loaded there, at its own address only, without following it further", async t => {
   const asked = [];
+  let offer;
+  let attempt = 0;
+  const startPath = "/api/integration/opencode/connect/oauth";
   const server = http.createServer((request, response) => {
+    request.resume();
+    if (request.url === startPath && request.method === "POST") {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ data: { attemptID: `att_${++attempt}`, url: offer, mode: "auto" } }));
+      return;
+    }
+    if (request.url === `${startPath}/att_${attempt}` && request.method === "GET") {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ data: { status: "pending" } }));
+      return;
+    }
     asked.push(request.url);
     response.writeHead(302, { location: "http://example.com/done" });
     response.end();
   });
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
-  t.after(() => server.close());
-  const handle = link.engineHandler(() => ({ port: 1, password: "p" }));
+  t.after(() => { server.closeAllConnections(); server.close(); });
   const port = server.address().port;
-  const loaded = await answer(handle, "POST", "kuvo/sign-in/return", JSON.stringify({ url: `http://127.0.0.1:${port}/mcp/oauth/callback?code=c&state=s#_=_` }));
+  const handle = link.engineHandler(() => ({ port, password: "p" }));
+  const headers = { "x-kuvo-sign-in-client": "a".repeat(32) };
+  const begin = async callback => {
+    offer = `https://example.test/login?state=s&redirect_uri=${encodeURIComponent(callback)}`;
+    const started = await answer(handle, "POST", "kuvo/sign-in/start?integration=opencode", JSON.stringify({ methodID: "console" }), headers);
+    assert.equal(started.status, 200);
+    assert.equal(started.json.pasteAddress, true);
+    return started.json.attemptID;
+  };
+  const returned = (url, attemptID) => answer(handle, "POST", "kuvo/sign-in/return",
+    JSON.stringify({ url, integration: "opencode", attempt: attemptID }), headers);
+  const callback = `http://127.0.0.1:${port}/mcp/oauth/callback`;
+  const first = await begin(callback);
+  const loaded = await returned(`${callback}?code=c&state=s#_=_`, first);
   assert.deepEqual([loaded.status, loaded.json], [200, { status: 302 }]);
   assert.deepEqual(asked, ["/mcp/oauth/callback?code=c&state=s"]);
   for (const url of ["http://example.com:80/cb?code=c", `http://127.0.0.1:${port}/cb`, `https://127.0.0.1:${port}/cb?code=c`]) {
-    assert.equal((await answer(handle, "POST", "kuvo/sign-in/return", JSON.stringify({ url }))).status, 400, url);
+    assert.equal((await returned(url, first)).status, 400, url);
   }
   assert.equal(asked.length, 1);
-  // Nothing there to take it.
+  // The same callback flow, with no listener left to take it.
   const closed = http.createServer();
   await new Promise(resolve => closed.listen(0, "127.0.0.1", resolve));
-  const gone = closed.address().port;
+  const gone = `http://127.0.0.1:${closed.address().port}/cb`;
+  const second = await begin(gone);
   await new Promise(resolve => closed.close(resolve));
-  assert.equal((await answer(handle, "POST", "kuvo/sign-in/return", JSON.stringify({ url: `http://127.0.0.1:${gone}/cb?code=c` }))).status, 502);
+  assert.equal((await returned(`${gone}?code=c&state=s`, second)).status, 502);
   assert.equal((await answer(handle, "GET", "kuvo/sign-in/return")).status, 405);
 });
 
@@ -898,7 +931,9 @@ test("kuvo/info lists the Macs that use the machine, by name, and how many phone
 });
 
 test("plan accounts: listed, signed in to and switched from a phone", async t => {
-  const engine = await fakeEngine();
+  const attempt = { attemptID: "att_console", url: "https://example.test/console", mode: "auto" };
+  let submitted;
+  const engine = await fakeEngine({ startSignIn: body => { submitted = body; return attempt; } });
   t.after(engine.close);
   const hostKey = link.newKey();
   const handle = link.engineHandler(() => ({ pid: process.pid, port: engine.port, password: "s3cret", version: "2.0.30" }));
@@ -926,7 +961,8 @@ test("plan accounts: listed, signed in to and switched from a phone", async t =>
   phone.send({ t: "req", id: 7, m: "POST", p: "api/integration/opencode/connect/oauth", h: { "Content-Type": "application/json" } }, Buffer.from(start));
   const started = await phone.response();
   assert.equal(started.head.s, 200);
-  assert.equal(JSON.parse(started.body).body, start);
+  assert.deepEqual(JSON.parse(started.body), { data: attempt });
+  assert.deepEqual(submitted, { ...JSON.parse(start), remote: true });
   assert.deepEqual(engine.asked.filter(a => a.url?.startsWith("/api/")).map(a => `${a.method} ${a.url}`),
     ["GET /api/credential", "POST /api/integration/anthropic/connect/key", "POST /api/credential/cred_2/activate", "POST /api/integration/opencode/connect/oauth"]);
 });
@@ -1783,6 +1819,7 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     typed: ["GET", "kuvo/sessions/ses_none/typed"],
     update: ["GET", "kuvo/update"],
     "usage.history": ["GET", "kuvo/agents/api/kuvo/usage"],
+    "usage.insights": ["GET", "kuvo/agents/api/kuvo/insights"],
     "usage.notices": ["GET", "kuvo/agents/api/kuvo/limits"],
     "usage.settings": ["GET", "kuvo/agents/api/kuvo/usage/settings"],
     vault: ["GET", "kuvo/vault/tools"],
