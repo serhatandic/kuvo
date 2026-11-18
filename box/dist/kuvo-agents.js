@@ -1405,7 +1405,8 @@ class InsightsStore {
     const dirty = new Set;
     this.db.transaction(() => {
       let seq = this.read("sequence") ?? 0;
-      for (const { observedAt, ...record } of records) {
+      for (const { observedAt, ...incoming } of records) {
+        let record = incoming;
         if (record.at < now - 366 * DAY2 || record.at > now + DAY2)
           continue;
         const old = previous.get(record.key);
@@ -1417,11 +1418,14 @@ class InsightsStore {
           if (!!before.attributed === !!record.attributed && (old.received < firstSeen || old.received === firstSeen && before.computer < record.computer))
             continue;
         }
-        if (old && before && before.tokens && !record.tokens)
-          continue;
-        if (sender && old?.seq != null && before?.tokens && before.computer === record.computer && (!record.attributed || before.attributed))
-          continue;
-        if (before?.accountObserved && before.computer === record.computer) {
+        const sameOrigin = before?.computer === record.computer;
+        const keepLocal = sender && old?.seq != null && sameOrigin && (!record.attributed || before?.attributed);
+        if (before?.tokens && (!record.tokens || keepLocal)) {
+          if (!sender || !sameOrigin || before.accountObserved || !record.accountObserved || !record.account)
+            continue;
+          record = { ...before, account: record.account, accountObserved: true };
+        }
+        if (before?.accountObserved && sameOrigin) {
           record.account = before.account;
           record.accountObserved = true;
         }
@@ -24776,7 +24780,7 @@ function recordFrom(value) {
 }
 
 class Insights {
-  db;
+  index;
   scanner;
   pricing;
   directory;
@@ -24789,8 +24793,8 @@ class Insights {
   requested = new Map;
   epoch;
   mail = Promise.resolve();
-  constructor(db, scanner, pricing, directory, post, local, now = Date.now) {
-    this.db = db;
+  constructor(index, scanner, pricing, directory, post, local, now = Date.now) {
+    this.index = index;
     this.scanner = scanner;
     this.pricing = pricing;
     this.directory = directory;
@@ -24799,6 +24803,14 @@ class Insights {
     this.now = now;
     this.directory.listen(() => this.sync());
     this.post.onFollowed(() => this.sync());
+  }
+  get db() {
+    const reopened = this.index.reopen();
+    if (reopened !== this.index) {
+      this.index = reopened;
+      this.epoch = undefined;
+    }
+    return this.index;
   }
   start() {
     this.timer ??= setInterval(() => this.refresh(), SCAN_EVERY);
@@ -24836,12 +24848,13 @@ class Insights {
     }
   }
   ownEpoch() {
+    const db = this.db;
     return this.epoch ??= (async () => {
-      const kept = await this.db.read("epoch");
+      const kept = await db.read("epoch");
       if (kept)
         return kept;
       const epoch = crypto.randomUUID();
-      await this.db.write("epoch", epoch);
+      await db.write("epoch", epoch);
       return epoch;
     })();
   }
@@ -40162,13 +40175,18 @@ var init_limits_peers = __esm(() => {
 
 // box/src/agents/usage/insights-db.ts
 class InsightsDB {
+  file;
+  bundle;
   worker;
   opened;
   failure;
+  closing;
   id = 0;
   pricing;
   pending = new Map;
   constructor(file, bundle) {
+    this.file = file;
+    this.bundle = bundle;
     this.worker = bundle ? new Worker(bundle, { argv: ["--insights-db-worker"] }) : new Worker(new URL("./insights-db-worker.ts", import.meta.url), { argv: ["--insights-db-source-worker"] });
     this.worker.onmessage = ({ data }) => {
       const waiting = this.pending.get(data.id);
@@ -40181,13 +40199,26 @@ class InsightsDB {
         waiting.resolve(data.result);
     };
     this.worker.onerror = (event) => {
-      this.failure = new Error(event.message || "The Insights worker stopped.");
-      for (const waiting of this.pending.values())
-        waiting.reject(this.failure);
-      this.pending.clear();
+      this.fail(new Error(event.message || "The Insights worker stopped."));
+      this.worker.terminate();
     };
+    this.worker.addEventListener("close", (event) => {
+      this.fail(new Error(`The Insights worker exited (code ${event.code}).`));
+    });
     this.opened = this.send(["open", [file]]);
-    this.opened.catch(() => {});
+    this.opened.catch((error) => {
+      this.fail(error);
+      this.worker.terminate();
+    });
+  }
+  fail(error) {
+    this.failure ??= error;
+    for (const waiting of this.pending.values())
+      waiting.reject(this.failure);
+    this.pending.clear();
+  }
+  reopen() {
+    return this.failure && !this.closing ? new InsightsDB(this.file, this.bundle) : this;
   }
   send([method, args], pricing) {
     if (this.failure)
@@ -40208,11 +40239,20 @@ class InsightsDB {
   }
   async call(command, pricing) {
     await this.opened;
+    if (this.closing)
+      throw new Error("The Insights index is closed.");
     return this.send(command, pricing);
   }
-  async close() {
+  close() {
+    return this.closing ??= this.finish();
+  }
+  async finish() {
     try {
-      await this.call(["close", []]);
+      await this.opened;
+      await this.send(["close", []]);
+    } catch (error) {
+      if (!this.failure)
+        throw error;
     } finally {
       this.worker.terminate();
     }
@@ -41042,4 +41082,4 @@ if (!isMainThread && process.argv.includes("--insights-db-worker")) {
 } else {
   await init_main().then(() => ({}));
 }
-// Built from Packages/Box/src/agents 6c3cb57840253d377abeb166499e7330d8cc1fcb0143fac5226aa3f376b2c45d
+// Built from Packages/Box/src/agents a46f064f1aec564c24c56ac101beacd80d508a94f835f7d6b60d679f3e308a6b

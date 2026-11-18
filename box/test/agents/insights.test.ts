@@ -33,6 +33,62 @@ const show = (db: InsightsDB, filter = {}, computers = ["first", "second"], peri
   return db.view(now, "America/New_York", period, filter, computers, "overview", 0)
 }
 
+// Bound the failure of these tests if a dead worker leaves an RPC pending.
+async function workerReply<T>(pending: Promise<T>): Promise<T> {
+  let deadline: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([pending, new Promise<never>((_, reject) => {
+      deadline = setTimeout(() => reject(new Error("The Insights request never settled.")), 1000)
+    })])
+  } finally {
+    clearTimeout(deadline)
+  }
+}
+
+test("an Insights worker exit rejects requests and the bridge reopens the persisted index", async () => {
+  const file = join(dir, "worker-exit.sqlite")
+  const stored = new InsightsDB(file)
+  await stored.take([event("persisted")], priced, now)
+  await stored.close()
+
+  const script = join(dir, "exiting-worker.ts")
+  const marker = join(dir, "worker-started")
+  const source = join(import.meta.dir, "../../src/agents/usage/insights-db-worker.ts")
+  writeFileSync(script, `
+    import { existsSync, writeFileSync } from "node:fs"
+    import { serveInsightsDB } from ${JSON.stringify(source)}
+    const marker = ${JSON.stringify(marker)}
+    if (!existsSync(marker)) {
+      writeFileSync(marker, "")
+      process.exit(7)
+    }
+    serveInsightsDB()
+  `)
+  const db = new InsightsDB(file, script)
+  const post = new PeerPost()
+  const insights = new Insights(db, {} as InsightsScan, new PricingStore(undefined, null), new LinkDirectory(post), post, "first", () => now)
+  const params = new URLSearchParams("period=7&zone=UTC")
+  const requests = [db.read("local"), insights.view(params, "overview")]
+  const settled = await workerReply(Promise.allSettled(requests))
+  const exited: PromiseRejectedResult = { status: "rejected", reason: new Error("The Insights worker exited (code 7).") }
+  expect(settled).toEqual([exited, exited])
+  await expect(workerReply(db.read("local"))).rejects.toThrow(/worker exited.*7/)
+  try {
+    const view = await workerReply(insights.view(params, "overview"))
+    expect(view && "totals" in view && view.totals.calls).toBe(1)
+  } finally {
+    await insights["db"].close()
+  }
+})
+
+test("closing the Insights index is idempotent and later requests reject", async () => {
+  const db = new InsightsDB(":memory:")
+  await db.write("ready", true)
+  await Promise.all([workerReply(db.close()), workerReply(db.close())])
+  await expect(workerReply(db.read("ready"))).rejects.toThrow(/index is closed/)
+  await workerReply(db.close())
+})
+
 test("copies merge before filters, resumed sessions count once, and moved bot calls retain their origin", async () => {
   const db = new InsightsDB(":memory:")
   const one = event("previous", "first", { bot: "bot_demo", botName: "Demo", skills: ["research", "writing"] })
@@ -52,6 +108,24 @@ test("copies merge before filters, resumed sessions count once, and moved bot ca
   expect((await show(db)).totals?.cost).toBeGreaterThan(cost)
   expect((await show(db)).totals?.tokens).toBe(456)
   await db.close()
+})
+
+test("a peer account observation enriches the matching local copy and keeps its counts", async () => {
+  const db = new InsightsDB(":memory:")
+  try {
+    const fallback = event("copied", "second", { account: "second/claude" })
+    const observed = { ...fallback, account: "claude#observed", accountObserved: true as const }
+    await db.take([fallback], priced, now)
+    await db.take([{ ...observed, tokens: { ...tokens, input: 700 } }], priced, now, "second", 1)
+    expect((await show(db, { account: "claude#observed" })).totals).toMatchObject({ calls: 1, tokens: 152 })
+    expect((await show(db, { account: "second/claude" })).totals.calls).toBe(0)
+    await db.take([{ ...observed, account: "claude#other" }], priced, now, "second", 2)
+    await db.take([fallback], priced, now)
+    expect((await show(db, { account: "claude#observed" })).totals).toMatchObject({ calls: 1, tokens: 152 })
+    expect((await db.batch(1)).records).toMatchObject([observed])
+  } finally {
+    await db.close()
+  }
 })
 
 test("a newly available provider call replaces its saved placeholder across filters", async () => {

@@ -33,11 +33,12 @@ export class InsightsDB {
   private worker: Worker
   private opened: Promise<void>
   private failure?: Error
+  private closing?: Promise<void>
   private id = 0
   private pricing?: Pricing
   private pending = new Map<number, { resolve(value: unknown): void; reject(error: Error): void }>()
 
-  constructor(file: string, bundle?: string) {
+  constructor(private file: string, private bundle?: string) {
     this.worker = bundle
       ? new Worker(bundle, { argv: ["--insights-db-worker"] })
       : new Worker(new URL("./insights-db-worker.ts", import.meta.url), { argv: ["--insights-db-source-worker"] })
@@ -49,12 +50,27 @@ export class InsightsDB {
       else waiting.resolve(data.result)
     }
     this.worker.onerror = (event) => {
-      this.failure = new Error(event.message || "The Insights worker stopped.")
-      for (const waiting of this.pending.values()) waiting.reject(this.failure)
-      this.pending.clear()
+      this.fail(new Error(event.message || "The Insights worker stopped."))
+      this.worker.terminate()
     }
+    this.worker.addEventListener("close", (event) => {
+      this.fail(new Error(`The Insights worker exited (code ${event.code}).`))
+    })
     this.opened = this.send(["open", [file]])
-    void this.opened.catch(() => {})
+    void this.opened.catch((error) => {
+      this.fail(error)
+      this.worker.terminate()
+    })
+  }
+
+  private fail(error: Error) {
+    this.failure ??= error
+    for (const waiting of this.pending.values()) waiting.reject(this.failure)
+    this.pending.clear()
+  }
+
+  reopen() {
+    return this.failure && !this.closing ? new InsightsDB(this.file, this.bundle) : this
   }
 
   private send<T>([method, args]: Command, pricing?: Pricing): Promise<T> {
@@ -77,12 +93,23 @@ export class InsightsDB {
 
   private async call<T>(command: Command, pricing?: Pricing): Promise<T> {
     await this.opened
+    if (this.closing) throw new Error("The Insights index is closed.")
     return this.send<T>(command, pricing)
   }
 
-  async close() {
-    try { await this.call(["close", []]) }
-    finally { this.worker.terminate() }
+  close() {
+    return this.closing ??= this.finish()
+  }
+
+  private async finish() {
+    try {
+      await this.opened
+      await this.send(["close", []])
+    } catch (error) {
+      if (!this.failure) throw error
+    } finally {
+      this.worker.terminate()
+    }
   }
   read<T>(key: string) { return this.call<T | undefined>(["read", [key]]) }
   write(key: string, value: unknown) { return this.call<void>(["write", [key, value]]) }

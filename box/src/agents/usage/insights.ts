@@ -52,7 +52,7 @@ export class Insights {
   private mail = Promise.resolve()
 
   constructor(
-    private db: InsightsDB,
+    private index: InsightsDB,
     private scanner: InsightsScan,
     private pricing: PricingStore,
     private directory: LinkDirectory,
@@ -62,6 +62,15 @@ export class Insights {
   ) {
     this.directory.listen(() => this.sync())
     this.post.onFollowed(() => this.sync())
+  }
+
+  private get db() {
+    const reopened = this.index.reopen()
+    if (reopened !== this.index) {
+      this.index = reopened
+      this.epoch = undefined
+    }
+    return this.index
   }
 
   start() {
@@ -100,11 +109,12 @@ export class Insights {
   }
 
   private ownEpoch() {
+    const db = this.db
     return this.epoch ??= (async () => {
-      const kept = await this.db.read<string>("epoch")
+      const kept = await db.read<string>("epoch")
       if (kept) return kept
       const epoch = crypto.randomUUID()
-      await this.db.write("epoch", epoch)
+      await db.write("epoch", epoch)
       return epoch
     })()
   }

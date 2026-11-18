@@ -149,7 +149,8 @@ export class InsightsStore {
     const dirty = new Set<number>()
     this.db.transaction(() => {
       let seq = this.read<number>("sequence") ?? 0
-      for (const { observedAt, ...record } of records) {
+      for (const { observedAt, ...incoming } of records) {
+        let record = incoming
         if (record.at < now - 366 * DAY || record.at > now + DAY) continue
         const old = previous.get(record.key)
         const before: InsightRecord | undefined = old && JSON.parse(old.body)
@@ -161,11 +162,15 @@ export class InsightsStore {
           if (!!before.attributed === !!record.attributed &&
               (old.received < firstSeen || (old.received === firstSeen && before.computer < record.computer))) continue
         }
-        if (old && before && before.tokens && !record.tokens) continue
-        // A peer can improve a local placeholder or supply verified provenance. Otherwise this
-        // computer keeps the original observation it already has.
-        if (sender && old?.seq != null && before?.tokens && before.computer === record.computer && (!record.attributed || before.attributed)) continue
-        if (before?.accountObserved && before.computer === record.computer) {
+        const sameOrigin = before?.computer === record.computer
+        // Keep the existing counts when the incoming copy has none, or when this computer already
+        // has counts and the peer has no better provenance. A peer can still resolve its account.
+        const keepLocal = sender && old?.seq != null && sameOrigin && (!record.attributed || before?.attributed)
+        if (before?.tokens && (!record.tokens || keepLocal)) {
+          if (!sender || !sameOrigin || before.accountObserved || !record.accountObserved || !record.account) continue
+          record = { ...before, account: record.account, accountObserved: true }
+        }
+        if (before?.accountObserved && sameOrigin) {
           record.account = before.account
           record.accountObserved = true
         }
