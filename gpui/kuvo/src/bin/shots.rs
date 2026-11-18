@@ -1689,20 +1689,29 @@ fn main() -> anyhow::Result<()> {
             })?;
             cx.run_until_parked();
             if screen.slug == "composer-queue-dragging" {
-                cx.update_window(any, |root, window, cx| {
+                let to = cx.update_window(any, |root, window, cx| {
                     let workspace = root.downcast::<Workspace>().expect("the workspace");
                     let conversation = workspace.read(cx).conversation().expect("the conversation");
                     let (from, to) = conversation.read(cx).queue_drag_points();
                     let button = gpui::MouseButton::Left;
-                    window.dispatch_event(gpui::PlatformInput::MouseDown(gpui::MouseDownEvent {
+                    mouse(window, cx, gpui::PlatformInput::MouseDown(gpui::MouseDownEvent {
                         button, position: from, click_count: 1, ..Default::default()
-                    }), cx);
-                    for position in [from + gpui::point(px(0.), px(8.)), to + gpui::point(px(12.), px(8.))] {
-                        window.dispatch_event(gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent {
-                            position, pressed_button: Some(button), ..Default::default()
-                        }), cx);
-                    }
+                    }));
+                    mouse(window, cx, gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent {
+                        position: from + gpui::point(px(0.), px(8.)), pressed_button: Some(button), ..Default::default()
+                    }));
+                    assert!(cx.has_active_drag(), "the pointer missed the queue row");
+                    to + gpui::point(px(12.), px(8.))
                 })?;
+                cx.run_until_parked();
+                cx.update_window(any, |_, window, cx| {
+                    mouse(window, cx, gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent {
+                        position: to, pressed_button: Some(gpui::MouseButton::Left), ..Default::default()
+                    }));
+                    window.refresh();
+                })?;
+                cx.run_until_parked();
+                cx.update_window(any, |_, window, _| window.refresh())?;
                 cx.run_until_parked();
             }
             // Restarting after the rings and limits were read: they're kept, marked as updating.
