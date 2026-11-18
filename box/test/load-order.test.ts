@@ -28,13 +28,13 @@ const modules = (folder: string): string[] =>
     return entry.name.endsWith(".ts") && !entry.name.endsWith(".d.ts") ? [file] : []
   })
 
-// The coding agents' bridge runs as it loads: it's started as its build is (`selftest`), which loads
-// all it imports and stops. The link's main.ts runs only when it's the program, so it's loaded too.
-const AGENTS_MAIN = join(SRC, "agents", "main.ts")
+// Both bridge entry points run as loaded. Selftest loads their dependencies and exits.
+const AGENTS_ENTRIES = ["entry.ts", "main.ts"].map(file => join(SRC, "agents", file))
 
 async function loadAlone(module: string, env: Record<string, string>): Promise<string | null> {
   const loaded = "loaded first"
-  const run = module === AGENTS_MAIN
+  const entry = AGENTS_ENTRIES.includes(module)
+  const run = entry
     ? [process.execPath, module, "selftest"]
     : [process.execPath, "-e", `await import(${JSON.stringify(module)}); console.log(${JSON.stringify(loaded)}); process.exit(0)`]
   const child = Bun.spawn(run, { cwd: root, env, stdin: "ignore", stdout: "pipe", stderr: "pipe" })
@@ -43,7 +43,7 @@ async function loadAlone(module: string, env: Record<string, string>): Promise<s
   running.delete(child)
   // (Its last line: a module may say something as it loads.)
   const last = out.trim().split("\n").at(-1) ?? ""
-  const said = module === AGENTS_MAIN ? last.startsWith("ok ") : last === loaded
+  const said = entry ? last.startsWith("ok ") : last === loaded
   if (code === 0 && said) return null
   const why = err.split("\n").find(line => /Error\b/.test(line)) || err.trim().split("\n").at(-1) || `exit ${code}, saying ${JSON.stringify(last)}`
   return `${relative(SRC, module)}: ${why.trim()}`
@@ -52,7 +52,7 @@ async function loadAlone(module: string, env: Record<string, string>): Promise<s
 test("every module of the box loads when it's the first one loaded, entry points included", async () => {
   const all = modules(SRC).sort()
   expect(all).toContain(join(SRC, "link", "main.ts"))
-  expect(all).toContain(AGENTS_MAIN)
+  for (const entry of AGENTS_ENTRIES) expect(all).toContain(entry)
   const home = join(root, "home")
   mkdirSync(home)
   const env = { ...(process.env as Record<string, string>), HOME: home, KUVO_HOME: join(home, ".kuvo-code"), TMPDIR: root }
