@@ -230,9 +230,9 @@ link.writeLink({ phones: [] });
 link.macLink.config = { phones: true, machines: false, relay: "ws://127.0.0.1:1", name: "Studio", app: "1.0.0" };
 
 const handle = link.engineHandler(() => ({ port: 1, password: "pw" }), { name: "Studio" });
-const ask = async (method, route, body) => {
+const ask = async (method, route, body, phone) => {
   const pieces = [];
-  for await (const piece of handle({ method, path: route, headers: {}, fromApp: true, ...(body ? { body: Buffer.from(JSON.stringify(body)) } : {}) }, undefined)) pieces.push(piece);
+  for await (const piece of handle({ method, path: route, headers: {}, fromApp: !phone, ...(body ? { body: Buffer.from(JSON.stringify(body)) } : {}) }, phone)) pieces.push(piece);
   return { status: pieces.find(each => each.head).head.status, body: JSON.parse(Buffer.concat(pieces.filter(each => each.body).map(each => each.body)).toString() || "{}") };
 };
 // What a client follows (`kuvo/computers/add/events`), until the try `id` is as `wanted` says: its
@@ -1043,4 +1043,88 @@ test("a missing or unreadable list of machines isn't overwritten when this box s
   } finally {
     fs.writeFileSync(list, before);
   }
+});
+
+const macbookPeer = () => link.macPeersBody(link.readLink()).boxes.find(each => each.kind === "machine");
+const macbookAlias = "macbook.lan";
+
+async function holdAliasAdd(phone, during) {
+  const host = path.join(fake, "hold");
+  fs.writeFileSync(host, "kuvo kind");
+  let id;
+  try {
+    const started = await ask("POST", "kuvo/computers/add", { destination: macbookAlias }, phone);
+    assert.equal(started.status, 202, JSON.stringify(started.body));
+    id = started.body.try.id;
+    await until(id, found => found?.steps[0]?.state === "now");
+    await during();
+  } finally {
+    fs.rmSync(host);
+  }
+  return over(id);
+}
+
+test("an alias Add honours only its original pairing and cannot restore a key removed during the Add", async () => {
+  assert.equal((await ask("POST", "kuvo/machines", { destination: "macbook" })).status, 200);
+  const original = macbookPeer();
+  fs.appendFileSync(link.KNOWN_HOSTS, `${macbookAlias} ${fs.readFileSync(path.join(fake, "hostkey"), "utf8").trim()}\n`);
+  fs.writeFileSync(path.join(fake, `home-${macbookAlias}`), homes.macbook);
+  const key = link.publicOf(link.newKey());
+  const phone = { key, pairing: "first" };
+  link.updateLink(state => {
+    link.pairPhone(state, { key: k(key), pairing: phone.pairing, name: "Add caller", from: "pair" });
+    return state;
+  });
+  const revokedCaller = await holdAliasAdd(phone, async () => {
+    assert.equal((await ask("POST", "kuvo/phones/remove", { phones: [{ key: k(key) }] })).status, 200);
+    link.updateLink(state => {
+      link.pairPhone(state, { key: k(key), pairing: "second", name: "Add caller", from: "pair" });
+      return state;
+    });
+  });
+  const authorized = { key, pairing: "second" };
+  const removedPeer = await holdAliasAdd(authorized, async () => {
+    assert.equal((await ask("DELETE", `kuvo/computers/${original.key}`)).status, 200);
+  });
+  assert.deepEqual([revokedCaller.state, removedPeer.state], ["failed", "failed"]);
+  assert.match(revokedCaller.failure.message, /device that started this add is no longer paired/);
+  assert.match(removedPeer.failure.message, /was removed from your computers/);
+  assert.equal(macbookPeer(), undefined);
+  assert.deepEqual(read(path.join(home, "machines.json")), []);
+
+  const fresh = await ask("POST", "kuvo/computers/add", { destination: macbookAlias }, authorized);
+  const done = await over(fresh.body.try.id);
+  assert.equal(done.state, "done", JSON.stringify(done.failure));
+  assert.equal(done.computer.key, original.key, "a fresh Add can restore the same key");
+});
+
+test("uninstall revokes the paired desktop even when its identity folder cleanup fails", async () => {
+  // The preceding test leaves this box joined through the alias.
+  const computer = macbookPeer();
+  const appKey = link.publicOf(link.newKey());
+  link.updateLink(state => {
+    link.pairDevice(state, { key: k(appKey), name: "MacBook desktop", by: computer.key });
+    return state;
+  });
+  const pairing = link.readLink().phones.find(each => each.key === k(appKey)).pairing;
+  const kuvo = path.join(homes.macbook, ".kuvo-code");
+  const identity = path.join(kuvo, "desktop", "identity");
+  write(identity, "paired identity", 0o600);
+  assert.equal(link.authorizePhone(appKey, {}), true);
+  const rm = path.join(tools, "rm");
+  write(rm, '#!/bin/sh\nfor arg do [ "$arg" != "$HOME/.kuvo-code/desktop" ] || exit 1; done\nexec /bin/rm "$@"\n', 0o755);
+  let result;
+  try {
+    const started = await ask("POST", `kuvo/computers/${computer.key}/uninstall`);
+    assert.equal(started.status, 202);
+    result = await over(started.body.try.id);
+  } finally {
+    fs.rmSync(rm);
+  }
+  assert.equal(result.state, "failed");
+  assert.equal(fs.readFileSync(identity, "utf8"), "paired identity");
+  assert.deepEqual(pidsThere(kuvo).filter(alive), [], "the service stopped");
+  assert.equal(link.authorizePhone(appKey, {}), false, "the surviving identity cannot connect");
+  assert.ok(link.ownPhones(link.readLink()).removed.some(each => each.key === k(appKey) && each.pairing === pairing));
+  assert.match(result.failure.message, /access to your other computers was revoked.*desktop identity folder/);
 });

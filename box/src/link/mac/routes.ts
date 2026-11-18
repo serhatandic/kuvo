@@ -77,7 +77,11 @@ export function setMacPeers(link: LinkState, given: unknown, rejoined?: string):
   if (skipped) console.error(`${skipped} of this Mac's machines weren't records the box could take, and were left out.`);
   const removed = (Array.isArray(given.removed) ? given.removed : []).filter((key: unknown): key is string => typeof key === "string" && KEY.test(key) && !now.some(peer => peer.key === key));
   const gone = peersOf(link).filter(peer => removed.includes(peer.key));
-  if (removed.length) link.removedHere = [...new Set([...removedHere, ...removed])];
+  if (removed.length) {
+    link.removedHere = [...new Set([...removedHere, ...removed])];
+    link.removalRevisions ??= {};
+    for (const key of new Set(removed)) link.removalRevisions[key] = (link.removalRevisions[key] ?? 0) + 1;
+  }
   const kept = (Array.isArray(link.left) ? link.left : []).filter(key => !now.some(peer => peer.key === key) && !removed.includes(key));
   link.left = [...kept, ...removed].slice(-64);
   // Kuvo Code's app on a computer you removed goes from your devices with it: every device that

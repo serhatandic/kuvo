@@ -109,15 +109,35 @@ function take(lock, stale) {
     return false;
   }
 }
-function hold(lock, stale, wait) {
+function hold(lock, stale, wait, exclusive = false) {
   fs.mkdirSync(path.dirname(lock), { recursive: true, mode: 448 });
   const nap = new Int32Array(new SharedArrayBuffer(4));
-  for (let i = 0;i < wait / 10; i++) {
-    if (take(lock, stale))
+  const deadline = exclusive ? performance.now() + wait : Infinity;
+  for (let i = 0;i < wait / 10 && performance.now() < deadline; i++) {
+    if (take(lock, exclusive ? Infinity : stale))
       return true;
+    if (exclusive)
+      reapDeadOwner(lock);
     Atomics.wait(nap, 0, 0, 10);
   }
   return false;
+}
+function reapDeadOwner(lock) {
+  try {
+    const marker = fs.readdirSync(lock).find((name) => /^owner-[1-9][0-9]*-[a-f0-9]{16}$/.test(name));
+    if (!marker)
+      return;
+    const pid = Number(marker.split("-")[1]);
+    try {
+      process.kill(pid, 0);
+      return;
+    } catch (error) {
+      if (error.code !== "ESRCH")
+        return;
+    }
+    fs.unlinkSync(path.join(lock, marker));
+    fs.rmdirSync(lock);
+  } catch {}
 }
 async function holdAwaiting(lock, stale, wait) {
   fs.mkdirSync(path.dirname(lock), { recursive: true, mode: 448 });
@@ -128,11 +148,20 @@ async function holdAwaiting(lock, stale, wait) {
   }
   return false;
 }
-function locked(lock, work, { stale = 1e4, wait = 3000 } = {}) {
-  const held = hold(lock, stale, wait);
+function locked(lock, work, { stale = 1e4, wait = 3000, exclusive = false } = {}) {
+  const owner = exclusive ? path.join(lock, `owner-${process.pid}-${crypto2.randomBytes(8).toString("hex")}`) : null;
+  const held = hold(lock, stale, wait, exclusive);
+  if (exclusive && !held)
+    throw new Error("Kuvo Code is updating its link. Try again in a moment.");
   try {
+    if (owner)
+      fs.writeFileSync(owner, "", { flag: "wx", mode: 384 });
     return work();
   } finally {
+    if (owner)
+      try {
+        fs.unlinkSync(owner);
+      } catch {}
     if (held)
       try {
         fs.rmdirSync(lock);
@@ -1571,7 +1600,7 @@ function updateLink(change) {
     if (changed)
       writeLink(changed);
     return changed ?? null;
-  });
+  }, { exclusive: true });
 }
 var MAC_OVERLAY, macLink, written, onLinkWritten = (then) => {
   written.push(then);
@@ -35277,8 +35306,12 @@ function setMacPeers(link, given, rejoined) {
     console.error(`${skipped} of this Mac's machines weren't records the box could take, and were left out.`);
   const removed = (Array.isArray(given.removed) ? given.removed : []).filter((key) => typeof key === "string" && KEY.test(key) && !now.some((peer) => peer.key === key));
   const gone = peersOf(link).filter((peer) => removed.includes(peer.key));
-  if (removed.length)
+  if (removed.length) {
     link.removedHere = [...new Set([...removedHere, ...removed])];
+    link.removalRevisions ??= {};
+    for (const key of new Set(removed))
+      link.removalRevisions[key] = (link.removalRevisions[key] ?? 0) + 1;
+  }
   const kept = (Array.isArray(link.left) ? link.left : []).filter((key) => !now.some((peer) => peer.key === key) && !removed.includes(key));
   link.left = [...kept, ...removed].slice(-64);
   for (const key of removed)
@@ -35622,18 +35655,39 @@ function removeHere(key) {
   let already = false;
   let listSaved = true;
   const changed = updateLink((link) => {
-    const peer = link ? peersOf(link).find((each) => each.key === key) : undefined;
-    already = Boolean(link?.removedHere?.includes(key));
-    if (!link || !peer)
-      return link && already && takeOffVouched(link, key) ? link : null;
+    if (!link)
+      return null;
+    const peer = peersOf(link).find((each) => each.key === key);
+    already = Boolean(link.removedHere?.includes(key));
+    if (!peer && !already)
+      return null;
+    const destination = peer?.id ?? link.pendingMachineCleanup?.[key];
+    const cleanList = () => {
+      if (!destination)
+        return false;
+      listSaved = peersOf(link).some((each) => each.key !== key && each.id === destination) || forgetSaved(destination);
+      if (!listSaved) {
+        link.pendingMachineCleanup = { ...link.pendingMachineCleanup, [key]: destination };
+        return true;
+      }
+      if (!link.pendingMachineCleanup?.[key])
+        return false;
+      delete link.pendingMachineCleanup[key];
+      if (!Object.keys(link.pendingMachineCleanup).length)
+        delete link.pendingMachineCleanup;
+      return true;
+    };
+    if (!peer) {
+      const cleaned = cleanList();
+      return takeOffVouched(link, key) || cleaned ? link : null;
+    }
     const made = setMacPeers(link, { peers: (Array.isArray(link.macPeers) ? link.macPeers : []).filter((each) => each?.key !== key), moved: link.macMoved, removed: [key] });
     if (!made.link)
       return null;
     gone = made.gone;
     if (made.link.peerNames)
       delete made.link.peerNames[key];
-    if (peer.id)
-      listSaved = forgetSaved(peer.id);
+    cleanList();
     return made.link;
   });
   if (!gone.length && !already)
@@ -45474,7 +45528,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "f6efbd4f50c4";
+var BRIDGE_VERSION = "bd7e34e33769";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -48539,7 +48593,17 @@ var UPDATE_STEPS = [["checking", "Checking it"], ["files", "Copying the update"]
 var UNINSTALL_STEPS = [["checking", "Reaching it"], ["removing", "Stopping and removing Kuvo Code"], ["forgetting", "Taking it off your computers"]];
 var launcherID = (key) => crypto53.createHash("sha256").update(`kuvo-launcher
 ${key}`).digest("hex").slice(0, 32);
-async function setUp2(tell, destination, name, kind, expectedKey) {
+var ADD_REVOKED = "The device that started this add is no longer paired. Start a new add from one of your devices.";
+var removedDuringAdd = (name) => new Failed(`${name} was removed from your computers. Add it again to restore access.`);
+function checkAdd(link, grant, name, key) {
+  if (!grant)
+    return;
+  if (grant.caller && !pairedPhone(link, grant.caller.key, grant.caller.pairing))
+    throw new Failed(ADD_REVOKED);
+  if (key && (grant.revisions[key] ?? 0) !== (link?.removalRevisions?.[key] ?? 0))
+    throw removedDuringAdd(name);
+}
+async function setUp2(tell, destination, name, kind, expectedKey, grant) {
   const reach = new Reach(destination, name, tell, kind === "add" ? [] : otherAddressesOf(destination));
   try {
     tell.step("checking", `Connecting to ${name}`);
@@ -48571,9 +48635,17 @@ async function setUp2(tell, destination, name, kind, expectedKey) {
     const sameID = kind === "add" && probe.id ? saved.find((each) => each.identity === probe.id && each.destination !== destination) : undefined;
     const itsPeer = sameID ? peersOf(link).find((each) => each.id === sameID.destination) : undefined;
     const same = sameID && itsPeer && (!found?.card?.self.key || found.card.self.key === itsPeer.key) ? sameID : undefined;
-    if (same) {
+    if (same && itsPeer) {
       const peer = itsPeer;
-      writePrivate(LIST_FILE, JSON.stringify(saved.map((each) => each === same ? { ...each, otherAddresses: [...new Set([...each.otherAddresses ?? [], destination])] } : each), null, 2));
+      updateLink((current) => {
+        checkAdd(current, grant, name, peer.key);
+        const latest = savedMachines();
+        const record = latest?.find((each) => each.destination === same.destination);
+        if (!latest || !record || !peersOf(current).some((each) => each.key === peer.key && each.id === record.destination))
+          throw removedDuringAdd(name);
+        writePrivate(LIST_FILE, JSON.stringify(latest.map((each) => each === record ? { ...each, otherAddresses: [...new Set([...each.otherAddresses ?? [], destination])] } : each), null, 2));
+        return null;
+      });
       for (const id of ["files", "engine", "starting", "seeding", "joining"])
         tell.skip(id, `It’s ${peer?.name ?? same.destination}, already one of your computers`);
       tell.rename(peer?.name ?? same.destination);
@@ -48661,7 +48733,7 @@ async function setUp2(tell, destination, name, kind, expectedKey) {
       }
       tell.step("joining");
       const identity = /^id ([0-9a-f]{32})$/m.exec(started.stdout)?.[1] ?? probe.id;
-      const computer = await join3(reach, destination, name, identity, expectedKey);
+      const computer = await join3(reach, destination, name, identity, expectedKey, grant);
       unjoined = false;
       tell.came(computer);
     } catch (error) {
@@ -48681,13 +48753,13 @@ async function setUp2(tell, destination, name, kind, expectedKey) {
     await reach.close();
   }
 }
-async function join3(reach, destination, name, identity, expectedKey) {
+async function join3(reach, destination, name, identity, expectedKey, grant) {
   const relay = macLink.config?.relay;
   const beforeLink = readLink();
   const removedWhileAdding = (link) => expectedKey && link?.removedHere?.includes(expectedKey);
-  const removed = () => new Failed(`${name} was removed from your computers. Add it again to restore access.`);
+  checkAdd(beforeLink, grant, name, expectedKey);
   if (removedWhileAdding(beforeLink))
-    throw removed();
+    throw removedDuringAdd(name);
   const before = peersOf(beforeLink).find((peer) => peer.id === destination);
   const gift = await setupGift(before?.key ?? null);
   if (!relay || !gift?.mac)
@@ -48705,8 +48777,10 @@ async function join3(reach, destination, name, identity, expectedKey) {
   const peer = { key: said.key, sign: said.sign, address: said.address, name, id: destination };
   let named = name;
   const changed = updateLink((link) => {
+    checkAdd(link, grant, name, expectedKey);
+    checkAdd(link, grant, name, peer.key);
     if (removedWhileAdding(link))
-      throw removed();
+      throw removedDuringAdd(name);
     const saved = savedMachines();
     if (!saved)
       throw new Failed(`${ownName()}’s list of machines can’t be read right now.`);
@@ -48746,10 +48820,16 @@ function begin(kind, destination, name, steps, work) {
   return made;
 }
 var uninstalling = (now) => now?.seen.kind === "uninstall" ? { busy: `Kuvo Code is being uninstalled from ${now.seen.name} now. Add it again once that’s done.` } : null;
-function beginAdd(destination) {
+function beginAdd(destination, asker) {
   const now = underWay2(destination);
-  const expected = peersOf(readLink()).find((peer) => peer.id === destination)?.key;
-  return uninstalling(now) ?? now ?? begin("add", destination, destination, SETUP_STEPS, (tell) => setUp2(tell, destination, destination, "add", expected));
+  const link = readLink();
+  const key = asker?.key?.toString("base64url");
+  const caller = key && pairedPhone(link, key, asker?.pairing);
+  if (key && !caller)
+    return { busy: ADD_REVOKED };
+  const grant = { caller: caller ? { key: caller.key, pairing: caller.pairing ?? "" } : undefined, revisions: link?.removalRevisions ?? {} };
+  const expected = peersOf(link).find((peer) => peer.id === destination)?.key;
+  return uninstalling(now) ?? now ?? begin("add", destination, destination, SETUP_STEPS, (tell) => setUp2(tell, destination, destination, "add", expected, grant));
 }
 function sshAddressOf(key) {
   const peer = peersOf(readLink()).find((each) => each.key === key);
@@ -48839,18 +48919,33 @@ function beginUninstall(key) {
       const only = macs.size === 0;
       tell.step("removing", only ? undefined : "Another Mac uses it too, so Kuvo Code stays there");
       const ran = await reach.run(uninstall(ENGINE_VERSION, own, only), { most: 600000 });
+      let cleanup;
       if (ran.status !== 0) {
         let said = null;
         try {
           said = JSON.parse(ran.stdout.trim().split(`
 `).pop() ?? "");
         } catch {}
-        throw new Failed(isObject(said) && typeof said.message === "string" ? plainName(said.message).slice(0, 400) : `Kuvo Code couldn’t be stopped on ${at.name}. ${lastLine(ran.stderr)}`.trim());
+        const message = isObject(said) && typeof said.message === "string" ? plainName(said.message).slice(0, 400) : `Kuvo Code couldn’t be stopped on ${at.name}. ${lastLine(ran.stderr)}`.trim();
+        if (!isObject(said) || said.result !== "incomplete" && said.result !== "unfinished")
+          throw new Failed(message);
+        cleanup = message;
       }
       tell.step("forgetting");
-      const removed = removeHere(key);
-      if (removed.status !== 200 && removed.status !== 404)
-        throw new Failed(isObject(removed.value) && typeof removed.value.message === "string" ? removed.value.message : `${ownName()} couldn’t take ${at.name} off its list.`);
+      let removed;
+      try {
+        removed = removeHere(key);
+      } catch (error) {
+        if (!cleanup)
+          throw error;
+        throw new Failed(`Couldn’t confirm that access for ${at.name} was revoked. ${cleanup} ${error instanceof Error ? error.message : "Try again."}`);
+      }
+      if (removed.status !== 200 && removed.status !== 404) {
+        const message = isObject(removed.value) && typeof removed.value.message === "string" ? removed.value.message : `${ownName()} couldn’t take ${at.name} off its list.`;
+        throw new Failed(cleanup ? `${message} ${cleanup}` : message);
+      }
+      if (cleanup)
+        throw new Failed(`${at.name}’s access to your other computers was revoked. ${cleanup}`, false);
     } finally {
       await reach.close();
     }
@@ -65213,7 +65308,7 @@ async function* computersAddRoute(context, match) {
   const problem = addressProblem(destination);
   if (problem)
     return yield* json(400, { message: problem });
-  const begun = beginAdd(destination);
+  const begun = beginAdd(destination, context.phone);
   if ("busy" in begun)
     return yield* json(409, { message: begun.busy });
   return yield* json(202, { try: begun.seen });
@@ -71477,7 +71572,7 @@ async function* add3(context, here) {
     if (machine)
       return yield* json(200, { machine, known: true });
   }
-  const begun = beginAdd(destination);
+  const begun = beginAdd(destination, context.phone);
   if ("busy" in begun)
     return yield* json(409, { message: begun.busy });
   await settled3(begun);

@@ -85,6 +85,10 @@ export interface LinkState {
   /** Machines removed through `kuvo/computers` (by key), which this Mac's app saying its machines
    * doesn't bring back: only completing an explicit add does. */
   removedHere?: string[];
+  /** Per-key removal revisions, retained across re-adds so an older SSH Add can't restore trust. */
+  removalRevisions?: Record<string, number>;
+  /** A removed peer's saved destination, kept until its machines-list cleanup succeeds. */
+  pendingMachineCleanup?: Record<string, string>;
   /** Machines this Mac removed that haven't heard it yet (they hear it once it's back on the relay). */
   untold?: Peer[];
   /** The setup it's in, and its role there (PROTOCOL.md, "Your setup"). */
@@ -179,13 +183,12 @@ export function writeLink(link: LinkState) {
 
 // One change to link.json at a time, here and from `setup` and `pair` (other processes): read,
 // changed and written under a lock (run/.link.lock), so none writes over another's (a removal,
-// say). `change` returns the link to write, or nothing to leave it. A lock left by one that was
-// cut off goes after ten seconds; one not had in three goes ahead all the same.
+// say). `change` returns the link to write, or nothing to leave it. A busy lock fails the update.
 const LOCK = path.join(RUN, ".link.lock");
 export function updateLink(change: (link: LinkState | null) => LinkState | null | undefined | void): LinkState | null {
   return locked(LOCK, () => {
     const changed = change(readLink());
     if (changed) writeLink(changed);
     return changed ?? null;
-  });
+  }, { exclusive: true });
 }

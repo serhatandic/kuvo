@@ -176,16 +176,35 @@ export function removeHere(key: string): Acted {
   let already = false;
   let listSaved = true;
   const changed = updateLink(link => {
-    const peer = link ? peersOf(link).find(each => each.key === key) : undefined;
+    if (!link) return null;
+    const peer = peersOf(link).find(each => each.key === key);
     // (Removed already, from here: the same again, as when it's asked again after a restart.)
-    already = Boolean(link?.removedHere?.includes(key));
-    // (One removed before its devices went with it, #753: they go when it's asked again.)
-    if (!link || !peer) return link && already && takeOffVouched(link, key) ? link : null;
+    already = Boolean(link.removedHere?.includes(key));
+    if (!peer && !already) return null;
+    const destination = peer?.id ?? link.pendingMachineCleanup?.[key];
+    const cleanList = () => {
+      if (!destination) return false;
+      // An explicit Add may have since kept this destination for a different key.
+      listSaved = peersOf(link).some(each => each.key !== key && each.id === destination) || forgetSaved(destination);
+      if (!listSaved) {
+        link.pendingMachineCleanup = { ...link.pendingMachineCleanup, [key]: destination };
+        return true;
+      }
+      if (!link.pendingMachineCleanup?.[key]) return false;
+      delete link.pendingMachineCleanup[key];
+      if (!Object.keys(link.pendingMachineCleanup).length) delete link.pendingMachineCleanup;
+      return true;
+    };
+    if (!peer) {
+      const cleaned = cleanList();
+      // One removed before its devices went with it loses them when asked again.
+      return takeOffVouched(link, key) || cleaned ? link : null;
+    }
     const made = setMacPeers(link, { peers: (Array.isArray(link.macPeers) ? link.macPeers : []).filter(each => each?.key !== key), moved: link.macMoved, removed: [key] });
     if (!made.link) return null;
     gone = made.gone;
     if (made.link.peerNames) delete made.link.peerNames[key];
-    if (peer.id) listSaved = forgetSaved(peer.id);
+    cleanList();
     return made.link;
   });
   if (!gone.length && !already) return answer(404, { message: `That isn't one of ${ownName()}'s machines.` });

@@ -80,16 +80,35 @@ function take(lock: string, stale: number): boolean {
   }
 }
 
-// Holds `lock` for one process at a time: whether it was had. One not had in `wait` ms goes ahead
-// all the same.
-function hold(lock: string, stale: number, wait: number): boolean {
+// Tries to hold the lock. Exclusive writers use a wall-clock deadline and leave live locks alone.
+function hold(lock: string, stale: number, wait: number, exclusive = false): boolean {
   fs.mkdirSync(path.dirname(lock), { recursive: true, mode: 0o700 });
   const nap = new Int32Array(new SharedArrayBuffer(4));
-  for (let i = 0; i < wait / 10; i++) {
-    if (take(lock, stale)) return true;
+  const deadline = exclusive ? performance.now() + wait : Infinity;
+  for (let i = 0; i < wait / 10 && performance.now() < deadline; i++) {
+    if (take(lock, exclusive ? Infinity : stale)) return true;
+    if (exclusive) reapDeadOwner(lock);
     Atomics.wait(nap, 0, 0, 10);
   }
   return false;
+}
+
+// Only the waiter that unlinks this particular dead owner's marker can remove the directory.
+// An older lock without an owner marker is left alone.
+function reapDeadOwner(lock: string): void {
+  try {
+    const marker = fs.readdirSync(lock).find(name => /^owner-[1-9][0-9]*-[a-f0-9]{16}$/.test(name));
+    if (!marker) return;
+    const pid = Number(marker.split("-")[1]);
+    try {
+      process.kill(pid, 0);
+      return;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ESRCH") return;
+    }
+    fs.unlinkSync(path.join(lock, marker));
+    fs.rmdirSync(lock);
+  } catch {}
 }
 
 // The same, waiting without holding up the process: the one holding it may be this process too,
@@ -103,13 +122,17 @@ async function holdAwaiting(lock: string, stale: number, wait: number): Promise<
   return false;
 }
 
-// `work` done holding `lock`: one process at a time. A lock left by one that was cut off goes
-// after `stale` ms (ten seconds); one not had in `wait` ms (three) goes ahead all the same.
-export function locked<T>(lock: string, work: () => T, { stale = 10_000, wait = 3_000 } = {}): T {
-  const held = hold(lock, stale, wait);
+// Exclusive work requires the lock and can reclaim it only from a known dead owner. Other work
+// retains the stale expiry and can proceed after waiting without the lock.
+export function locked<T>(lock: string, work: () => T, { stale = 10_000, wait = 3_000, exclusive = false } = {}): T {
+  const owner = exclusive ? path.join(lock, `owner-${process.pid}-${crypto.randomBytes(8).toString("hex")}`) : null;
+  const held = hold(lock, stale, wait, exclusive);
+  if (exclusive && !held) throw new Error("Kuvo Code is updating its link. Try again in a moment.");
   try {
+    if (owner) fs.writeFileSync(owner, "", { flag: "wx", mode: 0o600 });
     return work();
   } finally {
+    if (owner) try { fs.unlinkSync(owner); } catch {}
     if (held) try { fs.rmdirSync(lock); } catch {}
   }
 }

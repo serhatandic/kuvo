@@ -158,6 +158,51 @@ test("a failed machines list write leaves the peer removed and reports the incom
   });
 });
 
+test("a forwarded removal retries the saved list write until it succeeds", async () => {
+  fresh();
+  link.macLink.appSaid = undefined;
+  const list = path.join(home, "machines.json");
+  const remove = () => handed(devbox, { method: "DELETE", item: attic.pub });
+  const rename = fs.renameSync;
+  fs.renameSync = (from, to) => {
+    if (to === list) throw new Error("could not save the list");
+    return rename(from, to);
+  };
+  try {
+    assert.equal((await remove())[0].status, 503);
+    assert.equal((await remove())[0].status, 503, "a second failure is still incomplete");
+  } finally {
+    fs.renameSync = rename;
+  }
+  assert.ok(JSON.parse(fs.readFileSync(list, "utf8")).some(each => each.destination === "attic"));
+  assert.equal((await remove())[0].status, 200);
+  assert.equal(JSON.parse(fs.readFileSync(list, "utf8")).some(each => each.destination === "attic"), false);
+  assert.ok(link.readLink().removedHere.includes(attic.pub));
+});
+
+test("link updates time out without writing when another writer still owns the lock", () => {
+  fresh();
+  const old = link.readLink();
+  assert.equal(link.removeHere(attic.pub).status, 200);
+  const lock = path.join(run, ".link.lock");
+  fs.mkdirSync(lock);
+  fs.writeFileSync(path.join(lock, `owner-${process.pid}-0123456789abcdef`), "");
+  fs.utimesSync(lock, new Date(0), new Date(0));
+  let called = false;
+  try {
+    assert.throws(() => link.updateLink(() => {
+      called = true;
+      return old;
+    }), /updating its link.*Try again/);
+    assert.equal(called, false);
+    assert.ok(link.readLink().removedHere.includes(attic.pub));
+    assert.ok(fs.existsSync(lock));
+  } finally {
+    fs.rmSync(lock, { recursive: true, force: true });
+  }
+  assert.ok(link.updateLink(state => state), "a fresh update can retry after the lock is released");
+});
+
 test("vouching checks the membership recorded when the pairing write acquires its lock", async () => {
   fresh();
   link.updateLink(state => ({ ...state, setup: { id: `set_${"a".repeat(22)}`, epoch: 1, primary: k(link.publicOf(mac)), sign: link.signingKeyOf(state.sign), role: "primary" } }));

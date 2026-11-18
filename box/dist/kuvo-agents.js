@@ -1495,15 +1495,35 @@ function take(lock, stale) {
     return false;
   }
 }
-function hold(lock, stale, wait) {
+function hold(lock, stale, wait, exclusive = false) {
   fs4.mkdirSync(path3.dirname(lock), { recursive: true, mode: 448 });
   const nap = new Int32Array(new SharedArrayBuffer(4));
-  for (let i = 0;i < wait / 10; i++) {
-    if (take(lock, stale))
+  const deadline = exclusive ? performance.now() + wait : Infinity;
+  for (let i = 0;i < wait / 10 && performance.now() < deadline; i++) {
+    if (take(lock, exclusive ? Infinity : stale))
       return true;
+    if (exclusive)
+      reapDeadOwner(lock);
     Atomics.wait(nap, 0, 0, 10);
   }
   return false;
+}
+function reapDeadOwner(lock) {
+  try {
+    const marker = fs4.readdirSync(lock).find((name) => /^owner-[1-9][0-9]*-[a-f0-9]{16}$/.test(name));
+    if (!marker)
+      return;
+    const pid = Number(marker.split("-")[1]);
+    try {
+      process.kill(pid, 0);
+      return;
+    } catch (error) {
+      if (error.code !== "ESRCH")
+        return;
+    }
+    fs4.unlinkSync(path3.join(lock, marker));
+    fs4.rmdirSync(lock);
+  } catch {}
 }
 async function holdAwaiting(lock, stale, wait) {
   fs4.mkdirSync(path3.dirname(lock), { recursive: true, mode: 448 });
@@ -1514,11 +1534,20 @@ async function holdAwaiting(lock, stale, wait) {
   }
   return false;
 }
-function locked(lock, work, { stale = 1e4, wait = 3000 } = {}) {
-  const held = hold(lock, stale, wait);
+function locked(lock, work, { stale = 1e4, wait = 3000, exclusive = false } = {}) {
+  const owner = exclusive ? path3.join(lock, `owner-${process.pid}-${crypto2.randomBytes(8).toString("hex")}`) : null;
+  const held = hold(lock, stale, wait, exclusive);
+  if (exclusive && !held)
+    throw new Error("Kuvo Code is updating its link. Try again in a moment.");
   try {
+    if (owner)
+      fs4.writeFileSync(owner, "", { flag: "wx", mode: 384 });
     return work();
   } finally {
+    if (owner)
+      try {
+        fs4.unlinkSync(owner);
+      } catch {}
     if (held)
       try {
         fs4.rmdirSync(lock);
@@ -39622,4 +39651,4 @@ if (!onMachine) {
 }
 process.on("SIGTERM", () => stop());
 process.on("SIGINT", () => stop());
-// Built from Packages/Box/src/agents 632f573a8bc4ad3ef196a8b36f03c150f4ed941f364d304111a26961eb0ebb8c
+// Built from Packages/Box/src/agents 13a7ad1a5e4b3d644f6b453ae17d17fe1c8ff076984944c2f0d282d198690e15

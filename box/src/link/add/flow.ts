@@ -22,13 +22,14 @@ import { changeKeptHosts, LIST_FILE, savedMachines } from "../mac/machines";
 import { setMacPeers, setupGift } from "../mac/routes";
 import { ADDRESS, KEY, ownKey, peersOf } from "../peers/known";
 import { readPeerAgents } from "../peers/directory";
-import { vouchedWords, vouchMoved } from "../phones";
+import { pairedPhone, vouchedWords, vouchMoved } from "../phones";
 import { machineBoxIn } from "../install/verdict";
 import { oldAppAttached, removeHere } from "../peers/manage";
 import { appsOf, foundOf, judgeComputer, oursNow } from "../setup/judge";
 import { addElsewhere, mainElsewhere } from "../setup/main-only";
 import { macLink, readLink, updateLink } from "../state";
 import type { LinkState } from "../state";
+import type { Asker } from "../server/context";
 import { boxVersion, newerVersion } from "../updates/update";
 import { addressProblem } from "./address";
 import { ENGINE_VERSION, RELEASE_FILES, engineFor, ownFiles, tarOf, type Kind } from "./files";
@@ -266,8 +267,22 @@ const UNINSTALL_STEPS = [["checking", "Reaching it"], ["removing", "Stopping and
  * from its link's key, never the key itself. */
 const launcherID = (key: string): string => crypto.createHash("sha256").update(`kuvo-launcher\n${key}`).digest("hex").slice(0, 32);
 
+interface AddGrant {
+  caller?: { key: string; pairing: string };
+  revisions: Record<string, number>;
+}
+
+const ADD_REVOKED = "The device that started this add is no longer paired. Start a new add from one of your devices.";
+const removedDuringAdd = (name: string) => new Failed(`${name} was removed from your computers. Add it again to restore access.`);
+
+function checkAdd(link: LinkState | null, grant: AddGrant | undefined, name: string, key?: string): void {
+  if (!grant) return;
+  if (grant.caller && !pairedPhone(link, grant.caller.key, grant.caller.pairing)) throw new Failed(ADD_REVOKED);
+  if (key && (grant.revisions[key] ?? 0) !== (link?.removalRevisions?.[key] ?? 0)) throw removedDuringAdd(name);
+}
+
 // Sets a computer up at `destination`, or again: everything to its box running there as one of yours.
-async function setUp(tell: Telling, destination: string, name: string, kind: "add" | "setup" | "update", expectedKey?: string): Promise<void> {
+async function setUp(tell: Telling, destination: string, name: string, kind: "add" | "setup" | "update", expectedKey?: string, grant?: AddGrant): Promise<void> {
   const reach = new Reach(destination, name, tell, kind === "add" ? [] : otherAddressesOf(destination));
   try {
     tell.step("checking", `Connecting to ${name}`);
@@ -297,9 +312,16 @@ async function setUp(tell: Telling, destination: string, name: string, kind: "ad
     const sameID = kind === "add" && probe.id ? saved.find(each => each.identity === probe.id && each.destination !== destination) : undefined;
     const itsPeer = sameID ? peersOf(link).find(each => each.id === sameID.destination) : undefined;
     const same = sameID && itsPeer && (!found?.card?.self.key || found.card.self.key === itsPeer.key) ? sameID : undefined;
-    if (same) {
+    if (same && itsPeer) {
       const peer = itsPeer;
-      writePrivate(LIST_FILE, JSON.stringify(saved.map(each => (each === same ? { ...each, otherAddresses: [...new Set([...(each.otherAddresses ?? []), destination])] } : each)), null, 2));
+      updateLink(current => {
+        checkAdd(current, grant, name, peer.key);
+        const latest = savedMachines();
+        const record = latest?.find(each => each.destination === same.destination);
+        if (!latest || !record || !peersOf(current).some(each => each.key === peer.key && each.id === record.destination)) throw removedDuringAdd(name);
+        writePrivate(LIST_FILE, JSON.stringify(latest.map(each => (each === record ? { ...each, otherAddresses: [...new Set([...(each.otherAddresses ?? []), destination])] } : each)), null, 2));
+        return null;
+      });
       for (const id of ["files", "engine", "starting", "seeding", "joining"]) tell.skip(id, `It’s ${peer?.name ?? same.destination}, already one of your computers`);
       tell.rename(peer?.name ?? same.destination);
       if (peer) tell.came({ key: peer.key, name: peer.name }, true);
@@ -389,7 +411,7 @@ async function setUp(tell: Telling, destination: string, name: string, kind: "ad
       }
       tell.step("joining");
       const identity = /^id ([0-9a-f]{32})$/m.exec(started.stdout)?.[1] ?? probe.id;
-      const computer = await join(reach, destination, name, identity, expectedKey);
+      const computer = await join(reach, destination, name, identity, expectedKey, grant);
       unjoined = false;
       tell.came(computer);
     } catch (error) {
@@ -413,12 +435,12 @@ async function setUp(tell: Telling, destination: string, name: string, kind: "ad
 // Signs the computer into your setup: this box's keys and documents given over SSH (the trust
 // between them), its own taken back, and its record written here, for your other computers and
 // phones to take from this box.
-async function join(reach: Reach, destination: string, name: string, identity: string | null, expectedKey?: string): Promise<{ key: string; name: string }> {
+async function join(reach: Reach, destination: string, name: string, identity: string | null, expectedKey?: string, grant?: AddGrant): Promise<{ key: string; name: string }> {
   const relay = macLink.config?.relay;
   const beforeLink = readLink();
   const removedWhileAdding = (link: LinkState | null) => expectedKey && link?.removedHere?.includes(expectedKey);
-  const removed = () => new Failed(`${name} was removed from your computers. Add it again to restore access.`);
-  if (removedWhileAdding(beforeLink)) throw removed();
+  checkAdd(beforeLink, grant, name, expectedKey);
+  if (removedWhileAdding(beforeLink)) throw removedDuringAdd(name);
   const before = peersOf(beforeLink).find(peer => peer.id === destination);
   const gift = await setupGift(before?.key ?? null);
   if (!relay || !gift?.mac) throw new Failed(`${ownName()} isn’t linked to your other computers yet, so it couldn’t add ${name}.`);
@@ -432,7 +454,9 @@ async function join(reach: Reach, destination: string, name: string, identity: s
   const peer = { key: said.key, sign: said.sign, address: said.address, name, id: destination };
   let named = name;
   const changed = updateLink(link => {
-    if (removedWhileAdding(link)) throw removed();
+    checkAdd(link, grant, name, expectedKey);
+    checkAdd(link, grant, name, peer.key);
+    if (removedWhileAdding(link)) throw removedDuringAdd(name);
     // Save the machine record and bridge before restoring trust on a fresh Add.
     const saved = savedMachines();
     if (!saved) throw new Failed(`${ownName()}’s list of machines can’t be read right now.`);
@@ -479,10 +503,15 @@ const uninstalling = (now: Running | undefined): Busy | null => (now?.seen.kind 
 
 /** Begins adding the computer at `destination` (checked first: `addressProblem`, `canAdd`). One
  * being added or set up there already is answered as it is; one being stopped is waited for. */
-export function beginAdd(destination: string): Running | Busy {
+export function beginAdd(destination: string, asker?: Asker): Running | Busy {
   const now = underWay(destination);
-  const expected = peersOf(readLink()).find(peer => peer.id === destination)?.key;
-  return uninstalling(now) ?? now ?? begin("add", destination, destination, SETUP_STEPS, tell => setUp(tell, destination, destination, "add", expected));
+  const link = readLink();
+  const key = asker?.key?.toString("base64url");
+  const caller = key && pairedPhone(link, key, asker?.pairing);
+  if (key && !caller) return { busy: ADD_REVOKED };
+  const grant: AddGrant = { caller: caller ? { key: caller.key, pairing: caller.pairing ?? "" } : undefined, revisions: link?.removalRevisions ?? {} };
+  const expected = peersOf(link).find(peer => peer.id === destination)?.key;
+  return uninstalling(now) ?? now ?? begin("add", destination, destination, SETUP_STEPS, tell => setUp(tell, destination, destination, "add", expected, grant));
 }
 
 /** The address this box set the computer `key` up at, and its name: null for one it didn't. */
@@ -570,15 +599,28 @@ export function beginUninstall(key: string): Running | null {
       tell.step("removing", only ? undefined : "Another Mac uses it too, so Kuvo Code stays there");
       // (Never cut short: a removal half done would leave it running with nothing to start it.)
       const ran = await reach.run(scripts.uninstall(ENGINE_VERSION, own, only), { most: 600_000 });
+      let cleanup: string | undefined;
       if (ran.status !== 0) {
         let said: unknown = null;
         try { said = JSON.parse(ran.stdout.trim().split("\n").pop() ?? ""); } catch {}
-        throw new Failed(isObject(said) && typeof said.message === "string" ? plainName(said.message).slice(0, 400) : `Kuvo Code couldn’t be stopped on ${at.name}. ${lastLine(ran.stderr)}`.trim());
+        const message = isObject(said) && typeof said.message === "string" ? plainName(said.message).slice(0, 400) : `Kuvo Code couldn’t be stopped on ${at.name}. ${lastLine(ran.stderr)}`.trim();
+        if (!isObject(said) || (said.result !== "incomplete" && said.result !== "unfinished")) throw new Failed(message);
+        cleanup = message;
       }
       tell.step("forgetting");
-      const removed = removeHere(key);
+      let removed: ReturnType<typeof removeHere>;
+      try {
+        removed = removeHere(key);
+      } catch (error) {
+        if (!cleanup) throw error;
+        throw new Failed(`Couldn’t confirm that access for ${at.name} was revoked. ${cleanup} ${error instanceof Error ? error.message : "Try again."}`);
+      }
       // (Gone from the list already, as when it was asked twice: done all the same.)
-      if (removed.status !== 200 && removed.status !== 404) throw new Failed(isObject(removed.value) && typeof removed.value.message === "string" ? removed.value.message : `${ownName()} couldn’t take ${at.name} off its list.`);
+      if (removed.status !== 200 && removed.status !== 404) {
+        const message = isObject(removed.value) && typeof removed.value.message === "string" ? removed.value.message : `${ownName()} couldn’t take ${at.name} off its list.`;
+        throw new Failed(cleanup ? `${message} ${cleanup}` : message);
+      }
+      if (cleanup) throw new Failed(`${at.name}’s access to your other computers was revoked. ${cleanup}`, false);
     } finally {
       await reach.close();
     }
