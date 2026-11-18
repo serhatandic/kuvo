@@ -1,6 +1,6 @@
 // A bot's job, kept in its folder (`job.json`): `{line, details}`, what it does in a few words (what
 // shows under its name) and all of it, which the bot sets with its set_job tool and Edit Bot can
-// change (`PATCH kuvo/bots/<id>` with `job`). Its memory is its own to write as it likes.
+// change (`PATCH kuvo/bots/<id>` with `job`, `jobLine` or `jobDetails`). Its memory is its own to write as it likes.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -12,6 +12,8 @@ import { botHere, type BotHere, changeDescription, isMoving } from "./here";
 
 const JOB_FILE = "job.json";
 const MOST_JOB_LINE = 200, MOST_JOB_DETAILS = 8000;
+const LONG_JOB = "Shorten Job to 200 characters or fewer.";
+const LONG_INSTRUCTIONS = "Shorten Instructions to 8,000 characters or fewer.";
 
 /** A bot's job: what it does in a few words (`line`, what shows under its name), and all of it. */
 export interface Job {
@@ -101,6 +103,22 @@ export function givenJob(given: unknown): GivenJob {
   if ([...line].length > MOST_JOB_LINE) return { error: "Say what it does in a few words: that line is too long." };
   if ([...details].length > MOST_JOB_DETAILS) return { error: "That job is too long to keep: shorten its details." };
   return { job: { line, details } };
+}
+
+/** Only validate and normalize the fields supplied, so an omitted field can be kept as stored. */
+export function givenJobFields(fields: { jobLine?: unknown; jobDetails?: unknown }): { job: Partial<Job>; error?: undefined } | { error: string; job?: undefined } {
+  const job: Partial<Job> = {};
+  if ("jobLine" in fields) {
+    if (typeof fields.jobLine !== "string") return { error: "Job must be text." };
+    job.line = jobLine(plainName(fields.jobLine));
+    if ([...job.line].length > MOST_JOB_LINE) return { error: LONG_JOB };
+  }
+  if ("jobDetails" in fields) {
+    if (typeof fields.jobDetails !== "string") return { error: "Instructions must be text." };
+    job.details = trimmed(fields.jobDetails);
+    if ([...job.details].length > MOST_JOB_DETAILS) return { error: LONG_INSTRUCTIONS };
+  }
+  return { job };
 }
 
 // A bot's job as its memory kept it before bots kept it in a record (Bots.job(inMemory:), held to

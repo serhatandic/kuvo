@@ -5283,7 +5283,7 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
   Errors are `{"message"}`: 400 for a missing name or an unknown template, personality or
   project; 409 while its box has no words for bots (below); 422 for a model that can't run there (its
   account isn't signed in there); 503 when it couldn't be made.
-- `PATCH kuvo/bots/<id>` with any of `{name, look, personality, model, effort, job}` changes a bot as Edit
+- `PATCH kuvo/bots/<id>` with any of `{name, look, personality, model, effort, job, jobLine, jobDetails}` changes a bot as Edit
   Bot does (`personality: null` for the model's own way, `model` as `{providerID, id, variant?}`,
   `effort` (`bots.effort`) the effort its model runs at, for the model it has or the one the change
   names: one of that model's own as the box lists them (`efforts`, "The models offered"), null or
@@ -5292,7 +5292,10 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
   it has, or for a bot with no model; 422 for a model the side it runs on (the engine, or the
   coding agents) lists others but not it (its account signed out there); 503 while that side lists none (it isn't answering now),
   `job` as `{line, details}`, the whole job, which replaces the one it had: its line on one line,
-  without a sentence's end; both `""` for none; 400 for one too long): `200 {"bot": <as kuvo/bots
+  without a sentence's end; both `""` for none. With `bots.job-fields`, `jobLine` and `jobDetails`
+  change just the supplied strings and keep the other field as stored. Each may be cleared with
+  `""`. A held edit using either waits for that feature on the receiving computer. 400 for a field
+  over its limit): `200 {"bot": <as kuvo/bots
   lists one>}` (null when it no longer lists here by then, a move begun meanwhile), after a coding agent's model for a bot on the engine has carried its conversation
   on with them (its `session` is the new one, `agents` true). Errors are `{"message"}`: 400 for an
   empty name, or a look or personality there isn't; 422 for a model it can't use where it lives

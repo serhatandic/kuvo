@@ -5815,6 +5815,9 @@
             "literal": "bots.job"
            },
            {
+            "literal": "bots.job-fields"
+           },
+           {
             "literal": "bots.make"
            },
            {
@@ -6548,6 +6551,9 @@
            },
            {
             "literal": "bots.job"
+           },
+           {
+            "literal": "bots.job-fields"
            },
            {
             "literal": "bots.make"

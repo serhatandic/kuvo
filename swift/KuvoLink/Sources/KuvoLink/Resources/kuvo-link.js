@@ -11818,6 +11818,7 @@ var FEATURES = [
   "bots.events",
   "bots.held",
   "bots.job",
+  "bots.job-fields",
   "bots.make",
   "bots.now",
   "bots.state",
@@ -15330,6 +15331,8 @@ import path34 from "node:path";
 var JOB_FILE = "job.json";
 var MOST_JOB_LINE = 200;
 var MOST_JOB_DETAILS = 8000;
+var LONG_JOB = "Shorten Job to 200 characters or fewer.";
+var LONG_INSTRUCTIONS = "Shorten Instructions to 8,000 characters or fewer.";
 function readJob(folder) {
   try {
     const kept = JSON.parse(textOf(path34.join(folder, JOB_FILE)) ?? "");
@@ -15390,6 +15393,24 @@ function givenJob(given) {
   if ([...details].length > MOST_JOB_DETAILS)
     return { error: "That job is too long to keep: shorten its details." };
   return { job: { line, details } };
+}
+function givenJobFields(fields) {
+  const job = {};
+  if ("jobLine" in fields) {
+    if (typeof fields.jobLine !== "string")
+      return { error: "Job must be text." };
+    job.line = jobLine(plainName(fields.jobLine));
+    if ([...job.line].length > MOST_JOB_LINE)
+      return { error: LONG_JOB };
+  }
+  if ("jobDetails" in fields) {
+    if (typeof fields.jobDetails !== "string")
+      return { error: "Instructions must be text." };
+    job.details = trimmed2(fields.jobDetails);
+    if ([...job.details].length > MOST_JOB_DETAILS)
+      return { error: LONG_INSTRUCTIONS };
+  }
+  return { job };
 }
 var spaces = (text) => text.replace(/^[\p{Zs}\t]+|[\p{Zs}\t]+$/gu, "");
 var trimmed2 = (text) => text.replace(/^[\p{Z}\t\n\v\f\r\u0085]+|[\p{Z}\t\n\v\f\r\u0085]+$/gu, "");
@@ -33258,7 +33279,7 @@ function onto(now, before, after) {
   }
   return next;
 }
-var EDITED_FIELDS = ["name", "look", "personality", "job", "model", "effort", "work"];
+var EDITED_FIELDS = ["name", "look", "personality", "job", "jobLine", "jobDetails", "model", "effort", "work"];
 async function changeBot(id, given, readEngine, readBridge, machine, signal, at = Date.now()) {
   const no = (status, message) => ({ status, value: { message } });
   const here = botHere(id);
@@ -33300,6 +33321,9 @@ async function changeBot(id, given, readEngine, readBridge, machine, signal, at 
       return no(400, checked.error);
     job = checked.job;
   }
+  const partialJob = givenJobFields(given);
+  if (partialJob.error !== undefined)
+    return no(400, partialJob.error);
   if ("effort" in given) {
     const base = "model" in given ? given.model : described.model;
     if (!isModel(base))
@@ -33388,6 +33412,9 @@ async function changeBot(id, given, readEngine, readBridge, machine, signal, at 
     return no(503, here.agents ? agentsLine() : "The engine isn’t running.");
   const renamed = changed.name !== described.name;
   const was = jobOf(here);
+  if ("jobLine" in given || "jobDetails" in given) {
+    job = { ...job ?? was, ...partialJob.job };
+  }
   const newJob = job !== undefined && (job.line !== was.line || job.details !== was.details);
   const retold = renamed || changed.personality !== described.personality || newJob;
   const switched = !sameModel(changed.model, described.model);
@@ -36087,8 +36114,9 @@ var REFUSED_FILE = path118.join(HELD4, "refused.json");
 var TAKEN_FILE = path118.join(RUN, "bots-held-taken.json");
 var BOT_ID2 = /^bot_[A-Za-z0-9]{1,60}$/;
 var EDIT_ID = /^bte_[A-Za-z0-9_-]{16,40}$/;
-var FIELDS = ["name", "look", "personality", "job", "model", "effort"];
+var FIELDS = ["name", "look", "personality", "job", "jobLine", "jobDetails", "model", "effort"];
 var EFFORT_FEATURE = "bots.effort";
+var JOB_FIELDS_FEATURE = "bots.job-fields";
 var AGAIN_AFTER2 = 60000;
 var REFUSAL_SHOWS = 86400000;
 var MOST_REFUSALS = 50;
@@ -36162,11 +36190,24 @@ var botOf3 = (bot, kept, known) => {
   const { name, look } = known.get(bot) ?? kept ?? {};
   return { ...name ? { name } : {}, ...look ? { look } : {} };
 };
+function missingFeature(change, features) {
+  if (!change)
+    return;
+  if ("effort" in change && !features.includes(EFFORT_FEATURE))
+    return "an effort";
+  if ((("jobLine" in change) || ("jobDetails" in change)) && !features.includes(JOB_FIELDS_FEATURE))
+    return "separate Job and Instructions changes";
+  return;
+}
 var waitsOf = (held, link, told) => {
-  if (!held.change || !("effort" in held.change) || !held.to || !told[held.to] || (told[held.to]?.features ?? []).includes(EFFORT_FEATURE))
+  const peer = told[held.to];
+  if (!peer)
+    return;
+  const missing = missingFeature(held.change, peer.features ?? []);
+  if (!missing)
     return;
   const computer = nameOf4(held, link);
-  return `${computer} needs an update before it takes an effort: this goes once Kuvo Code is updated on ${computer}.`;
+  return `${computer} needs an update before it takes ${missing}: this goes once Kuvo Code is updated on ${computer}.`;
 };
 var viewOf = (held, link, known = knownElsewhere(link), told = readPeerAgents()) => ({
   bot: held.bot,
@@ -36210,6 +36251,9 @@ function checkedChange(given) {
     if (checked.error)
       return { error: checked.error };
   }
+  const jobProblem = givenJobFields(change).error;
+  if (jobProblem)
+    return { error: jobProblem };
   if ("model" in change && !isModel(change.model))
     return { error: "That isn’t a model." };
   if ("effort" in change && change.effort !== null && typeof change.effort !== "string")
@@ -36245,7 +36289,15 @@ function holdEdit(bot, given, on, { removed = false, now = Date.now() } = {}) {
       const dropsEffort = Boolean(checked) && "model" in checked.change && !("effort" in checked.change);
       const { effort: _effort, ...changeBefore } = before?.change ?? {};
       const { effort: _effortAt, ...timesBefore } = before?.times ?? {};
-      const kept = dropsEffort ? { change: changeBefore, times: timesBefore } : { change: before?.change ?? {}, times: before?.times ?? {} };
+      const kept = dropsEffort ? { change: changeBefore, times: timesBefore } : { change: { ...before?.change }, times: { ...before?.times } };
+      if (checked && "job" in checked.change) {
+        for (const field of ["jobLine", "jobDetails"]) {
+          if (field in checked.change)
+            continue;
+          delete kept.change[field];
+          delete kept.times[field];
+        }
+      }
       if (checked && Buffer.byteLength(JSON.stringify({ ...kept.change, ...checked.change })) > MOST_CHANGE) {
         answer = no(400, "That’s too much to change at once.");
         return;
@@ -36317,7 +36369,7 @@ function sendHeld(host, link = readLink(), now = Date.now()) {
     const peer = peersOf(link).find((each) => each.key === held.to);
     if (!peer || !(told[peer.key]?.features ?? []).includes(HELD_FEATURE))
       continue;
-    if (held.change && "effort" in held.change && !(told[peer.key]?.features ?? []).includes(EFFORT_FEATURE))
+    if (missingFeature(held.change, told[peer.key]?.features ?? []))
       continue;
     const ages = Object.fromEntries(Object.entries(held.times ?? {}).map(([field, at]) => [field, Math.max(0, now - at)]));
     const bytes = mailFor(peer, { botEdit: { id: held.id, bot: held.bot, ...held.delete ? { delete: true } : { change: held.change, ages }, at: held.at }, at: now }, link);
@@ -36453,10 +36505,31 @@ async function takeBotEdit(sender, given, reply, steps, now = Date.now()) {
         for (const [field, age] of Object.entries(ages))
           if (typeof age === "number" && Number.isFinite(age))
             times[field] = clock - Math.max(0, age);
+        const change = { ...given.change };
+        if ("job" in change) {
+          const legacy = givenJob(change.job).job;
+          if (legacy) {
+            for (const [field, value] of [["jobLine", legacy.line], ["jobDetails", legacy.details]]) {
+              if (field in change)
+                continue;
+              change[field] = value;
+              if (times.job !== undefined)
+                times[field] = times.job;
+            }
+            delete change.job;
+          }
+        }
         const edited = editedTimes(bot);
-        const lastEdited = (field) => field === "effort" && edited.model !== undefined ? Math.max(edited.model, edited.effort ?? 0) : edited[field];
-        const fresh = Object.entries(given.change).filter(([field]) => FIELDS.includes(field) && !(times[field] !== undefined && lastEdited(field) !== undefined && times[field] <= lastEdited(field)));
-        const change = given.change;
+        const lastEdited = (field) => {
+          if (field === "effort")
+            return Math.max(edited.model ?? 0, edited.effort ?? 0);
+          if (field === "jobLine" || field === "jobDetails")
+            return Math.max(edited.job ?? 0, edited[field] ?? 0);
+          if (field === "job")
+            return Math.max(edited.job ?? 0, edited.jobLine ?? 0, edited.jobDetails ?? 0);
+          return edited[field] ?? 0;
+        };
+        const fresh = Object.entries(change).filter(([field]) => FIELDS.includes(field) && !(times[field] !== undefined && times[field] <= lastEdited(field)));
         const taken = "model" in change && !fresh.some(([field]) => field === "model") ? fresh.filter(([field]) => field !== "effort") : fresh;
         done = taken.length ? await changeWhatItCan(bot, taken, times, steps) : { status: 200, value: {} };
       }
@@ -45447,7 +45520,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "f8786caa6279";
+var BRIDGE_VERSION = "12e4a52b6b48";
 
 // box/src/link/rehome/move.ts
 init_outside();
