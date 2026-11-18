@@ -1,4 +1,4 @@
-import "./safety";
+import "./safety"
 import { expect, spyOn, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
