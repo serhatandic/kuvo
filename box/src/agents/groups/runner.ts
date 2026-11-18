@@ -358,11 +358,11 @@ export class GroupRunner {
    * started (`activate`), so nothing happens here before the Mac has let go of its copy. One here
    * already is replaced only when `replace` says so.
    */
-  put(group: Group, messages: GroupMessage[], status: Status, replace: boolean): boolean {
+  put(group: Group, messages: GroupMessage[], status: Status, replace: boolean, moveImport?: string): boolean {
     const existing = this.chats.get(group.id)
     if (existing && !replace) return false
     if (existing) this.stop(group.id)
-    const kept: Kept = { group, status, messages }
+    const kept: Kept = { group, status, messages, ...(moveImport ? { moveImport } : {}) }
     this.chats.set(group.id, kept)
     this.context.store.saveMessages(kept)
     this.changed(group.id)
@@ -411,9 +411,9 @@ export class GroupRunner {
   }
 
   /** Gone from here, its seats left where they are (a move away: the bots stay here). */
-  release(id: string): boolean {
+  release(id: string, moveImport?: string): boolean {
     const kept = this.chats.get(id)
-    if (!kept) return false
+    if (!kept || (moveImport !== undefined && kept.moveImport !== moveImport)) return false
     this.stop(id)
     // Keep the held group available for a retry until its folder is out of the live store.
     this.context.store.trash(id, this.context.trash)

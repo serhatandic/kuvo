@@ -31396,7 +31396,9 @@ class Carrying {
         if (session.model?.providerID && hosts.get(session.model.providerID))
           session.model = { ...session.model, providerID: hosts.get(session.model.providerID).providerID };
         stillOn();
-        await undo.noteSession(id);
+        if (this.store.get(id))
+          throw new CantCarry("a conversation is already on this computer");
+        undo.noteSession(id);
         this.sessions.addCarried({ session, messages, agent });
       }
       return { sessions, infos: manifest.sessions.map(({ id, metadata }) => ({ id, metadata })), digest: manifest.digest, ...rootCame ? { came: rootCame } : {}, lanes: manifest.lanes.map(({ list: _, ...lane }) => ({ ...lane, how: placed.includes(manifest.lanes.find((each) => each.session === lane.session && each.provider === lane.provider)) ? "files" : "handover" })), model: this.store.get(manifest.root)?.session.model };
@@ -31498,12 +31500,12 @@ class Undo {
     } catch {}
     return this.list;
   }
-  async write() {
-    await writeFile(this.file, JSON.stringify(this.list), { mode: 384 });
+  write() {
+    writeDurablePrivate(this.file, JSON.stringify(this.list));
   }
-  async noteSession(id) {
+  noteSession(id) {
     this.list.sessions.push(id);
-    await this.write();
+    this.write();
   }
   async put(from, dest, file, merges) {
     await mkdir(dirname20(dest), { recursive: true });
@@ -31520,7 +31522,7 @@ class Undo {
     if (there)
       placed.replaced = join40(this.keep, "replaced", String(this.count++));
     this.list.placed.push(placed);
-    await this.write();
+    this.write();
     if (placed.replaced) {
       await mkdir(dirname20(placed.replaced), { recursive: true });
       await rename(dest, placed.replaced);
@@ -31544,9 +31546,9 @@ class Undo {
         await rm(dest, { force: true });
       }
       this.list.placed.pop();
-      await this.write();
+      this.write();
     }
-    await this.write().catch(() => {});
+    this.write();
   }
 }
 async function carryRoutes(carrying, method, parts, body) {
@@ -32309,8 +32311,16 @@ var queueFiles = (run) => ({
   lock: path5.join(run, ".queues.lock")
 });
 var WAITING_ID = /^msg_[A-Za-z0-9]{1,80}$/;
+var isWaitingID = (id) => typeof id === "string" && WAITING_ID.test(id);
+var BAD_WAITING_ID = "This message couldn\u2019t be queued. Send it again as a new message.";
+
+class InvalidWaitingID extends Error {
+  constructor() {
+    super(BAD_WAITING_ID);
+  }
+}
 var keptWaiting = (value) => (Array.isArray(value) ? value : []).flatMap((item) => {
-  if (!isObject(item) || typeof item.id !== "string" || !WAITING_ID.test(item.id) || typeof item.text !== "string")
+  if (!isObject(item) || !isWaitingID(item.id) || typeof item.text !== "string")
     return [];
   const files = Array.isArray(item.files) ? item.files.filter((name) => typeof name === "string") : [];
   return [{ id: item.id, ...typeof item.from === "string" ? { from: item.from } : {}, text: item.text, ...files.length ? { files } : {}, ...typeof item.keyword === "string" ? { keyword: item.keyword } : {}, at: typeof item.at === "number" ? item.at : 0 }];
@@ -32391,6 +32401,8 @@ function keepWaiting(files, session, message, { from, words, kept: keptText } = 
   changeQueue(files, session, (state) => {
     if (!state.paused && !holds)
       return state;
+    if (!isWaitingID(message.id))
+      throw new InvalidWaitingID;
     writeDurablePrivate(waitingFile(files, message.id), JSON.stringify(keptText === undefined ? message : { ...message, text: keptText }), path5.dirname(files.file));
     kept = true;
     const names = fileNames(message.files);
@@ -34186,13 +34198,13 @@ class GroupRunner {
     const working = kept.messages.some((message) => message.tasks?.some((task) => task.state === "working" || task.state === "waiting"));
     this.context.store.setAwake(id, kept.status === "active" && (kept.group.meeting !== undefined || this.state(id).abort !== undefined || this.answering.has(id) || working));
   }
-  put(group, messages, status, replace) {
+  put(group, messages, status, replace, moveImport) {
     const existing = this.chats.get(group.id);
     if (existing && !replace)
       return false;
     if (existing)
       this.stop(group.id);
-    const kept = { group, status, messages };
+    const kept = { group, status, messages, ...moveImport ? { moveImport } : {} };
     this.chats.set(group.id, kept);
     this.context.store.saveMessages(kept);
     this.changed(group.id);
@@ -34235,9 +34247,9 @@ class GroupRunner {
     this.changed(id);
     return { group: kept.group, messages: kept.messages };
   }
-  release(id) {
+  release(id, moveImport) {
     const kept = this.chats.get(id);
-    if (!kept)
+    if (!kept || moveImport !== undefined && kept.moveImport !== moveImport)
       return false;
     this.stop(id);
     this.context.store.trash(id, this.context.trash);
@@ -35427,6 +35439,7 @@ var weekdayOf2 = (time, zone) => {
 };
 
 // box/src/agents/groups/store.ts
+import fs7 from "fs";
 import { existsSync as existsSync19, mkdirSync as mkdirSync25, readdirSync as readdirSync21, readFileSync as readFileSync35, renameSync as renameSync21, rmSync as rmSync17, writeFileSync as writeFileSync26 } from "fs";
 import { dirname as dirname21, join as join41 } from "path";
 
@@ -35501,6 +35514,10 @@ class GroupStore {
   root;
   bots;
   agentsFile;
+  unreadable = new Set;
+  transcriptUnreadable(id) {
+    return this.unreadable.has(id);
+  }
   constructor(root, bots, agentsFile) {
     this.root = root;
     this.bots = bots;
@@ -35519,9 +35536,15 @@ class GroupStore {
     for (const id of names) {
       if (!/^grp_[a-z0-9]+$/.test(id))
         continue;
-      const kept = this.read(id);
-      if (kept)
-        all.set(id, kept);
+      try {
+        const kept = this.read(id);
+        if (kept)
+          all.set(id, kept);
+        this.unreadable.delete(id);
+      } catch (error) {
+        this.unreadable.add(id);
+        console.error("Group transcript could not be loaded:", error);
+      }
     }
     return all;
   }
@@ -35529,13 +35552,13 @@ class GroupStore {
     const record = read2(join41(this.folder(id), "group.json"));
     if (!record || typeof record.kuvo !== "number" || record.kuvo > version2 || !isGroup(record.group, id))
       return;
-    const messages = read2(join41(this.folder(id), "messages.json")) ?? [];
+    const messages = JSON.parse(fs7.readFileSync(join41(this.folder(id), "messages.json"), "utf8"));
     if (!isMessages(messages))
-      return;
-    return { group: record.group, status: record.status === "held" ? "held" : "active", talking: record.talking === true, paused: record.paused === true, ...isTurning(record.turning) ? { turning: record.turning } : {}, messages };
+      throw new Error("The group transcript could not be read");
+    return { group: record.group, ...typeof record.moveImport === "string" ? { moveImport: record.moveImport } : {}, status: record.status === "held" ? "held" : "active", talking: record.talking === true, paused: record.paused === true, ...isTurning(record.turning) ? { turning: record.turning } : {}, messages };
   }
   saveGroup(kept) {
-    writeDurablePrivate(join41(this.folder(kept.group.id), "group.json"), JSON.stringify({ kuvo: version2, status: kept.status, ...kept.talking ? { talking: true } : {}, ...kept.paused ? { paused: true } : {}, ...kept.turning ? { turning: kept.turning } : {}, group: kept.group }, null, 2), dirname21(this.root));
+    writeDurablePrivate(join41(this.folder(kept.group.id), "group.json"), JSON.stringify({ kuvo: version2, status: kept.status, ...kept.moveImport ? { moveImport: kept.moveImport } : {}, ...kept.talking ? { talking: true } : {}, ...kept.paused ? { paused: true } : {}, ...kept.turning ? { turning: kept.turning } : {}, group: kept.group }, null, 2), dirname21(this.root));
   }
   saveMessages(kept) {
     writeDurablePrivate(join41(this.folder(kept.group.id), "messages.json"), JSON.stringify(kept.messages, null, 2), dirname21(this.root));
@@ -35798,16 +35821,18 @@ async function groupRoutes(runner, store, method, parts, body) {
   }
   if (!/^grp_[a-z0-9]+$/.test(id))
     return error(404, "No such chat.");
+  if (store.transcriptUnreadable(id))
+    return error(503, "This computer couldn\u2019t read the group\u2019s conversation. Restart Kuvo and try again.");
   if (!action) {
     if (method === "GET") {
       const chat = runner.get(id);
       return chat ? json12({ version: version2, data: chat }) : error(404, "No such chat.");
     }
     if (method === "PUT") {
-      const { group, messages, status, replace } = await body();
+      const { group, messages, status, replace, moveImport } = await body();
       if (!isGroup(group, id) || !isMessages(messages ?? []))
         return error(400, "That isn't a group chat.");
-      if (!runner.put(group, messages ?? [], status === "active" ? "active" : "held", replace === true))
+      if (!runner.put(group, messages ?? [], status === "active" ? "active" : "held", replace === true, typeof moveImport === "string" ? moveImport : undefined))
         return error(409, "That chat is here already.");
       return json12({ data: runner.get(id) });
     }
@@ -35850,9 +35875,10 @@ async function groupRoutes(runner, store, method, parts, body) {
       return json12({ data: runner.get(id) });
     case "hold":
       return json12({ data: runner.hold(id) });
-    case "release":
-      runner.release(id);
-      return json12({});
+    case "release": {
+      const { moveImport } = await body() ?? {};
+      return runner.release(id, typeof moveImport === "string" ? moveImport : undefined) ? json12({}) : error(404, "No such chat.");
+    }
   }
   if (found.status !== "active")
     return error(409, "That chat is moving.");
@@ -38045,7 +38071,7 @@ import { statSync as statSync17 } from "fs";
 import { dirname as dirname23 } from "path";
 
 // box/src/shared/bundle.ts
-import fs7 from "fs";
+import fs8 from "fs";
 var BUILT = /\/\/ Built from Packages\/Box\/src\/agents ([0-9a-f]{16,64})\s*(?:\n|$)/g;
 function buildOf(text) {
   let found = null;
@@ -38056,18 +38082,18 @@ function buildOf(text) {
 function bundleBuild(file) {
   let handle;
   try {
-    handle = fs7.openSync(file, "r");
-    const size = fs7.fstatSync(handle).size;
+    handle = fs8.openSync(file, "r");
+    const size = fs8.fstatSync(handle).size;
     const length = Math.min(size, 1024);
     const tail = Buffer.alloc(length);
-    fs7.readSync(handle, tail, 0, length, size - length);
+    fs8.readSync(handle, tail, 0, length, size - length);
     return buildOf(tail.toString("utf8"));
   } catch {
     return null;
   } finally {
     if (handle !== undefined)
       try {
-        fs7.closeSync(handle);
+        fs8.closeSync(handle);
       } catch {}
   }
 }
@@ -38258,7 +38284,7 @@ class Renewal {
 }
 
 // box/src/shared/engines.ts
-import fs8 from "fs";
+import fs9 from "fs";
 import path6 from "path";
 function byNumbers(a, b) {
   const [x, y] = [a, b].map((version) => version.split(".").map((part) => parseInt(part, 10) || 0));
@@ -38273,11 +38299,11 @@ function enginesThere(root) {
 function enginesIn(folder) {
   let names = [];
   try {
-    names = fs8.readdirSync(folder);
+    names = fs9.readdirSync(folder);
   } catch {}
   const runs = (name) => {
     try {
-      fs8.accessSync(path6.join(folder, name, "opencode"), fs8.constants.X_OK);
+      fs9.accessSync(path6.join(folder, name, "opencode"), fs9.constants.X_OK);
       return true;
     } catch {
       return false;
@@ -38288,7 +38314,7 @@ function enginesIn(folder) {
 function keeperEngine(root) {
   let named;
   try {
-    named = /^V=([0-9][0-9A-Za-z.+-]*)$/m.exec(fs8.readFileSync(path6.join(root, "bin", "kuvo-start"), "utf8"))?.[1];
+    named = /^V=([0-9][0-9A-Za-z.+-]*)$/m.exec(fs9.readFileSync(path6.join(root, "bin", "kuvo-start"), "utf8"))?.[1];
   } catch {}
   const there = enginesThere(root);
   return named && there.includes(named) ? named : there.at(-1) ?? null;
@@ -38296,7 +38322,7 @@ function keeperEngine(root) {
 
 // box/src/shared/account.ts
 import { spawnSync as spawnSync3 } from "child_process";
-import fs9 from "fs";
+import fs10 from "fs";
 import os from "os";
 import path7 from "path";
 function homeFolder() {
@@ -38314,7 +38340,7 @@ function accountEntry() {
     line = spawnSync3("getent", ["passwd", String(uid)], { encoding: "utf8", timeout: 5000 }).stdout;
     if (!line?.trim()) {
       try {
-        line = fs9.readFileSync("/etc/passwd", "utf8").split(`
+        line = fs10.readFileSync("/etc/passwd", "utf8").split(`
 `).find((each) => each.split(":")[2] === String(uid));
       } catch {}
     }
@@ -38337,7 +38363,7 @@ var testHome;
 function isRealBridgeFolder(folder, home = accountHome()) {
   const located = (each) => {
     try {
-      return fs9.realpathSync.native(each);
+      return fs10.realpathSync.native(each);
     } catch {
       return path7.resolve(each);
     }
@@ -38347,34 +38373,34 @@ function isRealBridgeFolder(folder, home = accountHome()) {
 }
 
 // box/src/shared/updating.ts
-import fs10 from "fs";
+import fs11 from "fs";
 import path8 from "path";
 function updateUnderWay(run) {
   const lock = path8.join(run, ".updating");
-  if (!fs10.existsSync(lock))
+  if (!fs11.existsSync(lock))
     return false;
   let pid = null;
   try {
-    pid = Number(fs10.readFileSync(path8.join(lock, "pid"), "utf8"));
+    pid = Number(fs11.readFileSync(path8.join(lock, "pid"), "utf8"));
   } catch {}
   if (pid)
     return processRuns(pid, "kuvo-link");
   try {
-    return Date.now() - fs10.statSync(lock).mtimeMs < 60000;
+    return Date.now() - fs11.statSync(lock).mtimeMs < 60000;
   } catch {
     return false;
   }
 }
 
 // box/src/shared/engine-swap.ts
-import fs11 from "fs";
+import fs12 from "fs";
 import path9 from "path";
 var HOLD_MOST = 30 * 60000;
 var SWAP_MOST = 30 * 60000;
 var swapFile = (run) => path9.join(run, "engine-swap.json");
 function readSwap(run) {
   try {
-    const said = JSON.parse(fs11.readFileSync(swapFile(run), "utf8"));
+    const said = JSON.parse(fs12.readFileSync(swapFile(run), "utf8"));
     if (typeof said?.from !== "string" || typeof said.to !== "string" || typeof said.pid !== "number" || !["waiting", "holding", "swapping", "back"].includes(said.stage))
       return null;
     return said;
@@ -38507,7 +38533,7 @@ class Store {
 }
 
 // box/src/shared/hang.ts
-import fs12 from "fs";
+import fs13 from "fs";
 import net2 from "net";
 import path10 from "path";
 var LOOK_EVERY = 30000;
@@ -38615,21 +38641,21 @@ class HangWatch {
   }
   server() {
     try {
-      const { pid, port } = JSON.parse(fs12.readFileSync(this.options.record, "utf8"));
+      const { pid, port } = JSON.parse(fs13.readFileSync(this.options.record, "utf8"));
       return Number.isInteger(pid) && pid > 1 && Number.isInteger(port) && port > 0 ? { pid, port } : null;
     } catch {
       return null;
     }
   }
   stoppedOnPurpose() {
-    return ["stopped", ".launching", ".updating", ".system-asking"].some((name) => fs12.existsSync(path10.join(this.options.run, name)));
+    return ["stopped", ".launching", ".updating", ".system-asking"].some((name) => fs13.existsSync(path10.join(this.options.run, name)));
   }
   endedLately() {
     const file = path10.join(this.options.run, `hung-${this.options.name}.json`);
-    if (!fs12.existsSync(file))
+    if (!fs13.existsSync(file))
       return [];
     try {
-      const times = JSON.parse(fs12.readFileSync(file, "utf8"));
+      const times = JSON.parse(fs13.readFileSync(file, "utf8"));
       return Array.isArray(times) ? times.filter((time) => typeof time === "number" && this.now() - time < ENDED_WHILE && time <= this.now()) : null;
     } catch {
       return null;
@@ -38645,8 +38671,8 @@ class HangWatch {
     }
     const file = path10.join(this.options.run, `hung-${this.options.name}.json`);
     try {
-      fs12.writeFileSync(`${file}.new`, JSON.stringify([...lately, this.now()]), { mode: 384 });
-      fs12.renameSync(`${file}.new`, file);
+      fs13.writeFileSync(`${file}.new`, JSON.stringify([...lately, this.now()]), { mode: 384 });
+      fs13.renameSync(`${file}.new`, file);
     } catch {
       console.error(`The ${this.options.name} has said nothing for ${minutes} minutes, but that can't be noted in ${file}: it's left as it is, for you to restart.`);
       return;
@@ -39525,4 +39551,4 @@ if (!onMachine) {
 }
 process.on("SIGTERM", () => stop());
 process.on("SIGINT", () => stop());
-// Built from Packages/Box/src/agents d40e8c138178319d3e9f4c5d94eba6ee9532513b796e665aa944196192e2e111
+// Built from Packages/Box/src/agents d9efb78186ece3e30e36a23da8f0cc4c9cf68bdd9f9aa787b9a8a66cc6d8fc87

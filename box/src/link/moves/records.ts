@@ -38,6 +38,9 @@ export interface MoveRecord extends Move {
   pausedAs?: string;
   /** The box it goes to: its folder was put in place by this move (and goes if it's taken back). */
   placed?: boolean;
+  /** Destination sessions this move imported, and the one whose import reply may be missing. */
+  createdSessions?: string[];
+  importingSession?: string;
   /** A group chat's bots, which the box it goes to checks it has. */
   members?: string[];
   /** Offered to the other box at least once: a copy may be there, to drop if it's taken back. */

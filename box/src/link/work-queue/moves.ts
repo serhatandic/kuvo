@@ -5,11 +5,12 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { writeDurablePrivate } from "../../shared/files";
 import { isObject } from "../../shared/json";
 import { keepLabel, labels } from "./labels";
 import { statusNamed } from "./statuses";
 import { intoTodo } from "./ops";
-import { changeQueues, FILE_NAME, filesOf, itemOf, OWNER, readKeptQueue, readQueueSettingAside, type Item } from "./store";
+import { changeQueues, FILE_NAME, filesOf, itemOf, OWNER, readKeptQueue, readQueueSettingAside, WORK_QUEUE, type Item } from "./store";
 
 /** What a move carries: each owner's items, the labels they have, and which items
  * have files (packed beside `move.json`, in `work-queue/<item>/`). */
@@ -28,7 +29,7 @@ export function packWorkQueues(owners: readonly string[]): CarriedQueues | null 
   return {
     items,
     labels: labels().filter(each => used.has(each.id)),
-    withFiles: items.filter(item => item.files.length && fs.existsSync(filesOf(item.id))).map(item => item.id),
+    withFiles: items.filter(item => item.files.length).map(item => item.id),
   };
 }
 
@@ -69,25 +70,22 @@ export function placeWorkQueues(carried: unknown, owners: readonly string[], ope
       // (Into a queue of a kind a newer box keeps here that this one can't read whole: refused, so
       // the move fails and the box it comes from keeps it.)
       const before = book.find({ id: item.id });
-      if (before) book.queue(before.owner).items = book.queue(before.owner).items.filter(each => each.id !== item.id);
+      if (before) throw new Error("A carried Work Queue item is already here");
       book.queue(item.owner).items.push(item);
       const from = opened ? path.join(opened, "work-queue", item.id) : null;
-      fs.rmSync(filesOf(item.id), { recursive: true, force: true });
       for (const file of item.files) {
-        if (!from || !FILE_NAME.test(file.name)) continue;
+        if (!from || !FILE_NAME.test(file.name)) throw new Error("A carried Work Queue file is missing");
+        // Never follow an attachment symlink, even if the unpacked file was replaced.
+        const handle = fs.openSync(path.join(from, file.name), fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0));
         try {
-          fs.mkdirSync(filesOf(item.id), { recursive: true, mode: 0o700 });
-          // (Never through a link: `unpack` took only plain files, and this is opened as one.)
-          const handle = fs.openSync(path.join(from, file.name), fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0));
-          try {
-            if (fs.fstatSync(handle).isFile()) fs.writeFileSync(path.join(filesOf(item.id), file.name), fs.readFileSync(handle), { mode: 0o600 });
-          } finally {
-            fs.closeSync(handle);
-          }
-        } catch {}
+          if (!fs.fstatSync(handle).isFile()) throw new Error("A carried Work Queue attachment is not a file");
+          writeDurablePrivate(path.join(filesOf(item.id), file.name), fs.readFileSync(handle), path.dirname(WORK_QUEUE));
+        } finally {
+          fs.closeSync(handle);
+        }
       }
     }
-  }, undefined, { onItsOwn: true });
+  }, undefined, { durable: true });
 }
 
 /** The queues of `owners` gone from here (their files too): the move took them (nothing changes

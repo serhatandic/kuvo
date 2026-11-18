@@ -17,6 +17,7 @@ import { createHash } from "node:crypto"
 import { createReadStream } from "node:fs"
 import { copyFile, lstat, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises"
 import { basename, dirname, isAbsolute, join, normalize, sep } from "node:path"
+import { writeDurablePrivate } from "../shared/files"
 import { baseProvider, parseProvider, type AgentKind } from "./accounts"
 import type { Agent, ConversationFiles } from "./agent"
 import { NotFound, type Sessions } from "./sessions"
@@ -438,7 +439,8 @@ export class Carrying {
         }
         if (session.model?.providerID && hosts.get(session.model.providerID)) session.model = { ...session.model, providerID: hosts.get(session.model.providerID)!.providerID }
         stillOn()
-        await undo.noteSession(id)
+        if (this.store.get(id)) throw new CantCarry("a conversation is already on this computer")
+        undo.noteSession(id)
         this.sessions.addCarried({ session, messages, agent })
       }
       return { sessions, infos: manifest.sessions.map(({ id, metadata }) => ({ id, metadata })), digest: manifest.digest, ...(rootCame ? { came: rootCame } : {}), lanes: manifest.lanes.map(({ list: _, ...lane }) => ({ ...lane, how: placed.includes(manifest.lanes.find((each) => each.session === lane.session && each.provider === lane.provider)!) ? ("files" as const) : ("handover" as const) })), model: this.store.get(manifest.root)?.session.model }
@@ -556,13 +558,13 @@ class Undo {
     return this.list
   }
 
-  private async write() {
-    await writeFile(this.file, JSON.stringify(this.list), { mode: 0o600 })
+  private write() {
+    writeDurablePrivate(this.file, JSON.stringify(this.list))
   }
 
-  async noteSession(id: string) {
+  noteSession(id: string) {
     this.list.sessions.push(id)
-    await this.write()
+    this.write()
   }
 
   /** `from` to `dest`, checked there; what was at `dest` kept (`merges`: left, and this one beside it). */
@@ -580,7 +582,7 @@ class Undo {
     const placed: Placed = merges ? { dest, sha256: file.sha256 } : { dest }
     if (there) placed.replaced = join(this.keep, "replaced", String(this.count++))
     this.list.placed.push(placed)
-    await this.write()
+    this.write()
     if (placed.replaced) {
       await mkdir(dirname(placed.replaced), { recursive: true })
       await rename(dest, placed.replaced)
@@ -607,9 +609,9 @@ class Undo {
       }
       // (Written to since by something here, a memory the others share: kept as it is now.)
       this.list.placed.pop()
-      await this.write()
+      this.write()
     }
-    await this.write().catch(() => {})
+    this.write()
   }
 }
 

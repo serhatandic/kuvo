@@ -3,8 +3,9 @@
 // Send Now, and a client's own message to wait with it.
 
 import { isObject, parsed } from "../../shared/json";
-import { wakeMarkOf } from "../../shared/queues";
+import { BAD_WAITING_ID, isWaitingID, wakeMarkOf } from "../../shared/queues";
 import { MOVING } from "../bots/here";
+import { admitPrompt, MoveAdmissionClosed } from "../moves/admission";
 import { frozen, liveMoves } from "../moves/records";
 import { followed, followedLive } from "../follow";
 import { isRefused, placeOfSession, placeOfSessionPatiently } from "../letters/letter";
@@ -188,7 +189,8 @@ export async function* queueRoute(context: RouteContext, match: RegExpMatchArray
 async function* add({ request, bridge, readEngine, json, signal }: RouteContext, target: Target, session: string): AsyncGenerator<AnswerPiece> {
   const given = parsed(request.body);
   if (!isObject(given)) return yield* json(400, { message: "Send what was written (words)." });
-  const id = typeof given.id === "string" && /^msg_[A-Za-z0-9]{1,80}$/.test(given.id) ? given.id : messageID();
+  if (given.id !== undefined && !isWaitingID(given.id)) return yield* json(400, { message: BAD_WAITING_ID });
+  const id = given.id ?? messageID();
   const files = Array.isArray(given.files) ? given.files : [];
   const toAgents = bridge()?.port === target.port;
   const mark = wakeMarkOf(given.metadata) ?? undefined;
@@ -243,13 +245,15 @@ async function* added({ json }: Pick<RouteContext, "json">, target: Target, sess
   const message = { id, text: written.text, ...(written.files?.length ? { files: written.files } : {}), delivery, ...(written.metadata ? { metadata: written.metadata } : {}) } as { id: string; text: string; files?: unknown[]; delivery: "steer" | "queue"; metadata?: Record<string, unknown> };
   const before = typeof given.before === "string" && /^[A-Za-z0-9_]{1,100}$/.test(given.before) ? given.before : undefined;
   try {
-    if (await keepWaitingBefore(target, session, message, { from, words }, before)) return yield* json(200, { ...shownQueue(queueOf(session)), waits: true });
+    const waits = await admitPrompt(session, async () => {
+      if (await keepWaitingBefore(target, session, message, { from, words }, before)) return true;
+      await asked(target, "POST", `api/session/${encodeURIComponent(session)}/prompt`, message, SENDING_PATIENCE.ms);
+      return false;
+    });
+    return yield* json(200, { ...shownQueue(queueOf(session)), waits });
   } catch (error) {
-    console.error("kuvo-link: could not save a waiting message", error);
+    if (error instanceof MoveAdmissionClosed) return yield* json(409, { message: error.message });
+    console.error("kuvo-link: could not add a waiting message", error);
     return yield* json(500, { message: "This computer couldn’t save the message. Try sending it again." });
   }
-  // (A busy engine takes the message late, and has it then: waited for, not given up on at the
-  // usual half minute and said to have failed, #443.)
-  await asked(target, "POST", `api/session/${encodeURIComponent(session)}/prompt`, message, SENDING_PATIENCE.ms);
-  return yield* json(200, { ...shownQueue(queueOf(session)), waits: false });
 }

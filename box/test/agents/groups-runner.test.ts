@@ -1,5 +1,6 @@
 import "../safety"
-import { afterEach, beforeEach, describe, expect, test } from "bun:test"
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test"
+import fs from "node:fs"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -538,7 +539,9 @@ describe("a group chat on a machine", () => {
 
   test("one talking when the engine started over waits for Keep Going", () => {
     const { store } = runner()
-    store.saveGroup({ group: group(), status: "active", talking: true, messages: [] })
+    const saved = { group: group(), status: "active" as const, talking: true, messages: [] }
+    store.saveMessages(saved)
+    store.saveGroup(saved)
     const { groups } = runner()
     expect(groups.talk("grp_team000001")).toEqual({ speaking: undefined, discussing: false, paused: true })
   })
@@ -688,6 +691,33 @@ describe("a group chat on a machine", () => {
     groups.put({ ...seated, id: "grp_other00001" }, [], "active", false)
     await groups.delete("grp_other00001")
     expect(engine.requests.some((request) => request.method === "DELETE" && request.path === "/api/session/ses_seatA")).toBe(true)
+  })
+
+  test("after restart a transcript read failure refuses a move before changing the group", async () => {
+    const chat = group()
+    const messages = [{ id: "msg_previous", kind: "message", text: "Keep this conversation.", time: stamp() }]
+    const original = runner()
+    const put = await groupRoutes(original.groups, original.store, "PUT", [chat.id], async () => ({ group: chat, messages, status: "active" }))
+    expect(put.status).toBe(200)
+    const transcript = join(root, "groups", chat.id, "messages.json")
+    const state = join(root, "groups", chat.id, "group.json")
+    const before = readFileSync(state, "utf8")
+    const read = fs.readFileSync
+    const failRead = ((file, options) => {
+      if (file === transcript) throw Object.assign(new Error("Injected transcript read failure"), { code: "EIO" })
+      return read(file, options)
+    }) as typeof read
+    const inject = spyOn(fs, "readFileSync").mockImplementation(failRead)
+    let restarted: ReturnType<typeof runner>
+    try { restarted = runner() } finally { inject.mockRestore() }
+    const hold = await groupRoutes(restarted.groups, restarted.store, "POST", [chat.id, "hold"], async () => undefined)
+    expect(hold.status).toBe(503)
+    expect(readFileSync(state, "utf8")).toBe(before)
+    expect(JSON.parse(readFileSync(transcript, "utf8"))).toEqual(messages)
+    const recovered = runner()
+    const retried = await groupRoutes(recovered.groups, recovered.store, "POST", [chat.id, "hold"], async () => undefined)
+    expect(retried.status).toBe(200)
+    expect(await retried.json()).toMatchObject({ data: { messages } })
   })
 
   test("a moved group stays held if its activation record cannot be saved", () => {

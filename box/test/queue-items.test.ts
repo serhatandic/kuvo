@@ -11,11 +11,14 @@ import { interceptSync } from "./disk-fault"
 // keeping each session's inbox and messages as the engine does.
 
 const { engineHandler } = await import("../src/link/server/router")
-const { forgetQueue, queueWatcher, QUEUES_FILE, WAITING_DIR } = await import("../src/link/engine/queue")
+const { forgetQueue, queueOf, queueWatcher, releaseWaiting, QUEUES_FILE, WAITING_DIR } = await import("../src/link/engine/queue")
 
+let activeFails: boolean, acceptsPrompt: boolean
 let inboxes: Record<string, any[]>, delivered: Record<string, string[]>, keeps: Set<string>, got: { method: string; path: string }[]
 beforeEach(() => {
   for (const session of ["ses_q", "ses_late"]) forgetQueue(session)
+  activeFails = false
+  acceptsPrompt = true
   got = []
   keeps = new Set()
   delivered = {}
@@ -42,12 +45,20 @@ const engine = Bun.serve({
     const url = new URL(request.url)
     got.push({ method: request.method, path: url.pathname })
     const reply = (value: unknown, status = 200) => Response.json(value, { status })
-    if (url.pathname === "/api/session/active") return reply({ data: {} })
+    if (url.pathname === "/api/session/active") return activeFails ? reply({}, 503) : reply({ data: {} })
     const [, id, kind, item] = url.pathname.match(/^\/api\/session\/([^/]+)(?:\/([^/]+)(?:\/([^/]+))?)?$/) ?? []
     if (id === "ses_broken") return reply({ message: "Busy." }, 500)
     if (!id || !inboxes[id]) return reply({ message: "No such session." }, 404)
     if (!kind) return reply({ data: { id, location: { directory: "/w" }, time: { created: 1, updated: 1 } } })
-    if (kind === "message") return reply({ data: (delivered[id] ?? []).map(each => ({ id: each, type: "user" })) })
+    if (kind === "message") {
+      if (item) return (delivered[id] ?? []).includes(item) ? reply({ data: { id: item } }) : reply({}, 404)
+      return reply({ data: (delivered[id] ?? []).map(each => ({ id: each, type: "user" })) })
+    }
+    if (kind === "prompt") {
+      const prompt = await request.json() as { id: string }
+      if (acceptsPrompt) (delivered[id] ??= []).push(prompt.id)
+      return reply({ data: { id: prompt.id } })
+    }
     if (kind !== "inbox") return reply({ message: "Not here." }, 404)
     if (!item) return reply({ data: inboxes[id] })
     const entry = inboxes[id]!.find(each => each.id === item)
@@ -82,6 +93,41 @@ async function stopAndAdd(): Promise<string> {
   expect(added.json.waits).toBe(true)
   return id
 }
+
+test("Send Now and engine-swap release keep waiting payloads until the engine confirms their ID", async () => {
+  const one = await stopAndAdd()
+  const payload = path.join(WAITING_DIR, `${one}.json`)
+  const sendNow = () => ask(handler, "POST", `kuvo/sessions/ses_q/queue/${one}/now`)
+  activeFails = true
+  expect((await sendNow()).status).toBe(502)
+  expect(queueOf("ses_q").paused).toBe(true)
+  expect(queueOf("ses_q").waiting?.map(item => item.id)).toContain(one)
+  expect(fs.existsSync(payload)).toBe(true)
+
+  // The existing engine items go first when the queue is resumed. This queued box prompt
+  // remains for the engine-swap release pump to send.
+  activeFails = false
+  expect((await ask(handler, "POST", "kuvo/sessions/ses_q/queue/resume")).status).toBe(200)
+  acceptsPrompt = false
+  expect(await releaseWaiting(target)).toBe(0)
+  expect(queueOf("ses_q").waiting?.map(item => item.id)).toContain(one)
+  expect(fs.existsSync(payload)).toBe(true)
+  acceptsPrompt = true
+  expect(await releaseWaiting(target)).toBe(1)
+  expect(delivered.ses_q).toEqual([one])
+  expect(fs.existsSync(payload)).toBe(false)
+})
+
+test("paused send and queue add reject IDs that cannot be kept in the queue", async () => {
+  expect((await ask(handler, "POST", "kuvo/sessions/ses_q/queue/hold")).status).toBe(200)
+  for (const route of ["send", "queue/add"]) {
+    const answer = await ask(handler, "POST", `kuvo/sessions/ses_q/${route}`, { id: "msg_bad_id", text: "Keep it.", kept: true, delivery: "queue" })
+    expect(answer.status).toBe(400)
+    expect(answer.json.message).toContain("Send it again as a new message.")
+  }
+  expect(queueOf("ses_q").waiting ?? []).toEqual([])
+  expect(fs.existsSync(path.join(WAITING_DIR, "msg_bad_id.json"))).toBe(false)
+})
 
 test("a paused enqueue gets success only after its payload and index sync", async () => {
   const id = "msg_SaveFault"

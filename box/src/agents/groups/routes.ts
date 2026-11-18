@@ -47,15 +47,16 @@ export async function groupRoutes(runner: GroupRunner | undefined, store: GroupS
     return json({})
   }
   if (!/^grp_[a-z0-9]+$/.test(id)) return error(404, "No such chat.")
+  if (store.transcriptUnreadable(id)) return error(503, "This computer couldn’t read the group’s conversation. Restart Kuvo and try again.")
   if (!action) {
     if (method === "GET") {
       const chat = runner.get(id)
       return chat ? json({ version, data: chat }) : error(404, "No such chat.")
     }
     if (method === "PUT") {
-      const { group, messages, status, replace } = await body()
+      const { group, messages, status, replace, moveImport } = await body()
       if (!isGroup(group, id) || !isMessages(messages ?? [])) return error(400, "That isn't a group chat.")
-      if (!runner.put(group, messages ?? [], status === "active" ? "active" : "held", replace === true)) return error(409, "That chat is here already.")
+      if (!runner.put(group, messages ?? [], status === "active" ? "active" : "held", replace === true, typeof moveImport === "string" ? moveImport : undefined)) return error(409, "That chat is here already.")
       return json({ data: runner.get(id) })
     }
     if (method === "PATCH") {
@@ -93,9 +94,10 @@ export async function groupRoutes(runner: GroupRunner | undefined, store: GroupS
       return json({ data: runner.get(id) })
     case "hold":
       return json({ data: runner.hold(id) })
-    case "release":
-      runner.release(id)
-      return json({})
+    case "release": {
+      const { moveImport } = await body() ?? {}
+      return runner.release(id, typeof moveImport === "string" ? moveImport : undefined) ? json({}) : error(404, "No such chat.")
+    }
   }
   if (found.status !== "active") return error(409, "That chat is moving.")
   switch (action) {

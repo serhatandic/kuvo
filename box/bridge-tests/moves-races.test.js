@@ -63,7 +63,8 @@ const server = http.createServer((request, response) => {
         if (engine.sessions.has(given.info.id)) return response.writeHead(409).end("{}");
         if (engine.refuse === given.info.id) return response.writeHead(500, { "content-type": "application/json" }).end(JSON.stringify({ message: "The disk is full." }));
         engine.imports += 1;
-        engine.sessions.set(given.info.id, { id: given.info.id, title: given.info.title, parentID: given.info.parentID, directory: given.location.directory, messages: given.messages });
+        engine.sessions.set(given.info.id, { id: given.info.id, title: given.info.title, parentID: given.info.parentID, directory: given.location.directory, metadata: given.info.metadata, messages: given.messages });
+        if (engine.loseImportReply === given.info.id) return response.destroy();
         return send(200, listed(engine.sessions.get(given.info.id)));
       };
       if (!engine.hold) return bring();
@@ -82,7 +83,14 @@ const server = http.createServer((request, response) => {
     const match = url.pathname.match(/^\/api\/session\/([^/]+)(\/inbox|\/interrupt|\/prompt|\/message)?$/);
     const session = match && engine.sessions.get(match[1]);
     if (!session) return send(404, null);
+    if (!match[2] && request.method === "GET" && engine.lookupDown === session.id) return send(503, null);
     if (match[2] === "/inbox") {
+      if (session.holdInbox) {
+        const wait = session.holdInbox;
+        session.holdInbox = null;
+        session.inboxHeld = true;
+        return void wait.then(() => send(200, session.inbox ?? []));
+      }
       session.inboxReads = (session.inboxReads ?? 0) + 1;
       return session.inboxDown ? send(503, null) : send(200, session.inbox ?? []);
     }
@@ -223,6 +231,44 @@ test("a move with a real queued message refuses a missing payload both before se
     } finally {
       fs.writeFileSync(payload, bytes);
     }
+  }
+});
+
+test("a real queue add delayed after admission is included before the source can switch", async () => {
+  const session = "ses_AdmissionRace", message = "msg_AdmissionRace";
+  chat(session);
+  const source = engine.sessions.get(session);
+  assert.equal((await ask("POST", `kuvo/sessions/${session}/stop`)).json.paused, true);
+  const { promise, resolve } = Promise.withResolvers();
+  source.holdInbox = promise;
+  const pendingAdd = ask("POST", `kuvo/sessions/${session}/queue/add`, { id: message, text: "Keep the admitted send.", kept: true, before: "msg_first" });
+  const before = told.length;
+  labAnswers();
+  try {
+    await until(() => source.inboxHeld);
+    const move = ask("POST", "kuvo/moves", { kind: "chat", id: session, to: peerKey });
+    await until(() => recordOf(session)?.stage === "holding");
+    // A second send sees the freeze while the first one is still finishing.
+    const late = await ask("POST", `kuvo/sessions/${session}/queue/add`, { id: "msg_TooLate", text: "This reached the freeze." });
+    assert.equal(late.status, 409);
+    const offeredBeforeTheWrite = await Promise.race([
+      until(() => told.slice(before).some(mail => mail.op === "offer")).then(() => true),
+      new Promise(done => setTimeout(done, 300, false)),
+    ]);
+    resolve();
+    assert.equal((await pendingAdd).json.waits, true);
+    await until(() => told.slice(before).some(mail => mail.op === "switch"));
+    const moveID = recordOf(session).id;
+    const parts = told.slice(before).filter(mail => mail.id === moveID && mail.op === "part");
+    const file = path.join(support, "admitted.tgz");
+    fs.writeFileSync(file, Buffer.concat(parts.map(mail => Buffer.from(mail.d, "base64url"))));
+    const manifest = spawnSync("tar", ["-xOzf", file, "move.json"], { encoding: "utf8" });
+    await say({ op: "switched", id: moveID });
+    assert.equal((await move).status, 200);
+    assert.equal(offeredBeforeTheWrite, false);
+    assert.match(manifest.stdout, /Keep the admitted send/);
+  } finally {
+    resolve();
   }
 });
 
@@ -648,6 +694,48 @@ test("a drop that comes while a copy's being set up waits for it, then lets all 
   assert.deepEqual(underWay((await ask("GET", "kuvo/moves")).json), { moves: [], away: [] });
   // And lab heard, as it was set up, that it was still at it.
   assert.ok(told.some(move => move.id === id && move.op === "working"));
+});
+
+test("a transient destination lookup refuses import and rollback preserves unrelated children", async () => {
+  script = () => {};
+  for (const fault of ["lookup", "conflict", "lostReply"]) {
+    const thing = `ses_Root${fault}`, child = `ses_Child${fault}`, id = `mov_Import${fault}`;
+    const resident = { id: child, title: "Existing local conversation", directory: chats, messages: [{ text: "Keep this." }] };
+    const { bytes, hash } = bundleFor(thing, [
+      { info: { id: thing, title: "Notes" }, messages: [] },
+      { info: { id: child, parentID: thing, title: "Incoming copy" }, messages: [] },
+    ], { "wakes.json": "[]" });
+    await say({ op: "offer", safeSwitch: true, id, kind: "chat", thing, name: "Notes", size: bytes.length, hash, wasPaused: false, from: peerKey });
+    let completeImport;
+    if (fault === "lookup") {
+      engine.sessions.set(child, resident);
+      engine.lookupDown = child;
+    } else if (fault === "conflict") {
+      engine.hold = new Promise(resolve => { completeImport = resolve; });
+    } else {
+      engine.loseImportReply = child;
+    }
+    const before = engine.imports;
+    try {
+      const part = say({ op: "part", id, hash, i: 0, of: 1, d: bytes.toString("base64url") });
+      if (fault === "conflict") {
+        await until(() => engine.holding);
+        engine.sessions.set(child, resident);
+        engine.hold = null;
+        completeImport();
+      }
+      await part;
+      assert.ok(told.some(mail => mail.id === id && mail.op === "failed"));
+      assert.ok(!told.some(mail => mail.id === id && mail.op === "arrived"));
+      assert.equal(engine.sessions.has(thing), false);
+      assert.equal(engine.sessions.get(child), fault === "lostReply" ? undefined : resident);
+      assert.equal(engine.imports - before, { lookup: 0, conflict: 1, lostReply: 2 }[fault]);
+    } finally {
+      engine.lookupDown = engine.loseImportReply = engine.hold = null;
+      completeImport?.();
+      engine.sessions.delete(child);
+    }
+  }
 });
 
 test("a switch heard while this box's engine is down: the original goes once it's back", async () => {

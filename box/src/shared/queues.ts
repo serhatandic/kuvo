@@ -131,10 +131,15 @@ export interface Shown {
 
 // (A message's id names its file in `waiting`.)
 const WAITING_ID = /^msg_[A-Za-z0-9]{1,80}$/;
+export const isWaitingID = (id: unknown): id is string => typeof id === "string" && WAITING_ID.test(id);
+export const BAD_WAITING_ID = "This message couldn’t be queued. Send it again as a new message.";
+export class InvalidWaitingID extends Error {
+  constructor() { super(BAD_WAITING_ID); }
+}
 
 /** What waits on the box, as a list in a file (or another box's move) gives it: each that's whole. */
 export const keptWaiting = (value: unknown): Waiting[] => (Array.isArray(value) ? value : []).flatMap(item => {
-  if (!isObject(item) || typeof item.id !== "string" || !WAITING_ID.test(item.id) || typeof item.text !== "string") return [];
+  if (!isObject(item) || !isWaitingID(item.id) || typeof item.text !== "string") return [];
   const files = Array.isArray(item.files) ? item.files.filter((name): name is string => typeof name === "string") : [];
   return [{ id: item.id, ...(typeof item.from === "string" ? { from: item.from } : {}), text: item.text, ...(files.length ? { files } : {}), ...(typeof item.keyword === "string" ? { keyword: item.keyword } : {}), at: typeof item.at === "number" ? item.at : 0 }];
 });
@@ -223,6 +228,7 @@ export function keepWaiting(files: QueueFiles, session: string, message: Outgoin
   let kept = false;
   changeQueue(files, session, state => {
     if (!state.paused && !holds) return state;
+    if (!isWaitingID(message.id)) throw new InvalidWaitingID();
     writeDurablePrivate(waitingFile(files, message.id), JSON.stringify(keptText === undefined ? message : { ...message, text: keptText }), path.dirname(files.file));
     kept = true;
     const names = fileNames(message.files);

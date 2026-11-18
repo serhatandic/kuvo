@@ -9,6 +9,7 @@
 // taken back); then notes the switch, tells the other box to switch, and lets its own copy go.
 // Before the switch, anything that goes wrong takes it back as it was; after it, only forward.
 
+import { waitForPromptWrites } from "./admission";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -40,7 +41,7 @@ import { readBackground } from "../work/background";
 import { decidedOf, forgetDecided, isAutopilot, keepDecided, tellAutopilot } from "../work/autopilot";
 import { isChatsFolder } from "../engine/chats";
 import type { EngineSession } from "../engine/sessions";
-import { CHATS, engineWait, MOST_BUNDLE, NotTaken, TooBig, deleteSession, directoryOf, exportAll, folderOf, groupAction, conversationHash, hashOf, idsOf, importAll, notPlainIn, ownTree, pack, toTrash, unpack } from "./bundle";
+import { CHATS, engineWait, MOST_BUNDLE, NotTaken, TooBig, deleteSession, directoryOf, exportAll, folderOf, groupAction, conversationHash, hashOf, idsOf, importConversation, notPlainIn, ownTree, pack, toTrash, unpack } from "./bundle";
 import type { Contents } from "./bundle";
 import { forgetWorkQueues, packWorkQueues, placeWorkQueues } from "../work-queue/moves";
 import { AGENT_NAMES, CARRIED_AGENTS } from "../../shared/carry";
@@ -340,6 +341,7 @@ async function movable(kind: MoveKind, thing: string, signal?: AbortSignal): Pro
   let bridge: Target;
   try { bridge = readBridgeFile(); } catch { return null; }
   const listed = await askGroups<{ data?: { group?: { name?: string; members?: unknown } } }>(bridge, "GET", `/${encodeURIComponent(thing)}`, undefined, engineWait(signal)).catch(() => null);
+  if (listed?.status === 503) return { name: "This group chat", why: "This computer couldn’t read the group’s conversation. Restart Kuvo and try again." };
   if (listed?.status !== 200) return null;
   const members = listed.value?.data?.group?.members;
   return {
@@ -652,7 +654,10 @@ async function carryOn(id: string): Promise<void> {
   let queues: Record<string, unknown> = {};
   const contents: Contents = { kind: record.kind, thing: record.thing, name: record.name, exports, wasPaused: record.wasPaused };
   if (record.kind === "group") {
-    contents.group = await groupAction(readBridgeFile(), record.thing, "hold") as Contents["group"];
+    contents.group = await groupAction(readBridgeFile(), record.thing, "hold").catch(error => {
+      if ((error as { status?: number })?.status === 503) throw new Refused(`${record.name}’s conversation couldn’t be read. Restart Kuvo on this computer and try again.`);
+      throw error;
+    }) as Contents["group"];
     // Its Work Queue, which its seats keep.
     const workQueue = packWorkQueues([record.thing]);
     if (workQueue) contents.workQueue = workQueue;
@@ -669,6 +674,7 @@ async function carryOn(id: string): Promise<void> {
     }
     const target = record.lane ? readBridgeFile() : readEngineFile();
     const known = new Set(record.sessions);
+    await waitForPromptWrites(record.sessions);
     await settle(target, record.sessions, record.name);
     const running = runningOf(record.sessions);
     if (running) throw new Refused(say.background(record.name, running));
@@ -699,6 +705,7 @@ async function carryOn(id: string): Promise<void> {
       if (takenBack()) return;
       // Freeze the discovered conversations before waiting for their inboxes to settle.
       changeMove(id, each => { each.sessions = record.sessions; });
+      await waitForPromptWrites(record.sessions);
       await settle(target, record.sessions, record.name);
       const background = runningOf(record.sessions);
       if (background) throw new Refused(say.background(record.name, background));
@@ -848,6 +855,7 @@ async function arrived(record: MoveRecord, placed?: unknown): Promise<void> {
   };
   if (record.kind !== "group") {
     const target = record.lane ? readBridgeFile() : readEngineFile();
+    await waitForPromptWrites(record.sessions);
     await settle(target, record.sessions, record.name);
     // What's in place there, file by file, is what was sent: or it's not the one to go on from.
     if (record.lane && placed !== outgoing.get(record.id)?.digest) throw new Refused(say.notSame(record.name));
@@ -1148,14 +1156,27 @@ async function setUp(sender: MailSender, id: string, file: string, identity: Bun
   }
 }
 
+/** Only a definite absence allows an import or counts as a completed rollback. */
+async function sessionHere(target: Target, id: string, signal?: AbortSignal): Promise<unknown> {
+  try {
+    return await call(target, "GET", `/api/session/${encodeURIComponent(id)}`, undefined, engineWait(signal));
+  } catch (error) {
+    if ((error as { status?: number })?.status === 404) return undefined;
+    throw error;
+  }
+}
+
+const importReceipt = (record: MoveRecord) => `${record.id}:${record.generation}:${record.hash}`;
+
 /** The bundle put in place here, held: its folder, its conversations, a group chat. */
 async function bringIn(record: MoveRecord, signal: AbortSignal): Promise<string[]> {
   const { contents, folder, carry: carried, opened } = await unpack(record.id);
   if (record.kind === "group") {
     const held = contents.group;
     if (!held || !isObject(held.group)) throw new NotTaken("The group chat didn’t come with it.");
-    const answer = await askGroups<{ message?: unknown }>(readBridgeFile(), "PUT", `/${encodeURIComponent(record.thing)}`, { group: held.group, messages: held.messages, status: "held" }, engineWait(signal));
+    const answer = await askGroups<{ message?: unknown }>(readBridgeFile(), "PUT", `/${encodeURIComponent(record.thing)}`, { group: held.group, messages: held.messages, status: "held", moveImport: importReceipt(record) }, engineWait(signal));
     if (answer.status !== 200) throw new Error(typeof answer.value?.message === "string" ? answer.value.message : `Its group chats answered ${answer.status}.`);
+    changeMove(record.id, each => { each.placed = true; });
     placeWorkQueues(contents.workQueue, [record.thing], opened);
     return [];
   }
@@ -1172,12 +1193,11 @@ async function bringIn(record: MoveRecord, signal: AbortSignal): Promise<string[
   const bringing = contents.lane ? contents.lane.sessions.filter(each => typeof each === "string" && /^ses_[A-Za-z0-9]{1,60}$/.test(each)) : idsOf(contents.exports);
   if (contents.lane && (!bringing.length || bringing.length !== contents.lane.sessions.length)) throw new NotTaken("Its conversations aren’t its own.");
   for (const session of bringing) {
-    if (await call(engine, "GET", `/api/session/${encodeURIComponent(session)}`, undefined, engineWait(signal)).then(() => true, () => false)) throw new NotTaken(`Its conversations are on ${HERE} already.`);
+    if (await sessionHere(engine, session, signal) !== undefined) throw new NotTaken(`Its conversations are on ${HERE} already.`);
   }
   signal.throwIfAborted();
   if (folder) {
-    // One left by a move cut short, or by the copy before this one, goes first.
-    if (fs.existsSync(place)) await toTrash(place);
+    if (fs.existsSync(place)) throw new NotTaken(`${record.name} is on ${HERE} already.`);
     fs.mkdirSync(path.dirname(place), { recursive: true });
     // Publish only a held folder, even if the bridge stops immediately after the rename.
     writeDurablePrivate(PAUSED(folder), moveMarker(record.id));
@@ -1202,13 +1222,22 @@ async function bringIn(record: MoveRecord, signal: AbortSignal): Promise<string[
       throw error;
     });
     sessions = [...new Set([...sessions, ...placed.sessions])];
-    changeMove(record.id, each => { each.digest = placed.digest; each.sessions = sessions; });
+    changeMove(record.id, each => { each.digest = placed.digest; each.sessions = sessions; each.createdSessions = placed.sessions; });
     infos = placed.infos as typeof infos;
     // Its account isn't on this computer: the bot goes on with the one its conversation went to. And
     // on the model it ran on, where it named it by an alias that stands for another one here.
     if (record.kind === "bot" && placed.model?.providerID) rewriteModel(place, placed.model, placed.came);
   } else {
-    await importAll(engine, contents.exports, directory, signal);
+    for (const exported of contents.exports) {
+      if (!isObject(exported) || !isObject(exported.info) || typeof exported.info.id !== "string") throw new NotTaken("A conversation did not come through.");
+      const session = exported.info.id;
+      changeMove(record.id, each => { each.importingSession = session; });
+      await importConversation(engine, exported, directory, importReceipt(record), engineWait(signal));
+      changeMove(record.id, each => {
+        each.createdSessions = [...(each.createdSessions ?? []), session];
+        each.importingSession = undefined;
+      });
+    }
     infos = contents.exports.flatMap(exported => isObject(exported) && isObject(exported.info) ? [exported.info as Partial<EngineSession> & { id: string }] : []);
   }
   // What waited for them, kept here paused until the switch.
@@ -1431,23 +1460,30 @@ async function drop(id: string): Promise<void> {
 async function clearCopy(record: MoveRecord): Promise<void> {
   incoming.delete(record.id);
   if (record.kind === "group") {
-    await groupAction(readBridgeFile(), record.thing, "release");
-    forgetWorkQueues([record.thing]);
+    if (record.complete) await groupAction(readBridgeFile(), record.thing, "release", importReceipt(record));
+    if (record.placed) forgetWorkQueues([record.thing]);
   } else {
-    // (None brought in yet: its engine needn't be running.)
+    const created = new Set(record.createdSessions);
     if (record.lane) {
       // Only what this move placed, each agent's files too, and what those replaced back.
       if (fs.existsSync(placedOf(record.id))) await carry(readBridgeFile(), "undo", { keep: placedOf(record.id) });
-      for (const session of record.sessions) forgetDecided(session);
-    } else if (record.sessions.length) {
+    } else if (created.size || record.importingSession) {
       const engine = readEngineFile();
-      for (const session of [...record.sessions].reverse()) {
-      await deleteSession(engine, session);
+      if (record.importingSession) {
+        const info = await sessionHere(engine, record.importingSession);
+        if (isObject(info) && isObject(info.metadata) && info.metadata["kuvo.moveImport"] === importReceipt(record)) {
+          created.add(record.importingSession);
+          // Keep the proof even if deleting the session succeeds before the rest of cleanup does.
+          changeMove(record.id, each => { each.createdSessions = [...created]; each.importingSession = undefined; });
+        }
+      }
+      for (const session of [...created].reverse()) await deleteSession(engine, session);
+    }
+    for (const session of created) {
       forgetDecided(session);
+      forgetQueue(session);
     }
-    }
-    for (const session of record.sessions) forgetQueue(session);
-    forgetWorkQueues(record.sessions);
+    if (created.size) forgetWorkQueues([...created]);
     const place = folderOf(record.kind, record.thing);
     // Only a copy this move placed, never one that lives here.
     if (place && record.placed) {

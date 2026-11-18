@@ -13,6 +13,9 @@ const { serveBox } = await import("../src/link/server/serve")
 const { forgetMovesInMemory, hold, keepMoving, resumeMoves, sendMovesWith, takeMoveMail } = await import("../src/link/moves/move")
 const { MOVES, forgetMove, noteEnded, readMove, saveMove, switchedHere } = await import("../src/link/moves/records")
 const { pack } = await import("../src/link/moves/bundle")
+const { filesOf, WORK_QUEUE } = await import("../src/link/work-queue/store")
+const { forgetWorkQueues, packWorkQueues } = await import("../src/link/work-queue/moves")
+import type { CarriedQueues } from "../src/link/work-queue/moves"
 const { queueOf, unpackQueues, WAITING_DIR } = await import("../src/link/engine/queue")
 
 const id = "mov_Safety172"
@@ -439,14 +442,15 @@ test("record and directory syncs gate switch mail, activation, and replayed ackn
   expect(activity).toBe(1)
 })
 
-async function incomingBot(queues?: Record<string, unknown>) {
+async function incomingBot(queues?: Record<string, unknown>, workQueue?: CarriedQueues) {
   const seed = "mov_IncomingSafety"
   fs.mkdirSync(path.dirname(nested), { recursive: true })
   fs.writeFileSync(nested, "This check must come with the bot.")
   fs.writeFileSync(path.join(arrivingFolder, "bot.json"), JSON.stringify({ kuvo: 1, id: arrivingBot, name: "Mira" }))
   fs.writeFileSync(path.join(arrivingFolder, "session"), arrivingSession)
   const packed = await pack(seed, { kind: "bot", thing: arrivingBot, name: "Mira", folder: arrivingBot, wasPaused: false,
-    exports: [{ info: { id: arrivingSession }, messages: [] }], queues })
+    exports: [{ info: { id: arrivingSession }, messages: [] }], queues, workQueue })
+  if (workQueue) forgetWorkQueues([arrivingSession])
   const bytes = fs.readFileSync(packed.file)
   forgetMove(seed)
   fs.rmSync(arrivingFolder, { recursive: true })
@@ -456,6 +460,49 @@ async function incomingBot(queues?: Record<string, unknown>) {
   const part = () => peerMail("part", { i: 0, of: 1, d: bytes.toString("base64url"), ...identity })
   const activate = () => peerMail("switch", { safeSwitch: true, ...identity })
   return { ...identity, part, activate }
+}
+
+for (const failure of ["attachment write", "index sync", "none"] as const) {
+  test(`a Work Queue move waits for its attachment and index to persist (${failure})`, async () => {
+    const added = handler({
+      method: "POST", path: "kuvo/work-queue/items", headers: {}, fromApp: true,
+      body: Buffer.from(JSON.stringify({
+        owner: arrivingSession, title: "Keep the attachment", files: [{ uri: "data:image/png;base64,YXR0YWNobWVudA==", name: "plan.png" }],
+      })),
+    }, undefined)
+    expect((await added.next()).value).toMatchObject({ head: { status: 200 } })
+    await added.return(undefined)
+    const work = packWorkQueues([arrivingSession])!
+    const attachment = path.join(filesOf(work.items[0].id), "plan.png")
+    expect(fs.readFileSync(attachment, "utf8")).toBe("attachment")
+    const incoming = await incomingBot(undefined, work)
+    const index = path.join(WORK_QUEUE, "queues", `${arrivingSession}.json`)
+    const synced: string[] = []
+    const restore = interceptSync(file => failure === "index sync" && file.startsWith(`${index}.`), synced)
+    const write = fs.writeFileSync
+    const disk = spyOn(fs, "writeFileSync").mockImplementation((file, data, options) => {
+      if (failure === "attachment write" && (file === attachment || String(file).startsWith(`${attachment}.`))) {
+        throw Object.assign(new Error("Injected full disk"), { code: "ENOSPC" })
+      }
+      return write(file, data, options)
+    })
+    try { await incoming.part() } finally { disk.mockRestore(); restore() }
+    if (failure !== "none") {
+      expect(mail.some(each => each.op === "arrived")).toBe(false)
+      expect(mail.at(-1)).toMatchObject({ op: "failed" })
+      expect(importedBot).toBe(false)
+    } else {
+      expect(mail.at(-1)).toMatchObject({ op: "arrived" })
+      const fileAt = synced.findIndex(file => file.startsWith(`${attachment}.`))
+      const indexAt = synced.findIndex(file => file.startsWith(`${index}.`))
+      expect(fileAt).toBeGreaterThanOrEqual(0)
+      expect(indexAt).toBeGreaterThan(fileAt)
+      expect(synced.slice(indexAt + 1)).toContain(path.dirname(index))
+      expect(fs.readFileSync(attachment, "utf8")).toBe("attachment")
+      await peerMail("drop", incoming)
+    }
+    fs.rmSync(filesOf(work.items[0].id), { recursive: true, force: true })
+  })
 }
 
 test("moving a bot cannot report arrival until its nested wake-up files have synced", async () => {

@@ -7,6 +7,7 @@
 // the engine started again pause it until Resume; Stop holds what was for the next step ahead of
 // the queue, the latest Stop's first. Kept in `run/queues.json`, by session.
 
+import { admitPrompt } from "../moves/admission";
 import { draftOf, keptCommand } from "../messages/commands";
 import { keptParts, partsOf, withPartsOf } from "../messages/parts";
 import crypto from "node:crypto";
@@ -181,9 +182,11 @@ export async function sendInto(target: Target, session: string, message: Outgoin
   // Never the box's own notes, which clients draw as notes; a plain one a client asks about once.)
   const metadata = isBoxNote(message.metadata) ? message.metadata : withPartsOf(message.metadata, message.text);
   const whole = { ...message, id: message.id ?? messageID(), ...(metadata !== undefined ? { metadata } : {}) };
-  if (keepWaiting(session, whole, shown, undefined, target)) return "waits";
-  await asked(target, "POST", `api/session/${address(session)}/prompt`, whole);
-  return "sent";
+  return admitPrompt(session, async () => {
+    if (keepWaiting(session, whole, shown, undefined, target)) return "waits";
+    await asked(target, "POST", `api/session/${address(session)}/prompt`, whole);
+    return "sent";
+  });
 }
 
 /** `item` (else the first) taken from what waits on the box for `session` (`resume`: the queue no
@@ -509,7 +512,7 @@ export async function drain(target: Target, session: string): Promise<void> {
   if (queueOf(session).paused || (await isRunning(target, session))) return;
   if (!first) return;
   const next = inbox.find(item => item.id === first);
-  if (!next) return sendWaiting(target, session, first);
+  if (!next) { await sendWaiting(target, session, first); return; }
   if (queueOf(session).waiting?.some(item => item.id === next.id) && await acceptedWaiting(target, session, next.id)) confirmWaiting(session, next.id);
   if (next.delivery === "queue") await setDelivery(target, session, next.id, "steer");
   else await interrupt(target, session, true);
@@ -535,37 +538,31 @@ function confirmWaiting(session: string, item: string): void {
   fs.rmSync(waitingFile(item), { force: true });
 }
 
-const waitingSends = new Map<string, Promise<void>>();
+const waitingSends = new Map<string, { item: string; sent: Promise<boolean> }>();
 
 // Keep the index and payload until acceptance. A process killed before that point can retry with
 // the exact same ID, including when the engine took the prompt but the reply was lost.
-function sendWaiting(target: Target, session: string, item: string): Promise<void> {
+async function sendWaiting(target: Target, session: string, item: string, { whilePaused = false, steer = true } = {}): Promise<boolean> {
   const pending = waitingSends.get(session);
-  if (pending) return pending;
-  const send = (async () => {
+  if (pending) {
+    if (pending.item === item) return pending.sent;
+    await pending.sent.catch(() => false);
+    return sendWaiting(target, session, item, { whilePaused, steer });
+  }
+  const sent = (async () => {
     if (!await acceptedWaiting(target, session, item)) {
       const state = queueOf(session);
-      if (state.paused || !state.waiting?.some(each => each.id === item)) return;
+      if ((!whilePaused && state.paused) || !state.waiting?.some(each => each.id === item)) return false;
       const message = waitingPayload(item);
       if (!message) throw new Error("A waiting message could not be read");
-      await asked(target, "POST", `api/session/${address(session)}/prompt`, { ...message, delivery: "steer" });
+      await asked(target, "POST", `api/session/${address(session)}/prompt`, { ...message, ...(steer ? { delivery: "steer" } : {}) });
       if (!await acceptedWaiting(target, session, item)) throw new Error("A waiting message was not confirmed");
     }
     confirmWaiting(session, item);
+    return true;
   })().finally(() => waitingSends.delete(session));
-  waitingSends.set(session, send);
-  return send;
-}
-
-// A message taken to go that didn't: where `place` puts it, as it was shown; else (it was the first
-// to go) first again, held first if it was held.
-function putBack(session: string, { message, shown, held }: { message: Outgoing & { id: string }; shown: Waiting; held: boolean }, place?: files.Place) {
-  changeQueue(session, state => {
-    writePrivate(waitingFile(message.id), JSON.stringify(message));
-    const without = { ...state, held: state.held.filter(id => id !== shown.id), waiting: (state.waiting ?? []).filter(each => each.id !== shown.id) };
-    if (place) return place(without, shown);
-    return { ...without, ...(held ? { held: [shown.id, ...without.held] } : {}), waiting: [shown, ...without.waiting] };
-  });
+  waitingSends.set(session, { item, sent });
+  return sent;
 }
 
 /** What waits for `session`'s next step held in its queue, ahead of what was queued (the latest
@@ -618,18 +615,10 @@ export async function resumeQueue(target: Target, session: string): Promise<Queu
 export async function sendNow(target: Target, session: string, item: string): Promise<boolean> {
   // While the engine is being changed: no longer paused, and it goes first once the new one runs.
   if (swapHoldsFor(target)) return goesFirst(session, item);
-  // One waiting on the box: to the engine for now (back where it was if the engine doesn't take it).
-  const inbox = await inboxFor(target, session);
-  const kept = takeWaiting(session, item, true, inbox);
-  if (kept) {
-    if (!kept.message) return false;
+  if (queueOf(session).waiting?.some(each => each.id === item)) {
     const running = await isRunning(target, session);
-    try {
-      await asked(target, "POST", `api/session/${address(session)}/prompt`, { ...kept.message, delivery: "steer" });
-    } catch (error) {
-      putBack(session, { ...kept, message: kept.message }, placedBefore(inbox, kept.before));
-      throw error;
-    }
+    if (!(await sendWaiting(target, session, item, { whilePaused: true }))) return false;
+    changeQueue(session, state => ({ ...state, paused: false, resumed: Date.now() }), true);
     if (running) await interrupt(target, session, true);
     return true;
   }
@@ -727,8 +716,8 @@ export async function moveInboxToBox(target: Target, session: string): Promise<n
 
 /** What waits on the box for each conversation on `target` that isn't paused, sent there, each once
  * and in its order (the first to go now, the rest as each was sent): once an engine change is done,
- * or let go of (PROTOCOL.md, "A new engine"). One the engine doesn't take goes back first, and that
- * conversation's rest waits for the next look; one whose conversation is gone goes. Sessions the
+ * or let go of (PROTOCOL.md, "A new engine"). One the engine doesn't confirm stays in place,
+ * and that conversation's rest waits for the next look. Sessions the
  * engine doesn't have (the coding agents') are left. How many went. */
 export async function releaseWaiting(target: Target): Promise<number> {
   let sent = 0;
@@ -739,24 +728,17 @@ export async function releaseWaiting(target: Target): Promise<number> {
     } catch {
       continue;
     }
-    // (The first starts a turn where none runs; into one that runs, each goes as it was sent.)
-    let first = !(await isRunning(target, session).catch(() => true));
+    // The first starts a turn where none runs; into one that runs, each goes as it was sent.
+    const running = await isRunning(target, session).catch(() => undefined);
+    if (running === undefined) continue;
+    let steer = !running;
     for (;;) {
       const now = queueOf(session);
-      if (now.paused || !now.waiting?.length) break;
-      const taken = takeWaiting(session);
-      if (!taken) break;
-      if (!taken.message) continue;
-      const steer = first;
-      first = false;
-      try {
-        await asked(target, "POST", `api/session/${address(session)}/prompt`, { ...taken.message, ...(steer ? { delivery: "steer" } : {}) });
-        sent++;
-      } catch (error) {
-        if (/ 404\.$/.test(String((error as Error | null)?.message))) break;
-        putBack(session, { ...taken, message: taken.message });
-        break;
-      }
+      const next = now.waiting?.[0];
+      if (now.paused || !next) break;
+      if (!(await sendWaiting(target, session, next.id, { steer }).catch(() => false))) break;
+      steer = false;
+      sent++;
     }
   }
   return sent;

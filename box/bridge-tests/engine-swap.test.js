@@ -68,6 +68,7 @@ const port = Number(process.argv[process.argv.indexOf("--port") + 1]);
 const version = process.env.STAND_IN_VERSION;
 const scratch = ${JSON.stringify(scratch)};
 const inbox = [];
+const accepted = new Set();
 const read = request => new Promise(resolve => { let body = ""; request.on("data", chunk => { body += chunk; }); request.on("end", () => resolve(body)); });
 http.createServer(async (request, response) => {
   const url = new URL(request.url, "http://x");
@@ -83,8 +84,18 @@ http.createServer(async (request, response) => {
   const one = /^\\/api\\/session\\/([^/]+)(\\/.*)?$/.exec(url.pathname);
   if (one && one[1] !== "ses_engine") return answer(404, { message: "no such session" });
   if (one && !one[2]) return answer(200, { data: { id: "ses_engine", directory: ${JSON.stringify(home)}, time: { updated: Date.now() } } });
+  if (one?.[2]?.startsWith("/message/")) {
+    const id = decodeURIComponent(one[2].slice("/message/".length));
+    return accepted.has(id) ? answer(200, { data: { id } }) : answer(404, {});
+  }
   if (one && one[2] === "/prompt" && request.method === "POST") {
     const body = JSON.parse(await read(request));
+    if (version === "1.1.0" && fs.existsSync(scratch + "/unconfirmed-prompt")) {
+      fs.rmSync(scratch + "/unconfirmed-prompt");
+      fs.writeFileSync(scratch + "/unconfirmed-id", body.id);
+      return answer(200, { data: { id: body.id } });
+    }
+    accepted.add(body.id);
     fs.appendFileSync(scratch + "/prompts.log", JSON.stringify({ engine: version, id: body.id, text: body.text, delivery: body.delivery }) + "\\n");
     return answer(200, { data: { id: body.id } });
   }
@@ -250,11 +261,14 @@ test("an engine change waits for the turns on it, holds what's sent meanwhile on
   assert.deepEqual(prompts(), [], "nothing reached the old engine");
   assert.equal(engineNow().pid, old.pid, "its turn isn't cut");
 
-  // The engine's turn ends: the new engine takes its place, and what was held goes to it, each once, in order.
+  // The new engine answers one prompt without accepting it. The release retries that same ID
+  // before it sends the rest.
+  write(path.join(scratch, "unconfirmed-prompt"), "");
   busy(false);
   const fresh = await until(() => { const now = engineNow(); return now?.version === "1.1.0" ? now : null; }, "the new engine to run");
   assert.ok(!runs(old.pid), "the old engine stopped");
-  await until(() => prompts().length >= 3, "what was held to reach the new engine");
+  await until(() => prompts().length >= 3, "what was held to reach the new engine", 20_000);
+  assert.equal(fs.readFileSync(path.join(scratch, "unconfirmed-id"), "utf8"), "msg_swapinbox000001");
   await until(() => !fs.existsSync(path.join(RUN, "engine-swap.json")), "the swap to end");
   const said = text => (text.includes("first") ? "first" : text.includes("second") ? "second" : text);
   assert.deepEqual(prompts().map(each => [each.engine, each.id, said(each.text)]), [["1.1.0", "msg_swapinbox000001", "queued before"], ["1.1.0", "msg_swapfirst000001", "first"], ["1.1.0", "msg_swapsecond00001", "second"]],

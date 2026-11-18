@@ -2,6 +2,8 @@
 // writes what the agent reads (messages/parts.ts) and sends it to the conversation, its parts kept
 // with it; `POST kuvo/messages/parts` reads the parts of messages from before, which carry none.
 
+import { BAD_WAITING_ID, isWaitingID } from "../../shared/queues";
+import { admitPrompt, MoveAdmissionClosed } from "../moves/admission";
 import { isObject, parsed } from "../../shared/json";
 import { MOVING } from "../bots/here";
 import { messageID } from "../engine/sessions";
@@ -129,7 +131,8 @@ async function* sending(context: RouteContext, session: string): AsyncGenerator<
   const headers: Record<string, string> = { authorization: `Basic ${Buffer.from(`opencode:${target.password}`).toString("base64")}`, "content-type": "application/json" };
   const asked = Object.fromEntries(Object.entries(request.headers ?? {}).map(([name, value]) => [name.toLowerCase(), value]));
   for (const name of REQUEST_HEADERS) if (typeof asked[name] === "string") headers[name] = asked[name] as string;
-  const id = !command && typeof given.id === "string" && given.id ? given.id : undefined;
+  if (!command && given.id !== undefined && !isWaitingID(given.id)) return yield* json(400, { message: BAD_WAITING_ID });
+  const id = !command && isWaitingID(given.id) ? given.id : undefined;
   // A command's message shows as typed: its parts go with it to the coding agents' bridge, and for
   // the engine's, which take none, are kept here once it says which message it made (commands.ts).
   const typed = command && fields ? commandParts(command, fields.words) : null;
@@ -143,41 +146,43 @@ async function* sending(context: RouteContext, session: string): AsyncGenerator<
       const message = fields
         ? await composed(fields, files, session, target, toAgents, request, readEngine, command ? signal : undefined, undefined, command !== null)
         : await sentAgain(again!, files, session, target, toAgents);
-      // One Stop named as still on its way, looked at as it goes (keeping its files can take a
-      // while, Stop meanwhile): held, waiting on the box (the engine would run all it holds with
-      // the first thing to reach a stopped conversation), not set going.
-      const held = heldAsItComes(session, id);
-      // `now` (Send Now): to go now, the step under way stopped for it once the engine has it.
-      const now = !held && !command && given.delivery === "now";
-      const delivery = held || given.delivery === "queue" ? "queue" : given.delivery === "steer" || now || !command ? "steer" : undefined;
-      const body = command
-        ? { name: command, text: message.text, ...(message.files.length ? { files: message.files } : {}), ...(delivery ? { delivery } : {}), ...(typed && toAgents ? { metadata: withParts(undefined, typed) } : {}) }
-        : { id: id ?? messageID(), text: message.text, ...(message.files.length ? { files: message.files } : {}), delivery, metadata: message.metadata };
-      if (held && id && keepWaitingHeld(session, { ...body, id, delivery: "queue" } as Outgoing & { id: string }, typeof given.words === "string" ? given.words : fields?.words)) {
-        return { status: 200, headers: { "content-type": "application/json" }, body: Buffer.from(JSON.stringify({ waits: true })) };
-      }
-      // An engine being changed takes no command meanwhile (it would run on the engine stopped next):
-      // said, in words, to send again once it's back.
-      if (command && swapHoldsFor(target)) return { status: 503, headers: { "content-type": "application/json" }, body: Buffer.from(JSON.stringify({ message: `${swapLine(swapUnderWay(RUN)) ?? ""} Send this command again then.`.trim(), engineChanging: true })) };
-      // For after this run while its queue is paused (a Stop, from any client), or while its engine
-      // is being changed (PROTOCOL.md, "A new engine"): it waits on the box, as what arrives then does
-      // (the engine would run all it holds with the next thing it had).
-      if (!command && (delivery === "queue" || swapHoldsFor(target)) && keepWaiting(session, body as Outgoing & { id: string }, { words: (typeof given.words === "string" ? given.words : fields?.words ?? message.text).trim() }, undefined, target)) {
-        return { status: 200, headers: { "content-type": "application/json" }, body: Buffer.from(JSON.stringify({ waits: true })) };
-      }
-      const post = async (): Promise<SentAnswer> => {
-        const response = await fetch(at, { method: "POST", headers, body: JSON.stringify(body), signal: command ? signal : undefined });
-        return { status: response.status, headers: answerHeaders(response), body: Buffer.from(await response.arrayBuffer()) };
-      };
-      const made = template ? madeText(await template, message.text) : null;
-      const answer = typed && !toAgents ? await sendingCommand(session, typed, made, post, each => each.status >= 200 && each.status < 300) : await post();
-      // (Taken by the agent meanwhile, it isn't waiting any more: that's as good.)
-      if (now && answer.status >= 200 && answer.status < 300) await sendNow(target, session, (body as { id: string }).id).catch(() => false);
-      // (Stop hasn't paused it yet: it holds it with the rest, as it names it.)
-      if (held && id && answer.status >= 200 && answer.status < 300) await holdQueue(target, session, undefined, [id]).catch(() => {});
-      return answer;
+      return await admitPrompt(session, async () => {
+        // One Stop named as still on its way, looked at as it goes (keeping its files can take a
+        // while, Stop meanwhile): held, waiting on the box (the engine would run all it holds with
+        // the first thing to reach a stopped conversation), not set going.
+        const held = heldAsItComes(session, id);
+        // `now` (Send Now): to go now, the step under way stopped for it once the engine has it.
+        const now = !held && !command && given.delivery === "now";
+        const delivery = held || given.delivery === "queue" ? "queue" : given.delivery === "steer" || now || !command ? "steer" : undefined;
+        const body = command
+          ? { name: command, text: message.text, ...(message.files.length ? { files: message.files } : {}), ...(delivery ? { delivery } : {}), ...(typed && toAgents ? { metadata: withParts(undefined, typed) } : {}) }
+          : { id: id ?? messageID(), text: message.text, ...(message.files.length ? { files: message.files } : {}), delivery, metadata: message.metadata };
+        if (held && id && keepWaitingHeld(session, { ...body, id, delivery: "queue" } as Outgoing & { id: string }, typeof given.words === "string" ? given.words : fields?.words)) {
+          return { status: 200, headers: { "content-type": "application/json" }, body: Buffer.from(JSON.stringify({ waits: true })) };
+        }
+        // An engine being changed takes no command meanwhile (it would run on the engine stopped next):
+        // said, in words, to send again once it's back.
+        if (command && swapHoldsFor(target)) return { status: 503, headers: { "content-type": "application/json" }, body: Buffer.from(JSON.stringify({ message: `${swapLine(swapUnderWay(RUN)) ?? ""} Send this command again then.`.trim(), engineChanging: true })) };
+        // For after this run while its queue is paused (a Stop, from any client), or while its engine
+        // is being changed (PROTOCOL.md, "A new engine"): it waits on the box, as what arrives then does
+        // (the engine would run all it holds with the next thing it had).
+        if (!command && (delivery === "queue" || swapHoldsFor(target)) && keepWaiting(session, body as Outgoing & { id: string }, { words: (typeof given.words === "string" ? given.words : fields?.words ?? message.text).trim() }, undefined, target)) {
+          return { status: 200, headers: { "content-type": "application/json" }, body: Buffer.from(JSON.stringify({ waits: true })) };
+        }
+        const post = async (): Promise<SentAnswer> => {
+          const response = await fetch(at, { method: "POST", headers, body: JSON.stringify(body), signal: command ? signal : undefined });
+          return { status: response.status, headers: answerHeaders(response), body: Buffer.from(await response.arrayBuffer()) };
+        };
+        const made = template ? madeText(await template, message.text) : null;
+        const answer = typed && !toAgents ? await sendingCommand(session, typed, made, post, each => each.status >= 200 && each.status < 300) : await post();
+        // (Taken by the agent meanwhile, it isn't waiting any more: that's as good.)
+        if (now && answer.status >= 200 && answer.status < 300) await sendNow(target, session, (body as { id: string }).id).catch(() => false);
+        // (Stop hasn't paused it yet: it holds it with the rest, as it names it.)
+        if (held && id && answer.status >= 200 && answer.status < 300) await holdQueue(target, session, undefined, [id]).catch(() => {});
+        return answer;
+      });
     } catch (error) {
-      if (error instanceof NotListed) return { status: 409, headers: { "content-type": "application/json" }, body: Buffer.from(JSON.stringify({ message: error.message })) };
+      if (error instanceof NotListed || error instanceof MoveAdmissionClosed) return { status: 409, headers: { "content-type": "application/json" }, body: Buffer.from(JSON.stringify({ message: error.message })) };
       if (signal?.aborted && command) throw new Error("Stopped.");
       return { status: 503, headers: { "content-type": "application/json" }, body: Buffer.from(JSON.stringify({ message: toAgents ? "The coding agents aren't answering on this computer. Try again in a moment." : "The engine isn't answering. Try again in a moment." })) };
     }

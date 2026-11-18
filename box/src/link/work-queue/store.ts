@@ -7,6 +7,7 @@
 //
 // (Named apart from `engine/queue.ts`, which is a conversation's queue of messages.)
 
+import { writeDurablePrivate } from "../../shared/files";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -442,7 +443,7 @@ export class Book {
 
   /** What changed, written: the queues that gained items first, so a write cut off between two
    * leaves an item in both (read once, see `items`) rather than in neither. */
-  save(): boolean {
+  save(durable = false): boolean {
     let any = false;
     const changed = [...this.queues].filter(([owner, queue]) => JSON.stringify(queue.items) !== this.before.get(owner));
     const gained = (owner: string, queue: Queue) => {
@@ -453,7 +454,11 @@ export class Book {
     for (const [owner, queue] of changed) {
       any = true;
       if (!queue.items.length) fs.rmSync(fileOf(owner), { force: true });
-      else writePrivate(fileOf(owner), JSON.stringify({ owner, items: queue.items }));
+      else {
+        const data = JSON.stringify({ owner, items: queue.items });
+        if (durable) writeDurablePrivate(fileOf(owner), data, path.dirname(WORK_QUEUE));
+        else writePrivate(fileOf(owner), data);
+      }
       this.before.set(owner, JSON.stringify(queue.items));
     }
     return any;
@@ -462,7 +467,7 @@ export class Book {
 
 /** `work` done on the queues here, one process at a time; what it changed written, and those
  * following told. Deleted items past their 30 days go first (and their files). */
-export function changeQueues<T>(work: (book: Book) => T, now = Date.now(), { onItsOwn = false }: { onItsOwn?: boolean } = {}): T {
+export function changeQueues<T>(work: (book: Book) => T, now = Date.now(), { onItsOwn = false, durable = false }: { onItsOwn?: boolean; durable?: boolean } = {}): T {
   fs.mkdirSync(WORK_QUEUE, { recursive: true, mode: 0o700 });
   migratedToChange();
   const { value, changed } = locked(LOCK, () => {
@@ -485,11 +490,11 @@ export function changeQueues<T>(work: (book: Book) => T, now = Date.now(), { onI
       purged.push(...gone.map(item => item.id));
     }
     const value = work(book);
-    const changed = book.save();
+    const changed = book.save(durable);
     // (Their files only once the queues no longer list them: a refused change leaves both.)
     for (const id of purged) fs.rmSync(path.join(FILES, id), { recursive: true, force: true });
     return { value, changed };
-  });
+  }, { required: durable });
   if (changed) noteQueuesChanged();
   return value;
 }
