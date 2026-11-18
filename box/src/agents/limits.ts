@@ -495,10 +495,6 @@ export class Limits {
     this.turnTimer.unref?.()
   }
 
-  private recent(source: LimitsSource, window: LimitWindow): boolean {
-    return this.now() - window.read <= Math.max(source.read ? 15 * MINUTE : 60 * MINUTE, 2 * source.every)
-  }
-
   /**
    * The accounts with plan limits: each agent's own sign-in first, then the ones you added, then
    * the engine's. `borrowed`: one a peer's reading stood for a read of here is listed with that
@@ -528,7 +524,7 @@ export class Limits {
           ...(account.label ? { label: account.label } : {}),
           identity: entry.identity!,
           ...((peer.plan ?? entry.plan) ? { plan: peer.plan ?? entry.plan } : {}),
-          windows: peer.windows.filter(window => this.recent(account.limits, window)),
+          windows: peer.windows,
           ...((peer.balance ?? entry.balance) ? { balance: peer.balance ?? entry.balance } : {}),
           ...(peer.extras?.length ? { extras: peer.extras } : {}),
           ...(entry.checked ? { checked: entry.checked } : {}),
@@ -543,7 +539,7 @@ export class Limits {
         ...(account.label ? { label: account.label } : {}),
         ...(entry.identity ? { identity: entry.identity } : {}),
         ...(entry.plan ? { plan: entry.plan } : {}),
-        windows: entry.windows.filter(window => this.recent(account.limits, window)),
+        windows: entry.windows,
         ...(entry.notices?.length ? { notices: entry.notices.filter(n => currentNotice(n, this.now())) } : {}),
         ...(entry.noticeState ? { noticeState: entry.noticeState } : {}),
         ...(entry.balance ? { balance: entry.balance } : {}),
