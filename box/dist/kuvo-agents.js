@@ -23242,9 +23242,6 @@ function signedInAgents(agents, record = signIns) {
 }
 
 // box/src/agents/account-refresh.ts
-var MODEL_INTERVAL = 5 * 60000;
-var PROVIDER_CATALOG_INTERVAL = 60 * 60000;
-
 class AccountRefresh {
   limits;
   now;
@@ -23315,7 +23312,7 @@ class AccountRefresh {
   async publish(agent, account) {
     emit("integration.updated", { integrationID: agent.providerID, accountRefresh: true });
     if (account.signedIn)
-      await Promise.allSettled([this.catalog(agent, this.snapshot(agent)), this.limits?.readAgain(agent.providerID)]);
+      await Promise.allSettled([this.catalog(agent, this.snapshot(agent), true), this.limits?.readAgain(agent.providerID)]);
     else
       emit("model.updated", { accountRefresh: true });
   }
@@ -23326,51 +23323,46 @@ class AccountRefresh {
       return [];
     if (this.snapshot(agent) !== snapshot)
       return this.models(agent, hidden, refresh);
-    const value = await this.catalog(agent, snapshot, refresh ? "picker" : undefined);
+    const value = await this.catalog(agent, snapshot, refresh);
     if (this.snapshot(agent) !== snapshot)
       return this.models(agent, hidden, refresh);
     return hidden ? value : value.filter((model) => !model.hidden);
   }
-  catalog(agent, snapshot, trigger) {
-    if (snapshot.listing)
-      return snapshot.listing;
+  catalog(agent, snapshot, refresh) {
     const cached = snapshot.models;
-    const now = this.now();
-    const since = now - (snapshot.lastProviderCheck ?? -Infinity);
-    const refresh = trigger === "picker" || since >= (trigger === "app" && agent.id === "codex" ? MODEL_INTERVAL : PROVIDER_CATALOG_INTERVAL);
-    if (!refresh && cached && now - cached.at < MODEL_INTERVAL)
-      return Promise.resolve(cached.value);
-    if (refresh)
-      snapshot.lastProviderCheck = now;
-    const loading = snapshot.listing = agent.models({ hidden: true, refresh }).then((value) => {
-      if (snapshot.listing !== loading || this.snapshot(agent) !== snapshot)
+    if (!refresh && cached)
+      return Promise.resolve(cached);
+    const listing = snapshot.listing;
+    if (listing) {
+      if (!refresh || listing.refresh)
+        return listing.pending;
+      return listing.pending.catch(() => []).then((value) => this.snapshot(agent) === snapshot ? this.catalog(agent, snapshot, true) : value);
+    }
+    const pending = agent.models({ hidden: true, refresh }).then((value) => {
+      if (snapshot.listing?.pending !== pending || this.snapshot(agent) !== snapshot)
         return value;
-      snapshot.models = { at: this.now(), value };
-      if (JSON.stringify(cached?.value) !== JSON.stringify(value))
+      snapshot.models = value;
+      if (JSON.stringify(cached) !== JSON.stringify(value))
         emit("model.updated", { accountRefresh: true });
       return value;
     }).catch((error) => {
-      if (refresh)
-        snapshot.lastProviderCheck = this.now() - PROVIDER_CATALOG_INTERVAL + MODEL_INTERVAL;
-      if (cached) {
-        if (snapshot.listing === loading)
-          snapshot.models = { ...cached, at: this.now() };
-        return cached.value;
-      }
+      if (cached)
+        return cached;
       throw error;
     }).finally(() => {
-      if (snapshot.listing === loading)
+      if (snapshot.listing?.pending === pending)
         snapshot.listing = undefined;
     });
-    return loading;
+    snapshot.listing = { refresh, pending };
+    return pending;
   }
   catalogChanged(agents, programUpdated) {
     for (const agent of agents) {
       const snapshot = this.snapshot(agent);
       if (programUpdated === agent.id) {
         this.snapshots.set(agent, { account: snapshot.account, identity: snapshot.identity, models: snapshot.models });
-        this.models(agent).catch(() => {});
-      } else {
+        this.models(agent, false, true).catch(() => {});
+      } else if (!programUpdated) {
         snapshot.models = undefined;
       }
     }
@@ -23386,11 +23378,7 @@ class AccountRefresh {
         return;
       this.nextRound = now + 30000;
     }
-    await Promise.allSettled(agents.map(async (agent) => {
-      const account = await this.read(agent, true);
-      if (account.signedIn && !account.unchecked)
-        await this.catalog(agent, this.snapshot(agent), opened ? "app" : undefined);
-    }));
+    await Promise.allSettled(agents.map((agent) => this.read(agent, true)));
   }
 }
 
@@ -38047,6 +38035,7 @@ function page(items, url) {
   const next = start + limit < items.length && data.length ? `${order}:${data[data.length - 1].id}${filter ? `:${filter}` : ""}` : undefined;
   return { data, cursor: { next } };
 }
+var PROGRAM_RELEASE_INTERVAL = 60 * 60000;
 function handler(context) {
   const expected = "Basic " + Buffer.from(`opencode:${context.password}`).toString("base64");
   const { sessions, roster, auto, link } = context;
@@ -38071,7 +38060,7 @@ function handler(context) {
           emit("integration.updated", { integrationID: each.providerID });
       }));
     };
-    setInterval(() => void checkPrograms(), PROVIDER_CATALOG_INTERVAL).unref?.();
+    setInterval(() => void checkPrograms(), PROGRAM_RELEASE_INTERVAL).unref?.();
     checkPrograms();
     setInterval(() => void accounts.round(roster.all()), 60000).unref?.();
     subscribe((event) => {
@@ -40057,4 +40046,4 @@ if (!onMachine) {
 }
 process.on("SIGTERM", () => stop());
 process.on("SIGINT", () => stop());
-// Built from Packages/Box/src/agents 31d5dc1ac56c95288d79ee1f072af5131d6be9efca754b9fcaa1136085db92de
+// Built from Packages/Box/src/agents 8825c855d103ffc41738a703d82b796f0865852cf412b20611eb72c8b4dfa40c

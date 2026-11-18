@@ -2365,7 +2365,9 @@ start on a model by the same rule.
   through a coding agent (OpenAI, xAI) still needs its key ("A session's model").
 
 A picker can show its last list immediately and ask again with `refresh=1`. This rereads the
-engine’s current catalog and asks the coding agents to refresh their own lists.
+engine’s current catalog and asks the coding agents to refresh their own lists. The bridge also
+refreshes an agent’s list after sign-in, including Sign In Again, when its plan changes, and after
+an agent update. The hourly check looks for agent program releases so Accounts can offer updates.
 
 ### Work
 

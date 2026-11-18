@@ -9,7 +9,7 @@ import type { Model } from "../../src/agents/wire"
 test("account notification and timer pick up a changed plan, then update the catalog and rings", async () => {
   let plan = "Plus"
   let fresh = false
-  let lists = 0
+  const lists: boolean[] = []
   let time = 10_000_000
   const provider = "codex-cli@plan-test"
   const source = {
@@ -26,15 +26,15 @@ test("account notification and timer pick up a changed plan, then update the cat
       fresh = asked
       return { installed: true, signedIn: true, label: `ChatGPT ${plan}` }
     },
-    models: async () => {
-      lists++
+    models: async ({ refresh }: { refresh: boolean }) => {
+      lists.push(refresh)
       return [{ id: plan === "Plus" ? "gpt-6" : "gpt-6.2" }] as Model[]
     },
   } as unknown as Agent
   await limits.tick()
   await accounts.round([agent])
   expect((await accounts.models(agent))[0]?.id).toBe("gpt-6")
-  expect(lists).toBe(1)
+  expect(lists).toEqual([false])
   plan = "Pro"
   const events: string[] = []
   const stop = subscribe(event => events.push(event.type))
@@ -48,10 +48,15 @@ test("account notification and timer pick up a changed plan, then update the cat
     expect(events).toContain("integration.updated")
     expect(events).toContain("model.updated")
     expect(events).toContain("kuvo.limits.updated")
-    expect(lists).toBe(2)
+    expect(lists).toEqual([false, true])
     time += 5 * 60_000
     await accounts.round([agent])
-    expect(lists).toBe(3)
+    expect(lists).toEqual([false, true])
+    plan = "Plus"
+    time += 5 * 60_000
+    await accounts.round([agent])
+    expect((await accounts.models(agent))[0]?.id).toBe("gpt-6")
+    expect(lists).toEqual([false, true, true])
     time += 8 * 60 * 60_000
     expect(limits.rows()[0]?.rings).toEqual({})
   } finally {
@@ -98,35 +103,90 @@ test("signing in again drops rings and ignores a read started under the old sign
   expect(limits.list()[0]?.windows[0]?.used).toBe(0.02)
 })
 
-test("the hourly check and each picker opening fetch the provider catalog", async () => {
+test("account checks leave the catalog cached and each picker opening fetches new releases", async () => {
   let time = 10_000_000
   let provider = "one"
-  let cached = ""
-  let fetches = 0
+  let cached = provider
+  const lists: boolean[] = []
   const agent = {
     id: "codex",
     providerID: "codex-cli@release-test",
     account: async () => ({ installed: true, signedIn: true }),
     models: async ({ refresh }: { refresh: boolean }) => {
-      if (refresh) {
-        cached = provider
-        fetches++
-      }
+      lists.push(refresh)
+      if (refresh) cached = provider
       return [{ id: cached }] as Model[]
     },
   } as unknown as Agent
   const accounts = new AccountRefresh(undefined, () => time)
-  const releases = async () => (await accounts.models(agent)).map(model => model.id)
+  const releases = async (refresh = false) => (await accounts.models(agent, false, refresh)).map(model => model.id)
   await accounts.round([agent])
+  expect(lists).toEqual([])
   expect(await releases()).toEqual(["one"])
   provider = "two"
-  time += 59 * 60_000
+  time += 60 * 60_000
   await accounts.round([agent])
+  await accounts.round([agent], true)
   expect(await releases()).toEqual(["one"])
-  time += 60_000
-  await accounts.round([agent])
-  expect(await releases()).toEqual(["two"])
+  expect(lists).toEqual([false])
+  expect(await releases(true)).toEqual(["two"])
   provider = "three"
-  expect((await accounts.models(agent, false, true))[0]?.id).toBe("three")
-  expect(fetches).toBe(3)
+  expect(await releases(true)).toEqual(["three"])
+  expect(lists).toEqual([false, true, true])
+})
+
+test("an agent update refreshes its catalog immediately", async () => {
+  let model = "one"
+  const lists: boolean[] = []
+  const agent = {
+    id: "codex",
+    providerID: "codex-cli@program-test",
+    account: async () => ({ installed: true, signedIn: true }),
+    models: async ({ refresh }: { refresh: boolean }) => {
+      lists.push(refresh)
+      return [{ id: refresh ? model : "one" }] as Model[]
+    },
+  } as unknown as Agent
+  const accounts = new AccountRefresh()
+  expect((await accounts.models(agent))[0]?.id).toBe("one")
+  model = "two"
+  let stop = () => {}
+  const updated = new Promise<void>(resolve => {
+    stop = subscribe(event => {
+      if (event.type === "model.updated" && event.data?.accountRefresh === true) resolve()
+    })
+  })
+  try {
+    accounts.catalogChanged([agent], agent.id)
+    await updated
+    expect(lists).toEqual([false, true])
+    expect((await accounts.models(agent))[0]?.id).toBe("two")
+  } finally {
+    stop()
+  }
+})
+
+test("opening a picker during the first catalog read still fetches the provider catalog", async () => {
+  let start!: () => void
+  let finish!: () => void
+  const started = new Promise<void>(resolve => { start = resolve })
+  const finished = new Promise<void>(resolve => { finish = resolve })
+  const agent = {
+    providerID: "codex-cli@picker-test",
+    account: async () => ({ installed: true, signedIn: true }),
+    models: async ({ refresh }: { refresh: boolean }) => {
+      if (!refresh) {
+        start()
+        await finished
+      }
+      return [{ id: refresh ? "new" : "cached" }] as Model[]
+    },
+  } as unknown as Agent
+  const accounts = new AccountRefresh()
+  const cached = accounts.models(agent)
+  await started
+  const refreshed = accounts.models(agent, false, true)
+  finish()
+  expect((await cached)[0]?.id).toBe("cached")
+  expect((await refreshed)[0]?.id).toBe("new")
 })

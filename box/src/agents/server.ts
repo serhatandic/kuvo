@@ -1,6 +1,6 @@
 import { GITHUB_WORK_QUEUE } from "../shared/github"
 import type { GitHubSignIn } from "./github-sign-in"
-import { AccountRefresh, PROVIDER_CATALOG_INTERVAL } from "./account-refresh"
+import { AccountRefresh } from "./account-refresh"
 import { watchSignIn } from "./signin-watch"
 // The bridge's HTTP API: the engine's, the parts the app uses for a session, its models and its
 // sign-in, answered for outside agents. Anything else is "not here", which the app takes as it
@@ -222,6 +222,8 @@ function page<T extends { id: string }>(items: T[], url: URL): { data: T[]; curs
   return { data, cursor: { next } }
 }
 
+const PROGRAM_RELEASE_INTERVAL = 60 * 60_000
+
 export function handler(context: Context) {
   const expected = "Basic " + Buffer.from(`opencode:${context.password}`).toString("base64")
   const { sessions, roster, auto, link } = context
@@ -243,7 +245,7 @@ export function handler(context: Context) {
         for (const each of matching) emit("integration.updated", { integrationID: each.providerID })
       }))
     }
-    setInterval(() => void checkPrograms(), PROVIDER_CATALOG_INTERVAL).unref?.()
+    setInterval(() => void checkPrograms(), PROGRAM_RELEASE_INTERVAL).unref?.()
     void checkPrograms()
     setInterval(() => void accounts.round(roster.all()), 60_000).unref?.()
     subscribe(event => {
