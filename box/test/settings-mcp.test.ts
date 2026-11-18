@@ -30,7 +30,11 @@ const fake = Bun.serve({
     engine.asked.push(`${request.method} ${url.pathname}`)
     if (url.pathname === "/api/mcp") return Response.json(engine.servers)
     if (url.pathname === "/api/integration") return Response.json({ data: [{ id: "int_tracker", name: "tracker", metadata: { source: "mcp" }, methods: [{ type: "oauth", id: "mcp", label: "Sign in" }], connections: [] }] })
-    if (url.pathname === "/api/integration/int_tracker/connect/oauth" && request.method === "POST") return Response.json({ data: { attemptID: "att_1", url: "https://tracker.example.com/authorize?state=1" } })
+    if (url.pathname === "/api/integration/int_tracker/connect/oauth" && request.method === "POST") {
+      const page = new URL("https://tracker.example.com/authorize?state=1")
+      page.searchParams.set("redirect_uri", `http://127.0.0.1:${url.port}/mcp/oauth/callback`)
+      return Response.json({ data: { attemptID: "att_1", url: page.href } })
+    }
     if (url.pathname === "/api/integration/int_tracker/connect/oauth/att_1") return Response.json({ data: { status: engine.attempt, ...(engine.attempt === "failed" ? { message: "access_denied" } : {}) } })
     if (url.pathname === "/mcp/oauth/callback") {
       engine.returned.push(url.search)
@@ -231,7 +235,8 @@ test("a server's sign-in is led by the box: started, followed, done, and its ser
   let tracker = rowOf(await page(), "server-tracker")
   let shown = (await act(tracker, "sign-in")).json
   tracker = rowOf(shown, "server-tracker")
-  expect(tracker.flow).toMatchObject({ state: "waiting", title: "Signing in to tracker", line: "Finish signing in on its page in your browser.", opens: "https://tracker.example.com/authorize?state=1" })
+  expect(tracker.flow).toMatchObject({ state: "waiting", title: "Signing in to tracker", line: "Finish signing in on its page in your browser." })
+  expect(new URL(tracker.flow.opens).searchParams.get("state")).toBe("1")
   // The page ends at an address on the box's computer: the app beside it has nothing to paste;
   // any other client (a phone, another computer) pastes the address back.
   expect(tracker.flow.code).toBeUndefined()
@@ -248,7 +253,10 @@ test("a server's sign-in is led by the box: started, followed, done, and its ser
   // An address its page doesn't take is said, and the sign-in still waits.
   const turnedDown = await act(tracker, "finish", { code: `http://127.0.0.1:${fake.port}/elsewhere?code=old` }, tracker.revision, false)
   expect(turnedDown.status).toBe(400)
-  expect(turnedDown.json.message).toBe("The sign-in didn't take that address. Paste the one its page ended on for this sign-in, or start it again.")
+  expect(turnedDown.json.message).toBe("Paste the address from this sign-in, or start again.")
+  const wrongState = `http://127.0.0.1:${fake.port}/mcp/oauth/callback?code=wrong&state=2`
+  expect((await act(tracker, "finish", { code: wrongState }, tracker.revision, false)).status).toBe(400)
+  expect(engine.returned).toEqual([])
   const pasted = `http://127.0.0.1:${fake.port}/mcp/oauth/callback?code=abc&state=1`
   expect((await act(tracker, "finish", { code: pasted }, tracker.revision, false)).status).toBe(200)
   expect(engine.returned).toEqual(["?code=abc&state=1"])

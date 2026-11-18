@@ -399,23 +399,24 @@ impl ModelPicker {
         cx.spawn_in(window, async move |this, cx| {
             let Some(offered) = read.await else { return };
             this.update_in(cx, |this, window, cx| {
-                let rail = match this.shown {
-                    Shown::Rail(at) => this.catalog.rails.get(at).map(|entry| entry.id.clone()),
-                    Shown::Starred => None,
-                };
                 let mut catalog = Catalog::new(&offered, |model| offered.scoped || side.is_none_or(|side| model.side == side));
                 catalog.unset = this.catalog.unset.clone();
-                if let Some(rail) = rail {
-                    this.shown = Shown::Rail(catalog.rails.iter().position(|entry| entry.id == rail).unwrap_or(0));
-                }
-                let rows = (catalog.entries.len() + usize::from(catalog.unset.is_some())).clamp(3, MOST_ROWS);
-                this.height = rows as f32 * ROW + 8.;
-                this.catalog = Arc::new(catalog);
-                this.rows.clear();
-                this.run_search(this.query.clone(), window, cx);
+                this.replace_catalog(catalog, window, cx);
             }).ok();
         }).detach();
         self
+    }
+
+    pub(crate) fn replace_catalog(&mut self, catalog: Catalog, window: &mut Window, cx: &mut Context<Self>) {
+        if let Shown::Rail(at) = self.shown {
+            let rail = self.catalog.rails.get(at);
+            self.shown = Shown::Rail(rail.and_then(|rail| catalog.rails.iter().position(|entry| entry.id == rail.id)).unwrap_or(0));
+        }
+        let rows = (catalog.entries.len() + usize::from(catalog.unset.is_some())).clamp(3, MOST_ROWS);
+        self.height = rows as f32 * ROW + 8.;
+        self.catalog = Arc::new(catalog);
+        self.rows.clear();
+        self.run_search(self.query.clone(), window, cx);
     }
 
     /// Told each time a star changes, with your starred models as they are now.

@@ -95,7 +95,8 @@ export async function atWork(engine: Target, folders: string[]): Promise<Set<str
   try {
     const active = await engineGet(engine, "api/session/active");
     const data = isObject(active) ? active.data : null;
-    const sessions = Array.isArray(data) ? data : isObject(data) ? Object.keys(data) : [];
+    if (!Array.isArray(data) && !isObject(data)) return new Set(folders);
+    const sessions = Array.isArray(data) ? data : Object.keys(data);
     for (const id of sessions) {
       if (typeof id !== "string") continue;
       const session = await engineGet(engine, `api/session/${encodeURIComponent(id)}`).catch(() => null);
@@ -153,6 +154,21 @@ async function closeQuiet(engine: Target, folders: string[]): Promise<string[]> 
   return waiting;
 }
 
+/** GitLab's catalog belongs to the open location. Reopen only quiet locations and keep the
+ * existing catalog for a location with work in progress. Engine-wide catalogs have their own TTL. */
+export async function revalidatePickerModels(engine: EngineRecord, folder?: string): Promise<void> {
+  const providers = listOf(await engineGet(engine, "api/provider"));
+  if (!providers.some(provider => isObject(provider) && provider.id === "gitlab")) return;
+  const open = await openFolders(engine);
+  const waiting = await closeQuiet(engine, folder ? open.filter(each => path.resolve(each) === path.resolve(folder)) : open);
+  if (waiting.length) keepDue(engine, waiting, MODELS_DUE_FILE);
+}
+
+function keepDue(engine: EngineRecord, waiting: string[], file: string): void {
+  const before = readDue(file);
+  const kept = before?.engine === engineOf(engine) ? before.folders : [];
+  writeDue(file, { engine: engineOf(engine), folders: [...new Set([...kept, ...waiting])] });
+}
 /** `provider`'s models asked of again on `engine`, with every other provider's: each folder it has
  * open closed where nothing's going on, the rest noted for once their work is done; then what
  * providers need learned from its list as it is now, and applied. */
@@ -185,9 +201,7 @@ export async function refreshModels(engine: EngineRecord, provider: string, file
     if (error instanceof CantClose) return { status: 503, message: "This engine can't ask for its models again without restarting. Restart it in Settings › Engine." };
     throw error;
   }
-  const before = readDue(file);
-  const kept = before?.engine === engineOf(engine) ? before.folders : [];
-  writeDue(file, { engine: engineOf(engine), folders: [...new Set([...kept, ...waiting])] });
+  keepDue(engine, waiting, file);
   // (The folder it opens first, its own, opens afresh for it.)
   await learnCompatibility(engine).catch(() => {});
   return { status: 200, waiting };

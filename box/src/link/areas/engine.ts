@@ -16,6 +16,7 @@ import type { EngineRecord, Target } from "../../shared/records";
 import { canonicalPath, signInReturn, socketAllowed } from "../server/paths";
 import { HERE, IS_MAC, K, OWN_HOME_MAC, RUN } from "../home";
 import { plainName } from "../../shared/text";
+import { matchesSignInReturn } from "./sign-in";
 import { macLink, readLink } from "../state";
 import { phoneHere } from "../compat/leave-running";
 import { readEngineFile } from "../engine/client";
@@ -244,5 +245,8 @@ export async function* engineControlRoute(context: RouteContext, control: RegExp
 export async function* signInReturnRoute(context: RouteContext): AsyncGenerator<AnswerPiece> {
   const { request, signal, json } = context;
   if (request.method.toUpperCase() !== "POST") return yield* json(405, {});
-  return yield* loadSignInReturn(request.body, signal, new URLSearchParams(request.path.split("?")[1]).get("check") === "1");
+  let given: unknown;
+  try { given = JSON.parse(request.body?.toString("utf8") ?? ""); } catch {}
+  if (!await matchesSignInReturn(context, given)) return yield* json(400, { message: "Paste the address from this sign-in, or start again." });
+  return yield* loadSignInReturn(request.body, signal, true);
 }

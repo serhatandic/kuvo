@@ -23,7 +23,7 @@ import { settingsRoute } from "./settings";
 import { dropFlow, endFlow, FLOWS_FILE, flowsOf, keepFlow } from "./settings-flows";
 import { asked, item, mtime, refusal, row, said, STALE, staleOrRefusal, unreadPage } from "./settings-kit";
 import type { Refused, Section } from "./settings-kit";
-import { failureWords, oauthPage, oauthStartBody } from "./sign-in";
+import { failureWords, isOAuthReturn, oauthCallback, oauthPage, oauthStartBody } from "./sign-in";
 
 const TITLE = "MCP Servers";
 
@@ -261,13 +261,14 @@ function flowOf(context: RouteContext, flow: ReturnType<typeof flowsOf>[number])
   if (flow.state === "done") return { id: flow.id, state: "done", title, line: "Signed in. The agent can use its tools now.", actions: [{ id: "dismiss", title: "OK" }] };
   if (flow.state === "failed") return { id: flow.id, state: "failed", title, line: flow.line ?? "Signing in didn’t work.", actions: [{ id: "sign-in", title: "Try Again" }, { id: "dismiss", title: "OK" }] };
   const opens = flow.about.url;
+  const paste = !fromLocalApp(context.request) && Boolean(oauthCallback(opens));
   return {
-    id: flow.id, state: "waiting", title, line: fromLocalApp(context.request) ? "Finish signing in on its page in your browser." : "Finish signing in in your browser. If the last page can’t load, copy its address and paste it here.",
+    id: flow.id, state: "waiting", title, line: paste ? "Finish signing in in your browser. If the last page can’t load, copy its address and paste it here." : "Finish signing in on its page in your browser.",
     ...(opens ? { opens } : {}),
     // (Its page ends at an address on this box's computer: from elsewhere, pasted back.)
-    ...(fromLocalApp(context.request) ? {} : { code: { title: "Or paste the address the page ended on", placeholder: "http://127.0.0.1:19876/mcp/oauth/callback?code=…", action: "finish" } }),
+    ...(paste ? { code: { title: "Or paste the address the page ended on", placeholder: "http://127.0.0.1:19876/mcp/oauth/callback?code=…", action: "finish" } } : {}),
     // (`finish` takes a pasted address: offered only with the field for it.)
-    actions: [...(opens ? [{ id: "open-sign-in", title: "Open Sign-In Page", opens }] : []), ...(fromLocalApp(context.request) ? [] : [{ id: "finish", title: "Finish" }]), { id: "cancel", title: "Cancel" }],
+    actions: [...(opens ? [{ id: "open-sign-in", title: "Open Sign-In Page", opens }] : []), ...(paste ? [{ id: "finish", title: "Finish" }] : []), { id: "cancel", title: "Cancel" }],
   };
 }
 
@@ -432,6 +433,11 @@ async function mcpAct(context: RouteContext, at: SettingItem, action: SettingAct
     case "finish": {
       const pasted = text(values?.code).trim();
       if (!pasted) return { status: 400, message: "Paste the address the sign-in page ended on." };
+      const flow = flowsOf("mcp").find(each => each.row === at.id && each.id === at.flow?.id && each.state === "waiting");
+      const expected = oauthCallback(flow?.about.url);
+      if (!expected || !isOAuthReturn(pasted, expected.callback, expected.state)) {
+        return { status: 400, message: "Paste the address from this sign-in, or start again." };
+      }
       const loaded = await asked(context, ctx => loadSignInReturn(ctx.request.body, ctx.signal), "POST", "kuvo/sign-in/return", { url: pasted });
       const refused = refusal(loaded);
       if (refused) return refused;
@@ -466,8 +472,8 @@ async function signIn(context: RouteContext, known: Facts, row: string, name: st
     const page = typeof started.url === "string" && /^https?:\/\//i.test(started.url) ? started.url : undefined;
     keepFlow({ section: "mcp", row, id: started.attemptID, about: { integration, attempt: started.attemptID, server: name, ...(page ? { url: page } : {}) } });
     return null;
-  } catch (error) {
-    return { status: 502, message: error instanceof Error && error.message ? error.message : "The sign-in couldn't be started." };
+  } catch {
+    return { status: 502, message: "The sign-in couldn't be started." };
   }
 }
 

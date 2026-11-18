@@ -244,6 +244,7 @@ export const MODELS_OFFERED = object({
   "providers?": list(object({ id: string, name: string, "label?": string })),
   "starred?": list(STARRED),
   "listing?": list(string),
+  "unavailable?": list(object({ id: string, keepPrevious: bool })),
   "scoped?": bool,
   "note?": string,
   "starting?": nullable(MODEL_REF),

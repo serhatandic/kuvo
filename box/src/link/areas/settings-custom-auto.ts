@@ -35,7 +35,7 @@ function entryForm(models: Model[], entry?: AutoEntry): SettingForm {
   if (entry && !choices.some(choice => choice.id === modelKey(entry))) choices.push({ id: modelKey(entry), title: `${entry.modelID} (${entry.providerID})`, model: { providerID: entry.providerID, id: entry.modelID } });
 
   return { title: entry ? "Change the model or its effort" : "Add Model", submit: entry ? "Save" : "Add Model", fields: [
-    { id: "model", title: "Model", kind: "choice", value: entry ? modelKey(entry) : choices[0]?.id ?? "", choices },
+    { id: "model", title: "Model", kind: "choice", value: entry ? modelKey(entry) : "", choices },
     { id: "variant", title: "Effort", kind: "text", value: entry?.variant ?? "", line: entry ? effortWords(models.find(model => modelKey(entry) === JSON.stringify([model.providerID, model.id]))) : "Leave empty for the default. Choose a model to see its supported efforts below." },
   ] };
 }

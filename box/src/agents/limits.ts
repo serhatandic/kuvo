@@ -195,7 +195,8 @@ export interface LimitsSource {
   /** Accounts whose reads share one limit at their maker (Anthropic's applies to the computer, not a sign-in): one turned away holds them all. */
   bucket?: string
   /** Set by the box: a window a turn heard of (a rate-limit event), told as it comes. */
-  heard?: (window: Omit<LimitWindow, "read" | "source">) => void
+  heard?: (window: Omit<LimitWindow, "read" | "source">, generation?: number) => void
+  generation?: () => number
   /**
    * Who the account is at its maker, as its sign-in says, the same on every computer signed in to
    * it: its maker's own account ID (`anthropic:<account>|<organization>`, `chatgpt:<account>/<user>`,
@@ -333,6 +334,7 @@ const SHARED_SLACK = 2 * MINUTE
 
 export class Limits {
   private entries = new Map<string, Entry>()
+  private generations = new Map<string, number>()
   private holds = new Map<string, number>()
   /** When each maker's bucket was last asked, in ms. */
   private asked = new Map<string, number>()
@@ -587,6 +589,7 @@ export class Limits {
   /** Drop the previous reading before a sign-in or plan change is shown. An in-flight read
    * keeps its old entry, so its answer cannot repopulate this account. */
   invalidate(provider: string) {
+    this.generations.set(provider, (this.generations.get(provider) ?? 0) + 1)
     const before = this.entries.get(provider)
     if (!before) return
     const held = before.problem?.kind === "rate-limited" && (before.problem.until ?? before.next) > this.now()
@@ -926,7 +929,9 @@ export class Limits {
   /** What a turn of this account hears (its rate-limit events), kept as the window's latest. */
   private listen(provider: string, source: LimitsSource) {
     if (source.heard) return
-    source.heard = (window) => {
+    const generation = source.generation = () => this.generations.get(provider) ?? 0
+    source.heard = (window, from) => {
+      if (from !== undefined && from !== generation()) return
       if (!Number.isFinite(window.used)) return
       let entry = this.entries.get(provider)
       if (!entry) {

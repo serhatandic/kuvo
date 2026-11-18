@@ -457,7 +457,7 @@ impl SignIn {
         self.run(
             move |client| {
                 if paste_address {
-                    client.return_sign_in_address(&code)
+                    client.return_sign_in_address(side, &account, &id, &code)
                 } else {
                     client.complete_sign_in(side, &account, &id, &code)
                 }

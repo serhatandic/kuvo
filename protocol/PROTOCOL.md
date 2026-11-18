@@ -2365,7 +2365,11 @@ start on a model by the same rule.
   through a coding agent (OpenAI, xAI) still needs its key ("A session's model").
 
 A picker can show its last list immediately and ask again with `refresh=1`. This rereads the
-engine’s current catalog and asks the coding agents to refresh their own lists. The bridge also
+engine’s current catalog and asks the coding agents to refresh their own lists. It revalidates
+GitLab’s catalog for each affected project once it has no work in progress. Concurrent requests and pickers
+reopened within two seconds share a refresh. An account that couldn't answer is listed under
+`unavailable`. Its last successful list may still be present, and a client can keep the rows
+it showed before when that account has `keepPrevious: true`. The bridge also
 refreshes an agent’s list after sign-in, including Sign In Again, when its plan changes, and after
 an agent update. The hourly check looks for agent program releases so Accounts can offer updates.
 
@@ -4459,14 +4463,15 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
     every browser sign-in here, and shows `userCode` as it is, never reading one out of the page
     or the instructions itself. `kuvo/sign-in/status` says it too wherever the status has it.
     When start or status says `pasteAddress: true`, the desktop shows a field for the address
-    the browser ended on. It submits it to `POST kuvo/sign-in/return?check=1` with `{url}` and
+    the browser ended on. It submits it to `POST kuvo/sign-in/return` with
+    `{url, integration, attempt, agents}` and
     keeps following the attempt. A page that starts at `localhost` can only be opened on the
     computer doing the sign-in, which the box explains.
   - `GET kuvo/sign-in/status?integration=<id>&attempt=<id>[&agents=1][&wait=<seconds>]` → the
     attempt's status as the engine (or the bridge) says it (`status`, `message?`, `url?`,
     `instructions?`, `userCode?`), with `failure` once it's `failed` or `expired`: what a client
     shows, the page's OAuth code in words (`access_denied`: turned down on its page) and the
-    engine's own words otherwise. A client asks it as the sign-in goes (every second or so), in
+    a plain fallback message otherwise. A client asks it as the sign-in goes (every second or so), in
     place of the engine's status route. With `wait` (at most 25), the box asks the engine each
     second and answers once what it says changes or it ends, else after that long: for a client
     whose every ask runs a process (a Mac asking a machine's box over SSH, with `wait=20`).
@@ -4480,9 +4485,9 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
     `SignInStatus`) and gpui's `kuvo_box`; the phone's sample Mac and tests' computers serve its recorded answers as they
     are. Every box the update gate lets through has `sign-in.methods`; a client offers no ways of
     its own.
-- `POST kuvo/sign-in/return` with `{"url"}`: where a sign-in's page sent the browser back to the
-  computer (`http://127.0.0.1:<port>/…?code=…`: a plan's that finishes there, an MCP server's at
-  `127.0.0.1:19876`, a coding agent's), which a phone can't load. The computer loads it, as the
+- `POST kuvo/sign-in/return` with `{url, integration, attempt, agents}`: where a sign-in's page
+  sent the browser back to the computer. The request must come from the client that started the
+  pending attempt. The address must match its callback and OAuth state. The computer loads it as the
   browser would have: only its own address (127.0.0.1, localhost or [::1], over http, at a port,
   with a query; a fragment is left off), and no further than it answers (a redirect isn't
   followed). `200 {"status"}` with the status it got: 2xx or 3xx, it took it; `400 {"message"}`

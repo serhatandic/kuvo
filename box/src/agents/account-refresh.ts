@@ -10,6 +10,9 @@ interface Snapshot {
   account?: Account
   identity?: string
   models?: Model[]
+  modelFailed?: boolean
+  modelDirty?: boolean
+  accountChanged?: boolean
   listing?: { refresh: boolean; pending: Promise<Model[]> }
   reading?: Promise<Account>
   rereading?: Promise<Account>
@@ -53,7 +56,7 @@ export class AccountRefresh {
     const changed = previous && !account.unchecked && (previous.signedIn !== account.signedIn || previous.label !== account.label || switched)
     if (changed) {
       this.invalidate(agent, snapshot)
-      this.snapshots.set(agent, { account, identity })
+      this.snapshots.set(agent, { account, identity, accountChanged: true })
     }
     if (!account.unchecked) signIns.record(agent.providerID, account)
     if (changed) void this.publish(agent, account)
@@ -65,7 +68,7 @@ export class AccountRefresh {
     const previous = this.snapshot(agent)
     this.invalidate(agent, previous)
     // A read begun before the sign-in finished cannot publish an account or catalog for it.
-    this.snapshots.delete(agent)
+    this.snapshots.set(agent, { accountChanged: true })
     const account = await this.read(agent, true)
     await this.publish(agent, account)
   }
@@ -93,9 +96,17 @@ export class AccountRefresh {
     return hidden ? value : value.filter(model => !model.hidden)
   }
 
+  async modelStatus(agent: Agent, hidden: boolean, refresh: boolean) {
+    let models: Model[]
+    try { models = await this.models(agent, hidden, refresh) }
+    catch { return { models: [], unavailable: true, keepPrevious: !this.snapshot(agent).accountChanged } }
+    const snapshot = this.snapshot(agent)
+    return { models, unavailable: snapshot.account?.signedIn === true && snapshot.modelFailed === true, keepPrevious: !snapshot.accountChanged }
+  }
+
   private catalog(agent: Agent, snapshot: Snapshot, refresh: boolean): Promise<Model[]> {
     const cached = snapshot.models
-    if (!refresh && cached) return Promise.resolve(cached)
+    if (!refresh && cached && !snapshot.modelDirty) return Promise.resolve(cached)
     const listing = snapshot.listing
     if (listing) {
       if (!refresh || listing.refresh) return listing.pending
@@ -106,9 +117,12 @@ export class AccountRefresh {
     const pending = agent.models({ hidden: true, refresh }).then(value => {
       if (snapshot.listing?.pending !== pending || this.snapshot(agent) !== snapshot) return value
       snapshot.models = value
+      snapshot.modelFailed = false
+      snapshot.modelDirty = false
       if (JSON.stringify(cached) !== JSON.stringify(value)) emit("model.updated", { accountRefresh: true })
       return value
     }).catch(error => {
+      if (snapshot.listing?.pending === pending && this.snapshot(agent) === snapshot) snapshot.modelFailed = true
       if (cached) return cached
       throw error
     }).finally(() => { if (snapshot.listing?.pending === pending) snapshot.listing = undefined })
@@ -120,10 +134,10 @@ export class AccountRefresh {
     for (const agent of agents) {
       const snapshot = this.snapshot(agent)
       if (programUpdated === agent.id) {
-        this.snapshots.set(agent, { account: snapshot.account, identity: snapshot.identity, models: snapshot.models })
+        this.snapshots.set(agent, { account: snapshot.account, identity: snapshot.identity, models: snapshot.models, accountChanged: snapshot.accountChanged })
         void this.models(agent, false, true).catch(() => {})
       } else if (!programUpdated) {
-        snapshot.models = undefined
+        snapshot.modelDirty = true
       }
     }
   }

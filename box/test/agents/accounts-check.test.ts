@@ -5,7 +5,7 @@
 
 import "../safety"
 import { afterAll, afterEach, beforeAll, describe, expect, setSystemTime, test } from "bun:test"
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { delimiter, dirname, join } from "node:path"
 import { TookTooLong, type Agent } from "../../src/agents/agent"
@@ -625,7 +625,7 @@ esac
   })
 
   test("a failed sign-in's words have no terminal codes, and nothing of a token", async () => {
-    // It stops before any code is pasted: its last words are what's said.
+    // It stops before any code is pasted, with private output in its last lines.
     writeFileSync(join(bin, "claude"), `#!/bin/sh
 case "$1" in
   setup-token)
@@ -644,7 +644,7 @@ esac
       const status = sign.status()
       expect(status.status).toBe("failed")
       const message = (status as { message: string }).message
-      expect(message).toContain("OAuth error: Request failed")
+      expect(message).toBe("The sign-in ended before it finished. Try again.")
       expect(message).not.toMatch(/[\x00-\x08\x0b-\x1f\x7f]|\[<u|\(B/)
       expect(message).not.toContain(LONG.slice(20, 40))
       expect(message).not.toContain(LONG.slice(75, 95))
@@ -938,17 +938,46 @@ esac
 `, { mode: 0o700 })
   const github = new GitHubSignIn(context())
   let attempt: Awaited<ReturnType<typeof github.begin>> | undefined
+  let started: ReturnType<typeof github.begin> | undefined
   try {
     expect((await github.integration())?.connections).toEqual([])
-    attempt = await github.begin()
+    started = github.begin("first computer")
+    expect(() => github.begin("second computer")).toThrow("already open")
+    attempt = await started
     expect(attempt).toMatchObject({ url: "https://github.com/login/device", userCode: "ABCD-1234" })
-    expect(github.status(attempt.attemptID).status).toBe("pending")
+    expect(github.status(attempt.attemptID, "first computer").status).toBe("pending")
+    expect(() => github.begin("second computer")).toThrow("already open")
+    expect(github.status(attempt.attemptID, "second computer").status).toBe("expired")
+    github.cancel(attempt.attemptID, "second computer")
+    expect(github.status(attempt.attemptID, "first computer").status).toBe("pending")
     writeFileSync(approval, "")
-    for (let retries = 0; retries < 40 && github.status(attempt.attemptID).status === "pending"; retries++) await Bun.sleep(25)
-    expect(github.status(attempt.attemptID).status).toBe("complete")
+    for (let retries = 0; retries < 40 && github.status(attempt.attemptID, "first computer").status === "pending"; retries++) await Bun.sleep(25)
+    expect(github.status(attempt.attemptID, "first computer").status).toBe("complete")
     expect((await github.integration())?.connections.length).toBe(1)
   } finally {
+    attempt ??= await started?.catch(() => undefined)
     if (attempt) github.cancel(attempt.attemptID)
     rmSync(gh, { force: true })
   }
+})
+
+test("Antigravity probe cleanup is confined to its own session folders", async () => {
+  const { AntigravityAgent } = await import("../../src/agents/agents/antigravity")
+  const agent = new AntigravityAgent(context(), { id: "cleanup", home: join(root, "agy-cleanup") })
+  const acp = join(agent.profile, "antigravity-acp")
+  const brain = join(acp, "brain")
+  mkdirSync(join(brain, "valid-session"), { recursive: true })
+  const protectedFolder = join(acp, "keep")
+  mkdirSync(protectedFolder)
+  writeFileSync(join(protectedFolder, "protected"), "still here")
+  const cleanup = (id: string) => (agent as unknown as { removeSessionFiles(id: string): void }).removeSessionFiles(id)
+  cleanup("../keep")
+  expect(existsSync(join(protectedFolder, "protected"))).toBe(true)
+  cleanup("valid-session")
+  expect(existsSync(join(brain, "valid-session"))).toBe(false)
+  rmSync(brain, { recursive: true })
+  mkdirSync(join(protectedFolder, "valid-session"))
+  symlinkSync(protectedFolder, brain)
+  cleanup("valid-session")
+  expect(existsSync(join(protectedFolder, "valid-session"))).toBe(true)
 })

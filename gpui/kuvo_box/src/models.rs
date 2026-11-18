@@ -168,6 +168,13 @@ pub struct Known {
     pub agents: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Unavailable {
+    pub id: String,
+    pub keep_previous: bool,
+}
+
 /// A provider of the models offered, named as its side names it (`models.offered.providers`).
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Provider {
@@ -207,6 +214,8 @@ pub struct Offered {
     /// may still run.
     #[serde(default)]
     pub listing: Vec<String>,
+    #[serde(default)]
+    pub unavailable: Vec<Unavailable>,
     /// The model a new session starts on (`None` left out: the box couldn't say; `Some(None)`:
     /// nothing runs there).
     #[serde(default, deserialize_with = "present")]
@@ -221,7 +230,7 @@ impl Offered {
 
     /// Whether both sides could say their models.
     pub fn is_whole(&self) -> bool {
-        self.known.engine && self.known.agents
+        self.known.engine && self.known.agents && self.unavailable.is_empty()
     }
 
     /// This answer, with what `before` said of a side this one couldn't (PROTOCOL.md, "The models
@@ -240,6 +249,11 @@ impl Offered {
             self.models.extend(before.models.iter().filter(on(Side::Agents)).cloned());
             self.listing = before.listing.clone();
             self.known.agents = true;
+        }
+        for each in &self.unavailable {
+            if each.keep_previous && !self.models.iter().any(|model| model.side == Side::Agents && model.provider_id == each.id) {
+                self.models.extend(before.models.iter().filter(|model| model.side == Side::Agents && model.provider_id == each.id).cloned());
+            }
         }
         // (The names of the providers of what was kept.)
         for provider in &before.providers {
@@ -445,6 +459,18 @@ mod tests {
         assert_eq!(now.models.iter().map(|model| model.side).collect::<Vec<_>>(), [Side::Engine, Side::Agents]);
         // Nothing before: as said, not whole.
         assert!(!offered(json!({ "models": [], "known": { "engine": false, "agents": true } })).keeping(None).is_whole());
+    }
+
+    #[test]
+    fn a_failed_provider_keeps_only_its_own_previous_models_if_allowed() {
+        let model = |provider: &str, id: &str| json!({ "providerID": provider, "id": id, "name": id, "side": "agents", "efforts": [], "aliases": [] });
+        let before = offered(json!({ "models": [model("claude", "old"), model("codex", "kept"), model("grok", "other-account")], "known": { "engine": true, "agents": true } }));
+        let now = offered(json!({
+            "models": [model("claude", "new")], "known": { "engine": true, "agents": true },
+            "unavailable": [{ "id": "codex", "keepPrevious": true }, { "id": "grok", "keepPrevious": false }]
+        })).keeping(Some(&before));
+        assert_eq!(now.models.iter().map(|model| model.id.as_str()).collect::<Vec<_>>(), ["new", "kept"]);
+        assert!(!now.is_whole());
     }
 
     #[test]

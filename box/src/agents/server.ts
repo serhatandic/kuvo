@@ -1,4 +1,5 @@
 import { GITHUB_WORK_QUEUE } from "../shared/github"
+import { failureWords } from "../shared/sign-in-failure"
 import type { GitHubSignIn } from "./github-sign-in"
 import { AccountRefresh } from "./account-refresh"
 import { watchSignIn } from "./signin-watch"
@@ -119,18 +120,23 @@ const lastMaintained = new Map<string, Maintenance>()
  * known before otherwise, and the account is said again once they do.
  */
 /** What `agent`'s program is now, as just read; whether that's news. */
-function maintainedNow(agent: Agent, value: Maintenance): boolean {
-  const changed = JSON.stringify(lastMaintained.get(agent.id)) !== JSON.stringify(value)
+function maintainedNow(agent: Agent, value: Maintenance, matching: Agent[] = []): boolean {
+  const before = lastMaintained.get(agent.id)
+  const changed = JSON.stringify(before) !== JSON.stringify(value)
   lastMaintained.set(agent.id, value)
+  if (matching.length && before && before.installed !== value.installed) {
+    for (const each of matching) each.programUpdated?.()
+    emit("model.updated", { program: agent.id })
+  }
   return changed
 }
 
-async function maintainedSoon(agent: Agent, fresh: boolean): Promise<Maintenance | undefined> {
+async function maintainedSoon(agent: Agent, fresh: boolean, note: typeof maintainedNow): Promise<Maintenance | undefined> {
   if (!agent.maintenance) return undefined
   let answered = false
   const asked = agent.maintenance(fresh).then(
     (value) => {
-      const changed = maintainedNow(agent, value)
+      const changed = note(agent, value)
       if (answered && changed) emit("integration.updated", { integrationID: agent.providerID })
       return value
     },
@@ -141,7 +147,7 @@ async function maintainedSoon(agent: Agent, fresh: boolean): Promise<Maintenance
   return value
 }
 
-export async function integration(agent: Agent, accounts: AccountRefresh, fresh = false, auto?: Auto): Promise<Integration> {
+export async function integration(agent: Agent, accounts: AccountRefresh, fresh = false, auto?: Auto, note = maintainedNow): Promise<Integration> {
   const [account, maintained] = await Promise.all([
     // A check that fails is its program's (each agent says itself when it isn't installed): it's
     // there, and says why, rather than offering its installer again.
@@ -149,7 +155,7 @@ export async function integration(agent: Agent, accounts: AccountRefresh, fresh 
       (account) => account,
       (error): Account => ({ installed: true, signedIn: false, message: String(error?.message ?? error) }),
     ),
-    maintainedSoon(agent, fresh),
+    maintainedSoon(agent, fresh, note),
   ])
   const before = lastSeen.get(agent.providerID)
   // Who's signed in, as last said (one not said yet, or not now, is no other account).
@@ -228,21 +234,16 @@ export function handler(context: Context) {
   const expected = "Basic " + Buffer.from(`opencode:${context.password}`).toString("base64")
   const { sessions, roster, auto, link } = context
   const agentFor = (id: string) => roster.find(id)
+  const note = (agent: Agent, value: Maintenance) => maintainedNow(agent, value, roster.all().filter(each => each.id === agent.id))
   const accounts = new AccountRefresh(context.limits)
   const signedIn = (agent: Agent) => void accounts.signedIn(agent).then(() => context.usage?.refresh()).catch(() => {})
   if (context.refreshAccounts) {
     const checkPrograms = async () => {
       const agents = roster.all()
       await Promise.allSettled(agents.filter(agent => agent.instance.id === "default" && agent.maintenance).map(async agent => {
-        const before = lastMaintained.get(agent.id)
         const value = await agent.maintenance!()
-        if (!maintainedNow(agent, value)) return
-        const matching = agents.filter(each => each.id === agent.id)
-        if (before?.installed && before.installed !== value.installed) {
-          for (const each of matching) each.programUpdated?.()
-          emit("model.updated", { program: agent.id })
-        }
-        for (const each of matching) emit("integration.updated", { integrationID: each.providerID })
+        if (!note(agent, value)) return
+        for (const each of agents) if (each.id === agent.id) emit("integration.updated", { integrationID: each.providerID })
       }))
     }
     setInterval(() => void checkPrograms(), PROGRAM_RELEASE_INTERVAL).unref?.()
@@ -280,12 +281,18 @@ export function handler(context: Context) {
         if (!github) return error(404, "GitHub sign-in isn’t available here.")
         if (!b && method === "GET") return located(await github.integration())
         if (b === "connect" && c === "oauth" && !e) {
+          const owner = request.headers.get("x-kuvo-sign-in-owner")
+          if (!owner) return error(400, "Start GitHub sign-in from Accounts.")
           if (!d && method === "POST") {
             if ((await body()).methodID !== "device") return error(400, "Choose Sign in with GitHub.")
-            return located(await github.begin())
+            try { return located(await github.begin(owner)) }
+            catch (failure) {
+              if ((failure as { status?: number }).status === 409) return error(409, (failure as Error).message)
+              throw failure
+            }
           }
-          if (d && method === "GET") return located(github.status(d))
-          if (d && method === "DELETE") { github.cancel(d); return json({}) }
+          if (d && method === "GET") return located(github.status(d, owner))
+          if (d && method === "DELETE") { github.cancel(d, owner); return json({}) }
         }
         return error(404, "That GitHub sign-in action isn’t available.")
       }
@@ -294,11 +301,11 @@ export function handler(context: Context) {
           // `fresh`: asked anew (you refreshed, or came back to the app), with your shell's PATH read again.
           const fresh = url.searchParams.get("fresh") === "1"
           if (fresh) await refreshLoginPath()
-          return located(await Promise.all(roster.all().map((agent) => integration(agent, accounts, fresh, auto))))
+          return located(await Promise.all(roster.all().map((agent) => integration(agent, accounts, fresh, auto, note))))
         }
         const agent = agentFor(a)
         if (!agent) return error(404, `No agent ${a}.`)
-        if (!b) return located(await integration(agent, accounts, true, auto))
+        if (!b) return located(await integration(agent, accounts, true, auto, note))
         if (b === "connect" && c === "oauth") {
           if (!d && method === "POST") {
             const { methodID, remote } = await body()
@@ -324,10 +331,11 @@ export function handler(context: Context) {
           if (!pending || pending.agent !== agent) return error(404, "That sign-in is over. Start it again.")
           if (method === "GET" && !e) {
             const expired = Date.now() > pending.expires
-            const status = expired ? { status: "expired" } : pending.attempt.status()
+            const status = expired ? { status: "expired" as const } : pending.attempt.status()
             if (expired) { pending.stop(); pending.attempt.cancel() }
             if (status.status === "complete") pending.finish()
             if (status.status !== "pending") { pending.stop(); attempts.delete(d!) }
+            if (status.status === "failed") return located({ status: "failed", message: failureWords("failed", status.message) })
             return located(status.status === "pending" ? { ...status, acceptsCode: pending.attempt.acceptsCode, mode: pending.attempt.mode } : status)
           }
           if (method === "POST" && e === "complete") {
@@ -380,8 +388,12 @@ export function handler(context: Context) {
         // `kuvo/sessions/models` reads them; pickers don't).
         const hidden = url.searchParams.get("hidden") === "1"
         const refresh = url.searchParams.get("refresh") === "1"
-        const models = await Promise.all(roster.all().map(agent => accounts.models(agent, hidden, refresh).catch((): Model[] => [])))
-        return located(models.flat())
+        const results = await Promise.all(roster.all().map(async agent => ({ id: agent.providerID, ...await accounts.modelStatus(agent, hidden, refresh) })))
+        const models = results.flatMap(each => each.models)
+        if (url.searchParams.get("details") === "1") {
+          return located({ models, unavailable: results.filter(each => each.unavailable).map(({ id, keepPrevious }) => ({ id, keepPrevious })) })
+        }
+        return located(models)
       }
       if (area === "agent" || area === "command" || area === "skill" || area === "mcp") return located([])
       if (area === "provider") return located([])
@@ -690,6 +702,9 @@ export function handler(context: Context) {
 
       return error(404, "Not available for this agent.")
     } catch (caught) {
+      if (/^\/api\/integration\/[^/]+\/connect\/oauth(?:\/|$)/.test(url.pathname)) {
+        return error(502, "The sign-in couldn’t continue. Try again.")
+      }
       if (caught instanceof NotFound) return error(404, caught.message)
       if (caught instanceof BadRequest) return error(400, caught.message)
       return error(500, caught instanceof Error ? caught.message : String(caught))

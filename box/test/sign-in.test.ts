@@ -141,7 +141,7 @@ test("remote provider OAuth offers the callback address field and explains a loc
       cancelled.push(route)
       return Response.json({})
     }
-    const url = route.includes("/local-only/") ? "http://localhost:1234/start" : "https://provider.example/authorize?redirect_uri=http%3A%2F%2Flocalhost%3A1234%2Fcallback"
+    const url = route.includes("/local-only/") ? "http://localhost:1234/start" : "https://provider.example/authorize?redirect_uri=http%3A%2F%2Flocalhost%3A1234%2Fcallback&state=abc"
     return Response.json({ data: { attemptID: "att_1", url, mode: "auto" } })
   } })
   try {
@@ -149,7 +149,7 @@ test("remote provider OAuth offers the callback address field and explains a loc
     const ask = async (integration: string, transport: { fromApp?: boolean; fromMac?: boolean; served?: boolean }) => {
       let status = 0
       let body: any
-      const request = { method: "POST", path: `kuvo/sign-in/start?integration=${integration}`, headers: {}, body: Buffer.from('{"methodID":"browser"}'), ...transport }
+      const request = { method: "POST", path: `kuvo/sign-in/start?integration=${integration}`, headers: { "x-kuvo-sign-in-client": "a".repeat(32) }, body: Buffer.from('{"methodID":"browser"}'), ...transport }
       for await (const part of handler(request, undefined)) {
         if ("head" in part) status = part.head.status
         if ("body" in part) body = JSON.parse(part.body.toString())
@@ -164,6 +164,54 @@ test("remote provider OAuth offers the callback address field and explains a loc
     expect(refused.body.message).toContain("Open Kuvo Code on")
     expect(cancelled).toEqual(["/api/integration/local-only/connect/oauth/att_1"])
   } finally {
+    engine.stop(true)
+  }
+})
+
+test("pasting a callback requires the starting client, account, attempt, callback and state", async () => {
+  const { engineHandler } = await import("../src/link/server/router")
+  const seen: string[] = []
+  const listener = Bun.serve({ port: 0, fetch(request) {
+    seen.push(request.url)
+    return new Response("OK")
+  } })
+  const callback = `http://127.0.0.1:${listener.port}/callback`
+  const engine = Bun.serve({ port: 0, fetch(request) {
+    const url = new URL(request.url)
+    const account = url.pathname.split("/")[3]!
+    return Response.json({ data: request.method === "POST"
+      ? { attemptID: `try-${account}`, url: `https://provider.example/auth?${new URLSearchParams({ redirect_uri: callback, state: account })}` }
+      : url.pathname.includes("/safe-failure/")
+        ? { status: "failed", message: `secret: ${callback}?code=private /home/user/.credential` }
+        : { status: "pending" } })
+  } })
+  try {
+    const handler = engineHandler(() => ({ port: engine.port, password: "pw" }) as any)
+    const ask = async (method: string, path: string, given?: unknown, client = "a") => {
+      let status = 0, body: any
+      for await (const part of handler({ method, path, headers: { "x-kuvo-sign-in-client": client.repeat(32) },
+        body: given === undefined ? undefined : Buffer.from(JSON.stringify(given)) }, undefined)) {
+        if ("head" in part) status = part.head.status
+        if ("body" in part) body = JSON.parse(part.body.toString())
+      }
+      return { status, body }
+    }
+    for (const account of ["first", "second"]) {
+      expect((await ask("POST", `kuvo/sign-in/start?integration=${account}`, { methodID: "browser" })).body.pasteAddress).toBe(true)
+    }
+    const post = (url: string, client = "a", attempt = "try-first") =>
+      ask("POST", "kuvo/sign-in/return?check=1", { integration: "first", attempt, url }, client)
+    expect((await post(callback + "?state=second&code=private")).status).toBe(400)
+    expect((await post(callback + "/other?state=first&code=private")).status).toBe(400)
+    expect((await post(callback + "?state=first&code=private", "b")).status).toBe(400)
+    expect((await post(callback + "?state=first&code=private", "a", "try-second")).status).toBe(400)
+    expect(seen).toEqual([])
+    expect((await post(callback + "?state=first&code=private")).status).toBe(200)
+    expect(seen).toHaveLength(1)
+    expect((await ask("GET", "kuvo/sign-in/status?integration=safe-failure&attempt=ended")).body)
+      .toEqual({ status: "failed", message: "Signing in didn’t work.", failure: "Signing in didn’t work." })
+  } finally {
+    listener.stop(true)
     engine.stop(true)
   }
 })

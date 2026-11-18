@@ -190,3 +190,24 @@ test("opening a picker during the first catalog read still fetches the provider 
   expect((await cached)[0]?.id).toBe("cached")
   expect((await refreshed)[0]?.id).toBe("new")
 })
+
+test("failed models are reported per account, with the last successful list of that account only", async () => {
+  let fail = false
+  const agent = {
+    id: "fake",
+    providerID: "fake@model-failure",
+    account: async () => ({ installed: true, signedIn: true }),
+    models: async () => {
+      if (fail) throw new Error("private provider error")
+      return [{ id: "one" }] as Model[]
+    },
+  } as unknown as Agent
+  const accounts = new AccountRefresh()
+  await accounts.models(agent)
+  fail = true
+  accounts.catalogChanged([agent])
+  expect(await accounts.modelStatus(agent, false, true)).toMatchObject({ models: [{ id: "one" }], unavailable: true, keepPrevious: true })
+  expect(await new AccountRefresh().modelStatus(agent, false, true)).toEqual({ models: [], unavailable: true, keepPrevious: true })
+  await accounts.signedIn(agent)
+  expect(await accounts.modelStatus(agent, false, true)).toEqual({ models: [], unavailable: true, keepPrevious: false })
+})

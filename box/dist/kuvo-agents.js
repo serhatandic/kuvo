@@ -1426,9 +1426,9 @@ async function commandSignIn(options) {
         await spawned.stdin.flush();
       };
     }
-  } catch (error) {
+  } catch {
     rmSync2(own, { recursive: true, force: true });
-    throw error;
+    throw new Error("The sign-in program couldn\u2019t start. Try again.");
   }
   let status = { status: "pending" };
   let pasted = false;
@@ -1450,11 +1450,8 @@ async function commandSignIn(options) {
     else if (pasted)
       status = { status: "failed", message: "That code didn't work. Start again, and paste the code from the page this sign-in opens." };
     else {
-      let words = options.secret ? output.replace(options.secret, "") : output;
-      if (options.codePrompt)
-        words = words.replace(options.codePrompt, "");
-      words = words.replace(/[\x00-\x08\x0b-\x1f\x7f]/g, "");
-      status = { status: "failed", message: lastLines(words) || `Signing in stopped (exit code ${code}).` };
+      console.error(`The sign-in command stopped (exit code ${code}).`);
+      status = { status: "failed", message: "The sign-in ended before it finished. Try again." };
     }
   });
   (async () => {
@@ -1551,14 +1548,10 @@ async function commandSignIn(options) {
   };
 }
 var TERMINAL = { cols: 1000, rows: 50 };
-function lastLines(text) {
-  return text.trim().split(`
-`).slice(-4).join(`
-`).trim();
-}
 
 // box/src/shared/github.ts
 var GITHUB_WORK_QUEUE = "github-work-queue";
+var GITHUB_SIGN_IN_BUSY = "GitHub sign-in is already open on another device. Finish it there or wait for it to expire.";
 
 // box/src/agents/github-sign-in.ts
 var PAGE = "https://github.com/login/device";
@@ -1589,12 +1582,20 @@ class GitHubSignIn {
       connections: signedIn ? [{ type: "external", method: "oauth", status: { status: "connected", message: "Signed in to GitHub" } }] : []
     };
   }
-  begin() {
-    return this.starting ??= this.start().finally(() => {
+  begin(owner) {
+    const waiting = this.starting ?? (this.attempt?.signIn.status().status === "pending" ? this.attempt : undefined);
+    if (waiting) {
+      if (waiting.owner !== owner)
+        throw Object.assign(new Error(GITHUB_SIGN_IN_BUSY), { status: 409 });
+      return Promise.resolve(waiting.answer);
+    }
+    const answer = this.start(owner).finally(() => {
       this.starting = undefined;
     });
+    this.starting = { owner, answer };
+    return answer;
   }
-  async start() {
+  async start(owner) {
     const gh = which("gh");
     if (!gh)
       throw new Error("Install GitHub CLI on the computer that runs the Work Queue, then try again in Settings \u2192 Accounts.");
@@ -1621,11 +1622,12 @@ class GitHubSignIn {
     const created = Date.now();
     const expires = created + 15 * 60000;
     const timer = setTimeout(() => this.cancel(id), expires - created).unref();
-    this.attempt = { id, signIn, timer };
-    return { attemptID: id, url: signIn.userCode ? PAGE : "", instructions: signIn.instructions, userCode: signIn.userCode, mode: signIn.mode, time: { created, expires } };
+    const answer = { attemptID: id, url: signIn.userCode ? PAGE : "", instructions: signIn.instructions, userCode: signIn.userCode, mode: signIn.mode, time: { created, expires } };
+    this.attempt = { id, owner, signIn, timer, answer };
+    return answer;
   }
-  status(id) {
-    if (this.attempt?.id !== id)
+  status(id, owner) {
+    if (this.attempt?.id !== id || this.attempt.owner !== owner)
       return { status: "expired" };
     const status = this.attempt.signIn.status();
     if (status.status === "pending") {
@@ -1639,8 +1641,8 @@ class GitHubSignIn {
   waiting() {
     return this.starting !== undefined || this.attempt?.signIn.status().status === "pending";
   }
-  cancel(id = this.attempt?.id) {
-    if (!this.attempt || this.attempt.id !== id)
+  cancel(id = this.attempt?.id, owner) {
+    if (!this.attempt || this.attempt.id !== id || owner !== undefined && this.attempt.owner !== owner)
       return;
     clearTimeout(this.attempt.timer);
     this.attempt.signIn.cancel();
@@ -1695,7 +1697,7 @@ function yourZone(home = boxHome) {
 }
 
 // box/src/agents/main.ts
-import { mkdirSync as mkdirSync29, readdirSync as readdirSync23, readFileSync as readFileSync41, realpathSync as realpathSync10, rmSync as rmSync19 } from "fs";
+import { mkdirSync as mkdirSync29, readdirSync as readdirSync23, readFileSync as readFileSync41, realpathSync as realpathSync11, rmSync as rmSync19 } from "fs";
 import { basename as basename13, dirname as dirname24, join as join43 } from "path";
 
 // box/src/agents/accounts.ts
@@ -7921,7 +7923,7 @@ function ancestors(path) {
 
 // box/src/agents/agents/antigravity.ts
 import { createHash as createHash10 } from "crypto";
-import { chmodSync as chmodSync2, existsSync as existsSync14, mkdirSync as mkdirSync15, readdirSync as readdirSync15, readFileSync as readFileSync23, renameSync as renameSync13, rmSync as rmSync12, statSync as statSync8, writeFileSync as writeFileSync17 } from "fs";
+import { chmodSync as chmodSync2, existsSync as existsSync14, mkdirSync as mkdirSync15, readdirSync as readdirSync15, readFileSync as readFileSync23, realpathSync as realpathSync6, renameSync as renameSync13, rmSync as rmSync12, statSync as statSync8, writeFileSync as writeFileSync17 } from "fs";
 import { dirname as dirname13, join as join24 } from "path";
 import { pathToFileURL as pathToFileURL2 } from "url";
 
@@ -12520,6 +12522,7 @@ class Limits {
   prepare;
   settled;
   entries = new Map;
+  generations = new Map;
   holds = new Map;
   asked = new Map;
   refusals = new Map;
@@ -12725,6 +12728,7 @@ class Limits {
     return raw ? `${account.service}#${identityOf(raw)}` : undefined;
   }
   invalidate(provider) {
+    this.generations.set(provider, (this.generations.get(provider) ?? 0) + 1);
     const before = this.entries.get(provider);
     if (!before)
       return;
@@ -13012,7 +13016,10 @@ class Limits {
   listen(provider, source) {
     if (source.heard)
       return;
-    source.heard = (window) => {
+    const generation = source.generation = () => this.generations.get(provider) ?? 0;
+    source.heard = (window, from) => {
+      if (from !== undefined && from !== generation())
+        return;
       if (!Number.isFinite(window.used))
         return;
       let entry = this.entries.get(provider);
@@ -15526,10 +15533,17 @@ ${rpc.stderr.trim()}`);
     return this.listedHere;
   }
   removeSessionFiles(sessionID) {
-    const folder = join24(this.profile, "antigravity-acp");
-    for (const suffix of [".db", ".db-wal", ".db-shm", ".db-journal", ".meta"])
-      rmSync12(join24(folder, "conversations", sessionID + suffix), { force: true });
-    rmSync12(join24(folder, "brain", sessionID), { recursive: true, force: true });
+    if (typeof sessionID !== "string" || !/^[a-z0-9][a-z0-9_-]{0,127}$/i.test(sessionID) || !existsSync14(this.profile))
+      return;
+    const folder = join24(realpathSync6(this.profile), "antigravity-acp");
+    const conversations = join24(folder, "conversations");
+    const brain = join24(folder, "brain");
+    if (existsSync14(conversations) && realpathSync6(conversations) === conversations) {
+      for (const suffix of [".db", ".db-wal", ".db-shm", ".db-journal", ".meta"])
+        rmSync12(join24(conversations, sessionID + suffix), { force: true });
+    }
+    if (existsSync14(brain) && realpathSync6(brain) === brain)
+      rmSync12(join24(brain, sessionID), { recursive: true, force: true });
   }
   modelConnection(found) {
     const launch = this.launch();
@@ -15693,7 +15707,7 @@ import { basename as basename8, dirname as dirname14, join as join27, resolve as
 import { pathToFileURL as pathToFileURL3 } from "url";
 
 // box/src/agents/maintenance.ts
-import { existsSync as existsSync15, realpathSync as realpathSync6 } from "fs";
+import { existsSync as existsSync15, realpathSync as realpathSync7 } from "fs";
 import { basename as basename7, join as join25 } from "path";
 var checked = new Map;
 var newest = new Map;
@@ -15814,7 +15828,7 @@ async function npmLatest(name, fresh, tag = "latest") {
 async function resolveUpdater(definition) {
   let realPath = definition.executable;
   try {
-    realPath = realpathSync6(definition.executable);
+    realPath = realpathSync7(definition.executable);
   } catch {}
   const name = basename7(definition.executable);
   const native = definition.nativeUpdate;
@@ -15840,7 +15854,7 @@ async function resolveUpdater(definition) {
       let brewPrefix = said;
       try {
         if (said)
-          brewPrefix = realpathSync6(said);
+          brewPrefix = realpathSync7(said);
       } catch {}
       if (brewPrefix && brewPrefix === keg.prefix) {
         const cask = keg.kind === "cask";
@@ -16428,7 +16442,6 @@ function botMemory(session) {
 var KEPT_IN_HOME = ["settings*.json", "hooks", ".mcp.json"];
 var PRINTED_TOKEN = /sk-ant-oat\d+-[A-Za-z0-9_-]{60,}(?=[^A-Za-z0-9_-])/;
 var ANY_TOKEN = /sk-ant-[A-Za-z0-9_-]+/g;
-var PRINTED_SECRET = /sk-ant-[A-Za-z0-9_-]+|^[^\S\n]*[A-Za-z0-9_-]{32,}[^\S\n]*$/gm;
 var VALUE = `"[^"]*"|'[^']*'|[^\\s"',;]+`;
 var SECRET_NAME = "[A-Za-z0-9_-]*(?:key|token(?!s)|secret|password|passwd)[A-Za-z0-9_-]*";
 var withoutSecrets = (text) => text.replace(ANY_TOKEN, "sk-ant-\u2026").replace(/:\/\/[^\s/]*@/g, "://\u2026@").replace(new RegExp(`\\b((?:proxy-)?authorization)(["']?\\s*[:=]\\s*)(?:"[^"]*"|'[^']*'|(?:(?:bearer|basic|token)\\s+)?[^\\s"',;]+)`, "gi"), "$1$2\u2026").replace(/\bBearer\s+(?!tokens?\b)[A-Za-z0-9._~+/-]+=*/gi, "Bearer \u2026").replace(new RegExp(`\\b(${SECRET_NAME})(\\s*=\\s*)(?:${VALUE})`, "gi"), "$1$2\u2026").replace(new RegExp(`(["'])(${SECRET_NAME})\\1(\\s*:\\s*)(?:${VALUE})`, "gi"), "$1$2$1$3\u2026").replace(new RegExp(`\\b((?:[A-Za-z0-9_-]+[-_])?(?:api[-_]?key|token)|[A-Za-z0-9_-]*(?:password|passwd|secret))(?<!(?:^|[\\s(])token)(\\s*:\\s*)(?:${VALUE})`, "gi"), "$1$2\u2026").replace(new RegExp(`(--${SECRET_NAME})(\\s+|=)(?:${VALUE})`, "gi"), "$1$2\u2026");
@@ -16492,6 +16505,7 @@ class ClaudeAgent {
   turnedAway;
   modelList;
   loadingModels;
+  catalogGeneration = 0;
   listed = [];
   program = 0;
   signOut;
@@ -16552,6 +16566,8 @@ class ClaudeAgent {
   }
   programUpdated() {
     this.program++;
+    this.catalogGeneration++;
+    this.loadingModels = undefined;
     if (this.modelList)
       this.modelList.at = 0;
   }
@@ -16775,7 +16791,6 @@ class ClaudeAgent {
           if (token)
             keep(token);
         },
-        secret: PRINTED_SECRET,
         onComplete: () => {
           this.turnedAway = undefined;
           this.known.reset();
@@ -16911,7 +16926,11 @@ class ClaudeAgent {
   async models(options = {}) {
     if (this.modelList?.at && !options.refresh)
       return this.modelList.models;
-    const loading = this.loadingModels ??= this.loadModels().finally(() => this.loadingModels = undefined);
+    const generation = this.catalogGeneration;
+    const loading = this.loadingModels ??= this.loadModels(generation).finally(() => {
+      if (this.loadingModels === loading)
+        this.loadingModels = undefined;
+    });
     if (options.refresh) {
       let listed = () => {};
       const ready = new Promise((resolve) => {
@@ -16920,9 +16939,16 @@ class ClaudeAgent {
       });
       try {
         await Promise.race([ready, loading]);
+      } catch (error) {
+        if (generation === this.catalogGeneration)
+          throw error;
       } finally {
         this.listed = this.listed.filter((each) => each !== listed);
       }
+      if (generation !== this.catalogGeneration)
+        return this.models(options);
+    } else {
+      loading.catch(() => {});
     }
     return this.modelList?.models ?? fallbackModels(this.providerID);
   }
@@ -16952,8 +16978,10 @@ class ClaudeAgent {
       return;
     return models.find((model) => model.aliases?.includes(id))?.id;
   }
-  async loadModels() {
+  async loadModels(generation) {
     const sdk = await this.sdk();
+    if (generation !== this.catalogGeneration)
+      return;
     const abort = new AbortController;
     const idle = async function* () {
       await new Promise((resolve) => abort.signal.addEventListener("abort", resolve));
@@ -16978,9 +17006,11 @@ class ClaudeAgent {
         return;
       })]);
       const list = init?.models ?? [];
-      if (list.length) {
+      if (!list.length && generation === this.catalogGeneration)
+        throw new Error("Claude Code didn\u2019t list its models.");
+      if (generation === this.catalogGeneration && list.length) {
         this.listModels(list);
-        if (await this.askWindows(q, list))
+        if (await this.askWindows(q, list, generation) && generation === this.catalogGeneration)
           this.listModels(list);
       }
     } finally {
@@ -17015,10 +17045,12 @@ class ClaudeAgent {
       told();
     emit("model.updated", {});
   }
-  async askWindows(q, list) {
+  async askWindows(q, list, generation) {
     const said = new Map;
     let changed = false;
     for (const info of list) {
+      if (generation !== this.catalogGeneration)
+        return false;
       const key = info.resolvedModel ?? info.value;
       let window = said.get(key);
       if (window === undefined) {
@@ -17032,13 +17064,18 @@ class ClaudeAgent {
           return changed;
         said.set(key, window);
       }
+      if (generation !== this.catalogGeneration)
+        return false;
       if (this.windows.note(info.value, window))
         changed = true;
     }
     return changed;
   }
   forgetModels() {
+    this.catalogGeneration++;
+    this.loadingModels = undefined;
     this.modelList = undefined;
+    this.windows = new ContextWindows;
   }
   thread(session, state) {
     return new ClaudeThread(this, session, state);
@@ -17133,6 +17170,7 @@ class ClaudeThread {
   agent;
   session;
   state;
+  usageGeneration = null;
   query;
   input;
   active;
@@ -17223,7 +17261,9 @@ class ClaudeThread {
     this.subagents = await subagentsFor(this.session.location.directory);
     const subagents = claudeSubagents(this.subagents);
     const subagentsKey = JSON.stringify(subagents);
-    if (this.query && (this.opened?.append !== append || this.opened?.program !== this.agent.program || this.opened?.tools !== tools?.key || this.opened?.skills !== skills || this.opened?.fence !== fence || this.opened?.subagents !== subagentsKey)) {
+    const usage = this.usageGeneration;
+    const signInChanged = usage && (usage.number !== (this.agent.limits.generation?.() ?? 0) || usage.signIn !== this.agent.limits.signIn?.());
+    if (this.query && (signInChanged || this.opened?.append !== append || this.opened?.program !== this.agent.program || this.opened?.tools !== tools?.key || this.opened?.skills !== skills || this.opened?.fence !== fence || this.opened?.subagents !== subagentsKey)) {
       this.cut.push(...this.wakingWork);
       this.close();
     }
@@ -17570,6 +17610,7 @@ ${input.text}` } : input, this.copies());
     this.input = new Queue;
     const tools = fenceOn() ? relayedTools(this.session.id, this) : kuvoTools(this.session.id);
     this.opened = { model: modelID, effort, plan, append, program: this.agent.program, tools: tools?.key, skills, fence: fenceKey() + fullAccessMark(this.session.id), subagents: JSON.stringify(subagents) };
+    this.usageGeneration = taken ? null : { number: this.agent.limits.generation?.() ?? 0, signIn: this.agent.limits.signIn?.() };
     this.query = sdk.query({
       prompt: this.input,
       options: {
@@ -17720,9 +17761,10 @@ ${input.text}` } : input, this.copies());
   }
   async read(query) {
     let ended;
+    const usage = this.usageGeneration;
     try {
       for await (const message of query)
-        this.handle(message);
+        this.handle(message, usage);
     } catch (error) {
       ended = error;
     }
@@ -17786,7 +17828,7 @@ ${input.text}` } : input, this.copies());
     this.close();
     return { ...error, type: "signin" };
   }
-  handle(message) {
+  handle(message, usage = this.usageGeneration) {
     this.said?.forget();
     if (message.type === "system" && message.subtype === "init") {
       const held = this.held;
@@ -17816,7 +17858,7 @@ ${input.text}` } : input, this.copies());
     if (!active) {
       const background = message.parent_tool_use_id ? this.keptLane(message.parent_tool_use_id) : undefined;
       if (background)
-        return this.laneFrame(undefined, background, message);
+        return this.laneFrame(undefined, background, message, usage);
       return this.ownFrame(message);
     }
     if (!message.parent_tool_use_id && Array.isArray(message.user_message_uuids))
@@ -17829,9 +17871,9 @@ ${input.text}` } : input, this.copies());
     const lane = message.parent_tool_use_id ? this.subagentLane(active, message.parent_tool_use_id) : active;
     if (!lane)
       return;
-    this.laneFrame(active, lane, message);
+    this.laneFrame(active, lane, message, usage);
   }
-  laneFrame(active, lane, message) {
+  laneFrame(active, lane, message, usage) {
     const turn = lane.turn;
     switch (message.type) {
       case "stream_event":
@@ -17888,8 +17930,10 @@ ${input.text}` } : input, this.copies());
       }
       case "rate_limit_event": {
         const info = message.rate_limit_info ?? {};
-        for (const window of heardWindows(info))
-          this.agent.limits.heard?.(window);
+        if (usage && usage.signIn === this.agent.limits.signIn?.()) {
+          for (const window of heardWindows(info))
+            this.agent.limits.heard?.(window, usage.number);
+        }
         if (!active || lane !== active)
           return;
         if (info.status === "allowed_warning") {
@@ -23173,6 +23217,37 @@ class Roster {
   }
 }
 
+// box/src/shared/sign-in-failure.ts
+function failureWords(status, message) {
+  if (status === "expired")
+    return "The sign-in timed out. Try again.";
+  const said = typeof message === "string" ? message.trim() : "";
+  if (!said)
+    return "Signing in didn\u2019t work.";
+  const lower = said.toLowerCase();
+  if (lower.includes("access_denied"))
+    return "The sign-in was turned down on its page. Try again to sign in.";
+  if (lower.includes("server_error") || lower.includes("temporarily_unavailable"))
+    return "The service couldn\u2019t sign you in just now. Try again in a moment.";
+  if (lower.includes("state mismatch") || lower.includes("state_mismatch"))
+    return "That page was from an earlier sign-in. Try again to sign in.";
+  if (lower === "invalid_grant")
+    return "Signing in didn\u2019t work (invalid grant).";
+  if ([
+    "The sign-in was turned down on its page. Try again to sign in.",
+    "The service couldn\u2019t sign you in just now. Try again in a moment.",
+    "That page was from an earlier sign-in. Try again to sign in.",
+    "Signing in didn\u2019t work (invalid grant).",
+    "Claude Code's sign-in ended before it finished.",
+    "The sign-in ended before it finished. Try again.",
+    "That code didn't work. Start again, and paste the code from the page this sign-in opens.",
+    "Claude didn't take that code. Start again for a new one.",
+    "GitHub didn\u2019t finish signing in. Start again for a new code."
+  ].includes(said))
+    return said;
+  return "Signing in didn\u2019t work.";
+}
+
 // box/src/agents/sign-ins.ts
 var ASK_WITHIN = 20000;
 
@@ -23288,7 +23363,7 @@ class AccountRefresh {
     const changed = previous && !account.unchecked && (previous.signedIn !== account.signedIn || previous.label !== account.label || switched);
     if (changed) {
       this.invalidate(agent, snapshot);
-      this.snapshots.set(agent, { account, identity });
+      this.snapshots.set(agent, { account, identity, accountChanged: true });
     }
     if (!account.unchecked)
       signIns.record(agent.providerID, account);
@@ -23299,7 +23374,7 @@ class AccountRefresh {
   async signedIn(agent) {
     const previous = this.snapshot(agent);
     this.invalidate(agent, previous);
-    this.snapshots.delete(agent);
+    this.snapshots.set(agent, { accountChanged: true });
     const account = await this.read(agent, true);
     await this.publish(agent, account);
   }
@@ -23328,9 +23403,19 @@ class AccountRefresh {
       return this.models(agent, hidden, refresh);
     return hidden ? value : value.filter((model) => !model.hidden);
   }
+  async modelStatus(agent, hidden, refresh) {
+    let models;
+    try {
+      models = await this.models(agent, hidden, refresh);
+    } catch {
+      return { models: [], unavailable: true, keepPrevious: !this.snapshot(agent).accountChanged };
+    }
+    const snapshot = this.snapshot(agent);
+    return { models, unavailable: snapshot.account?.signedIn === true && snapshot.modelFailed === true, keepPrevious: !snapshot.accountChanged };
+  }
   catalog(agent, snapshot, refresh) {
     const cached = snapshot.models;
-    if (!refresh && cached)
+    if (!refresh && cached && !snapshot.modelDirty)
       return Promise.resolve(cached);
     const listing = snapshot.listing;
     if (listing) {
@@ -23342,10 +23427,14 @@ class AccountRefresh {
       if (snapshot.listing?.pending !== pending || this.snapshot(agent) !== snapshot)
         return value;
       snapshot.models = value;
+      snapshot.modelFailed = false;
+      snapshot.modelDirty = false;
       if (JSON.stringify(cached) !== JSON.stringify(value))
         emit("model.updated", { accountRefresh: true });
       return value;
     }).catch((error) => {
+      if (snapshot.listing?.pending === pending && this.snapshot(agent) === snapshot)
+        snapshot.modelFailed = true;
       if (cached)
         return cached;
       throw error;
@@ -23360,10 +23449,10 @@ class AccountRefresh {
     for (const agent of agents) {
       const snapshot = this.snapshot(agent);
       if (programUpdated === agent.id) {
-        this.snapshots.set(agent, { account: snapshot.account, identity: snapshot.identity, models: snapshot.models });
+        this.snapshots.set(agent, { account: snapshot.account, identity: snapshot.identity, models: snapshot.models, accountChanged: snapshot.accountChanged });
         this.models(agent, false, true).catch(() => {});
       } else if (!programUpdated) {
-        snapshot.models = undefined;
+        snapshot.modelDirty = true;
       }
     }
   }
@@ -23492,7 +23581,7 @@ function spendTitle(service) {
 // box/src/agents/usage/usage.ts
 import { execFileSync as execFileSync2 } from "child_process";
 import { createHash as createHash16 } from "crypto";
-import { lstatSync as lstatSync9, mkdirSync as mkdirSync24, readFileSync as readFileSync33, realpathSync as realpathSync8, renameSync as renameSync20, statSync as statSync15, writeFileSync as writeFileSync25 } from "fs";
+import { lstatSync as lstatSync9, mkdirSync as mkdirSync24, readFileSync as readFileSync33, realpathSync as realpathSync9, renameSync as renameSync20, statSync as statSync15, writeFileSync as writeFileSync25 } from "fs";
 import { homedir as homedir5, hostname as hostname2 } from "os";
 import { basename as basename11, dirname as dirname18, join as join38 } from "path";
 
@@ -25551,7 +25640,7 @@ function fromKeptGrok(kept) {
 }
 
 // box/src/agents/usage/antigravity-history.ts
-import { readdirSync as readdirSync19, realpathSync as realpathSync7, statSync as statSync12 } from "fs";
+import { readdirSync as readdirSync19, realpathSync as realpathSync8, statSync as statSync12 } from "fs";
 import { join as join34 } from "path";
 function generationEvent(blob, stepMetadata) {
   function varint(bytes, start) {
@@ -25687,7 +25776,7 @@ function antigravityDatabases(geminiHome, problems) {
     const folder = join34(geminiHome, name, "conversations");
     return names(folder, problems).filter((file) => file.endsWith(".db")).map((file) => {
       try {
-        return realpathSync7(join34(folder, file));
+        return realpathSync8(join34(folder, file));
       } catch (error) {
         if (!problems)
           throw error;
@@ -27277,7 +27366,7 @@ async function usageRoutes(usage, method, rest, params, body = async () => ({}))
 function placeOf(computer, folder, part) {
   let real = folder;
   try {
-    real = realpathSync8(folder);
+    real = realpathSync9(folder);
   } catch {}
   const hash = createHash16("sha256").update(`kuvo-code usage place v2
 `).update(computer).update(`
@@ -27372,7 +27461,7 @@ function claudeSources(folder, computer = ownComputer) {
 }
 function realOf(folder) {
   try {
-    return realpathSync8(folder);
+    return realpathSync9(folder);
   } catch {
     return folder;
   }
@@ -27817,7 +27906,7 @@ async function updateAll(agents, accounts, noted, known) {
 // box/src/agents/sessions.ts
 import { createHash as createHash17 } from "crypto";
 import { spawn as spawnProcess } from "child_process";
-import { readFileSync as readFileSync34, realpathSync as realpathSync9, statSync as statSync16 } from "fs";
+import { readFileSync as readFileSync34, realpathSync as realpathSync10, statSync as statSync16 } from "fs";
 import { homedir as homedir6 } from "os";
 import { dirname as dirname19, join as join39, resolve as resolve8 } from "path";
 import { fileURLToPath as fileURLToPath2 } from "url";
@@ -28876,7 +28965,7 @@ function outsidePaths(ask, directory, attached, own = ownPlaces(), owns) {
 }
 function realFolder(folder) {
   try {
-    return realpathSync9(folder);
+    return realpathSync10(folder);
   } catch {
     return folder;
   }
@@ -37956,17 +38045,23 @@ var located = (value) => json15({ location: { directory: process.cwd() }, data: 
 var error2 = (status, message) => json15({ message }, status);
 var lastSeen = new Map;
 var lastMaintained = new Map;
-function maintainedNow(agent, value) {
-  const changed = JSON.stringify(lastMaintained.get(agent.id)) !== JSON.stringify(value);
+function maintainedNow(agent, value, matching = []) {
+  const before = lastMaintained.get(agent.id);
+  const changed = JSON.stringify(before) !== JSON.stringify(value);
   lastMaintained.set(agent.id, value);
+  if (matching.length && before && before.installed !== value.installed) {
+    for (const each of matching)
+      each.programUpdated?.();
+    emit("model.updated", { program: agent.id });
+  }
   return changed;
 }
-async function maintainedSoon(agent, fresh) {
+async function maintainedSoon(agent, fresh, note) {
   if (!agent.maintenance)
     return;
   let answered = false;
   const asked = agent.maintenance(fresh).then((value) => {
-    const changed = maintainedNow(agent, value);
+    const changed = note(agent, value);
     if (answered && changed)
       emit("integration.updated", { integrationID: agent.providerID });
     return value;
@@ -37975,10 +38070,10 @@ async function maintainedSoon(agent, fresh) {
   answered = true;
   return value;
 }
-async function integration(agent, accounts, fresh = false, auto) {
+async function integration(agent, accounts, fresh = false, auto, note = maintainedNow) {
   const [account, maintained] = await Promise.all([
     accounts.read(agent, fresh).then((account) => account, (error) => ({ installed: true, signedIn: false, message: String(error?.message ?? error) })),
-    maintainedSoon(agent, fresh)
+    maintainedSoon(agent, fresh, note)
   ]);
   const before = lastSeen.get(agent.providerID);
   const label = account.signedIn ? account.label ?? before?.label : undefined;
@@ -38040,24 +38135,19 @@ function handler(context) {
   const expected = "Basic " + Buffer.from(`opencode:${context.password}`).toString("base64");
   const { sessions, roster, auto, link } = context;
   const agentFor = (id) => roster.find(id);
+  const note = (agent, value) => maintainedNow(agent, value, roster.all().filter((each) => each.id === agent.id));
   const accounts = new AccountRefresh(context.limits);
   const signedIn = (agent) => void accounts.signedIn(agent).then(() => context.usage?.refresh()).catch(() => {});
   if (context.refreshAccounts) {
     const checkPrograms = async () => {
       const agents = roster.all();
       await Promise.allSettled(agents.filter((agent) => agent.instance.id === "default" && agent.maintenance).map(async (agent) => {
-        const before = lastMaintained.get(agent.id);
         const value = await agent.maintenance();
-        if (!maintainedNow(agent, value))
+        if (!note(agent, value))
           return;
-        const matching = agents.filter((each) => each.id === agent.id);
-        if (before?.installed && before.installed !== value.installed) {
-          for (const each of matching)
-            each.programUpdated?.();
-          emit("model.updated", { program: agent.id });
-        }
-        for (const each of matching)
-          emit("integration.updated", { integrationID: each.providerID });
+        for (const each of agents)
+          if (each.id === agent.id)
+            emit("integration.updated", { integrationID: each.providerID });
       }));
     };
     setInterval(() => void checkPrograms(), PROGRAM_RELEASE_INTERVAL).unref?.();
@@ -38100,15 +38190,24 @@ function handler(context) {
         if (!b && method === "GET")
           return located(await github.integration());
         if (b === "connect" && c === "oauth" && !e) {
+          const owner = request.headers.get("x-kuvo-sign-in-owner");
+          if (!owner)
+            return error2(400, "Start GitHub sign-in from Accounts.");
           if (!d && method === "POST") {
             if ((await body()).methodID !== "device")
               return error2(400, "Choose Sign in with GitHub.");
-            return located(await github.begin());
+            try {
+              return located(await github.begin(owner));
+            } catch (failure) {
+              if (failure.status === 409)
+                return error2(409, failure.message);
+              throw failure;
+            }
           }
           if (d && method === "GET")
-            return located(github.status(d));
+            return located(github.status(d, owner));
           if (d && method === "DELETE") {
-            github.cancel(d);
+            github.cancel(d, owner);
             return json15({});
           }
         }
@@ -38119,13 +38218,13 @@ function handler(context) {
           const fresh = url.searchParams.get("fresh") === "1";
           if (fresh)
             await refreshLoginPath();
-          return located(await Promise.all(roster.all().map((agent) => integration(agent, accounts, fresh, auto))));
+          return located(await Promise.all(roster.all().map((agent) => integration(agent, accounts, fresh, auto, note))));
         }
         const agent = agentFor(a);
         if (!agent)
           return error2(404, `No agent ${a}.`);
         if (!b)
-          return located(await integration(agent, accounts, true, auto));
+          return located(await integration(agent, accounts, true, auto, note));
         if (b === "connect" && c === "oauth") {
           if (!d && method === "POST") {
             const { methodID, remote } = await body();
@@ -38164,6 +38263,8 @@ function handler(context) {
               pending.stop();
               attempts.delete(d);
             }
+            if (status.status === "failed")
+              return located({ status: "failed", message: failureWords("failed", status.message) });
             return located(status.status === "pending" ? { ...status, acceptsCode: pending.attempt.acceptsCode, mode: pending.attempt.mode } : status);
           }
           if (method === "POST" && e === "complete") {
@@ -38215,8 +38316,12 @@ function handler(context) {
           return located(null);
         const hidden = url.searchParams.get("hidden") === "1";
         const refresh = url.searchParams.get("refresh") === "1";
-        const models = await Promise.all(roster.all().map((agent) => accounts.models(agent, hidden, refresh).catch(() => [])));
-        return located(models.flat());
+        const results = await Promise.all(roster.all().map(async (agent) => ({ id: agent.providerID, ...await accounts.modelStatus(agent, hidden, refresh) })));
+        const models = results.flatMap((each) => each.models);
+        if (url.searchParams.get("details") === "1") {
+          return located({ models, unavailable: results.filter((each) => each.unavailable).map(({ id, keepPrevious }) => ({ id, keepPrevious })) });
+        }
+        return located(models);
       }
       if (area === "agent" || area === "command" || area === "skill" || area === "mcp")
         return located([]);
@@ -38541,6 +38646,9 @@ function handler(context) {
       }
       return error2(404, "Not available for this agent.");
     } catch (caught) {
+      if (/^\/api\/integration\/[^/]+\/connect\/oauth(?:\/|$)/.test(url.pathname)) {
+        return error2(502, "The sign-in couldn\u2019t continue. Try again.");
+      }
       if (caught instanceof NotFound)
         return error2(404, caught.message);
       if (caught instanceof BadRequest)
@@ -39603,7 +39711,7 @@ var password = onMachine ? process.env.KUVO_AGENTS_PASSWORD : process.env.OPENCO
 var kept3 = process.env.KUVO_AGENTS_KEPT === "1";
 var ownRuntime = (() => {
   try {
-    return !!machineHome && realpathSync10(dirname24(dirname24(process.execPath))) === realpathSync10(join43(machineHome, "engine"));
+    return !!machineHome && realpathSync11(dirname24(dirname24(process.execPath))) === realpathSync11(join43(machineHome, "engine"));
   } catch {
     return false;
   }
@@ -40046,4 +40154,4 @@ if (!onMachine) {
 }
 process.on("SIGTERM", () => stop());
 process.on("SIGINT", () => stop());
-// Built from Packages/Box/src/agents 8825c855d103ffc41738a703d82b796f0865852cf412b20611eb72c8b4dfa40c
+// Built from Packages/Box/src/agents ae3241fc58ed4dcf674ab8cc343c1e011a353666f46474d217c5b4c843257ea0

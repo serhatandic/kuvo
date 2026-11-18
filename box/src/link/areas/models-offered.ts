@@ -117,6 +117,7 @@ export function offeredAnswer(lists: Lists, wanted: Ref | null, starred: Starred
     providers: providersOf(offered, lists),
     starred,
     known: { engine: lists.engine !== null, agents: lists.bridge !== null },
+    ...(lists.bridge?.unavailable?.length ? { unavailable: lists.bridge.unavailable } : {}),
     ...(listing.length ? { listing } : {}),
     ...(starting !== undefined ? { starting: starting?.model ?? null } : {}),
   };

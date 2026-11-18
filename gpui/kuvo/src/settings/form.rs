@@ -14,7 +14,7 @@ use gpui::{
     StatefulInteractiveElement, Styled, Subscription, Task, Window, div, prelude::FluentBuilder as _, px,
 };
 use kuvo_box::BoxClient;
-use kuvo_box::settings_pages::{Changed, Checked, Field, FieldKind, FieldWords, Folder, Form, MOST_FILE_BYTES, Sent, WordsTone, file_value, for_check};
+use kuvo_box::settings_pages::{Changed, Checked, Choice, Field, FieldKind, FieldWords, Folder, Form, MOST_FILE_BYTES, Sent, WordsTone, file_value, for_check};
 use kuvo_ui::{
     ActiveTheme, Icon, IconName, IconSize, StyledType, TextField, TextFieldEvent, TypeSize,
     button::{Button, ButtonSize},
@@ -94,6 +94,21 @@ pub struct FormSheet {
 }
 
 impl EventEmitter<FormEvent> for FormSheet {}
+
+fn choice_catalog(choices: &[Choice], chosen: &str) -> crate::model_picker::Catalog {
+    let offered = kuvo_box::models::Offered {
+        models: choices.iter().filter_map(|choice| {
+            let model = choice.model.as_ref()?;
+            Some(kuvo_box::models::OfferedModel { provider_id: model.provider_id.clone(), id: model.id.clone(), name: choice.title.clone(), side: kuvo_box::models::Side::Engine, efforts: Vec::new(), aliases: Vec::new(), retiring: false, hidden: false, free: false })
+        }).collect(),
+        ..Default::default()
+    };
+    let catalog = crate::model_picker::Catalog::new(&offered, |_| true);
+    match choices.iter().find(|choice| choice.model.is_none()) {
+        Some(unset) => catalog.with_unset(unset.title.clone(), unset.line.clone().unwrap_or_default(), unset.id == chosen),
+        None => catalog,
+    }
+}
 
 fn text_of(value: Option<&Value>) -> String {
     match value {
@@ -643,51 +658,62 @@ impl FormSheet {
                     .into_any_element()
             }
             // Models: the model picker, its choices the box's (one that isn't a model, ahead of them).
-            FieldKind::Choice if !disabled && field.choices.iter().any(|choice| choice.model.is_some()) => {
+            FieldKind::Choice if !disabled && (field.choices.iter().any(|choice| choice.model.is_some())
+                || (id == "model" && matches!(self.target.section.as_str(), "agents" | "commands" | "custom-auto"))) => {
                 let chosen = values.get(&id).and_then(Value::as_str).unwrap_or_default().to_owned();
                 let shown = field.choices.iter().find(|choice| choice.id == chosen).map(|choice| choice.title.clone()).unwrap_or_else(|| chosen.clone());
                 let (choices, this) = (field.choices.clone(), cx.entity().downgrade());
+                let (client, target) = (self.client.clone(), self.target.clone());
                 let control = crate::model_picker::setting_button(
                     &format!("settings-form-{id}"),
                     shown,
                     move |window, cx| {
-                        let offered = kuvo_box::models::Offered {
-                            models: choices
-                                .iter()
-                                .filter_map(|choice| {
-                                    let model = choice.model.as_ref()?;
-                                    Some(kuvo_box::models::OfferedModel { provider_id: model.provider_id.clone(), id: model.id.clone(), name: choice.title.clone(), side: kuvo_box::models::Side::Engine, efforts: Vec::new(), aliases: Vec::new(), retiring: false, hidden: false, free: false })
-                                })
-                                .collect(),
-                            ..Default::default()
-                        };
-                        let mut catalog = crate::model_picker::Catalog::new(&offered, |_| true);
-                        let unset = choices.iter().find(|choice| choice.model.is_none());
-                        if let Some(unset) = unset {
-                            catalog = catalog.with_unset(unset.title.clone(), unset.line.clone().unwrap_or_default(), unset.id == chosen);
-                        }
+                        let catalog = choice_catalog(&choices, &chosen);
                         let current = choices.iter().find(|choice| choice.id == chosen).and_then(|choice| choice.model.clone()).map(|model| kuvo_box::typed::ModelRef { provider_id: model.provider_id, id: model.id, variant: None });
-                        let (choices, this, id) = (choices.clone(), this.clone(), id.clone());
-                        cx.new(|cx| {
+                        let (selection, field, on_pick) = (choices.clone(), id.clone(), this.clone());
+                        let picker = cx.new(|cx| {
                             crate::model_picker::ModelPicker::new(
                                 std::sync::Arc::new(catalog),
                                 None,
                                 current,
                                 None,
                                 std::rc::Rc::new(move |picked: Option<kuvo_box::typed::ModelRef>, _, cx| {
-                                    let choice = choices.iter().find(|choice| match (&choice.model, &picked) {
-                                        (Some(model), Some(picked)) => model.provider_id == picked.provider_id && model.id == picked.id,
-                                        (None, None) => true,
-                                        _ => false,
-                                    });
-                                    if let Some(pick) = choice.map(|choice| choice.id.clone()) {
-                                        this.update(cx, |this, cx| this.pick(&id, Value::String(pick), cx)).ok();
-                                    }
+                                    on_pick.update(cx, |this, cx| {
+                                        let choices = this.form.fields.iter().find(|each| each.id == field).map(|each| &each.choices).unwrap_or(&selection);
+                                        let choice = choices.iter().find(|choice| match (&choice.model, &picked) {
+                                            (Some(model), Some(picked)) => model.provider_id == picked.provider_id && model.id == picked.id,
+                                            (None, None) => true,
+                                            _ => false,
+                                        });
+                                        if let Some(pick) = choice.map(|choice| choice.id.clone()) {
+                                            this.pick(&field, Value::String(pick), cx);
+                                        }
+                                    }).ok();
                                 }),
                                 window,
                                 cx,
                             )
-                        })
+                        });
+                        let (client, target, field) = (client.clone(), target.clone(), id.clone());
+                        let requested = field.clone();
+                        let read = cx.background_executor().spawn(async move {
+                            client.refresh_setting_model_choices(&target.section, &target.row, &target.action, &requested).ok().flatten()
+                        });
+                        let (opened, form, chosen) = (picker.downgrade(), this.clone(), chosen.clone());
+                        window.spawn(cx, async move |cx| {
+                            let Some(choices) = read.await else { return };
+                            opened.update_in(cx, |picker, window, cx| {
+                                let catalog = choice_catalog(&choices, &chosen);
+                                form.update(cx, |form, cx| {
+                                    if let Some(each) = form.form.fields.iter_mut().find(|each| each.id == field) {
+                                        each.choices = choices;
+                                    }
+                                    cx.notify();
+                                }).ok();
+                                picker.replace_catalog(catalog, window, cx);
+                            }).ok();
+                        }).detach();
+                        picker
                     },
                     cx,
                 );

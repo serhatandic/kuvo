@@ -104,10 +104,11 @@ export async function asked(target: Target, method: string, route: string, body?
  * answers: what's under `data`, or the whole answer; it throws with the answer's message for a
  * status that isn't ok. `folder`: the folder it's about, as the engine reads it.
  */
-export async function call(target: Target, method: string, route: string, body?: unknown, signal?: AbortSignal, folder?: string): Promise<unknown> {
+export async function call(target: Target, method: string, route: string, body?: unknown, signal?: AbortSignal, folder?: string, headers?: Record<string, string>): Promise<unknown> {
   const response = await fetch(`http://127.0.0.1:${target.port}${route}`, {
     method,
     headers: {
+      ...headers,
       authorization: `Basic ${Buffer.from(`opencode:${target.password}`).toString("base64")}`,
       ...(body ? { "content-type": "application/json" } : {}),
       // The folder it's about, as the engine reads it (a query naming one is ignored).

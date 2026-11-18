@@ -6,13 +6,13 @@ import { newID } from "./ids"
 import { run, which } from "./proc"
 import { commandSignIn } from "./signin"
 
-import { GITHUB_WORK_QUEUE } from "../shared/github"
+import { GITHUB_SIGN_IN_BUSY, GITHUB_WORK_QUEUE } from "../shared/github"
 const PAGE = "https://github.com/login/device"
 const ENV = { GH_PROMPT_DISABLED: "1", GH_NO_UPDATE_NOTIFIER: "1", NO_COLOR: "1" }
 
 export class GitHubSignIn {
-  private attempt?: { id: string; signIn: SignInAttempt; timer: ReturnType<typeof setTimeout> }
-  private starting?: ReturnType<GitHubSignIn["start"]>
+  private attempt?: { id: string; owner: string; signIn: SignInAttempt; timer: ReturnType<typeof setTimeout>; answer: Awaited<ReturnType<GitHubSignIn["start"]>> }
+  private starting?: { owner: string; answer: ReturnType<GitHubSignIn["start"]> }
   private account?: { until: number; check: Promise<boolean> }
 
   constructor(private readonly folders: { home: string; temporary: string }) {}
@@ -33,11 +33,18 @@ export class GitHubSignIn {
     }
   }
 
-  begin() {
-    return this.starting ??= this.start().finally(() => { this.starting = undefined })
+  begin(owner: string) {
+    const waiting = this.starting ?? (this.attempt?.signIn.status().status === "pending" ? this.attempt : undefined)
+    if (waiting) {
+      if (waiting.owner !== owner) throw Object.assign(new Error(GITHUB_SIGN_IN_BUSY), { status: 409 })
+      return Promise.resolve(waiting.answer)
+    }
+    const answer = this.start(owner).finally(() => { this.starting = undefined })
+    this.starting = { owner, answer }
+    return answer
   }
 
-  private async start() {
+  private async start(owner: string) {
     const gh = which("gh")
     if (!gh) throw new Error("Install GitHub CLI on the computer that runs the Work Queue, then try again in Settings → Accounts.")
     if (process.env.GH_TOKEN || process.env.GITHUB_TOKEN) throw new Error("The Work Queue uses a GitHub token set on this computer. Remove that setting before signing in here.")
@@ -56,12 +63,13 @@ export class GitHubSignIn {
     const created = Date.now()
     const expires = created + 15 * 60_000
     const timer = setTimeout(() => this.cancel(id), expires - created).unref()
-    this.attempt = { id, signIn, timer }
-    return { attemptID: id, url: signIn.userCode ? PAGE : "", instructions: signIn.instructions, userCode: signIn.userCode, mode: signIn.mode, time: { created, expires } }
+    const answer = { attemptID: id, url: signIn.userCode ? PAGE : "", instructions: signIn.instructions, userCode: signIn.userCode, mode: signIn.mode, time: { created, expires } }
+    this.attempt = { id, owner, signIn, timer, answer }
+    return answer
   }
 
-  status(id: string) {
-    if (this.attempt?.id !== id) return { status: "expired" }
+  status(id: string, owner: string) {
+    if (this.attempt?.id !== id || this.attempt.owner !== owner) return { status: "expired" }
     const status = this.attempt.signIn.status()
     if (status.status === "pending") {
       const userCode = status.userCode ?? this.attempt.signIn.userCode
@@ -75,8 +83,8 @@ export class GitHubSignIn {
     return this.starting !== undefined || this.attempt?.signIn.status().status === "pending"
   }
 
-  cancel(id = this.attempt?.id) {
-    if (!this.attempt || this.attempt.id !== id) return
+  cancel(id = this.attempt?.id, owner?: string) {
+    if (!this.attempt || this.attempt.id !== id || (owner !== undefined && this.attempt.owner !== owner)) return
     clearTimeout(this.attempt.timer)
     this.attempt.signIn.cancel()
     this.attempt = undefined

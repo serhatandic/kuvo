@@ -197,9 +197,13 @@ test("bridge bots offer provider models too; engine bots explain choosing a codi
 test("opening the picker bypasses the list cache and asks the bridge to refresh upstream", async () => {
   let upstream = "old"
   let cached = upstream
+  let refreshes = 0
   const bridge = Bun.serve({ port: 0, fetch(request) {
     const url = new URL(request.url)
-    if (url.searchParams.get("refresh") === "1") cached = upstream
+    if (url.searchParams.get("refresh") === "1") {
+      refreshes++
+      cached = upstream
+    }
     const data = url.pathname === "/api/model" ? [listed("codex-cli", cached, cached, [])]
       : url.pathname === "/api/integration" ? [{ id: "codex-cli", name: "Codex", connections: [{}] }]
       : { lists: [] }
@@ -219,9 +223,73 @@ test("opening the picker bypasses the list cache and asks the bridge to refresh 
   try {
     expect(await ask()).toEqual(["old"])
     upstream = "released"
+    expect(await Promise.all([ask(true), ask(true)])).toEqual([["released"], ["released"]])
     expect(await ask(true)).toEqual(["released"])
+    expect(refreshes).toBe(1)
   } finally {
     bridge.stop(true)
     forgetModelLists()
   }
+})
+
+test("opening the picker revalidates GitLab's open catalog and leaves active folders alone", async () => {
+  const { listsHere } = await import("../src/link/work/model-rule")
+  const { settleDueModels } = await import("../src/link/engine/models")
+  let model = "stale"
+  let busy = true
+  const closed: string[] = []
+  const engine = Bun.serve({ port: 0, fetch(request) {
+    const url = new URL(request.url)
+    let data: unknown
+    switch (url.pathname) {
+      case "/api/provider": data = [{ id: "gitlab" }]; break
+      case "/api/model": data = [listed("gitlab", model, model, [])]; break
+      case "/api/model/default": data = null; break
+      case "/api/integration": data = [{ id: "gitlab", connections: [{}] }]; break
+      case "/api/debug/location":
+        if (request.method === "DELETE") {
+          closed.push(url.searchParams.get("location[directory]")!)
+          model = "released"
+          data = []
+        } else data = ["/busy", "/quiet"].filter(folder => !closed.includes(folder)).map(directory => ({ directory }))
+        break
+      case "/api/session/active": data = busy ? ["ses_busy"] : []; break
+      case "/api/session/ses_busy": data = { location: { directory: "/busy" } }; break
+      default: data = []
+    }
+    return Response.json({ data })
+  } })
+  try {
+    const target = { port: engine.port!, password: "test" }
+    const [result, overlapping] = await Promise.all([
+      listsHere(target, null, undefined, false, true),
+      listsHere(target, null, undefined, false, true),
+    ])
+    expect(result.engine?.models.map(each => each.id)).toEqual(["released"])
+    expect(overlapping.engine?.models.map(each => each.id)).toEqual(["released"])
+    expect((await listsHere(target, null, undefined, false, true)).engine?.models.map(each => each.id)).toEqual(["released"])
+    expect(closed).toEqual(["/quiet"])
+    busy = false
+    await settleDueModels(target)
+    expect(closed).toEqual(["/quiet", "/busy"])
+  } finally { engine.stop(true); forgetModelLists() }
+})
+
+test("an unanswered provider is marked separately from healthy providers", async () => {
+  const { listsHere } = await import("../src/link/work/model-rule")
+  const bridge = Bun.serve({ port: 0, fetch(request) {
+    const route = new URL(request.url).pathname
+    const data = route === "/api/model"
+      ? { models: [listed("claude-code", "sonnet", "Sonnet", [])], unavailable: [{ id: "codex-cli", keepPrevious: true }] }
+      : route === "/api/integration"
+        ? [{ id: "claude-code", connections: [{}] }, { id: "codex-cli", connections: [{}] }]
+        : { lists: [] }
+    return Response.json({ data })
+  } })
+  try {
+    const lists = await listsHere(null, { port: bridge.port!, password: "test" }, undefined, false, true)
+    const answer = offeredAnswer(lists, null)
+    expect(answer.models.map(each => each.id)).toEqual(["sonnet"])
+    expect(answer.unavailable).toEqual([{ id: "codex-cli", keepPrevious: true }])
+  } finally { bridge.stop(true); forgetModelLists() }
 })

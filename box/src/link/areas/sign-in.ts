@@ -1,4 +1,4 @@
-import { GITHUB_WORK_QUEUE } from "../../shared/github";
+import { GITHUB_SIGN_IN_BUSY, GITHUB_WORK_QUEUE } from "../../shared/github";
 // Signing in to an account (PROTOCOL.md, "Signing in"): the ways a client offers, in the box's order
 // and words, for one account (`kuvo/sign-in/methods`) or every one listed (`kuvo/sign-in/accounts`,
 // what Accounts' Sign In buttons and hints go by), and how a started sign-in is going, with what to say when it
@@ -7,6 +7,13 @@ import { GITHUB_WORK_QUEUE } from "../../shared/github";
 // words what it offers. Held to protocol/vectors/sign-in.json.
 
 import { isObject, parsed } from "../../shared/json";
+import { createHash } from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
+import { writeSecret } from "../files";
+import { RUN } from "../home";
+import { failureWords } from "../../shared/sign-in-failure";
+export { failureWords } from "../../shared/sign-in-failure";
 import { ENGINE_SERVICES } from "../../shared/limits";
 import type { Target } from "../../shared/records";
 import { pause } from "../../shared/wait";
@@ -184,23 +191,6 @@ function hintOf(methods: OfferedMethod[], name: string): string {
  * ways in as the box offers them, so OpenAI, whose ChatGPT plan comes through Codex, is a key. */
 export const isPlan = (offered: OfferedMethods): boolean => offered.methods.some(method => method.type === "oauth");
 
-/** What a client says of a sign-in that ended without signing in: `expired`, or `failed` with the
- * engine's `message` (a sign-in page that sends back an error hands the engine its OAuth code, as
- * `access_denied` when you turn it down there, which the engine passes on as it is). */
-export function failureWords(status: "failed" | "expired", message?: unknown): string {
-  if (status === "expired") return "The sign-in timed out. Try again.";
-  const said = typeof message === "string" ? message.trim() : "";
-  if (!said) return "Signing in didn’t work.";
-  const lower = said.toLowerCase();
-  if (lower.includes("access_denied")) return "The sign-in was turned down on its page. Try again to sign in.";
-  if (lower.includes("server_error") || lower.includes("temporarily_unavailable")) return "The service couldn’t sign you in just now. Try again in a moment.";
-  // The page's answer was for another try: an address pasted from an earlier sign-in.
-  if (lower.includes("state mismatch") || lower.includes("state_mismatch")) return "That page was from an earlier sign-in. Try again to sign in.";
-  // Another OAuth code, on its own: in words.
-  if (/^[a-z]+(_[a-z]+)+$/i.test(said)) return `Signing in didn’t work (${lower.replaceAll("_", " ")}).`;
-  return said;
-}
-
 /** Where `query` asks about: the coding agents' bridge (`agents=1`, for an agent's account), else
  * the engine; or why it can't be asked now. */
 async function placeOf(query: URLSearchParams, context: RouteContext): Promise<{ target: Target } | { down: AgentsAway | { message: string } }> {
@@ -229,6 +219,29 @@ function loopback(value: string): URL | undefined {
   return undefined;
 }
 
+export function oauthCallback(page: unknown): { callback: URL; state: string } | undefined {
+  if (typeof page !== "string") return;
+  try {
+    const params = new URL(page).searchParams;
+    const state = params.get("state");
+    if (!state || params.getAll("state").length !== 1) return;
+    for (const name of ["redirect_uri", "redirect_url", "redirect", "callback", "return_to"]) {
+      const target = params.get(name);
+      const callback = target ? loopback(target) : undefined;
+      if (callback?.protocol === "http:" && callback.port) return { callback, state };
+    }
+  } catch {}
+  return undefined;
+}
+
+export function isOAuthReturn(value: string, callback: URL, state: string): boolean {
+  const actual = loopback(value);
+  return Boolean(actual &&
+    actual.origin === callback.origin && actual.pathname === callback.pathname &&
+    actual.searchParams.getAll("state").length === 1 && actual.searchParams.get("state") === state &&
+    [...callback.searchParams].every(([name, value]) => actual.searchParams.get(name) === value));
+}
+
 /** An OAuth page may finish by returning to a listener on the computer that started it. */
 export function oauthPage(url: unknown): { local: boolean; returns: boolean } {
   if (typeof url !== "string") return { local: false, returns: false };
@@ -241,12 +254,63 @@ export function oauthPage(url: unknown): { local: boolean; returns: boolean } {
   }
 }
 
-function pasteAddress(attempt: Record<string, unknown>, request: LinkRequest) {
-  if (fromLocalApp(request) || !oauthPage(attempt.url).returns || attempt.acceptsCode === true || attempt.mode === "code") return {};
+function ownerOf(context: RouteContext): string | undefined {
+  if (context.phone?.key) return `key:${context.phone.key.toString("hex")}`;
+  const supplied = context.request.headers?.["x-kuvo-sign-in-client"];
+  if (typeof supplied === "string" && /^[a-f0-9]{32}$/.test(supplied)) return `client:${supplied}`;
+  if (fromLocalApp(context.request)) return "local";
+  return undefined;
+}
+
+const ownerHeaders = (owner: string | undefined) => owner ? { "x-kuvo-sign-in-owner": owner } : undefined;
+interface PendingReturn { owner: string; callback?: string; state?: string; until: number }
+// SSH may use a new host process for each request.
+const returnFolder = path.join(RUN, "sign-in-returns");
+const returnFile = (agents: boolean, integration: string, id: string) =>
+  path.join(returnFolder, createHash("sha256").update(JSON.stringify([agents, integration, id])).digest("hex"));
+function readReturn(file: string): PendingReturn | undefined {
+  try {
+    const expected = JSON.parse(fs.readFileSync(file, "utf8")) as PendingReturn;
+    if (expected.until > Date.now()) return expected;
+  } catch {}
+  return undefined;
+}
+
+function keepReturn(file: string, expected: PendingReturn) {
+  try { writeSecret(file, JSON.stringify(expected)); } catch {}
+}
+
+function pasteAddress(attempt: Record<string, unknown>, context: RouteContext, query: URLSearchParams, id: unknown) {
+  const owner = ownerOf(context);
+  if (!owner || typeof id !== "string" || fromLocalApp(context.request) || typeof attempt.url !== "string" || attempt.acceptsCode === true || attempt.mode === "code") return {};
+  const file = returnFile(query.get("agents") === "1", query.get("integration")!.trim(), id);
+  const started = readReturn(file);
+  if (!started || started.owner !== owner) return {};
+  const expected = oauthCallback(attempt.url);
+  if (!expected) return {};
+  if (!started.callback) {
+    keepReturn(file, { ...started, callback: expected.callback.href, state: expected.state });
+    if (!readReturn(file)?.callback) return {};
+  }
   return {
     pasteAddress: true,
     instructions: "Finish signing in in your browser. If the last page can’t load, copy its address and paste it here.",
   };
+}
+
+/** Only the browser return advertised by this pending sign-in may be sent to a listener. */
+export async function matchesSignInReturn(context: RouteContext, given: unknown): Promise<boolean> {
+  const owner = ownerOf(context);
+  if (!owner || !isObject(given) || typeof given.integration !== "string" || typeof given.attempt !== "string" || typeof given.url !== "string") return false;
+  const agents = given.agents === true;
+  const file = returnFile(agents, given.integration, given.attempt);
+  const expected = readReturn(file);
+  const callback = expected?.callback && loopback(expected.callback);
+  if (!expected?.state || !callback || expected.owner !== owner || !isOAuthReturn(given.url, callback, expected.state)) return false;
+  const place = await placeOf(new URLSearchParams({ integration: given.integration, agents: agents ? "1" : "0" }), context);
+  if ("down" in place) return false;
+  const current = await call(place.target, "GET", `/api/integration/${encodeURIComponent(given.integration)}/connect/oauth/${encodeURIComponent(given.attempt)}`, undefined, AbortSignal.timeout(5_000)).catch(() => null);
+  return readReturn(file)?.state === expected.state && isObject(current) && current.status === "pending";
 }
 
 function useHostBrowser(request: LinkRequest): string {
@@ -269,11 +333,11 @@ export async function* workQueueSignInRoute(context: RouteContext): AsyncGenerat
   const method = request.method.toUpperCase();
   try {
     const body = parsed(request.body);
-    const result = await call(bridge, method, `/${context.route}`, method === "POST" && isObject(body) ? oauthStartBody(request, body) : undefined, signal);
+    const result = await call(bridge, method, `/${context.route}`, method === "POST" && isObject(body) ? oauthStartBody(request, body) : undefined, signal, undefined, ownerHeaders(ownerOf(context)));
     return yield* json(200, { data: result });
   } catch (error) {
     const status = (error as { status?: number }).status;
-    return yield* json(status ?? 502, { message: error instanceof Error ? error.message : "GitHub sign-in didn’t answer." });
+    return yield* json(status ?? 502, { message: error instanceof Error && error.message === GITHUB_SIGN_IN_BUSY ? GITHUB_SIGN_IN_BUSY : "GitHub sign-in didn’t answer. Try again." });
   }
 }
 
@@ -308,7 +372,7 @@ async function* accountsRoute(context: RouteContext, query: URLSearchParams): As
   } catch (error) {
     if (deadline.aborted) return yield* json(504, { message: "It didn't answer in time. Try again." });
     const status = (error as { status?: unknown } | null)?.status;
-    return yield* json(typeof status === "number" && status >= 400 ? status : 502, { message: error instanceof Error && error.message ? error.message : "It didn't answer." });
+    return yield* json(typeof status === "number" && status >= 400 ? status : 502, { message: "The accounts couldn’t be read. Try again." });
   }
 }
 
@@ -326,7 +390,7 @@ async function* startRoute(context: RouteContext, query: URLSearchParams): Async
   // (A coding agent's sign-in may download its program first: longer than a read.)
   const deadline = AbortSignal.timeout(120_000);
   try {
-    const started = await call(place.target, "POST", `/api/integration/${encodeURIComponent(integration)}/connect/oauth`, oauthStartBody(request, { methodID: given.methodID, ...(isObject(given.answer) ? { answer: given.answer } : {}) }), signal ? AbortSignal.any([signal, deadline]) : deadline);
+    const started = await call(place.target, "POST", `/api/integration/${encodeURIComponent(integration)}/connect/oauth`, oauthStartBody(request, { methodID: given.methodID, ...(isObject(given.answer) ? { answer: given.answer } : {}) }), signal ? AbortSignal.any([signal, deadline]) : deadline, undefined, ownerHeaders(ownerOf(context)));
     if (!isObject(started)) return yield* json(502, { message: "The sign-in couldn't be started." });
     if (!fromLocalApp(request) && oauthPage(started.url).local) {
       if (typeof started.attemptID === "string") {
@@ -335,11 +399,27 @@ async function* startRoute(context: RouteContext, query: URLSearchParams): Async
       return yield* json(409, { message: useHostBrowser(request) });
     }
     const userCode = userCodeOf(started);
-    return yield* json(200, { ...started, ...pasteAddress(started, request), ...(userCode ? { userCode } : {}) });
+    const owner = ownerOf(context);
+    if (!fromLocalApp(request) && owner && typeof started.attemptID === "string") {
+      const now = Date.now();
+      try {
+        for (const name of fs.readdirSync(returnFolder)) {
+          const old = path.join(returnFolder, name);
+          if (/^[a-f0-9]{64}$/.test(name) && fs.statSync(old).mtimeMs < now - 30 * 60_000) fs.rmSync(old, { force: true });
+        }
+      } catch {}
+      const file = returnFile(query.get("agents") === "1", integration, started.attemptID);
+      if (!readReturn(file)) keepReturn(file, { owner, until: now + 30 * 60_000 });
+    }
+    return yield* json(200, { ...started, ...pasteAddress(started, context, query, started.attemptID), ...(userCode ? { userCode } : {}) });
   } catch (error) {
     if (deadline.aborted) return yield* json(504, { message: "It didn't answer in time. Try again." });
     const status = (error as { status?: unknown } | null)?.status;
-    return yield* json(typeof status === "number" && status >= 400 ? status : 502, { message: error instanceof Error && error.message ? error.message : "It didn't answer." });
+    const words = error instanceof Error ? error.message : "";
+    const message = words === GITHUB_SIGN_IN_BUSY ? GITHUB_SIGN_IN_BUSY
+      : !fromLocalApp(request) && words.endsWith("on the computer it runs on: its page comes back there.") ? useHostBrowser(request)
+      : "The sign-in couldn’t be started. Try again.";
+    return yield* json(typeof status === "number" && status >= 400 ? status : 502, { message });
   }
 }
 
@@ -376,7 +456,7 @@ export async function* signInRoute(context: RouteContext): AsyncGenerator<Answer
     const statusRoute = `/api/integration/${encodeURIComponent(integration)}/connect/oauth/${encodeURIComponent(attempt)}`;
     const read = async (): Promise<Record<string, unknown> | null> => {
       const each = AbortSignal.timeout(15_000);
-      return (await call(place.target, "GET", statusRoute, undefined, signal ? AbortSignal.any([signal, each]) : each)) as Record<string, unknown> | null;
+      return (await call(place.target, "GET", statusRoute, undefined, signal ? AbortSignal.any([signal, each]) : each, undefined, ownerHeaders(ownerOf(context)))) as Record<string, unknown> | null;
     };
     let said = await read();
     const wait = Math.min(Math.max(Number(query.get("wait")) || 0, 0), MOST_WAIT) * 1000;
@@ -396,11 +476,19 @@ export async function* signInRoute(context: RouteContext): AsyncGenerator<Answer
       return yield* json(200, { status: "failed", failure: useHostBrowser(request) });
     }
     const userCode = userCodeOf(said);
-    return yield* json(200, { ...said, ...(status === "pending" && said ? pasteAddress(said, request) : {}), ...(userCode ? { userCode } : {}), ...(status === "failed" || status === "expired" ? { failure: failureWords(status, said?.message) } : {}) });
+    if (status !== "pending") {
+      const file = returnFile(query.get("agents") === "1", integration, attempt);
+      if (readReturn(file)?.owner === ownerOf(context)) fs.rmSync(file, { force: true });
+    }
+    if (status === "failed" || status === "expired") {
+      const message = failureWords(status, said?.message);
+      return yield* json(200, { status, message, failure: message });
+    }
+    return yield* json(200, { ...said, ...(status === "pending" && said ? pasteAddress(said, context, query, attempt) : {}), ...(userCode ? { userCode } : {}) });
   } catch (error) {
     if (attempt === null ? deadline.aborted : (error as Error | null)?.name === "TimeoutError") return yield* json(504, { message: "It didn't answer in time. Try again." });
     const status = (error as { status?: unknown } | null)?.status;
-    const message = error instanceof Error && error.message ? error.message : "It didn't answer.";
+    const message = status === 404 ? "That sign-in is over. Start it again." : "The sign-in status couldn’t be read. Try again.";
     return yield* json(typeof status === "number" && status >= 400 ? status : 502, { message });
   }
 }

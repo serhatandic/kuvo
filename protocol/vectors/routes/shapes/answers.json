@@ -12695,10 +12695,28 @@
   },
   {
    "route": "POST kuvo/sign-in/return",
+   "body": {
+    "object": {
+     "url": "string",
+     "integration": "string",
+     "attempt": "string",
+     "agents?": "bool"
+    }
+   },
    "answers": {
     "200": {
      "object": {
       "status": "number"
+     }
+    },
+    "400": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "502": {
+     "object": {
+      "message": "string"
      }
     }
    }
@@ -12908,6 +12926,11 @@
      }
     },
     "400": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "409": {
      "object": {
       "message": "string"
      }
@@ -15052,6 +15075,14 @@
       },
       "listing?": {
        "list": "string"
+      },
+      "unavailable?": {
+       "list": {
+        "object": {
+         "id": "string",
+         "keepPrevious": "bool"
+        }
+       }
       },
       "scoped?": "bool",
       "note?": "string",

@@ -8,7 +8,7 @@
 // It writes files itself then, with its own tools (the bridge's would write outside).
 
 import { createHash } from "node:crypto"
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs"
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { pathToFileURL } from "node:url"
 import { providerID, type AgentAccount } from "../accounts"
@@ -657,9 +657,14 @@ export class AntigravityAgent implements Agent {
 
   /** A session made only to check the sign-in leaves nothing behind. */
   private removeSessionFiles(sessionID: string) {
-    const folder = join(this.profile, "antigravity-acp")
-    for (const suffix of [".db", ".db-wal", ".db-shm", ".db-journal", ".meta"]) rmSync(join(folder, "conversations", sessionID + suffix), { force: true })
-    rmSync(join(folder, "brain", sessionID), { recursive: true, force: true })
+    if (typeof sessionID !== "string" || !/^[a-z0-9][a-z0-9_-]{0,127}$/i.test(sessionID) || !existsSync(this.profile)) return
+    const folder = join(realpathSync(this.profile), "antigravity-acp")
+    const conversations = join(folder, "conversations")
+    const brain = join(folder, "brain")
+    if (existsSync(conversations) && realpathSync(conversations) === conversations) {
+      for (const suffix of [".db", ".db-wal", ".db-shm", ".db-journal", ".meta"]) rmSync(join(conversations, sessionID + suffix), { force: true })
+    }
+    if (existsSync(brain) && realpathSync(brain) === brain) rmSync(join(brain, sessionID), { recursive: true, force: true })
   }
 
   private modelConnection(found: (url: string) => void) {

@@ -44,6 +44,18 @@ impl Transport for ThingsBox {
             ("POST", route) if route == format!("{FORM}/check") => answer(200, json!({ "fields": [], "ready": true })),
             ("POST", FORM) if self.stale.load(std::sync::atomic::Ordering::Relaxed) => answer(409, json!({ "message": "It changed since you read it.", "page": { "id": "things", "title": "Things", "groups": [] } })),
             ("POST", FORM) => answer(200, json!({ "id": "things", "title": "Things", "groups": [] })),
+            ("GET", "kuvo/settings/things") if request.path.ends_with("?refresh-models=1") => answer(200, json!({
+                "id": "things", "title": "Things", "groups": [{ "id": "things", "rows": [{
+                    "id": "one", "title": "Thing", "kind": "actions", "revision": "r1", "actions": [{
+                        "id": "edit", "title": "Edit", "form": { "title": "Edit", "submit": "Save", "fields": [{
+                            "id": "model", "title": "Model", "kind": "choice", "choices": [
+                                { "id": "old-choice", "title": "Old Model", "model": { "providerID": "openai", "id": "old" } },
+                                { "id": "new-choice-id", "title": "New Model", "model": { "providerID": "openai", "id": "new" } }
+                            ]
+                        }] }
+                    }]
+                }] }]
+            })),
             ("GET", SHOWN) => answer(200, json!({ "values": { "password": "kept pass", "other": "never shown" } })),
             _ => self.stand_in.send(request),
         }
@@ -132,6 +144,33 @@ fn scroll_fields(cx: &mut VisualTestContext) {
 
 fn value(sheet: &Entity<FormSheet>, cx: &mut VisualTestContext, field: &str) -> Value {
     sheet.read_with(cx, |sheet, cx| sheet.values(cx).get(field).cloned().unwrap_or_default())
+}
+
+#[gpui::test]
+fn a_forms_picker_refreshes_choices_and_sends_the_new_choices_id(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        Theme::init(Appearance::Light, cx);
+        kuvo::bind_keys(cx);
+    });
+    let the_box = ThingsBox { stand_in: StandIn::at(Replies::Never, NOW), seen: Arc::default(), stale: Arc::default() };
+    let client = BoxClient::new(the_box.clone());
+    let target = Target { section: "things".into(), row: "one".into(), was: "r1".into(), action: "edit".into() };
+    let form: Form = serde_json::from_value(json!({ "title": "Edit", "submit": "Save", "fields": [{
+        "id": "model", "title": "Model", "kind": "choice", "value": "old-choice", "choices": [
+            { "id": "old-choice", "title": "Old Model", "model": { "providerID": "openai", "id": "old" } }
+        ]
+    }] })).unwrap();
+    let window = cx.add_window(move |_, cx| FormSheet::new(client, false, target, form, cx));
+    let sheet = window.root(cx).unwrap();
+    let cx = VisualTestContext::from_window(window.into(), cx).into_mut();
+    cx.simulate_resize(size(px(800.), px(700.)));
+    sheet.update(cx, |sheet, cx| sheet.start(cx));
+    cx.run_until_parked();
+    click(cx, "settings-form-model-menu");
+    click(cx, "model-row-openai/new");
+    assert_eq!(value(&sheet, cx, "model"), json!("new-choice-id"));
+    sheet.update(cx, |sheet, cx| sheet.submit(cx));
+    assert_eq!(the_box.bodies("POST", FORM)[0]["values"]["model"], json!("new-choice-id"));
 }
 
 #[gpui::test]

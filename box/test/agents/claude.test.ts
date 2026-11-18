@@ -2469,6 +2469,19 @@ describe("Claude Code, instructions that changed as its conversation goes on", (
 })
 
 describe("the plan's limits a turn hears", () => {
+  test("a Claude query from before a sign-in change cannot refill the old account's ring", async () => {
+    const limits = new Limits(() => agentAccounts([claude]))
+    await limits.tick()
+    const { id, first } = await begin()
+    fake.out.push({ type: "rate_limit_event", rate_limit_info: { status: "allowed", rateLimitType: "five_hour", utilization: 0.8 } })
+    await until(() => limits.list().some(each => each.windows.length > 0))
+    limits.invalidate(provider)
+    fake.out.push({ type: "rate_limit_event", rate_limit_info: { status: "allowed", rateLimitType: "five_hour", utilization: 0.95 } })
+    fake.result([first])
+    await until(() => idles(id).length > 0)
+    expect(limits.list().flatMap(each => each.windows)).toEqual([])
+  })
+
   test("Claude Code's rate-limit event in a turn keeps the account's window current for the clients", async () => {
     const limits = new Limits(() => agentAccounts([claude]))
     await limits.tick()
@@ -2485,6 +2498,45 @@ describe("the plan's limits a turn hears", () => {
     fake.result([first])
     await until(() => idles(id).length > 0)
   })
+})
+
+test("a new Claude account starts a new probe and an old probe cannot update its models or context", async () => {
+  let queries = 0
+  let giveOldContext!: (value: { maxTokens: number }) => void
+  let oldContextStarted!: () => void
+  let finishOldProbe!: () => void
+  const oldReadingContext = new Promise<void>(resolve => { oldContextStarted = resolve })
+  const oldProbeFinished = new Promise<void>(resolve => { finishOldProbe = resolve })
+  const oldContext = new Promise<{ maxTokens: number }>(resolve => { giveOldContext = resolve })
+  claude.sdk = async () => ({
+    query: ({ options }: { options: { abortController: AbortController } }) => {
+      const first = ++queries === 1
+      if (first) options.abortController.signal.addEventListener("abort", finishOldProbe, { once: true })
+      return {
+        initializationResult: async () => ({ models: [{ value: first ? "old-model" : "new-model", displayName: first ? "Old model" : "New model" }] }),
+        setModel: async () => {},
+        getContextUsage: () => {
+          if (!first) return Promise.resolve({ maxTokens: 200_001 })
+          oldContextStarted()
+          return oldContext
+        },
+      }
+    },
+  } as unknown as Awaited<ReturnType<ClaudeAgent["sdk"]>>)
+  expect((await claude.models({ refresh: true })).map(model => model.id)).toEqual(["old-model"])
+  await oldReadingContext
+  claude.forgetModels()
+  const refresh = claude.models({ refresh: true })
+  try {
+    await Promise.resolve()
+    expect(queries).toBe(2)
+    expect((await refresh).map(model => model.id)).toEqual(["new-model"])
+  } finally {
+    giveOldContext({ maxTokens: 950_000 })
+  }
+  await oldProbeFinished
+  expect((await claude.models()).map(model => model.id)).toEqual(["new-model"])
+  expect(queries).toBe(2)
 })
 
 describe("Your subagents (Settings › Agents), in Claude Code", () => {
