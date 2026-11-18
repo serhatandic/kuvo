@@ -46133,7 +46133,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "e28e7b23cf30";
+var BRIDGE_VERSION = "feb47c76eba9";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -64055,7 +64055,10 @@ async function* queueRoute(context, match) {
         queueFollowers.delete(told);
         inboxFollowers.delete(heard);
       };
-    }, signal ?? undefined, { look: () => JSON.stringify(queueOf(session)) });
+    }, signal ?? undefined, { look: () => {
+      const state = queueOf(session);
+      return JSON.stringify({ ...shownQueue(state), order: state.order });
+    } });
   }
   const stopping = action === "stop" || step === "hold";
   const settling = () => liveMoves().some((move) => move.role === "from" && move.stage === "holding" && (move.thing === session || move.sessions.includes(session)));

@@ -85,7 +85,10 @@ export async function* queueRoute(context: RouteContext, match: RegExpMatchArray
       queueFollowers.add(told);
       inboxFollowers.add(heard);
       return () => { queueFollowers.delete(told); inboxFollowers.delete(heard); };
-    }, signal ?? undefined, { look: () => JSON.stringify(queueOf(session)) });
+    }, signal ?? undefined, { look: () => {
+      const state = queueOf(session);
+      return JSON.stringify({ ...shownQueue(state), order: state.order });
+    } });
   }
   // One moving to or from another computer: what waits for it goes as it was read for the move. A
   // Stop still stops it while the box it leaves waits for its turn to end, before it's read.
