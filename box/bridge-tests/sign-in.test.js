@@ -174,13 +174,13 @@ test("how a sign-in is going, as the engine says, with what to say once it ended
   // Still going: as the engine says it, the page that came later too.
   assert.deepEqual(await status("att_pending"), { status: "pending", message: "Downloading… 40%", url: "https://example.com/later" });
   assert.deepEqual(await status("att_done"), { status: "complete" });
-  // Turned down on its page: in words, the engine's own kept beside them.
-  assert.deepEqual(await status("att_denied"), { status: "failed", message: "access_denied", failure: "The sign-in was turned down on its page. Try again to sign in." });
-  assert.deepEqual(await status("att_said"), { status: "failed", message: "The page said no.", failure: "The page said no." });
+  // Both message fields carry the box's display-safe sign-in words.
+  assert.deepEqual(await status("att_denied"), { status: "failed", message: "The sign-in was turned down on its page. Try again to sign in.", failure: "The sign-in was turned down on its page. Try again to sign in." });
+  assert.deepEqual(await status("att_said"), { status: "failed", message: "Signing in didn’t work.", failure: "Signing in didn’t work." });
   assert.deepEqual(await status("att_late"), { status: "expired", failure: "The sign-in timed out. Try again." });
   // A coding agent's, from the bridge, with what else it says.
   const agent = await answer("GET", "kuvo/sign-in/status?integration=claude-code&attempt=att_agent&agents=1");
-  assert.deepEqual(agent.json, { status: "failed", message: "server_error", userCode: "AB12-CD34", failure: "The service couldn’t sign you in just now. Try again in a moment." });
+  assert.deepEqual(agent.json, { status: "failed", message: "The service couldn’t sign you in just now. Try again in a moment.", userCode: "AB12-CD34", failure: "The service couldn’t sign you in just now. Try again in a moment." });
 });
 
 test("asked to wait for a change (a Mac asking a machine's box over SSH): answered once the sign-in ends, not before", async () => {
@@ -196,7 +196,7 @@ test("a sign-in the engine doesn't know (it started over), or can't say: its sta
   const unknown = await answer("GET", "kuvo/sign-in/status?integration=github-copilot&attempt=att_gone");
   assert.equal(unknown.status, 404);
   const broken = await answer("GET", "kuvo/sign-in/status?integration=github-copilot&attempt=att_broken");
-  assert.deepEqual(broken, { status: 500, json: { message: "The engine fell over." } });
+  assert.deepEqual(broken, { status: 500, json: { message: "The sign-in status couldn’t be read. Try again." } });
 });
 
 test("asked of the coding agents while their bridge isn't running: why not", async () => {
