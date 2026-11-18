@@ -4,12 +4,12 @@
 //! computer, or why not in the box's words), New Bot as the box offers it, and Delete asked first.
 //! Clicks and keys go through the window as AppKit hands them on.
 
-use gpui::{Bounds, Entity, Modifiers, Pixels, TestAppContext, VisualTestContext, px, size};
+use gpui::{Bounds, Entity, Focusable as _, Modifiers, Pixels, TestAppContext, VisualTestContext, px, size};
 use kuvo::area::Area;
 use kuvo::bots::{BotsView, Sheet, Shown};
 use kuvo::stand_in::{Replies, StandIn};
 use kuvo::workspace::Workspace;
-use kuvo_box::BoxClient;
+use kuvo_box::{BoxClient, bots::BotChange};
 use kuvo_ui::{Appearance, Theme};
 use serde_json::{Value, json};
 
@@ -265,7 +265,7 @@ fn its_job_and_look_change_through_the_box(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
     let (workspace, cx) = open(cx, stand_in.clone());
     let page = bot(&workspace, cx, "bot_release");
-    // The job summary and instructions are edited on the page and saved together.
+    // Tab saves Job on blur and leaves Instructions focused. Escape cancels only Instructions.
     click(cx, "bot-job-line");
     assert!(!shown(cx, "bot-sheet"));
     let head = bounds(cx, "bot-head").unwrap();
@@ -273,18 +273,26 @@ fn its_job_and_look_change_through_the_box(cx: &mut TestAppContext) {
     assert!(field.bottom() <= head.bottom());
     cx.simulate_keystrokes("cmd-a backspace");
     cx.simulate_input("Ships a beta every Thursday");
-    click(cx, "bot-job-details");
+    cx.simulate_keystrokes("tab");
+    cx.run_until_parked();
+    assert!(cx.update(|window, cx| page.read(cx).job_fields().1.focus_handle(cx).is_focused(window)));
+    let job_patch = json!({ "jobLine": "Ships a beta every Thursday" });
+    assert_eq!(bodies(&stand_in, "PATCH", "kuvo/bots/bot_release"), vec![job_patch.clone()]);
+    cx.simulate_input("Discard this.");
+    cx.simulate_keystrokes("escape");
+    assert_eq!(page.read_with(cx, |page, cx| page.job_fields().1.read(cx).text().to_owned()), "");
+    assert_eq!(name_and_job(&page, cx).1, "Ships a beta every Thursday");
     cx.simulate_input("Tag it and wait for the build.");
     cx.simulate_keystrokes("enter");
     cx.simulate_input("Post the notes.");
     cx.simulate_keystrokes("enter");
     cx.simulate_input("Check the changelog.");
     assert!(bounds(cx, "bot-job-details").unwrap().size.height > field.size.height);
-    assert!(bodies(&stand_in, "PATCH", "kuvo/bots/bot_release").is_empty());
+    assert_eq!(bodies(&stand_in, "PATCH", "kuvo/bots/bot_release"), vec![job_patch.clone()]);
     cx.simulate_keystrokes("cmd-enter");
     cx.run_until_parked();
     let instructions = "Tag it and wait for the build.\nPost the notes.\nCheck the changelog.";
-    assert_eq!(bodies(&stand_in, "PATCH", "kuvo/bots/bot_release"), vec![json!({ "job": { "line": "Ships a beta every Thursday", "details": instructions } })]);
+    assert_eq!(bodies(&stand_in, "PATCH", "kuvo/bots/bot_release"), vec![job_patch, json!({ "jobDetails": instructions })]);
     assert_eq!(name_and_job(&page, cx), ("Release Captain".into(), "Ships a beta every Thursday".into(), instructions.into()));
 
     // The look: a colour and a shape among those the box offers; its face is kept.
@@ -292,10 +300,72 @@ fn its_job_and_look_change_through_the_box(cx: &mut TestAppContext) {
     assert!(shown(cx, "look-color-graphite") && shown(cx, "look-shape-bloom"), "the box's colours and shapes");
     click(cx, "look-color-amber");
     click(cx, "look-shape-gem");
-    assert!(stand_in.seen_at("PATCH", "kuvo/bots/bot_release").len() == 1, "nothing is sent until Save");
+    assert!(stand_in.seen_at("PATCH", "kuvo/bots/bot_release").len() == 2, "nothing is sent until Save");
     click(cx, "sheet-save");
     assert_eq!(bodies(&stand_in, "PATCH", "kuvo/bots/bot_release").last(), Some(&json!({ "look": { "color": "amber", "shape": "gem", "face": "calm" } })));
     assert_eq!(page.read_with(cx, |page, _| page.bot().map(|bot| bot.look.color.clone())), Some("amber".into()));
+}
+
+#[gpui::test]
+fn changing_job_keeps_instructions_changed_elsewhere(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (workspace, cx) = open(cx, stand_in.clone());
+    let page = bot(&workspace, cx, "bot_mira");
+    BoxClient::new(stand_in.clone()).change_bot("bot_mira", &BotChange {
+        job_details: Some("Updated elsewhere.".into()), ..BotChange::default()
+    }).unwrap();
+    click(cx, "bot-job-line");
+    cx.simulate_keystrokes("cmd-a");
+    cx.simulate_input("Keeps the website working");
+    click(cx, "bot-lives");
+    assert_eq!(bodies(&stand_in, "PATCH", "kuvo/bots/bot_mira").last(), Some(&json!({ "jobLine": "Keeps the website working" })));
+    assert_eq!(name_and_job(&page, cx).2, "Updated elsewhere.");
+}
+
+#[gpui::test]
+fn an_older_computer_keeps_the_job_draft_and_asks_for_an_update(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.set_lacks(&["bots.job-fields"]);
+    let (workspace, cx) = open(cx, stand_in.clone());
+    let page = bot(&workspace, cx, "bot_mira");
+    click(cx, "bot-job-line");
+    cx.simulate_keystrokes("cmd-a");
+    cx.simulate_input("Keeps the website working");
+    cx.simulate_keystrokes("enter");
+    assert!(shown(cx, "bot-edit-error-Couldn’t save the change. Update Kuvo and try again."));
+    assert!(bodies(&stand_in, "PATCH", "kuvo/bots/bot_mira").is_empty());
+    assert_eq!(page.read_with(cx, |page, cx| page.job_fields().0.read(cx).text().to_owned()), "Keeps the website working");
+}
+
+#[gpui::test]
+fn overlong_job_and_instructions_keep_their_drafts_and_name_the_limit(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (workspace, cx) = open(cx, stand_in);
+    let page = bot(&workspace, cx, "bot_mira");
+    for (index, selector, submit, limit, message) in [
+        (0, "bot-job-line", "enter", 200, "Shorten Job to 200 characters or fewer."),
+        (1, "bot-job-details", "cmd-enter", 8000, "Shorten Instructions to 8,000 characters or fewer."),
+    ] {
+        let draft = "x".repeat(limit + 1);
+        click(cx, selector);
+        cx.simulate_keystrokes("cmd-a");
+        page.update(cx, |page, cx| {
+            let fields = page.job_fields();
+            let field = if index == 0 { fields.0 } else { fields.1 };
+            field.update(cx, |field, cx| field.set_text(draft.clone(), cx));
+        });
+        cx.simulate_keystrokes(submit);
+        cx.run_until_parked();
+        assert!(shown(cx, &format!("bot-edit-error-{message}")));
+        assert_eq!(page.read_with(cx, |page, cx| {
+            let fields = page.job_fields();
+            if index == 0 { fields.0 } else { fields.1 }.read(cx).text().to_owned()
+        }), draft);
+    }
+    assert!(shown(cx, "bot-edit-error-Shorten Job to 200 characters or fewer."));
+    cx.simulate_keystrokes("escape");
+    assert!(!shown(cx, "bot-edit-error-Shorten Instructions to 8,000 characters or fewer."));
+    assert!(shown(cx, "bot-edit-error-Shorten Job to 200 characters or fewer."));
 }
 
 #[gpui::test]
@@ -378,12 +448,13 @@ fn a_custom_personality_can_be_edited_from_the_picker(cx: &mut TestAppContext) {
     click(cx, "bot-personality-menu");
     click(cx, "menu-item-Edit personality…");
     assert!(shown(cx, "personality-edit-name") && shown(cx, "personality-edit-description"));
-    cx.simulate_keystrokes("cmd-a");
+    cx.simulate_keystrokes("shift-tab cmd-a");
     cx.simulate_input("Galley Guide");
-    click(cx, "personality-edit-description");
-    cx.simulate_keystrokes("cmd-a");
+    cx.simulate_keystrokes("tab cmd-a");
     cx.simulate_input("Keeps brief notes.");
-    click(cx, "sheet-save");
+    cx.simulate_keystrokes("tab tab enter");
+    cx.simulate_event(gpui::KeyUpEvent { keystroke: gpui::Keystroke::parse("enter").unwrap() });
+    cx.run_until_parked();
     assert!(!shown(cx, "bot-sheet"));
     assert_eq!(bodies(&stand_in, "PATCH", "kuvo/personalities/custom.pirate"), vec![
         json!({ "name": "Galley Guide", "description": "Keeps brief notes." })
@@ -592,6 +663,7 @@ fn its_effort_is_picked_from_its_models_own_and_sent_alone(cx: &mut TestAppConte
     click(cx, "bot-effort-default");
     assert_eq!(bodies(&stand_in, "PATCH", "kuvo/bots/bot_mira").last(), Some(&json!({ "effort": null })));
     assert_eq!(variant(cx), None);
+    assert!(shown(cx, "bot-model-value-Claude Opus 5.5 · Default"));
     // A model with no efforts of its own has no Effort row.
     click(cx, "bot-model-menu");
     click(cx, "model-rail-google");
@@ -778,10 +850,103 @@ mod live {
         cx.run_until_parked();
         assert_eq!(bodies(&stand_in, "PATCH", "kuvo/bots/bot_mira"), vec![
             json!({ "name": "Mira Two" }),
-            json!({ "job": { "line": "Keeps the website working", "details": instructions } }),
+            json!({ "jobLine": "Keeps the website working" }),
         ]);
-        let (name, line, _) = name_and_job(&page, cx);
-        assert_eq!((name.as_str(), line.as_str()), ("Mira Two", "Keeps the website working"));
+        let (name, line, details) = name_and_job(&page, cx);
+        assert_eq!((name.as_str(), line.as_str(), details), ("Mira Two", "Keeps the website working", instructions));
+    }
+
+    #[gpui::test]
+    fn navigating_drains_a_draft_behind_a_pending_save(cx: &mut TestAppContext) {
+        let stand_in = StandIn::at(Replies::Never, NOW);
+        let (page, cx) = host(cx, &stand_in);
+        page.update(cx, |page, cx| page.show(Some("bot:bot_mira"), cx));
+        cx.run_until_parked();
+        // Both edits and the switch happen before the first response can be dispatched.
+        page.update(cx, |page, cx| {
+            page.name_field().update(cx, |field, cx| field.set_text("Mira Two", cx));
+            page.save_editor(cx);
+            page.job_fields().1.update(cx, |field, cx| field.set_text("Keep this on the way out.", cx));
+            page.show(Some("bot:bot_docs"), cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(name_and_job(&page, cx).0, "Docs Keeper");
+        assert_eq!(bodies(&stand_in, "PATCH", "kuvo/bots/bot_mira"), vec![
+            json!({ "name": "Mira Two" }), json!({ "jobDetails": "Keep this on the way out." }),
+        ]);
+        page.update(cx, |page, cx| page.show(Some("bot:bot_mira"), cx));
+        cx.run_until_parked();
+        assert_eq!(name_and_job(&page, cx).2, "Keep this on the way out.");
+    }
+
+    #[gpui::test]
+    fn a_failed_profile_save_survives_navigation_and_can_be_retried(cx: &mut TestAppContext) {
+        let stand_in = StandIn::at(Replies::Never, NOW);
+        let (page, cx) = host(cx, &stand_in);
+        page.update(cx, |page, cx| page.show(Some("bot:bot_mira"), cx));
+        cx.run_until_parked();
+        stand_in.bots_changeable(false);
+        page.update(cx, |page, cx| {
+            page.name_field().update(cx, |field, cx| field.set_text("Mira Two", cx));
+            page.save_editor(cx);
+            page.show(Some("bot:bot_docs"), cx);
+        });
+        cx.run_until_parked();
+        assert!(!shown(cx, "bot-edit-error"));
+        stand_in.bots_changeable(true);
+        page.update(cx, |page, cx| page.show(Some("bot:bot_mira"), cx));
+        cx.run_until_parked();
+        assert!(shown(cx, "bot-edit-error"));
+        assert_eq!(page.read_with(cx, |page, cx| page.name_field().read(cx).text().to_owned()), "Mira Two");
+        click(cx, "bot-name-field");
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        assert_eq!(name_and_job(&page, cx).0, "Mira Two");
+        assert_eq!(bodies(&stand_in, "PATCH", "kuvo/bots/bot_mira").len(), 2);
+        assert!(!shown(cx, "bot-edit-error"));
+    }
+
+    #[gpui::test]
+    fn a_response_preserves_a_new_name_equal_to_the_old_one(cx: &mut TestAppContext) {
+        let stand_in = StandIn::at(Replies::Never, NOW);
+        let (page, cx) = host(cx, &stand_in);
+        page.update(cx, |page, cx| page.show(Some("bot:bot_mira"), cx));
+        cx.run_until_parked();
+        page.update(cx, |page, cx| {
+            page.name_field().update(cx, |field, cx| field.set_text("Mira Two", cx));
+            page.save_editor(cx);
+            page.name_field().update(cx, |field, cx| field.set_text("Mira", cx));
+        });
+        cx.run_until_parked();
+        assert_eq!(name_and_job(&page, cx).0, "Mira Two");
+        assert_eq!(page.read_with(cx, |page, cx| page.name_field().read(cx).text().to_owned()), "Mira");
+        page.update(cx, |page, cx| page.save_editor(cx));
+        cx.run_until_parked();
+        assert_eq!(bodies(&stand_in, "PATCH", "kuvo/bots/bot_mira"), vec![
+            json!({ "name": "Mira Two" }), json!({ "name": "Mira" }),
+        ]);
+    }
+
+    #[gpui::test]
+    fn escape_cancels_only_instructions_while_job_is_saving(cx: &mut TestAppContext) {
+        let stand_in = StandIn::at(Replies::Never, NOW);
+        let (page, cx) = host(cx, &stand_in);
+        page.update(cx, |page, cx| page.show(Some("bot:bot_mira"), cx));
+        cx.run_until_parked();
+        let instructions = name_and_job(&page, cx).2;
+        click(cx, "bot-job-details");
+        page.update(cx, |page, cx| {
+            page.job_fields().0.update(cx, |field, cx| field.set_text("Saving this job", cx));
+            page.save_editor(cx);
+            page.job_fields().1.update(cx, |field, cx| {
+                field.set_text("Discard these instructions.", cx);
+                cx.emit(kuvo_ui::text_field::TextFieldEvent::Cancel);
+            });
+        });
+        cx.run_until_parked();
+        assert_eq!(bodies(&stand_in, "PATCH", "kuvo/bots/bot_mira"), vec![json!({ "jobLine": "Saving this job" })]);
+        assert_eq!(name_and_job(&page, cx).1, "Saving this job");
+        assert_eq!(page.read_with(cx, |page, cx| page.job_fields().1.read(cx).text().to_owned()), instructions);
     }
 
     #[gpui::test]

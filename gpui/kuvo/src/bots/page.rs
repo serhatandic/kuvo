@@ -17,7 +17,7 @@ use kuvo_ui::{
 
 use std::{rc::Rc, sync::Arc};
 
-use super::{Act, BotsView, Control, Item, Row, Sheet, Shown, Tone};
+use super::{Act, BotsView, Control, Item, ProfileField, Row, Sheet, Shown, Tone};
 use crate::model_picker::{Catalog, ModelPicker};
 use crate::areas::bot_face;
 
@@ -36,6 +36,21 @@ fn name_input_top() -> gpui::Pixels {
 fn profile_avatar_size() -> gpui::Pixels {
     let input_height = TypeSize::Body.line_height() + (PROFILE_INPUT_PADDING + PROFILE_INPUT_BORDER) * 2.;
     input_height * 2. + PROFILE_FIELD_GAP + name_input_top()
+}
+
+fn focus_by_tab(event: &gpui::KeyDownEvent, window: &mut Window, cx: &mut App) -> bool {
+    let modifiers = event.keystroke.modifiers;
+    if event.keystroke.key != "tab" || modifiers.platform || modifiers.alt || modifiers.control || modifiers.function {
+        return false;
+    }
+    if modifiers.shift {
+        window.focus_prev(cx);
+    } else {
+        window.focus_next(cx);
+    }
+    window.prevent_default();
+    cx.stop_propagation();
+    true
 }
 
 impl BotsView {
@@ -152,6 +167,10 @@ impl BotsView {
             .into_any_element()
     }
 
+    fn focused_profile_field(&self, window: &Window, cx: &App) -> Option<ProfileField> {
+        ProfileField::ALL.into_iter().find(|&field| self.profile_field(field).focus_handle(cx).is_focused(window))
+    }
+
     fn profile_fields(&self, avatar: AnyElement, has_job: bool, cx: &mut Context<Self>) -> AnyElement {
         let c = cx.theme().colors.clone();
         let field = |label, key: &'static str, input| {
@@ -162,17 +181,30 @@ impl BotsView {
                     .bg(c.surface).px(space::S3).py(PROFILE_INPUT_PADDING)
                     .child(input))
         };
+        let errors = self.profile_errors().map(str::to_owned).collect::<Vec<_>>();
         div()
             .id("bot-profile-fields")
             .flex()
             .flex_col()
             .gap(space::S6)
-            .on_mouse_down_out(cx.listener(|this, _, _, cx| this.save_profile(cx)))
+            .on_mouse_down_out(cx.listener(|this, _, window, cx| {
+                if let Some(field) = this.focused_profile_field(window, cx) {
+                    this.queue_profile(&[field], false, cx);
+                }
+            }))
             .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
-                if event.keystroke.key == "enter" && event.keystroke.modifiers.platform {
+                let focused = this.focused_profile_field(window, cx);
+                if focus_by_tab(event, window, cx) {
+                    // Focus listeners run on paint, so record a Tab even between two frames.
+                    if let Some(field) = focused && focused != this.focused_profile_field(window, cx) {
+                        this.queue_profile(&[field], false, cx);
+                    }
+                } else if event.keystroke.key == "enter" && event.keystroke.modifiers.platform
+                    && focused == Some(ProfileField::Instructions)
+                {
                     window.prevent_default();
                     cx.stop_propagation();
-                    this.save_profile(cx);
+                    this.queue_profile(&[ProfileField::Instructions], true, cx);
                 }
             }))
             .child(div().flex().items_center()
@@ -183,9 +215,14 @@ impl BotsView {
                     .child(field("Name", "bot-name-field", self.name.clone()))
                     .when(has_job, |d| d.child(field("Job", "bot-job-line", self.line.clone())))))
             .when(has_job, |d| d.child(field("Instructions", "bot-job-details", self.details.clone())))
-            .children(self.edit_error.clone().filter(|_| self.sheet().is_none()).map(|error| {
-                div().debug_selector(|| "bot-edit-error".into()).text_ui(TypeSize::Small).text_color(c.danger).child(error)
-            }))
+            .when(!errors.is_empty() && self.sheet().is_none(), |d| {
+                d.child(div().debug_selector(|| "bot-edit-error".into())
+                    .flex().flex_col().gap(space::S2).text_ui(TypeSize::Small).text_color(c.danger)
+                    .children(errors.into_iter().map(|error| {
+                        let selector = format!("bot-edit-error-{error}");
+                        div().debug_selector(move || selector).child(error)
+                    })))
+            })
             .into_any_element()
     }
 
@@ -443,7 +480,10 @@ impl BotsView {
                         })
                 };
                 if let Some((title, detail)) = navigation {
-                    let value = div().truncate().child(shown);
+                    let value = div().truncate().debug_selector({
+                        let shown = shown.clone();
+                        move || format!("bot-model-value-{shown}")
+                    }).child(shown);
                     let trigger = self.navigation_row(key, &format!("{key}-menu"), title, detail, Some(value.into_any_element()), true, cx);
                     PopoverMenu::view(SharedString::from(format!("{key}-popover")), trigger, open).fill().align_right().into_any_element()
                 } else {
@@ -668,6 +708,14 @@ impl BotsView {
             .id(SharedString::from(format!("bot-sheet-{:?}-{subject_id}", std::mem::discriminant(&sheet))))
             .debug_selector(|| "bot-sheet".into())
             .track_focus(&self.sheet_focus)
+            .when(matches!(sheet, Sheet::Personality(_)), |d| d.tab_group().capture_key_down(cx.listener(|this, event, window, cx| {
+                let focus = window.focused(cx);
+                if focus_by_tab(event, window, cx) && !this.sheet_focus.contains_focused(window, cx)
+                    && let Some(focus) = focus
+                {
+                    window.focus(&focus, cx);
+                }
+            })))
             .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, window, cx| match event.keystroke.key.as_str() {
                 "escape" => this.close_editor(cx),
                 "enter" if enter_saves && this.sheet_focus.is_focused(window) => this.save_editor(cx),
@@ -820,14 +868,10 @@ impl Render for BotsView {
         }
         if !self.watching_profile_focus {
             self.watching_profile_focus = true;
-            let name = self.name.focus_handle(cx);
-            self._subscriptions.push(cx.on_blur(&name, window, |this, _, cx| this.save_profile(cx)));
-            for field in [&self.line, &self.details] {
-                let focus = field.focus_handle(cx);
-                self._subscriptions.push(cx.on_blur(&focus, window, |this, window, cx| {
-                    if !this.line.focus_handle(cx).is_focused(window) && !this.details.focus_handle(cx).is_focused(window) {
-                        this.save_profile(cx);
-                    }
+            for field in ProfileField::ALL {
+                let focus = self.profile_field(field).focus_handle(cx);
+                self._subscriptions.push(cx.on_blur(&focus, window, move |this, _, cx| {
+                    this.queue_profile(&[field], false, cx);
                 }));
             }
         }

@@ -92,13 +92,6 @@ pub enum Sheet {
     Delete,
 }
 
-/// The editor open for the selected bot.
-#[derive(Clone, Debug, PartialEq)]
-enum Editor {
-    Profile(BotChange),
-    Sheet(Sheet),
-}
-
 /// A row's control, at its right.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Control {
@@ -182,13 +175,41 @@ struct Form {
     error: Option<String>,
 }
 
-/// The Bots area's main view.
-#[derive(Clone, PartialEq)]
-struct ProfileValues {
-    name: String,
-    job: Option<(String, String)>,
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ProfileField {
+    Name,
+    Job,
+    Instructions,
 }
 
+impl ProfileField {
+    const ALL: [Self; 3] = [Self::Name, Self::Job, Self::Instructions];
+}
+
+struct FieldSave {
+    text: String,
+    generation: u64,
+}
+
+#[derive(Default)]
+struct FieldDraft {
+    saved: Option<String>,
+    text: String,
+    generation: u64,
+    clean_generation: u64,
+    queued: Option<FieldSave>,
+    pending: Option<FieldSave>,
+    error: Option<FieldError>,
+}
+
+struct FieldError {
+    generation: u64,
+    message: String,
+}
+
+type ProfileDraft = [FieldDraft; 3];
+
+/// The Bots area's main view.
 pub struct BotsView {
     client: BoxClient,
     live: bool,
@@ -203,14 +224,14 @@ pub struct BotsView {
     busy: Vec<(String, String)>,
     /// What the box last refused of a row's change, over the page until closed.
     problem: Option<String>,
-    editor: Option<Editor>,
+    editor: Option<Sheet>,
     /// The editor’s change is on its way; and why the box turned the last one down.
     saving: bool,
     edit_error: Option<String>,
-    /// The inline fields, made once, and New Bot’s name.
-    profile_source: Option<(Shown, ProfileValues)>,
+    /// Drafts outlive the shared text fields when the user switches bots.
+    profiles: HashMap<String, ProfileDraft>,
+    profile_shown: Option<String>,
     watching_profile_focus: bool,
-    profile_save_queued: bool,
     name: Entity<TextField>,
     line: Entity<TextField>,
     details: Entity<TextField>,
@@ -251,13 +272,13 @@ impl BotsView {
                 .submits_on_enter(false)
                 .placeholder("What to do, when to do it, and what to report")
         });
-        let personality_name = cx.new(|cx| TextField::new(cx).placeholder("Name"));
-        let personality_description = cx.new(|cx| TextField::new(cx).multi_line(4, 10).placeholder("Description"));
+        let personality_name = cx.new(|cx| TextField::new(cx).tab_stop().placeholder("Name"));
+        let personality_description = cx.new(|cx| TextField::new(cx).tab_stop().multi_line(4, 10).placeholder("Description"));
         let new_name = cx.new(|cx| TextField::new(cx).placeholder("Name"));
         let subscriptions = vec![
-            cx.subscribe(&name, |this: &mut BotsView, _, event: &TextFieldEvent, cx| this.profile_key(event, cx)),
-            cx.subscribe(&line, |this: &mut BotsView, _, event: &TextFieldEvent, cx| this.profile_key(event, cx)),
-            cx.subscribe(&details, |this: &mut BotsView, _, event: &TextFieldEvent, cx| this.profile_key(event, cx)),
+            cx.subscribe(&name, |this: &mut BotsView, _, event: &TextFieldEvent, cx| this.profile_key(ProfileField::Name, event, cx)),
+            cx.subscribe(&line, |this: &mut BotsView, _, event: &TextFieldEvent, cx| this.profile_key(ProfileField::Job, event, cx)),
+            cx.subscribe(&details, |this: &mut BotsView, _, event: &TextFieldEvent, cx| this.profile_key(ProfileField::Instructions, event, cx)),
             cx.subscribe(&personality_name, |this: &mut BotsView, _, event: &TextFieldEvent, cx| this.editor_key(event, cx)),
             cx.subscribe(&personality_description, |this: &mut BotsView, _, event: &TextFieldEvent, cx| this.editor_key(event, cx)),
             cx.subscribe(&new_name, |this: &mut BotsView, _, event: &TextFieldEvent, cx| match event {
@@ -280,9 +301,9 @@ impl BotsView {
             editor: None,
             saving: false,
             edit_error: None,
-            profile_source: None,
+            profiles: HashMap::new(),
+            profile_shown: None,
             watching_profile_focus: false,
-            profile_save_queued: false,
             name,
             line,
             details,
@@ -313,10 +334,7 @@ impl BotsView {
 
     /// The sheet open, if one is.
     pub fn sheet(&self) -> Option<&Sheet> {
-        match self.editor.as_ref()? {
-            Editor::Sheet(sheet) => Some(sheet),
-            _ => None,
-        }
+        self.editor.as_ref()
     }
 
     /// The field a name is typed in (Rename's), a job's line and its details, and New Bot's name.
@@ -370,13 +388,13 @@ impl BotsView {
             _ => Shown::Nothing,
         };
         if self.shown != shown {
-            self.save_profile(cx);
+            self.queue_profile(&ProfileField::ALL, false, cx);
+            self.profile_shown = None;
             if let Some(editor) = &self.editor {
                 self.disable_editor_fields(editor, false, cx);
                 self.wants_focus = None;
             }
             self.shown = shown;
-            self.profile_save_queued = false;
             self.problem = None;
             self.editor = None;
             self.edit_error = None;
@@ -574,14 +592,15 @@ impl BotsView {
             self.list.splice(start..self.items.len() - tail, items.len() - tail - start);
             self.items = items;
         }
-        if self.profile_save_queued && self.editor.is_none() && self.subject().is_some_and(|(id, ..)| !self.change_pending(&id)) {
-            self.profile_save_queued = false;
-            let shown = self.shown.clone();
+        let ready: Vec<_> = self.profiles.iter()
+            .filter(|(id, fields)| !self.change_pending(id) && fields.iter().any(|field| field.queued.is_some()))
+            .map(|(id, _)| id.clone()).collect();
+        if !ready.is_empty() {
             let view = cx.weak_entity();
             cx.defer(move |cx| {
                 view.update(cx, |this, cx| {
-                    if this.shown == shown {
-                        this.save_profile(cx);
+                    for id in ready {
+                        this.drain_profile(&id, cx);
                     }
                 }).ok();
             });
@@ -727,6 +746,7 @@ impl BotsView {
             let name = self.model_name(model).unwrap_or_else(|| "Model unavailable".into());
             match model.variant.as_deref() {
                 Some(effort) => format!("{name} · {}", effort_title(effort)),
+                None if self.offered().is_some_and(|catalog| catalog.models.iter().any(|offered| offered.is(model) && !offered.efforts.is_empty())) => format!("{name} · Default"),
                 None => name,
             }
         } else {
@@ -976,26 +996,26 @@ impl BotsView {
             Act::EditLook => {
                 // From the look it has; a bot elsewhere whose computer said none, the box's first.
                 let Some(look) = self.subject().and_then(|(_, _, look)| look.or_else(|| self.first_look())) else { return };
-                self.open_editor(Editor::Sheet(Sheet::Look { look, new: false }), None);
+                self.open_editor(Sheet::Look { look, new: false }, None);
             }
             Act::EditPersonality => {
                 let Some(personality) = self.editable_personality().cloned() else { return };
                 self.personality_name.update(cx, |field, cx| field.set_text(personality.name.clone(), cx));
                 self.personality_description.update(cx, |field, cx| field.set_text(personality.description.clone(), cx));
-                self.open_editor(Editor::Sheet(Sheet::Personality(personality)), Some(self.personality_name.focus_handle(cx)));
+                self.open_editor(Sheet::Personality(personality), Some(self.personality_name.focus_handle(cx)));
             }
             Act::FormLook => {
                 // From the look shown; with none, the first of each the box offers.
                 let look = self.form_look().or_else(|| self.first_look());
                 let Some(look) = look else { return };
-                self.open_editor(Editor::Sheet(Sheet::Look { look, new: true }), None);
+                self.open_editor(Sheet::Look { look, new: true }, None);
             }
             Act::SetEffort(effort) => self.change("bot-effort", BotChange { effort: Some(effort), ..BotChange::default() }, cx),
             Act::SetPersonality(personality) => {
                 self.change("bot-personality", BotChange { personality: Some(personality), ..BotChange::default() }, cx);
             }
             Act::SetModel(model) => self.change("bot-model", BotChange { model: Some(model), ..BotChange::default() }, cx),
-            Act::Delete => self.open_editor(Editor::Sheet(Sheet::Delete), None),
+            Act::Delete => self.open_editor(Sheet::Delete, None),
             Act::New => cx.emit(BotsEvent::Select(Some("new".into()))),
             Act::PickTemplate(template) => {
                 // A template's name goes in while the name is still a template's (or empty).
@@ -1034,7 +1054,7 @@ impl BotsView {
         self.busy.iter().any(|(key, _)| key.split_once('/').is_some_and(|(bot, _)| bot == id))
     }
 
-    fn open_editor(&mut self, editor: Editor, focus: Option<FocusHandle>) {
+    fn open_editor(&mut self, editor: Sheet, focus: Option<FocusHandle>) {
         self.editor = Some(editor);
         self.edit_error = None;
         self.saving = false;
@@ -1057,102 +1077,196 @@ impl BotsView {
         self.rebuild(cx);
     }
 
-    fn profile_values(&self) -> Option<ProfileValues> {
-        if let Some(bot) = self.bot() {
-            return Some(ProfileValues {
-                name: bot.name.clone(),
-                job: Some((bot.job.clone(), bot.job_details.clone())),
-            });
+    fn profile_field(&self, field: ProfileField) -> &Entity<TextField> {
+        match field {
+            ProfileField::Name => &self.name,
+            ProfileField::Job => &self.line,
+            ProfileField::Instructions => &self.details,
         }
-        let (_, name, _) = self.subject()?;
-        Some(ProfileValues { name, job: None })
+    }
+
+    fn capture_profile(&mut self, cx: &App) {
+        let Some(id) = &self.profile_shown else { return };
+        let texts = ProfileField::ALL.map(|field| self.profile_field(field).read(cx).text().to_owned());
+        let draft = self.profiles.entry(id.clone()).or_default();
+        for (field, text) in draft.iter_mut().zip(texts) {
+            if text != field.text {
+                field.text = text;
+                field.generation += 1;
+            }
+        }
     }
 
     fn sync_profile(&mut self, cx: &mut Context<Self>) {
-        let next = self.profile_values().map(|values| (self.shown.clone(), values));
-        if self.profile_source == next || self.saving {
+        self.capture_profile(cx);
+        let Some((id, name, _)) = self.subject() else {
+            self.profile_shown = None;
             return;
+        };
+        let values = if let Some(bot) = self.bot() {
+            [Some(name), Some(bot.job.clone()), Some(bot.job_details.clone())]
+        } else {
+            let name = self.held(&id).and_then(|held| held.name()).unwrap_or(&name).to_owned();
+            [Some(name), None, None]
+        };
+        let draft = self.profiles.entry(id.clone()).or_default();
+        for (field, saved) in draft.iter_mut().zip(values) {
+            // A refresh can change the baseline but only replaces a field without a draft.
+            if field.pending.is_none() && field.queued.is_none() && field.error.is_none()
+                && field.generation == field.clean_generation
+            {
+                field.text = saved.as_deref().unwrap_or_default().to_owned();
+            }
+            field.saved = saved;
         }
-        let previous = std::mem::replace(&mut self.profile_source, next);
-        let Some((shown, values)) = &self.profile_source else { return };
-        let prior = previous.as_ref().filter(|(page, _)| page == shown).map(|(_, values)| values);
-        let (line, details) = values.job.clone().unwrap_or_default();
-        let prior_job = prior.and_then(|values| values.job.as_ref());
-        for (field, old, value) in [
-            (&self.name, prior.map(|old| old.name.as_str()), values.name.clone()),
-            (&self.line, prior_job.map(|(line, _)| line.as_str()), line),
-            (&self.details, prior_job.map(|(_, details)| details.as_str()), details),
-        ] {
-            if old.is_none_or(|old| field.read(cx).text() == old) && field.read(cx).text() != value {
-                field.update(cx, |field, cx| field.set_text(value, cx));
+        self.profile_shown = Some(id);
+        self.draw_profile_fields(cx);
+    }
+
+    fn draw_profile_fields(&self, cx: &mut Context<Self>) {
+        let Some(draft) = self.profile_shown.as_ref().and_then(|id| self.profiles.get(id)) else { return };
+        for (field, state) in ProfileField::ALL.into_iter().zip(draft) {
+            let input = self.profile_field(field);
+            if input.read(cx).text() != state.text {
+                input.update(cx, |input, cx| input.set_text(state.text.clone(), cx));
             }
         }
     }
 
-    fn profile_key(&mut self, event: &TextFieldEvent, cx: &mut Context<Self>) {
+    fn profile_errors(&self) -> impl Iterator<Item = &str> {
+        self.profile_shown.as_ref().and_then(|id| self.profiles.get(id)).into_iter().flatten()
+            .filter_map(|field| field.error.as_ref().map(|error| error.message.as_str()))
+    }
+
+    fn profile_key(&mut self, field: ProfileField, event: &TextFieldEvent, cx: &mut Context<Self>) {
         match event {
-            TextFieldEvent::Submit(_) => self.save_profile(cx),
-            TextFieldEvent::Cancel if !self.saving => {
-                self.profile_source = None;
-                self.profile_save_queued = false;
-                self.edit_error = None;
-                self.rebuild(cx);
+            TextFieldEvent::Changed => self.capture_profile(cx),
+            TextFieldEvent::Submit(_) => self.queue_profile(&[field], true, cx),
+            TextFieldEvent::Cancel => {
+                self.capture_profile(cx);
+                let Some(draft) = self.profile_shown.as_ref().and_then(|id| self.profiles.get_mut(id)) else { return };
+                let draft = &mut draft[field as usize];
+                draft.generation += 1;
+                draft.text = if let Some(pending) = &mut draft.pending {
+                    pending.generation = draft.generation;
+                    pending.text.clone()
+                } else {
+                    draft.clean_generation = draft.generation;
+                    draft.saved.clone().unwrap_or_default()
+                };
+                draft.queued = None;
+                draft.error = None;
+                self.draw_profile_fields(cx);
+                cx.notify();
             }
-            _ => {}
         }
     }
 
     fn save_profile(&mut self, cx: &mut Context<Self>) {
-        if matches!(self.editor, Some(Editor::Sheet(_))) {
-            return;
-        }
-        let Some((id, ..)) = self.subject() else { return };
-        if self.change_pending(&id) {
-            self.profile_save_queued = true;
-            return;
-        }
-        let Some((shown, source)) = &self.profile_source else { return };
-        if *shown != self.shown {
-            return;
-        }
-        let typed_name = self.name.read(cx).text().trim().to_owned();
-        let name = if typed_name.is_empty() {
-            let old = source.name.clone();
-            self.name.update(cx, |field, cx| field.set_text(old, cx));
-            self.edit_error = Some("A bot needs a name.".into());
-            cx.notify();
-            None
-        } else {
-            (typed_name != source.name).then_some(typed_name)
-        };
-        let job = source.job.as_ref().and_then(|(line, details)| {
-            let typed = (self.line.read(cx).text().trim(), self.details.read(cx).text().trim());
-            (typed != (line.trim(), details.trim())).then(|| (typed.0.to_owned(), typed.1.to_owned()))
-        });
-        if name.is_none() && job.is_none() {
-            return;
-        }
-        self.profile_save_queued = false;
-        self.editor = Some(Editor::Profile(BotChange { name, job, ..BotChange::default() }));
-        self.submit_editor(false, cx);
+        self.queue_profile(&ProfileField::ALL, true, cx);
     }
 
-    fn accept_profile(&mut self, change: &BotChange, cx: &App) {
-        let Some((_, source)) = &mut self.profile_source else { return };
-        let name = self.name.read(cx).text();
-        if change.name.as_deref() == Some(name.trim()) {
-            source.name = name.to_owned();
+    fn queue_profile(&mut self, fields: &[ProfileField], retry_failed: bool, cx: &mut Context<Self>) {
+        if self.sheet().is_some() {
+            return;
         }
-        if let (Some((saved_line, saved_details)), Some((line, details))) = (&change.job, &mut source.job) {
-            let draft_line = self.line.read(cx).text();
-            let draft_details = self.details.read(cx).text();
-            if draft_line.trim() == saved_line {
-                *line = draft_line.to_owned();
+        self.capture_profile(cx);
+        let Some(id) = self.profile_shown.clone() else { return };
+        let Some(draft) = self.profiles.get_mut(&id) else { return };
+        for &field in fields {
+            let state = &mut draft[field as usize];
+            let Some(saved) = &state.saved else { continue };
+            if !retry_failed && state.error.as_ref().is_some_and(|error| error.generation == state.generation) {
+                continue;
             }
-            if draft_details.trim() == saved_details {
-                *details = draft_details.to_owned();
+            let text = state.text.trim();
+            let baseline = state.pending.as_ref().map_or(saved.as_str(), |save| save.text.as_str());
+            if text == baseline {
+                state.queued = None;
+                if state.pending.is_none() {
+                    state.text = saved.clone();
+                    state.clean_generation = state.generation;
+                    state.error = None;
+                }
+            } else if matches!(field, ProfileField::Name) && text.is_empty() {
+                state.text = baseline.to_owned();
+                state.generation += 1;
+                state.queued = None;
+                state.error = Some(FieldError { generation: state.generation, message: "A bot needs a name.".into() });
+            } else {
+                state.queued = Some(FieldSave { text: text.to_owned(), generation: state.generation });
             }
         }
+        self.draw_profile_fields(cx);
+        self.drain_profile(&id, cx);
+        cx.notify();
+    }
+
+    fn drain_profile(&mut self, id: &str, cx: &mut Context<Self>) {
+        if self.change_pending(id) {
+            return;
+        }
+        let Some(draft) = self.profiles.get_mut(id) else { return };
+        // Save one field at a time so a refusal leaves other fields free to save.
+        let Some((field, state, save)) = ProfileField::ALL.into_iter().zip(draft).find_map(|(field, state)| {
+            let save = state.queued.take()?;
+            if state.saved.as_deref() == Some(&save.text) {
+                if state.generation == save.generation {
+                    state.clean_generation = state.generation;
+                }
+                return None;
+            }
+            Some((field, state, save))
+        }) else { return };
+        let mut change = BotChange::default();
+        match field {
+            ProfileField::Name => change.name = Some(save.text.clone()),
+            ProfileField::Job => change.job_line = Some(save.text.clone()),
+            ProfileField::Instructions => change.job_details = Some(save.text.clone()),
+        }
+        state.error = None;
+        state.pending = Some(save);
+        let id = id.to_owned();
+        let key = format!("{id}/profile");
+        self.set_busy(&key, "Saving…");
+        let target = id.clone();
+        self.run(key.clone(), move |client| client.change_bot(&target, &change), move |this, outcome, cx| {
+            this.done(&key);
+            this.capture_profile(cx);
+            if let Some(state) = this.profiles.get_mut(&id).map(|draft| &mut draft[field as usize])
+                && let Some(sent) = state.pending.take()
+            {
+                match &outcome {
+                    Ok(answer) => {
+                        let saved = match answer {
+                            Outcome::Done(Some(bot)) => match field {
+                                ProfileField::Name => bot.name.clone(),
+                                ProfileField::Job => bot.job.clone(),
+                                ProfileField::Instructions => bot.job_details.clone(),
+                            },
+                            _ => sent.text,
+                        };
+                        if state.generation == sent.generation {
+                            state.text = saved.clone();
+                            state.clean_generation = state.generation;
+                        }
+                        state.saved = Some(saved);
+                    }
+                    Err(error) => {
+                        state.error = Some(FieldError {
+                            generation: sent.generation,
+                            message: edit_problem(error, "Couldn’t save the change.", "Check the fields and try again."),
+                        });
+                    }
+                }
+            }
+            if this.profile_shown.as_deref() == Some(&id) {
+                this.draw_profile_fields(cx);
+            }
+            if let Ok(answer) = outcome {
+                this.took(&id, answer, false, cx);
+            }
+        }, cx);
     }
 
     /// Return or Escape in an inline field.
@@ -1169,7 +1283,7 @@ impl BotsView {
         if self.saving {
             return;
         }
-        if let Some(Editor::Sheet(Sheet::Look { look, .. })) = &mut self.editor {
+        if let Some(Sheet::Look { look, .. }) = &mut self.editor {
             if let Some(color) = color {
                 look.color = color.to_owned();
             }
@@ -1194,21 +1308,20 @@ impl BotsView {
             return;
         }
         let Some(editor) = self.editor.clone() else { return };
-        if let Editor::Sheet(Sheet::Personality(personality)) = &editor {
+        if let Sheet::Personality(personality) = &editor {
             self.save_personality(personality.clone(), cx);
             return;
         }
         let change = match &editor {
             // The new bot's look: kept for when it's made.
-            Editor::Sheet(Sheet::Look { look, new: true }) => {
+            Sheet::Look { look, new: true } => {
                 self.form.look = Some(look.clone());
                 self.close_editor(cx);
                 return;
             }
-            Editor::Profile(change) => Some(change.clone()),
-            Editor::Sheet(Sheet::Look { look, new: false }) => Some(BotChange { look: Some(look.clone()), ..BotChange::default() }),
-            Editor::Sheet(Sheet::Delete) => None,
-            Editor::Sheet(Sheet::Personality(_)) => unreachable!("saved separately"),
+            Sheet::Look { look, new: false } => Some(BotChange { look: Some(look.clone()), ..BotChange::default() }),
+            Sheet::Delete => None,
+            Sheet::Personality(_) => unreachable!("saved separately"),
         };
         let Some((bot, _, _)) = self.subject() else { return };
         self.saving = true;
@@ -1234,24 +1347,16 @@ impl BotsView {
                     Ok(outcome) => {
                         if its_editor {
                             this.editor = None;
-                            if let Editor::Profile(change) = &editor {
-                                this.accept_profile(change, cx);
-                            }
                             this.wants_focus = restore_focus.then(|| this.focus.clone());
                         }
                         this.took(&bot, outcome, deleting, cx);
                     }
                     Err(error) if its_editor => {
                         let retry = match editor {
-                            Editor::Profile(_) => "Check the fields and try again.",
-                            Editor::Sheet(Sheet::Look { .. }) => "Choose an avatar and try again.",
+                            Sheet::Look { .. } => "Choose an avatar and try again.",
                             _ => "Try again.",
                         };
                         this.edit_error = Some(edit_problem(&error, if deleting { "Couldn’t delete the bot." } else { "Couldn’t save the change." }, retry));
-                        if matches!(editor, Editor::Profile(_)) {
-                            this.editor = None;
-                            this.profile_save_queued = false;
-                        }
                     }
                     // You've gone elsewhere meanwhile: nothing changed, and nothing is said over
                     // another bot's page.
@@ -1267,7 +1372,7 @@ impl BotsView {
         let Some(bot) = self.bot().map(|bot| bot.id.clone()) else { return };
         let name = self.personality_name.read(cx).text().trim().to_owned();
         let description = self.personality_description.read(cx).text().trim().to_owned();
-        let editor = Editor::Sheet(Sheet::Personality(personality.clone()));
+        let editor = Sheet::Personality(personality.clone());
         let page = self.shown.clone();
         let key = format!("{bot}/editor");
         self.saving = true;
@@ -1308,9 +1413,9 @@ impl BotsView {
         self.rebuild(cx);
     }
 
-    fn disable_editor_fields(&self, editor: &Editor, disabled: bool, cx: &mut Context<Self>) {
+    fn disable_editor_fields(&self, editor: &Sheet, disabled: bool, cx: &mut Context<Self>) {
         let fields = match editor {
-            Editor::Sheet(Sheet::Personality(_)) => &[&self.personality_name, &self.personality_description][..],
+            Sheet::Personality(_) => &[&self.personality_name, &self.personality_description][..],
             _ => return,
         };
         for field in fields {
@@ -1385,6 +1490,9 @@ fn delete_row() -> Row {
 
 fn edit_problem(error: &kuvo_box::Error, problem: &str, retry: &str) -> String {
     match error {
+        kuvo_box::Error::Refused(refusal) if matches!(refusal.message.as_str(),
+            "Shorten Job to 200 characters or fewer." | "Shorten Instructions to 8,000 characters or fewer."
+        ) => refusal.message.clone(),
         kuvo_box::Error::Refused(refusal) if refusal.message == "A bot needs a name." => {
             format!("{} Enter a name and try again.", refusal.message)
         }

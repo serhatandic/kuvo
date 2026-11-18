@@ -305,6 +305,12 @@ impl Bots {
         if body.get("effort").is_some_and(|effort| !effort.is_null() && !effort.is_string()) {
             return (400, json!({ "message": "That isn’t an effort." }));
         }
+        if body["jobLine"].as_str().is_some_and(|line| line.chars().count() > 200) {
+            return (400, json!({ "message": "Shorten Job to 200 characters or fewer." }));
+        }
+        if body["jobDetails"].as_str().is_some_and(|details| details.chars().count() > 8000) {
+            return (400, json!({ "message": "Shorten Instructions to 8,000 characters or fewer." }));
+        }
         // One that lives on another computer: held for it, a later change on top.
         if let Some(computer) = self.there(id).map(|there| there["computer"].as_str().unwrap_or_default().to_owned()) {
             return (202, json!({ "held": self.hold(id, &computer, Some(change), false, now) }));
@@ -337,6 +343,7 @@ impl Bots {
                 // (Done above: it's its model's variant.)
                 "effort" => {}
                 "model" if change.contains_key("effort") => {}
+                "jobLine" => bot["job"] = value.clone(),
                 "job" => {
                     bot["job"] = value["line"].clone();
                     bot["jobDetails"] = value["details"].clone();

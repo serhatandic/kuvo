@@ -219,7 +219,7 @@ impl BoxClient {
     }
 
     /// Refused in the client, without reaching the box, while it waits for its update.
-    fn check_gate(&self, request: &Request) -> Result<()> {
+    pub(crate) fn check_gate(&self, request: &Request) -> Result<()> {
         if gate::is_allowed(&request.path) {
             return Ok(());
         }
