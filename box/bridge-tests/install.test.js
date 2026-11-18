@@ -387,6 +387,57 @@ echo "$verb" >>"$HOME/keys-asked"
 case "$verb" in copy) echo '{"copied":0}' ;; passwords) echo '{"v":1,"logins":[]}' ;; *) echo '{}' ;; esac
 `;
 
+test("install move progress stays in order when rehome is delayed between finishing and settling", { skip: !mac && "a Mac's app folder" }, () => {
+  const where = computer();
+  write(path.join(where.S, "Chats", "c1", "notes.md"), "a chat's notes");
+  // Hold the child after publishing each journal step until the installer's next poll has
+  // finished reading it. At "done", the journal no longer provides progress and run.phase
+  // still says "plan". Both the journal and phase are written by the real move.
+  const schedule = path.join(where.home, "schedule.cjs");
+  write(schedule, `
+const fs = require("node:fs");
+const path = require("node:path");
+const journal = path.join(process.env.KUVO_HOME || "", "updates", "rehome", "journal.json");
+const observed = step => path.join(process.env.HOME, "observed-" + step);
+const steps = ["clear", "done"];
+if (process.argv[2] === "install") {
+  const read = fs.readFileSync;
+  let previous;
+  fs.readFileSync = function (file, ...args) {
+    const text = read.call(this, file, ...args);
+    if (file === journal) {
+      const { step } = JSON.parse(text);
+      if (steps.includes(step) && step === previous) fs.writeFileSync(observed(step), "");
+      previous = step;
+    }
+    return text;
+  };
+}
+if (process.argv[2] === "rehome" && process.argv.includes("--run")) {
+  const rename = fs.renameSync;
+  const nap = new Int32Array(new SharedArrayBuffer(4));
+  fs.renameSync = function (from, to) {
+    rename.call(this, from, to);
+    if (to !== journal) return;
+    const { step } = JSON.parse(fs.readFileSync(journal, "utf8"));
+    if (!steps.includes(step)) return;
+    const deadline = Date.now() + 10_000;
+    while (!fs.existsSync(observed(step))) {
+      if (Date.now() >= deadline) throw new Error("Installer did not poll " + step);
+      Atomics.wait(nap, 0, 0, 10);
+    }
+  };
+}
+`);
+  const moved = install(where, "move", { env: { NODE_OPTIONS: `--require "${schedule}"` } });
+  assert.equal(moved.status, 0, moved.stderr + JSON.stringify(moved.lines));
+  assert.equal(moved.said.result, "done");
+  assert.ok(exists(path.join(where.home, "observed-done")));
+  assert.ok(moved.steps.includes("clear"), JSON.stringify(moved.lines));
+  const indices = moved.lines.filter(line => line.index !== undefined).map(line => line.index);
+  assert.deepEqual(indices, [...indices].sort((a, b) => a - b), JSON.stringify(moved.lines));
+});
+
 test("an earlier Kuvo Code's chats and settings move with `kuvo-install move`: each step said in the box's own words, its helper started, and the app's own folder as it was", { skip: !mac && "a Mac's app folder" }, () => {
   const where = computer();
   write(path.join(where.bundle, "Contents", "MacOS", "kuvo-keys"), keysStandIn, 0o755);

@@ -55343,8 +55343,16 @@ function readFailed() {
   return isObject(said) && typeof said.at === "number" && typeof said.message === "string" ? { at: said.at, message: said.message } : null;
 }
 function readOpening() {
-  const said = readJSON3(OPENING_FILE());
-  return isObject(said) && typeof said.at === "number" && typeof said.by === "number" ? { at: said.at, by: said.by } : null;
+  const file = OPENING_FILE();
+  const said = readJSON3(file);
+  if (isObject(said) && typeof said.at === "number" && typeof said.by === "number")
+    return { at: said.at, by: said.by };
+  try {
+    const stat = fs138.statSync(file);
+    return stat.isFile() ? { at: stat.mtimeMs, by: null } : null;
+  } catch {
+    return null;
+  }
 }
 function updating(now = Date.now()) {
   try {
@@ -55400,12 +55408,15 @@ function appStatus(now = Date.now()) {
   };
 }
 function stale(opening, now) {
-  return opening.by !== process.pid && !alive(opening.by) || now - opening.at > WAIT + OPEN_WITHIN;
+  return openerGone(opening) || now - opening.at > WAIT + OPEN_WITHIN;
+}
+function openerGone({ by }) {
+  return by !== null && by !== process.pid && !alive(by);
 }
 async function openApp(signal, ways = OPEN_WAYS) {
-  if (isOpen())
-    return null;
   for (let tries = 0;tries < 3; tries++) {
+    if (isOpen())
+      return null;
     const now = ways.now();
     let opening = readOpening();
     if (opening && stale(opening, now)) {
@@ -55430,7 +55441,7 @@ async function openApp(signal, ways = OPEN_WAYS) {
     }
     const theirs = opening;
     const still = () => JSON.stringify(readOpening()) === JSON.stringify(theirs);
-    const cutOff = () => theirs.by !== process.pid && !alive(theirs.by);
+    const cutOff = () => openerGone(theirs);
     await ways.until(() => isOpen() || !still() || cutOff(), theirs.at + WAIT + OPEN_WITHIN, signal);
     if (isOpen())
       return null;
@@ -57592,7 +57603,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "7eb2fa750a12";
+var BRIDGE_VERSION = "fed206678aad";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -68708,16 +68719,18 @@ async function moved2({ home, root, bundle, release, engine }, judged, say) {
     child.once("exit", (status) => resolve(status));
     child.once("error", () => resolve(null));
   });
-  let shown = "";
+  let shown = stepIndex("plan");
   const show = () => {
     const progress = rehomeStatus(home).progress;
-    if (progress && progress.step !== shown) {
-      shown = progress.step;
+    if (!progress)
+      return;
+    const step = stepIndex(progress.step);
+    if (step > shown) {
+      shown = step;
       say(progress);
     }
   };
   say(progressOf("plan"));
-  shown = "plan";
   let status;
   while (status === undefined) {
     status = await Promise.race([ended, sleep(250).then(() => {

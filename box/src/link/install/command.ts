@@ -26,7 +26,7 @@ import { helperStatus } from "../helper";
 import { accountHome, homeFolder, K, located, OWN_RUNTIME } from "../home";
 import { computerName } from "../mac/link";
 import { homeOfRoot, rehomeNew, runningIn, settled } from "../rehome/move";
-import { giveLock, progressOf, rehomeFolder, rehomeStatus, takeLock } from "../rehome/state";
+import { giveLock, progressOf, rehomeFolder, rehomeStatus, stepIndex, takeLock } from "../rehome/state";
 import { Said } from "../rehome/said";
 import { sleep } from "../../shared/wait";
 import { launchTools } from "../uninstall";
@@ -223,17 +223,19 @@ async function moved({ home, root, bundle, release, engine }: { home: string; ro
     fs.closeSync(logTo);
   }
   const ended = new Promise<number | null>(resolve => { child.once("exit", status => resolve(status)); child.once("error", () => resolve(null)); });
-  // Each step as it's reached, in the box's own words.
-  let shown = "";
+  // Polling can see "plan" again during a retry or between the journal finishing and settling.
+  // Keep the furthest step shown. "clear" and "done" share a display index but have different words.
+  let shown = stepIndex("plan");
   const show = () => {
     const progress = rehomeStatus(home).progress;
-    if (progress && progress.step !== shown) {
-      shown = progress.step;
+    if (!progress) return;
+    const step = stepIndex(progress.step);
+    if (step > shown) {
+      shown = step;
       say(progress);
     }
   };
   say(progressOf("plan"));
-  shown = "plan";
   let status: number | null | undefined;
   while (status === undefined) {
     status = await Promise.race([ended, sleep(250).then(() => undefined)]);

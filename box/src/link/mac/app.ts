@@ -128,9 +128,19 @@ function readFailed(): Failed | null {
 }
 
 interface OpeningNote { at: number; by: number }
-function readOpening(): OpeningNote | null {
-  const said = readJSON(OPENING_FILE());
-  return isObject(said) && typeof said.at === "number" && typeof said.by === "number" ? { at: said.at, by: said.by } : null;
+type Opening = OpeningNote | { at: number; by: null };
+function readOpening(): Opening | null {
+  const file = OPENING_FILE();
+  const said = readJSON(file);
+  if (isObject(said) && typeof said.at === "number" && typeof said.by === "number") return { at: said.at, by: said.by };
+  // The exclusive create claims the opening before its JSON is written. While the note is
+  // incomplete, use the file's time so a writer that never finishes can't hold it forever.
+  try {
+    const stat = fs.statSync(file);
+    return stat.isFile() ? { at: stat.mtimeMs, by: null } : null;
+  } catch {
+    return null;
+  }
 }
 
 /** Whether an update of the app installs now: noted in the last two minutes. */
@@ -196,8 +206,12 @@ export function appStatus(now = Date.now()) {
 }
 
 /** An opening whose process is gone, or that has run past its time (and a little more). */
-function stale(opening: OpeningNote, now: number): boolean {
-  return (opening.by !== process.pid && !alive(opening.by)) || now - opening.at > WAIT + OPEN_WITHIN;
+function stale(opening: Opening, now: number): boolean {
+  return openerGone(opening) || now - opening.at > WAIT + OPEN_WITHIN;
+}
+
+function openerGone({ by }: Opening): boolean {
+  return by !== null && by !== process.pid && !alive(by);
 }
 
 /** How the opening is done and waited for: the host asked (`open`, null once it's opened, else
@@ -215,8 +229,8 @@ export interface OpenWays {
  * `signal` stops a call's wait; the one that asked for an opening sees it through, so every call
  * waiting on it hears how it went (its caller sends it one SIGTERM, which `box route` takes as that). */
 export async function openApp(signal?: AbortSignal, ways: OpenWays = OPEN_WAYS): Promise<string | null> {
-  if (isOpen()) return null;
   for (let tries = 0; tries < 3; tries++) {
+    if (isOpen()) return null;
     const now = ways.now();
     let opening = readOpening();
     if (opening && stale(opening, now)) {
@@ -239,11 +253,11 @@ export async function openApp(signal?: AbortSignal, ways: OpenWays = OPEN_WAYS):
       return await openAndWait(mine, ways);
     }
     // One under way: waited for, until the app registers, that opening ends, or its process goes
-    // (cut off, it never says how it went: the next try takes it on). Long enough for the opener's
-    // own ask of the host to come back after its wait, with why it failed.
+    // (cut off, it never says how it went: the next try takes it on). An incomplete note is
+    // checked again once written. Long enough for the opener's ask and its wait for registration.
     const theirs = opening;
     const still = () => JSON.stringify(readOpening()) === JSON.stringify(theirs);
-    const cutOff = () => theirs.by !== process.pid && !alive(theirs.by);
+    const cutOff = () => openerGone(theirs);
     await ways.until(() => isOpen() || !still() || cutOff(), theirs.at + WAIT + OPEN_WITHIN, signal);
     if (isOpen()) return null;
     if (signal?.aborted) return "The call was stopped.";

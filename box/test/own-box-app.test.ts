@@ -69,6 +69,24 @@ test("many browser calls while the app is closed: one opening, of the app where 
   expect(world.asked).toEqual([BUNDLE])
 })
 
+test("a call waits while another process is still writing the opening note", async () => {
+  registerApp({ tools: null, bundle: BUNDLE })
+  const note = join(RUN, "app-opening.json")
+  const world = stage()
+  world.at = Date.now()
+  writeFileSync(note, "", { flag: "wx", mode: 0o600 })
+  const call = openApp(undefined, world.ways)
+  expect(await Promise.race([call, Promise.resolve("pending")])).toBe("pending")
+  expect(world.waiting).toHaveLength(1)
+
+  writeFileSync(note, JSON.stringify({ at: world.at, by: process.pid }))
+  world.expire()
+  await waitingFor(world, 1)
+  world.registers()
+  expect(await call).toBeNull()
+  expect(world.asked).toEqual([])
+})
+
 test("an app that doesn't register within 30 seconds: every call waiting hears so, and none opens it again for five minutes", async () => {
   registerApp({ tools: null, bundle: BUNDLE })
   const world = stage()
