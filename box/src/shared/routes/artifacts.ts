@@ -68,14 +68,14 @@ export const ARTIFACT_CHANGES = oneOf(
 );
 
 export const ARTIFACT_ROUTES: RouteShape[] = [
-  { route: "GET kuvo/artifacts", answers: { 200: ARTIFACT_LIST } },
-  { route: "GET kuvo/artifacts/timeline", answers: { 200: ARTIFACT_TIMELINE } },
-  { route: "GET kuvo/artifacts/storage", answers: { 200: ARTIFACT_STORAGE } },
-  { route: "POST kuvo/artifacts/storage", answers: { 200: ARTIFACT_STORAGE } },
-  { route: "POST kuvo/artifacts/storage/clear", answers: { 200: object({ cleared: number, copies: number, older: number, budget: number, free: number, floor: number, low: bool }) } },
-  { route: "GET kuvo/artifacts/:id", answers: { 200: ARTIFACT } },
-  { route: "POST kuvo/artifacts/:id/pin", answers: { 200: ARTIFACT } },
-  { route: "POST kuvo/artifacts/:id/restore", answers: { 200: ARTIFACT } },
-  { route: "GET kuvo/artifacts/:id/versions/:n", answers: { 200: BYTES } },
-  { route: "GET kuvo/artifacts/:id/versions/:n/changes", answers: { 200: ARTIFACT_CHANGES } },
+  { route: "GET kuvo/artifacts", feature: "artifacts", answers: { 200: ARTIFACT_LIST } },
+  { route: "GET kuvo/artifacts/timeline", feature: "artifacts", answers: { 200: ARTIFACT_TIMELINE } },
+  { route: "GET kuvo/artifacts/storage", feature: "artifacts", answers: { 200: ARTIFACT_STORAGE } },
+  { route: "POST kuvo/artifacts/storage", feature: "artifacts", answers: { 200: ARTIFACT_STORAGE } },
+  { route: "POST kuvo/artifacts/storage/clear", feature: "artifacts", answers: { 200: object({ cleared: number, copies: number, older: number, budget: number, free: number, floor: number, low: bool }) } },
+  { route: "GET kuvo/artifacts/:id", feature: "artifacts", answers: { 200: ARTIFACT } },
+  { route: "POST kuvo/artifacts/:id/pin", feature: "artifacts", answers: { 200: ARTIFACT } },
+  { route: "POST kuvo/artifacts/:id/restore", feature: "artifacts", answers: { 200: ARTIFACT } },
+  { route: "GET kuvo/artifacts/:id/versions/:n", feature: "artifacts", answers: { 200: BYTES } },
+  { route: "GET kuvo/artifacts/:id/versions/:n/changes", feature: "artifacts", answers: { 200: ARTIFACT_CHANGES } },
 ];

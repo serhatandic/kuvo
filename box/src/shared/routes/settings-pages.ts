@@ -205,10 +205,10 @@ export type SettingsPage = Infer<typeof SETTINGS_PAGE>;
 export type SettingsSection = Infer<typeof SETTINGS_SECTION>;
 
 export const SETTINGS_PAGE_ROUTES: RouteShape[] = [
-  { route: "GET kuvo/settings", answers: { 200: SETTINGS_SECTIONS } },
-  { route: "GET kuvo/settings/:section", answers: { 200: SETTINGS_PAGE, 404: REFUSED } },
-  { route: "GET kuvo/settings/:section/events", answers: { 200: SETTINGS_PAGE, 404: REFUSED } },
-  { route: "PATCH kuvo/settings/:section", body: SETTINGS_CHANGE, answers: { 200: SETTINGS_PAGE, 400: REFUSED, 403: REFUSED, 404: REFUSED, 409: SETTINGS_STALE } },
-  { route: "POST kuvo/settings/:section/:row/:action", body: SETTINGS_ACT, answers: { 200: SETTINGS_PAGE, 400: SETTINGS_FORM_REFUSED, 403: REFUSED, 404: REFUSED, 409: SETTINGS_STALE } },
-  { route: "POST kuvo/settings/:section/:row/:action/check", body: SETTINGS_CHECK, answers: { 200: SETTINGS_CHECKED, 400: REFUSED, 404: REFUSED, 409: SETTINGS_STALE } },
+  { route: "GET kuvo/settings", feature: "settings", answers: { 200: SETTINGS_SECTIONS } },
+  { route: "GET kuvo/settings/:section", feature: "settings", answers: { 200: SETTINGS_PAGE, 404: REFUSED } },
+  { route: "GET kuvo/settings/:section/events", feature: "settings", answers: { 200: SETTINGS_PAGE, 404: REFUSED } },
+  { route: "PATCH kuvo/settings/:section", feature: "settings", body: SETTINGS_CHANGE, answers: { 200: SETTINGS_PAGE, 400: REFUSED, 403: REFUSED, 404: REFUSED, 409: SETTINGS_STALE } },
+  { route: "POST kuvo/settings/:section/:row/:action", feature: "settings.flows", body: SETTINGS_ACT, answers: { 200: SETTINGS_PAGE, 400: SETTINGS_FORM_REFUSED, 403: REFUSED, 404: REFUSED, 409: SETTINGS_STALE } },
+  { route: "POST kuvo/settings/:section/:row/:action/check", feature: "settings.flows", body: SETTINGS_CHECK, answers: { 200: SETTINGS_CHECKED, 400: REFUSED, 404: REFUSED, 409: SETTINGS_STALE } },
 ];

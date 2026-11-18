@@ -7576,6 +7576,11 @@ tell: nothing is assumed, old or new, and the next ask reads it again. Each sayi
 A client checks only names newer than the gate's (`BoxGate.required` and what came before them,
 which a box that isn't held has) and a kind's own (`update`, `engine.start`).
 
+Each client-facing Box route registration and route contract names an advertised feature. Use
+the feature that introduced the route. The required list still names the capabilities clients
+need for the update gate. It can be smaller than the set of advertised features. Keep checking
+`kuvo/info` before depending on any advertised name.
+
 One row a name, in order, so branches that each add one merge cleanly.
 
 | Name | What it answers |
@@ -7587,6 +7592,10 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `agent-tools` | `POST kuvo/agent-tools`: the agents' tools, answered by the box (bridge 0.9.100) |
 | `agent-tools.own` | `POST kuvo/agent-tools` answers the wake-up tools, `set_job` and the show tools too ("Agents' tools") |
 | `agents` | `kuvo/agents/api/…`: the coding agents (`agents` in `kuvo/info` says whether their bridge is up now) |
+| `agents.accounts` | `kuvo/agents/api/kuvo/accounts…`: add, rename and remove named coding-agent accounts |
+| `agents.start` | `POST kuvo/agents/start`: restart the coding agents' bridge when it fails to start |
+| `agents.updates` | `kuvo/agents/api/kuvo/updates…`: start program updates and acknowledge the results |
+| `agents.voice` | `kuvo/agents/api/kuvo/voice…`: voice routes |
 | `approval` | `kuvo/approval` and `kuvo/sessions/<id>/approval` ("Approval", bridge 0.9.180) |
 | `approval.default` | A new conversation's approval where its client doesn't say: Auto the first time on a computer, then the last one picked there (`kuvo/approval`'s `default`, bridge 0.9.185); one a client made with `kuvo.approval` alone gets that ("Approval") |
 | `approval.fullAccess` | Full Access as it is since bridge 0.9.184: its commands run outside the sandbox, nothing asks or is reviewed, `kuvo/approval`'s `fullAccess` is whether you confirmed it on this computer (asked the first time it's picked), and Tell Auto is gone ("Approval") |
@@ -7678,6 +7687,7 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `groups.seats` | its bots take turns in chats on other computers ("Peers", group chats) |
 | `handoff` | `kuvo/agents/api/kuvo/handoff…`: handoffs |
 | `hosts` | a Mac: `kuvo/hosts…` (with its app closed its box still lists them, and `DELETE` says the app must be open; a box in a home of its own answers all of it itself); a member of a setup answers it too, with `setup.mainOnly` |
+| `info` | `GET kuvo/info`: Box identity and advertised features. This discovery request is available before the gate opens. |
 | `integrations` | `kuvo/integrations…` |
 | `keys` | `kuvo/keys…` |
 | `letters-read` | (in a peer's agents' mail) it takes a letter with `read` (bridge 0.9.100) |
@@ -7704,6 +7714,7 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `moves.check` | between boxes, `check` before a move holds anything: whether the box it goes to can run it; a move's `note` says what it does differently there ("kuvo/moves") |
 | `named` | `kuvo/named` |
 | `names.titles` | Computer `limitServices`, work `account.title`, usage `serviceTitles`: display words supplied by the box |
+| `notices` | `GET kuvo/notices` and `…/events`: notices the Box has already worded |
 | `personalities` | `kuvo/personalities…` |
 | `personalities.events` | `kuvo/personalities/events` |
 | `phones` | `kuvo/phones` and `POST kuvo/phones/remove` |
@@ -7745,6 +7756,7 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `sessions.models` | `GET kuvo/sessions/models` ("A session's model") |
 | `sessions.move` | `POST kuvo/sessions/<id>/move`: a conversation moved into a project, given its folders ("Projects", #341) |
 | `sessions.needsYou` | `needsYou`, each project's `asking` and `working`, and each session's `bot`, in `kuvo/sessions/list` ("Session lists", #711) |
+| `sessions.read` | `POST kuvo/sessions/read`: mark conversations on this Box as read |
 | `sessions.start` | `POST kuvo/sessions`: a session started with a task (bridge 0.9.100) |
 | `sessions.start.empty` | `POST kuvo/sessions` from a client without a task, `agent`, `model` as `{providerID, id, variant?}`, and `info` and `worktree` in its answer (#341) |
 | `settings` | `kuvo/settings`, `kuvo/settings/<section>`, `…/events`, a row changed with `PATCH` and an action done with `POST …/<row>/<action>`: the box's settings as it describes them, General, Permissions, Browser, Git, Worktrees, Storage and Archived Sessions ("A box's settings", #727) |

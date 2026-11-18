@@ -118,22 +118,22 @@ const REF = nullable(object({ id: string, "number?": number, "source?": SOURCE, 
 const ON_ANOTHER = object({ message: string, computer: COMPUTER });
 
 export const WORK_QUEUE_ROUTES: RouteShape[] = [
-  { route: "GET kuvo/work-queue", answers: { 200: QUEUE_VIEW } },
-  { route: "GET kuvo/work-queue/events", answers: { 200: QUEUE_VIEW } },
-  { route: "GET kuvo/work-queue/tools", answers: { 200: object({ tools: list(any), instructions: string }) } },
-  { route: "POST kuvo/work-queue/tools", answers: { 200: object({ text: string, isError: bool }) } },
-  { route: "GET kuvo/work-queue/refs", answers: { 200: object({ refs: map(REF) }) } },
-  { route: "POST kuvo/work-queue/refs", answers: { 200: object({ refs: map(REF) }) } },
-  { route: "GET kuvo/work-queue/labels", answers: { 200: object({ labels: list(QUEUE_LABEL) }) } },
-  { route: "POST kuvo/work-queue/labels", answers: { 200: object({ labels: list(QUEUE_LABEL), "label?": QUEUE_LABEL }) } },
-  { route: "POST kuvo/work-queue/items", answers: { 200: object({ item: QUEUE_ITEM }) } },
-  { route: "POST kuvo/work-queue/import", answers: { 200: object({ added: number, byStatus: map(number), waiting: number, skipped: list(string), said: string }) } },
-  { route: "GET kuvo/work-queue/items/:item", answers: { 200: object({ item: QUEUE_ITEM_WHOLE }) } },
+  { route: "GET kuvo/work-queue", feature: "work-queue", answers: { 200: QUEUE_VIEW } },
+  { route: "GET kuvo/work-queue/events", feature: "work-queue", answers: { 200: QUEUE_VIEW } },
+  { route: "GET kuvo/work-queue/tools", feature: "work-queue", answers: { 200: object({ tools: list(any), instructions: string }) } },
+  { route: "POST kuvo/work-queue/tools", feature: "work-queue", answers: { 200: object({ text: string, isError: bool }) } },
+  { route: "GET kuvo/work-queue/refs", feature: "work-queue", answers: { 200: object({ refs: map(REF) }) } },
+  { route: "POST kuvo/work-queue/refs", feature: "work-queue", answers: { 200: object({ refs: map(REF) }) } },
+  { route: "GET kuvo/work-queue/labels", feature: "work-queue.edit", answers: { 200: object({ labels: list(QUEUE_LABEL) }) } },
+  { route: "POST kuvo/work-queue/labels", feature: "work-queue.edit", answers: { 200: object({ labels: list(QUEUE_LABEL), "label?": QUEUE_LABEL }) } },
+  { route: "POST kuvo/work-queue/items", feature: "work-queue.edit", answers: { 200: object({ item: QUEUE_ITEM }) } },
+  { route: "POST kuvo/work-queue/import", feature: "work-queue", answers: { 200: object({ added: number, byStatus: map(number), waiting: number, skipped: list(string), said: string }) } },
+  { route: "GET kuvo/work-queue/items/:item", feature: "work-queue", answers: { 200: object({ item: QUEUE_ITEM_WHOLE }) } },
   // (A file of an item on another computer: from there, 4 MB at most, else 413.)
-  { route: "GET kuvo/work-queue/items/:item/files/:name", answers: { 200: BYTES, 409: ON_ANOTHER, 413: object({ message: string, "computer?": COMPUTER }), 502: ON_ANOTHER, 503: ON_ANOTHER } },
-  { route: "PATCH kuvo/work-queue/items/:item", answers: { 200: object({ item: QUEUE_ITEM }), 409: ON_ANOTHER, 503: ON_ANOTHER } },
-  { route: "POST kuvo/work-queue/items/:item/restore", answers: { 200: object({ item: QUEUE_ITEM }), 409: ON_ANOTHER, 503: ON_ANOTHER } },
-  { route: "DELETE kuvo/work-queue/items/:item", answers: { 200: object({ item: QUEUE_ITEM }), 409: ON_ANOTHER, 503: ON_ANOTHER } },
+  { route: "GET kuvo/work-queue/items/:item/files/:name", feature: "work-queue.attachments", answers: { 200: BYTES, 409: ON_ANOTHER, 413: object({ message: string, "computer?": COMPUTER }), 502: ON_ANOTHER, 503: ON_ANOTHER } },
+  { route: "PATCH kuvo/work-queue/items/:item", feature: "work-queue.edit", answers: { 200: object({ item: QUEUE_ITEM }), 409: ON_ANOTHER, 503: ON_ANOTHER } },
+  { route: "POST kuvo/work-queue/items/:item/restore", feature: "work-queue.edit", answers: { 200: object({ item: QUEUE_ITEM }), 409: ON_ANOTHER, 503: ON_ANOTHER } },
+  { route: "DELETE kuvo/work-queue/items/:item", feature: "work-queue.edit", answers: { 200: object({ item: QUEUE_ITEM }), 409: ON_ANOTHER, 503: ON_ANOTHER } },
 ];
 
 

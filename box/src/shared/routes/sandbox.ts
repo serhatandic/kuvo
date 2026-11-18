@@ -118,15 +118,16 @@ export type SandboxOwner = Infer<typeof SANDBOX_OWNER>;
 export type SandboxAsk = Infer<typeof SANDBOX_ASK>;
 
 export const SANDBOX_ROUTES: RouteShape[] = [
-  { route: "GET kuvo/sandbox", answers: { 200: SANDBOX } },
-  { route: "POST kuvo/sandbox/check", answers: { 200: SANDBOX } },
-  { route: "POST kuvo/sandbox/restart", answers: { 200: SANDBOX, 503: object({ message: string }) } },
-  { route: "GET kuvo/sandbox/asks", answers: { 200: SANDBOX_ASKS } },
-  { route: "POST kuvo/sandbox/asks/:id", answers: { 200: NOTHING } },
-  { route: "GET kuvo/sandbox/allowed", answers: { 200: SANDBOX_ALLOWED } },
-  { route: "POST kuvo/sandbox/allowed", answers: { 200: SANDBOX_ALLOWED } },
-  { route: "DELETE kuvo/sandbox/allowed/:id", answers: { 200: SANDBOX_ALLOWED } },
-  { route: "GET kuvo/sandbox/tools", answers: { 200: SANDBOX_TOOL_LIST } },
-  { route: "POST kuvo/sandbox/tools", answers: { 200: SANDBOX_TOOL } },
-  { route: "POST kuvo/sandbox/stopped", answers: { 200: SANDBOX_STOPPED } },
+  { route: "GET kuvo/sandbox", feature: "sandbox", answers: { 200: SANDBOX } },
+  { route: "POST kuvo/sandbox/check", feature: "sandbox.check", answers: { 200: SANDBOX } },
+  { route: "POST kuvo/sandbox/restart", feature: "sandbox", answers: { 200: SANDBOX, 503: object({ message: string }) } },
+  { route: "GET kuvo/sandbox/asks", feature: "sandbox.asks", answers: { 200: SANDBOX_ASKS } },
+  { route: "GET kuvo/sandbox/asks/events", feature: "sandbox.asks", answers: { 200: SANDBOX_ASKS } },
+  { route: "POST kuvo/sandbox/asks/:id", feature: "sandbox.asks", answers: { 200: NOTHING } },
+  { route: "GET kuvo/sandbox/allowed", feature: "sandbox", answers: { 200: SANDBOX_ALLOWED } },
+  { route: "POST kuvo/sandbox/allowed", feature: "sandbox", answers: { 200: SANDBOX_ALLOWED } },
+  { route: "DELETE kuvo/sandbox/allowed/:id", feature: "sandbox", answers: { 200: SANDBOX_ALLOWED } },
+  { route: "GET kuvo/sandbox/tools", feature: "sandbox", answers: { 200: SANDBOX_TOOL_LIST } },
+  { route: "POST kuvo/sandbox/tools", feature: "sandbox", answers: { 200: SANDBOX_TOOL } },
+  { route: "POST kuvo/sandbox/stopped", feature: "sandbox", answers: { 200: SANDBOX_STOPPED } },
 ];

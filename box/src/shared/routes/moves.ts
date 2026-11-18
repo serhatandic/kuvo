@@ -80,8 +80,9 @@ export type Moves = Infer<typeof MOVES>;
 export type MoveReceipt = Infer<typeof MOVE_RECEIPT>;
 
 export const MOVE_ROUTES: RouteShape[] = [
-  { route: "GET kuvo/moves", answers: { 200: MOVES } },
-  { route: "GET kuvo/moves/places", answers: { 200: MOVE_PLACES } },
-  { route: "GET kuvo/moves/receipt", answers: { 200: MOVE_RECEIPT } },
-  { route: "POST kuvo/moves", answers: { 200: MOVED, 202: MOVE_ACCEPTED } },
+  { route: "GET kuvo/moves", feature: "moves", answers: { 200: MOVES } },
+  { route: "GET kuvo/moves/events", feature: "moves", answers: { 200: MOVES } },
+  { route: "GET kuvo/moves/places", feature: "moves", answers: { 200: MOVE_PLACES } },
+  { route: "GET kuvo/moves/receipt", feature: "moves", answers: { 200: MOVE_RECEIPT } },
+  { route: "POST kuvo/moves", feature: "moves", answers: { 200: MOVED, 202: MOVE_ACCEPTED } },
 ];

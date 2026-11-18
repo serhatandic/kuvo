@@ -11,6 +11,7 @@
 // (`machines`). With only Kuvo Code's desktop app there's none, and it answers those too (`answersAlone`).
 
 import os from "node:os";
+import type { RouteFeature } from "../../shared/routes/feature";
 import { engineConnect } from "../areas/engine";
 import { docsChanged } from "../documents/exchange";
 import { authorizeDesktopConnection, refreshPhoneTrust } from "../documents/phone-sync";
@@ -42,7 +43,14 @@ import type { LinkState } from "../state";
 // hands its own requests for anything else to this box. Everything else a phone asks this box
 // answers itself, as a machine's does, with the app open or closed; and with only Kuvo Code's
 // desktop app, these too (`answersAlone`).
-export const MAC_APP_ROUTES = ["kuvo/machines", "kuvo/hosts", "kuvo/asks", "kuvo/mac", "kuvo/engine"];
+const MAC_APP_ROUTE_FEATURES = {
+  "kuvo/machines": "machines",
+  "kuvo/hosts": "hosts",
+  "kuvo/asks": "asks",
+  "kuvo/mac": "mac",
+  "kuvo/engine": "engine.restart",
+} as const satisfies Record<string, RouteFeature>;
+export const MAC_APP_ROUTES = Object.keys(MAC_APP_ROUTE_FEATURES);
 export const macAppAnswers = (route: string): boolean => MAC_APP_ROUTES.some(area => route === area || route.startsWith(`${area}/`)) && !isRetiredMachineRoute(route);
 
 export { boxAnswers, keeperRuns } from "./keeper-runs";

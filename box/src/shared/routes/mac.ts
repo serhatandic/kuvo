@@ -49,7 +49,7 @@ export const MACHINES = object({
 export type MacMachines = Infer<typeof MACHINES>;
 
 export const MAC_ROUTES: RouteShape[] = [
-  { route: "GET kuvo/machines", answers: { 200: MACHINES } },
-  { route: "GET kuvo/hosts", answers: { 200: HOSTS } },
-  { route: "DELETE kuvo/hosts/:machine", answers: { 200: NOTHING } },
+  { route: "GET kuvo/machines", feature: "machines", answers: { 200: MACHINES } },
+  { route: "GET kuvo/hosts", feature: "hosts", answers: { 200: HOSTS } },
+  { route: "DELETE kuvo/hosts/:machine", feature: "hosts", answers: { 200: NOTHING } },
 ];

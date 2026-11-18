@@ -52,14 +52,14 @@ export type BrowserSites = Infer<typeof BROWSER_SITES>;
 export type BrowserSettings = Infer<typeof BROWSER_SETTINGS>;
 
 export const BROWSER_ROUTES: RouteShape[] = [
-  { route: "GET kuvo/browser/view", answers: { 101: BYTES, 426: object({ message: string }) } },
-  { route: "GET kuvo/browser/history", answers: { 200: BROWSER_HISTORY } },
-  { route: "DELETE kuvo/browser/history", answers: { 200: BROWSER_HISTORY } },
-  { route: "DELETE kuvo/browser/history/:host", answers: { 200: BROWSER_HISTORY } },
-  { route: "GET kuvo/browser/icons/:host", answers: { 200: BYTES } },
-  { route: "GET kuvo/browser/sites", answers: { 200: BROWSER_SITES } },
-  { route: "DELETE kuvo/browser/sites", answers: { 200: BROWSER_SITES } },
-  { route: "DELETE kuvo/browser/sites/:site", answers: { 200: BROWSER_SITES } },
-  { route: "GET kuvo/browser/settings", answers: { 200: BROWSER_SETTINGS } },
-  { route: "PATCH kuvo/browser/settings", answers: { 200: BROWSER_SETTINGS } },
+  { route: "GET kuvo/browser/view", feature: "browser.view", answers: { 101: BYTES, 426: object({ message: string }) } },
+  { route: "GET kuvo/browser/history", feature: "browser.data", answers: { 200: BROWSER_HISTORY } },
+  { route: "DELETE kuvo/browser/history", feature: "browser.data", answers: { 200: BROWSER_HISTORY } },
+  { route: "DELETE kuvo/browser/history/:host", feature: "browser.data", answers: { 200: BROWSER_HISTORY } },
+  { route: "GET kuvo/browser/icons/:host", feature: "browser.data", answers: { 200: BYTES } },
+  { route: "GET kuvo/browser/sites", feature: "browser.data", answers: { 200: BROWSER_SITES } },
+  { route: "DELETE kuvo/browser/sites", feature: "browser.data", answers: { 200: BROWSER_SITES } },
+  { route: "DELETE kuvo/browser/sites/:site", feature: "browser.data", answers: { 200: BROWSER_SITES } },
+  { route: "GET kuvo/browser/settings", feature: "browser.data", answers: { 200: BROWSER_SETTINGS } },
+  { route: "PATCH kuvo/browser/settings", feature: "browser.data", answers: { 200: BROWSER_SETTINGS } },
 ];

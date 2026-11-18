@@ -22,6 +22,6 @@ export const MESSAGE_PARTS = object({
 
 export const MESSAGE_ROUTES: RouteShape[] = [
   // (The engine's answer, or its coding agents' bridge's, as it gave it.)
-  { route: "POST kuvo/sessions/:id/send", answers: { 200: any, 400: REFUSED, 404: REFUSED, 405: REFUSED, 409: REFUSED, 503: REFUSED } },
-  { route: "POST kuvo/messages/parts", answers: { 200: object({ parts: list(MESSAGE_PARTS) }), 400: REFUSED, 405: REFUSED } },
+  { route: "POST kuvo/sessions/:id/send", feature: "messages.send", answers: { 200: any, 400: REFUSED, 404: REFUSED, 405: REFUSED, 409: REFUSED, 503: REFUSED } },
+  { route: "POST kuvo/messages/parts", feature: "messages.send", answers: { 200: object({ parts: list(MESSAGE_PARTS) }), 400: REFUSED, 405: REFUSED } },
 ];

@@ -43,14 +43,14 @@ export type SkillAbout = Infer<typeof SKILL_ABOUT>;
 export type SkillCollection = Infer<typeof SKILL_COLLECTION>;
 
 export const SKILL_ROUTES: RouteShape[] = [
-  { route: "GET kuvo/skills", answers: { 200: SKILLS } },
-  { route: "GET kuvo/skills/:name", answers: { 200: SKILL_TEXT } },
-  { route: "PUT kuvo/skills/:name", answers: { 200: NOTHING } },
-  { route: "DELETE kuvo/skills/:name", answers: { 200: NOTHING } },
-  { route: "GET kuvo/skill-trash", answers: { 200: SKILL_TRASH } },
-  { route: "POST kuvo/skill-trash/:id/restore", answers: { 200: SKILL_NAMED } },
-  { route: "GET kuvo/skill-library", answers: { 200: SKILL_LIBRARY } },
-  { route: "POST kuvo/skill-library/install", answers: { 200: SKILL_NAMED } },
-  { route: "GET kuvo/skill-library/:owner/:name", answers: { 200: SKILL_COLLECTION } },
-  { route: "GET kuvo/skill-library/:owner/:name/about", answers: { 200: SKILL_ABOUT } },
+  { route: "GET kuvo/skills", feature: "skills", answers: { 200: SKILLS } },
+  { route: "GET kuvo/skills/:name", feature: "skills", answers: { 200: SKILL_TEXT } },
+  { route: "PUT kuvo/skills/:name", feature: "skills", answers: { 200: NOTHING } },
+  { route: "DELETE kuvo/skills/:name", feature: "skills", answers: { 200: NOTHING } },
+  { route: "GET kuvo/skill-trash", feature: "skills.trash", answers: { 200: SKILL_TRASH } },
+  { route: "POST kuvo/skill-trash/:id/restore", feature: "skills.trash", answers: { 200: SKILL_NAMED } },
+  { route: "GET kuvo/skill-library", feature: "skills", answers: { 200: SKILL_LIBRARY } },
+  { route: "POST kuvo/skill-library/install", feature: "skills", answers: { 200: SKILL_NAMED } },
+  { route: "GET kuvo/skill-library/:owner/:name", feature: "skills", answers: { 200: SKILL_COLLECTION } },
+  { route: "GET kuvo/skill-library/:owner/:name/about", feature: "skills", answers: { 200: SKILL_ABOUT } },
 ];

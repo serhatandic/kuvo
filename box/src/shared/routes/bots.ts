@@ -123,12 +123,13 @@ export type HeldEdit = Infer<typeof HELD_EDIT>;
 export type RefusedEdit = Infer<typeof REFUSED_EDIT>;
 
 export const BOT_ROUTES: RouteShape[] = [
-  { route: "GET kuvo/bots", answers: { 200: BOTS } },
-  { route: "POST kuvo/bots", answers: { 201: MADE } },
-  { route: "GET kuvo/bots/templates", answers: { 200: TEMPLATES } },
-  { route: "POST kuvo/bots/retell", answers: { 200: NOTHING } },
-  { route: "PATCH kuvo/bots/:id", answers: { 200: CHANGED, 202: HELD } },
-  { route: "DELETE kuvo/bots/:id", answers: { 200: NOTHING, 202: HELD } },
-  { route: "POST kuvo/bots/:id/arrived", answers: { 200: CHANGED } },
-  { route: "POST kuvo/bots/:id/seen", answers: { 200: NOTHING, 404: object({ message: string }), 405: NOTHING, 500: object({ message: string }), 502: object({ message: string }), 503: object({ message: string }) } },
+  { route: "GET kuvo/bots", feature: "bots", answers: { 200: BOTS } },
+  { route: "GET kuvo/bots/events", feature: "bots.events", answers: { 200: BOTS } },
+  { route: "POST kuvo/bots", feature: "bots.make", answers: { 201: MADE } },
+  { route: "GET kuvo/bots/templates", feature: "bots.make", answers: { 200: TEMPLATES } },
+  { route: "POST kuvo/bots/retell", feature: "bots.elsewhere", answers: { 200: NOTHING } },
+  { route: "PATCH kuvo/bots/:id", feature: "bots.edit", answers: { 200: CHANGED, 202: HELD } },
+  { route: "DELETE kuvo/bots/:id", feature: "bots.edit", answers: { 200: NOTHING, 202: HELD } },
+  { route: "POST kuvo/bots/:id/arrived", feature: "bots", answers: { 200: CHANGED } },
+  { route: "POST kuvo/bots/:id/seen", feature: "bots.state", answers: { 200: NOTHING, 404: object({ message: string }), 405: NOTHING, 500: object({ message: string }), 502: object({ message: string }), 503: object({ message: string }) } },
 ];

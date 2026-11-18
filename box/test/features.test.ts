@@ -32,3 +32,17 @@ test("a Mac's box names every box's but a machine's own, and the Mac's own, each
   expect(new Set(mac).size).toBe(mac.length)
   for (const name of MACHINE_FEATURES) expect(mac).not.toContain(name)
 })
+
+test("the protocol and Rust gate agree and both kinds of Box advertise the required names", () => {
+  const root = join(import.meta.dir, "../..")
+  const protocol = readFileSync(join(root, "protocol/gate-required.txt"), "utf8")
+    .split("\n").map(line => line.trim()).filter(line => line && !line.startsWith("#"))
+  const rust = readFileSync(join(root, "gpui/kuvo_box/src/gate/required.rs"), "utf8")
+    .split("\n").map(line => /^\s*"([^"]+)",$/.exec(line)?.[1]).filter(name => name !== undefined)
+  expect(protocol.length).toBeGreaterThan(0)
+  expect(new Set(protocol).size).toBe(protocol.length)
+  expect([...rust].sort()).toEqual([...protocol].sort())
+  const machine = new Set<string>(FEATURES)
+  const mac = new Set(macFeatures())
+  expect(protocol.filter(name => !machine.has(name) || !mac.has(name))).toEqual([])
+})

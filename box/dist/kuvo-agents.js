@@ -39416,6 +39416,9 @@ function page(items, url) {
   const next = start + limit < items.length && data.length ? `${order}:${data[data.length - 1].id}${filter ? `:${filter}` : ""}` : undefined;
   return { data, cursor: { next } };
 }
+function bridgeExtension(name) {
+  return name !== undefined && Object.hasOwn(BRIDGE_EXTENSIONS, name);
+}
 function handler(context) {
   const expected = "Basic " + Buffer.from(`opencode:${context.password}`).toString("base64");
   const { sessions, roster, auto, link } = context;
@@ -39772,7 +39775,8 @@ function handler(context) {
             return json16({ data: [] });
         }
       }
-      if (area === "kuvo" && a === "accounts") {
+      const extension = area === "kuvo" && bridgeExtension(a) ? a : undefined;
+      if (extension === "accounts") {
         if (method === "POST" && !b) {
           const { agent: givenAgent, provider, label } = await body();
           const agent = givenAgent ?? (typeof provider === "string" ? parseProvider(provider)?.kind : undefined);
@@ -39809,7 +39813,7 @@ function handler(context) {
           return json16({});
         }
       }
-      if (area === "kuvo" && a === "updates" && !c) {
+      if (extension === "updates" && !c) {
         if (!b) {
           if (method !== "POST")
             return error2(405, "Not allowed.");
@@ -39834,55 +39838,55 @@ function handler(context) {
         updateProgram(agent, () => roster.all(), maintainedNow);
         return json16({ data: { updating: [agent.id] } });
       }
-      if (area === "kuvo" && a === "sandbox" && b === "restart" && !c && method === "POST") {
+      if (extension === "sandbox" && b === "restart" && !c && method === "POST") {
         context.restartOutside?.();
         return json16({});
       }
-      if (area === "kuvo" && a === "carry")
+      if (extension === "carry")
         return await carryRoutes(context.carrying, method, parts.slice(3), body);
-      if (area === "kuvo" && a === "goals")
+      if (extension === "goals")
         return await goalRoutes(context.goals, method, parts.slice(3), body);
-      if (area === "kuvo" && a === "btw")
+      if (extension === "btw")
         return await sideQuestionRoutes(context.sideQuestions, method, parts.slice(3), body);
-      if (area === "kuvo" && a === "handoff")
+      if (extension === "handoff")
         return await handoffRoutes(context.handoffs, method, parts.slice(3), body);
-      if (area === "kuvo" && a === "branch")
+      if (extension === "branch")
         return await branchRoutes(context.places, method, parts.slice(3), body);
-      if (area === "kuvo" && a === "reviews")
+      if (extension === "reviews")
         return await reviewRoutes(context.reviews, method, parts.slice(3), body);
-      if (area === "kuvo" && a === "voice")
+      if (extension === "voice")
         return await voiceRoutes(context.voice, method, parts.slice(3));
-      if (area === "kuvo" && a === "limits")
+      if (extension === "limits")
         return await limitsRoutes(context.limits, method, parts.slice(3), body);
-      if (area === "kuvo" && a === "insights")
+      if (extension === "insights")
         return await insightsRoutes(context.usage?.insights, method, parts.slice(3), url.searchParams);
-      if (area === "kuvo" && a === "usage")
+      if (extension === "usage")
         return await usageRoutes(context.usage, method, parts.slice(3), url.searchParams, body);
-      if (area === "kuvo" && a === "groups")
+      if (extension === "groups")
         return await groupRoutes(context.groups?.runner, context.groups?.store, method, parts.slice(3), body);
-      if (area === "kuvo" && a === "link" && b === "groups")
+      if (extension === "link" && b === "groups")
         return await linkRoutes(context.groups?.runner, context.groups?.store, method, parts.slice(4), body, request.signal);
-      if (area === "kuvo" && a === "artifacts" && b === "noted" && !c)
+      if (extension === "artifacts" && b === "noted" && !c)
         return await notedRoute(context.noted, method, body);
-      if (area === "kuvo" && a === "link" && b === "artifacts") {
+      if (extension === "link" && b === "artifacts") {
         if (context.artifactFormatError)
           throw context.artifactFormatError;
         return await artifactRoutes(context.artifacts, method, parts.slice(4), url.searchParams, body, request.signal);
       }
-      if (area === "kuvo" && a === "peers")
+      if (extension === "peers")
         return await peerRoutes(context.peers ?? context.groups?.peers, method, parts.slice(3), body, request.signal);
-      if (area === "kuvo" && a === "tools" && method === "PUT") {
+      if (extension === "tools" && method === "PUT") {
         const { url: address, token, timeout } = await body();
         setToolServer(typeof address === "string" && address && typeof token === "string" ? { url: address, token, timeout: Number(timeout) || 960000 } : undefined);
         noteToolServer(typeof address === "string" && typeof token === "string" ? address : undefined);
         return json16({});
       }
-      if (area === "kuvo" && a === "engine" && method === "PUT") {
+      if (extension === "engine" && method === "PUT") {
         const { url: address, password } = await body();
         link.configure(typeof address === "string" && address ? address : undefined, typeof password === "string" ? password : undefined);
         return json16({});
       }
-      if (area === "kuvo" && a === "auto") {
+      if (extension === "auto") {
         if (b === "limits" && method === "DELETE") {
           const provider = url.searchParams.get("provider");
           if (provider)
@@ -39974,7 +39978,7 @@ function expandCommand(template, written) {
 
 ${all}`;
 }
-var attempts, json16 = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } }), located = (value) => json16({ location: { directory: process.cwd() }, data: value }), error2 = (status, message) => json16({ message }, status), lastSeen, lastMaintained, PROGRAM_RELEASE_INTERVAL;
+var attempts, json16 = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } }), located = (value) => json16({ location: { directory: process.cwd() }, data: value }), error2 = (status, message) => json16({ message }, status), lastSeen, lastMaintained, BRIDGE_EXTENSIONS, PROGRAM_RELEASE_INTERVAL;
 var init_server = __esm(() => {
   init_insights();
   init_format_version();
@@ -40016,6 +40020,28 @@ var init_server = __esm(() => {
   }, 60000).unref?.();
   lastSeen = new Map;
   lastMaintained = new Map;
+  BRIDGE_EXTENSIONS = {
+    accounts: "agents.accounts",
+    artifacts: "agents",
+    auto: "auto.lists",
+    branch: "branch",
+    btw: "btw",
+    carry: "moves.agents",
+    engine: "agents",
+    goals: "work.goals",
+    groups: "agents",
+    handoff: "handoff",
+    insights: "usage.insights",
+    limits: "limits",
+    link: "agents",
+    peers: "agents",
+    reviews: "reviews",
+    sandbox: "sandbox",
+    tools: "agents",
+    updates: "agents.updates",
+    usage: "usage.history",
+    voice: "agents.voice"
+  };
   PROGRAM_RELEASE_INTERVAL = 60 * 60000;
 });
 
@@ -42029,4 +42055,4 @@ if (!isMainThread && process.argv.includes("--insights-db-worker")) {
 } else {
   await init_main().then(() => ({}));
 }
-// Built from Packages/Box/src/agents 25b15c5380c2810c5e42f83b3c66cd1b7535cff46baf5f2093a38072a01b642f
+// Built from Packages/Box/src/agents c595c25a72fda9bcda68412adad607b13dd193e296971cafabf13c9242b6ce44

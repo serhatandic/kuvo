@@ -34,6 +34,7 @@ export type ListedAskShape = Infer<typeof ASK>;
 export type Asks = Infer<typeof ASKS>;
 
 export const ASK_ROUTES: RouteShape[] = [
-  { route: "GET kuvo/asks", answers: { 200: ASKS } },
-  { route: "POST kuvo/asks/:id", answers: { 200: NOTHING } },
+  { route: "GET kuvo/asks", feature: "asks", answers: { 200: ASKS } },
+  { route: "GET kuvo/asks/events", feature: "asks", answers: { 200: ASKS } },
+  { route: "POST kuvo/asks/:id", feature: "asks", answers: { 200: NOTHING } },
 ];

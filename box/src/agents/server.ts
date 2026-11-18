@@ -1,3 +1,4 @@
+import type { Feature } from "../shared/features"
 import { insightsRoutes } from "./usage/insights"
 import { UnsupportedFormatVersion } from "../shared/format-version"
 import { ROUTE_VERSION, ROUTE_VERSION_HEADER, routeVersionError } from "../shared/route-version"
@@ -230,6 +231,35 @@ function page<T extends { id: string }>(items: T[], url: URL): { data: T[]; curs
   const filter = url.searchParams.get("parentID") ?? cursor?.split(":")[2]
   const next = start + limit < items.length && data.length ? `${order}:${data[data.length - 1].id}${filter ? `:${filter}` : ""}` : undefined
   return { data, cursor: { next } }
+}
+
+// The bridge extensions behind kuvo/agents/api/kuvo. A new extension needs a
+// feature advertised by the Box. Internal operations share the bridge's name.
+const BRIDGE_EXTENSIONS = {
+  accounts: "agents.accounts",
+  artifacts: "agents",
+  auto: "auto.lists",
+  branch: "branch",
+  btw: "btw",
+  carry: "moves.agents",
+  engine: "agents",
+  goals: "work.goals",
+  groups: "agents",
+  handoff: "handoff",
+  insights: "usage.insights",
+  limits: "limits",
+  link: "agents",
+  peers: "agents",
+  reviews: "reviews",
+  sandbox: "sandbox",
+  tools: "agents",
+  updates: "agents.updates",
+  usage: "usage.history",
+  voice: "agents.voice",
+} as const satisfies Record<string, Feature>
+
+function bridgeExtension(name: string | undefined): name is keyof typeof BRIDGE_EXTENSIONS {
+  return name !== undefined && Object.hasOwn(BRIDGE_EXTENSIONS, name)
 }
 
 const PROGRAM_RELEASE_INTERVAL = 60 * 60_000
@@ -562,7 +592,9 @@ export function handler(context: Context) {
       }
 
       // Your accounts with the agents: adding one (it then signs in as any does), naming one, removing one.
-      if (area === "kuvo" && a === "accounts") {
+      const extension = area === "kuvo" && bridgeExtension(a) ? a : undefined
+
+      if (extension === "accounts") {
         if (method === "POST" && !b) {
           const { agent: givenAgent, provider, label } = await body()
           const agent = givenAgent ?? (typeof provider === "string" ? parseProvider(provider)?.kind : undefined)
@@ -601,7 +633,7 @@ export function handler(context: Context) {
       // how it goes (`metadata.programUpdate`). `POST kuvo/updates`: Update All, each program it
       // picks (`metadata.updateAll`); `POST kuvo/updates/<provider>`: that account's program;
       // `DELETE kuvo/updates/<provider>?at=…`: how that one went, seen, for every client.
-      if (area === "kuvo" && a === "updates" && !c) {
+      if (extension === "updates" && !c) {
         if (!b) {
           if (method !== "POST") return error(405, "Not allowed.")
           return json({ data: { updating: await updateAll(roster.all(), () => roster.all(), maintainedNow, (agent) => lastMaintained.get(agent.id)) } })
@@ -624,33 +656,33 @@ export function handler(context: Context) {
       // Where Kuvo Code's own tools are (the app says each time they start), for every agent here.
       // The group chats that live on this machine.
       // You said to restart the agents started before the box's sandbox was on (`kuvo/sandbox/restart`, from the box's link).
-      if (area === "kuvo" && a === "sandbox" && b === "restart" && !c && method === "POST") {
+      if (extension === "sandbox" && b === "restart" && !c && method === "POST") {
         context.restartOutside?.()
         return json({})
       }
-      if (area === "kuvo" && a === "carry") return await carryRoutes(context.carrying, method, parts.slice(3), body)
-      if (area === "kuvo" && a === "goals") return await goalRoutes(context.goals, method, parts.slice(3), body)
-      if (area === "kuvo" && a === "btw") return await sideQuestionRoutes(context.sideQuestions, method, parts.slice(3), body)
-      if (area === "kuvo" && a === "handoff") return await handoffRoutes(context.handoffs, method, parts.slice(3), body)
-      if (area === "kuvo" && a === "branch") return await branchRoutes(context.places, method, parts.slice(3), body)
-      if (area === "kuvo" && a === "reviews") return await reviewRoutes(context.reviews, method, parts.slice(3), body)
-      if (area === "kuvo" && a === "voice") return await voiceRoutes(context.voice, method, parts.slice(3))
-      if (area === "kuvo" && a === "limits") return await limitsRoutes(context.limits, method, parts.slice(3), body)
-      if (area === "kuvo" && a === "insights") return await insightsRoutes(context.usage?.insights, method, parts.slice(3), url.searchParams)
-      if (area === "kuvo" && a === "usage") return await usageRoutes(context.usage, method, parts.slice(3), url.searchParams, body)
-      if (area === "kuvo" && a === "groups") return await groupRoutes(context.groups?.runner, context.groups?.store, method, parts.slice(3), body)
+      if (extension === "carry") return await carryRoutes(context.carrying, method, parts.slice(3), body)
+      if (extension === "goals") return await goalRoutes(context.goals, method, parts.slice(3), body)
+      if (extension === "btw") return await sideQuestionRoutes(context.sideQuestions, method, parts.slice(3), body)
+      if (extension === "handoff") return await handoffRoutes(context.handoffs, method, parts.slice(3), body)
+      if (extension === "branch") return await branchRoutes(context.places, method, parts.slice(3), body)
+      if (extension === "reviews") return await reviewRoutes(context.reviews, method, parts.slice(3), body)
+      if (extension === "voice") return await voiceRoutes(context.voice, method, parts.slice(3))
+      if (extension === "limits") return await limitsRoutes(context.limits, method, parts.slice(3), body)
+      if (extension === "insights") return await insightsRoutes(context.usage?.insights, method, parts.slice(3), url.searchParams)
+      if (extension === "usage") return await usageRoutes(context.usage, method, parts.slice(3), url.searchParams, body)
+      if (extension === "groups") return await groupRoutes(context.groups?.runner, context.groups?.store, method, parts.slice(3), body)
       // The same, as a client reads and changes them (`kuvo/groups`, which the box's link passes on).
-      if (area === "kuvo" && a === "link" && b === "groups") return await linkRoutes(context.groups?.runner, context.groups?.store, method, parts.slice(4), body, request.signal)
+      if (extension === "link" && b === "groups") return await linkRoutes(context.groups?.runner, context.groups?.store, method, parts.slice(4), body, request.signal)
       // What this computer's agents made (`kuvo/artifacts`, which the box's link passes on).
-      if (area === "kuvo" && a === "artifacts" && b === "noted" && !c) return await notedRoute(context.noted, method, body)
-      if (area === "kuvo" && a === "link" && b === "artifacts") {
+      if (extension === "artifacts" && b === "noted" && !c) return await notedRoute(context.noted, method, body)
+      if (extension === "link" && b === "artifacts") {
         if (context.artifactFormatError) throw context.artifactFormatError
         return await artifactRoutes(context.artifacts, method, parts.slice(4), url.searchParams, body, request.signal)
       }
       // Group chats and plan limits across your computers, as the box's link carries their mail (groups/post.ts).
-      if (area === "kuvo" && a === "peers") return await peerRoutes(context.peers ?? context.groups?.peers, method, parts.slice(3), body, request.signal)
+      if (extension === "peers") return await peerRoutes(context.peers ?? context.groups?.peers, method, parts.slice(3), body, request.signal)
 
-      if (area === "kuvo" && a === "tools" && method === "PUT") {
+      if (extension === "tools" && method === "PUT") {
         const { url: address, token, timeout } = await body()
         setToolServer(typeof address === "string" && address && typeof token === "string" ? { url: address, token, timeout: Number(timeout) || 960_000 } : undefined)
         noteToolServer(typeof address === "string" && typeof token === "string" ? address : undefined)
@@ -658,14 +690,14 @@ export function handler(context: Context) {
       }
 
       // Where the engine is (the app says each time it starts), for its models in sessions here.
-      if (area === "kuvo" && a === "engine" && method === "PUT") {
+      if (extension === "engine" && method === "PUT") {
         const { url: address, password } = await body()
         link.configure(typeof address === "string" && address ? address : undefined, typeof password === "string" ? password : undefined)
         return json({})
       }
 
       // Auto: your list of models, and the ones held back at a limit until it resets.
-      if (area === "kuvo" && a === "auto") {
+      if (extension === "auto") {
         if (b === "limits" && method === "DELETE") {
           // One account's (you signed in to it again, or switched to another of it), or all.
           const provider = url.searchParams.get("provider")

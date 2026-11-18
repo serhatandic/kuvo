@@ -25,9 +25,10 @@ export type Project = Infer<typeof PROJECT>;
 export type Projects = Infer<typeof PROJECTS>;
 
 export const PROJECT_ROUTES: RouteShape[] = [
-  { route: "GET kuvo/projects", answers: { 200: PROJECTS } },
-  { route: "PUT kuvo/projects", answers: { 200: object({ project: PROJECT }) } },
+  { route: "GET kuvo/projects", feature: "projects", answers: { 200: PROJECTS } },
+  { route: "GET kuvo/projects/events", feature: "projects", answers: { 200: PROJECTS } },
+  { route: "PUT kuvo/projects", feature: "projects", answers: { 200: object({ project: PROJECT }) } },
   // Removed: how many of its sessions were archived, and which (each client's lists hide them at once).
   // (A project with sessions that couldn't be archived stays, and says how many were and weren't.)
-  { route: "DELETE kuvo/projects", answers: { 200: object({ archived: number, sessions: list(string) }), 409: object({ message: string, archived: number, kept: number, sessions: list(string) }) } },
+  { route: "DELETE kuvo/projects", feature: "projects", answers: { 200: object({ archived: number, sessions: list(string) }), 409: object({ message: string, archived: number, kept: number, sessions: list(string) }) } },
 ];
