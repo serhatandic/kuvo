@@ -164,7 +164,19 @@ test("a machine offers renaming and removing your machines where the Mac that wr
   assert.deepEqual(await ask("PATCH", `kuvo/computers/${second.pub}`, { name: " " }), { status: 400, body: { message: "Give it a name of up to 100 characters." } });
   assert.equal((await ask("PATCH", `kuvo/computers/${second.pub}`, { name: "x".repeat(101) })).status, 400);
   // Not one of yours, or not what it offers: said so.
-  assert.equal((await ask("DELETE", `kuvo/computers/${box("machine").pub}`)).status, 404);
+  const missing = box("machine").pub;
+  const removing = ask("DELETE", `kuvo/computers/${missing}`);
+  await eventually(() => {
+    const forwards = path.join(run, "work-queue", "forward");
+    return fs.existsSync(forwards) && fs.readdirSync(forwards).some(file => file.endsWith(".json"));
+  });
+  sent.length = 0;
+  link.sendQueueForwards({ welcomed: true, send: bytes => sent.push(bytes) }, link.readLink(), Date.now(), { ownOnly: false });
+  assert.equal(sent.length, 1);
+  const retry = opened(sent[0], mac).workQueue.act;
+  assert.deepEqual({ ...retry, id: undefined, at: undefined }, { id: undefined, at: undefined, area: "computers", method: "DELETE", item: missing, body: { cleanup: true } });
+  link.receiveMail(mailFrom(mac, { workQueue: { acted: { id: retry.id, status: 404, value: { message: "That isn't one of your computers." } } }, at: Date.now() }), undefined, takeMail);
+  assert.equal((await removing).status, 404);
   assert.deepEqual(await ask("DELETE", `kuvo/computers/${here.pub}`), { status: 409, body: { message: "Garage can't remove itself: remove it from another of your computers." } });
   assert.deepEqual(await ask("PATCH", `kuvo/computers/${mac.pub}`, { name: "Desk" }), { status: 409, body: { message: "Studio is a Mac: it goes by the name it has there." } });
   assert.equal((await ask("POST", `kuvo/computers/${second.pub}`)).status, 405);
