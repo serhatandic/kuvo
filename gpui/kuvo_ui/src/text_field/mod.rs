@@ -225,7 +225,6 @@ pub struct TextField {
     kind: FieldType,
     /// Drawn without its own border and fill (inside a composer card).
     bare: bool,
-    fit_width: bool,
     disabled: bool,
     /// What's wrong with the text, shown under the field with a red edge.
     error: Option<SharedString>,
@@ -270,7 +269,6 @@ impl TextField {
             submits: true,
             kind: FieldType::default(),
             bare: false,
-            fit_width: false,
             disabled: false,
             error: None,
             masked: false,
@@ -386,9 +384,9 @@ impl TextField {
         self
     }
 
-    /// Fit a single-line field to its text, with room for the caret, up to the available width.
-    pub fn fit_width(mut self) -> Self {
-        self.fit_width = true;
+    /// Include the field in the window’s Tab order.
+    pub fn tab_stop(mut self) -> Self {
+        self.focus = self.focus.tab_stop(true);
         self
     }
 
@@ -1127,22 +1125,9 @@ impl Render for TextField {
             .on_mouse_up_out(MouseButton::Left, cx.listener(|this, _, _, _| this.selecting = false))
             .on_mouse_move(cx.listener(Self::mouse_move))
             .on_scroll(cx.listener(Self::scroll_wheel))
+            .w_full()
             .text_ui(self.kind.size)
             .text_color(c.text);
-        if self.fit_width && self.lines.is_none() {
-            let text = if self.content.is_empty() {
-                self.placeholder.to_string()
-            } else if self.masked {
-                layout::dots(&self.content)
-            } else {
-                self.content.clone()
-            };
-            let (lines, _, _, _) = layout::shape(&text, None, c.text, None, self.kind, window);
-            let width = lines.first().map_or(px(0.), |line| line.width());
-            field = field.w(width + space::S2).max_w_full();
-        } else {
-            field = field.w_full();
-        }
         if let Some(weight) = self.kind.weight {
             field = field.font_weight(weight);
         }

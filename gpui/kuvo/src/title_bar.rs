@@ -79,6 +79,18 @@ pub fn render(workspace: &Workspace, cx: &mut Context<Workspace>) -> AnyElement 
             .tooltip("⌥⌘0")
             .on_click(cx.listener(|this, _, _, cx| this.toggle_panel(cx)))
     });
+    let bot_page = if workspace.area() == Area::Bots && workspace.bot_chat().is_none() {
+        workspace.area_view(Area::Bots)
+            .and_then(|area| area.read(cx).page())
+            .filter(|page| page.read(cx).bot().is_some())
+            .cloned()
+    } else {
+        None
+    };
+    let bot_chat = bot_page.map(|page| {
+        Button::icon_only("bot-chat", IconName::Message, "Open bot chat").ghost().tooltip("Open bot chat")
+            .on_click(move |_, _, cx| page.update(cx, |page, cx| page.act(crate::bots::Act::Chat, cx)))
+    });
     div()
         .id("title-bar")
         .flex()
@@ -121,6 +133,7 @@ pub fn render(workspace: &Workspace, cx: &mut Context<Workspace>) -> AnyElement 
                 .child(div().flex_1())
                 .children(update_chip(workspace, cx))
                 .children(more_menu)
+                .children(bot_chat.map(buttons))
                 .children(panel_button.map(buttons)),
         )
         .into_any_element()

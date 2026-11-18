@@ -163,35 +163,28 @@ fn renaming_goes_to_the_box_and_its_answer_is_what_shows(cx: &mut TestAppContext
     let stand_in = StandIn::at(Replies::Never, NOW);
     let (workspace, cx) = open(cx, stand_in.clone());
     let page = bot(&workspace, cx, "bot_mira");
-    let name = bounds(cx, "bot-head-name").unwrap();
-    let job_top = bounds(cx, "bot-head-job").unwrap().top();
-    click(cx, "bot-name-edit");
-    let field = bounds(cx, "bot-name-field").unwrap();
-    assert_eq!(name.origin, field.origin, "the editor replaces the title at the same position");
-    assert_eq!(name.size.height, field.size.height, "the title keeps its height");
-    assert!(field.size.width < px(180.), "the editor fits a short name");
-    assert_eq!(bounds(cx, "bot-head-job").unwrap().top(), job_top, "the job stays in place");
-    assert!(!shown(cx, "bot-name-save") && !shown(cx, "bot-name-cancel") && !shown(cx, "bot-sheet"));
-
-    let input = page.read_with(cx, |page, _| page.name_field().clone());
-    input.update(cx, |field, cx| field.set_text("W".repeat(80), cx));
-    cx.run_until_parked();
-    let wide = bounds(cx, "bot-name-field").unwrap();
-    assert!(wide.size.width > field.size.width && wide.right() <= bounds(cx, "bot-chat").unwrap().left());
+    let name = bounds(cx, "bot-name-field").unwrap();
+    let jobs = bounds(cx, "bot-job-line").unwrap();
+    let instructions = bounds(cx, "bot-job-details").unwrap();
+    let avatar = bounds(cx, "bot-avatar-edit").unwrap();
+    assert_eq!(name.size.width, jobs.size.width);
+    assert_eq!(name.size.width, instructions.size.width);
+    assert_eq!(avatar.center().x, name.center().x);
+    assert!(avatar.bottom() < name.top());
+    click(cx, "bot-name-field");
     cx.simulate_keystrokes("cmd-a backspace enter");
     cx.run_until_parked();
     assert!(bodies(&stand_in, "PATCH", "kuvo/bots/bot_mira").is_empty());
-    assert!(shown(cx, "bot-edit-error") && !shown(cx, "bot-name-field"));
+    assert!(shown(cx, "bot-edit-error"));
     assert_eq!(name_and_job(&page, cx).0, "Mira");
 
-    click(cx, "bot-name-edit");
+    click(cx, "bot-name-field");
     cx.simulate_keystrokes("cmd-a");
     cx.simulate_input("Mira Two");
-    assert!(bounds(cx, "bot-name-field").unwrap().size.width > field.size.width);
     cx.simulate_keystrokes("enter");
     cx.run_until_parked();
     assert_eq!(bodies(&stand_in, "PATCH", "kuvo/bots/bot_mira"), vec![json!({ "name": "Mira Two" })]);
-    assert!(shown(cx, "bot-head-name") && !shown(cx, "bot-name-field"));
+    assert_eq!(bounds(cx, "bot-name-field").unwrap(), name);
     assert_eq!(title(&workspace, cx).as_deref(), Some("Mira Two"), "the sidebar's list is read again");
     // A change answers without an activity update, so the sidebar keeps its state.
     assert_eq!(page.read_with(cx, |page, _| page.bot().unwrap().now.asking), 1);
@@ -201,14 +194,15 @@ fn renaming_goes_to_the_box_and_its_answer_is_what_shows(cx: &mut TestAppContext
 fn escape_and_cancel_close_editors_and_send_nothing(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
     let (workspace, cx) = open(cx, stand_in.clone());
-    bot(&workspace, cx, "bot_mira");
-    for (opener, editor) in [("bot-name-edit", "bot-name-field"), ("bot-job-edit", "bot-job-line")] {
-        click(cx, opener);
-        assert!(shown(cx, editor), "{opener}");
+    let page = bot(&workspace, cx, "bot_mira");
+    let (name, job) = page.read_with(cx, |page, _| (page.name_field().clone(), page.job_fields().0.clone()));
+    for (selector, field) in [("bot-name-field", name), ("bot-job-line", job)] {
+        let saved = field.read_with(cx, |field, _| field.text().to_owned());
+        click(cx, selector);
         cx.simulate_input("Draft");
         cx.simulate_keystrokes("escape");
         cx.run_until_parked();
-        assert!(!shown(cx, editor), "Escape closes {editor}");
+        assert_eq!(field.read_with(cx, |field, _| field.text().to_owned()), saved);
     }
     for opener in ["bot-avatar-edit", "bot-delete-button"] {
         click(cx, opener);
@@ -233,22 +227,22 @@ fn clicking_away_saves_inline_edits_only_when_they_changed(cx: &mut TestAppConte
     let stand_in = StandIn::at(Replies::Never, NOW);
     let (workspace, cx) = open(cx, stand_in.clone());
     let page = bot(&workspace, cx, "bot_mira");
-    click(cx, "bot-name-edit");
+    click(cx, "bot-name-field");
     click(cx, "bot-lives");
-    assert!(!shown(cx, "bot-name-field"));
+    assert!(shown(cx, "bot-name-field"));
     assert!(bodies(&stand_in, "PATCH", "kuvo/bots/bot_mira").is_empty());
 
-    click(cx, "bot-name-edit");
+    click(cx, "bot-name-field");
     cx.simulate_keystrokes("cmd-a");
     cx.simulate_input("Mira Two");
     click(cx, "bot-lives");
     assert_eq!(name_and_job(&page, cx).0, "Mira Two");
 
-    click(cx, "bot-job-edit");
+    click(cx, "bot-job-line");
     cx.simulate_keystrokes("cmd-a");
     cx.simulate_input("Keeps the website working");
     click(cx, "bot-lives");
-    assert!(!shown(cx, "bot-job-line"));
+    assert!(shown(cx, "bot-job-line"));
     assert_eq!(name_and_job(&page, cx).1, "Keeps the website working");
     assert_eq!(bodies(&stand_in, "PATCH", "kuvo/bots/bot_mira").len(), 2);
 }
@@ -259,7 +253,7 @@ fn its_job_and_look_change_through_the_box(cx: &mut TestAppContext) {
     let (workspace, cx) = open(cx, stand_in.clone());
     let page = bot(&workspace, cx, "bot_release");
     // The job summary and instructions are edited on the page and saved together.
-    click(cx, "bot-job-edit");
+    click(cx, "bot-job-line");
     assert!(!shown(cx, "bot-sheet"));
     let head = bounds(cx, "bot-head").unwrap();
     assert!(bounds(cx, "bot-job-details").unwrap().bottom() < head.bottom());
@@ -277,7 +271,7 @@ fn its_job_and_look_change_through_the_box(cx: &mut TestAppContext) {
     assert_eq!(name_and_job(&page, cx), ("Release Captain".into(), "Ships a beta every Thursday".into(), instructions.into()));
 
     // The look: a colour and a shape among those the box offers; its face is kept.
-    click(cx, "bot-avatar-edit");
+    click(cx, "bot-avatar-pencil");
     assert!(shown(cx, "look-color-graphite") && shown(cx, "look-shape-bloom"), "the box's colours and shapes");
     click(cx, "look-color-amber");
     click(cx, "look-shape-gem");
@@ -321,12 +315,13 @@ fn a_long_personality_description_wraps_on_the_profile(cx: &mut TestAppContext) 
     let (workspace, cx) = open(cx, StandIn::at(Replies::Never, NOW));
     bot(&workspace, cx, "bot_mira");
     let short = bounds(cx, "bot-personality-detail").unwrap();
-    assert!(bounds(cx, "bot-personality-menu").unwrap().size.width <= px(170.));
+    let row = bounds(cx, "bot-personality-menu").unwrap();
+    assert!(row.size.width > px(400.), "the whole card opens the picker");
     click(cx, "bot-personality-menu");
     click(cx, "menu-item-Ship’s Cook");
     let long = bounds(cx, "bot-personality-detail").unwrap();
     assert!(long.size.height > short.size.height * 2., "the selected description wraps on the card");
-    assert!(bounds(cx, "bot-personality-menu").unwrap().left() >= long.right(), "the picker sits beside the description");
+    assert!(bounds(cx, "bot-personality-menu").unwrap().right() > long.right());
 }
 
 #[gpui::test]
@@ -385,7 +380,7 @@ fn an_edit_for_a_bot_on_another_computer_is_held_and_says_waiting(cx: &mut TestA
     click(cx, "bot-bot_docs");
     click(cx, "bot-chat-settings");
     stand_in.move_bot("bot_docs", "studio-mini");
-    click(cx, "bot-name-edit");
+    click(cx, "bot-name-field");
     cx.simulate_keystrokes("cmd-a");
     cx.simulate_input("Docs Warden");
     cx.simulate_keystrokes("enter");
@@ -491,10 +486,10 @@ fn the_bots_of_your_other_computers_list_as_the_box_says_and_change_through_it(c
     assert_eq!(title(&workspace, cx).as_deref(), Some("Wren"));
     assert!(shown(cx, "elsewhere-head-bot_wren") && !shown(cx, "bot-held"));
     // What this box can't say of it is said, and isn't offered: its job, personality and model.
-    assert!(shown(cx, "elsewhere-note") && !shown(cx, "bot-personality-menu") && !shown(cx, "bot-model-menu") && !shown(cx, "bot-job-edit"));
+    assert!(shown(cx, "elsewhere-note") && !shown(cx, "bot-personality-menu") && !shown(cx, "bot-model-menu") && !shown(cx, "bot-job-line"));
 
     // Renamed from here: asked of this box, which holds it for the bot's computer (202).
-    click(cx, "bot-name-edit");
+    click(cx, "bot-name-field");
     cx.simulate_keystrokes("cmd-a");
     cx.simulate_input("Wren II");
     cx.simulate_keystrokes("enter");
@@ -534,7 +529,7 @@ fn a_bot_held_for_a_computer_shows_as_itself_by_the_name_and_look_the_box_gives(
     assert!(shown(cx, "elsewhere-bot_wren"));
     click(cx, "elsewhere-bot_wren");
     assert_eq!(title(&workspace, cx).as_deref(), Some("Wren"));
-    assert!(shown(cx, "bot-refused-0") && !shown(cx, "bot-name-edit") && !shown(cx, "bot-delete-button"));
+    assert!(shown(cx, "bot-refused-0") && !shown(cx, "bot-name-field") && !shown(cx, "bot-delete-button"));
 }
 
 #[gpui::test]
@@ -544,21 +539,22 @@ fn its_effort_is_picked_from_its_models_own_and_sent_alone(cx: &mut TestAppConte
     let page = bot(&workspace, cx, "bot_mira");
     let variant = |cx: &mut VisualTestContext| page.read_with(cx, |page, _| page.bot().and_then(|bot| bot.model.as_ref().and_then(|model| model.variant.clone())));
     assert_eq!(variant(cx), Some("high".into()));
-    click(cx, "bot-effort-menu");
-    assert!(shown(cx, "menu-item-Max") && !shown(cx, "menu-item-Extra"), "its model's own efforts, as the box lists them");
-    click(cx, "menu-item-Low");
+    click(cx, "bot-model-menu");
+    assert!(shown(cx, "bot-effort-max") && !shown(cx, "bot-effort-extra"), "its model's own efforts, as the box lists them");
+    click(cx, "bot-effort-low");
     assert_eq!(bodies(&stand_in, "PATCH", "kuvo/bots/bot_mira"), vec![json!({ "effort": "low" })]);
     assert_eq!(variant(cx), Some("low".into()), "the box's answer");
     // None: the model's own, sent as null.
-    click(cx, "bot-effort-menu");
-    click(cx, "menu-item-The model’s own");
+    click(cx, "bot-model-menu");
+    click(cx, "bot-effort-default");
     assert_eq!(bodies(&stand_in, "PATCH", "kuvo/bots/bot_mira").last(), Some(&json!({ "effort": null })));
     assert_eq!(variant(cx), None);
     // A model with no efforts of its own has no Effort row.
     click(cx, "bot-model-menu");
     click(cx, "model-rail-google");
     click(cx, "model-row-google/gemini-3-pro");
-    assert!(!shown(cx, "bot-effort-menu") && shown(cx, "bot-model-menu"));
+    click(cx, "bot-model-menu");
+    assert!(shown(cx, "model-picker") && !shown(cx, "bot-effort-default"));
 }
 
 #[gpui::test]
@@ -630,11 +626,13 @@ fn a_first_run_offers_a_new_bot_and_a_narrow_window_keeps_the_page(cx: &mut Test
 
     let (workspace, cx) = open(cx, StandIn::at(Replies::Never, NOW));
     bot(&workspace, cx, "bot_mira");
-    cx.simulate_resize(size(px(760.), px(900.)));
+    cx.simulate_resize(size(px(550.), px(820.)));
     cx.run_until_parked();
     assert!(!shown(cx, "area-sidebar") && shown(cx, "bot-head") && shown(cx, "bot-chat"), "the sidebar folds away; the page and its Chat stay");
-    let (head, chat) = (bounds(cx, "bot-head").unwrap(), bounds(cx, "bot-chat").unwrap());
-    assert!(chat.right() <= head.right() + px(1.) && head.right() <= px(760.), "nothing is cut off");
+    let (name, avatar, model) = (bounds(cx, "bot-name-field").unwrap(), bounds(cx, "bot-avatar-edit").unwrap(), bounds(cx, "bot-model-menu").unwrap());
+    assert_eq!(name.center().x, avatar.center().x);
+    assert_eq!(name.size.width, model.size.width);
+    assert!(name.left() >= px(0.) && name.right() <= px(550.), "the column fits the window");
 }
 
 /// The app's way: the box asked off the window's thread, its answers coming in later, perhaps
@@ -676,7 +674,7 @@ mod live {
         let (page, cx) = host(cx, &stand_in);
         page.update(cx, |page, cx| page.show(Some("bot:bot_mira"), cx));
         cx.run_until_parked();
-        click(cx, "bot-name-edit");
+        click(cx, "bot-name-field");
         cx.simulate_keystrokes("cmd-a");
         cx.simulate_input("Mira Two");
         // Save, and before the box answers: on to another bot, and its Delete asked.
@@ -702,18 +700,17 @@ mod live {
         let (page, cx) = host(cx, &stand_in);
         page.update(cx, |page, cx| page.show(Some("bot:bot_mira"), cx));
         cx.run_until_parked();
-        click(cx, "bot-name-edit");
+        click(cx, "bot-name-field");
         cx.simulate_keystrokes("cmd-a");
         cx.simulate_input("Mira Two");
         page.update(cx, |page, cx| {
-            page.act(Act::EditJob, cx);
             page.save_editor(cx);
             page.act(Act::SetEffort(Some("low".into())), cx);
         });
         cx.run_until_parked();
         assert_eq!(bodies(&stand_in, "PATCH", "kuvo/bots/bot_mira"), vec![json!({ "name": "Mira Two" })]);
-        click(cx, "bot-effort-menu");
-        click(cx, "menu-item-Low");
+        click(cx, "bot-model-menu");
+        click(cx, "bot-effort-low");
         assert_eq!(bodies(&stand_in, "PATCH", "kuvo/bots/bot_mira").last(), Some(&json!({ "effort": "low" })));
     }
 

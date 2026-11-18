@@ -185,7 +185,6 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "bot-edit-top", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bots) },
     Screen { slug: "bot-edit-scrolled", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bots) },
     Screen { slug: "bot-edit-name", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_rename) },
-    Screen { slug: "bot-edit-job-editing", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_job) },
     Screen { slug: "bot-edit-avatar-hover", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bots) },
     Screen { slug: "bot-edit-long-personality", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bots) },
     Screen { slug: "bot-edit-personality-picker", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bots) },
@@ -204,7 +203,7 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "bot-elsewhere-delete", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_elsewhere_delete) },
     Screen { slug: "bot-waiting", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_waiting) },
     Screen { slug: "bot-none", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_none) },
-    Screen { slug: "bot-narrow", width: 760., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_narrow) },
+    Screen { slug: "bot-narrow", width: 550., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_narrow) },
     Screen { slug: "bot-first-run", width: 1280., height: 820., session: None, typed: None, empty: true, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_none) },
     // Group chats (`kuvo/src/groups`): one mid-discussion, "&" offering its bots, one paused with
     // a wrap-up and a bot that left, an empty one, its editor, New Group and what the box turns down.
@@ -527,7 +526,9 @@ fn bot_rename(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<W
 }
 fn bot_job(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     bots(workspace, window, cx);
-    bots_page(workspace, cx).update(cx, |page, cx| page.act(BotAct::EditJob, cx));
+    let page = bots_page(workspace, cx);
+    let (_, details) = page.read(cx).job_fields();
+    window.focus(&details.focus_handle(cx), cx);
 }
 fn bot_look(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     bots(workspace, window, cx);
