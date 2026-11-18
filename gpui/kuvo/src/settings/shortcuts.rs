@@ -49,6 +49,7 @@ pub fn title(name: &str) -> Option<(&'static str, &'static str)> {
         "area::ShowBots" => ("Navigation", "Show Bots"),
         "area::ShowSessions" => ("Navigation", "Show Sessions"),
         "area::ShowComputers" => ("Navigation", "Show Computers"),
+        "area::ShowUsage" => ("Navigation", "Show Insights"),
         "area::Back" => ("Navigation", "Go back"),
         "area::Forward" => ("Navigation", "Go forward"),
         "app_menu::Hide" => ("App menu", "Hide Kuvo"),
