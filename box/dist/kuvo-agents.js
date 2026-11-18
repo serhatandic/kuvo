@@ -14383,6 +14383,9 @@ class Limits {
     this.turnTimer = setTimeout(() => this.turn(), Math.min(Math.max(at - this.now(), 0) + 1, 2 ** 31 - 1));
     this.turnTimer.unref?.();
   }
+  recent(source, window) {
+    return this.now() - window.read <= Math.max(source.read ? 15 * MINUTE2 : 60 * MINUTE2, 2 * source.every);
+  }
   list(borrowed = true) {
     const listed = [];
     for (const account of this.accounts()) {
@@ -14404,7 +14407,7 @@ class Limits {
           ...account.label ? { label: account.label } : {},
           identity: entry.identity,
           ...peer.plan ?? entry.plan ? { plan: peer.plan ?? entry.plan } : {},
-          windows: peer.windows,
+          windows: peer.windows.filter((window) => this.recent(account.limits, window)),
           ...peer.balance ?? entry.balance ? { balance: peer.balance ?? entry.balance } : {},
           ...peer.extras?.length ? { extras: peer.extras } : {},
           ...entry.checked ? { checked: entry.checked } : {},
@@ -14419,7 +14422,7 @@ class Limits {
         ...account.label ? { label: account.label } : {},
         ...entry.identity ? { identity: entry.identity } : {},
         ...entry.plan ? { plan: entry.plan } : {},
-        windows: entry.windows,
+        windows: account.limits.keepLastReading ? entry.windows : entry.windows.filter((window) => this.recent(account.limits, window)),
         ...entry.notices?.length ? { notices: entry.notices.filter((n) => currentNotice(n, this.now())) } : {},
         ...entry.noticeState ? { noticeState: entry.noticeState } : {},
         ...entry.balance ? { balance: entry.balance } : {},
@@ -15939,7 +15942,7 @@ class AntigravityPlan {
     this.discover = discover;
     this.bases = bases;
     this.oauth = oauth;
-    this.limits = { every: 10 * 60000, bucket: "antigravity", read: (now) => this.read(now), signIn: () => this.signIn(), account: () => this.account(), identity: () => this.credential()?.identity };
+    this.limits = { every: 10 * 60000, bucket: "antigravity", keepLastReading: true, read: (now) => this.read(now), signIn: () => this.signIn(), account: () => this.account(), identity: () => this.credential()?.identity };
   }
   signOut() {
     rmSync9(join22(this.stateFolder(), "refusals.json"), { force: true });
@@ -41826,4 +41829,4 @@ if (!isMainThread && process.argv.includes("--insights-db-worker")) {
 } else {
   await init_main().then(() => ({}));
 }
-// Built from Packages/Box/src/agents d15adb394d6aa623f22f097a64dad43f706f23bbb17b80103c7e26bb57c029cf
+// Built from Packages/Box/src/agents e088089c3756030f3981fede9f0ba0d6630d90dbd47e98e2e5c6c59a8d2ab6a0
