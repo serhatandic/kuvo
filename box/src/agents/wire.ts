@@ -1,5 +1,6 @@
 // The engine's wire format, the parts Kuvo Code reads (OpenCodeKit's Session, Message, events…).
 // The bridge answers in it, so the app shows these sessions as it does the engine's.
+import type { WorkOrder } from "../shared/work-order"
 
 export type Millis = number
 
@@ -55,6 +56,7 @@ export interface MessageTime {
   usageAccount?: string
   /** The original session of a message copied into a fork. */
   usageSession?: string
+  order?: WorkOrder
   created: Millis
   streamed?: Millis
   completed?: Millis

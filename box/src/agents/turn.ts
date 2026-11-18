@@ -7,6 +7,7 @@ import { messageID, newID } from "./ids"
 import type { Store } from "./store"
 import type { AssistantMessage, CompactionMessage, Content, ModelRef, StructuredError, TokenUsage, ToolCall, ToolOutput } from "./wire"
 import { noTokens } from "./wire"
+import { workOrder } from "../shared/work-order"
 
 /** The metadata of a note from Kuvo Code for the user ("Your hook failed…", "Going on with
  * Codex…"): clients show these, and not the engine's notes written for the model, which look the
@@ -39,6 +40,7 @@ export class Turn {
   /** One just ended, with no model call since: more about it is about that one. */
   private justCompacted = false
   readonly started = Date.now()
+  readonly order = workOrder()
   /** What the run used, in all its steps. */
   tokens: TokenUsage = noTokens()
   cost = 0

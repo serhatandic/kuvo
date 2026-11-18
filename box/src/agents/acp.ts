@@ -23,6 +23,7 @@ import type { AgentKind } from "./accounts"
 import { hold, type Held } from "./hold/client"
 import { agentHoldFolder, noteTurn, type HeldTurn } from "./hold/adopt"
 import type { Decision, FormField, Session, TokenUsage } from "./wire"
+import { workOrder, type WorkOrder } from "../shared/work-order"
 
 const outputLimit = 30_000
 /** An agent's words for a usage limit (not any error that mentions a quota). */
@@ -143,6 +144,7 @@ export interface BackgroundTask {
   kind?: string
   /** When it started (ms), and the file its output goes to. */
   started?: number
+  order?: WorkOrder
   outputFile?: string
 }
 
@@ -719,8 +721,12 @@ export class AcpThread implements Thread {
         // process before: a new one starts with nothing going.)
         if (this.loading || replayed || (sessionID && this.sessionID && sessionID !== this.sessionID)) return
         const before = this.tasks
-        this.tasks = new Map(tasks.map((task) => [task.id, { ...task, started: before.get(task.id)?.started ?? task.started ?? Date.now() }]))
-        if (before.size !== this.tasks.size || [...this.tasks.keys()].some((id) => !before.has(id))) emit("session.background.updated", { sessionID: this.session.id }, this.session.location.directory)
+        this.tasks = new Map(tasks.map((task) => {
+          if (task.started !== undefined) return [task.id, task]
+          const known = before.get(task.id)
+          return [task.id, { ...task, started: known?.started ?? Date.now(), order: known ? known.order : workOrder() }]
+        }))
+        if (before.size !== this.tasks.size || [...this.tasks.values()].some((task) => before.get(task.id)?.started !== task.started || before.get(task.id)?.order !== task.order)) emit("session.background.updated", { sessionID: this.session.id }, this.session.location.directory)
       },
     }
   }
@@ -1191,7 +1197,7 @@ export class AcpThread implements Thread {
   /** Not commands in the bar: it can't stop one alone, nor say what one printed until it ends. */
   get backgroundTasks() {
     if (!this.rpc || this.rpc.isClosed) return []
-    return [...this.tasks.values()].map((task) => ({ id: task.id, since: task.started ?? Date.now() }))
+    return [...this.tasks.values()].map((task) => ({ id: task.id, since: task.started ?? Date.now(), ...(task.order ? { order: task.order } : {}) }))
   }
 
   /** It can't be asked to stop them one by one: it stops, and with it what it left going (the next message starts it again, going on with its conversation). */

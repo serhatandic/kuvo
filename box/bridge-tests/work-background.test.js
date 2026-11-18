@@ -58,7 +58,7 @@ const engine = http.createServer((request, response) => {
   request.on("end", () => {
     const reply = (value, status = 200) => { response.writeHead(status, { "content-type": "application/json" }); response.end(JSON.stringify(value)); };
     const url = request.url;
-    if (url.startsWith("/api/session?")) return reply({ data: Object.values(state.sessions).filter(each => !each.parentID) });
+    if (url.startsWith("/api/session?")) return reply({ data: Object.values(state.sessions).filter(each => !each.parentID && each.id !== state.unlisted) });
     if (url === "/api/session/active" && state.hold) {
       const { asked, until } = state.hold;
       state.hold = null;
@@ -615,6 +615,26 @@ test("the box restarting: a command still running holds its finish still, with w
   await watcher(again).caughtUp;
   await again.pass(5 * SECONDS);
   assert.equal(finished().length, 1, "not twice");
+});
+
+test("the box restarting retries a held finish whose session is unlisted and transiently unreadable", async () => {
+  const time = clock();
+  const first = watcher(time);
+  await first.caughtUp;
+  asked();
+  await first(startJob("sh_1", "npm test", time.at));
+  said("Started the tests.");
+  await first(ended());
+  first.gone();
+  endJob("sh_1");
+  state.unlisted = "ses_tests";
+  state.unreachable = true;
+  const next = clock(time.at);
+  await watcher(next).caughtUp;
+  state.unreachable = false;
+  await next.pass(link.FIRST_LOOK);
+  await next.pass(5 * SECONDS);
+  assert.equal(finished().length, 1);
 });
 
 test("the box restarting while a command runs past 30 minutes: the new link hears it end, and tells once", async () => {

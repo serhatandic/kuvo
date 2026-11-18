@@ -33,6 +33,7 @@ import type { AssistantMessage, Attachment, CompactionMessage, Decision, FormAns
 import { plain } from "./proc"
 import type { Snapshots } from "./snapshots"
 import { AGENTS_TEXT_BYTES } from "../shared/text"
+import { workOrder, type WorkOrder } from "../shared/work-order"
 import type { HeldTurn } from "./hold/adopt"
 import { noTokens } from "./wire"
 
@@ -1377,11 +1378,11 @@ export class Sessions {
    * going. Lanes that can't say what they left running (see PROTOCOL.md) have none here.
    */
   background() {
-    const all: Record<string, { commands: { id: string; command: string; started: number }[]; subagents: { id: string; since: number }[]; tasks: { id: string; since: number }[] }> = {}
+    const all: Record<string, { commands: { id: string; command: string; started: number; order?: WorkOrder }[]; subagents: { id: string; since: number; order?: WorkOrder }[]; tasks: { id: string; since: number; order?: WorkOrder }[] }> = {}
     for (const [id, live] of this.live) {
-      const subagents = [...live.subagents].filter(([, turn]) => !turn.isEnded).map(([child, turn]) => ({ id: child, since: turn.started }))
+      const subagents = [...live.subagents].filter(([, turn]) => !turn.isEnded).map(([child, turn]) => ({ id: child, since: turn.started, order: turn.order }))
       const tasks = [...live.threads.values()].flatMap((thread) => thread.backgroundTasks ?? [])
-      const commands = runningShells(id).map((job) => ({ id: job.id, command: job.command, started: job.time.started }))
+      const commands = runningShells(id).map((job) => ({ id: job.id, command: job.command, started: job.time.started, order: job.time.order }))
       if (subagents.length || tasks.length || commands.length) all[id] = { commands, subagents, tasks }
     }
     return all
@@ -1827,7 +1828,7 @@ export class Sessions {
     emit("session.inbox.enqueued", { sessionID: id, inboxID: input.id, item: { type: "user", payload: { text: input.text, files: input.files, metadata: input.metadata }, delivery: "steer" } }, directory)
     emit("session.inbox.delivered", { sessionID: id, inboxID: input.id }, directory)
     const attachments: Attachment[] = input.files.map((file) => ({ mime: mime(file.uri), name: file.name, source: { type: "uri", uri: file.uri } }))
-    record.messages.push({ type: "user", id: input.id, time: { created: Date.now(), origin: this.store.origin?.() }, text: input.text, files: attachments.length ? attachments : undefined, metadata: input.metadata })
+    record.messages.push({ type: "user", id: input.id, time: { created: Date.now(), origin: this.store.origin?.(), order: workOrder() }, text: input.text, files: attachments.length ? attachments : undefined, metadata: input.metadata })
     record.session.time.updated = Date.now()
     this.store.save(id, true)
   }
@@ -1869,6 +1870,7 @@ export class Sessions {
     const handing = { cancelled: false }
     live.steering.set(input.id, handing)
     let taken = false
+    let order: WorkOrder | undefined
     let note: SnapshotNote | undefined
     try {
       // The files as they are before it, for Undo (yours, not a note from the app).
@@ -1885,6 +1887,8 @@ export class Sessions {
       const attached = withTextFiles(input.text, input.files.map(promptFile))
       // Still that turn, at work (not stopped) with that agent, and not cancelled meanwhile.
       if (live.doing.kind === "running" && live.doing.run === run && run.agent === agent && !handing.cancelled) {
+        // The agent can start a command before its acknowledgement reaches the bridge.
+        if (!input.synthetic) order = workOrder()
         taken = await agent.thread.steer({ id: input.id, text: attached.text, files: attached.files, synthetic: Boolean(input.synthetic) }).catch(() => false)
       }
     } finally {
@@ -1916,7 +1920,7 @@ export class Sessions {
     emit("session.inbox.delivered", { sessionID: id, inboxID: input.id }, directory)
     const attachments: Attachment[] = input.files.map((file) => ({ mime: mime(file.uri), name: file.name, source: { type: "uri", uri: file.uri } }))
     if (input.synthetic) record.messages.push({ type: "synthetic", id: input.id, time: { created: Date.now() }, text: input.text, description: input.synthetic.description, metadata: input.synthetic.metadata })
-    else record.messages.push({ type: "user", id: input.id, time: { created: Date.now(), origin: this.store.origin?.() }, text: input.text, files: attachments.length ? attachments : undefined, metadata: input.metadata })
+    else record.messages.push({ type: "user", id: input.id, time: { created: Date.now(), origin: this.store.origin?.(), order }, text: input.text, files: attachments.length ? attachments : undefined, metadata: input.metadata })
     record.session.time.updated = Date.now()
     // Its own undo, while its turn is under way (what the turn changes from here on).
     // (One that couldn't be kept isn't noted: Undo from the message before covers it.)
@@ -2141,7 +2145,7 @@ export class Sessions {
     if (live.relays?.has(input.id)) (run.relayed ??= []).push(input.id)
     const attachments: Attachment[] = input.files.map((file) => ({ mime: mime(file.uri), name: file.name, source: { type: "uri", uri: file.uri } }))
     if (input.synthetic) record.messages.push({ type: "synthetic", id: input.id, time: { created: Date.now() }, text: input.text, description: input.synthetic.description, metadata: input.synthetic.metadata })
-    else record.messages.push({ type: "user", id: input.id, time: { created: Date.now(), origin: this.store.origin?.() }, text: input.text, files: attachments.length ? attachments : undefined, metadata: input.metadata })
+    else record.messages.push({ type: "user", id: input.id, time: { created: Date.now(), origin: this.store.origin?.(), order: workOrder() }, text: input.text, files: attachments.length ? attachments : undefined, metadata: input.metadata })
     session.time.updated = Date.now()
     this.store.save(id, true)
     // Your first message: the session gets a title from it, as the engine's sessions do.

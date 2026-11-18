@@ -907,6 +907,15 @@ describe("Stopping an ACP agent", () => {
 const backgroundTasks = (tasks: [string, string, string][], outputFile?: string): [string, any] => ["s1", { method: "_x.ai/session/update", update: { sessionUpdate: "background_tasks", tasks: tasks.map(([task_id, command, status]) => ({ task_id, command, description: `Run ${command}`, kind: "bash", status, started_at: "2026-11-10T00:00:00Z", output_file: outputFile })) } }]
 
 describe("Grok's background work after its turn (#262)", () => {
+  test("a reported task start takes precedence over its first listing", async () => {
+    const first = backgroundTasks([["b1", "npm test", "running"]])
+    delete first[1].update.tasks[0].started_at
+    const dated = backgroundTasks([["b1", "npm test", "running"]])
+    const grok = new TestGrok(program(fakeAcp([first, dated]), join(root, "grok")), root)
+    const id = await run(grok)
+    expect(sessions.background()[id]?.tasks).toEqual([{ id: "b1", since: Date.parse(dated[1].update.tasks[0].started_at) }])
+  })
+
   test("it keeps Grok running past its idle close, shown as still at work; once it ends, Grok is let go", async () => {
     const idleClose = timing.idleClose
     timing.idleClose = 50

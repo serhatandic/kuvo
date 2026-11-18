@@ -2,6 +2,7 @@
 // your own plan or key (`claude auth login`), one long-lived Claude Code per session fed message
 // by message, its replies streamed into the session as the engine's own would be.
 
+import { workOrder, type WorkOrder } from "../../shared/work-order"
 import { spawn } from "node:child_process"
 import { createHash, randomUUID } from "node:crypto"
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs"
@@ -1079,7 +1080,7 @@ class ClaudeThread implements Thread {
   /** Subagents it sent off in the background, at work after the turn that started them: by their call. */
   private backgroundLanes = new Map<string, Lane & { run: SubagentRun; background: boolean }>()
   /** Its background tasks (commands, subagents), by its id: commands are in the bar. */
-  private tasks = new Map<string, { type: string; description: string; toolUseID?: string; shell?: string; outputFile?: string; last?: { output: string; total: number }; since?: number; backgrounded?: boolean }>()
+  private tasks = new Map<string, { type: string; description: string; toolUseID?: string; shell?: string; outputFile?: string; last?: { output: string; total: number }; since: number; order: WorkOrder; backgrounded?: boolean }>()
   /** Its live background tasks, as it last listed them. */
   private liveTasks = new Set<string>()
   /** Commands it ran, by their call: what a background one runs. */
@@ -1411,7 +1412,7 @@ class ClaudeThread implements Thread {
         const resumed = type === "local_agent" && known?.toolUseID && message.tool_use_id && message.tool_use_id !== known.toolUseID ? known.toolUseID : undefined
         // (Whether it runs in the background is Claude Code's to say: its Agent tool's default is.)
         const backgrounded = typeof message.is_backgrounded === "boolean" ? message.is_backgrounded : known?.backgrounded
-        this.tasks.set(message.task_id, { ...known, type, description: message.description ?? known?.description ?? "", toolUseID: resumed ?? message.tool_use_id ?? known?.toolUseID, backgrounded })
+        this.tasks.set(message.task_id, { ...known, type, description: message.description ?? known?.description ?? "", toolUseID: resumed ?? message.tool_use_id ?? known?.toolUseID, backgrounded, since: known?.since ?? Date.now(), order: known?.order ?? workOrder() })
         if (type === "local_agent" && typeof message.tool_use_id === "string" && !resumed) {
           this.rememberSubagent(message.tool_use_id, { agentID: message.task_id })
           // A subagent's own (the turn's have theirs from their call): its session from the start,
@@ -1457,7 +1458,7 @@ class ClaudeThread implements Thread {
         this.liveTasks = new Set(tasks.map((task: any) => String(task.task_id)))
         for (const task of tasks) {
           const known = this.tasks.get(task.task_id)
-          this.tasks.set(task.task_id, { ...known, type: task.task_type ?? known?.type ?? "", description: task.description ?? known?.description ?? "", since: known?.since ?? Date.now() })
+          this.tasks.set(task.task_id, { ...known, type: task.task_type ?? known?.type ?? "", description: task.description ?? known?.description ?? "", since: known?.since ?? Date.now(), order: known?.order ?? workOrder() })
           this.shellFor(task.task_id)
         }
         for (const [id, task] of this.tasks) if (task.shell && !this.liveTasks.has(id)) endShell(task.shell)
@@ -1486,6 +1487,8 @@ class ClaudeThread implements Thread {
           if (shell && !this.liveTasks.has(taskID)) endShell(shell)
         })
       },
+      task.since,
+      task.order,
     )
   }
 
@@ -1536,7 +1539,7 @@ class ClaudeThread implements Thread {
       const task = this.tasks.get(id)
       // (A subagent with a session is listed as one, under a turn or after it.)
       if (task?.shell || task?.type === "local_bash" || (task?.toolUseID && (this.backgroundLanes.has(task.toolUseID) || this.active?.subagents.has(task.toolUseID)))) return []
-      return [{ id, since: task?.since ?? Date.now() }]
+      return [{ id, since: task?.since ?? Date.now(), order: task?.order }]
     })
   }
 

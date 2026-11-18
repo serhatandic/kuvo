@@ -36,6 +36,7 @@ import type { EngineSession } from "../engine/sessions";
 import type { EngineForm, PermissionAsked } from "../notices/news";
 import { ofTurn, pastSummaries, turnIn, workOutcome } from "../../shared/summaries";
 import { saidAlready, WORK_SENT } from "./sent";
+import type { WorkOrder } from "../../shared/work-order";
 
 export const WORK_WAKES = path.join(WORK_FOLDER, "wakes.json");
 /** What each followed session's starter was told (its last reply's message, its asks), and when the
@@ -239,7 +240,7 @@ interface Told {
   held?: Record<string, { from: string; at: number }>;
   /** Those whose finish waits for what they left running: the place they run, since when, and when
    * the question its turn answered was asked (what ran before that doesn't hold it). */
-  waiting?: Record<string, { from: string; at: number; asked?: number }>;
+  waiting?: Record<string, { from: string; at: number; asked?: number; askedOrder?: WorkOrder }>;
 }
 const readTold = (file: string): Told | null => {
   try {
@@ -292,9 +293,9 @@ const changeTold = (file: string, change: (told: Told) => void, from: string | n
 // Whether what a session left running holds its finish: any of it but its services, or, for a turn
 // that answered a question, only what began since that was asked (a build from before isn't its work).
 // (A service it left up, listening on a port, never holds it: it may run for good.)
-const holds = (still: BackgroundWork | null | undefined, waited: { asked?: number }): boolean => {
+const holds = (still: BackgroundWork | null | undefined, waited: { asked?: number; askedOrder?: WorkOrder }): boolean => {
   const work = awaited(still);
-  return Boolean(work) && (typeof waited.asked !== "number" || startedSince(work!, waited.asked));
+  return Boolean(work) && (typeof waited.asked !== "number" || startedSince(work!, waited.asked, waited.askedOrder));
 };
 
 // What said it, as a hash: whether a reply says the same again, whitespace aside.
@@ -305,14 +306,19 @@ const hashed = (text: string) => crypto.createHash("sha256").update(text).digest
  * the box's own word (what a session it started did, a limit that reset: what comes of it may be the
  * result a lead waits for, so it's told, but it doesn't set a stopped session going), its own
  * wake-up, or a word of another kind (a goal given to it). */
-interface Began { kind: "asked" | "you" | "left" | "word" | "timer" | "other"; at: number | null }
+interface Began { kind: "asked" | "you" | "left" | "word" | "timer" | "other"; at: number | null; order?: WorkOrder }
 const messageTime = (message: { time?: unknown } | undefined) => isObject(message?.time) && typeof message.time.created === "number" ? message.time.created : null;
+const messageOrder = (time: unknown): WorkOrder | undefined => {
+  const order = isObject(time) ? time.order : undefined;
+  if (Array.isArray(order) && typeof order[0] === "string" && typeof order[1] === "number") return [order[0], order[1]];
+  return undefined;
+};
 // From a turn's messages, newest first; a turn with no starter in reach counts as asked for.
 function beganBy(turn: { type?: unknown; text?: unknown; metadata?: unknown; time?: unknown }[]): Began {
   const starters = turn.filter(message => message.type === "user" || message.type === "synthetic");
   const askers = starters.filter(message => message.type === "user" && !isBoxsOwnWord(message.text, message.metadata));
   const asked = askers[0];
-  if (asked) return { kind: askers.every(message => writtenByYou(message.text, message.metadata)) ? "you" : "asked", at: messageTime(asked) };
+  if (asked) return { kind: askers.every(message => writtenByYou(message.text, message.metadata)) ? "you" : "asked", at: messageTime(asked), order: messageOrder(asked.time) };
   if (!starters.length) return { kind: "asked", at: null };
   const first = starters.at(-1)!;
   const at = messageTime(first);
@@ -628,9 +634,11 @@ export function workWatcher(source: Target, targets: () => Target[], { gather = 
   // Held: told nothing until what it left running is over (heard as it ends, as it stops counting at
   // its limit, or found every little while, in case its end wasn't heard), however long that takes.
   // `asked`: when the question its turn answered was asked, as what ran before that doesn't hold it.
-  const waitFor = (session: string, since: number, asked: number | null) => {
+  const waitFor = (session: string, since: number, asked: number | undefined, askedOrder?: WorkOrder) => {
     const was = readTold(toldFile)?.waiting?.[session];
-    if (!was || was.asked !== (asked ?? undefined)) changeTold(toldFile, told => { told.waiting = { ...told.waiting, [session]: { from, at: was?.at ?? since, ...(asked !== null ? { asked } : {}) } }; }, null, now());
+    if (!was || was.asked !== asked || was.askedOrder?.[0] !== askedOrder?.[0] || was.askedOrder?.[1] !== askedOrder?.[1]) {
+      changeTold(toldFile, told => { told.waiting = { ...told.waiting, [session]: { from, at: was?.at ?? since, asked, askedOrder } }; }, null, now());
+    }
     lookWhileWaiting(session, was ? WAITING_LOOK : FIRST_LOOK);
   };
   const looking = new Set<string>();
@@ -676,8 +684,9 @@ export function workWatcher(source: Target, targets: () => Target[], { gather = 
     const yours = last?.began.kind === "you";
     if (yours && !waited) return noteTold(session.id, { reply: last!.id ?? undefined });
     // (Someone's question isn't held up by what was running before they asked: a dev server.)
-    const askedAt = yours ? waited?.asked ?? null : last?.began.kind === "asked" ? last.began.at : null;
-    if (holds(still, { asked: askedAt ?? undefined })) return waitFor(session.id, waitedSince ?? at, askedAt);
+    const asked = yours ? waited?.asked : last?.began.kind === "asked" ? last.began.at ?? undefined : undefined;
+    const askedOrder = yours ? waited?.askedOrder : last?.began.kind === "asked" ? last.began.order : undefined;
+    if (holds(still, { asked, askedOrder })) return waitFor(session.id, waitedSince ?? at, asked, askedOrder);
     const was = readTold(toldFile)?.sessions[session.id] ?? {};
     letGoOf(session.id);
     if (last && !yours && !isNews(was, last)) return noteTold(session.id, { reply: last.id ?? undefined });
@@ -841,6 +850,10 @@ export function workWatcher(source: Target, targets: () => Target[], { gather = 
       startersTold = true;
     } catch {
       again = true;
+    } finally {
+      for (const [id, waited] of Object.entries(readTold(toldFile)?.waiting ?? {})) {
+        if (waited.from === from) lookWhileWaiting(id, FIRST_LOOK);
+      }
     }
     if (!again || signal?.aborted) return;
     const timer = schedule(() => catchingUp(), CATCH_UP_AGAIN);
