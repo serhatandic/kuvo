@@ -6307,6 +6307,9 @@
             "literal": "usage.history"
            },
            {
+            "literal": "usage.insights"
+           },
+           {
             "literal": "usage.notices"
            },
            {
@@ -7040,6 +7043,9 @@
            },
            {
             "literal": "usage.history"
+           },
+           {
+            "literal": "usage.insights"
            },
            {
             "literal": "usage.notices"

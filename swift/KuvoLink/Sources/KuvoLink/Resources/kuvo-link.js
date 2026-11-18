@@ -11982,6 +11982,7 @@ var FEATURES = [
   "typed",
   "update",
   "usage.history",
+  "usage.insights",
   "usage.notices",
   "usage.settings",
   "vault",
@@ -45447,7 +45448,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "f8786caa6279";
+var BRIDGE_VERSION = "afcd55c5441d";
 
 // box/src/link/rehome/move.ts
 init_outside();

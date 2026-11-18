@@ -22947,287 +22947,8 @@ class Roster {
   }
 }
 
-// box/src/agents/signin-watch.ts
-function watchSignIn(attempt, expires, completed, every = 250) {
-  let stopped = false;
-  let timer;
-  const check = () => {
-    if (stopped)
-      return;
-    if (Date.now() >= expires) {
-      stopped = true;
-      attempt.cancel();
-      return;
-    }
-    const status = attempt.status().status;
-    if (status === "complete") {
-      stopped = true;
-      completed();
-      return;
-    }
-    if (status !== "pending") {
-      stopped = true;
-      return;
-    }
-    timer = setTimeout(check, every);
-    timer.unref();
-  };
-  check();
-  return () => {
-    if (!stopped && Date.now() < expires && attempt.status().status === "complete")
-      completed();
-    stopped = true;
-    clearTimeout(timer);
-  };
-}
-
-// box/src/agents/branch.ts
-var origins = ["branchedFrom", "handoffFrom", "handoffTo", "startedBy", "beside", "carriedFrom"];
-var listed2 = ["kuvo.pinned", "kuvo.archived"];
-
-class BranchError extends Error {
-  status;
-  constructor(status, message) {
-    super(message);
-    this.status = status;
-  }
-}
-async function branch(places, session, before) {
-  const place = places.isBridge(session) ? places.bridge : places.engine;
-  const info = await sessionInfo(place.api, session).catch((error) => {
-    throw new BranchError(error?.status === 404 ? 404 : 503, error?.status === 404 ? "There's no such conversation here." : "The conversation can't be reached now.");
-  });
-  if (info.parentID)
-    throw new BranchError(409, "A subagent's conversation can't be branched. Branch the conversation it works for.");
-  const made = await place.api.request("POST", at(session) + "/fork", { before }).catch((error) => {
-    if (error?.status === 404)
-      throw new BranchError(404, "That message isn't in this conversation.");
-    if (error?.status >= 400 && error?.status < 500)
-      throw new BranchError(error.status, String(error?.message ?? error));
-    throw new BranchError(503, "The new conversation couldn't be started.");
-  });
-  const copy = made?.data;
-  if (typeof copy?.id !== "string")
-    throw new BranchError(503, "The new conversation couldn't be started.");
-  const carried = [copy.metadata ?? {}, info.metadata ?? {}];
-  const from = (key, value, inKuvo) => carried.some((notes) => {
-    const where = inKuvo ? notes.kuvo ?? {} : notes;
-    return key in where && sameJSON(value, where[key]);
-  });
-  const marked = await rewriteVia(place.api, copy.id, (now) => {
-    const metadata = { ...now.metadata ?? {} };
-    for (const key of listed2)
-      if (key in metadata && from(key, metadata[key], false))
-        delete metadata[key];
-    const kuvo = { ...metadata.kuvo ?? {} };
-    for (const key of origins)
-      if (key in kuvo && from(key, kuvo[key], true))
-        delete kuvo[key];
-    return { metadata: { ...metadata, kuvo: { ...kuvo, branchedFrom: session } } };
-  }).catch(() => null);
-  return marked ? { ...copy, metadata: marked.session.metadata } : copy;
-}
-var json8 = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } });
-async function branchRoutes(places, method, parts, body) {
-  if (!places)
-    return json8({ message: "Branches aren't running on this computer." }, 503);
-  const [session] = parts;
-  if (!session || method !== "POST")
-    return json8({ message: "Not allowed" }, 405);
-  if (!/^ses_[A-Za-z0-9_]+$/.test(session))
-    return json8({ message: "There's no such conversation here." }, 404);
-  const { before } = await body() ?? {};
-  if (typeof before !== "string" || !before)
-    return json8({ message: "Say which message to branch before." }, 400);
-  try {
-    return json8({ data: await branch(places, session, before) });
-  } catch (error) {
-    if (error instanceof BranchError)
-      return json8({ message: error.message }, error.status);
-    throw error;
-  }
-}
-
-// box/src/shared/account-names.ts
-var cards = { claude: "Claude", codex: "Codex", cursor: "Cursor", antigravity: "Antigravity", copilot: "Copilot", grok: "Grok", opencode: "OpenCode", openrouter: "OpenRouter", zai: "Z.ai", ollama: "Ollama" };
-function spendTitle(service) {
-  return Object.hasOwn(cards, service) ? cards[service] : service.replace(/\b\w/g, (letter) => letter.toUpperCase());
-}
-
-// box/src/agents/usage/usage.ts
-import { execFileSync as execFileSync2 } from "child_process";
-import { createHash as createHash16 } from "crypto";
-import { lstatSync as lstatSync9, mkdirSync as mkdirSync24, readFileSync as readFileSync33, realpathSync as realpathSync8, renameSync as renameSync20, statSync as statSync15, writeFileSync as writeFileSync25 } from "fs";
-import { homedir as homedir5, hostname as hostname2 } from "os";
-import { basename as basename11, dirname as dirname18, join as join38 } from "path";
-
-// box/src/agents/usage/claude-log.ts
-var USAGE = Buffer.from('"usage":{');
-var isObject2 = (value) => !!value && typeof value === "object" && !Array.isArray(value);
-var isNumber = (value) => typeof value === "number" && Number.isFinite(value);
-var int = (value) => isNumber(value) ? Math.trunc(value) : 0;
-function claudeLine(line) {
-  if (line.indexOf(USAGE) < 0)
-    return [];
-  let object;
-  try {
-    object = JSON.parse(line.toString("utf8"));
-  } catch {
-    return [];
-  }
-  return claudeEntries(object);
-}
-function claudeEntries(object) {
-  if (!isObject2(object) || typeof object.timestamp !== "string")
-    return [];
-  const at = timestamp(object.timestamp);
-  const message = object.message;
-  if (at === undefined || !isObject2(message) || !isObject2(message.usage))
-    return [];
-  const usage = message.usage;
-  if (nullWhereNever(object, message, usage))
-    return [];
-  const parsed = tokensOf(usage);
-  if (!parsed || !valid(object, message))
-    return [];
-  const model = typeof message.model === "string" && message.model !== "<synthetic>" ? message.model : undefined;
-  const parent = {
-    at,
-    tokens: parsed.tokens,
-    ...typeof message.id === "string" ? { message: message.id } : {},
-    ...typeof object.requestId === "string" ? { request: object.requestId } : {},
-    sidechain: object.isSidechain === true,
-    speed: parsed.speed,
-    ...isNumber(object.costUSD) ? { cost: object.costUSD } : {},
-    ...model !== undefined ? { model } : {}
-  };
-  const iterations = usage.iterations;
-  if (!Array.isArray(iterations) || !iterations.every(isObject2))
-    return [parent];
-  const entries = [parent];
-  let advisor = 0;
-  for (const iteration of iterations) {
-    if (iteration.type !== "advisor_message" || typeof iteration.model !== "string" || !iteration.model)
-      continue;
-    const own = tokensOf(iteration);
-    if (!own)
-      continue;
-    entries.push({
-      at,
-      tokens: own.tokens,
-      ...parent.message !== undefined ? { message: `${parent.message}:advisor:${advisor}` } : {},
-      ...parent.request !== undefined ? { request: parent.request } : {},
-      sidechain: parent.sidechain,
-      speed: own.speed,
-      model: iteration.model
-    });
-    advisor++;
-  }
-  return entries;
-}
-function tokensOf(usage) {
-  if (!isNumber(usage.input_tokens) || !isNumber(usage.output_tokens))
-    return;
-  const speed = typeof usage.speed === "string" ? usage.speed : undefined;
-  if (speed !== undefined && speed !== "fast" && speed !== "standard")
-    return;
-  let cacheWrite5m = 0;
-  let cacheWrite1h = 0;
-  if (isObject2(usage.cache_creation)) {
-    cacheWrite5m = int(usage.cache_creation.ephemeral_5m_input_tokens);
-    cacheWrite1h = int(usage.cache_creation.ephemeral_1h_input_tokens);
-  } else
-    cacheWrite5m = int(usage.cache_creation_input_tokens);
-  return {
-    tokens: { input: Math.trunc(usage.input_tokens), cacheWrite5m, cacheWrite1h, cacheRead: int(usage.cache_read_input_tokens), output: Math.trunc(usage.output_tokens), ...speed === "fast" ? { fast: true } : {} },
-    speed: speed !== undefined
-  };
-}
-function valid(object, message) {
-  if (typeof object.version === "string" && !/^\d+\.\d+\.\d/.test(object.version))
-    return false;
-  for (const value of [object.sessionId, object.requestId, message.id, message.model])
-    if (value === "")
-      return false;
-  return true;
-}
-function nullWhereNever(object, message, usage) {
-  const levels = [
-    [object, ["cwd", "costUSD", "version", "sessionId", "requestId", "isApiErrorMessage"]],
-    [message, ["id", "model"]],
-    [usage, ["speed", "cache_read_input_tokens", "cache_creation_input_tokens"]]
-  ];
-  return levels.some(([container, fields]) => fields.some((field) => container[field] === null));
-}
-function timestamp(raw) {
-  let text = raw.trim();
-  if (!text)
-    return;
-  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/.test(text))
-    text = text.slice(0, 10) + "T" + text.slice(11);
-  if (text.endsWith(" UTC"))
-    text = text.slice(0, -4) + "Z";
-  const match = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(\.\d+)?(Z|[+-]\d{2}:\d{2})?$/.exec(text);
-  if (!match)
-    return;
-  const fraction = (match[2] ?? "").slice(1, 4).padEnd(match[2] ? 3 : 0, "0");
-  const at = Date.parse(`${match[1]}${fraction ? "." + fraction : ""}${match[3] ?? "Z"}`);
-  return Number.isFinite(at) ? at : undefined;
-}
-var total = (entry) => entry.tokens.input + entry.tokens.cacheWrite5m + entry.tokens.cacheWrite1h + entry.tokens.cacheRead + entry.tokens.output;
-function dedupClaude(entries) {
-  const kept = [];
-  const exact = new Map;
-  const byMessage = new Map;
-  const keyOf = (message, request) => `${message}\x00${request ?? "\x01"}`;
-  for (const entry of entries) {
-    if (entry.message === undefined) {
-      kept.push(entry);
-      continue;
-    }
-    const key = keyOf(entry.message, entry.request);
-    const collision = exact.get(key) ?? byMessage.get(entry.message)?.find((index) => entry.sidechain || kept[index].sidechain);
-    if (collision !== undefined) {
-      if (replaces(entry, kept[collision])) {
-        const old = kept[collision];
-        exact.delete(keyOf(old.message, old.request));
-        kept[collision] = entry;
-        exact.set(key, collision);
-      }
-      continue;
-    }
-    exact.set(key, kept.length);
-    byMessage.set(entry.message, [...byMessage.get(entry.message) ?? [], kept.length]);
-    kept.push(entry);
-  }
-  return kept;
-}
-function replaces(candidate, existing) {
-  if (candidate.sidechain !== existing.sidechain)
-    return existing.sidechain;
-  const [a, b] = [total(candidate), total(existing)];
-  if (a !== b)
-    return a > b;
-  return candidate.speed && !existing.speed;
-}
-function keptClaude(entry) {
-  const flags = (entry.sidechain ? 1 : 0) | (entry.speed ? 2 : 0) | (entry.tokens.fast ? 4 : 0);
-  const { input, cacheWrite5m, cacheWrite1h, cacheRead, output } = entry.tokens;
-  return [entry.at, entry.message ?? null, entry.request ?? null, flags, entry.model ?? null, input, cacheWrite5m, cacheWrite1h, cacheRead, output, entry.cost ?? null];
-}
-function fromKeptClaude(kept) {
-  const [at, message, request, flags, model, input, cacheWrite5m, cacheWrite1h, cacheRead, output, cost] = kept;
-  return {
-    at,
-    tokens: { input, cacheWrite5m, cacheWrite1h, cacheRead, output, ...flags & 4 ? { fast: true } : {} },
-    ...message !== null ? { message } : {},
-    ...request !== null ? { request } : {},
-    sidechain: !!(flags & 1),
-    speed: !!(flags & 2),
-    ...cost !== null ? { cost } : {},
-    ...model !== null ? { model } : {}
-  };
-}
+// box/src/agents/usage/insights.ts
+import { hostname as hostname2 } from "os";
 
 // box/src/agents/usage/pricing.ts
 import { mkdirSync as mkdirSync20, readFileSync as readFileSync30, renameSync as renameSync16, writeFileSync as writeFileSync21 } from "fs";
@@ -23773,7 +23494,7 @@ function scaled(rates, factor) {
 }
 var rates = (input, output, cacheWrite, cacheRead, cacheReadIsExplicit, fast = 1) => ({ input, output, cacheWrite, cacheRead, cacheReadIsExplicit, longContextThreshold: 200000, fast });
 var number2 = (value) => typeof value === "number" && Number.isFinite(value) ? value : undefined;
-var isObject3 = (value) => !!value && typeof value === "object" && !Array.isArray(value);
+var isObject2 = (value) => !!value && typeof value === "object" && !Array.isArray(value);
 
 class Catalog {
   entries;
@@ -23838,11 +23559,11 @@ function suffixAllows(key, suffix) {
   return date;
 }
 function catalogFromLiteLLM(root) {
-  if (!isObject3(root))
+  if (!isObject2(root))
     throw new Error("Pricing feed is not a JSON object.");
   const entries = new Map;
   for (const [key, entry] of Object.entries(root)) {
-    if (!isObject3(entry))
+    if (!isObject2(entry))
       continue;
     const input = number2(entry.input_cost_per_token);
     const output = number2(entry.output_cost_per_token);
@@ -23859,7 +23580,7 @@ function catalogFromLiteLLM(root) {
     value.outputAbove = million("output_cost_per_token_above_200k_tokens");
     value.cacheWriteAbove = million("cache_creation_input_token_cost_above_200k_tokens");
     value.cacheReadAbove = million("cache_read_input_token_cost_above_200k_tokens");
-    const fast = isObject3(entry.provider_specific_entry) ? number2(entry.provider_specific_entry.fast) : undefined;
+    const fast = isObject2(entry.provider_specific_entry) ? number2(entry.provider_specific_entry.fast) : undefined;
     if (fast !== undefined)
       value.fast = fast;
     entries.set(key, value);
@@ -23869,15 +23590,15 @@ function catalogFromLiteLLM(root) {
   return new Catalog(entries);
 }
 function catalogFromModelsDev(root) {
-  if (!isObject3(root))
+  if (!isObject2(root))
     throw new Error("Pricing feed is not a JSON object.");
   const entries = new Map;
   for (const name of Object.keys(root).sort()) {
-    const models = isObject3(root[name]) ? root[name].models : undefined;
-    if (!isObject3(models))
+    const models = isObject2(root[name]) ? root[name].models : undefined;
+    if (!isObject2(models))
       continue;
     for (const [id, model] of Object.entries(models)) {
-      if (entries.has(id) || !isObject3(model) || !isObject3(model.cost))
+      if (entries.has(id) || !isObject2(model) || !isObject2(model.cost))
         continue;
       const input = number2(model.cost.input);
       const output = number2(model.cost.output);
@@ -23891,11 +23612,11 @@ function catalogFromModelsDev(root) {
   return new Catalog(entries);
 }
 function catalogFromCompact(root) {
-  if (!isObject3(root) || !isObject3(root.models))
+  if (!isObject2(root) || !isObject2(root.models))
     throw new Error("Pricing catalog is not compact JSON.");
   const entries = new Map;
   for (const [key, model] of Object.entries(root.models)) {
-    if (!isObject3(model))
+    if (!isObject2(model))
       continue;
     const [i, o, cw, cr] = [number2(model.i), number2(model.o), number2(model.cw), number2(model.cr)];
     if (i === undefined || o === undefined || cw === undefined || cr === undefined)
@@ -23928,17 +23649,17 @@ function compactOf(catalog) {
   return JSON.stringify({ models });
 }
 function supplementFrom(root) {
-  if (!isObject3(root) || !isObject3(root.pricing) || !Array.isArray(root.alias_rules))
+  if (!isObject2(root) || !isObject2(root.pricing) || !Array.isArray(root.alias_rules))
     throw new Error("The pricing supplement isn't one.");
   const fastMultipliers = new Map;
-  if (isObject3(root.fast_multipliers)) {
+  if (isObject2(root.fast_multipliers)) {
     for (const [model, value] of Object.entries(root.fast_multipliers))
       if (number2(value) !== undefined)
         fastMultipliers.set(model, value);
   }
   const pricing = new Map;
   for (const [model, entry] of Object.entries(root.pricing)) {
-    if (!isObject3(entry))
+    if (!isObject2(entry))
       throw new Error("The pricing supplement isn't one.");
     const input = number2(entry.input_per_million);
     const output = number2(entry.output_per_million);
@@ -23949,7 +23670,7 @@ function supplementFrom(root) {
   }
   const aliases = [];
   for (const rule of root.alias_rules) {
-    if (!isObject3(rule) || typeof rule.pattern !== "string" || typeof rule.canonical !== "string")
+    if (!isObject2(rule) || typeof rule.pattern !== "string" || typeof rule.canonical !== "string")
       throw new Error("The pricing supplement isn't one.");
     const insensitive = rule.pattern.startsWith("(?i)");
     try {
@@ -23957,7 +23678,7 @@ function supplementFrom(root) {
     } catch {}
   }
   const fallbackModels = new Map;
-  if (isObject3(root.fallback_models)) {
+  if (isObject2(root.fallback_models)) {
     for (const [provider, models] of Object.entries(root.fallback_models)) {
       if (!Array.isArray(models) || !models.every((model) => typeof model === "string"))
         throw new Error("The pricing supplement isn't one.");
@@ -24199,102 +23920,6 @@ class PricingStore {
   }
 }
 
-// box/src/agents/usage/codex-pricing.ts
-var AUTO_REVIEW = "codex-auto-review";
-var AUTO_REVIEW_FREE_SINCE = Date.parse("2026-10-06T00:00:00Z");
-var RESERVE = "gpt-reserve";
-var RESERVE_PRICED_AS = "gpt-5.6-luna";
-var AUTO_REVIEW_RAN_ON = [
-  ["2026-07-09", "gpt-5.6-luna"],
-  ["2026-04-23", "gpt-5.5"],
-  ["2026-03-05", "gpt-5.4"],
-  ["2026-02-05", "gpt-5.3-codex"],
-  ["2025-12-11", "gpt-5.2-codex"],
-  ["2025-11-13", "gpt-5.1-codex"],
-  ["2025-09-15", "gpt-5-codex"],
-  ["2025-08-07", "gpt-5"]
-].map(([day, model]) => [Date.parse(`${day}T00:00:00Z`), model]);
-var isFreeAutoReview = (model, at) => model === AUTO_REVIEW && at >= AUTO_REVIEW_FREE_SINCE;
-function pricingModelOf(model, at) {
-  if (model !== AUTO_REVIEW || at >= AUTO_REVIEW_FREE_SINCE)
-    return model;
-  return AUTO_REVIEW_RAN_ON.find(([released]) => at >= released)?.[1] ?? "gpt-5";
-}
-var FREE = { input: 0, output: 0, cacheWrite: 0, cacheRead: 0, cacheReadIsExplicit: true, longContextThreshold: 200000, fast: 1 };
-function resolveCodexRates(pricing, model, at) {
-  if (isFreeAutoReview(model, at))
-    return { rates: FREE, rateModel: model, fastAlias: false, baseRates: true };
-  const effective = pricingModelOf(model, at);
-  const canonical = pricing.canonicalName(effective);
-  const fastAlias = canonical.endsWith("-fast");
-  const rateModel = fastAlias ? canonical.slice(0, -"-fast".length) : canonical;
-  const base = pricing.resolve(rateModel);
-  return { rates: base ?? pricing.resolve(effective), rateModel, fastAlias, baseRates: base !== undefined };
-}
-function prepareCodex(pricing, model, at) {
-  const resolution = resolveCodexRates(pricing, model, at);
-  if (!resolution.rates)
-    return;
-  return { rates: adjusted(resolution.rates, resolution.rateModel), fast: resolution.fastAlias && resolution.baseRates };
-}
-function preparedCost(prepared, tokens) {
-  return costDollars(prepared.rates, { ...tokens, fast: prepared.fast });
-}
-function codexCost(rates, tokens, model, fast, ultrafast = false) {
-  const prepared = { rates: adjusted(rates, model), fast: fast || ultrafast };
-  const multiplier = ultrafast ? ultrafastMultiplier(datedBaseModel(model)) : undefined;
-  if (multiplier !== undefined)
-    prepared.rates = { ...prepared.rates, fast: multiplier };
-  return preparedCost(prepared, tokens);
-}
-var ultrafastMultiplier = (base) => base === "gpt-6-astra" ? 6 : undefined;
-function adjusted(rates, model) {
-  const base = datedBaseModel(model);
-  const effective = { ...rates };
-  const long = LONG_CONTEXT[base];
-  if (long) {
-    effective.inputAbove = long[0];
-    effective.outputAbove = long[1];
-    effective.cacheReadAbove = long[2];
-    effective.longContextThreshold = 272000;
-  }
-  if (NO_CACHE_DISCOUNT.has(base) || !rates.cacheReadIsExplicit) {
-    effective.cacheRead = effective.input;
-    effective.cacheReadAbove = effective.inputAbove;
-  }
-  effective.fast = priorityMultiplier(base, rates);
-  return effective;
-}
-function priorityMultiplier(base, rates) {
-  if (base === "gpt-5.5" || base === "gpt-5.5-pro")
-    return 2.5;
-  if (["gpt-5.4", "gpt-5.4-pro", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-astra", "gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna"].includes(base))
-    return 2;
-  return rates.fast === 1 ? 2 : rates.fast;
-}
-var NO_CACHE_DISCOUNT = new Set(["gpt-5.4-pro", "gpt-5.5-pro"]);
-var LONG_CONTEXT = {
-  "gpt-5.4": [5, 22.5, 0.5],
-  "gpt-5.4-pro": [60, 270, 60],
-  "gpt-5.5": [10, 45, 1],
-  "gpt-5.5-pro": [60, 270, 60],
-  "gpt-5.6-sol": [8, 30, 0.8],
-  "gpt-5.6-terra": [4, 18, 0.4],
-  "gpt-5.6-luna": [0.4, 1.8, 0.04],
-  "gpt-6-astra": [20, 75, 2],
-  "gpt-6.1-sol": [4, 15, 0.2],
-  "gpt-6-sol": [4, 15, 0.4],
-  "gpt-6-luna": [0.2, 0.75, 0.02]
-};
-function datedBaseModel(model) {
-  for (const pattern of [/-\d{4}-\d{2}-\d{2}$/, /-\d{8}$/]) {
-    const match = pattern.exec(model);
-    if (match && match.index > 0)
-      return model.slice(0, match.index);
-  }
-  return model;
-}
-
 // box/src/agents/usage/history.ts
 var SLOT = 15 * 60000;
 var DAY3 = 24 * 60 * 60000;
@@ -24506,6 +24131,644 @@ function slotsFrom(given, most = 50000) {
   return slots;
 }
 
+// box/src/agents/usage/insights.ts
+var DAY4 = 86400000;
+var SCAN_EVERY = 5 * 60000;
+var MAX_PAGE = 100;
+var isInsightsMail = (value) => value?.kind === "insights";
+var optionalText = (value) => typeof value === "string" && value.length > 0 ? value.slice(0, 512) : undefined;
+var small = (v) => typeof v === "string" && v.length > 0 && v.length <= 512;
+var validAt = (v) => typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
+function recordFrom(value) {
+  if (!value || typeof value !== "object" || !/^[a-f0-9]{64}$/.test(value.key) || !validAt(value.at))
+    return;
+  if (![value.computer, value.provider, value.session, value.call].every(small))
+    return;
+  if (value.supersedes !== undefined && !/^[a-f0-9]{64}$/.test(value.supersedes))
+    return;
+  for (const list of [value.skills, value.pricingModels]) {
+    if (list !== undefined && (!Array.isArray(list) || list.length > 32 || !list.every(small)))
+      return;
+  }
+  if (value.reportedTotal !== undefined && !validAt(value.reportedTotal))
+    return;
+  const t = value.tokens;
+  if (t !== undefined && (!t || typeof t !== "object" || ![t.input, t.cacheRead, t.cacheWrite5m, t.cacheWrite1h, t.output].every((n) => n === null || validAt(n))))
+    return;
+  const { key, at, session, nativeSession, call, provider, computer, account, bot, botName, model, pricingModels, agent, title, skills, supersedes, reportedTotal, observedAt } = value;
+  return {
+    key,
+    at,
+    session,
+    call,
+    provider,
+    computer,
+    pricingModels,
+    skills,
+    supersedes,
+    reportedTotal,
+    account: optionalText(account),
+    bot: optionalText(bot),
+    botName: optionalText(botName),
+    model: optionalText(model),
+    agent: optionalText(agent),
+    title: optionalText(title),
+    nativeSession: optionalText(nativeSession),
+    ...validAt(observedAt) ? { observedAt } : {},
+    ...value.attributed === true ? { attributed: true } : {},
+    ...value.human === true ? { human: true } : {},
+    ...value.partial === true ? { partial: true } : {},
+    ...t ? { tokens: {
+      input: t.input,
+      cacheRead: t.cacheRead,
+      cacheWrite5m: t.cacheWrite5m,
+      cacheWrite1h: t.cacheWrite1h,
+      ...t.fast === true ? { fast: true } : {},
+      ...t.ultrafast === true ? { ultrafast: true } : {},
+      output: t.output
+    } } : {}
+  };
+}
+
+class Insights {
+  db;
+  scanner;
+  pricing;
+  directory;
+  post;
+  local;
+  now;
+  scan;
+  timer;
+  refreshed;
+  requested = new Map;
+  epoch;
+  constructor(db, scanner, pricing, directory, post, local, now = Date.now) {
+    this.db = db;
+    this.scanner = scanner;
+    this.pricing = pricing;
+    this.directory = directory;
+    this.post = post;
+    this.local = local;
+    this.now = now;
+    this.epoch = db.read("epoch") ?? crypto.randomUUID();
+    db.write("epoch", this.epoch);
+    this.directory.listen(() => this.sync());
+    this.post.onFollowed(() => this.sync());
+  }
+  start() {
+    this.timer ??= setInterval(() => this.refresh(), SCAN_EVERY);
+    this.timer.unref?.();
+    this.refresh();
+  }
+  refresh(force = false) {
+    this.sync(force);
+    if (this.scan)
+      return this.scan;
+    this.scan = this.round().catch((error) => {
+      console.error("Insights scan:", error instanceof Error ? error.message : error);
+      this.db.write("failed", true);
+    }).finally(() => {
+      this.scan = undefined;
+    });
+    return this.scan;
+  }
+  async round() {
+    const now = this.now();
+    const pricing = this.pricing.current();
+    const since = Math.floor(now / DAY4) * DAY4 - 365 * DAY4;
+    const { records, issues } = await this.scanner.scan(pricing, since);
+    this.db.price(this.pricing.current(), now);
+    const catalog = this.pricing.current();
+    for (let offset = 0;offset < records.length; offset += 800) {
+      this.db.take(records.slice(offset, offset + 800), catalog, now);
+      if (offset + 800 < records.length)
+        await new Promise((resolve) => setImmediate(resolve));
+    }
+    this.db.take([], catalog, now);
+    this.db.price(this.pricing.current(), now);
+    this.db.write("failed", false);
+    this.db.write("local", { scanned: this.now(), issues });
+    this.sync();
+    for (const peer of this.peers()) {
+      const served = this.db.read(`served/${peer.key}`);
+      if (served)
+        this.sendPage(peer.key, served.after, served.epoch);
+    }
+  }
+  peers() {
+    return this.directory.peerBoxes().filter(({ key }) => this.directory.isYours(key));
+  }
+  sync(force = false) {
+    const now = this.now();
+    const fresh = force && (this.refreshed === undefined || now - this.refreshed > 30000);
+    if (fresh)
+      this.refreshed = now;
+    for (const peer of this.peers()) {
+      if (!fresh && now - (this.requested.get(peer.key) ?? -Infinity) < 30000)
+        continue;
+      this.pull(peer.key, fresh);
+    }
+  }
+  pull(to, refresh = false) {
+    this.requested.set(to, this.now());
+    this.post.send(to, { kind: "insights", action: "pull", after: this.db.read(`cursor/${to}`) ?? 0, epoch: this.db.read(`peer-epoch/${to}`), ...refresh ? { refresh: true } : {} }, false);
+  }
+  sendPage(to, after, epoch) {
+    const current = this.db.read("sequence") ?? 0;
+    const reset = epoch !== undefined && epoch !== this.epoch || after > current;
+    const batch = this.db.batch(reset ? 0 : after);
+    const coverage = this.db.read("local");
+    this.post.send(to, { kind: "insights", action: "page", after, ...batch, epoch: this.epoch, ...reset ? { reset: true } : {}, records: batch.records.map((record) => {
+      const key = this.directory.own()?.key;
+      if (!key || record.computer !== this.local)
+        return record;
+      return { ...record, computer: key, account: record.account?.replace(this.local + "/", key + "/") };
+    }), ...coverage }, false);
+  }
+  take(from, mail) {
+    if (!this.directory.isYours(from) || !validAt(mail.after))
+      return;
+    if (mail.action === "pull") {
+      const epoch = small(mail.epoch) ? mail.epoch : undefined;
+      this.db.write(`served/${from}`, { after: mail.after, epoch });
+      this.sendPage(from, mail.after, epoch);
+      if (mail.refresh === true)
+        this.refresh();
+      return;
+    }
+    if (mail.action !== "page" || !validAt(mail.next) || !mail.reset && mail.next < mail.after || !small(mail.epoch) || !Array.isArray(mail.records) || mail.records.length > MAX_PAGE)
+      return;
+    const expected = this.db.read(`cursor/${from}`) ?? 0;
+    if (mail.after !== expected)
+      return;
+    const priorEpoch = this.db.read(`peer-epoch/${from}`);
+    if (priorEpoch && priorEpoch !== mail.epoch && !mail.reset)
+      return;
+    const own = this.directory.own()?.key ?? this.local;
+    const records = mail.records.map(recordFrom).filter((record) => !!record && (record.computer === own || this.directory.isYours(record.computer)));
+    const pricing = this.pricing.current();
+    this.db.price(pricing, this.now());
+    this.db.take(records, pricing, this.now(), from, mail.next, mail.epoch);
+    if (!mail.more && validAt(mail.scanned) && mail.scanned <= this.now() + DAY4)
+      this.db.write(`peer/${from}`, {
+        scanned: mail.scanned,
+        issues: Array.isArray(mail.issues) ? mail.issues.filter(small).slice(0, 12) : []
+      });
+    if (mail.more && (mail.reset || mail.next > expected))
+      this.pull(from);
+  }
+  view(params, route) {
+    const now = this.now();
+    const period = Number(params.get("period") ?? 30);
+    if (![7, 30, 90, 365].includes(period))
+      return;
+    const zone = knownZone2(params.get("zone")) ?? ownZone();
+    const filter = {};
+    for (const name of ["computer", "bot", "account", "provider", "session"]) {
+      const value = params.get(name);
+      if (value)
+        filter[name] = value;
+    }
+    const offset = Number(params.get("offset") ?? 0);
+    if (!validAt(offset) || offset > 1e6 || route === "detail" && !filter.session)
+      return;
+    const own = this.directory.own() ?? { key: this.local, name: hostname2() };
+    const peers = this.peers();
+    const computers = [own, ...peers];
+    const localKeys = own.key === this.local ? [own.key] : [own.key, this.local];
+    const keys = [...localKeys, ...peers.map(({ key }) => key)];
+    const selected = filter.computer === own.key ? localKeys : filter.computer ? keys.filter((key) => key === filter.computer) : keys;
+    delete filter.computer;
+    const data = this.db.view(now, zone, period, filter, selected, route, offset);
+    if (route !== "overview" || !data.totals) {
+      const botHomes = new Map(this.directory.bots().map((bot) => [bot.session, bot.box]));
+      const sessions = data.sessions?.map((session) => ({ ...session, home: botHomes.get(session.session) ?? session.computer }));
+      return { ...data, ...sessions ? { sessions } : {}, localComputers: localKeys };
+    }
+    const local = this.db.read("local");
+    const coverage = computers.filter(({ key }) => !params.has("computer") || params.get("computer") === key).map(({ key, name }) => {
+      const read = key === own.key ? local : this.db.read(`peer/${key}`);
+      const issues = read?.issues.filter((issue) => !filter.provider || filter.provider === issue) ?? [];
+      return { key, name, scanned: read?.scanned, stale: read ? read.scanned < now - 2 * SCAN_EVERY : false, issues };
+    });
+    const partial = data.totals.partial > 0 || coverage.some((entry) => !entry.scanned || entry.issues.length > 0) || this.db.read("failed");
+    const state = !local && this.scan ? "loading" : coverage.some((entry) => entry.stale) ? "stale" : partial ? "partial" : data.totals.sessions ? "ready" : "empty";
+    return {
+      ...data,
+      computers,
+      bots: this.db.choices(keys),
+      coverage,
+      state,
+      zone,
+      period,
+      updatedDay: local ? dayIn(local.scanned, zone) : null,
+      scanning: !!this.scan,
+      localComputers: localKeys,
+      unavailable: data.providers.some((row) => row.name === "cursor" && row.partial > 0) ? ["Cursor API call counts where the run only reports context size"] : []
+    };
+  }
+}
+var json8 = (body, status = 200) => Response.json(body, { status });
+function insightsRoutes(insights, method, path, params) {
+  if (!insights)
+    return json8({ message: "Insights is unavailable on this computer." }, 503);
+  if (method === "POST" && path.length === 1 && path[0] === "refresh") {
+    insights.refresh(true);
+    return json8({ data: { scanning: true } }, 202);
+  }
+  if (method !== "GET")
+    return json8({ message: "Not found." }, 404);
+  const route = path.length === 0 ? params.has("session") ? "detail" : "overview" : path[0] === "sessions" && path.length === 1 ? "sessions" : path[0] === "sessions" && path.length === 2 ? "detail" : undefined;
+  if (!route)
+    return json8({ message: "Not found." }, 404);
+  if (path.length === 2)
+    params.set("session", path[1]);
+  const data = insights.view(params, route);
+  return data ? json8({ data }) : json8({ message: "Choose a 7, 30, 90 or 365 day period and a valid page." }, 400);
+}
+
+// box/src/agents/signin-watch.ts
+function watchSignIn(attempt, expires, completed, every = 250) {
+  let stopped = false;
+  let timer;
+  const check = () => {
+    if (stopped)
+      return;
+    if (Date.now() >= expires) {
+      stopped = true;
+      attempt.cancel();
+      return;
+    }
+    const status = attempt.status().status;
+    if (status === "complete") {
+      stopped = true;
+      completed();
+      return;
+    }
+    if (status !== "pending") {
+      stopped = true;
+      return;
+    }
+    timer = setTimeout(check, every);
+    timer.unref();
+  };
+  check();
+  return () => {
+    if (!stopped && Date.now() < expires && attempt.status().status === "complete")
+      completed();
+    stopped = true;
+    clearTimeout(timer);
+  };
+}
+
+// box/src/agents/branch.ts
+var origins = ["branchedFrom", "handoffFrom", "handoffTo", "startedBy", "beside", "carriedFrom"];
+var listed2 = ["kuvo.pinned", "kuvo.archived"];
+
+class BranchError extends Error {
+  status;
+  constructor(status, message) {
+    super(message);
+    this.status = status;
+  }
+}
+async function branch(places, session, before) {
+  const place = places.isBridge(session) ? places.bridge : places.engine;
+  const info = await sessionInfo(place.api, session).catch((error) => {
+    throw new BranchError(error?.status === 404 ? 404 : 503, error?.status === 404 ? "There's no such conversation here." : "The conversation can't be reached now.");
+  });
+  if (info.parentID)
+    throw new BranchError(409, "A subagent's conversation can't be branched. Branch the conversation it works for.");
+  const made = await place.api.request("POST", at(session) + "/fork", { before }).catch((error) => {
+    if (error?.status === 404)
+      throw new BranchError(404, "That message isn't in this conversation.");
+    if (error?.status >= 400 && error?.status < 500)
+      throw new BranchError(error.status, String(error?.message ?? error));
+    throw new BranchError(503, "The new conversation couldn't be started.");
+  });
+  const copy = made?.data;
+  if (typeof copy?.id !== "string")
+    throw new BranchError(503, "The new conversation couldn't be started.");
+  const carried = [copy.metadata ?? {}, info.metadata ?? {}];
+  const from = (key, value, inKuvo) => carried.some((notes) => {
+    const where = inKuvo ? notes.kuvo ?? {} : notes;
+    return key in where && sameJSON(value, where[key]);
+  });
+  const marked = await rewriteVia(place.api, copy.id, (now) => {
+    const metadata = { ...now.metadata ?? {} };
+    for (const key of listed2)
+      if (key in metadata && from(key, metadata[key], false))
+        delete metadata[key];
+    const kuvo = { ...metadata.kuvo ?? {} };
+    for (const key of origins)
+      if (key in kuvo && from(key, kuvo[key], true))
+        delete kuvo[key];
+    return { metadata: { ...metadata, kuvo: { ...kuvo, branchedFrom: session } } };
+  }).catch(() => null);
+  return marked ? { ...copy, metadata: marked.session.metadata } : copy;
+}
+var json9 = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } });
+async function branchRoutes(places, method, parts, body) {
+  if (!places)
+    return json9({ message: "Branches aren't running on this computer." }, 503);
+  const [session] = parts;
+  if (!session || method !== "POST")
+    return json9({ message: "Not allowed" }, 405);
+  if (!/^ses_[A-Za-z0-9_]+$/.test(session))
+    return json9({ message: "There's no such conversation here." }, 404);
+  const { before } = await body() ?? {};
+  if (typeof before !== "string" || !before)
+    return json9({ message: "Say which message to branch before." }, 400);
+  try {
+    return json9({ data: await branch(places, session, before) });
+  } catch (error) {
+    if (error instanceof BranchError)
+      return json9({ message: error.message }, error.status);
+    throw error;
+  }
+}
+
+// box/src/shared/account-names.ts
+var cards = { claude: "Claude", codex: "Codex", cursor: "Cursor", antigravity: "Antigravity", copilot: "Copilot", grok: "Grok", opencode: "OpenCode", openrouter: "OpenRouter", zai: "Z.ai", ollama: "Ollama" };
+function spendTitle(service) {
+  return Object.hasOwn(cards, service) ? cards[service] : service.replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+// box/src/agents/usage/usage.ts
+import { execFileSync as execFileSync2 } from "child_process";
+import { createHash as createHash17 } from "crypto";
+import { lstatSync as lstatSync9, mkdirSync as mkdirSync24, readFileSync as readFileSync33, realpathSync as realpathSync8, renameSync as renameSync20, statSync as statSync15, writeFileSync as writeFileSync25 } from "fs";
+import { homedir as homedir5, hostname as hostname3 } from "os";
+import { basename as basename11, dirname as dirname18, isAbsolute as isAbsolute3, join as join38, relative as relative6, sep as sep11 } from "path";
+
+// box/src/agents/usage/claude-log.ts
+var USAGE = Buffer.from('"usage":{');
+var isObject3 = (value) => !!value && typeof value === "object" && !Array.isArray(value);
+var isNumber = (value) => typeof value === "number" && Number.isFinite(value);
+var int = (value) => isNumber(value) ? Math.trunc(value) : 0;
+function claudeLine(line) {
+  if (line.indexOf(USAGE) < 0)
+    return [];
+  let object;
+  try {
+    object = JSON.parse(line.toString("utf8"));
+  } catch {
+    return [];
+  }
+  return claudeEntries(object);
+}
+function claudeEntries(object) {
+  if (!isObject3(object) || typeof object.timestamp !== "string")
+    return [];
+  const at = timestamp(object.timestamp);
+  const message = object.message;
+  if (at === undefined || !isObject3(message) || !isObject3(message.usage))
+    return [];
+  const usage = message.usage;
+  if (nullWhereNever(object, message, usage))
+    return [];
+  const parsed = tokensOf(usage);
+  if (!parsed || !valid(object, message))
+    return [];
+  const model = typeof message.model === "string" && message.model !== "<synthetic>" ? message.model : undefined;
+  const parent = {
+    at,
+    tokens: parsed.tokens,
+    ...typeof object.sessionId === "string" ? { session: object.sessionId } : {},
+    ...typeof message.id === "string" ? { message: message.id } : {},
+    ...typeof object.requestId === "string" ? { request: object.requestId } : {},
+    sidechain: object.isSidechain === true,
+    speed: parsed.speed,
+    ...isNumber(object.costUSD) ? { cost: object.costUSD } : {},
+    ...model !== undefined ? { model } : {}
+  };
+  const iterations = usage.iterations;
+  if (!Array.isArray(iterations) || !iterations.every(isObject3))
+    return [parent];
+  const entries = [parent];
+  let advisor = 0;
+  for (const iteration of iterations) {
+    if (iteration.type !== "advisor_message" || typeof iteration.model !== "string" || !iteration.model)
+      continue;
+    const own = tokensOf(iteration);
+    if (!own)
+      continue;
+    entries.push({
+      at,
+      tokens: own.tokens,
+      ...parent.session ? { session: parent.session } : {},
+      ...parent.message !== undefined ? { message: `${parent.message}:advisor:${advisor}` } : {},
+      ...parent.request !== undefined ? { request: parent.request } : {},
+      sidechain: parent.sidechain,
+      speed: own.speed,
+      model: iteration.model
+    });
+    advisor++;
+  }
+  return entries;
+}
+function tokensOf(usage) {
+  if (!isNumber(usage.input_tokens) || !isNumber(usage.output_tokens))
+    return;
+  const speed = typeof usage.speed === "string" ? usage.speed : undefined;
+  if (speed !== undefined && speed !== "fast" && speed !== "standard")
+    return;
+  let cacheWrite5m = 0;
+  let cacheWrite1h = 0;
+  if (isObject3(usage.cache_creation)) {
+    cacheWrite5m = int(usage.cache_creation.ephemeral_5m_input_tokens);
+    cacheWrite1h = int(usage.cache_creation.ephemeral_1h_input_tokens);
+  } else
+    cacheWrite5m = int(usage.cache_creation_input_tokens);
+  return {
+    tokens: { input: Math.trunc(usage.input_tokens), cacheWrite5m, cacheWrite1h, cacheRead: int(usage.cache_read_input_tokens), output: Math.trunc(usage.output_tokens), ...speed === "fast" ? { fast: true } : {} },
+    speed: speed !== undefined
+  };
+}
+function valid(object, message) {
+  if (typeof object.version === "string" && !/^\d+\.\d+\.\d/.test(object.version))
+    return false;
+  for (const value of [object.sessionId, object.requestId, message.id, message.model])
+    if (value === "")
+      return false;
+  return true;
+}
+function nullWhereNever(object, message, usage) {
+  const levels = [
+    [object, ["cwd", "costUSD", "version", "sessionId", "requestId", "isApiErrorMessage"]],
+    [message, ["id", "model"]],
+    [usage, ["speed", "cache_read_input_tokens", "cache_creation_input_tokens"]]
+  ];
+  return levels.some(([container, fields]) => fields.some((field) => container[field] === null));
+}
+function timestamp(raw) {
+  let text = raw.trim();
+  if (!text)
+    return;
+  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/.test(text))
+    text = text.slice(0, 10) + "T" + text.slice(11);
+  if (text.endsWith(" UTC"))
+    text = text.slice(0, -4) + "Z";
+  const match = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(\.\d+)?(Z|[+-]\d{2}:\d{2})?$/.exec(text);
+  if (!match)
+    return;
+  const fraction = (match[2] ?? "").slice(1, 4).padEnd(match[2] ? 3 : 0, "0");
+  const at = Date.parse(`${match[1]}${fraction ? "." + fraction : ""}${match[3] ?? "Z"}`);
+  return Number.isFinite(at) ? at : undefined;
+}
+var total = (entry) => entry.tokens.input + entry.tokens.cacheWrite5m + entry.tokens.cacheWrite1h + entry.tokens.cacheRead + entry.tokens.output;
+function dedupClaude(entries) {
+  const kept = [];
+  const exact = new Map;
+  const byMessage = new Map;
+  const keyOf = (message, request) => `${message}\x00${request ?? "\x01"}`;
+  for (const entry of entries) {
+    if (entry.message === undefined) {
+      kept.push(entry);
+      continue;
+    }
+    const key = keyOf(entry.message, entry.request);
+    const collision = exact.get(key) ?? byMessage.get(entry.message)?.find((index) => entry.sidechain || kept[index].sidechain);
+    if (collision !== undefined) {
+      if (replaces(entry, kept[collision])) {
+        const old = kept[collision];
+        exact.delete(keyOf(old.message, old.request));
+        kept[collision] = entry;
+        exact.set(key, collision);
+      }
+      continue;
+    }
+    exact.set(key, kept.length);
+    byMessage.set(entry.message, [...byMessage.get(entry.message) ?? [], kept.length]);
+    kept.push(entry);
+  }
+  return kept;
+}
+function replaces(candidate, existing) {
+  if (candidate.sidechain !== existing.sidechain)
+    return existing.sidechain;
+  const [a, b] = [total(candidate), total(existing)];
+  if (a !== b)
+    return a > b;
+  return candidate.speed && !existing.speed;
+}
+function keptClaude(entry) {
+  const flags = (entry.sidechain ? 1 : 0) | (entry.speed ? 2 : 0) | (entry.tokens.fast ? 4 : 0);
+  const { input, cacheWrite5m, cacheWrite1h, cacheRead, output } = entry.tokens;
+  return [entry.at, entry.message ?? null, entry.request ?? null, flags, entry.model ?? null, input, cacheWrite5m, cacheWrite1h, cacheRead, output, entry.cost ?? null, ...entry.session ? [entry.session] : []];
+}
+function fromKeptClaude(kept) {
+  const [at, message, request, flags, model, input, cacheWrite5m, cacheWrite1h, cacheRead, output, cost, session] = kept;
+  return {
+    at,
+    ...session ? { session } : {},
+    tokens: { input, cacheWrite5m, cacheWrite1h, cacheRead, output, ...flags & 4 ? { fast: true } : {} },
+    ...message !== null ? { message } : {},
+    ...request !== null ? { request } : {},
+    sidechain: !!(flags & 1),
+    speed: !!(flags & 2),
+    ...cost !== null ? { cost } : {},
+    ...model !== null ? { model } : {}
+  };
+}
+
+// box/src/agents/usage/codex-pricing.ts
+var AUTO_REVIEW = "codex-auto-review";
+var AUTO_REVIEW_FREE_SINCE = Date.parse("2026-10-06T00:00:00Z");
+var RESERVE = "gpt-reserve";
+var RESERVE_PRICED_AS = "gpt-5.6-luna";
+var AUTO_REVIEW_RAN_ON = [
+  ["2026-07-09", "gpt-5.6-luna"],
+  ["2026-04-23", "gpt-5.5"],
+  ["2026-03-05", "gpt-5.4"],
+  ["2026-02-05", "gpt-5.3-codex"],
+  ["2025-12-11", "gpt-5.2-codex"],
+  ["2025-11-13", "gpt-5.1-codex"],
+  ["2025-09-15", "gpt-5-codex"],
+  ["2025-08-07", "gpt-5"]
+].map(([day, model]) => [Date.parse(`${day}T00:00:00Z`), model]);
+var isFreeAutoReview = (model, at) => model === AUTO_REVIEW && at >= AUTO_REVIEW_FREE_SINCE;
+function pricingModelOf(model, at) {
+  if (model !== AUTO_REVIEW || at >= AUTO_REVIEW_FREE_SINCE)
+    return model;
+  return AUTO_REVIEW_RAN_ON.find(([released]) => at >= released)?.[1] ?? "gpt-5";
+}
+var FREE = { input: 0, output: 0, cacheWrite: 0, cacheRead: 0, cacheReadIsExplicit: true, longContextThreshold: 200000, fast: 1 };
+function resolveCodexRates(pricing, model, at) {
+  if (isFreeAutoReview(model, at))
+    return { rates: FREE, rateModel: model, fastAlias: false, baseRates: true };
+  const effective = pricingModelOf(model, at);
+  const canonical = pricing.canonicalName(effective);
+  const fastAlias = canonical.endsWith("-fast");
+  const rateModel = fastAlias ? canonical.slice(0, -"-fast".length) : canonical;
+  const base = pricing.resolve(rateModel);
+  return { rates: base ?? pricing.resolve(effective), rateModel, fastAlias, baseRates: base !== undefined };
+}
+function prepareCodex(pricing, model, at) {
+  const resolution = resolveCodexRates(pricing, model, at);
+  if (!resolution.rates)
+    return;
+  return { rates: adjusted(resolution.rates, resolution.rateModel), fast: resolution.fastAlias && resolution.baseRates };
+}
+function preparedCost(prepared, tokens) {
+  return costDollars(prepared.rates, { ...tokens, fast: prepared.fast });
+}
+function codexCost(rates, tokens, model, fast, ultrafast = false) {
+  const prepared = { rates: adjusted(rates, model), fast: fast || ultrafast };
+  const multiplier = ultrafast ? ultrafastMultiplier(datedBaseModel(model)) : undefined;
+  if (multiplier !== undefined)
+    prepared.rates = { ...prepared.rates, fast: multiplier };
+  return preparedCost(prepared, tokens);
+}
+var ultrafastMultiplier = (base) => base === "gpt-6-astra" ? 6 : undefined;
+function adjusted(rates, model) {
+  const base = datedBaseModel(model);
+  const effective = { ...rates };
+  const long = LONG_CONTEXT[base];
+  if (long) {
+    effective.inputAbove = long[0];
+    effective.outputAbove = long[1];
+    effective.cacheReadAbove = long[2];
+    effective.longContextThreshold = 272000;
+  }
+  if (NO_CACHE_DISCOUNT.has(base) || !rates.cacheReadIsExplicit) {
+    effective.cacheRead = effective.input;
+    effective.cacheReadAbove = effective.inputAbove;
+  }
+  effective.fast = priorityMultiplier(base, rates);
+  return effective;
+}
+function priorityMultiplier(base, rates) {
+  if (base === "gpt-5.5" || base === "gpt-5.5-pro")
+    return 2.5;
+  if (["gpt-5.4", "gpt-5.4-pro", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-astra", "gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna"].includes(base))
+    return 2;
+  return rates.fast === 1 ? 2 : rates.fast;
+}
+var NO_CACHE_DISCOUNT = new Set(["gpt-5.4-pro", "gpt-5.5-pro"]);
+var LONG_CONTEXT = {
+  "gpt-5.4": [5, 22.5, 0.5],
+  "gpt-5.4-pro": [60, 270, 60],
+  "gpt-5.5": [10, 45, 1],
+  "gpt-5.5-pro": [60, 270, 60],
+  "gpt-5.6-sol": [8, 30, 0.8],
+  "gpt-5.6-terra": [4, 18, 0.4],
+  "gpt-5.6-luna": [0.4, 1.8, 0.04],
+  "gpt-6-astra": [20, 75, 2],
+  "gpt-6.1-sol": [4, 15, 0.2],
+  "gpt-6-sol": [4, 15, 0.4],
+  "gpt-6-luna": [0.2, 0.75, 0.02]
+};
+function datedBaseModel(model) {
+  for (const pattern of [/-\d{4}-\d{2}-\d{2}$/, /-\d{8}$/]) {
+    const match = pattern.exec(model);
+    if (match && match.index > 0)
+      return model.slice(0, match.index);
+  }
+  return model;
+}
+
 // box/src/agents/usage/codex-log.ts
 var codexState = () => ({ previous: null, model: null, fast: false, ultrafast: false, sawMeta: false, gate: null });
 var isObject4 = (value) => !!value && typeof value === "object" && !Array.isArray(value);
@@ -24604,6 +24867,7 @@ function codexLine(line, state) {
   }
   if (type === "session_meta" && !state.sawMeta) {
     state.sawMeta = true;
+    state.session = textOf(payload?.id);
     if (payload && isChildMeta(payload)) {
       const created = seconds(object.timestamp);
       state.gate = created !== undefined ? { startedAt: created } : { selfTimed: true };
@@ -24663,6 +24927,7 @@ function codexLine(line, state) {
   return [
     {
       at,
+      ...state.session ? { session: state.session } : {},
       model,
       ...model === RESERVE ? { pricingModel: RESERVE_PRICED_AS } : {},
       input: usage.input,
@@ -24716,10 +24981,10 @@ function codexSlots(events, pricing, since, fallback) {
   }
   return slots;
 }
-var keptCodex = (event) => [event.at, event.model, event.pricingModel ?? null, event.input, event.cached, event.output, event.reasoning, event.total, (event.fast ? 1 : 0) | (event.ultrafast ? 2 : 0)];
+var keptCodex = (event) => [event.at, event.model, event.pricingModel ?? null, event.input, event.cached, event.output, event.reasoning, event.total, (event.fast ? 1 : 0) | (event.ultrafast ? 2 : 0), ...event.session ? [event.session] : []];
 function fromKeptCodex(kept) {
-  const [at, model, pricingModel, input, cached, output, reasoning, total, flags] = kept;
-  return { at, model, ...pricingModel !== null ? { pricingModel } : {}, input, cached, output, reasoning, total, fast: !!(flags & 1), ultrafast: !!(flags & 2) };
+  const [at, model, pricingModel, input, cached, output, reasoning, total, flags, session] = kept;
+  return { at, model, ...session ? { session } : {}, ...pricingModel !== null ? { pricingModel } : {}, input, cached, output, reasoning, total, fast: !!(flags & 1), ultrafast: !!(flags & 2) };
 }
 function codexStateFrom(value) {
   if (!isObject4(value))
@@ -24741,7 +25006,7 @@ function codexStateFrom(value) {
     return;
   if (typeof value.fast !== "boolean" || typeof value.ultrafast !== "boolean" || typeof value.sawMeta !== "boolean")
     return;
-  return { previous, model: value.model, fast: value.fast, ultrafast: value.ultrafast, sawMeta: value.sawMeta, gate };
+  return { ...typeof value.session === "string" ? { session: value.session } : {}, previous, model: value.model, fast: value.fast, ultrafast: value.ultrafast, sawMeta: value.sawMeta, gate };
 }
 
 // box/src/agents/usage/engine-codex.ts
@@ -25055,6 +25320,7 @@ function grokEntries(object) {
     const ticks = numberOf(values.costUsdTicks) ?? (models.length === 1 ? turnTicks : undefined);
     entries.push({
       at,
+      ...typeof params?.sessionId === "string" ? { session: params.sessionId } : {},
       ...event ? { event } : {},
       model,
       tokens: { input: input - cacheRead - cacheWrite, cacheWrite5m: cacheWrite, cacheWrite1h: 0, cacheRead, output: bounded(values.outputTokens) },
@@ -25108,11 +25374,11 @@ function grokSlots(entries, pricing, since) {
 }
 function keptGrok(entry) {
   const { input, cacheWrite5m, cacheRead, output } = entry.tokens;
-  return [entry.at, entry.event ?? null, entry.model, input, cacheWrite5m, cacheRead, output, entry.cost ?? null];
+  return [entry.at, entry.event ?? null, entry.model, input, cacheWrite5m, cacheRead, output, entry.cost ?? null, ...entry.session ? [entry.session] : []];
 }
 function fromKeptGrok(kept) {
-  const [at, event, model, input, cacheWrite5m, cacheRead, output, cost] = kept;
-  return { at, ...event !== null ? { event } : {}, model, tokens: { input, cacheWrite5m, cacheWrite1h: 0, cacheRead, output }, ...cost !== null ? { cost } : {} };
+  const [at, event, model, input, cacheWrite5m, cacheRead, output, cost, session] = kept;
+  return { at, ...session ? { session } : {}, ...event !== null ? { event } : {}, model, tokens: { input, cacheWrite5m, cacheWrite1h: 0, cacheRead, output }, ...cost !== null ? { cost } : {} };
 }
 
 // box/src/agents/usage/antigravity-history.ts
@@ -25295,7 +25561,7 @@ function open(path) {
     return new Database("file:" + path.replace(/[%?#]/g, c => "%" + c.charCodeAt(0).toString(16)) + "?immutable=1", { readonly: true })
   }
 }
-self.onmessage = ({ data: { paths } }) => {
+self.onmessage = ({ data: { paths, withIndex } }) => {
   const events = []
   try {
     for (const path of paths) {
@@ -25317,7 +25583,7 @@ self.onmessage = ({ data: { paths } }) => {
             // embedded timing can still date an otherwise valid generation.
             if (row.data === null) continue
             const event = generationEvent(row.data, row.step ?? undefined)
-            if (event) events.push(event)
+            if (event) events.push(withIndex ? { ...event, index: row.idx } : event)
           }
           if (rows.length < 8) break
         }
@@ -25339,9 +25605,9 @@ class AntigravityHistory {
   databases = new Map;
   combined = new Map;
   failing = new Map;
-  async scan(geminiHome, since) {
+  async scan(geminiHome, since, observe) {
     const problems = new Map;
-    const paths = antigravityDatabases(geminiHome, problems);
+    const paths = antigravityDatabases(geminiHome, problems).filter((path) => !observe || observe.owns(path));
     let cached = this.databases.get(geminiHome);
     if (!cached)
       this.databases.set(geminiHome, cached = new Map);
@@ -25355,6 +25621,7 @@ class AntigravityHistory {
       if (!paths.includes(path) && !problems.has(path))
         failing.delete(path);
     const fail = (path, message) => {
+      observe?.problem?.();
       if (failing.get(path) !== message)
         this.log(`usage: Antigravity's ${path} couldn't be read: ${message}`);
       failing.set(path, message);
@@ -25372,9 +25639,11 @@ class AntigravityHistory {
         }
         if (before?.stamp === stamp.stamp) {
           parts.push(before.events);
+          observe?.take(path, before.events);
           continue;
         }
-        const events = await this.read(path);
+        const events = await this.read(path, !!observe);
+        observe?.take(path, events);
         if (fingerprint2(path).stamp !== stamp.stamp) {
           failing.delete(path);
           parts.push(events);
@@ -25385,8 +25654,10 @@ class AntigravityHistory {
         parts.push(events);
       } catch (error) {
         fail(path, error instanceof Error ? error.message : String(error));
-        if (before)
+        if (before) {
           parts.push(before.events);
+          observe?.take(path, before.events);
+        }
       }
     }
     const previous = this.combined.get(geminiHome);
@@ -25397,7 +25668,7 @@ class AntigravityHistory {
     return events;
   }
 }
-function readAntigravityDatabase(path) {
+function readAntigravityDatabase(path, withIndex = false) {
   readerURL2 ??= URL.createObjectURL(new Blob([READER2], { type: "application/javascript" }));
   const worker = new Worker(readerURL2);
   worker.unref?.();
@@ -25407,7 +25678,7 @@ function readAntigravityDatabase(path) {
     timer.unref?.();
     worker.onmessage = ({ data }) => data.failed ? reject(new Error(data.failed)) : resolve(data.events);
     worker.onerror = (event) => reject(new Error(event.message));
-    worker.postMessage({ paths: [path] });
+    worker.postMessage({ paths: [path], withIndex });
   }).finally(() => {
     clearTimeout(timer);
     worker.terminate();
@@ -25418,7 +25689,7 @@ function readAntigravityDatabase(path) {
 import { createHash as createHash13 } from "crypto";
 import { mkdirSync as mkdirSync21, readFileSync as readFileSync31, renameSync as renameSync17, writeFileSync as writeFileSync22 } from "fs";
 import { join as join35 } from "path";
-var DAY4 = 24 * 60 * 60000;
+var DAY5 = 24 * 60 * 60000;
 var CURSOR_DAYS = 32;
 var MIN_BETWEEN = 60000;
 var integer = (value) => typeof value === "number" && Number.isSafeInteger(value) ? value : undefined;
@@ -25495,7 +25766,7 @@ class CursorHistory {
     if (under)
       return under;
     const last = this.last.get(key);
-    if (last && now >= last.at && now - last.at < MIN_BETWEEN && Math.floor(now / DAY4) === Math.floor(last.at / DAY4))
+    if (last && now >= last.at && now - last.at < MIN_BETWEEN && Math.floor(now / DAY5) === Math.floor(last.at / DAY5))
       return { days: last.days, whole: true };
     const read = this.readFor(client, access, key, now).then((result) => {
       if (result.whole)
@@ -25507,11 +25778,11 @@ class CursorHistory {
   }
   async readFor(client, access, key, now) {
     const token = { access };
-    const today = Math.floor(now / DAY4) * DAY4;
+    const today = Math.floor(now / DAY5) * DAY5;
     const window = Array.from({ length: CURSOR_DAYS }, (_, back) => {
-      const start = today - back * DAY4;
-      const end = Math.min(start + DAY4, now);
-      return { key: dayKey(start), start, end, complete: end === start + DAY4 };
+      const start = today - back * DAY5;
+      const end = Math.min(start + DAY5, now);
+      return { key: dayKey(start), start, end, complete: end === start + DAY5 };
     });
     const keys = new Set(window.map((day) => day.key));
     const cached = new Map([...this.load(key)].filter(([day]) => keys.has(day)));
@@ -25607,7 +25878,7 @@ class CursorHistory {
       if (count === 0 && received < parsed.total)
         return "incomplete";
       for (const event of parsed.events) {
-        if (event.at < day.start || event.at >= day.start + DAY4)
+        if (event.at < day.start || event.at >= day.start + DAY5)
           return "invalid";
         const slot = Math.floor(event.at / SLOT);
         const id = `${slot}
@@ -25756,7 +26027,17 @@ self.onmessage = (event) => {
       const v1 = names.includes("message")
       const v2 = names.includes("session_message")
       if (!v1 && !v2) continue
-      const json = db.query(v1 && v2 ? sql.both : v1 ? sql.v1 : sql.v2).values()[0]?.[0]
+      let query = v1 && v2 ? sql.both : v1 ? sql.v1 : sql.v2
+      if (sql.usage) {
+        for (const [table, message] of [["session", "message"], ["session_v2", "session_message"]]) {
+          const columns = db.query("SELECT name FROM pragma_table_info(?)").values(table).flat()
+          const fact = (column) => columns.includes(column) ? "(SELECT " + column + " FROM " + table + " WHERE id = " + message + ".session_id)" : "NULL"
+          for (const column of ["title", "metadata", "parent_id"]) query = query.replaceAll("@" + table + "_" + column + "@", fact(column))
+        }
+        const legacyParts = db.query("SELECT 1 FROM pragma_table_info('part') WHERE name='data'").get()
+        query = query.replaceAll("@legacy_parts@", legacyParts ? "(SELECT json_group_array(json(p.data)) FROM part p WHERE p.message_id=message.id AND json_valid(p.data) AND json_extract(p.data, '$.type')='tool')" : "NULL")
+      }
+      const json = db.query(query).values()[0]?.[0]
       answers.push(typeof json === "string" ? { path, json } : { path })
     } catch (error) {
       answers.push({ path, failed: error instanceof Error ? error.message : String(error) })
@@ -25793,6 +26074,27 @@ function readEngineDatabases(folder, sql) {
     clearTimeout(timer);
     worker.terminate();
   });
+}
+function engineUsageAnswers(folder, since) {
+  const rows = (table, role, sessionTable, parts) => `
+    SELECT json_array(session_id, id, ${role}, time_created,
+      json_extract(data, '$.time.completed'),
+      COALESCE(json_extract(data, '$.model.providerID'), json_extract(data, '$.providerID')),
+      COALESCE(json_extract(data, '$.model.id'), json_extract(data, '$.modelID')),
+      json_extract(data, '$.agent'), json_extract(data, '$.tokens'),
+      json_extract(data, '$.metadata.source'),
+      json_extract(data, '$.time.origin'),
+      @${sessionTable}_title@, @${sessionTable}_metadata@, @${sessionTable}_parent_id@,
+      (SELECT json_group_array(json_array(COALESCE(json_extract(part.value,'$.name'),json_extract(part.value,'$.tool')),
+          json_extract(part.value,'$.state.input'))) FROM json_each(${parts}) AS part
+        WHERE json_extract(part.value,'$.type') = 'tool' AND json_extract(part.value,'$.state.status') = 'completed'
+          AND lower(COALESCE(json_extract(part.value,'$.name'),json_extract(part.value,'$.tool'))) IN ('skill','read','read_file'))) AS row
+    FROM ${table} WHERE time_created >= ${Math.trunc(since)} AND json_valid(data)
+      AND (${role} IN ('user','assistant') OR (${role} = 'compaction' AND json_extract(data, '$.status') = 'completed'))`;
+  const v1 = rows("message", "json_extract(data, '$.role')", "session", "@legacy_parts@");
+  const v2 = rows("session_message", "type", "session_v2", "json_extract(data, '$.content')");
+  const all = (...parts) => `SELECT json_group_array(json(row)) FROM (${parts.join(" UNION ALL ")})`;
+  return readEngineDatabases(folder, { tables: TABLES_SQL, v1: all(v1), v2: all(v2), both: all(v1, v2), usage: true });
 }
 
 // box/src/agents/usage/engine-hosted.ts
@@ -26120,8 +26422,12 @@ async function headOf(handle, length) {
   return createHash14("sha256").update(buffer.subarray(0, bytesRead)).digest("hex").slice(0, 32);
 }
 
+// box/src/agents/usage/insight-records.ts
+import { createHash as createHash15 } from "crypto";
+var insightKey = (...parts) => createHash15("sha256").update(JSON.stringify(parts)).digest("hex");
+
 // box/src/agents/usage/settings.ts
-import { createHash as createHash15, randomBytes as randomBytes7 } from "crypto";
+import { createHash as createHash16, randomBytes as randomBytes7 } from "crypto";
 import { mkdirSync as mkdirSync23, readFileSync as readFileSync32, renameSync as renameSync19, statSync as statSync14, writeFileSync as writeFileSync24 } from "fs";
 import { dirname as dirname17 } from "path";
 var SETTINGS_UNITS = ["layout", "providers", "totalSpend", "codexFallback", "notifications"];
@@ -26379,7 +26685,7 @@ class UsageSettings {
       const unit = this.units[name];
       return [name, unit.stamp.v, unit.stamp.by, unit.stamp.imported === true, unit.value];
     });
-    return createHash15("sha256").update(canonical(all)).digest("hex").slice(0, 32);
+    return createHash16("sha256").update(canonical(all)).digest("hex").slice(0, 32);
   }
   change(given, knows, based) {
     const values = [];
@@ -26461,8 +26767,8 @@ class UsageSettings {
     } catch {}
   }
 }
-var json9 = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } });
-var answer3 = (settings, extra = {}) => json9({ data: { settings: settings.values(), versions: settings.versions(), imported: settings.imported, notificationAvailability: notificationAvailability(), ...extra } });
+var json10 = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } });
+var answer3 = (settings, extra = {}) => json10({ data: { settings: settings.values(), versions: settings.versions(), imported: settings.imported, notificationAvailability: notificationAvailability(), ...extra } });
 async function settingsRoutes(settings, choices, method, rest, body) {
   if (!rest.length && method === "GET")
     return answer3(settings);
@@ -26471,14 +26777,14 @@ async function settingsRoutes(settings, choices, method, rest, body) {
       return;
     });
     if (!given || typeof given !== "object" || Array.isArray(given))
-      return json9({ message: "Say which settings change, each whole." }, 400);
+      return json10({ message: "Say which settings change, each whole." }, 400);
     if ("codexFallback" in given && given.codexFallback !== null && (typeof given.codexFallback !== "string" || !choices().includes(given.codexFallback))) {
-      return json9({ message: "This model's prices aren't available now. Choose another model or None." }, 400);
+      return json10({ message: "This model's prices aren't available now. Choose another model or None." }, 400);
     }
     const { knows, based, ...parts } = given;
     const changed = settings.change(parts, knowsFrom(knows), based && typeof based === "object" && !Array.isArray(based) ? based : undefined);
     if ("message" in changed)
-      return json9({ message: changed.message }, 400);
+      return json10({ message: changed.message }, 400);
     return answer3(settings, changed.stale.length ? { stale: changed.stale } : {});
   }
   if (rest.length === 1 && rest[0] === "import" && method === "POST") {
@@ -26486,19 +26792,19 @@ async function settingsRoutes(settings, choices, method, rest, body) {
       return;
     });
     if (!given || typeof given !== "object" || Array.isArray(given))
-      return json9({ message: "Say what the settings were." }, 400);
+      return json10({ message: "Say what the settings were." }, 400);
     const { codexFallback, ...rest } = given;
     const usable = codexFallback === null || typeof codexFallback === "string" && choices().includes(codexFallback);
     return answer3(settings, { took: settings.take(usable ? { ...rest, codexFallback } : rest) });
   }
-  return json9({ message: "Not available for this agent." }, 404);
+  return json10({ message: "Not available for this agent." }, 404);
 }
 
 // box/src/agents/usage/usage.ts
 var USAGE_SERVICES = ["claude", "codex", "grok", "opencode", "cursor", "antigravity"];
 var MINUTE3 = 60000;
-var DAY5 = 24 * 60 * MINUTE3;
-var SCAN_EVERY = 5 * MINUTE3;
+var DAY6 = 24 * 60 * MINUTE3;
+var SCAN_EVERY2 = 5 * MINUTE3;
 function usageRows(boxes) {
   const groups = [];
   const found = new Map;
@@ -26582,6 +26888,7 @@ class Usage {
   timer;
   said = "";
   peers;
+  insights;
   services = USAGE_SERVICES;
   kept;
   get settings() {
@@ -26605,7 +26912,7 @@ class Usage {
     pricing.onChange = () => void this.refresh();
   }
   start() {
-    this.timer ??= setInterval(() => void this.tick(), SCAN_EVERY);
+    this.timer ??= setInterval(() => void this.tick(), SCAN_EVERY2);
     this.timer.unref?.();
     this.tick();
   }
@@ -26637,7 +26944,7 @@ class Usage {
     const pricing = this.pricing.current();
     const fallback = this.settings?.codexFallback ?? null;
     const at = this.now();
-    const since = Math.floor((at - KEPT_DAYS * DAY5) / DAY5) * DAY5;
+    const since = Math.floor((at - KEPT_DAYS * DAY6) / DAY6) * DAY6;
     const sources = this.sources();
     let complete = true;
     try {
@@ -26813,38 +27120,38 @@ class Usage {
     } catch {}
   }
 }
-var json10 = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } });
+var json11 = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } });
 async function usageRoutes(usage, method, rest, params, body = async () => ({})) {
   if (!usage)
-    return json10({ message: "Usage isn't read on this computer." }, 503);
+    return json11({ message: "Usage isn't read on this computer." }, 503);
   const zone = params.get("zone");
   if (!rest.length && method === "GET")
-    return json10({ data: usage.view(zone) });
+    return json11({ data: usage.view(zone) });
   if (rest.length === 1 && rest[0] === "pricing" && method === "PUT") {
     const given = (await body())?.codex;
     const model = given && typeof given === "object" ? given.fallback : undefined;
     if (model !== null && typeof model !== "string")
-      return json10({ message: "Say {codex: {fallback}}: a model, or null for none." }, 400);
+      return json11({ message: "Say {codex: {fallback}}: a model, or null for none." }, 400);
     if (!usage.setCodexFallback(model === "" ? null : model))
-      return json10({ message: "This model's prices aren't available now. Choose another model or None." }, 400);
+      return json11({ message: "This model's prices aren't available now. Choose another model or None." }, 400);
     await Promise.race([usage.refresh(), new Promise((resolve) => setTimeout(resolve, 5000).unref?.())]);
-    return json10({ data: usage.view(zone) });
+    return json11({ data: usage.view(zone) });
   }
   if (rest[0] === "settings")
-    return usage.settings ? settingsRoutes(usage.settings, () => usage.codexChoices(), method, rest.slice(1), body) : json10({ message: "Usage settings aren't kept on this computer." }, 503);
+    return usage.settings ? settingsRoutes(usage.settings, () => usage.codexChoices(), method, rest.slice(1), body) : json11({ message: "Usage settings aren't kept on this computer." }, 503);
   if (rest.length === 1 && rest[0] === "refresh" && method === "POST") {
     usage.peers?.refreshElsewhere();
     await Promise.race([usage.refresh(), new Promise((resolve) => setTimeout(resolve, 5000).unref?.())]);
-    return json10({ data: usage.view(zone) });
+    return json11({ data: usage.view(zone) });
   }
-  return json10({ message: "Not available for this agent." }, 404);
+  return json11({ message: "Not available for this agent." }, 404);
 }
 function placeOf(computer, folder, part) {
   let real = folder;
   try {
     real = realpathSync8(folder);
   } catch {}
-  const hash = createHash16("sha256").update(`kuvo-code usage place v2
+  const hash = createHash17("sha256").update(`kuvo-code usage place v2
 `).update(computer).update(`
 `).update(real);
   if (part !== undefined)
@@ -26852,7 +27159,7 @@ function placeOf(computer, folder, part) {
 `).update(part);
   return hash.digest("hex").slice(0, 16);
 }
-function thisComputer(platform = process.platform, read = (path) => readFileSync33(path, "utf8"), macUUID = () => uuidOf(ioreg()), name = hostname2) {
+function thisComputer(platform = process.platform, read = (path) => readFileSync33(path, "utf8"), macUUID = () => uuidOf(ioreg()), name = hostname3) {
   if (platform === "darwin") {
     const uuid = macUUID();
     if (uuid)
@@ -26897,14 +27204,25 @@ function claudeRoots(agent, env = process.env, home = homedir5()) {
   }
   return [...new Set(roots)];
 }
-function claudeSources(folder, computer = ownComputer) {
+function insideUsageHome(home, path) {
+  const inside = (from) => from !== ".." && !from.startsWith(".." + sep11) && !isAbsolute3(from);
+  try {
+    const root = realpathSync8(home);
+    if (!inside(relative6(home, path)) && !inside(relative6(root, path)))
+      return false;
+    return inside(relative6(root, realpathSync8(path)));
+  } catch {
+    return false;
+  }
+}
+function claudeSources(folder, computer = ownComputer, native) {
   const files = new JSONLFiles((line) => claudeLine(line).map(keptClaude), (entry) => entry[0], folder ? join38(folder, "claude-files") : undefined, 1, (entry) => entry[1] === null ? undefined : JSON.stringify(entry.slice(1)));
   const last = new Map;
   return (agents) => agents.flatMap((agent) => {
     const parsed = parseProvider(agent.providerID);
     if (parsed?.kind !== "claude" || !agent.conversationRoots)
       return [];
-    const roots = () => claudeRoots(agent);
+    const roots = () => claudeRoots(agent).filter((path) => !native || native.owns(path));
     const source = {
       provider: agent.providerID,
       service: "claude",
@@ -26921,12 +27239,20 @@ function claudeSources(folder, computer = ownComputer) {
             found.set(file.path, file);
         const ordered = [...found.values()].sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
         await files.refresh(ordered, since);
-        const listed = createHash16("sha256").update(ordered.map((file) => file.path).join(`
+        const listed = createHash17("sha256").update(ordered.map((file) => file.path).join(`
 `)).digest("hex");
         const before = last.get(agent.providerID);
-        if (before && before.version === files.version && before.pricing === pricing && before.since === since && before.listed === listed)
+        if (!native && before && before.version === files.version && before.pricing === pricing && before.since === since && before.listed === listed)
           return before.slots;
-        const slots = claudeSlots(dedupClaude(files.itemsOf(ordered, since).map(fromKeptClaude)), pricing, since);
+        const entries = dedupClaude(files.itemsOf(ordered, since).map(fromKeptClaude));
+        native?.take(agent.providerID, entries.flatMap((entry) => entry.session ? [{
+          session: entry.session,
+          at: entry.at,
+          call: entry.message ?? entry.request ?? insightKey(entry.at, entry.model, entry.tokens),
+          model: entry.model,
+          tokens: entry.tokens
+        }] : []));
+        const slots = native ? noSlots() : claudeSlots(entries, pricing, since);
         last.set(agent.providerID, { version: files.version, pricing, since, listed, slots });
         return slots;
       },
@@ -26967,12 +27293,12 @@ function isFolder(path) {
 }
 function codexSources(folder, fallback = () => {
   return;
-}, computer = ownComputer) {
+}, computer = ownComputer, native) {
   const files = new JSONLFiles((line, state) => codexLine(line, state).map(keptCodex), (entry) => entry[0], folder ? join38(folder, "codex-files") : undefined, 1, (entry) => JSON.stringify(entry.slice(0, 8)), { initial: codexState, from: codexStateFrom });
   const last = new Map;
   return (agents) => {
     const codex = agents.filter((agent) => parseProvider(agent.providerID)?.kind === "codex");
-    const homes = new Map(codex.map((agent) => [agent.providerID, codexHomes(agent)]));
+    const homes = new Map(codex.map((agent) => [agent.providerID, native ? [(agent.conversationRoots?.() ?? []).filter(native.owns)] : codexHomes(agent)]));
     const owner = new Map;
     for (const agent of codex)
       for (const root of homes.get(agent.providerID).flat())
@@ -27011,13 +27337,30 @@ function codexSources(folder, fallback = () => {
             }
           }
           await files.refresh(found, since);
-          const listed = createHash16("sha256").update(found.map((file) => file.path).join(`
+          const listed = createHash17("sha256").update(found.map((file) => file.path).join(`
 `)).digest("hex");
           const model = fallback();
           const before = last.get(agent.providerID);
-          if (before && before.version === files.version && before.pricing === pricing && before.since === since && before.listed === listed && before.fallback === model)
+          if (!native && before && before.version === files.version && before.pricing === pricing && before.since === since && before.listed === listed && before.fallback === model)
             return before.slots;
-          const slots = codexSlots(files.itemsOf(found, since).map(fromKeptCodex), pricing, since, model);
+          const events = files.itemsOf(found, since).map(fromKeptCodex);
+          native?.take(agent.providerID, events.flatMap((event) => event.session ? [{
+            session: event.session,
+            call: insightKey(codexKey(event)),
+            at: event.at,
+            model: event.model,
+            pricingModels: event.pricingModel ? [event.pricingModel] : undefined,
+            tokens: {
+              input: event.input - event.cached,
+              cacheRead: event.cached,
+              output: event.output,
+              cacheWrite5m: 0,
+              cacheWrite1h: 0,
+              fast: event.fast,
+              ultrafast: event.ultrafast
+            }
+          }] : []));
+          const slots = native ? noSlots() : codexSlots(events, pricing, since, model);
           last.set(agent.providerID, { version: files.version, pricing, since, listed, ...model ? { fallback: model } : {}, slots });
           return slots;
         },
@@ -27059,24 +27402,24 @@ function engineCodexSource(folder, signedIn, kept, computer = ownComputer) {
     ];
   };
 }
-function ownerOf(grok) {
+function ownerOf(grok, owns) {
   const owner = new Map;
   for (const agent of grok)
     for (const root of agent.conversationRoots())
-      if (!owner.has(realOf(root)))
+      if ((!owns || owns(root)) && !owner.has(realOf(root)))
         owner.set(realOf(root), agent.providerID);
   return owner;
 }
-function grokSources(folder, computer = ownComputer) {
+function grokSources(folder, computer = ownComputer, native) {
   const files = new JSONLFiles((line) => grokLine(line).map(keptGrok), (entry) => entry[0], folder ? join38(folder, "grok-files") : undefined, 1);
   const last = new Map;
   return (agents) => {
-    const owner = ownerOf(agents.filter((agent) => parseProvider(agent.providerID)?.kind === "grok" && agent.conversationRoots));
+    const owner = ownerOf(agents.filter((agent) => parseProvider(agent.providerID)?.kind === "grok" && agent.conversationRoots), native?.owns);
     return agents.flatMap((agent) => {
       const parsed = parseProvider(agent.providerID);
       if (parsed?.kind !== "grok" || !agent.conversationRoots)
         return [];
-      const roots = () => [...new Set(agent.conversationRoots())].filter((root) => (owner.get(realOf(root)) ?? agent.providerID) === agent.providerID);
+      const roots = () => [...new Set(agent.conversationRoots())].filter((path) => !native || native.owns(path)).filter((root) => (owner.get(realOf(root)) ?? agent.providerID) === agent.providerID);
       const source = {
         provider: agent.providerID,
         service: "grok",
@@ -27094,12 +27437,20 @@ function grokSources(folder, computer = ownComputer) {
                 found.set(file.path, file);
           const ordered = [...found.values()].sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
           await files.refresh(ordered, since);
-          const listed = createHash16("sha256").update(ordered.map((file) => file.path).join(`
+          const listed = createHash17("sha256").update(ordered.map((file) => file.path).join(`
 `)).digest("hex");
           const before = last.get(agent.providerID);
-          if (before && before.version === files.version && before.pricing === pricing && before.since === since && before.listed === listed)
+          if (!native && before && before.version === files.version && before.pricing === pricing && before.since === since && before.listed === listed)
             return before.slots;
-          const slots = grokSlots(dedupGrok(files.itemsOf(ordered, since).map(fromKeptGrok)), pricing, since);
+          if (native)
+            native.take(agent.providerID, ordered.flatMap((file) => dedupGrok(files.itemsOf([file], since).map(fromKeptGrok)).map((entry) => ({
+              session: entry.session ?? basename11(dirname18(file.path)),
+              at: entry.at,
+              model: entry.model,
+              call: entry.event ? insightKey(entry.event, entry.model) : insightKey(entry.at, entry.model, entry.tokens),
+              tokens: entry.tokens
+            }))));
+          const slots = native ? noSlots() : grokSlots(dedupGrok(files.itemsOf(ordered, since).map(fromKeptGrok)), pricing, since);
           last.set(agent.providerID, { version: files.version, pricing, since, listed, slots });
           return slots;
         },
@@ -27225,7 +27576,7 @@ function cursorSources(folder, elsewhere, history = new CursorHistory(folder ? j
           if (read.whole)
             wholeAt.set(agent.providerID, now());
           const days = read.days;
-          const said = createHash16("sha256").update(JSON.stringify([...days])).digest("hex");
+          const said = createHash17("sha256").update(JSON.stringify([...days])).digest("hex");
           const before = last.get(agent.providerID);
           if (before && before.days === said && before.pricing === pricing && before.since === since)
             return before.slots;
@@ -27238,12 +27589,12 @@ function cursorSources(folder, elsewhere, history = new CursorHistory(folder ? j
     });
   };
 }
-function antigravitySources(folder, computer = ownComputer, history = new AntigravityHistory(folder ? join38(folder, "antigravity-files") : undefined)) {
+function antigravitySources(folder, computer = ownComputer, history = new AntigravityHistory(folder ? join38(folder, "antigravity-files") : undefined), native) {
   const last = new Map;
   return (agents) => agents.flatMap((agent) => {
     const parsed = parseProvider(agent.providerID);
     const profile = agent.profile;
-    if (parsed?.kind !== "antigravity" || !profile)
+    if (parsed?.kind !== "antigravity" || !profile || native && !native.owns(profile))
       return [];
     return [{
       provider: agent.providerID,
@@ -27252,11 +27603,24 @@ function antigravitySources(folder, computer = ownComputer, history = new Antigr
       ...agent.instance.label ? { label: agent.instance.label } : {},
       places: () => [placeOf(computer(), profile)],
       slots: async (pricing, since) => {
-        const events = await history.scan(profile, since);
+        const rows = [];
+        const events = await history.scan(profile, since, native && {
+          owns: native.owns,
+          problem: () => native.problem?.("antigravity"),
+          take(path, events) {
+            for (const event of events) {
+              const models = modelCandidates(event.modelID, event.label);
+              const at = event.timestampSeconds * 1000;
+              const tokens = { input: event.inputTokens, output: event.outputTokens, cacheRead: event.cacheReadTokens, cacheWrite5m: 0, cacheWrite1h: 0 };
+              rows.push({ session: basename11(path, ".db"), at, call: event.index === undefined ? insightKey(at, models, tokens) : String(event.index), model: models[0], pricingModels: models, tokens });
+            }
+          }
+        });
+        native?.take(agent.providerID, rows);
         const before = last.get(agent.providerID);
         if (before && before.events === events && before.pricing === pricing && before.since === since)
           return before.slots;
-        const slots = antigravitySlots(events, pricing, since);
+        const slots = native ? noSlots() : antigravitySlots(events, pricing, since);
         last.set(agent.providerID, { events, pricing, since, slots });
         return slots;
       }
@@ -27380,7 +27744,7 @@ async function updateAll(agents, accounts, noted, known) {
 }
 
 // box/src/agents/sessions.ts
-import { createHash as createHash17 } from "crypto";
+import { createHash as createHash18 } from "crypto";
 import { spawn as spawnProcess } from "child_process";
 import { readFileSync as readFileSync34, realpathSync as realpathSync9, statSync as statSync16 } from "fs";
 import { homedir as homedir6 } from "os";
@@ -27572,10 +27936,11 @@ class Turn {
     if (this.compaction)
       this.compacted(false);
     this.justCompacted = false;
+    const origin = this.store.origin?.();
     const step = {
       type: "assistant",
       id: newID("msg"),
-      time: { created: Date.now() },
+      time: { created: Date.now(), origin, usageAccount: origin && this.store.usageAccount?.((model ?? this.model).providerID, origin) },
       agent: this.agent,
       model: model ?? this.model,
       content: []
@@ -28771,7 +29136,7 @@ class Sessions {
     const directory = body.location.directory;
     const session = {
       id: newID("ses"),
-      projectID: "prj_" + createHash17("sha1").update(directory).digest("hex").slice(0, 16),
+      projectID: "prj_" + createHash18("sha1").update(directory).digest("hex").slice(0, 16),
       agent: typeof body.agent === "string" && body.agent ? body.agent : "build",
       model: body.model,
       cost: 0,
@@ -28834,6 +29199,8 @@ class Sessions {
     this.store.add(session);
     const copy = this.store.get(session.id);
     copy.messages = structuredClone(record.messages.slice(0, at));
+    for (const message of copy.messages)
+      message.time.usageSession ??= record.session.id;
     if (record.agent.kuvoInstructions)
       copy.agent.kuvoInstructions = structuredClone(record.agent.kuvoInstructions);
     if (Array.isArray(record.agent.autoHeld))
@@ -29380,7 +29747,7 @@ ${others.join(`
     emit("session.inbox.enqueued", { sessionID: id, inboxID: input.id, item: { type: "user", payload: { text: input.text, files: input.files, metadata: input.metadata }, delivery: "steer" } }, directory);
     emit("session.inbox.delivered", { sessionID: id, inboxID: input.id }, directory);
     const attachments = input.files.map((file) => ({ mime: mime(file.uri), name: file.name, source: { type: "uri", uri: file.uri } }));
-    record.messages.push({ type: "user", id: input.id, time: { created: Date.now() }, text: input.text, files: attachments.length ? attachments : undefined, metadata: input.metadata });
+    record.messages.push({ type: "user", id: input.id, time: { created: Date.now(), origin: this.store.origin?.() }, text: input.text, files: attachments.length ? attachments : undefined, metadata: input.metadata });
     record.session.time.updated = Date.now();
     this.store.save(id, true);
   }
@@ -29464,7 +29831,7 @@ ${others.join(`
     if (input.synthetic)
       record.messages.push({ type: "synthetic", id: input.id, time: { created: Date.now() }, text: input.text, description: input.synthetic.description, metadata: input.synthetic.metadata });
     else
-      record.messages.push({ type: "user", id: input.id, time: { created: Date.now() }, text: input.text, files: attachments.length ? attachments : undefined, metadata: input.metadata });
+      record.messages.push({ type: "user", id: input.id, time: { created: Date.now(), origin: this.store.origin?.() }, text: input.text, files: attachments.length ? attachments : undefined, metadata: input.metadata });
     record.session.time.updated = Date.now();
     if (note?.before && runOf(live.doing) === run) {
       this.notes(record)[input.id] = note;
@@ -29678,7 +30045,7 @@ ${text.slice(0, 4000)}
     if (input.synthetic)
       record.messages.push({ type: "synthetic", id: input.id, time: { created: Date.now() }, text: input.text, description: input.synthetic.description, metadata: input.synthetic.metadata });
     else
-      record.messages.push({ type: "user", id: input.id, time: { created: Date.now() }, text: input.text, files: attachments.length ? attachments : undefined, metadata: input.metadata });
+      record.messages.push({ type: "user", id: input.id, time: { created: Date.now(), origin: this.store.origin?.() }, text: input.text, files: attachments.length ? attachments : undefined, metadata: input.metadata });
     session.time.updated = Date.now();
     this.store.save(id, true);
     if (!input.synthetic && !session.title && !session.parentID && record.messages.filter((message) => message.type === "user").length === 1)
@@ -30911,8 +31278,8 @@ async function signedOut(agent) {
 }
 
 // box/src/agents/artifacts/routes.ts
-var json11 = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } });
-var message = (status, text) => json11({ message: text }, status);
+var json12 = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } });
+var message = (status, text) => json12({ message: text }, status);
 var kinds2 = new Set(["memory", "skill", "image", "page", "document", "download", "code", "file"]);
 var seconds2 = (text) => {
   if (!text)
@@ -30968,7 +31335,7 @@ async function artifactRoutes(store, method, parts, query, body, signal) {
     const scope = scopeOf(query);
     if (typeof scope === "string")
       return message(400, scope);
-    return json11(list(store, scope, Math.min(500, Math.max(1, Number(query.get("limit")) || 200)), beforeOf(query)));
+    return json12(list(store, scope, Math.min(500, Math.max(1, Number(query.get("limit")) || 200)), beforeOf(query)));
   }
   if (first === "events" || first === "timeline" && second === "events") {
     if (method !== "GET")
@@ -30984,7 +31351,7 @@ async function artifactRoutes(store, method, parts, query, body, signal) {
     const scope = scopeOf(query);
     if (typeof scope === "string")
       return message(400, scope);
-    return json11(timeline(store, scope, Math.min(500, Math.max(1, Number(query.get("limit")) || 200)), beforeOf(query)));
+    return json12(timeline(store, scope, Math.min(500, Math.max(1, Number(query.get("limit")) || 200)), beforeOf(query)));
   }
   if (first === "storage") {
     if (!second && method === "POST") {
@@ -30999,17 +31366,17 @@ async function artifactRoutes(store, method, parts, query, body, signal) {
       const refused = store.setBudget(budget, given.confirmed);
       if (refused)
         return message(400, refused);
-      return json11(store.storage());
+      return json12(store.storage());
     }
     if (!second)
-      return method === "GET" ? json11(store.storage()) : message(405, "Read it with GET, or set its budget with POST.");
+      return method === "GET" ? json12(store.storage()) : message(405, "Read it with GET, or set its budget with POST.");
     if (second === "clear" && method === "POST") {
       const given = await body() ?? {};
       const { before } = given;
       if ("was" in given && given.was !== store.storage().older)
         return message(409, "It changed since you read it.");
       const at = typeof before === "number" ? new Date(before * 1000).toISOString() : undefined;
-      return json11({ cleared: store.clearOlder(at), ...store.storage() });
+      return json12({ cleared: store.clearOlder(at), ...store.storage() });
     }
     return message(404, "No such route.");
   }
@@ -31017,7 +31384,7 @@ async function artifactRoutes(store, method, parts, query, body, signal) {
   if (!artifact)
     return message(404, "That isn't in this computer's record.");
   if (!second)
-    return method === "GET" ? json11(clientArtifact(await store.checkGone(artifact.id) ?? artifact, store)) : message(405, "Read it with GET.");
+    return method === "GET" ? json12(clientArtifact(await store.checkGone(artifact.id) ?? artifact, store)) : message(405, "Read it with GET.");
   if (second === "pin") {
     if (method !== "POST")
       return message(405, "Pin it with POST.");
@@ -31025,7 +31392,7 @@ async function artifactRoutes(store, method, parts, query, body, signal) {
     if (typeof pinned !== "boolean")
       return message(400, "Say whether it's pinned (pinned).");
     const changed = await store.pin(artifact.id, pinned ? { by: "you", ...typeof note === "string" && note.trim() ? { note: note.trim() } : {} } : null);
-    return changed ? json11(clientArtifact(changed, store)) : message(409, "It couldn't be kept now. Try again in a moment.");
+    return changed ? json12(clientArtifact(changed, store)) : message(409, "It couldn't be kept now. Try again in a moment.");
   }
   if (second === "restore") {
     if (method !== "POST")
@@ -31034,7 +31401,7 @@ async function artifactRoutes(store, method, parts, query, body, signal) {
     if (!Number.isInteger(version))
       return message(400, "Say which version to put back (version).");
     const restored = await store.restore(artifact.id, version);
-    return typeof restored === "string" ? message(409, restored) : json11(clientArtifact(restored, store));
+    return typeof restored === "string" ? message(409, restored) : json12(clientArtifact(restored, store));
   }
   if (second === "versions" && third !== undefined) {
     const n = Number(third);
@@ -31056,15 +31423,15 @@ async function artifactRoutes(store, method, parts, query, body, signal) {
       if (version.reason && privateReasons.has(version.reason))
         return message(410, notKept(version));
       if (version.patch)
-        return json11({ style: "lines", patch: version.patch, added: version.lines?.added ?? 0, removed: version.lines?.removed ?? 0, from: from?.n ?? null, to: n });
+        return json12({ style: "lines", patch: version.patch, added: version.lines?.added ?? 0, removed: version.lines?.removed ?? 0, from: from?.n ?? null, to: n });
       if (!isText(artifact.type)) {
-        return json11({ style: artifact.kind === "image" || artifact.type === "application/pdf" ? "pair" : "none", from: from?.n ?? null, to: n });
+        return json12({ style: artifact.kind === "image" || artifact.type === "application/pdf" ? "pair" : "none", from: from?.n ?? null, to: n });
       }
       const after = version.status === "deleted" ? "" : store.bytes(artifact.id, n);
       const before = from ? from.status === "deleted" ? "" : store.bytes(artifact.id, from.n) : "";
       if (after === null || after === undefined || before === null || before === undefined)
         return message(410, version.kept ? "The version before isn't kept, so what changed can't be shown." : notKept(version));
-      return json11({ ...changes(before.toString(), after.toString(), isProse(artifact.path)), from: from?.n ?? null, to: n });
+      return json12({ ...changes(before.toString(), after.toString(), isProse(artifact.path)), from: from?.n ?? null, to: n });
     }
   }
   return message(404, "No such route.");
@@ -31081,7 +31448,7 @@ async function notedRoute(noted, method, body) {
     return message(400, "Say whose it is (session).");
   if (via !== "download")
     return message(400, "Say how it came (via: download).");
-  return await noted(session, path, via) ? json11({ ok: true }) : message(404, "There's no such conversation on this computer.");
+  return await noted(session, path, via) ? json12({ ok: true }) : message(404, "There's no such conversation on this computer.");
 }
 function notKept(version) {
   if (version.status === "deleted")
@@ -31160,10 +31527,10 @@ function followed(store, read, signal) {
 }
 
 // box/src/agents/carry.ts
-import { createHash as createHash18 } from "crypto";
+import { createHash as createHash19 } from "crypto";
 import { createReadStream } from "fs";
 import { copyFile, lstat as lstat2, mkdir, readFile as readFile4, readdir as readdir2, rename, rm, stat as stat3, writeFile } from "fs/promises";
-import { basename as basename12, dirname as dirname20, isAbsolute as isAbsolute3, join as join40, normalize, sep as sep11 } from "path";
+import { basename as basename12, dirname as dirname20, isAbsolute as isAbsolute4, join as join40, normalize, sep as sep12 } from "path";
 var WORKING = 423;
 
 class CantCarry extends Error {
@@ -31174,7 +31541,7 @@ class CantCarry extends Error {
   }
 }
 async function hashOf(file) {
-  const hash = createHash18("sha256");
+  const hash = createHash19("sha256");
   for await (const chunk of createReadStream(file))
     hash.update(chunk);
   return hash.digest("hex");
@@ -31192,7 +31559,7 @@ async function plainFiles(from, link, at = "") {
   return files;
 }
 var digestOf = (records, lanes, said = []) => {
-  const hash = createHash18("sha256");
+  const hash = createHash19("sha256");
   for (const record of records)
     hash.update(`r ${record.path} ${record.size} ${record.sha256}
 `);
@@ -31208,7 +31575,7 @@ var digestOf = (records, lanes, said = []) => {
   }
   return hash.digest("base64url");
 };
-var safeWithin = (name) => Boolean(name) && !isAbsolute3(name) && normalize(name) === name && !name.split(sep11).includes("..");
+var safeWithin = (name) => Boolean(name) && !isAbsolute4(name) && normalize(name) === name && !name.split(sep12).includes("..");
 var ID2 = /^ses_[A-Za-z0-9]{1,60}$/;
 var QUIET = { still: 400, most: 5000 };
 
@@ -31276,6 +31643,15 @@ class Carrying {
     let at = 0;
     for (const record of family) {
       const id = record.session.id;
+      const origin = this.store.origin?.();
+      if (origin)
+        for (const message of record.messages) {
+          if (message.type !== "user" && message.type !== "assistant")
+            continue;
+          message.time.origin ??= origin;
+          if (message.type === "assistant")
+            message.time.usageAccount ??= this.store.usageAccount?.(message.model.providerID, message.time.origin);
+        }
       this.store.save(id, true);
       const marks = record.session.metadata ?? {};
       const archived = record.session.time.archived ?? marks["kuvo.archived"] ?? marks.kuvo?.archived ?? null;
@@ -31482,7 +31858,7 @@ class Carrying {
           const { chat: _, ...kuvo } = session.metadata?.kuvo ?? {};
           session.metadata = { ...session.metadata ?? {}, kuvo: chat ? { ...kuvo, chat } : kuvo };
         }
-        session.projectID = "prj_" + createHash18("sha1").update(directory).digest("hex").slice(0, 16);
+        session.projectID = "prj_" + createHash19("sha1").update(directory).digest("hex").slice(0, 16);
         delete agent.snapshots;
         const lanesHere = manifest.lanes.filter((lane) => lane.session === id);
         const threads = agent.threads ?? {};
@@ -31498,12 +31874,12 @@ class Carrying {
             kept[here] = slot;
             const where = host.conversationPlace(slot.state, session);
             for (const file of lane.list) {
-              const conversation = join40("lanes", String(manifest.lanes.indexOf(lane)), "conversation") + sep11;
+              const conversation = join40("lanes", String(manifest.lanes.indexOf(lane)), "conversation") + sep12;
               const memory = join40("lanes", String(manifest.lanes.indexOf(lane)), "memory");
-              const dest = file.path.startsWith(conversation) ? where.item(file.path.slice(conversation.length)) : file.path === memory ? where.memory ?? null : file.path.startsWith(memory + sep11) && where.memory ? join40(where.memory, file.path.slice(memory.length + 1)) : null;
+              const dest = file.path.startsWith(conversation) ? where.item(file.path.slice(conversation.length)) : file.path === memory ? where.memory ?? null : file.path.startsWith(memory + sep12) && where.memory ? join40(where.memory, file.path.slice(memory.length + 1)) : null;
               if (!dest)
                 throw new CantCarry("its conversation didn't come whole");
-              if (inUse.some((path) => dest === path || dest.startsWith(path + sep11)))
+              if (inUse.some((path) => dest === path || dest.startsWith(path + sep12)))
                 throw new CantCarry("its conversation is one here already");
               stillOn();
               await undo.put(join40(from, file.path), dest, file, Boolean(where.memoryMerges && !file.path.startsWith(conversation)));
@@ -31587,7 +31963,7 @@ class Carrying {
     for (const lane of left) {
       const named = parseProvider(lane.provider);
       const agents = named ? this.accountsOf(named.kind) : [];
-      const roots = (this.agentOf(lane.provider)?.conversationRoots?.() ?? agents.flatMap((agent) => agent.conversationRoots?.() ?? [])).map((root) => root + sep11);
+      const roots = (this.agentOf(lane.provider)?.conversationRoots?.() ?? agents.flatMap((agent) => agent.conversationRoots?.() ?? [])).map((root) => root + sep12);
       const ours = (path) => roots.some((root) => path.startsWith(root) && normalize(path) === path);
       for (const path of lane.paths) {
         if (!ours(path) || live.has(path)) {
@@ -35868,15 +36244,15 @@ function namedBlock(text, directory, excluding = new Set) {
 }
 
 // box/src/agents/groups/routes.ts
-var json12 = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } });
-var error = (status, message) => json12({ message }, status);
+var json13 = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } });
+var error = (status, message) => json13({ message }, status);
 async function groupRoutes(runner, store, method, parts, body) {
   if (!runner || !store)
     return error(404, "Group chats run on the Mac here.");
   const [id, action] = parts;
   if (!id) {
     if (method === "GET")
-      return json12({ version: version2, data: runner.list() });
+      return json13({ version: version2, data: runner.list() });
     return error(405, "Not allowed");
   }
   if ((id === "box-settings" || id === "clock" || id === "settings") && method === "PUT" && action === undefined) {
@@ -35900,14 +36276,14 @@ async function groupRoutes(runner, store, method, parts, body) {
     const after = store.settings();
     if (JSON.stringify([before?.askFirst, before?.denies]) !== JSON.stringify([after?.askFirst, after?.denies]))
       runner.rulesChanged();
-    return json12({});
+    return json13({});
   }
   if (!/^grp_[a-z0-9]+$/.test(id))
     return error(404, "No such chat.");
   if (!action) {
     if (method === "GET") {
       const chat = runner.get(id);
-      return chat ? json12({ version: version2, data: chat }) : error(404, "No such chat.");
+      return chat ? json13({ version: version2, data: chat }) : error(404, "No such chat.");
     }
     if (method === "PUT") {
       const { group, messages, status, replace } = await body();
@@ -35915,7 +36291,7 @@ async function groupRoutes(runner, store, method, parts, body) {
         return error(400, "That isn't a group chat.");
       if (!runner.put(group, messages ?? [], status === "active" ? "active" : "held", replace === true))
         return error(409, "That chat is here already.");
-      return json12({ data: runner.get(id) });
+      return json13({ data: runner.get(id) });
     }
     if (method === "PATCH") {
       const edits = await body();
@@ -35936,12 +36312,12 @@ async function groupRoutes(runner, store, method, parts, body) {
         return error(400, "That isn't a meeting.");
       if (edits?.members !== undefined && !(Array.isArray(edits.members) && edits.members.every((member) => typeof member === "string")))
         return error(400, "Those aren't bots.");
-      return await runner.update(id, edits ?? {}) ? json12({ data: runner.get(id) }) : error(404, "No such chat.");
+      return await runner.update(id, edits ?? {}) ? json13({ data: runner.get(id) }) : error(404, "No such chat.");
     }
     if (method === "DELETE") {
       if (runner.get(id)?.status === "held")
         return error(409, "That chat is moving.");
-      return await runner.delete(id) ? json12({}) : error(404, "No such chat.");
+      return await runner.delete(id) ? json13({}) : error(404, "No such chat.");
     }
     return error(405, "Not allowed");
   }
@@ -35953,12 +36329,12 @@ async function groupRoutes(runner, store, method, parts, body) {
   switch (action) {
     case "activate":
       runner.activate(id);
-      return json12({ data: runner.get(id) });
+      return json13({ data: runner.get(id) });
     case "hold":
-      return json12({ data: runner.hold(id) });
+      return json13({ data: runner.hold(id) });
     case "release":
       runner.release(id);
-      return json12({});
+      return json13({});
   }
   if (found.status !== "active")
     return error(409, "That chat is moving.");
@@ -35970,32 +36346,32 @@ async function groupRoutes(runner, store, method, parts, body) {
       const members = new Set(found.group.members.flatMap((member) => store.bot(member)?.sessionID ?? runner.peers?.bots().find((bot) => bot.id === member)?.session ?? []));
       const named = typeof text === "string" ? namedBlock(text, readDirectory(store.agentsFile), members) : undefined;
       const message = typeof text === "string" ? runner.send(id, text, named) : undefined;
-      return message ? json12({ data: message }) : error(400, "Nothing to send.");
+      return message ? json13({ data: message }) : error(400, "Nothing to send.");
     }
     case "stop":
       runner.stop(id);
-      return json12({});
+      return json13({});
     case "keep-going":
       runner.keepGoing(id);
-      return json12({});
+      return json13({});
     case "undo": {
       const { message } = await body();
       const text = typeof message === "string" ? runner.undo(id, message) : undefined;
-      return text === undefined ? error(404, "No such message.") : json12({ data: { text } });
+      return text === undefined ? error(404, "No such message.") : json13({ data: { text } });
     }
     case "start-work": {
       const { wrapUp } = await body();
       if (typeof wrapUp === "string")
         runner.startWork(wrapUp, id);
-      return json12({});
+      return json13({});
     }
   }
   return error(404, "Not found");
 }
 
 // box/src/agents/groups/link.ts
-var json13 = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } });
-var message2 = (status, text) => json13({ message: text }, status);
+var json14 = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } });
+var message2 = (status, text) => json14({ message: text }, status);
 var seconds3 = (text) => {
   const time = Date.parse(text ?? "");
   return Number.isFinite(time) ? time / 1000 : undefined;
@@ -36147,7 +36523,7 @@ function joinable(runner, store) {
 }
 async function linkRoutes(runner, store, method, parts, body, signal) {
   if (!runner || !store)
-    return json13({}, 404);
+    return json14({}, 404);
   const [id, action] = parts;
   const here = () => {
     const { here, there } = bots(runner, store);
@@ -36155,21 +36531,21 @@ async function linkRoutes(runner, store, method, parts, body, signal) {
   };
   if (!id || id === "events") {
     if (method === "GET")
-      return id ? following(() => list2(runner, store), undefined, signal) : json13(list2(runner, store));
+      return id ? following(() => list2(runner, store), undefined, signal) : json14(list2(runner, store));
     if (method === "POST" && !id)
       return await make(runner, store, await body().catch(() => {
         return;
       }), here());
-    return json13({}, 405);
+    return json14({}, 405);
   }
   if (id === "joinable")
-    return method === "GET" ? json13({ bots: joinable(runner, store) }) : json13({}, 405);
+    return method === "GET" ? json14({ bots: joinable(runner, store) }) : json14({}, 405);
   if (!/^grp_[a-z0-9]+$/.test(id))
-    return json13({}, 404);
+    return json14({}, 404);
   if (method === "GET" && (!action || action === "events")) {
     if (!chat(runner, store, id))
-      return json13({}, 404);
-    return action ? following((withMessages) => chat(runner, store, id, withMessages), id, signal) : json13(chat(runner, store, id));
+      return json14({}, 404);
+    return action ? following((withMessages) => chat(runner, store, id, withMessages), id, signal) : json14(chat(runner, store, id));
   }
   if (method === "PATCH" && !action) {
     const given = await body().catch(() => {
@@ -36203,18 +36579,18 @@ async function linkRoutes(runner, store, method, parts, body, signal) {
     const asked = await ask(runner, store, "PATCH", [id], edits);
     if (asked.status !== 200)
       return message2([400, 404, 409].includes(asked.status) ? asked.status : 503, asked.value?.message ?? "The group chat couldn\u2019t be changed.");
-    return json13({ group: list2(runner, store).groups.find((each) => each.id === id) ?? null });
+    return json14({ group: list2(runner, store).groups.find((each) => each.id === id) ?? null });
   }
   if (method === "DELETE" && !action) {
     const asked = await ask(runner, store, "DELETE", [id]);
     if (asked.status === 200 || asked.status === 404 && asked.value?.message === "No such chat.")
-      return json13({});
+      return json14({});
     if (asked.status === 409)
       return message2(409, "That chat is moving. Try again once it\u2019s there.");
     return message2(503, asked.value?.message ?? "The group chat couldn\u2019t be deleted. Try again in a moment.");
   }
   if (method !== "POST" || action === "events")
-    return json13({}, 405);
+    return json14({}, 405);
   const given = await body().catch(() => {
     return;
   }) ?? {};
@@ -36222,7 +36598,7 @@ async function linkRoutes(runner, store, method, parts, body, signal) {
   switch (action) {
     case undefined:
       if (typeof given.text !== "string" || !trim(given.text))
-        return json13({}, 400);
+        return json14({}, 400);
       asked = await ask(runner, store, "POST", [id, "send"], { text: given.text, ...typeof given.named === "string" ? { named: given.named } : {} });
       if (asked.status === 400 && asked.value?.message)
         return message2(400, asked.value.message);
@@ -36236,21 +36612,21 @@ async function linkRoutes(runner, store, method, parts, body, signal) {
       break;
     case "undo": {
       if (typeof given.message !== "string")
-        return json13({}, 404);
+        return json14({}, 404);
       asked = await ask(runner, store, "POST", [id, "undo"], { message: given.message });
       if (asked.status !== 200)
-        return json13({}, failed(asked.status));
-      return json13({ text: asked.value?.data?.text ?? "" });
+        return json14({}, failed(asked.status));
+      return json14({ text: asked.value?.data?.text ?? "" });
     }
     case "start":
       if (typeof given.message !== "string")
-        return json13({}, 404);
+        return json14({}, 404);
       asked = await ask(runner, store, "POST", [id, "start-work"], { wrapUp: given.message });
       break;
     default:
-      return json13({}, 404);
+      return json14({}, 404);
   }
-  return json13({}, asked.status === 200 ? 200 : failed(asked.status));
+  return json14({}, asked.status === 200 ? 200 : failed(asked.status));
 }
 async function make(runner, store, given, here) {
   if (!given || typeof given !== "object" || Array.isArray(given))
@@ -36277,7 +36653,7 @@ async function make(runner, store, given, here) {
   if (!runner.put({ id, name, ...purpose ? { purpose } : {}, members, seats: {}, heard: {}, created: now, viewed: now, ...meeting ? { meeting } : {} }, [], "active", false)) {
     return message2(409, "That chat is here already.");
   }
-  return json13({ group: list2(runner, store).groups.find((each) => each.id === id) ?? null }, 201);
+  return json14({ group: list2(runner, store).groups.find((each) => each.id === id) ?? null }, 201);
 }
 
 // box/src/agents/groups/post.ts
@@ -36287,12 +36663,12 @@ import { existsSync as existsSync20, readFileSync as readFileSync38, renameSync 
 var SEAT_MAIL_KINDS = ["turn", "state", "result", "steer", "stop", "drop", "work", "held", "report", "memory"];
 
 // box/src/agents/usage/usage-peers.ts
-import { createHash as createHash19 } from "crypto";
+import { createHash as createHash20 } from "crypto";
 import { mkdirSync as mkdirSync26, readFileSync as readFileSync37, renameSync as renameSync22, writeFileSync as writeFileSync27 } from "fs";
 import { dirname as dirname21 } from "path";
 var isUsageMail = (value) => value !== null && typeof value === "object" && value.kind === "usage";
 var MINUTE4 = 60000;
-var DAY6 = 24 * 60 * MINUTE4;
+var DAY7 = 24 * 60 * MINUTE4;
 var TELL_AGAIN = 10 * MINUTE4;
 var PEER_AWAY = 25 * MINUTE4;
 var SKEW = MINUTE4;
@@ -36483,7 +36859,7 @@ class UsagePeers {
   }
   lastDigest;
   shared() {
-    const start = Math.floor(Math.floor((this.now() - KEPT_DAYS * DAY6) / DAY6) * DAY6) / SLOT;
+    const start = Math.floor(Math.floor((this.now() - KEPT_DAYS * DAY7) / DAY7) * DAY7) / SLOT;
     const accounts = this.usage.own().slice(0, MOST_ACCOUNTS).flatMap((own) => {
       const taken = takenAccount(toldOf2(own), 0, Infinity);
       return taken ? [{ ...toldOf2(taken), slots: fromSlot(keptSlots(taken.slots), start), whole: start }] : [];
@@ -36562,7 +36938,7 @@ class UsagePeers {
 }
 function digestOf2(accounts) {
   const canonical = accounts.map((account) => [account.provider, account.service, account.agent ?? null, account.account ?? null, account.label ?? null, account.identity ?? null, account.cut === true, account.places ?? [], account.slots.models, account.slots.used, account.slots.unknown ?? []]);
-  return createHash19("sha256").update(JSON.stringify(canonical)).digest("hex").slice(0, 32);
+  return createHash20("sha256").update(JSON.stringify(canonical)).digest("hex").slice(0, 32);
 }
 var toldOf2 = ({ slots, ...account }) => ({ ...account, slots: keptSlots(slots) });
 function fromSlot(slots, first) {
@@ -37349,10 +37725,10 @@ function gaveUp(parts, to, mail, at) {
       return;
   }
 }
-var json14 = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } });
+var json15 = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } });
 async function peerRoutes(parts, method, path, body, signal) {
   if (!parts)
-    return json14({ message: "Group chats don't run here." }, 404);
+    return json15({ message: "Group chats don't run here." }, 404);
   const [what] = path;
   if (what === "mail" && method === "GET")
     return parts.post.follow(signal);
@@ -37362,54 +37738,58 @@ async function peerRoutes(parts, method, path, body, signal) {
     });
     if (typeof given?.from === "string" && given.from && isLimitsMail(given.mail)) {
       parts.limits?.take(given.from, given.mail);
-      return json14({});
+      return json15({});
+    }
+    if (typeof given?.from === "string" && given.from && isInsightsMail(given.mail)) {
+      parts.insights?.take(given.from, given.mail);
+      return json15({});
     }
     if (typeof given?.from === "string" && given.from && isUsageMail(given.mail)) {
       parts.usage?.take(given.from, given.mail);
-      return json14({});
+      return json15({});
     }
     if (typeof given?.from === "string" && given.from && isResetMail(given.mail)) {
       parts.resets?.take(given.from, given.mail);
-      return json14({});
+      return json15({});
     }
     if (typeof given?.from === "string" && given.from && isSettingsMail(given.mail)) {
       parts.settings?.take(given.from, given.mail);
-      return json14({});
+      return json15({});
     }
     if (!parts.server || !parts.runner)
-      return json14({ message: "Group chats don't run here." }, 404);
+      return json15({ message: "Group chats don't run here." }, 404);
     if (typeof given?.from !== "string" || !given.from || !isSeatMail(given.mail))
-      return json14({ message: "That isn't group chat mail." }, 400);
+      return json15({ message: "That isn't group chat mail." }, 400);
     receive(parts, given.from, given.mail);
-    return json14({});
+    return json15({});
   }
   if (what === "gaveup" && method === "POST") {
     if (!parts.server || !parts.runner)
-      return json14({ message: "Group chats don't run here." }, 404);
+      return json15({ message: "Group chats don't run here." }, 404);
     const given = await body().catch(() => {
       return;
     });
     if (typeof given?.to !== "string" || !given.to || !isSeatMail(given.mail))
-      return json14({ message: "That isn't group chat mail." }, 400);
+      return json15({ message: "That isn't group chat mail." }, 400);
     if (!parts.directory.told)
-      return json14({ message: "Not yet." }, 503);
+      return json15({ message: "Not yet." }, 503);
     gaveUp(parts, given.to, given.mail, typeof given.at === "number" ? given.at : undefined);
-    return json14({});
+    return json15({});
   }
   if (what === "sent" && method === "POST") {
     const given = await body().catch(() => {
       return;
     });
     if (!Array.isArray(given?.ids) || !given.ids.every((id) => typeof id === "string"))
-      return json14({ message: "Those aren't mail." }, 400);
+      return json15({ message: "Those aren't mail." }, 400);
     parts.post.sent(given.ids);
-    return json14({});
+    return json15({});
   }
   if (!what && method === "PUT")
     return parts.directory.set(await body().catch(() => {
       return;
-    })) ? json14({}) : json14({ message: "That isn't who your computers are." }, 400);
-  return json14({ message: "Not found" }, 404);
+    })) ? json15({}) : json15({ message: "That isn't who your computers are." }, 400);
+  return json15({ message: "Not found" }, 404);
 }
 
 class LinkDirectory {
@@ -37584,9 +37964,9 @@ setInterval(() => {
     attempts.delete(id);
   }
 }, 60000).unref?.();
-var json15 = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } });
-var located = (value) => json15({ location: { directory: process.cwd() }, data: value });
-var error2 = (status, message) => json15({ message }, status);
+var json16 = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } });
+var located = (value) => json16({ location: { directory: process.cwd() }, data: value });
+var error2 = (status, message) => json16({ message }, status);
 var lastSeen = new Map;
 var lastMaintained = new Map;
 function maintainedNow(agent, value) {
@@ -37701,7 +38081,7 @@ function handler(context) {
         return error2(404, "Not found");
       const [, area, a, b, c, d, e] = parts;
       if (area === "info")
-        return json15({ version: context.version, pid: process.pid, build: context.build ?? null });
+        return json16({ version: context.version, pid: process.pid, build: context.build ?? null });
       if (area === "event")
         return feed();
       if (area === "integration") {
@@ -37750,13 +38130,13 @@ function handler(context) {
             if (!pending.attempt.complete)
               return error2(400, "This sign-in finishes in the browser.");
             await pending.attempt.complete(String(code ?? ""));
-            return json15({});
+            return json16({});
           }
           if (method === "DELETE") {
             pending.stop();
             pending.attempt.cancel();
             attempts.delete(d);
-            return json15({});
+            return json16({});
           }
         }
         if (b === "connect" && c === "key" && method === "POST") {
@@ -37765,7 +38145,7 @@ function handler(context) {
             return error2(400, `${agent.name} doesn't take a key here.`);
           await agent.signInWithKey(String(key ?? "").trim());
           signIns.ask(agent).then(() => context.limits?.readAgain(agent.providerID)).then(() => context.usage?.refresh()).catch(() => {});
-          return json15({});
+          return json16({});
         }
         if (b === "install" && method === "POST") {
           if (!agent.installProgram)
@@ -37779,7 +38159,7 @@ function handler(context) {
             emit("integration.updated", { integrationID: agent.providerID });
             emit("model.updated", {});
           }
-          return json15({ data: result });
+          return json16({ data: result });
         }
         if (b === "disconnect" && method === "POST") {
           if (!agent.signOut)
@@ -37788,7 +38168,7 @@ function handler(context) {
           await signIns.ask(agent);
           emit("integration.updated", { integrationID: agent.providerID });
           emit("model.updated", {});
-          return json15({});
+          return json16({});
         }
       }
       if (area === "model") {
@@ -37815,46 +38195,46 @@ function handler(context) {
           return read ? located(read) : error2(404, "No such command.");
         }
         if (a && !b && method === "DELETE")
-          return await stopShell(a) ? json15({}) : error2(404, "No such command.");
+          return await stopShell(a) ? json16({}) : error2(404, "No such command.");
       }
       if (area === "session") {
         if (!a) {
           if (method === "POST")
-            return json15({ data: sessions.create(await body()) });
+            return json16({ data: sessions.create(await body()) });
           const directory = url.searchParams.get("directory") ?? undefined;
           const under = url.searchParams.get("parentID") ?? url.searchParams.get("cursor")?.split(":")[2] ?? null;
           const roots = sessions.list(directory, under === null || under === "" ? undefined : under === "null" ? null : under);
           const ordered = url.searchParams.get("cursor")?.startsWith("asc") || url.searchParams.get("order") === "asc" ? [...roots].reverse() : roots;
-          return json15(page(ordered, url));
+          return json16(page(ordered, url));
         }
         if (a === "active")
-          return json15({ data: Object.fromEntries(sessions.active().map((id) => [id, { type: "busy" }])) });
+          return json16({ data: Object.fromEntries(sessions.active().map((id) => [id, { type: "busy" }])) });
         if (a === "background")
-          return json15({ data: sessions.background() });
+          return json16({ data: sessions.background() });
         if (a === "import" && method === "POST")
-          return json15({ data: sessions.importSession(await body()) });
+          return json16({ data: sessions.importSession(await body()) });
         const id = a;
         if (!b) {
           if (method === "GET")
-            return json15({ data: sessions.get(id) });
+            return json16({ data: sessions.get(id) });
           if (method === "PATCH") {
             sessions.update(id, await body());
-            return json15({ data: sessions.get(id) });
+            return json16({ data: sessions.get(id) });
           }
           if (method === "DELETE") {
             await sessions.remove(id);
-            return json15({});
+            return json16({});
           }
         }
         switch (b) {
           case "compact":
             if (method === "POST")
-              return json15({ data: sessions.compact(id) });
+              return json16({ data: sessions.compact(id) });
             break;
           case "background":
             if (method === "DELETE") {
               await sessions.stopBackground(id);
-              return json15({});
+              return json16({});
             }
             break;
           case "message": {
@@ -37863,45 +38243,45 @@ function handler(context) {
             const ordered = asc ? messages : [...messages].reverse();
             if (c) {
               const found = messages.find((message) => message.id === c);
-              return found ? json15({ data: found }) : error2(404, "No such message.");
+              return found ? json16({ data: found }) : error2(404, "No such message.");
             }
-            return json15(page(ordered, url));
+            return json16(page(ordered, url));
           }
           case "inbox":
             if (method === "DELETE" && c) {
               sessions.cancelInput(id, c);
-              return json15({});
+              return json16({});
             }
             if (method === "PATCH" && c) {
               const asked = await body();
               sessions.setDelivery(id, c, asked.delivery, asked.into === true);
-              return json15({});
+              return json16({});
             }
-            return json15({ data: sessions.inbox(id) });
+            return json16({ data: sessions.inbox(id) });
           case "prompt": {
             const input = await body();
             sessions.prompt(id, { id: input.id ?? newID("msg"), text: String(input.text ?? ""), files: input.files ?? [], delivery: input.delivery ?? "steer", metadata: input.metadata && typeof input.metadata === "object" && !Array.isArray(input.metadata) ? input.metadata : undefined });
-            return json15({});
+            return json16({});
           }
           case "fork":
-            return json15({ data: sessions.fork(id, String((await body()).before ?? "")) });
+            return json16({ data: sessions.fork(id, String((await body()).before ?? "")) });
           case "revert":
             if (c === "stage" && method === "POST")
-              return json15({ data: await sessions.stageRevert(id, String((await body()).messageID ?? "")) });
+              return json16({ data: await sessions.stageRevert(id, String((await body()).messageID ?? "")) });
             if (!c && method === "DELETE") {
               await sessions.clearRevert(id);
-              return json15({});
+              return json16({});
             }
             break;
           case "shell":
             if (method !== "POST")
               break;
             sessions.runShell(id, String((await body()).command ?? ""));
-            return json15({});
+            return json16({});
           case "synthetic": {
             const input = await body();
             sessions.synthetic(id, String(input.text ?? ""), typeof input.description === "string" ? input.description : undefined);
-            return json15({});
+            return json16({});
           }
           case "generate": {
             const input = await body();
@@ -37909,7 +38289,7 @@ function handler(context) {
             if (!prompt.trim())
               throw new BadRequest("Say what to write.");
             const model = input.model && typeof input.model.providerID === "string" && typeof input.model.id === "string" ? { providerID: input.model.providerID, id: input.model.id } : undefined;
-            return json15({ data: { text: await sessions.generate(id, prompt, { orAnother: input.orAnother === true, model }) } });
+            return json16({ data: { text: await sessions.generate(id, prompt, { orAnother: input.orAnother === true, model }) } });
           }
           case "command": {
             const input = await body();
@@ -37918,44 +38298,44 @@ function handler(context) {
             const template = name ? await link.commandTemplate(name, sessions.get(id).location.directory) : undefined;
             const text = template ? expandCommand(template, written) : `/${name} ${written}`.trim();
             sessions.prompt(id, { id: newID("msg"), text, files: input.files ?? [], delivery: input.delivery ?? "steer", metadata: input.metadata && typeof input.metadata === "object" && !Array.isArray(input.metadata) ? input.metadata : undefined });
-            return json15({});
+            return json16({});
           }
           case "interrupt":
-            return json15({ interrupted: await sessions.interrupt(id, url.searchParams.get("resume") === "true") });
+            return json16({ interrupted: await sessions.interrupt(id, url.searchParams.get("resume") === "true") });
           case "model":
             sessions.selectModel(id, (await body()).model);
-            return json15({});
+            return json16({});
           case "agent":
             sessions.selectAgent(id, (await body()).agent);
-            return json15({});
+            return json16({});
           case "permission":
             if (!c)
-              return json15({ data: id === "global" ? [] : sessions.permissions(id) });
+              return json16({ data: id === "global" ? [] : sessions.permissions(id) });
             if (d === "reply") {
               const { decision, message } = await body();
               sessions.replyPermission(id, c, decision, typeof message === "string" ? message : undefined);
-              return json15({});
+              return json16({});
             }
             break;
           case "form":
             if (!c)
-              return json15({ data: id === "global" ? [] : sessions.forms(id) });
+              return json16({ data: id === "global" ? [] : sessions.forms(id) });
             if (d === "reply") {
               sessions.replyForm(id, c, (await body()).answer ?? {});
-              return json15({});
+              return json16({});
             }
             if (method === "DELETE") {
               sessions.replyForm(id, c, null, url.searchParams.get("message") ?? undefined);
-              return json15({});
+              return json16({});
             }
             break;
           case "view": {
             const { idle } = await body();
             sessions.view(id, Number(idle) || Date.now());
-            return json15({});
+            return json16({});
           }
           case "diff":
-            return json15({ data: [] });
+            return json16({ data: [] });
         }
       }
       if (area === "kuvo" && a === "accounts") {
@@ -37968,7 +38348,7 @@ function handler(context) {
           roster.sync();
           const added = roster.all().find((each) => each.instance.id === record.id && each.id === agent);
           emit("integration.updated", { integrationID: added.providerID });
-          return json15({ data: { providerID: added.providerID } });
+          return json16({ data: { providerID: added.providerID } });
         }
         const target = b ? roster.find(b) : undefined;
         if (!target)
@@ -37979,11 +38359,11 @@ function handler(context) {
           roster.accounts.rename(target.providerID, (await body()).label);
           roster.sync();
           emit("integration.updated", { integrationID: target.providerID });
-          return json15({});
+          return json16({});
         }
         if (method === "DELETE") {
           if (url.searchParams.get("onlyUnsigned") === "1" && (await target.account(true)).signedIn)
-            return json15({});
+            return json16({});
           sessions.forgetProvider(target.providerID);
           await target.removeAccount?.().catch(() => {});
           target.shutdown?.();
@@ -37992,14 +38372,14 @@ function handler(context) {
           roster.sync();
           emit("integration.updated", { integrationID: target.providerID });
           emit("model.updated", {});
-          return json15({});
+          return json16({});
         }
       }
       if (area === "kuvo" && a === "updates" && !c) {
         if (!b) {
           if (method !== "POST")
             return error2(405, "Not allowed.");
-          return json15({ data: { updating: await updateAll(roster.all(), () => roster.all(), maintainedNow, (agent) => lastMaintained.get(agent.id)) } });
+          return json16({ data: { updating: await updateAll(roster.all(), () => roster.all(), maintainedNow, (agent) => lastMaintained.get(agent.id)) } });
         }
         const agent = agentFor(b);
         if (!agent)
@@ -38011,18 +38391,18 @@ function handler(context) {
               if (each.id === agent.id)
                 emit("integration.updated", { integrationID: each.providerID });
           }
-          return json15({});
+          return json16({});
         }
         if (method !== "POST")
           return error2(405, "Not allowed.");
         if (!agent.update || !agent.maintenance)
           return error2(400, `Update ${agent.name} the way you installed it.`);
         updateProgram(agent, () => roster.all(), maintainedNow);
-        return json15({ data: { updating: [agent.id] } });
+        return json16({ data: { updating: [agent.id] } });
       }
       if (area === "kuvo" && a === "sandbox" && b === "restart" && !c && method === "POST") {
         context.restartOutside?.();
-        return json15({});
+        return json16({});
       }
       if (area === "kuvo" && a === "carry")
         return await carryRoutes(context.carrying, method, parts.slice(3), body);
@@ -38040,6 +38420,8 @@ function handler(context) {
         return await voiceRoutes(context.voice, method, parts.slice(3));
       if (area === "kuvo" && a === "limits")
         return await limitsRoutes(context.limits, method, parts.slice(3), body);
+      if (area === "kuvo" && a === "insights")
+        return insightsRoutes(context.usage?.insights, method, parts.slice(3), url.searchParams);
       if (area === "kuvo" && a === "usage")
         return await usageRoutes(context.usage, method, parts.slice(3), url.searchParams, body);
       if (area === "kuvo" && a === "groups")
@@ -38056,12 +38438,12 @@ function handler(context) {
         const { url: address, token, timeout } = await body();
         setToolServer(typeof address === "string" && address && typeof token === "string" ? { url: address, token, timeout: Number(timeout) || 960000 } : undefined);
         noteToolServer(typeof address === "string" && typeof token === "string" ? address : undefined);
-        return json15({});
+        return json16({});
       }
       if (area === "kuvo" && a === "engine" && method === "PUT") {
         const { url: address, password } = await body();
         link.configure(typeof address === "string" && address ? address : undefined, typeof password === "string" ? password : undefined);
-        return json15({});
+        return json16({});
       }
       if (area === "kuvo" && a === "auto") {
         if (b === "limits" && method === "DELETE") {
@@ -38071,7 +38453,7 @@ function handler(context) {
           else
             auto.clearLimits();
           emit("kuvo.auto.updated", {});
-          return json15({});
+          return json16({});
         }
         if (!c && (!b && method === "POST" || b && b !== "limits" && (b !== "order" || method === "PUT") && ["PUT", "DELETE"].includes(method))) {
           const given = await body();
@@ -38098,23 +38480,23 @@ function handler(context) {
             return error2(400, problem.message);
           }
           emit("kuvo.auto.updated", {});
-          return json15({ data: { lists: await sessions.autoLists(), limits: auto.limits() } });
+          return json16({ data: { lists: await sessions.autoLists(), limits: auto.limits() } });
         }
         if (!b && method === "GET")
-          return json15({ data: { entries: await sessions.autoEntries(), lists: await sessions.autoLists(), limits: auto.limits() } });
+          return json16({ data: { entries: await sessions.autoEntries(), lists: await sessions.autoLists(), limits: auto.limits() } });
       }
       if (area === "experimental" && a === "session" && b) {
         const id = b;
         if (c === "instructions" && d === "entries" && !e && method === "GET")
-          return json15({ data: sessions.instructionEntries(id) });
+          return json16({ data: sessions.instructionEntries(id) });
         if (c === "instructions" && d === "entries" && e && (method === "PUT" || method === "DELETE")) {
           sessions.setInstruction(id, e, method === "DELETE" ? undefined : String((await body()).value ?? ""));
-          return json15({});
+          return json16({});
         }
         if (c === "wait") {
           while (sessions.active().includes(id))
             await Bun.sleep(200);
-          return json15({});
+          return json16({});
         }
       }
       return error2(404, "Not available for this agent.");
@@ -38508,6 +38890,8 @@ import { join as join42 } from "path";
 
 class Store {
   root;
+  origin;
+  usageAccount;
   records = new Map;
   pending = new Map;
   constructor(root) {
@@ -39168,6 +39552,537 @@ function takenAccount2(given, off, now) {
   };
 }
 
+// box/src/agents/usage/insights-db.ts
+import { Database } from "bun:sqlite";
+var DAY8 = 86400000;
+var tokenFields = ["input", "cacheRead", "cacheWrite5m", "cacheWrite1h", "output"];
+function dayBounds(now, zone, period) {
+  const days = windowDays(now, zone, period - 1).reverse();
+  const startOf = (day) => {
+    const utc = Date.parse(day);
+    let lo = utc - DAY8, hi = utc + DAY8;
+    while (lo < hi) {
+      const mid = Math.floor((lo + hi) / 2);
+      if (dayIn(mid, zone) < day)
+        lo = mid + 1;
+      else
+        hi = mid;
+    }
+    return lo;
+  };
+  const starts = days.map(startOf);
+  return days.map((day, i) => [day, starts[i], starts[i + 1] ?? now + 1]);
+}
+function estimate(record, pricing, now) {
+  if (!record.model || !record.tokens || record.partial || tokenFields.some((field) => record.tokens?.[field] == null))
+    return null;
+  const tokens = record.tokens;
+  for (const model of record.pricingModels ?? [record.model]) {
+    if (record.provider === "codex") {
+      const rates = resolveCodexRates(pricing, model, now);
+      if (rates.rates)
+        return codexCost(rates.rates, tokens, rates.rateModel, rates.fastAlias ? rates.baseRates : !!tokens.fast, !!record.tokens.ultrafast);
+    } else {
+      const cost = pricing.cost(model, tokens, record.provider !== "cursor");
+      if (cost !== undefined && Number.isFinite(cost))
+        return cost;
+    }
+  }
+  return null;
+}
+var metrics = `
+  SUM(cost) AS cost, SUM(tokens) AS tokens, SUM(cache_read) AS cached,
+  SUM(input) AS input, SUM(cache_write) AS creation, SUM(output) AS output,
+  COALESCE(SUM(human),0) AS messages,
+  COUNT(*) FILTER (WHERE human = 0) AS calls,
+  SUM(processed) AS processed,
+  COUNT(*) FILTER (WHERE human = 0 AND cost IS NULL) AS unpriced,
+  COUNT(*) FILTER (WHERE human = 0 AND partial = 1) AS partial`;
+
+class InsightsDB {
+  db;
+  pricing;
+  overviews = new Map;
+  dayCache = new Map;
+  boundsCache = new Map;
+  constructor(file) {
+    this.db = new Database(file);
+    this.db.exec(`
+      PRAGMA journal_mode = WAL;
+      CREATE TABLE IF NOT EXISTS state (key TEXT PRIMARY KEY, body TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS event (
+        key TEXT PRIMARY KEY, seq INTEGER, sender TEXT, received INTEGER NOT NULL,
+        at INTEGER NOT NULL, session TEXT NOT NULL, computer TEXT NOT NULL, bot TEXT, bot_name TEXT, title TEXT,
+        provider TEXT NOT NULL, account TEXT, model TEXT, agent TEXT, human INTEGER NOT NULL, partial INTEGER NOT NULL,
+        cost REAL, tokens INTEGER, input INTEGER, cache_read INTEGER, cache_write INTEGER, output INTEGER,
+        skills TEXT NOT NULL, body TEXT NOT NULL, supersedes TEXT, processed INTEGER
+      );
+      CREATE INDEX IF NOT EXISTS event_time ON event(at, session);
+      CREATE INDEX IF NOT EXISTS event_session ON event(session, at);
+      CREATE INDEX IF NOT EXISTS event_computer ON event(computer, at, session);
+      CREATE INDEX IF NOT EXISTS event_bot ON event(bot, at, session);
+      CREATE INDEX IF NOT EXISTS event_provider ON event(provider, at, session);
+      CREATE INDEX IF NOT EXISTS event_account ON event(account, at, session);
+      CREATE INDEX IF NOT EXISTS event_seq ON event(seq);
+      CREATE INDEX IF NOT EXISTS event_supersedes ON event(supersedes) WHERE supersedes IS NOT NULL;
+    `);
+  }
+  close() {
+    this.db.close();
+  }
+  read(key) {
+    const saved = this.db.query("SELECT body FROM state WHERE key = ?").get(key);
+    return saved ? JSON.parse(saved.body) : undefined;
+  }
+  write(key, value) {
+    this.db.query("INSERT INTO state VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET body = excluded.body").run(key, JSON.stringify(value));
+  }
+  invalidate(days) {
+    this.overviews.clear();
+    if (!days)
+      return this.dayCache.clear();
+    for (const [key, { start, end }] of this.dayCache) {
+      const first = Math.floor(start / DAY8), last = Math.floor((end - 1) / DAY8);
+      if (days.has(first) || days.has(last) || last - first > 1 && days.has(first + 1))
+        this.dayCache.delete(key);
+    }
+  }
+  price(pricing, now) {
+    if (this.pricing === pricing)
+      return;
+    this.db.transaction(() => {
+      const set = this.db.query("UPDATE event SET cost = ? WHERE key = ?");
+      for (const { body, key } of this.db.query("SELECT key, body FROM event WHERE human = 0").iterate()) {
+        set.run(estimate(JSON.parse(body), pricing, now), key);
+      }
+    })();
+    this.pricing = pricing;
+    this.invalidate();
+  }
+  take(records, pricing, now, sender, cursor, epoch) {
+    const previous = this.db.query("SELECT body, cost, seq, received, sender, at FROM event WHERE key = ?");
+    const put = this.db.query(`
+      INSERT OR REPLACE INTO event VALUES (
+        $key,$seq,$sender,$received,$at,$session,$computer,$bot,$botName,$title,$provider,$account,$model,$agent,$human,$partial,
+        $cost,$tokens,$input,$cacheRead,$cacheWrite,$output,$skills,$body,$supersedes,$processed
+      )`);
+    const dirty = new Set;
+    this.db.transaction(() => {
+      let seq = this.read("sequence") ?? 0;
+      for (const { observedAt, ...record } of records) {
+        if (record.at < now - 366 * DAY8 || record.at > now + DAY8)
+          continue;
+        const old = previous.get(record.key);
+        const before = old && JSON.parse(old.body);
+        const firstSeen = observedAt !== undefined ? Math.min(now, Math.max(record.at, observedAt)) : now;
+        if (old && before && before.computer !== record.computer) {
+          if (before.attributed && !record.attributed)
+            continue;
+          if (!!before.attributed === !!record.attributed && (old.received < firstSeen || old.received === firstSeen && before.computer < record.computer))
+            continue;
+        }
+        if (old && before && before.tokens && !record.tokens)
+          continue;
+        if (sender && old?.seq != null && before?.tokens && before.computer === record.computer && (!record.attributed || before.attributed))
+          continue;
+        const body = JSON.stringify(record);
+        if (old?.body === body && (sender || old.seq !== null))
+          continue;
+        const t = record.tokens;
+        const sum = (...parts) => {
+          const known = parts.filter((n) => n != null);
+          return known.length ? known.reduce((a, b) => a + b, 0) : null;
+        };
+        put.run({
+          $key: record.key,
+          $seq: !sender || old?.seq != null ? ++seq : null,
+          $sender: sender ?? null,
+          $received: old && before?.computer === record.computer ? Math.min(old.received, firstSeen) : firstSeen,
+          $at: record.at,
+          $session: record.session,
+          $computer: record.computer,
+          $bot: record.bot ?? null,
+          $botName: record.botName ?? null,
+          $title: record.title ?? null,
+          $provider: record.provider,
+          $account: record.account ?? null,
+          $model: record.model ?? null,
+          $agent: record.agent ?? null,
+          $human: record.human ? 1 : 0,
+          $partial: !record.human && (record.partial || !t || tokenFields.some((field) => t[field] == null)) ? 1 : 0,
+          $cost: estimate(record, pricing, now),
+          $tokens: sum(t?.input, t?.output, t?.cacheWrite5m, t?.cacheWrite1h),
+          $input: t?.input ?? null,
+          $cacheRead: t?.cacheRead ?? null,
+          $cacheWrite: sum(t?.cacheWrite5m, t?.cacheWrite1h),
+          $output: t?.output ?? null,
+          $skills: JSON.stringify(record.skills ?? []),
+          $body: body,
+          $supersedes: record.supersedes ?? null,
+          $processed: record.reportedTotal ?? sum(t?.input, t?.output, t?.cacheRead, t?.cacheWrite5m, t?.cacheWrite1h)
+        });
+        dirty.add(Math.floor(record.at / DAY8));
+        if (old)
+          dirty.add(Math.floor(old.at / DAY8));
+        const replaced = record.supersedes ? previous.get(record.supersedes) : undefined;
+        if (replaced)
+          dirty.add(Math.floor(replaced.at / DAY8));
+      }
+      if (sender && cursor !== undefined) {
+        this.write(`cursor/${sender}`, cursor);
+        if (epoch)
+          this.write(`peer-epoch/${sender}`, epoch);
+      }
+      this.write("sequence", seq);
+      this.db.query("DELETE FROM event WHERE at < ?").run(now - 366 * DAY8);
+    })();
+    if (dirty.size)
+      this.invalidate(dirty);
+  }
+  batch(after) {
+    const rows = this.db.query("SELECT seq, body, received FROM event WHERE seq > ? ORDER BY seq LIMIT 100").all(after);
+    return { records: rows.map(({ body, received }) => ({ ...JSON.parse(body), observedAt: received })), next: rows.at(-1)?.seq ?? after, more: rows.length === 100 };
+  }
+  choices(computers) {
+    const names = this.db.query(`
+      SELECT bot AS key, COALESCE(MAX(bot_name), bot) AS name
+      FROM event WHERE bot IS NOT NULL AND computer IN (${computers.map(() => "?").join(",")})
+      GROUP BY bot ORDER BY name COLLATE NOCASE, key`).all(...computers);
+    return names;
+  }
+  range(now, zone, period) {
+    const day = dayIn(now, zone);
+    const key = `${zone}/${period}/${day}`;
+    let bounds = this.boundsCache.get(key);
+    if (!bounds) {
+      if (this.boundsCache.size >= 32)
+        this.boundsCache.clear();
+      bounds = dayBounds(now, zone, period);
+      this.boundsCache.set(key, bounds);
+    }
+    return bounds.map(([date, start, end], i) => [date, start, i === bounds.length - 1 ? now + 1 : end]);
+  }
+  view(now, zone, period, filter, computers, route, offset) {
+    const days = this.range(now, zone, period);
+    const since = days[0][1];
+    const names = ["computer", "bot", "account", "provider", "session"];
+    const clauses = [
+      "event.at >= ?",
+      "event.at < ?",
+      `event.computer IN (${computers.map(() => "?").join(",")})`,
+      "NOT EXISTS (SELECT 1 FROM event AS newer WHERE newer.supersedes = event.key)"
+    ];
+    const args = [since, now + 1, ...computers];
+    for (const name of names) {
+      const value = filter[name];
+      if (!value)
+        continue;
+      clauses.push(`event.${name} = ?`);
+      args.push(value);
+    }
+    const where = clauses.join(" AND ");
+    if (route === "detail") {
+      const rows = this.db.query(`SELECT body, cost, tokens AS tokenCount FROM event WHERE ${where}
+        AND human = 0 ORDER BY at, key LIMIT 101 OFFSET ?`).all(...args, offset);
+      return { calls: rows.slice(0, 100).map(({ body, cost, tokenCount }) => ({ ...JSON.parse(body), cost, tokenCount })), next: rows.length > 100 ? offset + 100 : null };
+    }
+    if (route === "sessions") {
+      const rows = this.db.query(`
+        SELECT session, MAX(title) AS title, MAX(at) AS at, (SELECT last.computer FROM event AS last WHERE last.session = event.session ORDER BY last.at DESC, last.key LIMIT 1) AS computer, ${metrics}
+        FROM event WHERE ${where} GROUP BY session ORDER BY at DESC, session LIMIT 51 OFFSET ?`).all(...args, offset);
+      return { sessions: rows.slice(0, 50), next: rows.length > 50 ? offset + 50 : null };
+    }
+    const overviewKey = insightKey(zone, since, period, computers, filter);
+    const kept = this.overviews.get(overviewKey);
+    if (kept && kept.until >= now)
+      return kept.result;
+    const totals = this.db.query(`
+      SELECT ${metrics}, COUNT(DISTINCT session) AS sessions FROM event WHERE ${where}`).get(...args);
+    const dayQuery = this.db.query(`SELECT ${metrics} FROM event INDEXED BY event_time WHERE ${where}`);
+    const daily = days.map(([name, start, end]) => {
+      const key = insightKey(zone, start, end, computers, filter);
+      let cached = this.dayCache.get(key);
+      if (!cached) {
+        if (this.dayCache.size >= 2000)
+          this.dayCache.clear();
+        cached = { start, end, result: dayQuery.get(start, end, ...args.slice(2)) };
+        if (name !== days.at(-1)?.[0])
+          this.dayCache.set(key, cached);
+      }
+      return { name, ...cached.result };
+    });
+    const grouped = (name, extra = "", group = "1") => this.db.query(`SELECT ${name} AS name, MIN(provider) AS provider, ${metrics}
+        FROM event ${extra} WHERE ${where} AND human = 0 GROUP BY ${group}
+        ORDER BY COALESCE(cost,0) DESC, COALESCE(tokens,0) DESC, name LIMIT 2000`).all(...args);
+    const shares = (rows) => rows.map((row) => ({
+      ...row,
+      costShare: totals.cost && row.cost !== null ? row.cost / totals.cost : null,
+      tokenShare: totals.tokens && row.tokens !== null ? row.tokens / totals.tokens : null
+    }));
+    const result = {
+      totals,
+      daily,
+      providers: shares(grouped("provider")),
+      breakdowns: {
+        model: shares(grouped("COALESCE(model,'Unknown model')", "", "1, provider")),
+        agent: shares(grouped("COALESCE(MAX(bot_name),agent,provider)", "", "COALESCE(bot, agent, provider), CASE WHEN bot IS NULL THEN provider END")),
+        day: shares(daily),
+        skill: shares(grouped("skill.value", ", json_each(event.skills) AS skill"))
+      }
+    };
+    if (this.overviews.size >= 24)
+      this.overviews.clear();
+    this.overviews.set(overviewKey, { until: now + 1e4, result });
+    return result;
+  }
+}
+
+// box/src/agents/usage/insights-scan.ts
+var nativeKey = { claude: "claudeSession", codex: "codexThread", grok: "acpSession", antigravity: "acpSession" };
+function skillsNamed(tools) {
+  const names = new Set;
+  for (const [tool, value] of tools) {
+    if (typeof tool !== "string" || !value || typeof value !== "object")
+      continue;
+    const input = value;
+    if (/^skill$/i.test(tool)) {
+      const name = input.skill ?? input.name;
+      if (typeof name === "string" && name.length <= 200)
+        names.add(name);
+    }
+    const path = input.file_path ?? input.filePath ?? input.path;
+    if (/^(read|read_file)$/i.test(tool) && typeof path === "string") {
+      const name = /(?:^|[/\\])skills[/\\]([^/\\]+)[/\\]SKILL\.md$/i.exec(path)?.[1];
+      if (name && name.length <= 200)
+        names.add(name);
+    }
+  }
+  return [...names].sort().slice(0, 32);
+}
+function observedSkills(step) {
+  return skillsNamed(step.content.flatMap((part) => part.type === "tool" && part.state.status === "completed" ? [[part.name, part.state.input]] : []));
+}
+function seatBot2(metadata) {
+  try {
+    const value = typeof metadata === "string" ? JSON.parse(metadata) : metadata;
+    const bot = value?.kuvo?.seat?.bot;
+    return typeof bot === "string" ? bot : undefined;
+  } catch {
+    return;
+  }
+}
+var count = (n) => typeof n === "number" && Number.isSafeInteger(n) && n >= 0 ? n : null;
+function buckets(given) {
+  if (!given || typeof given !== "object")
+    return;
+  const raw = given;
+  const output = count(raw.output);
+  return {
+    input: count(raw.input),
+    output: output === null ? null : output + (count(raw.reasoning) ?? 0),
+    cacheRead: count(raw.cache?.read),
+    cacheWrite5m: count(raw.cache?.write),
+    cacheWrite1h: 0
+  };
+}
+function automated(metadata) {
+  return typeof metadata?.source === "string" && ["agent", "group", "queue", "wake", "system"].includes(metadata.source);
+}
+
+class InsightsScan {
+  options;
+  issues = new Set;
+  native = new Map;
+  engine;
+  sources;
+  constructor(options) {
+    this.options = options;
+    const reader = {
+      owns: (path) => insideUsageHome(options.root, path),
+      problem: (provider) => this.issues.add(provider),
+      take: (provider, rows) => {
+        this.native.set(provider, rows);
+      }
+    };
+    this.sources = [
+      claudeSources(options.cache, ownComputer, reader),
+      codexSources(options.cache, undefined, ownComputer, reader),
+      grokSources(options.cache, ownComputer, reader),
+      antigravitySources(options.cache, ownComputer, new AntigravityHistory, reader)
+    ];
+  }
+  async scan(pricing, since) {
+    const agents = this.options.agents().filter((agent) => agent.instance.home || parseProvider(agent.providerID)?.kind === "antigravity");
+    const sources = this.sources.flatMap((list) => list(agents));
+    this.issues.clear();
+    const issues = this.issues;
+    this.native.clear();
+    try {
+      for (const source of sources) {
+        try {
+          await source.slots(pricing, since);
+        } catch {
+          issues.add(source.service);
+        }
+      }
+    } finally {
+      for (const files of new Set(sources.map((source) => source.files)))
+        files?.endRound(issues.size === 0);
+    }
+    const botOf = new Map(this.options.bots().map((bot) => [bot.sessionID, bot]));
+    const local = this.options.computer();
+    const records = [];
+    const taken = new Set;
+    const native = new Map;
+    for (const [provider, rows] of this.native) {
+      for (const row of rows) {
+        if (row.at < since)
+          continue;
+        const key = insightKey(provider, row.session);
+        let list = native.get(key);
+        if (!list)
+          native.set(key, list = []);
+        list.push(row);
+      }
+    }
+    for (const list of native.values())
+      list.sort((a, b) => a.at - b.at);
+    for (const session of this.options.store.all()) {
+      const record = this.options.store.get(session.id);
+      if (!record || session.time.updated < since)
+        continue;
+      const seat = seatBot2(session.metadata);
+      const bot = botOf.get(session.id) ?? botOf.get(session.parentID ?? "");
+      const base = { session: session.id, title: session.title, bot: bot?.id ?? seat, botName: bot?.name };
+      for (const message of record.messages) {
+        if (message.type !== "assistant" && message.type !== "user")
+          continue;
+        const at = message.time.completed ?? message.time.created;
+        if (at < since)
+          continue;
+        const model = message.type === "assistant" ? message.model : session.model;
+        const accountProvider = model?.providerID ?? "engine";
+        const kind = parseProvider(accountProvider)?.kind;
+        const provider = kind ?? accountProvider;
+        const computer = message.time.origin ?? local;
+        const fields = {
+          ...base,
+          computer,
+          provider,
+          account: message.time.usageAccount ?? this.options.account(accountProvider, computer),
+          at,
+          ...message.time.origin ? { attributed: true } : {}
+        };
+        if (message.time.usageSession && message.time.usageSession !== session.id)
+          continue;
+        const key = insightKey("kuvo", session.id, message.id);
+        if (message.type === "user") {
+          if (!session.parentID && !seat && !automated(message.metadata))
+            records.push({ ...fields, key, call: message.id, human: true });
+          continue;
+        }
+        if (!message.time.completed)
+          continue;
+        const skills = observedSkills(message);
+        const step = { ...fields, call: message.id, key, model: model?.id, agent: message.agent, skills };
+        const tokens = kind === "cursor" ? undefined : buckets(message.tokens);
+        const field = kind && kind in nativeKey ? nativeKey[kind] : undefined;
+        const threads = record.agent.threads;
+        const id = field && (threads?.[accountProvider]?.state ?? record.agent)[field];
+        const candidates = typeof id === "string" ? native.get(insightKey(accountProvider, id)) : undefined;
+        if (candidates?.length) {
+          let pos = lowerBound(candidates, message.time.created - 1000);
+          let matched = false;
+          while (pos < candidates.length && candidates[pos].at <= at + 1000) {
+            const row = candidates[pos++];
+            const nativeID = insightKey(provider, row.session, row.call);
+            if (taken.has(nativeID))
+              continue;
+            taken.add(nativeID);
+            matched = true;
+            records.push({ ...step, ...row, supersedes: key, session: session.id, nativeSession: row.session, key: nativeID });
+          }
+          if (matched)
+            continue;
+        }
+        records.push({ ...step, tokens, ...!tokens ? { partial: true } : {} });
+      }
+    }
+    if (this.options.engine) {
+      try {
+        const read = await this.engineRecords(this.options.engine, since, botOf);
+        records.push(...read.records);
+        if (read.partial)
+          issues.add("opencode");
+      } catch {
+        issues.add("opencode");
+      }
+    } else {
+      issues.add("opencode");
+    }
+    return { records, issues: [...issues] };
+  }
+  async engineRecords(folder, since, bots) {
+    const stamp = databasesStamp(folder);
+    if (this.engine?.stamp === stamp && this.engine.since === since)
+      return { records: this.engine.records };
+    const records = [];
+    const answers = await engineUsageAnswers(folder, since);
+    const partial = answers?.some((answer) => answer.failed !== undefined);
+    for (const answer of answers ?? []) {
+      if (!answer.json)
+        continue;
+      const rows = JSON.parse(answer.json);
+      for (const [session, call, role, created, completed, rawProvider, model, agent, usage, source, origin, title, metadata, parent, parts] of rows) {
+        const at = completed ?? created;
+        if (typeof session !== "string" || !session || typeof call !== "string" || typeof at !== "number" || at < since)
+          continue;
+        const seat = seatBot2(metadata);
+        if (role === "user" && (parent || seat || automated({ source })))
+          continue;
+        if (role === "assistant" && completed === null && !usage)
+          continue;
+        const provider = typeof rawProvider === "string" ? rawProvider : "opencode";
+        const computer = typeof origin === "string" ? origin : this.options.computer();
+        const bot = bots.get(session);
+        const tokens = role === "user" ? undefined : buckets(usage);
+        records.push({
+          key: insightKey("engine", session, call),
+          session,
+          call,
+          at,
+          computer,
+          provider,
+          account: this.options.account(provider, computer),
+          bot: bot?.id ?? seat,
+          botName: bot?.name,
+          title: typeof title === "string" ? title : undefined,
+          ...Array.isArray(parts) ? { skills: skillsNamed(parts.filter(Array.isArray)) } : {},
+          model: typeof model === "string" ? model : undefined,
+          agent: typeof agent === "string" ? agent : undefined,
+          tokens,
+          reportedTotal: usage && typeof usage === "object" ? count(usage.total) ?? undefined : undefined,
+          ...role === "user" ? { human: true } : !tokens ? { partial: true } : {}
+        });
+      }
+    }
+    if (!partial)
+      this.engine = { stamp, since, records };
+    return { records, partial };
+  }
+}
+function lowerBound(rows, at) {
+  let lo = 0, hi = rows.length;
+  while (lo < hi) {
+    const middle = lo + hi >>> 1;
+    if (rows[middle].at < at)
+      lo = middle + 1;
+    else
+      hi = middle;
+  }
+  return lo;
+}
+
 // box/src/agents/main.ts
 var version3 = "1";
 var script = Bun.main;
@@ -39389,8 +40304,35 @@ var engineHostedUsage = engineHostedSources(engineData);
 cursorEndpoints.live = !noPriceFeeds;
 antigravityTransport.live = !noPriceFeeds;
 var cursorUsage = cursorSources(usageFolder, (provider, identity) => limits.held(provider) || identity !== undefined && !!usage.peers?.readsWhole("cursor", identity));
-var usage = new Usage(() => [...claudeUsage2(roster.all()), ...codexUsage(roster.all()), ...grokUsage(roster.all()), ...engineCodexUsage(), ...engineHostedUsage(), ...cursorUsage(roster.all()), ...antigravityUsage(roster.all())], new PricingStore(join43(usageFolder, "pricing"), noPriceFeeds ? null : undefined), (provider) => limits.identity(provider), join43(usageFolder, "usage.json"));
+var pricing = new PricingStore(join43(usageFolder, "pricing"), noPriceFeeds ? null : undefined);
+var usage = new Usage(() => [...claudeUsage2(roster.all()), ...codexUsage(roster.all()), ...grokUsage(roster.all()), ...engineCodexUsage(), ...engineHostedUsage(), ...cursorUsage(roster.all()), ...antigravityUsage(roster.all())], pricing, (provider) => limits.identity(provider), join43(usageFolder, "usage.json"));
 usage.settings = usageSettings;
+var localUsageKey = insightKey("kuvo insight computer", ownComputer()).slice(0, 32);
+var usageComputer = () => directory.own()?.key ?? localUsageKey;
+store.origin = usageComputer;
+try {
+  mkdirSync29(usageFolder, { recursive: true, mode: 448 });
+  const accountOf = (provider, computer) => {
+    const service = parseProvider(provider)?.kind ?? (provider === "openai" ? "codex" : provider);
+    const identity = limits.identity(provider);
+    return identity ? `${service}#${identity}` : `${computer}/${provider}`;
+  };
+  store.usageAccount = (provider, origin) => limits.identity(provider) ? accountOf(provider, origin) : undefined;
+  const scanner = new InsightsScan({
+    root: home3,
+    cache: join43(usageFolder, "insights-logs"),
+    agents: () => roster.all(),
+    store,
+    bots: () => groups?.store.allBots() ?? [],
+    computer: usageComputer,
+    engine: engineData,
+    account: accountOf
+  });
+  const insights = new Insights(new InsightsDB(join43(usageFolder, "insights.sqlite")), scanner, pricing, directory, post, localUsageKey);
+  peers.insights = usage.insights = insights;
+} catch (error) {
+  console.error("Insights index:", error instanceof Error ? error.message : error);
+}
 engineAccounts.onAnswered = () => void usage.tick();
 if (!engineData)
   usage.services = USAGE_SERVICES.filter((service) => service !== "opencode");
@@ -39441,6 +40383,7 @@ await untilSandboxDecided();
 sessions.resumeHeld();
 limits.start();
 usage.start();
+usage.insights?.start();
 var carrying = new Carrying(sessions, store, (provider) => sessions.agent(provider), (kind) => roster.all().filter((agent) => parseProvider(agent.providerID)?.kind === kind));
 var server4;
 var renewal;
@@ -39622,4 +40565,4 @@ if (!onMachine) {
 }
 process.on("SIGTERM", () => stop());
 process.on("SIGINT", () => stop());
-// Built from Packages/Box/src/agents 632f573a8bc4ad3ef196a8b36f03c150f4ed941f364d304111a26961eb0ebb8c
+// Built from Packages/Box/src/agents 1a622341557e193df70448caef86f5294e68ca5c5f7bdd8272a862cb6f38ffd4
