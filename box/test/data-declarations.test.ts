@@ -95,3 +95,14 @@ test("every stored format in the version inventory has a data declaration", () =
   const declared: string[] = Object.values(DATA_DECLARATIONS).flatMap(data => [...data.families]);
   expect([...new Set(declared)].sort()).toEqual([...families].sort());
 });
+
+test("Work Queue item policies use the authority for the queue's owner", () => {
+  for (const kind of ["queueItems", "queueNotes", "queueFiles", "queueHistoryAndDelivery"] as const) {
+    const { owner } = DATA_DECLARATIONS[kind];
+    expect(owner).toBeFunction();
+    expect(owner("ses_Example")).toBe("session computer");
+    expect(owner("grp_example")).toBe("group host");
+    expect(owner("usr_you")).toBe("local computer");
+    expect(owner("future_example")).toBeUndefined();
+  }
+});

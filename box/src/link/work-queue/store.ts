@@ -7,6 +7,7 @@
 //
 // (Named apart from `engine/queue.ts`, which is a conversation's queue of messages.)
 
+import { OWNER } from "../../shared/work-queue-owner";
 import { UnsupportedFormatVersion } from "../../shared/format-version";
 import { writeDurablePrivate } from "../../shared/files";
 import { mentionIndexOf, mentionLinkOf, mentionSnapshot, pruneRelations, relationOf, syncMentions, type MentionIndex, type MentionLink, type MentionSnapshot, type Relation } from "./relations";
@@ -25,10 +26,7 @@ const QUEUES = path.join(WORK_QUEUE, "queues");
 export const FILES = path.join(WORK_QUEUE, "files");
 const LOCK = path.join(WORK_QUEUE, ".lock");
 
-/** Your own queue's key: the items you added from a client that are no conversation's (yet). */
-export const YOURS = "usr_you";
-/** An owner's key: a conversation's address, a group chat's id, or your own queue's. */
-export const OWNER = /^(?:ses_[A-Za-z0-9]{1,60}|grp_[a-z0-9]{1,60}|usr_you)$/;
+export { OWNER, YOURS } from "../../shared/work-queue-owner";
 /** A queue file's owner as a newer box may name one (another kind than this box knows): its queue is
  * kept as it is, and goes along, never skipped or written over. */
 export const KEPT_OWNER = /^[a-z]{2,10}_[A-Za-z0-9_-]{1,80}$/;

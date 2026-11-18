@@ -2,7 +2,16 @@
 // Family names refer to "Stored formats" in .claude/notes/848-U-versions-inventory.md.
 // An inventory family can contain several kinds with different policies. The owner is the
 // authority for a record, regardless of where a replica, journal or imported copy lives.
+import { OWNER, YOURS } from "./work-queue-owner";
+
 export type DataOwner = "session computer" | "group host" | "bot home" | "primary" | "local computer" | "client";
+
+/** The authority is determined by the queue key. Unknown owner kinds have no policy yet. */
+function workQueueOwner(owner: string): DataOwner | undefined {
+  if (!OWNER.test(owner)) return undefined;
+  if (owner === YOURS) return "local computer";
+  return owner.startsWith("grp_") ? "group host" : "session computer";
+}
 
 export type DataConflict =
   | "fields"             // Merge independent fields. Ask the user about divergent edits to the same field.
@@ -14,7 +23,7 @@ export type DataConflict =
 // Deletions defeat stale edits for all kinds. Backup policy is for normal encrypted backups.
 // Vaults have a separate, optional encrypted export. External project files can be opted in.
 export interface DataDeclaration {
-  readonly owner: DataOwner;
+  readonly owner: DataOwner | typeof workQueueOwner;
   readonly conflict: DataConflict;
   readonly backup: boolean;
   readonly families: readonly [string, ...string[]];
@@ -51,10 +60,10 @@ export const DATA_DECLARATIONS = {
   groupSettings: { owner: "group host", conflict: "fields", backup: true, families: ["Group chats and bridge delivery"] },
   privateGroupSeats: { owner: "bot home", conflict: "owner order", backup: true, families: ["Group chats and bridge delivery", "Coding agent native storage"] },
 
-  queueItems: { owner: "session computer", conflict: "fields", backup: true, families: ["Work Queue items and history"] },
-  queueNotes: { owner: "session computer", conflict: "keep both notes", backup: true, families: ["Work Queue items and history"] },
-  queueFiles: { owner: "session computer", conflict: "owner order", backup: true, families: ["Managed attachment files"] },
-  queueHistoryAndDelivery: { owner: "session computer", conflict: "owner order", backup: true, families: ["Work Queue items and history", "Work Queue labels, delivery and receipts"] },
+  queueItems: { owner: workQueueOwner, conflict: "fields", backup: true, families: ["Work Queue items and history"] },
+  queueNotes: { owner: workQueueOwner, conflict: "keep both notes", backup: true, families: ["Work Queue items and history"] },
+  queueFiles: { owner: workQueueOwner, conflict: "owner order", backup: true, families: ["Managed attachment files"] },
+  queueHistoryAndDelivery: { owner: workQueueOwner, conflict: "owner order", backup: true, families: ["Work Queue items and history", "Work Queue labels, delivery and receipts"] },
   queueNumberAllocation: { owner: "primary", conflict: "owner order", backup: true, families: ["Work Queue ledger"] },
   queueNumberUse: { owner: "local computer", conflict: "owner order", backup: true, families: ["Work Queue ledger"] },
   queueLabels: { owner: "primary", conflict: "fields", backup: true, families: ["Work Queue labels, delivery and receipts", "Work Queue categories/status migration"] },
