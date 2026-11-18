@@ -11,7 +11,7 @@
 // computer's own, for its own clients: never handed on from another box (areas/computers.ts).
 
 import { updateAccess } from "../setup/access";
-import { PENDING_SAVE, stageShared, waitShared, type SharedSave } from "../setup/shared";
+import { awaitSharedSave, sharedSaveReply, stageShared, type SharedSave } from "../setup/shared";
 import { isObject } from "../../shared/json";
 import { LEADERSHIP_WAIT, primaryFenced } from "../setup/lease";
 import { plainName } from "../../shared/text";
@@ -183,12 +183,11 @@ export async function renameHere(key: string, name: string): Promise<Acted> {
   }, { durable: true });
   if (waitingForStandby) return answer(503, { message: LEADERSHIP_WAIT });
   if (!found) return answer(404, { message: `That isn't one of ${ownName()}'s machines.` });
-  if (save && await waitShared(save) !== "saved") {
-    return answer(202, { pending: true, message: PENDING_SAVE });
-  }
+  const receipt = await awaitSharedSave(save);
+  if (receipt && receipt.status !== 200) return receipt;
   if (!changed && (readLink()?.setup?.standby || readLink()?.setup?.checkpointed)) return answer(409, { message: "A computer name is already waiting to be saved. Try again when it has saved." });
   macDocsChanged();
-  return answer(200, { name });
+  return answer(200, { name, ...receipt?.value });
 }
 
 /** Retire the old standby, install a replacement, then save the access change. */
@@ -219,14 +218,13 @@ export async function removeComputerHere(key: string, pendingOnly = false): Prom
 // Legacy in-process callers can complete immediately. The routed removal waits for a receipt.
 export function removeHere(key: string, pendingOnly = false): Acted {
   const removal = prepareRemoval(key, pendingOnly);
-  return removal.save ? answer(202, { pending: true, message: PENDING_SAVE }) : completeRemoval(removal);
+  return removal.save ? sharedSaveReply(removal.save, "pending") : completeRemoval(removal);
 }
 
 async function finishRemoval(removal: ReturnType<typeof prepareRemoval>): Promise<Acted> {
   const { save } = removal;
-  if (save && await waitShared(save) !== "saved") {
-    return answer(202, { pending: true, message: PENDING_SAVE });
-  }
+  const receipt = await awaitSharedSave(save);
+  if (receipt && receipt.status !== 200) return receipt;
   return completeRemoval(removal);
 }
 
@@ -283,7 +281,7 @@ function completeRemoval({ changed, blocked, gone, already, needsCleanup, key, b
   tellGone(gone);
   // Once the removal is durable, clean up its saved address. Leave a retry if the list fails.
   if (needsCleanup && !cleanRemovalList(key)) return answer(503, { message: "The computer’s access was removed, but the saved machines list couldn’t be updated." });
-  return answer(200, {});
+  return save ? sharedSaveReply(save, "saved") : answer(200, {});
 }
 
 function cleanRemovalList(key: string): boolean {

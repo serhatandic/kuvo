@@ -39,7 +39,7 @@ import { sshActions } from "../add/flow";
 import { KEEP_UP_FILE, keepingUp } from "../add/keep-up";
 import { tryFollowers } from "../add/tries";
 import { updateAccess } from "../setup/access";
-import { PENDING_SAVE, waitShared } from "../setup/shared";
+import { awaitSharedSave } from "../setup/shared";
 import { allowVouching, vouchBlockOf } from "../phones";
 import { blockedWords } from "../peers/devices";
 import { PRIMARY_UNLINK } from "../setup/leadership";
@@ -368,10 +368,9 @@ async function* allowDevices(context: RouteContext, key: string): AsyncGenerator
   const { save, busy } = updateAccess(kept => (kept && followedSetup(kept)?.role === "primary"
     && allowVouching(kept, key, Boolean(kept.setup?.standby)) ? kept : null));
   if (busy) return yield* json(409, { message: "An access change is already waiting to be saved." });
-  if (save && await waitShared(save) !== "saved") {
-    return yield* json(202, { pending: true, message: PENDING_SAVE });
-  }
-  return yield* json(200, {});
+  const receipt = await awaitSharedSave(save);
+  if (receipt && receipt.status !== 200) return yield* json(receipt.status, receipt.value);
+  return yield* json(200, receipt?.value ?? {});
 }
 
 export async function* computersRoute(context: RouteContext, match: RegExpMatchArray): AsyncGenerator<AnswerPiece> {

@@ -5,7 +5,7 @@ import path from "node:path";
 import { isObject, parsed } from "../../shared/json";
 import type { Body } from "../../shared/json";
 import { followed } from "../follow";
-import { PENDING_SAVE, changeShared, waitShared } from "../setup/shared";
+import { PENDING_SAVE, changeShared, sharedSaveReply, waitShared } from "../setup/shared";
 import { LEADERSHIP_WAIT } from "../setup/lease";
 import { requiresStandby } from "../setup/record";
 import { readLink } from "../state";
@@ -43,7 +43,7 @@ export async function* personalitiesDocumentRoute(context: RouteContext): AsyncG
       return yield* json(400, { message: "Send a library of personalities: {document: {personalities, removed}}." });
     }
     const saved = await savePersonalityLibrary(given.document);
-    return yield* json(saved.status, saved.status === 200 ? { changed: saved.changed } : saved.value);
+    return yield* json(saved.status, saved.status === 200 ? { changed: saved.changed, ...saved.receipt } : saved.value);
   }
   const [status, value] = takePersonalitiesDocument(parsed(request.body) as Body<"document">, readEngine, readBridge);
   return yield* json(status, value);
@@ -51,7 +51,7 @@ export async function* personalitiesDocumentRoute(context: RouteContext): AsyncG
 
 /** The document route and the SSH command use the same receipt-backed merge. */
 export async function savePersonalityLibrary(document: GivenLibrary | null): Promise<
-  { status: 200; library: PersonalityLibrary; changed: string[] }
+  { status: 200; library: PersonalityLibrary; changed: string[]; receipt: Extract<ReturnType<typeof sharedSaveReply>, { status: 200 }>["value"] }
   | { status: 202 | 400 | 409 | 503; value: { message: string; pending?: true } }
 > {
   const setup = readLink()?.setup;
@@ -69,8 +69,9 @@ export async function savePersonalityLibrary(document: GivenLibrary | null): Pro
   });
   if (library && !fitsLibrary(library)) return { status: 400, value: { message: FULL_LIBRARY } };
   if (!save || !library) return { status: 409, value: { message: "The personality library couldn't be staged. Another save may be pending or the setup may be out of space." } };
-  if (await waitShared(save) !== "saved") return { status: 202, value: { pending: true, message: PENDING_SAVE } };
-  return { status: 200, library, changed };
+  const reply = sharedSaveReply(save, await waitShared(save));
+  if (reply.status !== 200) return reply;
+  return { status: 200, library, changed, receipt: reply.value };
 }
 
 // The personalities you make, this machine's copy of the library.
@@ -98,8 +99,9 @@ export async function* personalityRoute(context: RouteContext, personality: RegE
     });
     if (answer[0] !== 200) return yield* json(...answer);
     if (!save) return yield* json(409, { message: "A personality change is already waiting to be saved." });
-    if (await waitShared(save) !== "saved") return yield* json(202, { pending: true, message: PENDING_SAVE });
-    return yield* json(...answer);
+    const reply = sharedSaveReply(save, await waitShared(save));
+    if (reply.status !== 200) return yield* json(reply.status, reply.value);
+    return yield* json(200, { ...answer[1], ...reply.value });
   }
   const [status, value] = answerPersonalities(method, id, body);
   // Its bots with it are told what it is now, or that it's gone.

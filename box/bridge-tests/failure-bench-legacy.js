@@ -10,15 +10,25 @@ const resource = "swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js";
 // SHA-256 of the resource at the pinned commit. Lokum has no checkout history to verify against.
 const digest = "aeb60b84f4f29590535c67ed0a3d6c5a33f448d8b8c8e566493cf6d0e598f5f2";
 
-export function legacyBuild(checkout = fileURLToPath(new URL("../..", import.meta.url))) {
-  const archived = path.join(checkout, "box", "bridge-tests", ".failure-bench-legacy.mjs");
+export function legacyBuild(checkout) {
+  return buildFixture(ref, digest, ".failure-bench-legacy.mjs", checkout);
+}
+
+// The last layout-4 bridge, retained for real update and keeper recovery entry points.
+export function layout4Build(checkout) {
+  return buildFixture("4330569c2f1c39eef166f65d2abb1b7256ef7dcb",
+    "6f24ff74ca472a74045b4ebb1038ffb4ff199b331006c607b915f383f406d0b4", ".layout-4.mjs", checkout);
+}
+
+function buildFixture(ref, digest, filename, checkout = fileURLToPath(new URL("../..", import.meta.url))) {
+  const archived = path.join(checkout, "box", "bridge-tests", filename);
   let build;
   if (fs.existsSync(archived)) {
     build = fs.readFileSync(archived);
   } else {
     const result = spawnSync("git", ["--no-optional-locks", "-C", checkout, "show", `${ref}:${resource}`], { maxBuffer: 64 * 1024 * 1024 });
     if (result.status !== 0) {
-      throw new Error(`Missing pinned failure-bench build at ${ref}. Run scripts/failure-bench.sh --prepare.`);
+      throw new Error(`Missing pinned failure-bench build at ${ref}. Check that the pinned commit or the transferred fixture is present.`);
     }
     build = result.stdout;
   }

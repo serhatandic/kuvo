@@ -1,16 +1,19 @@
 // A change is authorized by the preceding epoch's sole successor signer. The installed
 // certificate and the local role are written together, before anyone can send the certificate.
 
+import { setupLayoutDeferred } from "../../shared/folder-version";
+import crypto from "node:crypto";
 import type { Doc } from "../../shared/documents";
 import { isObject } from "../../shared/json";
 import { docBytes, docKey, held, ownSign, readDoc, signDoc } from "../documents/format";
 import { cleanMoved, cleanPeer, fitsPeer, ownKey, KEY } from "../peers/known";
 import { fits, foldPhones } from "../phones";
+import { K } from "../home";
 import type { LinkState, Phone } from "../state";
-import { preserveCheckpoint, resolveCheckpoint } from "./checkpoint";
+import { checksSeal, preserveCheckpoint, resolveCheckpoint } from "./checkpoint";
 import { acceptedMembership, projectMembership } from "./membership";
 import { committedOperations, installShared, sharedValues } from "./shared";
-import { requiresStandby, setupOf } from "./record";
+import { ledSetup, requiresStandby, setupDoc, setupOf } from "./record";
 
 export const NUMBER_RESERVE = 2_000;
 export const STANDBY_UNLINK = "Choose another standby first.";
@@ -19,6 +22,42 @@ export const PRIMARY_UNLINK = "Choose another primary first.";
 export function leadershipOf(link: LinkState | null | undefined): Doc | null {
   const setup = link?.setup;
   return setup?.managed ? held(link?.leadership?.[setup.epoch]) : null;
+}
+
+/** A fresh member starts at the position named by the primary's signed SSH roster. */
+export function leadershipPosition(link: LinkState) {
+  const tip = leadershipOf(link);
+  if (tip) return { origin: tip.origin, epoch: tip.n, h: tip.h };
+  const setup = link.setup;
+  if (!setup?.managed || setup.aside || setup.epoch === 1) return null;
+  const roster = setupDoc(link);
+  const position = ledSetup(roster);
+  if (!roster || roster.origin !== setup.sign || position?.id !== setup.id
+    || position.epoch !== setup.epoch || position.primary !== setup.primary) return null;
+  return { origin: roster.origin, epoch: position.epoch, h: roster.h };
+}
+
+export interface ReplacementEnrollment {
+  id: string;
+  epoch: number;
+  key: string;
+  proposalHash: string;
+}
+
+export const leadershipProposalHash = (signature: string) => crypto.createHash("sha256").update(signature).digest("base64url");
+
+export function replacementOutcome(link: LinkState | null, enrollment: ReplacementEnrollment) {
+  const { id, epoch, key, proposalHash } = enrollment;
+  const setup = link?.setup;
+  if (!link || setup?.id !== id) return "interrupted";
+  const certificate = held(link.leadership?.[epoch]);
+  const approval = certificate?.body.approval;
+  if (certificate?.body.recovery === true && certificate.body.standby === key && setupOf(certificate.body)?.id === id
+    && typeof approval === "string" && leadershipProposalHash(approval) === proposalHash) return "committed";
+  const pending = held(link.leadershipPending);
+  if (setup.epoch === epoch - 1 && pending?.n === epoch && pending.body.standby === key
+    && leadershipProposalHash(pending.envelope.s) === proposalHash) return "pending";
+  return "interrupted";
 }
 
 /** The replacement is a mail peer only for the receipt to this signed recovery proposal. */
@@ -31,8 +70,9 @@ export function pendingStandby(link: LinkState) {
 /** Turn a fenced primary's proposal into a certificate, on the current standby only. */
 export function approveLeadership(link: LinkState, proposal: Doc, checkpoint?: Doc): Doc | null {
   const current = link.setup;
-  if (!current || current.sign !== proposal.origin || proposal.body.proposal !== true || !link.sign) return null;
+  if (setupLayoutDeferred(K) || !current || current.sign !== proposal.origin || proposal.body.proposal !== true || !link.sign) return null;
   const resolved = resolveCheckpoint(proposal, checkpoint);
+  if (resolved && !checksSeal(link, resolved.checkpoint)) return null;
   if (proposal.body.standbyAcceptance === true) {
     if (current.standby || !resolved || (proposal.body.recovery === true && !requiresStandby(current))) return null;
     const replacement = resolved.membership.boxes.find(peer => peer.key === proposal.body.standby);
@@ -69,10 +109,11 @@ export function takeLeadership(link: LinkState, doc: Doc, checkpoint?: Doc): boo
   const next = setupOf(doc.body);
   const acceptance = doc.body.standbyAcceptance === true;
   if (doc.body.recovery === true && !acceptance) return false;
-  if (doc.kind !== "leadership" || !current || current.aside || !next || next.id !== current.id || doc.n !== next.epoch
+  if (setupLayoutDeferred(K) || doc.kind !== "leadership" || !current || current.aside || !next || next.id !== current.id || doc.n !== next.epoch
     || next.epoch !== current.epoch + 1 || (!acceptance && doc.origin !== (current.standby?.sign ?? current.sign))
     || doc.body.previous !== current.primary) return false;
   const resolved = resolveCheckpoint(doc, checkpoint);
+  if (resolved && !checksSeal(link, resolved.checkpoint)) return false;
   if ((current.checkpointed || Object.hasOwn(doc.body, "checkpoint")) && !resolved) return false;
   const body = resolved?.membership ?? doc.body;
   if (!Array.isArray(body.boxes) || !body.boxes.every(fitsPeer)) return false;

@@ -4,7 +4,7 @@
 // bring back, keep the labels, and import an old backlog. Agents do the same through the tools
 // (`kuvo/work-queue/tools`).
 
-import { PENDING_SAVE, waitShared } from "../setup/shared";
+import { awaitSharedSave } from "../setup/shared";
 import { references } from "../work-queue/relations";
 import fs from "node:fs";
 import path from "node:path";
@@ -253,12 +253,13 @@ export async function* workQueueRoute(context: RouteContext, match: RegExpMatchA
       : given.remove !== undefined ? removeLabel(given.remove, stripLabel)
       : { refused: "Send {add, color?}, {change, name?, color?} or {remove}." };
     if ("refused" in outcome) return yield* json(400, { message: outcome.refused });
+    const receipt = await awaitSharedSave(outcome.save);
+    if (receipt && receipt.status !== 200) return yield* json(receipt.status, receipt.value);
     if (outcome.save) {
-      if (await waitShared(outcome.save) !== "saved") return yield* json(202, { pending: true, message: PENDING_SAVE });
       if (given.remove !== undefined) stripLabel(outcome.done.id);
     }
     tellQueuesAgain();
-    return yield* json(200, { labels: labels(), ...(given.remove === undefined ? { label: outcome.done } : {}) });
+    return yield* json(200, { ...receipt?.value, labels: labels(), ...(given.remove === undefined ? { label: outcome.done } : {}) });
   }
 
   if (part === "items") {

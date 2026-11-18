@@ -18,7 +18,7 @@ import { writeCard } from "../setup/card";
 import { appsOf, ATTACHED_FILE, foundOf, judgeComputer, oursNow } from "../setup/judge";
 import { addElsewhere, mainElsewhere, setupHosts } from "../setup/main-only";
 import { ownMachinesRoute } from "../mac/own-machines";
-import { changeShared, OPERATION_ID, operationOutcome, PENDING_SAVE, waitShared } from "../setup/shared";
+import { changeShared, OPERATION_ID, queryOperation, sharedSaveReply, waitShared } from "../setup/shared";
 import { followedSetup } from "../setup/record";
 import { setupView } from "../setup/view";
 import { engineRoute } from "../server/forward";
@@ -138,7 +138,7 @@ export async function* saveLocalSetup(context: RouteContext): AsyncGenerator<Ans
   if (!request.fromHolder || request.method !== "POST") return yield* json(403, {});
   const given = parsed(request.body);
   if (isObject(given) && typeof given.id === "string" && typeof given.operation === "string" && given.value === undefined) {
-    const outcome = operationOutcome(readLink(), given.id, given.operation);
+    const outcome = queryOperation(given.id, given.operation, given.proof);
     if (!outcome) return yield* json(404, {});
     const { kind, epoch, sequence, baseRevision, status } = outcome;
     return yield* json(200, { operation: given.operation, kind, epoch, sequence, baseRevision, status });
@@ -168,8 +168,6 @@ export async function* saveLocalSetup(context: RouteContext): AsyncGenerator<Ans
     return value;
   }, operation);
   if (!save) return yield* json(409, { message: "The setup changed or a save is already pending." });
-  const status = await waitShared(save);
-  if (status === "pending") return yield* json(202, { pending: true, status, operation: save.operation, message: PENDING_SAVE });
-  if (status === "interrupted") return yield* json(409, { operation: save.operation, status, message: "The primary changed before this save committed." });
-  return yield* json(200, { operation: save.operation, status: "committed" });
+  const reply = sharedSaveReply(save, await waitShared(save));
+  return yield* json(reply.status, reply.value);
 }

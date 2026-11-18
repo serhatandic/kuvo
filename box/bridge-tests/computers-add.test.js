@@ -2076,11 +2076,11 @@ test("failure bench: a Linux primary starts fresh, enrolls over SSH and pairs de
   const inBox = (box, file = "link.json") => read(path.join(box, "run", file));
   const localServer = async (box, boxEnv) => {
     write(path.join(box, "run", "serve.needed"), "");
-    start(boxEnv, "serve", "--kept");
+    const child = start(boxEnv, "serve", "--kept");
     const record = await waitFor("the kept server starts", () => {
-      try { return inBox(box, "serve.json"); } catch (error) { if (error.code !== "ENOENT") throw error; }
+      try { const current = inBox(box, "serve.json"); return current.pid === child.pid && current; } catch (error) { if (error.code !== "ENOENT") throw error; }
     });
-    return async (method, route, body) => {
+    const ask = async (method, route, body) => {
       const answer = await fetch(`http://127.0.0.1:${record.port}/${route}`, {
         method, signal: AbortSignal.timeout(20_000),
         headers: { authorization: `Basic ${Buffer.from(`opencode:${record.password}`).toString("base64")}`, "x-kuvo-from": "mac" },
@@ -2088,6 +2088,7 @@ test("failure bench: a Linux primary starts fresh, enrolls over SSH and pairs de
       });
       return { status: answer.status, body: await answer.json() };
     };
+    return Object.assign(ask, { child });
   };
 
   assert.equal(fs.existsSync(path.join(primaryBox, "run", "link.json")), false);
@@ -2129,7 +2130,7 @@ test("failure bench: a Linux primary starts fresh, enrolls over SSH and pairs de
   const member = done.computer.key;
   const memberEnv = { ...env, HOME: memberHome, KUVO_HOME: memberBox };
   assert.deepEqual(inBox(memberBox).setup, { ...primary, role: "member" }, "SSH installed the signed setup");
-  const memberApp = await localServer(memberBox, memberEnv);
+  let memberApp = await localServer(memberBox, memberEnv);
   assert.equal((await memberApp("GET", "kuvo/computers/add")).body.can, false);
   assert.equal((await memberApp("POST", "kuvo/phones/pair")).body.primary, primary.primary);
   assert.deepEqual((await primaryApp("GET", "kuvo/setup")).body.computers.map(each => each.key), [primary.primary, member]);
@@ -2224,6 +2225,10 @@ test("failure bench: a Linux primary starts fresh, enrolls over SSH and pairs de
       };
       const pending = await attempt();
       assert.equal(pending.state, "working", JSON.stringify(pending));
+      const joined = inBox(target);
+      assert.equal(joined.setup.epoch, 2);
+      assert.equal(joined.leadership, undefined);
+      assert.ok(link.digestOf(joined).some(entry => entry[1] === "leadership" && entry[2] === 2));
       assert.equal(afterRestart(pending.id).state, "working");
       assert.deepEqual(Object.keys(inBox(primaryBox).sharedPending), [operation]);
       assert.equal(fs.readFileSync(path.join(target, "box", "keys", "KUVO_KEY_NOTION_TOKEN"), "utf8").trim(), "fixture-seeded-key");
@@ -2264,13 +2269,36 @@ test("failure bench: a Linux primary starts fresh, enrolls over SSH and pairs de
       return setup.role === "primary" && setup.epoch === 3 && !setup.standby;
     });
     const before = inBox(memberBox).shared;
-    const attempt = await addOn(memberApp, "replacement-standby");
+    const target = path.join(homes["replacement-standby"], ".kuvo-code");
+    const replies = [];
+    const release = relay.intercept(null, standbyAddress, packet => {
+      const file = path.join(target, "run", "link.json");
+      if (!fs.existsSync(file)) return false;
+      const address = link.addressOf(Buffer.from(read(file).secret, "base64url"));
+      if (!address.equals(packet.from)) return false;
+      replies.push(packet);
+      return true;
+    });
+    atEnd(release);
+    const attempt = await addOn((...args) => memberApp(...args), "replacement-standby");
+    await waitFor("the replacement installs its certificate while replies are held", () => {
+      const file = path.join(target, "run", "link.json");
+      return replies.length && fs.existsSync(file) && read(file).leadership?.[4];
+    });
+    assert.ok(inBox(memberBox).leadershipPending);
+    const original = memberApp.child;
+    const exited = new Promise(resolve => original.once("exit", resolve));
+    original.kill("SIGTERM");
+    await exited;
+    memberApp = await localServer(memberBox, memberEnv);
+    assert.equal((await attempt()).state, "working", "the restarted server keeps the save in flight");
+    release();
+    replies.forEach(relay.replay);
     const done = await waitFor("recovery adds a new standby over SSH", async () => {
       const current = await attempt();
       assert.notEqual(current.state, "failed", JSON.stringify(current.failure));
       return current.state === "done" && current;
     });
-    const target = path.join(homes["replacement-standby"], ".kuvo-code");
     const standby = inBox(target);
     const recovered = inBox(memberBox);
     assert.equal(recovered.setup.epoch, 4);

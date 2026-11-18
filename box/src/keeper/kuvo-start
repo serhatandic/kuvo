@@ -54,7 +54,17 @@ case "${1:-keep}" in
 stop|engine-stop|engine-halt|off|pause|rollback|check-rollback-layout) ;;
 *)
   if [ -f "$K/bin/kuvo-link.js" ] && [ -x "$K/engine/$V/opencode" ]; then
-    KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$K/engine/$V/opencode" --config=/dev/null --no-env-file "$K/bin/kuvo-link.js" folder-upgrade </dev/null || exit $?
+    KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$K/engine/$V/opencode" --config=/dev/null --no-env-file "$K/bin/kuvo-link.js" folder-upgrade </dev/null || {
+      # A broken trial may be unable to run even the judge. Restore before starting any workers.
+      case "${1:-box}" in
+        box|keep|start)
+          if [ -f "$R/update-trial" ] && ! is "$(cat "$R/.updating/pid" 2>/dev/null)" kuvo-link; then
+            sh "$0" rollback && exec sh "$K/bin/kuvo-start" "$@"
+          fi
+          ;;
+      esac
+      exit 1
+    }
   fi
   ;;
 esac
@@ -324,7 +334,7 @@ keep)
   # (The watchdog an engine from 0.7 had, which an older Mac's start brings, isn't stopped here:
   # nothing kills by a pattern, and it noted no pid to stop it by. It ends by itself once the
   # engine it watched isn't the one in run/engine.json any more.)
-  fails=0; next=0; started=; round=0; bfails=0; bnext=0; bstarted=
+  fails=0; next=0; started=; round=0; bfails=0; bnext=0; saw_trial=; bstarted=
   while :; do
     [ -f "$K/bin/kuvo-start" ] && [ "$(cat "$R/box.pid" 2>/dev/null)" = "$$" ] || exit 0
     hold
@@ -343,6 +353,13 @@ keep)
       if [ -n "$rv" ] && [ -x "$K/engine/$rv/opencode" ] && [ "$(tr -d ' \t\r\n' <"$R/engine-ran" 2>/dev/null)" != "$rv" ] && ! swapping; then echo "$rv" >"$R/engine-ran.new" && mv -f "$R/engine-ran.new" "$R/engine-ran"; fi
     fi
     pick
+    if [ -f "$R/update-trial" ]; then
+      saw_trial=1
+    elif [ -n "$saw_trial" ] && [ -f "$K/bin/kuvo-link.js" ] && [ -x "$K/engine/$V/opencode" ]; then
+      # A confirming process from the previous release may leave the folder step to the keeper.
+      KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$K/engine/$V/opencode" --config=/dev/null --no-env-file "$K/bin/kuvo-link.js" folder-upgrade </dev/null || exit 1
+      saw_trial=
+    fi
     # COMPAT(0.7 keeper): checked each round. Goes 3 months after 0.8.0.
     # Its script replaced: a newer keeper carries on; an older Mac's gets this one back (its
     # mark left as it is, so that Mac doesn't put its own there again).
@@ -689,6 +706,9 @@ rollback)
   fi
   echo $$ >"$R/.rolling-back/pid"
   trap '[ "$(cat "$R/.rolling-back/pid" 2>/dev/null)" = "$$" ] && rm -rf "$R/.rolling-back"' EXIT
+  [ -f "$R/update-trial" ] || exit 0
+  judge=$(cat "$R/update-judge.pid" 2>/dev/null)
+  if [ "$judge" != "${KUVO_UPDATER:-}" ] && is "$judge" kuvo-link; then exit 1; fi
   # Three tries that couldn't put it all back (a disk full, say), and it gives up. A count that
   # can't be read or written back is taken as the last.
   tries=0

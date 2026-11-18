@@ -3557,6 +3557,7 @@ function askSetupSave(run, body) {
           status: reply.status,
           message: typeof result.message === "string" ? result.message : undefined,
           ...typeof result.operation === "string" ? { operation: result.operation } : {},
+          ...isObject(result.proof) && typeof result.proof.d === "string" && typeof result.proof.s === "string" ? { proof: { d: result.proof.d, s: result.proof.s } } : {},
           ...outcome === "pending" || outcome === "committed" || outcome === "interrupted" ? { outcome } : {}
         });
       } catch {
@@ -40688,9 +40689,9 @@ function checkpoint(file, current) {
   return { version, upgradingTo };
 }
 function upgradeKuvoFolder(folder, importLegacy) {
-  upgradeFolder(folder, steps, importLegacy, () => checkTrialRecovery(folder));
+  upgradeFolder(folder, steps, importLegacy, (start) => checkTrialRecovery(folder, start));
 }
-function checkTrialRecovery(folder) {
+function checkTrialRecovery(folder, start) {
   if (!fs15.existsSync(path11.join(folder, "run", "update-trial")))
     return;
   const bin = path11.join(folder, "updates", "rollback", "files", "bin");
@@ -40724,8 +40725,13 @@ function checkTrialRecovery(folder) {
         timeout: 15000
       }).status === 0;
     };
-    if (!accepts(steps.length) || steps.length > 1 && accepts(2147483647))
-      refuse();
+    if (!accepts(2147483647)) {
+      if (accepts(steps.length))
+        return;
+      if (start.version === 4 && start.upgradingTo === undefined && accepts(start.version))
+        return false;
+    }
+    refuse();
   } finally {
     fs15.rmSync(scratch, { recursive: true, force: true });
   }
@@ -40740,8 +40746,8 @@ function upgradeFolder(folder, ordered, importLegacy, beforeSteps) {
 `, path11.dirname(folder));
   locked(path11.join(folder, ".folder-upgrade.lock"), () => {
     const start = checkpoint(file, current);
-    if (start.version < current)
-      beforeSteps?.();
+    if (start.version < current && beforeSteps?.(start) === false)
+      return;
     for (let version = start.version;version < current; version++) {
       const upgradingTo = version + 1;
       if (start.upgradingTo !== upgradingTo)
@@ -42364,4 +42370,4 @@ if (!isMainThread && process.argv.includes("--insights-db-worker")) {
 } else {
   await init_main().then(() => ({}));
 }
-// Built from Packages/Box/src/agents 91c89bbb0b07f76969b730d7e4364e28122462c2505f1ce036bb6066e9bbef2c
+// Built from Packages/Box/src/agents 9211cd7a45408ffff28e97ebba0b69abfc8f45a9a5991c2d3002360b3a0ec711

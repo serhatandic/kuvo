@@ -156,16 +156,21 @@ while IFS= read -r -d '' source; do
 done < <(git --no-optional-locks ls-files -z mac/helper/Sources swift/OpenCodeKit/Sources swift/KuvoClient/Sources swift/KuvoLink/Sources scripts)
 # Transfer the exact historical build used by the failure bench. The remote snapshot has no .git.
 history=()
+fixture_dir=$(mktemp -d)
+trap 'rm -r -- "$fixture_dir"' EXIT
+mkdir -p "$fixture_dir/box/bridge-tests"
 ref_file=box/bridge-tests/failure-bench-legacy-ref.txt
 if [[ -f "$ref_file" ]] && { [[ ${#files[@]} -eq 0 ]] || [[ " ${files[*]} " == *" bridge-tests/devices-two-boxes.test.js "* || " ${files[*]} " == *" bridge-tests/failure-bench-legacy.test.js "* ]]; }; then
     read -r ref < "$ref_file"
     [[ "$ref" =~ ^[0-9a-f]{40}$ ]] || { echo "Invalid legacy build reference" >&2; exit 1; }
-    fixture_dir=$(mktemp -d)
-    trap 'rm -r -- "$fixture_dir"' EXIT
-    mkdir -p "$fixture_dir/box/bridge-tests"
     legacy=box/bridge-tests/.failure-bench-legacy.mjs
     git --no-optional-locks show "$ref:swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js" > "$fixture_dir/$legacy"
     history=(-C "$fixture_dir" "$legacy")
+fi
+if [[ ${#files[@]} -eq 0 ]] || [[ " ${files[*]} " == *" bridge-tests/folder-version.test.js "* || " ${files[*]} " == *" bridge-tests/updates.test.js "* ]]; then
+    layout=box/bridge-tests/.layout-4.mjs
+    git --no-optional-locks show "4330569c2f1c39eef166f65d2abb1b7256ef7dcb:swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js" > "$fixture_dir/$layout"
+    history+=(-C "$fixture_dir" "$layout")
 fi
 COPYFILE_DISABLE=1 tar --no-xattrs --exclude node_modules --exclude .build -czf - \
     box/bridge-tests protocol/vectors swift/KuvoLink/Sources/KuvoLink/Resources \

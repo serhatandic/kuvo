@@ -130,7 +130,7 @@ import { featuresNow, settleUpdate, startSettling } from "./updates/health";
 import { handOverMachine, recoverMachineJob, startMachineInstall, swapEngine } from "./updates/engine-swap";
 import { type UpdateOptions, ON_TRIAL, UPDATING_ALREADY, agentsWorking, dropOldBackups, passingOutcome, updateOnTrial, checkDrift, failedInPassing, offerWaits, isUpdating, noteLauncher, noteOlderMacs, installerSteps, noteUpdate, startOfferedUpdate, startUpdate, takeOffer, untilFree, update, UPDATE_KEYS, releaseRound, updatesBlocked, updateState, updateStatus } from "./updates/update";
 import { clearIncoming, followOver, followPeers, watchHeld } from "./updates/fleet";
-import { checkFolderVersion, upgradeKuvoFolder } from "../shared/folder-version";
+import { checkFolderVersion, setupLayoutDeferred, upgradeKuvoFolder } from "../shared/folder-version";
 import { BRIDGE_VERSION } from "./version";
 import { ADD_RESERVATION, SETUP_OCCUPIED } from "./marks";
 import type { AddressInfo } from "node:net";
@@ -761,7 +761,8 @@ async function box(command: string): Promise<void> {
         return say({ status: 200, ...legacy.library });
       }
       const saved = await savePersonalityLibrary(given);
-      return say({ status: saved.status, ...(saved.status === 200 ? saved.library : saved.value) });
+      return say(saved.status === 200 ? { ...saved.library, operation: saved.receipt.operation, status: 200 }
+        : { ...saved.value, outcome: "status" in saved.value ? saved.value.status : undefined, status: saved.status });
     }
     default:
       console.error("Usage: kuvo-link.js box adopt | read | change | key <name> | route | reconnect <server> | personalities | update-status | update-now");
@@ -1017,6 +1018,10 @@ interface SetupInput {
 // another relay, or a newer one), and prints the machine's address and public key for the Mac
 // to tell your phones. Nothing left to answer: the bridge stops, and the keys stay.
 async function setup(): Promise<void> {
+  if (setupLayoutDeferred(K)) {
+    console.error("Wait for the Kuvo Code update to finish before joining a setup.");
+    process.exit(1);
+  }
   let input: SetupInput;
   try {
     const chunks: Buffer[] = [];

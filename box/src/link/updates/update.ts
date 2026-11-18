@@ -12,6 +12,8 @@
 // checked the same way and taken at the next quiet moment; and it can carry a signed Mac bundle
 // (the box's helper), swapped whole.
 
+import { upgradeKuvoFolder } from "../../shared/folder-version";
+import { syncDurableFile, writeDurablePrivate } from "../../shared/files";
 import { askSetupSave, localSetupValue } from "../../shared/setup-local";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import crypto from "node:crypto";
@@ -146,6 +148,8 @@ export interface UpdateTrial {
   to: string;
   at: number;
   swapped?: number;
+  /** The rollback is ready, and installation has not yet finished copying the release. */
+  installing?: true;
   features?: string[];
   judged?: import("./health").Judged;
   /** How the engine's data was as a newer engine took it (`keepData`), to tell later whether that
@@ -698,17 +702,17 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
     // get past (the machine going down) is put back too.
     const newerEngine = otherEngine && newerVersion(manifest.engine, previous?.version);
     keepForRollback(files, newerEngine ? manifest.engine : null, new Set(bundles), path.join(stage, "files", "bin", "kuvo-start"));
-    noteUpdate({ trial: { from: before, to: manifest.version, at: clock() }, running: null });
+    noteUpdate({ trial: { from: before, to: manifest.version, at: clock(), installing: true }, running: null });
     // (A rollback's count from a trial an older Kuvo ended: never this one's.)
     fs.rmSync(path.join(RUN, "update-restore"), { force: true });
-    fs.writeFileSync(UPDATE_TRIAL, manifest.version, { mode: 0o600 });
+    writeDurablePrivate(UPDATE_TRIAL, manifest.version);
     trial = true;
     // Nothing at work is stopped: each piece takes the new code as it takes any (PROTOCOL.md,
     // "Updates"). Only another engine than the one running is: that one alone, its coding agents'
     // bridge running on, and only once nothing works there or on your word (above).
     if (otherEngine) {
       stopped = true;
-      noteUpdate({ trial: { from: before, to: manifest.version, at: clock(), engineStopped: true } });
+      noteUpdate({ trial: { from: before, to: manifest.version, at: clock(), installing: true, engineStopped: true } });
       const halt = /^engine-stop\)/m.test(textOf(path.join(K, "bin", "kuvo-start")) ?? "") ? "engine-stop" : "stop";
       const stop = ran("sh", [path.join(K, "bin", "kuvo-start"), halt], keeperEnv, 300_000);
       // COMPAT(beta.30 engine-record): an engine an older keeper's stop missed, stopped by its record. Goes once no box is from before beta.31.
@@ -906,12 +910,16 @@ export function clearUpdateStaging(folder = UPDATES): void {
 // engines but this one.
 export function confirmUpdate(clock = Date.now): boolean {
   const state = updateState();
-  if (!state.trial?.healthy || boxVersion() !== state.trial.to || isUpdating()) return false;
+  if (!state.trial?.healthy || boxVersion() !== state.trial.to || isUpdating()
+    || fs.existsSync(path.join(RUN, "update-restore"))
+    || runs(Number(textOf(path.join(RUN, ".rolling-back", "pid"))), "kuvo-start")) return false;
   let engine: string | null | undefined = null;
   try { engine = readEngineFile()?.version; } catch {}
   // (How it went noted first: whoever sees the trial over finds it said.)
   noteUpdate({ trial: null, last: { at: clock(), result: "updated", from: state.trial.from, to: state.trial.to }, ...(state.offerFailed && !newerVersion(state.offerFailed.version, state.trial.to) ? { offerFailed: null } : {}) });
   fs.rmSync(UPDATE_TRIAL, { force: true });
+  syncDurableFile(RUN);
+  upgradeKuvoFolder(K);
   fs.rmSync(ROLLBACK, { recursive: true, force: true });
   // (Not the one the coding agents' bridge still runs on, until it moves to the new: its agents'
   // tools run from it.)

@@ -217,6 +217,31 @@ test("failure bench: an offline member follows two handovers and the former prim
   await see(b, 4, b);
 });
 
+test("failure bench: an SSH-enrolled member advertises its accepted epoch and catches up", { timeout: 35_000 }, async t => {
+  const { a, b, c, see } = await network(t);
+  assert.equal((await submit(a, b, 1)).status, 202);
+  await Promise.all([see(a, 2, b), see(b, 2, b), see(c, 2, b)]);
+  assert.equal((await submit(b, a, 2)).status, 202);
+  await Promise.all([see(a, 3, a), see(b, 3, a), see(c, 3, a)]);
+  await c.stop("SIGTERM");
+
+  const primary = a.read();
+  const gift = link.ownDoc(primary, "peers", link.primaryPeersBody(primary));
+  const joined = { ...c.identity, mac: a.key, macs: [a.key], macSigns: { [a.key]: a.sign }, phones: [] };
+  // SSH gives a fresh member the current signed roster, without the preceding epoch's authority.
+  link.docsWork({ link: joined, library: { personalities: [], removed: [] } }, a.entry, { give: [gift.envelope] }, { stay: a.key });
+  assert.equal(joined.setup.epoch, 3);
+  assert.equal(joined.leadership, undefined);
+  assert.ok(link.digestOf(joined).some(entry => entry[1] === "leadership" && entry[2] === 3));
+  fs.writeFileSync(path.join(c.run, "link.json"), JSON.stringify(joined));
+
+  assert.equal((await submit(a, b, 3)).status, 202);
+  await Promise.all([see(a, 4, b), see(b, 4, b)]);
+  c.start();
+  await see(c, 4, b);
+  assert.ok(c.read().leadership[4]);
+});
+
 test("failure bench: a successor that goes unreachable during handover follows the committed epoch when back", { timeout: 40_000 }, async t => {
   const { a, b, c, relay, see } = await network(t);
   let reconnect;
@@ -306,6 +331,15 @@ test("failure bench: only the standby takes over across a split and the old prim
   for (const box of [a, b, c]) box.clock(3 * HOUR + 5_000);
   await Promise.all([see(b, 3, b), see(c, 3, b)]);
   assert.equal(a.read().setup.epoch, 2);
+  // The primary is still partitioned. Ask the successor using the receipt from the save.
+  assert.equal(blocked.value.operation, interrupted);
+  const lostOnSuccessor = await link.askSetupSave(b.run, { id: stale.setup.id, operation: interrupted, proof: blocked.value.proof });
+  assert.equal(lostOnSuccessor.status, 200);
+  assert.equal(lostOnSuccessor.outcome, "interrupted");
+  assert.equal(lostOnSuccessor.operation, interrupted);
+  const checked = link.readDoc(blocked.value.proof);
+  const forgedProof = link.signDoc(c.seed, "setup-shared", checked.n, checked.body);
+  assert.equal((await link.askSetupSave(b.run, { id: stale.setup.id, operation: interrupted, proof: forgedProof })).status, 404);
   const winning = link.readDoc(b.read().leadership[3]);
   assert.equal(winning.origin, b.sign);
   assert.equal(winning.body.takeover, true);
@@ -319,6 +353,8 @@ test("failure bench: only the standby takes over across a split and the old prim
   assert.equal(link.takeDoc(b.read(), a.read().leadership[2]), null);
   await see(b, 4, b);
   assert.equal(b.read().setup.standby.key, c.key);
+  await see(c, 4, b);
+  assert.equal((await link.askSetupSave(c.run, { id: stale.setup.id, operation: interrupted })).outcome, "interrupted");
   await until("new primary leased", () => b.lease(4, c), t.signal);
   assert.equal((await a.route("POST", "kuvo/phones/remove", { phones: [{ key: phone, pairing }] })).status, 409);
 
@@ -532,10 +568,17 @@ test("failure bench: a saved change survives killing the primary before it publi
   const { a, b, c, relay, see, phone, pairing } = await standbyNetwork(t);
   // Prevent the third computer from learning the change from the old primary.
   const reconnect = [relay.pause(a.address, c.address), relay.pause(b.address, c.address)];
-  const standby = await rename(a, b, "Renamed Desk");
-  assert.deepEqual(standby, { status: 200, value: { name: "Renamed Desk" } });
-  const done = await rename(a, c, "Accepted name");
-  assert.deepEqual(done, { status: 200, value: { name: "Accepted name" } });
+  for (const [box, name, sequence] of [[b, "Renamed Desk", 1], [c, "Accepted name", 2]]) {
+    const done = await rename(a, box, name);
+    const { setup, sharedOutcomes } = b.read();
+    const operation = Object.keys(sharedOutcomes).find(id => sharedOutcomes[id].kind === "setupNames"
+      && sharedOutcomes[id].sequence === sequence);
+    assert.ok(operation, "the standby durably accepted the operation");
+    const proof = link.signDoc(a.seed, "setup-shared", sequence, {
+      id: setup.id, epoch: 2, operation, kind: "setupNames", baseRevision: sequence - 1, proposal: sharedOutcomes[operation].proposal,
+    });
+    assert.deepEqual(done, { status: 200, value: { name, setup: setup.id, epoch: 2, operation, proof, status: "committed" } });
+  }
   assert.equal(b.read().shared.setupNames.value[c.key], "Accepted name");
   assert.equal(await setupName(c, c.key), c.name);
   assert.equal((await a.route("POST", "kuvo/phones/remove", { phones: [{ key: phone, pairing }] }, true)).status, 200);

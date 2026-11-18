@@ -65,7 +65,7 @@ export async function relayStandIn({ addressOf }, { changed: told = () => {} } =
   const sockets = new Map();
   const offline = new Set();
   const paused = new Set();
-  const route = (from, to) => `${from.toString("hex")}:${to.toString("hex")}`;
+  const route = (from, to) => `${from?.toString("hex") ?? "*"}:${to.toString("hex")}`;
   const interceptors = new Map();
   const forward = ({ from, to, payload }) => {
     const device = devices.get(to.toString("hex"));
@@ -77,7 +77,7 @@ export async function relayStandIn({ addressOf }, { changed: told = () => {} } =
   const deliver = (from, to, payload) => {
     const key = route(from, to);
     if (paused.has(key)) return;
-    const intercept = interceptors.get(key);
+    const intercept = interceptors.get(key) ?? interceptors.get(route(null, to));
     if (intercept?.({ from: Buffer.from(from), to: Buffer.from(to), payload: Buffer.from(payload) })) return;
     forward({ from, to, payload });
   };
@@ -156,7 +156,7 @@ export async function relayStandIn({ addressOf }, { changed: told = () => {} } =
       return () => paused.delete(key);
     },
     // Take selected packets out of normal delivery. Forward a saved packet explicitly to release
-    // it, call replay twice to duplicate it, or leave it out to drop it.
+    // it, call replay twice to duplicate it, or leave it out to drop it. A null source matches any sender.
     intercept(from, to, takePacket) {
       const key = route(from, to);
       if (interceptors.has(key)) throw new Error(`Already intercepting ${key}`);

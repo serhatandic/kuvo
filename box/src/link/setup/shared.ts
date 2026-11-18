@@ -1,16 +1,19 @@
 // The standby's durable acceptance commits an operation. Proposals, outcomes and accepted
 // values share the link lock. An operation keeps its identity even when its kind is edited again.
+import { setupLayoutDeferred } from "../../shared/folder-version";
 import crypto from "node:crypto";
 import { SHARED_KINDS, sharedKind, sharedPolicy, type SharedKind } from "../../shared/data-declarations";
 import type { Doc, SignedDoc } from "../../shared/documents";
 import { isObject } from "../../shared/json";
-import { held, MOST_DOC, ownSign, signDoc } from "../documents/format";
+import { held, MOST_DOC, ownSign, readDoc, signDoc } from "../documents/format";
+import { K } from "../home";
 import { ownKey } from "../peers/known";
 import { readLink, updateLink, type LinkState } from "../state";
 import { primaryFenced } from "./lease";
 import { applyAccess } from "./access";
 import { acceptedMembership, membershipOf, projectMembership } from "./membership";
 import { followedSetup, requiresStandby } from "./record";
+import { sealedPrimary } from "./checkpoint";
 
 export type { SharedKind };
 export type SharedValues = Partial<Record<SharedKind, { sequence: number; value: unknown }>>;
@@ -85,24 +88,31 @@ export function pendingShared(link: LinkState | null | undefined, kind: SharedKi
   return link ? pendingEntry(link, kind)?.doc ?? null : null;
 }
 
-export interface SharedSave { id: string; epoch: number; sequence: number; operation: string }
+export interface SharedSave { id: string; epoch: number; sequence: number; operation: string; proof?: SignedDoc }
 
-export function asSave(doc: Doc): SharedSave {
-  return { id: doc.body.id as string, epoch: doc.body.epoch as number, sequence: doc.n, operation: identity(doc)! };
+export function asSave(doc: Doc, seed?: string): SharedSave {
+  const id = doc.body.id as string;
+  const epoch = doc.body.epoch as number;
+  const operation = identity(doc)!;
+  // The caller can prove it received an operation without exposing the proposed value or effects.
+  const proof = seed && signDoc(seed, "setup-shared", doc.n, {
+    id, epoch, operation, kind: doc.body.kind, baseRevision: doc.n - 1, proposal: doc.envelope.s,
+  });
+  return { id, epoch, sequence: doc.n, operation, ...(proof ? { proof } : {}) };
 }
 
 /** Stage under the link lock. Independent kinds proceed independently; one kind is serialized. */
 export function stageShared(link: LinkState, kind: SharedKind, value: unknown, effects?: object, requested?: string): SharedSave | null {
   const setup = followedSetup(link);
   const operation = requested ?? crypto.randomBytes(16).toString("base64url");
-  if (!link.sign || setup?.role !== "primary" || setup.sign !== ownSign(link) || (!setup.standby && (!setup.checkpointed || requiresStandby(setup)))
+  if (setupLayoutDeferred(K) || !link.sign || setup?.role !== "primary" || setup.sign !== ownSign(link) || (!setup.standby && (!setup.checkpointed || requiresStandby(setup)))
     || link.leadershipPending || !sharedKind(kind) || value === undefined || !OPERATION_ID.test(operation)) return null;
   scopeShared(link, setup.id);
   if (Object.hasOwn(link.sharedOutcomes ?? {}, operation)) return null;
   const pending = pendingShared(link, kind);
   if (pending) {
     return (!requested || identity(pending) === requested) && JSON.stringify(pending.body.value) === JSON.stringify(value)
-      && JSON.stringify(pending.body.effects) === JSON.stringify(effects) ? asSave(pending) : null;
+      && JSON.stringify(pending.body.effects) === JSON.stringify(effects) ? asSave(pending, link.sign) : null;
   }
   if (Object.hasOwn(link.sharedPending ?? {}, operation)) return null;
   const sequence = (link.shared?.[kind]?.sequence ?? 0) + 1;
@@ -117,13 +127,14 @@ export function stageShared(link: LinkState, kind: SharedKind, value: unknown, e
     id: setup.id, epoch: setup.epoch, kind, value, operation, baseRevision: sequence - 1, ...(effects ? { effects } : {}),
   });
   if (envelope.d.length > MOST_DOC * 4 / 3) return null;
+  const doc = held(envelope)!;
   if (setup.standby) link.sharedPending = { ...link.sharedPending, [operation]: envelope };
   else {
     link.shared = next;
-    remember(link, held(envelope)!, operation, "committed");
+    remember(link, doc, operation, "committed");
     if (kind === "membershipAndAccess") applyAccess(link, value, effects);
   }
-  return { id: setup.id, epoch: setup.epoch, sequence, operation };
+  return asSave(doc, link.sign);
 }
 
 function remember(link: LinkState, doc: Doc, operation: string, status: OperationOutcome["status"]) {
@@ -145,7 +156,7 @@ function matchesMembership(link: LinkState, value: unknown): boolean {
 export function takeShared(link: LinkState, sender: string, doc: Doc): SignedDoc | null {
   const setup = followedSetup(link);
   const { id, epoch, kind, value, receipt } = doc.body;
-  if (!setup || !link.sign || id !== setup.id || epoch !== setup.epoch) return null;
+  if (setupLayoutDeferred(K) || !setup || !link.sign || id !== setup.id || epoch !== setup.epoch) return null;
   if (setup.checkpointed && setup.role === "member" && setup.primary === sender && setup.sign === doc.origin
     && setup.standby?.key !== ownKey(link) && doc.n === epoch && doc.body.replica !== undefined) {
     const replica = sharedValues(doc.body.replica);
@@ -220,14 +231,68 @@ export function operationOutcome(link: LinkState | null | undefined, id: string,
   return pending ? { status: "pending" as const, sequence: pending.n, baseRevision: pending.n - 1, epoch: pending.body.epoch, kind: pending.body.kind } : null;
 }
 
+/** The signed checkpoint for the next epoch seals the original primary's outstanding operations. */
+export function queryOperation(id: string, operation: string, proof: unknown) {
+  if (setupLayoutDeferred(K)) return null;
+  if (proof === undefined) return operationOutcome(readLink(), id, operation);
+  const ticket = readDoc(proof);
+  if (!ticket || ticket.kind !== "setup-shared" || ticket.body.id !== id || identity(ticket) !== operation) return null;
+  const { epoch, kind, proposal } = ticket.body;
+  if (!Number.isSafeInteger(epoch) || Number(epoch) < 1 || !sharedKind(kind)
+    || typeof proposal !== "string" || !/^[\w-]{86}$/.test(proposal)) return null;
+  const same = (outcome: OperationOutcome) => outcome.proposal === proposal && outcome.kind === kind
+    && outcome.epoch === epoch && outcome.sequence === ticket.n;
+  const link = readLink();
+  const setup = followedSetup(link);
+  if (!link || !setup || setup.id !== id) return null;
+  const authoritative = (state: LinkState) => {
+    const position = followedSetup(state);
+    return position?.id === id && ticket.origin === (epoch === position.epoch ? position.sign : sealedPrimary(state, Number(epoch)));
+  };
+  if (!authoritative(link)) return null;
+  const known = operationOutcome(link, id, operation);
+  if (known) {
+    if ("proposal" in known) return same(known) ? known : null;
+    const pending = pendingShared(link, kind);
+    return pending?.envelope.s === proposal && pending.n === ticket.n && pending.body.epoch === epoch ? known : null;
+  }
+  if (Number(epoch) >= setup.epoch) return null;
+  let result: OperationOutcome | null = null;
+  updateLink(state => {
+    if (!state || !authoritative(state) || Number(epoch) >= state.setup!.epoch) return null;
+    const decided = state.sharedOutcomes?.[operation];
+    if (decided) {
+      result = same(decided) ? decided : null;
+      return null;
+    }
+    result = { epoch: Number(epoch), kind, sequence: ticket.n, baseRevision: ticket.n - 1, proposal, status: "interrupted" };
+    state.sharedOutcomes = { ...state.sharedOutcomes, [operation]: result };
+    return state;
+  }, { durable: true });
+  return result;
+}
+
+export function sharedSaveReply(save: SharedSave, result: Awaited<ReturnType<typeof waitShared>>) {
+  const { id, epoch, operation, proof } = save;
+  const receipt = { setup: id, epoch, operation, ...(proof ? { proof } : {}) };
+  if (result === "saved") return { status: 200, value: { ...receipt, status: "committed" as const } } as const;
+  if (result === "pending") return { status: 202, value: { ...receipt, status: "pending" as const, pending: true, message: PENDING_SAVE } } as const;
+  return { status: 409, value: { ...receipt, status: "interrupted" as const, message: "The primary changed before this save committed." } } as const;
+}
+
+export async function awaitSharedSave(save: SharedSave | null | undefined) {
+  return save ? sharedSaveReply(save, await waitShared(save)) : null;
+}
+
 export async function waitShared(save: SharedSave, timeout = 3_000, signal?: AbortSignal): Promise<"saved" | "pending" | "interrupted"> {
   const until = Date.now() + timeout;
-  while (Date.now() < until && !signal?.aborted) {
+  while (!signal?.aborted) {
     const link = readLink();
     const outcome = operationOutcome(link, save.id, save.operation);
     if (outcome?.status === "committed") return "saved";
     if (outcome?.status === "interrupted") return "interrupted";
     if (link?.setup?.id !== save.id || link.setup.epoch !== save.epoch) return "interrupted";
+    if (Date.now() >= until) break;
     await new Promise(resolve => setTimeout(resolve, 50));
   }
   return "pending";

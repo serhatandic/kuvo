@@ -5,6 +5,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
+import { layout4Build } from "./failure-bench-legacy.js";
 import { fileURLToPath } from "node:url";
 import { removeAtEnd } from "./at-end.js";
 
@@ -153,11 +154,8 @@ test("failure bench: a broken trial can stop and restore the saved bridge for it
     fs.mkdirSync(dir, { recursive: true });
   }
   // This is the shipped layout-4 bridge, and the trial is the built layout-5 bridge.
-  const previous = spawnSync("git", ["--no-optional-locks", "show",
-    "4330569c2f1c39eef166f65d2abb1b7256ef7dcb:swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js",
-  ], { cwd: fileURLToPath(new URL("../..", import.meta.url)), maxBuffer: 16 * 1024 * 1024 });
-  assert.equal(previous.status, 0, previous.stderr?.toString());
-  fs.writeFileSync(old, previous.stdout);
+  const previous = layout4Build();
+  fs.writeFileSync(old, previous);
   fs.copyFileSync(link, current);
   fs.writeFileSync(path.join(engine, "opencode"), `#!/bin/sh
 shift 2
@@ -171,10 +169,12 @@ cp "${old}" "${current}" && rm "${folder}/run/update-trial"
 `);
   fs.writeFileSync(marker, '{"version":4}\n');
   assert.equal(launch(home, process.execPath, [old, "here", ".probe"]).status, 0);
+  // A trial may defer a clean layout 4, but cannot defer a migration that already started.
+  fs.writeFileSync(marker, '{"version":4,"upgradingTo":5}\n');
   const refused = launch(home, process.execPath, [current, "folder-upgrade"]);
   assert.equal(refused.status, 1, refused.stderr);
   assert.match(refused.stderr, /saved Kuvo Code can't recover folder layout 5/);
-  assert.equal(fs.readFileSync(marker, "utf8"), '{"version":4}\n');
+  assert.equal(fs.readFileSync(marker, "utf8"), '{"version":4,"upgradingTo":5}\n');
 
   // An incompatible marker must never let restore put back the older binary.
   fs.writeFileSync(marker, '{"version":5}\n');
@@ -187,7 +187,7 @@ cp "${old}" "${current}" && rm "${folder}/run/update-trial"
   fs.writeFileSync(marker, '{"version":4}\n');
   const restored = launch(home, "/bin/sh", [keeper, "rollback"]);
   assert.equal(restored.status, 0, restored.stderr);
-  assert.deepEqual(fs.readFileSync(current), previous.stdout);
+  assert.deepEqual(fs.readFileSync(current), previous);
   assert.equal(fs.readFileSync(marker, "utf8"), '{"version":4}\n');
 });
 

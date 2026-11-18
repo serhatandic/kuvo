@@ -65,12 +65,18 @@ export function checkFolderVersion(folder: string): void {
 }
 
 export function upgradeKuvoFolder(folder: string, importLegacy?: () => void): void {
-  upgradeFolder(folder, steps, importLegacy, () => checkTrialRecovery(folder));
+  upgradeFolder(folder, steps, importLegacy, start => checkTrialRecovery(folder, start));
+}
+
+/** Layout-5 writers remain fenced until the folder runner has committed the last step. */
+export function setupLayoutDeferred(folder: string): boolean {
+  try { return checkpoint(path.join(folder, FOLDER_VERSION_FILE), steps.length).version === 4; }
+  catch { return true; }
 }
 
 /** A trial can advance only as far as the saved reader can open. Before layout markers,
  * readers ignored the probe completely and can recover only the additive layout 1. */
-function checkTrialRecovery(folder: string): void {
+function checkTrialRecovery(folder: string, start: Checkpoint): void | false {
   if (!fs.existsSync(path.join(folder, "run", "update-trial"))) return;
   const bin = path.join(folder, "updates", "rollback", "files", "bin");
   const saved = path.join(bin, "kuvo-link.js");
@@ -93,14 +99,20 @@ function checkTrialRecovery(folder: string): void {
         stdio: "ignore", timeout: 15_000,
       }).status === 0;
     };
-    if (!accepts(steps.length) || (steps.length > 1 && accepts(2_147_483_647))) refuse();
+    if (!accepts(2_147_483_647)) {
+      if (accepts(steps.length)) return;
+      // The only deferred step is additive. The trial's setup writers stay on hold
+      // until confirmation, and rollback can reopen the original marker as-is.
+      if (start.version === 4 && start.upgradingTo === undefined && accepts(start.version)) return false;
+    }
+    refuse();
   } finally {
     fs.rmSync(scratch, { recursive: true, force: true });
   }
 }
 
 /** The same runner can be exercised with multiple steps before a second layout ships. */
-export function upgradeFolder(folder: string, ordered: readonly Step[], importLegacy?: () => void, beforeSteps?: () => void): void {
+export function upgradeFolder(folder: string, ordered: readonly Step[], importLegacy?: () => void, beforeSteps?: (start: Checkpoint) => void | false): void {
   folder = path.resolve(folder);
   const file = path.join(folder, FOLDER_VERSION_FILE);
   const current = ordered.length;
@@ -109,7 +121,7 @@ export function upgradeFolder(folder: string, ordered: readonly Step[], importLe
   const save = (state: Checkpoint) => writeDurablePrivate(file, JSON.stringify(state) + "\n", path.dirname(folder));
   locked(path.join(folder, ".folder-upgrade.lock"), () => {
     const start = checkpoint(file, current);
-    if (start.version < current) beforeSteps?.();
+    if (start.version < current && beforeSteps?.(start) === false) return;
     for (let version = start.version; version < current; version++) {
       const upgradingTo = version + 1;
       if (start.upgradingTo !== upgradingTo) save({ version, upgradingTo });

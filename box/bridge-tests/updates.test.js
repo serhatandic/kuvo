@@ -13,16 +13,18 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { layout4Build } from "./failure-bench-legacy.js";
 import { runningAs } from "./running-as.js";
 import { atEnd, removeAtEnd } from "./at-end.js";
 
-const home = fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-link-updates-"));
+const boxHome = fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-link-updates-"));
+const home = path.join(boxHome, ".kuvo-code");
 process.env.KUVO_HOME = home;
 const link = await import("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");
 const script = fileURLToPath(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url));
 const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-link-release-"));
 const engines = new Set();
-removeAtEnd(home);
+removeAtEnd(boxHome);
 removeAtEnd(scratch);
 atEnd(() => {
   for (const pid of engines) try { process.kill(pid); } catch {}
@@ -150,10 +152,10 @@ await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
 atEnd(() => server.close());
 const base = `http://127.0.0.1:${server.address().port}`;
 
-function release({ version = "0.10.0", engine: engineVersion = "1.1.0", released = new Date(Date.now() - 10 * 86_400_000), breaks = false, engineBreaks = null, linkBreaks = false, tamper = false, key = privateKey, bundle = null, extra = null, link = false } = {}) {
+function release({ version = "0.10.0", engine: engineVersion = "1.1.0", released = new Date(Date.now() - 10 * 86_400_000), breaks = false, engineBreaks = null, linkBreaks = false, tamper = false, key = privateKey, bundle = null, extra = null, link = false, keeperScript = null } = {}) {
   const files = path.join(scratch, `files-${crypto.randomUUID()}`);
   write(path.join(files, "bin", "box-version"), version);
-  write(path.join(files, "bin", "kuvo-start"), keeper(engineVersion, breaks), 0o700);
+  write(path.join(files, "bin", "kuvo-start"), keeperScript ?? keeper(engineVersion, breaks), 0o700);
   // (One that `linkBreaks` passes its self-test, and answers nothing else.)
   write(path.join(files, "bin", "kuvo-link.js"), linkBreaks ? 'if (process.argv.includes("selftest")) console.log("ok"); else process.exit(1);\n' : fs.readFileSync(script, "utf8"), 0o600);
   write(path.join(files, "bin", "kuvo-wake"), "# the new wake-ups\n", 0o755);
@@ -430,6 +432,91 @@ throw new Error("The updater did not reach the cut: " + JSON.stringify(result));
   assert.equal(resumed.status, 0, resumed.stderr);
   assert.deepEqual(read(ledger), { ...stored, formatVersion: 1 });
   assert.equal(fs.readFileSync(path.join(home, "data", "opencode", "opencode.db"), "utf8"), "the old engine's data");
+});
+
+function layoutTrial() {
+  machine();
+  const previous = layout4Build();
+  const current = path.join(home, "bin", "kuvo-link.js");
+  write(current, previous);
+  write(path.join(home, "bin", "kuvo-start"), keeper("1.0.0").replace("stop)", "bridge) : ;;\nstop)"), 0o700);
+  const keeperScript = fs.readFileSync(new URL("../src/keeper/kuvo-start", import.meta.url), "utf8").replaceAll("@ENGINE@", "1.0.0");
+  release({ engine: "1.0.0", keeperScript });
+  const marker = path.join(home, "folder-version.json");
+  const data = path.join(home, "data", "opencode", "opencode.db");
+  write(marker, '{"version":4}\n');
+  const off = path.join(home, "run", "off");
+  // Keep the box entry point from detaching a keeper. The test starts the recovery keeper itself.
+  write(off, "");
+  write(path.join(home, "bin", "kuvo-setsid"), '#!/bin/sh\nexec "$@"\n', 0o700);
+  write(path.join(home, "run", "engine-ran"), "1.0.0\n");
+  const trace = path.join(home, "run", "keeper-test.log");
+  write(path.join(home, "engine", "1.0.0", "opencode"), engineBinary("1.0.0").replace('*.js) exec "$FAKE_NODE" "$@"',
+    `*.js) if [ "$2" = update ] && [ "$3" = --settle ]; then exec "$FAKE_NODE" "$@" >>${JSON.stringify(trace)} 2>&1; fi
+    exec "$FAKE_NODE" "$@"`), 0o755);
+  const env = { ...process.env, HOME: boxHome, KUVO_TEST_KEEP_ROUND: "1" };
+  return { current, data, env, marker, off, previous, trace, keeper: path.join(home, "bin", "kuvo-start") };
+}
+
+test("failure bench: a layout 4 update runs the real keeper preflight and confirms layout 5", async () => {
+  const { current, data, env, marker, off, keeper } = layoutTrial();
+  assert.equal((await update()).result, "updated");
+  assert.deepEqual(read(marker), { version: 4 });
+  const preflight = spawnSync("sh", [keeper, "box"], { env, encoding: "utf8", timeout: 15_000 });
+  assert.equal(preflight.status, 0, preflight.stderr);
+  assert.deepEqual(read(marker), { version: 4 }, "the saved bridge can still open the trial folder");
+  fs.unlinkSync(off);
+  assert.equal(await settle(), "well");
+  assert.deepEqual(read(marker), { version: 5 });
+  assert.equal(fs.existsSync(path.join(home, "updates", "rollback")), false);
+  assert.equal(fs.readFileSync(data, "utf8"), "the old engine's data");
+  assert.deepEqual(fs.readFileSync(current), fs.readFileSync(script));
+});
+
+test("failure bench: a layout 4 keeper recovers after the updater loses the file swap", { timeout: 45_000 }, async t => {
+  const { current, data, env, marker, off, previous, trace, keeper } = layoutTrial();
+  const boot = path.join(scratch, "kuvo-link-layout-cut.mjs");
+  write(boot, `
+import fs from "node:fs";
+const rename = fs.renameSync;
+fs.renameSync = (from, to) => {
+  rename(from, to);
+  if (to === ${JSON.stringify(keeper)}) process.kill(process.pid, "SIGKILL");
+};
+const link = await import(${JSON.stringify(pathToFileURL(script).href)});
+const result = await link.update({ now: true, keys: [${JSON.stringify(pinned)}], url: ${JSON.stringify(`${base}/boxes.json`)}, blocked: null });
+throw new Error("The updater did not reach the cut: " + JSON.stringify(result));
+`);
+  const updater = spawn(process.execPath, [boot], { env, stdio: ["ignore", "ignore", "inherit"] });
+  t.after(() => { if (updater.exitCode === null && updater.signalCode === null) updater.kill(); });
+  const result = await new Promise(resolve => updater.once("exit", (code, signal) => resolve({ code, signal })));
+  assert.deepEqual(result, { code: null, signal: "SIGKILL" });
+  assert.deepEqual(fs.readFileSync(current), fs.readFileSync(script));
+  assert.deepEqual(read(marker), { version: 4 });
+  fs.unlinkSync(off);
+  const orphan = spawn("sh", [keeper, "keep"], { env, stdio: ["ignore", "ignore", "inherit"] });
+  t.after(async () => {
+    if (orphan.exitCode !== null || orphan.signalCode !== null) return;
+    const exited = new Promise(resolve => orphan.once("exit", resolve));
+    orphan.kill();
+    await exited;
+  });
+  const diagnostics = () => ["update.json", "update-settle.tries", "update-judge.pid", "update-restore", ".rolling-back/pid", path.basename(trace)]
+    .flatMap(file => {
+      const at = path.join(home, "run", file);
+      return fs.existsSync(at) ? [`${file}: ${fs.readFileSync(at, "utf8")}`] : [];
+    }).join("\n");
+  try {
+    await waitFor(() => !fs.existsSync(path.join(home, "run", "update-trial"))
+      || orphan.exitCode !== null, "the keeper settles the orphaned trial", 250);
+  } catch (error) {
+    assert.fail(`${error.message}\n${diagnostics()}`);
+  }
+  assert.equal(fs.existsSync(path.join(home, "run", "update-trial")), false, "the keeper recovered before exiting");
+  assert.deepEqual(read(marker), { version: 4 });
+  assert.deepEqual(fs.readFileSync(current), previous);
+  assert.equal(boxVersion(), "0.9.0");
+  assert.equal(fs.readFileSync(data, "utf8"), "the old engine's data");
 });
 
 test("a bridge that won't take the new build (it doesn't run here) isn't well", async t => {

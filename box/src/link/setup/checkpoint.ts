@@ -1,17 +1,18 @@
 // The certificate authorizes a content hash. Persist the verified bytes before recording
 // the epoch, so recovery and backups can follow the same reference as replication.
+import { setupLayoutDeferred } from "../../shared/folder-version";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import type { Doc, SignedDoc } from "../../shared/documents";
 import { isObject } from "../../shared/json";
-import { readDoc, signDoc } from "../documents/format";
+import { held, readDoc, SIGN, signDoc } from "../documents/format";
 import { privateFolder, writeDurablePrivate } from "../files";
-import { RUN } from "../home";
+import { K, RUN } from "../home";
 import type { LinkState } from "../state";
 import { membershipOf } from "./membership";
 import { setupOf } from "./record";
-import { committedOperations, OPERATION_ID, sharedValues, type OperationOutcomes, type SharedValues } from "./shared";
+import { OPERATION_ID, sharedValues, type OperationOutcomes, type SharedValues } from "./shared";
 import { sharedKind } from "../../shared/data-declarations";
 
 export const CHECKPOINT_FEATURE = "setup.checkpoints";
@@ -42,7 +43,7 @@ export function preserveCheckpoint(doc: Doc) {
 function outcomesOf(value: unknown, epoch: number): OperationOutcomes | null {
   if (!isObject(value)) return null;
   for (const [operation, outcome] of Object.entries(value)) {
-    if (!OPERATION_ID.test(operation) || !isObject(outcome) || !sharedKind(outcome.kind) || outcome.status !== "committed"
+    if (!OPERATION_ID.test(operation) || !isObject(outcome) || !sharedKind(outcome.kind) || (outcome.status !== "committed" && outcome.status !== "interrupted")
       || !Number.isSafeInteger(outcome.epoch) || Number(outcome.epoch) < 1 || Number(outcome.epoch) >= epoch
       || !Number.isSafeInteger(outcome.sequence) || Number(outcome.sequence) < 1
       || outcome.baseRevision !== Number(outcome.sequence) - 1 || typeof outcome.proposal !== "string") return null;
@@ -71,7 +72,7 @@ function archivesOf(doc: Doc): Doc[] | null {
  * computer at the current position can stage disk writes. The certificate then binds its hash. */
 export function cacheCheckpoint(link: LinkState, cache: Map<string, Doc>, doc: Doc): void {
   const setup = link.setup;
-  if (!setup || doc.kind !== "setup-checkpoint" || doc.body.id !== setup.id) return;
+  if (setupLayoutDeferred(K) || !setup || doc.kind !== "setup-checkpoint" || doc.body.id !== setup.id) return;
   const hash = checkpointHash(doc);
   if (doc.body.archive === true) {
     for (const manifest of cache.values()) {
@@ -88,6 +89,40 @@ export function cacheCheckpoint(link: LinkState, cache: Map<string, Doc>, doc: D
   cache.set(hash, doc);
 }
 
+function sealedPrimaries(checkpoint: Doc): Record<number, string> | null {
+  const value = checkpoint.body.sealedPrimaries;
+  if (value === undefined) return {}; // Layout 5 checkpoints written before operation proofs.
+  if (!isObject(value) || Object.entries(value).some(([epoch, sign]) => {
+    const n = Number(epoch);
+    return !Number.isSafeInteger(n) || n < 1 || n >= checkpoint.n || String(n) !== epoch || typeof sign !== "string" || !SIGN.test(sign);
+  })) return null;
+  return value as Record<number, string>;
+}
+
+/** The exact predecessor is sufficient for older checkpoints without a cumulative seal. */
+export function sealedPrimary(link: LinkState, epoch: number): string | undefined {
+  const tip = held(link.leadership?.[link.setup!.epoch]);
+  const manifest = checkpointFile(tip?.body.checkpoint);
+  const signer = manifest && sealedPrimaries(manifest)?.[epoch];
+  if (signer) return signer;
+  const transition = held(link.leadership?.[epoch + 1]);
+  if (transition && setupOf(transition.body)?.id === link.setup!.id) {
+    return resolveCheckpoint(transition)?.membership.boxes.find(peer => peer.key === transition.body.previous)?.sign;
+  }
+  return undefined;
+}
+
+export function checksSeal(link: LinkState, checkpoint: Doc): boolean {
+  const seals = sealedPrimaries(checkpoint);
+  if (!seals) return false;
+  if (checkpoint.body.sealedPrimaries === undefined) return true;
+  const current = link.setup!;
+  if (seals[current.epoch] !== current.sign) return false;
+  const tip = held(link.leadership?.[current.epoch]);
+  const previous = checkpointFile(tip?.body.checkpoint);
+  return !previous || Object.entries(sealedPrimaries(previous) ?? {}).every(([epoch, sign]) => seals[Number(epoch)] === sign);
+}
+
 export function resolveCheckpoint(transition: Doc, candidate?: Doc) {
   const ref = transition.body.checkpoint;
   const checkpoint = candidate ?? checkpointFile(ref);
@@ -97,7 +132,7 @@ export function resolveCheckpoint(transition: Doc, candidate?: Doc) {
   const value = shared?.membershipAndAccess?.value;
   const membership = isObject(value) && !Object.hasOwn(value, "fields") ? membershipOf(value) : null;
   const pages = archivesOf(checkpoint);
-  if (!shared || !membership || !pages) return null;
+  if (!shared || !membership || !pages || !sealedPrimaries(checkpoint)) return null;
   const outcomes: OperationOutcomes = {};
   for (const page of pages) {
     const entries = outcomesOf(page.body.outcomes, checkpoint.n);
@@ -112,9 +147,9 @@ export function resolveCheckpoint(transition: Doc, candidate?: Doc) {
 
 export function checkpointedTransition(link: LinkState, authority: Record<string, unknown>, shared: SharedValues): Doc | null {
   const next = setupOf(authority);
-  if (!next || !link.sign) return null;
+  if (!next || !link.sign || setupLayoutDeferred(K)) return null;
   // Keep the order stable once an epoch closes, so complete pages are reused by later epochs.
-  const entries = Object.entries(committedOperations(link)).sort(([left, a], [right, b]) =>
+  const entries = Object.entries(link.sharedSetup === next.id ? link.sharedOutcomes ?? {} : {}).sort(([left, a], [right, b]) =>
     a.epoch - b.epoch || a.sequence - b.sequence || (a.kind < b.kind ? -1 : a.kind > b.kind ? 1 : left < right ? -1 : 1));
   const archives: string[] = [];
   for (let offset = 0; offset < entries.length; offset += OPERATIONS_PER_PAGE) {
@@ -125,7 +160,11 @@ export function checkpointedTransition(link: LinkState, authority: Record<string
     preserveCheckpoint(page);
     archives.push(checkpointHash(page));
   }
-  const checkpoint = readDoc(signDoc(link.sign, "setup-checkpoint", next.epoch, { id: next.id, shared, archives }));
+  const current = link.setup!;
+  const prior = held(link.leadership?.[current.epoch]);
+  const priorManifest = checkpointFile(prior?.body.checkpoint);
+  const seals = { ...(priorManifest && sealedPrimaries(priorManifest)), [current.epoch]: current.sign };
+  const checkpoint = readDoc(signDoc(link.sign, "setup-checkpoint", next.epoch, { id: next.id, shared, archives, sealedPrimaries: seals }));
   if (!checkpoint) return null;
   const doc = readDoc(signDoc(link.sign, "leadership", next.epoch, {
     ...authority, checkpoint: checkpointHash(checkpoint),

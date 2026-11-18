@@ -18,7 +18,7 @@ import { cleanMoved, leaveMac, macDoc, macDocs, macsOf, ownKey, peersOf, writesO
 import { mergePersonalities, MOST_COUNT, readPersonalities } from "../personalities/library";
 import { foldPhones, ownPhones } from "../phones";
 import { followedSetup, lowerEpoch, requiresStandby, setupOf, type SetupWord } from "../setup/record";
-import { approveLeadership, leadershipOf, takeLeadership } from "../setup/leadership";
+import { approveLeadership, leadershipOf, leadershipPosition, takeLeadership } from "../setup/leadership";
 import { cacheCheckpoint, leadershipDocuments } from "../setup/checkpoint";
 import { publishedShared, takeShared } from "../setup/shared";
 import { primaryFenced } from "../setup/lease";
@@ -269,8 +269,8 @@ export function primaryPeersBody(link: LinkState): PrimaryPeersBody {
 export function digestOf(link: LinkState): DigestEntry[] {
   const have: DigestEntry[] = [];
   // A contiguous, verified authority chain is described by its highest accepted epoch.
-  const tip = leadershipOf(link);
-  if (tip) have.push([tip.origin, tip.kind, tip.n, tip.h]);
+  const tip = leadershipPosition(link);
+  if (tip) have.push([tip.origin, "leadership", tip.epoch, tip.h]);
   for (const envelope of Object.values(link?.docs ?? {})) {
     const doc = held(envelope);
     if (doc) have.push([doc.origin, doc.kind, doc.n, doc.h]);

@@ -11,7 +11,7 @@
 // over its own server), and said plainly elsewhere.
 
 import { requiresStandby } from "../setup/record";
-import { PENDING_SAVE, submitShared, waitShared } from "../setup/shared";
+import { PENDING_SAVE, sharedSaveReply, submitShared, waitShared } from "../setup/shared";
 import fs from "node:fs";
 import path from "node:path";
 import { listRoute, LIST_ROUTE } from "../lists/sessions";
@@ -665,8 +665,8 @@ async function clockChange(_context: RouteContext, at: SettingItem, value: unkno
       if (!choice) return { status: 400, message: "This computer doesn't know that time zone." };
       const save = submitShared("setupTimeZone", choice);
       if (!save) return { status: 409, message: "A time zone change is already waiting to be saved." };
-      if (await waitShared(save) !== "saved") return { status: 202, message: PENDING_SAVE };
-      return null;
+      const reply = sharedSaveReply(save, await waitShared(save));
+      return { status: reply.status, message: reply.status === 200 ? "" : reply.value.message, save: reply.value };
     }
     return setZone(String(value)) ? null : { status: 400, message: "This computer doesn't know that time zone." };
   } catch {
@@ -982,9 +982,9 @@ export async function* settingsPageRoute(context: RouteContext, match: RegExpMat
       done = await section.change(context, at, given.value, given.confirmed);
     }
     if (done?.stale) return { status: 409, value: { message: done.message, page: await section.read(context) } };
-    if (done) return { status: done.status, value: { message: done.message, ...(done.fields ? { fields: done.fields } : {}) } };
+    if (done && done.status !== 200) return { status: done.status, value: { message: done.message, ...done.save, ...(done.fields ? { fields: done.fields } : {}) } };
     changed();
-    return { status: 200, value: await section.read(context) };
+    return { status: 200, value: { ...await section.read(context), ...done?.save } };
   });
   return yield* json(status, value);
 }

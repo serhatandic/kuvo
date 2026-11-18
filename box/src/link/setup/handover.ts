@@ -1,6 +1,7 @@
 // The primary checks that the successor is running this protocol, then atomically commits
 // a signed epoch change. Peers deliver the committed record with the regular document exchange.
 
+import { setupLayoutDeferred } from "../../shared/folder-version";
 import path from "node:path";
 import { UsageSettings } from "../../agents/usage/settings";
 import { isObject } from "../../shared/json";
@@ -21,7 +22,7 @@ import { readLink, updateLink, type LinkState } from "../state";
 import { forwardAct, takesForwarded, type Act, type Acted } from "../work-queue/forward";
 import { changeNumbers, installNumberAuthority, MOST_NUMBER, topOf } from "../work-queue/numbers";
 import { writeCard } from "./card";
-import { NUMBER_RESERVE, takeLeadership } from "./leadership";
+import { leadershipProposalHash, NUMBER_RESERVE, takeLeadership, type ReplacementEnrollment } from "./leadership";
 import { LEADERSHIP_WAIT, primaryFenced } from "./lease";
 import { followedSetup, requiresStandby, type SetupRecord } from "./record";
 
@@ -62,7 +63,7 @@ async function handoverHere(target: string, position: Record<string, unknown>, r
 }
 
 /** Recover a delegated setup by adding one previously unknown computer to its accepted replica. */
-export function enrollStandby(setup: SetupRecord, peer: Peer & { sign: string }, prepare: (link: LinkState) => void): Promise<Acted> {
+export function enrollStandby(setup: SetupRecord, peer: Peer & { sign: string }, prepare: (link: LinkState, enrollment: ReplacementEnrollment) => void): Promise<Acted> {
   return proposeLeadership({ setup: setup.id, epoch: setup.epoch }, setup.primary, peer, { recovery: { peer, prepare } });
 }
 
@@ -72,8 +73,9 @@ export async function proposeLeadership(
   position: Record<string, unknown>,
   target: string,
   standby: NonNullable<SetupRecord["standby"]> | null,
-  { requester, targetSign, recovery }: { requester?: string; targetSign?: string; recovery?: { peer: Peer; prepare: (link: LinkState) => void } } = {},
+  { requester, targetSign, recovery }: { requester?: string; targetSign?: string; recovery?: { peer: Peer; prepare: (link: LinkState, enrollment: ReplacementEnrollment) => void } } = {},
 ): Promise<Acted> {
+  if (setupLayoutDeferred(K)) return answer(503, "Wait for the Kuvo Code update to finish before changing the setup.");
   let oversized = false;
   let unsupportedLibrary = false;
   const changed = changeNumbers(numbers => updateLink(link => {
@@ -158,7 +160,7 @@ export async function proposeLeadership(
         shared, removalRevisions: link.removalRevisions, numbers: ledger,
       }));
     if (!doc || !boxes.every(box => box.key && box.sign && box.address)) return null;
-    recovery?.prepare(link);
+    recovery?.prepare(link, { id: current.id, epoch, key: recovery.peer.key, proposalHash: leadershipProposalHash(doc.envelope.s) });
     if (current.standby || acceptance) link.leadershipPending = doc.envelope;
     else {
       if (!takeLeadership(link, doc)) return null;

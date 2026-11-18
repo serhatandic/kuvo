@@ -5,6 +5,7 @@
 // of it before (#636). Each step is told as it goes (`tries.ts`); every word a client shows is here.
 // The setup's primary enrolls members and signs the resulting membership list.
 
+import { setupLayoutDeferred } from "../../shared/folder-version";
 import { updateAccess } from "../setup/access";
 import { asSave, PENDING_SAVE, pendingShared, waitShared, type SharedSave } from "../setup/shared";
 import { LEADERSHIP_WAIT, primaryFenced } from "../setup/lease";
@@ -40,6 +41,7 @@ import { type HostKey, type Ran, type Way, hangUp, lastLine, reachedAs, readHost
 import { Failed, type Running, Stopped, type Telling, startTry, stopTry, underWay } from "./tries";
 import { noteKeyNow } from "../setup/lead";
 import { membershipOf } from "../setup/membership";
+import { replacementOutcome, type ReplacementEnrollment } from "../setup/leadership";
 import { enrollStandby } from "../setup/handover";
 import { followedSetup, requiresStandby } from "../setup/record";
 import { SETUP_OCCUPIED } from "../marks";
@@ -404,6 +406,7 @@ const ADD_REVOKED = "The device that started this add is no longer paired. Start
 const removedDuringAdd = (name: string) => new Failed(`${name} was removed from your computers. Add it again to restore access.`);
 
 function checkAdd(link: LinkState | null, grant: AddGrant | undefined, name: string, key?: string): void {
+  if (setupLayoutDeferred(K)) throw new Failed("Wait for the Kuvo Code update to finish before adding a computer.");
   if (primaryFenced(link)) throw new Failed(LEADERSHIP_WAIT, false);
   const main = mainElsewhere(link);
   if (main) throw new Failed(addElsewhere(main).message, false);
@@ -560,12 +563,13 @@ async function setUp(tell: Telling, destination: string, name: string, kind: "ad
       }
       tell.step("joining");
       const identity = /^id ([0-9a-f]{32})$/m.exec(started.stdout)?.[1] ?? probe.id;
-      finish = await join(reserved, destination, name, identity, account.token, (peer, save) => {
+      finish = await join(reserved, destination, name, identity, account.token, (peer, enrollment) => {
         // The winning epoch decides this proposal. A local stop or timeout cannot undo it.
-        unjoined = false;
-        tell.commit?.();
         if (!tell.signal.aborted) tell.step("joining", "Waiting for the standby to save this computer");
-        if (save) tell.saving?.(save, peer);
+        if ("proposalHash" in enrollment) tell.replacing?.(enrollment, peer);
+        else tell.saving?.(enrollment, peer);
+        tell.commit?.();
+        unjoined = false;
       }, expectedKey, grant);
       unjoined = false;
     } catch (error) {
@@ -589,7 +593,7 @@ async function setUp(tell: Telling, destination: string, name: string, kind: "ad
 // Signs the computer into your setup: this box's keys and documents given over SSH (the trust
 // between them), its own taken back, and its record written here, for your other computers and
 // phones to take from this box.
-async function join(run: Reach["run"], destination: string, name: string, identity: string | null, token: string, staged: (peer: { key: string; name: string }, save?: SharedSave) => void, expectedKey?: string, grant?: AddGrant): Promise<() => Promise<{ key: string; name: string }>> {
+async function join(run: Reach["run"], destination: string, name: string, identity: string | null, token: string, staged: (peer: { key: string; name: string }, enrollment: SharedSave | ReplacementEnrollment) => void, expectedKey?: string, grant?: AddGrant): Promise<() => Promise<{ key: string; name: string }>> {
   const beforeLink = readLink();
   const relay = IS_MAC ? macLink.config?.relay : beforeLink?.relay;
   const removedWhileAdding = (link: LinkState | null) => expectedKey && link?.removedHere?.includes(expectedKey);
@@ -616,21 +620,25 @@ async function join(run: Reach["run"], destination: string, name: string, identi
   const setup = followedSetup(readLink());
   if (!expectedKey && setup?.role === "primary" && !setup.standby && requiresStandby(setup)) {
     if (said.standbyAcceptance !== true) throw new Failed(`Update Kuvo Code on ${name} before using it as the replacement standby.`);
-    const result = await enrollStandby(setup, { ...peer, kind: "machine" }, link => {
+    let replacement: ReplacementEnrollment | undefined;
+    const result = await enrollStandby(setup, { ...peer, kind: "machine" }, (link, enrollment) => {
       checkAdd(link, grant, name, peer.key);
       if (removedWhileAdding(link)) throw removedDuringAdd(name);
       keepRecord();
       keepHost(destination, peer);
+      staged(peer, enrollment);
+      replacement = enrollment;
     });
-    if (result.status !== 202) throw new Failed(isObject(result.value) ? String(result.value.message) : "The replacement couldn't be saved.");
-    staged(peer);
+    if (result.status !== 202 || !replacement) throw new Failed(isObject(result.value) ? String(result.value.message) : "The replacement couldn't be saved.");
+    const enrollment = replacement;
     macDocsChanged();
     return async () => {
-      while (true) {
-        const current = readLink()?.setup;
-        if (current?.id !== setup.id || current.epoch > setup.epoch) break;
+      let status = replacementOutcome(readLink(), enrollment);
+      while (status === "pending") {
         await new Promise(resolve => setTimeout(resolve, 100));
+        status = replacementOutcome(readLink(), enrollment);
       }
+      if (status !== "committed") throw new Failed(`The setup changed before ${peer.name} was saved. Add it again from the primary.`);
       return finishEnrollment(peer, null);
     };
   }

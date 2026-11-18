@@ -3,6 +3,7 @@
 // changes, and written with what they told into `run/agents.json` (what a Mac that's gone told,
 // forgotten).
 
+import { setupLayoutDeferred } from "../../shared/folder-version";
 import fs from "node:fs";
 import path from "node:path";
 import { FEATURES } from "../../shared/features";
@@ -14,7 +15,7 @@ import { folderGoes, listBots } from "../bots/list";
 import { currentDigest } from "../documents/work";
 import { readBridgeFile } from "../engine/client";
 import { locked, textOf, writePrivate } from "../files";
-import { IS_MAC } from "../home";
+import { IS_MAC, K } from "../home";
 import { isChatsFolder } from "../engine/chats";
 import { awaySessions, movedAway } from "../moves/records";
 import { readLink } from "../state";
@@ -143,7 +144,10 @@ export async function refreshOwn(readEngine: () => Target, link: LinkState | nul
 }
 
 // What this box answers, as its agents' mail says (`kuvo/info`'s features).
-const ownFeatures = (): readonly string[] => (IS_MAC ? macFeatures() : FEATURES);
+const ownFeatures = (): readonly string[] => {
+  const features = IS_MAC ? macFeatures() : FEATURES;
+  return setupLayoutDeferred(K) ? features.filter(feature => feature !== "setup.checkpoints" && feature !== "setup.standby-acceptance") : features;
+};
 
 // Tells each peer this box's agents: when they change, and every ten minutes, with a digest of
 // its documents to each that takes them, so one that missed what was given gets it then (PROTOCOL.md,

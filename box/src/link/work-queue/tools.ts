@@ -1,4 +1,4 @@
-import { PENDING_SAVE } from "../setup/shared";
+import { awaitSharedSave } from "../setup/shared";
 import { relationsOf } from "./relations";
 // The Work Queue's tools (PROTOCOL.md, "The Work Queue", "Tools"): how every agent, whatever runs
 // it (the engine, Claude Code, Codex, Cursor, Grok, Antigravity), keeps its work items. The box
@@ -405,8 +405,13 @@ async function run(name: string, args: Record<string, unknown>, caller: QueueCal
         : asked[0] === "recolor" ? (typeof args.color === "string" && args.color.trim() ? changeLabel(args.recolor, { color: args.color }) : { refused: "Say its new colour (color)." })
         : removeLabel(args.remove, stripLabel);
       if ("refused" in outcome) return refused(outcome.refused);
-      if (outcome.save) return said(PENDING_SAVE);
-      return said(`${asked[0] === "add" ? "Made" : asked[0] === "remove" ? "Removed (and took off every item here)" : "Changed"} the label ${outcome.done.name}. Labels now: ${listed()}.`);
+      const receipt = await awaitSharedSave(outcome.save);
+      if (receipt && receipt.status !== 200) {
+        const message = `${receipt.value.message} Save operation ${receipt.value.operation}.`;
+        return receipt.status === 202 ? said(message) : refused(message);
+      }
+      if (receipt && asked[0] === "remove") stripLabel(outcome.done.id);
+      return said(`${asked[0] === "add" ? "Made" : asked[0] === "remove" ? "Removed (and took off every item here)" : "Changed"} the label ${outcome.done.name}. Labels now: ${listed()}.${receipt ? ` Save operation ${receipt.value.operation} committed.` : ""}`);
     }
     case "queue_import": {
       const given = givenItems(args.items);

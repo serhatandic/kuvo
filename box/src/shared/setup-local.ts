@@ -3,6 +3,7 @@
 import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
+import type { SignedDoc } from "./documents";
 import { isObject } from "./json";
 
 export const LOCAL_SETUP_SAVE = "kuvo/setup/save-local";
@@ -43,6 +44,7 @@ interface LocalSaveAnswer {
   status: number;
   message?: string;
   operation?: string;
+  proof?: SignedDoc;
   outcome?: "pending" | "committed" | "interrupted";
 }
 
@@ -86,6 +88,7 @@ export function askSetupSave(run: string, body: object): Promise<LocalSaveAnswer
         const outcome = result.status;
         finish({ status: reply.status, message: typeof result.message === "string" ? result.message : undefined,
           ...(typeof result.operation === "string" ? { operation: result.operation } : {}),
+          ...(isObject(result.proof) && typeof result.proof.d === "string" && typeof result.proof.s === "string" ? { proof: { d: result.proof.d, s: result.proof.s } } : {}),
           ...(outcome === "pending" || outcome === "committed" || outcome === "interrupted" ? { outcome } : {}),
         });
       } catch { finish(); }

@@ -2,8 +2,8 @@
 // "Computers", Adding one), as this box keeps them for every client to draw: each with its steps,
 // what it asks you now, how it failed or what it came to, all in this box's words. Kept in memory by
 // the box's long-running process, and noted in `run/adding.json`, so a box that started again
-// says a try was cut short (it's never taken up again by itself: you try again). One thing at a
-// time per computer: what's asked of a computer waits for what's under way there to end.
+// can recover saves already entrusted to the setup. A try that hadn't reached a save is cut short.
+// One thing at a time per computer: what's asked of a computer waits for what's under way there to end.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -12,6 +12,7 @@ import { newID } from "../../shared/text";
 import { writeDurablePrivate, writePrivate } from "../files";
 import { RUN } from "../home";
 import { peersOf } from "../peers/known";
+import { replacementOutcome, type ReplacementEnrollment } from "../setup/leadership";
 import { operationOutcome, type SharedSave } from "../setup/shared";
 import { readLink } from "../state";
 
@@ -43,7 +44,8 @@ export interface Running {
 }
 
 const running = new Map<string, Running>();
-type Enrollment = { save: SharedSave; peer: { key: string; name: string } };
+type EnrollmentPeer = { key: string; name: string };
+type Enrollment = ({ save: SharedSave } | { replacement: ReplacementEnrollment }) & { peer: EnrollmentPeer };
 type SavedTry = AddTry & { enrollment?: Enrollment };
 let finished: SavedTry[] | null = null;
 let asks = 0;
@@ -78,11 +80,11 @@ export function allTries(): AddTry[] {
   return [...[...running.values()].map(each => each.seen).reverse(), ...kept().map(reconcileEnrollment)];
 }
 
-function note(durable = false): void {
+function note(durable = false, required = false): void {
   try {
     const active = [...running.values()].reverse().map(each => ({ ...each.seen, enrollment: each.enrollment }));
     (durable ? writeDurablePrivate : writePrivate)(TRIES_FILE, JSON.stringify([...active, ...kept()]));
-  } catch {}
+  } catch (error) { if (required) throw error; }
   for (const tell of [...tryFollowers]) tell();
 }
 
@@ -95,11 +97,15 @@ const failedTitle = (kind: AddTry["kind"], name: string): string => `${NAMES[kin
 function reconcileEnrollment(seen: SavedTry): AddTry {
   const { enrollment, ...attempt } = seen;
   if (!enrollment) return attempt;
-  const { save, peer } = enrollment;
+  const { peer } = enrollment;
   const link = readLink();
-  const outcome = operationOutcome(link, save.id, save.operation);
-  if (outcome?.status === "pending" || (!outcome && link?.setup?.id === save.id && link.setup.epoch === save.epoch)) return attempt;
-  const computer = outcome?.status === "committed" && peersOf(link).find(each => each.key === peer.key);
+  const status = "replacement" in enrollment
+    ? replacementOutcome(link, enrollment.replacement)
+    : operationOutcome(link, enrollment.save.id, enrollment.save.operation)?.status
+      ?? (link?.setup?.id === enrollment.save.id && link.setup.epoch === enrollment.save.epoch ? "pending" : "interrupted");
+  if (status === "pending") return attempt;
+  const computer = status === "committed" && (peersOf(link).find(each => each.key === peer.key)
+    ?? ("replacement" in enrollment ? peer : null));
   if (computer) return { ...attempt, computer: { key: computer.key, name: computer.name }, state: "done", title: doneTitle(attempt.kind, attempt.name),
     steps: attempt.steps.map(step => step.state === "now" ? { ...step, state: "done" } : step) };
   const title = failedTitle(attempt.kind, attempt.name);
@@ -114,7 +120,8 @@ export interface Telling {
   check(): void;
   /** An irreversible change has been saved; keep the cleanup outcome even if asked to stop. */
   commit?(): void;
-  saving?(save: SharedSave, peer: Enrollment["peer"]): void;
+  saving?(save: SharedSave, peer: EnrollmentPeer): void;
+  replacing?(replacement: ReplacementEnrollment, peer: EnrollmentPeer): void;
   /** The step under way now (those before it done), with what it says beside it. */
   step(id: string, detail?: string): void;
   /** How far the step under way has got, in bytes. */
@@ -155,6 +162,14 @@ export function startTry(kind: AddTry["kind"], destination: string, name: string
       it.enrollment = { save, peer };
       if (it.seen.state === "stopping") it.seen = { ...it.seen, state: "working", title: workingTitle(kind, name) };
       note(true);
+    },
+    replacing(replacement, peer) {
+      it.enrollment = { replacement, peer };
+      try { note(true, true); } catch (error) {
+        delete it.enrollment;
+        throw error;
+      }
+      it.committed = true;
     },
     step(id, detail) {
       tell.check();

@@ -27,7 +27,7 @@ export function captureMembership(link: LinkState, self?: Peer) {
   });
 }
 
-export function updateAccess(change: (link: LinkState | null) => LinkState | null | undefined | void, { localOnly = false } = {}) {
+export function updateAccess(change: (link: LinkState | null) => LinkState | null | undefined | void, { localOnly = false } = {}): { changed: LinkState | null; save: SharedSave | null; busy: boolean } {
   let save: SharedSave | null = null;
   let busy = false;
   const changed = updateLink(link => {

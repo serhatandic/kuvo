@@ -12,7 +12,7 @@
 // Platform: the same on macOS and Linux; only a Mac's box has the switch ("Let my devices connect").
 
 import { updateAccess } from "../setup/access";
-import { PENDING_SAVE, waitShared } from "../setup/shared";
+import { awaitSharedSave } from "../setup/shared";
 import { isObject } from "../../shared/json";
 import { plainName } from "../../shared/text";
 import { noteDocsChanged } from "../documents/changed";
@@ -114,9 +114,8 @@ export async function pairHere(device: AskingDevice, by?: string): Promise<Acted
     return fresh ? link : null;
   });
   if (busy) return answer(409, { message: "An access change is already waiting to be saved." });
-  if (save && await waitShared(save) !== "saved") {
-    return answer(202, { pending: true, message: PENDING_SAVE });
-  }
+  const receipt = await awaitSharedSave(save);
+  if (receipt && receipt.status !== 200) return receipt;
   if (refusal) return refusal;
   const paired = made as ReturnType<typeof pairDevice> | null;
   if (!paired) return answer(409, { message: IS_MAC ? `${ownName()} isn't ready for your devices yet. Try again in a moment.` : "This machine has no relay to pair through." });
@@ -128,7 +127,7 @@ export async function pairHere(device: AskingDevice, by?: string): Promise<Acted
     // (A Mac's link comes up for its first device, as for a phone's pairing.)
     macLink.wake?.();
   }
-  return answer(200, { paired: true, pairing: paired.pairing });
+  return answer(200, { paired: true, pairing: paired.pairing, ...receipt?.value });
 }
 
 /** Compatibility for clients whose member box vouches for them. The primary uses the same
@@ -148,11 +147,10 @@ export async function deviceAct(sender: MailSender, act: Act): Promise<Acted> {
       return link;
     });
     if (busy || !changed) return answer(409, { message: "This computer couldn’t confirm the devices were revoked." });
-    if (save && await waitShared(save) !== "saved") {
-      return answer(202, { pending: true, message: PENDING_SAVE });
-    }
+    const receipt = await awaitSharedSave(save);
+    if (receipt && receipt.status !== 200) return receipt;
     macDocsChanged({ closeRemoved: readLink() });
-    return answer(200, {});
+    return answer(200, receipt?.value ?? {});
   }
   const device = act.method === "POST" ? givenDevice({ ...(act.body ?? {}), key: act.item }, null) : null;
   if (!device) return answer(400, NOT_GIVEN);
