@@ -497,9 +497,9 @@ impl InsightsView {
         let narrow = window.viewport_size().width < px(640.);
         let summary = card(cx).when(!narrow, |d| d.w(px(292.)).flex_none())
             .debug_selector(|| "insights-summary".into())
-            .child(div().text_color(c.text_muted).child(if metric == Metric::Cost { "Estimated API cost · USD" } else { "Tokens without cache reads" }))
-            .child(div().text_size(px(30.)).font_weight(gpui::FontWeight::SEMIBOLD).child(format_metric(known, metric)))
-            .child(div().text_ui(TypeSize::Caption).text_color(c.text_muted).child(format!("{session_count} {}", if session_count == 1 { "session" } else { "sessions" })))
+            .child(div().debug_selector(|| "insights-total-label".into()).text_color(c.text_muted).child(if metric == Metric::Cost { "Estimated API cost · USD" } else { "Tokens without cache reads" }))
+            .child(div().debug_selector(|| "insights-total-value".into()).text_size(px(30.)).line_height(px(36.)).my(space::S0_5).font_weight(gpui::FontWeight::SEMIBOLD).child(format_metric(known, metric)))
+            .child(div().debug_selector(|| "insights-total-sessions".into()).text_ui(TypeSize::Caption).text_color(c.text_muted).child(format!("{session_count} {}", if session_count == 1 { "session" } else { "sessions" })))
             .when(!overview.breakdowns.agent.is_empty(), |d| d.child(div().flex().flex_col().gap(space::S0_5).mt(space::S2).children(agents)))
             .child(div().mt(space::S2).pt(space::S1_5).border_t_1().border_color(c.border).flex().flex_col().gap(space::S0_5)
                 .children(counts.into_iter().map(|(title, count)| {

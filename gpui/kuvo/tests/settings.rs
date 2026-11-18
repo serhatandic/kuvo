@@ -917,6 +917,11 @@ fn usage_ring_filters_insights_and_opens_a_session_from_its_calls(cx: &mut TestA
     assert_eq!(summary.origin.y, chart.origin.y);
     assert_eq!(summary.size.height, chart.size.height);
     assert!(summary.right() < chart.left());
+    let label = bounds(cx, "insights-total-label").expect("total label");
+    let total = bounds(cx, "insights-total-value").expect("total value");
+    let sessions = bounds(cx, "insights-total-sessions").expect("session count");
+    assert!(total.size.height >= px(36.));
+    assert!(label.bottom() < total.top() && total.bottom() < sessions.top());
     assert_eq!(workspace.read_with(cx, |workspace, cx| workspace.title(cx).0).as_deref(), Some("Insights"));
 
     click(cx, "insights-day-28");
