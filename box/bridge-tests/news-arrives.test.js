@@ -45,8 +45,9 @@ function computers() {
 }
 const movedFrom = (entries) => {
   fs.mkdirSync(path.join(run, "moves"), { recursive: true });
-  fs.writeFileSync(path.join(run, "moves", "moved.json"), JSON.stringify(entries));
+  fs.writeFileSync(movedFile, JSON.stringify(entries));
 };
+const movedFile = path.join(run, "moves", "moved.json");
 
 // An engine with these sessions; what it was given to deliver is in `prompts`.
 async function engine(sessions = {}) {
@@ -101,6 +102,18 @@ async function taken(letter, target, now, extra = {}) {
   return said[0];
 }
 
+// The local move journal belongs to the sending box. While the peer receives the letter, use
+// its journal so prompt admission sees the same ownership as the peer's routing.
+async function takenOnPeer(letter, target, now) {
+  const sourceMoves = fs.readFileSync(movedFile);
+  fs.rmSync(movedFile);
+  try {
+    return await taken(letter, target, now);
+  } finally {
+    fs.writeFileSync(movedFile, sourceMoves);
+  }
+}
+
 // The coding agents' bridge running, as this box's real `peerPlaces` reads it: a process its record
 // names, whose command line says it's the bridge, over an engine-like stand-in with no sessions.
 const bridgeProcess = spawn(process.execPath, ["-e", "setInterval(() => {}, 1e9)", "kuvo-agents"], { stdio: "ignore" });
@@ -149,7 +162,7 @@ test("a lead's box away for 3 days hears [Session finished] once it's back, once
   assert.ok(letter, "it goes once more when the lead's box is back");
   assert.equal(letter.at, back, "sealed at this send, so the box it reaches takes it");
   assert.equal(letter.made, start, "with when it was made beside that");
-  const lost = await taken(letter, leadBox.target, back);
+  const lost = await takenOnPeer(letter, leadBox.target, back);
   assert.deepEqual([lost.ok, lost.why], [true, undefined], "delivered");
   assert.equal(finishedOf(leadBox.prompts).length, 1);
   assert.equal(leadBox.prompts[0].to, "ses_lead");
@@ -159,7 +172,7 @@ test("a lead's box away for 3 days hears [Session finished] once it's back, once
   // So it comes again, and this time the receipt arrives.
   const [again] = lettersFor(await round(back + MINUTE), lead);
   assert.ok(again, "no receipt: it comes again");
-  link.letterWent(lead.peer, await taken(again, leadBox.target, back + MINUTE), back + MINUTE);
+  link.letterWent(lead.peer, await takenOnPeer(again, leadBox.target, back + MINUTE), back + MINUTE);
   assert.equal(finishedOf(leadBox.prompts).length, 1, "the same news isn't delivered twice");
   assert.deepEqual(waitingNotes(), [], "and it's done");
   assert.equal((await round(back + 2 * MINUTE)).length, 0);
@@ -272,7 +285,9 @@ test("a lead moved twice: the box it moved on from says where it lives, and the 
   // (Only the box it was sent to has a say: another's word on it counts for nothing.)
   const [onward] = lettersFor(await round(T + MINUTE), third);
   assert.ok(onward, "it goes on to the computer it lives on now");
-  link.letterWent(third.peer, await taken(onward, nowThere.target, T + MINUTE), T + MINUTE);
+  const delivered = await takenOnPeer(onward, nowThere.target, T + MINUTE);
+  assert.equal(delivered.ok, true);
+  link.letterWent(third.peer, delivered, T + MINUTE);
   assert.equal(finishedOf(nowThere.prompts).length, 1);
   assert.deepEqual(waitingNotes(), []);
   // And the next news goes straight there.

@@ -10,7 +10,7 @@ import { writeLink, readLink } from "../src/link/state"
 import { newKey, publicOf } from "../src/link/crypto/keys"
 import { letterWent, sendOutbox } from "../src/link/letters/outbox"
 import { LETTER_MEMORY, SENDING } from "../src/link/letters/letter"
-import { MOVED_FOR, MOVES, noteEnded, switchedHere } from "../src/link/moves/records"
+import { MOVED_FOR, compactDecisionHints, endedFor, noteEnded, switchedHere } from "../src/link/moves/records"
 import { boxNoteOf } from "../src/shared/queues"
 
 const mine = newKey(), remote = newKey(), stranger = newKey(), mac = publicOf(newKey()).toString("base64url")
@@ -171,8 +171,9 @@ test("a chat switched to here is taken for two days, the subagents it brought to
   noteEnded("mov_dropped", "dropped", now, ["ses_dropped"])
   expect([...switchedHere(now)].sort()).toEqual(["ses_moved", "ses_moved_sub"])
   expect(switchedHere(now + MOVED_FOR).size).toBe(0)
-  // Kept no longer than that: the move's record stays a year, its sessions don't.
+  // Expired routing hints can be removed without forgetting who owns the conversation.
+  compactDecisionHints(now + MOVED_FOR)
   noteEnded("mov_later", "switched", now + MOVED_FOR, ["ses_later"])
   expect([...switchedHere(now + MOVED_FOR)]).toEqual(["ses_later"])
-  expect(JSON.parse(fs.readFileSync(path.join(MOVES, "ended.json"), "utf8")).mov_switched).toEqual({ as: "switched", at: now })
+  expect(endedFor("mov_switched", key)).toEqual({ as: "switched", at: now })
 })
