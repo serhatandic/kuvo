@@ -5209,10 +5209,18 @@ function readQueues(files, strict = false) {
     if (strict && error.code !== "ENOENT")
       throw error;
   }
-  if (strict && (!isObject(all) || Object.values(all).some((state) => !isObject(state) || state.waiting !== undefined && (!Array.isArray(state.waiting) || keptWaiting(state.waiting).length !== state.waiting.length)))) {
-    throw new Error("The queue index could not be read");
+  if (!isObject(all)) {
+    if (strict)
+      throw new Error("The queue index could not be read");
+    return {};
   }
-  return isObject(all) ? Object.fromEntries(Object.entries(all).map(([session, state]) => [session, keptState(state)])) : {};
+  return Object.fromEntries(Object.entries(all).map(([session, saved]) => {
+    const state = isObject(saved) ? queueFormat.read(saved) : null;
+    if (strict && (!state || state.waiting !== undefined && (!Array.isArray(state.waiting) || keptWaiting(state.waiting).length !== state.waiting.length))) {
+      throw new Error("The queue index could not be read");
+    }
+    return [session, keptState(state)];
+  }));
 }
 function changeQueue(files, session, change, changed, reseal = false) {
   let made = false;
@@ -5242,12 +5250,27 @@ function changeQueue(files, session, change, changed, reseal = false) {
       if (!showsQueue(each) && !each.order?.length && !each.resumed && !each.arriving)
         delete all[id];
     }
-    writeDurablePrivate(files.file, JSON.stringify(all));
+    const indexed = Object.fromEntries(Object.entries(all).map(([id, state]) => [id, queueFormat.write(state)]));
+    writeDurablePrivate(files.file, JSON.stringify(indexed));
     return state;
   }, { required: true });
   if (made)
     changed?.();
   return after;
+}
+function readWaitingFile(file) {
+  try {
+    const saved = JSON.parse(fs25.readFileSync(file, "utf8"));
+    return isObject(saved) ? payloadFormat.read(saved) : null;
+  } catch (error) {
+    if (error instanceof UnsupportedFormatVersion)
+      throw error;
+    return null;
+  }
+}
+function writeWaitingFile(file, message, root) {
+  readWaitingFile(file);
+  writeDurablePrivate(file, JSON.stringify(payloadFormat.write(message)), root);
 }
 function keepWaiting(files, session, message, { from, words, kept: keptText } = {}, changed, place = last, holds = false) {
   let kept = false;
@@ -5256,7 +5279,7 @@ function keepWaiting(files, session, message, { from, words, kept: keptText } = 
       return state;
     if (!isWaitingID(message.id))
       throw new InvalidWaitingID;
-    writeDurablePrivate(waitingFile(files, message.id), JSON.stringify(keptText === undefined ? message : { ...message, text: keptText }), path22.dirname(files.file));
+    writeWaitingFile(waitingFile(files, message.id), keptText === undefined ? message : { ...message, text: keptText }, path22.dirname(files.file));
     kept = true;
     const names = fileNames(message.files);
     const parts = isObject(message.metadata) && isObject(message.metadata.kuvo) && isObject(message.metadata.kuvo.parts) ? message.metadata.kuvo.parts : null;
@@ -5275,7 +5298,7 @@ var queueFiles = (run) => ({
     return [];
   const files = Array.isArray(item.files) ? item.files.filter((name) => typeof name === "string") : [];
   return [{ id: item.id, ...typeof item.from === "string" ? { from: item.from } : {}, text: item.text, ...files.length ? { files } : {}, ...typeof item.keyword === "string" ? { keyword: item.keyword } : {}, at: typeof item.at === "number" ? item.at : 0 }];
-}), keptState = (value) => {
+}), queueFormat, payloadFormat, keptState = (value) => {
   const waiting = keptWaiting(isObject(value) ? value.waiting : undefined);
   const inboxMoved = isObject(value) && Array.isArray(value.inboxMoved) ? value.inboxMoved.filter((id) => typeof id === "string" && waiting.some((item) => item.id === id)) : [];
   return {
@@ -5297,6 +5320,7 @@ var queueFiles = (run) => ({
   return typeof file.uri === "string" && !file.uri.startsWith("data:") ? [path22.basename(decodeURIComponent(file.uri.replace(/^file:\/\//, "")))] : ["file"];
 }), last = (state, item) => ({ ...state, waiting: [...state.waiting ?? [], item] });
 var init_queues = __esm(() => {
+  init_format_version();
   init_files();
   GOAL_OPENINGS = [
     ["[Goal started] The user approved the plan.", "Goal started"],
@@ -5313,6 +5337,8 @@ var init_queues = __esm(() => {
       super(BAD_WAITING_ID);
     }
   };
+  queueFormat = additiveObjectFormat("Conversation queue");
+  payloadFormat = additiveObjectFormat("Waiting message");
 });
 
 // box/src/shared/message-words.ts
@@ -5668,6 +5694,7 @@ async function reorderQueue(target, session, item, anchor, before) {
     const inbox = await inboxNow(target, session);
     let moved = false;
     const state = changeQueue2(session, (state) => {
+      checkWaitingFormats(state.waiting);
       const steer = new Set(inbox.filter((each) => each.delivery === "steer" && !state.held.includes(each.id)).map((each) => each.id));
       const order = orderOf(inbox, state).filter((id) => !steer.has(id));
       if (item === anchor || !order.includes(item) || !order.includes(anchor))
@@ -5696,6 +5723,7 @@ async function sendInto(target, session, message, shown = {}) {
 }
 function takeWaiting(session, item, resume = false, inbox = [], delivering = true) {
   let shown;
+  let message = null;
   let held = false;
   let before;
   changeQueue2(session, (state) => {
@@ -5705,6 +5733,7 @@ function takeWaiting(session, item, resume = false, inbox = [], delivering = tru
     shown = state.waiting?.find((each) => each.id === next);
     if (!shown)
       return state;
+    message = waitingPayload(shown.id);
     const order = orderOf(inbox, state);
     before = order[order.indexOf(shown.id) + 1];
     held = state.held.includes(shown.id);
@@ -5712,15 +5741,11 @@ function takeWaiting(session, item, resume = false, inbox = [], delivering = tru
   });
   if (!shown)
     return null;
-  const message = waitingPayload(shown.id);
   fs26.rmSync(waitingFile2(shown.id), { force: true });
   return { shown, message, held, ...before ? { before } : {} };
 }
 function waitingPayload(id, strict = false) {
-  let whole = null;
-  try {
-    whole = JSON.parse(fs26.readFileSync(waitingFile2(id), "utf8"));
-  } catch {}
+  const whole = readWaitingFile(waitingFile2(id));
   return isObject(whole) && (!strict || whole.id === id && (whole.files === undefined || Array.isArray(whole.files))) && typeof whole.text === "string" && (whole.delivery === "steer" || whole.delivery === "queue") ? { id, text: whole.text, delivery: whole.delivery, ...Array.isArray(whole.files) ? { files: whole.files } : {}, ...isObject(whole.metadata) ? { metadata: whole.metadata } : {} } : null;
 }
 function carryQueue(from, to, renamed) {
@@ -5863,13 +5888,14 @@ function unpackQueues(carried, sessions) {
       const brought = message.files ?? [];
       if (!Array.isArray(brought) || !brought.every((file) => isObject(file) && typeof file.uri === "string" && BASE64_DATA.test(file.uri)))
         throw new CantCarry(session);
-      return { shown, message: {
+      const payload = {
         id: shown.id,
         text: message.text,
         delivery: message.delivery,
         ...brought.length ? { files: brought } : {},
         ...isObject(message.metadata) ? { metadata: message.metadata } : {}
-      } };
+      };
+      return { shown, message: payload };
     });
     const ids = new Set(waiting.map((each) => each.shown.id));
     if (!queue.held.every((id) => typeof id === "string" && ids.has(id)))
@@ -5879,10 +5905,16 @@ function unpackQueues(carried, sessions) {
       throw new CantCarry(session);
     return { session, waiting, held: queue.held, paused: queue.paused, order };
   });
+  const current = readQueues2(true);
+  for (const { session, waiting } of prepared) {
+    checkWaitingFormats(current[session]?.waiting);
+    for (const { shown } of waiting)
+      readWaitingFile(waitingFile2(shown.id));
+  }
   for (const { session, waiting, held, paused, order } of prepared) {
     forgetQueue(session);
     for (const { shown, message } of waiting)
-      writeDurablePrivate(waitingFile2(shown.id), JSON.stringify(message), RUN);
+      writeWaitingFile(waitingFile2(shown.id), message, RUN);
     changeQueue2(session, () => ({ paused: true, held, waiting: waiting.map((each) => each.shown), ...order?.length ? { order } : {} }), true);
     if (!paused)
       goOn.push(session);
@@ -5893,10 +5925,15 @@ function forgetQueue(session) {
   let gone = [];
   changeQueue2(session, (state) => {
     gone = state.waiting ?? [];
+    checkWaitingFormats(gone);
     return { paused: false, held: [] };
   });
   for (const each of gone)
     fs26.rmSync(waitingFile2(each.id), { force: true });
+}
+function checkWaitingFormats(waiting = []) {
+  for (const { id } of waiting)
+    readWaitingFile(waitingFile2(id));
 }
 function dropWaiting(session, item, inbox = []) {
   const dropped = takeWaiting(session, item, false, inbox, false);
@@ -5942,14 +5979,12 @@ function queueItems(inbox, state) {
     if (kept) {
       let delivery = "queue";
       let words = kept.text;
-      try {
-        const message = JSON.parse(fs26.readFileSync(waitingFile2(id), "utf8"));
-        if (message?.delivery === "steer")
-          delivery = "steer";
-        const wake = wakeCard(typeof message?.text === "string" ? message.text : "", message?.metadata);
-        if (wake)
-          words = wake.summary;
-      } catch {}
+      const message = readWaitingFile(waitingFile2(id));
+      if (message?.delivery === "steer")
+        delivery = "steer";
+      const wake = wakeCard(typeof message?.text === "string" ? message.text : "", message?.metadata);
+      if (wake)
+        words = wake.summary;
       return [{ id, words, files: kept.files ?? [], keyword: kept.keyword ?? null, from: kept.from ?? null, on: "box", delivery, held }];
     }
     const entry = inbox.find((each) => each.id === id);
@@ -6038,7 +6073,10 @@ async function acceptedWaiting(target, session, item) {
   return isObject(stored) && (stored.id === item || isObject(stored.info) && stored.info.id === item);
 }
 function confirmWaiting(session, item) {
-  changeQueue2(session, (state) => ({ ...withoutOrder(state, item), held: state.held.filter((id) => id !== item), waiting: state.waiting?.filter((each) => each.id !== item) }), true);
+  changeQueue2(session, (state) => {
+    readWaitingFile(waitingFile2(item));
+    return { ...withoutOrder(state, item), held: state.held.filter((id) => id !== item), waiting: state.waiting?.filter((each) => each.id !== item) };
+  }, true);
   fs26.rmSync(waitingFile2(item), { force: true });
 }
 async function sendWaiting(target, session, item, { whilePaused = false, steer = true } = {}) {
@@ -6103,7 +6141,10 @@ async function stopSession(target, session, holds = true, items = []) {
   return state;
 }
 async function resumeQueue(target, session) {
-  changeQueue2(session, (current) => ({ ...current, paused: false, resumed: Date.now() }), true);
+  changeQueue2(session, (current) => {
+    checkWaitingFormats(current.waiting);
+    return { ...current, paused: false, resumed: Date.now() };
+  }, true);
   await drain(target, session);
   return queueOf(session);
 }
@@ -6158,6 +6199,7 @@ function goesFirst(session, item) {
     const shown = state.waiting?.find((each) => each.id === item);
     if (!shown)
       return state;
+    readWaitingFile(waitingFile2(item));
     found = true;
     return {
       ...state,
@@ -6206,14 +6248,14 @@ async function transferInbox(target, session) {
     if (text === null)
       continue;
     const own = /^msg_[A-Za-z0-9]{1,80}$/.test(id) ? id : `msg_${crypto12.createHash("sha256").update(id).digest("hex").slice(0, 32)}`;
-    const files = sendableFiles(entry.payload?.files);
-    const message = { id: own, text, delivery: entry.delivery, ...files.length ? { files } : {}, ...isObject(entry.payload?.metadata) ? { metadata: entry.payload.metadata } : {} };
+    const attachments = sendableFiles(entry.payload?.files);
+    const message = { id: own, text, delivery: entry.delivery, ...attachments.length ? { files: attachments } : {}, ...isObject(entry.payload?.metadata) ? { metadata: entry.payload.metadata } : {} };
     const shown = shownOfInbox(entry);
     const waiting = { id: own, ...shown.from ? { from: shown.from } : {}, text: shown.words, ...shown.files.length ? { files: shown.files } : {}, ...shown.keyword ? { keyword: shown.keyword } : {}, at: Date.now() };
     const saved = waitingFile2(own);
     const alreadyKept = fs26.existsSync(saved);
     changeQueue2(session, (state) => {
-      writeDurablePrivate(saved, JSON.stringify(message), RUN);
+      writeWaitingFile(saved, message, RUN);
       const ranked = state.order && orderOf(inbox.filter((entry) => remaining.has(entry.id)), state);
       const prefix = new Set(state.inboxMoved).add(own);
       const pending = new Map((state.waiting ?? []).map((item) => [item.id, item]));
@@ -25847,20 +25889,28 @@ import path66 from "node:path";
 function readEndedSignIns() {
   try {
     const kept = JSON.parse(fs65.readFileSync(ENDED_SIGN_INS_FILE, "utf8"));
-    return new Map(Object.entries(isObject(kept) ? kept : {}).filter(([, credential]) => typeof credential === "string"));
-  } catch {
+    if (!isObject(kept))
+      return new Map;
+    const { [ENDED_VERSION]: version, ...entries } = kept;
+    const upgraded = upgradeFormat("Ended sign-ins", version, entries, endedSteps);
+    return new Map(Object.entries(upgraded).filter(([, credential]) => typeof credential === "string"));
+  } catch (error) {
+    if (error instanceof UnsupportedFormatVersion)
+      throw error;
     return new Map;
   }
 }
 function changeEndedSignIns(change) {
-  const ended = readEndedSignIns();
-  change(ended);
-  try {
-    if (ended.size)
-      writePrivate(ENDED_SIGN_INS_FILE, JSON.stringify(Object.fromEntries(ended)));
-    else
-      fs65.rmSync(ENDED_SIGN_INS_FILE, { force: true });
-  } catch {}
+  locked(`${ENDED_SIGN_INS_FILE}.lock`, () => {
+    const ended = readEndedSignIns();
+    change(ended);
+    try {
+      if (ended.size)
+        writePrivate(ENDED_SIGN_INS_FILE, JSON.stringify({ ...Object.fromEntries(ended), [ENDED_VERSION]: endedSteps.length }));
+      else
+        fs65.rmSync(ENDED_SIGN_INS_FILE, { force: true });
+    } catch {}
+  });
 }
 async function noteSignIn(event, source) {
   const ended = event.type === "session.execution.failed";
@@ -25904,6 +25954,7 @@ async function forgetPlan(engine, id) {
   const plan = integrations.find((each) => each?.id === id);
   if (!plan || plan.metadata?.source === "mcp")
     return { status: 404 };
+  readEndedSignIns();
   let refused = 0;
   for (const entry of entries) {
     if (entry?.integrationID !== id || typeof entry.id !== "string")
@@ -25937,7 +25988,11 @@ async function* accountsRoute(context) {
   if (route === "kuvo/accounts/ended") {
     if (!["GET", "HEAD"].includes(request.method.toUpperCase()))
       return yield* json(405, {});
-    const providers = await endedProviders(engine).catch(() => null);
+    const providers = await endedProviders(engine).catch((error) => {
+      if (error instanceof UnsupportedFormatVersion)
+        throw error;
+      return null;
+    });
     if (!providers)
       return yield* json(503, { message: "The engine isn't answering. Try again in a moment." });
     return yield* json(200, { providers });
@@ -25955,7 +26010,11 @@ async function* accountsRoute(context) {
     const refreshed = await refreshModels(engine, id).catch(() => ({ status: 503, message: "The engine isn't answering. Try again in a moment." }));
     return yield* json(refreshed.status, refreshed.status === 200 ? { waiting: refreshed.waiting } : { message: refreshed.message });
   }
-  const forgot = await forgetPlan(engine, id).catch(() => ({ status: 503, message: "The engine isn't answering. Try again in a moment." }));
+  const forgot = await forgetPlan(engine, id).catch((error) => {
+    if (error instanceof UnsupportedFormatVersion)
+      throw error;
+    return { status: 503, message: "The engine isn't answering. Try again in a moment." };
+  });
   return yield* json(forgot.status, "message" in forgot ? { message: forgot.message } : {});
 }
 async function* credentialsRoute(context) {
@@ -25989,12 +26048,14 @@ async function* credentialsRoute(context) {
   yield { body: Buffer.from(JSON.stringify({ credentials: listed })) };
   return;
 }
-var ENDED_SIGN_INS_FILE;
+var ENDED_VERSION = "/formatVersion", endedSteps, ENDED_SIGN_INS_FILE;
 var init_accounts = __esm(() => {
+  init_format_version();
   init_client();
   init_models();
   init_files2();
   init_home();
+  endedSteps = [(entries) => entries];
   ENDED_SIGN_INS_FILE = path66.join(RUN, "ended-sign-ins.json");
 });
 
@@ -55071,7 +55132,7 @@ var init_files4 = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "fd2f990b0eba";
+var BRIDGE_VERSION = "742cce39b300";
 
 // box/src/link/rehome/paths.ts
 import { createHash as createHash3 } from "node:crypto";
@@ -56167,6 +56228,14 @@ function keeperEngine2(root) {
 }
 var init_engines = () => {};
 
+// box/src/shared/artifact-format.ts
+var artifactIndexFormat, artifactSettingsFormat;
+var init_artifact_format = __esm(() => {
+  init_format_version();
+  artifactIndexFormat = additiveObjectFormat("Artifact index");
+  artifactSettingsFormat = additiveObjectFormat("Artifact storage settings");
+});
+
 // box/src/link/rehome/own.ts
 import { createHash as createHash4 } from "node:crypto";
 import fs149 from "node:fs";
@@ -56248,24 +56317,29 @@ function rewriteOwnFile({ file, relative, kind }, map) {
     } catch {
       return false;
     }
+    if (relative === "artifacts/settings.json" && isObject(value))
+      artifactSettingsFormat.read(value);
     const { value: rewritten, changed } = mapJSON(value, map);
     if (changed)
       next = JSON.stringify(rewritten, null, /\n {2}"/.test(text) ? 2 : /\n "/.test(text) ? 1 : /\n\t/.test(text) ? "\t" : undefined) + (text.endsWith(`
 `) ? `
 ` : "");
   } else {
-    const artifacts = relative.startsWith("artifacts/");
+    const artifacts = relative.startsWith("artifacts/log/");
     next = text.split(`
 `).map((line) => {
       if (!line.trim() || !namesOld(line, map))
         return line;
+      let parsed;
       try {
-        const parsed = JSON.parse(line);
-        const { value, changed } = mapJSON(artifacts ? mapArtifactLine(parsed, map) : parsed, map);
-        return changed ? JSON.stringify(value) : line;
+        parsed = JSON.parse(line);
       } catch {
         return line;
       }
+      if (artifacts && isObject(parsed))
+        artifactIndexFormat.read(parsed);
+      const { value, changed } = mapJSON(artifacts ? mapArtifactLine(parsed, map) : parsed, map);
+      return changed ? JSON.stringify(value) : line;
     }).join(`
 `);
   }
@@ -56477,6 +56551,7 @@ var NOT_OURS, OURS_INSIDE, glob = (pattern) => new RegExp("^" + pattern.split("/
   }
 };
 var init_own = __esm(() => {
+  init_artifact_format();
   init_paths2();
   NOT_OURS = [
     "engine",
@@ -75165,6 +75240,7 @@ async function* devicesPairRoute(context) {
 init_uninstall();
 
 // box/src/link/areas/queue.ts
+init_format_version();
 init_queues();
 init_here();
 init_admission();
@@ -75542,6 +75618,8 @@ async function* queueRoute(context, match) {
       return yield* json(404, { message: "That message isn't waiting any more." });
     return yield* json(200, shownQueue(queueOf(session)));
   } catch (error) {
+    if (error instanceof UnsupportedFormatVersion)
+      throw error;
     if (error instanceof MoveAdmissionClosed)
       return yield* json(409, { message: error.message });
     return yield* json(502, { message: String(error?.message ?? error) });
@@ -75609,6 +75687,8 @@ async function* added({ json }, target, session, given, written, words) {
     });
     return yield* json(200, { ...shownQueue(queueOf(session)), waits });
   } catch (error) {
+    if (error instanceof UnsupportedFormatVersion)
+      throw error;
     if (error instanceof MoveAdmissionClosed)
       return yield* json(409, { message: error.message });
     console.error("kuvo-link: could not add a waiting message", error);

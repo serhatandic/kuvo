@@ -17,7 +17,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { isObject } from "../../shared/json";
 import { processRuns } from "../../shared/platform";
-import { locked, writeDurablePrivate, writePrivate } from "../files";
+import { locked, writePrivate } from "../files";
 import { RUN } from "../home";
 import { asked, call, readBridgeFile } from "./client";
 import { swapHolds, swapLine, swapUnderWay } from "../../shared/engine-swap";
@@ -151,6 +151,7 @@ export async function reorderQueue(target: Target, session: string, item: string
     const inbox = await inboxNow(target, session);
     let moved = false;
     const state = changeQueue(session, state => {
+      checkWaitingFormats(state.waiting);
       const steer = new Set(inbox.filter(each => each.delivery === "steer" && !state.held.includes(each.id)).map(each => each.id));
       const order = orderOf(inbox, state).filter(id => !steer.has(id));
       if (item === anchor || !order.includes(item) || !order.includes(anchor)) return state;
@@ -240,6 +241,7 @@ export async function sendInto(target: Target, session: string, message: Outgoin
  * them with `inbox`. */
 function takeWaiting(session: string, item?: string, resume = false, inbox: InboxEntry[] = [], delivering = true): { shown: Waiting; message: (Outgoing & { id: string }) | null; held: boolean; before?: string } | null {
   let shown: Waiting | undefined;
+  let message: ReturnType<typeof waitingPayload> = null;
   let held = false;
   let before: string | undefined;
   changeQueue(session, state => {
@@ -247,20 +249,19 @@ function takeWaiting(session: string, item?: string, resume = false, inbox: Inbo
     const next = item ?? orderOf([], state)[0];
     shown = state.waiting?.find(each => each.id === next);
     if (!shown) return state;
+    message = waitingPayload(shown.id);
     const order = orderOf(inbox, state);
     before = order[order.indexOf(shown.id) + 1];
     held = state.held.includes(shown.id);
     return { ...state, ...(resume ? { paused: false, resumed: Date.now() } : {}), held: state.held.filter(id => id !== shown!.id), waiting: state.waiting!.filter(each => each !== shown) };
   });
   if (!shown) return null;
-  const message = waitingPayload(shown.id);
   fs.rmSync(waitingFile(shown.id), { force: true });
   return { shown, message, held, ...(before ? { before } : {}) };
 }
 
 function waitingPayload(id: string, strict = false): (Outgoing & { id: string }) | null {
-  let whole: unknown = null;
-  try { whole = JSON.parse(fs.readFileSync(waitingFile(id), "utf8")); } catch {}
+  const whole = files.readWaitingFile(waitingFile(id));
   return isObject(whole) && (!strict || (whole.id === id && (whole.files === undefined || Array.isArray(whole.files)))) &&
     typeof whole.text === "string" && (whole.delivery === "steer" || whole.delivery === "queue")
     ? { id, text: whole.text, delivery: whole.delivery, ...(Array.isArray(whole.files) ? { files: whole.files } : {}), ...(isObject(whole.metadata) ? { metadata: whole.metadata } : {}) }
@@ -428,8 +429,9 @@ export function unpackQueues(carried: unknown, sessions: readonly string[]): str
       seen.add(shown.id);
       const brought = message.files ?? [];
       if (!Array.isArray(brought) || !brought.every(file => isObject(file) && typeof file.uri === "string" && BASE64_DATA.test(file.uri))) throw new CantCarry(session);
-      return { shown, message: { id: shown.id, text: message.text, delivery: message.delivery,
-        ...(brought.length ? { files: brought } : {}), ...(isObject(message.metadata) ? { metadata: message.metadata } : {}) } };
+      const payload: Outgoing = { id: shown.id, text: message.text, delivery: message.delivery,
+        ...(brought.length ? { files: brought } : {}), ...(isObject(message.metadata) ? { metadata: message.metadata } : {}) };
+      return { shown, message: payload };
     });
     const ids = new Set(waiting.map(each => each.shown.id));
     if (!queue.held.every((id): id is string => typeof id === "string" && ids.has(id))) throw new CantCarry(session);
@@ -438,9 +440,14 @@ export function unpackQueues(carried: unknown, sessions: readonly string[]): str
       new Set(order).size !== order.length)) throw new CantCarry(session);
     return { session, waiting, held: queue.held, paused: queue.paused, order };
   });
+  const current = readQueues(true);
+  for (const { session, waiting } of prepared) {
+    checkWaitingFormats(current[session]?.waiting);
+    for (const { shown } of waiting) files.readWaitingFile(waitingFile(shown.id));
+  }
   for (const { session, waiting, held, paused, order } of prepared) {
     forgetQueue(session);
-    for (const { shown, message } of waiting) writeDurablePrivate(waitingFile(shown.id), JSON.stringify(message), RUN);
+    for (const { shown, message } of waiting) files.writeWaitingFile(waitingFile(shown.id), message, RUN);
     changeQueue(session, () => ({ paused: true, held, waiting: waiting.map(each => each.shown), ...(order?.length ? { order } : {}) }), true);
     if (!paused) goOn.push(session);
   }
@@ -452,9 +459,14 @@ export function forgetQueue(session: string): void {
   let gone: Waiting[] = [];
   changeQueue(session, state => {
     gone = state.waiting ?? [];
+    checkWaitingFormats(gone);
     return { paused: false, held: [] };
   });
   for (const each of gone) fs.rmSync(waitingFile(each.id), { force: true });
+}
+
+function checkWaitingFormats(waiting: Waiting[] = []): void {
+  for (const { id } of waiting) files.readWaitingFile(waitingFile(id));
 }
 
 /** One taken away from what waits on the box (Remove, or Edit): how it was shown, what would have
@@ -513,12 +525,10 @@ export function queueItems(inbox: InboxEntry[], state: QueueState): QueueItem[] 
     if (kept) {
       let delivery: "steer" | "queue" = "queue";
       let words = kept.text;
-      try {
-        const message = JSON.parse(fs.readFileSync(waitingFile(id), "utf8"));
-        if (message?.delivery === "steer") delivery = "steer";
-        const wake = wakeCard(typeof message?.text === "string" ? message.text : "", message?.metadata);
-        if (wake) words = wake.summary;
-      } catch {}
+      const message = files.readWaitingFile(waitingFile(id));
+      if (message?.delivery === "steer") delivery = "steer";
+      const wake = wakeCard(typeof message?.text === "string" ? message.text : "", message?.metadata);
+      if (wake) words = wake.summary;
       return [{ id, words, files: kept.files ?? [], keyword: kept.keyword ?? null, from: kept.from ?? null, on: "box", delivery, held }];
     }
     const entry = inbox.find(each => each.id === id);
@@ -606,7 +616,10 @@ async function acceptedWaiting(target: Target, session: string, item: string): P
 }
 
 function confirmWaiting(session: string, item: string): void {
-  changeQueue(session, state => ({ ...withoutOrder(state, item), held: state.held.filter(id => id !== item), waiting: state.waiting?.filter(each => each.id !== item) }), true);
+  changeQueue(session, state => {
+    files.readWaitingFile(waitingFile(item));
+    return { ...withoutOrder(state, item), held: state.held.filter(id => id !== item), waiting: state.waiting?.filter(each => each.id !== item) };
+  }, true);
   fs.rmSync(waitingFile(item), { force: true });
 }
 
@@ -680,7 +693,10 @@ export async function stopSession(target: Target, session: string, holds = true,
 
 /** Resume: the queue goes on, its next message now. */
 export async function resumeQueue(target: Target, session: string): Promise<QueueState> {
-  changeQueue(session, current => ({ ...current, paused: false, resumed: Date.now() }), true);
+  changeQueue(session, current => {
+    checkWaitingFormats(current.waiting);
+    return { ...current, paused: false, resumed: Date.now() };
+  }, true);
   await drain(target, session);
   return queueOf(session);
 }
@@ -741,6 +757,7 @@ function goesFirst(session: string, item: string): boolean {
   changeQueue(session, state => {
     const shown = state.waiting?.find(each => each.id === item);
     if (!shown) return state;
+    files.readWaitingFile(waitingFile(item));
     found = true;
     return { ...state, paused: false, resumed: Date.now(), held: state.held.filter(id => id !== item), waiting: [shown, ...state.waiting!.filter(each => each !== shown)],
       order: [item, ...(state.order ?? []).filter(id => id !== item)] };
@@ -785,8 +802,8 @@ async function transferInbox(target: Target, session: string): Promise<number> {
     if (text === null) continue;
     // (An ID the box can't name a file by: one of its own, the same each time.)
     const own = /^msg_[A-Za-z0-9]{1,80}$/.test(id) ? id : `msg_${crypto.createHash("sha256").update(id).digest("hex").slice(0, 32)}`;
-    const files = sendableFiles(entry.payload?.files);
-    const message = { id: own, text, delivery: entry.delivery, ...(files.length ? { files } : {}), ...(isObject(entry.payload?.metadata) ? { metadata: entry.payload!.metadata as Record<string, unknown> } : {}) };
+    const attachments = sendableFiles(entry.payload?.files);
+    const message = { id: own, text, delivery: entry.delivery, ...(attachments.length ? { files: attachments } : {}), ...(isObject(entry.payload?.metadata) ? { metadata: entry.payload!.metadata as Record<string, unknown> } : {}) };
     const shown = shownOfInbox(entry);
     const waiting: Waiting = { id: own, ...(shown.from ? { from: shown.from } : {}), text: shown.words, ...(shown.files.length ? { files: shown.files } : {}), ...(shown.keyword ? { keyword: shown.keyword } : {}), at: Date.now() };
     // Kept on the box, in its place (after those moved before it, ahead of what waited there), before
@@ -794,7 +811,7 @@ async function transferInbox(target: Target, session: string): Promise<number> {
     const saved = waitingFile(own);
     const alreadyKept = fs.existsSync(saved);
     changeQueue(session, state => {
-      writeDurablePrivate(saved, JSON.stringify(message), RUN);
+      files.writeWaitingFile(saved, message, RUN);
       const ranked = state.order && orderOf(inbox.filter(entry => remaining.has(entry.id)), state);
       const prefix = new Set(state.inboxMoved).add(own);
       const pending = new Map((state.waiting ?? []).map(item => [item.id, item]));

@@ -439,6 +439,7 @@ setInterval(() => peers.settings?.tell(), 60_000).unref?.()
 // What every conversation here makes, recorded as it's made: the engine's and this bridge's own.
 // One that fails to start leaves the rest of the bridge as it is.
 let artifacts: ArtifactStore | undefined
+let artifactFormatError: UnsupportedFormatVersion | undefined
 let noted: ((session: string, path: string, via: string) => Promise<boolean>) | undefined
 if (artifactsFolder) {
   try {
@@ -476,6 +477,7 @@ if (artifactsFolder) {
     link.watch((event) => void recorder.heard(engineSource, event))
     subscribe((event) => void recorder.heard(bridgeSource, event))
   } catch (error) {
+    if (error instanceof UnsupportedFormatVersion) artifactFormatError = error
     console.error("artifacts:", error)
   }
 }
@@ -494,7 +496,7 @@ let server: ReturnType<typeof Bun.serve>
 /** Making way for a newer bridge in its place, on a machine (below). */
 let renewal: Renewal | undefined
 const githubSignIn = new GitHubSignIn(context)
-const answer = handler({ roster, sessions, auto, link, password, version, build, groups, peers, goals, sideQuestions, handoffs, places, reviews, voice, artifacts, noted, restartOutside, carrying, limits, usage, refreshAccounts: true, githubSignIn })
+const answer = handler({ roster, sessions, auto, link, password, version, build, groups, peers, goals, sideQuestions, handoffs, places, reviews, voice, artifacts, artifactFormatError, noted, restartOutside, carrying, limits, usage, refreshAccounts: true, githubSignIn })
 /** Requests being answered now (but the event feed's, which stays open): a newer bridge waits for them. */
 let answering = 0
 try {

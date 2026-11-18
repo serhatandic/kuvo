@@ -7,6 +7,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { additiveObjectFormat, UnsupportedFormatVersion } from "./format-version";
 import { isObject } from "./json";
 import { locked, writeDurablePrivate } from "./files";
 
@@ -148,6 +149,9 @@ export const keptWaiting = (value: unknown): Waiting[] => (Array.isArray(value) 
   return [{ id: item.id, ...(typeof item.from === "string" ? { from: item.from } : {}), text: item.text, ...(files.length ? { files } : {}), ...(typeof item.keyword === "string" ? { keyword: item.keyword } : {}), at: typeof item.at === "number" ? item.at : 0 }];
 });
 
+const queueFormat = additiveObjectFormat("Conversation queue");
+const payloadFormat = additiveObjectFormat("Waiting message");
+
 const keptState = (value: unknown): QueueState => {
   const waiting = keptWaiting(isObject(value) ? value.waiting : undefined);
   const inboxMoved = isObject(value) && Array.isArray(value.inboxMoved)
@@ -177,11 +181,18 @@ export function readQueues(files: QueueFiles, strict = false): Record<string, Qu
   try { all = JSON.parse(fs.readFileSync(files.file, "utf8")); } catch (error) {
     if (strict && (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
-  if (strict && (!isObject(all) || Object.values(all).some(state => !isObject(state) ||
-    (state.waiting !== undefined && (!Array.isArray(state.waiting) || keptWaiting(state.waiting).length !== state.waiting.length))))) {
-    throw new Error("The queue index could not be read");
+  if (!isObject(all)) {
+    if (strict) throw new Error("The queue index could not be read");
+    return {};
   }
-  return isObject(all) ? Object.fromEntries(Object.entries(all).map(([session, state]) => [session, keptState(state)])) : {};
+  return Object.fromEntries(Object.entries(all).map(([session, saved]) => {
+    const state = isObject(saved) ? queueFormat.read(saved) : null;
+    if (strict && (!state || (state.waiting !== undefined &&
+      (!Array.isArray(state.waiting) || keptWaiting(state.waiting).length !== state.waiting.length)))) {
+      throw new Error("The queue index could not be read");
+    }
+    return [session, keptState(state)];
+  }));
 }
 
 /** `session`'s queue as `change` makes it, read again just before, under its lock; `changed`, told
@@ -209,7 +220,8 @@ export function changeQueue(files: QueueFiles, session: string, change: (state: 
       }
       if (!showsQueue(each) && !each.order?.length && !each.resumed && !each.arriving) delete all[id];
     }
-    writeDurablePrivate(files.file, JSON.stringify(all));
+    const indexed = Object.fromEntries(Object.entries(all).map(([id, state]) => [id, queueFormat.write(state)]));
+    writeDurablePrivate(files.file, JSON.stringify(indexed));
     return state;
   }, { required: true });
   if (made) changed?.();
@@ -217,6 +229,22 @@ export function changeQueue(files: QueueFiles, session: string, change: (state: 
 }
 
 export const waitingFile = (files: QueueFiles, id: string) => path.join(files.waiting, `${id}.json`);
+
+export function readWaitingFile(file: string): Record<string, unknown> | null {
+  try {
+    const saved: unknown = JSON.parse(fs.readFileSync(file, "utf8"));
+    return isObject(saved) ? payloadFormat.read(saved) : null;
+  } catch (error) {
+    if (error instanceof UnsupportedFormatVersion) throw error;
+    return null;
+  }
+}
+
+/** Check before replacing a payload, including on a retry with the same ID. */
+export function writeWaitingFile(file: string, message: Outgoing, root: string): void {
+  readWaitingFile(file);
+  writeDurablePrivate(file, JSON.stringify(payloadFormat.write(message)), root);
+}
 
 // The names of the files a message carries, as clients show them.
 const fileNames = (files: unknown[] | undefined): string[] => (files ?? []).flatMap(file => {
@@ -238,7 +266,7 @@ export function keepWaiting(files: QueueFiles, session: string, message: Outgoin
   changeQueue(files, session, state => {
     if (!state.paused && !holds) return state;
     if (!isWaitingID(message.id)) throw new InvalidWaitingID();
-    writeDurablePrivate(waitingFile(files, message.id), JSON.stringify(keptText === undefined ? message : { ...message, text: keptText }), path.dirname(files.file));
+    writeWaitingFile(waitingFile(files, message.id), keptText === undefined ? message : { ...message, text: keptText }, path.dirname(files.file));
     kept = true;
     const names = fileNames(message.files);
     const parts = isObject(message.metadata) && isObject(message.metadata.kuvo) && isObject(message.metadata.kuvo.parts) ? message.metadata.kuvo.parts : null;

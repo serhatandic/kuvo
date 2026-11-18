@@ -19,7 +19,7 @@ Baseline is piece T at `819e4f5a6`. Scope is the computer's Kuvo home (including
 | Work Queue labels, delivery and receipts | `run/work-queue/{labels,acted,seen,queues-carried,queues-scanned}.json` and the journals in `link/work-queue` | Unmarked. Validates fields by operation and uses IDs/timestamps for retries. | **Versioned.** Additive v1 for labels, forwarded requests, answers and action receipts, GitHub-read cache, handoff and carry/scan receipts, peer summaries and remote undo. Writes and expiry paths preserve explicit future records. |
 | Managed attachment files | `run/work-queue/files/`, session attachments, `link/server/attached.ts` | Byte streams. File type/name/hash, size and identity belong to owner metadata. Consumers interpret the media type. | **External.** External, not versioned by Kuvo. Media encoders and user files own the bytes. The queue item or transfer manifest describes them. |
 | Engine database | `data/opencode/opencode*.db{,-wal,-shm}` | Engine migration history is checked during the staged legacy move. | **External.** External, not versioned by Kuvo. The upstream engine owns the database and its migration history. |
-| Conversation metadata and queue | `run/{queues,typed-sent}.json`, agent session data, `link/engine`, `agents/store.ts` | Unmarked JSON; readers normalize old shapes. | **Left.** Carry, scan and typed-send receipts write v1. Queue indexes, pending bodies and bridge session files still need versioned readers and writers. |
+| Conversation metadata and queue | `run/{queues,typed-sent}.json`, agent session data, `link/engine`, `agents/store.ts` | Unmarked JSON; readers normalize old shapes. | **Left.** Queue entries, waiting message bodies, and carry, scan and typed-send receipts write v1. Older readers keep the existing object shapes. Deletion, resume and transfer paths check waiting formats before removing or replacing the payload. Bridge session metadata and transcripts still need versioned readers and writers. |
 | Coding agent native storage | `agents/` native homes and named instances, including provider auth files and logs such as Claude/Codex JSONL, Cursor chat files, Antigravity SQLite/Protobuf | Provider-owned schemas. Kuvo reads provider formats it understands and leaves native migration to the provider. No uniform Kuvo mark. | **External.** External, not versioned by Kuvo. Provider runtimes own sign-in files, transcripts and database formats. |
 | Letters, receipts and calls | `run/outbox/`, `run/{letters-seen,refusals,told,served,sent,rows}.json` where used, `link/letters` | Unmarked. Letter IDs and timestamps protect deduplication and replay. Old app letters have their own import. | **Left.** The exchange inherits peer-mail v1. Outbox entries and local deduplication records still need versions. |
 | Pending work and work status | `run/{asks,answers,awaited,background,decided,goals,homes,oversight,reviews,side-questions,started-elsewhere,stopped,unanswering}.json` where used, session notes, `link/work` | Unmarked. Each reader selects known state and keeps separate delivery records as applicable. | **Left.** Local spool records and state caches still need versions, including shell and helper readers. |
@@ -41,7 +41,7 @@ Baseline is piece T at `819e4f5a6`. Scope is the computer's Kuvo home (including
 | Vault integrity records | `vault/{items,grants}.json` and authenticated indexes, `link/vault/store.ts` | Signed envelope `v:2`, legacy plain JSON handled by the existing reader. Generation tracks integrity, not schema. | **Versioned.** Existing authenticated v2 with legacy JSON import. Generation is independent of the envelope version. |
 | Vault values, activity and pause | `vault/values/`, `activity.jsonl`, `paused.json` | Existing per-type encoding. Value sealing has an encryption contract; activity/pause records lack a common version. | **Left.** Activity lines and compaction write additive v1. The signed pause envelope now gates reads and writes on its existing v2 marker and accepts older signed envelopes. The sealed value files still need an explicit version for their byte layout and a rollback-compatible reader. |
 | SSH trust and agent sockets | `known_hosts` material, local agent sockets, `link/add/ssh.ts`, `link/vault/ssh*.ts` | OpenSSH text/wire contracts. A socket path identifies a process, not a schema. | **External.** External, not versioned by Kuvo. OpenSSH owns known_hosts and the SSH agent protocol. |
-| Sign-ins and integration credentials | Managed account index and agent homes, `box/keys/`, integration key/token files, engine auth, Mac Keychain | Unmarked Kuvo metadata and opaque provider secrets. Existing seed/import and sign-in logic decides on a provider basis. | **Left.** The managed account index writes a v1 header that older array readers skip. Kuvo credential metadata, including ended sign-ins, still needs version checks. Providers and Keychain own the opaque secrets. |
+| Sign-ins and integration credentials | Managed account index and agent homes, `box/keys/`, integration key/token files, engine auth, Mac Keychain | Unmarked Kuvo metadata and opaque provider secrets. Existing seed/import and sign-in logic decides on a provider basis. | **Versioned.** The managed accounts array has a v1 header that older readers skip. Ended sign-ins write additive v1 and refuse unsupported records before Disconnect. Provider stores (including Cursor’s SDK store) and Keychain own their formats. Integration key files are opaque values read in their provider’s encoding. |
 | Plan limits and usage readings | `agents/usage/` cache/state, `limits*.json`, `usage.json`, `usage-delivered.json`, append-only call summaries | Unmarked. Each has its own fallback or refresh rules. | **Left.** The peer exchange is versioned. Local caches, usage state and append-only summaries still need versions. |
 | Cursor fallback cache | `agents/usage/cursor-history.ts` | `version:1`. Unknown cache versions are rebuilt. | **Versioned.** Existing version 1. The reader regenerates the disposable cache when it cannot read the recorded version. |
 | Usage settings | `agents/usage/settings.json`, legacy app Usage settings | Writes `kuvo:1`. Field stamps order merges and the old app importer records what it imported. | **Versioned.** Existing kuvo:1 marker now gates opening and saving; legacy Codex fallback is imported by the current layout. |
@@ -87,9 +87,9 @@ The route registry in `box/src/link/server/router.ts`, Mac relay dispatcher in `
 
 | Families | Versioned | External | Ephemeral | Open |
 | --- | ---: | ---: | ---: | ---: |
-| Stored (50) | 19 | 6 | 0 | 25 |
+| Stored (50) | 20 | 6 | 0 | 24 |
 | Messages (19) | 9 | 1 | 0 | 9 |
-| Total (69) | 28 | 7 | 0 | 34 |
+| Total (69) | 29 | 7 | 0 | 33 |
 
 A partly covered family counts as left. Existing signed, negotiated and release-covered families
 keep the versions identified in their rows. External bytes inside a Kuvo-owned, versioned
@@ -109,5 +109,6 @@ negotiated contract with the relay.
 
 For #922, display the format name and supported version in update/recovery status. A route can
 return HTTP 409 with `unsupportedFormatVersion` when a local record prevents the operation.
-Show which computer or file refused the operation, with retry or update where applicable. Mail
-refusals currently appear in the receiving box's logs.
+Show which computer or file refused the operation, with retry or update where applicable. Artifact
+startup refusals and queue mutations can now return that code. Mail refusals currently appear in the
+receiving box's logs.

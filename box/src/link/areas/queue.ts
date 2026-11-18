@@ -2,6 +2,7 @@
 // waits for Resume, what Stop held and what waits on the box, followed as it changes; Stop, Resume,
 // Send Now, and a client's own message to wait with it.
 
+import { UnsupportedFormatVersion } from "../../shared/format-version";
 import { isObject, parsed } from "../../shared/json";
 import { BAD_WAITING_ID, isWaitingID, wakeMarkOf } from "../../shared/queues";
 import { MOVING } from "../bots/here";
@@ -182,6 +183,7 @@ export async function* queueRoute(context: RouteContext, match: RegExpMatchArray
     if (!(await go)) return yield* json(404, { message: "That message isn't waiting any more." });
     return yield* json(200, shownQueue(queueOf(session)));
   } catch (error) {
+    if (error instanceof UnsupportedFormatVersion) throw error;
     if (error instanceof MoveAdmissionClosed) return yield* json(409, { message: error.message });
     return yield* json(502, { message: String((error as Error | null)?.message ?? error) });
   }
@@ -265,6 +267,7 @@ async function* added({ json }: Pick<RouteContext, "json">, target: Target, sess
     });
     return yield* json(200, { ...shownQueue(queueOf(session)), waits });
   } catch (error) {
+    if (error instanceof UnsupportedFormatVersion) throw error;
     if (error instanceof MoveAdmissionClosed) return yield* json(409, { message: error.message });
     console.error("kuvo-link: could not add a waiting message", error);
     return yield* json(500, { message: "This computer couldn’t save the message. Try sending it again." });

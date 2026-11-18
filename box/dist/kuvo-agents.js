@@ -4122,6 +4122,14 @@ function budgetConfirmation(older) {
   return { title: "Keep less of older versions?", body: `Older versions take ${fileSize(older)} now, so the oldest of their copies go until they fit. The newest version of each file, memory, skills and what\u2019s kept stay.`, button: "Keep up to" };
 }
 
+// box/src/shared/artifact-format.ts
+var artifactIndexFormat, artifactSettingsFormat;
+var init_artifact_format = __esm(() => {
+  init_format_version();
+  artifactIndexFormat = additiveObjectFormat("Artifact index");
+  artifactSettingsFormat = additiveObjectFormat("Artifact storage settings");
+});
+
 // box/src/agents/artifacts/store.ts
 import { createHash as createHash2, createHmac, randomBytes as randomBytes2 } from "crypto";
 import { appendFileSync, closeSync as closeSync2, existsSync as existsSync4, fchmodSync, mkdirSync as mkdirSync4, openSync as openSync2, readdirSync as readdirSync4, readFileSync as readFileSync5, renameSync as renameSync3, rmSync as rmSync4, statSync as statSync3, writeFileSync as writeFileSync4 } from "fs";
@@ -4526,7 +4534,7 @@ class ArtifactStore {
     } catch {
       return {};
     }
-    return isObject(saved) ? settingsFormat.read(saved) : {};
+    return isObject(saved) ? artifactSettingsFormat.read(saved) : {};
   }
   setBudget(bytes, confirmed) {
     const older = this.storage().older;
@@ -4534,7 +4542,7 @@ class ArtifactStore {
       return budgetConfirmation(older).body;
     const settings = this.readSettings();
     const budget = Math.max(0, Math.floor(bytes));
-    writeFileSync4(join8(this.root, "settings.json.new"), JSON.stringify(settingsFormat.write({ ...settings, budget })));
+    writeFileSync4(join8(this.root, "settings.json.new"), JSON.stringify(artifactSettingsFormat.write({ ...settings, budget })));
     renameSync3(join8(this.root, "settings.json.new"), join8(this.root, "settings.json"));
     this.chosenBudget = budget;
     this.settle();
@@ -4720,9 +4728,9 @@ class ArtifactStore {
     for (const artifact of this.artifacts.values()) {
       const { versions, ...header } = artifact;
       if (!versions.length)
-        lines.push(JSON.stringify(indexFormat.write({ a: header })));
+        lines.push(JSON.stringify(artifactIndexFormat.write({ a: header })));
       for (const version of [...versions].sort((a, b) => a.n - b.n))
-        lines.push(JSON.stringify(indexFormat.write({ a: header, v: version })));
+        lines.push(JSON.stringify(artifactIndexFormat.write({ a: header, v: version })));
     }
     const file = join8(this.root, "log", "0000-00.jsonl");
     try {
@@ -4773,7 +4781,7 @@ class ArtifactStore {
   write(artifact, version) {
     const { versions: _, ...header } = artifact;
     const line = { a: header, ...version ? { v: version } : {} };
-    appendFileSync(join8(this.root, "log", stamp(this.now()).slice(0, 7) + ".jsonl"), JSON.stringify(indexFormat.write(line)) + `
+    appendFileSync(join8(this.root, "log", stamp(this.now()).slice(0, 7) + ".jsonl"), JSON.stringify(artifactIndexFormat.write(line)) + `
 `);
   }
   load() {
@@ -4804,7 +4812,7 @@ class ArtifactStore {
         }
         if (!isObject(saved))
           continue;
-        const line = indexFormat.read(saved);
+        const line = artifactIndexFormat.read(saved);
         if (!line.a?.id)
           continue;
         const artifact = this.artifacts.get(line.a.id) ?? { ...line.a, versions: [] };
@@ -4886,19 +4894,17 @@ function summary(artifact) {
   const { versions, ...header } = artifact;
   return { ...header, versions: versions.filter((version) => !version.before).length, latest: versions.at(-1) };
 }
-var copyLimit, defaultBudget, lineLimit, patchLimit = 1e5, outsideWindow, indexFormat, settingsFormat, stamp = (date) => date.toISOString(), kindsKeptWhole, stampOf = (stat) => ({ size: stat.size, mtime: stat.mtimeMs, ctime: stat.ctimeMs, ino: stat.ino }), sameStamp = (a, b) => a.size === b.size && a.mtime === b.mtime && a.ctime === b.ctime && a.ino === b.ino, couldBeRewritten = (stamp, at) => at - Math.max(stamp.mtime, stamp.ctime) < (stamp.mtime % 1000 === 0 || stamp.ctime % 1000 === 0 ? 2000 : 100);
+var copyLimit, defaultBudget, lineLimit, patchLimit = 1e5, outsideWindow, stamp = (date) => date.toISOString(), kindsKeptWhole, stampOf = (stat) => ({ size: stat.size, mtime: stat.mtimeMs, ctime: stat.ctimeMs, ino: stat.ino }), sameStamp = (a, b) => a.size === b.size && a.mtime === b.mtime && a.ctime === b.ctime && a.ino === b.ino, couldBeRewritten = (stamp, at) => at - Math.max(stamp.mtime, stamp.ctime) < (stamp.mtime % 1000 === 0 || stamp.ctime % 1000 === 0 ? 2000 : 100);
 var init_store = __esm(() => {
   init_kinds();
   init_policy();
   init_turnfiles();
-  init_format_version();
+  init_artifact_format();
   init_files();
   copyLimit = 25 * 1024 * 1024;
   defaultBudget = 1024 ** 3;
   lineLimit = 1024 * 1024;
   outsideWindow = 5 * 60000;
-  indexFormat = additiveObjectFormat("Artifact index");
-  settingsFormat = additiveObjectFormat("Artifact storage settings");
   kindsKeptWhole = new Set(["memory", "skill"]);
 });
 
@@ -34209,10 +34215,18 @@ function readQueues(files, strict = false) {
     if (strict && error.code !== "ENOENT")
       throw error;
   }
-  if (strict && (!isObject(all) || Object.values(all).some((state) => !isObject(state) || state.waiting !== undefined && (!Array.isArray(state.waiting) || keptWaiting(state.waiting).length !== state.waiting.length)))) {
-    throw new Error("The queue index could not be read");
+  if (!isObject(all)) {
+    if (strict)
+      throw new Error("The queue index could not be read");
+    return {};
   }
-  return isObject(all) ? Object.fromEntries(Object.entries(all).map(([session, state]) => [session, keptState(state)])) : {};
+  return Object.fromEntries(Object.entries(all).map(([session, saved]) => {
+    const state = isObject(saved) ? queueFormat.read(saved) : null;
+    if (strict && (!state || state.waiting !== undefined && (!Array.isArray(state.waiting) || keptWaiting(state.waiting).length !== state.waiting.length))) {
+      throw new Error("The queue index could not be read");
+    }
+    return [session, keptState(state)];
+  }));
 }
 function changeQueue(files, session, change, changed, reseal = false) {
   let made = false;
@@ -34242,12 +34256,27 @@ function changeQueue(files, session, change, changed, reseal = false) {
       if (!showsQueue(each) && !each.order?.length && !each.resumed && !each.arriving)
         delete all[id];
     }
-    writeDurablePrivate(files.file, JSON.stringify(all));
+    const indexed = Object.fromEntries(Object.entries(all).map(([id, state]) => [id, queueFormat.write(state)]));
+    writeDurablePrivate(files.file, JSON.stringify(indexed));
     return state;
   }, { required: true });
   if (made)
     changed?.();
   return after;
+}
+function readWaitingFile(file) {
+  try {
+    const saved = JSON.parse(fs6.readFileSync(file, "utf8"));
+    return isObject(saved) ? payloadFormat.read(saved) : null;
+  } catch (error) {
+    if (error instanceof UnsupportedFormatVersion)
+      throw error;
+    return null;
+  }
+}
+function writeWaitingFile(file, message, root) {
+  readWaitingFile(file);
+  writeDurablePrivate(file, JSON.stringify(payloadFormat.write(message)), root);
 }
 function keepWaiting(files, session, message, { from, words, kept: keptText } = {}, changed, place = last2, holds = false) {
   let kept = false;
@@ -34256,7 +34285,7 @@ function keepWaiting(files, session, message, { from, words, kept: keptText } = 
       return state;
     if (!isWaitingID(message.id))
       throw new InvalidWaitingID;
-    writeDurablePrivate(waitingFile(files, message.id), JSON.stringify(keptText === undefined ? message : { ...message, text: keptText }), path5.dirname(files.file));
+    writeWaitingFile(waitingFile(files, message.id), keptText === undefined ? message : { ...message, text: keptText }, path5.dirname(files.file));
     kept = true;
     const names = fileNames(message.files);
     const parts = isObject(message.metadata) && isObject(message.metadata.kuvo) && isObject(message.metadata.kuvo.parts) ? message.metadata.kuvo.parts : null;
@@ -34275,7 +34304,7 @@ var queueFiles = (run) => ({
     return [];
   const files = Array.isArray(item.files) ? item.files.filter((name) => typeof name === "string") : [];
   return [{ id: item.id, ...typeof item.from === "string" ? { from: item.from } : {}, text: item.text, ...files.length ? { files } : {}, ...typeof item.keyword === "string" ? { keyword: item.keyword } : {}, at: typeof item.at === "number" ? item.at : 0 }];
-}), keptState = (value) => {
+}), queueFormat, payloadFormat, keptState = (value) => {
   const waiting = keptWaiting(isObject(value) ? value.waiting : undefined);
   const inboxMoved = isObject(value) && Array.isArray(value.inboxMoved) ? value.inboxMoved.filter((id) => typeof id === "string" && waiting.some((item) => item.id === id)) : [];
   return {
@@ -34297,6 +34326,7 @@ var queueFiles = (run) => ({
   return typeof file.uri === "string" && !file.uri.startsWith("data:") ? [path5.basename(decodeURIComponent(file.uri.replace(/^file:\/\//, "")))] : ["file"];
 }), last2 = (state, item) => ({ ...state, waiting: [...state.waiting ?? [], item] });
 var init_queues = __esm(() => {
+  init_format_version();
   init_files();
   WAITING_ID = /^msg_[A-Za-z0-9]{1,80}$/;
   InvalidWaitingID = class InvalidWaitingID extends Error {
@@ -34304,6 +34334,8 @@ var init_queues = __esm(() => {
       super(BAD_WAITING_ID);
     }
   };
+  queueFormat = additiveObjectFormat("Conversation queue");
+  payloadFormat = additiveObjectFormat("Waiting message");
 });
 
 // box/src/shared/message-words.ts
@@ -39832,8 +39864,11 @@ function handler(context) {
         return await linkRoutes(context.groups?.runner, context.groups?.store, method, parts.slice(4), body, request.signal);
       if (area === "kuvo" && a === "artifacts" && b === "noted" && !c)
         return await notedRoute(context.noted, method, body);
-      if (area === "kuvo" && a === "link" && b === "artifacts")
+      if (area === "kuvo" && a === "link" && b === "artifacts") {
+        if (context.artifactFormatError)
+          throw context.artifactFormatError;
         return await artifactRoutes(context.artifacts, method, parts.slice(4), url.searchParams, body, request.signal);
+      }
       if (area === "kuvo" && a === "peers")
         return await peerRoutes(context.peers ?? context.groups?.peers, method, parts.slice(3), body, request.signal);
       if (area === "kuvo" && a === "tools" && method === "PUT") {
@@ -39903,6 +39938,8 @@ function handler(context) {
       }
       return error2(404, "Not available for this agent.");
     } catch (caught) {
+      if (caught instanceof UnsupportedFormatVersion)
+        return Response.json({ code: "unsupportedFormatVersion", message: caught.message }, { status: 409 });
       if (/^\/api\/integration\/[^/]+\/connect\/oauth(?:\/|$)/.test(url.pathname)) {
         return error2(502, "The sign-in couldn\u2019t continue. Try again.");
       }
@@ -39940,6 +39977,7 @@ ${all}`;
 var attempts, json16 = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } }), located = (value) => json16({ location: { directory: process.cwd() }, data: value }), error2 = (status, message) => json16({ message }, status), lastSeen, lastMaintained, PROGRAM_RELEASE_INTERVAL;
 var init_server = __esm(() => {
   init_insights();
+  init_format_version();
   init_route_version();
   init_account_refresh();
   init_accounts();
@@ -41480,7 +41518,7 @@ var version3 = "1", script, build, home3, password, kept3, ownRuntime, machineEn
 }, restartOutside = () => {
   restarting = true;
   noteInside();
-}, self, partGiven, groups, groupFolders, groupMemoryKey, post, directory, peers, artifactsFolder, botsFolder, agentsFile, runFolder, places5, goals, sideQuestions, handoffs, reviews, voice, engineAccounts, limits, noPriceFeeds, usageFolder, usageSettings, claudeUsage2, codexUsage, engineData, engineCodexUsage, antigravityUsage, grokUsage, engineHostedUsage, cursorUsage, pricing, usage, localUsageKey, usageComputer = () => directory.own()?.key ?? localUsageKey, artifacts, noted2, carrying, server4, renewal, githubSignIn, answer4, answering = 0, record2, machineHandover, keeperHandover = () => {
+}, self, partGiven, groups, groupFolders, groupMemoryKey, post, directory, peers, artifactsFolder, botsFolder, agentsFile, runFolder, places5, goals, sideQuestions, handoffs, reviews, voice, engineAccounts, limits, noPriceFeeds, usageFolder, usageSettings, claudeUsage2, codexUsage, engineData, engineCodexUsage, antigravityUsage, grokUsage, engineHostedUsage, cursorUsage, pricing, usage, localUsageKey, usageComputer = () => directory.own()?.key ?? localUsageKey, artifacts, artifactFormatError, noted2, carrying, server4, renewal, githubSignIn, answer4, answering = 0, record2, machineHandover, keeperHandover = () => {
   if (!machineHandover || !runFolder)
     return false;
   const swap = swapUnderWay(runFolder);
@@ -41841,6 +41879,8 @@ var init_main = __esm(async () => {
       link4.watch((event) => void recorder.heard(engineSource, event));
       subscribe((event) => void recorder.heard(bridgeSource, event));
     } catch (error) {
+      if (error instanceof UnsupportedFormatVersion)
+        artifactFormatError = error;
       console.error("artifacts:", error);
     }
   }
@@ -41851,7 +41891,7 @@ var init_main = __esm(async () => {
   usage.insights?.start();
   carrying = new Carrying(sessions, store, (provider) => sessions.agent(provider), (kind) => roster.all().filter((agent) => parseProvider(agent.providerID)?.kind === kind));
   githubSignIn = new GitHubSignIn(context);
-  answer4 = handler({ roster, sessions, auto, link: link4, password, version: version3, build, groups, peers, goals, sideQuestions, handoffs, places: places5, reviews, voice, artifacts, noted: noted2, restartOutside, carrying, limits, usage, refreshAccounts: true, githubSignIn });
+  answer4 = handler({ roster, sessions, auto, link: link4, password, version: version3, build, groups, peers, goals, sideQuestions, handoffs, places: places5, reviews, voice, artifacts, artifactFormatError, noted: noted2, restartOutside, carrying, limits, usage, refreshAccounts: true, githubSignIn });
   try {
     server4 = Bun.serve({
       hostname: "127.0.0.1",
@@ -41989,4 +42029,4 @@ if (!isMainThread && process.argv.includes("--insights-db-worker")) {
 } else {
   await init_main().then(() => ({}));
 }
-// Built from Packages/Box/src/agents 40e47cc8a9b7282ef1dd044836f15fd4280686eabde0ebf61523ff1a044344c5
+// Built from Packages/Box/src/agents 25b15c5380c2810c5e42f83b3c66cd1b7535cff46baf5f2093a38072a01b642f

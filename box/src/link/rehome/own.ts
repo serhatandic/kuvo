@@ -10,6 +10,8 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { artifactIndexFormat, artifactSettingsFormat } from "../../shared/artifact-format";
+import { isObject } from "../../shared/json";
 import { claudeSlug, mapJSON, mapLines, mapped, mappedValue, moves, namesOld, type PathMap } from "./paths";
 import type { Placement } from "./state";
 
@@ -106,19 +108,18 @@ export function rewriteOwnFile({ file, relative, kind }: OwnFile, map: PathMap):
   } else if (kind === "json") {
     let value: unknown;
     try { value = JSON.parse(text); } catch { return false; }
+    if (relative === "artifacts/settings.json" && isObject(value)) artifactSettingsFormat.read(value);
     const { value: rewritten, changed } = mapJSON(value, map);
     if (changed) next = JSON.stringify(rewritten, null, /\n {2}"/.test(text) ? 2 : /\n "/.test(text) ? 1 : /\n\t/.test(text) ? "\t" : undefined) + (text.endsWith("\n") ? "\n" : "");
   } else {
-    const artifacts = relative.startsWith("artifacts/");
+    const artifacts = relative.startsWith("artifacts/log/");
     next = text.split("\n").map(line => {
       if (!line.trim() || !namesOld(line, map)) return line;
-      try {
-        const parsed = JSON.parse(line);
-        const { value, changed } = mapJSON(artifacts ? mapArtifactLine(parsed, map) : parsed, map);
-        return changed ? JSON.stringify(value) : line;
-      } catch {
-        return line;
-      }
+      let parsed: unknown;
+      try { parsed = JSON.parse(line); } catch { return line; }
+      if (artifacts && isObject(parsed)) artifactIndexFormat.read(parsed);
+      const { value, changed } = mapJSON(artifacts ? mapArtifactLine(parsed, map) : parsed, map);
+      return changed ? JSON.stringify(value) : line;
     }).join("\n");
   }
   if (next === text) return false;

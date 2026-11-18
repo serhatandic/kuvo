@@ -36,9 +36,12 @@ An absent JSON format marker denotes the pre-marker layout (version 0). The link
 the version with a normal atomic write. The ledger commits it under the writer lock. Work Queue
 owner files, labels, handoff and forwarded action receipts use additive version 1. Setup cards,
 welcome files, move journals and manifests, and server and bridge rendezvous records also add
-version 1 beside their existing fields. Insights
-adopts its existing database as SQLite `user_version = 1` in the same transaction as its schema
-step. These readers report unsupported versions before writing any replacement.
+version 1 beside their existing fields. Conversation queue entries and waiting payloads use
+additive version 1. The artifact index and vault activity log mark each JSON line, including
+compacted lines. The managed accounts and rehome folder arrays have a header entry that the
+legacy readers filter out. The signed vault pause envelope uses its existing v2 marker.
+Insights adopts its existing database as SQLite `user_version = 1` in the same transaction as its
+schema step. These readers report unsupported versions before writing any replacement.
 
 For authenticated box-to-box mail, the v1 Noise prologue stays the same. The JSON inside now
 includes `formatVersion: 1`. An absent field is the original body, which has the same payload

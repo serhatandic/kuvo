@@ -3,6 +3,7 @@ import { afterAll, expect, test } from "bun:test"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { rewriteOwnFile } from "../src/link/rehome/own"
 import { PATH_REWRITER } from "../src/link/rehome/rewrite"
 import { parsePlist } from "../src/link/rehome/upgrades"
 import { mac07, preferences, put, readJSON, run, snapshot, type Mac } from "./rehome-run-world"
@@ -227,5 +228,21 @@ test("rehome stamps its folders list without changing what the previous reader s
   writeFileSync(file, future)
   expect(() => PATH_REWRITER.outside(move, () => { throw new Error("Unexpected recovery mutation") })).toThrow("Rehome project folders format version 2 is unsupported")
   expect(() => PATH_REWRITER.rewrite(move)).toThrow("Rehome project folders format version 2 is unsupported")
+  expect(readFileSync(file, "utf8")).toBe(future)
+})
+
+test("rehome rewrites supported artifact indexes and leaves a future log byte for byte", () => {
+  const work = mkdtempSync(join(root, "artifact-log-"))
+  const from = join(work, "old")
+  const to = join(work, "new")
+  const file = join(work, "2026-11.jsonl")
+  const input = { file, relative: "artifacts/log/2026-11.jsonl", kind: "lines-json" as const }
+  const line = { a: { id: "art_test", path: join(from, "notes.md") }, formatVersion: 1 }
+  writeFileSync(file, JSON.stringify(line) + "\n")
+  expect(rewriteOwnFile(input, [{ from, to }])).toBe(true)
+  expect(readJSON(file)).toEqual({ ...line, a: { ...line.a, path: join(to, "notes.md") } })
+  const future = JSON.stringify(line) + "\n" + JSON.stringify({ ...line, formatVersion: 2 }) + "\n"
+  writeFileSync(file, future)
+  expect(() => rewriteOwnFile(input, [{ from, to }])).toThrow("Artifact index format version 2 is unsupported")
   expect(readFileSync(file, "utf8")).toBe(future)
 })

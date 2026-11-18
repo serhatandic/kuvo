@@ -56,7 +56,7 @@ test("the account index accepts legacy arrays and guards account changes against
   const root = mkdtempSync(join(tmpdir(), "kuvo-add-account-"))
   try {
     const file = join(root, "accounts.json")
-    const legacy = { kind: "codex", id: "saved", label: "Saved" }
+    const legacy = { kind: "codex", id: "saved", label: "Saved" } as const
     writeFileSync(file, JSON.stringify([legacy]))
     const accounts = new Accounts(root)
     expect(accounts.all()).toContainEqual(legacy)

@@ -1,4 +1,5 @@
 import { insightsRoutes } from "./usage/insights"
+import { UnsupportedFormatVersion } from "../shared/format-version"
 import { ROUTE_VERSION, ROUTE_VERSION_HEADER, routeVersionError } from "../shared/route-version"
 import { GITHUB_WORK_QUEUE } from "../shared/github"
 import { failureWords } from "../shared/sign-in-failure"
@@ -61,6 +62,7 @@ export interface Context {
   goals?: Goals
   /** The record of what this computer's agents made (artifacts/store.ts); none where it couldn't start. */
   artifacts?: ArtifactStore
+  artifactFormatError?: UnsupportedFormatVersion
   /** A file a conversation got without a tool call naming it (artifacts/recorder.ts, `noted`). */
   noted?: (session: string, path: string, via: string) => Promise<boolean>
   /** The box's other keywords: side questions, handoffs and reviews (btw.ts, handoff.ts, reviews.ts). */
@@ -641,7 +643,10 @@ export function handler(context: Context) {
       if (area === "kuvo" && a === "link" && b === "groups") return await linkRoutes(context.groups?.runner, context.groups?.store, method, parts.slice(4), body, request.signal)
       // What this computer's agents made (`kuvo/artifacts`, which the box's link passes on).
       if (area === "kuvo" && a === "artifacts" && b === "noted" && !c) return await notedRoute(context.noted, method, body)
-      if (area === "kuvo" && a === "link" && b === "artifacts") return await artifactRoutes(context.artifacts, method, parts.slice(4), url.searchParams, body, request.signal)
+      if (area === "kuvo" && a === "link" && b === "artifacts") {
+        if (context.artifactFormatError) throw context.artifactFormatError
+        return await artifactRoutes(context.artifacts, method, parts.slice(4), url.searchParams, body, request.signal)
+      }
       // Group chats and plan limits across your computers, as the box's link carries their mail (groups/post.ts).
       if (area === "kuvo" && a === "peers") return await peerRoutes(context.peers ?? context.groups?.peers, method, parts.slice(3), body, request.signal)
 
@@ -707,6 +712,7 @@ export function handler(context: Context) {
 
       return error(404, "Not available for this agent.")
     } catch (caught) {
+      if (caught instanceof UnsupportedFormatVersion) return Response.json({ code: "unsupportedFormatVersion", message: caught.message }, { status: 409 })
       if (/^\/api\/integration\/[^/]+\/connect\/oauth(?:\/|$)/.test(url.pathname)) {
         return error(502, "The sign-in couldn’t continue. Try again.")
       }

@@ -14,6 +14,8 @@ import { record } from "../../src/agents/artifacts/record"
 import { Recorder, type Event, type Source } from "../../src/agents/artifacts/recorder"
 import { artifactRoutes, notedRoute } from "../../src/agents/artifacts/routes"
 import { ArtifactStore } from "../../src/agents/artifacts/store"
+import { handler } from "../../src/agents/server"
+import { UnsupportedFormatVersion } from "../../src/shared/format-version"
 
 // The box's record of what its agents made, as a client reads it (`kuvo/artifacts`): a bot's memory
 // with what changed in it, a coding session's documents, a group chat's files by bot, versions kept
@@ -1326,4 +1328,14 @@ test("artifact storage reads legacy history, stamps writes, and refuses future r
   writeFileSync(saved, history.repeat(1001))
   expect(new ArtifactStore(folder, { now }).at(file)?.versions).toHaveLength(1)
   expect(JSON.parse(readFileSync(join(folder, "log", "0000-00.jsonl"), "utf8")).formatVersion).toBe(1)
+})
+
+test("the agents bridge reports an unsupported artifact format to the box", async () => {
+  const artifactFormatError = new UnsupportedFormatVersion("Artifact index", 2, 1)
+  const answer = handler({ password: "pw", artifactFormatError } as Parameters<typeof handler>[0])
+  const response = await answer(new Request("http://agent/api/kuvo/link/artifacts/events?bot=bot_ada", {
+    headers: { authorization: "Basic " + Buffer.from("opencode:pw").toString("base64") },
+  }))
+  expect(response.status).toBe(409)
+  expect(await response.json()).toEqual({ code: "unsupportedFormatVersion", message: artifactFormatError.message })
 })
