@@ -151,7 +151,7 @@ async function ask(method, p, given, from = { fromApp: true }) {
   try { json = JSON.parse(text); } catch {}
   return { status: parts[0].head.status, json };
 }
-const machineEnv = { PATH: process.env.PATH, HOME: support, KUVO_HOME: machineHome, TMPDIR: support };
+const machineEnv = { PATH: process.env.PATH, HOME: machineHome, KUVO_HOME: machineHome, TMPDIR: support };
 const labLink = () => read(path.join(machineHome, "run", "link.json"));
 const labPid = () => { try { return Number(fs.readFileSync(path.join(machineHome, "run", "link.pid"), "utf8")); } catch { return 0; } };
 // What the machine's box answers its CLI (`box route`: a Mac over SSH, or an agent's command there).
@@ -647,11 +647,13 @@ test("the desktop app on a member's computer is paired through its own box and r
   assert.match(off.json.message, /^“Let my devices connect” is off on /);
 });
 
-test("a removal reaches a member while the primary's inbound device switch stays off", { timeout: 18_000 }, async t => {
+test("failure bench: a removal reaches a member while the primary's inbound device switch stays off", { timeout: 18_000 }, async t => {
   signal = t.signal;
+  await eventually(async () => (await ask("GET", "kuvo/setup")).json?.you?.role === "primary");
+  await eventually(() => labLink()?.setup?.role === "member" && relay.has(macAddress));
   const member = { key: Buffer.from(lab.key, "base64url"), address: Buffer.from(lab.address, "base64url") };
   const other = { key: link.publicOf(link.newKey()).toString("base64url"), sign: link.signingKeyOf(link.newSigningSeed()), name: "Cellar",
-    id: "cellar.example", address: relay.device().address.toString("base64url") };
+    id: "cellar.example", address: link.addressOf(crypto.randomBytes(32)).toString("base64url") };
   const peers = link.readLink().macPeers;
   assert.equal((await ask("PUT", "kuvo/link/peers", { peers: [...peers, other] })).status, 200);
   const desktop = client({ name: "Cellar desktop", client: "desktop" });
@@ -659,12 +661,44 @@ test("a removal reaches a member while the primary's inbound device switch stays
   await eventually(() => labLink()?.phones?.some(each => each.key === desktop.public));
   await openOnMember(desktop, member);
   assert.equal((await desktop.request("GET", "kuvo/computers")).status, 200);
+  const phonesDoc = packet => {
+    if (!packet.from.equals(macAddress) || !packet.to.equals(member.address)) return;
+    const frame = link.readFrame(packet.payload);
+    if (frame?.kind !== link.Frame.mail) return;
+    const opened = link.openOneWay(frame.body, Buffer.from(labLink().key, "base64url"), link.publicOf(macKey));
+    const mail = JSON.parse(opened.payload.toString());
+    return mail.docs?.give?.map(link.readDoc).find(doc => doc?.kind === "phones");
+  };
+  const hasGrant = doc => doc?.body.phones?.some(each => each.key === desktop.public);
+  const earlier = relay.delivered.findLast(packet => hasGrant(phonesDoc(packet)));
+  assert.ok(earlier, "the original signed grant reached the member");
+  const held = [];
+  const release = relay.intercept(macAddress, member.address, packet => {
+    const doc = phonesDoc(packet);
+    if (!doc?.body.removed?.some(each => each.key === desktop.public)) return false;
+    held.push(packet);
+    return true;
+  });
   const config = link.macLink.config;
   const appSaid = link.macLink.appSaid;
   assert.equal((await ask("PUT", "kuvo/link/config", { ...config, phones: false })).status, 200);
   link.macLink.appSaid = undefined;
   try {
     assert.equal((await ask("DELETE", `kuvo/computers/${other.key}`)).status, 200);
+    const dropped = await eventually(() => held[0]);
+    assert.equal(memberHasRemoval(desktop.public), false, "the relay dropped the first revocation");
+    // The next digest exchange repairs the loss. Hold the repair so the test chooses exactly
+    // when it comes in, then release it before the stale copy of the grant.
+    link.docsChanged(link.macLink.host, { tell: true });
+    const revoked = await eventually(() => held.find(packet => !packet.payload.equals(dropped.payload)));
+    assert.equal(phonesDoc(revoked).n, phonesDoc(dropped).n, "the repair carries the same signed revocation");
+    assert.equal((await desktop.request("GET", "kuvo/computers")).status, 200);
+    // A newer signed list arrives before a delayed copy of the grant. Both lists can be duplicated
+    // by the network. Previously accepted grants must never overwrite a newer tombstone.
+    relay.replay(revoked);
+    relay.replay(revoked);
+    relay.replay(earlier);
+    relay.replay(earlier);
     const until = Date.now() + 4_000;
     assert.equal(await eventually(() => memberHasRemoval(desktop.public) ? "removed" : Date.now() >= until && "stale"), "removed",
       "the member installed the removal while the primary switch was off");
@@ -672,6 +706,7 @@ test("a removal reaches a member while the primary's inbound device switch stays
     assert.deepEqual(await desktop.open(member), { refused: true });
     assert.equal(link.macLink.config.phones, false);
   } finally {
+    release();
     await ask("PUT", "kuvo/link/config", config);
     link.macLink.appSaid = appSaid;
   }
@@ -700,7 +735,7 @@ test("the reconnect reply carries the current signed membership as well as phone
   assert.deepEqual(replies.at(-1).phoneSync, { id, list: `${phones.n}:${phones.h}`, peers: `${peers.n}:${peers.h}`, ack: true });
 });
 
-test("a reconnecting member checks another member's list and can use its cache while isolated", { timeout: 100_000 }, async t => {
+test("failure bench: a reconnecting member catches up from another box while the primary is away", { timeout: 100_000 }, async t => {
   signal = t.signal;
   const member = { key: Buffer.from(lab.key, "base64url"), address: Buffer.from(lab.address, "base64url") };
   const extraHome = path.join(support, "workshop");
@@ -739,7 +774,26 @@ test("a reconnecting member checks another member's list and can use its cache w
   write(extraFile, { key: extraKey.toString("base64url"), secret: extraSecret.toString("base64url"), sign: extraSign,
     name: extra.name, relay: relay.url, mac: macPub, macSigns: seed.macSigns, docs: seed.docs, setup: seed.setup });
   write(path.join(extraHome, "run", "work-queue", "numbers.json"), { primary: macPub, leases: [], since: 2_000 });
-  const child = spawn(process.execPath, [script, "run"], { env: { ...machineEnv, KUVO_HOME: extraHome }, stdio: "ignore" });
+  // Run the previous build verbatim. Lokum receives only the blob, without checkout history.
+  const ref = fs.readFileSync(new URL("failure-bench-legacy-ref.txt", import.meta.url), "utf8").trim();
+  const archived = new URL(".failure-bench-legacy.mjs", import.meta.url);
+  let previous;
+  if (fs.existsSync(archived)) {
+    previous = fs.readFileSync(archived);
+  } else {
+    const checkout = fileURLToPath(new URL("../..", import.meta.url));
+    const relative = path.relative(checkout, script);
+    const result = spawnSync("git", ["--no-optional-locks", "-C", checkout, "show", `${ref}:${relative}`], { maxBuffer: 64 * 1024 * 1024 });
+    if (result.status === 0) previous = result.stdout;
+    else t.diagnostic(`History unavailable at ${ref}; running the isolation scenario with the current build.`);
+  }
+  let workshopScript = script;
+  if (previous) {
+    assert.ok(!previous.equals(fs.readFileSync(script)), "the two builds differ");
+    workshopScript = path.join(extraHome, "bin", "kuvo-link.js");
+    write(workshopScript, previous.toString("utf8"));
+  }
+  const child = spawn(process.execPath, [workshopScript, "run"], { env: { ...machineEnv, HOME: extraHome, KUVO_HOME: extraHome }, stdio: "ignore" });
   const stopped = new Promise(resolve => child.once("close", resolve));
   async function pair(name) {
     const device = client({ name, client: "desktop" });
@@ -759,6 +813,10 @@ test("a reconnecting member checks another member's list and can use its cache w
     const second = await pair("Revoked while isolated");
     let resumeMember = disconnect(member.address);
     await eventually(() => !relay.has(member.address));
+    const promptedBefore = labEngine.prompted.length;
+    const text = "Keep working while off the relay";
+    assert.equal((await labApp("POST", "api/session/ses_far/prompt", { id: "msg_offline", text })).status, 200);
+    assert.deepEqual(labEngine.prompted.slice(promptedBefore), [text]);
     await remove(first);
     let resumeMain = disconnect(macAddress);
     await eventually(() => !relay.has(macAddress));

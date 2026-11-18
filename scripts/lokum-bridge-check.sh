@@ -1,5 +1,5 @@
 #!/bin/bash
-# Usage: scripts/lokum-bridge-check.sh <checkout> <name> [test files…]
+# Usage: scripts/lokum-bridge-check.sh <checkout> <name> [--test-name-pattern=PATTERN] [test files…]
 # Runs the chosen bridge tests (all of them when none are named) on lokum, from the checkout as it is.
 # Under a pinned Node: the engine's Bun (1.4.4) fails dozens of bridge tests that pass under Node
 # (bots-work, reach-elsewhere-rules…). Bun is still on the PATH for the tests that start a box on it.
@@ -13,6 +13,8 @@ case "$NAME" in ''|*[!a-zA-Z0-9_-]*) echo 'name must contain only letters, digit
 # (The guard removes folders in ~/.kuvo-code-test named like a run of its own whose process is gone.)
 if [[ "$NAME" =~ ^(ku|sb|sa|kv|outside)-[0-9]+(-|$) ]]; then echo "name mustn't look like a test run's own folder: $NAME" >&2; exit 64; fi
 cd "$REPO"
+pattern=
+case "${1:-}" in --test-name-pattern=*) pattern=$1; shift ;; esac
 files=()
 for file in "$@"; do
     file=${file#box/}; file=${file#bridge-tests/}
@@ -22,7 +24,7 @@ for file in "$@"; do
 done
 IFS= read -r -d '' remote <<'REMOTE' || true
 set -eo pipefail
-name=$1; shift
+name=$1; pattern=$2; shift 2
 real_home=$HOME
 T=$HOME/.kuvo-code-test/$name
 # Refuse existing runs, including symlinks; never remove someone else's scratch.
@@ -131,6 +133,9 @@ mkdir "$T/node"
 tar xJf "$T/node.tar.xz" -C "$T/node" --strip-components=1
 export PATH=$T/node/bin:$PATH
 echo "Runtime: Node $node, downloaded into the scratch folder (engine Bun $(BUN_BE_BUN=1 "$engine" --version) fails bridge tests that pass under Node)"
+if [ -n "$pattern" ]; then
+    set -- "$pattern" "$@"
+fi
 node --test --test-reporter=tap "$@"
 REMOTE
 # The run's shell is made a child subreaper (Linux's prctl, kept across exec), so what its tests start
@@ -138,7 +143,7 @@ REMOTE
 subreaper='import ctypes, os, sys
 if ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) != 0: sys.exit("Could not track what this run starts (prctl).")
 os.execv("/bin/bash", ["bash", "-c"] + sys.argv[1:])'
-printf -v command 'python3 -I -c %q %q -- %q' "$subreaper" "$remote" "$NAME"
+printf -v command 'python3 -I -c %q %q -- %q %q' "$subreaper" "$remote" "$NAME" "$pattern"
 for file in "${files[@]}"; do printf -v quoted ' %q' "$file"; command+=$quoted; done
 # compat.test.js inspects source markers on every side, including Swift and shell code.
 # Send those tracked sources too, without assets, dependency folders or build output.
@@ -149,9 +154,22 @@ while IFS= read -r -d '' source; do
         *.swift|*.ts|*.js|*.mjs|*.sh|*.py) sources+=("$source");;
     esac
 done < <(git --no-optional-locks ls-files -z mac/helper/Sources swift/OpenCodeKit/Sources swift/KuvoClient/Sources swift/KuvoLink/Sources scripts)
+# Transfer the exact historical build used by the failure bench. The remote snapshot has no .git.
+history=()
+ref_file=box/bridge-tests/failure-bench-legacy-ref.txt
+if [[ -f "$ref_file" ]] && { [[ ${#files[@]} -eq 0 ]] || [[ " ${files[*]} " == *" bridge-tests/devices-two-boxes.test.js "* ]]; }; then
+    read -r ref < "$ref_file"
+    [[ "$ref" =~ ^[0-9a-f]{40}$ ]] || { echo "Invalid legacy build reference" >&2; exit 1; }
+    fixture_dir=$(mktemp -d)
+    trap 'rm -r -- "$fixture_dir"' EXIT
+    mkdir -p "$fixture_dir/box/bridge-tests"
+    legacy=box/bridge-tests/.failure-bench-legacy.mjs
+    git --no-optional-locks show "$ref:swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js" > "$fixture_dir/$legacy"
+    history=(-C "$fixture_dir" "$legacy")
+fi
 COPYFILE_DISABLE=1 tar --no-xattrs --exclude node_modules --exclude .build -czf - \
     box/bridge-tests protocol/vectors swift/KuvoLink/Sources/KuvoLink/Resources \
     swift/KuvoCode/Stores/PhoneLink.swift \
     protocol/PROTOCOL.md protocol/compat-kinds.txt box/src box/dist box/package.json box/bun.lock \
-    "${sources[@]}" |
+    "${sources[@]}" "${history[@]}" |
     ssh -o BatchMode=yes "$HOST" "$command"

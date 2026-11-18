@@ -66,13 +66,20 @@ export async function relayStandIn({ addressOf }, { changed: told = () => {} } =
   const offline = new Set();
   const paused = new Set();
   const route = (from, to) => `${from.toString("hex")}:${to.toString("hex")}`;
-  const deliver = (from, to, payload) => {
-    if (paused.has(route(from, to))) return;
+  const interceptors = new Map();
+  const forward = ({ from, to, payload }) => {
     const device = devices.get(to.toString("hex"));
     if (!device) return devices.get(from.toString("hex"))?.(Buffer.concat([Buffer.from([3]), to]));
     device(Buffer.concat([Buffer.from([2]), from, payload]));
     delivered.push({ from: Buffer.from(from), to: Buffer.from(to), payload: Buffer.from(payload) });
     changed();
+  };
+  const deliver = (from, to, payload) => {
+    const key = route(from, to);
+    if (paused.has(key)) return;
+    const intercept = interceptors.get(key);
+    if (intercept?.({ from: Buffer.from(from), to: Buffer.from(to), payload: Buffer.from(payload) })) return;
+    forward({ from, to, payload });
   };
   // A device's message to the relay, from `from` (null before its hello).
   const take = (message, state, give) => {
@@ -148,6 +155,15 @@ export async function relayStandIn({ addressOf }, { changed: told = () => {} } =
       paused.add(key);
       return () => paused.delete(key);
     },
+    // Take selected packets out of normal delivery. Forward a saved packet explicitly to release
+    // it, call replay twice to duplicate it, or leave it out to drop it.
+    intercept(from, to, takePacket) {
+      const key = route(from, to);
+      if (interceptors.has(key)) throw new Error(`Already intercepting ${key}`);
+      interceptors.set(key, takePacket);
+      return () => interceptors.delete(key);
+    },
+    replay: forward,
     // Take one box off the relay and hold it there until it can connect again.
     disconnect(address) {
       const key = address.toString("hex");
