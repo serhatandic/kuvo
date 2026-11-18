@@ -11,7 +11,7 @@ use std::time::Duration;
 use gpui::{
     AnyElement, AnyWindowHandle, App, AppContext as _, Context, Entity, FocusHandle, Focusable, InteractiveElement, IntoElement, MouseButton,
     MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Render, ScrollHandle, SharedString, Styled,
-    Subscription, Task, Window, div, prelude::FluentBuilder as _, px,
+    Subscription, Task, Window, deferred, div, prelude::FluentBuilder as _, px,
 };
 use kuvo_box::accounts::Confirm;
 use kuvo_box::follow::{Follow, ListUpdate, Timing};
@@ -41,6 +41,9 @@ use crate::sidebar::{FocusSearch, Line};
 use crate::panel::{self, Place, SidePanel, Tab};
 use crate::{NewSession, ShowChanges, ShowFiles, ToggleAppearance, TogglePanel, ToggleSidebar, areas, landing, sidebar, time, title_bar};
 
+#[path = "quick_search.rs"]
+mod quick_search;
+
 /// How long typing pauses before the box is asked to search conversations.
 const SEARCH_PAUSE: Duration = Duration::from_millis(300);
 /// How many conversations a search shows.
@@ -51,6 +54,14 @@ const WELCOME_AGAIN: Duration = Duration::from_secs(2);
 pub const NARROW: Pixels = px(820.);
 /// How far back the window remembers where it's been.
 const HISTORY: usize = 100;
+/// The raised panel's leading edge, between the rail and the sidebar.
+const CARD_EDGE: Pixels = px(1.);
+
+struct SidebarDrag {
+    from: Pixels,
+    initial: Pixels,
+    width: Pixels,
+}
 
 /// Where the window was: a place back and forward go to.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -307,6 +318,7 @@ pub struct Workspace {
     /// Now, as the sidebar's times count from it (fixed for shots).
     now: Option<f64>,
     focus: FocusHandle,
+    sidebar_toggle_focus: FocusHandle,
     /// The sidebar's search, and what the box found in conversations for it (`finds_for`).
     search: Entity<TextField>,
     archived_filter: bool,
@@ -327,6 +339,10 @@ pub struct Workspace {
     panel_open: bool,
     panel_width: Pixels,
     resizing: Option<(Pixels, Pixels)>,
+    sidebar_drag: Option<SidebarDrag>,
+    quick_search: Option<quick_search::QuickSearch>,
+    /// Keep the bot strip beside a session opened with the compact sidebar's search.
+    session_with_bot_strip: bool,
     /// The area open, the other areas' sidebars (kept while hidden), and the accounts' rings.
     area: Area,
     areas: Vec<(Area, Entity<AreaView>)>,
@@ -431,6 +447,7 @@ impl Workspace {
                 Go::BotChat { bot, session, draft } => this.open_bot_chat(bot, session, draft.as_deref(), window, cx),
                 Go::Session(session) => this.open_session_now(session, window, cx),
                 Go::Sessions => this.show_area(Area::Sessions, window, cx),
+                Go::SearchBotsAndSessions => { this.open_quick_search(window, cx); }
                 Go::ReadComputers => {
                     if this._computers_follow.is_none() {
                         this.read_computers(cx);
@@ -464,6 +481,7 @@ impl Workspace {
             area_subscriptions.push(cx.observe_in(bots, window, |this: &mut Workspace, _, window, cx| this.bots_changed(window, cx)));
         }
         let rings = cx.new(|cx| Rings::new(client.clone(), live, cx));
+        area_subscriptions.push(cx.observe_global::<crate::yours::Store>(|_, cx| cx.notify()));
         let mut workspace = Workspace {
             client: client.clone(),
             switching: None,
@@ -488,6 +506,7 @@ impl Workspace {
             showing_all: HashSet::new(),
             now: None,
             focus: cx.focus_handle(),
+            sidebar_toggle_focus: cx.focus_handle(),
             search,
             archived_filter: false,
             finds: Vec::new(),
@@ -503,6 +522,9 @@ impl Workspace {
             panel_open: false,
             panel_width: panel::WIDTH,
             resizing: None,
+            sidebar_drag: None,
+            quick_search: None,
+            session_with_bot_strip: false,
             area: Area::Sessions,
             areas,
             rings,
@@ -552,6 +574,12 @@ impl Workspace {
             workspace.tasks.push(cx.spawn(async move |this, cx| {
                 let result = task.await;
                 this.update(cx, |this, cx| this.connected(result, cx)).ok();
+            }));
+            workspace.tasks.push(cx.spawn(async move |this, cx| {
+                loop {
+                    cx.background_executor().timer(Duration::from_secs(30)).await;
+                    if this.update(cx, |this, cx| this.tick_wake_labels(cx)).is_err() { break; }
+                }
             }));
             let follow = client.follow_sessions(Timing::default());
             let updates = follow.updates().clone();
@@ -710,10 +738,11 @@ impl Workspace {
     /// it's been had, where that isn't known yet.
     fn box_changed(&mut self, cx: &mut Context<Self>) {
         // The box's bots are drawn offline while it can't be reached (a box can't say so itself).
-        let reached = !matches!(self.box_state, BoxState::Unreachable(_));
+        let reached = !matches!(self.box_state, BoxState::Unreachable(_)) && !matches!(self.lists, Lists::Failed(_));
         if let Some(view) = self.area_view(Area::Bots).cloned() {
             view.update(cx, |view, cx| view.set_reached(reached, cx));
         }
+        self.refresh_conversation_wakes(cx);
         if let Some(run) = self.first_run().cloned() {
             let (state, name) = (self.box_state.clone(), self.box_name());
             run.update(cx, |run, cx| run.set_box(state, name, cx));
@@ -1453,6 +1482,7 @@ impl Workspace {
     /// Counts the sidebar's times from `now` (shots, so they read the same each time).
     pub fn set_now(&mut self, now: f64, cx: &mut Context<Self>) {
         self.now = Some(now);
+        self.refresh_conversation_wakes(cx);
         self.rings.update(cx, |rings, _| rings.set_now(now));
         if let Some(run) = self.first_run().cloned() {
             run.update(cx, |run, _| run.set_now(now));
@@ -1537,6 +1567,7 @@ impl Workspace {
         // (A bot's own conversation, as the session lists say: its sessions show over its composer.)
         let bot = self.listing().facts(session).filter(|facts| facts.kind.0 == "bot").and_then(|facts| facts.bot.clone());
         self.wire_bars(&view, bot, cx);
+        self.wire_wakes(&view, session, cx);
         window.focus(&view.focus_handle(cx), cx);
         self.open = Open::Conversation { view, session: session.to_owned() };
         self.place_panel(cx);
@@ -1593,6 +1624,7 @@ impl Workspace {
             let (client, live) = (self.client.clone(), self.live);
             let view = cx.new(|cx| ConversationView::new(client, session.to_owned(), composer.clone(), live, cx));
             self.wire_bars(&view, Some(bot.to_owned()), cx);
+            self.wire_wakes(&view, session, cx);
             #[cfg(feature = "stand-in")]
             if !self.live {
                 self.read_conversation_at_once(&view, session, cx);
@@ -1622,6 +1654,7 @@ impl Workspace {
     /// The box's bots were read again: a conversation shown for a bot whose conversation is
     /// another session now (a coding agent's model carried it on) goes to that one.
     fn bots_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.refresh_conversation_wakes(cx);
         self.restore_bot(window, cx);
         let Some(chat) = &self.bot_chat else { return };
         let (bot, session) = (chat.bot.clone(), chat.session.clone());
@@ -1635,6 +1668,38 @@ impl Workspace {
                 }
             }
             _ => {}
+        }
+    }
+
+    fn wire_wakes(&self, view: &Entity<ConversationView>, session: &str, cx: &mut Context<Self>) {
+        let status = self.area_view(Area::Bots).and_then(|area| {
+            let area = area.read(cx);
+            let Reading::Ready(bots) = area.bots() else { return None };
+            let bot = bots.bots.iter().find(|bot| bot.session == session)?;
+            let mut status = crate::wakes::Status::from(bot);
+            status.waking &= area.has_fresh_bots();
+            Some(status)
+        });
+        let computer = self.info.as_ref().map(|info| info.name.clone()).unwrap_or_else(|| self.box_name().into());
+        view.update(cx, |view, cx| view.set_wakes(status, computer, self.now, cx));
+    }
+
+    fn tick_wake_labels(&self, cx: &mut Context<Self>) {
+        if self.area == Area::Bots && let Some(area) = self.area_view(Area::Bots) {
+            area.update(cx, |_, cx| cx.notify());
+        }
+        let chat = self.bot_chat().map(|(_, view)| view).or_else(|| self.conversation());
+        if let Some(chat) = chat {
+            chat.update(cx, |view, cx| view.tick_wakes(cx));
+        }
+    }
+
+    fn refresh_conversation_wakes(&self, cx: &mut Context<Self>) {
+        if let Open::Conversation { view, session } = &self.open {
+            self.wire_wakes(view, session, cx);
+        }
+        if let Some(chat) = &self.bot_chat {
+            self.wire_wakes(&chat.view, &chat.session, cx);
         }
     }
 
@@ -1839,7 +1904,10 @@ impl Workspace {
     /// bounds, never leaving the conversation narrower than its narrowest.
     pub fn resize_to(&mut self, x: Pixels, wide: Pixels, cx: &mut Context<Self>) {
         let Some((from, width)) = self.resizing else { return };
-        self.panel_width = (width + (from - x)).clamp(panel::NARROWEST, self.widest_panel(wide));
+        let widest = self.widest_panel(wide, cx);
+        if widest >= panel::NARROWEST {
+            self.panel_width = (width + (from - x)).clamp(panel::NARROWEST, widest);
+        }
         cx.notify();
     }
 
@@ -1860,7 +1928,7 @@ impl Workspace {
         let c = cx.theme().colors.clone();
         // In a window narrower than it was made for, the panel gives way before the conversation
         // does; its width is kept for a wider one.
-        let width = self.panel_width.min(self.widest_panel(window.viewport_size().width));
+        let width = self.panel_width.min(self.widest_panel(window.viewport_size().width, cx));
         let resizing = self.resizing.is_some();
         div()
             .relative()
@@ -1952,22 +2020,32 @@ impl Workspace {
         self.find_task = None;
         self.finding = query.chars().count() >= SEARCHED_FROM;
         if self.finding {
-            let client = self.client.clone();
-            if self.live {
-                self.find_task = Some(cx.spawn(async move |this, cx| {
-                    cx.background_executor().timer(SEARCH_PAUSE).await;
-                    let asked = query.clone();
-                    let found = cx.background_executor().spawn(async move { client.search(&asked, SEARCH_MOST) }).await;
-                    this.update(cx, |this, cx| this.found(&query, found, cx)).ok();
-                }));
-            } else {
-                // (Tests and shots: at once, as the box would answer.)
-                let found = client.search(&query, SEARCH_MOST);
-                self.found(&query, found, cx);
-            }
+            self.find_task = self.search_conversations(query, Self::found, cx);
         }
         self.prune_session_popover(cx);
         cx.notify();
+    }
+
+    fn search_conversations(
+        &mut self,
+        query: String,
+        done: fn(&mut Self, &str, kuvo_box::Result<Vec<Found>>, &mut Context<Self>),
+        cx: &mut Context<Self>,
+    ) -> Option<Task<()>> {
+        let client = self.client.clone();
+        if self.live {
+            Some(cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(SEARCH_PAUSE).await;
+                let asked = query.clone();
+                let found = cx.background_executor().spawn(async move { client.search(&asked, SEARCH_MOST) }).await;
+                this.update(cx, |this, cx| done(this, &query, found, cx)).ok();
+            }))
+        } else {
+            // Tests and shots receive the stand-in's answer immediately.
+            let found = client.search(&query, SEARCH_MOST);
+            done(self, &query, found, cx);
+            None
+        }
     }
 
     /// What the box found for `query`, unless the search has changed since.
@@ -1994,10 +2072,17 @@ impl Workspace {
 
     /// Puts the keyboard in the sidebar's search.
     pub fn focus_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.sidebar_available() {
+            return;
+        }
+        self.bring_out_sidebar(window);
+        if self.open_quick_search(window, cx).is_some() {
+            self.keep_place(cx);
+            return;
+        }
         if self.area != Area::Sessions {
             self.show_area(Area::Sessions, window, cx);
         }
-        self.bring_out_sidebar(window);
         self.keep_place(cx);
         self.walked = None;
         window.focus(&self.search.focus_handle(cx), cx);
@@ -2114,6 +2199,13 @@ impl Workspace {
             self.switching = switching;
             cx.notify();
         }
+        // Connections can become usable after this workspace received its own list of computers.
+        if let (Some(switching), Some(area)) = (&self.switching, self.area_view(Area::Bots).cloned()) {
+            let peers: Vec<_> = switching.rows.iter()
+                .filter(|row| switching.shown.as_deref().map_or(!row.computer.here, |shown| row.key() != shown))
+                .map(|row| Computer { here: false, ..row.computer.clone() }).collect();
+            area.update(cx, |area, cx| area.follow_remote_bots(&peers, cx));
+        }
         // (The box that lists them may have changed with them, `set_lister`: handed on each time.)
         self.sync_offers(cx);
     }
@@ -2132,6 +2224,10 @@ impl Workspace {
     /// narrow one only once brought out.
     pub fn sidebar_shown(&self) -> bool {
         if self.narrow { self.shown_narrow } else { !self.folded }
+    }
+
+    pub(crate) fn sidebar_toggle_focus(&self) -> &FocusHandle {
+        &self.sidebar_toggle_focus
     }
 
     pub fn is_narrow(&self) -> bool {
@@ -2185,6 +2281,7 @@ impl Workspace {
     }
 
     pub fn show_area(&mut self, area: Area, window: &mut Window, cx: &mut Context<Self>) {
+        self.session_with_bot_strip = false;
         if area == Area::Queue { self.queue_opened(cx); }
         self.area = area;
         self.bring_out_sidebar(window);
@@ -2261,6 +2358,9 @@ impl Workspace {
             self.keep_place(cx);
         }
         self.prune_session_popover(cx);
+        if !self.sidebar_shown() {
+            self.end_sidebar_resize(cx);
+        }
         // Folded with the keyboard in it (its search, its list): the keyboard goes to the main view.
         if !self.sidebar_shown() && (self.search.focus_handle(cx).is_focused(window) || self.list_focus.is_focused(window)) {
             self.walked = None;
@@ -2283,6 +2383,9 @@ impl Workspace {
 
     fn area_picked(&mut self, view: &Entity<AreaView>, window: &mut Window, cx: &mut Context<Self>) {
         let (area, picked) = view.read_with(cx, |view, _| (view.area(), view.selected().map(str::to_owned)));
+        if area == Area::Bots && self.area == Area::Sessions && self.session_with_bot_strip {
+            self.area = Area::Bots;
+        }
         if area == Area::Bots {
             self.restoring.bot = None;
         }
@@ -3300,16 +3403,91 @@ impl Workspace {
         }
     }
 
-    /// How wide the area's sidebar and the rail are now, together.
-    fn sidebars_width(&self) -> Pixels {
-        rail::WIDTH + if self.sidebar_shown() { px(sidebar::WIDTH) } else { px(0.) }
+    fn sidebar_width(&self, viewport: Pixels, cx: &App) -> Pixels {
+        let preferred = self.sidebar_drag.as_ref().map_or_else(
+            || sidebar::preferred_width(crate::yours::sidebar_width(cx)),
+            |drag| drag.width,
+        );
+        sidebar::visible_width(sidebar::fit_width(preferred, self.sidebar_viewport(viewport), self.can_show_bot_strip()))
+    }
+
+    fn sidebar_available(&self) -> bool {
+        self.first_run().is_none() && !self.awaits_box()
+            && (self.area == Area::Settings || self.blocked().is_none())
+    }
+
+    fn visible_sidebar_width(&self, viewport: Pixels, cx: &App) -> Option<Pixels> {
+        (self.sidebar_shown() && self.sidebar_available()).then(|| self.sidebar_width(viewport, cx))
+    }
+
+    fn compact_sidebar_visible(&self, viewport: Pixels, cx: &App) -> bool {
+        self.visible_sidebar_width(viewport, cx).is_some_and(sidebar::compact_bots)
+    }
+
+    fn panel_shown(&self) -> bool {
+        self.area == Area::Sessions && self.panel_open && !self.client.gate().is_held()
+            && self.sidebar_available()
+    }
+
+    fn sidebar_viewport(&self, viewport: Pixels) -> Pixels {
+        if self.panel_shown() {
+            viewport - panel::NARROWEST - CARD_EDGE
+        } else {
+            viewport
+        }
+    }
+
+    fn can_show_bot_strip(&self) -> bool {
+        self.area == Area::Bots || (self.area == Area::Sessions && self.session_with_bot_strip)
+    }
+
+    fn end_sidebar_resize(&mut self, cx: &mut Context<Self>) {
+        if let Some(drag) = self.sidebar_drag.take() {
+            let width = sidebar::visible_width(drag.width);
+            if width != drag.initial {
+                crate::yours::change(crate::yours::Change::SidebarWidth(f32::from(width)), cx);
+            }
+            cx.notify();
+        }
+    }
+
+    fn sidebar_handle(&self, width: Pixels, cx: &mut Context<Self>) -> AnyElement {
+        let c = cx.theme().colors.clone();
+        let dragging = self.sidebar_drag.is_some();
+        deferred(
+            div()
+                .id("sidebar-edge")
+                .debug_selector(|| "sidebar-edge".into())
+                .absolute()
+                .right(px(-4.))
+                .top_0()
+                .bottom_0()
+                .w(px(8.))
+                .flex()
+                .justify_center()
+                .cursor_col_resize()
+                .on_mouse_down(MouseButton::Left, cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
+                    cx.stop_propagation();
+                    if event.click_count == 2 {
+                        this.sidebar_drag = None;
+                        crate::yours::change(crate::yours::Change::SidebarWidth(sidebar::WIDTH), cx);
+                    } else {
+                        this.sidebar_drag = Some(SidebarDrag { from: event.position.x, initial: width, width });
+                    }
+                    cx.notify();
+                }))
+                .child(div().w(px(2.)).h_full().when(dragging, |d| d.bg(c.accent)).hover(|s| s.bg(c.border_strong))),
+        ).into_any_element()
     }
 
     /// The widest the side panel goes in a window `wide`: never leaving the conversation narrower
     /// than its narrowest (the rail, the area's sidebar and the panel's edge apart).
-    fn widest_panel(&self, wide: Pixels) -> Pixels {
-        let room = wide - self.sidebars_width() - panel::CONVERSATION_NARROWEST - px(8.);
-        panel::WIDEST.min(room).max(panel::NARROWEST)
+    fn widest_panel(&self, wide: Pixels, cx: &App) -> Pixels {
+        let sidebar = self.visible_sidebar_width(wide, cx).unwrap_or(px(0.));
+        let room = wide - rail::WIDTH - CARD_EDGE - sidebar - panel::CONVERSATION_NARROWEST - CARD_EDGE;
+        // Keep the conversation and left sidebar at their minimums. At the smallest
+        // window sizes the right panel can render below its usual minimum.
+        room.clamp(px(0.), panel::WIDEST)
     }
 }
 
@@ -3323,6 +3501,17 @@ impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
         let c = &theme.colors;
+        let viewport = window.viewport_size().width;
+        // A narrow window folds its sidebar away until it is brought out again.
+        let narrow = viewport < NARROW;
+        if self.narrow != narrow {
+            self.shown_narrow = false;
+        }
+        self.narrow = narrow;
+        let compact = self.compact_sidebar_visible(viewport, cx);
+        if !compact {
+            self.dismiss_hidden_quick_search(window, cx);
+        }
         // The first run takes the whole window until it's done; while the box is first being
         // asked whether it's been had, the window waits, empty, rather than show the app and
         // take it away again.
@@ -3344,6 +3533,7 @@ impl Render for Workspace {
             };
             return div()
                 .debug_selector(|| "window-waiting".into())
+                .track_focus(&self.focus)
                 .size_full()
                 .flex()
                 .flex_col()
@@ -3361,13 +3551,6 @@ impl Render for Workspace {
         if std::mem::take(&mut self.focus_landing) {
             window.focus(&self.landing.focus_handle(cx), cx);
         }
-        // A narrow window folds the area's sidebar away; brought out there, it folds again once
-        // the window has been wide and narrows again.
-        let narrow = window.viewport_size().width < NARROW;
-        if self.narrow != narrow {
-            self.shown_narrow = false;
-        }
-        self.narrow = narrow;
 
         // Bots' main view on screen or not, whichever way the window got there.
         let groups_on_screen = self.area == Area::Bots && self.bot_chat().is_none() && !self.client.gate().is_held();
@@ -3404,12 +3587,38 @@ impl Render for Workspace {
             _ if self.restoring.session.is_some() => div().debug_selector(|| "restoring".into()).size_full().into_any_element(),
             _ => landing::render(self, window, cx),
         } };
-        let area_view = (!sessions).then(|| self.area_view(self.area).cloned()).flatten();
-        let sidebar: Option<AnyElement> = (self.sidebar_shown() && blocked.is_none()).then(|| match area_view {
-            Some(view) => view.into_any_element(),
-            None => sidebar::render(self, window, cx),
+        let width = self.visible_sidebar_width(viewport, cx);
+        let sidebar_area = if compact { Area::Bots } else { self.area };
+        let area_view = self.area_view(sidebar_area).cloned();
+        if let Some(view) = &area_view {
+            let mode = match (compact, sessions) {
+                (false, _) => areas::SidebarMode::Full,
+                (true, false) => areas::SidebarMode::Avatars,
+                (true, true) => areas::SidebarMode::SessionAvatars(
+                    self.opened().and_then(|id| self.listing.facts(id)).and_then(|facts| facts.bot.clone()),
+                ),
+            };
+            view.update(cx, |view, cx| view.set_sidebar_mode(mode, cx));
+        }
+        let sidebar = width.map(|width| {
+            let content = match area_view {
+                Some(view) => view.into_any_element(),
+                None => sidebar::render(self, window, cx),
+            };
+            div()
+                .id("area-sidebar")
+                .debug_selector(|| "area-sidebar".into())
+                .relative()
+                .w(width)
+                .h_full()
+                .flex_none()
+                .bg(c.sidebar)
+                .border_r_1()
+                .border_color(c.border)
+                .child(content)
+                .child(self.sidebar_handle(width, cx))
         });
-        let panel = (sessions && self.panel_open && !self.client.gate().is_held()).then(|| self.panel_card(window, cx));
+        let panel = self.panel_shown().then(|| self.panel_card(window, cx));
         div()
             .key_context("Workspace")
             .track_focus(&self.focus)
@@ -3460,17 +3669,38 @@ impl Render for Workspace {
                     }))
                     .on_mouse_up(MouseButton::Left, cx.listener(|this, _: &MouseUpEvent, _, cx| this.end_resize(cx)))
             })
+            .when(self.sidebar_drag.is_some(), |d| {
+                d.cursor_col_resize()
+                    .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, cx| {
+                        if event.pressed_button != Some(MouseButton::Left) {
+                            this.end_sidebar_resize(cx);
+                        } else {
+                            let bots = this.can_show_bot_strip();
+                            let viewport = this.sidebar_viewport(window.viewport_size().width);
+                            let Some(drag) = &mut this.sidebar_drag else { return };
+                            let width = drag.initial + event.position.x - drag.from;
+                            drag.width = sidebar::fit_width(width, viewport, bots);
+                            cx.notify();
+                        }
+                    }))
+                    .capture_any_mouse_up(cx.listener(|this, event: &MouseUpEvent, _, cx| {
+                        if event.button == MouseButton::Left {
+                            this.end_sidebar_resize(cx);
+                        }
+                    }))
+            })
             .on_action(cx.listener(|_, _: &ToggleAppearance, _, cx| {
                 let next = cx.theme().appearance.toggled();
                 crate::yours::set_theme(next, cx);
             }))
             .flex()
             .flex_col()
+            .relative()
             .size_full()
             .bg(c.background)
             .text_ui(TypeSize::Small)
             .text_color(c.text)
-            .child(title_bar::render(self, cx))
+            .child(title_bar::render(self, width.map(|width| rail::WIDTH + CARD_EDGE + width), compact, cx))
             .child(
                 div().flex_1().min_h_0().flex().child(rail::render(self, cx)).child(
                     // The area's sidebar and its main view share one raised panel, its corner
@@ -3486,12 +3716,11 @@ impl Render for Workspace {
                         .border_l_1()
                         .border_color(c.border)
                         .overflow_hidden()
-                        .children(sidebar.map(|sidebar| {
-                            div().id("area-sidebar").debug_selector(|| "area-sidebar".into()).w(px(sidebar::WIDTH)).h_full().flex_none().bg(c.sidebar).border_r_1().border_color(c.border).child(sidebar)
-                        }))
-                        .child(div().relative().flex_1().min_w_0().h_full().child(content))
+                        .children(sidebar)
+                        .child(div().debug_selector(|| "workspace-content".into()).relative().flex_1().min_w_0().h_full().child(content))
                         .children(panel),
                 ),
             )
+            .children(self.render_quick_search(cx))
     }
 }

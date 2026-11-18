@@ -156,6 +156,7 @@ icons! {
     Plus => "plus",
     Question => "question",
     Queue => "queue",
+    Refresh => "refresh",
     Quote => "quote",
     Return => "return",
     Search => "search",

@@ -10,6 +10,7 @@ use kuvo::area::Area;
 use kuvo::panel::Tab;
 use kuvo_box::git::Group;
 use kuvo::first_run::{FirstRun, Step};
+use kuvo::stand_in::areas::UsageSample;
 use kuvo::stand_in::first_run::Scenario;
 use kuvo::stand_in::{Replies, StandIn};
 use kuvo::workspace::BoxState;
@@ -101,7 +102,21 @@ fn model_picker_provider(workspace: &mut Workspace, window: &mut Window, cx: &mu
     }
 }
 
+fn bot_wake_list(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    bot_chat(workspace, window, cx);
+    let chat = workspace.bot_chat().unwrap().1.clone();
+    chat.update(cx, |chat, cx| chat.open_wake_schedule(window, cx));
+}
+
 const SCREENS: &[Screen] = &[
+    Screen { slug: "bot-wake-row-waking", width: 1200., height: 800., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_none) },
+    Screen { slug: "bot-wake-row-scheduled", width: 1200., height: 800., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_none) },
+    Screen { slug: "bot-wake-badge-hover", width: 1200., height: 800., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_none) },
+    Screen { slug: "bot-wake-row-none", width: 1200., height: 800., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_none) },
+    Screen { slug: "bot-wake-chip", width: 1200., height: 800., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_chat) },
+    Screen { slug: "bot-wake-list-many", width: 1200., height: 800., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_wake_list) },
+    Screen { slug: "bot-wake-list-long-note", width: 1200., height: 800., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_wake_list) },
+    Screen { slug: "bot-wake-list-empty", width: 1200., height: 800., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_wake_list) },
     // The model picker (#775): open on the conversation's provider, searching, another provider;
     // and the composer's row with a message written (the paperclip, the picks and Send on one line).
     Screen { slug: "model-picker", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(model_picker_open) },
@@ -173,6 +188,11 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "area-bots", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bots) },
     Screen { slug: "titlebar-bots-folded", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bots_folded) },
     Screen { slug: "titlebar-session", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "sidebar-long-computer", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue) },
+    Screen { slug: "sidebar-wide", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bots) },
+    Screen { slug: "sidebar-narrow-bots", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bots) },
+    Screen { slug: "sidebar-search-results", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(sidebar_search_results) },
+    Screen { slug: "sidebar-search-empty", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(sidebar_search_empty) },
     Screen { slug: "titlebar-session-folded", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(sidebar_folded) },
     Screen { slug: "area-queue", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue) },
     Screen { slug: "area-computers", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(computers) },
@@ -341,6 +361,11 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "agents-rail-restarting", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "agents-conversation-down", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(conversation_agents_down) },
     Screen { slug: "settings-a-usage", width: 1280., height: 1400., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(usage) },
+    Screen { slug: "usage-many", width: 1140., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(usage) },
+    Screen { slug: "usage-one", width: 920., height: 600., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(usage) },
+    Screen { slug: "usage-empty", width: 920., height: 600., session: None, typed: None, empty: true, opens: &[], search: None, walks: 0, attach: &[], panel: Some(usage) },
+    Screen { slug: "usage-failed", width: 920., height: 600., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(usage) },
+    Screen { slug: "usage-stale", width: 920., height: 600., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(usage) },
     Screen { slug: "settings-a-models", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(models) },
     Screen { slug: "settings-a-permissions", width: 1280., height: 1640., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(permissions) },
     Screen { slug: "settings-a-permissions-services", width: 1280., height: 1640., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(permissions) },
@@ -421,6 +446,16 @@ fn sidebar_folded(workspace: &mut Workspace, window: &mut Window, cx: &mut Conte
 
 fn bots(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     pick(workspace, Area::Bots, "bot:bot_mira", window, cx);
+}
+
+fn sidebar_search_results(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    bots(workspace, window, cx);
+    workspace.open_quick_search(window, cx).expect("compact search").update(cx, |field, cx| field.set_text("in", cx));
+}
+
+fn sidebar_search_empty(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    bots(workspace, window, cx);
+    workspace.open_quick_search(window, cx).expect("compact search").update(cx, |field, cx| field.set_text("zzzz", cx));
 }
 
 /// Bots' page view.
@@ -758,7 +793,7 @@ fn computer_narrow(workspace: &mut Workspace, window: &mut Window, cx: &mut Cont
 }
 
 fn usage(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
-    workspace.show_setting("Usage", window, cx);
+    workspace.show_setting(&kuvo::settings::box_key("", "usage"), window, cx);
 }
 
 /// Settings' view, on `section`.
@@ -1438,8 +1473,37 @@ fn main() -> anyhow::Result<()> {
             } else {
                 kuvo::yours::TextSize::Default
             };
-            cx.update(|cx| kuvo::yours::change(kuvo::yours::Change::TextSize(text_size), cx));
+            cx.update(|cx| {
+                use kuvo::yours::{Change, change};
+                change(Change::TextSize(text_size), cx);
+                let width = match screen.slug {
+                    "sidebar-wide" => 420.,
+                    "sidebar-narrow-bots" | "sidebar-search-results" | "sidebar-search-empty" => kuvo::sidebar::COMPACT_WIDTH,
+                    _ => kuvo::sidebar::WIDTH,
+                };
+                change(Change::SidebarWidth(width), cx);
+            });
             let stand_in = if screen.slug.starts_with("held-box") { StandIn::held_older(Replies::Never) } else if screen.empty { StandIn::empty(Replies::Never) } else { StandIn::at(Replies::Never, NOW) };
+            if screen.slug == "sidebar-long-computer" {
+                stand_in.set_elsewhere(true);
+                stand_in.set_computer_name("WWWWW Engineering Workstation East Coast");
+            }
+            if screen.slug == "sidebar-narrow-bots" {
+                stand_in.set_bot_now("bot_mira", serde_json::json!({ "working": 1, "asking": 0, "state": "working", "since": NOW - 60_000. }));
+            }
+            if screen.slug == "sidebar-search-results" {
+                stand_in.set_facts("ses_signup", |facts| {
+                    facts["bot"] = serde_json::json!("bot_mira");
+                    facts["title"] = serde_json::json!("Fix the sign-up form wiping on a taken email when the previous invitation has expired");
+                });
+            }
+            match screen.slug {
+                "usage-many" => stand_in.set_usage_sample(UsageSample::Many),
+                "usage-one" => stand_in.set_usage_sample(UsageSample::One),
+                "usage-failed" => stand_in.set_usage_sample(UsageSample::Failed),
+                "usage-stale" => stand_in.set_usage_sample(UsageSample::Stale),
+                _ => {}
+            }
             if screen.slug.starts_with("settings-commands") {
                 stand_in.add_settings_section(serde_json::json!({"id":"commands","title":"Commands","group":"Agents & Tools","icon":"terminal","line":"Prompts you use often, run by typing / and their name."}), serde_json::from_str(include_str!("../stand_in/settings/commands.json")).expect("Commands fixture"));
             }
@@ -1589,6 +1653,25 @@ fn main() -> anyhow::Result<()> {
             if screen.slug == "settings-a-permissions-services" {
                 stand_in.set_sandbox(serde_json::json!({ "on": true, "needsYou": true, "able": true, "agents": true, "gaps": ["services"], "needs": "user namespaces", "why": "Commands run in the sandbox, but this machine doesn’t let it keep them from your login’s services, like systemd. Until it allows user namespaces, agents don’t use your vault here and goals don’t run on their own.", "action": "help", "actionLabel": "How to Check…", "opens": "https://www.kuvo.run/code/docs/machines/#sandbox" }));
             }
+            if screen.slug.starts_with("bot-wake-") {
+                use serde_json::json;
+                let waking = screen.slug == "bot-wake-row-waking";
+                stand_in.set_bot_now("bot_mira", json!({ "working": usize::from(waking), "asking": 0, "waking": waking, "state": if waking { "working" } else { "idle" }, "since": NOW }));
+                let count = match screen.slug {
+                    "bot-wake-row-none" | "bot-wake-list-empty" => 0,
+                    "bot-wake-list-many" => 9,
+                    _ => 1,
+                };
+                let notes = ["Review the deployment", "Check the staging error rate", "Draft the Friday release notes", "Review signup conversion", "Run the accessibility audit", "Check links in the help center", "Review pending translations", "Send the weekly traffic summary", "Check the production backup"];
+                let wakes = notes.iter().take(count).enumerate().map(|(index, note)| {
+                    let summary = if screen.slug == "bot-wake-list-long-note" {
+                        "Review this morning’s rollout across all regions, compare signup conversion with the last successful release, check the error rate for each browser and flag the steps that need another look."
+                    } else { note };
+                    json!({ "id": format!("wake{index}"), "due": NOW / 1000. + 180. + index as f64 * 3600., "every": if index % 2 == 0 { Some("1d") } else { None }, "summary": summary, "cancelKey": format!("wake{index}") })
+                }).collect();
+                let watches = if count > 1 { vec![json!({ "letters": "ci", "every": "30m", "summary": "Watch the CI checks", "next": NOW / 1000. + 900. })] } else { Vec::new() };
+                stand_in.set_bot_wakes("bot_mira", wakes, watches);
+            }
             if screen.slug == "bot-waiting" {
                 stand_in.refuse_bot_edit("bot_scout", "studio-mini", "studio-mini has no personality “Ship’s Cook”.");
             }
@@ -1707,6 +1790,16 @@ fn main() -> anyhow::Result<()> {
             cx.run_until_parked();
             cx.update_window(any, |_, window, _| window.refresh())?;
             cx.run_until_parked();
+            if screen.slug == "bot-wake-badge-hover" {
+                use gpui::{Modifiers, MouseMoveEvent, PlatformInput};
+                // Mira's avatar, the first bot in this fixture.
+                cx.update_window(any, |_, window, cx| mouse(window, cx, PlatformInput::MouseMove(MouseMoveEvent {
+                    position: gpui::point(px(83.), px(118.)), pressed_button: None, modifiers: Modifiers::default(),
+                })))?;
+                cx.run_until_parked();
+                cx.advance_clock(std::time::Duration::from_millis(550));
+                cx.run_until_parked();
+            }
             // A composer's menu opened with a press on its chip, through the window.
             if let Some(at) = match screen.slug {
                 "mode-menu" => Some(gpui::point(px(526.), px(767.))),

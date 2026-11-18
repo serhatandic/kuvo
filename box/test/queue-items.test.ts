@@ -141,3 +141,16 @@ test("followed, a session's queue comes again as the engine's inbox for it chang
     stream.stop()
   }
 })
+
+test("wake-ups waiting in the engine and on a stopped queue use the stored summary", async () => {
+  await ask(handler, "POST", "kuvo/sessions/ses_q/queue/hold")
+  const text = "[Wake-up] Check everything. More instructions here."
+  const metadata = { kuvo: { wake: { summary: "Check the release" } } }
+  inboxes.ses_q!.push({ id: "msg_engwake", type: "user", delivery: "queue", payload: { text, metadata } })
+  const added = await ask(handler, "POST", "kuvo/sessions/ses_q/queue/add", { id: "msg_boxwake", text, metadata, kept: true, from: "Wake-up", words: text.slice("[Wake-up] ".length) })
+  expect(added.json.waits).toBe(true)
+  const { json } = await ask(handler, "GET", "kuvo/sessions/ses_q/queue?items=1")
+  expect(json.items.filter((each: any) => each.from === "Wake-up").map((each: any) => [each.on, each.words])).toEqual([
+    ["engine", "Check the release"], ["box", "Check the release"],
+  ])
+})

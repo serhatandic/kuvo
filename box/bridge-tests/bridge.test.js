@@ -1558,6 +1558,7 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     "bots.now": ["GET", "kuvo/bots"],
     // (A bot's state is in `now`; seen is a bot's own route: one that isn't here says so.)
     "bots.state": ["POST", "kuvo/bots/bot_none/seen"],
+    "bots.wake-ups": ["GET", "kuvo/wakes/ses_none/events"],
     // (This Mac's app, registered with a Mac's box in a home of its own: a machine says it has none.)
     "box.app": ["GET", "kuvo/box/app"],
     // (Where the app's own host answers, said as it registers there: the same route.)

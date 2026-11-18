@@ -7,8 +7,9 @@
 use std::rc::Rc;
 
 use gpui::{
-    App, ClickEvent, ElementId, Hsla, InteractiveElement, IntoElement, ParentElement,
-    Pixels, RenderOnce, SharedString, StatefulInteractiveElement, Styled, Window, div, px,
+    App, ClickEvent, ElementId, FocusHandle, Hsla, InteractiveElement, IntoElement, ParentElement,
+    Pixels, RenderOnce, SharedString, StatefulInteractiveElement, Styled, Window, div,
+    prelude::FluentBuilder as _, px,
 };
 
 use crate::{
@@ -44,7 +45,7 @@ pub enum ButtonSize {
 }
 
 impl ButtonSize {
-    fn height(self) -> Pixels {
+    pub fn height(self) -> Pixels {
         match self {
             Self::Small => px(24.),
             Self::Medium => px(32.),
@@ -92,12 +93,15 @@ pub struct Button {
     style: ButtonStyle,
     size: ButtonSize,
     icon_size: IconSize,
+    icon_color: Option<Hsla>,
     pill: bool,
     square: bool,
     disabled: bool,
     loading: bool,
     selected: bool,
     full_width: bool,
+    truncate_at: Option<Pixels>,
+    focus: Option<FocusHandle>,
     /// Its words in the second level and regular weight (a ghost button that says where you are,
     /// like the title bar's computer, rather than what to do).
     quiet: bool,
@@ -119,12 +123,15 @@ impl Button {
             style: ButtonStyle::default(),
             size: ButtonSize::default(),
             icon_size: IconSize::Nav,
+            icon_color: None,
             pill: false,
             square: false,
             disabled: false,
             loading: false,
             selected: false,
             full_width: false,
+            truncate_at: None,
+            focus: None,
             quiet: false,
             shown: None,
             tooltip: None,
@@ -176,6 +183,12 @@ impl Button {
         self
     }
 
+    /// Match the icon and its loading spinner to adjacent text.
+    pub fn icon_color(mut self, color: Hsla) -> Self {
+        self.icon_color = Some(color);
+        self
+    }
+
     /// Fully rounded: the shape for calls to action.
     pub fn pill(mut self) -> Self {
         self.pill = true;
@@ -224,6 +237,17 @@ impl Button {
 
     pub fn full_width(mut self) -> Self {
         self.full_width = true;
+        self
+    }
+
+    /// Caps the button's width and ellipsizes its label to keep the icons visible.
+    pub fn truncate_at(mut self, width: Pixels) -> Self {
+        self.truncate_at = Some(width);
+        self
+    }
+
+    pub fn track_focus(mut self, focus: FocusHandle) -> Self {
+        self.focus = Some(focus);
         self
     }
 
@@ -313,11 +337,11 @@ impl RenderOnce for Button {
         };
         // A ghost button's icons are drawn as the rail's and the rows' are: the icon grey at rest,
         // a step up when it's on (its wash says so), never the text's near-black.
-        let icon_color = match self.style {
+        let icon_color = self.icon_color.unwrap_or(match self.style {
             ButtonStyle::Ghost if self.selected => c.icon_on,
             ButtonStyle::Ghost => c.icon,
             _ => look.text,
-        };
+        });
         let disabled = self.disabled;
 
         // Found by its id in tests (`debug_bounds`).
@@ -325,6 +349,7 @@ impl RenderOnce for Button {
         let mut button = div()
             .id(self.id)
             .debug_selector(move || selector)
+            .when_some(self.focus.as_ref(), |button, focus| button.track_focus(focus))
             .flex()
             .flex_none()
             .items_center()
@@ -402,8 +427,15 @@ impl RenderOnce for Button {
             self.icon.map(|i| Icon::new(i).size(size).color(icon_color).into_any_element())
         };
         button
+            .when_some(self.truncate_at, |button, width| button.max_w(width))
             .children(leading)
-            .children(self.label)
+            .children(self.label.map(|label| {
+                if self.truncate_at.is_some() {
+                    div().min_w_0().truncate().child(label).into_any_element()
+                } else {
+                    label.into_any_element()
+                }
+            }))
             .children(self.icon_after.map(|i| Icon::new(i).size(size).color(icon_color)))
             .children(self.shortcut.map(|keys| keycap(keys, keycap_border, if disabled { faint } else { icon_color }).into_any_element()))
     }

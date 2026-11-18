@@ -25,6 +25,7 @@ export interface ListPlace {
   projects: readonly { directory: string; name?: string; removed?: boolean }[];
   /** Those at work now. */
   running: ReadonlySet<string>;
+  wakeTurns?: ReadonlySet<string>;
   /** Since when each waits on you (ms), its subagents' asks counting as its own. */
   asked: ReadonlyMap<string, number>;
   /** Copies that aren't this box's own (moved away, or on their way here). */
@@ -117,6 +118,7 @@ export function factsOf(session: EngineSession, place: ListPlace): SessionFacts 
   if (bot) facts.bot = bot;
   // (What it streams counts while it's at work: a run's end that went unheard leaves nothing behind.)
   const running = place.running.has(session.id);
+  if (running && place.wakeTurns?.has(session.id)) facts.wakeTurn = true;
   if (running && place.thinking?.has(session.id)) facts.thinking = true;
   // (Read on any client up to where its last turn ended: `time.viewed`, PROTOCOL.md "What's been read".)
   const idle = Number(session.time?.idle) || 0;
@@ -184,6 +186,7 @@ export function botsNow(sessions: Readonly<Record<string, SessionFacts>>, seen?:
     const stands = standing(facts);
     if (stands) now[stands] += 1;
     else if (facts.updated) now.finished = Math.max(now.finished ?? 0, facts.updated);
+    if (facts.kind === "bot" && facts.running && facts.wakeTurn) now.waking = true;
     if (stands === "working" && facts.thinking) now.thinking = (now.thinking ?? 0) + 1;
     // (A hard stop is a turn you haven't read, `unread`, which you may have seen since.)
     const seenAt = seen?.get(facts.bot) ?? -Infinity;

@@ -60,6 +60,24 @@ pub fn until(then: f64, now: f64) -> String {
     }
 }
 
+/// A scheduled time for the sidebar. Times more than a day away use the viewer's local clock.
+pub fn next_wake(due: f64, now: f64) -> Option<String> {
+    const DAY: f64 = 86_400_000.;
+    let ahead = due - now;
+    if !ahead.is_finite() || ahead <= 0. {
+        return None;
+    }
+    if ahead <= DAY {
+        // Keep the relative form even when rounding the final minute up to 24 hours.
+        let soon = if ahead > DAY - 60_000. { "24 h".into() } else { until(due, now) };
+        return Some(format!("in {soon}"));
+    }
+    let seconds = (due / 1000.) as i64;
+    let local_day = (seconds + crate::pasted::utc_offset(seconds)).div_euclid(86_400);
+    let weekday = ["Thu", "Fri", "Sat", "Sun", "Mon", "Tue", "Wed"][local_day.rem_euclid(7) as usize];
+    Some(format!("{weekday} {}", clock(due)))
+}
+
 /// A turn's length: "Worked for 25s", "Worked for 3m 10s", "Worked for 1h 5m".
 pub fn worked_for(ms: f64) -> String {
     let seconds = (ms / 1000.0).round().max(1.0) as u64;
@@ -170,6 +188,21 @@ mod tests {
         assert_eq!(worked_for(25_000.0), "Worked for 25s");
         assert_eq!(worked_for(190_000.0), "Worked for 3m 10s");
         assert_eq!(worked_for(3_900_000.0), "Worked for 1h 5m");
+    }
+
+    #[test]
+    fn next_wake_reads_as_a_future_time() {
+        let now = 1_794_622_400_000.;
+        assert_eq!(next_wake(now - 1., now), None);
+        assert_eq!(next_wake(now, now), None);
+        assert_eq!(next_wake(now + 180_000., now).as_deref(), Some("in 3 min"));
+        assert_eq!(next_wake(now + 7_200_000., now).as_deref(), Some("in 2 h"));
+        assert_eq!(next_wake(now + 86_400_000., now).as_deref(), Some("in 24 h"));
+        let due = now + 2. * 86_400_000.;
+        let seconds = due as i64 / 1000;
+        let day = (seconds + crate::pasted::utc_offset(seconds)).div_euclid(86_400);
+        let weekday = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][(day + 3).rem_euclid(7) as usize];
+        assert_eq!(next_wake(due, now).unwrap(), format!("{weekday} {}", clock(due)));
     }
 
     #[test]
