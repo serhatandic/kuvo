@@ -157,7 +157,7 @@ done < <(git --no-optional-locks ls-files -z mac/helper/Sources swift/OpenCodeKi
 # Transfer the exact historical build used by the failure bench. The remote snapshot has no .git.
 history=()
 ref_file=box/bridge-tests/failure-bench-legacy-ref.txt
-if [[ -f "$ref_file" ]] && { [[ ${#files[@]} -eq 0 ]] || [[ " ${files[*]} " == *" bridge-tests/devices-two-boxes.test.js "* ]]; }; then
+if [[ -f "$ref_file" ]] && { [[ ${#files[@]} -eq 0 ]] || [[ " ${files[*]} " == *" bridge-tests/devices-two-boxes.test.js "* || " ${files[*]} " == *" bridge-tests/failure-bench-legacy.test.js "* ]]; }; then
     read -r ref < "$ref_file"
     [[ "$ref" =~ ^[0-9a-f]{40}$ ]] || { echo "Invalid legacy build reference" >&2; exit 1; }
     fixture_dir=$(mktemp -d)

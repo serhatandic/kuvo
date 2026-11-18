@@ -6,10 +6,13 @@ cd "$(dirname "$0")/.."
 while IFS= read -r name; do
     case "$name" in KUVO_*) unset "$name" ;; esac
 done < <(compgen -e)
-# The general bridge suite can run in shallow clones. The bench requires the previous build.
+# This commit is part of main's history. A shallow checkout may need it explicitly.
 read -r previous < box/bridge-tests/failure-bench-legacy-ref.txt
-if ! git --no-optional-locks cat-file -e "${previous}:swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js"; then
-    echo "The failure bench needs the previous box build at $previous. Use a checkout with that commit." >&2
-    exit 1
+[[ "$previous" =~ ^[0-9a-f]{40}$ ]] || { echo "Invalid legacy build reference" >&2; exit 1; }
+resource=swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js
+if ! git --no-optional-locks cat-file -e "${previous}:$resource" 2>/dev/null; then
+    git --no-optional-locks fetch --no-tags --depth=1 origin "$previous"
+    git --no-optional-locks cat-file -e "${previous}:$resource"
 fi
-exec scripts/test-box.sh bridge '--test-name-pattern=^failure bench:' devices-two-boxes.test.js updates.test.js
+if [[ "${1:-}" == --prepare ]]; then exit 0; fi
+exec scripts/test-box.sh bridge '--test-name-pattern=^failure bench:' failure-bench-legacy.test.js devices-two-boxes.test.js updates.test.js
