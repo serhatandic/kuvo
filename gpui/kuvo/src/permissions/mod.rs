@@ -431,7 +431,11 @@ impl HeadsUp {
             Some(false) => (permission.line.clone().unwrap_or_else(|| "Not allowed yet.".into()), c.text_muted),
             None => (format!("{program} hasn’t said yet."), c.text_muted),
         };
-        let icon = if permission.id == "screenRecording" { IconName::Computer } else { IconName::Return };
+        let icon = match permission.id.as_str() {
+            "screenRecording" => IconName::Computer,
+            "fullDiskAccess" => IconName::Folder,
+            _ => IconName::Return,
+        };
         let id = permission.id.clone();
         let end: AnyElement = match permission.allowed {
             Some(true) => div()
