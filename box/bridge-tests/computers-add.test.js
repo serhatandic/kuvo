@@ -1197,6 +1197,9 @@ for (const [destination, disconnected] of [["interrupted", "SIGTERM"], ["network
       await waitFor(() => fs.existsSync(path.join(folder, "writer-ended")));
       const recovery = await retryAdd(destination);
       assert.equal(recovery.question?.id, "recoverAccount");
+      assert.equal(recovery.question.title, `Continue adding ${destination}?`);
+      assert.equal(recovery.question.message, `An earlier attempt to add ${destination} didn't finish, and it's no longer running. Kuvo can clear it and start again.`);
+      assert.deepEqual(recovery.question.answers.map(answer => answer.label), ["Cancel", "Clear and Continue"]);
       assert.equal(fs.readlinkSync(reservationAt(folder)), original, "recovery requires an answer");
       assert.equal((await answerRecovery(recovery, "recover")).status, 200);
       const recovered = await over(recovery.id);

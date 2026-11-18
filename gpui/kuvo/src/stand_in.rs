@@ -469,8 +469,8 @@ impl StandIn {
                 && let Some(tried) = state.areas.tries.iter_mut().find(|tried| tried["id"].as_str() == Some(id))
             {
                 tried["question"] = json!({
-                    "id": "recoverAccount", "at": tried["question"]["at"], "title": format!("Continue on {destination}?"),
-                    "message": "An earlier Kuvo Code change left this account marked in use. Kuvo Code checked that it isn’t changing the account now. Clear the mark to stop the earlier attempt and continue this one.",
+                    "id": "recoverAccount", "at": tried["question"]["at"], "title": format!("Continue adding {destination}?"),
+                    "message": format!("An earlier attempt to add {destination} didn't finish, and it's no longer running. Kuvo can clear it and start again."),
                     "facts": [],
                     "answers": [{ "id": "cancel", "label": "Cancel", "kind": "plain" }, { "id": "recover", "label": "Clear and Continue", "kind": "primary" }]
                 });

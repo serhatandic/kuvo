@@ -304,8 +304,8 @@ class AccountReservation {
     if (claim.status !== scripts.ACCOUNT_RECOVER || !/^guarded-[0-9a-f]{48}$/.test(prior)) throw this.cannotPrepare(claim);
     if (activeReservations.has(prior)) throw this.busy();
     const answer = await this.tell.ask({
-      id: "recoverAccount", title: `Continue on ${this.name}?`,
-      message: "An earlier Kuvo Code change left this account marked in use. Kuvo Code checked that it isn’t changing the account now. Clear the mark to stop the earlier attempt and continue this one.",
+      id: "recoverAccount", title: `Continue adding ${this.name}?`,
+      message: `An earlier attempt to add ${this.name} didn't finish, and it's no longer running. Kuvo can clear it and start again.`,
       facts: [],
       answers: [{ id: "cancel", label: "Cancel", kind: "plain" }, { id: "recover", label: "Clear and Continue", kind: "primary" }],
     });
