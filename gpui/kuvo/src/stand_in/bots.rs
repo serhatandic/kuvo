@@ -17,6 +17,7 @@ const FACES: &[&str] = &["calm", "happy", "sleepy", "wink", "curious", "bright"]
 /// The stand-in's bots.
 #[derive(Default)]
 pub struct Bots {
+    stopped_work: std::collections::HashSet<String>,
     pub bots: Vec<Value>,
     pub held: Vec<Value>,
     pub refused: Vec<Value>,
@@ -59,6 +60,7 @@ impl Bots {
         );
         mira["project"] = json!(format!("{HOME}/Projects/website"));
         Bots {
+            stopped_work: Default::default(),
             bots: vec![
                 mira,
                 bot("bot_inbox", "Inbox Helper", "coral", "squircle", "Drafts replies to support mail", "", Some("preset.cheerful"), json!({ "working": 0, "asking": 1, "state": "needsYou", "since": now - 600_000.0 })),
@@ -208,12 +210,23 @@ impl Bots {
                     (200, json!({}))
                 }
             },
+            ("POST", ["kuvo", "bots", id, "stop-all"]) => {
+                self.stopped_work.insert((*id).to_owned());
+                (200, json!({}))
+            }
             ("DELETE", ["kuvo", "bots", id]) => self.delete(id, now),
             ("GET", ["kuvo", "work"]) => match query("bot") {
                 None => (400, json!({ "message": "Say whose work: bot=<id>." })),
                 Some(bot) if !self.bots.iter().any(|each| each["id"] == json!(bot)) => (404, json!({ "message": "There’s no such bot here." })),
                 Some(bot) => {
-                    let sessions = work(&bot, now);
+                    let mut sessions = work(&bot, now);
+                    if self.stopped_work.contains(&bot) {
+                        for session in &mut sessions {
+                            if matches!(session["state"].as_str(), Some("working" | "asking")) {
+                                session["state"] = json!("stopped");
+                            }
+                        }
+                    }
                     let today = if bot == "bot_mira" { json!({ "started": sessions.len(), "answered": 1, "working": 2, "tokens": 2_200_000 }) } else { json!({ "started": 0, "answered": 0, "working": 0, "tokens": 0 }) };
                     (200, json!({ "bot": bot, "sessions": sessions, "answered": [], "today": today, "limits": null }))
                 }

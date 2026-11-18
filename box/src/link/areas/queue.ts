@@ -10,7 +10,7 @@ import { followed, followedLive } from "../follow";
 import { isRefused, placeOfSession, placeOfSessionPatiently } from "../letters/letter";
 import { targetsOf } from "../letters/tools";
 import { asked } from "../engine/client";
-import { dropWaiting, holdQueue, inboxFollowers, inboxFor, inboxNow, keepWaitingBefore, queueFollowers, queueItems, queueOf, readQueues, resumeQueue, sendNow, showsQueue, shownQueue, steerQueued, takeBackFromInbox } from "../engine/queue";
+import { dropWaiting, holdQueue, inboxFollowers, inboxFor, inboxNow, keepWaitingBefore, queueFollowers, queueItems, queueOf, readQueues, reorderQueue, resumeQueue, sendNow, showsQueue, shownQueue, steerQueued, takeBackFromInbox } from "../engine/queue";
 import type { QueueShown } from "../../shared/routes/sessions";
 import { forgetStopped } from "../work/background";
 import { forgetArriving, holdArriving, sendsSettled } from "../messages/arriving";
@@ -28,7 +28,7 @@ import { fromAPhone } from "../server/context";
 import type { AnswerPiece, RouteContext } from "../server/context";
 import type { Target } from "../../shared/records";
 
-export const QUEUE_ROUTE = /^kuvo\/sessions\/(?:queues\/events|([^/]+)\/(stop|queue(?:\/(hold|resume|add|events))?|queue\/([^/]+)(?:\/(now|steer))?))$/;
+export const QUEUE_ROUTE = /^kuvo\/sessions\/(?:queues\/events|([^/]+)\/(stop|queue(?:\/(hold|resume|add|events|reorder))?|queue\/([^/]+)(?:\/(now|steer))?))$/;
 
 // How long the queue's read waits for the engine, each time (where the session is, then its inbox):
 // a client draws it at once, and a busy engine's `items` are null rather than late.
@@ -84,7 +84,7 @@ export async function* queueRoute(context: RouteContext, match: RegExpMatchArray
       queueFollowers.add(told);
       inboxFollowers.add(heard);
       return () => { queueFollowers.delete(told); inboxFollowers.delete(heard); };
-    }, signal ?? undefined, { look: () => JSON.stringify(shownQueue(queueOf(session))) });
+    }, signal ?? undefined, { look: () => JSON.stringify(queueOf(session)) });
   }
   // One moving to or from another computer: what waits for it goes as it was read for the move. A
   // Stop still stops it while the box it leaves waits for its turn to end, before it's read.
@@ -159,6 +159,15 @@ export async function* queueRoute(context: RouteContext, match: RegExpMatchArray
       const target = place.target;
       if (!once) return yield* add(context, target, session);
       return yield* answering(await sentOnce(once, () => collected(add(context, target, session))));
+    }
+    if (step === "reorder") {
+      const given = parsed(request.body);
+      if (!isObject(given) || typeof given.item !== "string" || typeof given.anchor !== "string" || typeof given.before !== "boolean")
+        return yield* json(400, { message: "Give the message, its neighbor, and which side to put it on." });
+      const reordered = await reorderQueue(place.target, session, given.item, given.anchor, given.before);
+      if (!reordered)
+        return yield* json(409, { message: "Those messages can’t be moved now. Check the queue and try again." });
+      return yield* json(200, { ...shownQueue(reordered.state), items: reordered.items });
     }
     // (You set it going: if it was stopped, what comes of it is news again, and what Stop named as
     // on its way goes as it was sent when it comes.)

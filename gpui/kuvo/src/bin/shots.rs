@@ -405,6 +405,7 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "conversation-activity-empty", width: 1280., height: 820., session: Some("ses_recipes"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(conversation_activity) },
     Screen { slug: "conversation-header-running", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "composer-queue-two", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "composer-queue-dragging", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "composer-queue-long", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "bars-one", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "bars-many", width: 1280., height: 900., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
@@ -1615,9 +1616,9 @@ fn main() -> anyhow::Result<()> {
                 }), include_bytes!("../../../assets/icons/activity.svg"));
                 stand_in.set_queue("ses_signup", vec![]);
             }
-            if matches!(screen.slug, "composer-queue-two" | "composer-queue-long") {
+            if matches!(screen.slug, "composer-queue-two" | "composer-queue-long" | "composer-queue-dragging") {
                 use serde_json::json;
-                let messages = if screen.slug == "composer-queue-two" {
+                let messages = if screen.slug != "composer-queue-long" {
                     vec!["Check the form on mobile", "Add a changelog entry"]
                 } else {
                     vec![
@@ -1687,6 +1688,23 @@ fn main() -> anyhow::Result<()> {
                 });
             })?;
             cx.run_until_parked();
+            if screen.slug == "composer-queue-dragging" {
+                cx.update_window(any, |root, window, cx| {
+                    let workspace = root.downcast::<Workspace>().expect("the workspace");
+                    let conversation = workspace.read(cx).conversation().expect("the conversation");
+                    let (from, to) = conversation.read(cx).queue_drag_points();
+                    let button = gpui::MouseButton::Left;
+                    window.dispatch_event(gpui::PlatformInput::MouseDown(gpui::MouseDownEvent {
+                        button, position: from, click_count: 1, ..Default::default()
+                    }), cx);
+                    for position in [to, to] {
+                        window.dispatch_event(gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent {
+                            position, pressed_button: Some(button), ..Default::default()
+                        }), cx);
+                    }
+                })?;
+                cx.run_until_parked();
+            }
             // Restarting after the rings and limits were read: they're kept, marked as updating.
             if matches!(screen.slug, "agents-rail-restarting" | "agents-usage-restarting") {
                 agents.agents_restarting();

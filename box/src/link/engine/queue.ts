@@ -114,12 +114,43 @@ const interrupt = (target: Target, session: string, resume = false) =>
 /** What waits, by its ID, in the order it goes, as clients show it: what's held, in its order (in
  * the engine's inbox, or on the box), then the engine's for the next step, then its queue, then what
  * waits on the box. */
-export function orderOf(inbox: InboxEntry[], { held, waiting = [] }: QueueState): string[] {
-  const first = held.filter(id => inbox.some(item => item.id === id) || waiting.some(each => each.id === id));
-  const then = (ids: string[]) => ids.filter(id => !first.includes(id));
-  return [...first, ...then(inbox.filter(item => item.delivery === "steer").map(item => item.id)),
-    ...then(inbox.filter(item => item.delivery === "queue").map(item => item.id)), ...then(waiting.map(each => each.id))];
+export function orderOf(inbox: InboxEntry[], { held, waiting = [], order = [] }: QueueState): string[] {
+  const heldSet = new Set(held);
+  const inboxById = new Map(inbox.map(item => [item.id, item]));
+  const waitingIds = new Set(waiting.map(item => item.id));
+  const base = [...new Set([
+    ...held.filter(id => inboxById.has(id) || waitingIds.has(id)),
+    ...inbox.filter(item => item.delivery === "steer" && !heldSet.has(item.id)).map(item => item.id),
+    ...inbox.filter(item => item.delivery === "queue" && !heldSet.has(item.id)).map(item => item.id),
+    ...waitingIds,
+  ])];
+  if (!order.length) return base;
+  const fixed = new Set(inbox.filter(item => item.type === "compaction" || (item.delivery === "steer" && !heldSet.has(item.id))).map(item => item.id));
+  const movable = new Set(base.filter(id => !fixed.has(id)));
+  const ranked = order.filter(id => movable.delete(id)).concat([...movable]);
+  let index = 0;
+  return base.map(id => fixed.has(id) ? id : ranked[index++]!);
 }
+
+/** Move a waiting message relative to another. A replay of the same move is harmless. */
+export async function reorderQueue(target: Target, session: string, item: string, anchor: string, before: boolean): Promise<{ state: QueueState; items: QueueItem[] } | null> {
+  const inbox = await inboxNow(target, session);
+  let moved = false;
+  const state = files.changeQueue(FILES, session, state => {
+    const steer = new Set(inbox.filter(each => each.delivery === "steer" && !state.held.includes(each.id)).map(each => each.id));
+    const order = orderOf(inbox, state).filter(id => !steer.has(id));
+    if (item === anchor || !order.includes(item) || !order.includes(anchor)) return state;
+    order.splice(order.indexOf(item), 1);
+    order.splice(order.indexOf(anchor) + (before ? 0 : 1), 0, item);
+    moved = true;
+    return { ...state, order };
+  }, tellFollowers, true);
+  return moved ? { state, items: queueItems(inbox, state) } : null;
+}
+
+const withoutOrder = (state: QueueState, id: string): QueueState => ({
+  ...state, ...(state.order ? { order: state.order.filter(each => each !== id) } : {}),
+});
 
 const waitingFile = (id: string) => files.waitingFile(FILES, id);
 
@@ -150,6 +181,12 @@ export const placedBefore = (inbox: InboxEntry[], before: string | undefined): f
   const order = orderOf(inbox, state);
   const at = before && before !== item.id ? order.indexOf(before) : -1;
   if (at < 0) return { ...state, waiting: [...waiting, item] };
+  if (state.order?.includes(before!)) {
+    const index = state.order.indexOf(before!);
+    const order = state.order.filter(id => id !== item.id);
+    order.splice(index, 0, item.id);
+    return { ...state, order, waiting: [...waiting, item] };
+  }
   const inHeld = state.held.indexOf(before!);
   if (inHeld >= 0) return { ...state, held: [...state.held.slice(0, inHeld), item.id, ...state.held.slice(inHeld)], waiting: [...waiting, item] };
   if (inbox.some(entry => entry.id === before)) {
@@ -189,7 +226,8 @@ function takeWaiting(session: string, item?: string, resume = false, inbox: Inbo
   let held = false;
   let before: string | undefined;
   changeQueue(session, state => {
-    shown = item ? state.waiting?.find(each => each.id === item) : state.waiting?.[0];
+    const next = item ?? orderOf([], state)[0];
+    shown = state.waiting?.find(each => each.id === next);
     if (!shown) return state;
     const order = orderOf(inbox, state);
     before = order[order.indexOf(shown.id) + 1];
@@ -225,10 +263,12 @@ export function carryQueue(from: string, to: string, renamed: Record<string, str
   if (again) return;
   let was: QueueState = { paused: false, held: [] };
   changeQueue(from, state => { was = state; return { paused: false, held: [] }; });
-  if (!showsQueue(was)) return;
+  if (!showsQueue(was) && !was.order?.length) return;
   // (What waits on the box goes as it is, by its own ID.)
   const held = was.held.flatMap(id => renamed[id] ? [renamed[id]] : was.waiting?.some(each => each.id === id) ? [id] : []);
+  const order = was.order?.flatMap(id => renamed[id] ? [renamed[id]] : was.waiting?.some(each => each.id === id) ? [id] : []);
   changeQueue(to, state => ({ ...state, paused: state.paused || was.paused, held: [...state.held, ...held],
+    ...(order?.length ? { order: [...(state.order ?? []), ...order] } : {}),
     ...(was.waiting?.length ? { waiting: [...(state.waiting ?? []), ...was.waiting] } : {}) }));
 }
 
@@ -242,6 +282,7 @@ const MOST_CARRIED = 300;
 export interface CarriedQueue {
   paused: boolean;
   held: string[];
+  order?: string[];
   waiting: { shown: Waiting; message: unknown }[];
 }
 
@@ -331,7 +372,8 @@ export async function packQueues(target: Target, sessions: readonly string[]): P
       }];
     });
     const ids = new Set(waiting.map(each => each.shown.id));
-    packed[session] = { paused: state.paused, held: state.held.map(id => renamed[id] ?? id).filter(id => ids.has(id)), waiting };
+    packed[session] = { paused: state.paused, held: state.held.map(id => renamed[id] ?? id).filter(id => ids.has(id)), waiting,
+      ...(state.order?.length ? { order: waiting.map(each => each.shown.id) } : {}) };
   }
   return packed;
 }
@@ -358,7 +400,8 @@ export function unpackQueues(carried: unknown, sessions: readonly string[]): str
       waiting.push(shown);
     }
     const held = (Array.isArray(queue.held) ? queue.held : []).filter((id): id is string => typeof id === "string" && waiting.some(each => each.id === id));
-    changeQueue(session, () => ({ paused: true, held, ...(waiting.length ? { waiting } : {}) }));
+    const order = (Array.isArray(queue.order) ? queue.order : []).filter((id): id is string => typeof id === "string" && waiting.some(each => each.id === id));
+    changeQueue(session, () => ({ paused: true, held, ...(waiting.length ? { waiting } : {}), ...(order.length ? { order } : {}) }));
     if (queue.paused !== true) goOn.push(session);
   }
   return goOn;
@@ -378,7 +421,9 @@ export function forgetQueue(session: string): void {
  * gone, and what came after it, as `orderOf` shows them with `inbox` (for Undo to put back as it
  * was, where it was); null when it isn't there. */
 export function dropWaiting(session: string, item: string, inbox: InboxEntry[] = []): ReturnType<typeof takeWaiting> {
-  return takeWaiting(session, item, false, inbox);
+  const dropped = takeWaiting(session, item, false, inbox);
+  if (dropped) changeQueue(session, state => withoutOrder(state, item));
+  return dropped;
 }
 
 /** The engine's inbox for `session`, as far as the queue reads it (none, when it can't be read). */
@@ -475,7 +520,7 @@ export async function takeBackFromInbox(target: Target, session: string, item: s
   if ((await inboxOf(target, session)).some(each => each.id === item)) throw new Error("It couldn't be taken back. Try again in a moment.");
   const recent = await asked(target, "GET", `api/session/${address(session)}/message?limit=40&order=desc`).catch(() => null) as { data?: unknown } | null;
   if (Array.isArray(recent?.data) && recent.data.some(message => isObject(message) && message.id === item)) return null;
-  changeQueue(session, state => ({ ...state, held: state.held.filter(id => id !== item) }));
+  changeQueue(session, state => ({ ...withoutOrder(state, item), held: state.held.filter(id => id !== item) }));
   const shown = shownOfInbox(entry);
   const text = typeof entry.payload?.text === "string" ? entry.payload.text : typeof entry.text === "string" ? entry.text : "";
   const files = sendableFiles(entry.payload?.files);
@@ -489,15 +534,24 @@ export async function drain(target: Target, session: string): Promise<void> {
   // (Nothing starts on an engine being changed: what waits goes once the new one runs.)
   if (queueOf(session).paused || swapHoldsFor(target) || (await isRunning(target, session))) return;
   const inbox = await inboxOf(target, session);
-  const first = orderOf(inbox, queueOf(session))[0];
-  // (Stopped, or started, while it looked: as it is now.)
-  if (queueOf(session).paused || (await isRunning(target, session))) return;
-  if (!first) return;
+  // Re-read the saved order after the final asynchronous check, so a concurrent move wins.
+  if (await isRunning(target, session)) return;
+  const state = queueOf(session);
+  if (state.paused) return;
+  const first = orderOf(inbox, state)[0];
+  if (!first) {
+    if (state.order?.length) changeQueue(session, current => current.order?.every(id => state.order!.includes(id)) ? { ...current, order: [] } : current);
+    return;
+  }
   const next = inbox.find(item => item.id === first);
-  if (!next) return sendWaiting(target, session, first);
+  if (!next) {
+    await sendWaiting(target, session, first);
+    changeQueue(session, state => withoutOrder(state, first));
+    return;
+  }
   if (next.delivery === "queue") await setDelivery(target, session, next.id, "steer");
   else await interrupt(target, session, true);
-  changeQueue(session, state => ({ ...state, held: state.held.filter(id => id !== next.id) }));
+  changeQueue(session, state => ({ ...withoutOrder(state, next.id), held: state.held.filter(id => id !== next.id) }));
 }
 
 // `item` waiting on the box for `session`, to go now (nothing runs): back where it was if the
@@ -549,8 +603,11 @@ export async function holdQueue(target: Target, session: string, since?: number,
   return changeQueue(session, state => {
     // (One held that waits on the box stays held.)
     const there = (id: string) => waiting.some(item => item.id === id) || Boolean(state.waiting?.some(each => each.id === id));
-    return since !== undefined && (state.resumed ?? 0) >= since ? state
-      : { ...state, paused: state.paused || waiting.length > 0 || Boolean(state.waiting?.length), held: [...moved.filter(there), ...state.held.filter(id => !moved.includes(id) && there(id))] };
+    if (since !== undefined && (state.resumed ?? 0) >= since) return state;
+    const newlyHeld = moved.filter(there);
+    return { ...state, paused: state.paused || waiting.length > 0 || Boolean(state.waiting?.length),
+      held: [...newlyHeld, ...state.held.filter(id => !moved.includes(id) && there(id))],
+      ...(state.order && newlyHeld.length ? { order: [...newlyHeld, ...state.order.filter(id => !moved.includes(id) && there(id))] } : {}) };
   });
 }
 
@@ -615,7 +672,7 @@ export async function steerQueued(target: Target, session: string, item: string,
   const entry = (await inboxOf(target, session)).find(each => each.id === item);
   if (!entry || !(await isRunning(target, session))) return sendNow(target, session, item);
   // Only this one is let go of what a Stop held: the rest wait for Resume, as 0.7's Steer left them.
-  changeQueue(session, state => ({ ...state, held: state.held.filter(id => id !== item) }));
+  changeQueue(session, state => ({ ...withoutOrder(state, item), held: state.held.filter(id => id !== item) }));
   if (entry.delivery === "steer" && !toAgents) return true;
   try {
     await asked(target, "PATCH", `api/session/${address(session)}/inbox/${address(item)}`, { delivery: "steer", ...(toAgents ? { into: true } : {}) });
@@ -635,7 +692,7 @@ function goesFirst(session: string, item: string): boolean {
     const shown = state.waiting?.find(each => each.id === item);
     if (!shown) return state;
     found = true;
-    return { ...state, paused: false, resumed: Date.now(), held: state.held.filter(id => id !== item), waiting: [shown, ...state.waiting!.filter(each => each !== shown)] };
+    return { ...state, paused: false, resumed: Date.now(), held: state.held.filter(id => id !== item), waiting: [shown, ...state.waiting!.filter(each => each !== shown)], ...(state.order ? { order: [item, ...state.order.filter(id => id !== item)] } : {}) };
   });
   return found;
 }
@@ -668,13 +725,14 @@ export async function moveInboxToBox(target: Target, session: string): Promise<n
     changeQueue(session, state => ({
       ...state,
       held: state.held.map(each => (each === id ? own : each)),
+      ...(state.order ? { order: state.order.map(each => each === id ? own : each) } : {}),
       waiting: [...kept, waiting, ...(state.waiting ?? []).filter(each => each.id !== own && !kept.some(one => one.id === each.id))],
     }));
     try {
       await asked(target, "DELETE", `api/session/${address(session)}/inbox/${address(id)}`);
     } catch {
       // (Taken by the agent first, or kept by the engine: it stays where it is, and only there.)
-      changeQueue(session, state => ({ ...state, held: state.held.map(each => (each === own ? id : each)), waiting: (state.waiting ?? []).filter(each => each.id !== own) }));
+      changeQueue(session, state => ({ ...state, held: state.held.map(each => (each === own ? id : each)), ...(state.order ? { order: state.order.map(each => each === own ? id : each) } : {}), waiting: (state.waiting ?? []).filter(each => each.id !== own) }));
       fs.rmSync(waitingFile(own), { force: true });
       continue;
     }
@@ -705,11 +763,15 @@ export async function releaseWaiting(target: Target): Promise<number> {
       if (now.paused || !now.waiting?.length) break;
       const taken = takeWaiting(session);
       if (!taken) break;
-      if (!taken.message) continue;
+      if (!taken.message) {
+        changeQueue(session, state => withoutOrder(state, taken.shown.id));
+        continue;
+      }
       const steer = first;
       first = false;
       try {
         await asked(target, "POST", `api/session/${address(session)}/prompt`, { ...taken.message, ...(steer ? { delivery: "steer" } : {}) });
+        changeQueue(session, state => withoutOrder(state, taken.shown.id));
         sent++;
       } catch (error) {
         if (/ 404\.$/.test(String((error as Error | null)?.message))) break;

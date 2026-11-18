@@ -50,6 +50,10 @@ impl Item {
     }
 
     /// Waiting on the box itself (it came while the queue was paused), not in the engine.
+    pub fn can_reorder(&self) -> bool {
+        self.held || self.is_on_box() || self.is_queued()
+    }
+
     pub fn is_on_box(&self) -> bool {
         self.on == "box"
     }
@@ -96,6 +100,10 @@ impl BoxClient {
     /// Send Now: `item` to the agent right away, the step under way stopped for it.
     pub fn send_queued_now(&self, session: &str, item: &str) -> Result<()> {
         self.done(&Request::post(format!("{}/{}/now", route(session), paths::segment(item)), serde_json::json!({})))
+    }
+
+    pub fn reorder_queue(&self, session: &str, item: &str, anchor: &str, before: bool) -> Result<Queue> {
+        self.value(&Request::post(format!("{}/reorder", route(session)), serde_json::json!({ "item": item, "anchor": anchor, "before": before })))
     }
 
     /// Takes `item` out of the queue (wherever it waits), with what it was.

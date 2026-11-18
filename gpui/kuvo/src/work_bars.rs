@@ -44,6 +44,14 @@ pub struct WorkBars {
     /// The bot this conversation is, whose sessions show in a bar of their own.
     bot: Option<String>,
     background: Background,
+    background_fresh: bool,
+    work_connected: bool,
+    work_fresh: bool,
+    work_target: Option<f64>,
+    work_pending: bool,
+    stopping_all: bool,
+    active_rows: Rc<[SessionRow]>,
+    recent_rows: Rc<[SessionRow]>,
     work: Option<Work>,
     handle: PopoverMenuHandle,
     trigger_focus: FocusHandle,
@@ -74,6 +82,14 @@ impl WorkBars {
             live,
             bot: None,
             background: Background::default(),
+            background_fresh: false,
+            work_connected: false,
+            work_fresh: false,
+            work_target: None,
+            work_pending: false,
+            stopping_all: false,
+            active_rows: Rc::from([]),
+            recent_rows: Rc::from([]),
             work: None,
             handle: Default::default(),
             trigger_focus: cx.focus_handle(),
@@ -98,8 +114,7 @@ impl WorkBars {
             bars._background_follow = Some(follow);
             bars.tasks.push(cx.spawn(async move |this, cx| {
                 while let Ok(update) = updates.recv().await {
-                    let Followed::Now(background) = update else { continue };
-                    if this.update(cx, |this, cx| this.take_background(background, cx)).is_err() {
+                    if this.update(cx, |this, cx| this.take_background_update(update, cx)).is_err() {
                         break;
                     }
                 }
@@ -156,6 +171,11 @@ impl WorkBars {
         }
         self.bot = bot.clone();
         self.work = None;
+        self.work_connected = false;
+        self.work_fresh = false;
+        self.work_target = None;
+        self.work_pending = false;
+        self.rebuild_sessions();
         self.work_reads += 1;
         self._work_follow = None;
         self.work_seen = None;
@@ -166,13 +186,11 @@ impl WorkBars {
         self._work_follow = Some(follow);
         self.tasks.push(cx.spawn(async move |this, cx| {
             while let Ok(update) = updates.recv().await {
-                let Followed::Now(changes) = update else { continue };
                 let went = this.update(cx, |this, cx| {
-                    let at = changes.changed.get(&bot).copied();
-                    // (The first line too: what changed while it wasn't followed.)
-                    if this.work.is_none() || at != this.work_seen {
-                        this.work_seen = at;
-                        this.read_work(cx);
+                    if this.bot.as_deref() != Some(bot.as_str()) { return; }
+                    match update {
+                        Followed::Now(changes) => this.work_changed(changes.changed.get(&bot).copied(), cx),
+                        Followed::Failed(_) => this.work_disconnected(cx),
                     }
                 });
                 if went.is_err() {
@@ -202,35 +220,90 @@ impl WorkBars {
         });
     }
 
-    fn read_work(&mut self, cx: &mut Context<Self>) {
-        let Some(bot) = self.bot.clone() else { return };
+    fn work_disconnected(&mut self, cx: &mut Context<Self>) {
         self.work_reads += 1;
-        let read = self.work_reads;
+        self.work_pending = false;
+        self.work_connected = false;
+        self.work_fresh = false;
+        cx.notify();
+    }
+
+    fn work_changed(&mut self, at: Option<f64>, cx: &mut Context<Self>) {
+        self.work_connected = true;
+        if self.work_target == at && self.work_pending { return; }
+        self.work_target = at;
+        if !self.work_fresh || self.work_seen != at {
+            self.read_work(cx);
+        }
+    }
+
+    fn read_work(&mut self, cx: &mut Context<Self>) {
+        let Some(bot) = self.bot.clone().filter(|_| self.work_connected) else { return };
+        self.work_reads += 1;
+        let (read, at) = (self.work_reads, self.work_target);
+        self.work_pending = true;
         let client = self.client.clone();
         self.spawn(cx, move || client.bot_work(&bot), move |this, work, cx| {
-            if this.work_reads == read
-                && let Ok(work) = work
-            {
-                this.work = Some(work);
+            if this.work_reads != read { return; }
+            this.work_pending = false;
+            if let Ok(work) = work {
+                this.work_seen = at;
+                this.work_fresh = true;
+                this.take_work(work);
+            } else {
+                this.work_fresh = false;
+                // An unchanged feed may produce no more events after this failed detail read.
+                this.tasks.push(cx.spawn(async move |this, cx| {
+                    cx.background_executor().timer(Duration::from_secs(2)).await;
+                    this.update(cx, |this, cx| {
+                        if this.work_reads == read {
+                            this.read_work(cx);
+                        }
+                    }).ok();
+                }));
+            }
+            cx.notify();
+        });
+    }
+
+    fn take_background_update(&mut self, update: Followed<Background>, cx: &mut Context<Self>) {
+        match update {
+            Followed::Now(background) => self.take_background(background, cx),
+            Followed::Failed(_) => {
+                self.background_reads += 1;
+                self.background_fresh = false;
                 cx.notify();
             }
-        });
+        }
     }
 
     /// What runs for it besides its turn, as its box said.
     pub fn take_background(&mut self, background: Background, cx: &mut Context<Self>) {
+        self.background_fresh = true;
+        let sessions_changed = self.background.subagents != background.subagents;
         self.background = background;
+        if sessions_changed {
+            self.rebuild_sessions();
+        }
         cx.notify();
     }
 
     /// What its box says now, read at once on this thread (tests and shots).
     #[cfg(feature = "stand-in")]
     pub fn read_at_once(&mut self, cx: &mut Context<Self>) {
-        if let Ok(background) = self.client.session_background(&self.session) {
-            self.take_background(background, cx);
-        }
+        let background = self.client.session_background(&self.session);
+        self.take_background_update(match background {
+            Ok(value) => Followed::Now(value),
+            Err(error) => Followed::Failed(error),
+        }, cx);
         if let Some(bot) = &self.bot {
-            self.work = self.client.bot_work(bot).ok();
+            match self.client.bot_work(bot) {
+                Ok(work) => {
+                    self.work_fresh = true;
+                    self.take_work(work);
+                }
+                Err(_) => self.work_fresh = false,
+            }
         }
         cx.notify();
     }
@@ -245,29 +318,45 @@ impl WorkBars {
     }
 
     fn is_running(&self) -> bool {
-        !self.background.commands.is_empty()
-            || self.background.subagents.iter().any(|subagent| !subagent.asking)
-            || self.at_work().any(|session| session.state == WorkState::Working)
+        (self.background_fresh && (!self.background.commands.is_empty()
+            || self.background.subagents.iter().any(|subagent| !subagent.asking)))
+            || (self.work_fresh && self.at_work().any(|session| session.state == WorkState::Working))
     }
 
-    fn sessions(&self) -> Vec<SessionRow> {
-        let mut sessions: Vec<_> = self.at_work().map(|session| SessionRow {
-            id: session.session.clone(),
-            title: session.title.clone().unwrap_or_else(|| "Session".into()),
-            asking: session.state == WorkState::Asking,
-            provider: session.model.as_ref().and_then(|model| model.provider_id.clone()),
-        }).collect();
+    fn take_work(&mut self, work: Work) {
+        let changed = self.work.as_ref().is_none_or(|previous| previous.sessions != work.sessions);
+        self.work = Some(work);
+        if changed { self.rebuild_sessions(); }
+    }
+
+    fn rebuild_sessions(&mut self) {
+        let mut ids = HashSet::new();
+        let mut active = Vec::new();
+        let mut recent = Vec::new();
+        for session in self.work.iter().flat_map(|work| &work.sessions) {
+            if session.session == self.session || !session.is_at_work() || !ids.insert(&session.session) { continue; }
+            active.push(SessionRow::from_work(session));
+        }
         for subagent in &self.background.subagents {
-            if subagent.session != self.session && !sessions.iter().any(|session| session.id == subagent.session) {
-                sessions.push(SessionRow {
+            if subagent.session != self.session && ids.insert(&subagent.session) {
+                active.push(SessionRow {
                     id: subagent.session.clone(),
                     title: subagent.title.clone().unwrap_or_else(|| "Subagent".into()),
-                    asking: subagent.asking,
+                    state: if subagent.asking { WorkState::Asking } else { WorkState::Working },
                     provider: None,
                 });
             }
         }
-        sessions
+        for session in self.work.iter().flat_map(|work| &work.sessions) {
+            if session.session != self.session
+                && matches!(session.state, WorkState::Finished | WorkState::Failed | WorkState::Stopped)
+                && ids.insert(&session.session)
+            {
+                recent.push(SessionRow::from_work(session));
+            }
+        }
+        self.active_rows = active.into();
+        self.recent_rows = recent.into();
     }
 
     /// Opens a session's conversation, to watch it and talk to it.
@@ -310,6 +399,21 @@ impl WorkBars {
         });
     }
 
+    fn stop_all(&mut self, cx: &mut Context<Self>) {
+        let Some(bot) = self.bot.clone() else { return };
+        self.stopping_all = true;
+        self.failure = None;
+        let client = self.client.clone();
+        self.spawn(cx, move || client.stop_bot_work(&bot), |this, result, cx| {
+            this.stopping_all = false;
+            if let Err(error) = result {
+                this.failure = Some(format!("The sessions didn’t stop: {}", kuvo_box::accounts::said(&error)));
+            }
+            this.after_stop(cx);
+        });
+        cx.notify();
+    }
+
     fn after_stop(&mut self, cx: &mut Context<Self>) {
         if self.live {
             self.read_background(cx);
@@ -328,8 +432,27 @@ impl WorkBars {
 struct SessionRow {
     id: String,
     title: String,
-    asking: bool,
+    state: WorkState,
     provider: Option<String>,
+}
+
+impl SessionRow {
+    fn from_work(session: &WorkSession) -> Self {
+        Self {
+            id: session.session.clone(),
+            title: session.title.clone().unwrap_or_else(|| "Session".into()),
+            state: session.state,
+            provider: session.model.as_ref().and_then(|model| model.provider_id.clone()),
+        }
+    }
+}
+
+fn sessions_label(working: usize, asking: usize) -> String {
+    match (working, asking) {
+        (0, n) => format!("{n} waiting for you"),
+        (n, 0) => format!("{n} working"),
+        (n, m) => format!("{n} working · {m} waiting for you"),
+    }
 }
 
 impl Focusable for WorkBars {
@@ -384,7 +507,7 @@ impl WorkBars {
         let bars = cx.entity();
         let source = self.wake_source();
         let show_wakes = force_wakes || self.wake_label().is_some();
-        let sessions = self.sessions();
+        let sessions = self.active_rows.clone();
         let card = cx.new(|cx| ActivityCard::with_source(&bars, source, show_wakes, force_wakes, &sessions, cx));
         self.handle.open(card, window, cx);
         cx.notify();
@@ -394,6 +517,7 @@ impl WorkBars {
 enum Preview {
     Loading,
     Text(String),
+    CurrentFile(String),
     Image(std::sync::Arc<gpui::Image>),
     Message(String),
 }
@@ -412,6 +536,7 @@ struct ActivityCard {
     preview: Option<(String, Preview)>,
     reading: Option<Task<()>>,
     more: Option<Task<()>>,
+    loaded_pages: usize,
     wake_schedule: Option<Entity<WakeSchedule>>,
     force_wakes: bool,
     _activity_subscription: Subscription,
@@ -430,7 +555,8 @@ impl ActivityCard {
     fn new(activity: &Entity<WorkBars>, force_wakes: bool, cx: &mut Context<Self>) -> Self {
         let bars = activity.read(cx);
         let show_wakes = force_wakes || bars.wake_label().is_some();
-        Self::with_source(activity, bars.wake_source(), show_wakes, force_wakes, &bars.sessions(), cx)
+        let (source, sessions) = (bars.wake_source(), bars.active_rows.clone());
+        Self::with_source(activity, source, show_wakes, force_wakes, &sessions, cx)
     }
 
     fn with_source(activity: &Entity<WorkBars>, source: wakes::Source, show_wakes: bool, force_wakes: bool, sessions: &[SessionRow], cx: &mut Context<Self>) -> Self {
@@ -450,11 +576,12 @@ impl ActivityCard {
             preview: None,
             reading: None,
             more: None,
+            loaded_pages: 1,
             wake_schedule: schedule,
             force_wakes,
             _activity_subscription: cx.observe(activity, |this: &mut ActivityCard, activity, cx| {
                 let bars = activity.read(cx);
-                let (client, live, sessions) = (bars.client.clone(), bars.live, bars.sessions());
+                let (client, live, sessions) = (bars.client.clone(), bars.live, bars.active_rows.clone());
                 let command_gone = this.output.as_ref().is_some_and(|output| !bars.background.commands.iter().any(|command| command.id == output.command.id));
                 let wake_source = (this.wake_schedule.is_none() && bars.wake_label().is_some()).then(|| bars.wake_source());
                 if command_gone {
@@ -523,10 +650,29 @@ impl ActivityCard {
 
     fn take_outputs(&mut self, update: Followed<Outputs>, cx: &mut Context<Self>) {
         match update {
+            Followed::Now(page) if self.loaded_pages > 1 => {
+                let Some(activity) = self.activity.upgrade() else { return };
+                let bars = activity.read(cx);
+                let (client, session, pages) = (bars.client.clone(), bars.session.clone(), self.loaded_pages);
+                let task = cx.background_executor().spawn(async move {
+                    refresh_outputs(page, pages, |cursor| client.session_outputs(&session, Some(cursor)))
+                });
+                self.more = Some(cx.spawn(async move |this, cx| {
+                    let result = task.await;
+                    this.update(cx, |this, cx| {
+                        this.more = None;
+                        match result {
+                            Ok(outputs) => { this.outputs = Some(outputs); this.outputs_failed = false; }
+                            Err(_) => this.outputs_failed = true,
+                        }
+                        cx.notify();
+                    }).ok();
+                }));
+            }
             Followed::Now(page) => {
                 self.outputs = Some(page);
                 self.outputs_failed = false;
-                self.more = None;
+                // Leave a requested next page running; its cursor is based on a stable record.
             }
             Followed::Failed(_) => self.outputs_failed = true,
         }
@@ -534,10 +680,12 @@ impl ActivityCard {
     }
 
     fn more_outputs(&mut self, cx: &mut Context<Self>) {
+        if self.more.is_some() { return; }
         let Some(before) = self.outputs.as_ref().and_then(|page| page.next.clone()) else { return };
         let Some(activity) = self.activity.upgrade() else { return };
         let bars = activity.read(cx);
         let (client, session) = (bars.client.clone(), bars.session.clone());
+        self.loaded_pages += 1;
         let task = cx.background_executor().spawn(async move { client.session_outputs(&session, Some(&before)) });
         self.more = Some(cx.spawn(async move |this, cx| {
             let answer = task.await;
@@ -545,15 +693,10 @@ impl ActivityCard {
                 this.more = None;
                 match answer {
                     Ok(page) => if let Some(outputs) = &mut this.outputs {
-                        for artifact in page.artifacts {
-                            if !outputs.artifacts.iter().any(|shown| shown.id == artifact.id) {
-                                outputs.artifacts.push(artifact);
-                            }
-                        }
-                        outputs.next = page.next;
+                        append_outputs(outputs, page);
                         this.outputs_failed = false;
                     },
-                    Err(_) => this.outputs_failed = true,
+                    Err(_) => { this.loaded_pages -= 1; this.outputs_failed = true; }
                 }
                 cx.notify();
             }).ok();
@@ -704,17 +847,45 @@ impl ActivityCard {
             .child(face).into_any_element()
     }
 
-    fn sessions(&self, bars: &WorkBars, sessions: Vec<SessionRow>, cx: &Context<Self>) -> Option<AnyElement> {
-        if sessions.is_empty() { return None; }
-        let c = cx.theme().colors.clone();
-        let working = sessions.iter().filter(|session| !session.asking).count();
-        let asking = sessions.len() - working;
-        let label = match (working, asking) {
-            (0, n) => format!("{n} waiting for you"),
-            (n, 0) => format!("{n} working"),
-            (n, m) => format!("{n} working · {m} waiting"),
+    fn session_row(&self, bars: &WorkBars, session: &SessionRow, active: bool, cx: &Context<Self>) -> AnyElement {
+        let c = &cx.theme().colors;
+        let avatar = self.avatar(bars, session, "row", cx);
+        let id = session.id.clone();
+        let stop = id.clone();
+        let status = match session.state {
+            WorkState::Working => "Working",
+            WorkState::Asking => "Waiting for you",
+            WorkState::Finished => "Finished",
+            WorkState::Failed => "Failed",
+            WorkState::Stopped => "Stopped",
+            _ => "",
         };
-        let fold = row("activity-toggle-sessions", cx)
+        div().flex().items_center().gap(space::S1)
+            .child(row(format!("activity-session-{id}"), cx).flex_1().min_w_0()
+                .child(avatar)
+                .child(div().flex_1().min_w_0().truncate().child(session.title.clone()))
+                .child(div().flex_none().text_ui(TypeSize::Caption).text_color(c.text_muted).child(status))
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.dismiss(cx);
+                    this.activity.update(cx, |bars, cx| bars.open(&id, window, cx)).ok();
+                })))
+            .children(active.then(|| Button::icon_only(SharedString::from(format!("activity-stop-{stop}")), IconName::Stop, "Stop session").ghost().quiet()
+                .size(ButtonSize::Small).disabled(bars.stopping_all || bars.stopping.contains(&stop))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.activity.update(cx, |bars, cx| bars.stop_session(&stop, cx)).ok();
+                }))))
+            .into_any_element()
+    }
+
+    fn sessions(&self, bars: &WorkBars, cx: &Context<Self>) -> Option<AnyElement> {
+        let sessions = &bars.active_rows;
+        let recent = &bars.recent_rows;
+        if sessions.is_empty() && recent.is_empty() { return None; }
+        let c = cx.theme().colors.clone();
+        let asking = sessions.iter().filter(|session| session.state == WorkState::Asking).count();
+        let label = sessions_label(sessions.len() - asking, asking);
+        let can_stop = bars.bot.is_some() && bars.work_fresh && bars.at_work().next().is_some();
+        let fold = (!sessions.is_empty()).then(|| row("activity-toggle-sessions", cx)
             .child(
                 div().flex().flex_none().items_center()
                     .children(sessions.iter().take(3).enumerate().map(|(index, session)| {
@@ -731,29 +902,21 @@ impl ActivityCard {
             .on_click(cx.listener(|this, _, _, cx| {
                 this.expanded = !this.expanded;
                 cx.notify();
-            }));
-        let rows = self.expanded.then(|| sessions.into_iter().map(|session| {
-            let avatar = self.avatar(bars, &session, "row", cx);
-            let id = session.id;
-            let stop = id.clone();
-            let status = if session.asking { "Waiting for you" } else { "Working" };
-            div().flex().items_center().gap(space::S1)
-                .child(row(format!("activity-session-{id}"), cx).flex_1().min_w_0()
-                    .child(avatar)
-                    .child(div().flex_1().min_w_0().truncate().child(session.title))
-                    .child(div().flex_none().text_ui(TypeSize::Caption).text_color(c.text_muted).child(status))
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.dismiss(cx);
-                        this.activity.update(cx, |bars, cx| bars.open(&id, window, cx)).ok();
-                    })))
-                .child(Button::icon_only(SharedString::from(format!("activity-stop-{stop}")), IconName::Stop, "Stop session").ghost().quiet()
-                    .size(ButtonSize::Small).disabled(bars.stopping.contains(&stop))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.activity.update(cx, |bars, cx| bars.stop_session(&stop, cx)).ok();
-                    })))
-        }).collect::<Vec<_>>());
+            })));
         Some(section("activity-sessions", if bars.bot.is_some() { "Sessions" } else { "Subagents" }, cx)
-            .child(fold).children(rows.into_iter().flatten()).into_any_element())
+            .child(div().flex().items_center()
+                .children(fold.map(|fold| fold.flex_1().min_w_0()))
+                .children(can_stop.then(|| Button::new("activity-stop-all", "Stop All").ghost().quiet()
+                    .size(ButtonSize::Small).loading(bars.stopping_all)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.activity.update(cx, |bars, cx| bars.stop_all(cx)).ok();
+                    })))))
+            .children(sessions.iter().filter(|_| self.expanded).map(|session| self.session_row(bars, session, true, cx)))
+            .children((!recent.is_empty()).then(|| {
+                section("activity-recent", "Recent", cx)
+                    .children(recent.iter().map(|session| self.session_row(bars, session, false, cx)))
+            }))
+            .into_any_element())
     }
 
     fn processes(&self, bars: &WorkBars, cx: &Context<Self>) -> Option<AnyElement> {
@@ -803,6 +966,9 @@ impl ActivityCard {
                 .max_h(window.viewport_size().height / 2.).overflow_y_scroll()
                 .child(match preview {
                     Preview::Text(text) => crate::panel::files::text_preview(name, text, text.lines().count(), cx),
+                    Preview::CurrentFile(text) => div().flex().flex_col().gap(space::S2)
+                        .child(div().debug_selector(|| "activity-current-file".into()).text_color(c.text_muted).child("Current file"))
+                        .child(crate::panel::files::text_preview(name, text, text.lines().count(), cx)).into_any_element(),
                     Preview::Image(img) => gpui::img(img.clone()).w_full().max_h(window.viewport_size().height / 2. - space::S4)
                         .object_fit(gpui::ObjectFit::Contain).into_any_element(),
                     Preview::Loading => div().text_color(c.text_muted).child("Reading…").into_any_element(),
@@ -821,17 +987,22 @@ impl Render for ActivityCard {
         let content = if let Some((name, preview)) = &self.preview {
             self.preview(name, preview, window, cx)
         } else {
-            let sessions = bars.sessions();
             let wake = bars.wake_label().or_else(|| self.force_wakes.then(|| "Wake-ups & Watches".into()));
             let outputs = self.outputs(cx);
-            let sessions = self.sessions(bars, sessions, cx);
+            let sessions = self.sessions(bars, cx);
             let processes = self.processes(bars, cx);
             let wake = wake.zip(self.wake_schedule.clone()).map(|(label, schedule)| {
                 section("activity-wakes", "Wake-ups", cx)
                     .child(div().debug_selector(|| "activity-wake-status".into()).px(space::S2).py(space::S1).text_color(c.text_muted).child(label))
                     .child(schedule).into_any_element()
             });
-            div().flex().flex_col().child(outputs)
+            div().flex().flex_col()
+                .children(((!bars.background_fresh && (!bars.background.commands.is_empty() || !bars.background.subagents.is_empty()))
+                    || (!bars.work_fresh && bars.work.is_some())).then(|| {
+                    div().debug_selector(|| "activity-last-known".into()).p(space::S2)
+                        .text_ui(TypeSize::Caption).text_color(c.text_muted).child("Last known activity")
+                }))
+                .child(outputs)
                 .children([sessions, processes, wake].into_iter().flatten().map(|section| {
                     div().mt(space::S2).pt(space::S2).border_t_1().border_color(c.border).child(section)
                 }))
@@ -886,11 +1057,26 @@ fn mark(icon: IconName, color: gpui::Hsla) -> impl IntoElement {
     div().flex_none().child(Icon::new(icon).size(IconSize::Medium).color(color))
 }
 
+fn append_outputs(outputs: &mut Outputs, page: Outputs) {
+    let mut ids: HashSet<_> = outputs.artifacts.iter().map(|artifact| artifact.id.clone()).collect();
+    outputs.artifacts.extend(page.artifacts.into_iter().filter(|artifact| ids.insert(artifact.id.clone())));
+    outputs.next = page.next;
+}
+
+fn refresh_outputs<E>(mut first: Outputs, pages: usize, mut next: impl FnMut(&str) -> Result<Outputs, E>) -> Result<Outputs, E> {
+    for _ in 1..pages {
+        let Some(cursor) = first.next.as_deref() else { break };
+        let page = next(cursor)?;
+        append_outputs(&mut first, page);
+    }
+    Ok(first)
+}
+
 fn read_preview(client: &BoxClient, artifact: &Artifact) -> Preview {
     // For tracked files the artifact record points at Git rather than keeping a second copy.
     if artifact.gone.is_none() && artifact.latest.reason.as_deref() == Some("git") {
         return match client.read_text(&artifact.path) {
-            Ok(file) if file.text => Preview::Text(file.content),
+            Ok(file) if file.text => Preview::CurrentFile(file.content),
             Ok(_) => Preview::Message("A preview isn’t available for this file type.".into()),
             Err(error) => Preview::Message(error.to_string()),
         };
@@ -909,4 +1095,100 @@ fn read_preview(client: &BoxClient, artifact: &Artifact) -> Preview {
         return Preview::Text(text);
     }
     Preview::Message("A preview isn’t available for this file type.".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::stand_in::{Replies, StandIn};
+    use serde_json::json;
+
+    #[gpui::test]
+    fn failed_activity_is_last_known_and_work_retries_the_same_timestamp(cx: &mut gpui::TestAppContext) {
+        let stand_in = StandIn::at(Replies::Never, 1000.);
+        let bars = cx.update(|cx| cx.new(|cx| WorkBars::new(BoxClient::new(stand_in.clone()), "ses_mira".into(), false, cx)));
+        cx.update(|cx| bars.update(cx, |bars, cx| {
+            bars.set_bot(Some("bot_mira".into()), cx);
+            bars.work_changed(Some(1.), cx);
+        }));
+        cx.run_until_parked();
+        cx.update(|cx| {
+            assert!(bars.read(cx).is_running());
+            assert_eq!(bars.read(cx).work_seen, Some(1.));
+        });
+
+        stand_in.set_down(true);
+        cx.update(|cx| bars.update(cx, |bars, cx| {
+            bars.work_changed(Some(2.), cx);
+            bars.take_background_update(Followed::Failed(kuvo_box::Error::Unreachable("offline".into())), cx);
+        }));
+        cx.run_until_parked();
+        cx.update(|cx| {
+            let bars = bars.read(cx);
+            assert!(!bars.is_running());
+            assert_eq!(bars.work_seen, Some(1.));
+            assert!(!bars.active_rows.is_empty());
+        });
+
+        stand_in.set_down(false);
+        cx.executor().advance_clock(Duration::from_secs(2));
+        cx.run_until_parked();
+        cx.update(|cx| {
+            let bars = bars.read(cx);
+            assert_eq!(bars.work_seen, Some(2.));
+            assert!(bars.is_running());
+        });
+        cx.update(|cx| bars.update(cx, |bars, cx| {
+            bars.work_disconnected(cx);
+            assert!(!bars.is_running());
+            assert!(!bars.active_rows.is_empty());
+        }));
+    }
+
+    #[gpui::test]
+    fn session_rows_are_deduplicated_and_kept_when_background_is_unchanged(cx: &mut gpui::TestAppContext) {
+        let stand_in = StandIn::at(Replies::Never, 1000.);
+        cx.update(|cx| {
+            let bars = cx.new(|cx| WorkBars::new(BoxClient::new(stand_in), "ses_mira".into(), false, cx));
+            bars.update(cx, |bars, cx| {
+                bars.set_bot(Some("bot_mira".into()), cx);
+                bars.read_at_once(cx);
+                let background: Background = serde_json::from_value(json!({ "subagents": [
+                    { "session": "ses_signup", "since": 1. },
+                    { "session": "ses_extra", "since": 2. },
+                    { "session": "ses_extra", "since": 3. }
+                ] })).unwrap();
+                bars.take_background(background.clone(), cx);
+                let first = bars.active_rows.clone();
+                assert_eq!(first.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(), ["ses_signup", "ses_cms", "ses_extra"]);
+                bars.take_background(background, cx);
+                assert!(Rc::ptr_eq(&first, &bars.active_rows));
+            });
+        });
+    }
+
+    #[test]
+    fn a_live_update_refreshes_the_loaded_range_using_new_cursors() {
+        fn page(ids: &[&str], next: Option<&str>) -> Outputs {
+            serde_json::from_value(json!({
+                "artifacts": ids.iter().map(|id| json!({
+                    "id": id, "path": "/tmp/output", "name": "output",
+                    "kind": "file", "type": "text/plain", "latest": {"n": 1}
+                })).collect::<Vec<_>>(),
+                "next": next,
+            })).unwrap()
+        }
+        let updated = refresh_outputs(page(&["new", "a"], Some("after-a")), 3, |cursor| match cursor {
+            "after-a" => Ok(page(&["b", "c"], Some("after-c"))),
+            "after-c" => Ok(page(&["d", "e"], Some("after-e"))),
+            _ => Err("unexpected cursor"),
+        }).unwrap();
+        assert_eq!(updated.artifacts.iter().map(|item| item.id.as_str()).collect::<Vec<_>>(), ["new", "a", "b", "c", "d", "e"]);
+        assert_eq!(updated.next.as_deref(), Some("after-e"));
+    }
+
+    #[test]
+    fn mixed_activity_specifies_whom_sessions_wait_for() {
+        assert_eq!(sessions_label(2, 1), "2 working · 1 waiting for you");
+    }
 }

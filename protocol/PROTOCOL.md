@@ -1273,6 +1273,10 @@ the same for every client and with none connected, and keeps them in `run/queues
   as they went to the engine, go first, in that order. `POST …/queue/resume`: unpaused, and the
   next one goes now. `POST …/queue/<item>/now` (Send Now): unpaused, the item steered (one waiting
   on the box sent), and a run under way stopped to go on with it; 404 when it isn't waiting.
+  `POST …/queue/reorder` takes `{item, anchor, before}` and places the waiting message before
+  or after another waiting message. The order persists across clients and restarts. A message
+  already steered into the current run keeps its slot. The answer includes the reordered
+  `items`; 409 means a message can no longer be moved.
   `POST …/queue/<item>/steer` (Steer, `queue.steer`): unpaused, and the item for the agent's next
   step in the run under way, which goes on: the engine takes it then, and the coding agents' bridge
   hands it into the turn where its agent takes one partway (Claude Code, Codex; the bridge's `PATCH

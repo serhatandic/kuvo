@@ -154,3 +154,19 @@ test("wake-ups waiting in the engine and on a stopped queue use the stored summa
     ["engine", "Check the release"], ["box", "Check the release"],
   ])
 })
+
+test("reordering persists across queue reads and the next drain follows it", async () => {
+  // The already-steered message keeps its slot. Swap two messages waiting for the run to end.
+  inboxes.ses_q!.push({ id: "msg_second", type: "user", delivery: "queue", payload: { text: "Second." } })
+  const path = "kuvo/sessions/ses_q/queue"
+  for (const _ of [1, 2]) {
+    expect((await ask(handler, "POST", `${path}/reorder`, { item: "msg_second", anchor: "msg_mail", before: true })).status).toBe(200)
+  }
+  const { readQueues, drain } = await import("../src/link/engine/queue")
+  expect(readQueues().ses_q?.order).toEqual(["msg_second", "msg_mail"])
+  const reopened = await ask(handler, "GET", `${path}?items=1`)
+  expect(reopened.json.items.map((row: { id: string }) => row.id)).toEqual(["msg_steer", "msg_second", "msg_mail"])
+  inboxes.ses_q = inboxes.ses_q!.filter(row => row.id !== "msg_steer")
+  await drain(target, "ses_q")
+  expect(inboxes.ses_q.find(row => row.delivery === "steer")?.id).toBe("msg_second")
+})

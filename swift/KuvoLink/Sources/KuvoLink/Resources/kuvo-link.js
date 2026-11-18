@@ -2254,6 +2254,7 @@ var init_sessions = __esm(() => {
     { route: "GET kuvo/sessions/:id/mentions", answers: { 200: MENTIONS, 400: REFUSED2, 404: REFUSED2, 503: REFUSED2 } },
     { route: "POST kuvo/sessions/:id/stop", answers: { 200: QUEUE, 404: REFUSED2, 502: REFUSED2, 503: REFUSED2 } },
     { route: "POST kuvo/sessions/:id/queue/hold", answers: { 200: QUEUE, 404: REFUSED2, 502: REFUSED2, 503: REFUSED2 } },
+    { route: "POST kuvo/sessions/:id/queue/reorder", answers: { 200: QUEUE_SHOWN, 400: REFUSED2, 404: REFUSED2, 409: REFUSED2, 502: REFUSED2, 503: REFUSED2, 504: REFUSED2 } },
     { route: "POST kuvo/sessions/:id/queue/resume", answers: { 200: QUEUE, 404: REFUSED2, 502: REFUSED2, 503: REFUSED2 } },
     { route: "POST kuvo/sessions/:id/queue/:item/now", answers: { 200: QUEUE, 404: REFUSED2, 502: REFUSED2, 503: REFUSED2 } },
     { route: "POST kuvo/sessions/:id/queue/:item/steer", answers: { 200: QUEUE, 404: REFUSED2, 502: REFUSED2, 503: REFUSED2 } },
@@ -10573,6 +10574,7 @@ var keptState = (value) => {
     held: isObject(value) && Array.isArray(value.held) ? value.held.filter((id) => typeof id === "string") : [],
     ...isObject(value) && typeof value.resumed === "number" ? { resumed: value.resumed } : {},
     ...waiting.length ? { waiting } : {},
+    ...isObject(value) && Array.isArray(value.order) && value.order.length ? { order: [...new Set(value.order.filter((id) => typeof id === "string"))] } : {},
     ...isObject(value) && value.paused === true && value.heldFor === "goal" ? { heldFor: "goal" } : {},
     ...isObject(value) && isObject(value.arriving) && Object.keys(value.arriving).length ? { arriving: Object.fromEntries(Object.entries(value.arriving).filter((each) => typeof each[1] === "number")) } : {},
     ...isObject(value) && Array.isArray(value.cameHeld) && value.cameHeld.length ? { cameHeld: value.cameHeld.filter((id) => typeof id === "string") } : {}
@@ -10587,7 +10589,7 @@ function readQueues(files) {
   } catch {}
   return isObject(all) ? Object.fromEntries(Object.entries(all).map(([session, state]) => [session, keptState(state)])) : {};
 }
-function changeQueue(files, session, change, changed) {
+function changeQueue(files, session, change, changed, strict = false) {
   let made = false;
   const after = locked(files.lock, () => {
     const all = readQueues(files);
@@ -10612,12 +10614,15 @@ function changeQueue(files, session, change, changed) {
         if (!Object.keys(each.arriving).length)
           delete each.arriving;
       }
-      if (!showsQueue(each) && !each.resumed && !each.arriving)
+      if (!showsQueue(each) && !each.order?.length && !each.resumed && !each.arriving)
         delete all[id];
     }
     try {
       writePrivate(files.file, JSON.stringify(all));
-    } catch {}
+    } catch (error) {
+      if (strict)
+        throw error;
+    }
     return state;
   });
   if (made)
@@ -10986,16 +10991,43 @@ async function onlyASummaryFailed(target, session) {
 }
 var setDelivery = (target, session, item, delivery) => asked(target, "PATCH", `api/session/${address(session)}/inbox/${address(item)}`, { delivery });
 var interrupt = (target, session, resume = false) => asked(target, "POST", `api/session/${address(session)}/interrupt${resume ? "?resume=true" : ""}`);
-function orderOf(inbox, { held, waiting = [] }) {
-  const first = held.filter((id) => inbox.some((item) => item.id === id) || waiting.some((each) => each.id === id));
-  const then = (ids) => ids.filter((id) => !first.includes(id));
-  return [
-    ...first,
-    ...then(inbox.filter((item) => item.delivery === "steer").map((item) => item.id)),
-    ...then(inbox.filter((item) => item.delivery === "queue").map((item) => item.id)),
-    ...then(waiting.map((each) => each.id))
-  ];
+function orderOf(inbox, { held, waiting = [], order = [] }) {
+  const heldSet = new Set(held);
+  const inboxById = new Map(inbox.map((item) => [item.id, item]));
+  const waitingIds = new Set(waiting.map((item) => item.id));
+  const base = [...new Set([
+    ...held.filter((id) => inboxById.has(id) || waitingIds.has(id)),
+    ...inbox.filter((item) => item.delivery === "steer" && !heldSet.has(item.id)).map((item) => item.id),
+    ...inbox.filter((item) => item.delivery === "queue" && !heldSet.has(item.id)).map((item) => item.id),
+    ...waitingIds
+  ])];
+  if (!order.length)
+    return base;
+  const fixed = new Set(inbox.filter((item) => item.type === "compaction" || item.delivery === "steer" && !heldSet.has(item.id)).map((item) => item.id));
+  const movable = new Set(base.filter((id) => !fixed.has(id)));
+  const ranked = order.filter((id) => movable.delete(id)).concat([...movable]);
+  let index = 0;
+  return base.map((id) => fixed.has(id) ? id : ranked[index++]);
 }
+async function reorderQueue(target, session, item, anchor, before) {
+  const inbox = await inboxNow(target, session);
+  let moved = false;
+  const state = changeQueue(FILES, session, (state) => {
+    const steer = new Set(inbox.filter((each) => each.delivery === "steer" && !state.held.includes(each.id)).map((each) => each.id));
+    const order = orderOf(inbox, state).filter((id) => !steer.has(id));
+    if (item === anchor || !order.includes(item) || !order.includes(anchor))
+      return state;
+    order.splice(order.indexOf(item), 1);
+    order.splice(order.indexOf(anchor) + (before ? 0 : 1), 0, item);
+    moved = true;
+    return { ...state, order };
+  }, tellFollowers, true);
+  return moved ? { state, items: queueItems(inbox, state) } : null;
+}
+var withoutOrder = (state, id) => ({
+  ...state,
+  ...state.order ? { order: state.order.filter((each) => each !== id) } : {}
+});
 var waitingFile2 = (id) => waitingFile(FILES, id);
 var keepWaiting2 = (session, message, shown = {}, place, target) => keepWaiting(FILES, session, message, shown, tellFollowers, place, target ? swapHoldsFor(target) : false);
 var keepWaitingHeld = (session, message, words) => keepWaiting2(session, message, words === undefined ? {} : { words: words.trim() }, (state, waiting) => {
@@ -11012,6 +11044,12 @@ var placedBefore = (inbox, before) => (given, item) => {
   const at = before && before !== item.id ? order.indexOf(before) : -1;
   if (at < 0)
     return { ...state, waiting: [...waiting, item] };
+  if (state.order?.includes(before)) {
+    const index = state.order.indexOf(before);
+    const order = state.order.filter((id) => id !== item.id);
+    order.splice(index, 0, item.id);
+    return { ...state, order, waiting: [...waiting, item] };
+  }
   const inHeld = state.held.indexOf(before);
   if (inHeld >= 0)
     return { ...state, held: [...state.held.slice(0, inHeld), item.id, ...state.held.slice(inHeld)], waiting: [...waiting, item] };
@@ -11038,7 +11076,8 @@ function takeWaiting(session, item, resume = false, inbox = []) {
   let held = false;
   let before;
   changeQueue2(session, (state) => {
-    shown = item ? state.waiting?.find((each) => each.id === item) : state.waiting?.[0];
+    const next = item ?? orderOf([], state)[0];
+    shown = state.waiting?.find((each) => each.id === next);
     if (!shown)
       return state;
     const order = orderOf(inbox, state);
@@ -11079,13 +11118,15 @@ function carryQueue(from, to, renamed) {
     was = state;
     return { paused: false, held: [] };
   });
-  if (!showsQueue(was))
+  if (!showsQueue(was) && !was.order?.length)
     return;
   const held = was.held.flatMap((id) => renamed[id] ? [renamed[id]] : was.waiting?.some((each) => each.id === id) ? [id] : []);
+  const order = was.order?.flatMap((id) => renamed[id] ? [renamed[id]] : was.waiting?.some((each) => each.id === id) ? [id] : []);
   changeQueue2(to, (state) => ({
     ...state,
     paused: state.paused || was.paused,
     held: [...state.held, ...held],
+    ...order?.length ? { order: [...state.order ?? [], ...order] } : {},
     ...was.waiting?.length ? { waiting: [...state.waiting ?? [], ...was.waiting] } : {}
   }));
 }
@@ -11178,7 +11219,12 @@ async function packQueues(target, sessions) {
       }];
     });
     const ids = new Set(waiting.map((each) => each.shown.id));
-    packed[session] = { paused: state.paused, held: state.held.map((id) => renamed[id] ?? id).filter((id) => ids.has(id)), waiting };
+    packed[session] = {
+      paused: state.paused,
+      held: state.held.map((id) => renamed[id] ?? id).filter((id) => ids.has(id)),
+      waiting,
+      ...state.order?.length ? { order: waiting.map((each) => each.shown.id) } : {}
+    };
   }
   return packed;
 }
@@ -11202,7 +11248,8 @@ function unpackQueues(carried, sessions) {
       waiting.push(shown);
     }
     const held = (Array.isArray(queue.held) ? queue.held : []).filter((id) => typeof id === "string" && waiting.some((each) => each.id === id));
-    changeQueue2(session, () => ({ paused: true, held, ...waiting.length ? { waiting } : {} }));
+    const order = (Array.isArray(queue.order) ? queue.order : []).filter((id) => typeof id === "string" && waiting.some((each) => each.id === id));
+    changeQueue2(session, () => ({ paused: true, held, ...waiting.length ? { waiting } : {}, ...order.length ? { order } : {} }));
     if (queue.paused !== true)
       goOn.push(session);
   }
@@ -11218,7 +11265,10 @@ function forgetQueue(session) {
     fs24.rmSync(waitingFile2(each.id), { force: true });
 }
 function dropWaiting(session, item, inbox = []) {
-  return takeWaiting(session, item, false, inbox);
+  const dropped = takeWaiting(session, item, false, inbox);
+  if (dropped)
+    changeQueue2(session, (state) => withoutOrder(state, item));
+  return dropped;
 }
 var inboxFor = (target, session) => inboxOf(target, session).catch(() => []);
 var inboxNow = (target, session, patience) => inboxOf(target, session, patience).then(messagesIn);
@@ -11307,7 +11357,7 @@ async function takeBackFromInbox(target, session, item) {
   const recent = await asked(target, "GET", `api/session/${address(session)}/message?limit=40&order=desc`).catch(() => null);
   if (Array.isArray(recent?.data) && recent.data.some((message) => isObject(message) && message.id === item))
     return null;
-  changeQueue2(session, (state) => ({ ...state, held: state.held.filter((id) => id !== item) }));
+  changeQueue2(session, (state) => ({ ...withoutOrder(state, item), held: state.held.filter((id) => id !== item) }));
   const shown = shownOfInbox(entry);
   const text = typeof entry.payload?.text === "string" ? entry.payload.text : typeof entry.text === "string" ? entry.text : "";
   const files = sendableFiles(entry.payload?.files);
@@ -11317,19 +11367,28 @@ async function drain(target, session) {
   if (queueOf(session).paused || swapHoldsFor(target) || await isRunning(target, session))
     return;
   const inbox = await inboxOf(target, session);
-  const first = orderOf(inbox, queueOf(session))[0];
-  if (queueOf(session).paused || await isRunning(target, session))
+  if (await isRunning(target, session))
     return;
-  if (!first)
+  const state = queueOf(session);
+  if (state.paused)
     return;
+  const first = orderOf(inbox, state)[0];
+  if (!first) {
+    if (state.order?.length)
+      changeQueue2(session, (current) => current.order?.every((id) => state.order.includes(id)) ? { ...current, order: [] } : current);
+    return;
+  }
   const next = inbox.find((item) => item.id === first);
-  if (!next)
-    return sendWaiting(target, session, first);
+  if (!next) {
+    await sendWaiting(target, session, first);
+    changeQueue2(session, (state) => withoutOrder(state, first));
+    return;
+  }
   if (next.delivery === "queue")
     await setDelivery(target, session, next.id, "steer");
   else
     await interrupt(target, session, true);
-  changeQueue2(session, (state) => ({ ...state, held: state.held.filter((id) => id !== next.id) }));
+  changeQueue2(session, (state) => ({ ...withoutOrder(state, next.id), held: state.held.filter((id) => id !== next.id) }));
 }
 async function sendWaiting(target, session, item) {
   const taken = takeWaiting(session, item);
@@ -11373,7 +11432,15 @@ async function holdQueue(target, session, since, items = []) {
   const waiting = await inboxOf(target, session).then(messagesIn, () => inbox);
   return changeQueue2(session, (state) => {
     const there = (id) => waiting.some((item) => item.id === id) || Boolean(state.waiting?.some((each) => each.id === id));
-    return since !== undefined && (state.resumed ?? 0) >= since ? state : { ...state, paused: state.paused || waiting.length > 0 || Boolean(state.waiting?.length), held: [...moved.filter(there), ...state.held.filter((id) => !moved.includes(id) && there(id))] };
+    if (since !== undefined && (state.resumed ?? 0) >= since)
+      return state;
+    const newlyHeld = moved.filter(there);
+    return {
+      ...state,
+      paused: state.paused || waiting.length > 0 || Boolean(state.waiting?.length),
+      held: [...newlyHeld, ...state.held.filter((id) => !moved.includes(id) && there(id))],
+      ...state.order && newlyHeld.length ? { order: [...newlyHeld, ...state.order.filter((id) => !moved.includes(id) && there(id))] } : {}
+    };
   });
 }
 async function stopSession(target, session, holds = true, items = []) {
@@ -11423,7 +11490,7 @@ async function steerQueued(target, session, item, toAgents) {
   const entry = (await inboxOf(target, session)).find((each) => each.id === item);
   if (!entry || !await isRunning(target, session))
     return sendNow(target, session, item);
-  changeQueue2(session, (state) => ({ ...state, held: state.held.filter((id) => id !== item) }));
+  changeQueue2(session, (state) => ({ ...withoutOrder(state, item), held: state.held.filter((id) => id !== item) }));
   if (entry.delivery === "steer" && !toAgents)
     return true;
   try {
@@ -11442,7 +11509,7 @@ function goesFirst(session, item) {
     if (!shown)
       return state;
     found = true;
-    return { ...state, paused: false, resumed: Date.now(), held: state.held.filter((id) => id !== item), waiting: [shown, ...state.waiting.filter((each) => each !== shown)] };
+    return { ...state, paused: false, resumed: Date.now(), held: state.held.filter((id) => id !== item), waiting: [shown, ...state.waiting.filter((each) => each !== shown)], ...state.order ? { order: [item, ...state.order.filter((id) => id !== item)] } : {} };
   });
   return found;
 }
@@ -11468,12 +11535,13 @@ async function moveInboxToBox(target, session) {
     changeQueue2(session, (state) => ({
       ...state,
       held: state.held.map((each) => each === id ? own : each),
+      ...state.order ? { order: state.order.map((each) => each === id ? own : each) } : {},
       waiting: [...kept, waiting, ...(state.waiting ?? []).filter((each) => each.id !== own && !kept.some((one) => one.id === each.id))]
     }));
     try {
       await asked(target, "DELETE", `api/session/${address(session)}/inbox/${address(id)}`);
     } catch {
-      changeQueue2(session, (state) => ({ ...state, held: state.held.map((each) => each === own ? id : each), waiting: (state.waiting ?? []).filter((each) => each.id !== own) }));
+      changeQueue2(session, (state) => ({ ...state, held: state.held.map((each) => each === own ? id : each), ...state.order ? { order: state.order.map((each) => each === own ? id : each) } : {}, waiting: (state.waiting ?? []).filter((each) => each.id !== own) }));
       fs24.rmSync(waitingFile2(own), { force: true });
       continue;
     }
@@ -11500,12 +11568,15 @@ async function releaseWaiting(target) {
       const taken = takeWaiting(session);
       if (!taken)
         break;
-      if (!taken.message)
+      if (!taken.message) {
+        changeQueue2(session, (state) => withoutOrder(state, taken.shown.id));
         continue;
+      }
       const steer = first;
       first = false;
       try {
         await asked(target, "POST", `api/session/${address(session)}/prompt`, { ...taken.message, ...steer ? { delivery: "steer" } : {} });
+        changeQueue2(session, (state) => withoutOrder(state, taken.shown.id));
         sent++;
       } catch (error) {
         if (/ 404\.$/.test(String(error?.message)))
@@ -22805,10 +22876,10 @@ async function settleWorkRead(target, signal) {
 }
 var endTime = (row) => isObject(row?.time) && typeof row.time.created === "number" ? row.time.created : undefined;
 var tokensOf = (data) => (data.tokens?.input ?? 0) + (data.tokens?.output ?? 0) + (data.tokens?.reasoning ?? 0);
-async function describeWork(listed, working, { replies = false, signal } = {}) {
+async function describeWork(listed, working, { replies = false, signal, ask } = {}) {
   const { data } = listed;
   const folder = data.location?.directory ?? data.directory ?? "";
-  const asking = await askingNow(listed, signal);
+  const asking = ask === undefined ? await askingNow(listed, signal) : ask;
   const read = replies && !working.has(data.id);
   const page = read ? await lastMessages(listed.target, data.id, signal) : null;
   const outcome = read ? outcomeOf(listed, page) : data.outcome;
@@ -45447,7 +45518,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "f8786caa6279";
+var BRIDGE_VERSION = "a93009a55bff";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -63298,7 +63369,7 @@ async function* partsRoute(context) {
 }
 
 // box/src/link/areas/queue.ts
-var QUEUE_ROUTE = /^kuvo\/sessions\/(?:queues\/events|([^/]+)\/(stop|queue(?:\/(hold|resume|add|events))?|queue\/([^/]+)(?:\/(now|steer))?))$/;
+var QUEUE_ROUTE = /^kuvo\/sessions\/(?:queues\/events|([^/]+)\/(stop|queue(?:\/(hold|resume|add|events|reorder))?|queue\/([^/]+)(?:\/(now|steer))?))$/;
 var ITEMS_WAIT = 2000;
 async function queueShown(session, targets) {
   const state = queueOf(session);
@@ -63346,7 +63417,7 @@ async function* queueRoute(context, match) {
         queueFollowers.delete(told);
         inboxFollowers.delete(heard);
       };
-    }, signal ?? undefined, { look: () => JSON.stringify(shownQueue(queueOf(session))) });
+    }, signal ?? undefined, { look: () => JSON.stringify(queueOf(session)) });
   }
   const stopping = action === "stop" || step === "hold";
   const settling = () => liveMoves().some((move) => move.role === "from" && move.stage === "holding" && (move.thing === session || move.sessions.includes(session)));
@@ -63415,6 +63486,15 @@ async function* queueRoute(context, match) {
       if (!once)
         return yield* add2(context, target, session);
       return yield* answering2(await sentOnce(once, () => collected(add2(context, target, session))));
+    }
+    if (step === "reorder") {
+      const given = parsed(request.body);
+      if (!isObject(given) || typeof given.item !== "string" || typeof given.anchor !== "string" || typeof given.before !== "boolean")
+        return yield* json(400, { message: "Give the message, its neighbor, and which side to put it on." });
+      const reordered = await reorderQueue(place.target, session, given.item, given.anchor, given.before);
+      if (!reordered)
+        return yield* json(409, { message: "Those messages can’t be moved now. Check the queue and try again." });
+      return yield* json(200, { ...shownQueue(reordered.state), items: reordered.items });
     }
     forgetStopped(session);
     forgetArriving(session);
@@ -67117,10 +67197,22 @@ async function botWork(bot, context) {
   const work = ofBot(bot, await workSessions(targets, signal ?? undefined));
   const working = await atWorkNow(targets, signal ?? undefined);
   const sessions = [];
-  const shown = work.slice(0, 60);
-  const asked = workAccounts(shown.map((each) => ({ id: each.data.id, target: each.target, provider: each.data.model?.providerID })), signal ?? undefined);
+  let recent = 0;
+  const shown = [];
+  for (let at = 0;at < work.length && !signal?.aborted; at += 8) {
+    const checked = await Promise.all(work.slice(at, at + 8).map(async (listed) => ({ listed, ask: await askingNow(listed, signal ?? undefined) })));
+    for (const row of checked) {
+      if (row.ask || working.has(row.listed.data.id))
+        shown.push(row);
+      else if (recent < 60) {
+        shown.push(row);
+        recent++;
+      }
+    }
+  }
+  const asked = workAccounts(shown.map(({ listed }) => ({ id: listed.data.id, target: listed.target, provider: listed.data.model?.providerID })), signal ?? undefined);
   for (let at = 0;at < shown.length; at += 8) {
-    sessions.push(...await Promise.all(shown.slice(at, at + 8).map((each) => describeWork(each, working, { replies: true, signal: signal ?? undefined }))));
+    sessions.push(...await Promise.all(shown.slice(at, at + 8).map(({ listed, ask }) => describeWork(listed, working, { replies: true, ask, signal: signal ?? undefined }))));
   }
   const allAnswered = work.flatMap((each) => answersOn(each.data.metadata).map((answer) => ({ ...answer, session: each.data.id }))).sort((a, b) => b.at - a.at);
   const answered = allAnswered.slice(0, 100);

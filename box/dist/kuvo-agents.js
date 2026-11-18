@@ -32452,6 +32452,7 @@ var keptState = (value) => {
     held: isObject(value) && Array.isArray(value.held) ? value.held.filter((id) => typeof id === "string") : [],
     ...isObject(value) && typeof value.resumed === "number" ? { resumed: value.resumed } : {},
     ...waiting.length ? { waiting } : {},
+    ...isObject(value) && Array.isArray(value.order) && value.order.length ? { order: [...new Set(value.order.filter((id) => typeof id === "string"))] } : {},
     ...isObject(value) && value.paused === true && value.heldFor === "goal" ? { heldFor: "goal" } : {},
     ...isObject(value) && isObject(value.arriving) && Object.keys(value.arriving).length ? { arriving: Object.fromEntries(Object.entries(value.arriving).filter((each) => typeof each[1] === "number")) } : {},
     ...isObject(value) && Array.isArray(value.cameHeld) && value.cameHeld.length ? { cameHeld: value.cameHeld.filter((id) => typeof id === "string") } : {}
@@ -32466,7 +32467,7 @@ function readQueues(files) {
   } catch {}
   return isObject(all) ? Object.fromEntries(Object.entries(all).map(([session, state]) => [session, keptState(state)])) : {};
 }
-function changeQueue(files, session, change, changed) {
+function changeQueue(files, session, change, changed, strict = false) {
   let made = false;
   const after = locked(files.lock, () => {
     const all = readQueues(files);
@@ -32491,12 +32492,15 @@ function changeQueue(files, session, change, changed) {
         if (!Object.keys(each.arriving).length)
           delete each.arriving;
       }
-      if (!showsQueue(each) && !each.resumed && !each.arriving)
+      if (!showsQueue(each) && !each.order?.length && !each.resumed && !each.arriving)
         delete all[id];
     }
     try {
       writePrivate(files.file, JSON.stringify(all));
-    } catch {}
+    } catch (error) {
+      if (strict)
+        throw error;
+    }
     return state;
   });
   if (made)
@@ -39622,4 +39626,4 @@ if (!onMachine) {
 }
 process.on("SIGTERM", () => stop());
 process.on("SIGINT", () => stop());
-// Built from Packages/Box/src/agents 632f573a8bc4ad3ef196a8b36f03c150f4ed941f364d304111a26961eb0ebb8c
+// Built from Packages/Box/src/agents 85e299fb4bb202ff562baf307959b7e1f07fd1b8759accdd984eed98d32d839f

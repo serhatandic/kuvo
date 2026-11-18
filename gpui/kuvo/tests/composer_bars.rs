@@ -290,3 +290,35 @@ fn a_bots_conversation_shows_its_sessions_and_wake_schedule(cx: &mut TestAppCont
     click(cx, "activity-session-ses_cms");
     assert_eq!(workspace.read_with(cx, |workspace, _| (workspace.area(), workspace.opened().map(str::to_owned))), (Area::Sessions, Some("ses_cms".into())));
 }
+
+#[gpui::test]
+fn stop_all_keeps_recent_sessions_openable_after_the_last_one_ends(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (workspace, cx) = open(cx, stand_in.clone());
+    click(cx, "rail-bots");
+    click(cx, "bot-bot_mira");
+    click(cx, "conversation-activity-button");
+    assert!(shown(cx, "activity-stop-all") && shown(cx, "activity-session-ses_dark"));
+    click(cx, "activity-stop-all");
+    assert_eq!(stand_in.seen_at("POST", "kuvo/bots/bot_mira/stop-all").len(), 1);
+    assert!(!shown(cx, "conversation-activity-running") && !shown(cx, "activity-stop-all"));
+    assert!(shown(cx, "activity-recent") && shown(cx, "activity-session-ses_signup"));
+    click(cx, "activity-session-ses_dark");
+    assert_eq!(workspace.read_with(cx, |workspace, _| workspace.opened().map(str::to_owned)).as_deref(), Some("ses_dark"));
+}
+
+#[gpui::test]
+fn a_git_backed_output_labels_the_current_file(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.add_output("ses_signup", json!({
+        "id": "art_000000000000000000000001",
+        "path": format!("{WEBSITE}/src/components/SignupForm.tsx"),
+        "name": "SignupForm.tsx", "kind": "code", "type": "text/plain",
+        "latest": { "n": 3, "reason": "git" },
+    }), &[]);
+    let (_, cx) = conversation(cx, &stand_in, "ses_signup");
+    click(cx, "conversation-activity-button");
+    click(cx, "activity-output-art_000000000000000000000001");
+    assert!(shown(cx, "activity-current-file"));
+    assert_eq!(stand_in.seen_at("GET", "kuvo/file/text").len(), 1);
+}

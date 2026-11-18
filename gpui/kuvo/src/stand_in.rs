@@ -2187,6 +2187,18 @@ impl StandIn {
             }
             // Steer: for the agent's next step (one on the box, or with nothing running, goes now).
             // Send Now: to the agent at once, setting a stopped queue going.
+            ("POST", ["kuvo", "sessions", session, "queue", "reorder"]) => {
+                let Some(queue) = state.queues.get_mut(*session) else { return answer(404, json!({})) };
+                let (item, anchor) = (&body["item"], &body["anchor"]);
+                let (Some(from), Some(mut at)) = (queue.iter().position(|row| row["id"] == *item), queue.iter().position(|row| row["id"] == *anchor)) else {
+                    return answer(409, json!({ "message": "Those messages can’t be moved now." }));
+                };
+                let row = queue.remove(from);
+                if from < at { at -= 1; }
+                queue.insert(at + usize::from(body["before"] == false), row);
+                state.told(session, Followed::Queue);
+                answer(200, json!({ "paused": state.paused.contains(*session), "items": state.queues.get(*session) }))
+            }
             ("POST", ["kuvo", "sessions", session, "queue", item, how @ ("steer" | "now")]) => {
                 let session = (*session).to_owned();
                 let running = state.running.contains(&session);

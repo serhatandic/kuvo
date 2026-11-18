@@ -235,3 +235,44 @@ fn a_send_for_after_the_run_does_not_appear_in_the_transcript_while_waiting(cx: 
     let row = stand_in.queue_of("ses_signup").into_iter().find(|item| item["words"] == words).unwrap();
     assert!(bounds(cx, &format!("queued-{}", row["id"].as_str().unwrap())).is_some());
 }
+
+#[gpui::test]
+fn a_queue_drag_persists_across_reopening_and_keyboard_moves_it_back(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (workspace, cx) = open(cx, stand_in.clone());
+    open_session(&workspace, "ses_signup", cx);
+    let button = gpui::MouseButton::Left;
+    let drag = |cx: &mut VisualTestContext, first: &str, second: &str| {
+        let from = bounds(cx, first).unwrap().center();
+        let to = bounds(cx, second).unwrap().center();
+        cx.simulate_mouse_down(from, button, Modifiers::default());
+        for _ in 0..2 {
+            cx.simulate_mouse_move(to, Some(button), Modifiers::default());
+        }
+        cx.run_until_parked();
+        assert!(bounds(cx, "queue-drag-preview").is_some());
+        to
+    };
+    let to = drag(cx, "queued-msg_q1", "queued-msg_q2");
+    cx.simulate_keystrokes("escape");
+    cx.simulate_mouse_up(to, button, Modifiers::default());
+    cx.run_until_parked();
+    assert!(bounds(cx, "queue-drag-preview").is_none());
+    let route = "kuvo/sessions/ses_signup/queue/reorder";
+    assert!(stand_in.seen_at("POST", route).is_empty());
+
+    let to = drag(cx, "queued-msg_q1", "queued-msg_q2");
+    cx.simulate_mouse_up(to, button, Modifiers::default());
+    cx.run_until_parked();
+    assert_eq!(stand_in.queue_of("ses_signup")[0]["id"], "msg_q2");
+    assert_eq!(stand_in.seen_at("POST", route).len(), 1);
+    open_session(&workspace, "ses_recipes", cx);
+    open_session(&workspace, "ses_signup", cx);
+    let first = bounds(cx, "queued-msg_q2").unwrap();
+    let second = bounds(cx, "queued-msg_q1").unwrap();
+    assert!(first.top() < second.top());
+    cx.simulate_click(first.center(), Modifiers::default());
+    cx.simulate_keystrokes("alt-down");
+    cx.run_until_parked();
+    assert_eq!(stand_in.queue_of("ses_signup")[0]["id"], "msg_q1");
+}
