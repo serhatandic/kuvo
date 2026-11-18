@@ -41,7 +41,7 @@ import type { MailSender, Peer } from "./known";
  * between your own computers (never to or from a box a peer vouches for; the bridge sends and
  * takes them only within its setup, `SeatPeers.setup`). */
 export interface SeatMail {
-  kind: SeatMailKind | "limits" | "usage" | "settings";
+  kind: SeatMailKind | "limits" | "usage" | "settings" | "insights";
   memory?: { bot: string; chat: string; [field: string]: unknown };
   [field: string]: unknown;
 }

@@ -14,17 +14,17 @@ import { execFileSync } from "node:child_process"
 import { createHash } from "node:crypto"
 import { lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs"
 import { homedir, hostname } from "node:os"
-import { basename, dirname, join } from "node:path"
+import { basename, dirname, isAbsolute, join, relative, sep } from "node:path"
 import type { AgentKind } from "../accounts"
 import { parseProvider } from "../accounts"
 import type { Agent } from "../agent"
 import { emit } from "../events"
 import { identityOf, type LimitsService } from "../limits"
 import { claudeLine, dedupClaude, fromKeptClaude, keptClaude, type KeptClaudeEntry } from "./claude-log"
-import { codexLine, codexSlots, codexState, codexStateFrom, fromKeptCodex, keptCodex, type CodexState, type KeptCodexEvent } from "./codex-log"
+import { codexKey, codexLine, codexSlots, codexState, codexStateFrom, fromKeptCodex, keptCodex, type CodexState, type KeptCodexEvent } from "./codex-log"
 import { engineCodexRows, engineCodexSlots, engineStamp } from "./engine-codex"
 import { dedupGrok, fromKeptGrok, grokLine, grokSlots, keptGrok, type KeptGrokEntry } from "./grok-log"
-import { AntigravityHistory, antigravitySlots } from "./antigravity-history"
+import { AntigravityHistory, antigravitySlots, modelCandidates } from "./antigravity-history"
 import { cursorReachable, type CursorClient } from "./cursor-api"
 import { CursorHistory, cursorSlots, type CursorDay } from "./cursor-history"
 import { databasesStamp } from "./engine-db"
@@ -32,6 +32,8 @@ import { HOSTED_PROVIDERS, hostedAnswers, hostedSlots, type HostedRow } from "./
 import { claudeSlots, daysIn, slotsFrom, keptSlots, knownZone, noSlots, ownZone, summed, trimmed, type Day, type Slots, KEPT_DAYS, UNATTRIBUTED } from "./history"
 import { JSONLFiles, jsonlFiles } from "./jsonl"
 import type { Pricing, PricingStore } from "./pricing"
+import { insightKey, type NativeUsage } from "./insight-records"
+import type { Insights } from "./insights"
 import type { UsagePeers } from "./usage-peers"
 import { settingsRoutes, type UsageSettings } from "./settings"
 
@@ -249,6 +251,7 @@ export class Usage {
   private said = ""
   /** Your other computers' usage, once the bridge's link is there to carry it. */
   peers?: UsagePeers
+  insights?: Insights
   /** The services this box states the usage of (`opencode` only where it reads its engine's databases). */
   services: LimitsService[] = USAGE_SERVICES
   private kept?: UsageSettings
@@ -642,13 +645,31 @@ export function claudeRoots(agent: Agent, env: NodeJS.ProcessEnv = process.env, 
   return [...new Set(roots)]
 }
 
+/** The Insights reader only opens roots that resolve inside the agent's own Kuvo folder. */
+interface NativeUsageReader {
+  take(provider: string, rows: NativeUsage[]): void
+  owns(path: string): boolean
+  problem?(provider: string): void
+}
+
+export function insideUsageHome(home: string, path: string): boolean {
+  const inside = (from: string) => from !== ".." && !from.startsWith(".." + sep) && !isAbsolute(from)
+  try {
+    const root = realpathSync(home)
+    if (!inside(relative(home, path)) && !inside(relative(root, path))) return false
+    return inside(relative(root, realpathSync(path)))
+  } catch {
+    return false
+  }
+}
+
 /**
  * The Claude Code accounts whose usage is read here, from the folders each runs Claude Code with
  * (`claudeRoots`). `folder`: where what was read of the logs is kept (`claude-files`, a file a log).
  * A round that read nothing new, with the same prices, works nothing out again. `computer`: this
  * computer, for where its folders are (`placeOf`).
  */
-export function claudeSources(folder?: string, computer = ownComputer): (agents: Agent[]) => UsageSource[] {
+export function claudeSources(folder?: string, computer = ownComputer, native?: NativeUsageReader): (agents: Agent[]) => UsageSource[] {
   const files = new JSONLFiles<KeptClaudeEntry>(
     (line) => claudeLine(line).map(keptClaude),
     (entry) => entry[0],
@@ -662,7 +683,7 @@ export function claudeSources(folder?: string, computer = ownComputer): (agents:
     agents.flatMap((agent) => {
       const parsed = parseProvider(agent.providerID)
       if (parsed?.kind !== "claude" || !agent.conversationRoots) return []
-      const roots = () => claudeRoots(agent)
+      const roots = () => claudeRoots(agent).filter((path) => !native || native.owns(path))
       const source: UsageSource = {
         provider: agent.providerID,
         service: "claude",
@@ -679,8 +700,13 @@ export function claudeSources(folder?: string, computer = ownComputer): (agents:
           await files.refresh(ordered, since)
           const listed = createHash("sha256").update(ordered.map((file) => file.path).join("\n")).digest("hex")
           const before = last.get(agent.providerID)
-          if (before && before.version === files.version && before.pricing === pricing && before.since === since && before.listed === listed) return before.slots
-          const slots = claudeSlots(dedupClaude(files.itemsOf(ordered, since).map(fromKeptClaude)), pricing, since)
+          if (!native && before && before.version === files.version && before.pricing === pricing && before.since === since && before.listed === listed) return before.slots
+          const entries = dedupClaude(files.itemsOf(ordered, since).map(fromKeptClaude))
+          native?.take(agent.providerID, entries.flatMap((entry) => entry.session ? [{
+            session: entry.session, at: entry.at, call: entry.message ?? entry.request ?? insightKey(entry.at, entry.model, entry.tokens),
+            model: entry.model, tokens: entry.tokens,
+          }] : []))
+          const slots = native ? noSlots() : claudeSlots(entries, pricing, since)
           last.set(agent.providerID, { version: files.version, pricing, since, listed, slots })
           return slots
         },
@@ -742,7 +768,7 @@ function isFolder(path: string): boolean {
  * with that one only, never twice. `fallback`: the model whose rates estimate one with no price
  * (`UsageSettings`). A round that read nothing new, with the same prices, works nothing out again.
  */
-export function codexSources(folder?: string, fallback: () => string | undefined = () => undefined, computer = ownComputer): (agents: Agent[]) => UsageSource[] {
+export function codexSources(folder?: string, fallback: () => string | undefined = () => undefined, computer = ownComputer, native?: NativeUsageReader): (agents: Agent[]) => UsageSource[] {
   const files = new JSONLFiles<KeptCodexEvent, CodexState>(
     (line, state) => codexLine(line, state).map(keptCodex),
     (entry) => entry[0],
@@ -755,7 +781,7 @@ export function codexSources(folder?: string, fallback: () => string | undefined
   const last = new Map<string, { version: number; pricing: Pricing; since: number; listed: string; fallback?: string; slots: Slots }>()
   return (agents) => {
     const codex = agents.filter((agent) => parseProvider(agent.providerID)?.kind === "codex")
-    const homes = new Map(codex.map((agent) => [agent.providerID, codexHomes(agent)]))
+    const homes = new Map(codex.map((agent) => [agent.providerID, native ? [(agent.conversationRoots?.() ?? []).filter(native.owns)] : codexHomes(agent)]))
     // Whose each folder is: the account it's really in, not one that links to it; one only linked
     // to (your ~/.codex while CODEX_HOME names another), the first that links to it.
     const owner = new Map<string, string>()
@@ -793,8 +819,15 @@ export function codexSources(folder?: string, fallback: () => string | undefined
           const listed = createHash("sha256").update(found.map((file) => file.path).join("\n")).digest("hex")
           const model = fallback()
           const before = last.get(agent.providerID)
-          if (before && before.version === files.version && before.pricing === pricing && before.since === since && before.listed === listed && before.fallback === model) return before.slots
-          const slots = codexSlots(files.itemsOf(found, since).map(fromKeptCodex), pricing, since, model)
+          if (!native && before && before.version === files.version && before.pricing === pricing && before.since === since && before.listed === listed && before.fallback === model) return before.slots
+          const events = files.itemsOf(found, since).map(fromKeptCodex)
+          native?.take(agent.providerID, events.flatMap((event) => event.session ? [{
+            session: event.session, call: insightKey(codexKey(event)), at: event.at, model: event.model,
+            pricingModels: event.pricingModel ? [event.pricingModel] : undefined,
+            tokens: { input: event.input - event.cached, cacheRead: event.cached, output: event.output,
+              cacheWrite5m: 0, cacheWrite1h: 0, fast: event.fast, ultrafast: event.ultrafast },
+          }] : []))
+          const slots = native ? noSlots() : codexSlots(events, pricing, since, model)
           last.set(agent.providerID, { version: files.version, pricing, since, listed, ...(model ? { fallback: model } : {}), slots })
           return slots
         },
@@ -852,9 +885,9 @@ export function engineCodexSource(folder: string | undefined, signedIn: () => bo
  * names it (the default first, your own Grok's). A folder two accounts name (your `GROK_HOME` that
  * is an added account's home too) is read with that one only, never twice.
  */
-function ownerOf(grok: Agent[]): Map<string, string> {
+function ownerOf(grok: Agent[], owns?: (path: string) => boolean): Map<string, string> {
   const owner = new Map<string, string>()
-  for (const agent of grok) for (const root of agent.conversationRoots!()) if (!owner.has(realOf(root))) owner.set(realOf(root), agent.providerID)
+  for (const agent of grok) for (const root of agent.conversationRoots!()) if ((!owns || owns(root)) && !owner.has(realOf(root))) owner.set(realOf(root), agent.providerID)
   return owner
 }
 
@@ -865,7 +898,7 @@ function ownerOf(grok: Agent[]): Map<string, string> {
  * counted too), only its sessions' `updates.jsonl`; a folder two accounts name, once (`ownerOf`). `folder`: where what was read of them is kept (`grok-files`, a file a log). A
  * round that read nothing new, with the same prices, works nothing out again.
  */
-export function grokSources(folder?: string, computer = ownComputer): (agents: Agent[]) => UsageSource[] {
+export function grokSources(folder?: string, computer = ownComputer, native?: NativeUsageReader): (agents: Agent[]) => UsageSource[] {
   const files = new JSONLFiles<KeptGrokEntry>(
     (line) => grokLine(line).map(keptGrok),
     (entry) => entry[0],
@@ -874,11 +907,11 @@ export function grokSources(folder?: string, computer = ownComputer): (agents: A
   )
   const last = new Map<string, { version: number; pricing: Pricing; since: number; listed: string; slots: Slots }>()
   return (agents) => {
-    const owner = ownerOf(agents.filter((agent) => parseProvider(agent.providerID)?.kind === "grok" && agent.conversationRoots))
+    const owner = ownerOf(agents.filter((agent) => parseProvider(agent.providerID)?.kind === "grok" && agent.conversationRoots), native?.owns)
     return agents.flatMap((agent) => {
       const parsed = parseProvider(agent.providerID)
       if (parsed?.kind !== "grok" || !agent.conversationRoots) return []
-      const roots = () => [...new Set(agent.conversationRoots!())].filter((root) => (owner.get(realOf(root)) ?? agent.providerID) === agent.providerID)
+      const roots = () => [...new Set(agent.conversationRoots!())].filter((path) => !native || native.owns(path)).filter((root) => (owner.get(realOf(root)) ?? agent.providerID) === agent.providerID)
       const source: UsageSource = {
         provider: agent.providerID,
         service: "grok",
@@ -895,8 +928,14 @@ export function grokSources(folder?: string, computer = ownComputer): (agents: A
           await files.refresh(ordered, since)
           const listed = createHash("sha256").update(ordered.map((file) => file.path).join("\n")).digest("hex")
           const before = last.get(agent.providerID)
-          if (before && before.version === files.version && before.pricing === pricing && before.since === since && before.listed === listed) return before.slots
-          const slots = grokSlots(dedupGrok(files.itemsOf(ordered, since).map(fromKeptGrok)), pricing, since)
+          if (!native && before && before.version === files.version && before.pricing === pricing && before.since === since && before.listed === listed) return before.slots
+          if (native) native.take(agent.providerID, ordered.flatMap((file) =>
+            dedupGrok(files.itemsOf([file], since).map(fromKeptGrok)).map((entry) => ({
+              session: entry.session ?? basename(dirname(file.path)), at: entry.at, model: entry.model,
+              call: entry.event ? insightKey(entry.event, entry.model) : insightKey(entry.at, entry.model, entry.tokens),
+              tokens: entry.tokens,
+            }))))
+          const slots = native ? noSlots() : grokSlots(dedupGrok(files.itemsOf(ordered, since).map(fromKeptGrok)), pricing, since)
           last.set(agent.providerID, { version: files.version, pricing, since, listed, slots })
           return slots
         },
@@ -1050,12 +1089,12 @@ export function cursorSources(folder: string | undefined, elsewhere: (provider: 
 }
 
 /** Only Kuvo Code's own Antigravity profiles; never an editor's or ~/.gemini. */
-export function antigravitySources(folder?: string, computer = ownComputer, history = new AntigravityHistory(folder ? join(folder, "antigravity-files") : undefined)): (agents: Agent[]) => UsageSource[] {
+export function antigravitySources(folder?: string, computer = ownComputer, history = new AntigravityHistory(folder ? join(folder, "antigravity-files") : undefined), native?: NativeUsageReader): (agents: Agent[]) => UsageSource[] {
   const last = new Map<string, { events: unknown; pricing: Pricing; since: number; slots: Slots }>()
   return (agents) => agents.flatMap((agent) => {
     const parsed = parseProvider(agent.providerID)
     const profile = (agent as Agent & { profile?: string }).profile
-    if (parsed?.kind !== "antigravity" || !profile) return []
+    if (parsed?.kind !== "antigravity" || !profile || (native && !native.owns(profile))) return []
     return [{
       provider: agent.providerID,
       service: "antigravity" as const,
@@ -1063,10 +1102,23 @@ export function antigravitySources(folder?: string, computer = ownComputer, hist
       ...(agent.instance.label ? { label: agent.instance.label } : {}),
       places: () => [placeOf(computer(), profile)],
       slots: async (pricing: Pricing, since: number) => {
-        const events = await history.scan(profile, since)
+        const rows: NativeUsage[] = []
+        const events = await history.scan(profile, since, native && {
+          owns: native.owns,
+          problem: () => native.problem?.("antigravity"),
+          take(path, events) {
+            for (const event of events) {
+              const models = modelCandidates(event.modelID, event.label)
+              const at = event.timestampSeconds * 1000
+              const tokens = { input: event.inputTokens, output: event.outputTokens, cacheRead: event.cacheReadTokens, cacheWrite5m: 0, cacheWrite1h: 0 }
+              rows.push({ session: basename(path, ".db"), at, call: event.index === undefined ? insightKey(at, models, tokens) : String(event.index), model: models[0], pricingModels: models, tokens })
+            }
+          },
+        })
+        native?.take(agent.providerID, rows)
         const before = last.get(agent.providerID)
         if (before && before.events === events && before.pricing === pricing && before.since === since) return before.slots
-        const slots = antigravitySlots(events, pricing, since)
+        const slots = native ? noSlots() : antigravitySlots(events, pricing, since)
         last.set(agent.providerID, { events, pricing, since, slots })
         return slots
       },

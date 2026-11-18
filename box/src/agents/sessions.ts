@@ -1240,6 +1240,7 @@ export class Sessions {
     this.store.add(session)
     const copy = this.store.get(session.id)!
     copy.messages = structuredClone(record.messages.slice(0, at))
+    for (const message of copy.messages) message.time.usageSession ??= record.session.id
     if (record.agent.kuvoInstructions) copy.agent.kuvoInstructions = structuredClone(record.agent.kuvoInstructions)
     if (Array.isArray(record.agent.autoHeld)) copy.agent.autoHeld = [...(record.agent.autoHeld as string[])]
     this.store.save(session.id, true)
@@ -1819,7 +1820,7 @@ export class Sessions {
     emit("session.inbox.enqueued", { sessionID: id, inboxID: input.id, item: { type: "user", payload: { text: input.text, files: input.files, metadata: input.metadata }, delivery: "steer" } }, directory)
     emit("session.inbox.delivered", { sessionID: id, inboxID: input.id }, directory)
     const attachments: Attachment[] = input.files.map((file) => ({ mime: mime(file.uri), name: file.name, source: { type: "uri", uri: file.uri } }))
-    record.messages.push({ type: "user", id: input.id, time: { created: Date.now() }, text: input.text, files: attachments.length ? attachments : undefined, metadata: input.metadata })
+    record.messages.push({ type: "user", id: input.id, time: { created: Date.now(), origin: this.store.origin?.() }, text: input.text, files: attachments.length ? attachments : undefined, metadata: input.metadata })
     record.session.time.updated = Date.now()
     this.store.save(id, true)
   }
@@ -1908,7 +1909,7 @@ export class Sessions {
     emit("session.inbox.delivered", { sessionID: id, inboxID: input.id }, directory)
     const attachments: Attachment[] = input.files.map((file) => ({ mime: mime(file.uri), name: file.name, source: { type: "uri", uri: file.uri } }))
     if (input.synthetic) record.messages.push({ type: "synthetic", id: input.id, time: { created: Date.now() }, text: input.text, description: input.synthetic.description, metadata: input.synthetic.metadata })
-    else record.messages.push({ type: "user", id: input.id, time: { created: Date.now() }, text: input.text, files: attachments.length ? attachments : undefined, metadata: input.metadata })
+    else record.messages.push({ type: "user", id: input.id, time: { created: Date.now(), origin: this.store.origin?.() }, text: input.text, files: attachments.length ? attachments : undefined, metadata: input.metadata })
     record.session.time.updated = Date.now()
     // Its own undo, while its turn is under way (what the turn changes from here on).
     // (One that couldn't be kept isn't noted: Undo from the message before covers it.)
@@ -2133,7 +2134,7 @@ export class Sessions {
     if (live.relays?.has(input.id)) (run.relayed ??= []).push(input.id)
     const attachments: Attachment[] = input.files.map((file) => ({ mime: mime(file.uri), name: file.name, source: { type: "uri", uri: file.uri } }))
     if (input.synthetic) record.messages.push({ type: "synthetic", id: input.id, time: { created: Date.now() }, text: input.text, description: input.synthetic.description, metadata: input.synthetic.metadata })
-    else record.messages.push({ type: "user", id: input.id, time: { created: Date.now() }, text: input.text, files: attachments.length ? attachments : undefined, metadata: input.metadata })
+    else record.messages.push({ type: "user", id: input.id, time: { created: Date.now(), origin: this.store.origin?.() }, text: input.text, files: attachments.length ? attachments : undefined, metadata: input.metadata })
     session.time.updated = Date.now()
     this.store.save(id, true)
     // Your first message: the session gets a title from it, as the engine's sessions do.

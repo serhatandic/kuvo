@@ -82,6 +82,7 @@ extension BoxGate {
         "sign-in.accounts.state", // #668: no client decides when Disconnect, Sign In Again or Install show
         "sign-in.codes", // #711
         "typed",
+        "usage.insights",
         "usage.notices",
         "waiting", // #711
         "waiting.cards", // #718: what waits on you counts the cards a client used to add itself

@@ -44,6 +44,8 @@ export interface EngineSQL {
   v1: string
   v2: string
   both: string
+  /** The Insights query also uses session and part tables where present. */
+  usage?: true
 }
 
 /** What one database answered: its JSON, or why it couldn't be read. One without message tables answers nothing. */
@@ -90,7 +92,17 @@ self.onmessage = (event) => {
       const v1 = names.includes("message")
       const v2 = names.includes("session_message")
       if (!v1 && !v2) continue
-      const json = db.query(v1 && v2 ? sql.both : v1 ? sql.v1 : sql.v2).values()[0]?.[0]
+      let query = v1 && v2 ? sql.both : v1 ? sql.v1 : sql.v2
+      if (sql.usage) {
+        for (const [table, message] of [["session", "message"], ["session_v2", "session_message"]]) {
+          const columns = db.query("SELECT name FROM pragma_table_info(?)").values(table).flat()
+          const fact = (column) => columns.includes(column) ? "(SELECT " + column + " FROM " + table + " WHERE id = " + message + ".session_id)" : "NULL"
+          for (const column of ["title", "metadata", "parent_id"]) query = query.replaceAll("@" + table + "_" + column + "@", fact(column))
+        }
+        const legacyParts = db.query("SELECT 1 FROM pragma_table_info('part') WHERE name='data'").get()
+        query = query.replaceAll("@legacy_parts@", legacyParts ? "(SELECT json_group_array(json(p.data)) FROM part p WHERE p.message_id=message.id AND json_valid(p.data) AND json_extract(p.data, '$.type')='tool')" : "NULL")
+      }
+      const json = db.query(query).values()[0]?.[0]
       answers.push(typeof json === "string" ? { path, json } : { path })
     } catch (error) {
       answers.push({ path, failed: error instanceof Error ? error.message : String(error) })
@@ -136,4 +148,27 @@ export function readEngineDatabases(folder: string, sql: EngineSQL): Promise<Eng
     clearTimeout(timer)
     worker.terminate()
   })
+}
+
+/** Usage metadata from the Kuvo engine only. Use the same read-only worker as its plan summaries. */
+export function engineUsageAnswers(folder: string, since: number) {
+  const rows = (table: string, role: string, sessionTable: string, parts: string) => `
+    SELECT json_array(session_id, id, ${role}, time_created,
+      json_extract(data, '$.time.completed'),
+      COALESCE(json_extract(data, '$.model.providerID'), json_extract(data, '$.providerID')),
+      COALESCE(json_extract(data, '$.model.id'), json_extract(data, '$.modelID')),
+      json_extract(data, '$.agent'), json_extract(data, '$.tokens'),
+      json_extract(data, '$.metadata.source'),
+      json_extract(data, '$.time.origin'),
+      @${sessionTable}_title@, @${sessionTable}_metadata@, @${sessionTable}_parent_id@,
+      (SELECT json_group_array(json_array(COALESCE(json_extract(part.value,'$.name'),json_extract(part.value,'$.tool')),
+          json_extract(part.value,'$.state.input'))) FROM json_each(${parts}) AS part
+        WHERE json_extract(part.value,'$.type') = 'tool' AND json_extract(part.value,'$.state.status') = 'completed'
+          AND lower(COALESCE(json_extract(part.value,'$.name'),json_extract(part.value,'$.tool'))) IN ('skill','read','read_file'))) AS row
+    FROM ${table} WHERE time_created >= ${Math.trunc(since)} AND json_valid(data)
+      AND (${role} IN ('user','assistant') OR (${role} = 'compaction' AND json_extract(data, '$.status') = 'completed'))`
+  const v1 = rows("message", "json_extract(data, '$.role')", "session", "@legacy_parts@")
+  const v2 = rows("session_message", "type", "session_v2", "json_extract(data, '$.content')")
+  const all = (...parts: string[]) => `SELECT json_group_array(json(row)) FROM (${parts.join(" UNION ALL ")})`
+  return readEngineDatabases(folder, { tables: TABLES_SQL, v1: all(v1), v2: all(v2), both: all(v1, v2), usage: true })
 }

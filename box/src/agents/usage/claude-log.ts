@@ -17,6 +17,7 @@ export interface ClaudeEntry {
   /** When, in ms. */
   at: number
   tokens: Tokens
+  session?: string
   message?: string
   request?: string
   sidechain: boolean
@@ -57,6 +58,7 @@ export function claudeEntries(object: unknown): ClaudeEntry[] {
   const parent: ClaudeEntry = {
     at,
     tokens: parsed.tokens,
+    ...(typeof object.sessionId === "string" ? { session: object.sessionId } : {}),
     ...(typeof message.id === "string" ? { message: message.id } : {}),
     ...(typeof object.requestId === "string" ? { request: object.requestId } : {}),
     sidechain: object.isSidechain === true,
@@ -75,6 +77,7 @@ export function claudeEntries(object: unknown): ClaudeEntry[] {
     entries.push({
       at,
       tokens: own.tokens,
+      ...(parent.session ? { session: parent.session } : {}),
       ...(parent.message !== undefined ? { message: `${parent.message}:advisor:${advisor}` } : {}),
       ...(parent.request !== undefined ? { request: parent.request } : {}),
       sidechain: parent.sidechain,
@@ -175,18 +178,19 @@ function replaces(candidate: ClaudeEntry, existing: ClaudeEntry) {
 
 // What's kept of each file's entries (jsonl.ts), small: [at, message, request, flags, model, input,
 // 5m writes, 1h writes, reads, output, cost]; flags: 1 sidechain, 2 speed, 4 fast.
-export type KeptClaudeEntry = [number, string | null, string | null, number, string | null, number, number, number, number, number, number | null]
+export type KeptClaudeEntry = [number, string | null, string | null, number, string | null, number, number, number, number, number, number | null, string?]
 
 export function keptClaude(entry: ClaudeEntry): KeptClaudeEntry {
   const flags = (entry.sidechain ? 1 : 0) | (entry.speed ? 2 : 0) | (entry.tokens.fast ? 4 : 0)
   const { input, cacheWrite5m, cacheWrite1h, cacheRead, output } = entry.tokens
-  return [entry.at, entry.message ?? null, entry.request ?? null, flags, entry.model ?? null, input, cacheWrite5m, cacheWrite1h, cacheRead, output, entry.cost ?? null]
+  return [entry.at, entry.message ?? null, entry.request ?? null, flags, entry.model ?? null, input, cacheWrite5m, cacheWrite1h, cacheRead, output, entry.cost ?? null, ...(entry.session ? [entry.session] as const : [] as const)]
 }
 
 export function fromKeptClaude(kept: KeptClaudeEntry): ClaudeEntry {
-  const [at, message, request, flags, model, input, cacheWrite5m, cacheWrite1h, cacheRead, output, cost] = kept
+  const [at, message, request, flags, model, input, cacheWrite5m, cacheWrite1h, cacheRead, output, cost, session] = kept
   return {
     at,
+    ...(session ? { session } : {}),
     tokens: { input, cacheWrite5m, cacheWrite1h, cacheRead, output, ...(flags & 4 ? { fast: true } : {}) },
     ...(message !== null ? { message } : {}),
     ...(request !== null ? { request } : {}),
