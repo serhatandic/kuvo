@@ -15,8 +15,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { APP_FOLDER, K, RUN, recordedKind } from "./home";
 import { textOf, writePrivate } from "./files";
-import { commandLineOf, engineRuns, processRuns } from "../shared/platform";
-import { LAUNCH_AGENT, REBOOT_TAG } from "./marks";
+import { commandLineOf, processRuns } from "../shared/platform";
+import { LAUNCH_AGENT, MACHINE_WATCH_AGENT, REBOOT_TAG } from "./marks";
 import { launchTools } from "./uninstall";
 
 export const HELPER_NAME = "Kuvo Helper";
@@ -34,13 +34,13 @@ const xml = (text: string) => text.replace(/&/g, "&amp;").replace(/</g, "&lt;").
  * Stop Kuvo on this Mac, launchd or you quitting it, another copy running, a refusal only you can
  * clear); a new build of it put in its place (an update) has it exit otherwise (75), and a crash
  * does, so launchd always starts it again then. */
-export function helperPlist(app: string, machine = false): string {
+export function helperPlist(app: string, mode: "keep" | "keep-machine" | "watch-machine" = "keep"): string {
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-<key>Label</key><string>${LAUNCH_AGENT}</string>
-<key>ProgramArguments</key><array><string>${xml(helperProgram())}</string><string>${machine ? "keep-machine" : "keep"}</string><string>--home</string><string>${xml(K)}</string></array>
+<key>Label</key><string>${mode === "watch-machine" ? MACHINE_WATCH_AGENT : LAUNCH_AGENT}</string>
+<key>ProgramArguments</key><array><string>${xml(helperProgram())}</string><string>${mode}</string><string>--home</string><string>${xml(K)}</string></array>
 <key>RunAtLoad</key><true/>
 <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
 <key>AbandonProcessGroup</key><true/>
@@ -69,6 +69,10 @@ export function machineKeeperIdentity(): { keeper: number; helper: number } | nu
 
 export const machineKeeperRuns = () => machineKeeperIdentity() !== null;
 
+export function machinePermissionWatcher(pid: number): boolean {
+  return processRuns(pid, "Kuvo Helper") && !!commandLineOf(pid)?.includes(`${helperProgram()} watch-machine`);
+}
+
 export const machineJobFile = path.join(RUN, "machine-helper-job.json");
 export const machineRetryFile = path.join(RUN, "machine-helper-retry");
 
@@ -92,16 +96,16 @@ export function saveMachineJob(job: MachineJob) {
   writePrivate(machineJobFile, JSON.stringify(job));
 }
 
-function machineLaunch() {
+function machineLaunch(label = LAUNCH_AGENT) {
   const tools = launchTools();
   if (!tools) return null;
-  const domain = `gui/${process.getuid?.() ?? 0}`, job = `${domain}/${LAUNCH_AGENT}`;
-  const plist = path.join(tools.agents, `${LAUNCH_AGENT}.plist`);
+  const domain = `gui/${process.getuid?.() ?? 0}`, job = `${domain}/${label}`;
+  const plist = path.join(tools.agents, `${label}.plist`);
   const run = (args: string[]) => spawnSync(tools.launchctl, args, { encoding: "utf8", timeout: 10_000, stdio: ["ignore", "pipe", "pipe"] });
   return { domain, job, plist, run };
 }
 
-function legacyKeeperRuns(): boolean {
+export function legacyKeeperRuns(): boolean {
   const pid = Number(textOf(path.join(RUN, "box.pid")));
   const [helperKeeper] = (textOf(path.join(RUN, "machine-keeper")) ?? "").split(/\s+/).map(Number);
   return pid !== helperKeeper && processRuns(pid, "kuvo-start");
@@ -113,6 +117,67 @@ function waitForKeeper(ready: () => boolean): boolean {
     nap(100);
   }
   return false;
+}
+
+/** Watch for the Files grant while the legacy launch job still owns worker restarts. */
+export function watchMachinePermissions(): boolean {
+  const launch = machineLaunch(MACHINE_WATCH_AGENT);
+  if (!launch) return false;
+  const { domain, job, plist, run } = launch;
+  const loaded = run(["print", job]);
+  if (loaded.error) return false;
+  if (loaded.status === 0) {
+    const pid = Number(/^\s*pid = (\d+)\s*$/m.exec(loaded.stdout ?? "")?.[1]);
+    if (machinePermissionWatcher(pid)) return true;
+    return run(["kickstart", job]).status === 0;
+  }
+  writePrivate(plist, helperPlist("run.kuvo.code", "watch-machine"));
+  return run(["bootstrap", domain, plist]).status === 0;
+}
+
+function stopMachinePermissionWatch(): boolean {
+  const launch = machineLaunch(MACHINE_WATCH_AGENT);
+  if (!launch) return false;
+  const { job, plist, run } = launch;
+  const loaded = run(["print", job]);
+  if (loaded.error) return false;
+  const pid = Number(/^\s*pid = (\d+)\s*$/m.exec(loaded.stdout ?? "")?.[1]);
+  if (loaded.status === 0 && run(["bootout", job]).status !== 0) return false;
+  if (!waitForKeeper(() => !machinePermissionWatcher(pid))) return false;
+  fs.rmSync(plist, { force: true });
+  return true;
+}
+
+const shellJob = (plist: string | null) => !!plist?.includes('exec sh "$HOME/.kuvo-code/bin/kuvo-start"');
+const helperJob = (plist: string | null) => !!plist?.includes(`<string>${xml(helperProgram())}</string><string>keep-machine</string>`);
+
+export function machineHelperInstalled(): boolean {
+  const launch = machineLaunch();
+  return !!launch && helperJob(textOf(launch.plist));
+}
+
+export function previousMachineInstall(): boolean {
+  const launch = machineLaunch();
+  return legacyKeeperRuns() || (!!launch && shellJob(textOf(launch.plist))) ||
+    (!fs.existsSync(machineMark) && fs.existsSync(path.join(RUN, "engine-ran")));
+}
+
+export function startLegacyMachine(): boolean {
+  if (legacyKeeperRuns()) return true;
+  const launch = machineLaunch();
+  if (launch && shellJob(textOf(launch.plist))) {
+    const { domain, job, plist, run } = launch;
+    if ((run(["print", job]).status === 0 ? run(["kickstart", job]) : run(["bootstrap", domain, plist])).status === 0 &&
+        waitForKeeper(legacyKeeperRuns)) return true;
+  }
+  spawnLegacyKeeper();
+  return waitForKeeper(legacyKeeperRuns);
+}
+
+function spawnLegacyKeeper() {
+  spawn("/bin/sh", [path.join(K, "bin", "kuvo-start"), "box"], {
+    detached: true, stdio: "ignore", cwd: K, env: { ...process.env, HOME: path.dirname(K), KUVO_MACHINE_HELPER_PID: "", KUVO_MACHINE_RESTORING: "1" },
+  }).unref();
 }
 
 /** Restores the durable launch job. The journal stays until the caller has checked the workers. */
@@ -139,36 +204,33 @@ export function restoreMachineJob(previous: MachineJob): boolean {
     restored = restored && checked.status === 0 && /^\s*program = \/bin\/sh\s*$/m.test(checked.stdout ?? "");
   }
   if (!previous.legacy) return restored;
-  if (!legacyKeeperRuns()) {
-    const start = path.join(K, "bin", "kuvo-start");
-    spawn("/bin/sh", [start, "box"], {
-      detached: true, stdio: "ignore", cwd: K, env: { ...process.env, HOME: path.dirname(K), KUVO_MACHINE_HELPER_PID: "", KUVO_MACHINE_RESTORING: "1" },
-    }).unref();
-  }
+  if (!legacyKeeperRuns()) spawnLegacyKeeper();
   return waitForKeeper(legacyKeeperRuns) && restored;
 }
 
 /** Starts the Helper job. Keep the previous job on disk across the whole trial. */
-export function startMachineHelper(): boolean {
+export function startMachineHelper(version?: string): boolean {
   if (!machineHelperAvailable() || fs.existsSync(path.join(RUN, "off"))) return false;
   const launch = machineLaunch()!;
   const { domain, job, plist, run } = launch;
   const before = textOf(plist);
-  const installed = !!before?.includes(`<string>${xml(helperProgram())}</string><string>keep-machine</string>`);
-  if (before !== null && !installed && !before.includes('exec sh "$HOME/.kuvo-code/bin/kuvo-start"')) return false;
+  const installed = helperJob(before);
+  if (before !== null && !installed && !shellJob(before)) return false;
   const loaded = run(["print", job]);
   if (loaded.error || (loaded.status === 0 && !installed && !/^\s*program = \/bin\/sh\s*$/m.test(loaded.stdout ?? ""))) return false;
   if (installed) {
     writePrivate(machineMark, "");
-    return (loaded.status === 0 ? run(["kickstart", job]) : run(["bootstrap", domain, plist])).status === 0;
+    return (loaded.status === 0 ? run(["kickstart", job]) : run(["bootstrap", domain, plist])).status === 0 &&
+      waitForKeeper(machineKeeperRuns);
   }
 
-  const previous: MachineJob = { phase: "installing", owner: process.pid, plist: before, loaded: loaded.status === 0, legacy: before !== null || legacyKeeperRuns() };
+  const previous: MachineJob = { phase: "installing", owner: process.pid, plist: before, loaded: loaded.status === 0, legacy: !!version || before !== null || legacyKeeperRuns(), version };
   if (machineJob()) return false;
   saveMachineJob(previous);
   try {
+    if (!stopMachinePermissionWatch()) throw new Error("launchd could not stop the permission watcher");
     if (previous.loaded && run(["bootout", job]).status !== 0) throw new Error("launchd could not stop the old job");
-    writePrivate(plist, helperPlist("run.kuvo.code", true));
+    writePrivate(plist, helperPlist("run.kuvo.code", "keep-machine"));
     writePrivate(machineMark, "");
     for (let attempt = 0; attempt < 3; attempt++) {
       if (run(["bootstrap", domain, plist]).status === 0) {
@@ -183,45 +245,7 @@ export function startMachineHelper(): boolean {
   } catch (error) {
     console.error("Couldn’t install Kuvo Helper’s machine job:", error);
   }
-  // Recovery is also called by the next start if this process is interrupted here.
-  restoreMachineJob(previous);
-  return false;
-}
-
-/** The installer's immediate start. A running legacy keeper hands over from its own quiet
- * update loop; starting the installer again never takes working processes down. */
-export async function startMachineInstall(): Promise<boolean> {
-  if (!machineHelperAvailable()) {
-    console.error("Kuvo Helper for machines is missing, or this Mac has no supported launch agent location.");
-    return false;
-  }
-  const keeper = Number(textOf(path.join(RUN, "box.pid")));
-  const engineUp = () => {
-    try { return engineRuns(JSON.parse(textOf(path.join(RUN, "engine.json")) ?? "").pid, K); } catch { return false; }
-  };
-  if (!machineKeeperRuns() && processRuns(keeper, "kuvo-start") && engineUp()) return true;
-
-  // A fresh start has no children to move later. Keep the flag absent for a detached legacy
-  // engine or bridge so it will be restarted at a quiet point.
-  const bridge = Number(textOf(path.join(RUN, "agents.pid")));
-  const fresh = !engineUp() && !processRuns(bridge, "kuvo-agents") && !machineJob()?.legacy;
-  fs.rmSync(path.join(RUN, "stopped"), { force: true });
-  if (!machineKeeperRuns() && !startMachineHelper()) {
-    console.error("Kuvo Helper couldn’t be started. Sign in to this Mac and check that Kuvo is allowed in Login Items.");
-    return false;
-  }
-  const until = Date.now() + 120_000;
-  while (Date.now() < until && !fs.existsSync(path.join(RUN, "off"))) {
-    if (machineKeeperRuns() && engineUp()) {
-      if (fresh) {
-        writePrivate(machineHandoverDone, "");
-        fs.rmSync(machineJobFile, { force: true });
-      }
-      return true;
-    }
-    await new Promise(resolve => setTimeout(resolve, 500));
-  }
-  console.error("Kuvo Helper or its engine didn’t finish starting.");
+  // The caller verifies rollback, or the keeper resumes it if interrupted here.
   return false;
 }
 

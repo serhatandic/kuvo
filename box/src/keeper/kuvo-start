@@ -62,14 +62,16 @@ recover_machine_job() {
   [ -f "$R/machine-helper-job.json" ] && [ -n "$V" ] && [ "$(uname -s)" = Darwin ] && ! own_mac || return 1
   record=$(cat "$R/machine-helper-job.json" 2>/dev/null)
   phase=$(printf '%s' "$record" | sed -n 's/.*"phase":"\([^"]*\)".*/\1/p')
-  [ "$phase" != waiting ] || return 1
+  fresh_trial=
+  if [ "$phase" = waiting ] && printf '%s' "$record" | grep -q '"legacy":false'; then fresh_trial=1; fi
   owner=$(printf '%s' "$record" | sed -n 's/.*"owner":\([0-9]*\).*/\1/p')
   if is "$owner" kuvo-link; then
-    [ "$phase" = workers ] && under_helper && return 1
+    { [ "$phase" = workers ] || [ -n "$fresh_trial" ]; } && under_helper && return 1
     [ "$phase" = restoring ] && [ ! -f "$R/machine-helper" ] && return 1
     return 0
   fi
   (environment; cd "$K"; KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$S" "$K/engine/$V/opencode" --config=/dev/null --no-env-file "$K/bin/kuvo-link.js" engine-swap --machine-helper-recover >>"$R/machine-handover.log" 2>&1 </dev/null &)
+  [ -n "$fresh_trial" ] && under_helper && return 1
   [ "$phase" != restoring ] || [ -f "$R/machine-helper" ]
 }
 start_helper() {

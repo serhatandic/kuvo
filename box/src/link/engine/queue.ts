@@ -648,11 +648,13 @@ function goesFirst(session: string, item: string): boolean {
  * the agent first is left. It throws when the inbox can't be read. */
 export async function moveInboxToBox(target: Target, session: string): Promise<number> {
   const inbox = messagesIn(await inboxOf(target, session, undefined, true));
-  if (!inbox.length) return 0;
+  if (!inbox.length) {
+    if (queueOf(session).inboxMoved) changeQueue(session, state => ({ ...state, inboxMoved: undefined }));
+    return 0;
+  }
   let moved = 0;
   // (In the order they'd go, ahead of what waits on the box already.)
   const order = new Set(orderOf(inbox, queueOf(session)).filter(id => inbox.some(entry => entry.id === id)));
-  const kept: Waiting[] = [];
   for (const id of order) {
     const entry = inbox.find(each => each.id === id)!;
     const text = typeof entry.payload?.text === "string" ? entry.payload.text : typeof entry.text === "string" ? entry.text : null;
@@ -668,11 +670,18 @@ export async function moveInboxToBox(target: Target, session: string): Promise<n
     const saved = waitingFile(own);
     const alreadyKept = fs.existsSync(saved);
     writePrivate(saved, JSON.stringify(message));
-    changeQueue(session, state => ({
-      ...state,
-      held: state.held.map(each => (each === id ? own : each)),
-      waiting: [...kept, waiting, ...(state.waiting ?? []).filter(each => each.id !== own && !kept.some(one => one.id === each.id))],
-    }));
+    changeQueue(session, state => {
+      const prefix = new Set(state.inboxMoved).add(own);
+      const pending = new Map((state.waiting ?? []).map(item => [item.id, item]));
+      pending.set(own, waiting);
+      return {
+        ...state,
+        held: state.held.map(each => (each === id ? own : each)),
+        inboxMoved: [...prefix],
+        waiting: [...Array.from(prefix, id => pending.get(id)!), ...Array.from(pending.values()).filter(item => !prefix.has(item.id))],
+      };
+    });
+    if (!queueOf(session).inboxMoved?.includes(own)) throw new Error("The box couldn’t save the inbox order.");
     try {
       await asked(target, "DELETE", `api/session/${address(session)}/inbox/${address(id)}`);
     } catch (error) {
@@ -683,10 +692,10 @@ export async function moveInboxToBox(target: Target, session: string): Promise<n
       fs.rmSync(saved, { force: true });
       continue;
     }
-    kept.push(waiting);
     moved++;
   }
   if (messagesIn(await inboxOf(target, session, undefined, true)).length) throw new Error("The engine still holds pending messages.");
+  changeQueue(session, state => ({ ...state, inboxMoved: undefined }));
   return moved;
 }
 

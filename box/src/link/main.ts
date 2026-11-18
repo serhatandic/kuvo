@@ -113,13 +113,13 @@ import { keepKeyFiles } from "./keys";
 import { keepAwakeWhileWorking } from "./work/awake";
 import { runningServe, SERVE_FILE, SERVE_NEEDED } from "./serve-kept";
 import { uninstallCommand } from "./uninstall";
-import { helperCommand, machineHelperAvailable, machineJob, machineKeeperRuns, startMachineInstall } from "./helper";
+import { helperCommand } from "./helper";
 import { handOverCommand, watchHelperBuild } from "./compat/helper-handover";
 import { keepMachinesUp } from "./add/keep-up";
 import { leaveForNewCode } from "./updates/code-in-place";
 import { sayWhole } from "./once";
 import { featuresNow, settleUpdate, startSettling } from "./updates/health";
-import { handOverMachine, recoverMachineJob, swapEngine } from "./updates/engine-swap";
+import { handOverMachine, recoverMachineJob, startMachineInstall, swapEngine } from "./updates/engine-swap";
 import { type UpdateOptions, ON_TRIAL, UPDATING_ALREADY, agentsWorking, dropOldBackups, passingOutcome, updateOnTrial, checkDrift, failedInPassing, offerWaits, isUpdating, noteLauncher, noteOlderMacs, installerSteps, noteUpdate, startOfferedUpdate, startUpdate, takeOffer, untilFree, update, UPDATE_KEYS, releaseRound, updatesBlocked, updateState, updateStatus } from "./updates/update";
 import { clearIncoming, followOver, followPeers, tellHeld, watchHeld } from "./updates/fleet";
 import { BRIDGE_VERSION } from "./version";
@@ -1234,13 +1234,8 @@ if (main) {
   // updates/engine-swap.ts). Stays until it's done.
   else if (mode === "engine-swap") {
     if (argument === "--machine-helper-recover") await recoverMachineJob();
-    else {
-      if (argument === "--machine-helper" && machineHelperAvailable()) {
-        await handOverMachine();
-      }
-      if (argument !== "--machine-helper" || (!machineKeeperRuns() && !machineJob())) {
-        console.log(JSON.stringify({ swapped: await swapEngine() }));
-      }
+    else if (argument !== "--machine-helper" || await handOverMachine() === "deferred") {
+      console.log(JSON.stringify({ swapped: await swapEngine() }));
     }
   }
   // Kuvo's own programs here put back from the signed release this box runs, where one isn't what it

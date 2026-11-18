@@ -32447,11 +32447,13 @@ var keptWaiting = (value) => (Array.isArray(value) ? value : []).flatMap((item) 
 });
 var keptState = (value) => {
   const waiting = keptWaiting(isObject(value) ? value.waiting : undefined);
+  const inboxMoved = isObject(value) && Array.isArray(value.inboxMoved) ? value.inboxMoved.filter((id) => typeof id === "string" && waiting.some((item) => item.id === id)) : [];
   return {
     paused: isObject(value) && value.paused === true,
     held: isObject(value) && Array.isArray(value.held) ? value.held.filter((id) => typeof id === "string") : [],
     ...isObject(value) && typeof value.resumed === "number" ? { resumed: value.resumed } : {},
     ...waiting.length ? { waiting } : {},
+    ...inboxMoved.length ? { inboxMoved } : {},
     ...isObject(value) && value.paused === true && value.heldFor === "goal" ? { heldFor: "goal" } : {},
     ...isObject(value) && isObject(value.arriving) && Object.keys(value.arriving).length ? { arriving: Object.fromEntries(Object.entries(value.arriving).filter((each) => typeof each[1] === "number")) } : {},
     ...isObject(value) && Array.isArray(value.cameHeld) && value.cameHeld.length ? { cameHeld: value.cameHeld.filter((id) => typeof id === "string") } : {}
@@ -38503,26 +38505,31 @@ function readSwap(run) {
     return null;
   }
 }
+function machineRecovery(run, swap) {
+  if (!swap.machineHelper || typeof swap.holding !== "number")
+    return false;
+  try {
+    const job = JSON.parse(fs11.readFileSync(path9.join(run, "machine-helper-job.json"), "utf8"));
+    return !!job.version && ["installing", "waiting", "workers", "restoring"].includes(job.phase);
+  } catch {
+    return false;
+  }
+}
 function swapUnderWay(run) {
   const swap = readSwap(run);
   if (!swap)
     return null;
   if (processRuns(swap.pid, "kuvo-link"))
     return swap;
-  if (swap.machineHelper && swap.holding && Date.now() - swap.holding < HOLD_MOST + SWAP_MOST) {
-    try {
-      const job = JSON.parse(fs11.readFileSync(path9.join(run, "machine-helper-job.json"), "utf8"));
-      if (job.version && (job.phase === "workers" || job.phase === "restoring"))
-        return { ...swap, stage: "back" };
-    } catch {}
-  }
+  if (machineRecovery(run, swap))
+    return { ...swap, stage: "back" };
   return null;
 }
 function swapHolds(run, now = Date.now()) {
   const swap = swapUnderWay(run);
   if (!swap || swap.stage === "waiting")
     return false;
-  return typeof swap.holding === "number" && now - swap.holding < HOLD_MOST + SWAP_MOST;
+  return machineRecovery(run, swap) || typeof swap.holding === "number" && now - swap.holding < HOLD_MOST + SWAP_MOST;
 }
 async function untilSwapLets(run, every = 1000) {
   while (swapHolds(run))
@@ -39667,4 +39674,4 @@ if (!onMachine) {
 }
 process.on("SIGTERM", () => stop());
 process.on("SIGINT", () => stop());
-// Built from Packages/Box/src/agents c38480256f7eaf559ccb0fcff787d24aa468ce5e5798dee3b66c727e9c24b713
+// Built from Packages/Box/src/agents cf885b42341b49bb67e5ef6f53cd2bf938b9767f5f76301fb5418acebafc13c6

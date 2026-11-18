@@ -26,7 +26,7 @@ import { asked, engineGet, readBridgeFile, readEngineFile } from "../engine/clie
 import { atWork, openFolders } from "../engine/models";
 import { moveInboxToBox, releaseWaiting } from "../engine/queue";
 import { listOf, textOf, writePrivate } from "../files";
-import { forgetMachineCron, machineHandoverDone, machineHelperAvailable, machineJob, machineJobFile, machineKeeperIdentity, machineKeeperRuns, machineRetryFile, restoreMachineJob, saveMachineJob, startMachineHelper } from "../helper";
+import { forgetMachineCron, machineHandoverDone, machineHelperAvailable, machineHelperInstalled, machineJob, machineJobFile, machineKeeperIdentity, machineKeeperRuns, machineRetryFile, previousMachineInstall, restoreMachineJob, saveMachineJob, startLegacyMachine, startMachineHelper, watchMachinePermissions } from "../helper";
 import { machineFilesAllowed } from "../permissions";
 import { K, REAL_BOX, RUN, UPDATES } from "../home";
 import { agentsWorking, dataNow, isUpdating, keepData, newerVersion, noteUpdate, roomForData, takeUpdateLock, UPDATE_LOCK, updateOnTrial, versionOrder } from "./update";
@@ -306,11 +306,49 @@ async function serviceReady(version: string | undefined, helper: number | null, 
   return null;
 }
 
+function completeMachineJob() {
+  writePrivate(machineHandoverDone, "");
+  fs.rmSync(machineJobFile, { force: true });
+  forgetMachineCron();
+}
+
+/** The installer's first start, or an explicit start of a machine already installed. */
+export async function startMachineInstall({ clock = Date.now, wait = sleep }: SwapOptions = {}): Promise<boolean> {
+  if (!machineHelperAvailable() || fs.existsSync(path.join(RUN, "off"))) {
+    console.error("Kuvo Helper for machines is missing, or can’t start on this Mac.");
+    return false;
+  }
+  fs.rmSync(path.join(RUN, "stopped"), { force: true });
+  if (machineJob()) await recoverMachineJob({ clock, wait });
+  if (machineJob()) return false;
+  const adopted = fs.existsSync(machineHandoverDone) && machineHelperInstalled();
+  if (!adopted) fs.rmSync(machineHandoverDone, { force: true });
+  if (!adopted && previousMachineInstall()) {
+    // The existing launch job may be stopped. Its plist still makes this a legacy start.
+    return startLegacyMachine() && !!await serviceReady(undefined, null, {}, clock, wait);
+  }
+  if (!takeUpdateLock()) return false;
+  try {
+    const started = machineKeeperRuns() || startMachineHelper();
+    const helper = started ? machineKeeperIdentity()?.helper : undefined;
+    // Once adopted, detached workers can still serve across a restart of the same signed Helper.
+    if (helper && await serviceReady(undefined, adopted ? null : helper, {}, clock, wait)) {
+      if (!adopted) completeMachineJob();
+      return true;
+    }
+    await recoverMachineJob({ clock, wait }, true);
+    console.error("Kuvo Helper’s engine and coding agents didn’t finish starting. Check that Kuvo is allowed in Login Items.");
+    return false;
+  } finally {
+    fs.rmSync(UPDATE_LOCK, { recursive: true, force: true });
+  }
+}
+
 /** Recovers a replacement interrupted before its workers were verified. The keeper, and a
  * start from cron or from a client, invoke this even when the engine is down. */
 export async function recoverMachineJob({ clock = Date.now, wait = sleep }: SwapOptions = {}, owner = false): Promise<EngineRecord | null> {
   const job = machineJob();
-  if (!job || job.phase === "waiting" || stoppedOnPurpose()) return null;
+  if (!job || stoppedOnPurpose()) return null;
   if (fs.existsSync(machineHandoverDone)) {
     fs.rmSync(machineJobFile, { force: true });
     forgetMachineCron();
@@ -319,11 +357,19 @@ export async function recoverMachineJob({ clock = Date.now, wait = sleep }: Swap
   if (!owner && (processRuns(job.owner, "kuvo-link") || !takeUpdateLock())) return null;
   try {
     const helper = job.helper ?? machineKeeperIdentity()?.helper;
+    if (!owner && !job.legacy && job.phase === "waiting" && helper) {
+      saveMachineJob({ ...job, owner: process.pid });
+      const target = await serviceReady(undefined, helper, {}, clock, wait);
+      if (target) {
+        completeMachineJob();
+        return target;
+      }
+    }
     if (!restoreMachineJob(job)) return null;
-    if (job.version && helper) {
+    if (helper) {
       const engine = runningEngine();
       if (engine?.pid && workerHelper("engine", engine.pid) === helper &&
-          !await asked(engine, "GET", "api/session?limit=1").then(() => true, () => false)) keeper("engine-halt");
+          (!job.legacy || !await asked(engine, "GET", "api/session?limit=1").then(() => true, () => false))) keeper("engine-halt");
       const pid = Number(textOf(path.join(RUN, "agents.pid")));
       if (processRuns(pid, "kuvo-agents") && workerHelper("agents", pid) === helper) {
         let answering = false;
@@ -331,12 +377,13 @@ export async function recoverMachineJob({ clock = Date.now, wait = sleep }: Swap
           const bridge = readBridgeFile();
           answering = bridge.pid === pid && await asked(bridge, "GET", "api/session/active").then(() => true, () => false);
         } catch { /* the bridge did not finish starting */ }
-        if (!answering && processRuns(pid, "kuvo-agents")) process.kill(pid, "SIGTERM");
+        if ((!job.legacy || !answering) && processRuns(pid, "kuvo-agents")) process.kill(pid, "SIGTERM");
       }
     }
     fs.rmSync(restartWorkers, { force: true });
     const target = job.legacy ? await serviceReady(job.version, null, {}, clock, wait) : null;
     if (job.legacy && !target) return null;
+    if (!job.legacy) fs.rmSync(path.join(RUN, "engine-ran"), { force: true });
     fs.rmSync(machineJobFile, { force: true });
     backOffMachine();
     if (target && !owner) await releaseAfterHold(target);
@@ -346,30 +393,27 @@ export async function recoverMachineJob({ clock = Date.now, wait = sleep }: Swap
   }
 }
 
-/** Moves the launch job at a quiet point, then its old workers at a quiet point with a fresh grant. */
-export async function handOverMachine({ clock = Date.now, wait = sleep }: SwapOptions = {}): Promise<void> {
-  if (!machineHelperAvailable() || fs.existsSync(machineHandoverDone) || swapUnderWay(RUN)) return;
-  const job = machineJob();
-  if (job && job.phase !== "waiting") {
+/** Keep the old launch job until the signed Helper sees the grant. Switch at a quiet point. */
+export async function handOverMachine({ clock = Date.now, wait = sleep }: SwapOptions = {}): Promise<"deferred" | "handled"> {
+  if (!machineHelperAvailable() || fs.existsSync(machineHandoverDone)) return "deferred";
+  if (swapUnderWay(RUN)) return "handled";
+  if (machineJob()) {
     await recoverMachineJob({ clock, wait });
-    return;
+    return machineJob() ? "handled" : "deferred";
   }
-  if (Number(textOf(machineRetryFile)) > clock()) return;
-  const owner = machineKeeperIdentity();
-  const installed = owner !== null;
-  if (installed && (!job?.legacy || !machineFilesAllowed())) return;
+  if (Number(textOf(machineRetryFile)) > clock()) return "deferred";
+  if (machineKeeperRuns() || !watchMachinePermissions() || !machineFilesAllowed()) return "deferred";
   const engine = runningEngine();
-  if (!engine?.version || !engine.pid) return;
+  if (!engine?.version || !engine.pid) return "deferred";
   const blocked = () => stoppedOnPurpose() || isUpdating() || updateOnTrial() || fs.existsSync(path.join(RUN, ".rolling-back"));
   const busy = async () => await engineBusy(engine) || await agentsWorking() !== false;
-  const valid = () => !blocked() && runningEngine()?.pid === engine.pid && machineKeeperIdentity()?.helper === owner?.helper;
-  if (!valid()) return;
+  const valid = () => !blocked() && runningEngine()?.pid === engine.pid && !machineKeeperRuns() && machineFilesAllowed();
+  if (!valid()) return "deferred";
 
   const state: EngineSwap = { from: engine.version, to: engine.version, pid: process.pid, since: clock(), stage: "waiting", machineHelper: true };
   const say = () => writePrivate(swapFile(RUN), JSON.stringify(state));
   let locked = false;
   let held = false;
-  let retiring = false;
   let ready: EngineRecord | null = null;
   say();
   try {
@@ -379,62 +423,65 @@ export async function handOverMachine({ clock = Date.now, wait = sleep }: SwapOp
       if (quietSince !== undefined && clock() - quietSince >= SWAP_TIMING.quiet) break;
       await wait(SWAP_TIMING.every);
     }
-    if (!valid()) return;
+    if (!valid()) return "deferred";
     state.stage = "holding";
     state.holding = clock();
     say();
     held = true;
     await wait(Math.min(1000, SWAP_TIMING.every));
-    if (await busy() || !valid() || (installed && !machineFilesAllowed())) return;
+    if (await busy() || !valid()) return "deferred";
 
     const bridge = Number(textOf(path.join(RUN, "agents.pid")));
-    if (installed) {
-      if (processRuns(bridge, "kuvo-agents")) {
-        try {
-          const noted = readBridgeFile();
-          if (noted.pid !== bridge || noted.machineHandover !== true) return;
-        } catch { return; }
-      }
-      if (!(await keepInboxes(engine)) || await busy() || !valid()) return;
+    if (processRuns(bridge, "kuvo-agents")) {
+      try {
+        const noted = readBridgeFile();
+        if (noted.pid !== bridge || noted.machineHandover !== true) return "deferred";
+      } catch { return "deferred"; }
     }
+    if (!(await keepInboxes(engine)) || await busy() || !valid()) return "deferred";
     state.stage = "swapping";
     say();
-    if (!takeUpdateLock()) return;
+    if (!takeUpdateLock()) return "handled";
     locked = true;
-    if (stoppedOnPurpose() || updateOnTrial()) return;
-    if (!installed) {
-      if (!startMachineHelper()) {
-        console.error("Kuvo Helper’s machine launch agent couldn’t start.");
-        backOffMachine();
-        await recoverMachineJob({ clock, wait }, true);
-      }
-      return;
+    if (stoppedOnPurpose() || updateOnTrial() || !machineFilesAllowed()) return "deferred";
+    if (!startMachineHelper(engine.version)) {
+      console.error("Kuvo Helper’s machine launch agent couldn’t start.");
+      backOffMachine();
+      return "handled";
     }
-    if (!machineFilesAllowed() || !job) return;
+    const job = machineJob();
+    const helper = machineKeeperIdentity()?.helper;
+    if (!job || !helper) return "handled";
+    const until = clock() + Math.min(12_000, SWAP_TIMING.startMost);
+    while (machineKeeperIdentity()?.helper === helper && !machineFilesAllowed(helper) && !stoppedOnPurpose() && clock() < until) {
+      await wait(Math.min(SWAP_TIMING.every, 500));
+    }
+    if (machineKeeperIdentity()?.helper !== helper || !machineFilesAllowed(helper) || await busy()) return "handled";
 
-    saveMachineJob({ ...job, phase: "workers", owner: process.pid, version: engine.version, helper: owner!.helper });
-    retiring = true;
+    // Keep the Helper keeper in standby until the old bridge and engine have been retired.
     writePrivate(restartWorkers, String(process.pid));
+    saveMachineJob({ ...job, phase: "workers", owner: process.pid, helper });
     for (let i = 0; i < 45 && processRuns(bridge, "kuvo-agents"); i++) await wait(1000);
-    if (!processRuns(bridge, "kuvo-agents") && !stoppedOnPurpose() && machineFilesAllowed() && !await engineBusy(engine) && keeper("engine-halt")) {
+    if (!processRuns(bridge, "kuvo-agents") && !stoppedOnPurpose() && machineKeeperIdentity()?.helper === helper &&
+        machineFilesAllowed(helper) && !await engineBusy(engine) && keeper("engine-halt")) {
       fs.rmSync(restartWorkers, { force: true });
-      ready = await serviceReady(engine.version, owner!.helper, { engine: engine.pid, bridge }, clock, wait);
-      if (ready) {
-        writePrivate(machineHandoverDone, "");
-        fs.rmSync(machineJobFile, { force: true });
-      }
+      ready = await serviceReady(engine.version, helper, { engine: engine.pid, bridge }, clock, wait);
+      if (ready) completeMachineJob();
     }
+    return "handled";
   } finally {
-    if (retiring && !ready) {
-      state.stage = "back";
-      say();
-      ready = await recoverMachineJob({ clock, wait }, true);
+    try {
+      if (locked && machineJob() && !ready) {
+        state.stage = "back";
+        say();
+        ready = await recoverMachineJob({ clock, wait }, true);
+      }
+    } finally {
+      if (locked) fs.rmSync(UPDATE_LOCK, { recursive: true, force: true });
+      fs.rmSync(restartWorkers, { force: true });
+      if (ready || !machineJob()) await releaseAfterHold(ready ?? (held ? runningEngine() : null));
     }
-    if (locked) fs.rmSync(UPDATE_LOCK, { recursive: true, force: true });
-    fs.rmSync(restartWorkers, { force: true });
-    if (!retiring || ready) await releaseAfterHold(ready ?? (held ? runningEngine() : null));
   }
-  if (fs.existsSync(machineHandoverDone)) forgetMachineCron();
 }
 
 // The swap itself, nothing at work: what the engine's inboxes hold onto the box, the old engine

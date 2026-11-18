@@ -9,7 +9,7 @@ import path from "node:path";
 import { isObject, parsed } from "../shared/json";
 import type { BoxPermissions } from "../shared/routes/box";
 import { textOf, writePrivate } from "./files";
-import { HELPER_NAME, helperBundle, machineKeeperIdentity, machineMark } from "./helper";
+import { HELPER_NAME, helperBundle, machineHelperAvailable, machineKeeperIdentity, machineMark, machinePermissionWatcher } from "./helper";
 import { APP_FOLDER, K, recordedKind } from "./home";
 import { appHost, askHost } from "./host-interface";
 import type { AnswerPiece, RouteContext } from "./server/context";
@@ -85,9 +85,15 @@ function permissionNote(maxAge: number, helper?: number) {
 }
 
 /** A recent grant from the exact Helper that currently supervises this machine. */
-export function machineFilesAllowed(): boolean {
+function machinePermissionNote() {
   const keeper = machineKeeperIdentity();
-  return !!keeper && permissionNote(12_000, keeper.helper)?.fullDiskAccess === true;
+  if (keeper) return permissionNote(12_000, keeper.helper);
+  const noted = permissionNote(12_000);
+  return noted && typeof noted.pid === "number" && machinePermissionWatcher(noted.pid) ? noted : null;
+}
+
+export function machineFilesAllowed(helper?: number): boolean {
+  return (helper === undefined ? machinePermissionNote() : permissionNote(12_000, helper))?.fullDiskAccess === true;
 }
 
 /** What macOS allows this box, as its helper last noted it. `applies`: whether this box runs under
@@ -99,7 +105,7 @@ export function machineFilesAllowed(): boolean {
 export function boxPermissions(): BoxPermissions {
   const darwin = process.platform === "darwin" && !APP_FOLDER;
   const ownMac = darwin && recordedKind() === "mac";
-  const machine = darwin && !ownMac && fs.existsSync(machineMark);
+  const machine = darwin && !ownMac && (fs.existsSync(machineMark) || machineHelperAvailable());
   const applies = ownMac || machine;
   const permissions = ownMac ? PERMISSIONS : machine ? [FILES] : [];
   const later = applies ? putOff() : new Set<string>();
@@ -117,8 +123,7 @@ export function boxPermissions(): BoxPermissions {
   });
   const unknown = said();
   if (!applies) return unknown;
-  const keeper = machine ? machineKeeperIdentity() : null;
-  const noted = ownMac ? permissionNote(75_000) : keeper && permissionNote(12_000, keeper.helper);
+  const noted = ownMac ? permissionNote(75_000) : machinePermissionNote();
   if (!noted) return unknown;
   if (ownMac && (typeof noted.screenRecording !== "boolean" || typeof noted.accessibility !== "boolean")) return unknown;
   const allowed: Partial<Record<PermissionID, boolean>> = {};

@@ -62,19 +62,23 @@ write(path.join(tools, "launchctl"), `#!/bin/sh
 J="$HOME/.kuvo-code/run/fake-launchd"
 P="$HOME/Library/LaunchAgents/run.kuvo.code.machine.plist"
 H="$HOME/.kuvo-code/${helperBundle}/Contents/MacOS/Kuvo Helper"
+mode=keep-machine
+case "$2 $3" in
+  *.permissions*) J="$J.permissions"; P="$HOME/Library/LaunchAgents/run.kuvo.code.machine.permissions.plist"; mode=watch-machine ;;
+esac
 case "$1" in
   print)
     [ -f "$J" ] || exit 1
-    if grep -qx legacy "$J"; then echo "program = /bin/sh"; else echo "program = $H"; fi
+    if grep -qx legacy "$J"; then echo "program = /bin/sh"; else echo "program = $H"; echo "pid = $(cat "$J")"; fi
     ;;
   bootout)
     pid=$(cat "$J" 2>/dev/null)
-    if [ -n "$pid" ] && ps -ww -o command= -p "$pid" | grep -Fq "$H keep-machine"; then kill "$pid"; fi
+    if [ -n "$pid" ] && ps -ww -o command= -p "$pid" | grep -Fq "$H $mode"; then kill "$pid"; fi
     rm -f "$J"; : >"\${J}.booted-out"
     ;;
   bootstrap|kickstart)
     [ -f "$P" ] || exit 1
-    if ! grep -q keep-machine "$P"; then
+    if [ "$mode" = keep-machine ] && ! grep -q keep-machine "$P"; then
       echo legacy >"$J"
       keeper=$(cat "$HOME/.kuvo-code/run/box.pid" 2>/dev/null)
       if [ -z "$keeper" ] || ! ps -ww -o command= -p "$keeper" | grep -q 'kuvo-start.*keep'; then
@@ -82,10 +86,18 @@ case "$1" in
       fi
       exit 0
     fi
-    [ ! -f "$HOME/refuse-helper" ] || exit 1
+    if [ "$mode" = keep-machine ] && [ -f "$HOME/refuse-helper" ]; then
+      if [ -f "$HOME/fail-bridge-on-bootstrap" ]; then : >"$HOME/fail-legacy-bridge"; fi
+      exit 1
+    fi
+    if [ "$mode" = keep-machine ] && [ -f "$HOME/pause-helper-bootstrap" ]; then
+      : >"$HOME/entered-helper-bootstrap"
+      while [ -f "$HOME/pause-helper-bootstrap" ]; do sleep 0.1; done
+      exit 1
+    fi
     pid=$(cat "$J" 2>/dev/null)
-    if [ -n "$pid" ] && ps -ww -o command= -p "$pid" | grep -Fq "$H keep-machine"; then exit 0; fi
-    "$H" keep-machine --home "$HOME/.kuvo-code" </dev/null >/dev/null 2>&1 &
+    if [ -n "$pid" ] && ps -ww -o command= -p "$pid" | grep -Fq "$H $mode"; then exit 0; fi
+    "$H" "$mode" --home "$HOME/.kuvo-code" </dev/null >/dev/null 2>&1 &
     echo "$!" >"$J"
     ;;
   *) exit 1 ;;
@@ -107,6 +119,9 @@ const server = http.createServer((request, response) => {
   request.on("data", chunk => chunks.push(chunk));
   request.on("end", () => {
     response.writeHead(200, { "content-type": "application/json" });
+    if (request.url.endsWith("/prompt") && request.method === "POST") {
+      fs.appendFileSync(process.env.HOME + "/delivered-prompts", JSON.parse(Buffer.concat(chunks).toString()).text + "\\n");
+    }
     if (request.url === "/api/credential" && request.method === "POST") {
       const given = JSON.parse(Buffer.concat(chunks).toString());
       fs.writeFileSync(kept, JSON.stringify([...credentials(), { id: "cred_" + credentials().length, integrationID: given.integrationID, label: given.label, value: given.value, active: given.activate }]), { mode: 0o600 });
@@ -138,7 +153,28 @@ for (const file of ["box/src/keeper/kuvo-start", "box/src/keeper/kuvo-launch", "
   write(path.join(root, file), fs.readFileSync(path.join(checkout, file)));
 }
 write(path.join(root, "swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js"), fs.readFileSync(script));
-write(path.join(root, "box/dist/kuvo-agents.js"), `import fs from "node:fs";\nconsole.log(JSON.stringify({ url: "http://127.0.0.1:" + process.env.KUVO_AGENTS_PORT }));\nsetInterval(() => { if (!fs.existsSync(process.env.KUVO_HOME)) process.exit(0); }, 300);\n`);
+write(path.join(root, "box/dist/kuvo-agents.js"), `
+import fs from "node:fs";
+import http from "node:http";
+const run = process.env.KUVO_HOME + "/run";
+const port = Number(process.env.KUVO_AGENTS_PORT);
+const has = name => fs.existsSync(process.env.HOME + "/" + name);
+const server = http.createServer((_, res) => {
+  if (has(process.env.KUVO_MACHINE_HELPER_PID ? "fail-helper-bridge" : "fail-legacy-bridge")) res.statusCode = 503;
+  res.end(JSON.stringify({ data: [] }));
+});
+server.listen(port, "127.0.0.1", () => {
+  fs.writeFileSync(run + "/bridge.json", JSON.stringify({ pid: process.pid, port, password: "test", machineHandover: true, helper: Number(process.env.KUVO_MACHINE_HELPER_PID || 0) }));
+  console.log(JSON.stringify({url: "http://127.0.0.1:" + port}));
+});
+setInterval(() => {
+  if (has("crash-bridge")) {
+    fs.unlinkSync(process.env.HOME + "/crash-bridge");
+    process.exit(0);
+  }
+  if (!fs.existsSync(run) || fs.existsSync(run + "/.machine-handover.pid")) process.exit(0);
+}, 100);
+`);
 const release = path.join(base, "release");
 const packed = spawnSync("sh", [path.join(checkout, "scripts", "box-release.sh"), "--files", "1.0.0", release], {
   env: { ...process.env, BUN: process.env.BUN || process.env.KUVO_TEST_BUN || (process.versions.bun ? process.execPath : "bun"), BOX_SOURCES: root }, encoding: "utf8",
@@ -149,12 +185,12 @@ fs.rmSync(path.join(home, "box.json"));
 write(path.join(home, helperBundle, "Contents/Info.plist"), "<key>KuvoHelperKeepsMachine</key><true/>");
 write(path.join(home, helperBundle, "Contents/MacOS/Kuvo Helper"), `#!/bin/sh
 export KUVO_MACHINE_HELPER_PID=$$ KUVO_TEST_KEEP_ROUND=1
-sh "$HOME/.kuvo-code/bin/kuvo-start" keep &
-keeper=$!
+keeper=
+if [ "$1" != watch-machine ]; then sh "$HOME/.kuvo-code/bin/kuvo-start" keep & keeper=$!; fi
 trap 'kill "$keeper" 2>/dev/null; exit 0' TERM
 R="$HOME/.kuvo-code/run"
 started=$(date +%s)
-while kill -0 "$keeper" 2>/dev/null; do
+while [ -d "$R" ] && { [ -z "$keeper" ] || kill -0 "$keeper" 2>/dev/null; }; do
   grant=$(cat "$HOME/files-access" 2>/dev/null || printf null)
   printf '{"v":1,"pid":%s,"started":%s,"observedAt":%s,"fullDiskAccess":%s}\n' "$$" "$started" "$(($(date +%s) * 1000))" "$grant" >"$R/permissions.new"
   mv "$R/permissions.new" "$R/permissions.json"
@@ -1096,10 +1132,7 @@ test("no list of machines while this box keeps its machines' links isn't none: i
   }
 });
 
-for (const scenario of ["grant", "worker failure", "interruption", "bootstrap denied"]) test(`legacy Darwin machine hand-over: ${scenario}`, {
-  skip: process.platform !== "darwin",
-}, async () => {
-  const name = "legacy-" + scenario.replaceAll(" ", "-");
+function machineFixture(name, { legacy = true } = {}) {
   const folder = path.join(base, name);
   homes[name] = folder;
   const root = path.join(folder, ".kuvo-code");
@@ -1107,12 +1140,15 @@ for (const scenario of ["grant", "worker failure", "interruption", "bootstrap de
   const plist = path.join(folder, "Library/LaunchAgents/run.kuvo.code.machine.plist");
   const engine = () => read(path.join(run, "engine.json"));
   const bridge = () => read(path.join(run, "bridge.json"));
+  const journal = path.join(run, "machine-helper-job.json");
+  const swap = path.join(run, "engine-swap.json");
+  const adopted = path.join(run, "machine-helper-adopted");
   const until = async (check, message) => {
-    for (let i = 0; i < 550; i++) {
+    for (let i = 0; i < 600; i++) {
       try { if (check()) return; } catch {}
       await new Promise(resolve => setTimeout(resolve, 100));
     }
-    const facts = ["machine-handover.log", "machine-helper-job.json", "fake-launchd", "box.pid", "machine-keeper", "engine.json", "bridge.json", "agents.log", "engine.log"];
+    const facts = ["machine-handover.log", "engine-swap.log", "machine-helper-job.json", "fake-launchd", "fake-launchd.permissions", "box.pid", "machine-keeper", "engine.json", "bridge.json", "agents.log", "engine.log"];
     const diagnostics = facts.map(name => {
       const file = path.join(run, name);
       return fs.existsSync(file) ? `${name}: ${fs.readFileSync(file, "utf8").slice(-500)}` : `${name}: missing`;
@@ -1124,58 +1160,177 @@ for (const scenario of ["grant", "worker failure", "interruption", "bootstrap de
   write(path.join(root, "box/kind"), "machine\n");
   write(path.join(root, "box/keys/KUVO_KEY_NOTION_TOKEN"), "retained");
   write(path.join(run, "launch.env"), `PATH=${process.env.PATH}\n`);
-  write(plist, '<string>exec sh "$HOME/.kuvo-code/bin/kuvo-start"</string>');
-  write(path.join(run, "fake-launchd"), "legacy\n");
-  write(path.join(root, "bin/kuvo-agents.js"), `
-import fs from "node:fs";
-import http from "node:http";
-const run = process.env.KUVO_HOME + "/run";
-const port = Number(process.env.KUVO_AGENTS_PORT);
-const server = http.createServer((_, res) => {
-  if (process.env.KUVO_MACHINE_HELPER_PID && fs.existsSync(process.env.HOME + "/fail-helper-bridge")) res.statusCode = 503;
-  res.end(JSON.stringify({ data: [] }));
-});
-server.listen(port, "127.0.0.1", () => {
-  fs.writeFileSync(run + "/bridge.json", JSON.stringify({ pid: process.pid, port, password: "test", machineHandover: true, helper: Number(process.env.KUVO_MACHINE_HELPER_PID) }));
-  console.log(JSON.stringify({url: "http://127.0.0.1:" + port}));
-});
-setInterval(() => {
-  if (!fs.existsSync(run) || fs.existsSync(run + "/.machine-handover.pid")) process.exit(0);
-}, 100);
-`);
-  const env = { ...process.env, HOME: folder, KUVO_HOME: root, KUVO_TEST_KEEP_ROUND: "1", KUVO_TEST_SWAP_EVERY: "100", KUVO_TEST_SWAP_QUIET: "500", KUVO_TEST_SWAP_START_MOST: "9000" };
+  if (legacy) {
+    write(plist, '<string>exec sh "$HOME/.kuvo-code/bin/kuvo-start"</string>');
+    write(path.join(run, "fake-launchd"), "legacy\n");
+  }
+  const env = { ...process.env, HOME: folder, KUVO_HOME: root, KUVO_TEST_KEEP_ROUND: "1", KUVO_TEST_SWAP_EVERY: "100", KUVO_TEST_SWAP_QUIET: "700", KUVO_TEST_SWAP_START_MOST: "9000" };
   const start = path.join(root, "bin", "kuvo-start");
+  const installHelper = () => fs.cpSync(path.join(home, helperBundle), path.join(root, helperBundle), { recursive: true });
+  const nextEngine = () => {
+    const next = "999.0.0";
+    write(path.join(root, "engine", next, "opencode"), engineBinary, 0o755);
+    write(start, fs.readFileSync(start, "utf8").replace(/^V=.*$/m, `V=${next}`), 0o700);
+    write(path.join(root, "bin/.kuvo-boot"), "next");
+    return next;
+  };
+  const stop = () => {
+    spawnSync(path.join(tools, "launchctl"), ["bootout", "stub/run.kuvo.code.machine.permissions"], { env });
+    spawnSync("sh", [start, "off"], { env, timeout: 40_000 });
+  };
+  return { folder, root, run, plist, engine, bridge, journal, swap, adopted, until, env, start, installHelper, nextEngine, stop };
+}
+
+for (const reinstall of [false, true]) test(`a fresh Darwin installer rolls back when the bridge never answers${reinstall ? " during reinstall" : ""}`, {
+  skip: process.platform !== "darwin",
+}, async () => {
+  const { folder, root, plist, engine, bridge, journal, adopted, until, env, installHelper, stop } = machineFixture(reinstall ? "installer-bridge-reinstall" : "installer-bridge", { legacy: false });
+  installHelper();
+  if (reinstall) write(adopted, "");
+  write(path.join(folder, "fail-helper-bridge"), "");
+  const installer = spawn(process.execPath, [path.join(root, "bin/kuvo-link.js"), "helper", "machine-start"], { env, stdio: "ignore" });
+  const exited = new Promise(resolve => installer.once("exit", resolve));
+  try {
+    await until(() => engine().pid && bridge().pid, "the installer should have started both workers");
+    assert.equal((await fetch(`http://127.0.0.1:${bridge().port}/api/session/active`)).status, 503);
+    assert.ok(fs.existsSync(journal), "the startup trial is still recoverable");
+    assert.equal(fs.existsSync(adopted), false);
+    assert.equal(await exited, 1);
+    assert.equal(fs.existsSync(adopted), false);
+    assert.equal(fs.existsSync(plist), false, "the failed launch job was removed");
+  } finally {
+    if (installer.exitCode === null && installer.signalCode === null) installer.kill();
+    stop();
+  }
+});
+
+test("a stopped Darwin machine starts through its existing launch job", {
+  skip: process.platform !== "darwin",
+}, async () => {
+  const { root, run, plist, bridge, adopted, env, installHelper, stop } = machineFixture("installer-stopped-legacy");
+  installHelper();
+  write(path.join(run, "stopped"), "");
+  const installer = spawn(process.execPath, [path.join(root, "bin/kuvo-link.js"), "helper", "machine-start"], { env, stdio: "ignore" });
+  const exited = new Promise(resolve => installer.once("exit", resolve));
+  try {
+    assert.equal(await exited, 0);
+    assert.match(fs.readFileSync(plist, "utf8"), /exec sh/);
+    assert.equal(bridge().helper, 0);
+    assert.equal(fs.existsSync(adopted), false);
+  } finally {
+    if (installer.exitCode === null && installer.signalCode === null) installer.kill();
+    stop();
+  }
+});
+
+test("a Darwin keeper finishes an interrupted fresh install when both services answer", {
+  skip: process.platform !== "darwin",
+}, async () => {
+  const { folder, root, engine, bridge, journal, adopted, until, env, installHelper, stop } = machineFixture("installer-interrupted", { legacy: false });
+  installHelper();
+  write(path.join(folder, "fail-helper-bridge"), "");
+  const installer = spawn(process.execPath, [path.join(root, "bin/kuvo-link.js"), "helper", "machine-start"], { env, stdio: "ignore" });
+  const exited = new Promise(resolve => installer.once("exit", resolve));
+  try {
+    await until(() => read(journal).phase === "waiting" && engine().pid && bridge().pid, "both workers start during the trial");
+    assert.ok(installer.kill("SIGKILL"));
+    await exited;
+    fs.rmSync(path.join(folder, "fail-helper-bridge"));
+    await until(() => fs.existsSync(adopted) && !fs.existsSync(journal), "the keeper verifies service and completes adoption");
+  } finally {
+    if (installer.exitCode === null && installer.signalCode === null) installer.kill();
+    stop();
+  }
+});
+
+for (const scenario of ["grant", "worker failure", "interruption", "bootstrap denied", "rollback holds", "deferred update", "deferred worker restart"]) test(`legacy Darwin machine hand-over: ${scenario}`, {
+  skip: process.platform !== "darwin",
+}, async () => {
+  const name = "legacy-" + scenario.replaceAll(" ", "-");
+  const { folder, run, plist, engine, bridge, journal, swap, adopted, until, env, start, installHelper, nextEngine, stop } = machineFixture(name);
   const legacy = spawn("sh", [start, "keep"], { env, stdio: "ignore" });
   try {
     await until(() => bridge().pid && engine().pid, "legacy workers should start");
     const oldEngine = engine().pid, oldBridge = bridge().pid;
-    write(path.join(folder, "busy"), "");
-    fs.cpSync(path.join(home, helperBundle), path.join(root, helperBundle), { recursive: true });
-    await until(() => read(path.join(run, "engine-swap.json")).stage === "waiting", "the hand-over should wait for work");
-    assert.doesNotMatch(fs.readFileSync(plist, "utf8"), /keep-machine/);
-    if (scenario === "bootstrap denied") write(path.join(folder, "refuse-helper"), "");
-    if (scenario === "worker failure") write(path.join(folder, "fail-helper-bridge"), "");
-    fs.rmSync(path.join(folder, "busy"));
-    if (scenario === "bootstrap denied") {
-      await until(() => fs.existsSync(path.join(run, "machine-helper-retry")) && !fs.existsSync(path.join(run, "machine-helper-job.json")), "backoff after restoring the launch job");
+    const deferred = scenario.startsWith("deferred");
+    const rollback = scenario === "rollback holds";
+    if (deferred) write(path.join(folder, "files-access"), "false");
+    else if (rollback) {
+      write(path.join(folder, "files-access"), "true");
+      write(path.join(folder, "refuse-helper"), "");
+      write(path.join(folder, "fail-bridge-on-bootstrap"), "");
+    } else write(path.join(folder, "busy"), "");
+    installHelper();
+    if (deferred) {
+      await until(() => read(path.join(run, "permissions.json")).fullDiskAccess === false, "Helper should report a denial");
+    } else if (!rollback) {
+      await until(() => read(path.join(run, "permissions.json")).fullDiskAccess === null, "the signed watcher should publish while the old job is running");
+      assert.match(fs.readFileSync(plist, "utf8"), /exec sh/);
+      write(path.join(folder, "files-access"), "false");
+      await until(() => read(path.join(run, "permissions.json")).fullDiskAccess === false, "the watcher should report a denial");
+    }
+
+    if (scenario === "deferred worker restart") {
+      write(path.join(folder, "crash-bridge"), "");
+      await until(() => bridge().pid !== oldBridge, "the legacy job should restart the bridge");
+      assert.equal(bridge().helper, 0, "the replacement bridge retains the old launch identity");
       assert.equal(engine().pid, oldEngine);
-      const next = "999.0.0";
-      write(path.join(root, "engine", next, "opencode"), engineBinary, 0o755);
-      write(start, fs.readFileSync(start, "utf8").replace(/^V=.*$/m, `V=${next}`), 0o700);
-      write(path.join(root, "bin/.kuvo-boot"), "next");
+      assert.match(fs.readFileSync(plist, "utf8"), /exec sh/);
+      return;
+    }
+    if (scenario === "deferred update") {
+      const next = nextEngine();
+      await until(() => engine().version === next, "the ordinary swap should proceed while Files stays denied");
+      assert.equal(fs.readFileSync(path.join(folder, "engine-helper"), "utf8"), "");
+      assert.equal(bridge().pid, oldBridge);
+      assert.equal(read(path.join(run, "permissions.json")).fullDiskAccess, false);
+      assert.equal(fs.existsSync(adopted), false);
+      return;
+    }
+
+    if (!rollback) {
+      assert.equal(engine().pid, oldEngine);
+      assert.equal(bridge().pid, oldBridge);
+      for (const worker of [engine(), bridge()]) assert.ok((await fetch(`http://127.0.0.1:${worker.port}/api/session/active`)).ok);
+      if (scenario === "bootstrap denied") write(path.join(folder, "refuse-helper"), "");
+      if (scenario === "worker failure") write(path.join(folder, "fail-helper-bridge"), "");
+      if (scenario === "interruption") write(path.join(folder, "pause-helper-bootstrap"), "");
+      write(path.join(folder, "files-access"), "true");
+      await until(() => read(swap).stage === "waiting", "even with a grant the hand-over should wait for work");
+      assert.match(fs.readFileSync(plist, "utf8"), /exec sh/);
+      fs.rmSync(path.join(folder, "busy"));
+    }
+
+    if (scenario === "bootstrap denied" || scenario === "rollback holds") {
+      if (scenario === "rollback holds") {
+        await until(() => fs.existsSync(path.join(folder, "fail-legacy-bridge")) && read(journal).phase === "restoring", "the restored bridge is unavailable during rollback");
+        const sent = path.join(folder, "delivered-prompts");
+        const owner = read(swap).pid;
+        write(path.join(run, "waiting/msg_held.json"), JSON.stringify({ id: "msg_held", text: "Keep this held", delivery: "queue" }));
+        write(path.join(run, "queues.json"), JSON.stringify({ ses_held: { paused: false, held: [], waiting: [{ id: "msg_held", at: Date.now(), text: "Keep this held" }] } }));
+        await until(() => spawnSync("ps", ["-p", String(owner)], { stdio: "ignore" }).status !== 0, "the first recovery finishes its readiness wait");
+        assert.equal(fs.existsSync(sent), false, "a running engine on its own does not release messages");
+        assert.equal(read(journal).phase, "restoring");
+        assert.equal(read(swap).stage, "back");
+        fs.rmSync(path.join(folder, "fail-legacy-bridge"));
+        await until(() => fs.existsSync(sent) && !fs.existsSync(journal) && !fs.existsSync(swap), "verified service releases the held message");
+        assert.equal(fs.readFileSync(sent, "utf8"), "Keep this held\n");
+      }
+      await until(() => fs.existsSync(path.join(run, "machine-helper-retry")) && !fs.existsSync(journal), "backoff after restoring the launch job");
+      assert.equal(engine().pid, oldEngine);
+      const next = nextEngine();
       await until(() => engine().version === next, "an ordinary engine swap can proceed during backoff");
       return;
     }
 
-    await until(() => fs.existsSync(path.join(run, "machine-keeper")), "Helper should take over the keeper");
-    assert.match(fs.readFileSync(plist, "utf8"), /keep-machine/);
-    assert.ok(fs.existsSync(path.join(run, "fake-launchd.booted-out")));
     if (scenario === "interruption") {
-      const journal = path.join(run, "machine-helper-job.json");
-      await until(() => read(journal).phase === "waiting", "the old plist is kept after bootstrap");
+      await until(() => fs.existsSync(path.join(folder, "entered-helper-bootstrap")), "launch replacement should reach bootstrap");
       const backup = read(journal);
+      assert.equal(backup.phase, "installing");
       assert.match(backup.plist, /exec sh/);
-      write(journal, JSON.stringify({ ...backup, phase: "installing", owner: 2147483647 }));
+      assert.match(spawnSync("ps", ["-ww", "-o", "command=", "-p", String(backup.owner)], { encoding: "utf8" }).stdout, /kuvo-link\.js engine-swap --machine-helper/);
+      process.kill(backup.owner, "SIGKILL");
+      fs.rmSync(path.join(folder, "pause-helper-bootstrap"));
       await until(() => !fs.existsSync(journal) && !fs.existsSync(path.join(run, "machine-helper")), "keeper recovers the interrupted replacement");
       assert.match(fs.readFileSync(plist, "utf8"), /exec sh/);
       assert.equal(engine().pid, oldEngine);
@@ -1183,31 +1338,22 @@ setInterval(() => {
       return;
     }
 
-    // Unknown and denied can span several quiet looks while both old services keep answering.
-    for (const grant of ["null", "false"]) {
-      write(path.join(folder, "files-access"), grant);
-      await new Promise(resolve => setTimeout(resolve, 2000));
-      assert.equal(engine().pid, oldEngine);
-      assert.equal(bridge().pid, oldBridge);
-      for (const worker of [engine(), bridge()]) assert.ok((await fetch(`http://127.0.0.1:${worker.port}/api/session/active`)).ok);
-    }
-    write(path.join(folder, "files-access"), "true");
     if (scenario === "worker failure") {
-      await until(() => !fs.existsSync(path.join(run, "machine-helper-job.json")) && fs.existsSync(path.join(run, "machine-helper-retry")) && bridge().pid !== oldBridge, "the previous launch path restored working service");
+      await until(() => !fs.existsSync(journal) && fs.existsSync(path.join(run, "machine-helper-retry")) && bridge().pid !== oldBridge, "the previous launch path restored working service");
       assert.match(fs.readFileSync(plist, "utf8"), /exec sh/);
-      assert.equal(fs.existsSync(path.join(run, "machine-helper-adopted")), false);
+      assert.equal(fs.existsSync(adopted), false);
       assert.ok((await fetch(`http://127.0.0.1:${bridge().port}/api/session/active`)).ok);
       return;
     }
-    await until(() => engine().pid !== oldEngine && bridge().pid !== oldBridge && fs.existsSync(path.join(run, "machine-helper-adopted")), "Helper should restart both workers and confirm adoption");
+    await until(() => engine().pid !== oldEngine && bridge().pid !== oldBridge && fs.existsSync(adopted), "Helper should restart both workers and confirm adoption");
+    const root = path.dirname(run);
     assert.equal(fs.readFileSync(path.join(root, "box/kind"), "utf8"), "machine\n");
     assert.equal(fs.readFileSync(path.join(root, "box/keys/KUVO_KEY_NOTION_TOKEN"), "utf8"), "retained");
-    assert.ok(fs.existsSync(path.join(run, "machine-helper-adopted")));
     const [, helper] = fs.readFileSync(path.join(run, "machine-keeper"), "utf8").trim().split(/\s+/).map(Number);
     assert.equal(Number(fs.readFileSync(path.join(folder, "engine-helper"), "utf8")), helper);
     assert.equal(bridge().helper, helper);
   } finally {
-    spawnSync("sh", [start, "off"], { env, timeout: 40_000 });
+    stop();
     if (legacy.exitCode === null && legacy.signalCode === null) legacy.kill();
   }
 });

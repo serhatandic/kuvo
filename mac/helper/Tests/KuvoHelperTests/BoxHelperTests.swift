@@ -593,6 +593,19 @@ private final class InTheTests {}
         #expect(json(facts)["fullDiskAccess"] as? Bool == true)
     }
 
+    @Test func machinePermissionWatcherReportsFilesWithoutStartingAWorker() throws {
+        try standIns()
+        try write(box.appending(path: "box/kind"), "machine\n")
+        let helper = try keeping(["--test-permissions", "full-disk-access"], mode: "watch-machine")
+        defer { cleanUp([helper]) }
+        let facts = run.appending(path: "permissions.json")
+        until { json(facts)["fullDiskAccess"] as? Bool == true }
+        #expect(json(facts)["pid"] as? Int == Int(helper.process.processIdentifier))
+        #expect(json(facts)["fullDiskAccess"] as? Bool == true)
+        #expect(text(home.appending(path: "keep.parent")).isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: run.appending(path: "host.json").path))
+    }
+
     @Test func itStartsNoBoxWhileAMoveIsUnfinished() throws {
         try standIns()
         defer { cleanUp() }

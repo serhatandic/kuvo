@@ -19,7 +19,7 @@ import { allWakes } from "./areas/wakes";
 import { listBots } from "./bots/list";
 import { APP_FOLDER, IN_TEST_FOLDER, K, REAL_BOX, RUN, accountHome, homeFolder, located, recordedKind } from "./home";
 import { peersOf } from "./peers/known";
-import { LAUNCH_AGENT, REBOOT_TAG } from "./marks";
+import { LAUNCH_AGENT, MACHINE_WATCH_AGENT, REBOOT_TAG } from "./marks";
 import { SERVE_ROLE } from "./serve-kept";
 import { readLink } from "./state";
 
@@ -146,13 +146,14 @@ export function uninstall(): Uninstalled {
   let crontabLine = false;
   const startsAgain: string[] = [];
   // Its start at login first, so nothing starts it again as it stops.
-  if (tools && process.platform === "darwin") {
-    const plist = path.join(tools.agents, `${LAUNCH_AGENT}.plist`);
+  if (tools && process.platform === "darwin") for (const label of [MACHINE_WATCH_AGENT, LAUNCH_AGENT]) {
+    const plist = path.join(tools.agents, `${label}.plist`);
     if (fs.existsSync(plist)) {
       const uid = process.getuid?.() ?? 0;
-      run(tools.launchctl, ["bootout", `gui/${uid}/${LAUNCH_AGENT}`]);
+      run(tools.launchctl, ["bootout", `gui/${uid}/${label}`]);
       try { fs.rmSync(plist, { force: true }); } catch {}
-      if (fs.existsSync(plist)) startsAgain.push("its launch agent"); else launchAgent = true;
+      if (fs.existsSync(plist)) startsAgain.push(label === LAUNCH_AGENT ? "its launch agent" : "its Files permission watcher");
+      else if (label === LAUNCH_AGENT) launchAgent = true;
     }
   }
   if (tools) {

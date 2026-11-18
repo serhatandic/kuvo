@@ -32,8 +32,8 @@ export interface EngineSwap {
 }
 
 /** How long a hold lasts at most before it's let go of (as the coding agents' bridge's renewal), and
- * how long a swap's start may take on top of that (a slow migration) before nothing is held whatever
- * the file says: holding is always bounded, even by a swapper that went. */
+ * how long an ordinary swap's start may take on top of that (a slow migration). A saved machine
+ * launch replacement keeps its hold while recovery is still pending. */
 export const HOLD_MOST = 30 * 60_000;
 export const SWAP_MOST = 30 * 60_000;
 
@@ -49,27 +49,31 @@ export function readSwap(run: string): EngineSwap | null {
   }
 }
 
-/** The swap under way, while its swapper runs (one that went holds nothing). */
+function machineRecovery(run: string, swap: EngineSwap): boolean {
+  if (!swap.machineHelper || typeof swap.holding !== "number") return false;
+  try {
+    const job = JSON.parse(fs.readFileSync(path.join(run, "machine-helper-job.json"), "utf8"));
+    return !!job.version && ["installing", "waiting", "workers", "restoring"].includes(job.phase);
+  } catch {
+    return false;
+  }
+}
+
+/** The swap under way, including a machine whose launch replacement still needs recovery. */
 export function swapUnderWay(run: string): EngineSwap | null {
   const swap = readSwap(run);
   if (!swap) return null;
   if (processRuns(swap.pid, "kuvo-link")) return swap;
-  if (swap.machineHelper && swap.holding && Date.now() - swap.holding < HOLD_MOST + SWAP_MOST) {
-    try {
-      const job = JSON.parse(fs.readFileSync(path.join(run, "machine-helper-job.json"), "utf8"));
-      if (job.version && (job.phase === "workers" || job.phase === "restoring")) return { ...swap, stage: "back" };
-    } catch { /* no recovery pending */ }
-  }
+  if (machineRecovery(run, swap)) return { ...swap, stage: "back" };
   return null;
 }
 
-/** Whether what's sent into a conversation on the engine waits on the box now: while a swapper that
- * runs holds, swaps or goes back, and never longer than `HOLD_MOST` and `SWAP_MOST` from when it
- * began holding. */
+/** Holds last until a machine's launch recovery restores service. Ordinary engine changes hold
+ * for at most `HOLD_MOST` and `SWAP_MOST` from when they began holding. */
 export function swapHolds(run: string, now = Date.now()): boolean {
   const swap = swapUnderWay(run);
   if (!swap || swap.stage === "waiting") return false;
-  return typeof swap.holding === "number" && now - swap.holding < HOLD_MOST + SWAP_MOST;
+  return machineRecovery(run, swap) || (typeof swap.holding === "number" && now - swap.holding < HOLD_MOST + SWAP_MOST);
 }
 
 /** What a client shows while an engine change waits or goes, in one plain line (null: none under way). */

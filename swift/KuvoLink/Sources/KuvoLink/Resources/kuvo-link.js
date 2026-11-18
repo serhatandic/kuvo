@@ -10434,26 +10434,31 @@ function readSwap(run) {
     return null;
   }
 }
+function machineRecovery(run, swap) {
+  if (!swap.machineHelper || typeof swap.holding !== "number")
+    return false;
+  try {
+    const job = JSON.parse(fs21.readFileSync(path19.join(run, "machine-helper-job.json"), "utf8"));
+    return !!job.version && ["installing", "waiting", "workers", "restoring"].includes(job.phase);
+  } catch {
+    return false;
+  }
+}
 function swapUnderWay(run) {
   const swap = readSwap(run);
   if (!swap)
     return null;
   if (processRuns(swap.pid, "kuvo-link"))
     return swap;
-  if (swap.machineHelper && swap.holding && Date.now() - swap.holding < HOLD_MOST + SWAP_MOST) {
-    try {
-      const job = JSON.parse(fs21.readFileSync(path19.join(run, "machine-helper-job.json"), "utf8"));
-      if (job.version && (job.phase === "workers" || job.phase === "restoring"))
-        return { ...swap, stage: "back" };
-    } catch {}
-  }
+  if (machineRecovery(run, swap))
+    return { ...swap, stage: "back" };
   return null;
 }
 function swapHolds(run, now = Date.now()) {
   const swap = swapUnderWay(run);
   if (!swap || swap.stage === "waiting")
     return false;
-  return typeof swap.holding === "number" && now - swap.holding < HOLD_MOST + SWAP_MOST;
+  return machineRecovery(run, swap) || typeof swap.holding === "number" && now - swap.holding < HOLD_MOST + SWAP_MOST;
 }
 function swapLine(swap) {
   if (!swap)
@@ -10584,11 +10589,13 @@ var keptWaiting = (value) => (Array.isArray(value) ? value : []).flatMap((item) 
 });
 var keptState = (value) => {
   const waiting = keptWaiting(isObject(value) ? value.waiting : undefined);
+  const inboxMoved = isObject(value) && Array.isArray(value.inboxMoved) ? value.inboxMoved.filter((id) => typeof id === "string" && waiting.some((item) => item.id === id)) : [];
   return {
     paused: isObject(value) && value.paused === true,
     held: isObject(value) && Array.isArray(value.held) ? value.held.filter((id) => typeof id === "string") : [],
     ...isObject(value) && typeof value.resumed === "number" ? { resumed: value.resumed } : {},
     ...waiting.length ? { waiting } : {},
+    ...inboxMoved.length ? { inboxMoved } : {},
     ...isObject(value) && value.paused === true && value.heldFor === "goal" ? { heldFor: "goal" } : {},
     ...isObject(value) && isObject(value.arriving) && Object.keys(value.arriving).length ? { arriving: Object.fromEntries(Object.entries(value.arriving).filter((each) => typeof each[1] === "number")) } : {},
     ...isObject(value) && Array.isArray(value.cameHeld) && value.cameHeld.length ? { cameHeld: value.cameHeld.filter((id) => typeof id === "string") } : {}
@@ -11467,11 +11474,13 @@ function goesFirst(session, item) {
 }
 async function moveInboxToBox(target, session) {
   const inbox = messagesIn(await inboxOf(target, session, undefined, true));
-  if (!inbox.length)
+  if (!inbox.length) {
+    if (queueOf(session).inboxMoved)
+      changeQueue2(session, (state) => ({ ...state, inboxMoved: undefined }));
     return 0;
+  }
   let moved = 0;
   const order = new Set(orderOf(inbox, queueOf(session)).filter((id) => inbox.some((entry) => entry.id === id)));
-  const kept = [];
   for (const id of order) {
     const entry = inbox.find((each) => each.id === id);
     const text = typeof entry.payload?.text === "string" ? entry.payload.text : typeof entry.text === "string" ? entry.text : null;
@@ -11485,11 +11494,19 @@ async function moveInboxToBox(target, session) {
     const saved = waitingFile2(own);
     const alreadyKept = fs24.existsSync(saved);
     writePrivate(saved, JSON.stringify(message));
-    changeQueue2(session, (state) => ({
-      ...state,
-      held: state.held.map((each) => each === id ? own : each),
-      waiting: [...kept, waiting, ...(state.waiting ?? []).filter((each) => each.id !== own && !kept.some((one) => one.id === each.id))]
-    }));
+    changeQueue2(session, (state) => {
+      const prefix = new Set(state.inboxMoved).add(own);
+      const pending = new Map((state.waiting ?? []).map((item) => [item.id, item]));
+      pending.set(own, waiting);
+      return {
+        ...state,
+        held: state.held.map((each) => each === id ? own : each),
+        inboxMoved: [...prefix],
+        waiting: [...Array.from(prefix, (id) => pending.get(id)), ...Array.from(pending.values()).filter((item) => !prefix.has(item.id))]
+      };
+    });
+    if (!queueOf(session).inboxMoved?.includes(own))
+      throw new Error("The box couldn’t save the inbox order.");
     try {
       await asked(target, "DELETE", `api/session/${address(session)}/inbox/${address(id)}`);
     } catch (error) {
@@ -11499,11 +11516,11 @@ async function moveInboxToBox(target, session) {
       fs24.rmSync(saved, { force: true });
       continue;
     }
-    kept.push(waiting);
     moved++;
   }
   if (messagesIn(await inboxOf(target, session, undefined, true)).length)
     throw new Error("The engine still holds pending messages.");
+  changeQueue2(session, (state) => ({ ...state, inboxMoved: undefined }));
   return moved;
 }
 async function releaseWaiting(target) {
@@ -16892,6 +16909,7 @@ import path129 from "node:path";
 
 // box/src/link/marks.ts
 var LAUNCH_AGENT = "run.kuvo.code.machine";
+var MACHINE_WATCH_AGENT = `${LAUNCH_AGENT}.permissions`;
 var REBOOT_TAG = "# kuvo-code: starts its engine again after a restart";
 
 // box/src/link/uninstall.ts
@@ -40346,20 +40364,21 @@ function uninstall() {
   let launchAgent = false;
   let crontabLine = false;
   const startsAgain = [];
-  if (tools && process.platform === "darwin") {
-    const plist = path128.join(tools.agents, `${LAUNCH_AGENT}.plist`);
-    if (fs122.existsSync(plist)) {
-      const uid = process.getuid?.() ?? 0;
-      run3(tools.launchctl, ["bootout", `gui/${uid}/${LAUNCH_AGENT}`]);
-      try {
-        fs122.rmSync(plist, { force: true });
-      } catch {}
-      if (fs122.existsSync(plist))
-        startsAgain.push("its launch agent");
-      else
-        launchAgent = true;
+  if (tools && process.platform === "darwin")
+    for (const label of [MACHINE_WATCH_AGENT, LAUNCH_AGENT]) {
+      const plist = path128.join(tools.agents, `${label}.plist`);
+      if (fs122.existsSync(plist)) {
+        const uid = process.getuid?.() ?? 0;
+        run3(tools.launchctl, ["bootout", `gui/${uid}/${label}`]);
+        try {
+          fs122.rmSync(plist, { force: true });
+        } catch {}
+        if (fs122.existsSync(plist))
+          startsAgain.push(label === LAUNCH_AGENT ? "its launch agent" : "its Files permission watcher");
+        else if (label === LAUNCH_AGENT)
+          launchAgent = true;
+      }
     }
-  }
   if (tools) {
     const table = crontab(tools);
     if (table !== null && table.includes(REBOOT_TAG)) {
@@ -40443,13 +40462,13 @@ var helperBundle = () => path129.join(K, "bin", `${HELPER_NAME}.app`);
 var helperProgram = () => path129.join(helperBundle(), "Contents", "MacOS", HELPER_NAME);
 var HANDOVER_RECORD = () => path129.join(RUN, "helper-handover.json");
 var xml = (text) => text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-function helperPlist(app, machine = false) {
+function helperPlist(app, mode = "keep") {
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-<key>Label</key><string>${LAUNCH_AGENT}</string>
-<key>ProgramArguments</key><array><string>${xml(helperProgram())}</string><string>${machine ? "keep-machine" : "keep"}</string><string>--home</string><string>${xml(K)}</string></array>
+<key>Label</key><string>${mode === "watch-machine" ? MACHINE_WATCH_AGENT : LAUNCH_AGENT}</string>
+<key>ProgramArguments</key><array><string>${xml(helperProgram())}</string><string>${mode}</string><string>--home</string><string>${xml(K)}</string></array>
 <key>RunAtLoad</key><true/>
 <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
 <key>AbandonProcessGroup</key><true/>
@@ -40468,6 +40487,9 @@ function machineKeeperIdentity() {
   return keeper > 1 && helper > 1 && keeper === Number(textOf(path129.join(RUN, "box.pid"))) && processRuns(keeper, "kuvo-start") && processRuns(helper, "Kuvo Helper") && commandLineOf(keeper)?.includes(`${K}/bin/kuvo-start keep`) && commandLineOf(helper)?.includes(`${helperProgram()} keep-machine`) ? { keeper, helper } : null;
 }
 var machineKeeperRuns = () => machineKeeperIdentity() !== null;
+function machinePermissionWatcher(pid) {
+  return processRuns(pid, "Kuvo Helper") && !!commandLineOf(pid)?.includes(`${helperProgram()} watch-machine`);
+}
 var machineJobFile = path129.join(RUN, "machine-helper-job.json");
 var machineRetryFile = path129.join(RUN, "machine-helper-retry");
 function machineJob() {
@@ -40481,12 +40503,12 @@ function machineJob() {
 function saveMachineJob(job) {
   writePrivate(machineJobFile, JSON.stringify(job));
 }
-function machineLaunch() {
+function machineLaunch(label = LAUNCH_AGENT) {
   const tools = launchTools();
   if (!tools)
     return null;
-  const domain = `gui/${process.getuid?.() ?? 0}`, job = `${domain}/${LAUNCH_AGENT}`;
-  const plist = path129.join(tools.agents, `${LAUNCH_AGENT}.plist`);
+  const domain = `gui/${process.getuid?.() ?? 0}`, job = `${domain}/${label}`;
+  const plist = path129.join(tools.agents, `${label}.plist`);
   const run = (args) => spawnSync9(tools.launchctl, args, { encoding: "utf8", timeout: 1e4, stdio: ["ignore", "pipe", "pipe"] });
   return { domain, job, plist, run };
 }
@@ -40503,6 +40525,69 @@ function waitForKeeper(ready) {
     nap(100);
   }
   return false;
+}
+function watchMachinePermissions() {
+  const launch = machineLaunch(MACHINE_WATCH_AGENT);
+  if (!launch)
+    return false;
+  const { domain, job, plist, run } = launch;
+  const loaded = run(["print", job]);
+  if (loaded.error)
+    return false;
+  if (loaded.status === 0) {
+    const pid = Number(/^\s*pid = (\d+)\s*$/m.exec(loaded.stdout ?? "")?.[1]);
+    if (machinePermissionWatcher(pid))
+      return true;
+    return run(["kickstart", job]).status === 0;
+  }
+  writePrivate(plist, helperPlist("run.kuvo.code", "watch-machine"));
+  return run(["bootstrap", domain, plist]).status === 0;
+}
+function stopMachinePermissionWatch() {
+  const launch = machineLaunch(MACHINE_WATCH_AGENT);
+  if (!launch)
+    return false;
+  const { job, plist, run } = launch;
+  const loaded = run(["print", job]);
+  if (loaded.error)
+    return false;
+  const pid = Number(/^\s*pid = (\d+)\s*$/m.exec(loaded.stdout ?? "")?.[1]);
+  if (loaded.status === 0 && run(["bootout", job]).status !== 0)
+    return false;
+  if (!waitForKeeper(() => !machinePermissionWatcher(pid)))
+    return false;
+  fs123.rmSync(plist, { force: true });
+  return true;
+}
+var shellJob = (plist) => !!plist?.includes('exec sh "$HOME/.kuvo-code/bin/kuvo-start"');
+var helperJob = (plist) => !!plist?.includes(`<string>${xml(helperProgram())}</string><string>keep-machine</string>`);
+function machineHelperInstalled() {
+  const launch = machineLaunch();
+  return !!launch && helperJob(textOf(launch.plist));
+}
+function previousMachineInstall() {
+  const launch = machineLaunch();
+  return legacyKeeperRuns() || !!launch && shellJob(textOf(launch.plist)) || !fs123.existsSync(machineMark) && fs123.existsSync(path129.join(RUN, "engine-ran"));
+}
+function startLegacyMachine() {
+  if (legacyKeeperRuns())
+    return true;
+  const launch = machineLaunch();
+  if (launch && shellJob(textOf(launch.plist))) {
+    const { domain, job, plist, run } = launch;
+    if ((run(["print", job]).status === 0 ? run(["kickstart", job]) : run(["bootstrap", domain, plist])).status === 0 && waitForKeeper(legacyKeeperRuns))
+      return true;
+  }
+  spawnLegacyKeeper();
+  return waitForKeeper(legacyKeeperRuns);
+}
+function spawnLegacyKeeper() {
+  spawn11("/bin/sh", [path129.join(K, "bin", "kuvo-start"), "box"], {
+    detached: true,
+    stdio: "ignore",
+    cwd: K,
+    env: { ...process.env, HOME: path129.dirname(K), KUVO_MACHINE_HELPER_PID: "", KUVO_MACHINE_RESTORING: "1" }
+  }).unref();
 }
 function restoreMachineJob(previous) {
   const launch = machineLaunch();
@@ -40532,41 +40617,36 @@ function restoreMachineJob(previous) {
   }
   if (!previous.legacy)
     return restored;
-  if (!legacyKeeperRuns()) {
-    const start = path129.join(K, "bin", "kuvo-start");
-    spawn11("/bin/sh", [start, "box"], {
-      detached: true,
-      stdio: "ignore",
-      cwd: K,
-      env: { ...process.env, HOME: path129.dirname(K), KUVO_MACHINE_HELPER_PID: "", KUVO_MACHINE_RESTORING: "1" }
-    }).unref();
-  }
+  if (!legacyKeeperRuns())
+    spawnLegacyKeeper();
   return waitForKeeper(legacyKeeperRuns) && restored;
 }
-function startMachineHelper() {
+function startMachineHelper(version) {
   if (!machineHelperAvailable() || fs123.existsSync(path129.join(RUN, "off")))
     return false;
   const launch = machineLaunch();
   const { domain, job, plist, run } = launch;
   const before = textOf(plist);
-  const installed = !!before?.includes(`<string>${xml(helperProgram())}</string><string>keep-machine</string>`);
-  if (before !== null && !installed && !before.includes('exec sh "$HOME/.kuvo-code/bin/kuvo-start"'))
+  const installed = helperJob(before);
+  if (before !== null && !installed && !shellJob(before))
     return false;
   const loaded = run(["print", job]);
   if (loaded.error || loaded.status === 0 && !installed && !/^\s*program = \/bin\/sh\s*$/m.test(loaded.stdout ?? ""))
     return false;
   if (installed) {
     writePrivate(machineMark, "");
-    return (loaded.status === 0 ? run(["kickstart", job]) : run(["bootstrap", domain, plist])).status === 0;
+    return (loaded.status === 0 ? run(["kickstart", job]) : run(["bootstrap", domain, plist])).status === 0 && waitForKeeper(machineKeeperRuns);
   }
-  const previous = { phase: "installing", owner: process.pid, plist: before, loaded: loaded.status === 0, legacy: before !== null || legacyKeeperRuns() };
+  const previous = { phase: "installing", owner: process.pid, plist: before, loaded: loaded.status === 0, legacy: !!version || before !== null || legacyKeeperRuns(), version };
   if (machineJob())
     return false;
   saveMachineJob(previous);
   try {
+    if (!stopMachinePermissionWatch())
+      throw new Error("launchd could not stop the permission watcher");
     if (previous.loaded && run(["bootout", job]).status !== 0)
       throw new Error("launchd could not stop the old job");
-    writePrivate(plist, helperPlist("run.kuvo.code", true));
+    writePrivate(plist, helperPlist("run.kuvo.code", "keep-machine"));
     writePrivate(machineMark, "");
     for (let attempt = 0;attempt < 3; attempt++) {
       if (run(["bootstrap", domain, plist]).status === 0) {
@@ -40581,43 +40661,6 @@ function startMachineHelper() {
   } catch (error) {
     console.error("Couldn’t install Kuvo Helper’s machine job:", error);
   }
-  restoreMachineJob(previous);
-  return false;
-}
-async function startMachineInstall() {
-  if (!machineHelperAvailable()) {
-    console.error("Kuvo Helper for machines is missing, or this Mac has no supported launch agent location.");
-    return false;
-  }
-  const keeper = Number(textOf(path129.join(RUN, "box.pid")));
-  const engineUp = () => {
-    try {
-      return engineRuns(JSON.parse(textOf(path129.join(RUN, "engine.json")) ?? "").pid, K);
-    } catch {
-      return false;
-    }
-  };
-  if (!machineKeeperRuns() && processRuns(keeper, "kuvo-start") && engineUp())
-    return true;
-  const bridge = Number(textOf(path129.join(RUN, "agents.pid")));
-  const fresh = !engineUp() && !processRuns(bridge, "kuvo-agents") && !machineJob()?.legacy;
-  fs123.rmSync(path129.join(RUN, "stopped"), { force: true });
-  if (!machineKeeperRuns() && !startMachineHelper()) {
-    console.error("Kuvo Helper couldn’t be started. Sign in to this Mac and check that Kuvo is allowed in Login Items.");
-    return false;
-  }
-  const until = Date.now() + 120000;
-  while (Date.now() < until && !fs123.existsSync(path129.join(RUN, "off"))) {
-    if (machineKeeperRuns() && engineUp()) {
-      if (fresh) {
-        writePrivate(machineHandoverDone, "");
-        fs123.rmSync(machineJobFile, { force: true });
-      }
-      return true;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 500));
-  }
-  console.error("Kuvo Helper or its engine didn’t finish starting.");
   return false;
 }
 function forgetMachineCron() {
@@ -40869,14 +40912,20 @@ function permissionNote(maxAge, helper) {
     return null;
   return noted;
 }
-function machineFilesAllowed() {
+function machinePermissionNote() {
   const keeper = machineKeeperIdentity();
-  return !!keeper && permissionNote(12000, keeper.helper)?.fullDiskAccess === true;
+  if (keeper)
+    return permissionNote(12000, keeper.helper);
+  const noted = permissionNote(12000);
+  return noted && typeof noted.pid === "number" && machinePermissionWatcher(noted.pid) ? noted : null;
+}
+function machineFilesAllowed(helper) {
+  return (helper === undefined ? machinePermissionNote() : permissionNote(12000, helper))?.fullDiskAccess === true;
 }
 function boxPermissions() {
   const darwin = process.platform === "darwin" && !APP_FOLDER;
   const ownMac = darwin && recordedKind() === "mac";
-  const machine = darwin && !ownMac && fs124.existsSync(machineMark);
+  const machine = darwin && !ownMac && (fs124.existsSync(machineMark) || machineHelperAvailable());
   const applies = ownMac || machine;
   const permissions = ownMac ? PERMISSIONS : machine ? [FILES4] : [];
   const later = applies ? putOff() : new Set;
@@ -40898,8 +40947,7 @@ function boxPermissions() {
   const unknown = said();
   if (!applies)
     return unknown;
-  const keeper = machine ? machineKeeperIdentity() : null;
-  const noted = ownMac ? permissionNote(75000) : keeper && permissionNote(12000, keeper.helper);
+  const noted = ownMac ? permissionNote(75000) : machinePermissionNote();
   if (!noted)
     return unknown;
   if (ownMac && (typeof noted.screenRecording !== "boolean" || typeof noted.accessibility !== "boolean"))
@@ -41193,9 +41241,47 @@ async function serviceReady(version, helper, old, clock, wait) {
   } while (clock() < until);
   return null;
 }
+function completeMachineJob() {
+  writePrivate(machineHandoverDone, "");
+  fs125.rmSync(machineJobFile, { force: true });
+  forgetMachineCron();
+}
+async function startMachineInstall({ clock = Date.now, wait = sleep } = {}) {
+  if (!machineHelperAvailable() || fs125.existsSync(path131.join(RUN, "off"))) {
+    console.error("Kuvo Helper for machines is missing, or can’t start on this Mac.");
+    return false;
+  }
+  fs125.rmSync(path131.join(RUN, "stopped"), { force: true });
+  if (machineJob())
+    await recoverMachineJob({ clock, wait });
+  if (machineJob())
+    return false;
+  const adopted = fs125.existsSync(machineHandoverDone) && machineHelperInstalled();
+  if (!adopted)
+    fs125.rmSync(machineHandoverDone, { force: true });
+  if (!adopted && previousMachineInstall()) {
+    return startLegacyMachine() && !!await serviceReady(undefined, null, {}, clock, wait);
+  }
+  if (!takeUpdateLock())
+    return false;
+  try {
+    const started = machineKeeperRuns() || startMachineHelper();
+    const helper = started ? machineKeeperIdentity()?.helper : undefined;
+    if (helper && await serviceReady(undefined, adopted ? null : helper, {}, clock, wait)) {
+      if (!adopted)
+        completeMachineJob();
+      return true;
+    }
+    await recoverMachineJob({ clock, wait }, true);
+    console.error("Kuvo Helper’s engine and coding agents didn’t finish starting. Check that Kuvo is allowed in Login Items.");
+    return false;
+  } finally {
+    fs125.rmSync(UPDATE_LOCK, { recursive: true, force: true });
+  }
+}
 async function recoverMachineJob({ clock = Date.now, wait = sleep } = {}, owner = false) {
   const job = machineJob();
-  if (!job || job.phase === "waiting" || stoppedOnPurpose())
+  if (!job || stoppedOnPurpose())
     return null;
   if (fs125.existsSync(machineHandoverDone)) {
     fs125.rmSync(machineJobFile, { force: true });
@@ -41206,11 +41292,19 @@ async function recoverMachineJob({ clock = Date.now, wait = sleep } = {}, owner 
     return null;
   try {
     const helper = job.helper ?? machineKeeperIdentity()?.helper;
+    if (!owner && !job.legacy && job.phase === "waiting" && helper) {
+      saveMachineJob({ ...job, owner: process.pid });
+      const target = await serviceReady(undefined, helper, {}, clock, wait);
+      if (target) {
+        completeMachineJob();
+        return target;
+      }
+    }
     if (!restoreMachineJob(job))
       return null;
-    if (job.version && helper) {
+    if (helper) {
       const engine = runningEngine();
-      if (engine?.pid && workerHelper("engine", engine.pid) === helper && !await asked(engine, "GET", "api/session?limit=1").then(() => true, () => false))
+      if (engine?.pid && workerHelper("engine", engine.pid) === helper && (!job.legacy || !await asked(engine, "GET", "api/session?limit=1").then(() => true, () => false)))
         keeper("engine-halt");
       const pid = Number(textOf(path131.join(RUN, "agents.pid")));
       if (processRuns(pid, "kuvo-agents") && workerHelper("agents", pid) === helper) {
@@ -41219,7 +41313,7 @@ async function recoverMachineJob({ clock = Date.now, wait = sleep } = {}, owner 
           const bridge = readBridgeFile();
           answering = bridge.pid === pid && await asked(bridge, "GET", "api/session/active").then(() => true, () => false);
         } catch {}
-        if (!answering && processRuns(pid, "kuvo-agents"))
+        if ((!job.legacy || !answering) && processRuns(pid, "kuvo-agents"))
           process.kill(pid, "SIGTERM");
       }
     }
@@ -41227,6 +41321,8 @@ async function recoverMachineJob({ clock = Date.now, wait = sleep } = {}, owner 
     const target = job.legacy ? await serviceReady(job.version, null, {}, clock, wait) : null;
     if (job.legacy && !target)
       return null;
+    if (!job.legacy)
+      fs125.rmSync(path131.join(RUN, "engine-ran"), { force: true });
     fs125.rmSync(machineJobFile, { force: true });
     backOffMachine();
     if (target && !owner)
@@ -41238,32 +41334,30 @@ async function recoverMachineJob({ clock = Date.now, wait = sleep } = {}, owner 
   }
 }
 async function handOverMachine({ clock = Date.now, wait = sleep } = {}) {
-  if (!machineHelperAvailable() || fs125.existsSync(machineHandoverDone) || swapUnderWay(RUN))
-    return;
-  const job = machineJob();
-  if (job && job.phase !== "waiting") {
+  if (!machineHelperAvailable() || fs125.existsSync(machineHandoverDone))
+    return "deferred";
+  if (swapUnderWay(RUN))
+    return "handled";
+  if (machineJob()) {
     await recoverMachineJob({ clock, wait });
-    return;
+    return machineJob() ? "handled" : "deferred";
   }
   if (Number(textOf(machineRetryFile)) > clock())
-    return;
-  const owner = machineKeeperIdentity();
-  const installed = owner !== null;
-  if (installed && (!job?.legacy || !machineFilesAllowed()))
-    return;
+    return "deferred";
+  if (machineKeeperRuns() || !watchMachinePermissions() || !machineFilesAllowed())
+    return "deferred";
   const engine = runningEngine();
   if (!engine?.version || !engine.pid)
-    return;
+    return "deferred";
   const blocked = () => stoppedOnPurpose() || isUpdating() || updateOnTrial() || fs125.existsSync(path131.join(RUN, ".rolling-back"));
   const busy = async () => await engineBusy(engine) || await agentsWorking() !== false;
-  const valid = () => !blocked() && runningEngine()?.pid === engine.pid && machineKeeperIdentity()?.helper === owner?.helper;
+  const valid = () => !blocked() && runningEngine()?.pid === engine.pid && !machineKeeperRuns() && machineFilesAllowed();
   if (!valid())
-    return;
+    return "deferred";
   const state = { from: engine.version, to: engine.version, pid: process.pid, since: clock(), stage: "waiting", machineHelper: true };
   const say = () => writePrivate(swapFile(RUN), JSON.stringify(state));
   let locked = false;
   let held = false;
-  let retiring = false;
   let ready = null;
   say();
   try {
@@ -41275,72 +41369,74 @@ async function handOverMachine({ clock = Date.now, wait = sleep } = {}) {
       await wait(SWAP_TIMING.every);
     }
     if (!valid())
-      return;
+      return "deferred";
     state.stage = "holding";
     state.holding = clock();
     say();
     held = true;
     await wait(Math.min(1000, SWAP_TIMING.every));
-    if (await busy() || !valid() || installed && !machineFilesAllowed())
-      return;
+    if (await busy() || !valid())
+      return "deferred";
     const bridge = Number(textOf(path131.join(RUN, "agents.pid")));
-    if (installed) {
-      if (processRuns(bridge, "kuvo-agents")) {
-        try {
-          const noted = readBridgeFile();
-          if (noted.pid !== bridge || noted.machineHandover !== true)
-            return;
-        } catch {
-          return;
-        }
+    if (processRuns(bridge, "kuvo-agents")) {
+      try {
+        const noted = readBridgeFile();
+        if (noted.pid !== bridge || noted.machineHandover !== true)
+          return "deferred";
+      } catch {
+        return "deferred";
       }
-      if (!await keepInboxes(engine) || await busy() || !valid())
-        return;
     }
+    if (!await keepInboxes(engine) || await busy() || !valid())
+      return "deferred";
     state.stage = "swapping";
     say();
     if (!takeUpdateLock())
-      return;
+      return "handled";
     locked = true;
-    if (stoppedOnPurpose() || updateOnTrial())
-      return;
-    if (!installed) {
-      if (!startMachineHelper()) {
-        console.error("Kuvo Helper’s machine launch agent couldn’t start.");
-        backOffMachine();
-        await recoverMachineJob({ clock, wait }, true);
-      }
-      return;
+    if (stoppedOnPurpose() || updateOnTrial() || !machineFilesAllowed())
+      return "deferred";
+    if (!startMachineHelper(engine.version)) {
+      console.error("Kuvo Helper’s machine launch agent couldn’t start.");
+      backOffMachine();
+      return "handled";
     }
-    if (!machineFilesAllowed() || !job)
-      return;
-    saveMachineJob({ ...job, phase: "workers", owner: process.pid, version: engine.version, helper: owner.helper });
-    retiring = true;
+    const job = machineJob();
+    const helper = machineKeeperIdentity()?.helper;
+    if (!job || !helper)
+      return "handled";
+    const until = clock() + Math.min(12000, SWAP_TIMING.startMost);
+    while (machineKeeperIdentity()?.helper === helper && !machineFilesAllowed(helper) && !stoppedOnPurpose() && clock() < until) {
+      await wait(Math.min(SWAP_TIMING.every, 500));
+    }
+    if (machineKeeperIdentity()?.helper !== helper || !machineFilesAllowed(helper) || await busy())
+      return "handled";
     writePrivate(restartWorkers, String(process.pid));
+    saveMachineJob({ ...job, phase: "workers", owner: process.pid, helper });
     for (let i = 0;i < 45 && processRuns(bridge, "kuvo-agents"); i++)
       await wait(1000);
-    if (!processRuns(bridge, "kuvo-agents") && !stoppedOnPurpose() && machineFilesAllowed() && !await engineBusy(engine) && keeper("engine-halt")) {
+    if (!processRuns(bridge, "kuvo-agents") && !stoppedOnPurpose() && machineKeeperIdentity()?.helper === helper && machineFilesAllowed(helper) && !await engineBusy(engine) && keeper("engine-halt")) {
       fs125.rmSync(restartWorkers, { force: true });
-      ready = await serviceReady(engine.version, owner.helper, { engine: engine.pid, bridge }, clock, wait);
-      if (ready) {
-        writePrivate(machineHandoverDone, "");
-        fs125.rmSync(machineJobFile, { force: true });
-      }
+      ready = await serviceReady(engine.version, helper, { engine: engine.pid, bridge }, clock, wait);
+      if (ready)
+        completeMachineJob();
     }
+    return "handled";
   } finally {
-    if (retiring && !ready) {
-      state.stage = "back";
-      say();
-      ready = await recoverMachineJob({ clock, wait }, true);
+    try {
+      if (locked && machineJob() && !ready) {
+        state.stage = "back";
+        say();
+        ready = await recoverMachineJob({ clock, wait }, true);
+      }
+    } finally {
+      if (locked)
+        fs125.rmSync(UPDATE_LOCK, { recursive: true, force: true });
+      fs125.rmSync(restartWorkers, { force: true });
+      if (ready || !machineJob())
+        await releaseAfterHold(ready ?? (held ? runningEngine() : null));
     }
-    if (locked)
-      fs125.rmSync(UPDATE_LOCK, { recursive: true, force: true });
-    fs125.rmSync(restartWorkers, { force: true });
-    if (!retiring || ready)
-      await releaseAfterHold(ready ?? (held ? runningEngine() : null));
   }
-  if (fs125.existsSync(machineHandoverDone))
-    forgetMachineCron();
 }
 async function swapNow(engine, state, say, clock, wait) {
   say("swapping");
@@ -46485,7 +46581,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "920bfea043b5";
+var BRIDGE_VERSION = "08e18891f9d1";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -74158,13 +74254,8 @@ if (main) {
   } else if (mode === "engine-swap") {
     if (argument === "--machine-helper-recover")
       await recoverMachineJob();
-    else {
-      if (argument === "--machine-helper" && machineHelperAvailable()) {
-        await handOverMachine();
-      }
-      if (argument !== "--machine-helper" || !machineKeeperRuns() && !machineJob()) {
-        console.log(JSON.stringify({ swapped: await swapEngine() }));
-      }
+    else if (argument !== "--machine-helper" || await handOverMachine() === "deferred") {
+      console.log(JSON.stringify({ swapped: await swapEngine() }));
     }
   } else if (mode === "repair") {
     const key = process.env.KUVO_TEST_RELEASE_KEY, feed = process.env.KUVO_TEST_RELEASE_FEED;

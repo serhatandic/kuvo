@@ -118,7 +118,8 @@ public final class BoxHelper {
         if let every = option("--test-look-every").flatMap(Double.init), every > 0 { lookEvery = every }
         #endif
         let appBundle = option("--app")
-        let machine = words.first == "keep-machine"
+        let watching = words.first == "watch-machine"
+        let machine = words.first == "keep-machine" || watching
         var keychain = HostKeychain()
         #if DEBUG
         // Tests alone: a keychain file of their own.
@@ -179,7 +180,7 @@ public final class BoxHelper {
             fail(refused.why)
         }
         switch command {
-        case "keep", "keep-machine":
+        case "keep", "keep-machine", "watch-machine":
             guard words.count <= 1 else { fail("Specify only one keeper mode.") }
             // In the menu bar (`MenuBarItem`), while it keeps the box: its own build always; the
             // tests' never in your menu bar (`--test-app-loop`: AppKit's run loop, without the item).
@@ -188,7 +189,7 @@ public final class BoxHelper {
             #else
             let (loop, drawn) = (true, true)
             #endif
-            let helper = MainActor.assumeIsolated { keep(home: home, keychain: keychain, prefix: prefix, app: app, machine: machine, allowed: allowed) }
+            let helper = MainActor.assumeIsolated { keep(home: home, keychain: keychain, prefix: prefix, app: app, machine: machine, watching: watching, allowed: allowed) }
             guard loop else { dispatchMain() }
             MainActor.assumeIsolated {
                 let application = NSApplication.shared
@@ -243,7 +244,7 @@ public final class BoxHelper {
                 fail(error.localizedDescription)
             }
         default:
-            fail("Usage: \(BoxHelperBundle.name) [keep|keep-machine] [--home <box>] | keys check|uncopy|clear|back [--app <Kuvo Code.app>] | permissions")
+            fail("Usage: \(BoxHelperBundle.name) [keep|keep-machine|watch-machine] [--home <box>] | keys check|uncopy|clear|back [--app <Kuvo Code.app>] | permissions")
         }
     }
 
@@ -316,7 +317,7 @@ public final class BoxHelper {
 
     /// The box kept, in this process, for as long as it runs.
     @discardableResult
-    private static func keep(home: URL, keychain: HostKeychain, prefix: String, app: String, machine: Bool, allowed: @escaping @Sendable () async -> Permissions?) -> BoxHelper {
+    private static func keep(home: URL, keychain: HostKeychain, prefix: String, app: String, machine: Bool, watching: Bool, allowed: @escaping @Sendable () async -> Permissions?) -> BoxHelper {
         let run = home.appending(path: "run")
         try? FileManager.default.createDirectory(at: run, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         // One at a time: one opened while launchd's runs goes at once, and cleanly.
@@ -361,7 +362,7 @@ public final class BoxHelper {
         let host = machine ? nil : BoxHelperHost(home: home, keychain: keychain, prefix: prefix, app: app)
         let helper = BoxHelper(home: home, host: host, environment: environment)
         helper.allowed = allowed
-        helper.begin()
+        helper.begin(watching: watching)
         return helper
     }
 
@@ -420,7 +421,7 @@ public final class BoxHelper {
     // MARK: Running
 
     /// Started: its host interface, `serve`, and the keeper; then it looks after them.
-    func begin() {
+    func begin(watching: Bool = false) {
         signal(SIGTERM, SIG_IGN)
         signal(SIGINT, SIG_IGN)
         for number in [SIGTERM, SIGINT] {
@@ -430,7 +431,7 @@ public final class BoxHelper {
             signals.append(source)
         }
         if host == nil {
-            startKeeper()
+            if !watching { startKeeper() }
             looking = Task { await look() }
             return
         }

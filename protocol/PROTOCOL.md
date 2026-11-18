@@ -8816,12 +8816,13 @@ was named Kuvo Code Box, in no release.)
 
 A Darwin machine box uses the same signed Helper and launch agent with `keep-machine --home <box>`.
 Helper starts its keeper and the box continues to use its machine credentials. An existing machine
-switches its launch agent when work is quiet, with the previous launch job saved on disk.
-With a recent Files grant from the running Helper, Kuvo waits for quiet again, holds incoming
-messages, keeps all pending engine inbox messages, and restarts both workers. The previous launch
-job stays available until the new engine and bridge answer. A failed or interrupted replacement
-restores it and checks service before releasing held messages. A failed adoption backs off so an
-ordinary engine update can proceed through the restored keeper.
+starts a permission watcher under the signed Helper while the existing launch job still runs
+worker restarts and ordinary engine updates. After the watcher sees the Files grant, Kuvo waits
+for quiet, holds incoming messages, keeps pending inbox messages, and saves the launch job before
+switching it. It rechecks the grant with the Helper that will run the workers. New installs and
+migrations both verify that the engine and bridge answer before completing the switch. If
+migration fails or is interrupted, Kuvo restores the previous job and holds messages until both
+services answer. A failed adoption backs off so ordinary engine updates can proceed.
 
 - **Started** by the launch agent `run.kuvo.code.machine` (one per computer): `kuvo-link.js helper install [--load] [--app <bundle ID>]` writes
   `~/Library/LaunchAgents/run.kuvo.code.machine.plist` (`ProgramArguments`: the helper, `keep
