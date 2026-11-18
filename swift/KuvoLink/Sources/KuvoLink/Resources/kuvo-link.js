@@ -52616,6 +52616,10 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
     const pack = from ? readRelease(path142.join(from, packName(manifest)), 1e8) : await download(() => fetchedPatiently(manifest.pack.url, 1e8, 300000));
     if (hexSHA256(pack) !== manifest.pack.sha256)
       throw new Error("The release's files aren't what it says.");
+    const authority = localSetupValue(RUN, "setupSecurityAndReleaseChoice");
+    if (authority?.id !== setup?.id || authority?.epoch !== setup?.epoch || authority?.sequence !== setup?.sequence) {
+      return { result: "waiting", version: manifest.version, message: "The setup changed while this release was being checked." };
+    }
     keepRelease(released, pack);
     if (setup && !alreadyChosen) {
       const response = await askSetupSave(RUN, {
@@ -56928,7 +56932,7 @@ var init_files4 = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "1c42f65344e2";
+var BRIDGE_VERSION = "fad5e7e10856";
 
 // box/src/link/rehome/paths.ts
 import { createHash as createHash4 } from "node:crypto";
@@ -62681,11 +62685,15 @@ function beginUninstall(key) {
         console.error("Uninstall local revocation failed:", error);
         throw new Failed("Kuvo Code couldn’t confirm that access was revoked. Try uninstalling again.");
       }
-      const listCleanup = removed.status === 503 ? " The saved machines list still needs to be updated." : "";
-      if (removed.status !== 200 && removed.status !== 503) {
+      if (removed.status === 202)
+        throw new Failed(PENDING_SAVE);
+      const current = readLink();
+      const cleanupOnly = removed.status === 503 && current?.removedHere?.includes(key) && !peersOf(current).some((peer) => peer.key === key);
+      if (removed.status !== 200 && !cleanupOnly) {
         console.error("Uninstall local revocation returned", removed);
         throw new Failed("Kuvo Code couldn’t confirm that access was revoked. Try uninstalling again.");
       }
+      const listCleanup = cleanupOnly ? " The saved machines list still needs to be updated." : "";
       tell.commit?.();
       let cleanup = "";
       try {
