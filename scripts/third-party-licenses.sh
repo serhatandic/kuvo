@@ -50,6 +50,9 @@ HEADER
     section browser-use 0.4.2 https://github.com/browser-use/browser-use \
         "box/src/browser/buildDomTree.js, unchanged." \
         Licenses/browser-use.txt
+    section "Work Queue Markdown parser" 2.0.3 https://github.com/syntax-tree/mdast-util-from-markdown \
+        "Bundled in kuvo-link.js. Includes micromark and the runtime dependencies listed below." \
+        Licenses/work-queue-markdown.txt
     section models.dev "(logos, 2026-11-01)" https://models.dev \
         "Providers' logos in swift/KuvoClient/Sources/ClientDesign/Resources/Marks.xcassets, unchanged. Each logo is its owner's trademark, shown only to name its provider." \
         Licenses/models.dev.txt

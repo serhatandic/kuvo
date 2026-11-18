@@ -586,6 +586,39 @@ test("an effort held for another computer waits until that computer takes one", 
   assert.deepEqual(Object.keys(mailTo(lab).at(-1).botEdit.ages), ["model"]);
 });
 
+test("individual Job and Instructions edits wait for a computer that can take them", async () => {
+  const path = `kuvo/bots/${wren}`;
+  assert.equal((await route("PATCH", path, { jobDetails: "Check the build." })).status, 202);
+  const job = await route("PATCH", path, { jobLine: "Build monitor" });
+  assert.deepEqual(job.body.held.change, { jobLine: "Build monitor", jobDetails: "Check the build." });
+  assert.deepEqual(mailTo(lab), []);
+  assert.match((await listed()).held[0].waits, /separate Job and Instructions changes/);
+  agentsTold({ labFeatures: ["bots.held", "bots.job-fields"] });
+  link.sendHeld(host);
+  assert.deepEqual(mailTo(lab).at(-1).botEdit.change, job.body.held.change);
+  const whole = await route("PATCH", path, { job: { line: "New job", details: "New instructions." } });
+  assert.deepEqual(whole.body.held.change, { job: { line: "New job", details: "New instructions." } });
+});
+
+test("a held whole job keeps the Instructions edited locally since it was sent", async () => {
+  write(path.join(bots, "kit.json"), kit);
+  const bot = "bot_scout00001";
+  const folder = path.join(bots, bot);
+  write(path.join(folder, "session"), "ses_scout");
+  write(path.join(folder, "bot.json"), { kuvo: 1, id: bot, name: "Scout", job: "", look: { color: "sky", shape: "round", face: "calm" }, created: "2026-10-01T09:00:00Z" });
+  assert.equal((await route("PATCH", `kuvo/bots/${bot}`, { jobDetails: "New local instructions." })).status, 200);
+  const id = `bte_${crypto.randomBytes(16).toString("base64url")}`;
+  receive(lab, { botEdit: { id, bot, change: { job: { line: "Build monitor", details: "Old instructions." } }, ages: { job: 10_000 }, at: Date.now() } });
+  let answer;
+  for (let attempt = 0; !answer && attempt < 100; attempt++) {
+    await new Promise(resolve => setTimeout(resolve, 10));
+    answer = mailTo(lab).find(mail => mail.botEdited?.id === id);
+  }
+  assert.equal(answer?.botEdited.status, 200);
+  const { line, details } = JSON.parse(fs.readFileSync(path.join(folder, "job.json"), "utf8"));
+  assert.deepEqual({ line, details }, { line: "Build monitor", details: "New local instructions." });
+});
+
 test("a peer saying its agents again changes nothing for those following this box's bots, and one it gives no name isn't listed", async () => {
   agentsTold({ labBots: [labWren, { ...labWren, id: "bot_blank000001", session: "ses_blank", name: "" }] });
   const before = JSON.stringify(await listed());

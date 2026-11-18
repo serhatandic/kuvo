@@ -40,6 +40,7 @@ export const FEATURES = [
   "bots.events",
   "bots.held",
   "bots.job",
+  "bots.job-fields",
   "bots.make",
   "bots.now",
   "bots.state",

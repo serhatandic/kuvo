@@ -151,6 +151,8 @@ pub struct Note {
     pub by: Who,
     #[serde(default)]
     pub text: String,
+    #[serde(default)]
+    pub mentions: Vec<Mention>,
 }
 
 /// How far an item is, and what's being done now.
@@ -309,12 +311,30 @@ impl Item {
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct File {
     pub name: String,
+    pub anchor: Option<String>,
     #[serde(default)]
     pub size: u64,
     #[serde(default, rename = "type")]
     pub kind: String,
     #[serde(default)]
     pub at: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Mention {
+    pub start: usize,
+    pub end: usize,
+    pub number: u64,
+    #[serde(default)]
+    pub item: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct ItemRelation {
+    pub id: String,
+    pub title: String,
+    pub number: Option<u64>,
+    pub kind: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -336,6 +356,9 @@ pub struct Whole {
     pub notes: Vec<Note>,
     pub files: Vec<File>,
     pub links: Vec<Link>,
+    pub mentions: Vec<Mention>,
+    pub relations: Vec<ItemRelation>,
+    pub can_link_items: bool,
 }
 
 /// An owner in a view: what it is, and its title.
@@ -445,6 +468,8 @@ pub struct ItemChange {
     pub body: Option<String>,
     /// New files to append; existing files stay with the item.
     pub files: Vec<crate::parts::File>,
+    /// Picture markers to remove from the current description, by URL and saved file name.
+    pub remove_inline_images: Vec<(String, String)>,
     pub status: Option<String>,
     pub priority: Option<String>,
     /// All of its labels, in place of those it had.
@@ -464,6 +489,10 @@ impl ItemChange {
             }
         };
         if !self.files.is_empty() { put("files", Some(json!(self.files))); }
+        if !self.remove_inline_images.is_empty() {
+            put("removeInlineImages", Some(json!(self.remove_inline_images.iter()
+                .map(|(url, name)| json!({ "url": url, "name": name })).collect::<Vec<_>>())));
+        }
         put("title", self.title.as_ref().map(|title| json!(title)));
         put("body", self.body.as_ref().map(|body| json!(body)));
         put("status", self.status.as_ref().map(|status| json!(status)));
@@ -488,6 +517,11 @@ impl BoxClient {
     /// counts: what the Work Queue itself shows.
     pub fn work_queue_view(&self) -> Result<QueueSaid> {
         self.queue_view("kuvo/work-queue?owner=all&counts=1")
+    }
+
+    /// A conversation's queue and the items linked to it, for resolving chat references.
+    pub fn work_queue_for_owner(&self, owner: &str) -> Result<QueueSaid> {
+        self.queue_view(&format!("kuvo/work-queue?owner={}&glance=1", paths::segment(owner)))
     }
 
     /// The same view narrowed as `by` says (a search, filters), by the box: only the items it
@@ -530,7 +564,21 @@ impl BoxClient {
             notes: read_all(said.get("notes")),
             files: read_all(said.get("files")),
             links: read_all(said.get("links")),
+            mentions: read_all(said.get("bodyMentions")),
+            relations: read_all(said.get("itemRelations")),
+            can_link_items: said.get("canLinkItems").and_then(Value::as_bool).unwrap_or(false),
         })
+    }
+
+    /// Finds textual mentions by the same rule the queue uses to keep backlinks.
+    pub fn work_item_mentions(&self, text: &str) -> Result<Vec<Mention>> {
+        let answer: Value = self.value(&Request::post("kuvo/work-queue/refs", json!({ "text": text })))?;
+        Ok(read_all(answer.get("mentions")))
+    }
+
+    pub fn set_work_item_relation(&self, item: &str, other: &str, kind: Option<&str>) -> Result<Item> {
+        let request = Request { method: "PATCH".into(), path: item_route(item), headers: Vec::new(), body: Some(json!({ "itemRelation": { "item": other, "kind": kind } })) };
+        self.item_answer(request)
     }
 
     /// Reads a file kept with an item, including one routed to another computer.
@@ -570,7 +618,12 @@ impl BoxClient {
 
     /// Changes an item: what it says, where it stands, its priority, labels, assignee or due day.
     pub fn change_work_item(&self, item: &str, change: &ItemChange) -> Result<Item> {
-        self.item_answer(Request { method: "PATCH".into(), path: item_route(item), headers: Vec::new(), body: Some(change.body()) })
+        let request = Request { method: "PATCH".into(), path: item_route(item), headers: Vec::new(), body: Some(change.body()) };
+        let answer = self.item_reply(request)?;
+        if !change.remove_inline_images.is_empty() && answer.get("inlineImagesApplied").and_then(Value::as_bool) != Some(true) {
+            return Err(Error::BadAnswer("The picture couldn’t be removed. Update Kuvo on the computer that keeps this item, then try again.".into()));
+        }
+        Self::answered_item(answer)
     }
 
     /// Deletes an item (the box keeps it a while, to bring back).
@@ -619,11 +672,18 @@ impl BoxClient {
     }
 
     fn item_answer(&self, request: Request) -> Result<Item> {
+        Self::answered_item(self.item_reply(request)?)
+    }
+
+    fn item_reply(&self, request: Request) -> Result<Value> {
         let response = self.send(&request)?;
         if !response.is_success() {
             return Err(Error::Refused(Refusal::from_answer(response.status, &response.body)));
         }
-        let answer: Value = serde_json::from_slice(&response.body).map_err(|error| Error::BadAnswer(format!("The answer couldn't be read: {error}")))?;
+        serde_json::from_slice(&response.body).map_err(|error| Error::BadAnswer(format!("The answer couldn't be read: {error}")))
+    }
+
+    fn answered_item(answer: Value) -> Result<Item> {
         serde_json::from_value(answer.get("item").cloned().unwrap_or(Value::Null)).map_err(|error| Error::BadAnswer(format!("The item couldn't be read: {error}")))
     }
 }

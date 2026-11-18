@@ -63,6 +63,13 @@ pub enum Row {
 }
 
 impl Row {
+    fn reference_text(&self) -> Vec<&str> {
+        match self {
+            Row::Message { drawn, .. } => crate::queue::chat_references::message_text(drawn),
+            Row::Talking => Vec::new(),
+        }
+    }
+
     pub fn key(&self) -> &str {
         match self {
             Row::Message { said, .. } => &said.id,
@@ -73,6 +80,7 @@ impl Row {
 
 pub struct GroupChatView {
     client: BoxClient,
+    chat_references: crate::queue::chat_references::ChatReferences,
     live: bool,
     id: String,
     /// The chat as the box lists it (its name, purpose, bots), and the box's bots (who a bot that
@@ -130,6 +138,7 @@ impl GroupChatView {
         });
         let mut view = GroupChatView {
             client: client.clone(),
+            chat_references: Default::default(),
             live,
             id: id.clone(),
             group,
@@ -574,6 +583,8 @@ impl GroupChatView {
                 (Some(bot), _) => self.bot_message(ix, bot, said, drawn, view, toggle, cx),
             },
         };
+        let references = self.chat_references.chips(row.reference_text(), &self.client, self.live, cx);
+        let body = if let Some(references) = references { div().child(body).child(references).into_any_element() } else { body };
         entries::frame(ix, row.key(), body, matches!(row, Row::Talking))
     }
 
@@ -860,6 +871,7 @@ impl GroupChatView {
 
 impl Render for GroupChatView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.chat_references.refresh(self.rows.iter().rev().flat_map(Row::reference_text), &self.id, &self.client, self.live, self.list.clone(), cx);
         let c = cx.theme().colors.clone();
         let view = cx.entity();
         let body: AnyElement = if !self.read {

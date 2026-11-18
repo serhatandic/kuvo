@@ -2308,6 +2308,13 @@ impl Workspace {
         crate::yours::queue_badge(&self.queue_badge_items, opened)
     }
 
+    pub(crate) fn open_queue_reference(&mut self, item: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(queue) = self.area_view(Area::Queue).cloned() {
+            queue.update(cx, |queue, cx| queue.select(Some(format!("item:{item}")), cx));
+            self.show_area(Area::Queue, window, cx);
+        }
+    }
+
     pub fn show_area(&mut self, area: Area, window: &mut Window, cx: &mut Context<Self>) {
         self.session_with_bot_strip = false;
         if area == Area::Queue { self.queue_opened(cx); }

@@ -5307,7 +5307,7 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
   Errors are `{"message"}`: 400 for a missing name or an unknown template, personality or
   project; 409 while its box has no words for bots (below); 422 for a model that can't run there (its
   account isn't signed in there); 503 when it couldn't be made.
-- `PATCH kuvo/bots/<id>` with any of `{name, look, personality, model, effort, job}` changes a bot as Edit
+- `PATCH kuvo/bots/<id>` with any of `{name, look, personality, model, effort, job, jobLine, jobDetails}` changes a bot as Edit
   Bot does (`personality: null` for the model's own way, `model` as `{providerID, id, variant?}`,
   `effort` (`bots.effort`) the effort its model runs at, for the model it has or the one the change
   names: one of that model's own as the box lists them (`efforts`, "The models offered"), null or
@@ -5316,7 +5316,10 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
   it has, or for a bot with no model; 422 for a model the side it runs on (the engine, or the
   coding agents) lists others but not it (its account signed out there); 503 while that side lists none (it isn't answering now),
   `job` as `{line, details}`, the whole job, which replaces the one it had: its line on one line,
-  without a sentence's end; both `""` for none; 400 for one too long): `200 {"bot": <as kuvo/bots
+  without a sentence's end; both `""` for none. With `bots.job-fields`, `jobLine` and `jobDetails`
+  change just the supplied strings and keep the other field as stored. Each may be cleared with
+  `""`. A held edit using either waits for that feature on the receiving computer. 400 for a field
+  over its limit): `200 {"bot": <as kuvo/bots
   lists one>}` (null when it no longer lists here by then, a move begun meanwhile), after a coding agent's model for a bot on the engine has carried its conversation
   on with them (its `session` is the new one, `agents` true). Errors are `{"message"}`: 400 for an
   empty name, or a look or personality there isn't; 422 for a model it can't use where it lives
@@ -6857,6 +6860,14 @@ before (a linked item is its owner's to change). A client shows them first, as "
   it last told it, with `computer`; null for one no computer told this box of. A client reads each
   on its own (one it can't read is as null, the others still chips), and keeps what it learns by
   the ref as asked, not by a number.
+- `POST kuvo/work-queue/refs {text}` → `{mentions: [{start, end, number}]}` for a client
+  editing a description. Ranges use UTF-16 code units. Code and Markdown links are skipped.
+- A whole item can include `bodyMentions` and `notes[].mentions`. Each uses the same ranges into
+  the corresponding text and names its target as `item`, the stable item ID. Use that ID when
+  showing or opening the chip. The box saves the binding with the text so an item keeps its
+  references when it moves or the number changes. `itemRelations: [{id, title, number?, kind}]`
+  lists `mentions` and `mentioned-in` from the saved descriptions and notes. The link goes away
+  when the last mention is removed.
 - `GET kuvo/work-queue/labels` → `{labels}`.
 
 **What you do** (a paired phone, this Mac's app, or Kuvo Code on another computer through `box
@@ -6872,6 +6883,22 @@ relay (said at once, nothing sent), or when no answer came in 20 seconds (a file
 computer stopped answering meanwhile (it may have been done: a client looks again); 409 for one that doesn't take it
 from another box (an older box), changed there. One on its way to another computer (`handing`) is refused (400) until it's there,
 but for `DELETE`, which calls its hand-off off (a note says so) and deletes it.
+A client can send `PATCH kuvo/work-queue/items/<id> {itemRelation: {item, kind}}`
+for two items kept on the same computer. `item` is the other item's ID and `kind` is
+`related`, `blocks`, `blocked-by`, or `duplicate-of`. A new kind replaces the pair's
+previous relation. `null` removes it from either end. Both items show the relation from
+their own side, including `duplicated-by` on the inverse end. The response includes
+`itemRelationApplied: true`.
+
+An attachment can appear in a description as
+`![Attachment](kuvo-attachment:draft/<index>/<encoded original name>)` during a client
+save. The zero-based index refers to the `files` in that request. The box substitutes
+`![<stored name>](kuvo-attachment:file/<anchor>)` and includes that `anchor` on the stored
+file. A file's anchor stays with it when the item moves. To remove a picture from the item
+page, use `PATCH` with `removeInlineImages: [{url, name}]`, where `url` is the picture marker
+and `name` is the saved file name. The box applies it to the current description under the queue
+lock and answers `inlineImagesApplied: true`. The file stays attached.
+
 `POST kuvo/work-queue/items` `{title, body?, status?, priority?, labels?, assignee?, due?, top?,
 owner?, files?}` → `{item}`: an item added, `todo` and `normal` unless said, numbered as an agent's is. The
 box decides whose queue it's in: `owner`'s where a client names one (the conversation whose queue
@@ -7110,7 +7137,8 @@ item on its way to another computer (`handing`) goes with the move and is sent f
 - **Told**: each box tells every such peer its Work Queue, unasked, so the others have it while it
   sleeps: `{workQueue: {told: {id, at, kind, since, top, primary?: {key, kind, since?}, shared?,
   items, owners, labels}}}`. `items` are its items as a view gives them (without `can`) (not deleted ones; the
-  100 latest Done; 1,500 at most), each with `handedFrom` (who handed it on), an issue's or pull
+  100 latest Done; 1,500 at most), each with `handedFrom` (who handed it on) and
+  `mentionTargets` (stable IDs it mentions), an issue's or pull
   request's with `seen` and `keptIn` as this box last read it (`seen.checked`, when it last asked
   GitHub); `owners` names their
   owners; `labels` its labels (`[{id, name, color}]`); `kind`, `since` and `top` how it numbers, `primary` the

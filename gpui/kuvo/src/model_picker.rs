@@ -27,7 +27,7 @@ use kuvo_box::{
     typed::ModelRef,
 };
 use kuvo_ui::{
-    button::keycap,
+    button::{Button, ButtonSize, keycap},
     icon::{Icon, IconName, IconSize},
     text_field::{TextField, TextFieldEvent},
     theme::{ActiveTheme, StyledType, TypeSize, radius, scaled, space},
@@ -265,6 +265,7 @@ fn in_order(text: &str, word: &str) -> Option<i64> {
 // MARK: The picker
 
 /// What's picked: a model, or the choice ahead of them.
+pub type OnEffort = Rc<dyn Fn(Option<String>, &mut Window, &mut App)>;
 pub type OnPick = Rc<dyn Fn(Option<ModelRef>, &mut Window, &mut App)>;
 /// Your starred models, as they are now.
 pub type OnStarred = Rc<dyn Fn(Vec<Starred>, &mut App)>;
@@ -312,6 +313,7 @@ pub struct ModelPicker {
     problem: Option<SharedString>,
     height: f32,
     on_pick: OnPick,
+    on_effort: Option<OnEffort>,
     on_starred: Option<OnStarred>,
     /// Star changes waiting to go to the box, one at a time in the order made; the one on its
     /// way; and the stars as the box last said them.
@@ -369,6 +371,7 @@ impl ModelPicker {
             note: None,
             problem: None,
             on_pick,
+            on_effort: None,
             on_starred: None,
             star_queue: Default::default(),
             star_sending: None,
@@ -384,6 +387,40 @@ impl ModelPicker {
             picker.scroll.scroll_to_item(row, ScrollStrategy::Nearest);
         }
         picker
+    }
+
+    /// Let the picker change the current bot model’s effort alongside its model.
+    pub fn on_effort(mut self, on_effort: Option<OnEffort>) -> Self {
+        self.on_effort = on_effort;
+        self
+    }
+
+    fn effort_controls(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let handler = self.on_effort.clone()?;
+        let current = self.current.as_ref()?;
+        let model = &self.catalog.entries[self.catalog.position(current)?];
+        if model.efforts.is_empty() {
+            return None;
+        }
+        let c = cx.theme().colors.clone();
+        let choices = std::iter::once(None).chain(model.efforts.iter().cloned().map(Some));
+        Some(div().flex().flex_col().gap(space::S1).px(space::S3).py(space::S2)
+            .border_b_1().border_color(c.border)
+            .child(div().text_ui(TypeSize::Small).text_color(c.text_muted).child("Effort"))
+            .child(div().flex().flex_wrap().gap(space::S1).children(choices.map(|choice| {
+                let id = SharedString::from(format!("bot-effort-{}", choice.as_deref().unwrap_or("default")));
+                let title = choice.as_deref().map(kuvo_box::models::effort_title).unwrap_or_else(|| "Default".into());
+                let on = current.variant == choice;
+                let handler = handler.clone();
+                Button::new(id, title).ghost().size(ButtonSize::Small).selected(on)
+                    .on_click(cx.listener(move |_, _, window, cx| {
+                        cx.emit(DismissEvent);
+                        if !on {
+                            handler(choice.clone(), window, cx);
+                        }
+                    }))
+            })))
+            .into_any_element())
     }
 
     /// Told each time a star changes, with your starred models as they are now.
@@ -860,6 +897,7 @@ impl Render for ModelPicker {
                     .child(search)
                     // The search's underline, as 0.7's.
                     .child(div().mx(space::S3).h(px(1.)).bg(c.accent))
+                    .children(self.effort_controls(cx))
                     .child(list)
                     .children(self.problem.clone().map(|problem| div().debug_selector(|| "model-picker-problem".into()).px(space::S3).pb(space::S2).text_ui(TypeSize::Caption).text_color(c.warning).child(problem)))
                     .children(self.note.clone().map(|note| div().px(space::S3).py(space::S2).border_t_1().border_color(c.border).text_ui(TypeSize::Caption).text_color(c.text_faint).child(note))),

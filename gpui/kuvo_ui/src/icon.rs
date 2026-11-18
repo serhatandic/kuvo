@@ -129,6 +129,8 @@ icons! {
     Clock => "clock",
     Close => "close",
     Compose => "compose",
+    CollapseEditor => "collapse-editor",
+    ExpandEditor => "expand-editor",
     Computer => "computer",
     Copy => "copy",
     Drive => "drive",

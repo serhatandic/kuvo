@@ -12,7 +12,7 @@ import { BOTS, HERE, IS_MAC, K, RUN } from "../home";
 import { hostTrash } from "../host-interface";
 import { botPersonalities } from "../personalities/library";
 import { BOT_STEP, botHere, botLook, botModel, changeDescription, isModel, isMoving, MOVING, noteBotsChanged, sameModel } from "./here";
-import { givenJob, jobOf, writeJob } from "./jobs";
+import { givenJob, givenJobFields, jobOf, writeJob } from "./jobs";
 import { NO_KIT, readKit, runsWithAgents } from "./kit";
 import { listBots } from "./list";
 import { fitsLook, signInRefusal } from "./make";
@@ -66,10 +66,10 @@ function onto(now: BotDescription | null, before: BotDescription, after: BotDesc
  * each checked here (`personality` null for none). `effort` (`bots.effort`): the effort its model
  * runs at, one of that model's own as this box lists them (null or "" for the model's own), for the
  * model it has or the one the change names. */
-export type BotChange = Pick<GivenBot, "name" | "look" | "personality" | "job" | "model"> & { effort?: unknown; work?: unknown };
+export type BotChange = Pick<GivenBot, "name" | "look" | "personality" | "job" | "model"> & { effort?: unknown; work?: unknown; jobLine?: unknown; jobDetails?: unknown };
 
 /** The fields of a change whose times are noted (`noteEdited`). */
-const EDITED_FIELDS = ["name", "look", "personality", "job", "model", "effort", "work"];
+const EDITED_FIELDS = ["name", "look", "personality", "job", "jobLine", "jobDetails", "model", "effort", "work"];
 
 /** What `changeBot` answers: the bot as it is after the change, or why not. */
 export type ChangedAnswer = JSONAnswer<ChangedBot | { message: string }>;
@@ -120,6 +120,8 @@ export async function changeBot(id: string, given: BotChange | null | undefined,
     if (checked.error) return no(400, checked.error);
     job = checked.job;
   }
+  const partialJob = givenJobFields(given);
+  if (partialJob.error !== undefined) return no(400, partialJob.error);
   // The effort its model runs at: one of that model's own, as this box lists them (the engine's, or
   // its coding agents'). It's the model's variant from here on, as `model` alone names it.
   if ("effort" in given) {
@@ -200,6 +202,10 @@ export async function changeBot(id: string, given: BotChange | null | undefined,
   if (!target) return no(503, here.agents ? agentsLine() : "The engine isn’t running.");
   const renamed = changed.name !== described.name;
   const was = jobOf(here);
+  // Read the other field after the asynchronous checks, just before writing the job.
+  if ("jobLine" in given || "jobDetails" in given) {
+    job = { ...(job ?? was), ...partialJob.job };
+  }
   const newJob = job !== undefined && (job.line !== was.line || job.details !== was.details);
   const retold = renamed || changed.personality !== described.personality || newJob;
   const switched = !sameModel(changed.model, described.model);

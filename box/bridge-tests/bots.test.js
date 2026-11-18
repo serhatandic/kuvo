@@ -728,6 +728,39 @@ test("with the Mac closed, a bot here is changed from a phone as Edit Bot change
   }
 });
 
+test("Job and Instructions can be changed independently and report their own limits", async () => {
+  const folder = bot("bot_scout00001");
+  write(path.join(folder, "MEMORY.md"), "# Scout's memory\n\n## Job\nOld job.\nOld instructions.\n");
+  const engine = await makingEngine(["opencode", "anthropic"]);
+  try {
+    const handle = link.engineHandler(() => ({ port: engine.port, password: "p" }), { name: "my-server" }, () => null);
+    const route = "kuvo/bots/bot_scout00001";
+    const remote = await ask(handle, "PATCH", route, { jobDetails: "New instructions." });
+    assert.equal(remote.status, 200);
+    assert.equal(remote.json.bot.job, "Old job");
+    const local = await ask(handle, "PATCH", route, { jobLine: "New job" });
+    assert.equal(local.status, 200);
+    assert.equal(local.json.bot.job, "New job");
+    assert.equal(local.json.bot.jobDetails, "New instructions.");
+    const jobFile = path.join(folder, "job.json");
+    const before = fs.readFileSync(jobFile, "utf8");
+    for (const [body, message] of [
+      [{ jobLine: "x".repeat(201) }, "Shorten Job to 200 characters or fewer."],
+      [{ jobDetails: "x".repeat(8001) }, "Shorten Instructions to 8,000 characters or fewer."],
+    ]) {
+      const invalid = await ask(handle, "PATCH", route, body);
+      assert.equal(invalid.status, 400);
+      assert.equal(invalid.json.message, message);
+      assert.equal(fs.readFileSync(jobFile, "utf8"), before);
+    }
+    const cleared = await ask(handle, "PATCH", route, { jobLine: "" });
+    assert.equal(cleared.json.bot.job, "");
+    assert.equal(cleared.json.bot.jobDetails, "New instructions.");
+  } finally {
+    engine.close();
+  }
+});
+
 test("a bot changed from a phone that leaves mid-way has its conversation told all of it: its new name, model and words, not only its details", async () => {
   write(path.join(bots, "kit.json"), JSON.stringify(kit));
   const folder = bot("bot_scout00001");

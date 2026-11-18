@@ -18,7 +18,7 @@ use std::path::PathBuf;
 use std::{ops::Range, time::Duration};
 
 use gpui::{
-    App, Bounds, ClipboardEntry, ClipboardItem, Context, Image, EntityInputHandler, EventEmitter, FocusHandle, Focusable,
+    AnyElement, App, Bounds, ClipboardEntry, ClipboardItem, Context, Image, EntityInputHandler, EventEmitter, FocusHandle, Focusable,
     InteractiveElement, IntoElement, KeyBinding, MouseButton, MouseDownEvent, MouseMoveEvent,
     ParentElement, Pixels, Point, Render, ScrollEvent, SharedString, Styled, UTF16Selection,
     Window, actions, div, px,
@@ -209,6 +209,20 @@ struct Snapshot {
     selection: Range<usize>,
 }
 
+/// An editable source range represented by a block, such as an attached picture.
+#[derive(Clone)]
+pub struct InlineBlock {
+    pub range: Range<usize>,
+    pub height: std::rc::Rc<dyn Fn(Pixels) -> Pixels>,
+    pub draw: std::rc::Rc<dyn Fn(Pixels, &App) -> AnyElement>,
+}
+
+#[derive(Clone)]
+pub struct FieldLink {
+    pub range: Range<usize>,
+    pub open: std::rc::Rc<dyn Fn(&mut Window, &mut App)>,
+}
+
 /// A text field. Create it with `cx.new(|cx| TextField::new(cx))`, then render the entity.
 pub struct TextField {
     focus: FocusHandle,
@@ -219,6 +233,10 @@ pub struct TextField {
     marked: Option<Range<usize>>,
     /// `None` for one line; `Some((min, max))` lines for a growing field.
     lines: Option<(usize, usize)>,
+    editor_height: Option<(Pixels, bool)>,
+    decoration_text: String,
+    inline_blocks: Vec<InlineBlock>,
+    links: Vec<FieldLink>,
     /// Return submits rather than adding a line.
     submits: bool,
     /// The type its text is set in.
@@ -266,6 +284,10 @@ impl TextField {
             reversed: false,
             marked: None,
             lines: None,
+            editor_height: None,
+            decoration_text: String::new(),
+            inline_blocks: Vec::new(),
+            links: Vec::new(),
             submits: true,
             kind: FieldType::default(),
             bare: false,
@@ -345,6 +367,29 @@ impl TextField {
         self
     }
 
+    /// Caps the editor viewport, or fills it when enlarged.
+    pub fn set_editor_height(&mut self, height: Pixels, fill: bool) {
+        self.editor_height = Some((height, fill));
+    }
+
+    pub fn set_decorations(&mut self, text: String, inline_blocks: Vec<InlineBlock>, links: Vec<FieldLink>) {
+        self.decoration_text = text;
+        self.inline_blocks = inline_blocks;
+        self.links = links;
+    }
+
+    fn blocks(&self) -> &[InlineBlock] {
+        if self.content == self.decoration_text { &self.inline_blocks } else { &[] }
+    }
+
+    fn links(&self) -> &[FieldLink] {
+        if self.content == self.decoration_text { &self.links } else { &[] }
+    }
+
+    pub fn replace_selection(&mut self, words: &str, cx: &mut Context<Self>) {
+        self.edit(self.selection.clone(), words, EditKind::Other, cx);
+    }
+
     /// Whether Return submits (the default) or adds a line.
     pub fn submits_on_enter(mut self, submits: bool) -> Self {
         self.submits = submits;
@@ -381,6 +426,12 @@ impl TextField {
     /// Drawn without its own border and fill, for use inside a card such as the composer.
     pub fn bare(mut self) -> Self {
         self.bare = true;
+        self
+    }
+
+    /// Include the field in the window’s Tab order.
+    pub fn tab_stop(mut self) -> Self {
+        self.focus = self.focus.tab_stop(true);
         self
     }
 
@@ -470,6 +521,7 @@ impl TextField {
 
     fn move_to(&mut self, offset: usize, cx: &mut Context<Self>) {
         let offset = offset.min(self.content.len());
+        let offset = self.blocks().iter().find(|block| offset > block.range.start && offset < block.range.end).map_or(offset, |block| block.range.start);
         // Moving the caret ends a run of typing: the next word is its own undo step.
         self.last_edit = EditKind::Other;
         self.selection = offset..offset;
@@ -497,6 +549,9 @@ impl TextField {
     }
 
     fn previous_grapheme(&self, offset: usize) -> usize {
+        if let Some(block) = self.blocks().iter().find(|block| block.range.start < offset && offset <= block.range.end) {
+            return block.range.start;
+        }
         self.content
             .grapheme_indices(true)
             .rev()
@@ -505,6 +560,9 @@ impl TextField {
     }
 
     fn next_grapheme(&self, offset: usize) -> usize {
+        if let Some(block) = self.blocks().iter().find(|block| block.range.start <= offset && offset < block.range.end) {
+            return block.range.end;
+        }
         self.content
             .grapheme_indices(true)
             .find_map(|(ix, _)| (ix > offset).then_some(ix))
@@ -570,7 +628,7 @@ impl TextField {
         let layout = self.layout.as_ref().filter(|l| l.text == self.content)?;
         let at = layout.position_for(self.cursor());
         let x = *self.goal_x.get_or_insert(at.x);
-        let y = at.y + layout.line_height * rows + layout.line_height / 2.;
+        let y = layout.vertical_y(at.y, rows);
         let target = if y < px(0.) {
             0
         } else if y >= layout.content_height {
@@ -714,6 +772,13 @@ impl TextField {
     fn edit(&mut self, range: Range<usize>, text: &str, kind: EditKind, cx: &mut Context<Self>) {
         if self.disabled {
             return;
+        }
+        let mut range = range;
+        for block in self.blocks() {
+            if range.start < block.range.end && range.end > block.range.start {
+                range.start = range.start.min(block.range.start);
+                range.end = range.end.max(block.range.end);
+            }
         }
         let text = self.normalize(text);
         let coalesce = kind == EditKind::Typing
@@ -880,6 +945,16 @@ impl TextField {
         }
         self.reset_blink(cx);
         self.refresh_layout(window);
+        if event.modifiers.secondary(cx)
+            && let Some(layout) = &self.layout
+            && let Some(link) = self.links().iter().find(|link| {
+                layout.rects_for(&link.range).iter().any(|bounds| bounds.contains(&(event.position - layout.origin)))
+            })
+        {
+            (link.open.clone())(window, cx);
+            cx.stop_propagation();
+            return;
+        }
         window.focus(&self.focus, cx);
         let offset = self.offset_at(event.position);
         self.goal_x = None;

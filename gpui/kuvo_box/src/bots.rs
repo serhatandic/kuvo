@@ -57,9 +57,16 @@ impl Held {
     /// The fields what's held changes, in Edit Bot's order (others a newer box names, after).
     pub fn fields(&self) -> Vec<String> {
         let Some(change) = &self.change else { return Vec::new() };
-        let known = ["name", "look", "job", "personality", "model", "effort"];
-        let mut fields: Vec<String> = known.iter().filter(|field| change.contains_key(**field)).map(|field| (*field).to_owned()).collect();
-        fields.extend(change.keys().filter(|field| !known.contains(&field.as_str())).cloned());
+        let known = [
+            ("name", "name"), ("look", "look"), ("job", "job"), ("jobLine", "job"),
+            ("jobDetails", "instructions"), ("personality", "personality"), ("model", "model"), ("effort", "effort"),
+        ];
+        let mut fields: Vec<String> = known.iter()
+            .filter(|(key, _)| change.contains_key(*key))
+            .map(|(_, label)| (*label).to_owned())
+            .collect();
+        fields.dedup();
+        fields.extend(change.keys().filter(|field| !known.iter().any(|(key, _)| *key == field.as_str())).cloned());
         fields
     }
 }
@@ -258,6 +265,8 @@ pub struct BotChange {
     pub effort: Option<Option<String>>,
     /// Its line and its details, the whole job.
     pub job: Option<(String, String)>,
+    pub job_line: Option<String>,
+    pub job_details: Option<String>,
 }
 
 impl BotChange {
@@ -280,6 +289,12 @@ impl BotChange {
         }
         if let Some((line, details)) = &self.job {
             body.insert("job".into(), json!({ "line": line, "details": details }));
+        }
+        if let Some(line) = &self.job_line {
+            body.insert("jobLine".into(), json!(line));
+        }
+        if let Some(details) = &self.job_details {
+            body.insert("jobDetails".into(), json!(details));
         }
         Value::Object(body)
     }
@@ -424,6 +439,19 @@ impl BoxClient {
         self.get("kuvo/bots/templates")
     }
 
+    /// Changes a custom personality in the shared library.
+    pub fn change_personality(&self, id: &str, name: &str, description: &str) -> Result<Personality> {
+        let mut changed: Personality = self.value(&Request {
+            method: "PATCH".into(),
+            path: format!("kuvo/personalities/{}", crate::paths::segment(id)),
+            headers: Vec::new(),
+            body: Some(json!({ "name": name, "description": description })),
+        })?;
+        // The library route returns a custom record without the templates catalogue's marker.
+        changed.custom = true;
+        Ok(changed)
+    }
+
     /// Makes a bot on this box.
     pub fn make_bot(&self, new: &NewBot) -> Result<Made> {
         let mut body = Map::new();
@@ -445,7 +473,15 @@ impl BoxClient {
 
     /// Changes a bot. Asked of a box it doesn't live on, the box holds it for that computer.
     pub fn change_bot(&self, bot: &str, change: &BotChange) -> Result<Outcome> {
-        self.bot_outcome(Request { method: "PATCH".into(), path: format!("kuvo/bots/{bot}"), headers: Vec::new(), body: Some(change.body()) })
+        let request = Request { method: "PATCH".into(), path: format!("kuvo/bots/{bot}"), headers: Vec::new(), body: Some(change.body()) };
+        if change.job_line.is_some() || change.job_details.is_some() {
+            self.check_gate(&request)?;
+            let feature = "bots.job-fields";
+            if !self.gate().has(feature) {
+                return Err(Error::NeedsUpdating { missing: vec![feature.to_owned()] });
+            }
+        }
+        self.bot_outcome(request)
     }
 
     /// Deletes a bot, as Delete Bot… does. Asked of a box it doesn't live on, it's held too.
@@ -564,6 +600,13 @@ mod tests {
         assert_eq!(BotChange { name: Some("Mira".into()), ..BotChange::default() }.body(), json!({ "name": "Mira" }));
         assert_eq!(BotChange { personality: Some(None), ..BotChange::default() }.body(), json!({ "personality": null }), "null: the model's own way");
         assert_eq!(BotChange { job: Some(("Ships betas".into(), String::new())), ..BotChange::default() }.body(), json!({ "job": { "line": "Ships betas", "details": "" } }));
+        assert_eq!(BotChange { job_line: Some("Ships betas".into()), ..BotChange::default() }.body(), json!({ "jobLine": "Ships betas" }));
+        assert_eq!(BotChange { job_details: Some(String::new()), ..BotChange::default() }.body(), json!({ "jobDetails": "" }));
+        let held: Held = serde_json::from_value(json!({
+            "bot": "bot_mira", "box": "k", "computer": "lab",
+            "change": { "job": { "line": "Old job" }, "jobLine": "New job", "jobDetails": "" }, "since": 5
+        })).unwrap();
+        assert_eq!(held.fields(), vec!["job", "instructions"]);
         let model = ModelRef { provider_id: "anthropic".into(), id: "claude-opus-5-5".into(), variant: None };
         assert_eq!(BotChange { model: Some(model), ..BotChange::default() }.body(), json!({ "model": { "providerID": "anthropic", "id": "claude-opus-5-5" } }));
         assert_eq!(BotChange { effort: Some(Some("high".into())), ..BotChange::default() }.body(), json!({ "effort": "high" }));

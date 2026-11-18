@@ -14,6 +14,7 @@ pub const REQUIRED: &[&str] = &[
     "bots.effort",
     "bots.elsewhere",
     "bots.held",
+    "bots.job-fields",
     "bots.now",
     "bots.state",
     "bots.wake-ups",

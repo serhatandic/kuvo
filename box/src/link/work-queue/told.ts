@@ -29,7 +29,7 @@ export interface Numbering {
 }
 
 /** An item as another computer tells it: its summary, and who handed it on. */
-export type ToldItem = ItemSummary & { handedFrom?: string[] };
+export type ToldItem = ItemSummary & { handedFrom?: string[]; mentionTargets?: string[] };
 
 /** What a computer last told: as of when (its clock, `at`), when it was heard (this one's), its
  * items, the owners they name, its labels, and how it numbers. */
@@ -102,6 +102,7 @@ export function toldItemOf(given: unknown, latest = Infinity): ToldItem | null {
     linkCount: count(given.linkCount),
     ...(typeof given.handedBy === "string" && OWNER.test(given.handedBy) ? { handedBy: given.handedBy } : {}),
     ...(Array.isArray(given.handedFrom) ? { handedFrom: given.handedFrom.filter((each): each is string => typeof each === "string" && OWNER.test(each)).slice(0, 20) } : {}),
+    ...(Array.isArray(given.mentionTargets) ? { mentionTargets: [...new Set(given.mentionTargets.filter((id): id is string => typeof id === "string" && ITEM_ID.test(id)))] } : {}),
     ...(source ? { source } : {}),
     ...(seen ? { seen } : {}),
     ...(keptIn ? { keptIn } : {}),

@@ -10,7 +10,7 @@ use std::{cell::RefCell, rc::Rc};
 use gpui::{
     AnyElement, AnyView, App, AppContext as _, Context, DismissEvent, ElementId, Entity,
     EventEmitter, FocusHandle, Focusable, InteractiveElement, IntoElement, KeyBinding, MouseButton,
-    ParentElement, Pixels, Point, Render, RenderOnce, SharedString, StatefulInteractiveElement,
+    ParentElement, Pixels, Point, Render, RenderOnce, ScrollHandle, SharedString, StatefulInteractiveElement,
     Styled, Subscription, Window, actions, div, prelude::FluentBuilder as _,
     px,
 };
@@ -54,6 +54,7 @@ pub enum MenuItem {
 pub struct MenuEntry {
     label: SharedString,
     detail: Option<SharedString>,
+    description: Option<SharedString>,
     icon: Option<IconName>,
     shortcut: Option<SharedString>,
     checked: bool,
@@ -68,6 +69,7 @@ impl MenuEntry {
         Self {
             label: label.into(),
             detail: None,
+            description: None,
             icon: None,
             shortcut: None,
             checked: false,
@@ -86,6 +88,12 @@ impl MenuEntry {
     /// A second, quieter label after the first (a model's speed, a branch's ahead count).
     pub fn detail(mut self, detail: impl Into<SharedString>) -> Self {
         self.detail = Some(detail.into());
+        self
+    }
+
+    /// A description below the name, with room to wrap.
+    pub fn description(mut self, words: impl Into<SharedString>) -> Self {
+        self.description = Some(words.into());
         self
     }
 
@@ -139,6 +147,7 @@ pub struct Menu {
     selected_by_pointer: bool,
     focus: FocusHandle,
     width: Pixels,
+    scroll: ScrollHandle,
 }
 
 impl EventEmitter<DismissEvent> for Menu {}
@@ -151,7 +160,7 @@ impl Focusable for Menu {
 
 impl Menu {
     pub fn new(cx: &mut Context<Self>) -> Self {
-        Self { items: Vec::new(), selected: None, selected_by_pointer: false, focus: cx.focus_handle(), width: px(240.) }
+        Self { items: Vec::new(), selected: None, selected_by_pointer: false, focus: cx.focus_handle(), width: px(240.), scroll: ScrollHandle::new() }
     }
 
     pub fn entry(mut self, entry: MenuEntry) -> Self {
@@ -218,12 +227,18 @@ impl Menu {
 
     fn select_next(&mut self, _: &SelectNext, _: &mut Window, cx: &mut Context<Self>) {
         self.selected = self.step(self.selected, 1);
+        if let Some(ix) = self.selected {
+            self.scroll.scroll_to_item(ix);
+        }
         self.selected_by_pointer = false;
         cx.notify();
     }
 
     fn select_previous(&mut self, _: &SelectPrevious, _: &mut Window, cx: &mut Context<Self>) {
         self.selected = self.step(self.selected, -1);
+        if let Some(ix) = self.selected {
+            self.scroll.scroll_to_item(ix);
+        }
         self.selected_by_pointer = false;
         cx.notify();
     }
@@ -284,13 +299,16 @@ impl Render for Menu {
                     };
                     let icon_color = if entry.disabled { c.text_faint } else if entry.destructive { c.danger } else { c.text_muted };
                     let selector = format!("menu-item-{}", entry.label);
+                    let description_selector = format!("{selector}-description");
                     div()
                         .debug_selector(move || selector)
                         .id(ix)
                         .flex()
                         .items_center()
                         .gap(space::S2)
-                        .h(px(30.))
+                        .when(entry.description.is_none(), |d| d.h(px(30.)))
+                        .when(entry.description.is_some(), |d| d.py(space::S1))
+                        .flex_none()
                         .px(space::S2)
                         .rounded(radius::NAV)
                         .text_ui(TypeSize::Small)
@@ -315,7 +333,11 @@ impl Render for Menu {
                             };
                             d.child(div().flex().w(IconSize::Nav.pixels()).flex_none().children(leading))
                         })
-                        .child(div().flex_1().min_w_0().truncate().child(entry.label.clone()))
+                        .child(div().flex_1().min_w_0().flex().flex_col()
+                            .child(div().when(entry.description.is_none(), |d| d.truncate()).child(entry.label.clone()))
+                            .children(entry.description.clone().map(|words| {
+                                div().debug_selector(move || description_selector).text_color(c.text_muted).child(words)
+                            })))
                         // (A long detail gives way too, so neither pushes the other out of the menu.)
                         .children(entry.detail.clone().map(|d| div().min_w_0().max_w(gpui::relative(0.6)).truncate().text_color(c.text_faint).child(d)))
                         .children(entry.shortcut.clone().map(|k| {
@@ -354,6 +376,7 @@ impl Render for Menu {
             // A long one (every time zone) scrolls inside itself, never off the window.
             .max_h(px(MOST_HEIGHT))
             .overflow_y_scroll()
+            .track_scroll(&self.scroll)
             .children(rows)
     }
 }

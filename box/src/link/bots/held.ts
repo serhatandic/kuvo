@@ -29,7 +29,7 @@ import { ownName } from "../letters/start";
 import { macLink, readLink } from "../state";
 import { botHere, isModel, noteBotsChanged } from "./here";
 import { editedTimes } from "./edited";
-import { givenJob } from "./jobs";
+import { givenJob, givenJobFields } from "./jobs";
 import { fitsLook } from "./make";
 import type { BotChange } from "./edit";
 import type { HeldEdit, RefusedEdit } from "../../shared/routes/bots";
@@ -51,10 +51,11 @@ const BOT_ID = /^bot_[A-Za-z0-9]{1,60}$/;
 const EDIT_ID = /^bte_[A-Za-z0-9_-]{16,40}$/;
 /** What's held: Edit Bot's fields. A bot's work settings (its limits, what it may do without asking)
  * aren't: they change only where it lives, while that computer answers. */
-const FIELDS = ["name", "look", "personality", "job", "model", "effort"] as const;
+const FIELDS = ["name", "look", "personality", "job", "jobLine", "jobDetails", "model", "effort"] as const;
 /** What a computer says it answers (`features`) once it takes an `effort` in a change: one held
  * with it waits for a computer that doesn't yet, which would drop it and call the change done. */
 const EFFORT_FEATURE = "bots.effort";
+const JOB_FIELDS_FEATURE = "bots.job-fields";
 
 /** How often what's held goes again to a computer that answers (the relay keeps nothing), and how
  * long a refusal shows. */
@@ -167,12 +168,21 @@ const botOf = (bot: string, kept: KnownBot | undefined, known: Map<string, Known
   return { ...(name ? { name } : {}), ...(look ? { look } : {}) };
 };
 
-// Why an edit hasn't gone to a computer that answers, in words: it holds an effort, which that
-// computer takes only once it's updated (`sendHeld`).
+// An older computer would silently drop these fields, so the edit waits until it can take them.
+function missingFeature(change: BotChange | undefined, features: readonly string[]): string | undefined {
+  if (!change) return undefined;
+  if ("effort" in change && !features.includes(EFFORT_FEATURE)) return "an effort";
+  if (("jobLine" in change || "jobDetails" in change) && !features.includes(JOB_FIELDS_FEATURE)) return "separate Job and Instructions changes";
+  return undefined;
+}
+
 const waitsOf = (held: Held, link: LinkState | null, told: Record<string, ToldAgents>): string | undefined => {
-  if (!held.change || !("effort" in held.change) || !held.to || !told[held.to] || (told[held.to]?.features ?? []).includes(EFFORT_FEATURE)) return undefined;
+  const peer = told[held.to];
+  if (!peer) return undefined;
+  const missing = missingFeature(held.change, peer.features ?? []);
+  if (!missing) return undefined;
   const computer = nameOf(held, link);
-  return `${computer} needs an update before it takes an effort: this goes once Kuvo Code is updated on ${computer}.`;
+  return `${computer} needs an update before it takes ${missing}: this goes once Kuvo Code is updated on ${computer}.`;
 };
 
 const viewOf = (held: Held, link: LinkState | null, known: Map<string, KnownBot> = knownElsewhere(link), told: Record<string, ToldAgents> = readPeerAgents()): HeldEdit => ({
@@ -215,6 +225,8 @@ function checkedChange(given: unknown): { change: BotChange } | { error: string 
     const checked = givenJob(change.job);
     if (checked.error) return { error: checked.error };
   }
+  const jobProblem = givenJobFields(change).error;
+  if (jobProblem) return { error: jobProblem };
   if ("model" in change && !isModel(change.model)) return { error: "That isn’t a model." };
   if ("effort" in change && change.effort !== null && typeof change.effort !== "string") return { error: "That isn’t an effort." };
   return { change: change as BotChange };
@@ -255,7 +267,16 @@ export function holdEdit(bot: string, given: { change: unknown } | { delete: tru
       const dropsEffort = Boolean(checked) && "model" in checked!.change && !("effort" in checked!.change);
       const { effort: _effort, ...changeBefore } = (before?.change ?? {}) as Record<string, unknown>;
       const { effort: _effortAt, ...timesBefore } = before?.times ?? {};
-      const kept = dropsEffort ? { change: changeBefore as BotChange, times: timesBefore } : { change: before?.change ?? {}, times: before?.times ?? {} };
+      const kept = dropsEffort
+        ? { change: changeBefore as BotChange, times: timesBefore }
+        : { change: { ...before?.change }, times: { ...before?.times } };
+      if (checked && "job" in checked.change) {
+        for (const field of ["jobLine", "jobDetails"] as const) {
+          if (field in checked.change) continue;
+          delete kept.change[field];
+          delete kept.times[field];
+        }
+      }
       // (What's held goes in one mail: one too big for it never would.)
       if (checked && Buffer.byteLength(JSON.stringify({ ...kept.change, ...checked.change })) > MOST_CHANGE) {
         answer = no(400, "That’s too much to change at once.");
@@ -336,7 +357,7 @@ export function sendHeld(host: Pick<LinkHost, "send" | "welcomed"> | null | unde
     if (last?.id === held.id && now - last.at < AGAIN_AFTER) continue;
     const peer = peersOf(link).find(each => each.key === held.to);
     if (!peer || !(told[peer.key]?.features ?? []).includes(HELD_FEATURE)) continue;
-    if (held.change && "effort" in held.change && !(told[peer.key]?.features ?? []).includes(EFFORT_FEATURE)) continue;
+    if (missingFeature(held.change, told[peer.key]?.features ?? [])) continue;
     // (How long ago each field was given, not when: the computers' clocks may not agree.)
     const ages = Object.fromEntries(Object.entries(held.times ?? {}).map(([field, at]) => [field, Math.max(0, now - at)]));
     const bytes = mailFor(peer, { botEdit: { id: held.id, bot: held.bot, ...(held.delete ? { delete: true } : { change: held.change, ages }), at: held.at }, at: now }, link);
@@ -497,13 +518,30 @@ export async function takeBotEdit(sender: MailSender, given: unknown, reply: (pa
         const clock = Date.now();
         const times: Record<string, number> = {};
         for (const [field, age] of Object.entries(ages)) if (typeof age === "number" && Number.isFinite(age)) times[field] = clock - Math.max(0, age);
+        const change = { ...given.change as Record<string, unknown> };
+        // A whole job from an older sender may be fresh for only one of its fields.
+        if ("job" in change) {
+          const legacy = givenJob(change.job).job;
+          if (legacy) {
+            for (const [field, value] of [["jobLine", legacy.line], ["jobDetails", legacy.details]] as const) {
+              if (field in change) continue;
+              change[field] = value;
+              if (times.job !== undefined) times[field] = times.job;
+            }
+            delete change.job;
+          }
+        }
         const edited = editedTimes(bot);
         // (An effort is its model's: one given before its model last changed here is stale too.)
-        const lastEdited = (field: string): number | undefined => (field === "effort" && edited.model !== undefined ? Math.max(edited.model, edited.effort ?? 0) : edited[field]);
-        const fresh = Object.entries(given.change as Record<string, unknown>).filter(([field]) => (FIELDS as readonly string[]).includes(field)
-          && !(times[field] !== undefined && lastEdited(field) !== undefined && times[field] <= lastEdited(field)!));
+        const lastEdited = (field: string): number => {
+          if (field === "effort") return Math.max(edited.model ?? 0, edited.effort ?? 0);
+          if (field === "jobLine" || field === "jobDetails") return Math.max(edited.job ?? 0, edited[field] ?? 0);
+          if (field === "job") return Math.max(edited.job ?? 0, edited.jobLine ?? 0, edited.jobDetails ?? 0);
+          return edited[field] ?? 0;
+        };
+        const fresh = Object.entries(change).filter(([field]) => (FIELDS as readonly string[]).includes(field)
+          && !(times[field] !== undefined && times[field] <= lastEdited(field)));
         // (An effort given with a model is that model's: not for the one it has once that model isn't taken.)
-        const change = given.change as Record<string, unknown>;
         const taken = "model" in change && !fresh.some(([field]) => field === "model") ? fresh.filter(([field]) => field !== "effort") : fresh;
         done = taken.length ? await changeWhatItCan(bot, taken, times, steps) : { status: 200, value: {} };
       }

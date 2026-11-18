@@ -26,6 +26,7 @@ pub struct Bots {
     pub elsewhere: Vec<Value>,
     /// New Bot requests answered, by their id.
     made: HashMap<String, Value>,
+    edited_personality: Option<Value>,
     next: u64,
     /// Its list can't be read now (503).
     pub down: bool,
@@ -76,6 +77,7 @@ impl Bots {
                 elsewhere("bot_wren", "ses_wren", "Wren", json!({ "color": "mint", "shape": "bloom", "face": "calm" }), "Builds the nightly", ("lab", "machine")),
             ],
             made: HashMap::new(),
+            edited_personality: None,
             next: 1,
             down: false,
             unsealed: false,
@@ -192,7 +194,26 @@ impl Bots {
                 // The lists, empty too; none of the three while it can't check its seals (as a box does).
                 if self.unsealed { (200, json!({ "bots": self.listed() })) } else { (200, json!({ "bots": self.listed(), "held": self.held, "refused": self.refused, "elsewhere": self.elsewhere_said() })) }
             }
-            ("GET", ["kuvo", "bots", "templates"]) => (200, templates(projects)),
+            ("GET", ["kuvo", "bots", "templates"]) => {
+                let mut offered = templates(projects);
+                if let Some(edited) = &self.edited_personality
+                    && let Some(custom) = offered["personalities"].as_array_mut().and_then(|options| options.iter_mut().find(|option| option["id"] == edited["id"]))
+                {
+                    *custom = edited.clone();
+                    custom["custom"] = json!(true);
+                }
+                (200, offered)
+            }
+            ("PATCH", ["kuvo", "personalities", "custom.pirate"]) => {
+                match (body["name"].as_str(), body["description"].as_str()) {
+                    (Some(name), Some(description)) if !name.is_empty() && !description.is_empty() => {
+                        let changed = json!({ "id": "custom.pirate", "name": name, "description": description });
+                        self.edited_personality = Some(changed.clone());
+                        (200, changed)
+                    }
+                    _ => (400, json!({ "message": "A personality needs a name and a description." })),
+                }
+            }
             ("POST", ["kuvo", "bots"]) => self.make(body, projects, now),
             ("PATCH", ["kuvo", "bots", id]) => self.change(id, body, now),
             // Seen: what it finished or stopped on is read, so it's idle again (`bots.state`).
@@ -297,6 +318,12 @@ impl Bots {
         if body.get("effort").is_some_and(|effort| !effort.is_null() && !effort.is_string()) {
             return (400, json!({ "message": "That isn’t an effort." }));
         }
+        if body["jobLine"].as_str().is_some_and(|line| line.chars().count() > 200) {
+            return (400, json!({ "message": "Shorten Job to 200 characters or fewer." }));
+        }
+        if body["jobDetails"].as_str().is_some_and(|details| details.chars().count() > 8000) {
+            return (400, json!({ "message": "Shorten Instructions to 8,000 characters or fewer." }));
+        }
         // One that lives on another computer: held for it, a later change on top.
         if let Some(computer) = self.there(id).map(|there| there["computer"].as_str().unwrap_or_default().to_owned()) {
             return (202, json!({ "held": self.hold(id, &computer, Some(change), false, now) }));
@@ -329,6 +356,7 @@ impl Bots {
                 // (Done above: it's its model's variant.)
                 "effort" => {}
                 "model" if change.contains_key("effort") => {}
+                "jobLine" => bot["job"] = value.clone(),
                 "job" => {
                     bot["job"] = value["line"].clone();
                     bot["jobDetails"] = value["details"].clone();
@@ -440,7 +468,7 @@ fn personalities() -> Vec<Value> {
     ]
     .into_iter()
     .map(|(id, name, description)| json!({ "id": id, "name": name, "description": description, "custom": false }))
-    .chain([json!({ "id": "custom.pirate", "name": "Ship’s Cook", "description": "One of your own.", "custom": true })])
+    .chain([json!({ "id": "custom.pirate", "name": "Ship’s Cook", "description": "Brings a little galley humor to everyday work. Gives the short answer first, then explains the trade-offs in plain language. When a task has several steps, calls out what is ready, what needs a decision, and what can wait. Keeps the jokes out of urgent updates and ends each handoff with the next thing to do.", "custom": true })])
     .collect()
 }
 

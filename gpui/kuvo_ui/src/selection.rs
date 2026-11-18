@@ -678,12 +678,13 @@ pub struct SelectableText {
     chips: Vec<(Range<usize>, Hsla)>,
     links: Rc<Vec<(Range<usize>, String)>>,
     on_link: Option<LinkClick>,
+    link_title: Option<Rc<dyn Fn(&str) -> String>>,
     inner: Option<(AnyElement, TextLayout)>,
 }
 
 impl SelectableText {
     pub fn new(id: impl Into<ElementId>, text: impl Into<SharedString>) -> Self {
-        Self { id: id.into(), text: text.into(), runs: None, unit: None, chips: Vec::new(), links: Rc::default(), on_link: None, inner: None }
+        Self { id: id.into(), text: text.into(), runs: None, unit: None, chips: Vec::new(), links: Rc::default(), on_link: None, link_title: None, inner: None }
     }
 
     pub fn runs(mut self, runs: Vec<TextRun>) -> Self {
@@ -711,6 +712,11 @@ impl SelectableText {
         self
     }
 
+    pub fn link_title(mut self, title: impl Fn(&str) -> String + 'static) -> Self {
+        self.link_title = Some(Rc::new(title));
+        self
+    }
+
     fn build(&mut self) -> &mut (AnyElement, TextLayout) {
         if self.inner.is_none() {
             let mut styled = StyledText::new(self.text.clone());
@@ -734,7 +740,10 @@ impl SelectableText {
                         }
                     });
                     // Where a link goes, shown before it's clicked.
-                    text.tooltip(move |ix, _, cx| tips.iter().find(|(range, _)| range.contains(&ix)).map(|(_, url)| crate::menu::Tooltip::new(url.clone()).build(cx)))
+                    let title = self.link_title.clone();
+                    text.tooltip(move |ix, _, cx| tips.iter().find(|(range, _)| range.contains(&ix)).map(|(_, url)| {
+                        crate::menu::Tooltip::new(title.as_ref().map_or_else(|| url.clone(), |title| title(url))).build(cx)
+                    }))
                         .into_any_element()
                 }
                 _ => styled.into_any_element(),

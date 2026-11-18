@@ -128,9 +128,10 @@ fn the_queue_lists_the_boxs_items_under_its_statuses_with_whats_closed_folded(cx
 
     // What's closed is folded until it's opened; so is what's deleted.
     assert!(!shown(cx, "item-wqi_251") && !shown(cx, "item-wqi_248") && !shown(cx, "item-wqi_262"));
-    let folded_height = bounds(cx, "group-done").unwrap().size.height;
+    let folded = bounds(cx, "group-done").unwrap();
+    assert!(top(cx, "group-canceled") - folded.bottom() <= px(6.));
     click(cx, "group-done");
-    assert_eq!(bounds(cx, "group-done").unwrap().size.height, folded_height);
+    assert!(bounds(cx, "group-done").unwrap().size.height > folded.size.height);
     assert!(shown(cx, "item-wqi_251") && shown(cx, "item-wqi_251-status-done"));
     click(cx, "group-done");
     assert!(!shown(cx, "item-wqi_251"));
@@ -290,9 +291,10 @@ fn an_items_page_shows_what_the_box_says_of_it(cx: &mut TestAppContext) {
     assert_eq!(stand_in.seen_at("GET", "kuvo/work-queue/items/wqi_231").len(), 1);
 
     // Its title, that it's at work, its chips, how far it is, what it says, and what's kept with it.
-    for part in ["item-head", "item-state", "chip-status", "chip-priority", "chip-assignee", "chip-due", "chip-labels", "item-progress", "item-progress-value", "item-body", "item-session-ses_signup", "item-link-https://example.com/tone-guide", "item-file-before.png", "item-note-0", "item-note-2", "item-facts"] {
+    for part in ["item-head", "item-state", "chip-status", "chip-priority", "chip-assignee", "chip-due", "chip-labels", "item-body", "item-session-ses_signup", "item-link-https://example.com/tone-guide", "item-file-before.png", "item-note-0", "item-note-2", "item-facts"] {
         assert!(shown(cx, part), "{part}");
     }
+    assert!(!shown(cx, "item-progress"));
     let whole = page.read_with(cx, |page, _| page.whole().cloned().expect("read whole"));
     assert_eq!((whole.notes.len(), whole.files.len(), whole.links.len()), (3, 2, 2));
     // The newest note first.
@@ -326,7 +328,7 @@ fn an_item_on_a_computer_thats_away_says_so_and_offers_nothing(cx: &mut TestAppC
     click(cx, "item-wqi_242");
     assert!(shown(cx, "item-elsewhere") && !shown(cx, "item-body") && !shown(cx, "item-no-body"));
     assert!(page.read_with(cx, |page, _| page.whole().is_some_and(|whole| whole.told)));
-    assert!(!shown(cx, "item-finish") && !shown(cx, "item-edit") && !shown(cx, "item-more"));
+    assert!(!shown(cx, "item-finish") && !shown(cx, "item-edit") && !shown(cx, "item-more") && !shown(cx, "link-item"));
     // Its status is said, and opens no menu.
     click(cx, "chip-status");
     assert_eq!(menu(&page, cx), None);
@@ -1340,14 +1342,14 @@ mod live {
 }
 
 #[gpui::test]
-fn images_paste_into_new_and_edit_item_descriptions(cx: &mut TestAppContext) {
+fn queue_editor_images_paste_into_new_and_edit_item_descriptions(cx: &mut TestAppContext) {
     use gpui::{ClipboardItem, Image, ImageFormat};
     let stand_in = StandIn::at(Replies::Never, NOW);
     let (_workspace, page, cx) = queue(cx, &stand_in);
     let pasted = tempfile::tempdir().unwrap();
     cx.update(|_, cx| cx.set_global(kuvo::pasted::PastedFolder(pasted.path().to_path_buf())));
     let mut out = std::io::Cursor::new(Vec::new());
-    image::RgbaImage::new(3, 2).write_to(&mut out, image::ImageFormat::Png).unwrap();
+    image::RgbaImage::new(300, 200).write_to(&mut out, image::ImageFormat::Png).unwrap();
     let bytes = out.into_inner();
     let drop_path = pasted.path().join("dropped.png");
     std::fs::write(&drop_path, &bytes).unwrap();
@@ -1371,8 +1373,27 @@ fn images_paste_into_new_and_edit_item_descriptions(cx: &mut TestAppContext) {
     let paths = composer.read_with(cx, |composer, _| composer.attached().to_vec());
     assert_eq!(paths.len(), 1);
     assert_eq!(std::fs::read(&paths[0]).unwrap(), bytes);
-    assert!(shown(cx, "attachments"));
-    assert_eq!(page.read_with(cx, |page, cx| page.item_fields().1.read(cx).text().to_owned()), "[Image 1] ");
+    let picture = format!("picture-draft/0/{}", paths[0].display());
+    assert!(shown(cx, &picture));
+    assert!(page.read_with(cx, |page, cx| page.item_fields().1.read(cx).text().contains("kuvo-attachment:draft/0/")));
+    let tile = bounds(cx, &picture).unwrap();
+    assert_eq!(tile.size.width, bounds(cx, "item-composer").unwrap().size.width);
+    cx.simulate_mouse_move(tile.center(), None, Modifiers::default());
+    cx.run_until_parked();
+    cx.write_to_clipboard(ClipboardItem::new_string("Replace this".into()));
+    click(cx, "copy-queue-image");
+    assert!(matches!(cx.read_from_clipboard().as_ref().and_then(kuvo_ui::Pasted::from_clipboard), Some(kuvo_ui::Pasted::Picture(_))));
+    click(cx, "expand-queue-image");
+    assert!(shown(cx, "picture-viewer"));
+    keys(cx, "escape");
+    assert!(shown(cx, "queue-sheet"));
+    assert!(!shown(cx, "picture-viewer"));
+    let tile = bounds(cx, &picture).unwrap();
+    cx.simulate_mouse_move(tile.center(), None, Modifiers::default());
+    cx.run_until_parked();
+    click(cx, "remove-queue-image");
+    assert!(composer.read_with(cx, |composer, _| composer.attached().is_empty()));
+    keys(cx, "cmd-v");
     drop_image(cx);
     assert_eq!(composer.read_with(cx, |composer, _| composer.attached().len()), 2);
     keys(cx, "cmd-enter");
@@ -1404,6 +1425,7 @@ fn a_computer_without_attachments_offers_none_in_its_item_forms(cx: &mut TestApp
     let mut out = std::io::Cursor::new(Vec::new());
     image::RgbaImage::new(3, 2).write_to(&mut out, image::ImageFormat::Png).unwrap();
     click(cx, "queue-new");
+    assert!(!shown(cx, "sheet-attach"));
     cx.simulate_input("No pictures here");
     keys(cx, "enter");
     cx.write_to_clipboard(ClipboardItem::from(Image::from_bytes(ImageFormat::Png, out.into_inner())));
@@ -1415,4 +1437,245 @@ fn a_computer_without_attachments_offers_none_in_its_item_forms(cx: &mut TestApp
     keys(cx, "cmd-enter");
     let sent = bodies(&stand_in, "POST", "kuvo/work-queue/items");
     assert!(sent.last().unwrap().get("files").is_none());
+}
+
+#[gpui::test]
+fn queue_editor_tab_order_and_large_editor(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (_workspace, page, cx) = queue(cx, &stand_in);
+    click(cx, "queue-new");
+    let compact = bounds(cx, "queue-sheet").unwrap();
+    cx.simulate_input("A title");
+    keys(cx, "tab");
+    cx.simulate_input("A description");
+    keys(cx, "shift-tab");
+    cx.simulate_input(" updated");
+    assert_eq!(page.read_with(cx, |page, cx| {
+        let (title, body) = page.item_fields();
+        (title.read(cx).text().to_owned(), body.read(cx).text().to_owned())
+    }), ("A title updated".to_owned(), "A description".to_owned()));
+    assert!(shown(cx, "sheet-attach"));
+    click(cx, "sheet-size");
+    let large = bounds(cx, "queue-sheet").unwrap();
+    assert!(large.size.height > compact.size.height + px(200.));
+    assert_eq!(large.origin.x, px(40.));
+    assert_eq!(large.size.width, px(1200.));
+    click(cx, "sheet-size");
+    assert_eq!(bounds(cx, "queue-sheet").unwrap().size.width, compact.size.width);
+}
+
+#[gpui::test]
+fn queue_editor_known_numbers_are_offered_and_can_be_inserted_from_the_keyboard(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.work_queue_mention_fixture("🖼 #234 ", json!([{ "start": 3, "end": 7, "number": 234 }]));
+    let (_workspace, page, cx) = queue(cx, &stand_in);
+    click(cx, "queue-new");
+    cx.simulate_input("Add the review");
+    keys(cx, "tab");
+    cx.simulate_input("🖼 #234");
+    cx.run_until_parked();
+    assert!(shown(cx, "reference-choice-234"));
+    keys(cx, "enter");
+    assert_eq!(page.read_with(cx, |page, cx| page.item_fields().1.read(cx).text().to_owned()), "🖼 #234 ");
+    assert!(!shown(cx, "reference-choice-234"));
+    keys(cx, "cmd-enter");
+    assert_eq!(bodies(&stand_in, "POST", "kuvo/work-queue/items").last().unwrap()["body"], "🖼 #234");
+}
+
+#[gpui::test]
+fn queue_editor_kept_picture_opens_from_page_and_edit_and_uses_its_saved_name(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let mut png = std::io::Cursor::new(Vec::new());
+    image::RgbaImage::new(600, 95).write_to(&mut png, image::ImageFormat::Png).unwrap();
+    stand_in.work_item_fixture("wqi_231", json!({
+        "body": "Before [Image 1] after.\n\n![Review 2.png](kuvo-attachment:file/review2)\n\nFinish",
+        "files": [
+            { "name": "Review 2.png", "type": "image/png", "anchor": "review2", "at": 2 },
+            { "name": "Screenshot.png", "type": "image/png", "at": 3 },
+        ],
+    }), Some(("Review 2.png", png.get_ref().clone())));
+    stand_in.work_item_fixture("wqi_231", json!({}), Some(("Screenshot.png", png.into_inner())));
+    let (_workspace, _page, cx) = queue(cx, &stand_in);
+    click(cx, "item-wqi_231");
+    click(cx, "picture-wqi_231/2/Review 2.png");
+    assert!(shown(cx, "picture-viewer"));
+    keys(cx, "escape");
+    click(cx, "item-edit");
+    click(cx, "picture-wqi_231/2/Review 2.png");
+    assert!(shown(cx, "picture-viewer"));
+    keys(cx, "escape");
+    assert!(shown(cx, "queue-sheet"));
+    let tile = bounds(cx, "picture-wqi_231/2/Review 2.png").unwrap();
+    cx.simulate_mouse_move(tile.center(), None, Modifiers::default());
+    cx.run_until_parked();
+    click(cx, "remove-queue-image");
+    keys(cx, "cmd-enter");
+    let edited = bodies(&stand_in, "PATCH", "kuvo/work-queue/items/wqi_231");
+    assert!(!edited.last().unwrap()["body"].as_str().unwrap().contains("kuvo-attachment:file/review2"));
+}
+
+#[gpui::test]
+fn queue_editor_empty_links_shows_add_link_in_place_of_heading(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.work_item_fixture("wqi_234", json!({ "canLinkItems": true }), None);
+    let (_workspace, _page, cx) = queue(cx, &stand_in);
+    click(cx, "item-wqi_234");
+    assert!(!shown(cx, "links-heading"));
+    click(cx, "link-item");
+    assert!(shown(cx, "link-choice-wqi_231"));
+}
+
+#[gpui::test]
+fn queue_editor_link_item_sends_the_chosen_kind_and_target(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.work_item_fixture("wqi_231", json!({
+        "canLinkItems": true,
+        "itemRelations": [{ "id": "wqi_234", "kind": "related", "title": "Dark mode for the settings page", "number": 234 }],
+    }), None);
+    let (_workspace, _page, cx) = queue(cx, &stand_in);
+    click(cx, "item-wqi_231");
+    assert!(shown(cx, "links-heading"));
+    let row = bounds(cx, "item-relation-0").unwrap();
+    assert_eq!(row.size.height, px(28.));
+    cx.simulate_mouse_move(row.center(), None, Modifiers::default());
+    cx.run_until_parked();
+    cx.executor().advance_clock(std::time::Duration::from_millis(320));
+    cx.run_until_parked();
+    assert!(shown(cx, "queue-item-hover-card"));
+    click(cx, "link-item");
+    cx.simulate_input("#234");
+    cx.run_until_parked();
+    click(cx, "blocks");
+    click(cx, "link-choice-wqi_234");
+    assert_eq!(bodies(&stand_in, "PATCH", "kuvo/work-queue/items/wqi_231").last().unwrap(), &json!({
+        "itemRelation": { "item": "wqi_234", "kind": "blocks" },
+    }));
+}
+
+#[gpui::test]
+fn queue_editor_attach_button_takes_any_file_with_a_long_description(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (_workspace, page, cx) = queue(cx, &stand_in);
+    let folder = tempfile::tempdir().unwrap();
+    let path = folder.path().join("Trace bundle.bin");
+    std::fs::write(&path, b"sample trace").unwrap();
+    click(cx, "queue-new");
+    cx.simulate_input("Investigate the trace");
+    keys(cx, "tab");
+    page.update(cx, |page, cx| {
+        page.item_fields().1.update(cx, |field, cx| field.set_text("A trace log with a long description.\n".repeat(80), cx));
+    });
+    cx.run_until_parked();
+    click(cx, "sheet-attach");
+    assert!(cx.did_prompt_for_paths());
+    cx.simulate_path_prompt_response(|options| {
+        assert!(options.files && options.multiple && !options.directories);
+        Some(vec![path.clone()])
+    });
+    cx.run_until_parked();
+    assert!(shown(cx, "sheet-save"));
+    click(cx, &format!("save-draft/0/{}", path.display()));
+    let copy = folder.path().join("Saved Trace.bin");
+    cx.simulate_new_path_selection(|_| Some(copy.clone()));
+    cx.run_until_parked();
+    assert_eq!(std::fs::read(copy).unwrap(), b"sample trace");
+    click(cx, "sheet-save");
+    let sent = bodies(&stand_in, "POST", "kuvo/work-queue/items");
+    assert_eq!(sent.last().unwrap()["files"][0]["name"], "Trace bundle.bin");
+}
+
+#[gpui::test]
+fn queue_editor_item_page_renders_a_clickable_reference_chip(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.work_item_fixture("wqi_231", json!({
+        "body": "See #234. Ranked #1.",
+        "bodyMentions": [{ "start": 4, "end": 8, "number": 234 }],
+        "itemRelations": [{ "id": "wqi_234", "kind": "mentions", "title": "Dark mode for the settings page", "number": 234 }],
+    }), None);
+    let (_workspace, page, cx) = queue(cx, &stand_in);
+    click(cx, "item-wqi_231");
+    assert!(!shown(cx, "item-chip-1"));
+    assert!(shown(cx, "item-relation-0"));
+    let tile = bounds(cx, "item-chip-234").unwrap();
+    cx.simulate_mouse_move(tile.center(), None, Modifiers::default());
+    cx.run_until_parked();
+    assert!(stand_in.seen_at("GET", "kuvo/work-queue/items/wqi_234").is_empty());
+    cx.executor().advance_clock(std::time::Duration::from_millis(320));
+    cx.run_until_parked();
+    assert!(shown(cx, "queue-item-hover-card"));
+    assert!(!stand_in.seen_at("GET", "kuvo/work-queue/items/wqi_234").is_empty());
+    click(cx, "item-chip-234");
+    assert_eq!(page.read_with(cx, |page, _| page.shown().clone()), Shown::Item("wqi_234".into()));
+}
+
+#[gpui::test]
+fn chat_references_open_the_same_item_preview_and_page(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let text = "Please check #234 and #866666.";
+    stand_in.work_item_fixture("wqi_234", json!({ "owner": "ses_signup" }), None);
+    stand_in.work_queue_mention_fixture(text, json!([
+        { "start": 13, "end": 17, "number": 234 },
+        { "start": 22, "end": 29, "number": 866666 },
+    ]));
+    stand_in.add_message("ses_signup", json!({
+        "type": "user", "id": "msg-work-queue", "time": { "created": NOW }, "text": text,
+    }));
+    let (workspace, cx) = open(cx, stand_in.clone());
+    workspace.update_in(cx, |workspace, window, cx| workspace.open_read_at_once("ses_signup", window, cx));
+    cx.run_until_parked();
+    assert!(!shown(cx, "item-chip-866666"));
+    let tile = bounds(cx, "item-chip-234").unwrap();
+    cx.simulate_mouse_move(tile.center(), None, Modifiers::default());
+    cx.run_until_parked();
+    cx.executor().advance_clock(std::time::Duration::from_millis(320));
+    cx.run_until_parked();
+    assert!(shown(cx, "queue-item-hover-card"));
+    click(cx, "item-chip-234");
+    assert_eq!(workspace.read_with(cx, |workspace, _| workspace.area()), Area::Queue);
+    assert!(shown(cx, "item-page"));
+}
+
+#[gpui::test]
+fn a_note_reference_opens_its_bound_item_even_if_its_number_is_reused(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.work_item_fixture("wqi_231", json!({
+        "body": "",
+        "notes": [{
+            "at": NOW, "by": { "user": true }, "text": "🖼 See #42.",
+            "mentions": [{ "start": 7, "end": 10, "number": 42, "item": "wqi_234" }],
+        }],
+    }), None);
+    stand_in.work_item_fixture("wqi_235", json!({ "number": 42 }), None);
+    let (_workspace, page, cx) = queue(cx, &stand_in);
+    click(cx, "item-wqi_231");
+    assert!(!shown(cx, "item-chip-42"));
+    let chip = bounds(cx, "item-chip-234").unwrap();
+    cx.simulate_mouse_move(chip.center(), None, Modifiers::default());
+    cx.run_until_parked();
+    cx.executor().advance_clock(std::time::Duration::from_millis(320));
+    cx.run_until_parked();
+    assert!(shown(cx, "queue-item-hover-card"));
+    click(cx, "item-chip-234");
+    assert_eq!(page.read_with(cx, |page, _| page.shown().clone()), Shown::Item("wqi_234".into()));
+}
+
+#[gpui::test]
+fn removing_a_page_picture_sends_its_marker_without_replacing_the_description(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let anchor = "0123456789abcdef01234567";
+    let url = format!("kuvo-attachment:file/{anchor}");
+    let mut png = std::io::Cursor::new(Vec::new());
+    image::RgbaImage::new(600, 95).write_to(&mut png, image::ImageFormat::Png).unwrap();
+    stand_in.work_item_fixture("wqi_231", json!({
+        "body": format!("Before\n\n![Review.png]({url})\n\nAfter"),
+        "files": [{ "name": "Review.png", "type": "image/png", "anchor": anchor, "at": 2 }],
+    }), Some(("Review.png", png.into_inner())));
+    let (_workspace, _page, cx) = queue(cx, &stand_in);
+    click(cx, "item-wqi_231");
+    let tile = bounds(cx, "picture-wqi_231/2/Review.png").unwrap();
+    cx.simulate_mouse_move(tile.center(), None, Modifiers::default());
+    cx.run_until_parked();
+    click(cx, "remove-queue-image");
+    let patches = bodies(&stand_in, "PATCH", "kuvo/work-queue/items/wqi_231");
+    assert_eq!(patches.last(), Some(&json!({ "removeInlineImages": [{ "url": url, "name": "Review.png" }] })));
 }

@@ -204,6 +204,13 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "area-first-run", width: 1280., height: 820., session: None, typed: None, empty: true, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     // Bots (`kuvo/src/bots`): a bot's page, its conversation, New Bot, each sheet, a bot waiting
     // for another computer, a narrow window and the first run.
+    Screen { slug: "bot-edit-top", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bots) },
+    Screen { slug: "bot-edit-scrolled", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bots) },
+    Screen { slug: "bot-edit-name", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_rename) },
+    Screen { slug: "bot-edit-avatar-hover", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bots) },
+    Screen { slug: "bot-edit-long-personality", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bots) },
+    Screen { slug: "bot-edit-personality-picker", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bots) },
+    Screen { slug: "bot-edit-all-options", width: 1280., height: 1320., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bots) },
     Screen { slug: "bot-page", width: 1280., height: 1180., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bots) },
     Screen { slug: "bot-move-row", width: 1280., height: 1180., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bots) },
     Screen { slug: "bot-move-menu", width: 1280., height: 1180., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_move_menu) },
@@ -224,7 +231,7 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "bot-elsewhere-delete", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_elsewhere_delete) },
     Screen { slug: "bot-waiting", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_waiting) },
     Screen { slug: "bot-none", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_none) },
-    Screen { slug: "bot-narrow", width: 760., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_narrow) },
+    Screen { slug: "bot-narrow", width: 550., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_narrow) },
     Screen { slug: "bot-first-run", width: 1280., height: 820., session: None, typed: None, empty: true, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_none) },
     // Group chats (`kuvo/src/groups`): one mid-discussion, "&" offering its bots, one paused with
     // a wrap-up and a bot that left, an empty one, its editor, New Group and what the box turns down.
@@ -253,6 +260,15 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "queue-item-elsewhere", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_item_elsewhere) },
     Screen { slug: "queue-item-done", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_item_done) },
     Screen { slug: "queue-new", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_new) },
+    Screen { slug: "queue-new-empty", width: 1280., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_new_empty) },
+    Screen { slug: "queue-new-picture", width: 1280., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_new_picture) },
+    Screen { slug: "queue-new-enlarged", width: 1280., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_new_enlarged) },
+    Screen { slug: "queue-edit-pictures", width: 1280., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_edit) },
+    Screen { slug: "queue-item-hover-card", width: 1280., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_item) },
+    Screen { slug: "queue-item-status-tooltip", width: 1280., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_item) },
+    Screen { slug: "queue-item-references", width: 1280., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_item) },
+    Screen { slug: "queue-item-links", width: 1280., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_item) },
+    Screen { slug: "queue-collapsed-lanes", width: 1280., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_collapsed_lanes) },
     Screen { slug: "queue-new-status", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_new_status) },
     Screen { slug: "queue-new-priority", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_new_priority) },
     Screen { slug: "queue-new-assignee", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_new_assignee) },
@@ -480,7 +496,7 @@ fn sidebar_search_empty(workspace: &mut Workspace, window: &mut Window, cx: &mut
 }
 
 /// Bots' page view.
-fn bots_page(workspace: &Workspace, cx: &Context<Workspace>) -> gpui::Entity<BotsView> {
+fn bots_page(workspace: &Workspace, cx: &gpui::App) -> gpui::Entity<BotsView> {
     workspace.area_view(Area::Bots).and_then(|view| view.read(cx).page().cloned()).expect("Bots")
 }
 /// The group chats' view.
@@ -582,7 +598,9 @@ fn bot_rename(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<W
 }
 fn bot_job(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     bots(workspace, window, cx);
-    bots_page(workspace, cx).update(cx, |page, cx| page.act(BotAct::EditJob, cx));
+    let page = bots_page(workspace, cx);
+    let (_, details) = page.read(cx).job_fields();
+    window.focus(&details.focus_handle(cx), cx);
 }
 fn bot_look(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     bots(workspace, window, cx);
@@ -694,6 +712,38 @@ fn queue_writing(workspace: &mut Workspace, window: &mut Window, cx: &mut Contex
 fn queue_new(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     queue_writing(workspace, window, cx);
 }
+fn queue_new_empty(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    queue_all(workspace, window, cx);
+    queue_page(workspace, cx).update(cx, |page, cx| page.act(QueueAct::New, cx));
+}
+
+fn queue_new_enlarged(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    queue_new_empty(workspace, window, cx);
+    queue_page(workspace, cx).update(cx, |page, cx| page.act(QueueAct::ToggleEditorSize, cx));
+}
+
+fn queue_new_picture(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    queue_new_empty(workspace, window, cx);
+    let page = queue_page(workspace, cx);
+    let (title, body, composer) = page.read_with(cx, |page, _| {
+        (page.item_fields().0.clone(), page.item_fields().1.clone(), page.item_composer().clone())
+    });
+    title.update(cx, |field, cx| field.set_text("Tighten the Work Queue layout", cx));
+    body.update(cx, |field, cx| field.set_text("The current Work Queue leaves a large gap between groups.", cx));
+    let image = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../shots/sidebar-c-queue-light.png");
+    composer.update(cx, |composer, cx| composer.attach_named([image], cx));
+    body.update(cx, |field, cx| field.replace_selection("Keep the group names and counts visible.", cx));
+}
+
+fn queue_collapsed_lanes(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    queue_all(workspace, window, cx);
+    queue_page(workspace, cx).update(cx, |page, cx| {
+        for status in ["needs-you", "in-review", "in-progress", "waiting", "todo", "backlog"] {
+            page.act(QueueAct::Fold(status.into()), cx);
+        }
+    });
+}
+
 /// New Item with one of its chips' menus open.
 fn queue_new_with(field: Field, workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     let page = queue_writing(workspace, window, cx);
@@ -1537,6 +1587,53 @@ fn main() -> anyhow::Result<()> {
             }
             // One computer turned down a change held for it, in its words.
             // A queue with many more labels than a menu shows at once.
+            if screen.slug == "queue-edit-pictures" {
+                stand_in.work_item_fixture("wqi_231", serde_json::json!({
+                    "body": "The email field should keep its value if the address is taken.\n\n![signup.png](kuvo-attachment:file/signup)\n\nCheck the other fields after submitting.\n\n![signup-wide.png](kuvo-attachment:file/signup-wide)",
+                    "files": [{"name": "signup.png", "type": "image/png", "anchor": "signup", "at": 1},
+                              {"name": "signup-wide.png", "type": "image/png", "anchor": "signup-wide", "at": 2}],
+                }), Some(("signup.png", include_bytes!("../../../shots/screens-composer-row-light.png").to_vec())));
+                stand_in.work_item_fixture("wqi_231", serde_json::json!({}), Some(("signup-wide.png", include_bytes!("../../../shots/screens-composer-row-dark.png").to_vec())));
+            }
+            if matches!(screen.slug, "queue-item-references" | "queue-item-links" | "queue-item-hover-card") {
+                let body = "Coordinate the error copy with #234 before merging. The page ranked #1.";
+                let mention = |body: &str, number: u64| {
+                    let tag = format!("#{number}");
+                    let start = body.find(&tag).unwrap();
+                    serde_json::json!({"start": start, "end": start + tag.len(), "number": number})
+                };
+                let current_title = "Keep what was typed when the sign-up email is taken";
+                let target_title = "Dark mode for the settings page";
+                stand_in.work_item_fixture("wqi_234", serde_json::json!({
+                    "title": target_title,
+                    "body": "Use the new theme tokens throughout Settings. Check the sidebar and permission panels in both appearances.",
+                    "status": "in-progress", "priority": "high", "labels": ["lbl_design"],
+                    "assignee": {"kind": "bot", "id": "bot_mira", "name": "Mira"},
+                    "itemRelations": [{"kind": "mentioned-in", "id": "wqi_231", "number": 231, "title": current_title}],
+                    "canLinkItems": true,
+                }), None);
+                let mut links = vec![serde_json::json!({
+                    "kind": "mentions", "id": "wqi_234", "number": 234, "title": target_title,
+                })];
+                if screen.slug == "queue-item-links" {
+                    let post = "Write the launch post, with the three screenshots and the short video from the design review";
+                    let post_body = "Include the sign-up fix from #231 in the launch post.";
+                    stand_in.work_item_fixture("wqi_235", serde_json::json!({
+                        "title": post, "body": post_body, "bodyMentions": [mention(post_body, 231)],
+                        "itemRelations": [{"kind": "mentions", "id": "wqi_231", "number": 231, "title": current_title}],
+                        "canLinkItems": true,
+                    }), None);
+                    links.extend([
+                        serde_json::json!({"kind": "mentioned-in", "id": "wqi_235", "number": 235, "title": post}),
+                        serde_json::json!({"kind": "blocks", "id": "wqi_236", "number": 236, "title": "Nightly builds for the Linux packages"}),
+                        serde_json::json!({"kind": "related", "id": "wqi_237", "number": 237, "title": "Get the Lighthouse score above 90"}),
+                    ]);
+                }
+                stand_in.work_item_fixture("wqi_231", serde_json::json!({
+                    "title": current_title, "body": body, "bodyMentions": [mention(body, 234)],
+                    "itemRelations": links, "canLinkItems": true, "files": [], "links": [], "notes": [],
+                }), None);
+            }
             if screen.slug == "queue-new-many-labels" {
                 stand_in.many_labels();
             }
@@ -1599,6 +1696,12 @@ fn main() -> anyhow::Result<()> {
                     "bot-move-failed" => MoveScenario::Failed,
                     _ => MoveScenario::Ready,
                 });
+            }
+            if matches!(screen.slug, "bot-edit-long-personality" | "bot-edit-personality-picker") {
+                BoxClient::new(stand_in.clone()).change_bot("bot_mira", &kuvo_box::bots::BotChange {
+                    personality: Some(Some("custom.pirate".into())),
+                    ..Default::default()
+                })?;
             }
             if screen.slug.starts_with("bot-wake-") {
                 use serde_json::json;
@@ -1801,6 +1904,26 @@ fn main() -> anyhow::Result<()> {
             cx.run_until_parked();
             cx.update_window(any, |_, window, _| window.refresh())?;
             cx.run_until_parked();
+            if matches!(screen.slug, "bot-edit-scrolled" | "bot-edit-avatar-hover" | "bot-edit-personality-picker") {
+                cx.update_window(any, |root, window, cx| {
+                    let workspace = root.downcast::<Workspace>().expect("the workspace");
+                    let page = bots_page(workspace.read(cx), cx);
+                    if screen.slug == "bot-edit-scrolled" {
+                        page.read(cx).scroll_to_end();
+                    } else {
+                        use gpui::{Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, PlatformInput};
+                        if screen.slug == "bot-edit-avatar-hover" {
+                            let position = page.read(cx).avatar_center().expect("the avatar is visible");
+                            mouse(window, cx, PlatformInput::MouseMove(MouseMoveEvent { position, pressed_button: None, modifiers: Modifiers::default() }));
+                        } else {
+                            let position = page.read(cx).personality_menu_center().expect("the personality picker is visible");
+                            mouse(window, cx, PlatformInput::MouseDown(MouseDownEvent { position, button: MouseButton::Left, modifiers: Modifiers::default(), click_count: 1, first_mouse: false }));
+                        }
+                    }
+                    window.refresh();
+                })?;
+                cx.run_until_parked();
+            }
             if screen.slug == "bot-wake-badge-hover" {
                 use gpui::{Modifiers, MouseMoveEvent, PlatformInput};
                 // Mira's avatar, the first bot in this fixture.
@@ -1880,6 +2003,38 @@ fn main() -> anyhow::Result<()> {
             cx.advance_clock(kuvo_ui::motion::MotionDuration::Fast.duration());
             cx.update_window(any, |_, window, _| window.refresh())?;
             cx.run_until_parked();
+            if screen.slug == "queue-new-picture" {
+                use gpui::{Modifiers, MouseMoveEvent, PlatformInput};
+                cx.update_window(any, |_, window, cx| {
+                    mouse(window, cx, PlatformInput::MouseMove(MouseMoveEvent {
+                        position: gpui::point(px(800.), px(300.)), pressed_button: None, modifiers: Modifiers::default(),
+                    }));
+                })?;
+                cx.run_until_parked();
+            }
+            use kuvo::queue::{ShotHoverPoint, ShotHoverTarget};
+            let hover = match screen.slug {
+                "queue-item-hover-card" => Some((ShotHoverTarget::Reference(234), 320)),
+                "queue-item-status-tooltip" => Some((ShotHoverTarget::ItemStatus, 520)),
+                _ => None,
+            };
+            if let Some((target, delay_ms)) = hover {
+                use gpui::{Modifiers, MouseMoveEvent, PlatformInput};
+                cx.update(|cx| cx.set_global(ShotHoverPoint { target, point: Default::default() }));
+                cx.update_window(any, |_, window, _| window.refresh())?;
+                cx.run_until_parked();
+                cx.update_window(any, |_, window, cx| {
+                    let point = cx.global::<ShotHoverPoint>().point.get().expect("the Work Queue hover target");
+                    mouse(window, cx, PlatformInput::MouseMove(MouseMoveEvent {
+                        position: point, pressed_button: None, modifiers: Modifiers::default(),
+                    }));
+                })?;
+                cx.run_until_parked();
+                cx.advance_clock(std::time::Duration::from_millis(delay_ms));
+                cx.update_window(any, |_, window, _| window.refresh())?;
+                cx.run_until_parked();
+                cx.update(|cx| { cx.remove_global::<ShotHoverPoint>(); });
+            }
             let image = cx.capture_screenshot(any)?;
             let name = format!("screens-{}-{}.png", screen.slug, if appearance.is_dark() { "dark" } else { "light" });
             image.save(out.join(&name))?;

@@ -1432,3 +1432,22 @@ test("a picture you attach to an item is kept with it: a file of this computer o
   assert.deepEqual((await route("GET", `kuvo/work-queue/items/${id}`)).body.item.files.map(file => file.name), ["first.png", "second.png"]);
 
 });
+
+test("queue_show includes item mentions and the two perspectives of a manual link", async () => {
+  await tool("queue_add", { title: "Audit sign-in error copy" }, "ses_lead");
+  await tool("queue_add", { title: "Ship the form" }, "ses_lead");
+  await tool("queue_update", { item: 1, body: "Coordinate with #2." }, "ses_lead");
+  const list = await view("ses_lead");
+  const from = list.items.find(item => item.number === 1);
+  const to = list.items.find(item => item.number === 2);
+  const edited = await route("PATCH", `kuvo/work-queue/items/${from.id}`, {
+    itemRelation: { item: to.id, kind: "blocks" },
+  });
+  assert.equal(edited.body.itemRelationApplied, true);
+  const first = await tool("queue_show", { item: 1 }, "ses_lead");
+  const second = await tool("queue_show", { item: 2 }, "ses_lead");
+  assert.match(first.text, /blocks #2 Ship the form/);
+  assert.match(first.text, /mentions #2 Ship the form/);
+  assert.match(second.text, /blocked by #1 Audit sign-in error copy/);
+  assert.match(second.text, /mentioned in #1 Audit sign-in error copy/);
+});
