@@ -123,6 +123,8 @@ fs.writeFileSync(process.env.HOME + "/engine-helper", process.env.KUVO_MACHINE_H
 // (Its sign-ins, kept as an engine keeps them: listed, and stored as they're given.)
 const kept = process.env.HOME + "/engine-credentials.json";
 const inboxFile = process.env.HOME + "/engine-inbox.json";
+const receiptFile = process.env.HOME + "/engine-prompt-ids";
+const promptIDs = () => fs.existsSync(receiptFile) ? fs.readFileSync(receiptFile, "utf8").trim().split("\\n") : [];
 const credentials = () => { try { return JSON.parse(fs.readFileSync(kept, "utf8")); } catch { return []; } };
 const server = http.createServer((request, response) => {
   const chunks = [];
@@ -145,9 +147,20 @@ const server = http.createServer((request, response) => {
         return response.end("{}");
       }
     }
+    const receipt = url.pathname.match(/^\\/api\\/session\\/[^/]+\\/message\\/([^/]+)$/);
+    if (request.method === "GET" && receipt) {
+      const id = receipt[1];
+      if (!promptIDs().includes(id)) {
+        response.statusCode = 404;
+        return response.end("{}");
+      }
+      return response.end(JSON.stringify({ data: { info: { id } } }));
+    }
     response.writeHead(200, { "content-type": "application/json" });
     if (request.url.endsWith("/prompt") && request.method === "POST") {
-      fs.appendFileSync(process.env.HOME + "/delivered-prompts", JSON.parse(Buffer.concat(chunks).toString()).text + "\\n");
+      const given = JSON.parse(Buffer.concat(chunks).toString());
+      fs.appendFileSync(receiptFile, given.id + "\\n");
+      fs.appendFileSync(process.env.HOME + "/delivered-prompts", given.text + "\\n");
     }
     if (request.url === "/api/credential" && request.method === "POST") {
       const given = JSON.parse(Buffer.concat(chunks).toString());
