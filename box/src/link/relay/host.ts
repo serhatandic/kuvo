@@ -4,6 +4,7 @@
 import { EMPTY } from "../crypto/keys";
 import { IKResponder, PROLOGUE } from "../crypto/noise";
 import type { Transport } from "../crypto/noise";
+import { routeRefusalHeaders, routeRequestHeaders } from "../server/format";
 import type { Answer, AnyPiece, Asker, LinkRequest } from "../server/context";
 import { decodeMessage, encodeMessage, Frame, frame, pieces, readFrame, relaySend } from "./frames";
 import type { Head } from "./frames";
@@ -70,13 +71,11 @@ interface PhoneHead {
   end?: boolean;
 }
 
-// A request as a phone's head says it: its method and path only when they're text, its headers
-// only when they're an object (a path that isn't text is then refused, as one that isn't what it
-// seems).
-const requestOf = (head: PhoneHead, body: Buffer): LinkRequest => ({
+// A request as a phone's head says it: its method and path only when they're text.
+const requestOf = (head: PhoneHead, body: Buffer, headers: LinkRequest["headers"]): LinkRequest => ({
   method: typeof head.m === "string" ? head.m : "GET",
   path: typeof head.p === "string" ? head.p : "",
-  headers: head.h !== null && typeof head.h === "object" && !Array.isArray(head.h) ? (head.h as LinkRequest["headers"]) : {},
+  headers,
   body,
 });
 
@@ -221,7 +220,12 @@ export class LinkHost {
   message(session: PhoneSession, { head, body }: { head: PhoneHead; body: Buffer }) {
     switch (head.t) {
       case "req": {
-        const request = requestOf(head, body);
+        const { headers, error } = routeRequestHeaders(head.h);
+        if (error) {
+          this.seal(session, encodeMessage({ t: "res", id: head.id, s: 400, h: routeRefusalHeaders, end: true }, Buffer.from(JSON.stringify(error))));
+          return;
+        }
+        const request = requestOf(head, body, headers);
         if (String(request.headers.upgrade ?? "").toLowerCase() === "websocket") this.open(session, head.id, request);
         else if (head.end === false) session.incoming.set(head.id, request);
         else this.run(session, head.id, request);

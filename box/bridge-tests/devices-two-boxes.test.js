@@ -258,9 +258,9 @@ function client(hello, key = link.newKey()) {
       transport = opened.transport;
       return response;
     },
-    async request(method, p, body) {
+    async request(method, p, body, headers = {}) {
       const id = ++request;
-      const h = body === undefined ? {} : { "content-type": "application/json" };
+      const h = { ...(body === undefined ? {} : { "content-type": "application/json" }), ...headers };
       const bytes = body === undefined ? Buffer.alloc(0) : Buffer.from(JSON.stringify(body));
       for (const piece of link.pieces({ t: "req", id, m: method, p, h }, bytes, true)) device.send(at.address, link.frame(link.Frame.transport, session, transport.seal(piece)));
       const pieces = [];
@@ -645,6 +645,29 @@ test("the desktop app on a member's computer is paired through its own box and r
   link.macLink.config = wasConfig;
   assert.equal(off.status, 409);
   assert.match(off.json.message, /^“Let my devices connect” is off on /);
+});
+
+test("relay refuses mixed-case future and conflicting route versions before sending a prompt", { timeout: 18_000 }, async t => {
+  signal = t.signal;
+  const desktop = client({ name: "Version check", client: "desktop" });
+  assert.equal((await ask("POST", "kuvo/devices/pair", { key: desktop.public, name: "Version check", kind: "desktop" }, { served: true, fromApp: true })).status, 200);
+  try {
+    await eventually(() => relay.has(macAddress));
+    assert.equal((await desktop.open({ key: link.publicOf(macKey), address: macAddress })).kind, "mac");
+    const prompted = macEngine.prompted.length;
+    for (const headers of [
+      { "X-Kuvo-Route-Version": "2" },
+      { "x-kuvo-route-version": "1", "X-Kuvo-Route-Version": "2" },
+      { "X-Kuvo-Route-Version": "2", "x-kuvo-route-version": "1" },
+    ]) {
+      const refused = await desktop.request("POST", "api/session/ses_lead/prompt", { text: "Unsupported prompt" }, headers);
+      assert.equal(refused.status, 400);
+      assert.equal(refused.json.code, "unsupportedFormatVersion");
+      assert.equal(macEngine.prompted.length, prompted);
+    }
+  } finally {
+    await ask("POST", "kuvo/phones/remove", { phones: [{ key: desktop.public }] });
+  }
 });
 
 test("failure bench: a removal reaches a member while the primary's inbound device switch stays off", { timeout: 18_000 }, async t => {

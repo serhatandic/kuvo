@@ -15,7 +15,8 @@
 // is kuvo-ai's protocol/PROTOCOL.md, with the same in Swift (swift/KuvoLink) for the Mac and
 // the phone.
 
-import { ROUTE_VERSION_HEADER } from "../shared/route-version";
+import { ROUTE_VERSION, ROUTE_VERSION_HEADER } from "../shared/route-version";
+import { routeRequestHeaders } from "./server/format";
 import { takeSeed } from "./add/seed";
 import { spawn } from "node:child_process";
 import crypto from "node:crypto";
@@ -682,20 +683,16 @@ async function box(command: string): Promise<void> {
       try { given = JSON.parse(await input()); } catch {}
       // (The coding agents' bridge's sessions too: a wake-up held for one, say.)
       const handle = engineHandler(readEngineFile, { name: os.hostname() }, readBridgeFile);
-      // With the folder it's asked about (`x-opencode-directory`), as a phone's request has it.
-      const folder = (given?.headers as Record<string, unknown> | undefined)?.["x-opencode-directory"];
-      const signInClient = (given?.headers as Record<string, unknown> | undefined)?.["x-kuvo-sign-in-client"];
-      // And the Mac's proof for a request to this machine's vault (or its unlock key, to unlock it),
-      // which makes it a client there (areas/vault.ts); with the body as it was sent, which the proof covers.
-      const vaultHeaders: Record<string, string> = {};
-      for (const name of ["x-kuvo-vault-key", "x-kuvo-vault-proof"]) {
-        const value = (given?.headers as Record<string, unknown> | undefined)?.[name];
-        if (typeof value === "string") vaultHeaders[name] = value;
+      const { headers: givenHeaders, error } = routeRequestHeaders(given?.headers);
+      if (error) return say({ status: 400, routeVersion: ROUTE_VERSION, body: JSON.stringify(error) });
+      // Forward only the folder, sign-in client, vault credentials and route version from SSH.
+      const headers: Record<string, string> = { "content-type": "application/json" };
+      for (const name of ["x-opencode-directory", "x-kuvo-sign-in-client", "x-kuvo-vault-key", "x-kuvo-vault-proof", ROUTE_VERSION_HEADER]) {
+        const value = givenHeaders[name];
+        if (typeof value === "string") headers[name] = value;
       }
-      const routeVersion = (given?.headers as Record<string, unknown> | undefined)?.[ROUTE_VERSION_HEADER];
-      const versionHeader = routeVersion === undefined ? {} : { [ROUTE_VERSION_HEADER]: typeof routeVersion === "string" ? routeVersion : "" };
       const sentBody = typeof given?.bodyText === "string" ? given.bodyText : given?.body === undefined ? "" : JSON.stringify(given.body);
-      const request = { method: String(given?.method ?? "GET"), path: String(given?.path ?? ""), headers: { "content-type": "application/json", ...(typeof folder === "string" ? { "x-opencode-directory": folder } : {}), ...(typeof signInClient === "string" ? { "x-kuvo-sign-in-client": signInClient } : {}), ...vaultHeaders, ...versionHeader }, body: Buffer.from(sentBody), fromMac: true };
+      const request = { method: String(given?.method ?? "GET"), path: String(given?.path ?? ""), headers, body: Buffer.from(sentBody), fromMac: true };
       let status = 502;
       let type = "";
       let routeResponseVersion: string | undefined;

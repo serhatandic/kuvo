@@ -44,10 +44,18 @@ test("SSH route answers carry their version and future requests are refused befo
   assert.equal(legacy.status, 200);
   assert.equal(legacy.routeVersion, "1");
   assert.equal(route({ [header]: "1" }).status, 200);
-  const future = route({ [header]: "2" });
-  assert.equal(future.status, 400);
-  assert.equal(future.routeVersion, "1");
-  assert.equal(JSON.parse(future.body).code, "unsupportedFormatVersion");
+  assert.equal(route({ "X-Kuvo-Route-Version": "1" }).status, 200);
+  for (const headers of [
+    { [header]: "2" },
+    { "X-Kuvo-Route-Version": "2" },
+    { [header]: "1", "X-Kuvo-Route-Version": "2" },
+    { "X-Kuvo-Route-Version": "2", [header]: "1" },
+  ]) {
+    const future = route(headers);
+    assert.equal(future.status, 400, JSON.stringify(headers));
+    assert.equal(future.routeVersion, "1");
+    assert.equal(JSON.parse(future.body).code, "unsupportedFormatVersion");
+  }
 });
 
 test("future ledger and link files are refused without making replacement data", () => {
