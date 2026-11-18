@@ -32,6 +32,7 @@ export interface SetupRecord extends SetupWord {
   aside?: true;
   managed?: true;
   sharedSaves?: true;
+  checkpointed?: true;
   standby?: { key: string; sign: string };
   numberCeiling?: number;
   conflict?: { primary: string; epoch: number };

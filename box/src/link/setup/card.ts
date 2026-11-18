@@ -35,7 +35,7 @@ export function cardNow(): Record<string, unknown> {
     epoch: view.epoch,
     role: view.you.role,
     primary: primary ? { key: primary.key, name: primary.name, heard } : null,
-    self: { key: own, name: String(link?.name ?? ""), kind: IS_MAC ? "mac" : "machine" },
+    self: { key: own, name: view.computers.find(box => box.key === own)?.name ?? String(link?.name ?? ""), kind: IS_MAC ? "mac" : "machine" },
     // (Or Kuvo Code on this Mac attached to it in place: `POST kuvo/setup/attached`.)
     app: IS_MAC || fs.existsSync(path.join(RUN, ATTACHED_FILE)),
     computers: view.computers.length,

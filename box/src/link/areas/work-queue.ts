@@ -254,8 +254,7 @@ export async function* workQueueRoute(context: RouteContext, match: RegExpMatchA
       : { refused: "Send {add, color?}, {change, name?, color?} or {remove}." };
     if ("refused" in outcome) return yield* json(400, { message: outcome.refused });
     if (outcome.save) {
-      const { id, epoch, sequence } = outcome.save;
-      if (await waitShared("queueLabels", id, epoch, sequence) === "pending") return yield* json(202, { pending: true, message: PENDING_SAVE });
+      if (await waitShared(outcome.save) !== "saved") return yield* json(202, { pending: true, message: PENDING_SAVE });
       if (given.remove !== undefined) stripLabel(outcome.done.id);
     }
     tellQueuesAgain();

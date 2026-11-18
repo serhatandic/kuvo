@@ -23,6 +23,7 @@ export type DataConflict =
 // Deletions defeat stale edits for all kinds. Backup policy is for normal encrypted backups.
 // Vaults have a separate, optional encrypted export. External project files can be opted in.
 export interface DataDeclaration {
+  readonly shared?: { readonly publish?: true; readonly localSave?: "usage" | "release"; readonly checkpointOnly?: true; readonly localEffects?: readonly string[] };
   readonly owner: DataOwner | typeof workQueueOwner;
   readonly conflict: DataConflict;
   readonly backup: boolean;
@@ -34,11 +35,11 @@ export const DATA_DECLARATIONS = {
   setupLeadership: { owner: "primary", conflict: "owner order", backup: true, families: ["Link state", "Signed documents"] },
   setupReplica: { owner: "primary", conflict: "owner order", backup: true, families: ["Link state", "Signed documents"] },
   setupSaveOutbox: { owner: "local computer", conflict: "owner order", backup: false, families: ["Link state"] },
-  setupNames: { owner: "primary", conflict: "fields", backup: true, families: ["Link state", "Signed documents"] },
+  setupNames: { shared: { publish: true, checkpointOnly: true }, owner: "primary", conflict: "fields", backup: true, families: ["Link state", "Signed documents"] },
   setupStandbyLease: { owner: "local computer", conflict: "regenerate", backup: false, families: ["Link state"] },
   setupStandbySettings: { owner: "local computer", conflict: "fields", backup: true, families: ["Link state"] },
-  membershipAndAccess: { owner: "primary", conflict: "owner order", backup: true, families: ["Link state", "Signed documents", "Phone trust and sync"] },
-  setupSecurityAndReleaseChoice: { owner: "primary", conflict: "owner order", backup: true, families: ["Local fences and audit", "Installed release"] },
+  membershipAndAccess: { shared: { publish: true, checkpointOnly: true, localEffects: ["untold", "untoldMembership", "pendingMachineCleanup"] }, owner: "primary", conflict: "owner order", backup: true, families: ["Link state", "Signed documents", "Phone trust and sync"] },
+  setupSecurityAndReleaseChoice: { shared: { publish: true, localSave: "release" }, owner: "primary", conflict: "owner order", backup: true, families: ["Local fences and audit", "Installed release"] },
   computerIdentityAndTrust: { owner: "local computer", conflict: "owner order", backup: false, families: ["Link state", "Phone trust and sync", "SSH trust and agent sockets"] },
   clientIdentity: { owner: "client", conflict: "owner order", backup: false, families: ["Desktop settings"] },
   setupCard: { owner: "local computer", conflict: "fields", backup: true, families: ["Setup discovery and welcome"] },
@@ -71,12 +72,12 @@ export const DATA_DECLARATIONS = {
   queueNotes: { owner: workQueueOwner, conflict: "keep both notes", backup: true, families: ["Work Queue items and history"] },
   queueFiles: { owner: workQueueOwner, conflict: "owner order", backup: true, families: ["Managed attachment files"] },
   queueHistoryAndDelivery: { owner: workQueueOwner, conflict: "owner order", backup: true, families: ["Work Queue items and history", "Work Queue labels, delivery and receipts"] },
-  queueNumberAllocation: { owner: "primary", conflict: "owner order", backup: true, families: ["Work Queue ledger"] },
+  queueNumberAllocation: { shared: {}, owner: "primary", conflict: "owner order", backup: true, families: ["Work Queue ledger"] },
   queueNumberUse: { owner: "local computer", conflict: "owner order", backup: true, families: ["Work Queue ledger"] },
-  queueLabels: { owner: "primary", conflict: "fields", backup: true, families: ["Work Queue labels, delivery and receipts", "Work Queue categories/status migration"] },
+  queueLabels: { shared: { publish: true }, owner: "primary", conflict: "fields", backup: true, families: ["Work Queue labels, delivery and receipts", "Work Queue categories/status migration"] },
   queueMigration: { owner: "local computer", conflict: "owner order", backup: true, families: ["Work Queue categories/status migration"] },
 
-  ownershipAssignments: { owner: "primary", conflict: "owner order", backup: true, families: ["Signed documents", "Moves and handoffs"] },
+  ownershipAssignments: { shared: {}, owner: "primary", conflict: "owner order", backup: true, families: ["Signed documents", "Moves and handoffs"] },
   transferReceipts: { owner: "local computer", conflict: "owner order", backup: true, families: ["Moves and handoffs", "Rehome journal and staged trees"] },
   stagedTransferCopies: { owner: "local computer", conflict: "regenerate", backup: false, families: ["Moves and handoffs", "Rehome journal and staged trees"] },
   projectPathsAndWorktrees: { owner: "local computer", conflict: "fields", backup: true, families: ["Projects and worktrees", "Rehome journal and staged trees"] },
@@ -86,9 +87,9 @@ export const DATA_DECLARATIONS = {
   artifactStorageSettings: { owner: "local computer", conflict: "fields", backup: true, families: ["Artifacts"] },
   managedArtifacts: { owner: "session computer", conflict: "owner order", backup: true, families: ["Artifacts"] },
 
-  setupPersonalities: { owner: "primary", conflict: "fields", backup: true, families: ["Personalities", "Signed documents"] },
-  setupTimeZone: { owner: "primary", conflict: "fields", backup: true, families: ["Time zone"] },
-  setupUsageDisplay: { owner: "primary", conflict: "fields", backup: true, families: ["Usage settings"] },
+  setupPersonalities: { shared: { publish: true }, owner: "primary", conflict: "fields", backup: true, families: ["Personalities", "Signed documents"] },
+  setupTimeZone: { shared: { publish: true }, owner: "primary", conflict: "fields", backup: true, families: ["Time zone"] },
+  setupUsageDisplay: { shared: { publish: true, localSave: "usage" }, owner: "primary", conflict: "fields", backup: true, families: ["Usage settings"] },
   localSettingsAndPermissions: { owner: "local computer", conflict: "fields", backup: true, families: ["Computer settings and local tools", "Local fences and audit"] },
   modelsAndReusableTools: { owner: "local computer", conflict: "fields", backup: true, families: ["Computer settings and local tools", "Engine/plugin/MCP configuration"] },
   engineAndIntegrationSettings: { owner: "local computer", conflict: "fields", backup: true, families: ["Engine/plugin/MCP configuration"] },
@@ -110,3 +111,19 @@ export const DATA_DECLARATIONS = {
   computerLogsAndCaches: { owner: "local computer", conflict: "regenerate", backup: false, families: ["Logs and disposable caches", "Local fences and audit", "Coding agent native storage", "Work Queue labels, delivery and receipts"] },
   clientLogs: { owner: "client", conflict: "regenerate", backup: false, families: ["Desktop settings", "Logs and disposable caches"] },
 } as const satisfies Record<string, DataDeclaration>;
+
+type Declaration = keyof typeof DATA_DECLARATIONS;
+export type SharedKind = {
+  [K in Declaration]: typeof DATA_DECLARATIONS[K] extends { owner: "primary"; shared: object } ? K : never
+}[Declaration];
+
+export function sharedKind(kind: unknown): kind is SharedKind {
+  return typeof kind === "string" && Object.hasOwn(DATA_DECLARATIONS, kind)
+    && DATA_DECLARATIONS[kind as Declaration].owner === "primary" && "shared" in DATA_DECLARATIONS[kind as Declaration];
+}
+
+export const SHARED_KINDS = Object.keys(DATA_DECLARATIONS).filter(sharedKind);
+
+export function sharedPolicy(kind: SharedKind): NonNullable<DataDeclaration["shared"]> {
+  return DATA_DECLARATIONS[kind].shared;
+}

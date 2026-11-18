@@ -665,7 +665,7 @@ async function clockChange(_context: RouteContext, at: SettingItem, value: unkno
       if (!choice) return { status: 400, message: "This computer doesn't know that time zone." };
       const save = submitShared("setupTimeZone", choice);
       if (!save) return { status: 409, message: "A time zone change is already waiting to be saved." };
-      if (await waitShared("setupTimeZone", save.id, save.epoch, save.sequence) === "pending") return { status: 202, message: PENDING_SAVE };
+      if (await waitShared(save) !== "saved") return { status: 202, message: PENDING_SAVE };
       return null;
     }
     return setZone(String(value)) ? null : { status: 400, message: "This computer doesn't know that time zone." };

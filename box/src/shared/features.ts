@@ -197,6 +197,7 @@ export const FEATURES = [
   "settings.flows",
   "settings.vault",
   "setup",
+  "setup.checkpoints",
   "setup.handover",
   "setup.mainOnly",
   "setup.ready",

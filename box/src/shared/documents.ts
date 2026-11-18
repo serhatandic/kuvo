@@ -2,7 +2,7 @@
 // a box keeps it.
 
 /** The kinds there are: who a Mac's boxes are, the phones each box pairs and removes, and each box's view of your personalities. */
-export const DOC_KINDS = ["peers", "phones", "personalities", "leadership", "setup-shared"] as const;
+export const DOC_KINDS = ["peers", "phones", "personalities", "leadership", "setup-shared", "setup-checkpoint"] as const;
 export type DocKind = (typeof DOC_KINDS)[number];
 
 /** A document as it's given and kept: its bytes (`d`) and their signature (`s`), base64url. */

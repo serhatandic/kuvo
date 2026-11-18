@@ -1,3 +1,4 @@
+import { acceptedMembership } from "./setup/membership";
 // Paired phones (PROTOCOL.md, "Paired phones")
 // A pairing adds a phone; a removal, from a phone on the list, takes one off for good (`removed`,
 // with the pairing it ended): only a pairing of its own, with a new pairing id, lets it back in,
@@ -241,7 +242,10 @@ export function removePhones(link: LinkState, by: string | undefined, entries: u
 // document. Each keeps when it was added here and where it was last seen.
 export function foldPhones(link: LinkState, now = Date.now()): void {
   const macs = macsOf(link);
+  const accepted = acceptedMembership(link);
+  const authority = accepted && link.setup?.role === "member" ? link.setup.primary : undefined;
   for (const doc of phoneDocs(link)) {
+    if (authority && doc.origin === link.setup?.sign) continue;
     for (const entry of Array.isArray(doc.body.removed) ? doc.body.removed.slice(0, MOST_KEPT) : []) {
       if (fits(entry, macs) && typeof entry.pairing === "string") noteRemoved(link, entry.key, entry.pairing);
     }
@@ -260,7 +264,7 @@ export function foldPhones(link: LinkState, now = Date.now()): void {
     listed.push(phone);
   };
   for (const mac of macs) {
-    const doc = macDoc(link, mac, "phones");
+    const doc = mac === authority ? { body: accepted!.devices } : macDoc(link, mac, "phones");
     if (!doc) {
       for (const phone of link.phones ?? []) if (phone.from === "mac" && phone.mac === mac) add(phone);
       continue;
@@ -291,6 +295,7 @@ export const ownPhones = (link: LinkState) => ({
   ...(link.setup?.managed && link.setup.role === "primary" ? { epoch: link.setup.epoch } : {}),
   phones: (link.phones ?? []).filter(phone => phone.from === "pair" && !phone.local).map(phone => ({ key: phone.key, name: phone.name ?? "", ...(phone.address ? { address: phone.address } : {}), pairing: phone.pairing ?? "", ...(phone.kind === "desktop" ? { kind: "desktop" as const } : {}), ...(phone.by ? { by: phone.by } : {}) })),
   removed: (link.removed ?? []).map(({ key, pairing }) => ({ key, pairing })),
+  ...acceptedMembership(link)?.devices,
 });
 
 // A phone's session proved its own: its notifications go where it is now.

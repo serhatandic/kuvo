@@ -1,3 +1,4 @@
+import { publishedShared } from "../setup/shared";
 // What this Mac's app asks of its box's link (`kuvo/link/…`)
 // Whether it's wanted and how it's doing, its phones and documents, your machines, and the letters
 // and agents of this Mac's conversations.
@@ -122,10 +123,10 @@ export async function setupGift(again: string | null): Promise<{ mac: string | n
   let docs: SignedDoc[] = [];
   const link = updateLink(link => {
     if (!link?.sign) return null;
-    if (again && !link.removedHere?.includes(again) && Array.isArray(link.left)) link.left = link.left.filter(key => key !== again);
+    if (!link.setup?.checkpointed && again && !link.removedHere?.includes(again) && Array.isArray(link.left)) link.left = link.left.filter(key => key !== again);
     noteKeyNow(link);
     const own = ownDocs({ link, library });
-    docs = [...Object.values(own).map(made => made.envelope), ...Object.values(link.docs ?? {}).sort((a, b) => (a.d < b.d ? -1 : 1))];
+    docs = [...Object.values(own).map(made => made.envelope), ...publishedShared(link), ...Object.values(link.docs ?? {}).sort((a, b) => (a.d < b.d ? -1 : 1))];
     return link;
   });
   if (!link) return null;

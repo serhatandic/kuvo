@@ -13,6 +13,7 @@ import { writeCard } from "../setup/card";
 import { liveLink, updateLink } from "../state";
 import { confirmPhoneMembership } from "./phone-sync";
 import { changedWork, docMails, docsWork, greetWork } from "./work";
+import type { Doc } from "../../shared/documents";
 import type { PersonalityLibrary } from "../personalities/library";
 import type { LinkHost } from "../relay/host";
 import type { LinkState } from "../state";
@@ -24,6 +25,7 @@ type DocsDone = Pick<ReturnType<typeof docsWork>, "given" | "left" | "send">;
 
 // Parts of documents on their way here, from each box (`assemble`).
 const docParts = new Map<string, PendingParts>();
+const checkpoints = new Map<string, Doc>();
 
 // Sends what `work` says goes (`[{to, docs}]`), in as many mails as each takes.
 export function sendDocs(host: Pick<LinkHost, "send"> | null | undefined, link: LinkState, sends: DocSend[] | null | undefined): void {
@@ -48,7 +50,7 @@ export async function receiveDocs(sender: DocSender, docs: DocsMail, host: LinkH
     if (!link) return null;
     setup = JSON.stringify(link.setup ?? null);
     shared = link.shared;
-    const state: DocsState = { link, library: before, parts: docParts };
+    const state: DocsState = { link, library: before, parts: docParts, checkpoints };
     work = docsWork(state, sender, docs);
     library = state.library;
     return link;

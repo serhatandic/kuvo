@@ -1,3 +1,4 @@
+import { acceptedMembership, acceptedName, namedRoster } from "../setup/membership";
 // Peers (PROTOCOL.md, "Peers")
 // The other boxes a Mac set this one up with: itself and its other machines, each as that Mac's
 // newest peers document names them, so one a Mac removed leaves every box it lists. Its Macs: those
@@ -192,7 +193,8 @@ export function movedOf(link: LinkState | null | undefined): Map<string, string>
   const moved = new Map<string, string>();
   // COMPAT(beta.1 mac-moves): a Mac's word, from an app that ran moves before its boxes did. Goes on the user's word, once no Mac from before 1.0 connects.
   // A Mac's word: what this Mac's app says (`kuvo/link/peers`), or a Mac's peers document.
-  if (IS_MAC) for (const { session, key } of cleanMoved(link?.macMoved)) moved.set(session, key);
+  const accepted = acceptedMembership(link);
+  if (accepted || IS_MAC) for (const { session, key } of accepted?.moved ?? cleanMoved(link?.macMoved)) moved.set(session, key);
   else for (const word of macWords(link)) for (const { session, key } of cleanMoved(word.moved)) moved.set(session, key);
   // Over it, the word of the box that moved each: this one's, and its peers'; the newest last.
   const now = Date.now();
@@ -229,10 +231,10 @@ export function macDocs(link: LinkState | null | undefined): { mac: string; doc:
 /** The boxes you removed, so they're no peers of this one (`left`: this Mac's own record, or what
  * its Macs' peers documents say), not those just missing from a list for now. */
 export function removedBoxes(link: LinkState | null | undefined): Set<string> {
-  const left = writesOwnPeers(link) ? (Array.isArray(link?.left) ? link.left : []) : macDocs(link).map(each => each.doc).flatMap(doc => {
+  const left = acceptedMembership(link)?.left ?? (writesOwnPeers(link) ? (Array.isArray(link?.left) ? link.left : []) : macDocs(link).map(each => each.doc).flatMap(doc => {
     const named = doc?.body.left;
     return Array.isArray(named) ? named.filter((key): key is string => typeof key === "string") : [];
-  });
+  }));
   const peers = new Set(peersOf(link).map(peer => peer.key));
   return new Set(left.filter(key => !peers.has(key)));
 }
@@ -255,6 +257,8 @@ export const writesOwnPeers = (link: LinkState | null | undefined): boolean =>
 // This box's peers now: the ones it enrolled, or those its enrolling computers name.
 export function peersOf(link: LinkState | null | undefined): Peer[] {
   if (!link) return [];
+  const membership = acceptedMembership(link);
+  if (membership) return namedRoster(link, membership.boxes.filter(peer => peer.key !== ownKey(link)));
   // This Mac's box: its machines, as its app set them up (`kuvo/link/peers`), by the names you gave them.
   if (writesOwnPeers(link)) return (Array.isArray(link.macPeers) ? link.macPeers : []).filter(fitsPeer).slice(0, MOST_PEERS).map(cleanPeer).map(peer => renamed(link, peer));
   const own = ownKey(link);
@@ -266,17 +270,15 @@ export function peersOf(link: LinkState | null | undefined): Peer[] {
 }
 
 // A machine of this Mac by the name you gave it, where you gave one.
-const renamed = (link: LinkState, peer: Peer): Peer => {
-  const shared = link.sharedSetup === link.setup?.id ? link.shared?.setupNames?.value : undefined;
-  const name = (isObject(shared) ? shared[peer.key] : undefined) ?? link.peerNames?.[peer.key];
-  return typeof name === "string" && name ? { ...peer, name } : peer;
-};
+const renamed = (link: LinkState, peer: Peer): Peer => ({ ...peer, name: acceptedName(link, peer.key, peer.name) });
 
 /** The boxes this box's Macs name (in a setup, its main computer's first; `only`, that one Mac's
  * word alone), itself among them: what each is called there, and what it is. A Mac's box names its
  * own machines (`peersOf`). */
 export function namedBoxes(link: LinkState | null | undefined, only?: string): Peer[] {
   if (!link || writesOwnPeers(link)) return [];
+  const membership = acceptedMembership(link);
+  if (membership && (only === undefined || only === link.setup?.primary)) return namedRoster(link, membership.boxes);
   const byKey = new Map<string, Peer>();
   for (const word of macWords(link, only)) for (const box of word.boxes) if (fitsPeer(box) && !byKey.has(box.key)) byKey.set(box.key, cleanPeer(box));
   return [...byKey.values()];

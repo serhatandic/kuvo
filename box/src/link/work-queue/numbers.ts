@@ -323,8 +323,8 @@ function counterOf(kept: Numbers): number {
 /** Install the certified ledger once, inside the same lock as the first allocation. */
 export function installNumberAuthority(kept: Numbers, link: LinkState | null | undefined): void {
   const setup = followedSetup(link);
-  const numbers = leadershipOf(link)?.body.numbers;
-  const allocation = link?.shared?.queueNumberAllocation;
+  const allocation = link?.sharedSetup === setup?.id ? link?.shared?.queueNumberAllocation : undefined;
+  const numbers = setup?.checkpointed ? allocation?.value : leadershipOf(link)?.body.numbers;
   if (setup?.role !== "primary" || !isObject(numbers)) return;
   const stamp = `${setup.id}:${setup.epoch}`;
   if (kept.leadership === stamp && kept.allocation === allocation?.sequence) return;

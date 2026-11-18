@@ -11,7 +11,7 @@
 // computer's own, for its own clients: never handed on from another box (areas/computers.ts).
 
 import { updateAccess } from "../setup/access";
-import { PENDING_SAVE, stageShared, waitShared } from "../setup/shared";
+import { PENDING_SAVE, stageShared, waitShared, type SharedSave } from "../setup/shared";
 import { isObject } from "../../shared/json";
 import { LEADERSHIP_WAIT, primaryFenced } from "../setup/lease";
 import { plainName } from "../../shared/text";
@@ -21,7 +21,7 @@ import { macDocsChanged } from "../documents/exchange";
 import { IS_MAC } from "../home";
 import { movedFromOldApp } from "../rehome/moved";
 import { tellGone } from "../mac/link";
-import { LIST_FILE, savedMachines } from "../mac/machines";
+import { LIST_FILE, localDestination, peerAtDestination, savedMachines } from "../mac/machines";
 import { setMacPeers } from "../mac/routes";
 import { proposeLeadership, standbyHere } from "../setup/handover";
 import { leadershipOf, PRIMARY_UNLINK, STANDBY_UNLINK } from "../setup/leadership";
@@ -164,7 +164,7 @@ const answer = (status: number, value: unknown): Acted => ({ status, value });
 export async function renameHere(key: string, name: string): Promise<Acted> {
   let found = false;
   let waitingForStandby = false;
-  let sequence: number | null = null;
+  let save: SharedSave | null = null;
   const changed = updateLink(link => {
     if (!link || mainElsewhere(link) || !peersOf(link).some(peer => peer.key === key)) return null;
     found = true;
@@ -172,10 +172,10 @@ export async function renameHere(key: string, name: string): Promise<Acted> {
       waitingForStandby = true;
       return null;
     }
-    if (link.setup?.standby) {
+    if (link.setup?.standby || link.setup?.checkpointed) {
       const before = link.shared?.setupNames?.value;
-      sequence = stageShared(link, "setupNames", { ...(isObject(before) ? before : link.peerNames), [key]: name });
-      return sequence === null ? null : link;
+      save = stageShared(link, "setupNames", { ...(isObject(before) ? before : link.peerNames), [key]: name });
+      return save ? link : null;
     }
     if (link.peerNames?.[key] === name) return null;
     link.peerNames = { ...(link.peerNames ?? {}), [key]: name };
@@ -183,11 +183,10 @@ export async function renameHere(key: string, name: string): Promise<Acted> {
   }, { durable: true });
   if (waitingForStandby) return answer(503, { message: LEADERSHIP_WAIT });
   if (!found) return answer(404, { message: `That isn't one of ${ownName()}'s machines.` });
-  if (changed?.setup?.standby && sequence !== null
-    && await waitShared("setupNames", changed.setup.id, changed.setup.epoch, sequence) === "pending") {
+  if (save && await waitShared(save) !== "saved") {
     return answer(202, { pending: true, message: PENDING_SAVE });
   }
-  if (!changed && readLink()?.setup?.standby) return answer(409, { message: "A computer name is already waiting to be saved. Try again when it has saved." });
+  if (!changed && (readLink()?.setup?.standby || readLink()?.setup?.checkpointed)) return answer(409, { message: "A computer name is already waiting to be saved. Try again when it has saved." });
   macDocsChanged();
   return answer(200, { name });
 }
@@ -227,7 +226,7 @@ export function removeHere(key: string, pendingOnly = false): Acted {
 
 async function finishRemoval(removal: ReturnType<typeof prepareRemoval>): Promise<Acted> {
   const { save } = removal;
-  if (save && await waitShared("membershipAndAccess", save.id, save.epoch, save.sequence) === "pending") {
+  if (save && await waitShared(save) !== "saved") {
     return answer(202, { pending: true, message: PENDING_SAVE });
   }
   return completeRemoval(removal);
@@ -250,7 +249,8 @@ function prepareRemoval(key: string, pendingOnly: boolean) {
     const peer = peersOf(link).find(each => each.key === key);
     if (pendingOnly && (peer || !link.pendingMachineCleanup?.[key])) return null;
     already = Boolean(link.removedHere?.includes(key));
-    needsCleanup = Boolean(peer?.id || link.pendingMachineCleanup?.[key]);
+    const destination = peer && localDestination(link, key);
+    needsCleanup = Boolean(destination || link.pendingMachineCleanup?.[key]);
     if (!peer) {
       // One removed before its devices went with it loses them when asked again.
       return !pendingOnly && already && takeOffVouched(link, key) ? link : null;
@@ -271,7 +271,7 @@ function prepareRemoval(key: string, pendingOnly: boolean) {
         };
       }
     }
-    if (peer.id) made.link.pendingMachineCleanup = { ...made.link.pendingMachineCleanup, [key]: peer.id };
+    if (destination) made.link.pendingMachineCleanup = { ...made.link.pendingMachineCleanup, [key]: destination };
     return made.link;
   }, { localOnly: pendingOnly });
   return { ...result, blocked, gone, already, needsCleanup, key };
@@ -296,7 +296,7 @@ function cleanRemovalList(key: string): boolean {
       const destination = pending?.[key];
       if (!link || !pending || !destination) return null;
       // A fresh Add may have kept the destination again since revocation.
-      saved = peersOf(link).some(each => each.id === destination) || forgetSaved(destination);
+      saved = Boolean(peerAtDestination(link, destination)) || forgetSaved(destination);
       if (!saved) return null;
       delete pending[key];
       if (!Object.keys(pending).length) delete link.pendingMachineCleanup;

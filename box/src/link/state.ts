@@ -15,7 +15,7 @@ import { IS_MAC, LINK_FILE, RUN } from "./home";
 import type { NoticeHold } from "./notices/hold";
 import type { Peer } from "./peers/known";
 import type { LinkHost } from "./relay/host";
-import type { SharedKind, SharedValues } from "./setup/shared";
+import type { OperationOutcomes, SharedKind, SharedValues } from "./setup/shared";
 import type { SetupRecord } from "./setup/record";
 
 /** A phone this box lets in (PROTOCOL.md, "Paired phones"). */
@@ -105,7 +105,8 @@ export interface LinkState {
   leadershipPending?: SignedDoc;
   sharedSetup?: string;
   shared?: SharedValues;
-  sharedPending?: Partial<Record<SharedKind, SignedDoc>>;
+  sharedPending?: Record<string, SignedDoc>;
+  sharedOutcomes?: OperationOutcomes;
   sharedInterrupted?: Partial<Record<SharedKind, SignedDoc>>;
   sharedReceipts?: Partial<Record<SharedKind, SignedDoc>>;
   /** This Mac's static key as its box last had it, and the ones before (made anew since): a machine
@@ -201,7 +202,7 @@ export function writeLink(link: LinkState, durable = false) {
   const kept = IS_MAC ? Object.fromEntries(Object.entries(link).filter(([key]) => !MAC_OVERLAY.includes(key))) : link;
   // (Its keys, on a machine.)
   const text = JSON.stringify(linkFormat.write(kept), null, 2);
-  if (durable || link.shared || link.sharedPending || link.sharedInterrupted) {
+  if (durable || link.shared || link.sharedPending || link.sharedOutcomes || link.sharedInterrupted) {
     privateFolder(path.dirname(LINK_FILE));
     writeDurablePrivate(LINK_FILE, text);
   } else writeSecret(LINK_FILE, text);

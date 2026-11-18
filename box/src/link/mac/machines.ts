@@ -1,3 +1,5 @@
+import type { LinkState } from "../state";
+import { setupHosts } from "../setup/main-only";
 // A Mac's machines for a phone (PROTOCOL.md, "Machines"), where there's an app of the Mac's to
 // ask (the retired Mac app), open or closed.
 //
@@ -111,6 +113,25 @@ export function savedMachines(kept = keptHosts()): SavedMachine[] | null {
   }
 }
 
+/** A saved SSH destination belongs to this computer and is bound to the enrolled key. */
+export function localDestination(link: LinkState | null | undefined, key: string): string | undefined {
+  const hosts = keptHosts();
+  const saved = savedMachines(hosts);
+  if (!saved) return;
+  const destinations = new Set(saved.map(each => each.destination));
+  const known = Object.entries(hosts ?? {}).find(([id, host]) => host?.key === key && destinations.has(id))?.[0];
+  if (known || link?.setup?.checkpointed) return known;
+  // Compatibility for a pre-checkpoint Mac's saved list.
+  const old = peersOf(link).find(peer => peer.key === key)?.id;
+  return old && destinations.has(old) && !hosts?.[old]?.key ? old : undefined;
+}
+
+export function peerAtDestination(link: LinkState | null | undefined, destination: string) {
+  const hosts = keptHosts();
+  const key = hosts && Object.hasOwn(hosts, destination) ? hosts[destination]?.key : undefined;
+  return peersOf(link).find(peer => peer.key === key || (!key && !link?.setup?.checkpointed && peer.id === destination));
+}
+
 /** Whether this Mac has machines its link meets, as its list says (the app's word for it, read by
  * the box itself): one that can't be read counts, as the app counts it. */
 export function anyMachines(): boolean {
@@ -122,11 +143,11 @@ export function anyMachines(): boolean {
 export function machinesWithoutApp(now = Date.now()): MacMachines | null {
   const saved = savedMachines();
   if (!saved) return null;
-  const peers = peersOf(readLink());
+  const link = readLink();
   const told = readPeerAgents();
   return {
     machines: saved.map(({ destination, otherAddresses }) => {
-      const peer = peers.find(each => each.id === destination);
+      const peer = peerAtDestination(link, destination);
       const last = peer ? told[peer.key] : undefined;
       // (By this Mac's clock: `heard`. A list kept before there was one has only the sender's.)
       const heard = !peer ? "" : now - (last?.heard ?? last?.at ?? 0) < HEARD_LATELY ? "Running · " : "Not heard from lately · ";
@@ -141,6 +162,8 @@ export function machinesWithoutApp(now = Date.now()): MacMachines | null {
  * be told or there's no relay yet to name, since a phone takes this list for all your machines and
  * forgets the rest. */
 export function hostsWithoutApp(): Hosts | null {
+  const link = readLink();
+  if (link?.setup?.managed) return setupHosts(link);
   const kept = keptHosts();
   const saved = savedMachines(kept);
   const relay = IS_MAC ? macLink.config?.relay : readLink()?.relay;
@@ -228,9 +251,15 @@ export const isMachinesRoute = (route: string): boolean => /^kuvo\/(machines|hos
 /** A phone asking about this Mac's machines: the app says, and while it isn't there this box says
  * what it can, and that the rest needs the app. */
 export async function* machinesRoute(request: LinkRequest, phone: Asker | undefined, signal: AbortSignal | undefined, route: string, timing: AppTiming = TIMING): AsyncGenerator<AnswerPiece> {
-  const read = request.method.toUpperCase() === "GET";
+  const method = request.method.toUpperCase();
+  const read = method === "GET";
+  const link = readLink();
+  if ((read || method === "HEAD") && route === "kuvo/hosts" && link?.setup?.managed) {
+    const hosts = setupHosts(link);
+    return yield* answer(hosts ? 200 : 503, hosts ?? { message: UNREADABLE });
+  }
   // On a member of a setup, only its main computer adds and removes computers (PROTOCOL.md, "Your setup").
-  const main = read ? null : mainElsewhere(readLink());
+  const main = read ? null : mainElsewhere(link);
   if (main) return yield* answer(409, addElsewhere(main));
   if (read && route === "kuvo/machines/events") return yield* machinesFollowed(request, phone, signal, timing);
   // Only what's read has this box to fall back on. What changes something may take as long as it

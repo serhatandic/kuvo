@@ -54,7 +54,7 @@ export async function* phonesRemoveRoute(context: RouteContext): AsyncGenerator<
     return link && (asMac ? removeAsMac(link, given?.phones, Boolean(kept?.setup?.standby)) : removePhones(link, phone?.key?.toString("base64url"), given?.phones, Boolean(kept?.setup?.standby))) ? link : null;
   });
   if (busy) return yield* json(409, { message: "An access change is already waiting to be saved." });
-  if (save && await waitShared("membershipAndAccess", save.id, save.epoch, save.sequence) === "pending") {
+  if (save && await waitShared(save) !== "saved") {
     return yield* json(202, { pending: true, message: PENDING_SAVE });
   }
   const main = primary as ReturnType<typeof mainElsewhere>;

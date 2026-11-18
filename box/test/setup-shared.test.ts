@@ -1,12 +1,18 @@
 import "./safety";
 import { expect, test } from "bun:test";
+import crypto from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
 import { addressOf, newKey, publicOf } from "../src/link/crypto/keys";
 import { newSigningSeed, readDoc, signDoc, signingKeyOf } from "../src/link/documents/format";
+import { digestOf, docsWork } from "../src/link/documents/work";
 import type { LinkState } from "../src/link/state";
 import { grantLease, leaseClock } from "../src/link/setup/lease";
+import { RUN } from "../src/link/home";
+import { cacheCheckpoint, checkpointHash, checkpointedTransition, leadershipDocuments } from "../src/link/setup/checkpoint";
 import { takeLeadership } from "../src/link/setup/leadership";
 import { newSetupID, type SetupRecord } from "../src/link/setup/record";
-import { pendingShared, sharedValue, stageShared, takeShared } from "../src/link/setup/shared";
+import { installShared, operationOutcome, pendingShared, sharedValue, stageShared, takeShared } from "../src/link/setup/shared";
 
 function identity() {
   const secret = newKey();
@@ -26,7 +32,9 @@ test("only the assigned standby receipts the primary's exact save and pending ow
   const ownership = { pending: [{ id: "move-one", source: a.key, destination: c.key }] };
 
   expect(stageShared(member, "ownershipAssignments", ownership)).toBeNull();
-  expect(stageShared(primary, "ownershipAssignments", ownership)).toBe(1);
+  const save = stageShared(primary, "ownershipAssignments", ownership)!;
+  expect(save.sequence).toBe(1);
+  expect(save.operation).toMatch(/^[\w-]{22}$/);
   expect(sharedValue(primary, "ownershipAssignments")).toBeUndefined();
   const proposal = pendingShared(primary, "ownershipAssignments")!;
   expect(takeShared(member, a.key, proposal)).toBeNull();
@@ -54,4 +62,97 @@ test("only the assigned standby receipts the primary's exact save and pending ow
   expect(takeLeadership(standby, certificate)).toBe(true);
   expect(sharedValue(standby, "ownershipAssignments")).toEqual(ownership);
   expect(pendingShared(standby, "ownershipAssignments")).toBeNull();
+});
+
+test("a receiver requests exactly the next authority record beyond the old digest limit", () => {
+  const a = identity(), b = identity();
+  const id = newSetupID();
+  const setup: SetupRecord = { id, epoch: 530, primary: a.key, sign: a.signer, role: "primary", managed: true };
+  const sender: LinkState = {
+    key: a.seed, sign: a.sign, setup,
+    macPeers: [{ key: b.key, sign: b.signer, name: "Desk", kind: "machine", address: b.address }],
+    leadership: Object.fromEntries(Array.from({ length: 529 }, (_, index) => {
+      const epoch = index + 2;
+      return [epoch, signDoc(a.sign, "leadership", epoch, { setup: { id, epoch, primary: a.key } })];
+    })),
+  };
+  const have = digestOf(sender).filter(entry => entry[1] === "leadership");
+  expect(have.map(entry => entry[2])).toEqual([530]);
+
+  for (const epoch of [2, 512, 513, 529]) {
+    const cursor = readDoc(sender.leadership![epoch])!;
+    const state = { link: sender, library: { personalities: [], removed: [] } };
+    const result = docsWork(state, { key: b.key, sign: b.signer }, { have: [[cursor.origin, cursor.kind, cursor.n, cursor.h]], reply: true });
+    const transitions = result.send.flatMap(mail => mail.docs.give ?? []).flatMap(envelope => {
+      const doc = readDoc(envelope);
+      return doc?.kind === "leadership" ? [doc.n] : [];
+    });
+    expect(transitions).toEqual([epoch + 1]);
+  }
+});
+
+test("each interrupted operation remains queryable when a later epoch reuses its base revision", () => {
+  const a = identity(), b = identity();
+  const setup: SetupRecord = {
+    id: newSetupID(), epoch: 2, primary: a.key, sign: a.signer, role: "primary", managed: true,
+    standby: { key: b.key, sign: b.signer }, numberCeiling: 2_000,
+  };
+  const primary: LinkState = { key: a.seed, sign: a.sign, setup };
+  const first = stageShared(primary, "setupNames", { [b.key]: "First attempt" })!;
+  expect(operationOutcome(primary, setup.id, first.operation)?.status).toBe("pending");
+  setup.epoch++;
+  installShared(primary, {}, {});
+  const second = stageShared(primary, "setupNames", { [b.key]: "Second attempt" })!;
+  expect(second.sequence).toBe(first.sequence);
+  expect(second.operation).not.toBe(first.operation);
+  setup.epoch++;
+  installShared(primary, {}, {});
+  expect(operationOutcome(primary, setup.id, first.operation)).toMatchObject({ status: "interrupted", epoch: 2, baseRevision: 0 });
+  expect(operationOutcome(primary, setup.id, second.operation)).toMatchObject({ status: "interrupted", epoch: 3, baseRevision: 0 });
+});
+
+test("a checkpoint preserves operation pages and accepts a lost receipt after promotion", () => {
+  const a = identity(), b = identity();
+  const id = newSetupID();
+  const setup: SetupRecord = {
+    id, epoch: 2, primary: a.key, sign: a.signer, role: "primary", managed: true, checkpointed: true,
+    standby: { key: b.key, sign: b.signer }, numberCeiling: 2_000,
+  };
+  const primary: LinkState = { key: a.seed, sign: a.sign, setup, sharedSetup: id };
+  const standby: LinkState = { key: b.seed, sign: b.sign, setup: { ...setup, role: "member" }, sharedSetup: id };
+  const save = stageShared(primary, "setupNames", { [b.key]: "Renamed" })!;
+  const proposal = pendingShared(primary, "setupNames")!;
+  expect(takeShared(standby, a.key, proposal)).not.toBeNull();
+  expect(operationOutcome(primary, id, save.operation)?.status).toBe("pending");
+  standby.sharedOutcomes = {
+    ...Object.fromEntries(Array.from({ length: 520 }, (_, index) => [crypto.randomBytes(16).toString("base64url"), {
+      kind: "queueLabels" as const, epoch: 1, sequence: index + 1, baseRevision: index,
+      proposal: crypto.randomBytes(64).toString("base64url"), status: "committed" as const,
+    }])),
+    ...standby.sharedOutcomes,
+  };
+  const boxes = [a, b].map(box => ({ key: box.key, sign: box.signer, address: box.address, name: "Box", kind: "machine" }));
+  const transition = checkpointedTransition(standby, {
+    setup: { id, epoch: 3, primary: b.key }, previous: a.key, takeover: true, sharedSaves: true,
+  }, { ...standby.shared, membershipAndAccess: { sequence: 1, value: { boxes } } })!;
+  const [manifest, ...tail] = leadershipDocuments(transition.envelope).map(envelope => readDoc(envelope)!);
+  const pages = tail.slice(0, -1);
+  expect(pages).toHaveLength(3);
+  expect(manifest!.body.archives).toEqual(pages.map(checkpointHash));
+  expect(transition.body.shared).toBeUndefined();
+  expect(transition.body.outcomes).toBeUndefined();
+
+  // Lose one page on the receiver. Neither its role nor its pending operation changes.
+  const missing = pages[1]!;
+  const file = path.join(RUN, "setup-checkpoints", checkpointHash(missing) + ".json");
+  fs.unlinkSync(file);
+  expect(takeLeadership(primary, transition, manifest)).toBe(false);
+  expect(operationOutcome(primary, id, save.operation)?.status).toBe("pending");
+
+  const cache = new Map();
+  cacheCheckpoint(primary, cache, manifest!);
+  cacheCheckpoint(primary, cache, missing);
+  expect(takeLeadership(primary, transition, cache.get(transition.body.checkpoint))).toBe(true);
+  expect(operationOutcome(primary, id, save.operation)).toMatchObject({ status: "committed", epoch: 2, sequence: 1, baseRevision: 0 });
+  expect(Object.keys(primary.sharedOutcomes!)).toHaveLength(521);
 });

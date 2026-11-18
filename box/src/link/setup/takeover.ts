@@ -12,6 +12,8 @@ import { readNumbers } from "../work-queue/numbers";
 import { takesForwarded } from "../work-queue/forward";
 import { writeCard } from "./card";
 import { proposeLeadership, standbyHere } from "./handover";
+import { CHECKPOINT_FEATURE, checkpointedTransition, leadershipDocuments } from "./checkpoint";
+import { acceptedMembership, acceptedName } from "./membership";
 import { leadershipOf, takeLeadership } from "./leadership";
 import { fresh, grantLease, HEARTBEAT_MS, leaseClock, LEASE_MS, primaryFenced, standbySettings, testSetupClock } from "./lease";
 import { publishedShared, sharedValue } from "./shared";
@@ -107,7 +109,7 @@ function takeoverTick(host: LinkHost | null | undefined): void {
   if (!host?.welcomed) return;
   if (setup.role === "primary" && link.leadershipPending) {
     const standby = peersOf(link).find(peer => peer.key === setup.standby?.key);
-    if (standby) sendDocs(host, link, [{ to: standby, docs: { give: [link.leadershipPending] } }]);
+    if (standby) sendDocs(host, link, [{ to: standby, docs: { give: leadershipDocuments(link.leadershipPending) } }]);
     return;
   }
   if (setup.role === "primary" && setup.standby && !primaryFenced(link) && Object.keys(link.sharedPending ?? {}).length) {
@@ -122,7 +124,8 @@ function takeoverTick(host: LinkHost | null | undefined): void {
     if (setup.standby) {
       const ledger = sharedValue(link, "queueNumberAllocation");
       const next = Math.max(readNumbers().next ?? 1, isObject(ledger) ? Number(ledger.next) || 1 : 1);
-      if (setup.numberCeiling && setup.numberCeiling - next < 400 && !primaryFenced(link)) {
+      const migrating = !setup.checkpointed && peersOf(link).every(peer => takesForwarded(peer.key, CHECKPOINT_FEATURE));
+      if ((migrating || (setup.numberCeiling && setup.numberCeiling - next < 400)) && !primaryFenced(link)) {
         void proposeLeadership({ setup: setup.id, epoch: setup.epoch }, setup.primary, setup.standby)
           .catch(error => console.warn("Standby number reservation:", error.message));
       }
@@ -171,37 +174,46 @@ function promote(host: LinkHost, position: Position) {
     const setup = followedSetup(link);
     if (!link?.sign || !setup?.standby || setup.id !== position.id || setup.epoch !== position.epoch
       || ownKey(link) !== setup.standby.key || ownSign(link) !== setup.standby.sign) return null;
-    const roster = setupDoc(link);
-    const prior = leadershipOf(link);
-    if (!roster || !prior || typeof setup.numberCeiling !== "number") return null;
-    const phones = held(link.docs?.[docKey(setup.sign, "phones")]);
-    const word = phones?.body.epoch;
-    const ledger = sharedValue(link, "queueNumberAllocation");
-    const previousNumbers = isObject(ledger) ? ledger : isObject(prior.body.numbers) ? prior.body.numbers : {};
-    const membership = sharedValue(link, "membershipAndAccess");
-    const accepted = isObject(membership) && membership.epoch === setup.epoch ? membership : null;
-    const names = sharedValue(link, "setupNames");
-    const rosterBoxes = accepted?.boxes ?? roster.body.boxes;
-    const boxes = Array.isArray(rosterBoxes) ? rosterBoxes.filter(fitsPeer).map(cleanPeer).map(peer => {
-      const name = isObject(names) ? names[peer.key] : undefined;
-      return typeof name === "string" ? { ...peer, name } : peer;
-    }) : [];
+    const ceiling = setup.numberCeiling;
+    if (typeof ceiling !== "number") return null;
     const epoch = setup.epoch + 1;
-    const envelope = signDoc(link.sign, "leadership", epoch, {
-      setup: { id: setup.id, epoch, primary: setup.standby.key }, previous: setup.primary, takeover: true,
-      boxes, left: accepted?.left ?? roster.body.left, moved: accepted?.moved ?? roster.body.moved,
-      devices: accepted?.devices ?? (word === setup.epoch ? phones!.body : prior.body.devices),
-      vouchBlocked: accepted?.vouchBlocked ?? roster.body.vouchBlocked ?? prior.body.vouchBlocked,
-      removalRevisions: isObject(accepted?.fields) ? accepted.fields.removalRevisions : prior.body.removalRevisions,
-      shared: link.shared ?? {}, sharedSaves: true,
-      numbers: { ...previousNumbers, next: setup.numberCeiling + 1 },
-    });
-    const doc = readDoc(envelope);
+    const authority = {
+      setup: { id: setup.id, epoch, primary: setup.standby.key },
+      previous: setup.primary, takeover: true, sharedSaves: true,
+    };
+    const ledger = sharedValue(link, "queueNumberAllocation");
+    let doc;
+    if (setup.checkpointed) {
+      if (!acceptedMembership(link) || !isObject(ledger)) return null;
+      doc = checkpointedTransition(link, authority, {
+        ...link.shared,
+        queueNumberAllocation: { sequence: link.shared!.queueNumberAllocation!.sequence, value: { ...ledger, next: ceiling + 1 } },
+      });
+    } else {
+      // COMPAT(layout 4): recover a standby selected by a release that did not checkpoint.
+      const roster = setupDoc(link);
+      const prior = leadershipOf(link);
+      if (!roster || !prior) return null;
+      const phones = held(link.docs?.[docKey(setup.sign, "phones")]);
+      const membership = sharedValue(link, "membershipAndAccess");
+      const accepted = isObject(membership) && membership.epoch === setup.epoch ? membership : null;
+      const rosterBoxes = accepted?.boxes ?? roster.body.boxes;
+      const boxes = Array.isArray(rosterBoxes) ? rosterBoxes.filter(fitsPeer).map(cleanPeer)
+        .map(peer => ({ ...peer, name: acceptedName(link, peer.key, peer.name) })) : [];
+      doc = readDoc(signDoc(link.sign, "leadership", epoch, {
+        ...authority, boxes, left: accepted?.left ?? roster.body.left, moved: accepted?.moved ?? roster.body.moved,
+        devices: accepted?.devices ?? (phones?.body.epoch === setup.epoch ? phones!.body : prior.body.devices),
+        vouchBlocked: accepted?.vouchBlocked ?? roster.body.vouchBlocked ?? prior.body.vouchBlocked,
+        removalRevisions: isObject(accepted?.fields) ? accepted.fields.removalRevisions : prior.body.removalRevisions,
+        shared: link.shared ?? {},
+        numbers: { ...(isObject(ledger) ? ledger : isObject(prior.body.numbers) ? prior.body.numbers : {}), next: ceiling + 1 },
+      }));
+    }
     return doc && takeLeadership(link, doc) ? link : null;
   }, { durable: true });
   if (!changed?.setup) return;
   console.info(`Standby took over at setup epoch ${changed.setup.epoch} after ${standbySettings().delay / 60_000} minutes without its primary.`);
-  sendDocs(host, changed, peersOf(changed).map(to => ({ to, docs: { give: [changed.leadership![changed.setup!.epoch]!] } })));
+  sendDocs(host, changed, peersOf(changed).map(to => ({ to, docs: { give: leadershipDocuments(changed.leadership![changed.setup!.epoch]!) } })));
   noteDocsChanged();
   try { writeCard(); } catch {}
 }

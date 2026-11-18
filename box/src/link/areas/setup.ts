@@ -8,6 +8,7 @@ import { computerInSentence } from "../computer-name";
 
 import fs from "node:fs";
 import path from "node:path";
+import { sharedKind, sharedPolicy } from "../../shared/data-declarations";
 import { isObject, parsed, type Body } from "../../shared/json";
 import { writePrivate } from "../files";
 import { RUN } from "../home";
@@ -15,9 +16,9 @@ import { followed } from "../follow";
 import { handover, selectStandby } from "../setup/handover";
 import { writeCard } from "../setup/card";
 import { appsOf, ATTACHED_FILE, foundOf, judgeComputer, oursNow } from "../setup/judge";
-import { addElsewhere, mainElsewhere, memberHosts } from "../setup/main-only";
+import { addElsewhere, mainElsewhere, setupHosts } from "../setup/main-only";
 import { ownMachinesRoute } from "../mac/own-machines";
-import { changeShared, PENDING_SAVE, waitShared } from "../setup/shared";
+import { changeShared, OPERATION_ID, operationOutcome, PENDING_SAVE, waitShared } from "../setup/shared";
 import { followedSetup } from "../setup/record";
 import { setupView } from "../setup/view";
 import { engineRoute } from "../server/forward";
@@ -126,8 +127,8 @@ export async function* memberComputersRoute(context: RouteContext): AsyncGenerat
     return yield* engineRoute(context);
   }
   if (ADDS_OR_REMOVES(method, route)) return yield* json(409, addElsewhere(main));
-  if (method !== "GET" || route !== "kuvo/hosts") return yield* engineRoute(context);
-  const hosts = memberHosts(link);
+  if ((method !== "GET" && method !== "HEAD") || route !== "kuvo/hosts") return yield* engineRoute(context);
+  const hosts = setupHosts(link);
   if (hosts) return yield* json(200, hosts);
   return yield* json(503, { message: "This computer can't list your computers yet. Try again in a moment." });
 }
@@ -136,12 +137,22 @@ export async function* saveLocalSetup(context: RouteContext): AsyncGenerator<Ans
   const { request, json } = context;
   if (!request.fromHolder || request.method !== "POST") return yield* json(403, {});
   const given = parsed(request.body);
+  if (isObject(given) && typeof given.id === "string" && typeof given.operation === "string" && given.value === undefined) {
+    const outcome = operationOutcome(readLink(), given.id, given.operation);
+    if (!outcome) return yield* json(404, {});
+    const { kind, epoch, sequence, baseRevision, status } = outcome;
+    return yield* json(200, { operation: given.operation, kind, epoch, sequence, baseRevision, status });
+  }
   if (!isObject(given) || !isObject(given.value)) return yield* json(400, { message: "Send the setup settings to save." });
   const kind = given.kind;
-  if (kind !== "setupUsageDisplay" && kind !== "setupSecurityAndReleaseChoice") return yield* json(400, {});
+  if (!sharedKind(kind)) return yield* json(400, {});
+  const policy = sharedPolicy(kind).localSave;
+  if (!policy) return yield* json(400, {});
+  const operation = given.operation;
+  if (operation !== undefined && (typeof operation !== "string" || !OPERATION_ID.test(operation))) return yield* json(400, {});
   const value = given.value;
-  if (kind === "setupUsageDisplay" && (!isObject(value.units) || typeof value.imported !== "boolean")) return yield* json(400, {});
-  if (kind === "setupSecurityAndReleaseChoice") {
+  if (policy === "usage" && (!isObject(value.units) || typeof value.imported !== "boolean")) return yield* json(400, {});
+  if (policy === "release") {
     try {
       if (typeof value.signed !== "string" || value.signed.length > 128_000) return yield* json(400, {});
       const manifest = verifyBoxes(Buffer.from(value.signed, "base64").toString());
@@ -155,8 +166,10 @@ export async function* saveLocalSetup(context: RouteContext): AsyncGenerator<Ans
     if (!link.setup || link.setup.id !== given.id || link.setup.epoch !== given.epoch
       || (link.sharedSetup === given.id ? link.shared?.[kind]?.sequence ?? 0 : 0) !== expected) return undefined;
     return value;
-  });
+  }, operation);
   if (!save) return yield* json(409, { message: "The setup changed or a save is already pending." });
-  if (await waitShared(kind, save.id, save.epoch, save.sequence) === "pending") return yield* json(202, { pending: true, message: PENDING_SAVE });
-  return yield* json(200, {});
+  const status = await waitShared(save);
+  if (status === "pending") return yield* json(202, { pending: true, status, operation: save.operation, message: PENDING_SAVE });
+  if (status === "interrupted") return yield* json(409, { operation: save.operation, status, message: "The primary changed before this save committed." });
+  return yield* json(200, { operation: save.operation, status: "committed" });
 }

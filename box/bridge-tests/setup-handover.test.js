@@ -16,6 +16,24 @@ const script = fileURLToPath(new URL("../../swift/KuvoLink/Sources/KuvoLink/Reso
 const link = await import(script);
 const submit = (box, primary, epoch) => box.route("POST", "kuvo/setup/handover", { primary: primary.key, epoch });
 
+function checkpoint(box, epoch) {
+  const transition = link.readDoc(box.read().leadership[epoch]);
+  assert.equal(transition.body.boxes, undefined);
+  assert.equal(transition.body.devices, undefined);
+  assert.equal(transition.body.shared, undefined);
+  assert.equal(transition.body.numbers, undefined);
+  const file = path.join(box.run, "setup-checkpoints", transition.body.checkpoint + ".json");
+  const envelope = JSON.parse(fs.readFileSync(file, "utf8"));
+  assert.equal(crypto.createHash("sha256").update(envelope.d).digest("base64url"), transition.body.checkpoint);
+  const saved = link.readDoc(envelope);
+  assert.equal(saved.kind, "setup-checkpoint");
+  assert.equal(saved.n, epoch);
+  return saved.body;
+}
+
+const pendingOperation = (box, kind) => Object.entries(box.read().sharedPending ?? {})
+  .find(([, envelope]) => link.readDoc(envelope).body.kind === kind)?.[0];
+
 async function until(what, read, signal) {
   while (!signal.aborted) {
     const value = read();
@@ -161,7 +179,7 @@ test("failure bench: an offline member follows two handovers and the former prim
   assert.equal(a.read().phones.find(device => device.key === phone)?.mac, b.key);
   assert.equal(b.read().vouchBlocked[0].key, c.key);
   const transition = link.readDoc(b.read().leadership[2]);
-  assert.equal(transition.body.numbers.next, 401);
+  assert.equal(checkpoint(b, 2).shared.queueNumberAllocation.value.next, 401);
   const stale = c.read();
   assert.equal(link.takeDoc(stale, b.read().leadership[2]), null);
   const forged = link.signDoc(a.seed, "leadership", 3, { ...transition.body, previous: b.key, setup: { ...transition.body.setup, epoch: 3, primary: a.key } });
@@ -270,7 +288,8 @@ test("failure bench: only the standby takes over across a split and the old prim
   const blocked = await a.route("DELETE", `kuvo/computers/${c.key}`);
   assert.equal(blocked.status, 202);
   assert.equal(blocked.value.pending, true);
-  assert.ok(a.read().sharedPending.membershipAndAccess);
+  const interrupted = pendingOperation(a, "membershipAndAccess");
+  assert.ok(interrupted);
   const work = await a.route("POST", "kuvo/work-queue/items", { title: "Work survives the split" }, true);
   assert.equal(work.status, 200);
   const stale = a.read();
@@ -281,7 +300,7 @@ test("failure bench: only the standby takes over across a split and the old prim
   const winning = link.readDoc(b.read().leadership[3]);
   assert.equal(winning.origin, b.sign);
   assert.equal(winning.body.takeover, true);
-  assert.equal(winning.body.numbers.next, stale.setup.numberCeiling + 1);
+  assert.equal(checkpoint(b, 3).shared.queueNumberAllocation.value.next, stale.setup.numberCeiling + 1);
   const fake = link.signDoc(c.seed, "leadership", 3, winning.body);
   assert.equal(link.takeDoc(stale, fake), null);
   const oldPrimaryFork = link.signDoc(a.seed, "leadership", 3, {
@@ -305,6 +324,10 @@ test("failure bench: only the standby takes over across a split and the old prim
   a.start();
   await see(a, 4, b);
   assert.equal(a.read().peerNames, undefined);
+  const lost = await link.askSetupSave(a.run, { id: stale.setup.id, operation: interrupted });
+  assert.equal(lost.status, 200);
+  assert.equal(lost.outcome, "interrupted");
+  assert.equal(a.read().sharedOutcomes[interrupted].baseRevision, 1);
   assert.equal(a.read().phones.find(device => device.key === phone)?.pairing, pairing);
   assert.equal((await a.route("GET", `kuvo/work-queue/items/${work.value.item.id}`)).value.item.title, "Work survives the split");
 });
@@ -370,6 +393,8 @@ test("failure bench: a saved change survives killing the primary before it publi
   const { a, b, c, relay, see, phone, pairing } = await standbyNetwork(t);
   // Prevent the third computer from learning the change from the old primary.
   const reconnect = [relay.pause(a.address, c.address), relay.pause(b.address, c.address)];
+  const standby = await rename(a, b, "Renamed Desk");
+  assert.deepEqual(standby, { status: 200, value: { name: "Renamed Desk" } });
   const done = await rename(a, c, "Accepted name");
   assert.deepEqual(done, { status: 200, value: { name: "Accepted name" } });
   assert.equal(b.read().shared.setupNames.value[c.key], "Accepted name");
@@ -392,6 +417,14 @@ test("failure bench: a saved change survives killing the primary before it publi
   await see(c, 3, b);
   assert.equal(await setupName(b, c.key), "Accepted name");
   assert.equal(await setupName(c, c.key), "Accepted name");
+  assert.equal(await setupName(b, b.key), "Renamed Desk");
+  assert.equal((await b.route("GET", "kuvo/computers")).value.computers.find(box => box.key === b.key)?.name, "Renamed Desk");
+  assert.equal(await setupName(c, b.key), "Renamed Desk");
+  const discovery = await b.route("GET", "kuvo/hosts");
+  assert.equal(discovery.status, 200);
+  assert.deepEqual(discovery.value.hosts.map(({ key, name }) => ({ key, name })),
+    [{ key: c.key, name: "Accepted name" }, { key: a.key, name: a.name }]);
+  assert.deepEqual(await c.route("GET", "kuvo/hosts"), discovery);
   assert.equal(b.read().phones.some(device => device.key === phone), false);
   assert.ok(b.read().removed.some(device => device.key === phone && device.pairing === pairing));
 });
@@ -414,7 +447,10 @@ test("failure bench: a save waits durably through standby and primary restarts",
   assert.equal(a.read().shared?.setupUsageDisplay, undefined);
   assert.equal(answer.status, 202);
   assert.equal(answer.value.pending, true);
-  assert.ok(a.read().sharedPending.setupNames);
+  assert.ok(pendingOperation(a, "setupNames"));
+  assert.ok(display.operation);
+  assert.equal(pendingOperation(a, usage.kind), display.operation);
+  assert.equal((await link.askSetupSave(a.run, { id: usage.id, operation: display.operation })).outcome, "pending");
   assert.equal(await setupName(a, c.key), c.name);
   const item = await a.route("POST", "kuvo/work-queue/items", { title: "Everyday work" }, true);
   assert.equal(item.status, 200);
@@ -424,14 +460,19 @@ test("failure bench: a save waits durably through standby and primary restarts",
   b.start();
   await until("saved on both boxes", () => {
     const saved = box => box.read().shared?.setupNames?.value[c.key] === "Waits on disk";
-    return saved(a) && saved(b) && !a.read().sharedPending?.setupNames
+    return saved(a) && saved(b) && !pendingOperation(a, "setupNames")
       && a.read().shared?.setupUsageDisplay?.sequence === 1 && b.read().shared?.setupUsageDisplay?.sequence === 1
       && a.read().shared?.queueLabels?.sequence === 2 && b.read().shared?.queueLabels?.sequence === 2;
   }, t.signal);
   assert.equal(await setupName(a, c.key), "Waits on disk");
   assert.deepEqual(b.read().shared.setupUsageDisplay.value, usage.value);
-  assert.equal((await a.route("GET", "kuvo/work-queue/labels")).value.labels[0].name, "Saved label");
+  assert.equal((await link.askSetupSave(a.run, { id: usage.id, operation: display.operation })).outcome, "committed");
   await until("display preferences published to an ordinary member", () => c.read().shared?.setupUsageDisplay?.sequence === 1, t.signal);
+  const later = await link.askSetupSave(a.run, { ...usage, sequence: 1, value: { units: {}, imported: false } });
+  assert.equal(later.status, 200);
+  assert.notEqual(later.operation, display.operation);
+  assert.equal((await link.askSetupSave(b.run, { id: usage.id, operation: display.operation })).outcome, "committed");
+  assert.equal((await a.route("GET", "kuvo/work-queue/labels")).value.labels[0].name, "Saved label");
   assert.equal((await link.askSetupSave(c.run, usage)).status, 409);
 });
 
@@ -463,7 +504,7 @@ test("failure bench: number blocks stay unique across a takeover", { timeout: 55
   assert.equal(offline.number, firstNumber + 1);
   b.clock(3 * HOUR + 5_000);
   await see(b, 3, b);
-  assert.deepEqual(link.readDoc(b.read().leadership[3]).body.numbers.given, ledger.given);
+  assert.deepEqual(checkpoint(b, 3).shared.queueNumberAllocation.value.given, ledger.given);
   const next = await make(b, "Must wait for a new block");
   assert.equal(next.number, undefined);
 

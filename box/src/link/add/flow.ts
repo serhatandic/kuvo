@@ -19,7 +19,7 @@ import { writePrivate } from "../files";
 import { IS_MAC, K } from "../home";
 import { ownName } from "../letters/start";
 import { macLinkCheck } from "../mac/link";
-import { changeKeptHosts, LIST_FILE, savedMachines } from "../mac/machines";
+import { changeKeptHosts, LIST_FILE, localDestination, peerAtDestination, savedMachines } from "../mac/machines";
 import { setMacPeers, setupGift } from "../mac/routes";
 import { ADDRESS, KEY, ownKey, peersOf } from "../peers/known";
 import { readPeerAgents } from "../peers/directory";
@@ -134,7 +134,7 @@ export interface OtherAddress {
  * the other addresses you added it under, then those it tells its Macs (its tailnet's first). */
 export function otherAddressesOf(destination: string): OtherAddress[] {
   const record = (savedMachines() ?? []).find(each => each.destination === destination);
-  const peer = peersOf(readLink()).find(each => each.id === destination);
+  const peer = peerAtDestination(readLink(), destination);
   const told = peer ? readPeerAgents()[peer.key]?.computer?.addresses ?? [] : [];
   const host = (address: string) => address.slice(address.lastIndexOf("@") + 1).toLowerCase();
   const seen = new Set([host(destination)]);
@@ -443,12 +443,12 @@ async function setUp(tell: Telling, destination: string, name: string, kind: "ad
     // disk has that machine's id, and is a computer of its own.)
     const found = foundBoxes.find(box => !box.app);
     const savedHere = saved.find(each => each.destination === destination && each.identity && each.identity === probe.id);
-    const known = savedHere && peersOf(link).find(peer => peer.id === savedHere.destination);
+    const known = savedHere && peerAtDestination(link, savedHere.destination);
     const ours = { ...oursNow(link), ...(known ? { rotated: { machine: known.key, keys: new Set(link?.keysBefore ?? []) } } : {}) };
     const judged = judgeComputer(foundBoxes, ours, appsOf(probe.lines));
     if (judged.verdict === "self") throw new Failed(`That’s ${ownName()} itself. Add another computer.`, false);
     const sameID = kind === "add" && probe.id ? saved.find(each => each.identity === probe.id && each.destination !== destination) : undefined;
-    const itsPeer = sameID ? peersOf(link).find(each => each.id === sameID.destination) : undefined;
+    const itsPeer = sameID ? peerAtDestination(link, sameID.destination) : undefined;
     const same = sameID && itsPeer && (!found?.card?.self.key || found.card.self.key === itsPeer.key) ? sameID : undefined;
     if (same && itsPeer) {
       const peer = itsPeer;
@@ -456,7 +456,7 @@ async function setUp(tell: Telling, destination: string, name: string, kind: "ad
         checkAdd(current, grant, name, peer.key);
         const latest = savedMachines();
         const record = latest?.find(each => each.destination === same.destination);
-        if (!latest || !record || !peersOf(current).some(each => each.key === peer.key && each.id === record.destination)) throw removedDuringAdd(name);
+        if (!latest || !record || peerAtDestination(current, record.destination)?.key !== peer.key) throw removedDuringAdd(name);
         writePrivate(LIST_FILE, JSON.stringify(latest.map(each => (each === record ? { ...each, otherAddresses: [...new Set([...(each.otherAddresses ?? []), destination])] } : each)), null, 2));
         return null;
       });
@@ -576,7 +576,7 @@ async function join(run: Reach["run"], destination: string, name: string, identi
   const removedWhileAdding = (link: LinkState | null) => expectedKey && link?.removedHere?.includes(expectedKey);
   checkAdd(beforeLink, grant, name, expectedKey);
   if (removedWhileAdding(beforeLink)) throw removedDuringAdd(name);
-  const before = peersOf(beforeLink).find(peer => peer.id === destination);
+  const before = peerAtDestination(beforeLink, destination);
   const gift = await setupGift(before?.key ?? null);
   if (!relay || !gift?.mac) throw new Failed(`${ownName()} isn’t linked to your other computers yet, so it couldn’t add ${name}.`);
   const input = { relay, name, mac: gift.mac, macSign: gift.macSign, docs: gift.docs, id: destination, tolerates: 1, macID: launcherID(gift.mac), macName: ownName(), replaces: gift.replaces };
@@ -598,17 +598,18 @@ async function join(run: Reach["run"], destination: string, name: string, identi
     if (!saved) throw new Failed(`${ownName()}’s list of machines can’t be read right now.`);
     const had = saved.find(each => each.destination === destination);
     writePrivate(LIST_FILE, JSON.stringify(had ? saved.map(each => (each === had && identity ? { ...each, identity } : each)) : [...saved, { destination, ...(identity ? { identity } : {}) }], null, 2));
+    const replaced = peerAtDestination(link, destination);
     keepHost(destination, { name, address: peer.address, key: peer.key, sign: peer.sign });
     const state = link ?? { phones: [] };
     // (Under its id here, or its key, once: set up again with keys made anew, it's the same machine.)
     const peers = (Array.isArray(state.macPeers) ? state.macPeers : []).filter(isObject);
-    const others = peers.filter(each => each.key !== peer.key && each.id !== destination);
+    const others = peers.filter(each => each.key !== peer.key && each.key !== replaced?.key);
     // (And what's kept by the key it had goes by the one it has now: the devices its box vouched for.)
-    for (const each of peers) if (each.id === destination && typeof each.key === "string") vouchMoved(state, each.key, peer.key);
+    if (replaced) vouchMoved(state, replaced.key, peer.key);
     return setMacPeers(state, { peers: [...others, peer], moved: state.macMoved }, expectedKey ? undefined : peer.key).link;
   });
   if (busy) throw new Failed("An access change is already waiting to be saved.");
-  if (save && await waitShared("membershipAndAccess", save.id, save.epoch, save.sequence) === "pending") throw new Failed(PENDING_SAVE);
+  if (save && await waitShared(save) !== "saved") throw new Failed(PENDING_SAVE);
   const enrolled = save ? readLink() : changed;
   if (!enrolled || !peersOf(enrolled).some(each => each.key === peer.key)) throw new Failed(`${ownName()} couldn’t keep ${name}’s record.`);
   named = peersOf(enrolled).find(each => each.key === peer.key)?.name ?? name;
@@ -651,15 +652,17 @@ export function beginAdd(destination: string, asker?: Asker): Running | Busy {
   const caller = key && pairedPhone(link, key, asker?.pairing);
   if (key && !caller) return { busy: ADD_REVOKED };
   const grant: AddGrant = { caller: caller ? { key: caller.key, pairing: caller.pairing ?? "" } : undefined, revisions: link?.removalRevisions ?? {} };
-  const expected = peersOf(link).find(peer => peer.id === destination)?.key;
+  const expected = peerAtDestination(link, destination)?.key;
   return uninstalling(now) ?? now ?? begin("add", destination, destination, SETUP_STEPS, tell => setUp(tell, destination, destination, "add", expected, grant));
 }
 
 /** The address this box set the computer `key` up at, and its name: null for one it didn't. */
 export function sshAddressOf(key: string): { destination: string; name: string } | null {
-  const peer = peersOf(readLink()).find(each => each.key === key);
-  if (!peer?.id || addressProblem(peer.id) || !(savedMachines() ?? []).some(each => each.destination === peer.id)) return null;
-  return { destination: peer.id, name: peer.name };
+  const link = readLink();
+  const peer = peersOf(link).find(each => each.key === key);
+  const destination = peer && localDestination(link, key);
+  if (!peer || !destination || addressProblem(destination)) return null;
+  return { destination, name: peer.name };
 }
 
 /** Begins setting the computer `key` up again, at the address it was added under: the same steps,

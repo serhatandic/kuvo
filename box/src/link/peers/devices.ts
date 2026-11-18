@@ -114,7 +114,7 @@ export async function pairHere(device: AskingDevice, by?: string): Promise<Acted
     return fresh ? link : null;
   });
   if (busy) return answer(409, { message: "An access change is already waiting to be saved." });
-  if (save && await waitShared("membershipAndAccess", save.id, save.epoch, save.sequence) === "pending") {
+  if (save && await waitShared(save) !== "saved") {
     return answer(202, { pending: true, message: PENDING_SAVE });
   }
   if (refusal) return refusal;
@@ -131,7 +131,8 @@ export async function pairHere(device: AskingDevice, by?: string): Promise<Acted
   return answer(200, { paired: true, pairing: paired.pairing });
 }
 
-/** The members the primary enrolled. Only signed peers may vouch. */
+/** Compatibility for clients whose member box vouches for them. The primary uses the same
+ * accepted membership and access operation as pairing beside the primary. */
 const ownMachines = (link: LinkState): Set<string> =>
   new Set(peersOf(link).filter(peer => (link.setup?.managed || peer.kind === "machine") && peer.sign).map(peer => peer.key));
 
@@ -147,7 +148,7 @@ export async function deviceAct(sender: MailSender, act: Act): Promise<Acted> {
       return link;
     });
     if (busy || !changed) return answer(409, { message: "This computer couldn’t confirm the devices were revoked." });
-    if (save && await waitShared("membershipAndAccess", save.id, save.epoch, save.sequence) === "pending") {
+    if (save && await waitShared(save) !== "saved") {
       return answer(202, { pending: true, message: PENDING_SAVE });
     }
     macDocsChanged({ closeRemoved: readLink() });

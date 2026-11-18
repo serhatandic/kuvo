@@ -22,6 +22,8 @@ const steps: readonly Step[] = [
   // 4. Link state can carry an epoch's accepted shared values and pending saves.
   // Layout 3 setups keep their existing authority and files until their first save.
   () => {},
+  // 5. Reserve immutable setup checkpoints and operation records. Layout 4 records remain readable.
+  () => {},
 ];
 
 interface Checkpoint {

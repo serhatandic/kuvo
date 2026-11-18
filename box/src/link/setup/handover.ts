@@ -7,6 +7,9 @@ import { isObject } from "../../shared/json";
 import { readPersonalities } from "../personalities/library";
 import { labels } from "../work-queue/labels";
 import { readZoneSetting } from "../zone/setting";
+import { captureMembership } from "./access";
+import { CHECKPOINT_FEATURE, checkpointedTransition } from "./checkpoint";
+import { acceptedMembership } from "./membership";
 import { MAX_SHARED_BYTES, type SharedValues } from "./shared";
 import { noteDocsChanged } from "../documents/changed";
 import { ownSign, readDoc, signDoc } from "../documents/format";
@@ -72,8 +75,10 @@ export async function proposeLeadership(position: Record<string, unknown>, targe
         || (Object.keys(link.shared ?? {}).length && !takesForwarded(peer.key, "setup.shared-saves"))))) return null;
     if (standby && (standby.key === target || !members.some(peer => peer.key === standby.key && peer.sign === standby.sign)
       || members.some(peer => !peer.sign || !takesForwarded(peer.key, "setup.shared-saves")))) return null;
+    const supportsCheckpoint = members.every(peer => takesForwarded(peer.key, CHECKPOINT_FEATURE));
+    const migrating = Boolean(!current.checkpointed && current.standby && supportsCheckpoint);
     const renewing = target === current.primary && (standby?.key ?? null) === (current.standby?.key ?? null);
-    if (renewing && (!standby || !current.numberCeiling || current.numberCeiling >= MOST_NUMBER - 1)) return null;
+    if (renewing && (!standby || !current.numberCeiling || (!migrating && current.numberCeiling >= MOST_NUMBER - 1))) return null;
     installNumberAuthority(numbers, link);
     const granted = { ...numbers.granted };
     if (granted.self) {
@@ -83,7 +88,7 @@ export async function proposeLeadership(position: Record<string, unknown>, targe
     const { boxes, left, moved } = primaryPeersBody(link);
     const epoch = current.epoch + 1;
     const next = topOf(numbers) + 1;
-    if (renewing && next + NUMBER_RESERVE - 1 <= current.numberCeiling!) return null;
+    if (renewing && !migrating && next + NUMBER_RESERVE - 1 <= current.numberCeiling!) return null;
     const shared: SharedValues = { ...(link.sharedSetup === current.id ? link.shared : {}) };
     if (standby && !current.standby) {
       const library = readPersonalities();
@@ -99,18 +104,29 @@ export async function proposeLeadership(position: Record<string, unknown>, targe
         shared.setupPersonalities = { sequence: 1, value: library };
       }
     }
-    const envelope = signDoc(link.sign, "leadership", epoch, {
-      setup: { id: current.id, epoch, primary: target }, previous: current.primary, boxes, left, moved,
-      devices: ownPhones(link), vouchBlocked: link.vouchBlocked ?? [],
-      shared, ...(retiredStandby ? { retiredStandby } : {}), removalRevisions: link.removalRevisions,
+    const authority = {
+      setup: { id: current.id, epoch, primary: target }, previous: current.primary,
+      ...(retiredStandby ? { retiredStandby } : {}),
       ...(standby || requiresStandby(current) ? { sharedSaves: true } : {}),
-      numbers: { next, given: numbers.given, granted },
-      ...(standby ? { standby: standby.key, numberCeiling: Math.min(MOST_NUMBER - 1, next + NUMBER_RESERVE - 1) } : {}),
+      ...(standby ? { standby: standby.key, numberCeiling: renewing && migrating ? current.numberCeiling : Math.min(MOST_NUMBER - 1, next + NUMBER_RESERVE - 1) } : {}),
       ...(current.standby ? { proposal: true } : {}),
-    });
-    const doc = readDoc(envelope);
+    };
+    const ledger = { next, given: numbers.given, granted };
+    let doc;
+    if (current.checkpointed || supportsCheckpoint) {
+      const membership = acceptedMembership(link) ?? captureMembership(link);
+      if (!membership) return null;
+      shared.membershipAndAccess = { sequence: shared.membershipAndAccess?.sequence ?? 1, value: membership };
+      shared.queueNumberAllocation = { sequence: shared.queueNumberAllocation?.sequence ?? 1, value: ledger };
+      doc = checkpointedTransition(link, authority, shared);
+    } else {
+      doc = readDoc(signDoc(link.sign, "leadership", epoch, {
+        ...authority, boxes, left, moved, devices: ownPhones(link), vouchBlocked: link.vouchBlocked ?? [],
+        shared, removalRevisions: link.removalRevisions, numbers: ledger,
+      }));
+    }
     if (!doc || !boxes.every(box => box.key && box.sign && box.address)) return null;
-    if (current.standby) link.leadershipPending = envelope;
+    if (current.standby) link.leadershipPending = doc.envelope;
     else {
       if (!takeLeadership(link, doc)) return null;
       pruneDocs(link);

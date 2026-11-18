@@ -1,3 +1,4 @@
+import { leadershipDocuments } from "../setup/checkpoint";
 // This Mac's box's link (PROTOCOL.md, "This Mac's box: the relay"): whether it's wanted, how it's
 // doing, its keys from the app, and the machines told they're let go. mac/relay runs it.
 
@@ -206,9 +207,10 @@ function sendGone(gone: Peer[]): string[] {
     if (!removal) continue;
     const word = setupOf(held(removal)?.body);
     const chain = Object.entries(link.leadership ?? {})
-      .filter(([epoch]) => word && Number(epoch) <= word.epoch).map(([, cert]) => cert);
+      .filter(([epoch]) => word && Number(epoch) <= word.epoch).map(([, cert]) => leadershipDocuments(cert));
+    if (chain.some(documents => !documents.length)) continue;
     try {
-      const sent = docMails({ give: [...chain, removal] }).every(docs => {
+      const sent = docMails({ give: [...chain.flat(), removal] }).every(docs => {
         const bytes = mailFor(peer, { docs, at: Date.now() }, link);
         return bytes && host.send(bytes);
       });

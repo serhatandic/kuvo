@@ -25,9 +25,9 @@ import { forgetSaved, oldAppAttached, oldAppWords } from "../peers/manage";
 import { readTries } from "../peers/reach-again";
 import { PEER_REACH, readReach } from "../peers/reach";
 import type { AnswerPiece, AnyPiece, RouteContext } from "../server/context";
-import { addElsewhere, mainElsewhere, memberHosts } from "../setup/main-only";
+import { addElsewhere, mainElsewhere, setupHosts } from "../setup/main-only";
 import { readLink } from "../state";
-import { changeKeptHosts, hostsWithoutApp, keptHosts, LIST_FILE, savedMachines, UNREADABLE } from "./machines";
+import { changeKeptHosts, hostsWithoutApp, keptHosts, LIST_FILE, localDestination, peerAtDestination, savedMachines, UNREADABLE } from "./machines";
 
 type Machine = MacMachines["machines"][number];
 
@@ -41,12 +41,12 @@ const mtime = (file: string): number => { try { return fs.statSync(file).mtimeMs
 export function ownMachines(now = Date.now()): MacMachines | null {
   const saved = savedMachines();
   if (!saved) return null;
-  const peers = peersOf(readLink());
+  const link = readLink();
   const told = readPeerAgents();
   const reach = readReach();
   const tries = readTries();
   const machines = saved.map(({ destination, otherAddresses }): Machine => {
-    const peer = peers.find(each => each.id === destination);
+    const peer = peerAtDestination(link, destination);
     const busy = underWay(destination);
     const stands = peer ? peerReach(peer.key, told, reach, tries, now).reach : null;
     const [connection, status] = busy ? ["installing", busy.seen.title]
@@ -100,8 +100,8 @@ export async function* ownMachinesRoute(context: RouteContext): AsyncGenerator<A
   const link = readLink();
   const main = mainElsewhere(link);
   if (main && !read) return yield* json(409, addElsewhere(main));
-  if (main && route === "kuvo/hosts") {
-    const hosts = memberHosts(link);
+  if ((main || link?.setup?.managed) && read && route === "kuvo/hosts") {
+    const hosts = setupHosts(link);
     return yield* json(hosts ? 200 : 503, hosts ?? { message: "This computer can't list your computers yet. Try again in a moment." });
   }
   const parts = route.split("/").map(part => { try { return decodeURIComponent(part); } catch { return part; } });
@@ -140,9 +140,13 @@ export async function* ownMachinesRoute(context: RouteContext): AsyncGenerator<A
 
   const saved = savedMachines();
   if (!saved) return yield* json(503, { message: UNREADABLE });
-  const machine = saved.find(each => each.destination === parts[2]);
+  const requested = parts[2]!;
+  const known = link?.setup?.checkpointed && peersOf(link).find(peer => peer.key === requested);
+  if (known && method === "DELETE" && parts.length === 3) return yield* await removed(context, known.key);
+  const destination = known ? localDestination(link, known.key) : requested;
+  const machine = saved.find(each => each.destination === destination);
   if (!machine) return yield* json(404, {});
-  const peer = peersOf(readLink()).find(each => each.id === machine.destination);
+  const peer = peerAtDestination(link, machine.destination);
   const name = peer?.name || machine.destination;
   const entry = () => ownMachines()?.machines.find(each => each.id === machine.destination);
   const action = parts[3];
@@ -199,7 +203,7 @@ async function* add(context: RouteContext, here: string): AsyncGenerator<AnswerP
   // Here already, at that address or as another of a machine's, with nothing under way for it:
   // said so at once, as the Mac's app did. (Set Up Again is `kuvo/computers/<key>/setup`.)
   const had = savedMachines()?.find(each => each.destination === destination || each.otherAddresses?.includes(destination));
-  if (had && !before && peersOf(readLink()).some(peer => peer.id === had.destination)) {
+  if (had && !before && peerAtDestination(readLink(), had.destination)) {
     const machine = ownMachines()?.machines.find(each => each.id === had.destination);
     if (machine) return yield* json(200, { machine, known: true });
   }
@@ -222,7 +226,7 @@ async function* add(context: RouteContext, here: string): AsyncGenerator<AnswerP
   }
   // The one it came to: itself, or the computer already here that this address reaches too.
   const key = begun.seen.computer?.key;
-  const id = (key ? peersOf(readLink()).find(each => each.key === key)?.id : undefined)
+  const id = (key ? localDestination(readLink(), key) : undefined)
     ?? savedMachines()?.find(each => each.otherAddresses?.includes(destination))?.destination ?? destination;
   const machine = ownMachines()?.machines.find(each => each.id === id);
   if (!machine) return yield* json(502, { message: `${destination} was set up, but ${here} couldn’t read its list of machines afterwards.` });

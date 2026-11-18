@@ -20,12 +20,15 @@ import type { LinkState } from "../state";
 
 /** Keep an independent primary's role after it adds members. Legacy Mac numbering still applies. */
 export function leadsNow(link: LinkState, now = Date.now()): boolean {
+  const setup = followedSetup(link);
+  if (setup?.managed) return setup.role === "primary";
   // (A machine its Mac let go waits for that Mac as numbering always has, days, before it numbers
   // on its own: never at once.)
   if (!IS_MAC) {
     if (macsOf(link).length || link.setup?.role === "member") return false;
     if (followedSetup(link)?.role === "primary") return true;
   }
+  // COMPAT: setups from the Mac-ranked queue numbering era.
   return "self" in rankedPrimary(link, undefined, now);
 }
 

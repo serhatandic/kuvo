@@ -1,3 +1,4 @@
+import { acceptedMembership, namedRoster } from "./membership";
 // Who's in your setup, as this box says it (`kuvo/setup`, PROTOCOL.md "Your setup"): facts only,
 // the same on every box of one setup, from the document its main computer signs.
 
@@ -25,7 +26,8 @@ export function setupView(link: LinkState | null | undefined): SetupView {
   // This box's own, in a setup or not.
   const welcomed = isWelcomed();
   if (!setup || !own) return { setup: null, epoch: null, primary: null, you: { key: own, role: null }, computers: [], startsFromOthers: switched, heldBy: [], welcomed };
-  const boxes: unknown[] = setup.role === "member" ? (Array.isArray(setupDoc(link)?.body.boxes) ? setupDoc(link)!.body.boxes as unknown[] : [])
+  const membership = acceptedMembership(link);
+  const boxes: unknown[] = membership ? namedRoster(link!, membership.boxes) : setup.role === "member" ? (Array.isArray(setupDoc(link)?.body.boxes) ? setupDoc(link)!.body.boxes as unknown[] : [])
     : primaryPeersBody(link!).boxes;
   const computers: Computer[] = [];
   for (const box of boxes.slice(0, MOST_PEERS + 1)) {

@@ -52,7 +52,7 @@ export async function* personalitiesDocumentRoute(context: RouteContext): AsyncG
     });
     if (full) return yield* json(400, { message: FULL_LIBRARY });
     if (!save) return yield* json(409, { message: "A personality change is already waiting to be saved." });
-    if (await waitShared("setupPersonalities", save.id, save.epoch, save.sequence) === "pending") return yield* json(202, { pending: true, message: PENDING_SAVE });
+    if (await waitShared(save) !== "saved") return yield* json(202, { pending: true, message: PENDING_SAVE });
     return yield* json(200, { changed });
   }
   const [status, value] = takePersonalitiesDocument(parsed(request.body) as Body<"document">, readEngine, readBridge);
@@ -82,7 +82,7 @@ export async function* personalityRoute(context: RouteContext, personality: RegE
     });
     if (answer[0] !== 200) return yield* json(...answer);
     if (!save) return yield* json(409, { message: "A personality change is already waiting to be saved." });
-    if (await waitShared("setupPersonalities", save.id, save.epoch, save.sequence) === "pending") return yield* json(202, { pending: true, message: PENDING_SAVE });
+    if (await waitShared(save) !== "saved") return yield* json(202, { pending: true, message: PENDING_SAVE });
     return yield* json(...answer);
   }
   const [status, value] = answerPersonalities(method, id, body);

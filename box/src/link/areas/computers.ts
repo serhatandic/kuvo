@@ -44,6 +44,7 @@ import { allowVouching, vouchBlockOf } from "../phones";
 import { blockedWords } from "../peers/devices";
 import { PRIMARY_UNLINK } from "../setup/leadership";
 import { mainElsewhere } from "../setup/main-only";
+import { acceptedMembership, acceptedName } from "../setup/membership";
 import { followedSetup } from "../setup/record";
 import { fromLocalApp } from "../server/context";
 import { macLink, readLink } from "../state";
@@ -224,9 +225,10 @@ export async function listComputers(name: string, bridge: Target | null, signal?
   const byName = <T extends { name: string; key: string }>(boxes: T[]) => [...boxes].sort((a, b) => a.name.localeCompare(b.name) || a.key.localeCompare(b.key));
   const { version, kuvo, engine, system: runs, agents } = ownComputer();
   const atWork = atWorkHere();
+  const localName = acceptedMembership(link)?.boxes.find(box => box.key === own)?.name ?? ownComputerName();
   const computers: Omit<ListedComputer, "actions" | "limitServices" | "title" | "reachTitles">[] = [{
     key: own ?? "",
-    name: ownComputerName(),
+    name: link ? acceptedName(link, own, localName) : localName,
     kind: IS_MAC ? "mac" : "machine",
     here: true,
     reach: "connected",
@@ -366,7 +368,7 @@ async function* allowDevices(context: RouteContext, key: string): AsyncGenerator
   const { save, busy } = updateAccess(kept => (kept && followedSetup(kept)?.role === "primary"
     && allowVouching(kept, key, Boolean(kept.setup?.standby)) ? kept : null));
   if (busy) return yield* json(409, { message: "An access change is already waiting to be saved." });
-  if (save && await waitShared("membershipAndAccess", save.id, save.epoch, save.sequence) === "pending") {
+  if (save && await waitShared(save) !== "saved") {
     return yield* json(202, { pending: true, message: PENDING_SAVE });
   }
   return yield* json(200, {});

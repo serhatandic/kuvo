@@ -39,7 +39,14 @@ export function localSetupValue(run: string, kind: string): LocalSetupValue | nu
   } catch { return null; }
 }
 
-export function askSetupSave(run: string, body: object): Promise<{ status: number; message?: string }> {
+interface LocalSaveAnswer {
+  status: number;
+  message?: string;
+  operation?: string;
+  outcome?: "pending" | "committed" | "interrupted";
+}
+
+export function askSetupSave(run: string, body: object): Promise<LocalSaveAnswer> {
   const fallback = { status: 503, message: "The box that keeps your setup isn't answering." };
   const socketPath = path.join(run, "vault.sock");
   let key: string;
@@ -51,7 +58,7 @@ export function askSetupSave(run: string, body: object): Promise<{ status: numbe
   } catch { return Promise.resolve(fallback); }
   return new Promise(resolve => {
     const socket = net.createConnection(socketPath);
-    const finish = (answer: { status: number; message?: string } = fallback) => { socket.destroy(); resolve(answer); };
+    const finish = (answer: LocalSaveAnswer = fallback) => { socket.destroy(); resolve(answer); };
     socket.setEncoding("utf8").setTimeout(8_000);
     socket.on("connect", () => socket.write(JSON.stringify({ hello: "", key }) + "\n"));
     socket.on("timeout", () => finish());
@@ -75,7 +82,12 @@ export function askSetupSave(run: string, body: object): Promise<{ status: numbe
         const reply = JSON.parse(answer.slice(0, newline));
         const value: unknown = JSON.parse(Buffer.from(reply.body, "base64").toString());
         if (!Number.isInteger(reply.status)) return finish();
-        finish({ status: reply.status, message: isObject(value) && typeof value.message === "string" ? value.message : undefined });
+        const result = isObject(value) ? value : {};
+        const outcome = result.status;
+        finish({ status: reply.status, message: typeof result.message === "string" ? result.message : undefined,
+          ...(typeof result.operation === "string" ? { operation: result.operation } : {}),
+          ...(outcome === "pending" || outcome === "committed" || outcome === "interrupted" ? { outcome } : {}),
+        });
       } catch { finish(); }
     });
   });
