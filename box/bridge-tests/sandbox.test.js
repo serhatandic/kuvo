@@ -1474,7 +1474,7 @@ test("a command reaches its own conversation's SSH agent from the sandbox (the v
   const other = path.join(root, "ssh-other");
   fs.mkdirSync(project);
   fs.mkdirSync(other);
-  const agents = sshAgentsOf(box.home, !linux);
+  const agents = sshAgentsOf(box.home, box.env.HOME);
   // On macOS, one of the app's SSH connections to your machines, beside the agents (a stand-in).
   const connection = linux ? null : path.join(path.dirname(agents), `sandbox-test-${process.pid}.sock`);
   const listening = connection && net.createServer(socket => socket.end());

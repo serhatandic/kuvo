@@ -35,8 +35,7 @@ const REFUSED_FOR = 30_000;
 const NOTE_KEPT = 30 * 24 * 60 * 60_000;
 const IDLE = 60 * 60_000;
 
-/** Whether the agents' folder is in a folder that's this user's alone: on a Mac, `/tmp/kuvo-ssh-<uid>`,
- * which anyone could have made first (a folder, not a link, owned by you, `0700`), or none yet. */
+/** The macOS socket parent must be private and owned by this account. */
 function safeFolder(): boolean {
   if (process.platform !== "darwin") return true;
   const parent = path.dirname(SSH_AGENTS);

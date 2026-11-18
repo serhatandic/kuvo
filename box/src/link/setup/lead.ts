@@ -1,7 +1,6 @@
 // When a box leads a setup of its own (PROTOCOL.md, "Your setup"): this Mac's box, once it numbers
-// on its own (Macs that set up the same machine number from the first one set up, which leads) and
-// each of its machines has said it knows setups; a box no Mac set up (one you paired a phone with
-// by itself, on Linux say). It's made once, at epoch 1, with this box as the main computer, and named
+// on its own, or a box no Mac set up (one you paired a phone with on Linux, for example).
+// It's made once, at epoch 1, with this box as the main computer, and named
 // in this Mac's peers document, which its machines take. Looked at once a minute, and as the box
 // starts; with what follows it on this box: its card (`card.ts`) and its peers told.
 
@@ -12,23 +11,16 @@ import { macsOf, ownKey } from "../peers/known";
 import { updateLink } from "../state";
 import { rankedPrimary } from "../work-queue/numbers";
 import { writeCard } from "./card";
-import { heldBy } from "./held";
 import { followedSetup, newSetupID } from "./record";
 import { settleSetup } from "./settle";
 import type { LinkState } from "../state";
 
-/** Whether this box leads its setup now: this Mac's box, while it's the first computer you set up as
- * it and its peers know (it numbers from none other) and no machine of it says another Mac shares it;
- * to start leading (or lead again), each machine must have said so (one that hasn't, an older box,
- * holds it back: nothing changes meanwhile), while one that leads goes on through a machine that
- * hasn't said yet (one just added, its first word still on its way); one that never told it how it
- * numbers, or is gone, counts for neither (`heldBy`). A machine leads while no Mac set it up and it
- * numbers on its own. */
+/** Whether this box leads: it numbers on its own, and is a Mac or has no Mac that set it up. */
 export function leadsNow(link: LinkState, now = Date.now()): boolean {
   // (A machine its Mac let go waits for that Mac as numbering always has, days, before it numbers
   // on its own: never at once.)
   if (!IS_MAC) return !macsOf(link).length && "self" in rankedPrimary(link, undefined, now);
-  return "self" in rankedPrimary(link, undefined, now) && !heldBy(link, now).length;
+  return "self" in rankedPrimary(link, undefined, now);
 }
 
 /** This Mac's static key noted (in place, under link.json's lock): one made anew since the last is

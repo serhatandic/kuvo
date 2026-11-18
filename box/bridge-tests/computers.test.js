@@ -267,7 +267,7 @@ test("Connect, for a computer that's away: this box tells it its agents and asks
 // Where a client of your own reaches each computer itself (`computers.reach`, #742): the desktop
 // app connects to every box directly, so each of your own computers says its box's address on the
 // relay and the relay it's reached through: every computer, one an earlier Kuvo Code called shared too.
-test("each of your computers says where its box is reached, one an earlier Kuvo Code says is shared too", async () => {
+test("each peer says where its box is reached", async () => {
   fresh();
   const hereAddress = k(link.addressOf(Buffer.from(link.readLink().secret, "base64url")));
   tell(mac, { features: MAC_TAKES, computer: { version: "1.1.0", working: 0 } });

@@ -489,36 +489,30 @@ fn computers(alone: bool, more: usize) -> Vec<Value> {
             json!({ "key": "key_old", "name": "old-mini", "kind": "mac", "reach": "connected", "version": "0.9.180", "engine": "1.14.0", "system": "macOS 14.6", "via": "relay", "limits": ["claude"], "features": kuvo_box::gate::BASELINE, "actions": [] }),
         ]);
     }
-    let reaches = ["connected", "connected", "away", "connecting", "unknown"];
+    let reaches = ["connected", "connected", "away", "connecting"];
     computers.extend((0..more).map(|ix| {
         let reach = reaches[ix % reaches.len()];
         let name = format!("worker-{:02}", ix + 1);
-        let mut computer = json!({ "key": format!("key_more_{ix}"), "name": name, "kind": "machine", "id": name, "reach": reach, "via": if reach == "unknown" { "peer" } else { "relay" }, "limits": [], "actions": [] });
-        if reach == "unknown" {
-            computer["through"] = json!("devbox");
-        } else {
-            computer["working"] = json!(if reach == "connected" { ix % 3 } else { 0 });
-            computer["features"] = json!(kuvo_box::gate::REQUIRED);
-            let mut actions = vec![json!({ "id": "rename", "label": "Rename" })];
-            if reach == "away" {
-                actions.push(json!({ "id": "connect", "label": "Connect" }));
-            }
-            actions.push(remove(&name));
-            computer["actions"] = json!(actions);
-            computer["version"] = json!("0.8.0");
-            computer["engine"] = json!("2.3.0");
-            computer["system"] = json!(if ix % 2 == 0 { "Ubuntu 24.04.1 LTS" } else { "Debian 12" });
+        let mut computer = json!({ "key": format!("key_more_{ix}"), "name": name, "kind": "machine", "id": name, "reach": reach, "via": "relay", "limits": [], "actions": [] });
+        computer["working"] = json!(if reach == "connected" { ix % 3 } else { 0 });
+        computer["features"] = json!(kuvo_box::gate::REQUIRED);
+        let mut actions = vec![json!({ "id": "rename", "label": "Rename" })];
+        if reach == "away" {
+            actions.push(json!({ "id": "connect", "label": "Connect" }));
         }
+        actions.push(remove(&name));
+        computer["actions"] = json!(actions);
+        computer["version"] = json!("0.8.0");
+        computer["engine"] = json!("2.3.0");
+        computer["system"] = json!(if ix % 2 == 0 { "Ubuntu 24.04.1 LTS" } else { "Debian 12" });
         computer
     }));
     for computer in &mut computers {
         computer["reachTitles"] = reach_titles();
         let reach = computer["reach"].as_str().unwrap_or("connected");
-        let title = match (reach, computer["through"].as_str()) {
-            ("away", _) => "Can’t be reached".to_owned(),
-            ("connecting", _) => "Connecting".to_owned(),
-            ("unknown", Some(through)) => format!("Known through {through}"),
-            ("unknown", None) => "Not reached directly".to_owned(),
+        let title = match reach {
+            "away" => "Can’t be reached".to_owned(),
+            "connecting" => "Connecting".to_owned(),
             _ => "Connected".to_owned(),
         };
         computer["title"] = json!(title);

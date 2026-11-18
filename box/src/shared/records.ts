@@ -77,8 +77,6 @@ export interface ToldAgents {
   featuresCut?: true;
   /** Conversations it moved away lately, by the key of the box each lives on now, and when. */
   moved?: { session: string; key: string; at: number }[];
-  /** The boxes it knows (its own peers), which this box may take plan limits from and tell its own to (PROTOCOL.md, "Plan limits"). */
-  boxes?: { key: string; address: string; kind: "mac" | "machine"; name: string }[];
   /** The setup it follows (its id), where it said one (PROTOCOL.md, "Your setup"). */
   setup?: string;
   /** Where a bot deleted there ends up, as it said: the Finder's Trash, or Kuvo Code's own trash

@@ -351,12 +351,11 @@ export type ComputerUpdate = Infer<typeof COMPUTER_UPDATE>;
 
 /** One of your computers, as a box knows it (`kuvo/computers`, PROTOCOL.md "Computers"): its key
  * (`""` for the box itself while it has none), name and kind; `here`, the box that answered; `id`,
- * a machine's name on its Mac; `shared`, always false (every computer listed is yours, #783);
- * COMPAT(beta.1 shared-false): kept for a Mac from before #783, which reads it. Goes when 0.8.0 ships.
- * Whether it's heard from (`connected`), not yet or being reached again (`connecting`), not lately (`away`), or not this box's to say (`unknown`: one known by a peer's word alone); Kuvo Code's version
+ * a machine's name on its Mac;
+ * Whether it's heard from (`connected`), not yet or being reached again (`connecting`), not lately (`away`); Kuvo Code's version
  * there, its engine's and its system, as it said them; what its box answers (`features`, as it
- * said them, whole); how this box knows it (`here`, itself; `relay`, a peer it talks to; `peer`, by
- * another computer's word alone, `through` that one); where a client of your own reaches its box
+ * said them, whole); how this box knows it (`here`, itself; `relay`, a peer it talks to);
+ * where a paired device reaches its box
  * itself (`address`, on the relay, and `relay`, its URL: only on your own computers); how many of its sessions are at work and
  * which (the first few, by id and title), where it said; the services whose plan limits it reads;
  * what can be done with it from here (`actions`); and `vouching` (`devices.allow`, on your setup's
@@ -365,12 +364,12 @@ export type ComputerUpdate = Infer<typeof COMPUTER_UPDATE>;
 export const LISTED_COMPUTER = object({
   key: string, name: string, kind: words("mac", "machine"), "here?": literal(true), "id?": string,
   title: string, reachTitles: map(string), "detail?": string, "notice?": object({ title: string, detail: string }), "settingsNotice?": object({ title: string, detail: string }), "workingTitle?": string,
-  shared: bool, reach: words("connected", "connecting", "away", "unknown"),
+  reach: words("connected", "connecting", "away"),
   "version?": string, "engine?": string, "system?": string, "features?": list(string),
   // How its coding agents stand, as it says (PROTOCOL.md, "The coding agents' state"): a fact, not
   // words to show.
   "agents?": object({ state: words("running", "restarting", "down"), "why?": string }),
-  via: words("here", "relay", "peer"), "through?": string, "address?": string, "relay?": string,
+  via: words("here", "relay"), "address?": string, "relay?": string,
   "working?": number, "atWork?": list(object({ id: string, "title?": string })), limits: list(string), limitServices: list(object({ id: string, title: string })),
   actions: list(COMPUTER_ACTION), "vouching?": object({ blocked: literal(true), words: string }),
   "update?": COMPUTER_UPDATE,

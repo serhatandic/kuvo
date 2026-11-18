@@ -146,12 +146,12 @@ test("a rename or remove this Mac took and was cut short by a restart is done ag
   assert.deepEqual(link.removeHere(mini.pub), { status: 200, value: {} });
 });
 
-test("a machine this Mac set up that an earlier Kuvo Code says another Mac shares is listed as yours, and this Mac's to rename and remove (#783)", async () => {
+test("the Mac can rename and remove a peer with an older agent record", async () => {
   fresh();
-  // It says it's shared, as an earlier Kuvo Code did once another of your Macs set it up too.
+  // Older agent records can still carry the obsolete flag.
   link.receiveMail(link.sealOneWay(Buffer.from(JSON.stringify({ at: Date.now(), agents: { at: Date.now(), list: [], shared: true } })), devbox.key, link.publicOf(mac)).message, undefined, (sender, payload) => link.peerMail(sender, payload, null));
-  const shared = (await link.listComputers("Studio", null)).find(each => each.key === devbox.pub);
-  assert.deepEqual([shared.apart, shared.shared, shared.actions.map(action => action.id)], [undefined, false, ["rename", "remove"]]);
+  const peer = (await link.listComputers("Studio", null)).find(each => each.key === devbox.pub);
+  assert.deepEqual(peer.actions.map(action => action.id), ["rename", "remove"]);
   assert.deepEqual(await ask("DELETE", `kuvo/computers/${devbox.pub}`), { status: 200, body: {} });
 });
 
@@ -204,7 +204,7 @@ test("while the old Kuvo Code app is attached to this Mac's box, removing a mach
   await reopened();
 });
 
-test("your other computers rename a machine through this Mac, one an earlier Kuvo Code says is shared too (#783)", async () => {
+test("your other computers rename a machine through this Mac", async () => {
   fresh();
   link.receiveMail(link.sealOneWay(Buffer.from(JSON.stringify({ at: Date.now(), agents: { at: Date.now(), list: [], shared: true } })), devbox.key, link.publicOf(mac)).message, undefined, (sender, payload) => link.peerMail(sender, payload, null));
   const [renamed] = await handed(mini, { method: "PATCH", item: devbox.pub, body: { name: "Build box" } });

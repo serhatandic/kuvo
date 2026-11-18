@@ -10,8 +10,8 @@ unset OPENCODE_PASSWORD OPENCODE_SERVER_PASSWORD OPENCODE_CONFIG_CONTENT 2>/dev/
 here=
 if [ -n "$KUVO_NPX_APART" ]; then
   [ "$KUVO_NPX_APART" = fetch ] && here=$PWD
-  apart="${XDG_CACHE_HOME:-${TMPDIR:-/tmp}}/kuvo-npx"
-  mkdir -p "$apart" 2>/dev/null && cd "$apart" 2>/dev/null
+  apart="${XDG_CACHE_HOME:-$HOME/.kuvo-code/cache}/kuvo-npx"
+  mkdir -p "$apart" && cd "$apart" || exit 1
   unset KUVO_NPX_APART
 fi
 if [ -n "$XDG_CACHE_HOME" ] && command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1; then

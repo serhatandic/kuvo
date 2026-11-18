@@ -10887,15 +10887,12 @@ class LimitResets {
   decideHere(rowID, on) {
     const at = Math.max(this.now(), (this.allowed.get(rowID)?.at ?? 0) + 1);
     this.decide(rowID, on, at, "");
-    for (const box of this.yours())
+    for (const box of this.peers())
       this.transport?.send(box.key, { kind: "reset", at, always: { row: rowID, on, at } }, true);
   }
-  yours() {
+  peers() {
     const own = this.directory?.own()?.key;
-    return (this.directory?.peerBoxes() ?? []).filter((box) => box.key && box.key !== own && this.isYours(box.key));
-  }
-  isYours(key) {
-    return this.directory?.isYours?.(key) === true;
+    return (this.directory?.peerBoxes() ?? []).filter((box) => box.key && box.key !== own);
   }
   decide(rowID, on, at, from) {
     const kept = this.allowed.get(rowID);
@@ -10924,7 +10921,7 @@ class LimitResets {
     if (!rowID.includes("#"))
       return { status: 409, message: "This account doesn't say who it is yet, so Always Allow can't be kept for it." };
     const ownCan = ownProvider !== undefined && !!this.limits.account(ownProvider)?.limits.reset && this.limits.liveRow(ownProvider) === rowID;
-    if (!ownCan && !this.yours().length)
+    if (!ownCan && !this.peers().length)
       return { status: 404, message: "No computer of yours has this account's sign-in." };
     if (ownCan)
       this.saw(ownProvider, rowID);
@@ -11040,7 +11037,7 @@ class LimitResets {
     if (!isResetMail(mail))
       return;
     const passedThere = !!mail.answer && typeof mail.answer.id === "string" && this.spends.some((each) => each.id === mail.answer.id && each.via === from);
-    if (this.directory && !this.isYours(from) && !passedThere) {
+    if (this.directory && !this.directory.isPeer(from) && !passedThere) {
       const ask = mail.ask;
       if (!this.directory.told || !ask || typeof ask.id !== "string" || !/^[A-Za-z0-9_-]{1,80}$/.test(ask.id))
         return;
@@ -11075,7 +11072,7 @@ class LimitResets {
     });
   }
   reaches(key) {
-    return !!this.transport?.followed && this.isYours(key);
+    return !!this.transport?.followed && this.directory?.isPeer(key) === true;
   }
   passing = new Map;
   passed(spend) {
@@ -11542,7 +11539,7 @@ function withResetsOn(row, members) {
   const index = row.extras?.findIndex((extra) => extra.kind === "resets") ?? -1;
   if (index < 0)
     return;
-  const can = (member) => !member.box.vouched && member.account.extras?.some((extra) => extra.kind === "resets" && extra.usable === true);
+  const can = (member) => member.account.extras?.some((extra) => extra.kind === "resets" && extra.usable === true);
   const holder = members.find((member) => can(member) && !member.box.away) ?? members.find(can);
   const extras = [...row.extras];
   const { on: _, ...resets } = extras[index];
@@ -11557,8 +11554,6 @@ function merged(boxes) {
   const base = members.find((member) => member.agent) ?? members[0];
   if (members.length === 1)
     return base;
-  const yours = boxes.filter((member) => !member.box.vouched).map((member) => member.account);
-  const pool = yours.some((member) => member.checked && !member.problem) ? yours : members;
   const account = { ...base };
   const label = members.map((member) => member.label?.trim()).find(Boolean);
   if (label)
@@ -11576,7 +11571,7 @@ function merged(boxes) {
     }
   }
   account.windows = windows;
-  const newest = [...pool].sort((a, b) => newestOf(b) - newestOf(a));
+  const newest = [...members].sort((a, b) => newestOf(b) - newestOf(a));
   const plan = newest.find((member) => member.plan)?.plan;
   const balance = newest.find((member) => member.balance)?.balance;
   const read = newest.find((member) => member.checked && !member.problem);
@@ -26526,7 +26521,6 @@ function usageRows(boxes) {
     const wide = members.some((member) => member.account.accountWide);
     const newest = (of) => of.reduce((best, member) => !best || (member.account.scanned ?? 0) > (best.account.scanned ?? 0) ? member : best, undefined);
     const counted = wide ? [newest(members.filter((member) => !member.same))].filter((member) => member !== undefined) : members.filter((member) => !member.same);
-    const yourCounted = wide ? [newest(members.filter((member) => !member.same && !member.box.vouched))].filter((member) => member !== undefined) : members.filter((member) => !member.same && !member.box.vouched);
     const row = {
       id,
       service: base.service,
@@ -26546,26 +26540,20 @@ function usageRows(boxes) {
         ...account.scanned ? { scanned: account.scanned } : {},
         ...box.here ? { here: true } : {},
         ...box.away ? { away: true } : {},
-        ...box.vouched ? { vouched: true } : {},
         ...same ? { same: true } : {}
       })),
-      slots: summed(counted.map((member) => member.account.slots)),
-      yours: summed(yourCounted.map((member) => member.account.slots))
+      slots: summed(counted.map((member) => member.account.slots))
     };
     if (members.every((member) => member.box.away))
       row.away = true;
+    if (counted.some((member) => member.box.away))
+      row.partialAway = true;
     if (counted.some((member) => member.account.cut))
       row.cut = true;
-    if (members.every((member) => member.box.vouched))
-      row.vouched = true;
     if (members.every((member) => member.account.estimated === false))
       row.estimated = false;
     if (wide)
       row.accountWide = true;
-    if (yourCounted.some((member) => member.box.away))
-      row.yoursAway = true;
-    if (yourCounted.some((member) => member.account.cut))
-      row.yoursCut = true;
     return row;
   });
 }
@@ -26727,12 +26715,12 @@ class Usage {
     const totals = {};
     const partial = {};
     for (const service of this.services) {
-      const of = rows.filter((row) => row.service === service && !row.vouched);
+      const of = rows.filter((row) => row.service === service);
       if (!of.length)
         continue;
-      totals[service] = daysIn(summed(of.map((row) => row.yours)), asked, now);
-      if (of.some((row) => row.yoursAway || row.yoursCut))
-        partial[service] = { ...of.some((row) => row.yoursAway) ? { away: true } : {}, ...of.some((row) => row.yoursCut) ? { cut: true } : {} };
+      totals[service] = daysIn(summed(of.map((row) => row.slots)), asked, now);
+      if (of.some((row) => row.partialAway || row.cut))
+        partial[service] = { ...of.some((row) => row.partialAway) ? { away: true } : {}, ...of.some((row) => row.cut) ? { cut: true } : {} };
     }
     const scanned = Math.max(0, ...this.own().map((account) => account.scanned ?? 0));
     const pricing = this.pricing.current();
@@ -26751,7 +26739,7 @@ class Usage {
       serviceTitles: Object.fromEntries([...new Set([...this.services, ...Object.keys(totals)])].map((service) => [service, spendTitle(service)])),
       ...scanned ? { scanned } : {},
       pricing: { codex: { fallback: this.settings?.codexFallback ?? null, chosen: this.settings?.chosen ?? false, choices: this.pricing.current().fallbackOptions("codex") } },
-      rows: rows.map(({ slots, yours: _, yoursAway: _away, yoursCut: _cut, ...row }) => ({ ...row, days: grouped(row.service, daysIn(slots, asked, now)) })),
+      rows: rows.map(({ slots, partialAway: _, ...row }) => ({ ...row, days: grouped(row.service, daysIn(slots, asked, now)) })),
       totals,
       ...Object.keys(partial).length ? { partial } : {}
     };
@@ -26779,7 +26767,7 @@ class Usage {
       this.ownSaid = mine;
       this.ownFallback = fallback;
     }
-    const now = JSON.stringify(this.rows().map(({ scanned: _, slots, yours, boxes, ...row }) => ({ ...row, boxes: boxes.map(({ scanned: _, ...box }) => box), slots: keptSlots(slots), yours: keptSlots(yours) })));
+    const now = JSON.stringify(this.rows().map(({ scanned: _, slots, boxes, ...row }) => ({ ...row, boxes: boxes.map(({ scanned: _, ...box }) => box), slots: keptSlots(slots) })));
     if (now === this.said)
       return;
     this.said = now;
@@ -36343,7 +36331,7 @@ class UsagePeers {
       return false;
     const now = this.now();
     for (const [key, kept] of this.peers) {
-      if (key >= self || this.vouched(key) || now - kept.heard > PEER_AWAY)
+      if (key >= self || !this.directory.isPeer(key) || now - kept.heard > PEER_AWAY)
         continue;
       if (kept.accounts.some((account) => account.accountWide && account.service === service && account.identity === identity && account.scanned !== undefined && now - account.scanned < WHOLE_FRESH))
         return true;
@@ -36355,14 +36343,12 @@ class UsagePeers {
     const self = this.directory.own();
     const boxes = [{ key: self?.key ?? "", name: self?.name ?? "", here: true, away: false, accounts: own }];
     const peers = [...this.peers.entries()].sort(([, a], [, b]) => a.name.localeCompare(b.name));
-    for (const [key, kept] of peers)
-      boxes.push({ key, name: this.directory.peerBoxes().find((box) => box.key === key)?.name ?? kept.name, here: false, away: now - kept.heard > PEER_AWAY, vouched: this.vouched(key), accounts: kept.accounts.map((account) => ({ ...account, slots: trimmed2(account.slots, now) })) });
+    for (const [key, kept] of peers) {
+      if (!this.directory.told || !this.directory.isPeer(key))
+        continue;
+      boxes.push({ key, name: this.directory.peerBoxes().find((box) => box.key === key)?.name ?? kept.name, here: false, away: now - kept.heard > PEER_AWAY, accounts: kept.accounts.map((account) => ({ ...account, slots: trimmed2(account.slots, now) })) });
+    }
     return usageRows(boxes);
-  }
-  vouched(key) {
-    if (!this.directory.isYours)
-      return false;
-    return this.directory.told ? !this.directory.isYours(key) : this.peers.get(key)?.vouched === true;
   }
   tell(changed = false) {
     if (!this.transport.followed || !this.directory.told)
@@ -36410,7 +36396,7 @@ class UsagePeers {
   take(from, mail) {
     if (!isUsageMail(mail))
       return;
-    if (this.directory.told && !this.directory.peerBoxes().some((box) => box.key === from))
+    if (!this.directory.told || !this.directory.isPeer(from))
       return;
     const now = this.now();
     const before = this.peers.get(from);
@@ -36429,8 +36415,7 @@ class UsagePeers {
       if (since !== undefined)
         accounts = accounts.map((account) => withOlder(account, before?.accounts.find((kept) => kept.provider === account.provider), since));
       whole = !!digest && digestOf2(accounts.map(toldOf2)) === digest;
-      const vouched = this.vouched(from);
-      this.peers.set(from, { name, heard: now, ...digest ? { digest } : {}, ...vouched ? { vouched } : {}, accounts });
+      this.peers.set(from, { name, heard: now, ...digest ? { digest } : {}, accounts });
       this.save();
       this.usage.peersChanged();
     } else if (before) {
@@ -36519,21 +36504,9 @@ class UsagePeers {
       for (const key of [...map.keys()])
         if (!here.has(key))
           map.delete(key);
-    let moved = false;
-    for (const [key, kept] of this.peers) {
-      const vouched = this.vouched(key);
-      if (kept.vouched === true === vouched)
-        continue;
-      if (vouched)
-        kept.vouched = true;
-      else
-        delete kept.vouched;
-      moved = true;
-    }
-    if (gone || moved) {
+    if (gone)
       this.save();
-      this.usage.peersChanged();
-    }
+    this.usage.peersChanged();
     this.tell();
   }
   load() {
@@ -36545,7 +36518,7 @@ class UsagePeers {
         if (!kept || typeof kept.heard !== "number" || !Array.isArray(kept.accounts))
           continue;
         const digest = text6(kept.digest, 64);
-        this.peers.set(key, { name: typeof kept.name === "string" ? kept.name : "another computer", heard: kept.heard, ...digest ? { digest } : {}, ...kept.vouched === true ? { vouched: true } : {}, accounts: kept.accounts.flatMap((account) => takenAccount(account, 0, Infinity) ?? []) });
+        this.peers.set(key, { name: typeof kept.name === "string" ? kept.name : "another computer", heard: kept.heard, ...digest ? { digest } : {}, accounts: kept.accounts.flatMap((account) => takenAccount(account, 0, Infinity) ?? []) });
       }
     } catch {}
   }
@@ -36647,9 +36620,9 @@ class SettingsPeers {
     });
   }
   ours() {
-    if (!this.directory.told || !this.directory.setup || !this.directory.isPeer)
+    if (!this.directory.told || !this.directory.setup)
       return [];
-    return this.directory.peerBoxes().flatMap(({ key }) => this.directory.isPeer(key) ? [key] : []);
+    return this.directory.peerBoxes().map(({ key }) => key);
   }
   taking;
   tell(changed = false) {
@@ -37419,7 +37392,6 @@ class LinkDirectory {
   listed = [];
   homes = new Map;
   self;
-  also = new Map;
   listeners = [];
   told = false;
   setup;
@@ -37439,11 +37411,6 @@ class LinkDirectory {
     this.boxes = boxes;
     const self = given.self;
     this.self = self && typeof self === "object" && typeof self.key === "string" ? { key: self.key, name: typeof self.name === "string" ? self.name : "" } : undefined;
-    this.also = new Map;
-    for (const box of Array.isArray(given.also) ? given.also : []) {
-      if (box && typeof box.key === "string" && box.key && !boxes.has(box.key))
-        this.also.set(box.key, typeof box.name === "string" && box.name ? box.name : "another computer");
-    }
     this.setup = typeof given.setup === "string" && /^set_[A-Za-z0-9_-]{1,64}$/.test(given.setup) ? given.setup : undefined;
     this.inNoSetup = given.setup === null;
     this.told = true;
@@ -37460,7 +37427,7 @@ class LinkDirectory {
     return true;
   }
   peerBoxes() {
-    return [...[...this.boxes].map(([key, box]) => ({ key, name: box.name })), ...[...this.also].map(([key, name]) => ({ key, name }))];
+    return [...this.boxes].map(([key, box]) => ({ key, name: box.name }));
   }
   own() {
     return this.self;
@@ -37479,9 +37446,6 @@ class LinkDirectory {
   }
   isPeer(box) {
     return this.boxes.has(box);
-  }
-  isYours(box) {
-    return this.told && this.isPeer(box);
   }
   home(box) {
     let home = this.homes.get(box);
@@ -38798,8 +38762,6 @@ class LimitsPeers {
     this.now = now;
     this.load();
     this.noticeBoundary = this.boundary();
-    if (directory.told)
-      this.yoursBefore = new Set(directory.peerBoxes().filter(({ key }) => this.ours(key)).map(({ key }) => key));
     limits.peers = this;
     directory.listen(() => this.directorySaid());
     transport.onFollowed?.(() => this.told.clear());
@@ -38813,7 +38775,7 @@ class LimitsPeers {
   freshest(service, identity) {
     let newest;
     for (const [key, kept] of this.peers) {
-      if (!this.ours(key))
+      if (!this.directory.told || !this.directory.isPeer(key))
         continue;
       for (const account of kept.accounts) {
         if (account.service !== service || account.identity !== identity || account.problem || !account.checked)
@@ -38828,7 +38790,7 @@ class LimitsPeers {
     const own = this.directory.own()?.key;
     if (!own || !this.directory.told)
       return;
-    if (!this.directory.setup || !this.directory.isPeer)
+    if (!this.directory.setup)
       return own;
     const candidates = [own];
     for (const [key, kept] of this.peers) {
@@ -38843,12 +38805,12 @@ class LimitsPeers {
     return this.directory.own()?.key === key;
   }
   noticeStates(service, identity) {
-    if (!this.directory.told || !this.directory.setup || !this.directory.isPeer)
+    if (!this.directory.told || !this.directory.setup)
       return [];
     return [...this.peers].flatMap(([key, kept]) => this.noticePeer(key, kept) ? kept.accounts.filter((a) => a.service === service && a.identity === identity).map((a) => a.noticeState ?? {}) : []);
   }
   notices() {
-    if (!this.directory.told || !this.directory.setup || !this.directory.isPeer)
+    if (!this.directory.told || !this.directory.setup)
       return [];
     return [...this.peers].flatMap(([key, kept]) => this.noticePeer(key, kept) ? kept.accounts.flatMap((a) => a.notices ?? []).filter((n) => currentNotice(n, this.now())) : []);
   }
@@ -38875,11 +38837,12 @@ class LimitsPeers {
     const boxes = [{ key: self?.key ?? "", name: self?.name ?? "", here: true, away: false, accounts: own }];
     const peers = [...this.peers.entries()].sort(([, a], [, b]) => a.name.localeCompare(b.name));
     for (const [key, kept] of peers) {
-      const ours = this.ours(key);
-      const accounts = ours ? kept.accounts : forVouched(kept.accounts);
+      if (!this.directory.told || !this.directory.isPeer(key))
+        continue;
+      const accounts = kept.accounts;
       const visible = this.noticePeer(key, kept) ? accounts.map((a) => ({ ...a, ...a.notices ? { notices: a.notices.filter((n) => currentNotice(n, now)) } : {} })) : withoutNotices(accounts);
       const awayAt = kept.heard + PEER_AWAY2;
-      boxes.push({ key, name: this.directory.peerBoxes().find((box) => box.key === key)?.name ?? kept.name, here: false, away: now > awayAt, awayAt, ...!ours ? { vouched: true } : {}, accounts: visible });
+      boxes.push({ key, name: this.directory.peerBoxes().find((box) => box.key === key)?.name ?? kept.name, here: false, away: now > awayAt, awayAt, accounts: visible });
     }
     return limitRows(boxes, now, presentUsage);
   }
@@ -38888,15 +38851,14 @@ class LimitsPeers {
       return;
     const now = this.now();
     const mine = this.shared();
-    const theirs = forVouched(mine);
     for (const { key } of this.directory.peerBoxes()) {
-      const accounts = this.forPeer(key, this.ours(key) ? mine : theirs);
+      const accounts = this.forPeer(key, mine);
       const json = JSON.stringify([this.noticeEnvelope(key), accounts]);
       const last = this.told.get(key);
       const due = !last || now - last.at >= TELL_AGAIN3 || last.json !== json && (urgent || now - last.at >= HEARD_EVERY);
       if (!due)
         continue;
-      this.transport.send(key, { kind: "limits", at: now, accounts: this.forPeer(key, accounts), ...this.noticeEnvelope(key), ...!last ? { ask: true } : {} }, false);
+      this.transport.send(key, { kind: "limits", at: now, accounts, ...this.noticeEnvelope(key), ...!last ? { ask: true } : {} }, false);
       this.told.set(key, { json, at: now });
     }
   }
@@ -38906,11 +38868,11 @@ class LimitsPeers {
     const given = mail;
     if (!Array.isArray(given.accounts))
       return;
-    if (this.directory.told && !this.directory.peerBoxes().some((box) => box.key === from))
+    if (!this.directory.told || !this.directory.isPeer(from))
       return;
     const now = this.now();
     const off = typeof given.at === "number" && Number.isFinite(given.at) && Math.abs(now - given.at) >= SKEW2 ? now - given.at : 0;
-    const read = given.accounts.slice(0, 100).flatMap((account) => {
+    const accounts = given.accounts.slice(0, 100).flatMap((account) => {
       const taken = takenAccount2(account, off, now);
       if (taken && (!this.noticeOurs(from) || given.noticeSetup !== this.directory.setup)) {
         delete taken.notices;
@@ -38918,7 +38880,6 @@ class LimitsPeers {
       }
       return taken ? [taken] : [];
     });
-    const accounts = !this.ours(from) ? forVouched(read) : read;
     const before = this.peers.get(from);
     const name = this.directory.peerBoxes().find((box) => box.key === from)?.name ?? before?.name ?? "another computer";
     const seen = new Map(before?.accounts.flatMap((a) => a.notices?.map((n) => [n.id, n.forwarder]) ?? []) ?? []);
@@ -38954,7 +38915,7 @@ class LimitsPeers {
     const now = this.now();
     const mine = this.shared();
     for (const [key, refresh] of asks)
-      this.transport.send(key, { kind: "limits", at: now, accounts: this.forPeer(key, this.ours(key) ? mine : forVouched(mine)), ...this.noticeEnvelope(key), refresh }, false);
+      this.transport.send(key, { kind: "limits", at: now, accounts: this.forPeer(key, mine), ...this.noticeEnvelope(key), refresh }, false);
   }
   idOf(account, identity) {
     return identity ? `${account.service}#${identity}` : `${this.directory.own()?.key ?? ""}/${account.provider}`;
@@ -38966,18 +38927,15 @@ class LimitsPeers {
     if (now - (this.answered.get(key) ?? -Infinity) < HEARD_EVERY)
       return;
     this.answered.set(key, now);
-    const accounts = this.forPeer(key, this.ours(key) ? this.shared() : forVouched(this.shared()));
+    const accounts = this.forPeer(key, this.shared());
     this.transport.send(key, { kind: "limits", at: now, accounts, ...this.noticeEnvelope(key) }, false);
     this.told.set(key, { json: JSON.stringify([this.noticeEnvelope(key), accounts]), at: now });
   }
   forPeer(key, accounts) {
     return this.noticeOurs(key) ? accounts : withoutNotices(accounts);
   }
-  ours(key) {
-    return this.directory.isYours?.(key) === true;
-  }
   noticeOurs(key) {
-    return !!this.directory.told && !!this.directory.setup && this.ours(key) && this.directory.isPeer?.(key) === true;
+    return !!this.directory.told && !!this.directory.setup && this.directory.isPeer(key);
   }
   noticePeer(key, kept) {
     return this.noticeOurs(key) && kept.noticeSetup === this.directory.setup;
@@ -38997,7 +38955,6 @@ class LimitsPeers {
       accounts.pop();
     return accounts;
   }
-  yoursBefore = new Set;
   boundary() {
     return JSON.stringify([
       this.directory.told,
@@ -39010,23 +38967,12 @@ class LimitsPeers {
     let urgent = boundary !== this.noticeBoundary;
     this.noticeBoundary = boundary;
     const here = new Set(this.directory.peerBoxes().map((box) => box.key));
-    const yours = new Set([...here].filter((key) => this.ours(key)));
-    for (const key of yours)
-      if (!this.yoursBefore.has(key))
-        this.told.delete(key);
-    let gone = yours.size !== this.yoursBefore.size || [...yours].some((key) => !this.yoursBefore.has(key));
-    this.yoursBefore = yours;
-    for (const [key, kept] of [...this.peers]) {
-      if (!here.has(key)) {
-        this.peers.delete(key);
-        gone = true;
-      } else if (!this.ours(key)) {
-        const told = forVouched(kept.accounts);
-        if (JSON.stringify(told) === JSON.stringify(kept.accounts))
-          continue;
-        kept.accounts = told;
-        gone = true;
-      }
+    let gone = false;
+    for (const key of this.peers.keys()) {
+      if (here.has(key))
+        continue;
+      this.peers.delete(key);
+      gone = true;
     }
     for (const key of [...this.told.keys()])
       if (!here.has(key))
@@ -39044,10 +38990,10 @@ class LimitsPeers {
       }
     }
     this.limits.settleNoticeForwarders();
-    if (gone) {
+    if (gone)
       this.save();
+    if (gone || urgent)
       this.limits.peersChanged();
-    }
     urgent ||= gone;
     this.tell(urgent);
   }
@@ -39072,14 +39018,6 @@ class LimitsPeers {
       renameSync25(this.file + ".new", this.file);
     } catch {}
   }
-}
-function forVouched(accounts) {
-  return accounts.map((account) => {
-    const { agentsReset: _, balance: ___, notices: ____, noticeState: _____, ...told } = account;
-    const extras = (account.extras ?? []).filter((extra) => extra.kind === "resets" || extra.kind === "unreadable").map(({ agents: __, ...extra }) => extra);
-    delete told.extras;
-    return extras.length ? { ...told, extras } : told;
-  });
 }
 function withoutNotices(accounts) {
   return accounts.map(({ notices, noticeState, ...account }) => account);
@@ -39622,4 +39560,4 @@ if (!onMachine) {
 }
 process.on("SIGTERM", () => stop());
 process.on("SIGINT", () => stop());
-// Built from Packages/Box/src/agents 632f573a8bc4ad3ef196a8b36f03c150f4ed941f364d304111a26961eb0ebb8c
+// Built from Packages/Box/src/agents 595b50c1c0c4fe4414845f9abc897beae31b089d370274001be6bdee750e589e

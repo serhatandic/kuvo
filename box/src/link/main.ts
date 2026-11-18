@@ -121,7 +121,7 @@ import { sayWhole } from "./once";
 import { featuresNow, settleUpdate, startSettling } from "./updates/health";
 import { swapEngine } from "./updates/engine-swap";
 import { type UpdateOptions, ON_TRIAL, UPDATING_ALREADY, agentsWorking, dropOldBackups, passingOutcome, updateOnTrial, checkDrift, failedInPassing, offerWaits, isUpdating, noteLauncher, noteOlderMacs, installerSteps, noteUpdate, startOfferedUpdate, startUpdate, takeOffer, untilFree, update, UPDATE_KEYS, releaseRound, updatesBlocked, updateState, updateStatus } from "./updates/update";
-import { clearIncoming, followOver, followPeers, tellHeld, watchHeld } from "./updates/fleet";
+import { clearIncoming, followOver, followPeers, watchHeld } from "./updates/fleet";
 import { BRIDGE_VERSION } from "./version";
 import type { AddressInfo } from "node:net";
 import type { SignedDoc } from "../shared/documents";
@@ -200,7 +200,7 @@ export { codeCheck, codeInPlace } from "./updates/code-in-place";
 export { HEALTH, lookAtPieces, rollBackCode, settleUpdate } from "./updates/health";
 export { appBehind, registerDesktop } from "./mac/app";
 export { noteTrialEnded } from "./updates/update";
-export { fleetFacts, fleetWith, followPeers, forgetFleet, heldRelease, keepRelease, newestHeld, pullUnderWay, takeReleaseMail, tellHeld, watchHeld } from "./updates/fleet";
+export { fleetFacts, fleetWith, followPeers, forgetFleet, heldRelease, keepRelease, newestHeld, pullUnderWay, takeReleaseMail, watchHeld } from "./updates/fleet";
 export { UPDATE_KEYS, agentsWorking, boxVersion, dropOldBackups, checkDrift, confirmUpdate, isUpdating, newerVersion, noteLauncher, noteOlderMacs, offerDue, offerHeld, offerUpdate, offerWaits, offeredVersion, releaseRound, startUpdate, takeOffer, update, updateStatus, updatesBlocked, verifyBoxes, versionOrder } from "./updates/update";
 export { FILE_LIMIT } from "./areas/file";
 export { firstMessageOf, jobInMemory, jobLine, keepJobs } from "./bots/jobs";
@@ -227,7 +227,7 @@ export { followedSetup, newSetupID, startsFromOthers } from "./setup/record";
 export { setupView } from "./setup/view";
 export { foundOf, hereNow, judgeComputer, judgeHere, oursNow, OWN_BOX_RAN } from "./setup/judge";
 export { cardNow, SETUP_CARD, writeCard } from "./setup/card";
-export { keptComputer, keptFeatures, peerOf, readPeerAgents, takeAgents, vouchedOf } from "./peers/directory";
+export { keptComputer, keptFeatures, peerOf, readPeerAgents, takeAgents } from "./peers/directory";
 export { actionsOf, oldAppAttached, removeHere, renameHere, writerAct, writerOf } from "./peers/manage";
 export { canAdd, otherAddressesOf } from "./add/flow";
 export { ownAddresses } from "./areas/computers";
@@ -479,12 +479,11 @@ async function run(): Promise<void> {
   // well is its judge's to say (updates/health.ts).
   followOver(() => current);
   clearIncoming();
-  setInterval(() => { try { followPeers(); tellHeld(); } catch {} }, 60_000).unref?.();
+  setInterval(() => { try { followPeers(); } catch {} }, 60_000).unref?.();
   // A newer signed release held here (Kuvo Code here handed it over, or it was fetched): your other
   // computers hear at once, not at the next minute's round, and take it in parallel with this one.
   watchHeld(() => {
     if (current?.welcomed) announce(current, readEngineFile).catch(() => {});
-    try { tellHeld(); } catch {}
   });
   const rounds = () => {
     noteLauncher();
@@ -966,7 +965,7 @@ interface SetupInput {
   name?: string;
   mac?: string;
   macSign?: string;
-  /** The Mac's own name, for who else uses this box. */
+  /** The Mac's own name. */
   macName?: string;
   docs?: SignedDoc[];
   id?: string;
@@ -1003,7 +1002,12 @@ async function setup(): Promise<void> {
   // The Mac's keys before, made anew since (over SSH, so this box knows they were that Mac's).
   const replaced = mac && Array.isArray(input.replaces) ? input.replaces.filter((key): key is string => typeof key === "string" && KEY.test(key) && key !== mac).slice(0, 8) : [];
   let formerMacs: string[] = [];
+  let alreadySetUp = false;
   updateLink(current => {
+    if (mac && current && macsOf(current).length && !macsOf(current).some(key => key === mac || replaced.includes(key))) {
+      alreadySetUp = true;
+      return null;
+    }
     const next = current ?? { secret: crypto.randomBytes(32).toString("base64url"), key: newKey().toString("base64url"), phones: [] };
     next.sign ??= newSigningSeed();
     if (mac) {
@@ -1042,6 +1046,10 @@ async function setup(): Promise<void> {
     link = next;
     return next;
   });
+  if (alreadySetUp) {
+    console.error("This OS account already has a Kuvo setup. Connect to your own OS account.");
+    process.exit(1);
+  }
   if (work && library !== before) await takePersonalities(library).catch(() => {});
   // (What those keys' agents were, told here, goes with them.)
   const after = link ?? readLink();

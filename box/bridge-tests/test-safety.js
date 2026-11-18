@@ -182,7 +182,7 @@ export function ownPath(given) {
   const where = resolved(given);
   const homes = [...new Set([realHome, accountHome].filter(Boolean).map(home => resolved(home)))];
   const real = homes.flatMap(home =>
-    [".kuvo-code", ".ssh", ".gnupg", ".claude", ".codex", ".grok", ".cursor", path.join("Library", "Keychains"),
+    [".kuvo-code", ".kuvo-ssh", ".kuvo-ssh-ctl", ".ssh", ".gnupg", ".claude", ".codex", ".grok", ".cursor", path.join("Library", "Keychains"),
       ...["Application Support", "Caches", "WebKit", "HTTPStorages", "Preferences"].map(folder => path.join("Library", folder, "run.kuvo.code")), path.join("Library", "Logs", "Kuvo Code")]
       .map(folder => path.join(home, folder)));
   const here = identities(where), self = identity(where);

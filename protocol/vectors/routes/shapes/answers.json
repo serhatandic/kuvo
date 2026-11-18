@@ -5212,7 +5212,6 @@
           }
          },
          "workingTitle?": "string",
-         "shared": "bool",
          "reach": {
           "oneOf": [
            {
@@ -5223,9 +5222,6 @@
            },
            {
             "literal": "away"
-           },
-           {
-            "literal": "unknown"
            }
           ]
          },
@@ -5260,13 +5256,9 @@
            },
            {
             "literal": "relay"
-           },
-           {
-            "literal": "peer"
            }
           ]
          },
-         "through?": "string",
          "address?": "string",
          "relay?": "string",
          "working?": "number",
@@ -5420,7 +5412,6 @@
           }
          },
          "workingTitle?": "string",
-         "shared": "bool",
          "reach": {
           "oneOf": [
            {
@@ -5431,9 +5422,6 @@
            },
            {
             "literal": "away"
-           },
-           {
-            "literal": "unknown"
            }
           ]
          },
@@ -5468,13 +5456,9 @@
            },
            {
             "literal": "relay"
-           },
-           {
-            "literal": "peer"
            }
           ]
          },
-         "through?": "string",
          "address?": "string",
          "relay?": "string",
          "working?": "number",

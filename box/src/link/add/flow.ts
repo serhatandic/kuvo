@@ -305,22 +305,7 @@ async function setUp(tell: Telling, destination: string, name: string, kind: "ad
       return;
     }
     if (judged.verdict !== "free" && judged.verdict !== "ours" && !judged.joins) {
-      const theirs = judged.boxes.find(box => box.verdict !== "free" && box.verdict !== "ours");
-      const whose = plainName(theirs?.primary?.name) || plainName(theirs?.name);
-      const answer = await tell.ask({
-        id: "inAnotherSetup",
-        title: `${name} already runs Kuvo Code`,
-        message: judged.verdict === "older"
-          ? `It was set up by ${whose || "another Mac"}, with an older Kuvo Code. Adding it here updates it, and both use it from then on: its sessions and bots stay.`
-          : `It’s one of ${whose ? `${whose}’s` : "another setup’s"} computers. Adding it here shares it between the two: its sessions and bots stay, and it keeps its own settings and sign-ins.`,
-        facts: [{ label: "Address", value: destination }, ...(whose ? [{ label: "Set up by", value: whose }] : [])],
-        answers: [{ id: "cancel", label: "Cancel", kind: "plain" }, { id: "add", label: "Add Anyway", kind: "primary" }],
-      });
-      if (answer !== "add") {
-        stopFrom(tell);
-        throw new Stopped();
-      }
-      tell.check();
+      throw new Failed(`Kuvo Code on ${name} already belongs to another setup. To add this computer, connect over SSH to your own OS account.`, false);
     }
 
     // Its files, unless it has a newer Kuvo Code (which keeps its own) or has these already.

@@ -45,18 +45,12 @@ export interface LimitsDirectory {
   readonly told: boolean
   readonly setup?: string
   readonly inNoSetup?: boolean
+  isPeer(key: string): boolean
   peerBoxes(): { key: string; name: string }[]
   /** This box, as the link names it. */
   own(): { key: string; name: string } | undefined
   /** Told each time the link says who they are. */
   listen(listener: () => void): void
-  /** Whether a box is one of your computers (a peer), not one a peer vouches for. */
-  isPeer?(key: string): boolean
-  /**
-   * Whether a box is one of your own computers for what's yours alone (spending resets, Always
-   * Allow, what you spend beyond your limits, usage totals): a peer, once the link has said.
-   */
-  isYours?(key: string): boolean
 }
 
 interface Kept {
@@ -101,7 +95,6 @@ export class LimitsPeers {
   ) {
     this.load()
     this.noticeBoundary = this.boundary()
-    if (directory.told) this.yoursBefore = new Set(directory.peerBoxes().filter(({ key }) => this.ours(key)).map(({ key }) => key))
     limits.peers = this
     directory.listen(() => this.directorySaid())
     // The link carries what goes again (it started, or followed anew): what went meanwhile was
@@ -119,15 +112,11 @@ export class LimitsPeers {
     return this.freshest(service, identity)?.checked
   }
 
-  /**
-   * The newest reading one of your own computers had of this account from its maker, without a
-   * problem, if any did: never one that isn't yours, nor any before the link has said (what such a
-   * box is told of an account lacks its spend and extras, so it never stands in for a read of here).
-   */
+  /** The newest successful reading from a peer. */
   freshest(service: LimitsService, identity: string): AccountLimits | undefined {
     let newest: AccountLimits | undefined
     for (const [key, kept] of this.peers) {
-      if (!this.ours(key)) continue
+      if (!this.directory.told || !this.directory.isPeer(key)) continue
       for (const account of kept.accounts) {
         if (account.service !== service || account.identity !== identity || account.problem || !account.checked) continue
         if (!newest || account.checked > newest.checked!) newest = account
@@ -140,7 +129,7 @@ export class LimitsPeers {
   forwarder(service: string, identity: string): string | undefined {
     const own = this.directory.own()?.key
     if (!own || !this.directory.told) return undefined
-    if (!this.directory.setup || !this.directory.isPeer) return own
+    if (!this.directory.setup) return own
     const candidates = [own]
     for (const [key, kept] of this.peers) {
       if (!this.noticePeer(key, kept) || this.now() - kept.heard > PEER_AWAY) continue
@@ -153,13 +142,13 @@ export class LimitsPeers {
 
   /** Per-window decisions, including turn-only accounts whose maker was never checked here. */
   noticeStates(service: LimitsService, identity: string): Record<string, NoticeState>[] {
-    if (!this.directory.told || !this.directory.setup || !this.directory.isPeer) return []
+    if (!this.directory.told || !this.directory.setup) return []
     return [...this.peers].flatMap(([key, kept]) => this.noticePeer(key, kept) ? kept.accounts.filter(a => a.service === service && a.identity === identity).map(a => a.noticeState ?? {}) : [])
   }
 
-  /** Only direct peers' decided notices: vouched-for computers never send or receive these. */
+  /** Peers' decided notices within this setup. */
   notices(): UsageNotice[] {
-    if (!this.directory.told || !this.directory.setup || !this.directory.isPeer) return []
+    if (!this.directory.told || !this.directory.setup) return []
     return [...this.peers].flatMap(([key, kept]) => this.noticePeer(key, kept) ? kept.accounts.flatMap(a => a.notices ?? []).filter(n => currentNotice(n, this.now())) : [])
   }
 
@@ -186,11 +175,11 @@ export class LimitsPeers {
     const boxes: LimitsBox[] = [{ key: self?.key ?? "", name: self?.name ?? "", here: true, away: false, accounts: own }]
     const peers = [...this.peers.entries()].sort(([, a], [, b]) => a.name.localeCompare(b.name))
     for (const [key, kept] of peers) {
-      const ours = this.ours(key)
-      const accounts = ours ? kept.accounts : forVouched(kept.accounts)
+      if (!this.directory.told || !this.directory.isPeer(key)) continue
+      const accounts = kept.accounts
       const visible = this.noticePeer(key, kept) ? accounts.map(a => ({ ...a, ...(a.notices ? { notices: a.notices.filter(n => currentNotice(n, now)) } : {}) })) : withoutNotices(accounts)
       const awayAt = kept.heard + PEER_AWAY
-      boxes.push({ key, name: this.directory.peerBoxes().find((box) => box.key === key)?.name ?? kept.name, here: false, away: now > awayAt, awayAt, ...(!ours ? { vouched: true } : {}), accounts: visible })
+      boxes.push({ key, name: this.directory.peerBoxes().find((box) => box.key === key)?.name ?? kept.name, here: false, away: now > awayAt, awayAt, accounts: visible })
     }
     return limitRows(boxes, now, presentUsage)
   }
@@ -205,14 +194,13 @@ export class LimitsPeers {
     if (!this.transport.followed || !this.directory.told) return
     const now = this.now()
     const mine = this.shared()
-    const theirs = forVouched(mine)
     for (const { key } of this.directory.peerBoxes()) {
-      const accounts = this.forPeer(key, this.ours(key) ? mine : theirs)
+      const accounts = this.forPeer(key, mine)
       const json = JSON.stringify([this.noticeEnvelope(key), accounts])
       const last = this.told.get(key)
       const due = !last || now - last.at >= TELL_AGAIN || (last.json !== json && (urgent || now - last.at >= HEARD_EVERY))
       if (!due) continue
-      this.transport.send(key, { kind: "limits", at: now, accounts: this.forPeer(key, accounts), ...this.noticeEnvelope(key), ...(!last ? { ask: true as const } : {}) }, false)
+      this.transport.send(key, { kind: "limits", at: now, accounts, ...this.noticeEnvelope(key), ...(!last ? { ask: true as const } : {}) }, false)
       this.told.set(key, { json, at: now })
     }
   }
@@ -222,21 +210,15 @@ export class LimitsPeers {
     if (!mail || typeof mail !== "object") return
     const given = mail as Partial<LimitsMail>
     if (!Array.isArray(given.accounts)) return
-    if (this.directory.told && !this.directory.peerBoxes().some((box) => box.key === from)) return
+    if (!this.directory.told || !this.directory.isPeer(from)) return
     const now = this.now()
     // Its clock, onto this box's: a mail takes a moment, so only one that's well off is moved.
     const off = typeof given.at === "number" && Number.isFinite(given.at) && Math.abs(now - given.at) >= SKEW ? now - given.at : 0
-    const read = given.accounts.slice(0, 100).flatMap((account) => {
+    const accounts = given.accounts.slice(0, 100).flatMap((account) => {
       const taken = takenAccount(account, off, now)
       if (taken && (!this.noticeOurs(from) || given.noticeSetup !== this.directory.setup)) { delete taken.notices; delete taken.noticeState }
       return taken ? [taken] : []
     })
-    // (From a box that isn't one of your own computers (one a peer only vouches for), or before the
-    // link has said, only what such a box is told, whatever it said: it never keeps your spending or
-    // Always Allow. Once the link says one is yours, it's asked for all of its own,
-    // `directorySaid`. What was kept before, from a restart, is kept whole and shown so only once
-    // the link says it's yours: `rows`, `freshest`.)
-    const accounts = !this.ours(from) ? forVouched(read) : read
     const before = this.peers.get(from)
     const name = this.directory.peerBoxes().find((box) => box.key === from)?.name ?? before?.name ?? "another computer"
     const seen = new Map(before?.accounts.flatMap(a => a.notices?.map(n => [n.id, n.forwarder] as const) ?? []) ?? [])
@@ -273,7 +255,7 @@ export class LimitsPeers {
     }
     const now = this.now()
     const mine = this.shared()
-    for (const [key, refresh] of asks) this.transport.send(key, { kind: "limits", at: now, accounts: this.forPeer(key, this.ours(key) ? mine : forVouched(mine)), ...this.noticeEnvelope(key), refresh }, false)
+    for (const [key, refresh] of asks) this.transport.send(key, { kind: "limits", at: now, accounts: this.forPeer(key, mine), ...this.noticeEnvelope(key), refresh }, false)
   }
 
   /** An account of this box's, as rows name it. */
@@ -287,7 +269,7 @@ export class LimitsPeers {
     const now = this.now()
     if (now - (this.answered.get(key) ?? -Infinity) < HEARD_EVERY) return
     this.answered.set(key, now)
-    const accounts = this.forPeer(key, this.ours(key) ? this.shared() : forVouched(this.shared()))
+    const accounts = this.forPeer(key, this.shared())
     this.transport.send(key, { kind: "limits", at: now, accounts, ...this.noticeEnvelope(key) }, false)
     this.told.set(key, { json: JSON.stringify([this.noticeEnvelope(key), accounts]), at: now })
   }
@@ -296,14 +278,9 @@ export class LimitsPeers {
     return this.noticeOurs(key) ? accounts : withoutNotices(accounts)
   }
 
-  /** Whether a box is one of your own computers (a peer, not one a peer of yours only vouches for). */
-  private ours(key: string) {
-    return this.directory.isYours?.(key) === true
-  }
-
   /** Same boundary as usage/settings-peers: only own computers within one known setup. */
   private noticeOurs(key: string) {
-    return !!this.directory.told && !!this.directory.setup && this.ours(key) && this.directory.isPeer?.(key) === true
+    return !!this.directory.told && !!this.directory.setup && this.directory.isPeer(key)
   }
 
   private noticePeer(key: string, kept: Kept) {
@@ -327,14 +304,6 @@ export class LimitsPeers {
     return accounts
   }
 
-  /** Your own computers as the link last said, to know one that has just become yours. */
-  private yoursBefore = new Set<string>()
-
-  /**
-   * The link said who your computers are: those no longer among them go, one that's no longer one
-   * of your own keeps only what such a box is told, one new to this box is told now, and one that
-   * has just become yours (again) is told all and asked for all of its own.
-   */
   private boundary(): string {
     return JSON.stringify([this.directory.told, this.directory.setup ?? null,
       this.directory.peerBoxes().filter(({ key }) => this.noticeOurs(key)).map(({ key }) => key).sort()])
@@ -346,22 +315,11 @@ export class LimitsPeers {
     let urgent = boundary !== this.noticeBoundary
     this.noticeBoundary = boundary
     const here = new Set(this.directory.peerBoxes().map((box) => box.key))
-    const yours = new Set([...here].filter((key) => this.ours(key)))
-    // (Told again as if never told: with `ask`, so it tells this box all of its own at once.)
-    for (const key of yours) if (!this.yoursBefore.has(key)) this.told.delete(key)
-    // (Which are yours changed, the first time the link says too: what clients see of them with it.)
-    let gone = yours.size !== this.yoursBefore.size || [...yours].some((key) => !this.yoursBefore.has(key))
-    this.yoursBefore = yours
-    for (const [key, kept] of [...this.peers]) {
-      if (!here.has(key)) {
-        this.peers.delete(key)
-        gone = true
-      } else if (!this.ours(key)) {
-        const told = forVouched(kept.accounts)
-        if (JSON.stringify(told) === JSON.stringify(kept.accounts)) continue
-        kept.accounts = told
-        gone = true
-      }
+    let gone = false
+    for (const key of this.peers.keys()) {
+      if (here.has(key)) continue
+      this.peers.delete(key)
+      gone = true
     }
     for (const key of [...this.told.keys()]) if (!here.has(key)) this.told.delete(key)
     for (const key of [...this.answered.keys()]) if (!here.has(key)) this.answered.delete(key)
@@ -374,10 +332,8 @@ export class LimitsPeers {
       }
     }
     this.limits.settleNoticeForwarders()
-    if (gone) {
-      this.save()
-      this.limits.peersChanged()
-    }
+    if (gone) this.save()
+    if (gone || urgent) this.limits.peersChanged()
     urgent ||= gone
     this.tell(urgent)
   }
@@ -401,20 +357,6 @@ export class LimitsPeers {
       renameSync(this.file + ".new", this.file)
     } catch {}
   }
-}
-
-/**
- * What a box a peer only vouches for is told of your accounts: their limits, but not what you spend
- * or have to spend beyond them (`spent`, `capped`, `left`, credits left), nor whether agents may
- * use their resets.
- */
-function forVouched(accounts: AccountLimits[]): AccountLimits[] {
-  return accounts.map((account) => {
-    const { agentsReset: _, balance: ___, notices: ____, noticeState: _____, ...told } = account
-    const extras = (account.extras ?? []).filter((extra) => extra.kind === "resets" || extra.kind === "unreadable").map(({ agents: __, ...extra }) => extra)
-    delete told.extras
-    return extras.length ? { ...told, extras } : told
-  })
 }
 
 function withoutNotices(accounts: AccountLimits[]): AccountLimits[] {

@@ -73,7 +73,7 @@ before(() => {
   assert.ok(ours);
 });
 
-test("each verdict, as a Mac adding a computer hears it: nothing there, one of ours, this very Mac, a member of another setup (its main computer unheard of for weeks: still not free), another setup's main computer, a machine other Macs share, a lone box", async () => {
+test("each verdict, as a Mac adding a computer hears it: nothing there, one of ours, this very Mac, a member of another setup (its main computer unheard of for weeks: still not free), another setup's main computer, a machine with old setup records, a lone box", async () => {
   const one = (fields, folder = ".kuvo-code", kind = "machine") => `box ${kind} ${folder}\ncard ${JSON.stringify(card(fields))}`;
   const verdict = async probe => {
     const judged = await judge(probe);
@@ -95,14 +95,14 @@ test("each verdict, as a Mac adding a computer hears it: nothing there, one of o
   });
 
   const main = await verdict(one({ setup: otherSetup, epoch: 1, role: "primary", primary: { key: imac.pub, name: "iMac", heard: null }, self: { key: imac.pub, name: "iMac", kind: "mac" }, app: true, computers: 3, items: 37 }, "Library/Application Support/run.kuvo.code/box", "app"));
-  assert.deepEqual([main.verdict, main.joins], ["main", false], "iMac runs Kuvo Code for 2 more computers: bringing them in is asked");
+  assert.deepEqual([main.verdict, main.joins], ["main", false], "iMac runs Kuvo Code for 2 more computers: it already has members");
   assert.deepEqual([main.boxes[0].computers, main.boxes[0].items, main.boxes[0].name], [3, 37, "iMac"]);
   assert.equal((await verdict(one({ setup: otherSetup, epoch: 1, role: "primary", primary: { key: mini.pub, name: "vps", heard: null }, computers: 1, items: 4 }))).verdict, "main", "a lone box leading a setup of its own");
   const lone = await verdict(one({ self: { key: imac.pub, name: "iMac", kind: "mac" }, app: true }, "Library/Application Support/run.kuvo.code/box", "app"));
-  assert.deepEqual([lone.verdict, lone.joins], ["main", false], "a Mac whose app runs it, in no setup yet, with no work: asked all the same (its app would open as a window from then on)");
+  assert.deepEqual([lone.verdict, lone.joins], ["main", false], "a Mac whose app runs it, in no setup yet, with no work: its app already runs Kuvo");
   const alone = await verdict(one({ setup: otherSetup, epoch: 1, role: "primary", primary: { key: mini.pub, name: "vps", heard: null }, computers: 1, items: 0 }));
   assert.deepEqual([alone.verdict, alone.joins], ["main", true], "a lone box leading an empty setup of its own");
-  assert.equal(member.joins, false, "a member of another setup is moved, never joined without asking");
+  assert.equal(member.joins, false, "a member of another setup cannot be added");
   // Kuvo Code on that computer, though no box of its own ran there (attached in place to its box, or
   // just installed): asked, as its app would open as a window from then on.
   const withApp = await verdict(one({ setup: otherSetup, epoch: 1, role: "primary", primary: { key: mini.pub, name: "Mini", heard: null }, computers: 1, items: 0 }) + "\napp Library/Application Support/run.kuvo.code");
@@ -114,7 +114,7 @@ test("each verdict, as a Mac adding a computer hears it: nothing there, one of o
   const unsaid = await verdict(one({ setup: otherSetup, epoch: 1, role: "primary", primary: { key: mini.pub, name: "Mini", heard: null }, computers: undefined, items: "lots" }));
   assert.deepEqual([unsaid.verdict, unsaid.joins, unsaid.boxes[0].computers, unsaid.boxes[0].items], ["main", false, null, null]);
 
-  assert.equal((await verdict(one({ macs: [{ key: imac.pub, name: "iMac" }, { key: box("mac", "Air").pub, name: "Air" }] }))).verdict, "elsewhere", "a machine other Macs share, in no setup: theirs");
+  assert.equal((await verdict(one({ macs: [{ key: imac.pub, name: "iMac" }, { key: box("mac", "Air").pub, name: "Air" }] }))).verdict, "elsewhere", "a machine with old setup records, in no setup: theirs");
   assert.equal((await verdict(one({ macs: [{ key: imac.pub, name: "iMac" }, { key: self.pub, name: "Studio" }] }))).verdict, "ours", "one this Mac shares with iMac: ours already");
   assert.equal((await verdict(one({}))).verdict, "free", "a box no Mac set up, leading nothing (its Mac let it go)");
   assert.equal((await verdict(one({ setup: otherSetup, role: "member", primary: { key: imac.pub, name: "iMac", heard: 1 }, self: { key: lab.pub, name: "lab", kind: "machine" } }))).verdict, "elsewhere",

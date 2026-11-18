@@ -13,14 +13,13 @@ import { spawnSync } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
-import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { atEnd, removeAtEnd } from "./at-end.js";
 
 // (Short: a shared connection's socket goes under the box's folder on Linux.)
-const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-add-")));
+const base = fs.realpathSync(fs.mkdtempSync("/tmp/k"));
 removeAtEnd(base);
 const home = path.join(base, "here", ".kuvo-code");
 const there = path.join(base, "there");
@@ -833,7 +832,7 @@ test("a Mac that's a machine's box already, with earlier Kuvo Code data beside i
   assert.equal((await ask("DELETE", "kuvo/hosts/machine07")).status, 200);
 });
 
-test("a Mac that has Kuvo Code's app is someone's already: it's added, and none of this box's keys or sign-ins are copied there", async () => {
+test("a Mac with an existing app folder is added without copying sign-ins or keys", async () => {
   // Only the app's folder, no box of a machine's: judged free, and added with no question.
   fs.mkdirSync(path.join(homes.macbook, "Library", "Application Support", "run.kuvo.code"), { recursive: true });
   const done = await added("macbook");

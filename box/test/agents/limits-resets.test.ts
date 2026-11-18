@@ -404,9 +404,9 @@ class Box {
       }
     }
   }
-  /** Its link says who your computers are, and `also`, boxes a peer of yours only vouches for. */
-  async meet(others: Box[], also: Box[] = []) {
-    await peerRoutes(this.parts, "PUT", [], async () => ({ self: { key: this.key, name: this.name }, boxes: others.map((box) => ({ key: box.key, name: box.name, seats: true })), also: also.map((box) => ({ key: box.key, name: box.name })), bots: [] }))
+  /** The link gives the bridge its peer directory. */
+  async meet(others: Box[]) {
+    await peerRoutes(this.parts, "PUT", [], async () => ({ self: { key: this.key, name: this.name }, boxes: others.map((box) => ({ key: box.key, name: box.name, seats: true })), bots: [] }))
   }
   stop() {
     this.following.abort()
@@ -662,7 +662,7 @@ describe("the second review's cases", () => {
     const relay = new Map<string, Box>()
     const macFolder = mkdtempSync(join(base, "mac-lost-"))
     const claudeMac = macClaude(macFolder)
-    const mac = new Box("key-mac", "MacBook Pro", () => agentAccounts([claudeMac]), macFolder, relay, 20)
+    const mac = new Box("key-mac", "MacBook Pro", () => agentAccounts([claudeMac]), macFolder, relay, 250)
     const hetzner = await linuxBox("key-hetzner", "hetzner", relay)
     try {
       await mac.meet([hetzner])
@@ -695,47 +695,7 @@ describe("the second review's cases", () => {
     }
   })
 
-  test("a box a peer only vouches for hears an account's limits but not its spend or Always Allow, and can't ask for a reset", async () => {
-    const relay = new Map<string, Box>()
-    const hetznerFolder = mkdtempSync(join(base, "hetzner-v-"))
-    const claudeLinux = linuxClaude(hetznerFolder)
-    // (An account with credits left, as OpenRouter's is.)
-    const credits: LimitedAccount = { provider: "openrouter", service: "openrouter", limits: { every: 600_000, identity: () => "key:sk-or-test", read: async () => ({ windows: [], balance: { left: 7.7, limit: 50, unit: "usd" as const } }) } }
-    const hetzner = new Box("key-hetzner", "hetzner", () => [...agentAccounts([claudeLinux]), credits], hetznerFolder, relay)
-    const macFolder = mkdtempSync(join(base, "mac-v-"))
-    const claudeMac = macClaude(macFolder)
-    const mac = new Box("key-mac", "MacBook Pro", () => agentAccounts([claudeMac]), macFolder, relay)
-    const otherFolder = mkdtempSync(join(base, "vouched-"))
-    const other = new Box("key-other", "another Mac", () => [], otherFolder, relay)
-    try {
-      await hetzner.meet([mac], [other])
-      await mac.meet([hetzner])
-      await other.meet([], [hetzner])
-      await hetzner.limits.tick()
-      const id = hetzner.limits.rows()[0]!.id
-      await limitsRoutes(hetzner.limits, "PUT", ["reset", "always"], async () => ({ row: id, always: true }))
-      const theirs = () => other.limits.rows().find((row) => row.id === id)
-      const ours = () => mac.limits.rows().find((row) => row.id === id)
-      await until(() => !!theirs() && !!ours()?.extras?.some((extra) => extra.agents))
-      expect(theirs()!.windows.length).toBeGreaterThan(0)
-      expect(theirs()!.extras?.map((extra) => extra.kind)).toEqual(["resets"])
-      expect(theirs()!.extras?.[0]!.agents).toBeUndefined()
-      expect(theirs()!.agentsReset).toBeUndefined()
-      // Your own Mac hears all of it.
-      expect(ours()!.extras?.map((extra) => extra.kind)).toEqual(["capped", "resets"])
-      // Nor what an account has left to spend.
-      await until(() => !!other.limits.rows().find((row) => row.service === "openrouter") && !!mac.limits.rows().find((row) => row.service === "openrouter"))
-      expect(other.limits.rows().find((row) => row.service === "openrouter")!.balance).toBeUndefined()
-      expect(mac.limits.rows().find((row) => row.service === "openrouter")!.balance).toEqual({ left: 7.7, limit: 50, unit: "usd" })
-      // And its ask is never taken.
-      await peerRoutes(hetzner.parts, "POST", ["mail"], async () => ({ from: "key-other", mail: { kind: "reset", at: time, ask: { id: "v1", row: id } } }))
-      expect(makers.claims).toEqual([])
-    } finally {
-      hetzner.stop()
-      mac.stop()
-      other.stop()
-    }
-  })
+
 })
 
 describe("the third review's cases", () => {
@@ -1107,7 +1067,7 @@ describe("the sixth review's cases", () => {
     const relay = new Map<string, Box>()
     const macFolder = mkdtempSync(join(base, "mac-6-"))
     const claudeMac = macClaude(macFolder)
-    const mac = new Box("key-mac", "MacBook Pro", () => agentAccounts([claudeMac]), macFolder, relay, 20)
+    const mac = new Box("key-mac", "MacBook Pro", () => agentAccounts([claudeMac]), macFolder, relay, 250)
     const hetznerFolder = mkdtempSync(join(base, "hetzner-6-"))
     const claudeLinux = linuxClaude(hetznerFolder)
     const hetzner = new Box("key-hetzner", "hetzner", () => agentAccounts([claudeLinux]), hetznerFolder, relay)
@@ -1177,7 +1137,7 @@ describe("the sixth review's cases", () => {
   })
 })
 
-describe("which of your computers are yours", () => {
+describe("peer membership changes", () => {
   test("a decision a peer told stays while the link only leaves that peer out for a moment", async () => {
     const relay = new Map<string, Box>()
     const folder = mkdtempSync(join(base, "moment-"))
@@ -1199,7 +1159,7 @@ describe("which of your computers are yours", () => {
     }
   })
 
-  test("a spend a box began for a Mac that isn't one of its own any more is answered as it went, never 'nothing was used' for one that went", async () => {
+  test("a spend a box began for a Mac that left the setup is answered as it went, never 'nothing was used' for one that went", async () => {
     const relay = new Map<string, Box>()
     const folder = mkdtempSync(join(base, "begun-"))
     const machine = new Box("key-machine", "hetzner", () => agentAccounts([linuxClaude(folder)]), folder, relay)
@@ -1252,7 +1212,7 @@ describe("which of your computers are yours", () => {
     }
   })
 
-  test("the answer to a reset a Mac passed to its machine still comes through once the Mac counts that machine as not its own: it says how it went, never 'may have been used'", async () => {
+  test("the answer to a reset a Mac passed to its machine still comes through after the machine leaves the peer list: it says how it went, never 'may have been used'", async () => {
     const relay = new Map<string, Box>()
     const macFolder = mkdtempSync(join(base, "via-mac-"))
     const claudeMac = macClaude(macFolder)

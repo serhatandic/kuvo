@@ -102,7 +102,7 @@ export function whyNot(computer: Pick<ListedComputer, "key" | "name" | "kind" | 
   const { writer } = facts;
   if (computer.kind === "mac") return what === "rename" ? `${name} is a Mac: it goes by the name it has there.` : `A Mac can't be removed from here.`;
   if (what === "remove" && computer.here) return `${here} can't remove itself: remove it from another of your computers.`;
-  if (!writer) return macsOf(link).length > 1 ? `${name} was set up by more than one Mac, so no one of them keeps its record: ${what} it from the Mac that added it.` : `No Mac keeps ${name}'s record, so it can't be ${what === "rename" ? "renamed" : "removed"} from here.`;
+  if (!writer) return macsOf(link).length > 1 ? `${what === "rename" ? "Rename" : "Remove"} ${name} from the Mac that added it.` : `No Mac keeps ${name}'s record, so it can't be ${what === "rename" ? "renamed" : "removed"} from here.`;
   if (!facts.reachable) return `${here} can't reach ${(writer as { name: string }).name}, which keeps your machines' records: ${what} ${name} from there.`;
   if (!computer.key || !facts.machines.has(computer.key)) return `${name} isn't one of ${writer.here ? here : writer.name}’s machines, so it can't be ${what === "rename" ? "renamed" : "removed"} from here.`;
   if (!facts.takes) return `${(writer as { name: string }).name} needs a newer Kuvo Code to ${what} your machines. Update it, then try again.`;

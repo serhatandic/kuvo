@@ -157,8 +157,6 @@ export async function announce(host: Pick<LinkHost, "send">, readEngine: () => T
   if (!ownList) return;
   // With the conversations it moved away lately, and where each lives now.
   const moved = movedAway(now).map(({ session, key, at }) => ({ session, key, at }));
-  // And the boxes it knows: each peer may take plan limits from those it doesn't know itself.
-  const boxes = peersOf(link).map(({ key, address, kind, name }) => ({ key, address, kind, name }));
   // And the setup it follows (the usage panel's settings go between the boxes of one setup).
   const setup = followedSetup(link)?.id;
   const where = setup ? { setup } : {};
@@ -170,7 +168,7 @@ export async function announce(host: Pick<LinkHost, "send">, readEngine: () => T
   // And where a bot deleted here ends up (the Trash, or Kuvo Code's trash folder), so a box that
   // lists this one's bots says what deleting one takes with it as this computer would.
   const trash = folderGoes().to;
-  const json = JSON.stringify([ownList, moved, boxes, where, computer && { ...computer, working: undefined }, trash, zone]);
+  const json = JSON.stringify([ownList, moved, where, computer && { ...computer, working: undefined }, trash, zone]);
   let have: DigestEntry[] | false | null = null;
   for (const peer of peersOf(link)) {
     if (only !== undefined && peer.key !== only) continue;
@@ -187,7 +185,7 @@ export async function announce(host: Pick<LinkHost, "send">, readEngine: () => T
     for (const told of zones) {
       for (const count of [ownList.length, Math.floor(ownList.length / 2), Math.floor(ownList.length / 4)]) {
         sent = ownList.slice(0, count);
-        bytes = mailFor(peer, { agents: { at: now, list: sent, features: ownFeatures(), moved, boxes: boxes.filter(box => box.key !== peer.key), trash, ...where, ...(computer ? { computer } : {}) }, ...(told ? { zone: told } : {}), ...docs, at: now, ...(ask ? { ask: "agents" } : {}) }, link);
+        bytes = mailFor(peer, { agents: { at: now, list: sent, features: ownFeatures(), moved, trash, ...where, ...(computer ? { computer } : {}) }, ...(told ? { zone: told } : {}), ...docs, at: now, ...(ask ? { ask: "agents" } : {}) }, link);
         if (bytes) break;
       }
       if (bytes) break;

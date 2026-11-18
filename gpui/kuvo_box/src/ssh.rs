@@ -26,9 +26,7 @@ pub struct SshBox {
     /// The box's home in the machine's home folder.
     root: String,
     /// A folder of this user's alone where connections are shared (`ControlPath`), so each request
-    /// costs a round trip rather than a login: the app's own `/tmp/kuvo-ssh-<uid>` (the one place
-    /// outside its folders Kuvo Code keeps anything, docs/footprint.md), made only once a request
-    /// goes. None: one login each.
+    /// costs a round trip rather than a login. The directory is private to this account.
     sharing: Option<PathBuf>,
 }
 
@@ -234,7 +232,9 @@ impl Transport for SshBox {
 /// made first could hold a socket of its own, which ssh would hand what it sends.
 #[cfg(unix)]
 fn is_own_private_folder(folder: &Path) -> bool {
-    use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+    use std::os::unix::{ffi::OsStrExt, fs::{DirBuilderExt, MetadataExt}};
+    // OpenSSH appends a temporary suffix to the 40-character %C expansion.
+    if folder.as_os_str().as_bytes().len() > 45 { return false; }
     // Made private in one step (a umask only takes bits away).
     let _ = std::fs::DirBuilder::new().mode(0o700).create(folder);
     let Ok(metadata) = std::fs::symlink_metadata(folder) else { return false };
@@ -248,11 +248,10 @@ fn is_own_private_folder(_folder: &Path) -> bool {
     false
 }
 
-/// The Mac app's folder for shared SSH connections, `/tmp/kuvo-ssh-<uid>`.
+/// The desktop app's private SSH connection directory.
 #[cfg(unix)]
 pub fn app_sharing_folder() -> Option<PathBuf> {
-    // SAFETY: getuid has no preconditions.
-    Some(PathBuf::from(format!("/tmp/kuvo-ssh-{}", unsafe { libc::getuid() })))
+    std::env::var_os("HOME").map(PathBuf::from).filter(|home| home.is_absolute()).map(|home| home.join(".kuvo-ssh-ctl"))
 }
 
 #[cfg(not(unix))]

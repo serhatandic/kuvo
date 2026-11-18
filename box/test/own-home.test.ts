@@ -105,7 +105,7 @@ test("the app's box in its own folder keeps what it kept: beside it, where its a
   // The app's folder is Kuvo Code's own to the sandbox, its `bin` readable.
   expect(seen.kuvo).toContain(S)
   expect(seen.readable).toEqual([join(S, "bin")])
-  if (mac) expect(places.sshAgents).toStartWith("/private/tmp/kuvo-ssh-")
+  if (mac) expect(places.sshAgents).toStartWith(join(home, ".kuvo-ssh") + "/")
 })
 
 test("the app's box started in a home of its own is refused, rather than take your home for the app's folder", () => {

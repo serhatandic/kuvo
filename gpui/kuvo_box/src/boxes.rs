@@ -59,7 +59,7 @@ pub enum Pairing {
     Paired,
     /// The nearest box couldn't say yet (its main computer isn't answering): asked again later.
     Waiting(String),
-    /// Refused, in the box's words (the switch is off, a shared machine, an older box).
+    /// Refused, in the box's words (the switch is off or the box is older).
     Refused(String),
     /// This device was removed from your devices: only your word pairs it again
     /// ([`Boxes::pair_again`]).

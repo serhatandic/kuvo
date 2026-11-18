@@ -49,8 +49,7 @@ user's or the lead's agreement.
     socket a crash left makes every later start fail), forwarding a Unix socket
     (`-L <socket>:127.0.0.1:<port>`). A socket rather than a local port: there's no race for a free
     port, and only this user can open it. Its path must stay under macOS's 104 bytes, so it goes
-    in the same short folder as SSH's shared connections (`/tmp/kuvo-ssh-<uid>`, checked to be
-    this user's alone), not the app's long temporary folder.
+    in a private short directory under the account’s home.
   - It speaks HTTP over that socket, with `LocalServer`'s client (already written for a closable
     stream), saying `x-kuvo-from: mac`.
   - Like `LocalServer::recorded`, it reads `run/serve.json` again when a request fails to
@@ -64,6 +63,5 @@ user's or the lead's agreement.
   handed to its timed reader for good once `streams()` is false.
 - Tests use a stand-in `ssh` that opens the forward with a local Unix socket to the stand-in box,
   and the existing stand-in box. No real machine is involved.
-- Its footprint: the socket goes in `/tmp/kuvo-ssh-<uid>` (footprint.md's one exception, which
-  this joins) and is removed when the tunnel ends.
+- Its footprint: the socket stays inside the account’s home and is removed when the tunnel ends.
   The `ssh -N` process is this client's own, and is stopped by its PID only.

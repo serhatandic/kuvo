@@ -1483,8 +1483,7 @@ mod tests {
         assert!(matches!(read, super::Reading::Ready(bots) if bots.bots.is_empty()));
     }
 
-    /// A computer's line says what the box says of it: one it only knows of through another is
-    /// never said to be away.
+    /// A computer’s line uses its box’s reach and system details.
     #[test]
     fn a_computers_line_says_how_the_box_reaches_it() {
         let computer = |json: &str| serde_json::from_str::<kuvo_box::areas::Computer>(json).unwrap();
@@ -1492,8 +1491,6 @@ mod tests {
         assert_eq!(line(r#"{"key":"a","name":"devbox","kind":"machine","reach":"connected","system":"Ubuntu 24.04.1 LTS","via":"relay","working":0,"limits":[]}"#), "Ubuntu 24.04.1 LTS");
         assert_eq!(line(r#"{"key":"a","name":"devbox","kind":"machine","reach":"connecting","title":"Connecting","via":"relay","working":0,"limits":[]}"#), "Connecting");
         assert_eq!(line(r#"{"key":"a","name":"devbox","kind":"machine","reach":"away","title":"Can’t be reached","via":"relay","working":0,"limits":[]}"#), "Can’t be reached");
-        assert_eq!(line(r#"{"key":"b","name":"Studio","kind":"mac","reach":"unknown","title":"Known through devbox","via":"peer","through":"devbox","working":0,"limits":[]}"#), "Known through devbox");
-        assert_eq!(line(r#"{"key":"b","name":"Studio","kind":"mac","reach":"unknown","title":"Not reached directly","via":"peer","working":0,"limits":[]}"#), "Not reached directly");
     }
 
     #[test]

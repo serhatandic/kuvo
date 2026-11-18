@@ -4,18 +4,15 @@
 // host's key is checked strictly, against your known hosts and this box's own (`ssh/known_hosts`
 // in its folder); one not known yet is read without signing in, for you to look at. Used only
 // while a computer is set up or uninstalled: boxes talk through the relay after.
-// Platform: `/usr/bin/ssh` on a Mac, `ssh` from the PATH on Linux. Shared connections' sockets go
-// in `/tmp/kuvo-ssh-<uid>` on a Mac (a socket's path is short there; docs/footprint.md) and in the
-// box's own `run/ssh` on Linux.
+// SSH connection sockets live under this account’s home.
 
 import { spawn } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import type net from "node:net";
-import os from "node:os";
 import path from "node:path";
 import { loginEnvironment } from "../../shared/platform";
-import { IN_TEST_FOLDER, K, RUN, homeFolder } from "../home";
+import { IN_TEST_FOLDER, K, RUN, SSH_AGENTS, homeFolder } from "../home";
 import { isSshKey } from "../vault/ssh";
 import { type AgentKey, privateKeyOf, serveAgent } from "../vault/ssh-agent";
 import { isLocked, readItems, valuesOf } from "../vault/store";
@@ -47,10 +44,9 @@ const strict = (): string[] => {
 
 /** The folder shared connections' sockets (and the vault's agent's) go in, yours alone; null where
  * there's none to trust (someone else made it, or a path too long for a socket). */
-function socketFolder(): string | null {
-  const folder = process.platform === "darwin" ? path.join("/tmp", `kuvo-ssh-${os.userInfo().uid}`) : path.join(RUN, "ssh");
+function socketFolder(folder = path.join(RUN, "ssh")): string | null {
   try {
-    fs.mkdirSync(folder, { recursive: process.platform !== "darwin", mode: 0o700 });
+    fs.mkdirSync(folder, { recursive: true, mode: 0o700 });
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") return null;
   }
@@ -60,13 +56,12 @@ function socketFolder(): string | null {
   } catch {
     return null;
   }
-  // (`%C` is 40 characters; a socket's path is 104 bytes at most on a Mac, 108 on Linux.)
-  return Buffer.byteLength(folder) > 55 ? null : folder;
+  return folder;
 }
 
 const sharing = (): string[] => {
   const folder = socketFolder();
-  return folder ? ["-o", "ControlMaster=auto", "-o", `ControlPath=${folder}/%C`, "-o", "ControlPersist=60"] : ["-o", "ControlMaster=no", "-o", "ControlPath=none"];
+  return folder && Buffer.byteLength(folder) <= 45 ? ["-o", "ControlMaster=auto", "-o", `ControlPath=${folder}/%C`, "-o", "ControlPersist=60"] : ["-o", "ControlMaster=no", "-o", "ControlPath=none"];
 };
 
 /** How a connection signs in besides your own keys: the vault's agent. */
@@ -172,8 +167,9 @@ export const remote = (destination: string, script: string, options: RunOptions 
 
 /** Lets go of the connection shared with `destination` (as a try ends): nothing of it stays. */
 export async function hangUp(destination: string, way?: Way, options: string[] = []): Promise<void> {
-  if (!socketFolder()) return;
-  await run([...BASE, ...sharing(), ...signingIn(way), ...options, "-O", "exit", "--", destination], { most: 10_000, way });
+  const shared = sharing();
+  if (shared.includes("ControlPath=none")) return;
+  await run([...BASE, ...shared, ...signingIn(way), ...options, "-O", "exit", "--", destination], { most: 10_000, way });
 }
 
 /** How `ssh` reaches `destination` as your config has it (`ssh -G`): the host it connects to, as
@@ -303,7 +299,9 @@ export function troubleOf(ran: Ran): Trouble | null {
  * your own asking (adding a computer): its socket, and what closes it. Null while the vault is
  * locked, has no SSH key, or there's nowhere safe for its socket. */
 export async function vaultAgent(): Promise<{ way: Way; close: () => void } | null> {
-  const folder = socketFolder();
+  const parent = socketFolder(path.dirname(SSH_AGENTS));
+  if (!parent) return null;
+  const folder = socketFolder(path.join(parent, `a-${crypto.createHash("sha256").update(path.resolve(K)).digest("hex").slice(0, 12)}`));
   if (!folder) return null;
   let keys: AgentKey[] = [];
   try {

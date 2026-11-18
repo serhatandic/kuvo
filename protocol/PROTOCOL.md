@@ -259,15 +259,8 @@ computer. Changing the main computer and joining two setups come later: #183.)
 - **Kept** in `run/link.json` as `setup: {id, epoch, primary, sign, role: "primary"|"member",
   aside?, conflict?}` (`sign`, the main computer's signing key). `aside`: kept only so a lower
   epoch of it is never taken, and followed for nothing else (its main computer stopped naming it).
-- **Who leads one**: this Mac's box, once it numbers on its own (the Work Queue's first computer,
-  "Numbers") and each of its machines has said it knows setups (`shared: false` in what it tells of
-  its Work Queue; one that hasn't said, an older box, holds it back, and nothing changes meanwhile;
-  once it leads, nothing does; `shared: true`, which an earlier Kuvo Code said of a machine more
-  than one Mac set up, holds nothing back; a machine that never told this Mac how it numbers, or one
-  the Work Queue counts as gone, not heard for days, holds it back from neither, so one stale
-  machine never keeps a Mac out of a setup); and a box no Mac set up, once it numbers on its own (one paired with
-  a phone by itself, on Linux say; one its Mac let go waits for that Mac first, as "Numbers" says,
-  days). It's made once, at epoch 1, and looked at once a minute and as a machine's word on how it
+- **Who leads one**: a Mac's box, or a box no Mac set up, once it numbers on its own ("Numbers").
+  A box its Mac let go waits for that Mac first, as "Numbers" says. It's made once, at epoch 1, and looked at once a minute and as a machine's word on how it
   numbers changes: a Mac that stops leading (it numbers through another Mac) sets it aside and its document names it no more; leading again, it names the same
   one. A Mac whose keys were made anew (its static key, or its signing key alone) makes a new setup:
   the one it led with its old keys is no longer its own, and its machines take the new one from it.
@@ -292,14 +285,11 @@ computer. Changing the main computer and joining two setups come later: #183.)
   Mac's documents. A box that follows no setup (kept until every box knows setups) takes `peers`
   from its own Macs, as before. The card (below) is a hint for what looks from outside, never
   trusted for any of this.
-- **A machine more than one Mac set up** (#783) is yours, as every computer is: it follows one
-  setup as above, never set aside for it, and says `shared: false` like any box that knows setups.
-  The Macs number from the first one you set up ("Numbers"), which leads; the others follow no
-  setup of their own until setups can be joined (#183), and count every computer their machines
-  name as yours. (Earlier, such a machine was a "shared machine": it followed no setup, said
-  `shared: true`, and its computers counted each other as someone else's. A box now ignores that
-  word from an older one, and one set aside for it follows its setup again once its main computer
-  names it.)
+- **Existing links**: boxes keep direct connections established over SSH, including links from
+  older releases. Each box follows one setup. Extra computers named in old agents mail, and
+  old directory and numbering flags, carry no membership. The SSH setup command refuses an
+  additional setup on an account already enrolled, while reconnection and key rotation still work.
+
 - **`GET kuvo/setup`** (and `kuvo/setup/events`, a line now and one at each change), on every box,
   for every client: `{setup, epoch, primary: {key, name, kind}, you: {key, role}, computers: [{key,
   name, kind, role, app}], conflict?, startsFromOthers: {value, default}, heldBy: [key], welcomed}`. Facts only, the same on
@@ -307,12 +297,7 @@ computer. Changing the main computer and joining two setups come later: #183.)
   setup, `setup`, `epoch`, `primary` and `you.role` are null and `computers` is empty.
   `startsFromOthers` is the #181 switch (not built yet): `value` as you set it (`link.json`'s
   `startsFromOthers`, `on` or `off`), or null, and `default`, what it is then: off on the main
-  computer (and on a Mac in no setup), on everywhere else, so it follows the role. `heldBy`: on a
-  Mac, the machines whose word holds it back from leading now (not said yet, or `shared: true`;
-  "Who leads one"), by key; empty elsewhere. Only the machines' word: a Mac that numbers through an
-  earlier Mac doesn't lead either, with none of them named. Once it leads, a machine not heard from
-  for days stays gone until it's heard from again (so a Mac back from a long sleep doesn't step
-  aside while the relay hasn't looked again).
+  computer (and on a Mac in no setup), on everywhere else, so it follows the role. `heldBy` is an empty list.
   `welcomed` (`setup.welcomed`, #733): whether you've had Kuvo Code's first run with this box (each
   box its own: a client asks the box it opens with, its own computer's), kept on it
   (`run/welcomed.json`), so every client of it agrees and one installed again doesn't
@@ -411,14 +396,15 @@ computer. Changing the main computer and joining two setups come later: #183.)
     adding it joins its setup with nothing to ask, as another setup's main computer with no Kuvo
     Code app there (no box's card says `app`, no `app` line: a Mac's app would open as a window from
     then on, which you choose) whose setup is empty (its card says no other computer and no work
-    items: one that doesn't say is asked; a lie skips a question at most); else the verdict's own
-    question.
+    items). For any other setup already on the SSH account, Add Computer stops and asks you to
+    connect to your own OS account.
+
   - **`POST kuvo/setup/attached`**: Kuvo Code on this computer attached to this box in place (the
     app, once the box runs, by the box's own `bin/kuvo-link.js box route` with its own engine, as a
     Mac reaches a machine's box over SSH), from then on said on its card (`app: true`,
-    `run/app-attached.json`), so a Mac adding this computer asks before a join. Any `box route`
+    `run/app-attached.json`), so Add Computer can recognize an existing desktop setup. Any `box route`
     caller may say it (the app here, a Mac over SSH, this box's own agents), and the app beside its
-    own box; 403 from a phone or the relay. It can't be undone, and can only make a join ask first.
+    own box; 403 from a phone or the relay. The attachment stays recorded.
     Answers `{}`.
   - **`kuvo-link.js here <root>`**: Kuvo Code on a Mac (the app, and its keeper), before it starts
     a box, with `KUVO_HOME` its own box's folder (in its app folder) and `root` the machines'
@@ -466,10 +452,7 @@ connection.
   about?, machine?, look?}], "features"?}}`: a bot's `id` (`bot_…`, as group chats name their
   members) and `look` (`{color, shape, face}`, as `kuvo/bots` has it: a colour, shape or face the
   apps don't draw is kept as the plain look's, `graphite`, `round`, `calm`), and `features` as the box's
-  `kuvo/info` names them (the box that takes them keeps the first 300 names), and `boxes`
-  (`[{key, address, kind, name}]`, 64 at most), the sender's other peers, which the receiver takes
-  plan limits from and tells its own to where they aren't its peers too ("Plan limits", "Across your
-  computers"; nothing else), and `setup` (the id of the setup it follows, where it follows one: the
+  `kuvo/info` names them (the box that takes them keeps the first 300 names), and `setup` (the id of the setup it follows, where it follows one: the
   usage panel's settings go between the boxes of one setup), and `computer` (`{version?, engine?, system?,
   working, atWork?, waiting?, asking?, oldApp?, addresses?, kuvo?, release?, agents?}`: Kuvo Code's version there, its engine's, its system as people know
   it, how many of its sessions are at work and which, how many wait on you and which (`asking`, ten
@@ -482,9 +465,7 @@ connection.
   and `release`, the Kuvo version it runs and the signed release it holds ("Updates", Your
   computers follow each other), and `agents` (`{state, why?}`, how its coding agents stand: "The
   coding agents' state"); to each
-  peer, every one of them your own computer (#783; an earlier box said `shared: true` of a machine
-  more than one Mac set up, and kept this from it and from peers in another setup: a box now
-  ignores that word); told again at its next round, within a
+  peer; told again at its next round, within a
   minute, as it starts or stops working at all, else with the rest). Beside `agents`, the same mail
   carries `zone: {zone, n, zoneinfo?}`, your time zone's pick, by the same rule as `computer` ("Your time zone"). A box sends its bots and its 40 latest
   sessions (its engine's and its coding agents') when they change and every ten minutes. Each box
@@ -1638,9 +1619,8 @@ sessions").
 ### Computer display words (`computers.words`)
 
 Each `kuvo/computers` row has `title`, the display title of its `reach` value
-(“Connected”, “Connecting”, “Can’t be reached”; for `unknown`, “Known through <name>”
-with the computer it's known through, `through`, or “Not reached directly” without one).
-For an unavailable reach (`away`, `connecting`, `unknown`), `detail` gives a short
+(“Connected”, “Connecting”, “Can’t be reached”).
+For an unavailable reach (`away` or `connecting`), `detail` gives a short
 explanation and `notice: {title, detail}` supplies the named notice shown in Computers;
 `settingsNotice: {title, detail}` is the same standing in words about its settings, shown
 where its settings would be (a box that sends none: `notice`). Connected computers have neither. `workingTitle`, present whenever
@@ -1652,7 +1632,7 @@ The same fields are sent in `kuvo/computers/events` snapshots.
 
 Each computer also carries `reachTitles`, a map of display words for the app’s own
 reach states: `connecting`, `held` (an update is needed), `away`, `notPaired` and
-`unreached` (`shared` and `apart` are no longer said, #783). A client’s direct connection may stand differently from the
+`unreached`. A client’s direct connection may stand differently from the
 answering computer’s connection; it selects the matching supplied title instead of
 writing a title itself. The capability is gate-required.
 
@@ -1666,50 +1646,38 @@ Work sessions include `account.title`, the complete short display name including
 
 Your computers as one list (`computers`, #711), from any box, a Mac's or a machine's, with no
 client connected: a client's Computers area and its switcher draw it, and ask no Mac for it
-(`kuvo/machines` names only what a Mac's app connects to over SSH). Each box lists what it knows:
-its peers in full, and the boxes they vouch for by name only (`reach: "unknown"`), so a Mac says
-more of its machines than of your other Mac, and a machine more of its Macs than of their other
-machines; a client that wants every computer's facts asks the box that has it as a peer.
+(`kuvo/machines` names only what a Mac's app connects to over SSH).
 
 - `GET kuvo/computers` → `{computers: [computer…]}`: the box that answers first (`here: true`),
-  then its peers by name ("Peers"), then the boxes those vouch for ("Plan limits", Who). Every
-  one is yours (#783: a machine more than one Mac set up lists them all). Each:
+  then its peers by name ("Peers"). Each:
   - `key` (its box's public key; `""` for the box itself while it has none), `name`, `kind`
     (`mac` or `machine`), `id?` (a machine's name on its Mac);
-  - `shared`: always `false`, kept for apps that read it (once, a machine Macs of different setups
-    shared, and `apart: true` a peer that wasn't one of your own computers: neither is said since
-    #783, so an app files no computer apart from yours);
   - `reach`: `connected` (the box itself; a peer heard from in the last half hour), `connecting`
     (a peer not heard from yet since this box knew of it, or being reached again: Connect, below,
     asked in the last 20 seconds and no word since), `away` (the relay said it isn't
-    there, `run/peer-reach.json`, or nothing came from it for half an hour) or `unknown` (a box
-    known only by a peer's word: this box can't say). As this box last heard: one that's itself
+    there, `run/peer-reach.json`, or nothing came from it for half an hour). As this box last heard: one that's itself
     off the relay still says `connected` of a peer heard in the last half hour;
   - `version?`, `engine?`, `system?`: Kuvo Code's version there, its engine's, and its system as
     people know it ("macOS 15.1", "Ubuntu 24.04.1 LTS"), as that box said them with its agents
-    (`agents.computer`, "Peers"); left out for one that hasn't said (a box from before this, one
-    known only by a peer's word);
+    (`agents.computer`, "Peers"); left out for one that hasn't said;
   - `features?` (`computers.facts`): what its box answers, as its `kuvo/info` says (this box's
     own) or as it said with its agents: whole, so a client applies its update gate to it ("The
     update gate") and calls it older where a name it needs is missing. Left out for one that hasn't
     said, and one whose list is longer than peers keep
     (300 names, "Peers"): it can't be said what's missing then, and a client doesn't call it older;
-  - `via`: how the box that answers knows it: `here` (itself), `relay` (a peer it talks to) or
-    `peer` (by another computer's word alone, `through` that one's name);
+  - `via`: `here` for the box that answers, or `relay` for a peer;
   - `address?` and `relay?` (`computers.reach`, #742): where a client of your own reaches that
     computer's box itself: its address on the relay (base64url, as its setup's peers document
     names it; the box's own from its relay secret) and the relay's URL, the one this box reaches
     it through. With the box's key (`key`) that's all a paired device needs to open a session
     there ("Sessions"), so Kuvo Code's desktop app connects to each of your computers directly
-    and no box relays for another. Left out on one known by a peer's word alone, and while this box
-    has no relay;
+    and no box relays for another. Left out while this box has no relay;
   - `working?` and `atWork?` (`computers.facts`): how many of its sessions are at work
     (conversations, not their subagents, never one that waits on you), and which, newest first,
     each `{id, title?}` (its session's id on that computer, and its title): its own from its session
     list (the first 100), a peer's as it last said (the first 20; a peer tells which as they change,
     at most once a minute). `0` and `[]` for one that's away (nothing there can be seen at work
-    now); both left out for one that never said (a box from before this, one known only by a
-    peer's word): a client says nothing of what's at
+    now); both left out for one that never said: a client says nothing of what's at
     work there, never "nothing";
   - `limits`: the services whose plan limits it reads (`claude`, `codex`…), as the answering
     box's limits rows say (`rows[].boxes`); `[]` while its coding agents' bridge doesn't run.
@@ -1824,7 +1792,7 @@ machines; a client that wants every computer's facts asks the box that has it as
     as any that isn't an act), so the computer kept out can't allow itself, and a member's box
     answers `409 {"message": "Allow it from <main>.", "primary": "<its key>"}`. `409 {"message"}`
     too on a box that leads no setup, for the box itself, and for a computer that isn't the main
-    computer's own (known by a peer's word alone).
+    computer's own.
   - **While the old app is attached** (the Mac app before 0.8, which keeps its own list of machines
     and writes all of it back, `machines.json` and `kuvo/link/peers`, so a removal there wouldn't
     hold): the box that writes a machine's record takes no removal, from a client of its own or
@@ -1903,9 +1871,6 @@ machines; a client that wants every computer's facts asks the box that has it as
     - `hostKeyChanged`: the key differs from one the box kept. `trust` puts the new one in its
       place: the old key's line goes, with every other key kept under that host's name. A key that differs from one in your own known hosts is never asked about: the try
       fails, saying to remove it with `ssh-keygen -R`.
-    - `inAnotherSetup`: a box found there is another setup's, or an older Kuvo Code's ("Your
-      setup", Already in a setup?, judged as `kuvo/setup/judge` does). `add` goes on, and it's
-      shared from then on.
     `cancel`, on each, stops the try.
   - `DELETE kuvo/computers/add/<id>` stops one under way (at its next step: what it runs there
     now ends first, and its start is never cut short; it says `stopping` meanwhile, then leaves
@@ -3142,8 +3107,7 @@ did: the box keeps working as itself ("For released Macs").
   - **Told**: its agents mail's `computer` says `kuvo` (the Kuvo version it runs; a Mac's `version`
     is its app's) and `release` (the version it holds), "Peers".
   - **Told at once**: the box's link watches `updates` and, as a newer release is held (whichever
-    process kept it), tells its peers in agents mail and the boxes they vouch for (`holds`) right
-    away, not at the next round.
+    process kept it), tells its peers in agents mail right away.
   - **Followed**: as a peer's agents mail comes, and each minute, a box takes the newest `release`
     your computers say, newer than its own version: the newest version, then the lowest key (a peer
     that couldn't hand a version over isn't asked for it again for an hour). A version that rests
@@ -3163,18 +3127,9 @@ did: the box keeps working as itself ("For released Macs").
     an update under way here is offered again at the next look, any other refusal rests that peer
     an hour; the engine comes from the manifest's URL, as for any update. Only the
     box with the relay connection pulls (its link, `run`); a box that starts again begins anew.
-  - **Whose**: only your own computers: its peers, the members of the setup it follows, and the Macs
-    a machine of yours names among its own `boxes` as `mac` (a Mac that set up one of your computers
-    is yours, #783). A box a peer only vouches for otherwise is never asked, told or answered.
-  - **Between two Macs**: a Mac's box's peers are its own machines, so another of your Macs isn't
-    one; `release` mail goes between them too (and, of what a vouched box sends, only it beside
-    limits): a box tells your other Macs what it holds (`{holds: <version>}`, at once when that
-    changes, and every ten minutes), which they follow as a peer's `computer.release` (for half an
-    hour from its word).
   - **Never** older, its own version, unsigned or signed by a key it doesn't pin, with an engine
-    older than the one running (refused before any part is asked), or from a box that isn't yours
-    (a peer, or one a peer vouches for). A refusal that's no fault of the computer that sent it (an
-    update starting here) is looked at again a minute on; one that is rests that computer an hour.
+    older than the one running (refused before any part is asked), or from outside its peer list.
+    A refusal because an update started here is looked at again a minute later.
 - **This Mac's app follows** its Kuvo: the desktop app registers its version with `kuvo/box/app`
   (`{desktop, version}`), and while Kuvo on this Mac runs a newer version, this Mac's row in
   `kuvo/computers` says it (`appCheck: <version>`): the app looks for its own update then, in the
@@ -5877,16 +5832,13 @@ the last reading in its folder (`limits.json`), through a restart. A client reac
       how many; `expiries`, each one's, soonest first (ms, 50 at most); `usable`, one can be used now
       with this sign-in; `agents: true`, agents may use them without asking (Always Allow, below).
       In a row, `usable` and `on` `{key, name, here?}` say which of your computers would use one:
-      the first of its `boxes` (this box first, one heard from before one that's away, never one a
-      peer only vouches for, nor one that isn't yours, Whose) whose own
+      the first of its `boxes` (this box first, one heard from before one that's away) whose own
       `resets` say `usable`; none can, `usable: false` and no `on`. `agents` is that computer's.
     - `unreadable` `{message}`: what this sign-in can't read: a Mac's Claude token can only run
       Claude, so its extra usage and resets show only from a computer of yours signed in to Claude
       Code with the same account (as one row, its numbers are that computer's); alone, the row
       states this (`id` `resets`).
     A read of them that fails keeps what was read (a failed read never states none, nor a zero).
-    A box a peer only vouches for is told an account's limits and its `resets` count, never what
-    it spends or has to spend (`spent`, `capped`, `left`, `balance`) nor `agents`/`agentsReset`.
     A client leaves out a kind it doesn't know, and one whose `resetsAt` has passed (not known
     now, as a window); a box keeps from a peer's mail the kinds it knows, checked, and passes a
     kind it doesn't know on as told, only its plain fields, 1 KB at most. Absent when there's none.
@@ -5913,40 +5865,12 @@ the last reading in its folder (`limits.json`), through a restart. A client reac
   each time either changes (a peer's word included).
 - **Across your computers** (#210): every box is equal, none is a hub, and each works with any
   other off.
-  - **Who**: a box's limits peers are its peers ("Peers") and the boxes they say they know
-    (`agents.boxes`, 16 from each peer at most) that it doesn't: so two Macs that share a machine,
-    which aren't each other's peers, and each Mac's other machines, share their limits through no
-    one. It takes only `limits`
-    from those (any other mail from them is dropped, as from anyone else), and they go when no peer
-    names them any more. A box two hops away (known only to a box only a peer knows) isn't one.
-  - **Whose** (#701): what's yours alone (spending a reset, Always Allow, what an account spends or
-    has left to spend, `agents`/`agentsReset`, and usage `totals`) stays between your own
-    computers: every peer (a box only a peer vouches for isn't one). Only you set your computers
-    up, so since #783 a machine more than one Mac set up, and a peer in another setup, are yours
-    too, and the link tells the bridge no peer as apart (`PUT /api/kuvo/peers` says no `apart` or
-    `shared`). What follows is how the bridge treats one a link from before said wasn't yours
-    (`apart: true` on a peer, `shared: true` on one or at the top): on such a machine no Mac's resets are used
-    (only its own sign-ins' are, here), no Always Allow is taken or passed on, and no one's spend is
-    added up but its own; and each Mac treats that machine as it treats the other Mac (a box a peer
-    vouches for). Such a box is told only what a box a peer vouches for is, and what one says is
-    kept as such a box's (before the link has said too); what was kept through a restart is kept
-    whole, but read (`rows`) as such a box's, and never stands for a read, until the link says it's
-    yours; one that becomes yours (again, or the first time the link says) is asked for all of its
-    own at once, and clients hear. A reset asked of a box that isn't yours is answered, never left
-    to wait: one it began for that asker before, as it went there (`already`), or open
-    (`not-now`, `open`) where it isn't settled; a new one `failed`, saying the computer with its
-    sign-in isn't one of yours now. Before its link has said, a box answers none. An answer to a spend
-    a box passed to that very box is taken whatever the link says of it now, as it says how that
-    spend went. Always Allow
-    decisions are kept with the box they came from (`from` in the journal, `""` decided here): the
-    moment a box becomes a shared machine (the journal keeps `shared`), every decision kept there
-    goes, once (made on its own page, from a card there, by a Mac, or in a journal from before
-    this), so agents there ask again, and one made there after stays; else a decision a peer told
-    goes once the link names that peer as not yours (never for one it merely leaves out for a
-    moment), and one from a journal from before this, whose box isn't known, once any peer says it's
-    a shared machine. Before its link has said who your computers are (a box just started), no
-    Always Allow holds there: an agent's reset is refused, saying so. One that goes is kept as off, as of when it was decided, so an older word never brings
-    it back.
+  - The bridge accepts readings after the link confirms peer membership. Cached readings are
+    visible once that membership is confirmed. A request to spend a reset requires membership.
+    An already recorded spend can still be reconciled with its original computer, using the
+    same request, after that computer leaves. Before the link reports membership, agents ask
+    before using a reset.
+
   - Each box's bridge tells each limits peer what it read of its own accounts, through its link:
     `{"limits": {at, accounts, ask?, refresh?}}`, `accounts` as its `GET` lists them, but its own
     numbers only (each account's hashed `identity`, its windows with when each was read, `checked`,
@@ -6133,7 +6057,7 @@ the last reading in its folder (`limits.json`), through a restart. A client reac
     `confirm` again after a lost answer, and after `unknown` or `unconfirmed`; a 404 then (the box no
     longer knows it) asks anew.
   - **On the computer with the sign-in**: a box whose own sign-in can't spend it passes it to
-    `on`, one of your own computers (never a box a peer vouches for, nor one that isn't yours, Whose), as `{"seat": {"kind": "reset", at, ask:
+    `on`, a peer, as `{"seat": {"kind": "reset", at, ask:
     {id, row, by?}}}`, and answers when that one does (`{"seat": {"kind": "reset", at, answer: {id,
     outcome, until?, already?, open?, message?}}}`: `already`, its maker said this request was done
     before; `open`, the spend stays open there, so it stays open here too), or `unknown` after 45
@@ -6141,7 +6065,7 @@ the last reading in its folder (`limits.json`), through a restart. A client reac
     under the same id, which that box's journal answers once). An open one that can't be passed
     there now stays open (`not-now`, saying an earlier try may have gone); a new one that can't is
     never kept. A box takes a
-    reset's mail only from your own computers (Whose); its link drops it from a box a peer vouches for.
+    reset mail only from peers.
   - **Always Allow**: `PUT kuvo/agents/api/kuvo/limits/reset/always {provider | row, always}`:
     agents may (or may not) use an account's resets without asking. It's the account's, by who it
     is (its row `<service>#<identity>`; 409 for one that doesn't say who it is yet): each decision
@@ -6222,22 +6146,20 @@ Cursor while its plan's sign-in was turned away as it is now, or while Cursor ho
   - A `row` is one account across your computers, with the same `id` as its plan limits row
     (`<service>#<identity>`, or `<box key>/<provider>` for one that can't say who it is), so a
     client puts an account's limits and its usage side by side: `{id, service, provider, agent?,
-    account?, label?, identity?, scanned?, boxes, away?, cut?, vouched?, estimated?, accountWide?,
+    account?, label?, identity?, scanned?, boxes, away?, cut?, estimated?, accountWide?,
     days}`: `estimated: false` where its dollars are what its maker billed (OpenCode's hosted
     models'), not an estimate; `accountWide: true` where its use is its maker's account of the whole
-    account (Cursor's): its days are its newest box's (`scanned`; of your own computers', for
-    `totals`), never a sum; `boxes` as limits' rows have them (`{key, name, provider, agent?, account?, label?, scanned?, here?, away?,
-    vouched?, same?}`): `vouched`, a box a peer vouches for (another Mac beside a machine you
-    share) or one that isn't yours (Whose, above), not one of your computers, and the row `vouched` when all of them are; `same`, a box
+    account (Cursor's): its days are its newest box's (`scanned`), never a sum; `boxes` as limits'
+    rows have them (`{key, name, provider, agent?, account?, label?, scanned?, here?, away?,
+    same?}`), where `same` marks a box
     that reads a folder another of them already does (two boxes on one computer), not added again.
     Its `days` are the **sum** of every box's own (each box reads only its own logs), each folder
     once; an `accountWide` row's, its newest box's alone. OpenCode's: a row for Go (the same row as its plan limits') and one for Zen, each only
     while it has use in the window. A conversation moved to another
     computer (`kuvo/moves`) is copied there, and the one it left keeps its copy for a while: its
     past use counts on both meanwhile.
-  - `totals`: each service's days, the accounts on your own computers added up (this box and its
-    peers, not a box a peer vouches for ("Plan limits", "Across your computers", Whose): their rows
-    show, `vouched`, in no total), each folder once (an `accountWide` row's newest box of yours): what the Mac's Claude, Codex, Grok, OpenCode and Cursor cards show. `partial`: a service whose
+  - `totals`: each service's days, from the same accounts as the rows. Each folder is counted
+    once, and an `accountWide` row contributes its newest box's reading. `partial`: a service whose
     totals are short, `away` (one of your computers isn't answering: its share is as of then) or
     `cut` (one told less than all: its oldest days).
   - A `day`: `{date, tokens, cost, models: [{model, tokens, cost, family?}], unknown?, fallback?}`, newest first, for
@@ -6366,8 +6288,7 @@ Cursor while its plan's sign-in was turned away as it is now, or while Cursor ho
 - **Across your computers**, as plan limits are ("Plan limits", "Across your computers": the same
   boxes, no hub, each working with the others off): each box tells each of them its own accounts'
   use, `{"seat": {"kind": "usage", at, digest, accounts?, from?, ask?, refresh?, fresh?}}` through its link
-  (in parts when it's big, as a group chat's mail is; to and from a box a peer vouches for too,
-  which sends nothing else that's taken): all of it (`accounts`) with `ask` to one it hasn't told
+  (in parts when it's big, as a group chat's mail is): all of it (`accounts`) with `ask` to one it hasn't told
   since its bridge or link started, and to one that asks; after a read that changed what they used
   (not only when they were read), only the last two days' slots, `from` the first slot they're
   from, the receiver keeping its older ones as told before; every ten minutes otherwise, `digest`
@@ -6392,10 +6313,9 @@ Cursor while its plan's sign-in was turned away as it is now, or while Cursor ho
   400 KB, the oldest left out first, an account so cut marked `cut` (and its rows elsewhere `cut:
   true`: their oldest days are short). Never a log, a message, a path or a sign-in. `refresh: true`: read yours now and tell (each box asks at most once a minute, and
   reads for each at most once a minute). The receiver keeps the last from each
-  (`usage/peers.json`), through a restart; a box not heard from for 25 minutes is away (its rows
-  `away` when every box of theirs is), what it said kept, and whether it was one a peer vouches
-  for, which holds after a restart until the link says again; a computer you removed goes, with
-  what it said.
+  (`usage/peers.json`), through a restart. It shows cached readings only after the link reports
+  membership. A peer not heard from for 25 minutes is away, and its last reading stays visible.
+  A computer removed from the setup leaves the usage view.
 
 ### Usage notices
 
@@ -6414,8 +6334,7 @@ new reader inherits the baseline/dedup. These fields cross only between direct o
 within one known setup, the same boundary as usage settings: the sender includes `noticeSetup`,
 and the receiver takes the fields only when it follows that setup. A box following
 no setup never sends or takes the fields, and a cached peer's notices/state stop applying when
-the setup changes. Accounts on computers a peer vouches for still show their limits, never
-notices. Peers preserve the original ID and decision; they do not decide it again. The current
+the setup changes. Peers preserve the original ID and decision; they do not decide it again. The current
 account holder with the smallest link key among online same-setup direct peers forwards decided
 facts to phones, including facts received from another holder. Once the link has named this box,
 each fact pins that selection in `forwarder`; before then, push waits. A later ownership change
@@ -6541,17 +6460,15 @@ Mac's box) answers 404: the Mac keeps a change and sends it once its bridge has 
   anew. A link from before this, met for a moment as a box updates, doesn't say it either. The
   bridge takes not said as neither: it records nothing and shares nothing until the link says), and a box sends and takes
   them only while it follows one, only with its peers (the setup's boxes), and only mail naming the
-  same setup. So never to or from a box a peer vouches for, and never through a machine more than
-  one Mac set up (it follows no setup, so it neither passes them on nor takes them): until setups
-  can be joined (#183), Macs that share a machine each keep their own, as their boxes keep them.
+  same setup.
   The settings belong to the setup they were shared in (`setup` in `settings.json`; `null` while
   the box followed none; a box from before this takes the first the link names): a box the link
-  names in another setup (it left yours, and joined someone else's), or in one after following
+  names in another setup (the setup changed), or in one after following
   none, starts over, every part and `imported` gone, so none of them reaches the new setup's
   computers, and its own Mac's settings come in again.
   Nothing goes before the link has said. Each box tells the others `{"seat": {"kind": "settings",
   at, digest, setup, usage?, ask?}}` through its link, which carries this kind only between your
-  own computers (never to or from a box a peer vouches for), whole or in parts as a group chat's
+  peers, whole or in parts as a group chat's
   mail is. `usage` is the parts with their versions (`{<part>: {value, stamp: {v, by,
   imported?}}}`), and `digest` a hash of all of them. A box sends all of them, with `ask`, to one
   it hasn't told since its bridge or link started. It sends all of them as they change, here or
@@ -7084,15 +7001,13 @@ item on its way to another computer (`handing`) goes with the move and is sent f
 `work-queue.elsewhere`; mail as "Peers" says, under the top-level `workQueue`):
 
 - **Told**: each box tells every such peer its Work Queue, unasked, so the others have it while it
-  sleeps: `{workQueue: {told: {id, at, kind, since, top, primary?: {key, kind, since?}, shared?,
+  sleeps: `{workQueue: {told: {id, at, kind, since, top, primary?: {key, kind, since?},
   items, owners, labels}}}`. `items` are its items as a view gives them (without `can`) (not deleted ones; the
   100 latest Done; 1,500 at most), each with `handedFrom` (who handed it on), an issue's or pull
   request's with `seen` and `keptIn` as this box last read it (`seen.checked`, when it last asked
   GitHub); `owners` names their
   owners; `labels` its labels (`[{id, name, color}]`); `kind`, `since` and `top` how it numbers, `primary` the
-  one it numbers from (itself when it's the primary), and `shared: false`, which says it knows setups
-  ("Your setup"; an older box says nothing, or `true` of a machine more than one Mac set up, which
-  is ignored since #783). `id` (`wqt_…`) is the same while all that is.
+  one it numbers from (itself when it's the primary). `id` (`wqt_…`) is the same while all that is.
   It's worked out again when a queue changes and each minute (who's at work changes it), and goes
   to one computer once in 15 s at most, again each minute (sooner after a change you made from a
   client, at the next round 15 s on) until that computer answers `{workQueue: {had: id}}`, nothing
@@ -9073,7 +8988,7 @@ box's facts alone:
     short?: {used, level}, long?: {used, level}}`, as "Plan limits" says them; none while the
     coding agents' bridge doesn't run.
   - `computers` (#781; left out by a box from before): every one of your computers, this one first
-    (`here: true`), then each of its peers by name (never one known by a peer's word alone): `{key, name, kind, here?, reach, working?,
+    (`here: true`), then each of its peers by name: `{key, name, kind, here?, reach, working?,
     sessions, waiting?, asking, rings}`. `reach` as `kuvo/computers` says it (`connected`,
     `connecting`, `away`). This one's as above (`waiting`, its sessions waiting on you); another's as
     it last told this box with its agents ("Peers", `computer`'s `working`, `atWork`, `waiting`,
@@ -10822,7 +10737,7 @@ own (`gaps`: `services`), none of this holds.
 
 It can't read
 Kuvo Code's own folders (on a machine `~/.kuvo-code`; on this Mac the app's folders under `Library`,
-any `run.kuvo.code…` copy's, its temporary folder and `/tmp/kuvo-ssh-<uid>`) but its `bin`, nor your
+any `run.kuvo.code…` copy's, its temporary folder and the account’s private SSH directories) but its `bin`, nor your
 secrets (cloud, package and git tokens, browsers' and password managers' data, the coding agents'
 sign-ins and opencode's, wherever your `XDG_DATA_HOME` puts it, private SSH keys: every file in
 `~/.ssh` but its config, known hosts and public keys; gh's `hosts.yml` when it holds the token). A
@@ -10915,7 +10830,7 @@ says to) through Kuvo Code's own SSH agent, which `ssh`, git over SSH and `ssh-a
 `SSH_AUTH_SOCK`. While agents may use the vault, the launcher notes each conversation before its
 command runs (`run/ssh-for/<session>`, or `dir-<sum>` with its folder for one of yours with none),
 and the process that holds the vault opens that conversation's agent: a socket of its own, named
-from the note's sum and random bytes, in `/tmp/kuvo-ssh-<uid>/agents-<sum>` on a Mac (a socket's
+from the note's sum and random bytes, in `~/.kuvo-ssh/<sum>` when a Mac box has a deep path (a socket's
 path is short there) and `run/ssh-agents` on a machine, which the launcher hands the command.
 Each lists only the keys its conversation may use, signs inside that process (a key never reaches
 the command), answers one request at a time per connection, asks you once for a key whichever of
@@ -11802,12 +11717,6 @@ can go three months after 0.8.0 ships.
 - Its keeper's box, still running after an update until the work under way ends, and a machine's
   box from before #660, are held by the update gate ("The update gate"): no client of this version
   runs Kuvo Code's own tools, git or a file walk itself for them any more.
-- (Filed here though no beta.1 Mac reads it: no release does.) A copy of Kuvo Code from before
-  #783 (built from main, never a release) treats a machine more
-  than one Mac set up as someone else's, and leads its setup only once that machine says it isn't:
-  a box says `shared: false` in its work queue numbering, and on every computer `kuvo/computers`
-  lists. Nothing reads it otherwise; it goes when 0.8.0 ships.
-  <!-- compat: beta.1 shared-false -->
 
 ### Antigravity conversation history
 

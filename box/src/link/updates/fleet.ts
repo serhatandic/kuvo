@@ -15,9 +15,8 @@ import { isObject } from "../../shared/json";
 import { listOf, writePrivate } from "../files";
 import { REAL_BOX, UPDATES } from "../home";
 import { watchFolders } from "../follow";
-import { readPeerAgents, vouchedOf } from "../peers/directory";
-import { type Peer, mailFor, peersOf } from "../peers/known";
-import { setupView } from "../setup/view";
+import { readPeerAgents } from "../peers/directory";
+import { mailFor, peersOf } from "../peers/known";
 import type { LinkState } from "../state";
 import type { LinkHost } from "../relay/host";
 import { readLink } from "../state";
@@ -167,15 +166,6 @@ interface Pull {
 let pull: Pull | null = null;
 /** Each `<peer> <version>` that couldn't be had from that peer, with when. */
 const tried = new Map<string, number>();
-/** What the boxes a peer vouches for (another of your Macs, known through a machine both set up)
- * said they hold (`{holds}`), with when: they send no agents mail to this box. */
-const heldBy = new Map<string, { version: string; at: number }>();
-/** What this box last told each box a peer vouches for that it holds, with when. */
-const toldHeld = new Map<string, { version: string; at: number }>();
-/** How long a vouched box's word on what it holds counts, and how often it's said again. */
-const HELD_WORD = 30 * 60_000;
-const SAY_HELD_AGAIN = 10 * 60_000;
-
 /** How a box follows its peers: for a test, its keys, its block, its clock, where its mail goes and
  * what's done with a release once it's offered. */
 export interface FleetOptions {
@@ -201,24 +191,12 @@ export function followOver(host: () => Pick<LinkHost, "send"> | null | undefined
   hostOf = host;
 }
 
-/** Your own computers this box can mail, beside its peers: the members of the setup it follows, and
- * your other Macs a peer of it names (a Mac one of your machines names as its own set it up, and
- * every Mac that set up one of your computers is yours, #783). Never a box only vouched for
- * otherwise: `release` mail, and the packs, go only between your own computers. */
-export function yours(link: LinkState | null | undefined = readLink(), told = readPeerAgents()): Peer[] {
-  const peers = peersOf(link);
-  const members = new Set(setupView(link).computers.map(each => each.key));
-  const others = vouchedOf(link, told).filter(box => members.has(box.key) || (box.kind === "mac" && peers.some(peer => peer.kind === "machine" && told[peer.key]?.boxes?.some(each => each.key === box.key && each.kind === "mac"))));
-  return [...peers, ...others.filter(box => !peers.some(peer => peer.key === box.key))];
-}
-const isYours = (key: string): boolean => yours().some(each => each.key === key);
-
 function tell(peer: string, release: Record<string, unknown>, options: FleetOptions): boolean {
   if (options.send) return options.send(peer, release);
   const link = readLink();
   // (A release's trust is its signature, never who hands it over; but it goes only between your
   // own computers.)
-  const to = yours(link).find(each => each.key === peer);
+  const to = peersOf(link).find(each => each.key === peer);
   const bytes = link && to && mailFor(to, { release, at: Date.now() }, link);
   if (!bytes) return false;
   try { return hostOf()?.send(bytes) === true; } catch { return false; }
@@ -252,13 +230,8 @@ function heldAround(now: number): { peer: string; version: string }[] {
   const mine = boxVersion();
   if (!mine) return [];
   const told = readPeerAgents();
-  const link = readLink();
-  const peers = new Set(peersOf(link).map(peer => peer.key));
-  const others = yours(link, told).map(box => box.key).filter(key => !peers.has(key) && now - (heldBy.get(key)?.at ?? -Infinity) < HELD_WORD);
-  return [
-    ...[...peers].map(key => ({ peer: key, version: told[key]?.computer?.release })),
-    ...others.map(key => ({ peer: key, version: heldBy.get(key)?.version })),
-  ]
+  const peers = peersOf(readLink());
+  return peers.map(({ key }) => ({ peer: key, version: told[key]?.computer?.release }))
     .filter((each): each is { peer: string; version: string } => typeof each.version === "string" && newerVersion(each.version, mine))
     .filter(each => now - (tried.get(`${each.peer} ${each.version}`) ?? -Infinity) >= TRIED_FOR)
     .sort((a, b) => (newerVersion(a.version, b.version) ? -1 : newerVersion(b.version, a.version) ? 1 : a.peer < b.peer ? -1 : a.peer > b.peer ? 1 : 0));
@@ -272,10 +245,8 @@ function repairPull(options: FleetOptions, now: number): void {
   const mine = boxVersion();
   if (pull || !mine || isUpdating() || runningKept(options.keys)) return;
   const told = readPeerAgents();
-  const link = readLink();
-  const peers = new Set(peersOf(link).map(peer => peer.key));
-  const others = yours(link, told).map(box => box.key).filter(key => !peers.has(key) && now - (heldBy.get(key)?.at ?? -Infinity) < HELD_WORD);
-  const holder = [...[...peers].map(key => ({ peer: key, version: told[key]?.computer?.release })), ...others.map(key => ({ peer: key, version: heldBy.get(key)?.version }))]
+  const peers = peersOf(readLink());
+  const holder = peers.map(({ key }) => ({ peer: key, version: told[key]?.computer?.release }))
     .filter(each => each.version === mine && now - (tried.get(`${each.peer} ${mine}`) ?? -Infinity) >= TRIED_FOR)
     .sort((a, b) => (a.peer < b.peer ? -1 : a.peer > b.peer ? 1 : 0))[0];
   if (!holder) return;
@@ -360,14 +331,7 @@ function endPull(why: string | null, now = Date.now()): void {
 export function takeReleaseMail(sender: { key: string }, given: Record<string, unknown>, asked: FleetOptions = {}): void {
   const options = { ...ownWays(), ...asked };
   const { keys = UPDATE_KEYS, clock = Date.now, blocked = updatesBlocked() } = options;
-  // Only between your own computers (a peer, or another of your Macs; never a box only vouched for).
-  if (!isYours(sender.key)) return;
-  // Told what another of your Macs holds: followed as a peer's word is.
-  if (typeof given.holds === "string") {
-    if (!/^\d+\.\d+\.\d+(-beta\.\d+)?$/.test(given.holds)) return;
-    heldBy.set(sender.key, { version: given.holds, at: clock() });
-    return followPeers(asked);
-  }
+  if (!peersOf(readLink()).some(peer => peer.key === sender.key)) return;
   // Asked: what this box holds, if it's that version.
   // (The one it holds, or the one it runs, kept apart: a computer with none of its own repairs from it.)
   const holding = (version: unknown): Held | null => [heldRelease(keys), heldRelease(keys, RUNNING)].find(each => each?.version === version) ?? null;
@@ -480,28 +444,10 @@ export function pullUnderWay(): { peer: string; version: string; got: number; pa
   return pull ? { peer: pull.peer, version: pull.version, got: pull.got.size, ...(pull.parts !== undefined ? { parts: pull.parts } : {}) } : null;
 }
 
-/** What this box holds told to each box a peer vouches for (another of your Macs, which hears no
- * agents mail from it): when it changes, and every ten minutes. Each minute. */
-export function tellHeld(asked: FleetOptions = {}): void {
-  const options = { ...ownWays(), ...asked };
-  const now = (options.clock ?? Date.now)();
-  const held = heldRelease(options.keys ?? UPDATE_KEYS);
-  if (!held) return;
-  const link = readLink();
-  const peers = new Set(peersOf(link).map(peer => peer.key));
-  for (const box of yours(link).filter(each => !peers.has(each.key))) {
-    const last = toldHeld.get(box.key);
-    if (last?.version === held.version && now - last.at < SAY_HELD_AGAIN) continue;
-    if (tell(box.key, { holds: held.version }, options)) toldHeld.set(box.key, { version: held.version, at: now });
-  }
-}
-
 /** Forgets what's pulled and tried, for a test. */
 export function forgetFleet(): void {
   pull = null;
   tried.clear();
-  heldBy.clear();
-  toldHeld.clear();
   fs.rmSync(INCOMING, { recursive: true, force: true });
 }
 

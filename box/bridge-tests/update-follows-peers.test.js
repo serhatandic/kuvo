@@ -57,9 +57,8 @@ const computer = (kind, name, id) => {
   return { key, pub: k(link.publicOf(key)), sender: { key: k(link.publicOf(key)), kind, ...(id ? { id } : {}) }, peer: { key: k(link.publicOf(key)), address, name, kind, ...(id ? { id } : {}) } };
 };
 const here = computer("machine", "devbox", "devbox"), mini = computer("mac", "mini"), lab = computer("machine", "lab", "lab");
-// Another of your Macs that isn't this box's peer: known through lab, a machine both set up. And a
-// machine lab names that isn't yours (not in your setup, not a Mac that set up one of yours).
-const studio = computer("mac", "studio"), stranger = computer("machine", "stranger", "stranger");
+// Keys that are absent from the peer list.
+const stranger = computer("machine", "stranger", "stranger");
 // (Lab's key the lower of the two others', so ties go to it.)
 const [first, second] = [mini, lab].sort((a, b) => (a.pub < b.pub ? -1 : 1));
 
@@ -205,33 +204,7 @@ test("a computer that was away takes the newer release once it hears from the ot
   assert.equal(offered(), "0.10.0");
 });
 
-test("another of your Macs that isn't a peer (known through a machine both set up) hands over its release too, and is told what this one holds", () => {
-  box();
-  const holding = peerHolding(release("0.10.0"));
-  follow({ [studio.pub]: holding });
-  // Lab says it knows studio: a box it vouches for, which sends no agents mail here.
-  link.peerMail(lab.sender, { agents: { at: clock++, list: [], boxes: [studio.peer], computer: { kuvo: "0.9.0" } } }, null);
-  link.takeReleaseMail(studio.sender, { holds: "0.10.0" });
-  assert.deepEqual(holding.asked, [{ want: "0.10.0" }], "asked at once, as studio said it holds it");
-  exchange(studio, holding);
-  assert.equal(offers, 1);
-  assert.equal(offered(), "0.10.0");
-
-  // The other way: what this box holds is told to studio, once, and again ten minutes on.
-  box();
-  const sent = [];
-  link.fleetWith({ keys: [pinned], blocked: null, clock: () => clock, send: (key, mail) => { sent.push([key, mail]); return true; } });
-  link.peerMail(lab.sender, { agents: { at: clock++, list: [], boxes: [studio.peer], computer: { kuvo: "0.9.0" } } }, null);
-  hold("0.9.0");
-  link.tellHeld();
-  link.tellHeld();
-  assert.deepEqual(sent, [[studio.pub, { holds: "0.9.0" }]]);
-  clock += 10 * 60_000;
-  link.tellHeld();
-  assert.equal(sent.length, 2);
-});
-
-test("release mail goes only between your own computers: a box a peer only vouches for is neither asked, told nor answered", () => {
+test("release mail ignores legacy computer announcements and requests from unknown keys", () => {
   box();
   const holding = peerHolding(release("0.10.0"));
   const sent = [];
@@ -242,7 +215,6 @@ test("release mail goes only between your own computers: a box a peer only vouch
   assert.deepEqual(sent, [], "not followed");
   hold("0.9.0");
   link.takeReleaseMail(stranger.sender, { want: "0.9.0" });
-  link.tellHeld();
   assert.deepEqual(sent, [], "not answered, nor told");
 });
 

@@ -20,7 +20,7 @@ import { listOf, writePrivate } from "../files";
 import { LETTER_ID, LETTER_MEMORY, SENDING, letterTries } from "../letters/letter";
 import { IS_MAC } from "../home";
 import { macLink, readLink } from "../state";
-import { readPeerAgents, vouchedOf } from "./directory";
+import { readPeerAgents } from "./directory";
 import { mailFor, ownKey, peersOf } from "./known";
 import type { ToldAgents } from "../../shared/records";
 import type { SeatLine as SharedLine, SeatMailKind, SeatPeers } from "../../shared/seats";
@@ -38,8 +38,7 @@ import type { MailSender, Peer } from "./known";
  * (PROTOCOL.md, "Plan limits"), which go as `{"limits": …}`, not as a seat's; `usage`: what its
  * accounts used (PROTOCOL.md, "Usage history"), which goes as a seat's, in parts when it's big;
  * `settings`: the usage panel's settings (PROTOCOL.md, "Usage settings"), as a seat's, only
- * between your own computers (never to or from a box a peer vouches for; the bridge sends and
- * takes them only within its setup, `SeatPeers.setup`). */
+ * within the same setup (`SeatPeers.setup`). */
 export interface SeatMail {
   kind: SeatMailKind | "limits" | "usage" | "settings";
   memory?: { bot: string; chat: string; [field: string]: unknown };
@@ -137,8 +136,7 @@ export function seatPayloads(mail: SeatMail, id?: string): SeatPayload[] | null 
 // The bridge's mail for `to`, sent now, each part as a mail of its own: whether it all went, or
 // "too big" for one that can't go at all (said in the log).
 function sendSeat(host: SeatHost | null | undefined, to: string, mail: SeatMail, id: string | undefined, link: LinkState | null = readLink()): boolean | "too big" {
-  // (Plan limits and usage go to a box a peer vouches for too.)
-  const peer = peersOf(link).find(each => each.key === to) ?? (mail.kind === "limits" || mail.kind === "usage" ? vouchedOf(link).find(each => each.key === to) : undefined);
+  const peer = peersOf(link).find(each => each.key === to);
   if (!peer || !host) return false;
   // Its plan limits: a mail of their own, whole (the bridge sends no more than fits).
   if (mail.kind === "limits") {
@@ -170,8 +168,7 @@ export async function takeLimits(sender: MailSender, limits: Record<string, unkn
 
 // A seat mail that came (whole, or once its parts are all here), to the bridge; one that mustn't be
 // lost said to have come, once the bridge has it, or to be sent again when it couldn't be given.
-// `only`: the kinds taken from this sender (a box a peer vouches for: `usage`), the rest dropped.
-export async function takeSeat(sender: MailSender, payload: Record<string, unknown>, send: (to: MailSender, message: { delivered: { id: string; ok: boolean; why?: string; retry?: boolean } }) => void, ask: BridgeAsk = bridgeAsk, only?: string[]): Promise<void> {
+export async function takeSeat(sender: MailSender, payload: Record<string, unknown>, send: (to: MailSender, message: { delivered: { id: string; ok: boolean; why?: string; retry?: boolean } }) => void, ask: BridgeAsk = bridgeAsk): Promise<void> {
   let mail: unknown = null, id: string | null = null;
   if (isObject(payload.seat)) {
     mail = payload.seat;
@@ -184,7 +181,6 @@ export async function takeSeat(sender: MailSender, payload: Record<string, unkno
     id = whole.s || null;
   }
   if (!isObject(mail) || (id !== null && !LETTER_ID.test(id))) return;
-  if (only && !only.includes(String(mail.kind))) return;
   try {
     await ask("POST", "/mail", { from: sender.key, mail });
   } catch {
@@ -203,8 +199,6 @@ export function seatPeers(link: LinkState | null = readLink(), told: Record<stri
   const setup = followedSetup(link);
   return {
     ...(key ? { self: { key, name } } : {}),
-    // Boxes only a peer knows, for plan limits alone.
-    also: vouchedOf(link, told).map(box => ({ key: box.key, name: plainName(box.name) || "another computer" })),
     boxes: peers.map(peer => ({ key: peer.key, name: plainName(peer.name) || "another computer", seats: (told[peer.key]?.features ?? []).includes("groups.seats") })),
     bots: peers.flatMap(peer => (told[peer.key]?.list ?? []).filter(agent => agent.kind === "bot" && agent.id)
       .map(agent => ({ id: agent.id!, name: agent.name, job: agent.about ?? "", box: peer.key, session: agent.session, ...(agent.look ? { look: agent.look } : {}) }))),

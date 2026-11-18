@@ -1,6 +1,6 @@
 //! The Computers area as someone uses it, against the stand-in box (nothing real is reached): only
 //! this Mac; this Mac with a machine at work, a Mac that can't be reached, one on an older Kuvo Code
-//! and a shared machine; a long list; a computer's page and what it says; Add a Machine. Clicks go
+//! and a machine; a long list; a computer's page and what it says; Add a Machine. Clicks go
 //! through the window as AppKit hands them on.
 
 use gpui::{Bounds, Entity, Modifiers, Pixels, ScrollDelta, ScrollEvent, TestAppContext, TouchPhase, VisualTestContext, px, size};

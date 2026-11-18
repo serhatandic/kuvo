@@ -56,7 +56,7 @@ export interface LinkState {
   macs?: string[];
   macSigns?: Record<string, string>;
   macSeen?: Record<string, number>;
-  /** Each Mac's name, as its setup said it: who else uses this box, to say so. */
+  /** Each Mac's name, as its setup said it. */
   macNames?: Record<string, string>;
   /** The documents it holds, by origin and kind; how far its own are, and the views it's met. */
   docs?: Record<string, SignedDoc>;
