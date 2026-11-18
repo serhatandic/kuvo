@@ -183,7 +183,7 @@ impl Settings {
             for (id, title, pane, allowed, is_for, not) in [
                 ("screenRecording", "Screen Recording", "Privacy_ScreenCapture", permissions.screen_recording, "For agents that look at the screen.", "Not allowed. Agents can’t look at the screen."),
                 ("accessibility", "Accessibility", "Privacy_Accessibility", permissions.accessibility, "For agents that click and type in other apps.", "Not allowed. Agents can’t click or type in other apps."),
-                ("fullDiskAccess", "Files", "Privacy_AllFiles", permissions.full_disk_access, "For agents that work with your files anywhere on this Mac.", "For agents that work with your files anywhere on this Mac."),
+                ("fullDiskAccess", "Files", "Privacy_AllFiles", permissions.full_disk_access, "For agents that work with your files anywhere on this Mac.", "Not allowed. Agents may be blocked from opening protected files."),
             ] {
                 let row_id = format!("allows-{id}");
                 allows.push(if !permissions.known {

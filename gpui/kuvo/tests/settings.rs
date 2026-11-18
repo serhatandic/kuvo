@@ -1402,8 +1402,9 @@ fn this_mac_says_how_kuvo_stands_here_and_what_macos_allows_its_helper(cx: &mut 
     assert!(!shown(cx, "permission-heads-up"));
     assert!(shown(cx, "row-login-items-open-login-items") && shown(cx, "row-allows-screenRecording-open-system-settings"));
     assert_eq!(view.read_with(cx, |view, _| view.row_detail("row-allows-screenRecording")).as_deref(), Some("Not allowed. Agents can’t look at the screen."));
-    // One that's allowed, and one macOS asks about itself, offer nothing.
+    // Accessibility is allowed. Files explains what may be blocked and opens its pane.
     assert!(shown(cx, "row-allows-accessibility") && !shown(cx, "row-allows-accessibility-open-system-settings") && shown(cx, "row-allows-fullDiskAccess-open-system-settings"));
+    assert_eq!(view.read_with(cx, |view, _| view.row_detail("row-allows-fullDiskAccess")).as_deref(), Some("Not allowed. Agents may be blocked from opening protected files."));
     // Login Items opens its own pane in System Settings.
     click(cx, "row-login-items-open-login-items");
     assert_eq!(cx.opened_url().as_deref(), Some("x-apple.systempreferences:com.apple.LoginItems-Settings.extension"));

@@ -1347,7 +1347,12 @@ fn first_run_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path
             continue;
         }
         for appearance in [Appearance::Light, Appearance::Dark] {
-            cx.update(|cx| Theme::set_appearance(appearance, cx));
+            cx.update(|cx| {
+                // Each onboarding picture starts on a fresh desktop, even if an earlier
+                // picture marked the shared app context as welcomed.
+                kuvo::yours::init(None, cx);
+                Theme::set_appearance(appearance, cx);
+            });
             let stand_in = StandIn::first_run(Replies::Never, NOW, screen.scenario);
             (screen.before)(&stand_in);
             let client = BoxClient::new(stand_in.clone());

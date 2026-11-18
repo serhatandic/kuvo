@@ -699,6 +699,7 @@ const LOGIN_ITEMS = "x-apple.systempreferences:com.apple.LoginItems-Settings.ext
 const NOT_ALLOWED: Record<string, string> = {
   screenRecording: "Not allowed. Agents can’t look at the screen.",
   accessibility: "Not allowed. Agents can’t click or type in other apps.",
+  fullDiskAccess: "Not allowed. Agents may be blocked from opening protected files.",
 };
 
 async function computerPage(context: RouteContext): Promise<SettingsPage> {

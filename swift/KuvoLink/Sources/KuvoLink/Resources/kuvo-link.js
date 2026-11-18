@@ -46118,7 +46118,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "5c9f8c551660";
+var BRIDGE_VERSION = "dd7a4d032e1f";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -71088,7 +71088,8 @@ var computerHere4 = (context) => context.request.fromApp === true ? process.plat
 var LOGIN_ITEMS = "x-apple.systempreferences:com.apple.LoginItems-Settings.extension";
 var NOT_ALLOWED2 = {
   screenRecording: "Not allowed. Agents can’t look at the screen.",
-  accessibility: "Not allowed. Agents can’t click or type in other apps."
+  accessibility: "Not allowed. Agents can’t click or type in other apps.",
+  fullDiskAccess: "Not allowed. Agents may be blocked from opening protected files."
 };
 async function computerPage(context) {
   const here = context.request.fromApp === true;
