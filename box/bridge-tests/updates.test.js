@@ -458,9 +458,35 @@ function layoutTrial() {
   return { current, data, env, marker, off, previous, trace, keeper: path.join(home, "bin", "kuvo-start") };
 }
 
+async function installedUpdater(current, env, cut) {
+  const boot = path.join(scratch, "kuvo-link-layout-update.mjs");
+  write(boot, `
+import fs from "node:fs";
+const rename = fs.renameSync;
+const cut = ${JSON.stringify(cut ?? null)};
+fs.renameSync = (from, to) => {
+  rename(from, to);
+  if (to === cut) process.kill(process.pid, "SIGKILL");
+};
+const link = await import(${JSON.stringify(pathToFileURL(current).href)});
+const result = await link.update({ now: true, keys: [${JSON.stringify(pinned)}], url: ${JSON.stringify(`${base}/boxes.json`)}, blocked: null });
+console.log(JSON.stringify(result));
+`);
+  const child = spawn(process.execPath, [boot], { env, stdio: ["ignore", "pipe", "inherit"] });
+  atEnd(() => { if (child.exitCode === null && child.signalCode === null) child.kill(); });
+  let output = "";
+  child.stdout.on("data", chunk => { output += chunk; });
+  return new Promise((resolve, reject) => {
+    child.once("error", reject);
+    child.once("close", (code, signal) => resolve({ code, signal, output }));
+  });
+}
+
 test("failure bench: a layout 4 update runs the real keeper preflight and confirms layout 5", async () => {
   const { current, data, env, marker, off, keeper } = layoutTrial();
-  assert.equal((await update()).result, "updated");
+  const run = await installedUpdater(current, env);
+  assert.equal(run.code, 0, run.output);
+  assert.equal(JSON.parse(run.output.trim().split("\n").at(-1)).result, "updated");
   assert.deepEqual(read(marker), { version: 4 });
   const preflight = spawnSync("sh", [keeper, "box"], { env, encoding: "utf8", timeout: 15_000 });
   assert.equal(preflight.status, 0, preflight.stderr);
@@ -475,22 +501,9 @@ test("failure bench: a layout 4 update runs the real keeper preflight and confir
 
 test("failure bench: a layout 4 keeper recovers after the updater loses the file swap", { timeout: 45_000 }, async t => {
   const { current, data, env, marker, off, previous, trace, keeper } = layoutTrial();
-  const boot = path.join(scratch, "kuvo-link-layout-cut.mjs");
-  write(boot, `
-import fs from "node:fs";
-const rename = fs.renameSync;
-fs.renameSync = (from, to) => {
-  rename(from, to);
-  if (to === ${JSON.stringify(keeper)}) process.kill(process.pid, "SIGKILL");
-};
-const link = await import(${JSON.stringify(pathToFileURL(script).href)});
-const result = await link.update({ now: true, keys: [${JSON.stringify(pinned)}], url: ${JSON.stringify(`${base}/boxes.json`)}, blocked: null });
-throw new Error("The updater did not reach the cut: " + JSON.stringify(result));
-`);
-  const updater = spawn(process.execPath, [boot], { env, stdio: ["ignore", "ignore", "inherit"] });
-  t.after(() => { if (updater.exitCode === null && updater.signalCode === null) updater.kill(); });
-  const result = await new Promise(resolve => updater.once("exit", (code, signal) => resolve({ code, signal })));
-  assert.deepEqual(result, { code: null, signal: "SIGKILL" });
+  const cut = await installedUpdater(current, env, keeper);
+  assert.equal(cut.code, null, cut.output);
+  assert.equal(cut.signal, "SIGKILL");
   assert.deepEqual(fs.readFileSync(current), fs.readFileSync(script));
   assert.deepEqual(read(marker), { version: 4 });
   fs.unlinkSync(off);

@@ -2078,7 +2078,7 @@ test("failure bench: a Linux primary starts fresh, enrolls over SSH and pairs de
     write(path.join(box, "run", "serve.needed"), "");
     const child = start(boxEnv, "serve", "--kept");
     const record = await waitFor("the kept server starts", () => {
-      try { const current = inBox(box, "serve.json"); return current.pid === child.pid && current; } catch (error) { if (error.code !== "ENOENT") throw error; }
+      try { const current = inBox(box, "serve.json"); return alive(current.pid) && current; } catch (error) { if (error.code !== "ENOENT") throw error; }
     });
     const ask = async (method, route, body) => {
       const answer = await fetch(`http://127.0.0.1:${record.port}/${route}`, {
@@ -2088,7 +2088,23 @@ test("failure bench: a Linux primary starts fresh, enrolls over SSH and pairs de
       });
       return { status: answer.status, body: await answer.json() };
     };
-    return Object.assign(ask, { child });
+    return Object.assign(ask, {
+      async stop() {
+        if (record.pid === child.pid) {
+          const exited = new Promise(resolve => child.once("exit", resolve));
+          child.kill("SIGTERM");
+          await exited;
+        } else {
+          // The SSH installation's own keeper can start the server first.
+          const { stdout } = spawnSync("ps", ["-ww", "-o", "command=", "-p", String(record.pid)], { encoding: "utf8" });
+          assert.ok(stdout.includes(path.join(box, "bin", "kuvo-link.js") + " serve --kept"), stdout);
+          process.kill(record.pid, "SIGTERM");
+        }
+        await waitFor("the old server has removed its record", () => {
+          try { return inBox(box, "serve.json").pid !== record.pid; } catch (error) { if (error.code === "ENOENT") return true; throw error; }
+        });
+      },
+    });
   };
 
   assert.equal(fs.existsSync(path.join(primaryBox, "run", "link.json")), false);
@@ -2286,10 +2302,7 @@ test("failure bench: a Linux primary starts fresh, enrolls over SSH and pairs de
       return replies.length && fs.existsSync(file) && read(file).leadership?.[4];
     });
     assert.ok(inBox(memberBox).leadershipPending);
-    const original = memberApp.child;
-    const exited = new Promise(resolve => original.once("exit", resolve));
-    original.kill("SIGTERM");
-    await exited;
+    await memberApp.stop();
     memberApp = await localServer(memberBox, memberEnv);
     assert.equal((await attempt()).state, "working", "the restarted server keeps the save in flight");
     release();
