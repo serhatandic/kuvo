@@ -3,6 +3,87 @@ import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { DATA_DECLARATIONS } from "../src/shared/data-declarations";
 
+// Required policy kinds from #848. This checklist is independent of the declarations and the
+// storage inventory because several kinds can share a family.
+const REQUIRED_KINDS = [
+  "membershipAndAccess",
+  "setupSecurityAndReleaseChoice",
+  "computerIdentityAndTrust",
+  "clientIdentity",
+  "setupCard",
+  "welcomeProgress",
+  "boxMacLinkSettings",
+  "clientDisplayAndConnections",
+  "peerDirectoryAndReach",
+  "installAndSeedProgress",
+
+  "conversations",
+  "conversationSettings",
+  "sessionQueue",
+  "sessionFiles",
+  "sessionNotes",
+  "pendingSessionWork",
+  "sessionGoals",
+  "sessionSchedules",
+  "sessionLettersAndDelivery",
+  "searchIndex",
+
+  "botSettings",
+  "botMemory",
+  "botNotes",
+  "botSchedules",
+  "groupTranscript",
+  "groupSettings",
+  "privateGroupSeats",
+
+  "queueItems",
+  "queueNotes",
+  "queueFiles",
+  "queueHistoryAndDelivery",
+  "queueNumberAllocation",
+  "queueNumberUse",
+  "queueLabels",
+  "queueMigration",
+
+  "ownershipAssignments",
+  "transferReceipts",
+  "stagedTransferCopies",
+  "projectPathsAndWorktrees",
+  "externalProjectFiles",
+  "gitPreferences",
+  "gitBackupRefs",
+  "artifactStorageSettings",
+  "managedArtifacts",
+
+  "setupPersonalities",
+  "setupTimeZone",
+  "setupUsageDisplay",
+  "localSettingsAndPermissions",
+  "modelsAndReusableTools",
+  "engineAndIntegrationSettings",
+  "installedProgramsAndCatalogs",
+  "localSignInsAndKeys",
+  "vaultKeys",
+  "vaultItemsGrantsAndPause",
+  "vaultSecretValues",
+  "vaultActivity",
+
+  "providerLimitReadings",
+  "usageRecords",
+  "usageCaches",
+  "browserProfile",
+  "browserSettings",
+  "browserHistory",
+  "browserIconCache",
+  "runtimeRecords",
+  "computerLogsAndCaches",
+  "clientLogs",
+];
+
+test("every required data kind has its own declaration", () => {
+  expect(Object.keys(DATA_DECLARATIONS).sort()).toEqual([...REQUIRED_KINDS].sort());
+});
+
 test("every stored format in the version inventory has a data declaration", () => {
   const inventory = readFileSync(new URL("../../.claude/notes/848-U-versions-inventory.md", import.meta.url), "utf8");
   const stored = inventory.split("## Stored formats\n")[1]?.split("\n## ")[0] ?? "";
