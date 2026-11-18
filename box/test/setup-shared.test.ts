@@ -5,7 +5,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { addressOf, newKey, publicOf } from "../src/link/crypto/keys";
 import { newSigningSeed, readDoc, signDoc, signingKeyOf } from "../src/link/documents/format";
-import { digestOf, docsWork } from "../src/link/documents/work";
+import { changedWork, digestOf, docsWork } from "../src/link/documents/work";
 import type { LinkState } from "../src/link/state";
 import { grantLease, leaseClock } from "../src/link/setup/lease";
 import { RUN } from "../src/link/home";
@@ -155,4 +155,7 @@ test("a checkpoint preserves operation pages and accepts a lost receipt after pr
   expect(takeLeadership(primary, transition, cache.get(transition.body.checkpoint))).toBe(true);
   expect(operationOutcome(primary, id, save.operation)).toMatchObject({ status: "committed", epoch: 2, sequence: 1, baseRevision: 0 });
   expect(Object.keys(primary.sharedOutcomes!)).toHaveLength(521);
+  const update = changedWork({ link: primary, library: { personalities: [], removed: [] } });
+  expect(update.send[0]?.docs.have?.some(([, kind, epoch]) => kind === "leadership" && epoch === 3)).toBe(true);
+  expect(update.send.flatMap(mail => mail.docs.give ?? []).some(envelope => readDoc(envelope)?.kind === "setup-checkpoint")).toBe(false);
 });

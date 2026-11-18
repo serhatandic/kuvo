@@ -502,9 +502,11 @@ export function greetWork(state: Pick<DocsState, "link" | "library">): { send: D
 export function changedWork(state: Pick<DocsState, "link" | "library">, tell = false): { send: DocSend[] } {
   const made = (Object.values(ownDocs(state)) as OwnDoc[]).filter(each => each.changed).map(each => each.envelope);
   const leadership = leadershipOf(state.link);
-  const chain = leadership ? leadershipDocuments(leadership.envelope) : [];
+  const chain = leadership && !leadership.body.checkpoint ? leadershipDocuments(leadership.envelope) : [];
   const mine = ownSign(state.link);
-  const have = tell ? digestOf(state.link) : null;
+  // An epoch hint is enough for a peer to request its next checkpoint. Ordinary changes
+  // should not resend the operation archive to every computer already caught up.
+  const have = tell || leadership?.body.checkpoint ? digestOf(state.link) : null;
   const replica = publishedShared(state.link);
   return {
     send: docPeers(state.link).map(peer => {

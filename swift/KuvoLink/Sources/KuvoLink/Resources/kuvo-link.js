@@ -15075,9 +15075,9 @@ function greetWork(state) {
 function changedWork(state, tell = false) {
   const made = Object.values(ownDocs(state)).filter((each) => each.changed).map((each) => each.envelope);
   const leadership = leadershipOf(state.link);
-  const chain = leadership ? leadershipDocuments(leadership.envelope) : [];
+  const chain = leadership && !leadership.body.checkpoint ? leadershipDocuments(leadership.envelope) : [];
   const mine = ownSign(state.link);
-  const have = tell ? digestOf(state.link) : null;
+  const have = tell || leadership?.body.checkpoint ? digestOf(state.link) : null;
   const replica = publishedShared(state.link);
   return {
     send: docPeers(state.link).map((peer) => {
@@ -57487,7 +57487,7 @@ var init_files4 = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "193a293da4b6";
+var BRIDGE_VERSION = "330041c2555a";
 
 // box/src/link/rehome/paths.ts
 import { createHash as createHash4 } from "node:crypto";
