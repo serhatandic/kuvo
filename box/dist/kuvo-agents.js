@@ -14383,9 +14383,6 @@ class Limits {
     this.turnTimer = setTimeout(() => this.turn(), Math.min(Math.max(at - this.now(), 0) + 1, 2 ** 31 - 1));
     this.turnTimer.unref?.();
   }
-  recent(source, window) {
-    return this.now() - window.read <= Math.max(source.read ? 15 * MINUTE2 : 60 * MINUTE2, 2 * source.every);
-  }
   list(borrowed = true) {
     const listed = [];
     for (const account of this.accounts()) {
@@ -14407,7 +14404,7 @@ class Limits {
           ...account.label ? { label: account.label } : {},
           identity: entry.identity,
           ...peer.plan ?? entry.plan ? { plan: peer.plan ?? entry.plan } : {},
-          windows: peer.windows.filter((window) => this.recent(account.limits, window)),
+          windows: peer.windows,
           ...peer.balance ?? entry.balance ? { balance: peer.balance ?? entry.balance } : {},
           ...peer.extras?.length ? { extras: peer.extras } : {},
           ...entry.checked ? { checked: entry.checked } : {},
@@ -14422,7 +14419,7 @@ class Limits {
         ...account.label ? { label: account.label } : {},
         ...entry.identity ? { identity: entry.identity } : {},
         ...entry.plan ? { plan: entry.plan } : {},
-        windows: entry.windows.filter((window) => this.recent(account.limits, window)),
+        windows: entry.windows,
         ...entry.notices?.length ? { notices: entry.notices.filter((n) => currentNotice(n, this.now())) } : {},
         ...entry.noticeState ? { noticeState: entry.noticeState } : {},
         ...entry.balance ? { balance: entry.balance } : {},
@@ -41829,4 +41826,4 @@ if (!isMainThread && process.argv.includes("--insights-db-worker")) {
 } else {
   await init_main().then(() => ({}));
 }
-// Built from Packages/Box/src/agents e3170119651a9499e84d550784162118c204b4161549607625a69f7481b52334
+// Built from Packages/Box/src/agents d15adb394d6aa623f22f097a64dad43f706f23bbb17b80103c7e26bb57c029cf

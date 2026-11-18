@@ -25659,13 +25659,15 @@ async function close(engine, folder) {
 
 class CantClose extends Error {
 }
-async function closeQuiet(engine, folders) {
+async function closeQuiet(engine, folders, current = () => true) {
   const waiting = [];
   for (const folder of folders) {
     if ((await atWork(engine, [folder])).has(folder)) {
       waiting.push(folder);
       continue;
     }
+    if (!current())
+      return waiting;
     const closed = await close(engine, folder);
     if (closed === "unsupported")
       throw new CantClose;
@@ -25760,36 +25762,44 @@ async function refreshEngineWide(engine, provider, folders) {
   await learnCompatibility(engine).catch(() => {});
   return { status: 200, waiting: [] };
 }
+var pendingSettlements = new Map;
 var settling = null;
-var settleAgain = false;
 function settleDueModels(engine, file = MODELS_DUE_FILE) {
-  if (settling) {
-    settleAgain = true;
+  pendingSettlements.set(file, { ...engine });
+  if (settling)
     return settling;
-  }
   settling = (async () => {
     await null;
     try {
-      do {
-        settleAgain = false;
+      for (const [file, engine] of pendingSettlements) {
+        pendingSettlements.delete(file);
         const due = readDue(file);
         if (!due)
-          return;
-        if (due.engine !== engineOf(engine))
-          return writeDue(file, null);
+          continue;
+        if (due.engine !== engineOf(engine)) {
+          writeDue(file, null);
+          continue;
+        }
+        const current = () => {
+          const next = pendingSettlements.get(file);
+          return (!next || engineOf(next) === due.engine) && readDue(file)?.engine === due.engine;
+        };
         const open = await openFolders(engine).catch(() => null);
-        if (!open)
-          return;
+        if (!open || !current())
+          continue;
         const still = due.folders.filter((folder) => open.includes(folder));
-        const waiting = await closeQuiet(engine, still).catch(() => null);
-        if (!waiting)
-          return writeDue(file, null);
-        const now = readDue(file);
-        const added = now?.engine === due.engine ? now.folders.filter((folder) => !due.folders.includes(folder)) : [];
+        const waiting = await closeQuiet(engine, still, current).catch(() => null);
+        if (!current())
+          continue;
+        if (!waiting) {
+          writeDue(file, null);
+          continue;
+        }
+        const added = readDue(file)?.folders.filter((folder) => !due.folders.includes(folder)) ?? [];
         writeDue(file, { engine: due.engine, folders: [...waiting, ...added] });
         if (waiting.length < still.length)
           await learnCompatibility(engine).catch(() => {});
-      } while (settleAgain);
+      }
     } finally {
       settling = null;
     }
@@ -38650,7 +38660,7 @@ async function adoptPending(engine, bridge, signal) {
     }
   }
 }
-async function settleAgain2(target, id, agents, signal) {
+async function settleAgain(target, id, agents, signal) {
   const data = (await engineGet(target, `api/session/${encodeURIComponent(id)}`).catch(() => null))?.data;
   if (!data?.id)
     return;
@@ -39376,7 +39386,7 @@ async function markMade(making, target, session, signal) {
   if (!marked && making.prompt.unheard)
     making.prompt.text = making.prompt.unheard;
   if (marked && !making.asBefore)
-    await settleAgain2(target, session, making.agents, signal).catch(() => {});
+    await settleAgain(target, session, making.agents, signal).catch(() => {});
   await noteFullAccess(session).catch(() => {});
   return marked;
 }
@@ -40675,7 +40685,7 @@ async function carryToAgents(id, model, readEngine, agents) {
     if (directory && folders.length) {
       await call(agents, "PUT", `/api/experimental/session/${encodeURIComponent(moved)}/instructions/entries/${PROJECT_FOLDERS_ENTRY}`, { value: projectFoldersNote(directory, folders) }).catch(() => {});
     }
-    await settleAgain2(agents, moved, true).catch(() => {});
+    await settleAgain(agents, moved, true).catch(() => {});
     if (autopilot === true)
       await tellAutopilot(agents, moved, true).catch(() => {});
     if (bot) {
@@ -41075,7 +41085,7 @@ async function makeOnce(given, readEngine, readBridge, machine) {
     const now = stamp();
     const described = { created: now, id, job: "", kuvo: DESCRIPTION, look, model, name, ...personality ? { personality: personality.id } : {}, ...project ? { project } : {}, updated: now };
     fs106.writeFileSync(path108.join(folder, "bot.json"), JSON.stringify(described, null, 2));
-    await settleAgain2(target, session.id, agents, AbortSignal.timeout(BOT_STEP)).catch(() => {});
+    await settleAgain(target, session.id, agents, AbortSignal.timeout(BOT_STEP)).catch(() => {});
   } catch (error) {
     if (session?.id)
       await call(target, "DELETE", `/api/session/${encodeURIComponent(session.id)}`, undefined, AbortSignal.timeout(BOT_STEP)).catch(() => {});
@@ -51217,14 +51227,16 @@ function starts() {
     checked: true
   };
 }
-var RECORDS = [
-  ["box.pid", /kuvo-start(-keeper)? keep(\s|$)/, "keeper"],
-  ["engine.json", engineRole(K), "engine"],
-  ["agents.pid", /kuvo-agents/, "coding agents"],
-  ["link.pid", /kuvo-link\.js run(\s|$)/, "link"],
-  ["serve.json", SERVE_ROLE, "server"],
-  ["browser.pid", /kuvo-browser\.js host(\s|$)/, "browser"]
-];
+function processRecords() {
+  return [
+    ["box.pid", /kuvo-start(-keeper)? keep(\s|$)/, "keeper"],
+    ["engine.json", engineRole(K), "engine"],
+    ["agents.pid", /kuvo-agents/, "coding agents"],
+    ["link.pid", /kuvo-link\.js run(\s|$)/, "link"],
+    ["serve.json", SERVE_ROLE, "server"],
+    ["browser.pid", /kuvo-browser\.js host(\s|$)/, "browser"]
+  ];
+}
 function recorded(file, role) {
   let text = "";
   try {
@@ -51258,7 +51270,7 @@ function holders() {
   });
 }
 function running3() {
-  return [...RECORDS.filter(([file, role]) => recorded(file, role) !== null).map(([, , what]) => what), ...holders().length ? ["coding agents' processes"] : []];
+  return [...processRecords().filter(([file, role]) => recorded(file, role) !== null).map(([, , what]) => what), ...holders().length ? ["coding agents' processes"] : []];
 }
 function ownKeeper() {
   const keeper = path133.join(K, "bin", "kuvo-start");
@@ -51329,7 +51341,7 @@ function uninstall2() {
     stopped = off.status === 0;
   }
   const told = [];
-  for (const [file, role] of RECORDS) {
+  for (const [file, role] of processRecords()) {
     const pid = recorded(file, role);
     if (pid && pid !== process.pid)
       try {
@@ -57580,7 +57592,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "b812970a2d60";
+var BRIDGE_VERSION = "7eb2fa750a12";
 
 // box/src/link/rehome/move.ts
 init_outside();
