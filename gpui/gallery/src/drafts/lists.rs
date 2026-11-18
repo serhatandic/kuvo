@@ -400,7 +400,7 @@ fn queue(cx: &App) -> Vec<AnyElement> {
 
 fn computers(cx: &App) -> Vec<AnyElement> {
     let c = cx.theme().colors.clone();
-    // Your computers and shared machines as one list: the box's `kuvo/computers`.
+    // Your computers as one list: the box's `kuvo/computers`.
     let mut rows = vec![SectionHeader::new("computers", "Your Computers").into_any_element()];
     for (ix, computer) in COMPUTERS.iter().enumerate() {
         let selected = ix == 1;
@@ -460,8 +460,6 @@ fn computers(cx: &App) -> Vec<AnyElement> {
         );
     }
     rows.push(spaced(NavRow::new("add-machine", "Add a Machine").icon(IconName::Plus).muted(true)));
-    rows.push(SectionHeader::new("shared", "Shared Machines").into_any_element());
-    rows.push(spaced(NavRow::new("shared-build", "build-box").icon(IconName::Terminal).trailing(time("Shared", false, cx))));
     rows
 }
 

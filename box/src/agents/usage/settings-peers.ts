@@ -1,12 +1,7 @@
 // The usage panel's settings shared between your own computers' boxes (PROTOCOL.md, "Usage
 // settings"): each tells the others its parts with their versions as they change, and each takes
 // what's newer (`UsageSettings.merge`), so every box holds the same. Only between the boxes of one
-// setup ("Your setup"), whose boxes are all yours: never a box a peer vouches for, nor through a
-// machine two people's Macs share (it follows no setup, so it neither sends nor takes them), and
-// nothing before the link has said. Every ten minutes a box says only what it holds
-// (`digest`); one that holds something else answers with all of its own and asks for the other's.
-// The mail goes through the box's link (`{"seat": {"kind": "settings", …}}`), which carries this
-// kind only between your own computers too.
+// setup ("Your setup").
 
 import type { LimitsDirectory, LimitsTransport } from "../limits-peers"
 import type { KeptUnit, UsageSettings } from "./settings"
@@ -59,8 +54,8 @@ export class SettingsPeers {
    * setup's boxes), never a box only a peer knows. None before the link says, or in no setup.
    */
   private ours(): string[] {
-    if (!this.directory.told || !this.directory.setup || !this.directory.isPeer) return []
-    return this.directory.peerBoxes().flatMap(({ key }) => (this.directory.isPeer!(key) ? [key] : []))
+    if (!this.directory.told || !this.directory.setup) return []
+    return this.directory.peerBoxes().map(({ key }) => key)
   }
 
   /** A mail from a box whose last word was this digest, being taken: not told back what it just said. */
@@ -130,7 +125,7 @@ export class SettingsPeers {
       else if (this.directory.inNoSetup) this.settings.inNoSetup()
     }
     const ours = new Set(this.ours())
-    // (A computer gone, or one that's now a box a peer vouches for: forgotten, told again should it come back as yours.)
+    // (A computer that left is told again if it rejoins.)
     for (const map of [this.told, this.answered]) for (const key of [...map.keys()]) if (!ours.has(key)) map.delete(key)
     this.tell()
   }

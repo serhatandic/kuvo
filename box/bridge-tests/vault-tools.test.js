@@ -12,7 +12,6 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { sshAgentsOf } from "./box-stand-ins.js";
 import { atEnd, removeAtEnd } from "./at-end.js";
 // (Each test fails at its own time limit when what it waits for never comes, rather than holding up the run.)
 import { asked as askedAt, before, test } from "./vault-waits.js";
@@ -21,7 +20,6 @@ import { asked as askedAt, before, test } from "./vault-waits.js";
 const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "kvt-")));
 // (Once the box and the tool have stopped: they write in its folder until they have.)
 removeAtEnd(home);
-removeAtEnd(sshAgentsOf(home));
 atEnd(async () => {
   await Promise.all([box, mcp].map(child => child && child.exitCode === null && child.signalCode === null ? new Promise(done => { child.once("exit", done); child.kill(); }) : null));
 });

@@ -18,9 +18,8 @@ export const SETUP_CARD = path.join(RUN, "setup-card.json");
 
 /** What the card says: the setup and its epoch, this box's role, its main computer (when it was last
  * heard from, ms; null on the main computer itself), this box, whether Kuvo Code's app runs it (or
- * attached to it in place), how
- * many computers the setup has, how many Work Queue items are here, the machines holding this Mac
- * back from leading one (`heldBy`), and the Macs that set this box up, by name (a machine's: none on
+ * attached to it in place), how many computers the setup has, how many Work Queue items are here,
+ * and the Macs that set this box up, by name (a machine's: none on
  * a Mac), for a box in no setup to be judged by (`judge.ts`). */
 export function cardNow(): Record<string, unknown> {
   const link = readLink();

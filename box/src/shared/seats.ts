@@ -43,12 +43,10 @@ export interface SeatBot {
  * this box itself, as its peers name it (its key, and its name: what its plan limits' rows call it). */
 export interface SeatPeers {
   self?: { key: string; name: string };
-  /** Boxes a peer knows that aren't this box's peers (another Mac's, beside a machine two Macs share): for plan limits alone. */
-  also?: { key: string; name: string }[];
   boxes: SeatBox[];
   bots: SeatBot[];
   /** The setup this box follows now, by its id (PROTOCOL.md, "Your setup"); `null` once it's
-   * settled that it follows none (a machine Macs share, a setup set aside); not said while it can't
+   * settled that it follows none (a setup set aside); not said while it can't
    * say yet (its keys not read as its link starts, none made yet) or by a link from before this,
    * which the bridge takes as neither. The usage panel's settings go only between boxes of the
    * same setup. */

@@ -382,138 +382,26 @@ test("plan limits (PROTOCOL.md, \"Plan limits\"): what the bridge tells a comput
   }
 });
 
-test("plan limits with a box only a peer knows (another Mac's, beside a machine two Macs share): its limits go to it and come from it, and nothing else does", async () => {
+test("legacy agent directory entries grant no access to box mail", () => {
   fresh();
   const air = box("mac", "air");
-  // The second machine says which boxes it knows: this one, and the Air, which isn't this box's peer.
-  link.takeAgents(second.peer, { at: Date.now(), list: [], boxes: [here.peer, air.peer, { key: "not a key", address: "x", kind: "mac" }] });
-  const peers = link.seatPeers(link.readLink());
-  assert.deepEqual(peers.also, [{ key: air.pub, name: "air" }]);
-  assert.ok(!peers.boxes.some(each => each.key === air.pub), "not in its group chats");
-
-  // What the bridge tells it goes there; nothing else of the bridge's does.
+  const file = path.join(run, "peer-agents.json");
+  fs.writeFileSync(file, JSON.stringify({
+    [second.pub]: { at: 1, kind: "machine", list: [], boxes: [here.peer, air.peer] },
+  }));
+  assert.equal(link.seatPeers(link.readLink()).also, undefined);
+  assert.ok(!link.seatPeers(link.readLink()).boxes.some(each => each.key === air.pub));
   const sent = [];
-  const host = { send: bytes => sent.push(bytes) };
-  link.carrySeat(host, { id: "sm_limits002", to: air.pub, durable: false, mail: { kind: "limits", at: 7, accounts: [] } }, link.readLink());
-  assert.equal(sent.length, 1);
-  assert.deepEqual(opened(sent[0], air).payload.limits, { at: 7, accounts: [] });
-  link.carrySeat(host, { id: "sm_turn0002", to: air.pub, durable: false, mail: { kind: "turn", turn: { id: "trn_9" } } }, link.readLink());
-  assert.equal(sent.length, 1, "a group chat's mail isn't sent to it");
-
-  // What it sends: its limits reach the bridge; its agents and letters are dropped.
-  const posted = [];
-  let heard;
-  const got = new Promise(resolve => { heard = resolve; });
-  const server = http.createServer((request, response) => {
-    let body = "";
-    request.on("data", chunk => { body += chunk; });
-    request.on("end", () => {
-      response.writeHead(200, { "content-type": "application/json" });
-      response.end("{}");
-      posted.push(JSON.parse(body));
-      heard();
-    });
-  });
-  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
-  fs.writeFileSync(path.join(run, "bridge.json"), JSON.stringify({ port: server.address().port, password: "bridge-pw" }));
-  try {
-    const mail = link.mailFor(here.peer, { limits: { at: 8, accounts: [] }, agents: { at: Date.now(), list: [{ session: "ses_air1", name: "Air's", kind: "session" }] }, letter: { id: "ltr_x" }, at: Date.now() }, { key: k(air.key) });
-    link.receiveMail(link.readFrame(mail.subarray(17)).body, host, (sender, given) => link.peerMail(sender, given, host));
-    await got;
-    assert.deepEqual(posted, [{ from: air.pub, mail: { at: 8, accounts: [], kind: "limits" } }]);
-    assert.equal(link.readPeerAgents()[air.pub], undefined, "its agents aren't taken");
-  } finally {
-    server.close();
+  for (const kind of ["limits", "usage", "turn"]) {
+    link.carrySeat({ send: bytes => sent.push(bytes) }, {
+      id: "sm_old0001", to: air.pub, durable: false, mail: { kind, accounts: [] },
+    }, link.readLink());
   }
-});
-
-test("usage history (PROTOCOL.md, \"Usage history\") goes to a box only a peer knows, in parts when it's big; from it, its usage reaches the bridge and its group chats' mail doesn't", async () => {
-  fresh();
-  const air = box("mac", "air");
-  link.takeAgents(second.peer, { at: Date.now(), list: [], boxes: [here.peer, air.peer] });
-  const sent = [];
-  const host = { send: bytes => sent.push(bytes) };
-  // A month of hours is bigger than a mail: it goes in parts, kept nowhere.
-  const used = Array.from({ length: 4000 }, (_, i) => [490000 + i, 0, 123456, 1.234567]);
-  const mail = { kind: "usage", at: 7, accounts: [{ provider: "claude-code", service: "claude", identity: "0123456789abcdef", hours: { models: ["claude-opus-5"], used } }] };
-  assert.equal(link.carrySeat(host, { id: "sm_usage0001", to: air.pub, durable: false, mail }, link.readLink()), true);
-  assert.ok(sent.length > 1, "in parts");
-  const parts = sent.map(bytes => opened(bytes, air).payload.seatPart);
-  assert.ok(parts.every(Boolean));
-  const sending = path.join(run, "outbox", "sending");
-  assert.deepEqual(fs.existsSync(sending) ? fs.readdirSync(sending) : [], [], "nothing kept to send again");
-
-  const posted = [];
-  let heard;
-  const got = new Promise(resolve => { heard = resolve; });
-  const server = http.createServer((request, response) => {
-    let body = "";
-    request.on("data", chunk => { body += chunk; });
-    request.on("end", () => {
-      response.writeHead(200, { "content-type": "application/json" });
-      response.end("{}");
-      posted.push(JSON.parse(body));
-      heard();
-    });
-  });
-  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
-  fs.writeFileSync(path.join(run, "bridge.json"), JSON.stringify({ port: server.address().port, password: "bridge-pw" }));
-  try {
-    // A group chat's turn from it first: dropped.
-    const turn = link.mailFor(here.peer, { seat: { kind: "turn", turn: { id: "trn_air" } }, at: Date.now() }, { key: k(air.key) });
-    link.receiveMail(link.readFrame(turn.subarray(17)).body, host, (sender, given) => link.peerMail(sender, given, host));
-    // Its usage, in parts: put together, and to the bridge.
-    for (const part of parts) {
-      const bytes = link.mailFor(here.peer, { seatPart: part, at: Date.now() }, { key: k(air.key) });
-      link.receiveMail(link.readFrame(bytes.subarray(17)).body, host, (sender, given) => link.peerMail(sender, given, host));
-    }
-    await got;
-    assert.deepEqual(posted, [{ from: air.pub, mail }]);
-  } finally {
-    server.close();
-  }
-});
-
-test("a box only a peer knew is forgotten once no peer names it: nothing goes to it, and its mail isn't opened", () => {
-  fresh();
-  const air = box("mac", "air");
-  const at = Date.now();
-  link.takeAgents(second.peer, { at, list: [], boxes: [air.peer] });
-  assert.deepEqual(link.seatPeers(link.readLink()).also, [{ key: air.pub, name: "air" }]);
-  // The second machine no longer names it (the Air's Mac let it go).
-  link.takeAgents(second.peer, { at: at + 1, list: [], boxes: [] });
-  assert.deepEqual(link.seatPeers(link.readLink()).also, []);
-  const sent = [];
-  link.carrySeat({ send: bytes => sent.push(bytes) }, { id: "sm_limits003", to: air.pub, durable: false, mail: { kind: "limits", at: 9, accounts: [] } }, link.readLink());
   assert.equal(sent.length, 0);
-  const mail = link.mailFor(here.peer, { limits: { at: 9, accounts: [] }, at: Date.now() }, { key: k(air.key) });
-  assert.equal(link.openMail(link.readFrame(mail.subarray(17)).body, link.readLink(), () => link.vouchedOf(link.readLink())), null);
-  // (While it was named, it was opened.)
-  link.takeAgents(second.peer, { at: at + 2, list: [], boxes: [air.peer] });
-  assert.equal(link.openMail(link.readFrame(mail.subarray(17)).body, link.readLink(), () => link.vouchedOf(link.readLink()))?.vouched, true);
-});
-
-// #783: only you set your computers up, so every peer is one of your own computers: none is ever
-// told to the bridge as apart or shared, whatever an earlier Kuvo Code's word or a setup says.
-test("the bridge is told every peer is one of your own computers: a machine more than one Mac set up, one an earlier Kuvo Code says is shared, one in another setup (#783)", () => {
-  fresh();
-  const air = box("mac", "air");
-  const marked = given => link.seatPeers(given).boxes.filter(each => each.apart || each.shared).map(each => each.name);
-  let at = Date.now();
-  const tells = agents => link.takeAgents(second.peer, { at: ++at, list: [], ...agents });
-  tells({ shared: true });
-  assert.deepEqual(marked(link.readLink()), []);
-  const inSetup = { ...link.readLink(), setup: { id: "set_AAAAAAAAAAAAAAAAAAAAAA", epoch: 1, primary: mac.pub, sign: mac.pub, role: "member" } };
-  tells({ setup: "set_BBBBBBBBBBBBBBBBBBBBBB" });
-  assert.deepEqual(marked(inSetup), []);
-  const twoMacs = { ...link.readLink(), macs: [mac.pub, air.pub] };
-  assert.deepEqual(marked(twoMacs), []);
-  assert.equal("shared" in link.seatPeers(twoMacs), false);
-  const queues = path.join(run, "work-queue", "peers");
-  fs.mkdirSync(queues, { recursive: true });
-  fs.writeFileSync(path.join(queues, `${second.pub}.json`), JSON.stringify({ id: "wqt_secondtoldsecond", at: 1, heard: 1, kind: "machine", since: 50, items: [], owners: [], labels: [], shared: true }));
-  assert.deepEqual(marked(link.readLink()), []);
-  fs.rmSync(queues, { recursive: true, force: true });
+  const mail = link.mailFor(here.peer, { limits: { at: 9, accounts: [] }, seat: { kind: "usage" } }, { key: k(air.key) });
+  assert.equal(link.openMail(link.readFrame(mail.subarray(17)).body, link.readLink()), null);
+  link.takeAgents(second.peer, { at: 2, list: [], boxes: [air.peer] });
+  assert.equal(link.readPeerAgents()[second.pub].boxes, undefined);
 });
 
 test("a box whose setup changes says so at once, not at the next round; a second Mac setting it up changes nothing to tell", () => {
@@ -527,7 +415,7 @@ test("a box whose setup changes says so at once, not at the next round; a second
   assert.equal(link.whereChanged(inSetup), true, "another setup: told at once");
 });
 
-test("the usage panel's settings (PROTOCOL.md, \"Usage settings\") go between your own computers only: to a peer as a seat's mail, never to a box only a peer knows, and from it never to the bridge", async () => {
+test("the usage panel's settings (PROTOCOL.md, \"Usage settings\") go between your own computers only: to a peer as a seat's mail, ignoring legacy directory entries", async () => {
   fresh();
   const air = box("mac", "air");
   link.takeAgents(second.peer, { at: Date.now(), list: [], boxes: [here.peer, air.peer] });
@@ -548,9 +436,9 @@ test("the usage panel's settings (PROTOCOL.md, \"Usage settings\") go between yo
   assert.equal(link.carrySeat(host, { id: "sm_settings01", to: second.pub, durable: false, mail }, link.readLink()), true);
   assert.equal(sent.length, 1);
   assert.deepEqual(opened(sent[0], second).payload.seat, mail);
-  // To a box only a peer knows (another person's Mac): nothing goes.
+  // A legacy directory entry does not supply a destination.
   link.carrySeat(host, { id: "sm_settings02", to: air.pub, durable: false, mail }, link.readLink());
-  assert.equal(sent.length, 1, "nothing to a box a peer vouches for");
+  assert.equal(sent.length, 1, "only the peer receives settings");
 
   const posted = [];
   let heard;

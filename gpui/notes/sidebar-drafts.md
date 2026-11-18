@@ -17,8 +17,7 @@ Search on top, then that area's navigation:
   New Bot, then group chats.
 - Work Queue: In Progress, its categories (Next, Later, a custom one, Parked, Done) with counts,
   then Show Only (issues and pull requests, a computer, Deleted).
-- Computers: your computers with how each is reached and what's at work there, Add a Machine,
-  shared machines.
+- Computers: your computers with how each is reached and what's at work there, and Add a Machine.
 - Settings: its sections, in the Mac's groups.
 
 At the rail's foot, one **usage ring per signed-in account**: the arc is the share of its fullest

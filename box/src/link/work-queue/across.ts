@@ -54,8 +54,7 @@ interface Telling {
 }
 
 /** How this box numbers, as it tells its peers: its kind, when it was set up, the highest number it
- * used or holds, its primary (itself, or another, with when that one was set up), and `shared: false`,
- * which says it knows setups (older Macs wait for it before they lead one; never true now, #783). */
+ * used or holds, and the primary it numbers from. */
 export function numberingNow(link: LinkState | null): Numbering {
   const primary = primaryOf(link);
   const own = link ? ownKey(link) : null;
@@ -67,8 +66,7 @@ export function numberingNow(link: LinkState | null): Numbering {
     const told = primary.via ? readTold(primary.via.key)?.primary?.since : readTold(primary.peer.key)?.since;
     named = { key: primary.peer.key, kind: primary.peer.kind, ...(told ? { since: told } : {}) };
   }
-  // COMPAT(beta.1 shared-false): a Mac from before #783 leads a setup only once each machine says `shared: false`. Goes when 0.8.0 ships.
-  return { kind, since, top: topOf(), ...(named ? { primary: named } : {}), shared: false };
+  return { kind, since, top: topOf(), ...(named ? { primary: named } : {}) };
 }
 
 /** An item as this box tells it: its summary, with who handed it on; an issue's with when this
@@ -225,8 +223,8 @@ function takeTold(sender: MailSender, given: unknown, reply: (payload: Record<st
   if (!keepTold(sender.key, told)) return;
   forgetDeletedThere(new Set(told.items.map(item => item.id)));
   reply({ had: told.id });
-  // How it numbers changed (it's shared now, or numbers from another): this box's setup looked at now.
-  if (before?.shared !== told.shared || before?.primary?.key !== told.primary?.key || before?.primary?.since !== told.primary?.since) noteSetupNow(Date.now(), { soon: 0 });
+  // How it numbers changed: look at this box's setup now.
+  if (before?.primary?.key !== told.primary?.key || before?.primary?.since !== told.primary?.since) noteSetupNow(Date.now(), { soon: 0 });
   const primary = primaryOf(link);
   if ("self" in primary) movePast(Math.max(told.top ?? 0, ...told.items.map(item => item.number ?? 0)));
   else if ("peer" in primary && (primary.via ? primary.via.key === sender.key && told.primary?.key === primary.peer.key : primary.peer.key === sender.key)) {

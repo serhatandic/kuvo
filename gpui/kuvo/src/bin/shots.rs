@@ -298,6 +298,7 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "computer-shared", width: 1280., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(computer_shared) },
     Screen { slug: "computer-add", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(computer_add) },
     Screen { slug: "computer-add-key", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(computer_add) },
+    Screen { slug: "computer-add-recover", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(computer_add) },
     Screen { slug: "computer-add-progress", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(computer_add) },
     Screen { slug: "computer-add-failed", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(computer_add) },
     Screen { slug: "computer-add-done", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(computer_add) },
@@ -1656,6 +1657,7 @@ fn main() -> anyhow::Result<()> {
             // Add a Machine, as far as each of its states.
             match screen.slug {
                 "computer-add-key" => stand_in.adding_at("mac-mini", "asking"),
+                "computer-add-recover" => stand_in.adding_at("mac-mini", "recovery"),
                 "computer-add-progress" => stand_in.adding_at("mac-mini", "copying"),
                 "computer-add-failed" => stand_in.adding_at("nowhere.example", "asking"),
                 "computer-add-done" => stand_in.adding_at("mac-mini", "done"),

@@ -115,7 +115,7 @@ beforeEach(() => {
   link.writeLink({ phones: [], macPeers: [lab.peer], macMoved: [] });
 });
 
-test("this Mac numbers through a machine it shares with a Mac set up before it: its ask goes through that machine, naming that Mac", () => {
+test("legacy numbering can route through a peer to the recorded primary", () => {
   write(numbers, { primary: "self", next: 12, leases: [], since: 9_000 });
   labTold({ primary: { key: other.pub, kind: "mac", since: 1_000 } });
   const primary = link.primaryOf(link.readLink(), numbers);
@@ -135,13 +135,9 @@ test("this Mac numbers through a machine it shares with a Mac set up before it: 
 
 test("this Mac, numbering on its own, leads a setup of its own: its peers document names it, its numbers go on where they were (#41, then #42), and kuvo/setup says it's the main computer", async () => {
   write(numbers, { primary: "self", next: 42, leases: [], since: 1_000 });
-  // lab runs an older box, which doesn't say whether it's shared: nothing changes yet.
   labTold({ primary: { key: self.pub, kind: "mac", since: 1_000 }, shared: undefined });
   link.noteSetupNow(Date.now(), { soon: 0 });
-  assert.equal(ownPeers().setup, undefined, "held back by a machine that hasn't said");
-  assert.deepEqual(link.primaryOf(link.readLink(), numbers), { self: true }, "numbering as it was");
-  labTold({ primary: { key: self.pub, kind: "mac", since: 1_000 } });
-  link.noteSetupNow(Date.now(), { soon: 0 });
+  assert.deepEqual(link.primaryOf(link.readLink(), numbers), { self: true });
   const named = ownPeers().setup;
   assert.match(named?.id ?? "", /^set_[A-Za-z0-9_-]{22}$/);
   assert.deepEqual({ epoch: named.epoch, primary: named.primary }, { epoch: 1, primary: self.pub });
@@ -167,7 +163,7 @@ test("this Mac, numbering on its own, leads a setup of its own: its peers docume
   assert.deepEqual({ setup: card.setup, role: card.role, primary: card.primary.key, app: card.app, computers: card.computers, items: card.items }, { setup: named.id, role: "primary", primary: self.pub, app: true, computers: 2, items: 1 });
 });
 
-test("a Mac whose numbers go through another Mac leads no setup and numbers as before; a machine an earlier Kuvo Code says another Mac shares (another of yours) never holds it back, leading or not (#783)", () => {
+test("a Mac follows the numbering primary and ignores obsolete peer flags", () => {
   write(numbers, { primary: "self", next: 12, leases: [], since: 9_000 });
   labTold({ primary: { key: other.pub, kind: "mac", since: 1_000 } });
   link.noteSetupNow(Date.now(), { soon: 0 });
@@ -175,8 +171,7 @@ test("a Mac whose numbers go through another Mac leads no setup and numbers as b
   assert.equal(ownPeers().setup, undefined);
   assert.equal(link.primaryOf(link.readLink(), numbers).via?.key, lab.pub, "and through lab, as before");
 
-  // lab numbers from this Mac, and says (as an earlier Kuvo Code did) another Mac set it up too:
-  // that Mac is yours, so this one leads all the same.
+  // A legacy numbering record's shared field does not affect leadership.
   write(numbers, { primary: "self", next: 12, leases: [], since: 1_000 });
   labTold({ primary: { key: self.pub, kind: "mac", since: 1_000 }, shared: true });
   link.noteSetupNow(Date.now(), { soon: 0 });
@@ -208,60 +203,6 @@ test("a Mac whose keys were made anew while it doesn't lead lets the setup it le
   } finally {
     link.macLink.overlay = before;
   }
-});
-
-test("what a machine tells of how it numbers is looked at as it comes: lab, now on a box that knows setups, says it knows setups, and this Mac leads at once; a machine added since that hasn't said yet doesn't stop it, nor one an earlier Kuvo Code says is shared", async () => {
-  write(numbers, { primary: "self", next: 12, leases: [], since: 1_000 });
-  labTold({ primary: { key: self.pub, kind: "mac", since: 1_000 }, shared: undefined });
-  link.noteSetupNow(Date.now(), { soon: 0 });
-  assert.equal(link.readLink().setup, undefined, "held back by lab, an older box");
-  // lab's next word, by mail, as its updated box tells it.
-  const told = { id: "wqt_labupdatedlabupdat", at: Date.now(), kind: "machine", since: 50, top: 0, primary: { key: self.pub, kind: "mac", since: 1_000 }, shared: false, items: [], owners: [], labels: [] };
-  await link.takeWorkQueueMail(lab.peer, { told }, host, () => ({ targets: [target], bridge: false }));
-  const led = ownPeers().setup;
-  assert.ok(led, "leads now, not at its next minute");
-  // You add a machine: until it says, this Mac leads on.
-  const added = box("machine", "vps");
-  link.updateLink(current => ({ ...current, macPeers: [lab.peer, added.peer] }));
-  link.noteSetupNow(Date.now(), { soon: 0 });
-  assert.deepEqual(ownPeers().setup, led);
-  write(path.join(queues, "peers", `${added.pub}.json`), { id: "wqt_vpstoldvpstold", at: 1, heard: 1, kind: "machine", since: 60, items: [], owners: [], labels: [], primary: { key: self.pub, kind: "mac", since: 1_000 }, shared: true });
-  link.noteSetupNow(Date.now(), { soon: 0 });
-  assert.deepEqual(ownPeers().setup, led, "leads on");
-});
-
-test("kuvo/setup and the card name the machines holding this Mac back (heldBy); a machine that never told how it numbers, or one gone for days, holds it back no more", async () => {
-  write(numbers, { primary: "self", next: 12, leases: [], since: 1_000 });
-  const vps = box("machine", "vps"), old = box("machine", "old");
-  link.updateLink(current => ({ ...current, macPeers: [lab.peer, vps.peer, old.peer] }));
-  // lab, an older box, hasn't said whether it's shared; vps never told this Mac anything; old says
-  // it's shared, but hasn't answered for four days, and the relay found it away within the hour.
-  labTold({ primary: { key: self.pub, kind: "mac", since: 1_000 }, shared: undefined });
-  write(path.join(queues, "peers", `${old.pub}.json`), { id: "wqt_oldtoldoldtold", at: 1, heard: 1, kind: "machine", since: 60, items: [], owners: [], labels: [], primary: { key: self.pub, kind: "mac", since: 1_000 }, shared: true });
-  write(path.join(run, "peer-reach.json"), { [old.pub]: Date.now() - 4 * 86_400_000 });
-  write(path.join(run, "peer-reach-checked.json"), { [old.pub]: Date.now() - 60_000 });
-  link.noteSetupNow(Date.now(), { soon: 0 });
-  assert.equal(link.readLink().setup, undefined, "lab holds it back");
-  assert.deepEqual((await route("GET", "kuvo/setup")).json.heldBy, [lab.pub], "lab alone: not vps, which never told, nor old, gone");
-  link.writeCard();
-  assert.deepEqual(read(path.join(run, "setup-card.json")).heldBy, [lab.pub]);
-
-  labTold({ primary: { key: self.pub, kind: "mac", since: 1_000 } });
-  link.noteSetupNow(Date.now(), { soon: 0 });
-  assert.equal(link.readLink().setup?.role, "primary", "it leads");
-  assert.deepEqual((await route("GET", "kuvo/setup")).json.heldBy, []);
-  // This Mac slept overnight: the relay hasn't found old away within the hour, as it's only
-  // looked again once this Mac's back on it. old, not heard from for days, is gone all the same: it
-  // leads on, rather than stepping aside for a minute.
-  write(path.join(run, "peer-reach-checked.json"), { [old.pub]: Date.now() - 10 * 3_600_000 });
-  link.noteSetupNow(Date.now(), { soon: 0 });
-  assert.equal(link.readLink().setup?.aside, undefined, "still leads after a long sleep");
-  assert.deepEqual(link.setupView(link.readLink()).heldBy, []);
-  // old answers again, saying it's shared, as an earlier Kuvo Code did: this Mac leads on.
-  write(path.join(run, "peer-reach.json"), {});
-  link.noteSetupNow(Date.now(), { soon: 0 });
-  assert.equal(link.readLink().setup?.aside, undefined, "leads on");
-  assert.deepEqual(link.setupView(link.readLink()).heldBy, []);
 });
 
 test("kuvo/setup/events says it now, and again as link.json changes, written here or by another process (setup over SSH)", async () => {
@@ -310,7 +251,7 @@ test("this Mac's setup outlives a restart: kept in its link.json, it's named aga
   }
 });
 
-test("this Mac's static key made anew: setting a machine up again lets the old key go, so the machine isn't shared with itself and follows the new setup at once", async () => {
+test("this Mac's static key made anew: setting a machine up again lets the old key go, and the machine follows the new setup at once", async () => {
   write(numbers, { primary: "self", next: 12, leases: [], since: 1_000 });
   labTold({ primary: { key: self.pub, kind: "mac", since: 1_000 } });
   link.noteSetupNow(Date.now(), { soon: 0 });
@@ -340,7 +281,7 @@ test("this Mac's static key made anew: setting a machine up again lets the old k
   // up before the next step, so setting up again finds it running rather than starting a second.
   const setUp = async () => {
     const given = (await route("GET", "kuvo/link/setup")).json;
-    const result = spawnSync(process.execPath, [script, "setup"], { input: JSON.stringify({ relay: "wss://relay.invalid", name: "lab", id: "lab", ...given }), env, encoding: "utf8" });
+    const result = spawnSync(process.execPath, [script, "setup"], { input: JSON.stringify({ relay: "wss://relay.invalid", name: "lab", id: "lab", ...given }), env: { ...env, BUN_BE_BUN: process.env.BUN_BE_BUN }, encoding: "utf8" });
     assert.equal(result.status, 0, result.stderr);
     // (Its version too, written just after: without it, setting up again starts a newer one.)
     await until(() => alive(bridgePid()) && bridgeVersion() !== "", "the machine's bridge never started");
@@ -359,7 +300,7 @@ test("this Mac's static key made anew: setting a machine up again lets the old k
     const again = await setUp();
     assert.deepEqual(again.link.macs, [now], "never two of one Mac");
     assert.equal(again.link.setup?.primary, now);
-    assert.equal(again.link.setup?.aside, undefined, "not shared with itself");
+    assert.equal(again.link.setup?.aside, undefined, "the new key keeps its setup");
     assert.equal(again.link.setup?.id, ownPeers().setup.id);
     assert.deepEqual([first.given.replaces, again.given.replaces], [[], [self.pub]], "what this Mac's box gives: the key it had before");
   } finally {

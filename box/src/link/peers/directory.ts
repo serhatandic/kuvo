@@ -9,9 +9,8 @@ import { isObject } from "../../shared/json";
 import { plainName } from "../../shared/text";
 import { locked, writePrivate } from "../files";
 import { RUN } from "../home";
-import { KEY, MOST_PEERS, cleanPeer, fitsPeer, ownKey, peersOf } from "./known";
+import { KEY } from "./known";
 import { SETUP_ID } from "../setup/record";
-import type { LinkState } from "../state";
 import type { AgentsFile, AskingSession, AtWorkSession, ListedAgent, ToldAgents, ToldComputer } from "../../shared/records";
 import type { EngineSession } from "../engine/sessions";
 import { type BotLook, LOOKS as LOOK_WORDS } from "../../shared/routes/bots";
@@ -87,7 +86,6 @@ export function takeAgents(sender: { key: string; kind: "mac" | "machine"; id?: 
     const computer = keptComputer(given.computer);
     all[sender.key] = { at: given.at as number, heard: Date.now(), kind: sender.kind, ...(sender.id ? { id: sender.id } : {}), list: (given.list as unknown[]).filter(fitsAgent).slice(0, MOST_AGENTS).map(keptAgent),
       ...(Array.isArray(given.features) ? { features: keptFeatures(given.features), ...(featuresCut(given.features) ? { featuresCut: true as const } : {}) } : {}), ...(Array.isArray(given.moved) ? { moved: keptMoved(given.moved) } : {}),
-      ...(Array.isArray(given.boxes) ? { boxes: keptBoxes(given.boxes) } : {}),
       ...(typeof given.setup === "string" && SETUP_ID.test(given.setup) ? { setup: given.setup } : {}),
       ...(given.trash === "trash" || given.trash === "kuvo" ? { trash: given.trash } : {}),
       ...(computer ? { computer } : {}) };
@@ -140,42 +138,6 @@ function keptAgents(given: unknown): ToldComputer["agents"] {
   const state = given.state as "running" | "restarting" | "down";
   return { state, ...(state === "down" && (AGENTS_DOWN_WHY as readonly string[]).includes(given.why as string) ? { why: given.why as string } : {}) };
 }
-
-const keptBoxes = (boxes: unknown[]): NonNullable<ToldAgents["boxes"]> => boxes.filter(fitsPeer).slice(0, MOST_PEERS).map(cleanPeer).map(({ key, address, kind, name }) => ({ key, address, kind, name }));
-
-// The boxes this box's peers say they know that aren't its peers too (another of your Macs, and
-// that Mac's machines, beside a machine both set up): it takes plan limits from them, and tells its
-// own to them, and nothing else (PROTOCOL.md, "Plan limits", "Across your computers"). A peer's word
-// on them is as good as the peer, which a Mac set up; it goes with that peer.
-export function vouchedOf(link: LinkState | null | undefined, told?: Record<string, ToldAgents>): Peer[] {
-  if (!link) return [];
-  const own = ownKey(link);
-  const peers = peersOf(link);
-  // Worked out again only when its peers or what they told changed (mail no peer can open asks
-  // it each time).
-  let stamp = `${own}|${peers.map(peer => peer.key).join(",")}|`;
-  if (!told) {
-    try {
-      const file = fs.statSync(PEER_AGENTS_FILE);
-      stamp += `${file.mtimeMs}:${file.size}`;
-    } catch { stamp += "none"; }
-    if (vouchedKept?.stamp === stamp) return vouchedKept.vouched;
-  }
-  const known = new Set(peers.map(peer => peer.key));
-  const vouched = new Map<string, Peer>();
-  for (const peer of peers) {
-    // (As many as one peer names, 16 at most.)
-    for (const box of (told ?? (told = readPeerAgents()))[peer.key]?.boxes?.slice(0, VOUCHED_EACH) ?? []) {
-      if (!fitsPeer(box) || box.key === own || known.has(box.key) || vouched.has(box.key)) continue;
-      vouched.set(box.key, cleanPeer(box));
-    }
-  }
-  const list = [...vouched.values()].slice(0, MOST_PEERS);
-  if (!stamp.endsWith("|")) vouchedKept = { stamp, vouched: list };
-  return list;
-}
-const VOUCHED_EACH = 16;
-let vouchedKept: { stamp: string; vouched: Peer[] } | null = null;
 
 // What each peer told, by its key, as it last said it by mail.
 export function readPeerAgents(file = PEER_AGENTS_FILE): Record<string, ToldAgents> {

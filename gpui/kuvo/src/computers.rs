@@ -911,7 +911,7 @@ impl ComputersView {
         });
         computer.notice.as_ref().map(|notice| Item::Notice {
             key: format!("notice-{}", computer.reach),
-            tone: if computer.reach == "unknown" { Tone::Info } else if computer.reach == "connecting" { Tone::Busy } else { Tone::Waiting },
+            tone: if computer.reach == "connecting" { Tone::Busy } else { Tone::Waiting },
             title: notice.title.clone(),
             words: notice.detail.clone(),
             action: connect.filter(|_| computer.reach == "away"),
@@ -1294,7 +1294,6 @@ fn reached(computer: &Computer) -> Option<String> {
     }
     match computer.via.as_str() {
         "relay" => Some("Through the relay, end to end encrypted".into()),
-        "peer" => Some(format!("Only by {}’s word", computer.through.as_deref().unwrap_or("another computer"))),
         _ => None,
     }
 }
@@ -1468,11 +1467,10 @@ mod tests {
         assert_eq!(Shown::from_key(Some("computer:key_devbox")), Shown::Computer("key_devbox".into()));
     }
 
-    /// How a computer is reached is said as the box says it: by the relay, or by another's word.
+    /// How the answering box reaches a computer.
     #[test]
     fn how_a_computer_is_reached_is_the_boxs_word() {
         assert_eq!(reached(&computer(r#"{"name":"devbox","via":"relay"}"#)).as_deref(), Some("Through the relay, end to end encrypted"));
-        assert_eq!(reached(&computer(r#"{"name":"mini","via":"peer","through":"devbox"}"#)).as_deref(), Some("Only by devbox’s word"));
         assert_eq!(reached(&computer(r#"{"name":"Studio","here":true,"via":"here"}"#)).as_deref(), Some("Shown in this window"));
     }
 }

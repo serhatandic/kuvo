@@ -183,7 +183,7 @@ pub struct Computer {
     /// A machine's name on its Mac.
     #[serde(default)]
     pub id: Option<String>,
-    /// `connected`, `connecting`, `away`, or `unknown` (known by another computer's word alone).
+    /// `connected`, `connecting`, or `away`.
     #[serde(default)]
     pub reach: String,
     /// Kuvo Code's version there, its engine's, and its system as people know it ("macOS 15.1").
@@ -193,13 +193,10 @@ pub struct Computer {
     pub engine: Option<String>,
     #[serde(default)]
     pub system: Option<String>,
-    /// How the box that answers knows it: `here`, `relay`, or `peer` (`through` that one's name).
+    /// How the box that answers reaches it: `here` or `relay`.
     #[serde(default)]
     pub via: String,
-    #[serde(default)]
-    pub through: Option<String>,
-    /// How many of its sessions are at work; none where it never said (an older box, one known
-    /// only by another's word, one that isn't yours): nothing is claimed of it then.
+    /// How many of its sessions are at work, when the box supplied a count.
     #[serde(default)]
     pub working: Option<usize>,
     /// Which of its sessions are at work, newest first (the first few), as it said them.
@@ -218,7 +215,7 @@ pub struct Computer {
     #[serde(default, deserialize_with = "readable")]
     pub actions: Vec<ComputerAction>,
     /// Where its box is on the relay, and which relay (`computers.reach`): one of your own
-    /// computers a paired device reaches directly. None for one that isn't yours.
+    /// computers a paired device reaches directly.
     #[serde(default)]
     pub address: Option<String>,
     #[serde(default)]
@@ -939,13 +936,13 @@ mod tests {
     fn your_computers_read_as_the_box_says_them() {
         let said: Computers = serde_json::from_str(
             r#"{"computers":[{"key":"","name":"Studio","kind":"mac","here":true,"reach":"connected","version":"0.8.0","engine":"2.3.0","system":"macOS 15.1","via":"here","working":2,"limits":["claude"]},
-                {"key":"k1","name":"devbox","kind":"machine","id":"devbox","reach":"unknown","via":"peer","through":"Studio","working":0,"limits":[]},
+                {"key":"k1","name":"devbox","kind":"machine","id":"devbox","reach":"connecting","via":"relay","working":0,"limits":[]},
                 {"key":"k2"}]}"#,
         )
         .unwrap();
         assert_eq!(said.computers.len(), 2, "one in a shape this can't read is left out");
         assert!(said.computers[0].here && said.computers[0].is_mac());
-        assert_eq!((said.computers[1].reach.as_str(), said.computers[1].through.as_deref()), ("unknown", Some("Studio")));
+        assert_eq!((said.computers[1].reach.as_str(), said.computers[1].via.as_str()), ("connecting", "relay"));
         // What's at work is said where the box said it; one that never said has no count at all.
         assert_eq!(said.computers[0].working, Some(2));
         let facts: Computer = serde_json::from_str(r#"{"key":"k3","name":"mini","kind":"machine","reach":"connected","via":"relay","atWork":[{"id":"ses_1","title":"Ship it"},{"id":"ses_2"},{"title":"no id"}],"actions":[{"id":"connect","label":"Connect"},{"label":"no id"}],"limits":[]}"#).unwrap();

@@ -4,7 +4,7 @@
 // ever seeing a value. (This Mac's vault, in its Keychain: vault-host.test.js.)
 //
 // Run with `node --test box/bridge-tests/vault.test.js`.
-import { testsFolder } from "./test-safety.js";
+import { ownPath, testsFolder } from "./test-safety.js";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import crypto from "node:crypto";
@@ -627,8 +627,7 @@ test("after the box starts again the vault is locked, until a client's key unloc
 
 // The agent each conversation's commands get in the sandbox (vault/ssh.ts): the launcher notes the
 // conversation, and hands its commands the agent's socket. Here, the notes as the launcher writes them.
-const sshAgents = sshAgentsOf(home);
-removeAtEnd(sshAgents);
+const sshAgents = sshAgentsOf(home, root);
 function noteConversation(note, folder, where = home) {
   const notes = path.join(where, "run", "ssh-for");
   fs.mkdirSync(notes, { recursive: true });
@@ -807,14 +806,11 @@ test("an SSH key you keep for a project signs through its conversations' own age
 });
 
 test("a Mac whose home is short keeps its SSH agents in the home, where the tests look for them", async t => {
-  // (GitHub's macOS runners' home is `/Users/runner`: 63-64 bytes to this file's agents' folder, under
-  // the 68 from which the box keeps them in /private/tmp instead. This file looked in /private/tmp on
-  // every Mac, so there it waited 60 s for an agent the box had opened in the home, #410.)
-  if (process.platform !== "darwin") return t.skip("only a Mac moves an agent's folder out of a long home");
+  if (process.platform !== "darwin") return t.skip("macOS uses a shorter path for deep box folders");
   const short = fs.mkdtempSync(`/tmp/kv-ssh-${process.pid}-`);
   removeAtEnd(short);
   const agents = path.join(short, "run", "ssh-agents");
-  assert.equal(sshAgentsOf(short), agents, "the box's own folder, for a home this short");
+  assert.equal(sshAgentsOf(short, root), agents, "the box's own folder, for a home this short");
   const other = await start({ KUVO_HOME: short });
   try {
     const folder = path.join(short, "project");
@@ -879,6 +875,29 @@ test("on a box whose agents' commands aren't fenced, agents get none of the vaul
     const state = await fromMac("GET", "kuvo/vault", undefined, key);
     assert.equal(state.value.state.agents, false, "your Vault page can say so");
     assert.equal(state.value.items.length, 4, "your items are all still there");
+  } finally {
+    await box.stop();
+  }
+});
+
+test("a conversation can connect to its SSH agent from a long multibyte macOS home", async t => {
+  if (process.platform !== "darwin") return t.skip("macOS socket path limit");
+  const account = path.join(root, "é".repeat(Math.max(1, Math.ceil((72 - Buffer.byteLength(root) - 1) / 2))));
+  const boxHome = path.join(account, "box");
+  const hash = crypto.createHash("sha256").update(boxHome).digest("hex").slice(0, 12);
+  const agents = ownPath(path.join("/private/tmp", `kuvo-ssh-${process.getuid()}`, hash));
+  removeAtEnd(agents);
+  const box = await start({ HOME: account, KUVO_HOME: boxHome });
+  try {
+    noteConversation(folderNote(account), account, boxHome);
+    const socket = await appears(agents, () => {
+      const name = fs.existsSync(agents) && fs.readdirSync(agents).find(name => name.endsWith(".sock"));
+      return name && path.join(agents, name);
+    });
+    assert.ok(Buffer.byteLength(socket) <= 103);
+    const result = await sshTool("ssh-add", ["-l"], socket);
+    assert.equal(result.status, 1, result.stderr);
+    assert.match(result.stdout, /no identities/i);
   } finally {
     await box.stop();
   }

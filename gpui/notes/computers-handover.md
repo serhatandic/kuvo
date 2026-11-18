@@ -6,12 +6,12 @@ The Computers area (`kuvo/src/computers.rs`, the sidebar in `kuvo/src/areas.rs`)
 `kuvo/computers` alone (PROTOCOL.md, "Computers"):
 
 1. **The sidebar**: All Computers (the area's own page), Your Computers, each computer with its
-   tile, a dot for how it stands (green connected, amber connecting or older, red away, faint known only by another's word), its line and what's at work there; Add
+   tile, a dot for how it stands (green connected, amber connecting or older, red away), its line and what's at work there; Add
    a Machine… under them; Shared Machines apart.
 2. **All Computers**: each as a row with how it stands, its system, what's at work and its Kuvo Code
    version; Add a Machine…; a line for adding one where this computer is alone.
 3. **A computer's page**: its tile, name and "state · system"; a notice for why it stands as it
-   does (can't be reached, connecting, known only through another, shared with another setup, or
+   does (can't be reached, connecting, or
    older, in the window's own held words, `workspace::held_words`); At Work (the box's count; Show
    in Sessions for this window's own); About (kind, system, Kuvo Code, engine, how it's
    reached, plan limits it reads); Manage (Rename…, Connect for one that's away, Remove… for

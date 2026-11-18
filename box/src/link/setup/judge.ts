@@ -65,6 +65,7 @@ export interface Ours {
   key: string | null;
   setup: string | null;
   keys: Set<string>;
+  rotated?: { machine: string; keys: Set<string> };
 }
 
 const MOST_BOXES = 8;
@@ -161,6 +162,7 @@ export function judgeBox(found: FoundBox, ours: Ours): Exclude<Verdict, "two"> {
     // hasn't taken the new one yet.
     if (card.setup && ours.key && card.primary?.key === ours.key) return "ours";
     // In another setup now, whoever set it up before (a machine of ours that forgot us, say).
+    if (!found.app && ours.rotated?.machine === card.self.key && card.primary?.key && ours.rotated.keys.has(card.primary.key)) return "ours";
     if (card.setup && card.role === "member") return "elsewhere";
     if (card.setup && card.role === "primary") return "main";
     if ((card.self.key && ours.keys.has(card.self.key)) || macs.some(each => ours.keys.has(each))) return "ours";

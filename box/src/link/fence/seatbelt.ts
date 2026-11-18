@@ -248,8 +248,7 @@ export function seatbeltProfile(policy: FencePolicy, options: SeatbeltOptions): 
     ...(policy.socketPatterns ?? []).map(pattern => `(remote unix-socket ${regex(pattern)})`));
   // But its own, in its temporary folder (in the app's on this Mac).
   allow("network-outbound", `(remote unix-socket ${param("TMP")})`);
-  // And its own SSH agent, Kuvo Code's (vault/ssh.ts), in `/tmp/kuvo-ssh-<uid>` with the app's
-  // connections to your machines, which the launcher names (none: nothing).
+  // And its own SSH agent socket, which the launcher names (vault/ssh.ts).
   allow("network-outbound", `(remote unix-socket (literal (param "SSH")))`);
 
   // Signals stay allowed: xcodebuild stops the xctest it started through the Simulator, which runs

@@ -243,7 +243,7 @@ Over a box's own server, what's followed streams. Its record is read again for e
 a server that started again (a new port and password each time) is found, its `kuvo/info` read
 again, and a port a stopped server left is never sent anything. A machine over SSH answers each
 request once, so its lists are read again every half minute and an open conversation every few
-seconds, over one shared connection (`/tmp/kuvo-ssh-<uid>`, as the Mac app shares it). A follow
+seconds, over an SSH connection reused from `~/.kuvo-ssh-ctl` when the socket path fits. A follow
 hands on only the latest of what it sees, so a view that reads late gets the state now.
 
 Bots (`kuvo_box::bots`): `kuvo/bots` with `held` and `refused`, `kuvo/bots/templates`, `POST

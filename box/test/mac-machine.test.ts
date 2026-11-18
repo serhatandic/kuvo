@@ -7,7 +7,7 @@ import { join } from "node:path"
 // A Mac can be a machine, with or without the app on it: what's kept from commands is decided by
 // which box this is, not which system it's on. Run as a box runs it, in a process of its own.
 const mac = process.platform === "darwin"
-const root = realpathSync(mkdtempSync(join(tmpdir(), "kuvo-mac-machine-")))
+const root = realpathSync(mkdtempSync(mac ? "/tmp/km-" : join(tmpdir(), "kuvo-mac-machine-")))
 afterAll(() => rmSync(root, { recursive: true, force: true }))
 
 const LINK = join(import.meta.dir, "..", "src", "link")
@@ -38,7 +38,7 @@ test.if(mac)("a machine's box on a Mac keeps its commands from the app's connect
 test.if(mac)("a box on a Mac whose folder is too deep for a socket keeps its agents where one fits", () => {
   const home = join(root, "deep")
   const deep = join(home, "a-folder-long-enough-that-no-socket-in-it-could-ever-fit-in-104-bytes", ".kuvo-code")
-  expect(asBox(home, { KUVO_HOME: deep }).agents).toStartWith(`/private/tmp/kuvo-ssh-${userInfo().uid}/agents-`)
+  expect(asBox(home, { KUVO_HOME: deep }).agents).toStartWith(join(home, ".kuvo-ssh") + "/")
 })
 
 test.if(mac)("the app's box on a Mac that's a machine too keeps its commands from the machine's folder", () => {
@@ -46,7 +46,8 @@ test.if(mac)("the app's box on a Mac that's a machine too keeps its commands fro
   const app = join(home, "Library", "Application Support", "run.kuvo.code", "box")
   const box = asBox(home, { KUVO_HOME: app, KUVO_BOX: "mac", KUVO_ENGINE_CONFIG: join(home, "config") })
   expect(box.kuvo).toContain(join(box.account, ".kuvo-code"))
-  expect(box.agents).toStartWith(`/private/tmp/kuvo-ssh-${userInfo().uid}/agents-`)
+  expect(box.agents).toStartWith(join(home, ".kuvo-ssh") + "/")
+  expect(box.kuvo).toContain(join(home, ".kuvo-ssh"))
 })
 
 test.if(!mac)("a machine's box on Linux keeps its SSH agents in its own folder", () => {

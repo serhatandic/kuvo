@@ -1,7 +1,7 @@
 import { ownComputerName } from "../computer-name";
 import { serviceTitle } from "../../shared/account-names";
 // Your computers, as this box knows them (PROTOCOL.md, "Computers", `kuvo/computers`): itself, its
-// peers (the boxes its Macs name), and the boxes those vouch for (plan limits only). What each is,
+// peers (the boxes its Macs name). What each is,
 // whether it's heard from, where a client of your own reaches it (its address and relay), what it
 // runs and answers, which of its sessions are at work, which
 // services' plan limits it reads, and what can be done with it from here: renamed, removed
@@ -25,7 +25,7 @@ import { call, readEngineFile } from "../engine/client";
 import { followedLive } from "../follow";
 import { IS_MAC, LINK_FILE, MAC_APP_VERSION, MAC_ENGINE_VERSION } from "../home";
 import { keptList, listFollowers, listNow, type Kept } from "../lists/sessions";
-import { MOST_ASKING, MOST_AT_WORK, PEER_AGENTS_FILE, readPeerAgents, vouchedOf } from "../peers/directory";
+import { MOST_ASKING, MOST_AT_WORK, PEER_AGENTS_FILE, readPeerAgents } from "../peers/directory";
 import { addressOf } from "../crypto/keys";
 import { ADDRESS, ownKey, peersOf } from "../peers/known";
 import { actionsOf, givenName, MOST_NAME, oldAppAttached, refusal, removeHere, renameHere, writerFacts, writerOf } from "../peers/manage";
@@ -183,18 +183,14 @@ function reachOf(link: LinkState | null, address: string | undefined): { address
 }
 
 /** Display words belong to the answering box; reach remains a machine-readable state. */
-export function computerWords(computer: Pick<ListedComputer, "reach" | "name" | "through" | "working">, here: string): Pick<ListedComputer, "title" | "detail" | "notice" | "settingsNotice" | "workingTitle" | "reachTitles"> {
-  const { reach, name, through, working } = computer;
-  // (One known only through another names it, as its notice does; "Not reached directly" where
-  // this box can't say through which.)
-  const title = ({ connected: "Connected", connecting: "Connecting", away: "Can’t be reached", unknown: through ? `Known through ${through}` : "Not reached directly" })[reach];
+export function computerWords(computer: Pick<ListedComputer, "reach" | "name" | "working">, here: string): Pick<ListedComputer, "title" | "detail" | "notice" | "settingsNotice" | "workingTitle" | "reachTitles"> {
+  const { reach, name, working } = computer;
+  const title = ({ connected: "Connected", connecting: "Connecting", away: "Can’t be reached" })[reach];
   const notice = reach === "away" ? { title: `${name} can’t be reached`, detail: `${here} hasn’t heard from it for a while: it may be asleep, off, or offline. It shows here again by itself once it’s back, with what it runs.` }
-    : reach === "connecting" ? { title: `Connecting to ${name}…`, detail: `${here} hasn’t heard from it yet.` }
-    : reach === "unknown" ? { title: `Known through ${through ?? "another computer"}`, detail: `${here} doesn’t reach ${name} itself, so how it stands and what it runs can’t be said here.` } : undefined;
+    : reach === "connecting" ? { title: `Connecting to ${name}…`, detail: `${here} hasn’t heard from it yet.` } : undefined;
   // The same standing where its settings would show: what can't be read or changed, not what it runs.
   const settingsNotice = reach === "away" ? { title: `${name} can’t be reached`, detail: `Its settings are kept on ${name}, so they can’t be read or changed until ${here} hears from it again. They show here by themselves once it’s back.` }
-    : reach === "connecting" ? { title: `Connecting to ${name}…`, detail: `Its settings show here once ${here} hears from it.` }
-    : reach === "unknown" ? { title: `${name}’s settings can’t be shown here`, detail: `${here} doesn’t reach ${name} itself, so its settings can’t be read or changed from here.` } : undefined;
+    : reach === "connecting" ? { title: `Connecting to ${name}…`, detail: `Its settings show here once ${here} hears from it.` } : undefined;
   return { title, reachTitles: {
     connecting: "Connecting…", held: "Needs an update", away: "Can’t be reached",
     notPaired: "Hasn’t taken this app yet",
@@ -214,7 +210,7 @@ export function peerReach(key: string, told = readPeerAgents(), reach = readReac
   return { away, reach: reaching ? "connecting" : away ? "away" : said?.heard === undefined ? "connecting" : "connected" };
 }
 
-/** Your computers: this box first, then its peers by name, then the boxes they vouch for, each
+/** Your computers: this box first, then its peers by name, each
  * with what can be done with it from here. */
 export async function listComputers(name: string, bridge: Target | null, signal?: AbortSignal, now = Date.now()): Promise<ListedComputer[]> {
   let link = null as ReturnType<typeof readLink>;
@@ -231,7 +227,6 @@ export async function listComputers(name: string, bridge: Target | null, signal?
     name: ownComputerName(),
     kind: IS_MAC ? "mac" : "machine",
     here: true,
-    shared: false,
     reach: "connected",
     via: "here",
     ...reachOf(link, ownAddress(link)),
@@ -273,7 +268,6 @@ export async function listComputers(name: string, bridge: Target | null, signal?
       name: peer.name,
       kind: peer.kind,
       ...(peer.id ? { id: peer.id } : {}),
-      shared: false,
       // (Not heard from since this box knew of it, and not found away: still being reached.)
       reach: standing,
       via: "relay",
@@ -287,13 +281,6 @@ export async function listComputers(name: string, bridge: Target | null, signal?
       limits: limits.get(peer.key) ?? [],
       ...(leads && blocked ? { vouching: { blocked: true as const, words: blockedWords(blocked.device, peer.name) } } : {}),
     });
-  }
-  // The boxes a peer vouches for (another of your Macs, beside a machine both set up): known by that
-  // peer's word alone, so nothing is known of what they run or whether they answer.
-  for (const box of byName(vouchedOf(link, told))) {
-    const through = peers.find(peer => told[peer.key]?.boxes?.some(each => each.key === box.key));
-    if (!through) continue;
-    computers.push({ key: box.key, name: box.name, kind: box.kind, shared: false, reach: "unknown", via: "peer", through: through.name, limits: limits.get(box.key) ?? [] });
   }
   return withActions();
 }

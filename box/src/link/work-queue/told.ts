@@ -18,14 +18,12 @@ import type { ItemSummary, OwnerFacts } from "./view";
 export const TOLD = path.join(WORK_QUEUE, "peers");
 
 /** How a computer numbers: its kind, when it was set up, the highest number it used or holds, the
- * primary it numbers from (`self` for itself), and `shared`, which a box that knows setups says
- * (false now; an older box said true for a machine more than one Mac set up, or says neither). */
+ * primary it numbers from (`self` for itself). */
 export interface Numbering {
   kind: "mac" | "machine";
   since?: number;
   top?: number;
   primary?: { key: string; kind: "mac" | "machine"; since?: number };
-  shared?: boolean;
 }
 
 /** An item as another computer tells it: its summary, and who handed it on. */
@@ -125,7 +123,7 @@ export function numberingOf(given: Record<string, unknown>): Numbering {
   const kind = KIND(given.kind) ?? "machine";
   const primary = isObject(given.primary) && typeof given.primary.key === "string" && KEY.test(given.primary.key) && KIND(given.primary.kind)
     ? { key: given.primary.key, kind: KIND(given.primary.kind)!, ...(time(given.primary.since) ? { since: time(given.primary.since) } : {}) } : undefined;
-  return { kind, ...(time(given.since) ? { since: time(given.since) } : {}), ...(whole(given.top) ? { top: whole(given.top) } : {}), ...(primary ? { primary } : {}), ...(typeof given.shared === "boolean" ? { shared: given.shared } : {}) };
+  return { kind, ...(time(given.since) ? { since: time(given.since) } : {}), ...(whole(given.top) ? { top: whole(given.top) } : {}), ...(primary ? { primary } : {}) };
 }
 
 /** What a computer told, as it came, cleaned: null for what isn't. */
@@ -194,29 +192,6 @@ export function patchTold(key: string, id: string, item: unknown, deleted: boole
       writePrivate(fileOf(key), JSON.stringify({ ...kept, items }));
     });
   } catch {}
-}
-
-// What each computer last said of being shared, by the told file's time and size: read once a
-// second for each one by `kuvo/setup/events`, so the whole of what it told is read only as it changes.
-const sharedSaid = new Map<string, { stamp: string; shared: boolean | undefined }>();
-/** Whether the computer `key` says it's a machine Macs share (`shared`), as it last told this one:
- * undefined for one that tells but doesn't say (an older box), null for one that never told. */
-export function toldShared(key: string): boolean | undefined | null {
-  if (!KEY.test(key)) return null;
-  let stamp: string;
-  try {
-    const stat = fs.statSync(fileOf(key));
-    stamp = `${stat.mtimeMs}:${stat.size}`;
-  } catch {
-    sharedSaid.delete(key);
-    return null;
-  }
-  const kept = sharedSaid.get(key);
-  if (kept?.stamp === stamp) return kept.shared;
-  const told = readTold(key);
-  if (!told) return null;
-  sharedSaid.set(key, { stamp, shared: told.shared });
-  return told.shared;
 }
 
 /** The computers that told this one, by key. */

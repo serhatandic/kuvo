@@ -7,14 +7,14 @@
 
 import "../safety"
 import { afterAll, beforeEach, describe, expect, test } from "bun:test"
-import { mkdtempSync, rmSync } from "node:fs"
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { LinkDirectory, PeerPost, peerRoutes, type PeerParts } from "../../src/agents/groups/post"
 import type { Clock } from "../../src/agents/groups/peer"
 import { Limits, LimitsProblem, limitsRoutes, type LimitedAccount, type LimitsSource } from "../../src/agents/limits"
 import { LimitsPeers, PEER_AWAY, TELL_AGAIN, type LimitsMail } from "../../src/agents/limits-peers"
-import { limitRows, type LimitRow } from "../../src/agents/limits-rows"
+import type { LimitRow } from "../../src/agents/limits-rows"
 import { subscribe } from "../../src/agents/events"
 
 const base = mkdtempSync(join(process.env.KUVO_TEST_ROOT ?? tmpdir(), "kuvo-limits-peers-"))
@@ -174,11 +174,10 @@ class Box {
   }
 
   /**
-   * Its link says who your other computers are (`PUT /api/kuvo/peers`): its peers, and `also`, the
-   * boxes they know that it doesn't.
+   * Supplies membership to the bridge. Older links also sent `also`.
    */
-  async meet(others: Box[], also: Box[] = []) {
-    await peerRoutes(this.parts, "PUT", [], async () => ({ self: { key: this.key, name: this.name }, boxes: others.map((box) => ({ key: box.key, name: box.name, seats: true })), also: also.map((box) => ({ key: box.key, name: box.name })), bots: [] }))
+  async meet(others: Box[], legacyAlso: Pick<Box, "key" | "name">[] = []) {
+    await peerRoutes(this.parts, "PUT", [], async () => ({ self: { key: this.key, name: this.name }, boxes: others.map((box) => ({ key: box.key, name: box.name, seats: true })), also: legacyAlso.map((box) => ({ key: box.key, name: box.name })), bots: [] }))
   }
 
   async route(method = "GET", rest: string[] = []) {
@@ -342,6 +341,7 @@ describe("plan limits across your computers", () => {
     // Through a restart of hetzner's bridge.
     hetzner.stop()
     hetzner.start()
+    await hetzner.meet([mac, lokum])
     expect(home()?.away).toBe(true)
     expect(home()?.windows[0]?.read).toBe(read)
 
@@ -487,25 +487,6 @@ describe("plan limits across your computers", () => {
     expect(await post("gaveup", { to: "key-other", mail: { kind: "work", work: { task: "gt_1" } } })).toBe(404)
   })
 
-  test("two Macs that share a machine aren't each other's peers, yet each lists the other's accounts; an account both are signed in to is read by each (#701: a reading from a box that isn't yours, told without its spend, never stands in for your own)", async () => {
-    const studio = new Box("key-studio", "Studio", relay, [claude(maker, "studio", "anthropic:work|org"), claude(maker, "studio", "anthropic:studio|org", "claude-code@studio01")])
-    const air = new Box("key-air", "Air", relay, [claude(maker, "air", "anthropic:work|org")])
-    const shared = new Box("key-shared", "shared", relay, [])
-    // The machine's peers are both Macs; each Mac's are its machine, and the box the machine knows.
-    await shared.meet([studio, air])
-    await studio.meet([shared], [air])
-    await air.meet([shared], [studio])
-    await studio.limits.tick()
-    await relay.settled()
-    await air.limits.tick()
-    await relay.settled()
-    expect(maker.reads.map((read) => `${read.box} ${read.who}`)).toEqual(["studio anthropic:work|org", "studio anthropic:studio|org", "air anthropic:work|org"])
-    // Each has the whole list: the Studio-only account on the Air, both Macs on the work account's row.
-    for (const box of [studio, air, shared]) {
-      expect(box.rows().map((row) => row.boxes.map((each) => each.name).sort().join(",")).sort()).toEqual(["Air,Studio", "Studio"])
-    }
-  })
-
   test("the link saying who your computers are again tells no one again, and an ask is answered once a minute at most", async () => {
     const { mac, hetzner, lokum, all } = await threeComputers()
     await relay.settled()
@@ -630,12 +611,12 @@ describe("plan limits across your computers", () => {
   })
 })
 
-describe("whose computers see what's yours alone (#701, the separate review)", () => {
+describe("restoring peer readings", () => {
   /** An account with credits left (as OpenRouter's is): what only your own computers are told. */
   const credits = (): LimitedAccount => ({ provider: "openrouter", service: "openrouter", limits: { every: 600_000, identity: () => "key:sk-or-test", read: async () => ({ windows: [], balance: { left: 7.7, limit: 50, unit: "usd" as const } }) } })
   const balance = (box: Box) => box.rows().find((row) => row.service === "openrouter")?.balance
 
-  test("what your own machine last told is kept whole through a restart: shown as it was once the link says it's yours, and as a box that isn't yours before", async () => {
+  test("what your own machine last told is kept whole through a restart: shown once the link confirms the computer is a peer", async () => {
     const mac = new Box("key-mac", "MacBook Pro", relay, [])
     const hetzner = new Box("key-hetzner", "hetzner", relay, [credits()])
     await mac.meet([hetzner])
@@ -645,49 +626,21 @@ describe("whose computers see what's yours alone (#701, the separate review)", (
     expect(balance(mac)).toEqual({ left: 7.7, limit: 50, unit: "usd" })
     // The Mac's bridge restarts while hetzner is off (it tells nothing now).
     relay.off.add("key-hetzner")
+    const peersFile = join(mac.root, "limits-peers.json")
+    const saved = JSON.parse(readFileSync(peersFile, "utf8"))
+    saved.peers["old-key"] = { ...saved.peers["key-hetzner"], name: "Old entry" }
+    writeFileSync(peersFile, JSON.stringify(saved))
     mac.start()
     expect(balance(mac)).toBeUndefined()
-    expect(mac.rows().find((row) => row.service === "openrouter")).toBeDefined()
-    // Clients hear it as the link says (what they read before was as a box that isn't yours).
+    expect(mac.rows().find((row) => row.service === "openrouter")).toBeUndefined()
+    // Clients hear it as soon as the link supplies membership.
     const heard: any[] = []
     const stop = subscribe((event) => event.type === "kuvo.limits.updated" && heard.push(event.data))
-    await mac.meet([hetzner])
+    await mac.meet([hetzner], [{ key: "old-key", name: "Old entry" }])
     stop()
+    expect(mac.rows().flatMap(row => row.boxes.map(box => box.key))).toEqual(["key-hetzner"])
     expect(balance(mac)).toEqual({ left: 7.7, limit: 50, unit: "usd" })
     expect(heard.at(-1)?.rows.find((row: LimitRow) => row.service === "openrouter")?.balance).toEqual({ left: 7.7, limit: 50, unit: "usd" })
   })
 
-  test("an account's spend and extras come from your own computers' reading, though a box that isn't yours read it later", () => {
-    const account = (checked: number, extras?: any[]) => ({ provider: "claude-code", service: "claude" as const, identity: "aaaaaaaaaaaaaaaa", windows: [{ id: "five_hour", used: 0.5, minutes: 300, read: checked, source: "usage" as const }], checked, ...(extras ? { extras } : {}) })
-    const capped = { id: "extra_usage", name: "Extra Usage", kind: "capped", amount: 12.4, limit: 50, unit: "usd" }
-    const resets = { id: "resets", name: "Rate Limit Resets", kind: "resets", count: 2, usable: true }
-    const [row] = limitRows([
-      { key: "key-mac", name: "MacBook Pro", here: true, away: false, accounts: [account(time - 60_000, [capped, resets]) as any] },
-      { key: "key-shared", name: "shared", here: false, away: false, vouched: true, accounts: [account(time, [{ ...resets, count: 1 }]) as any] },
-    ], time)
-    expect(row!.extras?.map((extra) => extra.kind)).toEqual(["capped", "resets"])
-    expect(row!.windows[0]!.read).toBe(time)
-    // None of yours read it without a problem: the other's reading, as it was told.
-    const [only] = limitRows([
-      { key: "key-mac", name: "MacBook Pro", here: true, away: false, accounts: [{ provider: "claude-code", service: "claude", identity: "aaaaaaaaaaaaaaaa", windows: [] } as any] },
-      { key: "key-shared", name: "shared", here: false, away: false, vouched: true, accounts: [account(time, [{ ...resets, count: 1 }]) as any] },
-    ], time)
-    expect(only!.extras?.map((extra) => extra.kind)).toEqual(["resets"])
-  })
-})
-
-test("without a setup a computer that stops being yours is immediately sent the stripped view", () => {
-  let yours = true, changed = () => {}, now = 1700000000000
-  const account = { provider: "claude-code", service: "claude", windows: [], balance: { left: 12, unit: "usd" }, agentsReset: true }
-  const limits = { list: () => [account], settleNoticeForwarders: () => {}, peersChanged: () => {} } as unknown as Limits
-  const sent: LimitsMail[] = []
-  const directory = { told: true, own: () => ({ key: "own", name: "Own" }), peerBoxes: () => [{ key: "peer", name: "Peer" }], listen: (f: () => void) => { changed = f }, isPeer: () => true, isYours: () => yours }
-  const peers = new LimitsPeers(limits, { followed: true, send: (_, mail) => { sent.push(mail) } }, directory, undefined, () => now)
-  peers.tell(true)
-  expect(sent[0].accounts[0].balance).toEqual({ left: 12, unit: "usd" })
-  expect(sent[0].accounts[0].agentsReset).toBe(true)
-  yours = false; now += 1000; changed()
-  expect(sent).toHaveLength(2)
-  expect(sent[1].accounts[0].balance).toBeUndefined()
-  expect(sent[1].accounts[0].agentsReset).toBeUndefined()
 })

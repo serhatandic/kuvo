@@ -417,7 +417,7 @@ describe("Cursor's usage history", () => {
     ])
     expect(rows.map((row) => row.id)).toEqual([`cursor#${identityOf("cursor:user_abc")}`])
     const tokens = (slots: Slots) => [...slots.used.values()].flatMap((models) => [...models.values()]).reduce((sum, [each]) => sum + each, 0)
-    expect(tokens(rows[0]!.yours)).toBe(tokens(mine!.slots))
+    expect(tokens(rows[0]!.slots)).toBe(tokens(mine!.slots))
   })
 
   test("a sign-in file that can't be read just now (being rewritten) isn't a sign-out: what the box had stays", async () => {
@@ -465,16 +465,15 @@ describe("Cursor's account across your computers", () => {
     expect(rows(account(100, [extra]), account(200, undefined, true))[0]!.extras).toEqual([extra])
   })
 
-  test("a row takes its newest box's reading, never a sum; your totals, your own computers' newest", () => {
+  test("a row takes its newest box's reading, never a sum", () => {
     const rows = usageRows([
       { key: "mac", name: "Mac", here: true, away: false, accounts: [wide(100, 10)] },
       { key: "dev", name: "devbox", here: false, away: false, accounts: [wide(300, 30)] },
-      { key: "other", name: "Another Mac", here: false, away: false, vouched: true, accounts: [wide(500, 50)] },
+      { key: "other", name: "Another Mac", here: false, away: false, accounts: [wide(500, 50)] },
     ])
     expect(rows).toHaveLength(1)
     const tokens = (slots: Slots) => [...slots.used.values()].flatMap((models) => [...models.values()]).reduce((sum, [each]) => sum + each, 0)
     expect(tokens(rows[0]!.slots)).toBe(50)
-    expect(tokens(rows[0]!.yours)).toBe(30)
     expect(rows[0]!.accountWide).toBe(true)
     expect(rows[0]!.boxes.map((box) => box.key)).toEqual(["mac", "dev", "other"])
     // (Logs a box reads itself still add up.)
@@ -510,13 +509,13 @@ describe("Cursor's account across your computers", () => {
     expect(usage.own()[0]!.scanned).toBe(mine!.scanned)
   })
 
-  test("one of your computers asks Cursor for an account's history at a time, however its plan read went; one that stops, or is away, is taken over; one a peer vouches for isn't waited on", async () => {
+  test("one of your computers asks Cursor for an account's history at a time, however its plan read went; one that stops, or is away, is taken over", async () => {
     cursor.keys.set("key_mac", "auth0|user_abc")
     cursor.keys.set("key_dev", "auth0|user_abc")
     // Its plan can't be read (no subscription): neither computer's limits stand for the other's.
     cursor.usage = { enabled: false }
     cursor.events = eventsEachDay(1)
-    const directory = (self: string, other: string) => ({ told: true, own: () => ({ key: self, name: self }), peerBoxes: () => [{ key: other, name: other }], listen: () => {}, isPeer: () => true, isYours: () => true })
+    const directory = (self: string, other: string) => ({ told: true, own: () => ({ key: self, name: self }), peerBoxes: () => [{ key: other, name: other }], listen: () => {}, isPeer: () => true })
     const boxes: { key: string; peers: UsagePeers }[] = []
     let down = new Set<string>()
     const box = (key: string, other: string, sign: string) => {
@@ -592,8 +591,8 @@ describe("Cursor's account across your computers", () => {
     expect(row!.problem).toMatchObject({ kind: "rate-limited", until: now + 60 * 60_000 })
   })
 
-  test("a box a peer vouches for (another person's Mac beside a machine you share) is never waited on", async () => {
-    const peers = new UsagePeers(new Usage(() => [], store(cursorPricing()), () => undefined, undefined, () => now), { followed: true, send: () => {} }, { told: true, own: () => ({ key: "b", name: "b" }), peerBoxes: () => [{ key: "a", name: "a" }], listen: () => {}, isPeer: () => false, isYours: () => false } as any, undefined, () => now)
+  test("an unknown computer does not affect which peer reads Cursor", async () => {
+    const peers = new UsagePeers(new Usage(() => [], store(cursorPricing()), () => undefined, undefined, () => now), { followed: true, send: () => {} }, { told: true, own: () => ({ key: "b", name: "b" }), peerBoxes: () => [], listen: () => {}, isPeer: () => false }, undefined, () => now)
     const identity = "aaaaaaaaaaaaaaaa"
     peers.take("a", { kind: "usage", at: now, digest: "x", accounts: [{ provider: "cursor", service: "cursor", identity, scanned: now, accountWide: true, slots: { models: [], used: [] } }] })
     expect(peers.readsWhole("cursor", identity)).toBe(false)

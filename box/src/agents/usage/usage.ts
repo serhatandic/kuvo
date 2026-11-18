@@ -119,8 +119,6 @@ export interface UsageRowBox {
   scanned?: number
   here?: true
   away?: true
-  /** A box a peer vouches for (another Mac beside a machine you share): not one of your computers. */
-  vouched?: true
   /** It reads a folder another of these boxes already does (two boxes on one computer): not added again. */
   same?: true
 }
@@ -142,18 +140,13 @@ export interface UsageRow {
   away?: true
   /** One of its computers told less than all of its use (`OwnUsage.cut`): its oldest days are short. */
   cut?: true
-  /** It's only on boxes a peer vouches for: not yours, and in no total. */
-  vouched?: true
+  /** A computer counted in the total is away. */
+  partialAway?: true
   /** Every box of it says its dollars are what its maker billed, not an estimate. */
   estimated?: false
   /** Its maker's account of the whole account: its slots are its newest box's, not a sum. */
   accountWide?: true
   slots: Slots
-  /** Its slots from your own computers only (not a vouched box's): what the totals add up. */
-  yours: Slots
-  /** Your own computers' share of it: one is away, or told less than all. */
-  yoursAway?: true
-  yoursCut?: true
 }
 
 /** A box's accounts, as `rows` takes them: this one's, or what a peer last told. */
@@ -162,15 +155,13 @@ export interface UsageBox {
   name: string
   here: boolean
   away: boolean
-  /** A box a peer vouches for, not one of yours. */
-  vouched?: boolean
   accounts: OwnUsage[]
 }
 
 /**
  * One row per account across the boxes, this box's first: one `service` with one `identity` is one
  * account. Its slots are every box's added up; an account its maker states whole (`accountWide`:
- * Cursor's), its newest box's alone (and of your own computers', yours).
+ * Cursor's), its newest box's alone.
  */
 export function usageRows(boxes: UsageBox[]): UsageRow[] {
   const groups: { id: string; members: { box: UsageBox; account: OwnUsage; same: boolean }[] }[] = []
@@ -199,7 +190,6 @@ export function usageRows(boxes: UsageBox[]): UsageRow[] {
     // (Newest first, by when each read it; this box's first among the same.)
     const newest = (of: typeof members) => of.reduce<(typeof members)[number] | undefined>((best, member) => (!best || (member.account.scanned ?? 0) > (best.account.scanned ?? 0) ? member : best), undefined)
     const counted = wide ? [newest(members.filter((member) => !member.same))].filter((member) => member !== undefined) : members.filter((member) => !member.same)
-    const yourCounted = wide ? [newest(members.filter((member) => !member.same && !member.box.vouched))].filter((member) => member !== undefined) : members.filter((member) => !member.same && !member.box.vouched)
     const row: UsageRow = {
       id,
       service: base.service,
@@ -219,20 +209,15 @@ export function usageRows(boxes: UsageBox[]): UsageRow[] {
         ...(account.scanned ? { scanned: account.scanned } : {}),
         ...(box.here ? { here: true as const } : {}),
         ...(box.away ? { away: true as const } : {}),
-        ...(box.vouched ? { vouched: true as const } : {}),
         ...(same ? { same: true as const } : {}),
       })),
       slots: summed(counted.map((member) => member.account.slots)),
-      yours: summed(yourCounted.map((member) => member.account.slots)),
     }
     if (members.every((member) => member.box.away)) row.away = true
+    if (counted.some((member) => member.box.away)) row.partialAway = true
     if (counted.some((member) => member.account.cut)) row.cut = true
-    if (members.every((member) => member.box.vouched)) row.vouched = true
     if (members.every((member) => member.account.estimated === false)) row.estimated = false
     if (wide) row.accountWide = true
-    // (Your share is short where a box counted in it is away, or told less.)
-    if (yourCounted.some((member) => member.box.away)) row.yoursAway = true
-    if (yourCounted.some((member) => member.account.cut)) row.yoursCut = true
     return row
   })
 }
@@ -423,15 +408,14 @@ export class Usage {
     const asked = knownZone(zone) ?? ownZone()
     const now = this.now()
     const rows = this.rows()
-    // Each service's days: your own computers' accounts only (a box a peer vouches for may be
-    // another person's), each folder once. And whether one of them is away or told less than all.
+    // Add each account's counted slots to its service.
     const totals: Record<string, Day[]> = {}
     const partial: Record<string, { away?: true; cut?: true }> = {}
     for (const service of this.services) {
-      const of = rows.filter((row) => row.service === service && !row.vouched)
+      const of = rows.filter((row) => row.service === service)
       if (!of.length) continue
-      totals[service] = daysIn(summed(of.map((row) => row.yours)), asked, now)
-      if (of.some((row) => row.yoursAway || row.yoursCut)) partial[service] = { ...(of.some((row) => row.yoursAway) ? { away: true as const } : {}), ...(of.some((row) => row.yoursCut) ? { cut: true as const } : {}) }
+      totals[service] = daysIn(summed(of.map((row) => row.slots)), asked, now)
+      if (of.some((row) => row.partialAway || row.cut)) partial[service] = { ...(of.some((row) => row.partialAway) ? { away: true as const } : {}), ...(of.some((row) => row.cut) ? { cut: true as const } : {}) }
     }
     const scanned = Math.max(0, ...this.own().map((account) => account.scanned ?? 0))
     // Cursor's models by the family each shows under (its effort and speed variants as one row), as
@@ -455,7 +439,7 @@ export class Usage {
       ...(scanned ? { scanned } : {}),
       // Codex's fallback model, as this box prices its own logs with it, and those it may be.
       pricing: { codex: { fallback: this.settings?.codexFallback ?? null, chosen: this.settings?.chosen ?? false, choices: this.pricing.current().fallbackOptions("codex") } },
-      rows: rows.map(({ slots, yours: _, yoursAway: _away, yoursCut: _cut, ...row }) => ({ ...row, days: grouped(row.service, daysIn(slots, asked, now)) })),
+      rows: rows.map(({ slots, partialAway: _, ...row }) => ({ ...row, days: grouped(row.service, daysIn(slots, asked, now)) })),
       totals,
       ...(Object.keys(partial).length ? { partial } : {}),
     }
@@ -499,7 +483,7 @@ export class Usage {
       this.ownSaid = mine
       this.ownFallback = fallback
     }
-    const now = JSON.stringify(this.rows().map(({ scanned: _, slots, yours, boxes, ...row }) => ({ ...row, boxes: boxes.map(({ scanned: _, ...box }) => box), slots: keptSlots(slots), yours: keptSlots(yours) })))
+    const now = JSON.stringify(this.rows().map(({ scanned: _, slots, boxes, ...row }) => ({ ...row, boxes: boxes.map(({ scanned: _, ...box }) => box), slots: keptSlots(slots) })))
     if (now === this.said) return
     this.said = now
     emit("kuvo.usage.updated", { services: this.services })

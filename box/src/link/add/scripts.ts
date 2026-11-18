@@ -1,15 +1,72 @@
 // The scripts a box runs on a computer it sets up, over SSH (`ssh.ts`), each whole and run by `sh`
 // there: what's on it, the release's files and the engine put in place, its start and its start
-// after a restart, its link's own commands, and its removal. They need `sh`, `tar`, `sed` and a
-// SHA-256 tool there (`sha256sum`, or a Mac's `shasum`), nothing else.
+// after a restart, its link's own commands, and its removal. Account locking uses `lockf` on
+// macOS and `flock` on Linux.
 // Platform: each handles a Mac and Linux in the one script (the tools' names, `launchd` beside cron).
 // The computer's folder is always `~/.kuvo-code` there: its keeper names no other.
 
 import { appDataProbe } from "../install/app-data";
 import { quote } from "../../shared/text";
-import { LAUNCH_AGENT, REBOOT_TAG } from "../marks";
+import { ADD_RESERVATION, LAUNCH_AGENT, REBOOT_TAG } from "../marks";
 
 const K = 'K="$HOME/.kuvo-code"';
+export const ACCOUNT_BUSY = 8;
+export const ACCOUNT_LOST = 73;
+export const ACCOUNT_ERROR = 74;
+export const ACCOUNT_RECOVER = 76;
+export const ACCOUNT_OLD = 77;
+export const RESERVATION_PREFIX = "guarded-";
+
+// The marker reserves the account across SSH commands. An OS file lock covers each command
+// that changes it, including recovery. Keep the lock file's inode, and let foreground children
+// inherit fd 9 so it remains locked even if their SSH shell dies.
+const accountLock = (script: string, wait = 5): string => `A="$HOME/${ADD_RESERVATION}"
+claimed() { [ -e "$A" ] || [ -L "$A" ]; }
+if [ -L "$A.lock" ] || { [ -e "$A.lock" ] && [ ! -f "$A.lock" ]; }; then
+  echo "The Kuvo Code account lock must be a regular file." >&2
+  exit ${ACCOUNT_ERROR}
+fi
+(umask 077; : >>"$A.lock") || exit ${ACCOUNT_ERROR}
+(
+  case "$(uname -s)" in
+    Darwin) /usr/bin/lockf -t ${wait} 9 ;;
+    *) flock -w ${wait} -E 75 9 ;;
+  esac
+  locked=$?
+  if [ "$locked" -ne 0 ]; then
+    if [ "$locked" -eq 75 ] && claimed; then exit ${ACCOUNT_BUSY}; fi
+    exit ${ACCOUNT_ERROR}
+  fi
+  trap '' HUP
+${script}
+) 9<>"$A.lock"`;
+
+const owns = (token: string) => `[ "$(readlink "$A" 2>/dev/null)" = ${quote(token)} ]`;
+
+export const reserve = (token: string, previous?: string): string => accountLock(`
+if claimed; then
+  prior=$(readlink "$A") || exit ${ACCOUNT_ERROR}
+  case "$prior" in
+    ${RESERVATION_PREFIX}*) ;;
+    *) exit ${ACCOUNT_OLD} ;;
+  esac
+  ${previous ? `${owns(previous)} || exit ${ACCOUNT_BUSY}
+  rm -f "$A" || exit ${ACCOUNT_ERROR}` : `printf '%s\\n' "$prior"; exit ${ACCOUNT_RECOVER}`}
+${previous ? `else
+  exit ${ACCOUNT_LOST}` : ""}
+fi
+ln -s ${quote(token)} "$A" || exit ${ACCOUNT_ERROR}`, 0);
+
+export const release = (token: string): string => accountLock(`
+if claimed; then
+  prior=$(readlink "$A") || exit ${ACCOUNT_ERROR}
+  if [ "$prior" = ${quote(token)} ]; then rm -f "$A"; fi
+fi`);
+
+export const reserved = (token: string, script: string): string => accountLock(`
+${owns(token)} || exit ${ACCOUNT_LOST}
+${script}`);
+
 /** A dollar sign, where a script's own `${…}` stands in a template here. */
 const D = "$";
 
@@ -207,9 +264,9 @@ else
 fi`;
 
 /** `kuvo-link.js setup` there, its input (JSON) on its standard input: its answer is the last line. */
-export const join = (version: string): string => `${K}
+export const join = (version: string, token: string): string => `${K}
 ${engineOf(version)}
-${link("setup")}`;
+${link(`setup ${quote(token)}`)}`;
 
 /** The accounts a computer starts with, on its standard input (`{credentials}`), taken by its own
  * box (`kuvo-link.js box seed`): its answer is the last line, which says how many, never what. */

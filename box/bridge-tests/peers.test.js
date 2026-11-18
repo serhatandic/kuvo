@@ -533,12 +533,7 @@ test("a box tells its peers its agents as they change, and every ten minutes", a
   const to = bytes => [mac, second].find(each => k(bytes.subarray(1, 17)) === each.address);
   assert.deepEqual(sent.map(bytes => opened(bytes, to(bytes)).address).sort(), [mac.address, second.address].sort());
   assert.deepEqual(opened(sent[0], to(sent[0])).payload.agents.list, []);
-  // With the boxes it knows, but the one it's for (for plan limits: "Plan limits", "Across your computers").
-  for (const bytes of sent) {
-    const peer = to(bytes);
-    const other = peer === mac ? second : mac;
-    assert.deepEqual(opened(bytes, peer).payload.agents.boxes, [{ key: other.peer.key, address: other.peer.address, kind: other.peer.kind, name: other.peer.name }]);
-  }
+  for (const bytes of sent) assert.equal(opened(bytes, to(bytes)).payload.agents.boxes, undefined);
   await link.announce(host, readEngine, link.readLink(), now + 60_000);
   assert.equal(sent.length, 2, "the same, within ten minutes: not again");
   await link.announce(host, readEngine, link.readLink(), now + 601_000);
@@ -584,13 +579,13 @@ test("a box lists your computers: itself, and each peer as it's heard from, with
   // (Where a client of your own reaches each: its box's address, and this box's relay.)
   const reachTitles = { connecting: "Connecting…", held: "Needs an update", away: "Can’t be reached", notPaired: "Hasn’t taken this app yet", unreached: "Can’t be reached from this app" };
   const reached = address => ({ address, relay: link.readLink().relay, reachTitles });
-  assert.deepEqual({ ...own, system: "said", features: "said" }, { key: here.pub, name: "devbox", kind: "machine", here: true, shared: false, reach: "connected", via: "here", ...reached(k(link.addressOf(Buffer.from(link.readLink().secret, "base64url")))), system: "said", features: "said", title: "Connected", workingTitle: "0 sessions at work", working: 0, atWork: [], limits: [], limitServices: [], actions: [],
+  assert.deepEqual({ ...own, system: "said", features: "said" }, { key: here.pub, name: "devbox", kind: "machine", here: true, reach: "connected", via: "here", ...reached(k(link.addressOf(Buffer.from(link.readLink().secret, "base64url")))), system: "said", features: "said", title: "Connected", workingTitle: "0 sessions at work", working: 0, atWork: [], limits: [], limitServices: [], actions: [],
     // (How its coding agents stand: this test's box has no bridge's program.)
     agents: { state: "down", why: "notInstalled" } });
   // (Its peers by name: what's at work on one that never said isn't claimed.)
   assert.deepEqual(others, [
-    { key: mac.pub, name: "mac", kind: "mac", shared: false, reach: "connecting", title: "Connecting", detail: "devbox hasn’t heard from it yet.", notice: { title: "Connecting to mac…", detail: "devbox hasn’t heard from it yet." }, settingsNotice: { title: "Connecting to mac…", detail: "Its settings show here once devbox hears from it." }, via: "relay", ...reached(mac.address), limits: [], limitServices: [], actions: [] },
-    { key: second.pub, name: "second", kind: "machine", id: "second", shared: false, reach: "connected", via: "relay", ...reached(second.address), version: "1.0.0", engine: "1.19.2", system: "Ubuntu 24.04.1 LTS", agents: { state: "down", why: "outdated" }, title: "Connected", workingTitle: "2 sessions at work", working: 2, limits: [], limitServices: [], actions: [] },
+    { key: mac.pub, name: "mac", kind: "mac", reach: "connecting", title: "Connecting", detail: "devbox hasn’t heard from it yet.", notice: { title: "Connecting to mac…", detail: "devbox hasn’t heard from it yet." }, settingsNotice: { title: "Connecting to mac…", detail: "Its settings show here once devbox hears from it." }, via: "relay", ...reached(mac.address), limits: [], limitServices: [], actions: [] },
+    { key: second.pub, name: "second", kind: "machine", id: "second", reach: "connected", via: "relay", ...reached(second.address), version: "1.0.0", engine: "1.19.2", system: "Ubuntu 24.04.1 LTS", agents: { state: "down", why: "outdated" }, title: "Connected", workingTitle: "2 sessions at work", working: 2, limits: [], limitServices: [], actions: [] },
   ]);
   // (How its coding agents stand, as it told: kept as one of the box's facts, never a word of its own.)
   assert.deepEqual(link.keptComputer({ agents: { state: "down", why: "rm -rf" } }).agents, { state: "down" });
@@ -615,20 +610,16 @@ test("a box lists your computers: itself, and each peer as it's heard from, with
   ({ body } = await ask());
   assert.equal(body.computers[2].reach, "away");
 
-  // A peer an earlier Kuvo Code says is shared (another of your Macs set it up too, #783): one of
-  // your own computers all the same, what it runs kept, and told what this one runs; the Mac it
-  // vouches for is among your computers, known through it.
+  // Older mail can include extra box records. The sender is still a peer.
   const theirs = box("mac", "MacBook");
   const takeMail = (sender, payload) => link.peerMail(sender, payload, null);
   link.receiveMail(mailFrom(second, { at: Date.now() + 1, agents: { at: Date.now() + 1, list: [], shared: true, setup: "set_BBBBBBBBBBBBBBBBBBBBBB", boxes: [theirs.peer], computer: { version: "9.9.9", system: "Ubuntu", working: 5 } } }), undefined, takeMail);
   const yours = box("machine", "attic");
   link.receiveMail(mailFrom(mac, { at: Date.now() + 1, agents: { at: Date.now() + 1, list: [], boxes: [yours.peer], computer: { version: "1.0.0", working: 1 } } }), undefined, takeMail);
   ({ body } = await ask());
-  assert.deepEqual(body.computers.slice(1).map(each => [each.name, each.apart, each.shared, each.version, each.working, each.reach, each.through]), [
-    ["mac", undefined, false, "1.0.0", 1, "connected", undefined],
-    ["second", undefined, false, "9.9.9", 5, "connected", undefined],
-    ["attic", undefined, false, undefined, undefined, "unknown", "mac"],
-    ["MacBook", undefined, false, undefined, undefined, "unknown", "second"],
+  assert.deepEqual(body.computers.slice(1).map(each => [each.name, each.version, each.working, each.reach]), [
+    ["mac", "1.0.0", 1, "connected"],
+    ["second", "9.9.9", 5, "connected"],
   ]);
   const again = [];
   await link.announce({ send: bytes => again.push(bytes) }, () => target, link.readLink(), Date.now(), true);
@@ -640,7 +631,7 @@ test("a box lists your computers: itself, and each peer as it's heard from, with
   const other = box("mac");
   fresh({ macs: [mac.pub, other.pub], peersFrom: { [mac.pub]: { at: 1, peers: [mac.peer, second.peer] } } });
   ({ body } = await ask());
-  assert.deepEqual(body.computers.map(each => [each.name, each.shared, each.apart]), [["devbox", false, undefined], ["mac", false, undefined], ["second", false, undefined]]);
+  assert.deepEqual(body.computers.map(each => each.name), ["devbox", "mac", "second"]);
   const told = [];
   await link.announce({ send: bytes => told.push(bytes) }, () => target, link.readLink(), Date.now(), true);
   assert.ok(told.length > 0);
@@ -651,7 +642,7 @@ test("a box lists your computers: itself, and each peer as it's heard from, with
   }
 });
 
-test("a box tells its peers the setup it follows; a machine two of your Macs set up never says it's shared (#783)", async t => {
+test("a box tells its peers the setup it follows", async t => {
   const air = box("mac", "air");
   const { target } = await engine(t);
   const readEngine = () => target;

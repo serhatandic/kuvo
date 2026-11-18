@@ -1,7 +1,7 @@
 // What the box's tests stand in for and start: this Mac's app (its host interface's keys, kept in
 // memory as the Keychain would), a route as a client reaches it over SSH (`box route`), this Mac's
 // box started as the app starts it, and where a box keeps its conversations' SSH agents.
-import { ownPath } from "./test-safety.js";
+import "./test-safety.js";
 import crypto from "node:crypto";
 import http from "node:http";
 import path from "node:path";
@@ -10,17 +10,14 @@ import { fileURLToPath } from "node:url";
 import { atEnd } from "./at-end.js";
 
 export const script = fileURLToPath(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url));
-/** Where a box (its folder `KUVO_HOME`) keeps its conversations' SSH agents (vault/ssh.ts): on a Mac
- * with a home too long for a socket's path, outside it, so a test clears it itself (a box it stops
- * with SIGTERM can't); in a home short enough for the socket, as the box keeps them there. The same
- * choice `SSH_AGENTS` makes in box/src/link/home.ts: this Mac's box (`macBox`, KUVO_BOX=mac),
- * or over 68 bytes to the agents' folder. (GitHub's macOS runners' home is `/Users/runner`: 63-64
- * bytes there, so the box keeps its agents in the home; looking in `/private/tmp` on every Mac waited
- * 60 s for an agent never there, #410.) */
-export const sshAgentsOf = (home, macBox = false) => {
-  const agents = path.join(home, "run", "ssh-agents");
-  if (process.platform !== "darwin" || (!macBox && Buffer.byteLength(agents) <= 68)) return agents;
-  return ownPath(path.join("/private/tmp", `kuvo-ssh-${process.getuid()}`, `agents-${crypto.createHash("sha256").update(home).digest("hex").slice(0, 8)}`));
+/** Where a box keeps its conversations' SSH agents (vault/ssh.ts). */
+export const sshAgentsOf = (box, home) => {
+  const agents = path.join(box, "run", "ssh-agents");
+  const fits = folder => Buffer.byteLength(path.join(folder, "0".repeat(33))) <= 103;
+  if (process.platform !== "darwin" || fits(agents)) return agents;
+  const boxID = crypto.createHash("sha256").update(path.resolve(box)).digest("hex").slice(0, 12);
+  const short = path.join(home, ".kuvo-ssh", boxID);
+  return fits(short) ? short : path.join("/private/tmp", `kuvo-ssh-${process.getuid()}`, boxID);
 };
 /** A route as a client reaches it over SSH (`box route`), in a process of its own. */
 export async function boxRoute(request, env) {

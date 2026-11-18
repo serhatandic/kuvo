@@ -1,5 +1,5 @@
 // What your accounts used, shared between your computers (PROTOCOL.md, "Usage history"): each box
-// tells the boxes it shares plan limits with (its peers and those they vouch for, `LimitsDirectory`)
+// tells its peers
 // its own accounts' slots (who each account is, as a hash, its name, and each quarter hour's tokens
 // and dollars by model; never a sign-in, a log or a message), and keeps the last each one told,
 // through a restart. Every box then lists every account across them, each account's slots added up
@@ -55,8 +55,6 @@ interface Kept {
   heard: number
   /** What it told, hashed (`UsageMail.digest`). */
   digest?: string
-  /** A box a peer vouches for, not one of yours, as the link last said (kept, for a start before it says again). */
-  vouched?: boolean
   accounts: OwnUsage[]
 }
 
@@ -123,15 +121,14 @@ export class UsagePeers {
    * Whether another of your own computers reads this account its maker states whole (`service`,
    * `identity`: Cursor's) in this box's place: of those that read it lately (25 minutes, as they
    * said: one that stopped, or that's away, is taken over), the one whose key comes first does,
-   * this box included. However its plan's limits went (a problem, a hold, a box a peer vouches for
-   * reading them), one of your computers asks its maker for its history at a time.
+   * this box included. Only one computer asks its maker for its history at a time.
    */
   readsWhole(service: LimitsService, identity: string): boolean {
     const self = this.directory.own()?.key
     if (!self || !this.directory.told) return false
     const now = this.now()
     for (const [key, kept] of this.peers) {
-      if (key >= self || this.vouched(key) || now - kept.heard > PEER_AWAY) continue
+      if (key >= self || !this.directory.isPeer(key) || now - kept.heard > PEER_AWAY) continue
       if (kept.accounts.some((account) => account.accountWide && account.service === service && account.identity === identity && account.scanned !== undefined && now - account.scanned < WHOLE_FRESH)) return true
     }
     return false
@@ -143,18 +140,11 @@ export class UsagePeers {
     const self = this.directory.own()
     const boxes: UsageBox[] = [{ key: self?.key ?? "", name: self?.name ?? "", here: true, away: false, accounts: own }]
     const peers = [...this.peers.entries()].sort(([, a], [, b]) => a.name.localeCompare(b.name))
-    for (const [key, kept] of peers) boxes.push({ key, name: this.directory.peerBoxes().find((box) => box.key === key)?.name ?? kept.name, here: false, away: now - kept.heard > PEER_AWAY, vouched: this.vouched(key), accounts: kept.accounts.map((account) => ({ ...account, slots: trimmed(account.slots, now) })) })
+    for (const [key, kept] of peers) {
+      if (!this.directory.told || !this.directory.isPeer(key)) continue
+      boxes.push({ key, name: this.directory.peerBoxes().find((box) => box.key === key)?.name ?? kept.name, here: false, away: now - kept.heard > PEER_AWAY, accounts: kept.accounts.map((account) => ({ ...account, slots: trimmed(account.slots, now) })) })
+    }
     return usageRows(boxes)
-  }
-
-  /**
-   * Whether a box isn't one of your own computers, whose use is in no total: one a peer vouches for
-   * (not one of your peers: `LimitsDirectory.isYours`); as the link says, or until it has since
-   * this started, as it last said.
-   */
-  private vouched(key: string): boolean {
-    if (!this.directory.isYours) return false
-    return this.directory.told ? !this.directory.isYours(key) : this.peers.get(key)?.vouched === true
   }
 
   /**
@@ -211,7 +201,7 @@ export class UsagePeers {
   /** What a peer told (`from`, its key: the link opens only your computers' mail). */
   take(from: string, mail: unknown) {
     if (!isUsageMail(mail)) return
-    if (this.directory.told && !this.directory.peerBoxes().some((box) => box.key === from)) return
+    if (!this.directory.told || !this.directory.isPeer(from)) return
     const now = this.now()
     const before = this.peers.get(from)
     const name = this.directory.peerBoxes().find((box) => box.key === from)?.name ?? before?.name ?? "another computer"
@@ -229,8 +219,7 @@ export class UsagePeers {
       const since = typeof mail.from === "number" && Number.isInteger(mail.from) && mail.from > 0 ? mail.from * SLOT : undefined
       if (since !== undefined) accounts = accounts.map((account) => withOlder(account, before?.accounts.find((kept) => kept.provider === account.provider), since))
       whole = !!digest && digestOf(accounts.map(toldOf)) === digest
-      const vouched = this.vouched(from)
-      this.peers.set(from, { name, heard: now, ...(digest ? { digest } : {}), ...(vouched ? { vouched } : {}), accounts })
+      this.peers.set(from, { name, heard: now, ...(digest ? { digest } : {}), accounts })
       this.save()
       this.usage.peersChanged()
     } else if (before) {
@@ -329,30 +318,19 @@ export class UsagePeers {
       gone = true
     }
     for (const map of [this.told, this.answered, this.askedBack, this.readFor]) for (const key of [...map.keys()]) if (!here.has(key)) map.delete(key)
-    // (Which are your computers and which a peer vouches for may have changed: the totals with it.)
-    let moved = false
-    for (const [key, kept] of this.peers) {
-      const vouched = this.vouched(key)
-      if ((kept.vouched === true) === vouched) continue
-      if (vouched) kept.vouched = true
-      else delete kept.vouched
-      moved = true
-    }
-    if (gone || moved) {
-      this.save()
-      this.usage.peersChanged()
-    }
+    if (gone) this.save()
+    this.usage.peersChanged()
     this.tell()
   }
 
   private load() {
     if (!this.file) return
     try {
-      const saved = JSON.parse(readFileSync(this.file, "utf8")) as { peers?: Record<string, { name?: unknown; heard?: unknown; digest?: unknown; vouched?: unknown; accounts?: unknown }> }
+      const saved = JSON.parse(readFileSync(this.file, "utf8")) as { peers?: Record<string, { name?: unknown; heard?: unknown; digest?: unknown; accounts?: unknown }> }
       for (const [key, kept] of Object.entries(saved.peers ?? {})) {
         if (!kept || typeof kept.heard !== "number" || !Array.isArray(kept.accounts)) continue
         const digest = text(kept.digest, 64)
-        this.peers.set(key, { name: typeof kept.name === "string" ? kept.name : "another computer", heard: kept.heard, ...(digest ? { digest } : {}), ...(kept.vouched === true ? { vouched: true } : {}), accounts: kept.accounts.flatMap((account) => takenAccount(account, 0, Infinity) ?? []) })
+        this.peers.set(key, { name: typeof kept.name === "string" ? kept.name : "another computer", heard: kept.heard, ...(digest ? { digest } : {}), accounts: kept.accounts.flatMap((account) => takenAccount(account, 0, Infinity) ?? []) })
       }
     } catch {}
   }

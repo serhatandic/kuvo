@@ -398,7 +398,8 @@ export function fencePolicy(ports: number[] = []): FencePolicy {
   // kept by name, `kuvoPatterns`). A Mac's box in a home of its own keeps the same, never the folder
   // around its home (your home folder): only the box in its app's folder has the app's around it.
   const own = APP_FOLDER ? macFolders(home, APP_FOLDER) : { kuvo: [K, path.join(home, ".kuvo-code"), ...(process.platform === "darwin" ? [`/private/tmp/kuvo-ssh-${os.userInfo().uid}`, path.join(home, "Library", "Logs", "Kuvo Code")] : [])], readable: [path.join(K, "bin")] };
-  const kuvo = [...new Set(own.kuvo.map(throughLinks))];
+  const kuvoSsh = inHomes([".kuvo-ssh", ".kuvo-ssh-ctl"]);
+  const kuvo = [...new Set([...own.kuvo.map(throughLinks), ...kuvoSsh])];
   const kuvoReadable = own.readable.map(throughLinks);
   const commandCaches = Object.values(sandboxCaches());
   // Your cache folder, and your own if you set one (on a machine, what its launch kept: the box's

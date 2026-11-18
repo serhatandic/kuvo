@@ -7,8 +7,7 @@
 // crash, a lost answer or a failure, it goes as the same request, and its maker answers that it's
 // done rather than spending another. It runs on the computer that holds the account's sign-in: a box
 // without one (a Mac's Claude token can only run Claude) passes it to the peer of yours that has
-// one (`{"seat": {"kind": "reset"}}`, only between your own computers: never a box a peer vouches
-// for), and answers when
+// one (`{"seat": {"kind": "reset"}}`, between peers), and answers when
 // that one does. Whether agents may use an account's resets without asking (Always Allow) is kept
 // here too, with the account, on the box whose sign-in spends them, and told only to your own
 // computers.
@@ -219,18 +218,13 @@ export class LimitResets {
   private decideHere(rowID: string, on: boolean) {
     const at = Math.max(this.now(), (this.allowed.get(rowID)?.at ?? 0) + 1)
     this.decide(rowID, on, at, "")
-    for (const box of this.yours()) this.transport?.send(box.key, { kind: "reset", at, always: { row: rowID, on, at } }, true)
+    for (const box of this.peers()) this.transport?.send(box.key, { kind: "reset", at, always: { row: rowID, on, at } }, true)
   }
 
-  /** Your other computers (never a box a peer only vouches for). */
-  private yours() {
+  /** Peers that can coordinate a reset. */
+  private peers() {
     const own = this.directory?.own()?.key
-    return (this.directory?.peerBoxes() ?? []).filter((box) => box.key && box.key !== own && this.isYours(box.key))
-  }
-
-  /** Whether a box is one of your own computers (`LimitsDirectory.isYours`). */
-  private isYours(key: string) {
-    return this.directory?.isYours?.(key) === true
+    return (this.directory?.peerBoxes() ?? []).filter((box) => box.key && box.key !== own)
   }
 
   /**
@@ -276,7 +270,7 @@ export class LimitResets {
     if (!rowID) return { status: 404, message: "No account of yours by that name has resets." }
     if (!rowID.includes("#")) return { status: 409, message: "This account doesn't say who it is yet, so Always Allow can't be kept for it." }
     const ownCan = ownProvider !== undefined && !!this.limits.account(ownProvider)?.limits.reset && this.limits.liveRow(ownProvider) === rowID
-    if (!ownCan && !this.yours().length) return { status: 404, message: "No computer of yours has this account's sign-in." }
+    if (!ownCan && !this.peers().length) return { status: 404, message: "No computer of yours has this account's sign-in." }
     if (ownCan) this.saw(ownProvider!, rowID)
     this.decideHere(rowID, on)
     return null
@@ -403,13 +397,13 @@ export class LimitResets {
     return this.spends.findLast((each) => each.row === rowID && each.state === "sending" && (via ? each.via === via : !each.via) && this.now() - each.at < UNSETTLED_FOR)
   }
 
-  /** A peer's reset mail: only from one of your own computers (a box a peer only vouches for never spends yours). */
+  /** A peer's reset mail. */
   take(from: string, mail: unknown) {
     if (!isResetMail(mail)) return
     // (An answer to a spend this box passed to that very box is taken, whatever the link says of it
     // now: it says how that spend went there.)
     const passedThere = !!mail.answer && typeof mail.answer.id === "string" && this.spends.some((each) => each.id === mail.answer!.id && each.via === from)
-    if (this.directory && !this.isYours(from) && !passedThere) {
+    if (this.directory && !this.directory.isPeer(from) && !passedThere) {
       // (Once the link has said, an ask is answered, so its asker isn't left waiting, and nothing
       // is spent: a spend begun for it here before, as that went, or still open, never "nothing was
       // used" for one that may have gone. Anything else is dropped.)
@@ -453,9 +447,9 @@ export class LimitResets {
     })
   }
 
-  /** Whether one of your own computers can be asked now (any other box never spends your resets). */
+  /** Whether this box can ask the peer now. */
   private reaches(key: string) {
-    return !!this.transport?.followed && this.isYours(key)
+    return !!this.transport?.followed && this.directory?.isPeer(key) === true
   }
 
   /** Asks passed to a peer and waiting for its answer, by id: asked again meanwhile, the same wait. */
