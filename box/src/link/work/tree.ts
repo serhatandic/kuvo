@@ -352,10 +352,10 @@ const tokensOf = (data: Listed["data"]) => (data.tokens?.input ?? 0) + (data.tok
 /** A session of a bot's work as clients show it: where it stands now (`working`, what each asks:
  * `asks`), and, with `replies`, its last reply's first lines (`replyBeforeStop`: written in its
  * turn that ended before it was stopped at rest). */
-export async function describeWork(listed: Listed, working: Set<string>, { replies = false, signal }: { replies?: boolean; signal?: AbortSignal } = {}): Promise<WorkSession & { askID?: string; replyBeforeStop?: true }> {
+export async function describeWork(listed: Listed, working: Set<string>, { replies = false, signal, ask }: { replies?: boolean; signal?: AbortSignal; ask?: { id: string; what: string } | null } = {}): Promise<WorkSession & { askID?: string; replyBeforeStop?: true }> {
   const { data } = listed;
   const folder = data.location?.directory ?? data.directory ?? "";
-  const asking = await askingNow(listed, signal);
+  const asking = ask === undefined ? await askingNow(listed, signal) : ask;
   // (With its last reply, read as well: how it ended, past a summary.)
   const read = replies && !working.has(data.id);
   const page = read ? await lastMessages(listed.target, data.id, signal) : null;

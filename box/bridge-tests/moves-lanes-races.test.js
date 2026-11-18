@@ -6,6 +6,7 @@
 //
 // Run with `node --test box/bridge-tests/moves-lanes-races.test.js`.
 import "./test-safety.js";
+import { moveTime, scriptedMoves } from "./move-script.js";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import crypto from "node:crypto";
@@ -154,13 +155,14 @@ const lab = { key: labKey, address: link.addressOf(crypto.randomBytes(32)).toStr
 link.writeLink({ macPeers: [lab] });
 link.macLink.overlay = { key: link.newKey().toString("base64url"), secret: crypto.randomBytes(32).toString("base64url"), relay: "wss://relay.test", name: "Studio Mac" };
 const told = [];
+const { sent, say } = scriptedMoves(link, lab);
 let script = () => {};
 link.sendMovesWith((_peer, move) => {
+  sent(move);
   told.push(move);
   setImmediate(() => script(move));
   return true;
 });
-const say = move => link.takeMoveMail(lab, move);
 const stop = new AbortController();
 link.watchMoves(() => ({ send: () => true }), stop.signal);
 atEnd(() => {
@@ -202,7 +204,7 @@ test("written after it was packed (a wake-up, a letter): it's noticed, and it al
       digests.push(await digestOf(late.session));
       // The first time it's written to as it goes, once it's been read for sending.
       if (offers === 1) fs.appendFileSync(late.file, '{"type":"assistant","late":true}\n');
-      say({ op: "ready", id: move.id });
+      say({ op: "ready", safeSwitch: true, id: move.id });
     }
     if (move.op === "part") {
       say({ op: "got", id: move.id, i: move.i });
@@ -228,7 +230,7 @@ for (const [what, bot, change] of [["renamed", () => named, { title: "Renamed on
       offers++;
       digests.push(await digestOf(session));
       if (offers === 1) assert.equal((await asks("PATCH", `/api/session/${session}`, change)).status, 200);
-      say({ op: "ready", id: move.id });
+      say({ op: "ready", safeSwitch: true, id: move.id });
     }
     if (move.op === "part") {
       say({ op: "got", id: move.id, i: move.i });
@@ -249,14 +251,14 @@ test("written to again and again: it stays where it is, as it was", async () => 
       digests.push(await digestOf(always.session));
       fs.appendFileSync(always.file, '{"type":"assistant"}\n');
       wrote = fs.readFileSync(always.file, "utf8");
-      say({ op: "ready", id: move.id });
+      say({ op: "ready", safeSwitch: true, id: move.id });
     }
     if (move.op === "part") {
       say({ op: "got", id: move.id, i: move.i });
       if (move.i === move.of - 1) say({ op: "arrived", id: move.id, hash: move.hash, digest: digests.at(-1) });
     }
     if (move.op === "switch") assert.fail("it never switches to a copy that isn't the same");
-    if (move.op === "drop") say({ op: "dropped", id: move.id });
+    if (move.op === "drop") say({ op: "dropped", neverSwitched: true, id: move.id });
   };
   const moved = await ask("POST", "kuvo/moves", { kind: "bot", id: always.bot, to: labKey });
   assert.equal(moved.status, 409);
@@ -267,13 +269,13 @@ test("written to again and again: it stays where it is, as it was", async () => 
 test("what's in place there isn't what was sent: taken back, and nothing's let go here", async () => {
   const wrote = fs.readFileSync(wrong.file, "utf8");
   script = move => {
-    if (move.op === "offer") say({ op: "ready", id: move.id });
+    if (move.op === "offer") say({ op: "ready", safeSwitch: true, id: move.id });
     if (move.op === "part") {
       say({ op: "got", id: move.id, i: move.i });
       if (move.i === move.of - 1) say({ op: "arrived", id: move.id, hash: move.hash, digest: "not-the-same" });
     }
     if (move.op === "switch") assert.fail("it never switches to a copy that isn't the same");
-    if (move.op === "drop") say({ op: "dropped", id: move.id });
+    if (move.op === "drop") say({ op: "dropped", neverSwitched: true, id: move.id });
   };
   const moved = await ask("POST", "kuvo/moves", { kind: "bot", id: wrong.bot, to: labKey });
   assert.equal(moved.status, 409);
@@ -285,15 +287,15 @@ test("the other computer quiet for good as it's sent: taken back, nothing half d
   const wrote = fs.readFileSync(quiet.file, "utf8");
   // It takes the offer, then is never heard from again.
   script = move => {
-    if (move.op === "offer") say({ op: "ready", id: move.id });
-    if (move.op === "drop") say({ op: "dropped", id: move.id });
+    if (move.op === "offer") say({ op: "ready", safeSwitch: true, id: move.id });
+    if (move.op === "drop") say({ op: "dropped", neverSwitched: true, id: move.id });
   };
   const moving = ask("POST", "kuvo/moves", { kind: "bot", id: quiet.bot, to: labKey });
   await until(() => {
     const offer = told.find(move => move.op === "offer" && move.thing === quiet.bot);
     return offer && told.some(move => move.op === "part" && move.id === offer.id);
   });
-  link.keepMoving(Date.now() + 11 * 60_000);
+  moveTime(link, Date.now() + 11 * 60_000);
   const moved = await moving;
   assert.equal(moved.status, 503);
   assert.match(moved.json.message, /stopped answering/);
@@ -334,7 +336,7 @@ test("what came doesn't match what it says it is: nothing's placed, and what was
 test("a conversation with something in it that isn't a plain file can't be packed: it's said so, and it stays", async () => {
   const wrote = fs.readFileSync(linked.file, "utf8");
   script = move => {
-    if (move.op === "drop") say({ op: "dropped", id: move.id });
+    if (move.op === "drop") say({ op: "dropped", neverSwitched: true, id: move.id });
   };
   const moved = await ask("POST", "kuvo/moves", { kind: "bot", id: linked.bot, to: labKey });
   assert.equal(moved.status, 409);
@@ -366,7 +368,7 @@ test("a bot on Codex goes with its thread's rollout, kept here as the way back u
   assert.equal(fs.readFileSync(rollout, "utf8"), wrote, "kept, as the way back");
   const at = Date.now();
   await say({ op: "ran", id: entry.id, at });
-  link.keepMoving(at + WEEK + 1);
+  moveTime(link, at + WEEK + 1);
   await until(() => !leftHere().some(each => each.id === entry.id));
   assert.ok(!fs.existsSync(rollout), "gone a week after it ran there");
 
@@ -399,7 +401,7 @@ const leftHere = () => {
 };
 const moveAway = async ({ bot, session }) => {
   script = async move => {
-    if (move.op === "offer") say({ op: "ready", id: move.id });
+    if (move.op === "offer") say({ op: "ready", safeSwitch: true, id: move.id });
     if (move.op === "part") {
       say({ op: "got", id: move.id, i: move.i });
       if (move.i === move.of - 1) say({ op: "arrived", id: move.id, hash: move.hash, digest: await digestOf(session) });
@@ -417,14 +419,14 @@ test("what a move left of a Claude Code bot goes a week after it ran there: its 
   const beside = path.join(path.dirname(leaves.file), leaves.id);
   assert.ok(fs.existsSync(leaves.file) && fs.existsSync(memoryOf(leaves)) && fs.existsSync(beside), "kept, as the way back");
   assert.ok(entry?.ranAt === undefined);
-  link.keepMoving(Date.now() + 90 * 24 * 3600_000);
+  moveTime(link, Date.now() + 90 * 24 * 3600_000);
   assert.ok(fs.existsSync(leaves.file), "with no word it's run there, it stays");
 
   const at = Date.now();
   await say({ op: "ran", id: entry.id, at });
-  link.keepMoving(at + WEEK - 1);
+  moveTime(link, at + WEEK - 1);
   assert.ok(fs.existsSync(leaves.file), "not before the week's up");
-  link.keepMoving(at + WEEK + 1);
+  moveTime(link, at + WEEK + 1);
   await until(() => !leftHere().some(each => each.id === entry.id));
   assert.ok(!fs.existsSync(leaves.file) && !fs.existsSync(beside) && !fs.existsSync(memoryOf(leaves)), "all of it's gone");
   if (entry.trash) assert.ok(!fs.existsSync(entry.trash));
@@ -438,7 +440,7 @@ test("a memory folder a session it started still uses stays when the rest of wha
   const entry = await moveAway(shares);
   const at = Date.now();
   await say({ op: "ran", id: entry.id, at });
-  link.keepMoving(at + WEEK + 1);
+  moveTime(link, at + WEEK + 1);
   await until(() => !leftHere().some(each => each.id === entry.id));
   assert.ok(!fs.existsSync(shares.file), "its conversation's gone");
   assert.equal(fs.readFileSync(path.join(memoryOf(shares), "MEMORY.md"), "utf8"), "Both of them use this.\n");
@@ -457,7 +459,7 @@ test("what a move left is never removed once the conversation runs here again, w
   assert.equal((await asks("GET", `/api/session/${back.session}`)).status, 200);
   const at = Date.now();
   await say({ op: "ran", id: entry.id, at });
-  link.keepMoving(at + WEEK + 1);
+  moveTime(link, at + WEEK + 1);
   await until(() => !leftHere().some(each => each.id === entry.id));
   assert.equal(fs.readFileSync(back.file, "utf8"), '{"type":"user"}\n', "the conversation it's on here is still there");
   assert.equal(fs.readFileSync(path.join(memoryOf(back), "MEMORY.md"), "utf8"), "Still in use.\n", "and so is its memory");

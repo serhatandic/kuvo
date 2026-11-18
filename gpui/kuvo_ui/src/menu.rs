@@ -405,11 +405,13 @@ impl PopoverMenuHandle {
         let menu_focus = menu.focus_handle(cx);
         OpenMenus::add(menu_focus.clone(), return_to.clone(), cx);
         let dismissed = {
-            let slot = self.0.clone();
+            let slot = Rc::downgrade(&self.0);
             let menu_focus = menu_focus.clone();
             let return_to = return_to.clone();
             window.subscribe(&menu, cx, move |_, _: &DismissEvent, window, cx| {
-                slot.borrow_mut().take();
+                if let Some(slot) = slot.upgrade() {
+                    slot.borrow_mut().take();
+                }
                 OpenMenus::remove(&menu_focus, cx);
                 // Leave focus alone if the chosen entry moved it on purpose (a rename field) or
                 // a press outside put it somewhere else.
@@ -446,31 +448,33 @@ impl PopoverMenuHandle {
 /// has focus takes over that one's place to return to, rather than the other menu, which is
 /// about to close.
 #[derive(Default)]
-struct OpenMenus(Vec<(FocusHandle, Option<FocusHandle>)>);
+struct OpenMenus(Vec<(gpui::WeakFocusHandle, Option<FocusHandle>)>);
 
 impl gpui::Global for OpenMenus {}
 
 /// Whether a menu has the keyboard (a selection it was opened over still shows as in use).
 pub fn is_menu_focused(window: &Window, cx: &App) -> bool {
-    cx.try_global::<OpenMenus>().is_some_and(|menus| menus.0.iter().any(|(menu, _)| menu.contains_focused(window, cx)))
+    cx.try_global::<OpenMenus>().is_some_and(|menus| menus.0.iter().filter_map(|(menu, _)| menu.upgrade()).any(|menu| menu.contains_focused(window, cx)))
 }
 
 impl OpenMenus {
     fn return_target(focused: Option<FocusHandle>, cx: &mut App) -> Option<FocusHandle> {
         let focused = focused?;
         let menus = cx.default_global::<OpenMenus>();
-        match menus.0.iter().find(|(menu, _)| *menu == focused) {
+        match menus.0.iter().find(|(menu, _)| menu == &focused) {
             Some((_, return_to)) => return_to.clone(),
             None => Some(focused),
         }
     }
 
     fn add(menu: FocusHandle, return_to: Option<FocusHandle>, cx: &mut App) {
-        cx.default_global::<OpenMenus>().0.push((menu, return_to));
+        let menus = cx.default_global::<OpenMenus>();
+        menus.0.retain(|(open, _)| open.upgrade().is_some());
+        menus.0.push((menu.downgrade(), return_to));
     }
 
     fn remove(menu: &FocusHandle, cx: &mut App) {
-        cx.default_global::<OpenMenus>().0.retain(|(open, _)| open != menu);
+        cx.default_global::<OpenMenus>().0.retain(|(open, _)| open != menu && open.upgrade().is_some());
     }
 }
 
@@ -478,12 +482,17 @@ type MenuBuilder = Rc<dyn Fn(&mut Window, &mut App) -> Entity<Menu>>;
 /// Makes what a popover shows and opens it with the handle.
 type Opener = Rc<dyn Fn(&PopoverMenuHandle, &mut Window, &mut App)>;
 
+enum Trigger {
+    Element(AnyElement),
+    Button(Box<crate::Button>),
+}
+
 /// A dropdown: a trigger (usually a button) and the menu it opens from itself, by the rule in
 /// [`crate::anchor`]: below it at its leading edge, unless told otherwise.
 #[derive(IntoElement)]
 pub struct PopoverMenu {
     id: ElementId,
-    trigger: AnyElement,
+    trigger: Trigger,
     menu: Opener,
     handle: Option<PopoverMenuHandle>,
     align_right: bool,
@@ -503,11 +512,20 @@ impl PopoverMenu {
 
     /// A popover of a view of its own (a picker), made only as it opens.
     pub fn view<V: ManagedView>(id: impl Into<ElementId>, trigger: impl IntoElement, view: impl Fn(&mut Window, &mut App) -> Entity<V> + 'static) -> Self {
+        Self::view_for(id.into(), Trigger::Element(trigger.into_any_element()), view)
+    }
+
+    /// A button trigger that also opens with Enter and Space.
+    pub fn button<V: ManagedView>(id: impl Into<ElementId>, button: crate::Button, view: impl Fn(&mut Window, &mut App) -> Entity<V> + 'static) -> Self {
+        Self::view_for(id.into(), Trigger::Button(Box::new(button)), view)
+    }
+
+    fn view_for<V: ManagedView>(id: ElementId, trigger: Trigger, view: impl Fn(&mut Window, &mut App) -> Entity<V> + 'static) -> Self {
         let menu: Opener = Rc::new(move |handle, window, cx| {
             let view = view(window, cx);
             handle.open(view, window, cx);
         });
-        Self { id: id.into(), trigger: trigger.into_any_element(), menu, handle: None, align_right: false, above: false, centered: false, fill: false }
+        Self { id, trigger, menu, handle: None, align_right: false, above: false, centered: false, fill: false }
     }
 
     /// Opens above the trigger (a composer's control, at the window's foot).
@@ -548,6 +566,22 @@ impl RenderOnce for PopoverMenu {
         let open = handle.view();
         let builder = self.menu.clone();
         let toggle = handle.clone();
+        let trigger = match self.trigger {
+            Trigger::Button(button) => {
+                let (handle, build) = (handle.clone(), self.menu.clone());
+                button.on_click(move |event, window, cx| {
+                    if event.is_keyboard() {
+                        if handle.is_open() {
+                            handle.close(window, cx);
+                        } else {
+                            build(&handle, window, cx);
+                        }
+                        cx.stop_propagation();
+                    }
+                }).into_any_element()
+            }
+            Trigger::Element(element) => element,
+        };
         let placement = match (self.above, self.align_right) {
             (false, false) => Placement::below(),
             (false, true) => Placement::below().align_end(),
@@ -574,7 +608,7 @@ impl RenderOnce for PopoverMenu {
                     builder(&toggle, window, cx);
                 }
             })
-            .child(self.trigger)
+            .child(trigger)
             .children(open.map(|menu| Popover::new(("menu-motion", menu.entity_id().as_u64()), placement, menu)))
     }
 }

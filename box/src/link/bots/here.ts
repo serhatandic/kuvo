@@ -5,6 +5,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { locked, textOf } from "../files";
 import type { Fields } from "../../shared/json";
+import { moveHold } from "../../shared/move-hold";
 import type { BotLook, BotModel } from "../../shared/routes/bots";
 import { BOTS } from "../home";
 
@@ -56,7 +57,7 @@ export function botHere(id: unknown): BotHere | null {
 
 // On its way to another computer: a move holds its wake-ups (the Mac's Moves.hold), and nothing
 // reaches it or changes here until it's there, as on the Mac.
-export const isMoving = (folder: string): boolean => (textOf(path.join(folder, "paused")) ?? "").trim() === "moving";
+export const isMoving = (folder: string): boolean => moveHold(textOf(path.join(folder, "paused"))) !== null;
 export const MOVING = "It’s moving to another computer. Try again once it’s there.";
 // How long a step of making or deleting a bot waits on the engine, once it's under way: it goes on
 // without the phone's request, which may end first.

@@ -86,6 +86,7 @@ pub struct Refused {
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct Elsewhere {
     pub id: String,
+    /// The computer it lives on, by its box key.
     #[serde(default, rename = "box")]
     pub computer_key: String,
     #[serde(default)]
@@ -351,7 +352,7 @@ impl WorkSession {
 #[serde(rename_all = "camelCase")]
 pub struct WorkModel {
     pub id: String,
-    #[serde(default)]
+    #[serde(default, alias = "providerID")]
     pub provider_id: Option<String>,
     #[serde(default)]
     pub variant: Option<String>,

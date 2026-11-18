@@ -29,6 +29,41 @@ export function writePrivate(file: string, text: string | Uint8Array) {
   placeWhole(file, text);
 }
 
+function syncPath(file: string): void {
+  const handle = fs.openSync(file, "r");
+  try { fs.fsyncSync(handle); } finally { fs.closeSync(handle); }
+}
+
+/** Seal a file and its directory entry. `through` also seals the entries of newly made parents. */
+export function syncDurableFile(file: string, through = path.dirname(file)): void {
+  for (let entry = file; ; entry = path.dirname(entry)) {
+    syncPath(entry);
+    if (entry === through) return;
+    if (path.dirname(entry) === entry) throw new Error("The sync must stop at a parent of the file");
+  }
+}
+
+/** Seal an imported tree from the leaves up, without following any links in it. */
+export function syncDurableTree(folder: string, through = path.dirname(folder)): void {
+  function syncEntry(entry: string): void {
+    const stat = fs.lstatSync(entry);
+    if (stat.isSymbolicLink()) return;
+    if (stat.isDirectory()) for (const child of fs.readdirSync(entry)) syncEntry(path.join(entry, child));
+    else if (!stat.isFile()) throw new Error("An imported entry is not a file or folder");
+    syncPath(entry);
+  }
+  syncEntry(folder);
+  syncDurableFile(path.dirname(folder), through);
+}
+
+/** A private atomic write whose contents and rename survive a power cut before the caller proceeds. */
+export function writeDurablePrivate(file: string, text: string | Uint8Array, through = path.dirname(file)): void {
+  const folder = path.dirname(file);
+  fs.mkdirSync(folder, { recursive: true, mode: 0o700 });
+  placeWhole(file, text, 0o600, true);
+  syncDurableFile(folder, through);
+}
+
 /**
  * A key, token or sign-in in `file`: as `writePrivate`, and in a folder only you can open however
  * it was made (one others could read is closed to them first).
@@ -55,12 +90,13 @@ export function privateFolder(folder: string): string {
 // Through a new file only you can read (one of that name already there, or a link, isn't written
 // through), renamed into place: never seen half-written, and nothing left beside it if it fails.
 // (`mode` 0o700 for a script that runs as it lands.)
-export function placeWhole(file: string, text: string | Uint8Array, mode = 0o600) {
+export function placeWhole(file: string, text: string | Uint8Array, mode = 0o600, durable = false) {
   const temporary = `${file}.${process.pid}.${crypto.randomBytes(4).toString("hex")}.tmp`;
   try {
     fs.writeFileSync(temporary, text, { mode, flag: "wx" });
     // (Only a mode your umask took bits from, as a script's.)
     if ((fs.statSync(temporary).mode & 0o777) !== mode) fs.chmodSync(temporary, mode);
+    if (durable) syncPath(temporary);
     fs.renameSync(temporary, file);
   } catch (error) {
     try { fs.rmSync(temporary, { force: true }); } catch {}
@@ -104,9 +140,10 @@ async function holdAwaiting(lock: string, stale: number, wait: number): Promise<
 }
 
 // `work` done holding `lock`: one process at a time. A lock left by one that was cut off goes
-// after `stale` ms (ten seconds); one not had in `wait` ms (three) goes ahead all the same.
-export function locked<T>(lock: string, work: () => T, { stale = 10_000, wait = 3_000 } = {}): T {
+// after `stale` ms (ten seconds). After `wait` ms (three), a required lock fails the operation.
+export function locked<T>(lock: string, work: () => T, { stale = 10_000, wait = 3_000, required = false } = {}): T {
   const held = hold(lock, stale, wait);
+  if (required && !held) throw new Error("Could not lock the file for writing");
   try {
     return work();
   } finally {

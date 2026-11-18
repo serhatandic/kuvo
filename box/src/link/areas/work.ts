@@ -1,3 +1,4 @@
+import { askingNow } from "../work/tree";
 // A bot's work, as every client shows it (PROTOCOL.md, "Work"): `GET kuvo/work?bot=<id>`, its
 // sessions and where each stands, the asks it answered for them, what it started today and the
 // limits you set; `GET kuvo/work/events`, when each bot's work last changed, a line now and one for
@@ -50,11 +51,21 @@ async function botWork(bot: string, context: RouteContext): Promise<BotWork> {
   const working = await atWorkNow(targets, signal ?? undefined);
   // A few at a time: each asks the engine what it asks and said.
   const sessions: Awaited<ReturnType<typeof describeWork>>[] = [];
-  const shown = work.slice(0, 60);
-  // (The accounts they run on, meanwhile: each provider asked once where it runs.)
-  const asked = workAccounts(shown.map(each => ({ id: each.data.id, target: each.target, provider: each.data.model?.providerID })), signal ?? undefined);
+  let recent = 0;
+  const shown = [];
+  for (let at = 0; at < work.length && !signal?.aborted; at += 8) {
+    const checked = await Promise.all(work.slice(at, at + 8).map(async listed => ({ listed, ask: await askingNow(listed, signal ?? undefined) })));
+    for (const row of checked) {
+      if (row.ask || working.has(row.listed.data.id)) shown.push(row);
+      else if (recent < 60) {
+        shown.push(row);
+        recent++;
+      }
+    }
+  }
+  const asked = workAccounts(shown.map(({ listed }) => ({ id: listed.data.id, target: listed.target, provider: listed.data.model?.providerID })), signal ?? undefined);
   for (let at = 0; at < shown.length; at += 8) {
-    sessions.push(...await Promise.all(shown.slice(at, at + 8).map(each => describeWork(each, working, { replies: true, signal: signal ?? undefined }))));
+    sessions.push(...await Promise.all(shown.slice(at, at + 8).map(({ listed, ask }) => describeWork(listed, working, { replies: true, ask, signal: signal ?? undefined }))));
   }
   const allAnswered: WorkAnswer[] = work.flatMap(each => answersOn(each.data.metadata).map(answer => ({ ...answer, session: each.data.id }))).sort((a, b) => b.at - a.at);
   const answered = allAnswered.slice(0, 100);

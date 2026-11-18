@@ -22,6 +22,7 @@ const link = await import("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-
 // The engine: each session's inbox and whether it runs; what was asked of it, each time a test
 // waits on it looking again.
 let inboxes, running, asked, prompted, unsure = false, taken = new Set(), waiting = [], latest = {}, pages = {}, viewedAt = 0, looks = 0, whenLooked = null;
+const accepted = new Set();
 // A busy engine: the next `stalls` reads of a session get no answer until the test ends them.
 let stalls = 0, stalled = [];
 // Whether a prompt stays in its session's inbox, as one for a run under way does.
@@ -59,6 +60,10 @@ const engine = http.createServer((request, response) => {
     else if (rest === "/inbox") answer = { data: inboxes[session] ?? [] };
     // Its newest message (the queue only asks for the one).
     else if (rest === "/message") answer = { data: url.searchParams.get("limit") === "6" ? pages[session] ?? [] : latest[session] ? [latest[session]] : [] };
+    else if (rest?.startsWith("/message/")) {
+      const id = decodeURIComponent(rest.slice(9));
+      if (accepted.has(`${session}/${id}`)) answer = { data: { id } };
+    }
     else if (rest?.startsWith("/inbox/") && request.method === "DELETE") {
       inboxes[session] = (inboxes[session] ?? []).filter(each => each.id !== decodeURIComponent(rest.slice(7)));
       asked.push(`${session} ${decodeURIComponent(rest.slice(7))} gone`);
@@ -76,6 +81,7 @@ const engine = http.createServer((request, response) => {
       // A message for the session: what it says, as it went.
       const given = JSON.parse(body);
       prompted.push({ session, ...given });
+      accepted.add(`${session}/${given.id}`);
       if (keeps) (inboxes[session] ??= []).push({ id: given.id, delivery: given.delivery });
       asked.push(`${session} prompt ${given.id}`);
       answer = {};
@@ -101,6 +107,7 @@ beforeEach(() => {
   running = new Set();
   asked = [];
   prompted = [];
+  accepted.clear();
   unsure = false;
   taken = new Set();
   latest = {};
@@ -512,9 +519,8 @@ test("Stop holds the conversation though nothing waits: what you queue meanwhile
   b.hear("session.execution.started");
   b.hear("session.execution.succeeded");
   b.wait(1500);
-  while (prompted.length < 2) await heard();
+  await until(state => state.waiting === undefined);
   assert.deepEqual(prompted.map(each => each.id), ["msg_back1", "msg_back2"]);
-  assert.equal(link.queueOf("ses_1").waiting, undefined);
   assert.deepEqual(prompted[1].files, [{ uri: "file:///tmp/notes.txt", name: "notes.txt" }], "whole, with its files");
 });
 
@@ -775,9 +781,8 @@ test("a coding agents' run still keeping its files as it ends doesn't leave the 
   running.delete("ses_1");
   b.hear("session.idle");
   b.wait(1500);
-  while (prompted.length < 2) await heard();
+  await until(state => state.waiting === undefined);
   assert.deepEqual(prompted.map(each => each.id), ["msg_w1", "msg_w2"]);
-  assert.deepEqual(link.queueOf("ses_1").waiting, undefined);
 });
 
 test("Resume pressed after a Stop while the coding agents' run still keeps its files goes on once the session's free", { timeout: 10_000 }, async () => {

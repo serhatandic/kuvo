@@ -110,6 +110,7 @@ macro_rules! icons {
 }
 
 icons! {
+    Activity => "activity",
     Alarm => "alarm",
     Archive => "archive",
     ArrowDown => "arrow-down",
@@ -154,6 +155,7 @@ icons! {
     Plus => "plus",
     Question => "question",
     Queue => "queue",
+    QueuedMessage => "queued-message",
     Refresh => "refresh",
     Quote => "quote",
     Return => "return",
@@ -168,9 +170,11 @@ icons! {
     Star => "star",
     StarFilled => "star-filled",
     Spinner => "spinner",
+    Steer => "steer",
     Stop => "stop",
     Sun => "sun",
     Terminal => "terminal",
+    TerminalWindow => "terminal-window",
     Trash => "trash",
     Undo => "undo",
     User => "user",

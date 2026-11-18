@@ -372,6 +372,7 @@ export const SESSION_ROUTES: RouteShape[] = [
   { route: "GET kuvo/sessions/:id/mentions", answers: { 200: MENTIONS, 400: REFUSED, 404: REFUSED, 503: REFUSED } },
   { route: "POST kuvo/sessions/:id/stop", answers: { 200: QUEUE, 404: REFUSED, 502: REFUSED, 503: REFUSED } },
   { route: "POST kuvo/sessions/:id/queue/hold", answers: { 200: QUEUE, 404: REFUSED, 502: REFUSED, 503: REFUSED } },
+  { route: "POST kuvo/sessions/:id/queue/reorder", answers: { 200: QUEUE_SHOWN, 400: REFUSED, 404: REFUSED, 409: REFUSED, 502: REFUSED, 503: REFUSED, 504: REFUSED } },
   { route: "POST kuvo/sessions/:id/queue/resume", answers: { 200: QUEUE, 404: REFUSED, 502: REFUSED, 503: REFUSED } },
   { route: "POST kuvo/sessions/:id/queue/:item/now", answers: { 200: QUEUE, 404: REFUSED, 502: REFUSED, 503: REFUSED } },
   { route: "POST kuvo/sessions/:id/queue/:item/steer", answers: { 200: QUEUE, 404: REFUSED, 502: REFUSED, 503: REFUSED } },

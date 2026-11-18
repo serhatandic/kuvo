@@ -203,3 +203,87 @@ fn a_queue_held_for_an_engine_update_says_why_in_the_boxs_words(cx: &mut TestApp
     follow_queue(&view, &workspace, "ses_signup", cx);
     assert!(bounds(cx, "queue-line").is_none(), "gone once the engine is back");
 }
+
+#[gpui::test]
+fn the_queue_has_visible_remove_and_more_actions(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (workspace, cx) = open(cx, stand_in.clone());
+    let (_, composer) = open_session(&workspace, "ses_signup", cx);
+    click(cx, "queue-more-msg_q1");
+    assert!(bounds(cx, "menu-item-Edit").is_some());
+    click(cx, "menu-item-Edit");
+    assert!(bounds(cx, "queued-msg_q1").is_none());
+    assert!(!composer.read_with(cx, |composer, cx| composer.field().read(cx).text().to_string()).is_empty());
+    click(cx, "remove-msg_q2");
+    assert!(stand_in.queue_of("ses_signup").is_empty());
+    assert!(bounds(cx, "queue").is_none());
+}
+
+#[gpui::test]
+fn a_send_for_after_the_run_does_not_appear_in_the_transcript_while_waiting(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (workspace, cx) = open(cx, stand_in.clone());
+    let (view, composer) = open_session(&workspace, "ses_signup", cx);
+    let words = "After this run, check the links";
+    cx.simulate_input(words);
+    composer.update(cx, |composer, cx| composer.send_as(kuvo::composer::SendAs::Queue, cx));
+    cx.run_until_parked();
+    // Deliberately don't hand the queue update to the view yet.
+    assert!(!view.read_with(cx, |view, _| view.entries().iter().any(|entry|
+        matches!(entry, kuvo::entries::Entry::Outgoing { words: sent, .. } if sent == words))));
+    follow_queue(&view, &workspace, "ses_signup", cx);
+    let row = stand_in.queue_of("ses_signup").into_iter().find(|item| item["words"] == words).unwrap();
+    assert!(bounds(cx, &format!("queued-{}", row["id"].as_str().unwrap())).is_some());
+}
+
+#[gpui::test]
+fn a_queue_drag_persists_across_reopening_and_keyboard_moves_it_back(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (workspace, cx) = open(cx, stand_in.clone());
+    open_session(&workspace, "ses_signup", cx);
+    let button = gpui::MouseButton::Left;
+    let drag = |cx: &mut VisualTestContext, first: &str, second: &str, moves: usize| {
+        let row = bounds(cx, first).unwrap();
+        let from = row.center();
+        let to = bounds(cx, second).unwrap().center() + gpui::point(px(35.), px(0.));
+        cx.simulate_mouse_down(from, button, Modifiers::default());
+        if moves > 1 {
+            cx.simulate_mouse_move(from + gpui::point(px(0.), px(8.)), Some(button), Modifiers::default());
+        }
+        for _ in 0..moves {
+            cx.simulate_mouse_move(to, Some(button), Modifiers::default());
+        }
+        cx.run_until_parked();
+        let preview = bounds(cx, "queue-drag-preview").unwrap();
+        assert_eq!(preview.left(), row.left());
+        assert_eq!(preview.size.width, row.size.width);
+        for selector in ["drag-queue-action", "drag-queue-remove", "drag-queue-more"] {
+            let action = bounds(cx, selector).unwrap();
+            assert!(action.left() >= preview.left() && action.right() <= preview.right());
+        }
+        to
+    };
+    let to = drag(cx, "queued-msg_q1", "queued-msg_q2", 2);
+    cx.simulate_keystrokes("escape");
+    cx.simulate_mouse_up(to, button, Modifiers::default());
+    cx.run_until_parked();
+    assert!(bounds(cx, "queue-drag-preview").is_none());
+    let route = "kuvo/sessions/ses_signup/queue/reorder";
+    assert!(stand_in.seen_at("POST", route).is_empty());
+
+    // A quick release at the destination still commits even before a second drag-move event.
+    let to = drag(cx, "queued-msg_q1", "queued-msg_q2", 1);
+    cx.simulate_mouse_up(to, button, Modifiers::default());
+    cx.run_until_parked();
+    assert_eq!(stand_in.queue_of("ses_signup")[0]["id"], "msg_q2");
+    assert_eq!(stand_in.seen_at("POST", route).len(), 1);
+    open_session(&workspace, "ses_recipes", cx);
+    open_session(&workspace, "ses_signup", cx);
+    let first = bounds(cx, "queued-msg_q2").unwrap();
+    let second = bounds(cx, "queued-msg_q1").unwrap();
+    assert!(first.top() < second.top());
+    cx.simulate_click(first.center(), Modifiers::default());
+    cx.simulate_keystrokes("alt-down");
+    cx.run_until_parked();
+    assert_eq!(stand_in.queue_of("ses_signup")[0]["id"], "msg_q1");
+}

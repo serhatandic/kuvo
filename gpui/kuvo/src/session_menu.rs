@@ -199,6 +199,7 @@ pub fn build_menu_items(
     session_id: String,
     anchor: PopoverAnchor,
     workspace: WeakEntity<Workspace>,
+    move_chat: bool,
 ) -> Vec<MenuItem> {
     let mut items = Vec::new();
     if let Some(held) = &actions.held {
@@ -206,7 +207,13 @@ pub fn build_menu_items(
     }
     let held = actions.held.is_some();
     let mut lined = false;
-    let mut any_above = false;
+    let mut any_above = move_chat;
+    if move_chat {
+        let (workspace, session, anchor) = (workspace.clone(), session_id.clone(), anchor.clone());
+        items.push(MenuItem::Entry(MenuEntry::new("Move to…").disabled(held).on_select(move |window, cx| {
+            workspace.update(cx, |workspace, cx| workspace.move_chat_menu(&session, &anchor, window, cx)).ok();
+        })));
+    }
     for action in &actions.actions {
         let supported = matches!(
             action.id.as_str(),
@@ -282,12 +289,13 @@ pub fn menu_from_actions(
     session_id: String,
     anchor: PopoverAnchor,
     workspace: WeakEntity<Workspace>,
+    move_chat: bool,
     cx: &mut App,
 ) -> Entity<Menu> {
     cx.new(|cx| {
         let mut menu = Menu::new(cx).width(px(208.));
         let items = match result {
-            Ok(actions) => build_menu_items(&actions, session_id, anchor, workspace),
+            Ok(actions) => build_menu_items(&actions, session_id, anchor, workspace, move_chat),
             Err(error) => vec![MenuItem::Header(error.to_string().into())],
         };
         menu.set_items(items, cx);
@@ -303,12 +311,13 @@ pub fn open_actions_menu(
     session_id: String,
     anchor: PopoverAnchor,
     workspace: WeakEntity<Workspace>,
+    move_chat: bool,
     window: &mut Window,
     cx: &mut App,
 ) -> Entity<Menu> {
     if !live {
         let result = client.session_actions(&session_id);
-        return menu_from_actions(result, session_id, anchor, workspace, cx);
+        return menu_from_actions(result, session_id, anchor, workspace, move_chat, cx);
     }
 
     let menu = cx.new(|cx| Menu::new(cx).width(px(208.)).header("Loading…"));
@@ -333,7 +342,7 @@ pub fn open_actions_menu(
             weak_menu
                 .update(cx, |menu, cx| {
                     let items = match result {
-                        Ok(actions) => build_menu_items(&actions, session_id, anchor, workspace),
+                        Ok(actions) => build_menu_items(&actions, session_id, anchor, workspace, move_chat),
                         Err(error) => vec![MenuItem::Header(error.to_string().into())],
                     };
                     menu.set_items(items, cx);

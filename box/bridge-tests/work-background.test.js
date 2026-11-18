@@ -113,6 +113,11 @@ const engine = http.createServer((request, response) => {
       if (state.reads?.session === id) return state.reads.hold(answer, () => reply({ message: "Timed out." }, 500));
       return answer();
     }
+    if (one?.[2]?.startsWith("/message/")) {
+      const message = decodeURIComponent(one[2].slice("/message/".length));
+      const stored = state.prompts.find(each => each.to === id && each.id === message);
+      return stored ? reply({ data: { id: stored.id } }) : reply({ message: "No such message." }, 404);
+    }
     if (one?.[2] === "/prompt") {
       // (Sent again under the same id, as a retry is, it's taken once.)
       const prompt = { to: id, ...JSON.parse(body) };

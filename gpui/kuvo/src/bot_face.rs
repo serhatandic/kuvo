@@ -298,6 +298,11 @@ pub fn bot_face(id: &str, look: &Look, size: Pixels) -> AnyElement {
         .into_any_element()
 }
 
+/// A still idle pose for a move row and its header.
+pub fn still_bot_face(id: &str, look: &Look, size: Pixels) -> AnyElement {
+    still_avatar(id, look, State::Idle, size)
+}
+
 /// A settled avatar for the compact sidebar, with no frame or motion scheduling.
 pub fn still_avatar(id: &str, look: &Look, state: State, size: Pixels) -> AnyElement {
     let pose = Motion::settled_in(seed_of(id), &look.face, state).pose(f32::from(size));

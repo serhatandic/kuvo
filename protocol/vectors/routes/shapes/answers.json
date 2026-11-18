@@ -11190,7 +11190,8 @@
          "place?": "string",
          "sent?": "number",
          "size?": "number",
-         "waiting?": "bool"
+         "waiting?": "bool",
+         "progress?": "string"
         }
        }
       },
@@ -11254,7 +11255,8 @@
             "place?": "string",
             "sent?": "number",
             "size?": "number",
-            "waiting?": "bool"
+            "waiting?": "bool",
+            "progress?": "string"
            }
           }
          }
@@ -11296,7 +11298,14 @@
          },
          "ok": "bool",
          "why?": "string",
-         "note?": "string"
+         "note?": "string",
+         "confirm?": {
+          "object": {
+           "title": "string",
+           "message": "string",
+           "label": "string"
+          }
+         }
         }
        }
       },
@@ -11310,6 +11319,151 @@
        }
       }
      }
+    }
+   }
+  },
+  {
+   "route": "GET kuvo/moves/receipt",
+   "answers": {
+    "200": {
+     "oneOf": [
+      {
+       "object": {
+        "state": {
+         "literal": "moving"
+        },
+        "move": {
+         "object": {
+          "id": "string",
+          "kind": {
+           "oneOf": [
+            {
+             "literal": "bot"
+            },
+            {
+             "literal": "chat"
+            },
+            {
+             "literal": "group"
+            }
+           ]
+          },
+          "thing": "string",
+          "name": "string",
+          "from": "string",
+          "to": "string",
+          "role": {
+           "oneOf": [
+            {
+             "literal": "from"
+            },
+            {
+             "literal": "to"
+            }
+           ]
+          },
+          "stage": {
+           "oneOf": [
+            {
+             "literal": "holding"
+            },
+            {
+             "literal": "copying"
+            },
+            {
+             "literal": "switching"
+            },
+            {
+             "literal": "finishing"
+            }
+           ]
+          },
+          "sessions": {
+           "list": "string"
+          },
+          "place?": "string",
+          "sent?": "number",
+          "size?": "number",
+          "waiting?": "bool",
+          "progress?": "string"
+         }
+        }
+       }
+      },
+      {
+       "object": {
+        "state": {
+         "literal": "done"
+        },
+        "move": {
+         "object": {
+          "id": "string",
+          "kind": {
+           "oneOf": [
+            {
+             "literal": "bot"
+            },
+            {
+             "literal": "chat"
+            },
+            {
+             "literal": "group"
+            }
+           ]
+          },
+          "thing": "string",
+          "name": "string",
+          "from": "string",
+          "to": "string",
+          "role": {
+           "oneOf": [
+            {
+             "literal": "from"
+            },
+            {
+             "literal": "to"
+            }
+           ]
+          },
+          "stage": {
+           "oneOf": [
+            {
+             "literal": "holding"
+            },
+            {
+             "literal": "copying"
+            },
+            {
+             "literal": "switching"
+            },
+            {
+             "literal": "finishing"
+            }
+           ]
+          },
+          "sessions": {
+           "list": "string"
+          },
+          "place?": "string",
+          "sent?": "number",
+          "size?": "number",
+          "waiting?": "bool",
+          "progress?": "string"
+         }
+        },
+        "message": "string",
+        "note?": "string"
+       }
+      },
+      {
+       "object": {
+        "state": {
+         "literal": "failed"
+        },
+        "message": "string"
+       }
+      }
+     ]
     }
    }
   },
@@ -11370,7 +11524,69 @@
         "place?": "string",
         "sent?": "number",
         "size?": "number",
-        "waiting?": "bool"
+        "waiting?": "bool",
+        "progress?": "string"
+       }
+      },
+      "note?": "string"
+     }
+    },
+    "202": {
+     "object": {
+      "move": {
+       "object": {
+        "id": "string",
+        "kind": {
+         "oneOf": [
+          {
+           "literal": "bot"
+          },
+          {
+           "literal": "chat"
+          },
+          {
+           "literal": "group"
+          }
+         ]
+        },
+        "thing": "string",
+        "name": "string",
+        "from": "string",
+        "to": "string",
+        "role": {
+         "oneOf": [
+          {
+           "literal": "from"
+          },
+          {
+           "literal": "to"
+          }
+         ]
+        },
+        "stage": {
+         "oneOf": [
+          {
+           "literal": "holding"
+          },
+          {
+           "literal": "copying"
+          },
+          {
+           "literal": "switching"
+          },
+          {
+           "literal": "finishing"
+          }
+         ]
+        },
+        "sessions": {
+         "list": "string"
+        },
+        "place?": "string",
+        "sent?": "number",
+        "size?": "number",
+        "waiting?": "bool",
+        "progress?": "string"
        }
       }
      }
@@ -16144,6 +16360,113 @@
      }
     },
     "503": {
+     "object": {
+      "message": "string"
+     }
+    }
+   }
+  },
+  {
+   "route": "POST kuvo/sessions/:id/queue/reorder",
+   "answers": {
+    "200": {
+     "object": {
+      "paused": "bool",
+      "held": {
+       "list": "string"
+      },
+      "waiting?": {
+       "list": {
+        "object": {
+         "id": "string",
+         "from?": "string",
+         "text": "string",
+         "files?": {
+          "list": "string"
+         },
+         "keyword?": "string",
+         "at": "number"
+        }
+       }
+      },
+      "line?": "string",
+      "items": {
+       "oneOf": [
+        {
+         "list": {
+          "object": {
+           "id": "string",
+           "words": "string",
+           "files": {
+            "list": "string"
+           },
+           "keyword": {
+            "oneOf": [
+             "string",
+             "null"
+            ]
+           },
+           "from": {
+            "oneOf": [
+             "string",
+             "null"
+            ]
+           },
+           "on": {
+            "oneOf": [
+             {
+              "literal": "engine"
+             },
+             {
+              "literal": "box"
+             }
+            ]
+           },
+           "delivery": {
+            "oneOf": [
+             {
+              "literal": "steer"
+             },
+             {
+              "literal": "queue"
+             }
+            ]
+           },
+           "held": "bool"
+          }
+         }
+        },
+        "null"
+       ]
+      }
+     }
+    },
+    "400": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "404": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "409": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "502": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "503": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "504": {
      "object": {
       "message": "string"
      }

@@ -427,6 +427,9 @@ export function handler(context: Context) {
             sessions.prompt(id, { id: input.id ?? newID("msg"), text: String(input.text ?? ""), files: input.files ?? [], delivery: input.delivery ?? "steer", metadata: input.metadata && typeof input.metadata === "object" && !Array.isArray(input.metadata) ? input.metadata : undefined })
             return json({})
           }
+          case "prompt-receipt":
+            if (method === "GET" && c) return sessions.confirmPrompt(id, c) ? json({ data: { id: c } }) : error(404, "No such message.")
+            break
           case "fork":
             return json({ data: sessions.fork(id, String((await body()).before ?? "")) })
           case "revert":

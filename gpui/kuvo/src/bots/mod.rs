@@ -99,6 +99,7 @@ pub enum Control {
     Text(String),
     Busy(String),
     Button(String, Act),
+    MoveTo { bot: String, computer: String, source: Option<crate::moves::RemoteSource> },
     /// A bot's face beside a button.
     Face(Option<Look>, String, Act),
     Danger(String, Act),
@@ -180,6 +181,7 @@ struct Form {
 /// The Bots area's main view.
 pub struct BotsView {
     client: BoxClient,
+    moves: Option<Entity<crate::moves::MovesView>>,
     live: bool,
     said: Reading<BotsSaid>,
     shown: Shown,
@@ -224,6 +226,16 @@ impl Focusable for BotsView {
 }
 
 impl BotsView {
+    fn move_source(&self, id: &str) -> Option<crate::moves::RemoteSource> {
+        let Reading::Ready(said) = &self.said else { return None };
+        crate::moves::RemoteSource::of(said.elsewhere.iter().find(|bot| bot.id == id)?)
+    }
+
+    pub fn set_moves(&mut self, moves: Entity<crate::moves::MovesView>, cx: &mut Context<Self>) {
+        self._subscriptions.push(cx.observe(&moves, |_, _, cx| cx.notify()));
+        self.moves = Some(moves);
+    }
+
     pub fn new(client: BoxClient, live: bool, cx: &mut Context<Self>) -> BotsView {
         let name = cx.new(|cx| TextField::new(cx).placeholder("Name"));
         let line = cx.new(|cx| TextField::new(cx).placeholder("What it does, in a few words"));
@@ -245,6 +257,7 @@ impl BotsView {
         ];
         let mut view = BotsView {
             client,
+            moves: None,
             live,
             said: Reading::NotYet,
             shown: Shown::Nothing,
@@ -619,6 +632,20 @@ impl BotsView {
         items
     }
 
+    fn computer_row(bot: &str, computer: &str, source: Option<crate::moves::RemoteSource>, can_move: bool) -> Row {
+        let control = if can_move {
+            Control::MoveTo { bot: bot.to_owned(), computer: computer.to_owned(), source }
+        } else {
+            Control::Text(computer.to_owned())
+        };
+        Row {
+            key: "bot-computer".into(),
+            title: "Computer".into(),
+            detail: String::new(),
+            control,
+        }
+    }
+
     fn setting_rows(&self, bot: &Bot) -> Vec<Row> {
         let busy_or = |key: &str, control: Control| match self.busy(&bot.id, key) {
             Some(words) => Control::Busy(words.to_owned()),
@@ -633,6 +660,7 @@ impl BotsView {
                 detail: if bot.job.is_empty() { "None yet. Tell it in its chat, or write one here.".into() } else { bot.job.clone() },
                 control: Control::Button("Edit…".into(), Act::EditJob),
             },
+            Self::computer_row(&bot.id, bot.machine.as_deref().unwrap_or(&self.this_box), None, true),
         ];
         // Its personality, among those the box offers (`kuvo/bots/templates`).
         let personality = match &self.templates {
@@ -669,8 +697,7 @@ impl BotsView {
             let shown = has.as_deref().map(effort_title).unwrap_or_else(|| OWN_EFFORT.to_owned());
             rows.push(Row { key: "bot-effort".into(), title: "Effort".into(), detail: "How hard it thinks before it answers.".into(), control: busy_or("bot-effort", Control::Menu { shown, choices }) });
         }
-        // Where it lives and works: the box's facts, read only.
-        rows.push(Row { key: "bot-lives".into(), title: "Lives on".into(), detail: String::new(), control: Control::Text(bot.machine.clone().unwrap_or_else(|| self.this_box.clone())) });
+        // Where it works, as its box says.
         rows.push(Row { key: "bot-works".into(), title: "Works in".into(), detail: String::new(), control: Control::Text(bot.project.as_deref().map(|project| self.project_name(project)).unwrap_or_else(|| "A folder of its own".into())) });
         rows
     }
@@ -699,7 +726,11 @@ impl BotsView {
             let rows = vec![
                 Row { key: "bot-name".into(), title: "Name".into(), detail: "What it’s called, here and in group chats.".into(), control: Control::Button("Rename…".into(), Act::Rename) },
                 Row { key: "bot-look".into(), title: "Look".into(), detail: "Its colour and shape, wherever it shows.".into(), control: Control::Face(there.look.clone(), "Change…".into(), Act::EditLook) },
-                Row { key: "bot-lives".into(), title: "Lives on".into(), detail: String::new(), control: Control::Text(computer.clone()) },
+                {
+                    let source = self.move_source(id);
+                    let can_move = source.is_some();
+                    Self::computer_row(id, &computer, source, can_move)
+                },
             ];
             let count = rows.len();
             items.extend(rows.into_iter().enumerate().map(|(ix, row)| Item::Row { row: Box::new(row), first: ix == 0, last: ix + 1 == count }));

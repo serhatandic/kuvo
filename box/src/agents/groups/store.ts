@@ -4,8 +4,11 @@
 // gives every chat there. Its bots are read from their own folders (`~/.kuvo-code/bots`), as they
 // are now: a bot changed from elsewhere (its job, from the phone) is as it is.
 
+import fs from "node:fs"
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
+import { syncDurableFile, writeDurablePrivate } from "../../shared/files"
+import { moveHold } from "../../shared/move-hold"
 import { emit } from "../events"
 import type { ModelRef } from "../wire"
 import type { SeatResult } from "./seat"
@@ -21,6 +24,8 @@ export type Status = "held" | "active"
 export interface Kept {
   group: Group
   status: Status
+  /** The incoming move that created this record, for guarded rollback. */
+  moveImport?: string
   /** Talking when the runner last stopped: it says so, and waits for Keep Going. */
   talking?: boolean
   /** Paused at its limit of turns: it waits for Keep Going, however often the runner starts over. */
@@ -175,7 +180,7 @@ export interface MachineBot extends SeatBot {
   look?: unknown
   /** When it was made. */
   created?: string
-  /** A move holds it (`paused` in its folder says "moving", as the Mac's Moves writes it): it sits its turns out until it's there. */
+  /** A move holds it: it sits its turns out until it's there. */
   moving?: boolean
 }
 
@@ -202,6 +207,11 @@ function write(file: string, value: unknown) {
 }
 
 export class GroupStore {
+  private unreadable = new Set<string>()
+
+  transcriptUnreadable(id: string): boolean {
+    return this.unreadable.has(id)
+  }
   constructor(
     readonly root: string,
     readonly bots: string,
@@ -224,8 +234,14 @@ export class GroupStore {
     } catch {}
     for (const id of names) {
       if (!/^grp_[a-z0-9]+$/.test(id)) continue
-      const kept = this.read(id)
-      if (kept) all.set(id, kept)
+      try {
+        const kept = this.read(id)
+        if (kept) all.set(id, kept)
+        this.unreadable.delete(id)
+      } catch (error) {
+        this.unreadable.add(id)
+        console.error("Group transcript could not be loaded:", error)
+      }
     }
     return all
   }
@@ -233,20 +249,17 @@ export class GroupStore {
   read(id: string): Kept | undefined {
     const record = read(join(this.folder(id), "group.json"))
     if (!record || typeof record.kuvo !== "number" || record.kuvo > version || !isGroup(record.group, id)) return undefined
-    const messages = read(join(this.folder(id), "messages.json")) ?? []
-    // One whose messages won't read is left as it is, for a newer version or a person to look at.
-    if (!isMessages(messages)) return undefined
-    return { group: record.group, status: record.status === "held" ? "held" : "active", talking: record.talking === true, paused: record.paused === true, ...(isTurning(record.turning) ? { turning: record.turning } : {}), messages }
+    const messages: unknown = JSON.parse(fs.readFileSync(join(this.folder(id), "messages.json"), "utf8"))
+    if (!isMessages(messages)) throw new Error("The group transcript could not be read")
+    return { group: record.group, ...(typeof record.moveImport === "string" ? { moveImport: record.moveImport } : {}), status: record.status === "held" ? "held" : "active", talking: record.talking === true, paused: record.paused === true, ...(isTurning(record.turning) ? { turning: record.turning } : {}), messages }
   }
 
   saveGroup(kept: Kept) {
-    mkdirSync(this.folder(kept.group.id), { recursive: true, mode: 0o700 })
-    write(join(this.folder(kept.group.id), "group.json"), { kuvo: version, status: kept.status, ...(kept.talking ? { talking: true } : {}), ...(kept.paused ? { paused: true } : {}), ...(kept.turning ? { turning: kept.turning } : {}), group: kept.group })
+    writeDurablePrivate(join(this.folder(kept.group.id), "group.json"), JSON.stringify({ kuvo: version, status: kept.status, ...(kept.moveImport ? { moveImport: kept.moveImport } : {}), ...(kept.talking ? { talking: true } : {}), ...(kept.paused ? { paused: true } : {}), ...(kept.turning ? { turning: kept.turning } : {}), group: kept.group }, null, 2), dirname(this.root))
   }
 
   saveMessages(kept: Kept) {
-    mkdirSync(this.folder(kept.group.id), { recursive: true, mode: 0o700 })
-    write(join(this.folder(kept.group.id), "messages.json"), kept.messages)
+    writeDurablePrivate(join(this.folder(kept.group.id), "messages.json"), JSON.stringify(kept.messages, null, 2), dirname(this.root))
   }
 
   /** Whether the chat keeps the engine up: a meeting coming, a discussion or work under way. */
@@ -261,10 +274,15 @@ export class GroupStore {
    * with where it went): on the Mac the app puts it in the Finder's Trash, where you look for it.
    */
   trash(id: string, trash: string) {
-    if (!existsSync(this.folder(id))) return
+    if (!existsSync(this.folder(id))) {
+      syncDurableFile(this.root, dirname(this.root))
+      return
+    }
     const into = join(trash, `${new Date().toISOString().replace(/[-:]/g, "").replace(/\..*/, "")}-group-${id}`)
     mkdirSync(into, { recursive: true, mode: 0o700 })
     renameSync(this.folder(id), join(into, id))
+    syncDurableFile(into, dirname(trash))
+    syncDurableFile(this.root, dirname(this.root))
     emit("kuvo.group.trashed", { id, path: into })
   }
 
@@ -322,7 +340,7 @@ export class GroupStore {
       agents: text(join(folder, "via"))?.trim() === "bridge",
       ...(described.look !== undefined ? { look: described.look } : {}),
       ...(typeof described.created === "string" ? { created: described.created } : {}),
-      ...(text(join(folder, "paused"))?.trim() === "moving" ? { moving: true } : {}),
+      ...(moveHold(text(join(folder, "paused"))) ? { moving: true } : {}),
     }
   }
 

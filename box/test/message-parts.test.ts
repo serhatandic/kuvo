@@ -215,7 +215,7 @@ describe("kuvo/sessions/<id>/send", () => {
 
   test("one sent again (Retry) after switching to a model that reads only words sends its picture as a path", async () => {
     const png = `data:image/png;base64,${Buffer.from("png").toString("base64")}`
-    await send("ses_text", { id: "msg_again_pic", text: "What's this?", files: [{ uri: png, name: "a.png" }] })
+    expect((await send("ses_text", { id: "msg_againpic", text: "What's this?", files: [{ uri: png, name: "a.png" }] })).status).toBe(200)
     const [sent] = prompted(engineAsked)
     expect(sent.body.files).toBeUndefined()
     const lines = sent.body.text.split("\n")

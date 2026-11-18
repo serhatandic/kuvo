@@ -1,9 +1,11 @@
-import { compactionFeed, compactionPage } from "../../shared/compaction-words";
-import { messageWordsPage } from "../../shared/message-words";
 // Forwarding to the engine
 // What isn't the box's own goes on to the engine, or to the coding agents' bridge (`kuvo/agents/…`),
 // a phone's prompts with who they name told, and that they're from a phone.
 
+import { BAD_WAITING_ID, isWaitingID } from "../../shared/queues";
+import { admitPrompt, MoveAdmissionClosed } from "../moves/admission";
+import { compactionFeed, compactionPage } from "../../shared/compaction-words";
+import { messageWordsPage } from "../../shared/message-words";
 import { agentsAway, AGENTS_RESTARTING, bridgeBack } from "../areas/agents-down";
 import { engineDown, stopShell } from "../areas/engine";
 import { RUN } from "../home";
@@ -130,11 +132,26 @@ export async function* forward(target: Target, path: string, request: LinkReques
     try { body = JSON.parse(request.body?.toString("utf8") ?? ""); } catch {}
     const session = decodeURIComponent(toEngine[1]!);
     const text = isObject(body) && typeof body.text === "string" ? body.text : null;
-    const id = isObject(body) && typeof body.id === "string" && /^msg_[A-Za-z0-9]{1,80}$/.test(body.id) ? body.id : messageID();
+    if (toEngine[2] === "prompt" && isObject(body) && body.id !== undefined && !isWaitingID(body.id)) {
+      yield { head: { status: 400, headers: { "content-type": "application/json" } } };
+      yield { body: Buffer.from(JSON.stringify({ message: BAD_WAITING_ID })) };
+      return;
+    }
+    const id = isObject(body) && isWaitingID(body.id) ? body.id : messageID();
     const message = isObject(body) && text !== null && toEngine[2] === "prompt"
       ? { id, text, delivery: body.delivery === "queue" ? "queue" as const : "steer" as const, ...(Array.isArray(body.files) ? { files: body.files } : {}), ...(isObject(body.metadata) ? { metadata: body.metadata } : {}) }
       : null;
-    if (message && keepWaiting(session, message, {}, undefined, target)) {
+    let kept = false;
+    try {
+      if (message) kept = await admitPrompt(session, async () => keepWaiting(session, message, {}, undefined, target));
+    } catch (error) {
+      const moving = error instanceof MoveAdmissionClosed;
+      if (!moving) console.error("kuvo-link: could not add a waiting message", error);
+      yield { head: { status: moving ? 409 : 500, headers: { "content-type": "application/json" } } };
+      yield { body: Buffer.from(JSON.stringify({ message: moving ? error.message : "This computer couldn’t save the message. Try sending it again." })) };
+      return;
+    }
+    if (kept) {
       yield { head: { status: 200, headers: { "content-type": "application/json" } } };
       yield { body: Buffer.from(JSON.stringify({ waits: true })) };
     } else {
@@ -180,26 +197,32 @@ export async function* forward(target: Target, path: string, request: LinkReques
   // a busy engine takes to answer, it's waited for, as one without an id is: a repeat meanwhile
   // waits with it, rather than a "busy" sending its words back to be sent again under a new id
   // the engine would take twice. Not answering (the engine started again), a repeat tries again.
+  const admitted = <T>(write: () => Promise<T>): Promise<T> =>
+    sending ? admitPrompt(decodeURIComponent(sending[1]!), write) : write();
+  const sendingError = (error: unknown): SentAnswer => error instanceof MoveAdmissionClosed
+    ? { status: 409, headers: { "content-type": "application/json" }, body: Buffer.from(JSON.stringify({ message: error.message })) }
+    : notAnswering();
   const once = sending && sending[2] === "prompt" ? sentKey(toAgents ? "agents" : "engine", decodeURIComponent(sending[1]!), request.body) : null;
   if (once) {
     const answer = await sentOnce(once, async () => {
       try {
-        const response = await fetch(url, { method, headers, body: await outgoing() });
-        return { status: response.status, headers: answerHeaders(response), body: Buffer.from(await response.arrayBuffer()) };
-      } catch {
-        return notAnswering();
+        const body = await outgoing();
+        return await admitted(async () => {
+          const response = await fetch(url, { method, headers, body });
+          return { status: response.status, headers: answerHeaders(response), body: Buffer.from(await response.arrayBuffer()) };
+        });
+      } catch (error) {
+        return sendingError(error);
       }
     });
     yield { head: { status: answer.status, headers: answer.headers } };
     if (answer.body.length) yield { body: answer.body };
     return;
   }
-  const send = async () => fetch(url, {
-    method,
-    headers,
-    body: method === "GET" || method === "HEAD" ? undefined : await outgoing(),
-    signal: delivering,
-  });
+  const send = async () => {
+    const body = method === "GET" || method === "HEAD" ? undefined : await outgoing();
+    return admitted(() => fetch(url, { method, headers, body, signal: delivering }));
+  };
   let response: Response;
   try {
     // A session's written in its turn, as the box's own writers of it write (`../engine/notes.ts`),
@@ -220,7 +243,7 @@ export async function* forward(target: Target, path: string, request: LinkReques
   } catch (error) {
     // Said so, unless the asker went.
     if (signal?.aborted) throw error;
-    const answer = notAnswering();
+    const answer = sendingError(error);
     yield { head: { status: answer.status, headers: answer.headers } };
     yield { body: answer.body };
     return;

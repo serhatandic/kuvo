@@ -291,6 +291,7 @@ fn row_right_click_title_bar_menu_and_held_session_follow_box_actions(cx: &mut T
         "ses_dark".into(),
         PopoverAnchor::TitleBar,
         workspace.downgrade(),
+        false,
     );
     assert!(matches!(&items[0], MenuItem::Header(text) if text.as_ref() == "Moving to Studio…"));
     assert!(

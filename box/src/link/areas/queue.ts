@@ -3,14 +3,15 @@
 // Send Now, and a client's own message to wait with it.
 
 import { isObject, parsed } from "../../shared/json";
-import { wakeMarkOf } from "../../shared/queues";
+import { BAD_WAITING_ID, isWaitingID, wakeMarkOf } from "../../shared/queues";
 import { MOVING } from "../bots/here";
+import { admitPrompt, MoveAdmissionClosed } from "../moves/admission";
 import { frozen, liveMoves } from "../moves/records";
 import { followed, followedLive } from "../follow";
 import { isRefused, placeOfSession, placeOfSessionPatiently } from "../letters/letter";
 import { targetsOf } from "../letters/tools";
 import { asked } from "../engine/client";
-import { dropWaiting, holdQueue, inboxFollowers, inboxFor, inboxNow, keepWaitingBefore, queueFollowers, queueItems, queueOf, readQueues, resumeQueue, sendNow, showsQueue, shownQueue, steerQueued, takeBackFromInbox } from "../engine/queue";
+import { dropWaiting, holdQueue, inboxFollowers, inboxFor, inboxNow, keepWaitingBefore, queueFollowers, queueItems, queueOf, readQueues, reorderQueue, resumeQueue, sendNow, showsQueue, shownQueue, steerQueued, takeBackFromInbox } from "../engine/queue";
 import type { QueueShown } from "../../shared/routes/sessions";
 import { forgetStopped } from "../work/background";
 import { forgetArriving, holdArriving, sendsSettled } from "../messages/arriving";
@@ -28,7 +29,7 @@ import { fromAPhone } from "../server/context";
 import type { AnswerPiece, RouteContext } from "../server/context";
 import type { Target } from "../../shared/records";
 
-export const QUEUE_ROUTE = /^kuvo\/sessions\/(?:queues\/events|([^/]+)\/(stop|queue(?:\/(hold|resume|add|events))?|queue\/([^/]+)(?:\/(now|steer))?))$/;
+export const QUEUE_ROUTE = /^kuvo\/sessions\/(?:queues\/events|([^/]+)\/(stop|queue(?:\/(hold|resume|add|events|reorder))?|queue\/([^/]+)(?:\/(now|steer))?))$/;
 
 // How long the queue's read waits for the engine, each time (where the session is, then its inbox):
 // a client draws it at once, and a busy engine's `items` are null rather than late.
@@ -84,7 +85,10 @@ export async function* queueRoute(context: RouteContext, match: RegExpMatchArray
       queueFollowers.add(told);
       inboxFollowers.add(heard);
       return () => { queueFollowers.delete(told); inboxFollowers.delete(heard); };
-    }, signal ?? undefined, { look: () => JSON.stringify(shownQueue(queueOf(session))) });
+    }, signal ?? undefined, { look: () => {
+      const state = queueOf(session);
+      return JSON.stringify({ ...shownQueue(state), order: state.order });
+    } });
   }
   // One moving to or from another computer: what waits for it goes as it was read for the move. A
   // Stop still stops it while the box it leaves waits for its turn to end, before it's read.
@@ -160,6 +164,15 @@ export async function* queueRoute(context: RouteContext, match: RegExpMatchArray
       if (!once) return yield* add(context, target, session);
       return yield* answering(await sentOnce(once, () => collected(add(context, target, session))));
     }
+    if (step === "reorder") {
+      const given = parsed(request.body);
+      if (!isObject(given) || typeof given.item !== "string" || typeof given.anchor !== "string" || typeof given.before !== "boolean")
+        return yield* json(400, { message: "Give the message, its neighbor, and which side to put it on." });
+      const reordered = await reorderQueue(place.target, session, given.item, given.anchor, given.before);
+      if (!reordered)
+        return yield* json(409, { message: "Those messages can’t be moved now. Check the queue and try again." });
+      return yield* json(200, { ...shownQueue(reordered.state), items: reordered.items });
+    }
     // (You set it going: if it was stopped, what comes of it is news again, and what Stop named as
     // on its way goes as it was sent when it comes.)
     forgetStopped(session);
@@ -169,6 +182,7 @@ export async function* queueRoute(context: RouteContext, match: RegExpMatchArray
     if (!(await go)) return yield* json(404, { message: "That message isn't waiting any more." });
     return yield* json(200, shownQueue(queueOf(session)));
   } catch (error) {
+    if (error instanceof MoveAdmissionClosed) return yield* json(409, { message: error.message });
     return yield* json(502, { message: String((error as Error | null)?.message ?? error) });
   }
 }
@@ -188,7 +202,8 @@ export async function* queueRoute(context: RouteContext, match: RegExpMatchArray
 async function* add({ request, bridge, readEngine, json, signal }: RouteContext, target: Target, session: string): AsyncGenerator<AnswerPiece> {
   const given = parsed(request.body);
   if (!isObject(given)) return yield* json(400, { message: "Send what was written (words)." });
-  const id = typeof given.id === "string" && /^msg_[A-Za-z0-9]{1,80}$/.test(given.id) ? given.id : messageID();
+  if (given.id !== undefined && !isWaitingID(given.id)) return yield* json(400, { message: BAD_WAITING_ID });
+  const id = given.id ?? messageID();
   const files = Array.isArray(given.files) ? given.files : [];
   const toAgents = bridge()?.port === target.port;
   const mark = wakeMarkOf(given.metadata) ?? undefined;
@@ -242,9 +257,16 @@ async function* added({ json }: Pick<RouteContext, "json">, target: Target, sess
   const from = typeof given.from === "string" && given.from.trim() ? given.from.trim().slice(0, 80) : undefined;
   const message = { id, text: written.text, ...(written.files?.length ? { files: written.files } : {}), delivery, ...(written.metadata ? { metadata: written.metadata } : {}) } as { id: string; text: string; files?: unknown[]; delivery: "steer" | "queue"; metadata?: Record<string, unknown> };
   const before = typeof given.before === "string" && /^[A-Za-z0-9_]{1,100}$/.test(given.before) ? given.before : undefined;
-  if (await keepWaitingBefore(target, session, message, { from, words }, before)) return yield* json(200, { ...shownQueue(queueOf(session)), waits: true });
-  // (A busy engine takes the message late, and has it then: waited for, not given up on at the
-  // usual half minute and said to have failed, #443.)
-  await asked(target, "POST", `api/session/${encodeURIComponent(session)}/prompt`, message, SENDING_PATIENCE.ms);
-  return yield* json(200, { ...shownQueue(queueOf(session)), waits: false });
+  try {
+    const waits = await admitPrompt(session, async () => {
+      if (await keepWaitingBefore(target, session, message, { from, words }, before)) return true;
+      await asked(target, "POST", `api/session/${encodeURIComponent(session)}/prompt`, message, SENDING_PATIENCE.ms);
+      return false;
+    });
+    return yield* json(200, { ...shownQueue(queueOf(session)), waits });
+  } catch (error) {
+    if (error instanceof MoveAdmissionClosed) return yield* json(409, { message: error.message });
+    console.error("kuvo-link: could not add a waiting message", error);
+    return yield* json(500, { message: "This computer couldn’t save the message. Try sending it again." });
+  }
 }

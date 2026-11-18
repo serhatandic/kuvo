@@ -1667,6 +1667,13 @@ export class Sessions {
     this.enqueue(id, record, live, input)
   }
 
+  confirmPrompt(id: string, message: string): boolean {
+    const record = this.record(id)
+    if (!this.queue(record).some(input => input.id === message) && !record.messages.some(entry => entry.id === message)) return false
+    this.store.sealPrompt(id, record)
+    return true
+  }
+
   /** A message (yours, or a note from the app) in line: into the turn under way, now, or after it. */
   private enqueue(id: string, record: Record_, live: Live, input: Input) {
     const queue = this.queue(record)

@@ -31,7 +31,7 @@ import { ADDRESS, ownKey, peersOf } from "../peers/known";
 import { actionsOf, givenName, MOST_NAME, oldAppAttached, refusal, removeHere, renameHere, writerFacts, writerOf } from "../peers/manage";
 import { offRelay } from "../letters/leave";
 import { plainName } from "../../shared/text";
-import { awaySince, PEER_REACH, readReach } from "../peers/reach";
+import { peerIsAway, PEER_REACH, readReach } from "../peers/reach";
 import { askReachAgain, REACH_AGAIN, readTries, tryingSince } from "../peers/reach-again";
 import { ownName } from "../letters/start";
 import { forwardAct } from "../work-queue/forward";
@@ -54,10 +54,6 @@ export const COMPUTERS_ROUTE = /^kuvo\/computers(?:(\/events)|\/([A-Za-z0-9_-]{1
 
 /** The most sessions at work this box names of itself (it counts them all). */
 const MOST_HERE = 100;
-
-/** How long since a peer's last word (its agents, every ten minutes while it's on the relay) it
- * still counts as heard from. */
-const HEARD_LATELY = 30 * 60_000;
 
 /** The system this box runs on, as people know it ("macOS 15.1", "Ubuntu 24.04.1 LTS"); none where it can't be read. */
 export function systemName(platform: NodeJS.Platform = process.platform, read: (file: string) => string = file => fs.readFileSync(file, "utf8")): string | undefined {
@@ -211,7 +207,7 @@ export function computerWords(computer: Pick<ListedComputer, "reach" | "name" | 
  * from since, or never heard from since this box knew of it), away, or connected. */
 export function peerReach(key: string, told = readPeerAgents(), reach = readReach(), tries = readTries(), now = Date.now()): { away: boolean; reach: "connected" | "connecting" | "away" } {
   const said = told[key];
-  const away = awaySince(key, reach) !== null || (said?.heard !== undefined && now - said.heard > HEARD_LATELY);
+  const away = peerIsAway(key, said?.heard, reach, now);
   // (Connect asked a moment ago, and not heard from since: being reached.)
   const trying = tryingSince(key, now, tries);
   const reaching = trying !== null && !(said?.heard !== undefined && said.heard >= trying);

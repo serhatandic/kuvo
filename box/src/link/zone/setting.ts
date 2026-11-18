@@ -13,6 +13,7 @@ import { forgetZoneRead, knownZone, ownClock, zoneFileIn } from "../../shared/zo
 import { listOf, locked, placeWhole, textOf, writePrivate } from "../files";
 import { BOTS, IS_MAC, K, REAL_BOX, RUN, SESSION_WAKES } from "../home";
 import { readMacKit } from "../bots/mac-kit";
+import { isMoving } from "../bots/here";
 
 /** What a box keeps of your time zone: the zone, its count (one more with each pick, whichever
  * computer it was made on: 1 and up), the zone's rules (a TZif file, base64), for a computer without
@@ -288,7 +289,7 @@ export function applyZone(setting: ZoneSetting | null = readZoneSetting()): void
   const files = zoneFilesFor(setting);
   for (const id of listOf(BOTS)) {
     const folder = path.join(BOTS, id);
-    if (!fs.existsSync(path.join(folder, "bot.json")) || (textOf(path.join(folder, "paused")) ?? "").trim() === "moving") continue;
+    if (!fs.existsSync(path.join(folder, "bot.json")) || isMoving(folder)) continue;
     try { writeZoneFiles(folder, files); } catch {}
   }
   // (Only yours: a machine's own clock written there would be read as yours from before, and told

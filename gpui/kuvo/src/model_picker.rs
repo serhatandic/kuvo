@@ -870,9 +870,16 @@ impl Render for ModelPicker {
 /// A setting's model, as a settings row draws a choice (Settings › Models, a bot's): what's chosen,
 /// in a button found as `{key}-menu`, and the picker it opens (made only as it opens).
 pub fn setting_button(key: &str, shown: String, open: impl Fn(&mut Window, &mut App) -> Entity<ModelPicker> + 'static, cx: &App) -> AnyElement {
+    let shown = if shown.is_empty() { "—".to_owned() } else { shown };
+    let trigger = setting_trigger(key, shown, cx);
+    kuvo_ui::menu::PopoverMenu::view(SharedString::from(format!("{key}-popover")), trigger, open).align_right().into_any_element()
+}
+
+/// The shared trigger for a setting whose current value opens a picker.
+pub(crate) fn setting_trigger(key: &str, shown: String, cx: &App) -> AnyElement {
     let c = cx.theme().colors.clone();
     let id = SharedString::from(format!("{key}-menu"));
-    let trigger = div()
+    div()
         .id(id.clone())
         .debug_selector({
             let id = id.to_string();
@@ -890,9 +897,9 @@ pub fn setting_button(key: &str, shown: String, open: impl Fn(&mut Window, &mut 
         .border_color(c.border_strong)
         .bg(c.card)
         .cursor_pointer()
-        .child(div().flex_1().min_w_0().truncate().text_ui(TypeSize::Body).text_color(c.text).child(if shown.is_empty() { "—".to_owned() } else { shown }))
-        .child(div().flex().flex_none().flex_col().child(Icon::new(IconName::ChevronUp).size(IconSize::Indicator).color(c.icon)).child(Icon::new(IconName::ChevronDown).size(IconSize::Indicator).color(c.icon)));
-    kuvo_ui::menu::PopoverMenu::view(SharedString::from(format!("{key}-popover")), trigger, open).align_right().into_any_element()
+        .child(div().flex_1().min_w_0().truncate().text_ui(TypeSize::Body).text_color(c.text).child(shown))
+        .child(div().flex().flex_none().flex_col().child(Icon::new(IconName::ChevronUp).size(IconSize::Indicator).color(c.icon)).child(Icon::new(IconName::ChevronDown).size(IconSize::Indicator).color(c.icon)))
+        .into_any_element()
 }
 
 #[cfg(test)]

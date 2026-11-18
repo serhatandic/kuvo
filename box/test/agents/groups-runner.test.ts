@@ -1,5 +1,6 @@
 import "../safety"
-import { afterEach, beforeEach, describe, expect, test } from "bun:test"
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test"
+import fs from "node:fs"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -12,6 +13,7 @@ import { stamp, type Group } from "../../src/agents/groups/rules"
 import { GroupStore } from "../../src/agents/groups/store"
 import type { ServerEvent } from "../../src/agents/wire"
 import { queueFiles, readQueues, waitingFile } from "../../src/shared/queues"
+import { interceptSync } from "../disk-fault"
 import { Engine } from "./support/engine"
 
 // A group chat that lives on a machine, as the machine's bridge runs it: against a stand-in engine
@@ -537,7 +539,9 @@ describe("a group chat on a machine", () => {
 
   test("one talking when the engine started over waits for Keep Going", () => {
     const { store } = runner()
-    store.saveGroup({ group: group(), status: "active", talking: true, messages: [] })
+    const saved = { group: group(), status: "active" as const, talking: true, messages: [] }
+    store.saveMessages(saved)
+    store.saveGroup(saved)
     const { groups } = runner()
     expect(groups.talk("grp_team000001")).toEqual({ speaking: undefined, discussing: false, paused: true })
   })
@@ -689,6 +693,60 @@ describe("a group chat on a machine", () => {
     expect(engine.requests.some((request) => request.method === "DELETE" && request.path === "/api/session/ses_seatA")).toBe(true)
   })
 
+  test("after restart a transcript read failure refuses a move before changing the group", async () => {
+    const chat = group()
+    const messages = [{ id: "msg_previous", kind: "message", text: "Keep this conversation.", time: stamp() }]
+    const original = runner()
+    const put = await groupRoutes(original.groups, original.store, "PUT", [chat.id], async () => ({ group: chat, messages, status: "active" }))
+    expect(put.status).toBe(200)
+    const transcript = join(root, "groups", chat.id, "messages.json")
+    const state = join(root, "groups", chat.id, "group.json")
+    const before = readFileSync(state, "utf8")
+    const read = fs.readFileSync
+    const failRead = ((file, options) => {
+      if (file === transcript) throw Object.assign(new Error("Injected transcript read failure"), { code: "EIO" })
+      return read(file, options)
+    }) as typeof read
+    const inject = spyOn(fs, "readFileSync").mockImplementation(failRead)
+    let restarted: ReturnType<typeof runner>
+    try { restarted = runner() } finally { inject.mockRestore() }
+    const hold = await groupRoutes(restarted.groups, restarted.store, "POST", [chat.id, "hold"], async () => undefined)
+    expect(hold.status).toBe(503)
+    expect(readFileSync(state, "utf8")).toBe(before)
+    expect(JSON.parse(readFileSync(transcript, "utf8"))).toEqual(messages)
+    const recovered = runner()
+    const retried = await groupRoutes(recovered.groups, recovered.store, "POST", [chat.id, "hold"], async () => undefined)
+    expect(retried.status).toBe(200)
+    expect(await retried.json()).toMatchObject({ data: { messages } })
+  })
+
+  test("a moved group stays held if its activation record cannot be saved", () => {
+    const { groups, store } = runner()
+    const chat = group()
+    groups.put(chat, [], "held", false)
+    const save = store.saveGroup.bind(store)
+    store.saveGroup = () => { throw new Error("Disk failed during activation") }
+    expect(() => groups.activate(chat.id)).toThrow("Disk failed during activation")
+    expect(groups.get(chat.id)?.status).toBe("held")
+    store.saveGroup = save
+    expect(groups.activate(chat.id)).toBe(true)
+    expect(JSON.parse(readFileSync(join(root, "groups", chat.id, "group.json"), "utf8")).status).toBe("active")
+  })
+
+  test("a retired group remains held and can retry release if moving its folder fails", () => {
+    const { groups, store } = runner()
+    const chat = group()
+    groups.put(chat, [], "held", false)
+    const trash = store.trash.bind(store)
+    store.trash = () => { throw new Error("Trash could not be reached") }
+    expect(() => groups.release(chat.id)).toThrow("Trash could not be reached")
+    expect(groups.get(chat.id)?.status).toBe("held")
+    store.trash = trash
+    expect(groups.release(chat.id)).toBe(true)
+    expect(groups.get(chat.id)).toBeUndefined()
+    expect(existsSync(join(root, "groups", chat.id))).toBe(false)
+  })
+
   test("its routes: the list, a chat that's here already, one that's moving", async () => {
     const { groups, store } = runner()
     const call = (method: string, parts: string[], body: unknown = {}) => groupRoutes(groups, store, method, parts, async () => body)
@@ -699,6 +757,36 @@ describe("a group chat on a machine", () => {
     expect(listed.data.map((each: any) => [each.group.id, each.status])).toEqual([["grp_team000001", "held"]])
     expect((await call("PUT", ["grp_other00001"], { group: group(), messages: [] })).status).toBe(400)
     expect((await call("GET", ["../x"])).status).toBe(404)
+  })
+
+  test("real group routes wait for disk sync before import, hold, or activation can succeed", async () => {
+    const chat = group()
+    const id = chat.id
+    const { groups, store } = runner()
+    const call = (runner: GroupRunner, method: string, parts: string[], body: unknown = {}) => groupRoutes(runner, store, method, parts, async () => body)
+    const dir = join(store.root, id)
+    const groupFile = join(dir, "group.json")
+    const message = { id: "msg_group_sync", text: "Carry this transcript.", time: stamp(), kind: "message" }
+    const imported = { group: chat, messages: [message], status: "held" }
+    let restore = interceptSync(file => file.startsWith(join(dir, "messages.json.")))
+    try { await expect(call(groups, "PUT", [id], imported)).rejects.toThrow("Injected sync failure") } finally { restore() }
+    expect(store.read(id)).toBeUndefined()
+    expect((await call(groups, "PUT", [id], { ...imported, replace: true })).status).toBe(200)
+    expect(store.read(id)?.messages).toMatchObject([message])
+    expect((await call(groups, "POST", [id, "activate"])).status).toBe(200)
+
+    restore = interceptSync(file => file === dir && JSON.parse(readFileSync(groupFile, "utf8")).status === "held")
+    try { await expect(call(groups, "POST", [id, "hold"])).rejects.toThrow("Injected sync failure") } finally { restore() }
+    expect((await call(groups, "POST", [id, "hold"])).status).toBe(200)
+    expect(new GroupStore(store.root, store.bots).read(id)?.status).toBe("held")
+
+    restore = interceptSync(file => file === dir && JSON.parse(readFileSync(groupFile, "utf8")).status === "active")
+    try { await expect(call(groups, "POST", [id, "activate"])).rejects.toThrow("Injected sync failure") } finally { restore() }
+    const reopened = runner({ store }).groups
+    restore = interceptSync(file => file === dir)
+    try { await expect(call(reopened, "POST", [id, "activate"])).rejects.toThrow("Injected sync failure") } finally { restore() }
+    expect((await call(reopened, "POST", [id, "activate"])).status).toBe(200)
+    expect(store.read(id)).toMatchObject({ status: "active", messages: [message] })
   })
 
   test("/compact in a group chat: it says why not, and nobody is told anything", async () => {

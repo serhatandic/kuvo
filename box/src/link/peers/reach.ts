@@ -76,3 +76,8 @@ export const awaySince = (key: string, reach = readReach()): number | null => re
 
 /** When the relay last found the box `key` not there, or null. */
 export const lastFoundAway = (key: string, checked = readReach(PEER_CHECKED)): number | null => checked[key] ?? null;
+
+/** A peer found away by the relay or unheard from for three normal mail intervals. */
+export function peerIsAway(key: string, heard: number | undefined, reach = readReach(), now = Date.now()): boolean {
+  return awaySince(key, reach) !== null || (heard !== undefined && now - heard > 30 * 60_000);
+}

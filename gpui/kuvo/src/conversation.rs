@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use gpui::{
-    AnyElement, App, AppContext as _, Context, Entity, FocusHandle, Focusable, InteractiveElement, IntoElement, ParentElement, Render,
+    Animation, AnimationExt as _, AnyElement, App, AppContext as _, Context, Entity, FocusHandle, Focusable, InteractiveElement, IntoElement, ParentElement, Render,
     SharedString, StatefulInteractiveElement, Styled, Subscription, Task, Window, div, prelude::FluentBuilder as _, px,
 };
 use kuvo_box::asks::Asks;
@@ -18,7 +18,7 @@ use kuvo_ui::{
     ActiveTheme, Button, ButtonSize, Icon, IconName, IconSize, StyledType, TypeSize,
     anchor::{Placement, Popover},
     chat_list::{ChatListState, chat_list},
-    menu::{ContextMenuArea, Menu, MenuEntry},
+    menu::{ContextMenuArea, Menu, MenuEntry, PopoverMenu},
     selection::{self, SelectionArea, SelectionState},
     small::spinner,
     theme::{radius, space},
@@ -31,6 +31,50 @@ use kuvo_box::messages::{Content, Message};
 use kuvo_box::pictures::Picture;
 use crate::entries::{self, COLUMN, Entry, Fold};
 use crate::work_bars::WorkBars;
+
+const QUEUE_ROW_HEIGHT: f32 = 32.;
+
+#[derive(Clone)]
+struct QueueDrag {
+    owner: gpui::EntityId,
+    item: String,
+    words: String,
+    action: &'static str,
+}
+
+struct QueueDragPreview {
+    drag: QueueDrag,
+    row: gpui::Bounds<gpui::Pixels>,
+    pointer_offset_x: gpui::Pixels,
+}
+
+impl Render for QueueDragPreview {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme();
+        let c = &theme.colors;
+        // GPUI places the preview at the pointer minus its initial grab offset.
+        let left = self.row.left() - (window.mouse_position().x - self.pointer_offset_x);
+        div().debug_selector(|| "queue-drag-preview".into())
+            .relative().left(left).top(px(-3.)).w(self.row.size.width).h(px(QUEUE_ROW_HEIGHT))
+            .flex().items_center().gap(space::S2).px(space::S2)
+            .rounded(radius::NAV).bg(c.elevated).shadow(theme.card_shadow())
+            .child(Icon::new(IconName::QueuedMessage).size(IconSize::Nav).color(c.text_faint))
+            .child(div().flex_1().min_w_0().truncate().text_ui(TypeSize::Small).text_color(c.text).child(self.drag.words.clone()))
+            .child(Button::new("drag-queue-action", self.drag.action).ghost().quiet().size(ButtonSize::Small)
+                .when(self.drag.action == "Steer", |button| button.icon(IconName::Steer).icon_size(IconSize::Nav)))
+            .child(Button::icon_only("drag-queue-remove", IconName::Trash, "Remove").ghost().quiet()
+                .size(ButtonSize::Small).icon_size(IconSize::Nav))
+            .child(Button::icon_only("drag-queue-more", IconName::More, "More actions").ghost().quiet()
+                .size(ButtonSize::Small).icon_size(IconSize::Nav))
+    }
+}
+
+#[derive(Clone, PartialEq)]
+struct QueueMove {
+    item: String,
+    anchor: String,
+    before: bool,
+}
 
 /// What's wrong, said over the conversation.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -67,7 +111,7 @@ pub struct ConversationView {
     composer: Entity<Composer>,
     /// What it waits on you for, in the composer's place while anything does.
     asks: Entity<AskCard>,
-    /// What runs for it that it doesn't show as it happens, in bars over the composer.
+    /// The activity control in the header.
     bars: Entity<WorkBars>,
     follow: Option<Rc<Follow<ConversationUpdate>>>,
     _follow_task: Option<Task<()>>,
@@ -76,6 +120,11 @@ pub struct ConversationView {
     /// What waits its turn, as the box orders it, over the composer.
     queue: Queue,
     queue_failed: Option<String>,
+    queue_scroll: gpui::ScrollHandle,
+    queue_drag: Option<QueueMove>,
+    queue_move_pending: Option<QueueMove>,
+    queue_dragging: Option<String>,
+    queue_drag_motion: u64,
     /// Why what it asks couldn't be read (what was shown stays meanwhile).
     asks_failed: Option<String>,
     /// Whether the card had the composer's place (and the keyboard with it) last it was drawn.
@@ -89,10 +138,6 @@ pub struct ConversationView {
     /// has been used, so only the last one's timer takes the check away.
     copied: Option<(String, u64)>,
     client: BoxClient,
-    wakes: Option<crate::wakes::Status>,
-    wake_handle: kuvo_ui::menu::PopoverMenuHandle,
-    wake_computer: String,
-    wake_now: Option<f64>,
     live: bool,
     _queue_follow: Option<Follow<Followed<Queue>>>,
     tasks: Vec<Task<()>>,
@@ -156,6 +201,11 @@ impl ConversationView {
             _asks_task: None,
             queue: Queue::default(),
             queue_failed: None,
+            queue_scroll: gpui::ScrollHandle::new(),
+            queue_drag: None,
+            queue_move_pending: None,
+            queue_dragging: None,
+            queue_drag_motion: 0,
             asks_failed: None,
             card_took_keys: false,
             focus: cx.focus_handle(),
@@ -163,7 +213,6 @@ impl ConversationView {
             transcript: cx.focus_handle(),
             copied: None,
             client: client.clone(),
-            wakes: None, wake_handle: Default::default(), wake_computer: String::new(), wake_now: None,
             live,
             _queue_follow: None,
             tasks: Vec::new(),
@@ -236,42 +285,23 @@ impl ConversationView {
     }
 
     pub(crate) fn set_wakes(&mut self, wakes: Option<crate::wakes::Status>, computer: String, now: Option<f64>, cx: &mut Context<Self>) {
-        if self.wakes != wakes || self.wake_computer != computer || self.wake_now != now {
-            self.wakes = wakes;
-            self.wake_computer = computer;
-            self.wake_now = now;
-            cx.notify();
-        }
+        self.bars.update(cx, |bars, cx| bars.set_wakes(wakes, computer, now, cx));
     }
 
     pub(crate) fn tick_wakes(&self, cx: &mut Context<Self>) {
-        if self.wakes.is_some() || self.wake_handle.is_open() { cx.notify(); }
-    }
-
-    fn wake_source(&self) -> crate::wakes::Source {
-        crate::wakes::Source { client: self.client.clone(), session: self.session.clone(), computer: self.wake_computer.clone(), live: self.live, now: self.wake_now }
+        self.bars.update(cx, |bars, cx| bars.tick_wakes(cx));
     }
 
     #[cfg(feature = "stand-in")]
     pub fn open_wake_schedule(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let source = self.wake_source();
-        let list = cx.new(|cx| crate::wakes::WakeSchedule::new(source, cx));
-        self.wake_handle.open(list, window, cx);
-        cx.notify();
-    }
-
-    fn wake_chip(&self) -> Option<AnyElement> {
-        let now = self.wake_now.unwrap_or_else(crate::time::now_ms);
-        let label = self.wakes.as_ref().and_then(|status| status.chip_label(now))
-            .or_else(|| self.wake_handle.is_open().then(|| "Wake-ups".into()))?;
-        Some(div().w_full().max_w(px(COLUMN)).pb(space::S2).child(crate::wakes::chip("composer-wakes", label, self.wake_source(), true, self.wake_handle.clone())).into_any_element())
+        self.bars.update(cx, |bars, cx| bars.open_activity_with_wakes(true, window, cx));
     }
 
     pub fn composer(&self) -> &Entity<Composer> {
         &self.composer
     }
 
-    /// The bars over its composer.
+    /// The activity control for this conversation.
     pub fn bars(&self) -> &Entity<WorkBars> {
         &self.bars
     }
@@ -532,7 +562,11 @@ impl ConversationView {
     fn with_outgoing(&self, mut rows: Vec<Entry>, mut revisions: Vec<u64>, cx: &App) -> (Vec<Entry>, Vec<u64>) {
         let at = if matches!(rows.last(), Some(Entry::Working { .. })) { rows.len() - 1 } else { rows.len() };
         let running = self.running;
-        let (outgoing, outgoing_revisions): (Vec<Entry>, Vec<u64>) = self.composer.read(cx).outgoing().iter().filter(|outgoing| !outgoing.arrived).map(|outgoing| Entry::outgoing(outgoing, running)).unzip();
+        // A send for after the run belongs to the queue unless the transcript confirms it went
+        // straight through. Keep failed sends here so Retry and Edit remain available.
+        let (outgoing, outgoing_revisions): (Vec<Entry>, Vec<u64>) = self.composer.read(cx).outgoing().iter()
+            .filter(|outgoing| !outgoing.arrived && (!outgoing.is_queued() || outgoing.failed.is_some()))
+            .map(|outgoing| Entry::outgoing(outgoing, running)).unzip();
         rows.splice(at..at, outgoing);
         revisions.splice(at..at, outgoing_revisions);
         (rows, revisions)
@@ -615,6 +649,73 @@ impl ConversationView {
     pub fn resume_queue(&mut self, cx: &mut Context<Self>) {
         let (client, session) = (self.client.clone(), self.session.clone());
         self.queue_change(move || client.resume_queue(&session), "The queue couldn’t be resumed", cx);
+    }
+
+    #[cfg(feature = "stand-in")]
+    pub fn queue_drag_points(&self) -> (gpui::Point<gpui::Pixels>, gpui::Point<gpui::Pixels>) {
+        let origin = self.queue_scroll.bounds().origin;
+        (origin + gpui::point(px(18.), px(16.)), origin + gpui::point(px(18.), px(48.)))
+    }
+
+    fn commit_queue_move(&mut self, change: QueueMove, cx: &mut Context<Self>) {
+        if self.queue_move_pending.is_some() { return; }
+        self.queue_move_pending = Some(change.clone());
+        let (client, session) = (self.client.clone(), self.session.clone());
+        let task = cx.background_executor().spawn(async move {
+            client.reorder_queue(&session, &change.item, &change.anchor, change.before)
+        });
+        self.tasks.retain(|task| !task.is_ready());
+        self.tasks.push(cx.spawn(async move |this, cx| {
+            let result = task.await;
+            this.update(cx, |this, cx| {
+                this.queue_move_pending = None;
+                match result {
+                    Ok(queue) => this.take_queue(queue, cx),
+                    Err(error) => this.queue_failed = Some(format!("The message couldn’t be moved: {}", kuvo_box::accounts::said(&error))),
+                }
+                cx.notify();
+            }).ok();
+        }));
+        cx.notify();
+    }
+
+    fn cancel_queue_drag(&mut self, cx: &mut Context<Self>) {
+        self.queue_dragging = None;
+        self.queue_drag = None;
+        cx.notify();
+    }
+
+    fn queue_move_at(&self, drag: &QueueDrag, position: gpui::Point<gpui::Pixels>, cx: &App) -> Option<QueueMove> {
+        let bounds = self.queue_scroll.bounds();
+        if !bounds.contains(&position) { return None; }
+        let y = position.y - bounds.top() - self.queue_scroll.offset().y;
+        let index = (f32::from(y) / QUEUE_ROW_HEIGHT).floor() as usize;
+        let items = self.queued_shown(cx);
+        let from = items.iter().position(|item| item.id == drag.item && item.can_reorder())?;
+        let anchor = items.get(index)?;
+        (from != index && anchor.can_reorder()).then(|| QueueMove {
+            item: drag.item.clone(), anchor: anchor.id.clone(), before: index < from,
+        })
+    }
+
+    fn drag_over_queue(&mut self, event: &gpui::DragMoveEvent<QueueDrag>, _: &mut Window, cx: &mut Context<Self>) {
+        let drag = event.drag(cx);
+        if drag.owner != cx.entity().entity_id() { return; }
+        let change = self.queue_move_at(drag, event.event.position, cx);
+        if self.queue_drag != change {
+            self.queue_drag = change;
+            self.queue_drag_motion += 1;
+            cx.notify();
+        }
+    }
+
+    fn keyboard_queue_move(&mut self, id: &str, up: bool, cx: &mut Context<Self>) {
+        let items: Vec<_> = self.queued_shown(cx).into_iter().filter(Item::can_reorder).collect();
+        let Some(at) = items.iter().position(|item| item.id == id) else { return };
+        let neighbor = if up { at.checked_sub(1) } else { Some(at + 1) };
+        if let Some(anchor) = neighbor.and_then(|index| items.get(index)) {
+            self.commit_queue_move(QueueMove { item: id.into(), anchor: anchor.id.clone(), before: up }, cx);
+        }
     }
 
     /// Asks the box to change the queue (`work`), off the UI thread; what the box makes of it comes
@@ -1200,24 +1301,41 @@ impl ConversationView {
     /// (into the run under way) or Send, Send Now for one already for the agent's next step, and
     /// Edit (yours) and Remove under the pointer; Resume while a Stop holds it.
     fn queue_view(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let items = self.queued_shown(cx);
+        let mut items = self.queued_shown(cx);
         if items.is_empty() {
             return None;
         }
         let c = cx.theme().colors.clone();
-        let count = items.len();
         let running = self.running;
         let paused = self.queue.paused && !running;
-        let said = if paused { format!("{count} waiting · paused") } else if count == 1 { "1 waiting".to_owned() } else { format!("{count} waiting") };
-        let rows = items.iter().enumerate().map(|(ix, item)| {
-            let group = SharedString::from(format!("queued-{ix}"));
-            let (edit_id, remove_id, go_id) = (item.id.clone(), item.id.clone(), item.id.clone());
+        let can_drag = self.queue_move_pending.is_none() && items.iter().filter(|item| item.can_reorder()).take(2).count() == 2;
+        let mut previous_slots = HashMap::new();
+        let change = self.queue_drag.as_ref().or(self.queue_move_pending.as_ref());
+        if let Some(change) = change {
+            let mut movable: Vec<_> = items.iter().filter(|item| item.can_reorder()).cloned().collect();
+            if let (Some(from), Some(to)) = (
+                movable.iter().position(|item| item.id == change.item),
+                movable.iter().position(|item| item.id == change.anchor),
+            ) {
+                if self.queue_drag.is_some() {
+                    previous_slots.extend(items.iter().enumerate().map(|(index, item)| (item.id.clone(), index)));
+                }
+                let item = movable.remove(from);
+                let to = to - usize::from(from < to) + usize::from(!change.before);
+                movable.insert(to, item);
+                for (row, moved) in items.iter_mut().filter(|item| item.can_reorder()).zip(movable) {
+                    *row = moved;
+                }
+            }
+        }
+        let rows = items.iter().enumerate().map(|(index, item)| {
+            let (remove_id, go_id) = (item.id.clone(), item.id.clone());
             let selector = format!("queued-{}", item.id);
             // Where it stands: for after the run, or for the agent's next step.
             let steered = !item.is_queued() && !item.is_on_box();
-            let mark = Icon::new(if steered { IconName::ArrowRight } else { IconName::Clock }).size(IconSize::Nav).color(if ix == 0 { c.accent } else { c.text_faint });
+            let mark = Icon::new(if steered { IconName::ArrowRight } else { IconName::QueuedMessage }).size(IconSize::Nav).color(c.text_faint);
             let lead: AnyElement = match &item.from {
-                Some(from) => div().flex().flex_none().items_center().gap(space::S1_5).child(mark).child(div().text_ui(TypeSize::Caption).medium().text_color(c.text_muted).child(from.clone())).into_any_element(),
+                Some(from) => div().flex().flex_none().items_center().gap(space::S1_5).child(mark).child(div().max_w(px(100.)).truncate().text_ui(TypeSize::Caption).medium().text_color(c.text_muted).child(from.clone())).into_any_element(),
                 None => mark.into_any_element(),
             };
             // Its way on: Steer while the run goes on (Send with none); one already for the agent's
@@ -1231,6 +1349,8 @@ impl ConversationView {
             let go = div().debug_selector(move || go_selector).child(
                 Button::new(SharedString::from(format!("go-{}", item.id)), go_label)
                     .ghost()
+                    .quiet()
+                    .when(go_steers, |button| button.icon(IconName::Steer).icon_size(IconSize::Nav))
                     .size(ButtonSize::Small)
                     .tooltip(match go_label {
                         "Steer" => "Steer: the agent takes this at its next step, without waiting for the run to end",
@@ -1261,44 +1381,81 @@ impl ConversationView {
                     menu.separator().entry(MenuEntry::new("Remove").destructive().on_select(move |_, cx| remove.update(cx, |this, cx| this.unqueue(r.clone(), false, cx))))
                 })
             };
+            let more = format!("queue-more-{}", item.id);
+            let draggable = can_drag && item.can_reorder();
+            let dragging_here = self.queue_dragging.as_deref() == Some(item.id.as_str());
+            let row_id: SharedString = format!("queued-{}", item.id).into();
+            let keyboard = item.id.clone();
+            let drag = QueueDrag {
+                owner: cx.entity().entity_id(), item: item.id.clone(),
+                words: item.words.lines().next().unwrap_or("").to_owned(), action: go_label,
+            };
+            let owner = cx.entity().downgrade();
             let row = div()
-                .id(SharedString::from(format!("queued-{}", item.id)))
+                .id(row_id.clone())
                 .debug_selector(move || selector)
-                .group(group.clone())
                 .flex()
                 .items_center()
                 .gap(space::S2)
-                .h(px(30.))
+                .h(px(QUEUE_ROW_HEIGHT))
                 .px(space::S2)
                 .rounded(radius::NAV)
                 .hover(|s| s.bg(c.hover))
+                .when(item.can_reorder(), |d| d.tab_index(0).focus_visible(|d| d.bg(c.hover)))
+                .when(draggable, |d| d
+                    .cursor_grab()
+                    .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, _, cx| {
+                        let key = event.keystroke.key.as_str();
+                        if event.keystroke.modifiers.alt && matches!(key, "up" | "down") {
+                            this.keyboard_queue_move(&keyboard, key == "up", cx);
+                            cx.stop_propagation();
+                        }
+                    }))
+                    .on_drag(drag, move |drag, offset, _, cx| {
+                        let row = owner.update(cx, |this, cx| {
+                            this.queue_dragging = Some(drag.item.clone());
+                            this.queue_drag = None;
+                            cx.notify();
+                            this.queue_scroll.bounds()
+                        }).unwrap_or_default();
+                        cx.new(|_| QueueDragPreview { drag: drag.clone(), row, pointer_offset_x: offset.x })
+                    }))
+                .when(dragging_here, |d| d.opacity(0.))
                 .child(lead)
                 .children(item.keyword.clone().map(|keyword| div().flex_none().text_ui(TypeSize::Caption).text_color(c.accent).child(keyword)))
                 .child(div().flex_1().min_w_0().truncate().text_ui(TypeSize::Small).text_color(c.text).child(item.words.lines().next().unwrap_or("").to_owned()))
                 .children((!item.files.is_empty()).then(|| {
                     let files = if item.files.len() == 1 { item.files[0].clone() } else { format!("{} files", item.files.len()) };
-                    div().flex().flex_none().items_center().gap(space::S1).text_ui(TypeSize::Caption).text_color(c.text_muted).child(Icon::new(IconName::Paperclip).size(IconSize::Nav).color(c.text_faint)).child(files)
+                    div().flex().flex_none().items_center().gap(space::S1).text_ui(TypeSize::Caption).text_color(c.text_muted).child(Icon::new(IconName::Paperclip).size(IconSize::Nav).color(c.text_faint)).child(div().max_w(px(90.)).truncate().child(files))
                 }))
                 .children(next_step)
                 .child(go)
-                .child(
-                    div()
-                        .flex()
-                        .flex_none()
-                        .gap(space::S0_5)
-                        .opacity(0.)
-                        .group_hover(group, |s| s.opacity(1.))
-                        .when(item.is_yours(), |d| {
-                            let selector = format!("edit-{}", item.id);
-                            d.child(div().debug_selector(move || selector).child(Button::icon_only(SharedString::from(format!("edit-{}", item.id)), IconName::Pencil, "Edit").size(ButtonSize::Small).on_click(cx.listener(move |this, _, _, cx| this.unqueue(edit_id.clone(), true, cx)))))
-                        })
-                        // (Another's isn't yours to edit: its room kept, so every row's buttons line up.)
-                        .when(!item.is_yours(), |d| d.child(div().flex_none().size(px(24.))))
-                        .child({
-                            let selector = format!("remove-{}", item.id);
-                            div().debug_selector(move || selector).child(Button::icon_only(SharedString::from(format!("remove-{}", item.id)), IconName::Trash, "Remove").size(ButtonSize::Small).on_click(cx.listener(move |this, _, _, cx| this.unqueue(remove_id.clone(), false, cx))))
-                        }),
-                );
+                .child({
+                    let selector = format!("remove-{}", item.id);
+                    div().flex_none().debug_selector(move || selector).child(
+                        Button::icon_only(SharedString::from(format!("remove-{}", item.id)), IconName::Trash, "Remove")
+                            .ghost().quiet().size(ButtonSize::Small).icon_size(IconSize::Nav)
+                            .on_click(cx.listener(move |this, _, _, cx| this.unqueue(remove_id.clone(), false, cx))),
+                    )
+                })
+                .child(div().flex_none().debug_selector({
+                    let selector = more.clone();
+                    move || selector
+                }).child(
+                    PopoverMenu::button(SharedString::from(more.clone()), Button::icon_only(SharedString::from(format!("open-{more}")), IconName::More, "More actions")
+                            .ghost().quiet().size(ButtonSize::Small).icon_size(IconSize::Nav), menu.clone())
+                        .above().align_right(),
+                ));
+            let row = match previous_slots.get(&item.id) {
+                Some(previous) if !dragging_here && *previous != index => {
+                    let distance = (*previous as f32 - index as f32) * QUEUE_ROW_HEIGHT;
+                    row.with_animation((row_id, self.queue_drag_motion as usize),
+                        Animation::new(std::time::Duration::from_millis(130)).with_easing(gpui::ease_out_quint()),
+                        move |row, progress| row.relative().top(px(distance * (1. - progress))))
+                        .into_any_element()
+                }
+                _ => row.into_any_element(),
+            };
             ContextMenuArea::new(SharedString::from(format!("queued-menu-{}", item.id)), row, menu)
         });
         Some(
@@ -1306,34 +1463,38 @@ impl ConversationView {
                 .debug_selector(|| "queue".into())
                 .w_full()
                 .max_w(px(COLUMN))
-                .mb(space::S2)
                 .flex()
                 .flex_col()
-                .p(space::S1)
-                .rounded(radius::CARD - px(4.))
-                .bg(c.sunken)
+                .px(space::S1)
+                .pt(space::S1)
+                .pb(space::S4)
+                .mb(-space::S3)
+                .rounded_t(radius::CARD)
+                .bg(c.surface.blend(c.sunken.opacity(0.45)))
                 .border_1()
                 .border_color(c.border)
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .px(space::S2)
-                        .pt(space::S1)
-                        .pb(space::S0_5)
-                        .text_ui(TypeSize::Caption)
-                        .text_color(c.text_faint)
-                        .child(said)
-                        .children(paused.then(|| {
-                            div().debug_selector(|| "queue-resume".into()).child(
-                                Button::new("queue-resume", "Resume").ghost().size(ButtonSize::Small).tooltip("Send the waiting messages, one after another").on_click(cx.listener(|this, _, _, cx| this.resume_queue(cx))),
-                            )
-                        })),
-                )
-                // Why it waits, in the box's words (its engine being updated): under the count, as plain as it.
+                .children(paused.then(|| {
+                    div().flex().items_center().justify_between().px(space::S2)
+                        .text_ui(TypeSize::Caption).text_color(c.text_muted)
+                        .child("Queue paused")
+                        .child(div().debug_selector(|| "queue-resume".into()).child(
+                            Button::new("queue-resume", "Resume").ghost().size(ButtonSize::Small).tooltip("Send the waiting messages, one after another").on_click(cx.listener(|this, _, _, cx| this.resume_queue(cx))),
+                        ))
+                }))
                 .children(self.queue.line.clone().map(|line| div().debug_selector(|| "queue-line".into()).px(space::S2).pb(space::S1).text_ui(TypeSize::Caption).text_color(c.text_muted).child(line)))
-                .child(div().id("queue-rows").max_h(px(30. * 4.)).overflow_y_scroll().children(rows))
+                .child(div().id("queue-rows").max_h(px(QUEUE_ROW_HEIGHT * 4.)).overflow_y_scroll().track_scroll(&self.queue_scroll)
+                    .on_drag_move(cx.listener(Self::drag_over_queue))
+                    .on_drop(cx.listener(|this, drag: &QueueDrag, window, cx| {
+                        if drag.owner != cx.entity().entity_id() { return; }
+                        if let Some(change) = this.queue_move_at(drag, window.mouse_position(), cx) {
+                            this.commit_queue_move(change, cx);
+                        }
+                        this.cancel_queue_drag(cx);
+                    }))
+                    .on_mouse_up_out(gpui::MouseButton::Left, cx.listener(|this, _, _, cx| {
+                        if this.queue_dragging.is_some() { this.cancel_queue_drag(cx); }
+                    }))
+                    .children(rows))
                 .children(self.queue_failed.clone().map(|why| div().px(space::S2).pb(space::S1).text_ui(TypeSize::Caption).text_color(c.warning).child(why)))
                 .into_any_element(),
         )
@@ -1358,9 +1519,6 @@ pub fn read_now(client: &BoxClient, session: &str) -> kuvo_box::Result<kuvo_box:
 impl Render for ConversationView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.keep_focus(window, cx);
-        // A bot's sessions' rows name their models as the composer's box offers them.
-        let names = self.composer.read(cx).menu_models().into_iter().map(|model| (model.id, model.name)).collect();
-        self.bars.update(cx, |bars, cx| bars.set_names(names, cx));
         let theme = cx.theme().clone();
         let c = &theme.colors;
         let view = cx.entity();
@@ -1449,6 +1607,13 @@ impl Render for ConversationView {
         let viewer = self.picture_viewer(window, cx);
         div()
             .track_focus(&self.focus)
+            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                if event.keystroke.key == "escape" && this.queue_dragging.is_some() && cx.has_active_drag() {
+                    cx.stop_active_drag(window);
+                    this.cancel_queue_drag(cx);
+                    cx.stop_propagation();
+                }
+            }))
             .relative()
             .size_full()
             .flex()
@@ -1479,14 +1644,13 @@ impl Render for ConversationView {
                     .children(self.asks_failed.clone().filter(|_| !gone).map(|why| {
                         div().w_full().max_w(px(COLUMN)).pb(space::S2).text_ui(TypeSize::Caption).text_color(c.warning).child(why)
                     }))
-                    .when(!gone, |d| d.children(self.wake_chip()).child(self.bars.clone()))
-                    .when(!gone, |d| d.children(self.queue_view(cx)))
                     // What it waits on you for takes the composer's place, as on the Mac and the phone.
                     // One this app can't answer sits over the composer, which stays usable.
                     .when(!gone, |d| {
                         let card = self.asks.read(cx);
                         let (asking, beside) = (card.is_asking(), card.leaves_composer());
                         d.when(asking && beside, |d| d.child(div().w_full().max_w(px(COLUMN)).pb(space::S2).child(self.asks.clone())))
+                            .children(self.queue_view(cx))
                             .child(div().w_full().max_w(px(COLUMN)).child(if asking && !beside { self.asks.clone().into_any_element() } else { self.composer.clone().into_any_element() }))
                     }),
             )

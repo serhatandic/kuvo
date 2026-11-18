@@ -358,11 +358,11 @@ export class GroupRunner {
    * started (`activate`), so nothing happens here before the Mac has let go of its copy. One here
    * already is replaced only when `replace` says so.
    */
-  put(group: Group, messages: GroupMessage[], status: Status, replace: boolean): boolean {
+  put(group: Group, messages: GroupMessage[], status: Status, replace: boolean, moveImport?: string): boolean {
     const existing = this.chats.get(group.id)
     if (existing && !replace) return false
     if (existing) this.stop(group.id)
-    const kept: Kept = { group, status, messages }
+    const kept: Kept = { group, status, messages, ...(moveImport ? { moveImport } : {}) }
     this.chats.set(group.id, kept)
     this.context.store.saveMessages(kept)
     this.changed(group.id)
@@ -375,10 +375,19 @@ export class GroupRunner {
   activate(id: string): boolean {
     const kept = this.chats.get(id)
     if (!kept) return false
-    if (kept.status !== "active") {
+    if (kept.status === "active") {
+      // A bridge restart can read a rename whose directory sync failed in the previous process.
+      this.context.store.saveGroup(kept)
+    } else {
       kept.status = "active"
-      this.changed(id)
-      this.began(id)
+      try {
+        this.changed(id)
+        this.began(id)
+      } catch (error) {
+        // A retry must still finish activation if saving or starting the group failed.
+        kept.status = "held"
+        throw error
+      }
     }
     return true
   }
@@ -396,18 +405,20 @@ export class GroupRunner {
     if (!kept) return undefined
     this.stop(id)
     kept.status = "held"
+    this.context.store.saveMessages(kept)
     this.changed(id)
     return { group: kept.group, messages: kept.messages }
   }
 
   /** Gone from here, its seats left where they are (a move away: the bots stay here). */
-  release(id: string): boolean {
+  release(id: string, moveImport?: string): boolean {
     const kept = this.chats.get(id)
-    if (!kept) return false
+    if (!kept || (moveImport !== undefined && kept.moveImport !== moveImport)) return false
     this.stop(id)
+    // Keep the held group available for a retry until its folder is out of the live store.
+    this.context.store.trash(id, this.context.trash)
     this.chats.delete(id)
     this.live.delete(id)
-    this.context.store.trash(id, this.context.trash)
     emit("kuvo.group.deleted", { id })
     // Its bots no longer remember it from here (the computer it went to does, in the same file,
     // which stays).

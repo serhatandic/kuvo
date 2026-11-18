@@ -295,16 +295,12 @@ export async function toTrash(folder: string): Promise<string | undefined> {
   return fs.existsSync(trashed) ? trashed : undefined;
 }
 
-/** Each export into `engine` at `directory`, under its own ID (until `signal` gives up on it). */
-export async function importAll(engine: Target, exports: unknown[], directory: string, signal?: AbortSignal): Promise<void> {
-  for (const exported of exports) {
-    if (!isObject(exported)) continue;
-    // (One there already isn't replaced: what a move brought before goes first, `clearCopy`.) A
-    // chat's mark as it is here, from the first: kept where it lands among this box's chats, taken
-    // off anywhere else.
-    const info = isObject(exported.info) ? { ...exported.info, metadata: chatNotes(exported.info.metadata, directory) } : exported.info;
-    await call(engine, "POST", "/api/experimental/session/import", { info, messages: exported.messages, location: { directory } }, signal);
-  }
+/** Import one conversation with a receipt the destination can verify if it loses the reply. */
+export async function importConversation(engine: Target, exported: Record<string, unknown>, directory: string, move: string, signal?: AbortSignal): Promise<void> {
+  if (!isObject(exported.info)) throw new NotTaken("A conversation did not come through.");
+  const notes = chatNotes(exported.info.metadata, directory);
+  const metadata = { ...notes, "kuvo.moveImport": move };
+  await call(engine, "POST", "/api/experimental/session/import", { info: { ...exported.info, metadata }, messages: exported.messages, location: { directory } }, signal);
 }
 
 /** Gone from `engine`; one that isn't there is as good as gone. */
@@ -312,13 +308,13 @@ export async function deleteSession(engine: Target, id: string): Promise<void> {
   try {
     await call(engine, "DELETE", `/api/session/${encodeURIComponent(id)}`, undefined, engineWait());
   } catch (error) {
-    if ((error as { status?: number } | null)?.status !== 404 && !/404|not found/i.test(String((error as Error | null)?.message ?? error))) throw error;
+    if ((error as { status?: number } | null)?.status !== 404) throw error;
   }
 }
 
 /** A group chat on this box's bridge: `action` (hold, activate, release), its answer's data. */
-export async function groupAction(bridge: Target, group: string, action: "hold" | "activate" | "release"): Promise<unknown> {
-  const answer = await askGroups<{ data?: unknown; message?: unknown }>(bridge, "POST", `/${encodeURIComponent(group)}/${action}`, undefined, engineWait());
+export async function groupAction(bridge: Target, group: string, action: "hold" | "activate" | "release", moveImport?: string): Promise<unknown> {
+  const answer = await askGroups<{ data?: unknown; message?: unknown }>(bridge, "POST", `/${encodeURIComponent(group)}/${action}`, moveImport === undefined ? undefined : { moveImport }, engineWait());
   if (answer.status === 404 && action === "release") return null;
   if (answer.status !== 200) throw Object.assign(new Error(typeof answer.value?.message === "string" ? answer.value.message : `Its group chats answered ${answer.status}.`), { status: answer.status });
   return answer.value?.data ?? null;

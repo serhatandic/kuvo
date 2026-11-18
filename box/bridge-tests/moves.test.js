@@ -35,21 +35,14 @@ const labChats = path.join(machineHome, "chats"), labBots = path.join(machineHom
 // What a box wrote (the machine is another process): looked at again every few milliseconds until
 // it's there, or the test runs out of time (`signal`).
 let signal;
-function eventually(found) {
-  return new Promise((resolve, reject) => {
-    const look = () => {
-      const value = found();
-      if (!value) return;
-      clearInterval(timer);
-      resolve(value);
-    };
-    const timer = setInterval(look, 20);
-    signal?.addEventListener("abort", () => {
-      clearInterval(timer);
-      reject(new Error(`it never got there: ${found}`));
-    }, { once: true });
-    look();
-  });
+async function eventually(found) {
+  const stopped = signal;
+  while (true) {
+    stopped?.throwIfAborted();
+    const value = await found();
+    if (value) return value;
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
 }
 
 const authorized = request => request.headers.authorization === `Basic ${Buffer.from("opencode:pw").toString("base64")}`;
@@ -69,7 +62,7 @@ function body(request) {
 // An engine with its conversations (`{id, title, directory, messages}`), as its API exports, imports
 // and deletes them.
 async function engineWith(sessions) {
-  const engine = { sessions: new Map(sessions.map(each => [each.id, each])), prompts: [], entries: [], cursors: new Map(), active: new Set() };
+  const engine = { sessions: new Map(sessions.map(each => [each.id, each])), prompts: [], accepted: new Map(), entries: [], cursors: new Map(), active: new Set() };
   const server = http.createServer(async (request, response) => {
     const given = await body(request);
     const url = new URL(request.url, "http://x");
@@ -106,7 +99,7 @@ async function engineWith(sessions) {
       const session = engine.sessions.get(exported[1]);
       return session ? send(200, { info: { id: session.id, title: session.title, ...(session.parent ? { parentID: session.parent } : {}), ...(session.metadata ? { metadata: session.metadata } : {}) }, messages: session.messages }) : send(404, null);
     }
-    const match = url.pathname.match(/^\/api\/session\/([^/]+)(\/inbox(?:\/([^/]+))?|\/prompt|\/instructions\/entries|\/interrupt|\/message)?$/);
+    const match = url.pathname.match(/^\/api\/session\/([^/]+)(\/inbox(?:\/([^/]+))?|\/prompt|\/instructions\/entries|\/interrupt|\/message(?:\/([^/]+))?)?$/);
     const session = match && engine.sessions.get(match[1]);
     if (!session) return send(404, null);
     // What it holds to go (`inbox`: messages sent while it worked), as the engine keeps them.
@@ -123,8 +116,11 @@ async function engineWith(sessions) {
       engine.active.delete(session.id);
       return send(200, true);
     }
+    if (match[4]) return engine.accepted.get(session.id)?.has(match[4]) ? send(200, { id: match[4] }) : send(404, null);
     if (match[2] === "/message") return send(200, []);
     if (match[2] === "/prompt") {
+      if (!engine.accepted.has(session.id)) engine.accepted.set(session.id, new Set());
+      engine.accepted.get(session.id).add(given.id);
       engine.prompts.push({ session: session.id, text: given.text, delivery: given.delivery, ...(given.files ? { files: given.files } : {}) });
       return send(200, {});
     }
@@ -311,9 +307,37 @@ const trashed = home => {
 
 test("where something can go: each of your other computers", { timeout: 60_000 }, async t => {
   signal = t.signal;
-  const places = await ask("GET", "kuvo/moves/places?kind=chat&id=ses_chat1");
-  assert.equal(places.status, 200);
-  assert.deepEqual(places.json.places, [{ key: lab.key, name: "lab", kind: "machine", ok: true }]);
+  const whenConnected = () => eventually(async () => {
+    // Setup can try mail before both peers are on the relay. A message from lab marks it as back.
+    link.peerMail({ ...lab, kind: "machine" }, { at: Date.now() }, null);
+    const places = await ask("GET", "kuvo/moves/places?kind=chat&id=ses_chat1");
+    assert.equal(places.status, 200);
+    return places.json.places[0]?.ok ? places : null;
+  });
+  const places = await whenConnected();
+  const [{ confirm, ...place }] = places.json.places;
+  assert.deepEqual(place, { key: lab.key, name: "lab", kind: "machine", ok: true });
+  assert.equal(confirm.title, "Move “Trip plans” to lab?");
+  assert.match(confirm.message, /conversation and wake-ups/);
+  assert.match(confirm.message, /sign-ins stay on Studio Mac/);
+  assert.doesNotMatch(confirm.message, /A turn is running/);
+  macEngine.active.add("ses_chat1");
+  t.after(() => macEngine.active.delete("ses_chat1"));
+  const busy = await whenConnected();
+  assert.match(busy.json.places[0].confirm.message, /A turn is running/);
+
+  const reach = path.join(macHome, "run", "peer-reach.json");
+  try {
+    const away = await eventually(async () => {
+      // An announcement already in flight can clear this mark before the route reads it.
+      write(reach, { [lab.key]: Date.now() });
+      const answer = await ask("GET", "kuvo/moves/places?kind=chat&id=ses_chat1");
+      return answer.json.places[0]?.ok === false ? answer.json.places[0] : null;
+    });
+    assert.deepEqual(away, { ...place, ok: false, why: "lab isn’t connected. Connect to it, then try again.", note: "Can’t be reached" });
+  } finally {
+    fs.rmSync(reach, { force: true });
+  }
   assert.equal((await ask("GET", "kuvo/moves/places?kind=chat&id=ses_nothing")).status, 404);
 });
 
@@ -387,12 +411,28 @@ test("the chat that moved takes messages where it lives now", { timeout: 60_000 
 
 test("a bot moves from the machine to this Mac, asked as this Mac asks a machine", { timeout: 60_000 }, async t => {
   signal = t.signal;
-  const moved = await askMachine("POST", "kuvo/moves", { kind: "bot", id: "bot_ada", to: mac });
-  assert.equal(moved.status, 200, JSON.stringify(moved.json));
+  labEngine.active.add("ses_bot1");
+  t.after(() => labEngine.active.delete("ses_bot1"));
+  const accepted = await askMachine("POST", "kuvo/moves", { kind: "bot", id: "bot_ada", to: mac, receipt: true });
+  assert.equal(accepted.status, 202, JSON.stringify(accepted.json));
+  const receipt = `kuvo/moves/receipt?id=${accepted.json.move.id}`;
+  const moving = await askMachine("GET", receipt);
+  assert.equal(moving.json.state, "moving");
+  assert.match(moving.json.move.progress, /Getting ready/);
+  labEngine.active.delete("ses_bot1");
+  await eventually(() => fs.existsSync(path.join(machineHome, "run", "moves", `${accepted.json.move.id}.outcome.json`)));
+  const done = await askMachine("GET", receipt);
+  assert.equal(done.json.state, "done");
+  assert.equal(done.json.move.to, mac);
+  assert.match(done.json.message, /^Moved to /);
   // Here: its folder, its memory, its conversation working in it, and nothing holding it.
   assert.equal(fs.readFileSync(path.join(macBots, "bot_ada", "MEMORY.md"), "utf8"), "The deploy is on Fridays.\n");
   assert.ok(!fs.existsSync(path.join(macBots, "bot_ada", "paused")));
   assert.equal(macEngine.sessions.get("ses_bot1")?.directory, path.join(macBots, "bot_ada", "workspace"));
+  const here = await ask("GET", "kuvo/bots");
+  assert.equal(here.json.bots.find(bot => bot.id === "bot_ada")?.name, "Ada");
+  const there = await askMachine("GET", "kuvo/bots");
+  assert.ok(!there.json.bots.some(bot => bot.id === "bot_ada"));
   // There: gone, to the machine's trash with its conversation.
   assert.ok(!labEngine.sessions.has("ses_bot1"));
   assert.ok(!fs.existsSync(path.join(labBots, "bot_ada")));
@@ -407,8 +447,12 @@ test("a computer that can't take it now: it stays where it was, as it was", { ti
   const was = fs.readFileSync(record, "utf8");
   write(record, { port: 9, password: "pw" });
   t.after(() => write(record, was));
-  const moved = await ask("POST", "kuvo/moves", { kind: "chat", id: "ses_chat2", to: lab.key });
-  assert.equal(moved.status, 409);
+  const started = await ask("POST", "kuvo/moves", { kind: "chat", id: "ses_chat2", to: lab.key, receipt: true });
+  assert.equal(started.status, 202);
+  const id = started.json.move.id;
+  await eventually(() => fs.existsSync(path.join(macHome, "run", "moves", `${id}.outcome.json`)));
+  const moved = await ask("GET", `kuvo/moves/receipt?id=${id}`);
+  assert.equal(moved.json.state, "failed");
   assert.match(moved.json.message, /engine on lab isn’t running/);
   assert.ok(macEngine.sessions.has("ses_chat2"));
   assert.ok(!labEngine.sessions.has("ses_chat2"));
@@ -421,7 +465,9 @@ test("a group chat goes to the machine its bots live on, held there until the sw
   await eventually(() => {
     try { return JSON.parse(fs.readFileSync(path.join(macHome, "run", "peer-agents.json"), "utf8"))[lab.key]?.list.some(agent => agent.kind === "bot" && agent.id === "bot_lin"); } catch { return false; }
   });
-  assert.deepEqual((await ask("GET", "kuvo/moves/places?kind=group&id=grp_lab")).json.places, [{ key: lab.key, name: "lab", kind: "machine", ok: true }]);
+  const [{ confirm, ...place }] = (await ask("GET", "kuvo/moves/places?kind=group&id=grp_lab")).json.places;
+  assert.deepEqual(place, { key: lab.key, name: "lab", kind: "machine", ok: true });
+  assert.match(confirm.message, /Its bots stay where they are/);
   assert.deepEqual((await ask("GET", "kuvo/moves/places?kind=group&id=grp_mix")).json.places, [{
     key: lab.key, name: "lab", kind: "machine", ok: false,
     why: "“Mixed”’s bots don’t all live on lab. Move them there first, then the chat can follow.", note: "Its bots don’t all live there",

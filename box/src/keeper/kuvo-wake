@@ -613,9 +613,12 @@ if [ "$1" = fire ]; then
     # Though one whose session is gone (deleted while it was held) goes to the trash, as
     # `settle` has one go; not one on its way to another computer.
     if [ -e "${bot}paused" ]; then
-      if [ "$(cat "${bot}paused" 2>/dev/null)" != moving ] && session=$(cat "$bot/session" 2>/dev/null) && [ -n "$session" ] && reach; then
-        held=1; settle; held=
-      fi
+      case "$(cat "${bot}paused" 2>/dev/null)" in
+        moving|moving:mov_*) ;;
+        *) if session=$(cat "$bot/session" 2>/dev/null) && [ -n "$session" ] && reach; then
+             held=1; settle; held=
+           fi ;;
+      esac
       # (One let go as its session is back goes on now, as any other.)
       [ -e "${bot}paused" ] || [ ! -d "$bot" ] && continue
     fi
