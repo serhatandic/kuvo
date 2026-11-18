@@ -1,3 +1,4 @@
+import "../safety"
 import { expect, test } from "bun:test"
 import { Limits, LimitsProblem, limitsRoutes, type AccountLimits, type LimitWindow } from "../../src/agents/limits"
 import { resetLabels } from "../../src/agents/usage/limit-display"
