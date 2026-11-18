@@ -917,7 +917,7 @@ pub fn said_of(account: &Value, offered: &Value, agents: bool, ended: Option<&st
         if !added && !installs && meta["signsOut"] == true && (!said.is_empty() || state == "ended") {
             let stays = if meta["signOutStops"] == true { "A turn running on it stops; your sessions stay" } else { "Your sessions stay" };
             let message = if meta["signOutShared"] == true {
-                format!("{name} is signed out on {computer}, in Terminal too, and its models leave the model picker. {stays}; sign in again to use it.")
+                format!("{name} is signed out on {computer}, in other apps that use the same sign-in, and its models leave the model picker. {stays}; sign in again to use it.")
             } else {
                 format!("{name} is signed out in Kuvo Code on {computer}, and its models leave the model picker. {stays}; sign in again to use it. Outside Kuvo Code, {name} stays as it is.")
             };
