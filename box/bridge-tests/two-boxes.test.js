@@ -252,7 +252,13 @@ test("this Mac's documents reach a machine; a phone the machine lets go reaches 
   const back = setUp(again.json.docs);
   assert.equal(back.key, lab.key, JSON.stringify(back));
   assert.ok((machineLink()?.macs ?? []).includes(mac));
-  assert.equal((await ask("PUT", "kuvo/link/peers", { peers: [{ key: lab.key, sign: lab.sign, address: lab.address, name: "lab", id: "lab" }], moved: [] })).status, 200);
+  const peers = { peers: [{ key: lab.key, sign: lab.sign, address: lab.address, name: "lab", id: "lab" }], moved: [] };
+  assert.equal((await ask("PUT", "kuvo/link/peers", peers)).status, 200);
+  assert.equal(link.macPeersBody(link.readLink()).boxes.some(box => box.key === lab.key), false, "a legacy list cannot restore trust");
+  // The SSH Add has completed on the stand-in machine. Commit the fresh pairing as Add does.
+  link.updateLink(current => link.setMacPeers(current, peers, lab.key).link);
+  assert.equal(link.macPeersBody(link.readLink()).boxes.some(box => box.key === lab.key), true);
+  link.macDocsChanged();
 
   // Removed while this Mac's box is off the relay: the machine hears it once it's back.
   link.stopMacLink();

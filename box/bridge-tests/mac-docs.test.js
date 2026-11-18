@@ -105,11 +105,13 @@ test("who this Mac's computers are: itself and its machines, each with the key i
   // Removed: named as left.
   assert.equal((await ask("PUT", "kuvo/link/peers", { peers: [lab.peer], moved: [], removed: [shed.peer.key] })).status, 200);
   assert.deepEqual((await own()).peers.body.left, [shed.peer.key]);
-  // Set up again: no longer, as setting it up asks (`?key=`), and once it's back among them.
+  // A legacy setup read and peer-list write cannot rejoin this removed peer.
   const setup = await ask("GET", `kuvo/link/setup?key=${shed.peer.key}`);
-  assert.deepEqual(setup.json.docs.map(link.readDoc).find(doc => doc?.origin === macSign && doc.kind === "peers").body.left, []);
+  assert.deepEqual(setup.json.docs.map(link.readDoc).find(doc => doc?.origin === macSign && doc.kind === "peers").body.left, [shed.peer.key]);
   assert.equal((await ask("PUT", "kuvo/link/peers", { peers: [lab.peer, shed.peer], moved: [] })).status, 200);
-  assert.deepEqual((await own()).peers.body.left, []);
+  peers = (await own()).peers.body;
+  assert.deepEqual(peers.left, [shed.peer.key]);
+  assert.deepEqual(peers.boxes.filter(box => box.kind === "machine").map(box => box.id), ["lab.invalid"]);
 });
 
 test("one computer under two names stays one of this Mac's when one name is forgotten", async () => {
@@ -235,13 +237,13 @@ test("what this Mac takes of its own and its machines': a copy of its own furthe
   assert.ok(!have.some(([origin, kind]) => origin === lab.peer.sign && kind === "peers"), JSON.stringify(have));
 });
 
-test("with the phone link off, this Mac's documents say nothing of your phones (your machines keep what they had)", async () => {
+test("with incoming phone connections off, this Mac still gives its machines the signed phone document", async () => {
   const lab = machine("lab.invalid");
   await fresh(lab);
   assert.equal((await ask("PUT", "kuvo/link/config", { phones: false, machines: true, relay: "ws://127.0.0.1:9", name: "Studio Mac", app: "0.9.0" })).status, 200);
   const setup = await ask("GET", "kuvo/link/setup");
   const kinds = setup.json.docs.map(link.readDoc).filter(doc => doc?.origin === macSign).map(doc => doc.kind).sort();
-  assert.deepEqual(kinds, ["peers", "personalities"]);
+  assert.deepEqual(kinds, ["peers", "personalities", "phones"]);
 });
 
 test("a machine's documents coming in, before this Mac's box knows its own agents (its engine starting), keep them in the list its group chats name", async () => {
