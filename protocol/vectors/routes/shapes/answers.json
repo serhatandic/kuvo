@@ -5212,7 +5212,6 @@
           }
          },
          "workingTitle?": "string",
-         "shared": "bool",
          "reach": {
           "oneOf": [
            {
@@ -5223,13 +5222,11 @@
            },
            {
             "literal": "away"
-           },
-           {
-            "literal": "unknown"
            }
           ]
          },
          "version?": "string",
+         "kuvo?": "string",
          "engine?": "string",
          "system?": "string",
          "features?": {
@@ -5260,13 +5257,9 @@
            },
            {
             "literal": "relay"
-           },
-           {
-            "literal": "peer"
            }
           ]
          },
-         "through?": "string",
          "address?": "string",
          "relay?": "string",
          "working?": "number",
@@ -5420,7 +5413,6 @@
           }
          },
          "workingTitle?": "string",
-         "shared": "bool",
          "reach": {
           "oneOf": [
            {
@@ -5431,13 +5423,11 @@
            },
            {
             "literal": "away"
-           },
-           {
-            "literal": "unknown"
            }
           ]
          },
          "version?": "string",
+         "kuvo?": "string",
          "engine?": "string",
          "system?": "string",
          "features?": {
@@ -5468,13 +5458,9 @@
            },
            {
             "literal": "relay"
-           },
-           {
-            "literal": "peer"
            }
           ]
          },
-         "through?": "string",
          "address?": "string",
          "relay?": "string",
          "working?": "number",
@@ -5815,6 +5801,9 @@
             "literal": "bots.job"
            },
            {
+            "literal": "bots.job-fields"
+           },
+           {
             "literal": "bots.make"
            },
            {
@@ -6305,6 +6294,9 @@
            },
            {
             "literal": "usage.history"
+           },
+           {
+            "literal": "usage.insights"
            },
            {
             "literal": "usage.notices"
@@ -6550,6 +6542,9 @@
             "literal": "bots.job"
            },
            {
+            "literal": "bots.job-fields"
+           },
+           {
             "literal": "bots.make"
            },
            {
@@ -7040,6 +7035,9 @@
            },
            {
             "literal": "usage.history"
+           },
+           {
+            "literal": "usage.insights"
            },
            {
             "literal": "usage.notices"
@@ -8449,6 +8447,9 @@
            },
            {
             "literal": "accessibility"
+           },
+           {
+            "literal": "fullDiskAccess"
            }
           ]
          },
@@ -8462,6 +8463,8 @@
          },
          "settings": "string",
          "byHand": "bool",
+         "byHandLine": "string",
+         "unknownLine": "string",
          "asks": "bool"
         }
        }
@@ -8511,6 +8514,9 @@
            },
            {
             "literal": "accessibility"
+           },
+           {
+            "literal": "fullDiskAccess"
            }
           ]
          },
@@ -8524,6 +8530,8 @@
          },
          "settings": "string",
          "byHand": "bool",
+         "byHandLine": "string",
+         "unknownLine": "string",
          "asks": "bool"
         }
        }
@@ -12911,10 +12919,28 @@
   },
   {
    "route": "POST kuvo/sign-in/return",
+   "body": {
+    "object": {
+     "url": "string",
+     "integration?": "string",
+     "attempt?": "string",
+     "agents?": "bool"
+    }
+   },
    "answers": {
     "200": {
      "object": {
       "status": "number"
+     }
+    },
+    "400": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "502": {
+     "object": {
+      "message": "string"
      }
     }
    }
@@ -13102,6 +13128,7 @@
       "url?": "string",
       "instructions?": "string",
       "userCode?": "string",
+      "pasteAddress?": "bool",
       "failure?": "string"
      }
     }
@@ -13117,11 +13144,17 @@
       "instructions?": "string",
       "mode?": "string",
       "acceptsCode?": "bool",
+      "pasteAddress?": "bool",
       "userCode?": "string",
       "time?": "any"
      }
     },
     "400": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "409": {
      "object": {
       "message": "string"
      }
@@ -15266,6 +15299,16 @@
       },
       "listing?": {
        "list": "string"
+      },
+      "unavailable?": {
+       "list": {
+        "object": {
+         "id": "string"
+        }
+       }
+      },
+      "generations?": {
+       "map": "string"
       },
       "scoped?": "bool",
       "note?": "string",
