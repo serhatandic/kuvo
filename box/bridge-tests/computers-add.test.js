@@ -444,7 +444,7 @@ const over = id => until(id, found => !found || found.state === "done" || found.
 const steps = found => found.steps.map(step => `${step.id}:${step.state}`);
 const sshLog = () => (fs.existsSync(path.join(fake, "log")) ? fs.readFileSync(path.join(fake, "log"), "utf8").trim().split("\n") : []);
 // (Two more computers, each a home of its own: a Mac that has Kuvo Code's app, and one with nothing.)
-const homes = Object.fromEntries(["macbook", "mini", "nas", "attic", "race", "claim", "rotate", "interrupted", "network-drop", "release", "add-first", "uninstall-first", "prepare", "old-reservation", "prepare-error"].map(name => [name, path.join(base, name)]));
+const homes = Object.fromEntries(["macbook", "mini", "nas", "attic", "race", "claim", "rotate", "interrupted", "network-drop", "release", "add-first", "uninstall-first", "prepare", "old-reservation", "prepare-error", "probe-removal", "stop-uninstall"].map(name => [name, path.join(base, name)]));
 for (const [name, folder] of Object.entries(homes)) {
   fs.mkdirSync(folder, { recursive: true });
   fs.writeFileSync(path.join(fake, `home-${name}`), folder);
@@ -1675,9 +1675,10 @@ for (const [destination, heldScript, step, expected] of [
 }
 
 test("SSH uninstall stops if the refreshed peer list drops the target during the probe", async () => {
-  assert.equal((await ask("POST", "kuvo/machines", { destination: "macbook" })).status, 200);
-  const computer = macbookPeer();
-  const kuvo = path.join(homes.macbook, ".kuvo-code");
+  const addedForProbe = await added("probe-removal");
+  assert.equal(addedForProbe.state, "done", JSON.stringify(addedForProbe.failure));
+  const computer = addedForProbe.computer;
+  const kuvo = path.join(homes["probe-removal"], ".kuvo-code");
   const identity = path.join(kuvo, "desktop", "identity");
   write(identity, "still here", 0o600);
   const key = link.publicOf(link.newKey());
@@ -1690,7 +1691,8 @@ test("SSH uninstall stops if the refreshed peer list drops the target during the
     assert.equal(started.status, 202, JSON.stringify(started.body));
     id = started.body.try.id;
     await until(id, found => found?.steps[0]?.state === "now");
-    assert.equal((await ask("PUT", "kuvo/link/peers", { peers: [] })).status, 200);
+    const peers = link.readLink().macPeers.filter(peer => peer.key !== computer.key);
+    assert.equal((await ask("PUT", "kuvo/link/peers", { peers })).status, 200);
   } finally {
     fs.rmSync(hold);
   }
@@ -1703,10 +1705,10 @@ test("SSH uninstall stops if the refreshed peer list drops the target during the
 });
 
 test("Stop after committed revocation retains the unconfirmed SSH cleanup and local instructions", async () => {
-  const added = await ask("POST", "kuvo/computers/add", { destination: "macbook" });
-  assert.equal((await over(added.body.try.id)).state, "done");
-  const computer = macbookPeer();
-  const kuvo = path.join(homes.macbook, ".kuvo-code");
+  const addedForStop = await added("stop-uninstall");
+  assert.equal(addedForStop.state, "done", JSON.stringify(addedForStop.failure));
+  const computer = addedForStop.computer;
+  const kuvo = path.join(homes["stop-uninstall"], ".kuvo-code");
   write(path.join(kuvo, "desktop", "identity"), "still here", 0o600);
   const marker = path.join(fake, "lose-uninstall-reply");
   const entered = path.join(fake, "uninstall-entered");
@@ -1729,7 +1731,7 @@ test("Stop after committed revocation retains the unconfirmed SSH cleanup and lo
   fs.rmSync(marker);
   assert.equal(ended?.state, "failed");
   assert.match(ended.failure.message, /revoked.*couldn’t confirm.*Run the local uninstall command \(kuvo-link\.js uninstall\)/);
-  assert.equal(macbookPeer(), undefined);
+  assert.equal(link.macPeersBody(link.readLink()).boxes.some(peer => peer.key === computer.key), false);
   assert.equal(fs.readFileSync(path.join(kuvo, "desktop", "identity"), "utf8"), "still here");
   assert.equal(fs.existsSync(path.join(kuvo, "run", "off")), false);
 });
