@@ -1376,7 +1376,7 @@ fn computer_key(computer: &Computer) -> String {
 }
 
 /// A computer's line under its name, from the box's facts: the one this window shows says so; one
-/// that isn't reached says that, one the box only knows of through another says through which; else its system, or Kuvo Code's version there, as it said them.
+/// that isn't reached says that, one the box only knows of through another says through which; else its system, or Kuvo's version there, as it said them.
 pub fn computer_line(computer: &Computer) -> String {
     if computer.here {
         // (Window state, not the box's: which computer this window shows is this window's own
@@ -1387,7 +1387,7 @@ pub fn computer_line(computer: &Computer) -> String {
         return computer.reach_title("held");
     }
     if computer.reach == "connected" {
-        computer.system.clone().or_else(|| computer.version.as_ref().map(|version| format!("Kuvo Code {version}"))).unwrap_or_else(|| computer.title.clone())
+        computer.system.clone().or_else(|| computer.kuvo_version().map(|version| format!("Kuvo {version}"))).unwrap_or_else(|| computer.title.clone())
     } else {
         computer.title.clone()
     }

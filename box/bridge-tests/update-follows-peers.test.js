@@ -91,6 +91,16 @@ function follow(peers) {
 const exchange = (from, holding) => holding.drain(reply => link.takeReleaseMail(from.sender, reply));
 const offered = () => link.offeredVersion();
 
+test("the computer list reports the installed Kuvo version beside the Mac app version", async () => {
+  box("0.8.0-beta.33");
+  says(mini, "0.8.0-beta.32", null);
+  const computers = await link.listComputers("devbox", null);
+  assert.equal(computers.find(each => each.here)?.kuvo, "0.8.0-beta.33");
+  const mac = computers.find(each => each.key === mini.pub);
+  assert.equal(mac?.version, "1.0.0");
+  assert.equal(mac?.kuvo, "0.8.0-beta.32");
+});
+
 test("a newer signed release another of your computers holds is taken from it as soon as its mail says so: pulled part by part, checked, and offered here in one exchange", () => {
   box();
   const holding = peerHolding(release("0.10.0"));

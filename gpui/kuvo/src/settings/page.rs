@@ -130,7 +130,7 @@ impl SettingsView {
             .child(div().id("settings-sections").flex_1().min_h_0().overflow_y_scroll().px(space::S2).pb(space::S4).children(rows))
             .child(div().flex_none().border_t_1().border_color(c.border).px(space::S2).py(space::S2).child(div().debug_selector(|| "settings-foot".into()).child(foot)))
             // A sign-in or a confirm open: the sidebar waits under the same dimming as the page.
-            .when(self.sign_in.is_some() || self.confirm.is_some() || self.folder_picker.is_some(), |d| d.child(div().id("settings-sidebar-dim").debug_selector(|| "settings-sidebar-dim".into()).absolute().inset_0().bg(dim(cx)).occlude()))
+            .when(self.sign_in.is_some() || self.confirm.is_some() || self.folder_picker.is_some() || self.rename_account.is_some(), |d| d.child(div().id("settings-sidebar-dim").debug_selector(|| "settings-sidebar-dim".into()).absolute().inset_0().bg(dim(cx)).occlude()))
             .into_any_element()
     }
 
@@ -200,8 +200,7 @@ impl SettingsView {
         let c = cx.theme().colors.clone();
         let Some(item) = self.items.get(ix).cloned() else { return div().into_any_element() };
         let body: AnyElement = match item {
-            Item::Title(title) => div().pt(space::S8).text_ui(TypeSize::Title).medium().text_color(c.text).child(title).into_any_element(),
-            Item::Whose(words) => div().debug_selector(|| "settings-whose".into()).pt(space::S1).text_ui(TypeSize::Small).text_color(c.text_muted).child(words).into_any_element(),
+            Item::Title(title) => div().debug_selector(|| "settings-title".into()).pt(space::S8).text_ui(TypeSize::Title).medium().text_color(c.text).child(title).into_any_element(),
             Item::Insights => div().pt(space::S2).debug_selector(|| "settings-open-insights".into())
                 .child(Button::new("open-insights", "Open Insights").icon(IconName::Chart).ghost()
                     .on_click(|_, window, cx| window.dispatch_action(Box::new(crate::area::ShowUsage), cx)))
@@ -509,7 +508,13 @@ impl SettingsView {
         match control {
             Control::None => div().into_any_element(),
             Control::Text(words) => div().text_ui(TypeSize::Body).text_color(c.text_muted).child(words).into_any_element(),
-            Control::Busy(words) => div().flex().items_center().gap(space::S2).text_ui(TypeSize::Small).text_color(c.text_muted).child(spinner(SharedString::from(format!("{key}-busy")), IconSize::Nav, c.text_muted)).child(div().id(SharedString::from(format!("{key}-busy-label"))).child(words).pulsing()).into_any_element(),
+            Control::Busy(words) => {
+                let label = format!("{key}-busy-label");
+                div().flex().items_center().gap(space::S2).text_ui(TypeSize::Small).text_color(c.text_muted)
+                    .child(spinner(SharedString::from(format!("{key}-busy")), IconSize::Nav, c.text_muted))
+                    .child(div().id(SharedString::from(label.clone())).debug_selector(move || label).child(words).pulsing())
+                    .into_any_element()
+            }
             Control::Switch { on, act } => {
                 let this = cx.entity().downgrade();
                 let switch = Switch::new(SharedString::from(format!("{key}-switch")), on).disabled(act.is_none());
@@ -700,10 +705,11 @@ impl SettingsView {
                 .into_any_element()
             }
             Control::Windows(meters) => windows(key, &meters, self.now.unwrap_or_else(time::now_ms), cx),
-            Control::Thing { buttons, menu, switch } => {
+            Control::Thing { buttons, menu, switch, busy } => {
                 let menu = (!menu.is_empty()).then(|| self.control(key, Control::Menu { shown: None, choices: menu.into_iter().map(|push| (push.label, None, push.act, false)).collect() }, cx));
                 let switch = switch.map(|(on, act)| self.control(key, Control::Switch { on, act }, cx));
-                div().flex().items_center().gap(space::S2).children(self.buttons(key, buttons, cx)).children(menu).children(switch).into_any_element()
+                let busy = busy.map(|words| self.control(key, Control::Busy(words), cx));
+                div().flex().items_center().gap(space::S2).children(busy).children(self.buttons(key, buttons, cx)).children(menu).children(switch).into_any_element()
             }
         }
     }
@@ -895,7 +901,7 @@ impl Render for SettingsView {
             self.rebuild(cx);
         }
         self.hear_blurs(window, cx);
-        let loading = self.items.iter().all(|item| matches!(item, Item::Title(_) | Item::End | Item::Note { busy: true, .. } | Item::Whose(_)))
+        let loading = self.items.iter().all(|item| matches!(item, Item::Title(_) | Item::End | Item::Note { busy: true, .. }))
             .then(|| self.items.iter().find_map(|item| match item { Item::Note { words, busy: true, .. } => Some(words.clone()), _ => None })).flatten();
         let page = match loading {
             Some(words) => div().size_full().flex().items_center().justify_center().child(kuvo_ui::small::LoadingLabel::new("page-loading", words)).into_any_element(),
@@ -1066,6 +1072,29 @@ impl Render for SettingsView {
                 .into_any_element();
             sheet_keyed(card, "settings-folder-picker", cx)
         });
+        let rename = self.rename_account.as_mut().map(|rename| {
+            if std::mem::take(&mut rename.focus) {
+                window.focus(&rename.field.focus_handle(cx), cx);
+            }
+            let blank = rename.field.read(cx).text().trim().is_empty();
+            let card = div()
+                .debug_selector(|| "account-rename".into())
+                .w(px(400.)).max_w_full()
+                .flex().flex_col().gap(space::S4).p(space::S5)
+                .rounded(radius::NAV).bg(c.card).border_1().border_color(c.border)
+                .shadow(cx.theme().elevated_shadow())
+                .child(div().text_ui(TypeSize::Body).medium().text_color(c.text).child(format!("Rename {}", rename.name)))
+                .child(div().debug_selector(|| "account-rename-field".into()).child(rename.field.clone()))
+                .child(div().flex().justify_end().gap(space::S2)
+                    .child(Button::new("account-rename-cancel", "Cancel").on_click(cx.listener(|this, _, _, cx| {
+                        this.rename_account = None;
+                        cx.notify();
+                    })))
+                    .child(Button::new("account-rename-save", "Save").primary().disabled(blank)
+                        .on_click(cx.listener(|this, _, _, cx| this.save_account_name(cx)))))
+                .into_any_element();
+            sheet_keyed(card, "account-rename", cx)
+        });
         let sign_in = self.sign_in.clone().map(|sheet_view| sheet_keyed(sheet_view.clone().into_any_element(), ("sign-in", sheet_view.entity_id().as_u64()), cx));
         let form = self.form().cloned().map(|form| sheet_keyed(form.clone().into_any_element(), ("form", form.entity_id().as_u64()), cx));
         div()
@@ -1076,6 +1105,7 @@ impl Render for SettingsView {
             .bg(c.sidebar)
             .child(div().size_full().flex().flex_col().children(problem).child(div().flex_1().min_h_0().child(page)))
             .children(confirm)
+            .children(rename)
             .children(sign_in)
             .children(form)
             .children(folder_picker)

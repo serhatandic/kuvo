@@ -365,7 +365,7 @@ export const LISTED_COMPUTER = object({
   key: string, name: string, kind: words("mac", "machine"), "here?": literal(true), "id?": string,
   title: string, reachTitles: map(string), "detail?": string, "notice?": object({ title: string, detail: string }), "settingsNotice?": object({ title: string, detail: string }), "workingTitle?": string,
   reach: words("connected", "connecting", "away"),
-  "version?": string, "engine?": string, "system?": string, "features?": list(string),
+  "version?": string, "kuvo?": string, "engine?": string, "system?": string, "features?": list(string),
   // How its coding agents stand, as it says (PROTOCOL.md, "The coding agents' state"): a fact, not
   // words to show.
   "agents?": object({ state: words("running", "restarting", "down"), "why?": string }),

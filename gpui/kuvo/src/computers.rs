@@ -692,9 +692,9 @@ impl ComputersView {
         items.push(Item::Group("About".into()));
         // (What it hasn't said isn't drawn: a computer whose Kuvo is older, or that hasn't been
         // reached, says little, and a row of "Not said yet" tells you nothing.)
-        let version = match (&computer.version, computer.is_behind()) {
+        let version = match (computer.kuvo_version(), computer.is_behind()) {
             (Some(version), true) => Some(format!("{version}, older than this app")),
-            (Some(version), false) => Some(version.clone()),
+            (Some(version), false) => Some(version.to_owned()),
             (None, true) => Some("Older than this app".to_owned()),
             (None, false) => None,
         };
@@ -1093,14 +1093,14 @@ impl ComputersView {
         div().w_full().flex().justify_center().px(space::S8).child(div().w_full().max_w(px(PAGE_WIDTH)).child(body)).into_any_element()
     }
 
-    /// A computer among all of them: how it stands, its system, the Kuvo Code it has, what's at
+    /// A computer among all of them: how it stands, its system, the Kuvo it has, what's at
     /// work there; it opens its page.
     fn row(&mut self, computer: &Computer, first: bool, last: bool, cx: &mut Context<Self>) -> AnyElement {
         let c = cx.theme().colors.clone();
         let key = if computer.here { "this".to_owned() } else { format!("computer:{}", computer.key) };
         let id = if computer.here { "this".to_owned() } else { computer.key.clone() };
         let selector = format!("computers-row-{id}");
-        let version = computer.version.as_ref().map(|version| format!("Kuvo Code {version}"));
+        let version = computer.kuvo_version().map(|version| format!("Kuvo {version}"));
         let working = computer.working.filter(|working| *working > 0).map(|working| {
             div()
                 .flex()
@@ -1126,7 +1126,10 @@ impl ComputersView {
                     .child(div().truncate().text_ui(TypeSize::Small).text_color(if computer.is_older() { c.warning } else { c.text_muted }).child(standing(computer))),
             )
             .children(working)
-            .children(version.map(|version| div().flex_none().text_ui(TypeSize::Caption).text_color(c.text_faint).child(version)))
+            .children(version.map(|version| {
+                let selector = format!("computers-version-{id}-{version}");
+                div().debug_selector(move || selector).flex_none().text_ui(TypeSize::Caption).text_color(c.text_faint).child(version)
+            }))
             .child(Icon::new(IconName::ChevronRight).color(c.icon))
             .into_any_element()
     }

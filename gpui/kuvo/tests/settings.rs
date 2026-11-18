@@ -107,6 +107,7 @@ fn settings_opens_on_your_own_and_the_foot_row_goes_to_the_computers(cx: &mut Te
     // Your settings first: this app's own, which ask no box anything.
     assert!(shown(cx, "settings-yours-title") && shown(cx, "settings-search"));
     assert!(shown(cx, "row-editor"), "General first");
+    assert!(shown(cx, "settings-title") && !shown(cx, "settings-whose"));
     assert_eq!(title(&workspace, cx).as_deref(), Some("General"));
     assert!(stand_in.seen_at("GET", "kuvo/settings").is_empty());
     // One of your own that isn't in the desktop app yet says so.
@@ -350,7 +351,7 @@ fn every_kind_of_row_is_drawn_from_the_boxs_description(cx: &mut TestAppContext)
     click(cx, "row-token-replace");
     click(cx, "row-token-field");
     cx.simulate_input("wrong-paste");
-    click(cx, "settings-whose");
+    click(cx, "settings-title");
     click(cx, "row-token-cancel");
     assert!(bodies(&stand_in, "PATCH", "kuvo/settings/samples").iter().all(|sent| sent["row"] != json!("token")));
     // A secret that's set shows no field until Replace; what's typed is sent and never drawn again.
@@ -443,6 +444,7 @@ fn accounts_lists_the_agents_and_providers_as_the_box_says_them(cx: &mut TestApp
     let stand_in = StandIn::at(Replies::Never, NOW);
     let (workspace, cx) = open(cx, stand_in.clone());
     section(&workspace, cx, "Accounts");
+    assert!(shown(cx, "settings-title") && !shown(cx, "settings-whose"));
     for row in ["account-claude-code", "account-claude-code@w0rk1a2b", "account-codex-cli", "account-cursor", "account-grok-cli", "account-github-copilot", "account-anthropic", "account-groq"] {
         assert!(shown(cx, row), "{row}");
     }
@@ -474,7 +476,9 @@ fn accounts_lists_the_agents_and_providers_as_the_box_says_them(cx: &mut TestApp
     click(cx, "account-claude-code-menu");
     assert!(shown(cx, "menu-item-Sign In Again…") && !shown(cx, "menu-item-Remove Account…"));
     cx.simulate_keystrokes("escape");
-    assert!(shown(cx, "account-github-copilot-disconnect") && !shown(cx, "account-github-copilot-sign-in-again"));
+    click(cx, "account-github-copilot-menu");
+    assert!(shown(cx, "menu-item-Disconnect…") && !shown(cx, "menu-item-Sign In Again…"));
+    cx.simulate_keystrokes("escape");
     // The coding agents not running: the box's words, and the engine's accounts still.
     stand_in.agents_running(false);
     section(&workspace, cx, "Usage");
@@ -591,7 +595,8 @@ fn signing_in_in_the_browser_follows_the_box_until_it_goes_through(cx: &mut Test
     assert!(!shown(cx, "sign-in"));
     // Read again: signed in, no longer ended.
     assert!(!shown(cx, "account-gitlab-sign-in-again"));
-    assert!(shown(cx, "account-gitlab-disconnect"));
+    click(cx, "account-gitlab-menu");
+    assert!(shown(cx, "menu-item-Disconnect…"));
 }
 
 #[gpui::test]
@@ -600,7 +605,8 @@ fn a_device_code_is_shown_and_copied_after_disconnecting(cx: &mut TestAppContext
     let (workspace, cx) = open(cx, stand_in.clone());
     section(&workspace, cx, "Accounts");
     // Disconnect is asked first, then goes to the box's route.
-    click(cx, "account-github-copilot-disconnect");
+    click(cx, "account-github-copilot-menu");
+    click(cx, "menu-item-Disconnect…");
     assert!(shown(cx, "settings-confirm"));
     assert!(stand_in.seen_at("POST", "kuvo/accounts/github-copilot/forget").is_empty());
     click(cx, "confirm-go");
@@ -967,7 +973,8 @@ fn the_page_keeps_its_place_when_a_row_changes(cx: &mut TestAppContext) {
     cx.simulate_event(gpui::ScrollEvent { position: page.center(), delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(-700.))), ..Default::default() });
     cx.run_until_parked();
     let before = bounds(cx, "account-openrouter").expect("scrolled to it");
-    click(cx, "account-github-copilot-disconnect");
+    click(cx, "account-github-copilot-menu");
+    click(cx, "menu-item-Disconnect…");
     click(cx, "confirm-go");
     let after = bounds(cx, "account-openrouter").expect("still on screen");
     assert!(after.origin.y < px(400.), "not back at the top: {after:?} (was {before:?})");
@@ -1002,7 +1009,8 @@ fn escape_closes_the_sign_in_and_the_confirm(cx: &mut TestAppContext) {
     cx.simulate_keystrokes("escape");
     cx.run_until_parked();
     assert!(!shown(cx, "sign-in"));
-    click(cx, "account-github-copilot-disconnect");
+    click(cx, "account-github-copilot-menu");
+    click(cx, "menu-item-Disconnect…");
     cx.simulate_keystrokes("escape");
     cx.run_until_parked();
     assert!(!shown(cx, "settings-confirm"));
@@ -1024,9 +1032,8 @@ fn a_sign_in_the_engine_forgot_is_given_up_after_a_while(cx: &mut TestAppContext
 }
 
 /// What an account says and offers is the box's answer, drawn as it comes: its line, its buttons'
-/// words, and a confirm in the box's words. An action this app has no control for, or one that
-/// only works on the box's computer while this app isn't there, isn't drawn, and no rule of this
-/// app's fills in for what the box didn't say.
+/// words, and a confirm in the box's words. A newer action keeps its label. An action that needs
+/// this computer is offered only here.
 #[gpui::test]
 fn an_account_is_drawn_from_the_boxs_state_line_and_actions(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
@@ -1057,14 +1064,19 @@ fn an_account_is_drawn_from_the_boxs_state_line_and_actions(cx: &mut TestAppCont
     assert!(shown(cx, "menu-item-Sign In Again…") && shown(cx, "menu-item-Forget This Plan…"));
     cx.simulate_keystrokes("escape");
 
-    // A signed-in plan the box offers nothing this app has a control for: nothing drawn, though
-    // it's a saved sign-in this app once offered Disconnect for by itself.
-    stand_in.set_account_said("github-copilot", json!({ "actions": [{ "id": "somethingNew", "label": "A Newer Thing" }, { "id": "update", "label": "Update to 9" }, { "id": "addAnother", "label": "Add Another Account" }] }));
+    stand_in.set_account_said("github-copilot", json!({ "actions": [
+        { "id": "somethingNew", "label": "A Newer Thing" },
+        { "id": "addAnother", "label": "Add Another Account", "sheetTitle": "Add a Copilot Account" }
+    ] }));
     again(&workspace, cx);
-    assert!(shown(cx, "account-github-copilot"));
-    for button in ["account-github-copilot-disconnect", "account-github-copilot-menu", "account-github-copilot-a-newer-thing", "account-github-copilot-update-to-9", "account-github-copilot-add-another-account"] {
-        assert!(!shown(cx, button), "{button}");
-    }
+    click(cx, "account-github-copilot-menu");
+    assert!(shown(cx, "menu-item-A Newer Thing"));
+    assert!(!shown(cx, "menu-item-Disconnect…"));
+    click(cx, "menu-item-Add Another Account…");
+    assert_eq!(view.read_with(cx, |view, cx| view.sign_in().map(|sheet| sheet.read(cx).title())), Some("Add a Copilot Account".into()));
+    let started = stand_in.seen_at("POST", "kuvo/sign-in/start");
+    assert_eq!(started.last().map(|seen| seen.path.as_str()), Some("kuvo/sign-in/start?integration=github-copilot"));
+    cx.simulate_keystrokes("escape");
 
     // A sign-in whose page comes back to the box's computer: only where this app runs there.
     stand_in.set_account_said("cursor", json!({ "actions": [{ "id": "signIn", "label": "Sign In", "sheetTitle": "Sign In to Cursor", "here": true }] }));
@@ -1073,6 +1085,29 @@ fn an_account_is_drawn_from_the_boxs_state_line_and_actions(cx: &mut TestAppCont
     stand_in.set_elsewhere(true);
     again(&workspace, cx);
     assert!(shown(cx, "account-cursor") && !shown(cx, "account-cursor-sign-in"));
+}
+
+#[gpui::test]
+fn an_added_account_can_be_renamed(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (workspace, cx) = open(cx, stand_in.clone());
+    let view = section(&workspace, cx, "Accounts");
+    let route = "kuvo/agents/api/kuvo/accounts/claude-code%40w0rk1a2b";
+    click(cx, "account-claude-code@w0rk1a2b-menu");
+    click(cx, "menu-item-Rename…");
+    assert!(shown(cx, "account-rename"));
+    cx.simulate_keystrokes("escape");
+    assert!(bodies(&stand_in, "PATCH", route).is_empty());
+    assert!(!shown(cx, "account-rename"));
+    click(cx, "account-claude-code@w0rk1a2b-menu");
+    click(cx, "menu-item-Rename…");
+    click(cx, "account-rename-field");
+    cx.simulate_keystrokes("cmd-a backspace");
+    cx.simulate_input("Studio");
+    click(cx, "account-rename-save");
+    assert_eq!(bodies(&stand_in, "PATCH", route), [json!({ "label": "Studio" })]);
+    assert!(!shown(cx, "account-rename"));
+    assert!(view.read_with(cx, |view, _| view.page_words()).contains("Claude Code · Studio"));
 }
 
 /// The app's way: the box asked off the window's thread, its answers coming in later.
@@ -1133,6 +1168,176 @@ mod live {
         assert!(shown(cx, "setting-accounts"));
         assert!(shown(cx, "account-github-copilot"), "the page with it, once Accounts is read");
         let _ = host;
+    }
+
+    fn open_accounts(cx: &mut TestAppContext, client: BoxClient) -> (Entity<Host>, &mut VisualTestContext) {
+        cx.update(|cx| {
+            Theme::init(Appearance::Light, cx);
+            kuvo::bind_keys(cx);
+        });
+        let (host, cx) = cx.add_window_view(|_, cx| {
+            let settings = cx.new(|cx| SettingsView::new(client, true, cx));
+            Host { settings }
+        });
+        cx.simulate_resize(size(px(1280.), px(1400.)));
+        host.update(cx, |host, cx| host.settings.update(cx, |settings, cx| {
+            settings.set_place("Accounts", cx);
+            settings.shown(cx);
+        }));
+        cx.run_until_parked();
+        (host, cx)
+    }
+
+    fn outdated_agent(stand_in: &StandIn) {
+        stand_in.set_agent_metadata("claude-code", json!({ "latestVersion": "2.4.2", "outdated": true, "updates": true }));
+    }
+
+    fn program_update(stand_in: &StandIn, state: serde_json::Value) {
+        stand_in.set_agent_metadata("claude-code", json!({ "programUpdate": state }));
+    }
+
+    fn advance(cx: &mut VisualTestContext, seconds: u64) {
+        cx.executor().advance_clock(std::time::Duration::from_secs(seconds));
+        cx.run_until_parked();
+    }
+
+    #[gpui::test]
+    fn an_agent_update_shows_progress_until_the_new_version_is_reported(cx: &mut TestAppContext) {
+        let stand_in = StandIn::at(Replies::Never, NOW);
+        outdated_agent(&stand_in);
+        let (host, cx) = open_accounts(cx, BoxClient::new(RequestBox(stand_in.clone())));
+        assert!(shown(cx, "account-claude-code-menu"));
+        assert!(shown(cx, "account-claude-code-update-to-2.4.2"));
+        let view = host.read_with(cx, |host, _| host.settings.clone());
+        let update = view.read_with(cx, |view, _| view.account_act("claude-code", "update")).unwrap();
+        let route = "kuvo/agents/api/kuvo/updates/claude-code";
+        view.update(cx, |view, cx| view.act(update.clone(), cx));
+        // Run through the first POST, leaving its completion on the UI scheduler.
+        while stand_in.seen_at("POST", route).is_empty() {
+            assert!(cx.executor().tick(), "the first click should send a request");
+        }
+        assert!(view.read_with(cx, |view, _| view.account_act("claude-code", "update").is_some()));
+        view.update(cx, |view, cx| view.act(update, cx));
+        cx.run_until_parked();
+        assert_eq!(stand_in.seen_at("POST", route).len(), 1);
+        assert!(shown(cx, "account-claude-code-busy-label"));
+        assert!(!shown(cx, "account-claude-code-update-to-2.4.2"));
+
+        stand_in.set_agent_metadata("claude-code", json!({
+            "outdated": false, "programUpdate": { "state": "updated", "version": "2.4.2", "at": 2 }
+        }));
+        advance(cx, 1);
+        assert!(!shown(cx, "account-claude-code-busy-label"));
+        let detail = view.read_with(cx, |view, _| view.row_detail("account-claude-code")).unwrap();
+        assert!(detail.ends_with("2.4.2"), "{detail}");
+    }
+
+    #[gpui::test]
+    fn accounts_poll_for_updates_that_started_elsewhere_and_back_off_on_a_failed_progress_read(cx: &mut TestAppContext) {
+        let stand_in = StandIn::at(Replies::Never, NOW);
+        outdated_agent(&stand_in);
+        let (host, cx) = open_accounts(cx, BoxClient::new(RequestBox(stand_in.clone())));
+        let view = host.read_with(cx, |host, _| host.settings.clone());
+        assert!(shown(cx, "account-claude-code-update-to-2.4.2"));
+        program_update(&stand_in, json!({ "state": "updating", "at": 1 }));
+        advance(cx, 30);
+        assert!(shown(cx, "account-claude-code-busy-label"));
+        assert!(!shown(cx, "account-claude-code-update-to-2.4.2"));
+
+        stand_in.agents_running(false);
+        advance(cx, 1);
+        assert!(!shown(cx, "account-claude-code-busy-label"));
+        assert!(view.read_with(cx, |view, _| view.page_words()).contains("Can’t check update progress"));
+        let route = "kuvo/agents/api/integration";
+        let reads = stand_in.seen_at("GET", route).len();
+        advance(cx, 1);
+        assert_eq!(stand_in.seen_at("GET", route).len(), reads, "no retry after one second");
+        stand_in.agents_running(true);
+        advance(cx, 14);
+        assert!(shown(cx, "account-claude-code-busy-label"));
+        assert!(!shown(cx, "account-claude-code-notice"));
+
+        let reads = stand_in.seen_at("GET", route).len();
+        view.update(cx, |view, cx| view.set_place("Clock", cx));
+        advance(cx, 30);
+        assert_eq!(stand_in.seen_at("GET", route).len(), reads);
+    }
+
+    #[gpui::test]
+    fn a_failed_agent_update_names_the_agent_and_keeps_its_installed_version(cx: &mut TestAppContext) {
+        let stand_in = StandIn::at(Replies::Never, NOW);
+        outdated_agent(&stand_in);
+        program_update(&stand_in, json!({ "state": "failed", "message": "spawn npm ENOENT", "at": 2 }));
+        let (host, cx) = open_accounts(cx, BoxClient::new(RequestBox(stand_in)));
+        let view = host.read_with(cx, |host, _| host.settings.clone());
+        assert!(!shown(cx, "account-claude-code-busy-label"));
+        assert!(shown(cx, "account-claude-code-notice"));
+        assert!(view.read_with(cx, |view, _| view.page_words()).contains("Couldn’t update Claude Code\nspawn npm ENOENT"));
+        assert!(view.read_with(cx, |view, _| view.row_detail("account-claude-code")).unwrap().ends_with("2.4.1"));
+    }
+
+    #[cfg(unix)]
+    #[gpui::test]
+    fn an_integration_event_refreshes_visible_accounts_before_the_poll(cx: &mut TestAppContext) {
+        use kuvo_box::transport::{Closer, Request, Response, Stream, Transport};
+        use std::{io::{self, BufReader, Read, Write}, os::unix::net::UnixStream, sync::mpsc};
+
+        struct Events {
+            requests: RequestBox,
+            writers: mpsc::Sender<(String, UnixStream)>,
+        }
+
+        struct Listening {
+            read: UnixStream,
+            ready: Option<(mpsc::Sender<(String, UnixStream)>, String, UnixStream)>,
+        }
+
+        impl Read for Listening {
+            fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+                if let Some((ready, route, write)) = self.ready.take() {
+                    let _ = ready.send((route, write));
+                }
+                self.read.read(buf)
+            }
+        }
+
+        impl Transport for Events {
+            fn send(&self, request: &Request) -> kuvo_box::Result<Response> {
+                self.requests.send(request)
+            }
+
+            fn open(&self, request: &Request, hold: &dyn Fn(Closer) -> bool) -> kuvo_box::Result<Stream> {
+                let (read, write) = UnixStream::pair().unwrap();
+                let shutdown = read.try_clone().unwrap();
+                let closer = Closer::new(move || { let _ = shutdown.shutdown(std::net::Shutdown::Both); });
+                let ready = hold(closer.clone()).then(|| (self.writers.clone(), request.path.clone(), write));
+                let reader = Box::new(BufReader::new(Listening { read, ready }));
+                Ok(Stream { status: 200, content_type: Some("text/event-stream".into()), reader, closer })
+            }
+
+            fn streams(&self) -> bool { true }
+            fn here(&self) -> bool { true }
+            fn describe(&self) -> String { self.requests.describe() }
+        }
+
+        let stand_in = StandIn::at(Replies::Never, NOW);
+        outdated_agent(&stand_in);
+        let (writers, streams) = mpsc::channel();
+        let (_, cx) = open_accounts(cx, BoxClient::new(Events { requests: RequestBox(stand_in.clone()), writers }));
+        cx.executor().allow_parking();
+        let mut streams: std::collections::HashMap<_, _> = (0..2)
+            .map(|_| streams.recv_timeout(std::time::Duration::from_secs(5)).unwrap()).collect();
+        // Both followers have queued their initial refresh before they begin reading.
+        cx.run_until_parked();
+        assert!(shown(cx, "account-claude-code-update-to-2.4.2"));
+        program_update(&stand_in, json!({ "state": "updating", "at": 1 }));
+        streams.get_mut("kuvo/agents/api/event").unwrap().write_all(b"data: {\"type\":\"integration.updated\",\"data\":{}}\n\n").unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !shown(cx, "account-claude-code-busy-label") {
+            assert!(std::time::Instant::now() < deadline, "the event should refresh Accounts without advancing its clock");
+            std::thread::yield_now();
+            cx.run_until_parked();
+        }
     }
 
     /// Install in the app's own way, its answers coming in later: installed, the sign-in opens,
@@ -1237,7 +1442,7 @@ fn a_rounded_unit_field_sends_nothing_untouched_and_ordinary_confirmation_has_no
     click(cx,"row-budget-field");
     cx.simulate_keystrokes("enter");
     cx.run_until_parked();
-    click(cx,"settings-whose");
+    click(cx,"settings-title");
     cx.run_until_parked();
     assert!(view.read_with(cx, |view, _| view.confirm_words()).is_none());
     assert!(bodies(&stand_in,"PATCH","kuvo/settings/storage").is_empty());
@@ -1298,7 +1503,7 @@ fn multiline_instructions_keep_whitespace_and_return_adds_a_line(cx: &mut TestAp
     cx.simulate_input("Second  ");
     assert!(bodies(&stand_in,"PATCH","kuvo/settings/git").is_empty());
     // Saved as it's left: a press anywhere else on the page.
-    click(cx,"settings-whose");
+    click(cx,"settings-title");
     cx.run_until_parked();
     let sent=bodies(&stand_in,"PATCH","kuvo/settings/git");
     assert_eq!(sent[0]["value"],json!("  First\nSecond  "));
@@ -1938,7 +2143,7 @@ fn fields_save_as_theyre_left_and_instructions_are_full_width(cx: &mut TestAppCo
     assert!(area.size.width > prefix.size.width * 2., "full width");
     // Left unchanged: nothing.
     click(cx, "row-branch-prefix-field");
-    click(cx, "settings-whose");
+    click(cx, "settings-title");
     assert!(bodies(&stand_in, "PATCH", "kuvo/settings/git").is_empty());
     // Typed and left: saved, from the row's revision.
     click(cx, "row-branch-prefix-field");
@@ -1954,7 +2159,7 @@ fn fields_save_as_theyre_left_and_instructions_are_full_width(cx: &mut TestAppCo
     cx.simulate_keystrokes("enter");
     cx.simulate_input("Keep it short");
     assert_eq!(bodies(&stand_in, "PATCH", "kuvo/settings/git").len(), 1);
-    click(cx, "settings-whose");
+    click(cx, "settings-title");
     let sent = bodies(&stand_in, "PATCH", "kuvo/settings/git");
     assert_eq!((sent[1]["row"].clone(), sent[1]["value"].clone()), (json!("commit-instructions"), json!("Say why\nKeep it short")));
     // Escape puts back what the box has.

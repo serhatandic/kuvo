@@ -1697,7 +1697,8 @@ client connected: a client's Computers area and its switcher draw it, and ask no
     asked in the last 20 seconds and no word since), `away` (the relay said it isn't
     there, `run/peer-reach.json`, or nothing came from it for half an hour). As this box last heard: one that's itself
     off the relay still says `connected` of a peer heard in the last half hour;
-  - `version?`, `engine?`, `system?`: Kuvo Code's version there, its engine's, and its system as
+  - `kuvo?`: the installed version of Kuvo on that computer.
+  - `version?`, `engine?`, `system?`: the desktop app’s version on a Mac (Kuvo’s on a machine), its engine’s, and its system as
     people know it ("macOS 15.1", "Ubuntu 24.04.1 LTS"), as that box said them with its agents
     (`agents.computer`, "Peers"); left out for one that hasn't said;
   - `features?` (`computers.facts`): what its box answers, as its `kuvo/info` says (this box's
@@ -4428,7 +4429,7 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
       Codex's and Grok's on a Mac) or stays; `rename` and `remove` (an account you added
       beside an agent's own: signed out and forgotten, and its confirm says so) are `PATCH` and
       `DELETE kuvo/agents/api/kuvo/accounts/<id>`. A
-      client draws the ids it has a control for and leaves out one it doesn't know.
+      client shows each offered action by its label, with unrecognized actions disabled.
       Keys are entered, never signed into: an account whose only ways in are keys (`methods` all
       `key`) words `signIn`, `signInAgain` and `addAnother` "Add Key", "Replace Key" and "Add
       Another Key" (#733); one reached with the computer's credentials and no sign-in page (an

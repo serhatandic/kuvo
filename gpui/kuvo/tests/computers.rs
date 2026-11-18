@@ -65,11 +65,13 @@ fn only_this_mac_is_listed_with_a_way_to_add_a_machine(cx: &mut TestAppContext) 
     assert!(shown(cx, "computers-page") && shown(cx, "computers-row-this") && shown(cx, "computer-this"));
     assert!(!shown(cx, "computer-key_devbox") && !shown(cx, "computers-row-key_devbox"));
     assert!(shown(cx, "computers-alone"));
+    assert!(shown(cx, "computers-version-this-Kuvo 0.8.0-beta.33"));
+    assert!(!shown(cx, "computers-version-this-Kuvo 0.8.0-beta.12"));
     // This Mac's page: connected, its facts as its box says them, and its session at work, which opens.
     click(cx, "computers-row-this");
     assert_eq!(page.read_with(cx, |page, _| page.shown().clone()), Shown::This);
     assert!(shown(cx, "computer-head") && !shown(cx, "notice-away") && !shown(cx, "notice-older"));
-    assert_eq!(said(&page, cx, "fact-version").map(|(_, value)| value).as_deref(), Some("0.8.0"));
+    assert_eq!(said(&page, cx, "fact-version").map(|(_, value)| value).as_deref(), Some("0.8.0-beta.33"));
     assert_eq!(said(&page, cx, "fact-system").map(|(_, value)| value).as_deref(), Some("macOS 15.1"));
     assert_eq!(said(&page, cx, "fact-reached").map(|(_, value)| value).as_deref(), Some("Shown in this window"));
     assert!(!shown(cx, "action-remove"), "this window's own computer isn't removed from here");
@@ -207,6 +209,9 @@ fn a_computer_away_and_one_older_say_why_on_their_pages(cx: &mut TestAppContext)
         assert!(shown(cx, &format!("computers-row-{row}")), "{row} among all of them");
         assert!(shown(cx, &format!("computer-{row}")), "{row} in the sidebar");
     }
+    assert!(shown(cx, "computers-version-key_studio-Kuvo 0.8.0-beta.32"));
+    assert!(shown(cx, "computers-version-key_devbox-Kuvo 0.8.0"));
+    assert!(!shown(cx, "computers-version-key_old-Kuvo 0.9.180"));
     // A machine at work: connected, its sessions counted as its box says.
     click(cx, "computer-key_devbox");
     assert_eq!(title(&workspace, cx).as_deref(), Some("devbox"));
@@ -225,7 +230,7 @@ fn a_computer_away_and_one_older_say_why_on_their_pages(cx: &mut TestAppContext)
     let (held_title, _) = held_words(Some("old-mini"), false);
     assert_eq!(said(&page, cx, "notice-behind"), Some((held_title, kuvo::workspace::behind_words().to_owned())));
     assert!(!shown(cx, "notice-older"), "never said to wait for its update");
-    assert_eq!(said(&page, cx, "fact-version").map(|(_, value)| value).as_deref(), Some("0.9.180, older than this app"));
+    assert_eq!(said(&page, cx, "fact-version").map(|(_, value)| value).as_deref(), Some("Older than this app"));
     assert!(!shown(cx, "at-work-none"), "an older computer's count isn't claimed");
     // All of them again, from the sidebar's first row.
     click(cx, "computers-all");

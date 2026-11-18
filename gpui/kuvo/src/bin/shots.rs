@@ -289,6 +289,7 @@ const SCREENS: &[Screen] = &[
     // page (this one, one at work, one away, one older, one shared), Add a Machine, a narrow window.
     Screen { slug: "computers", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(computers_all) },
     Screen { slug: "computers-alone", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(computers_all) },
+    Screen { slug: "computers-versions", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(computers_all) },
     Screen { slug: "computers-many", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(computers_all) },
     Screen { slug: "computer-this", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(computer_this) },
     Screen { slug: "computer-page", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(computers) },
@@ -365,7 +366,10 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "settings-a-updates", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(updates) },
     Screen { slug: "settings-a-updates-narrow", width: 760., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(updates) },
     Screen { slug: "settings-a-clock", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(clock) },
+    Screen { slug: "settings-no-whose-line", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(clock) },
     Screen { slug: "settings-a-accounts", width: 1280., height: 1400., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(accounts) },
+    Screen { slug: "accounts-update-available", width: 1280., height: 1400., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(accounts) },
+    Screen { slug: "accounts-updating", width: 1280., height: 1400., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(accounts) },
     // The coding agents not running (PROTOCOL.md, "The coding agents' state"): Accounts, Usage,
     // the rail's rings (their card open) and the line over a conversation's composer.
     Screen { slug: "agents-accounts-down", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(accounts) },
@@ -1651,6 +1655,13 @@ fn main() -> anyhow::Result<()> {
             }
             if screen.slug == "queue-new-many-labels" {
                 stand_in.many_labels();
+            }
+            if matches!(screen.slug, "accounts-update-available" | "accounts-updating") {
+                let mut metadata = serde_json::json!({ "latestVersion": "2.4.2", "outdated": true, "updates": true });
+                if screen.slug == "accounts-updating" {
+                    metadata["programUpdate"] = serde_json::json!({ "state": "updating", "at": 1 });
+                }
+                stand_in.set_agent_metadata("claude-code", metadata);
             }
             // Computers: only this Mac, and a long list.
             if screen.slug == "computers-alone" {

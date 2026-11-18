@@ -695,6 +695,34 @@ fn follow_events(client: &BoxClient, place: Where, timing: Timing, latest: &Late
     false
 }
 
+impl BoxClient {
+    /// Signal when accounts may have changed, including when the event stream reconnects.
+    pub fn follow_account_changes(&self, place: Where, timing: Timing) -> Follow<()> {
+        let client = self.clone();
+        spawn("kuvo accounts events", move |latest, stop| {
+            let mut backoff = Backoff::new(timing);
+            while !stop.is_stopped() {
+                if let Ok(mut stream) = client.open(&Request::get(place.events_route()), &|closer| stop.hold(closer))
+                    && (200..300).contains(&stream.status)
+                {
+                    latest.put(());
+                    while let Ok(Some(data)) = lines::next_event(&mut *stream.reader) {
+                        backoff.reset();
+                        let Ok(event) = serde_json::from_str::<Value>(&data) else { continue };
+                        if matches!(event["type"].as_str(), Some("integration.updated" | "credential.updated" | "credential.switched")) {
+                            latest.put(());
+                        }
+                    }
+                }
+                stop.release();
+                if backoff.wait(&stop) {
+                    break;
+                }
+            }
+        })
+    }
+}
+
 /// What a follow of one of the box's own lists says (a conversation's asks, its queue).
 #[derive(Debug, Clone, PartialEq)]
 pub enum Followed<T> {

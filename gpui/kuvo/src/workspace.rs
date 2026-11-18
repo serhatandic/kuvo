@@ -3614,6 +3614,11 @@ impl Focusable for Workspace {
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.area != Area::Settings
+            && let Some(settings) = self.area_view(Area::Settings).and_then(|view| view.read(cx).settings()).cloned()
+        {
+            settings.update(cx, |settings, _| settings.hidden());
+        }
         let theme = cx.theme().clone();
         let c = &theme.colors;
         let viewport = window.viewport_size().width;

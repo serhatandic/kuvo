@@ -659,6 +659,10 @@ impl StandIn {
         self.state().settings.set_account_said(account, said);
     }
 
+    pub fn set_agent_metadata(&self, id: &str, metadata: Value) {
+        self.state().settings.set_agent_metadata(id, metadata);
+    }
+
     /// Whether its bots can be read (`kuvo/bots` answers `503` while not).
     pub fn bots_readable(&self, readable: bool) {
         self.state().bots.down = !readable;

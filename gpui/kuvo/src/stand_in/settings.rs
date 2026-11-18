@@ -447,6 +447,30 @@ impl Settings {
             self.agents.push(account);
             return Some((200, json!({ "data": { "providerID": id } })));
         }
+        if agents_side && let [ "kuvo", action @ ("accounts" | "updates"), id ] = api.as_slice() {
+            let id = path_part(id);
+            match (method, *action) {
+                ("PATCH", "accounts") => {
+                    let Some(account) = self.agents.iter_mut().find(|each| each["id"] == id) else {
+                        return Some((404, json!({ "message": "No such account." })));
+                    };
+                    let original = account["name"].as_str().unwrap_or_default();
+                    let name = original.split_once(" · ").map_or(original, |(base, _)| base);
+                    let label = body["label"].as_str().unwrap_or_default();
+                    account["name"] = json!(format!("{name} · {label}"));
+                    account["metadata"]["accountLabel"] = json!(label);
+                    return Some((200, json!({})));
+                }
+                ("POST", "updates") => {
+                    let Some(account) = self.agents.iter_mut().find(|each| each["id"] == id) else {
+                        return Some((404, json!({ "message": "No such agent." })));
+                    };
+                    account["metadata"]["programUpdate"] = json!({ "state": "updating", "at": 1 });
+                    return Some((200, json!({ "data": { "updating": [id] } })));
+                }
+                _ => {}
+            }
+        }
         if agents_side && api.len() == 3 && api[0..2] == ["kuvo", "accounts"] && method == "DELETE" {
             let account = path_part(api[2]);
             self.agents.retain(|each| each["id"] != account.as_str() || (query("onlyUnsigned").as_deref() == Some("1") && each["connections"].as_array().is_some_and(|connections| !connections.is_empty())));
@@ -629,6 +653,11 @@ impl Settings {
 
     pub fn set_account_said(&mut self, account: &str, said: Value) {
         self.said.insert(account.to_owned(), said);
+    }
+
+    pub fn set_agent_metadata(&mut self, id: &str, metadata: Value) {
+        let account = self.agents.iter_mut().find(|each| each["id"] == id).expect("sample agent");
+        account["metadata"].as_object_mut().unwrap().extend(metadata.as_object().unwrap().clone());
     }
 
     pub fn set_config(&mut self, path: &[&str], value: Value) {

@@ -143,6 +143,8 @@ impl Ways {
 pub struct Integration {
     pub id: String,
     pub name: String,
+    #[serde(default)]
+    metadata: Value,
 }
 
 /// How an account stands, as the box says (`state`): the fact its line words. One this client
@@ -209,6 +211,16 @@ impl Action {
     }
 }
 
+/// The progress or outcome of a coding agent's program update.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(tag = "state", rename_all = "camelCase")]
+pub enum ProgramUpdate {
+    Updating,
+    Updated { version: String },
+    Current { version: String },
+    Failed { message: String, version: Option<String> },
+}
+
 /// An account as Accounts draws it: the engine's or the bridge's listing, and what the box says
 /// of it (`kuvo/sign-in/accounts`): its ways in, its mark, how it stands, its line and its actions.
 #[derive(Debug, Clone, PartialEq)]
@@ -231,6 +243,23 @@ pub struct AccountEntry {
     /// An account you added beside its agent's own (`added`): a first run lists each agent once,
     /// by its own.
     pub added: bool,
+}
+
+impl AccountEntry {
+    pub fn account_label(&self) -> &str {
+        self.integration.metadata["accountLabel"].as_str().unwrap_or(&self.integration.name)
+    }
+
+    pub fn program_update(&self) -> Option<ProgramUpdate> {
+        serde_json::from_value(self.integration.metadata["programUpdate"].clone()).ok()
+    }
+
+    pub fn program_version(&self) -> Option<&str> {
+        if self.side != Side::Agents {
+            return None;
+        }
+        self.integration.metadata["version"].as_str()
+    }
 }
 
 /// Every account on this box, as Accounts lists them.
@@ -448,6 +477,19 @@ impl BoxClient {
     pub fn install_agent(&self, account: &str) -> Result<Installed> {
         let data: Data<Installed> = self.value(&Request::post(format!("kuvo/agents/api/integration/{}/install", segment(account)), json!({})))?;
         Ok(data.data)
+    }
+
+    pub fn update_agent(&self, account: &str) -> Result<()> {
+        self.done(&Request::post(format!("kuvo/agents/api/kuvo/updates/{}", segment(account)), json!({})))
+    }
+
+    pub fn rename_agent_account(&self, account: &str, label: &str) -> Result<()> {
+        self.done(&Request {
+            method: "PATCH".into(),
+            path: format!("kuvo/agents/api/kuvo/accounts/{}", segment(account)),
+            headers: Vec::new(),
+            body: Some(json!({ "label": label })),
+        })
     }
 
     /// Disconnect: this box's sign-ins and keys for one of the engine's plans or providers.
