@@ -55,6 +55,7 @@ test("an interrupted inbox transfer delivers the messages in their original orde
   const session = "ses_retry_order"
   const inbox = ["A", "B", "C"].map(text => ({ id: `msg_${text}`, delivery: "queue", type: "user", payload: { text } }))
   const delivered: string[] = []
+  const accepted = new Set<string>()
   let refused = 2
   const server = Bun.serve({
     hostname: "127.0.0.1",
@@ -70,7 +71,16 @@ test("an interrupted inbox transfer delivers the messages in their original orde
         }
         inbox.splice(inbox.findIndex(item => item.id === id), 1)
       }
-      if (route === `/api/session/${session}/prompt`) delivered.push((await request.json() as { text: string }).text)
+      if (route === `/api/session/${session}/prompt`) {
+        const { id, text } = await request.json() as { id: string; text: string }
+        accepted.add(id)
+        delivered.push(text)
+      }
+      const message = route.match(/\/message\/([^/]+)$/)
+      if (message) {
+        const id = message[1]
+        return accepted.has(id) ? Response.json({ data: { info: { id } } }) : new Response(null, { status: 404 })
+      }
       return Response.json({ data: {} })
     },
   })
