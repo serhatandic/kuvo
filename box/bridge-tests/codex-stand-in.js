@@ -37,6 +37,7 @@ process.stdin.on("data", chunk => {
     const message = JSON.parse(line);
     if (message.method === "thread/start") send({ id: message.id, result: { thread: { id: "t" + ++thread } } });
     else if (message.method === "thread/resume") send({ id: message.id, result: { thread: { id: message.params.threadId } } });
+    else if (message.method === "thread/backgroundTerminals/list") send({ id: message.id, result: { data: [] } });
     else if (message.method === "turn/start") {
       const turnId = "u" + ++turns;
       send({ id: message.id, result: { turn: { id: turnId, status: "inProgress" } } });

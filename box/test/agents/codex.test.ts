@@ -2010,6 +2010,8 @@ process.stdin.on("data", (chunk) => {
     } else if (message.id === 500) {
       send({ method: "item/completed", params: { threadId: "t2", turnId: "u2", item: { type: "agentMessage", id: "a2", text: "Answered: " + message.result.decision } } })
       send({ method: "turn/completed", params: { threadId: "t2", turn: { id: "u2", status: "completed" } } })
+    } else if (message.method === "thread/backgroundTerminals/list") {
+      send({ id: message.id, result: { data: [] } })
     } else if (message.method === "turn/interrupt") {
       send({ id: message.id, result: {} })
       send({ method: "turn/completed", params: { threadId: message.params.threadId, turn: { id: message.params.turnId, status: "interrupted" } } })
@@ -2060,6 +2062,7 @@ describe("Codex's agents in the background", () => {
     // Its turn is over, but the agent it spawned still works: it waits.
     expect(codex!.restartOutside()).toBe(true)
     expect(sessions.active()).toContain(child)
+    expect(sessions.background()[id]?.tasks ?? []).toEqual([])
     sessions.replyPermission(id, sessions.permissions(id)[0].id, "once")
     await until(() => sessions.messages(child).some((message) => message.type === "idle"))
     expect(sessions.messages(child).at(-1)).toMatchObject({ type: "idle", outcome: "succeeded" })
