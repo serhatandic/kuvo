@@ -18,6 +18,7 @@ import { movedFromOldApp } from "../rehome/moved";
 import { tellGone } from "../mac/link";
 import { LIST_FILE, savedMachines } from "../mac/machines";
 import { setMacPeers } from "../mac/routes";
+import { PRIMARY_UNLINK } from "../setup/leadership";
 import { followedSetup } from "../setup/record";
 import { macName, mainElsewhere } from "../setup/main-only";
 import { takeOffVouched, vouchedWords } from "../phones";
@@ -58,7 +59,7 @@ export function writerOf(link: LinkState | null | undefined): Writer {
 function writtenMachines(link: LinkState | null | undefined, writer: Writer): Set<string> {
   if (!writer) return new Set();
   const boxes = writer.here ? peersOf(link) : namedBoxes(link, writer.key);
-  return new Set(boxes.filter(box => box.kind === "machine").map(box => box.key));
+  return new Set(boxes.filter(box => box.kind === "machine" || link?.setup?.managed).map(box => box.key));
 }
 
 /** What this box knows of the writer, worked out once for a whole list: who it is, the machines
@@ -101,7 +102,8 @@ export function writerFacts(link: LinkState | null = readLink()): WriterFacts {
 export function whyNot(computer: Pick<ListedComputer, "key" | "name" | "kind" | "here" | "via">, what: "rename" | "remove", here: string, link: LinkState | null = readLink(), facts: WriterFacts = writerFacts(link)): string | null {
   const name = computer.name || "This computer";
   const { writer } = facts;
-  if (computer.kind === "mac") return what === "rename" ? `${name} is a Mac: it goes by the name it has there.` : `A Mac can't be removed from here.`;
+  if (what === "remove" && link?.setup && computer.key === link.setup.primary) return PRIMARY_UNLINK;
+  if (computer.kind === "mac" && (what === "rename" || !link?.setup?.managed)) return what === "rename" ? `${name} is a Mac: it goes by the name it has there.` : `A Mac can't be removed from here.`;
   if (what === "remove" && computer.here) return `${here} can't remove itself: remove it from another of your computers.`;
   if (!writer) return macsOf(link).length > 1 ? `${what === "rename" ? "Rename" : "Remove"} ${name} from the Mac that added it.` : `No Mac keeps ${name}'s record, so it can't be ${what === "rename" ? "renamed" : "removed"} from here.`;
   if (!facts.reachable) return `${here} can't reach ${(writer as { name: string }).name}, which keeps your machines' records: ${what} ${name} from there.`;
@@ -156,7 +158,7 @@ const answer = (status: number, value: unknown): Acted => ({ status, value });
 export function renameHere(key: string, name: string): Acted {
   let found = false;
   updateLink(link => {
-    if (!link || !peersOf(link).some(peer => peer.key === key)) return null;
+    if (!link || mainElsewhere(link) || !peersOf(link).some(peer => peer.key === key)) return null;
     found = true;
     if (link.peerNames?.[key] === name) return null;
     link.peerNames = { ...(link.peerNames ?? {}), [key]: name };
@@ -173,11 +175,16 @@ export function renameHere(key: string, name: string): Acted {
  * every device its box vouched for (`setMacPeers`; `takeOffVouched`, phones.ts), as this box's
  * phones document then says to your other computers. It keeps running there, as a box of its own. */
 export function removeHere(key: string, pendingOnly = false): Acted {
+  let blocked: string | null = null;
   let gone: Peer[] = [];
   let already = false;
   let needsCleanup = false;
   const changed = updateLink(link => {
     if (!link) return null;
+    if (link.setup?.primary === key || mainElsewhere(link)) {
+      blocked = link.setup?.primary === key ? PRIMARY_UNLINK : "Only the primary can remove a computer.";
+      return null;
+    }
     const peer = peersOf(link).find(each => each.key === key);
     if (pendingOnly && (peer || !link.pendingMachineCleanup?.[key])) return null;
     already = Boolean(link.removedHere?.includes(key));
@@ -193,6 +200,7 @@ export function removeHere(key: string, pendingOnly = false): Acted {
     if (peer.id) made.link.pendingMachineCleanup = { ...made.link.pendingMachineCleanup, [key]: peer.id };
     return made.link;
   });
+  if (blocked) return answer(409, { message: blocked });
   if (!gone.length && !already) return answer(404, { message: `That isn't one of ${ownName()}'s machines.` });
   macDocsChanged({ closeRemoved: changed });
   tellGone(gone);
@@ -241,6 +249,7 @@ export function forgetSaved(id: string): boolean {
 export async function writerAct(sender: MailSender, act: Act): Promise<Acted> {
   const link = readLink();
   const writer = writerOf(link);
+  if (act.method === "DELETE" && act.item === link?.setup?.primary) return answer(409, { message: PRIMARY_UNLINK });
   if (!writer?.here) return answer(409, { message: `${ownName()} doesn't keep your machines' records.` });
   // (The same rules as the asking box's, again here: it may be older, or not say true.)
   const target = peersOf(link).find(peer => peer.key === act.item);

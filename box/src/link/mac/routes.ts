@@ -71,7 +71,7 @@ export function setMacPeers(link: LinkState, given: unknown, rejoined?: string):
   // Only a completed SSH add can restore a removed peer. The app or its saved list can be stale.
   const removedHere = Array.isArray(link.removedHere) ? link.removedHere : [];
   const keeps = (key: string) => key === rejoined || !removedHere.includes(key);
-  const now = given.peers.slice(0, MOST_PEERS).map(peer => ({ ...peer, kind: "machine" }))
+  const now = given.peers.slice(0, MOST_PEERS).map(peer => ({ ...peer, kind: link.setup?.managed && peer?.kind === "mac" ? "mac" : "machine" }))
     .filter(peer => fitsPeer(peer) && typeof peer.sign === "string" && SIGN.test(peer.sign) && keeps(peer.key)).map(cleanPeer);
   const skipped = given.peers.slice(0, MOST_PEERS).filter(peer => !(isObject(peer) && typeof peer.key === "string" && !keeps(peer.key))).length - now.length;
   if (skipped) console.error(`${skipped} of this Mac's machines weren't records the box could take, and were left out.`);
@@ -197,12 +197,17 @@ export async function* macLinkRoute(route: string, request: LinkRequest, signal:
       return yield* followed(macPhones, macLink.phoneFollowers, signal);
     case "kuvo/link/peers": {
       if (method !== "PUT") return yield* json(405, {});
-      let gone: Peer[] = [];
+      let gone: Peer[] = [], refused = false;
       const changed = updateLink(link => {
+        if (link?.setup?.managed || mainElsewhere(link)) {
+          refused = true;
+          return null;
+        }
         const made = setMacPeers(link ?? { phones: [] }, parsed(request.body));
         gone = made.gone;
         return made.link;
       });
+      if (refused) return yield* json(409, { message: "Manage setup membership from Computers." });
       if (!changed) return yield* json(400, { message: "Send {peers: [{key, sign, address, name, id}], moved}." });
       macDocsChanged({ closeRemoved: changed });
       tellGone(gone);

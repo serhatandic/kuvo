@@ -31,6 +31,7 @@ export interface DataDeclaration {
 
 export const DATA_DECLARATIONS = {
   // The primary owns membership on every platform. SSH destinations stay local.
+  setupLeadership: { owner: "primary", conflict: "owner order", backup: true, families: ["Link state", "Signed documents"] },
   membershipAndAccess: { owner: "primary", conflict: "owner order", backup: true, families: ["Link state", "Signed documents", "Phone trust and sync"] },
   setupSecurityAndReleaseChoice: { owner: "primary", conflict: "owner order", backup: true, families: ["Local fences and audit", "Installed release"] },
   computerIdentityAndTrust: { owner: "local computer", conflict: "owner order", backup: false, families: ["Link state", "Phone trust and sync", "SSH trust and agent sockets"] },

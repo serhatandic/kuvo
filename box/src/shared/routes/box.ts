@@ -475,6 +475,7 @@ export const BOX_ROUTES: RouteShape[] = [
   { route: "POST kuvo/devices/pair", feature: "devices.pair", answers: { 200: DEVICE_PAIRED, 400: object({ message: string }), 403: object({ message: string }), 409: object({ message: string, "reason?": words("removed", "blocked") }), 503: object({ message: string }) } },
   { route: "DELETE kuvo/phones/pair", feature: "phones.pair", answers: { 200: NOTHING } },
   { route: "GET kuvo/setup", feature: "setup", answers: { 200: SETUP } },
+  { route: "POST kuvo/setup/handover", feature: "setup.handover", answers: { 200: object({ primary: string, epoch: number }), 202: object({ primary: string, epoch: number }), 409: object({ message: string }), 503: object({ message: string }) } },
   { route: "GET kuvo/setup/events", feature: "setup", answers: { 200: SETUP } },
   { route: "POST kuvo/setup/judge", feature: "setup", answers: { 200: JUDGED } },
   { route: "POST kuvo/setup/attached", feature: "setup", answers: { 200: NOTHING } },

@@ -3,7 +3,7 @@
 
 import { isObject } from "../../shared/json";
 import { primaryPeersBody } from "../documents/work";
-import { ownKey } from "../peers/known";
+import { MOST_PEERS, ownKey } from "../peers/known";
 import { isWelcomed } from "./welcomed";
 import { followedSetup, setupDoc, startsFromOthers } from "./record";
 import type { SETUP } from "../../shared/routes/box";
@@ -28,10 +28,11 @@ export function setupView(link: LinkState | null | undefined): SetupView {
   const boxes: unknown[] = setup.role === "member" ? (Array.isArray(setupDoc(link)?.body.boxes) ? setupDoc(link)!.body.boxes as unknown[] : [])
     : primaryPeersBody(link!).boxes;
   const computers: Computer[] = [];
-  for (const box of boxes.slice(0, 64)) {
+  for (const box of boxes.slice(0, MOST_PEERS + 1)) {
     if (!isObject(box) || typeof box.key !== "string" || (box.kind !== "mac" && box.kind !== "machine") || computers.some(each => each.key === box.key)) continue;
     computers.push({ key: box.key, name: String(box.name ?? "").slice(0, 100), kind: box.kind, role: box.key === setup.primary ? "primary" : "member", app: box.kind === "mac" });
   }
+  if (setup.managed) computers.sort((a, b) => Number(b.role === "primary") - Number(a.role === "primary"));
   const main = computers.find(each => each.key === setup.primary);
   return {
     setup: setup.id,

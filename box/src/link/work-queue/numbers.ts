@@ -24,6 +24,7 @@ import { KEY, macsOf, mailFor, ownKey, peersOf, removedBoxes } from "../peers/kn
 import { readTold, toldKeys } from "./told";
 import { awaySince, lastFoundAway, PEER_CHECKED, readReach } from "../peers/reach";
 import { followedSetup } from "../setup/record";
+import { leadershipOf } from "../setup/leadership";
 import { readLink } from "../state";
 import { allItems, changeQueues, OWNER, WORK_QUEUE } from "./store";
 import type { Book, Item } from "./store";
@@ -58,6 +59,7 @@ export interface Numbers {
   /** The peer it reaches its primary through, when that isn't one of its own. */
   through?: string;
   next?: number;
+  leadership?: string;
   /** By ask: the block given, the claims granted with it, and the box it went to (`by`; missing in
    * what an older primary kept). */
   given?: Record<string, { from: number; to: number; granted: Ranges; at: number; by?: string }>;
@@ -129,6 +131,7 @@ function numbersOf(kept: Record<string, unknown>): Numbers {
     ...(typeof kept.lost === "number" && Number.isFinite(kept.lost) ? { lost: kept.lost } : {}),
     ...(typeof kept.through === "string" ? { through: kept.through } : {}),
     ...(typeof kept.next === "number" && Number.isInteger(kept.next) && kept.next > 0 ? { next: kept.next } : {}),
+    ...(typeof kept.leadership === "string" ? { leadership: kept.leadership } : {}),
     ...(isObject(kept.given) ? { given: kept.given as Numbers["given"] } : {}),
     ...(isObject(kept.granted) ? { granted: Object.fromEntries(Object.entries(kept.granted).map(([box, ranges]) => [box, cleanRanges(ranges)])) } : {}),
     leases: cleanRanges(kept.leases),
@@ -313,6 +316,32 @@ function counterOf(kept: Numbers): number {
   return kept.next ?? Math.max(0, ...allItems().map(item => item.number ?? 0)) + 1;
 }
 
+/** Install the certified ledger once, inside the same lock as the first allocation. */
+export function installNumberAuthority(kept: Numbers, link: LinkState | null | undefined): void {
+  const setup = followedSetup(link);
+  const numbers = leadershipOf(link)?.body.numbers;
+  if (setup?.role !== "primary" || !isObject(numbers)) return;
+  const stamp = `${setup.id}:${setup.epoch}`;
+  if (kept.leadership === stamp) return;
+  const incoming = numbersOf(numbers);
+  kept.next = Math.max(counterOf(kept), incoming.next ?? 1, topOf(kept) + 1);
+  kept.given = incoming.given;
+  kept.granted = incoming.granted;
+  const me = setup.primary;
+  if (kept.granted?.[me]) {
+    kept.granted.self = kept.granted[me]!;
+    delete kept.granted[me];
+  }
+  kept.leadership = stamp;
+}
+
+// Check once more after taking the ledger lock, in case a different process handed over.
+function currentNumberAuthority(link: LinkState | null | undefined, file: string): LinkState | null | undefined {
+  if (file !== NUMBERS_FILE) return link;
+  const current = readLink();
+  return current?.setup?.managed ? current : link;
+}
+
 /** The primary `primary` noted as the one this box numbers from now. One that leaves numbering on its
  * own asks its new primary at once, so that one moves past what it handed out (`top`); one that
  * becomes the primary starts past every number it knows of. */
@@ -321,6 +350,7 @@ function notePrimary(kept: Numbers, primary: Primary, link: LinkState | null | u
     kept.primary ??= keyOf(primary, link);
     return;
   }
+  if ("self" in primary) installNumberAuthority(kept, link);
   const key = keyOf(primary, link)!;
   const through = "peer" in primary ? primary.via?.key : undefined;
   if (through) kept.through = through;
@@ -360,7 +390,9 @@ export function movePast(top: number, { file = NUMBERS_FILE }: { file?: string }
  * them out, as `primaryOf` says). The first number taken keeps that primary for good. */
 export function takeNumber(primary: Primary, { file = NUMBERS_FILE, now = Date.now(), link = readLink() }: { file?: string; now?: number; link?: LinkState | null } = {}): number | null {
   return changeNumbers(kept => {
-    notePrimary(kept, primary, link, now);
+    const current = currentNumberAuthority(link, file);
+    if ("self" in primary && current?.setup?.managed && current.setup.role !== "primary") return null;
+    notePrimary(kept, primary, current, now);
     if ("self" in primary) {
       const number = counterOf(kept);
       kept.next = number + 1;
@@ -435,7 +467,9 @@ export function claimNumbers(primary: Primary, numbers: number[], { file = NUMBE
   const claims = rangesOf(numbers);
   if (!claims.length) return { granted: [] };
   return changeNumbers(kept => {
-    notePrimary(kept, primary, link, now);
+    const current = currentNumberAuthority(link, file);
+    if ("self" in primary && current?.setup?.managed && current.setup.role !== "primary") return { granted: null };
+    notePrimary(kept, primary, current, now);
     if ("self" in primary) return { granted: grantOn(kept, "self", claims) };
     const highest = claims[claims.length - 1][1];
     kept.leases = kept.leases.map(([from, to]): [number, number] => [Math.max(from, highest + 1), to]).filter(([from, to]) => from <= to);
@@ -485,6 +519,9 @@ export function giveBlock(by: string, ask: unknown, { file = NUMBERS_FILE, now =
   const top = typeof ask.top === "number" && Number.isInteger(ask.top) && ask.top > 0 && ask.top < MOST_NUMBER ? ask.top : 0;
   const id = ask.id;
   return changeNumbers(kept => {
+    const link = file === NUMBERS_FILE ? readLink() : null;
+    if (link?.setup?.managed && link.setup.role !== "primary") return null;
+    installNumberAuthority(kept, link);
     kept.primary ??= "self";
     // (Past what the asking box used or holds: one that numbered on its own before, or numbers this
     // box lost with its file.)

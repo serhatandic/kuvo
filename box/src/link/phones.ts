@@ -283,7 +283,8 @@ export function foldPhones(link: LinkState, now = Date.now()): void {
 
 // This box's own phones document: the phones paired here, and every removal it knows of.
 export const ownPhones = (link: LinkState) => ({
-  phones: (link.phones ?? []).filter(phone => phone.from === "pair").map(phone => ({ key: phone.key, name: phone.name ?? "", ...(phone.address ? { address: phone.address } : {}), pairing: phone.pairing ?? "", ...(phone.kind === "desktop" ? { kind: "desktop" as const } : {}), ...(phone.by ? { by: phone.by } : {}) })),
+  ...(link.setup?.managed && link.setup.role === "primary" ? { epoch: link.setup.epoch } : {}),
+  phones: (link.phones ?? []).filter(phone => phone.from === "pair" && !phone.local).map(phone => ({ key: phone.key, name: phone.name ?? "", ...(phone.address ? { address: phone.address } : {}), pairing: phone.pairing ?? "", ...(phone.kind === "desktop" ? { kind: "desktop" as const } : {}), ...(phone.by ? { by: phone.by } : {}) })),
   removed: (link.removed ?? []).map(({ key, pairing }) => ({ key, pairing })),
 });
 

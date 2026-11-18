@@ -223,9 +223,9 @@ their agents and letters ("Peers").
 
 ### Documents
 
-What your computers share is three kinds of document: which computers a primary enrolled (`peers`), the phones
-each box pairs and removes (`phones`), and each box's view of your personalities
-(`personalities`). Each origin signs its own; any box passes a copy on; no clock decides anything.
+What your computers share is four kinds of document: which computers a primary enrolled (`peers`), the phones
+each box pairs and removes (`phones`), each box's view of your personalities
+(`personalities`), and changes to setup authority (`leadership`). Each origin signs its own; any box passes a copy on; no clock decides anything.
 
 - **Keys**: each box and Mac has a signing key (Ed25519) beside its static key: a Mac in its
   Keychain (`sign`), a machine in `run/link.json` (`sign`, the 32-byte seed), made with its other
@@ -299,13 +299,13 @@ each box pairs and removes (`phones`), and each box's view of your personalities
   list and `phoneSync: {id, list}`. Peers answer with the same `id` and `list` and `ack: true`
   after installing that list and closing sessions for devices it removes.
 - **Later**: each box's agents (`{"agents"}`, "Peers") are a list of its own too, still sent as
-  they change and every ten minutes; they could become a fourth kind.
+  they change and every ten minutes.
 
 ### Your setup
 
 Your **setup** has one **main computer** (its primary), whose box signs who's in it. Any supported
-computer can be the primary. Every other computer is a **member**. Changing the main computer and
-joining two setups are separate work.
+computer can be the primary. Every other computer is a **member**. The first primary is chosen automatically,
+and you can choose another member as primary once both computers are connected.
 
 - **The setup** has an id (`set_` and 16 random bytes, base64url) and an epoch (a whole number, one
   more with each change of main computer, never lower on any box). Its main computer's peers
@@ -315,6 +315,7 @@ joining two setups are separate work.
 - **Kept** in `run/link.json` as `setup: {id, epoch, primary, sign, role: "primary"|"member",
   aside?, conflict?}` (`sign`, the main computer's signing key). `aside`: kept only so a lower
   epoch of it is never taken, and followed for nothing else (its main computer stopped naming it).
+  `managed: true` means the setup follows signed leadership changes, independent of legacy numbering.
 - **Who leads one**: the first box you set up independently creates its setup at epoch 1. A
   standalone machine's keeper creates its local identity and setup before there is any device or
   member to reach. A new member follows the computer that enrolls it over SSH. A machine's primary
@@ -329,14 +330,44 @@ joining two setups are separate work.
   The member refuses a lower epoch of the setup it keeps. If another trusted enroller offers
   the same setup at the same epoch, the member keeps its primary and records
   `conflict: {primary, epoch}`. An empty standalone machine can give up its one-computer setup
-  when it joins the enroller's setup. A member drops its setup when it drops the enroller
-  (after a removal or the existing 30-day expiry). The SSH and stored fields named `mac`,
+  when it joins the enroller's setup. A member drops its setup when it receives a signed removal. The primary of an active setup does
+  not expire as an enroller. The SSH and stored fields named `mac`,
   `macs` and `macSigns` still carry these trust records, including for a Linux enroller.
   The discovery card is a hint and grants no trust.
 - **Existing links**: boxes keep direct connections established over SSH, including links from
   older releases. Each box follows one setup. Extra computers named in old agents mail, and
   old directory and numbering flags, carry no membership. The SSH setup command refuses an
   additional setup on an account already enrolled, while reconnection and key rotation still work.
+
+- **`POST kuvo/setup/handover {primary, epoch?}`** (`setup.handover`). An authenticated client
+  can ask any member. The box forwards the request to the current primary with the setup id and
+  epoch. The primary asks the chosen member to confirm the same setup and epoch by authenticated
+  peer mail. Every enrolled box must already have advertised support. An offline member can catch
+  up later. A target that cannot confirm leaves the old primary in charge.
+  The primary returns `202 {primary, epoch}` after committing the change. Delivery may still be in
+  progress. A request for the primary already in effect returns `200` with that key and epoch.
+  A conflicting epoch returns `409 {message}`. Clients follow `kuvo/setup/events`.
+- **Leadership record.** The outgoing primary signs a `leadership` document with `n` equal to
+  the next setup epoch. The body names `setup: {id, epoch, primary}` and `previous`, and carries
+  `boxes`, `moved`, `left`, `devices` (grants and removals), `vouchBlocked`, and `numbers`
+  (the allocation counter and grant receipts). It saves the certificate and its demotion in a
+  single durable `run/link.json` replacement before sending anything. The destination installs
+  its primary role from that certificate and signs subsequent membership and device lists with
+  its own key. After the transfer, only the primary publishes setup device grants and removals.
+  A receiver takes only the next epoch of its setup, signed by the preceding primary.
+  At that epoch, only the certified primary's membership document counts. Members keep the
+  verified certificates by epoch and trade them in the regular document exchange, oldest first,
+  so a member can cross multiple epochs even with the old primary offline. Folder layout 2
+  reserves this state while adopting existing link state in place.
+- **Reachability during leadership changes.** Before the durable commit, the old primary
+  retains authority. After it, there is one authorized successor, even if it is temporarily
+  unreachable. If the old primary stopped just after committing and no peer got the record, its
+  next start resends the saved certificate. A restarted or reconnected member catches up by
+  comparing document digests. The existing primary may not be unlinked. The removal route and
+  link CLI answer “Choose another primary first.”
+- **Release choice after handover.** Members take newer fleet releases from the certified
+  primary. Same-version repair can still use copies held by peers. File permissions and OS
+  approvals are enforced where the files and processes live.
 
 - **`GET kuvo/setup`** (and `kuvo/setup/events`, a line now and one at each change), on every box,
   for every client: `{setup, epoch, primary: {key, name, kind}, you: {key, role}, computers: [{key,
@@ -375,12 +406,7 @@ joining two setups are separate work.
   another computer as main, kept aside too: its main computer not naming it now) answers, with `primary` the main computer's static key and words naming it for a client to
   show as they are:
   - `POST kuvo/phones/pair`: `409 {"message": "Pair new phones from <main>.", primary}`, and
-    `kuvo-link.js pair` prints those words and stops (exit 3), with no pairing made, saying too,
-    until a takeover can be made, how to let a main computer that's gone for good go there
-    (`kuvo-link.js leave <its key>`, as removing the computer from it would) and what that costs:
-    the computer leaves that setup, so its other computers, and phones paired with that main
-    computer, no longer reach it; then it pairs by itself, or names another Mac's setup's main
-    computer. `leave` says what it did, or exits 1 for a key that isn't one of its Macs. A
+    `kuvo-link.js pair` prints those words and stops (exit 3), with no pairing made. A
     pairing link made before the box became a member pairs no one;
   - adding or removing computers as a Mac's app takes them (`POST kuvo/machines`, `DELETE
     kuvo/machines/<id>`, `POST kuvo/machines/<id>/uninstall`, `DELETE kuvo/hosts/<id>`), and any
@@ -7759,6 +7785,7 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `settings.flows` | In `kuvo/settings`: an action's `form`, checked as it's typed (`POST …/<row>/<action>/check`) and sent as `values`; a row's `badge`, `notice` and `flow` (a sign-in the box leads); and the MCP Servers section built with them ("A box's settings", #727) |
 | `settings.vault` | In `kuvo/settings`: the Vault section ("A box's settings"), and a form's `secret` and `file` fields, a `secret` pairs, Show (`shows`), and checks that never carry a value |
 | `setup` | `kuvo/setup`, `…/events`: your setup and its main computer ("Your setup") |
+| `setup.handover` | a member can ask the primary to transfer the setup to another enrolled computer at the next epoch |
 | `setup.mainOnly` | a member refuses pairing and adding with `409 {message, primary}`, and answers `GET kuvo/hosts` from its setup ("Your setup", Only the main computer adds and pairs) |
 | `setup.ready` | `GET kuvo/setup/ready`: whether a first run has anything to ask about your accounts here, decided by the box ("Your setup") |
 | `setup.welcomed` | `welcomed` in `kuvo/setup`, and `POST kuvo/setup/welcomed`: whether you've had the first run with this box ("Your setup", #733) |

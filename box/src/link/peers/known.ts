@@ -126,7 +126,7 @@ export function forgetOldMacs(link: LinkState, keep?: string, now = Date.now()):
   link.macSeen ??= {};
   for (const mac of macsOf(link)) link.macSeen[mac] ??= now;
   if (keep) link.macSeen[keep] = now;
-  const gone = macsOf(link).filter(mac => mac !== keep && now - link.macSeen![mac]! > MAC_GONE_AFTER);
+  const gone = macsOf(link).filter(mac => mac !== keep && mac !== followedSetup(link)?.primary && now - link.macSeen![mac]! > MAC_GONE_AFTER);
   if (!gone.length) return;
   for (const mac of gone) leaveMac(link, mac);
   if ((gone as (string | undefined)[]).includes(link.mac)) link.mac = keep;
@@ -150,7 +150,10 @@ export function leaveMac(link: LinkState, mac: string): void {
   for (const field of ["macSeen", "macSigns", "macNames", "legacy"] as const) if (link[field]) delete link[field][mac];
   link.phones = (link.phones ?? []).filter(phone => !(phone.from === "mac" && phone.mac === mac));
   // The setup that Mac leads goes with it, as its peers document does (PROTOCOL.md, "Your setup").
-  if (link.setup?.role === "member" && link.setup.primary === mac) delete link.setup;
+  if (link.setup?.role === "member" && link.setup.primary === mac) {
+    delete link.setup;
+    delete link.leadership;
+  }
 }
 
 export const MOST_PEERS = 64;
@@ -177,7 +180,7 @@ export function takeLegacyPeers(link: LinkState, mac: string, peers: unknown, at
 // Mac that set this box up is yours, so each one's word counts.
 function macWords(link: LinkState | null | undefined, only?: string): MacWord[] {
   return macDocs(link).filter(each => only === undefined || each.mac === only).map(({ mac, doc }) => {
-    if (doc) return { boxes: Array.isArray(doc.body.boxes) ? doc.body.boxes.slice(0, MOST_PEERS) : [], moved: doc.body.moved };
+    if (doc) return { boxes: Array.isArray(doc.body.boxes) ? doc.body.boxes.slice(0, MOST_PEERS + 1) : [], moved: doc.body.moved };
     // COMPAT(beta.1 peers-list): a beta.1 Mac's list, in place of its peers document. Goes on the user's word, once no Mac from before 1.0 connects.
     return link?.legacy?.[mac] ? { boxes: link.legacy[mac].peers ?? [], moved: link.legacy[mac].moved } : null;
   }).filter(Boolean) as MacWord[];
@@ -247,7 +250,7 @@ export function ownListed(): { session: string; name: string | null }[] {
 
 /** The legacy Mac writes its list even when set aside. A machine writes one as primary. */
 export const writesOwnPeers = (link: LinkState | null | undefined): boolean =>
-  IS_MAC || followedSetup(link)?.role === "primary";
+  (IS_MAC && !link?.setup?.managed) || followedSetup(link)?.role === "primary";
 
 // This box's peers now: the ones it enrolled, or those its enrolling computers name.
 export function peersOf(link: LinkState | null | undefined): Peer[] {
@@ -272,7 +275,7 @@ const renamed = (link: LinkState, peer: Peer): Peer => {
  * word alone), itself among them: what each is called there, and what it is. A Mac's box names its
  * own machines (`peersOf`). */
 export function namedBoxes(link: LinkState | null | undefined, only?: string): Peer[] {
-  if (!link || IS_MAC) return [];
+  if (!link || writesOwnPeers(link)) return [];
   const byKey = new Map<string, Peer>();
   for (const word of macWords(link, only)) for (const box of word.boxes) if (fitsPeer(box) && !byKey.has(box.key)) byKey.set(box.key, cleanPeer(box));
   return [...byKey.values()];

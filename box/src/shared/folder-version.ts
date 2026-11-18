@@ -14,6 +14,9 @@ type Step = (folder: string, importLegacy?: () => void) => void;
 const steps: readonly Step[] = [
   // 1. Adopt the deployed layout in place. A legacy Mac move supplies its staged import here.
   (_folder, importLegacy) => importLegacy?.(),
+  // 2. Link state can now carry a signed leadership history and demote its old signer.
+  // Existing setups need no rewrite. An older box must never reopen a transferred setup.
+  () => {},
 ];
 
 interface Checkpoint {

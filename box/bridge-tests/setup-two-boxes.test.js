@@ -259,7 +259,6 @@ test("a member pairs no phone and adds no computer, naming the main computer, an
   assert.equal(cli.status, 3, cli.stderr);
   assert.equal(cli.stdout, "");
   assert.match(cli.stderr, /^Pair new phones from Studio Mac\.$/m);
-  assert.ok(cli.stderr.includes(`If Studio Mac is gone for good, \`kuvo-link.js leave ${macPub}\` takes this computer out of its setup: your other computers, and phones paired with Studio Mac, no longer reach it here.`), cli.stderr);
   // An absent Mac is already gone. Leaving it again keeps the current setup.
   const wrong = spawnSync(process.execPath, [script, "leave", lab.key], { env: machineEnv, encoding: "utf8" });
   assert.deepEqual([wrong.status, wrong.stderr.trim()], [0, "That Mac is let go: this computer is no longer one of its computers."]);
@@ -279,12 +278,29 @@ test("a member pairs no phone and adds no computer, naming the main computer, an
   // What an older phone asks a Mac, asked of lab: the setup's machines, from its document.
   assert.deepEqual(labRoute("GET", "kuvo/hosts"), { status: 200, json: { hosts: [{ kind: "machine", name: "lab", address: lab.address, key: lab.key, relay: relay.url, machine: "lab.example", anotherMac: false, removed: false }] } });
 
-  // Its main computer let go, as the hint says: out of the setup, and it pairs phones itself.
+  // Neither the route nor the old CLI can unlink the current primary.
+  assert.deepEqual(labRoute("DELETE", `kuvo/computers/${macPub}`), { status: 409, json: { message: "Choose another primary first." } });
   const left = spawnSync(process.execPath, [script, "leave", macPub], { env: machineEnv, encoding: "utf8" });
-  assert.deepEqual([left.status, left.stderr.trim()], [0, "Studio Mac is let go: this computer is no longer one of its computers."]);
-  assert.equal(read(linkFile).setup, undefined);
-  const paired = spawnSync(process.execPath, [script, "pair", relay.url], { env: machineEnv, encoding: "utf8" });
-  assert.equal(paired.status, 0, paired.stderr);
-  assert.match(paired.stdout, /^kuvo-link:/);
-  assert.ok(read(linkFile).pairing?.token);
+  assert.deepEqual([left.status, left.stderr.trim()], [1, "Choose another primary first."]);
+  assert.equal(read(linkFile).setup.primary, macPub);
+  assert.equal(read(linkFile).pairing, undefined);
+});
+
+test("a Mac hands over to its machine, then follows its setup and defers device access", { timeout: 30_000 }, async t => {
+  signal = t.signal;
+  await eventually(() => link.readPeerAgents()[lab.key]?.features?.includes("setup.handover"));
+  const setup = (await ask("GET", "kuvo/setup")).json;
+  assert.equal(setup.you.role, "primary");
+  assert.deepEqual(await ask("POST", "kuvo/setup/handover", { primary: lab.key, epoch: setup.epoch }), {
+    status: 202, json: { primary: lab.key, epoch: setup.epoch + 1 },
+  });
+  const there = await eventually(() => {
+    const view = labRoute("GET", "kuvo/setup").json;
+    return view?.you.role === "primary" && view;
+  });
+  const here = (await ask("GET", "kuvo/setup")).json;
+  assert.deepEqual(sameAcross(there), sameAcross(here));
+  assert.deepEqual([here.you.role, there.primary.key], ["member", lab.key]);
+  assert.deepEqual(await ask("POST", "kuvo/phones/pair"), { status: 409, json: { message: "Pair new phones from lab.", primary: lab.key } });
+  assert.equal(labRoute("POST", "kuvo/phones/pair").status, 200);
 });

@@ -237,7 +237,7 @@ async function asked(box, method, route, { local = false } = {}) {
   return { status: parts[0].head.status, json: text ? JSON.parse(text) : undefined };
 }
 
-test("only a member's own Mac's list goes to a phone: set aside by its one Mac, it lists that Mac's; set up by a second Mac that leads a setup too, it stays in the one it has; its main computer let go, it pairs, until it takes the other Mac's", async () => {
+test("only a member's own Mac's list goes to a phone: set aside by its one Mac, it lists that Mac's; set up by a second Mac that leads a setup too, it stays in the one it has; only a signed removal lets it follow the other Mac", async () => {
   const studio = mac("Studio"), other = mac("Other"), b = machine("b"), c = machine("c"), d = machine("d");
   // Studio's setup: b lists its machines from it, by name, with the ids Studio gave them.
   setUp(b, studio, [studio.peers([c, b], leads(studio, 1))]);
@@ -258,14 +258,11 @@ test("only a member's own Mac's list goes to a phone: set aside by its one Mac, 
   assert.deepEqual(await asked(b, "GET", "kuvo/hosts"), { status: 200, json: { hosts: [row(b), row(c)] } });
   assert.deepEqual(await asked(b, "POST", "kuvo/phones/pair"), { status: 409, json: { message: "Pair new phones from Studio.", primary: studio.entry.key } });
 
-  // Studio let go (`kuvo-link.js leave`): b is in no setup, and pairs phones itself.
-  assert.equal(link.leave(studio.entry.key), true);
-  assert.equal(link.readLink().setup, undefined);
-  assert.equal((await asked({ state: { link: link.readLink() } }, "POST", "kuvo/phones/pair", { local: true })).status, 200);
-  // Then it takes the setup Other leads, the next time it settles: Other's to pair from now.
-  const settled = link.readLink();
-  delete settled.pairing;
-  link.settleSetup(settled);
+  // An unlink request cannot drop Studio. Once its signed list removes b, b follows Other.
+  assert.equal(link.leave(studio.entry.key), false);
+  assert.equal(link.readLink().setup.primary, studio.entry.key);
+  link.docsWork(b.state, studio.entry, { give: [studio.peers([c], { ...leads(studio, 1), left: [b.entry.key] })] });
+  const settled = b.state.link;
   assert.deepEqual([settled.setup.primary, settled.setup.aside], [other.entry.key, undefined]);
   assert.deepEqual(await asked({ state: { link: settled } }, "POST", "kuvo/phones/pair"), { status: 409, json: { message: "Pair new phones from Other.", primary: other.entry.key } });
   assert.deepEqual((await asked({ state: { link: settled } }, "GET", "kuvo/hosts")).json.hosts.map(each => each.name), ["b", "d"]);

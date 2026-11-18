@@ -127,7 +127,7 @@ export function pairHere(device: AskingDevice, by?: string): Acted {
 
 /** The members the primary enrolled. Only signed peers may vouch. */
 const ownMachines = (link: LinkState): Set<string> =>
-  new Set(peersOf(link).filter(peer => peer.kind === "machine" && peer.sign).map(peer => peer.key));
+  new Set(peersOf(link).filter(peer => (link.setup?.managed || peer.kind === "machine") && peer.sign).map(peer => peer.key));
 
 /** A member's box vouching for the app on its computer (`area: "devices"`, by mail): paired here
  * only on the setup's main computer, for a box its own peers document names. */

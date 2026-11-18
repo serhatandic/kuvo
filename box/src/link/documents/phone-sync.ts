@@ -204,7 +204,7 @@ export function takePhoneSync(sender: MailSender, given: unknown, host: LinkHost
     return;
   }
   if (!peersOf(link).some(peer => peer.key === sender.key)) return;
-  const self = followedSetup(link)?.role === "primary" || IS_MAC ? ownSign(link) : null;
+  const self = mainElsewhere(link) ? null : followedSetup(link)?.role === "primary" || IS_MAC ? ownSign(link) : null;
   const origin = given.origin === undefined ? self : given.origin;
   if (typeof origin !== "string" || !SIGN.test(origin)) return;
   let envelope = link.docs?.[docKey(origin, "phones")];
@@ -213,7 +213,7 @@ export function takePhoneSync(sender: MailSender, given: unknown, host: LinkHost
   if (origin === self) {
     envelope = undefined;
     const changed = updateLink(current => {
-      if (!current || ownSign(current) !== origin || !peersOf(current).some(peer => peer.key === sender.key)) return null;
+      if (!current || mainElsewhere(current) || ownSign(current) !== origin || !peersOf(current).some(peer => peer.key === sender.key)) return null;
       envelope = ownDoc(current, "phones", ownPhones(current))?.envelope;
       membership = ownDoc(current, "peers", primaryPeersBody(current))?.envelope;
       return envelope ? current : null;

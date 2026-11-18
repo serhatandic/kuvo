@@ -30,6 +30,7 @@ export interface SetupRecord extends SetupWord {
   sign: string;
   role: "primary" | "member";
   aside?: true;
+  managed?: true;
   conflict?: { primary: string; epoch: number };
 }
 
@@ -67,10 +68,14 @@ export function followedSetup(link: LinkState | null | undefined): SetupRecord |
   return setup;
 }
 
-/** The setup document a member holds (its main computer's peers document), or null. */
+/** The primary's membership document, or the certified roster while waiting for it. */
 export function setupDoc(link: LinkState | null | undefined): Doc | null {
   const setup = followedSetup(link);
-  return setup?.role === "member" ? held(link!.docs?.[docKey(setup.sign, "peers")]) : null;
+  if (setup?.role !== "member") return null;
+  const doc = held(link!.docs?.[docKey(setup.sign, "peers")]);
+  const word = doc && setupOf(doc.body);
+  if (!setup.managed || (word && word.id === setup.id && word.epoch === setup.epoch && word.primary === setup.primary)) return doc;
+  return held(link?.leadership?.[setup.epoch]);
 }
 
 /** Whether a peers document goes back on the setup this box keeps: the same setup at a lower epoch

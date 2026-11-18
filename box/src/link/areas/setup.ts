@@ -12,6 +12,7 @@ import { parsed, type Body } from "../../shared/json";
 import { writePrivate } from "../files";
 import { RUN } from "../home";
 import { followed } from "../follow";
+import { handover } from "../setup/handover";
 import { writeCard } from "../setup/card";
 import { appsOf, ATTACHED_FILE, foundOf, judgeComputer, oursNow } from "../setup/judge";
 import { addElsewhere, mainElsewhere, memberHosts } from "../setup/main-only";
@@ -40,6 +41,11 @@ onLinkWritten(() => {
 export async function* setupRoute(context: RouteContext): AsyncGenerator<AnswerPiece> {
   const { request, route, signal, json } = context;
   const method = request.method.toUpperCase();
+  if (route === "kuvo/setup/handover") {
+    if (method !== "POST") return yield* json(405, {});
+    const done = await handover(parsed(request.body), signal);
+    return yield* json(done.status, done.value);
+  }
   if (route === "kuvo/setup/judge") {
     if (method !== "POST") return yield* json(405, {});
     // The probe's lines as it printed them (RemoteEngineInstaller's, in OpenCodeKit).

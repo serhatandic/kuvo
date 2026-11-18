@@ -17,6 +17,7 @@ import { REAL_BOX, UPDATES } from "../home";
 import { watchFolders } from "../follow";
 import { readPeerAgents } from "../peers/directory";
 import { mailFor, peersOf } from "../peers/known";
+import { followedSetup } from "../setup/record";
 import type { LinkState } from "../state";
 import type { LinkHost } from "../relay/host";
 import { readLink } from "../state";
@@ -230,11 +231,19 @@ function heldAround(now: number): { peer: string; version: string }[] {
   const mine = boxVersion();
   if (!mine) return [];
   const told = readPeerAgents();
-  const peers = peersOf(readLink());
-  return peers.map(({ key }) => ({ peer: key, version: told[key]?.computer?.release }))
+  const link = readLink();
+  const peers = peersOf(link);
+  return peers.filter(peer => releaseAuthority(peer.key, link)).map(({ key }) => ({ peer: key, version: told[key]?.computer?.release }))
     .filter((each): each is { peer: string; version: string } => typeof each.version === "string" && newerVersion(each.version, mine))
     .filter(each => now - (tried.get(`${each.peer} ${each.version}`) ?? -Infinity) >= TRIED_FOR)
     .sort((a, b) => (newerVersion(a.version, b.version) ? -1 : newerVersion(b.version, a.version) ? 1 : a.peer < b.peer ? -1 : a.peer > b.peer ? 1 : 0));
+}
+
+// Repair may use any copy of the running release. A transferred setup takes newer fleet
+// releases from its current primary, which chooses its own release through the normal updater.
+function releaseAuthority(peer: string, link = readLink()): boolean {
+  const setup = followedSetup(link);
+  return !setup?.managed || (setup.role === "member" && setup.primary === peer);
 }
 
 /** No sound release of the version this box runs kept here (an older updater kept none, or it was
@@ -278,6 +287,7 @@ export function followPeers(asked: FleetOptions = {}): void {
     }
     endPull(null);
   }
+  if (pull && !pull.forRepair && !releaseAuthority(pull.peer)) endPull(null, now);
   if (pull) {
     // (Caught up meanwhile: it goes.)
     if (!newerVersion(pull.version, boxVersion())) return endPull(null);
@@ -427,6 +437,7 @@ function finish(current: Pull, options: FleetOptions, now: number): void {
     fs.rmSync(INCOMING, { recursive: true, force: true });
     return;
   }
+  if (!releaseAuthority(current.peer)) return endPull(null, now);
   const offered = offerUpdate(folder, { keys: options.keys ?? UPDATE_KEYS, blocked: options.blocked === undefined ? updatesBlocked() : options.blocked, clock: options.clock });
   if (offered.status !== 202) {
     if (offered.message === UPDATING_ALREADY || isUpdating()) return;

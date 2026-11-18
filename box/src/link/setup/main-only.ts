@@ -5,7 +5,6 @@
 
 import { isObject } from "../../shared/json";
 import type { Hosts } from "../../shared/routes/mac";
-import { IS_MAC } from "../home";
 import { macDoc, macsOf } from "../peers/known";
 import type { LinkState } from "../state";
 import { setupDoc } from "./record";
@@ -41,7 +40,7 @@ export const addElsewhere = (main: { key: string; name: string }) => ({ message:
  * each of its Macs' own peers documents: they're all yours. Null where this box is no member, has
  * no relay to name, or holds no such document yet. */
 export function memberHosts(link: LinkState | null | undefined): Hosts | null {
-  if (IS_MAC || !mainElsewhere(link) || !link?.relay) return null;
+  if (!mainElsewhere(link) || !link?.relay) return null;
   const setup = setupDoc(link);
   const docs = setup ? [setup] : link.setup!.aside ? macsOf(link).map(mac => macDoc(link, mac, "peers")).filter(doc => doc !== null) : [];
   if (!docs.length) return null;

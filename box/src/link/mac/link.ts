@@ -11,7 +11,7 @@ import { writePrivate } from "../files";
 import { plainName } from "../../shared/text";
 import { accountHome, K, located, MAC_APP_VERSION, OWN_HOME_MAC, RUN } from "../home";
 import { linkHost } from "../host-interface";
-import { cleanPeer, fitsPeer, mailFor, peersOf } from "../peers/known";
+import { cleanPeer, fitsPeer, mailFor, peersOf, writesOwnPeers } from "../peers/known";
 import { liveLink, readLink, updateLink, macLink } from "../state";
 import { anyMachines } from "./machines";
 import type { SignedDoc } from "../../shared/documents";
@@ -30,7 +30,7 @@ export type LinkStatusState = "off" | "connecting" | "connected" | "failed";
 export function macNeeded(link: LinkState | null | undefined, now = Date.now()): boolean {
   const config = macLink.config;
   if (!config) return false;
-  if (config.machines) return true;
+  if (config.machines || (link?.setup?.managed && peersOf(link).length)) return true;
   const pairing = (["pairing", "appPairing"] as const).some(slot => link?.[slot] && now < link[slot]!.expires);
   return Boolean(config.phones && ((link?.phones ?? []).length || pairing));
 }
@@ -185,7 +185,7 @@ function sendGone(gone: Peer[]): string[] {
   if (!host?.welcomed) return [];
   let envelope: SignedDoc | null = null;
   const link = updateLink(link => {
-    const made = link?.sign ? ownDoc(link, "peers", primaryPeersBody(link)) : null;
+    const made = link?.sign && writesOwnPeers(link) ? ownDoc(link, "peers", primaryPeersBody(link)) : null;
     envelope = made?.envelope ?? null;
     return made?.changed ? link : null;
   }) ?? readLink();

@@ -25,7 +25,7 @@ import { forgetSaved, oldAppAttached, oldAppWords } from "../peers/manage";
 import { readTries } from "../peers/reach-again";
 import { PEER_REACH, readReach } from "../peers/reach";
 import type { AnswerPiece, AnyPiece, RouteContext } from "../server/context";
-import { addElsewhere, mainElsewhere } from "../setup/main-only";
+import { addElsewhere, mainElsewhere, memberHosts } from "../setup/main-only";
 import { readLink } from "../state";
 import { changeKeptHosts, hostsWithoutApp, keptHosts, LIST_FILE, savedMachines, UNREADABLE } from "./machines";
 
@@ -97,8 +97,13 @@ export async function* ownMachinesRoute(context: RouteContext): AsyncGenerator<A
   const method = request.method.toUpperCase();
   const read = method === "GET" || method === "HEAD";
   // On a member of a setup, only its main computer adds and removes computers (PROTOCOL.md, "Your setup").
-  const main = read ? null : mainElsewhere(readLink());
-  if (main) return yield* json(409, addElsewhere(main));
+  const link = readLink();
+  const main = mainElsewhere(link);
+  if (main && !read) return yield* json(409, addElsewhere(main));
+  if (main && route === "kuvo/hosts") {
+    const hosts = memberHosts(link);
+    return yield* json(hosts ? 200 : 503, hosts ?? { message: "This computer can't list your computers yet. Try again in a moment." });
+  }
   const parts = route.split("/").map(part => { try { return decodeURIComponent(part); } catch { return part; } });
   const here = ownName();
 

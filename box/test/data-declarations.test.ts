@@ -7,6 +7,7 @@ import { DATA_DECLARATIONS } from "../src/shared/data-declarations";
 // storage inventory because several kinds can share a family.
 const REQUIRED_KINDS = [
   "membershipAndAccess",
+  "setupLeadership",
   "setupSecurityAndReleaseChoice",
   "computerIdentityAndTrust",
   "clientIdentity",

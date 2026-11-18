@@ -10,7 +10,7 @@ import type { SignedDoc } from "../shared/documents";
 import { objectFormat, UnsupportedFormatVersion } from "../shared/format-version";
 import { isObject } from "../shared/json";
 import { SIGN } from "./documents/format";
-import { locked, writeSecret } from "./files";
+import { locked, privateFolder, writeDurablePrivate, writeSecret } from "./files";
 import { IS_MAC, LINK_FILE, RUN } from "./home";
 import type { NoticeHold } from "./notices/hold";
 import type { Peer } from "./peers/known";
@@ -24,6 +24,8 @@ export interface Phone {
   added?: number;
   /** Paired here, or listed by one of its Macs (`mac`, that Mac's key). */
   from?: "pair" | "mac";
+  /** A member's independent pairing, kept local when it later becomes primary. */
+  local?: true;
   mac?: string;
   /** Where it is on the relay, for its notifications. */
   address?: string;
@@ -94,6 +96,8 @@ export interface LinkState {
   untold?: Peer[];
   /** The setup it's in, and its role there (PROTOCOL.md, "Your setup"). */
   setup?: SetupRecord;
+  /** Verified leadership changes, indexed by setup epoch for offline catch-up. */
+  leadership?: Record<number, SignedDoc>;
   /** This Mac's static key as its box last had it, and the ones before (made anew since): a machine
    * this Mac sets up again lets those go (`replaces` in setup). */
   keyNow?: string;
@@ -182,11 +186,15 @@ export function readLink(): LinkState | null {
   return link;
 }
 
-export function writeLink(link: LinkState) {
+export function writeLink(link: LinkState, durable = false) {
   // This Mac's keys and what its app says stay out of the file.
   const kept = IS_MAC ? Object.fromEntries(Object.entries(link).filter(([key]) => !MAC_OVERLAY.includes(key))) : link;
   // (Its keys, on a machine.)
-  writeSecret(LINK_FILE, JSON.stringify(linkFormat.write(kept), null, 2));
+  const text = JSON.stringify(linkFormat.write(kept), null, 2);
+  if (durable) {
+    privateFolder(path.dirname(LINK_FILE));
+    writeDurablePrivate(LINK_FILE, text);
+  } else writeSecret(LINK_FILE, text);
   for (const then of written) then(link);
 }
 
@@ -194,10 +202,13 @@ export function writeLink(link: LinkState) {
 // changed and written under a lock (run/.link.lock), so none writes over another's (a removal,
 // say). `change` returns the link to write, or nothing to leave it. A busy lock fails the update.
 const LOCK = path.join(RUN, ".link.lock");
-export function updateLink(change: (link: LinkState | null) => LinkState | null | undefined | void): LinkState | null {
+export function updateLink(change: (link: LinkState | null) => LinkState | null | undefined | void, { durable = false } = {}): LinkState | null {
   return locked(LOCK, () => {
-    const changed = change(readLink());
-    if (changed) writeLink(changed);
+    const current = readLink();
+    const managed = current?.setup?.managed;
+    const before = JSON.stringify(current?.setup ?? null);
+    const changed = change(current);
+    if (changed) writeLink(changed, durable || (before !== JSON.stringify(changed.setup ?? null) && Boolean(changed.setup?.managed || managed)));
     return changed ?? null;
   }, { exclusive: true });
 }

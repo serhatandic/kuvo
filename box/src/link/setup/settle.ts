@@ -17,7 +17,7 @@ import type { LinkState } from "../state";
 export function settleSetup(link: LinkState): void {
   // (Within it: a machine with no Mac; one set up by a Mac; the setup it keeps, as its main
   // computer's newest document says it; and one it takes.)
-  if (IS_MAC) return;
+  if (IS_MAC || link.setup?.managed) return;
   const macs = macsOf(link);
   if (!macs.length) {
     if (link.setup?.role === "member") delete link.setup;
@@ -41,6 +41,7 @@ export function settleSetup(link: LinkState): void {
       kept.id = own.setup!.id;
       kept.epoch = own.setup!.epoch;
       delete kept.aside;
+      if (own.doc?.body.managed === true) kept.managed = true;
     } else if (doc && !ledSetup(doc)) kept.aside = true;
     return;
   }
@@ -48,7 +49,7 @@ export function settleSetup(link: LinkState): void {
   // up: the one it numbers from, the first you set up; none until that's one of them.)
   const ranked = offers.length > 1 ? rankedPrimary(link) : null;
   const taken = offers.length === 1 ? offers[0] : offers.find(each => ranked && "peer" in ranked && ranked.peer.key === each.mac);
-  if (taken) link.setup = { id: taken.setup!.id, epoch: taken.setup!.epoch, primary: taken.setup!.primary, sign: taken.doc!.origin, role: "member" };
+  if (taken) link.setup = { id: taken.setup!.id, epoch: taken.setup!.epoch, primary: taken.setup!.primary, sign: taken.doc!.origin, role: "member", ...(taken.doc!.body.managed === true ? { managed: true as const } : {}) };
 }
 
 /** A peers document this box is given (`takeDoc`), looked at for one more thing: one of its own

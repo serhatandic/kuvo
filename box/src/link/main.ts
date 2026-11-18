@@ -79,6 +79,7 @@ import { watchFolders } from "./follow";
 import { pushRows } from "./work/elsewhere";
 import { pushNumbers } from "./work-queue/numbers";
 import { initializeMachineSetup, noteSetupNow, settleOwnSetup } from "./setup/lead";
+import { PRIMARY_UNLINK } from "./setup/leadership";
 import { macName, mainElsewhere, pairElsewhere } from "./setup/main-only";
 import { writeCard } from "./setup/card";
 import { hereNow } from "./setup/judge";
@@ -1127,7 +1128,7 @@ function setupDocs(link: LinkState): SignedDoc[] {
 export function leave(mac: unknown): boolean {
   if (typeof mac !== "string" || !KEY.test(mac)) return false;
   const link = updateLink(link => {
-    if (!link || !macsOf(link).includes(mac)) return null;
+    if (!link || link.setup?.primary === mac || !macsOf(link).includes(mac)) return null;
     leaveMac(link, mac);
     pruneDocs(link);
     foldPhones(link);
@@ -1157,10 +1158,6 @@ function pair(relay: string | undefined): void {
   const primary = main as ReturnType<typeof mainElsewhere>;
   if (primary) {
     console.error(pairElsewhere(primary).message);
-    // (Until a takeover can be made: a main computer that's gone for good is let go here, as
-    // removing this computer from it would. What that costs is said with it.)
-    const name = primary.name || "it";
-    console.error(`If ${name} is gone for good, \`kuvo-link.js leave ${primary.key}\` takes this computer out of its setup: your other computers, and phones paired with ${name}, no longer reach it here. Then it pairs phones itself, or names another main computer.`);
     process.exit(3);
   }
   if (!link) {
@@ -1209,6 +1206,10 @@ if (main) {
     const before = readLink();
     if (!before || typeof argument !== "string" || !KEY.test(argument)) {
       console.error("Kuvo Code couldn’t confirm which setup this computer should leave.");
+      process.exit(1);
+    }
+    if (before.setup?.primary === argument) {
+      console.error(PRIMARY_UNLINK);
       process.exit(1);
     }
     const name = macName(before, argument);

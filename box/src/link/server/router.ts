@@ -146,6 +146,7 @@ const ROUTES: (Route | Route<RegExpMatchArray>)[] = [
   { feature: "config", when: (route, request) => /^kuvo\/(config|mcp\/catalog|keys)(\/|\?|$)/.test(request.path), answer: settingsRoute },
   // The box's settings as it describes them, for any client to draw (PROTOCOL.md, "A box's settings").
   { feature: "settings", when: route => route.match(SETTINGS_PAGE_ROUTE), answer: settingsPageRoute },
+  { feature: "setup.handover", when: route => route === "kuvo/setup/handover", answer: setupRoute },
   { feature: "setup", when: route => route === "kuvo/setup" || route === "kuvo/setup/events" || route === "kuvo/setup/judge" || route === "kuvo/setup/attached" || route === "kuvo/setup/welcomed" || route === "kuvo/setup/ready", answer: setupRoute },
   // (A Mac's box with an app to ask answers these with it, before this: `macFront`.)
   { feature: "computers", when: route => !IS_MAC && isMachinesRoute(route), answer: memberComputersRoute },

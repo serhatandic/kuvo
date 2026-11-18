@@ -1803,6 +1803,7 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     "settings.vault": ["GET", "kuvo/settings/vault"],
     // (Your setup, and who's its main computer.)
     setup: ["GET", "kuvo/setup"],
+    "setup.handover": ["POST", "kuvo/setup/handover"],
     "setup.mainOnly": ["GET", "kuvo/setup"],
     "setup.ready": ["GET", "kuvo/setup/ready"],
     "setup.welcomed": ["GET", "kuvo/setup"],

@@ -16,7 +16,8 @@ import { IS_MAC } from "../home";
 import { cleanMoved, leaveMac, macDoc, macDocs, macsOf, ownKey, peersOf, writesOwnPeers } from "../peers/known";
 import { mergePersonalities, MOST_COUNT, readPersonalities } from "../personalities/library";
 import { foldPhones, ownPhones } from "../phones";
-import { followedSetup, lowerEpoch, setupDoc, type SetupWord } from "../setup/record";
+import { followedSetup, lowerEpoch, setupOf, type SetupWord } from "../setup/record";
+import { leadershipOf, takeLeadership } from "../setup/leadership";
 import { noteConflict, settleSetup } from "../setup/settle";
 import { macSign, updateLink } from "../state";
 import { bodyHash, DOC_PART, docKey, held, MOST_DOC, ownSign, readDoc, shortHash, signDoc } from "./format";
@@ -72,7 +73,7 @@ export interface DocsState {
 }
 
 /** A box as a primary's peers document names it. */
-export type PeersBox = { key: string | null; sign: string | null; address: string | null; name: string; kind: "mac" | "machine" } | (Peer & { kind: "machine" });
+export type PeersBox = { key: string | null; sign: string | null; address: string | null; name: string; kind: "mac" | "machine" } | Peer;
 
 /** A Mac's peers document: its boxes, the conversations being moved, the machines it removed, and
  * the setup it leads (PROTOCOL.md, "Your setup"). */
@@ -81,6 +82,7 @@ export interface PrimaryPeersBody {
   moved: MovedSession[];
   left: string[];
   setup?: SetupWord;
+  managed?: true;
 }
 
 /** What's to go to one box while documents are worked out. */
@@ -95,6 +97,8 @@ interface Outgoing {
 // so each is yours) and its setup's main computer; phones and personalities from those Macs, its
 // peers, and itself (a copy of its own it lost count of).
 function takesFrom(link: LinkState, origin: string, kind: DocKind): boolean {
+  if (kind === "leadership") return Boolean(link.setup);
+  if (kind === "phones" && link.setup?.managed) return origin === link.setup.sign;
   const macs = macsOf(link).map(mac => macSign(link, mac)).filter(Boolean);
   const setup = followedSetup(link);
   // (This Mac takes a copy of its own, one it lost count of.)
@@ -132,6 +136,13 @@ const docPeers = (link: LinkState): Peer[] => peersOf(link).filter(peer => typeo
 export function takeDoc(link: LinkState, envelope: unknown): TakenDoc | null {
   const doc = readDoc(envelope);
   if (!doc) return null;
+  if (doc.kind === "leadership") return takeLeadership(link, doc) ? doc : null;
+  if (doc.kind === "peers" && link.setup?.managed) {
+    const setup = setupOf(doc.body);
+    if (!setup || setup.id !== link.setup.id || setup.epoch !== link.setup.epoch
+      || setup.primary !== link.setup.primary || doc.origin !== link.setup.sign) return null;
+  }
+  if (doc.kind === "phones" && link.setup?.managed && doc.origin === link.setup.sign && doc.body.epoch !== link.setup.epoch) return null;
   if (!takesFrom(link, doc.origin, doc.kind)) {
     if (doc.kind === "peers") noteConflict(link, doc);
     return null;
@@ -195,8 +206,10 @@ export function ownDocs(state: Pick<DocsState, "link" | "library">): Partial<Rec
     const peers = ownDoc(state.link, "peers", primaryPeersBody(state.link));
     if (peers) docs.peers = peers;
   }
-  const phones = ownDoc(state.link, "phones", ownPhones(state.link));
-  if (phones) docs.phones = phones;
+  if (!state.link.setup?.managed || state.link.setup.role === "primary") {
+    const phones = ownDoc(state.link, "phones", ownPhones(state.link));
+    if (phones) docs.phones = phones;
+  }
   const library = mergePersonalities(state.library);
   if (Buffer.byteLength(JSON.stringify(library)) <= MOST_DOC - 4096) {
     const personalities = ownDoc(state.link, "personalities", library);
@@ -206,7 +219,9 @@ export function ownDocs(state: Pick<DocsState, "link" | "library">): Partial<Rec
 }
 
 // Only the membership writer signs the peers document.
-const ownKinds = (link: LinkState): readonly DocKind[] => (writesOwnPeers(link) ? DOC_KINDS : ["phones", "personalities"]);
+const ownDocumentKinds = ["peers", "phones", "personalities"] as const;
+const ownKinds = (link: LinkState): readonly DocKind[] =>
+  writesOwnPeers(link) ? ownDocumentKinds : link.setup?.managed ? ["personalities"] : ["phones", "personalities"];
 
 // The primary's peers document: itself and its members, each with
 // the key it signs with; the conversations being moved; and the machines it removed, so they let
@@ -221,14 +236,14 @@ export function primaryPeersBody(link: LinkState): PrimaryPeersBody {
   // Include the setup while this box leads it (`setup/lead.ts`).
   const setup = followedSetup(link);
   const leads = setup?.role === "primary" && setup.primary === me.key && setup.sign === me.sign;
-  return { boxes: [me, ...peers.map((peer): PeersBox => ({ ...peer, kind: "machine" }))], moved: cleanMoved(link.macMoved), left: (Array.isArray(link.left) ? link.left : []).filter(key => !current.has(key)),
-    ...(leads && setup ? { setup: { id: setup.id, epoch: setup.epoch, primary: setup.primary } } : {}) };
+  return { boxes: [me, ...peers.map((peer): PeersBox => ({ ...peer, kind: setup?.managed ? peer.kind : "machine" }))], moved: cleanMoved(link.macMoved), left: (Array.isArray(link.left) ? link.left : []).filter(key => !current.has(key)),
+    ...(leads && setup ? { setup: { id: setup.id, epoch: setup.epoch, primary: setup.primary }, ...(setup.managed ? { managed: true as const } : {}) } : {}) };
 }
 
 // What this box has, as it tells other boxes: each document's origin, kind, version and hash.
 export function digestOf(link: LinkState): DigestEntry[] {
   const have: DigestEntry[] = [];
-  for (const envelope of Object.values(link?.docs ?? {})) {
+  for (const envelope of [...Object.values(link?.leadership ?? {}), ...Object.values(link?.docs ?? {})]) {
     const doc = held(envelope);
     if (doc) have.push([doc.origin, doc.kind, doc.n, doc.h]);
   }
@@ -289,7 +304,12 @@ export function docsWork(state: DocsState, sender: DocSender, docs: DocsMail, { 
   }
   // Who its boxes are first: the rest is taken from the boxes they name.
   const took: TakenDoc[] = [];
-  for (const kind of DOC_KINDS) {
+  const transitions = given.filter(envelope => held(envelope)?.kind === "leadership").sort((a, b) => held(a)!.n - held(b)!.n);
+  for (const envelope of transitions) {
+    const doc = takeDoc(link, envelope);
+    if (doc) took.push(doc);
+  }
+  for (const kind of ownDocumentKinds) {
     for (const envelope of given) {
       const peeked = held(envelope);
       if (peeked?.kind !== kind) continue;
@@ -314,10 +334,11 @@ export function docsWork(state: DocsState, sender: DocSender, docs: DocsMail, { 
   if (personalities.length) state.library = mergePersonalities(state.library, ...personalities);
   // A digest: what the sender lacks, and whether it has something this box lacks.
   let ask = false;
+  const leadershipKey = (origin: string, n: number) => `${docKey(origin, "leadership")} ${n}`;
   if (Array.isArray(docs?.have)) {
     const theirs = new Map<string, { n: number; h: string }>();
     for (const entry of docs.have.slice(0, 512)) {
-      if (Array.isArray(entry) && typeof entry[0] === "string" && DOC_KINDS.includes(entry[1]) && Number.isSafeInteger(entry[2])) theirs.set(docKey(entry[0], entry[1]), { n: entry[2], h: String(entry[3] ?? "") });
+      if (Array.isArray(entry) && typeof entry[0] === "string" && DOC_KINDS.includes(entry[1]) && Number.isSafeInteger(entry[2])) theirs.set(entry[1] === "leadership" ? leadershipKey(entry[0], entry[2]) : docKey(entry[0], entry[1]), { n: entry[2], h: String(entry[3] ?? "") });
     }
     const self = ownSign(link);
     // One of this box's own further on than it knew (it lost count): its next one goes past it.
@@ -330,6 +351,12 @@ export function docsWork(state: DocsState, sender: DocSender, docs: DocsMail, { 
       const there = theirs.get(key);
       return !there || there.n < n || (there.n === n && there.h > h);
     };
+    if (docPeers(link).some(peer => peer.key === sender.key)) {
+      for (const envelope of Object.values(link.leadership ?? {})) {
+        const doc = held(envelope);
+        if (doc && !theirs.has(leadershipKey(doc.origin, doc.n))) to(sender, docs => docs.give.push(envelope));
+      }
+    }
     for (const envelope of Object.values(link.docs ?? {})) {
       const doc = held(envelope);
       if (doc && behind(docKey(doc.origin, doc.kind), doc.n, doc.h) && takenBy(link, sender.key, doc.origin, doc.kind)) to(sender, docs => docs.give.push(envelope));
@@ -337,6 +364,10 @@ export function docsWork(state: DocsState, sender: DocSender, docs: DocsMail, { 
     if (!docs.reply) {
       for (const [key, there] of theirs) {
         const [origin, kind] = key.split(" ") as [string, DocKind];
+        if (kind === "leadership") {
+          if (link.setup && there.n > link.setup.epoch) ask = true;
+          continue;
+        }
         if (origin === self || (kind === "personalities" && origin !== senderSign) || !takesFrom(link, origin, kind)) continue;
         const have = kind === "personalities" ? link.views?.[origin] : held(link.docs?.[key]);
         if (!have || have.n < there.n || (have.n === there.n && have.h > there.h)) ask = true;
@@ -349,7 +380,7 @@ export function docsWork(state: DocsState, sender: DocSender, docs: DocsMail, { 
   const mine = ownSign(link);
   for (const doc of took.filter(doc => doc.kind !== "personalities" && !doc.mine)) {
     for (const peer of peers) {
-      if (peer.key !== sender.key && peer.sign !== doc.origin && takenBy(link, peer.key, doc.origin, doc.kind)) to(peer, docs => docs.give.push(doc.envelope));
+      if (peer.key !== sender.key && (doc.kind === "leadership" || (peer.sign !== doc.origin && takenBy(link, peer.key, doc.origin, doc.kind)))) to(peer, docs => docs.give.push(doc.envelope));
     }
   }
   for (const made of Object.values(ownNow) as OwnDoc[]) {
@@ -395,6 +426,8 @@ export function greetWork(state: Pick<DocsState, "link" | "library">): { send: D
 // its digest too, so each gives what this one lacks and asks for what it has.
 export function changedWork(state: Pick<DocsState, "link" | "library">, tell = false): { send: DocSend[] } {
   const made = (Object.values(ownDocs(state)) as OwnDoc[]).filter(each => each.changed).map(each => each.envelope);
+  const leadership = leadershipOf(state.link);
+  if (leadership) made.unshift(leadership.envelope);
   const mine = ownSign(state.link);
   const have = tell ? digestOf(state.link) : null;
   return {

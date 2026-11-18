@@ -43,7 +43,7 @@ export const ATTACHMENTS = "work-queue.attachments";
 export const takesForwarded = (key: string, feature = FORWARD_FEATURE): boolean => (readPeerAgents()[key]?.features ?? []).includes(feature);
 
 /** What a box says it takes of each other area's asks. */
-const AREA_FEATURES = { computers: "computers.manage", devices: "devices.pair" } as const;
+const AREA_FEATURES = { computers: "computers.manage", devices: "devices.pair", setup: "setup.handover" } as const;
 
 export const FORWARDS = path.join(WORK_QUEUE, "forward");
 // What a keeper did for the asks it took, by asker and id (changes only: a read is done again).
@@ -57,7 +57,8 @@ const LEFT = /^(wqa_[A-Za-z0-9_-]{16,40})\.json$/;
 /** How long a box waits for the computer that keeps an item to answer; a file longer, as its
  * answer comes in parts (a test's shorter). */
 export const forwardTiming = { wait: 20_000, file: 60_000 };
-const waitFor = (act: { action?: unknown }) => (act.action === "file" ? forwardTiming.file : forwardTiming.wait);
+const waitFor = (act: { area?: unknown; method?: unknown; action?: unknown }) =>
+  (act.action === "file" ? forwardTiming.file : act.area === "setup" && act.method === "POST" ? 2 * forwardTiming.wait + AGAIN_AFTER : forwardTiming.wait);
 /** How often what's waiting goes again while it's waited for (the keeper takes each id once). */
 const AGAIN_AFTER = 5_000;
 /** How soon a keeper answers an ask sent again: a file's not while it's waited for (it can be big). */
@@ -79,7 +80,7 @@ const MOST_REMEMBERED = 2_000;
  * `item` is the sender's box key, `peers/devices.ts`); a Work Queue item's otherwise. */
 export interface Act {
   id: string;
-  area?: "computers" | "devices";
+  area?: "computers" | "devices" | "setup";
   method: "GET" | "DELETE" | "POST" | "PATCH";
   item: string;
   action?: "restore" | "file";
@@ -389,7 +390,7 @@ export async function takeAct(sender: MailSender, given: unknown, reply: (payloa
   const kept = changes ? readDone(now).get(key) : undefined;
   // (Renaming or removing one of your machines, or pairing your app, is the same done twice: one
   // cut short is done again.)
-  const redo = kept !== undefined && kept.answer === null && act.area !== undefined;
+  const redo = kept !== undefined && kept.answer === null && act.area !== undefined && act.area !== "setup";
   if (kept && !redo) {
     const value = kept.answer ?? { status: 409, value: { message: `${here} stopped while it was doing this, so it can't tell whether it was done. Look again in a moment.` } };
     did.set(key, { until: kept.until, answer: value, answered: now });
@@ -429,7 +430,8 @@ const actOf = (given: unknown): Act | null => {
   const fits = (method === "GET" && action === undefined) || (method === "DELETE" && action === undefined) || (method === "POST" && action === "restore") || (method === "PATCH" && action === undefined)
     || (method === "GET" && action === "file" && typeof name === "string" && name.length > 0 && name.length <= 300);
   const devices = given.area === "devices" && (method === "POST" || method === "DELETE") && action === undefined;
-  if (!fits && !devices) return null;
-  if (given.area !== undefined && !devices && !(given.area === "computers" && (method === "PATCH" || method === "DELETE") && action === undefined)) return null;
-  return { id: given.id, ...(given.area === "computers" || given.area === "devices" ? { area: given.area } : {}), method, item: given.item, ...(action ? { action } : {}), ...(action === "file" ? { name } : {}), ...(isObject(given.body) ? { body: given.body } : {}), at: given.at } as Act;
+  const setup = given.area === "setup" && (method === "GET" || method === "POST") && action === undefined;
+  if (!fits && !devices && !setup) return null;
+  if (given.area !== undefined && !devices && !setup && !(given.area === "computers" && (method === "PATCH" || method === "DELETE") && action === undefined)) return null;
+  return { id: given.id, ...(given.area === "computers" || devices || setup ? { area: given.area } : {}), method, item: given.item, ...(action ? { action } : {}), ...(action === "file" ? { name } : {}), ...(isObject(given.body) ? { body: given.body } : {}), at: given.at } as Act;
 };

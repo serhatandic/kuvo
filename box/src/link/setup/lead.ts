@@ -42,6 +42,7 @@ export function noteKeyNow(link: LinkState): void {
 export function settleOwnSetup(link: LinkState, now = Date.now()): void {
   noteKeyNow(link);
   settleSetup(link);
+  if (link.setup?.managed && followedSetup(link)) return;
   const own = ownKey(link);
   const sign = ownSign(link);
   if (!own || !sign || (!IS_MAC && macsOf(link).length)) return;

@@ -40,6 +40,7 @@ import { KEEP_UP_FILE, keepingUp } from "../add/keep-up";
 import { tryFollowers } from "../add/tries";
 import { allowVouching, vouchBlockOf } from "../phones";
 import { blockedWords } from "../peers/devices";
+import { PRIMARY_UNLINK } from "../setup/leadership";
 import { mainElsewhere } from "../setup/main-only";
 import { followedSetup } from "../setup/record";
 import { fromLocalApp } from "../server/context";
@@ -296,6 +297,7 @@ async function* manage(context: RouteContext, key: string, action: string | unde
   const connect = action === "/connect";
   const what = connect ? (method === "POST" ? "connect" : null) : method === "PATCH" ? "rename" : method === "DELETE" ? "remove" : null;
   if (!what) return yield* json(405, { message: connect ? "Only POST." : "Rename (PATCH) or remove (DELETE)." });
+  if (what === "remove" && readLink()?.setup?.primary === key) return yield* json(409, { message: PRIMARY_UNLINK });
   const computers = await listComputers(info.name ?? "", null, signal ?? undefined);
   const computer = computers.find(each => each.key === key);
   if (!computer) {
@@ -360,7 +362,7 @@ async function* allowDevices(context: RouteContext, key: string): AsyncGenerator
   if (computer.here) return yield* json(409, { message: `${here} is the computer you're asking: it adds its own app itself.` });
   if (computer.via !== "relay") return yield* json(409, { message: `${computer.name} isn't one of ${here}'s own computers, so it adds none of your devices.` });
   // (Not kept from it: the same answer. What was removed stays removed: its app makes a new key.)
-  updateLink(kept => (kept && allowVouching(kept, key) ? kept : null));
+  updateLink(kept => (kept && followedSetup(kept)?.role === "primary" && allowVouching(kept, key) ? kept : null));
   return yield* json(200, {});
 }
 

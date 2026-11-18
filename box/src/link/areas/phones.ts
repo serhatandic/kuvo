@@ -41,10 +41,17 @@ export async function* phonesRemoveRoute(context: RouteContext): AsyncGenerator<
   const asMac = (IS_MAC && request.fromApp === true) || fromLocalApp(request);
   // On this Mac, one before any phone's paired here (no link file yet) is kept all the same,
   // so the phone stays out once it's taken.
+  let primary: ReturnType<typeof mainElsewhere> = null;
   const changed = updateLink(kept => {
+    if (kept?.setup?.managed && kept.setup.role === "member") {
+      primary = mainElsewhere(kept);
+      return null;
+    }
     const link: LinkState | null = kept ?? (asMac ? { phones: [], removed: [] } : null);
     return link && (asMac ? removeAsMac(link, given?.phones) : removePhones(link, phone?.key?.toString("base64url"), given?.phones)) ? link : null;
   });
+  const main = primary as ReturnType<typeof mainElsewhere>;
+  if (main) return yield* json(409, { message: `Remove devices from ${main.name || "your main computer"}.`, primary: main.key });
   if (!changed) return yield* json(400, { message: "Only phones paired here can be removed, and never your Mac." });
   noteDocsChanged();
   // Once this answer is on its way: a phone that removed itself gets it too.
