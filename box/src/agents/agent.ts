@@ -1,6 +1,7 @@
 // What each outside agent (Claude Code, Codex, Cursor, Grok, Antigravity) gives the bridge: its
 // sign-in, its models, and a conversation that runs turns and reports them on a `Turn`.
 
+import type { WorkOrder } from "../shared/work-order"
 import type { AgentAccount } from "./accounts"
 import type { Limit } from "./auto"
 import type { LimitsSource } from "./limits"
@@ -373,7 +374,7 @@ export interface Thread {
   /** It has work going that closing it would end (commands left running): it's kept open. */
   readonly keepsWorking?: boolean
   /** What else it keeps going in the background, besides commands and subagents: each with when it started. */
-  readonly backgroundTasks?: { id: string; since: number }[]
+  readonly backgroundTasks?: { id: string; since: number; order?: WorkOrder }[]
   /** Those tasks ended. */
   stopBackgroundTasks?(): Promise<void>
   /**

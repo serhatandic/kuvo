@@ -4,6 +4,7 @@
 
 import { emit } from "./events"
 import { newID } from "./ids"
+import { workOrder, type WorkOrder } from "../shared/work-order"
 
 export interface ShellJob {
   id: string
@@ -12,7 +13,7 @@ export interface ShellJob {
   cwd: string
   exit?: number
   metadata: { sessionID: string }
-  time: { started: number }
+  time: { started: number; order: WorkOrder }
 }
 
 interface Kept {
@@ -28,9 +29,9 @@ const kept = new Map<string, Kept>()
 const keptAfter = 10 * 60_000
 
 /** A command left running: its id here. */
-export function addShell(sessionID: string, directory: string, command: string, output: Kept["output"], stop: Kept["stop"], started = Date.now()): string {
+export function addShell(sessionID: string, directory: string, command: string, output: Kept["output"], stop: Kept["stop"], started = Date.now(), order = workOrder()): string {
   const id = newID("shl")
-  const job: ShellJob = { id, status: "running", command, cwd: directory, metadata: { sessionID }, time: { started } }
+  const job: ShellJob = { id, status: "running", command, cwd: directory, metadata: { sessionID }, time: { started, order } }
   kept.set(id, { job, output, stop })
   emit("shell.created", { info: job }, directory)
   return id

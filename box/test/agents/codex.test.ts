@@ -284,13 +284,23 @@ process.stdin.on("data", (chunk) => {
       send({ method: "turn/completed", params: { threadId: "t1", turn: { id: summarizing ? "c1" : "u1", status: "interrupted" } } })
       stopped?.()
     } else if (message.method === "thread/backgroundTerminals/list") {
+      if (require("node:fs").existsSync("lists-blocked")) {
+        const { id } = message
+        const timer = setInterval(() => {
+          if (require("node:fs").existsSync("lists-blocked")) return
+          clearInterval(timer)
+          send({ id, result: { data: terminals } })
+        }, 10)
+        continue
+      }
       // (It can't say, while a file "lists-fail" is there.)
       if (require("node:fs").existsSync(require("node:path").join(process.cwd(), "lists-fail"))) {
         send({ id: message.id, error: { code: -32603, message: "busy" } })
         continue
       }
       if (require("node:fs").existsSync(require("node:path").join(process.cwd(), "terminal-done"))) terminals = []
-      send({ id: message.id, result: { data: terminals } })
+      const replacement = require("node:fs").existsSync("terminal-replaced")
+      send({ id: message.id, result: { data: replacement ? terminals.map(terminal => ({ ...terminal, itemId: "replacement" })) : terminals } })
     } else if (message.method === "thread/backgroundTerminals/clean") {
       terminals = []
       send({ id: message.id, result: {} })
@@ -429,12 +439,13 @@ describe("Commands Codex leaves running in a background terminal (#262)", () => 
   }
   const lists = () => sent().filter((message) => message.method === "thread/backgroundTerminals/list").length
 
-  test.each(["before", "after", "unknown"] as const)("a terminal's start relative to the lead's instruction: %s", async (when) => {
+  test.each(["before", "after", "unknown", "clock rollback"] as const)("a terminal's start relative to the lead's instruction: %s", async (when) => {
     const commandStart = Date.now()
     const asked = commandStart + (when === "after" ? -7_200 : 7_200)
     const listed = commandStart + 3_600_000
     const item = command("c-p1", "find .")
     const finish = { type: "session.execution.succeeded", data: { sessionID: "" } }
+    let instructionTime = { created: asked }
     const lead = { id: "ses_lead", title: "Lead", location: { directory: root } }
     const prompts: { text: string; delivery: string }[] = []
     const server = Bun.serve({
@@ -456,7 +467,7 @@ describe("Commands Codex leaves running in a background terminal (#262)", () => 
         if (path === `/api/session/${finish.data.sessionID}/message`) return Response.json({ data: [
           { id: "msg_idle", type: "idle", time: { created: listed } },
           { id: "msg_reply", type: "assistant", time: { created: listed }, content: [{ type: "text", text: "The tests pass." }] },
-          { id: "msg_asked", type: "user", time: { created: asked }, text: "[Message from Lead · ses_lead] (To answer, use send_message to ses_lead.)\n\nCheck the tests." },
+          { id: "msg_asked", type: "user", time: instructionTime, text: "[Message from Lead · ses_lead] (To answer, use send_message to ses_lead.)\n\nCheck the tests." },
         ] })
         return Response.json({ data: [] })
       },
@@ -474,9 +485,14 @@ describe("Commands Codex leaves running in a background terminal (#262)", () => 
       file: join(root, "wakes.json"), backgroundFile: join(root, "background.json"),
       schedule: (run, delay = 0) => { scheduled.push({ at: now + delay, run }); scheduled.sort((a, b) => a.at - b.at) },
     })
+    let delivered: Promise<void> | undefined
+    const unsubscribe = subscribe(event => {
+      if (event.type === finish.type && event.data.sessionID === finish.data.sessionID) delivered = watch(finish)
+    })
     try {
       await watch.caughtUp
-      setSystemTime(commandStart)
+      const rollback = when === "clock rollback"
+      setSystemTime(rollback ? asked : commandStart)
       const events: [string, any][] = when === "unknown"
         ? [
           ["item/completed", { item: { ...item, status: "completed", exitCode: 0 } }],
@@ -485,13 +501,31 @@ describe("Commands Codex leaves running in a background terminal (#262)", () => 
           leavesTerminal("find .", "p2"),
         ]
         : [["item/started", { item }]]
-      const id = start([...events, leavesTerminal("find ."), untilTold])
+      const pauseBeforeCommand: [string, any][] = rollback
+        ? [["item/completed", { item: { type: "agentMessage", id: "ready", text: "Starting." } }], untilTold]
+        : []
+      const id = start([...pauseBeforeCommand, ...events, leavesTerminal("find ."), untilTold])
       finish.data.sessionID = id
+      if (rollback) {
+        await until(() => steps(id).some(step => step.content.some((part: any) => part.text === "Starting.")))
+        instructionTime = sessions.messages(id).find(message => message.type === "user")!.time
+        expect(instructionTime.created).toBeGreaterThan(commandStart)
+        setSystemTime(commandStart)
+        sessions.prompt(id, { id: "msg_codex_begin_01", text: "Begin.", files: [], delivery: "steer" })
+      }
       await until(() => tools(id).some((tool) => tool.id === (when === "unknown" ? "c-p2" : item.id)))
       setSystemTime(listed)
+      if (when === "after") writeFileSync(join(root, "lists-blocked"), "")
       sessions.prompt(id, { id: "msg_codex_list_001", text: "Carry on.", files: [], delivery: "steer" })
+      if (when === "after") {
+        await until(() => lists() === 1)
+        expect(delivered).toBeUndefined()
+        expect(ended(id)).toBe(false)
+        rmSync(join(root, "lists-blocked"))
+      }
       await until(() => ended(id) && sessions.background()[id]?.tasks.length === (when === "unknown" ? 2 : 1))
-      await watch(finish)
+      expect(delivered).toBeDefined()
+      await delivered
       await pass(5_000)
       if (when === "before") {
         expect(prompts).toHaveLength(1)
@@ -500,7 +534,7 @@ describe("Commands Codex leaves running in a background terminal (#262)", () => 
         expect(prompts).toHaveLength(0)
         expect(finishHeld(id, toldFile)).toBe(true)
       }
-      expect(sessions.background()[id]?.tasks).toEqual(when === "unknown"
+      expect(sessions.background()[id]?.tasks.map(({ id, since }) => ({ id, since }))).toEqual(when === "unknown"
         ? [{ id: "p2", since: commandStart }, { id: "p1", since: listed }]
         : [{ id: "p1", since: commandStart }])
       await sessions.stopBackground(id)
@@ -510,7 +544,11 @@ describe("Commands Codex leaves running in a background terminal (#262)", () => 
       expect(finishHeld(id, toldFile)).toBe(false)
       expect(prompts).toHaveLength(1)
       expect(prompts[0]).toMatchObject({ text: expect.stringContaining("[Session finished]"), delivery: "queue" })
+      await watch(finish)
+      await pass(5_000)
+      expect(prompts).toHaveLength(1)
     } finally {
+      unsubscribe()
       setSystemTime()
       watch.gone()
       await server.stop(true)
@@ -536,14 +574,44 @@ describe("Commands Codex leaves running in a background terminal (#262)", () => 
       const id = await run([leavesTerminal("npm run dev")])
       await until(() => (sessions.background()[id]?.tasks.length ?? 0) === 1)
       writeFileSync(join(root, "lists-fail"), "")
-      // (Three that fail, past its idle close: it gives up on them only after five in a row.)
+      // Fail repeatedly, past its idle close.
       const now = lists()
-      await until(() => lists() >= now + 3)
+      await until(() => lists() >= now + 7, 2_000)
       expect(sessions.background()[id]?.tasks.length).toBe(1)
       expect(sent().some((message) => message.method === "thread/unsubscribe")).toBe(false)
       rmSync(join(root, "lists-fail"))
       writeFileSync(join(root, "terminal-done"), "")
       await until(() => sent().some((message) => message.method === "thread/unsubscribe"))
+    }))
+
+  test("a failed first list is retried with an empty cache", () =>
+    quickly(async () => {
+      writeFileSync(join(root, "lists-fail"), "")
+      const id = await run([leavesTerminal("npm test")])
+      expect(sessions.background()[id]?.tasks[0]?.id).toMatch(/^unknown:/)
+      await until(() => lists() >= 2, 2_000)
+      rmSync(join(root, "lists-fail"))
+      await until(() => sessions.background()[id]?.tasks[0]?.id === "p1", 2_000)
+    }))
+
+  test("a replacement app-server can reuse the terminal and item IDs without keeping their times", async () => {
+    const id = await run([leavesTerminal("npm test")])
+    await until(() => sessions.background()[id]?.tasks[0]?.id === "p1")
+    const since = sessions.background()[id].tasks[0].since
+    codex!.shutdown()
+    sessions.prompt(id, { id: "msg_codex_server_01", text: "Start it again.", files: [], delivery: "queue" })
+    await until(() => sessions.messages(id).filter(message => message.type === "idle").length === 2)
+    await until(() => sessions.background()[id]?.tasks[0]?.id === "p1")
+    expect(sessions.background()[id].tasks[0].since).toBeGreaterThan(since)
+  })
+
+  test("a replacement item with the same process ID gets a fresh fallback", () =>
+    quickly(async () => {
+      const id = await run([leavesTerminal("npm test")])
+      await until(() => sessions.background()[id]?.tasks[0]?.id === "p1")
+      const since = sessions.background()[id].tasks[0].since
+      writeFileSync(join(root, "terminal-replaced"), "")
+      await until(() => sessions.background()[id].tasks[0].since > since, 2_000)
     }))
 
   test("Stop on what it left running ends them", () =>

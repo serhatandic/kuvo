@@ -9638,6 +9638,13 @@ function noteTurn(held, thread, note) {
   held.note({ turns });
 }
 
+// box/src/shared/work-order.ts
+import { randomUUID } from "crypto";
+var BACKGROUND_WORK_LIMIT = 6 * 3600000;
+var origin = randomUUID();
+var sequence = 0;
+var workOrder = () => [origin, ++sequence];
+
 // box/src/agents/acp.ts
 var outputLimit2 = 30000;
 var limitWords = /RESOURCE_EXHAUSTED|usage limit (?:reached|exceeded)|quota exceeded|exceeded your (?:current )?quota|rate limit exceeded|too many requests/i;
@@ -10133,8 +10140,13 @@ ${text}`;
         if (this.loading || replayed || sessionID && this.sessionID && sessionID !== this.sessionID)
           return;
         const before = this.tasks;
-        this.tasks = new Map(tasks.map((task) => [task.id, { ...task, started: task.started ?? before.get(task.id)?.started ?? Date.now() }]));
-        if (before.size !== this.tasks.size || [...this.tasks.values()].some((task) => before.get(task.id)?.started !== task.started))
+        this.tasks = new Map(tasks.map((task) => {
+          if (task.started !== undefined)
+            return [task.id, task];
+          const known = before.get(task.id);
+          return [task.id, { ...task, started: known?.started ?? Date.now(), order: known ? known.order : workOrder() }];
+        }));
+        if (before.size !== this.tasks.size || [...this.tasks.values()].some((task) => before.get(task.id)?.started !== task.started || before.get(task.id)?.order !== task.order))
           emit("session.background.updated", { sessionID: this.session.id }, this.session.location.directory);
       }
     };
@@ -10605,7 +10617,7 @@ ${text}`;
   get backgroundTasks() {
     if (!this.rpc || this.rpc.isClosed)
       return [];
-    return [...this.tasks.values()].map((task) => ({ id: task.id, since: task.started ?? Date.now() }));
+    return [...this.tasks.values()].map((task) => ({ id: task.id, since: task.started ?? Date.now(), ...task.order ? { order: task.order } : {} }));
   }
   async stopBackgroundTasks() {
     if (!this.tasks.size || this.active)
@@ -15539,7 +15551,7 @@ function unzipper() {
 
 // box/src/agents/agents/claude.ts
 import { spawn as spawn6 } from "child_process";
-import { createHash as createHash12, randomUUID } from "crypto";
+import { createHash as createHash12, randomUUID as randomUUID2 } from "crypto";
 import { existsSync as existsSync16, mkdirSync as mkdirSync16, readdirSync as readdirSync16, readFileSync as readFileSync25, rmdirSync as rmdirSync2, rmSync as rmSync13, statSync as statSync10 } from "fs";
 import { homedir } from "os";
 import { basename as basename8, dirname as dirname14, join as join27, resolve as resolve7 } from "path";
@@ -16147,9 +16159,9 @@ class Queue {
 // box/src/agents/shells.ts
 var kept = new Map;
 var keptAfter = 10 * 60000;
-function addShell(sessionID, directory, command, output, stop, started = Date.now()) {
+function addShell(sessionID, directory, command, output, stop, started = Date.now(), order = workOrder()) {
   const id = newID("shl");
-  const job = { id, status: "running", command, cwd: directory, metadata: { sessionID }, time: { started } };
+  const job = { id, status: "running", command, cwd: directory, metadata: { sessionID }, time: { started, order } };
   kept.set(id, { job, output, stop });
   emit("shell.created", { info: job }, directory);
   return id;
@@ -17252,7 +17264,7 @@ ${input.text}` } : input, this.copies());
         const type = message.task_type ?? known?.type ?? "";
         const resumed = type === "local_agent" && known?.toolUseID && message.tool_use_id && message.tool_use_id !== known.toolUseID ? known.toolUseID : undefined;
         const backgrounded = typeof message.is_backgrounded === "boolean" ? message.is_backgrounded : known?.backgrounded;
-        this.tasks.set(message.task_id, { ...known, type, description: message.description ?? known?.description ?? "", toolUseID: resumed ?? message.tool_use_id ?? known?.toolUseID, backgrounded, since: known?.since ?? Date.now() });
+        this.tasks.set(message.task_id, { ...known, type, description: message.description ?? known?.description ?? "", toolUseID: resumed ?? message.tool_use_id ?? known?.toolUseID, backgrounded, since: known?.since ?? Date.now(), order: known?.order ?? workOrder() });
         if (type === "local_agent" && typeof message.tool_use_id === "string" && !resumed) {
           this.rememberSubagent(message.tool_use_id, { agentID: message.task_id });
           if (this.active)
@@ -17305,7 +17317,7 @@ ${input.text}` } : input, this.copies());
         this.liveTasks = new Set(tasks.map((task) => String(task.task_id)));
         for (const task of tasks) {
           const known = this.tasks.get(task.task_id);
-          this.tasks.set(task.task_id, { ...known, type: task.task_type ?? known?.type ?? "", description: task.description ?? known?.description ?? "", since: known?.since ?? Date.now() });
+          this.tasks.set(task.task_id, { ...known, type: task.task_type ?? known?.type ?? "", description: task.description ?? known?.description ?? "", since: known?.since ?? Date.now(), order: known?.order ?? workOrder() });
           this.shellFor(task.task_id);
         }
         for (const [id, task] of this.tasks)
@@ -17330,7 +17342,7 @@ ${input.text}` } : input, this.copies());
         if (shell && !this.liveTasks.has(taskID))
           endShell(shell);
       });
-    }, task.since);
+    }, task.since, task.order);
   }
   async taskOutput(taskID) {
     const task = this.tasks.get(taskID);
@@ -17374,7 +17386,7 @@ ${input.text}` } : input, this.copies());
       const task = this.tasks.get(id);
       if (task?.shell || task?.type === "local_bash" || task?.toolUseID && (this.backgroundLanes.has(task.toolUseID) || this.active?.subagents.has(task.toolUseID)))
         return [];
-      return [{ id, since: task?.since ?? Date.now() }];
+      return [{ id, since: task?.since ?? Date.now(), order: task?.order }];
     });
   }
   async stopBackgroundTasks() {
@@ -17389,7 +17401,7 @@ ${input.text}` } : input, this.copies());
     let id = this.state.claudeSession;
     const resume = Boolean(id && this.state.claudeStarted);
     if (!id) {
-      id = randomUUID();
+      id = randomUUID2();
       this.state.claudeSession = id;
       hooks.saveState();
     }
@@ -18552,7 +18564,7 @@ Attached files:
 ${others.map((path) => `- ${path}`).join(`
 `)}`;
   content.push({ type: "text", text });
-  return { type: "user", message: { role: "user", content }, parent_tool_use_id: null, uuid: randomUUID() };
+  return { type: "user", message: { role: "user", content }, parent_tool_use_id: null, uuid: randomUUID2() };
 }
 function safeBase642(path) {
   try {
@@ -19687,7 +19699,7 @@ class CodexThread {
     if (this.server !== server)
       return;
     this.loaded = false;
-    this.commandStarts.clear();
+    this.resetTerminals();
     const active = this.active;
     if (!active)
       return;
@@ -19718,7 +19730,7 @@ class CodexThread {
         left.request("thread/unsubscribe", { threadId: this.nativeID }).catch(() => {});
       this.server = rpc;
       this.loaded = false;
-      this.commandStarts.clear();
+      this.resetTerminals();
     }
     const fenced = this.agent.isFenced(rpc);
     const instructions = [hooks.instructions(), ASKING_WORDS].filter(Boolean).join(`
@@ -19786,8 +19798,10 @@ class CodexThread {
       console.error(`Codex turned your subagents away, so this conversation starts without them: ${error.message}`);
       started = await rpc.request("thread/start", { ...common, config: withoutSubagents }, 60000);
     }
-    if (this.nativeID && this.nativeID !== started.thread.id)
+    if (this.nativeID && this.nativeID !== started.thread.id) {
       this.startedOver = true;
+      this.resetTerminals();
+    }
     this.nativeID = started.thread.id;
     this.state.codexThread = this.nativeID;
     this.state.codexTold = instructions;
@@ -19802,69 +19816,96 @@ class CodexThread {
     for (const [threadID, lane] of this.backgroundLanes)
       if (lane.ended || lane.run.turn.isEnded)
         this.backgroundLanes.delete(threadID);
-    return this.backgroundLanes.size > 0 || this.liveTerminals.length > 0;
+    return this.backgroundLanes.size > 0 || Boolean(this.server && !this.server.isClosed && (this.terminals.length || this.terminalsUnknown));
   }
   terminals = [];
   commandStarts = new Map;
   terminalsRead;
-  listFailures = 0;
-  get liveTerminals() {
-    return this.server && !this.server.isClosed ? this.terminals : [];
-  }
+  terminalReadVersion = 0;
+  terminalsUnknown;
   get backgroundTasks() {
-    return this.liveTerminals.map((terminal) => ({ id: terminal.id, since: terminal.since }));
+    if (!this.server || this.server.isClosed)
+      return [];
+    const tasks = this.terminals.map(({ id, since, order }) => ({ id, since, order }));
+    return this.terminalsUnknown ? [...tasks, this.terminalsUnknown] : tasks;
+  }
+  resetTerminals() {
+    clearTimeout(this.terminalsRead);
+    ++this.terminalReadVersion;
+    const changed = this.terminals.length > 0 || this.terminalsUnknown !== undefined;
+    this.terminals = [];
+    this.terminalsUnknown = undefined;
+    this.commandStarts.clear();
+    if (changed)
+      emit("session.background.updated", { sessionID: this.session.id }, this.session.location.directory);
   }
   async stopBackgroundTasks() {
     const server = this.server;
-    if (!this.liveTerminals.length || !server || !this.nativeID)
+    if (!this.backgroundTasks.length || !server || !this.nativeID)
       return;
     await server.request("thread/backgroundTerminals/clean", { threadId: this.nativeID }, 30000).catch(() => {});
     await this.readTerminals();
   }
-  async readTerminals() {
+  async readTerminals(initial = false) {
     clearTimeout(this.terminalsRead);
     const server = this.server;
     const threadID = this.nativeID;
-    let listed = [];
-    if (server && !server.isClosed && threadID) {
-      try {
-        listed = [];
-        const seen = new Set;
-        let cursor;
-        do {
-          const answer = await server.request("thread/backgroundTerminals/list", { threadId: threadID, ...cursor ? { cursor } : {} }, 30000);
-          for (const terminal of Array.isArray(answer?.data) ? answer.data : []) {
-            if (typeof terminal?.processId !== "string")
-              continue;
-            listed.push({ id: terminal.processId, itemId: typeof terminal.itemId === "string" ? terminal.itemId : undefined });
-          }
-          cursor = typeof answer?.nextCursor === "string" && answer.nextCursor && !seen.has(answer.nextCursor) ? answer.nextCursor : undefined;
-          if (cursor)
-            seen.add(cursor);
-        } while (cursor && seen.size < 20);
-        this.listFailures = 0;
-      } catch {
-        listed = server.isClosed || ++this.listFailures >= 5 ? [] : undefined;
+    if (!server || server.isClosed || !threadID || this.inTurn && !initial)
+      return;
+    const version = ++this.terminalReadVersion;
+    const current = () => version === this.terminalReadVersion && !server.isClosed && (initial || !this.inTurn);
+    const again = () => {
+      this.terminalsRead = setTimeout(() => void this.readTerminals(), codexTiming.terminals);
+      this.terminalsRead.unref();
+    };
+    const listed = [];
+    try {
+      const seen = new Set;
+      let cursor;
+      do {
+        const answer = await server.request("thread/backgroundTerminals/list", { threadId: threadID, ...cursor ? { cursor } : {} }, 30000);
+        if (!Array.isArray(answer?.data))
+          throw new Error("Codex didn't list its background terminals.");
+        for (const terminal of answer.data) {
+          if (typeof terminal?.processId !== "string")
+            continue;
+          listed.push({ id: terminal.processId, itemId: typeof terminal.itemId === "string" ? terminal.itemId : undefined });
+        }
+        cursor = typeof answer?.nextCursor === "string" && answer.nextCursor && !seen.has(answer.nextCursor) ? answer.nextCursor : undefined;
+        if (cursor)
+          seen.add(cursor);
+      } while (cursor && seen.size < 20);
+    } catch {
+      if (!current())
+        return;
+      const before = this.terminalsUnknown;
+      const now = Date.now();
+      const fresh = before && now - before.since < BACKGROUND_WORK_LIMIT ? before : undefined;
+      this.terminalsUnknown = initial ? { id: `unknown:${threadID}`, since: fresh?.since ?? now, order: workOrder() } : fresh;
+      if (before !== this.terminalsUnknown) {
+        emit("session.background.updated", { sessionID: this.session.id }, this.session.location.directory);
       }
-    }
-    if (server !== this.server || this.inTurn)
-      return;
-    if (!listed) {
-      if (this.terminals.length)
-        this.terminalsRead = setTimeout(() => void this.readTerminals(), codexTiming.terminals);
+      if (this.terminals.length || this.terminalsUnknown)
+        again();
       return;
     }
+    if (!current())
+      return;
+    const wasUnknown = this.terminalsUnknown !== undefined;
+    this.terminalsUnknown = undefined;
     const before = new Map(this.terminals.map((terminal) => [terminal.id, terminal]));
     this.terminals = listed.map(({ id, itemId }) => {
-      const started = itemId === undefined ? undefined : this.commandStarts.get(itemId);
-      return { id, since: started ?? before.get(id)?.since ?? Date.now() };
+      const known = before.get(id);
+      const start = itemId === undefined ? undefined : this.commandStarts.get(itemId);
+      const observed = start ?? (known?.itemId === itemId ? known : undefined) ?? { since: Date.now(), order: workOrder() };
+      return { id, itemId, since: observed.since, order: observed.order };
     });
     for (const id of [...this.commandStarts.keys()].slice(0, Math.max(0, this.commandStarts.size - 200)))
       this.commandStarts.delete(id);
-    if (before.size !== this.terminals.length || this.terminals.some((terminal) => before.get(terminal.id)?.since !== terminal.since))
+    if (wasUnknown || before.size !== this.terminals.length || this.terminals.some((terminal) => before.get(terminal.id)?.order !== terminal.order))
       emit("session.background.updated", { sessionID: this.session.id }, this.session.location.directory);
     if (this.terminals.length)
-      this.terminalsRead = setTimeout(() => void this.readTerminals(), codexTiming.terminals);
+      again();
   }
   async steer(input) {
     const [first] = this.waiting;
@@ -19954,8 +19995,11 @@ class CodexThread {
       while (this.asking.size)
         await Promise.all(this.asking);
       this.answers = [];
-      this.inTurn = false;
-      this.readTerminals();
+      try {
+        await this.readTerminals(true);
+      } finally {
+        this.inTurn = false;
+      }
     }
   }
   ask(questions, hooks) {
@@ -20073,6 +20117,8 @@ ${said(index)}`).join(`
   resumeTurn(input, turn, hooks) {
     const taken = input.held;
     const rpc = this.agent.adoptServer(taken);
+    if (this.server !== rpc || this.nativeID !== taken.thread)
+      this.resetTerminals();
     this.server = rpc;
     this.nativeID = taken.thread;
     this.loaded = true;
@@ -20254,8 +20300,9 @@ ${said.map((each) => each.text).join(`
       return;
     }
     const item = params?.item;
-    if (method === "item/started" && item?.type === "commandExecution" && typeof item.id === "string" && !this.commandStarts.has(item.id))
-      this.commandStarts.set(item.id, Date.now());
+    if ((!from || from === this.server) && method === "item/started" && item?.type === "commandExecution" && typeof item.id === "string" && !this.commandStarts.has(item.id)) {
+      this.commandStarts.set(item.id, { since: Date.now(), order: workOrder() });
+    }
     if (!active)
       return;
     const turn = active.turn;
@@ -21041,10 +21088,7 @@ From memory: ${cited.join("; ")}`);
     for (const lane of this.backgroundLanes.values())
       this.endSubagent(lane, "interrupted");
     this.backgroundLanes.clear();
-    clearTimeout(this.terminalsRead);
-    if (this.terminals.length)
-      emit("session.background.updated", { sessionID: this.session.id }, this.session.location.directory);
-    this.terminals = [];
+    this.resetTerminals();
     const server = this.server;
     if (this.nativeID && this.loaded && server && !server.isClosed && !this.agent.isFenced(server))
       server.request("thread/unsubscribe", { threadId: this.nativeID }).catch(() => {});
@@ -27549,6 +27593,7 @@ class Turn {
   compaction;
   justCompacted = false;
   started = Date.now();
+  order = workOrder();
   tokens = noTokens();
   cost = 0;
   constructor(store, sessionID, directory, model, agent) {
@@ -28971,9 +29016,9 @@ class Sessions {
   background() {
     const all = {};
     for (const [id, live] of this.live) {
-      const subagents = [...live.subagents].filter(([, turn]) => !turn.isEnded).map(([child, turn]) => ({ id: child, since: turn.started }));
+      const subagents = [...live.subagents].filter(([, turn]) => !turn.isEnded).map(([child, turn]) => ({ id: child, since: turn.started, order: turn.order }));
       const tasks = [...live.threads.values()].flatMap((thread) => thread.backgroundTasks ?? []);
-      const commands = runningShells(id).map((job) => ({ id: job.id, command: job.command, started: job.time.started }));
+      const commands = runningShells(id).map((job) => ({ id: job.id, command: job.command, started: job.time.started, order: job.time.order }));
       if (subagents.length || tasks.length || commands.length)
         all[id] = { commands, subagents, tasks };
     }
@@ -29393,7 +29438,7 @@ ${others.join(`
     emit("session.inbox.enqueued", { sessionID: id, inboxID: input.id, item: { type: "user", payload: { text: input.text, files: input.files, metadata: input.metadata }, delivery: "steer" } }, directory);
     emit("session.inbox.delivered", { sessionID: id, inboxID: input.id }, directory);
     const attachments = input.files.map((file) => ({ mime: mime(file.uri), name: file.name, source: { type: "uri", uri: file.uri } }));
-    record.messages.push({ type: "user", id: input.id, time: { created: Date.now() }, text: input.text, files: attachments.length ? attachments : undefined, metadata: input.metadata });
+    record.messages.push({ type: "user", id: input.id, time: { created: Date.now(), order: workOrder() }, text: input.text, files: attachments.length ? attachments : undefined, metadata: input.metadata });
     record.session.time.updated = Date.now();
     this.store.save(id, true);
   }
@@ -29429,6 +29474,7 @@ ${others.join(`
     const handing = { cancelled: false };
     live.steering.set(input.id, handing);
     let taken = false;
+    let order;
     let note;
     try {
       if (this.snapshots && !input.synthetic) {
@@ -29443,6 +29489,8 @@ ${others.join(`
       }
       const attached = withTextFiles(input.text, input.files.map(promptFile));
       if (live.doing.kind === "running" && live.doing.run === run && run.agent === agent && !handing.cancelled) {
+        if (!input.synthetic)
+          order = workOrder();
         taken = await agent.thread.steer({ id: input.id, text: attached.text, files: attached.files, synthetic: Boolean(input.synthetic) }).catch(() => false);
       }
     } finally {
@@ -29477,7 +29525,7 @@ ${others.join(`
     if (input.synthetic)
       record.messages.push({ type: "synthetic", id: input.id, time: { created: Date.now() }, text: input.text, description: input.synthetic.description, metadata: input.synthetic.metadata });
     else
-      record.messages.push({ type: "user", id: input.id, time: { created: Date.now() }, text: input.text, files: attachments.length ? attachments : undefined, metadata: input.metadata });
+      record.messages.push({ type: "user", id: input.id, time: { created: Date.now(), order }, text: input.text, files: attachments.length ? attachments : undefined, metadata: input.metadata });
     record.session.time.updated = Date.now();
     if (note?.before && runOf(live.doing) === run) {
       this.notes(record)[input.id] = note;
@@ -29691,7 +29739,7 @@ ${text.slice(0, 4000)}
     if (input.synthetic)
       record.messages.push({ type: "synthetic", id: input.id, time: { created: Date.now() }, text: input.text, description: input.synthetic.description, metadata: input.synthetic.metadata });
     else
-      record.messages.push({ type: "user", id: input.id, time: { created: Date.now() }, text: input.text, files: attachments.length ? attachments : undefined, metadata: input.metadata });
+      record.messages.push({ type: "user", id: input.id, time: { created: Date.now(), order: workOrder() }, text: input.text, files: attachments.length ? attachments : undefined, metadata: input.metadata });
     session.time.updated = Date.now();
     this.store.save(id, true);
     if (!input.synthetic && !session.title && !session.parentID && record.messages.filter((message) => message.type === "user").length === 1)
@@ -39635,4 +39683,4 @@ if (!onMachine) {
 }
 process.on("SIGTERM", () => stop());
 process.on("SIGINT", () => stop());
-// Built from Packages/Box/src/agents 09c0fa65ac27351e4aaf4908bd355f0f647055645fc29fe63a4abfd597fa4dd8
+// Built from Packages/Box/src/agents 3d1468e3b5c6f36b34b1b9fa47df3467aae4c3f0253517c79c7438e58e28016b

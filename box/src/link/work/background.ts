@@ -19,6 +19,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { isObject } from "../../shared/json";
 import type { Target } from "../../shared/records";
+import { BACKGROUND_WORK_LIMIT, type WorkOrder } from "../../shared/work-order";
 import type { BackgroundList } from "../../shared/routes/work";
 import { endShellJob, type ShellJob } from "../areas/engine";
 import { wakesChanged } from "../areas/wakes";
@@ -38,13 +39,13 @@ const LOCK = path.join(WORK_FOLDER, ".background.lock");
 /** How long a command or subagent that never ends counts as work, from when it started (ms): after
  * that its session no longer shows at work for it, though it may still run (a dev server), and a
  * finish that waited on it is told. */
-export const AT_WORK_LIMIT = 6 * 3_600_000;
+export const AT_WORK_LIMIT = BACKGROUND_WORK_LIMIT;
 // As the box starts: the sessions updated this recently have their folders' tools running still.
 const RECENT = 3_600_000;
 
 /** `ports`: the TCP ports it listens on, a service's (a dev server): its session's finish doesn't wait on it. */
-export interface BackgroundCommand { id: string; command: string; started: number; folder?: string; ports?: number[] }
-export interface BackgroundHelper { id: string; since: number }
+export interface BackgroundCommand { id: string; command: string; started: number; order?: WorkOrder; folder?: string; ports?: number[] }
+export interface BackgroundHelper { id: string; since: number; order?: WorkOrder }
 /** What runs for a session besides its own turn. `tasks`: what else its agent keeps going. */
 export interface BackgroundWork { commands: BackgroundCommand[]; subagents: BackgroundHelper[]; tasks: BackgroundHelper[] }
 
@@ -120,7 +121,12 @@ export async function atWorkNow(targets: Target[], signal?: AbortSignal, file = 
 }
 
 /** Whether any of `work` started at `at` (ms) or since. */
-export const startedSince = (work: BackgroundWork, at: number) => [...work.commands.map(each => each.started), ...work.subagents.map(each => each.since), ...work.tasks.map(each => each.since)].some(started => started >= at);
+export function startedSince(work: BackgroundWork, at: number, order?: WorkOrder): boolean {
+  const since = (started: number, observed?: WorkOrder) => order && observed?.[0] === order[0] ? observed[1] >= order[1] : started >= at;
+  return work.commands.some(each => since(each.started, each.order))
+    || work.subagents.some(each => since(each.since, each.order))
+    || work.tasks.some(each => since(each.since, each.order));
+}
 
 /** What of `work` its session is waiting on, services (`ports`) left out; null for none. */
 export function awaited(work: BackgroundWork | null | undefined): BackgroundWork | null {

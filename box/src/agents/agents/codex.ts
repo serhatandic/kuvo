@@ -33,6 +33,7 @@ import { codexSubagents, subagentsFor, subagentsRoot } from "../subagents"
 import { instructionsNote, toldOf } from "../told"
 import type { Turn } from "../turn"
 import type { FileDiff, FormField, Model, ModelRef, OAuthStatus, Session } from "../wire"
+import { BACKGROUND_WORK_LIMIT, workOrder, type WorkOrder } from "../../shared/work-order"
 
 const places = ["/opt/homebrew/bin", "/usr/local/bin", join(homedir(), ".local/bin"), join(homedir(), ".codex/bin")]
 const outputLimit = 30_000
@@ -1185,7 +1186,7 @@ class CodexThread implements Thread {
     }
     if (this.server !== server) return
     this.loaded = false
-    this.commandStarts.clear()
+    this.resetTerminals()
     const active = this.active
     if (!active) return
     this.active = undefined
@@ -1226,7 +1227,7 @@ class CodexThread implements Thread {
       if (left && !left.isClosed && this.nativeID && this.loaded && !this.keepsWorking) void left.request("thread/unsubscribe", { threadId: this.nativeID }).catch(() => {})
       this.server = rpc
       this.loaded = false
-      this.commandStarts.clear()
+      this.resetTerminals()
     }
     const fenced = this.agent.isFenced(rpc)
     const instructions = [hooks.instructions(), ASKING_WORDS].filter(Boolean).join("\n\n")
@@ -1309,7 +1310,10 @@ class CodexThread implements Thread {
       console.error(`Codex turned your subagents away, so this conversation starts without them: ${error.message}`)
       started = await rpc.request("thread/start", { ...common, config: withoutSubagents }, 60_000)
     }
-    if (this.nativeID && this.nativeID !== started.thread.id) this.startedOver = true
+    if (this.nativeID && this.nativeID !== started.thread.id) {
+      this.startedOver = true
+      this.resetTerminals()
+    }
     this.nativeID = started.thread.id
     this.state.codexThread = this.nativeID
     // A new thread has the instructions it's given now.
@@ -1327,7 +1331,7 @@ class CodexThread implements Thread {
   get keepsWorking(): boolean {
     // (One the session ended, with the turn that started it, isn't.)
     for (const [threadID, lane] of this.backgroundLanes) if (lane.ended || lane.run.turn.isEnded) this.backgroundLanes.delete(threadID)
-    return this.backgroundLanes.size > 0 || this.liveTerminals.length > 0
+    return this.backgroundLanes.size > 0 || Boolean(this.server && !this.server.isClosed && (this.terminals.length || this.terminalsUnknown))
   }
 
   /**
@@ -1335,71 +1339,90 @@ class CodexThread implements Thread {
    * when each started (or was first listed if its start wasn't heard). They go with that app-server.
    * Codex doesn't say when one ends, so they're listed again every while, until none is left.
    */
-  private terminals: { id: string; since: number }[] = []
+  private terminals: { id: string; itemId?: string; since: number; order: WorkOrder }[] = []
   /** Commands by item ID, including ones that haven't appeared in a terminal list yet. */
-  private commandStarts = new Map<string, number>()
+  private commandStarts = new Map<string, { since: number; order: WorkOrder }>()
   private terminalsRead?: ReturnType<typeof setTimeout>
-  /** Lists that failed in a row. */
-  private listFailures = 0
-
-  private get liveTerminals() {
-    return this.server && !this.server.isClosed ? this.terminals : []
-  }
+  private terminalReadVersion = 0
+  /** The initial snapshot failed, so what the turn left running still needs to be checked. */
+  private terminalsUnknown?: { id: string; since: number; order: WorkOrder }
 
   get backgroundTasks() {
-    return this.liveTerminals.map((terminal) => ({ id: terminal.id, since: terminal.since }))
+    if (!this.server || this.server.isClosed) return []
+    const tasks = this.terminals.map(({ id, since, order }) => ({ id, since, order }))
+    return this.terminalsUnknown ? [...tasks, this.terminalsUnknown] : tasks
+  }
+
+  private resetTerminals() {
+    clearTimeout(this.terminalsRead)
+    ++this.terminalReadVersion
+    const changed = this.terminals.length > 0 || this.terminalsUnknown !== undefined
+    this.terminals = []
+    this.terminalsUnknown = undefined
+    this.commandStarts.clear()
+    if (changed) emit("session.background.updated", { sessionID: this.session.id }, this.session.location.directory)
   }
 
   async stopBackgroundTasks() {
     const server = this.server
-    if (!this.liveTerminals.length || !server || !this.nativeID) return
+    if (!this.backgroundTasks.length || !server || !this.nativeID) return
     await server.request("thread/backgroundTerminals/clean", { threadId: this.nativeID }, 30_000).catch(() => {})
     await this.readTerminals()
   }
 
   /** Lists its background terminals again; while any runs, again in a while. */
-  private async readTerminals() {
+  private async readTerminals(initial = false) {
     clearTimeout(this.terminalsRead)
     const server = this.server
     const threadID = this.nativeID
-    // (Those it listed before, while it can't say now: a list that failed isn't an empty one.)
-    let listed: { id: string; itemId?: string }[] | undefined = []
-    if (server && !server.isClosed && threadID) {
-      try {
-        listed = []
-        const seen = new Set<string>()
-        let cursor: string | undefined
-        do {
-          const answer: any = await server.request("thread/backgroundTerminals/list", { threadId: threadID, ...(cursor ? { cursor } : {}) }, 30_000)
-          for (const terminal of Array.isArray(answer?.data) ? answer.data : []) {
-            if (typeof terminal?.processId !== "string") continue
-            listed.push({ id: terminal.processId, itemId: typeof terminal.itemId === "string" ? terminal.itemId : undefined })
-          }
-          cursor = typeof answer?.nextCursor === "string" && answer.nextCursor && !seen.has(answer.nextCursor) ? answer.nextCursor : undefined
-          if (cursor) seen.add(cursor)
-        } while (cursor && seen.size < 20)
-        this.listFailures = 0
-      } catch {
-        // (Given up on after a few in a row: one that never answers can't keep it open for ever.)
-        listed = server.isClosed || ++this.listFailures >= 5 ? [] : undefined
-      }
+    if (!server || server.isClosed || !threadID || (this.inTurn && !initial)) return
+    const version = ++this.terminalReadVersion
+    const current = () => version === this.terminalReadVersion && !server.isClosed && (initial || !this.inTurn)
+    const again = () => {
+      this.terminalsRead = setTimeout(() => void this.readTerminals(), codexTiming.terminals)
+      this.terminalsRead.unref()
     }
-    // (Its app-server since replaced, or a turn under way, which reads them again as it ends.)
-    if (server !== this.server || this.inTurn) return
-    if (!listed) {
-      if (this.terminals.length) this.terminalsRead = setTimeout(() => void this.readTerminals(), codexTiming.terminals)
+    const listed: { id: string; itemId?: string }[] = []
+    try {
+      const seen = new Set<string>()
+      let cursor: string | undefined
+      do {
+        const answer: any = await server.request("thread/backgroundTerminals/list", { threadId: threadID, ...(cursor ? { cursor } : {}) }, 30_000)
+        if (!Array.isArray(answer?.data)) throw new Error("Codex didn't list its background terminals.")
+        for (const terminal of answer.data) {
+          if (typeof terminal?.processId !== "string") continue
+          listed.push({ id: terminal.processId, itemId: typeof terminal.itemId === "string" ? terminal.itemId : undefined })
+        }
+        cursor = typeof answer?.nextCursor === "string" && answer.nextCursor && !seen.has(answer.nextCursor) ? answer.nextCursor : undefined
+        if (cursor) seen.add(cursor)
+      } while (cursor && seen.size < 20)
+    } catch {
+      if (!current()) return
+      const before = this.terminalsUnknown
+      const now = Date.now()
+      const fresh = before && now - before.since < BACKGROUND_WORK_LIMIT ? before : undefined
+      this.terminalsUnknown = initial ? { id: `unknown:${threadID}`, since: fresh?.since ?? now, order: workOrder() } : fresh
+      if (before !== this.terminalsUnknown) {
+        emit("session.background.updated", { sessionID: this.session.id }, this.session.location.directory)
+      }
+      if (this.terminals.length || this.terminalsUnknown) again()
       return
     }
+    if (!current()) return
+    const wasUnknown = this.terminalsUnknown !== undefined
+    this.terminalsUnknown = undefined
     const before = new Map(this.terminals.map((terminal) => [terminal.id, terminal]))
     this.terminals = listed.map(({ id, itemId }) => {
-      const started = itemId === undefined ? undefined : this.commandStarts.get(itemId)
-      return { id, since: started ?? before.get(id)?.since ?? Date.now() }
+      const known = before.get(id)
+      const start = itemId === undefined ? undefined : this.commandStarts.get(itemId)
+      const observed = start ?? (known?.itemId === itemId ? known : undefined) ?? { since: Date.now(), order: workOrder() }
+      return { id, itemId, since: observed.since, order: observed.order }
     })
     // Keep a recent history for commands that haven't been listed yet. Listed terminals carry
     // their own timestamps across polls.
     for (const id of [...this.commandStarts.keys()].slice(0, Math.max(0, this.commandStarts.size - 200))) this.commandStarts.delete(id)
-    if (before.size !== this.terminals.length || this.terminals.some((terminal) => before.get(terminal.id)?.since !== terminal.since)) emit("session.background.updated", { sessionID: this.session.id }, this.session.location.directory)
-    if (this.terminals.length) this.terminalsRead = setTimeout(() => void this.readTerminals(), codexTiming.terminals)
+    if (wasUnknown || before.size !== this.terminals.length || this.terminals.some((terminal) => before.get(terminal.id)?.order !== terminal.order)) emit("session.background.updated", { sessionID: this.session.id }, this.session.location.directory)
+    if (this.terminals.length) again()
   }
 
   /** Your message, into the turn under way (Codex's turn/steer). */
@@ -1498,9 +1521,12 @@ class CodexThread implements Thread {
       for (const card of this.waiting) card.abort.abort()
       while (this.asking.size) await Promise.all(this.asking)
       this.answers = []
-      this.inTurn = false
-      // What it left running, now the turn's over.
-      void this.readTerminals()
+      // Publish what it left running before Sessions emits the turn's finish.
+      try {
+        await this.readTerminals(true)
+      } finally {
+        this.inTurn = false
+      }
     }
   }
 
@@ -1633,6 +1659,7 @@ class CodexThread implements Thread {
   private resumeTurn(input: RunInput, turn: Turn, hooks: TurnHooks): Promise<RunResult> {
     const taken = input.held!
     const rpc = this.agent.adoptServer(taken)
+    if (this.server !== rpc || this.nativeID !== taken.thread) this.resetTerminals()
     this.server = rpc
     this.nativeID = taken.thread
     this.loaded = true
@@ -1814,7 +1841,9 @@ class CodexThread implements Thread {
       return
     }
     const item = params?.item
-    if (method === "item/started" && item?.type === "commandExecution" && typeof item.id === "string" && !this.commandStarts.has(item.id)) this.commandStarts.set(item.id, Date.now())
+    if ((!from || from === this.server) && method === "item/started" && item?.type === "commandExecution" && typeof item.id === "string" && !this.commandStarts.has(item.id)) {
+      this.commandStarts.set(item.id, { since: Date.now(), order: workOrder() })
+    }
     if (!active) return
     const turn = active.turn
     // Another turn's (one stopped before, ending late).
@@ -2583,9 +2612,7 @@ class CodexThread implements Thread {
   close() {
     for (const lane of this.backgroundLanes.values()) this.endSubagent(lane, "interrupted")
     this.backgroundLanes.clear()
-    clearTimeout(this.terminalsRead)
-    if (this.terminals.length) emit("session.background.updated", { sessionID: this.session.id }, this.session.location.directory)
-    this.terminals = []
+    this.resetTerminals()
     // Let go of in the app-server it's in (one of its own stops with it).
     const server = this.server
     if (this.nativeID && this.loaded && server && !server.isClosed && !this.agent.isFenced(server)) void server.request("thread/unsubscribe", { threadId: this.nativeID }).catch(() => {})

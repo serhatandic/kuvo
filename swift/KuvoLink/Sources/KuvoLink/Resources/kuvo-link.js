@@ -21033,6 +21033,11 @@ function madeWords(made, here) {
 import fs71 from "node:fs";
 import path75 from "node:path";
 
+// box/src/shared/work-order.ts
+import { randomUUID } from "node:crypto";
+var BACKGROUND_WORK_LIMIT = 6 * 3600000;
+var origin = randomUUID();
+
 // box/src/link/areas/engine.ts
 import { spawn as spawn9 } from "node:child_process";
 
@@ -22844,7 +22849,7 @@ var placeWords = (work) => work.project ? `in ${work.project}` : work.folder ===
 var WORK_BACKGROUND = path75.join(WORK_FOLDER, "background.json");
 var WORK_STOPPED = path75.join(WORK_FOLDER, "stopped.json");
 var LOCK10 = path75.join(WORK_FOLDER, ".background.lock");
-var AT_WORK_LIMIT = 6 * 3600000;
+var AT_WORK_LIMIT = BACKGROUND_WORK_LIMIT;
 var RECENT = 3600000;
 var readKept6 = (file) => {
   try {
@@ -22903,7 +22908,10 @@ async function atWorkNow(targets, signal, file = WORK_BACKGROUND) {
     working.add(id);
   return working;
 }
-var startedSince = (work, at) => [...work.commands.map((each) => each.started), ...work.subagents.map((each) => each.since), ...work.tasks.map((each) => each.since)].some((started) => started >= at);
+function startedSince(work, at, order) {
+  const since = (started, observed) => order && observed?.[0] === order[0] ? observed[1] >= order[1] : started >= at;
+  return work.commands.some((each) => since(each.started, each.order)) || work.subagents.some((each) => since(each.since, each.order)) || work.tasks.some((each) => since(each.since, each.order));
+}
 function awaited(work) {
   if (!work)
     return null;
@@ -23618,16 +23626,22 @@ var changeTold = (file, change, from, until) => {
 };
 var holds2 = (still, waited) => {
   const work = awaited(still);
-  return Boolean(work) && (typeof waited.asked !== "number" || startedSince(work, waited.asked));
+  return Boolean(work) && (typeof waited.asked !== "number" || startedSince(work, waited.asked, waited.askedOrder));
 };
 var hashed = (text) => crypto27.createHash("sha256").update(text).digest("hex").slice(0, 16);
 var messageTime = (message) => isObject(message?.time) && typeof message.time.created === "number" ? message.time.created : null;
+var messageOrder = (time) => {
+  const order = isObject(time) ? time.order : undefined;
+  if (Array.isArray(order) && typeof order[0] === "string" && typeof order[1] === "number")
+    return [order[0], order[1]];
+  return;
+};
 function beganBy(turn) {
   const starters = turn.filter((message) => message.type === "user" || message.type === "synthetic");
   const askers = starters.filter((message) => message.type === "user" && !isBoxsOwnWord(message.text, message.metadata));
   const asked = askers[0];
   if (asked)
-    return { kind: askers.every((message) => writtenByYou(message.text, message.metadata)) ? "you" : "asked", at: messageTime(asked) };
+    return { kind: askers.every((message) => writtenByYou(message.text, message.metadata)) ? "you" : "asked", at: messageTime(asked), order: messageOrder(asked.time) };
   if (!starters.length)
     return { kind: "asked", at: null };
   const first = starters.at(-1);
@@ -23900,12 +23914,13 @@ ${starter}`;
     }, after);
     timer?.unref?.();
   };
-  const waitFor = (session, since, asked) => {
+  const waitFor = (session, since, asked, askedOrder) => {
     const was = readTold3(toldFile)?.waiting?.[session];
-    if (!was || was.asked !== (asked ?? undefined))
+    if (!was || was.asked !== asked || was.askedOrder?.[0] !== askedOrder?.[0] || was.askedOrder?.[1] !== askedOrder?.[1]) {
       changeTold(toldFile, (told) => {
-        told.waiting = { ...told.waiting, [session]: { from, at: was?.at ?? since, ...asked !== null ? { asked } : {} } };
+        told.waiting = { ...told.waiting, [session]: { from, at: was?.at ?? since, asked, askedOrder } };
       }, null, now());
+    }
     lookWhileWaiting(session, was ? WAITING_LOOK : FIRST_LOOK);
   };
   const looking = new Set;
@@ -23947,9 +23962,10 @@ ${starter}`;
     const yours = last?.began.kind === "you";
     if (yours && !waited)
       return noteTold(session.id, { reply: last.id ?? undefined });
-    const askedAt = yours ? waited?.asked ?? null : last?.began.kind === "asked" ? last.began.at : null;
-    if (holds2(still, { asked: askedAt ?? undefined }))
-      return waitFor(session.id, waitedSince ?? at, askedAt);
+    const asked = yours ? waited?.asked : last?.began.kind === "asked" ? last.began.at ?? undefined : undefined;
+    const askedOrder = yours ? waited?.askedOrder : last?.began.kind === "asked" ? last.began.order : undefined;
+    if (holds2(still, { asked, askedOrder }))
+      return waitFor(session.id, waitedSince ?? at, asked, askedOrder);
     const was = readTold3(toldFile)?.sessions[session.id] ?? {};
     letGoOf(session.id);
     if (last && !yours && !isNews(was, last))
@@ -24119,6 +24135,11 @@ ${starter}`;
       startersTold = true;
     } catch {
       again = true;
+    } finally {
+      for (const [id, waited] of Object.entries(readTold3(toldFile)?.waiting ?? {})) {
+        if (waited.from === from)
+          lookWhileWaiting(id, FIRST_LOOK);
+      }
     }
     if (!again || signal?.aborted)
       return;
@@ -45447,7 +45468,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "f8786caa6279";
+var BRIDGE_VERSION = "f06032d1ca0c";
 
 // box/src/link/rehome/move.ts
 init_outside();
