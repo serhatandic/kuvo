@@ -60,6 +60,7 @@ const engine = await standIn(url => {
 // The coding agents' bridge: Claude Code, signed in with its own command or a key.
 const bridge = await standIn(url => {
   if (url === "/api/integration") return [{ id: "claude-code", name: "Claude Code", methods: [{ type: "key", label: "Anthropic API key" }, { type: "oauth", id: "subscription", label: "Claude Pro or Max" }], connections: [] }];
+  if (url === "/api/integration/claude-code/connect/oauth/att_agent_pending") return { status: "pending", userCode: "AB12-CD34" };
   if (url === "/api/integration/claude-code/connect/oauth/att_agent") return { status: "failed", message: "server_error", userCode: "AB12-CD34" };
   return undefined;
 });
@@ -178,9 +179,11 @@ test("how a sign-in is going, as the engine says, with what to say once it ended
   assert.deepEqual(await status("att_denied"), { status: "failed", message: "The sign-in was turned down on its page. Try again to sign in.", failure: "The sign-in was turned down on its page. Try again to sign in." });
   assert.deepEqual(await status("att_said"), { status: "failed", message: "Signing in didn’t work.", failure: "Signing in didn’t work." });
   assert.deepEqual(await status("att_late"), { status: "expired", message: "The sign-in timed out. Try again.", failure: "The sign-in timed out. Try again." });
-  // A coding agent's, from the bridge, with what else it says.
+  // A device code is shown for a pending attempt. Once it ends, the safe failure is all that's shown.
+  const pendingAgent = await answer("GET", "kuvo/sign-in/status?integration=claude-code&attempt=att_agent_pending&agents=1");
+  assert.deepEqual(pendingAgent.json, { status: "pending", userCode: "AB12-CD34" });
   const agent = await answer("GET", "kuvo/sign-in/status?integration=claude-code&attempt=att_agent&agents=1");
-  assert.deepEqual(agent.json, { status: "failed", message: "The service couldn’t sign you in just now. Try again in a moment.", userCode: "AB12-CD34", failure: "The service couldn’t sign you in just now. Try again in a moment." });
+  assert.deepEqual(agent.json, { status: "failed", message: "The service couldn’t sign you in just now. Try again in a moment.", failure: "The service couldn’t sign you in just now. Try again in a moment." });
 });
 
 test("asked to wait for a change (a Mac asking a machine's box over SSH): answered once the sign-in ends, not before", async () => {
