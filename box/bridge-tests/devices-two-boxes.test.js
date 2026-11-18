@@ -685,14 +685,14 @@ test("failure bench: a removal reaches a member while the primary's inbound devi
   await eventually(() => labLink()?.phones?.some(each => each.key === desktop.public));
   await openOnMember(desktop, member);
   assert.equal((await desktop.request("GET", "kuvo/computers")).status, 200);
-  const phonesDoc = packet => {
+  const docsIn = packet => {
     if (!packet.from.equals(macAddress) || !packet.to.equals(member.address)) return;
     const frame = link.readFrame(packet.payload);
     if (frame?.kind !== link.Frame.mail) return;
     const opened = link.openOneWay(frame.body, Buffer.from(labLink().key, "base64url"), link.publicOf(macKey));
-    const mail = JSON.parse(opened.payload.toString());
-    return mail.docs?.give?.map(link.readDoc).find(doc => doc?.kind === "phones");
+    return JSON.parse(opened.payload.toString()).docs;
   };
+  const phonesDoc = packet => docsIn(packet)?.give?.map(link.readDoc).find(doc => doc?.kind === "phones");
   const hasGrant = doc => doc?.body.phones?.some(each => each.key === desktop.public);
   const earlier = relay.delivered.findLast(packet => hasGrant(phonesDoc(packet)));
   assert.ok(earlier, "the original signed grant reached the member");
@@ -711,10 +711,26 @@ test("failure bench: a removal reaches a member while the primary's inbound devi
     assert.equal((await ask("DELETE", `kuvo/computers/${other.key}`)).status, 200);
     const dropped = await eventually(() => held[0]);
     assert.equal(memberHasRemoval(desktop.public), false, "the relay dropped the first revocation");
-    // The next digest exchange repairs the loss. Hold the repair so the test chooses exactly
-    // when it comes in, then release it before the stale copy of the grant.
-    link.docsChanged(link.macLink.host, { tell: true });
-    const revoked = await eventually(() => held.find(packet => !packet.payload.equals(dropped.payload)));
+    // Drop the primary's connection. Its normal reconnect must advertise the missing
+    // revocation and repair the loss while the member keeps its existing desktop session.
+    const resume = relay.disconnect(macAddress);
+    let sentBeforeReconnect;
+    let heldBeforeReconnect;
+    try {
+      await eventually(() => !relay.has(macAddress));
+      sentBeforeReconnect = relay.delivered.length;
+      heldBeforeReconnect = held.length;
+    } finally {
+      resume();
+    }
+    await eventually(() => relay.has(macAddress));
+    const { origin, n, h } = phonesDoc(dropped);
+    const advertised = packet => docsIn(packet)?.have?.some(([key, kind, version, hash]) =>
+      key === origin && kind === "phones" && version === n && hash === h);
+    const deadline = Date.now() + 5_000;
+    const greeted = await eventually(() => relay.delivered.slice(sentBeforeReconnect).find(advertised) ?? (Date.now() >= deadline && "missing"));
+    assert.notEqual(greeted, "missing", "the primary advertised the revocation when it reconnected");
+    const revoked = await eventually(() => held.slice(heldBeforeReconnect).find(packet => !packet.payload.equals(dropped.payload)));
     assert.equal(phonesDoc(revoked).n, phonesDoc(dropped).n, "the repair carries the same signed revocation");
     assert.equal((await desktop.request("GET", "kuvo/computers")).status, 200);
     // A newer signed list arrives before a delayed copy of the grant. Both lists can be duplicated
