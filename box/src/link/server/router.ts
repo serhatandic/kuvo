@@ -1,3 +1,4 @@
+import { LOCAL_SETUP_SAVE } from "../../shared/setup-local";
 import { GITHUB_WORK_QUEUE } from "../../shared/github";
 // The box's routes
 // What a phone, or this Mac's app, asks of this box: each route to the area that answers it, the
@@ -12,7 +13,7 @@ import { SESSION_FOLDERS_ROUTE, SESSION_MOVE_ROUTE, sessionFoldersRoute, session
 import { DELETES_ROUTE, deletesRoute, SESSION_ACTION_ROUTE, sessionActionRoute } from "../areas/session-actions";
 import { foundRoute } from "../areas/found";
 import { searchRoute } from "../areas/search";
-import { memberComputersRoute, setupRoute } from "../areas/setup";
+import { memberComputersRoute, saveLocalSetup, setupRoute } from "../areas/setup";
 import { changesRoute } from "../areas/changes";
 import { askAnswerRoute, asksRoute } from "../areas/asks";
 import { appNoticeRoute, attentionRoute } from "../areas/attention";
@@ -291,6 +292,7 @@ export function engineHandler(readEngine: () => EngineRecord = readEngineFile, i
     if (phone?.kind === "desktop") request = { ...request, desktop: true };
     const route = request.path.split("?")[0];
     const context: RouteContext = { request, phone, signal, route, readEngine, readBridge, bridge, info, phonesChanged, hold, json, text };
+    if (route === LOCAL_SETUP_SAVE) return yield* saveLocalSetup(context);
     const matched = matchBoxRoute(route, request, phone);
     // Each answer receives its own predicate's match, a pairing TypeScript cannot follow.
     if (matched) return yield* matched.entry.answer(context, matched.match as never);

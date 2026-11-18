@@ -390,7 +390,8 @@ peers.resets = new LimitResets(limits, join(home, "limits-resets.json"), Date.no
 const noPriceFeeds = process.env.KUVO_TEST_PRICE_FEEDS === "off" || !isRealBridgeFolder(home)
 delete process.env.KUVO_TEST_PRICE_FEEDS
 const usageFolder = join(home, "usage")
-const usageSettings = new UsageSettings(join(usageFolder, "settings.json"))
+const usageSettings = new UsageSettings(join(usageFolder, "settings.json"), undefined, undefined, runFolder)
+if (runFolder) setInterval(() => usageSettings.followShared(), 2_000).unref()
 limits.settings = usageSettings
 limits.ownKey = () => directory.own()?.key ?? ""
 const claudeUsage = claudeSources(usageFolder)

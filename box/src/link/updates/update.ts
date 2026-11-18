@@ -12,6 +12,7 @@
 // checked the same way and taken at the next quiet moment; and it can carry a signed Mac bundle
 // (the box's helper), swapped whole.
 
+import { askSetupSave, localSetupValue } from "../../shared/setup-local";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -534,8 +535,13 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
   };
   try {
     step("checking");
+    const setup = localSetupValue(RUN, "setupSecurityAndReleaseChoice");
+    const choice = isObject(setup?.value) ? setup.value : null;
     let released: Buffer;
-    if (from) released = readRelease(path.join(from, "boxes.json"), 1_000_000);
+    if (!from && setup && (!setup.primary || (typeof choice?.version === "string" && newerVersion(choice.version, before)))) {
+      if (typeof choice?.signed !== "string") return { result: "waiting", message: "Your setup's primary hasn't selected a release yet." };
+      released = Buffer.from(choice.signed, "base64");
+    } else if (from) released = readRelease(path.join(from, "boxes.json"), 1_000_000);
     else try {
       released = await download(() => fetchedPatiently(url, 1_000_000, 30_000));
     } catch (error) {
@@ -545,6 +551,8 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
       throw error;
     }
     const manifest = verifyBoxes(released.toString("utf8"), keys);
+    const alreadyChosen = choice?.version === manifest.version && choice?.sha256 === manifest.pack.sha256;
+    if (setup && !setup.primary && !alreadyChosen) return { result: "waiting", message: "Your setup's primary has selected a different release." };
     taking(manifest.version);
     // (Only GitHub's says what the newest release is.)
     if (!from) noteUpdate({ latest: manifest.version, checked: clock() });
@@ -576,6 +584,13 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
     // Signed and checked: held from now, for your other computers to take at once, each judging it
     // for itself, whatever comes of taking it here (`updates/fleet.ts`).
     keepRelease(released, pack);
+    if (setup && !alreadyChosen) {
+      const response = await askSetupSave(RUN, {
+        kind: "setupSecurityAndReleaseChoice", id: setup.id, epoch: setup.epoch, sequence: setup.sequence,
+        value: { version: manifest.version, sha256: manifest.pack.sha256, signed: released.toString("base64") },
+      });
+      if (response.status !== 200) return { result: "waiting", version: manifest.version, message: response.message };
+    }
     fs.writeFileSync(path.join(stage, "pack.tgz"), pack, { mode: 0o600 });
     if (ran("tar", ["xzf", path.join(stage, "pack.tgz"), "-C", path.join(stage, "files")]).status !== 0) throw new Error("The release's files couldn't be unpacked.");
     const box: BoxFiles = JSON.parse(fs.readFileSync(path.join(stage, "files", "box.json"), "utf8"));

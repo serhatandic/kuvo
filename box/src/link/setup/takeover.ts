@@ -5,7 +5,7 @@ import { isObject } from "../../shared/json";
 import { noteDocsChanged } from "../documents/changed";
 import { sendDocs } from "../documents/exchange";
 import { docKey, held, ownSign, readDoc, signDoc } from "../documents/format";
-import { mailFor, ownKey, peersOf, type MailSender } from "../peers/known";
+import { cleanPeer, fitsPeer, mailFor, ownKey, peersOf, type MailSender } from "../peers/known";
 import type { LinkHost } from "../relay/host";
 import { readLink, updateLink, type LinkState } from "../state";
 import { readNumbers } from "../work-queue/numbers";
@@ -14,6 +14,7 @@ import { writeCard } from "./card";
 import { proposeLeadership, standbyHere } from "./handover";
 import { leadershipOf, takeLeadership } from "./leadership";
 import { fresh, grantLease, HEARTBEAT_MS, leaseClock, LEASE_MS, primaryFenced, standbySettings, testSetupClock } from "./lease";
+import { publishedShared, sharedValue } from "./shared";
 import { followedSetup, setupDoc } from "./record";
 
 type Clock = ReturnType<typeof leaseClock>;
@@ -60,6 +61,9 @@ export function receiveAuthority(sender: MailSender, given: Record<string, unkno
   if (given.kind === "available" && setup.role === "primary") {
     if (typeof given.preferred !== "boolean" || typeof given.reason !== "string") return;
     candidates.set(sender.key, { at: now, preferred: given.preferred, reason: given.reason.slice(0, 40) });
+    const peer = peersOf(link).find(peer => peer.key === sender.key);
+    const give = publishedShared(link);
+    if (peer && give.length && peer.key !== setup.standby?.key) sendDocs(host, link, [{ to: peer, docs: { give } }]);
     return;
   }
   if (!setup.standby || !signal(given.token)) return;
@@ -106,20 +110,26 @@ function takeoverTick(host: LinkHost | null | undefined): void {
     if (standby) sendDocs(host, link, [{ to: standby, docs: { give: [link.leadershipPending] } }]);
     return;
   }
+  if (setup.role === "primary" && setup.standby && !primaryFenced(link) && Object.keys(link.sharedPending ?? {}).length) {
+    const standby = peersOf(link).find(peer => peer.key === setup.standby!.key);
+    if (standby) sendDocs(host, link, [{ to: standby, docs: { give: Object.values(link.sharedPending!) } }]);
+  }
   if (lastTick && fresh(lastTick, now, testing ? 400 : HEARTBEAT_MS)) return;
   lastTick = now;
   const settings = standbySettings();
   if (setup.role === "primary") {
     ownPrimarySince ??= now;
     if (setup.standby) {
-      if (setup.numberCeiling && setup.numberCeiling - (readNumbers().next ?? 1) < 400 && !primaryFenced(link)) {
+      const ledger = sharedValue(link, "queueNumberAllocation");
+      const next = Math.max(readNumbers().next ?? 1, isObject(ledger) ? Number(ledger.next) || 1 : 1);
+      if (setup.numberCeiling && setup.numberCeiling - next < 400 && !primaryFenced(link)) {
         void proposeLeadership({ setup: setup.id, epoch: setup.epoch }, setup.primary, setup.standby)
           .catch(error => console.warn("Standby number reservation:", error.message));
       }
       return;
     }
     if (selecting || fresh(ownPrimarySince, now, testing ? 2_000 : 90_000)) return;
-    if (peersOf(link).some(peer => !peer.sign || !takesForwarded(peer.key, "setup.takeover"))) return;
+    if (peersOf(link).some(peer => !peer.sign || !takesForwarded(peer.key, "setup.shared-saves"))) return;
     const next = availableStandby(link, now);
     if (!next) return;
     selecting = true;
@@ -146,8 +156,9 @@ function takeoverTick(host: LinkHost | null | undefined): void {
 }
 
 function availableStandby(link: LinkState, now: Clock) {
+  const retiring = leadershipOf(link)?.body.retiredStandby;
   const available = peersOf(link).flatMap(peer => {
-    if (!peer.sign || !takesForwarded(peer.key, "setup.takeover")) return [];
+    if (peer.key === retiring || !peer.sign || !takesForwarded(peer.key, "setup.shared-saves")) return [];
     const candidate = candidates.get(peer.key);
     return candidate && fresh(candidate.at, now, testSetupClock() ? 10_000 : 3 * HEARTBEAT_MS) ? [{ peer, ...candidate }] : [];
   });
@@ -165,13 +176,24 @@ function promote(host: LinkHost, position: Position) {
     if (!roster || !prior || typeof setup.numberCeiling !== "number") return null;
     const phones = held(link.docs?.[docKey(setup.sign, "phones")]);
     const word = phones?.body.epoch;
-    const previousNumbers = isObject(prior.body.numbers) ? prior.body.numbers : {};
+    const ledger = sharedValue(link, "queueNumberAllocation");
+    const previousNumbers = isObject(ledger) ? ledger : isObject(prior.body.numbers) ? prior.body.numbers : {};
+    const membership = sharedValue(link, "membershipAndAccess");
+    const accepted = isObject(membership) && membership.epoch === setup.epoch ? membership : null;
+    const names = sharedValue(link, "setupNames");
+    const rosterBoxes = accepted?.boxes ?? roster.body.boxes;
+    const boxes = Array.isArray(rosterBoxes) ? rosterBoxes.filter(fitsPeer).map(cleanPeer).map(peer => {
+      const name = isObject(names) ? names[peer.key] : undefined;
+      return typeof name === "string" ? { ...peer, name } : peer;
+    }) : [];
     const epoch = setup.epoch + 1;
     const envelope = signDoc(link.sign, "leadership", epoch, {
       setup: { id: setup.id, epoch, primary: setup.standby.key }, previous: setup.primary, takeover: true,
-      boxes: roster.body.boxes, left: roster.body.left, moved: roster.body.moved,
-      devices: word === setup.epoch ? phones!.body : prior.body.devices,
-      vouchBlocked: roster.body.vouchBlocked ?? prior.body.vouchBlocked,
+      boxes, left: accepted?.left ?? roster.body.left, moved: accepted?.moved ?? roster.body.moved,
+      devices: accepted?.devices ?? (word === setup.epoch ? phones!.body : prior.body.devices),
+      vouchBlocked: accepted?.vouchBlocked ?? roster.body.vouchBlocked ?? prior.body.vouchBlocked,
+      removalRevisions: isObject(accepted?.fields) ? accepted.fields.removalRevisions : prior.body.removalRevisions,
+      shared: link.shared ?? {}, sharedSaves: true,
       numbers: { ...previousNumbers, next: setup.numberCeiling + 1 },
     });
     const doc = readDoc(envelope);

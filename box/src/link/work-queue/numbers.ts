@@ -23,10 +23,11 @@ import { locked, writeDurablePrivate } from "../files";
 import { KEY, macsOf, mailFor, ownKey, peersOf, removedBoxes } from "../peers/known";
 import { readTold, toldKeys } from "./told";
 import { awaySince, lastFoundAway, PEER_CHECKED, readReach } from "../peers/reach";
-import { followedSetup } from "../setup/record";
+import { followedSetup, requiresStandby } from "../setup/record";
 import { primaryFenced } from "../setup/lease";
 import { leadershipOf } from "../setup/leadership";
-import { readLink } from "../state";
+import { pendingShared, stageShared } from "../setup/shared";
+import { readLink, updateLink } from "../state";
 import { allItems, changeQueues, OWNER, WORK_QUEUE } from "./store";
 import type { Book, Item } from "./store";
 import type { LinkHost } from "../relay/host";
@@ -61,6 +62,7 @@ export interface Numbers {
   through?: string;
   next?: number;
   leadership?: string;
+  allocation?: number;
   /** By ask: the block given, the claims granted with it, and the box it went to (`by`; missing in
    * what an older primary kept). */
   given?: Record<string, { from: number; to: number; granted: Ranges; at: number; by?: string }>;
@@ -133,6 +135,7 @@ function numbersOf(kept: Record<string, unknown>): Numbers {
     ...(typeof kept.through === "string" ? { through: kept.through } : {}),
     ...(typeof kept.next === "number" && Number.isInteger(kept.next) && kept.next > 0 ? { next: kept.next } : {}),
     ...(typeof kept.leadership === "string" ? { leadership: kept.leadership } : {}),
+    ...(typeof kept.allocation === "number" ? { allocation: kept.allocation } : {}),
     ...(isObject(kept.given) ? { given: kept.given as Numbers["given"] } : {}),
     ...(isObject(kept.granted) ? { granted: Object.fromEntries(Object.entries(kept.granted).map(([box, ranges]) => [box, cleanRanges(ranges)])) } : {}),
     leases: cleanRanges(kept.leases),
@@ -321,11 +324,12 @@ function counterOf(kept: Numbers): number {
 export function installNumberAuthority(kept: Numbers, link: LinkState | null | undefined): void {
   const setup = followedSetup(link);
   const numbers = leadershipOf(link)?.body.numbers;
+  const allocation = link?.shared?.queueNumberAllocation;
   if (setup?.role !== "primary" || !isObject(numbers)) return;
   const stamp = `${setup.id}:${setup.epoch}`;
-  if (kept.leadership === stamp) return;
-  const incoming = numbersOf(numbers);
-  kept.next = Math.max(counterOf(kept), incoming.next ?? 1, topOf(kept) + 1);
+  if (kept.leadership === stamp && kept.allocation === allocation?.sequence) return;
+  const incoming = numbersOf(isObject(allocation?.value) ? allocation.value : numbers);
+  kept.next = Math.max(counterOf(kept), incoming.next ?? 1, Number(numbers.next) || 1, topOf(kept) + 1);
   kept.given = incoming.given;
   kept.granted = incoming.granted;
   const me = setup.primary;
@@ -334,6 +338,7 @@ export function installNumberAuthority(kept: Numbers, link: LinkState | null | u
     delete kept.granted[me];
   }
   kept.leadership = stamp;
+  kept.allocation = allocation?.sequence;
 }
 
 // Check once more after taking the ledger lock, in case a different process handed over.
@@ -387,14 +392,17 @@ export function movePast(top: number, { file = NUMBERS_FILE }: { file?: string }
   }, file);
 }
 
-/** The next number for a new item here, or null when it has to wait for one (`primary`: who hands
- * them out, as `primaryOf` says). The first number taken keeps that primary for good. */
+function usesBlocks(link: LinkState | null | undefined): boolean {
+  return requiresStandby(link?.setup) || leadershipOf(link)?.body.takeover === true;
+}
+
+/** Take the next local number, or leave the item waiting for a block. */
 export function takeNumber(primary: Primary, { file = NUMBERS_FILE, now = Date.now(), link = readLink() }: { file?: string; now?: number; link?: LinkState | null } = {}): number | null {
   return changeNumbers(kept => {
     const current = currentNumberAuthority(link, file);
-    if ("self" in primary && (primaryFenced(current) || (current?.setup?.managed && current.setup.role !== "primary"))) return null;
+    if ("self" in primary && current?.setup?.managed && current.setup.role !== "primary") return null;
     notePrimary(kept, primary, current, now);
-    if ("self" in primary) {
+    if ("self" in primary && !usesBlocks(current)) {
       const number = counterOf(kept);
       if (number > (current?.setup?.numberCeiling ?? MOST_NUMBER - 1)) return null;
       kept.next = number + 1;
@@ -470,9 +478,9 @@ export function claimNumbers(primary: Primary, numbers: number[], { file = NUMBE
   if (!claims.length) return { granted: [] };
   return changeNumbers(kept => {
     const current = currentNumberAuthority(link, file);
-    if ("self" in primary && (primaryFenced(current) || (current?.setup?.managed && current.setup.role !== "primary"))) return { granted: null };
+    if ("self" in primary && current?.setup?.managed && current.setup.role !== "primary") return { granted: null };
     notePrimary(kept, primary, current, now);
-    if ("self" in primary) return { granted: grantOn(kept, "self", claims, {}, current?.setup?.numberCeiling) };
+    if ("self" in primary && !usesBlocks(current)) return { granted: grantOn(kept, "self", claims, {}, current?.setup?.numberCeiling) };
     const highest = claims[claims.length - 1][1];
     kept.leases = kept.leases.map(([from, to]): [number, number] => [Math.max(from, highest + 1), to]).filter(([from, to]) => from <= to);
     // (A new ask, so the claims go with it even if one without them was sent already.)
@@ -484,10 +492,10 @@ export function claimNumbers(primary: Primary, numbers: number[], { file = NUMBE
 
 /** What goes to the primary now: the ask under way, if it wasn't sent in the last half minute
  * (kept as sent before it goes), with the highest number this box used or holds (`top`). */
-export function askToSend({ file = NUMBERS_FILE, now = Date.now() }: { file?: string; now?: number } = {}): { id: string; count: number; claims?: Ranges; restores?: Ranges; own?: true; top?: number } | null {
+export function askToSend({ file = NUMBERS_FILE, now = Date.now(), retry = ASK_AGAIN }: { file?: string; now?: number; retry?: number } = {}): { id: string; count: number; claims?: Ranges; restores?: Ranges; own?: true; top?: number } | null {
   const asked = changeNumbers(kept => {
     const asking = kept.asking;
-    if (!asking || (asking.sent !== undefined && now - asking.sent < ASK_AGAIN)) return null;
+    if (!asking || (asking.sent !== undefined && now - asking.sent < retry)) return null;
     asking.sent = now;
     return { id: asking.id, count: asking.count, ...(asking.claims?.length ? { claims: asking.claims, own: true as const } : {}), ...(asking.restores?.length ? { restores: asking.restores } : {}) };
   }, file);
@@ -520,19 +528,13 @@ export function giveBlock(by: string, ask: unknown, { file = NUMBERS_FILE, now =
   const claims = cleanRanges(ask.claims);
   const top = typeof ask.top === "number" && Number.isInteger(ask.top) && ask.top > 0 && ask.top < MOST_NUMBER ? ask.top : 0;
   const id = ask.id;
-  return changeNumbers(kept => {
-    const link = file === NUMBERS_FILE ? readLink() : null;
-    if (primaryFenced(link) || (link?.setup?.managed && link.setup.role !== "primary")) return null;
-    installNumberAuthority(kept, link);
-    kept.primary ??= "self";
-    // (Past what the asking box used or holds: one that numbered on its own before, or numbers this
-    // box lost with its file.)
+  const said = { own: ask.own === true, restores: cleanRanges(ask.restores) };
+  function allocate(kept: Numbers, ceiling?: number) {
     if (top && !kept.given?.[id]) kept.next = Math.max(counterOf(kept), cappedTop(top) + 1);
     const given = kept.given?.[id];
-    if (given) return { id, from: given.from, to: given.to, granted: given.granted ?? [] };
-    const ceiling = link?.setup?.numberCeiling;
-    if (ceiling !== undefined && counterOf(kept) + count - 1 > ceiling) return null;
-    const granted = grantOn(kept, by, claims, { own: ask.own === true, restores: cleanRanges(ask.restores) },
+    if (given) return given.by && given.by !== by ? null : { id, from: given.from, to: given.to, granted: given.granted ?? [] };
+    if (counterOf(kept) + count - 1 > (ceiling ?? MOST_NUMBER - 1)) return null;
+    const granted = grantOn(kept, by, claims, said,
       ceiling === undefined ? undefined : ceiling - count);
     const from = counterOf(kept);
     const to = from + count - 1;
@@ -540,6 +542,37 @@ export function giveBlock(by: string, ask: unknown, { file = NUMBERS_FILE, now =
     const all = Object.entries({ ...(kept.given ?? {}), [id]: { from, to, granted, at: now, by } });
     kept.given = Object.fromEntries(all.sort((a, b) => a[1].at - b[1].at).slice(-MOST_GIVEN));
     return { id, from, to, granted };
+  }
+
+  return changeNumbers(kept => {
+    const current = file === NUMBERS_FILE ? readLink() : null;
+    if (current?.setup?.managed && current.setup.role !== "primary") return null;
+    installNumberAuthority(kept, current);
+    if (!usesBlocks(current)) {
+      kept.primary ??= "self";
+      return allocate(kept);
+    }
+    let answer: ReturnType<typeof allocate> = null;
+    updateLink(link => {
+      if (!link?.setup?.standby || followedSetup(link)?.role !== "primary" || primaryFenced(link)) return null;
+      if (by !== link.setup.primary && !peersOf(link).some(peer => peer.key === by)) return null;
+      const ledger = { ...kept };
+      installNumberAuthority(ledger, link);
+      // After promotion and rotation the accepted asks still get their original block.
+      if (ledger.given?.[id]) {
+        answer = allocate(ledger);
+        return null;
+      }
+      if (ledger.granted?.self) {
+        ledger.granted = { ...ledger.granted, [link.setup.primary]: ledger.granted.self };
+        delete ledger.granted.self;
+      }
+      if (pendingShared(link, "queueNumberAllocation")) return null;
+      if (!allocate(ledger, link.setup.numberCeiling)) return null;
+      const { next, given, granted } = ledger;
+      return stageShared(link, "queueNumberAllocation", { next, given, granted }) !== null ? link : null;
+    }, { durable: true });
+    return answer;
   }, file);
 }
 
@@ -669,7 +702,7 @@ export function reclaimWaiting(primary: Primary = primaryOf(), options: { file?:
   const asked = kept.asking?.claims ?? [];
   const wanted = waiting.flatMap(item => (item.wanted !== undefined && !inRanges(asked, item.wanted) ? [item.wanted] : []));
   const restores = waiting.flatMap(item => (item.number !== undefined && item.wanted !== undefined && !inRanges(asked, item.wanted) ? [item.wanted] : []));
-  if ("self" in primary) {
+  if ("self" in primary && !(options.file === undefined && usesBlocks(readLink()))) {
     const granted = wanted.length ? claimNumbers(primary, wanted, { ...options, restores }).granted : [];
     changeQueues(book => numberWaiting(book, primary, { granted: granted ?? [], claimed: rangesOf(wanted) }, options), undefined, { onItsOwn: true });
     return true;
@@ -694,8 +727,15 @@ export function pushNumbers(host: Pick<LinkHost, "send" | "welcomed"> | null | u
   }
   if (!host?.welcomed || !link || !readNumbers().asking) return;
   const primary = primaryOf(link);
+  if ("self" in primary && usesBlocks(link)) {
+    const asking = readNumbers().asking;
+    if (!asking || !link.setup) return;
+    const block = giveBlock(link.setup.primary, { ...asking, own: true, top: topOf() });
+    if (block) blockArrived(block, primary);
+    return;
+  }
   if (!("peer" in primary)) return;
-  const ask = askToSend();
+  const ask = askToSend({ retry: link.setup?.standby ? 2_000 : ASK_AGAIN });
   if (!ask) return;
   const bytes = mailFor(primary.via ?? primary.peer, { workQueue: { ask, ...(primary.via ? { to: primary.peer.key } : {}) }, at: Date.now() }, link);
   if (bytes) try { host.send(bytes); } catch {}

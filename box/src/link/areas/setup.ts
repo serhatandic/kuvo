@@ -8,7 +8,7 @@ import { computerInSentence } from "../computer-name";
 
 import fs from "node:fs";
 import path from "node:path";
-import { parsed, type Body } from "../../shared/json";
+import { isObject, parsed, type Body } from "../../shared/json";
 import { writePrivate } from "../files";
 import { RUN } from "../home";
 import { followed } from "../follow";
@@ -17,6 +17,7 @@ import { writeCard } from "../setup/card";
 import { appsOf, ATTACHED_FILE, foundOf, judgeComputer, oursNow } from "../setup/judge";
 import { addElsewhere, mainElsewhere, memberHosts } from "../setup/main-only";
 import { ownMachinesRoute } from "../mac/own-machines";
+import { changeShared, PENDING_SAVE, waitShared } from "../setup/shared";
 import { followedSetup } from "../setup/record";
 import { setupView } from "../setup/view";
 import { engineRoute } from "../server/forward";
@@ -24,6 +25,7 @@ import { onLinkWritten, readLink } from "../state";
 import { isWelcomed, setWelcomed } from "../setup/welcomed";
 import { firstRunReady, type Listed } from "../setup/ready";
 import { call } from "../engine/client";
+import { verifyBoxes } from "../updates/update";
 import { plainName } from "../../shared/text";
 import { listsHere } from "../work/model-rule";
 import { readEndedSignIns } from "./accounts";
@@ -128,4 +130,33 @@ export async function* memberComputersRoute(context: RouteContext): AsyncGenerat
   const hosts = memberHosts(link);
   if (hosts) return yield* json(200, hosts);
   return yield* json(503, { message: "This computer can't list your computers yet. Try again in a moment." });
+}
+
+export async function* saveLocalSetup(context: RouteContext): AsyncGenerator<AnswerPiece> {
+  const { request, json } = context;
+  if (!request.fromHolder || request.method !== "POST") return yield* json(403, {});
+  const given = parsed(request.body);
+  if (!isObject(given) || !isObject(given.value)) return yield* json(400, { message: "Send the setup settings to save." });
+  const kind = given.kind;
+  if (kind !== "setupUsageDisplay" && kind !== "setupSecurityAndReleaseChoice") return yield* json(400, {});
+  const value = given.value;
+  if (kind === "setupUsageDisplay" && (!isObject(value.units) || typeof value.imported !== "boolean")) return yield* json(400, {});
+  if (kind === "setupSecurityAndReleaseChoice") {
+    try {
+      if (typeof value.signed !== "string" || value.signed.length > 128_000) return yield* json(400, {});
+      const manifest = verifyBoxes(Buffer.from(value.signed, "base64").toString());
+      if (manifest.version !== value.version || manifest.pack.sha256 !== value.sha256) return yield* json(400, {});
+    } catch {
+      return yield* json(400, { message: "This release could not be verified." });
+    }
+  }
+  const expected = given.sequence;
+  const save = changeShared(kind, (_before, link) => {
+    if (!link.setup || link.setup.id !== given.id || link.setup.epoch !== given.epoch
+      || (link.sharedSetup === given.id ? link.shared?.[kind]?.sequence ?? 0 : 0) !== expected) return undefined;
+    return value;
+  });
+  if (!save) return yield* json(409, { message: "The setup changed or a save is already pending." });
+  if (await waitShared(kind, save.id, save.epoch, save.sequence) === "pending") return yield* json(202, { pending: true, message: PENDING_SAVE });
+  return yield* json(200, {});
 }

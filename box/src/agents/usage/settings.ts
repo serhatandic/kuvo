@@ -12,6 +12,7 @@
 import { createHash, randomBytes } from "node:crypto"
 import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs"
 import { dirname } from "node:path"
+import { askSetupSave, localSetupValue, type LocalSetupValue } from "../../shared/setup-local"
 
 import { upgradeFormat, UnsupportedFormatVersion } from "../../shared/format-version"
 import { notificationAvailability } from "./notices"
@@ -301,6 +302,7 @@ export class UsageSettings {
   setup?: string | null
   /** The highest version seen, so a change counts on from it whatever this clock says. */
   private highest = 0
+  private sharedRevision?: string
   private listeners: ((units: SettingsUnit[]) => void)[] = []
   /** Who made a change before the link named this box: two such never tie. */
   private readonly unnamed = "?" + randomBytes(8).toString("hex")
@@ -309,6 +311,7 @@ export class UsageSettings {
     private readonly file?: string,
     private readonly now: () => number = Date.now,
     public self: () => string = () => "",
+    private readonly run?: string,
   ) {
     if (!file) return
     try {
@@ -327,6 +330,36 @@ export class UsageSettings {
       if (error instanceof UnsupportedFormatVersion) throw error
     }
     for (const unit of Object.values(this.units)) if (!unit.stamp.imported) this.highest = Math.max(this.highest, unit.stamp.v)
+  }
+
+  shared(): LocalSetupValue | null {
+    return this.run ? localSetupValue(this.run, "setupUsageDisplay") : null
+  }
+
+  followShared() {
+    const shared = this.shared()
+    if (!shared || !shared.sequence) return
+    const revision = `${shared.id}:${shared.epoch}:${shared.sequence}`
+    if (revision === this.sharedRevision) return
+    this.sharedRevision = revision
+    const value = shared.value as { units?: unknown; imported?: boolean } | undefined
+    this.units = unitsFrom(value?.units)
+    this.imported = value?.imported === true
+    for (const unit of Object.values(this.units)) this.highest = Math.max(this.highest, unit.stamp.v)
+    this.changed([...SETTINGS_UNITS], false)
+  }
+
+  draft(): UsageSettings {
+    const draft = new UsageSettings(undefined, this.now, this.self)
+    draft.units = this.kept()
+    draft.imported = this.imported
+    draft.highest = this.highest
+    return draft
+  }
+
+  saveDraft(shared: LocalSetupValue, draft: UsageSettings) {
+    return askSetupSave(this.run!, { kind: "setupUsageDisplay", id: shared.id, epoch: shared.epoch, sequence: shared.sequence,
+      value: { units: draft.kept(), imported: draft.imported } })
   }
 
   /** Told each time parts change (here, or from another of your computers). */
@@ -513,7 +546,18 @@ const answer = (settings: UsageSettings, extra: Record<string, unknown> = {}) =>
  * `choices`: the models Codex's fallback model may be now.
  */
 export async function settingsRoutes(settings: UsageSettings, choices: () => string[], method: string, rest: string[], body: () => Promise<any>): Promise<Response> {
+  settings.followShared()
   if (!rest.length && method === "GET") return answer(settings)
+  const shared = settings.shared()
+  if (shared && !shared.primary) return json({ message: "Change your setup's usage settings on its primary." }, 409)
+  const draft = shared ? settings.draft() : settings
+  const saved = async (extra: Record<string, unknown>) => {
+    if (!shared) return answer(settings, extra)
+    const result = await settings.saveDraft(shared, draft)
+    if (result.status !== 200) return json({ message: result.message, ...(result.status === 202 ? { pending: true } : {}) }, result.status)
+    settings.followShared()
+    return answer(settings, extra)
+  }
   if (!rest.length && method === "PUT") {
     const given = await body().catch(() => undefined)
     if (!given || typeof given !== "object" || Array.isArray(given)) return json({ message: "Say which settings change, each whole." }, 400)
@@ -521,9 +565,9 @@ export async function settingsRoutes(settings: UsageSettings, choices: () => str
       return json({ message: "This model's prices aren't available now. Choose another model or None." }, 400)
     }
     const { knows, based, ...parts } = given as Record<string, unknown>
-    const changed = settings.change(parts, knowsFrom(knows), based && typeof based === "object" && !Array.isArray(based) ? (based as Record<string, unknown>) : undefined)
+    const changed = draft.change(parts, knowsFrom(knows), based && typeof based === "object" && !Array.isArray(based) ? (based as Record<string, unknown>) : undefined)
     if ("message" in changed) return json({ message: changed.message }, 400)
-    return answer(settings, changed.stale.length ? { stale: changed.stale } : {})
+    return changed.changed.length ? saved(changed.stale.length ? { stale: changed.stale } : {}) : answer(settings, changed.stale.length ? { stale: changed.stale } : {})
   }
   if (rest.length === 1 && rest[0] === "import" && method === "POST") {
     const given = await body().catch(() => undefined)
@@ -531,7 +575,8 @@ export async function settingsRoutes(settings: UsageSettings, choices: () => str
     // (A fallback model this box can't price with now isn't one to take.)
     const { codexFallback, ...rest } = given as Record<string, unknown>
     const usable = codexFallback === null || (typeof codexFallback === "string" && choices().includes(codexFallback))
-    return answer(settings, { took: settings.take(usable ? { ...rest, codexFallback } : rest) })
+    if (settings.imported) return answer(settings, { took: [] })
+    return saved({ took: draft.take(usable ? { ...rest, codexFallback } : rest) })
   }
   return json({ message: "Not available for this agent." }, 404)
 }

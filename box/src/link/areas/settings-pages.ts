@@ -10,6 +10,8 @@
 // Mac's Software Update) is offered only to a client there (`fromApp`: the app beside its box,
 // over its own server), and said plainly elsewhere.
 
+import { requiresStandby } from "../setup/record";
+import { PENDING_SAVE, submitShared, waitShared } from "../setup/shared";
 import fs from "node:fs";
 import path from "node:path";
 import { listRoute, LIST_ROUTE } from "../lists/sessions";
@@ -56,11 +58,11 @@ import { MAC_LINK_FILE } from "../mac/link";
 import { letDevicesConnect } from "../mac/routes";
 import { freshBoxPermissions } from "../permissions";
 import type { BoxPermissions } from "../../shared/routes/box";
-import { macLink } from "../state";
+import { macLink, readLink } from "../state";
 import { agentsWorking, newerVersion, offerChangesEngine, offerFailedTwice, offerHeld, updateRoute, updateStatus } from "../updates/update";
 import { boxAnswers } from "../mac/keeper-runs";
 import { askHolder, heldRead, holdsVault } from "../vault/holder";
-import { hasZoneRules, readZoneSetting, setZone, ZONE_FILE, zoneFilesFor, zoneHere } from "../zone/setting";
+import { hasZoneRules, readZoneSetting, setZone, zoneChoice, ZONE_FILE, zoneFilesFor, zoneHere } from "../zone/setting";
 import { ownClock } from "../../shared/zone";
 import type { AnswerPiece, RouteContext } from "../server/context";
 
@@ -655,6 +657,17 @@ async function clockChange(_context: RouteContext, at: SettingItem, value: unkno
   // picked again is nothing to write either, but where it's only carried from before: then it's yours.)
   if (value === OWN_CLOCK || (value === at.value && !readZoneSetting()?.carried)) return null;
   try {
+    const setup = readLink()?.setup;
+    if (requiresStandby(setup)) {
+      if (setup?.role !== "primary") return { status: 409, message: "Change your setup's time zone on its primary." };
+      if (!setup.standby) return { status: 503, message: PENDING_SAVE };
+      const choice = zoneChoice(String(value));
+      if (!choice) return { status: 400, message: "This computer doesn't know that time zone." };
+      const save = submitShared("setupTimeZone", choice);
+      if (!save) return { status: 409, message: "A time zone change is already waiting to be saved." };
+      if (await waitShared("setupTimeZone", save.id, save.epoch, save.sequence) === "pending") return { status: 202, message: PENDING_SAVE };
+      return null;
+    }
     return setZone(String(value)) ? null : { status: 400, message: "This computer doesn't know that time zone." };
   } catch {
     return { status: 503, message: "Your time zone couldn't be changed here just now: try again in a moment." };

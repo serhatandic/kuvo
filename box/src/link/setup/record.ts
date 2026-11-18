@@ -31,6 +31,7 @@ export interface SetupRecord extends SetupWord {
   role: "primary" | "member";
   aside?: true;
   managed?: true;
+  sharedSaves?: true;
   standby?: { key: string; sign: string };
   numberCeiling?: number;
   conflict?: { primary: string; epoch: number };
@@ -97,3 +98,7 @@ export function startsFromOthers(link: LinkState | null | undefined): { value: "
   const main = setup ? setup.role === "primary" : IS_MAC;
   return { value, default: main ? "off" : "on" };
 }
+
+/** A delegated setup waits for its next standby after promotion or retirement. */
+export const requiresStandby = (setup: SetupRecord | null | undefined): boolean =>
+  Boolean(setup?.standby || setup?.sharedSaves);

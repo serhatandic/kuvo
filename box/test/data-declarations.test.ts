@@ -8,6 +8,9 @@ import { DATA_DECLARATIONS } from "../src/shared/data-declarations";
 const REQUIRED_KINDS = [
   "membershipAndAccess",
   "setupLeadership",
+  "setupReplica",
+  "setupSaveOutbox",
+  "setupNames",
   "setupStandbyLease",
   "setupStandbySettings",
   "setupSecurityAndReleaseChoice",

@@ -38,13 +38,14 @@ import { forwardAct } from "../work-queue/forward";
 import { sshActions } from "../add/flow";
 import { KEEP_UP_FILE, keepingUp } from "../add/keep-up";
 import { tryFollowers } from "../add/tries";
+import { updateAccess } from "../setup/access";
+import { PENDING_SAVE, waitShared } from "../setup/shared";
 import { allowVouching, vouchBlockOf } from "../phones";
 import { blockedWords } from "../peers/devices";
 import { PRIMARY_UNLINK } from "../setup/leadership";
 import { mainElsewhere } from "../setup/main-only";
 import { followedSetup } from "../setup/record";
 import { fromLocalApp } from "../server/context";
-import { updateLink } from "../state";
 import { macLink, readLink } from "../state";
 import type { LinkState } from "../state";
 import { boxVersion } from "../updates/update";
@@ -328,7 +329,7 @@ async function* manage(context: RouteContext, key: string, action: string | unde
   if (why) return yield* json(409, { message: why });
   const writer = writerOf(link)!;
   if (writer.here) {
-    const done = what === "rename" ? renameHere(key, name!) : await removeComputerHere(key);
+    const done = what === "rename" ? await renameHere(key, name!) : await removeComputerHere(key);
     return yield* json(done.status, done.value);
   }
   // (Handed to the box that writes it: it does it as its own client's, and says how it went.)
@@ -362,7 +363,12 @@ async function* allowDevices(context: RouteContext, key: string): AsyncGenerator
   if (computer.here) return yield* json(409, { message: `${here} is the computer you're asking: it adds its own app itself.` });
   if (computer.via !== "relay") return yield* json(409, { message: `${computer.name} isn't one of ${here}'s own computers, so it adds none of your devices.` });
   // (Not kept from it: the same answer. What was removed stays removed: its app makes a new key.)
-  updateLink(kept => (kept && followedSetup(kept)?.role === "primary" && allowVouching(kept, key) ? kept : null));
+  const { save, busy } = updateAccess(kept => (kept && followedSetup(kept)?.role === "primary"
+    && allowVouching(kept, key, Boolean(kept.setup?.standby)) ? kept : null));
+  if (busy) return yield* json(409, { message: "An access change is already waiting to be saved." });
+  if (save && await waitShared("membershipAndAccess", save.id, save.epoch, save.sequence) === "pending") {
+    return yield* json(202, { pending: true, message: PENDING_SAVE });
+  }
   return yield* json(200, {});
 }
 

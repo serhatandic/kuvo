@@ -8,12 +8,13 @@
 // your own computers.
 // Platform: the same on macOS and Linux.
 
+import { localSetupValue } from "../../shared/setup-local";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { isObject } from "../../shared/json";
 import { listOf, writePrivate } from "../files";
-import { REAL_BOX, UPDATES } from "../home";
+import { REAL_BOX, RUN, UPDATES } from "../home";
 import { watchFolders } from "../follow";
 import { readPeerAgents } from "../peers/directory";
 import { mailFor, peersOf } from "../peers/known";
@@ -57,6 +58,7 @@ export interface Held {
   version: string;
   boxes: string;
   pack: string;
+  sha256: string;
   size: number;
 }
 
@@ -77,7 +79,7 @@ export function heldRelease(keys: string[] = ownWays().keys ?? UPDATE_KEYS, fold
       packChecked = { stamp, sha: manifest.pack.sha256, ok: crypto.createHash("sha256").update(fs.readFileSync(pack)).digest("hex") === manifest.pack.sha256 };
     }
     if (!packChecked.ok) return null;
-    return { version: manifest.version, boxes, pack, size: stat.size };
+    return { version: manifest.version, boxes, pack, sha256: manifest.pack.sha256, size: stat.size };
   } catch { return null; }
 }
 
@@ -143,7 +145,10 @@ export function watchHeld(changed: () => void): { close: () => void } {
 /** What this box tells its peers of its Kuvo (`computer.kuvo`, `computer.release`). */
 export function fleetFacts(): { kuvo?: string; release?: string } {
   const kuvo = boxVersion(), held = heldRelease();
-  return { ...(kuvo ? { kuvo } : {}), ...(held ? { release: held.version } : {}) };
+  const setup = localSetupValue(RUN, "setupSecurityAndReleaseChoice");
+  const choice = isObject(setup?.value) ? setup.value : null;
+  const published = held && (!setup || held.version === kuvo || (held.version === choice?.version && held.sha256 === choice?.sha256));
+  return { ...(kuvo ? { kuvo } : {}), ...(published ? { release: held.version } : {}) };
 }
 
 // ---- Pulling a newer one ----

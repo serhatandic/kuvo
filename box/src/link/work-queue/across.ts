@@ -15,8 +15,10 @@ import { computerName } from "../peers/computer-name";
 import { readPeerAgents } from "../peers/directory";
 import { ownKey, peersOf, removedBoxes } from "../peers/known";
 import { awaySince, readReach } from "../peers/reach";
+import { requiresStandby } from "../setup/record";
+import { sharedValue } from "../setup/shared";
 import { readLink } from "../state";
-import { followsBy, labels as labelsHere, LABELS_FILE, takePrimaryLabels, type Label } from "./labels";
+import { followsBy, labels as labelsHere, LABELS_FILE, setupLabels, takePrimaryLabels, type Label } from "./labels";
 import { isClosed } from "./statuses";
 import { stripLabel } from "./ops";
 import { handArrived, handedBack, sendHandings } from "./hand";
@@ -28,7 +30,7 @@ import { writerAct } from "../peers/manage";
 import { mailsFor, takePart } from "./parts";
 import { movePast, ownSince, primaryOf, takeNumbersMail, topOf } from "./numbers";
 import { noteSetupNow } from "../setup/lead";
-import { allItems, OWNER, queueFollowers, refNames, WORK_QUEUE, type Item, type ItemRef } from "./store";
+import { allItems, changeQueues, OWNER, queueFollowers, refNames, WORK_QUEUE, type Item, type ItemRef } from "./store";
 import { doneByRead, SEEN_FILE, seenOf, withSeen } from "./github";
 import { forgetTold, keepTold, MOST_TOLD, MOST_TOLD_DONE, patchTold, readTold, TOLD, toldItemOf, toldKeys, toldOf, type Numbering, type ToldItem } from "./told";
 import { locked, writePrivate } from "../files";
@@ -127,6 +129,23 @@ const marks = () => [path.join(WORK_QUEUE, "queues"), LABELS_FILE, path.join(WOR
 let titles = new Map<string, unknown>();
 let titlesAt = 0;
 
+let labelRevision = "";
+function reconcileSetupLabels(link: LinkState) {
+  const selected = setupLabels(sharedValue(link, "queueLabels"));
+  if (!selected) return;
+  const revision = `${link.sharedSetup}:${link.shared?.queueLabels?.sequence}`;
+  if (labelRevision === revision) return;
+  const removed = new Set(selected.removed);
+  if (removed.size) changeQueues(book => {
+    for (const item of book.items()) if (item.labels.some(id => removed.has(id))) {
+      item.labels = item.labels.filter(id => !removed.has(id));
+    }
+  }, undefined, { onItsOwn: true });
+  labelRevision = revision;
+  telling = null;
+  for (const tell of queueFollowers) tell();
+}
+
 /** This box's Work Queue told to each computer that takes it, on its rounds: worked out again when
  * a queue changes, and each minute (who's at work changes it too); to one computer once in 15
  * seconds at most, again each minute until it says it has it, and nothing while it's the same and
@@ -134,6 +153,7 @@ let titlesAt = 0;
  * conversations go first (`hand.ts`), whatever's told. */
 export async function pushQueues(host: Pick<LinkHost, "send">, link: LinkState | null = readLink(), targets: Target[], now = Date.now()): Promise<void> {
   if (!link?.key) return;
+  reconcileSetupLabels(link);
   const peers = peersOf(link);
   // What's kept of computers you removed goes.
   const removed = removedBoxes(link);
@@ -229,7 +249,7 @@ function takeTold(sender: MailSender, given: unknown, reply: (payload: Record<st
   if (before?.primary?.key !== told.primary?.key || before?.primary?.since !== told.primary?.since) noteSetupNow(Date.now(), { soon: 0 });
   const primary = primaryOf(link);
   if ("self" in primary) movePast(Math.max(told.top ?? 0, ...told.items.map(item => item.number ?? 0)));
-  else if ("peer" in primary && (primary.via ? primary.via.key === sender.key && told.primary?.key === primary.peer.key : primary.peer.key === sender.key)) {
+  else if (!requiresStandby(link?.setup) && "peer" in primary && (primary.via ? primary.via.key === sender.key && told.primary?.key === primary.peer.key : primary.peer.key === sender.key)) {
     // (Read only when a label it no longer has is one this box might keep.)
     let counts: Map<string, number> | null = null;
     takePrimaryLabels(told.labels, id => {

@@ -12,6 +12,8 @@ import { isObject } from "../../shared/json";
 import { plainName } from "../../shared/text";
 import { MOST_DOC } from "../documents/format";
 import { textOf, locked, writePrivate } from "../files";
+import { sharedValue } from "../setup/shared";
+import { readLink } from "../state";
 import { BOTS, RUN } from "../home";
 import type { Personality as PersonalityShape } from "../../shared/routes/personalities";
 
@@ -119,6 +121,10 @@ const personalitySteps = [(library: GivenLibrary) => library];
 export const personalityLibraryVersion = personalitySteps.length;
 
 export function readPersonalities(file = PERSONALITIES_FILE): PersonalityLibrary {
+  if (file === PERSONALITIES_FILE) {
+    const shared = sharedValue(readLink(), "setupPersonalities");
+    if (isObject(shared)) return mergePersonalities(shared);
+  }
   try {
     const kept: GivenLibrary & { kuvo?: unknown } = JSON.parse(fs.readFileSync(file, "utf8"));
     return mergePersonalities(upgradeFormat("Personality library", kept?.kuvo, kept, personalitySteps));

@@ -24,6 +24,8 @@ export interface LinkRequest {
   desktop?: boolean;
   /** Proved, over the vault's socket, to hold the vault's unlock key (vault/holder.ts): a client. */
   vaultClient?: boolean;
+  /** Authenticated with the local holder socket key. */
+  fromHolder?: true;
 }
 
 /** Who asks: a phone, by its static key and where it is on the relay; nothing for this Mac's app. */

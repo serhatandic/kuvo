@@ -5,8 +5,10 @@ import { noteDocsChanged } from "./changed";
 import { IS_MAC } from "../home";
 import { forgetMacsAgents, writeAgents } from "../peers/agents";
 import { mailFor } from "../peers/known";
-import { readPersonalities } from "../personalities/library";
-import { takePersonalities } from "../personalities/take";
+import { personalityFollowers, readPersonalities } from "../personalities/library";
+import { retellBots, takePersonalities } from "../personalities/take";
+import { sharedValue } from "../setup/shared";
+import { publishZoneSetting, readZoneSetting } from "../zone/setting";
 import { writeCard } from "../setup/card";
 import { liveLink, updateLink } from "../state";
 import { confirmPhoneMembership } from "./phone-sync";
@@ -41,9 +43,11 @@ export async function receiveDocs(sender: DocSender, docs: DocsMail, host: LinkH
   const before = readPersonalities();
   // (Set inside updateLink's change, which TypeScript can't follow: hence the `as`.)
   let work = null as DocsDone | null, library = before, setup = "";
+  let shared: LinkState["shared"];
   const link = updateLink(link => {
     if (!link) return null;
     setup = JSON.stringify(link.setup ?? null);
+    shared = link.shared;
     const state: DocsState = { link, library: before, parts: docParts };
     work = docsWork(state, sender, docs);
     library = state.library;
@@ -54,14 +58,26 @@ export async function receiveDocs(sender: DocSender, docs: DocsMail, host: LinkH
   // Its setup changed with them (taken, or set aside): its card says so now.
   if (JSON.stringify(link.setup ?? null) !== setup) try { writeCard(); } catch {}
   await afterDocs(work, before, library, link, host);
+  if (link.setup?.role === "primary" && shared?.membershipAndAccess !== link.shared?.membershipAndAccess) noteDocsChanged();
+  if (shared?.setupTimeZone !== link.shared?.setupTimeZone && sharedValue(link, "setupTimeZone")) {
+    const zone = readZoneSetting();
+    if (zone) publishZoneSetting(zone);
+  }
+  if (shared?.setupPersonalities !== link.shared?.setupPersonalities && sharedValue(link, "setupPersonalities")) {
+    const now = readPersonalities();
+    const prior = new Map([...before.personalities, ...before.removed].map(entry => [entry.id, JSON.stringify(entry)]));
+    const changed = [...now.personalities, ...now.removed].filter(entry => prior.get(entry.id) !== JSON.stringify(entry)).map(entry => entry.id);
+    for (const tell of personalityFollowers) tell();
+    if (changed.length) retellBots(changed).catch(() => {});
+  }
 }
 
 async function afterDocs(work: DocsDone, before: PersonalityLibrary, library: PersonalityLibrary, link: LinkState, host: LinkHost | null | undefined): Promise<void> {
+  sendDocs(host, link, work.send);
   host?.keepOnly?.(new Set((link.phones ?? []).map(phone => phone.key)));
   if (library !== before) await takePersonalities(library).catch(() => {});
   for (const mac of work.left) forgetMacsAgents(mac, link);
   writeAgents(link);
-  sendDocs(host, link, work.send);
 }
 
 // Something changed here, or this box just connected (`greet`): its own documents that changed go

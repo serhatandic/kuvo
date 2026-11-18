@@ -261,8 +261,9 @@ test("failure bench: only the standby takes over across a split and the old prim
   await delay(800);
   await see(b, 2, a);
   const blocked = await a.route("DELETE", `kuvo/computers/${c.key}`);
-  assert.equal(blocked.status, 409);
-  assert.match(blocked.value.message, /waiting for its standby/);
+  assert.equal(blocked.status, 202);
+  assert.equal(blocked.value.pending, true);
+  assert.ok(a.read().sharedPending.membershipAndAccess);
   const work = await a.route("POST", "kuvo/work-queue/items", { title: "Work survives the split" }, true);
   assert.equal(work.status, 200);
   const stale = a.read();
@@ -284,7 +285,7 @@ test("failure bench: only the standby takes over across a split and the old prim
   await see(b, 4, b);
   assert.equal(b.read().setup.standby.key, c.key);
   await until("new primary leased", () => b.lease(4, c), t.signal);
-  assert.equal((await a.route("POST", "kuvo/phones/remove", { phones: [{ key: phone, pairing }] })).status, 503);
+  assert.equal((await a.route("POST", "kuvo/phones/remove", { phones: [{ key: phone, pairing }] })).status, 409);
 
   // Simulate shared state kept only by the old primary, separately from its local item.
   await a.stop("SIGTERM");
@@ -353,4 +354,119 @@ test("failure bench: the standby retires before its membership is removed", { ti
   assert.equal(link.readDoc(c.read().leadership[3]).origin, b.sign);
   assert.ok(a.read().left.includes(b.key));
   await until("standby removal received", () => b.read().setup?.id !== a.read().setup.id, t.signal);
+});
+
+const rename = (a, target, name) => a.route("PATCH", `kuvo/computers/${target.key}`, { name });
+const setupName = async (box, key) => (await box.route("GET", "kuvo/setup")).value.computers.find(each => each.key === key)?.name;
+
+test("failure bench: a saved change survives killing the primary before it publishes", { timeout: 45_000 }, async t => {
+  const { a, b, c, relay, see, phone, pairing } = await standbyNetwork(t);
+  // Prevent the third computer from learning the change from the old primary.
+  const reconnect = [relay.pause(a.address, c.address), relay.pause(b.address, c.address)];
+  const done = await rename(a, c, "Accepted name");
+  assert.deepEqual(done, { status: 200, value: { name: "Accepted name" } });
+  assert.equal(b.read().shared.setupNames.value[c.key], "Accepted name");
+  assert.equal(await setupName(c, c.key), c.name);
+  assert.equal((await a.route("POST", "kuvo/phones/remove", { phones: [{ key: phone, pairing }] }, true)).status, 200);
+  assert.deepEqual(b.read().shared.membershipAndAccess.value.devices.removed, [{ key: phone, pairing }]);
+  await a.stop();
+  await b.stop("SIGTERM");
+  const saved = b.read();
+  // Drop the ordinary roster publication while retaining the signed leadership
+  // certificate and the durable replica. Takeover must recover the accepted name.
+  delete saved.docs?.[`${a.sign} peers`];
+  delete saved.docs?.[`${a.sign} phones`];
+  fs.writeFileSync(path.join(b.run, "link.json"), JSON.stringify(saved));
+  b.start();
+  await until("standby restarted", () => relay.has(b.address), t.signal);
+  reconnect.forEach(resume => resume());
+  await delay(450);
+  b.clock(3 * HOUR + 5_000);
+  await see(b, 3, b);
+  await see(c, 3, b);
+  assert.equal(await setupName(b, c.key), "Accepted name");
+  assert.equal(await setupName(c, c.key), "Accepted name");
+  assert.equal(b.read().phones.some(device => device.key === phone), false);
+  assert.ok(b.read().removed.some(device => device.key === phone && device.pairing === pairing));
+});
+
+test("failure bench: a save waits durably through standby and primary restarts", { timeout: 45_000 }, async t => {
+  const { a, b, c } = await standbyNetwork(t);
+  await b.stop("SIGTERM");
+  const usage = {
+    kind: "setupUsageDisplay", id: a.read().setup.id, epoch: 2, sequence: 0,
+    value: { units: { codexFallback: { value: "gpt-test", stamp: { v: 1, by: a.key } } }, imported: true },
+  };
+  assert.equal((await a.route("POST", "kuvo/setup/save-local", usage, true)).status, 403);
+  const [answer, display, label] = await Promise.all([
+    rename(a, c, "Waits on disk"), link.askSetupSave(a.run, usage),
+    a.route("POST", "kuvo/work-queue/labels", { add: "Saved label" }, true),
+  ]);
+  assert.equal(label.status, 202);
+  assert.equal(label.value.pending, true);
+  assert.equal(display.status, 202);
+  assert.equal(a.read().shared?.setupUsageDisplay, undefined);
+  assert.equal(answer.status, 202);
+  assert.equal(answer.value.pending, true);
+  assert.ok(a.read().sharedPending.setupNames);
+  assert.equal(await setupName(a, c.key), c.name);
+  const item = await a.route("POST", "kuvo/work-queue/items", { title: "Everyday work" }, true);
+  assert.equal(item.status, 200);
+  assert.equal(item.value.item.number, undefined);
+  await a.stop();
+  a.start();
+  b.start();
+  await until("saved on both boxes", () => {
+    const saved = box => box.read().shared?.setupNames?.value[c.key] === "Waits on disk";
+    return saved(a) && saved(b) && !a.read().sharedPending?.setupNames
+      && a.read().shared?.setupUsageDisplay?.sequence === 1 && b.read().shared?.setupUsageDisplay?.sequence === 1
+      && a.read().shared?.queueLabels?.sequence === 2 && b.read().shared?.queueLabels?.sequence === 2;
+  }, t.signal);
+  assert.equal(await setupName(a, c.key), "Waits on disk");
+  assert.deepEqual(b.read().shared.setupUsageDisplay.value, usage.value);
+  assert.equal((await a.route("GET", "kuvo/work-queue/labels")).value.labels[0].name, "Saved label");
+  await until("display preferences published to an ordinary member", () => c.read().shared?.setupUsageDisplay?.sequence === 1, t.signal);
+  assert.equal((await link.askSetupSave(c.run, usage)).status, 409);
+});
+
+test("failure bench: number blocks stay unique across a takeover", { timeout: 55_000 }, async t => {
+  const { a, b, c, relay, see } = await standbyNetwork(t);
+  const make = async (box, title) => {
+    const answer = await box.route("POST", "kuvo/work-queue/items", { title }, true);
+    assert.equal(answer.status, 200);
+    return answer.value.item;
+  };
+  const numbered = async (box, id) => {
+    while (!t.signal.aborted) {
+      const answer = await box.route("GET", `kuvo/work-queue/items/${id}`);
+      if (Number.isInteger(answer.value.item?.number)) return answer.value.item.number;
+      await delay(150);
+    }
+    assert.fail("Timed out waiting for item number");
+  };
+  const first = await make(c, "Numbered by the old primary");
+  assert.equal(first.number, undefined);
+  const firstNumber = await numbered(c, first.id);
+  const ledger = b.read().shared.queueNumberAllocation.value;
+  const block = Object.values(ledger.given).find(grant => grant.by === c.key);
+  assert.ok(block && block.from <= firstNumber && firstNumber < block.to);
+
+  const reconnect = [relay.pause(b.address, c.address), relay.pause(c.address, b.address)];
+  await a.stop();
+  const offline = await make(c, "Uses the existing block offline");
+  assert.equal(offline.number, firstNumber + 1);
+  b.clock(3 * HOUR + 5_000);
+  await see(b, 3, b);
+  assert.deepEqual(link.readDoc(b.read().leadership[3]).body.numbers.given, ledger.given);
+  const next = await make(b, "Must wait for a new block");
+  assert.equal(next.number, undefined);
+
+  reconnect.forEach(resume => resume());
+  c.clock(3 * HOUR + 5_000);
+  await see(c, 4, b);
+  const nextNumber = await numbered(b, next.id);
+  assert.ok(nextNumber > block.to);
+  const stillOffline = await make(c, "Keeps the remainder of the old block");
+  assert.equal(stillOffline.number, offline.number + 1);
+  assert.equal(new Set([firstNumber, offline.number, nextNumber, stillOffline.number]).size, 4);
 });

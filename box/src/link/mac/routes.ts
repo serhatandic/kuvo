@@ -67,14 +67,14 @@ const macPhones = (): MacPhones => {
 // isn't a peer now, and nothing more; one set up again is no longer removed. One that isn't a
 // machine's record is left out (a line in the box's log says so), never the rest with it. No link
 // for what isn't a list.
-export function setMacPeers(link: LinkState, given: unknown, rejoined?: string): MacPeersSet {
+export function setMacPeers(link: LinkState, given: unknown, rejoined?: string, staging = false): MacPeersSet {
   if (!isObject(given) || !Array.isArray(given.peers)) return { link: null, gone: [] };
   // Only a completed SSH add can restore a removed peer. The app or its saved list can be stale.
   const removedHere = Array.isArray(link.removedHere) ? link.removedHere : [];
   const keeps = (key: string) => key === rejoined || !removedHere.includes(key);
   const now = given.peers.slice(0, MOST_PEERS).map(peer => ({ ...peer, kind: link.setup?.managed && peer?.kind === "mac" ? "mac" : "machine" }))
     .filter(peer => fitsPeer(peer) && typeof peer.sign === "string" && SIGN.test(peer.sign) && keeps(peer.key)).map(cleanPeer);
-  if (primaryFenced(link) || (link.setup?.standby && !now.some(peer => peer.key === link.setup!.standby!.key && peer.sign === link.setup!.standby!.sign))) return { link: null, gone: [] };
+  if ((!staging && primaryFenced(link)) || (link.setup?.standby && !now.some(peer => peer.key === link.setup!.standby!.key && peer.sign === link.setup!.standby!.sign))) return { link: null, gone: [] };
   const skipped = given.peers.slice(0, MOST_PEERS).filter(peer => !(isObject(peer) && typeof peer.key === "string" && !keeps(peer.key))).length - now.length;
   if (skipped) console.error(`${skipped} of this Mac's machines weren't records the box could take, and were left out.`);
   const removed = (Array.isArray(given.removed) ? given.removed : []).filter((key: unknown): key is string => typeof key === "string" && KEY.test(key) && !now.some(peer => peer.key === key));

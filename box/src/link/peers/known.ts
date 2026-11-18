@@ -267,7 +267,8 @@ export function peersOf(link: LinkState | null | undefined): Peer[] {
 
 // A machine of this Mac by the name you gave it, where you gave one.
 const renamed = (link: LinkState, peer: Peer): Peer => {
-  const name = link.peerNames?.[peer.key];
+  const shared = link.sharedSetup === link.setup?.id ? link.shared?.setupNames?.value : undefined;
+  const name = (isObject(shared) ? shared[peer.key] : undefined) ?? link.peerNames?.[peer.key];
   return typeof name === "string" && name ? { ...peer, name } : peer;
 };
 

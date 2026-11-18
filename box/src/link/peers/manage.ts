@@ -10,6 +10,9 @@
 // Letting a computer add Kuvo Code's app to your devices again (`allow-devices`) is the main
 // computer's own, for its own clients: never handed on from another box (areas/computers.ts).
 
+import { updateAccess } from "../setup/access";
+import { PENDING_SAVE, stageShared, waitShared } from "../setup/shared";
+import { isObject } from "../../shared/json";
 import { LEADERSHIP_WAIT, primaryFenced } from "../setup/lease";
 import { plainName } from "../../shared/text";
 import type { ComputerAction, ListedComputer } from "../../shared/routes/box";
@@ -20,16 +23,16 @@ import { movedFromOldApp } from "../rehome/moved";
 import { tellGone } from "../mac/link";
 import { LIST_FILE, savedMachines } from "../mac/machines";
 import { setMacPeers } from "../mac/routes";
-import { proposeLeadership } from "../setup/handover";
-import { PRIMARY_UNLINK, STANDBY_UNLINK } from "../setup/leadership";
-import { followedSetup } from "../setup/record";
+import { proposeLeadership, standbyHere } from "../setup/handover";
+import { leadershipOf, PRIMARY_UNLINK, STANDBY_UNLINK } from "../setup/leadership";
+import { followedSetup, requiresStandby } from "../setup/record";
 import { macName, mainElsewhere } from "../setup/main-only";
 import { takeOffVouched, vouchedWords } from "../phones";
 import { macLink, readLink, updateLink } from "../state";
 import { writePrivate } from "../files";
 import { ownName } from "../letters/start";
 import type { LinkState } from "../state";
-import type { Act, Acted } from "../work-queue/forward";
+import { takesForwarded, type Act, type Acted } from "../work-queue/forward";
 import { readPeerAgents } from "./directory";
 import { macsOf, namedBoxes, peersOf } from "./known";
 import { awaySince } from "./reach";
@@ -158,31 +161,57 @@ const answer = (status: number, value: unknown): Acted => ({ status, value });
 
 /** Renames the machine `key` here, on the box that writes its record: its peers document names it so
  * from now on, and your other computers take it from there. */
-export function renameHere(key: string, name: string): Acted {
-  let found = false, fenced = false;
-  updateLink(link => {
-    if (primaryFenced(link)) { fenced = true; return null; }
+export async function renameHere(key: string, name: string): Promise<Acted> {
+  let found = false;
+  let waitingForStandby = false;
+  let sequence: number | null = null;
+  const changed = updateLink(link => {
     if (!link || mainElsewhere(link) || !peersOf(link).some(peer => peer.key === key)) return null;
     found = true;
+    if (requiresStandby(link.setup) && !link.setup?.standby) {
+      waitingForStandby = true;
+      return null;
+    }
+    if (link.setup?.standby) {
+      const before = link.shared?.setupNames?.value;
+      sequence = stageShared(link, "setupNames", { ...(isObject(before) ? before : link.peerNames), [key]: name });
+      return sequence === null ? null : link;
+    }
     if (link.peerNames?.[key] === name) return null;
     link.peerNames = { ...(link.peerNames ?? {}), [key]: name };
     return link;
-  });
-  if (fenced) return answer(503, { message: LEADERSHIP_WAIT });
+  }, { durable: true });
+  if (waitingForStandby) return answer(503, { message: LEADERSHIP_WAIT });
   if (!found) return answer(404, { message: `That isn't one of ${ownName()}'s machines.` });
+  if (changed?.setup?.standby && sequence !== null
+    && await waitShared("setupNames", changed.setup.id, changed.setup.epoch, sequence) === "pending") {
+    return answer(202, { pending: true, message: PENDING_SAVE });
+  }
+  if (!changed && readLink()?.setup?.standby) return answer(409, { message: "A computer name is already waiting to be saved. Try again when it has saved." });
   macDocsChanged();
   return answer(200, { name });
 }
 
-/** A departing standby first durably retires its own authority. The primary then drops
- * its access and selects a replacement from the remaining members on the next round. */
+/** Retire the old standby, install a replacement, then save the access change. */
 export async function removeComputerHere(key: string, pendingOnly = false): Promise<Acted> {
-  const setup = readLink()?.setup;
-  if (!pendingOnly && setup?.role === "primary" && setup.standby?.key === key) {
-    const retired = await proposeLeadership({ setup: setup.id, epoch: setup.epoch }, setup.primary, null);
-    if (retired.status !== 202) return answer(409, { message: "The standby must answer before it can be removed." });
+  const link = readLink();
+  const setup = followedSetup(link);
+  if (!pendingOnly && setup?.role === "primary" && (setup.standby?.key === key
+    || (!setup.standby && leadershipOf(link)?.body.retiredStandby === key))) {
+    const replacement = peersOf(link).find(peer => peer.key !== key && takesForwarded(peer.key, "setup.shared-saves"));
+    if (!replacement) return answer(409, { message: STANDBY_UNLINK });
+    if (setup.standby) {
+      const retired = await proposeLeadership({ setup: setup.id, epoch: setup.epoch }, setup.primary, null, undefined, undefined, key);
+      if (retired.status !== 202) return answer(409, { message: "The standby must answer before it can be removed." });
+    }
+    const after = followedSetup(readLink());
+    if (!after || after.id !== setup.id || after.role !== "primary") return answer(409, { message: "The setup changed. Refresh it and try again." });
+    if (!after.standby) {
+      const selected = await standbyHere(replacement.key, { setup: after.id, epoch: after.epoch });
+      if (selected.status !== 202 && !readLink()?.setup?.standby) return selected;
+    }
   }
-  return removeHere(key, pendingOnly);
+  return finishRemoval(prepareRemoval(key, pendingOnly));
 }
 
 /** Removes the machine `key` here, on the box that writes its record: its peers document names it
@@ -190,14 +219,29 @@ export async function removeComputerHere(key: string, pendingOnly = false): Prom
  * this Mac's list of machines no longer has it. Kuvo Code's app on it goes from your devices too:
  * every device its box vouched for (`setMacPeers`; `takeOffVouched`, phones.ts), as this box's
  * phones document then says to your other computers. It keeps running there, as a box of its own. */
+// Legacy in-process callers can complete immediately. The routed removal waits for a receipt.
 export function removeHere(key: string, pendingOnly = false): Acted {
+  const removal = prepareRemoval(key, pendingOnly);
+  return removal.save ? answer(202, { pending: true, message: PENDING_SAVE }) : completeRemoval(removal);
+}
+
+async function finishRemoval(removal: ReturnType<typeof prepareRemoval>): Promise<Acted> {
+  const { save } = removal;
+  if (save && await waitShared("membershipAndAccess", save.id, save.epoch, save.sequence) === "pending") {
+    return answer(202, { pending: true, message: PENDING_SAVE });
+  }
+  return completeRemoval(removal);
+}
+
+function prepareRemoval(key: string, pendingOnly: boolean) {
   let blocked: string | null = null;
   let gone: Peer[] = [];
   let already = false;
   let needsCleanup = false;
-  const changed = updateLink(link => {
+  const result = updateAccess(link => {
     if (!link) return null;
-    if (primaryFenced(link)) { blocked = LEADERSHIP_WAIT; return null; }
+    if (pendingOnly && primaryFenced(link)) { blocked = LEADERSHIP_WAIT; return null; }
+    // A new removal needs a receipt, while cleanup on retry only changes the local address list.
     if (link.setup?.standby?.key === key) { blocked = STANDBY_UNLINK; return null; }
     if (link.setup?.primary === key || mainElsewhere(link)) {
       blocked = link.setup?.primary === key ? PRIMARY_UNLINK : "Only the primary can remove a computer.";
@@ -209,9 +253,9 @@ export function removeHere(key: string, pendingOnly = false): Acted {
     needsCleanup = Boolean(peer?.id || link.pendingMachineCleanup?.[key]);
     if (!peer) {
       // One removed before its devices went with it loses them when asked again.
-      return already && takeOffVouched(link, key) ? link : null;
+      return !pendingOnly && already && takeOffVouched(link, key) ? link : null;
     }
-    const made = setMacPeers(link, { peers: (Array.isArray(link.macPeers) ? link.macPeers : []).filter(each => each?.key !== key), moved: link.macMoved, removed: [key] });
+    const made = setMacPeers(link, { peers: (Array.isArray(link.macPeers) ? link.macPeers : []).filter(each => each?.key !== key), moved: link.macMoved, removed: [key] }, undefined, Boolean(link.setup?.standby));
     if (!made.link) return null;
     gone = made.gone;
     if (made.link.peerNames) delete made.link.peerNames[key];
@@ -229,10 +273,15 @@ export function removeHere(key: string, pendingOnly = false): Acted {
     }
     if (peer.id) made.link.pendingMachineCleanup = { ...made.link.pendingMachineCleanup, [key]: peer.id };
     return made.link;
-  }, { durable: true });
+  }, { localOnly: pendingOnly });
+  return { ...result, blocked, gone, already, needsCleanup, key };
+}
+
+function completeRemoval({ changed, blocked, gone, already, needsCleanup, key, busy, save }: ReturnType<typeof prepareRemoval>): Acted {
+  if (busy) return answer(409, { message: "An access change is already waiting to be saved." });
   if (blocked) return answer(409, { message: blocked });
   if (!gone.length && !already) return answer(404, { message: `That isn't one of ${ownName()}'s machines.` });
-  macDocsChanged({ closeRemoved: changed });
+  macDocsChanged({ closeRemoved: save ? readLink() : changed });
   tellGone(gone);
   // Once the removal is durable, clean up its saved address. Leave a retry if the list fails.
   if (needsCleanup && !cleanRemovalList(key)) return answer(503, { message: "The computer’s access was removed, but the saved machines list couldn’t be updated." });

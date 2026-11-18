@@ -6,6 +6,8 @@
 
 import fs from "node:fs"
 import path from "node:path"
+import { isObject } from "./json"
+import { localSetupValue } from "./setup-local"
 
 /** Where a box keeps its time zone, under its folder. */
 export const zoneFileIn = (home: string): string => path.join(home, "box", "time-zone.json")
@@ -79,6 +81,8 @@ export function boxZoneIs(zone: unknown): void {
 /** Your time zone: the box's setting (its file, else as the box gave it), else `KUVO_TZ`, else
  * undefined (this computer's clock). */
 export function yourZone(home: string | undefined = boxHome): string | undefined {
+  const shared = home ? localSetupValue(path.join(home, "run"), "setupTimeZone")?.value : null
+  if (isObject(shared) && knownZone(shared.zone)) return shared.zone
   const set = (home ? settingZone(zoneFileIn(home)) : undefined) ?? boxGiven
   if (set) return set
   // COMPAT(0.7 bot-kit): the zone a Mac of 0.7 or before started a machine's engine with. Goes 3 months after 0.8.0.

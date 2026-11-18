@@ -13,6 +13,7 @@ import { leaveAnswer, letterWent } from "../letters/outbox";
 import { takeLetter } from "../letters/take";
 import { callsBack, takeCall } from "../letters/calls";
 import { rowsBack, rowsWent, takeRows } from "../work/elsewhere";
+import { requiresStandby } from "../setup/record";
 import { receiveAuthority } from "../setup/takeover";
 import { noteHeard } from "./reach";
 import { takeMoving, tellMovingAgain } from "../moves/elsewhere";
@@ -58,7 +59,7 @@ export function peerMail(sender: MailSender, payload: Record<string, unknown>, h
   // A release asked for, or handed over in parts (`updates/fleet.ts`).
   if (isObject(payload.release)) try { takeReleaseMail(sender, payload.release); } catch {}
   // Your time zone (`zone/setting.ts`), from any of your computers.
-  if (isObject(payload.zone)) takeZone(payload.zone);
+  if (isObject(payload.zone) && !requiresStandby(readLink()?.setup)) takeZone(payload.zone);
   // Documents (PROTOCOL.md, "Documents"): given, in parts, or a digest of what it has.
   if (isObject(payload.setupAuthority)) try { receiveAuthority(sender, payload.setupAuthority, host); } catch {}
   if (isObject(payload.docs)) receiveDocs(sender, payload.docs as DocsMail, host).catch(() => {});

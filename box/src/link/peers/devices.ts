@@ -11,7 +11,8 @@
 // gets back in by having its app make a new key.
 // Platform: the same on macOS and Linux; only a Mac's box has the switch ("Let my devices connect").
 
-import { LEADERSHIP_WAIT, primaryFenced } from "../setup/lease";
+import { updateAccess } from "../setup/access";
+import { PENDING_SAVE, waitShared } from "../setup/shared";
 import { isObject } from "../../shared/json";
 import { plainName } from "../../shared/text";
 import { noteDocsChanged } from "../documents/changed";
@@ -22,7 +23,7 @@ import { ownName } from "../letters/start";
 import { fits, pairDevice, revokeVoucher, vouchBlockOf } from "../phones";
 import { mainElsewhere } from "../setup/main-only";
 import { followedSetup } from "../setup/record";
-import { macLink, readLink, updateLink } from "../state";
+import { macLink, readLink } from "../state";
 import { forwardAct, takesForwarded } from "../work-queue/forward";
 import type { LinkState } from "../state";
 import type { Act, Acted } from "../work-queue/forward";
@@ -79,14 +80,13 @@ const switchOffWords = () => ({ message: `“Let my devices connect” is off on
 /** `device` paired on this box, which pairs phones itself: at once, as a paired device of its own.
  * Refused as a phone's pairing is: a Mac that lets no device in, or a box with no relay. `by`: the
  * member's box key. Its membership and permission to vouch are checked under the pairing lock. */
-export function pairHere(device: AskingDevice, by?: string): Acted {
+export async function pairHere(device: AskingDevice, by?: string): Promise<Acted> {
   if (switchOff()) return answer(409, switchOffWords());
   let made: ReturnType<typeof pairDevice> | null = null;
   let fresh = false;
   let refusal: Acted | undefined;
   let computer: string | undefined;
-  updateLink(link => {
-    if (primaryFenced(link)) { refusal = answer(503, { message: LEADERSHIP_WAIT }); return null; }
+  const { save, busy } = updateAccess(link => {
     const main = mainElsewhere(link);
     if (main && !by) {
       refusal = answer(409, { message: `Pair new devices from ${main.name || "your main computer"}.`, primary: main.key });
@@ -113,6 +113,10 @@ export function pairHere(device: AskingDevice, by?: string): Acted {
     fresh = (link.phones ?? []).length !== before;
     return fresh ? link : null;
   });
+  if (busy) return answer(409, { message: "An access change is already waiting to be saved." });
+  if (save && await waitShared("membershipAndAccess", save.id, save.epoch, save.sequence) === "pending") {
+    return answer(202, { pending: true, message: PENDING_SAVE });
+  }
   if (refusal) return refusal;
   const paired = made as ReturnType<typeof pairDevice> | null;
   if (!paired) return answer(409, { message: IS_MAC ? `${ownName()} isn't ready for your devices yet. Try again in a moment.` : "This machine has no relay to pair through." });
@@ -136,14 +140,17 @@ const ownMachines = (link: LinkState): Set<string> =>
 export async function deviceAct(sender: MailSender, act: Act): Promise<Acted> {
   if (act.method === "DELETE") {
     if (act.item !== sender.key) return answer(403, { message: "A computer can only revoke its own devices." });
-    const changed = updateLink(link => {
-      if (!link || primaryFenced(link) || followedSetup(link)?.role !== "primary" || !ownMachines(link).has(sender.key)) return null;
+    const { changed, save, busy } = updateAccess(link => {
+      if (!link || followedSetup(link)?.role !== "primary" || !ownMachines(link).has(sender.key)) return null;
       const device = link.phones?.find(phone => phone.by === sender.key)?.name ?? vouchBlockOf(link, sender.key)?.device;
       revokeVoucher(link, sender.key, device);
       return link;
     });
-    if (!changed) return answer(409, { message: "This computer couldn’t confirm the devices were revoked." });
-    macDocsChanged({ closeRemoved: changed });
+    if (busy || !changed) return answer(409, { message: "This computer couldn’t confirm the devices were revoked." });
+    if (save && await waitShared("membershipAndAccess", save.id, save.epoch, save.sequence) === "pending") {
+      return answer(202, { pending: true, message: PENDING_SAVE });
+    }
+    macDocsChanged({ closeRemoved: readLink() });
     return answer(200, {});
   }
   const device = act.method === "POST" ? givenDevice({ ...(act.body ?? {}), key: act.item }, null) : null;
@@ -179,6 +186,7 @@ export async function pairDeviceFromHere(given: unknown, signal?: AbortSignal | 
   if (!takesForwarded(main.key, DEVICES_FEATURE)) return answer(409, { message: `${named} needs a newer Kuvo Code to add this app to your devices. Update it, then try again.` });
   const there = await forwardAct(peer, device.name, { area: "devices", method: "POST", item: device.key, body: { name: device.name, kind: device.kind } }, signal, link);
   if ("refused" in there) return answer(503, waiting);
+  if (there.status === 202) return there;
   const said = isObject(there.value) ? there.value : {};
   if (there.status === 200 && said.paired === true && typeof said.pairing === "string") return answer(200, { paired: true, pairing: said.pairing });
   const message = typeof said.message === "string" && said.message ? said.message.slice(0, 700) : `${named} didn't add this app to your devices.`;

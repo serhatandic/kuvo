@@ -16,8 +16,9 @@ import { IS_MAC } from "../home";
 import { cleanMoved, leaveMac, macDoc, macDocs, macsOf, ownKey, peersOf, writesOwnPeers } from "../peers/known";
 import { mergePersonalities, MOST_COUNT, readPersonalities } from "../personalities/library";
 import { foldPhones, ownPhones } from "../phones";
-import { followedSetup, lowerEpoch, setupOf, type SetupWord } from "../setup/record";
+import { followedSetup, lowerEpoch, requiresStandby, setupOf, type SetupWord } from "../setup/record";
 import { approveLeadership, leadershipOf, takeLeadership } from "../setup/leadership";
+import { takeShared } from "../setup/shared";
 import { primaryFenced } from "../setup/lease";
 import { noteConflict, settleSetup } from "../setup/settle";
 import { macSign, updateLink } from "../state";
@@ -102,6 +103,8 @@ interface Outgoing {
 // peers, and itself (a copy of its own it lost count of).
 function takesFrom(link: LinkState, origin: string, kind: DocKind): boolean {
   if (kind === "leadership") return Boolean(link.setup);
+  if (kind === "setup-shared") return false;
+  if (kind === "personalities" && requiresStandby(link.setup)) return false;
   if (kind === "phones" && link.setup?.managed) return origin === link.setup.sign;
   const macs = macsOf(link).map(mac => macSign(link, mac)).filter(Boolean);
   const setup = followedSetup(link);
@@ -141,6 +144,7 @@ export function takeDoc(link: LinkState, envelope: unknown): TakenDoc | null {
   const doc = readDoc(envelope);
   if (!doc) return null;
   if (doc.kind === "leadership") return takeLeadership(link, doc) ? doc : null;
+  if (doc.kind === "setup-shared") return null;
   if (doc.kind === "peers" && link.setup) {
     const kept = link.setup;
     const setup = setupOf(doc.body);
@@ -220,7 +224,7 @@ export function ownDocs(state: Pick<DocsState, "link" | "library">): Partial<Rec
     if (phones) docs.phones = phones;
   }
   const library = mergePersonalities(state.library);
-  if (Buffer.byteLength(JSON.stringify(library)) <= MOST_DOC - 4096) {
+  if (!requiresStandby(state.link.setup) && Buffer.byteLength(JSON.stringify(library)) <= MOST_DOC - 4096) {
     const personalities = ownDoc(state.link, "personalities", library);
     if (personalities) docs.personalities = personalities;
   }
@@ -229,8 +233,10 @@ export function ownDocs(state: Pick<DocsState, "link" | "library">): Partial<Rec
 
 // Only the membership writer signs the peers document.
 const ownDocumentKinds = ["peers", "phones", "personalities"] as const;
-const ownKinds = (link: LinkState): readonly DocKind[] =>
-  writesOwnPeers(link) ? ownDocumentKinds : link.setup?.managed ? ["personalities"] : ["phones", "personalities"];
+const ownKinds = (link: LinkState): readonly DocKind[] => {
+  if (requiresStandby(link.setup)) return writesOwnPeers(link) ? ["peers", "phones"] : [];
+  return writesOwnPeers(link) ? ownDocumentKinds : link.setup?.managed ? ["personalities"] : ["phones", "personalities"];
+};
 
 // The primary's peers document: itself and its members, each with
 // the key it signs with; the conversations being moved; and the machines it removed, so they let
@@ -324,6 +330,12 @@ export function docsWork(state: DocsState, sender: DocSender, docs: DocsMail, { 
       took.push(doc);
       if (approved === doc) to(sender, outgoing => outgoing.give.push(doc.envelope));
     }
+  }
+  for (const envelope of given) {
+    if (held(envelope)?.kind !== "setup-shared") continue;
+    const doc = readDoc(envelope);
+    const receipt = doc && takeShared(link, sender.key, doc);
+    if (receipt) to(sender, outgoing => outgoing.give.push(receipt));
   }
   for (const kind of ownDocumentKinds) {
     for (const envelope of given) {

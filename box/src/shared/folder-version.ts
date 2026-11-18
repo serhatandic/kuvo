@@ -19,6 +19,9 @@ const steps: readonly Step[] = [
   () => {},
   // 3. Reserve the standby delegation and fencing state before using them.
   () => {},
+  // 4. Link state can carry an epoch's accepted shared values and pending saves.
+  // Layout 3 setups keep their existing authority and files until their first save.
+  () => {},
 ];
 
 interface Checkpoint {

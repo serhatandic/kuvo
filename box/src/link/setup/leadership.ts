@@ -7,7 +7,8 @@ import { docBytes, docKey, held, ownSign, readDoc, signDoc } from "../documents/
 import { cleanMoved, cleanPeer, fitsPeer, ownKey, KEY } from "../peers/known";
 import { fits, foldPhones } from "../phones";
 import type { LinkState, Phone } from "../state";
-import { setupOf } from "./record";
+import { installShared, sharedValues } from "./shared";
+import { requiresStandby, setupOf } from "./record";
 
 export const NUMBER_RESERVE = 2_000;
 export const STANDBY_UNLINK = "Choose another standby first.";
@@ -23,6 +24,10 @@ export function approveLeadership(link: LinkState, proposal: Doc): Doc | null {
   const current = link.setup;
   if (!current?.standby || current.standby.key !== ownKey(link) || current.standby.sign !== ownSign(link)
     || current.sign !== proposal.origin || proposal.body.proposal !== true || !link.sign) return null;
+  const values = sharedValues(proposal.body.shared) ?? {};
+  for (const [kind, entry] of Object.entries(link.shared ?? {})) {
+    if (JSON.stringify(values[kind as keyof typeof values]) !== JSON.stringify(entry)) return null;
+  }
   return readDoc(signDoc(link.sign, "leadership", proposal.n, { ...proposal.body, approval: proposal.envelope.s }));
 }
 
@@ -33,6 +38,7 @@ export function takeLeadership(link: LinkState, doc: Doc): boolean {
   if (doc.kind !== "leadership" || !current || current.aside || !next || next.id !== current.id || doc.n !== next.epoch
     || next.epoch !== current.epoch + 1 || doc.origin !== (current.standby?.sign ?? current.sign)
     || doc.body.previous !== current.primary || !Array.isArray(doc.body.boxes) || !doc.body.boxes.every(fitsPeer)) return false;
+  if (doc.body.shared !== undefined && !sharedValues(doc.body.shared)) return false;
   const takeover = doc.body.takeover === true;
   if (takeover) {
     if (!current.standby || next.primary !== current.standby.key || doc.body.proposal) return false;
@@ -62,6 +68,7 @@ export function takeLeadership(link: LinkState, doc: Doc): boolean {
     delete link.setup;
     delete link.leadership;
     delete link.leadershipPending;
+    installShared(link, undefined);
     link.macs = [];
     delete link.mac;
     delete link.macSigns;
@@ -75,10 +82,12 @@ export function takeLeadership(link: LinkState, doc: Doc): boolean {
   // the shared state from this primary and supplies it to peers as they catch up.
   const stillHere = here && current.role === "primary";
   link.setup = { ...next, sign: primary.sign, role: here ? "primary" : "member", managed: true,
+    ...(requiresStandby(current) || standby || doc.body.sharedSaves === true ? { sharedSaves: true as const } : {}),
     ...(standby?.sign ? { standby: { key: standby.key, sign: standby.sign }, numberCeiling: ceiling as number } : {}),
   };
   link.leadership = { ...link.leadership, [next.epoch]: doc.envelope };
   delete link.leadershipPending;
+  installShared(link, doc);
   if (stillHere) return true;
   link.macs = here ? [] : [primary.key];
   link.macSigns = here ? {} : { [primary.key]: primary.sign };
@@ -117,6 +126,10 @@ export function takeLeadership(link: LinkState, doc: Doc): boolean {
     link.macMoved = cleanMoved(doc.body.moved);
     link.left = left;
     link.removedHere = left;
+    if (isObject(doc.body.removalRevisions)) {
+      link.removalRevisions = Object.fromEntries(Object.entries(doc.body.removalRevisions)
+        .filter(([key, n]) => KEY.test(key) && Number.isSafeInteger(n) && Number(n) > 0)) as Record<string, number>;
+    }
     delete link.peerNames;
     link.vouchBlocked = Array.isArray(doc.body.vouchBlocked) ? doc.body.vouchBlocked : [];
   } else {

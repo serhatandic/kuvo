@@ -1,10 +1,17 @@
 // The primary checks that the successor is running this protocol, then atomically commits
 // a signed epoch change. Peers deliver the committed record with the regular document exchange.
 
+import path from "node:path";
+import { UsageSettings } from "../../agents/usage/settings";
 import { isObject } from "../../shared/json";
+import { readPersonalities } from "../personalities/library";
+import { labels } from "../work-queue/labels";
+import { readZoneSetting } from "../zone/setting";
+import { MAX_SHARED_BYTES, type SharedValues } from "./shared";
 import { noteDocsChanged } from "../documents/changed";
 import { ownSign, readDoc, signDoc } from "../documents/format";
 import { primaryPeersBody, pruneDocs } from "../documents/work";
+import { APP_FOLDER, K } from "../home";
 import { KEY, ownKey, peersOf, type MailSender } from "../peers/known";
 import { ownPhones } from "../phones";
 import { readLink, updateLink } from "../state";
@@ -13,7 +20,7 @@ import { changeNumbers, installNumberAuthority, MOST_NUMBER, topOf } from "../wo
 import { writeCard } from "./card";
 import { NUMBER_RESERVE, takeLeadership } from "./leadership";
 import { LEADERSHIP_WAIT, primaryFenced } from "./lease";
-import { followedSetup, type SetupRecord } from "./record";
+import { followedSetup, requiresStandby, type SetupRecord } from "./record";
 
 export const HANDOVER_FEATURE = "setup.handover";
 const answer = (status: number, message: string): Acted => ({ status, value: { message } });
@@ -52,17 +59,19 @@ async function handoverHere(target: string, position: Record<string, unknown>, r
 
 /** The number ledger and the fenced proposal are frozen together. With a standby, only it
  * can turn the proposal into the next certificate. Sending is safe to retry after a restart. */
-export async function proposeLeadership(position: Record<string, unknown>, target: string, standby: NonNullable<SetupRecord["standby"]> | null, requester?: string, targetSign?: string): Promise<Acted> {
+export async function proposeLeadership(position: Record<string, unknown>, target: string, standby: NonNullable<SetupRecord["standby"]> | null, requester?: string, targetSign?: string, retiredStandby?: string): Promise<Acted> {
   const changed = changeNumbers(numbers => updateLink(link => {
     const current = followedSetup(link);
     if (!link?.sign || current?.role !== "primary" || current.sign !== ownSign(link) || current.id !== position.setup || current.epoch !== position.epoch
-      || primaryFenced(link)) return null;
+      || primaryFenced(link) || Object.keys(link.sharedPending ?? {}).length) return null;
+    if (retiredStandby && (standby || current.standby?.key !== retiredStandby)) return null;
     const members = peersOf(link);
     if (requester && !members.some(peer => peer.key === requester)) return null;
     if (target !== current.primary && (!members.some(peer => peer.key === target && peer.sign === targetSign)
-      || members.some(peer => !peer.sign || !takesForwarded(peer.key, HANDOVER_FEATURE)))) return null;
+      || members.some(peer => !peer.sign || !takesForwarded(peer.key, HANDOVER_FEATURE)
+        || (Object.keys(link.shared ?? {}).length && !takesForwarded(peer.key, "setup.shared-saves"))))) return null;
     if (standby && (standby.key === target || !members.some(peer => peer.key === standby.key && peer.sign === standby.sign)
-      || members.some(peer => !peer.sign || !takesForwarded(peer.key, "setup.takeover")))) return null;
+      || members.some(peer => !peer.sign || !takesForwarded(peer.key, "setup.shared-saves")))) return null;
     const renewing = target === current.primary && (standby?.key ?? null) === (current.standby?.key ?? null);
     if (renewing && (!standby || !current.numberCeiling || current.numberCeiling >= MOST_NUMBER - 1)) return null;
     installNumberAuthority(numbers, link);
@@ -75,9 +84,26 @@ export async function proposeLeadership(position: Record<string, unknown>, targe
     const epoch = current.epoch + 1;
     const next = topOf(numbers) + 1;
     if (renewing && next + NUMBER_RESERVE - 1 <= current.numberCeiling!) return null;
+    const shared: SharedValues = { ...(link.sharedSetup === current.id ? link.shared : {}) };
+    if (standby && !current.standby) {
+      const library = readPersonalities();
+      const zone = readZoneSetting();
+      if (zone && !shared.setupTimeZone) shared.setupTimeZone = { sequence: 1, value: zone };
+      if (!shared.queueLabels) shared.queueLabels = { sequence: 1, value: { labels: labels(), removed: [] } };
+      if (!shared.setupUsageDisplay) {
+        const usage = new UsageSettings(path.join(APP_FOLDER ?? K, "agents", "usage", "settings.json"));
+        const units = usage.kept();
+        if (usage.imported || Object.keys(units).length) shared.setupUsageDisplay = { sequence: 1, value: { units, imported: usage.imported } };
+      }
+      if (!shared.setupPersonalities && Buffer.byteLength(JSON.stringify({ ...shared, library })) < MAX_SHARED_BYTES) {
+        shared.setupPersonalities = { sequence: 1, value: library };
+      }
+    }
     const envelope = signDoc(link.sign, "leadership", epoch, {
       setup: { id: current.id, epoch, primary: target }, previous: current.primary, boxes, left, moved,
       devices: ownPhones(link), vouchBlocked: link.vouchBlocked ?? [],
+      shared, ...(retiredStandby ? { retiredStandby } : {}), removalRevisions: link.removalRevisions,
+      ...(standby || requiresStandby(current) ? { sharedSaves: true } : {}),
       numbers: { next, given: numbers.given, granted },
       ...(standby ? { standby: standby.key, numberCeiling: Math.min(MOST_NUMBER - 1, next + NUMBER_RESERVE - 1) } : {}),
       ...(current.standby ? { proposal: true } : {}),
@@ -146,8 +172,8 @@ export async function standbyHere(target: string, position: Record<string, unkno
   if (setup?.role !== "primary" || setup.id !== position.setup || setup.epoch !== position.epoch) return answer(409, "The setup changed. Refresh it and try again.");
   const peers = peersOf(link);
   const peer = peers.find(peer => peer.key === target);
-  if (!peer?.sign || !takesForwarded(target, "setup.takeover")) return answer(409, "Choose a member that supports standby.");
-  if (peers.some(peer => !takesForwarded(peer.key, "setup.takeover"))) return answer(409, "Every member must connect on a version that supports standby first.");
+  if (!peer?.sign || !takesForwarded(target, "setup.shared-saves")) return answer(409, "Choose a member that supports standby.");
+  if (peers.some(peer => !takesForwarded(peer.key, "setup.shared-saves"))) return answer(409, "Every member must connect on a version that supports standby first.");
   const ready = await forwardAct(peer, "Changing the standby", { area: "setup", method: "GET", item: target, body: position }, undefined, link, Date.now(), { backgroundRelay: true });
   if ("refused" in ready) return answer(ready.status, ready.refused);
   if (ready.status !== 200 || !isObject(ready.value) || ready.value.sign !== peer.sign) return answer(409, "The chosen standby hasn't caught up yet.");

@@ -394,12 +394,10 @@ and you can choose another member as primary once both computers are connected.
   the choice of standby. The old primary installs the higher signed epoch as a member on
   reconnect and uses the winning membership and device state. Local work stays with its owner.
   Folder layout 3 reserves these records. Older box builds refuse to open that layout.
-- **Numbers before confirmed saves.** A delegated epoch reserves a bounded range above the
-  certified counter. The primary cannot allocate past `numberCeiling`, and only the standby
-  can certify a new bound. Takeover skips the outgoing epoch's remaining reservation so no
-  number already given there is reused. The standby-confirmed saves work (#916) will also keep
-  subsequent counter and block receipts, removals and pending transfers so takeover can use
-  the last acknowledged checkpoint. Existing local items and leased blocks remain usable.
+- **Number reservations.** A delegated epoch reserves a bounded range above the certified counter.
+  Only the standby can certify a new bound. With folder layout 4, the primary saves each grant
+  through the standby before issuing it. Takeover retains those grants and skips the outgoing
+  epoch's remaining reservation. Existing local items and leased blocks remain usable.
 - **Reachability during leadership changes.** A restarted or reconnected member catches up
   with certificates in order. A pending proposal can finish after the initiating request
   times out. The existing primary may not be unlinked. The removal route and link CLI answer
@@ -547,6 +545,39 @@ and you can choose another member as primary once both computers are connected.
     box that's `stopped` starts it again in place (by launchd, through its Mac's launch agent
     `run.kuvo.code.machine` where it's there, else its own `kuvo-start`), and says one that won't
     start so, to try again, rather than waiting on it.
+
+### Saving setup-wide changes
+
+A setup that delegates to a standby advertises `setup.shared-saves`. Its primary
+stages edits for primary-owned data kinds from the Box data declarations. It keeps
+one outstanding save per kind in its private link state. Other kinds and work
+owned by individual computers can continue. A client that times out waiting for
+the receipt gets HTTP 202 with `pending: true`. A subsequent read shows the
+accepted value once it arrives.
+
+The primary uses an active lease to send a signed `setup-shared` document to the
+designated standby. The document identifies the setup, epoch, data kind, and
+next sequence and carries the replacement value. The standby persists the
+value and a signed receipt before sending it. The receipt names the same setup,
+epoch, kind and sequence and covers the primary's exact proposal signature.
+Retries receive the same receipt. The primary checks the current lease, epoch,
+standby key and proposal before applying the edit, publishing it, or replying
+that it saved. An ordinary member can take published settings only from the
+primary signer of its current epoch.
+
+Takeover carries the accepted shared values, access removals and allocation
+ledger into the signed leadership certificate. A handover or standby
+replacement carries the same accepted values. The former standby receipt
+authority ends when it signs the next epoch. An outbox entry interrupted by
+an epoch change is kept locally for inspection. A caller must resubmit it
+against the new epoch if the standby had yet to accept it.
+
+The primary saves Work Queue grants before it hands them out, including blocks
+it requests for itself. Each box consumes its own blocks locally when it is
+offline. An item stays awaiting a number when its box has no block left. The
+new primary keeps the existing grants and advances beyond the old epoch's
+number ceiling, including any part reserved under a version that predates
+shared saves.
 
 ### Peers
 

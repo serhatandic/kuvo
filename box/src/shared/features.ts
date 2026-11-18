@@ -200,6 +200,7 @@ export const FEATURES = [
   "setup.handover",
   "setup.mainOnly",
   "setup.ready",
+  "setup.shared-saves",
   "setup.takeover",
   "setup.welcomed",
   "shell.stop",

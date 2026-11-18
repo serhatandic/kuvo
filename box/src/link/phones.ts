@@ -6,6 +6,7 @@
 // (PROTOCOL.md, "Documents"). The Mac's are the same rules (PairedPhones in KuvoLink), and both
 // are held to protocol/vectors/link.json.
 
+import { updateAccess } from "./setup/access";
 import { primaryFenced } from "./setup/lease";
 import crypto from "node:crypto";
 import { isObject } from "../shared/json";
@@ -40,7 +41,7 @@ export function authorizePhonePairing(key: Buffer, hello: PhoneHello | null | un
   if (!hello?.pair) return current();
   // Showing the token: a pairing of its own, paired before or not (one removed comes back).
   let paired: string | undefined;
-  updateLink(link => {
+  const { save, changed } = updateAccess(link => {
     // A phone's (`kuvo/phones/pair`), or, on a Mac, the one its Settings › Phone shows: each apart,
     // so neither ends the other.
     const given = Buffer.from(String(hello!.pair), "base64url");
@@ -51,7 +52,7 @@ export function authorizePhonePairing(key: Buffer, hello: PhoneHello | null | un
       const expected = Buffer.from(pairing.token, "base64url");
       return given.length === expected.length && crypto.timingSafeEqual(given, expected);
     });
-    if (!slot || primaryFenced(link)) return null;
+    if (!slot) return null;
     const issuer = link![slot]!.issuer;
     const issuedBy = issuer && pairedPhone(link, issuer.key, issuer.pairing);
     if (mainElsewhere(link) || (issuer && (!issuedBy || !canIssuePairing(issuedBy)))) {
@@ -65,6 +66,7 @@ export function authorizePhonePairing(key: Buffer, hello: PhoneHello | null | un
     delete link![slot];
     return link;
   });
+  if (save || !changed) return current();
   if (paired) noteDocsChanged();
   return paired ?? current();
 }
@@ -145,8 +147,8 @@ export const vouchedWords = (link: LinkState | null | undefined, key: string | u
 export const vouchBlockOf = (link: LinkState | null | undefined, key: string | undefined) => (key ? (link?.vouchBlocked ?? []).find(each => each.key === key) : undefined);
 
 /** The box `key` vouches again (in place): whether anything changed. What was removed stays removed. */
-export function allowVouching(link: LinkState, key: string): boolean {
-  if (primaryFenced(link) || !vouchBlockOf(link, key)) return false;
+export function allowVouching(link: LinkState, key: string, staging = false): boolean {
+  if ((!staging && primaryFenced(link)) || !vouchBlockOf(link, key)) return false;
   link.vouchBlocked = link.vouchBlocked!.filter(each => each.key !== key);
   if (!link.vouchBlocked.length) delete link.vouchBlocked;
   return true;
@@ -211,8 +213,8 @@ export function pairDevice(link: LinkState, device: { key: string; name: string;
 // Phones this Mac removes (its own box, from its app): Settings › Phone, or the removals a
 // machine's phones document brought; and those Kuvo Code on any computer removes on the box beside
 // it. Only phones; false, changing nothing, for anything else.
-export function removeAsMac(link: LinkState, entries: unknown): boolean {
-  if (primaryFenced(link)) return false;
+export function removeAsMac(link: LinkState, entries: unknown, staging = false): boolean {
+  if ((!staging && primaryFenced(link))) return false;
   // (On a machine, as Kuvo Code beside its box removes: never one of the Macs that set it up.)
   const macs = macsOf(link);
   if (!Array.isArray(entries) || !entries.length || entries.length > MOST_KEPT || !entries.every(entry => fits(entry, macs))) return false;
@@ -222,8 +224,8 @@ export function removeAsMac(link: LinkState, entries: unknown): boolean {
 
 // Phones `by` removes ({key, pairing}): only a phone on the list, or a Mac, removes, and only
 // phones, a few at a time. False, changing nothing, otherwise.
-export function removePhones(link: LinkState, by: string | undefined, entries: unknown): boolean {
-  if (primaryFenced(link)) return false;
+export function removePhones(link: LinkState, by: string | undefined, entries: unknown, staging = false): boolean {
+  if ((!staging && primaryFenced(link))) return false;
   const macs = macsOf(link);
   const allowed = new Set([...(link.phones ?? []).map(phone => phone.key), ...macs]);
   if (!allowed.has(by!) || !Array.isArray(entries) || !entries.length || entries.length > MOST_AT_ONCE) return false;

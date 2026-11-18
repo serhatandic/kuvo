@@ -532,7 +532,10 @@ export async function usageRoutes(usage: Usage | undefined, method: string, rest
     const given = (await body())?.codex
     const model = given && typeof given === "object" ? given.fallback : undefined
     if (model !== null && typeof model !== "string") return json({ message: "Say {codex: {fallback}}: a model, or null for none." }, 400)
-    if (!usage.setCodexFallback(model === "" ? null : model)) return json({ message: "This model's prices aren't available now. Choose another model or None." }, 400)
+    if (usage.settings?.shared()) {
+      const answer = await settingsRoutes(usage.settings, () => usage.codexChoices(), "PUT", [], async () => ({ codexFallback: model === "" ? null : model }))
+      if (answer.status !== 200) return answer
+    } else if (!usage.setCodexFallback(model === "" ? null : model)) return json({ message: "This model's prices aren't available now. Choose another model or None." }, 400)
     await Promise.race([usage.refresh(), new Promise((resolve) => setTimeout(resolve, 5_000).unref?.())])
     return json({ data: usage.view(zone) })
   }

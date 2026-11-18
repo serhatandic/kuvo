@@ -7,6 +7,9 @@
 // Platform: the same on a Mac's box and a machine's; on a Mac, bots go by its clock while no zone is
 // picked (no zone file), as they always have.
 
+import { requiresStandby } from "../setup/record";
+import { sharedValue } from "../setup/shared";
+import { readLink } from "../state";
 import fs from "node:fs";
 import path from "node:path";
 import { forgetZoneRead, knownZone, ownClock, zoneFileIn } from "../../shared/zone";
@@ -160,6 +163,8 @@ const needsWriting = (kept: ZoneSetting | null | undefined): boolean => {
 
 /** This box's setting as kept, carried from before the first time; null for none yet. */
 export function readZoneSetting(): ZoneSetting | null {
+  const shared = sharedValue(readLink(), "setupTimeZone");
+  if (isSetting(shared)) return shared;
   const kept = readKept();
   if (!needsWriting(kept)) return kept ?? null;
   // (No file, and nothing from before to carry: none, without the lock.)
@@ -173,7 +178,7 @@ export function readZoneSetting(): ZoneSetting | null {
   }
   // (An older Mac's kit changed it: what goes by it here, and your other computers, follow.)
   const moved = movedByKit();
-  if (moved) changed(moved);
+  if (moved) publishZoneSetting(moved);
   return made;
 }
 
@@ -186,10 +191,10 @@ export function zoneHere(setting: ZoneSetting | null = readZoneSetting()): { zon
  * clock, nor what an older Mac gave it before. */
 export function zoneMail(): ZoneMail | null {
   const setting = readZoneSetting();
-  return setting && !setting.carried && setting.n >= 1 ? { zone: setting.zone, n: setting.n, ...(setting.zoneinfo ? { zoneinfo: setting.zoneinfo } : {}) } : null;
+  return !requiresStandby(readLink()?.setup) && setting && !setting.carried && setting.n >= 1 ? { zone: setting.zone, n: setting.n, ...(setting.zoneinfo ? { zoneinfo: setting.zoneinfo } : {}) } : null;
 }
 
-function changed(setting: ZoneSetting): void {
+export function publishZoneSetting(setting: ZoneSetting): void {
   applyZone(setting);
   for (const told of [...zoneFollowers]) try { told(); } catch {}
 }
@@ -203,6 +208,13 @@ export const pickCount = (now: Pick<ZoneSetting, "n"> | null, at = Date.now()): 
 
 /** Your zone changed to `zone` here, from a client: counted past any this box has seen, and past now.
  * Null for a zone this computer doesn't know. */
+export function zoneChoice(zone: string): ZoneSetting | null {
+  if (!knownZone(zone)) return null;
+  const before = readZoneSetting();
+  const rules = rulesOf(zone) ?? (before?.zone === zone ? before.zoneinfo : undefined);
+  return { kuvo: 1, zone, n: pickCount(before), ...(rules ? { zoneinfo: rules } : {}) };
+}
+
 export function setZone(zone: string): ZoneSetting | null {
   if (!knownZone(zone)) return null;
   let made: ZoneSetting | null = null;
@@ -215,7 +227,7 @@ export function setZone(zone: string): ZoneSetting | null {
     return made;
   });
   const moved = movedByKit();
-  if (made || moved) changed(made ?? moved!);
+  if (made || moved) publishZoneSetting(made ?? moved!);
   return setting;
 }
 
@@ -250,7 +262,7 @@ export function takeZone(given: unknown): boolean {
     return false;
   }
   const moved = movedByKit();
-  if (made || moved) changed(made ?? moved!);
+  if (made || moved) publishZoneSetting(made ?? moved!);
   return Boolean(made);
 }
 

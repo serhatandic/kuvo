@@ -5,6 +5,8 @@
 // of it before (#636). Each step is told as it goes (`tries.ts`); every word a client shows is here.
 // The setup's primary enrolls members and signs the resulting membership list.
 
+import { updateAccess } from "../setup/access";
+import { PENDING_SAVE, waitShared } from "../setup/shared";
 import { LEADERSHIP_WAIT, primaryFenced } from "../setup/lease";
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -587,7 +589,7 @@ async function join(run: Reach["run"], destination: string, name: string, identi
   }
   const peer = { key: said.key, sign: said.sign, address: said.address, name, id: destination };
   let named = name;
-  const changed = updateLink(link => {
+  const { changed, save, busy } = updateAccess(link => {
     checkAdd(link, grant, name, expectedKey);
     checkAdd(link, grant, name, peer.key);
     if (removedWhileAdding(link)) throw removedDuringAdd(name);
@@ -605,8 +607,11 @@ async function join(run: Reach["run"], destination: string, name: string, identi
     for (const each of peers) if (each.id === destination && typeof each.key === "string") vouchMoved(state, each.key, peer.key);
     return setMacPeers(state, { peers: [...others, peer], moved: state.macMoved }, expectedKey ? undefined : peer.key).link;
   });
-  if (!changed || !peersOf(changed).some(each => each.key === peer.key)) throw new Failed(`${ownName()} couldn’t keep ${name}’s record.`);
-  named = peersOf(changed).find(each => each.key === peer.key)?.name ?? name;
+  if (busy) throw new Failed("An access change is already waiting to be saved.");
+  if (save && await waitShared("membershipAndAccess", save.id, save.epoch, save.sequence) === "pending") throw new Failed(PENDING_SAVE);
+  const enrolled = save ? readLink() : changed;
+  if (!enrolled || !peersOf(enrolled).some(each => each.key === peer.key)) throw new Failed(`${ownName()} couldn’t keep ${name}’s record.`);
+  named = peersOf(enrolled).find(each => each.key === peer.key)?.name ?? name;
   // This box meets its machines on the relay from now on.
   if (IS_MAC && macLink.config) {
     macLink.config = { ...macLink.config, machines: true };

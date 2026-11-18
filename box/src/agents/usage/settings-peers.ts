@@ -67,7 +67,7 @@ export class SettingsPeers {
    * what they are.
    */
   tell(changed = false) {
-    if (!this.transport.followed) return
+    if (this.settings.shared() || !this.transport.followed) return
     const now = this.now()
     const digest = this.settings.digest()
     for (const key of this.ours()) {
@@ -87,7 +87,7 @@ export class SettingsPeers {
 
   /** What another box told (`from`, its key): taken only from one of your own computers. */
   take(from: string, mail: unknown) {
-    if (!isSettingsMail(mail) || mail.setup !== this.directory.setup || !this.ours().includes(from)) return
+    if (this.settings.shared() || !isSettingsMail(mail) || mail.setup !== this.directory.setup || !this.ours().includes(from)) return
     // (Newer parts taken tell the rest of your computers, `listen` above.)
     if (mail.usage) {
       this.taking = typeof mail.digest === "string" ? { key: from, digest: mail.digest } : undefined
