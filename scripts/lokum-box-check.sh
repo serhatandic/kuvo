@@ -81,6 +81,10 @@ fi
 REMOTE
 printf -v command 'bash -c %q -- %q %q' "$remote" "$NAME" "${FULL:+1}"
 for file in "$@"; do printf -v quoted ' %q' "$file"; command+=$quoted; done
+# The declaration coverage test compares policy families with the checked-in inventory.
+inventory=.claude/notes/848-U-versions-inventory.md
+extra=()
+if [[ -f "$inventory" ]]; then extra+=("$inventory"); fi
 COPYFILE_DISABLE=1 tar --no-xattrs -czf - \
     box/package.json box/bun.lock box/bunfig.toml box/tsconfig.json \
     box/src box/test box/eval \
@@ -90,5 +94,5 @@ COPYFILE_DISABLE=1 tar --no-xattrs -czf - \
     scripts/route-shapes.sh scripts/route-shapes.ts scripts/real-app-guard.sh \
     scripts/build-browser.sh scripts/build-browser.ts box/dist/kuvo-browser.js \
     box/dist/kuvo-agents.js swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js \
-    scripts/box-release.sh scripts/sign-box.mjs |
+    scripts/box-release.sh scripts/sign-box.mjs ${extra[@]+"${extra[@]}"} |
     ssh -o BatchMode=yes "$HOST" "$command"
