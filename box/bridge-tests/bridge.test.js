@@ -1554,6 +1554,7 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     // (A bot on another computer, held for it: a bot none of them lists is refused with words.)
     "bots.held": ["PATCH", "kuvo/bots/bot_none"],
     "bots.job": ["GET", "kuvo/bots"],
+    "bots.job-fields": ["PATCH", "kuvo/bots/bot_none"],
     "bots.make": ["GET", "kuvo/bots/templates"],
     "bots.now": ["GET", "kuvo/bots"],
     // (A bot's state is in `now`; seen is a bot's own route: one that isn't here says so.)

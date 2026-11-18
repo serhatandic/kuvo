@@ -16,6 +16,7 @@ extension BoxGate {
         "bots.effort", // the Bots area: a model's effort, as the box says it
         "bots.elsewhere", // the Bots area: the bots on your other computers
         "bots.held", // #668 item 8: an edit to a bot whose computer is away is held by the box asked; no client keeps an outbox
+        "bots.job-fields", // Job and Instructions can be saved independently
         "bots.now", // #711, the desktop client's sidebar and Settings draw what the box says
         "bots.state", // a bot's one state (thinking, blocked, done, asleep…) and Seen are the box's; no client works one out
         "bots.wake-ups",
