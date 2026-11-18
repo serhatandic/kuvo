@@ -193,7 +193,7 @@ export class AntigravityPlan {
   private access?: { credential: string; token: string; expires: number }
   readonly limits: LimitsSource
   constructor(readonly profile: () => string, private readonly stateFolder: () => string, private readonly fetcher: AntigravityFetch = (url, init) => fetch(url, init), private readonly discover = discoverAntigravity, private readonly bases = productionBases, private readonly oauth = "https://oauth2.googleapis.com/token") {
-    this.limits = { every: 10 * 60_000, bucket: "antigravity", read: now => this.read(now), signIn: () => this.signIn(), account: () => this.account(), identity: () => this.credential()?.identity }
+    this.limits = { every: 10 * 60_000, bucket: "antigravity", keepLastReading: true, read: now => this.read(now), signIn: () => this.signIn(), account: () => this.account(), identity: () => this.credential()?.identity }
   }
   /** Signing out prunes only this account's box-owned derived refusal record. */
   signOut() {

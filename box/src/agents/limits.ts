@@ -192,6 +192,8 @@ export interface LimitsSource {
   signIn?(): string | undefined
   /** The least time between two reads, in ms: as often as its maker's endpoint allows. */
   every: number
+  /** Keep this account's last local reading visible after the usual freshness cutoff. */
+  keepLastReading?: boolean
   /** Accounts whose reads share one limit at their maker (Anthropic's applies to the computer, not a sign-in): one turned away holds them all. */
   bucket?: string
   /** Set by the box: a window a turn heard of (a rate-limit event), told as it comes. */
@@ -495,6 +497,10 @@ export class Limits {
     this.turnTimer.unref?.()
   }
 
+  private recent(source: LimitsSource, window: LimitWindow): boolean {
+    return this.now() - window.read <= Math.max(source.read ? 15 * MINUTE : 60 * MINUTE, 2 * source.every)
+  }
+
   /**
    * The accounts with plan limits: each agent's own sign-in first, then the ones you added, then
    * the engine's. `borrowed`: one a peer's reading stood for a read of here is listed with that
@@ -524,7 +530,7 @@ export class Limits {
           ...(account.label ? { label: account.label } : {}),
           identity: entry.identity!,
           ...((peer.plan ?? entry.plan) ? { plan: peer.plan ?? entry.plan } : {}),
-          windows: peer.windows,
+          windows: peer.windows.filter(window => this.recent(account.limits, window)),
           ...((peer.balance ?? entry.balance) ? { balance: peer.balance ?? entry.balance } : {}),
           ...(peer.extras?.length ? { extras: peer.extras } : {}),
           ...(entry.checked ? { checked: entry.checked } : {}),
@@ -539,7 +545,7 @@ export class Limits {
         ...(account.label ? { label: account.label } : {}),
         ...(entry.identity ? { identity: entry.identity } : {}),
         ...(entry.plan ? { plan: entry.plan } : {}),
-        windows: entry.windows,
+        windows: account.limits.keepLastReading ? entry.windows : entry.windows.filter(window => this.recent(account.limits, window)),
         ...(entry.notices?.length ? { notices: entry.notices.filter(n => currentNotice(n, this.now())) } : {}),
         ...(entry.noticeState ? { noticeState: entry.noticeState } : {}),
         ...(entry.balance ? { balance: entry.balance } : {}),
