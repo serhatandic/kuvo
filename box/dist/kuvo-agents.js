@@ -3542,7 +3542,14 @@ function askSetupSave(run, body) {
         const value = JSON.parse(Buffer.from(reply.body, "base64").toString());
         if (!Number.isInteger(reply.status))
           return finish();
-        finish({ status: reply.status, message: isObject(value) && typeof value.message === "string" ? value.message : undefined });
+        const result = isObject(value) ? value : {};
+        const outcome = result.status;
+        finish({
+          status: reply.status,
+          message: typeof result.message === "string" ? result.message : undefined,
+          ...typeof result.operation === "string" ? { operation: result.operation } : {},
+          ...outcome === "pending" || outcome === "committed" || outcome === "interrupted" ? { outcome } : {}
+        });
       } catch {
         finish();
       }
@@ -40699,6 +40706,7 @@ var init_folder_version = __esm(() => {
     (_folder, importLegacy) => importLegacy?.(),
     () => {},
     () => {},
+    () => {},
     () => {}
   ];
 });
@@ -42303,4 +42311,4 @@ if (!isMainThread && process.argv.includes("--insights-db-worker")) {
 } else {
   await init_main().then(() => ({}));
 }
-// Built from Packages/Box/src/agents f64563906086796327425ccf7931f7947ea6cf2fd27cceb4823f86c57f015837
+// Built from Packages/Box/src/agents 57933dbd155b040c5b5be4b21371873d7fd459784f2ba8eeff7bc652d99d242a

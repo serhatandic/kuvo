@@ -6901,6 +6901,9 @@
             "literal": "setup"
            },
            {
+            "literal": "setup.checkpoints"
+           },
+           {
             "literal": "setup.handover"
            },
            {
@@ -7670,6 +7673,9 @@
            },
            {
             "literal": "setup"
+           },
+           {
+            "literal": "setup.checkpoints"
            },
            {
             "literal": "setup.handover"
