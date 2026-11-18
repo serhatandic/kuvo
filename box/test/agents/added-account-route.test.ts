@@ -24,10 +24,11 @@ test("POST accounts with provider creates an isolated account and leaves the fir
       },
       body: JSON.stringify({ provider: providerID("codex", first.id) }),
     }))
+    const before = accounts.all().map(record => providerID(record.kind, record.id))
     const refused = await add("2")
     expect(refused.status).toBe(400)
     expect((await refused.json() as { code: string }).code).toBe("unsupportedFormatVersion")
-    expect(accounts.all()).toHaveLength(1)
+    expect(accounts.all().map(record => providerID(record.kind, record.id))).toEqual(before)
     const response = await add()
     expect(response.status).toBe(200)
     expect(response.headers.get("x-kuvo-route-version")).toBe("1")
