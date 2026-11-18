@@ -6910,6 +6910,9 @@
             "literal": "setup.ready"
            },
            {
+            "literal": "setup.takeover"
+           },
+           {
             "literal": "setup.welcomed"
            },
            {
@@ -7673,6 +7676,9 @@
            },
            {
             "literal": "setup.ready"
+           },
+           {
+            "literal": "setup.takeover"
            },
            {
             "literal": "setup.welcomed"
@@ -10071,6 +10077,7 @@
         }
        }
       },
+      "standby?": "string",
       "conflict?": {
        "object": {
         "primary": "string",
@@ -10110,6 +10117,34 @@
        "list": "string"
       },
       "welcomed": "bool"
+     }
+    }
+   }
+  },
+  {
+   "route": "POST kuvo/setup/standby",
+   "feature": "setup.takeover",
+   "answers": {
+    "200": {
+     "object": {
+      "primary": "string",
+      "epoch": "number"
+     }
+    },
+    "202": {
+     "object": {
+      "primary": "string",
+      "epoch": "number"
+     }
+    },
+    "409": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "503": {
+     "object": {
+      "message": "string"
      }
     }
    }
@@ -10235,6 +10270,7 @@
         }
        }
       },
+      "standby?": "string",
       "conflict?": {
        "object": {
         "primary": "string",
