@@ -80,7 +80,6 @@ export class InsightsScan {
     store: Store
     bots: () => Bot[]
     computer: () => string
-    account: (provider: string, computer: string) => string
     engine?: string
   }) {
     const reader = {
@@ -140,7 +139,8 @@ export class InsightsScan {
         const kind = parseProvider(accountProvider)?.kind
         const provider = kind ?? accountProvider
         const computer = message.time.origin ?? local
-        const fields = { ...base, computer, provider, account: message.time.usageAccount ?? this.options.account(accountProvider, computer), at,
+        const fields = { ...base, computer, provider, account: message.time.usageAccount ?? `${computer}/${accountProvider}`, at,
+          ...(message.time.usageAccount ? { accountObserved: true as const } : {}),
           ...(message.time.origin ? { attributed: true as const } : {}) }
         if (message.time.usageSession && message.time.usageSession !== session.id) continue
         const key = insightKey("kuvo", session.id, message.id)
@@ -194,7 +194,7 @@ export class InsightsScan {
     for (const answer of answers ?? []) {
       if (!answer.json) continue
       const rows: unknown[][] = JSON.parse(answer.json)
-      for (const [session, call, role, created, completed, rawProvider, model, agent, usage, source, origin, title, metadata, parent, parts] of rows) {
+      for (const [session, call, role, created, completed, rawProvider, model, agent, usage, source, origin, observedAccount, title, metadata, parent, parts] of rows) {
         const at = completed ?? created
         if (typeof session !== "string" || !session || typeof call !== "string" || typeof at !== "number" || at < since) continue
         const seat = seatBot(metadata)
@@ -202,11 +202,12 @@ export class InsightsScan {
         if (role === "assistant" && completed === null && !usage) continue
         const provider = typeof rawProvider === "string" ? rawProvider : "opencode"
         const computer = typeof origin === "string" ? origin : this.options.computer()
+        const account = typeof observedAccount === "string" && observedAccount ? observedAccount : undefined
         const bot = bots.get(session)
         const tokens = role === "user" ? undefined : buckets(usage)
         records.push({
           key: insightKey("engine", session, call), session, call, at, computer, provider,
-          account: this.options.account(provider, computer), bot: bot?.id ?? seat, botName: bot?.name, title: typeof title === "string" ? title : undefined,
+          account: account ?? `${computer}/${provider}`, ...(account ? { accountObserved: true as const } : {}), bot: bot?.id ?? seat, botName: bot?.name, title: typeof title === "string" ? title : undefined,
           ...(Array.isArray(parts) ? { skills: skillsNamed(parts.filter(Array.isArray) as [unknown, unknown][]) } : {}),
           model: typeof model === "string" ? model : undefined, agent: typeof agent === "string" ? agent : undefined,
           tokens, reportedTotal: usage && typeof usage === "object" ? count((usage as { total?: unknown }).total) ?? undefined : undefined,

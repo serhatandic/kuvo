@@ -14,6 +14,8 @@ export interface InsightRecord {
   computer: string
   provider: string
   account?: string
+  /** The account was known when the call ran. */
+  accountObserved?: true
   model?: string
   pricingModels?: string[]
   bot?: string

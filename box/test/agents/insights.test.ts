@@ -8,7 +8,8 @@ import type { Agent } from "../../src/agents/agent"
 import { LinkDirectory, PeerPost } from "../../src/agents/groups/post"
 import { Store } from "../../src/agents/store"
 import { Insights, insightsRoutes } from "../../src/agents/usage/insights"
-import { dayBounds, InsightsDB } from "../../src/agents/usage/insights-db"
+import { InsightsDB } from "../../src/agents/usage/insights-db"
+import { dayBounds } from "../../src/agents/usage/insights-store"
 import { InsightsScan } from "../../src/agents/usage/insights-scan"
 import { insightKey, type InsightRecord } from "../../src/agents/usage/insight-records"
 import { generationEvent } from "../../src/agents/usage/antigravity-history"
@@ -32,87 +33,124 @@ const show = (db: InsightsDB, filter = {}, computers = ["first", "second"], peri
   return db.view(now, "America/New_York", period, filter, computers, "overview", 0)
 }
 
-test("copies merge before filters, resumed sessions count once, and moved bot calls retain their origin", () => {
+test("copies merge before filters, resumed sessions count once, and moved bot calls retain their origin", async () => {
   const db = new InsightsDB(":memory:")
   const one = event("previous", "first", { bot: "bot_demo", botName: "Demo", skills: ["research", "writing"] })
   const two = event("new", "second", { bot: "bot_demo", botName: "Demo" })
   const another = event("third", "second", { session: "another", model: "unpriced-model" })
-  db.take([one, two, another, event("previous", "second", { attributed: undefined }), event("unknown", "second", { tokens: undefined })], priced, now)
-  db.take([one, another], priced, now, "second", 100)
-  expect(db.read<number>("cursor/second")).toBe(100)
-  expect(show(db).totals).toMatchObject({ tokens: 456, processed: 1956, sessions: 2, unpriced: 2, partial: 1 })
-  expect(show(db, { bot: "bot_demo" }).breakdowns.skill.map((row) => row.costShare)).toEqual([0.5, 0.5])
-  expect(show(db, { bot: "bot_demo" }, ["second"]).totals).toMatchObject({ tokens: 152, sessions: 1 })
-  expect(show(db, { account: "claude#same-account" }).totals?.tokens).toBe(456)
-  const calls = db.view(now, "America/New_York", 30, { session: "session" }, ["first", "second"], "detail", 0).calls
+  await db.take([one, two, another, event("previous", "second", { attributed: undefined }), event("unknown", "second", { tokens: undefined })], priced, now)
+  await db.take([one, another], priced, now, "second", 100)
+  expect(await db.read<number>("cursor/second")).toBe(100)
+  expect((await show(db)).totals).toMatchObject({ tokens: 456, processed: 1956, sessions: 2, unpriced: 2, partial: 1 })
+  expect((await show(db, { bot: "bot_demo" })).breakdowns.skill.map((row) => row.costShare)).toEqual([0.5, 0.5])
+  expect((await show(db, { bot: "bot_demo" }, ["second"])).totals).toMatchObject({ tokens: 152, sessions: 1 })
+  expect((await show(db, { account: "claude#same-account" })).totals?.tokens).toBe(456)
+  const calls = (await db.view(now, "America/New_York", 30, { session: "session" }, ["first", "second"], "detail", 0)).calls
   expect(calls?.map((call) => call.computer).sort()).toEqual(["first", "second", "second"])
-  const cost = show(db).totals!.cost!
-  db.price(catalog(10), now)
-  expect(show(db).totals?.cost).toBeGreaterThan(cost)
-  expect(show(db).totals?.tokens).toBe(456)
-  db.close()
+  const cost = (await show(db)).totals!.cost!
+  await db.price(catalog(10), now)
+  expect((await show(db)).totals?.cost).toBeGreaterThan(cost)
+  expect((await show(db)).totals?.tokens).toBe(456)
+  await db.close()
 })
 
-test("a newly available provider call replaces its saved placeholder across filters", () => {
+test("a newly available provider call replaces its saved placeholder across filters", async () => {
   const db = new InsightsDB(":memory:")
   const saved = event("missing", "first", { tokens: undefined })
-  db.take([saved], priced, now)
-  expect(show(db).totals?.partial).toBe(1)
-  db.take([event("native", "first", { supersedes: saved.key })], priced, now)
-  expect(show(db).totals).toMatchObject({ sessions: 1, tokens: 152, partial: 0, unpriced: 0 })
-  db.close()
+  await db.take([saved], priced, now)
+  expect((await show(db)).totals?.partial).toBe(1)
+  await db.take([event("native", "first", { supersedes: saved.key })], priced, now)
+  expect((await show(db)).totals).toMatchObject({ sessions: 1, tokens: 152, partial: 0, unpriced: 0 })
+  await db.close()
 })
 
-test("day bounds use the viewer's time zone, including DST transitions", () => {
+test("day bounds use the viewer's time zone, including DST transitions", async () => {
   const at = Date.parse("2026-03-09T12:00:00Z")
   const bounds = dayBounds(at, "America/New_York", 7)
   expect(bounds.at(-2)).toEqual(["2026-03-08", Date.parse("2026-03-08T05:00:00Z"), Date.parse("2026-03-09T04:00:00Z")])
   const midnight = Date.parse("2026-11-18T05:00:00Z")
   const db = new InsightsDB(":memory:")
-  db.take([event("yesterday", "first", { at: midnight - 1 }), event("today", "first", { at: midnight })], priced, now)
-  expect(show(db).daily?.slice(-2).map(({ tokens }) => tokens)).toEqual([152, 152])
-  expect(db.view(now, "Asia/Kathmandu", 7, {}, ["first"], "overview", 0).daily?.at(-1)?.tokens).toBe(304)
-  db.close()
+  await db.take([event("yesterday", "first", { at: midnight - 1 }), event("today", "first", { at: midnight })], priced, now)
+  expect((await show(db)).daily?.slice(-2).map(({ tokens }) => tokens)).toEqual([152, 152])
+  expect((await db.view(now, "Asia/Kathmandu", 7, {}, ["first"], "overview", 0)).daily?.at(-1)?.tokens).toBe(304)
+  await db.close()
 })
 
-test("a year of daily readings uses indexed ranges and reuses unchanged days", () => {
+test("a cold yearly query and repricing both leave the bridge event loop responsive", async () => {
   const db = new InsightsDB(":memory:")
-  db.take(Array.from({ length: 40_000 }, (_, i) => event(String(i), "first", {
-    session: "session-" + i % 177, at: now - 2_000 - i % 365 * day,
-  })), priced, now)
-  const begin = performance.now()
-  const year = show(db, {}, ["first"], 365)
-  expect(year.daily?.length).toBe(365)
-  expect(year.totals).toMatchObject({ sessions: 177, tokens: 40_000 * 152 })
-  expect(performance.now() - begin).toBeLessThan(8000)
-  const warm = performance.now()
-  expect(show(db, {}, ["first"], 365).daily).toEqual(year.daily!)
-  expect(performance.now() - warm).toBeLessThan(500)
-  db.close()
+  try {
+    for (let start = 0; start < 40_000; start += 1_000) {
+      await db.take(Array.from({ length: 1_000 }, (_, offset) => {
+        const i = start + offset
+        return event(String(i), "first", { session: "session-" + i % 4000, at: now - 2_000 - i % 365 * day })
+      }), priced, now)
+    }
+    const turns: unknown[] = []
+    async function whileServing<T>(start: () => T | Promise<T>) {
+      const turn = new Promise((resolve) => setTimeout(() => resolve("bridge timer"), 0))
+      const work = Promise.resolve(start())
+      const first = await Promise.race([turn, work.then(() => "database finished")])
+      const result = await work
+      turns.push(first)
+      return result
+    }
+    const year = await whileServing(() => show(db, {}, ["first"], 365))
+    expect(year.daily).toHaveLength(365)
+    expect(year.totals).toMatchObject({ sessions: 4000, tokens: 40_000 * 152 })
+    expect((await show(db, {}, ["first"], 365)).daily).toEqual(year.daily)
+    await whileServing(() => db.price(catalog(10), now))
+    expect(turns).toEqual(["bridge timer", "bridge timer"])
+    const repriced = await show(db, {}, ["first"], 365)
+    expect(repriced.totals.cost).toBeGreaterThan(year.totals.cost!)
+    expect(repriced.totals.tokens).toBe(year.totals.tokens)
+  } finally {
+    await db.close()
+  }
 }, 60_000)
 
-test("resume peer pages, reject vouched computers, and price incoming records locally", () => {
+test("a session page computes shares of the whole filtered snapshot after a scan", async () => {
+  const db = new InsightsDB(":memory:")
+  try {
+    await db.take([event("early", "first", { bot: "bot_demo", skills: ["research", "writing"] })], priced, now)
+    const filter = { bot: "bot_demo" }
+    const old = await show(db, filter)
+    expect(old.breakdowns.skill.map((row) => row.tokenShare)).toEqual([1, 1])
+    expect(old.daily.reduce((sum, row) => sum + (row.tokens ?? 0), 0)).toBe(old.totals.tokens!)
+    await db.take([
+      event("late", "first", { bot: "bot_demo" }),
+      event("other", "first", { bot: "bot_demo", session: "unpriced", model: "unpriced-model" }),
+      event("excluded", "first", { session: "other-bot" }),
+    ], priced, now)
+    const page = await db.view(now, "America/New_York", 30, filter, ["first"], "sessions", 0)
+    expect(page.sessions.find((row) => row.session === "session")).toMatchObject({ costShare: 1, tokenShare: 2 / 3 })
+    expect(page.sessions.find((row) => row.session === "unpriced")).toMatchObject({ costShare: null, tokenShare: 1 / 3 })
+  } finally {
+    await db.close()
+  }
+})
+
+test("resume peer pages, reject vouched computers, and price incoming records locally", async () => {
   const db = new InsightsDB(":memory:")
   const post = new PeerPost()
   const directory = new LinkDirectory(post)
   const mail = new Insights(db, {} as InsightsScan, new PricingStore(undefined, null), directory, post, "first", () => now)
   directory.set({ self: { key: "first", name: "First" }, boxes: [{ key: "second", name: "Second" }], also: [{ key: "shared", name: "Shared" }], bots: [] })
   const page = { kind: "insights" as const, action: "page" as const, after: 0, next: 100, more: true, epoch: "first-generation", scanned: now, records: [event("remote", "second")] }
-  mail.take("shared", page)
-  expect(db.read("cursor/shared")).toBeUndefined()
-  mail.take("second", page)
-  mail.take("second", page)
-  mail.take("second", { ...page, after: 100, next: 101, more: false, records: [event("next", "second")] })
-  expect(db.read<number>("cursor/second")).toBe(101)
-  mail.take("second", { ...page, after: 101, next: 2, more: false, epoch: "new-generation", reset: true, records: [event("next", "second")] })
-  expect(db.read<number>("cursor/second")).toBe(2)
-  expect(db.read<string>("peer-epoch/second")).toBe("new-generation")
-  expect(show(db, {}, ["second"]).totals).toMatchObject({ sessions: 1, calls: 2, tokens: 304 })
+  await mail.take("shared", page)
+  expect(await db.read("cursor/shared")).toBeUndefined()
+  await mail.take("second", page)
+  await mail.take("second", page)
+  await mail.take("second", { ...page, after: 100, next: 101, more: false, records: [event("next", "second")] })
+  expect(await db.read<number>("cursor/second")).toBe(101)
+  await mail.take("second", { ...page, after: 101, next: 2, more: false, epoch: "new-generation", reset: true, records: [event("next", "second")] })
+  expect(await db.read<number>("cursor/second")).toBe(2)
+  expect(await db.read<string>("peer-epoch/second")).toBe("new-generation")
+  expect((await show(db, {}, ["second"])).totals).toMatchObject({ sessions: 1, calls: 2, tokens: 304 })
   const asked = new URLSearchParams("period=7&zone=UTC")
-  expect(insightsRoutes(mail, "GET", [], asked).status).toBe(200)
-  expect(insightsRoutes(mail, "GET", ["sessions", "session"], asked).status).toBe(200)
-  expect(insightsRoutes(mail, "GET", [], new URLSearchParams("period=10")).status).toBe(400)
-  db.close()
+  expect((await insightsRoutes(mail, "GET", [], asked)).status).toBe(200)
+  expect((await insightsRoutes(mail, "GET", ["sessions", "session"], asked)).status).toBe(200)
+  expect((await insightsRoutes(mail, "GET", [], new URLSearchParams("period=10"))).status).toBe(400)
+  await db.close()
 })
 
 const writeLog = (path: string, ...rows: object[]) => {
@@ -183,10 +221,20 @@ test("isolated Claude, Codex, Grok and Antigravity records join Kuvo steps, and 
   mkdirSync(engine)
   const db = new Database(join(engine, "opencode.db"))
   db.exec(readFileSync(join(import.meta.dir, "../fixtures/usage/opencode-hosted.sql"), "utf8"))
-  db.close()
-  const scanner = new InsightsScan({ root: home, cache: join(home, "cache"), agents: () => agents, store, bots: () => [], computer: () => "first", account: () => "account", engine })
+  await db.close()
+  const externalDb = join(dir, "outside", "external-engine.db")
+  const outside = new Database(externalDb)
+  outside.exec("CREATE TABLE message (id TEXT, session_id TEXT, time_created INTEGER, data TEXT)")
+  outside.query("INSERT INTO message VALUES (?, ?, ?, ?)").run(
+    "outside-call", "outside-session", at, JSON.stringify({ role: "assistant", modelID: "claude-test", tokens: { input: 700 } }),
+  )
+  outside.close()
+  symlinkSync(externalDb, join(engine, "opencode-extra.db"))
+  const options = { root: home, cache: join(home, "cache"), agents: () => agents, store, bots: () => [], computer: () => "first", account: () => "account", engine }
+  const scanner = new InsightsScan(options)
   const { records, issues } = await scanner.scan(priced, now - 365 * day)
   expect(issues).toEqual([])
+  expect(records.some((record) => record.session === "outside-session")).toBe(false)
   for (const provider of ["claude", "codex", "grok", "antigravity"]) {
     const found = records.filter((record) => record.provider === provider)
     expect(found, provider).toHaveLength(1)
@@ -198,4 +246,38 @@ test("isolated Claude, Codex, Grok and Antigravity records join Kuvo steps, and 
   expect(records.filter((r) => r.provider === "opencode-go").some((r) => r.human)).toBe(true)
   expect(records.find((r) => r.call === "m-go-2")?.reportedTotal).toBe(750)
   expect(records.find((r) => r.call === "m-go-4")).toBeUndefined()
+})
+
+test("legacy history stays on its provider slot through sign-in changes, while observed accounts stay pinned", async () => {
+  const home = join(dir, "account-history")
+  const store = new Store(join(home, "saved"))
+  const model = { providerID: "claude-code", id: "claude-test" }
+  const step = (id: string, usageAccount?: string): Message => ({
+    id, type: "assistant", model, agent: "build", content: [],
+    time: { created: now - 1000, completed: now - 500, origin: "first", usageAccount },
+  })
+  store.addWhole({
+    session: { id: "historical", projectID: "p", cost: 0, time: { created: now - 2000, updated: now },
+      location: { directory: home }, tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } } },
+    messages: [step("legacy"), step("observed", "claude#account-a")], agent: {},
+  })
+  let signedIn = "claude#account-a"
+  const options = { root: home, cache: join(home, "cache"), agents: () => [], store, bots: () => [],
+    computer: () => "first", account: () => signedIn }
+  const scanner = new InsightsScan(options)
+  const scan = async () => Object.fromEntries((await scanner.scan(priced, now - day)).records.map((row) => [row.call, row.account]))
+  expect(await scan()).toEqual({ legacy: "first/claude-code", observed: "claude#account-a" })
+  signedIn = "claude#account-b"
+  expect(await scan()).toEqual({ legacy: "first/claude-code", observed: "claude#account-a" })
+  const db = new InsightsDB(":memory:")
+  try {
+    const { records } = await scanner.scan(priced, now - day)
+    const known = records.find((row) => row.call === "observed")!
+    await db.take([known], priced, now)
+    await db.take([{ ...known, account: "first/claude-code", accountObserved: undefined }], priced, now)
+    const saved = await db.view(now, "UTC", 7, {}, ["first"], "detail", 0)
+    expect(saved.calls[0]?.account).toBe("claude#account-a")
+  } finally {
+    await db.close()
+  }
 })

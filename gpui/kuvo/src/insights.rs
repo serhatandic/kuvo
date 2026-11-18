@@ -118,11 +118,14 @@ struct Overview {
 }
 
 #[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct Session {
     session: String,
     title: Option<String>,
     computer: String,
     home: Option<String>,
+    cost_share: Option<f64>,
+    token_share: Option<f64>,
     at: f64,
     #[serde(flatten)]
     usage: Measures,
@@ -493,7 +496,7 @@ impl InsightsView {
                 .child(format_metric(value(&row.usage, metric), metric))
         });
         let narrow = window.viewport_size().width < px(640.);
-        let summary = card(cx).p(space::S4).when(!narrow, |d| d.w(px(292.)).flex_none())
+        let summary = card(cx).when(!narrow, |d| d.w(px(292.)).flex_none())
             .debug_selector(|| "insights-summary".into())
             .child(div().flex().flex_col().gap(space::S1)
                 .child(div().debug_selector(|| "insights-total-label".into()).text_color(c.text_muted).child(if metric == Metric::Cost { "Estimated API cost · USD" } else { "Tokens without cache reads" }))
@@ -559,7 +562,7 @@ impl InsightsView {
                 .child("A call can appear under more than one skill.")))
             .child(table_header([title, "Estimated cost", "Share", "Tokens"], cx))
             .when(self.breakdown == Breakdown::Session, |d| d
-                .children(self.session_rows(&overview.totals, cx))
+                .children(self.session_rows(cx))
                 .when(self.sessions.sessions.is_empty(), |d| d.child(div().py(space::S2).text_color(c.text_muted).child("No sessions in this range.")))
                 .when_some(self.sessions.next, |d, next| d.child(self.more("insights-more-sessions", next, cx))))
             .when(self.breakdown != Breakdown::Session, |d| d
@@ -581,13 +584,12 @@ impl InsightsView {
                 ))))
     }
 
-    fn session_rows(&self, totals: &Measures, cx: &mut Context<Self>) -> Vec<AnyElement> {
+    fn session_rows(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let c = cx.theme().colors.clone();
-        let total = value(totals, self.metric).filter(|total| *total > 0.);
         self.sessions.sessions.iter().enumerate().map(|(i, session)| {
             let words = session.title.as_deref().filter(|title| !title.is_empty()).unwrap_or("Untitled session");
             let selected = session.clone();
-            let share = value(&session.usage, self.metric).zip(total).map(|(amount, total)| amount / total);
+            let share = match self.metric { Metric::Cost => session.cost_share, Metric::Tokens => session.token_share };
             div().id(("insights-session", i)).debug_selector(move || format!("insights-session-{i}").into())
                 .cursor_pointer().hover(|d| d.bg(c.hover)).tab_index(0)
                 .on_click(cx.listener(move |this, _, _, cx| {

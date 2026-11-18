@@ -407,18 +407,17 @@ const usageComputer = () => directory.own()?.key ?? localUsageKey
 store.origin = usageComputer
 try {
   mkdirSync(usageFolder, { recursive: true, mode: 0o700 })
-  const accountOf = (provider: string, computer: string) => {
+  store.usageAccount = (provider) => {
     const service = parseProvider(provider)?.kind ?? (provider === "openai" ? "codex" : provider)
     const identity = limits.identity(provider)
-    return identity ? `${service}#${identity}` : `${computer}/${provider}`
+    return identity ? `${service}#${identity}` : undefined
   }
-  store.usageAccount = (provider, origin) => limits.identity(provider) ? accountOf(provider, origin) : undefined
   const scanner = new InsightsScan({
     root: home, cache: join(usageFolder, "insights-logs"), agents: () => roster.all(), store,
     bots: () => groups?.store.allBots() ?? [],
-    computer: usageComputer, engine: engineData, account: accountOf,
+    computer: usageComputer, engine: engineData,
   })
-  const insights = new Insights(new InsightsDB(join(usageFolder, "insights.sqlite")), scanner, pricing, directory, post, localUsageKey)
+  const insights = new Insights(new InsightsDB(join(usageFolder, "insights.sqlite"), build ? script : undefined), scanner, pricing, directory, post, localUsageKey)
   peers.insights = usage.insights = insights
 } catch (error) {
   console.error("Insights index:", error instanceof Error ? error.message : error)

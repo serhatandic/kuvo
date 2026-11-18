@@ -34,6 +34,7 @@ function recordFrom(value: InsightRecord): InsightRecord | undefined {
     account: optionalText(account), bot: optionalText(bot), botName: optionalText(botName), model: optionalText(model),
     agent: optionalText(agent), title: optionalText(title), nativeSession: optionalText(nativeSession),
     ...(validAt(observedAt) ? { observedAt } : {}),
+    ...(value.accountObserved === true && optionalText(account) ? { accountObserved: true } : {}),
     ...(value.attributed === true ? { attributed: true } : {}),
     ...(value.human === true ? { human: true } : {}),
     ...(value.partial === true ? { partial: true } : {}),
@@ -47,7 +48,8 @@ export class Insights {
   private timer?: ReturnType<typeof setInterval>
   private refreshed?: number
   private requested = new Map<string, number>()
-  private epoch: string
+  private epoch?: Promise<string>
+  private mail = Promise.resolve()
 
   constructor(
     private db: InsightsDB,
@@ -58,8 +60,6 @@ export class Insights {
     private local: string,
     private now = Date.now,
   ) {
-    this.epoch = db.read<string>("epoch") ?? crypto.randomUUID()
-    db.write("epoch", this.epoch)
     this.directory.listen(() => this.sync())
     this.post.onFollowed(() => this.sync())
   }
@@ -75,7 +75,7 @@ export class Insights {
     if (this.scan) return this.scan
     this.scan = this.round().catch((error) => {
       console.error("Insights scan:", error instanceof Error ? error.message : error)
-      this.db.write("failed", true)
+      return this.db.write("failed", true).catch(() => {})
     }).finally(() => { this.scan = undefined })
     return this.scan
   }
@@ -85,22 +85,28 @@ export class Insights {
     const pricing = this.pricing.current()
     const since = Math.floor(now / DAY) * DAY - 365 * DAY
     const { records, issues } = await this.scanner.scan(pricing, since)
-    this.db.price(this.pricing.current(), now)
-    // Relinquish the bridge between batches during a large first backfill.
-    const catalog = this.pricing.current()
+    // Bound each worker message so the bridge can handle other requests during a backfill.
     for (let offset = 0; offset < records.length; offset += 800) {
-      this.db.take(records.slice(offset, offset + 800), catalog, now)
-      if (offset + 800 < records.length) await new Promise<void>((resolve) => setImmediate(resolve))
+      await this.db.take(records.slice(offset, offset + 800), this.pricing.current(), now)
     }
-    this.db.take([], catalog, now)
-    this.db.price(this.pricing.current(), now)
-    this.db.write("failed", false)
-    this.db.write("local", { scanned: this.now(), issues })
+    await this.db.take([], this.pricing.current(), now)
+    await this.db.write("failed", false)
+    await this.db.write("local", { scanned: this.now(), issues })
     this.sync()
     for (const peer of this.peers()) {
-      const served = this.db.read<{ after: number; epoch?: string }>(`served/${peer.key}`)
-      if (served) this.sendPage(peer.key, served.after, served.epoch)
+      const served = await this.db.read<{ after: number; epoch?: string }>(`served/${peer.key}`)
+      if (served) await this.sendPage(peer.key, served.after, served.epoch)
     }
+  }
+
+  private ownEpoch() {
+    return this.epoch ??= (async () => {
+      const kept = await this.db.read<string>("epoch")
+      if (kept) return kept
+      const epoch = crypto.randomUUID()
+      await this.db.write("epoch", epoch)
+      return epoch
+    })()
   }
 
   private peers() {
@@ -113,22 +119,21 @@ export class Insights {
     if (fresh) this.refreshed = now
     for (const peer of this.peers()) {
       if (!fresh && now - (this.requested.get(peer.key) ?? -Infinity) < 30_000) continue
-      this.pull(peer.key, fresh)
+      void this.pull(peer.key, fresh).catch((error) => console.error("Insights peer sync:", error))
     }
   }
 
-  private pull(to: string, refresh = false) {
+  private async pull(to: string, refresh = false) {
     this.requested.set(to, this.now())
-    this.post.send(to, { kind: "insights", action: "pull", after: this.db.read<number>(`cursor/${to}`) ?? 0, epoch: this.db.read<string>(`peer-epoch/${to}`), ...(refresh ? { refresh: true } : {}) }, false)
+    this.post.send(to, { kind: "insights", action: "pull", ...await this.db.cursor(to), ...(refresh ? { refresh: true } : {}) }, false)
   }
 
-  private sendPage(to: string, after: number, epoch?: string) {
-    const current = this.db.read<number>("sequence") ?? 0
+  private async sendPage(to: string, after: number, epoch?: string) {
+    const [ownEpoch, current, coverage] = await Promise.all([this.ownEpoch(), this.db.read<number>("sequence"), this.db.read<Coverage>("local")])
     // A paired computer may have rebuilt its index from scratch.
-    const reset = (epoch !== undefined && epoch !== this.epoch) || after > current
-    const batch = this.db.batch(reset ? 0 : after)
-    const coverage = this.db.read<Coverage>("local")
-    this.post.send(to, { kind: "insights", action: "page", after, ...batch, epoch: this.epoch, ...(reset ? { reset: true } : {}), records: batch.records.map((record) => {
+    const reset = (epoch !== undefined && epoch !== ownEpoch) || after > (current ?? 0)
+    const batch = await this.db.batch(reset ? 0 : after)
+    this.post.send(to, { kind: "insights", action: "page", after, ...batch, epoch: ownEpoch, ...(reset ? { reset: true } : {}), records: batch.records.map((record) => {
       const key = this.directory.own()?.key
       if (!key || record.computer !== this.local) return record
       return { ...record, computer: key, account: record.account?.replace(this.local + "/", key + "/") }
@@ -136,33 +141,38 @@ export class Insights {
   }
 
   take(from: string, mail: InsightsMail) {
+    const handled = this.mail.then(() => this.receive(from, mail))
+    // A failed delivery must not stop the next one from being processed.
+    this.mail = handled.catch(() => {})
+    return handled
+  }
+
+  private async receive(from: string, mail: InsightsMail) {
     if (!this.directory.isYours(from) || !validAt(mail.after)) return
     if (mail.action === "pull") {
       const epoch = small(mail.epoch) ? mail.epoch : undefined
-      this.db.write(`served/${from}`, { after: mail.after, epoch })
-      this.sendPage(from, mail.after, epoch)
+      await this.db.write(`served/${from}`, { after: mail.after, epoch })
+      await this.sendPage(from, mail.after, epoch)
       if (mail.refresh === true) void this.refresh()
       return
     }
     if (mail.action !== "page" || !validAt(mail.next) || (!mail.reset && mail.next < mail.after) || !small(mail.epoch) || !Array.isArray(mail.records) || mail.records.length > MAX_PAGE) return
-    const expected = this.db.read<number>(`cursor/${from}`) ?? 0
+    const { after: expected, epoch: priorEpoch } = await this.db.cursor(from)
     if (mail.after !== expected) return
-    const priorEpoch = this.db.read<string>(`peer-epoch/${from}`)
     if (priorEpoch && priorEpoch !== mail.epoch && !mail.reset) return
     const own = this.directory.own()?.key ?? this.local
     const records = mail.records.map(recordFrom).filter((record): record is InsightRecord =>
       !!record && (record.computer === own || this.directory.isYours(record.computer)))
     const pricing = this.pricing.current()
-    this.db.price(pricing, this.now())
-    this.db.take(records, pricing, this.now(), from, mail.next, mail.epoch)
-    if (!mail.more && validAt(mail.scanned) && mail.scanned <= this.now() + DAY) this.db.write(`peer/${from}`, {
+    await this.db.take(records, pricing, this.now(), from, mail.next, mail.epoch)
+    if (!mail.more && validAt(mail.scanned) && mail.scanned <= this.now() + DAY) await this.db.write(`peer/${from}`, {
       scanned: mail.scanned,
       issues: Array.isArray(mail.issues) ? mail.issues.filter(small).slice(0, 12) : [],
     })
-    if (mail.more && (mail.reset || mail.next > expected)) this.pull(from)
+    if (mail.more && (mail.reset || mail.next > expected)) await this.pull(from)
   }
 
-  view(params: URLSearchParams, route: "overview" | "sessions" | "detail") {
+  async view(params: URLSearchParams, route: "overview" | "sessions" | "detail") {
     const now = this.now()
     const period = Number(params.get("period") ?? 30)
     if (![7, 30, 90, 365].includes(period)) return
@@ -182,26 +192,26 @@ export class Insights {
     // A machine can have recorded work before the link learned its name.
     const selected = filter.computer === own.key ? localKeys : filter.computer ? keys.filter((key) => key === filter.computer) : keys
     delete filter.computer
-    const data = this.db.view(now, zone, period, filter, selected, route, offset)
+    const data = await this.db.view(now, zone, period, filter, selected, route, offset)
     if ("sessions" in data) {
       const botHomes = new Map(this.directory.bots().map((bot) => [bot.session, bot.box]))
       const sessions = data.sessions.map((session) => ({ ...session, home: botHomes.get(session.session) ?? session.computer }))
       return { ...data, sessions, localComputers: localKeys }
     }
     if ("calls" in data) return { ...data, localComputers: localKeys }
-    const local = this.db.read<Coverage>("local")
-    const coverage = computers.filter(({ key }) => !params.has("computer") || params.get("computer") === key).map(({ key, name }) => {
-      const read = key === own.key ? local : this.db.read<Coverage>(`peer/${key}`)
+    const local = await this.db.read<Coverage>("local")
+    const coverage = await Promise.all(computers.filter(({ key }) => !params.has("computer") || params.get("computer") === key).map(async ({ key, name }) => {
+      const read = key === own.key ? local : await this.db.read<Coverage>(`peer/${key}`)
       const issues = read?.issues.filter((issue) => !filter.provider || filter.provider === issue) ?? []
       return { key, name, scanned: read?.scanned, stale: read ? read.scanned < now - 2 * SCAN_EVERY : false, issues }
-    })
-    const partial = data.totals.partial > 0 || coverage.some((entry) => !entry.scanned || entry.issues.length > 0) || this.db.read("failed")
+    }))
+    const partial = data.totals.partial > 0 || coverage.some((entry) => !entry.scanned || entry.issues.length > 0) || await this.db.read("failed")
     const state = !local && this.scan ? "loading"
       : coverage.some((entry) => entry.stale) ? "stale"
       : partial ? "partial"
       : data.totals.sessions ? "ready" : "empty"
     return {
-      ...data, computers, bots: this.db.choices(keys), coverage, state, zone, period,
+      ...data, computers, bots: await this.db.choices(keys), coverage, state, zone, period,
       updatedDay: local ? dayIn(local.scanned, zone) : null,
       scanning: !!this.scan, localComputers: localKeys,
       unavailable: data.providers.some((row) => row.name === "cursor" && row.partial > 0)
@@ -213,7 +223,7 @@ export class Insights {
 type Coverage = { scanned: number; issues: string[] }
 const json = (body: unknown, status = 200) => Response.json(body, { status })
 
-export function insightsRoutes(insights: Insights | undefined, method: string, path: string[], params: URLSearchParams) {
+export async function insightsRoutes(insights: Insights | undefined, method: string, path: string[], params: URLSearchParams) {
   if (!insights) return json({ message: "Insights is unavailable on this computer." }, 503)
   if (method === "POST" && path.length === 1 && path[0] === "refresh") {
     void insights.refresh(true)
@@ -225,6 +235,6 @@ export function insightsRoutes(insights: Insights | undefined, method: string, p
     path[0] === "sessions" && path.length === 2 ? "detail" : undefined
   if (!route) return json({ message: "Not found." }, 404)
   if (path.length === 2) params.set("session", path[1]!)
-  const data = insights.view(params, route)
+  const data = await insights.view(params, route)
   return data ? json({ data }) : json({ message: "Choose a 7, 30, 90 or 365 day period and a valid page." }, 400)
 }

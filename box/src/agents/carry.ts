@@ -180,7 +180,6 @@ export class Carrying {
       if (origin) for (const message of record.messages) {
         if (message.type !== "user" && message.type !== "assistant") continue
         message.time.origin ??= origin
-        if (message.type === "assistant") message.time.usageAccount ??= this.store.usageAccount?.(message.model.providerID, message.time.origin)
       }
       this.store.save(id, true)
       const marks = (record.session.metadata ?? {}) as Record<string, any>

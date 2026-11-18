@@ -206,7 +206,7 @@ export async function peerRoutes(parts: PeerParts | undefined, method: string, p
       return json({})
     }
     if (typeof given?.from === "string" && given.from && isInsightsMail(given.mail)) {
-      parts.insights?.take(given.from, given.mail)
+      await parts.insights?.take(given.from, given.mail)
       return json({})
     }
     // What its accounts used (PROTOCOL.md, "Usage history").

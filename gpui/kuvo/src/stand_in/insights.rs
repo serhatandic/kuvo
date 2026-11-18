@@ -79,8 +79,8 @@ pub fn answer(method: &str, route: &str, query: impl Fn(&str) -> Option<String>,
         "/sessions" => {
             let mut sessions: Vec<_> = SESSIONS.iter().enumerate().filter_map(|(i, (session, title, _))| {
                 let calls = by_session(i);
-                let latest = calls.last()?;
-                let mut out = measures(&calls);
+                let latest = *calls.last()?;
+                let mut out = row(title, None, calls);
                 out["session"] = json!(session);
                 out["title"] = json!(title);
                 out["computer"] = json!(latest.computer);

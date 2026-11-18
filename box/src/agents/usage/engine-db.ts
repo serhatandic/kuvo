@@ -3,25 +3,40 @@
 // in a worker of its own (`bun:sqlite`, read-only), so the bridge never waits on SQLite. What each
 // usage source asks of them is its own SQL (engine-hosted.ts).
 
-import { readdirSync, statSync } from "node:fs"
-import { join } from "node:path"
+import { readdirSync, realpathSync, statSync, type Dirent } from "node:fs"
+import { isAbsolute, join, relative, sep } from "node:path"
 
 /**
  * Every channel's database in the engine's data folder, path-sorted; none when the folder isn't
  * there (no engine has run). A folder that is there but can't be listed throws: not known now.
  */
 export function engineDatabases(folder: string): string[] {
-  let names: string[]
+  let files: Dirent[]
+  let root: string
   try {
-    names = readdirSync(folder)
+    root = realpathSync(folder)
+    files = readdirSync(root, { withFileTypes: true })
   } catch (error) {
     if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return []
     throw error
   }
-  return names
-    .filter((name) => name.startsWith("opencode") && name.endsWith(".db"))
-    .sort()
-    .map((name) => join(folder, name))
+  const paths = new Set<string>()
+  for (const file of files) {
+    if (!file.name.startsWith("opencode") || !file.name.endsWith(".db")) continue
+    const path = join(root, file.name)
+    // Plain entries already live under the resolved root. Keep unreadable files in
+    // the list so the worker can report their errors without losing readable channels.
+    if (file.isFile()) paths.add(path)
+    if (!file.isSymbolicLink()) continue
+    try {
+      const resolved = realpathSync(path)
+      const inside = relative(root, resolved)
+      if (inside && inside !== ".." && !inside.startsWith(".." + sep) && !isAbsolute(inside)) paths.add(resolved)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") throw error
+    }
+  }
+  return [...paths].sort()
 }
 
 /** What the databases are now (each with its write-ahead log), to read them again only when one changed; throws as `engineDatabases` does. */
@@ -59,7 +74,12 @@ export type EngineAnswer = { path: string; json?: string; failed?: string }
  */
 const READER = `
 import { Database } from "bun:sqlite"
-import { statSync } from "node:fs"
+import { realpathSync, statSync } from "node:fs"
+import { isAbsolute, relative, sep } from "node:path"
+function owned(root, path) {
+  const inside = relative(root, path)
+  return inside && inside !== ".." && !inside.startsWith(".." + sep) && !isAbsolute(inside)
+}
 // (A database the engine is recovering or checkpointing is waited for a little, from the first query on.)
 function opened(db) {
   db.exec("PRAGMA busy_timeout = 2000")
@@ -82,12 +102,21 @@ function open(path) {
   }
 }
 self.onmessage = (event) => {
-  const { paths, sql } = event.data
+  const { paths, root, sql } = event.data
   const answers = []
   for (const path of paths) {
     let db
     try {
-      db = open(path)
+      const resolved = realpathSync(path)
+      if (!owned(root, resolved)) continue
+      for (const suffix of ["-wal", "-shm", "-journal"]) {
+        try {
+          if (!owned(root, realpathSync(resolved + suffix))) throw new Error("The engine database has a side file outside its data folder.")
+        } catch (error) {
+          if (error?.code !== "ENOENT") throw error
+        }
+      }
+      db = open(resolved)
       const names = String(db.query(sql.tables).values()[0]?.[0] ?? "").split(",").map((name) => name.trim())
       const v1 = names.includes("message")
       const v2 = names.includes("session_message")
@@ -127,12 +156,14 @@ export const TABLES_SQL = "SELECT group_concat(name) FROM sqlite_master WHERE ty
  */
 export function readEngineDatabases(folder: string, sql: EngineSQL): Promise<EngineAnswer[] | undefined> {
   let paths: string[]
+  let root: string
   try {
     paths = engineDatabases(folder)
+    if (!paths.length) return Promise.resolve(undefined)
+    root = realpathSync(folder)
   } catch (error) {
     return Promise.reject(error)
   }
-  if (!paths.length) return Promise.resolve(undefined)
   readerURL ??= URL.createObjectURL(new Blob([READER], { type: "application/javascript" }))
   const worker = new Worker(readerURL)
   // (It never keeps the bridge from ending.)
@@ -143,7 +174,7 @@ export function readEngineDatabases(folder: string, sql: EngineSQL): Promise<Eng
     timer.unref?.()
     worker.onmessage = (event: MessageEvent<EngineAnswer[]>) => resolve(event.data)
     worker.onerror = (event) => reject(new Error(event.message))
-    worker.postMessage({ paths, sql })
+    worker.postMessage({ paths, root, sql })
   }).finally(() => {
     clearTimeout(timer)
     worker.terminate()
@@ -159,7 +190,7 @@ export function engineUsageAnswers(folder: string, since: number) {
       COALESCE(json_extract(data, '$.model.id'), json_extract(data, '$.modelID')),
       json_extract(data, '$.agent'), json_extract(data, '$.tokens'),
       json_extract(data, '$.metadata.source'),
-      json_extract(data, '$.time.origin'),
+      json_extract(data, '$.time.origin'), json_extract(data, '$.time.usageAccount'),
       @${sessionTable}_title@, @${sessionTable}_metadata@, @${sessionTable}_parent_id@,
       (SELECT json_group_array(json_array(COALESCE(json_extract(part.value,'$.name'),json_extract(part.value,'$.tool')),
           json_extract(part.value,'$.state.input'))) FROM json_each(${parts}) AS part

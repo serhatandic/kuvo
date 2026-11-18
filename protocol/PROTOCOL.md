@@ -11976,7 +11976,10 @@ today), `zone` (an IANA time zone), and optional `computer`, `bot`, and
 filter. `GET /insights/sessions` pages the same selection by last activity,
 and `GET /insights/sessions/:session` (or `GET /insights?session=…`) pages
 one session's calls in chronological order. Both take `offset`, default
-0, and return `next` or null. `POST /insights/refresh` starts or joins a
+0, and return `next` or null. Session rows include `costShare` and
+`tokenShare`, each a fraction of the matching total computed in the same
+SQLite snapshot, or null when the share is unavailable.
+`POST /insights/refresh` starts or joins a
 background scan and peer sync and answers 202.
 
 The overview returns filter choices, totals, daily readings, provider
