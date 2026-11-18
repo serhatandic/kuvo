@@ -23,7 +23,7 @@ use super::log;
 use super::noise::{self, Initiator};
 use super::relay::{Dial, Incoming, Outgoing};
 use crate::error::{Error, Refusal, Result};
-use crate::transport::Request;
+use crate::transport::{check_route_version, Request, ROUTE_VERSION_HEADER};
 
 /// How long the link waits, as the phone's does (KuvoLink's `Link`).
 #[derive(Debug, Clone, Copy)]
@@ -650,6 +650,15 @@ impl LinkClient {
                         if let Some(at) = session.unanswered.remove(&id) {
                             session.arrived = session.arrived.max(at);
                         }
+                        if kind == "res" {
+                            let version = head.get("h").and_then(|headers| headers.get(ROUTE_VERSION_HEADER));
+                            if let Err(error) = check_route_version(version.map(|value| value.as_str().unwrap_or(""))) {
+                                if let Some(answer) = session.answers.remove(&id) {
+                                    let _ = answer.send(Piece::Failed(error));
+                                }
+                                return;
+                            }
+                        }
                         let Some(answer) = session.answers.get(&id) else { return };
                         let mut gone = false;
                         if kind == "res" {
@@ -716,8 +725,8 @@ impl LinkClient {
         let (sender, receiver) = channel();
         session.answers.insert(id, sender);
         let mut headers = serde_json::Map::new();
-        for (name, value) in &request.headers {
-            headers.insert(name.clone(), Value::String(value.clone()));
+        for (name, value) in request.wire_headers() {
+            headers.insert(name.to_owned(), Value::String(value.to_owned()));
         }
         let body = match &request.body {
             Some(body) => {

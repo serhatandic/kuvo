@@ -62,6 +62,7 @@ fn this_macs_box_is_found_by_its_record_and_lists_its_sessions() {
     let seen = stand_in.seen();
     assert_eq!(seen.iter().map(|seen| seen.route()).collect::<Vec<_>>(), vec!["kuvo/info", "kuvo/sessions/list"]);
     assert!(seen.iter().all(|seen| seen.headers.get("x-kuvo-from").map(String::as_str) == Some("app")));
+    assert!(seen.iter().all(|seen| seen.headers.get("x-kuvo-route-version").map(String::as_str) == Some("1")));
 }
 
 #[test]
