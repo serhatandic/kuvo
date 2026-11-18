@@ -102,8 +102,12 @@ const MOST_BLOCKED = 64;
 // box vouch for before, which could ask for the computer to be allowed again.
 function blockVoucher(link: LinkState, phone: Phone, now: number): void {
   if (!phone.by) return;
-  takeOffVouched(link, phone.by);
-  link.vouchBlocked = [...(link.vouchBlocked ?? []).filter(each => each.key !== phone.by), { key: phone.by, device: phone.name ?? "", at: now }].slice(-MOST_BLOCKED);
+  revokeVoucher(link, phone.by, phone.name ?? "", now);
+}
+
+export function revokeVoucher(link: LinkState, by: string, device = "", now = Date.now()): void {
+  takeOffVouched(link, by);
+  link.vouchBlocked = [...(link.vouchBlocked ?? []).filter(each => each.key !== by), { key: by, device, at: now }].slice(-MOST_BLOCKED);
 }
 
 /** Every device the box `by` vouched for taken off (in place), each by the pairing it has now and

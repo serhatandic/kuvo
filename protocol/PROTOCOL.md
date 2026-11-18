@@ -1804,8 +1804,8 @@ machines; a client that wants every computer's facts asks the box that has it as
     the devices it vouched for and its entry in `vouchBlocked`, goes by the new key as its
     record does, so removing it later still takes its app off.) `confirm.message` says
     "Kuvo Code’s app on <computer> is taken off your devices." on the box that knows of such a
-    device (the main computer alone: `by` is in no document, so a member's box that hands the
-    removal on doesn't say it, though it holds there too). `200 {}`, and the same for one removed already (whose devices,
+    device. Member boxes learn `by` from the signed phones document. The main computer writes
+    the revocation and shares it with the other boxes. `200 {}`, and the same for one removed already (whose devices,
     were any left from before this, go then).
   - `POST kuvo/computers/<key>/connect`: this box's own, for a peer that's `away`: its link tells
     that computer its agents now, asking for theirs (`run/reach-again.json`, sent by the process
@@ -11490,7 +11490,13 @@ started while another runs leaves. `GET kuvo/box/serve` answers `{needed, servin
 own box (`409`): its server is Kuvo Code's to run.
 
 **Uninstalling** (`box.uninstall`, #333 piece 3). Removing Kuvo Code from a computer is the box's
-own command, which the app or a Terminal line runs: `kuvo-link.js uninstall`. Nothing of the box
+own command, which the app or a Terminal line runs: `kuvo-link.js uninstall`. Before stopping,
+a member asks its main computer to revoke devices it vouched for. The command removes the desktop
+identity file and, on the real Mac's own box, asks the Keychain to delete the released app's item.
+An unconfirmed revocation or failed identity deletion is reported as incomplete.
+When another computer uninstalls over SSH, the controller revokes access after a successful
+probe and before sending the destructive command. A lost SSH reply leaves cleanup unconfirmed.
+Nothing of the box
 starts again, and nothing of it runs:
 - the launch agent that starts it at login on a Mac (`~/Library/LaunchAgents/run.kuvo.code.machine.plist`)
   is let go of (`launchctl bootout gui/<uid>/run.kuvo.code.machine`) and removed, first, so nothing

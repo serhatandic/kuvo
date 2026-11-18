@@ -253,6 +253,25 @@ test("uninstall refuses a folder that isn't a box", async () => {
   assert.equal(exists(where.run), false, "nothing made there");
 });
 
+test("local uninstall clears the file identity and reports unconfirmed revocation when it cannot reach its primary", async () => {
+  const where = home();
+  const primary = "a".repeat(43);
+  fs.writeFileSync(path.join(where.run, "link.json"), JSON.stringify({
+    key: Buffer.alloc(32, 7).toString("base64url"),
+    setup: { role: "member", primary },
+  }));
+  const identity = path.join(where.K, "desktop", "identity");
+  fs.mkdirSync(path.dirname(identity));
+  fs.writeFileSync(identity, "a desktop identity");
+  const done = await uninstall(where);
+  assert.equal(done.status, 1);
+  const said = JSON.parse(done.stdout);
+  assert.equal(said.result, "unfinished");
+  assert.equal(said.stopped, true);
+  assert.match(said.message, /couldn’t confirm that your main computer revoked/);
+  assert.equal(fs.existsSync(identity), false);
+});
+
 test("uninstall says what it doesn't know", async () => {
   const where = home();
   assert.equal((await uninstall(where, ["--all"])).status, 2);

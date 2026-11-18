@@ -289,6 +289,7 @@ check_desktop() {
 if [ ! -x "$E" ] || [ ! -f "$K/bin/kuvo-link.js" ]; then check_desktop; echo '{"result":"none"}'; exit 0; fi
 ${link(`leave ${quote(key)}`)} >/dev/null 2>&1 || true
 ${only ? "" : "echo kept; exit 0"}
+export KUVO_UNINSTALL_FROM_SSH=1
 ${link("uninstall")} 2>/dev/null; did=$?
 # (What it keeps of sign-ins and keys goes whether or not everything stopped just now.)
 if [ -f "$K/data/opencode/opencode.db" ]; then

@@ -14,10 +14,11 @@
 import { isObject } from "../../shared/json";
 import { plainName } from "../../shared/text";
 import { noteDocsChanged } from "../documents/changed";
+import { macDocsChanged } from "../documents/exchange";
 import { macPeersBody } from "../documents/work";
 import { IS_MAC } from "../home";
 import { ownName } from "../letters/start";
-import { fits, pairDevice } from "../phones";
+import { fits, pairDevice, revokeVoucher, vouchBlockOf } from "../phones";
 import { mainElsewhere } from "../setup/main-only";
 import { followedSetup } from "../setup/record";
 import { macLink, readLink, updateLink } from "../state";
@@ -126,6 +127,18 @@ const ownMachines = (link: LinkState): Set<string> => new Set(IS_MAC ? macPeersB
 /** A member's box vouching for the app on its computer (`area: "devices"`, by mail): paired here
  * only on the setup's main computer, for a box its own peers document names. */
 export async function deviceAct(sender: MailSender, act: Act): Promise<Acted> {
+  if (act.method === "DELETE") {
+    if (act.item !== sender.key) return answer(403, { message: "A computer can only revoke its own devices." });
+    const changed = updateLink(link => {
+      if (!link || followedSetup(link)?.role !== "primary" || !ownMachines(link).has(sender.key)) return null;
+      const device = link.phones?.find(phone => phone.by === sender.key)?.name ?? vouchBlockOf(link, sender.key)?.device;
+      revokeVoucher(link, sender.key, device);
+      return link;
+    });
+    if (!changed) return answer(409, { message: "This computer couldn’t confirm the devices were revoked." });
+    macDocsChanged({ closeRemoved: changed });
+    return answer(200, {});
+  }
   const device = act.method === "POST" ? givenDevice({ ...(act.body ?? {}), key: act.item }, null) : null;
   if (!device) return answer(400, NOT_GIVEN);
   return pairHere(device, sender.key);

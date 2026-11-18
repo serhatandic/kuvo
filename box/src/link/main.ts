@@ -1352,7 +1352,7 @@ if (main) {
   // Removing Kuvo Code from this computer (PROTOCOL.md, "Uninstalling"): `uninstall [--check]`,
   // from the app or a Terminal line.
   else if (mode === "uninstall") {
-    process.exitCode = uninstallCommand(process.argv.slice(3));
+    process.exitCode = await uninstallCommand(process.argv.slice(3));
   }
   // This Mac's box's helper, Kuvo Helper, started at login (PROTOCOL.md, "This Mac's box: its
   // helper"): `helper install [--load] [--app <bundle ID>] | helper start [--if-missing] [--app <bundle ID>] | helper status`.

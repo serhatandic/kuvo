@@ -2889,8 +2889,11 @@ function noteRemoved(link, key, pairing) {
 function blockVoucher(link, phone, now) {
   if (!phone.by)
     return;
-  takeOffVouched(link, phone.by);
-  link.vouchBlocked = [...(link.vouchBlocked ?? []).filter((each) => each.key !== phone.by), { key: phone.by, device: phone.name ?? "", at: now }].slice(-MOST_BLOCKED);
+  revokeVoucher(link, phone.by, phone.name ?? "", now);
+}
+function revokeVoucher(link, by, device = "", now = Date.now()) {
+  takeOffVouched(link, by);
+  link.vouchBlocked = [...(link.vouchBlocked ?? []).filter((each) => each.key !== by), { key: by, device, at: now }].slice(-MOST_BLOCKED);
 }
 function takeOffVouched(link, by) {
   const theirs = (link.phones ?? []).filter((each) => each.by === by);
@@ -34653,7 +34656,7 @@ var read2 = (file) => {
     return null;
   }
 };
-async function forwardAct(computer, named, act, signal, link = readLink(), now = Date.now()) {
+async function forwardAct(computer, named, act, signal, link = readLink(), now = Date.now(), { backgroundRelay = false } = {}) {
   const peer = peersOf(link).find((each) => each.key === computer.key);
   if (!peer || !takesForwarded(peer.key, act.area ? AREA_FEATURES[act.area] : FORWARD_FEATURE))
     return { status: 409, refused: `${named} is on ${computer.name}: change it there.` };
@@ -34662,7 +34665,7 @@ async function forwardAct(computer, named, act, signal, link = readLink(), now =
   const here = ownName();
   if (awaySince(peer.key) !== null)
     return { status: 503, refused: `${computer.name} isn't answering now (it may be asleep, off or offline), so nothing was changed there. Try again once it's back.` };
-  if (offRelay())
+  if (!backgroundRelay && offRelay())
     return { status: 503, refused: `${here} isn't connected to your other computers now, so nothing was changed on ${computer.name}. Try again in a moment.` };
   const id = `wqa_${crypto36.randomBytes(16).toString("base64url")}`;
   try {
@@ -34928,7 +34931,7 @@ var actOf = (given) => {
     return null;
   const { method, action, name } = given;
   const fits = method === "GET" && action === undefined || method === "DELETE" && action === undefined || method === "POST" && action === "restore" || method === "PATCH" && action === undefined || method === "GET" && action === "file" && typeof name === "string" && name.length > 0 && name.length <= 300;
-  const devices = given.area === "devices" && method === "POST" && action === undefined;
+  const devices = given.area === "devices" && (method === "POST" || method === "DELETE") && action === undefined;
   if (!fits && !devices)
     return null;
   if (given.area !== undefined && !devices && !(given.area === "computers" && (method === "PATCH" || method === "DELETE") && action === undefined))
@@ -34939,127 +34942,6 @@ var actOf = (given) => {
 // box/src/link/peers/devices.ts
 init_text();
 init_changed();
-init_work2();
-init_home();
-init_phones();
-init_main_only();
-init_record();
-init_state();
-init_directory();
-init_known();
-var DEVICES_FEATURE = "devices.pair";
-var namedDevice = (device) => device || "Kuvo Code's app";
-var blockedVouch = (device, computer, here) => ({
-  message: `${namedDevice(device)} on ${computer} was removed from your devices, so ${computer} can't add Kuvo Code's app by itself now. Allow it again from Kuvo Code on ${here} or another computer's app: Computers, ${computer}.`,
-  reason: "blocked"
-});
-var blockedWords = (device, computer) => `${namedDevice(device)} was removed from your devices. ${computer} can't add Kuvo Code's app again until you allow it.`;
-var MOST_NAME2 = 100;
-function givenDevice(given, link = readLink()) {
-  if (!isObject(given) || given.kind !== "desktop" || typeof given.name !== "string" || given.name.length > MOST_NAME2)
-    return null;
-  const boxes = link ? [...macsOf(link), ...peersOf(link).map((peer) => peer.key), ownKey(link) ?? ""] : [];
-  if (!fits2({ key: given.key }, boxes))
-    return null;
-  return { key: given.key, name: plainName(given.name).slice(0, MOST_NAME2), kind: "desktop" };
-}
-var answer2 = (status, value) => ({ status, value });
-var REMOVED2 = { message: "This app was removed from your devices.", reason: "removed" };
-var NOT_GIVEN = { message: "Send the app's key (key), its name (name, up to 100 characters) and what it is (kind: desktop)." };
-var switchOff = () => IS_MAC && !macLink.config?.phones;
-var switchOffWords = () => ({ message: `“Let my devices connect” is off on ${ownName()}.` });
-function pairHere(device, by) {
-  if (switchOff())
-    return answer2(409, switchOffWords());
-  let made = null;
-  let fresh = false;
-  let refusal;
-  let computer;
-  updateLink((link) => {
-    if (by) {
-      if (!link || followedSetup(link)?.role !== "primary") {
-        refusal = answer2(409, { message: `${ownName()} isn't your setup's main computer, so it adds no devices for your other computers.` });
-        return null;
-      }
-      if (link.removedHere?.includes(by) || !ownMachines(link).has(by)) {
-        refusal = answer2(409, { message: `Only computers in ${ownName()}'s own setup can add your devices.` });
-        return null;
-      }
-      computer = peersOf(link).find((peer) => peer.key === by)?.name;
-    }
-    if (!givenDevice(device, link)) {
-      refusal = answer2(400, NOT_GIVEN);
-      return null;
-    }
-    if (!link?.relay || !link.secret)
-      return null;
-    const before = (link.phones ?? []).length;
-    made = pairDevice(link, { ...device, by });
-    fresh = (link.phones ?? []).length !== before;
-    return fresh ? link : null;
-  });
-  if (refusal)
-    return refusal;
-  const paired = made;
-  if (!paired)
-    return answer2(409, { message: IS_MAC ? `${ownName()} isn't ready for your devices yet. Try again in a moment.` : "This machine has no relay to pair through." });
-  if ("removed" in paired)
-    return answer2(409, REMOVED2);
-  if ("blocked" in paired)
-    return answer2(409, blockedVouch(paired.blocked.device, computer || "that computer", ownName()));
-  if ("full" in paired)
-    return answer2(409, { message: "You have as many desktop apps among your devices as Kuvo Code keeps. Remove one you no longer use, then try again." });
-  if (fresh) {
-    noteDocsChanged();
-    macLink.wake?.();
-  }
-  return answer2(200, { paired: true, pairing: paired.pairing });
-}
-var ownMachines = (link) => new Set(IS_MAC ? macPeersBody(link).boxes.filter((box) => box.kind === "machine").map((box) => box.key) : []);
-async function deviceAct(sender, act) {
-  const device = act.method === "POST" ? givenDevice({ ...act.body ?? {}, key: act.item }, null) : null;
-  if (!device)
-    return answer2(400, NOT_GIVEN);
-  return pairHere(device, sender.key);
-}
-async function pairDeviceFromHere(given, signal) {
-  const link = readLink();
-  const device = givenDevice(given, link);
-  if (!device)
-    return answer2(400, NOT_GIVEN);
-  if (switchOff())
-    return answer2(409, switchOffWords());
-  const main = mainElsewhere(link);
-  if (!main)
-    return pairHere(device);
-  const named = main.name || peersOf(link).find((peer) => peer.key === main.key)?.name || "your main computer";
-  if (link?.setup?.aside)
-    return answer2(409, { message: `${named} doesn't list this computer in its setup now, so it can't add your devices by itself.` });
-  const known = (link?.phones ?? []).find((phone) => phone.key === device.key);
-  if (known)
-    return answer2(200, { paired: true, pairing: known.pairing ?? "" });
-  if ((link?.removed ?? []).some((each) => each.key === device.key))
-    return answer2(409, REMOVED2);
-  const waiting = { message: `${named} isn't answering. This app reaches your other computers once it does.` };
-  const peer = peersOf(link).find((each) => each.key === main.key);
-  if (!peer)
-    return answer2(503, waiting);
-  if (!readPeerAgents()[main.key]?.features)
-    return answer2(503, waiting);
-  if (!takesForwarded(main.key, DEVICES_FEATURE))
-    return answer2(409, { message: `${named} needs a newer Kuvo Code to add this app to your devices. Update it, then try again.` });
-  const there = await forwardAct({ key: main.key, name: named, kind: "mac" }, device.name, { area: "devices", method: "POST", item: device.key, body: { name: device.name, kind: device.kind } }, signal, link);
-  if ("refused" in there)
-    return answer2(503, waiting);
-  const said = isObject(there.value) ? there.value : {};
-  if (there.status === 200 && said.paired === true && typeof said.pairing === "string")
-    return answer2(200, { paired: true, pairing: said.pairing });
-  const message = typeof said.message === "string" && said.message ? said.message.slice(0, 700) : `${named} didn't add this app to your devices.`;
-  return answer2(409, { message, ...said.reason === "removed" || said.reason === "blocked" ? { reason: said.reason } : {} });
-}
-
-// box/src/link/peers/manage.ts
-init_text();
 
 // box/src/link/documents/exchange.ts
 init_home();
@@ -35245,7 +35127,143 @@ function macDocsChanged({ closeRemoved } = {}) {
     } catch {}
 }
 
+// box/src/link/peers/devices.ts
+init_work2();
+init_home();
+init_phones();
+init_main_only();
+init_record();
+init_state();
+init_directory();
+init_known();
+var DEVICES_FEATURE = "devices.pair";
+var namedDevice = (device) => device || "Kuvo Code's app";
+var blockedVouch = (device, computer, here) => ({
+  message: `${namedDevice(device)} on ${computer} was removed from your devices, so ${computer} can't add Kuvo Code's app by itself now. Allow it again from Kuvo Code on ${here} or another computer's app: Computers, ${computer}.`,
+  reason: "blocked"
+});
+var blockedWords = (device, computer) => `${namedDevice(device)} was removed from your devices. ${computer} can't add Kuvo Code's app again until you allow it.`;
+var MOST_NAME2 = 100;
+function givenDevice(given, link = readLink()) {
+  if (!isObject(given) || given.kind !== "desktop" || typeof given.name !== "string" || given.name.length > MOST_NAME2)
+    return null;
+  const boxes = link ? [...macsOf(link), ...peersOf(link).map((peer) => peer.key), ownKey(link) ?? ""] : [];
+  if (!fits2({ key: given.key }, boxes))
+    return null;
+  return { key: given.key, name: plainName(given.name).slice(0, MOST_NAME2), kind: "desktop" };
+}
+var answer2 = (status, value) => ({ status, value });
+var REMOVED2 = { message: "This app was removed from your devices.", reason: "removed" };
+var NOT_GIVEN = { message: "Send the app's key (key), its name (name, up to 100 characters) and what it is (kind: desktop)." };
+var switchOff = () => IS_MAC && !macLink.config?.phones;
+var switchOffWords = () => ({ message: `“Let my devices connect” is off on ${ownName()}.` });
+function pairHere(device, by) {
+  if (switchOff())
+    return answer2(409, switchOffWords());
+  let made = null;
+  let fresh = false;
+  let refusal;
+  let computer;
+  updateLink((link) => {
+    if (by) {
+      if (!link || followedSetup(link)?.role !== "primary") {
+        refusal = answer2(409, { message: `${ownName()} isn't your setup's main computer, so it adds no devices for your other computers.` });
+        return null;
+      }
+      if (link.removedHere?.includes(by) || !ownMachines(link).has(by)) {
+        refusal = answer2(409, { message: `Only computers in ${ownName()}'s own setup can add your devices.` });
+        return null;
+      }
+      computer = peersOf(link).find((peer) => peer.key === by)?.name;
+    }
+    if (!givenDevice(device, link)) {
+      refusal = answer2(400, NOT_GIVEN);
+      return null;
+    }
+    if (!link?.relay || !link.secret)
+      return null;
+    const before = (link.phones ?? []).length;
+    made = pairDevice(link, { ...device, by });
+    fresh = (link.phones ?? []).length !== before;
+    return fresh ? link : null;
+  });
+  if (refusal)
+    return refusal;
+  const paired = made;
+  if (!paired)
+    return answer2(409, { message: IS_MAC ? `${ownName()} isn't ready for your devices yet. Try again in a moment.` : "This machine has no relay to pair through." });
+  if ("removed" in paired)
+    return answer2(409, REMOVED2);
+  if ("blocked" in paired)
+    return answer2(409, blockedVouch(paired.blocked.device, computer || "that computer", ownName()));
+  if ("full" in paired)
+    return answer2(409, { message: "You have as many desktop apps among your devices as Kuvo Code keeps. Remove one you no longer use, then try again." });
+  if (fresh) {
+    noteDocsChanged();
+    macLink.wake?.();
+  }
+  return answer2(200, { paired: true, pairing: paired.pairing });
+}
+var ownMachines = (link) => new Set(IS_MAC ? macPeersBody(link).boxes.filter((box) => box.kind === "machine").map((box) => box.key) : []);
+async function deviceAct(sender, act) {
+  if (act.method === "DELETE") {
+    if (act.item !== sender.key)
+      return answer2(403, { message: "A computer can only revoke its own devices." });
+    const changed = updateLink((link) => {
+      if (!link || followedSetup(link)?.role !== "primary" || !ownMachines(link).has(sender.key))
+        return null;
+      const device = link.phones?.find((phone) => phone.by === sender.key)?.name ?? vouchBlockOf(link, sender.key)?.device;
+      revokeVoucher(link, sender.key, device);
+      return link;
+    });
+    if (!changed)
+      return answer2(409, { message: "This computer couldn’t confirm the devices were revoked." });
+    macDocsChanged({ closeRemoved: changed });
+    return answer2(200, {});
+  }
+  const device = act.method === "POST" ? givenDevice({ ...act.body ?? {}, key: act.item }, null) : null;
+  if (!device)
+    return answer2(400, NOT_GIVEN);
+  return pairHere(device, sender.key);
+}
+async function pairDeviceFromHere(given, signal) {
+  const link = readLink();
+  const device = givenDevice(given, link);
+  if (!device)
+    return answer2(400, NOT_GIVEN);
+  if (switchOff())
+    return answer2(409, switchOffWords());
+  const main = mainElsewhere(link);
+  if (!main)
+    return pairHere(device);
+  const named = main.name || peersOf(link).find((peer) => peer.key === main.key)?.name || "your main computer";
+  if (link?.setup?.aside)
+    return answer2(409, { message: `${named} doesn't list this computer in its setup now, so it can't add your devices by itself.` });
+  const known = (link?.phones ?? []).find((phone) => phone.key === device.key);
+  if (known)
+    return answer2(200, { paired: true, pairing: known.pairing ?? "" });
+  if ((link?.removed ?? []).some((each) => each.key === device.key))
+    return answer2(409, REMOVED2);
+  const waiting = { message: `${named} isn't answering. This app reaches your other computers once it does.` };
+  const peer = peersOf(link).find((each) => each.key === main.key);
+  if (!peer)
+    return answer2(503, waiting);
+  if (!readPeerAgents()[main.key]?.features)
+    return answer2(503, waiting);
+  if (!takesForwarded(main.key, DEVICES_FEATURE))
+    return answer2(409, { message: `${named} needs a newer Kuvo Code to add this app to your devices. Update it, then try again.` });
+  const there = await forwardAct({ key: main.key, name: named, kind: "mac" }, device.name, { area: "devices", method: "POST", item: device.key, body: { name: device.name, kind: device.kind } }, signal, link);
+  if ("refused" in there)
+    return answer2(503, waiting);
+  const said = isObject(there.value) ? there.value : {};
+  if (there.status === 200 && said.paired === true && typeof said.pairing === "string")
+    return answer2(200, { paired: true, pairing: said.pairing });
+  const message = typeof said.message === "string" && said.message ? said.message.slice(0, 700) : `${named} didn't add this app to your devices.`;
+  return answer2(409, { message, ...said.reason === "removed" || said.reason === "blocked" ? { reason: said.reason } : {} });
+}
+
 // box/src/link/peers/manage.ts
+init_text();
 init_home();
 
 // box/src/link/rehome/moved.ts
@@ -35650,36 +35668,20 @@ function renameHere(key, name) {
   macDocsChanged();
   return answer4(200, { name });
 }
-function removeHere(key) {
+function removeHere(key, pendingOnly = false) {
   let gone = [];
   let already = false;
-  let listSaved = true;
+  let needsCleanup = false;
   const changed = updateLink((link) => {
     if (!link)
       return null;
     const peer = peersOf(link).find((each) => each.key === key);
-    already = Boolean(link.removedHere?.includes(key));
-    if (!peer && !already)
+    if (pendingOnly && (peer || !link.pendingMachineCleanup?.[key]))
       return null;
-    const destination = peer?.id ?? link.pendingMachineCleanup?.[key];
-    const cleanList = () => {
-      if (!destination)
-        return false;
-      listSaved = peersOf(link).some((each) => each.key !== key && each.id === destination) || forgetSaved(destination);
-      if (!listSaved) {
-        link.pendingMachineCleanup = { ...link.pendingMachineCleanup, [key]: destination };
-        return true;
-      }
-      if (!link.pendingMachineCleanup?.[key])
-        return false;
-      delete link.pendingMachineCleanup[key];
-      if (!Object.keys(link.pendingMachineCleanup).length)
-        delete link.pendingMachineCleanup;
-      return true;
-    };
+    already = Boolean(link.removedHere?.includes(key));
+    needsCleanup = Boolean(peer?.id || link.pendingMachineCleanup?.[key]);
     if (!peer) {
-      const cleaned = cleanList();
-      return takeOffVouched(link, key) || cleaned ? link : null;
+      return already && takeOffVouched(link, key) ? link : null;
     }
     const made = setMacPeers(link, { peers: (Array.isArray(link.macPeers) ? link.macPeers : []).filter((each) => each?.key !== key), moved: link.macMoved, removed: [key] });
     if (!made.link)
@@ -35687,16 +35689,39 @@ function removeHere(key) {
     gone = made.gone;
     if (made.link.peerNames)
       delete made.link.peerNames[key];
-    cleanList();
+    if (peer.id)
+      made.link.pendingMachineCleanup = { ...made.link.pendingMachineCleanup, [key]: peer.id };
     return made.link;
   });
   if (!gone.length && !already)
     return answer4(404, { message: `That isn't one of ${ownName()}'s machines.` });
   macDocsChanged({ closeRemoved: changed });
   tellGone(gone);
-  if (!listSaved)
+  if (needsCleanup && !cleanRemovalList(key))
     return answer4(503, { message: "The computer’s access was removed, but the saved machines list couldn’t be updated." });
   return answer4(200, {});
+}
+function cleanRemovalList(key) {
+  let saved = true;
+  try {
+    updateLink((link) => {
+      const pending = link?.pendingMachineCleanup;
+      const destination = pending?.[key];
+      if (!link || !pending || !destination)
+        return null;
+      saved = peersOf(link).some((each) => each.id === destination) || forgetSaved(destination);
+      if (!saved)
+        return null;
+      delete pending[key];
+      if (!Object.keys(pending).length)
+        delete link.pendingMachineCleanup;
+      return link;
+    });
+  } catch (error) {
+    console.error("Removal machines-list cleanup failed:", error);
+    return false;
+  }
+  return saved;
 }
 function forgetSaved(id) {
   const saved = savedMachines();
@@ -35726,7 +35751,7 @@ async function writerAct(sender, act) {
     return renameHere(act.item, name);
   }
   if (act.method === "DELETE")
-    return removeHere(act.item);
+    return removeHere(act.item, act.body?.cleanup === true);
   return answer4(405, { message: "Rename or remove." });
 }
 
@@ -45528,7 +45553,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "bd7e34e33769";
+var BRIDGE_VERSION = "7d284ad856f2";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -47200,6 +47225,7 @@ check_desktop() {
 if [ ! -x "$E" ] || [ ! -f "$K/bin/kuvo-link.js" ]; then check_desktop; echo '{"result":"none"}'; exit 0; fi
 ${link2(`leave ${quote(key)}`)} >/dev/null 2>&1 || true
 ${only ? "" : "echo kept; exit 0"}
+export KUVO_UNINSTALL_FROM_SSH=1
 ${link2("uninstall")} 2>/dev/null; did=$?
 # (What it keeps of sign-ins and keys goes whether or not everything stopped just now.)
 if [ -f "$K/data/opencode/opencode.db" ]; then
@@ -47958,10 +47984,11 @@ async function environment(way) {
 }
 var commandFor = (script) => `exec sh -c 'kuvo_script=$(printf %s ${Buffer.from(script).toString("base64")} | base64 -d) || exit 127; eval "$kuvo_script"'`;
 function run4(args, options) {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     environment(options.way).then((env) => {
       if (options.signal?.aborted)
         return resolve({ status: null, stdout: "", stderr: "" });
+      options.beforeInput?.();
       const child = spawn15(program(), args, { env, stdio: ["pipe", "pipe", "pipe"] });
       const out = [], err = [];
       let kept = 0;
@@ -47998,6 +48025,13 @@ function run4(args, options) {
         let at = 0;
         const more = () => {
           while (at < input.length) {
+            try {
+              options.beforeInput?.();
+            } catch (error) {
+              stop();
+              reject(error);
+              return;
+            }
             const piece = input.subarray(at, at + 262144);
             at += piece.length;
             const room = child.stdin.write(piece);
@@ -48021,7 +48055,7 @@ function run4(args, options) {
       });
       stream.on("error", stop);
       stream.pipe(child.stdin);
-    });
+    }).catch(reject);
   });
 }
 var remote2 = (destination, script, options = {}) => run4([...BASE, ...strict(), ...sharing(), ...signingIn(options.way), ...options.options ?? [], "--", destination, commandFor(script)], options);
@@ -48520,7 +48554,7 @@ class Reach {
       if (!options.anyway)
         this.tell.check();
       const elsewhere = this.target !== this.destination;
-      const ran = await remote2(this.target, script, { input: options.input, sent: options.sent, most: options.most, way: this.way, options: this.options, ...options.cut ? { signal: this.tell.signal } : {} });
+      const ran = await remote2(this.target, script, { input: options.input, beforeInput: options.beforeInput, sent: options.sent, most: options.most, way: this.way, options: this.options, ...options.cut ? { signal: this.tell.signal } : {} });
       const trouble = troubleOf(ran);
       if (!trouble) {
         this.reached = true;
@@ -48605,6 +48639,7 @@ function checkAdd(link, grant, name, key) {
 }
 async function setUp2(tell, destination, name, kind, expectedKey, grant) {
   const reach = new Reach(destination, name, tell, kind === "add" ? [] : otherAddressesOf(destination));
+  const checkGrant = () => checkAdd(readLink(), grant, name, expectedKey);
   try {
     tell.step("checking", `Connecting to ${name}`);
     const mine = boxVersion();
@@ -48700,17 +48735,26 @@ async function setUp2(tell, destination, name, kind, expectedKey, grant) {
     const own = link ? ownKey(link) : null;
     const notes = JSON.stringify({ mac: own ? launcherID(own) : "", macName: ownName().replace(/[{}"\\]/g, ""), box: mine });
     const fresh = kind === "add" && judged.verdict === "free" && foundOf(probe.lines).length === 0 && appsOf(probe.lines) === 0 && !probe.id && !probe.version;
+    checkGrant();
     const given = fresh ? await gatherSeed() : null;
+    checkGrant();
     let unjoined = false;
     try {
-      unjoined = fresh;
-      const started = await reach.run(start(ENGINE_VERSION, name, notes), { most: 600000, ...given ? { input: Buffer.from(JSON.stringify({ settings: given.settings, keys: given.keys })) } : {} });
+      const started = await reach.run(start(ENGINE_VERSION, name, notes), {
+        most: 600000,
+        beforeInput: () => {
+          checkGrant();
+          unjoined = fresh;
+        },
+        ...given ? { input: Buffer.from(JSON.stringify({ settings: given.settings, keys: given.keys })) } : {}
+      });
       if (started.status === 7)
         throw new Failed(`${name} was removed from Kuvo Code while it was starting, so it wasn’t started. Add it again to use it.`);
       if (started.status === 6)
         throw new Failed(`${name}’s settings couldn’t be made ready. ${lastLine(started.stderr)}`.trim());
       if (started.status !== 0)
         throw new Failed(`Kuvo Code didn’t start on ${name}. ${lastLine(started.stderr)}`.trim(), true, `Kuvo Code didn’t start on ${name}`);
+      checkGrant();
       const renewing = given?.renewing ? ` ${given.renewing === 1 ? "One sign-in renews itself" : `${given.renewing} sign-ins renew themselves`}, so sign in to ${given.renewing === 1 ? "it" : "those"} on ${name}.` : "";
       if (!given)
         tell.skip("seeding", "It keeps its own");
@@ -48719,7 +48763,8 @@ async function setUp2(tell, destination, name, kind, expectedKey, grant) {
         const settings = /^seeded$/m.test(started.stdout);
         let taken = 0;
         if (given.credentials.length) {
-          const ran = await reach.run(seed(ENGINE_VERSION), { input: Buffer.from(JSON.stringify({ credentials: given.credentials })), most: 300000 });
+          const ran = await reach.run(seed(ENGINE_VERSION), { input: Buffer.from(JSON.stringify({ credentials: given.credentials })), beforeInput: checkGrant, most: 300000 });
+          checkGrant();
           let said = null;
           try {
             said = JSON.parse(ran.stdout.trim().split(`
@@ -48765,7 +48810,7 @@ async function join3(reach, destination, name, identity, expectedKey, grant) {
   if (!relay || !gift?.mac)
     throw new Failed(`${ownName()} isn’t linked to your other computers yet, so it couldn’t add ${name}.`);
   const input = { relay, name, mac: gift.mac, macSign: gift.macSign, docs: gift.docs, id: destination, tolerates: 1, macID: launcherID(gift.mac), macName: ownName(), replaces: gift.replaces };
-  const ran = await reach.run(join2(ENGINE_VERSION), { input: Buffer.from(JSON.stringify(input)), most: 300000 });
+  const ran = await reach.run(join2(ENGINE_VERSION), { input: Buffer.from(JSON.stringify(input)), beforeInput: () => checkAdd(readLink(), grant, name, expectedKey), most: 300000 });
   let said = null;
   try {
     said = JSON.parse(ran.stdout.trim().split(`
@@ -48905,9 +48950,17 @@ function beginUninstall(key) {
     const reach = new Reach(at.destination, at.name, tell, otherAddressesOf(at.destination));
     try {
       tell.step("checking", `Connecting to ${at.name}`);
-      const answer = await reach.run(probe2(ENGINE_VERSION), { cut: true, most: 120000 });
-      if (answer.status !== 0)
-        throw new Failed(`${at.name} couldn’t be checked. ${lastLine(answer.stderr)}`.trim());
+      let answer;
+      try {
+        answer = await reach.run(probe2(ENGINE_VERSION), { cut: true, most: 120000 });
+        if (answer.status !== 0)
+          throw new Error(answer.stderr);
+      } catch (error) {
+        if (error instanceof Stopped)
+          throw error;
+        console.error("Uninstall SSH probe failed:", error);
+        throw new Failed(`Kuvo Code couldn’t reach ${at.name} to start uninstalling. Try again when it’s online.`);
+      }
       const link = readLink();
       const own = link ? ownKey(link) : null;
       if (!own)
@@ -48918,36 +48971,40 @@ function beginUninstall(key) {
       macs.delete(own);
       const only = macs.size === 0;
       tell.step("removing", only ? undefined : "Another Mac uses it too, so Kuvo Code stays there");
-      const ran = await reach.run(uninstall(ENGINE_VERSION, own, only), { most: 600000 });
-      let cleanup;
-      if (ran.status !== 0) {
-        let said = null;
-        try {
-          said = JSON.parse(ran.stdout.trim().split(`
-`).pop() ?? "");
-        } catch {}
-        const message = isObject(said) && typeof said.message === "string" ? plainName(said.message).slice(0, 400) : `Kuvo Code couldn’t be stopped on ${at.name}. ${lastLine(ran.stderr)}`.trim();
-        if (!isObject(said) || said.result !== "incomplete" && said.result !== "unfinished")
-          throw new Failed(message);
-        cleanup = message;
-      }
-      tell.step("forgetting");
       let removed;
       try {
         removed = removeHere(key);
       } catch (error) {
-        if (!cleanup)
-          throw error;
-        throw new Failed(`Couldn’t confirm that access for ${at.name} was revoked. ${cleanup} ${error instanceof Error ? error.message : "Try again."}`);
+        console.error("Uninstall local revocation failed:", error);
+        throw new Failed("Kuvo Code couldn’t confirm that access was revoked. Try uninstalling again.");
       }
-      if (removed.status !== 200 && removed.status !== 404) {
-        const message = isObject(removed.value) && typeof removed.value.message === "string" ? removed.value.message : `${ownName()} couldn’t take ${at.name} off its list.`;
-        throw new Failed(cleanup ? `${message} ${cleanup}` : message);
+      const listCleanup = removed.status === 503 ? " The saved machines list still needs to be updated." : "";
+      if (![200, 404, 503].includes(removed.status)) {
+        console.error("Uninstall local revocation returned", removed);
+        throw new Failed("Kuvo Code couldn’t confirm that access was revoked. Try uninstalling again.");
       }
-      if (cleanup)
-        throw new Failed(`${at.name}’s access to your other computers was revoked. ${cleanup}`, false);
+      let cleanup = "";
+      try {
+        const ran = await reach.run(uninstall(ENGINE_VERSION, own, only), { most: 600000 });
+        const last = ran.stdout.trim().split(`
+`).pop();
+        let said;
+        try {
+          said = last && JSON.parse(last);
+        } catch {}
+        if (ran.status !== 0 || last !== "kept" && (!isObject(said) || said.result !== "none" && said.result !== "uninstalled")) {
+          console.error("Uninstall remote cleanup response:", ran.status, ran.stdout, ran.stderr);
+          cleanup = isObject(said) && said.result === "incomplete" ? "The desktop identity folder couldn’t be deleted." : isObject(said) && said.result === "unfinished" ? "Kuvo Code couldn’t finish cleanup on that computer." : "Kuvo Code couldn’t confirm whether cleanup finished on that computer.";
+        }
+      } catch (error) {
+        console.error("Uninstall remote cleanup unconfirmed:", error);
+        cleanup = "Kuvo Code couldn’t confirm whether cleanup finished on that computer.";
+      }
+      tell.step("forgetting");
+      if (cleanup || listCleanup)
+        throw new Failed(`${at.name}’s access to your other computers was revoked.${listCleanup}${cleanup ? ` ${cleanup}` : ""}`, false);
     } finally {
-      await reach.close();
+      await reach.close().catch((error) => console.error("Uninstall SSH close failed:", error));
     }
   });
 }
@@ -49424,8 +49481,17 @@ async function* manage(context, key, action) {
     return yield* json(405, { message: connect ? "Only POST." : "Rename (PATCH) or remove (DELETE)." });
   const computers = await listComputers(info.name ?? "", null, signal ?? undefined);
   const computer = computers.find((each) => each.key === key);
-  if (!computer)
-    return yield* json(404, { message: "That isn't one of your computers." });
+  if (!computer) {
+    const writer = what === "remove" ? writerOf(readLink()) : null;
+    if (!writer)
+      return yield* json(404, { message: "That isn't one of your computers." });
+    if (writer.here) {
+      const done = removeHere(key, true);
+      return yield* json(done.status, done.value);
+    }
+    const there = await forwardAct({ key: writer.key, name: writer.name, kind: "mac" }, "This computer", { area: "computers", item: key, method: "DELETE", body: { cleanup: true } }, signal);
+    return yield* json(there.status, "refused" in there ? { message: there.refused } : isObject(there.value) ? there.value : {});
+  }
   const here = computers[0].name;
   if (what === "connect") {
     if (computer.here)
@@ -56721,6 +56787,10 @@ import fs173 from "node:fs";
 import path183 from "node:path";
 init_home();
 init_known();
+init_keys();
+init_changed();
+init_phones();
+init_main_only();
 
 // box/src/link/serve-kept.ts
 init_platform();
@@ -56924,13 +56994,86 @@ function uninstall2() {
     Atomics.wait(pause, 0, 0, 50);
   const left = running5();
   stopped &&= left.length === 0;
-  const where = K.startsWith(homeFolder() + "/") ? "~" + K.slice(homeFolder().length) : K;
   const ran = left.length ? `its ${left.join(", ")} still ran just now` : "it couldn't stop everything just now";
   const starts = `${startsAgain.join(" and ")} couldn't be taken away`;
-  const message = !stopped && startsAgain.length ? `Kuvo Code isn't removed yet: ${ran}, and ${starts}. Run this again in a moment.` : !stopped ? `Kuvo Code won't start again on this computer, but ${ran}. Run this again in a moment.` : startsAgain.length ? `Kuvo Code is stopped on this computer, but ${starts}, so it may start again. Run this again in a moment.` : `Kuvo Code is stopped on this computer and won't start again. Its folder stays, with your sessions and settings: remove ${where} to remove them too.`;
+  const message = !stopped && startsAgain.length ? `Kuvo Code isn't removed yet: ${ran}, and ${starts}. Run this again in a moment.` : !stopped ? `Kuvo Code won't start again on this computer, but ${ran}. Run this again in a moment.` : startsAgain.length ? `Kuvo Code is stopped on this computer, but ${starts}, so it may start again. Run this again in a moment.` : "Kuvo Code is stopped on this computer and won't start again. Its folder stays, with your sessions and settings.";
   return { stopped, launchAgent, crontab: crontabLine, startsAgain, left: [K], message };
 }
-function uninstallCommand(args) {
+var identityFile = path183.join(K, "desktop", "identity");
+function logCleanup(detail) {
+  try {
+    fs173.appendFileSync(path183.join(RUN, "uninstall.log"), `${String(detail)}
+`, { mode: 384 });
+  } catch {}
+}
+function desktopKey() {
+  try {
+    const [key, secret] = fs173.readFileSync(identityFile, "utf8").trim().split(".");
+    if (key && secret && KEY.test(key) && KEY.test(secret))
+      return publicOf(Buffer.from(key, "base64url")).toString("base64url");
+  } catch (error) {
+    if (error.code !== "ENOENT")
+      logCleanup(error);
+  }
+  try {
+    const kept = JSON.parse(fs173.readFileSync(path183.join(K, "desktop", "boxes.json"), "utf8"));
+    if (isObject(kept) && typeof kept.paired === "string" && KEY.test(kept.paired))
+      return kept.paired;
+  } catch (error) {
+    if (error.code !== "ENOENT")
+      logCleanup(error);
+  }
+  return;
+}
+async function revokeDesktop() {
+  try {
+    const link = readLink();
+    const main = mainElsewhere(link);
+    if (main) {
+      let key = link && ownKey(link);
+      if (!key && IS_MAC) {
+        const card = JSON.parse(fs173.readFileSync(SETUP_CARD, "utf8"));
+        if (isObject(card) && isObject(card.self) && typeof card.self.key === "string")
+          key = card.self.key;
+      }
+      if (!key || !KEY.test(key))
+        return false;
+      const reply = await forwardAct({ ...main, name: main.name || "your main computer", kind: "mac" }, "This computer", { area: "devices", method: "DELETE", item: key }, undefined, link, Date.now(), { backgroundRelay: IS_MAC });
+      if (!("refused" in reply) && reply.status === 200)
+        return true;
+      logCleanup("refused" in reply ? reply.refused : `Device revocation returned ${reply.status}`);
+      return false;
+    }
+    const key = desktopKey();
+    if (key) {
+      const changed = updateLink((current) => current && current.phones?.some((phone) => phone.key === key) && removeAsMac(current, [{ key }]) ? current : null);
+      if (changed)
+        noteDocsChanged();
+    }
+    return true;
+  } catch (error) {
+    logCleanup(error);
+    return false;
+  }
+}
+function clearDesktopIdentity() {
+  let cleared = true;
+  try {
+    fs173.rmSync(identityFile, { force: true });
+  } catch (error) {
+    logCleanup(error);
+    cleared = false;
+  }
+  if (process.platform === "darwin" && REAL_BOX && located(K) === located(path183.join(accountHome(), ".kuvo-code"))) {
+    const removed = run5("/usr/bin/security", ["delete-generic-password", "-s", "run.kuvo.code.desktop", "-a", "link-identity"]);
+    if (removed.status !== 0 && removed.status !== 44) {
+      logCleanup(removed.error ?? removed.stderr);
+      cleared = false;
+    }
+  }
+  return cleared;
+}
+async function uninstallCommand(args) {
   const unknown = args.filter((arg) => arg !== "--check");
   if (unknown.length) {
     console.error("Usage: kuvo-link.js uninstall [--check]");
@@ -56943,7 +57086,7 @@ function uninstallCommand(args) {
     return 1;
   }
   if (!fs173.existsSync(path183.join(K, "bin", "kuvo-start")) && !fs173.existsSync(RUN)) {
-    const message = `There's no Kuvo Code box in ${K}.`;
+    const message = "There’s no Kuvo Code box in this folder.";
     console.log(JSON.stringify({ result: "refused", message }));
     console.error(message);
     return 1;
@@ -56952,8 +57095,21 @@ function uninstallCommand(args) {
     console.log(JSON.stringify(uninstallCheck()));
     return 0;
   }
-  const done = uninstall2();
-  const finished = done.stopped && done.startsAgain.length === 0;
+  const overSSH = process.env.KUVO_UNINSTALL_FROM_SSH === "1";
+  const revoked = overSSH || await revokeDesktop();
+  const identityCleared = overSSH || clearDesktopIdentity();
+  let done;
+  try {
+    done = uninstall2();
+  } catch (error) {
+    logCleanup(error);
+    done = { stopped: false, launchAgent: false, crontab: false, startsAgain: [], left: [K], message: "Kuvo Code couldn’t confirm it had stopped on this computer." };
+  }
+  if (!revoked)
+    done.message += " Kuvo Code couldn’t confirm that your main computer revoked this desktop’s access.";
+  if (!identityCleared)
+    done.message += " Kuvo Code couldn’t delete this desktop’s local identity.";
+  const finished = done.stopped && done.startsAgain.length === 0 && revoked && identityCleared;
   console.log(JSON.stringify({ result: finished ? "uninstalled" : "unfinished", ...done }));
   console.error(done.message);
   return finished ? 0 : 1;
@@ -73918,7 +74074,7 @@ if (main) {
   } else if (mode === "install") {
     process.exitCode = await installCommand(process.argv.slice(3));
   } else if (mode === "uninstall") {
-    process.exitCode = uninstallCommand(process.argv.slice(3));
+    process.exitCode = await uninstallCommand(process.argv.slice(3));
   } else if (mode === "helper" && process.argv[3] === "hand-over") {
     process.exitCode = handOverCommand(process.argv.slice(4));
   } else if (mode === "helper") {

@@ -171,47 +171,54 @@ export function renameHere(key: string, name: string): Acted {
  * this Mac's list of machines no longer has it. Kuvo Code's app on it goes from your devices too:
  * every device its box vouched for (`setMacPeers`; `takeOffVouched`, phones.ts), as this box's
  * phones document then says to your other computers. It keeps running there, as a box of its own. */
-export function removeHere(key: string): Acted {
+export function removeHere(key: string, pendingOnly = false): Acted {
   let gone: Peer[] = [];
   let already = false;
-  let listSaved = true;
+  let needsCleanup = false;
   const changed = updateLink(link => {
     if (!link) return null;
     const peer = peersOf(link).find(each => each.key === key);
-    // (Removed already, from here: the same again, as when it's asked again after a restart.)
+    if (pendingOnly && (peer || !link.pendingMachineCleanup?.[key])) return null;
     already = Boolean(link.removedHere?.includes(key));
-    if (!peer && !already) return null;
-    const destination = peer?.id ?? link.pendingMachineCleanup?.[key];
-    const cleanList = () => {
-      if (!destination) return false;
-      // An explicit Add may have since kept this destination for a different key.
-      listSaved = peersOf(link).some(each => each.key !== key && each.id === destination) || forgetSaved(destination);
-      if (!listSaved) {
-        link.pendingMachineCleanup = { ...link.pendingMachineCleanup, [key]: destination };
-        return true;
-      }
-      if (!link.pendingMachineCleanup?.[key]) return false;
-      delete link.pendingMachineCleanup[key];
-      if (!Object.keys(link.pendingMachineCleanup).length) delete link.pendingMachineCleanup;
-      return true;
-    };
+    needsCleanup = Boolean(peer?.id || link.pendingMachineCleanup?.[key]);
     if (!peer) {
-      const cleaned = cleanList();
       // One removed before its devices went with it loses them when asked again.
-      return takeOffVouched(link, key) || cleaned ? link : null;
+      return already && takeOffVouched(link, key) ? link : null;
     }
     const made = setMacPeers(link, { peers: (Array.isArray(link.macPeers) ? link.macPeers : []).filter(each => each?.key !== key), moved: link.macMoved, removed: [key] });
     if (!made.link) return null;
     gone = made.gone;
     if (made.link.peerNames) delete made.link.peerNames[key];
-    cleanList();
+    if (peer.id) made.link.pendingMachineCleanup = { ...made.link.pendingMachineCleanup, [key]: peer.id };
     return made.link;
   });
   if (!gone.length && !already) return answer(404, { message: `That isn't one of ${ownName()}'s machines.` });
   macDocsChanged({ closeRemoved: changed });
   tellGone(gone);
-  if (!listSaved) return answer(503, { message: "The computer’s access was removed, but the saved machines list couldn’t be updated." });
+  // Once the removal is durable, clean up its saved address. Leave a retry if the list fails.
+  if (needsCleanup && !cleanRemovalList(key)) return answer(503, { message: "The computer’s access was removed, but the saved machines list couldn’t be updated." });
   return answer(200, {});
+}
+
+function cleanRemovalList(key: string): boolean {
+  let saved = true;
+  try {
+    updateLink(link => {
+      const pending = link?.pendingMachineCleanup;
+      const destination = pending?.[key];
+      if (!link || !pending || !destination) return null;
+      // A fresh Add may have kept the destination again since revocation.
+      saved = peersOf(link).some(each => each.id === destination) || forgetSaved(destination);
+      if (!saved) return null;
+      delete pending[key];
+      if (!Object.keys(pending).length) delete link.pendingMachineCleanup;
+      return link;
+    });
+  } catch (error) {
+    console.error("Removal machines-list cleanup failed:", error);
+    return false;
+  }
+  return saved;
 }
 
 // The machine `id` gone from this Mac's list of machines (`machines.json`), as its app would take
@@ -242,6 +249,6 @@ export async function writerAct(sender: MailSender, act: Act): Promise<Acted> {
     if (!name) return answer(400, { message: `Give it a name of up to ${MOST_NAME} characters.` });
     return renameHere(act.item, name);
   }
-  if (act.method === "DELETE") return removeHere(act.item);
+  if (act.method === "DELETE") return removeHere(act.item, act.body?.cleanup === true);
   return answer(405, { message: "Rename or remove." });
 }

@@ -164,6 +164,19 @@ else
 fi
 if [ "$pubkey" = no ] || [ -f "$F/refuse" ]; then echo "you@$dest: Permission denied (publickey)." >&2; exit 255; fi
 [ -f "$F/home-$dest" ] && FAKE_SSH_HOME=$(cat "$F/home-$dest")
+if [ -f "$F/track" ] || [ -f "$F/lose-uninstall-reply" ]; then
+  text=$(printf %s "$cmd" | sed -n 's/.*printf %s \\([A-Za-z0-9+/=]*\\) | base64 -d.*/\\1/p' | base64 -d 2>/dev/null)
+  if [ -f "$F/track" ]; then
+    case "$text" in *'kuvo kind'*) echo probe >>"$F/track" ;; *'bin/kuvo-start" start'*) echo start >>"$F/track" ;; *'kuvo-link.js" box seed'*) echo accounts >>"$F/track" ;; esac
+  fi
+  if [ -f "$F/lose-uninstall-reply" ]; then
+    case "$text" in *'kuvo-link.js" uninstall'*)
+      HOME="$FAKE_SSH_HOME" sh -c "$cmd" >/dev/null 2>&1
+      echo "lost the reply after cleaning $FAKE_SSH_HOME/.kuvo-code" >&2
+      exit 255 ;;
+    esac
+  fi
+fi
 if [ -f "$F/fail" ]; then
   text=$(printf %s "$cmd" | sed -n 's/.*printf %s \\([A-Za-z0-9+/=]*\\) | base64 -d.*/\\1/p' | base64 -d 2>/dev/null)
   case "$text" in *"$(cat "$F/fail")"*) cat >/dev/null; echo "it broke" >&2; exit 1 ;; esac
@@ -982,14 +995,14 @@ test("a phone's Remove, Uninstall and Forget (the old Mac app's `kuvo/machines/<
   for await (const piece of handle({ method: "POST", path: "kuvo/machines/macbook/uninstall", headers: {}, fromMac: true }, undefined)) once.push(piece);
   assert.equal(once.find(each => each.head).head.status, 409);
   assert.ok(peer(), "still one of your computers");
-  fs.writeFileSync(path.join(fake, "fail"), 'kuvo-link.js" uninstall');
+  fs.writeFileSync(path.join(fake, "away-macbook"), "");
   try {
     const failed = await ask("POST", "kuvo/machines/macbook/uninstall");
     assert.equal(failed.status, 502, JSON.stringify(failed.body));
     assert.ok(failed.body.message.length > 10);
     assert.equal(read(path.join(home, "machines.json")).length, 1, "still on the list, as it's still there");
   } finally {
-    fs.rmSync(path.join(fake, "fail"));
+    fs.rmSync(path.join(fake, "away-macbook"));
   }
   assert.deepEqual([(await ask("POST", "kuvo/machines/macbook/uninstall")).status, read(path.join(home, "machines.json"))], [200, []]);
   assert.deepEqual(pidsThere(path.join(homes.macbook, ".kuvo-code")).filter(alive), [], "nothing of it runs there");
@@ -1126,5 +1139,92 @@ test("uninstall revokes the paired desktop even when its identity folder cleanup
   assert.deepEqual(pidsThere(kuvo).filter(alive), [], "the service stopped");
   assert.equal(link.authorizePhone(appKey, {}), false, "the surviving identity cannot connect");
   assert.ok(link.ownPhones(link.readLink()).removed.some(each => each.key === k(appKey) && each.pairing === pairing));
-  assert.match(result.failure.message, /access to your other computers was revoked.*desktop identity folder/);
+  assert.match(result.failure.message, /access to your other computers was revoked.*desktop identity folder/i);
 });
+
+test("uninstall logs a link-write failure without putting the local path in its result", async () => {
+  assert.equal((await ask("POST", "kuvo/machines", { destination: "macbook" })).status, 200);
+  const computer = macbookPeer();
+  const rename = fs.renameSync;
+  const linkFile = path.join(home, "run", "link.json");
+  fs.renameSync = (from, to) => {
+    if (to === linkFile) throw new Error(`Can't write ${linkFile}`);
+    return rename(from, to);
+  };
+  let result;
+  try {
+    const started = await ask("POST", `kuvo/computers/${computer.key}/uninstall`);
+    result = await over(started.body.try.id);
+  } finally {
+    fs.renameSync = rename;
+  }
+  assert.equal(result.state, "failed");
+  assert.equal(result.failure.message, "Kuvo Code couldn’t confirm that access was revoked. Try uninstalling again.");
+  assert.equal(macbookPeer().key, computer.key);
+  assert.equal(read(path.join(home, "machines.json"))[0].destination, "macbook", "the saved address is still available for retry");
+});
+
+test("uninstall revokes access before SSH cleanup and reports a lost reply without its diagnostic", async () => {
+  assert.equal((await ask("POST", "kuvo/machines", { destination: "macbook" })).status, 200);
+  const computer = macbookPeer();
+  const key = link.publicOf(link.newKey());
+  link.updateLink(state => { link.pairDevice(state, { key: k(key), name: "MacBook desktop", by: computer.key }); return state; });
+  const marker = path.join(fake, "lose-uninstall-reply");
+  fs.writeFileSync(marker, "");
+  let result;
+  try {
+    const started = await ask("POST", `kuvo/computers/${computer.key}/uninstall`);
+    assert.equal(started.status, 202, JSON.stringify(started.body));
+    result = await over(started.body.try.id);
+  } finally {
+    fs.rmSync(marker);
+  }
+  assert.deepEqual({
+    state: result.state, message: result.failure.message,
+    letsIn: link.authorizePhone(key, {}), present: Boolean(macbookPeer()),
+  }, {
+    state: "failed", message: "macbook’s access to your other computers was revoked. Kuvo Code couldn’t confirm whether cleanup finished on that computer.",
+    letsIn: false, present: false,
+  });
+  assert.deepEqual(pidsThere(path.join(homes.macbook, ".kuvo-code")).filter(alive), []);
+});
+
+for (const [destination, heldScript, step, expected] of [
+  ["early-seed", "kuvo kind", "checking", ["probe"]],
+  ["late-seed", 'bin/kuvo-start" start', "starting", ["probe", "start"]],
+]) {
+  test(`a revoked Add stops sending credentials after ${step}`, async () => {
+    const folder = path.join(base, destination);
+    homes[destination] = folder;
+    fs.mkdirSync(folder);
+    write(path.join(fake, `home-${destination}`), folder);
+    for (const tool of ["pkill", "caffeinate"]) write(path.join(folder, ".kuvo-code", "bin", tool), "#!/bin/sh\nexit 0\n", 0o755);
+    fs.appendFileSync(link.KNOWN_HOSTS, `${destination} ${fs.readFileSync(path.join(fake, "hostkey"), "utf8").trim()}\n`);
+    const key = link.publicOf(link.newKey());
+    link.updateLink(state => { link.pairPhone(state, { key: k(key), name: "Add caller", from: "pair", pairing: "caller" }); return state; });
+    const track = path.join(fake, "track");
+    const hold = path.join(fake, "hold");
+    fs.writeFileSync(track, "");
+    fs.writeFileSync(hold, heldScript);
+    let id;
+    try {
+      const started = await ask("POST", "kuvo/computers/add", { destination }, { key, pairing: "caller" });
+      assert.equal(started.status, 202, JSON.stringify(started.body));
+      id = started.body.try.id;
+      await until(id, found => found?.steps.find(each => each.id === step)?.state === "now");
+      const scriptStarted = () => fs.readFileSync(track, "utf8").split("\n").includes(expected.at(-1));
+      const deadline = Date.now() + 15_000;
+      while (!scriptStarted() && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 25));
+      assert.ok(scriptStarted(), "the remote held script was reached before revoking the caller");
+      assert.equal((await ask("POST", "kuvo/phones/remove", { phones: [{ key: k(key) }] })).status, 200);
+    } finally {
+      fs.rmSync(hold);
+    }
+    const ended = await over(id);
+    const ran = fs.readFileSync(track, "utf8").trim().split("\n");
+    fs.rmSync(track);
+    assert.equal(ended.state, "failed");
+    assert.match(ended.failure.message, /device that started this add is no longer paired/);
+    assert.deepEqual(ran, expected);
+  });
+}

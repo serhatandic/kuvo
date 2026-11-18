@@ -179,11 +179,11 @@ class Reach {
   /** Runs `script` there; its answer when it ran (whatever its status), or a `Failed` for a
    * connection that didn't come about. `cut`: ended with the try when it's stopped (only what's
    * safe cut short); `anyway`: run though the try was stopped (its own tidying up). */
-  async run(script: string, options: { input?: Buffer | { file: string }; sent?: (bytes: number, total: number) => void; cut?: boolean; most?: number; anyway?: boolean } = {}): Promise<Ran> {
+  async run(script: string, options: { input?: Buffer | { file: string }; beforeInput?: () => void; sent?: (bytes: number, total: number) => void; cut?: boolean; most?: number; anyway?: boolean } = {}): Promise<Ran> {
     for (let tries = 0; ; tries++) {
       if (!options.anyway) this.tell.check();
       const elsewhere = this.target !== this.destination;
-      const ran = await remote(this.target, script, { input: options.input, sent: options.sent, most: options.most, way: this.way, options: this.options, ...(options.cut ? { signal: this.tell.signal } : {}) });
+      const ran = await remote(this.target, script, { input: options.input, beforeInput: options.beforeInput, sent: options.sent, most: options.most, way: this.way, options: this.options, ...(options.cut ? { signal: this.tell.signal } : {}) });
       const trouble = troubleOf(ran);
       if (!trouble) {
         this.reached = true;
@@ -284,6 +284,7 @@ function checkAdd(link: LinkState | null, grant: AddGrant | undefined, name: str
 // Sets a computer up at `destination`, or again: everything to its box running there as one of yours.
 async function setUp(tell: Telling, destination: string, name: string, kind: "add" | "setup" | "update", expectedKey?: string, grant?: AddGrant): Promise<void> {
   const reach = new Reach(destination, name, tell, kind === "add" ? [] : otherAddressesOf(destination));
+  const checkGrant = () => checkAdd(readLink(), grant, name, expectedKey);
   try {
     tell.step("checking", `Connecting to ${name}`);
     const mine = boxVersion();
@@ -382,16 +383,22 @@ async function setUp(tell: Telling, destination: string, name: string, kind: "ad
     const fresh = kind === "add" && judged.verdict === "free" && foundOf(probe.lines).length === 0 && appsOf(probe.lines) === 0 && !probe.id && !probe.version;
     // (What it starts with goes with its start, on its standard input: this box's settings and
     // integrations' keys.)
+    checkGrant();
     const given = fresh ? await gatherSeed() : null;
+    checkGrant();
     // Started there, on a computer that had nothing, and not one of yours yet: whatever ends this
     // before it is (stopped, or failed), it's stopped there and what was copied is deleted.
     let unjoined = false;
     try {
-      unjoined = fresh;
-      const started = await reach.run(scripts.start(ENGINE_VERSION, name, notes), { most: 600_000, ...(given ? { input: Buffer.from(JSON.stringify({ settings: given.settings, keys: given.keys })) } : {}) });
+      const started = await reach.run(scripts.start(ENGINE_VERSION, name, notes), {
+        most: 600_000,
+        beforeInput: () => { checkGrant(); unjoined = fresh; },
+        ...(given ? { input: Buffer.from(JSON.stringify({ settings: given.settings, keys: given.keys })) } : {}),
+      });
       if (started.status === 7) throw new Failed(`${name} was removed from Kuvo Code while it was starting, so it wasn’t started. Add it again to use it.`);
       if (started.status === 6) throw new Failed(`${name}’s settings couldn’t be made ready. ${lastLine(started.stderr)}`.trim());
       if (started.status !== 0) throw new Failed(`Kuvo Code didn’t start on ${name}. ${lastLine(started.stderr)}`.trim(), true, `Kuvo Code didn’t start on ${name}`);
+      checkGrant();
       // Its accounts, once: the keys and the sign-ins that stay the same. Never what renews itself.
       const renewing = given?.renewing ? ` ${given.renewing === 1 ? "One sign-in renews itself" : `${given.renewing} sign-ins renew themselves`}, so sign in to ${given.renewing === 1 ? "it" : "those"} on ${name}.` : "";
       if (!given) tell.skip("seeding", "It keeps its own");
@@ -400,7 +407,8 @@ async function setUp(tell: Telling, destination: string, name: string, kind: "ad
         const settings = /^seeded$/m.test(started.stdout);
         let taken = 0;
         if (given.credentials.length) {
-          const ran = await reach.run(scripts.seed(ENGINE_VERSION), { input: Buffer.from(JSON.stringify({ credentials: given.credentials })), most: 300_000 });
+          const ran = await reach.run(scripts.seed(ENGINE_VERSION), { input: Buffer.from(JSON.stringify({ credentials: given.credentials })), beforeInput: checkGrant, most: 300_000 });
+          checkGrant();
           let said: unknown = null;
           try { said = JSON.parse(ran.stdout.trim().split("\n").pop() ?? ""); } catch {}
           taken = isObject(said) && typeof said.taken === "number" ? said.taken : 0;
@@ -445,7 +453,7 @@ async function join(reach: Reach, destination: string, name: string, identity: s
   const gift = await setupGift(before?.key ?? null);
   if (!relay || !gift?.mac) throw new Failed(`${ownName()} isn’t linked to your other computers yet, so it couldn’t add ${name}.`);
   const input = { relay, name, mac: gift.mac, macSign: gift.macSign, docs: gift.docs, id: destination, tolerates: 1, macID: launcherID(gift.mac), macName: ownName(), replaces: gift.replaces };
-  const ran = await reach.run(scripts.join(ENGINE_VERSION), { input: Buffer.from(JSON.stringify(input)), most: 300_000 });
+  const ran = await reach.run(scripts.join(ENGINE_VERSION), { input: Buffer.from(JSON.stringify(input)), beforeInput: () => checkAdd(readLink(), grant, name, expectedKey), most: 300_000 });
   let said: unknown = null;
   try { said = JSON.parse(ran.stdout.trim().split("\n").pop() ?? ""); } catch {}
   if (ran.status !== 0 || !isObject(said) || typeof said.address !== "string" || !ADDRESS.test(said.address) || typeof said.key !== "string" || !KEY.test(said.key) || typeof said.sign !== "string" || !SIGN.test(said.sign)) {
@@ -586,8 +594,15 @@ export function beginUninstall(key: string): Running | null {
     const reach = new Reach(at.destination, at.name, tell, otherAddressesOf(at.destination));
     try {
       tell.step("checking", `Connecting to ${at.name}`);
-      const answer = await reach.run(scripts.probe(ENGINE_VERSION), { cut: true, most: 120_000 });
-      if (answer.status !== 0) throw new Failed(`${at.name} couldn’t be checked. ${lastLine(answer.stderr)}`.trim());
+      let answer: Ran;
+      try {
+        answer = await reach.run(scripts.probe(ENGINE_VERSION), { cut: true, most: 120_000 });
+        if (answer.status !== 0) throw new Error(answer.stderr);
+      } catch (error) {
+        if (error instanceof Stopped) throw error;
+        console.error("Uninstall SSH probe failed:", error);
+        throw new Failed(`Kuvo Code couldn’t reach ${at.name} to start uninstalling. Try again when it’s online.`);
+      }
       const link = readLink();
       const own = link ? ownKey(link) : null;
       if (!own) throw new Failed(`${ownName()}’s link has no keys yet.`);
@@ -597,32 +612,40 @@ export function beginUninstall(key: string): Running | null {
       macs.delete(own);
       const only = macs.size === 0;
       tell.step("removing", only ? undefined : "Another Mac uses it too, so Kuvo Code stays there");
-      // (Never cut short: a removal half done would leave it running with nothing to start it.)
-      const ran = await reach.run(scripts.uninstall(ENGINE_VERSION, own, only), { most: 600_000 });
-      let cleanup: string | undefined;
-      if (ran.status !== 0) {
-        let said: unknown = null;
-        try { said = JSON.parse(ran.stdout.trim().split("\n").pop() ?? ""); } catch {}
-        const message = isObject(said) && typeof said.message === "string" ? plainName(said.message).slice(0, 400) : `Kuvo Code couldn’t be stopped on ${at.name}. ${lastLine(ran.stderr)}`.trim();
-        if (!isObject(said) || (said.result !== "incomplete" && said.result !== "unfinished")) throw new Failed(message);
-        cleanup = message;
-      }
-      tell.step("forgetting");
+      // Persist the revocation before the first destructive command. SSH may lose the reply.
       let removed: ReturnType<typeof removeHere>;
       try {
         removed = removeHere(key);
       } catch (error) {
-        if (!cleanup) throw error;
-        throw new Failed(`Couldn’t confirm that access for ${at.name} was revoked. ${cleanup} ${error instanceof Error ? error.message : "Try again."}`);
+        console.error("Uninstall local revocation failed:", error);
+        throw new Failed("Kuvo Code couldn’t confirm that access was revoked. Try uninstalling again.");
       }
-      // (Gone from the list already, as when it was asked twice: done all the same.)
-      if (removed.status !== 200 && removed.status !== 404) {
-        const message = isObject(removed.value) && typeof removed.value.message === "string" ? removed.value.message : `${ownName()} couldn’t take ${at.name} off its list.`;
-        throw new Failed(cleanup ? `${message} ${cleanup}` : message);
+      const listCleanup = removed.status === 503 ? " The saved machines list still needs to be updated." : "";
+      if (![200, 404, 503].includes(removed.status)) {
+        console.error("Uninstall local revocation returned", removed);
+        throw new Failed("Kuvo Code couldn’t confirm that access was revoked. Try uninstalling again.");
       }
-      if (cleanup) throw new Failed(`${at.name}’s access to your other computers was revoked. ${cleanup}`, false);
+      let cleanup = "";
+      // Never cut short: let the remote removal finish even if the client stops waiting.
+      try {
+        const ran = await reach.run(scripts.uninstall(ENGINE_VERSION, own, only), { most: 600_000 });
+        const last = ran.stdout.trim().split("\n").pop();
+        let said: unknown;
+        try { said = last && JSON.parse(last); } catch {}
+        if (ran.status !== 0 || (last !== "kept" && (!isObject(said) || (said.result !== "none" && said.result !== "uninstalled")))) {
+          console.error("Uninstall remote cleanup response:", ran.status, ran.stdout, ran.stderr);
+          cleanup = isObject(said) && said.result === "incomplete" ? "The desktop identity folder couldn’t be deleted." :
+            isObject(said) && said.result === "unfinished" ? "Kuvo Code couldn’t finish cleanup on that computer." :
+            "Kuvo Code couldn’t confirm whether cleanup finished on that computer.";
+        }
+      } catch (error) {
+        console.error("Uninstall remote cleanup unconfirmed:", error);
+        cleanup = "Kuvo Code couldn’t confirm whether cleanup finished on that computer.";
+      }
+      tell.step("forgetting");
+      if (cleanup || listCleanup) throw new Failed(`${at.name}’s access to your other computers was revoked.${listCleanup}${cleanup ? ` ${cleanup}` : ""}`, false);
     } finally {
-      await reach.close();
+      await reach.close().catch(error => console.error("Uninstall SSH close failed:", error));
     }
   });
 }
