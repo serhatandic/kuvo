@@ -31,7 +31,12 @@ export function updateAccess(change: (link: LinkState | null) => LinkState | nul
   let save: SharedSave | null = null;
   let busy = false;
   const changed = updateLink(link => {
-    if (localOnly || !link?.setup || (!link.setup.checkpointed && !requiresStandby(link.setup)) || link.setup.role !== "primary") return change(link);
+    if (localOnly || link?.setup?.role !== "primary") return change(link);
+    if (link.leadershipPending) {
+      busy = true;
+      return null;
+    }
+    if (!link.setup.checkpointed && !requiresStandby(link.setup)) return change(link);
     if ((!link.setup.standby && requiresStandby(link.setup)) || pendingShared(link, "membershipAndAccess")) {
       busy = true;
       return null;

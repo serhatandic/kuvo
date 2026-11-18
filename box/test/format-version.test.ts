@@ -12,11 +12,22 @@ test("format steps run in version order and an unknown version does not enter a 
 });
 
 test("an additive stamp preserves original fields and upgrades on a copy", () => {
-  const format = objectFormat("example", [fields => ({ ...fields, enabled: true })]);
+  const format = objectFormat("example", 1, (fields, from) => from === 0 ? { ...fields, enabled: true } : fields);
   const old = { name: "original", extension: { data: [1, 2] } };
   const upgraded = { ...old, enabled: true };
   expect(format.read(old)).toEqual(upgraded);
   expect(old).toEqual({ name: "original", extension: { data: [1, 2] } });
   expect(format.write(upgraded)).toEqual({ ...upgraded, formatVersion: 1 });
   expect(format.read(format.write(upgraded))).toEqual(upgraded);
+});
+
+test("compatibility decoders read a specific family version without replaying earlier decoders", () => {
+  const seen: number[] = [];
+  const reader = objectFormat("example", 2, (fields, version) => {
+    seen.push(version);
+    return fields;
+  });
+  expect(reader.read({ formatVersion: 1, content: "kept" })).toEqual({ content: "kept" });
+  expect(() => reader.read({ formatVersion: 3 })).toThrow(/unsupported/);
+  expect(seen).toEqual([1]);
 });

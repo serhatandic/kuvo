@@ -15,7 +15,7 @@ import { setupHosts } from "../setup/main-only";
 import fs from "node:fs";
 import path from "node:path";
 import { isObject } from "../../shared/json";
-import { locked, writePrivate } from "../files";
+import { locked, writeDurablePrivate, writePrivate } from "../files";
 import { APP_FOLDER, IS_MAC, K } from "../home";
 import { readPeerAgents } from "../peers/directory";
 import { peersOf } from "../peers/known";
@@ -78,7 +78,7 @@ export function changeKeptHosts(change: (machines: Record<string, unknown>) => R
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") return false;
     }
     const next = change(isObject(whole.machines) ? whole.machines : {});
-    if (next) writePrivate(PHONE_LINK_FILE, JSON.stringify({ ...whole, machines: next }, null, 2));
+    if (next) writeDurablePrivate(PHONE_LINK_FILE, JSON.stringify({ ...whole, machines: next }, null, 2));
     return true;
   });
 }

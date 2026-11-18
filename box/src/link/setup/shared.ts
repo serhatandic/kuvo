@@ -81,13 +81,13 @@ function pendingEntry(link: LinkState, kind: SharedKind) {
   return null;
 }
 
-export function pendingShared(link: LinkState, kind: SharedKind): Doc | null {
-  return pendingEntry(link, kind)?.doc ?? null;
+export function pendingShared(link: LinkState | null | undefined, kind: SharedKind): Doc | null {
+  return link ? pendingEntry(link, kind)?.doc ?? null : null;
 }
 
 export interface SharedSave { id: string; epoch: number; sequence: number; operation: string }
 
-function asSave(doc: Doc): SharedSave {
+export function asSave(doc: Doc): SharedSave {
   return { id: doc.body.id as string, epoch: doc.body.epoch as number, sequence: doc.n, operation: identity(doc)! };
 }
 
@@ -220,14 +220,14 @@ export function operationOutcome(link: LinkState | null | undefined, id: string,
   return pending ? { status: "pending" as const, sequence: pending.n, baseRevision: pending.n - 1, epoch: pending.body.epoch, kind: pending.body.kind } : null;
 }
 
-export async function waitShared(save: SharedSave): Promise<"saved" | "pending" | "interrupted"> {
-  const until = Date.now() + 3_000;
-  while (Date.now() < until) {
+export async function waitShared(save: SharedSave, timeout = 3_000, signal?: AbortSignal): Promise<"saved" | "pending" | "interrupted"> {
+  const until = Date.now() + timeout;
+  while (Date.now() < until && !signal?.aborted) {
     const link = readLink();
     const outcome = operationOutcome(link, save.id, save.operation);
     if (outcome?.status === "committed") return "saved";
     if (outcome?.status === "interrupted") return "interrupted";
-    if (link?.setup?.id !== save.id) break;
+    if (link?.setup?.id !== save.id || link.setup.epoch !== save.epoch) return "interrupted";
     await new Promise(resolve => setTimeout(resolve, 50));
   }
   return "pending";

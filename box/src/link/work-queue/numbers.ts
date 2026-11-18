@@ -105,7 +105,7 @@ const overlap = (ranges: Ranges, within: Ranges): Ranges => joined(ranges.flatMa
 export const inRanges = (ranges: Ranges, n: number) => ranges.some(([from, to]) => n >= from && n <= to);
 const cleanRanges = (value: unknown): Ranges => (Array.isArray(value) ? value.filter(isRange).slice(-MOST_RANGES) : []);
 
-const numbersFormat = objectFormat("Work Queue number ledger", [fields => fields]);
+const numbersFormat = objectFormat("Work Queue number ledger", 1);
 
 function openNumbers(file: string): { fields: Record<string, unknown>; upgraded: boolean } | null {
   let text: string;
@@ -403,6 +403,7 @@ export function takeNumber(primary: Primary, { file = NUMBERS_FILE, now = Date.n
     if ("self" in primary && current?.setup?.managed && current.setup.role !== "primary") return null;
     notePrimary(kept, primary, current, now);
     if ("self" in primary && !usesBlocks(current)) {
+      if (primaryFenced(current)) return null;
       const number = counterOf(kept);
       if (number > (current?.setup?.numberCeiling ?? MOST_NUMBER - 1)) return null;
       kept.next = number + 1;
@@ -480,7 +481,9 @@ export function claimNumbers(primary: Primary, numbers: number[], { file = NUMBE
     const current = currentNumberAuthority(link, file);
     if ("self" in primary && current?.setup?.managed && current.setup.role !== "primary") return { granted: null };
     notePrimary(kept, primary, current, now);
-    if ("self" in primary && !usesBlocks(current)) return { granted: grantOn(kept, "self", claims, {}, current?.setup?.numberCeiling) };
+    if ("self" in primary && !usesBlocks(current)) {
+      return { granted: primaryFenced(current) ? null : grantOn(kept, "self", claims, {}, current?.setup?.numberCeiling) };
+    }
     const highest = claims[claims.length - 1][1];
     kept.leases = kept.leases.map(([from, to]): [number, number] => [Math.max(from, highest + 1), to]).filter(([from, to]) => from <= to);
     // (A new ask, so the claims go with it even if one without them was sent already.)
@@ -549,6 +552,7 @@ export function giveBlock(by: string, ask: unknown, { file = NUMBERS_FILE, now =
     if (current?.setup?.managed && current.setup.role !== "primary") return null;
     installNumberAuthority(kept, current);
     if (!usesBlocks(current)) {
+      if (primaryFenced(current)) return null;
       kept.primary ??= "self";
       return allocate(kept);
     }

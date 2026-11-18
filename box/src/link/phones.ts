@@ -1,3 +1,4 @@
+import { asSave, pendingShared, waitShared, type SharedSave } from "./setup/shared";
 import { acceptedMembership } from "./setup/membership";
 // Paired phones (PROTOCOL.md, "Paired phones")
 // A pairing adds a phone; a removal, from a phone on the list, takes one off for good (`removed`,
@@ -14,7 +15,7 @@ import { isObject } from "../shared/json";
 import { addressOf, publicOf } from "./crypto/keys";
 import { noteDocsChanged } from "./documents/changed";
 import { mainElsewhere } from "./setup/main-only";
-import { held } from "./documents/format";
+import { bodyHash, held } from "./documents/format";
 import { ADDRESS, KEY, macDoc, macsOf } from "./peers/known";
 import { readLink, updateLink } from "./state";
 import type { Doc, SignedDoc } from "../shared/documents";
@@ -33,13 +34,25 @@ export const canIssuePairing = (phone: Phone): boolean => phone.from !== "mac" |
 // Lets in phones in link.json, and a new one showing the pairing token (once, in time), noting
 // where it is on the relay, for its notifications. Where a paired one is changes once its session
 // proves its own (confirmPhone): the first handshake message can be replayed from elsewhere.
-export function authorizePhonePairing(key: Buffer, hello: PhoneHello | null | undefined, address: Buffer | undefined): string | false {
+function stagePhonePairing(key: Buffer, hello: PhoneHello | null | undefined, address: Buffer | undefined): string | false | { save: SharedSave; pairing: string } {
   const encoded = key.toString("base64url");
   const current = () => {
     const phone = pairedPhone(readLink(), encoded);
     return phone ? phone.pairing ?? "" : false;
   };
   if (!hello?.pair) return current();
+  const before = readLink();
+  const pending = pendingShared(before, "membershipAndAccess");
+  if (pending) {
+    const hash = bodyHash(String(hello.pair));
+    const effects = pending.body.effects ?? pending.body.value;
+    const devices = (isObject(pending.body.value) && pending.body.value.devices) || pending.body.devices;
+    if (isObject(effects) && isObject(effects.pairing) && Object.values(effects.pairing).includes(hash)
+      && isObject(devices) && Array.isArray(devices.phones)) {
+      const phone = devices.phones.find(phone => isObject(phone) && phone.key === encoded);
+      if (typeof phone?.pairing === "string" && !pairedPhone(before, encoded, phone.pairing)) return { save: asSave(pending), pairing: phone.pairing };
+    }
+  }
   // Showing the token: a pairing of its own, paired before or not (one removed comes back).
   let paired: string | undefined;
   const { save, changed } = updateAccess(link => {
@@ -67,12 +80,23 @@ export function authorizePhonePairing(key: Buffer, hello: PhoneHello | null | un
     delete link![slot];
     return link;
   });
-  if (save || !changed) return current();
+  if (save && paired) return { save, pairing: paired };
+  if (!changed) return current();
   if (paired) noteDocsChanged();
   return paired ?? current();
 }
 
-export const authorizePhone = (...args: Parameters<typeof authorizePhonePairing>): boolean => authorizePhonePairing(...args) !== false;
+export async function authorizePhonePairing(key: Buffer, hello: PhoneHello, address: Buffer, signal?: AbortSignal): Promise<string | false> {
+  const staged = stagePhonePairing(key, hello, address);
+  if (typeof staged !== "object") return staged;
+  noteDocsChanged();
+  if (await waitShared(staged.save, Infinity, signal) !== "saved" || signal?.aborted) return false;
+  return pairedPhone(readLink(), key.toString("base64url"), staged.pairing) ? staged.pairing : false;
+}
+
+export function authorizePhone(...args: Parameters<typeof stagePhonePairing>): boolean {
+  return typeof stagePhonePairing(...args) === "string";
+}
 
 const PAIRING = /^[A-Za-z0-9_-]{0,32}$/;
 

@@ -14,7 +14,7 @@ import { writeCard } from "./card";
 import { proposeLeadership, standbyHere } from "./handover";
 import { CHECKPOINT_FEATURE, checkpointedTransition, leadershipDocuments } from "./checkpoint";
 import { acceptedMembership, acceptedName } from "./membership";
-import { leadershipOf, takeLeadership } from "./leadership";
+import { leadershipOf, pendingStandby, takeLeadership } from "./leadership";
 import { fresh, grantLease, HEARTBEAT_MS, leaseClock, LEASE_MS, primaryFenced, standbySettings, testSetupClock } from "./lease";
 import { publishedShared, sharedValue } from "./shared";
 import { followedSetup, setupDoc } from "./record";
@@ -108,7 +108,7 @@ function takeoverTick(host: LinkHost | null | undefined): void {
   lastRound = realNow;
   if (!host?.welcomed) return;
   if (setup.role === "primary" && link.leadershipPending) {
-    const standby = peersOf(link).find(peer => peer.key === setup.standby?.key);
+    const standby = peersOf(link).find(peer => peer.key === setup.standby?.key) ?? pendingStandby(link);
     if (standby) sendDocs(host, link, [{ to: standby, docs: { give: leadershipDocuments(link.leadershipPending) } }]);
     return;
   }

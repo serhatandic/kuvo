@@ -50,7 +50,7 @@ export interface SocketEvents {
 export interface LinkHostOptions {
   key: Buffer;
   hello: BoxHello;
-  authorize: (key: Buffer, hello: PhoneHello, address: Buffer) => PhoneAuthorization | Promise<PhoneAuthorization>;
+  authorize: (key: Buffer, hello: PhoneHello, address: Buffer, signal: AbortSignal) => PhoneAuthorization | Promise<PhoneAuthorization>;
   handle: (request: LinkRequest, phone: SessionPhone, signal: AbortSignal) => Answer;
   connect?: (request: LinkRequest, phone: SessionPhone, events: SocketEvents) => SocketHandle;
   send: (bytes: Buffer) => boolean | void;
@@ -109,6 +109,7 @@ export class LinkHost {
   declare confirmed: LinkHostOptions["confirmed"];
   declare mail: LinkHostOptions["mail"];
   declare sessions: Map<string, PhoneSession>;
+  private handshakes = new Map<string, AbortController>();
   /** While the relay has welcomed this host's connection (relay/connection.ts sets these three). */
   declare welcomed?: boolean;
   /** Ends its relay connection. */
@@ -130,6 +131,8 @@ export class LinkHost {
 
   // The relay connection dropped: what was under way is gone.
   reset() {
+    for (const pending of this.handshakes.values()) pending.abort();
+    this.handshakes.clear();
     for (const session of this.sessions.values()) this.end(session, false);
   }
 
@@ -141,6 +144,8 @@ export class LinkHost {
   // by the phone's own doing: phones count on that rather than checking before each request
   // (PROTOCOL.md, "The relay").
   forget(address: Buffer) {
+    const prefix = address.toString("base64url") + ":";
+    for (const [id, pending] of this.handshakes) if (id.startsWith(prefix)) pending.abort();
     for (const session of this.sessions.values()) if (session.from.equals(address)) this.end(session, false);
   }
 
@@ -181,6 +186,7 @@ export class LinkHost {
         return this.message(session, message as { head: PhoneHead; body: Buffer });
       }
       case Frame.close:
+        this.handshakes.get(id)?.abort();
         if (session) this.end(session, false);
         return;
       case Frame.mail:
@@ -199,7 +205,13 @@ export class LinkHost {
       return refuse();
     }
     if (hello?.v !== 1) return refuse();
-    const authorized = await this.authorize(responder.rs, hello, from);
+    this.handshakes.get(id)?.abort();
+    const pending = new AbortController();
+    this.handshakes.set(id, pending);
+    const authorized = await Promise.resolve(this.authorize(responder.rs, hello, from, pending.signal)).finally(() => {
+      if (this.handshakes.get(id) === pending) this.handshakes.delete(id);
+    });
+    if (pending.signal.aborted) return;
     if (typeof authorized === "object") {
       // The peer must authenticate the box before it can show the waiting message. No session
       // or request handler is installed for this handshake.

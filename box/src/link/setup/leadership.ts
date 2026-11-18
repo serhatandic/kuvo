@@ -21,12 +21,26 @@ export function leadershipOf(link: LinkState | null | undefined): Doc | null {
   return setup?.managed ? held(link?.leadership?.[setup.epoch]) : null;
 }
 
+/** The replacement is a mail peer only for the receipt to this signed recovery proposal. */
+export function pendingStandby(link: LinkState) {
+  const proposal = held(link.leadershipPending);
+  if (proposal?.body.standbyAcceptance !== true || proposal.body.proposal !== true) return undefined;
+  return resolveCheckpoint(proposal)?.membership.boxes.find(peer => peer.key === proposal.body.standby);
+}
+
 /** Turn a fenced primary's proposal into a certificate, on the current standby only. */
 export function approveLeadership(link: LinkState, proposal: Doc, checkpoint?: Doc): Doc | null {
   const current = link.setup;
-  if (!current?.standby || current.standby.key !== ownKey(link) || current.standby.sign !== ownSign(link)
-    || current.sign !== proposal.origin || proposal.body.proposal !== true || !link.sign) return null;
+  if (!current || current.sign !== proposal.origin || proposal.body.proposal !== true || !link.sign) return null;
   const resolved = resolveCheckpoint(proposal, checkpoint);
+  if (proposal.body.standbyAcceptance === true) {
+    if (current.standby || !resolved || (proposal.body.recovery === true && !requiresStandby(current))) return null;
+    const replacement = resolved.membership.boxes.find(peer => peer.key === proposal.body.standby);
+    if (!replacement || replacement.key !== ownKey(link) || replacement.sign !== ownSign(link)) return null;
+    // The caller installs the verified checkpoint and epoch durably before sending this certificate.
+    return readDoc(signDoc(link.sign, "leadership", proposal.n, { ...proposal.body, approval: proposal.envelope.s }));
+  }
+  if (current.standby?.key !== ownKey(link) || current.standby?.sign !== ownSign(link)) return null;
   if ((current.checkpointed || Object.hasOwn(proposal.body, "checkpoint")) && !resolved) return null;
   const values = resolved?.shared ?? sharedValues(proposal.body.shared) ?? {};
   for (const [kind, entry] of Object.entries(link.shared ?? {})) {
@@ -53,8 +67,10 @@ export function approveLeadership(link: LinkState, proposal: Doc, checkpoint?: D
 export function takeLeadership(link: LinkState, doc: Doc, checkpoint?: Doc): boolean {
   const current = link.setup;
   const next = setupOf(doc.body);
+  const acceptance = doc.body.standbyAcceptance === true;
+  if (doc.body.recovery === true && !acceptance) return false;
   if (doc.kind !== "leadership" || !current || current.aside || !next || next.id !== current.id || doc.n !== next.epoch
-    || next.epoch !== current.epoch + 1 || doc.origin !== (current.standby?.sign ?? current.sign)
+    || next.epoch !== current.epoch + 1 || (!acceptance && doc.origin !== (current.standby?.sign ?? current.sign))
     || doc.body.previous !== current.primary) return false;
   const resolved = resolveCheckpoint(doc, checkpoint);
   if ((current.checkpointed || Object.hasOwn(doc.body, "checkpoint")) && !resolved) return false;
@@ -65,7 +81,7 @@ export function takeLeadership(link: LinkState, doc: Doc, checkpoint?: Doc): boo
   const takeover = doc.body.takeover === true;
   if (takeover) {
     if (!current.standby || next.primary !== current.standby.key || doc.body.proposal) return false;
-  } else if (current.standby) {
+  } else if (current.standby || acceptance) {
     const { approval, ...proposal } = doc.body;
     if (proposal.proposal !== true || !readDoc({
       d: docBytes(current.sign, "leadership", doc.n, proposal).toString("base64url"), s: approval,
@@ -75,6 +91,9 @@ export function takeLeadership(link: LinkState, doc: Doc, checkpoint?: Doc): boo
   if (new Set(peers.map(peer => peer.key)).size !== peers.length) return false;
   const primary = peers.find(peer => peer.key === next.primary);
   const standby = peers.find(peer => peer.key === doc.body.standby && peer.key !== next.primary && peer.sign !== primary?.sign);
+  if (acceptance && (takeover || !resolved || current.standby || (doc.body.recovery === true && !requiresStandby(current))
+    || next.primary !== current.primary || standby?.sign !== doc.origin
+    || (current.role === "primary" && held(link.leadershipPending)?.envelope.s !== doc.body.approval))) return false;
   if (!primary?.sign || !peers.some(peer => peer.key === current.primary && peer.sign === current.sign)
     || (takeover && primary.sign !== current.standby?.sign)
     || (doc.body.standby != null && !standby?.sign)

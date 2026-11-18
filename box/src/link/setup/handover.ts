@@ -15,9 +15,9 @@ import { noteDocsChanged } from "../documents/changed";
 import { ownSign, readDoc, signDoc } from "../documents/format";
 import { primaryPeersBody, pruneDocs } from "../documents/work";
 import { APP_FOLDER, K } from "../home";
-import { KEY, ownKey, peersOf, type MailSender } from "../peers/known";
+import { KEY, ownKey, peersOf, type MailSender, type Peer } from "../peers/known";
 import { ownPhones } from "../phones";
-import { readLink, updateLink } from "../state";
+import { readLink, updateLink, type LinkState } from "../state";
 import { forwardAct, takesForwarded, type Act, type Acted } from "../work-queue/forward";
 import { changeNumbers, installNumberAuthority, MOST_NUMBER, topOf } from "../work-queue/numbers";
 import { writeCard } from "./card";
@@ -25,6 +25,7 @@ import { NUMBER_RESERVE, takeLeadership } from "./leadership";
 import { LEADERSHIP_WAIT, primaryFenced } from "./lease";
 import { followedSetup, requiresStandby, type SetupRecord } from "./record";
 
+export const STANDBY_ACCEPTANCE = "setup.standby-acceptance";
 export const HANDOVER_FEATURE = "setup.handover";
 const answer = (status: number, message: string): Acted => ({ status, value: { message } });
 
@@ -57,25 +58,40 @@ async function handoverHere(target: string, position: Record<string, unknown>, r
   if (ready.status !== 200) return ready;
   if (!isObject(ready.value) || ready.value.sign !== next.sign) return answer(409, "The chosen computer's signing key changed. Refresh your setup and try again.");
 
-  return proposeLeadership(position, target, setup.standby?.key !== target ? setup.standby ?? null : null, requester, next.sign);
+  return proposeLeadership(position, target, setup.standby?.key !== target ? setup.standby ?? null : null, { requester, targetSign: next.sign });
+}
+
+/** Recover a delegated setup by adding one previously unknown computer to its accepted replica. */
+export function enrollStandby(setup: SetupRecord, peer: Peer & { sign: string }, prepare: (link: LinkState) => void): Promise<Acted> {
+  return proposeLeadership({ setup: setup.id, epoch: setup.epoch }, setup.primary, peer, { recovery: { peer, prepare } });
 }
 
 /** The number ledger and the fenced proposal are frozen together. With a standby, only it
  * can turn the proposal into the next certificate. Sending is safe to retry after a restart. */
-export async function proposeLeadership(position: Record<string, unknown>, target: string, standby: NonNullable<SetupRecord["standby"]> | null, requester?: string, targetSign?: string, retiredStandby?: string): Promise<Acted> {
+export async function proposeLeadership(
+  position: Record<string, unknown>,
+  target: string,
+  standby: NonNullable<SetupRecord["standby"]> | null,
+  { requester, targetSign, recovery }: { requester?: string; targetSign?: string; recovery?: { peer: Peer; prepare: (link: LinkState) => void } } = {},
+): Promise<Acted> {
+  let oversized = false;
+  let unsupportedLibrary = false;
   const changed = changeNumbers(numbers => updateLink(link => {
     const current = followedSetup(link);
     if (!link?.sign || current?.role !== "primary" || current.sign !== ownSign(link) || current.id !== position.setup || current.epoch !== position.epoch
       || primaryFenced(link) || Object.keys(link.sharedPending ?? {}).length) return null;
-    if (retiredStandby && (standby || current.standby?.key !== retiredStandby)) return null;
+    if (recovery && (!standby || current.standby || !requiresStandby(current) || target !== current.primary
+      || recovery.peer.key !== standby.key || recovery.peer.sign !== standby.sign)) return null;
     const members = peersOf(link);
     if (requester && !members.some(peer => peer.key === requester)) return null;
     if (target !== current.primary && (!members.some(peer => peer.key === target && peer.sign === targetSign)
       || members.some(peer => !peer.sign || !takesForwarded(peer.key, HANDOVER_FEATURE)
         || (Object.keys(link.shared ?? {}).length && !takesForwarded(peer.key, "setup.shared-saves"))))) return null;
-    if (standby && (standby.key === target || !members.some(peer => peer.key === standby.key && peer.sign === standby.sign)
+    if (standby?.key === target) return null;
+    if (standby && !recovery && (!members.some(peer => peer.key === standby.key && peer.sign === standby.sign)
       || members.some(peer => !peer.sign || !takesForwarded(peer.key, "setup.shared-saves")))) return null;
     const supportsCheckpoint = members.every(peer => takesForwarded(peer.key, CHECKPOINT_FEATURE));
+    const acceptance = Boolean(standby && !current.standby && (recovery || members.every(peer => takesForwarded(peer.key, STANDBY_ACCEPTANCE))));
     const migrating = Boolean(!current.checkpointed && current.standby && supportsCheckpoint);
     const renewing = target === current.primary && (standby?.key ?? null) === (current.standby?.key ?? null);
     if (renewing && (!standby || !current.numberCeiling || (!migrating && current.numberCeiling >= MOST_NUMBER - 1))) return null;
@@ -90,8 +106,10 @@ export async function proposeLeadership(position: Record<string, unknown>, targe
     const next = topOf(numbers) + 1;
     if (renewing && !migrating && next + NUMBER_RESERVE - 1 <= current.numberCeiling!) return null;
     const shared: SharedValues = { ...(link.sharedSetup === current.id ? link.shared : {}) };
+    let hasLibrary = false;
     if (standby && !current.standby) {
       const library = readPersonalities();
+      hasLibrary = library.personalities.length > 0 || library.removed.length > 0;
       const zone = readZoneSetting();
       if (zone && !shared.setupTimeZone) shared.setupTimeZone = { sequence: 1, value: zone };
       if (!shared.queueLabels) shared.queueLabels = { sequence: 1, value: { labels: labels(), removed: [] } };
@@ -100,40 +118,60 @@ export async function proposeLeadership(position: Record<string, unknown>, targe
         const units = usage.kept();
         if (usage.imported || Object.keys(units).length) shared.setupUsageDisplay = { sequence: 1, value: { units, imported: usage.imported } };
       }
-      if (!shared.setupPersonalities && Buffer.byteLength(JSON.stringify({ ...shared, library })) < MAX_SHARED_BYTES) {
+      if (!shared.setupPersonalities) {
         shared.setupPersonalities = { sequence: 1, value: library };
       }
     }
     const authority = {
       setup: { id: current.id, epoch, primary: target }, previous: current.primary,
-      ...(retiredStandby ? { retiredStandby } : {}),
       ...(standby || requiresStandby(current) ? { sharedSaves: true } : {}),
       ...(standby ? { standby: standby.key, numberCeiling: renewing && migrating ? current.numberCeiling : Math.min(MOST_NUMBER - 1, next + NUMBER_RESERVE - 1) } : {}),
-      ...(current.standby ? { proposal: true } : {}),
+      ...(current.standby || acceptance ? { proposal: true } : {}),
+      ...(acceptance ? { standbyAcceptance: true } : {}),
+      ...(recovery ? { recovery: true } : {}),
     };
     const ledger = { next, given: numbers.given, granted };
-    let doc;
-    if (current.checkpointed || supportsCheckpoint) {
+    const checkpointed = current.checkpointed || supportsCheckpoint || acceptance;
+    if (checkpointed) {
       const membership = acceptedMembership(link) ?? captureMembership(link);
       if (!membership) return null;
-      shared.membershipAndAccess = { sequence: shared.membershipAndAccess?.sequence ?? 1, value: membership };
+      if (recovery) {
+        if (membership.boxes.some(peer => peer.key === recovery.peer.key) || membership.left.includes(recovery.peer.key)) return null;
+        const { id: _destination, ...portable } = recovery.peer;
+        membership.boxes.push(portable);
+      }
+      shared.membershipAndAccess = { sequence: (shared.membershipAndAccess?.sequence ?? (recovery ? 0 : 1)) + (recovery ? 1 : 0), value: membership };
       shared.queueNumberAllocation = { sequence: shared.queueNumberAllocation?.sequence ?? 1, value: ledger };
-      doc = checkpointedTransition(link, authority, shared);
-    } else {
-      doc = readDoc(signDoc(link.sign, "leadership", epoch, {
+    }
+    if (standby && !current.standby && Buffer.byteLength(JSON.stringify(shared)) > MAX_SHARED_BYTES) {
+      oversized = true;
+      return null;
+    }
+    if (hasLibrary && !acceptance) {
+      unsupportedLibrary = true;
+      return null;
+    }
+    const doc = checkpointed
+      ? checkpointedTransition(link, authority, shared)
+      : readDoc(signDoc(link.sign, "leadership", epoch, {
         ...authority, boxes, left, moved, devices: ownPhones(link), vouchBlocked: link.vouchBlocked ?? [],
         shared, removalRevisions: link.removalRevisions, numbers: ledger,
       }));
-    }
     if (!doc || !boxes.every(box => box.key && box.sign && box.address)) return null;
-    if (current.standby) link.leadershipPending = doc.envelope;
+    recovery?.prepare(link);
+    if (current.standby || acceptance) link.leadershipPending = doc.envelope;
     else {
       if (!takeLeadership(link, doc)) return null;
       pruneDocs(link);
     }
     return link;
   }, { durable: true }));
+  if (oversized) return answer(413, "The personality library and setup settings are too large to replicate. Shorten the personality library before choosing a standby.");
+  if (unsupportedLibrary) return answer(409, "Update all members before choosing a standby so it can verify the personality library.");
   if (!changed) return answer(409, "The setup changed or the standby couldn't be reached. Refresh your setup and try again.");
+  if (recovery && changed.leadershipPending) {
+    return { status: 202, value: { primary: target, epoch: changed.setup!.epoch + 1 } };
+  }
   if (changed.leadershipPending) {
     const deadline = Date.now() + 12_000;
     while (Date.now() < deadline) {
@@ -193,7 +231,7 @@ export async function standbyHere(target: string, position: Record<string, unkno
   const ready = await forwardAct(peer, "Changing the standby", { area: "setup", method: "GET", item: target, body: position }, undefined, link, Date.now(), { backgroundRelay: true });
   if ("refused" in ready) return answer(ready.status, ready.refused);
   if (ready.status !== 200 || !isObject(ready.value) || ready.value.sign !== peer.sign) return answer(409, "The chosen standby hasn't caught up yet.");
-  const outcome = await proposeLeadership(position, setup.primary, { key: target, sign: peer.sign }, requester);
+  const outcome = await proposeLeadership(position, setup.primary, { key: target, sign: peer.sign }, { requester });
   if (outcome.status === 202) console.info(`Standby selected: ${target} (${reason}).`);
   return outcome;
 }

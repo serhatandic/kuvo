@@ -6,7 +6,7 @@
 // The setup's primary enrolls members and signs the resulting membership list.
 
 import { updateAccess } from "../setup/access";
-import { PENDING_SAVE, waitShared } from "../setup/shared";
+import { asSave, PENDING_SAVE, pendingShared, waitShared, type SharedSave } from "../setup/shared";
 import { LEADERSHIP_WAIT, primaryFenced } from "../setup/lease";
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -15,11 +15,11 @@ import { isObject } from "../../shared/json";
 import { plainName } from "../../shared/text";
 import { macDocsChanged, receiveDocs } from "../documents/exchange";
 import { SIGN } from "../documents/format";
-import { writePrivate } from "../files";
+import { writeDurablePrivate, writePrivate } from "../files";
 import { IS_MAC, K } from "../home";
 import { ownName } from "../letters/start";
 import { macLinkCheck } from "../mac/link";
-import { changeKeptHosts, LIST_FILE, localDestination, peerAtDestination, savedMachines } from "../mac/machines";
+import { changeKeptHosts, keptHosts, LIST_FILE, localDestination, peerAtDestination, savedMachines } from "../mac/machines";
 import { setMacPeers, setupGift } from "../mac/routes";
 import { ADDRESS, KEY, ownKey, peersOf } from "../peers/known";
 import { readPeerAgents } from "../peers/directory";
@@ -39,7 +39,9 @@ import { gatherSeed } from "./seed";
 import { type HostKey, type Ran, type Way, hangUp, lastLine, reachedAs, readHostKey, remote, troubleOf, trustHostKeys, vaultAgent } from "./ssh";
 import { Failed, type Running, Stopped, type Telling, startTry, stopTry, underWay } from "./tries";
 import { noteKeyNow } from "../setup/lead";
-import { followedSetup } from "../setup/record";
+import { membershipOf } from "../setup/membership";
+import { enrollStandby } from "../setup/handover";
+import { followedSetup, requiresStandby } from "../setup/record";
 import { SETUP_OCCUPIED } from "../marks";
 
 class AccountOccupied extends Failed {
@@ -414,6 +416,16 @@ function checkAdd(link: LinkState | null, grant: AddGrant | undefined, name: str
 // Sets a computer up at `destination`, or again: everything to its box running there as one of yours.
 async function setUp(tell: Telling, destination: string, name: string, kind: "add" | "setup" | "update", expectedKey?: string, grant?: AddGrant): Promise<void> {
   tell.step("checking", `Connecting to ${name}`);
+  const pending = pendingShared(readLink(), "membershipAndAccess");
+  const pendingKey = keptHosts()?.[destination]?.key;
+  const candidate = pending && membershipOf(pending.body.value)?.boxes.find(peer => peer.key === pendingKey);
+  if (kind === "add" && pending && candidate && !peersOf(readLink()).some(peer => peer.key === candidate.key)) {
+    tell.step("joining");
+    const save = asSave(pending);
+    tell.saving?.(save, candidate);
+    tell.came(await finishEnrollment(candidate, save));
+    return;
+  }
   const mine = boxVersion();
   const files = ownFiles();
   if (!files || !mine) throw new Failed(`Kuvo Code on ${ownName()} has no files of its own to give another computer yet. Update Kuvo Code here, then try again.`);
@@ -421,6 +433,7 @@ async function setUp(tell: Telling, destination: string, name: string, kind: "ad
   const checkGrant = () => checkAdd(readLink(), grant, name, expectedKey);
   const account = new AccountReservation(reach, name, tell);
   const reserved = account.run;
+  let finish: (() => Promise<{ key: string; name: string }>) | undefined;
   await account.use(async () => {
     const answer = await reach.run(scripts.probe(ENGINE_VERSION), { cut: true, most: 120_000 });
     if (answer.status !== 0) throw new Failed(`${name} couldn’t be checked. ${lastLine(answer.stderr)}`.trim());
@@ -547,9 +560,14 @@ async function setUp(tell: Telling, destination: string, name: string, kind: "ad
       }
       tell.step("joining");
       const identity = /^id ([0-9a-f]{32})$/m.exec(started.stdout)?.[1] ?? probe.id;
-      const computer = await join(reserved, destination, name, identity, account.token, expectedKey, grant);
+      finish = await join(reserved, destination, name, identity, account.token, (peer, save) => {
+        // The winning epoch decides this proposal. A local stop or timeout cannot undo it.
+        unjoined = false;
+        tell.commit?.();
+        if (!tell.signal.aborted) tell.step("joining", "Waiting for the standby to save this computer");
+        if (save) tell.saving?.(save, peer);
+      }, expectedKey, grant);
       unjoined = false;
-      tell.came(computer);
     } catch (error) {
       // A competing setup enrolled this account after the probe. Its data belongs to that setup.
       if (!unjoined || !account.canRollBack || error instanceof AccountOccupied) throw error;
@@ -565,12 +583,13 @@ async function setUp(tell: Telling, destination: string, name: string, kind: "ad
       throw new Failed(`${failure.message} ${undone?.status === 0 ? `Kuvo Code was stopped on ${name} again, and the keys and sign-ins copied there were deleted.` : still}`, failure.again, failure.title);
     }
   });
+  if (finish) tell.came(await finish());
 }
 
 // Signs the computer into your setup: this box's keys and documents given over SSH (the trust
 // between them), its own taken back, and its record written here, for your other computers and
 // phones to take from this box.
-async function join(run: Reach["run"], destination: string, name: string, identity: string | null, token: string, expectedKey?: string, grant?: AddGrant): Promise<{ key: string; name: string }> {
+async function join(run: Reach["run"], destination: string, name: string, identity: string | null, token: string, staged: (peer: { key: string; name: string }, save?: SharedSave) => void, expectedKey?: string, grant?: AddGrant): Promise<() => Promise<{ key: string; name: string }>> {
   const beforeLink = readLink();
   const relay = IS_MAC ? macLink.config?.relay : beforeLink?.relay;
   const removedWhileAdding = (link: LinkState | null) => expectedKey && link?.removedHere?.includes(expectedKey);
@@ -588,16 +607,38 @@ async function join(run: Reach["run"], destination: string, name: string, identi
     throw new Failed(`Kuvo Code on ${name} couldn’t join your computers. ${lastLine(ran.stderr)}`.trim());
   }
   const peer = { key: said.key, sign: said.sign, address: said.address, name, id: destination };
-  let named = name;
+  const keepRecord = () => {
+    const saved = savedMachines();
+    if (!saved) throw new Failed(`${ownName()}’s list of machines can’t be read right now.`);
+    const had = saved.find(each => each.destination === destination);
+    writeDurablePrivate(LIST_FILE, JSON.stringify(had ? saved.map(each => (each === had && identity ? { ...each, identity } : each)) : [...saved, { destination, ...(identity ? { identity } : {}) }], null, 2));
+  };
+  const setup = followedSetup(readLink());
+  if (!expectedKey && setup?.role === "primary" && !setup.standby && requiresStandby(setup)) {
+    if (said.standbyAcceptance !== true) throw new Failed(`Update Kuvo Code on ${name} before using it as the replacement standby.`);
+    const result = await enrollStandby(setup, { ...peer, kind: "machine" }, link => {
+      checkAdd(link, grant, name, peer.key);
+      if (removedWhileAdding(link)) throw removedDuringAdd(name);
+      keepRecord();
+      keepHost(destination, peer);
+    });
+    if (result.status !== 202) throw new Failed(isObject(result.value) ? String(result.value.message) : "The replacement couldn't be saved.");
+    staged(peer);
+    macDocsChanged();
+    return async () => {
+      while (true) {
+        const current = readLink()?.setup;
+        if (current?.id !== setup.id || current.epoch > setup.epoch) break;
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+      return finishEnrollment(peer, null);
+    };
+  }
   const { changed, save, busy } = updateAccess(link => {
     checkAdd(link, grant, name, expectedKey);
     checkAdd(link, grant, name, peer.key);
     if (removedWhileAdding(link)) throw removedDuringAdd(name);
-    // Save the machine record and bridge before restoring trust on a fresh Add.
-    const saved = savedMachines();
-    if (!saved) throw new Failed(`${ownName()}’s list of machines can’t be read right now.`);
-    const had = saved.find(each => each.destination === destination);
-    writePrivate(LIST_FILE, JSON.stringify(had ? saved.map(each => (each === had && identity ? { ...each, identity } : each)) : [...saved, { destination, ...(identity ? { identity } : {}) }], null, 2));
+    keepRecord();
     const replaced = peerAtDestination(link, destination);
     keepHost(destination, { name, address: peer.address, key: peer.key, sign: peer.sign });
     const state = link ?? { phones: [] };
@@ -609,10 +650,26 @@ async function join(run: Reach["run"], destination: string, name: string, identi
     return setMacPeers(state, { peers: [...others, peer], moved: state.macMoved }, expectedKey ? undefined : peer.key).link;
   });
   if (busy) throw new Failed("An access change is already waiting to be saved.");
-  if (save && await waitShared(save) !== "saved") throw new Failed(PENDING_SAVE);
-  const enrolled = save ? readLink() : changed;
-  if (!enrolled || !peersOf(enrolled).some(each => each.key === peer.key)) throw new Failed(`${ownName()} couldn’t keep ${name}’s record.`);
-  named = peersOf(enrolled).find(each => each.key === peer.key)?.name ?? name;
+  if (save) staged(peer, save);
+  if (!save && !changed) throw new Failed(`${ownName()} couldn’t keep ${name}’s record.`);
+  const docs = Array.isArray(said.docs) ? said.docs : [];
+  return async () => {
+    const computer = await finishEnrollment(peer, save);
+    // Its own documents, signed with the key it just gave, taken as if by mail.
+    if (docs.length) await receiveDocs(peer, { give: docs }, liveLink()).catch(() => {});
+    return computer;
+  };
+}
+
+async function finishEnrollment(peer: { key: string; name: string }, save: SharedSave | null) {
+  if (save) {
+    macDocsChanged();
+    if (await waitShared(save, Infinity) !== "saved") {
+      throw new Failed(`The setup changed before ${peer.name} was saved. Add it again from the primary.`);
+    }
+  }
+  const enrolled = peersOf(readLink()).find(each => each.key === peer.key);
+  if (!enrolled) throw new Failed(`${ownName()} couldn’t keep ${peer.name}’s record.`);
   // This box meets its machines on the relay from now on.
   if (IS_MAC && macLink.config) {
     macLink.config = { ...macLink.config, machines: true };
@@ -620,9 +677,7 @@ async function join(run: Reach["run"], destination: string, name: string, identi
     macLink.wake?.();
   }
   macDocsChanged();
-  // What it has of documents (its own, signed with the key it just gave), taken as if by mail.
-  if (Array.isArray(said.docs) && said.docs.length) await receiveDocs(peer, { give: said.docs }, liveLink()).catch(() => {});
-  return { key: peer.key, name: named };
+  return { key: enrolled.key, name: enrolled.name };
 }
 
 function begin(kind: AddTry["kind"], destination: string, name: string, steps: readonly (readonly [string, string])[], work: (tell: Telling) => Promise<void>): Running {

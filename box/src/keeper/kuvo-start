@@ -10,7 +10,9 @@
 #   kuvo-start bridge    starts the coding agents' bridge, while the engine runs and it doesn't
 #   kuvo-start bridge-again  Try Again: the bridge started now, one that didn't finish starting ended
 #   kuvo-start rollback  puts back the code an update on trial replaced (never its data)
-K="$HOME/.kuvo-code"; R="$K/run"
+K="$HOME/.kuvo-code"
+if [ "${1:-}" = check-rollback-layout ] && [ -n "${2:-}" ]; then K=$2; fi
+R="$K/run"
 # Whether process $1 runs and is $2 (in its command line), with any run of slashes in either taken
 # as one: a HOME written with a slash at its end ("/Users/you/", as Kuvo Helper gave it) started its
 # engine as ".../you//.kuvo-code/engine/...", which a start or stop with HOME written without must
@@ -47,10 +49,42 @@ pick() {
   fi
 }
 pick
-# Check the layout before the keeper writes its first runtime record.
-if [ -f "$K/bin/kuvo-link.js" ] && [ -x "$K/engine/$V/opencode" ]; then
-  KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$K/engine/$V/opencode" --config=/dev/null --no-env-file "$K/bin/kuvo-link.js" folder-upgrade </dev/null || exit $?
-fi
+# Stop and rollback must work even when the trial bridge cannot execute.
+case "${1:-keep}" in
+stop|engine-stop|engine-halt|off|pause|rollback|check-rollback-layout) ;;
+*)
+  if [ -f "$K/bin/kuvo-link.js" ] && [ -x "$K/engine/$V/opencode" ]; then
+    KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$K/engine/$V/opencode" --config=/dev/null --no-env-file "$K/bin/kuvo-link.js" folder-upgrade </dev/null || exit $?
+  fi
+  ;;
+esac
+# The restore checks the actual marker with the saved bridge. A reader from before markers
+# can handle the additive layout only. Never lower a marker to make a restore pass.
+check_rollback_layout() (
+  marker="$K/folder-version.json"
+  [ -e "$marker" ] || [ -L "$marker" ] || exit 0
+  saved="$K/updates/rollback/files/bin/kuvo-link.js"
+  old_keeper="$K/updates/rollback/files/bin/kuvo-start"
+  old=$(sed -n 's/^V=//p' "$old_keeper" 2>/dev/null | head -n 1)
+  runtime="$K/engine/$old/opencode"
+  [ -x "$runtime" ] || runtime="$K/engine/$V/opencode"
+  if [ -f "$saved" ] && [ -x "$runtime" ]; then
+    probe=$(mktemp -d "${TMPDIR:-/tmp}/kuvo-restore.XXXXXX") || exit 1
+    trap 'rm -rf "$probe"' EXIT
+    mkdir "$probe/.kuvo-code" || exit 1
+    KUVO_HOME="$probe/.kuvo-code"; export KUVO_HOME
+    BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0; export BUN_BE_BUN BUN_RUNTIME_TRANSPILER_CACHE_PATH
+    printf '%s\n' '{"version":2147483647}' >"$KUVO_HOME/folder-version.json" || exit 1
+    if ! HOME="$probe" "$runtime" --config=/dev/null --no-env-file "$saved" here .kuvo-machine-probe </dev/null >/dev/null 2>&1; then
+      cp "$marker" "$KUVO_HOME/folder-version.json" || exit 1
+      HOME="$probe" "$runtime" --config=/dev/null --no-env-file "$saved" here .kuvo-machine-probe </dev/null >/dev/null
+      exit $?
+    fi
+  fi
+  grep -Eq '^[[:space:]]*\{[[:space:]]*"version"[[:space:]]*:[[:space:]]*[01][[:space:]]*\}[[:space:]]*$' "$marker" &&
+    [ "$(awk 'END {print NR}' "$marker")" = 1 ]
+)
+if [ "${1:-}" = check-rollback-layout ]; then check_rollback_layout; exit $?; fi
 mkdir -p "$R" 2>/dev/null && chmod 700 "$R" 2>/dev/null
 # Whether this is a Mac's own box (`box/kind` says `mac`), which its helper, Kuvo Helper, runs.
 own_mac() { [ "$(tr -d ' \t\r\n' 2>/dev/null <"$K/box/kind")" = mac ]; }
@@ -636,6 +670,7 @@ rollback)
   # it kept it (updates/rollback/restore.sh), never the engine's data. Nothing kept: the trial ends.
   [ -f "$R/update-trial" ] || exit 0
   [ -f "$K/updates/rollback/restore.sh" ] || { rm -f "$R/update-trial" "$R/update-restore" "$R/update-settle.tries"; exit 0; }
+  check_rollback_layout || { echo "The saved Kuvo Code cannot open this folder layout." >&2; exit 1; }
   # Giving up: the trial ends, and the box starts as it is, never left stopped (what was put back
   # and what wasn't is told by whoever looks next: `updates/rollback` stays where it wasn't all).
   give_up() {

@@ -52,8 +52,9 @@ export function fresh(since: { wall: number; uptime: number }, now: ReturnType<t
 }
 
 export function primaryFenced(link: LinkState | null | undefined): boolean {
-  if (link?.setup?.role !== "primary" || !link.setup.standby) return false;
+  if (link?.setup?.role !== "primary") return false;
   if (link.leadershipPending) return true;
+  if (!link.setup.standby) return false;
   const lease = json(file);
   return !isObject(lease) || lease.stamp !== stamp(link) || typeof lease.wall !== "number"
     || typeof lease.uptime !== "number" || !fresh({ wall: lease.wall, uptime: lease.uptime }, leaseClock(), LEASE_MS);

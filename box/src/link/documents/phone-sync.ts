@@ -140,9 +140,9 @@ export function phoneTrustWait(link: LinkState | null, key: string, host?: LinkH
   return checking;
 }
 
-export function authorizeDesktopConnection(host: LinkHost, key: Buffer, hello: PhoneHello, address: Buffer) {
+export function authorizeDesktopConnection(host: LinkHost, key: Buffer, hello: PhoneHello, address: Buffer, signal: AbortSignal) {
   const waiting = phoneTrustWait(readLink(), key.toString("base64url"), host);
-  return waiting ? { ...waiting, waiting: waiting.message } : authorizePhonePairing(key, hello, address);
+  return waiting ? { ...waiting, waiting: waiting.message } : authorizePhonePairing(key, hello, address, signal);
 }
 
 /** A signing Mac with an older phoneSync sends its membership in the normal document exchange.

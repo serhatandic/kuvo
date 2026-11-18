@@ -102,6 +102,15 @@ async function network(t, takeover = false) {
       heard: key => {
         try { return read("peer-agents.json")[key]?.features?.includes("setup.handover"); } catch { return false; }
       },
+      async command(args, input = "") {
+        const child = start(env, args, ["pipe", "pipe", "pipe"]);
+        let out = "", err = "";
+        child.stdout.on("data", chunk => { out += chunk; });
+        child.stderr.on("data", chunk => { err += chunk; });
+        child.stdin.end(input);
+        const [status] = await once(child, "close");
+        return { status, value: JSON.parse(out.trim().split("\n").at(-1)), err };
+      },
       async route(method, path, body, local = false) {
         const args = local ? ["--input-type=module", "-e", `
           import { engineHandler } from ${JSON.stringify(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url).href)};
@@ -374,16 +383,146 @@ test("failure bench: a lost primary is replaced after the configured delay", { t
   assert.equal(a.read().setup.epoch, 2);
 });
 
-test("failure bench: the standby retires before its membership is removed", { timeout: 45_000 }, async t => {
-  const { a, b, c, see } = await standbyNetwork(t);
+test("failure bench: standby retirement keeps the live standby until a replacement is ready", { timeout: 45_000 }, async t => {
+  const { a, b, c, see, relay } = await standbyNetwork(t);
+  const wake = relay.disconnect(c.address);
+  try {
+    const refused = await a.route("DELETE", `kuvo/computers/${b.key}`);
+    assert.equal(refused.status, 503, JSON.stringify(refused.value));
+    assert.equal(a.read().setup.epoch, 2);
+    assert.equal(a.read().setup.standby.key, b.key);
+    assert.equal(a.read().leadershipPending, undefined);
+  } finally {
+    wake();
+  }
+  await until("candidate reconnects", () => relay.has(c.address), t.signal);
   const done = await a.route("DELETE", `kuvo/computers/${b.key}`);
   assert.equal(done.status, 200, JSON.stringify(done.value));
-  await see(a, 4, a);
-  await see(c, 4, a);
+  await see(a, 3, a);
+  await see(c, 3, a);
   assert.equal(a.read().setup.standby.key, c.key);
   assert.equal(link.readDoc(c.read().leadership[3]).origin, b.sign);
   assert.ok(a.read().left.includes(b.key));
   await until("standby removal received", () => b.read().setup?.id !== a.read().setup.id, t.signal);
+});
+
+test("failure bench: local uninstall refuses a primary before clearing identity or stopping it", { timeout: 30_000 }, async t => {
+  const { a } = await standbyNetwork(t);
+  const identity = path.join(a.env.HOME, "desktop", "identity");
+  fs.mkdirSync(path.dirname(identity));
+  fs.writeFileSync(identity, "keep this identity");
+  const before = a.read().setup;
+  const done = await a.command(["uninstall"]);
+  assert.equal(done.status, 1, done.err);
+  assert.deepEqual(done.value, { result: "refused", message: "Choose another primary first." });
+  assert.deepEqual(a.read().setup, before);
+  assert.equal(fs.readFileSync(identity, "utf8"), "keep this identity");
+  assert.equal(a.child.exitCode, null);
+  const home = path.join(a.env.HOME, "standalone");
+  fs.mkdirSync(path.join(home, "run"), { recursive: true });
+  const child = spawn(process.execPath, [script, "uninstall"], { env: { ...a.env, HOME: home, KUVO_HOME: home }, stdio: "ignore" });
+  assert.equal((await once(child, "exit"))[0], 0);
+  assert.ok(fs.existsSync(path.join(home, "run", "off")));
+});
+
+test("failure bench: a QR handshake waits for its own durable pairing receipt", { timeout: 35_000 }, async t => {
+  const { a, b, relay } = await standbyNetwork(t);
+  const pairing = await a.route("POST", "kuvo/phones/pair");
+  assert.equal(pairing.status, 200);
+  const qr = new URL(pairing.value.link);
+  const device = relay.device();
+  const newKey = link.newKey();
+  const deviceKey = link.publicOf(newKey).toString("base64url");
+  const initiator = new link.IKInitiator(newKey, Buffer.from(qr.searchParams.get("key"), "base64url"), link.PROLOGUE);
+  const receipts = [];
+  const release = relay.intercept(b.address, a.address, packet => {
+    // Keep leases flowing while holding the signed access receipt.
+    const envelope = link.openMail(link.readFrame(packet.payload).body, a.read())?.payload?.docs?.give?.[0];
+    if (link.readDoc(envelope)?.body.receipt) { receipts.push(packet); return true; }
+    return false;
+  });
+  t.after(release);
+  device.send(a.address, link.frame(link.Frame.handshake1, 44, initiator.writeMessage1(Buffer.from(JSON.stringify({
+    v: 1, name: "New QR phone", pair: qr.searchParams.get("token"),
+  })))));
+  let frame;
+  const reply = device.next(15_000).then(bytes => { frame = link.readFrame(link.readRelay(bytes).payload); });
+  // Register the rejection handler before assertions so a failed test can also close the relay.
+  reply.catch(() => {});
+  await until("the standby persists the phone and tries to send its receipt", () => receipts[0], t.signal);
+  await delay(3_250);
+  assert.equal(frame, undefined, "the box has sent neither a refusal nor a session");
+  assert.ok(b.read().phones.some(phone => phone.key === deviceKey));
+  assert.ok(!a.read().phones.some(phone => phone.key === deviceKey));
+  release();
+  relay.replay(receipts[0]);
+  await reply;
+  assert.equal(frame.kind, link.Frame.handshake2);
+  assert.equal(JSON.parse(initiator.readMessage2(frame.body).payload).v, 1);
+  assert.ok(a.read().phones.some(phone => phone.key === deviceKey));
+});
+
+const personality = (i, length = 40) => ({ id: `custom.personal-${i}`, name: `Personality ${i}`, description: "x".repeat(length), updated: i + 1 });
+
+test("failure bench: the SSH personalities command saves through the standby", { timeout: 35_000 }, async t => {
+  const { a, b } = await standbyNetwork(t);
+  const file = path.join(a.env.HOME, "bots", "personalities.json");
+  const oldBytes = () => fs.existsSync(file) ? fs.readFileSync(file, "utf8") : null;
+  const before = oldBytes();
+  const document = { personalities: [personality(1)], removed: [] };
+  const saved = await a.command(["box", "personalities"], JSON.stringify(document));
+  assert.equal(saved.status, 0, saved.err);
+  assert.equal(saved.value.status, 200, JSON.stringify(saved.value));
+  assert.deepEqual((await a.route("GET", "kuvo/personalities")).value.personalities.map(each => each.id), ["custom.personal-1"]);
+  assert.deepEqual(b.read().shared.setupPersonalities.value.personalities.map(each => each.id), ["custom.personal-1"]);
+  assert.equal(oldBytes(), before, "the SSH save did not write to the legacy file");
+});
+
+test("failure bench: first standby assignment waits for the candidate to install the entire personality library", { timeout: 35_000 }, async t => {
+  const { a, b, c, relay } = await network(t);
+  const document = { personalities: [personality(1), personality(2)], removed: [{ id: "custom.retired", removed: 5 }] };
+  const saved = await a.command(["box", "personalities"], JSON.stringify(document));
+  assert.equal(saved.value.status, 200);
+  const accepted = [];
+  const releases = [b, c].map(from => relay.intercept(from.address, a.address, packet => {
+    const give = link.openMail(link.readFrame(packet.payload).body, a.read())?.payload?.docs?.give;
+    if (give?.some(envelope => link.readDoc(envelope)?.body.standbyAcceptance === true && link.readDoc(envelope).body.approval)) {
+      accepted.push(packet);
+      return true;
+    }
+    return false;
+  }));
+  const release = () => releases.forEach(resume => resume());
+  t.after(release);
+  const selecting = a.route("POST", "kuvo/setup/standby", { standby: b.key, epoch: 1 });
+  selecting.catch(() => {});
+  await until("the new standby tries to confirm its durable replica", () => accepted[0], t.signal);
+  assert.equal(a.read().setup.epoch, 1);
+  assert.equal(a.read().setup.standby, undefined);
+  const blocked = await a.command(["box", "personalities"], JSON.stringify({ personalities: [personality(3)] }));
+  assert.equal(blocked.value.status, 503, "the legacy library is frozen while its replica is waiting");
+  assert.equal(b.read().setup.standby.key, b.key);
+  assert.deepEqual(b.read().shared.setupPersonalities.value, {
+    personalities: saved.value.personalities, removed: saved.value.removed,
+  });
+  release();
+  relay.replay(accepted[0]);
+  assert.equal((await selecting).status, 202);
+  assert.equal(a.read().setup.standby.key, b.key);
+});
+
+test("failure bench: a first standby refuses a legacy library beyond replica capacity", { timeout: 35_000 }, async t => {
+  const { a, b } = await network(t);
+  const document = { personalities: Array.from({ length: 103 }, (_, i) => personality(i, 2_000)), removed: [] };
+  const saved = await a.command(["box", "personalities"], JSON.stringify(document));
+  assert.equal(saved.value.status, 200);
+  assert.equal(saved.value.personalities.length, document.personalities.length);
+  const refused = await a.route("POST", "kuvo/setup/standby", { standby: b.key, epoch: 1 });
+  assert.equal(refused.status, 413, JSON.stringify(refused.value));
+  assert.match(refused.value.message, /personality library.*too large/);
+  assert.equal(a.read().setup.standby, undefined);
+  assert.equal(a.read().setup.epoch, 1);
+  assert.equal((await a.route("GET", "kuvo/personalities")).value.personalities.length, document.personalities.length);
 });
 
 const rename = (a, target, name) => a.route("PATCH", `kuvo/computers/${target.key}`, { name });

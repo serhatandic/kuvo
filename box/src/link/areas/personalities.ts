@@ -6,9 +6,10 @@ import { isObject, parsed } from "../../shared/json";
 import type { Body } from "../../shared/json";
 import { followed } from "../follow";
 import { PENDING_SAVE, changeShared, waitShared } from "../setup/shared";
+import { LEADERSHIP_WAIT } from "../setup/lease";
 import { requiresStandby } from "../setup/record";
 import { readLink } from "../state";
-import { mergePersonalities, fitsLibrary, FULL_LIBRARY, PERSONALITIES_FILE, personalitiesDocument, personalityFollowers, readPersonalities } from "../personalities/library";
+import { mergePersonalities, fitsLibrary, type GivenLibrary, type PersonalityLibrary, FULL_LIBRARY, PERSONALITIES_FILE, personalitiesDocument, personalityFollowers, readPersonalities } from "../personalities/library";
 import { answerPersonalities, retellBots, takePersonalitiesDocument } from "../personalities/take";
 import type { AnswerPiece, RouteContext } from "../server/context";
 import type { Personalities } from "../../shared/routes/personalities";
@@ -30,7 +31,9 @@ export async function* personalitiesDocumentRoute(context: RouteContext): AsyncG
   const method = request.method.toUpperCase();
   if (route === "kuvo/personalities/document") return yield* method === "GET" ? json(200, personalitiesDocument()) : json(405, {});
   if (method !== "POST") return yield* json(405, {});
-  const setup = readLink()?.setup;
+  const link = readLink();
+  if (link?.leadershipPending) return yield* json(503, { message: LEADERSHIP_WAIT });
+  const setup = link?.setup;
   if (requiresStandby(setup)) {
     if (setup?.role !== "primary") return yield* json(409, { message: "Change your setup's personalities on its primary." });
     if (!setup.standby) return yield* json(503, { message: PENDING_SAVE });
@@ -39,24 +42,35 @@ export async function* personalitiesDocumentRoute(context: RouteContext): AsyncG
       || (given.document.removed !== undefined && !Array.isArray(given.document.removed))) {
       return yield* json(400, { message: "Send a library of personalities: {document: {personalities, removed}}." });
     }
-    const document = given.document;
-    let changed: string[] = [];
-    let full = false;
-    const save = changeShared("setupPersonalities", value => {
-      const before = isObject(value) ? mergePersonalities(value) : readPersonalities();
-      const after = mergePersonalities(before, document);
-      if (!fitsLibrary(after)) { full = true; return undefined; }
-      const was = new Map([...before.personalities, ...before.removed].map(entry => [entry.id, JSON.stringify(entry)]));
-      changed = [...after.personalities, ...after.removed].filter(entry => was.get(entry.id) !== JSON.stringify(entry)).map(entry => entry.id);
-      return after;
-    });
-    if (full) return yield* json(400, { message: FULL_LIBRARY });
-    if (!save) return yield* json(409, { message: "A personality change is already waiting to be saved." });
-    if (await waitShared(save) !== "saved") return yield* json(202, { pending: true, message: PENDING_SAVE });
-    return yield* json(200, { changed });
+    const saved = await savePersonalityLibrary(given.document);
+    return yield* json(saved.status, saved.status === 200 ? { changed: saved.changed } : saved.value);
   }
   const [status, value] = takePersonalitiesDocument(parsed(request.body) as Body<"document">, readEngine, readBridge);
   return yield* json(status, value);
+}
+
+/** The document route and the SSH command use the same receipt-backed merge. */
+export async function savePersonalityLibrary(document: GivenLibrary | null): Promise<
+  { status: 200; library: PersonalityLibrary; changed: string[] }
+  | { status: 202 | 400 | 409 | 503; value: { message: string; pending?: true } }
+> {
+  const setup = readLink()?.setup;
+  if (setup?.role !== "primary") return { status: 409, value: { message: "Change your setup's personalities on its primary." } };
+  if (!setup.standby) return { status: 503, value: { message: PENDING_SAVE } };
+  let changed: string[] = [];
+  let library: PersonalityLibrary | undefined;
+  const save = changeShared("setupPersonalities", value => {
+    const before = isObject(value) ? mergePersonalities(value) : readPersonalities();
+    library = mergePersonalities(before, document);
+    if (!fitsLibrary(library)) return undefined;
+    const was = new Map([...before.personalities, ...before.removed].map(entry => [entry.id, JSON.stringify(entry)]));
+    changed = [...library.personalities, ...library.removed].filter(entry => was.get(entry.id) !== JSON.stringify(entry)).map(entry => entry.id);
+    return library;
+  });
+  if (library && !fitsLibrary(library)) return { status: 400, value: { message: FULL_LIBRARY } };
+  if (!save || !library) return { status: 409, value: { message: "The personality library couldn't be staged. Another save may be pending or the setup may be out of space." } };
+  if (await waitShared(save) !== "saved") return { status: 202, value: { pending: true, message: PENDING_SAVE } };
+  return { status: 200, library, changed };
 }
 
 // The personalities you make, this machine's copy of the library.
@@ -66,7 +80,9 @@ export async function* personalityRoute(context: RouteContext, personality: RegE
   try { id = personality[1] === undefined ? undefined : decodeURIComponent(personality[1]); } catch { return yield* json(404, {}); }
   const method = request.method.toUpperCase();
   const body = parsed(request.body) as Body<"name" | "description">;
-  const setup = readLink()?.setup;
+  const link = readLink();
+  if (method !== "GET" && link?.leadershipPending) return yield* json(503, { message: LEADERSHIP_WAIT });
+  const setup = link?.setup;
   if (requiresStandby(setup) && method !== "GET") {
     if (setup?.role !== "primary") return yield* json(409, { message: "Change your setup's personalities on its primary." });
     if (!setup.standby) return yield* json(503, { message: PENDING_SAVE });

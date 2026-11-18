@@ -9,8 +9,11 @@ import fs from "node:fs";
 import path from "node:path";
 import type { AddQuestion, AddStep, AddTry } from "../../shared/routes/box";
 import { newID } from "../../shared/text";
-import { writePrivate } from "../files";
+import { writeDurablePrivate, writePrivate } from "../files";
 import { RUN } from "../home";
+import { peersOf } from "../peers/known";
+import { operationOutcome, type SharedSave } from "../setup/shared";
+import { readLink } from "../state";
 
 export const TRIES_FILE = path.join(RUN, "adding.json");
 
@@ -32,6 +35,7 @@ export interface Running {
   seen: AddTry;
   stop: AbortController;
   committed?: boolean;
+  enrollment?: Enrollment;
   /** The answer its question waits for. */
   answer: ((id: string) => void) | null;
   /** When it ends (however it ends). */
@@ -39,7 +43,9 @@ export interface Running {
 }
 
 const running = new Map<string, Running>();
-let finished: AddTry[] | null = null;
+type Enrollment = { save: SharedSave; peer: { key: string; name: string } };
+type SavedTry = AddTry & { enrollment?: Enrollment };
+let finished: SavedTry[] | null = null;
 let asks = 0;
 /** Told as any try changes (`kuvo/computers/add/events`). */
 export const tryFollowers = new Set<() => void>();
@@ -48,14 +54,14 @@ const chains = new Map<string, Promise<void>>();
 const isOver = (seen: AddTry): boolean => seen.state === "failed" || seen.state === "done";
 
 // The tries that are over, with those a box that stopped left under way: said cut short.
-function kept(): AddTry[] {
+function kept(): SavedTry[] {
   if (finished) return finished;
   finished = [];
   try {
-    const noted = JSON.parse(fs.readFileSync(TRIES_FILE, "utf8")) as AddTry[];
+    const noted = JSON.parse(fs.readFileSync(TRIES_FILE, "utf8")) as SavedTry[];
     for (const seen of Array.isArray(noted) ? noted.slice(0, 40) : []) {
       if (typeof seen?.id !== "string" || typeof seen.destination !== "string" || !Array.isArray(seen.steps)) continue;
-      if (isOver(seen)) finished.push(seen);
+      if (isOver(seen) || seen.enrollment) finished.push(seen);
       else {
         const { question: _question, ...rest } = seen;
         finished.push({ ...rest, state: "failed", title: failedTitle(seen.kind, seen.name),
@@ -69,11 +75,14 @@ function kept(): AddTry[] {
 
 /** Every try, those under way first, then those that are over, newest first. */
 export function allTries(): AddTry[] {
-  return [...[...running.values()].map(each => each.seen).reverse(), ...kept()];
+  return [...[...running.values()].map(each => each.seen).reverse(), ...kept().map(reconcileEnrollment)];
 }
 
-function note(): void {
-  try { writePrivate(TRIES_FILE, JSON.stringify(allTries())); } catch {}
+function note(durable = false): void {
+  try {
+    const active = [...running.values()].reverse().map(each => ({ ...each.seen, enrollment: each.enrollment }));
+    (durable ? writeDurablePrivate : writePrivate)(TRIES_FILE, JSON.stringify([...active, ...kept()]));
+  } catch {}
   for (const tell of [...tryFollowers]) tell();
 }
 
@@ -82,6 +91,22 @@ const workingTitle = (kind: AddTry["kind"], name: string): string => `${NAMES[ki
 const doneTitle = (kind: AddTry["kind"], name: string): string => `${name} ${NAMES[kind][1]}`;
 const failedTitle = (kind: AddTry["kind"], name: string): string => `${NAMES[kind][2]} ${name}`;
 
+/** After restart the proposal is still driven by replication. Its outcome decides the add. */
+function reconcileEnrollment(seen: SavedTry): AddTry {
+  const { enrollment, ...attempt } = seen;
+  if (!enrollment) return attempt;
+  const { save, peer } = enrollment;
+  const link = readLink();
+  const outcome = operationOutcome(link, save.id, save.operation);
+  if (outcome?.status === "pending" || (!outcome && link?.setup?.id === save.id && link.setup.epoch === save.epoch)) return attempt;
+  const computer = outcome?.status === "committed" && peersOf(link).find(each => each.key === peer.key);
+  if (computer) return { ...attempt, computer: { key: computer.key, name: computer.name }, state: "done", title: doneTitle(attempt.kind, attempt.name),
+    steps: attempt.steps.map(step => step.state === "now" ? { ...step, state: "done" } : step) };
+  const title = failedTitle(attempt.kind, attempt.name);
+  return { ...attempt, state: "failed", title, steps: attempt.steps.map(step => step.state === "now" ? { ...step, state: "failed" } : step),
+    failure: { title, message: `The setup changed before ${peer.name} was saved. Add it again from the primary.`, again: true } };
+}
+
 /** What a try's work is given to say how it goes. */
 export interface Telling {
   signal: AbortSignal;
@@ -89,6 +114,7 @@ export interface Telling {
   check(): void;
   /** An irreversible change has been saved; keep the cleanup outcome even if asked to stop. */
   commit?(): void;
+  saving?(save: SharedSave, peer: Enrollment["peer"]): void;
   /** The step under way now (those before it done), with what it says beside it. */
   step(id: string, detail?: string): void;
   /** How far the step under way has got, in bytes. */
@@ -124,6 +150,12 @@ export function startTry(kind: AddTry["kind"], destination: string, name: string
     signal: stop.signal,
     check() { if (stop.signal.aborted) throw new Stopped(); },
     commit() { it.committed = true; },
+    saving(save, peer) {
+      it.committed = true;
+      it.enrollment = { save, peer };
+      if (it.seen.state === "stopping") it.seen = { ...it.seen, state: "working", title: workingTitle(kind, name) };
+      note(true);
+    },
     step(id, detail) {
       tell.check();
       change({ steps: steady(it.seen.steps).map(step => (step.id === id ? { id: step.id, title: step.title, state: "now" as const, ...(detail ? { detail } : {}) } : step)) });
@@ -229,7 +261,7 @@ export function answerTry(id: string, answer: string, at: number): AddTry | null
 }
 
 /** The try `id`, under way or over. */
-export const tryOf = (id: string): AddTry | undefined => running.get(id)?.seen ?? kept().find(each => each.id === id);
+export const tryOf = (id: string): AddTry | undefined => allTries().find(each => each.id === id);
 
 /** A test's: every try forgotten (those under way stopped first, and waited for). */
 export async function forgetTries(): Promise<void> {

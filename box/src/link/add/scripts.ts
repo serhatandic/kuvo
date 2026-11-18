@@ -371,6 +371,7 @@ if [ -x "$E" ] && [ -f "$K/bin/kuvo-link.js" ]; then
   ${only ? "" : "echo kept; exit 0"}
   export KUVO_UNINSTALL_FROM_SSH=1
   said=$( ${link("uninstall")} ); did=$?
+  case "$said" in '{"result":"refused",'*) printf '%s\n' "$said"; exit "$did" ;; esac
 fi
 ${only ? "" : "exit 1"}
 (${uninstallCleanup}) || case $? in

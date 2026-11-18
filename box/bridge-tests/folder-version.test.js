@@ -140,3 +140,110 @@ exec ${JSON.stringify(process.execPath)} "$3" "$4"
     assert.deepEqual(fs.readdirSync(folder).sort(), ["bin", "engine", "folder-version.json"]);
   }
 });
+
+test("failure bench: a broken trial can stop and restore the saved bridge for its compatible layout", () => {
+  const home = scratch();
+  const folder = path.join(home, ".kuvo-code");
+  const saved = path.join(folder, "updates", "rollback");
+  const marker = path.join(folder, "folder-version.json");
+  const current = path.join(folder, "bin", "kuvo-link.js");
+  const old = path.join(saved, "files", "bin", "kuvo-link.js");
+  const engine = path.join(folder, "engine", "test");
+  for (const dir of [path.dirname(current), path.dirname(old), engine, path.join(folder, "run")]) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+  // This is the shipped layout-4 bridge, and the trial is the built layout-5 bridge.
+  const previous = spawnSync("git", ["--no-optional-locks", "show",
+    "4330569c2f1c39eef166f65d2abb1b7256ef7dcb:swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js",
+  ], { cwd: fileURLToPath(new URL("../..", import.meta.url)), maxBuffer: 16 * 1024 * 1024 });
+  assert.equal(previous.status, 0, previous.stderr?.toString());
+  fs.writeFileSync(old, previous.stdout);
+  fs.copyFileSync(link, current);
+  fs.writeFileSync(path.join(engine, "opencode"), `#!/bin/sh
+shift 2
+exec ${JSON.stringify(process.execPath)} "$@"
+`, { mode: 0o700 });
+  const keeper = path.join(folder, "bin", "kuvo-start");
+  fs.writeFileSync(keeper, fs.readFileSync(new URL("../src/keeper/kuvo-start", import.meta.url), "utf8").replaceAll("@ENGINE@", "test"));
+  fs.writeFileSync(path.join(folder, "run", "update-trial"), "trial");
+  fs.writeFileSync(path.join(saved, "restore.sh"), `#!/bin/sh
+cp "${old}" "${current}" && rm "${folder}/run/update-trial"
+`);
+  fs.writeFileSync(marker, '{"version":4}\n');
+  assert.equal(launch(home, process.execPath, [old, "here", ".probe"]).status, 0);
+  const refused = launch(home, process.execPath, [current, "folder-upgrade"]);
+  assert.equal(refused.status, 1, refused.stderr);
+  assert.match(refused.stderr, /saved Kuvo Code can't recover folder layout 5/);
+  assert.equal(fs.readFileSync(marker, "utf8"), '{"version":4}\n');
+
+  // An incompatible marker must never let restore put back the older binary.
+  fs.writeFileSync(marker, '{"version":5}\n');
+  fs.writeFileSync(current, 'throw new Error("broken trial")');
+  assert.equal(launch(home, "/bin/sh", [keeper, "stop"]).status, 0);
+  assert.equal(launch(home, "/bin/sh", [keeper, "rollback"]).status, 1);
+  assert.match(fs.readFileSync(current, "utf8"), /broken trial/);
+  assert.equal(fs.readFileSync(marker, "utf8"), '{"version":5}\n');
+  // Simulate the compatible case in a fresh rollback attempt.
+  fs.writeFileSync(marker, '{"version":4}\n');
+  const restored = launch(home, "/bin/sh", [keeper, "rollback"]);
+  assert.equal(restored.status, 0, restored.stderr);
+  assert.deepEqual(fs.readFileSync(current), previous.stdout);
+  assert.equal(fs.readFileSync(marker, "utf8"), '{"version":4}\n');
+});
+
+test("failure bench: the legacy import seals group files and directory entries before its checkpoint", () => {
+  const home = scratch();
+  const upgrades = new URL("../src/link/rehome/upgrades.ts", import.meta.url).href;
+  const child = launch(home, bun, ["--config=/dev/null", "--no-env-file", "-e", `
+    import assert from "node:assert/strict";
+    import fs from "node:fs";
+    import path from "node:path";
+    import { upgradeKuvoFolder } from ${JSON.stringify(runner)};
+    import { runUpgrades } from ${JSON.stringify(upgrades)};
+    const home = process.env.HOME;
+    const appFolder = path.join(home, "app");
+    const staging = path.join(home, "staging");
+    const work = path.join(staging, "work");
+    const placements = ["box", "run", "bots", "groups", "agents", "config", "machines.json"].map(name => ({
+      from: path.join(appFolder, name), to: path.join(home, name), staged: path.join(staging, name),
+    }));
+    const move = { way: "move", home, appFolder, placements, work, map: [] };
+    fs.mkdirSync(path.join(appFolder, "groups"), { recursive: true });
+    fs.writeFileSync(path.join(appFolder, "groups.json"), JSON.stringify([{ id: "grp_team", name: "Team", members: [] }]));
+    const messages = ["first", "second"].map(id => ({ id, text: id, time: "2026-01-01T00:00:00Z" }));
+    fs.writeFileSync(path.join(appFolder, "groups", "grp_team.json"), JSON.stringify(messages));
+    const opened = new Map(), synced = [];
+    const open = fs.openSync, sync = fs.fsyncSync;
+    fs.openSync = (entry, ...args) => {
+      const fd = open(entry, ...args);
+      opened.set(fd, entry);
+      return fd;
+    };
+    fs.fsyncSync = fd => {
+      sync(fd);
+      synced.push(opened.get(fd));
+    };
+    const group = path.join(staging, "groups", "grp_team");
+    const rename = fs.renameSync;
+    fs.renameSync = (from, to) => {
+      if (to === path.join(work, "folder-version.json")
+        && JSON.parse(fs.readFileSync(from)).version === 1) {
+        for (const expected of ["messages.json", "group.json", ".", "..", "../.."]) {
+          assert.ok(synced.includes(path.resolve(group, expected)), expected + " must reach disk before the import checkpoint");
+        }
+      }
+      rename(from, to);
+    };
+    upgradeKuvoFolder(work, () => runUpgrades({ release: path.join(home, "release") }, move));
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(group, "messages.json"))).map(each => each.id), ["first", "second"]);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(group, "group.json"))).group.name, "Team");
+    const messageSync = synced.indexOf(path.join(group, "messages.json"));
+    const metadataSync = synced.indexOf(path.join(group, "group.json"));
+    assert.ok(messageSync >= 0 && metadataSync > messageSync, JSON.stringify(synced));
+    assert.ok(synced.slice(metadataSync + 1).includes(group));
+    assert.ok(synced.slice(metadataSync + 1).includes(path.dirname(group)));
+    assert.ok(synced.slice(metadataSync + 1).includes(staging));
+    assert.equal(JSON.parse(fs.readFileSync(path.join(work, "folder-version.json"))).version, 5);
+  `]);
+  assert.equal(child.status, 0, child.stderr);
+});

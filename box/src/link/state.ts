@@ -182,7 +182,7 @@ function migratedLink(link: Record<string, any>): Record<string, unknown> {
   return link;
 }
 
-const linkFormat = objectFormat("Link state", [migratedLink]);
+const linkFormat = objectFormat("Link state", 1, (fields, from) => from === 0 ? migratedLink(fields) : fields);
 
 export function readLink(): LinkState | null {
   let link = null;

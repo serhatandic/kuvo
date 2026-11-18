@@ -26,38 +26,48 @@ export function upgradeFormat<T>(format: string, from: unknown, value: T, steps:
   return steps.slice(version).reduce((record, step) => step(record), value);
 }
 
-/** An additive object format. The stamp travels with the fields older writers already know.
- * Reading upgrades in memory so polling readers never race another process's write. */
-export function objectFormat(name: string, steps: readonly Upgrade<Record<string, unknown>>[]) {
+/** Family stamps describe a record's encoding. Decoders may adapt legacy bytes in
+ * memory. The folder-version runner owns durable changes spanning local files. */
+export function objectFormat(
+  name: string,
+  version: number,
+  decode: (fields: Record<string, unknown>, from: number) => Record<string, unknown> = fields => fields,
+) {
   return {
-    version: steps.length,
+    version,
     read(value: unknown): Record<string, unknown> {
       if (!isObject(value)) throw new Error(`${name} isn't a JSON object.`);
       const { formatVersion: from, ...fields } = value;
-      return upgradeFormat(name, from, fields, steps);
+      return decode(fields, readableVersion(name, from, version));
     },
     write<T extends object>(fields: T) {
-      return { ...fields, formatVersion: steps.length };
+      return { ...fields, formatVersion: version };
     },
   };
 }
 
+function readableVersion(name: string, from: unknown, current: number) {
+  const version = formatVersion(name, from, 0, current);
+  if (version > current) throw new UnsupportedFormatVersion(name, version, current);
+  return version;
+}
+
 /** Version 1 keeps the legacy object fields in place for neighbouring writers. */
-export const additiveObjectFormat = (name: string) => objectFormat(name, [fields => fields]);
+export const additiveObjectFormat = (name: string) => objectFormat(name, 1);
 
 /** For legacy lists whose readers already filter out objects without the list's item fields. */
 export function additiveListFormat(name: string) {
-  const steps: readonly Upgrade<unknown[]>[] = [items => items];
+  const version = 1;
   return {
     read(value: unknown): unknown[] {
       if (!Array.isArray(value)) throw new Error(`${name} isn't a JSON array.`);
       const marker = value[0];
-      return isObject(marker) && Object.hasOwn(marker, "formatVersion")
-        ? upgradeFormat(name, marker.formatVersion, value.slice(1), steps)
-        : upgradeFormat(name, undefined, value, steps);
+      if (!isObject(marker) || !Object.hasOwn(marker, "formatVersion")) return value;
+      readableVersion(name, marker.formatVersion, version);
+      return value.slice(1);
     },
     write<T>(items: readonly T[]) {
-      return [{ formatVersion: steps.length }, ...items];
+      return [{ formatVersion: version }, ...items];
     },
   };
 }

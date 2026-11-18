@@ -26,6 +26,8 @@ import { noteDocsChanged } from "./documents/changed";
 import { publishDesktopRemoval } from "./documents/phone-sync";
 import { removeAsMac } from "./phones";
 import { SETUP_CARD } from "./setup/card";
+import { PRIMARY_UNLINK } from "./setup/leadership";
+import { pendingShared } from "./setup/shared";
 import { mainElsewhere } from "./setup/main-only";
 import { LAUNCH_AGENT, MACHINE_WATCH_AGENT, REBOOT_TAG } from "./marks";
 import { SERVE_FILE, SERVE_ROLE } from "./serve-kept";
@@ -336,27 +338,45 @@ export async function uninstallCommand(args: string[]): Promise<number> {
     console.log(JSON.stringify(uninstallCheck()));
     return 0;
   }
+  const needsHandover = (link: ReturnType<typeof readLink>) => {
+    return link?.setup?.role === "primary" && (peersOf(link).some(peer => peer.key !== link.setup!.primary)
+      || Boolean(link.leadershipPending || pendingShared(link, "membershipAndAccess")));
+  };
+  const refuse = (message = PRIMARY_UNLINK) => {
+    console.log(JSON.stringify({ result: "refused", message }));
+    console.error(message);
+    return 1;
+  };
+  if (needsHandover(readLink())) return refuse();
   // The SSH controller has already revoked access before asking its remote to stop.
   const overSSH = process.env.KUVO_UNINSTALL_FROM_SSH === "1";
   const publishing = IS_MAC && !mainElsewhere(readLink());
   const revoked = overSSH || await revokeDesktop();
-  let done: Uninstalled;
+  let refusal = "Kuvo Code couldn’t check who leads this setup right now. Try uninstalling again.";
+  let done: Uninstalled = { stopped: false, launchAgent: false, crontab: false, startsAgain: [], left: [K], message: "Kuvo Code couldn’t confirm it had stopped on this computer." };
+  const cleared = { cleanup: null as ReturnType<typeof run> | null };
+  let identityCleared = false;
   try {
-    done = uninstall();
-  } catch (error) {
-    logCleanup(error);
-    done = { stopped: false, launchAgent: false, crontab: false, startsAgain: [], left: [K], message: "Kuvo Code couldn’t confirm it had stopped on this computer." };
-  }
-  // The SSH wrapper runs the same cleanup locally on the target, including with older boxes.
-  const cleanup = overSSH ? null : run("sh", ["-c", `K=$1\nE=$2\n${uninstallCleanup}`, "kuvo-cleanup", K, process.execPath]);
-  const identityCleared = (overSSH || clearDesktopKeychain()) && cleanup?.status !== 81;
-  const credentialsCleared = cleanup === null || cleanup.status === 0;
-  if (cleanup && !credentialsCleared) logCleanup(cleanup.error ?? cleanup.stderr);
+    updateLink(link => {
+      // Serialize the last authority check with enrollment and handover.
+      if (needsHandover(link)) { refusal = PRIMARY_UNLINK; return null; }
+      refusal = "";
+      try { done = uninstall(); } catch (error) { logCleanup(error); }
+      // The SSH wrapper runs the same cleanup locally on the target, including with older boxes.
+      cleared.cleanup = overSSH ? null : run("sh", ["-c", `K=$1\nE=$2\n${uninstallCleanup}`, "kuvo-cleanup", K, process.execPath]);
+      identityCleared = (overSSH || clearDesktopKeychain()) && cleared.cleanup?.status !== 81;
+      return null;
+    });
+  } catch (error) { logCleanup(error); }
+  if (refusal) return refuse(refusal);
+  const result = cleared.cleanup;
+  const credentialsCleared = result === null || result.status === 0;
+  if (result && !credentialsCleared) logCleanup(result.error ?? result.stderr);
   if (!revoked) done.message += publishing
     ? " Kuvo Code couldn’t confirm the desktop removal reached every other computer."
     : " Kuvo Code couldn’t confirm that your main computer revoked this desktop’s access.";
   if (!identityCleared) done.message += " Kuvo Code couldn’t delete this desktop’s local identity.";
-  if (!credentialsCleared && cleanup?.status !== 81) done.message += " Kuvo Code couldn’t clear all its keys and sign-ins. Run uninstall again.";
+  if (!credentialsCleared && result?.status !== 81) done.message += " Kuvo Code couldn’t clear all its keys and sign-ins. Run uninstall again.";
   const finished = done.stopped && done.startsAgain.length === 0 && revoked && identityCleared && credentialsCleared;
   console.log(JSON.stringify({ result: finished ? "uninstalled" : "unfinished", ...done }));
   console.error(done.message);

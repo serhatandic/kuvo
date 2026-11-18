@@ -1,5 +1,7 @@
 // The layout contract for a computer's Kuvo folder, independent of the formats carried inside it.
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { locked, writeDurablePrivate } from "./files";
 import { UnsupportedFormatVersion } from "./format-version";
@@ -7,6 +9,8 @@ import { isObject } from "./json";
 
 export const FOLDER_VERSION_FILE = "folder-version.json";
 
+// Advance the layout for coordinated changes across files or an incompatible on-disk
+// contract. A family encoding that still opens in older builds needs no folder step.
 type Step = (folder: string, importLegacy?: () => void) => void;
 
 /** Entry i takes layout i to i+1. A step must tolerate replay until its checkpoint commits.
@@ -61,11 +65,42 @@ export function checkFolderVersion(folder: string): void {
 }
 
 export function upgradeKuvoFolder(folder: string, importLegacy?: () => void): void {
-  upgradeFolder(folder, steps, importLegacy);
+  upgradeFolder(folder, steps, importLegacy, () => checkTrialRecovery(folder));
+}
+
+/** A trial can advance only as far as the saved reader can open. Before layout markers,
+ * readers ignored the probe completely and can recover only the additive layout 1. */
+function checkTrialRecovery(folder: string): void {
+  if (!fs.existsSync(path.join(folder, "run", "update-trial"))) return;
+  const bin = path.join(folder, "updates", "rollback", "files", "bin");
+  const saved = path.join(bin, "kuvo-link.js");
+  let engine: string | undefined;
+  try { engine = /^V=([\w.-]+)$/m.exec(fs.readFileSync(path.join(bin, "kuvo-start"), "utf8"))?.[1]; } catch {}
+  const oldRuntime = engine && path.join(folder, "engine", engine, "opencode");
+  let runtime = process.execPath;
+  if (oldRuntime) try { fs.accessSync(oldRuntime, fs.constants.X_OK); runtime = oldRuntime; } catch {}
+  const refuse = () => { throw new Error(`The saved Kuvo Code can't recover folder layout ${steps.length}. Roll back the trial before updating the folder.`); };
+  if (!fs.existsSync(saved)) return refuse();
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-layout-probe-"));
+  try {
+    const probe = path.join(scratch, ".kuvo-code");
+    fs.mkdirSync(probe, { mode: 0o700 });
+    const accepts = (version: number) => {
+      fs.writeFileSync(path.join(probe, FOLDER_VERSION_FILE), JSON.stringify({ version }));
+      const flags = runtime === oldRuntime || process.versions.bun ? ["--config=/dev/null", "--no-env-file"] : [];
+      return spawnSync(runtime, [...flags, saved, "here", ".kuvo-machine-probe"], {
+        env: { ...process.env, HOME: scratch, KUVO_HOME: probe, BUN_BE_BUN: "1", BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0" },
+        stdio: "ignore", timeout: 15_000,
+      }).status === 0;
+    };
+    if (!accepts(steps.length) || (steps.length > 1 && accepts(2_147_483_647))) refuse();
+  } finally {
+    fs.rmSync(scratch, { recursive: true, force: true });
+  }
 }
 
 /** The same runner can be exercised with multiple steps before a second layout ships. */
-export function upgradeFolder(folder: string, ordered: readonly Step[], importLegacy?: () => void): void {
+export function upgradeFolder(folder: string, ordered: readonly Step[], importLegacy?: () => void, beforeSteps?: () => void): void {
   folder = path.resolve(folder);
   const file = path.join(folder, FOLDER_VERSION_FILE);
   const current = ordered.length;
@@ -74,6 +109,7 @@ export function upgradeFolder(folder: string, ordered: readonly Step[], importLe
   const save = (state: Checkpoint) => writeDurablePrivate(file, JSON.stringify(state) + "\n", path.dirname(folder));
   locked(path.join(folder, ".folder-upgrade.lock"), () => {
     const start = checkpoint(file, current);
+    if (start.version < current) beforeSteps?.();
     for (let version = start.version; version < current; version++) {
       const upgradingTo = version + 1;
       if (start.upgradingTo !== upgradingTo) save({ version, upgradingTo });

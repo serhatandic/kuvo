@@ -20,6 +20,7 @@ import { gitPreferencesFormat } from "../areas/git-words";
 import { projectsVersion, readProjectFields } from "../areas/projects";
 import { readWorktreeFields, worktreeRecordsFormat } from "../areas/worktree-records";
 import { UsageSettings } from "../../agents/usage/settings";
+import { syncDurableFile } from "../../shared/files";
 import { isObject } from "../../shared/json";
 import { accountHome, homeFolder, located } from "../home";
 import { mergePersonalities, personalityLibraryVersion, readPersonalities } from "../personalities/library";
@@ -38,10 +39,15 @@ const listOf = (folder: string): string[] => { try { return fs.readdirSync(folde
 const readJSON = (file: string): unknown => { try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return undefined; } };
 const strings = (value: unknown): string[] => (Array.isArray(value) ? value.filter((each): each is string => typeof each === "string") : []);
 const stringMap = (value: unknown): Record<string, string> => (isObject(value) ? Object.fromEntries(Object.entries(value).filter((each): each is [string, string] => typeof each[1] === "string")) : {});
-function writeWhole(file: string, text: string): void {
+function replaceStaged(file: string, bytes: string | Buffer, mode = 0o600): void {
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
   const temporary = `${file}.${process.pid}.new`;
-  fs.writeFileSync(temporary, text, { mode: 0o600 });
+  const fd = fs.openSync(temporary, "w", mode);
+  try {
+    fs.writeFileSync(fd, bytes);
+    fs.fchmodSync(fd, mode);
+    fs.fsyncSync(fd);
+  } finally { fs.closeSync(fd); }
   fs.renameSync(temporary, file);
 }
 
@@ -114,6 +120,8 @@ export function appPreferences(appFolder: string): Prefs {
 // One upgrade's world
 
 interface Upgrade {
+  writeWhole: (file: string, bytes: string | Buffer, mode?: number) => void;
+  seal: (entry: string) => void;
   /** The earlier Kuvo Code's folder (read, never written), and where the box will be. */
   S: string;
   home: string;
@@ -133,7 +141,7 @@ const here = (folder: unknown): string | null => (typeof folder === "string" && 
 /** The projects you opened (`projectFolders`, in the sidebar's order, and `projectSettings`: each
  * one's name, extra folders and Run command) into the box's list (`box/projects.json`). One the
  * box has already keeps its own. Bots' folders were never projects. */
-function projects({ prefs, staged, S }: Upgrade): void {
+function projects({ writeWhole, prefs, staged, S }: Upgrade): void {
   const order = strings(prefs.projectFolders);
   const settings = isObject(prefs.projectSettings) ? prefs.projectSettings : {};
   const bots = (folder: string) => folder.startsWith(path.join(S, "bots") + "/") || folder.includes("/.kuvo-code/bots/");
@@ -164,7 +172,7 @@ function projects({ prefs, staged, S }: Upgrade): void {
 /** The worktrees the app kept for its sessions (`worktrees`) and those it removed
  * (`removedWorktrees`, which say where an archived session belongs) into the box's records
  * (`box/worktrees.json`). One whose folder is gone isn't a worktree any more. */
-function worktrees({ prefs, staged }: Upgrade): void {
+function worktrees({ writeWhole, prefs, staged }: Upgrade): void {
   const kept = isObject(prefs.worktrees) ? prefs.worktrees : {};
   const removed = stringMap(prefs.removedWorktrees);
   if (!Object.keys(kept).length && !Object.keys(removed).length) return;
@@ -193,7 +201,7 @@ function worktrees({ prefs, staged }: Upgrade): void {
 
 /** Your machines (`machines`: each one's address for `ssh`, its other addresses, its key file)
  * into the box's list (`machines.json`), beside those it has. */
-function machines({ prefs, staged }: Upgrade): void {
+function machines({ writeWhole, prefs, staged }: Upgrade): void {
   const listed = [...(Array.isArray(prefs["machines.unsaved"]) ? prefs["machines.unsaved"] : []), ...(Array.isArray(prefs.machines) ? prefs.machines : [])]
     .filter((each): each is Record<string, unknown> => isObject(each) && typeof each.destination === "string" && each.destination.length > 0);
   const file = staged("machines.json");
@@ -225,7 +233,6 @@ function settingsOf(file: string): Record<string, unknown> | null {
   const read = readJSON(file);
   return isObject(read) ? read : null;
 }
-const writeSettings = (file: string, settings: Record<string, unknown>) => writeWhole(file, JSON.stringify(settings, null, 2) + "\n");
 
 /** A key named where the app wrote its files for the engine (its temporary folder), or in the
  * engine's environment as a version before did, named where this box writes them (`box/keys`, as
@@ -240,7 +247,7 @@ function keysNamedIn(value: unknown, keys: string): unknown {
 /** The engine's settings: integrations' keys named where the box writes them now, and Settings ›
  * Git from the app's preferences (the branch prefix, and what commits and pull requests are told),
  * each only where the settings have none, once (`box/git.json` says it's done). */
-function engineSettings({ prefs, staged, home, dropped }: Upgrade): void {
+function engineSettings({ writeWhole, prefs, staged, home, dropped }: Upgrade): void {
   const file = staged("config/opencode/opencode.json");
   const settings = settingsOf(file);
   const account = homeFolder();
@@ -262,21 +269,21 @@ function engineSettings({ prefs, staged, home, dropped }: Upgrade): void {
     for (const [key, value] of offered) if (next[key] === undefined) next = { ...next, [key]: key === "branch_prefix" ? value : value.trim() };
     writeWhole(gitFile, JSON.stringify(gitPreferencesFormat.write({ ...kept, moved: true })));
   }
-  if (JSON.stringify(next) !== JSON.stringify(settings)) writeSettings(file, next);
+  if (JSON.stringify(next) !== JSON.stringify(settings)) writeWhole(file, JSON.stringify(next, null, 2) + "\n");
   // A bot's own settings name its keys the same way.
   for (const bot of listOf(staged("bots"))) {
     const own = path.join(staged("bots"), bot, "workspace", ".opencode", "opencode.json");
     const had = exists(own) ? readJSON(own) : undefined;
     if (!isObject(had)) continue;
     const renamed = keysNamedIn(had, `${shown}/box/keys`);
-    if (JSON.stringify(renamed) !== JSON.stringify(had)) writeSettings(own, renamed as Record<string, unknown>);
+    if (JSON.stringify(renamed) !== JSON.stringify(had)) writeWhole(own, JSON.stringify(renamed, null, 2) + "\n");
   }
 }
 
 /** The box's own settings the app kept: Keep This Mac Awake where it was off (`box/work.json`),
  * Ask First where new sessions started with it (`box/approval.json`), and what the app added to
  * the engine's settings once, so that what you took out stays out (`box/defaults-added`). */
-function boxSettings({ prefs, staged }: Upgrade): void {
+function boxSettings({ writeWhole, prefs, staged }: Upgrade): void {
   const merged = (name: string, change: Record<string, unknown>) => {
     const file = staged(name);
     const had = readJSON(file);
@@ -306,7 +313,7 @@ function boxSettings({ prefs, staged }: Upgrade): void {
 /** "Let my devices connect" as this Mac's link had it set (`phoneLink`, and a relay of your own,
  * `phoneLink.relay`), kept as the box keeps what its app said (`run/mac-link.json`). Never set, it
  * isn't written: the box's own start is on. A copy's home takes no relay it wasn't given. */
-function link({ prefs, staged, home }: Upgrade): void {
+function link({ writeWhole, prefs, staged, home }: Upgrade): void {
   const set = typeof prefs.phoneLink === "boolean";
   const own = typeof prefs["phoneLink.relay"] === "string" ? (prefs["phoneLink.relay"] as string).replace(/\/+$/, "") : "";
   let relay = "";
@@ -322,7 +329,7 @@ function link({ prefs, staged, home }: Upgrade): void {
 
 /** Someone who used an earlier Kuvo Code has had its first run: the box they move into says so
  * (`run/welcomed.json`, "Your setup"), so they land in their sessions, not in the Welcome's steps. */
-function welcomed({ staged }: Upgrade): void {
+function welcomed({ writeWhole, staged }: Upgrade): void {
   const file = staged("run/welcomed.json");
   // No time in it: a move run again writes the same file.
   if (!exists(file)) writeWhole(file, JSON.stringify(welcomeFormat.write({ moved: true })));
@@ -342,7 +349,7 @@ function listedBots(S: string): OldBot[] {
  * none), its session, where it works, and that it runs with the coding agents, each where it's
  * missing. (The list itself moves beside the bots' folder, `bots.json`, where the box takes a
  * job kept only there as it starts.) */
-function bots({ S, staged, prefs, dropped }: Upgrade): void {
+function bots({ writeWhole, S, staged, prefs, dropped }: Upgrade): void {
   if (exists(path.join(S, "bots.json")) && !Array.isArray(readJSON(path.join(S, "bots.json")))) dropped.push("The earlier Kuvo Code's list of bots couldn't be read. Bots made with a version before 0.7 may be missing: their folders are brought along, in ~/.kuvo-code/bots.");
   // (Before 0.7 a bot was described only in this list: one on a machine has no description there.)
   const theirs = prefs.calibration === undefined ? listedBots(S).filter(bot => bot.machine).length : 0;
@@ -369,7 +376,7 @@ function bots({ S, staged, prefs, dropped }: Upgrade): void {
 
 /** The personalities you made (`personalities.json`, and from 0.8.0-beta.1 those you removed) met
  * with the box's library (`bots/personalities.json`), by its own rule. */
-function personalities({ S, staged }: Upgrade): void {
+function personalities({ writeWhole, S, staged }: Upgrade): void {
   const made = readJSON(path.join(S, "personalities.json")), removed = readJSON(path.join(S, "personalities-removed.json"));
   if (!Array.isArray(made) && !Array.isArray(removed)) return;
   const file = staged("bots/personalities.json");
@@ -408,7 +415,7 @@ function chatMessages(file: string): Record<string, unknown>[] {
  * is taken out of the chat, so that bot's next turn makes one where it lives. What a bot was
  * still to forget goes with them (`groupMemoryWaiting` → `groups/pending-memory.json`). A chat
  * that's there already is left as it is. */
-function groupChats({ S, prefs, staged, dropped }: Upgrade): void {
+function groupChats({ writeWhole, seal, S, prefs, staged, dropped }: Upgrade): void {
   const root = staged("groups");
   const waiting = isObject(prefs.groupMemoryWaiting) ? prefs.groupMemoryWaiting : null;
   if (waiting) {
@@ -459,9 +466,11 @@ function groupChats({ S, prefs, staged, dropped }: Upgrade): void {
       seats++;
     }
     writeWhole(path.join(folder, "messages.json"), JSON.stringify(messages, null, 2));
-    writeWhole(path.join(folder, "group.json"), JSON.stringify({ kuvo: 1, status: held.has(chat.id) ? "held" : "active", group }, null, 2));
     // (Its old file, cloned with the folder, isn't the bridge's: only the folder is.)
     fs.rmSync(path.join(root, `${chat.id}.json`), { force: true });
+    seal(root);
+    // Metadata is also the replay guard for this chat. Publish it after its messages are durable.
+    writeWhole(path.join(folder, "group.json"), JSON.stringify({ kuvo: 1, status: held.has(chat.id) ? "held" : "active", group }, null, 2));
   }
   if (failed) dropped.push(`${failed === 1 ? "One group chat" : `${failed} group chats`} couldn't be read, and ${failed === 1 ? "wasn't" : "weren't"} brought along. ${failed === 1 ? "It's" : "They're"} still in the earlier Kuvo Code's folder (groups.json).`);
   if (unread) dropped.push(`${unread === 1 ? "One message" : `${unread} messages`} in your group chats couldn't be read, and ${unread === 1 ? "wasn't" : "weren't"} brought along.`);
@@ -474,7 +483,7 @@ function groupChats({ S, prefs, staged, dropped }: Upgrade): void {
  * 0.8.0-beta.1 the letters on their way and those seen (`agent-letters.json`,
  * `agent-letters-seen.json`), into the box's outbox, for the machines whose boxes talk to others
  * (as the app's own hand-over went: `phone-link.json` says which). The rest are said. */
-function letters({ S, staged, dropped }: Upgrade): void {
+function letters({ writeWhole, S, staged, dropped }: Upgrade): void {
   const waiting = readJSON(path.join(S, "agent-messages.json")), mailed = readJSON(path.join(S, "agent-letters.json")), seen = readJSON(path.join(S, "agent-letters-seen.json"));
   if (!Array.isArray(waiting) && !Array.isArray(mailed) && !isObject(seen)) return;
   const hosts = readJSON(path.join(S, "phone-link.json"));
@@ -514,7 +523,7 @@ function letters({ S, staged, dropped }: Upgrade): void {
 /** The usage panel's settings the app kept (how its cards are laid out, total spend, its
  * notifications, Codex's fallback model) into the box's (`agents/usage/settings.json`), by the
  * box's own import: once, and only the parts no box has set. */
-function usage({ prefs, staged }: Upgrade): void {
+function usage({ seal, prefs, staged }: Upgrade): void {
   const parts: Record<string, unknown> = {};
   const placed = prefs["openusage.layout.v1"];
   if (Array.isArray(placed)) {
@@ -536,20 +545,17 @@ function usage({ prefs, staged }: Upgrade): void {
   const file = path.join(staged("agents"), "usage", "settings.json");
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
   new UsageSettings(file).take(parts);
+  if (exists(file)) seal(file);
 }
 
 /** The engine's plugin, which the earlier Kuvo Code wrote into its settings' folder at each start
  * (its own version's): the release's, as every box has it (`config/opencode/plugins/kuvo-code.js`,
  * one of a release's files), in its place. */
-function enginePlugin(release: string, { staged }: Upgrade): void {
+function enginePlugin(release: string, { staged, writeWhole }: Upgrade): void {
   const name = "config/opencode/plugins/kuvo-code.js";
   let brought: Buffer;
   try { brought = fs.readFileSync(path.join(release, name)); } catch { return; }
-  const file = staged(name);
-  const temporary = `${file}.${process.pid}.new`;
-  fs.writeFileSync(temporary, brought, { mode: 0o644 });
-  fs.chmodSync(temporary, 0o644);
-  fs.renameSync(temporary, file);
+  writeWhole(staged(name), brought, 0o644);
 }
 
 // What isn't carried
@@ -593,7 +599,17 @@ function said({ S, prefs, dropped }: Upgrade): void {
  * stops the move (it goes back): nothing is left half brought along. */
 export function runUpgrades(run: RunPlan, move: MoveContext): string[] {
   const made = new Set<string>();
+  const seal = (entry: string) => {
+    const placement = move.placements.find(each => entry === each.staged || entry.startsWith(each.staged + path.sep));
+    if (!placement) throw new Error("An import attempted to sync outside staging");
+    syncDurableFile(entry, path.dirname(placement.staged));
+  };
   const upgrade: Upgrade = {
+    seal,
+    writeWhole(file, bytes, mode) {
+      replaceStaged(file, bytes, mode);
+      seal(file);
+    },
     S: move.appFolder,
     home: move.home,
     prefs: appPreferences(move.appFolder),
@@ -620,6 +636,11 @@ export function runUpgrades(run: RunPlan, move: MoveContext): string[] {
   for (const each of [projects, worktrees, machines, engineSettings, boxSettings, link, welcomed, bots, personalities, groupChats, letters, usage, said]) each(upgrade);
   enginePlugin(run.release, upgrade);
   // (A place nothing was written in isn't made: a Mac with no bots gets no bots' folder from this.)
-  for (const name of madeHere) if (name !== "box") try { fs.rmdirSync(upgrade.staged(name)); } catch {}
+  for (const name of places) {
+    const folder = upgrade.staged(name);
+    if (madeHere.includes(name) && name !== "box") try { fs.rmdirSync(folder); } catch {}
+    if (exists(folder)) seal(folder);
+    else syncDurableFile(path.dirname(folder));
+  }
   return upgrade.dropped;
 }

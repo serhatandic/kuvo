@@ -286,14 +286,25 @@ export function takeUpdateLock(): boolean {
 // stopped first, the older started after. A keeper put back from before the keeper kept the coding
 // agents' bridge itself (one without `bridge)`) stops the engine and its bridge and starts them
 // again, as it always did: that bridge only ever starts with its engine.
-function keepForRollback(files: string[], engine: string | null, bundles: ReadonlySet<string> = new Set()): void {
+function keepForRollback(files: string[], engine: string | null, bundles: ReadonlySet<string>, keeper: string): void {
   fs.rmSync(ROLLBACK, { recursive: true, force: true });
   fs.mkdirSync(path.join(ROLLBACK, "files"), { recursive: true, mode: 0o700 });
+  const guard = /^if \[ "\$\{1:-\}" = check-rollback-layout \]/m.test(fs.readFileSync(keeper, "utf8"));
+  let checkLayout = 'test ! -e "$K/folder-version.json" && test ! -L "$K/folder-version.json"';
+  if (guard) {
+    fs.copyFileSync(keeper, path.join(ROLLBACK, "layout-guard.sh"));
+    checkLayout = 'sh "$B/layout-guard.sh" check-rollback-layout "$K"';
+  } else if (fs.lstatSync(path.join(K, "folder-version.json"), { throwIfNoEntry: false })) {
+    // A release with an older keeper can restore only the layout that existed before the trial.
+    fs.copyFileSync(path.join(K, "folder-version.json"), path.join(ROLLBACK, "folder-version.json"));
+    checkLayout = 'cmp -s "$K/folder-version.json" "$B/folder-version.json"';
+  }
   const lines = [
     "#!/bin/sh",
     `K=${quote(K)}; B=${quote(ROLLBACK)}`,
     `p=$(cat "$K/run/.updating/pid" 2>/dev/null)`,
     `if [ -n "$p" ] && [ "$p" != "\${KUVO_UPDATER:-}" ] && kill -0 "$p" 2>/dev/null && { if [ -d /proc ]; then grep -q kuvo-link "/proc/$p/cmdline" 2>/dev/null; else ps -ww -o command= -p "$p" 2>/dev/null | grep -q kuvo-link; fi; }; then exit 0; fi`,
+    `{ ${checkLayout}; } || exit 1`,
     `halt=; if ! grep -q '^bridge)' "$B/files/bin/kuvo-start" 2>/dev/null; then halt=stop; elif ${engine ? `[ ! -f "$B/engine-started" ]` : "false"}; then halt=engine-stop; grep -q '^engine-stop)' "$K/bin/kuvo-start" 2>/dev/null || halt=stop; fi`,
     `if [ -n "$halt" ]; then sh "$K/bin/kuvo-start" "$halt" >/dev/null 2>&1 || exit 1; fi`,
   ];
@@ -686,7 +697,7 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
     // What's there kept, and how to put it back, before anything changes: a swap the update doesn't
     // get past (the machine going down) is put back too.
     const newerEngine = otherEngine && newerVersion(manifest.engine, previous?.version);
-    keepForRollback(files, newerEngine ? manifest.engine : null, new Set(bundles));
+    keepForRollback(files, newerEngine ? manifest.engine : null, new Set(bundles), path.join(stage, "files", "bin", "kuvo-start"));
     noteUpdate({ trial: { from: before, to: manifest.version, at: clock() }, running: null });
     // (A rollback's count from a trial an older Kuvo ended: never this one's.)
     fs.rmSync(path.join(RUN, "update-restore"), { force: true });

@@ -23,7 +23,7 @@ import { movedFromOldApp } from "../rehome/moved";
 import { tellGone } from "../mac/link";
 import { LIST_FILE, localDestination, peerAtDestination, savedMachines } from "../mac/machines";
 import { setMacPeers } from "../mac/routes";
-import { proposeLeadership, standbyHere } from "../setup/handover";
+import { standbyHere } from "../setup/handover";
 import { leadershipOf, PRIMARY_UNLINK, STANDBY_UNLINK } from "../setup/leadership";
 import { followedSetup, requiresStandby } from "../setup/record";
 import { macName, mainElsewhere } from "../setup/main-only";
@@ -197,18 +197,16 @@ export async function removeComputerHere(key: string, pendingOnly = false): Prom
   const setup = followedSetup(link);
   if (!pendingOnly && setup?.role === "primary" && (setup.standby?.key === key
     || (!setup.standby && leadershipOf(link)?.body.retiredStandby === key))) {
-    const replacement = peersOf(link).find(peer => peer.key !== key && takesForwarded(peer.key, "setup.shared-saves"));
-    if (!replacement) return answer(409, { message: STANDBY_UNLINK });
-    if (setup.standby) {
-      const retired = await proposeLeadership({ setup: setup.id, epoch: setup.epoch }, setup.primary, null, undefined, undefined, key);
-      if (retired.status !== 202) return answer(409, { message: "The standby must answer before it can be removed." });
+    const candidates = peersOf(link).filter(peer => peer.key !== key && takesForwarded(peer.key, "setup.shared-saves"));
+    if (!candidates.length) return answer(409, { message: STANDBY_UNLINK });
+    let outcome: Acted = answer(409, { message: STANDBY_UNLINK });
+    for (const candidate of candidates) {
+      outcome = await standbyHere(candidate.key, { setup: setup.id, epoch: setup.epoch });
+      const current = readLink();
+      if (outcome.status === 202) break;
+      if (current?.leadershipPending || current?.setup?.id !== setup.id || current.setup.epoch !== setup.epoch) return outcome;
     }
-    const after = followedSetup(readLink());
-    if (!after || after.id !== setup.id || after.role !== "primary") return answer(409, { message: "The setup changed. Refresh it and try again." });
-    if (!after.standby) {
-      const selected = await standbyHere(replacement.key, { setup: after.id, epoch: after.epoch });
-      if (selected.status !== 202 && !readLink()?.setup?.standby) return selected;
-    }
+    if (outcome.status !== 202) return outcome;
   }
   return finishRemoval(prepareRemoval(key, pendingOnly));
 }

@@ -81,6 +81,7 @@ import { pushRows } from "./work/elsewhere";
 import { pushNumbers } from "./work-queue/numbers";
 import { startTakeover } from "./setup/takeover";
 import { initializeMachineSetup, noteSetupNow, settleOwnSetup } from "./setup/lead";
+import { requiresStandby } from "./setup/record";
 import { PRIMARY_UNLINK } from "./setup/leadership";
 import { macName, mainElsewhere, pairElsewhere } from "./setup/main-only";
 import { writeCard } from "./setup/card";
@@ -107,6 +108,7 @@ import { announce, forgetMacsAgents, refreshOwn } from "./peers/agents";
 import { forgetOldMacs, KEY, leaveMac, macsOf, noteOnline, ownKey, peersOf, takeLegacyPeers } from "./peers/known";
 import { peerMail, receiveMail } from "./peers/mail";
 import { tellSeatPeers, watchSeats, whereChanged } from "./peers/seats";
+import { savePersonalityLibrary } from "./areas/personalities";
 import { changePersonalities, mergePersonalities, readPersonalities } from "./personalities/library";
 import { takePersonalities } from "./personalities/take";
 import { confirmPhone, foldPhones, newPairingToken, PAIRING_MINUTES, pairingLink } from "./phones";
@@ -597,7 +599,7 @@ async function run(): Promise<void> {
     const host: LinkHost = new LinkHost({
       key: Buffer.from(link!.key!, "base64url"),
       hello: { v: 1, kind: "machine", name: link!.name || os.hostname(), app: BRIDGE_VERSION, engine: engine.version ?? null },
-      authorize: (key, hello, address) => authorizeDesktopConnection(host, key, hello, address),
+      authorize: (key, hello, address, signal) => authorizeDesktopConnection(host, key, hello, address, signal),
       confirmed: confirmPhone,
       mail: (_from, body) => receiveMail(body, host, (sender, payload) => peerMail(sender, payload, host, peerPlaces), (mac, given, at) => hold.attend(`mac:${mac}`, given, at)),
       handle: engineHandler(readEngineFile, { name: link!.name || os.hostname() }, readBridgeFile, changed => host.keepOnly(new Set((changed.phones ?? []).map(phone => phone.key))), hold),
@@ -743,10 +745,23 @@ async function box(command: string): Promise<void> {
       // computers if this one changed.
       let given: GivenLibrary | null = null;
       try { given = JSON.parse((await input()) || "null"); } catch {}
-      const before = JSON.stringify(readPersonalities());
-      const met = changePersonalities(library => mergePersonalities(library, given));
-      if (JSON.stringify(met) !== before) noteDocsChanged();
-      return say({ status: 200, ...met });
+      let legacy: { library: ReturnType<typeof readPersonalities>; changed: boolean } | undefined;
+      let waiting = false;
+      updateLink(link => {
+        if (requiresStandby(link?.setup)) return null;
+        if (link?.leadershipPending) { waiting = true; return null; }
+        const before = JSON.stringify(readPersonalities());
+        const library = changePersonalities(current => mergePersonalities(current, given));
+        legacy = { library, changed: JSON.stringify(library) !== before };
+        return null;
+      });
+      if (waiting) return say({ status: 503, message: LEADERSHIP_WAIT });
+      if (legacy) {
+        if (legacy.changed) noteDocsChanged();
+        return say({ status: 200, ...legacy.library });
+      }
+      const saved = await savePersonalityLibrary(given);
+      return say({ status: saved.status, ...(saved.status === 200 ? saved.library : saved.value) });
     }
     default:
       console.error("Usage: kuvo-link.js box adopt | read | change | key <name> | route | reconnect <server> | personalities | update-status | update-now");
@@ -1106,6 +1121,7 @@ async function setup(): Promise<void> {
     key: publicOf(Buffer.from(link.key!, "base64url")).toString("base64url"),
     // Talks to other boxes itself (PROTOCOL.md, "Peers").
     peers: true,
+    standbyAcceptance: true,
     // Its signing key, and the documents it has, for the Mac to take (PROTOCOL.md, "Documents").
     sign: ownSign(link),
     docs: setupDocs(link),
