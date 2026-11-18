@@ -477,7 +477,8 @@ fn accounts_lists_the_agents_and_providers_as_the_box_says_them(cx: &mut TestApp
     assert!(shown(cx, "menu-item-Sign In Again…") && !shown(cx, "menu-item-Remove Account…"));
     cx.simulate_keystrokes("escape");
     click(cx, "account-github-copilot-menu");
-    assert!(shown(cx, "menu-item-Disconnect…") && !shown(cx, "menu-item-Sign In Again…"));
+    // An active plan offers both refreshing the current sign-in and disconnecting it.
+    assert!(shown(cx, "menu-item-Disconnect…") && shown(cx, "menu-item-Sign In Again…"));
     cx.simulate_keystrokes("escape");
     // The coding agents not running: the box's words, and the engine's accounts still.
     stand_in.agents_running(false);
@@ -742,13 +743,13 @@ fn an_agent_signs_out_and_an_added_account_is_removed_asked_first(cx: &mut TestA
     let stand_in = StandIn::at(Replies::Never, NOW);
     let (workspace, cx) = open(cx, stand_in.clone());
     let view = section(&workspace, cx, "Accounts");
-    // The agent's own sign-in: Sign Out, asked first in the box's words (Codex's is yours, so
-    // Terminal's goes too, and it says so). Nothing's sent until it's confirmed.
+    // The agent's own sign-in: Sign Out, asked first in the box's words. Codex shares that
+    // sign-in across apps. Nothing is sent until it's confirmed.
     click(cx, "account-codex-cli-menu");
     click(cx, "menu-item-Sign Out…");
     let (title, message, button) = view.read_with(cx, |view, _| view.confirm_words()).expect("Sign Out asks first");
     assert_eq!((title.as_str(), button.as_str()), ("Sign out of Codex?", "Sign Out"));
-    assert!(message.contains("in Terminal too"), "{message}");
+    assert!(message.contains("in other apps that use the same sign-in"), "{message}");
     assert!(stand_in.seen_at("POST", "kuvo/agents/api/integration/codex-cli/disconnect").is_empty());
     click(cx, "confirm-go");
     assert_eq!(stand_in.seen_at("POST", "kuvo/agents/api/integration/codex-cli/disconnect").len(), 1);
