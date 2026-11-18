@@ -30,7 +30,15 @@ async function standIn(routes) {
     if (request.headers["x-opencode-directory"]) folders.push(decodeURIComponent(request.headers["x-opencode-directory"]));
     asked.push(request.url);
     const folder = request.headers["x-opencode-directory"] ? decodeURIComponent(request.headers["x-opencode-directory"]) : undefined;
-    const value = typeof routes === "function" ? routes(request.url, folder) : routes[request.url];
+    const url = new URL(request.url, "http://127.0.0.1");
+    const details = url.pathname === "/api/model" && url.searchParams.get("details") === "1";
+    if (details) {
+      url.searchParams.delete("details");
+      url.searchParams.delete("refresh");
+    }
+    const route = url.pathname + url.search;
+    const listed = typeof routes === "function" ? routes(route, folder) : routes[route];
+    const value = details && Array.isArray(listed) ? { models: listed, unavailable: [], generations: {} } : listed;
     const status = value === undefined ? 404 : value === FAILS ? 500 : 200;
     response.writeHead(status, { "content-type": "application/json" });
     response.end(JSON.stringify(status !== 200 ? { message: "No such thing." } : { data: value }));

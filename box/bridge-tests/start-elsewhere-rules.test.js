@@ -991,7 +991,7 @@ test("a lead on a model its coding agent keeps out of its picker (Codex's hidden
   const visible = [{ id: "gpt-5.5", providerID: "codex-cli", name: "GPT-5.5" }];
   const agents = await engine({}, {
     "/api/model": visible,
-    "/api/model?hidden=1": [...visible, { id: "gpt-5.1-codex-mini", providerID: "codex-cli", name: "GPT-5.1 Codex Mini", hidden: true }],
+    "/api/model?hidden=1&details=1": { models: [...visible, { id: "gpt-5.1-codex-mini", providerID: "codex-cli", name: "GPT-5.1 Codex Mini", hidden: true }] },
     "/api/integration": [codexAccount],
     "/api/kuvo/auto": { lists: [] },
   });
