@@ -12387,6 +12387,12 @@ var init_phones = __esm(() => {
   PAIRING = /^[A-Za-z0-9_-]{0,32}$/;
 });
 
+// box/src/shared/work-queue-owner.ts
+var YOURS = "usr_you", OWNER;
+var init_work_queue_owner = __esm(() => {
+  OWNER = /^(?:ses_[A-Za-z0-9]{1,60}|grp_[a-z0-9]{1,60}|usr_you)$/;
+});
+
 // box/node_modules/dequal/dist/index.mjs
 var init_dist = () => {};
 
@@ -20853,13 +20859,13 @@ function issueAt(given) {
     return null;
   return { host: GITHUB_HOST, owner, repo, number };
 }
-var GITHUB_HOST = "github.com", OWNER = "[A-Za-z0-9](?:[A-Za-z0-9_-]{0,38})", REPO = "[A-Za-z0-9_.-]{1,100}", STORED, PAGE, refText = (at) => `gh:${at.owner}/${at.repo}#${at.number}`, sourceKey = (at) => `${at.host}/${at.owner}/${at.repo}#${at.number}`.toLowerCase(), sourceKeyOf = (source) => {
+var GITHUB_HOST = "github.com", OWNER2 = "[A-Za-z0-9](?:[A-Za-z0-9_-]{0,38})", REPO = "[A-Za-z0-9_.-]{1,100}", STORED, PAGE, refText = (at) => `gh:${at.owner}/${at.repo}#${at.number}`, sourceKey = (at) => `${at.host}/${at.owner}/${at.repo}#${at.number}`.toLowerCase(), sourceKeyOf = (source) => {
   const at = issueAt(source.ref);
   return at ? sourceKey(at) : `${source.kind}:${source.ref}`.toLowerCase();
 }, sameSource = (a, b) => sourceKeyOf(a) === sourceKeyOf(b) || a.id !== undefined && a.id === b.id;
 var init_sources = __esm(() => {
-  STORED = new RegExp(`^gh:(${OWNER})/(${REPO})#(\\d{1,10})$`);
-  PAGE = new RegExp(`^https?://(?:www\\.)?github\\.com/(${OWNER})/(${REPO})/(?:issues|pull)/(\\d{1,10})(?:[/?#][^\\s]*)?$`, "i");
+  STORED = new RegExp(`^gh:(${OWNER2})/(${REPO})#(\\d{1,10})$`);
+  PAGE = new RegExp(`^https?://(?:www\\.)?github\\.com/(${OWNER2})/(${REPO})/(?:issues|pull)/(\\d{1,10})(?:[/?#][^\\s]*)?$`, "i");
 });
 
 // box/src/link/work-queue/statuses.ts
@@ -21206,7 +21212,7 @@ function itemOf(given, owner) {
     links: list(given.links, (each) => typeof each.url === "string"),
     sessions: list(given.sessions, (each) => typeof each.session === "string" && SESSION2.test(each.session)),
     ...Array.isArray(given.handed) ? { handed: list(given.handed, (each) => typeof each.from === "string" && typeof each.to === "string") } : {},
-    ...typeof given.handedBy === "string" && OWNER2.test(given.handedBy) ? { handedBy: given.handedBy } : {},
+    ...typeof given.handedBy === "string" && OWNER.test(given.handedBy) ? { handedBy: given.handedBy } : {},
     ...typeof given.wanted === "number" && Number.isInteger(given.wanted) && given.wanted > 0 ? { wanted: given.wanted } : {},
     ...typeof given.importedAs === "number" && Number.isInteger(given.importedAs) && given.importedAs > 0 ? { importedAs: given.importedAs } : {},
     ...given.backGranted === true ? { backGranted: true } : {},
@@ -21295,10 +21301,10 @@ function readQueueSettingAside(owner, now = Date.now()) {
 }
 function owners() {
   migratedToRead();
-  return listOf(QUEUES2).filter((name) => name.endsWith(".json")).map((name) => name.slice(0, -5)).filter((owner) => OWNER2.test(owner));
+  return listOf(QUEUES2).filter((name) => name.endsWith(".json")).map((name) => name.slice(0, -5)).filter((owner) => OWNER.test(owner));
 }
 function readKeptQueue(owner) {
-  if (!KEPT_OWNER.test(owner) || OWNER2.test(owner))
+  if (!KEPT_OWNER.test(owner) || OWNER.test(owner))
     return null;
   let kept;
   try {
@@ -21359,7 +21365,7 @@ class Book {
     return queue;
   }
   queue(owner) {
-    if (!OWNER2.test(owner) && !this.queues.has(owner)) {
+    if (!OWNER.test(owner) && !this.queues.has(owner)) {
       const kept = fs47.existsSync(fileOf2(owner)) ? readKeptQueue(owner) : { owner, items: [] };
       if (!kept)
         throw new Refusal(`${owner}'s Work Queue was kept by a newer Kuvo Code, in a way this one can't read: it's left as it is.`);
@@ -21369,7 +21375,7 @@ class Book {
     return this.load(owner);
   }
   items() {
-    return [...this.queues.values()].filter((queue) => OWNER2.test(queue.owner)).flatMap((queue) => queue.items);
+    return [...this.queues.values()].filter((queue) => OWNER.test(queue.owner)).flatMap((queue) => queue.items);
   }
   find(ref) {
     return this.findAll(ref)[0] ?? null;
@@ -21472,7 +21478,7 @@ function noteHanded(item, from, to, at) {
   item.handedBy ??= from;
   item.handed = [...item.handed ?? [], { from, to, at }].slice(-MOST_HANDED);
 }
-var WORK_QUEUE2, QUEUES2, FILES2, LOCK3, YOURS = "usr_you", OWNER2, KEPT_OWNER, ITEM_ID, SESSION2, KEPT_REMOVED, MOST_ITEMS = 2000, MOST_TITLE = 200, MOST_BODY = 1e5, MOST_NOTE = 20000, MOST_NOTES = 200, MOST_FILE = 25000000, MOST_FILES = 50, MOST_HANDED_FILES = 4000000, MOST_LINKS = 50, MOST_EVENTS = 50, MOST_HANDED = 20, whoWords = (who) => {
+var WORK_QUEUE2, QUEUES2, FILES2, LOCK3, KEPT_OWNER, ITEM_ID, SESSION2, KEPT_REMOVED, MOST_ITEMS = 2000, MOST_TITLE = 200, MOST_BODY = 1e5, MOST_NOTE = 20000, MOST_NOTES = 200, MOST_FILE = 25000000, MOST_FILES = 50, MOST_HANDED_FILES = 4000000, MOST_LINKS = 50, MOST_EVENTS = 50, MOST_HANDED = 20, whoWords = (who) => {
   const given = who;
   if (given.user === true)
     return "the user";
@@ -21494,7 +21500,7 @@ var WORK_QUEUE2, QUEUES2, FILES2, LOCK3, YOURS = "usr_you", OWNER2, KEPT_OWNER, 
   const kept = Object.fromEntries(Object.entries(given).filter(([key, value]) => key.length <= 40 && (typeof value === "string" ? value.length <= 200 : typeof value === "number" || typeof value === "boolean")).slice(0, 10));
   return Object.keys(kept).length ? kept : null;
 }, FILE_NAME, KNOWN, handingOf = (given) => {
-  if (!isObject(given) || typeof given.id !== "string" || !/^wqh_[A-Za-z0-9_-]{8,40}$/.test(given.id) || typeof given.to !== "string" || !OWNER2.test(given.to) || typeof given.key !== "string" || typeof given.at !== "number")
+  if (!isObject(given) || typeof given.id !== "string" || !/^wqh_[A-Za-z0-9_-]{8,40}$/.test(given.id) || typeof given.to !== "string" || !OWNER.test(given.to) || typeof given.key !== "string" || typeof given.at !== "number")
     return null;
   return { id: given.id, to: given.to, key: given.key, name: typeof given.name === "string" ? given.name : "", at: given.at, by: whoOf(given.by) ?? { user: true }, ...typeof given.sent === "number" ? { sent: given.sent } : {}, ...typeof given.missing === "number" ? { missing: given.missing } : {} };
 }, MOST_EVENT = 2000, eventKept = (each) => typeof each.at === "number" && Number.isFinite(each.at) && typeof each.kind === "string" && each.kind.length > 0 && each.kind.length <= 40 && whoOf(each.by) !== null && JSON.stringify(each.by).length <= 500 && JSON.stringify(each).length <= MOST_EVENT, saidUnmoved = false, UnreadableQueue, readQueueOrNone = (owner) => {
@@ -21507,6 +21513,7 @@ var WORK_QUEUE2, QUEUES2, FILES2, LOCK3, YOURS = "usr_you", OWNER2, KEPT_OWNER, 
   }
 }, readAll = () => onceEach(owners().map(readQueueOrNone)), Refusal, QueueSetAside, matching2 = (items, ref) => items.filter((item) => refNames(ref, item)).sort((a, b) => Number(Boolean(a.removed)) - Number(Boolean(b.removed))), refNames = (ref, item) => ("id" in ref) ? item.id === ref.id : ("number" in ref) ? item.number === ref.number : Boolean(item.source) && sourceKeyOf(item.source) === ref.source, filesOf2 = (item) => path48.join(FILES2, item);
 var init_store = __esm(() => {
+  init_work_queue_owner();
   init_format_version();
   init_files();
   init_relations();
@@ -21515,11 +21522,11 @@ var init_store = __esm(() => {
   init_sources();
   init_migrate();
   init_statuses();
+  init_work_queue_owner();
   WORK_QUEUE2 = path48.join(RUN, "work-queue");
   QUEUES2 = path48.join(WORK_QUEUE2, "queues");
   FILES2 = path48.join(WORK_QUEUE2, "files");
   LOCK3 = path48.join(WORK_QUEUE2, ".lock");
-  OWNER2 = /^(?:ses_[A-Za-z0-9]{1,60}|grp_[a-z0-9]{1,60}|usr_you)$/;
   KEPT_OWNER = /^[a-z]{2,10}_[A-Za-z0-9_-]{1,80}$/;
   ITEM_ID = /^wqi_[A-Za-z0-9_-]{20}$/;
   SESSION2 = /^ses_[A-Za-z0-9]{1,60}$/;
@@ -21739,7 +21746,7 @@ var init_labels = __esm(() => {
 import fs48 from "node:fs";
 import path50 from "node:path";
 function toldItemOf(given, latest = Infinity) {
-  if (!isObject(given) || typeof given.id !== "string" || !ITEM_ID.test(given.id) || typeof given.owner !== "string" || !OWNER2.test(given.owner))
+  if (!isObject(given) || typeof given.id !== "string" || !ITEM_ID.test(given.id) || typeof given.owner !== "string" || !OWNER.test(given.owner))
     return null;
   const title = words2(given.title, 200);
   const status = typeof given.status === "string" && STATUS_ID.test(given.status) ? given.status : "todo";
@@ -21771,13 +21778,13 @@ function toldItemOf(given, latest = Infinity) {
     ...lastNote ? { lastNote } : {},
     fileCount: count(given.fileCount),
     linkCount: count(given.linkCount),
-    ...typeof given.handedBy === "string" && OWNER2.test(given.handedBy) ? { handedBy: given.handedBy } : {},
-    ...Array.isArray(given.handedFrom) ? { handedFrom: given.handedFrom.filter((each) => typeof each === "string" && OWNER2.test(each)).slice(0, 20) } : {},
+    ...typeof given.handedBy === "string" && OWNER.test(given.handedBy) ? { handedBy: given.handedBy } : {},
+    ...Array.isArray(given.handedFrom) ? { handedFrom: given.handedFrom.filter((each) => typeof each === "string" && OWNER.test(each)).slice(0, 20) } : {},
     ...Array.isArray(given.mentionTargets) ? { mentionTargets: [...new Set(given.mentionTargets.filter((id) => typeof id === "string" && ITEM_ID.test(id)))] } : {},
     ...source ? { source } : {},
     ...seen ? { seen } : {},
     ...keptIn ? { keptIn } : {},
-    ...isObject(given.handing) && typeof given.handing.to === "string" && OWNER2.test(given.handing.to) ? { handing: { to: given.handing.to, name: words2(given.handing.name, 100) } } : {},
+    ...isObject(given.handing) && typeof given.handing.to === "string" && OWNER.test(given.handing.to) ? { handing: { to: given.handing.to, name: words2(given.handing.name, 100) } } : {},
     created: stamp2(given.created),
     updated: stamp2(given.updated),
     ...typeof given.doneAt === "number" ? { doneAt: time(given.doneAt) } : {}
@@ -21854,7 +21861,7 @@ function patchTold(key, id, item, deleted) {
   }
 }
 var TOLD, MOST_TOLD = 1500, MOST_TOLD_DONE = 100, fileOf3 = (key) => path50.join(TOLD, `${key}.json`), SESSION3, KIND = (value) => value === "mac" || value === "machine" ? value : null, count = (value) => typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : 0, time = (value) => typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0, whole = (value, most = 999999) => typeof value === "number" && Number.isInteger(value) && value > 0 && value <= most ? value : undefined, words2 = (value, most) => typeof value === "string" ? cut(plainName(value), most) : "", whoOf2 = (value) => whoOf(value) ?? { name: "someone else" }, stamp2 = (value) => isObject(value) ? { at: time(value.at), by: whoOf2(value.by) } : { at: 0, by: whoOf2(null) }, ownerOf2 = (given) => {
-  if (!isObject(given) || typeof given.owner !== "string" || !OWNER2.test(given.owner))
+  if (!isObject(given) || typeof given.owner !== "string" || !OWNER.test(given.owner))
     return null;
   const kind = given.kind === "bot" || given.kind === "group" || given.kind === "you" ? given.kind : "session";
   const bot = isObject(given.bot) && typeof given.bot.id === "string" && /^bot_[A-Za-z0-9]{1,60}$/.test(given.bot.id) ? { id: given.bot.id, name: words2(given.bot.name, 100) } : undefined;
@@ -22291,7 +22298,7 @@ function numberWaiting(book, primary, answer, options = {}) {
   const used = [];
   if (answer) {
     for (const item of book.items()) {
-      if (item.wanted === undefined || item.backGranted || item.source || !OWNER2.test(item.owner) || !inRanges(answer.claimed, item.wanted))
+      if (item.wanted === undefined || item.backGranted || item.source || !OWNER.test(item.owner) || !inRanges(answer.claimed, item.wanted))
         continue;
       const kept = inRanges(answer.granted, item.wanted);
       if (item.number !== undefined) {
@@ -22316,7 +22323,7 @@ function numberWaiting(book, primary, answer, options = {}) {
     changeNumbers((kept) => {
       kept.used = joined(kept.used ?? [], rangesOf2(used)).slice(-MOST_RANGES);
     }, options.file);
-  const waiting = book.items().filter((item) => item.number === undefined && item.wanted === undefined && !item.source && OWNER2.test(item.owner)).sort((a, b) => a.created.at - b.created.at);
+  const waiting = book.items().filter((item) => item.number === undefined && item.wanted === undefined && !item.source && OWNER.test(item.owner)).sort((a, b) => a.created.at - b.created.at);
   for (const item of waiting) {
     const number = takeNumber(primary, options);
     if (number === null)
@@ -22375,7 +22382,7 @@ function restoreNumbers(book, now) {
   return used;
 }
 function reclaimWaiting(primary = primaryOf(), options = {}) {
-  const mine = allItems().filter((item) => !item.source && !item.removed && OWNER2.test(item.owner));
+  const mine = allItems().filter((item) => !item.source && !item.removed && OWNER.test(item.owner));
   const waiting = mine.filter((item) => item.number === undefined || item.wanted !== undefined && !item.backGranted);
   const settling = mine.some((item) => item.backGranted && item.wanted !== undefined);
   if (!waiting.length && !settling)
@@ -37656,11 +37663,11 @@ import path106 from "node:path";
 function packWorkQueues(owners) {
   const wanted = new Set(owners);
   for (const owner of wanted)
-    if (OWNER2.test(owner))
+    if (OWNER.test(owner))
       readQueueSettingAside(owner);
   const items = allItems().filter((item) => wanted.has(item.owner));
   for (const owner of wanted)
-    if (!OWNER2.test(owner))
+    if (!OWNER.test(owner))
       items.push(...readKeptQueue(owner)?.items ?? []);
   if (!items.length)
     return null;
@@ -37724,7 +37731,7 @@ function forgetWorkQueues(owners) {
   const gone = new Set(owners);
   changeQueues((book) => {
     for (const owner of gone) {
-      if (!OWNER2.test(owner) && !readKeptQueue(owner))
+      if (!OWNER.test(owner) && !readKeptQueue(owner))
         continue;
       const queue = book.queue(owner);
       for (const item of queue.items)
@@ -37734,7 +37741,7 @@ function forgetWorkQueues(owners) {
   }, undefined, { onItsOwn: true });
 }
 function carryWorkQueue(from, to) {
-  if (!OWNER2.test(from) || !OWNER2.test(to) || from === to)
+  if (!OWNER.test(from) || !OWNER.test(to) || from === to)
     return;
   changeQueues((book) => {
     for (const item of [...book.queue(from).items])
@@ -39520,7 +39527,7 @@ async function handArrived(sender, given, reply, places, now = Date.now()) {
     return;
   if (seenHand(id, now))
     return answer(true);
-  const from = typeof given.from === "string" && OWNER2.test(given.from) ? given.from : null;
+  const from = typeof given.from === "string" && OWNER.test(given.from) ? given.from : null;
   const item = itemOf(given.item, given.to);
   if (!item || !from)
     return answer(false, "That isn't an item.");
@@ -39674,7 +39681,7 @@ function addHere(given, local = false) {
     return changed3(() => {
       staged = stageClientFiles(given.files, local);
       return changeQueues((book) => {
-        if (given.owner !== undefined && (typeof given.owner !== "string" || !OWNER2.test(given.owner)))
+        if (given.owner !== undefined && (typeof given.owner !== "string" || !OWNER.test(given.owner)))
           throw new Refusal("That's no queue to add it to (owner): a conversation's address, or a group chat's id.");
         const assignee = given.assignee === undefined || given.assignee === null ? null : assigneeFor(given.assignee);
         const owner = given.owner ?? botSession(assignee ?? undefined) ?? YOURS;
@@ -41280,7 +41287,7 @@ function numberingNow(link) {
 }
 async function tellingNow2(targets, link, signal, cache) {
   const facts = await factsOf(targets, signal);
-  const all = allItems().filter((item) => OWNER2.test(item.owner) && !item.removed);
+  const all = allItems().filter((item) => OWNER.test(item.owner) && !item.removed);
   const isDone = (item) => isClosed(item.status) || Boolean(item.source && doneByRead(seenOf(item.source)));
   const doneTime = (item) => {
     const read = item.source ? seenOf(item.source) : undefined;
@@ -55141,7 +55148,7 @@ var init_files4 = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "e83e3f0eede9";
+var BRIDGE_VERSION = "0ee471ddb9c3";
 
 // box/src/link/rehome/paths.ts
 import { createHash as createHash3 } from "node:crypto";
@@ -62768,6 +62775,52 @@ function routeVersionError(given) {
   const version = typeof given === "string" && /^\d{1,15}$/.test(given) ? Number(given) : undefined;
   const error = new UnsupportedFormatVersion("Kuvo route", version, Number(ROUTE_VERSION));
   return { code: "unsupportedFormatVersion", message: error.message };
+}
+
+// box/src/link/server/format.ts
+init_format_version();
+var routeVersionHeaders = { [ROUTE_VERSION_HEADER]: ROUTE_VERSION };
+function routeRequestHeaders(given) {
+  const headers = Object.create(null);
+  for (const [name, value] of Object.entries(isObject(given) ? given : {})) {
+    const key = name.toLowerCase();
+    const invalidVersion = key === ROUTE_VERSION_HEADER && routeVersionError(value);
+    if (invalidVersion)
+      return { error: invalidVersion };
+    if (value === undefined)
+      continue;
+    if (typeof value !== "string" && !(Array.isArray(value) && value.every((each) => typeof each === "string"))) {
+      return { error: { code: "invalidHeader", message: `Invalid request header: ${key}.` } };
+    }
+    if (Object.hasOwn(headers, key) && JSON.stringify(headers[key]) !== JSON.stringify(value)) {
+      return { error: { code: "conflictingHeader", message: `Conflicting request header: ${key}.` } };
+    }
+    headers[key] = value;
+  }
+  return { headers };
+}
+var routeRefusalHeaders = { ...routeVersionHeaders, "content-type": "application/json" };
+function versionedRoutes(handle) {
+  return async function* (request, phone, signal) {
+    const { headers, error } = routeRequestHeaders(request.headers);
+    if (error) {
+      yield { head: { status: 400, headers: routeRefusalHeaders } };
+      yield { body: Buffer.from(JSON.stringify(error)) };
+      return;
+    }
+    let started = false;
+    try {
+      for await (const piece of handle({ ...request, headers }, phone, signal)) {
+        started = true;
+        yield "head" in piece ? { head: { ...piece.head, headers: { ...piece.head.headers, ...routeVersionHeaders } } } : piece;
+      }
+    } catch (error) {
+      if (started || !(error instanceof UnsupportedFormatVersion))
+        throw error;
+      yield { head: { status: 409, headers: routeRefusalHeaders } };
+      yield { body: Buffer.from(JSON.stringify({ code: "unsupportedFormatVersion", message: error.message })) };
+    }
+  };
 }
 
 // box/src/link/main.ts
@@ -70838,10 +70891,10 @@ function connectOnce(relay, secret, host, onWelcome = () => {}) {
 init_keys2();
 init_noise();
 init_frames();
-var requestOf = (head, body) => ({
+var requestOf = (head, body, headers) => ({
   method: typeof head.m === "string" ? head.m : "GET",
   path: typeof head.p === "string" ? head.p : "",
-  headers: head.h !== null && typeof head.h === "object" && !Array.isArray(head.h) ? head.h : {},
+  headers,
   body
 });
 
@@ -70937,7 +70990,12 @@ class LinkHost {
   message(session, { head, body }) {
     switch (head.t) {
       case "req": {
-        const request = requestOf(head, body);
+        const { headers, error } = routeRequestHeaders(head.h);
+        if (error) {
+          this.seal(session, encodeMessage({ t: "res", id: head.id, s: 400, h: routeRefusalHeaders, end: true }, Buffer.from(JSON.stringify(error))));
+          return;
+        }
+        const request = requestOf(head, body, headers);
         if (String(request.headers.upgrade ?? "").toLowerCase() === "websocket")
           this.open(session, head.id, request);
         else if (head.end === false)
@@ -71066,32 +71124,6 @@ class LinkHost {
     if (notify)
       this.send(relaySend(session.from, frame(Frame.close, session.number)));
   }
-}
-
-// box/src/link/server/format.ts
-init_format_version();
-function versionedRoutes(handle) {
-  return async function* (request, phone, signal) {
-    const error = routeVersionError(request.headers[ROUTE_VERSION_HEADER]);
-    const headers = { [ROUTE_VERSION_HEADER]: ROUTE_VERSION };
-    if (error) {
-      yield { head: { status: 400, headers: { ...headers, "content-type": "application/json" } } };
-      yield { body: Buffer.from(JSON.stringify(error)) };
-      return;
-    }
-    let started = false;
-    try {
-      for await (const piece of handle(request, phone, signal)) {
-        started = true;
-        yield "head" in piece ? { head: { ...piece.head, headers: { ...piece.head.headers, ...headers } } } : piece;
-      }
-    } catch (error) {
-      if (started || !(error instanceof UnsupportedFormatVersion))
-        throw error;
-      yield { head: { status: 409, headers: { ...headers, "content-type": "application/json" } } };
-      yield { body: Buffer.from(JSON.stringify({ code: "unsupportedFormatVersion", message: error.message })) };
-    }
-  };
 }
 
 // box/src/link/server/router.ts
@@ -73769,9 +73801,28 @@ function fromPhone(body) {
 
 ${FROM_PHONE}` }));
 }
-function modelInput(base, headers, signal) {
+
+class UnsupportedBridgeRouteVersion extends Error {
+  refusal;
+  constructor(refusal) {
+    super(refusal.message);
+    this.refusal = refusal;
+  }
+}
+async function fetchRoute(url, options, toAgents) {
+  const response = await fetch(url, options);
+  if (toAgents) {
+    const refusal = routeVersionError(response.headers.get(ROUTE_VERSION_HEADER) ?? undefined);
+    if (refusal) {
+      response.body?.cancel().catch(() => {});
+      throw new UnsupportedBridgeRouteVersion(refusal);
+    }
+  }
+  return response;
+}
+function modelInput(base, headers, signal, toAgents = false) {
   const read = async (at) => {
-    const response = await fetch(new URL(at, base), { headers, signal });
+    const response = await fetchRoute(new URL(at, base), { headers, signal }, toAgents);
     return response.ok ? (await response.json())?.data ?? null : null;
   };
   return async (session) => {
@@ -73784,13 +73835,16 @@ function modelInput(base, headers, signal) {
     return Array.isArray(input) ? input.filter((kind) => typeof kind === "string") : null;
   };
 }
-function answerHeaders(response) {
+function answerHeaders(response, fromAgents = false) {
   const out = {};
   for (const name of RESPONSE_HEADERS) {
     const value = response.headers.get(name);
     if (value)
       out[name] = value;
   }
+  const version = fromAgents ? response.headers.get(ROUTE_VERSION_HEADER) : null;
+  if (version !== null)
+    out[ROUTE_VERSION_HEADER] = version;
   return out;
 }
 async function* forward(target, path, request, signal, allows, naming = null, down = engineDown, toAgents = false) {
@@ -73807,6 +73861,8 @@ async function* forward(target, path, request, signal, allows, naming = null, do
   for (const name of REQUEST_HEADERS)
     if (given[name])
       headers[name] = given[name];
+  if (toAgents)
+    headers[ROUTE_VERSION_HEADER] = ROUTE_VERSION;
   const sending = method === "POST" && /^\/api\/session\/([^/]+)\/(prompt|command)$/.exec(url.pathname);
   const prompt = sending && sending[2] === "prompt" && !request.fromMac ? sending : null;
   let moving = false;
@@ -73867,7 +73923,7 @@ async function* forward(target, path, request, signal, allows, naming = null, do
   const readBefore = async () => {
     try {
       const patience = AbortSignal.timeout(NOTES_STEP);
-      const before = await fetch(url, { headers, signal: signal ? AbortSignal.any([signal, patience]) : patience });
+      const before = await fetchRoute(url, { headers, signal: signal ? AbortSignal.any([signal, patience]) : patience }, toAgents);
       if (before.ok)
         wasArchived = (await before.json())?.data?.metadata?.["kuvo.archived"] === true;
     } catch {}
@@ -73884,7 +73940,7 @@ async function* forward(target, path, request, signal, allows, naming = null, do
     if (!sending)
       return request.body;
     const session = decodeURIComponent(sending[1]);
-    const body = await attachedIn(request.body, session, modelInput(url, headers, delivering), request.fromMac === true, toAgents);
+    const body = await attachedIn(request.body, session, modelInput(url, headers, delivering, toAgents), request.fromMac === true, toAgents);
     if (sending[2] !== "prompt")
       return body;
     const named = prompt ? await namedIn(body, session, naming) : body;
@@ -73892,15 +73948,15 @@ async function* forward(target, path, request, signal, allows, naming = null, do
   };
   const notAnswering = () => ({ status: 503, headers: { "content-type": "application/json" }, body: Buffer.from(JSON.stringify({ message: down() })) });
   const admitted = (write) => sending ? admitPrompt(decodeURIComponent(sending[1]), write) : write();
-  const sendingError = (error) => error instanceof MoveAdmissionClosed ? { status: 409, headers: { "content-type": "application/json" }, body: Buffer.from(JSON.stringify({ message: error.message })) } : notAnswering();
+  const sendingError = (error) => error instanceof MoveAdmissionClosed ? { status: 409, headers: { "content-type": "application/json" }, body: Buffer.from(JSON.stringify({ message: error.message })) } : error instanceof UnsupportedBridgeRouteVersion ? { status: 502, headers: { "content-type": "application/json" }, body: Buffer.from(JSON.stringify(error.refusal)) } : notAnswering();
   const once = sending && sending[2] === "prompt" ? sentKey(toAgents ? "agents" : "engine", decodeURIComponent(sending[1]), request.body) : null;
   if (once) {
     const answer = await sentOnce(once, async () => {
       try {
         const body = await outgoing();
         return await admitted(async () => {
-          const response = await fetch(url, { method, headers, body });
-          return { status: response.status, headers: answerHeaders(response), body: Buffer.from(await response.arrayBuffer()) };
+          const response = await fetchRoute(url, { method, headers, body }, toAgents);
+          return { status: response.status, headers: answerHeaders(response, toAgents), body: Buffer.from(await response.arrayBuffer()) };
         });
       } catch (error) {
         return sendingError(error);
@@ -73913,7 +73969,7 @@ async function* forward(target, path, request, signal, allows, naming = null, do
   }
   const send = async () => {
     const body = method === "GET" || method === "HEAD" ? undefined : await outgoing();
-    return admitted(() => fetch(url, { method, headers, body, signal: delivering }));
+    return admitted(() => fetchRoute(url, { method, headers, body, signal: delivering }, toAgents));
   };
   let response;
   try {
@@ -73939,7 +73995,7 @@ async function* forward(target, path, request, signal, allows, naming = null, do
     yield { body: answer.body };
     return;
   }
-  const out = answerHeaders(response);
+  const out = answerHeaders(response, toAgents);
   if (changed && response.ok) {
     let archived;
     try {
@@ -77945,7 +78001,7 @@ async function* workQueueRoute(context, match) {
       return yield* json(405, {});
     if (!fromClient(context))
       return yield* json(403, { message: notClient(context) });
-    const owner = typeof given.owner === "string" && OWNER2.test(given.owner) ? given.owner : null;
+    const owner = typeof given.owner === "string" && OWNER.test(given.owner) ? given.owner : null;
     if (!owner)
       return yield* json(400, { message: "Say whose queue it goes in (owner): a conversation's address." });
     try {
@@ -77972,7 +78028,7 @@ async function* workQueueRoute(context, match) {
     if (method !== "GET")
       return yield* json(405, {});
     const owner = queryOf2(request).get("owner") ?? "";
-    if (!OWNER2.test(owner) && owner !== ALL)
+    if (!OWNER.test(owner) && owner !== ALL)
       return yield* json(400, { message: "Say whose queue (owner): a conversation's address, a group chat's id, or all." });
     const glance = queryOf2(request).get("glance") === "1";
     const counts = queryOf2(request).get("counts") === "1";
@@ -83946,7 +84002,8 @@ var ROUTES = [
   { feature: "plugins.search", when: (route) => route === "kuvo/plugins/search", answer: pluginSearchRoute },
   { feature: "programs", when: (route) => route === "kuvo/programs", answer: programsRoute },
   { feature: "providers.models", when: (route) => route === "kuvo/providers/models", answer: providerModelsRoute },
-  { feature: "skills", when: (route, request) => /^kuvo\/(skills|skill-library|skill-trash)(\/|\?|$)/.test(request.path), answer: skillsRoute },
+  { feature: "skills", when: (route) => /^kuvo\/(skills|skill-library)(\/|$)/.test(route), answer: skillsRoute },
+  { feature: "skills.trash", when: (route) => /^kuvo\/skill-trash(\/|$)/.test(route), answer: skillsRoute },
   { feature: "config", when: (route, request) => /^kuvo\/(config|mcp\/catalog|keys)(\/|\?|$)/.test(request.path), answer: settingsRoute },
   { feature: "settings", when: (route) => route.match(SETTINGS_PAGE_ROUTE), answer: settingsPageRoute },
   { feature: "setup", when: (route) => route === "kuvo/setup" || route === "kuvo/setup/events" || route === "kuvo/setup/judge" || route === "kuvo/setup/attached" || route === "kuvo/setup/welcomed" || route === "kuvo/setup/ready", answer: setupRoute },
@@ -83954,7 +84011,7 @@ var ROUTES = [
   { feature: "machines", when: (route) => OWN_HOME_MAC && isMachinesRoute(route), answer: ownMachinesRoute },
   { feature: "mac", when: (route) => OWN_HOME_MAC && route === "kuvo/mac", answer: ownMacRoute },
   { feature: "phones", when: (route) => route === "kuvo/phones", answer: phonesRoute },
-  { feature: "devices.pair", when: (route) => route === "kuvo/phones/remove", answer: phonesRemoveRoute },
+  { feature: "phones", when: (route) => route === "kuvo/phones/remove", answer: phonesRemoveRoute },
   { feature: "phones.pair", when: (route) => route === "kuvo/phones/pair", answer: pairingRoute },
   { feature: "devices.pair", when: (route) => route === "kuvo/devices/pair", answer: devicesPairRoute },
   { feature: "box.ownHome", when: (route) => route === "kuvo/link" || route.startsWith("kuvo/link/"), answer: linkRoute },
@@ -84038,6 +84095,14 @@ var ROUTES = [
   { feature: "wakes.events", when: (route) => route === "kuvo/wakes/events", answer: wakeEventsRoute },
   { feature: "wakes.edit", when: (route) => route.match(/^kuvo\/wakes\/([^/]+)(?:\/(cancel|now|pause|watch|events))?$/), answer: sessionWakesRoute }
 ];
+function matchBoxRoute(route, request, phone) {
+  for (const entry of ROUTES) {
+    const match = entry.when(route, request, phone);
+    if (match)
+      return { entry, match };
+  }
+  return null;
+}
 function engineHandler(readEngine = readEngineFile, info = {}, readBridge = readBridgeFile, phonesChanged = () => {}, hold = null) {
   const bridge = () => {
     try {
@@ -84056,11 +84121,9 @@ function engineHandler(readEngine = readEngineFile, info = {}, readBridge = read
       request = { ...request, desktop: true };
     const route = request.path.split("?")[0];
     const context = { request, phone, signal, route, readEngine, readBridge, bridge, info, phonesChanged, hold, json, text };
-    for (const { when, answer } of ROUTES) {
-      const match = when(route, request, phone);
-      if (match)
-        return yield* answer(context, match);
-    }
+    const matched = matchBoxRoute(route, request, phone);
+    if (matched)
+      return yield* matched.entry.answer(context, matched.match);
     return yield* engineRoute(context);
   });
 }
@@ -85778,18 +85841,17 @@ async function box(command) {
         given = JSON.parse(await input());
       } catch {}
       const handle = engineHandler(readEngineFile, { name: os24.hostname() }, readBridgeFile);
-      const folder = given?.headers?.["x-opencode-directory"];
-      const signInClient = given?.headers?.["x-kuvo-sign-in-client"];
-      const vaultHeaders = {};
-      for (const name of ["x-kuvo-vault-key", "x-kuvo-vault-proof"]) {
-        const value = given?.headers?.[name];
+      const { headers: givenHeaders, error } = routeRequestHeaders(given?.headers);
+      if (error)
+        return say({ status: 400, routeVersion: ROUTE_VERSION, body: JSON.stringify(error) });
+      const headers = { "content-type": "application/json" };
+      for (const name of ["x-opencode-directory", "x-kuvo-sign-in-client", "x-kuvo-vault-key", "x-kuvo-vault-proof", ROUTE_VERSION_HEADER]) {
+        const value = givenHeaders[name];
         if (typeof value === "string")
-          vaultHeaders[name] = value;
+          headers[name] = value;
       }
-      const routeVersion = given?.headers?.[ROUTE_VERSION_HEADER];
-      const versionHeader = routeVersion === undefined ? {} : { [ROUTE_VERSION_HEADER]: typeof routeVersion === "string" ? routeVersion : "" };
       const sentBody = typeof given?.bodyText === "string" ? given.bodyText : given?.body === undefined ? "" : JSON.stringify(given.body);
-      const request = { method: String(given?.method ?? "GET"), path: String(given?.path ?? ""), headers: { "content-type": "application/json", ...typeof folder === "string" ? { "x-opencode-directory": folder } : {}, ...typeof signInClient === "string" ? { "x-kuvo-sign-in-client": signInClient } : {}, ...vaultHeaders, ...versionHeader }, body: Buffer.from(sentBody), fromMac: true };
+      const request = { method: String(given?.method ?? "GET"), path: String(given?.path ?? ""), headers, body: Buffer.from(sentBody), fromMac: true };
       let status = 502;
       let type = "";
       let routeResponseVersion;

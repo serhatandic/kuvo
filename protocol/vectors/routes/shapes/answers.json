@@ -9900,7 +9900,7 @@
   },
   {
    "route": "POST kuvo/phones/remove",
-   "feature": "devices.pair",
+   "feature": "phones",
    "answers": {
     "200": {
      "object": {}
