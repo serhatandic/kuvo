@@ -155,28 +155,33 @@ impl MovesView {
             .or_else(|| self.said.of(target))
     }
 
-    pub fn row_status(&self, target: &Target, cx: &App) -> Option<AnyElement> {
-        if self
-            .notices
+    fn tracking_unavailable(&self, target: &Target) -> bool {
+        self.notices
             .iter()
             .any(|notice| matches!(notice, Notice::Tracking { target: item, .. } if item == target))
-        {
-            return Some(
-                div()
-                    .text_ui(TypeSize::Caption)
-                    .text_color(cx.theme().colors.text_muted)
-                    .child("Move status unavailable")
-                    .into_any_element(),
-            );
+    }
+
+    pub(crate) fn row_status_words(&self, target: &Target) -> Option<&str> {
+        if self.tracking_unavailable(target) {
+            return Some("Move status unavailable");
         }
         if let Some(moving) = self.moving(target) {
-            return Some(progress(moving, cx));
+            return Some(moving.progress.as_deref().unwrap_or("Moving…"));
         }
-        self.pending.contains_key(target).then(|| {
+        self.pending.contains_key(target).then_some("Starting the move…")
+    }
+
+    pub fn row_status(&self, target: &Target, cx: &App) -> Option<AnyElement> {
+        if !self.tracking_unavailable(target) {
+            if let Some(moving) = self.moving(target) {
+                return Some(progress(moving, cx));
+            }
+        }
+        self.row_status_words(target).map(|words| {
             div()
                 .text_ui(TypeSize::Caption)
                 .text_color(cx.theme().colors.text_muted)
-                .child("Starting the move…")
+                .child(words.to_owned())
                 .into_any_element()
         })
     }

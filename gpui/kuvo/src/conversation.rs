@@ -89,6 +89,10 @@ pub struct ConversationView {
     /// has been used, so only the last one's timer takes the check away.
     copied: Option<(String, u64)>,
     client: BoxClient,
+    wakes: Option<crate::wakes::Status>,
+    wake_handle: kuvo_ui::menu::PopoverMenuHandle,
+    wake_computer: String,
+    wake_now: Option<f64>,
     live: bool,
     _queue_follow: Option<Follow<Followed<Queue>>>,
     tasks: Vec<Task<()>>,
@@ -159,6 +163,7 @@ impl ConversationView {
             transcript: cx.focus_handle(),
             copied: None,
             client: client.clone(),
+            wakes: None, wake_handle: Default::default(), wake_computer: String::new(), wake_now: None,
             live,
             _queue_follow: None,
             tasks: Vec::new(),
@@ -228,6 +233,38 @@ impl ConversationView {
 
     pub fn session(&self) -> &str {
         &self.session
+    }
+
+    pub(crate) fn set_wakes(&mut self, wakes: Option<crate::wakes::Status>, computer: String, now: Option<f64>, cx: &mut Context<Self>) {
+        if self.wakes != wakes || self.wake_computer != computer || self.wake_now != now {
+            self.wakes = wakes;
+            self.wake_computer = computer;
+            self.wake_now = now;
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn tick_wakes(&self, cx: &mut Context<Self>) {
+        if self.wakes.is_some() || self.wake_handle.is_open() { cx.notify(); }
+    }
+
+    fn wake_source(&self) -> crate::wakes::Source {
+        crate::wakes::Source { client: self.client.clone(), session: self.session.clone(), computer: self.wake_computer.clone(), live: self.live, now: self.wake_now }
+    }
+
+    #[cfg(feature = "stand-in")]
+    pub fn open_wake_schedule(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let source = self.wake_source();
+        let list = cx.new(|cx| crate::wakes::WakeSchedule::new(source, cx));
+        self.wake_handle.open(list, window, cx);
+        cx.notify();
+    }
+
+    fn wake_chip(&self) -> Option<AnyElement> {
+        let now = self.wake_now.unwrap_or_else(crate::time::now_ms);
+        let label = self.wakes.as_ref().and_then(|status| status.chip_label(now))
+            .or_else(|| self.wake_handle.is_open().then(|| "Wake-ups".into()))?;
+        Some(div().w_full().max_w(px(COLUMN)).pb(space::S2).child(crate::wakes::chip("composer-wakes", label, self.wake_source(), true, self.wake_handle.clone())).into_any_element())
     }
 
     pub fn composer(&self) -> &Entity<Composer> {
@@ -1442,7 +1479,7 @@ impl Render for ConversationView {
                     .children(self.asks_failed.clone().filter(|_| !gone).map(|why| {
                         div().w_full().max_w(px(COLUMN)).pb(space::S2).text_ui(TypeSize::Caption).text_color(c.warning).child(why)
                     }))
-                    .when(!gone, |d| d.child(self.bars.clone()))
+                    .when(!gone, |d| d.children(self.wake_chip()).child(self.bars.clone()))
                     .when(!gone, |d| d.children(self.queue_view(cx)))
                     // What it waits on you for takes the composer's place, as on the Mac and the phone.
                     // One this app can't answer sits over the composer, which stays usable.

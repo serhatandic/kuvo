@@ -20,6 +20,7 @@ import { RUN } from "../home";
 import { asked, call, readBridgeFile } from "./client";
 import { swapHolds, swapLine, swapUnderWay } from "../../shared/engine-swap";
 import { carryUnderWay } from "./carrying";
+import { wakeCard } from "../../shared/message-words";
 import { summaryAtEnd } from "../../shared/summaries";
 import { messageID } from "./sessions";
 import * as files from "../../shared/queues";
@@ -422,7 +423,7 @@ export const inboxFollowers = new Set<(session: string) => void>();
  * (another agent, a wake-up, the box's own note; none for yours), what you wrote (its kept parts'
  * words, or its text without what the box added for the agent), the keyword it was sent with, and
  * its files' names. */
-function shownOfInbox(entry: InboxEntry): { from: string | null; words: string; keyword: string | null; files: string[] } {
+function shownOfInbox(entry: InboxEntry, summarizeWake = false): { from: string | null; words: string; keyword: string | null; files: string[] } {
   const text = typeof entry.payload?.text === "string" ? entry.payload.text : typeof entry.text === "string" ? entry.text : "";
   const metadata = entry.payload?.metadata;
   const files = (Array.isArray(entry.payload?.files) ? entry.payload.files : []).flatMap(file => {
@@ -437,6 +438,8 @@ function shownOfInbox(entry: InboxEntry): { from: string | null; words: string; 
   // (One that runs one of the engine's commands, as it was typed.)
   const parts = keptParts(metadata) ?? keptCommand(entry.id) ?? partsOf(text);
   if (parts.mail) return { from: parts.mail.name, words: parts.words, keyword: null, files };
+  const wake = summarizeWake ? wakeCard(text, metadata) : null;
+  if (wake) return { from: "Wake-up", words: wake.summary, keyword: null, files };
   const held = shownOfHeld(text);
   if (held.from) return { from: held.from, words: held.words ?? text, keyword: null, files };
   if (wakeMarkOf(metadata)) return { from: "Wake-up", words: parts.words, keyword: null, files };
@@ -451,11 +454,17 @@ export function queueItems(inbox: InboxEntry[], state: QueueState): QueueItem[] 
     const kept = state.waiting?.find(each => each.id === id);
     if (kept) {
       let delivery: "steer" | "queue" = "queue";
-      try { if (JSON.parse(fs.readFileSync(waitingFile(id), "utf8"))?.delivery === "steer") delivery = "steer"; } catch {}
-      return [{ id, words: kept.text, files: kept.files ?? [], keyword: kept.keyword ?? null, from: kept.from ?? null, on: "box", delivery, held }];
+      let words = kept.text;
+      try {
+        const message = JSON.parse(fs.readFileSync(waitingFile(id), "utf8"));
+        if (message?.delivery === "steer") delivery = "steer";
+        const wake = wakeCard(typeof message?.text === "string" ? message.text : "", message?.metadata);
+        if (wake) words = wake.summary;
+      } catch {}
+      return [{ id, words, files: kept.files ?? [], keyword: kept.keyword ?? null, from: kept.from ?? null, on: "box", delivery, held }];
     }
     const entry = inbox.find(each => each.id === id);
-    return entry ? [{ id, ...shownOfInbox(entry), on: "engine", delivery: entry.delivery, held }] : [];
+    return entry ? [{ id, ...shownOfInbox(entry, true), on: "engine", delivery: entry.delivery, held }] : [];
   });
 }
 

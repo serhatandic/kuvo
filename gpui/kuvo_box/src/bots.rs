@@ -86,6 +86,8 @@ pub struct Refused {
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct Elsewhere {
     pub id: String,
+    #[serde(default, rename = "box")]
+    pub computer_key: String,
     #[serde(default)]
     pub session: String,
     /// None: one the box has no name for (no computer of yours ever listed it to it).

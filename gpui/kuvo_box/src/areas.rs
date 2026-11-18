@@ -34,6 +34,8 @@ pub struct Look {
 #[derive(Debug, Clone, PartialEq, Default, Deserialize)]
 pub struct BotNow {
     #[serde(default)]
+    pub waking: bool,
+    #[serde(default)]
     pub working: usize,
     #[serde(default)]
     pub asking: usize,
@@ -94,6 +96,10 @@ pub struct Bot {
     pub job: String,
     #[serde(default)]
     pub paused: bool,
+    #[serde(default)]
+    pub wakes: Option<f64>,
+    #[serde(default)]
+    pub watching: usize,
     #[serde(default)]
     pub machine: Option<String>,
     /// What it's doing now.
@@ -522,9 +528,69 @@ fn lenient<'de, D: serde::Deserializer<'de>, T: serde::de::DeserializeOwned>(des
     Ok(value.and_then(|value| serde_json::from_value(value).ok()))
 }
 
+/// Display-ready plan limits for the Usage page.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct LimitDisplay {
+    pub title: String,
+    pub computers: Vec<RowBox>,
+    pub status: Option<LimitStatus>,
+    #[serde(deserialize_with = "readable")]
+    pub meters: Vec<UsageMeter>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct LimitStatus {
+    pub words: String,
+    pub warning: bool,
+}
+
+/// A countdown label starts at this instant. Before the first label, show the local reset date.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct ResetLabel {
+    pub at: f64,
+    pub words: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageSnapshot {
+    #[serde(deserialize_with = "readable")]
+    pub rows: Vec<Account>,
+    pub usage_updated_at: Option<f64>,
+    pub refresh_completed_at: Option<f64>,
+    #[serde(default)]
+    pub refresh_pending: bool,
+    #[serde(default)]
+    pub refresh_failed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageMeter {
+    pub title: String,
+    pub share: f32,
+    pub value: String,
+    pub level: Level,
+    pub read_at: f64,
+    pub resets_at: Option<f64>,
+    #[serde(default)]
+    pub reset_labels: Vec<ResetLabel>,
+    /// Time left before the client must mark this snapshot old, as decided by the box.
+    pub fresh_for_ms: u64,
+}
+
+impl UsageMeter {
+    pub fn old_at(&self, elapsed: std::time::Duration) -> bool {
+        elapsed >= std::time::Duration::from_millis(self.fresh_for_ms)
+    }
+}
+
 /// An account across your computers, as the limits' `rows` list it.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct Account {
+    /// Stable identity of this limits row across readings.
+    #[serde(default)]
+    pub id: Option<String>,
     /// Its mark and colour: `claude`, `codex`, `grok`, `cursor`, `antigravity`, `copilot`,
     /// `openrouter`, `zai`, `ollama`, `opencode`.
     pub service: String,
@@ -551,6 +617,8 @@ pub struct Account {
     /// The computers it's signed in on, as the box says (`boxes`).
     #[serde(default, deserialize_with = "readable")]
     pub boxes: Vec<RowBox>,
+    #[serde(default, deserialize_with = "lenient")]
+    pub usage: Option<LimitDisplay>,
 }
 
 /// A computer an account is signed in on, as a row says it: `here`, the computer whose box answered.
@@ -710,19 +778,29 @@ impl BoxClient {
 
     /// Every account across your computers, in the box's order (its limits' `rows`).
     pub fn accounts(&self) -> Result<Vec<Account>> {
-        #[derive(Deserialize)]
-        struct Data {
-            rows: Option<Vec<serde_json::Value>>,
-        }
+        self.usage_snapshot().map(|snapshot| snapshot.rows)
+    }
+
+    pub fn usage_snapshot(&self) -> Result<UsageSnapshot> {
+        self.read_usage(&Request::get("kuvo/agents/api/kuvo/limits"))
+    }
+
+    pub fn refresh_accounts(&self) -> Result<UsageSnapshot> {
+        self.read_usage(&Request::post("kuvo/agents/api/kuvo/limits/refresh", serde_json::json!({})))
+    }
+
+    fn read_usage(&self, request: &Request) -> Result<UsageSnapshot> {
         #[derive(Deserialize)]
         struct Answer {
-            data: Data,
+            data: UsageSnapshot,
         }
-        let answer: Answer = self.get("kuvo/agents/api/kuvo/limits")?;
-        // A coding agents' bridge from before `rows` (one still running after its box updated, until
-        // it restarts) lists none across your computers: not "no accounts", but none it says.
-        let rows = answer.data.rows.ok_or_else(|| Error::BadAnswer("This computer's Kuvo is from before it listed your accounts' limits: they show once it restarts.".into()))?;
-        Ok(rows.into_iter().filter_map(|row| serde_json::from_value(row).ok()).collect())
+        self.value::<Answer>(request).map(|answer| answer.data)
+    }
+
+    /// A signal to read the latest snapshot, also sent when first connecting to cover missed events.
+    pub fn follow_usage(&self, timing: Timing) -> Follow<Followed<serde_json::Value>> {
+        let route = "kuvo/agents/api/kuvo/limits";
+        follow_lines(self, "kuvo-box usage", format!("{route}/events"), route.into(), timing)
     }
 
     /// What's at work in Kuvo on this box's computer, as it says it for its menu bar.
@@ -797,6 +875,36 @@ mod tests {
         let row: Account = serde_json::from_str(r#"{"service":"claude","agent":"claude","label":"Work","title":"Claude · hetzner","windows":[{"id":"five_hour","title":"Session","used":0.4,"level":"calm"},{"id":"x","title":"Premium requests","used":0,"expired":true}]}"#).unwrap();
         assert_eq!(row.title, "Claude · hetzner");
         assert_eq!(row.windows.iter().map(|window| (window.title.as_str(), window.expired)).collect::<Vec<_>>(), vec![("Session", false), ("Premium requests", true)]);
+    }
+
+    #[test]
+    fn usage_display_keeps_the_box_words_and_deadline() {
+        use std::time::Duration;
+        let account: Account = serde_json::from_value(serde_json::json!({
+            "service": "claude",
+            "usage": {
+                "title": "Claude",
+                "computers": [{ "name": "Studio", "here": true }],
+                "status": { "words": "Check the sign-in.", "warning": true },
+                "meters": [
+                    { "title": "Weekly", "share": 0.7, "value": "70%", "level": "calm", "readAt": 1000, "resetsAt": 2000, "freshForMs": 500 },
+                    { "title": "Unreadable meter" }
+                ]
+            }
+        })).unwrap();
+        let display = account.usage.unwrap();
+        assert_eq!(display.title, "Claude");
+        assert_eq!(display.computers[0].name, "Studio");
+        assert_eq!(display.status.unwrap().words, "Check the sign-in.");
+        assert_eq!(display.meters.len(), 1);
+        let meter = &display.meters[0];
+        assert_eq!(meter.value, "70%");
+        assert_eq!(meter.read_at, 1000.);
+        assert_eq!(meter.resets_at, Some(2000.));
+        assert!(!meter.old_at(Duration::from_millis(499)));
+        assert!(meter.old_at(Duration::from_millis(500)));
+        let older: Account = serde_json::from_value(serde_json::json!({ "service": "claude" })).unwrap();
+        assert!(older.usage.is_none());
     }
 
     /// The rings are the box's: its short one outside and its long one inside, each with its level;

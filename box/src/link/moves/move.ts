@@ -27,7 +27,7 @@ import { bridgeTarget, call, readBridgeFile, readEngineFile } from "../engine/cl
 import { CantCarry, forgetQueue, moveInbox, packQueues, readQueues, resumeQueue, unpackQueues } from "../engine/queue";
 import { syncDurableFile, syncDurableTree, writeDurablePrivate, writePrivate } from "../files";
 import { HERE, IS_MAC, K } from "../home";
-import { refreshOwn } from "../peers/agents";
+import { announce, refreshOwn } from "../peers/agents";
 import { peerIsAway, readReach } from "../peers/reach";
 import { readPeerAgents } from "../peers/directory";
 import { mailFor, ownKey, peersOf } from "../peers/known";
@@ -1420,7 +1420,9 @@ async function completeActivation(id: string): Promise<void> {
   }
   forgetMove(id);
   if (record.kind === "bot") noteBotsChanged();
-  await refreshOwn(readEngineFile).catch(() => {});
+  // Publish the live copy before the source hears the switch acknowledgement.
+  const host = record.kind === "bot" ? hostOf() : null;
+  await (host ? announce(host, readEngineFile) : refreshOwn(readEngineFile)).catch(() => {});
   tell(record.peer, { op: "switched", id, ...bundleIdentity(record) });
 }
 

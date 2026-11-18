@@ -19,8 +19,9 @@ pub(crate) mod page;
 mod rows;
 pub mod shortcuts;
 pub mod sign_in;
+mod usage_columns;
 
-use std::collections::HashMap;
+use std::{collections::HashMap, time::{Duration, Instant, SystemTime}};
 
 use gpui::{App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, ListAlignment, ListState, SharedString, Subscription, Task, Window, px};
 use kuvo_box::BoxClient;
@@ -188,6 +189,11 @@ pub struct SettingsView {
     picker: kuvo_ui::menu::PopoverMenuHandle,
     accounts: Reading<Accounts>,
     limits: Reading<Vec<Account>>,
+    usage_read_started: Option<(Instant, SystemTime)>,
+    usage_refresh_failed: bool,
+    usage_updated_at: Option<f64>,
+    usage_follow: Option<Follow<Followed<Value>>>,
+    usage_placement: std::rc::Rc<std::cell::RefCell<usage_columns::Placement>>,
     config: Reading<Config>,
     offered: Reading<Offered>,
     usage: Reading<UsageSettings>,
@@ -260,6 +266,8 @@ enum Item {
     Title(String),
     /// Whose these settings are, said once under the title.
     Whose(String),
+    UsageSummary,
+    UsageCards(Vec<Row>),
     Group { label: String, words: String },
     Row { row: Box<Row>, first: bool, last: bool },
     Note { key: String, words: String, busy: bool, warning: bool },
@@ -267,6 +275,16 @@ enum Item {
     Aside { key: &'static str, icon: IconName, title: String, words: String },
     Nothing(String),
     End,
+}
+
+impl Item {
+    fn rows(&self) -> &[Row] {
+        match self {
+            Self::Row { row, .. } => std::slice::from_ref(row.as_ref()),
+            Self::UsageCards(rows) => rows,
+            _ => &[],
+        }
+    }
 }
 
 impl EventEmitter<Pick> for SettingsView {}
@@ -320,6 +338,11 @@ impl SettingsView {
             later_open: false,
             accounts: Reading::NotYet,
             limits: Reading::NotYet,
+            usage_read_started: None,
+            usage_refresh_failed: false,
+            usage_updated_at: None,
+            usage_follow: None,
+            usage_placement: Default::default(),
             config: Reading::NotYet,
             offered: Reading::NotYet,
             usage: Reading::NotYet,
@@ -535,6 +558,11 @@ impl SettingsView {
         self.pages.clear();
         self.accounts = Reading::NotYet;
         self.limits = Reading::NotYet;
+        self.usage_read_started = None;
+        self.usage_refresh_failed = false;
+        self.usage_updated_at = None;
+        self.usage_follow = None;
+        self.usage_placement = Default::default();
         self.config = Reading::NotYet;
         self.offered = Reading::NotYet;
         self.usage = Reading::NotYet;
@@ -785,10 +813,7 @@ impl SettingsView {
 
     /// The line under a row on the page open, as drawn.
     pub fn row_detail(&self, key: &str) -> Option<String> {
-        self.items.iter().find_map(|item| match item {
-            Item::Row { row, .. } if row.key == key => Some(row.detail.clone()),
-            _ => None,
-        })
+        self.items.iter().flat_map(Item::rows).find(|row| row.key == key).map(|row| row.detail.clone())
     }
 
     /// What a menu row on the page open shows as picked.
@@ -804,17 +829,18 @@ impl SettingsView {
 
     /// The rows on the page open, by key, in order (a list's items among them).
     pub fn page_rows(&self) -> Vec<String> {
-        self.items.iter().filter_map(|item| if let Item::Row { row, .. } = item { Some(row.key.clone()) } else { None }).collect()
+        self.items.iter().flat_map(Item::rows).map(|row| row.key.clone()).collect()
     }
 
     /// Every word on the page open: its rows' titles, lines and whys, and its notes.
     pub fn page_words(&self) -> String {
         let mut words = String::new();
         for item in &self.items {
-            match item {
-                Item::Row { row, .. } => words.extend([row.title.as_str(), "\n", row.detail.as_str(), "\n", row.why.as_deref().unwrap_or_default(), "\n"]),
-                Item::Note { words: note, .. } => words.extend([note.as_str(), "\n"]),
-                _ => {}
+            for row in item.rows() {
+                words.extend([row.title.as_str(), "\n", row.detail.as_str(), "\n", row.why.as_deref().unwrap_or_default(), "\n"]);
+            }
+            if let Item::Note { words: note, .. } = item {
+                words.extend([note.as_str(), "\n"]);
             }
         }
         words
@@ -822,10 +848,7 @@ impl SettingsView {
 
     /// Why a row on the page open can't be changed from here, as drawn under it.
     pub fn row_why(&self, key: &str) -> Option<String> {
-        self.items.iter().find_map(|item| match item {
-            Item::Row { row, .. } if row.key == key => row.why.clone(),
-            _ => None,
-        })
+        self.items.iter().flat_map(Item::rows).find(|row| row.key == key).and_then(|row| row.why.clone())
     }
 
     /// What shows in place of a computer's settings while it isn't reached: its title and words.
@@ -868,8 +891,13 @@ impl SettingsView {
             (Standing::Not { title, words }, _) if self.side == Side::Computer => items.push(Item::Aside { key: "settings-away", icon: IconName::Computer, title: title.clone(), words: words.clone() }),
             (_, Some(entry)) if entry.drawn == Drawn::Later => items.push(Item::Aside { key: "placeholder", icon: entry.icon, title: entry.title.clone(), words: LATER_WORDS.into() }),
             (_, Some(entry)) => {
+                let usage = self.side == Side::Computer && entry.id == "usage";
                 items.push(Item::Title(entry.title.clone()));
-                items.push(Item::Whose(if self.side == Side::Yours { YOURS_WORDS.to_owned() } else { format!("Kept on {name}, the same in every app that connects to it.") }));
+                if usage {
+                    items.push(Item::UsageSummary);
+                } else {
+                    items.push(Item::Whose(if self.side == Side::Yours { YOURS_WORDS.to_owned() } else { format!("Kept on {name}, the same in every app that connects to it.") }));
+                }
                 if let Some(Reading::Ready(page)) = self.pages.get(&entry.id).filter(|_| entry.drawn == Drawn::Described)
                     && let Some(line) = page.line.clone().filter(|line| !line.is_empty())
                 {
@@ -888,9 +916,13 @@ impl SettingsView {
                 for block in blocks {
                     match block {
                         Block::Group(label, words, rows) => {
-                            items.push(Item::Group { label, words });
-                            let count = rows.len();
-                            items.extend(rows.into_iter().enumerate().map(|(ix, row)| Item::Row { row: Box::new(row), first: ix == 0, last: ix + 1 == count }));
+                            if usage && label.is_empty() && words.is_empty() {
+                                items.push(Item::UsageCards(rows));
+                            } else {
+                                items.push(Item::Group { label, words });
+                                let count = rows.len();
+                                items.extend(rows.into_iter().enumerate().map(|(ix, row)| Item::Row { row: Box::new(row), first: ix == 0, last: ix + 1 == count }));
+                            }
                         }
                         Block::Note { key, words, busy, warning } => items.push(Item::Note { key, words, busy, warning }),
                     }
@@ -1090,6 +1122,130 @@ impl SettingsView {
         self.tasks.insert(name, task);
     }
 
+    fn refresh_usage(&mut self, cx: &mut Context<Self>) {
+        if !self.held() && self.client.is_some() && !self.usage_refreshing() {
+            self.usage_refresh_failed = false;
+            self.set_busy("usage-refresh", "Updating…");
+            self.read_limits(true, cx);
+            cx.notify();
+        }
+    }
+
+    fn usage_refreshing(&self) -> bool {
+        self.busy.iter().any(|(key, _)| key == "usage-refresh")
+    }
+
+    fn read_limits(&mut self, refresh: bool, cx: &mut Context<Self>) {
+        let started = (Instant::now(), SystemTime::now());
+        self.run("read-limits", move |client| {
+            if refresh { client.refresh_accounts() } else { client.usage_snapshot() }
+        }, move |this, read, cx| {
+            let completing = refresh || this.usage_follow.is_some();
+            let read = match read {
+                Ok(snapshot) => {
+                    if completing && snapshot.refresh_pending {
+                        this.follow_usage_refresh(cx);
+                        return;
+                    }
+                    if completing {
+                        this.finish_usage_refresh(snapshot.refresh_failed);
+                        if !snapshot.refresh_failed {
+                            this.usage_updated_at = snapshot.refresh_completed_at.or(snapshot.usage_updated_at);
+                        }
+                    }
+                    if !snapshot.refresh_failed || !completing {
+                        this.usage_updated_at = this.usage_updated_at.into_iter().chain(snapshot.usage_updated_at).max_by(f64::total_cmp);
+                    }
+                    Ok(snapshot.rows)
+                }
+                Err(error) => {
+                    if this.usage_follow.is_some() {
+                        // The event stream reconnects and signals another GET. A transient GET
+                        // failure doesn't tell us whether the provider has finished.
+                        return;
+                    }
+                    if refresh {
+                        this.finish_usage_refresh(true);
+                    }
+                    Err(error)
+                }
+            };
+            this.usage_read_started = read.is_ok().then_some(started);
+            this.agents_limits = agents_state(&read);
+            this.limits = reading(read, &this.limits);
+            this.mark_old_usage(cx);
+            let restarting = this.agents_limits.as_ref().is_some_and(kuvo_box::Refusal::agents_restarting);
+            this.again_while_restarting("usage", restarting, cx);
+        }, cx);
+    }
+
+    fn follow_usage_refresh(&mut self, cx: &mut Context<Self>) {
+        if self.usage_follow.is_some() {
+            return;
+        }
+        let Some(client) = &self.client else { return };
+        let follow = client.follow_usage(Timing::default());
+        let updates = follow.updates().clone();
+        self.usage_follow = Some(follow);
+        let task = cx.spawn(async move |this, cx| {
+            while let Ok(update) = updates.recv().await {
+                if matches!(update, Followed::Now(_)) {
+                    let took = this.update(cx, |this, cx| {
+                        if this.usage_follow.is_some() {
+                            this.read_limits(false, cx);
+                        }
+                    });
+                    if took.is_err() {
+                        break;
+                    }
+                }
+            }
+        });
+        self.tasks.insert("follow-usage-refresh".into(), task);
+    }
+
+    fn finish_usage_refresh(&mut self, failed: bool) {
+        self.usage_refresh_failed = failed;
+        self.done("usage-refresh");
+        self.usage_follow = None;
+        self.tasks.remove("follow-usage-refresh");
+    }
+
+    fn usage_elapsed(&self) -> Duration {
+        // Time asleep counts even when a monotonic clock pauses. A backwards clock change must
+        // also leave the snapshot ageing.
+        self.usage_read_started.map_or(Duration::MAX, |(started, wall)| {
+            started.elapsed().max(wall.elapsed().unwrap_or_default())
+        })
+    }
+
+    /// Switch to the snapshot’s old state at the deadline supplied with it.
+    fn mark_old_usage(&mut self, cx: &mut Context<Self>) {
+        const TASK: &str = "usage-display-deadline";
+        let Reading::Ready(accounts) = &self.limits else { return };
+        let elapsed = self.usage_elapsed();
+        let next = accounts.iter().filter_map(|account| account.usage.as_ref())
+            .flat_map(|usage| &usage.meters)
+            .filter(|meter| !meter.old_at(elapsed))
+            .map(|meter| Duration::from_millis(meter.fresh_for_ms))
+            .min();
+        self.tasks.remove(TASK);
+        if !self.live || self.side != Side::Computer || self.section() != "usage" {
+            return;
+        }
+        let minute = Duration::from_secs(60);
+        let delay = next.map_or(minute, |deadline| (deadline - elapsed).min(minute));
+        let task = cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(delay).await;
+            this.update(cx, |this, cx| {
+                this.list.remeasure();
+                cx.notify();
+                this.mark_old_usage(cx);
+            }).ok();
+        });
+        self.tasks.insert(TASK.into(), task);
+    }
+
     fn run<T: Send + 'static>(
         &mut self,
         name: impl Into<String>,
@@ -1209,12 +1365,9 @@ impl SettingsView {
                 this.again_while_restarting("accounts", restarting, cx);
             }, cx),
             (Some(Drawn::Own), "usage") => {
-                self.run("read-limits", |client| client.accounts(), |this, read, cx| {
-                    this.agents_limits = agents_state(&read);
-                    this.limits = reading(read, &this.limits);
-                    let restarting = this.agents_limits.as_ref().is_some_and(kuvo_box::Refusal::agents_restarting);
-                    this.again_while_restarting("usage", restarting, cx);
-                }, cx);
+                if !self.usage_refreshing() {
+                    self.read_limits(false, cx);
+                }
                 self.run("read-usage", |client| client.usage_settings(), |this, read, _| {
                     this.agents_usage = agents_state(&read);
                     this.usage = reading(read, &this.usage);

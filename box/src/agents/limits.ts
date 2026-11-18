@@ -16,7 +16,7 @@ import { dirname } from "node:path"
 import type { AgentKind } from "./accounts"
 import { parseProvider } from "./accounts"
 import type { Agent } from "./agent"
-import { emit } from "./events"
+import { emit, subscribe } from "./events"
 import type { LimitsPeers } from "./limits-peers"
 import { resetRoutes, type LimitResets } from "./limits-resets"
 import { limitRows, shownAccount, type LimitRow } from "./limits-rows"
@@ -424,9 +424,9 @@ export class Limits {
   }
 
   /** Every account across your computers, one row each (`limits-rows.ts`): this box's first. */
-  rows(): LimitRow[] {
+  rows(presentUsage = false): LimitRow[] {
     const own = this.list(false)
-    return this.peers ? this.peers.rows(own) : limitRows([{ key: "", name: "", here: true, away: false, accounts: own }], this.now())
+    return this.peers ? this.peers.rows(own, presentUsage) : limitRows([{ key: "", name: "", here: true, away: false, accounts: own }], this.now(), presentUsage)
   }
 
   /** What a peer told changed what's listed: the clients are told. */
@@ -639,6 +639,29 @@ export class Limits {
    * read as recently as its maker allows, here or on another of your computers: a client pulled to
    * refresh, or an agent asked. `only`: those a peer asked for.
    */
+  /** Coalesce manual refreshes and announce completion even if the readings did not change. */
+  refreshing?: Promise<void>
+  refreshFailed = false
+  refreshCompletedAt?: number
+
+  refreshUsage(): Promise<void> {
+    if (this.refreshing) return this.refreshing
+    const before = new Map([...this.entries].map(([id, entry]) => [id, entry.checked]))
+    this.refreshing = this.refresh().then(() => {
+      const checked = [...this.entries].filter(([id, entry]) => entry.checked !== before.get(id))
+      // Individual failures appear on their cards. A round with only failures has no new success.
+      this.refreshFailed = checked.length > 0 && checked.every(([, entry]) => entry.problem && entry.problem.kind !== "ended")
+      if (!this.refreshFailed) this.refreshCompletedAt = this.now()
+      this.peers?.refreshElsewhere(this.rows(), this.reads())
+    }, () => {
+      this.refreshFailed = true
+    }).finally(() => {
+      this.refreshing = undefined
+      emit("kuvo.limits.updated", { accounts: this.shown(), rows: this.rows(), notices: this.notices(), ownNotices: this.pushableNotices(), notificationAvailability: notificationAvailability(), refreshFinished: true })
+    })
+    return this.refreshing
+  }
+
   async refresh(only?: (account: LimitedAccount, identity: string | undefined) => boolean) {
     const at = this.now()
     for (const account of this.accounts()) {
@@ -1053,17 +1076,43 @@ export async function limitsRoutes(limits: Limits | undefined, method: string, r
   if (!limits) return json({ message: "Plan limits aren't read on this computer." }, 503)
   // Spending a reset (limits-resets.ts).
   if (rest[0] === "reset") return resetRoutes(limits.resets, method, rest.slice(1), body)
-  const answer = () => json({ data: { accounts: limits.shown(), services: limits.services(), rows: limits.rows(), notificationAvailability: notificationAvailability(), notices: limits.notices(), ownNotices: limits.pushableNotices() } })
+  const answer = () => {
+    const rows = limits.rows(true)
+    const usageUpdatedAt = Math.max(0, ...rows.map(row => row.usage?.updatedAt ?? 0)) || undefined
+    return json({ data: {
+      accounts: limits.shown(), services: limits.services(), rows, usageUpdatedAt,
+      refreshPending: !!limits.refreshing, refreshFailed: limits.refreshFailed, refreshCompletedAt: limits.refreshCompletedAt,
+      notificationAvailability: notificationAvailability(), notices: limits.notices(), ownNotices: limits.pushableNotices(),
+    } })
+  }
   if (!rest.length && method === "GET") return answer()
+  if (rest.length === 1 && rest[0] === "events" && method === "GET") return limitsEvents()
   if (rest.length === 1 && rest[0] === "refresh" && method === "POST") {
-    // Here first, then on the computer each account only elsewhere is on: what's read here reaches
-    // that computer before it's asked, so it doesn't read it too.
-    const reading = limits.refresh().finally(() => limits.peers?.refreshElsewhere(limits.rows(), limits.reads()))
-    // What's read within a couple of seconds is in the answer; the rest comes as kuvo.limits.updated.
-    await Promise.race([reading, new Promise((resolve) => setTimeout(resolve, 2_000).unref?.())])
+    await Promise.race([limits.refreshUsage(), new Promise((resolve) => setTimeout(resolve, 2_000).unref?.())])
     return answer()
   }
   return json({ message: "Not available for this agent." }, 404)
+}
+
+function limitsEvents(): Response {
+  const line = new TextEncoder().encode("{}\n")
+  let stop = () => {}
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      const unsubscribe = subscribe(event => {
+        if (event.type === "kuvo.limits.updated") controller.enqueue(line)
+      })
+      // Also retry the snapshot GET if an update signal arrived but the separate GET failed.
+      const heartbeat = setInterval(() => controller.enqueue(line), 15_000).unref()
+      stop = () => {
+        unsubscribe()
+        clearInterval(heartbeat)
+      }
+      controller.enqueue(line)
+    },
+    cancel() { stop() },
+  })
+  return new Response(stream, { headers: { "Content-Type": "application/x-ndjson", "Cache-Control": "no-cache" } })
 }
 
 const AGENT_SERVICES: Record<AgentKind, LimitsService> = { claude: "claude", codex: "codex", grok: "grok", cursor: "cursor", antigravity: "antigravity" }

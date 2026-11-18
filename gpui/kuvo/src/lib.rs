@@ -55,7 +55,10 @@ pub use workspace::Workspace;
 actions!(kuvo, [NewSession, ToggleAppearance, Quit, TogglePanel, ToggleSidebar, ShowChanges, ShowFiles, CheckForUpdates]);
 
 /// Binds the app's keys, after the blocks' (so "/"'s list takes its keys ahead of the field's).
+mod wakes;
+
 pub fn bind_keys(cx: &mut App) {
+    wakes::bind_keys(cx);
     kuvo_ui::bind_keys(cx);
     composer::bind_keys(cx);
     model_picker::bind_keys(cx);

@@ -2557,6 +2557,9 @@
            "working": "number",
            "asking": "number",
            "finished?": "number",
+           "waking?": {
+            "literal": true
+           },
            "state": {
             "oneOf": [
              {
@@ -3092,6 +3095,9 @@
           "working": "number",
           "asking": "number",
           "finished?": "number",
+          "waking?": {
+           "literal": true
+          },
           "state": {
            "oneOf": [
             {
@@ -3461,6 +3467,9 @@
             "working": "number",
             "asking": "number",
             "finished?": "number",
+            "waking?": {
+             "literal": true
+            },
             "state": {
              "oneOf": [
               {
@@ -3888,6 +3897,9 @@
             "working": "number",
             "asking": "number",
             "finished?": "number",
+            "waking?": {
+             "literal": true
+            },
             "state": {
              "oneOf": [
               {
@@ -5812,6 +5824,9 @@
             "literal": "bots.state"
            },
            {
+            "literal": "bots.wake-ups"
+           },
+           {
             "literal": "box.app"
            },
            {
@@ -6542,6 +6557,9 @@
            },
            {
             "literal": "bots.state"
+           },
+           {
+            "literal": "bots.wake-ups"
            },
            {
             "literal": "box.app"
@@ -14796,6 +14814,9 @@
          "pinned?": "bool",
          "archived?": "bool",
          "running?": "bool",
+         "wakeTurn?": {
+          "literal": true
+         },
          "asked?": "number",
          "away?": "bool",
          "bot?": "string",
@@ -14945,6 +14966,9 @@
          "pinned?": "bool",
          "archived?": "bool",
          "running?": "bool",
+         "wakeTurn?": {
+          "literal": true
+         },
          "asked?": "number",
          "away?": "bool",
          "bot?": "string",
@@ -28569,7 +28593,9 @@
             "id": "string",
             "due": "number",
             "note": "string",
-            "every?": "string"
+            "every?": "string",
+            "summary?": "string",
+            "cancelKey?": "string"
            }
           }
          },
@@ -28579,7 +28605,9 @@
             "letters": "string",
             "every": "string",
             "check": "string",
-            "note": "string"
+            "note": "string",
+            "summary?": "string",
+            "next?": "number"
            }
           }
          },
@@ -28602,7 +28630,9 @@
          "id": "string",
          "due": "number",
          "note": "string",
-         "every?": "string"
+         "every?": "string",
+         "summary?": "string",
+         "cancelKey?": "string"
         }
        }
       },
@@ -28612,7 +28642,9 @@
          "letters": "string",
          "every": "string",
          "check": "string",
-         "note": "string"
+         "note": "string",
+         "summary?": "string",
+         "next?": "number"
         }
        }
       },
@@ -28632,7 +28664,9 @@
          "id": "string",
          "due": "number",
          "note": "string",
-         "every?": "string"
+         "every?": "string",
+         "summary?": "string",
+         "cancelKey?": "string"
         }
        }
       },
@@ -28642,7 +28676,9 @@
          "letters": "string",
          "every": "string",
          "check": "string",
-         "note": "string"
+         "note": "string",
+         "summary?": "string",
+         "next?": "number"
         }
        }
       },
@@ -28662,7 +28698,9 @@
          "id": "string",
          "due": "number",
          "note": "string",
-         "every?": "string"
+         "every?": "string",
+         "summary?": "string",
+         "cancelKey?": "string"
         }
        }
       },
@@ -28672,7 +28710,9 @@
          "letters": "string",
          "every": "string",
          "check": "string",
-         "note": "string"
+         "note": "string",
+         "summary?": "string",
+         "next?": "number"
         }
        }
       },
@@ -28692,7 +28732,9 @@
          "id": "string",
          "due": "number",
          "note": "string",
-         "every?": "string"
+         "every?": "string",
+         "summary?": "string",
+         "cancelKey?": "string"
         }
        }
       },
@@ -28702,7 +28744,9 @@
          "letters": "string",
          "every": "string",
          "check": "string",
-         "note": "string"
+         "note": "string",
+         "summary?": "string",
+         "next?": "number"
         }
        }
       },
