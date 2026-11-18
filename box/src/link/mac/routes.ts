@@ -210,7 +210,7 @@ export async function* macLinkRoute(route: string, request: LinkRequest, signal:
         return made.link;
       });
       if (!changed) return yield* json(400, { message: "Send {peers: [{key, sign, address, name, id}], moved}." });
-      macDocsChanged();
+      macDocsChanged({ closeRemoved: changed });
       tellGone(gone);
       return yield* json(200, {});
     }

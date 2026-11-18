@@ -227,8 +227,7 @@ atEnd(async () => {
 
 // A device on the relay (the desktop app, or a phone), opening sessions with a box (`to`: its
 // address and key) and asking it things, as KuvoLink's client and the desktop app's do.
-function client(hello) {
-  const key = link.newKey();
+function client(hello, key = link.newKey()) {
   const device = relay.device();
   let session = crypto.randomInt(1, 2 ** 30);
   let transport = null, at = null, request = 0;
@@ -428,7 +427,8 @@ test("the desktop app on a member's computer is paired through its own box and r
     { key: lab.key, sign: lab.sign, address: lab.address, name: "lab", id: "lab.example" },
     { key: attic.pub, sign: link.signingKeyOf(link.newSigningSeed()), address: attic.address.toString("base64url"), name: "attic", id: "attic.example" },
   ], moved: [] })).status, 200);
-  const loft = client({ name: "Someone's laptop", client: "desktop" });
+  const loftKey = link.newKey();
+  const loft = client({ name: "Someone's laptop", client: "desktop" }, loftKey);
   const fromAttic = vouch(loft.public);
   mailAs(attic.on, atticKey, { workQueue: { act: fromAttic }, at: Date.now() });
   const atticPaired = await actedFor(fromAttic.id, atticKey, attic.address);
@@ -517,13 +517,25 @@ test("the desktop app on a member's computer is paired through its own box and r
   // added reaches the main computer and the member until then, and neither after, though it still
   // has its key. Every other device stays.
   await eventually(() => (labLink()?.phones ?? []).some(each => each.key === loft.public));
-  assert.deepEqual([(await loft.open(main)).kind, (await loft.open(member)).kind], ["mac", "machine"]);
+  const loftOnMember = client({ name: "Someone's laptop", client: "desktop" }, loftKey);
+  assert.equal((await loftOnMember.open(member)).kind, "machine");
+  assert.equal((await loftOnMember.request("GET", "kuvo/computers")).status, 200);
+  assert.equal((await loft.open(main)).kind, "mac");
+  assert.equal((await loft.request("GET", "kuvo/computers")).status, 200);
+  assert.equal((await studio.open(main)).kind, "mac");
+  assert.equal((await studio.request("GET", "kuvo/computers")).status, 200);
   // (The Mac app before 1.0 isn't attached: it said its link's config as this began.)
   link.macLink.appSaid = undefined;
+  const loftSessions = () => [...link.macLink.host.sessions.values()].filter(session => session.phone.key.toString("base64url") === loft.public);
+  assert.ok(loftSessions().length > 0);
   assert.deepEqual(await ask("DELETE", `kuvo/computers/${attic.pub}`), { status: 200, json: {} });
+  assert.equal(loftSessions().length, 0, "sessions are closed before the removal answers");
+  assert.deepEqual(await loft.request("GET", "kuvo/computers"), { closed: true }, "its open session is gone too");
+  assert.equal((await studio.request("GET", "kuvo/computers")).status, 200, "the current app keeps its open session");
   assert.deepEqual(await loft.open(main), { refused: true });
   assert.ok(!(await ask("GET", "kuvo/phones")).json.phones.some(each => each.key === loft.public));
   await memberHeardRemoved(loft.public);
+  assert.deepEqual(await loftOnMember.request("GET", "kuvo/computers"), { closed: true }, "the member closes its open session");
   assert.deepEqual(await loft.open(member), { refused: true });
   assert.deepEqual([(await phone.open(main)).kind, (await studio.open(main)).kind, (await studio.open(member)).kind, (await phone.open(member)).kind], ["mac", "mac", "machine", "machine"]);
 

@@ -54,9 +54,9 @@ export async function receiveDocs(sender: DocSender, docs: DocsMail, host: LinkH
 }
 
 async function afterDocs(work: DocsDone, before: PersonalityLibrary, library: PersonalityLibrary, link: LinkState, host: LinkHost | null | undefined): Promise<void> {
+  host?.keepOnly?.(new Set((link.phones ?? []).map(phone => phone.key)));
   if (library !== before) await takePersonalities(library).catch(() => {});
   for (const mac of work.left) forgetMacsAgents(mac, link);
-  host?.keepOnly?.(new Set((link.phones ?? []).map(phone => phone.key)));
   writeAgents(link);
   sendDocs(host, link, work.send);
 }
@@ -82,7 +82,10 @@ export function docsChanged(host: LinkHost | null | undefined, { greet = false, 
 
 // Something of this Mac's documents changed (a phone, a personality, your machines): what changed
 // goes to your machines now, if it's on the relay; they get it as they meet otherwise.
-export function macDocsChanged(): void {
+export function macDocsChanged({ closeRemoved }: { closeRemoved?: LinkState | null } = {}): void {
   const host = macLink.host;
+  // Computer removals close their devices' sessions here as well as on the boxes receiving the
+  // phones document. Direct phone removal sends its answer before closing the session.
+  if (closeRemoved) host?.keepOnly?.(new Set((closeRemoved.phones ?? []).map(phone => phone.key)));
   if (host?.welcomed) try { docsChanged(host); } catch {}
 }

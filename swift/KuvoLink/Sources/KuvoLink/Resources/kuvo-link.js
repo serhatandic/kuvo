@@ -35158,11 +35158,11 @@ async function receiveDocs(sender, docs, host) {
   await afterDocs(work, before, library, link, host);
 }
 async function afterDocs(work, before, library, link, host) {
+  host?.keepOnly?.(new Set((link.phones ?? []).map((phone) => phone.key)));
   if (library !== before)
     await takePersonalities(library).catch(() => {});
   for (const mac of work.left)
     forgetMacsAgents(mac, link);
-  host?.keepOnly?.(new Set((link.phones ?? []).map((phone) => phone.key)));
   writeAgents(link);
   sendDocs(host, link, work.send);
 }
@@ -35181,8 +35181,10 @@ function docsChanged(host, { greet = false, tell = false } = {}) {
     sendDocs(host, link, work.send);
   }
 }
-function macDocsChanged() {
+function macDocsChanged({ closeRemoved } = {}) {
   const host = macLink.host;
+  if (closeRemoved)
+    host?.keepOnly?.(new Set((closeRemoved.phones ?? []).map((phone) => phone.key)));
   if (host?.welcomed)
     try {
       docsChanged(host);
@@ -35376,7 +35378,7 @@ async function* macLinkRoute(route, request, signal) {
       });
       if (!changed)
         return yield* json(400, { message: "Send {peers: [{key, sign, address, name, id}], moved}." });
-      macDocsChanged();
+      macDocsChanged({ closeRemoved: changed });
       tellGone(gone);
       return yield* json(200, {});
     }
@@ -35597,7 +35599,7 @@ function removeHere(key) {
   let gone = [];
   let id;
   let already = false;
-  updateLink((link) => {
+  const changed = updateLink((link) => {
     const peer = link ? peersOf(link).find((each) => each.key === key) : undefined;
     already = Boolean(link?.removedHere?.includes(key));
     if (!link || !peer)
@@ -35612,13 +35614,11 @@ function removeHere(key) {
       delete made.link.peerNames[key];
     return made.link;
   });
-  if (!gone.length && already)
-    macDocsChanged();
-  if (!gone.length)
-    return already ? answer4(200, {}) : answer4(404, { message: `That isn't one of ${ownName()}'s machines.` });
+  if (!gone.length && !already)
+    return answer4(404, { message: `That isn't one of ${ownName()}'s machines.` });
   if (id)
     forgetSaved(id);
-  macDocsChanged();
+  macDocsChanged({ closeRemoved: changed });
   tellGone(gone);
   return answer4(200, {});
 }
@@ -45447,7 +45447,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "f8786caa6279";
+var BRIDGE_VERSION = "23869d1b9c66";
 
 // box/src/link/rehome/move.ts
 init_outside();

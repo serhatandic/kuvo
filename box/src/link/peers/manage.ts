@@ -175,7 +175,7 @@ export function removeHere(key: string): Acted {
   let gone: Peer[] = [];
   let id: string | undefined;
   let already = false;
-  updateLink(link => {
+  const changed = updateLink(link => {
     const peer = link ? peersOf(link).find(each => each.key === key) : undefined;
     // (Removed already, from here: the same again, as when it's asked again after a restart.)
     already = Boolean(link?.removedHere?.includes(key));
@@ -189,11 +189,9 @@ export function removeHere(key: string): Acted {
     if (made.link.peerNames) delete made.link.peerNames[key];
     return made.link;
   });
-  // (Its devices' removals go to your other computers either way.)
-  if (!gone.length && already) macDocsChanged();
-  if (!gone.length) return already ? answer(200, {}) : answer(404, { message: `That isn't one of ${ownName()}'s machines.` });
+  if (!gone.length && !already) return answer(404, { message: `That isn't one of ${ownName()}'s machines.` });
   if (id) forgetSaved(id);
-  macDocsChanged();
+  macDocsChanged({ closeRemoved: changed });
   tellGone(gone);
   return answer(200, {});
 }

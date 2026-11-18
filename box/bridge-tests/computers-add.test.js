@@ -1011,23 +1011,24 @@ test("a member of a setup, and a request that can't stay, are told where to add 
   }
 });
 
-test("no list of machines while this box keeps its machines' links isn't none: it says so, and adds no computer over it (#753)", async () => {
-  // (Its list gone, as when it couldn't be written; what it keeps of the machines it added still there.)
+test("a missing or unreadable list of machines isn't overwritten when this box still keeps machines' links (#753)", async () => {
   const list = path.join(home, "machines.json");
   const before = fs.readFileSync(list);
   assert.ok(Object.keys(read(path.join(home, "phone-link.json")).machines).length > 0);
-  fs.rmSync(list);
   try {
-    const said = (await ask("GET", "kuvo/computers/add")).body;
-    assert.deepEqual([said.can, said.why], [false, "Studio’s list of machines can’t be read right now."]);
-    const refused = await ask("POST", "kuvo/computers/add", { destination: "gpu" });
-    assert.deepEqual([refused.status, refused.body.message], [503, "Studio’s list of machines can’t be read right now."]);
-    assert.equal(fs.existsSync(list), false, "no new list written in its place");
-    // What a phone asks of this Mac's machines says the same: the one reading of it.
     const front = link.macFront(handle, { wait: 10, look: 60_000 });
-    const pieces = [];
-    for await (const piece of front({ method: "GET", path: "kuvo/machines", headers: {} }, undefined)) pieces.push(piece);
-    assert.equal(pieces.find(each => each.head).head.status, 503);
+    for (const contents of [null, "{ invalid JSON"]) {
+      if (contents === null) fs.rmSync(list);
+      else fs.writeFileSync(list, contents);
+      const said = (await ask("GET", "kuvo/computers/add")).body;
+      assert.deepEqual([said.can, said.why], [false, "Studio’s list of machines can’t be read right now."]);
+      const refused = await ask("POST", "kuvo/computers/add", { destination: "gpu" });
+      assert.deepEqual([refused.status, refused.body.message], [503, "Studio’s list of machines can’t be read right now."]);
+      assert.equal(fs.existsSync(list) ? fs.readFileSync(list, "utf8") : null, contents);
+      const pieces = [];
+      for await (const piece of front({ method: "GET", path: "kuvo/machines", headers: {} }, undefined)) pieces.push(piece);
+      assert.equal(pieces.find(each => each.head).head.status, 503);
+    }
   } finally {
     fs.writeFileSync(list, before);
   }
