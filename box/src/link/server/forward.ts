@@ -125,10 +125,12 @@ export async function* forward(target: Target, path: string, request: LinkReques
   // the box and goes once the new one runs, as one sent through `kuvo/sessions/<id>/send` does; a
   // command or shell, which would run on the engine stopped next, is said to wait.
   const toEngine = method === "POST" && /^\/api\/session\/([^/]+)\/(prompt|command|shell|compact|summarize)$/.exec(url.pathname);
-  if (toEngine && !toAgents && swapHoldsFor(target)) {
+  let heldSession: string | undefined;
+  try { if (toEngine && !toAgents) heldSession = decodeURIComponent(toEngine[1]!); } catch { /* let the engine answer an invalid address */ }
+  if (toEngine && heldSession && swapHoldsFor(target, heldSession)) {
     let body: unknown = null;
     try { body = JSON.parse(request.body?.toString("utf8") ?? ""); } catch {}
-    const session = decodeURIComponent(toEngine[1]!);
+    const session = heldSession;
     const text = isObject(body) && typeof body.text === "string" ? body.text : null;
     const id = isObject(body) && typeof body.id === "string" && /^msg_[A-Za-z0-9]{1,80}$/.test(body.id) ? body.id : messageID();
     const message = isObject(body) && text !== null && toEngine[2] === "prompt"
@@ -139,7 +141,7 @@ export async function* forward(target: Target, path: string, request: LinkReques
       yield { body: Buffer.from(JSON.stringify({ waits: true })) };
     } else {
       yield { head: { status: 503, headers: { "content-type": "application/json" } } };
-      yield { body: Buffer.from(JSON.stringify({ message: swapLine(swapUnderWay(RUN)) ?? "", engineChanging: true })) };
+      yield { body: Buffer.from(JSON.stringify({ message: swapLine(swapUnderWay(RUN)) ?? "Kuvo is checking the engine’s inbox.", engineChanging: true })) };
     }
     return;
   }

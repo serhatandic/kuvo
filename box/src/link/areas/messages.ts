@@ -158,11 +158,12 @@ async function* sending(context: RouteContext, session: string): AsyncGenerator<
       }
       // An engine being changed takes no command meanwhile (it would run on the engine stopped next):
       // said, in words, to send again once it's back.
-      if (command && swapHoldsFor(target)) return { status: 503, headers: { "content-type": "application/json" }, body: Buffer.from(JSON.stringify({ message: `${swapLine(swapUnderWay(RUN)) ?? ""} Send this command again then.`.trim(), engineChanging: true })) };
+      const holding = swapHoldsFor(target, session);
+      if (command && holding) return { status: 503, headers: { "content-type": "application/json" }, body: Buffer.from(JSON.stringify({ message: `${swapLine(swapUnderWay(RUN)) ?? "Kuvo is checking the engine’s inbox."} Send this command again then.`, engineChanging: true })) };
       // For after this run while its queue is paused (a Stop, from any client), or while its engine
       // is being changed (PROTOCOL.md, "A new engine"): it waits on the box, as what arrives then does
       // (the engine would run all it holds with the next thing it had).
-      if (!command && (delivery === "queue" || swapHoldsFor(target)) && keepWaiting(session, body as Outgoing & { id: string }, { words: (typeof given.words === "string" ? given.words : fields?.words ?? message.text).trim() }, undefined, target)) {
+      if (!command && (delivery === "queue" || holding) && keepWaiting(session, body as Outgoing & { id: string }, { words: (typeof given.words === "string" ? given.words : fields?.words ?? message.text).trim() }, undefined, target)) {
         return { status: 200, headers: { "content-type": "application/json" }, body: Buffer.from(JSON.stringify({ waits: true })) };
       }
       const post = async (): Promise<SentAnswer> => {

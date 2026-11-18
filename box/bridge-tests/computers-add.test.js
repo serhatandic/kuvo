@@ -62,6 +62,7 @@ write(path.join(tools, "launchctl"), `#!/bin/sh
 J="$HOME/.kuvo-code/run/fake-launchd"
 P="$HOME/Library/LaunchAgents/run.kuvo.code.machine.plist"
 H="$HOME/.kuvo-code/${helperBundle}/Contents/MacOS/Kuvo Helper"
+printf '%s\n' "$*" >>"$HOME/launchctl.log"
 mode=keep-machine
 case "$2 $3" in
   *.permissions*) J="$J.permissions"; P="$HOME/Library/LaunchAgents/run.kuvo.code.machine.permissions.plist"; mode=watch-machine ;;
@@ -79,6 +80,7 @@ case "$1" in
   bootstrap|kickstart)
     [ -f "$P" ] || exit 1
     if [ "$mode" = keep-machine ] && ! grep -q keep-machine "$P"; then
+      if [ -f "$HOME/refuse-legacy" ]; then echo "legacy job refused" >&2; exit 1; fi
       echo legacy >"$J"
       keeper=$(cat "$HOME/.kuvo-code/run/box.pid" 2>/dev/null)
       if [ -z "$keeper" ] || ! ps -ww -o command= -p "$keeper" | grep -q 'kuvo-start.*keep'; then
@@ -113,11 +115,29 @@ const port = Number(process.argv[process.argv.indexOf("--port") + 1]);
 fs.writeFileSync(process.env.HOME + "/engine-helper", process.env.KUVO_MACHINE_HELPER_PID || "");
 // (Its sign-ins, kept as an engine keeps them: listed, and stored as they're given.)
 const kept = process.env.HOME + "/engine-credentials.json";
+const inboxFile = process.env.HOME + "/engine-inbox.json";
 const credentials = () => { try { return JSON.parse(fs.readFileSync(kept, "utf8")); } catch { return []; } };
 const server = http.createServer((request, response) => {
   const chunks = [];
   request.on("data", chunk => chunks.push(chunk));
   request.on("end", () => {
+    const url = new URL(request.url, "http://127.0.0.1");
+    if (fs.existsSync(inboxFile)) {
+      if (url.pathname === "/api/session" && !url.searchParams.has("archived")) return response.end(JSON.stringify({ data: [{ id: "ses_retry" }] }));
+      if (url.pathname === "/api/session/ses_retry/inbox") return response.end(JSON.stringify({ data: JSON.parse(fs.readFileSync(inboxFile, "utf8")) }));
+      if (request.method === "DELETE" && url.pathname.startsWith("/api/session/ses_retry/inbox/")) {
+        const id = url.pathname.split("/").at(-1);
+        const failed = process.env.HOME + "/inbox-delete-refused";
+        if (id === "msg_B" && !fs.existsSync(failed)) {
+          fs.writeFileSync(failed, "");
+          response.statusCode = 503;
+          return response.end("{}");
+        }
+        const inbox = JSON.parse(fs.readFileSync(inboxFile, "utf8"));
+        fs.writeFileSync(inboxFile, JSON.stringify(inbox.filter(item => item.id !== id)));
+        return response.end("{}");
+      }
+    }
     response.writeHead(200, { "content-type": "application/json" });
     if (request.url.endsWith("/prompt") && request.method === "POST") {
       fs.appendFileSync(process.env.HOME + "/delivered-prompts", JSON.parse(Buffer.concat(chunks).toString()).text + "\\n");
@@ -1207,18 +1227,70 @@ for (const reinstall of [false, true]) test(`a fresh Darwin installer rolls back
 test("a stopped Darwin machine starts through its existing launch job", {
   skip: process.platform !== "darwin",
 }, async () => {
-  const { root, run, plist, bridge, adopted, env, installHelper, stop } = machineFixture("installer-stopped-legacy");
+  const { folder, root, run, plist, bridge, adopted, env, installHelper, stop } = machineFixture("installer-stopped-legacy");
   installHelper();
   write(path.join(run, "stopped"), "");
   const installer = spawn(process.execPath, [path.join(root, "bin/kuvo-link.js"), "helper", "machine-start"], { env, stdio: "ignore" });
   const exited = new Promise(resolve => installer.once("exit", resolve));
   try {
     assert.equal(await exited, 0);
+    assert.match(fs.readFileSync(path.join(folder, "launchctl.log"), "utf8"), /^kickstart gui\/\d+\/run\.kuvo\.code\.machine$/m);
     assert.match(fs.readFileSync(plist, "utf8"), /exec sh/);
     assert.equal(bridge().helper, 0);
     assert.equal(fs.existsSync(adopted), false);
   } finally {
     if (installer.exitCode === null && installer.signalCode === null) installer.kill();
+    stop();
+  }
+});
+
+test("a stopped Darwin machine reports a refused legacy launch job", {
+  skip: process.platform !== "darwin",
+}, async () => {
+  const { folder, root, run, plist, env, installHelper, stop } = machineFixture("installer-refused-legacy");
+  installHelper();
+  write(path.join(run, "stopped"), "");
+  write(path.join(folder, "refuse-legacy"), "");
+  const installer = spawn(process.execPath, [path.join(root, "bin/kuvo-link.js"), "helper", "machine-start"], { env, stdio: ["ignore", "ignore", "pipe"] });
+  let stderr = "";
+  installer.stderr.setEncoding("utf8").on("data", chunk => { stderr += chunk; });
+  const closed = new Promise(resolve => installer.once("close", resolve));
+  try {
+    assert.equal(await closed, 1, "a detached keeper cannot turn the refusal into success");
+    assert.match(stderr, /existing launch job couldn’t start.*legacy job refused/);
+    assert.match(fs.readFileSync(path.join(folder, "launchctl.log"), "utf8"), /^kickstart gui\/\d+\/run\.kuvo\.code\.machine$/m);
+    assert.match(fs.readFileSync(plist, "utf8"), /exec sh/);
+    assert.equal(fs.existsSync(path.join(run, "box.pid")), false);
+  } finally {
+    if (installer.exitCode === null && installer.signalCode === null) installer.kill();
+    stop();
+  }
+});
+
+test("an adopted Darwin reinstall reports failure while the bridge returns 503", {
+  skip: process.platform !== "darwin",
+}, async () => {
+  const { folder, root, plist, engine, bridge, journal, adopted, env, installHelper, stop } = machineFixture("installer-already-adopted", { legacy: false });
+  installHelper();
+  const installer = () => spawnSync(process.execPath, [path.join(root, "bin/kuvo-link.js"), "helper", "machine-start"], { env, encoding: "utf8", timeout: 40_000 });
+  try {
+    const first = installer();
+    assert.equal(first.status, 0, first.stderr);
+    const registered = fs.readFileSync(plist, "utf8");
+    assert.match(registered, /Kuvo Helper<\/string><string>keep-machine<\/string>/);
+    assert.ok(fs.existsSync(adopted));
+    const workers = [engine().pid, bridge().pid];
+
+    write(path.join(folder, "fail-helper-bridge"), "");
+    assert.equal((await fetch(`http://127.0.0.1:${bridge().port}/api/session/active`)).status, 503);
+    const again = installer();
+    assert.equal(again.status, 1, again.stderr);
+    assert.match(again.stderr, /didn’t finish starting/);
+    assert.equal(fs.readFileSync(plist, "utf8"), registered);
+    assert.ok(fs.existsSync(adopted), "the completed adoption stays in place");
+    assert.equal(fs.existsSync(journal), false);
+    assert.deepEqual([engine().pid, bridge().pid], workers);
+  } finally {
     stop();
   }
 });
@@ -1243,7 +1315,7 @@ test("a Darwin keeper finishes an interrupted fresh install when both services a
   }
 });
 
-for (const scenario of ["grant", "worker failure", "interruption", "bootstrap denied", "rollback holds", "deferred update", "deferred worker restart"]) test(`legacy Darwin machine hand-over: ${scenario}`, {
+for (const scenario of ["grant", "worker failure", "interruption", "bootstrap denied", "rollback holds", "deferred update", "deferred worker restart", "partial inbox"]) test(`legacy Darwin machine hand-over: ${scenario}`, {
   skip: process.platform !== "darwin",
 }, async () => {
   const name = "legacy-" + scenario.replaceAll(" ", "-");
@@ -1295,6 +1367,9 @@ for (const scenario of ["grant", "worker failure", "interruption", "bootstrap de
       if (scenario === "bootstrap denied") write(path.join(folder, "refuse-helper"), "");
       if (scenario === "worker failure") write(path.join(folder, "fail-helper-bridge"), "");
       if (scenario === "interruption") write(path.join(folder, "pause-helper-bootstrap"), "");
+      if (scenario === "partial inbox") write(path.join(folder, "engine-inbox.json"), JSON.stringify(["A", "B", "C"].map(text => ({
+        id: `msg_${text}`, delivery: "queue", type: "user", payload: { text },
+      }))));
       write(path.join(folder, "files-access"), "true");
       await until(() => read(swap).stage === "waiting", "even with a grant the hand-over should wait for work");
       assert.match(fs.readFileSync(plist, "utf8"), /exec sh/);
@@ -1352,6 +1427,12 @@ for (const scenario of ["grant", "worker failure", "interruption", "bootstrap de
     const [, helper] = fs.readFileSync(path.join(run, "machine-keeper"), "utf8").trim().split(/\s+/).map(Number);
     assert.equal(Number(fs.readFileSync(path.join(folder, "engine-helper"), "utf8")), helper);
     assert.equal(bridge().helper, helper);
+    if (scenario === "partial inbox") {
+      const delivered = path.join(folder, "delivered-prompts");
+      await until(() => fs.readFileSync(delivered, "utf8").endsWith("C\n") && !fs.existsSync(swap), "the handover should finish delivering the inbox");
+      assert.ok(fs.existsSync(path.join(folder, "inbox-delete-refused")), "one DELETE returned 503");
+      assert.equal(fs.readFileSync(delivered, "utf8"), "A\nB\nC\n", "the handover sends each prompt only once");
+    }
   } finally {
     stop();
     if (legacy.exitCode === null && legacy.signalCode === null) legacy.kill();

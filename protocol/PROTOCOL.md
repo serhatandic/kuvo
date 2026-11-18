@@ -3518,9 +3518,11 @@ turns, what's sent meanwhile held on the box, never cut:
   the box's queue meanwhile; Send Now and Steer put the item first. The coding agents' bridge waits
   before it starts anything on the engine (a conversation on the engine's models, a review, a group
   chat's seat) until the hold ends. What the engine's inboxes held is kept on the box before it's
-  taken from the engine, so a swapper cut off between the two leaves it in both, never neither. The queue's answer carries `line` while what waits on it waits for this
-  (the box's words; `kuvo/update`'s `engineChange.line` says the same for the computer, as its
-  update line in `computers`). Once it's done or let go of, what waits for each conversation the
+  taken from the engine, so a swapper cut off between the two leaves it in both, never neither.
+  If a transfer stops partway through, that conversation stays held while Kuvo clears the remaining
+  inbox and then sends the saved messages in order. The queue's answer carries `line` while it holds.
+  During an engine change, `kuvo/update`'s `engineChange.line` and the update line in `computers`
+  tell the computer's state. Once the hold ends, what waits for each conversation the
   engine has that isn't paused goes, each once and in its order: the first to start a turn where
   none runs, the rest (and all, into one that runs) as each was sent.
 

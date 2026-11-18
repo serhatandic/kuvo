@@ -10410,6 +10410,7 @@ function fieldsOf(given) {
 }
 
 // box/src/link/engine/queue.ts
+init_platform();
 init_files2();
 init_home();
 import crypto11 from "node:crypto";
@@ -10966,12 +10967,12 @@ var FILES = queueFiles(RUN);
 var QUEUES_FILE = FILES.file;
 var WAITING_DIR = FILES.waiting;
 var DRAIN_AFTER = 1500;
-var shownQueue = ({ paused, held, waiting }) => {
-  const line = waiting?.length && !paused && swapHolds(RUN) ? swapLine(swapUnderWay(RUN)) : null;
+var shownQueue = ({ paused, held, waiting, inboxMoved }) => {
+  const line = waiting?.length && !paused ? swapHolds(RUN) ? swapLine(swapUnderWay(RUN)) : inboxMoved?.length ? "Messages wait while Kuvo checks the engine’s inbox." : null : null;
   return { paused, held, ...waiting?.length ? { waiting } : {}, ...line ? { line } : {} };
 };
-function swapHoldsFor(target) {
-  if (!swapHolds(RUN))
+function swapHoldsFor(target, session) {
+  if (!swapHolds(RUN) && !(session && queueOf(session).inboxMoved?.length))
     return false;
   try {
     return readBridgeFile()?.port !== target.port;
@@ -11023,7 +11024,7 @@ function orderOf(inbox, { held, waiting = [] }) {
   ];
 }
 var waitingFile2 = (id) => waitingFile(FILES, id);
-var keepWaiting2 = (session, message, shown = {}, place, target) => keepWaiting(FILES, session, message, shown, tellFollowers, place, target ? swapHoldsFor(target) : false);
+var keepWaiting2 = (session, message, shown = {}, place, target) => keepWaiting(FILES, session, message, shown, tellFollowers, place, target ? swapHoldsFor(target, session) : false);
 var keepWaitingHeld = (session, message, words) => keepWaiting2(session, message, words === undefined ? {} : { words: words.trim() }, (state, waiting) => {
   const came = (state.cameHeld ?? []).filter((id) => id !== waiting.id);
   const held = state.held.filter((id) => id !== waiting.id);
@@ -11059,11 +11060,13 @@ async function sendInto(target, session, message, shown = {}) {
   await asked(target, "POST", `api/session/${address(session)}/prompt`, whole);
   return "sent";
 }
-function takeWaiting(session, item, resume = false, inbox = []) {
+function takeWaiting(session, item, resume = false, inbox = [], delivering = true) {
   let shown;
   let held = false;
   let before;
   changeQueue2(session, (state) => {
+    if (delivering && state.inboxMoved?.length)
+      return state;
     shown = item ? state.waiting?.find((each) => each.id === item) : state.waiting?.[0];
     if (!shown)
       return state;
@@ -11244,7 +11247,7 @@ function forgetQueue(session) {
     fs24.rmSync(waitingFile2(each.id), { force: true });
 }
 function dropWaiting(session, item, inbox = []) {
-  return takeWaiting(session, item, false, inbox);
+  return takeWaiting(session, item, false, inbox, false);
 }
 var inboxFor = (target, session) => inboxOf(target, session).catch(() => []);
 var inboxNow = (target, session, patience) => inboxOf(target, session, patience).then(messagesIn);
@@ -11340,11 +11343,11 @@ async function takeBackFromInbox(target, session, item) {
   return { id: item, text, ...files.length ? { files } : {}, delivery: entry.delivery, ...shown.from ? { from: shown.from } : {}, words: shown.words, keyword: shown.keyword, draft: shown.from ? shown.words : draftOf({ words: shown.words, keyword: shown.keyword ?? undefined }), ...before ? { before } : {} };
 }
 async function drain(target, session) {
-  if (queueOf(session).paused || swapHoldsFor(target) || await isRunning(target, session))
+  if (queueOf(session).paused || swapHoldsFor(target, session) || await isRunning(target, session))
     return;
   const inbox = await inboxOf(target, session);
   const first = orderOf(inbox, queueOf(session))[0];
-  if (queueOf(session).paused || await isRunning(target, session))
+  if (queueOf(session).paused || swapHoldsFor(target, session) || await isRunning(target, session))
     return;
   if (!first)
     return;
@@ -11414,9 +11417,11 @@ async function resumeQueue(target, session) {
   return queueOf(session);
 }
 async function sendNow(target, session, item) {
-  if (swapHoldsFor(target))
+  if (swapHoldsFor(target, session))
     return goesFirst(session, item);
   const inbox = await inboxFor(target, session);
+  if (swapHoldsFor(target, session))
+    return goesFirst(session, item);
   const kept = takeWaiting(session, item, true, inbox);
   if (kept) {
     if (!kept.message)
@@ -11444,7 +11449,7 @@ async function sendNow(target, session, item) {
   return true;
 }
 async function steerQueued(target, session, item, toAgents) {
-  if (swapHoldsFor(target))
+  if (swapHoldsFor(target, session))
     return goesFirst(session, item);
   const entry = (await inboxOf(target, session)).find((each) => each.id === item);
   if (!entry || !await isRunning(target, session))
@@ -11473,6 +11478,26 @@ function goesFirst(session, item) {
   return found;
 }
 async function moveInboxToBox(target, session) {
+  const claim = path22.join(RUN, ".inbox-transfers", crypto11.createHash("sha256").update(session).digest("hex"));
+  const taken = locked(FILES.lock, () => {
+    let owner = 0;
+    try {
+      owner = Number(fs24.readFileSync(claim, "utf8"));
+    } catch {}
+    if (owner === process.pid || processRuns(owner, "kuvo-link"))
+      return false;
+    writePrivate(claim, String(process.pid));
+    return true;
+  });
+  if (!taken)
+    throw new Error("The engine’s inbox is already being moved.");
+  try {
+    return await transferInbox(target, session);
+  } finally {
+    fs24.rmSync(claim, { force: true });
+  }
+}
+async function transferInbox(target, session) {
   const inbox = messagesIn(await inboxOf(target, session, undefined, true));
   if (!inbox.length) {
     if (queueOf(session).inboxMoved)
@@ -11530,6 +11555,11 @@ async function releaseWaiting(target) {
       continue;
     try {
       await asked(target, "GET", `api/session/${address(session)}`);
+      if (queueOf(session).inboxMoved?.length) {
+        if (await isRunning(target, session))
+          continue;
+        await moveInboxToBox(target, session);
+      }
     } catch {
       continue;
     }
@@ -40575,8 +40605,16 @@ function startLegacyMachine() {
   const launch = machineLaunch();
   if (launch && shellJob(textOf(launch.plist))) {
     const { domain, job, plist, run } = launch;
-    if ((run(["print", job]).status === 0 ? run(["kickstart", job]) : run(["bootstrap", domain, plist])).status === 0 && waitForKeeper(legacyKeeperRuns))
+    const loaded = run(["print", job]);
+    const started = loaded.error ? loaded : loaded.status === 0 ? run(["kickstart", job]) : run(["bootstrap", domain, plist]);
+    if (started.status !== 0) {
+      console.error("Kuvo’s existing launch job couldn’t start.", started.error?.message ?? started.stderr?.trim() ?? "");
+      return false;
+    }
+    if (waitForKeeper(legacyKeeperRuns))
       return true;
+    console.error("Kuvo’s existing launch job didn’t start its keeper in time.");
+    return false;
   }
   spawnLegacyKeeper();
   return waitForKeeper(legacyKeeperRuns);
@@ -40617,9 +40655,7 @@ function restoreMachineJob(previous) {
   }
   if (!previous.legacy)
     return restored;
-  if (!legacyKeeperRuns())
-    spawnLegacyKeeper();
-  return waitForKeeper(legacyKeeperRuns) && restored;
+  return restored && startLegacyMachine();
 }
 function startMachineHelper(version) {
   if (!machineHelperAvailable() || fs123.existsSync(path129.join(RUN, "off")))
@@ -46581,7 +46617,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "08e18891f9d1";
+var BRIDGE_VERSION = "c03646f9804b";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -62151,12 +62187,17 @@ async function* forward(target, path, request, signal, allows, naming = null, do
     return;
   }
   const toEngine = method === "POST" && /^\/api\/session\/([^/]+)\/(prompt|command|shell|compact|summarize)$/.exec(url.pathname);
-  if (toEngine && !toAgents && swapHoldsFor(target)) {
+  let heldSession;
+  try {
+    if (toEngine && !toAgents)
+      heldSession = decodeURIComponent(toEngine[1]);
+  } catch {}
+  if (toEngine && heldSession && swapHoldsFor(target, heldSession)) {
     let body = null;
     try {
       body = JSON.parse(request.body?.toString("utf8") ?? "");
     } catch {}
-    const session = decodeURIComponent(toEngine[1]);
+    const session = heldSession;
     const text = isObject(body) && typeof body.text === "string" ? body.text : null;
     const id = isObject(body) && typeof body.id === "string" && /^msg_[A-Za-z0-9]{1,80}$/.test(body.id) ? body.id : messageID();
     const message = isObject(body) && text !== null && toEngine[2] === "prompt" ? { id, text, delivery: body.delivery === "queue" ? "queue" : "steer", ...Array.isArray(body.files) ? { files: body.files } : {}, ...isObject(body.metadata) ? { metadata: body.metadata } : {} } : null;
@@ -62165,7 +62206,7 @@ async function* forward(target, path, request, signal, allows, naming = null, do
       yield { body: Buffer.from(JSON.stringify({ waits: true })) };
     } else {
       yield { head: { status: 503, headers: { "content-type": "application/json" } } };
-      yield { body: Buffer.from(JSON.stringify({ message: swapLine(swapUnderWay(RUN)) ?? "", engineChanging: true })) };
+      yield { body: Buffer.from(JSON.stringify({ message: swapLine(swapUnderWay(RUN)) ?? "Kuvo is checking the engine’s inbox.", engineChanging: true })) };
     }
     return;
   }
@@ -63954,9 +63995,10 @@ async function* sending3(context, session) {
       if (held && id && keepWaitingHeld(session, { ...body, id, delivery: "queue" }, typeof given.words === "string" ? given.words : fields?.words)) {
         return { status: 200, headers: { "content-type": "application/json" }, body: Buffer.from(JSON.stringify({ waits: true })) };
       }
-      if (command && swapHoldsFor(target))
-        return { status: 503, headers: { "content-type": "application/json" }, body: Buffer.from(JSON.stringify({ message: `${swapLine(swapUnderWay(RUN)) ?? ""} Send this command again then.`.trim(), engineChanging: true })) };
-      if (!command && (delivery === "queue" || swapHoldsFor(target)) && keepWaiting2(session, body, { words: (typeof given.words === "string" ? given.words : fields?.words ?? message.text).trim() }, undefined, target)) {
+      const holding = swapHoldsFor(target, session);
+      if (command && holding)
+        return { status: 503, headers: { "content-type": "application/json" }, body: Buffer.from(JSON.stringify({ message: `${swapLine(swapUnderWay(RUN)) ?? "Kuvo is checking the engine’s inbox."} Send this command again then.`, engineChanging: true })) };
+      if (!command && (delivery === "queue" || holding) && keepWaiting2(session, body, { words: (typeof given.words === "string" ? given.words : fields?.words ?? message.text).trim() }, undefined, target)) {
         return { status: 200, headers: { "content-type": "application/json" }, body: Buffer.from(JSON.stringify({ waits: true })) };
       }
       const post = async () => {

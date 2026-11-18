@@ -167,8 +167,15 @@ export function startLegacyMachine(): boolean {
   const launch = machineLaunch();
   if (launch && shellJob(textOf(launch.plist))) {
     const { domain, job, plist, run } = launch;
-    if ((run(["print", job]).status === 0 ? run(["kickstart", job]) : run(["bootstrap", domain, plist])).status === 0 &&
-        waitForKeeper(legacyKeeperRuns)) return true;
+    const loaded = run(["print", job]);
+    const started = loaded.error ? loaded : loaded.status === 0 ? run(["kickstart", job]) : run(["bootstrap", domain, plist]);
+    if (started.status !== 0) {
+      console.error("Kuvo’s existing launch job couldn’t start.", started.error?.message ?? started.stderr?.trim() ?? "");
+      return false;
+    }
+    if (waitForKeeper(legacyKeeperRuns)) return true;
+    console.error("Kuvo’s existing launch job didn’t start its keeper in time.");
+    return false;
   }
   spawnLegacyKeeper();
   return waitForKeeper(legacyKeeperRuns);
@@ -204,8 +211,7 @@ export function restoreMachineJob(previous: MachineJob): boolean {
     restored = restored && checked.status === 0 && /^\s*program = \/bin\/sh\s*$/m.test(checked.stdout ?? "");
   }
   if (!previous.legacy) return restored;
-  if (!legacyKeeperRuns()) spawnLegacyKeeper();
-  return waitForKeeper(legacyKeeperRuns) && restored;
+  return restored && startLegacyMachine();
 }
 
 /** Starts the Helper job. Keep the previous job on disk across the whole trial. */

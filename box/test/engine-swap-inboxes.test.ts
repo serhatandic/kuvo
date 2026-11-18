@@ -1,7 +1,7 @@
 import "./safety"
 import { expect, test } from "bun:test"
 import { keepInboxes } from "../src/link/updates/engine-swap"
-import { moveInboxToBox, queueOf, releaseWaiting } from "../src/link/engine/queue"
+import { moveInboxToBox, queueOf, releaseWaiting, sendInto } from "../src/link/engine/queue"
 
 test("a restart keeps pending messages beyond the first page and defers on incomplete inventory", async () => {
   const first = Array.from({ length: 100 }, (_, n) => ({ id: `ses_scan_${n}`, time: { updated: 1 } }))
@@ -55,7 +55,7 @@ test("an interrupted inbox transfer delivers the messages in their original orde
   const session = "ses_retry_order"
   const inbox = ["A", "B", "C"].map(text => ({ id: `msg_${text}`, delivery: "queue", type: "user", payload: { text } }))
   const delivered: string[] = []
-  let failB = true
+  let refused = 2
   const server = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
@@ -64,8 +64,8 @@ test("an interrupted inbox transfer delivers the messages in their original orde
       if (route.endsWith("/inbox")) return Response.json({ data: inbox })
       if (request.method === "DELETE") {
         const id = route.split("/").at(-1)
-        if (id === "msg_B" && failB) {
-          failB = false
+        if (id === "msg_B" && refused > 0) {
+          refused--
           return new Response(null, { status: 503 })
         }
         inbox.splice(inbox.findIndex(item => item.id === id), 1)
@@ -78,9 +78,12 @@ test("an interrupted inbox transfer delivers the messages in their original orde
     const target = { port: server.port!, password: "test" }
     await expect(moveInboxToBox(target, session)).rejects.toThrow("503")
     expect(inbox.map(item => item.id)).toEqual(["msg_B", "msg_C"])
+    await releaseWaiting(target)
+    expect(delivered).toEqual([])
+    expect(await sendInto(target, session, { id: "msg_D", text: "D", delivery: "steer" })).toBe("waits")
     expect(await moveInboxToBox(target, session)).toBe(2)
     await releaseWaiting(target)
-    expect(delivered).toEqual(["A", "B", "C"])
+    expect(delivered).toEqual(["A", "B", "C", "D"])
   } finally {
     server.stop(true)
   }
