@@ -452,10 +452,10 @@ test("a copy being set up as this box stopped: as it starts again, what came of 
   // As a box cut off partway through setting it up left it: its folder placed, its conversation in.
   const thing = "ses_cut1", id = "mov_cut1";
   fs.mkdirSync(path.join(wakes, thing), { recursive: true });
-  fs.writeFileSync(path.join(wakes, thing, "paused"), "moving");
+  fs.writeFileSync(path.join(wakes, thing, "paused"), `moving:${id}`);
   engine.sessions.set(thing, { id: thing, title: "Notes", directory: chats, messages: [] });
   writeRecord({ id, kind: "chat", thing, name: "“Notes”", from: peerKey, to: "", role: "to", stage: "copying", sessions: [thing], peer: peerKey, wasPaused: false,
-    hash: "h", size: 10, sent: 10, tries: 0, started: Date.now(), complete: true, placed: true, setUpSince: Date.now() - 60_000 });
+    hash: "h", size: 10, sent: 10, tries: 0, started: Date.now(), complete: true, placed: true, createdSessions: [thing], setUpSince: Date.now() - 60_000 });
   startAgain();
   await until(() => told.some(move => move.id === id && move.op === "failed"));
   assert.ok(!engine.sessions.has(thing) && !fs.existsSync(path.join(wakes, thing)), "nothing of it is left here");
@@ -682,7 +682,7 @@ test("a copy this box can't let go of is offered again: refused, saying why, rat
   // Lab took a move of it back a while ago; its copy here couldn't all go (its engine refusing).
   engine.sessions.set("ses_old1", { id: "ses_old1", title: "Notes", directory: chats, messages: [] });
   writeRecord({ id: "mov_old1", kind: "chat", thing: "ses_old1", name: "“Notes”", from: peerKey, to: "", role: "to", stage: "copying", sessions: ["ses_old1"], peer: peerKey, wasPaused: false,
-    hash: "h", size: 10, sent: 10, tries: 0, started: Date.now(), complete: true, dropping: true, sentAt: Date.now() });
+    hash: "h", size: 10, sent: 10, tries: 0, started: Date.now(), complete: true, createdSessions: ["ses_old1"], dropping: true, sentAt: Date.now() });
   engine.down = true;
   try {
     const { bytes, hash } = bundleFor({ kind: "chat", thing: "ses_old1", name: "“Notes”", wasPaused: false, exports: [{ info: { id: "ses_old1", title: "Notes" }, messages: [] }] });
@@ -702,7 +702,7 @@ test("a copy that still can't be let go of after a week says so in the log, once
   engine.sessions.set("ses_stuck1", { id: "ses_stuck1", title: "Notes", directory: chats, messages: [] });
   const started = Date.now();
   writeRecord({ id: "mov_stuck1", kind: "chat", thing: "ses_stuck1", name: "“Notes”", from: peerKey, to: "", role: "to", stage: "copying", sessions: ["ses_stuck1"], peer: peerKey, wasPaused: false,
-    hash: "h", size: 10, sent: 10, tries: 0, started, complete: true, dropping: true, sentAt: started });
+    hash: "h", size: 10, sent: 10, tries: 0, started, complete: true, createdSessions: ["ses_stuck1"], dropping: true, sentAt: started });
   const logged = [];
   const error = console.error;
   console.error = (...words) => logged.push(words.join(" "));
@@ -797,12 +797,29 @@ test("on this Mac, an answer that came after its conversation's tool stopped wai
   assert.ok(!fs.existsSync(path.join(replies, "ltr_late1.json")), "once");
 });
 
+test("an older copy without import ownership stays held instead of deleting a possibly unrelated session", async () => {
+  script = () => {};
+  const id = "mov_UnprovenImport", thing = "ses_UnprovenImport";
+  engine.sessions.set(thing, { id: thing, title: "Existing conversation", directory: chats, messages: [] });
+  writeRecord({ id, kind: "chat", thing, name: "Notes", from: peerKey, to: "", role: "to", stage: "copying",
+    sessions: [thing], peer: peerKey, wasPaused: false, hash: "h", size: 10, sent: 10, tries: 0, started: Date.now(), complete: true });
+  try {
+    await say({ op: "drop", id });
+    assert.equal(recordOf(thing)?.dropping, true);
+    assert.ok(engine.sessions.has(thing));
+    assert.ok((await ask("GET", "kuvo/moves")).json.away.includes(thing));
+  } finally {
+    fs.rmSync(path.join(movesFolder, `${id}.json`), { force: true });
+    engine.sessions.delete(thing);
+  }
+});
+
 test("a copy held here a long while, only now being let go of, isn't said in the log to have been stuck for a week", async () => {
   script = () => {};
   engine.sessions.set("ses_long1", { id: "ses_long1", title: "Notes", directory: chats, messages: [] });
   const id = "mov_long1";
   writeRecord({ id, kind: "chat", thing: "ses_long1", name: "“Notes”", from: peerKey, to: "", role: "to", stage: "copying", sessions: ["ses_long1"], peer: peerKey, wasPaused: false,
-    hash: "h", size: 10, sent: 10, tries: 0, started: Date.now() - 6 * 24 * 3600_000, complete: true });
+    hash: "h", size: 10, sent: 10, tries: 0, started: Date.now() - 6 * 24 * 3600_000, complete: true, createdSessions: ["ses_long1"] });
   const logged = [];
   const error = console.error;
   console.error = (...words) => logged.push(words.join(" "));

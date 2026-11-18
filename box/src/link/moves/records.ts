@@ -41,6 +41,7 @@ export interface MoveRecord extends Move {
   /** Destination sessions this move imported, and the one whose import reply may be missing. */
   createdSessions?: string[];
   importingSession?: string;
+  importingGroup?: boolean;
   /** A group chat's bots, which the box it goes to checks it has. */
   members?: string[];
   /** Offered to the other box at least once: a copy may be there, to drop if it's taken back. */

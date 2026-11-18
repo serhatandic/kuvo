@@ -31657,7 +31657,10 @@ class Undo {
     try {
       const said = JSON.parse(await readFile4(this.file, "utf8"));
       this.list = { sessions: Array.isArray(said?.sessions) ? said.sessions : [], placed: Array.isArray(said?.placed) ? said.placed : [] };
-    } catch {}
+    } catch (error) {
+      if (error.code !== "ENOENT")
+        throw error;
+    }
     return this.list;
   }
   write() {
@@ -39712,4 +39715,4 @@ if (!onMachine) {
 }
 process.on("SIGTERM", () => stop());
 process.on("SIGINT", () => stop());
-// Built from Packages/Box/src/agents 36ae33670a256a6c14fb06a38cefe31a45777efd35f64141a333fa66d4dce4a7
+// Built from Packages/Box/src/agents b29a96a7d3ce3f3f21ce37343b488f8e925807171ff4940c9bfb02407d270c3e

@@ -1062,10 +1062,13 @@ or commit the current bundle. Both computers must agree before the source sends 
 
 1. The source records the previous pause before writing a hold owned by this move. A failed move
    can release only its own hold. Group holds and their transcripts are synced before a copy can
-   be sent. The source checks the inboxes of every conversation it carries and refuses an
-   unreadable queue. The destination accounts for every queued message and syncs the imported
-   group or bot folder before reporting arrival. The source syncs its switch record before it
-   requests a switch for that bundle and keeps its original held while waiting for the decision.
+   be sent. A group whose transcript cannot be read stays where it is. The source freezes new
+   prompts, waits for admitted sends to finish, checks every carried conversation's inbox, and
+   refuses an unreadable queue. The destination requires definite absence before importing each
+   conversation and records what it created so a rollback preserves existing conversations.
+   It accounts for every queued message and syncs the imported group or bot files and any Work
+   Queue attachments and indexes before reporting arrival. The source syncs its switch record before
+   requesting the switch and keeps its original held while waiting for the decision.
 2. The destination writes and syncs its decision to own that bundle before activating the group,
    queues or wake-ups. It resumes activation after a restart. A queue send keeps its pending
    entry and payload until the engine confirms the same message ID in its inbox or conversation.

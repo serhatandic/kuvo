@@ -554,7 +554,9 @@ class Undo {
     try {
       const said = JSON.parse(await readFile(this.file, "utf8"))
       this.list = { sessions: Array.isArray(said?.sessions) ? said.sessions : [], placed: Array.isArray(said?.placed) ? said.placed : [] }
-    } catch {}
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+    }
     return this.list
   }
 

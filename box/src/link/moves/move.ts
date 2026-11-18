@@ -1064,7 +1064,7 @@ async function takeOffer(sender: MailSender, given: Record<string, unknown>): Pr
   incoming.set(id, new Set());
   saveMove({
     id, kind, thing, name, from: sender.key, to: ownKey(readLink() ?? {}) ?? "", role: "to", stage: "copying", sessions: [],
-    peer: sender.key, safeSwitch: true, wasPaused: given.wasPaused === true, ...(typeof given.pausedAs === "string" ? { pausedAs: given.pausedAs.slice(0, 2000) } : {}), generation, hash, size, sent: 0, tries: 0, started: was?.started ?? Date.now(), ...(lane ? { lane: true } : {}),
+    peer: sender.key, ...(kind === "group" ? { importingGroup: false } : { createdSessions: [] }), safeSwitch: true, wasPaused: given.wasPaused === true, ...(typeof given.pausedAs === "string" ? { pausedAs: given.pausedAs.slice(0, 2000) } : {}), generation, hash, size, sent: 0, tries: 0, started: was?.started ?? Date.now(), ...(lane ? { lane: true } : {}),
   });
   answer({ op: "ready", safeSwitch: true });
 }
@@ -1174,6 +1174,7 @@ async function bringIn(record: MoveRecord, signal: AbortSignal): Promise<string[
   if (record.kind === "group") {
     const held = contents.group;
     if (!held || !isObject(held.group)) throw new NotTaken("The group chat didn’t come with it.");
+    changeMove(record.id, each => { each.importingGroup = true; });
     const answer = await askGroups<{ message?: unknown }>(readBridgeFile(), "PUT", `/${encodeURIComponent(record.thing)}`, { group: held.group, messages: held.messages, status: "held", moveImport: importReceipt(record) }, engineWait(signal));
     if (answer.status !== 200) throw new Error(typeof answer.value?.message === "string" ? answer.value.message : `Its group chats answered ${answer.status}.`);
     changeMove(record.id, each => { each.placed = true; });
@@ -1462,13 +1463,21 @@ async function drop(id: string): Promise<void> {
 async function clearCopy(record: MoveRecord): Promise<void> {
   incoming.delete(record.id);
   if (record.kind === "group") {
-    if (record.complete) await groupAction(readBridgeFile(), record.thing, "release", importReceipt(record));
+    if (record.importingGroup) {
+      await groupAction(readBridgeFile(), record.thing, "release", importReceipt(record));
+    } else if (record.importingGroup === undefined && record.complete) {
+      const existing = await askGroups(readBridgeFile(), "GET", `/${encodeURIComponent(record.thing)}`, undefined, engineWait());
+      if (existing.status !== 404) throw new Error("The group copy has no import ownership receipt");
+    }
     if (record.placed) forgetWorkQueues([record.thing]);
   } else {
     const created = new Set(record.createdSessions);
     if (record.lane) {
       // Only what this move placed, each agent's files too, and what those replaced back.
       if (fs.existsSync(placedOf(record.id))) await carry(readBridgeFile(), "undo", { keep: placedOf(record.id) });
+    } else if (record.sessions.length && record.createdSessions === undefined && !record.importingSession) {
+      // An old journal named what the source offered, even when the destination never created it.
+      throw new Error("The conversation copy has no import ownership receipt");
     } else if (created.size || record.importingSession) {
       const engine = readEngineFile();
       if (record.importingSession) {
@@ -1488,9 +1497,7 @@ async function clearCopy(record: MoveRecord): Promise<void> {
     if (created.size) forgetWorkQueues([...created]);
     const place = folderOf(record.kind, record.thing);
     // Only a copy this move placed, never one that lives here.
-    if (place && record.placed) {
-      await toTrash(place);
-    }
+    if (place && record.placed && moveHold(pausedText(place)) === record.id) await toTrash(place);
   }
 }
 

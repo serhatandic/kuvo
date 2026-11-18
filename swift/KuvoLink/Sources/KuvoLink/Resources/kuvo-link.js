@@ -38861,6 +38861,7 @@ async function takeOffer2(sender, given) {
     stage: "copying",
     sessions: [],
     peer: sender.key,
+    ...kind === "group" ? { importingGroup: false } : { createdSessions: [] },
     safeSwitch: true,
     wasPaused: given.wasPaused === true,
     ...typeof given.pausedAs === "string" ? { pausedAs: given.pausedAs.slice(0, 2000) } : {},
@@ -38987,6 +38988,9 @@ async function bringIn(record, signal) {
     const held = contents.group;
     if (!held || !isObject(held.group))
       throw new NotTaken("The group chat didn’t come with it.");
+    changeMove(record.id, (each) => {
+      each.importingGroup = true;
+    });
     const answer = await askGroups(readBridgeFile(), "PUT", `/${encodeURIComponent(record.thing)}`, { group: held.group, messages: held.messages, status: "held", moveImport: importReceipt(record) }, engineWait(signal));
     if (answer.status !== 200)
       throw new Error(typeof answer.value?.message === "string" ? answer.value.message : `Its group chats answered ${answer.status}.`);
@@ -39279,8 +39283,13 @@ async function drop(id) {
 async function clearCopy(record) {
   incoming.delete(record.id);
   if (record.kind === "group") {
-    if (record.complete)
+    if (record.importingGroup) {
       await groupAction(readBridgeFile(), record.thing, "release", importReceipt(record));
+    } else if (record.importingGroup === undefined && record.complete) {
+      const existing = await askGroups(readBridgeFile(), "GET", `/${encodeURIComponent(record.thing)}`, undefined, engineWait());
+      if (existing.status !== 404)
+        throw new Error("The group copy has no import ownership receipt");
+    }
     if (record.placed)
       forgetWorkQueues([record.thing]);
   } else {
@@ -39288,6 +39297,8 @@ async function clearCopy(record) {
     if (record.lane) {
       if (fs123.existsSync(placedOf(record.id)))
         await carry(readBridgeFile(), "undo", { keep: placedOf(record.id) });
+    } else if (record.sessions.length && record.createdSessions === undefined && !record.importingSession) {
+      throw new Error("The conversation copy has no import ownership receipt");
     } else if (created.size || record.importingSession) {
       const engine = readEngineFile();
       if (record.importingSession) {
@@ -39310,9 +39321,8 @@ async function clearCopy(record) {
     if (created.size)
       forgetWorkQueues([...created]);
     const place = folderOf3(record.kind, record.thing);
-    if (place && record.placed) {
+    if (place && record.placed && moveHold(pausedText(place)) === record.id)
       await toTrash(place);
-    }
   }
 }
 var groupsToWake = false;
@@ -46045,7 +46055,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "6ad33f60417a";
+var BRIDGE_VERSION = "2c781ef32e0c";
 
 // box/src/link/rehome/move.ts
 init_outside();
