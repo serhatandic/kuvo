@@ -397,9 +397,9 @@ fn settle_entry_motion(cx: &mut VisualTestContext) {
     }
 }
 
-/// Resting on a ring opens its card to the ring's right, top-aligned with it, leaving the rings below
-/// in view; the card takes the clicks on it, so what's under it isn't reached; moving onto it
-/// keeps it open, and off both closes it.
+/// Resting on a ring opens its card to the ring's right, raised to fit in a short window. The rings
+/// below remain in view. The card captures clicks, stays open as the pointer enters it, and closes
+/// when the pointer leaves both the ring and card.
 #[gpui::test]
 fn a_rings_card_opens_to_its_right_and_takes_its_own_clicks(cx: &mut TestAppContext) {
     let (workspace, cx) = open(cx, StandIn::at(Replies::Never, NOW));
@@ -417,7 +417,8 @@ fn a_rings_card_opens_to_its_right_and_takes_its_own_clicks(cx: &mut TestAppCont
     settle_entry_motion(cx);
     let card = bounds(cx, "ring-card").expect("its card");
     assert!(card.left() >= ring.right() - px(0.5), "to the ring's right: {card:?} beside {ring:?}");
-    assert!((card.top() - ring.top()).abs() < px(1.), "top-aligned with the ring: {card:?} beside {ring:?}");
+    assert!(ring.top() + card.size.height > px(560.), "top alignment would cut off the card");
+    assert!((card.bottom() - ring.bottom()).abs() < px(1.), "raised to the ring's bottom edge: {card:?} beside {ring:?}");
     assert!(card.left() >= below.right() - px(0.5), "the ring below stays in view");
 
     // Onto the card: it stays open. A click on it reaches nothing under it (a section of Settings).
