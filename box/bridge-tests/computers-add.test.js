@@ -1501,8 +1501,9 @@ test("a reservation creation error says the account couldn't be prepared and log
   }
 });
 
-const macbookPeer = () => link.macPeersBody(link.readLink()).boxes.find(each => each.kind === "machine");
 const macbookAlias = "macbook.lan";
+const macbookAddress = destination => destination === "macbook" || destination === macbookAlias;
+const macbookPeer = () => link.macPeersBody(link.readLink()).boxes.find(each => each.kind === "machine" && macbookAddress(each.id));
 
 async function holdAliasAdd(phone, during) {
   const host = path.join(fake, "hold");
@@ -1523,6 +1524,7 @@ async function holdAliasAdd(phone, during) {
 test("an alias Add honours only its original pairing and cannot restore a key removed during the Add", async () => {
   assert.equal((await ask("POST", "kuvo/machines", { destination: "macbook" })).status, 200);
   const original = macbookPeer();
+  const otherMachines = read(path.join(home, "machines.json")).filter(each => !macbookAddress(each.destination));
   fs.appendFileSync(link.KNOWN_HOSTS, `${macbookAlias} ${fs.readFileSync(path.join(fake, "hostkey"), "utf8").trim()}\n`);
   fs.writeFileSync(path.join(fake, `home-${macbookAlias}`), homes.macbook);
   const key = link.publicOf(link.newKey());
@@ -1546,7 +1548,7 @@ test("an alias Add honours only its original pairing and cannot restore a key re
   assert.match(revokedCaller.failure.message, /device that started this add is no longer paired/);
   assert.match(removedPeer.failure.message, /was removed from your computers/);
   assert.equal(macbookPeer(), undefined);
-  assert.deepEqual(read(path.join(home, "machines.json")), []);
+  assert.deepEqual(read(path.join(home, "machines.json")), otherMachines);
 
   const fresh = await ask("POST", "kuvo/computers/add", { destination: macbookAlias }, authorized);
   const done = await over(fresh.body.try.id);
@@ -1604,7 +1606,7 @@ test("uninstall logs a link-write failure without putting the local path in its 
   assert.equal(result.state, "failed");
   assert.equal(result.failure.message, "Kuvo Code couldn’t confirm that access was revoked. Try uninstalling again.");
   assert.equal(macbookPeer().key, computer.key);
-  assert.equal(read(path.join(home, "machines.json"))[0].destination, "macbook", "the saved address is still available for retry");
+  assert.ok(read(path.join(home, "machines.json")).some(each => each.destination === "macbook"), "the saved address is still available for retry");
 });
 
 test("uninstall revokes access before SSH cleanup and reports a lost reply without its diagnostic", async () => {
