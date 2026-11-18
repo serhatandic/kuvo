@@ -17,6 +17,8 @@ const steps: readonly Step[] = [
   // 2. Link state can now carry a signed leadership history and demote its old signer.
   // Existing setups need no rewrite. An older box must never reopen a transferred setup.
   () => {},
+  // 3. Reserve the standby delegation and fencing state before using them.
+  () => {},
 ];
 
 interface Checkpoint {

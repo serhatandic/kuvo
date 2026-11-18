@@ -24,7 +24,7 @@ type DocsDone = Pick<ReturnType<typeof docsWork>, "given" | "left" | "send">;
 const docParts = new Map<string, PendingParts>();
 
 // Sends what `work` says goes (`[{to, docs}]`), in as many mails as each takes.
-function sendDocs(host: Pick<LinkHost, "send"> | null | undefined, link: LinkState, sends: DocSend[] | null | undefined): void {
+export function sendDocs(host: Pick<LinkHost, "send"> | null | undefined, link: LinkState, sends: DocSend[] | null | undefined): void {
   if (!host || !link?.key) return;
   for (const { to, docs } of sends ?? []) {
     for (const payload of docMails(docs)) {

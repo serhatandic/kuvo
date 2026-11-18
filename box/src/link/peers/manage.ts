@@ -10,15 +10,18 @@
 // Letting a computer add Kuvo Code's app to your devices again (`allow-devices`) is the main
 // computer's own, for its own clients: never handed on from another box (areas/computers.ts).
 
+import { LEADERSHIP_WAIT, primaryFenced } from "../setup/lease";
 import { plainName } from "../../shared/text";
 import type { ComputerAction, ListedComputer } from "../../shared/routes/box";
+import { ownDoc, primaryPeersBody } from "../documents/work";
 import { macDocsChanged } from "../documents/exchange";
 import { IS_MAC } from "../home";
 import { movedFromOldApp } from "../rehome/moved";
 import { tellGone } from "../mac/link";
 import { LIST_FILE, savedMachines } from "../mac/machines";
 import { setMacPeers } from "../mac/routes";
-import { PRIMARY_UNLINK } from "../setup/leadership";
+import { proposeLeadership } from "../setup/handover";
+import { PRIMARY_UNLINK, STANDBY_UNLINK } from "../setup/leadership";
 import { followedSetup } from "../setup/record";
 import { macName, mainElsewhere } from "../setup/main-only";
 import { takeOffVouched, vouchedWords } from "../phones";
@@ -156,17 +159,30 @@ const answer = (status: number, value: unknown): Acted => ({ status, value });
 /** Renames the machine `key` here, on the box that writes its record: its peers document names it so
  * from now on, and your other computers take it from there. */
 export function renameHere(key: string, name: string): Acted {
-  let found = false;
+  let found = false, fenced = false;
   updateLink(link => {
+    if (primaryFenced(link)) { fenced = true; return null; }
     if (!link || mainElsewhere(link) || !peersOf(link).some(peer => peer.key === key)) return null;
     found = true;
     if (link.peerNames?.[key] === name) return null;
     link.peerNames = { ...(link.peerNames ?? {}), [key]: name };
     return link;
   });
+  if (fenced) return answer(503, { message: LEADERSHIP_WAIT });
   if (!found) return answer(404, { message: `That isn't one of ${ownName()}'s machines.` });
   macDocsChanged();
   return answer(200, { name });
+}
+
+/** A departing standby first durably retires its own authority. The primary then drops
+ * its access and selects a replacement from the remaining members on the next round. */
+export async function removeComputerHere(key: string, pendingOnly = false): Promise<Acted> {
+  const setup = readLink()?.setup;
+  if (!pendingOnly && setup?.role === "primary" && setup.standby?.key === key) {
+    const retired = await proposeLeadership({ setup: setup.id, epoch: setup.epoch }, setup.primary, null);
+    if (retired.status !== 202) return answer(409, { message: "The standby must answer before it can be removed." });
+  }
+  return removeHere(key, pendingOnly);
 }
 
 /** Removes the machine `key` here, on the box that writes its record: its peers document names it
@@ -181,6 +197,8 @@ export function removeHere(key: string, pendingOnly = false): Acted {
   let needsCleanup = false;
   const changed = updateLink(link => {
     if (!link) return null;
+    if (primaryFenced(link)) { blocked = LEADERSHIP_WAIT; return null; }
+    if (link.setup?.standby?.key === key) { blocked = STANDBY_UNLINK; return null; }
     if (link.setup?.primary === key || mainElsewhere(link)) {
       blocked = link.setup?.primary === key ? PRIMARY_UNLINK : "Only the primary can remove a computer.";
       return null;
@@ -197,9 +215,21 @@ export function removeHere(key: string, pendingOnly = false): Acted {
     if (!made.link) return null;
     gone = made.gone;
     if (made.link.peerNames) delete made.link.peerNames[key];
+    if (made.link.setup?.managed) {
+      // Keep the removal at this epoch for a member that misses it before standby rotation.
+      // Build on a copy so the normal publisher still advances its own document counter.
+      const roster = ownDoc({ ...made.link }, "peers", primaryPeersBody(made.link));
+      if (roster) {
+        made.link.untold = [...(made.link.untold ?? []).filter(each => each.key !== key), ...gone].slice(-64);
+        made.link.untoldMembership = {
+          ...Object.fromEntries(Object.entries(made.link.untoldMembership ?? {}).filter(([key]) => made.link!.untold!.some(peer => peer.key === key))),
+          [key]: roster.envelope,
+        };
+      }
+    }
     if (peer.id) made.link.pendingMachineCleanup = { ...made.link.pendingMachineCleanup, [key]: peer.id };
     return made.link;
-  });
+  }, { durable: true });
   if (blocked) return answer(409, { message: blocked });
   if (!gone.length && !already) return answer(404, { message: `That isn't one of ${ownName()}'s machines.` });
   macDocsChanged({ closeRemoved: changed });
@@ -259,6 +289,6 @@ export async function writerAct(sender: MailSender, act: Act): Promise<Acted> {
     if (!name) return answer(400, { message: `Give it a name of up to ${MOST_NAME} characters.` });
     return renameHere(act.item, name);
   }
-  if (act.method === "DELETE") return removeHere(act.item, act.body?.cleanup === true);
+  if (act.method === "DELETE") return removeComputerHere(act.item, act.body?.cleanup === true);
   return answer(405, { message: "Rename or remove." });
 }

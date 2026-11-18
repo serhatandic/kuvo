@@ -308,7 +308,7 @@ computer can be the primary. Every other computer is a **member**. The first pri
 and you can choose another member as primary once both computers are connected.
 
 - **The setup** has an id (`set_` and 16 random bytes, base64url) and an epoch (a whole number, one
-  more with each change of main computer, never lower on any box). Its main computer's peers
+  more with each change of authority, never lower on any box). Its main computer's peers
   document names it: `setup: {id, epoch, primary}`, `primary` the main computer's static key, which
   the document names among its `boxes` with the document's signing key ("Documents"). Both
   `mac` and `machine` can identify the primary's box.
@@ -354,23 +354,62 @@ and you can choose another member as primary once both computers are connected.
   single durable `run/link.json` replacement before sending anything. The destination installs
   its primary role from that certificate and signs subsequent membership and device lists with
   its own key. After the transfer, only the primary publishes setup device grants and removals.
-  A receiver takes only the next epoch of its setup, signed by the preceding primary.
+  A receiver takes only the next epoch of its setup. The preceding primary signs when the
+  epoch has no standby. Once there is a standby, only its signing key can certify the next
+  epoch. For a planned transition the primary durably fences itself and saves its signed
+  proposal in `leadershipPending` before sending. The standby signs the same body with the
+  primary's detached signature in `approval`. It commits once before it replies. An interrupted
+  primary resends the proposal and installs the same certificate when it hears it. The
+  certificate names the next standby with `standby` (a static key in `boxes`) when one is
+  appointed. The new primary's peers document repeats that key and `numberCeiling` for new
+  SSH enrollments. A member that already follows the setup changes authority only through
+  the certificate chain.
   At that epoch, only the certified primary's membership document counts. Members keep the
   verified certificates by epoch and trade them in the regular document exchange, oldest first,
   so a member can cross multiple epochs even with the old primary offline. Folder layout 2
   reserves this state while adopting existing link state in place.
-- **Reachability during leadership changes.** Before the durable commit, the old primary
-  retains authority. After it, there is one authorized successor, even if it is temporarily
-  unreachable. If the old primary stopped just after committing and no peer got the record, its
-  next start resends the saved certificate. A restarted or reconnected member catches up by
-  comparing document digests. The existing primary may not be unlinked. The removal route and
-  link CLI answer “Choose another primary first.”
+- **Standby selection** (`setup.takeover`). Once every enrolled member has advertised support,
+  the primary chooses one reachable member. A member advertises its preference based on whether
+  it runs Linux, which is treated as more likely to be always on. Set `alwaysOn` to true or false
+  in the box's `setup-takeover.json` to override the platform default. Equal preferences sort by
+  static key. A client can `POST kuvo/setup/standby {standby, epoch?}` on any box. The primary
+  checks that the target answers at this epoch, with the same response semantics as handover.
+  The existing standby must sign its retirement before a replacement can have authority, even
+  when membership removal initiated the change. A setup with no reachable eligible member
+  waits to appoint a standby. A missing standby can still hold its delegation and cannot be
+  replaced by the primary alone.
+- **Primary lease.** The standby sends a fresh authenticated challenge every ten seconds.
+  The primary answers with another nonce. The standby returns a lease response only for the
+  outstanding exchange. The primary measures a sixty-second term from when it answered the
+  challenge, using both wall time and system uptime. The local `run/setup-lease.json` is bound
+  to the setup id, epoch and standby. Loss of the lease fences setup roster and device writes
+  and stops allocation of new Work Queue numbers. Existing connections and local work use
+  the grants and numbers already held. A pending leadership proposal also fences the primary.
+- **Takeover.** Only the standby can sign a transition with `takeover: true`. It names itself as
+  primary and uses the membership and device state it holds. It waits for three hours without
+  a successful round trip while it can reach the relay. Restarting the standby or losing the
+  standby's own relay connection starts a new observation period. It uses both wall time and
+  uptime, and resets on a long gap in observation. `delayMinutes` in `setup-takeover.json`
+  configures the wait between 60 and 10,080 minutes. The box logs the delay and takeover, and
+  the choice of standby. The old primary installs the higher signed epoch as a member on
+  reconnect and uses the winning membership and device state. Local work stays with its owner.
+  Folder layout 3 reserves these records. Older box builds refuse to open that layout.
+- **Numbers before confirmed saves.** A delegated epoch reserves a bounded range above the
+  certified counter. The primary cannot allocate past `numberCeiling`, and only the standby
+  can certify a new bound. Takeover skips the outgoing epoch's remaining reservation so no
+  number already given there is reused. The standby-confirmed saves work (#916) will also keep
+  subsequent counter and block receipts, removals and pending transfers so takeover can use
+  the last acknowledged checkpoint. Existing local items and leased blocks remain usable.
+- **Reachability during leadership changes.** A restarted or reconnected member catches up
+  with certificates in order. A pending proposal can finish after the initiating request
+  times out. The existing primary may not be unlinked. The removal route and link CLI answer
+  “Choose another primary first.”
 - **Release choice after handover.** Members take newer fleet releases from the certified
   primary. Same-version repair can still use copies held by peers. File permissions and OS
   approvals are enforced where the files and processes live.
 
 - **`GET kuvo/setup`** (and `kuvo/setup/events`, a line now and one at each change), on every box,
-  for every client: `{setup, epoch, primary: {key, name, kind}, you: {key, role}, computers: [{key,
+  for every client: `{setup, epoch, standby?, primary: {key, name, kind}, you: {key, role}, computers: [{key,
   name, kind, role, app}], conflict?, startsFromOthers: {value, default}, heldBy: [key], welcomed}`. Facts only, the same on
   every box of one setup (but `welcomed`, this box's own): `kind` is `mac` for a Mac with the app (`app`), `machine` otherwise; in no
   setup, `setup`, `epoch`, `primary` and `you.role` are null and `computers` is empty.
@@ -7786,6 +7825,7 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `settings.vault` | In `kuvo/settings`: the Vault section ("A box's settings"), and a form's `secret` and `file` fields, a `secret` pairs, Show (`shows`), and checks that never carry a value |
 | `setup` | `kuvo/setup`, `…/events`: your setup and its main computer ("Your setup") |
 | `setup.handover` | a member can ask the primary to transfer the setup to another enrolled computer at the next epoch |
+| `setup.takeover` | a signed standby can advance the setup epoch, and clients can choose another standby |
 | `setup.mainOnly` | a member refuses pairing and adding with `409 {message, primary}`, and answers `GET kuvo/hosts` from its setup ("Your setup", Only the main computer adds and pairs) |
 | `setup.ready` | `GET kuvo/setup/ready`: whether a first run has anything to ask about your accounts here, decided by the box ("Your setup") |
 | `setup.welcomed` | `welcomed` in `kuvo/setup`, and `POST kuvo/setup/welcomed`: whether you've had the first run with this box ("Your setup", #733) |

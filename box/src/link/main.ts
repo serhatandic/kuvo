@@ -15,6 +15,7 @@
 // is kuvo-ai's protocol/PROTOCOL.md, with the same in Swift (swift/KuvoLink) for the Mac and
 // the phone.
 
+import { LEADERSHIP_WAIT, primaryFenced } from "./setup/lease";
 import { ROUTE_VERSION, ROUTE_VERSION_HEADER } from "../shared/route-version";
 import { routeRequestHeaders } from "./server/format";
 import { takeSeed } from "./add/seed";
@@ -78,6 +79,7 @@ import { SENDING } from "./letters/letter";
 import { watchFolders } from "./follow";
 import { pushRows } from "./work/elsewhere";
 import { pushNumbers } from "./work-queue/numbers";
+import { startTakeover } from "./setup/takeover";
 import { initializeMachineSetup, noteSetupNow, settleOwnSetup } from "./setup/lead";
 import { PRIMARY_UNLINK } from "./setup/leadership";
 import { macName, mainElsewhere, pairElsewhere } from "./setup/main-only";
@@ -401,6 +403,7 @@ async function run(): Promise<void> {
   // is down too, so a phone can start it. Phones removed since lose what they have open, and the
   // box's keeper, if it went, starts again (it keeps this bridge, and the engine, running).
   let current: LinkHost | null = null;
+  startTakeover(() => current);
   setInterval(() => {
     let owner: number | null = null;
     try { owner = Number(fs.readFileSync(PID_FILE, "utf8")); } catch {}
@@ -919,7 +922,10 @@ async function serve(): Promise<void> {
   // the app's route scenarios, `KUVO_TEST_NO_PEERS`, whose fixture tells its bridge who they are.)
   // Never a real box (a test's folder only).
   const testsAlone = process.env.KUVO_TEST_NO_PEERS && !REAL_BOX;
-  if (IS_MAC && !testsAlone) runMacPeers();
+  if (IS_MAC && !testsAlone) {
+    runMacPeers();
+    startTakeover(liveLink);
+  }
   // Recently Deleted's skills past their 30 days, gone with no client there too.
   keepSkillTrashClear();
   // What a Work Queue change left half read as the box stopped.
@@ -1145,6 +1151,7 @@ function pair(relay: string | undefined): void {
   // Only your setup's main computer pairs phones: a member names it, and pairs none (exit 3).
   let main: ReturnType<typeof mainElsewhere> = null;
   const link = updateLink(current => {
+    if (primaryFenced(current)) throw new Error(LEADERSHIP_WAIT);
     main = mainElsewhere(current);
     if (main) return null;
     const next = current ?? { secret: crypto.randomBytes(32).toString("base64url"), key: newKey().toString("base64url"), name: os.hostname(), phones: [] };

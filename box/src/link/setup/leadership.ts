@@ -1,14 +1,16 @@
-// A change of primary is authorized by the primary of the previous epoch. The installed
+// A change is authorized by the preceding epoch's sole successor signer. The installed
 // certificate and the local role are written together, before anyone can send the certificate.
 
 import type { Doc } from "../../shared/documents";
 import { isObject } from "../../shared/json";
-import { docKey, held, ownSign } from "../documents/format";
+import { docBytes, docKey, held, ownSign, readDoc, signDoc } from "../documents/format";
 import { cleanMoved, cleanPeer, fitsPeer, ownKey, KEY } from "../peers/known";
 import { fits, foldPhones } from "../phones";
 import type { LinkState, Phone } from "../state";
 import { setupOf } from "./record";
 
+export const NUMBER_RESERVE = 2_000;
+export const STANDBY_UNLINK = "Choose another standby first.";
 export const PRIMARY_UNLINK = "Choose another primary first.";
 
 export function leadershipOf(link: LinkState | null | undefined): Doc | null {
@@ -16,18 +18,41 @@ export function leadershipOf(link: LinkState | null | undefined): Doc | null {
   return setup?.managed ? held(link?.leadership?.[setup.epoch]) : null;
 }
 
-/** Install a verified transition. A future standby can supply another authorization rule
- * here, before using the same epoch checks and state installation. */
+/** Turn a fenced primary's proposal into a certificate, on the current standby only. */
+export function approveLeadership(link: LinkState, proposal: Doc): Doc | null {
+  const current = link.setup;
+  if (!current?.standby || current.standby.key !== ownKey(link) || current.standby.sign !== ownSign(link)
+    || current.sign !== proposal.origin || proposal.body.proposal !== true || !link.sign) return null;
+  return readDoc(signDoc(link.sign, "leadership", proposal.n, { ...proposal.body, approval: proposal.envelope.s }));
+}
+
+/** Install handover, standby assignment/retirement, or takeover under the same epoch check. */
 export function takeLeadership(link: LinkState, doc: Doc): boolean {
   const current = link.setup;
   const next = setupOf(doc.body);
-  if (doc.kind !== "leadership" || !current || !next || next.id !== current.id || doc.n !== next.epoch
-    || next.epoch !== current.epoch + 1 || doc.origin !== current.sign || doc.body.previous !== current.primary
-    || next.primary === current.primary || !Array.isArray(doc.body.boxes) || !doc.body.boxes.every(fitsPeer)) return false;
+  if (doc.kind !== "leadership" || !current || current.aside || !next || next.id !== current.id || doc.n !== next.epoch
+    || next.epoch !== current.epoch + 1 || doc.origin !== (current.standby?.sign ?? current.sign)
+    || doc.body.previous !== current.primary || !Array.isArray(doc.body.boxes) || !doc.body.boxes.every(fitsPeer)) return false;
+  const takeover = doc.body.takeover === true;
+  if (takeover) {
+    if (!current.standby || next.primary !== current.standby.key || doc.body.proposal) return false;
+  } else if (current.standby) {
+    const { approval, ...proposal } = doc.body;
+    if (proposal.proposal !== true || !readDoc({
+      d: docBytes(current.sign, "leadership", doc.n, proposal).toString("base64url"), s: approval,
+    })) return false;
+  } else if (doc.body.proposal) return false;
   const peers = doc.body.boxes.map(cleanPeer);
   if (new Set(peers.map(peer => peer.key)).size !== peers.length) return false;
   const primary = peers.find(peer => peer.key === next.primary);
-  if (!primary?.sign || !peers.some(peer => peer.key === current.primary && peer.sign === current.sign)) return false;
+  const standby = peers.find(peer => peer.key === doc.body.standby && peer.key !== next.primary && peer.sign !== primary?.sign);
+  if (!primary?.sign || !peers.some(peer => peer.key === current.primary && peer.sign === current.sign)
+    || (takeover && primary.sign !== current.standby?.sign)
+    || (doc.body.standby != null && !standby?.sign)
+    || (next.primary === current.primary && (doc.body.standby ?? null) === (current.standby?.key ?? null)
+      && !(typeof doc.body.numberCeiling === "number" && doc.body.numberCeiling > (current.numberCeiling ?? 0)))) return false;
+  const ceiling = doc.body.numberCeiling;
+  if (standby && (typeof ceiling !== "number" || !Number.isSafeInteger(ceiling) || ceiling < 1)) return false;
   const own = ownKey(link);
   if (!own) return false;
   const left = Array.isArray(doc.body.left) ? doc.body.left.filter((key): key is string => typeof key === "string" && KEY.test(key)) : [];
@@ -36,6 +61,7 @@ export function takeLeadership(link: LinkState, doc: Doc): boolean {
     if (!left.includes(own)) return false;
     delete link.setup;
     delete link.leadership;
+    delete link.leadershipPending;
     link.macs = [];
     delete link.mac;
     delete link.macSigns;
@@ -45,8 +71,15 @@ export function takeLeadership(link: LinkState, doc: Doc): boolean {
 
   const here = own === primary.key;
   if (here && ownSign(link) !== primary.sign) return false;
-  link.setup = { ...next, sign: primary.sign, role: here ? "primary" : "member", managed: true };
+  // Same-primary transitions preserve local-only state. The certificate already contains
+  // the shared state from this primary and supplies it to peers as they catch up.
+  const stillHere = here && current.role === "primary";
+  link.setup = { ...next, sign: primary.sign, role: here ? "primary" : "member", managed: true,
+    ...(standby?.sign ? { standby: { key: standby.key, sign: standby.sign }, numberCeiling: ceiling as number } : {}),
+  };
   link.leadership = { ...link.leadership, [next.epoch]: doc.envelope };
+  delete link.leadershipPending;
+  if (stillHere) return true;
   link.macs = here ? [] : [primary.key];
   link.macSigns = here ? {} : { [primary.key]: primary.sign };
   link.macNames = here ? {} : { [primary.key]: primary.name };
@@ -54,6 +87,14 @@ export function takeLeadership(link: LinkState, doc: Doc): boolean {
   if (here) delete link.mac;
   else link.mac = primary.key;
   if (link.docs) delete link.docs[docKey(primary.sign, "phones")];
+  if (takeover) {
+    // All shared device removals come from the winning snapshot. Any disconnected
+    // primary's interim removals must not silently veto grants on the new primary.
+    link.removed = [];
+    delete link.untold;
+    delete link.untoldMembership;
+    delete link.pendingMachineCleanup;
+  }
   delete link.pairing;
   delete link.appPairing;
 

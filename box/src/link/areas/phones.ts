@@ -2,6 +2,7 @@
 // pair another; and Kuvo Code's desktop app on this computer paired as one of your devices
 // (`kuvo/devices/pair`, peers/devices.ts).
 
+import { LEADERSHIP_WAIT, primaryFenced } from "../setup/lease";
 import { parsed } from "../../shared/json";
 import type { Body } from "../../shared/json";
 import type { PAIRING } from "../../shared/routes/box";
@@ -42,7 +43,9 @@ export async function* phonesRemoveRoute(context: RouteContext): AsyncGenerator<
   // On this Mac, one before any phone's paired here (no link file yet) is kept all the same,
   // so the phone stays out once it's taken.
   let primary: ReturnType<typeof mainElsewhere> = null;
+  let fenced = false;
   const changed = updateLink(kept => {
+    if (primaryFenced(kept)) { fenced = true; return null; }
     if (kept?.setup?.managed && kept.setup.role === "member") {
       primary = mainElsewhere(kept);
       return null;
@@ -50,6 +53,7 @@ export async function* phonesRemoveRoute(context: RouteContext): AsyncGenerator<
     const link: LinkState | null = kept ?? (asMac ? { phones: [], removed: [] } : null);
     return link && (asMac ? removeAsMac(link, given?.phones) : removePhones(link, phone?.key?.toString("base64url"), given?.phones)) ? link : null;
   });
+  if (fenced) return yield* json(503, { message: LEADERSHIP_WAIT });
   const main = primary as ReturnType<typeof mainElsewhere>;
   if (main) return yield* json(409, { message: `Remove devices from ${main.name || "your main computer"}.`, primary: main.key });
   if (!changed) return yield* json(400, { message: "Only phones paired here can be removed, and never your Mac." });
@@ -84,6 +88,7 @@ export async function* pairingRoute(context: RouteContext): AsyncGenerator<Answe
   // Only your setup's main computer pairs phones: a member names it (PROTOCOL.md, "Your setup").
   let refusal: { message: string; primary?: string } | undefined;
   const link = updateLink(current => {
+    if (primaryFenced(current)) { refusal = { message: LEADERSHIP_WAIT }; return null; }
     const main = mainElsewhere(current);
     if (main) { refusal = pairElsewhere(main); return null; }
     if (IS_MAC && !macLink.config?.phones) { refusal = { message: SWITCH_OFF }; return null; }

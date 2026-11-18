@@ -25,7 +25,7 @@ async function until(what, read, signal) {
   throw new Error(`Timed out waiting for ${what}`);
 }
 
-async function network(t) {
+async function network(t, takeover = false) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-handover-"));
   const relay = await relayStandIn(link);
   const engine = http.createServer((_request, response) => response.writeHead(200, { "content-type": "application/json" }).end('{"data":[]}'));
@@ -63,16 +63,44 @@ async function network(t) {
     fs.mkdirSync(path.join(run, "work-queue"), { recursive: true });
     fs.writeFileSync(path.join(run, "engine.json"), JSON.stringify({ port: engine.address().port, password: "test" }));
     const read = file => JSON.parse(fs.readFileSync(path.join(run, file), "utf8"));
+    const clock = offset => {
+      const file = path.join(run, "test-setup-clock.json");
+      fs.writeFileSync(file + ".new", JSON.stringify({ offset }));
+      fs.renameSync(file + ".new", file);
+    };
+    if (takeover) {
+      clock(0);
+      fs.writeFileSync(path.join(home, "setup-takeover.json"), JSON.stringify({ alwaysOn: name === "Desk" }));
+    }
     return {
       key, sign, seed, address, name, run, env,
       entry: { key, sign, address: address.toString("base64url"), name, kind: "machine" },
       identity: { key: privateKey.toString("base64url"), sign: seed, secret: secret.toString("base64url"), name, relay: relay.url },
       read: () => read("link.json"),
+      clock,
+      lease(epoch, standby) {
+        try { return read("setup-lease.json").stamp === `${this.read().setup.id}:${epoch}:${standby.key}`; } catch { return false; }
+      },
       heard: key => {
         try { return read("peer-agents.json")[key]?.features?.includes("setup.handover"); } catch { return false; }
       },
-      async route(method, path, body) {
-        const child = start(env, ["box", "route"], ["pipe", "pipe", "pipe"]);
+      async route(method, path, body, local = false) {
+        const args = local ? ["--input-type=module", "-e", `
+          import { engineHandler } from ${JSON.stringify(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url).href)};
+          const chunks = [];
+          for await (const chunk of process.stdin) chunks.push(chunk);
+          const given = JSON.parse(Buffer.concat(chunks));
+          const request = { ...given, fromApp: true, served: true, headers: {}, body: Buffer.from(JSON.stringify(given.body ?? {})) };
+          let status, body = [];
+          for await (const part of engineHandler()(request, {})) {
+            if (part.head) status = part.head.status;
+            if (part.body) body.push(part.body);
+          }
+          console.log(JSON.stringify({ status, body: Buffer.concat(body).toString() }));
+        `] : [script, "box", "route"];
+        const child = spawn(process.execPath, args, { env, stdio: ["pipe", "pipe", "pipe"] });
+        children.add(child);
+        child.once("exit", () => children.delete(child));
         let out = "", err = "";
         child.stdout.on("data", chunk => { out += chunk; });
         child.stderr.on("data", chunk => { err += chunk; });
@@ -213,4 +241,116 @@ test("failure bench: losing the successor before readiness keeps the old primary
   await Promise.all([see(a, 1, a), see(b, 1, a), see(c, 1, a)]);
   assert.equal(a.read().leadership, undefined);
   reconnect();
+});
+
+const HOUR = 3_600_000;
+
+async function standbyNetwork(t) {
+  const net = await network(t, true);
+  const { a, b, see } = net;
+  await see(a, 2, a);
+  assert.equal((await a.route("GET", "kuvo/setup")).value.standby, b.key);
+  await until("primary leased", () => a.lease(2, b), t.signal);
+  return net;
+}
+
+test("failure bench: only the standby takes over across a split and the old primary rejoins", { timeout: 45_000 }, async t => {
+  const { a, b, c, relay, see, phone, pairing } = await standbyNetwork(t);
+  const reconnect = [b, c].flatMap(box => [relay.pause(a.address, box.address), relay.pause(box.address, a.address)]);
+  for (const box of [a, b, c]) box.clock(2 * HOUR);
+  await delay(800);
+  await see(b, 2, a);
+  const blocked = await a.route("DELETE", `kuvo/computers/${c.key}`);
+  assert.equal(blocked.status, 409);
+  assert.match(blocked.value.message, /waiting for its standby/);
+  const work = await a.route("POST", "kuvo/work-queue/items", { title: "Work survives the split" }, true);
+  assert.equal(work.status, 200);
+  const stale = a.read();
+
+  for (const box of [a, b, c]) box.clock(3 * HOUR + 5_000);
+  await Promise.all([see(b, 3, b), see(c, 3, b)]);
+  assert.equal(a.read().setup.epoch, 2);
+  const winning = link.readDoc(b.read().leadership[3]);
+  assert.equal(winning.origin, b.sign);
+  assert.equal(winning.body.takeover, true);
+  assert.equal(winning.body.numbers.next, stale.setup.numberCeiling + 1);
+  const fake = link.signDoc(c.seed, "leadership", 3, winning.body);
+  assert.equal(link.takeDoc(stale, fake), null);
+  const oldPrimaryFork = link.signDoc(a.seed, "leadership", 3, {
+    ...winning.body, takeover: false, setup: { ...winning.body.setup, primary: c.key },
+  });
+  assert.equal(link.takeDoc(stale, oldPrimaryFork), null);
+  assert.equal(link.takeDoc(b.read(), a.read().leadership[2]), null);
+  await see(b, 4, b);
+  assert.equal(b.read().setup.standby.key, c.key);
+  await until("new primary leased", () => b.lease(4, c), t.signal);
+  assert.equal((await a.route("POST", "kuvo/phones/remove", { phones: [{ key: phone, pairing }] })).status, 503);
+
+  // Simulate shared state kept only by the old primary, separately from its local item.
+  await a.stop("SIGTERM");
+  const interim = a.read();
+  interim.peerNames = { [c.key]: "Only heard by the old primary" };
+  interim.removed = [{ key: phone, pairing }];
+  interim.phones = [];
+  fs.writeFileSync(path.join(a.run, "link.json"), JSON.stringify(interim));
+  reconnect.forEach(resume => resume());
+  a.start();
+  await see(a, 4, b);
+  assert.equal(a.read().peerNames, undefined);
+  assert.equal(a.read().phones.find(device => device.key === phone)?.pairing, pairing);
+  assert.equal((await a.route("GET", `kuvo/work-queue/items/${work.value.item.id}`)).value.item.title, "Work survives the split");
+});
+
+test("failure bench: losing both primary and standby never promotes another member", { timeout: 35_000 }, async t => {
+  const { a, b, c, see } = await standbyNetwork(t);
+  await b.stop("SIGTERM");
+  c.clock(HOUR);
+  await delay(600);
+  await see(c, 2, a);
+  assert.equal((await a.route("GET", "kuvo/setup")).value.epoch, 2);
+  // Primary-side authority expires if the standby stays away.
+  a.clock(HOUR);
+  assert.equal((await a.route("POST", "kuvo/phones/pair")).status, 409);
+  await a.stop("SIGTERM");
+  c.clock(5 * HOUR);
+  await delay(900);
+  await see(c, 2, a);
+  assert.equal(c.read().leadership[3], undefined);
+});
+
+test("failure bench: only the old standby can approve a standby replacement and a handover", { timeout: 45_000 }, async t => {
+  const { a, b, c, see } = await standbyNetwork(t);
+  const selected = await a.route("POST", "kuvo/setup/standby", { standby: c.key, epoch: 2 });
+  assert.deepEqual(selected, { status: 202, value: { primary: a.key, epoch: 3 } });
+  await Promise.all([see(b, 3, a), see(c, 3, a)]);
+  assert.equal(link.readDoc(c.read().leadership[3]).origin, b.sign);
+  await until("replacement granted lease", () => a.lease(3, c), t.signal);
+  assert.deepEqual(await submit(a, b, 3), { status: 202, value: { primary: b.key, epoch: 4 } });
+  await Promise.all([see(b, 4, b), see(c, 4, b)]);
+  assert.equal(link.readDoc(b.read().leadership[4]).origin, c.sign);
+  assert.equal(b.read().setup.standby.key, c.key);
+});
+
+test("failure bench: a lost primary is replaced after the configured delay", { timeout: 40_000 }, async t => {
+  const { a, b, c, see } = await standbyNetwork(t);
+  fs.writeFileSync(path.join(b.env.HOME, "setup-takeover.json"), JSON.stringify({ delayMinutes: 60, alwaysOn: true }));
+  await a.stop("SIGKILL");
+  b.clock(3_000);
+  await delay(700);
+  await see(b, 2, a);
+  b.clock(HOUR + 1_000);
+  await Promise.all([see(b, 3, b), see(c, 3, b)]);
+  assert.equal(a.read().setup.epoch, 2);
+});
+
+test("failure bench: the standby retires before its membership is removed", { timeout: 45_000 }, async t => {
+  const { a, b, c, see } = await standbyNetwork(t);
+  const done = await a.route("DELETE", `kuvo/computers/${b.key}`);
+  assert.equal(done.status, 200, JSON.stringify(done.value));
+  await see(a, 4, a);
+  await see(c, 4, a);
+  assert.equal(a.read().setup.standby.key, c.key);
+  assert.equal(link.readDoc(c.read().leadership[3]).origin, b.sign);
+  assert.ok(a.read().left.includes(b.key));
+  await until("standby removal received", () => b.read().setup?.id !== a.read().setup.id, t.signal);
 });

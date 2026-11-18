@@ -1,0 +1,185 @@
+// The current standby alone can advance a delegated epoch. Its fresh round trip with the
+// primary renews a short lease. A failed round trip never refreshes either side's clock.
+import crypto from "node:crypto";
+import { isObject } from "../../shared/json";
+import { noteDocsChanged } from "../documents/changed";
+import { sendDocs } from "../documents/exchange";
+import { docKey, held, ownSign, readDoc, signDoc } from "../documents/format";
+import { mailFor, ownKey, peersOf, type MailSender } from "../peers/known";
+import type { LinkHost } from "../relay/host";
+import { readLink, updateLink, type LinkState } from "../state";
+import { readNumbers } from "../work-queue/numbers";
+import { takesForwarded } from "../work-queue/forward";
+import { writeCard } from "./card";
+import { proposeLeadership, standbyHere } from "./handover";
+import { leadershipOf, takeLeadership } from "./leadership";
+import { fresh, grantLease, HEARTBEAT_MS, leaseClock, LEASE_MS, primaryFenced, standbySettings, testSetupClock } from "./lease";
+import { followedSetup, setupDoc } from "./record";
+
+type Clock = ReturnType<typeof leaseClock>;
+type Position = { id: string; epoch: number };
+const nonce = () => crypto.randomBytes(16).toString("base64url");
+const signal = (token: unknown): token is string => typeof token === "string" && /^[\w-]{22}$/.test(token);
+
+let position = "";
+let since: Clock;
+let lastTick: Clock | undefined;
+let lastRound = 0;
+let selecting = false;
+let loggedDelay: number | undefined;
+let ping: { token: string; at: Clock } | undefined;
+let pong: { token: string; reply: string; at: Clock } | undefined;
+let lastPrimary: Clock | undefined;
+let ownPrimarySince: Clock | undefined;
+const candidates = new Map<string, { at: Clock; preferred: boolean; reason: string }>();
+
+function reset(setup: Position, now: Clock) {
+  const next = `${setup.id}:${setup.epoch}`;
+  if (position === next) return;
+  position = next;
+  since = now;
+  ping = pong = lastTick = lastPrimary = ownPrimarySince = undefined;
+  candidates.clear();
+  loggedDelay = undefined;
+}
+
+function send(host: LinkHost, link: LinkState, to: string, value: Record<string, unknown>) {
+  const peer = peersOf(link).find(each => each.key === to);
+  const { id, epoch } = link.setup!;
+  const bytes = peer && mailFor(peer, { setupAuthority: { id, epoch, ...value }, at: Date.now() }, link);
+  if (bytes) host.send(bytes);
+}
+
+export function receiveAuthority(sender: MailSender, given: Record<string, unknown>, host: LinkHost | null | undefined) {
+  if (!host?.welcomed) return;
+  const link = readLink();
+  const setup = followedSetup(link);
+  if (!link || !setup || setup.id !== given.id || setup.epoch !== given.epoch) return;
+  const now = leaseClock();
+  reset(setup, now);
+  if (given.kind === "available" && setup.role === "primary") {
+    if (typeof given.preferred !== "boolean" || typeof given.reason !== "string") return;
+    candidates.set(sender.key, { at: now, preferred: given.preferred, reason: given.reason.slice(0, 40) });
+    return;
+  }
+  if (!setup.standby || !signal(given.token)) return;
+  if (setup.role === "primary" && setup.standby.key === sender.key && !link.leadershipPending) {
+    if (given.kind === "ping") {
+      pong = { token: given.token, reply: nonce(), at: now };
+      send(host, link, sender.key, { kind: "pong", token: given.token, reply: pong.reply });
+    } else if (given.kind === "lease" && pong?.token === given.token && pong.reply === given.reply && fresh(pong.at, now, LEASE_MS / 2)) {
+      const fenced = primaryFenced(link);
+      grantLease(link, pong.at);
+      pong = undefined;
+      if (fenced) noteDocsChanged();
+    }
+  } else if (setup.standby.key === ownKey(link) && setup.standby.sign === ownSign(link) && sender.key === setup.primary
+    && given.kind === "pong" && signal(given.reply) && ping?.token === given.token && fresh(ping.at, now, LEASE_MS / 2)) {
+    ping = undefined;
+    lastPrimary = now;
+    send(host, link, sender.key, { kind: "lease", token: given.token, reply: given.reply });
+  }
+}
+
+export function startTakeover(host: () => LinkHost | null | undefined) {
+  setInterval(() => {
+    try { takeoverTick(host()); } catch (error) { console.warn("Standby check:", (error as Error).message); }
+  }, testSetupClock() ? 200 : 2_000).unref();
+}
+
+function takeoverTick(host: LinkHost | null | undefined): void {
+  const link = readLink();
+  const setup = followedSetup(link);
+  if (!link || !setup) return;
+  const now = leaseClock();
+  reset(setup, now);
+  const testing = testSetupClock();
+  const realNow = Date.now();
+  if (!host?.welcomed || realNow - lastRound > 3 * HEARTBEAT_MS || realNow < lastRound) {
+    lastPrimary = ping = undefined;
+    since = now;
+  }
+  lastRound = realNow;
+  if (!host?.welcomed) return;
+  if (setup.role === "primary" && link.leadershipPending) {
+    const standby = peersOf(link).find(peer => peer.key === setup.standby?.key);
+    if (standby) sendDocs(host, link, [{ to: standby, docs: { give: [link.leadershipPending] } }]);
+    return;
+  }
+  if (lastTick && fresh(lastTick, now, testing ? 400 : HEARTBEAT_MS)) return;
+  lastTick = now;
+  const settings = standbySettings();
+  if (setup.role === "primary") {
+    ownPrimarySince ??= now;
+    if (setup.standby) {
+      if (setup.numberCeiling && setup.numberCeiling - (readNumbers().next ?? 1) < 400 && !primaryFenced(link)) {
+        void proposeLeadership({ setup: setup.id, epoch: setup.epoch }, setup.primary, setup.standby)
+          .catch(error => console.warn("Standby number reservation:", error.message));
+      }
+      return;
+    }
+    if (selecting || fresh(ownPrimarySince, now, testing ? 2_000 : 90_000)) return;
+    if (peersOf(link).some(peer => !peer.sign || !takesForwarded(peer.key, "setup.takeover"))) return;
+    const next = availableStandby(link, now);
+    if (!next) return;
+    selecting = true;
+    void standbyHere(next.peer.key, { setup: setup.id, epoch: setup.epoch }, undefined, next.reason)
+      .catch(error => console.warn("Standby selection:", error.message))
+      .finally(() => { selecting = false; });
+    return;
+  }
+  if (setup.standby?.key !== ownKey(link) || setup.standby.sign !== ownSign(link)) {
+    send(host, link, setup.primary, { kind: "available", preferred: settings.alwaysOn, reason: settings.reason });
+    return;
+  }
+  if (loggedDelay !== settings.delay) {
+    loggedDelay = settings.delay;
+    console.info(`Standby watching epoch ${setup.epoch} with a ${settings.delay / 60_000}-minute takeover delay.`);
+  }
+  const heard = lastPrimary ?? since;
+  if (now.uptime - heard.uptime >= settings.delay && now.wall - heard.wall >= settings.delay) {
+    promote(host, setup);
+    return;
+  }
+  ping = { token: nonce(), at: now };
+  send(host, link, setup.primary, { kind: "ping", token: ping.token });
+}
+
+function availableStandby(link: LinkState, now: Clock) {
+  const available = peersOf(link).flatMap(peer => {
+    if (!peer.sign || !takesForwarded(peer.key, "setup.takeover")) return [];
+    const candidate = candidates.get(peer.key);
+    return candidate && fresh(candidate.at, now, testSetupClock() ? 10_000 : 3 * HEARTBEAT_MS) ? [{ peer, ...candidate }] : [];
+  });
+  available.sort((a, b) => Number(b.preferred) - Number(a.preferred) || (a.peer.key < b.peer.key ? -1 : 1));
+  return available[0];
+}
+
+function promote(host: LinkHost, position: Position) {
+  const changed = updateLink(link => {
+    const setup = followedSetup(link);
+    if (!link?.sign || !setup?.standby || setup.id !== position.id || setup.epoch !== position.epoch
+      || ownKey(link) !== setup.standby.key || ownSign(link) !== setup.standby.sign) return null;
+    const roster = setupDoc(link);
+    const prior = leadershipOf(link);
+    if (!roster || !prior || typeof setup.numberCeiling !== "number") return null;
+    const phones = held(link.docs?.[docKey(setup.sign, "phones")]);
+    const word = phones?.body.epoch;
+    const previousNumbers = isObject(prior.body.numbers) ? prior.body.numbers : {};
+    const epoch = setup.epoch + 1;
+    const envelope = signDoc(link.sign, "leadership", epoch, {
+      setup: { id: setup.id, epoch, primary: setup.standby.key }, previous: setup.primary, takeover: true,
+      boxes: roster.body.boxes, left: roster.body.left, moved: roster.body.moved,
+      devices: word === setup.epoch ? phones!.body : prior.body.devices,
+      vouchBlocked: roster.body.vouchBlocked ?? prior.body.vouchBlocked,
+      numbers: { ...previousNumbers, next: setup.numberCeiling + 1 },
+    });
+    const doc = readDoc(envelope);
+    return doc && takeLeadership(link, doc) ? link : null;
+  }, { durable: true });
+  if (!changed?.setup) return;
+  console.info(`Standby took over at setup epoch ${changed.setup.epoch} after ${standbySettings().delay / 60_000} minutes without its primary.`);
+  sendDocs(host, changed, peersOf(changed).map(to => ({ to, docs: { give: [changed.leadership![changed.setup!.epoch]!] } })));
+  noteDocsChanged();
+  try { writeCard(); } catch {}
+}

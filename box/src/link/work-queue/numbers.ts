@@ -24,6 +24,7 @@ import { KEY, macsOf, mailFor, ownKey, peersOf, removedBoxes } from "../peers/kn
 import { readTold, toldKeys } from "./told";
 import { awaySince, lastFoundAway, PEER_CHECKED, readReach } from "../peers/reach";
 import { followedSetup } from "../setup/record";
+import { primaryFenced } from "../setup/lease";
 import { leadershipOf } from "../setup/leadership";
 import { readLink } from "../state";
 import { allItems, changeQueues, OWNER, WORK_QUEUE } from "./store";
@@ -391,10 +392,11 @@ export function movePast(top: number, { file = NUMBERS_FILE }: { file?: string }
 export function takeNumber(primary: Primary, { file = NUMBERS_FILE, now = Date.now(), link = readLink() }: { file?: string; now?: number; link?: LinkState | null } = {}): number | null {
   return changeNumbers(kept => {
     const current = currentNumberAuthority(link, file);
-    if ("self" in primary && current?.setup?.managed && current.setup.role !== "primary") return null;
+    if ("self" in primary && (primaryFenced(current) || (current?.setup?.managed && current.setup.role !== "primary"))) return null;
     notePrimary(kept, primary, current, now);
     if ("self" in primary) {
       const number = counterOf(kept);
+      if (number > (current?.setup?.numberCeiling ?? MOST_NUMBER - 1)) return null;
       kept.next = number + 1;
       return number;
     }
@@ -448,11 +450,11 @@ function blocksOf(kept: Numbers, by: string, restores: Ranges): Ranges {
 // On the primary: which of `claims` the box `by` may have (at or above the counter and within reach
 // of it, granted it before, or, from a box that never claims one it used, in a block it gave that
 // box), the counter moved past them.
-function grantOn(kept: Numbers, by: string, claims: Ranges, said: ClaimsSaid = {}): Ranges {
+function grantOn(kept: Numbers, by: string, claims: Ranges, said: ClaimsSaid = {}, ceiling = MOST_NUMBER - 1): Ranges {
   const before = kept.granted?.[by] ?? [];
   const next = counterOf(kept);
   const blocks = by !== "self" && said.own ? blocksOf(kept, by, overlap(said.restores ?? [], claims)) : [];
-  const ranges = joined(overlap(claims, [[next, Math.min(next + CLAIM_REACH, MOST_NUMBER - 1)]]), overlap(claims, before), overlap(claims, blocks));
+  const ranges = joined(overlap(claims, [[next, Math.min(next + CLAIM_REACH, ceiling)]]), overlap(claims, before), overlap(claims, blocks));
   if (ranges.length) {
     kept.next = Math.max(next, ranges[ranges.length - 1][1] + 1);
     kept.granted = { ...(kept.granted ?? {}), [by]: joined(before, ranges).slice(-MOST_RANGES) };
@@ -468,9 +470,9 @@ export function claimNumbers(primary: Primary, numbers: number[], { file = NUMBE
   if (!claims.length) return { granted: [] };
   return changeNumbers(kept => {
     const current = currentNumberAuthority(link, file);
-    if ("self" in primary && current?.setup?.managed && current.setup.role !== "primary") return { granted: null };
+    if ("self" in primary && (primaryFenced(current) || (current?.setup?.managed && current.setup.role !== "primary"))) return { granted: null };
     notePrimary(kept, primary, current, now);
-    if ("self" in primary) return { granted: grantOn(kept, "self", claims) };
+    if ("self" in primary) return { granted: grantOn(kept, "self", claims, {}, current?.setup?.numberCeiling) };
     const highest = claims[claims.length - 1][1];
     kept.leases = kept.leases.map(([from, to]): [number, number] => [Math.max(from, highest + 1), to]).filter(([from, to]) => from <= to);
     // (A new ask, so the claims go with it even if one without them was sent already.)
@@ -520,7 +522,7 @@ export function giveBlock(by: string, ask: unknown, { file = NUMBERS_FILE, now =
   const id = ask.id;
   return changeNumbers(kept => {
     const link = file === NUMBERS_FILE ? readLink() : null;
-    if (link?.setup?.managed && link.setup.role !== "primary") return null;
+    if (primaryFenced(link) || (link?.setup?.managed && link.setup.role !== "primary")) return null;
     installNumberAuthority(kept, link);
     kept.primary ??= "self";
     // (Past what the asking box used or holds: one that numbered on its own before, or numbers this
@@ -528,7 +530,10 @@ export function giveBlock(by: string, ask: unknown, { file = NUMBERS_FILE, now =
     if (top && !kept.given?.[id]) kept.next = Math.max(counterOf(kept), cappedTop(top) + 1);
     const given = kept.given?.[id];
     if (given) return { id, from: given.from, to: given.to, granted: given.granted ?? [] };
-    const granted = grantOn(kept, by, claims, { own: ask.own === true, restores: cleanRanges(ask.restores) });
+    const ceiling = link?.setup?.numberCeiling;
+    if (ceiling !== undefined && counterOf(kept) + count - 1 > ceiling) return null;
+    const granted = grantOn(kept, by, claims, { own: ask.own === true, restores: cleanRanges(ask.restores) },
+      ceiling === undefined ? undefined : ceiling - count);
     const from = counterOf(kept);
     const to = from + count - 1;
     kept.next = to + 1;

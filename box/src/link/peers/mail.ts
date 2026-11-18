@@ -13,6 +13,7 @@ import { leaveAnswer, letterWent } from "../letters/outbox";
 import { takeLetter } from "../letters/take";
 import { callsBack, takeCall } from "../letters/calls";
 import { rowsBack, rowsWent, takeRows } from "../work/elsewhere";
+import { receiveAuthority } from "../setup/takeover";
 import { noteHeard } from "./reach";
 import { takeMoving, tellMovingAgain } from "../moves/elsewhere";
 import { takeMoveMail } from "../moves/move";
@@ -59,6 +60,7 @@ export function peerMail(sender: MailSender, payload: Record<string, unknown>, h
   // Your time zone (`zone/setting.ts`), from any of your computers.
   if (isObject(payload.zone)) takeZone(payload.zone);
   // Documents (PROTOCOL.md, "Documents"): given, in parts, or a digest of what it has.
+  if (isObject(payload.setupAuthority)) try { receiveAuthority(sender, payload.setupAuthority, host); } catch {}
   if (isObject(payload.docs)) receiveDocs(sender, payload.docs as DocsMail, host).catch(() => {});
   if (isObject(payload.phoneSync)) try { takePhoneSync(sender, payload.phoneSync, host); } catch {}
   // It's just connected, and may have missed what this box told it (the relay keeps nothing):

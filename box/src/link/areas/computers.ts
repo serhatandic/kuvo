@@ -28,7 +28,7 @@ import { keptList, listFollowers, listNow, type Kept } from "../lists/sessions";
 import { MOST_ASKING, MOST_AT_WORK, PEER_AGENTS_FILE, readPeerAgents } from "../peers/directory";
 import { addressOf } from "../crypto/keys";
 import { ADDRESS, ownKey, peersOf } from "../peers/known";
-import { actionsOf, givenName, MOST_NAME, oldAppAttached, refusal, removeHere, renameHere, writerFacts, writerOf } from "../peers/manage";
+import { actionsOf, givenName, MOST_NAME, oldAppAttached, refusal, removeComputerHere, renameHere, writerFacts, writerOf } from "../peers/manage";
 import { offRelay } from "../letters/leave";
 import { plainName } from "../../shared/text";
 import { peerIsAway, PEER_REACH, readReach } from "../peers/reach";
@@ -305,7 +305,7 @@ async function* manage(context: RouteContext, key: string, action: string | unde
     const writer = what === "remove" ? writerOf(readLink()) : null;
     if (!writer) return yield* json(404, { message: "That isn't one of your computers." });
     if (writer.here) {
-      const done = removeHere(key, true);
+      const done = await removeComputerHere(key, true);
       return yield* json(done.status, done.value);
     }
     const there = await forwardAct({ key: writer.key, name: writer.name, kind: "mac" }, "This computer", { area: "computers", item: key, method: "DELETE", body: { cleanup: true } }, signal);
@@ -328,7 +328,7 @@ async function* manage(context: RouteContext, key: string, action: string | unde
   if (why) return yield* json(409, { message: why });
   const writer = writerOf(link)!;
   if (writer.here) {
-    const done = what === "rename" ? renameHere(key, name!) : removeHere(key);
+    const done = what === "rename" ? renameHere(key, name!) : await removeComputerHere(key);
     return yield* json(done.status, done.value);
   }
   // (Handed to the box that writes it: it does it as its own client's, and says how it went.)

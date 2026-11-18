@@ -2,6 +2,7 @@
 // Whether it's wanted and how it's doing, its phones and documents, your machines, and the letters
 // and agents of this Mac's conversations.
 
+import { primaryFenced } from "../setup/lease";
 import fs from "node:fs";
 import path from "node:path";
 import { isObject, parsed } from "../../shared/json";
@@ -73,6 +74,7 @@ export function setMacPeers(link: LinkState, given: unknown, rejoined?: string):
   const keeps = (key: string) => key === rejoined || !removedHere.includes(key);
   const now = given.peers.slice(0, MOST_PEERS).map(peer => ({ ...peer, kind: link.setup?.managed && peer?.kind === "mac" ? "mac" : "machine" }))
     .filter(peer => fitsPeer(peer) && typeof peer.sign === "string" && SIGN.test(peer.sign) && keeps(peer.key)).map(cleanPeer);
+  if (primaryFenced(link) || (link.setup?.standby && !now.some(peer => peer.key === link.setup!.standby!.key && peer.sign === link.setup!.standby!.sign))) return { link: null, gone: [] };
   const skipped = given.peers.slice(0, MOST_PEERS).filter(peer => !(isObject(peer) && typeof peer.key === "string" && !keeps(peer.key))).length - now.length;
   if (skipped) console.error(`${skipped} of this Mac's machines weren't records the box could take, and were left out.`);
   const removed = (Array.isArray(given.removed) ? given.removed : []).filter((key: unknown): key is string => typeof key === "string" && KEY.test(key) && !now.some(peer => peer.key === key));

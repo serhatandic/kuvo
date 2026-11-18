@@ -11,6 +11,7 @@
 // gets back in by having its app make a new key.
 // Platform: the same on macOS and Linux; only a Mac's box has the switch ("Let my devices connect").
 
+import { LEADERSHIP_WAIT, primaryFenced } from "../setup/lease";
 import { isObject } from "../../shared/json";
 import { plainName } from "../../shared/text";
 import { noteDocsChanged } from "../documents/changed";
@@ -85,6 +86,7 @@ export function pairHere(device: AskingDevice, by?: string): Acted {
   let refusal: Acted | undefined;
   let computer: string | undefined;
   updateLink(link => {
+    if (primaryFenced(link)) { refusal = answer(503, { message: LEADERSHIP_WAIT }); return null; }
     const main = mainElsewhere(link);
     if (main && !by) {
       refusal = answer(409, { message: `Pair new devices from ${main.name || "your main computer"}.`, primary: main.key });
@@ -135,7 +137,7 @@ export async function deviceAct(sender: MailSender, act: Act): Promise<Acted> {
   if (act.method === "DELETE") {
     if (act.item !== sender.key) return answer(403, { message: "A computer can only revoke its own devices." });
     const changed = updateLink(link => {
-      if (!link || followedSetup(link)?.role !== "primary" || !ownMachines(link).has(sender.key)) return null;
+      if (!link || primaryFenced(link) || followedSetup(link)?.role !== "primary" || !ownMachines(link).has(sender.key)) return null;
       const device = link.phones?.find(phone => phone.by === sender.key)?.name ?? vouchBlockOf(link, sender.key)?.device;
       revokeVoucher(link, sender.key, device);
       return link;

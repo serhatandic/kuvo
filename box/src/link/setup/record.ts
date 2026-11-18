@@ -31,6 +31,8 @@ export interface SetupRecord extends SetupWord {
   role: "primary" | "member";
   aside?: true;
   managed?: true;
+  standby?: { key: string; sign: string };
+  numberCeiling?: number;
   conflict?: { primary: string; epoch: number };
 }
 

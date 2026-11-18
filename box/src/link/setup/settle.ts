@@ -4,10 +4,10 @@
 
 import type { Doc } from "../../shared/documents";
 import { IS_MAC } from "../home";
-import { macDoc, macsOf } from "../peers/known";
+import { cleanPeer, fitsPeer, macDoc, macsOf } from "../peers/known";
 import { macSign } from "../state";
 import { rankedPrimary } from "../work-queue/numbers";
-import { followedSetup, ledSetup } from "./record";
+import { followedSetup, ledSetup, type SetupRecord } from "./record";
 import type { LinkState } from "../state";
 
 /** This box's setup brought up to date with the peers documents it holds (in place, under
@@ -41,7 +41,7 @@ export function settleSetup(link: LinkState): void {
       kept.id = own.setup!.id;
       kept.epoch = own.setup!.epoch;
       delete kept.aside;
-      if (own.doc?.body.managed === true) kept.managed = true;
+      if (own.doc) Object.assign(kept, managedFields(own.doc));
     } else if (doc && !ledSetup(doc)) kept.aside = true;
     return;
   }
@@ -49,7 +49,7 @@ export function settleSetup(link: LinkState): void {
   // up: the one it numbers from, the first you set up; none until that's one of them.)
   const ranked = offers.length > 1 ? rankedPrimary(link) : null;
   const taken = offers.length === 1 ? offers[0] : offers.find(each => ranked && "peer" in ranked && ranked.peer.key === each.mac);
-  if (taken) link.setup = { id: taken.setup!.id, epoch: taken.setup!.epoch, primary: taken.setup!.primary, sign: taken.doc!.origin, role: "member", ...(taken.doc!.body.managed === true ? { managed: true as const } : {}) };
+  if (taken) link.setup = { id: taken.setup!.id, epoch: taken.setup!.epoch, primary: taken.setup!.primary, sign: taken.doc!.origin, role: "member", ...managedFields(taken.doc!) };
 }
 
 /** A peers document this box is given (`takeDoc`), looked at for one more thing: one of its own
@@ -62,4 +62,13 @@ export function noteConflict(link: LinkState, doc: Doc): void {
   if (setup?.role !== "member" || !said || said.id !== setup.id || said.epoch !== setup.epoch || said.primary === setup.primary) return;
   if (!macsOf(link).includes(said.primary) || macSign(link, said.primary) !== doc.origin) return;
   setup.conflict = { primary: said.primary, epoch: said.epoch };
+}
+
+function managedFields(doc: Doc): Pick<SetupRecord, "managed" | "standby" | "numberCeiling"> {
+  if (doc.body.managed !== true) return {};
+  const boxes = Array.isArray(doc.body.boxes) ? doc.body.boxes : [];
+  const standby = boxes.filter(fitsPeer).map(cleanPeer).find(peer => peer.key === doc.body.standby && peer.sign !== doc.origin);
+  const ceiling = doc.body.numberCeiling;
+  return { managed: true, ...(standby?.sign && typeof ceiling === "number" && Number.isSafeInteger(ceiling) && ceiling > 0
+    ? { standby: { key: standby.key, sign: standby.sign }, numberCeiling: ceiling } : {}) };
 }

@@ -9,10 +9,11 @@ import { KEY, ownKey, peersOf, type MailSender } from "../peers/known";
 import { ownPhones } from "../phones";
 import { readLink, updateLink } from "../state";
 import { forwardAct, takesForwarded, type Act, type Acted } from "../work-queue/forward";
-import { changeNumbers, installNumberAuthority, topOf } from "../work-queue/numbers";
+import { changeNumbers, installNumberAuthority, MOST_NUMBER, topOf } from "../work-queue/numbers";
 import { writeCard } from "./card";
-import { takeLeadership } from "./leadership";
-import { followedSetup } from "./record";
+import { NUMBER_RESERVE, takeLeadership } from "./leadership";
+import { LEADERSHIP_WAIT, primaryFenced } from "./lease";
+import { followedSetup, type SetupRecord } from "./record";
 
 export const HANDOVER_FEATURE = "setup.handover";
 const answer = (status: number, message: string): Acted => ({ status, value: { message } });
@@ -46,16 +47,24 @@ async function handoverHere(target: string, position: Record<string, unknown>, r
   if (ready.status !== 200) return ready;
   if (!isObject(ready.value) || ready.value.sign !== next.sign) return answer(409, "The chosen computer's signing key changed. Refresh your setup and try again.");
 
-  // Serialize with number allocation too. With this lock held, the committed snapshot includes
-  // every number the outgoing primary has assigned, even if nobody else has heard of it yet.
-  const epoch = setup.epoch + 1;
+  return proposeLeadership(position, target, setup.standby?.key !== target ? setup.standby ?? null : null, requester, next.sign);
+}
+
+/** The number ledger and the fenced proposal are frozen together. With a standby, only it
+ * can turn the proposal into the next certificate. Sending is safe to retry after a restart. */
+export async function proposeLeadership(position: Record<string, unknown>, target: string, standby: NonNullable<SetupRecord["standby"]> | null, requester?: string, targetSign?: string): Promise<Acted> {
   const changed = changeNumbers(numbers => updateLink(link => {
     const current = followedSetup(link);
-    if (!link?.sign || current?.role !== "primary" || current.sign !== ownSign(link) || current.id !== setup.id || current.epoch !== setup.epoch) return null;
+    if (!link?.sign || current?.role !== "primary" || current.sign !== ownSign(link) || current.id !== position.setup || current.epoch !== position.epoch
+      || primaryFenced(link)) return null;
     const members = peersOf(link);
     if (requester && !members.some(peer => peer.key === requester)) return null;
-    if (!members.some(peer => peer.key === target && peer.sign === next.sign)
-      || members.some(peer => !peer.sign || !takesForwarded(peer.key, HANDOVER_FEATURE))) return null;
+    if (target !== current.primary && (!members.some(peer => peer.key === target && peer.sign === targetSign)
+      || members.some(peer => !peer.sign || !takesForwarded(peer.key, HANDOVER_FEATURE)))) return null;
+    if (standby && (standby.key === target || !members.some(peer => peer.key === standby.key && peer.sign === standby.sign)
+      || members.some(peer => !peer.sign || !takesForwarded(peer.key, "setup.takeover")))) return null;
+    const renewing = target === current.primary && (standby?.key ?? null) === (current.standby?.key ?? null);
+    if (renewing && (!standby || !current.numberCeiling || current.numberCeiling >= MOST_NUMBER - 1)) return null;
     installNumberAuthority(numbers, link);
     const granted = { ...numbers.granted };
     if (granted.self) {
@@ -63,26 +72,51 @@ async function handoverHere(target: string, position: Record<string, unknown>, r
       delete granted.self;
     }
     const { boxes, left, moved } = primaryPeersBody(link);
+    const epoch = current.epoch + 1;
+    const next = topOf(numbers) + 1;
+    if (renewing && next + NUMBER_RESERVE - 1 <= current.numberCeiling!) return null;
     const envelope = signDoc(link.sign, "leadership", epoch, {
       setup: { id: current.id, epoch, primary: target }, previous: current.primary, boxes, left, moved,
       devices: ownPhones(link), vouchBlocked: link.vouchBlocked ?? [],
-      numbers: { next: topOf(numbers) + 1, given: numbers.given, granted },
+      numbers: { next, given: numbers.given, granted },
+      ...(standby ? { standby: standby.key, numberCeiling: Math.min(MOST_NUMBER - 1, next + NUMBER_RESERVE - 1) } : {}),
+      ...(current.standby ? { proposal: true } : {}),
     });
     const doc = readDoc(envelope);
-    if (!doc || !takeLeadership(link, doc)) return null;
-    pruneDocs(link);
+    if (!doc || !boxes.every(box => box.key && box.sign && box.address)) return null;
+    if (current.standby) link.leadershipPending = envelope;
+    else {
+      if (!takeLeadership(link, doc)) return null;
+      pruneDocs(link);
+    }
     return link;
   }, { durable: true }));
-  if (!changed) return answer(409, "The setup changed or its state couldn't be handed over. Refresh your setup and try again.");
-
+  if (!changed) return answer(409, "The setup changed or the standby couldn't be reached. Refresh your setup and try again.");
+  if (changed.leadershipPending) {
+    const deadline = Date.now() + 12_000;
+    while (Date.now() < deadline) {
+      const setup = readLink()?.setup;
+      if (setup?.id !== position.setup || !setup || setup.epoch !== position.epoch) {
+        if (setup?.id === position.setup && setup?.primary === target && setup.standby?.key === standby?.key && setup.standby?.sign === standby?.sign) {
+          return { status: 202, value: { primary: target, epoch: setup.epoch } };
+        }
+        return answer(409, "The setup changed. Refresh your setup and try again.");
+      }
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    return answer(503, LEADERSHIP_WAIT);
+  }
   noteDocsChanged();
   try { writeCard(); } catch {}
-  return { status: 202, value: { primary: target, epoch } };
+  return { status: 202, value: { primary: target, epoch: changed.setup!.epoch } };
 }
 
 export async function setupAct(sender: MailSender, act: Act): Promise<Acted> {
   if (!act.body) return answer(400, "Send the setup and epoch.");
-  if (act.method === "POST") return handoverHere(act.item, act.body, sender.key);
+  if (act.method === "POST") {
+    if (act.body.standby === true) return standbyHere(act.item, act.body, sender.key);
+    return handoverHere(act.item, act.body, sender.key);
+  }
   const link = readLink();
   const setup = followedSetup(link);
   if (!link || setup?.role !== "member" || setup.primary !== sender.key || setup.id !== act.body.setup
@@ -90,4 +124,34 @@ export async function setupAct(sender: MailSender, act: Act): Promise<Acted> {
     return answer(409, "The chosen computer hasn't caught up with the current primary yet.");
   }
   return { status: 200, value: { sign: ownSign(link) } };
+}
+
+export async function selectStandby(given: unknown, signal?: AbortSignal | null): Promise<Acted> {
+  if (!isObject(given) || typeof given.standby !== "string" || !KEY.test(given.standby)) return answer(400, "Choose a member by its key as standby.");
+  const link = readLink();
+  const setup = followedSetup(link);
+  if (!setup || (given.epoch !== undefined && setup.epoch !== given.epoch)) return answer(409, "The setup changed. Refresh it and try again.");
+  if (setup.standby?.key === given.standby) return { status: 200, value: { primary: setup.primary, epoch: setup.epoch } };
+  const position = { setup: setup.id, epoch: setup.epoch };
+  if (setup.role === "primary") return standbyHere(given.standby, position);
+  const primary = peersOf(link).find(peer => peer.key === setup.primary);
+  if (!primary) return answer(503, "This computer can't reach your primary.");
+  const result = await forwardAct(primary, "Changing the standby", { area: "setup", method: "POST", item: given.standby, body: { ...position, standby: true } }, signal, link);
+  return "refused" in result ? answer(result.status, result.refused) : result;
+}
+
+export async function standbyHere(target: string, position: Record<string, unknown>, requester?: string, reason = "user choice"): Promise<Acted> {
+  const link = readLink();
+  const setup = followedSetup(link);
+  if (setup?.role !== "primary" || setup.id !== position.setup || setup.epoch !== position.epoch) return answer(409, "The setup changed. Refresh it and try again.");
+  const peers = peersOf(link);
+  const peer = peers.find(peer => peer.key === target);
+  if (!peer?.sign || !takesForwarded(target, "setup.takeover")) return answer(409, "Choose a member that supports standby.");
+  if (peers.some(peer => !takesForwarded(peer.key, "setup.takeover"))) return answer(409, "Every member must connect on a version that supports standby first.");
+  const ready = await forwardAct(peer, "Changing the standby", { area: "setup", method: "GET", item: target, body: position }, undefined, link, Date.now(), { backgroundRelay: true });
+  if ("refused" in ready) return answer(ready.status, ready.refused);
+  if (ready.status !== 200 || !isObject(ready.value) || ready.value.sign !== peer.sign) return answer(409, "The chosen standby hasn't caught up yet.");
+  const outcome = await proposeLeadership(position, setup.primary, { key: target, sign: peer.sign }, requester);
+  if (outcome.status === 202) console.info(`Standby selected: ${target} (${reason}).`);
+  return outcome;
 }

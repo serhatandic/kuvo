@@ -17,7 +17,8 @@ import { cleanMoved, leaveMac, macDoc, macDocs, macsOf, ownKey, peersOf, writesO
 import { mergePersonalities, MOST_COUNT, readPersonalities } from "../personalities/library";
 import { foldPhones, ownPhones } from "../phones";
 import { followedSetup, lowerEpoch, setupOf, type SetupWord } from "../setup/record";
-import { leadershipOf, takeLeadership } from "../setup/leadership";
+import { approveLeadership, leadershipOf, takeLeadership } from "../setup/leadership";
+import { primaryFenced } from "../setup/lease";
 import { noteConflict, settleSetup } from "../setup/settle";
 import { macSign, updateLink } from "../state";
 import { bodyHash, DOC_PART, docKey, held, MOST_DOC, ownSign, readDoc, shortHash, signDoc } from "./format";
@@ -83,6 +84,9 @@ export interface PrimaryPeersBody {
   left: string[];
   setup?: SetupWord;
   managed?: true;
+  vouchBlocked?: LinkState["vouchBlocked"];
+  standby?: string;
+  numberCeiling?: number;
 }
 
 /** What's to go to one box while documents are worked out. */
@@ -137,10 +141,14 @@ export function takeDoc(link: LinkState, envelope: unknown): TakenDoc | null {
   const doc = readDoc(envelope);
   if (!doc) return null;
   if (doc.kind === "leadership") return takeLeadership(link, doc) ? doc : null;
-  if (doc.kind === "peers" && link.setup?.managed) {
+  if (doc.kind === "peers" && link.setup) {
+    const kept = link.setup;
     const setup = setupOf(doc.body);
-    if (!setup || setup.id !== link.setup.id || setup.epoch !== link.setup.epoch
-      || setup.primary !== link.setup.primary || doc.origin !== link.setup.sign) return null;
+    if ((kept.managed || doc.body.managed === true) && setup?.id === kept.id && setup.epoch > kept.epoch) return null;
+    if (kept.managed && (!setup || setup.id !== kept.id || setup.epoch !== kept.epoch
+      || setup.primary !== kept.primary || doc.origin !== kept.sign
+      || (doc.body.standby ?? null) !== (kept.standby?.key ?? null)
+      || doc.body.numberCeiling !== kept.numberCeiling)) return null;
   }
   if (doc.kind === "phones" && link.setup?.managed && doc.origin === link.setup.sign && doc.body.epoch !== link.setup.epoch) return null;
   if (!takesFrom(link, doc.origin, doc.kind)) {
@@ -202,11 +210,12 @@ export function ownDoc(link: LinkState, kind: DocKind, body: object): OwnDoc | n
 export function ownDocs(state: Pick<DocsState, "link" | "library">): Partial<Record<DocKind, OwnDoc>> {
   const docs: Partial<Record<DocKind, OwnDoc>> = {};
   // The inbound phone switch is local. Peers still need the signed list and its removals.
-  if (writesOwnPeers(state.link)) {
+  const canPublish = !primaryFenced(state.link);
+  if (canPublish && writesOwnPeers(state.link)) {
     const peers = ownDoc(state.link, "peers", primaryPeersBody(state.link));
     if (peers) docs.peers = peers;
   }
-  if (!state.link.setup?.managed || state.link.setup.role === "primary") {
+  if (canPublish && (!state.link.setup?.managed || state.link.setup.role === "primary")) {
     const phones = ownDoc(state.link, "phones", ownPhones(state.link));
     if (phones) docs.phones = phones;
   }
@@ -237,7 +246,7 @@ export function primaryPeersBody(link: LinkState): PrimaryPeersBody {
   const setup = followedSetup(link);
   const leads = setup?.role === "primary" && setup.primary === me.key && setup.sign === me.sign;
   return { boxes: [me, ...peers.map((peer): PeersBox => ({ ...peer, kind: setup?.managed ? peer.kind : "machine" }))], moved: cleanMoved(link.macMoved), left: (Array.isArray(link.left) ? link.left : []).filter(key => !current.has(key)),
-    ...(leads && setup ? { setup: { id: setup.id, epoch: setup.epoch, primary: setup.primary }, ...(setup.managed ? { managed: true as const } : {}) } : {}) };
+    ...(leads && setup ? { setup: { id: setup.id, epoch: setup.epoch, primary: setup.primary }, ...(setup.managed ? { managed: true as const } : {}), ...(setup.standby ? { standby: setup.standby.key, numberCeiling: setup.numberCeiling, vouchBlocked: link.vouchBlocked ?? [] } : {}) } : {}) };
 }
 
 // What this box has, as it tells other boxes: each document's origin, kind, version and hash.
@@ -306,8 +315,15 @@ export function docsWork(state: DocsState, sender: DocSender, docs: DocsMail, { 
   const took: TakenDoc[] = [];
   const transitions = given.filter(envelope => held(envelope)?.kind === "leadership").sort((a, b) => held(a)!.n - held(b)!.n);
   for (const envelope of transitions) {
-    const doc = takeDoc(link, envelope);
-    if (doc) took.push(doc);
+    const proposal = readDoc(envelope);
+    const approved = proposal && approveLeadership(link, proposal);
+    const committed = proposal?.body.proposal === true && held(link.leadership?.[proposal.n]);
+    if (committed && committed.body.approval === proposal?.envelope.s) to(sender, outgoing => outgoing.give.push(committed.envelope));
+    const doc = approved && takeLeadership(link, approved) ? approved : takeDoc(link, envelope);
+    if (doc) {
+      took.push(doc);
+      if (approved === doc) to(sender, outgoing => outgoing.give.push(doc.envelope));
+    }
   }
   for (const kind of ownDocumentKinds) {
     for (const envelope of given) {

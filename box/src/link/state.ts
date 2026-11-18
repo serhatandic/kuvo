@@ -94,10 +94,14 @@ export interface LinkState {
   pendingMachineCleanup?: Record<string, string>;
   /** Machines this Mac removed that haven't heard it yet (they hear it once it's back on the relay). */
   untold?: Peer[];
+  /** Peers documents at the epoch that revoked an offline member. */
+  untoldMembership?: Record<string, SignedDoc>;
   /** The setup it's in, and its role there (PROTOCOL.md, "Your setup"). */
   setup?: SetupRecord;
   /** Verified leadership changes, indexed by setup epoch for offline catch-up. */
   leadership?: Record<number, SignedDoc>;
+  /** A fenced primary resends its proposal until the previous standby settles the epoch. */
+  leadershipPending?: SignedDoc;
   /** This Mac's static key as its box last had it, and the ones before (made anew since): a machine
    * this Mac sets up again lets those go (`replaces` in setup). */
   keyNow?: string;

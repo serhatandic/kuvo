@@ -5,6 +5,7 @@
 // of it before (#636). Each step is told as it goes (`tries.ts`); every word a client shows is here.
 // The setup's primary enrolls members and signs the resulting membership list.
 
+import { LEADERSHIP_WAIT, primaryFenced } from "../setup/lease";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import type { AddTry, ComputerAction, ListedComputer } from "../../shared/routes/box";
@@ -22,7 +23,7 @@ import { ADDRESS, KEY, ownKey, peersOf } from "../peers/known";
 import { readPeerAgents } from "../peers/directory";
 import { pairedPhone, vouchedWords, vouchMoved } from "../phones";
 import { machineBoxIn } from "../install/verdict";
-import { oldAppAttached, removeHere } from "../peers/manage";
+import { oldAppAttached, removeComputerHere } from "../peers/manage";
 import { appsOf, foundOf, judgeComputer, oursNow } from "../setup/judge";
 import { addElsewhere, mainElsewhere } from "../setup/main-only";
 import { liveLink, macLink, readLink, updateLink } from "../state";
@@ -56,6 +57,7 @@ function keepHost(id: string, host: { name: string; address: string; key: string
 /** Whether this box adds computers now, and why not, in words a client shows as they are. */
 export function canAdd(): { can: true } | { can: false; status: 409 | 503; message: string; primary?: string } {
   const link = readLink();
+  if (primaryFenced(link)) return { can: false, status: 503, message: LEADERSHIP_WAIT };
   const main = mainElsewhere(link);
   if (main) return { can: false, status: 409, ...addElsewhere(main) };
   if (!IS_MAC && followedSetup(link)?.role !== "primary") return { can: false, status: 409, message: "This computer can add members once its setup is ready." };
@@ -398,6 +400,7 @@ const ADD_REVOKED = "The device that started this add is no longer paired. Start
 const removedDuringAdd = (name: string) => new Failed(`${name} was removed from your computers. Add it again to restore access.`);
 
 function checkAdd(link: LinkState | null, grant: AddGrant | undefined, name: string, key?: string): void {
+  if (primaryFenced(link)) throw new Failed(LEADERSHIP_WAIT, false);
   const main = mainElsewhere(link);
   if (main) throw new Failed(addElsewhere(main).message, false);
   if (!IS_MAC && followedSetup(link)?.role !== "primary") throw new Failed("This computer no longer leads a setup.", false);
@@ -739,9 +742,9 @@ export function beginUninstall(key: string): Running | null {
       const only = macs.size === 0;
       tell.step("removing", only ? undefined : "Another Mac uses it too, so Kuvo Code stays there");
       // Persist the revocation before the first destructive command. SSH may lose the reply.
-      let removed: ReturnType<typeof removeHere>;
+      let removed: Awaited<ReturnType<typeof removeComputerHere>>;
       try {
-        removed = removeHere(key);
+        removed = await removeComputerHere(key);
       } catch (error) {
         console.error("Uninstall local revocation failed:", error);
         throw new Failed("Kuvo Code couldn’t confirm that access was revoked. Try uninstalling again.");
