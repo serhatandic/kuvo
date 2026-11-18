@@ -16367,6 +16367,113 @@
    }
   },
   {
+   "route": "POST kuvo/sessions/:id/queue/reorder",
+   "answers": {
+    "200": {
+     "object": {
+      "paused": "bool",
+      "held": {
+       "list": "string"
+      },
+      "waiting?": {
+       "list": {
+        "object": {
+         "id": "string",
+         "from?": "string",
+         "text": "string",
+         "files?": {
+          "list": "string"
+         },
+         "keyword?": "string",
+         "at": "number"
+        }
+       }
+      },
+      "line?": "string",
+      "items": {
+       "oneOf": [
+        {
+         "list": {
+          "object": {
+           "id": "string",
+           "words": "string",
+           "files": {
+            "list": "string"
+           },
+           "keyword": {
+            "oneOf": [
+             "string",
+             "null"
+            ]
+           },
+           "from": {
+            "oneOf": [
+             "string",
+             "null"
+            ]
+           },
+           "on": {
+            "oneOf": [
+             {
+              "literal": "engine"
+             },
+             {
+              "literal": "box"
+             }
+            ]
+           },
+           "delivery": {
+            "oneOf": [
+             {
+              "literal": "steer"
+             },
+             {
+              "literal": "queue"
+             }
+            ]
+           },
+           "held": "bool"
+          }
+         }
+        },
+        "null"
+       ]
+      }
+     }
+    },
+    "400": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "404": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "409": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "502": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "503": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "504": {
+     "object": {
+      "message": "string"
+     }
+    }
+   }
+  },
+  {
    "route": "POST kuvo/sessions/:id/queue/resume",
    "answers": {
     "200": {
