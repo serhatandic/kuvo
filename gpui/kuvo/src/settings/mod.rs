@@ -20,7 +20,7 @@ mod rows;
 pub mod shortcuts;
 pub mod sign_in;
 
-use std::collections::HashMap;
+use std::{collections::HashMap, time::Duration};
 
 use gpui::{App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, ListAlignment, ListState, SharedString, Subscription, Task, Window, px};
 use kuvo_box::BoxClient;
@@ -1234,7 +1234,7 @@ impl SettingsView {
                     this.agents_usage = agents_state(&read);
                     this.usage = reading(read, &this.usage);
                     let restarting = this.agents_usage.as_ref().is_some_and(kuvo_box::Refusal::agents_restarting);
-                    this.again_while_restarting("usage", restarting, cx);
+                    this.read_again("usage", restarting, AGENTS_AGAIN, cx);
                 }, cx);
             }
             (Some(Drawn::Own), "models") => {
