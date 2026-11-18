@@ -70,14 +70,16 @@ function starts() {
 }
 
 /** What runs of the box, each by its record in `run` and the command line it runs with. */
-const RECORDS: [file: string, role: RegExp, what: string][] = [
-  ["box.pid", /kuvo-start(-keeper)? keep(\s|$)/, "keeper"],
-  ["engine.json", engineRole(K), "engine"],
-  ["agents.pid", /kuvo-agents/, "coding agents"],
-  ["link.pid", /kuvo-link\.js run(\s|$)/, "link"],
-  ["serve.json", SERVE_ROLE, "server"],
-  ["browser.pid", /kuvo-browser\.js host(\s|$)/, "browser"],
-];
+function processRecords(): [file: string, role: RegExp, what: string][] {
+  return [
+    ["box.pid", /kuvo-start(-keeper)? keep(\s|$)/, "keeper"],
+    ["engine.json", engineRole(K), "engine"],
+    ["agents.pid", /kuvo-agents/, "coding agents"],
+    ["link.pid", /kuvo-link\.js run(\s|$)/, "link"],
+    ["serve.json", SERVE_ROLE, "server"],
+    ["browser.pid", /kuvo-browser\.js host(\s|$)/, "browser"],
+  ];
+}
 
 /** A process recorded in `run` (`{"pid":…}` or a bare number), when it runs as `role` says (one
  * whose number another process took since isn't it). */
@@ -107,7 +109,7 @@ function holders(): number[] {
 
 /** What runs of the box now, by its records. */
 function running(): string[] {
-  return [...RECORDS.filter(([file, role]) => recorded(file, role) !== null).map(([, , what]) => what), ...(holders().length ? ["coding agents' processes"] : [])];
+  return [...processRecords().filter(([file, role]) => recorded(file, role) !== null).map(([, , what]) => what), ...(holders().length ? ["coding agents' processes"] : [])];
 }
 
 /** The box's keeper, `bin/kuvo-start`, when it names this very folder (it says `K="$HOME/<name>"`,
@@ -187,7 +189,7 @@ export function uninstall(): Uninstalled {
     stopped = off.status === 0;
   }
   const told: [number, RegExp][] = [];
-  for (const [file, role] of RECORDS) {
+  for (const [file, role] of processRecords()) {
     const pid = recorded(file, role);
     if (pid && pid !== process.pid) try { process.kill(pid, "SIGTERM"); told.push([pid, role]); } catch {}
   }
