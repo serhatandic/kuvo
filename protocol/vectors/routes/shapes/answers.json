@@ -6910,6 +6910,9 @@
             "literal": "setup.ready"
            },
            {
+            "literal": "setup.shared-saves"
+           },
+           {
             "literal": "setup.takeover"
            },
            {
@@ -7676,6 +7679,9 @@
            },
            {
             "literal": "setup.ready"
+           },
+           {
+            "literal": "setup.shared-saves"
            },
            {
             "literal": "setup.takeover"
