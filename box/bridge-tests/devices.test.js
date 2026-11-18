@@ -40,8 +40,8 @@ const alone = (extra = {}) => {
   link.forgetQueueActs();
   link.writeLink({ secret: k(crypto.randomBytes(32)), key: k(here.key), relay: "wss://relay.test", name: "devbox", phones: [], ...extra });
 };
-// A member of the setup Studio leads.
-const member = (extra = {}) => alone({ id: "devbox", mac: mac.pub, macs: [mac.pub], peersFrom: { [mac.pub]: { at: 1, peers: [mac.peer, here.peer] } },
+// A member of the setup Studio leads, with its legacy peer list already migrated.
+const member = (extra = {}) => alone({ id: "devbox", mac: mac.pub, macs: [mac.pub], legacy: { [mac.pub]: { at: 1, peers: [mac.peer, here.peer], moved: [] } },
   setup: { id: `set_${"a".repeat(22)}`, epoch: 1, primary: mac.pub, sign: "s".repeat(43), role: "member" }, ...extra });
 const mailFrom = (from, payload) => link.sealOneWay(Buffer.from(JSON.stringify(payload)), from.key, link.publicOf(here.key)).message;
 const takeMail = (sender, payload) => link.peerMail(sender, payload, null);
