@@ -15,6 +15,9 @@ export interface Record_ {
 }
 
 export class Store {
+  /** Set by the bridge for messages created on this computer. */
+  origin?: () => string
+  usageAccount?: (provider: string, origin: string) => string | undefined
   private records = new Map<string, Record_>()
   private pending = new Map<string, ReturnType<typeof setTimeout>>()
 

@@ -68,8 +68,12 @@ import { agentAccounts, BOX_ONLY_SERVICES, Limits } from "./limits"
 import { signedInAgents, signIns } from "./sign-ins"
 import { LimitsPeers } from "./limits-peers"
 import { LimitResets } from "./limits-resets"
+import { Insights } from "./usage/insights"
+import { InsightsDB } from "./usage/insights-db"
+import { InsightsScan } from "./usage/insights-scan"
+import { insightKey } from "./usage/insight-records"
 import { PricingStore } from "./usage/pricing"
-import { antigravitySources, claudeSources, codexSources, cursorSources, engineCodexSource, engineHostedSources, grokSources, Usage, USAGE_SERVICES, UsageSettings } from "./usage/usage"
+import { antigravitySources, claudeSources, codexSources, cursorSources, engineCodexSource, engineHostedSources, grokSources, ownComputer, Usage, USAGE_SERVICES, UsageSettings } from "./usage/usage"
 import { antigravityTransport } from "./usage/antigravity-plan"
 import { cursorEndpoints } from "./usage/cursor-api"
 import { UsagePeers } from "./usage/usage-peers"
@@ -395,8 +399,30 @@ const engineHostedUsage = engineHostedSources(engineData)
 cursorEndpoints.live = !noPriceFeeds
 antigravityTransport.live = !noPriceFeeds
 const cursorUsage = cursorSources(usageFolder, (provider, identity) => limits.held(provider) || (identity !== undefined && !!usage.peers?.readsWhole("cursor", identity)))
-const usage = new Usage(() => [...claudeUsage(roster.all()), ...codexUsage(roster.all()), ...grokUsage(roster.all()), ...engineCodexUsage(), ...engineHostedUsage(), ...cursorUsage(roster.all()), ...antigravityUsage(roster.all())], new PricingStore(join(usageFolder, "pricing"), noPriceFeeds ? null : undefined), (provider) => limits.identity(provider), join(usageFolder, "usage.json"))
+const pricing = new PricingStore(join(usageFolder, "pricing"), noPriceFeeds ? null : undefined)
+const usage = new Usage(() => [...claudeUsage(roster.all()), ...codexUsage(roster.all()), ...grokUsage(roster.all()), ...engineCodexUsage(), ...engineHostedUsage(), ...cursorUsage(roster.all()), ...antigravityUsage(roster.all())], pricing, (provider) => limits.identity(provider), join(usageFolder, "usage.json"))
 usage.settings = usageSettings
+const localUsageKey = insightKey("kuvo insight computer", ownComputer()).slice(0, 32)
+const usageComputer = () => directory.own()?.key ?? localUsageKey
+store.origin = usageComputer
+try {
+  mkdirSync(usageFolder, { recursive: true, mode: 0o700 })
+  store.usageAccount = (provider) => {
+    const service = parseProvider(provider)?.kind ?? (provider === "openai" ? "codex" : provider)
+    const identity = limits.identity(provider)
+    return identity ? `${service}#${identity}` : undefined
+  }
+  const scanner = new InsightsScan({
+    root: home, cache: join(usageFolder, "insights-logs"), agents: () => roster.all(), store,
+    bots: () => groups?.store.allBots() ?? [],
+    computer: usageComputer, engine: engineData,
+  })
+  const insights = new Insights(new InsightsDB(join(usageFolder, "insights.sqlite"), build ? script : undefined), scanner, pricing, directory, post, localUsageKey)
+  peers.insights = usage.insights = insights
+} catch (error) {
+  console.error("Insights index:", error instanceof Error ? error.message : error)
+}
+
 // The engine's sign-ins known (a box's first ChatGPT use shows at once, not a round later).
 engineAccounts.onAnswered = () => void usage.tick()
 // (OpenCode's hosted spend only where this box knows its engine's folder: else a client reads it as before.)
@@ -459,6 +485,7 @@ await untilSandboxDecided()
 sessions.resumeHeld()
 limits.start()
 usage.start()
+usage.insights?.start()
 const carrying = new Carrying(sessions, store, (provider) => sessions.agent(provider), (kind) => roster.all().filter((agent) => parseProvider(agent.providerID)?.kind === kind))
 let server: ReturnType<typeof Bun.serve>
 /** Making way for a newer bridge in its place, on a machine (below). */

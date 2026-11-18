@@ -24,6 +24,7 @@ export interface CodexEvent {
   /** When, in ms. */
   at: number
   model: string
+  session?: string
   /** What it's priced as, when not its own (`gpt-reserve`'s). */
   pricingModel?: string
   /** Input, counting what was cached. */
@@ -47,6 +48,7 @@ export interface RawUsage {
 
 /** What a log's lines so far say of what follows, kept with the log (jsonl.ts) so it's read on from there. */
 export interface CodexState {
+  session?: string
   previous: RawUsage | null
   model: string | null
   fast: boolean
@@ -164,6 +166,7 @@ export function codexLine(line: Buffer, state: CodexState): CodexEvent[] {
   // A child's log replays its parent's metadata too: only its first is its own.
   if (type === "session_meta" && !state.sawMeta) {
     state.sawMeta = true
+    state.session = textOf(payload?.id)
     if (payload && isChildMeta(payload)) {
       const created = seconds(object.timestamp)
       state.gate = created !== undefined ? { startedAt: created } : { selfTimed: true }
@@ -216,6 +219,7 @@ export function codexLine(line: Buffer, state: CodexState): CodexEvent[] {
   return [
     {
       at,
+      ...(state.session ? { session: state.session } : {}),
       model,
       ...(model === RESERVE ? { pricingModel: RESERVE_PRICED_AS } : {}),
       input: usage.input,
@@ -276,13 +280,13 @@ export function codexSlots(events: CodexEvent[], pricing: Pricing, since: number
 
 // What's kept of each log's turns (jsonl.ts), small: [at, model, pricing model, input, cached,
 // output, reasoning, total, flags]; flags: 1 fast, 2 Ultrafast.
-export type KeptCodexEvent = [number, string, string | null, number, number, number, number, number, number]
+export type KeptCodexEvent = [number, string, string | null, number, number, number, number, number, number, string?]
 
-export const keptCodex = (event: CodexEvent): KeptCodexEvent => [event.at, event.model, event.pricingModel ?? null, event.input, event.cached, event.output, event.reasoning, event.total, (event.fast ? 1 : 0) | (event.ultrafast ? 2 : 0)]
+export const keptCodex = (event: CodexEvent): KeptCodexEvent => [event.at, event.model, event.pricingModel ?? null, event.input, event.cached, event.output, event.reasoning, event.total, (event.fast ? 1 : 0) | (event.ultrafast ? 2 : 0), ...(event.session ? [event.session] as const : [] as const)]
 
 export function fromKeptCodex(kept: KeptCodexEvent): CodexEvent {
-  const [at, model, pricingModel, input, cached, output, reasoning, total, flags] = kept
-  return { at, model, ...(pricingModel !== null ? { pricingModel } : {}), input, cached, output, reasoning, total, fast: !!(flags & 1), ultrafast: !!(flags & 2) }
+  const [at, model, pricingModel, input, cached, output, reasoning, total, flags, session] = kept
+  return { at, model, ...(session ? { session } : {}), ...(pricingModel !== null ? { pricingModel } : {}), input, cached, output, reasoning, total, fast: !!(flags & 1), ultrafast: !!(flags & 2) }
 }
 
 /** A log's state, as it was kept (anything else: a log read again whole). */
@@ -300,5 +304,5 @@ export function codexStateFrom(value: unknown): CodexState | undefined {
   const gate = value.gate === null ? null : isObject(value.gate) && Number.isFinite(value.gate.startedAt) ? { startedAt: value.gate.startedAt as number } : isObject(value.gate) && value.gate.selfTimed === true ? { selfTimed: true as const } : undefined
   if (previous === undefined || gate === undefined || (value.model !== null && typeof value.model !== "string")) return undefined
   if (typeof value.fast !== "boolean" || typeof value.ultrafast !== "boolean" || typeof value.sawMeta !== "boolean") return undefined
-  return { previous, model: value.model, fast: value.fast, ultrafast: value.ultrafast, sawMeta: value.sawMeta, gate }
+  return { ...(typeof value.session === "string" ? { session: value.session } : {}), previous, model: value.model, fast: value.fast, ultrafast: value.ultrafast, sawMeta: value.sawMeta, gate }
 }

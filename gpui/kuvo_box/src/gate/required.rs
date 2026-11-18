@@ -81,6 +81,7 @@ pub const REQUIRED: &[&str] = &[
     "sign-in.accounts.state",
     "sign-in.codes",
     "typed",
+    "usage.insights",
     "usage.notices",
     "waiting",
     "waiting.cards",

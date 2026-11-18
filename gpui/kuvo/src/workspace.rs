@@ -27,7 +27,7 @@ use kuvo_ui::{
     theme::{radius, space},
 };
 
-use crate::area::{Area, Back, Forward, OpenHelp, ShowAccounts, ShowBots, ShowComputers, ShowQueue, ShowSessions, ShowSettings, ShowUsage};
+use crate::area::{Area, Back, Forward, OpenHelp, ShowAccounts, ShowBots, ShowComputers, ShowQueue, ShowSessions, ShowSettings, ShowUsage, UsageFilter};
 use crate::areas::{AreaView, Go, Picked, Reading};
 use crate::composer::{Composer, ComposerEvent, Target};
 use crate::first_run::{Finished, FirstRun};
@@ -260,6 +260,8 @@ pub enum Switch {
     OpenMoved { computer: String, target: kuvo_box::moves::Target },
     /// Show the computer with this key.
     To(String),
+    /// Open a session on another connected computer.
+    Session { computer: String, session: String },
     /// This app was removed from your devices: pair it again.
     PairAgain,
     /// Something was asked of the box that lists your computers (Update Now): read the list again
@@ -278,6 +280,7 @@ impl gpui::EventEmitter<Switch> for Workspace {}
 pub struct Workspace {
     client: BoxClient,
     moves: Entity<crate::moves::MovesView>,
+    insights: Entity<crate::insights::InsightsView>,
     /// Your computers as this app reaches them, where the window can show another's (none: a
     /// workspace by itself, which shows its one box).
     switching: Option<crate::home::Switching>,
@@ -433,6 +436,14 @@ impl Workspace {
         if let Some((_, bots)) = areas.iter().find(|(area, _)| *area == Area::Bots) {
             bots.update(cx, |bots, cx| bots.set_moves(moves.clone(), cx));
         }
+        let insights = cx.new(|cx| crate::insights::InsightsView::new(client.clone(), window, cx));
+        cx.subscribe_in(&insights, window, |this: &mut Self, _, open: &crate::insights::OpenSession, window, cx| {
+            if let Some(computer) = &open.computer && this.listing.facts(&open.session).is_none() {
+                cx.emit(Switch::Session { computer: computer.clone(), session: open.session.clone() });
+            } else {
+                this.open_session(&open.session, window, cx);
+            }
+        }).detach();
         let mut area_subscriptions: Vec<Subscription> = areas.iter().map(|(_, view)| cx.subscribe_in(view, window, |this: &mut Workspace, view, _: &Picked, window, cx| this.area_picked(&view, window, cx))).collect();
         area_subscriptions.push(cx.observe(&moves, |_, _, cx| cx.notify()));
         area_subscriptions.push(cx.subscribe(&moves, |_: &mut Self, _, moved: &crate::moves::OpenMoved, cx| {
@@ -554,6 +565,7 @@ impl Workspace {
             session_with_bot_strip: false,
             area: Area::Sessions,
             areas,
+            insights,
             rings,
             bot_chat: None,
             in_bot_chat: false,
@@ -2315,11 +2327,20 @@ impl Workspace {
         }
     }
 
+    #[cfg(feature = "stand-in")]
+    pub fn insights_sample(&mut self, slug: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.insights.update(cx, |view, cx| view.sample(slug, cx));
+        self.show_area(Area::Insights, window, cx);
+    }
+
     pub fn show_area(&mut self, area: Area, window: &mut Window, cx: &mut Context<Self>) {
         self.session_with_bot_strip = false;
         if area == Area::Queue { self.queue_opened(cx); }
         self.area = area;
         self.bring_out_sidebar(window);
+        if area == Area::Insights {
+            self.record(Nav::Area(area, None), cx);
+        }
         match area {
             Area::Sessions => {
                 let nav = self.opened().map_or(Nav::Landing, |session| Nav::Session(session.to_owned()));
@@ -2370,6 +2391,7 @@ impl Workspace {
     /// A press on an area's rail button: the area open folds its sidebar away (or brings it back);
     /// another opens.
     pub fn rail_pressed(&mut self, area: Area, window: &mut Window, cx: &mut Context<Self>) {
+        if self.area == Area::Insights && area == Area::Insights { return; }
         if area != self.area {
             self.show_area(area, window, cx);
             return;
@@ -2884,6 +2906,7 @@ impl Workspace {
     /// The main view's title and what's beside it, as the title bar shows them: a conversation's
     /// title and its project, or the page an area shows.
     pub fn title(&self, cx: &App) -> (Option<SharedString>, Option<SharedString>) {
+        if self.area == Area::Insights { return (Some(self.area.name().into()), None); }
         if self.area != Area::Sessions {
             let Some(view) = self.area_view(self.area) else { return (None, None) };
             let title = view.read(cx).title(cx);
@@ -3502,7 +3525,7 @@ impl Workspace {
     }
 
     fn visible_sidebar_width(&self, viewport: Pixels, cx: &App) -> Option<Pixels> {
-        (self.sidebar_shown() && self.sidebar_available()).then(|| self.sidebar_width(viewport, cx))
+        (self.area != Area::Insights && self.sidebar_shown() && self.sidebar_available()).then(|| self.sidebar_width(viewport, cx))
     }
 
     fn compact_sidebar_visible(&self, viewport: Pixels, cx: &App) -> bool {
@@ -3653,12 +3676,18 @@ impl Render for Workspace {
                 view.update(cx, |view, cx| view.set_chat_open(chat_open, cx));
             }
         }
+        let in_insights = self.area == Area::Insights;
+        let show_insights = in_insights && !self.client.gate().is_held();
+        let insights = self.insights.clone();
+        insights.update(cx, |view, cx| view.shown(show_insights, cx));
         let sessions = self.area == Area::Sessions;
         // A computer that can't be used shows why, and what moves it on, in every area but
         // Settings, never areas that open empty.
         let blocked = (self.area != Area::Settings).then(|| self.blocked()).flatten();
         let content: AnyElement = if let Some(blocked) = &blocked {
             div().debug_selector(|| "held-area".into()).size_full().child(crate::blocked::render(blocked, cx)).into_any_element()
+        } else if in_insights {
+            insights.into_any_element()
         } else { match (&self.open, self.area_view(self.area)) {
             (_, Some(view)) if !sessions => match (self.bot_chat(), view.read(cx).settings(), view.read(cx).main()) {
                 (Some((bot, chat)), _, _) => self.bot_chat_view(bot, chat, cx),
@@ -3737,7 +3766,11 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &ShowQueue, window, cx| this.show_area(Area::Queue, window, cx)))
             .on_action(cx.listener(|this, _: &ShowComputers, window, cx| this.show_area(Area::Computers, window, cx)))
             .on_action(cx.listener(|this, _: &ShowSettings, window, cx| this.show_area(Area::Settings, window, cx)))
-            .on_action(cx.listener(|this, _: &ShowUsage, window, cx| this.show_setting(&crate::settings::box_key("", "usage"), window, cx)))
+            .on_action(cx.listener(|this, _: &ShowUsage, window, cx| this.show_area(Area::Insights, window, cx)))
+            .on_action(cx.listener(|this, filter: &UsageFilter, window, cx| {
+                this.insights.update(cx, |insights, cx| insights.ring(Some(filter.clone()), cx));
+                this.show_area(Area::Insights, window, cx);
+            }))
             .on_action(cx.listener(|this, _: &ShowAccounts, window, cx| this.show_setting(&crate::settings::box_key("", "accounts"), window, cx)))
             .on_action(cx.listener(|this, _: &Back, window, cx| this.go_back(window, cx)))
             .on_action(cx.listener(|this, _: &Forward, window, cx| this.go_forward(window, cx)))

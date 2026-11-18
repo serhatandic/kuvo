@@ -9,6 +9,7 @@ import type { Pricing } from "./pricing"
 export const MAXIMUM_BLOB_BYTES = 1_048_576
 export const ANTIGRAVITY_BATCH_SIZE = 8
 export interface AntigravityEvent {
+  index?: number
   modelID?: string
   label?: string
   inputTokens: number
@@ -178,7 +179,7 @@ function open(path) {
     return new Database("file:" + path.replace(/[%?#]/g, c => "%" + c.charCodeAt(0).toString(16)) + "?immutable=1", { readonly: true })
   }
 }
-self.onmessage = ({ data: { paths } }) => {
+self.onmessage = ({ data: { paths, withIndex } }) => {
   const events = []
   try {
     for (const path of paths) {
@@ -200,7 +201,7 @@ self.onmessage = ({ data: { paths } }) => {
             // embedded timing can still date an otherwise valid generation.
             if (row.data === null) continue
             const event = generationEvent(row.data, row.step ?? undefined)
-            if (event) events.push(event)
+            if (event) events.push(withIndex ? { ...event, index: row.idx } : event)
           }
           if (rows.length < 8) break
         }
@@ -225,9 +226,9 @@ export class AntigravityHistory {
   private combined = new Map<string, { since: number; parts: AntigravityEvent[][]; events: AntigravityEvent[] }>()
   /** Each profile's databases that failed, with what was last logged: a failure is logged once, not every round. */
   private failing = new Map<string, Map<string, string>>()
-  async scan(geminiHome: string, since: number): Promise<AntigravityEvent[]> {
+  async scan(geminiHome: string, since: number, observe?: { owns(path: string): boolean; take(path: string, events: AntigravityEvent[]): void; problem?(): void }): Promise<AntigravityEvent[]> {
     const problems = new Map<string, string>()
-    const paths = antigravityDatabases(geminiHome, problems)
+    const paths = antigravityDatabases(geminiHome, problems).filter((path) => !observe || observe.owns(path))
     let cached = this.databases.get(geminiHome)
     if (!cached) this.databases.set(geminiHome, cached = new Map())
     for (const path of cached.keys()) if (!paths.includes(path)) cached.delete(path)
@@ -235,6 +236,7 @@ export class AntigravityHistory {
     if (!failing) this.failing.set(geminiHome, failing = new Map())
     for (const path of failing.keys()) if (!paths.includes(path) && !problems.has(path)) failing.delete(path)
     const fail = (path: string, message: string) => {
+      observe?.problem?.()
       if (failing!.get(path) !== message) this.log(`usage: Antigravity's ${path} couldn't be read: ${message}`)
       failing!.set(path, message)
     }
@@ -247,8 +249,9 @@ export class AntigravityHistory {
         const stamp = fingerprint(path)
         // A store untouched since the window began cannot contain use in the window.
         if (stamp.latest < since) { cached.delete(path); continue }
-        if (before?.stamp === stamp.stamp) { parts.push(before.events); continue }
-        const events = await this.read(path)
+        if (before?.stamp === stamp.stamp) { parts.push(before.events); observe?.take(path, before.events); continue }
+        const events = await this.read(path, !!observe)
+        observe?.take(path, events)
         if (fingerprint(path).stamp !== stamp.stamp) {
           // Written to as it was read (its WAL changes with every write): a busy database, not a
           // broken one. What was read (one read transaction's snapshot, except for the rare
@@ -267,7 +270,7 @@ export class AntigravityHistory {
         // logged and left out, and the others still count. One read before keeps its last whole
         // answer and old stamp, so it is retried next round.
         fail(path, error instanceof Error ? error.message : String(error))
-        if (before) parts.push(before.events)
+        if (before) { parts.push(before.events); observe?.take(path, before.events) }
       }
     }
     const previous = this.combined.get(geminiHome)
@@ -278,7 +281,7 @@ export class AntigravityHistory {
   }
 }
 
-export function readAntigravityDatabase(path: string): Promise<AntigravityEvent[]> {
+export function readAntigravityDatabase(path: string, withIndex = false): Promise<AntigravityEvent[]> {
   readerURL ??= URL.createObjectURL(new Blob([READER], { type: "application/javascript" }))
   const worker = new Worker(readerURL)
   worker.unref?.()
@@ -288,6 +291,6 @@ export function readAntigravityDatabase(path: string): Promise<AntigravityEvent[
     timer.unref?.()
     worker.onmessage = ({ data }) => data.failed ? reject(new Error(data.failed)) : resolve(data.events)
     worker.onerror = (event) => reject(new Error(event.message))
-    worker.postMessage({ paths: [path] })
+    worker.postMessage({ paths: [path], withIndex })
   }).finally(() => { clearTimeout(timer); worker.terminate() })
 }

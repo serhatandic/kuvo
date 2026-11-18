@@ -43,6 +43,6 @@ if [ -z "${BUN:-}" ]; then
 fi
 real_app_guard "scripts/build-agents.sh" "$BUN"
 
-BUN_BE_BUN=1 "$BUN" build box/src/agents/main.ts --target=bun --outfile box/dist/kuvo-agents.js
+BUN_BE_BUN=1 "$BUN" build box/src/agents/entry.ts --target=bun --outfile box/dist/kuvo-agents.js
 echo "$stamp" >>box/dist/kuvo-agents.js
 echo "Built box/dist/kuvo-agents.js"

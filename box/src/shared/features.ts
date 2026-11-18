@@ -205,6 +205,7 @@ export const FEATURES = [
   "typed",
   "update",
   "usage.history",
+  "usage.insights",
   "usage.notices",
   "usage.settings",
   "vault",

@@ -20,6 +20,7 @@ import { totalTokens, type Pricing, type Tokens } from "./pricing"
 export interface GrokEntry {
   /** When, in ms. */
   at: number
+  session?: string
   event?: string
   model: string
   tokens: Tokens
@@ -76,6 +77,7 @@ export function grokEntries(object: Record<string, any>): GrokEntry[] {
     const ticks = numberOf(values.costUsdTicks) ?? (models.length === 1 ? turnTicks : undefined)
     entries.push({
       at,
+      ...(typeof params?.sessionId === "string" ? { session: params.sessionId } : {}),
       ...(event ? { event } : {}),
       model,
       tokens: { input: input - cacheRead - cacheWrite, cacheWrite5m: cacheWrite, cacheWrite1h: 0, cacheRead, output: bounded(values.outputTokens) },
@@ -128,14 +130,14 @@ export function grokSlots(entries: GrokEntry[], pricing: Pricing, since: number)
 
 // What's kept of each transcript's entries (jsonl.ts), small: [at, event, model, input, cache
 // writes, cache reads, output, cost].
-export type KeptGrokEntry = [number, string | null, string, number, number, number, number, number | null]
+export type KeptGrokEntry = [number, string | null, string, number, number, number, number, number | null, string?]
 
 export function keptGrok(entry: GrokEntry): KeptGrokEntry {
   const { input, cacheWrite5m, cacheRead, output } = entry.tokens
-  return [entry.at, entry.event ?? null, entry.model, input, cacheWrite5m, cacheRead, output, entry.cost ?? null]
+  return [entry.at, entry.event ?? null, entry.model, input, cacheWrite5m, cacheRead, output, entry.cost ?? null, ...(entry.session ? [entry.session] as const : [] as const)]
 }
 
 export function fromKeptGrok(kept: KeptGrokEntry): GrokEntry {
-  const [at, event, model, input, cacheWrite5m, cacheRead, output, cost] = kept
-  return { at, ...(event !== null ? { event } : {}), model, tokens: { input, cacheWrite5m, cacheWrite1h: 0, cacheRead, output }, ...(cost !== null ? { cost } : {}) }
+  const [at, event, model, input, cacheWrite5m, cacheRead, output, cost, session] = kept
+  return { at, ...(session ? { session } : {}), ...(event !== null ? { event } : {}), model, tokens: { input, cacheWrite5m, cacheWrite1h: 0, cacheRead, output }, ...(cost !== null ? { cost } : {}) }
 }

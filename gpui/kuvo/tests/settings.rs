@@ -125,7 +125,7 @@ fn settings_opens_on_your_own_and_the_foot_row_goes_to_the_computers(cx: &mut Te
     assert!(shown(cx, "row-time-zone"), "its Clock");
     // Only the page on screen asks the box anything.
     assert!(stand_in.seen_at("GET", "kuvo/settings/browser").is_empty());
-    for (name, row) in [("Accounts", "account-claude-code"), ("Usage", "usage-0"), ("Models", "model-0"), ("Permissions", "row-sandbox"), ("Browser", "row-search-engine")] {
+    for (name, row) in [("Accounts", "account-claude-code"), ("Usage", "open-insights"), ("Models", "model-0"), ("Permissions", "row-sandbox"), ("Browser", "row-search-engine")] {
         section(&workspace, cx, name);
         assert!(shown(cx, row), "{name} shows {row}");
         assert_eq!(title(&workspace, cx).as_deref(), Some(name));
@@ -888,99 +888,55 @@ fn the_theme_row_switches_light_and_dark(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn usage_wraps_equal_width_cards_and_stacks_their_limits(cx: &mut TestAppContext) {
+fn usage_keeps_notices_and_opens_insights(cx: &mut TestAppContext) {
     let (workspace, cx) = open(cx, StandIn::at(Replies::Never, NOW));
-    let view = section(&workspace, cx, "Usage");
-    for row in ["usage-0", "usage-1", "usage-2", "usage-3", "usage-4", "usage-5"] {
-        assert!(shown(cx, row), "{row}");
-    }
-    // At this width two accounts fit, align at the top, and retain their natural heights.
-    let [first, second, third] = [0, 1, 2].map(|ix| bounds(cx, &format!("usage-{ix}")).expect("usage card"));
-    assert_eq!(first.origin.y, second.origin.y);
-    assert!(first.origin.x < second.origin.x);
-    assert!(first.size.height > second.size.height);
-    assert_eq!(second.origin.x, third.origin.x);
-    assert_eq!(third.origin.y, second.origin.y + second.size.height + px(12.));
-    assert!(third.origin.y < first.origin.y + first.size.height);
-    assert_eq!(first.size.width, second.size.width);
-    assert_eq!(first.size.width, third.size.width);
-    let [session, weekly, sonnet] = [0, 1, 2].map(|ix| bounds(cx, &format!("usage-0-window-{ix}")).expect("usage window"));
-    assert_eq!(session.origin.x, weekly.origin.x);
-    assert_eq!(session.origin.x, sonnet.origin.x);
-    assert_eq!(session.size.width, sonnet.size.width);
-    assert!(session.origin.y < weekly.origin.y && weekly.origin.y < sonnet.origin.y);
-
-    cx.simulate_resize(size(px(1600.), px(1800.)));
-    cx.run_until_parked();
-    let [first, second, third, fourth] = [0, 1, 2, 3].map(|ix| bounds(cx, &format!("usage-{ix}")).expect("usage card"));
-    assert!(first.origin.x < second.origin.x && second.origin.x < third.origin.x);
-    assert_eq!(first.origin.y, third.origin.y);
-    assert_eq!(first.size.width, third.size.width);
-    assert!(fourth.origin.y > first.origin.y);
-    assert!(!shown(cx, "usage-0-window-3"));
-    // Cursor's plan ended: listed, saying so, with no meters.
-    assert!(shown(cx, "usage-1") && !shown(cx, "usage-1-window-0"));
-    assert_eq!(view.read_with(cx, |view, _| view.row_detail("usage-2")).as_deref(), Some("mini-local"));
-    assert_eq!(view.read_with(cx, |view, _| view.row_detail("usage-0")).as_deref(), Some(""));
-    assert!(!shown(cx, "settings-whose"));
-}
-
-#[gpui::test]
-fn usage_refresh_is_inline_and_shows_success_and_failure(cx: &mut TestAppContext) {
-    let stand_in = StandIn::at(Replies::Never, NOW);
-    let (workspace, cx) = open(cx, stand_in.clone());
-    let view = section(&workspace, cx, "Usage");
-    let updated = bounds(cx, "usage-updated").unwrap();
-    let refresh = bounds(cx, "usage-refresh").unwrap();
-    assert!(refresh.origin.x >= updated.origin.x + updated.size.width);
-    assert!(refresh.origin.x <= updated.origin.x + updated.size.width + px(4.));
-    assert!((updated.center().y - refresh.center().y).abs() <= px(1.));
-    let words = |cx: &mut VisualTestContext| view.read_with(cx, |view, _| view.usage_update_words());
-    assert_eq!(words(cx), "Updated 2 min ago");
-
-    stand_in.fail_usage_refresh(true);
-    click(cx, "usage-refresh");
-    assert_eq!(words(cx), "Couldn’t update usage · Updated 2 min ago");
-    stand_in.fail_usage_refresh(false);
-    click(cx, "usage-refresh");
-    assert_eq!(words(cx), "Updated just now");
-    assert_eq!(stand_in.seen_at("POST", "kuvo/agents/api/kuvo/limits/refresh").len(), 2);
-}
-
-#[gpui::test]
-fn usage_refresh_waits_for_the_provider_and_ignores_repeat_presses(cx: &mut TestAppContext) {
-    let stand_in = StandIn::at(Replies::Never, NOW);
-    stand_in.delay_usage_refresh();
-    let (workspace, cx) = open(cx, stand_in.clone());
-    cx.executor().allow_parking();
-    let view = section(&workspace, cx, "Usage");
-    let initial_reads = stand_in.seen_at("GET", "kuvo/agents/api/kuvo/limits").len();
-    click(cx, "usage-refresh");
-    assert_eq!(view.read_with(cx, |view, _| view.usage_update_words()), "Updating…");
-    click(cx, "usage-refresh");
-    assert_eq!(stand_in.seen_at("POST", "kuvo/agents/api/kuvo/limits/refresh").len(), 1);
-
-    let wait_for = |cx: &mut VisualTestContext, ready: &dyn Fn(&mut VisualTestContext) -> bool| {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
-        while !ready(cx) {
-            assert!(std::time::Instant::now() < deadline, "the usage update should arrive");
-            std::thread::yield_now();
-            cx.run_until_parked();
-        }
-    };
-    wait_for(cx, &|_| stand_in.seen_at("GET", "kuvo/agents/api/kuvo/limits").len() > initial_reads);
-    let reads_before = stand_in.seen_at("GET", "kuvo/agents/api/kuvo/limits").len();
-    stand_in.complete_usage_refresh(kuvo::stand_in::areas::UsageSample::One);
-    wait_for(cx, &|cx| view.read_with(cx, |view, _| view.usage_update_words()) == "Updated just now");
-    assert!(stand_in.seen_at("GET", "kuvo/agents/api/kuvo/limits").len() > reads_before);
-    assert!(shown(cx, "usage-0") && !shown(cx, "usage-1"));
-}
-
-#[gpui::test]
-fn usage_on_a_first_run_says_theres_nothing_yet(cx: &mut TestAppContext) {
-    let (workspace, cx) = open(cx, StandIn::empty(Replies::Never));
     section(&workspace, cx, "Usage");
-    assert!(shown(cx, "note-usage-none"));
+    assert!(shown(cx, "notice-almost-out-switch"));
+    assert!(!shown(cx, "usage-0"));
+    click(cx, "open-insights");
+    assert_eq!(workspace.read_with(cx, |workspace, _| workspace.area()), kuvo::area::Area::Insights);
+}
+
+#[gpui::test]
+fn usage_ring_filters_insights_and_opens_a_session_from_its_calls(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (workspace, cx) = open(cx, stand_in.clone());
+    click(cx, "ring-0");
+    assert_eq!(workspace.read_with(cx, |workspace, _| workspace.area()), Area::Insights);
+    let route = "kuvo/agents/api/kuvo/insights";
+    let asked = stand_in.seen_at("GET", route);
+    assert!(asked.last().is_some_and(|read| read.path.contains("&account=")));
+    click(cx, "insights-ring-filter");
+    let asked = stand_in.seen_at("GET", route);
+    assert!(asked.last().is_some_and(|read| !read.path.contains("&account=")));
+
+    cx.simulate_resize(size(px(1180.), px(900.)));
+    cx.run_until_parked();
+    let summary = bounds(cx, "insights-summary").expect("summary");
+    let chart = bounds(cx, "insights-chart-card").expect("chart card");
+    assert_eq!(summary.origin.y, chart.origin.y);
+    assert_eq!(summary.size.height, chart.size.height);
+    assert!(summary.right() < chart.left());
+    let label = bounds(cx, "insights-total-label").expect("total label");
+    let total = bounds(cx, "insights-total-value").expect("total value");
+    let sessions = bounds(cx, "insights-total-sessions").expect("session count");
+    assert!(total.size.height >= px(36.));
+    assert!(label.bottom() < total.top() && total.bottom() < sessions.top());
+    assert_eq!(workspace.read_with(cx, |workspace, cx| workspace.title(cx).0).as_deref(), Some("Insights"));
+
+    click(cx, "insights-day-28");
+    cx.simulate_keystrokes("left");
+    cx.run_until_parked();
+    assert!(shown(cx, "insights-chart-reading"));
+    assert!(!shown(cx, "insights-view-daily"));
+    click(cx, "insights-by-Day");
+    assert!(shown(cx, "insights-active-tab-Day"));
+    click(cx, "insights-by-Session");
+    assert!(shown(cx, "insights-active-tab-Session"));
+    click(cx, "insights-session-0");
+    assert!(!stand_in.seen_at("GET", &format!("{route}/sessions/ses_signup")).is_empty());
+    click(cx, "insights-open-session");
+    assert_eq!(workspace.read_with(cx, |workspace, _| workspace.opened().map(str::to_owned)).as_deref(), Some("ses_signup"));
 }
 
 #[gpui::test]

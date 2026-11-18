@@ -50,6 +50,11 @@ export interface Session {
 }
 
 export interface MessageTime {
+  /** Computer that originally ran this step or received this prompt. */
+  origin?: string
+  usageAccount?: string
+  /** The original session of a message copied into a fork. */
+  usageSession?: string
   created: Millis
   streamed?: Millis
   completed?: Millis

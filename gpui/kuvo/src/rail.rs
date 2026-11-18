@@ -22,7 +22,7 @@ use kuvo_ui::{
     theme::{radius, space},
 };
 
-use crate::area::{Area, OpenHelp, ShowAccounts, ShowUsage};
+use crate::area::{Area, OpenHelp, ShowAccounts, ShowUsage, UsageFilter};
 use crate::time;
 use crate::workspace::Workspace;
 
@@ -39,7 +39,7 @@ const MOST_RINGS: usize = 4;
 /// The room a ring takes in the rail, its gap included.
 const RING_ROOM: f32 = 48.;
 /// The rail's height besides its rings: the title bar, the four areas, Help and Settings, gaps.
-const RAIL_REST: f32 = 44. + 4. * 46. + 2. * 46. + 40.;
+const RAIL_REST: f32 = 44. + 5. * 46. + 2. * 46. + 40.;
 /// How often the accounts are read again while the app runs (the box reads them on its own clock;
 /// this only picks up what it read), and sooner after a read that failed (a box still starting).
 const REREAD: Duration = Duration::from_secs(120);
@@ -55,7 +55,7 @@ pub const CARD_GRACE: Duration = Duration::from_millis(120);
 pub fn render(workspace: &Workspace, cx: &mut Context<Workspace>) -> AnyElement {
     let open = workspace.area();
     let waiting = workspace.waiting();
-    let top = [Area::Bots, Area::Sessions, Area::Queue, Area::Computers].into_iter().map(|area| {
+    let top = [Area::Bots, Area::Sessions, Area::Queue, Area::Computers, Area::Insights].into_iter().map(|area| {
         // How many things wait on you there, as the box counts them (`kuvo/waiting`).
         let count = match area {
             Area::Sessions => waiting.sessions,
@@ -365,7 +365,7 @@ impl Render for Rings {
         // (Restarting: each card says so, in the box's words, under what was last read.)
         let updating = self.agents.as_ref().filter(|_| restarting).map(|state| state.message.clone());
         let mut rings: Vec<AnyElement> = accounts.iter().take(most).enumerate().map(|(ix, account)| ring_button(ix, account, now, card == Some(ix), updating.clone(), cx)).collect();
-        // Past the rail's room: "+N", opening Settings › Usage.
+        // Past the rail's room: "+N", opening Insights.
         if accounts.len() > most {
             let more = accounts.len() - most;
             let hover = c.hover;
@@ -387,7 +387,7 @@ impl Render for Rings {
                     .medium()
                     .text_color(c.text_muted)
                     .child(format!("+{more}"))
-                    .tooltip(move |_, cx| Tooltip::new(format!("{more} more in Usage")).build(cx))
+                    .tooltip(move |_, cx| Tooltip::new(format!("{more} more in Insights")).build(cx))
                     .on_click(|_, window, cx| window.dispatch_action(Box::new(ShowUsage), cx))
                     .into_any_element(),
             );
@@ -429,7 +429,7 @@ impl Render for Rings {
 
 /// The coding agents' state where the rings would be: a ring with a warning while they're down, a
 /// spinner while they restart. Resting on it opens its card, with the box's sentence and its Try
-/// Again; clicking it opens Usage, which says the same.
+/// Again; clicking it opens Insights.
 fn state_ring(state: &Refusal, open: bool, trying: bool, cx: &mut Context<Rings>) -> AnyElement {
     let c = cx.theme().colors.clone();
     let hover = c.hover;
@@ -526,6 +526,7 @@ fn ring_button(ix: usize, account: &Account, now: f64, open: bool, updating: Opt
         None => div().text_ui(TypeSize::Caption).medium().text_color(c.text_muted).child(account.service.chars().next().map(|first| first.to_uppercase().to_string()).unwrap_or_default()).into_any_element(),
     };
     let selector = format!("ring-{ix}");
+    let filter = UsageFilter { title: account.title.clone(), account: account.id.clone().filter(|id| !id.is_empty()), provider: account.service.clone() };
     div()
         .id(SharedString::from(format!("ring-{ix}")))
         .debug_selector(move || selector)
@@ -552,9 +553,9 @@ fn ring_button(ix: usize, account: &Account, now: f64, open: bool, updating: Opt
                 .child(mark),
         )
         .on_hover(cx.listener(move |this, hovered: &bool, _, cx| this.ring_hovered(ix, *hovered, cx)))
-        .on_click(cx.listener(|this, _, window, cx| {
+        .on_click(cx.listener(move |this, _, window, cx| {
             this.close_card(cx);
-            window.dispatch_action(Box::new(ShowUsage), cx);
+            window.dispatch_action(Box::new(filter.clone()), cx);
         }))
         .when(open, |ring| ring.child(card_beside(account, now, updating, cx)))
         .into_any_element()

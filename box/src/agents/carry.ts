@@ -177,6 +177,11 @@ export class Carrying {
     let at = 0
     for (const record of family) {
       const id = record.session.id
+      const origin = this.store.origin?.()
+      if (origin) for (const message of record.messages) {
+        if (message.type !== "user" && message.type !== "assistant") continue
+        message.time.origin ??= origin
+      }
       this.store.save(id, true)
       const marks = (record.session.metadata ?? {}) as Record<string, any>
       const archived = record.session.time.archived ?? marks["kuvo.archived"] ?? marks.kuvo?.archived ?? null

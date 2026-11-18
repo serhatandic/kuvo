@@ -24,6 +24,7 @@ pub mod permissions;
 pub mod git;
 pub mod groups;
 pub mod moves;
+mod insights;
 pub mod queue;
 pub mod settings;
 pub mod work_bars;
@@ -613,6 +614,10 @@ impl StandIn {
     /// From now on, it says this of its sandbox (`kuvo/sandbox`).
     pub fn set_sandbox(&self, sandbox: Value) {
         self.state().settings.set_sandbox(sandbox);
+    }
+
+    pub fn set_insights_partial(&self) {
+        self.state().areas.insights_partial = true;
     }
 
     pub fn set_usage_sample(&self, sample: areas::UsageSample) {
@@ -1820,6 +1825,9 @@ impl StandIn {
         if (method, route) == ("POST", "kuvo/agents/api/kuvo/limits/refresh") && !state.areas.usage_refresh_failed {
             state.areas.usage_refresh_pending = state.areas.usage_refresh_delayed;
             state.areas.usage_refresh_completed = !state.areas.usage_refresh_pending;
+        }
+        if let Some((status, value)) = insights::answer(method, route, |name| query(path, name).map(decoded), made, state.areas.empty, state.areas.insights_partial) {
+            return answer(status, value);
         }
         if let Some((status, value)) = state.area(method, route) {
             return answer(status, value);

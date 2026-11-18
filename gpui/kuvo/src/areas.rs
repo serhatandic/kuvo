@@ -889,7 +889,7 @@ impl Render for AreaView {
             Area::Bots => self.bots_rows(window, cx),
             Area::Queue => self.queue_rows(cx),
             Area::Computers => self.computer_rows(cx),
-            Area::Settings => Vec::new(),
+            Area::Settings | Area::Insights => Vec::new(),
             Area::Sessions => Vec::new(),
         };
         // A sheet open on the area's page: the sidebar waits under the same dimming.

@@ -12012,3 +12012,39 @@ refinement; the legacy local client retains its own sharp-screenshot path.
 Examples and box-only socket path cases live in `protocol/vectors/browser-view.json`;
 released Swift socket vectors stay unchanged in `protocol/vectors/link.json`. Route answers
 are generated from the browser route shapes.
+
+### Insights
+
+The `usage.insights` feature gates Insights. The desktop reads
+`GET /kuvo/agents/api/kuvo/insights` on the link, which forwards to
+`GET /api/kuvo/insights` on Kuvo's agents bridge. The response is wrapped
+in `data`. This index covers Kuvo's own execution, from its engine
+databases, saved sessions and isolated agent homes. It keeps up to a
+year of per-call metadata, with human messages counted separately.
+
+Query parameters are `period` (7, 30, 90 or 365 calendar days, including
+today), `zone` (an IANA time zone), and optional `computer`, `bot`, and
+`account` or `provider`. A limits row ID from a ring is an `account`
+filter. `GET /insights/sessions` pages the same selection by last activity,
+and `GET /insights/sessions/:session` (or `GET /insights?session=…`) pages
+one session's calls in chronological order. Both take `offset`, default
+0, and return `next` or null. Session rows include `costShare` and
+`tokenShare`, each a fraction of the matching total computed in the same
+SQLite snapshot, or null when the share is unavailable.
+`POST /insights/refresh` starts or joins a
+background scan and peer sync and answers 202.
+
+The overview returns filter choices, totals, daily readings, provider
+totals, breakdowns by model, agent, day and skill, and coverage. A skill
+breakdown can attribute the same call to multiple observed skills.
+`state` is `loading`, `empty`, `partial`, `stale` or `ready`. A null token
+bucket or cost means it could not be determined. Cost is estimated in USD
+at current catalog rates. Token totals without cache reads, processed
+tokens with cache reads, and the individual buckets are separate fields.
+Cursor's context-only results are partial.
+
+Authenticated peer mail uses `kind: "insights"`. Direct peers resume a
+pull from the last SQLite sequence they have applied and take at most
+100 usage records in a page. Records contain origin, native identity,
+model, session metadata, skill names and observed token counts. Estimates
+are calculated by the receiving computer with its own current catalog.

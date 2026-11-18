@@ -88,10 +88,11 @@ export class Turn {
     // have gone through (one an agent dropped, or gave no end for), so it doesn't stay running.
     if (this.compaction) this.compacted(false)
     this.justCompacted = false
+    const origin = this.store.origin?.()
     const step: AssistantMessage = {
       type: "assistant",
       id: newID("msg"),
-      time: { created: Date.now() },
+      time: { created: Date.now(), origin, usageAccount: origin && this.store.usageAccount?.((model ?? this.model).providerID, origin) },
       agent: this.agent,
       model: model ?? this.model,
       content: [],
