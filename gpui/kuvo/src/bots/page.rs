@@ -38,9 +38,10 @@ impl BotsView {
                 .flex()
                 .flex_col()
                 .gap(space::S4)
-                .child(div().flex().justify_center().child(self.avatar(&key, look.as_ref(), editable, cx)))
-                .when(editable, |d| d.child(self.profile_fields(false, cx)))
-                .when(!editable, |d| d.child(div().text_ui(TypeSize::Title).medium().child(name)))
+                .when(editable, |d| d.child(self.profile_fields(self.avatar(&key, look.as_ref(), true, cx), false, cx)))
+                .when(!editable, |d| d
+                    .child(div().flex().justify_center().child(self.avatar(&key, look.as_ref(), false, cx)))
+                    .child(div().text_ui(TypeSize::Title).medium().child(name)))
                 .child(div().text_ui(TypeSize::Small).text_color(c.text_muted).child(line))
                 .into_any_element(),
             Item::Notice { key, tone, title, words } => {
@@ -76,24 +77,20 @@ impl BotsView {
                     .into_any_element()
             }
             Item::Group(label) => div().pt(space::S5).pb(space::S2).text_ui(TypeSize::Small).text_color(c.text_muted).child(label).into_any_element(),
-            Item::Row { row, .. } if matches!(self.shown, Shown::Bot(_) | Shown::Elsewhere(_)) => self.profile_row(*row, cx),
+            Item::Row { row, first, last } if matches!(self.shown, Shown::Bot(_) | Shown::Elsewhere(_)) => self.profile_row(*row, first, last, cx),
             Item::Row { row, first, last } => self.row(*row, first, last, cx),
-            Item::Session { session, project, ago, .. } => self.session(session, project, ago, cx),
-            Item::More { count, .. } => div()
-                .id("work-more")
-                .debug_selector(|| "work-more".into())
-                .w_full()
-                .bg(c.card)
-                .rounded(radius::POPOVER)
-                .border_1().border_color(c.border).mt(space::S2)
-                .px(space::S4)
-                .py(space::S3)
-                .cursor_pointer()
-                .hover(|s| s.bg(c.hover))
-                .text_ui(TypeSize::Small)
-                .text_color(c.text_muted)
-                .child(format!("Show all {count}"))
-                .on_click(cx.listener(|this, _, _, cx| this.act(Act::ShowAll, cx)))
+            Item::Session { session, project, ago, first, last } => self.session(session, project, ago, first, last, cx),
+            Item::More { count } => grouped_row(false, true, cx)
+                .child(div().id("work-more")
+                    .debug_selector(|| "work-more".into())
+                    .py(space::S3)
+                    .tab_index(0)
+                    .cursor_pointer()
+                    .hover(|s| s.bg(c.hover))
+                    .text_ui(TypeSize::Small)
+                    .text_color(c.text_muted)
+                    .child(format!("Show all {count}"))
+                    .on_click(cx.listener(|this, _, _, cx| this.act(Act::ShowAll, cx))))
                 .into_any_element(),
             Item::Note { key, words, busy: true } => kuvo_ui::small::LoadingLabel::new(gpui::SharedString::from(key), words).into_any_element(),
             Item::Note { key, words, busy } => div()
@@ -128,15 +125,11 @@ impl BotsView {
         div()
             .debug_selector(|| "bot-head".into())
             .pt(space::S8)
-            .flex()
-            .flex_col()
-            .gap(space::S6)
-            .child(div().flex().justify_center().child(self.avatar(&bot.id, Some(&bot.look), true, cx)))
-            .child(self.profile_fields(true, cx))
+            .child(self.profile_fields(self.avatar(&bot.id, Some(&bot.look), true, cx), true, cx))
             .into_any_element()
     }
 
-    fn profile_fields(&self, has_job: bool, cx: &mut Context<Self>) -> AnyElement {
+    fn profile_fields(&self, avatar: AnyElement, has_job: bool, cx: &mut Context<Self>) -> AnyElement {
         let c = cx.theme().colors.clone();
         let field = |label, key: &'static str, input| {
             div().flex().flex_col().gap(space::S1_5)
@@ -159,10 +152,12 @@ impl BotsView {
                     this.save_profile(cx);
                 }
             }))
-            .child(field("Name", "bot-name-field", self.name.clone()))
-            .when(has_job, |d| d
-                .child(field("Job", "bot-job-line", self.line.clone()))
-                .child(field("Instructions", "bot-job-details", self.details.clone())))
+            .child(div().flex().items_center().gap(space::S4)
+                .child(avatar)
+                .child(div().flex_1().min_w_0().flex().flex_col().gap(space::S3)
+                    .child(field("Name", "bot-name-field", self.name.clone()))
+                    .when(has_job, |d| d.child(field("Job", "bot-job-line", self.line.clone())))))
+            .when(has_job, |d| d.child(field("Instructions", "bot-job-details", self.details.clone())))
             .children(self.edit_error.clone().filter(|_| self.sheet().is_none()).map(|error| {
                 div().debug_selector(|| "bot-edit-error".into()).text_ui(TypeSize::Small).text_color(c.danger).child(error)
             }))
@@ -217,8 +212,8 @@ impl BotsView {
     pub fn avatar_center(&self) -> Option<gpui::Point<gpui::Pixels>> {
         let head = self.list.bounds_for_item(0)?;
         Some(gpui::point(
-            head.center().x,
-            head.top() + space::S8 + px(AVATAR_SIZE / 2.),
+            head.left() + space::S8.max((head.size.width - px(PAGE_WIDTH)) / 2.) + px(AVATAR_SIZE / 2.),
+            head.top() + space::S8 + px(AVATAR_SIZE / 2.) + space::S3,
         ))
     }
 
@@ -233,13 +228,13 @@ impl BotsView {
         self.list.scroll_to_end();
     }
 
-    fn profile_row(&mut self, row: Row, cx: &mut Context<Self>) -> AnyElement {
-        let c = cx.theme().colors.clone();
+    fn profile_row(&mut self, row: Row, first: bool, last: bool, cx: &mut Context<Self>) -> AnyElement {
         let Row { key, title, detail, control } = row;
-        let card = match control {
+        let danger = key == "bot-delete";
+        let content = match control {
             Control::Delete => {
                 let ready = self.can_open_editor();
-                navigation_card(&key, "bot-delete-button", title, detail, None, ready, cx)
+                self.navigation_row(&key, "bot-delete-button", title, detail, None, ready, cx)
                     .when(ready, |d| d.tab_index(0).on_click(cx.listener(|this, _, _, cx| this.act(Act::Delete, cx))))
                     .into_any_element()
             }
@@ -248,10 +243,68 @@ impl BotsView {
             }
             other => {
                 let value = self.control(&key, other, None, cx);
-                navigation_card(&key, &key, title, detail, Some(value), false, cx).into_any_element()
+                self.navigation_row(&key, &key, title, detail, Some(value), false, cx).into_any_element()
             }
         };
-        div().pt(space::S2).text_color(c.text).child(card).into_any_element()
+        grouped_row(first, last, cx)
+            .when(danger, |d| d.mt(space::S5))
+            .child(row_divider(last, cx).child(content))
+            .into_any_element()
+    }
+
+    fn navigation_row(&self, key: &str, selector: &str, title: String, detail: String, value: Option<AnyElement>, opens: bool, cx: &App) -> gpui::Stateful<gpui::Div> {
+        let c = &cx.theme().colors;
+        let icon = match key {
+            "bot-model" => IconName::Bot,
+            "bot-personality" => IconName::Sparkle,
+            "bot-lives" => IconName::Computer,
+            "bot-works" => IconName::Folder,
+            "bot-delete" => IconName::Trash,
+            _ => IconName::Settings,
+        };
+        let provider_mark = (key == "bot-model").then(|| self.bot()?.model.as_ref())
+            .flatten()
+            .and_then(|model| {
+                use kuvo_ui::icon::{Mark, provider_mark, provider_mark_color};
+                let provider = &model.provider_id;
+                let mark = match provider.as_str() {
+                    "anthropic" => Mark::of_service("claude")?,
+                    _ => {
+                        let (_, path) = provider_mark(provider)?;
+                        let mark = Mark::new(path);
+                        match provider_mark_color(provider) {
+                            Some(color) => mark.color(color),
+                            None => mark,
+                        }
+                    }
+                };
+                Some((provider.clone(), mark.icon_size(IconSize::Medium)))
+            });
+        let danger = key == "bot-delete";
+        let color = if danger { c.danger } else { c.text };
+        let leading = match provider_mark {
+            Some((provider, mark)) => div().debug_selector(move || format!("bot-model-provider-{provider}")).child(mark).into_any_element(),
+            None => Icon::new(icon).color(if danger { c.danger } else { c.icon }).into_any_element(),
+        };
+        let selector = selector.to_owned();
+        let detail_selector = format!("{key}-detail");
+        div()
+            .id(SharedString::from(selector.clone()))
+            .debug_selector(move || selector)
+            .w_full()
+            .flex()
+            .items_center()
+            .gap(space::S3)
+            .min_h(px(44.))
+            .py(space::S2)
+            .when(opens, |d| d.cursor_pointer().hover(|s| s.bg(c.hover)).focus_visible(|s| s.bg(c.hover)))
+            .child(div().flex_none().child(leading))
+            .child(div().flex_1().min_w_0().flex().flex_col().gap(space::S0_5)
+                .child(div().text_ui(TypeSize::Body).text_color(color).child(title))
+                .when(!detail.is_empty(), |d| d.child(div().debug_selector(move || detail_selector)
+                    .text_ui(TypeSize::Small).text_color(c.text_muted).child(detail))))
+            .children(value.map(|value| div().min_w_0().max_w(gpui::relative(0.60)).text_ui(TypeSize::Body).text_color(c.text_muted).child(value)))
+            .when(opens, |d| d.child(div().flex_none().child(Icon::new(IconName::ChevronRight).color(c.icon))))
     }
 
     fn row(&mut self, row: Row, first: bool, last: bool, cx: &mut Context<Self>) -> AnyElement {
@@ -323,7 +376,6 @@ impl BotsView {
             Control::Model { shown, current, new } => {
                 let (this, kept) = (cx.entity().downgrade(), cx.entity().downgrade());
                 let client = self.client().clone();
-                let provider = current.as_ref().and_then(|model| kuvo_ui::icon::Mark::of_service(&model.provider_id));
                 let view = this.clone();
                 let on_effort: crate::model_picker::OnEffort = Rc::new(move |picked, _, cx| {
                     view.update(cx, |view, cx| view.act(Act::SetEffort(picked), cx)).ok();
@@ -361,10 +413,8 @@ impl BotsView {
                         })
                 };
                 if let Some((title, detail)) = navigation {
-                    let value = div().flex().items_center().gap(space::S2).min_w_0()
-                        .children(provider.map(|mark| div().flex_none().child(mark.in_tile(px(16.)))))
-                        .child(div().min_w_0().truncate().child(shown));
-                    let trigger = navigation_card(key, &format!("{key}-menu"), title, detail, Some(value.into_any_element()), true, cx);
+                    let value = div().truncate().child(shown);
+                    let trigger = self.navigation_row(key, &format!("{key}-menu"), title, detail, Some(value.into_any_element()), true, cx);
                     PopoverMenu::view(SharedString::from(format!("{key}-popover")), trigger, open).fill().align_right().into_any_element()
                 } else {
                     crate::model_picker::setting_button(key, shown, open, cx)
@@ -376,7 +426,7 @@ impl BotsView {
                 let fill = navigation.is_some();
                 let trigger = if let Some((title, detail)) = navigation {
                     let value = div().truncate().child(shown).into_any_element();
-                    navigation_card(key, &id, title, detail, Some(value), true, cx).into_any_element()
+                    self.navigation_row(key, &id, title, detail, Some(value), true, cx).into_any_element()
                 } else { div()
                     .id(id.clone())
                     .debug_selector({
@@ -426,7 +476,7 @@ impl BotsView {
     }
 
     /// One of its sessions: how it stands, its title and project, when it started; it opens there.
-    fn session(&mut self, session: WorkSession, project: String, ago: String, cx: &mut Context<Self>) -> AnyElement {
+    fn session(&mut self, session: WorkSession, project: String, ago: String, first: bool, last: bool, cx: &mut Context<Self>) -> AnyElement {
         let c = cx.theme().colors.clone();
         let id = session.session.clone();
         let mark: AnyElement = match session.state {
@@ -445,15 +495,10 @@ impl BotsView {
         let (line, waiting) = super::session_line(&project, session.state);
         let title = session.title.clone().filter(|title| !title.trim().is_empty()).unwrap_or_else(|| "New Session".into());
         let (selector, line_selector) = (format!("work-{id}"), format!("work-{id}-line"));
-        div()
+        let row = div()
             .id(SharedString::from(selector.clone()))
             .debug_selector(move || selector)
             .w_full()
-            .bg(c.card)
-            .rounded(radius::POPOVER)
-            .border_1().border_color(c.border)
-            .mt(space::S2)
-            .px(space::S4)
             .tab_index(0)
             .cursor_pointer()
             .hover(|s| s.bg(c.hover))
@@ -476,7 +521,9 @@ impl BotsView {
                     )
                     .child(div().flex_none().text_ui(TypeSize::Caption).text_color(c.text_faint).child(ago))
                     .child(Icon::new(IconName::ChevronRight).color(c.icon)),
-            )
+            );
+        grouped_row(first, last, cx)
+            .child(row_divider(last, cx).child(row))
             .into_any_element()
     }
 
@@ -703,42 +750,21 @@ fn face_or_blank(id: &str, look: Option<&Look>, size: gpui::Pixels, cx: &App) ->
     }
 }
 
-fn navigation_card(key: &str, selector: &str, title: String, detail: String, value: Option<AnyElement>, opens: bool, cx: &App) -> gpui::Stateful<gpui::Div> {
+fn grouped_row(first: bool, last: bool, cx: &App) -> gpui::Div {
     let c = &cx.theme().colors;
-    let icon = match key {
-        "bot-model" => IconName::Sliders,
-        "bot-personality" => IconName::Sparkle,
-        "bot-lives" => IconName::Computer,
-        "bot-works" => IconName::Folder,
-        "bot-delete" => IconName::Trash,
-        _ => IconName::Settings,
-    };
-    let danger = key == "bot-delete";
-    let color = if danger { c.danger } else { c.text };
-    let selector = selector.to_owned();
-    let detail_selector = format!("{key}-detail");
     div()
-        .id(SharedString::from(selector.clone()))
-        .debug_selector(move || selector)
         .w_full()
-        .flex()
-        .items_center()
-        .gap(space::S3)
-        .min_h(px(44.))
         .px(space::S4)
-        .py(space::S2)
-        .rounded(radius::POPOVER)
         .bg(c.card)
-        .border_1()
         .border_color(c.border)
-        .when(opens, |d| d.cursor_pointer().hover(|s| s.bg(c.hover)).focus_visible(|s| s.bg(c.hover)))
-        .child(div().flex_none().child(Icon::new(icon).color(if danger { c.danger } else { c.icon })))
-        .child(div().flex_1().min_w_0().flex().flex_col().gap(space::S0_5)
-            .child(div().text_ui(TypeSize::Body).text_color(color).child(title))
-            .when(!detail.is_empty(), |d| d.child(div().debug_selector(move || detail_selector)
-                .text_ui(TypeSize::Small).text_color(c.text_muted).child(detail))))
-        .children(value.map(|value| div().min_w_0().max_w(gpui::relative(0.60)).text_ui(TypeSize::Body).text_color(c.text_muted).child(value)))
-        .when(opens, |d| d.child(div().flex_none().child(Icon::new(IconName::ChevronRight).color(c.icon))))
+        .border_l_1()
+        .border_r_1()
+        .when(first, |d| d.rounded_t(radius::POPOVER).border_t_1())
+        .when(last, |d| d.rounded_b(radius::POPOVER).border_b_1())
+}
+
+fn row_divider(last: bool, cx: &App) -> gpui::Div {
+    div().when(!last, |d| d.border_b_1().border_color(cx.theme().colors.border))
 }
 
 impl Render for BotsView {

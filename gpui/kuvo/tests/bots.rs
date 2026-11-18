@@ -167,10 +167,12 @@ fn renaming_goes_to_the_box_and_its_answer_is_what_shows(cx: &mut TestAppContext
     let jobs = bounds(cx, "bot-job-line").unwrap();
     let instructions = bounds(cx, "bot-job-details").unwrap();
     let avatar = bounds(cx, "bot-avatar-edit").unwrap();
-    assert_eq!(name.size.width, jobs.size.width);
-    assert_eq!(name.size.width, instructions.size.width);
-    assert_eq!(avatar.center().x, name.center().x);
-    assert!(avatar.bottom() < name.top());
+    assert_eq!(name.left(), jobs.left());
+    assert_eq!(name.right(), jobs.right());
+    assert!(avatar.right() < name.left() && avatar.bottom() > jobs.top());
+    assert_eq!(instructions.left(), avatar.left());
+    assert_eq!(instructions.right(), name.right());
+    assert!(instructions.top() > jobs.bottom());
     click(cx, "bot-name-field");
     cx.simulate_keystrokes("cmd-a backspace enter");
     cx.run_until_parked();
@@ -315,12 +317,38 @@ fn personality_and_model_are_picked_from_what_the_box_offers(cx: &mut TestAppCon
 }
 
 #[gpui::test]
+fn profile_rows_share_cards_and_model_uses_the_provider_mark(cx: &mut TestAppContext) {
+    let (workspace, cx) = open(cx, StandIn::at(Replies::Never, NOW));
+    bot(&workspace, cx, "bot_mira");
+
+    for (top, bottom) in [
+        ("bot-model-menu", "bot-personality-menu"),
+        ("bot-lives", "bot-works"),
+        ("work-ses_signup", "work-ses_cms"),
+    ] {
+        let top = bounds(cx, top).unwrap();
+        let bottom = bounds(cx, bottom).unwrap();
+        assert_eq!(top.left(), bottom.left());
+        assert_eq!(top.right(), bottom.right());
+        assert_eq!(bottom.top() - top.bottom(), px(1.), "only a hairline between grouped rows");
+    }
+
+    let claude = bounds(cx, "bot-model-provider-anthropic").unwrap();
+    let model = bounds(cx, "bot-model-menu").unwrap();
+    assert_eq!(claude.left(), model.left(), "the mark leads the row");
+    click(cx, "bot-model-menu");
+    click(cx, "model-rail-openai");
+    click(cx, "model-row-openai/gpt-6");
+    assert!(shown(cx, "bot-model-provider-openai") && !shown(cx, "bot-model-provider-anthropic"));
+}
+
+#[gpui::test]
 fn a_long_personality_description_wraps_on_the_profile(cx: &mut TestAppContext) {
     let (workspace, cx) = open(cx, StandIn::at(Replies::Never, NOW));
     bot(&workspace, cx, "bot_mira");
     let short = bounds(cx, "bot-personality-detail").unwrap();
     let row = bounds(cx, "bot-personality-menu").unwrap();
-    assert!(row.size.width > px(400.), "the whole card opens the picker");
+    assert!(row.size.width > px(400.), "the whole row opens the picker");
     click(cx, "bot-personality-menu");
     click(cx, "menu-item-Ship’s Cook");
     let long = bounds(cx, "bot-personality-detail").unwrap();
@@ -633,10 +661,13 @@ fn a_first_run_offers_a_new_bot_and_a_narrow_window_keeps_the_page(cx: &mut Test
     cx.simulate_resize(size(px(550.), px(820.)));
     cx.run_until_parked();
     assert!(!shown(cx, "area-sidebar") && shown(cx, "bot-head") && shown(cx, "bot-chat"), "the sidebar folds away; the page and its Chat stay");
-    let (name, avatar, model) = (bounds(cx, "bot-name-field").unwrap(), bounds(cx, "bot-avatar-edit").unwrap(), bounds(cx, "bot-model-menu").unwrap());
-    assert_eq!(name.center().x, avatar.center().x);
-    assert_eq!(name.size.width, model.size.width);
-    assert!(name.left() >= px(0.) && name.right() <= px(550.), "the column fits the window");
+    let name = bounds(cx, "bot-name-field").unwrap();
+    let avatar = bounds(cx, "bot-avatar-edit").unwrap();
+    let instructions = bounds(cx, "bot-job-details").unwrap();
+    assert!(avatar.right() < name.left());
+    assert_eq!(instructions.left(), avatar.left());
+    assert_eq!(instructions.right(), name.right());
+    assert!(instructions.left() >= px(0.) && instructions.right() <= px(550.), "the column fits the window");
 }
 
 /// The app's way: the box asked off the window's thread, its answers coming in later, perhaps

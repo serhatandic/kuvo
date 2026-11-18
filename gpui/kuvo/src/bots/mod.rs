@@ -156,7 +156,7 @@ enum Item {
     Notice { key: String, tone: Tone, title: String, words: String },
     Group(String),
     Row { row: Box<Row>, first: bool, last: bool },
-    Session { session: WorkSession, project: String, ago: String },
+    Session { session: WorkSession, project: String, ago: String, first: bool, last: bool },
     More { count: usize },
     Note { key: String, words: String, busy: bool },
     /// New Bot's templates, and which is picked.
@@ -629,11 +629,13 @@ impl BotsView {
                 let count = work.sessions.len();
                 let listed = if self.all_sessions { count } else { count.min(RECENT) };
                 let more = count > listed;
-                for session in work.sessions.iter().take(listed) {
+                for (index, session) in work.sessions.iter().take(listed).enumerate() {
                     items.push(Item::Session {
                         session: session.clone(),
                         project: session.project.as_deref().map(|project| self.project_name(project)).unwrap_or_default(),
                         ago: session.started.map(|started| time::ago(started, self.now())).unwrap_or_default(),
+                        first: index == 0,
+                        last: index + 1 == listed && !more,
                     });
                 }
                 if more {
