@@ -24341,11 +24341,13 @@ class Insights {
     const selected = filter.computer === own.key ? localKeys : filter.computer ? keys.filter((key) => key === filter.computer) : keys;
     delete filter.computer;
     const data = this.db.view(now, zone, period, filter, selected, route, offset);
-    if (route !== "overview" || !data.totals) {
+    if ("sessions" in data) {
       const botHomes = new Map(this.directory.bots().map((bot) => [bot.session, bot.box]));
-      const sessions = data.sessions?.map((session) => ({ ...session, home: botHomes.get(session.session) ?? session.computer }));
-      return { ...data, ...sessions ? { sessions } : {}, localComputers: localKeys };
+      const sessions = data.sessions.map((session) => ({ ...session, home: botHomes.get(session.session) ?? session.computer }));
+      return { ...data, sessions, localComputers: localKeys };
     }
+    if ("calls" in data)
+      return { ...data, localComputers: localKeys };
     const local = this.db.read("local");
     const coverage = computers.filter(({ key }) => !params.has("computer") || params.get("computer") === key).map(({ key, name }) => {
       const read = key === own.key ? local : this.db.read(`peer/${key}`);
@@ -39871,7 +39873,10 @@ function seatBot2(metadata) {
     return;
   }
 }
-var count = (n) => typeof n === "number" && Number.isSafeInteger(n) && n >= 0 ? n : null;
+var count = (value) => {
+  const n = numberOf(value);
+  return n !== undefined && Number.isSafeInteger(n) && n >= 0 ? n : null;
+};
 function buckets(given) {
   if (!given || typeof given !== "object")
     return;
@@ -40565,4 +40570,4 @@ if (!onMachine) {
 }
 process.on("SIGTERM", () => stop());
 process.on("SIGINT", () => stop());
-// Built from Packages/Box/src/agents 1a622341557e193df70448caef86f5294e68ca5c5f7bdd8272a862cb6f38ffd4
+// Built from Packages/Box/src/agents e021a0879badb5ec7dc8b36b8a5c70381e49dccc19c3f43db79da7432491376e

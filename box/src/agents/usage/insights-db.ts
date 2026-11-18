@@ -65,6 +65,18 @@ interface Overview {
   breakdowns: { model: BreakdownRow[]; agent: BreakdownRow[]; day: (Metrics & { name: string })[]; skill: BreakdownRow[] }
 }
 
+type SessionsPage = {
+  sessions: (Metrics & { session: string; title: string | null; at: number; computer: string })[]
+  next: number | null
+}
+
+type CallsPage = {
+  calls: (InsightRecord & { cost: number | null; tokenCount: number | null })[]
+  next: number | null
+}
+
+type Route = "overview" | "sessions" | "detail"
+
 export class InsightsDB {
   private db: Database
   private pricing?: Pricing
@@ -211,7 +223,11 @@ export class InsightsDB {
     return bounds.map(([date, start, end], i): Bound => [date, start, i === bounds.length - 1 ? now + 1 : end])
   }
 
-  view(now: number, zone: string, period: number, filter: Filter, computers: string[], route: "overview" | "sessions" | "detail", offset: number) {
+  view(now: number, zone: string, period: number, filter: Filter, computers: string[], route: "overview", offset: number): Overview
+  view(now: number, zone: string, period: number, filter: Filter, computers: string[], route: "sessions", offset: number): SessionsPage
+  view(now: number, zone: string, period: number, filter: Filter, computers: string[], route: "detail", offset: number): CallsPage
+  view(now: number, zone: string, period: number, filter: Filter, computers: string[], route: Route, offset: number): Overview | SessionsPage | CallsPage
+  view(now: number, zone: string, period: number, filter: Filter, computers: string[], route: Route, offset: number): Overview | SessionsPage | CallsPage {
     const days = this.range(now, zone, period)
     const since = days[0]![1]
     const names: (keyof Filter)[] = ["computer", "bot", "account", "provider", "session"]
@@ -228,7 +244,7 @@ export class InsightsDB {
     if (route === "detail") {
       const rows = this.db.query<Stored & { tokenCount: number | null }, (number | string)[]>(`SELECT body, cost, tokens AS tokenCount FROM event WHERE ${where}
         AND human = 0 ORDER BY at, key LIMIT 101 OFFSET ?`).all(...args, offset)
-      return { calls: rows.slice(0, 100).map(({ body, cost, tokenCount }) => ({ ...JSON.parse(body), cost, tokenCount })), next: rows.length > 100 ? offset + 100 : null }
+      return { calls: rows.slice(0, 100).map(({ body, cost, tokenCount }) => ({ ...JSON.parse(body) as InsightRecord, cost, tokenCount })), next: rows.length > 100 ? offset + 100 : null }
     }
     if (route === "sessions") {
       const rows = this.db.query<Metrics & { session: string; title: string | null; at: number; computer: string }, (number | string)[]>(`

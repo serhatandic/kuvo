@@ -29,9 +29,7 @@ const event = (call: string, computer = "first", patch: Partial<InsightRecord> =
   account: "claude#same-account", attributed: true, model: "claude-test", call, computer, tokens, ...patch,
 })
 const show = (db: InsightsDB, filter = {}, computers = ["first", "second"], period = 30) => {
-  const overview = db.view(now, "America/New_York", period, filter, computers, "overview", 0)
-  if (!overview.totals) throw new Error("Expected the overview.")
-  return overview
+  return db.view(now, "America/New_York", period, filter, computers, "overview", 0)
 }
 
 test("copies merge before filters, resumed sessions count once, and moved bot calls retain their origin", () => {
@@ -198,5 +196,6 @@ test("isolated Claude, Codex, Grok and Antigravity records join Kuvo steps, and 
   expect(records.find((r) => r.provider === "cursor")).toMatchObject({ partial: true })
   expect(records.find((r) => r.provider === "cursor")?.tokens).toBeUndefined()
   expect(records.filter((r) => r.provider === "opencode-go").some((r) => r.human)).toBe(true)
+  expect(records.find((r) => r.call === "m-go-2")?.reportedTotal).toBe(750)
   expect(records.find((r) => r.call === "m-go-4")).toBeUndefined()
 })

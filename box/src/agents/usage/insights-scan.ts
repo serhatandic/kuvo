@@ -9,6 +9,7 @@ import { AntigravityHistory } from "./antigravity-history"
 import { antigravitySources, claudeSources, codexSources, grokSources, insideUsageHome, ownComputer } from "./usage"
 import { insightKey, type InsightRecord, type NativeUsage, type TokenBuckets } from "./insight-records"
 import type { Pricing } from "./pricing"
+import { numberOf } from "./numbers"
 
 const nativeKey = { claude: "claudeSession", codex: "codexThread", grok: "acpSession", antigravity: "acpSession" } as const
 type Bot = { id: string; name: string; sessionID: string }
@@ -46,7 +47,10 @@ function seatBot(metadata: unknown): string | undefined {
   }
 }
 
-const count = (n: unknown) => typeof n === "number" && Number.isSafeInteger(n) && n >= 0 ? n : null
+const count = (value: unknown) => {
+  const n = numberOf(value)
+  return n !== undefined && Number.isSafeInteger(n) && n >= 0 ? n : null
+}
 
 /** Saved bridge and engine steps use disjoint cache and reasoning buckets. */
 function buckets(given: unknown): TokenBuckets | undefined {

@@ -183,11 +183,12 @@ export class Insights {
     const selected = filter.computer === own.key ? localKeys : filter.computer ? keys.filter((key) => key === filter.computer) : keys
     delete filter.computer
     const data = this.db.view(now, zone, period, filter, selected, route, offset)
-    if (route !== "overview" || !data.totals) {
+    if ("sessions" in data) {
       const botHomes = new Map(this.directory.bots().map((bot) => [bot.session, bot.box]))
-      const sessions = data.sessions?.map((session) => ({ ...session, home: botHomes.get(session.session) ?? session.computer }))
-      return { ...data, ...(sessions ? { sessions } : {}), localComputers: localKeys }
+      const sessions = data.sessions.map((session) => ({ ...session, home: botHomes.get(session.session) ?? session.computer }))
+      return { ...data, sessions, localComputers: localKeys }
     }
+    if ("calls" in data) return { ...data, localComputers: localKeys }
     const local = this.db.read<Coverage>("local")
     const coverage = computers.filter(({ key }) => !params.has("computer") || params.get("computer") === key).map(({ key, name }) => {
       const read = key === own.key ? local : this.db.read<Coverage>(`peer/${key}`)
