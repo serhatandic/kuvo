@@ -148,8 +148,27 @@ impl Eye {
 
 /// Paints a bot of `shape` and `color` (the box's names) in `pose`, filling a square `bounds`.
 pub fn paint_bot(bounds: Bounds<Pixels>, shape: Shape, color: &str, pose: &Pose, dark: bool, window: &mut Window) {
+    paint_in_frame(bounds, shape, color, pose, dark, Frame::new(bounds, pose), window);
+}
+
+/// Paint a resting profile avatar without the motion clearance used elsewhere.
+/// The silhouette retains its proportions within the square.
+pub fn paint_profile_bot(bounds: Bounds<Pixels>, shape: Shape, color: &str, pose: &Pose, dark: bool, window: &mut Window) {
+    let (left, top, right, bottom) = shape.outline().iter().copied().fold(
+        (0f32, 0f32, 0f32, 0f32),
+        |(left, top, right, bottom), (x, y)| (left.min(x), top.min(y), right.max(x), bottom.max(y)),
+    );
+    let scale = f32::from(bounds.size.width) / (right - left).max(bottom - top);
+    let frame = Frame {
+        center: (f32::from(bounds.left()) - left * scale, f32::from(bounds.top()) - top * scale),
+        r: scale,
+        ..Frame::new(bounds, pose)
+    };
+    paint_in_frame(bounds, shape, color, pose, dark, frame, window);
+}
+
+fn paint_in_frame(bounds: Bounds<Pixels>, shape: Shape, color: &str, pose: &Pose, dark: bool, frame: Frame, window: &mut Window) {
     let size = f32::from(bounds.size.width);
-    let frame = Frame::new(bounds, pose);
     let p: Paints = paints(color, dark, pose.color, pose.alpha);
     let g = pose.glyph_amt.clamp(0., 1.);
     let glyph = if g > 0.001 { pose.glyph } else { Glyph::None };

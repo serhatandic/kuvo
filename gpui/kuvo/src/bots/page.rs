@@ -23,7 +23,20 @@ use crate::areas::bot_face;
 
 /// The widest the page's cards grow (Settings' width).
 const PAGE_WIDTH: f32 = 560.;
-const AVATAR_SIZE: f32 = 96.;
+const ELSEWHERE_AVATAR_SIZE: f32 = 96.;
+const PROFILE_LABEL_GAP: gpui::Pixels = space::S1_5;
+const PROFILE_FIELD_GAP: gpui::Pixels = space::S4;
+const PROFILE_INPUT_PADDING: gpui::Pixels = space::S2;
+const PROFILE_INPUT_BORDER: gpui::Pixels = px(1.);
+
+fn name_input_top() -> gpui::Pixels {
+    TypeSize::Small.line_height() + PROFILE_LABEL_GAP
+}
+
+fn profile_avatar_size() -> gpui::Pixels {
+    let input_height = TypeSize::Body.line_height() + (PROFILE_INPUT_PADDING + PROFILE_INPUT_BORDER) * 2.;
+    input_height * 2. + PROFILE_FIELD_GAP + name_input_top()
+}
 
 impl BotsView {
     fn item(&mut self, ix: usize, cx: &mut Context<Self>) -> AnyElement {
@@ -38,9 +51,9 @@ impl BotsView {
                 .flex()
                 .flex_col()
                 .gap(space::S4)
-                .when(editable, |d| d.child(self.profile_fields(self.avatar(&key, look.as_ref(), true, cx), false, cx)))
+                .when(editable, |d| d.child(self.profile_fields(self.avatar(&key, look.as_ref(), true, false, cx), false, cx)))
                 .when(!editable, |d| d
-                    .child(div().flex().justify_center().child(self.avatar(&key, look.as_ref(), false, cx)))
+                    .child(div().flex().justify_center().child(self.avatar(&key, look.as_ref(), false, false, cx)))
                     .child(div().text_ui(TypeSize::Title).medium().child(name)))
                 .child(div().text_ui(TypeSize::Small).text_color(c.text_muted).child(line))
                 .into_any_element(),
@@ -76,7 +89,17 @@ impl BotsView {
                     )
                     .into_any_element()
             }
-            Item::Group(label) => div().pt(space::S5).pb(space::S2).text_ui(TypeSize::Small).text_color(c.text_muted).child(label).into_any_element(),
+            Item::Group(label) => {
+                let selector = format!("bot-group-{label}");
+                div()
+                    .pt(if matches!(self.shown, Shown::Bot(_)) { space::S6 + space::S1 } else { space::S5 })
+                    .pb(space::S2)
+                    .child(div().debug_selector(move || selector)
+                        .text_ui(TypeSize::Small)
+                        .text_color(c.text_muted)
+                        .child(label))
+                    .into_any_element()
+            }
             Item::Row { row, first, last } if matches!(self.shown, Shown::Bot(_) | Shown::Elsewhere(_)) => self.profile_row(*row, first, last, cx),
             Item::Row { row, first, last } => self.row(*row, first, last, cx),
             Item::Session { session, project, ago, first, last } => self.session(session, project, ago, first, last, cx),
@@ -125,25 +148,25 @@ impl BotsView {
         div()
             .debug_selector(|| "bot-head".into())
             .pt(space::S8)
-            .child(self.profile_fields(self.avatar(&bot.id, Some(&bot.look), true, cx), true, cx))
+            .child(self.profile_fields(self.avatar(&bot.id, Some(&bot.look), true, true, cx), true, cx))
             .into_any_element()
     }
 
     fn profile_fields(&self, avatar: AnyElement, has_job: bool, cx: &mut Context<Self>) -> AnyElement {
         let c = cx.theme().colors.clone();
         let field = |label, key: &'static str, input| {
-            div().flex().flex_col().gap(space::S1_5)
-                .child(div().text_ui(TypeSize::Small).text_color(c.text_muted).child(label))
+            div().flex().flex_col().gap(PROFILE_LABEL_GAP)
+                .child(div().debug_selector(move || format!("{key}-label")).text_ui(TypeSize::Small).text_color(c.text_muted).child(label))
                 .child(div().debug_selector(move || key.into())
                     .rounded(radius::NAV).border_1().border_color(c.border_strong)
-                    .bg(c.surface).px(space::S3).py(space::S2)
+                    .bg(c.surface).px(space::S3).py(PROFILE_INPUT_PADDING)
                     .child(input))
         };
         div()
             .id("bot-profile-fields")
             .flex()
             .flex_col()
-            .gap(space::S4)
+            .gap(space::S6)
             .on_mouse_down_out(cx.listener(|this, _, _, cx| this.save_profile(cx)))
             .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
                 if event.keystroke.key == "enter" && event.keystroke.modifiers.platform {
@@ -152,9 +175,11 @@ impl BotsView {
                     this.save_profile(cx);
                 }
             }))
-            .child(div().flex().items_center().gap(space::S4)
-                .child(avatar)
-                .child(div().flex_1().min_w_0().flex().flex_col().gap(space::S3)
+            .child(div().flex().items_center()
+                .when(has_job, |d| d.items_start().gap(space::S6))
+                .when(!has_job, |d| d.gap(space::S4))
+                .child(div().flex_none().when(has_job, |d| d.pt(name_input_top())).child(avatar))
+                .child(div().flex_1().min_w_0().flex().flex_col().gap(PROFILE_FIELD_GAP)
                     .child(field("Name", "bot-name-field", self.name.clone()))
                     .when(has_job, |d| d.child(field("Job", "bot-job-line", self.line.clone())))))
             .when(has_job, |d| d.child(field("Instructions", "bot-job-details", self.details.clone())))
@@ -164,8 +189,12 @@ impl BotsView {
             .into_any_element()
     }
 
-    fn avatar(&self, id: &str, look: Option<&Look>, editable: bool, cx: &mut Context<Self>) -> AnyElement {
-        let avatar = face_or_blank(id, look, px(AVATAR_SIZE), cx);
+    fn avatar(&self, id: &str, look: Option<&Look>, editable: bool, profile: bool, cx: &mut Context<Self>) -> AnyElement {
+        let size = if profile { profile_avatar_size() } else { px(ELSEWHERE_AVATAR_SIZE) };
+        let avatar = match (profile, look) {
+            (true, Some(look)) => profile_face(id, look, size),
+            _ => face_or_blank(id, look, size, cx),
+        };
         let ready = self.templates().is_some();
         let can_edit = editable && ready && (look.is_some() || self.first_look().is_some()) && self.can_open_editor();
         let c = cx.theme().colors.clone();
@@ -173,7 +202,7 @@ impl BotsView {
             .id("bot-avatar")
             .relative()
             .flex_none()
-            .size(px(AVATAR_SIZE))
+            .size(size)
             .rounded(radius::PILL)
             .child(avatar)
             .when(editable && !ready, |d| {
@@ -211,9 +240,10 @@ impl BotsView {
     #[cfg(feature = "shots")]
     pub fn avatar_center(&self) -> Option<gpui::Point<gpui::Pixels>> {
         let head = self.list.bounds_for_item(0)?;
+        let half = profile_avatar_size() / 2.;
         Some(gpui::point(
-            head.left() + space::S8.max((head.size.width - px(PAGE_WIDTH)) / 2.) + px(AVATAR_SIZE / 2.),
-            head.top() + space::S8 + px(AVATAR_SIZE / 2.) + space::S3,
+            head.left() + space::S8.max((head.size.width - px(PAGE_WIDTH)) / 2.) + half,
+            head.top() + space::S8 + name_input_top() + half,
         ))
     }
 
@@ -748,6 +778,21 @@ fn face_or_blank(id: &str, look: Option<&Look>, size: gpui::Pixels, cx: &App) ->
         Some(look) => bot_face(id, look, size),
         None => div().flex().flex_none().items_center().justify_center().size(size).rounded(radius::PILL).bg(cx.theme().colors.sunken).child(Icon::new(IconName::Bot).color(cx.theme().colors.icon)).into_any_element(),
     }
+}
+
+fn profile_face(id: &str, look: &Look, size: gpui::Pixels) -> AnyElement {
+    use kuvo_ui::bot::{Motion, Shape, State, paint::paint_profile_bot, seed_of};
+    let pose = Motion::settled_in(seed_of(id), &look.face, State::Idle).pose(f32::from(size));
+    let shape = Shape::of(&look.shape);
+    let color = look.color.clone();
+    gpui::canvas(
+        |_, _, _| (),
+        move |bounds, _, window, cx| {
+            paint_profile_bot(bounds, shape, &color, &pose, cx.theme().appearance.is_dark(), window);
+        },
+    )
+    .size(size)
+    .into_any_element()
 }
 
 fn grouped_row(first: bool, last: bool, cx: &App) -> gpui::Div {
