@@ -155,6 +155,7 @@ fn row(described: &Described, drawing: &Drawing) -> Row {
                 // (a form, a confirm) in its "…" menu, then its switch.
                 let (asks, now): (Vec<&Action>, Vec<&Action>) = described.actions.iter().partition(|action| action.form.is_some() || action.confirm.is_some());
                 Control::Thing {
+                    busy: None,
                     buttons: now.into_iter().map(|action| push(described, action, drawing)).collect(),
                     menu: asks.into_iter().map(|action| push(described, action, drawing)).collect(),
                     switch: Some((described.is_on(), can.then(|| change(json!(!described.is_on()))))),

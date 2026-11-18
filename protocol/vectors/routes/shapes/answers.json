@@ -5230,6 +5230,7 @@
           ]
          },
          "version?": "string",
+         "kuvo?": "string",
          "engine?": "string",
          "system?": "string",
          "features?": {
@@ -5438,6 +5439,7 @@
           ]
          },
          "version?": "string",
+         "kuvo?": "string",
          "engine?": "string",
          "system?": "string",
          "features?": {

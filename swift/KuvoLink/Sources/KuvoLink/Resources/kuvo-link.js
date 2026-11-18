@@ -45447,7 +45447,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "f8786caa6279";
+var BRIDGE_VERSION = "954428e99ba1";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -49205,7 +49205,7 @@ async function listComputers(name, bridge, signal, now = Date.now()) {
   const told = readPeerAgents();
   const tries = readTries();
   const byName = (boxes) => [...boxes].sort((a, b) => a.name.localeCompare(b.name) || a.key.localeCompare(b.key));
-  const { version, engine, system: runs, agents } = ownComputer();
+  const { version, kuvo, engine, system: runs, agents } = ownComputer();
   const atWork = atWorkHere();
   const computers = [{
     key: own ?? "",
@@ -49217,6 +49217,7 @@ async function listComputers(name, bridge, signal, now = Date.now()) {
     via: "here",
     ...reachOf(link, ownAddress(link)),
     ...version ? { version } : {},
+    ...kuvo ? { kuvo } : {},
     ...engine ? { engine } : {},
     ...runs ? { system: runs } : {},
     ...agents ? { agents } : {},
@@ -49226,12 +49227,11 @@ async function listComputers(name, bridge, signal, now = Date.now()) {
     limits: limits.get("here") ?? (own ? limits.get(own) : undefined) ?? [],
     ...IS_MAC && appBehind(boxVersion()) ? { appCheck: appBehind(boxVersion()) } : {}
   }];
-  const kuvoOf = new Map(peersOf(link).flatMap((peer) => told[peer.key]?.computer?.kuvo ? [[peer.key, told[peer.key].computer.kuvo]] : []));
   const withActions = () => {
     const here = computers[0].name;
     const facts = writerFacts(link);
     return computers.map((computer) => {
-      const keeping = keepingUp({ ...computer, ...kuvoOf.has(computer.key) ? { kuvo: kuvoOf.get(computer.key) } : {} }, here, now);
+      const keeping = keepingUp(computer, here, now);
       return { ...computer, ...computerWords(computer, here), limitServices: computer.limits.map((id) => ({ id, title: serviceTitle(id) })), ...keeping.update ? { update: keeping.update } : {}, actions: [...actionsOf(computer, here, tryingSince(computer.key, now, tries) !== null, link, facts), ...keeping.actions, ...sshActions(computer, here)] };
     });
   };
@@ -49253,7 +49253,7 @@ async function listComputers(name, bridge, signal, now = Date.now()) {
       reach: standing,
       via: "relay",
       ...reachOf(link, peer.address),
-      ...mine ? { ...mine.version ? { version: mine.version } : {}, ...mine.engine ? { engine: mine.engine } : {}, ...mine.system ? { system: mine.system } : {}, ...mine.agents && !away ? { agents: mine.agents } : {} } : {},
+      ...mine ? { ...mine.version ? { version: mine.version } : {}, ...mine.kuvo ? { kuvo: mine.kuvo } : {}, ...mine.engine ? { engine: mine.engine } : {}, ...mine.system ? { system: mine.system } : {}, ...mine.agents && !away ? { agents: mine.agents } : {} } : {},
       ...features ? { features } : {},
       ...mine?.working !== undefined ? away ? { working: 0, atWork: [] } : { working: mine.working, ...mine.atWork ? { atWork: mine.atWork } : {} } : {},
       limits: limits.get(peer.key) ?? [],

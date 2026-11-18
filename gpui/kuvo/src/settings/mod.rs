@@ -25,7 +25,7 @@ use std::{collections::HashMap, time::{Duration, Instant, SystemTime}};
 
 use gpui::{App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, ListAlignment, ListState, SharedString, Subscription, Task, Window, px};
 use kuvo_box::BoxClient;
-use kuvo_box::accounts::{Accounts, Side as AccountSide, said};
+use kuvo_box::accounts::{Accounts, ProgramUpdate, Side as AccountSide, said};
 use kuvo_box::areas::{Account, Computer};
 use kuvo_box::follow::{Follow, Followed, Timing};
 use kuvo_box::models::Offered;
@@ -215,6 +215,7 @@ pub struct SettingsView {
     /// What the box last refused, shown over the page until it's closed or the page changes.
     problem: Option<String>,
     confirm: Option<Confirm>,
+    rename_account: Option<RenameAccount>,
     folder_picker: Option<FolderPicker>,
     sign_in: Option<Entity<SignIn>>,
     added_sign_in: Option<String>,
@@ -248,6 +249,14 @@ pub struct SettingsView {
     _subscriptions: Vec<Subscription>,
 }
 
+struct RenameAccount {
+    account: String,
+    name: String,
+    field: Entity<TextField>,
+    focus: bool,
+    _events: Subscription,
+}
+
 #[derive(Clone)]
 struct FolderPicker {
     at: At,
@@ -264,8 +273,6 @@ struct FolderPicker {
 #[derive(Clone, Debug, PartialEq)]
 enum Item {
     Title(String),
-    /// Whose these settings are, said once under the title.
-    Whose(String),
     UsageSummary,
     UsageCards(Vec<Row>),
     Group { label: String, words: String },
@@ -302,7 +309,6 @@ impl Focusable for SettingsView {
     }
 }
 
-const YOURS_WORDS: &str = "The desktop app’s own, on this device. Your other devices keep theirs.";
 const LATER_WORDS: &str = "Coming to the desktop app.";
 
 impl SettingsView {
@@ -355,6 +361,7 @@ impl SettingsView {
             expanded: Vec::new(),
             problem: None,
             confirm: None,
+            rename_account: None,
             folder_picker: None,
             sign_in: None,
             added_sign_in: None,
@@ -575,6 +582,7 @@ impl SettingsView {
         self.follow = None;
         self.problem = None;
         self.confirm = None;
+        self.rename_account = None;
         self.folder_picker = None;
     }
 
@@ -604,6 +612,7 @@ impl SettingsView {
         if self.place() != before {
             self.problem = None;
             self.confirm = None;
+            self.rename_account = None;
             // (A form open for the page left goes with it, and what was typed in it.)
             self.form = None;
             self.form_events = None;
@@ -895,8 +904,6 @@ impl SettingsView {
                 items.push(Item::Title(entry.title.clone()));
                 if usage {
                     items.push(Item::UsageSummary);
-                } else {
-                    items.push(Item::Whose(if self.side == Side::Yours { YOURS_WORDS.to_owned() } else { format!("Kept on {name}, the same in every app that connects to it.") }));
                 }
                 if let Some(Reading::Ready(page)) = self.pages.get(&entry.id).filter(|_| entry.drawn == Drawn::Described)
                     && let Some(line) = page.line.clone().filter(|line| !line.is_empty())
@@ -1104,19 +1111,15 @@ impl SettingsView {
 
     // MARK: Reading
 
-    /// Runs `work` against the box of the computer shown, in the app off this thread, in tests
-    /// and shots at once, and hands what it came to to `then`. A newer one under the same name
-    /// replaces an older; one for a computer no longer shown is dropped unanswered.
-    /// While the box says its coding agents are restarting, `section` is read again a moment on: what
-    /// it says changes by itself (back, or down with why), and the page follows it.
-    fn again_while_restarting(&mut self, section: &'static str, restarting: bool, cx: &mut Context<Self>) {
+    /// Read a section again while the state it reports is still changing.
+    fn read_again(&mut self, section: &'static str, needed: bool, delay: Duration, cx: &mut Context<Self>) {
         let name = format!("again-{section}");
-        if !restarting || !self.live {
+        if !needed || !self.live {
             self.tasks.remove(&name);
             return;
         }
         let task = cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(AGENTS_AGAIN).await;
+            cx.background_executor().timer(delay).await;
             this.update(cx, |this, cx| this.read_section(section, cx)).ok();
         });
         self.tasks.insert(name, task);
@@ -1175,7 +1178,7 @@ impl SettingsView {
             this.limits = reading(read, &this.limits);
             this.mark_old_usage(cx);
             let restarting = this.agents_limits.as_ref().is_some_and(kuvo_box::Refusal::agents_restarting);
-            this.again_while_restarting("usage", restarting, cx);
+            this.read_again("usage", restarting, AGENTS_AGAIN, cx);
         }, cx);
     }
 
@@ -1246,6 +1249,9 @@ impl SettingsView {
         self.tasks.insert(TASK.into(), task);
     }
 
+    /// Runs `work` against the box of the computer shown, in the app off this thread, in tests
+    /// and shots at once, and hands what it came to to `then`. A newer one under the same name
+    /// replaces an older; one for a computer no longer shown is dropped unanswered.
     fn run<T: Send + 'static>(
         &mut self,
         name: impl Into<String>,
@@ -1360,9 +1366,7 @@ impl SettingsView {
         match (drawn, section) {
             (Some(Drawn::Described), _) => self.read_page(section, cx),
             (Some(Drawn::Own), "accounts") => self.run("read-accounts", |client| client.sign_in_accounts(), |this, read, cx| {
-                this.accounts = reading(read, &this.accounts);
-                let restarting = matches!(&this.accounts, Reading::Ready(accounts) if accounts.agents_down.as_ref().is_some_and(kuvo_box::Refusal::agents_restarting));
-                this.again_while_restarting("accounts", restarting, cx);
+                this.take_accounts(read, cx);
             }, cx),
             (Some(Drawn::Own), "usage") => {
                 if !self.usage_refreshing() {
@@ -1379,6 +1383,15 @@ impl SettingsView {
             }
             _ => {}
         }
+    }
+
+    fn take_accounts(&mut self, read: kuvo_box::Result<Accounts>, cx: &mut Context<Self>) {
+        self.accounts = reading(read, &self.accounts);
+        let Reading::Ready(accounts) = &self.accounts else { return };
+        let updating = accounts.agents.iter().any(|entry| matches!(entry.program_update(), Some(ProgramUpdate::Updating)));
+        let restarting = accounts.agents_down.as_ref().is_some_and(kuvo_box::Refusal::agents_restarting);
+        let delay = if updating { Duration::from_secs(1) } else { AGENTS_AGAIN };
+        self.read_again("accounts", updating || restarting, delay, cx);
     }
 
     /// Reads a page its box describes. The one open is followed as it changes instead (another
@@ -1615,6 +1628,11 @@ impl SettingsView {
                     }
                 }, cx);
             }
+            Act::UpdateAgent { account } => {
+                let updating = account.clone();
+                self.account_change(account, move |client| client.update_agent(&updating), "Starting update…", cx);
+            }
+            Act::RenameAgent { account, name, label } => self.open_account_rename(account, name, label, cx),
             Act::Install { account, name } => {
                 let key = format!("account-{account}");
                 self.set_busy(&key, "Installing…");
@@ -1782,15 +1800,45 @@ impl SettingsView {
         self.run(
             key,
             move |client| work(client).and_then(|_| client.sign_in_accounts()),
-            move |this, done, _| {
+            move |this, done, cx| {
                 this.done(&done_key);
                 match done {
-                    Ok(accounts) => this.accounts = Reading::Ready(accounts),
+                    Ok(accounts) => this.take_accounts(Ok(accounts), cx),
                     Err(error) => this.problem = Some(said(&error)),
                 }
             },
             cx,
         );
+    }
+
+    fn open_account_rename(&mut self, account: String, name: String, label: String, cx: &mut Context<Self>) {
+        let field = cx.new(|cx| {
+            let mut field = TextField::new(cx).placeholder("Name");
+            field.set_text(label, cx);
+            field
+        });
+        let events = cx.subscribe(&field, |this: &mut SettingsView, _, event: &TextFieldEvent, cx| {
+            match event {
+                TextFieldEvent::Submit(_) => this.save_account_name(cx),
+                TextFieldEvent::Cancel => this.rename_account = None,
+                TextFieldEvent::Changed => {}
+            }
+            cx.notify();
+        });
+        self.rename_account = Some(RenameAccount { account, name, field, focus: true, _events: events });
+    }
+
+    fn save_account_name(&mut self, cx: &mut Context<Self>) {
+        let Some(sheet) = &self.rename_account else { return };
+        let label = sheet.field.read(cx).text().trim().to_owned();
+        if label.is_empty() {
+            return;
+        }
+        let account = sheet.account.clone();
+        self.rename_account = None;
+        let renaming = account.clone();
+        self.account_change(account, move |client| client.rename_agent_account(&renaming, &label), "Renaming…", cx);
+        self.rebuild(cx);
     }
 
     pub fn browse_folder(&mut self, path: String, cx: &mut Context<Self>) {
@@ -1912,9 +1960,9 @@ impl SettingsView {
             this.run("read-accounts", move |client| {
                 if let Some(account) = remove { client.remove_unfinished_agent_account(&account)?; }
                 client.sign_in_accounts()
-            }, |this, read, _| {
+            }, |this, read, cx| {
                 if let Err(error) = &read { this.problem = Some(said(error)); }
-                this.accounts = reading(read, &this.accounts);
+                this.take_accounts(read, cx);
             }, cx);
             cx.notify();
         }));

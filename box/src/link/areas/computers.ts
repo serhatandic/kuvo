@@ -228,7 +228,7 @@ export async function listComputers(name: string, bridge: Target | null, signal?
   const told = readPeerAgents();
   const tries = readTries();
   const byName = <T extends { name: string; key: string }>(boxes: T[]) => [...boxes].sort((a, b) => a.name.localeCompare(b.name) || a.key.localeCompare(b.key));
-  const { version, engine, system: runs, agents } = ownComputer();
+  const { version, kuvo, engine, system: runs, agents } = ownComputer();
   const atWork = atWorkHere();
   const computers: Omit<ListedComputer, "actions" | "limitServices" | "title" | "reachTitles">[] = [{
     key: own ?? "",
@@ -240,6 +240,7 @@ export async function listComputers(name: string, bridge: Target | null, signal?
     via: "here",
     ...reachOf(link, ownAddress(link)),
     ...(version ? { version } : {}),
+    ...(kuvo ? { kuvo } : {}),
     ...(engine ? { engine } : {}),
     ...(runs ? { system: runs } : {}),
     ...(agents ? { agents } : {}),
@@ -250,14 +251,12 @@ export async function listComputers(name: string, bridge: Target | null, signal?
     // (Kuvo on this Mac ahead of its desktop app: the app checks for its update.)
     ...(IS_MAC && appBehind(boxVersion()) ? { appCheck: appBehind(boxVersion())! } : {}),
   }];
-  // The Kuvo each peer runs, where it says (one that follows the others: `updates/fleet.ts`).
-  const kuvoOf = new Map(peersOf(link).flatMap(peer => (told[peer.key]?.computer?.kuvo ? [[peer.key, told[peer.key]!.computer!.kuvo!] as const] : [])));
   const withActions = (): ListedComputer[] => {
     const here = computers[0]!.name;
     const facts = writerFacts(link);
     return computers.map(computer => {
       // (Brought up to date by this box, where it set it up and it's older: how that stands, and Update Now.)
-      const keeping = keepingUp({ ...(computer as ListedComputer), ...(kuvoOf.has(computer.key) ? { kuvo: kuvoOf.get(computer.key) } : {}) }, here, now);
+      const keeping = keepingUp(computer, here, now);
       return { ...computer, ...computerWords(computer, here), limitServices: computer.limits.map(id => ({ id, title: serviceTitle(id) })), ...(keeping.update ? { update: keeping.update } : {}), actions: [...actionsOf(computer as ListedComputer, here, tryingSince(computer.key, now, tries) !== null, link, facts), ...keeping.actions, ...sshActions(computer as ListedComputer, here)] };
     });
   };
@@ -283,7 +282,7 @@ export async function listComputers(name: string, bridge: Target | null, signal?
       via: "relay",
       // (Where a client of yours reaches it itself.)
       ...reachOf(link, peer.address),
-      ...(mine ? { ...(mine.version ? { version: mine.version } : {}), ...(mine.engine ? { engine: mine.engine } : {}), ...(mine.system ? { system: mine.system } : {}), ...(mine.agents && !away ? { agents: mine.agents } : {}) } : {}),
+      ...(mine ? { ...(mine.version ? { version: mine.version } : {}), ...(mine.kuvo ? { kuvo: mine.kuvo } : {}), ...(mine.engine ? { engine: mine.engine } : {}), ...(mine.system ? { system: mine.system } : {}), ...(mine.agents && !away ? { agents: mine.agents } : {}) } : {}),
       ...(features ? { features } : {}),
       // What's at work there, as it last said: nothing seen at work while it's away; nothing said
       // by one that never said it (an older box).

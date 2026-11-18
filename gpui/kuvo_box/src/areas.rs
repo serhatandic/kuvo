@@ -186,9 +186,12 @@ pub struct Computer {
     /// `connected`, `connecting`, `away`, or `unknown` (known by another computer's word alone).
     #[serde(default)]
     pub reach: String,
-    /// Kuvo Code's version there, its engine's, and its system as people know it ("macOS 15.1").
+    /// The desktop app's version on a Mac, or Kuvo's on older machines.
     #[serde(default)]
     pub version: Option<String>,
+    /// The installed version of Kuvo.
+    #[serde(default)]
+    pub kuvo: Option<String>,
     #[serde(default)]
     pub engine: Option<String>,
     #[serde(default)]
@@ -428,6 +431,11 @@ impl Computer {
     /// Display words for this app’s local reach state, supplied by kuvo/computers.
     pub fn reach_title(&self, state: &str) -> String {
         self.reach_titles.get(state).cloned().unwrap_or_default()
+    }
+
+    /// Older machines reported Kuvo in `version`. On a Mac that field names the desktop app.
+    pub fn kuvo_version(&self) -> Option<&str> {
+        self.kuvo.as_deref().or_else(|| if self.kind == "machine" { self.version.as_deref() } else { None })
     }
 
     pub fn is_mac(&self) -> bool {

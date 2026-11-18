@@ -3,7 +3,7 @@
 //! (Accounts, Models, Usage). A section the box describes is drawn from its description alone
 //! (`described.rs`). Drawing is in `page.rs`; nothing here reaches the box.
 
-use kuvo_box::accounts::{AccountEntry, Accounts, Action, Confirm, Side, State};
+use kuvo_box::accounts::{AccountEntry, Accounts, Action, Confirm, ProgramUpdate, Side, State};
 use kuvo_box::areas::{Account, Level, UsageMeter};
 use kuvo_box::models::Offered as OfferedModels;
 use kuvo_box::settings::{Config, UsageSettings};
@@ -103,6 +103,8 @@ pub enum Act {
     SignIn { side: Side, account: String, name: String, sheet_title: String },
     AddAgent { account: String, name: String, sheet_title: String },
     Install { account: String, name: String },
+    UpdateAgent { account: String },
+    RenameAgent { account: String, name: String, label: String },
     /// Disconnect, asked first in the box's words where it says to.
     Disconnect { account: String, confirm: Option<Confirm> },
     /// An agent's own sign-in signed out, asked first in the box's words where it says to.
@@ -266,7 +268,7 @@ pub enum Control {
     Usage { account: std::rc::Rc<str>, plan: Option<String>, meters: Vec<UsageMeter> },
     /// A thing in a list: what it offers now (buttons), what asks first (a "…" menu), and its
     /// switch, last, at the edge.
-    Thing { buttons: Vec<Push>, menu: Vec<Push>, switch: Option<(bool, Option<Act>)> },
+    Thing { buttons: Vec<Push>, menu: Vec<Push>, switch: Option<(bool, Option<Act>)>, busy: Option<String> },
 }
 
 /// One part of a whole, as drawn: its name, its words, its share of the whole (0 to 1), and what
@@ -584,14 +586,15 @@ pub fn page(section: &str, facts: &Facts) -> Vec<Block> {
 
 // MARK: Accounts
 
-/// What one of the box's actions does here, where this app has a control for it; none for one it
-/// hasn't yet (a program's update, renaming an account, another account beside the one in use).
+/// The control for an account action, if this version of the app understands it.
 pub(super) fn act_of(entry: &AccountEntry, action: &Action) -> Option<Act> {
     let (account, name) = (entry.integration.id.clone(), entry.integration.name.clone());
     Some(match action.id.as_str() {
-        "signIn" | "signInAgain" => Act::SignIn { side: entry.side, account, name, sheet_title: action.sheet_title.clone()? },
         "addAnother" if entry.side == Side::Agents => Act::AddAgent { account, name, sheet_title: action.sheet_title.clone()? },
+        "signIn" | "signInAgain" | "addAnother" => Act::SignIn { side: entry.side, account, name, sheet_title: action.sheet_title.clone()? },
         "install" => Act::Install { account, name },
+        "update" => Act::UpdateAgent { account },
+        "rename" => Act::RenameAgent { account, name, label: entry.account_label().to_owned() },
         "disconnect" => Act::Disconnect { account, confirm: action.confirm.clone() },
         "signOut" => Act::SignOut { account, confirm: action.confirm.clone() },
         "remove" => Act::RemoveAgent { account, confirm: action.confirm.clone() },
@@ -599,30 +602,55 @@ pub(super) fn act_of(entry: &AccountEntry, action: &Action) -> Option<Act> {
     })
 }
 
-/// An account's row, all of it as the box says: its line, a warning where its state needs you,
-/// and its actions with the box's words. Only the layout is this app's: signed in, they're in a
-/// menu (but a lone one that asks first, which stays a button); otherwise buttons, in the box's
-/// order. An action that only works on the box's computer is drawn only there.
 fn account_row(entry: &AccountEntry, facts: &Facts) -> Row {
     let name = entry.integration.name.clone();
     let key = format!("account-{}", entry.integration.id);
+    let update = entry.program_update();
+    let version = match &update {
+        Some(ProgramUpdate::Updated { version } | ProgramUpdate::Current { version }) => Some(version.as_str()),
+        Some(ProgramUpdate::Failed { version, .. }) => version.as_deref().or_else(|| entry.program_version()),
+        _ => entry.program_version(),
+    };
+    let mut detail = entry.line.clone();
+    if let Some(version) = version {
+        if !detail.is_empty() {
+            detail.push_str(" · ");
+        }
+        detail.push_str(version);
+    }
+    if let Some(ProgramUpdate::Failed { message, .. }) = &update {
+        if !detail.is_empty() {
+            detail.push('\n');
+        }
+        detail.push_str(message);
+    }
     let control = facts.busy(&key).unwrap_or_else(|| {
-        let offered: Vec<(&Action, Act)> = entry.actions.iter().filter(|action| action.offered(facts.here)).filter_map(|action| Some((action, act_of(entry, action)?))).collect();
-        match offered.as_slice() {
-            [] => Control::None,
-            [(action, _)] if entry.state == State::SignedIn && action.confirm.is_none() => menu(&offered),
-            [_, _, ..] if entry.state == State::SignedIn => menu(&offered),
-            _ => Control::Buttons(offered.into_iter().map(|(action, act)| Push::new(action.label.clone(), act)).collect()),
+        let offered: Vec<_> = entry.actions.iter().filter(|action| action.offered(facts.here)).collect();
+        let mut others = offered.iter().filter(|action| action.id != "update");
+        let more = entry.state == State::SignedIn
+            && others.next().is_some_and(|first| first.confirm.is_none() || others.next().is_some());
+
+        let mut buttons = Vec::new();
+        let mut menu = Vec::new();
+        for action in offered {
+            let mut item = Push { label: action.label.clone(), act: act_of(entry, action) };
+            if more && action.id != "update" {
+                if item.act.is_some() && (action.confirm.is_some() || action.signs_in() || action.id == "rename") {
+                    item.label.push('…');
+                }
+                menu.push(item);
+            } else {
+                buttons.push(item);
+            }
+        }
+        let busy = matches!(update, Some(ProgramUpdate::Updating)).then(|| "Updating…".to_owned());
+        if menu.is_empty() && busy.is_none() {
+            if buttons.is_empty() { Control::None } else { Control::Buttons(buttons) }
+        } else {
+            Control::Thing { buttons, menu, switch: None, busy }
         }
     });
-    Row::new(key, name.clone(), entry.line.clone(), control).leading(mark(entry, name)).warning(entry.state.needs_you())
-}
-
-/// Actions in a menu: one that opens something first (the box's confirm, or this app's sign-in
-/// sheet) ends in an ellipsis, as menus mark them. The mark is drawn here, never read in a label.
-fn menu(offered: &[(&Action, Act)]) -> Control {
-    let choices = offered.iter().map(|(action, act)| (if action.confirm.is_some() || action.signs_in() { format!("{}…", action.label) } else { action.label.clone() }, None, Some(act.clone()), false)).collect();
-    Control::Menu { shown: None, choices }
+    Row::new(key, name.clone(), detail, control).leading(mark(entry, name)).warning(entry.state.needs_you() || matches!(update, Some(ProgramUpdate::Failed { .. })))
 }
 
 /// An account's mark: the box's `service`; its name's first letter where the box names none.
