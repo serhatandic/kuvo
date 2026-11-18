@@ -1,6 +1,6 @@
 import { GITHUB_WORK_QUEUE } from "../shared/github"
 import type { GitHubSignIn } from "./github-sign-in"
-import { AccountRefresh } from "./account-refresh"
+import { AccountRefresh, PROVIDER_CATALOG_INTERVAL } from "./account-refresh"
 import { watchSignIn } from "./signin-watch"
 // The bridge's HTTP API: the engine's, the parts the app uses for a session, its models and its
 // sign-in, answered for outside agents. Anything else is "not here", which the app takes as it
@@ -145,12 +145,8 @@ export async function integration(agent: Agent, accounts: AccountRefresh, fresh 
   const [account, maintained] = await Promise.all([
     // A check that fails is its program's (each agent says itself when it isn't installed): it's
     // there, and says why, rather than offering its installer again.
-    agent.account(fresh).then(
-      (account) => {
-        // (The rings follow what Accounts shows, sign-ins.ts: a check that failed isn't a sign-out there.)
-        signIns.record(agent.providerID, account)
-        return account
-      },
+    accounts.read(agent, fresh).then(
+      (account) => account,
       (error): Account => ({ installed: true, signedIn: false, message: String(error?.message ?? error) }),
     ),
     maintainedSoon(agent, fresh),
@@ -233,9 +229,25 @@ export function handler(context: Context) {
   const accounts = new AccountRefresh(context.limits)
   const signedIn = (agent: Agent) => void accounts.signedIn(agent).then(() => context.usage?.refresh()).catch(() => {})
   if (context.refreshAccounts) {
+    const checkPrograms = async () => {
+      const agents = roster.all()
+      await Promise.allSettled(agents.filter(agent => agent.instance.id === "default" && agent.maintenance).map(async agent => {
+        const before = lastMaintained.get(agent.id)
+        const value = await agent.maintenance!()
+        if (!maintainedNow(agent, value)) return
+        const matching = agents.filter(each => each.id === agent.id)
+        if (before?.installed && before.installed !== value.installed) {
+          for (const each of matching) each.programUpdated?.()
+          emit("model.updated", { program: agent.id })
+        }
+        for (const each of matching) emit("integration.updated", { integrationID: each.providerID })
+      }))
+    }
+    setInterval(() => void checkPrograms(), PROVIDER_CATALOG_INTERVAL).unref?.()
+    void checkPrograms()
     setInterval(() => void accounts.round(roster.all()), 60_000).unref?.()
     subscribe(event => {
-      if (event.type === "model.updated" && event.data?.accountRefresh !== true) accounts.catalogChanged(roster.all())
+      if (event.type === "model.updated" && event.data?.accountRefresh !== true) accounts.catalogChanged(roster.all(), typeof event.data?.program === "string" ? event.data.program : undefined)
       const changed = event.type === "kuvo.agent.account.changed" || (event.type === "integration.updated" && event.data?.accountRefresh !== true)
       if (!changed) return
       const id = event.data?.integrationID
@@ -256,7 +268,7 @@ export function handler(context: Context) {
 
       if (area === "info") return json({ version: context.version, pid: process.pid, build: context.build ?? null })
       if (area === "event") {
-        if (context.refreshAccounts) void accounts.round(roster.all())
+        if (context.refreshAccounts) void accounts.round(roster.all(), true)
         return feed()
       }
 
@@ -346,7 +358,7 @@ export function handler(context: Context) {
             forgetUpdate(agent.id)
             for (const each of roster.all()) if (each.id === agent.id) each.programUpdated?.()
             emit("integration.updated", { integrationID: agent.providerID })
-            emit("model.updated", {})
+            emit("model.updated", { program: agent.id })
           }
           return json({ data: result })
         }
@@ -365,7 +377,8 @@ export function handler(context: Context) {
         // `hidden=1`: also those an agent still runs but keeps out of its picker (the box's
         // `kuvo/sessions/models` reads them; pickers don't).
         const hidden = url.searchParams.get("hidden") === "1"
-        const models = await Promise.all(roster.all().map(agent => accounts.models(agent, hidden).catch((): Model[] => [])))
+        const refresh = url.searchParams.get("refresh") === "1"
+        const models = await Promise.all(roster.all().map(agent => accounts.models(agent, hidden, refresh).catch((): Model[] => [])))
         return located(models.flat())
       }
       if (area === "agent" || area === "command" || area === "skill" || area === "mcp") return located([])

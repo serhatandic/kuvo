@@ -110,7 +110,7 @@ export function updateProgram(agent: Agent, accounts: () => Agent[], noted: Note
       kept.set(program, outcome(result))
       underWay.delete(program)
       told(agent, accounts())
-      if (result.updated) emit("model.updated", {})
+      if (result.updated) emit("model.updated", { program })
     }
     return result
   })()

@@ -729,11 +729,23 @@ export class ClaudeAgent implements Agent {
     if (executable && this.instance.home) await run(executable, ["auth", "logout"], { timeout: 20_000, env: this.env() }).catch(() => {})
   }
 
-  async models(): Promise<Model[]> {
-    if (this.modelList && Date.now() - this.modelList.at < 5 * 60_000) return this.modelList.models
+  async models(options: { refresh?: boolean } = {}): Promise<Model[]> {
+    if (this.modelList?.at && !options.refresh) return this.modelList.models
     // Claude Code says which models your account has once it starts: asked in the background, the
     // first time with Claude Code's usual ones meanwhile.
-    this.loadingModels ??= this.loadModels().finally(() => (this.loadingModels = undefined))
+    const loading = this.loadingModels ??= this.loadModels().finally(() => (this.loadingModels = undefined))
+    if (options.refresh) {
+      let listed: () => void = () => {}
+      const ready = new Promise<void>(resolve => {
+        listed = resolve
+        this.listed.push(listed)
+      })
+      try {
+        await Promise.race([ready, loading])
+      } finally {
+        this.listed = this.listed.filter(each => each !== listed)
+      }
+    }
     return this.modelList?.models ?? fallbackModels(this.providerID)
   }
 

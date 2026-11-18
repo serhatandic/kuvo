@@ -15433,37 +15433,9 @@ class AntigravityAgent {
       await this.ensureInstalled();
       if (cancelled)
         return;
-      const launch = this.launch();
-      const cwd = join24(launch.temporary, "work");
-      let whole;
-      try {
-        mkdirSync15(cwd);
-        whole = fenceRules() ? fenceAgent(launch.argv[0], cwd, { ...this.places(launch.env), read: this.reads(launch.env) }) : undefined;
-        if (fenceRules() && !whole)
-          throw new Error("Antigravity runs in the sandbox here, and it isn't ready: restart Kuvo Code.");
-      } catch (error) {
-        launch.onExit();
-        throw error;
-      }
-      rpc = new RPC(whole ? [whole.command, ...launch.argv.slice(1)] : launch.argv, {
-        cwd,
-        env: { ...launch.env, ...whole?.env },
-        cleanEnv: true,
-        jsonrpc: true,
-        firstID: 2 ** 30,
-        filter: (line) => {
-          const at = line.indexOf(signInLine);
-          if (at >= 0) {
-            found(line.slice(at + signInLine.length).trim());
-            return false;
-          }
-          return true;
-        }
-      });
-      rpc.onExit = () => {
-        whole?.ended();
-        launch.onExit();
-      };
+      const connection = this.modelConnection(found);
+      rpc = connection.rpc;
+      const { cwd, launch, initialize } = connection;
       const watch = setInterval(() => {
         try {
           found(readFileSync23(launch.env.KUVO_URL_FILE, "utf8").split(`
@@ -15471,7 +15443,7 @@ class AntigravityAgent {
         } catch {}
       }, 300);
       try {
-        await rpc.request("initialize", { protocolVersion: 1, clientCapabilities: { fs: { readTextFile: !whole, writeTextFile: !whole }, terminal: false }, clientInfo: { name: "kuvo-code", version: "1" } }, 120000);
+        await initialize(120000);
         await rpc.request("authenticate", { methodId: "oauth-personal" }, 600000);
         const setup = await rpc.request("session/new", { cwd, mcpServers: [] }, 120000);
         this.saveModels(setup);
@@ -15559,7 +15531,66 @@ ${rpc.stderr.trim()}`);
       rmSync12(join24(folder, "conversations", sessionID + suffix), { force: true });
     rmSync12(join24(folder, "brain", sessionID), { recursive: true, force: true });
   }
-  async models() {
+  modelConnection(found) {
+    const launch = this.launch();
+    const cwd = join24(launch.temporary, "work");
+    let whole;
+    try {
+      mkdirSync15(cwd);
+      whole = fenceRules() ? fenceAgent(launch.argv[0], cwd, { ...this.places(launch.env), read: this.reads(launch.env) }) : undefined;
+      if (fenceRules() && !whole)
+        throw new Error("Antigravity runs in the sandbox here, and it isn't ready: restart Kuvo Code.");
+    } catch (error) {
+      launch.onExit();
+      throw error;
+    }
+    const rpc = new RPC(whole ? [whole.command, ...launch.argv.slice(1)] : launch.argv, {
+      cwd,
+      env: { ...launch.env, ...whole?.env },
+      cleanEnv: true,
+      jsonrpc: true,
+      firstID: 2 ** 30,
+      filter: (line) => {
+        const at = line.indexOf(signInLine);
+        if (at >= 0) {
+          found(line.slice(at + signInLine.length).trim());
+          return false;
+        }
+        return true;
+      }
+    });
+    rpc.onExit = () => {
+      whole?.ended();
+      launch.onExit();
+    };
+    const initialize = (timeout) => rpc.request("initialize", {
+      protocolVersion: 1,
+      clientCapabilities: { fs: { readTextFile: !whole, writeTextFile: !whole }, terminal: false },
+      clientInfo: { name: "kuvo-code", version: "1" }
+    }, timeout);
+    return { rpc, cwd, launch, initialize };
+  }
+  async discoverModels() {
+    const { rpc, cwd, launch, initialize } = this.modelConnection(() => rpc.kill());
+    const watch = setInterval(() => {
+      if (existsSync14(launch.signInFile))
+        rpc.kill();
+    }, 300);
+    try {
+      await initialize(20000);
+      await rpc.request("authenticate", { methodId: "oauth-personal" }, 20000);
+      const setup = await rpc.request("session/new", { cwd, mcpServers: [] }, 20000);
+      if (setup?.sessionId)
+        this.removeSessionFiles(setup.sessionId);
+      this.saveModels(setup);
+    } finally {
+      clearInterval(watch);
+      rpc.kill();
+    }
+  }
+  async models(options = {}) {
+    if (options.refresh && this.isInstalled)
+      await this.discoverModels();
     try {
       const saved = JSON.parse(readFileSync23(this.modelsFile, "utf8"));
       return saved.models.map((info, index) => model(this.providerID, info.value, info.name, { images: true, released: info.value === saved.current ? 2000 : 1000 - index, context: this.windows.get(info.value) ?? 1e6 }));
@@ -16877,10 +16908,22 @@ class ClaudeAgent {
     if (executable && this.instance.home)
       await run(executable, ["auth", "logout"], { timeout: 20000, env: this.env() }).catch(() => {});
   }
-  async models() {
-    if (this.modelList && Date.now() - this.modelList.at < 5 * 60000)
+  async models(options = {}) {
+    if (this.modelList?.at && !options.refresh)
       return this.modelList.models;
-    this.loadingModels ??= this.loadModels().finally(() => this.loadingModels = undefined);
+    const loading = this.loadingModels ??= this.loadModels().finally(() => this.loadingModels = undefined);
+    if (options.refresh) {
+      let listed = () => {};
+      const ready = new Promise((resolve) => {
+        listed = resolve;
+        this.listed.push(listed);
+      });
+      try {
+        await Promise.race([ready, loading]);
+      } finally {
+        this.listed = this.listed.filter((each) => each !== listed);
+      }
+    }
     return this.modelList?.models ?? fallbackModels(this.providerID);
   }
   listsEveryModel() {
@@ -18695,7 +18738,7 @@ function named5(status, otherwise) {
 }
 
 // box/src/agents/agents/codex.ts
-import { existsSync as existsSync17, lstatSync as lstatSync8, mkdirSync as mkdirSync17, readdirSync as readdirSync17, readFileSync as readFileSync26, readlinkSync as readlinkSync2, rmSync as rmSync14, statSync as statSync11, symlinkSync as symlinkSync2 } from "fs";
+import { existsSync as existsSync17, lstatSync as lstatSync8, mkdirSync as mkdirSync17, readdirSync as readdirSync17, readFileSync as readFileSync26, readlinkSync as readlinkSync2, rmSync as rmSync14, symlinkSync as symlinkSync2, unlinkSync as unlinkSync2 } from "fs";
 import { homedir as homedir2 } from "os";
 import { basename as basename10, join as join28 } from "path";
 
@@ -19266,7 +19309,7 @@ class CodexAgent {
     if (key !== SHARED && !fence)
       throw new Error("Codex runs in the sandbox here, and it isn't ready: restart Kuvo Code.");
     const args = ["app-server", ...noComputerUse.flatMap((plugin) => ["-c", `plugins.${plugin}.enabled=false`])];
-    const env = { ...this.instance.home ? { CODEX_HOME: this.instance.home } : {}, ...thread ? { OPENCODE_SESSION_ID: thread.session.id } : {}, ...fence?.env };
+    const env = { CODEX_INTERNAL_ORIGINATOR_OVERRIDE: process.env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE ?? "kuvo-code", ...this.instance.home ? { CODEX_HOME: this.instance.home } : {}, ...thread ? { OPENCODE_SESSION_ID: thread.session.id } : {}, ...fence?.env };
     const argv = fence ? [fence.command, ...args] : [executable, ...args];
     const cwd = fence ? directory : this.context.temporary;
     const stops = slot.stops;
@@ -19609,16 +19652,14 @@ class CodexAgent {
     }
   }
   catalogGeneration = 0;
-  nextDiskRefresh = 0;
-  refreshDisk = false;
   async models(options = {}) {
     const shown = (models) => options.hidden ? models : models.filter((each) => !each.hidden);
-    if (this.modelList && Date.now() - this.modelList.at < 5 * 60000)
+    if (this.modelList && !options.refresh)
       return shown(this.modelList.models);
     try {
-      return shown(await this.listModels());
+      return shown(await this.listModels(options.refresh === true));
     } catch (error) {
-      if (this.modelList)
+      if (this.modelList && !options.refresh)
         return shown(this.modelList.models);
       throw error;
     }
@@ -19626,19 +19667,17 @@ class CodexAgent {
   listsEveryModel() {
     return this.modelList?.models.some((model) => model.hidden) === true;
   }
-  async listModels() {
+  async listModels(refresh) {
     const generation = this.catalogGeneration;
-    const cache = join28(this.home, "models_cache.json");
-    const now = Date.now();
-    if (this.refreshDisk || now >= this.nextDiskRefresh) {
-      this.nextDiskRefresh = now + 60000;
-      try {
-        if (this.refreshDisk || now - statSync11(cache).mtimeMs >= 5 * 60000)
-          rmSync14(cache, { force: true });
-        this.refreshDisk = false;
-      } catch {}
-    }
     const rpc = await this.rpc();
+    if (refresh) {
+      try {
+        unlinkSync2(join28(this.home, "models_cache.json"));
+      } catch (error) {
+        if (error.code !== "ENOENT")
+          throw error;
+      }
+    }
     const models = [];
     let cursor;
     let order = 1000;
@@ -19656,12 +19695,11 @@ class CodexAgent {
       cursor = page?.nextCursor ?? undefined;
     } while (cursor);
     if (generation === this.catalogGeneration && rpc !== this.slots.get(SHARED)?.outdated && rpc !== this.slots.get(ACCOUNT)?.outdated)
-      this.modelList = { at: Date.now(), models };
+      this.modelList = { models };
     return models;
   }
   forgetModels() {
     this.catalogGeneration++;
-    this.refreshDisk = true;
     this.modelList = undefined;
   }
   shutdown() {
@@ -21757,18 +21795,18 @@ class CursorAgent {
     if (!this.instance.home && process.env.CURSOR_API_KEY?.trim())
       throw new Error("Cursor stays signed in with CURSOR_API_KEY from your shell\u2019s environment. Remove it there to sign out.");
   }
-  async models() {
+  async models(options = {}) {
     const sdk = await this.sdk();
     const apiKey = await this.apiKey(sdk);
     if (!apiKey)
       return [];
-    if (this.modelList && this.modelList.key === apiKey && Date.now() - this.modelList.at < 5 * 60000)
+    if (this.modelList && this.modelList.key === apiKey && !options.refresh)
       return this.modelList.models;
     let list;
     try {
       list = await withTimeout2(sdk.Cursor.models.list({ apiKey }), 15000);
     } catch (error) {
-      if (this.modelList?.key === apiKey)
+      if (this.modelList?.key === apiKey && !options.refresh)
         return this.modelList.models;
       throw error;
     }
@@ -21783,7 +21821,7 @@ class CursorAgent {
         released: info.id === "default" ? 2000 : 1000 - index
       });
     });
-    this.modelList = { at: Date.now(), key: apiKey, models };
+    this.modelList = { key: apiKey, models };
     return models;
   }
   forgetModels() {
@@ -22977,8 +23015,12 @@ class GrokAgent {
       userCode: options.remote ? /\b([A-Z0-9]{4,}(?:-[A-Z0-9]{4,})+)\b/ : undefined
     });
   }
-  async models() {
-    const listed = await this.read(false).then((status) => status.models, () => this.status?.models ?? []);
+  async models(options = {}) {
+    const listed = await this.read(options.refresh === true).then((status) => status.models, (error) => {
+      if (options.refresh)
+        throw error;
+      return this.status?.models ?? [];
+    });
     const efforts = this.efforts();
     return listed.map((info, index) => model(this.providerID, info.id, info.name, { released: info.isDefault ? 1000 : 500 - index, context: this.windows.get(info.id) ?? 256000, variants: efforts[info.id]?.values ?? ["low", "medium", "high"] }));
   }
@@ -23201,12 +23243,14 @@ function signedInAgents(agents, record = signIns) {
 
 // box/src/agents/account-refresh.ts
 var MODEL_INTERVAL = 5 * 60000;
+var PROVIDER_CATALOG_INTERVAL = 60 * 60000;
 
 class AccountRefresh {
   limits;
   now;
   snapshots = new WeakMap;
   nextRound = 0;
+  nextOpen = 0;
   constructor(limits, now = Date.now) {
     this.limits = limits;
     this.now = now;
@@ -23275,23 +23319,30 @@ class AccountRefresh {
     else
       emit("model.updated", { accountRefresh: true });
   }
-  async models(agent, hidden = false) {
+  async models(agent, hidden = false, refresh = false) {
     const snapshot = this.snapshot(agent);
     const account = await this.read(agent);
     if (!account.signedIn)
       return [];
     if (this.snapshot(agent) !== snapshot)
-      return this.models(agent, hidden);
-    const value = await this.catalog(agent, snapshot);
+      return this.models(agent, hidden, refresh);
+    const value = await this.catalog(agent, snapshot, refresh ? "picker" : undefined);
     if (this.snapshot(agent) !== snapshot)
-      return this.models(agent, hidden);
+      return this.models(agent, hidden, refresh);
     return hidden ? value : value.filter((model) => !model.hidden);
   }
-  catalog(agent, snapshot) {
+  catalog(agent, snapshot, trigger) {
+    if (snapshot.listing)
+      return snapshot.listing;
     const cached = snapshot.models;
-    if (cached && this.now() - cached.at < MODEL_INTERVAL)
+    const now = this.now();
+    const since = now - (snapshot.lastProviderCheck ?? -Infinity);
+    const refresh = trigger === "picker" || since >= (trigger === "app" && agent.id === "codex" ? MODEL_INTERVAL : PROVIDER_CATALOG_INTERVAL);
+    if (!refresh && cached && now - cached.at < MODEL_INTERVAL)
       return Promise.resolve(cached.value);
-    const loading = snapshot.listing ??= agent.models({ hidden: true }).then((value) => {
+    if (refresh)
+      snapshot.lastProviderCheck = now;
+    const loading = snapshot.listing = agent.models({ hidden: true, refresh }).then((value) => {
       if (snapshot.listing !== loading || this.snapshot(agent) !== snapshot)
         return value;
       snapshot.models = { at: this.now(), value };
@@ -23299,6 +23350,8 @@ class AccountRefresh {
         emit("model.updated", { accountRefresh: true });
       return value;
     }).catch((error) => {
+      if (refresh)
+        snapshot.lastProviderCheck = this.now() - PROVIDER_CATALOG_INTERVAL + MODEL_INTERVAL;
       if (cached) {
         if (snapshot.listing === loading)
           snapshot.models = { ...cached, at: this.now() };
@@ -23311,19 +23364,32 @@ class AccountRefresh {
     });
     return loading;
   }
-  catalogChanged(agents) {
-    for (const agent of agents)
-      this.snapshot(agent).models = undefined;
+  catalogChanged(agents, programUpdated) {
+    for (const agent of agents) {
+      const snapshot = this.snapshot(agent);
+      if (programUpdated === agent.id) {
+        this.snapshots.set(agent, { account: snapshot.account, identity: snapshot.identity, models: snapshot.models });
+        this.models(agent).catch(() => {});
+      } else {
+        snapshot.models = undefined;
+      }
+    }
   }
-  async round(agents) {
+  async round(agents, opened = false) {
     const now = this.now();
-    if (now < this.nextRound)
-      return;
-    this.nextRound = now + 30000;
+    if (opened) {
+      if (now < this.nextOpen)
+        return;
+      this.nextOpen = now + 30000;
+    } else {
+      if (now < this.nextRound)
+        return;
+      this.nextRound = now + 30000;
+    }
     await Promise.allSettled(agents.map(async (agent) => {
       const account = await this.read(agent, true);
       if (account.signedIn && !account.unchecked)
-        await this.catalog(agent, this.snapshot(agent));
+        await this.catalog(agent, this.snapshot(agent), opened ? "app" : undefined);
     }));
   }
 }
@@ -23438,7 +23504,7 @@ function spendTitle(service) {
 // box/src/agents/usage/usage.ts
 import { execFileSync as execFileSync2 } from "child_process";
 import { createHash as createHash16 } from "crypto";
-import { lstatSync as lstatSync9, mkdirSync as mkdirSync24, readFileSync as readFileSync33, realpathSync as realpathSync8, renameSync as renameSync20, statSync as statSync16, writeFileSync as writeFileSync25 } from "fs";
+import { lstatSync as lstatSync9, mkdirSync as mkdirSync24, readFileSync as readFileSync33, realpathSync as realpathSync8, renameSync as renameSync20, statSync as statSync15, writeFileSync as writeFileSync25 } from "fs";
 import { homedir as homedir5, hostname as hostname2 } from "os";
 import { basename as basename11, dirname as dirname18, join as join38 } from "path";
 
@@ -25126,7 +25192,7 @@ function codexStateFrom(value) {
 }
 
 // box/src/agents/usage/engine-codex.ts
-import { readdirSync as readdirSync18, statSync as statSync12 } from "fs";
+import { readdirSync as readdirSync18, statSync as statSync11 } from "fs";
 import { join as join33 } from "path";
 function engineDatabases(folder) {
   let names;
@@ -25377,7 +25443,7 @@ function engineStamp(folder) {
   const parts = [];
   for (const path of [...engineDatabases(folder).flatMap((db) => [db, db + "-wal"]), join33(folder, "auth.json")]) {
     try {
-      const info = statSync12(path);
+      const info = statSync11(path);
       parts.push(`${path}:${info.size}:${info.mtimeMs}`);
     } catch {
       parts.push(`${path}:-`);
@@ -25497,7 +25563,7 @@ function fromKeptGrok(kept) {
 }
 
 // box/src/agents/usage/antigravity-history.ts
-import { readdirSync as readdirSync19, realpathSync as realpathSync7, statSync as statSync13 } from "fs";
+import { readdirSync as readdirSync19, realpathSync as realpathSync7, statSync as statSync12 } from "fs";
 import { join as join34 } from "path";
 function generationEvent(blob, stepMetadata) {
   function varint(bytes, start) {
@@ -25646,7 +25712,7 @@ function fingerprint2(path) {
   let latest = -Infinity;
   const stamp = [path, path + "-wal"].map((file) => {
     try {
-      const info = statSync13(file);
+      const info = statSync12(file);
       latest = Math.max(latest, info.mtimeMs);
       return `${file}:${info.ino}:${info.size}:${info.mtimeMs}:${info.ctimeMs}`;
     } catch (error) {
@@ -26076,7 +26142,7 @@ function cursorSlots(days, pricing, since) {
 }
 
 // box/src/agents/usage/engine-db.ts
-import { readdirSync as readdirSync20, statSync as statSync14 } from "fs";
+import { readdirSync as readdirSync20, statSync as statSync13 } from "fs";
 import { join as join36 } from "path";
 function engineDatabases2(folder) {
   let names;
@@ -26093,7 +26159,7 @@ function databasesStamp(folder) {
   const parts = [];
   for (const path of engineDatabases2(folder).flatMap((db) => [db, db + "-wal"])) {
     try {
-      const info = statSync14(path);
+      const info = statSync13(path);
       parts.push(`${path}:${info.size}:${info.mtimeMs}`);
     } catch {
       parts.push(`${path}:-`);
@@ -26503,7 +26569,7 @@ async function headOf(handle, length) {
 
 // box/src/agents/usage/settings.ts
 import { createHash as createHash15, randomBytes as randomBytes7 } from "crypto";
-import { mkdirSync as mkdirSync23, readFileSync as readFileSync32, renameSync as renameSync19, statSync as statSync15, writeFileSync as writeFileSync24 } from "fs";
+import { mkdirSync as mkdirSync23, readFileSync as readFileSync32, renameSync as renameSync19, statSync as statSync14, writeFileSync as writeFileSync24 } from "fs";
 import { dirname as dirname17 } from "path";
 var SETTINGS_UNITS = ["layout", "providers", "totalSpend", "codexFallback", "notifications"];
 function newer(a, b) {
@@ -26704,7 +26770,7 @@ class UsageSettings {
       if (!this.units.codexFallback && codex && typeof codex === "object" && "fallback" in codex) {
         const value = checked2("codexFallback", codex.fallback === "" ? null : codex.fallback);
         if (value !== undefined)
-          this.units.codexFallback = { value, stamp: { v: Math.floor(statSync15(file).mtimeMs), by: "", imported: true } };
+          this.units.codexFallback = { value, stamp: { v: Math.floor(statSync14(file).mtimeMs), by: "", imported: true } };
       }
     } catch {}
     for (const unit of Object.values(this.units))
@@ -27341,7 +27407,7 @@ function codexHomes(agent, env = process.env, home = homedir5()) {
 }
 function isFolder(path) {
   try {
-    return statSync16(path).isDirectory();
+    return statSync15(path).isDirectory();
   } catch {
     return false;
   }
@@ -27718,7 +27784,7 @@ function updateProgram(agent, accounts, noted) {
       underWay2.delete(program);
       told3(agent, accounts());
       if (result.updated)
-        emit("model.updated", {});
+        emit("model.updated", { program });
     }
     return result;
   })();
@@ -27763,7 +27829,7 @@ async function updateAll(agents, accounts, noted, known) {
 // box/src/agents/sessions.ts
 import { createHash as createHash17 } from "crypto";
 import { spawn as spawnProcess } from "child_process";
-import { readFileSync as readFileSync34, realpathSync as realpathSync9, statSync as statSync17 } from "fs";
+import { readFileSync as readFileSync34, realpathSync as realpathSync9, statSync as statSync16 } from "fs";
 import { homedir as homedir6 } from "os";
 import { dirname as dirname19, join as join39, resolve as resolve8 } from "path";
 import { fileURLToPath as fileURLToPath2 } from "url";
@@ -28835,7 +28901,7 @@ function outsideRefusable(ask, paths, folders) {
 }
 function isFolder2(path, action) {
   try {
-    return statSync17(path).isDirectory();
+    return statSync16(path).isDirectory();
   } catch {
     return action === "list" || action === "glob";
   }
@@ -31234,7 +31300,7 @@ function withTextFiles(text, files) {
     let contents;
     if (!file.mime.startsWith("image/") && file.mime !== "application/pdf") {
       try {
-        const bytes = file.data ? Buffer.from(file.data, "base64") : file.path && statSync17(file.path).isFile() && statSync17(file.path).size <= textFileLimit ? readFileSync34(file.path) : undefined;
+        const bytes = file.data ? Buffer.from(file.data, "base64") : file.path && statSync16(file.path).isFile() && statSync16(file.path).size <= textFileLimit ? readFileSync34(file.path) : undefined;
         if (bytes && !bytes.includes(0))
           contents = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
       } catch {}
@@ -37923,10 +37989,7 @@ async function maintainedSoon(agent, fresh) {
 }
 async function integration(agent, accounts, fresh = false, auto) {
   const [account, maintained] = await Promise.all([
-    agent.account(fresh).then((account) => {
-      signIns.record(agent.providerID, account);
-      return account;
-    }, (error) => ({ installed: true, signedIn: false, message: String(error?.message ?? error) })),
+    accounts.read(agent, fresh).then((account) => account, (error) => ({ installed: true, signedIn: false, message: String(error?.message ?? error) })),
     maintainedSoon(agent, fresh)
   ]);
   const before = lastSeen.get(agent.providerID);
@@ -37991,10 +38054,29 @@ function handler(context) {
   const accounts = new AccountRefresh(context.limits);
   const signedIn = (agent) => void accounts.signedIn(agent).then(() => context.usage?.refresh()).catch(() => {});
   if (context.refreshAccounts) {
+    const checkPrograms = async () => {
+      const agents = roster.all();
+      await Promise.allSettled(agents.filter((agent) => agent.instance.id === "default" && agent.maintenance).map(async (agent) => {
+        const before = lastMaintained.get(agent.id);
+        const value = await agent.maintenance();
+        if (!maintainedNow(agent, value))
+          return;
+        const matching = agents.filter((each) => each.id === agent.id);
+        if (before?.installed && before.installed !== value.installed) {
+          for (const each of matching)
+            each.programUpdated?.();
+          emit("model.updated", { program: agent.id });
+        }
+        for (const each of matching)
+          emit("integration.updated", { integrationID: each.providerID });
+      }));
+    };
+    setInterval(() => void checkPrograms(), PROVIDER_CATALOG_INTERVAL).unref?.();
+    checkPrograms();
     setInterval(() => void accounts.round(roster.all()), 60000).unref?.();
     subscribe((event) => {
       if (event.type === "model.updated" && event.data?.accountRefresh !== true)
-        accounts.catalogChanged(roster.all());
+        accounts.catalogChanged(roster.all(), typeof event.data?.program === "string" ? event.data.program : undefined);
       const changed = event.type === "kuvo.agent.account.changed" || event.type === "integration.updated" && event.data?.accountRefresh !== true;
       if (!changed)
         return;
@@ -38019,7 +38101,7 @@ function handler(context) {
         return json15({ version: context.version, pid: process.pid, build: context.build ?? null });
       if (area === "event") {
         if (context.refreshAccounts)
-          accounts.round(roster.all());
+          accounts.round(roster.all(), true);
         return feed();
       }
       if (area === "integration" && a === GITHUB_WORK_QUEUE) {
@@ -38127,7 +38209,7 @@ function handler(context) {
               if (each.id === agent.id)
                 each.programUpdated?.();
             emit("integration.updated", { integrationID: agent.providerID });
-            emit("model.updated", {});
+            emit("model.updated", { program: agent.id });
           }
           return json15({ data: result });
         }
@@ -38143,7 +38225,8 @@ function handler(context) {
         if (a === "default")
           return located(null);
         const hidden = url.searchParams.get("hidden") === "1";
-        const models = await Promise.all(roster.all().map((agent) => accounts.models(agent, hidden).catch(() => [])));
+        const refresh = url.searchParams.get("refresh") === "1";
+        const models = await Promise.all(roster.all().map((agent) => accounts.models(agent, hidden, refresh).catch(() => [])));
         return located(models.flat());
       }
       if (area === "agent" || area === "command" || area === "skill" || area === "mcp")
@@ -38493,7 +38576,7 @@ ${all}`;
 }
 
 // box/src/agents/renewal.ts
-import { statSync as statSync18 } from "fs";
+import { statSync as statSync17 } from "fs";
 import { dirname as dirname22 } from "path";
 
 // box/src/shared/bundle.ts
@@ -38695,7 +38778,7 @@ class Renewal {
   newerBuild() {
     let stat;
     try {
-      stat = statSync18(this.options.script);
+      stat = statSync17(this.options.script);
     } catch {
       return this.newer;
     }
@@ -38853,7 +38936,7 @@ async function untilSwapLets(run, every = 1000) {
 import { spawn as spawn7 } from "child_process";
 
 // box/src/agents/store.ts
-import { mkdirSync as mkdirSync27, readdirSync as readdirSync22, readFileSync as readFileSync39, renameSync as renameSync24, rmSync as rmSync18, statSync as statSync19, writeFileSync as writeFileSync29 } from "fs";
+import { mkdirSync as mkdirSync27, readdirSync as readdirSync22, readFileSync as readFileSync39, renameSync as renameSync24, rmSync as rmSync18, statSync as statSync18, writeFileSync as writeFileSync29 } from "fs";
 import { join as join42 } from "path";
 
 class Store {
@@ -38894,7 +38977,7 @@ class Store {
   }
   writtenAt(id) {
     try {
-      return statSync19(join42(this.root, id, "messages.json")).mtimeMs;
+      return statSync18(join42(this.root, id, "messages.json")).mtimeMs;
     } catch {
       return;
     }
@@ -39974,4 +40057,4 @@ if (!onMachine) {
 }
 process.on("SIGTERM", () => stop());
 process.on("SIGINT", () => stop());
-// Built from Packages/Box/src/agents c3b44afe499aa30299733c9b994a79fbd678b56969c7084b5b5df05b8d9ab374
+// Built from Packages/Box/src/agents 31d5dc1ac56c95288d79ee1f072af5131d6be9efca754b9fcaa1136085db92de

@@ -75,8 +75,8 @@ export function signInNeed(providerID: string, methods: string[][]): { missing: 
 }
 
 /** `target`'s answer to `route`; undefined when it didn't answer (not there, too slow, an error). */
-const asked = (target: Target, route: string, folder?: string): Promise<unknown> =>
-  call(target, "GET", route, undefined, AbortSignal.timeout(ASK_WAIT), folder).catch(() => undefined);
+const asked = (target: Target, route: string, folder?: string, timeout = ASK_WAIT): Promise<unknown> =>
+  call(target, "GET", route, undefined, AbortSignal.timeout(timeout), folder).catch(() => undefined);
 
 /** How long what a place listed is used again: until it says something changed, or this long. */
 const KEPT_FOR = 10_000;
@@ -290,11 +290,11 @@ async function engineLists(engine: Target, folder: string | undefined): Promise<
   return { ready, models, accounts, fallback: given };
 }
 
-async function bridgeLists(bridge: Target): Promise<BridgeLists | null> {
+async function bridgeLists(bridge: Target, refresh = false): Promise<BridgeLists | null> {
   // (Those an agent keeps out of its picker but still runs, Codex's hidden ones, too: only one
   // absent from its list is gone.)
   // (The models first: an account's word that its list is whole is of the list it has then.)
-  const listed = await asked(bridge, "/api/model?hidden=1");
+  const listed = await asked(bridge, refresh ? "/api/model?hidden=1&refresh=1" : "/api/model?hidden=1", undefined, refresh ? 65_000 : ASK_WAIT);
   const [integrations, auto] = await Promise.all(["/api/integration", "/api/kuvo/auto"].map(route => asked(bridge, route)));
   const models = modelsIn(listed), accounts = accountsIn(integrations);
   if (!models || !accounts) return null;
@@ -320,8 +320,11 @@ export function bridgeListsOf(bridge: Target | null): Promise<BridgeLists | null
 
 /** What both places list, for a session in `folder`. `noBridgeIsNone`: no bridge running counts as
  * no coding agents here (a session started now can't run on one), not as one that can't say yet. */
-export async function listsHere(engine: Target | null, bridge: Target | null, folder?: string, noBridgeIsNone = false): Promise<Lists> {
-  const [fromEngine, fromBridge] = await Promise.all([engineListsIn(engine, folder), bridgeListsOf(bridge)]);
+export async function listsHere(engine: Target | null, bridge: Target | null, folder?: string, noBridgeIsNone = false, refresh = false): Promise<Lists> {
+  const [fromEngine, fromBridge] = await Promise.all([
+    refresh && engine ? engineLists(engine, folder) : engineListsIn(engine, folder),
+    refresh && bridge ? bridgeLists(bridge, true) : bridgeListsOf(bridge),
+  ]);
   return { engine: fromEngine, bridge: fromBridge ?? (!bridge && noBridgeIsNone ? { models: [], accounts: new Map(), auto: [] } : null) };
 }
 

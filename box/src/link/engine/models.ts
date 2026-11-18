@@ -31,7 +31,8 @@ export const MODELS_DUE_FILE = path.join(RUN, "models-due.json");
 
 /** The providers whose models opencode (2.2.6) reads from your account, and again only as said
  * above: those a refresh brings new models to. (The rest come from models.dev's catalog, which the
- * engine reads again by itself every few minutes.) */
+ * pinned engine checks every five minutes. Its models.dev plugin reloads the active catalog
+ * when the response changes. Usage pricing checks a separate snapshot hourly.) */
 export const REFRESHABLE = ["digitalocean", "github-copilot", "gitlab", "modal", "opencode"];
 
 /** Of those, the ones whose list is the whole engine's, with how long it takes at most to read

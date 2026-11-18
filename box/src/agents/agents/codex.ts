@@ -3,7 +3,7 @@
 // serves every Codex session, each one of its threads; while the box's sandbox is on, each session
 // has one of its own, run whole in it.
 
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync } from "node:fs"
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, unlinkSync } from "node:fs"
 import { homedir } from "node:os"
 import { basename, join } from "node:path"
 import { providerID, type AgentAccount } from "../accounts"
@@ -144,7 +144,7 @@ export class CodexAgent implements Agent {
   /** One-off answers under way (`generate`), by their thread: what each is told. */
   private oneOffs = new Map<string, { rpc: RPC; notify: (method: string, params: any) => void; fail: (error: Error) => void }>()
   private logins = new Map<string, (status: OAuthStatus) => void>()
-  private modelList?: { at: number; models: Model[] }
+  private modelList?: { models: Model[] }
   /**
    * Each session's folder of Settings › Skills' skills. Codex takes extra skills for its whole
    * app-server, not a thread, so it has all of them (they differ only by a project's own).
@@ -465,7 +465,7 @@ export class CodexAgent implements Agent {
     const fence = key === SHARED ? undefined : this.fenced(directory, key === ACCOUNT ? undefined : key, seatBot(thread?.session))
     if (key !== SHARED && !fence) throw new Error("Codex runs in the sandbox here, and it isn't ready: restart Kuvo Code.")
     const args = ["app-server", ...noComputerUse.flatMap((plugin) => ["-c", `plugins.${plugin}.enabled=false`])]
-    const env = { ...(this.instance.home ? { CODEX_HOME: this.instance.home } : {}), ...(thread ? { OPENCODE_SESSION_ID: thread.session.id } : {}), ...fence?.env }
+    const env = { CODEX_INTERNAL_ORIGINATOR_OVERRIDE: process.env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE ?? "kuvo-code", ...(this.instance.home ? { CODEX_HOME: this.instance.home } : {}), ...(thread ? { OPENCODE_SESSION_ID: thread.session.id } : {}), ...fence?.env }
     const argv = fence ? [fence.command, ...args] : [executable, ...args]
     const cwd = fence ? directory : this.context.temporary
     // Under a holder on a box, so a bridge that crashes doesn't take its turns with it (hold/adopt.ts):
@@ -833,18 +833,16 @@ export class CodexAgent implements Agent {
   }
 
   private catalogGeneration = 0
-  private nextDiskRefresh = 0
-  private refreshDisk = false
 
-  async models(options: { hidden?: boolean } = {}): Promise<Model[]> {
+  async models(options: { hidden?: boolean; refresh?: boolean } = {}): Promise<Model[]> {
     // (Those Codex hides from its picker it still runs: listed only when asked for.)
     const shown = (models: Model[]) => (options.hidden ? models : models.filter((each) => !each.hidden))
-    if (this.modelList && Date.now() - this.modelList.at < 5 * 60_000) return shown(this.modelList.models)
+    if (this.modelList && !options.refresh) return shown(this.modelList.models)
     try {
-      return shown(await this.listModels())
+      return shown(await this.listModels(options.refresh === true))
     } catch (error) {
       // Codex couldn't list them just now (busy, or starting): the ones it listed last.
-      if (this.modelList) return shown(this.modelList.models)
+      if (this.modelList && !options.refresh) return shown(this.modelList.models)
       throw error
     }
   }
@@ -855,18 +853,19 @@ export class CodexAgent implements Agent {
     return this.modelList?.models.some((model) => model.hidden) === true
   }
 
-  private async listModels(): Promise<Model[]> {
+  private async listModels(refresh: boolean): Promise<Model[]> {
     const generation = this.catalogGeneration
-    const cache = join(this.home, "models_cache.json")
-    const now = Date.now()
-    if (this.refreshDisk || now >= this.nextDiskRefresh) {
-      this.nextDiskRefresh = now + 60_000
-      try {
-        if (this.refreshDisk || now - statSync(cache).mtimeMs >= 5 * 60_000) rmSync(cache, { force: true })
-        this.refreshDisk = false
-      } catch {}
-    }
     const rpc = await this.rpc()
+    if (refresh) {
+      // model/list uses OnlineIfUncached. Remove only Codex's cache directory entry, after
+      // initialization and before its first page. Codex owns discovery, auth and pagination.
+      // unlink does not follow a symlink or remove a directory.
+      try {
+        unlinkSync(join(this.home, "models_cache.json"))
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+      }
+    }
     const models: Model[] = []
     let cursor: string | undefined
     let order = 1000
@@ -888,13 +887,12 @@ export class CodexAgent implements Agent {
       cursor = page?.nextCursor ?? undefined
     } while (cursor)
     // Not kept from the old Codex's app-server: asked again of the new one.
-    if (generation === this.catalogGeneration && rpc !== this.slots.get(SHARED)?.outdated && rpc !== this.slots.get(ACCOUNT)?.outdated) this.modelList = { at: Date.now(), models }
+    if (generation === this.catalogGeneration && rpc !== this.slots.get(SHARED)?.outdated && rpc !== this.slots.get(ACCOUNT)?.outdated) this.modelList = { models }
     return models
   }
 
   forgetModels() {
     this.catalogGeneration++
-    this.refreshDisk = true
     this.modelList = undefined
   }
 

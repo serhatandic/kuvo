@@ -97,3 +97,36 @@ test("signing in again drops rings and ignores a read started under the old sign
   await Promise.all([old, next])
   expect(limits.list()[0]?.windows[0]?.used).toBe(0.02)
 })
+
+test("the hourly check and each picker opening fetch the provider catalog", async () => {
+  let time = 10_000_000
+  let provider = "one"
+  let cached = ""
+  let fetches = 0
+  const agent = {
+    id: "codex",
+    providerID: "codex-cli@release-test",
+    account: async () => ({ installed: true, signedIn: true }),
+    models: async ({ refresh }: { refresh: boolean }) => {
+      if (refresh) {
+        cached = provider
+        fetches++
+      }
+      return [{ id: cached }] as Model[]
+    },
+  } as unknown as Agent
+  const accounts = new AccountRefresh(undefined, () => time)
+  const releases = async () => (await accounts.models(agent)).map(model => model.id)
+  await accounts.round([agent])
+  expect(await releases()).toEqual(["one"])
+  provider = "two"
+  time += 59 * 60_000
+  await accounts.round([agent])
+  expect(await releases()).toEqual(["one"])
+  time += 60_000
+  await accounts.round([agent])
+  expect(await releases()).toEqual(["two"])
+  provider = "three"
+  expect((await accounts.models(agent, false, true))[0]?.id).toBe("three")
+  expect(fetches).toBe(3)
+})

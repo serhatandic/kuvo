@@ -7,11 +7,13 @@ import { signIns } from "./sign-ins"
 import type { Model } from "./wire"
 
 const MODEL_INTERVAL = 5 * 60_000
+export const PROVIDER_CATALOG_INTERVAL = 60 * 60_000
 
 interface Snapshot {
   account?: Account
   identity?: string
   models?: { at: number; value: Model[] }
+  lastProviderCheck?: number
   listing?: Promise<Model[]>
   reading?: Promise<Account>
   rereading?: Promise<Account>
@@ -20,6 +22,7 @@ interface Snapshot {
 export class AccountRefresh {
   private snapshots = new WeakMap<Agent, Snapshot>()
   private nextRound = 0
+  private nextOpen = 0
 
   constructor(private readonly limits?: Pick<Limits, "invalidate" | "readAgain">, private readonly now = Date.now) {}
 
@@ -84,25 +87,31 @@ export class AccountRefresh {
     else emit("model.updated", { accountRefresh: true })
   }
 
-  async models(agent: Agent, hidden = false): Promise<Model[]> {
+  async models(agent: Agent, hidden = false, refresh = false): Promise<Model[]> {
     const snapshot = this.snapshot(agent)
     const account = await this.read(agent)
     if (!account.signedIn) return []
-    if (this.snapshot(agent) !== snapshot) return this.models(agent, hidden)
-    const value = await this.catalog(agent, snapshot)
-    if (this.snapshot(agent) !== snapshot) return this.models(agent, hidden)
+    if (this.snapshot(agent) !== snapshot) return this.models(agent, hidden, refresh)
+    const value = await this.catalog(agent, snapshot, refresh ? "picker" : undefined)
+    if (this.snapshot(agent) !== snapshot) return this.models(agent, hidden, refresh)
     return hidden ? value : value.filter(model => !model.hidden)
   }
 
-  private catalog(agent: Agent, snapshot: Snapshot): Promise<Model[]> {
+  private catalog(agent: Agent, snapshot: Snapshot, trigger?: "app" | "picker"): Promise<Model[]> {
+    if (snapshot.listing) return snapshot.listing
     const cached = snapshot.models
-    if (cached && this.now() - cached.at < MODEL_INTERVAL) return Promise.resolve(cached.value)
-    const loading = snapshot.listing ??= agent.models({ hidden: true }).then(value => {
+    const now = this.now()
+    const since = now - (snapshot.lastProviderCheck ?? -Infinity)
+    const refresh = trigger === "picker" || since >= (trigger === "app" && agent.id === "codex" ? MODEL_INTERVAL : PROVIDER_CATALOG_INTERVAL)
+    if (!refresh && cached && now - cached.at < MODEL_INTERVAL) return Promise.resolve(cached.value)
+    if (refresh) snapshot.lastProviderCheck = now
+    const loading = snapshot.listing = agent.models({ hidden: true, refresh }).then(value => {
       if (snapshot.listing !== loading || this.snapshot(agent) !== snapshot) return value
       snapshot.models = { at: this.now(), value }
       if (JSON.stringify(cached?.value) !== JSON.stringify(value)) emit("model.updated", { accountRefresh: true })
       return value
     }).catch(error => {
+      if (refresh) snapshot.lastProviderCheck = this.now() - PROVIDER_CATALOG_INTERVAL + MODEL_INTERVAL
       if (cached) {
         if (snapshot.listing === loading) snapshot.models = { ...cached, at: this.now() }
         return cached.value
@@ -112,17 +121,30 @@ export class AccountRefresh {
     return loading
   }
 
-  catalogChanged(agents: Agent[]) {
-    for (const agent of agents) this.snapshot(agent).models = undefined
+  catalogChanged(agents: Agent[], programUpdated?: string) {
+    for (const agent of agents) {
+      const snapshot = this.snapshot(agent)
+      if (programUpdated === agent.id) {
+        this.snapshots.set(agent, { account: snapshot.account, identity: snapshot.identity, models: snapshot.models })
+        void this.models(agent).catch(() => {})
+      } else {
+        snapshot.models = undefined
+      }
+    }
   }
 
-  async round(agents: Agent[]): Promise<void> {
+  async round(agents: Agent[], opened = false): Promise<void> {
     const now = this.now()
-    if (now < this.nextRound) return
-    this.nextRound = now + 30_000
+    if (opened) {
+      if (now < this.nextOpen) return
+      this.nextOpen = now + 30_000
+    } else {
+      if (now < this.nextRound) return
+      this.nextRound = now + 30_000
+    }
     await Promise.allSettled(agents.map(async agent => {
       const account = await this.read(agent, true)
-      if (account.signedIn && !account.unchecked) await this.catalog(agent, this.snapshot(agent))
+      if (account.signedIn && !account.unchecked) await this.catalog(agent, this.snapshot(agent), opened ? "app" : undefined)
     }))
   }
 }

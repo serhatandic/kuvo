@@ -2364,6 +2364,9 @@ start on a model by the same rule.
   offered though Accounts shows no sign-in, as they run. Without one, a provider whose plan goes
   through a coding agent (OpenAI, xAI) still needs its key ("A session's model").
 
+A picker can show its last list immediately and ask again with `refresh=1`. This rereads the
+engine’s current catalog and asks the coding agents to refresh their own lists.
+
 ### Work
 
 A bot runs sessions as you would (bridge 0.9.106): it starts them in your projects on the model,

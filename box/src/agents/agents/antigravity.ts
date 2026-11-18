@@ -555,41 +555,9 @@ export class AntigravityAgent implements Agent {
     const flow = async () => {
       await this.ensureInstalled()
       if (cancelled) return
-      const launch = this.launch()
-      // It starts in an empty folder in its own temporary one (not where it unpacks itself), one of
-      // its own places in the sandbox: it reads the folder it starts in, and the bridge's temporary
-      // folder may be inside one the sandbox hides (on a Mac, the app's own temporary folder).
-      const cwd = join(launch.temporary, "work")
-      let whole: ReturnType<typeof fenceAgent>
-      try {
-        mkdirSync(cwd)
-        // In the box's sandbox while it's on, as its sessions run: what it reads as it starts
-        // (settings, skills, servers) runs there too, never outside.
-        whole = fenceRules() ? fenceAgent(launch.argv[0], cwd, { ...this.places(launch.env), read: this.reads(launch.env) }) : undefined
-        if (fenceRules() && !whole) throw new Error("Antigravity runs in the sandbox here, and it isn't ready: restart Kuvo Code.")
-      } catch (error) {
-        launch.onExit()
-        throw error
-      }
-      rpc = new RPC(whole ? [whole.command, ...launch.argv.slice(1)] : launch.argv, {
-        cwd,
-        env: { ...launch.env, ...whole?.env },
-        cleanEnv: true,
-        jsonrpc: true,
-        firstID: 2 ** 30,
-        filter: (line) => {
-          const at = line.indexOf(signInLine)
-          if (at >= 0) {
-            found(line.slice(at + signInLine.length).trim())
-            return false
-          }
-          return true
-        },
-      })
-      rpc.onExit = () => {
-        whole?.ended()
-        launch.onExit()
-      }
+      const connection = this.modelConnection(found)
+      rpc = connection.rpc
+      const { cwd, launch, initialize } = connection
       // It hands the page to its "browser", which writes it down (or says it on a line of its own).
       const watch = setInterval(() => {
         try {
@@ -597,7 +565,7 @@ export class AntigravityAgent implements Agent {
         } catch {}
       }, 300)
       try {
-        await rpc.request("initialize", { protocolVersion: 1, clientCapabilities: { fs: { readTextFile: !whole, writeTextFile: !whole }, terminal: false }, clientInfo: { name: "kuvo-code", version: "1" } }, 120_000)
+        await initialize(120_000)
         await rpc.request("authenticate", { methodId: "oauth-personal" }, 600_000)
         // Signed in: a session to check it works, and to learn your models; then it goes.
         const setup: any = await rpc.request("session/new", { cwd, mcpServers: [] }, 120_000)
@@ -694,7 +662,69 @@ export class AntigravityAgent implements Agent {
     rmSync(join(folder, "brain", sessionID), { recursive: true, force: true })
   }
 
-  async models(): Promise<Model[]> {
+  private modelConnection(found: (url: string) => void) {
+    const launch = this.launch()
+    // It starts in an empty folder in its own temporary one (not where it unpacks itself), one of
+    // its own places in the sandbox: it reads the folder it starts in, and the bridge's temporary
+    // folder may be inside one the sandbox hides (on a Mac, the app's own temporary folder).
+    const cwd = join(launch.temporary, "work")
+    let whole: ReturnType<typeof fenceAgent>
+    try {
+      mkdirSync(cwd)
+      // In the box's sandbox while it's on, as its sessions run: what it reads as it starts
+      // (settings, skills, servers) runs there too, never outside.
+      whole = fenceRules() ? fenceAgent(launch.argv[0], cwd, { ...this.places(launch.env), read: this.reads(launch.env) }) : undefined
+      if (fenceRules() && !whole) throw new Error("Antigravity runs in the sandbox here, and it isn't ready: restart Kuvo Code.")
+    } catch (error) {
+      launch.onExit()
+      throw error
+    }
+    const rpc = new RPC(whole ? [whole.command, ...launch.argv.slice(1)] : launch.argv, {
+      cwd,
+      env: { ...launch.env, ...whole?.env },
+      cleanEnv: true,
+      jsonrpc: true,
+      firstID: 2 ** 30,
+      filter: (line) => {
+        const at = line.indexOf(signInLine)
+        if (at >= 0) {
+          found(line.slice(at + signInLine.length).trim())
+          return false
+        }
+        return true
+      },
+    })
+    rpc.onExit = () => {
+      whole?.ended()
+      launch.onExit()
+    }
+    const initialize = (timeout: number) => rpc.request("initialize", {
+      protocolVersion: 1, clientCapabilities: { fs: { readTextFile: !whole, writeTextFile: !whole }, terminal: false },
+      clientInfo: { name: "kuvo-code", version: "1" },
+    }, timeout)
+    return { rpc, cwd, launch, initialize }
+  }
+
+  private async discoverModels() {
+    const { rpc, cwd, launch, initialize } = this.modelConnection(() => rpc.kill())
+    // This check only uses the existing sign-in. A browser request ends the probe.
+    const watch = setInterval(() => {
+      if (existsSync(launch.signInFile)) rpc.kill()
+    }, 300)
+    try {
+      await initialize(20_000)
+      await rpc.request("authenticate", { methodId: "oauth-personal" }, 20_000)
+      const setup: any = await rpc.request("session/new", { cwd, mcpServers: [] }, 20_000)
+      if (setup?.sessionId) this.removeSessionFiles(setup.sessionId)
+      this.saveModels(setup)
+    } finally {
+      clearInterval(watch)
+      rpc.kill()
+    }
+  }
+
+  async models(options: { refresh?: boolean } = {}): Promise<Model[]> {
+    if (options.refresh && this.isInstalled) await this.discoverModels()
     try {
       const saved = JSON.parse(readFileSync(this.modelsFile, "utf8")) as { current?: string; models: { value: string; name: string }[] }
       return saved.models.map((info, index) => model(this.providerID, info.value, info.name, { images: true, released: info.value === saved.current ? 2000 : 1000 - index, context: this.windows.get(info.value) ?? 1_000_000 }))

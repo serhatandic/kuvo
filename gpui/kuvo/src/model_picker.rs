@@ -23,7 +23,7 @@ use gpui::{
 };
 use kuvo_box::{
     client::BoxClient,
-    models::{Offered, OfferedModel, Starred},
+    models::{Offered, OfferedModel, Side, Starred},
     typed::ModelRef,
 };
 use kuvo_ui::{
@@ -386,6 +386,38 @@ impl ModelPicker {
         picker
     }
 
+    /// Keep the last catalog visible while the host reads it again.
+    pub fn refresh_when_opened(self, before: Option<Offered>, folder: Option<String>, session: Option<String>, side: Option<Side>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let Some(client) = self.client.clone() else { return self };
+        let wanted = self.current.clone();
+        let read = cx.background_executor().spawn(async move {
+            client.refresh_offered_models(wanted.as_ref(), folder.as_deref(), session.as_deref())
+                .map(|offered| offered.keeping(before.as_ref()))
+                .ok()
+                .filter(|offered| Some(offered) != before.as_ref())
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let Some(offered) = read.await else { return };
+            this.update_in(cx, |this, window, cx| {
+                let rail = match this.shown {
+                    Shown::Rail(at) => this.catalog.rails.get(at).map(|entry| entry.id.clone()),
+                    Shown::Starred => None,
+                };
+                let mut catalog = Catalog::new(&offered, |model| offered.scoped || side.is_none_or(|side| model.side == side));
+                catalog.unset = this.catalog.unset.clone();
+                if let Some(rail) = rail {
+                    this.shown = Shown::Rail(catalog.rails.iter().position(|entry| entry.id == rail).unwrap_or(0));
+                }
+                let rows = (catalog.entries.len() + usize::from(catalog.unset.is_some())).clamp(3, MOST_ROWS);
+                this.height = rows as f32 * ROW + 8.;
+                this.catalog = Arc::new(catalog);
+                this.rows.clear();
+                this.run_search(this.query.clone(), window, cx);
+            }).ok();
+        }).detach();
+        self
+    }
+
     /// Told each time a star changes, with your starred models as they are now.
     pub fn on_starred(mut self, on_starred: OnStarred) -> Self {
         self.on_starred = Some(on_starred);
@@ -464,6 +496,10 @@ impl ModelPicker {
         if query == self.query {
             return;
         }
+        self.run_search(query, window, cx);
+    }
+
+    fn run_search(&mut self, query: String, window: &mut Window, cx: &mut Context<Self>) {
         self.query = query.clone();
         self.cancel.store(true, Ordering::Relaxed);
         self.searching = None;

@@ -193,3 +193,35 @@ test("bridge bots offer provider models too; engine bots explain choosing a codi
     expect(ordinary.note).toContain("This conversation uses provider models")
   } finally { engine.stop(true); agents.stop(true); forgetModelLists() }
 })
+
+test("opening the picker bypasses the list cache and asks the bridge to refresh upstream", async () => {
+  let upstream = "old"
+  let cached = upstream
+  const bridge = Bun.serve({ port: 0, fetch(request) {
+    const url = new URL(request.url)
+    if (url.searchParams.get("refresh") === "1") cached = upstream
+    const data = url.pathname === "/api/model" ? [listed("codex-cli", cached, cached, [])]
+      : url.pathname === "/api/integration" ? [{ id: "codex-cli", name: "Codex", connections: [{}] }]
+      : { lists: [] }
+    return Response.json({ data })
+  } })
+  const ask = async (refresh = false) => {
+    let answer: any
+    const context = {
+      request: { method: "GET", path: `kuvo/models/offered${refresh ? "?refresh=1" : ""}`, headers: {} },
+      readEngine: () => { throw new Error("No engine") },
+      bridge: () => ({ port: bridge.port!, password: "test", pid: process.pid }),
+      json: (status: number, value: unknown) => { expect(status).toBe(200); answer = value; return [] },
+    } as unknown as RouteContext
+    for await (const _ of modelsOfferedRoute(context)) {}
+    return answer.models.map((model: any) => model.id)
+  }
+  try {
+    expect(await ask()).toEqual(["old"])
+    upstream = "released"
+    expect(await ask(true)).toEqual(["released"])
+  } finally {
+    bridge.stop(true)
+    forgetModelLists()
+  }
+})

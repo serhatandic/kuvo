@@ -276,6 +276,7 @@ impl BotsView {
                                 window,
                                 cx,
                             )
+                            .refresh_when_opened(Some(offered), None, None, None, window, cx)
                             .on_starred(Rc::new(move |starred, cx| {
                                 kept.update(cx, |this, _| this.keep_starred(starred)).ok();
                             }))

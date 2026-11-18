@@ -117,7 +117,7 @@ function codexServer() {
   return server
 }
 
-function codex(server: { request: (method: string) => Promise<unknown> } | Error) {
+function codex(server: { request: (method: string) => Promise<unknown> } | Error, ownHome?: string) {
   class TestCodex extends CodexAgent {
     override executable() {
       return "/usr/bin/true"
@@ -127,7 +127,7 @@ function codex(server: { request: (method: string) => Promise<unknown> } | Error
       return server
     }
   }
-  return new TestCodex(context())
+  return new TestCodex(context(), ownHome ? { id: "default", home: ownHome } : undefined)
 }
 
 describe("an agent's sign-in that can't be checked just now", () => {
@@ -886,30 +886,39 @@ test("an account says whether its list is every model it runs: not while its age
   expect((await metadata(of())).modelsComplete).toBe(true)
 })
 
-test("Codex remote sign-in uses ChatGPT device authorization and updates without signing out", async () => {
+test("Codex Sign In Again refreshes the provider catalog even when the account stays the same", async () => {
+  let released = "gpt-old"
   const calls: [string, unknown][] = []
   const agent = codex({
     async request(method: string, params?: unknown) {
       calls.push([method, params])
       if (method === "account/login/start") return { loginId: "device-login", verificationUrl: "https://auth.openai.com/codex/device", userCode: "ABCD-1234" }
       if (method === "account/read") return { account: { type: "chatgpt", email: "new@example.com", planType: "pro" } }
-      if (method === "model/list") return { data: [] }
+      if (method === "model/list") {
+        if (!existsSync(cache)) writeFileSync(cache, released)
+        return { data: [{ id: readFileSync(cache, "utf8") }] }
+      }
       throw new Error(method)
     },
-  })
+  }, mkdtempSync(join(root, "codex-login-")))
+  const cache = join(agent.home, "models_cache.json")
   const answer = handler({ roster: { all: () => [agent], find: () => agent }, password: "pw" } as any)
   const ask = (path: string, method = "GET", body?: unknown) => answer(new Request(`http://box/api/integration/codex-cli${path}`, {
     method, headers: { authorization: "Basic " + Buffer.from("opencode:pw").toString("base64"), "content-type": "application/json" },
     body: body ? JSON.stringify(body) : undefined,
   })).then(response => response.json()) as Promise<any>
+  const models = () => answer(new Request("http://box/api/model", { headers: { authorization: "Basic " + Buffer.from("opencode:pw").toString("base64") } })).then(response => response.json()) as Promise<any>
+  expect((await models()).data.map((model: any) => model.id)).toEqual(["gpt-old"])
+  released = "gpt-new"
   const started = (await ask("/connect/oauth", "POST", { methodID: "chatgpt", remote: true })).data
   expect(started).toMatchObject({ url: "https://auth.openai.com/codex/device", userCode: "ABCD-1234" })
-  expect(calls[0]).toEqual(["account/login/start", { type: "chatgptDeviceCode" }])
+  expect(calls).toContainEqual(["account/login/start", { type: "chatgptDeviceCode" }])
   const status = () => ask(`/connect/oauth/${started.attemptID}`).then(answer => answer.data.status)
   expect(await status()).toBe("pending")
   ;(agent as any).notification("account/login/completed", { loginId: "device-login", success: true })
   expect(await status()).toBe("complete")
   expect((await ask("")).data.connections[0].label).toBe("new@example.com · ChatGPT Pro")
+  expect((await models()).data.map((model: any) => model.id)).toEqual(["gpt-new"])
   expect(calls.map(([method]) => method)).not.toContain("account/logout")
 })
 

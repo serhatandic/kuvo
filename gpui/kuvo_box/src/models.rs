@@ -311,7 +311,19 @@ impl BoxClient {
 
     /// The box decides which models this conversation can use.
     pub fn offered_models_for_session(&self, wanted: Option<&ModelRef>, folder: Option<&str>, session: Option<&str>) -> Result<Offered> {
+        self.read_offered_models(wanted, folder, session, false)
+    }
+
+    /// Reads the catalog again when a picker opens.
+    pub fn refresh_offered_models(&self, wanted: Option<&ModelRef>, folder: Option<&str>, session: Option<&str>) -> Result<Offered> {
+        self.read_offered_models(wanted, folder, session, true)
+    }
+
+    fn read_offered_models(&self, wanted: Option<&ModelRef>, folder: Option<&str>, session: Option<&str>, refresh: bool) -> Result<Offered> {
         let mut query = Vec::new();
+        if refresh {
+            query.push("refresh=1".to_owned());
+        }
         if let Some(session) = session {
             query.push(format!("session={}", paths::query_value(session)));
         }

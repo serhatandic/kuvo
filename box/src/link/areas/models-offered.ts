@@ -57,7 +57,8 @@ export async function* modelsOfferedRoute(context: RouteContext): AsyncGenerator
   let engine: Target | null = null;
   try { engine = readEngine(); } catch {}
   const agents = bridge();
-  const session = new URLSearchParams(request.path.split("?")[1] ?? "").get("session")?.trim();
+  const query = new URLSearchParams(request.path.split("?")[1] ?? "");
+  const session = query.get("session")?.trim();
   let place: Awaited<ReturnType<typeof sessionHere>> = null;
   if (session) {
     try {
@@ -68,7 +69,7 @@ export async function* modelsOfferedRoute(context: RouteContext): AsyncGenerator
     }
     if (!place) return yield* json(404, { message: "This conversation is no longer available." });
   }
-  const lists = await listsHere(engine, agents, place?.data.location?.directory ?? place?.data.directory ?? folder);
+  const lists = await listsHere(engine, agents, place?.data.location?.directory ?? place?.data.directory ?? folder, false, query.get("refresh") === "1");
   const answer = offeredAnswer(lists, wantedIn(request.path), starredModels());
   if (!place) return yield* json(200, answer);
   const bot = typeof place.data.metadata?.kuvo?.bot === "string";

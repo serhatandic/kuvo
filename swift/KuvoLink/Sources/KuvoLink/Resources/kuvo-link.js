@@ -28124,7 +28124,7 @@ function signInNeed(providerID, methods) {
     ...connects ? { connects: true } : {}
   };
 }
-var asked4 = (target, route, folder) => call(target, "GET", route, undefined, AbortSignal.timeout(ASK_WAIT), folder).catch(() => {
+var asked4 = (target, route, folder, timeout = ASK_WAIT) => call(target, "GET", route, undefined, AbortSignal.timeout(timeout), folder).catch(() => {
   return;
 });
 var KEPT_FOR4 = 1e4;
@@ -28307,8 +28307,8 @@ async function engineLists(engine, folder) {
   const given = fallback === undefined ? undefined : isObject(fallback) && typeof fallback.providerID === "string" && typeof fallback.id === "string" ? { providerID: fallback.providerID, id: fallback.id } : null;
   return { ready, models, accounts, fallback: given };
 }
-async function bridgeLists(bridge) {
-  const listed = await asked4(bridge, "/api/model?hidden=1");
+async function bridgeLists(bridge, refresh = false) {
+  const listed = await asked4(bridge, refresh ? "/api/model?hidden=1&refresh=1" : "/api/model?hidden=1", undefined, refresh ? 65000 : ASK_WAIT);
   const [integrations, auto] = await Promise.all(["/api/integration", "/api/kuvo/auto"].map((route) => asked4(bridge, route)));
   const models = modelsIn(listed), accounts = accountsIn(integrations);
   if (!models || !accounts)
@@ -28324,8 +28324,11 @@ function engineListsIn(engine, folder) {
 function bridgeListsOf(bridge) {
   return bridge ? keptOr(`bridge:${bridge.port}`, () => bridgeLists(bridge), (lists) => lists.auto !== null) : Promise.resolve(null);
 }
-async function listsHere(engine, bridge, folder, noBridgeIsNone = false) {
-  const [fromEngine, fromBridge] = await Promise.all([engineListsIn(engine, folder), bridgeListsOf(bridge)]);
+async function listsHere(engine, bridge, folder, noBridgeIsNone = false, refresh = false) {
+  const [fromEngine, fromBridge] = await Promise.all([
+    refresh && engine ? engineLists(engine, folder) : engineListsIn(engine, folder),
+    refresh && bridge ? bridgeLists(bridge, true) : bridgeListsOf(bridge)
+  ]);
   return { engine: fromEngine, bridge: fromBridge ?? (!bridge && noBridgeIsNone ? { models: [], accounts: new Map, auto: [] } : null) };
 }
 var accountOf = (account) => ({ id: account.id, name: account.name, ...account.label ? { label: account.label } : {} });
@@ -45450,7 +45453,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "abb472a272ec";
+var BRIDGE_VERSION = "7a11a2559c2c";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -65407,7 +65410,8 @@ async function* modelsOfferedRoute(context) {
     engine = readEngine();
   } catch {}
   const agents = bridge();
-  const session = new URLSearchParams(request.path.split("?")[1] ?? "").get("session")?.trim();
+  const query = new URLSearchParams(request.path.split("?")[1] ?? "");
+  const session = query.get("session")?.trim();
   let place = null;
   if (session) {
     try {
@@ -65420,7 +65424,7 @@ async function* modelsOfferedRoute(context) {
     if (!place)
       return yield* json(404, { message: "This conversation is no longer available." });
   }
-  const lists = await listsHere(engine, agents, place?.data.location?.directory ?? place?.data.directory ?? folder);
+  const lists = await listsHere(engine, agents, place?.data.location?.directory ?? place?.data.directory ?? folder, false, query.get("refresh") === "1");
   const answer = offeredAnswer(lists, wantedIn(request.path), starredModels());
   if (!place)
     return yield* json(200, answer);

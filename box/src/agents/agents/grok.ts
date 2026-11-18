@@ -276,10 +276,13 @@ export class GrokAgent implements Agent {
     })
   }
 
-  async models(): Promise<Model[]> {
-    const listed = await this.read(false).then(
+  async models(options: { refresh?: boolean } = {}): Promise<Model[]> {
+    const listed = await this.read(options.refresh === true).then(
       (status) => status.models,
-      () => this.status?.models ?? [],
+      error => {
+        if (options.refresh) throw error
+        return this.status?.models ?? []
+      },
     )
     const efforts = this.efforts()
     // (Before a session has said, the efforts every Grok model has.)
