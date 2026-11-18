@@ -67,7 +67,7 @@ export const KEY = /^[A-Za-z0-9_-]{43}$/;
 
 export const ADDRESS = /^[A-Za-z0-9_-]{22}$/;
 
-// The Macs that set this machine up (`setup`), whose documents and mail it takes.
+// Direct SSH enrollers whose documents and mail this machine trusts (legacy mac/macs fields).
 export const macsOf = (link: LinkState | null | undefined): string[] => [...new Set([...(Array.isArray(link?.macs) ? link.macs : []), ...(typeof link?.mac === "string" ? [link.mac] : [])])];
 
 // Only time this machine's box ran counts toward a Mac's 30 days: while it was off, no Mac could
@@ -226,7 +226,7 @@ export function macDocs(link: LinkState | null | undefined): { mac: string; doc:
 /** The boxes you removed, so they're no peers of this one (`left`: this Mac's own record, or what
  * its Macs' peers documents say), not those just missing from a list for now. */
 export function removedBoxes(link: LinkState | null | undefined): Set<string> {
-  const left = IS_MAC ? (Array.isArray(link?.left) ? link.left : []) : macDocs(link).map(each => each.doc).flatMap(doc => {
+  const left = writesOwnPeers(link) ? (Array.isArray(link?.left) ? link.left : []) : macDocs(link).map(each => each.doc).flatMap(doc => {
     const named = doc?.body.left;
     return Array.isArray(named) ? named.filter((key): key is string => typeof key === "string") : [];
   });
@@ -245,11 +245,15 @@ export function ownListed(): { session: string; name: string | null }[] {
   }
 }
 
-// This box's peers now: every box its Macs name, itself left out.
+/** The legacy Mac writes its list even when set aside. A machine writes one as primary. */
+export const writesOwnPeers = (link: LinkState | null | undefined): boolean =>
+  IS_MAC || followedSetup(link)?.role === "primary";
+
+// This box's peers now: the ones it enrolled, or those its enrolling computers name.
 export function peersOf(link: LinkState | null | undefined): Peer[] {
   if (!link) return [];
   // This Mac's box: its machines, as its app set them up (`kuvo/link/peers`), by the names you gave them.
-  if (IS_MAC) return (Array.isArray(link.macPeers) ? link.macPeers : []).filter(fitsPeer).slice(0, MOST_PEERS).map(cleanPeer).map(peer => renamed(link, peer));
+  if (writesOwnPeers(link)) return (Array.isArray(link.macPeers) ? link.macPeers : []).filter(fitsPeer).slice(0, MOST_PEERS).map(cleanPeer).map(peer => renamed(link, peer));
   const own = ownKey(link);
   const byKey = new Map<string, Peer>();
   for (const word of macWords(link)) {

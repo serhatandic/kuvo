@@ -44,14 +44,14 @@ export function setupOf(body: unknown): SetupWord | null {
 }
 
 /** The setup a peers document names, when its signer is that setup's main computer (the box it
- * names as `primary`, a Mac, signs with the key it was signed with): the only setup a document makes
+ * names as `primary` signs with the key it was signed with): the only setup a document makes
  * a box take. Null for one that names none, or another's. */
 export function ledSetup(doc: Doc | null | undefined): SetupWord | null {
   if (doc?.kind !== "peers") return null;
   const setup = setupOf(doc.body);
   if (!setup) return null;
   const boxes = Array.isArray(doc.body.boxes) ? doc.body.boxes : [];
-  return boxes.some(box => isObject(box) && box.key === setup.primary && box.sign === doc.origin && box.kind === "mac") ? setup : null;
+  return boxes.some(box => isObject(box) && box.key === setup.primary && box.sign === doc.origin && (box.kind === "mac" || box.kind === "machine")) ? setup : null;
 }
 
 /** The setup this box follows now: its record, unless it's set aside, or it says this box leads it

@@ -36,7 +36,7 @@ export async function* computersAddRoute(context: RouteContext, match: RegExpMat
   }
   if (key) {
     if (method !== "POST") return yield* json(405, { message: "Only POST." });
-    if (request.fromMac) return yield* json(409, { message: ONCE });
+    if (request.fromMac && !request.served) return yield* json(409, { message: ONCE });
     const can = canAdd();
     if (!can.can) return yield* json(can.status, { message: can.message, ...(can.primary ? { primary: can.primary } : {}) });
     if (!sshAddressOf(key)) return yield* json(404, { message: "That isn’t a computer this one set up over SSH." });
@@ -61,7 +61,7 @@ export async function* computersAddRoute(context: RouteContext, match: RegExpMat
   }
   if (method === "GET") return yield* json(200, adding());
   if (method !== "POST") return yield* json(405, { message: "GET, or POST {destination}." });
-  if (request.fromMac) return yield* json(409, { message: ONCE });
+  if (request.fromMac && !request.served) return yield* json(409, { message: ONCE });
   const can = canAdd();
   if (!can.can) return yield* json(can.status, { message: can.message, ...(can.primary ? { primary: can.primary } : {}) });
   const destination = cleanAddress((parsed(request.body) as Body<"destination">)?.destination);

@@ -153,7 +153,7 @@ export async function* ownMachinesRoute(context: RouteContext): AsyncGenerator<A
   }
   if (method === "POST" && action === "uninstall" && parts.length === 4) {
     // (As `kuvo/computers/<key>/uninstall`: never for `box route`, a single request anything here could run.)
-    if (request.fromMac) return yield* json(409, { message: ONCE });
+    if (request.fromMac && !request.served) return yield* json(409, { message: ONCE });
     if (!peer) return yield* json(409, { message: `${here} never finished setting ${name} up, so there’s nothing of its own to uninstall there. Remove it instead.` });
     const can = canAdd();
     if (!can.can) return yield* json(can.status, { message: can.message });
@@ -187,7 +187,7 @@ async function* add(context: RouteContext, here: string): AsyncGenerator<AnswerP
   const problem = addressProblem(destination);
   if (problem) return yield* json(400, { message: problem });
   // (As `kuvo/computers/add`: never for `box route`, a single request anything here could run.)
-  if (request.fromMac) return yield* json(409, { message: ONCE });
+  if (request.fromMac && !request.served) return yield* json(409, { message: ONCE });
   const can = canAdd();
   if (!can.can) return yield* json(can.status, { message: can.message, ...(can.primary ? { primary: can.primary } : {}) });
   const before = underWay(destination);

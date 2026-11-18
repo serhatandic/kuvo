@@ -15,6 +15,8 @@ import { followed } from "../follow";
 import { writeCard } from "../setup/card";
 import { appsOf, ATTACHED_FILE, foundOf, judgeComputer, oursNow } from "../setup/judge";
 import { addElsewhere, mainElsewhere, memberHosts } from "../setup/main-only";
+import { ownMachinesRoute } from "../mac/own-machines";
+import { followedSetup } from "../setup/record";
 import { setupView } from "../setup/view";
 import { engineRoute } from "../server/forward";
 import { onLinkWritten, readLink } from "../state";
@@ -106,7 +108,10 @@ export async function* memberComputersRoute(context: RouteContext): AsyncGenerat
   const method = request.method.toUpperCase();
   const link = readLink();
   const main = mainElsewhere(link);
-  if (!main) return yield* engineRoute(context);
+  if (!main) {
+    if (followedSetup(link)?.role === "primary") return yield* ownMachinesRoute(context);
+    return yield* engineRoute(context);
+  }
   if (ADDS_OR_REMOVES(method, route)) return yield* json(409, addElsewhere(main));
   if (method !== "GET" || route !== "kuvo/hosts") return yield* engineRoute(context);
   const hosts = memberHosts(link);

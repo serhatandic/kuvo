@@ -1,13 +1,14 @@
 // Documents, between this box and the others
 // What other boxes send taken, and what changed here sent, as documents/work says.
 
+import { noteDocsChanged } from "./changed";
 import { IS_MAC } from "../home";
 import { forgetMacsAgents, writeAgents } from "../peers/agents";
 import { mailFor } from "../peers/known";
 import { readPersonalities } from "../personalities/library";
 import { takePersonalities } from "../personalities/take";
 import { writeCard } from "../setup/card";
-import { macLink, updateLink } from "../state";
+import { liveLink, updateLink } from "../state";
 import { confirmPhoneMembership } from "./phone-sync";
 import { changedWork, docMails, docsWork, greetWork } from "./work";
 import type { PersonalityLibrary } from "../personalities/library";
@@ -85,9 +86,10 @@ export function docsChanged(host: LinkHost | null | undefined, { greet = false, 
 // Something of this Mac's documents changed (a phone, a personality, your machines): what changed
 // goes to your machines now, if it's on the relay; they get it as they meet otherwise.
 export function macDocsChanged({ closeRemoved }: { closeRemoved?: LinkState | null } = {}): void {
-  const host = macLink.host;
+  const host = liveLink();
   // Computer removals close their devices' sessions here as well as on the boxes receiving the
   // phones document. Direct phone removal sends its answer before closing the session.
   if (closeRemoved) host?.keepOnly?.(new Set((closeRemoved.phones ?? []).map(phone => phone.key)));
   if (host?.welcomed) try { docsChanged(host); } catch {}
+  else if (!IS_MAC) noteDocsChanged();
 }

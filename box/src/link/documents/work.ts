@@ -1,5 +1,5 @@
 // Documents (PROTOCOL.md, "Documents")
-// What boxes copy between them: who a Mac's boxes are (its peers document), the phones each box
+// What boxes copy between them: the primary's membership (its peers document), the phones each box
 // pairs and removes (its phones document), and your personalities (each box's view of the
 // library). Each origin signs its own with a key of its own (Ed25519: `sign` in link.json, made
 // with this box's other keys; a Mac's comes in setup, over SSH), and numbers each version; any box
@@ -13,7 +13,7 @@ import { type Doc, DOC_KINDS, type DocKind, type SignedDoc } from "../../shared/
 import { isObject } from "../../shared/json";
 import { addressOf } from "../crypto/keys";
 import { IS_MAC } from "../home";
-import { cleanMoved, leaveMac, macDoc, macDocs, macsOf, ownKey, peersOf } from "../peers/known";
+import { cleanMoved, leaveMac, macDoc, macDocs, macsOf, ownKey, peersOf, writesOwnPeers } from "../peers/known";
 import { mergePersonalities, MOST_COUNT, readPersonalities } from "../personalities/library";
 import { foldPhones, ownPhones } from "../phones";
 import { followedSetup, lowerEpoch, setupDoc, type SetupWord } from "../setup/record";
@@ -71,12 +71,12 @@ export interface DocsState {
   theirs?: Map<string, { n: number; h: string }>;
 }
 
-/** A box as a Mac's peers document names it: this Mac itself, or one of its machines. */
-export type PeersBox = { key: string | null; sign: string | null; address: string | null; name: string; kind: "mac" } | (Peer & { kind: "machine" });
+/** A box as a primary's peers document names it. */
+export type PeersBox = { key: string | null; sign: string | null; address: string | null; name: string; kind: "mac" | "machine" } | (Peer & { kind: "machine" });
 
 /** A Mac's peers document: its boxes, the conversations being moved, the machines it removed, and
  * the setup it leads (PROTOCOL.md, "Your setup"). */
-export interface MacPeersBody {
+export interface PrimaryPeersBody {
   boxes: PeersBox[];
   moved: MovedSession[];
   left: string[];
@@ -98,7 +98,7 @@ function takesFrom(link: LinkState, origin: string, kind: DocKind): boolean {
   const macs = macsOf(link).map(mac => macSign(link, mac)).filter(Boolean);
   const setup = followedSetup(link);
   // (This Mac takes a copy of its own, one it lost count of.)
-  if (kind === "peers") return macs.includes(origin) || (setup?.role === "member" && origin === setup.sign) || (IS_MAC && origin === ownSign(link));
+  if (kind === "peers") return macs.includes(origin) || (setup?.role === "member" && origin === setup.sign) || (writesOwnPeers(link) && origin === ownSign(link));
   return macs.includes(origin) || origin === ownSign(link) || peersOf(link).some(peer => peer.sign === origin);
 }
 
@@ -108,7 +108,7 @@ function takesFrom(link: LinkState, origin: string, kind: DocKind): boolean {
 function takenBy(link: LinkState, to: string, origin: string | null, kind: DocKind): boolean {
   // This Mac's: each of its machines takes all of this Mac's, and the phones and personalities of
   // the others it names (who its boxes are, only from this Mac).
-  if (IS_MAC) {
+  if (writesOwnPeers(link)) {
     const peers = peersOf(link);
     return peers.some(peer => peer.key === to) && (origin === ownSign(link) || (kind !== "peers" && peers.some(peer => peer.sign === origin)));
   }
@@ -141,7 +141,7 @@ export function takeDoc(link: LinkState, envelope: unknown): TakenDoc | null {
   if (lowerEpoch(link, doc)) return null;
   if (doc.kind === "peers") noteConflict(link, doc);
   if (doc.origin === ownSign(link)) {
-    if ((doc.kind === "peers" && !IS_MAC) || doc.n > MOST_COUNT) return null;
+    if ((doc.kind === "peers" && !writesOwnPeers(link)) || doc.n > MOST_COUNT) return null;
     const had = link.own?.[doc.kind];
     if (had && (doc.n < had.n || (doc.n === had.n && doc.h === had.h))) return null;
     link.own = { ...(link.own ?? {}), [doc.kind]: { n: Math.max(doc.n, had?.n ?? 0), h: doc.h, b: bodyHash(doc.body) } };
@@ -191,8 +191,8 @@ export function ownDoc(link: LinkState, kind: DocKind, body: object): OwnDoc | n
 export function ownDocs(state: Pick<DocsState, "link" | "library">): Partial<Record<DocKind, OwnDoc>> {
   const docs: Partial<Record<DocKind, OwnDoc>> = {};
   // The inbound phone switch is local. Peers still need the signed list and its removals.
-  if (IS_MAC) {
-    const peers = ownDoc(state.link, "peers", macPeersBody(state.link));
+  if (writesOwnPeers(state.link)) {
+    const peers = ownDoc(state.link, "peers", primaryPeersBody(state.link));
     if (peers) docs.peers = peers;
   }
   const phones = ownDoc(state.link, "phones", ownPhones(state.link));
@@ -205,20 +205,20 @@ export function ownDocs(state: Pick<DocsState, "link" | "library">): Partial<Rec
   return docs;
 }
 
-// The kinds a box signs itself: who its boxes are, only a Mac.
-const ownKinds = (): readonly DocKind[] => (IS_MAC ? DOC_KINDS : ["phones", "personalities"]);
+// Only the membership writer signs the peers document.
+const ownKinds = (link: LinkState): readonly DocKind[] => (writesOwnPeers(link) ? DOC_KINDS : ["phones", "personalities"]);
 
-// Who this Mac's computers are, as its peers document says: itself and its machines, each with
+// The primary's peers document: itself and its members, each with
 // the key it signs with; the conversations being moved; and the machines it removed, so they let
 // it go (never one that's still one of its machines).
-export function macPeersBody(link: LinkState): MacPeersBody {
+export function primaryPeersBody(link: LinkState): PrimaryPeersBody {
   const peers = peersOf(link).filter(peer => typeof peer.sign === "string");
   let address: string | null = null;
   // (Without a secret, this throws: no address.)
   try { address = addressOf(Buffer.from(link.secret!, "base64url")).toString("base64url"); } catch {}
-  const me: PeersBox = { key: ownKey(link), sign: ownSign(link), address, name: String(link.name ?? "Mac").slice(0, 100), kind: "mac" };
+  const me: PeersBox = { key: ownKey(link), sign: ownSign(link), address, name: String(link.name ?? (IS_MAC ? "Mac" : "")).slice(0, 100), kind: IS_MAC ? "mac" : "machine" };
   const current = new Set(peers.map(peer => peer.key));
-  // The setup this Mac leads, while it leads it (`setup/lead.ts`).
+  // Include the setup while this box leads it (`setup/lead.ts`).
   const setup = followedSetup(link);
   const leads = setup?.role === "primary" && setup.primary === me.key && setup.sign === me.sign;
   return { boxes: [me, ...peers.map((peer): PeersBox => ({ ...peer, kind: "machine" }))], moved: cleanMoved(link.macMoved), left: (Array.isArray(link.left) ? link.left : []).filter(key => !current.has(key)),
@@ -234,7 +234,7 @@ export function digestOf(link: LinkState): DigestEntry[] {
   }
   for (const [origin, seen] of Object.entries(link?.views ?? {})) have.push([origin, "personalities", seen.n, seen.h]);
   const own = ownSign(link);
-  if (own) for (const kind of ownKinds()) if (link.own?.[kind]) have.push([own, kind, link.own[kind].n, link.own[kind].h]);
+  if (own) for (const kind of ownKinds(link)) if (link.own?.[kind]) have.push([own, kind, link.own[kind].n, link.own[kind].h]);
   return have;
 }
 
@@ -321,7 +321,7 @@ export function docsWork(state: DocsState, sender: DocSender, docs: DocsMail, { 
     }
     const self = ownSign(link);
     // One of this box's own further on than it knew (it lost count): its next one goes past it.
-    for (const kind of ownKinds()) {
+    for (const kind of ownKinds(link)) {
       const there = self && theirs.get(docKey(self, kind));
       if (there && there.n <= MOST_COUNT && there.n > (link.own?.[kind]?.n ?? 0)) link.own = { ...(link.own ?? {}), [kind]: { n: there.n, h: there.h, b: "" } };
     }

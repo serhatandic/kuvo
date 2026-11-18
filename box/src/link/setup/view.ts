@@ -2,8 +2,7 @@
 // the same on every box of one setup, from the document its main computer signs.
 
 import { isObject } from "../../shared/json";
-import { macPeersBody } from "../documents/work";
-import { IS_MAC } from "../home";
+import { primaryPeersBody } from "../documents/work";
 import { ownKey } from "../peers/known";
 import { isWelcomed } from "./welcomed";
 import { followedSetup, setupDoc, startsFromOthers } from "./record";
@@ -27,7 +26,7 @@ export function setupView(link: LinkState | null | undefined): SetupView {
   const welcomed = isWelcomed();
   if (!setup || !own) return { setup: null, epoch: null, primary: null, you: { key: own, role: null }, computers: [], startsFromOthers: switched, heldBy: [], welcomed };
   const boxes: unknown[] = setup.role === "member" ? (Array.isArray(setupDoc(link)?.body.boxes) ? setupDoc(link)!.body.boxes as unknown[] : [])
-    : IS_MAC ? macPeersBody(link!).boxes : [{ key: own, name: String(link!.name ?? ""), kind: "machine" }];
+    : primaryPeersBody(link!).boxes;
   const computers: Computer[] = [];
   for (const box of boxes.slice(0, 64)) {
     if (!isObject(box) || typeof box.key !== "string" || (box.kind !== "mac" && box.kind !== "machine") || computers.some(each => each.key === box.key)) continue;

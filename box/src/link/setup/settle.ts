@@ -1,9 +1,6 @@
-// What a box takes of your setup (PROTOCOL.md, "Your setup"): a machine follows the setup its Mac
-// leads, as its peers document names it; it never goes back to a lower epoch of it, and at the same
-// epoch keeps the main computer it has (noting the other). A machine more than one Mac set up is
-// yours all the same (only you set your computers up: no one else's Mac shares one), and follows
-// one setup: the one it has, or, where more than one of its Macs leads one, the one led by the Mac
-// it numbers from. This Mac's box leads its own (`lead.ts`), and takes none.
+// A member follows the signed setup of a computer that enrolled it over SSH. The
+// legacy mac/macs fields also cover this trust when the enroller is a Linux box.
+// A member keeps its current primary and epoch rules when it has several legacy enrollers.
 
 import type { Doc } from "../../shared/documents";
 import { IS_MAC } from "../home";

@@ -8,7 +8,7 @@
 // (Try Again) is offered only where a computer can't take an update by itself: it failed twice, or
 // couldn't be reached for days. Every word a client shows is here, one line each; what went wrong
 // in detail goes to this box's log.
-// Platform: the same on macOS and Linux, though only a Mac's box sets machines up for now (`canAdd`).
+// The primary can bring its members up to date over SSH on either platform.
 
 import fs from "node:fs";
 import path from "node:path";

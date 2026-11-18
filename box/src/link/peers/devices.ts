@@ -16,7 +16,6 @@ import { plainName } from "../../shared/text";
 import { noteDocsChanged } from "../documents/changed";
 import { macDocsChanged } from "../documents/exchange";
 import { phoneTrustWait } from "../documents/phone-sync";
-import { macPeersBody } from "../documents/work";
 import { IS_MAC } from "../home";
 import { ownName } from "../letters/start";
 import { fits, pairDevice, revokeVoucher, vouchBlockOf } from "../phones";
@@ -86,6 +85,11 @@ export function pairHere(device: AskingDevice, by?: string): Acted {
   let refusal: Acted | undefined;
   let computer: string | undefined;
   updateLink(link => {
+    const main = mainElsewhere(link);
+    if (main && !by) {
+      refusal = answer(409, { message: `Pair new devices from ${main.name || "your main computer"}.`, primary: main.key });
+      return null;
+    }
     if (by) {
       if (!link || followedSetup(link)?.role !== "primary") {
         refusal = answer(409, { message: `${ownName()} isn't your setup's main computer, so it adds no devices for your other computers.` });
@@ -121,9 +125,9 @@ export function pairHere(device: AskingDevice, by?: string): Acted {
   return answer(200, { paired: true, pairing: paired.pairing });
 }
 
-/** The boxes this box's own peers document names as its machines (the members of the setup it
- * leads), by key: only a Mac's box signs one. */
-const ownMachines = (link: LinkState): Set<string> => new Set(IS_MAC ? macPeersBody(link).boxes.filter(box => box.kind === "machine").map(box => box.key as string) : []);
+/** The members the primary enrolled. Only signed peers may vouch. */
+const ownMachines = (link: LinkState): Set<string> =>
+  new Set(peersOf(link).filter(peer => peer.kind === "machine" && peer.sign).map(peer => peer.key));
 
 /** A member's box vouching for the app on its computer (`area: "devices"`, by mail): paired here
  * only on the setup's main computer, for a box its own peers document names. */
@@ -171,7 +175,7 @@ export async function pairDeviceFromHere(given: unknown, signal?: AbortSignal | 
   // (Not heard from yet, so what it takes isn't known: asked again once it is.)
   if (!readPeerAgents()[main.key]?.features) return answer(503, waiting);
   if (!takesForwarded(main.key, DEVICES_FEATURE)) return answer(409, { message: `${named} needs a newer Kuvo Code to add this app to your devices. Update it, then try again.` });
-  const there = await forwardAct({ key: main.key, name: named, kind: "mac" }, device.name, { area: "devices", method: "POST", item: device.key, body: { name: device.name, kind: device.kind } }, signal, link);
+  const there = await forwardAct(peer, device.name, { area: "devices", method: "POST", item: device.key, body: { name: device.name, kind: device.kind } }, signal, link);
   if ("refused" in there) return answer(503, waiting);
   const said = isObject(there.value) ? there.value : {};
   if (there.status === 200 && said.paired === true && typeof said.pairing === "string") return answer(200, { paired: true, pairing: said.pairing });

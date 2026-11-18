@@ -18,6 +18,7 @@ import { movedFromOldApp } from "../rehome/moved";
 import { tellGone } from "../mac/link";
 import { LIST_FILE, savedMachines } from "../mac/machines";
 import { setMacPeers } from "../mac/routes";
+import { followedSetup } from "../setup/record";
 import { macName, mainElsewhere } from "../setup/main-only";
 import { takeOffVouched, vouchedWords } from "../phones";
 import { macLink, readLink, updateLink } from "../state";
@@ -46,7 +47,7 @@ export function writerOf(link: LinkState | null | undefined): Writer {
   const named = (key: string, name: string, or: string) => name || peersOf(link).find(peer => peer.key === key)?.name || or;
   const main = mainElsewhere(link);
   if (main) return { here: false, key: main.key, name: named(main.key, main.name, "your main computer") };
-  if (IS_MAC) return { here: true };
+  if (IS_MAC || followedSetup(link)?.role === "primary") return { here: true };
   const macs = macsOf(link);
   return macs.length === 1 ? { here: false, key: macs[0]!, name: named(macs[0]!, macName(link, macs[0]!), "the Mac that set it up") } : null;
 }

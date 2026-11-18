@@ -78,7 +78,7 @@ import { SENDING } from "./letters/letter";
 import { watchFolders } from "./follow";
 import { pushRows } from "./work/elsewhere";
 import { pushNumbers } from "./work-queue/numbers";
-import { noteSetupNow } from "./setup/lead";
+import { initializeMachineSetup, noteSetupNow, settleOwnSetup } from "./setup/lead";
 import { macName, mainElsewhere, pairElsewhere } from "./setup/main-only";
 import { writeCard } from "./setup/card";
 import { hereNow } from "./setup/judge";
@@ -88,7 +88,7 @@ import { reachAgainSoon, sendReachAgain } from "./peers/reach-again";
 import { heldSoon, sendHeld } from "./bots/held";
 import { handUpkeepSoon } from "./work-queue/hand";
 import { clearStaging } from "./work-queue/ops";
-import { macLinkCheck } from "./mac/link";
+import { macLinkCheck, tellUntold } from "./mac/link";
 import { macNoticeHold, macTell } from "./mac/notices";
 import { runMacPeers } from "./mac/peers";
 import { runMacLink } from "./mac/relay";
@@ -101,7 +101,7 @@ import { HELD_FILE, NoticeHold } from "./notices/hold";
 import { keepTold, markTeller, watchSentByAgents } from "./notices/told";
 import { sendToPhones } from "./notices/push";
 import { announce, forgetMacsAgents, refreshOwn } from "./peers/agents";
-import { forgetOldMacs, KEY, leaveMac, macsOf, noteOnline, peersOf, takeLegacyPeers } from "./peers/known";
+import { forgetOldMacs, KEY, leaveMac, macsOf, noteOnline, ownKey, peersOf, takeLegacyPeers } from "./peers/known";
 import { peerMail, receiveMail } from "./peers/mail";
 import { tellSeatPeers, watchSeats, whereChanged } from "./peers/seats";
 import { changePersonalities, mergePersonalities, readPersonalities } from "./personalities/library";
@@ -111,7 +111,7 @@ import { connectOnce, nextTry } from "./relay/connection";
 import { LinkHost } from "./relay/host";
 import { engineHandler } from "./server/router";
 import { serveBox } from "./server/serve";
-import { macLink, macSign, onLinkWritten, readLink, updateLink } from "./state";
+import { liveLink, machineLink, macLink, macSign, onLinkWritten, readLink, updateLink } from "./state";
 import { keepKeyFiles } from "./keys";
 import { keepAwakeWhileWorking } from "./work/awake";
 import { readServeRecord, runningServe, SERVE_FILE, SERVE_NEEDED, writeServeRecord } from "./serve-kept";
@@ -224,7 +224,7 @@ export { noteDocsChanged } from "./documents/changed";
 export { authorizePhone, confirmPhone, foldPhones, newPairing, ownPhones, pairDevice, pairPhone, removeAsMac, removePhones } from "./phones";
 export { deviceAct, givenDevice, pairDeviceFromHere, pairHere } from "./peers/devices";
 export { noLongerNeeded } from "./keeper";
-export { changedWork, digestOf, docMails, docsWork, greetWork, macPeersBody, ownDoc, takeDoc } from "./documents/work";
+export { changedWork, digestOf, docMails, docsWork, greetWork, primaryPeersBody, primaryPeersBody as macPeersBody, ownDoc, takeDoc } from "./documents/work";
 export { leadsNow, noteSetupNow, settleOwnSetup } from "./setup/lead";
 export { settleSetup } from "./setup/settle";
 export { followedSetup, newSetupID, startsFromOthers } from "./setup/record";
@@ -298,7 +298,7 @@ onDocsChanged(macDocsChanged);
 
 // Your time zone changed here (a pick, a peer's, an older Mac's kit): your other computers hear at once.
 zoneFollowers.add(() => {
-  const host = IS_MAC ? macLink.host : liveHost;
+  const host = liveLink();
   if (host?.welcomed) announce(host, readEngineFile).catch(() => {});
 });
 
@@ -307,7 +307,7 @@ onLinkWritten(link => {
   // settings go between the boxes of one setup).
   if (whereChanged(link)) {
     tellSeatPeers(link, true).catch(() => {});
-    const host = IS_MAC ? macLink.host : liveHost;
+    const host = liveLink();
     if (host?.welcomed) announce(host, readEngineFile, link).catch(() => {});
   }
   if (IS_MAC) {
@@ -324,14 +324,11 @@ onLinkWritten(link => {
   }
   // Devices no longer let in (removed on another computer, as its phones document says) lose what
   // they have open, a moment after, as on a Mac.
-  if (liveHost) setTimeout(() => liveHost?.keepOnly(new Set((readLink()?.phones ?? []).map(phone => phone.key))), 200).unref?.();
+  if (machineLink.host) setTimeout(() => machineLink.host?.keepOnly(new Set((readLink()?.phones ?? []).map(phone => phone.key))), 200).unref?.();
   // For the box's keeper, which keeps this bridge running while it's needed.
   if (needed(link)) fs.writeFileSync(NEEDED_FILE, "", { mode: 0o600 });
   else fs.rmSync(NEEDED_FILE, { force: true });
 });
-
-/** This machine's relay connection now, for what's told at once (`whereChanged`). */
-let liveHost: LinkHost | null = null;
 
 // ---- The commands ----
 
@@ -340,7 +337,7 @@ let liveHost: LinkHost | null = null;
 function machineWelcomed(host: LinkHost): void {
   try { refreshPhoneTrust(host); } catch {}
   announce(host, readEngineFile, undefined, undefined, true).catch(() => {});
-  try { docsChanged(host, { greet: true }); } catch {}
+  try { docsChanged(host, { greet: true }); tellUntold(); } catch {}
 }
 
 /** This box's engine while it runs, for what's put right in a conversation open there. */
@@ -384,6 +381,7 @@ async function run(): Promise<void> {
   updateLink(link => {
     if (!link) return null;
     link.sign ??= newSigningSeed();
+    settleOwnSetup(link);
     foldPhones(link);
     return link;
   });
@@ -484,7 +482,8 @@ async function run(): Promise<void> {
   // well is its judge's to say (updates/health.ts).
   followOver(() => current);
   clearIncoming();
-  setInterval(() => { try { followPeers(); } catch {} }, 60_000).unref?.();
+  setInterval(() => { try { followPeers(); tellUntold(); } catch {} }, 60_000).unref?.();
+  keepMachinesUp();
   // A newer signed release held here (Kuvo Code here handed it over, or it was fetched): your other
   // computers hear at once, not at the next minute's round, and take it in parallel with this one.
   watchHeld(() => {
@@ -558,7 +557,7 @@ async function run(): Promise<void> {
     reachNow();
     if (current) try { refreshPhoneTrust(current); } catch {}
     if (current?.welcomed && docsNoted()) {
-      try { docsChanged(current, { tell: true }); } catch {}
+      try { docsChanged(current, { tell: true }); tellUntold(); } catch {}
       // (A device removed by another process, Kuvo Code beside this box: what it has open ends now.)
       try { current.keepOnly(new Set((readLink()?.phones ?? []).map(phone => phone.key))); } catch {}
     }
@@ -600,7 +599,7 @@ async function run(): Promise<void> {
       send: () => {},
     });
     current = host;
-    liveHost = host;
+    machineLink.host = host;
     const started = Date.now();
     const welcomed = await connectOnce(link!.relay!, Buffer.from(link!.secret!, "base64url"), host, machineWelcomed);
     const next = nextTry(attempt, welcomed, Date.now() - started);
@@ -789,6 +788,7 @@ async function keptServe(): Promise<void> {
     return;
   }
   fs.mkdirSync(RUN, { recursive: true, mode: 0o700 });
+  initializeMachineSetup();
   const password = crypto.randomBytes(24).toString("hex");
   const server = serveBox(password, engineHandler(readEngineFile, { name: os.hostname() }, readBridgeFile));
   await new Promise<void>((resolve, reject) => {
@@ -844,6 +844,7 @@ async function serve(): Promise<void> {
   clearNotesLocks();
   // This Mac's settings with what its engine starts with, before a client reads them.
   if (IS_MAC) addMacDefaults();
+  else initializeMachineSetup();
   // And as its catalogs have them now, before it says where it is: this Mac's engine starts only after
   // that. (Any key to take away comes after, below: its app may not answer yet, and an engine
   // running takes settings as they change.)
@@ -1017,7 +1018,11 @@ async function setup(): Promise<void> {
       alreadySetUp = true;
       return null;
     }
-    if (mac && current && macsOf(current).length && !macsOf(current).some(key => key === mac || replaced.includes(key))) {
+    // Recheck ownership under the same lock used to enroll a peer. A primary that gained
+    // members after the SSH probe cannot be enrolled into a different setup.
+    if (mac && current && (ownKey(current) === mac
+      || (current.setup?.role === "primary" && peersOf(current).length > 0)
+      || (macsOf(current).length > 0 && !macsOf(current).some(key => key === mac || replaced.includes(key))))) {
       alreadySetUp = true;
       return null;
     }
@@ -1136,23 +1141,27 @@ export function leave(mac: unknown): boolean {
 
 function pair(relay: string | undefined): void {
   // Only your setup's main computer pairs phones: a member names it, and pairs none (exit 3).
-  const main = mainElsewhere(readLink());
-  if (main) {
-    console.error(pairElsewhere(main).message);
-    // (Until a takeover can be made: a main computer that's gone for good is let go here, as
-    // removing this computer from it would. What that costs is said with it.)
-    const name = main.name || "it";
-    console.error(`If ${name} is gone for good, \`kuvo-link.js leave ${main.key}\` takes this computer out of its setup: your other computers, and phones paired with ${name}, no longer reach it here. Then it pairs phones itself, or names another main computer.`);
-    process.exit(3);
-  }
+  let main: ReturnType<typeof mainElsewhere> = null;
   const link = updateLink(current => {
+    main = mainElsewhere(current);
+    if (main) return null;
     const next = current ?? { secret: crypto.randomBytes(32).toString("base64url"), key: newKey().toString("base64url"), name: os.hostname(), phones: [] };
     next.sign ??= newSigningSeed();
     if (relay) next.relay = relay;
     if (!next.relay) return null;
+    if (!IS_MAC) settleOwnSetup(next);
     next.pairing = newPairingToken();
     return next;
   });
+  const primary = main as ReturnType<typeof mainElsewhere>;
+  if (primary) {
+    console.error(pairElsewhere(primary).message);
+    // (Until a takeover can be made: a main computer that's gone for good is let go here, as
+    // removing this computer from it would. What that costs is said with it.)
+    const name = primary.name || "it";
+    console.error(`If ${name} is gone for good, \`kuvo-link.js leave ${primary.key}\` takes this computer out of its setup: your other computers, and phones paired with ${name}, no longer reach it here. Then it pairs phones itself, or names another main computer.`);
+    process.exit(3);
+  }
   if (!link) {
     console.error("Give the relay's address: kuvo-link.js pair wss://…");
     process.exit(1);
@@ -1182,6 +1191,7 @@ if (main) {
   const [mode, argument] = process.argv.slice(2);
   if (mode === "run") await run();
   else if (mode === "setup") await setup();
+  else if (mode === "setup-local") initializeMachineSetup();
   else if (mode === "pair") pair(argument);
   else if (mode === "box") await box(argument);
   else if (mode === "serve") await serve();

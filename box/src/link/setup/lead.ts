@@ -1,32 +1,37 @@
-// When a box leads a setup of its own (PROTOCOL.md, "Your setup"): this Mac's box, once it numbers
-// on its own, or a box no Mac set up (one you paired a phone with on Linux, for example).
-// It's made once, at epoch 1, with this box as the main computer, and named
-// in this Mac's peers document, which its machines take. Looked at once a minute, and as the box
-// starts; with what follows it on this box: its card (`card.ts`) and its peers told.
+// Setup leadership (PROTOCOL.md, "Your setup"). The first independent box creates epoch 1
+// and signs its membership. Existing Mac-led setups still follow their legacy numbering rule.
 
+import crypto from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
+import { newKey } from "../crypto/keys";
 import { noteDocsChanged } from "../documents/changed";
-import { ownSign } from "../documents/format";
-import { IS_MAC } from "../home";
+import { newSigningSeed, ownSign } from "../documents/format";
+import { IS_MAC, K, REAL_BOX } from "../home";
+import { computerName, DEFAULT_RELAY } from "../mac/link";
+import { ADD_RESERVATION } from "../marks";
 import { macsOf, ownKey } from "../peers/known";
-import { updateLink } from "../state";
+import { readLink, updateLink } from "../state";
 import { rankedPrimary } from "../work-queue/numbers";
 import { writeCard } from "./card";
 import { followedSetup, newSetupID } from "./record";
 import { settleSetup } from "./settle";
 import type { LinkState } from "../state";
 
-/** Whether this box leads: it numbers on its own, and is a Mac or has no Mac that set it up. */
+/** Keep an independent primary's role after it adds members. Legacy Mac numbering still applies. */
 export function leadsNow(link: LinkState, now = Date.now()): boolean {
   // (A machine its Mac let go waits for that Mac as numbering always has, days, before it numbers
   // on its own: never at once.)
-  if (!IS_MAC) return !macsOf(link).length && "self" in rankedPrimary(link, undefined, now);
+  if (!IS_MAC) {
+    if (macsOf(link).length || link.setup?.role === "member") return false;
+    if (followedSetup(link)?.role === "primary") return true;
+  }
   return "self" in rankedPrimary(link, undefined, now);
 }
 
-/** This Mac's static key noted (in place, under link.json's lock): one made anew since the last is
- * kept among the keys before, for its machines to let the old one go as it sets them up again. */
+/** Keep a primary's previous static keys for SSH re-enrollment after a key rotation. */
 export function noteKeyNow(link: LinkState): void {
-  const own = IS_MAC ? ownKey(link) : null;
+  const own = IS_MAC || !macsOf(link).length ? ownKey(link) : null;
   if (!own) return;
   if (link.keyNow && link.keyNow !== own) link.keysBefore = [...(link.keysBefore ?? []).filter(key => key !== own && key !== link.keyNow), link.keyNow].slice(-8);
   link.keyNow = own;
@@ -52,6 +57,37 @@ export function settleOwnSetup(link: LinkState, now = Date.now()): void {
   }
   if (leads) delete link.setup.aside;
   else link.setup.aside = true;
+}
+
+/** Initialize an independent machine before any client needs to pair or add a member.
+ * An account reserved by SSH setup gets its identity and trust from that setup command. */
+export function initializeMachineSetup(): void {
+  if (IS_MAC) return;
+  const kept = readLink();
+  if (kept && (macsOf(kept).length || (kept.relay && followedSetup(kept)))) return;
+  const changed = updateLink(current => {
+    if (current && macsOf(current).length) return null;
+    try {
+      fs.lstatSync(path.join(path.dirname(K), ADD_RESERVATION));
+      return null;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    const link = current ?? { phones: [] };
+    link.key ??= newKey().toString("base64url");
+    link.secret ??= crypto.randomBytes(32).toString("base64url");
+    link.sign ??= newSigningSeed();
+    link.name ??= computerName();
+    const relay = REAL_BOX ? DEFAULT_RELAY : process.env.KUVO_TEST_RELAY;
+    if (!link.relay && relay) {
+      try {
+        if (["ws:", "wss:"].includes(new URL(relay).protocol)) link.relay = relay.replace(/\/$/, "");
+      } catch {}
+    }
+    settleOwnSetup(link);
+    return link;
+  });
+  if (changed) writeCard();
 }
 
 let lookedAt = 0;

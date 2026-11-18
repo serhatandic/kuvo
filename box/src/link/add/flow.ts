@@ -3,9 +3,7 @@
 // host's key looked at, what's on the computer judged, this box's own files and engine put there,
 // its box started to keep itself, and the computer signed into your setup, as a Mac's app did all
 // of it before (#636). Each step is told as it goes (`tries.ts`); every word a client shows is here.
-// Platform: runs on macOS and Linux alike. Which box may add (`canAdd`) is decided in one place: a
-// Mac's box that isn't a member of another's setup, since only a Mac's box writes the record of
-// your machines (its peers document, `mac/routes.ts`); a Linux box says so in words.
+// The setup's primary enrolls members and signs the resulting membership list.
 
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -27,7 +25,7 @@ import { machineBoxIn } from "../install/verdict";
 import { oldAppAttached, removeHere } from "../peers/manage";
 import { appsOf, foundOf, judgeComputer, oursNow } from "../setup/judge";
 import { addElsewhere, mainElsewhere } from "../setup/main-only";
-import { macLink, readLink, updateLink } from "../state";
+import { liveLink, macLink, readLink, updateLink } from "../state";
 import type { LinkState } from "../state";
 import type { Asker } from "../server/context";
 import { boxVersion, newerVersion } from "../updates/update";
@@ -38,6 +36,7 @@ import { gatherSeed } from "./seed";
 import { type HostKey, type Ran, type Way, hangUp, lastLine, reachedAs, readHostKey, remote, troubleOf, trustHostKeys, vaultAgent } from "./ssh";
 import { Failed, type Running, Stopped, type Telling, startTry, stopTry, underWay } from "./tries";
 import { noteKeyNow } from "../setup/lead";
+import { followedSetup } from "../setup/record";
 import { SETUP_OCCUPIED } from "../marks";
 
 class AccountOccupied extends Failed {
@@ -59,11 +58,10 @@ export function canAdd(): { can: true } | { can: false; status: 409 | 503; messa
   const link = readLink();
   const main = mainElsewhere(link);
   if (main) return { can: false, status: 409, ...addElsewhere(main) };
-  // BOX-NEEDED (#183): a Linux box writing the record of a setup's computers. Until then only a Mac's does.
-  if (!IS_MAC) return { can: false, status: 409, message: "Add computers from a Mac for now: on Linux, Kuvo Code can’t yet keep the list of your computers." };
+  if (!IS_MAC && followedSetup(link)?.role !== "primary") return { can: false, status: 409, message: "This computer can add members once its setup is ready." };
   const here = ownName();
   if (oldAppAttached()) return { can: false, status: 409, message: `Quit the old Kuvo Code app on ${here} first: it keeps its own list of machines, and would write over this one.` };
-  if (!macLink.config?.relay) return { can: false, status: 503, message: `${here} isn’t linked to your other computers yet, so it can’t add one.` };
+  if (!(IS_MAC ? macLink.config?.relay : link?.relay)) return { can: false, status: 503, message: `${here} isn’t linked to your other computers yet, so it can’t add one.` };
   if (!RELEASE_FILES.every(([name]) => fs.existsSync(`${K}/${name}`))) return { can: false, status: 503, message: `Kuvo Code on ${here} has no files of its own to give another computer yet. Update Kuvo Code here, then try again.` };
   if (!savedMachines()) return { can: false, status: 503, message: `${here}’s list of machines can’t be read right now.` };
   return { can: true };
@@ -400,6 +398,9 @@ const ADD_REVOKED = "The device that started this add is no longer paired. Start
 const removedDuringAdd = (name: string) => new Failed(`${name} was removed from your computers. Add it again to restore access.`);
 
 function checkAdd(link: LinkState | null, grant: AddGrant | undefined, name: string, key?: string): void {
+  const main = mainElsewhere(link);
+  if (main) throw new Failed(addElsewhere(main).message, false);
+  if (!IS_MAC && followedSetup(link)?.role !== "primary") throw new Failed("This computer no longer leads a setup.", false);
   if (!grant) return;
   if (grant.caller && !pairedPhone(link, grant.caller.key, grant.caller.pairing)) throw new Failed(ADD_REVOKED);
   if (key && (grant.revisions[key] ?? 0) !== (link?.removalRevisions?.[key] ?? 0)) throw removedDuringAdd(name);
@@ -469,6 +470,8 @@ async function setUp(tell: Telling, destination: string, name: string, kind: "ad
       tell.skip("files", `It has a newer Kuvo Code (${probe.version}), left as it is`);
       tell.skip("engine", "Its own");
     } else {
+      const helper = probe.kind.system === "darwin" ? machineHelperPack() : null;
+      if (probe.kind.system === "darwin" && !helper) throw new Failed(`Kuvo Code on ${ownName()} has no Kuvo Helper to give ${name}. Update Kuvo Code here, then try again.`);
       tell.step("files");
       const has = await reach.run(scripts.filesCheck(files), { cut: true });
       if (has.status === 0 && has.stdout.trim() === "same") tell.skip("files", "It has them already");
@@ -476,10 +479,8 @@ async function setUp(tell: Telling, destination: string, name: string, kind: "ad
         const placed = await reserved(scripts.filesInstall(files), { input: tarOf(files), sent: tell.sent, most: 900_000 });
         if (placed.status !== 0) throw new Failed(`Kuvo Code’s files couldn’t be put on ${name}. ${lastLine(placed.stderr)}`.trim());
       }
-      if (probe.kind.system === "darwin") {
-        const helper = machineHelperPack();
-        if (!helper) throw new Failed(`Kuvo Code on ${ownName()} has no Kuvo Helper to give ${name}. Update Kuvo Code here, then try again.`);
-        const placed = await reach.run(scripts.helperInstall(helper.sum), { input: helper.bytes, sent: tell.sent, cut: true, most: 120_000 });
+      if (helper) {
+        const placed = await reserved(scripts.helperInstall(helper.sum), { input: helper.bytes, sent: tell.sent, cut: true, most: 120_000 });
         if (placed.status !== 0) throw new Failed(`Kuvo Helper couldn’t be put on ${name}. ${lastLine(placed.stderr)}`.trim());
       }
       if (probe.engine) tell.skip("engine", "It has it already");
@@ -565,8 +566,8 @@ async function setUp(tell: Telling, destination: string, name: string, kind: "ad
 // between them), its own taken back, and its record written here, for your other computers and
 // phones to take from this box.
 async function join(run: Reach["run"], destination: string, name: string, identity: string | null, token: string, expectedKey?: string, grant?: AddGrant): Promise<{ key: string; name: string }> {
-  const relay = macLink.config?.relay;
   const beforeLink = readLink();
+  const relay = IS_MAC ? macLink.config?.relay : beforeLink?.relay;
   const removedWhileAdding = (link: LinkState | null) => expectedKey && link?.removedHere?.includes(expectedKey);
   checkAdd(beforeLink, grant, name, expectedKey);
   if (removedWhileAdding(beforeLink)) throw removedDuringAdd(name);
@@ -604,12 +605,14 @@ async function join(run: Reach["run"], destination: string, name: string, identi
   if (!changed || !peersOf(changed).some(each => each.key === peer.key)) throw new Failed(`${ownName()} couldn’t keep ${name}’s record.`);
   named = peersOf(changed).find(each => each.key === peer.key)?.name ?? name;
   // This box meets its machines on the relay from now on.
-  if (macLink.config) macLink.config = { ...macLink.config, machines: true };
-  macLinkCheck();
-  macLink.wake?.();
+  if (IS_MAC && macLink.config) {
+    macLink.config = { ...macLink.config, machines: true };
+    macLinkCheck();
+    macLink.wake?.();
+  }
   macDocsChanged();
   // What it has of documents (its own, signed with the key it just gave), taken as if by mail.
-  if (Array.isArray(said.docs) && said.docs.length) await receiveDocs(peer, { give: said.docs }, macLink.host).catch(() => {});
+  if (Array.isArray(said.docs) && said.docs.length) await receiveDocs(peer, { give: said.docs }, liveLink()).catch(() => {});
   return { key: peer.key, name: named };
 }
 

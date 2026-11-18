@@ -216,16 +216,17 @@ their agents and letters ("Peers").
 
 ### Documents
 
-What your computers share is three kinds of document: who a Mac's boxes are (`peers`), the phones
+What your computers share is three kinds of document: which computers a primary enrolled (`peers`), the phones
 each box pairs and removes (`phones`), and each box's view of your personalities
 (`personalities`). Each origin signs its own; any box passes a copy on; no clock decides anything.
 
 - **Keys**: each box and Mac has a signing key (Ed25519) beside its static key: a Mac in its
   Keychain (`sign`), a machine in `run/link.json` (`sign`, the 32-byte seed), made with its other
   keys. A document's origin is that key's public half. Trust comes from SSH: setup gives the
-  machine the Mac's (`macSign`) and its answer gives the Mac the machine's (`sign`). A Mac's peers
-  document names each box with both its keys, so boxes learn each other's from a document they
-  already verify. A box made anew (its folder gone) is a new origin; the Mac's next setup names it.
+  member the primary's (`macSign`) and its answer gives the primary the member's (`sign`). The
+  primary's peers document names each box with both its keys, so members learn each other's from a
+  document they already verify. A box made anew (its folder gone) is a new origin. The next SSH setup
+  names it.
 - **Format**: `{"d": <bytes>, "s": <signature>}`, base64url without padding. The bytes are JSON,
   `{"v": 1, "kind", "origin", "n", "body"}`, as the origin wrote them, and the signature is over
   `"kuvo-link doc v1\0"` and the bytes. A box checks the signature before it reads them, and keeps
@@ -241,13 +242,12 @@ each box pairs and removes (`phones`), and each box's view of your personalities
   ("Your setup"); `phones` and
   `personalities` from those Macs, from its peers and from itself. Documents from an origin it no
   longer takes them from go.
-- **`peers`**, one per Mac: `{boxes: [{key, sign, address, name, kind: "mac"|"machine", id?}],
-  moved: [{session, key}], left: [key], setup?: {id, epoch, primary}}`: the Mac itself and each of
-  its machines whose bridge signs, the same document for all of them, and the setup it leads
-  ("Your setup"; older boxes read only `boxes`, `moved` and `left`). A box's peers are every box its Macs' documents name,
-  itself left out ("Peers"). `left` names the machines that Mac removed (never one it still has,
-  under another name): a box that finds itself there and no longer among `boxes` stops counting
-  that Mac, as `leave` does. The Mac mails it to a machine as it removes it, once.
+- **`peers`**, one per primary (and per legacy Mac enroller): `{boxes: [{key, sign, address, name,
+  kind: "mac"|"machine", id?}], moved: [{session, key}], left: [key], setup?: {id, epoch, primary}}`:
+  the primary itself and its signed members, the same document for all of them, and the setup it
+  leads ("Your setup"). Each box leaves itself out when it builds its list of peers. `left` names
+  the computers the primary removed. A box that finds itself there and no longer among `boxes`
+  drops that enroller, as `leave` does. The primary mails the document to the member it removes.
 - **This Mac's box** keeps the Mac's side (bridge 0.9.62): it signs the Mac's documents with the
   Mac's signing key (from the app, in memory only), takes its machines' and passes them on, and
   mails them on its relay connection, as a machine's bridge does; its peers are the machines its
@@ -274,10 +274,9 @@ each box pairs and removes (`phones`), and each box's view of your personalities
   newer. A document it took goes on to its other peers that would take it (not back where it came
   from, nor to its origin); one of its own that changed, to all of them. A box that would take it
   is one its setup's document, or one of its Macs', names (with its origin, for `phones` and
-  `personalities`). Over SSH, setup carries the
-  Mac's documents (`docs`, its own and those it has of its machines) and its answer the machine's.
-  A box doesn't give documents to a Mac that gave it no signing key.
-- **Phone authorization after reconnect**: a member asks its peers for the signing Mac's lists
+  `personalities`). Over SSH, setup carries the primary's documents (`docs`) and its answer carries
+  the member's. A box gives documents to peers whose signing keys it knows.
+- **Phone authorization after reconnect**: a member asks its peers for the primary's signed lists
   with authenticated mail `phoneSync: {id, origin}` (`id` is 16 random bytes, base64url, and
   `origin` is the Mac's signing key). Any peer can send the signed peers and phones documents
   it has, then `phoneSync: {id, list, peers?, ack: true}` with each document identified as `n:h`.
@@ -297,44 +296,36 @@ each box pairs and removes (`phones`), and each box's view of your personalities
 
 ### Your setup
 
-All of your computers that know each other are one **setup**, with one **main computer**: a Mac
-with the app, whose box signs who's in it. Every other computer is a **member**. (Built so far: the
-setup, who's main, what boxes take and number by it, and pairing and adding only from the main
-computer. Changing the main computer and joining two setups come later: #183.)
+Your **setup** has one **main computer** (its primary), whose box signs who's in it. Any supported
+computer can be the primary. Every other computer is a **member**. Changing the main computer and
+joining two setups are separate work.
 
 - **The setup** has an id (`set_` and 16 random bytes, base64url) and an epoch (a whole number, one
   more with each change of main computer, never lower on any box). Its main computer's peers
   document names it: `setup: {id, epoch, primary}`, `primary` the main computer's static key, which
-  the document names among its `boxes` as a Mac signing with the document's key ("Documents").
+  the document names among its `boxes` with the document's signing key ("Documents"). Both
+  `mac` and `machine` can identify the primary's box.
 - **Kept** in `run/link.json` as `setup: {id, epoch, primary, sign, role: "primary"|"member",
   aside?, conflict?}` (`sign`, the main computer's signing key). `aside`: kept only so a lower
   epoch of it is never taken, and followed for nothing else (its main computer stopped naming it).
-- **Who leads one**: a Mac's box, or a box no Mac set up, once it numbers on its own ("Numbers").
-  A box its Mac let go waits for that Mac first, as "Numbers" says. It's made once, at epoch 1, and looked at once a minute and as a machine's word on how it
-  numbers changes: a Mac that stops leading (it numbers through another Mac) sets it aside and its document names it no more; leading again, it names the same
-  one. A Mac whose keys were made anew (its static key, or its signing key alone) makes a new setup:
-  the one it led with its old keys is no longer its own, and its machines take the new one from it.
-  Setting a machine up again, it names its static keys before (`replaces` in `kuvo/link/setup` and
-  setup's input), which the machine lets go as `leave` does, so it's never two Macs to it. (Leading follows its machines' word, as the Work Queue's numbers already do
-  without a setup. Known gap until setups can be joined (#183's phase 7, with which leading holds
-  against a member's word alone): a machine's word, an earlier Mac named, sets the setup aside, so
-  a stolen member key can make a leading Mac step aside. Members still refuse
-  pairing and adding while it's aside ("Only the main computer adds and pairs").)
-- **What a box takes it from**: a machine follows the setup its Mac leads, from that Mac's
-  document: with more than one of its Macs leading one, the one it has, else the one led by the
-  Mac it numbers from ("Numbers": the first you set up); one it has set aside makes way for one
-  another of its Macs leads. Its main computer's signing key (as that Mac's setup over SSH last
-  gave it) is the setup's trust root, and no `peers` is taken at a lower epoch of the setup
-  (whoever signed it). It takes `peers` from each of its Macs too: every Mac that set a computer up
-  over SSH is yours (no one else's Mac sets up your computers, #783), so its peers are the boxes
-  any of its Macs names, its setup's document first. A Mac that names itself the main computer of
-  the same setup at the same epoch is taken for its boxes alone, never as the main computer: the
-  box keeps the one it has and notes `conflict: {primary, epoch}` (gone with that epoch). A machine with no Mac leads its own; set up by a Mac, it
-  gives that up (a setup of no other computer joins its Mac's). A box drops its setup when that Mac
-  stops counting there (it removed the box, or wasn't heard from in 30 days), as it drops that
-  Mac's documents. A box that follows no setup (kept until every box knows setups) takes `peers`
-  from its own Macs, as before. The card (below) is a hint for what looks from outside, never
-  trusted for any of this.
+- **Who leads one**: the first box you set up independently creates its setup at epoch 1. A
+  standalone machine's keeper creates its local identity and setup before there is any device or
+  member to reach. A new member follows the computer that enrolls it over SSH. A machine's primary
+  role holds when it adds members. Legacy Mac leadership still follows "Numbers": a box its Mac
+  let go waits for that Mac, and a Mac numbering through another Mac sets its setup aside until
+  it leads again. A primary whose keys were made anew creates a new setup. On a later SSH setup it
+  supplies its previous static keys (`replaces`) so the member lets those keys go.
+- **What a box takes it from**: a member follows the setup named by the computer that enrolled it
+  over SSH. When older links name several enrollers, the member keeps the setup it follows,
+  or takes the setup it numbers from ("Numbers"). A setup set aside makes way for one another
+  enroller leads. The primary's signing key (received over SSH) is the setup's trust root.
+  The member refuses a lower epoch of the setup it keeps. If another trusted enroller offers
+  the same setup at the same epoch, the member keeps its primary and records
+  `conflict: {primary, epoch}`. An empty standalone machine can give up its one-computer setup
+  when it joins the enroller's setup. A member drops its setup when it drops the enroller
+  (after a removal or the existing 30-day expiry). The SSH and stored fields named `mac`,
+  `macs` and `macSigns` still carry these trust records, including for a Linux enroller.
+  The discovery card is a hint and grants no trust.
 - **Existing links**: boxes keep direct connections established over SSH, including links from
   older releases. Each box follows one setup. Extra computers named in old agents mail, and
   old directory and numbering flags, carry no membership. The SSH setup command refuses an
@@ -393,7 +384,7 @@ computer. Changing the main computer and joining two setups come later: #183.)
     (itself too), each `{kind: "machine", name, address, key, relay, machine, anotherMac: false,
     removed: false}` (`machine`, the id the main computer's app knows it by), by name. Only what
     that document says: a machine it leaves out isn't listed, and `anotherMac` and `removed` are
-    always false. Not the main computer's Mac: a phone pairs with it. Set aside (its main
+    always false. The primary is left out because the device pairs with it. Set aside (its main
     computer leads no setup now), it lists what each of its Macs' own peers documents names, all
     yours. `503 {"message"}` before it holds that document, or while it has no relay.
 
@@ -1808,11 +1799,9 @@ client connected: a client's Computers area and its switcher draw it, and ask no
     otherwise, and by every other box.
   `405` for anything but `GET`.
 - **Managing them** (`computers.manage`, #735), from any box, with no client or Mac's app open. A
-  machine's record (its name, that it's one of your computers) is in the peers document of the Mac
-  that set it up, which your other computers take it from ("Your setup"): so one box writes it, as
-  one numbers the Work Queue. The **writer** is this Mac's box for its own machines (a Mac that isn't
-  a member of another's setup); for every other box, its setup's main computer, or the one Mac
-  that set up a machine in no setup; none on a machine more than one Mac set up outside a setup. A Mac's box reaches only its own machines, never another Mac,
+  machine's record (its name, that it's one of your computers) is in the signed peers document of
+  the computer that set it up ("Your setup"). The primary writes its members' records.
+  Outside a setup, a legacy machine can use the one Mac that set it up as its writer. A Mac's box reaches only its own machines, never another Mac,
   so on a Mac that's a member of another Mac's setup nothing is offered, and asked it says to do it
   from the main computer (a known gap until a member Mac can hand it on). A box that isn't the writer hands what you do to it by mail,
   as a Work Queue item's change goes to the computer that keeps it ("The Work Queue", Done where
@@ -1903,11 +1892,10 @@ client connected: a client's Computers area and its switcher draw it, and ask no
   answers what it asks. (Before, a Mac's app did all of it: `kuvo/machines`, which stays the old
   app's.) SSH is used to set a computer up, set it up again and uninstall it, never after: the
   computer's own keeper runs it, and boxes talk through the relay ("Peers").
-  - **Who adds**: a Mac's box that isn't a member of another's setup ("Your setup", Only the main
-    computer adds), with a relay and keys for its link and its own release's files in its folder.
-    A member answers `409 {message, primary}`; a Linux box `409 {message}` (only a Mac's box
-    writes the record of a setup's computers yet, #183); a Mac while the old app is attached to
-    its box `409` (that app keeps its own list); `503 {message}` for the rest, a list of machines
+  - **Who adds**: the primary, with a relay and keys for its link and its release files. A legacy
+    Mac outside a setup can still enroll computers. A member answers `409 {message, primary}`.
+    A Mac while the old app is attached to its box answers `409` (that app keeps its own list).
+    The rest return `503 {message}`, a list of machines
     that can't be told among them: read as `kuvo/machines` reads it ("Machines": there and won't
     read, or not there while `phone-link.json` keeps machines), so no computer is added over a
     list that's only missing (#753). `GET kuvo/computers/add` says the same as `can: false` with
@@ -1973,7 +1961,8 @@ client connected: a client's Computers area and its switcher draw it, and ask no
     data then) or a machine's, judged from the probe by the rule the installer judges one by
     (`machineBoxIn`), where its installer leaves that data as it is; puts its own release's files there, each checked by its
     SHA-256 before it's put in place, unless they're there already or the computer has a newer
-    Kuvo Code, which is left as it is; the engine, its own binary where the two are the same
+    Kuvo Code, which is left as it is. For a Mac, it supplies the signed Kuvo Helper from its
+    files or its verified release archive. It supplies the engine, its own binary where the two are the same
     kind, else the pinned package fetched and checked on the box's computer (the computer added
     downloads no code); then, in one script, the computer's settings made its own (one with none starts
     with the box's, below), how its keeper starts it (`run/launch.env`: the session's PATH, shell and

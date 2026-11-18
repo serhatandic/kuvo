@@ -52,8 +52,8 @@ export interface LinkState {
   name?: string;
   /** Its id on its Macs (their name for this machine). */
   id?: string;
-  /** The Macs that set it up, the last first named in `mac`; their signing keys, and when each was
-   * last heard from (ms), moved on by the time this machine was off since (`noteOnline`). */
+  /** Direct SSH enrollers, including a Linux primary, in legacy fields. `mac` names the
+   * last enroller. Last-heard times (ms) account for time this box was off (`noteOnline`). */
   mac?: string;
   macs?: string[];
   macSigns?: Record<string, string>;
@@ -73,7 +73,7 @@ export interface LinkState {
   /** A phone's pairing link, and (this Mac's) the one Settings › Phone shows. */
   pairing?: Pairing;
   appPairing?: Pairing;
-  /** Machines a Mac removed, for this Mac's peers document. */
+  /** Removed members, for the primary's peers document. */
   left?: string[];
   /** Whether each Mac that started its engine leaves a newer box as it is, by the Mac's id. */
   tolerantIDs?: Record<string, boolean>;
@@ -133,6 +133,10 @@ export const macLink: {
   statusFollowers: Set<() => void>;
   phoneFollowers: Set<() => void>;
 } = { config: null, overlay: null, status: { state: "off" }, host: null, wake: null, statusFollowers: new Set(), phoneFollowers: new Set() };
+
+/** A machine's bridge owns the relay even when a separate local server answers clients. */
+export const machineLink: { host: LinkHost | null } = { host: null };
+export const liveLink = () => IS_MAC ? macLink.host : machineLink.host;
 
 const written: ((link: LinkState) => void)[] = [];
 /** What follows each write, from now on (the box says it as it starts). */

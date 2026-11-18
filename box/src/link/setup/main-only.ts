@@ -47,7 +47,7 @@ export function memberHosts(link: LinkState | null | undefined): Hosts | null {
   if (!docs.length) return null;
   const hosts: Hosts["hosts"][number][] = [];
   for (const box of docs.flatMap(doc => (Array.isArray(doc.body.boxes) ? doc.body.boxes.slice(0, 64) : []))) {
-    if (!isObject(box) || box.kind !== "machine" || typeof box.key !== "string" || typeof box.address !== "string" || hosts.some(each => each.key === box.key)) continue;
+    if (!isObject(box) || box.key === link.setup!.primary || box.kind !== "machine" || typeof box.key !== "string" || typeof box.address !== "string" || hosts.some(each => each.key === box.key)) continue;
     const name = String(box.name ?? "").slice(0, 100);
     hosts.push({ kind: "machine", name, address: box.address, key: box.key, relay: link.relay, machine: typeof box.id === "string" && box.id ? box.id : name, anotherMac: false, removed: false });
   }

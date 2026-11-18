@@ -13,6 +13,7 @@ import path from "node:path";
 import pin from "../../shared/engine-pin.json";
 import { fetchedPatiently } from "../engine/client";
 import { K } from "../home";
+import { runningKept } from "../updates/fleet";
 
 /** A release's files that every box has, by their paths in its folder, with who may read and run
  * each (`release/files.ts` writes them; a test holds the two lists the same). In the order they're
@@ -66,17 +67,28 @@ export function ownFiles(home = K): OwnFile[] | null {
   return files;
 }
 
-/** The signed Helper carried by the Mac adding a machine, as a whole bundle. */
-export function machineHelperPack(home = K): { bytes: Buffer; sum: string } | null {
+/** The signed Helper in this box's files, or in the verified release it runs.
+ * Linux doesn't install the Mac bundle from that release locally. */
+export function machineHelperPack(): { bytes: Buffer; sum: string } | null {
   const name = "Kuvo Helper.app";
-  try {
-    if (!fs.statSync(path.join(home, "bin", name)).isDirectory()) return null;
-    const packed = spawnSync("tar", ["-cf", "-", "-C", path.join(home, "bin"), name], {
+  const pack = (bin: string) => {
+    const packed = spawnSync("tar", ["-cf", "-", "-C", bin, name], {
       maxBuffer: 32_000_000, timeout: 30_000, env: { ...process.env, COPYFILE_DISABLE: "1" },
     });
     return packed.status === 0 ? { bytes: packed.stdout, sum: sha256(packed.stdout) } : null;
-  } catch {
-    return null;
+  };
+  const bin = path.join(K, "bin");
+  if (fs.existsSync(path.join(bin, name))) return pack(bin);
+  const release = runningKept();
+  if (!release) return null;
+  const folder = fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-helper-"));
+  try {
+    // The release pack has already been checked against its signed manifest.
+    const bundle = `./bin/${name}`;
+    const unpacked = spawnSync("tar", ["-xzf", release.pack, "-C", folder, bundle], { timeout: 30_000 });
+    return unpacked.status === 0 ? pack(path.join(folder, "bin")) : null;
+  } finally {
+    fs.rmSync(folder, { recursive: true, force: true });
   }
 }
 

@@ -6,13 +6,13 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { isObject } from "../../shared/json";
-import { macPeersBody, ownDoc } from "../documents/work";
+import { primaryPeersBody, ownDoc } from "../documents/work";
 import { writePrivate } from "../files";
 import { plainName } from "../../shared/text";
 import { accountHome, K, located, MAC_APP_VERSION, OWN_HOME_MAC, RUN } from "../home";
 import { linkHost } from "../host-interface";
 import { cleanPeer, fitsPeer, mailFor, peersOf } from "../peers/known";
-import { macLink, readLink, updateLink } from "../state";
+import { liveLink, readLink, updateLink, macLink } from "../state";
 import { anyMachines } from "./machines";
 import type { SignedDoc } from "../../shared/documents";
 import type { Peer } from "../peers/known";
@@ -181,11 +181,11 @@ export function tellGone(gone: Peer[]): void {
 
 // Mails `gone` this Mac's peers document; the keys of those it went to.
 function sendGone(gone: Peer[]): string[] {
-  const host: LinkHost | null = macLink.host;
+  const host: LinkHost | null = liveLink();
   if (!host?.welcomed) return [];
   let envelope: SignedDoc | null = null;
   const link = updateLink(link => {
-    const made = link?.sign ? ownDoc(link, "peers", macPeersBody(link)) : null;
+    const made = link?.sign ? ownDoc(link, "peers", primaryPeersBody(link)) : null;
     envelope = made?.envelope ?? null;
     return made?.changed ? link : null;
   }) ?? readLink();

@@ -14,7 +14,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { isObject } from "../../shared/json";
 import { locked, writePrivate } from "../files";
-import { APP_FOLDER, K } from "../home";
+import { APP_FOLDER, IS_MAC, K } from "../home";
 import { readPeerAgents } from "../peers/directory";
 import { peersOf } from "../peers/known";
 import { addElsewhere, mainElsewhere } from "../setup/main-only";
@@ -143,7 +143,7 @@ export function machinesWithoutApp(now = Date.now()): MacMachines | null {
 export function hostsWithoutApp(): Hosts | null {
   const kept = keptHosts();
   const saved = savedMachines(kept);
-  const relay = macLink.config?.relay;
+  const relay = IS_MAC ? macLink.config?.relay : readLink()?.relay;
   if (!saved || !relay || kept === null || (kept === undefined && saved.length)) return null;
   // (Each by the name you gave it from any of your computers, where you gave one.)
   const peers = peersOf(readLink());
