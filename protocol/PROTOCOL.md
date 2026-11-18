@@ -1927,9 +1927,9 @@ machines; a client that wants every computer's facts asks the box that has it as
     kind, else the pinned package fetched and checked on the box's computer (the computer added
     downloads no code); then, in one script, the computer's settings made its own (one with none starts
     with the box's, below), how its keeper starts it (`run/launch.env`: the session's PATH, shell and
-    language and its name; no password or key), its `machine-id` made once, the `@reboot` line and a Mac's launch agent, and
-    `kuvo-start start`: its own keeper starts its engine, with a port and passwords that never
-    leave it; then `kuvo-link.js setup` there with this box's keys and documents, its answer
+    language and its name; no password or key), and its `machine-id` made once. On Linux it adds
+    the `@reboot` line and runs `kuvo-start start`. On Darwin it installs and starts Kuvo Helper’s
+    launch agent. The keeper starts the engine with a port and passwords that never leave it; then `kuvo-link.js setup` there with this box's keys and documents, its answer
     written as the box's own record of it (its peers document, `machines.json`, and
     `phone-link.json` for `kuvo/hosts`).
   - **What a new computer starts with** (`seeding`), once, as it's added, and only one that had
@@ -8814,8 +8814,14 @@ ID is the app's with `.box` after it (`run.kuvo.code.box`); an update keeps that
 its place, which is what macOS keeps your permissions and its Keychain items by. (Until #713 it
 was named Kuvo Code Box, in no release.)
 
-- **Started** by the launch agent `run.kuvo.code.machine` (one per computer, a machine's runs
-  `kuvo-start` with `/bin/sh`): `kuvo-link.js helper install [--load] [--app <bundle ID>]` writes
+A Darwin machine box uses the same signed Helper and launch agent with `keep-machine --home <box>`.
+Helper starts its keeper, and the box continues to use its machine credentials. On a new machine,
+Helper explains why Kuvo needs Downloads, Desktop and Documents and asks for them together before
+starting the engine. An existing machine switches its launch agent when work is quiet. Its running
+engine and coding agents’ bridge stay available while the user answers. At the next quiet moment
+Kuvo holds incoming messages, hands over the bridge and restarts both workers under Helper.
+
+- **Started** by the launch agent `run.kuvo.code.machine` (one per computer): `kuvo-link.js helper install [--load] [--app <bundle ID>]` writes
   `~/Library/LaunchAgents/run.kuvo.code.machine.plist` (`ProgramArguments`: the helper, `keep
   --home <box>`; `RunAtLoad`; `KeepAlive {SuccessfulExit: false}`; `AbandonProcessGroup`;
   `AssociatedBundleIdentifiers: [<the app's ID>]`, by default `run.kuvo.code`), and with `--load`

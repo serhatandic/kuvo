@@ -61,6 +61,11 @@ export function runningBridge() {
 
 // Starts the bridge on its own, outliving this command, from the machine's workspace.
 export function startBridge() {
+  if (process.platform === "darwin" && fs.existsSync(path.join(RUN, "machine-helper"))) {
+    fs.writeFileSync(NEEDED_FILE, "", { mode: 0o600 });
+    keepKeeper();
+    return;
+  }
   const workspace = path.join(K, "workspace");
   const child = spawn(process.execPath, [...OWN_RUNTIME, SCRIPT, "run"], {
     detached: true,

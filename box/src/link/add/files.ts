@@ -5,6 +5,7 @@
 // checked here. The computer being set up downloads no code.
 // Platform: the same on macOS and Linux; the engine's builds are named by `uname -sm`.
 
+import { spawnSync } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -63,6 +64,20 @@ export function ownFiles(home = K): OwnFile[] | null {
     }
   }
   return files;
+}
+
+/** The signed Helper carried by the Mac adding a machine, as a whole bundle. */
+export function machineHelperPack(home = K): { bytes: Buffer; sum: string } | null {
+  const name = "Kuvo Helper.app";
+  try {
+    if (!fs.statSync(path.join(home, "bin", name)).isDirectory()) return null;
+    const packed = spawnSync("tar", ["-cf", "-", "-C", path.join(home, "bin"), name], {
+      maxBuffer: 32_000_000, timeout: 30_000, env: { ...process.env, COPYFILE_DISABLE: "1" },
+    });
+    return packed.status === 0 ? { bytes: packed.stdout, sum: sha256(packed.stdout) } : null;
+  } catch {
+    return null;
+  }
 }
 
 // One tar header (ustar): a regular file, with no owner and no time, as a release's pack has them.

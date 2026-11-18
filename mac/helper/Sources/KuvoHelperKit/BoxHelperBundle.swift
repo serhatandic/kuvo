@@ -14,8 +14,7 @@ public enum BoxHelperBundle {
     /// Its bundle ID is the app's with this after it (`run.kuvo.code.box`), so a test or demo copy's
     /// keeps its own, and its Keychain items are named apart from the app's.
     public static let idSuffix = ".box"
-    /// The launch agent that starts a box at login on a Mac: one per computer, whatever set it up
-    /// (a machine's runs `kuvo-start` with `/bin/sh`; a Mac's own box's runs this).
+    /// The launch agent that starts a box at login on a Mac, one per computer.
     public static let launchAgent = "run.kuvo.code.machine"
     /// The box's home, in your account's home folder.
     public static let homeFolder = ".kuvo-code"

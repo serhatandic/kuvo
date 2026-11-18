@@ -7,7 +7,7 @@
 
 import { appDataProbe } from "../install/app-data";
 import { quote } from "../../shared/text";
-import { LAUNCH_AGENT, REBOOT_TAG } from "../marks";
+import { REBOOT_TAG } from "../marks";
 
 const K = 'K="$HOME/.kuvo-code"';
 /** A dollar sign, where a script's own `${…}` stands in a template here. */
@@ -115,6 +115,25 @@ ${files.map(file => `${file.sum} ${file.mode.toString(8)} ${file.path}`).join("\
 KUVO_SUMS
 echo placed`;
 
+/** Puts the signed Helper on a Mac as a whole, before starting or handing over its keeper. */
+export const helperInstall = (sum: string): string => `set -e
+${K}
+${SUM}
+mkdir -p "$K/bin"
+S=$(mktemp -d "$K/bin/.helper.XXXXXXXX")
+trap 'rm -rf "$S"' EXIT
+cat >"$S/helper.tar"
+[ "$(sum_of "$S/helper.tar")" = "${sum}" ] || { echo "Kuvo Helper didn't arrive whole." >&2; exit 9; }
+tar xf "$S/helper.tar" -C "$S"
+A="Kuvo Helper.app"
+codesign --verify --strict --deep "$S/$A"
+if [ -d "$K/bin/$A" ] && diff -qr "$S/$A" "$K/bin/$A" >/dev/null; then exit 0; fi
+[ ! -e "$K/bin/$A" ] || mv "$K/bin/$A" "$S/before"
+if ! mv "$S/$A" "$K/bin/$A"; then
+  [ ! -e "$S/before" ] || mv "$S/before" "$K/bin/$A"
+  exit 9
+fi`;
+
 /** Puts the engine in place, from its standard input (the binary, or its package: `packed`):
  * kept beside it first, checked against `sum`, tried (`--version`), then moved into place. Other
  * versions there stay: one may be at work. */
@@ -136,21 +155,8 @@ echo placed`;
 
 const REBOOT_LINE = `@reboot sh "$HOME/.kuvo-code/bin/kuvo-start" >/dev/null 2>&1 ${REBOOT_TAG}`;
 
-const LAUNCH_AGENT_PLIST = `<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-<key>Label</key><string>${LAUNCH_AGENT}</string>
-<key>ProgramArguments</key><array><string>/bin/sh</string><string>-c</string><string>exec sh "$HOME/.kuvo-code/bin/kuvo-start"</string></array>
-<key>RunAtLoad</key><true/>
-<key>AbandonProcessGroup</key><true/>
-</dict>
-</plist>`;
-
-// What starts the box after a restart, added once: its line in your crontab (one that can't be read
-// is left as it is, never written over; `crontab` given fifteen seconds, should a Mac ask something
-// on a screen nobody's at), and on a Mac its launch agent, which launchd reads at the next login.
-const START_AT_BOOT = String.raw`if command -v crontab >/dev/null 2>&1; then
+// A Linux machine's reboot entry, added once; Darwin's helper installs its launch agent.
+const START_AT_BOOT = String.raw`if [ "$(uname -s)" != Darwin ] && command -v crontab >/dev/null 2>&1; then
   cron_tab() { if command -v perl >/dev/null 2>&1; then perl -e 'alarm 15; exec @ARGV' crontab "$@"; else crontab "$@"; fi; }
   cron_now=$(cron_tab -l 2>"$R/.crontab.err"); cron_read=$?
   if [ $cron_read -eq 0 ] || grep -qi 'no crontab' "$R/.crontab.err" 2>/dev/null; then
@@ -160,9 +166,6 @@ const START_AT_BOOT = String.raw`if command -v crontab >/dev/null 2>&1; then
     esac
   fi
   rm -f "$R/.crontab.err"
-fi
-if [ "$(uname -s)" = Darwin ] && [ ! -f "$HOME/Library/LaunchAgents/${LAUNCH_AGENT}.plist" ]; then
-  mkdir -p "$HOME/Library/LaunchAgents" && printf '%s\n' ${quote(LAUNCH_AGENT_PLIST)} >"$HOME/Library/LaunchAgents/${LAUNCH_AGENT}.plist"
 fi`;
 
 /** Starts the box there, to keep itself from then on: its settings made its own (on a computer
@@ -196,7 +199,14 @@ if [ ! -s "$F" ]; then
   rm -f "$T"
 fi
 rm -f "$R/off"
-if sh "$K/bin/kuvo-start" start </dev/null >/dev/null 2>&1; then
+start_box() {
+  if [ "$(uname -s)" = Darwin ] && [ "$(cat "$K/box/kind" 2>/dev/null)" != mac ]; then
+    ${link("helper machine-start")} </dev/null
+  else
+    sh "$K/bin/kuvo-start" start </dev/null >/dev/null 2>&1
+  fi
+}
+if start_box; then
   [ -f "$R/off" ] && exit 7
   echo "id $(cat "$F")"
   echo started

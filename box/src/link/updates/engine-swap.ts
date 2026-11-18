@@ -18,16 +18,17 @@ import fs from "node:fs";
 import path from "node:path";
 import { HOLD_MOST, readSwap, SWAP_MOST, swapFile, swapUnderWay, type EngineSwap, type SwapStage } from "../../shared/engine-swap";
 import { nightOf } from "../../shared/night";
-import { engineRuns } from "../../shared/platform";
+import { engineRuns, processRuns } from "../../shared/platform";
 import type { EngineRecord, Target } from "../../shared/records";
 import { sleep } from "../../shared/wait";
 import { readAsks } from "../areas/asks";
-import { asked, engineGet, readEngineFile } from "../engine/client";
+import { asked, engineGet, readBridgeFile, readEngineFile } from "../engine/client";
 import { atWork, openFolders } from "../engine/models";
 import { moveInboxToBox, releaseWaiting } from "../engine/queue";
 import { listOf, textOf, writePrivate } from "../files";
+import { forgetMachineCron, machineFoldersAsked, machineHandoverDone, machineHelperAvailable, machineKeeperRuns, startMachineHelper } from "../helper";
 import { K, REAL_BOX, RUN, UPDATES } from "../home";
-import { dataNow, isUpdating, keepData, newerVersion, noteUpdate, roomForData, updateOnTrial, versionOrder } from "./update";
+import { agentsWorking, dataNow, isUpdating, keepData, newerVersion, noteUpdate, roomForData, takeUpdateLock, UPDATE_LOCK, updateOnTrial, versionOrder } from "./update";
 
 /** How the swapper goes: how often it looks, how long nothing must be at work to be quiet, how long
  * it waits for that before it holds at night or whatever the hour, how long a hold lasts before
@@ -242,20 +243,100 @@ export async function swapEngine({ clock = Date.now, wait = sleep }: SwapOptions
   }
 }
 
+/** Keeps pending engine messages on the box before either kind of restart. */
+async function keepInboxes(engine: Target, now: number): Promise<boolean> {
+  try {
+    const page = await asked(engine, "GET", "api/session?parentID=null&limit=100&order=desc") as { data?: { id?: string; time?: { updated?: number } }[] } | null;
+    const week = now - 7 * 86_400_000;
+    for (const session of page?.data ?? []) {
+      if (typeof session.id === "string" && (session.time?.updated ?? now) >= week) await moveInboxToBox(engine, session.id);
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Moves a legacy Darwin machine to the signed keeper. The first quiet hand-over only switches
+ * the launch job. Existing processes serve normally while the user answers the folder requests.
+ * The second quiet hand-over restarts the detached engine and bridge under the signed keeper. */
+export async function handOverMachine({ clock = Date.now, wait = sleep }: SwapOptions = {}): Promise<void> {
+  if (!machineHelperAvailable() || fs.existsSync(machineHandoverDone) || swapUnderWay(RUN)) return;
+  const installed = machineKeeperRuns();
+  if (installed && !fs.existsSync(machineFoldersAsked)) return;
+  const engine = runningEngine();
+  if (!engine?.version || !engine.pid) return;
+  const blocked = () => stoppedOnPurpose() || isUpdating() || updateOnTrial() || fs.existsSync(path.join(RUN, ".rolling-back"));
+  const busy = async () => await engineBusy(engine) || await agentsWorking() !== false;
+  const valid = () => !blocked() && runningEngine()?.pid === engine.pid && machineKeeperRuns() === installed;
+  if (!valid()) return;
+
+  const state: EngineSwap = { from: engine.version, to: engine.version, pid: process.pid, since: clock(), stage: "waiting", machineHelper: true };
+  const say = () => writePrivate(swapFile(RUN), JSON.stringify(state));
+  const restarting = path.join(RUN, ".machine-handover.pid");
+  let locked = false;
+  let held = false;
+  say();
+  try {
+    let quietSince: number | undefined;
+    while (valid()) {
+      quietSince = await busy() ? undefined : quietSince ?? clock();
+      if (quietSince !== undefined && clock() - quietSince >= SWAP_TIMING.quiet) break;
+      await wait(SWAP_TIMING.every);
+    }
+    if (!valid()) return;
+    state.stage = "holding";
+    state.holding = clock();
+    say();
+    held = true;
+    await wait(Math.min(1000, SWAP_TIMING.every));
+    if (await busy() || !valid()) return;
+
+    if (installed) {
+      // Before asking the bridge to leave, require its cooperative hand-over. The older bridge
+      // can take its normal renewal first. An unrecorded bridge still starting gets another round.
+      const pid = Number(textOf(path.join(RUN, "agents.pid")));
+      if (processRuns(pid, "kuvo-agents")) {
+        try { if (readBridgeFile().machineHandover !== true) return; } catch { return; }
+      }
+      if (!(await keepInboxes(engine, clock())) || await busy() || !valid()) return;
+    }
+    state.stage = "swapping";
+    say();
+    if (!takeUpdateLock()) return;
+    locked = true;
+    if (stoppedOnPurpose() || updateOnTrial()) return;
+    if (!installed) {
+      if (!startMachineHelper()) console.error("Kuvo Helper’s machine launch agent couldn’t start.");
+      return;
+    }
+
+    // The bridge uses the same quiet check and persisted queue as renewal, then stops its held
+    // agents cleanly. The keeper waits until the old engine has been stopped before replacing it.
+    writePrivate(restarting, String(process.pid));
+    const bridge = Number(textOf(path.join(RUN, "agents.pid")));
+    for (let i = 0; i < 45 && processRuns(bridge, "kuvo-agents"); i++) await wait(1000);
+    if (processRuns(bridge, "kuvo-agents") || stoppedOnPurpose() || await engineBusy(engine)) return;
+    if (!keeper("engine-halt")) return;
+    writePrivate(machineHandoverDone, "");
+    fs.rmSync(restarting, { force: true });
+    // Bounded by the same startup checks as an engine update. The keeper runs the start itself.
+    await answering(engine.version, clock, wait);
+  } finally {
+    if (locked) fs.rmSync(UPDATE_LOCK, { recursive: true, force: true });
+    fs.rmSync(restarting, { force: true });
+    await releaseAfterHold(held ? runningEngine() : null);
+  }
+  forgetMachineCron();
+}
+
 // The swap itself, nothing at work: what the engine's inboxes hold onto the box, the old engine
 // stopped, its data kept, the new one started and waited for; what was held to it once it answers,
 // else back to the one before where it can be. Null: it didn't go (something came up), and it goes
 // on holding.
 async function swapNow(engine: EngineRecord, state: EngineSwap, say: (stage: SwapStage, change?: Partial<EngineSwap>) => void, clock: () => number, wait: (ms: number) => Promise<unknown>): Promise<Swapped | null> {
   say("swapping");
-  // What each conversation's inbox holds, onto the box (an engine stopped loses what it held).
-  try {
-    const page = await asked(engine, "GET", "api/session?parentID=null&limit=100&order=desc") as { data?: { id?: string; time?: { updated?: number } }[] } | null;
-    const week = clock() - 7 * 86_400_000;
-    for (const session of page?.data ?? []) {
-      if (typeof session.id === "string" && (session.time?.updated ?? clock()) >= week) await moveInboxToBox(engine, session.id);
-    }
-  } catch {
+  if (!(await keepInboxes(engine, clock()))) {
     say("holding");
     return null;
   }
@@ -325,11 +406,13 @@ async function ended(state: EngineSwap, result: EngineChangeLast["result"], mess
   noteUpdate({ engine: { at: clock(), result, from: state.from, to: state.to, ...(message ? { message } : {}) } });
   fs.rmSync(SWAP_NOW, { force: true });
   if (result === "changed") fs.rmSync(BACK_FILE, { force: true });
-  if (engine) {
-    await releaseWaiting(engine).catch(() => 0);
-    // (Sent while that went: once more, now that nothing holds.)
-    fs.rmSync(swapFile(RUN), { force: true });
-    await releaseWaiting(engine).catch(() => 0);
-  }
+  if (engine) await releaseAfterHold(engine);
   return result;
+}
+
+async function releaseAfterHold(engine: Target | null): Promise<void> {
+  if (engine) await releaseWaiting(engine).catch(() => 0);
+  // Send anything that arrived during the first drain once the hold is gone.
+  if (readSwap(RUN)?.pid === process.pid) fs.rmSync(swapFile(RUN), { force: true });
+  if (engine) await releaseWaiting(engine).catch(() => 0);
 }

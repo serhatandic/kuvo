@@ -50,6 +50,23 @@ pick() {
 pick
 # Whether this is a Mac's own box (`box/kind` says `mac`), which its helper, Kuvo Helper, runs.
 own_mac() { [ "$(tr -d ' \t\r\n' 2>/dev/null <"$K/box/kind")" = mac ]; }
+machine_helper() { [ -f "$R/machine-helper" ] && ! own_mac && [ "$(uname -s)" = Darwin ]; }
+under_helper() {
+  [ -n "${KUVO_MACHINE_HELPER_PID-}" ] &&
+    [ "$KUVO_MACHINE_HELPER_PID" = "$(awk '{print $2}' "$R/machine-keeper" 2>/dev/null)" ]
+}
+asking_machine_folders() {
+  machine_helper && [ -f "$R/machine-helper-adopted" ] && [ ! -f "$R/machine-folders-asked" ]
+}
+machine_handover() { is "$(cat "$R/.machine-handover.pid" 2>/dev/null)" kuvo-link; }
+start_helper() {
+  [ -f "$R/off" ] && return 0
+  is "$(awk '{print $2}' "$R/machine-keeper" 2>/dev/null)" 'Kuvo Helper keep-machine' && return 0
+  domain="gui/$(id -u)"; label=run.kuvo.code.machine
+  ctl=/bin/launchctl
+  [ -z "${KUVO_TEST_UNINSTALL_TOOLS-}" ] || ctl="$KUVO_TEST_UNINSTALL_TOOLS/launchctl"
+  "$ctl" kickstart "$domain/$label" || "$ctl" bootstrap "$domain" "$HOME/Library/LaunchAgents/$label.plist"
+}
 # How its engine starts (`run/launch.env`), noted once. A machine's is noted by the start that
 # sets it up (the session's PATH, shell and language); nothing sets a Mac's own box up so, so
 # its keeper notes the same from what its helper gives it. Without it, no engine would start.
@@ -192,12 +209,17 @@ case "${1:-box}" in
 box)
   [ -f "$K/bin/kuvo-start" ] || exit 0
   [ -f "$R/off" ] && exit 0
+  if machine_helper; then start_helper; exit $?; fi
   is "$(cat "$R/box.pid" 2>/dev/null)" kuvo-start && exit 0
   cd "$K" || exit 0
   # This script (kuvo-start, or the copy below), as the keeper.
   env -i HOME="$HOME" PATH="$PATH" "$S" sh "$0" keep </dev/null >/dev/null 2>&1 &
   ;;
 keep)
+  if machine_helper && [ -z "${KUVO_MACHINE_HELPER_PID-}" ]; then start_helper; exit $?; fi
+  if [ -n "${KUVO_MACHINE_HELPER_PID-}" ]; then
+    (umask 077; printf '%s %s\n' "$$" "$KUVO_MACHINE_HELPER_PID" >"$R/machine-keeper.$$" && mv -f "$R/machine-keeper.$$" "$R/machine-keeper") || exit 1
+  fi
   echo $$ >"$R/box.pid"
   # A keeper starting is Kuvo on this Mac starting again (at login, or as the app opens): a stop
   # until then (`pause`) is over.
@@ -221,6 +243,7 @@ keep)
     fi
   }
   hold
+  machine=; [ "$(uname -s)" != Darwin ] || own_mac || machine=1
   boot=$(cat "$K/bin/.kuvo-boot" 2>/dev/null)
   # COMPAT(0.7 keeper): its own copies, bin/.kuvo-start-keeper and bin/.kuvo-launch-keeper. Goes 3 months after 0.8.0.
   # A copy of itself and of its launcher, which it runs its starts from and puts back when an
@@ -251,6 +274,12 @@ keep)
   while :; do
     [ -f "$K/bin/kuvo-start" ] && [ "$(cat "$R/box.pid" 2>/dev/null)" = "$$" ] || exit 0
     hold
+    # The old keeper yields once the new machine job is in place. Its detached workers
+    # stay up until the hand-over has held new work and can restart them.
+    if [ -n "$machine" ] && [ -f "$R/machine-helper" ] && ! under_helper; then
+      sleep 1
+      continue
+    fi
     # The engine running noted as the one that ran (run/engine-ran), as it runs: a box whose engine a
     # keeper from before started has it noted too.
     if up; then
@@ -297,7 +326,9 @@ keep)
       unlock
     fi
     now=$(date +%s)
-    if ! up && [ ! -f "$R/stopped" ] && [ -f "$R/launch.env" ] && [ "$now" -ge "$next" ] && ! swapping; then
+    if [ -f "$R/engine.now" ]; then fails=0; next=0; started=; fi
+    if ! up && [ ! -f "$R/stopped" ] && [ -f "$R/launch.env" ] && [ "$now" -ge "$next" ] && { ! swapping || [ -f "$R/engine.now" ]; } && ! machine_handover && ! asking_machine_folders; then
+      rm -f "$R/engine.now"
       # Down: one this started that ran under ten minutes counts as failing, and makes it
       # wait longer before the next start; one that ran longer starts the count again.
       if [ -n "$started" ]; then
@@ -312,8 +343,12 @@ keep)
     # ended (a newer build in its place, a crash), never with the engine. One that ran under ten
     # minutes makes it wait longer each time, as the engine's starts do.
     # Try Again (`bridge-again`, run/agents.now): its count of failures forgotten.
+    if [ -f "$R/agents.repair" ] && ! machine_handover; then
+      rm -f "$R/agents.repair"
+      sh "$me" bridge-again >/dev/null 2>&1 &
+    fi
     if [ -f "$R/agents.now" ]; then rm -f "$R/agents.now"; bfails=0; bnext=0; bstarted=; fi
-    if up && [ -f "$K/bin/kuvo-agents.js" ] && [ "$now" -ge "$bnext" ] && ! bridge_runs; then
+    if up && [ -f "$K/bin/kuvo-agents.js" ] && [ "$now" -ge "$bnext" ] && ! bridge_runs && ! machine_handover; then
       if [ -n "$bstarted" ]; then
         if [ $((now - bstarted)) -lt 600 ]; then bfails=$((bfails + 1)); else bfails=0; fi
       fi
@@ -389,7 +424,9 @@ keep)
     # with a link that has no swapper (one put back from before).
     if up && [ -f "$K/bin/kuvo-link.js" ] && [ -n "$V" ] && [ ! -f "$R/update-trial" ] && ! is "$(cat "$R/.updating/pid" 2>/dev/null)" kuvo-link && ! is "$(sed -n 's/.*"pid":\([0-9]*\).*/\1/p' "$R/engine-swap.json" 2>/dev/null)" kuvo-link; then
       ran=$(sed -n 's/.*"version":"\([^"]*\)".*/\1/p' "$R/engine.json" 2>/dev/null)
-      if [ -n "$ran" ] && [ "$ran" != "$W" ] && [ "$(printf '%s\n%s\n' "$ran" "$W" | sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1)" = "$W" ] && grep -q 'engine-swap' "$K/bin/kuvo-link.js" 2>/dev/null; then
+      if [ -n "$machine" ] && [ ! -f "$R/machine-helper-adopted" ] && [ -x "$K/bin/Kuvo Helper.app/Contents/MacOS/Kuvo Helper" ]; then
+        (environment; cd "$K"; KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$S" "$K/engine/$V/opencode" --config=/dev/null --no-env-file "$K/bin/kuvo-link.js" engine-swap --machine-helper >"$R/machine-handover.log" 2>&1 </dev/null &)
+      elif [ -n "$ran" ] && [ "$ran" != "$W" ] && [ "$(printf '%s\n%s\n' "$ran" "$W" | sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1)" = "$W" ] && grep -q 'engine-swap' "$K/bin/kuvo-link.js" 2>/dev/null; then
         (environment; cd "$K"; KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$S" "$K/engine/$V/opencode" --config=/dev/null --no-env-file "$K/bin/kuvo-link.js" engine-swap >"$R/engine-swap.log" 2>&1 </dev/null &)
       fi
     fi
@@ -429,6 +466,19 @@ keep)
   done
   ;;
 engine)
+  if asking_machine_folders; then exit 0; fi
+  if machine_helper && ! under_helper; then
+    { [ -f "$R/stopped" ] || [ -f "$R/off" ] || [ -f "$R/paused" ]; } && exit 0
+    up && exit 0
+    : >"$R/engine.now"
+    start_helper >/dev/null 2>&1 || exit 1
+    for i in $(seq 1 120); do
+      up && exit 0
+      [ -f "$R/off" ] && exit 1
+      sleep 1
+    done
+    exit 1
+  fi
   # As Kuvo Code last started it, with a new port and passwords: not when it's stopped on
   # purpose, or off (the machine removed), or stopped until it next starts (paused), or running.
   { [ -f "$R/stopped" ] || [ -f "$R/off" ] || [ -f "$R/paused" ]; } && exit 0
@@ -449,6 +499,12 @@ engine)
   exit 1
   ;;
 bridge)
+  machine_handover && exit 0
+  if machine_helper && ! under_helper; then
+    : >"$R/agents.now"
+    start_helper
+    exit $?
+  fi
   # The coding agents' bridge, kept apart from any one engine (PROTOCOL.md, "Updates"): started while
   # the engine runs and no bridge does, as the engine is (its launch's environment, a port and
   # password of its own), and following that engine by its record as it starts again. Not while it's
@@ -470,6 +526,11 @@ bridge-again)
   # (so never one another start has just begun); the keeper's wait after failures forgotten
   # (run/agents.now); the keeper started if it isn't running; and the bridge started.
   { [ -f "$R/stopped" ] || [ -f "$R/off" ] || [ -f "$R/paused" ]; } && exit 0
+  if machine_helper && ! under_helper; then
+    : >"$R/agents.repair"
+    start_helper
+    exit $?
+  fi
   if [ -f "$K/bin/kuvo-link.js" ] && [ -n "$V" ]; then
     (environment; cd "$K"; KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$K/engine/$V/opencode" --config=/dev/null --no-env-file "$K/bin/kuvo-link.js" repair >/dev/null 2>&1 </dev/null)
   fi

@@ -38206,6 +38206,7 @@ class Renewal {
   heldAt = 0;
   quietSince;
   going = false;
+  handingOver = false;
   seen;
   newer;
   checked = new Map;
@@ -38238,6 +38239,24 @@ class Renewal {
   look() {
     if (this.going)
       return;
+    if (this.options.keeperHandover?.()) {
+      if (!this.handingOver) {
+        this.handingOver = true;
+        this.options.hold(true);
+        return;
+      }
+      const work = this.options.work();
+      if (!work.turns && !work.other) {
+        this.going = true;
+        this.options.renew();
+      }
+      return;
+    }
+    if (this.handingOver) {
+      this.handingOver = false;
+      if (!this.holding)
+        this.options.hold(false);
+    }
     const now = this.options.now?.() ?? Date.now();
     const build = this.newerInPlace();
     if (!build) {
@@ -39485,11 +39504,24 @@ link4.whenReady().then(() => {
   }
 });
 var record2 = onMachine ? join43(machineHome, "run", "bridge.json") : undefined;
+var machineHandover = process.platform === "darwin" && kept3 && onMachine && Boolean(build);
+var keeperHandover = () => {
+  if (!machineHandover || !runFolder)
+    return false;
+  const swap = swapUnderWay(runFolder);
+  if (swap?.machineHelper !== true || swap.stage !== "swapping")
+    return false;
+  try {
+    return Number(readFileSync41(join43(runFolder, ".machine-handover.pid"), "utf8")) === swap.pid;
+  } catch {
+    return false;
+  }
+};
 var writeRecord = (renewal, first = false) => {
   if (!record2)
     return;
   try {
-    writeSecret(record2, JSON.stringify({ pid: process.pid, port: server4.port, password, build, renewal }));
+    writeSecret(record2, JSON.stringify({ pid: process.pid, port: server4.port, password, build, renewal, ...machineHandover ? { machineHandover: true } : {} }));
   } catch (error) {
     if (first)
       throw error;
@@ -39510,10 +39542,12 @@ renewal = onMachine && build ? new Renewal({
   },
   hold: (on) => sessions.hold(on),
   renew: () => {
-    console.error("A newer bridge is in place: this one makes way for it.");
-    stop(true);
+    const moving = keeperHandover();
+    console.error(moving ? "Kuvo Helper will start the next bridge." : "A newer bridge is in place: this one makes way for it.");
+    stop(true, !moving);
   },
   told: (state) => writeRecord(state),
+  keeperHandover,
   paused: () => updateUnderWay(join43(machineHome, "run")),
   ready: () => {
     if (kept3)
@@ -39575,7 +39609,7 @@ if (renewing)
 if (runFolder)
   new HangWatch({ name: "engine", run: runFolder, record: join43(runFolder, "engine.json"), isIt: isEngine }).start();
 var stopping = false;
-function stop(handOver = false) {
+function stop(handOver = false, startReplacement = true) {
   if (stopping)
     return;
   stopping = true;
@@ -39597,7 +39631,7 @@ function stop(handOver = false) {
   stopAllHeld();
   store.flush();
   server4.stop(true);
-  if (handOver && run && kept3)
+  if (handOver && run && kept3 && startReplacement)
     startNext(run);
   process.exit(0);
 }
@@ -39622,4 +39656,4 @@ if (!onMachine) {
 }
 process.on("SIGTERM", () => stop());
 process.on("SIGINT", () => stop());
-// Built from Packages/Box/src/agents 632f573a8bc4ad3ef196a8b36f03c150f4ed941f364d304111a26961eb0ebb8c
+// Built from Packages/Box/src/agents c1d1fe4e9e5c31172de50ce1c34b8a535bc7092d20b13d32001a7c9f0f5f64e0

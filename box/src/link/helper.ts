@@ -2,7 +2,7 @@
 // the signed program a Mac's box in a home of its own runs under, which macOS asks about and which
 // reaches its keys in the Keychain. Its release brings it into `bin` (`bin/Kuvo Helper.app`); this
 // starts it at login, as a machine's box is started: the launch agent `run.kuvo.code.machine`, one
-// per computer, whose program is the helper (a machine's is `/bin/sh`). `uninstall` takes it away.
+// per computer. `uninstall` takes it away.
 //
 // `kuvo-link.js helper install [--load] [--app <bundle ID>]` writes the launch agent's file (and with
 // `--load`, has launchd start it now); `helper status` says what's there; `helper start` is the
@@ -14,7 +14,9 @@ import { execFile, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { APP_FOLDER, K, RUN, recordedKind } from "./home";
-import { LAUNCH_AGENT } from "./marks";
+import { textOf, writePrivate } from "./files";
+import { engineRuns, processRuns } from "../shared/platform";
+import { LAUNCH_AGENT, REBOOT_TAG } from "./marks";
 import { launchTools } from "./uninstall";
 
 export const HELPER_NAME = "Kuvo Helper";
@@ -32,13 +34,13 @@ const xml = (text: string) => text.replace(/&/g, "&amp;").replace(/</g, "&lt;").
  * Stop Kuvo on this Mac, launchd or you quitting it, another copy running, a refusal only you can
  * clear); a new build of it put in its place (an update) has it exit otherwise (75), and a crash
  * does, so launchd always starts it again then. */
-export function helperPlist(app: string): string {
+export function helperPlist(app: string, machine = false): string {
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
 <key>Label</key><string>${LAUNCH_AGENT}</string>
-<key>ProgramArguments</key><array><string>${xml(helperProgram())}</string><string>keep</string><string>--home</string><string>${xml(K)}</string></array>
+<key>ProgramArguments</key><array><string>${xml(helperProgram())}</string><string>${machine ? "keep-machine" : "keep"}</string><string>--home</string><string>${xml(K)}</string></array>
 <key>RunAtLoad</key><true/>
 <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
 <key>AbandonProcessGroup</key><true/>
@@ -46,6 +48,117 @@ export function helperPlist(app: string): string {
 </dict>
 </plist>
 `;
+}
+
+const machineMark = path.join(RUN, "machine-helper");
+export const machineHandoverDone = path.join(RUN, "machine-helper-adopted");
+export const machineFoldersAsked = path.join(RUN, "machine-folders-asked");
+
+export function machineHelperAvailable(): boolean {
+  return process.platform === "darwin" && !APP_FOLDER && recordedKind() !== "mac" && !!launchTools()
+    && fs.existsSync(helperProgram())
+    && /<key>KuvoHelperKeepsMachine<\/key>\s*<true\s*\/>/.test(textOf(path.join(helperBundle(), "Contents", "Info.plist")) ?? "");
+}
+
+export function machineKeeperRuns(): boolean {
+  const [keeper, helper] = (textOf(path.join(RUN, "machine-keeper")) ?? "").trim().split(/\s+/).map(Number);
+  return keeper > 1 && helper > 1 && keeper === Number(textOf(path.join(RUN, "box.pid")))
+    && processRuns(keeper, "kuvo-start") && processRuns(helper, `${helperProgram()} keep-machine`);
+}
+
+/** Installs the machine job, or starts the one already installed. A failed replacement restores
+ * the old plist and job. The old keeper and its workers can run until Helper takes the keeper. */
+export function startMachineHelper(): boolean {
+  if (!machineHelperAvailable() || fs.existsSync(path.join(RUN, "off"))) return false;
+  const tools = launchTools()!;
+  const plist = path.join(tools.agents, `${LAUNCH_AGENT}.plist`);
+  const domain = `gui/${process.getuid?.() ?? 0}`, job = `${domain}/${LAUNCH_AGENT}`;
+  const run = (args: string[]) => spawnSync(tools.launchctl, args, { encoding: "utf8", timeout: 10_000, stdio: ["ignore", "pipe", "pipe"] });
+  const before = textOf(plist);
+  const installed = !!before?.includes(`<string>${xml(helperProgram())}</string><string>keep-machine</string>`);
+  // This label is also used by the Mac's own box. Replace only a legacy machine job.
+  if (before !== null && !installed && !before.includes('exec sh "$HOME/.kuvo-code/bin/kuvo-start"')) return false;
+  const loaded = run(["print", job]);
+  if (loaded.error || (loaded.status === 0 && !installed && !/^\s*program = \/bin\/sh\s*$/m.test(loaded.stdout ?? ""))) return false;
+  if (installed && loaded.status === 0 && (loaded.stdout ?? "").includes(helperProgram())) {
+    writePrivate(machineMark, "");
+    return run(["kickstart", job]).status === 0;
+  }
+  fs.mkdirSync(tools.agents, { recursive: true });
+  const marked = fs.existsSync(machineMark);
+  if (loaded.status === 0 && run(["bootout", job]).status !== 0) return false;
+  try {
+    writePrivate(plist, helperPlist("run.kuvo.code", true));
+    writePrivate(machineMark, "");
+    const pause = new Int32Array(new SharedArrayBuffer(4));
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (run(["bootstrap", domain, plist]).status === 0) {
+        for (let look = 0; look < 50; look++) {
+          if (machineKeeperRuns()) return true;
+          Atomics.wait(pause, 0, 0, 100);
+        }
+        if (installed) return true;
+        run(["bootout", job]);
+        break;
+      }
+      Atomics.wait(pause, 0, 0, 500);
+    }
+  } catch (error) {
+    console.error("Couldn’t install Kuvo Helper’s machine job:", error);
+  }
+  if (!marked) fs.rmSync(machineMark, { force: true });
+  if (before === null) fs.rmSync(plist, { force: true });
+  else {
+    writePrivate(plist, before);
+    if (loaded.status === 0) run(["bootstrap", domain, plist]);
+  }
+  return false;
+}
+
+/** The installer's immediate start. A running legacy keeper hands over from its own quiet
+ * update loop; starting the installer again never takes working processes down. */
+export async function startMachineInstall(): Promise<boolean> {
+  if (!machineHelperAvailable()) {
+    console.error("Kuvo Helper for machines is missing, or this Mac has no supported launch agent location.");
+    return false;
+  }
+  const keeper = Number(textOf(path.join(RUN, "box.pid")));
+  const engineUp = () => {
+    try { return engineRuns(JSON.parse(textOf(path.join(RUN, "engine.json")) ?? "").pid, K); } catch { return false; }
+  };
+  if (!machineKeeperRuns() && processRuns(keeper, "kuvo-start") && engineUp()) return true;
+
+  // A fresh start has no children to move later. Keep the flag absent for a detached legacy
+  // engine or bridge so it will be restarted at a quiet point.
+  const bridge = Number(textOf(path.join(RUN, "agents.pid")));
+  if (!engineUp() && !processRuns(bridge, "kuvo-agents") && !fs.existsSync(machineMark)) {
+    writePrivate(machineHandoverDone, "");
+  }
+  fs.rmSync(path.join(RUN, "stopped"), { force: true });
+  if (!machineKeeperRuns() && !startMachineHelper()) {
+    console.error("Kuvo Helper couldn’t be started. Sign in to this Mac and check that Kuvo is allowed in Login Items.");
+    return false;
+  }
+  const until = Date.now() + 480_000;
+  while (Date.now() < until && !fs.existsSync(path.join(RUN, "off"))) {
+    if (machineKeeperRuns() && engineUp()) return true;
+    await new Promise(resolve => setTimeout(resolve, 500));
+  }
+  console.error(fs.existsSync(machineFoldersAsked)
+    ? "Kuvo Helper or its engine didn’t finish starting."
+    : "On that Mac, answer Kuvo Helper’s folder access requests, then try again.");
+  return false;
+}
+
+/** Drops the old @reboot entry after launchd has started the signed keeper. */
+export function forgetMachineCron() {
+  const tools = launchTools();
+  if (!tools) return;
+  const options = { encoding: "utf8", timeout: 15_000 } as const;
+  const listed = spawnSync(tools.crontab, ["-l"], options);
+  if (listed.status !== 0 || !listed.stdout.includes(REBOOT_TAG)) return;
+  const input = listed.stdout.split("\n").filter(line => !line.includes(REBOOT_TAG)).join("\n");
+  spawnSync(tools.crontab, ["-"], { ...options, input });
 }
 
 /** Why the helper's launch agent can't be put in place here, or null. */

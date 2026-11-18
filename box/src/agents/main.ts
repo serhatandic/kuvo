@@ -41,7 +41,7 @@ import { leftSignIns } from "./signin"
 import { commandLineOf } from "../shared/platform"
 import { isRealBridgeFolder } from "../shared/account"
 import { updateUnderWay } from "../shared/updating"
-import { untilSwapLets } from "../shared/engine-swap"
+import { swapUnderWay, untilSwapLets } from "../shared/engine-swap"
 import { spawn } from "node:child_process"
 import { bundleBuild } from "../shared/bundle"
 import type { RenewalRecord } from "../shared/records"
@@ -517,10 +517,21 @@ void link.whenReady().then(() => {
 // build it runs, and how it makes way for a newer one put in its place (renewal.ts), for the box to
 // say (`kuvo/info`'s `pieces`).
 const record = onMachine ? join(machineHome!, "run", "bridge.json") : undefined
+const machineHandover = process.platform === "darwin" && kept && onMachine && Boolean(build)
+const keeperHandover = () => {
+  if (!machineHandover || !runFolder) return false
+  const swap = swapUnderWay(runFolder)
+  if (swap?.machineHelper !== true || swap.stage !== "swapping") return false
+  try {
+    return Number(readFileSync(join(runFolder, ".machine-handover.pid"), "utf8")) === swap.pid
+  } catch {
+    return false
+  }
+}
 const writeRecord = (renewal: RenewalRecord | null, first = false) => {
   if (!record) return
   try {
-    writeSecret(record, JSON.stringify({ pid: process.pid, port: server.port, password, build, renewal }))
+    writeSecret(record, JSON.stringify({ pid: process.pid, port: server.port, password, build, renewal, ...(machineHandover ? { machineHandover: true } : {}) }))
   } catch (error) {
     if (first) throw error
   }
@@ -549,10 +560,12 @@ renewal =
         },
         hold: (on) => sessions.hold(on),
         renew: () => {
-          console.error("A newer bridge is in place: this one makes way for it.")
-          stop(true)
+          const moving = keeperHandover()
+          console.error(moving ? "Kuvo Helper will start the next bridge." : "A newer bridge is in place: this one makes way for it.")
+          stop(true, !moving)
         },
         told: (state) => writeRecord(state),
+        keeperHandover,
         paused: () => updateUnderWay(join(machineHome!, "run")),
         // Only on the engine its keeper starts: one a Mac brought with a newer engine it kept from
         // starting (sessions were at work) waits for that engine, which starts it.
@@ -630,7 +643,7 @@ let stopping = false
  * so it says so (`run/agents-renewing`, for the link to answer "restarting" and let requests wait),
  * and starts the next one itself, once its own store is written, rather than leaving it to the
  * keeper's next round (PROTOCOL.md, "The coding agents' state"). */
-function stop(handOver = false) {
+function stop(handOver = false, startReplacement = true) {
   if (stopping) return
   stopping = true
   const run = onMachine ? join(machineHome!, "run") : undefined
@@ -653,7 +666,7 @@ function stop(handOver = false) {
   stopAllHeld()
   store.flush()
   server.stop(true)
-  if (handOver && run && kept) startNext(run)
+  if (handOver && run && kept && startReplacement) startNext(run)
   process.exit(0)
 }
 

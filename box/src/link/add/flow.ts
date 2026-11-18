@@ -30,7 +30,7 @@ import { addElsewhere, mainElsewhere } from "../setup/main-only";
 import { macLink, readLink, updateLink } from "../state";
 import { boxVersion, newerVersion } from "../updates/update";
 import { addressProblem } from "./address";
-import { ENGINE_VERSION, RELEASE_FILES, engineFor, ownFiles, tarOf, type Kind } from "./files";
+import { ENGINE_VERSION, RELEASE_FILES, engineFor, machineHelperPack, ownFiles, tarOf, type Kind } from "./files";
 import * as scripts from "./scripts";
 import { gatherSeed } from "./seed";
 import { type HostKey, type Ran, type Way, hangUp, lastLine, reachedAs, readHostKey, remote, troubleOf, trustHostKeys, vaultAgent } from "./ssh";
@@ -336,6 +336,12 @@ async function setUp(tell: Telling, destination: string, name: string, kind: "ad
         const placed = await reach.run(scripts.filesInstall(files), { input: tarOf(files), sent: tell.sent, cut: true, most: 900_000 });
         if (placed.status !== 0) throw new Failed(`Kuvo Code’s files couldn’t be put on ${name}. ${lastLine(placed.stderr)}`.trim());
       }
+      if (probe.kind.system === "darwin") {
+        const helper = machineHelperPack();
+        if (!helper) throw new Failed(`Kuvo Code on ${ownName()} has no Kuvo Helper to give ${name}. Update Kuvo Code here, then try again.`);
+        const placed = await reach.run(scripts.helperInstall(helper.sum), { input: helper.bytes, sent: tell.sent, cut: true, most: 120_000 });
+        if (placed.status !== 0) throw new Failed(`Kuvo Helper couldn’t be put on ${name}. ${lastLine(placed.stderr)}`.trim());
+      }
       if (probe.engine) tell.skip("engine", "It has it already");
       else {
         tell.step("engine");
@@ -347,7 +353,7 @@ async function setUp(tell: Telling, destination: string, name: string, kind: "ad
     }
 
     // Its start, by its own keeper: never cut short once it's begun.
-    tell.step("starting");
+    tell.step("starting", probe.kind.system === "darwin" && !probe.version ? "On that Mac, answer Kuvo Helper’s requests for Downloads, Desktop and Documents." : undefined);
     const own = link ? ownKey(link) : null;
     const notes = JSON.stringify({ mac: own ? launcherID(own) : "", macName: ownName().replace(/[{}"\\]/g, ""), box: mine });
     // A computer with nothing of Kuvo Code on it: no box found there, no Kuvo Code app's folder

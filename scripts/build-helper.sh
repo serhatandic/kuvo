@@ -53,8 +53,12 @@ PACKAGE=mac/helper
 OUT="$FOLDER/$NAME.app"
 
 built() {
-    swift build -c release --package-path "$PACKAGE" --product "$1" --arch arm64 -q >&2
-    echo "$(swift build -c release --package-path "$PACKAGE" --arch arm64 --show-bin-path)/$1"
+    product=$1
+    set -- --arch arm64
+    # The machine engine also ships for Intel Macs. The same signed Helper starts both.
+    [ "$product" != KuvoHelper ] || set -- "$@" --arch x86_64
+    swift build -c release --package-path "$PACKAGE" --product "$product" "$@" -q >&2
+    echo "$(swift build -c release --package-path "$PACKAGE" "$@" --show-bin-path)/$product"
 }
 # (One built elsewhere is a test's: never signed as the real thing, which would give a test build,
 # with its test-only options, Kuvo Code's identity.)

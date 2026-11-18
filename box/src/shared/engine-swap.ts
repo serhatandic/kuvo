@@ -25,6 +25,8 @@ export interface EngineSwap {
   letGo?: number;
   /** The swapper's process. */
   pid: number;
+  /** The machine’s first restart under Kuvo Helper. */
+  machineHelper?: true;
   /** What keeps it waiting that holding wouldn't outlast: a terminal open, or a question waiting on you. */
   blocked?: "terminal" | "ask";
 }
@@ -65,6 +67,10 @@ export function swapHolds(run: string, now = Date.now()): boolean {
 /** What a client shows while an engine change waits or goes, in one plain line (null: none under way). */
 export function swapLine(swap: EngineSwap | null): string | null {
   if (!swap) return null;
+  if (swap.machineHelper) {
+    if (swap.stage === "waiting") return "Kuvo will move to Kuvo Helper once the running sessions finish.";
+    return "Kuvo is moving to Kuvo Helper. New messages wait and go once it’s ready.";
+  }
   switch (swap.stage) {
     case "waiting": return swap.blocked === "terminal" ? "An update to Kuvo’s engine is ready. It installs once nothing is running: close the open terminals to let it."
       : swap.blocked === "ask" ? "An update to Kuvo’s engine is ready. It installs once nothing is running: answer what’s waiting on you to let it."

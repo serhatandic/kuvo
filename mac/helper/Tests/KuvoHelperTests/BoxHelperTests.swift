@@ -422,12 +422,12 @@ private final class InTheTests {}
         var isRunning: Bool { ended.value == nil }
     }
 
-    private func keeping(_ more: [String] = []) throws -> Kept {
+    private func keeping(_ more: [String] = [], mode: String = "keep") throws -> Kept {
         let process = Process()
         let ended = Ended()
         process.terminationHandler = { ended.note($0.terminationStatus) }
         process.executableURL = BoxHelperBundle.executable(of: helperInApp)
-        process.arguments = ["keep"] + own + more
+        process.arguments = [mode] + own + more
         process.environment = ["HOME": home.path, "PATH": "/usr/bin:/bin"]
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
@@ -573,6 +573,22 @@ private final class InTheTests {}
         try write(outside.appending(path: "x"), "x")
         #expect(try await post(host, "/trash", ["path": outside.path]).status == 200)
         #expect(FileManager.default.fileExists(atPath: outside.path))
+    }
+
+    @Test func machineModeKeepsOnlyTheKeeperAndLeavesMachineCredentialsInPlace() throws {
+        try standIns()
+        try write(box.appending(path: "box/kind"), "machine\n")
+        let key = box.appending(path: "box/keys/KUVO_KEY_GITHUB_TOKEN")
+        try write(key, "machine-key")
+        let helper = try keeping(mode: "keep-machine")
+        defer { cleanUp([helper]) }
+        until { !text(home.appending(path: "keep.parent")).isEmpty }
+        #expect(text(home.appending(path: "keep.parent")).trimmingCharacters(in: .whitespacesAndNewlines) == String(helper.process.processIdentifier))
+        #expect(text(box.appending(path: "box/kind")) == "machine\n")
+        #expect(text(key) == "machine-key")
+        #expect(!FileManager.default.fileExists(atPath: run.appending(path: "host.json").path))
+        #expect(!FileManager.default.fileExists(atPath: home.appending(path: "serve.stdin").path))
+        #expect(!FileManager.default.fileExists(atPath: run.appending(path: "machine-folders-asked").path))
     }
 
     @Test func itStartsNoBoxWhileAMoveIsUnfinished() throws {

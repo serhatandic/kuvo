@@ -113,13 +113,13 @@ import { keepKeyFiles } from "./keys";
 import { keepAwakeWhileWorking } from "./work/awake";
 import { runningServe, SERVE_FILE, SERVE_NEEDED } from "./serve-kept";
 import { uninstallCommand } from "./uninstall";
-import { helperCommand } from "./helper";
+import { helperCommand, machineHelperAvailable, startMachineInstall } from "./helper";
 import { handOverCommand, watchHelperBuild } from "./compat/helper-handover";
 import { keepMachinesUp } from "./add/keep-up";
 import { leaveForNewCode } from "./updates/code-in-place";
 import { sayWhole } from "./once";
 import { featuresNow, settleUpdate, startSettling } from "./updates/health";
-import { swapEngine } from "./updates/engine-swap";
+import { handOverMachine, swapEngine } from "./updates/engine-swap";
 import { type UpdateOptions, ON_TRIAL, UPDATING_ALREADY, agentsWorking, dropOldBackups, passingOutcome, updateOnTrial, checkDrift, failedInPassing, offerWaits, isUpdating, noteLauncher, noteOlderMacs, installerSteps, noteUpdate, startOfferedUpdate, startUpdate, takeOffer, untilFree, update, UPDATE_KEYS, releaseRound, updatesBlocked, updateState, updateStatus } from "./updates/update";
 import { clearIncoming, followOver, followPeers, tellHeld, watchHeld } from "./updates/fleet";
 import { BRIDGE_VERSION } from "./version";
@@ -1233,7 +1233,8 @@ if (main) {
   // quiet moment, what's sent meanwhile held on the box (`engine-swap`, as the keeper starts it;
   // updates/engine-swap.ts). Stays until it's done.
   else if (mode === "engine-swap") {
-    console.log(JSON.stringify({ swapped: await swapEngine() }));
+    if (argument === "--machine-helper" && machineHelperAvailable()) await handOverMachine();
+    else console.log(JSON.stringify({ swapped: await swapEngine() }));
   }
   // Kuvo's own programs here put back from the signed release this box runs, where one isn't what it
   // says (`repair`, as the keeper starts it: updates/repair.ts). A test's folder only takes a test's
@@ -1359,6 +1360,9 @@ if (main) {
   // COMPAT(beta.30 helper-handover): `helper hand-over --pid <helper>`, which serve starts. Goes once no box is from before beta.31.
   else if (mode === "helper" && process.argv[3] === "hand-over") {
     process.exitCode = handOverCommand(process.argv.slice(4));
+  }
+  else if (mode === "helper" && argument === "machine-start") {
+    process.exitCode = await startMachineInstall() ? 0 : 1;
   }
   else if (mode === "helper") {
     process.exitCode = helperCommand(process.argv.slice(3));

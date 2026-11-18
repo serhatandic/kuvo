@@ -64,6 +64,8 @@ export interface RenewalOptions {
   told: (state: RenewalRecord | null) => void
   /** Not now (the box is updating itself, which starts everything again anyway). */
   paused?: () => boolean
+  /** The machine is moving to its signed keeper, and will start the next bridge. */
+  keeperHandover?: () => boolean
   /** Whether the bundle in place runs on the engine it runs on, the one its keeper starts. */
   ready?: () => boolean
   /** Whether what keeps it running starts it again once it goes. */
@@ -94,6 +96,7 @@ export class Renewal {
   private heldAt = 0
   private quietSince?: number
   private going = false
+  private handingOver = false
   private seen?: string
   private newer?: string
   private checked = new Map<string, boolean | "checking">()
@@ -129,6 +132,23 @@ export class Renewal {
 
   look() {
     if (this.going) return
+    if (this.options.keeperHandover?.()) {
+      if (!this.handingOver) {
+        this.handingOver = true
+        this.options.hold(true)
+        return
+      }
+      const work = this.options.work()
+      if (!work.turns && !work.other) {
+        this.going = true
+        this.options.renew()
+      }
+      return
+    }
+    if (this.handingOver) {
+      this.handingOver = false
+      if (!this.holding) this.options.hold(false)
+    }
     const now = this.options.now?.() ?? Date.now()
     const build = this.newerInPlace()
     if (!build) {
