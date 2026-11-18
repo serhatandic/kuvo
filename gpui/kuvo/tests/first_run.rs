@@ -498,7 +498,7 @@ fn what_macos_must_allow_kuvo_helper_is_a_step_after_the_agents(cx: &mut TestApp
     click(cx, "first-run-next");
     assert_eq!(step(&workspace, cx), Step::Allow);
     // Each permission with the box's line and its own Open System Settings; Continue waits.
-    assert!(shown(cx, "permissions-step") && shown(cx, "permission-screenRecording-open") && shown(cx, "permission-accessibility-open"));
+    assert!(shown(cx, "permissions-step") && shown(cx, "permission-screenRecording-open") && shown(cx, "permission-accessibility-open") && shown(cx, "permission-fullDiskAccess-open"));
     click(cx, "first-run-next");
     assert_eq!(step(&workspace, cx), Step::Allow);
     // System Settings on Screen Recording, with the tile beside it holding the helper.
@@ -510,6 +510,7 @@ fn what_macos_must_allow_kuvo_helper_is_a_step_after_the_agents(cx: &mut TestApp
     stand_in.set_permissions(|permissions| {
         permissions.screen_recording = true;
         permissions.accessibility = true;
+        permissions.full_disk_access = true;
     });
     cx.executor().advance_clock(std::time::Duration::from_secs(1));
     cx.run_until_parked();
@@ -518,7 +519,7 @@ fn what_macos_must_allow_kuvo_helper_is_a_step_after_the_agents(cx: &mut TestApp
     // (A permission allowed in System Settings directly is read as the window comes back.)
     permissions.update(cx, |permissions, cx| permissions.read(cx));
     cx.run_until_parked();
-    assert!(shown(cx, "permission-accessibility-allowed") && !shown(cx, "first-run-not-now"));
+    assert!(shown(cx, "permission-accessibility-allowed") && shown(cx, "permission-fullDiskAccess-allowed") && !shown(cx, "first-run-not-now"));
     click(cx, "first-run-next");
     assert_eq!(step(&workspace, cx), Step::Where);
     // Back comes to it again, still one of the steps.
@@ -539,7 +540,7 @@ fn not_now_puts_off_what_the_step_asks_about_and_goes_on(cx: &mut TestAppContext
     click(cx, "first-run-not-now");
     assert_eq!(step(&workspace, cx), Step::Where);
     let later: Vec<_> = stand_in.seen_at("POST", "kuvo/box/permissions").iter().map(|seen| seen.body.as_ref().map(|body| body["later"].clone())).collect();
-    assert_eq!(later, [Some(json!("screenRecording")), Some(json!("accessibility"))]);
+    assert_eq!(later, [Some(json!("screenRecording")), Some(json!("accessibility")), Some(json!("fullDiskAccess"))]);
     assert_eq!(cx.opened_url(), None);
     // On to the end: the window opens with nothing over it.
     click(cx, "first-run-no-project");
@@ -551,7 +552,7 @@ fn not_now_puts_off_what_the_step_asks_about_and_goes_on(cx: &mut TestAppContext
 fn the_step_is_passed_over_where_nothing_needs_allowing(cx: &mut TestAppContext) {
     // Both allowed already: the agents go straight on to where to work.
     let stand_in = StandIn::first_run(Replies::Never, NOW, Scenario::Nothing);
-    stand_in.set_permissions(|permissions| *permissions = kuvo::stand_in::permissions::Permissions { screen_recording: true, accessibility: true, ..kuvo::stand_in::permissions::Permissions::nothing_allowed() });
+    stand_in.set_permissions(|permissions| *permissions = kuvo::stand_in::permissions::Permissions { screen_recording: true, accessibility: true, full_disk_access: true, ..kuvo::stand_in::permissions::Permissions::nothing_allowed() });
     let (workspace, cx) = open(cx, stand_in);
     click(cx, "first-run-next");
     click(cx, "first-run-next");

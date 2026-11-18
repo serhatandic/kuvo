@@ -580,7 +580,7 @@ private final class InTheTests {}
         try write(box.appending(path: "box/kind"), "machine\n")
         let key = box.appending(path: "box/keys/KUVO_KEY_GITHUB_TOKEN")
         try write(key, "machine-key")
-        let helper = try keeping(mode: "keep-machine")
+        let helper = try keeping(["--test-permissions", "full-disk-access"], mode: "keep-machine")
         defer { cleanUp([helper]) }
         until { !text(home.appending(path: "keep.parent")).isEmpty }
         #expect(text(home.appending(path: "keep.parent")).trimmingCharacters(in: .whitespacesAndNewlines) == String(helper.process.processIdentifier))
@@ -588,7 +588,9 @@ private final class InTheTests {}
         #expect(text(key) == "machine-key")
         #expect(!FileManager.default.fileExists(atPath: run.appending(path: "host.json").path))
         #expect(!FileManager.default.fileExists(atPath: home.appending(path: "serve.stdin").path))
-        #expect(!FileManager.default.fileExists(atPath: run.appending(path: "machine-folders-asked").path))
+        let facts = run.appending(path: "permissions.json")
+        until { json(facts)["fullDiskAccess"] as? Bool == true }
+        #expect(json(facts)["fullDiskAccess"] as? Bool == true)
     }
 
     @Test func itStartsNoBoxWhileAMoveIsUnfinished() throws {
@@ -808,9 +810,10 @@ private final class InTheTests {}
         #expect(json(facts)["screenRecording"] as? Bool == false)
         // Switched on in System Settings: the box, asked by a client, asks the helper, which notes
         // it before it answers.
-        try write(said, "screen-recording")
+        try write(said, "screen-recording,full-disk-access")
         let asked = try await post(json(run.appending(path: "host.json")), "/permissions", [:])
         #expect(asked.status == 200)
+        #expect(json(facts)["fullDiskAccess"] as? Bool == true)
         #expect(json(facts)["screenRecording"] as? Bool == true)
         #expect(json(facts)["accessibility"] as? Bool == false)
         #expect(json(facts)["pid"] as? Int == Int(helper.process.processIdentifier), "still the helper's own word, which the box checks")
@@ -829,7 +832,7 @@ private final class InTheTests {}
         let ran = try helper(["permissions", "--test-permissions-file", said.path])
         #expect(ran.status == 0)
         let answer = try #require(try JSONSerialization.jsonObject(with: Data(ran.output.utf8)) as? [String: Bool])
-        #expect(answer == ["screenRecording": false, "accessibility": true])
+        #expect(answer == ["screenRecording": false, "accessibility": true, "fullDiskAccess": false])
     }
 
     // MARK: kuvo-keys, the hand-over

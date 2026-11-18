@@ -26,7 +26,7 @@ import { asked, engineGet, readBridgeFile, readEngineFile } from "../engine/clie
 import { atWork, openFolders } from "../engine/models";
 import { moveInboxToBox, releaseWaiting } from "../engine/queue";
 import { listOf, textOf, writePrivate } from "../files";
-import { forgetMachineCron, machineFoldersAsked, machineHandoverDone, machineHelperAvailable, machineKeeperRuns, startMachineHelper } from "../helper";
+import { forgetMachineCron, machineHandoverDone, machineHelperAvailable, machineKeeperRuns, startMachineHelper } from "../helper";
 import { K, REAL_BOX, RUN, UPDATES } from "../home";
 import { agentsWorking, dataNow, isUpdating, keepData, newerVersion, noteUpdate, roomForData, takeUpdateLock, UPDATE_LOCK, updateOnTrial, versionOrder } from "./update";
 
@@ -258,12 +258,11 @@ async function keepInboxes(engine: Target, now: number): Promise<boolean> {
 }
 
 /** Moves a legacy Darwin machine to the signed keeper. The first quiet hand-over only switches
- * the launch job. Existing processes serve normally while the user answers the folder requests.
+ * the launch job. Existing processes serve normally until the workers are ready to hand over.
  * The second quiet hand-over restarts the detached engine and bridge under the signed keeper. */
 export async function handOverMachine({ clock = Date.now, wait = sleep }: SwapOptions = {}): Promise<void> {
   if (!machineHelperAvailable() || fs.existsSync(machineHandoverDone) || swapUnderWay(RUN)) return;
   const installed = machineKeeperRuns();
-  if (installed && !fs.existsSync(machineFoldersAsked)) return;
   const engine = runningEngine();
   if (!engine?.version || !engine.pid) return;
   const blocked = () => stoppedOnPurpose() || isUpdating() || updateOnTrial() || fs.existsSync(path.join(RUN, ".rolling-back"));

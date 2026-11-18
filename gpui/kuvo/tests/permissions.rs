@@ -128,8 +128,14 @@ fn settings_this_mac_opens_the_permission_with_the_tile(cx: &mut TestAppContext)
     click(cx, "row-allows-screenRecording-open-system-settings");
     assert_eq!(heads_up(&workspace, cx).read_with(cx, |heads_up, _| heads_up.tile()), Some(tile));
     assert_eq!(cx.windows().len(), 2);
-    // Allowed too: none is left to add, and the tile goes for good.
+    // The Files row can use the same tile to grant Full Disk Access.
     stand_in.set_permissions(|permissions| permissions.screen_recording = true);
+    wait(cx, SECOND);
+    assert!(!tile_open(&workspace, cx));
+    click(cx, "row-allows-fullDiskAccess-open-system-settings");
+    assert_eq!(cx.opened_url().as_deref(), Some("x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_AllFiles"));
+    assert_eq!(heads_up(&workspace, cx).read_with(cx, |heads_up, _| heads_up.tile()), Some(tile));
+    stand_in.set_permissions(|permissions| permissions.full_disk_access = true);
     wait(cx, SECOND);
     assert!(!tile_open(&workspace, cx) && heads_up(&workspace, cx).read_with(cx, |heads_up, _| heads_up.kept_tile()).is_none());
     wait(cx, SECOND);

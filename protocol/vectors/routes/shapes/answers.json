@@ -8449,6 +8449,9 @@
            },
            {
             "literal": "accessibility"
+           },
+           {
+            "literal": "fullDiskAccess"
            }
           ]
          },
@@ -8511,6 +8514,9 @@
            },
            {
             "literal": "accessibility"
+           },
+           {
+            "literal": "fullDiskAccess"
            }
           ]
          },

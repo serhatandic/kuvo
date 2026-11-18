@@ -40441,7 +40441,6 @@ function helperPlist(app, machine = false) {
 }
 var machineMark = path129.join(RUN, "machine-helper");
 var machineHandoverDone = path129.join(RUN, "machine-helper-adopted");
-var machineFoldersAsked = path129.join(RUN, "machine-folders-asked");
 function machineHelperAvailable() {
   return process.platform === "darwin" && !APP_FOLDER && recordedKind() !== "mac" && !!launchTools() && fs123.existsSync(helperProgram()) && /<key>KuvoHelperKeepsMachine<\/key>\s*<true\s*\/>/.test(textOf(path129.join(helperBundle(), "Contents", "Info.plist")) ?? "");
 }
@@ -40527,13 +40526,13 @@ async function startMachineInstall() {
     console.error("Kuvo Helper couldn’t be started. Sign in to this Mac and check that Kuvo is allowed in Login Items.");
     return false;
   }
-  const until = Date.now() + 480000;
+  const until = Date.now() + 120000;
   while (Date.now() < until && !fs123.existsSync(path129.join(RUN, "off"))) {
     if (machineKeeperRuns() && engineUp())
       return true;
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
-  console.error(fs123.existsSync(machineFoldersAsked) ? "Kuvo Helper or its engine didn’t finish starting." : "On that Mac, answer Kuvo Helper’s folder access requests, then try again.");
+  console.error("Kuvo Helper or its engine didn’t finish starting.");
   return false;
 }
 function forgetMachineCron() {
@@ -40903,8 +40902,6 @@ async function handOverMachine({ clock = Date.now, wait = sleep } = {}) {
   if (!machineHelperAvailable() || fs124.existsSync(machineHandoverDone) || swapUnderWay(RUN))
     return;
   const installed = machineKeeperRuns();
-  if (installed && !fs124.existsSync(machineFoldersAsked))
-    return;
   const engine = runningEngine();
   if (!engine?.version || !engine.pid)
     return;
@@ -46121,7 +46118,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "71e0afd1a4b8";
+var BRIDGE_VERSION = "5c9f8c551660";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -49276,7 +49273,7 @@ async function setUp2(tell, destination, name, kind) {
           throw new Failed(`The engine couldn’t be put on ${name}. ${lastLine(placed.stderr)}`.trim());
       }
     }
-    tell.step("starting", probe.kind.system === "darwin" && !probe.version ? "On that Mac, answer Kuvo Helper’s requests for Downloads, Desktop and Documents." : undefined);
+    tell.step("starting");
     const own = link ? ownKey(link) : null;
     const notes = JSON.stringify({ mac: own ? launcherID(own) : "", macName: ownName().replace(/[{}"\\]/g, ""), box: mine });
     const fresh = kind === "add" && judged.verdict === "free" && foundOf(probe.lines).length === 0 && appsOf(probe.lines) === 0 && !probe.id && !probe.version;
@@ -70314,9 +70311,11 @@ function wroteIt(pid, started) {
   const began = startedAt(pid);
   return began !== null && Math.abs(began - started) <= 3;
 }
+var FILES6 = { id: "fullDiskAccess", name: "Files", line: "For agents that work with your files anywhere on this Mac.", settings: "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_AllFiles", byHand: true };
 var PERMISSIONS = [
   { id: "screenRecording", name: "Screen Recording", line: "For agents that look at the screen.", settings: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture", byHand: true },
-  { id: "accessibility", name: "Accessibility", line: "For agents that click and type in other apps.", settings: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility", byHand: true }
+  { id: "accessibility", name: "Accessibility", line: "For agents that click and type in other apps.", settings: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility", byHand: true },
+  FILES6
 ];
 var LATER = () => path213.join(K, "box", "permissions-later.json");
 function putOff() {
@@ -70334,18 +70333,22 @@ function keepPutOff(later) {
   writePrivate(LATER(), JSON.stringify({ later: [...later].sort() }));
 }
 function boxPermissions() {
-  const applies = process.platform === "darwin" && !APP_FOLDER && recordedKind() === "mac";
+  const darwin = process.platform === "darwin" && !APP_FOLDER;
+  const ownMac = darwin && recordedKind() === "mac";
+  const machine = darwin && !ownMac && fs205.existsSync(machineMark);
+  const applies = ownMac || machine;
+  const permissions = ownMac ? PERMISSIONS : machine ? [FILES6] : [];
   const later = applies ? putOff() : new Set;
-  const said = (allowed) => ({
+  const said = (allowed = {}) => ({
     applies,
     name: applies ? HELPER_NAME : null,
-    known: allowed !== null,
-    screenRecording: allowed ? allowed.screenRecording : null,
-    accessibility: allowed ? allowed.accessibility : null,
+    known: Object.keys(allowed).length > 0,
+    screenRecording: allowed.screenRecording ?? null,
+    accessibility: allowed.accessibility ?? null,
     bundle: applies ? helperBundle() : null,
-    list: applies ? PERMISSIONS.map((each) => ({ ...each, allowed: allowed ? allowed[each.id] : null, asks: allowed !== null && !allowed[each.id] && !later.has(each.id) })) : []
+    list: permissions.map((each) => ({ ...each, allowed: allowed[each.id] ?? null, asks: allowed[each.id] === false && !later.has(each.id) }))
   });
-  const unknown = said(null);
+  const unknown = said();
   if (!applies)
     return unknown;
   let noted;
@@ -70358,10 +70361,14 @@ function boxPermissions() {
     return unknown;
   if (typeof noted.started !== "number" || !Number.isFinite(noted.started) || !wroteIt(noted.pid, noted.started))
     return unknown;
-  if (typeof noted.screenRecording !== "boolean" || typeof noted.accessibility !== "boolean")
+  if (ownMac && (typeof noted.screenRecording !== "boolean" || typeof noted.accessibility !== "boolean"))
     return unknown;
-  const allowed = { screenRecording: noted.screenRecording, accessibility: noted.accessibility };
-  const still = new Set([...later].filter((id) => PERMISSIONS.some((each) => each.id === id && !allowed[each.id])));
+  const allowed = {};
+  for (const { id } of permissions) {
+    if (typeof noted[id] === "boolean")
+      allowed[id] = noted[id];
+  }
+  const still = new Set([...later].filter((id) => PERMISSIONS.some((each) => each.id === id && allowed[each.id] !== true)));
   if (still.size !== later.size) {
     try {
       keepPutOff(still);
@@ -70405,6 +70412,8 @@ async function* permissionsRoute({ request, json }) {
   const now = boxPermissions();
   if (!now.applies)
     return yield* json(409, { message: "Nothing on this computer needs macOS's permission." });
+  if (!now.list.some((each) => each.id === id))
+    return yield* json(409, { message: "This permission doesn’t apply to Kuvo on this computer." });
   try {
     keepPutOff(new Set([...putOff(), id]));
   } catch {
@@ -71160,13 +71169,12 @@ async function computerPage(context) {
       allows.push(atLogin ? row({ id: "login-items", title: "Login Items", line: `Kuvo starts when you log in to ${where}.`, kind: "status", value: "On" }) : row({ id: "login-items", title: "Login Items", line: `Off, so Kuvo on ${where} doesn’t start at login.`, tone: "warning", kind: "actions", value: "Off", actions: [opensHere("open-login-items", "Open Login Items", LOGIN_ITEMS)] }));
     }
     for (const each of permissions.list) {
-      const words = { allowed: each.line, not: NOT_ALLOWED2[each.id] ?? "Not allowed." };
+      const words = { allowed: each.line, not: NOT_ALLOWED2[each.id] ?? each.line };
       if (each.allowed === false)
         allows.push(row({ id: `allows-${each.id}`, title: each.name, line: words.not, tone: "warning", kind: "actions", value: "Not allowed", actions: [opensHere(`open-${each.id}`, "Open System Settings", each.settings)] }));
       else
         allows.push(row({ id: `allows-${each.id}`, title: each.name, line: each.allowed ? words.allowed : `${helper} hasn’t said yet. ${words.allowed}`.trim(), kind: "status", value: each.allowed ? "Allowed" : "Not known yet" }));
     }
-    allows.push(row({ id: "allows-files", title: "Files and Folders", line: "macOS asks when an agent first opens Desktop, Documents or Downloads.", kind: "status", value: "Asked when needed" }));
     groups.push({ id: "macos", title: `What macOS Allows ${helper}`, note: `${helper} is the program your agents run under. Only you allow these, in System Settings.`, rows: allows });
   }
   return { id: "computer", title: computerTitle(context), groups };

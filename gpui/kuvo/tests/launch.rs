@@ -264,7 +264,7 @@ fn an_earlier_kuvo_code_s_sessions_are_moved_and_the_app_opens(cx: &mut TestAppC
     // (A Mac's own Kuvo that's had its first run, as one moved from an earlier Kuvo Code says
     // it has; all that macOS could ask about allowed already, so nothing else comes up.)
     let moved = StandIn::at(Replies::Never, NOW);
-    moved.set_permissions(|permissions| *permissions = kuvo::stand_in::permissions::Permissions { screen_recording: true, accessibility: true, ..kuvo::stand_in::permissions::Permissions::nothing_allowed() });
+    moved.set_permissions(|permissions| *permissions = kuvo::stand_in::permissions::Permissions { screen_recording: true, accessibility: true, full_disk_access: true, ..kuvo::stand_in::permissions::Permissions::nothing_allowed() });
     here.answers(&moved);
     let (launch, cx) = open(cx, installer, &here);
     assert_eq!(verbs(&bundle), ["status", "move"]);
@@ -570,7 +570,7 @@ fn after_a_move_what_macos_must_allow_kuvo_helper_is_asked_before_the_app_opens(
     cx.run_until_parked();
     assert!(!opened(&launch, cx));
     click(cx, "launch-not-now");
-    assert_eq!(moved.seen_at("POST", "kuvo/box/permissions").len(), 2);
+    assert_eq!(moved.seen_at("POST", "kuvo/box/permissions").len(), 3);
     assert!(opened(&launch, cx));
     assert!(shown(cx, "rail-settings") && !shown(cx, "permissions-step"));
 }

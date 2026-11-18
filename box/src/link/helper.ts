@@ -50,9 +50,8 @@ export function helperPlist(app: string, machine = false): string {
 `;
 }
 
-const machineMark = path.join(RUN, "machine-helper");
+export const machineMark = path.join(RUN, "machine-helper");
 export const machineHandoverDone = path.join(RUN, "machine-helper-adopted");
-export const machineFoldersAsked = path.join(RUN, "machine-folders-asked");
 
 export function machineHelperAvailable(): boolean {
   return process.platform === "darwin" && !APP_FOLDER && recordedKind() !== "mac" && !!launchTools()
@@ -139,14 +138,12 @@ export async function startMachineInstall(): Promise<boolean> {
     console.error("Kuvo Helper couldn’t be started. Sign in to this Mac and check that Kuvo is allowed in Login Items.");
     return false;
   }
-  const until = Date.now() + 480_000;
+  const until = Date.now() + 120_000;
   while (Date.now() < until && !fs.existsSync(path.join(RUN, "off"))) {
     if (machineKeeperRuns() && engineUp()) return true;
     await new Promise(resolve => setTimeout(resolve, 500));
   }
-  console.error(fs.existsSync(machineFoldersAsked)
-    ? "Kuvo Helper or its engine didn’t finish starting."
-    : "On that Mac, answer Kuvo Helper’s folder access requests, then try again.");
+  console.error("Kuvo Helper or its engine didn’t finish starting.");
   return false;
 }
 

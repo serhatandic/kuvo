@@ -353,7 +353,7 @@ async function setUp(tell: Telling, destination: string, name: string, kind: "ad
     }
 
     // Its start, by its own keeper: never cut short once it's begun.
-    tell.step("starting", probe.kind.system === "darwin" && !probe.version ? "On that Mac, answer Kuvo Helper’s requests for Downloads, Desktop and Documents." : undefined);
+    tell.step("starting");
     const own = link ? ownKey(link) : null;
     const notes = JSON.stringify({ mac: own ? launcherID(own) : "", macName: ownName().replace(/[{}"\\]/g, ""), box: mine });
     // A computer with nothing of Kuvo Code on it: no box found there, no Kuvo Code app's folder

@@ -4,6 +4,15 @@
 
 use serde_json::{Value, json};
 
+pub(super) fn settings_pane(pane: &str) -> String {
+    let extension = if pane == "Privacy_AllFiles" {
+        "com.apple.settings.PrivacySecurity.extension"
+    } else {
+        "com.apple.preference.security"
+    };
+    format!("x-apple.systempreferences:{extension}?{pane}")
+}
+
 /// How the stand-in's permissions stand.
 #[derive(Clone, Debug)]
 pub struct Permissions {
@@ -14,6 +23,7 @@ pub struct Permissions {
     pub known: bool,
     pub screen_recording: bool,
     pub accessibility: bool,
+    pub full_disk_access: bool,
     /// What's been put off ("Not Now").
     pub later: Vec<String>,
     /// Where its helper's bundle is.
@@ -24,12 +34,12 @@ pub struct Permissions {
 
 impl Default for Permissions {
     fn default() -> Permissions {
-        Permissions { applies: false, known: false, screen_recording: false, accessibility: false, later: Vec::new(), bundle: "/Users/sam/.kuvo-code/bin/Kuvo Helper.app".into(), fails: false }
+        Permissions { applies: false, known: false, screen_recording: false, accessibility: false, full_disk_access: false, later: Vec::new(), bundle: "/Users/sam/.kuvo-code/bin/Kuvo Helper.app".into(), fails: false }
     }
 }
 
 impl Permissions {
-    /// A Mac's own box whose helper says neither is allowed.
+    /// A Mac's own box whose helper says none are allowed.
     pub fn nothing_allowed() -> Permissions {
         Permissions { applies: true, known: true, ..Permissions::default() }
     }
@@ -40,7 +50,7 @@ impl Permissions {
         }
         let allowed = |allowed: bool| if self.known { json!(allowed) } else { Value::Null };
         let each = |id: &str, name: &str, line: &str, pane: &str, is: bool| {
-            json!({ "id": id, "name": name, "line": line, "allowed": allowed(is), "settings": format!("x-apple.systempreferences:com.apple.preference.security?{pane}"), "byHand": true, "asks": self.known && !is && !self.later.iter().any(|later| later == id) })
+            json!({ "id": id, "name": name, "line": line, "allowed": allowed(is), "settings": settings_pane(pane), "byHand": true, "asks": self.known && !is && !self.later.iter().any(|later| later == id) })
         };
         json!({
             "applies": true, "name": "Kuvo Helper", "known": self.known,
@@ -49,6 +59,7 @@ impl Permissions {
             "list": [
                 each("screenRecording", "Screen Recording", "For agents that look at the screen.", "Privacy_ScreenCapture", self.screen_recording),
                 each("accessibility", "Accessibility", "For agents that click and type in other apps.", "Privacy_Accessibility", self.accessibility),
+                each("fullDiskAccess", "Files", "For agents that work with your files anywhere on this Mac.", "Privacy_AllFiles", self.full_disk_access),
             ],
         })
     }
@@ -61,13 +72,13 @@ impl Permissions {
             _ if self.fails => (503, json!({ "message": "Kuvo on this Mac isn’t answering." })),
             "GET" => (200, self.said()),
             "POST" => match body["later"].as_str() {
-                Some(id @ ("screenRecording" | "accessibility")) if self.applies => {
+                Some(id @ ("screenRecording" | "accessibility" | "fullDiskAccess")) if self.applies => {
                     if !self.later.iter().any(|later| later == id) {
                         self.later.push(id.to_owned());
                     }
                     (200, self.said())
                 }
-                Some("screenRecording" | "accessibility") => (409, json!({ "message": "Nothing on this computer needs macOS's permission." })),
+                Some("screenRecording" | "accessibility" | "fullDiskAccess") => (409, json!({ "message": "Nothing on this computer needs macOS's permission." })),
                 _ => (400, json!({ "message": "Say which permission to ask about later." })),
             },
             _ => (405, json!({})),

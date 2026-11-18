@@ -781,11 +781,10 @@ async function computerPage(context: RouteContext): Promise<SettingsPage> {
         : row({ id: "login-items", title: "Login Items", line: `Off, so Kuvo on ${where} doesn’t start at login.`, tone: "warning", kind: "actions", value: "Off", actions: [opensHere("open-login-items", "Open Login Items", LOGIN_ITEMS)] }));
     }
     for (const each of permissions.list) {
-      const words = { allowed: each.line, not: NOT_ALLOWED[each.id] ?? "Not allowed." };
+      const words = { allowed: each.line, not: NOT_ALLOWED[each.id] ?? each.line };
       if (each.allowed === false) allows.push(row({ id: `allows-${each.id}`, title: each.name, line: words.not, tone: "warning", kind: "actions", value: "Not allowed", actions: [opensHere(`open-${each.id}`, "Open System Settings", each.settings)] }));
       else allows.push(row({ id: `allows-${each.id}`, title: each.name, line: each.allowed ? words.allowed : `${helper} hasn’t said yet. ${words.allowed}`.trim(), kind: "status", value: each.allowed ? "Allowed" : "Not known yet" }));
     }
-    allows.push(row({ id: "allows-files", title: "Files and Folders", line: "macOS asks when an agent first opens Desktop, Documents or Downloads.", kind: "status", value: "Asked when needed" }));
     groups.push({ id: "macos", title: `What macOS Allows ${helper}`, note: `${helper} is the program your agents run under. Only you allow these, in System Settings.`, rows: allows });
   }
   return { id: "computer", title: computerTitle(context), groups };

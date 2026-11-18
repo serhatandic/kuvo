@@ -136,8 +136,6 @@ fs.rmSync(path.join(home, "box.json"));
 write(path.join(home, helperBundle, "Contents/Info.plist"), "<key>KuvoHelperKeepsMachine</key><true/>");
 write(path.join(home, helperBundle, "Contents/MacOS/Kuvo Helper"), `#!/bin/sh
 export KUVO_MACHINE_HELPER_PID=$$ KUVO_TEST_KEEP_ROUND=1
-R="$HOME/.kuvo-code/run"
-[ ! -f "$R/machine-helper-adopted" ] || touch "$R/machine-folders-asked"
 sh "$HOME/.kuvo-code/bin/kuvo-start" keep &
 wait "$!"
 `, 0o755);
@@ -1074,7 +1072,7 @@ test("no list of machines while this box keeps its machines' links isn't none: i
   }
 });
 
-test("a legacy Darwin machine hands over at quiet points and keeps working while folder access is pending", {
+test("a legacy Darwin machine hands over at quiet points without waiting for file access", {
   skip: process.platform !== "darwin",
 }, async () => {
   const folder = path.join(base, "legacy-machine");
@@ -1082,7 +1080,6 @@ test("a legacy Darwin machine hands over at quiet points and keeps working while
   const root = path.join(folder, ".kuvo-code");
   const run = path.join(root, "run");
   const plist = path.join(folder, "Library/LaunchAgents/run.kuvo.code.machine.plist");
-  const mark = path.join(run, "machine-folders-asked");
   const engine = () => read(path.join(run, "engine.json"));
   const bridge = () => read(path.join(run, "bridge.json"));
   const until = async (check, message) => {
@@ -1128,9 +1125,6 @@ setInterval(() => {
     await until(() => fs.existsSync(path.join(run, "machine-keeper")), "Helper should take over the keeper");
     assert.match(fs.readFileSync(plist, "utf8"), /keep-machine/);
     assert.ok(fs.existsSync(path.join(run, "fake-launchd.booted-out")));
-    assert.equal(engine().pid, oldEngine, "engine keeps working while the user handles the prompts");
-    assert.equal(bridge().pid, oldBridge, "bridge keeps working while the user handles the prompts");
-    write(mark, "");
     await until(() => engine().pid !== oldEngine && bridge().pid !== oldBridge, "Helper should restart both workers");
     assert.equal(fs.readFileSync(path.join(root, "box/kind"), "utf8"), "machine\n");
     assert.equal(fs.readFileSync(path.join(root, "box/keys/KUVO_KEY_NOTION_TOKEN"), "utf8"), "retained");

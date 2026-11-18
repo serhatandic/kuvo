@@ -133,7 +133,7 @@ export const BOX_PERMISSIONS = object({
   screenRecording: nullable(bool),
   accessibility: nullable(bool),
   bundle: nullable(string),
-  list: list(object({ id: words("screenRecording", "accessibility"), name: string, line: string, allowed: nullable(bool), settings: string, byHand: bool, asks: bool })),
+  list: list(object({ id: words("screenRecording", "accessibility", "fullDiskAccess"), name: string, line: string, allowed: nullable(bool), settings: string, byHand: bool, asks: bool })),
 });
 
 /** This Mac's app as its box knows it (`kuvo/box/app`, PROTOCOL.md, "This Mac's app"): where it's

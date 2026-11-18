@@ -55,9 +55,6 @@ under_helper() {
   [ -n "${KUVO_MACHINE_HELPER_PID-}" ] &&
     [ "$KUVO_MACHINE_HELPER_PID" = "$(awk '{print $2}' "$R/machine-keeper" 2>/dev/null)" ]
 }
-asking_machine_folders() {
-  machine_helper && [ -f "$R/machine-helper-adopted" ] && [ ! -f "$R/machine-folders-asked" ]
-}
 machine_handover() { is "$(cat "$R/.machine-handover.pid" 2>/dev/null)" kuvo-link; }
 start_helper() {
   [ -f "$R/off" ] && return 0
@@ -327,7 +324,7 @@ keep)
     fi
     now=$(date +%s)
     if [ -f "$R/engine.now" ]; then fails=0; next=0; started=; fi
-    if ! up && [ ! -f "$R/stopped" ] && [ -f "$R/launch.env" ] && [ "$now" -ge "$next" ] && { ! swapping || [ -f "$R/engine.now" ]; } && ! machine_handover && ! asking_machine_folders; then
+    if ! up && [ ! -f "$R/stopped" ] && [ -f "$R/launch.env" ] && [ "$now" -ge "$next" ] && { ! swapping || [ -f "$R/engine.now" ]; } && ! machine_handover; then
       rm -f "$R/engine.now"
       # Down: one this started that ran under ten minutes counts as failing, and makes it
       # wait longer before the next start; one that ran longer starts the count again.
@@ -466,7 +463,6 @@ keep)
   done
   ;;
 engine)
-  if asking_machine_folders; then exit 0; fi
   if machine_helper && ! under_helper; then
     { [ -f "$R/stopped" ] || [ -f "$R/off" ] || [ -f "$R/paused" ]; } && exit 0
     up && exit 0

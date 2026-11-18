@@ -55,7 +55,6 @@ public final class BoxHelper {
     /// once it can be read.
     private var serveLacksFileKey = false
     private var finishing = false
-    private var preparingMachineFolders = false
     private var signals: [DispatchSourceSignal] = []
     private var looking: Task<Void, Never>?
     /// How it goes once everything it started has stopped (a test's only says so).
@@ -131,7 +130,7 @@ public final class BoxHelper {
         let saidFile = option("--test-permissions-file")
         let saidHere = option("--test-permissions") ?? ""
         let saidOnce = Set((saidFile.map { (try? String(contentsOfFile: $0, encoding: .utf8)) ?? "" } ?? saidHere).split(whereSeparator: { $0 == "," || $0.isWhitespace }).map(String.init))
-        let inThisProcess: @Sendable () -> Permissions = { Permissions(screenRecording: saidOnce.contains("screen-recording"), accessibility: saidOnce.contains("accessibility")) }
+        let inThisProcess: @Sendable () -> Permissions = { Permissions(screenRecording: saidOnce.contains("screen-recording"), accessibility: saidOnce.contains("accessibility"), fullDiskAccess: saidOnce.contains("full-disk-access")) }
         #else
         let inThisProcess: @Sendable () -> Permissions = { Permissions.asMacOSSays }
         #endif
@@ -431,9 +430,6 @@ public final class BoxHelper {
         if host == nil {
             startKeeper()
             looking = Task { await look() }
-            #if !DEBUG
-            Task { await prepareMachineFolders() }
-            #endif
             return
         }
         host?.failed = { [weak self] in Task { @MainActor in await self?.startHost() } }
@@ -539,7 +535,7 @@ public final class BoxHelper {
         while !finishing, !Task.isCancelled {
             noteAsking(asking())
             // (And at once where the note's gone: whatever took it away, the box hears again.)
-            if host != nil, round % 6 == 0 || !FileManager.default.fileExists(atPath: permissionsFile.path(percentEncoded: false)) { await notePermissions() }
+            if host == nil || round % 6 == 0 || !FileManager.default.fileExists(atPath: permissionsFile.path(percentEncoded: false)) { await notePermissions() }
             round += 1
             if serveLacksFileKey, let serve, serve.isRunning, host?.vaultFileKey().key != nil {
                 log.info("The vault's key can be read now: the box's server starts again with it")
@@ -549,46 +545,13 @@ public final class BoxHelper {
             if goes, keeper?.isRunning != true { return finish(0) }
             // A new build of it put in its place (an update): it goes, what it started with it (the
             // engine and the coding agents' bridge run on, detached), for launchd to start the new.
-            if !preparingMachineFolders && renewedInPlace {
+            if renewedInPlace {
                 log.notice("A new Kuvo Helper is in place: this one goes, for launchd to start it")
                 return finish(Self.renewed)
             }
-            try? await Task.sleep(for: .seconds(Self.lookEvery))
+            try? await Task.sleep(for: .seconds(host == nil ? min(Self.lookEvery, 5) : Self.lookEvery))
         }
     }
-
-    #if !DEBUG
-    private func prepareMachineFolders() async {
-        let completed = run.appending(path: "machine-folders-asked")
-        guard !goes, !finishing, !FileManager.default.fileExists(atPath: completed.path(percentEncoded: false)) else { return }
-
-        preparingMachineFolders = true
-        defer { preparingMachineFolders = false }
-        let alert = NSAlert()
-        alert.messageText = "Allow Kuvo to open your project folders"
-        alert.informativeText = "macOS will ask about Downloads, Desktop and Documents. Choose Allow in each prompt so your agents can open projects in those folders while you’re away."
-        alert.addButton(withTitle: "Continue")
-        NSApplication.shared.activate()
-        alert.runModal()
-        guard !finishing, !goes else { return }
-
-        // Reading one directory entry asks TCC even for an empty folder. macOS presents its
-        // three separate decisions in order, under this Helper's signed identity.
-        let account = home.deletingLastPathComponent()
-        await Task.detached {
-            for name in ["Downloads", "Desktop", "Documents"] {
-                let folder = account.appending(path: name).path(percentEncoded: false)
-                if let directory = opendir(folder) {
-                    _ = readdir(directory)
-                    closedir(directory)
-                }
-            }
-        }.value
-        if !finishing {
-            try? PrivateFile.write(Data(), to: completed)
-        }
-    }
-    #endif
 
     func noteAsking(_ open: Bool) {
         let file = run.appending(path: ".system-asking")
@@ -622,7 +585,7 @@ public final class BoxHelper {
         var info = proc_bsdinfo()
         let size = Int32(MemoryLayout<proc_bsdinfo>.size)
         guard proc_pidinfo(getpid(), PROC_PIDTBSDINFO, 0, &info, size) == size else { return }
-        let record: [String: Any] = ["v": 1, "pid": Int(getpid()), "started": Int(info.pbi_start_tvsec), "screenRecording": now.screenRecording, "accessibility": now.accessibility]
+        let record: [String: Any] = ["v": 1, "pid": Int(getpid()), "started": Int(info.pbi_start_tvsec), "screenRecording": now.screenRecording, "accessibility": now.accessibility, "fullDiskAccess": now.fullDiskAccess]
         guard let data = try? JSONSerialization.data(withJSONObject: record, options: [.sortedKeys]), (try? PrivateFile.write(data, to: permissionsFile)) != nil else { return }
         notedPermissions = now
     }
@@ -638,7 +601,7 @@ public final class BoxHelper {
         keeper?.terminate()
         host?.stop()
         noteAsking(false)
-        if host != nil { try? FileManager.default.removeItem(at: permissionsFile) }
+        try? FileManager.default.removeItem(at: permissionsFile)
         let children = [serve, keeper].compactMap { $0 }
         Task {
             // A few seconds for them to go, then SIGTERM, and a second after that, SIGKILL.
@@ -675,21 +638,36 @@ final class HelperApp: NSObject, NSApplicationDelegate {
 }
 
 /// What macOS allows the helper (and so everything the box runs under it), where macOS can be asked
-/// without asking you: Screen Recording and Accessibility. (Files and Folders and Local Network
-/// can't be asked about: they show only in what fails.)
+/// without prompting: Screen Recording, Accessibility and Full Disk Access.
 struct Permissions: Equatable, Sendable {
     var screenRecording: Bool
     var accessibility: Bool
+    var fullDiskAccess: Bool
 
     /// As macOS says of this process now. Neither call asks you anything. (macOS answers Screen
     /// Recording once for each process, and keeps to that answer however it changes after: only
     /// a process that never asked before hears the change.)
     nonisolated static var asMacOSSays: Permissions {
-        Permissions(screenRecording: CGPreflightScreenCaptureAccess(), accessibility: AXIsProcessTrusted())
+        Permissions(screenRecording: CGPreflightScreenCaptureAccess(), accessibility: AXIsProcessTrusted(),
+                    fullDiskAccess: canReadPrivacyDatabase)
+    }
+
+    /// Full Disk Access protects the system TCC database. Probe a read without querying it.
+    /// The older per-user database is a fallback if the system database is missing.
+    private nonisolated static var canReadPrivacyDatabase: Bool {
+        let relative = "Library/Application Support/com.apple.TCC/TCC.db"
+        var descriptor = Darwin.open("/" + relative, O_RDONLY | O_CLOEXEC)
+        if descriptor < 0, errno == ENOENT, let home = BoxHelper.accountHome() {
+            descriptor = Darwin.open(home.appending(path: relative).path(percentEncoded: false), O_RDONLY | O_CLOEXEC)
+        }
+        guard descriptor >= 0 else { return false }
+        defer { Darwin.close(descriptor) }
+        var byte: UInt8 = 0
+        return Darwin.read(descriptor, &byte, 1) == 1
     }
 
     /// As said in JSON (`permissions`).
-    var said: [String: Any] { ["screenRecording": screenRecording, "accessibility": accessibility] }
+    var said: [String: Any] { ["screenRecording": screenRecording, "accessibility": accessibility, "fullDiskAccess": fullDiskAccess] }
 
     /// As macOS says of this program now, asked by a process of its own that never asked before
     /// (`Kuvo Helper permissions`, its own child, so macOS asks about the same program): what you
@@ -714,8 +692,9 @@ struct Permissions: Equatable, Sendable {
                 // (A line of a few dozen bytes, all there once it has ended; it leaves nothing running.)
                 let data = output.fileHandleForReading.readDataToEndOfFile()
                 guard ended.terminationStatus == 0, let said = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-                      let screenRecording = said["screenRecording"] as? Bool, let accessibility = said["accessibility"] as? Bool else { return answer(nil) }
-                answer(Permissions(screenRecording: screenRecording, accessibility: accessibility))
+                      let screenRecording = said["screenRecording"] as? Bool, let accessibility = said["accessibility"] as? Bool,
+                      let fullDiskAccess = said["fullDiskAccess"] as? Bool else { return answer(nil) }
+                answer(Permissions(screenRecording: screenRecording, accessibility: accessibility, fullDiskAccess: fullDiskAccess))
             }
             do { try process.run() } catch { return answer(nil) }
             // No answer at five seconds (still running, or its output held open by something else):
