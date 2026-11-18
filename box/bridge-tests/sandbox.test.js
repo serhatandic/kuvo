@@ -1469,6 +1469,12 @@ test("on macOS, a command can't start what runs outside it, nor read another cop
 test("a command reaches its own conversation's SSH agent from the sandbox (the vault's SSH keys), and on macOS no other's, nor the app's connections to your machines", async () => {
   // (On macOS, this Mac's box: its agents are in a folder the sandbox hides.)
   const box = boxAt("ssh", !linux);
+  if (!linux) {
+    // The nested app box exercises the short socket path. Give it a home short enough for
+    // the socket itself, independently of the test runner's HOME and TMPDIR.
+    box.env.HOME = fs.realpathSync(fs.mkdtempSync("/tmp/k-ssh-"));
+    removeAtEnd(box.env.HOME);
+  }
   box.env.KUVO_VAULT_AGENTS = "1";
   const project = path.join(root, "ssh-project");
   const other = path.join(root, "ssh-other");
