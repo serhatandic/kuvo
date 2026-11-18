@@ -1,7 +1,7 @@
 // The scripts a box runs on a computer it sets up, over SSH (`ssh.ts`), each whole and run by `sh`
 // there: what's on it, the release's files and the engine put in place, its start and its start
-// after a restart, its link's own commands, and its removal. They need `sh`, `tar`, `sed` and a
-// SHA-256 tool there (`sha256sum`, or a Mac's `shasum`), nothing else.
+// after a restart, its link's own commands, and its removal. Account locking uses `lockf` on
+// macOS and `flock` on Linux.
 // Platform: each handles a Mac and Linux in the one script (the tools' names, `launchd` beside cron).
 // The computer's folder is always `~/.kuvo-code` there: its keeper names no other.
 
@@ -10,23 +10,62 @@ import { quote } from "../../shared/text";
 import { ADD_RESERVATION, LAUNCH_AGENT, REBOOT_TAG } from "../marks";
 
 const K = 'K="$HOME/.kuvo-code"';
-// A symlink records the whole reservation in one operation, even before Kuvo is installed.
-const reservation = `R="$HOME/${ADD_RESERVATION}"`;
-const owns = (token: string) => `[ "$(readlink "$R" 2>/dev/null)" = ${quote(token)} ]`;
+export const ACCOUNT_BUSY = 8;
+export const ACCOUNT_LOST = 73;
+export const ACCOUNT_ERROR = 74;
+export const ACCOUNT_RECOVER = 76;
+export const ACCOUNT_OLD = 77;
+export const RESERVATION_PREFIX = "guarded-";
 
-export const reserve = (token: string): string => `set -e
-${K}
-${reservation}
-[ ! -e "$R" ] && [ ! -L "$R" ] && ln -s ${quote(token)} "$R" 2>/dev/null && ${owns(token)} || exit 8`;
+// The marker reserves the account across SSH commands. An OS file lock covers each command
+// that changes it, including recovery. Keep the lock file's inode, and let foreground children
+// inherit fd 9 so it remains locked even if their SSH shell dies.
+const accountLock = (script: string, wait = 5): string => `A="$HOME/${ADD_RESERVATION}"
+claimed() { [ -e "$A" ] || [ -L "$A" ]; }
+if [ -L "$A.lock" ] || { [ -e "$A.lock" ] && [ ! -f "$A.lock" ]; }; then
+  echo "The Kuvo Code account lock must be a regular file." >&2
+  exit ${ACCOUNT_ERROR}
+fi
+(umask 077; : >>"$A.lock") || exit ${ACCOUNT_ERROR}
+(
+  case "$(uname -s)" in
+    Darwin) /usr/bin/lockf -t ${wait} 9 ;;
+    *) flock -w ${wait} -E 75 9 ;;
+  esac
+  locked=$?
+  if [ "$locked" -ne 0 ]; then
+    if [ "$locked" -eq 75 ] && claimed; then exit ${ACCOUNT_BUSY}; fi
+    exit ${ACCOUNT_ERROR}
+  fi
+  trap '' HUP
+${script}
+) 9<>"$A.lock"`;
 
-export const release = (token: string): string => `${K}
-${reservation}
-if ${owns(token)}; then rm -f "$R"; fi`;
+const owns = (token: string) => `[ "$(readlink "$A" 2>/dev/null)" = ${quote(token)} ]`;
 
-export const reserved = (token: string, script: string): string => `${K}
-${reservation}
-${owns(token)} || exit 8
-${script}`;
+export const reserve = (token: string, previous?: string): string => accountLock(`
+if claimed; then
+  prior=$(readlink "$A") || exit ${ACCOUNT_ERROR}
+  case "$prior" in
+    ${RESERVATION_PREFIX}*) ;;
+    *) exit ${ACCOUNT_OLD} ;;
+  esac
+  ${previous ? `${owns(previous)} || exit ${ACCOUNT_BUSY}
+  rm -f "$A" || exit ${ACCOUNT_ERROR}` : `printf '%s\\n' "$prior"; exit ${ACCOUNT_RECOVER}`}
+${previous ? `else
+  exit ${ACCOUNT_LOST}` : ""}
+fi
+ln -s ${quote(token)} "$A" || exit ${ACCOUNT_ERROR}`, 0);
+
+export const release = (token: string): string => accountLock(`
+if claimed; then
+  prior=$(readlink "$A") || exit ${ACCOUNT_ERROR}
+  if [ "$prior" = ${quote(token)} ]; then rm -f "$A"; fi
+fi`);
+
+export const reserved = (token: string, script: string): string => accountLock(`
+${owns(token)} || exit ${ACCOUNT_LOST}
+${script}`);
 
 /** A dollar sign, where a script's own `${…}` stands in a template here. */
 const D = "$";
@@ -291,9 +330,7 @@ KUVO_AT_WORK
  * keeps, and the folder of Kuvo Code's app there (`desktop`, the key it's paired by as one of
  * your devices). The rest of its folder stays, with its sessions. Prints `kept` (another Mac uses it), or what its
  * uninstall said (JSON); exit 1 when that couldn't stop everything. */
-export const uninstall = (version: string, key: string, only: boolean, token?: string): string => String.raw`${K}
-${reservation}
-${token ? owns(token) : '[ ! -L "$R" ]'} || exit 8
+export const uninstall = (version: string, key: string, only: boolean): string => String.raw`${K}
 ${engineOf(version)}
 # (The key Kuvo Code's app there is known by among your devices, which the box that removes this
 # computer takes off them too: with or without a Kuvo Code that runs. On a Mac the app keeps it in

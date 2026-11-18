@@ -1871,6 +1871,9 @@ client connected: a client's Computers area and its switcher draw it, and ask no
     - `hostKeyChanged`: the key differs from one the box kept. `trust` puts the new one in its
       place: the old key's line goes, with every other key kept under that host's name. A key that differs from one in your own known hosts is never asked about: the try
       fails, saying to remove it with `ssh-keygen -R`.
+    - `recoverAccount`: an earlier attempt left the SSH account marked in use and no remote
+      command holds its write lock. `recover` checks the lock and the mark again, then gives the
+      account to this attempt. Commands from the earlier attempt can no longer write there.
     `cancel`, on each, stops the try.
   - `DELETE kuvo/computers/add/<id>` stops one under way (at its next step: what it runs there
     now ends first, and its start is never cut short; it says `stopping` meanwhile, then leaves
@@ -1879,9 +1882,11 @@ client connected: a client's Computers area and its switcher draw it, and ask no
     off there again (stopped, its start after a restart removed, the keys and sign-ins copied
     there deleted), and a failure's words say so; where that couldn't be done the try fails,
     saying it may still run there.
-  - The reservation covers installation, copying keys and sign-ins, and joining the setup.
-    Only its owner can roll back a failed addition. If SSH drops during a write and the box cannot
-    confirm that it ended, the reservation stays in place to protect the account.
+  - Adding, updating, setting up again and uninstalling over SSH all reserve the account before
+    probing it, through their last change. The account's home holds the reservation and the
+    OS file lock used by each remote write. Only the reservation's owner can roll back a failed
+    addition. If SSH drops during a write and the box cannot confirm that it ended, the attempt
+    stops and leaves the reservation for recovery. A failed release is reported with the result.
   - **What it does**, in order: connects with the keys and agent of the box's computer (never a
     password; refused, it tries once through an agent of its own that offers the first few SSH keys
     in the vault, "Vault"); takes an atomic reservation on the SSH account, then probes the

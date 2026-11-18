@@ -194,8 +194,8 @@ box)
   [ -f "$R/off" ] && exit 0
   is "$(cat "$R/box.pid" 2>/dev/null)" kuvo-start && exit 0
   cd "$K" || exit 0
-  # This script (kuvo-start, or the copy below), as the keeper.
-  env -i HOME="$HOME" PATH="$PATH" "$S" sh "$0" keep </dev/null >/dev/null 2>&1 &
+  # This script (kuvo-start, or the copy below), as the keeper. It outlives any SSH account lock.
+  env -i HOME="$HOME" PATH="$PATH" "$S" sh "$0" keep </dev/null >/dev/null 2>&1 9>&- &
   ;;
 keep)
   echo $$ >"$R/box.pid"

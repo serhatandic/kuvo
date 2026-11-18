@@ -184,8 +184,9 @@ class Reach {
 
   /** Runs `script` there; its answer when it ran (whatever its status), or a `Failed` for a
    * connection that didn't come about. `cut`: ended with the try when it's stopped (only what's
-   * safe cut short); `anyway`: run though the try was stopped (its own tidying up). */
-  async run(script: string, options: { input?: Buffer | { file: string }; sent?: (bytes: number, total: number) => void; cut?: boolean; most?: number; anyway?: boolean } = {}): Promise<Ran> {
+   * safe cut short); `anyway`: run though the try was stopped (its own tidying up).
+   * `once`: never resend a command whose completion might be unknown. */
+  async run(script: string, options: { input?: Buffer | { file: string }; sent?: (bytes: number, total: number) => void; cut?: boolean; most?: number; anyway?: boolean; once?: boolean } = {}): Promise<Ran> {
     for (let tries = 0; ; tries++) {
       if (!options.anyway) this.tell.check();
       const elsewhere = this.target !== this.destination;
@@ -195,7 +196,7 @@ class Reach {
         this.reached = true;
         return ran;
       }
-      if (options.anyway) throw unreached(this.name, lastLine(ran.stderr));
+      if (options.anyway || options.once) throw unreached(this.name, lastLine(ran.stderr));
       this.tell.check();
       // (Not there, or not the key known for it at another address: the next address, as a try of its own.)
       if ((trouble.kind === "unreachable" || (elsewhere && trouble.kind !== "refused")) && await this.next(lastLine(ran.stderr))) {
@@ -273,31 +274,114 @@ const UNINSTALL_STEPS = [["checking", "Reaching it"], ["removing", "Stopping and
  * from its link's key, never the key itself. */
 const launcherID = (key: string): string => crypto.createHash("sha256").update(`kuvo-launcher\n${key}`).digest("hex").slice(0, 32);
 
-// Sets a computer up at `destination`, or again: everything to its box running there as one of yours.
-async function setUp(tell: Telling, destination: string, name: string, kind: "add" | "setup" | "update"): Promise<void> {
-  const reach = new Reach(destination, name, tell, kind === "add" ? [] : otherAddressesOf(destination));
-  const token = crypto.randomBytes(24).toString("hex");
-  let reserving = false;
-  let mutationFinished = true;
-  const occupied = () => new Failed(`Kuvo Code is already being added on ${name}. Try again once that finishes.`);
-  const reserved: Reach["run"] = async (script, options) => {
-    tell.check();
-    // A disconnected SSH command may still be mutating the account. Keep its reservation.
-    mutationFinished = false;
-    const ran = await reach.run(scripts.reserved(token, script), options);
-    mutationFinished = ran.status !== null;
-    if (ran.status === 8) throw occupied();
+// Attempts from this box are still active between remote commands, even through a different address.
+const activeReservations = new Set<string>();
+
+class AccountReservation {
+  readonly token = scripts.RESERVATION_PREFIX + crypto.randomBytes(24).toString("hex");
+  private finished = true;
+  get canRollBack(): boolean { return this.finished; }
+
+  constructor(private reach: Reach, private name: string, private tell: Telling) {}
+
+  private busy(): Failed {
+    return new Failed(`Another Kuvo Code change is in progress on ${this.name}. Try again once it finishes.`);
+  }
+
+  private cannotPrepare(ran: Ran): Failed {
+    console.error(`Kuvo couldn't prepare the SSH account on ${this.name} (status ${ran.status}): ${lastLine(ran.stderr)}`);
+    return new Failed(`Kuvo Code couldn’t prepare the OS account on ${this.name}. Check that you can write to your home folder there, then try again.`);
+  }
+
+  private async acquire(): Promise<void> {
+    const claim = await this.reach.run(scripts.reserve(this.token), { most: 30_000 });
+    if (claim.status === 0) return;
+    if (claim.status === scripts.ACCOUNT_BUSY) throw this.busy();
+    if (claim.status === scripts.ACCOUNT_OLD) {
+      throw new Failed(`An older version of Kuvo Code left an unfinished change on ${this.name}. Restart ${this.name} to end that change, then sign in to the same OS account and run rm -f ~/.kuvo-code-adding before trying again.`);
+    }
+    const prior = claim.stdout.trim();
+    if (claim.status !== scripts.ACCOUNT_RECOVER || !/^guarded-[0-9a-f]{48}$/.test(prior)) throw this.cannotPrepare(claim);
+    if (activeReservations.has(prior)) throw this.busy();
+    const answer = await this.tell.ask({
+      id: "recoverAccount", title: `Continue on ${this.name}?`,
+      message: "An earlier Kuvo Code change left this account marked in use. Kuvo Code checked that it isn’t changing the account now. Clear the mark to stop the earlier attempt and continue this one.",
+      facts: [],
+      answers: [{ id: "cancel", label: "Cancel", kind: "plain" }, { id: "recover", label: "Clear and Continue", kind: "primary" }],
+    });
+    if (answer !== "recover") {
+      stopFrom(this.tell);
+      throw new Stopped();
+    }
+    const retried = await this.reach.run(scripts.reserve(this.token, prior), { most: 30_000 });
+    if (retried.status === scripts.ACCOUNT_BUSY) throw this.busy();
+    if (retried.status === scripts.ACCOUNT_LOST) throw new Failed(`The account on ${this.name} changed while you were deciding. Try again.`);
+    if (retried.status !== 0) throw this.cannotPrepare(retried);
+  }
+
+  private interrupted(): Failed {
+    return new Failed(`Kuvo Code lost contact with ${this.name} during a change. Try again to check whether it finished.`);
+  }
+
+  readonly run: Reach["run"] = async (script, options) => {
+    if (!options?.anyway) this.tell.check();
+    if (!this.finished) throw this.interrupted();
+    this.finished = false;
+    let ran: Ran;
+    try {
+      ran = await this.reach.run(scripts.reserved(this.token, script), { ...options, once: true });
+    } catch {
+      throw this.interrupted();
+    }
+    if (ran.status === null) throw this.interrupted();
+    this.finished = true;
+    if (ran.status === scripts.ACCOUNT_BUSY) throw this.busy();
+    if (ran.status === scripts.ACCOUNT_LOST) throw new Failed(`The account on ${this.name} was cleared for another attempt. Try again.`);
+    if (ran.status === scripts.ACCOUNT_ERROR) throw this.cannotPrepare(ran);
     return ran;
   };
-  try {
-    tell.step("checking", `Connecting to ${name}`);
-    const mine = boxVersion();
-    const files = ownFiles();
-    if (!files || !mine) throw new Failed(`Kuvo Code on ${ownName()} has no files of its own to give another computer yet. Update Kuvo Code here, then try again.`);
-    reserving = true;
-    const claim = await reach.run(scripts.reserve(token));
-    if (claim.status === 8) throw occupied();
-    if (claim.status !== 0) throw new Failed(`Kuvo Code couldn’t reserve the OS account on ${name}. ${lastLine(claim.stderr)}`.trim());
+
+  async use(work: () => Promise<void>): Promise<void> {
+    let acquired = false;
+    let failure: unknown;
+    activeReservations.add(this.token);
+    try {
+      await this.acquire();
+      acquired = true;
+      await work();
+    } catch (error) {
+      failure = error;
+      throw error;
+    } finally {
+      try {
+        if (acquired && this.finished) await this.release(failure);
+      } finally {
+        activeReservations.delete(this.token);
+        await this.reach.close();
+      }
+    }
+  }
+
+  private async release(failure: unknown): Promise<void> {
+    const released = await this.reach.run(scripts.release(this.token), { anyway: true, most: 15_000 }).catch(() => null);
+    if (released?.status === 0) return;
+    console.error(`Kuvo couldn't clear the SSH reservation on ${this.name} (status ${released?.status}): ${lastLine(released?.stderr ?? "")}`);
+    const message = failure instanceof Error && !(failure instanceof Stopped) ? `${failure.message} ` : "";
+    const clearing = `couldn’t clear the account on ${this.name} for the next change. The next time you connect, Kuvo Code can check and offer to clear it.`;
+    throw new Failed(failure ? `${message}Kuvo Code ${clearing}` : `Kuvo Code finished the change but ${clearing}`);
+  }
+}
+
+// Sets a computer up at `destination`, or again: everything to its box running there as one of yours.
+async function setUp(tell: Telling, destination: string, name: string, kind: "add" | "setup" | "update"): Promise<void> {
+  tell.step("checking", `Connecting to ${name}`);
+  const mine = boxVersion();
+  const files = ownFiles();
+  if (!files || !mine) throw new Failed(`Kuvo Code on ${ownName()} has no files of its own to give another computer yet. Update Kuvo Code here, then try again.`);
+  const reach = new Reach(destination, name, tell, kind === "add" ? [] : otherAddressesOf(destination));
+  const account = new AccountReservation(reach, name, tell);
+  const reserved = account.run;
+  await account.use(async () => {
     const answer = await reach.run(scripts.probe(ENGINE_VERSION), { cut: true, most: 120_000 });
     if (answer.status !== 0) throw new Failed(`${name} couldn’t be checked. ${lastLine(answer.stderr)}`.trim());
     const probe = probed(answer.stdout);
@@ -403,17 +487,15 @@ async function setUp(tell: Telling, destination: string, name: string, kind: "ad
       }
       tell.step("joining");
       const identity = /^id ([0-9a-f]{32})$/m.exec(started.stdout)?.[1] ?? probe.id;
-      const computer = await join(reserved, destination, name, identity, token);
+      const computer = await join(reserved, destination, name, identity, account.token);
       unjoined = false;
       tell.came(computer);
     } catch (error) {
       // A competing setup enrolled this account after the probe. Its data belongs to that setup.
-      if (!unjoined || !mutationFinished || error instanceof AccountOccupied) throw error;
+      if (!unjoined || !account.canRollBack || error instanceof AccountOccupied) throw error;
       // (Run though the try was stopped: this is its own tidying up.)
       // (With no key of this box's to let go there, as when its link has none: undone all the same.)
-      mutationFinished = false;
-      const undone = await reach.run(scripts.uninstall(ENGINE_VERSION, own ?? "", true, token), { most: 600_000, anyway: true }).catch(() => null);
-      mutationFinished = undone !== null && undone.status !== null;
+      const undone = await reserved(scripts.uninstall(ENGINE_VERSION, own ?? "", true), { most: 600_000, anyway: true }).catch(() => null);
       const still = `Kuvo Code may still be running on ${name}, with the keys and sign-ins copied there. Add ${name} again, then uninstall it from its page.`;
       if (error instanceof Stopped || tell.signal.aborted) {
         if (undone?.status !== 0) throw new Failed(`This was stopped after Kuvo Code had started on ${name}, and it couldn’t be stopped there again. ${still}`, true, `${name} is still running Kuvo Code`);
@@ -422,10 +504,7 @@ async function setUp(tell: Telling, destination: string, name: string, kind: "ad
       const failure = error instanceof Failed ? error : new Failed(error instanceof Error && error.message ? error.message : "Something went wrong.");
       throw new Failed(`${failure.message} ${undone?.status === 0 ? `Kuvo Code was stopped on ${name} again, and the keys and sign-ins copied there were deleted.` : still}`, failure.again, failure.title);
     }
-  } finally {
-    if (reserving && mutationFinished) await reach.run(scripts.release(token), { anyway: true, most: 15_000 }).catch(() => {});
-    await reach.close();
-  }
+  });
 }
 
 // Signs the computer into your setup: this box's keys and documents given over SSH (the trust
@@ -568,8 +647,9 @@ export function beginUninstall(key: string): Running | null {
   if (now) stopTry(now);
   return begin("uninstall", at.destination, at.name, UNINSTALL_STEPS, async tell => {
     const reach = new Reach(at.destination, at.name, tell, otherAddressesOf(at.destination));
-    try {
-      tell.step("checking", `Connecting to ${at.name}`);
+    const account = new AccountReservation(reach, at.name, tell);
+    tell.step("checking", `Connecting to ${at.name}`);
+    await account.use(async () => {
       const answer = await reach.run(scripts.probe(ENGINE_VERSION), { cut: true, most: 120_000 });
       if (answer.status !== 0) throw new Failed(`${at.name} couldn’t be checked. ${lastLine(answer.stderr)}`.trim());
       const link = readLink();
@@ -582,7 +662,7 @@ export function beginUninstall(key: string): Running | null {
       const only = macs.size === 0;
       tell.step("removing", only ? undefined : "Another Mac uses it too, so Kuvo Code stays there");
       // (Never cut short: a removal half done would leave it running with nothing to start it.)
-      const ran = await reach.run(scripts.uninstall(ENGINE_VERSION, own, only), { most: 600_000 });
+      const ran = await account.run(scripts.uninstall(ENGINE_VERSION, own, only), { most: 600_000 });
       if (ran.status !== 0) {
         let said: unknown = null;
         try { said = JSON.parse(ran.stdout.trim().split("\n").pop() ?? ""); } catch {}
@@ -592,9 +672,7 @@ export function beginUninstall(key: string): Running | null {
       const removed = removeHere(key);
       // (Gone from the list already, as when it was asked twice: done all the same.)
       if (removed.status !== 200 && removed.status !== 404) throw new Failed(isObject(removed.value) && typeof removed.value.message === "string" ? removed.value.message : `${ownName()} couldn’t take ${at.name} off its list.`);
-    } finally {
-      await reach.close();
-    }
+    });
   });
 }
 

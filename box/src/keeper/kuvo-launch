@@ -225,7 +225,7 @@ if [ -n "$bridge_only" ]; then
   try=0
   while :; do
     : >"$R/agents.log"
-    KUVO_AGENTS_REMOTE=1 KUVO_AGENTS_KEPT=1 KUVO_AGENTS_HOME="$K/agents" KUVO_HOME="$K" KUVO_AGENTS_PORT="$aport" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$S" "$K/engine/$V/opencode" --config=/dev/null --no-env-file "$K/bin/kuvo-agents.js" >>"$R/agents.log" 2>&1 </dev/null &
+    KUVO_AGENTS_REMOTE=1 KUVO_AGENTS_KEPT=1 KUVO_AGENTS_HOME="$K/agents" KUVO_HOME="$K" KUVO_AGENTS_PORT="$aport" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$S" "$K/engine/$V/opencode" --config=/dev/null --no-env-file "$K/bin/kuvo-agents.js" >>"$R/agents.log" 2>&1 </dev/null 9>&- &
     apid=$!
     echo "$apid" >"$R/agents.pid"
     i=0; until grep -q '"url"' "$R/agents.log" 2>/dev/null || ! kill -0 "$apid" 2>/dev/null || [ $i -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
@@ -234,7 +234,8 @@ if [ -n "$bridge_only" ]; then
     aport=$(( $(od -An -N2 -tu2 /dev/urandom | tr -d ' ') % 40000 + 20000 ))
   done
 fi
-env -u KUVO_AGENTS_PASSWORD -u BUN_BE_BUN "$S" "$K/engine/$V/opencode" serve --port "$port" --hostname 127.0.0.1 >"$R/engine.log" 2>&1 </dev/null &
+# The engine outlives the SSH start. Leave its account lock with the foreground work.
+env -u KUVO_AGENTS_PASSWORD -u BUN_BE_BUN "$S" "$K/engine/$V/opencode" serve --port "$port" --hostname 127.0.0.1 >"$R/engine.log" 2>&1 </dev/null 9>&- &
 pid=$!
 i=0
 until grep -q "server listening" "$R/engine.log" 2>/dev/null; do

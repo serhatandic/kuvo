@@ -45338,7 +45338,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "0561bd947171";
+var BRIDGE_VERSION = "866bc1d427dd";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -46802,19 +46802,54 @@ var ADD_RESERVATION = ".kuvo-code-adding";
 
 // box/src/link/add/scripts.ts
 var K2 = 'K="$HOME/.kuvo-code"';
-var reservation = `R="$HOME/${ADD_RESERVATION}"`;
-var owns = (token) => `[ "$(readlink "$R" 2>/dev/null)" = ${quote(token)} ]`;
-var reserve = (token) => `set -e
-${K2}
-${reservation}
-[ ! -e "$R" ] && [ ! -L "$R" ] && ln -s ${quote(token)} "$R" 2>/dev/null && ${owns(token)} || exit 8`;
-var release = (token) => `${K2}
-${reservation}
-if ${owns(token)}; then rm -f "$R"; fi`;
-var reserved = (token, script) => `${K2}
-${reservation}
-${owns(token)} || exit 8
-${script}`;
+var ACCOUNT_BUSY = 8;
+var ACCOUNT_LOST = 73;
+var ACCOUNT_ERROR = 74;
+var ACCOUNT_RECOVER = 76;
+var ACCOUNT_OLD = 77;
+var RESERVATION_PREFIX = "guarded-";
+var accountLock = (script, wait = 5) => `A="$HOME/${ADD_RESERVATION}"
+claimed() { [ -e "$A" ] || [ -L "$A" ]; }
+if [ -L "$A.lock" ] || { [ -e "$A.lock" ] && [ ! -f "$A.lock" ]; }; then
+  echo "The Kuvo Code account lock must be a regular file." >&2
+  exit ${ACCOUNT_ERROR}
+fi
+(umask 077; : >>"$A.lock") || exit ${ACCOUNT_ERROR}
+(
+  case "$(uname -s)" in
+    Darwin) /usr/bin/lockf -t ${wait} 9 ;;
+    *) flock -w ${wait} -E 75 9 ;;
+  esac
+  locked=$?
+  if [ "$locked" -ne 0 ]; then
+    if [ "$locked" -eq 75 ] && claimed; then exit ${ACCOUNT_BUSY}; fi
+    exit ${ACCOUNT_ERROR}
+  fi
+  trap '' HUP
+${script}
+) 9<>"$A.lock"`;
+var owns = (token) => `[ "$(readlink "$A" 2>/dev/null)" = ${quote(token)} ]`;
+var reserve = (token, previous) => accountLock(`
+if claimed; then
+  prior=$(readlink "$A") || exit ${ACCOUNT_ERROR}
+  case "$prior" in
+    ${RESERVATION_PREFIX}*) ;;
+    *) exit ${ACCOUNT_OLD} ;;
+  esac
+  ${previous ? `${owns(previous)} || exit ${ACCOUNT_BUSY}
+  rm -f "$A" || exit ${ACCOUNT_ERROR}` : `printf '%s\\n' "$prior"; exit ${ACCOUNT_RECOVER}`}
+${previous ? `else
+  exit ${ACCOUNT_LOST}` : ""}
+fi
+ln -s ${quote(token)} "$A" || exit ${ACCOUNT_ERROR}`, 0);
+var release = (token) => accountLock(`
+if claimed; then
+  prior=$(readlink "$A") || exit ${ACCOUNT_ERROR}
+  if [ "$prior" = ${quote(token)} ]; then rm -f "$A"; fi
+fi`);
+var reserved = (token, script) => accountLock(`
+${owns(token)} || exit ${ACCOUNT_LOST}
+${script}`);
 var D = "$";
 var SUM = `sum_of() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi; }`;
 var engineOf2 = (version) => `E="$K/engine/${version}/opencode"; [ -x "$E" ] || E=$(for d in "$K"/engine/*/; do [ -x "\${d}opencode" ] && printf '%s\\n' "\${d}opencode"; done | tail -n 1)`;
@@ -47009,9 +47044,7 @@ const runs = (pid, program) => {
 })();
 KUVO_AT_WORK
 (cd "$K" && KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$E" --config=/dev/null --no-env-file "$S") 2>/dev/null | grep '^working ' || echo "working unknown"`;
-var uninstall = (version, key, only, token) => String.raw`${K2}
-${reservation}
-${token ? owns(token) : '[ ! -L "$R" ]'} || exit 8
+var uninstall = (version, key, only) => String.raw`${K2}
 ${engineOf2(version)}
 # (The key Kuvo Code's app there is known by among your devices, which the box that removes this
 # computer takes off them too: with or without a Kuvo Code that runs. On a Mac the app keeps it in
@@ -48368,7 +48401,7 @@ class Reach {
         this.reached = true;
         return ran;
       }
-      if (options.anyway)
+      if (options.anyway || options.once)
         throw unreached(this.name, lastLine(ran.stderr));
       this.tell.check();
       if ((trouble.kind === "unreachable" || elsewhere && trouble.kind !== "refused") && await this.next(lastLine(ran.stderr))) {
@@ -48435,33 +48468,129 @@ var UPDATE_STEPS = [["checking", "Checking it"], ["files", "Copying the update"]
 var UNINSTALL_STEPS = [["checking", "Reaching it"], ["removing", "Stopping and removing Kuvo Code"], ["forgetting", "Taking it off your computers"]];
 var launcherID = (key) => crypto53.createHash("sha256").update(`kuvo-launcher
 ${key}`).digest("hex").slice(0, 32);
-async function setUp2(tell, destination, name, kind) {
-  const reach = new Reach(destination, name, tell, kind === "add" ? [] : otherAddressesOf(destination));
-  const token = crypto53.randomBytes(24).toString("hex");
-  let reserving = false;
-  let mutationFinished = true;
-  const occupied = () => new Failed(`Kuvo Code is already being added on ${name}. Try again once that finishes.`);
-  const reserved2 = async (script, options) => {
-    tell.check();
-    mutationFinished = false;
-    const ran = await reach.run(reserved(token, script), options);
-    mutationFinished = ran.status !== null;
-    if (ran.status === 8)
-      throw occupied();
+var activeReservations = new Set;
+
+class AccountReservation {
+  reach;
+  name;
+  tell;
+  token = RESERVATION_PREFIX + crypto53.randomBytes(24).toString("hex");
+  finished = true;
+  get canRollBack() {
+    return this.finished;
+  }
+  constructor(reach, name, tell) {
+    this.reach = reach;
+    this.name = name;
+    this.tell = tell;
+  }
+  busy() {
+    return new Failed(`Another Kuvo Code change is in progress on ${this.name}. Try again once it finishes.`);
+  }
+  cannotPrepare(ran) {
+    console.error(`Kuvo couldn't prepare the SSH account on ${this.name} (status ${ran.status}): ${lastLine(ran.stderr)}`);
+    return new Failed(`Kuvo Code couldn’t prepare the OS account on ${this.name}. Check that you can write to your home folder there, then try again.`);
+  }
+  async acquire() {
+    const claim = await this.reach.run(reserve(this.token), { most: 30000 });
+    if (claim.status === 0)
+      return;
+    if (claim.status === ACCOUNT_BUSY)
+      throw this.busy();
+    if (claim.status === ACCOUNT_OLD) {
+      throw new Failed(`An older version of Kuvo Code left an unfinished change on ${this.name}. Restart ${this.name} to end that change, then sign in to the same OS account and run rm -f ~/.kuvo-code-adding before trying again.`);
+    }
+    const prior = claim.stdout.trim();
+    if (claim.status !== ACCOUNT_RECOVER || !/^guarded-[0-9a-f]{48}$/.test(prior))
+      throw this.cannotPrepare(claim);
+    if (activeReservations.has(prior))
+      throw this.busy();
+    const answer = await this.tell.ask({
+      id: "recoverAccount",
+      title: `Continue on ${this.name}?`,
+      message: "An earlier Kuvo Code change left this account marked in use. Kuvo Code checked that it isn’t changing the account now. Clear the mark to stop the earlier attempt and continue this one.",
+      facts: [],
+      answers: [{ id: "cancel", label: "Cancel", kind: "plain" }, { id: "recover", label: "Clear and Continue", kind: "primary" }]
+    });
+    if (answer !== "recover") {
+      stopFrom(this.tell);
+      throw new Stopped;
+    }
+    const retried = await this.reach.run(reserve(this.token, prior), { most: 30000 });
+    if (retried.status === ACCOUNT_BUSY)
+      throw this.busy();
+    if (retried.status === ACCOUNT_LOST)
+      throw new Failed(`The account on ${this.name} changed while you were deciding. Try again.`);
+    if (retried.status !== 0)
+      throw this.cannotPrepare(retried);
+  }
+  interrupted() {
+    return new Failed(`Kuvo Code lost contact with ${this.name} during a change. Try again to check whether it finished.`);
+  }
+  run = async (script, options) => {
+    if (!options?.anyway)
+      this.tell.check();
+    if (!this.finished)
+      throw this.interrupted();
+    this.finished = false;
+    let ran;
+    try {
+      ran = await this.reach.run(reserved(this.token, script), { ...options, once: true });
+    } catch {
+      throw this.interrupted();
+    }
+    if (ran.status === null)
+      throw this.interrupted();
+    this.finished = true;
+    if (ran.status === ACCOUNT_BUSY)
+      throw this.busy();
+    if (ran.status === ACCOUNT_LOST)
+      throw new Failed(`The account on ${this.name} was cleared for another attempt. Try again.`);
+    if (ran.status === ACCOUNT_ERROR)
+      throw this.cannotPrepare(ran);
     return ran;
   };
-  try {
-    tell.step("checking", `Connecting to ${name}`);
-    const mine = boxVersion();
-    const files = ownFiles();
-    if (!files || !mine)
-      throw new Failed(`Kuvo Code on ${ownName()} has no files of its own to give another computer yet. Update Kuvo Code here, then try again.`);
-    reserving = true;
-    const claim = await reach.run(reserve(token));
-    if (claim.status === 8)
-      throw occupied();
-    if (claim.status !== 0)
-      throw new Failed(`Kuvo Code couldn’t reserve the OS account on ${name}. ${lastLine(claim.stderr)}`.trim());
+  async use(work) {
+    let acquired = false;
+    let failure;
+    activeReservations.add(this.token);
+    try {
+      await this.acquire();
+      acquired = true;
+      await work();
+    } catch (error) {
+      failure = error;
+      throw error;
+    } finally {
+      try {
+        if (acquired && this.finished)
+          await this.release(failure);
+      } finally {
+        activeReservations.delete(this.token);
+        await this.reach.close();
+      }
+    }
+  }
+  async release(failure) {
+    const released = await this.reach.run(release(this.token), { anyway: true, most: 15000 }).catch(() => null);
+    if (released?.status === 0)
+      return;
+    console.error(`Kuvo couldn't clear the SSH reservation on ${this.name} (status ${released?.status}): ${lastLine(released?.stderr ?? "")}`);
+    const message = failure instanceof Error && !(failure instanceof Stopped) ? `${failure.message} ` : "";
+    const clearing = `couldn’t clear the account on ${this.name} for the next change. The next time you connect, Kuvo Code can check and offer to clear it.`;
+    throw new Failed(failure ? `${message}Kuvo Code ${clearing}` : `Kuvo Code finished the change but ${clearing}`);
+  }
+}
+async function setUp2(tell, destination, name, kind) {
+  tell.step("checking", `Connecting to ${name}`);
+  const mine = boxVersion();
+  const files = ownFiles();
+  if (!files || !mine)
+    throw new Failed(`Kuvo Code on ${ownName()} has no files of its own to give another computer yet. Update Kuvo Code here, then try again.`);
+  const reach = new Reach(destination, name, tell, kind === "add" ? [] : otherAddressesOf(destination));
+  const account = new AccountReservation(reach, name, tell);
+  const reserved = account.run;
+  await account.use(async () => {
     const answer = await reach.run(probe2(ENGINE_VERSION), { cut: true, most: 120000 });
     if (answer.status !== 0)
       throw new Failed(`${name} couldn’t be checked. ${lastLine(answer.stderr)}`.trim());
@@ -48515,7 +48644,7 @@ async function setUp2(tell, destination, name, kind) {
       if (has.status === 0 && has.stdout.trim() === "same")
         tell.skip("files", "It has them already");
       else {
-        const placed = await reserved2(filesInstall(files), { input: tarOf(files), sent: tell.sent, most: 900000 });
+        const placed = await reserved(filesInstall(files), { input: tarOf(files), sent: tell.sent, most: 900000 });
         if (placed.status !== 0)
           throw new Failed(`Kuvo Code’s files couldn’t be put on ${name}. ${lastLine(placed.stderr)}`.trim());
       }
@@ -48527,7 +48656,7 @@ async function setUp2(tell, destination, name, kind) {
           throw new Failed(error instanceof Error ? error.message : String(error));
         });
         tell.step("engine", megabytes(engine.size));
-        const placed = await reserved2(engineInstall(ENGINE_VERSION, engine.sum, engine.packed), { input: { file: engine.file }, sent: tell.sent, most: 3600000 });
+        const placed = await reserved(engineInstall(ENGINE_VERSION, engine.sum, engine.packed), { input: { file: engine.file }, sent: tell.sent, most: 3600000 });
         if (placed.status !== 0)
           throw new Failed(`The engine couldn’t be put on ${name}. ${lastLine(placed.stderr)}`.trim());
       }
@@ -48540,7 +48669,7 @@ async function setUp2(tell, destination, name, kind) {
     let unjoined = false;
     try {
       unjoined = fresh;
-      const started = await reserved2(start(ENGINE_VERSION, name, notes), { most: 600000, ...given ? { input: Buffer.from(JSON.stringify({ settings: given.settings, keys: given.keys })) } : {} });
+      const started = await reserved(start(ENGINE_VERSION, name, notes), { most: 600000, ...given ? { input: Buffer.from(JSON.stringify({ settings: given.settings, keys: given.keys })) } : {} });
       if (started.status === 7)
         throw new Failed(`${name} was removed from Kuvo Code while it was starting, so it wasn’t started. Add it again to use it.`);
       if (started.status === 6)
@@ -48555,7 +48684,7 @@ async function setUp2(tell, destination, name, kind) {
         const settings = /^seeded$/m.test(started.stdout);
         let taken = 0;
         if (given.credentials.length) {
-          const ran = await reserved2(seed(ENGINE_VERSION), { input: Buffer.from(JSON.stringify({ credentials: given.credentials })), most: 300000 });
+          const ran = await reserved(seed(ENGINE_VERSION), { input: Buffer.from(JSON.stringify({ credentials: given.credentials })), most: 300000 });
           let said = null;
           try {
             said = JSON.parse(ran.stdout.trim().split(`
@@ -48569,15 +48698,13 @@ async function setUp2(tell, destination, name, kind) {
       }
       tell.step("joining");
       const identity = /^id ([0-9a-f]{32})$/m.exec(started.stdout)?.[1] ?? probe.id;
-      const computer = await join3(reserved2, destination, name, identity, token);
+      const computer = await join3(reserved, destination, name, identity, account.token);
       unjoined = false;
       tell.came(computer);
     } catch (error) {
-      if (!unjoined || !mutationFinished || error instanceof AccountOccupied)
+      if (!unjoined || !account.canRollBack || error instanceof AccountOccupied)
         throw error;
-      mutationFinished = false;
-      const undone = await reach.run(uninstall(ENGINE_VERSION, own ?? "", true, token), { most: 600000, anyway: true }).catch(() => null);
-      mutationFinished = undone !== null && undone.status !== null;
+      const undone = await reserved(uninstall(ENGINE_VERSION, own ?? "", true), { most: 600000, anyway: true }).catch(() => null);
       const still = `Kuvo Code may still be running on ${name}, with the keys and sign-ins copied there. Add ${name} again, then uninstall it from its page.`;
       if (error instanceof Stopped || tell.signal.aborted) {
         if (undone?.status !== 0)
@@ -48587,11 +48714,7 @@ async function setUp2(tell, destination, name, kind) {
       const failure = error instanceof Failed ? error : new Failed(error instanceof Error && error.message ? error.message : "Something went wrong.");
       throw new Failed(`${failure.message} ${undone?.status === 0 ? `Kuvo Code was stopped on ${name} again, and the keys and sign-ins copied there were deleted.` : still}`, failure.again, failure.title);
     }
-  } finally {
-    if (reserving && mutationFinished)
-      await reach.run(release(token), { anyway: true, most: 15000 }).catch(() => {});
-    await reach.close();
-  }
+  });
 }
 async function join3(run, destination, name, identity, token) {
   const relay = macLink.config?.relay;
@@ -48729,8 +48852,9 @@ function beginUninstall(key) {
     stopTry(now);
   return begin("uninstall", at.destination, at.name, UNINSTALL_STEPS, async (tell) => {
     const reach = new Reach(at.destination, at.name, tell, otherAddressesOf(at.destination));
-    try {
-      tell.step("checking", `Connecting to ${at.name}`);
+    const account = new AccountReservation(reach, at.name, tell);
+    tell.step("checking", `Connecting to ${at.name}`);
+    await account.use(async () => {
       const answer = await reach.run(probe2(ENGINE_VERSION), { cut: true, most: 120000 });
       if (answer.status !== 0)
         throw new Failed(`${at.name} couldn’t be checked. ${lastLine(answer.stderr)}`.trim());
@@ -48744,7 +48868,7 @@ function beginUninstall(key) {
       macs.delete(own);
       const only = macs.size === 0;
       tell.step("removing", only ? undefined : "Another Mac uses it too, so Kuvo Code stays there");
-      const ran = await reach.run(uninstall(ENGINE_VERSION, own, only), { most: 600000 });
+      const ran = await account.run(uninstall(ENGINE_VERSION, own, only), { most: 600000 });
       if (ran.status !== 0) {
         let said = null;
         try {
@@ -48757,9 +48881,7 @@ function beginUninstall(key) {
       const removed = removeHere(key);
       if (removed.status !== 200 && removed.status !== 404)
         throw new Failed(isObject(removed.value) && typeof removed.value.message === "string" ? removed.value.message : `${ownName()} couldn’t take ${at.name} off its list.`);
-    } finally {
-      await reach.close();
-    }
+    });
   });
 }
 function sshActions(computer, here) {

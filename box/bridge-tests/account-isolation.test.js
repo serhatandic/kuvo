@@ -22,7 +22,7 @@ test("two account homes have independent box listeners, keys, SSH socket paths a
   // Keeps this test offline. kuvo-npx should run from a cache directory inside each HOME.
   fs.writeFileSync(path.join(bin, "npx"), '#!/bin/sh\npwd -P\n', { mode: 0o700 });
   const envFor = home => ({
-    HOME: home, PATH: `${bin}:/usr/bin:/bin`, TMPDIR: work,
+    HOME: home, PATH: `${bin}:/usr/bin:/bin`, TMPDIR: work, BUN_BE_BUN: process.env.BUN_BE_BUN,
   });
   const homes = ["a", "b"].map(name => path.join(root, name));
   const children = [];
@@ -92,7 +92,7 @@ test("SSH setup rejects a second setup on the same account and preserves its sav
   });
   fs.writeFileSync(link, kept);
   const result = spawnSync(process.execPath, [script, "setup"], {
-    env: { HOME: home, PATH: "/usr/bin:/bin" },
+    env: { HOME: home, PATH: "/usr/bin:/bin", BUN_BE_BUN: process.env.BUN_BE_BUN },
     input: JSON.stringify({ mac: "d".repeat(43), relay: "wss://unused.invalid" }), encoding: "utf8",
   });
   assert.equal(result.status, 4);
