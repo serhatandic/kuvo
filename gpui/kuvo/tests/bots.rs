@@ -256,17 +256,21 @@ fn its_job_and_look_change_through_the_box(cx: &mut TestAppContext) {
     click(cx, "bot-job-line");
     assert!(!shown(cx, "bot-sheet"));
     let head = bounds(cx, "bot-head").unwrap();
-    assert!(bounds(cx, "bot-job-details").unwrap().bottom() < head.bottom());
+    let field = bounds(cx, "bot-job-details").unwrap();
+    assert!(field.bottom() <= head.bottom());
     cx.simulate_keystrokes("cmd-a backspace");
     cx.simulate_input("Ships a beta every Thursday");
     click(cx, "bot-job-details");
     cx.simulate_input("Tag it and wait for the build.");
     cx.simulate_keystrokes("enter");
     cx.simulate_input("Post the notes.");
+    cx.simulate_keystrokes("enter");
+    cx.simulate_input("Check the changelog.");
+    assert!(bounds(cx, "bot-job-details").unwrap().size.height > field.size.height);
     assert!(bodies(&stand_in, "PATCH", "kuvo/bots/bot_release").is_empty());
     cx.simulate_keystrokes("cmd-enter");
     cx.run_until_parked();
-    let instructions = "Tag it and wait for the build.\nPost the notes.";
+    let instructions = "Tag it and wait for the build.\nPost the notes.\nCheck the changelog.";
     assert_eq!(bodies(&stand_in, "PATCH", "kuvo/bots/bot_release"), vec![json!({ "job": { "line": "Ships a beta every Thursday", "details": instructions } })]);
     assert_eq!(name_and_job(&page, cx), ("Release Captain".into(), "Ships a beta every Thursday".into(), instructions.into()));
 
@@ -712,6 +716,28 @@ mod live {
         click(cx, "bot-model-menu");
         click(cx, "bot-effort-low");
         assert_eq!(bodies(&stand_in, "PATCH", "kuvo/bots/bot_mira").last(), Some(&json!({ "effort": "low" })));
+    }
+
+    #[gpui::test]
+    fn profile_saves_keep_a_new_draft_while_a_response_is_pending(cx: &mut TestAppContext) {
+        let stand_in = StandIn::at(Replies::Never, NOW);
+        let (page, cx) = host(cx, &stand_in);
+        page.update(cx, |page, cx| page.show(Some("bot:bot_mira"), cx));
+        cx.run_until_parked();
+        let (_, _, instructions) = name_and_job(&page, cx);
+        page.update(cx, |page, cx| {
+            page.name_field().update(cx, |field, cx| field.set_text("Mira Two", cx));
+            page.save_editor(cx);
+            page.job_fields().0.update(cx, |field, cx| field.set_text("Keeps the website working", cx));
+            page.save_editor(cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(bodies(&stand_in, "PATCH", "kuvo/bots/bot_mira"), vec![
+            json!({ "name": "Mira Two" }),
+            json!({ "job": { "line": "Keeps the website working", "details": instructions } }),
+        ]);
+        let (name, line, _) = name_and_job(&page, cx);
+        assert_eq!((name.as_str(), line.as_str()), ("Mira Two", "Keeps the website working"));
     }
 
     #[gpui::test]
