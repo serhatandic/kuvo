@@ -933,9 +933,7 @@ pub fn said_of(account: &Value, offered: &Value, agents: bool, ended: Option<&st
         }
     } else {
         if signs_in {
-            if state == "ended" || state == "problem" || said.iter().any(|each| each.0["state"] == "ended") {
-                actions.push(json!({ "id": "signInAgain", "label": again }));
-            }
+            actions.push(json!({ "id": "signInAgain", "label": again }));
             actions.push(json!({ "id": "addAnother", "label": another }));
         }
         if meta["source"] != "mcp" && listed.iter().any(|each| each["type"] == "credential") {
