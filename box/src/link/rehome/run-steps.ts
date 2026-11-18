@@ -6,6 +6,7 @@
 // app's folder is read, never written, and its database never opened.
 // Platform: a Mac's alone (`lsof`, the Keychain, the helper); nothing here runs on Linux.
 
+import { upgradeFormat } from "../../shared/format-version";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -161,7 +162,8 @@ export async function upgradeStaged(run: RunPlan, move: MoveContext): Promise<st
   // (Loaded as it's needed: it reads with the box's own readers, which the move's own files,
   // loaded alone by its tests, don't bring.)
   const { runUpgrades } = await import("./upgrades");
-  return runUpgrades(run, move);
+  // The move journal already checkpoints this stage. Run the same 0.5–0.7 import on staging.
+  return upgradeFormat<string[]>("Legacy desktop move", 0, [], [() => runUpgrades(run, move)]);
 }
 
 // Counts

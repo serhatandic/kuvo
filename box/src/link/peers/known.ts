@@ -4,6 +4,7 @@
 // that set it up, each until it removes this box or isn't heard from in 30 days. And mail between
 // them: sealed for one of them, and opened from one.
 
+import { objectFormat, UnsupportedFormatVersion } from "../../shared/format-version";
 import type { Doc, DocKind } from "../../shared/documents";
 import { isObject } from "../../shared/json";
 import { plainName } from "../../shared/text";
@@ -279,6 +280,9 @@ export function ownKey(link: Pick<LinkState, "key">): string | null {
   try { return publicOf(Buffer.from(link.key!, "base64url")).toString("base64url"); } catch { return null; }
 }
 
+// The Noise prologue versions encryption. This versions the authenticated JSON inside it.
+const mailFormat = objectFormat("Peer mail", [fields => fields]);
+
 // A mail frame's body opened: from one of this box's Macs, or one of its peers. `{sender, payload}`,
 // or null for one from anyone else (or that isn't one).
 export function openMail(body: Buffer, link: LinkState | null | undefined): OpenedMail | null {
@@ -290,8 +294,13 @@ export function openMail(body: Buffer, link: LinkState | null | undefined): Open
   for (const sender of senders) {
     try {
       const payload = JSON.parse(openOneWay(body, key, Buffer.from(sender.key, "base64url")).payload.toString("utf8"));
-      return isObject(payload) ? { sender, payload } : null;
-    } catch {}
+      return { sender, payload: mailFormat.read(payload) };
+    } catch (error) {
+      if (error instanceof UnsupportedFormatVersion) {
+        console.warn(error.message);
+        return null;
+      }
+    }
   }
   return null;
 }
@@ -299,9 +308,9 @@ export function openMail(body: Buffer, link: LinkState | null | undefined): Open
 // Mail for a peer, as the relay takes it, sealed for its key alone; null for one too big to go, or
 // for a box with no address this box knows (a Mac whose mail came before any peers document said
 // where it is: nothing can go back to it yet).
-export function mailFor(peer: Pick<Peer, "key"> & { address?: string }, payload: unknown, link: LinkState): Buffer | null {
+export function mailFor(peer: Pick<Peer, "key"> & { address?: string }, payload: object, link: LinkState): Buffer | null {
   if (!peer.address) return null;
-  const sealed = frame(Frame.mail, 0, sealOneWay(Buffer.from(JSON.stringify(payload)), Buffer.from(link.key!, "base64url"), Buffer.from(peer.key, "base64url")).message);
+  const sealed = frame(Frame.mail, 0, sealOneWay(Buffer.from(JSON.stringify(mailFormat.write(payload))), Buffer.from(link.key!, "base64url"), Buffer.from(peer.key, "base64url")).message);
   if (sealed.length > MAX_MAIL) return null;
   return relaySend(Buffer.from(peer.address, "base64url"), sealed);
 }

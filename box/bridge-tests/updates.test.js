@@ -12,7 +12,7 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { runningAs } from "./running-as.js";
 import { atEnd, removeAtEnd } from "./at-end.js";
 
@@ -377,6 +377,9 @@ test("failure bench: an updater killed during a file swap rolls back and preserv
   machine();
   release();
   const cut = path.join(home, "bin", "kuvo-link.js");
+  const ledger = path.join(home, "run", "work-queue", "numbers.json");
+  const stored = { primary: "self", next: 47, leases: [], since: 1_000 };
+  write(ledger, JSON.stringify(stored));
   const boot = path.join(scratch, "update-until-first-rename.mjs");
   // Let the updater finish the first atomic rename. Kill its process there, before the second
   // file or the new engine can run. This leaves the actual on-disk trial and rollback journal.
@@ -414,6 +417,17 @@ throw new Error("The updater did not reach the cut: " + JSON.stringify(result));
   assert.equal(fs.readFileSync(path.join(home, "data", "opencode", "opencode.db"), "utf8"), "the old engine's data");
   assert.equal(fs.existsSync(path.join(home, "run", "update-trial")), false);
   assert.equal(fs.existsSync(path.join(home, "updates", "rollback")), false);
+  assert.deepEqual(read(ledger), stored);
+
+  assert.equal((await update()).result, "updated", "retry takes the same signed release");
+  engines.add(read(engineFile).pid);
+  assert.equal(boxVersion(), "0.10.0");
+  const resumed = spawnSync(process.execPath, ["--input-type=module", "-e",
+    `import { askToSend } from ${JSON.stringify(pathToFileURL(cut).href)}; askToSend();`,
+  ], { encoding: "utf8", timeout: 10_000 });
+  assert.equal(resumed.status, 0, resumed.stderr);
+  assert.deepEqual(read(ledger), { ...stored, formatVersion: 1 });
+  assert.equal(fs.readFileSync(path.join(home, "data", "opencode", "opencode.db"), "utf8"), "the old engine's data");
 });
 
 test("a bridge that won't take the new build (it doesn't run here) isn't well", async t => {

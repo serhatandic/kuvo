@@ -77,6 +77,45 @@ var isObject = (value) => Boolean(value) && typeof value === "object" && !Array.
   }
 }, sameJSON = (a, b) => sortedJSON(a ?? null) === sortedJSON(b ?? null);
 
+// box/src/shared/format-version.ts
+function formatVersion(format, value, legacy, current) {
+  if (value === undefined)
+    return legacy;
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+    throw new UnsupportedFormatVersion(format, value, current);
+  }
+  return value;
+}
+function upgradeFormat(format, from, value, steps) {
+  const version = formatVersion(format, from, 0, steps.length);
+  if (version > steps.length)
+    throw new UnsupportedFormatVersion(format, version, steps.length);
+  return steps.slice(version).reduce((record, step) => step(record), value);
+}
+function objectFormat(name, steps) {
+  return {
+    version: steps.length,
+    read(value) {
+      if (!isObject(value))
+        throw new Error(`${name} isn't a JSON object.`);
+      const { formatVersion: from, ...fields } = value;
+      return upgradeFormat(name, from, fields, steps);
+    },
+    write(fields) {
+      return { ...fields, formatVersion: steps.length };
+    }
+  };
+}
+var UnsupportedFormatVersion;
+var init_format_version = __esm(() => {
+  UnsupportedFormatVersion = class UnsupportedFormatVersion extends Error {
+    constructor(format, found, current) {
+      const version = typeof found === "number" && Number.isSafeInteger(found) ? String(found) : "invalid";
+      super(`${format} format version ${version} is unsupported (this build writes ${current}).`);
+    }
+  };
+});
+
 // box/src/shared/wait.ts
 var sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), pause = (ms, signal) => new Promise((resolve) => {
   if (signal?.aborted)
@@ -1465,7 +1504,7 @@ function readDoc(envelope) {
   } catch {
     return null;
   }
-  if (!isObject(doc) || doc.v !== 1 || !DOC_KINDS.includes(doc.kind) || typeof doc.origin !== "string" || !SIGN.test(doc.origin) || !Number.isSafeInteger(doc.n) || doc.n < 1 || !isObject(doc.body))
+  if (!isObject(doc) || doc.v !== DOC_VERSION || !DOC_KINDS.includes(doc.kind) || typeof doc.origin !== "string" || !SIGN.test(doc.origin) || !Number.isSafeInteger(doc.n) || doc.n < 1 || !isObject(doc.body))
     return null;
   try {
     const signature = Buffer.from(envelope.s, "base64url");
@@ -1484,6 +1523,8 @@ function held(envelope) {
     try {
       const bytes = Buffer.from(envelope.d, "base64url");
       const parsed = JSON.parse(bytes.toString("utf8"));
+      if (!isObject(parsed) || parsed.v !== DOC_VERSION)
+        return null;
       doc = { origin: parsed.origin, kind: parsed.kind, n: parsed.n, body: isObject(parsed.body) ? parsed.body : {}, h: shortHash(bytes), envelope };
     } catch {
       return null;
@@ -1494,13 +1535,13 @@ function held(envelope) {
   }
   return doc;
 }
-var DOC_SIGNED, MOST_DOC, DOC_PART = 40000, MOST_PARTS, SIGN, ED_PKCS8, ED_SPKI, newSigningSeed = () => crypto9.randomBytes(32).toString("base64url"), edPrivate = (seed) => crypto9.createPrivateKey({ key: Buffer.concat([ED_PKCS8, Buffer.from(seed, "base64url")]), format: "der", type: "pkcs8" }), edPublic = (key) => crypto9.createPublicKey({ key: Buffer.concat([ED_SPKI, Buffer.from(key, "base64url")]), format: "der", type: "spki" }), signingKeys, ownSign = (link) => {
+var DOC_VERSION = 1, DOC_SIGNED, MOST_DOC, DOC_PART = 40000, MOST_PARTS, SIGN, ED_PKCS8, ED_SPKI, newSigningSeed = () => crypto9.randomBytes(32).toString("base64url"), edPrivate = (seed) => crypto9.createPrivateKey({ key: Buffer.concat([ED_PKCS8, Buffer.from(seed, "base64url")]), format: "der", type: "pkcs8" }), edPublic = (key) => crypto9.createPublicKey({ key: Buffer.concat([ED_SPKI, Buffer.from(key, "base64url")]), format: "der", type: "spki" }), signingKeys, ownSign = (link) => {
   try {
     return typeof link?.sign === "string" ? signingKeyOf(link.sign) : null;
   } catch {
     return null;
   }
-}, signWith = (seed, bytes) => crypto9.sign(null, bytes, edPrivate(seed)).toString("base64url"), shortHash = (bytes) => crypto9.createHash("sha256").update(bytes).digest().subarray(0, 8).toString("base64url"), bodyHash = (body) => shortHash(Buffer.from(JSON.stringify(body))), docBytes = (origin, kind, n, body) => Buffer.from(JSON.stringify({ v: 1, kind, origin, n, body })), heldDocs, docKey = (origin, kind) => `${origin} ${kind}`;
+}, signWith = (seed, bytes) => crypto9.sign(null, bytes, edPrivate(seed)).toString("base64url"), shortHash = (bytes) => crypto9.createHash("sha256").update(bytes).digest().subarray(0, 8).toString("base64url"), bodyHash = (body) => shortHash(Buffer.from(JSON.stringify(body))), docBytes = (origin, kind, n, body) => Buffer.from(JSON.stringify({ v: DOC_VERSION, kind, origin, n, body })), heldDocs, docKey = (origin, kind) => `${origin} ${kind}`;
 var init_format = __esm(() => {
   init_documents();
   DOC_SIGNED = Buffer.from("kuvo-link doc v1\x00");
@@ -1693,7 +1734,7 @@ var init_record = __esm(() => {
 import fs18 from "node:fs";
 import path16 from "node:path";
 function migratedLink(link) {
-  if (!isObject(link) || !(link.peersFrom || link.vouched || link.macAts))
+  if (!(link.peersFrom || link.vouched || link.macAts))
     return link;
   for (const [mac, given] of Object.entries(link.peersFrom ?? {})) {
     if (!macSign(link, mac) && isObject(given)) {
@@ -1709,15 +1750,18 @@ function migratedLink(link) {
 function readLink() {
   let link = null;
   try {
-    link = migratedLink(JSON.parse(fs18.readFileSync(LINK_FILE, "utf8")));
-  } catch {}
+    link = linkFormat.read(JSON.parse(fs18.readFileSync(LINK_FILE, "utf8")));
+  } catch (error) {
+    if (error instanceof UnsupportedFormatVersion)
+      throw error;
+  }
   if (IS_MAC && macLink.overlay)
     return { phones: [], ...link ?? {}, ...macLink.overlay };
   return link;
 }
 function writeLink(link) {
   const kept = IS_MAC ? Object.fromEntries(Object.entries(link).filter(([key]) => !MAC_OVERLAY.includes(key))) : link;
-  writeSecret(LINK_FILE, JSON.stringify(kept, null, 2));
+  writeSecret(LINK_FILE, JSON.stringify(linkFormat.write(kept), null, 2));
   for (const then of written)
     then(link);
 }
@@ -1731,14 +1775,16 @@ function updateLink(change) {
 }
 var MAC_OVERLAY, macLink, written, onLinkWritten = (then) => {
   written.push(then);
-}, macSign = (link, mac) => typeof link?.macSigns?.[mac] === "string" && SIGN.test(link.macSigns[mac]) ? link.macSigns[mac] : null, LOCK;
+}, macSign = (link, mac) => typeof link?.macSigns?.[mac] === "string" && SIGN.test(link.macSigns[mac]) ? link.macSigns[mac] : null, linkFormat, LOCK;
 var init_state = __esm(() => {
+  init_format_version();
   init_format();
   init_files2();
   init_home();
   MAC_OVERLAY = ["key", "secret", "sign", "relay", "name"];
   macLink = { config: null, overlay: null, status: { state: "off" }, host: null, wake: null, statusFollowers: new Set, phoneFollowers: new Set };
   written = [];
+  linkFormat = objectFormat("Link state", [migratedLink]);
   LOCK = path16.join(RUN, ".link.lock");
 });
 
@@ -1908,15 +1954,20 @@ function openMail(body, link) {
   for (const sender of senders) {
     try {
       const payload = JSON.parse(openOneWay(body, key, Buffer.from(sender.key, "base64url")).payload.toString("utf8"));
-      return isObject(payload) ? { sender, payload } : null;
-    } catch {}
+      return { sender, payload: mailFormat.read(payload) };
+    } catch (error) {
+      if (error instanceof UnsupportedFormatVersion) {
+        console.warn(error.message);
+        return null;
+      }
+    }
   }
   return null;
 }
 function mailFor(peer, payload, link) {
   if (!peer.address)
     return null;
-  const sealed = frame(Frame.mail, 0, sealOneWay(Buffer.from(JSON.stringify(payload)), Buffer.from(link.key, "base64url"), Buffer.from(peer.key, "base64url")).message);
+  const sealed = frame(Frame.mail, 0, sealOneWay(Buffer.from(JSON.stringify(mailFormat.write(payload))), Buffer.from(link.key, "base64url"), Buffer.from(peer.key, "base64url")).message);
   if (sealed.length > MAX_MAIL)
     return null;
   return relaySend(Buffer.from(peer.address, "base64url"), sealed);
@@ -1937,8 +1988,9 @@ var KEY, ADDRESS, macsOf = (link) => [...new Set([...Array.isArray(link?.macs) ?
 }, MAC_GONE_AFTER, MOST_PEERS = 64, fitsPeer = (peer) => isObject(peer) && typeof peer.key === "string" && KEY.test(peer.key) && typeof peer.address === "string" && ADDRESS.test(peer.address) && (peer.kind === "mac" || peer.kind === "machine"), cleanPeer = ({ key, address, name, kind, id, sign }) => ({ key, address, kind, name: plainName(name).slice(0, 100), ...typeof id === "string" ? { id: id.slice(0, 200) } : {}, ...typeof sign === "string" && SIGN.test(sign) ? { sign } : {} }), cleanMoved = (moved) => (Array.isArray(moved) ? moved : []).filter((each) => isObject(each) && typeof each.session === "string" && /^ses_[A-Za-z0-9]{1,60}$/.test(each.session) && typeof each.key === "string" && KEY.test(each.key)).slice(0, 500).map(({ session, key }) => ({ session, key })), renamed = (link, peer) => {
   const name = link.peerNames?.[peer.key];
   return typeof name === "string" && name ? { ...peer, name } : peer;
-}, MAX_MAIL;
+}, mailFormat, MAX_MAIL;
 var init_known = __esm(() => {
+  init_format_version();
   init_text();
   init_keys();
   init_noise();
@@ -1953,6 +2005,7 @@ var init_known = __esm(() => {
   ONLINE_FILE = path17.join(RUN, "online");
   AWAY_AFTER = 5 * 60000;
   MAC_GONE_AFTER = 30 * 24 * 3600 * 1000;
+  mailFormat = objectFormat("Peer mail", [(fields) => fields]);
   MAX_MAIL = 65600 - 17;
 });
 
@@ -12666,27 +12719,36 @@ var init_reach = __esm(() => {
 import crypto19 from "node:crypto";
 import fs49 from "node:fs";
 import path52 from "node:path";
-function readNumbers(file = NUMBERS_FILE) {
+function openNumbers(file) {
+  let text;
   try {
-    const kept = JSON.parse(textOf(file) ?? "null");
-    if (!isObject(kept))
-      return { leases: [] };
-    const asking = isObject(kept.asking) && typeof kept.asking.id === "string" && typeof kept.asking.count === "number" && typeof kept.asking.since === "number" ? { id: kept.asking.id, count: kept.asking.count, since: kept.asking.since, ...typeof kept.asking.sent === "number" ? { sent: kept.asking.sent } : {}, ...Array.isArray(kept.asking.claims) ? { claims: cleanRanges(kept.asking.claims) } : {}, ...Array.isArray(kept.asking.restores) ? { restores: cleanRanges(kept.asking.restores) } : {} } : undefined;
-    return {
-      ...typeof kept.primary === "string" ? { primary: kept.primary } : {},
-      ...typeof kept.since === "number" && Number.isFinite(kept.since) && kept.since > 0 ? { since: kept.since } : {},
-      ...typeof kept.lost === "number" && Number.isFinite(kept.lost) ? { lost: kept.lost } : {},
-      ...typeof kept.through === "string" ? { through: kept.through } : {},
-      ...typeof kept.next === "number" && Number.isInteger(kept.next) && kept.next > 0 ? { next: kept.next } : {},
-      ...isObject(kept.given) ? { given: kept.given } : {},
-      ...isObject(kept.granted) ? { granted: Object.fromEntries(Object.entries(kept.granted).map(([box, ranges]) => [box, cleanRanges(ranges)])) } : {},
-      leases: cleanRanges(kept.leases),
-      ...Array.isArray(kept.used) ? { used: cleanRanges(kept.used) } : {},
-      ...asking ? { asking } : {}
-    };
-  } catch {
-    return { leases: [] };
+    text = fs49.readFileSync(file, "utf8");
+  } catch (error) {
+    if (error.code === "ENOENT")
+      return null;
+    throw error;
   }
+  const raw = JSON.parse(text);
+  const fields = numbersFormat.read(raw);
+  return { fields, upgraded: raw.formatVersion !== numbersFormat.version };
+}
+function readNumbers(file = NUMBERS_FILE) {
+  return numbersOf(openNumbers(file)?.fields ?? {});
+}
+function numbersOf(kept) {
+  const asking = isObject(kept.asking) && typeof kept.asking.id === "string" && typeof kept.asking.count === "number" && typeof kept.asking.since === "number" ? { id: kept.asking.id, count: kept.asking.count, since: kept.asking.since, ...typeof kept.asking.sent === "number" ? { sent: kept.asking.sent } : {}, ...Array.isArray(kept.asking.claims) ? { claims: cleanRanges(kept.asking.claims) } : {}, ...Array.isArray(kept.asking.restores) ? { restores: cleanRanges(kept.asking.restores) } : {} } : undefined;
+  return {
+    ...typeof kept.primary === "string" ? { primary: kept.primary } : {},
+    ...typeof kept.since === "number" && Number.isFinite(kept.since) && kept.since > 0 ? { since: kept.since } : {},
+    ...typeof kept.lost === "number" && Number.isFinite(kept.lost) ? { lost: kept.lost } : {},
+    ...typeof kept.through === "string" ? { through: kept.through } : {},
+    ...typeof kept.next === "number" && Number.isInteger(kept.next) && kept.next > 0 ? { next: kept.next } : {},
+    ...isObject(kept.given) ? { given: kept.given } : {},
+    ...isObject(kept.granted) ? { granted: Object.fromEntries(Object.entries(kept.granted).map(([box, ranges]) => [box, cleanRanges(ranges)])) } : {},
+    leases: cleanRanges(kept.leases),
+    ...Array.isArray(kept.used) ? { used: cleanRanges(kept.used) } : {},
+    ...asking ? { asking } : {}
+  };
 }
 function primaryOf(link = readLink(), file = NUMBERS_FILE, now = Date.now()) {
   const setup = followedSetup(link);
@@ -12794,13 +12856,26 @@ function topOf(kept = readNumbers()) {
 function changeNumbers(work, file = NUMBERS_FILE) {
   fs49.mkdirSync(path52.dirname(file), { recursive: true, mode: 448 });
   return locked(`${path52.join(path52.dirname(file), "." + path52.basename(file))}.lock`, () => {
-    const kept = readNumbers(file);
-    const before = JSON.stringify(kept);
+    const stored = openNumbers(file);
+    const kept = numbersOf(stored?.fields ?? {});
+    const before = JSON.parse(JSON.stringify(kept));
     const value = work(kept);
-    if (JSON.stringify(kept) !== before)
-      writePrivate(file, JSON.stringify(kept));
+    const after = { ...kept };
+    const fields = { ...stored?.fields };
+    let changed = stored?.upgraded ?? false;
+    for (const key of new Set([...Object.keys(before), ...Object.keys(after)])) {
+      if (JSON.stringify(before[key]) === JSON.stringify(after[key]))
+        continue;
+      if (after[key] === undefined)
+        delete fields[key];
+      else
+        fields[key] = after[key];
+      changed = true;
+    }
+    if (changed)
+      writeDurablePrivate(file, JSON.stringify(numbersFormat.write(fields)));
     return value;
-  });
+  }, { exclusive: true });
 }
 function counterOf(kept) {
   return kept.next ?? Math.max(0, ...allItems().map((item) => item.number ?? 0)) + 1;
@@ -13170,12 +13245,13 @@ var NUMBERS_FILE, BLOCK = 50, LOW = 15, ASK_AGAIN = 30000, MOST_GIVEN = 500, MOS
       ranges.push([from, to]);
   }
   return ranges;
-}, rangesOf2 = (numbers) => joined([...numbers].filter((n) => Number.isInteger(n) && n > 0).map((n) => [n, n])), overlap = (ranges, within) => joined(ranges.flatMap(([from, to]) => within.flatMap(([a, b]) => Math.max(from, a) <= Math.min(to, b) ? [[Math.max(from, a), Math.min(to, b)]] : []))), inRanges = (ranges, n) => ranges.some(([from, to]) => n >= from && n <= to), cleanRanges = (value) => Array.isArray(value) ? value.filter(isRange).slice(-MOST_RANGES) : [], LOST_FOR, FOUND_AWAY_WITHIN = 3600000, earlier = (a, b) => a.kind !== b.kind ? a.kind === "mac" : b.since !== Number.MAX_SAFE_INTEGER && a.since < b.since, rank = (a, b) => (a.kind === b.kind ? 0 : a.kind === "mac" ? -1 : 1) || a.since - b.since || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0), keyOf = (primary, link) => ("self" in primary) ? "self" : ("peer" in primary) ? primary.peer.key : readNumbers().primary ?? (link?.mac || undefined), askID = () => `wqn_${crypto19.randomBytes(12).toString("base64url")}`, leftIn = (leases) => leases.reduce((sum, [from, to]) => sum + to - from + 1, 0), TOP_MOST, cappedTop = (top) => Math.min(top, TOP_MOST), toldTopOf = (key) => {
+}, rangesOf2 = (numbers) => joined([...numbers].filter((n) => Number.isInteger(n) && n > 0).map((n) => [n, n])), overlap = (ranges, within) => joined(ranges.flatMap(([from, to]) => within.flatMap(([a, b]) => Math.max(from, a) <= Math.min(to, b) ? [[Math.max(from, a), Math.min(to, b)]] : []))), inRanges = (ranges, n) => ranges.some(([from, to]) => n >= from && n <= to), cleanRanges = (value) => Array.isArray(value) ? value.filter(isRange).slice(-MOST_RANGES) : [], numbersFormat, LOST_FOR, FOUND_AWAY_WITHIN = 3600000, earlier = (a, b) => a.kind !== b.kind ? a.kind === "mac" : b.since !== Number.MAX_SAFE_INTEGER && a.since < b.since, rank = (a, b) => (a.kind === b.kind ? 0 : a.kind === "mac" ? -1 : 1) || a.since - b.since || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0), keyOf = (primary, link) => ("self" in primary) ? "self" : ("peer" in primary) ? primary.peer.key : readNumbers().primary ?? (link?.mac || undefined), askID = () => `wqn_${crypto19.randomBytes(12).toString("base64url")}`, leftIn = (leases) => leases.reduce((sum, [from, to]) => sum + to - from + 1, 0), TOP_MOST, cappedTop = (top) => Math.min(top, TOP_MOST), toldTopOf = (key) => {
   const told = readTold(key);
   return Math.max(told?.top ?? 0, ...(told?.items ?? []).map((item) => item.number ?? 0));
 }, lookedForWaiting = 0;
 var init_numbers = __esm(() => {
   init_home();
+  init_format_version();
   init_files2();
   init_known();
   init_told();
@@ -13185,6 +13261,7 @@ var init_numbers = __esm(() => {
   init_store();
   NUMBERS_FILE = path52.join(WORK_QUEUE2, "numbers.json");
   ASK_ID = /^wqn_[A-Za-z0-9_-]{8,40}$/;
+  numbersFormat = objectFormat("Work Queue number ledger", [(fields) => fields]);
   LOST_FOR = 3 * 86400000;
   TOP_MOST = MOST_NUMBER - 1 - 4 * BLOCK;
 });
@@ -16736,6 +16813,18 @@ var init_upgrades = __esm(() => {
   KINDS5 = ["message", "wrapUp", "note", "meeting"];
   STATES3 = ["proposed", "waiting", "working", "done", "failed"];
 });
+
+// box/src/shared/route-version.ts
+init_format_version();
+var ROUTE_VERSION_HEADER = "x-kuvo-route-version";
+var ROUTE_VERSION = "1";
+function routeVersionError(given) {
+  if (given === undefined || given === ROUTE_VERSION)
+    return null;
+  const version = typeof given === "string" && /^\d{1,15}$/.test(given) ? Number(given) : undefined;
+  const error = new UnsupportedFormatVersion("Kuvo route", version, Number(ROUTE_VERSION));
+  return { code: "unsupportedFormatVersion", message: error.message };
+}
 
 // box/src/link/add/seed.ts
 import fs10 from "node:fs";
@@ -57592,12 +57681,13 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "7eb2fa750a12";
+var BRIDGE_VERSION = "874c35842a7a";
 
 // box/src/link/rehome/move.ts
 init_outside();
 
 // box/src/link/rehome/run-steps.ts
+init_format_version();
 init_database();
 init_paths();
 import { spawnSync as spawnSync16 } from "node:child_process";
@@ -57769,7 +57859,7 @@ async function migrateStaged(_run, move) {
 }
 async function upgradeStaged(run, move) {
   await Promise.resolve().then(() => init_upgrades());
-  return runUpgrades(run, move);
+  return upgradeFormat("Legacy desktop move", 0, [], [() => runUpgrades(run, move)]);
 }
 function stagedPlace(move, name) {
   const [top, ...rest] = name.split("/");
@@ -70341,6 +70431,22 @@ class LinkHost {
   }
 }
 
+// box/src/link/server/format.ts
+function versionedRoutes(handle) {
+  return async function* (request, phone, signal) {
+    const error = routeVersionError(request.headers[ROUTE_VERSION_HEADER]);
+    const headers = { [ROUTE_VERSION_HEADER]: ROUTE_VERSION };
+    if (error) {
+      yield { head: { status: 400, headers: { ...headers, "content-type": "application/json" } } };
+      yield { body: Buffer.from(JSON.stringify(error)) };
+      return;
+    }
+    for await (const piece of handle(request, phone, signal)) {
+      yield "head" in piece ? { head: { ...piece.head, headers: { ...piece.head.headers, ...headers } } } : piece;
+    }
+  };
+}
+
 // box/src/link/server/router.ts
 init_platform();
 // box/src/link/areas/agent-tools.ts
@@ -82905,7 +83011,7 @@ function engineHandler(readEngine = readEngineFile, info = {}, readBridge = read
       return null;
     }
   };
-  return async function* (request, phone, signal) {
+  return versionedRoutes(async function* (request, phone, signal) {
     const text = (status, words) => [{ head: { status, headers: { "content-type": "text/plain" } } }, { body: Buffer.from(words) }];
     const json = (status, value) => [{ head: { status, headers: { "content-type": "application/json" } } }, { body: Buffer.from(JSON.stringify(value)) }];
     if (!request.fromApp)
@@ -82920,7 +83026,7 @@ function engineHandler(readEngine = readEngineFile, info = {}, readBridge = read
         return yield* answer(context, match);
     }
     return yield* engineRoute(context);
-  };
+  });
 }
 
 // box/src/link/mac/relay.ts
@@ -82943,14 +83049,14 @@ async function* toApp(request, phone, signal) {
 }
 var answersAlone = () => OWN_HOME_MAC && !openAppHost();
 function macFront(handle = engineHandler(readEngineFile, { name: os22.hostname() }), timing) {
-  return async function* (request, phone, signal) {
+  return versionedRoutes(async function* (request, phone, signal) {
     const route = String(request.path ?? "").split("?")[0];
     if (!macAppAnswers(route) || boxAnswers(route) || answersAlone())
       return yield* handle(request, phone, signal);
     if (isMachinesRoute(route))
       return yield* machinesRoute(request, phone, signal, route, timing);
     yield* toApp(request, phone, signal);
-  };
+  });
 }
 async function runMacLink() {
   let attempt = 0;
@@ -84487,10 +84593,13 @@ async function box(command) {
         if (typeof value === "string")
           vaultHeaders[name] = value;
       }
+      const routeVersion = given?.headers?.[ROUTE_VERSION_HEADER];
+      const versionHeader = routeVersion === undefined ? {} : { [ROUTE_VERSION_HEADER]: typeof routeVersion === "string" ? routeVersion : "" };
       const sentBody = typeof given?.bodyText === "string" ? given.bodyText : given?.body === undefined ? "" : JSON.stringify(given.body);
-      const request = { method: String(given?.method ?? "GET"), path: String(given?.path ?? ""), headers: { "content-type": "application/json", ...typeof folder === "string" ? { "x-opencode-directory": folder } : {}, ...typeof signInClient === "string" ? { "x-kuvo-sign-in-client": signInClient } : {}, ...vaultHeaders }, body: Buffer.from(sentBody), fromMac: true };
+      const request = { method: String(given?.method ?? "GET"), path: String(given?.path ?? ""), headers: { "content-type": "application/json", ...typeof folder === "string" ? { "x-opencode-directory": folder } : {}, ...typeof signInClient === "string" ? { "x-kuvo-sign-in-client": signInClient } : {}, ...vaultHeaders, ...versionHeader }, body: Buffer.from(sentBody), fromMac: true };
       let status = 502;
       let type = "";
+      let routeResponseVersion;
       const chunks = [];
       const stop = new AbortController;
       process.once("SIGTERM", () => stop.abort());
@@ -84498,18 +84607,19 @@ async function box(command) {
         if (part.head) {
           status = part.head.status;
           type = String(part.head.headers?.["content-type"] ?? "");
+          routeResponseVersion = part.head.headers[ROUTE_VERSION_HEADER];
         }
         if (part.body)
           chunks.push(Buffer.from(part.body));
         if (type.startsWith("application/x-ndjson") && Buffer.concat(chunks).includes(10)) {
           stop.abort();
           const all = Buffer.concat(chunks);
-          return say({ status, body: all.subarray(0, all.indexOf(10) + 1).toString("utf8") });
+          return say({ status, routeVersion: routeResponseVersion, body: all.subarray(0, all.indexOf(10) + 1).toString("utf8") });
         }
       }
       const body = Buffer.concat(chunks);
       const text = (!type || type.startsWith("text/") || type.includes("json")) && isUTF8(body);
-      return say(text ? { status, body: body.toString("utf8") } : { status, bodyBase64: body.toString("base64"), type });
+      return say(text ? { status, routeVersion: routeResponseVersion, body: body.toString("utf8") } : { status, routeVersion: routeResponseVersion, bodyBase64: body.toString("base64"), type });
     }
     case "github-read":
       return void await readApart(process.argv[4], await input()).catch(() => {});

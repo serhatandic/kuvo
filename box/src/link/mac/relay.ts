@@ -20,6 +20,7 @@ import { peerMail, receiveMail } from "../peers/mail";
 import { confirmPhone } from "../phones";
 import { connectOnce, nextTry } from "../relay/connection";
 import { LinkHost } from "../relay/host";
+import { versionedRoutes } from "../server/format";
 import { engineHandler } from "../server/router";
 import { OWN_HOME_MAC } from "../home";
 import { boxAnswers } from "./keeper-runs";
@@ -71,12 +72,12 @@ export const answersAlone = (): boolean => OWN_HOME_MAC && !openAppHost();
 // areas that had moved onto it, and the app the rest). In a home of its own with no app to ask,
 // all of it here (`answersAlone`).
 export function macFront(handle: LinkHandler = engineHandler(readEngineFile, { name: os.hostname() }), timing?: AppTiming): LinkHandler {
-  return async function* (request: LinkRequest, phone: Asker | undefined, signal?: AbortSignal): AsyncGenerator<AnswerPiece> {
+  return versionedRoutes(async function* (request, phone, signal) {
     const route = String(request.path ?? "").split("?")[0];
     if (!macAppAnswers(route) || boxAnswers(route) || answersAlone()) return yield* handle(request, phone, signal);
     if (isMachinesRoute(route)) return yield* machinesRoute(request, phone, signal, route, timing);
     yield* toApp(request, phone, signal);
-  };
+  });
 }
 
 // This Mac's box's link: up while it's wanted, its keys from the app, your phones answered here,

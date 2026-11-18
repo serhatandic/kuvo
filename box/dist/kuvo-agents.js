@@ -11,6 +11,43 @@ var __esm = (fn, res, err) => () => {
   return res;
 };
 
+// box/src/shared/json.ts
+function sortedJSON(value) {
+  if (Array.isArray(value))
+    return `[${value.map(sortedJSON).join(",")}]`;
+  if (value && typeof value === "object") {
+    const object = value;
+    return `{${Object.keys(object).sort().filter((k) => object[k] !== undefined).map((k) => `${JSON.stringify(k)}:${sortedJSON(object[k])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+var isObject = (value) => Boolean(value) && typeof value === "object" && !Array.isArray(value), sameJSON = (a, b) => sortedJSON(a ?? null) === sortedJSON(b ?? null);
+
+// box/src/shared/format-version.ts
+function formatVersion(format, value, legacy, current) {
+  if (value === undefined)
+    return legacy;
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+    throw new UnsupportedFormatVersion(format, value, current);
+  }
+  return value;
+}
+function upgradeFormat(format, from, value, steps) {
+  const version = formatVersion(format, from, 0, steps.length);
+  if (version > steps.length)
+    throw new UnsupportedFormatVersion(format, version, steps.length);
+  return steps.slice(version).reduce((record, step) => step(record), value);
+}
+var UnsupportedFormatVersion;
+var init_format_version = __esm(() => {
+  UnsupportedFormatVersion = class UnsupportedFormatVersion extends Error {
+    constructor(format, found, current) {
+      const version = typeof found === "number" && Number.isSafeInteger(found) ? String(found) : "invalid";
+      super(`${format} format version ${version} is unsupported (this build writes ${current}).`);
+    }
+  };
+});
+
 // box/src/agents/usage/pricing/pricing_litellm_snapshot.json
 var pricing_litellm_snapshot_default;
 var init_pricing_litellm_snapshot = __esm(() => {
@@ -622,11 +659,11 @@ function suffixAllows(key, suffix) {
   return date;
 }
 function catalogFromLiteLLM(root) {
-  if (!isObject(root))
+  if (!isObject2(root))
     throw new Error("Pricing feed is not a JSON object.");
   const entries = new Map;
   for (const [key, entry] of Object.entries(root)) {
-    if (!isObject(entry))
+    if (!isObject2(entry))
       continue;
     const input = number(entry.input_cost_per_token);
     const output = number(entry.output_cost_per_token);
@@ -643,7 +680,7 @@ function catalogFromLiteLLM(root) {
     value.outputAbove = million("output_cost_per_token_above_200k_tokens");
     value.cacheWriteAbove = million("cache_creation_input_token_cost_above_200k_tokens");
     value.cacheReadAbove = million("cache_read_input_token_cost_above_200k_tokens");
-    const fast = isObject(entry.provider_specific_entry) ? number(entry.provider_specific_entry.fast) : undefined;
+    const fast = isObject2(entry.provider_specific_entry) ? number(entry.provider_specific_entry.fast) : undefined;
     if (fast !== undefined)
       value.fast = fast;
     entries.set(key, value);
@@ -653,15 +690,15 @@ function catalogFromLiteLLM(root) {
   return new Catalog(entries);
 }
 function catalogFromModelsDev(root) {
-  if (!isObject(root))
+  if (!isObject2(root))
     throw new Error("Pricing feed is not a JSON object.");
   const entries = new Map;
   for (const name of Object.keys(root).sort()) {
-    const models = isObject(root[name]) ? root[name].models : undefined;
-    if (!isObject(models))
+    const models = isObject2(root[name]) ? root[name].models : undefined;
+    if (!isObject2(models))
       continue;
     for (const [id, model] of Object.entries(models)) {
-      if (entries.has(id) || !isObject(model) || !isObject(model.cost))
+      if (entries.has(id) || !isObject2(model) || !isObject2(model.cost))
         continue;
       const input = number(model.cost.input);
       const output = number(model.cost.output);
@@ -675,11 +712,11 @@ function catalogFromModelsDev(root) {
   return new Catalog(entries);
 }
 function catalogFromCompact(root) {
-  if (!isObject(root) || !isObject(root.models))
+  if (!isObject2(root) || !isObject2(root.models))
     throw new Error("Pricing catalog is not compact JSON.");
   const entries = new Map;
   for (const [key, model] of Object.entries(root.models)) {
-    if (!isObject(model))
+    if (!isObject2(model))
       continue;
     const [i, o, cw, cr] = [number(model.i), number(model.o), number(model.cw), number(model.cr)];
     if (i === undefined || o === undefined || cw === undefined || cr === undefined)
@@ -712,17 +749,17 @@ function compactOf(catalog) {
   return JSON.stringify({ models });
 }
 function supplementFrom(root) {
-  if (!isObject(root) || !isObject(root.pricing) || !Array.isArray(root.alias_rules))
+  if (!isObject2(root) || !isObject2(root.pricing) || !Array.isArray(root.alias_rules))
     throw new Error("The pricing supplement isn't one.");
   const fastMultipliers = new Map;
-  if (isObject(root.fast_multipliers)) {
+  if (isObject2(root.fast_multipliers)) {
     for (const [model, value] of Object.entries(root.fast_multipliers))
       if (number(value) !== undefined)
         fastMultipliers.set(model, value);
   }
   const pricing = new Map;
   for (const [model, entry] of Object.entries(root.pricing)) {
-    if (!isObject(entry))
+    if (!isObject2(entry))
       throw new Error("The pricing supplement isn't one.");
     const input = number(entry.input_per_million);
     const output = number(entry.output_per_million);
@@ -733,7 +770,7 @@ function supplementFrom(root) {
   }
   const aliases = [];
   for (const rule of root.alias_rules) {
-    if (!isObject(rule) || typeof rule.pattern !== "string" || typeof rule.canonical !== "string")
+    if (!isObject2(rule) || typeof rule.pattern !== "string" || typeof rule.canonical !== "string")
       throw new Error("The pricing supplement isn't one.");
     const insensitive = rule.pattern.startsWith("(?i)");
     try {
@@ -741,7 +778,7 @@ function supplementFrom(root) {
     } catch {}
   }
   const fallbackModels = new Map;
-  if (isObject(root.fallback_models)) {
+  if (isObject2(root.fallback_models)) {
     for (const [provider, models] of Object.entries(root.fallback_models)) {
       if (!Array.isArray(models) || !models.every((model) => typeof model === "string"))
         throw new Error("The pricing supplement isn't one.");
@@ -973,7 +1010,7 @@ class PricingStore {
     return new Pricing(supplement, catalog(pricing_litellm_snapshot_default, "litellm"), catalog(pricing_models_dev_snapshot_default, "models_dev"));
   }
 }
-var totalTokens = (tokens) => tokens.input + tokens.cacheWrite5m + tokens.cacheWrite1h + tokens.cacheRead + tokens.output, promptTokens = (tokens) => tokens.input + tokens.cacheWrite5m + tokens.cacheWrite1h + tokens.cacheRead, rates = (input, output, cacheWrite, cacheRead, cacheReadIsExplicit, fast = 1) => ({ input, output, cacheWrite, cacheRead, cacheReadIsExplicit, longContextThreshold: 200000, fast }), number = (value) => typeof value === "number" && Number.isFinite(value) ? value : undefined, isObject = (value) => !!value && typeof value === "object" && !Array.isArray(value), normalizedKey = (value) => value.includes(".") || value.includes("@") ? value.replaceAll(".", "-").replaceAll("@", "-") : value, isDigit = (code) => code !== undefined && code >= 48 && code <= 57, isAlphanumeric = (code) => code !== undefined && (isDigit(code) || code >= 97 && code <= 122 || code >= 65 && code <= 90), SOURCES, PRICING_FEEDS, HOUR = 3600000, RETRY, MOST_BYTES;
+var totalTokens = (tokens) => tokens.input + tokens.cacheWrite5m + tokens.cacheWrite1h + tokens.cacheRead + tokens.output, promptTokens = (tokens) => tokens.input + tokens.cacheWrite5m + tokens.cacheWrite1h + tokens.cacheRead, rates = (input, output, cacheWrite, cacheRead, cacheReadIsExplicit, fast = 1) => ({ input, output, cacheWrite, cacheRead, cacheReadIsExplicit, longContextThreshold: 200000, fast }), number = (value) => typeof value === "number" && Number.isFinite(value) ? value : undefined, isObject2 = (value) => !!value && typeof value === "object" && !Array.isArray(value), normalizedKey = (value) => value.includes(".") || value.includes("@") ? value.replaceAll(".", "-").replaceAll("@", "-") : value, isDigit = (code) => code !== undefined && code >= 48 && code <= 57, isAlphanumeric = (code) => code !== undefined && (isDigit(code) || code >= 97 && code <= 122 || code >= 65 && code <= 90), SOURCES, PRICING_FEEDS, HOUR = 3600000, RETRY, MOST_BYTES;
 var init_pricing = __esm(() => {
   init_pricing_litellm_snapshot();
   init_pricing_models_dev_snapshot();
@@ -1343,25 +1380,19 @@ class InsightsStore {
   boundsCache = new Map;
   constructor(file) {
     this.db = new Database(file);
-    this.db.exec(`
-      PRAGMA journal_mode = WAL;
-      CREATE TABLE IF NOT EXISTS state (key TEXT PRIMARY KEY, body TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS event (
-        key TEXT PRIMARY KEY, seq INTEGER, sender TEXT, received INTEGER NOT NULL,
-        at INTEGER NOT NULL, session TEXT NOT NULL, computer TEXT NOT NULL, bot TEXT, bot_name TEXT, title TEXT,
-        provider TEXT NOT NULL, account TEXT, model TEXT, agent TEXT, human INTEGER NOT NULL, partial INTEGER NOT NULL,
-        cost REAL, tokens INTEGER, input INTEGER, cache_read INTEGER, cache_write INTEGER, output INTEGER,
-        skills TEXT NOT NULL, body TEXT NOT NULL, supersedes TEXT, processed INTEGER
-      );
-      CREATE INDEX IF NOT EXISTS event_time ON event(at, session);
-      CREATE INDEX IF NOT EXISTS event_session ON event(session, at);
-      CREATE INDEX IF NOT EXISTS event_computer ON event(computer, at, session);
-      CREATE INDEX IF NOT EXISTS event_bot ON event(bot, at, session);
-      CREATE INDEX IF NOT EXISTS event_provider ON event(provider, at, session);
-      CREATE INDEX IF NOT EXISTS event_account ON event(account, at, session);
-      CREATE INDEX IF NOT EXISTS event_seq ON event(seq);
-      CREATE INDEX IF NOT EXISTS event_supersedes ON event(supersedes) WHERE supersedes IS NOT NULL;
-    `);
+    try {
+      this.db.exec("PRAGMA busy_timeout = 3000");
+      this.db.transaction(() => {
+        const { user_version } = this.db.query("PRAGMA user_version").get();
+        upgradeFormat("Insights database", user_version, this.db, insightsUpgrades);
+        if (user_version !== insightsUpgrades.length)
+          this.db.exec(`PRAGMA user_version = ${insightsUpgrades.length}`);
+      }).immediate();
+      this.db.exec("PRAGMA journal_mode = WAL");
+    } catch (error) {
+      this.db.close();
+      throw error;
+    }
   }
   close() {
     this.db.close();
@@ -1595,12 +1626,34 @@ var DAY2 = 86400000, tokenFields, metrics = `
   COUNT(*) FILTER (WHERE human = 0) AS calls,
   SUM(processed) AS processed,
   COUNT(*) FILTER (WHERE human = 0 AND cost IS NULL) AS unpriced,
-  COUNT(*) FILTER (WHERE human = 0 AND partial = 1) AS partial`;
+  COUNT(*) FILTER (WHERE human = 0 AND partial = 1) AS partial`, insightsUpgrades;
 var init_insights_store = __esm(() => {
+  init_format_version();
   init_history();
   init_codex_pricing();
   init_insight_records();
   tokenFields = ["input", "cacheRead", "cacheWrite5m", "cacheWrite1h", "output"];
+  insightsUpgrades = [(db) => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS state (key TEXT PRIMARY KEY, body TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS event (
+        key TEXT PRIMARY KEY, seq INTEGER, sender TEXT, received INTEGER NOT NULL,
+        at INTEGER NOT NULL, session TEXT NOT NULL, computer TEXT NOT NULL, bot TEXT, bot_name TEXT, title TEXT,
+        provider TEXT NOT NULL, account TEXT, model TEXT, agent TEXT, human INTEGER NOT NULL, partial INTEGER NOT NULL,
+        cost REAL, tokens INTEGER, input INTEGER, cache_read INTEGER, cache_write INTEGER, output INTEGER,
+        skills TEXT NOT NULL, body TEXT NOT NULL, supersedes TEXT, processed INTEGER
+      );
+      CREATE INDEX IF NOT EXISTS event_time ON event(at, session);
+      CREATE INDEX IF NOT EXISTS event_session ON event(session, at);
+      CREATE INDEX IF NOT EXISTS event_computer ON event(computer, at, session);
+      CREATE INDEX IF NOT EXISTS event_bot ON event(bot, at, session);
+      CREATE INDEX IF NOT EXISTS event_provider ON event(provider, at, session);
+      CREATE INDEX IF NOT EXISTS event_account ON event(account, at, session);
+      CREATE INDEX IF NOT EXISTS event_seq ON event(seq);
+      CREATE INDEX IF NOT EXISTS event_supersedes ON event(supersedes) WHERE supersedes IS NOT NULL;
+  `);
+    return db;
+  }];
 });
 
 // box/src/agents/usage/insights-db-worker.ts
@@ -1680,21 +1733,9 @@ var init_ids = __esm(() => {
   last = { timestamp: 0, counter: 0 };
 });
 
-// box/src/shared/json.ts
-function sortedJSON(value) {
-  if (Array.isArray(value))
-    return `[${value.map(sortedJSON).join(",")}]`;
-  if (value && typeof value === "object") {
-    const object = value;
-    return `{${Object.keys(object).sort().filter((k) => object[k] !== undefined).map((k) => `${JSON.stringify(k)}:${sortedJSON(object[k])}`).join(",")}}`;
-  }
-  return JSON.stringify(value);
-}
-var isObject2 = (value) => Boolean(value) && typeof value === "object" && !Array.isArray(value), sameJSON = (a, b) => sortedJSON(a ?? null) === sortedJSON(b ?? null);
-
 // box/src/shared/compaction-words.ts
 function compactionWords(value) {
-  if (!isObject2(value) || value.type !== "compaction")
+  if (!isObject(value) || value.type !== "compaction")
     return value;
   const title = value.status === "running" ? "Summarizing the conversation\u2026" : value.status === "completed" ? "Conversation summarized" : value.status === "failed" ? "Couldn\u2019t summarize the conversation" : "Conversation summary";
   return { ...value, title, ...value.status === "running" ? { workingTitle: title } : {} };
@@ -1704,7 +1745,7 @@ function compactionEventWords(type, data) {
   if (!status)
     return data;
   const message = compactionWords({ type: "compaction", status });
-  if (!isObject2(message))
+  if (!isObject(message))
     return data;
   return { ...data, title: message.title, ...message.workingTitle ? { workingTitle: message.workingTitle } : {} };
 }
@@ -7654,7 +7695,7 @@ function rewriteSession(place, id, change, signal) {
   }, place.across, signal);
 }
 function withNotes(metadata, kuvo, top = {}) {
-  const notes = isObject2(metadata) ? { ...metadata } : {};
+  const notes = isObject(metadata) ? { ...metadata } : {};
   for (const [key, value] of Object.entries(top)) {
     if (value === undefined)
       delete notes[key];
@@ -7663,7 +7704,7 @@ function withNotes(metadata, kuvo, top = {}) {
   }
   if (!kuvo)
     return notes;
-  const own = isObject2(notes.kuvo) ? { ...notes.kuvo } : {};
+  const own = isObject(notes.kuvo) ? { ...notes.kuvo } : {};
   for (const [key, value] of Object.entries(kuvo)) {
     if (value === undefined)
       delete own[key];
@@ -16466,7 +16507,7 @@ function modelRef(value) {
   return { providerID: value.slice(0, at), id: value.slice(at + 1) };
 }
 function subagentModel(settings) {
-  const value = isObject2(settings) ? settings[SUBAGENT_MODEL[0]] : undefined;
+  const value = isObject(settings) ? settings[SUBAGENT_MODEL[0]] : undefined;
   return modelRef(value) ? value : undefined;
 }
 var SUBAGENT_MODEL, ENGINE_AGENTS, AGENT_PROVIDERS;
@@ -25403,6 +25444,19 @@ var init_insights = __esm(() => {
   SCAN_EVERY = 5 * 60000;
 });
 
+// box/src/shared/route-version.ts
+function routeVersionError(given) {
+  if (given === undefined || given === ROUTE_VERSION)
+    return null;
+  const version = typeof given === "string" && /^\d{1,15}$/.test(given) ? Number(given) : undefined;
+  const error = new UnsupportedFormatVersion("Kuvo route", version, Number(ROUTE_VERSION));
+  return { code: "unsupportedFormatVersion", message: error.message };
+}
+var ROUTE_VERSION_HEADER = "x-kuvo-route-version", ROUTE_VERSION = "1";
+var init_route_version = __esm(() => {
+  init_format_version();
+});
+
 // box/src/shared/sign-in-failure.ts
 function failureWords(status, message) {
   if (status === "expired")
@@ -34081,10 +34135,10 @@ function readQueues(files, strict = false) {
     if (strict && error.code !== "ENOENT")
       throw error;
   }
-  if (strict && (!isObject2(all) || Object.values(all).some((state) => !isObject2(state) || state.waiting !== undefined && (!Array.isArray(state.waiting) || keptWaiting(state.waiting).length !== state.waiting.length)))) {
+  if (strict && (!isObject(all) || Object.values(all).some((state) => !isObject(state) || state.waiting !== undefined && (!Array.isArray(state.waiting) || keptWaiting(state.waiting).length !== state.waiting.length)))) {
     throw new Error("The queue index could not be read");
   }
-  return isObject2(all) ? Object.fromEntries(Object.entries(all).map(([session, state]) => [session, keptState(state)])) : {};
+  return isObject(all) ? Object.fromEntries(Object.entries(all).map(([session, state]) => [session, keptState(state)])) : {};
 }
 function changeQueue(files, session, change, changed, reseal = false) {
   let made = false;
@@ -34131,7 +34185,7 @@ function keepWaiting(files, session, message, { from, words, kept: keptText } = 
     writeDurablePrivate(waitingFile(files, message.id), JSON.stringify(keptText === undefined ? message : { ...message, text: keptText }), path5.dirname(files.file));
     kept = true;
     const names = fileNames(message.files);
-    const parts = isObject2(message.metadata) && isObject2(message.metadata.kuvo) && isObject2(message.metadata.kuvo.parts) ? message.metadata.kuvo.parts : null;
+    const parts = isObject(message.metadata) && isObject(message.metadata.kuvo) && isObject(message.metadata.kuvo.parts) ? message.metadata.kuvo.parts : null;
     const keyword = typeof parts?.keyword === "string" ? parts.keyword : undefined;
     const waiting = { id: message.id, ...from ? { from } : {}, text: words ?? message.text, ...names.length ? { files: names } : {}, ...keyword ? { keyword } : {}, at: Date.now() };
     return place({ ...state, waiting: (state.waiting ?? []).filter((each) => each.id !== message.id) }, waiting);
@@ -34143,26 +34197,26 @@ var queueFiles = (run) => ({
   waiting: path5.join(run, "waiting"),
   lock: path5.join(run, ".queues.lock")
 }), WAITING_ID, isWaitingID = (id) => typeof id === "string" && WAITING_ID.test(id), BAD_WAITING_ID = "This message couldn\u2019t be queued. Send it again as a new message.", InvalidWaitingID, keptWaiting = (value) => (Array.isArray(value) ? value : []).flatMap((item) => {
-  if (!isObject2(item) || !isWaitingID(item.id) || typeof item.text !== "string")
+  if (!isObject(item) || !isWaitingID(item.id) || typeof item.text !== "string")
     return [];
   const files = Array.isArray(item.files) ? item.files.filter((name) => typeof name === "string") : [];
   return [{ id: item.id, ...typeof item.from === "string" ? { from: item.from } : {}, text: item.text, ...files.length ? { files } : {}, ...typeof item.keyword === "string" ? { keyword: item.keyword } : {}, at: typeof item.at === "number" ? item.at : 0 }];
 }), keptState = (value) => {
-  const waiting = keptWaiting(isObject2(value) ? value.waiting : undefined);
-  const inboxMoved = isObject2(value) && Array.isArray(value.inboxMoved) ? value.inboxMoved.filter((id) => typeof id === "string" && waiting.some((item) => item.id === id)) : [];
+  const waiting = keptWaiting(isObject(value) ? value.waiting : undefined);
+  const inboxMoved = isObject(value) && Array.isArray(value.inboxMoved) ? value.inboxMoved.filter((id) => typeof id === "string" && waiting.some((item) => item.id === id)) : [];
   return {
-    paused: isObject2(value) && value.paused === true,
-    held: isObject2(value) && Array.isArray(value.held) ? value.held.filter((id) => typeof id === "string") : [],
-    ...isObject2(value) && typeof value.resumed === "number" ? { resumed: value.resumed } : {},
+    paused: isObject(value) && value.paused === true,
+    held: isObject(value) && Array.isArray(value.held) ? value.held.filter((id) => typeof id === "string") : [],
+    ...isObject(value) && typeof value.resumed === "number" ? { resumed: value.resumed } : {},
     ...waiting.length ? { waiting } : {},
-    ...isObject2(value) && Array.isArray(value.order) && value.order.length ? { order: [...new Set(value.order.filter((id) => typeof id === "string"))] } : {},
+    ...isObject(value) && Array.isArray(value.order) && value.order.length ? { order: [...new Set(value.order.filter((id) => typeof id === "string"))] } : {},
     ...inboxMoved.length ? { inboxMoved } : {},
-    ...isObject2(value) && value.paused === true && value.heldFor === "goal" ? { heldFor: "goal" } : {},
-    ...isObject2(value) && isObject2(value.arriving) && Object.keys(value.arriving).length ? { arriving: Object.fromEntries(Object.entries(value.arriving).filter((each) => typeof each[1] === "number")) } : {},
-    ...isObject2(value) && Array.isArray(value.cameHeld) && value.cameHeld.length ? { cameHeld: value.cameHeld.filter((id) => typeof id === "string") } : {}
+    ...isObject(value) && value.paused === true && value.heldFor === "goal" ? { heldFor: "goal" } : {},
+    ...isObject(value) && isObject(value.arriving) && Object.keys(value.arriving).length ? { arriving: Object.fromEntries(Object.entries(value.arriving).filter((each) => typeof each[1] === "number")) } : {},
+    ...isObject(value) && Array.isArray(value.cameHeld) && value.cameHeld.length ? { cameHeld: value.cameHeld.filter((id) => typeof id === "string") } : {}
   };
 }, showsQueue = (state) => state.paused || state.held.length > 0 || Boolean(state.waiting?.length), RESUMED_FOR = 60000, waitingFile = (files, id) => path5.join(files.waiting, `${id}.json`), fileNames = (files) => (files ?? []).flatMap((file) => {
-  if (!isObject2(file))
+  if (!isObject(file))
     return [];
   if (typeof file.name === "string" && file.name)
     return [file.name];
@@ -34188,7 +34242,7 @@ function targetOf(value) {
   return line.length > 40 ? `${line.slice(0, 39).trimEnd()}\u2026` : line;
 }
 function toolSaid(words, input) {
-  const target = words.target && isObject2(input) ? targetOf(input[words.target.field]) : null;
+  const target = words.target && isObject(input) ? targetOf(input[words.target.field]) : null;
   if (!words.target || !target)
     return { title: words.done, doing: words.doing };
   const named = words.target.quoted ? `\u201C${target}\u201D` : target;
@@ -39290,9 +39344,7 @@ function handler(context) {
         accounts.changed(agent).catch(() => {});
     });
   }
-  return async (request) => {
-    if (request.headers.get("authorization") !== expected)
-      return error2(401, "Unauthorized");
+  const answer = async (request) => {
     const url = new URL(request.url);
     const parts = url.pathname.split("/").filter(Boolean).map(decodeURIComponent);
     const method = request.method;
@@ -39787,6 +39839,15 @@ function handler(context) {
       return error2(500, caught instanceof Error ? caught.message : String(caught));
     }
   };
+  return async (request) => {
+    if (request.headers.get("authorization") !== expected)
+      return error2(401, "Unauthorized");
+    const refusal = routeVersionError(request.headers.get(ROUTE_VERSION_HEADER) ?? undefined);
+    const response = refusal ? Response.json(refusal, { status: 400 }) : await answer(request);
+    const headers = new Headers(response.headers);
+    headers.set(ROUTE_VERSION_HEADER, ROUTE_VERSION);
+    return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
+  };
 }
 function expandCommand(template, written) {
   const all = written.trim();
@@ -39805,6 +39866,7 @@ ${all}`;
 var attempts, json16 = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } }), located = (value) => json16({ location: { directory: process.cwd() }, data: value }), error2 = (status, message) => json16({ message }, status), lastSeen, lastMaintained, PROGRAM_RELEASE_INTERVAL;
 var init_server = __esm(() => {
   init_insights();
+  init_route_version();
   init_account_refresh();
   init_accounts();
   init_events();
@@ -41829,4 +41891,4 @@ if (!isMainThread && process.argv.includes("--insights-db-worker")) {
 } else {
   await init_main().then(() => ({}));
 }
-// Built from Packages/Box/src/agents e088089c3756030f3981fede9f0ba0d6630d90dbd47e98e2e5c6c59a8d2ab6a0
+// Built from Packages/Box/src/agents 9704c68ea7f25ab3a8694245a15cb648a6e02f2e2734a814974b407475883dfa

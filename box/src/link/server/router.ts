@@ -83,6 +83,7 @@ import { vaultRoute } from "../areas/vault";
 import { AGENTS, agentsRoute, engineRoute } from "./forward";
 import type { BridgeRecord, EngineRecord } from "../../shared/records";
 import type { NoticeHold } from "../notices/hold";
+import { versionedRoutes } from "./format";
 import type { Answer, AnswerPiece, Asker, LinkHandler, LinkRequest, RouteContext } from "./context";
 
 /** One of the box's routes: `when(route, request)` says whether it takes the request, and gives
@@ -267,7 +268,7 @@ export function engineHandler(readEngine: () => EngineRecord = readEngineFile, i
       return null;
     }
   };
-  return async function* (request: LinkRequest, phone: Asker | undefined, signal?: AbortSignal): AsyncGenerator<AnswerPiece> {
+  return versionedRoutes(async function* (request, phone, signal) {
     const text = (status: number, words: string): AnswerPiece[] => [{ head: { status, headers: { "content-type": "text/plain" } } }, { body: Buffer.from(words) }];
     const json = (status: number, value: unknown): AnswerPiece[] => [{ head: { status, headers: { "content-type": "application/json" } } }, { body: Buffer.from(JSON.stringify(value)) }];
     // A phone using this machine, whatever it asks; not the app beside a Mac's own box.
@@ -283,5 +284,5 @@ export function engineHandler(readEngine: () => EngineRecord = readEngineFile, i
       if (match) return yield* answer(context, match as never);
     }
     return yield* engineRoute(context);
-  };
+  });
 }

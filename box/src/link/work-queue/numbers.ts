@@ -18,7 +18,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { isObject } from "../../shared/json";
 import { IS_MAC, RUN } from "../home";
-import { locked, textOf, writePrivate } from "../files";
+import { objectFormat } from "../../shared/format-version";
+import { locked, writeDurablePrivate } from "../files";
 import { KEY, macsOf, mailFor, ownKey, peersOf, removedBoxes } from "../peers/known";
 import { readTold, toldKeys } from "./told";
 import { awaySince, lastFoundAway, PEER_CHECKED, readReach } from "../peers/reach";
@@ -99,28 +100,41 @@ const overlap = (ranges: Ranges, within: Ranges): Ranges => joined(ranges.flatMa
 export const inRanges = (ranges: Ranges, n: number) => ranges.some(([from, to]) => n >= from && n <= to);
 const cleanRanges = (value: unknown): Ranges => (Array.isArray(value) ? value.filter(isRange).slice(-MOST_RANGES) : []);
 
-export function readNumbers(file = NUMBERS_FILE): Numbers {
+const numbersFormat = objectFormat("Work Queue number ledger", [fields => fields]);
+
+function openNumbers(file: string): { fields: Record<string, unknown>; upgraded: boolean } | null {
+  let text: string;
   try {
-    const kept = JSON.parse(textOf(file) ?? "null");
-    if (!isObject(kept)) return { leases: [] };
-    const asking = isObject(kept.asking) && typeof kept.asking.id === "string" && typeof kept.asking.count === "number" && typeof kept.asking.since === "number"
-      ? { id: kept.asking.id, count: kept.asking.count, since: kept.asking.since, ...(typeof kept.asking.sent === "number" ? { sent: kept.asking.sent } : {}), ...(Array.isArray(kept.asking.claims) ? { claims: cleanRanges(kept.asking.claims) } : {}), ...(Array.isArray(kept.asking.restores) ? { restores: cleanRanges(kept.asking.restores) } : {}) }
-      : undefined;
-    return {
-      ...(typeof kept.primary === "string" ? { primary: kept.primary } : {}),
-      ...(typeof kept.since === "number" && Number.isFinite(kept.since) && kept.since > 0 ? { since: kept.since } : {}),
-      ...(typeof kept.lost === "number" && Number.isFinite(kept.lost) ? { lost: kept.lost } : {}),
-      ...(typeof kept.through === "string" ? { through: kept.through } : {}),
-      ...(typeof kept.next === "number" && Number.isInteger(kept.next) && kept.next > 0 ? { next: kept.next } : {}),
-      ...(isObject(kept.given) ? { given: kept.given as Numbers["given"] } : {}),
-      ...(isObject(kept.granted) ? { granted: Object.fromEntries(Object.entries(kept.granted).map(([box, ranges]) => [box, cleanRanges(ranges)])) } : {}),
-      leases: cleanRanges(kept.leases),
-      ...(Array.isArray(kept.used) ? { used: cleanRanges(kept.used) } : {}),
-      ...(asking ? { asking } : {}),
-    };
-  } catch {
-    return { leases: [] };
+    text = fs.readFileSync(file, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
   }
+  const raw = JSON.parse(text);
+  const fields = numbersFormat.read(raw);
+  return { fields, upgraded: raw.formatVersion !== numbersFormat.version };
+}
+
+export function readNumbers(file = NUMBERS_FILE): Numbers {
+  return numbersOf(openNumbers(file)?.fields ?? {});
+}
+
+function numbersOf(kept: Record<string, unknown>): Numbers {
+  const asking = isObject(kept.asking) && typeof kept.asking.id === "string" && typeof kept.asking.count === "number" && typeof kept.asking.since === "number"
+    ? { id: kept.asking.id, count: kept.asking.count, since: kept.asking.since, ...(typeof kept.asking.sent === "number" ? { sent: kept.asking.sent } : {}), ...(Array.isArray(kept.asking.claims) ? { claims: cleanRanges(kept.asking.claims) } : {}), ...(Array.isArray(kept.asking.restores) ? { restores: cleanRanges(kept.asking.restores) } : {}) }
+    : undefined;
+  return {
+    ...(typeof kept.primary === "string" ? { primary: kept.primary } : {}),
+    ...(typeof kept.since === "number" && Number.isFinite(kept.since) && kept.since > 0 ? { since: kept.since } : {}),
+    ...(typeof kept.lost === "number" && Number.isFinite(kept.lost) ? { lost: kept.lost } : {}),
+    ...(typeof kept.through === "string" ? { through: kept.through } : {}),
+    ...(typeof kept.next === "number" && Number.isInteger(kept.next) && kept.next > 0 ? { next: kept.next } : {}),
+    ...(isObject(kept.given) ? { given: kept.given as Numbers["given"] } : {}),
+    ...(isObject(kept.granted) ? { granted: Object.fromEntries(Object.entries(kept.granted).map(([box, ranges]) => [box, cleanRanges(ranges)])) } : {}),
+    leases: cleanRanges(kept.leases),
+    ...(Array.isArray(kept.used) ? { used: cleanRanges(kept.used) } : {}),
+    ...(asking ? { asking } : {}),
+  };
 }
 
 /** This box's primary: its setup's main computer, itself when it's that (PROTOCOL.md, "Your setup");
@@ -276,12 +290,22 @@ const leftIn = (leases: Ranges) => leases.reduce((sum, [from, to]) => sum + to -
 export function changeNumbers<T>(work: (kept: Numbers) => T, file = NUMBERS_FILE): T {
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
   return locked(`${path.join(path.dirname(file), "." + path.basename(file))}.lock`, () => {
-    const kept = readNumbers(file);
-    const before = JSON.stringify(kept);
+    const stored = openNumbers(file);
+    const kept = numbersOf(stored?.fields ?? {});
+    const before = JSON.parse(JSON.stringify(kept)) as Record<string, unknown>;
     const value = work(kept);
-    if (JSON.stringify(kept) !== before) writePrivate(file, JSON.stringify(kept));
+    const after: Record<string, unknown> = { ...kept };
+    const fields = { ...stored?.fields };
+    let changed = stored?.upgraded ?? false;
+    for (const key of new Set([...Object.keys(before), ...Object.keys(after)])) {
+      if (JSON.stringify(before[key]) === JSON.stringify(after[key])) continue;
+      if (after[key] === undefined) delete fields[key];
+      else fields[key] = after[key];
+      changed = true;
+    }
+    if (changed) writeDurablePrivate(file, JSON.stringify(numbersFormat.write(fields)));
     return value;
-  });
+  }, { exclusive: true });
 }
 
 /** The primary's counter: as kept, or, lost with its file, past every number here (never #1 again). */

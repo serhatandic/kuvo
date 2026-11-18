@@ -15,8 +15,22 @@ test("POST accounts with provider creates an isolated account and leaves the fir
     writeFileSync(join(folder, "auth.json"), "first-secret")
     const roster = { accounts, sync() {}, all: () => accounts.all().map(record => ({ id: record.kind, instance: record, providerID: providerID(record.kind, record.id) })) }
     const answer = handler({ roster, password: "pw" } as any)
-    const response = await answer(new Request("http://agent/api/kuvo/accounts", { method: "POST", headers: { authorization: "Basic " + Buffer.from("opencode:pw").toString("base64"), "content-type": "application/json" }, body: JSON.stringify({ provider: providerID("codex", first.id) }) }))
+    const add = (version?: string) => answer(new Request("http://agent/api/kuvo/accounts", {
+      method: "POST",
+      headers: {
+        authorization: "Basic " + Buffer.from("opencode:pw").toString("base64"),
+        "content-type": "application/json",
+        ...(version === undefined ? {} : { "x-kuvo-route-version": version }),
+      },
+      body: JSON.stringify({ provider: providerID("codex", first.id) }),
+    }))
+    const refused = await add("2")
+    expect(refused.status).toBe(400)
+    expect((await refused.json() as { code: string }).code).toBe("unsupportedFormatVersion")
+    expect(accounts.all()).toHaveLength(1)
+    const response = await add()
     expect(response.status).toBe(200)
+    expect(response.headers.get("x-kuvo-route-version")).toBe("1")
     const added = (await response.json() as any).data.providerID
     expect(added).toMatch(/^codex-cli@[a-f0-9]{8}$/)
     expect(added).not.toBe(providerID("codex", first.id))

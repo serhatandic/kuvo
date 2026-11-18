@@ -15,6 +15,7 @@
 // is kuvo-ai's protocol/PROTOCOL.md, with the same in Swift (swift/KuvoLink) for the Mac and
 // the phone.
 
+import { ROUTE_VERSION_HEADER } from "../shared/route-version";
 import { takeSeed } from "./add/seed";
 import { spawn } from "node:child_process";
 import crypto from "node:crypto";
@@ -691,10 +692,13 @@ async function box(command: string): Promise<void> {
         const value = (given?.headers as Record<string, unknown> | undefined)?.[name];
         if (typeof value === "string") vaultHeaders[name] = value;
       }
+      const routeVersion = (given?.headers as Record<string, unknown> | undefined)?.[ROUTE_VERSION_HEADER];
+      const versionHeader = routeVersion === undefined ? {} : { [ROUTE_VERSION_HEADER]: typeof routeVersion === "string" ? routeVersion : "" };
       const sentBody = typeof given?.bodyText === "string" ? given.bodyText : given?.body === undefined ? "" : JSON.stringify(given.body);
-      const request = { method: String(given?.method ?? "GET"), path: String(given?.path ?? ""), headers: { "content-type": "application/json", ...(typeof folder === "string" ? { "x-opencode-directory": folder } : {}), ...(typeof signInClient === "string" ? { "x-kuvo-sign-in-client": signInClient } : {}), ...vaultHeaders }, body: Buffer.from(sentBody), fromMac: true };
+      const request = { method: String(given?.method ?? "GET"), path: String(given?.path ?? ""), headers: { "content-type": "application/json", ...(typeof folder === "string" ? { "x-opencode-directory": folder } : {}), ...(typeof signInClient === "string" ? { "x-kuvo-sign-in-client": signInClient } : {}), ...vaultHeaders, ...versionHeader }, body: Buffer.from(sentBody), fromMac: true };
       let status = 502;
       let type = "";
+      let routeResponseVersion: string | undefined;
       const chunks: Buffer[] = [];
       // A route that follows something answers with what it says now: its first line. Stopped by
       // its caller (an agent's tool call that waits, cancelled), it stops waiting and answers.
@@ -704,19 +708,20 @@ async function box(command: string): Promise<void> {
         if (part.head) {
           status = part.head.status;
           type = String(part.head.headers?.["content-type"] ?? "");
+          routeResponseVersion = part.head.headers[ROUTE_VERSION_HEADER];
         }
         if (part.body) chunks.push(Buffer.from(part.body));
         if (type.startsWith("application/x-ndjson") && Buffer.concat(chunks).includes(10)) {
           stop.abort();
           const all = Buffer.concat(chunks);
-          return say({ status, body: all.subarray(0, all.indexOf(10) + 1).toString("utf8") });
+          return say({ status, routeVersion: routeResponseVersion, body: all.subarray(0, all.indexOf(10) + 1).toString("utf8") });
         }
       }
       const body = Buffer.concat(chunks);
       // Bytes that aren't text (a picture, a PDF, a file sent as text that isn't UTF-8) go as
       // base64, whole.
       const text = (!type || type.startsWith("text/") || type.includes("json")) && isUTF8(body);
-      return say(text ? { status, body: body.toString("utf8") } : { status, bodyBase64: body.toString("base64"), type });
+      return say(text ? { status, routeVersion: routeResponseVersion, body: body.toString("utf8") } : { status, routeVersion: routeResponseVersion, bodyBase64: body.toString("base64"), type });
     }
     case "github-read":
       // A read of GitHub that was due as `route` answered, made here, outliving it.

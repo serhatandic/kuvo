@@ -1,4 +1,5 @@
 import { insightsRoutes } from "./usage/insights"
+import { ROUTE_VERSION, ROUTE_VERSION_HEADER, routeVersionError } from "../shared/route-version"
 import { GITHUB_WORK_QUEUE } from "../shared/github"
 import { failureWords } from "../shared/sign-in-failure"
 import type { GitHubSignIn } from "./github-sign-in"
@@ -260,8 +261,7 @@ export function handler(context: Context) {
     })
   }
 
-  return async (request: Request): Promise<Response> => {
-    if (request.headers.get("authorization") !== expected) return error(401, "Unauthorized")
+  const answer = async (request: Request): Promise<Response> => {
     const url = new URL(request.url)
     const parts = url.pathname.split("/").filter(Boolean).map(decodeURIComponent)
     const method = request.method
@@ -714,6 +714,15 @@ export function handler(context: Context) {
       if (caught instanceof BadRequest) return error(400, caught.message)
       return error(500, caught instanceof Error ? caught.message : String(caught))
     }
+  }
+
+  return async (request: Request): Promise<Response> => {
+    if (request.headers.get("authorization") !== expected) return error(401, "Unauthorized")
+    const refusal = routeVersionError(request.headers.get(ROUTE_VERSION_HEADER) ?? undefined)
+    const response = refusal ? Response.json(refusal, { status: 400 }) : await answer(request)
+    const headers = new Headers(response.headers)
+    headers.set(ROUTE_VERSION_HEADER, ROUTE_VERSION)
+    return new Response(response.body, { status: response.status, statusText: response.statusText, headers })
   }
 }
 

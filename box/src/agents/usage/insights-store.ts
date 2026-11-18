@@ -1,4 +1,5 @@
 import { Database } from "bun:sqlite"
+import { upgradeFormat } from "../../shared/format-version"
 import { dayIn, windowDays } from "./history"
 import { codexCost, resolveCodexRates } from "./codex-pricing"
 import { insightKey, type InsightRecord } from "./insight-records"
@@ -77,17 +78,9 @@ export type CallsPage = {
 
 export type Route = "overview" | "sessions" | "detail"
 
-export class InsightsStore {
-  private db: Database
-  private pricing?: Pricing
-  private overviews = new Map<string, { until: number; result: Overview }>()
-  private dayCache = new Map<string, { start: number; end: number; result: Metrics }>()
-  private boundsCache = new Map<string, Bound[]>()
-
-  constructor(file: string) {
-    this.db = new Database(file)
-    this.db.exec(`
-      PRAGMA journal_mode = WAL;
+// The schema before the stamp is the same. Keep its tables and rows in place.
+const insightsUpgrades = [(db: Database): Database => {
+  db.exec(`
       CREATE TABLE IF NOT EXISTS state (key TEXT PRIMARY KEY, body TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS event (
         key TEXT PRIMARY KEY, seq INTEGER, sender TEXT, received INTEGER NOT NULL,
@@ -104,7 +97,31 @@ export class InsightsStore {
       CREATE INDEX IF NOT EXISTS event_account ON event(account, at, session);
       CREATE INDEX IF NOT EXISTS event_seq ON event(seq);
       CREATE INDEX IF NOT EXISTS event_supersedes ON event(supersedes) WHERE supersedes IS NOT NULL;
-    `)
+  `)
+  return db
+}]
+
+export class InsightsStore {
+  private db: Database
+  private pricing?: Pricing
+  private overviews = new Map<string, { until: number; result: Overview }>()
+  private dayCache = new Map<string, { start: number; end: number; result: Metrics }>()
+  private boundsCache = new Map<string, Bound[]>()
+
+  constructor(file: string) {
+    this.db = new Database(file)
+    try {
+      this.db.exec("PRAGMA busy_timeout = 3000")
+      this.db.transaction(() => {
+        const { user_version } = this.db.query<{ user_version: number }, []>("PRAGMA user_version").get()!
+        upgradeFormat("Insights database", user_version, this.db, insightsUpgrades)
+        if (user_version !== insightsUpgrades.length) this.db.exec(`PRAGMA user_version = ${insightsUpgrades.length}`)
+      }).immediate()
+      this.db.exec("PRAGMA journal_mode = WAL")
+    } catch (error) {
+      this.db.close()
+      throw error
+    }
   }
 
   close() { this.db.close() }

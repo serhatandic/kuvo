@@ -28,6 +28,32 @@ or storage, and only the device itself can receive what's sent to its address.
 
 In text (links, JSON) keys, secrets, addresses and tokens are base64url without padding.
 
+## Format versions during an update
+
+An absent JSON format marker denotes the pre-marker layout (version 0). The link state
+(`run/link.json`) and Work Queue number ledger (`run/work-queue/numbers.json`) now write
+`formatVersion: 1` beside their existing fields. Readers upgrade old files in memory and persist
+the version with a normal atomic write. The ledger commits it under the writer lock. Insights
+adopts its existing database as SQLite `user_version = 1` in the same transaction as its schema
+step. These readers report unsupported versions before writing any replacement.
+
+For authenticated box-to-box mail, the v1 Noise prologue stays the same. The JSON inside now
+includes `formatVersion: 1`. An absent field is the original body, which has the same payload
+shape. A box ignores an unsupported explicit version before dispatch, without acknowledging the
+mail, and logs the refusal. The signed document's `v` still applies to its signed bytes.
+
+Routed HTTP and relay requests may send `x-kuvo-route-version: 1`. If the header is absent,
+the original route body shapes apply. Routed replies advertise version 1 in the response
+headers (`routeVersion: "1"` in a `box route` reply over SSH). An unsupported explicit request
+gets HTTP 400 and `code: "unsupportedFormatVersion"` before dispatch. Route features still
+govern whether a route exists. Socket handshakes and upstream protocols retain their own rules.
+
+A storage change declares and tests a step from n to n+1. For compatible changes, put the marker
+beside the old fields so an older process or rollback can still understand them. A future
+incompatible change needs a reader or a refusal in neighbouring versions, plus a way to choose
+which version to write while both builds are running. See the format inventory in
+`.claude/notes/848-U-versions-inventory.md`.
+
 ## The relay
 
 One WebSocket per device, binary messages, first byte the kind:

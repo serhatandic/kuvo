@@ -21,7 +21,7 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { before, test } from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { relayStandIn } from "./relay-stand-in.js";
 import { atEnd, removeAtEnd } from "./at-end.js";
 
@@ -773,7 +773,8 @@ test("failure bench: a reconnecting member catches up from another box while the
   const seed = labLink();
   write(extraFile, { key: extraKey.toString("base64url"), secret: extraSecret.toString("base64url"), sign: extraSign,
     name: extra.name, relay: relay.url, mac: macPub, macSigns: seed.macSigns, docs: seed.docs, setup: seed.setup });
-  write(path.join(extraHome, "run", "work-queue", "numbers.json"), { primary: macPub, leases: [], since: 2_000 });
+  const ledger = path.join(extraHome, "run", "work-queue", "numbers.json");
+  write(ledger, { primary: macPub, leases: [[121, 160]], since: 2_000 });
   // Run the previous build verbatim. Lokum receives only the blob, without checkout history.
   const ref = fs.readFileSync(new URL("failure-bench-legacy-ref.txt", import.meta.url), "utf8").trim();
   const archived = new URL(".failure-bench-legacy.mjs", import.meta.url);
@@ -793,8 +794,15 @@ test("failure bench: a reconnecting member catches up from another box while the
     workshopScript = path.join(extraHome, "bin", "kuvo-link.js");
     write(workshopScript, previous.toString("utf8"));
   }
-  const child = spawn(process.execPath, [workshopScript, "run"], { env: { ...machineEnv, HOME: extraHome, KUVO_HOME: extraHome }, stdio: "ignore" });
-  const stopped = new Promise(resolve => child.once("close", resolve));
+  const workshopEnv = { ...machineEnv, HOME: extraHome, KUVO_HOME: extraHome };
+  const startWorkshop = build => spawn(process.execPath, [build, "run"], { env: workshopEnv, stdio: "ignore" });
+  let workshop = startWorkshop(workshopScript);
+  async function stopWorkshop() {
+    if (workshop.exitCode !== null || workshop.signalCode !== null) return;
+    const stopped = new Promise(resolve => workshop.once("close", resolve));
+    workshop.kill("SIGTERM");
+    await stopped;
+  }
   async function pair(name) {
     const device = client({ name, client: "desktop" });
     assert.equal((await ask("POST", "kuvo/devices/pair", { key: device.public, name, kind: "desktop" }, { served: true, fromApp: true })).status, 200);
@@ -833,6 +841,47 @@ test("failure bench: a reconnecting member catches up from another box while the
     await eventually(() => !relay.has(member.address));
     await resumeMain();
     await remove(second);
+    if (previous) {
+      // Change the Workshop's stored format while the main box stays live. The previous process
+      // has really used this ledger. Cut the new process before the atomic replacement, exercise
+      // the previous reader on rollback, then retry the same upgrade and start the new link.
+      await stopWorkshop();
+      await eventually(() => !relay.has(extraAddress));
+      const before = fs.readFileSync(ledger, "utf8");
+      const fields = JSON.parse(before);
+      assert.equal(fields.formatVersion, undefined);
+      assert.deepEqual(fields.leases, [[121, 160]]);
+      const boot = path.join(extraHome, "upgrade.mjs");
+      write(boot, `
+import fs from "node:fs";
+const rename = fs.renameSync;
+if (process.argv[2] === "cut") fs.renameSync = (from, to) => {
+  if (to === ${JSON.stringify(ledger)}) process.kill(process.pid, "SIGKILL");
+  rename(from, to);
+};
+const link = await import(${JSON.stringify(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url).href)});
+link.askToSend();
+`);
+      const cut = spawnSync(process.execPath, [boot, "cut"], { env: workshopEnv, encoding: "utf8", timeout: 10_000 });
+      assert.equal(cut.signal, "SIGKILL", cut.stderr);
+      assert.equal(fs.readFileSync(ledger, "utf8"), before);
+      const readWithPreviousBuild = () => {
+        const previousRead = spawnSync(process.execPath, ["--input-type=module", "-e",
+          `import { readNumbers } from ${JSON.stringify(pathToFileURL(workshopScript).href)}; console.log(JSON.stringify(readNumbers()));`,
+        ], { env: workshopEnv, encoding: "utf8", timeout: 10_000 });
+        assert.equal(previousRead.status, 0, previousRead.stderr);
+        return JSON.parse(previousRead.stdout);
+      };
+      const rollback = readWithPreviousBuild();
+      assert.deepEqual(rollback.leases, fields.leases);
+      // The lock of the interrupted process is reclaimed; it cannot leave a partially upgraded ledger.
+      const resumed = spawnSync(process.execPath, [boot], { env: workshopEnv, encoding: "utf8", timeout: 10_000 });
+      assert.equal(resumed.status, 0, resumed.stderr);
+      assert.deepEqual(read(ledger), { ...fields, formatVersion: 1 });
+      assert.deepEqual(readWithPreviousBuild(), rollback);
+      workshop = startWorkshop(script);
+      await reached("the upgraded Workshop returned to the relay", () => relay.has(extraAddress));
+    }
     resumeMain = disconnect(macAddress);
     const resumeExtra = disconnect(extraAddress);
     await eventually(() => !relay.has(macAddress) && !relay.has(extraAddress));
@@ -855,8 +904,7 @@ test("failure bench: a reconnecting member catches up from another box while the
     await resumeMain();
   } finally {
     for (const resume of restart) resume();
-    child.kill("SIGTERM");
-    await stopped;
+    await stopWorkshop();
     await ask("PUT", "kuvo/link/peers", { peers: before });
     link.macLink.wake?.();
   }
