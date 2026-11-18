@@ -156,6 +156,11 @@ impl BoxClient {
         Some(BoxClient { transport, gate: Arc::new(Mutex::new((Gate::Unknown, 0))) })
     }
 
+    /// Whether a followed route would use the same connection as before.
+    pub fn same_connection(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.transport, &other.transport)
+    }
+
     /// Whether what this box follows keeps coming as things change (its own server), or is read
     /// again on a timer (a machine over SSH).
     pub fn streams(&self) -> bool {

@@ -341,13 +341,14 @@ interface LastReply {
 // before it replied), and what began its latest turn; it throws when it can't be read.
 // A session's messages, newest first, back as far as its latest turn begins (a long one is many
 // steps, each a message).
-async function latestMessages(target: Target, session: string) {
+async function latestMessages(target: Target, session: string, whole = false) {
   const address = encodeURIComponent(session);
   const messages: { id: string; type?: unknown; text?: unknown; metadata?: unknown; time?: unknown; content?: unknown }[] = [];
   let query = "limit=50&order=desc";
   for (let pages = 0; pages < 20; pages++) {
     // (A later page not read: as far as it got.)
-    const page = await engineGet(target, `api/session/${address}/message?${query}`).catch(error => { if (pages === 0) throw error; return null; }) as { data?: unknown; cursor?: { next?: string; previous?: string } | null } | null;
+    const page = await engineGet(target, `api/session/${address}/message?${query}`).catch(error => { if (whole || pages === 0) throw error; return null; }) as { data?: unknown; cursor?: { next?: string; previous?: string } | null } | null;
+    if (whole && !Array.isArray(page?.data)) throw new Error("The turn could not be read.");
     const data: unknown[] = Array.isArray(page?.data) ? page.data : [];
     for (const message of data) if (isObject(message) && typeof message.id === "string") messages.push(message as typeof messages[number]);
     const next = page?.cursor?.next ?? page?.cursor?.previous;
@@ -355,6 +356,15 @@ async function latestMessages(target: Target, session: string) {
     query = `limit=100&cursor=${encodeURIComponent(next)}`;
   }
   return messages;
+}
+
+/** Whether the open turn's first input was a wake-up (including a watch). */
+export async function wakeTurnIsOpen(target: Target, session: string): Promise<boolean> {
+  const messages = await latestMessages(target, session, true);
+  const { from, before } = turnIn(messages);
+  if (from !== 0) return false;
+  const first = messages.slice(0, before < 0 ? undefined : before).filter(message => message.type === "user" || message.type === "synthetic").at(-1);
+  return first?.type === "user" && typeof first.text === "string" && first.text.startsWith(WAKE_MARKER);
 }
 
 async function lastReply(target: Target, session: string): Promise<LastReply> {

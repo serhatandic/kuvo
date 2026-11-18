@@ -5603,6 +5603,12 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
   time they change (added, fired, canceled, paused), `{"sessions": [{session, wakes: [{id, due,
   note, every}], watches: [{letters, every, check, note}], paused}]}` with notes and checks whole,
   and only conversations that have any or are paused.
+  `GET kuvo/wakes/<session>/events` (`bots.wake-ups`) follows just that conversation in the
+  same shape as its GET, including an empty schedule. Both routes give each entry a `summary`
+  from the keeper, or the first sentence of the note if the keeper has none. A wake-up's
+  `cancelKey`, where present, can be sent as `wake` even after that repeat advances.
+  A watch's `next` is its next check in seconds since 1970. A check wakes the bot only if the
+  watch finds a change.
 - `kuvo/asks` (`GET` or `HEAD`): what agents ask you for while they browse (a box's own; a Mac's, its machines' too): a
   sign-in (the fields the page has, and the accounts Passwords keeps for the site, never
   their passwords), a one-time code, or a step only you can do. `kuvo/asks/events` is the same
@@ -5831,6 +5837,22 @@ the last reading in its folder (`limits.json`), through a restart. A client reac
     (`kuvo.limits.updated`) the moment a window listed starts over, so no client watches a clock
     for it. `title`, its name (`limits.titles`): `name`, else `model`, else by its length
     ("Session" for 300 minutes, "Weekly" for 10080, "Monthly", "3-day", "8-hour"), else "Limit".
+  - `usage` (HTTP `rows`): display facts for the Usage page. `title` is the account title without
+    a computer suffix. `computers` lists the named reading sources with `here` relative to the
+    answering computer. With no windows it lists where the account is signed in. `status?` is
+    `{words, warning}`. Each meter has `title, share, value, level, readAt, resetsAt?, resetLabels, freshForMs`.
+    Each `resetLabels` entry is `{at, words}`, effective from `at`. Countdowns under a day round up.
+    Before the first label, show “resets” followed by the local weekday and time of `resetsAt`.
+    The timestamps are Unix milliseconds for the client to format in the viewer's time zone. These
+    facts retain the historical reading after a reset. Draw it as old at once for an away or failing
+    source, or when the time supplied in `freshForMs` has passed. That time ends at the earlier of
+    the next reset, the source going away, or 30 minutes from the reading.
+    The limits response also includes `usageUpdatedAt?`, the latest timestamp represented by the
+    rows, including status-only accounts. Refresh may answer with `refreshPending: true`; follow
+    `GET kuvo/agents/api/kuvo/limits/events` and GET the latest snapshot on each line. The stream
+    signals once when it opens and on `kuvo.limits.updated`, including refresh completion.
+    `refreshCompletedAt?` is the latest successful manual refresh time. `refreshFailed` reports
+    whether the last refresh could not finish.
   - `balance` `{left, limit?, unit}`: credits left to spend, where the account has them.
   - `balance` with `limit`: what was bought (OpenRouter's total credits), so a client draws what's
     left of it as a meter.
@@ -7537,6 +7559,7 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `bots.make` | `kuvo/bots/templates` and `POST kuvo/bots` |
 | `bots.now` | `now` on each bot in `kuvo/bots` and `kuvo/bots/events`: its sessions at work and waiting on you ("What waits on you", #711) |
 | `bots.state` | `state`, `since`, `thinking`, `blocked` and `blockedBy` in each bot's `now`, and `POST kuvo/bots/<id>/seen`; `thinking`, `blocked`, `retrying` and `unread` in the session list's facts; the shapes `loaf`, `capsule` and `dome` ("What waits on you": "The one state a bot is in") |
+| `bots.wake-ups` | `bots.now.waking` while a wake-up turn is active, and a followed schedule with summaries, watch check times and stable cancellation keys. |
 | `box.app` | `kuvo/box/app` and `kuvo/box/app/open`: this Mac's app registering with a Mac's box in a home of its own, and opened by it for its agents' browser ("This Mac's box: this Mac's app") |
 | `box.app.host` | `kuvo/box/app`'s `host`: the app's own host interface, where a Mac's box in a home of its own sends a phone's ask of the Mac's own routes and asks what the panel's browser is signed in to ("This Mac's app") |
 | `box.appKeys` | `kuvo/box/proof`: what this Mac's app asks of the keys a Mac's box in a home of its own holds ("This Mac's box: its keys, for its app"); `bin/integrations-mac.json` read there |

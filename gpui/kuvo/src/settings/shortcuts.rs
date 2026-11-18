@@ -83,6 +83,7 @@ pub fn title(name: &str) -> Option<(&'static str, &'static str)> {
         "session_menu::RenameSession" => ("Sessions", "Rename session"),
         "session_menu::ArchiveSession" => ("Sessions", "Archive session"),
         "session_menu::DeleteSession" => ("Sessions", "Delete session"),
+        "wakes::Close" => ("Wake-ups", "Close wake-up schedule"),
         "changes::Commit" => ("Changes", "Commit changes"),
         "changes::Back" => ("Changes", "Go back in Changes"),
         "files::CloseFile" => ("Files", "Close file"),
@@ -134,6 +135,7 @@ pub fn description(context: &str) -> &'static str {
     if context.contains("ComposerSlash") { "While choosing a command" }
     else if context.contains("Composer") { "While writing a message" }
     else if context.contains("KuvoMenu") { "While a menu is open" }
+    else if context.contains("WakeSchedule") { "In the wake-up schedule" }
     else if context.contains("Sidebar") { "In the sidebar" }
     else if context.contains("!KuvoTextField") { "Outside text fields" }
     else if context.contains("KuvoTextField") { "While editing text" }

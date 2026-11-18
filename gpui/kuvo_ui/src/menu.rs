@@ -545,7 +545,7 @@ impl PopoverMenu {
         self
     }
 
-    /// Use the whole row as the trigger.
+    /// Takes the available width, so the trigger can size itself to the parent.
     pub fn fill(mut self) -> Self {
         self.fill = true;
         self
@@ -582,8 +582,8 @@ impl RenderOnce for PopoverMenu {
             .relative()
             .flex()
             .flex_none()
-            .when(self.fill, |d| d.w_full())
-            .when(!self.fill && !self.centered, |d| d.self_start())
+            .when(self.fill, |d| d.w_full().min_w_0())
+            .when(!self.centered, |d| d.self_start())
             .when(self.centered, |d| d.self_center())
             // A press on the trigger while the menu is open closes it, rather than closing on
             // the press and opening again on the release.
@@ -739,7 +739,8 @@ impl Render for Tooltip {
 pub fn tooltip_frame(text: SharedString, shortcut: Option<SharedString>, cx: &App) -> impl IntoElement {
     let theme = cx.theme();
     let c = &theme.colors;
-    div().pl(px(4.)).pt(px(6.)).child(
+    let selector = text.clone();
+    div().debug_selector(move || format!("tooltip-{selector}")).pl(px(4.)).pt(px(6.)).child(
         div()
             .flex()
             .items_center()

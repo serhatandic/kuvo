@@ -4,7 +4,7 @@
 //! (`described.rs`). Drawing is in `page.rs`; nothing here reaches the box.
 
 use kuvo_box::accounts::{AccountEntry, Accounts, Action, Confirm, Side, State};
-use kuvo_box::areas::{Account, Level};
+use kuvo_box::areas::{Account, Level, UsageMeter};
 use kuvo_box::models::Offered as OfferedModels;
 use kuvo_box::settings::{Config, UsageSettings};
 use kuvo_box::settings_pages::{BadgeTone, Confirm as Asks, FlowState, Form, Row as Described};
@@ -262,6 +262,8 @@ pub enum Control {
     Busy(String),
     /// Windows of use, each with its share and when it starts over.
     Windows(Vec<Meter>),
+    /// The Usage page account row and its display-ready plan limits.
+    Usage { account: std::rc::Rc<str>, plan: Option<String>, meters: Vec<UsageMeter> },
     /// A thing in a list: what it offers now (buttons), what asks first (a "…" menu), and its
     /// switch, last, at the edge.
     Thing { buttons: Vec<Push>, menu: Vec<Push>, switch: Option<(bool, Option<Act>)> },
@@ -356,7 +358,11 @@ impl Row {
 
     /// Whether `query` (lowercase) is in its name or its line.
     pub fn matches(&self, query: &str) -> bool {
-        self.title.to_lowercase().contains(query) || self.detail.to_lowercase().contains(query)
+        let contains = |words: &str| words.to_lowercase().contains(query);
+        contains(&self.title) || contains(&self.detail) || matches!(
+            &self.control,
+            Control::Usage { plan, .. } if plan.as_deref().is_some_and(contains) || self.why.as_deref().is_some_and(contains)
+        )
     }
 
     pub fn why(mut self, why: Option<String>) -> Row {
@@ -668,22 +674,6 @@ fn agents_state(label: &str, state: &Refusal, facts: &Facts) -> Block {
 
 // MARK: Usage
 
-/// An account's windows as meters: what's left of each (as its ring has it), its colour by the
-/// box's level, and when it resets; one that reset and wasn't read since says so (PROTOCOL.md).
-fn meters(account: &Account) -> Vec<Meter> {
-    account
-        .windows
-        .iter()
-        .map(|window| Meter {
-            title: window.title.clone(),
-            said: if window.expired { "Not read since it reset".to_owned() } else { format!("{}% left", ((1. - window.used.clamp(0., 1.)) * 100.).round() as u32) },
-            share: 1. - window.used.clamp(0., 1.),
-            level: window.level,
-            resets_at: window.resets_at.filter(|_| !window.expired),
-        })
-        .collect()
-}
-
 fn usage(facts: &Facts) -> Vec<Block> {
     let mut blocks = Vec::new();
     // The coding agents not running: down, their sentence in the limits' place; restarting, over
@@ -699,21 +689,39 @@ fn usage(facts: &Facts) -> Vec<Block> {
     };
     match limits {
         None => {}
-        Some(Reading::Ready(limits)) if limits.is_empty() => blocks.push(note("note-usage-none", "No account’s limits to show yet. Sign in under Accounts, and each plan’s limits show here.", false)),
+        Some(Reading::Ready(limits)) if limits.is_empty() => blocks.push(note("note-usage-none", "No accounts with limits yet. Sign in under Accounts.", false)),
         Some(Reading::Ready(limits)) => {
             let rows = limits
                 .iter()
                 .enumerate()
                 .map(|(ix, account)| {
-                    // A plan that ended, as the box says (`ended`): said so, with no meters.
-                    let detail = if account.ended { "Plan ended".to_owned() } else { account.plan.clone().map(|plan| format!("{plan} plan")).unwrap_or_default() };
-                    let meters = if account.ended { Vec::new() } else { meters(account) };
-                    Row::new(format!("usage-{ix}"), account.title.clone(), detail, Control::Windows(meters)).leading(Leading::Mark(account.service.clone()))
+                    let key = format!("usage-{ix}");
+                    let identity = std::rc::Rc::from(account.id.as_deref().unwrap_or(&key));
+                    let Some(display) = &account.usage else {
+                        return Row::new(key, account.title.clone(), "", Control::Usage { account: identity, plan: account.plan.clone(), meters: Vec::new() })
+                            .leading(Leading::Mark(account.service.clone()));
+                    };
+                    let status = display.status.as_ref();
+                    let computers = display.computers.iter()
+                        .filter(|computer| !(facts.here && computer.here))
+                        .map(|computer| computer.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    Row::new(key, display.title.clone(), computers, Control::Usage { account: identity, plan: account.plan.clone(), meters: display.meters.clone() })
+                        .leading(Leading::Mark(account.service.clone()))
+                        .why(status.map(|status| status.words.clone()))
+                        .warning(status.is_some_and(|status| status.warning))
                 })
                 .collect();
-            blocks.push(Block::Group("Limits".into(), String::new(), rows));
+            if limits.iter().any(|account| account.usage.is_none()) {
+                blocks.push(note("note-usage-update", "Update Kuvo on the computer selected in Settings to see usage details.", false));
+            }
+            blocks.push(Block::Group(String::new(), String::new(), rows));
         }
-        Some(reading) => blocks.extend(unread(reading, "note-usage", "your accounts’ limits")),
+        Some(Reading::Failed(_)) => blocks.push(Block::Note {
+            key: "note-usage".into(), words: "Couldn’t load usage. Check the computer’s connection and reopen Usage.".into(), busy: false, warning: true,
+        }),
+        Some(Reading::NotYet) => blocks.push(note("note-usage", "Reading usage…", true)),
     }
     // The notices this computer's box sends about them.
     match facts.usage {
@@ -735,7 +743,8 @@ fn usage(facts: &Facts) -> Vec<Block> {
         }
         // (Not read for the coding agents' state, said once above.)
         Reading::Failed(_) if agents.is_some() => {}
-        reading => blocks.extend(unread(reading, "note-usage-settings", "the usage notices")),
+        Reading::Failed(_) => blocks.push(note("note-usage-settings", "Couldn’t load usage notices.", false)),
+        Reading::NotYet => blocks.push(note("note-usage-settings", "Reading usage notices…", true)),
     }
     blocks
 }
@@ -819,6 +828,17 @@ mod tests {
         assert_eq!(found(true, blocks.clone(), "browser").len(), 2, "the section's name keeps it whole");
         assert!(found(false, blocks, "nothing like it").is_empty());
     }
+
+    #[test]
+    fn usage_search_matches_plan_and_visible_status() {
+        let row = Row::new("usage", "Claude", "", Control::Usage {
+            account: "account".into(), plan: Some("Max 20x".into()), meters: Vec::new(),
+        }).why(Some("Plan ended.".into()));
+        assert!(row.matches("max"));
+        assert!(row.matches("ended"));
+        assert!(!row.matches("work"));
+    }
+
 }
 
 #[cfg(test)]

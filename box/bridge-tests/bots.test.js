@@ -192,14 +192,14 @@ test("kuvo/wakes reads a bot's or a session's wake-ups, watches and pause", asyn
   assert.equal(theBot.status, 200);
   assert.deepEqual(theBot.json, {
     wakes: [
-      { id: "1792000100-XyZ789-1d@0900", due: 1792000100, note: "every morning", every: "1d" },
-      { id: "1792000500-AbC123", due: 1792000500, note: "check the build" },
+      { id: "1792000100-XyZ789-1d@0900", due: 1792000100, note: "every morning", every: "1d", summary: "every morning", cancelKey: "XyZ789" },
+      { id: "1792000500-AbC123", due: 1792000500, note: "check the build", summary: "check the", cancelKey: "AbC123" },
     ],
-    watches: [{ letters: "Qq1", every: "30m", check: "curl -s example.com", note: "Tell me when it's up" }],
+    watches: [{ letters: "Qq1", every: "30m", check: "curl -s example.com", note: "Tell me when it's up", summary: "Tell me when it's up" }],
     paused: false,
   });
   const own = await ask(handle, "GET", "kuvo/wakes/ses_plain");
-  assert.deepEqual(own.json, { wakes: [{ id: "1792000900-Plain1", due: 1792000900, note: "a session's own" }], watches: [], paused: true });
+  assert.deepEqual(own.json, { wakes: [{ id: "1792000900-Plain1", due: 1792000900, note: "a session's own", summary: "a session's own", cancelKey: "Plain1" }], watches: [], paused: true });
   // One that keeps none, and one that can't name a folder: nothing waiting.
   assert.deepEqual((await ask(handle, "GET", "kuvo/wakes/ses_other")).json, { wakes: [], watches: [], paused: false });
   assert.deepEqual((await ask(handle, "GET", "kuvo/wakes/..%2F..%2Fetc")).json, { wakes: [], watches: [], paused: false });
@@ -215,7 +215,7 @@ test("kuvo/wakes reads a bot's or a session's wake-ups, watches and pause", asyn
   assert.equal(all.status, 200);
   assert.deepEqual(all.json.sessions.sort((a, b) => a.session.localeCompare(b.session)), [
     { session: "ses_plain", next: 1792000900, watching: false, ...own.json },
-    { session: "ses_watch", watching: true, wakes: [], watches: [{ letters: "Ww2", every: "", check: "test -f done", note: "" }], paused: false },
+    { session: "ses_watch", watching: true, wakes: [], watches: [{ letters: "Ww2", every: "", check: "test -f done", note: "", summary: "Wake-up" }], paused: false },
   ]);
   assert.equal((await ask(handle, "POST", "kuvo/wakes")).status, 405);
 });

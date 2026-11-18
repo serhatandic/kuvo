@@ -3,7 +3,7 @@
 //! button and in a narrow window, "Needs you" on top of Sessions, back and forward, and the rings.
 //! Clicks and keys go through the window as AppKit hands them on.
 
-use gpui::{Bounds, Entity, Modifiers, Pixels, TestAppContext, VisualTestContext, px, size};
+use gpui::{Bounds, Entity, Modifiers, MouseButton, MouseDownEvent, MouseUpEvent, Pixels, TestAppContext, VisualTestContext, point, px, size};
 use kuvo::area::Area;
 use kuvo::stand_in::{Replies, StandIn};
 use kuvo::workspace::Workspace;
@@ -693,4 +693,320 @@ fn title_bar_groups_the_sidebar_side_buttons_before_a_divider_and_the_title(cx: 
         assert!(pair[0].right() <= pair[1].left(), "left to right, sidebar hidden: {pair:?}");
     }
     assert!(hidden[4].left() - hidden[3].right() <= gpui::px(16.), "the divider stays with the group");
+}
+
+fn drag_sidebar(cx: &mut VisualTestContext, delta: f32) {
+    let from = bounds(cx, "sidebar-edge").unwrap().center();
+    let to = point(from.x + px(delta), from.y);
+    let modifiers = Modifiers::default();
+    cx.simulate_mouse_down(from, MouseButton::Left, modifiers);
+    cx.simulate_mouse_move(to, Some(MouseButton::Left), modifiers);
+    cx.simulate_mouse_up(to, MouseButton::Left, modifiers);
+    cx.run_until_parked();
+}
+
+fn resizable_sidebar_width(cx: &mut VisualTestContext) -> Pixels {
+    let sidebar = bounds(cx, "area-sidebar").unwrap();
+    let divider = bounds(cx, "title-bar-divider").unwrap();
+    assert_eq!(divider.right(), sidebar.right(), "the border and divider share the same edge");
+    assert!(bounds(cx, "toggle-sidebar").unwrap().right() <= divider.left());
+    for name in ["computer-switcher", "back", "forward"] {
+        let button = bounds(cx, name).unwrap();
+        if sidebar.size.width == px(64.) {
+            assert!(button.left() >= divider.right(), "{name} sits beside the title in compact mode");
+        } else {
+            assert!(button.right() <= divider.left(), "{name} fits");
+        }
+    }
+    sidebar.size.width
+}
+
+#[gpui::test]
+fn resizable_sidebar_keeps_a_long_computer_name_inside_the_header(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let name = "WWWWW Engineering Workstation East Coast";
+    assert_eq!(name.chars().count(), 40);
+    stand_in.set_elsewhere(true);
+    stand_in.set_computer_name(name);
+    let (workspace, cx) = open(cx, stand_in);
+    assert_eq!(workspace.read_with(cx, |workspace, _| workspace.box_name().to_string()), name);
+    click(cx, "rail-queue");
+    assert_eq!(resizable_sidebar_width(cx), px(272.));
+    let picker = bounds(cx, "computer-switcher").unwrap().size.width;
+    drag_sidebar(cx, 160.);
+    assert_eq!(resizable_sidebar_width(cx), px(432.));
+    assert!(bounds(cx, "computer-switcher").unwrap().size.width > picker);
+}
+
+#[gpui::test]
+fn resizable_sidebar_switches_to_avatars_below_the_threshold(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.set_bot_now("bot_mira", serde_json::json!({ "working": 1, "asking": 0, "state": "working", "since": NOW }));
+    let (workspace, cx) = open(cx, stand_in);
+    click(cx, "rail-bots");
+    drag_sidebar(cx, -56.);
+    assert_eq!(resizable_sidebar_width(cx), px(216.));
+    assert!(bounds(cx, "bot-bot_mira").is_some());
+    drag_sidebar(cx, -1.);
+    assert_eq!(resizable_sidebar_width(cx), px(64.));
+    assert!(bounds(cx, "bot-bot_mira").is_none());
+    assert!(bounds(cx, "bot-avatar-at-work").is_some());
+    assert!(bounds(cx, "bot-avatar-needs-you").is_some());
+    assert!(bounds(cx, "group-grp_launch").is_none());
+    let mira = bounds(cx, "bot-avatar-bot:bot_mira").unwrap();
+    let inbox = bounds(cx, "bot-avatar-bot:bot_inbox").unwrap();
+    assert_eq!(mira.size.width, px(48.));
+    assert_eq!(inbox.top() - mira.bottom(), px(4.));
+    drag_sidebar(cx, -45.);
+    assert_eq!(resizable_sidebar_width(cx), px(64.));
+    click(cx, "bot-avatar-bot:bot_mira");
+    assert_eq!(title(&workspace, cx).as_deref(), Some("Mira"));
+    cx.simulate_keystrokes("cmd-b");
+    cx.run_until_parked();
+    assert!(bounds(cx, "area-sidebar").is_none());
+    click(cx, "rail-bots");
+    assert_eq!(resizable_sidebar_width(cx), px(64.));
+    drag_sidebar(cx, 152.);
+    assert_eq!(resizable_sidebar_width(cx), px(216.));
+    assert!(bounds(cx, "bot-bot_mira").is_some());
+}
+
+#[gpui::test]
+fn resizable_sidebar_search_opens_bots_and_sessions_without_expanding(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.set_facts("ses_signup", |facts| {
+        facts["bot"] = serde_json::json!("bot_mira");
+        facts["title"] = serde_json::json!("Fix the sign-up form wiping on a taken email when the previous invitation has expired");
+    });
+    let (workspace, cx) = open(cx, stand_in);
+    click(cx, "rail-bots");
+    drag_sidebar(cx, -200.);
+    click(cx, "bot-avatar-search");
+    assert!(bounds(cx, "sidebar-quick-search").is_some());
+    assert_eq!(resizable_sidebar_width(cx), px(64.));
+
+    cx.simulate_input("in");
+    assert!(bounds(cx, "sidebar-search-result-bot:bot_inbox").is_some());
+    assert!(bounds(cx, "sidebar-search-result-ses_signup").is_some());
+    assert!(bounds(cx, "sidebar-search-result-bot:bot_inbox-avatar").is_some());
+    assert!(bounds(cx, "sidebar-search-result-ses_signup-avatar").is_some());
+    let leading = bounds(cx, "sidebar-search-leading").unwrap();
+    let input = bounds(cx, "sidebar-search-input").unwrap();
+    assert_eq!(leading.size.width, px(20.));
+    assert_eq!(input.left(), leading.right() + px(8.));
+    for selector in ["sidebar-search-result-bot:bot_inbox-leading", "sidebar-search-result-ses_signup-leading"] {
+        let row = bounds(cx, selector).unwrap();
+        assert_eq!((row.left(), row.size.width), (leading.left(), leading.size.width));
+    }
+    cx.simulate_keystrokes("escape");
+    assert!(bounds(cx, "sidebar-quick-search").is_none());
+    assert_eq!(area(&workspace, cx), Area::Bots);
+    assert_eq!(resizable_sidebar_width(cx), px(64.));
+
+    click(cx, "bot-avatar-search");
+    cx.simulate_keystrokes("up down down enter");
+    assert_eq!(title(&workspace, cx).as_deref(), Some("Inbox Helper"));
+    assert!(bounds(cx, "sidebar-quick-search").is_none());
+    assert_eq!(resizable_sidebar_width(cx), px(64.));
+
+    click(cx, "bot-avatar-search");
+    cx.simulate_input("redis");
+    assert!(bounds(cx, "sidebar-search-result-ses_limits-avatar").is_none());
+    let chat = bounds(cx, "sidebar-search-result-ses_limits-leading").unwrap();
+    assert_eq!((chat.left(), chat.size.width), (leading.left(), leading.size.width));
+    click(cx, "sidebar-search-result-ses_limits");
+    assert_eq!(area(&workspace, cx), Area::Sessions);
+    assert_eq!(workspace.read_with(cx, |workspace, _| workspace.opened().map(str::to_owned)).as_deref(), Some("ses_limits"));
+    assert!(bounds(cx, "sidebar-quick-search").is_none());
+    assert_eq!(resizable_sidebar_width(cx), px(64.));
+    assert!(bounds(cx, "bot-avatar-search").is_some());
+
+    click(cx, "bot-avatar-search");
+    cx.simulate_input("zzzz");
+    assert!(bounds(cx, "sidebar-search-No matches.").is_some());
+    cx.simulate_keystrokes("enter");
+    assert!(bounds(cx, "sidebar-quick-search").is_some());
+}
+
+#[gpui::test]
+fn resizable_sidebar_saves_width_on_this_device_and_double_click_resets_it(cx: &mut TestAppContext) {
+    let folder = tempfile::tempdir().unwrap();
+    let path = folder.path().join(kuvo::yours::FILE);
+    cx.update(|cx| kuvo::yours::init(Some(path.clone()), cx));
+    let (_, cx) = open(cx, StandIn::at(Replies::Never, NOW));
+    drag_sidebar(cx, 400.);
+    assert_eq!(resizable_sidebar_width(cx), px(440.));
+    assert_eq!(kuvo::yours::Store::read(Some(path.clone())).now().sidebar_width, Some(440.));
+    cx.simulate_resize(size(px(820.), px(800.)));
+    cx.run_until_parked();
+    assert_eq!(resizable_sidebar_width(cx), px(413.));
+    cx.simulate_resize(size(px(1200.), px(800.)));
+    cx.run_until_parked();
+    assert_eq!(resizable_sidebar_width(cx), px(440.));
+
+    let position = bounds(cx, "sidebar-edge").unwrap().center();
+    let modifiers = Modifiers::default();
+    let button = MouseButton::Left;
+    cx.simulate_event(MouseDownEvent { button, position, modifiers, click_count: 2, first_mouse: false });
+    cx.simulate_event(MouseUpEvent { button, position, modifiers, click_count: 2 });
+    cx.run_until_parked();
+    assert_eq!(resizable_sidebar_width(cx), px(272.));
+    assert_eq!(kuvo::yours::Store::read(Some(path)).now().sidebar_width, Some(272.));
+}
+
+#[gpui::test]
+fn resizable_sidebar_handles_one_bot_and_a_computer_going_away(cx: &mut TestAppContext) {
+    let stand_in = StandIn::empty(Replies::Never);
+    stand_in.set_elsewhere(true);
+    stand_in.add_bot("solo", "One Bot with a Very Long Name", serde_json::json!({
+        "color": "mint", "shape": "round", "face": "calm",
+    }));
+    let (workspace, cx) = open(cx, stand_in.clone());
+    click(cx, "rail-bots");
+    drag_sidebar(cx, -200.);
+    assert_eq!(resizable_sidebar_width(cx), px(64.));
+    click(cx, "bot-avatar-bot:solo");
+    assert_eq!(title(&workspace, cx).as_deref(), Some("One Bot with a Very Long Name"));
+
+    stand_in.set_down(true);
+    workspace.update_in(cx, |workspace, _, cx| workspace.read_at_once(cx));
+    cx.run_until_parked();
+    assert!(bounds(cx, "area-sidebar").is_none());
+    assert!(bounds(cx, "held-area").is_some());
+    click(cx, "computer-switcher");
+    assert!(bounds(cx, "menu-item-Show Computers").is_some());
+}
+
+#[gpui::test]
+fn compact_sidebar_search_closes_when_folded(cx: &mut TestAppContext) {
+    let (_, cx) = open(cx, StandIn::at(Replies::Never, NOW));
+    click(cx, "rail-bots");
+    drag_sidebar(cx, -210.);
+    click(cx, "bot-avatar-search");
+    cx.simulate_input("Mira");
+    cx.simulate_keystrokes("cmd-b");
+    assert!(bounds(cx, "area-sidebar").is_none());
+    assert!(bounds(cx, "sidebar-quick-search").is_none());
+    // Keyboard focus is on the visible toggle, so Return brings the strip back.
+    cx.simulate_event(gpui::KeyDownEvent {
+        keystroke: gpui::Keystroke::parse("enter").unwrap(),
+        is_held: false,
+        prefer_character_input: false,
+    });
+    cx.simulate_event(gpui::KeyUpEvent { keystroke: gpui::Keystroke::parse("enter").unwrap() });
+    assert!(bounds(cx, "bot-avatar-search").is_some());
+    click(cx, "bot-avatar-search");
+    assert!(bounds(cx, "sidebar-search-result-bot:bot_inbox").is_some(), "the old search is gone");
+}
+
+#[gpui::test]
+fn compact_sidebar_search_closes_on_disconnect_and_cannot_reopen(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.set_elsewhere(true);
+    let (workspace, cx) = open(cx, stand_in.clone());
+    click(cx, "rail-bots");
+    drag_sidebar(cx, -210.);
+    click(cx, "bot-avatar-search");
+    cx.simulate_input("Mira");
+    stand_in.set_down(true);
+    workspace.update_in(cx, |workspace, _, cx| workspace.read_at_once(cx));
+    cx.run_until_parked();
+    assert!(bounds(cx, "blocked-unreached").is_some());
+    assert!(bounds(cx, "sidebar-quick-search").is_none());
+    cx.simulate_keystrokes("cmd-shift-f");
+    assert!(bounds(cx, "sidebar-quick-search").is_none());
+    assert!(bounds(cx, "blocked-unreached").is_some());
+    assert_eq!(area(&workspace, cx), Area::Bots);
+}
+
+#[gpui::test]
+fn compact_sidebar_keyboard_search_reveals_strip_and_accepts_input(cx: &mut TestAppContext) {
+    let (_, cx) = open(cx, StandIn::at(Replies::Never, NOW));
+    click(cx, "rail-bots");
+    drag_sidebar(cx, -210.);
+    click(cx, "bot-avatar-search");
+    cx.simulate_input("redis");
+    click(cx, "sidebar-search-result-ses_limits");
+    cx.simulate_keystrokes("cmd-b");
+    assert!(bounds(cx, "area-sidebar").is_none());
+    cx.simulate_keystrokes("cmd-shift-f");
+    cx.simulate_input("Mira");
+    assert!(bounds(cx, "sidebar-quick-search").is_some());
+    assert!(bounds(cx, "sidebar-search-result-bot:bot_mira").is_some());
+    assert!(bounds(cx, "sidebar-search-result-bot:bot_inbox").is_none());
+    assert_eq!(resizable_sidebar_width(cx), px(64.));
+}
+
+#[gpui::test]
+fn compact_sidebar_width_leaves_room_for_the_conversation_with_both_panes(cx: &mut TestAppContext) {
+    let (_, cx) = open(cx, StandIn::at(Replies::Never, NOW));
+    click(cx, "session-project-ses_signup");
+    drag_sidebar(cx, 400.);
+    click(cx, "toggle-panel");
+    cx.simulate_resize(size(px(820.), px(800.)));
+    cx.run_until_parked();
+    assert!(bounds(cx, "area-sidebar").is_some());
+    assert!(bounds(cx, "panel-edge").is_some());
+    assert!(bounds(cx, "workspace-content").unwrap().size.width >= px(360.));
+    drag_sidebar(cx, 100.);
+    assert!(bounds(cx, "workspace-content").unwrap().size.width >= px(360.));
+    cx.simulate_resize(size(px(1400.), px(800.)));
+    cx.run_until_parked();
+    assert_eq!(resizable_sidebar_width(cx), px(440.));
+}
+
+#[gpui::test]
+fn compact_sidebar_selection_follows_the_open_sessions_bot(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.set_facts("ses_signup", |facts| facts["bot"] = serde_json::json!("bot_inbox"));
+    let (_, cx) = open(cx, stand_in);
+    click(cx, "rail-bots");
+    drag_sidebar(cx, -210.);
+    click(cx, "bot-avatar-bot:bot_mira");
+    assert!(bounds(cx, "bot-avatar-bot:bot_mira-selected").is_some());
+    click(cx, "bot-avatar-search");
+    cx.simulate_input("sign-up");
+    click(cx, "sidebar-search-result-ses_signup");
+    assert!(bounds(cx, "bot-avatar-bot:bot_inbox-selected").is_some());
+    assert!(bounds(cx, "bot-avatar-bot:bot_mira-selected").is_none());
+    click(cx, "bot-avatar-search");
+    cx.simulate_input("redis");
+    click(cx, "sidebar-search-result-ses_limits");
+    assert!(bounds(cx, "bot-avatar-bot:bot_mira-selected").is_none());
+    assert!(bounds(cx, "bot-avatar-bot:bot_inbox-selected").is_none());
+}
+
+#[gpui::test]
+fn compact_sidebar_shows_a_scheduled_wake_badge_and_tooltip(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.set_bot_now("bot_mira", serde_json::json!({"working":0,"asking":0,"state":"idle"}));
+    stand_in.set_bot_wakes("bot_mira", vec![serde_json::json!({
+        "id": "at-build", "due": NOW / 1000. + 180., "summary": "Check the build", "cancelKey": "build",
+    })], vec![]);
+    let (_, cx) = open(cx, stand_in);
+    click(cx, "rail-bots");
+    drag_sidebar(cx, -210.);
+
+    let avatar = bounds(cx, "bot-avatar-bot:bot_mira").unwrap();
+    let badge = bounds(cx, "bot-avatar-wake").unwrap();
+    assert_eq!(badge.size, size(px(14.), px(14.)));
+    assert!(avatar.contains(&badge.center()));
+    cx.simulate_mouse_move(avatar.center(), None, Modifiers::default());
+    cx.run_until_parked();
+    cx.executor().advance_clock(std::time::Duration::from_secs(1));
+    cx.run_until_parked();
+    assert!(bounds(cx, "tooltip-Mira · Wakes in 3 min").is_some());
+}
+
+#[gpui::test]
+fn compact_sidebar_marks_remote_bot_changes(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.refuse_bot_edit("bot_wren", "lab", "The change was declined.");
+    let (_, cx) = open(cx, stand_in);
+    click(cx, "rail-bots");
+    drag_sidebar(cx, -210.);
+    assert!(bounds(cx, "bot-avatar-elsewhere:bot_scout").is_some());
+    assert!(bounds(cx, "bot-avatar-elsewhere:bot_wren").is_some());
+    assert!(bounds(cx, "bot-avatar-change-waiting").is_some());
+    assert!(bounds(cx, "bot-avatar-change-refused").is_some());
 }

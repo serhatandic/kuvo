@@ -62,3 +62,5 @@ pub use info::BoxInfo;
 pub use messages::{Conversation, Message, Where};
 pub use sessions::{Listing, Sidebar};
 pub use ssh::SshBox;
+
+pub mod wakes;

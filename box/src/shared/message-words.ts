@@ -216,11 +216,17 @@ export function firstSentence(note: string): string {
   return end ? plain.slice(0, end.index + 1) : plain;
 }
 
+/** The stored short summary, or the first sentence of a note from an older schedule. */
+export function wakeSummary(note: string, given?: string | null): string {
+  const summary = given?.replace(/\s+/g, " ").trim() || firstSentence(note) || "Wake-up";
+  return summary.length > 300 ? summary.slice(0, 299).trimEnd() + "…" : summary;
+}
+
 /** The card a message with `text` and `metadata` is, if it's a wake-up's; null for any other. */
 export function wakeCard(text: string, metadata: unknown): WakeCard | null {
   if (!text.startsWith(WAKE_OPENING)) return null;
   const note = text.slice(WAKE_OPENING.length).trim();
-  return { summary: wakeMarkOf(metadata)?.kuvo.wake.summary || firstSentence(note) || "Wake-up", note };
+  return { summary: wakeSummary(note, wakeMarkOf(metadata)?.kuvo.wake.summary), note };
 }
 
 // MARK: Pages

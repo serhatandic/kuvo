@@ -24,7 +24,7 @@ import { bridgeTarget, call, readBridgeFile, readEngineFile } from "../engine/cl
 import { CantCarry, forgetQueue, packQueues, queueOf, resumeQueue, unpackQueues } from "../engine/queue";
 import { writePrivate } from "../files";
 import { HERE, IS_MAC, K } from "../home";
-import { refreshOwn } from "../peers/agents";
+import { announce, refreshOwn } from "../peers/agents";
 import { readPeerAgents } from "../peers/directory";
 import { mailFor, ownKey, peersOf } from "../peers/known";
 import type { MailSender, Peer } from "../peers/known";
@@ -1347,7 +1347,8 @@ async function moveMail(sender: MailSender, given: Record<string, unknown>, id: 
         // The copy is ours now (ownAgents omits moves still held here): listed before the source
         // hears it switched, not at the minute's list. Letters to it are taken while it's switched
         // here lately (`switchedHere`), even once it's older than the latest that list keeps.
-        await refreshOwn(readEngineFile).catch(() => {});
+        const host = mine.kind === "bot" ? hostOf() : null;
+        await (host ? announce(host, readEngineFile) : refreshOwn(readEngineFile)).catch(() => {});
         return void tell(sender.key, { op: "switched", id });
       }
       if (mine?.role === "to") return letGoOf(sender, id);

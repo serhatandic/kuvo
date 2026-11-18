@@ -10,8 +10,8 @@
         {
           "send": "GET kuvo/wakes/ses_plan",
           "expect": { "status": 200, "whole": true, "json": {
-            "wakes": [ { "id": "<string>", "due": "<number>", "note": "Check the build", "every": "1d" } ],
-            "watches": [ { "letters": "Wt1", "every": "30m", "check": "curl -s https://example.invalid/status", "note": "When it's up" } ],
+            "wakes": [ { "id": "<string>", "due": "<number>", "note": "Check the build", "every": "1d", "summary": "Check the build", "cancelKey": "Wk1" } ],
+            "watches": [ { "letters": "Wt1", "every": "30m", "check": "curl -s https://example.invalid/status", "note": "When it's up", "summary": "When it's up" } ],
             "paused": false
           } }
         },
@@ -19,8 +19,8 @@
           "send": "GET kuvo/wakes",
           "expect": { "status": 200, "whole": true, "json": { "sessions": [ {
             "session": "ses_plan", "next": "<number>", "watching": true,
-            "wakes": [ { "id": "<string>", "due": "<number>", "note": "Check the build", "every": "1d" } ],
-            "watches": [ { "letters": "Wt1", "every": "30m", "check": "curl -s https://example.invalid/status", "note": "When it's up" } ],
+            "wakes": [ { "id": "<string>", "due": "<number>", "note": "Check the build", "every": "1d", "summary": "Check the build", "cancelKey": "Wk1" } ],
+            "watches": [ { "letters": "Wt1", "every": "30m", "check": "curl -s https://example.invalid/status", "note": "When it's up", "summary": "When it's up" } ],
             "paused": false
           } ] } }
         }
@@ -30,7 +30,7 @@
       "name": "a wake-up added, one that doesn't come back, and one that isn't there cancelled",
       "steps": [
         { "given": { "session": { "id": "ses_plan", "title": "Plan the launch", "directory": "{{work}}" } } },
-        { "send": "POST kuvo/wakes/ses_plan", "body": { "due": "{{now+3600}}", "note": "Morning digest" }, "expect": { "status": 200, "whole": true, "json": { "wakes": [ { "id": "<string>", "due": "<number>", "note": "Morning digest" } ], "watches": [], "paused": false } } },
+        { "send": "POST kuvo/wakes/ses_plan", "body": { "due": "{{now+3600}}", "note": "Morning digest" }, "expect": { "status": 200, "whole": true, "json": { "wakes": [ { "id": "<string>", "due": "<number>", "note": "Morning digest", "summary": "Morning digest", "cancelKey": "<string>" } ], "watches": [], "paused": false } } },
         { "send": "POST kuvo/wakes/ses_plan/cancel", "body": { "wake": "nothing" }, "expect": { "status": 404, "whole": true, "json": {} } }
       ]
     },

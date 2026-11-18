@@ -275,6 +275,7 @@ export const SESSION_FACTS = object({
   "pinned?": bool,
   "archived?": bool,
   "running?": bool,
+  "wakeTurn?": literal(true),
   "asked?": number,
   "away?": bool,
   "bot?": string,
@@ -305,7 +306,7 @@ export const BOT_STATES = ["idle", "working", "thinking", "needsYou", "blocked",
  * many of those at work are thinking and how many are blocked (each left out when none), and what
  * blocked the newest one. */
 export const BOT_NOW = object({
-  working: number, asking: number, "finished?": number,
+  working: number, asking: number, "finished?": number, "waking?": literal(true),
   state: words(...BOT_STATES), since: number, "thinking?": number, "blocked?": number, "blockedBy?": words("error", "limit"),
 });
 /** What waits on you in each area, across the box (`kuvo/waiting`): the sessions "Needs you" lists,

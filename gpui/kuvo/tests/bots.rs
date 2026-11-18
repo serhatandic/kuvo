@@ -783,3 +783,161 @@ fn bot_composer_uses_the_box_catalog_and_refreshes_after_credentials_change(cx: 
     assert_eq!(composer.read_with(cx, |composer, _| composer.menu_models()), engine_models(client.offered_models(None, None).unwrap()));
     assert_eq!(composer.read_with(cx, |composer, _| composer.menu_models().len()), before.len() + 1);
 }
+
+#[gpui::test]
+fn wake_chip_opens_schedule_and_cancel_requires_confirmation(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.set_bot_wakes("bot_mira", vec![json!({
+        "id": "at-build", "due": NOW / 1000. + 180., "summary": "Read the latest build report", "cancelKey": "build",
+    })], vec![]);
+    let (workspace, cx) = open(cx, stand_in.clone());
+    bot(&workspace, cx, "bot_mira");
+    click(cx, "bot-chat");
+    click(cx, "open-wake-schedule");
+    assert!(shown(cx, "wake-schedule"));
+    click(cx, "cancel-entry");
+    assert!(shown(cx, "confirm-cancel-entry"));
+    assert!(stand_in.seen_at("POST", "kuvo/wakes/ses_mira/cancel").is_empty());
+    click(cx, "keep-entry");
+    assert!(!shown(cx, "confirm-cancel-entry"));
+    click(cx, "cancel-entry");
+    click(cx, "confirm-cancel-entry");
+    assert_eq!(bodies(&stand_in, "POST", "kuvo/wakes/ses_mira/cancel"), vec![json!({"wake":"build"})]);
+    assert!(shown(cx, "wake-schedule") && !shown(cx, "cancel-entry"));
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    click(cx, "bot-bot_inbox");
+    assert!(!shown(cx, "open-wake-schedule"));
+}
+
+#[gpui::test]
+fn moved_bot_wakes_are_followed_before_opening_bots(cx: &mut TestAppContext) {
+    cx.executor().allow_parking();
+    cx.update(|cx| {
+        Theme::init(Appearance::Light, cx);
+        kuvo::bind_keys(cx);
+    });
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let peer = stand_in.peer_box("key_devbox").expect("destination computer");
+    let client = BoxClient::new(stand_in.clone());
+    let window = cx.add_window(move |window, cx| Workspace::new(client, true, window, cx));
+    let workspace = window.root(cx).unwrap();
+    let cx = VisualTestContext::from_window(window.into(), cx).into_mut();
+    cx.simulate_resize(size(px(1280.), px(900.)));
+    workspace.update_in(cx, |workspace, _, cx| workspace.set_now(NOW, cx));
+    cx.run_until_parked();
+    stand_in.move_bot("bot_mira", "devbox");
+    peer.add_bot("bot_mira", "Mira", json!({"color":"mint","shape":"round","face":"calm"}));
+    peer.set_bot_wakes("bot_mira", vec![json!({
+        "id": "at-build", "due": NOW / 1000. + 180., "summary": "Read the latest build report", "cancelKey": "build",
+    })], vec![]);
+    // The follow's bridge runs on a native thread. Wait on its handoff while the app is parked.
+    for _ in 0..400 {
+        cx.run_until_parked();
+        if !peer.seen_at("GET", "kuvo/bots/events").is_empty() { break; }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(workspace.read_with(cx, |workspace, _| workspace.area() == Area::Sessions));
+    assert_eq!(peer.seen_at("GET", "kuvo/bots/events").len(), 1);
+    assert!(peer.seen_at("GET", "kuvo/wakes/ses_mira/events").is_empty());
+    click(cx, "rail-bots");
+    for _ in 0..400 {
+        cx.run_until_parked();
+        if shown(cx, "open-wake-schedule") { break; }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(shown(cx, "bot-avatar-wake"), "the destination's schedule also marks its avatar");
+    click(cx, "open-wake-schedule");
+    for _ in 0..400 {
+        cx.run_until_parked();
+        if shown(cx, "cancel-entry") { break; }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(shown(cx, "cancel-entry"));
+    assert_eq!(peer.seen_at("GET", "kuvo/wakes/ses_mira/events").len(), 1);
+    assert!(stand_in.seen_at("GET", "kuvo/wakes/ses_mira/events").is_empty());
+
+    // Once it's away, the list spells out the failed read and offers no cancellation.
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    peer.set_down(true);
+    click(cx, "open-wake-schedule");
+    for _ in 0..400 {
+        cx.run_until_parked();
+        if shown(cx, "wake-schedule-error") && !shown(cx, "cancel-entry") { break; }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(shown(cx, "wake-schedule-error") && !shown(cx, "cancel-entry"));
+}
+
+#[gpui::test]
+fn wake_list_wraps_a_long_summary_and_bounds_many_entries(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let long = "Review the deployment across every region, compare it with previous releases, and flag anything unusual for another look before the Friday handoff.";
+    let wakes = (0..12).map(|index| json!({
+        "id": index.to_string(), "due": NOW / 1000. + 180. + 60. * index as f64,
+        "summary": if index == 0 { long } else { "Check the build" }, "cancelKey": index.to_string(),
+    })).collect();
+    stand_in.set_bot_wakes("bot_mira", wakes, vec![]);
+    let (workspace, cx) = open(cx, stand_in);
+    bot(&workspace, cx, "bot_mira");
+    click(cx, "bot-chat");
+    click(cx, "open-wake-schedule");
+    let first = bounds(cx, "wake-0").unwrap();
+    let second = bounds(cx, "wake-1").unwrap();
+    assert!(first.size.height > second.size.height);
+    assert!(second.top() >= first.bottom() - px(1.));
+    assert!(bounds(cx, "wake-entries").unwrap().size.height <= px(288.));
+}
+
+#[gpui::test]
+fn wake_badge_sits_on_the_avatar_and_yields_to_activity(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    for id in ["bot_mira", "bot_inbox", "bot_docs"] {
+        stand_in.set_bot_wakes(id, vec![json!({
+            "id": "at-build", "due": NOW / 1000. + 180., "summary": "Check the build", "cancelKey": "build",
+        })], vec![]);
+    }
+    stand_in.set_bot_now("bot_mira", json!({"working":0,"asking":0,"state":"idle"}));
+    stand_in.set_bot_now("bot_docs", json!({"working":1,"asking":0,"state":"working","waking":true}));
+    let (_, cx) = open(cx, stand_in);
+    click(cx, "rail-bots");
+    let wake = bounds(cx, "bot-avatar-wake").unwrap();
+    let avatar = bounds(cx, "bot-bot_mira-avatar").unwrap();
+    assert_eq!(wake.size, size(px(14.), px(14.)));
+    assert_eq!(wake.right(), avatar.right() - px(3.));
+    assert_eq!(wake.bottom(), avatar.bottom() - px(3.));
+    assert_eq!(wake.size, bounds(cx, "bot-avatar-needs-you").unwrap().size);
+    assert_eq!(wake.size, bounds(cx, "bot-avatar-at-work").unwrap().size);
+}
+
+#[gpui::test]
+fn wake_chip_drops_cached_activity_on_disconnect_until_a_fresh_bot_snapshot(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.set_bot_now("bot_mira", json!({"working":1,"asking":0,"state":"working","waking":true}));
+    let client = BoxClient::new(stand_in.clone());
+    let (workspace, cx) = open(cx, stand_in.clone());
+    bot(&workspace, cx, "bot_mira");
+    click(cx, "bot-chat");
+    assert!(shown(cx, "open-wake-schedule"));
+
+    stand_in.set_down(true);
+    workspace.update_in(cx, |workspace, _, cx| workspace.connected(client.connect(), cx));
+    cx.run_until_parked();
+    assert!(shown(cx, "bot-chat-strip"));
+    assert!(!shown(cx, "open-wake-schedule"));
+
+    stand_in.set_down(false);
+    workspace.update_in(cx, |workspace, _, cx| workspace.connected(client.connect(), cx));
+    cx.run_until_parked();
+    assert!(!shown(cx, "open-wake-schedule"), "the old snapshot stays stale after reconnect");
+    let bots = workspace.read_with(cx, |workspace, _| workspace.area_view(Area::Bots).unwrap().clone());
+    bots.update(cx, |bots, cx| bots.shown(cx));
+    cx.run_until_parked();
+    assert!(shown(cx, "open-wake-schedule"), "a fresh active turn can claim the chip again");
+
+    stand_in.set_bot_now("bot_mira", json!({"working":0,"asking":0,"state":"idle"}));
+    bots.update(cx, |bots, cx| bots.shown(cx));
+    cx.run_until_parked();
+    assert!(!shown(cx, "open-wake-schedule"));
+}
