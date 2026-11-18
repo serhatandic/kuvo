@@ -1390,12 +1390,7 @@ fn first_run_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path
             let name = format!("screens-{}-{}.png", screen.slug, if appearance.is_dark() { "dark" } else { "light" });
             image.save(out.join(&name))?;
             println!("{name}: {}x{}", image.width(), image.height());
-            cx.update_window(any, |_, window, cx| {
-                if screen.slug == "composer-queue-dragging" {
-                    cx.stop_active_drag(window);
-                }
-                window.remove_window();
-            })?;
+            cx.update_window(any, |_, window, _| window.remove_window())?;
             cx.run_until_parked();
         }
     }
@@ -1857,7 +1852,12 @@ fn main() -> anyhow::Result<()> {
             let name = format!("screens-{}-{}.png", screen.slug, if appearance.is_dark() { "dark" } else { "light" });
             image.save(out.join(&name))?;
             println!("{name}: {}x{}", image.width(), image.height());
-            cx.update_window(any, |_, window, _| window.remove_window())?;
+            cx.update_window(any, |_, window, cx| {
+                if screen.slug == "composer-queue-dragging" {
+                    cx.stop_active_drag(window);
+                }
+                window.remove_window();
+            })?;
             cx.run_until_parked();
         }
     }
