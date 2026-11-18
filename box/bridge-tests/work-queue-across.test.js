@@ -402,9 +402,9 @@ test("a machine in a setup numbers from its main computer, whatever a peer says 
   const asked = mailTo(mac).map(each => each.workQueue);
   assert.equal(asked[0]?.ask?.id, "wqn_tothemainmac01");
   assert.equal(asked[0].to, undefined, "to its main computer itself");
-  // It tells your other computers it isn't shared.
+  // The removed shared field no longer goes out in the queue snapshot.
   await link.pushQueues(host, link.readLink(), targets, Date.now());
-  assert.equal(mailTo(lab)[0].workQueue.told.shared, false);
+  assert.equal(Object.hasOwn(mailTo(lab)[0].workQueue.told, "shared"), false);
 
   // A second Mac (one of yours: only you set your computers up) sets it up, leading no setup: it
   // stays in the one it has, numbering from its main computer, and never says it's shared.
@@ -420,7 +420,7 @@ test("a machine in a setup numbers from its main computer, whatever a peer says 
   link.forgetQueuesTold();
   // (What it tells is made again at most once a minute.)
   await link.pushQueues(host, link.readLink(), targets, Date.now() + 120_000);
-  assert.equal(mailTo(lab)[0].workQueue.told.shared, false);
+  assert.equal(Object.hasOwn(mailTo(lab)[0].workQueue.told, "shared"), false);
   assert.equal(link.followedSetup(link.readLink())?.primary, mac.pub);
   assert.deepEqual(link.primaryOf(link.readLink(), file), { peer: link.peersOf(link.readLink()).find(peer => peer.key === mac.pub) });
   sent.length = 0;
