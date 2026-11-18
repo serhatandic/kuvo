@@ -6,3 +6,6 @@
 export const LAUNCH_AGENT = "run.kuvo.code.machine";
 /** The mark on the crontab line that starts the box after a restart (RemoteEngine.swift's `rebootTag`). */
 export const REBOOT_TAG = "# kuvo-code: starts its engine again after a restart";
+
+/** SSH setup found a different setup already on this account. */
+export const SETUP_OCCUPIED = 4;

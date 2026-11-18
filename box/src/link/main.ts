@@ -123,6 +123,7 @@ import { swapEngine } from "./updates/engine-swap";
 import { type UpdateOptions, ON_TRIAL, UPDATING_ALREADY, agentsWorking, dropOldBackups, passingOutcome, updateOnTrial, checkDrift, failedInPassing, offerWaits, isUpdating, noteLauncher, noteOlderMacs, installerSteps, noteUpdate, startOfferedUpdate, startUpdate, takeOffer, untilFree, update, UPDATE_KEYS, releaseRound, updatesBlocked, updateState, updateStatus } from "./updates/update";
 import { clearIncoming, followOver, followPeers, watchHeld } from "./updates/fleet";
 import { BRIDGE_VERSION } from "./version";
+import { SETUP_OCCUPIED } from "./marks";
 import type { AddressInfo } from "node:net";
 import type { SignedDoc } from "../shared/documents";
 import type { EngineRecord } from "../shared/records";
@@ -1048,7 +1049,7 @@ async function setup(): Promise<void> {
   });
   if (alreadySetUp) {
     console.error("This OS account already has a Kuvo setup. Connect to your own OS account.");
-    process.exit(1);
+    process.exit(SETUP_OCCUPIED);
   }
   if (work && library !== before) await takePersonalities(library).catch(() => {});
   // (What those keys' agents were, told here, goes with them.)

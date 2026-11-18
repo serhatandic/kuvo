@@ -95,7 +95,7 @@ test("SSH setup rejects a second setup on the same account and preserves its sav
     env: { HOME: home, PATH: "/usr/bin:/bin" },
     input: JSON.stringify({ mac: "d".repeat(43), relay: "wss://unused.invalid" }), encoding: "utf8",
   });
-  assert.equal(result.status, 1);
+  assert.equal(result.status, 4);
   assert.match(result.stderr, /Connect to your own OS account/);
   assert.equal(fs.readFileSync(link, "utf8"), kept);
 });

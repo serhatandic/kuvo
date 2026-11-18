@@ -35,6 +35,13 @@ import * as scripts from "./scripts";
 import { gatherSeed } from "./seed";
 import { type HostKey, type Ran, type Way, hangUp, lastLine, reachedAs, readHostKey, remote, troubleOf, trustHostKeys, vaultAgent } from "./ssh";
 import { Failed, type Running, Stopped, type Telling, startTry, stopTry, underWay } from "./tries";
+import { SETUP_OCCUPIED } from "../marks";
+
+class AccountOccupied extends Failed {
+  constructor(name: string) {
+    super(`Kuvo Code on ${name} already belongs to another setup. To add this computer, connect over SSH to your own OS account.`, false);
+  }
+}
 
 /** Every address of the computers this box set up. */
 export const takenAddresses = (): string[] => (savedMachines() ?? []).flatMap(each => [each.destination, ...(Array.isArray(each.otherAddresses) ? each.otherAddresses : [])]);
@@ -305,7 +312,7 @@ async function setUp(tell: Telling, destination: string, name: string, kind: "ad
       return;
     }
     if (judged.verdict !== "free" && judged.verdict !== "ours" && !judged.joins) {
-      throw new Failed(`Kuvo Code on ${name} already belongs to another setup. To add this computer, connect over SSH to your own OS account.`, false);
+      throw new AccountOccupied(name);
     }
 
     // Its files, unless it has a newer Kuvo Code (which keeps its own) or has these already.
@@ -377,7 +384,8 @@ async function setUp(tell: Telling, destination: string, name: string, kind: "ad
       unjoined = false;
       tell.came(computer);
     } catch (error) {
-      if (!unjoined) throw error;
+      // A competing setup enrolled this account after the probe. Its data belongs to that setup.
+      if (!unjoined || error instanceof AccountOccupied) throw error;
       // (Run though the try was stopped: this is its own tidying up.)
       // (With no key of this box's to let go there, as when its link has none: undone all the same.)
       const undone = await reach.run(scripts.uninstall(ENGINE_VERSION, own ?? "", true), { most: 600_000, anyway: true }).catch(() => null);
@@ -404,6 +412,7 @@ async function join(reach: Reach, destination: string, name: string, identity: s
   if (!relay || !gift?.mac) throw new Failed(`${ownName()} isn’t linked to your other computers yet, so it couldn’t add ${name}.`);
   const input = { relay, name, mac: gift.mac, macSign: gift.macSign, docs: gift.docs, id: destination, tolerates: 1, macID: launcherID(gift.mac), macName: ownName(), replaces: gift.replaces };
   const ran = await reach.run(scripts.join(ENGINE_VERSION), { input: Buffer.from(JSON.stringify(input)), most: 300_000 });
+  if (ran.status === SETUP_OCCUPIED) throw new AccountOccupied(name);
   let said: unknown = null;
   try { said = JSON.parse(ran.stdout.trim().split("\n").pop() ?? ""); } catch {}
   if (ran.status !== 0 || !isObject(said) || typeof said.address !== "string" || !ADDRESS.test(said.address) || typeof said.key !== "string" || !KEY.test(said.key) || typeof said.sign !== "string" || !SIGN.test(said.sign)) {

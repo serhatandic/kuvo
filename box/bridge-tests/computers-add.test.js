@@ -263,7 +263,7 @@ const over = id => until(id, found => !found || found.state === "done" || found.
 const steps = found => found.steps.map(step => `${step.id}:${step.state}`);
 const sshLog = () => (fs.existsSync(path.join(fake, "log")) ? fs.readFileSync(path.join(fake, "log"), "utf8").trim().split("\n") : []);
 // (Two more computers, each a home of its own: a Mac that has Kuvo Code's app, and one with nothing.)
-const homes = { macbook: path.join(base, "macbook"), mini: path.join(base, "mini"), nas: path.join(base, "nas"), attic: path.join(base, "attic") };
+const homes = { macbook: path.join(base, "macbook"), mini: path.join(base, "mini"), nas: path.join(base, "nas"), attic: path.join(base, "attic"), race: path.join(base, "race") };
 for (const [name, folder] of Object.entries(homes)) {
   fs.mkdirSync(folder, { recursive: true });
   fs.writeFileSync(path.join(fake, `home-${name}`), folder);
@@ -1030,4 +1030,27 @@ test("no list of machines while this box keeps its machines' links isn't none: i
   } finally {
     fs.writeFileSync(list, before);
   }
+});
+
+test("an account enrolled after the probe keeps its data when the second setup is refused", async () => {
+  const kuvo = path.join(homes.race, ".kuvo-code");
+  const hold = path.join(fake, "hold");
+  fs.writeFileSync(hold, 'kuvo-link.js" setup');
+  let joining;
+  const saved = path.join(kuvo, "run", "link.json");
+  const keyFile = path.join(kuvo, "box", "keys", "KUVO_KEY_EXISTING");
+  const mac = crypto.randomBytes(32).toString("base64url");
+  const state = JSON.stringify({ mac, macs: [mac], phones: [] }, null, 2);
+  try {
+    joining = await added("race", found => found?.steps.find(step => step.id === "joining")?.state === "now");
+    write(saved, state);
+    write(keyFile, "existing-key", 0o600);
+  } finally {
+    fs.rmSync(hold);
+  }
+  const refused = await over(joining.id);
+  assert.equal(refused.state, "failed");
+  assert.match(refused.failure.message, /connect over SSH to your own OS account/);
+  assert.equal(fs.readFileSync(saved, "utf8"), state);
+  assert.equal(fs.readFileSync(keyFile, "utf8"), "existing-key");
 });

@@ -45333,7 +45333,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "447541602df6";
+var BRIDGE_VERSION = "c274e918b1ee";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -46792,6 +46792,7 @@ init_text();
 // box/src/link/marks.ts
 var LAUNCH_AGENT = "run.kuvo.code.machine";
 var REBOOT_TAG = "# kuvo-code: starts its engine again after a restart";
+var SETUP_OCCUPIED = 4;
 
 // box/src/link/add/scripts.ts
 var K2 = 'K="$HOME/.kuvo-code"';
@@ -48199,6 +48200,11 @@ async function forgetTries() {
 }
 
 // box/src/link/add/flow.ts
+class AccountOccupied extends Failed {
+  constructor(name) {
+    super(`Kuvo Code on ${name} already belongs to another setup. To add this computer, connect over SSH to your own OS account.`, false);
+  }
+}
 var takenAddresses = () => (savedMachines() ?? []).flatMap((each) => [each.destination, ...Array.isArray(each.otherAddresses) ? each.otherAddresses : []]);
 function keepHost(id, host) {
   if (!changeKeptHosts((machines) => ({ ...machines, [id]: { ...host, anotherMac: false, peers: true } })))
@@ -48435,7 +48441,7 @@ async function setUp2(tell, destination, name, kind) {
       return;
     }
     if (judged.verdict !== "free" && judged.verdict !== "ours" && !judged.joins) {
-      throw new Failed(`Kuvo Code on ${name} already belongs to another setup. To add this computer, connect over SSH to your own OS account.`, false);
+      throw new AccountOccupied(name);
     }
     const newer = newerVersion(probe.version, mine);
     if (newer) {
@@ -48505,7 +48511,7 @@ async function setUp2(tell, destination, name, kind) {
       unjoined = false;
       tell.came(computer);
     } catch (error) {
-      if (!unjoined)
+      if (!unjoined || error instanceof AccountOccupied)
         throw error;
       const undone = await reach.run(uninstall(ENGINE_VERSION, own ?? "", true), { most: 600000, anyway: true }).catch(() => null);
       const still = `Kuvo Code may still be running on ${name}, with the keys and sign-ins copied there. Add ${name} again, then uninstall it from its page.`;
@@ -48529,6 +48535,8 @@ async function join3(reach, destination, name, identity) {
     throw new Failed(`${ownName()} isn’t linked to your other computers yet, so it couldn’t add ${name}.`);
   const input = { relay, name, mac: gift.mac, macSign: gift.macSign, docs: gift.docs, id: destination, tolerates: 1, macID: launcherID(gift.mac), macName: ownName(), replaces: gift.replaces };
   const ran = await reach.run(join2(ENGINE_VERSION), { input: Buffer.from(JSON.stringify(input)), most: 300000 });
+  if (ran.status === SETUP_OCCUPIED)
+    throw new AccountOccupied(name);
   let said = null;
   try {
     said = JSON.parse(ran.stdout.trim().split(`
@@ -73375,7 +73383,7 @@ async function setup() {
   });
   if (alreadySetUp) {
     console.error("This OS account already has a Kuvo setup. Connect to your own OS account.");
-    process.exit(1);
+    process.exit(SETUP_OCCUPIED);
   }
   if (work && library !== before)
     await takePersonalities(library).catch(() => {});

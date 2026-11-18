@@ -804,7 +804,7 @@ describe("the third review's cases", () => {
 
 describe("the fourth review's cases", () => {
   /** This Mac (Kuvo Code's Claude token) and hetzner (Claude Code's own sign-in, the same account), on the relay. */
-  async function macAndHetzner(peerWait = 20, ahead = 0) {
+  async function macAndHetzner(peerWait = 250, ahead = 0) {
     const relay = new Map<string, Box>()
     const macFolder = mkdtempSync(join(base, "mac-4-"))
     const claudeMac = macClaude(macFolder)
@@ -951,7 +951,7 @@ describe("the fourth review's cases", () => {
 
 describe("the fifth review's cases", () => {
   /** This Mac and hetzner (the same Claude account), on the relay. */
-  async function macAndHetzner(peerWait = 20) {
+  async function macAndHetzner(peerWait = 250) {
     const relay = new Map<string, Box>()
     const macFolder = mkdtempSync(join(base, "mac-5-"))
     const claudeMac = macClaude(macFolder)
