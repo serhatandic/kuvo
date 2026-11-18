@@ -5,6 +5,7 @@
     "bin/.kuvo-boot",
     "bin/bot-words.json",
     "bin/kuvo-launch",
+    "bin/kuvo-npx",
     "bin/kuvo-start",
     "bin/kuvo-wake"
   ],
@@ -16,10 +17,6 @@
     "bin/integrations.json": {
       "sha256": "f3d3e37e3ee672c1a0613602fd9a4079159c069b63443ad3c1bb4ccd8d89c175",
       "mode": "644"
-    },
-    "bin/kuvo-npx": {
-      "sha256": "147ac16a72137e79b0c068f840170824f9480c851d9266bc5a74e72a8b2c6748",
-      "mode": "755"
     },
     "bin/kuvo-setsid": {
       "sha256": "fb82b00f7aba25e650944ea3192381414e9e8196f80817ef8351f21e1a264f3a",
