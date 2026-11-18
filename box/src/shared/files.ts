@@ -117,13 +117,22 @@ function take(lock: string, stale: number): boolean {
 }
 
 // Tries to hold the lock. Exclusive writers use a wall-clock deadline and leave live locks alone.
-function hold(lock: string, stale: number, wait: number, exclusive = false): boolean {
+function hold(lock: string, stale: number, wait: number, owner: string | null): boolean {
   fs.mkdirSync(path.dirname(lock), { recursive: true, mode: 0o700 });
   const nap = new Int32Array(new SharedArrayBuffer(4));
-  const deadline = exclusive ? performance.now() + wait : Infinity;
+  const deadline = owner ? performance.now() + wait : Infinity;
   for (let i = 0; i < wait / 10 && performance.now() < deadline; i++) {
-    if (take(lock, exclusive ? Infinity : stale)) return true;
-    if (exclusive) reapDeadOwner(lock);
+    if (owner) {
+      try {
+        // Only an empty directory can be replaced. Publish the owner with the lock so a kill
+        // cannot strand an ownerless directory.
+        fs.renameSync(owner, lock);
+        return true;
+      } catch (error) {
+        if (!["EEXIST", "ENOTEMPTY"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
+      }
+      reapDeadOwner(lock);
+    } else if (take(lock, stale)) return true;
     Atomics.wait(nap, 0, 0, 10);
   }
   return false;
@@ -161,16 +170,22 @@ async function holdAwaiting(lock: string, stale: number, wait: number): Promise<
 // Exclusive work requires the lock and can reclaim it only from a known dead owner. Other work
 // retains the stale expiry and can proceed after waiting without the lock.
 export function locked<T>(lock: string, work: () => T, { stale = 10_000, wait = 3_000, exclusive = false, required = false } = {}): T {
-  const owner = exclusive ? path.join(lock, `owner-${process.pid}-${crypto.randomBytes(8).toString("hex")}`) : null;
-  const held = hold(lock, stale, wait, exclusive);
-  if (exclusive && !held) throw new Error("Kuvo Code is updating its link. Try again in a moment.");
-  if (required && !held) throw new Error("Could not lock the file for writing");
+  const marker = exclusive ? `owner-${process.pid}-${crypto.randomBytes(8).toString("hex")}` : null;
+  const pending = marker ? `${lock}.${marker}` : null;
+  let held = false;
   try {
-    if (owner) fs.writeFileSync(owner, "", { flag: "wx", mode: 0o600 });
+    if (pending && marker) {
+      fs.mkdirSync(pending, { recursive: true, mode: 0o700 });
+      fs.writeFileSync(path.join(pending, marker), "", { flag: "wx", mode: 0o600 });
+    }
+    held = hold(lock, stale, wait, pending);
+    if (exclusive && !held) throw new Error("Kuvo Code is updating its link. Try again in a moment.");
+    if (required && !held) throw new Error("Could not lock the file for writing");
     return work();
   } finally {
-    if (owner) try { fs.unlinkSync(owner); } catch {}
-    if (held) try { fs.rmdirSync(lock); } catch {}
+    const directory = held ? lock : pending;
+    if (directory && marker) try { fs.unlinkSync(path.join(directory, marker)); } catch {}
+    if (directory) try { fs.rmdirSync(directory); } catch {}
   }
 }
 

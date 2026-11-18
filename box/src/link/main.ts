@@ -125,6 +125,7 @@ import { featuresNow, settleUpdate, startSettling } from "./updates/health";
 import { handOverMachine, recoverMachineJob, startMachineInstall, swapEngine } from "./updates/engine-swap";
 import { type UpdateOptions, ON_TRIAL, UPDATING_ALREADY, agentsWorking, dropOldBackups, passingOutcome, updateOnTrial, checkDrift, failedInPassing, offerWaits, isUpdating, noteLauncher, noteOlderMacs, installerSteps, noteUpdate, startOfferedUpdate, startUpdate, takeOffer, untilFree, update, UPDATE_KEYS, releaseRound, updatesBlocked, updateState, updateStatus } from "./updates/update";
 import { clearIncoming, followOver, followPeers, watchHeld } from "./updates/fleet";
+import { checkFolderVersion, upgradeKuvoFolder } from "../shared/folder-version";
 import { BRIDGE_VERSION } from "./version";
 import { ADD_RESERVATION, SETUP_OCCUPIED } from "./marks";
 import type { AddressInfo } from "node:net";
@@ -1189,7 +1190,16 @@ export function selftest(): boolean {
 const main = process.argv[1] && fs.realpathSync(process.argv[1]) === fs.realpathSync(fileURLToPath(import.meta.url));
 if (main) {
   const [mode, argument] = process.argv.slice(2);
-  if (mode === "run") await run();
+  try {
+    // The installer and move own the destination until placement. A probe must not adopt it.
+    if (["here", "install", "rehome", "uninstall", "login-path", "login-env"].includes(mode)) checkFolderVersion(K);
+    else if (mode !== "selftest") upgradeKuvoFolder(K);
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  }
+  if (mode === "folder-upgrade") process.exit(0);
+  else if (mode === "run") await run();
   else if (mode === "setup") await setup();
   else if (mode === "setup-local") initializeMachineSetup();
   else if (mode === "pair") pair(argument);

@@ -47,6 +47,7 @@ import { spawn } from "node:child_process"
 import { bundleBuild } from "../shared/bundle"
 import { bridgeRecordFormat, readRendezvous, type BridgeRecord, type RenewalRecord } from "../shared/records"
 import { UnsupportedFormatVersion } from "../shared/format-version"
+import { upgradeKuvoFolder } from "../shared/folder-version"
 import { Sessions } from "./sessions"
 import { adoptHeld } from "./hold/adopt"
 import { stopAllHeld } from "./hold/client"
@@ -110,6 +111,15 @@ if (!home || !password || (onMachine && (!machineHome || !Number(process.env.KUV
   console.error(onMachine ? "KUVO_AGENTS_HOME, KUVO_HOME, KUVO_AGENTS_PORT and KUVO_AGENTS_PASSWORD are needed." : "KUVO_AGENTS_HOME and OPENCODE_PASSWORD are needed.")
   process.exit(2)
 }
+if (machineHome) {
+  try {
+    upgradeKuvoFolder(machineHome)
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error))
+    process.exit(1)
+  }
+}
+
 // On a box: its engine, where its record says now (or where a launch from before said), and Kuvo
 // Code's tools as the engine has them.
 const machineEngine = onMachine ? recordedEngine() ?? (process.env.KUVO_ENGINE_PORT ? { url: `http://127.0.0.1:${process.env.KUVO_ENGINE_PORT}`, password: process.env.OPENCODE_PASSWORD } : undefined) : undefined

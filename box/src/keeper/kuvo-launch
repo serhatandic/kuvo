@@ -10,6 +10,9 @@ replace=${KUVO_REPLACE-}; starting=${KUVO_START-}; unset KUVO_REPLACE KUVO_START
 bridge_only=${KUVO_BRIDGE-}; unset KUVO_BRIDGE
 V=${KUVO_VERSION:-@ENGINE@}; unset KUVO_VERSION
 K="$HOME/.kuvo-code"
+if [ -f "$K/bin/kuvo-link.js" ] && [ -x "$K/engine/$V/opencode" ]; then
+  KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$K/engine/$V/opencode" --config=/dev/null --no-env-file "$K/bin/kuvo-link.js" folder-upgrade </dev/null || exit $?
+fi
 # A Mac's own box (`box/kind` says `mac`): your login shell's environment, as a new Terminal window
 # has it, for the engine and what it runs (its link's `login-env`), as Kuvo Code 0.7's app gave its
 # engine yours. launchd gives Kuvo Helper, and so this, a bare one. First, so your own folders in it

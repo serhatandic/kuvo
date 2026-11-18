@@ -2679,15 +2679,22 @@ function take(lock, stale) {
     return false;
   }
 }
-function hold(lock, stale, wait, exclusive = false) {
+function hold(lock, stale, wait, owner) {
   fs2.mkdirSync(path2.dirname(lock), { recursive: true, mode: 448 });
   const nap = new Int32Array(new SharedArrayBuffer(4));
-  const deadline = exclusive ? performance.now() + wait : Infinity;
+  const deadline = owner ? performance.now() + wait : Infinity;
   for (let i = 0;i < wait / 10 && performance.now() < deadline; i++) {
-    if (take(lock, exclusive ? Infinity : stale))
-      return true;
-    if (exclusive)
+    if (owner) {
+      try {
+        fs2.renameSync(owner, lock);
+        return true;
+      } catch (error) {
+        if (!["EEXIST", "ENOTEMPTY"].includes(error.code ?? ""))
+          throw error;
+      }
       reapDeadOwner(lock);
+    } else if (take(lock, stale))
+      return true;
     Atomics.wait(nap, 0, 0, 10);
   }
   return false;
@@ -2719,24 +2726,29 @@ async function holdAwaiting(lock, stale, wait) {
   return false;
 }
 function locked(lock, work, { stale = 1e4, wait = 3000, exclusive = false, required = false } = {}) {
-  const owner = exclusive ? path2.join(lock, `owner-${process.pid}-${crypto2.randomBytes(8).toString("hex")}`) : null;
-  const held = hold(lock, stale, wait, exclusive);
-  if (exclusive && !held)
-    throw new Error("Kuvo Code is updating its link. Try again in a moment.");
-  if (required && !held)
-    throw new Error("Could not lock the file for writing");
+  const marker = exclusive ? `owner-${process.pid}-${crypto2.randomBytes(8).toString("hex")}` : null;
+  const pending = marker ? `${lock}.${marker}` : null;
+  let held = false;
   try {
-    if (owner)
-      fs2.writeFileSync(owner, "", { flag: "wx", mode: 384 });
+    if (pending && marker) {
+      fs2.mkdirSync(pending, { recursive: true, mode: 448 });
+      fs2.writeFileSync(path2.join(pending, marker), "", { flag: "wx", mode: 384 });
+    }
+    held = hold(lock, stale, wait, pending);
+    if (exclusive && !held)
+      throw new Error("Kuvo Code is updating its link. Try again in a moment.");
+    if (required && !held)
+      throw new Error("Could not lock the file for writing");
     return work();
   } finally {
-    if (owner)
+    const directory = held ? lock : pending;
+    if (directory && marker)
       try {
-        fs2.unlinkSync(owner);
+        fs2.unlinkSync(path2.join(directory, marker));
       } catch {}
-    if (held)
+    if (directory)
       try {
-        fs2.rmdirSync(lock);
+        fs2.rmdirSync(directory);
       } catch {}
   }
 }
@@ -40466,6 +40478,66 @@ var init_records = __esm(() => {
   bridgeRecordFormat = additiveObjectFormat("Coding agents bridge rendezvous");
 });
 
+// box/src/shared/folder-version.ts
+import fs14 from "fs";
+import path10 from "path";
+function checkpoint(file, current) {
+  const format = `Kuvo folder at ${path10.dirname(file)}`;
+  let text;
+  try {
+    text = fs14.readFileSync(file, "utf8");
+  } catch (error) {
+    if (error.code !== "ENOENT")
+      throw error;
+    if (fs14.lstatSync(file, { throwIfNoEntry: false }))
+      throw error;
+    return { version: 0 };
+  }
+  let value;
+  try {
+    value = JSON.parse(text);
+  } catch {}
+  const number = (found) => typeof found === "number" && Number.isSafeInteger(found) && found >= 0;
+  if (!isObject(value) || !number(value.version) || value.version > current) {
+    throw new UnsupportedFormatVersion(format, isObject(value) ? value.version : null, current);
+  }
+  const { version, upgradingTo } = value;
+  if (upgradingTo !== undefined && (!number(upgradingTo) || upgradingTo !== version + 1 || upgradingTo > current)) {
+    throw new UnsupportedFormatVersion(format, upgradingTo, current);
+  }
+  return { version, upgradingTo };
+}
+function upgradeKuvoFolder(folder, importLegacy) {
+  upgradeFolder(folder, steps, importLegacy);
+}
+function upgradeFolder(folder, ordered, importLegacy) {
+  folder = path10.resolve(folder);
+  const file = path10.join(folder, FOLDER_VERSION_FILE);
+  const current = ordered.length;
+  if (checkpoint(file, current).version === current)
+    return;
+  const save = (state) => writeDurablePrivate(file, JSON.stringify(state) + `
+`, path10.dirname(folder));
+  locked(path10.join(folder, ".folder-upgrade.lock"), () => {
+    const start = checkpoint(file, current);
+    for (let version = start.version;version < current; version++) {
+      const upgradingTo = version + 1;
+      if (start.upgradingTo !== upgradingTo)
+        save({ version, upgradingTo });
+      ordered[version](folder, importLegacy);
+      save({ version: upgradingTo });
+    }
+  }, { exclusive: true, wait: 60000 });
+}
+var FOLDER_VERSION_FILE = "folder-version.json", steps;
+var init_folder_version = __esm(() => {
+  init_files();
+  init_format_version();
+  steps = [
+    (_folder, importLegacy) => importLegacy?.()
+  ];
+});
+
 // box/src/agents/store.ts
 import { mkdirSync as mkdirSync27, readdirSync as readdirSync22, readFileSync as readFileSync39, renameSync as renameSync24, rmSync as rmSync18, statSync as statSync18, writeFileSync as writeFileSync29 } from "fs";
 import { join as join42 } from "path";
@@ -40579,9 +40651,9 @@ var init_store3 = __esm(() => {
 });
 
 // box/src/shared/hang.ts
-import fs14 from "fs";
+import fs15 from "fs";
 import net2 from "net";
-import path10 from "path";
+import path11 from "path";
 function ask2(port, within) {
   return new Promise((resolve) => {
     const socket = net2.connect({ host: "127.0.0.1", port });
@@ -40679,21 +40751,21 @@ class HangWatch {
   }
   server() {
     try {
-      const { pid, port } = JSON.parse(fs14.readFileSync(this.options.record, "utf8"));
+      const { pid, port } = JSON.parse(fs15.readFileSync(this.options.record, "utf8"));
       return Number.isInteger(pid) && pid > 1 && Number.isInteger(port) && port > 0 ? { pid, port } : null;
     } catch {
       return null;
     }
   }
   stoppedOnPurpose() {
-    return ["stopped", ".launching", ".updating", ".system-asking"].some((name) => fs14.existsSync(path10.join(this.options.run, name)));
+    return ["stopped", ".launching", ".updating", ".system-asking"].some((name) => fs15.existsSync(path11.join(this.options.run, name)));
   }
   endedLately() {
-    const file = path10.join(this.options.run, `hung-${this.options.name}.json`);
-    if (!fs14.existsSync(file))
+    const file = path11.join(this.options.run, `hung-${this.options.name}.json`);
+    if (!fs15.existsSync(file))
       return [];
     try {
-      const times = JSON.parse(fs14.readFileSync(file, "utf8"));
+      const times = JSON.parse(fs15.readFileSync(file, "utf8"));
       return Array.isArray(times) ? times.filter((time) => typeof time === "number" && this.now() - time < ENDED_WHILE && time <= this.now()) : null;
     } catch {
       return null;
@@ -40707,10 +40779,10 @@ class HangWatch {
       console.error(`The ${this.options.name} has said nothing for ${minutes} minutes, and it's been ended too often lately, or there's no telling how often: it's left as it is, for you to restart.`);
       return;
     }
-    const file = path10.join(this.options.run, `hung-${this.options.name}.json`);
+    const file = path11.join(this.options.run, `hung-${this.options.name}.json`);
     try {
-      fs14.writeFileSync(`${file}.new`, JSON.stringify([...lately, this.now()]), { mode: 384 });
-      fs14.renameSync(`${file}.new`, file);
+      fs15.writeFileSync(`${file}.new`, JSON.stringify([...lately, this.now()]), { mode: 384 });
+      fs15.renameSync(`${file}.new`, file);
     } catch {
       console.error(`The ${this.options.name} has said nothing for ${minutes} minutes, but that can't be noted in ${file}: it's left as it is, for you to restart.`);
       return;
@@ -41605,6 +41677,7 @@ var init_main = __esm(async () => {
   init_bundle();
   init_records();
   init_format_version();
+  init_folder_version();
   init_sessions();
   init_adopt();
   init_client();
@@ -41657,6 +41730,14 @@ var init_main = __esm(async () => {
   if (!home3 || !password || onMachine && (!machineHome || !Number(process.env.KUVO_AGENTS_PORT))) {
     console.error(onMachine ? "KUVO_AGENTS_HOME, KUVO_HOME, KUVO_AGENTS_PORT and KUVO_AGENTS_PASSWORD are needed." : "KUVO_AGENTS_HOME and OPENCODE_PASSWORD are needed.");
     process.exit(2);
+  }
+  if (machineHome) {
+    try {
+      upgradeKuvoFolder(machineHome);
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : String(error));
+      process.exit(1);
+    }
   }
   machineEngine2 = onMachine ? machineEngine() ?? (process.env.KUVO_ENGINE_PORT ? { url: `http://127.0.0.1:${process.env.KUVO_ENGINE_PORT}`, password: process.env.OPENCODE_PASSWORD } : undefined) : undefined;
   port2 = onMachine ? Number(process.env.KUVO_AGENTS_PORT) : 0;
@@ -42055,4 +42136,4 @@ if (!isMainThread && process.argv.includes("--insights-db-worker")) {
 } else {
   await init_main().then(() => ({}));
 }
-// Built from Packages/Box/src/agents 649a9eab4efbfd374d76da2d4a6645906f0e513122b8775a1bb4668a02656993
+// Built from Packages/Box/src/agents 16b74952c023e1c5671d254a45d2df77eeba4565465212af833a51b51b7b4406

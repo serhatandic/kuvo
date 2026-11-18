@@ -25,6 +25,7 @@ import { bundleID } from "../install/command";
 import { appFolderOf, homeOfRoot, keeperFailed, newReadiness, NOTHING_TO_MOVE, rehome, rehomeBack, rehomeNew, rehomeReady, rehomeResume, settled, type RehomeOutcome } from "./move";
 import { rehomeSignIns } from "./passwords";
 import { rehomeRun, rehomeSettle } from "./run";
+import { checkFolderVersion } from "../../shared/folder-version";
 import { moveUnderWay, rehomeStatus } from "./state";
 
 /** Each result's exit status: 0, start what's there; 1, it didn't move, start the box where it was;
@@ -51,6 +52,7 @@ export async function rehomeCommand(root: string | undefined, args: string[]): P
   const folders = () => ({ appFolder: appFolderOf(process.env.KUVO_HOME, home), home });
   const appFolder = (): string | null => { try { return folders().appFolder; } catch { return null; } };
   try {
+    checkFolderVersion(home);
     if (args.includes("--status")) {
       say(rehomeStatus(home));
       return 0;

@@ -11,7 +11,6 @@
 #   kuvo-start bridge-again  Try Again: the bridge started now, one that didn't finish starting ended
 #   kuvo-start rollback  puts back the code an update on trial replaced (never its data)
 K="$HOME/.kuvo-code"; R="$K/run"
-mkdir -p "$R" 2>/dev/null && chmod 700 "$R" 2>/dev/null
 # Whether process $1 runs and is $2 (in its command line), with any run of slashes in either taken
 # as one: a HOME written with a slash at its end ("/Users/you/", as Kuvo Helper gave it) started its
 # engine as ".../you//.kuvo-code/engine/...", which a start or stop with HOME written without must
@@ -48,6 +47,11 @@ pick() {
   fi
 }
 pick
+# Check the layout before the keeper writes its first runtime record.
+if [ -f "$K/bin/kuvo-link.js" ] && [ -x "$K/engine/$V/opencode" ]; then
+  KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$K/engine/$V/opencode" --config=/dev/null --no-env-file "$K/bin/kuvo-link.js" folder-upgrade </dev/null || exit $?
+fi
+mkdir -p "$R" 2>/dev/null && chmod 700 "$R" 2>/dev/null
 # Whether this is a Mac's own box (`box/kind` says `mac`), which its helper, Kuvo Helper, runs.
 own_mac() { [ "$(tr -d ' \t\r\n' 2>/dev/null <"$K/box/kind")" = mac ]; }
 machine_helper() { [ -f "$R/machine-helper" ] && ! own_mac && [ "$(uname -s)" = Darwin ]; }

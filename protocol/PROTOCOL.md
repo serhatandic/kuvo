@@ -30,7 +30,14 @@ In text (links, JSON) keys, secrets, addresses and tokens are base64url without 
 
 ## Format versions during an update
 
-An absent JSON format marker denotes the pre-marker layout (version 0). The link state
+A computer's Kuvo folder carries one layout version in `folder-version.json`. An absent
+file denotes layout 0. The startup gate refuses a future version or a migration in progress
+to a future version before opening the folder for writes. The ordered steps checkpoint
+their in-progress and completed versions in the same atomic file. Layout 1 adopts the
+deployed layout in place. During a legacy Mac move, that step imports the earlier app's
+data into staging, and rehome publishes the checkpoint with the imported files.
+
+Existing family markers validate their own contents. An absent JSON format marker denotes the pre-marker layout (version 0). The link state
 (`run/link.json`) and Work Queue number ledger (`run/work-queue/numbers.json`) now write
 `formatVersion: 1` beside their existing fields. Readers upgrade old files in memory and persist
 the version with a normal atomic write. The ledger commits it under the writer lock. Work Queue
@@ -56,10 +63,10 @@ format found before the reply starts gets HTTP 409 with the same code and the fo
 The desktop accepts legacy replies with no marker and declines an explicit unknown version. Route features still
 govern whether a route exists. Socket handshakes and upstream protocols retain their own rules.
 
-A storage change declares and tests a step from n to n+1. For compatible changes, put the marker
-beside the old fields so an older process or rollback can still understand them. A future
-incompatible change needs a reader or a refusal in neighbouring versions, plus a way to choose
-which version to write while both builds are running. See the format inventory in
+A layout change adds a tested, replayable folder step from n to n+1. Layout 1 preserves
+the existing files so pre-marker builds can still use them during rollback. A future
+incompatible layout requires stopping older writers and a compatible rollback plan.
+Computers in an updating fleet continue to exchange messages using their wire versions. See the format inventory in
 `.claude/notes/848-U-versions-inventory.md`.
 
 ## The relay
