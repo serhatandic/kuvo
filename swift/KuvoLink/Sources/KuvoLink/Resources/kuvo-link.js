@@ -106,6 +106,20 @@ function objectFormat(name, steps) {
     }
   };
 }
+function additiveListFormat(name) {
+  const steps = [(items) => items];
+  return {
+    read(value) {
+      if (!Array.isArray(value))
+        throw new Error(`${name} isn't a JSON array.`);
+      const marker = value[0];
+      return isObject(marker) && Object.hasOwn(marker, "formatVersion") ? upgradeFormat(name, marker.formatVersion, value.slice(1), steps) : upgradeFormat(name, undefined, value, steps);
+    },
+    write(items) {
+      return [{ formatVersion: steps.length }, ...items];
+    }
+  };
+}
 var UnsupportedFormatVersion, additiveObjectFormat = (name) => objectFormat(name, [(fields) => fields]);
 var init_format_version = __esm(() => {
   UnsupportedFormatVersion = class UnsupportedFormatVersion extends Error {
@@ -27533,8 +27547,14 @@ async function primeGenerations() {
   primed = true;
   primeTrouble = null;
 }
-function readSigned(file, fallback) {
+function readEnvelope(file) {
   const kept = readJSON2(file, null);
+  if (!kept)
+    return null;
+  return upgradeFormat(`Vault ${path75.basename(file, ".json")} envelope`, kept.v, kept, [(value) => value, (value) => value]);
+}
+function readSigned(file, fallback) {
+  const kept = readEnvelope(file);
   if (!kept)
     return fallback;
   const key = fileKey();
@@ -27554,7 +27574,7 @@ function keepSigned(file, data) {
   const key = fileKey();
   if (!key)
     throw onHost() ? new VaultRefusal(503, "Kuvo Code on this Mac didn't give its vault its key. Quit Kuvo Code and open it again.") : new VaultRefusal(423, LOCKED);
-  const generation = Math.max(newest.get(file) ?? 0, readJSON2(file, null)?.gen || 0) + 1;
+  const generation = Math.max(newest.get(file) ?? 0, readEnvelope(file)?.gen || 0) + 1;
   keepJSON(file, { v: 2, gen: generation, data, sig: signatureOf(key, file, generation, data) });
   newest.set(file, generation);
   rememberGeneration(file, generation);
@@ -27934,6 +27954,7 @@ var ITEMS, GRANTS, PAUSED, KEY_FILE, VALUES, VaultRefusal, LOCKED = "This comput
   return readSigned(PAUSED, { all: true });
 };
 var init_store2 = __esm(() => {
+  init_format_version();
   init_text();
   init_vault();
   init_files2();
@@ -55050,7 +55071,7 @@ var init_files4 = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "0cbb1c23e8d4";
+var BRIDGE_VERSION = "fd2f990b0eba";
 
 // box/src/link/rehome/paths.ts
 import { createHash as createHash3 } from "node:crypto";
@@ -56509,11 +56530,16 @@ function stagedOf(move, file) {
 }
 function readFolders(move) {
   try {
-    const kept = JSON.parse(fs150.readFileSync(foldersFile(move), "utf8"));
-    return Array.isArray(kept) ? kept.filter((each) => typeof each === "string") : [];
-  } catch {
+    const kept = foldersFormat.read(JSON.parse(fs150.readFileSync(foldersFile(move), "utf8")));
+    return kept.filter((each) => typeof each === "string");
+  } catch (error) {
+    if (error instanceof UnsupportedFormatVersion)
+      throw error;
     return [];
   }
+}
+function readDatabaseCounts(move) {
+  return countsFormat.read(JSON.parse(fs150.readFileSync(countsFile(move), "utf8")));
 }
 function stagedEngine(move) {
   const engines = placementOf(move, "engine");
@@ -56601,8 +56627,9 @@ var reversed = (map) => map.map(({ from, to }) => ({ from: to, to: from })).sort
   } catch {
     return [];
   }
-}, foldersFile = (move) => path157.join(move.work, "folders.json"), countsFile = (move) => path157.join(move.work, "counts.json"), withClashes = (move) => [...mergeClashes(move), ...move.map].sort((a, b) => b.from.length - a.from.length), PATH_REWRITER;
+}, foldersFile = (move) => path157.join(move.work, "folders.json"), countsFile = (move) => path157.join(move.work, "counts.json"), foldersFormat, countsFormat, withClashes = (move) => [...mergeClashes(move), ...move.map].sort((a, b) => b.from.length - a.from.length), PATH_REWRITER;
 var init_rewrite = __esm(() => {
+  init_format_version();
   init_engines();
   init_engine_check();
   init_database();
@@ -56610,6 +56637,8 @@ var init_rewrite = __esm(() => {
   init_outside2();
   init_paths2();
   init_paths2();
+  foldersFormat = additiveListFormat("Rehome project folders");
+  countsFormat = additiveObjectFormat("Rehome database counts");
   PATH_REWRITER = {
     refuses(move) {
       const data = placementOf(move, "data");
@@ -56636,13 +56665,16 @@ var init_rewrite = __esm(() => {
         for (const each of placement ? listOf8(placement.from) : [])
           folders.add(name === "bots" ? path157.join(placement.from, each, "workspace") : path157.join(placement.from, each));
       }
+      readFolders(move);
       const list = [...folders].filter((folder) => path157.isAbsolute(folder)).sort();
-      fs150.writeFileSync(foldersFile(move), JSON.stringify(list), { mode: 384 });
+      fs150.writeFileSync(foldersFile(move), JSON.stringify(foldersFormat.write(list)), { mode: 384 });
       if (engineData) {
+        if (exists4(countsFile(move)))
+          readDatabaseCounts(move);
         const counts = {};
         for (const database of databasesIn(engineData))
           counts[path157.basename(database)] = databaseCounts(database);
-        fs150.writeFileSync(countsFile(move), JSON.stringify(counts), { mode: 384 });
+        fs150.writeFileSync(countsFile(move), JSON.stringify(countsFormat.write(counts)), { mode: 384 });
         for (const database of databasesIn(engineData)) {
           const { projects } = rewriteDatabase(database, map);
           rewriteDataFolders(engineData, database, projects, map);
@@ -56668,7 +56700,7 @@ var init_rewrite = __esm(() => {
         if (rewritten.length)
           throw new Error(`The engine's database still names where Kuvo was: ${rewritten.join(", ")}`);
         notes.push(...elsewhere.map((each) => `${path157.basename(database)}: ${each}`));
-        const before = JSON.parse(fs150.readFileSync(countsFile(move), "utf8"))[path157.basename(database)];
+        const before = readDatabaseCounts(move)[path157.basename(database)];
         if (!before)
           throw new Error(`The engine's database ${path157.basename(database)} wasn't counted before it was rewritten.`);
         const after = databaseCounts(database);
@@ -56704,8 +56736,8 @@ var init_rewrite = __esm(() => {
         journal({ act: "rename", from, to });
         fs150.renameSync(from, to);
       };
-      repairWorktrees(placements.filter((each) => !each.installed).map((each) => each.to), map, journal);
       const folders = readFolders(move);
+      repairWorktrees(placements.filter((each) => !each.installed).map((each) => each.to), map, journal);
       const own = ownAgentHomes();
       renameClaudeHistory(own.claude, folders, map, rename);
       if (renameGrokSessions(own.grok, map, rename))
@@ -59431,11 +59463,27 @@ function note2(what, now = Date.now()) {
     entry.why = oneLine(entry.why, 300);
   vaultWork(() => {
     fs157.mkdirSync(VAULT_FOLDER, { recursive: true, mode: 448 });
-    fs157.appendFileSync(ACTIVITY, JSON.stringify(entry) + `
-`, { mode: 384 });
+    const fd = fs157.openSync(ACTIVITY, "a+", 384);
+    try {
+      const size = fs157.fstatSync(fd).size;
+      const tail = Buffer.alloc(1);
+      if (size)
+        fs157.readSync(fd, tail, 0, 1, size - 1);
+      const separator = size && tail[0] !== 10 ? `
+` : "";
+      fs157.writeFileSync(fd, separator + JSON.stringify(activityFormat.write(entry)) + `
+`);
+    } finally {
+      fs157.closeSync(fd);
+    }
     if (now - prunedAt > DAY4) {
       prunedAt = now;
-      prune2(now);
+      try {
+        prune2(now);
+      } catch (error) {
+        if (!(error instanceof UnsupportedFormatVersion))
+          throw error;
+      }
     }
   });
   return entry;
@@ -59446,7 +59494,7 @@ function prune2(now) {
   if (kept.length === lines.length)
     return;
   const temporary = ACTIVITY + ".new";
-  fs157.writeFileSync(temporary, kept.map((entry) => JSON.stringify(entry) + `
+  fs157.writeFileSync(temporary, kept.map((entry) => JSON.stringify(activityFormat.write(entry)) + `
 `).join(""), { mode: 384 });
   fs157.renameSync(temporary, ACTIVITY);
 }
@@ -59462,21 +59510,28 @@ function readLines() {
 `)) {
     if (!line)
       continue;
+    let saved;
     try {
-      entries.push(JSON.parse(line));
-    } catch {}
+      saved = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (isObject(saved))
+      entries.push(activityFormat.read(saved));
   }
   return entries;
 }
 function readActivity({ item, bot, session, before, limit = 100 } = {}, now = Date.now()) {
   return readLines().filter((entry) => now - entry.at < KEPT_DAYS * DAY4).filter((entry) => (!item || entry.item === item) && (!bot || entry.bot === bot) && (!session || entry.session === session) && (!before || entry.at < before)).sort((a, b) => b.at - a.at).slice(0, Math.max(1, Math.min(500, limit)));
 }
-var ACTIVITY, DAY4 = 86400000, prunedAt = 0;
+var ACTIVITY, DAY4 = 86400000, activityFormat, prunedAt = 0;
 var init_activity = __esm(() => {
+  init_format_version();
   init_text();
   init_home();
   init_work3();
   ACTIVITY = path165.join(VAULT_FOLDER, "activity.jsonl");
+  activityFormat = additiveObjectFormat("Vault activity");
 });
 
 // box/src/link/vault/use.ts
@@ -78222,6 +78277,7 @@ async function* autopilotRoute(context) {
 }
 
 // box/src/link/areas/typed.ts
+init_format_version();
 init_home();
 init_client();
 init_letter();
@@ -78915,14 +78971,17 @@ function answerOf3(decision, done, failure) {
   return { ...steps, ...done, ...command ? { command } : {}, ...send ? { send } : {}, ...restore ? { restore } : {}, ...error ? { error } : {} };
 }
 var TYPED_SENT = path211.join(RUN, "typed-sent.json");
+var sentFormat = additiveObjectFormat("Typed send receipts");
 var KEPT_MS2 = 60 * 60000;
 var KEPT_MOST = 1000;
 var KEPT_BYTES = 64 * 1024;
 function readKept11() {
   try {
     const read = JSON.parse(fs204.readFileSync(TYPED_SENT, "utf8"));
-    return isObject(read) ? read : {};
-  } catch {
+    return isObject(read) ? sentFormat.read(read) : {};
+  } catch (error) {
+    if (error instanceof UnsupportedFormatVersion)
+      throw error;
     return {};
   }
 }
@@ -78944,7 +79003,7 @@ function keepAnswer2(key, answer) {
   const temporary = `${TYPED_SENT}.${process.pid}`;
   try {
     fs204.mkdirSync(RUN, { recursive: true, mode: 448 });
-    fs204.writeFileSync(temporary, JSON.stringify(kept), { mode: 384 });
+    fs204.writeFileSync(temporary, JSON.stringify(sentFormat.write(kept)), { mode: 384 });
     fs204.renameSync(temporary, TYPED_SENT);
   } catch {
     fs204.rmSync(temporary, { force: true });

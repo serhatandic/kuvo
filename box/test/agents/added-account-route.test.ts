@@ -51,3 +51,26 @@ test.each([true, false])("conditional cancellation preserves signed-in=%s and re
   expect(response.status).toBe(200)
   expect(removed).toBe(!signedIn)
 })
+
+test("the account index accepts legacy arrays and guards account changes against future formats", () => {
+  const root = mkdtempSync(join(tmpdir(), "kuvo-add-account-"))
+  try {
+    const file = join(root, "accounts.json")
+    const legacy = { kind: "codex", id: "saved", label: "Saved" }
+    writeFileSync(file, JSON.stringify([legacy]))
+    const accounts = new Accounts(root)
+    expect(accounts.all()).toContainEqual(legacy)
+    accounts.rename("codex-cli@saved", "Renamed")
+    const current = JSON.parse(readFileSync(file, "utf8"))
+    expect(current).toEqual([{ formatVersion: 1 }, { ...legacy, label: "Renamed" }])
+    expect(current.filter((record: { kind?: string }) => record.kind === "codex")).toEqual([{ ...legacy, label: "Renamed" }])
+    const future = JSON.stringify([{ formatVersion: 2 }, legacy])
+    writeFileSync(file, future)
+    expect(() => new Accounts(root)).toThrow("Managed accounts format version 2 is unsupported")
+    expect(() => accounts.add("codex", "Another")).toThrow("Managed accounts format version 2 is unsupported")
+    expect(() => accounts.remove("codex-cli@saved")).toThrow("Managed accounts format version 2 is unsupported")
+    expect(readFileSync(file, "utf8")).toBe(future)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})

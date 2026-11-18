@@ -8,6 +8,7 @@
 // The client sends the files and quotes it has with what it's told to send, and keeps the rest.
 
 import fs from "node:fs";
+import { additiveObjectFormat, UnsupportedFormatVersion } from "../../shared/format-version";
 import path from "node:path";
 import { isObject, parsed } from "../../shared/json";
 import { RUN } from "../home";
@@ -185,6 +186,7 @@ function answerOf(decision: Decision, done: Done, failure: { restore: Restore; e
 // What a send with its own id was answered, kept on disk an hour (the most recent 1000), so the same
 // send again after this box started again is answered as it was, its step not done twice.
 export const TYPED_SENT = path.join(RUN, "typed-sent.json");
+const sentFormat = additiveObjectFormat("Typed send receipts");
 const KEPT_MS = 60 * 60_000;
 const KEPT_MOST = 1000;
 const KEPT_BYTES = 64 * 1024;
@@ -193,8 +195,9 @@ type KeptAnswer = { at: number; status: number; headers: Record<string, string>;
 function readKept(): Record<string, KeptAnswer> {
   try {
     const read = JSON.parse(fs.readFileSync(TYPED_SENT, "utf8"));
-    return isObject(read) ? (read as Record<string, KeptAnswer>) : {};
-  } catch {
+    return isObject(read) ? sentFormat.read(read) as Record<string, KeptAnswer> : {};
+  } catch (error) {
+    if (error instanceof UnsupportedFormatVersion) throw error;
     return {};
   }
 }
@@ -219,7 +222,7 @@ function keepAnswer(key: string, answer: { status: number; headers: Record<strin
   const temporary = `${TYPED_SENT}.${process.pid}`;
   try {
     fs.mkdirSync(RUN, { recursive: true, mode: 0o700 });
-    fs.writeFileSync(temporary, JSON.stringify(kept), { mode: 0o600 });
+    fs.writeFileSync(temporary, JSON.stringify(sentFormat.write(kept)), { mode: 0o600 });
     fs.renameSync(temporary, TYPED_SENT);
   } catch {
     fs.rmSync(temporary, { force: true });

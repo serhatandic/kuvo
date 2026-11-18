@@ -4,7 +4,7 @@ import fs from "node:fs"
 import { EventEmitter } from "node:events"
 import { watchTree } from "../../src/agents/artifacts/folders"
 import { spawnSync } from "node:child_process"
-import { chmodSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from "node:fs"
+import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { pathToFileURL } from "node:url"
@@ -1292,4 +1292,38 @@ describe("the routes", () => {
     expect(await line()).toEqual([["newer.pdf", null], ["older.png", null]])
     controller.abort()
   })
+})
+
+test("artifact storage reads legacy history, stamps writes, and refuses future records before compaction", async () => {
+  const folder = join(root, "artifacts")
+  const now = () => new Date("2026-10-26T09:00:00.000Z")
+  const saved = join(folder, "log", "2026-10.jsonl")
+  const file = join(project, "original.txt")
+  const budget = join(folder, "settings.json")
+  writeFileSync(budget, JSON.stringify({ budget: 123, extra: "preserved" }))
+  store = new ArtifactStore(folder, { now })
+  expect(store.storage().budget).toBe(123)
+  expect(store.setBudget(456, true)).toBeNull()
+  expect(JSON.parse(readFileSync(budget, "utf8"))).toEqual({ budget: 456, extra: "preserved", formatVersion: 1 })
+  const futureBudget = '{"formatVersion":2,"budget":42}'
+  writeFileSync(budget, futureBudget)
+  expect(() => store.setBudget(777, true)).toThrow("Artifact storage settings format version 2 is unsupported")
+  expect(readFileSync(budget, "utf8")).toBe(futureBudget)
+  writeFileSync(budget, '{"budget":456}')
+
+  writeFileSync(file, "original")
+  await store.change(file, { by: { kind: "you" }, via: "write" })
+  const { formatVersion, ...legacy } = JSON.parse(readFileSync(saved, "utf8"))
+  expect(formatVersion).toBe(1)
+  const history = JSON.stringify(legacy) + "\n"
+  writeFileSync(saved, history)
+  expect(new ArtifactStore(folder, { now }).at(file)?.versions).toHaveLength(1)
+  const future = history.repeat(1001) + '{"formatVersion":2}\n'
+  writeFileSync(saved, future)
+  expect(() => new ArtifactStore(folder, { now })).toThrow("Artifact index format version 2 is unsupported")
+  expect(readFileSync(saved, "utf8")).toBe(future)
+  expect(existsSync(join(folder, "log", "0000-00.jsonl"))).toBe(false)
+  writeFileSync(saved, history.repeat(1001))
+  expect(new ArtifactStore(folder, { now }).at(file)?.versions).toHaveLength(1)
+  expect(JSON.parse(readFileSync(join(folder, "log", "0000-00.jsonl"), "utf8")).formatVersion).toBe(1)
 })

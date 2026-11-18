@@ -1,6 +1,6 @@
 import "./safety"
 import { afterAll, beforeEach, expect, test } from "bun:test"
-import { mkdirSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { ask, follow } from "./route-answer"
 
@@ -399,4 +399,41 @@ test("no section's form can carry what's secret, nor read a value but through th
     }
     expect(JSON.stringify(shown)).not.toContain(SECRET)
   }
+})
+
+test("vault pause accepts the original signed envelope and refuses to replace a future one", async () => {
+  await made()
+  store.setPaused(true)
+  const file = join(VAULT_FOLDER, "paused.json")
+  const { v, ...legacy } = JSON.parse(readFileSync(file, "utf8"))
+  expect(v).toBe(2)
+  writeFileSync(file, JSON.stringify(legacy))
+  expect(store.pausedFor(undefined)).toMatch(/paused the vault/)
+  store.setPaused(false)
+  expect(JSON.parse(readFileSync(file, "utf8")).v).toBe(2)
+  const future = JSON.stringify({ ...JSON.parse(readFileSync(file, "utf8")), v: 3 })
+  writeFileSync(file, future)
+  expect(() => store.pausedFor(undefined)).toThrow("Vault paused envelope format version 3 is unsupported")
+  expect(() => store.setPaused(true)).toThrow("Vault paused envelope format version 3 is unsupported")
+  expect(readFileSync(file, "utf8")).toBe(future)
+})
+
+test("vault activity upgrades mixed lines and keeps a future entry through an append and prune", async () => {
+  const log = await import("../src/link/vault/activity")
+  const file = join(VAULT_FOLDER, "activity.jsonl")
+  mkdirSync(VAULT_FOLDER, { recursive: true })
+  const year = 366 * 86_400_000
+  const now = Date.now() + year
+  const old = { id: "old", at: now - year, what: "shown" }
+  const legacy = { id: "legacy", at: now - 1, what: "shown" } as const
+  writeFileSync(file, [old, legacy].map(each => JSON.stringify(each) + "\n").join(""))
+  const entry = log.note({ what: "shown" }, now)
+  expect(log.readActivity({}, now)).toEqual([entry, legacy])
+  expect(readFileSync(file, "utf8")).not.toContain('"id":"old"')
+  expect(activity().map((each: any) => each.formatVersion)).toEqual([1, 1])
+  const future = '{"id":"future","formatVersion":2}'
+  writeFileSync(file, future)
+  log.note({ what: "shown" }, now + year)
+  expect(readFileSync(file, "utf8").split("\n")[0]).toBe(future)
+  expect(() => log.readActivity({}, now + year)).toThrow("Vault activity format version 2 is unsupported")
 })

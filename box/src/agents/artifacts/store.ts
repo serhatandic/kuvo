@@ -19,6 +19,8 @@ import { isBinary, isText, kindOf, typeOf, type Kind } from "./kinds"
 import { CopyPolicy, freeSpace, privateReasons, type NoCopy } from "./policy"
 import { inScratch } from "./turnfiles"
 import { budgetConfirmation } from "../../shared/artifact-budget"
+import { additiveObjectFormat } from "../../shared/format-version"
+import { isObject } from "../../shared/json"
 import { writeSecret } from "../../shared/files"
 
 /** The biggest file a copy is kept of (as `kuvo/file` sends at most). */
@@ -138,6 +140,8 @@ export interface Scope {
 
 type Header = Omit<Artifact, "versions">
 type Line = { a: Header; v?: Version }
+const indexFormat = additiveObjectFormat("Artifact index")
+const settingsFormat = additiveObjectFormat("Artifact storage settings")
 
 const stamp = (date: Date) => date.toISOString()
 const kindsKeptWhole = new Set<Kind>(["memory", "skill"])
@@ -189,11 +193,9 @@ export class ArtifactStore {
     mkdirSync(join(root, "log"), { recursive: true })
     mkdirSync(join(root, "copies"), { recursive: true })
     this.policy = new CopyPolicy(options.disk ?? (() => freeSpace(root)))
+    const { budget } = this.readSettings()
+    if (typeof budget === "number" && budget >= 0) this.chosenBudget = budget
     this.key = ArtifactStore.keyIn(root)
-    try {
-      const budget = JSON.parse(readFileSync(join(root, "settings.json"), "utf8"))?.budget
-      if (typeof budget === "number" && budget >= 0) this.chosenBudget = budget
-    } catch {}
     this.load()
   }
 
@@ -624,13 +626,21 @@ export class ArtifactStore {
     return { copies, older, budget: this.budget, free, floor, low: free < floor }
   }
 
+  private readSettings() {
+    let saved: unknown
+    try { saved = JSON.parse(readFileSync(join(this.root, "settings.json"), "utf8")) } catch { return {} }
+    return isObject(saved) ? settingsFormat.read(saved) : {}
+  }
+
   /** Your budget for older versions, kept for the next start; older ones past it go now. */
   setBudget(bytes: number, confirmed?: unknown): string | null {
     const older = this.storage().older
     if (Math.floor(bytes) < older && confirmed !== true) return budgetConfirmation(older).body
-    this.chosenBudget = Math.max(0, Math.floor(bytes))
-    writeFileSync(join(this.root, "settings.json.new"), JSON.stringify({ budget: this.chosenBudget }))
+    const settings = this.readSettings()
+    const budget = Math.max(0, Math.floor(bytes))
+    writeFileSync(join(this.root, "settings.json.new"), JSON.stringify(settingsFormat.write({ ...settings, budget })))
     renameSync(join(this.root, "settings.json.new"), join(this.root, "settings.json"))
+    this.chosenBudget = budget
     this.settle()
     return null
   }
@@ -825,8 +835,8 @@ export class ArtifactStore {
     const lines: string[] = []
     for (const artifact of this.artifacts.values()) {
       const { versions, ...header } = artifact
-      if (!versions.length) lines.push(JSON.stringify({ a: header }))
-      for (const version of [...versions].sort((a, b) => a.n - b.n)) lines.push(JSON.stringify({ a: header, v: version }))
+      if (!versions.length) lines.push(JSON.stringify(indexFormat.write({ a: header })))
+      for (const version of [...versions].sort((a, b) => a.n - b.n)) lines.push(JSON.stringify(indexFormat.write({ a: header, v: version })))
     }
     // Before every month, so later ones read after it.
     const file = join(this.root, "log", "0000-00.jsonl")
@@ -876,7 +886,7 @@ export class ArtifactStore {
   private write(artifact: Artifact, version?: Version) {
     const { versions: _, ...header } = artifact
     const line: Line = { a: header, ...(version ? { v: version } : {}) }
-    appendFileSync(join(this.root, "log", stamp(this.now()).slice(0, 7) + ".jsonl"), JSON.stringify(line) + "\n")
+    appendFileSync(join(this.root, "log", stamp(this.now()).slice(0, 7) + ".jsonl"), JSON.stringify(indexFormat.write(line)) + "\n")
   }
 
   private load() {
@@ -889,18 +899,23 @@ export class ArtifactStore {
       let text = ""
       try {
         text = readFileSync(join(this.root, "log", month), "utf8")
-      } catch {}
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") continue
+        throw error
+      }
       for (const each of text.split("\n")) {
         if (!each) continue
         lines++
-        let line: Line
+        let saved: unknown
         try {
-          line = JSON.parse(each)
+          saved = JSON.parse(each)
         } catch {
           // A line cut short as the box stopped: the rest still counts.
           continue
         }
-        if (!line?.a?.id) continue
+        if (!isObject(saved)) continue
+        const line = indexFormat.read(saved) as Line
+        if (!line.a?.id) continue
         const artifact = this.artifacts.get(line.a.id) ?? { ...line.a, versions: [] }
         Object.assign(artifact, line.a)
         if (line.v) {

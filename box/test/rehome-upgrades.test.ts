@@ -1,8 +1,9 @@
 import "./safety"
 import { afterAll, expect, test } from "bun:test"
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { PATH_REWRITER } from "../src/link/rehome/rewrite"
 import { parsePlist } from "../src/link/rehome/upgrades"
 import { mac07, preferences, put, readJSON, run, snapshot, type Mac } from "./rehome-run-world"
 
@@ -207,3 +208,24 @@ test("a property list reads as the app's preferences are kept: text, numbers, sw
   const read = parsePlist(`<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "x">\n<plist version="1.0">\n<dict>\n\t<key>a &amp; b</key>\n\t<string>one &lt;two&gt;</string>\n\t<key>empty</key>\n\t<string></string>\n\t<key>n</key>\n\t<integer>3</integer>\n\t<key>r</key>\n\t<real>2.5</real>\n\t<key>on</key>\n\t<true/>\n\t<key>off</key>\n\t<false/>\n\t<key>list</key>\n\t<array>\n\t\t<string>x</string>\n\t\t<dict>\n\t\t\t<key>k</key>\n\t\t\t<string>v</string>\n\t\t</dict>\n\t</array>\n\t<key>none</key>\n\t<array/>\n\t<key>kept</key>\n\t<data>\n\t${Buffer.from(JSON.stringify({ deep: [1, "two"] })).toString("base64")}\n\t</data>\n\t<key>after</key>\n\t<string>still read</string>\n</dict>\n</plist>\n`)
   expect(read).toEqual({ "a & b": "one <two>", empty: "", n: 3, r: 2.5, on: true, off: false, list: ["x", { k: "v" }], none: [], kept: { deep: [1, "two"] }, after: "still read" })
 }, 120_000)
+
+test("rehome stamps its folders list without changing what the previous reader sees", () => {
+  const work = mkdtempSync(join(root, "folders-"))
+  const from = join(work, "app", "bots")
+  const home = join(work, "box")
+  const staged = join(work, "staged")
+  const expected = join(from, "bot_scout", "workspace")
+  mkdirSync(expected, { recursive: true })
+  mkdirSync(staged)
+  const move = { way: "move" as const, home, appFolder: join(work, "app"), placements: [{ from, to: join(home, "bots"), staged }], map: [], work }
+  const file = join(work, "folders.json")
+  writeFileSync(file, JSON.stringify([expected]))
+  PATH_REWRITER.rewrite(move)
+  expect(readJSON(file)).toEqual([{ formatVersion: 1 }, expected])
+  expect(readJSON(file).filter((entry: unknown) => typeof entry === "string")).toEqual([expected])
+  const future = JSON.stringify([{ formatVersion: 2 }, work])
+  writeFileSync(file, future)
+  expect(() => PATH_REWRITER.outside(move, () => { throw new Error("Unexpected recovery mutation") })).toThrow("Rehome project folders format version 2 is unsupported")
+  expect(() => PATH_REWRITER.rewrite(move)).toThrow("Rehome project folders format version 2 is unsupported")
+  expect(readFileSync(file, "utf8")).toBe(future)
+})

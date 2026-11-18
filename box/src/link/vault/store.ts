@@ -8,6 +8,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { upgradeFormat } from "../../shared/format-version";
 import { isObject } from "../../shared/json";
 import { newID, oneLine } from "../../shared/text";
 import { GRANT_HOWS, ITEM_KINDS, type VaultGrant, type VaultItem, type VaultState, type VaultWho } from "../../shared/routes/vault";
@@ -135,10 +136,19 @@ export const generationsTold = () => told;
 export const generations = (): Record<string, number> =>
   Object.fromEntries([ITEMS, GRANTS, PAUSED].map(file => [path.basename(file, ".json"), Number(readJSON<{ gen?: unknown } | null>(file, null)?.gen) || 0]));
 
+// Earlier signed envelopes use the same authenticated fields as v2. Validate the marker
+// before reading or replacing an envelope; authentication still uses the original bytes.
+function readEnvelope<T>(file: string) {
+  type Envelope = { v?: unknown; gen?: unknown; data?: T; sig?: unknown };
+  const kept = readJSON<Envelope | null>(file, null);
+  if (!kept) return null;
+  return upgradeFormat(`Vault ${path.basename(file, ".json")} envelope`, kept.v, kept, [value => value, value => value]);
+}
+
 /** A signed file's data: `fallback` when there's none, or it can't be checked now (locked), or it
  * wasn't signed with this vault's key. */
 function readSigned<T>(file: string, fallback: T): T {
-  const kept = readJSON<{ gen?: unknown; data?: T; sig?: unknown } | null>(file, null);
+  const kept = readEnvelope<T>(file);
   if (!kept) return fallback;
   const key = fileKey();
   if (!key) return fallback;
@@ -156,7 +166,7 @@ function readSigned<T>(file: string, fallback: T): T {
 function keepSigned(file: string, data: unknown) {
   const key = fileKey();
   if (!key) throw onHost() ? new VaultRefusal(503, "Kuvo Code on this Mac didn't give its vault its key. Quit Kuvo Code and open it again.") : new VaultRefusal(423, LOCKED);
-  const generation = Math.max(newest.get(file) ?? 0, readJSON<{ gen?: unknown } | null>(file, null)?.gen as number || 0) + 1;
+  const generation = Math.max(newest.get(file) ?? 0, readEnvelope(file)?.gen as number || 0) + 1;
   keepJSON(file, { v: 2, gen: generation, data, sig: signatureOf(key, file, generation, data) });
   newest.set(file, generation);
   rememberGeneration(file, generation);

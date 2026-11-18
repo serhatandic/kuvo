@@ -5,7 +5,7 @@
 
 import "./safety"
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test"
-import { readFileSync, rmSync } from "node:fs"
+import { readFileSync, rmSync, writeFileSync } from "node:fs"
 import { decide, KEYWORD_UNAVAILABLE } from "../src/link/typed/decide"
 import { commandsOffered, firstWake, focusAsked, parseCommand, parseGoal, parseKeyword, parseLoop, parseReview, repeatText, reviewUnfinished, scopeAsked, shellCommand, splitCommand } from "../src/link/typed/words"
 import type { AnswerPiece, RouteContext } from "../src/link/server/context"
@@ -334,11 +334,19 @@ describe("kuvo/sessions/<id>/typed", () => {
     const { forgetEverythingSent } = await import("../src/link/server/sent-once")
     bridgeSays = each => ({ status: 200, body: { data: { id: "q1", question: each.body.question } } })
     const first = await ask("POST", "ses_main", { text: "/btw why this way?", id: "snd_restart" })
+    const { formatVersion, ...legacy } = JSON.parse(readFileSync(TYPED_SENT, "utf8"))
+    expect(formatVersion).toBe(1)
+    writeFileSync(TYPED_SENT, JSON.stringify(legacy))
     // The box stops and starts again: what it held in memory is gone.
     forgetEverythingSent()
     const again = await ask("POST", "ses_main", { text: "/btw why this way?", id: "snd_restart" })
     expect(again).toEqual(first)
     expect(bridgeAsked.filter(each => each.method === "POST" && each.path === "/api/kuvo/btw/ses_main")).toHaveLength(1)
+    const future = JSON.stringify({ ...legacy, formatVersion: 2 })
+    writeFileSync(TYPED_SENT, future)
+    await expect(ask("POST", "ses_main", { text: "/btw a second question", id: "snd_other" })).rejects.toThrow("Typed send receipts format version 2 is unsupported")
+    expect(bridgeAsked.filter(each => each.method === "POST" && each.path === "/api/kuvo/btw/ses_main")).toHaveLength(1)
+    expect(readFileSync(TYPED_SENT, "utf8")).toBe(future)
   })
 
   test("two \"/plan\" at once are two switches, one after the other", async () => {

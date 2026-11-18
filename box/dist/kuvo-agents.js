@@ -52,6 +52,20 @@ function objectFormat(name, steps) {
     }
   };
 }
+function additiveListFormat(name) {
+  const steps = [(items) => items];
+  return {
+    read(value) {
+      if (!Array.isArray(value))
+        throw new Error(`${name} isn't a JSON array.`);
+      const marker = value[0];
+      return isObject(marker) && Object.hasOwn(marker, "formatVersion") ? upgradeFormat(name, marker.formatVersion, value.slice(1), steps) : upgradeFormat(name, undefined, value, steps);
+    },
+    write(items) {
+      return [{ formatVersion: steps.length }, ...items];
+    }
+  };
+}
 var UnsupportedFormatVersion, additiveObjectFormat = (name) => objectFormat(name, [(fields) => fields]);
 var init_format_version = __esm(() => {
   UnsupportedFormatVersion = class UnsupportedFormatVersion extends Error {
@@ -3491,13 +3505,20 @@ function parseProvider(provider) {
 
 class Accounts {
   root;
-  records = [];
+  records;
   constructor(root) {
     this.root = root;
+    this.records = this.read();
+  }
+  read() {
     try {
-      const saved = JSON.parse(readFileSync4(this.file, "utf8"));
-      this.records = saved.filter((record) => kinds.includes(record.kind) && record.id && record.id !== "default");
-    } catch {}
+      const saved = accountFormat.read(JSON.parse(readFileSync4(this.file, "utf8")));
+      return saved.filter((record) => kinds.includes(record?.kind) && record?.id && record.id !== "default");
+    } catch (error) {
+      if (error instanceof UnsupportedFormatVersion)
+        throw error;
+      return [];
+    }
   }
   get file() {
     return join6(this.root, "accounts.json");
@@ -3515,38 +3536,42 @@ class Accounts {
     return home;
   }
   add(kind, label) {
+    const records = this.read();
     const record = { kind, id: randomBytes(4).toString("hex"), label: label?.trim() || undefined };
     mkdirSync3(this.home(record), { recursive: true, mode: 448 });
-    this.records.push(record);
-    this.save();
+    this.save([...records, record]);
     return record;
   }
   rename(provider, label) {
     const parsed = parseProvider(provider);
-    const record = this.records.find((record) => record.kind === parsed?.kind && record.id === parsed?.id);
+    const records = this.read();
+    const record = records.find((record) => record.kind === parsed?.kind && record.id === parsed?.id);
     if (!record)
       return;
     record.label = label?.trim() || undefined;
-    this.save();
+    this.save(records);
   }
   remove(provider) {
     const parsed = parseProvider(provider);
-    const index = this.records.findIndex((record) => record.kind === parsed?.kind && record.id === parsed?.id);
+    const records = this.read();
+    const index = records.findIndex((record) => record.kind === parsed?.kind && record.id === parsed?.id);
     if (index < 0)
       return;
-    const [record] = this.records.splice(index, 1);
-    this.save();
+    const [record] = records.splice(index, 1);
+    this.save(records);
     rmSync3(this.home(record), { recursive: true, force: true });
     return record;
   }
-  save() {
+  save(records) {
     mkdirSync3(this.root, { recursive: true });
-    writeFileSync3(this.file + ".new", JSON.stringify(this.records, null, 2));
+    writeFileSync3(this.file + ".new", JSON.stringify(accountFormat.write(records), null, 2));
     renameSync2(this.file + ".new", this.file);
+    this.records = records;
   }
 }
-var kinds, baseProvider;
+var kinds, baseProvider, accountFormat;
 var init_accounts = __esm(() => {
+  init_format_version();
   init_machine();
   kinds = ["claude", "codex", "cursor", "grok", "antigravity"];
   baseProvider = {
@@ -3556,6 +3581,7 @@ var init_accounts = __esm(() => {
     grok: "grok-cli",
     antigravity: "antigravity"
   };
+  accountFormat = additiveListFormat("Managed accounts");
 });
 
 // box/src/shared/watch.ts
@@ -4117,12 +4143,10 @@ class ArtifactStore {
     mkdirSync4(join8(root, "log"), { recursive: true });
     mkdirSync4(join8(root, "copies"), { recursive: true });
     this.policy = new CopyPolicy(options.disk ?? (() => freeSpace(root)));
+    const { budget } = this.readSettings();
+    if (typeof budget === "number" && budget >= 0)
+      this.chosenBudget = budget;
     this.key = ArtifactStore.keyIn(root);
-    try {
-      const budget = JSON.parse(readFileSync5(join8(root, "settings.json"), "utf8"))?.budget;
-      if (typeof budget === "number" && budget >= 0)
-        this.chosenBudget = budget;
-    } catch {}
     this.load();
   }
   now() {
@@ -4495,13 +4519,24 @@ class ArtifactStore {
     const { free, floor } = this.policy.space();
     return { copies, older, budget: this.budget, free, floor, low: free < floor };
   }
+  readSettings() {
+    let saved;
+    try {
+      saved = JSON.parse(readFileSync5(join8(this.root, "settings.json"), "utf8"));
+    } catch {
+      return {};
+    }
+    return isObject(saved) ? settingsFormat.read(saved) : {};
+  }
   setBudget(bytes, confirmed) {
     const older = this.storage().older;
     if (Math.floor(bytes) < older && confirmed !== true)
       return budgetConfirmation(older).body;
-    this.chosenBudget = Math.max(0, Math.floor(bytes));
-    writeFileSync4(join8(this.root, "settings.json.new"), JSON.stringify({ budget: this.chosenBudget }));
+    const settings = this.readSettings();
+    const budget = Math.max(0, Math.floor(bytes));
+    writeFileSync4(join8(this.root, "settings.json.new"), JSON.stringify(settingsFormat.write({ ...settings, budget })));
     renameSync3(join8(this.root, "settings.json.new"), join8(this.root, "settings.json"));
+    this.chosenBudget = budget;
     this.settle();
     return null;
   }
@@ -4685,9 +4720,9 @@ class ArtifactStore {
     for (const artifact of this.artifacts.values()) {
       const { versions, ...header } = artifact;
       if (!versions.length)
-        lines.push(JSON.stringify({ a: header }));
+        lines.push(JSON.stringify(indexFormat.write({ a: header })));
       for (const version of [...versions].sort((a, b) => a.n - b.n))
-        lines.push(JSON.stringify({ a: header, v: version }));
+        lines.push(JSON.stringify(indexFormat.write({ a: header, v: version })));
     }
     const file = join8(this.root, "log", "0000-00.jsonl");
     try {
@@ -4738,7 +4773,7 @@ class ArtifactStore {
   write(artifact, version) {
     const { versions: _, ...header } = artifact;
     const line = { a: header, ...version ? { v: version } : {} };
-    appendFileSync(join8(this.root, "log", stamp(this.now()).slice(0, 7) + ".jsonl"), JSON.stringify(line) + `
+    appendFileSync(join8(this.root, "log", stamp(this.now()).slice(0, 7) + ".jsonl"), JSON.stringify(indexFormat.write(line)) + `
 `);
   }
   load() {
@@ -4751,19 +4786,26 @@ class ArtifactStore {
       let text = "";
       try {
         text = readFileSync5(join8(this.root, "log", month), "utf8");
-      } catch {}
+      } catch (error) {
+        if (error.code === "ENOENT")
+          continue;
+        throw error;
+      }
       for (const each of text.split(`
 `)) {
         if (!each)
           continue;
         lines++;
-        let line;
+        let saved;
         try {
-          line = JSON.parse(each);
+          saved = JSON.parse(each);
         } catch {
           continue;
         }
-        if (!line?.a?.id)
+        if (!isObject(saved))
+          continue;
+        const line = indexFormat.read(saved);
+        if (!line.a?.id)
           continue;
         const artifact = this.artifacts.get(line.a.id) ?? { ...line.a, versions: [] };
         Object.assign(artifact, line.a);
@@ -4844,16 +4886,19 @@ function summary(artifact) {
   const { versions, ...header } = artifact;
   return { ...header, versions: versions.filter((version) => !version.before).length, latest: versions.at(-1) };
 }
-var copyLimit, defaultBudget, lineLimit, patchLimit = 1e5, outsideWindow, stamp = (date) => date.toISOString(), kindsKeptWhole, stampOf = (stat) => ({ size: stat.size, mtime: stat.mtimeMs, ctime: stat.ctimeMs, ino: stat.ino }), sameStamp = (a, b) => a.size === b.size && a.mtime === b.mtime && a.ctime === b.ctime && a.ino === b.ino, couldBeRewritten = (stamp, at) => at - Math.max(stamp.mtime, stamp.ctime) < (stamp.mtime % 1000 === 0 || stamp.ctime % 1000 === 0 ? 2000 : 100);
+var copyLimit, defaultBudget, lineLimit, patchLimit = 1e5, outsideWindow, indexFormat, settingsFormat, stamp = (date) => date.toISOString(), kindsKeptWhole, stampOf = (stat) => ({ size: stat.size, mtime: stat.mtimeMs, ctime: stat.ctimeMs, ino: stat.ino }), sameStamp = (a, b) => a.size === b.size && a.mtime === b.mtime && a.ctime === b.ctime && a.ino === b.ino, couldBeRewritten = (stamp, at) => at - Math.max(stamp.mtime, stamp.ctime) < (stamp.mtime % 1000 === 0 || stamp.ctime % 1000 === 0 ? 2000 : 100);
 var init_store = __esm(() => {
   init_kinds();
   init_policy();
   init_turnfiles();
+  init_format_version();
   init_files();
   copyLimit = 25 * 1024 * 1024;
   defaultBudget = 1024 ** 3;
   lineLimit = 1024 * 1024;
   outsideWindow = 5 * 60000;
+  indexFormat = additiveObjectFormat("Artifact index");
+  settingsFormat = additiveObjectFormat("Artifact storage settings");
   kindsKeptWhole = new Set(["memory", "skill"]);
 });
 
@@ -41944,4 +41989,4 @@ if (!isMainThread && process.argv.includes("--insights-db-worker")) {
 } else {
   await init_main().then(() => ({}));
 }
-// Built from Packages/Box/src/agents feef467aa9ed2877c3b3d8d3a8d516b07bd3cea985d2c07fb0b7e9480dadc619
+// Built from Packages/Box/src/agents 40e47cc8a9b7282ef1dd044836f15fd4280686eabde0ebf61523ff1a044344c5

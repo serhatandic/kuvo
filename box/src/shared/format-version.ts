@@ -44,3 +44,20 @@ export function objectFormat(name: string, steps: readonly Upgrade<Record<string
 
 /** Version 1 keeps the legacy object fields in place for neighbouring writers. */
 export const additiveObjectFormat = (name: string) => objectFormat(name, [fields => fields]);
+
+/** For legacy lists whose readers already filter out objects without the list's item fields. */
+export function additiveListFormat(name: string) {
+  const steps: readonly Upgrade<unknown[]>[] = [items => items];
+  return {
+    read(value: unknown): unknown[] {
+      if (!Array.isArray(value)) throw new Error(`${name} isn't a JSON array.`);
+      const marker = value[0];
+      return isObject(marker) && Object.hasOwn(marker, "formatVersion")
+        ? upgradeFormat(name, marker.formatVersion, value.slice(1), steps)
+        : upgradeFormat(name, undefined, value, steps);
+    },
+    write<T>(items: readonly T[]) {
+      return [{ formatVersion: steps.length }, ...items];
+    },
+  };
+}
