@@ -207,6 +207,10 @@ if [ -f "$F/trace" ]; then
       : >"$FAKE_SSH_HOME/writer-ended"
     ) >/dev/null 2>&1 &
     while [ ! -f "$FAKE_SSH_HOME/writing" ] && [ ! -f "$FAKE_SSH_HOME/writer-ended" ]; do sleep 0.05; done
+    if [ "$(cat "$F/drop-seed-$dest")" = 255 ]; then
+      echo "Connection to $dest closed by remote host." >&2
+      exit 255
+    fi
     kill -TERM "$$"
   fi
 fi
@@ -311,7 +315,7 @@ const over = id => until(id, found => !found || found.state === "done" || found.
 const steps = found => found.steps.map(step => `${step.id}:${step.state}`);
 const sshLog = () => (fs.existsSync(path.join(fake, "log")) ? fs.readFileSync(path.join(fake, "log"), "utf8").trim().split("\n") : []);
 // (Two more computers, each a home of its own: a Mac that has Kuvo Code's app, and one with nothing.)
-const homes = Object.fromEntries(["macbook", "mini", "nas", "attic", "race", "claim", "rotate", "interrupted", "release", "add-first", "uninstall-first", "prepare", "prepare-error"].map(name => [name, path.join(base, name)]));
+const homes = Object.fromEntries(["macbook", "mini", "nas", "attic", "race", "claim", "rotate", "interrupted", "network-drop", "release", "add-first", "uninstall-first", "prepare", "old-reservation", "prepare-error"].map(name => [name, path.join(base, name)]));
 for (const [name, folder] of Object.entries(homes)) {
   fs.mkdirSync(folder, { recursive: true });
   fs.writeFileSync(path.join(fake, `home-${name}`), folder);
@@ -1166,43 +1170,46 @@ const waitFor = async found => {
   assert.fail("The remote command did not reach the test hold.");
 };
 
-test("a disconnected credential write stops Add and recovery waits for the remote writer", async () => {
-  const folder = homes.interrupted;
-  const hold = path.join(folder, "hold-seed");
-  const drop = path.join(fake, "drop-seed-interrupted");
-  write(path.join(fake, "home-interrupted-alias"), folder);
-  write(traceFile, "");
-  write(hold, "");
-  write(drop, "");
-  try {
-    const stopped = await added("interrupted");
-    const calls = remoteCalls().filter(call => call.startsWith("interrupted "));
-    assert.equal(calls.at(-1), "interrupted seed", "no join, uninstall or release after the interrupted write");
-    assert.equal(stopped.state, "failed");
-    assert.match(stopped.failure.message, /lost contact.*during a change/);
-    assert.equal(stopped.steps.find(step => step.id === "joining").state, "waiting");
-    const original = fs.readlinkSync(reservationAt(folder));
-    const whileWriting = await added("interrupted-alias");
-    assert.equal(whileWriting.state, "failed");
-    assert.match(whileWriting.failure.message, /change is in progress/);
-    assert.equal(fs.readlinkSync(reservationAt(folder)), original);
+for (const [destination, disconnected] of [["interrupted", "SIGTERM"], ["network-drop", "255"]]) {
+  test(`a credential write interrupted by SSH ${disconnected} stops Add and recovery waits for the remote writer`, async () => {
+    const folder = homes[destination];
+    const alias = `${destination}-alias`;
+    const hold = path.join(folder, "hold-seed");
+    const drop = path.join(fake, `drop-seed-${destination}`);
+    write(path.join(fake, `home-${alias}`), folder);
+    write(traceFile, "");
+    write(hold, "");
+    write(drop, disconnected);
+    try {
+      const stopped = await added(destination);
+      const writes = remoteCalls().filter(call => call.startsWith(`${destination} `) && / (seed|join|uninstall|release)$/.test(call));
+      assert.deepEqual(writes, [`${destination} seed`], "one seed call and no join, uninstall or release");
+      assert.equal(stopped.state, "failed");
+      assert.match(stopped.failure.message, /lost contact.*during a change/);
+      assert.equal(stopped.steps.find(step => step.id === "joining").state, "waiting");
+      const original = fs.readlinkSync(reservationAt(folder));
+      const whileWriting = await added(alias);
+      assert.equal(whileWriting.state, "failed");
+      assert.match(whileWriting.failure.message, /change is in progress/);
+      assert.equal(fs.readlinkSync(reservationAt(folder)), original);
 
-    fs.rmSync(hold);
-    await waitFor(() => fs.existsSync(path.join(folder, "writer-ended")));
-    const recovery = await retryAdd("interrupted");
-    assert.equal(recovery.question?.id, "recoverAccount");
-    assert.equal(fs.readlinkSync(reservationAt(folder)), original, "recovery requires an answer");
-    assert.equal((await answerRecovery(recovery, "recover")).status, 200);
-    const recovered = await over(recovery.id);
-    assert.equal(recovered.state, "done", JSON.stringify(recovered.failure));
-    assert.equal(fs.lstatSync(reservationAt(folder), { throwIfNoEntry: false }), undefined);
-    assert.equal(read(path.join(folder, "engine-credentials.json")).length, 2);
-  } finally {
-    fs.rmSync(hold, { force: true });
-    fs.rmSync(drop);
-    fs.rmSync(traceFile);
-  }
-});
+      fs.rmSync(hold);
+      await waitFor(() => fs.existsSync(path.join(folder, "writer-ended")));
+      const recovery = await retryAdd(destination);
+      assert.equal(recovery.question?.id, "recoverAccount");
+      assert.equal(fs.readlinkSync(reservationAt(folder)), original, "recovery requires an answer");
+      assert.equal((await answerRecovery(recovery, "recover")).status, 200);
+      const recovered = await over(recovery.id);
+      assert.equal(recovered.state, "done", JSON.stringify(recovered.failure));
+      assert.equal(fs.lstatSync(reservationAt(folder), { throwIfNoEntry: false }), undefined);
+      assert.equal(read(path.join(folder, "engine-credentials.json")).length, 2);
+    } finally {
+      fs.rmSync(hold, { force: true });
+      fs.rmSync(drop);
+      fs.rmSync(traceFile);
+    }
+  });
+}
 
 test("a failed final release is reported and an abandoned reservation can be cleared explicitly", async () => {
   const folder = homes.release;
@@ -1250,6 +1257,16 @@ test("a recovery answer only clears the reservation shown to the user", async ()
   } finally {
     fs.rmSync(marker);
   }
+});
+
+test("an old reservation is kept and Add explains how to clear it after a restart", async () => {
+  const marker = reservationAt(homes["old-reservation"]);
+  const original = "0123456789abcdef".repeat(3);
+  fs.symlinkSync(original, marker);
+  const result = await added("old-reservation");
+  assert.equal(result.state, "failed");
+  assert.equal(result.failure.message, "An older version of Kuvo Code left an unfinished change on old-reservation. Restart old-reservation to end that change, then sign in to the same OS account and run rm -f ~/.kuvo-code-adding before trying again.");
+  assert.equal(fs.readlinkSync(marker), original);
 });
 
 test("SSH uninstall cannot probe ownership while Add holds the account", async () => {
@@ -1322,7 +1339,7 @@ test("a reservation creation error says the account couldn't be prepared and log
   try {
     const result = await added("prepare-error");
     assert.equal(result.state, "failed");
-    assert.match(result.failure.message, /couldn’t prepare the OS account/);
+    assert.equal(result.failure.message, "Kuvo Code couldn’t prepare the OS account on prepare-error. Check that you can write to your home folder there, then try again.");
     assert.match(logged.join("\n"), /ln: test account can't create the reservation/);
     assert.equal(fs.lstatSync(reservationAt(folder), { throwIfNoEntry: false }), undefined);
   } finally {

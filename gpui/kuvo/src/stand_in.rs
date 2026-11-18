@@ -458,12 +458,24 @@ impl StandIn {
     }
 
     /// A try at adding `destination`, as far as `stage` (`asking`: its host key's question;
-    /// `copying`: trusted, the engine going over; `done`; a host named `nowhere…` fails at once).
+    /// `recovery`: clearing an earlier attempt; `copying`: the engine going over; `done`).
     pub fn adding_at(&self, destination: &str, stage: &str) {
         let tried = {
             let mut state = self.state();
             let begun = areas::adding(&mut state.areas, "POST", "kuvo/computers/add", &serde_json::json!({ "destination": destination }));
-            begun.and_then(|((_, value), _)| value["try"]["id"].as_str().map(str::to_owned))
+            let id = begun.and_then(|((_, value), _)| value["try"]["id"].as_str().map(str::to_owned));
+            if stage == "recovery"
+                && let Some(id) = id.as_deref()
+                && let Some(tried) = state.areas.tries.iter_mut().find(|tried| tried["id"].as_str() == Some(id))
+            {
+                tried["question"] = json!({
+                    "id": "recoverAccount", "at": tried["question"]["at"], "title": format!("Continue on {destination}?"),
+                    "message": "An earlier Kuvo Code change left this account marked in use. Kuvo Code checked that it isn’t changing the account now. Clear the mark to stop the earlier attempt and continue this one.",
+                    "facts": [],
+                    "answers": [{ "id": "cancel", "label": "Cancel", "kind": "plain" }, { "id": "recover", "label": "Clear and Continue", "kind": "primary" }]
+                });
+            }
+            id
         };
         if let (Some(id), "copying" | "done") = (tried, stage) {
             areas::adding(&mut self.state().areas, "POST", &format!("kuvo/computers/add/{id}/answer"), &serde_json::json!({ "answer": "trust" }));
