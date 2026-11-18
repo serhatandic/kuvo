@@ -120,6 +120,7 @@ icons! {
     Bolt => "bolt",
     Bot => "bot",
     Branch => "branch",
+    Chart => "chart",
     Check => "check",
     ChevronDown => "chevron-down",
     ChevronLeft => "chevron-left",

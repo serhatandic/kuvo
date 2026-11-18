@@ -367,6 +367,12 @@ impl Home {
                     this.keep_shown(cx);
                 }
             }
+            Switch::Session { computer, session } => {
+                if this.switch_to(computer, window, cx) {
+                    this.keep_shown(cx);
+                    this.workspace().clone().update(cx, |workspace, cx| workspace.open_session(session, window, cx));
+                }
+            }
             Switch::PairAgain => this.pair_again(cx),
             // (Followed live, the list says it by itself.)
             Switch::ReadList => {

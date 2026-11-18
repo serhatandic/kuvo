@@ -13,6 +13,7 @@ pub struct Areas {
     /// A first run: no bots, chats, other computers or accounts.
     pub empty: bool,
     pub usage: UsageSample,
+    pub insights_partial: bool,
     pub usage_refresh_failed: bool,
     pub usage_refresh_delayed: bool,
     pub usage_refresh_pending: bool,

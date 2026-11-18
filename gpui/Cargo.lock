@@ -2723,6 +2723,7 @@ dependencies = [
  "futures",
  "gpui",
  "gpui_platform",
+ "iana-time-zone",
  "image",
  "kuvo",
  "kuvo_box",

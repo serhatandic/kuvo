@@ -19,14 +19,13 @@ pub(crate) mod page;
 mod rows;
 pub mod shortcuts;
 pub mod sign_in;
-mod usage_columns;
 
-use std::{collections::HashMap, time::{Duration, Instant, SystemTime}};
+use std::collections::HashMap;
 
 use gpui::{App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, ListAlignment, ListState, SharedString, Subscription, Task, Window, px};
 use kuvo_box::BoxClient;
 use kuvo_box::accounts::{Accounts, Side as AccountSide, said};
-use kuvo_box::areas::{Account, Computer};
+use kuvo_box::areas::Computer;
 use kuvo_box::follow::{Follow, Followed, Timing};
 use kuvo_box::models::Offered;
 use kuvo_box::settings::{Config, UsageSettings};
@@ -188,18 +187,11 @@ pub struct SettingsView {
     /// The computer picker's menu, opened from its title.
     picker: kuvo_ui::menu::PopoverMenuHandle,
     accounts: Reading<Accounts>,
-    limits: Reading<Vec<Account>>,
-    usage_read_started: Option<(Instant, SystemTime)>,
-    usage_refresh_failed: bool,
-    usage_updated_at: Option<f64>,
-    usage_follow: Option<Follow<Followed<Value>>>,
-    usage_placement: std::rc::Rc<std::cell::RefCell<usage_columns::Placement>>,
     config: Reading<Config>,
     offered: Reading<Offered>,
     usage: Reading<UsageSettings>,
     /// The coding agents' state, where the last read of the limits, or of the usage notices, was
     /// refused for it (PROTOCOL.md, "The coding agents' state"): what was read before is kept.
-    agents_limits: Option<kuvo_box::Refusal>,
     agents_usage: Option<kuvo_box::Refusal>,
     /// Rows with a change on its way, and what they say meanwhile.
     busy: Vec<(String, String)>,
@@ -266,8 +258,7 @@ enum Item {
     Title(String),
     /// Whose these settings are, said once under the title.
     Whose(String),
-    UsageSummary,
-    UsageCards(Vec<Row>),
+    Insights,
     Group { label: String, words: String },
     Row { row: Box<Row>, first: bool, last: bool },
     Note { key: String, words: String, busy: bool, warning: bool },
@@ -281,7 +272,6 @@ impl Item {
     fn rows(&self) -> &[Row] {
         match self {
             Self::Row { row, .. } => std::slice::from_ref(row.as_ref()),
-            Self::UsageCards(rows) => rows,
             _ => &[],
         }
     }
@@ -337,16 +327,9 @@ impl SettingsView {
             picker: Default::default(),
             later_open: false,
             accounts: Reading::NotYet,
-            limits: Reading::NotYet,
-            usage_read_started: None,
-            usage_refresh_failed: false,
-            usage_updated_at: None,
-            usage_follow: None,
-            usage_placement: Default::default(),
             config: Reading::NotYet,
             offered: Reading::NotYet,
             usage: Reading::NotYet,
-            agents_limits: None,
             agents_usage: None,
             busy: Vec::new(),
             replacing: Vec::new(),
@@ -557,16 +540,9 @@ impl SettingsView {
         self.reading_sections = false;
         self.pages.clear();
         self.accounts = Reading::NotYet;
-        self.limits = Reading::NotYet;
-        self.usage_read_started = None;
-        self.usage_refresh_failed = false;
-        self.usage_updated_at = None;
-        self.usage_follow = None;
-        self.usage_placement = Default::default();
         self.config = Reading::NotYet;
         self.offered = Reading::NotYet;
         self.usage = Reading::NotYet;
-        self.agents_limits = None;
         self.agents_usage = None;
         self.busy.clear();
         self.replacing.clear();
@@ -685,11 +661,10 @@ impl SettingsView {
     fn facts(&self) -> rows::Facts<'_> {
         rows::Facts {
             accounts: &self.accounts,
-            limits: &self.limits,
-            limits_agents: self.agents_limits.as_ref().or(self.agents_usage.as_ref()),
             config: &self.config,
             offered: &self.offered,
             usage: &self.usage,
+            usage_agents: self.agents_usage.as_ref(),
             busy: &self.busy,
             this_box: self.shown_computer().filter(|computer| !computer.here).map_or(self.this_box.as_str(), |computer| computer.name.as_str()),
             here: self.client.as_ref().is_some_and(BoxClient::here),
@@ -894,7 +869,7 @@ impl SettingsView {
                 let usage = self.side == Side::Computer && entry.id == "usage";
                 items.push(Item::Title(entry.title.clone()));
                 if usage {
-                    items.push(Item::UsageSummary);
+                    items.push(Item::Insights);
                 } else {
                     items.push(Item::Whose(if self.side == Side::Yours { YOURS_WORDS.to_owned() } else { format!("Kept on {name}, the same in every app that connects to it.") }));
                 }
@@ -916,13 +891,9 @@ impl SettingsView {
                 for block in blocks {
                     match block {
                         Block::Group(label, words, rows) => {
-                            if usage && label.is_empty() && words.is_empty() {
-                                items.push(Item::UsageCards(rows));
-                            } else {
-                                items.push(Item::Group { label, words });
-                                let count = rows.len();
-                                items.extend(rows.into_iter().enumerate().map(|(ix, row)| Item::Row { row: Box::new(row), first: ix == 0, last: ix + 1 == count }));
-                            }
+                            items.push(Item::Group { label, words });
+                            let count = rows.len();
+                            items.extend(rows.into_iter().enumerate().map(|(ix, row)| Item::Row { row: Box::new(row), first: ix == 0, last: ix + 1 == count }));
                         }
                         Block::Note { key, words, busy, warning } => items.push(Item::Note { key, words, busy, warning }),
                     }
@@ -1122,130 +1093,6 @@ impl SettingsView {
         self.tasks.insert(name, task);
     }
 
-    fn refresh_usage(&mut self, cx: &mut Context<Self>) {
-        if !self.held() && self.client.is_some() && !self.usage_refreshing() {
-            self.usage_refresh_failed = false;
-            self.set_busy("usage-refresh", "Updating…");
-            self.read_limits(true, cx);
-            cx.notify();
-        }
-    }
-
-    fn usage_refreshing(&self) -> bool {
-        self.busy.iter().any(|(key, _)| key == "usage-refresh")
-    }
-
-    fn read_limits(&mut self, refresh: bool, cx: &mut Context<Self>) {
-        let started = (Instant::now(), SystemTime::now());
-        self.run("read-limits", move |client| {
-            if refresh { client.refresh_accounts() } else { client.usage_snapshot() }
-        }, move |this, read, cx| {
-            let completing = refresh || this.usage_follow.is_some();
-            let read = match read {
-                Ok(snapshot) => {
-                    if completing && snapshot.refresh_pending {
-                        this.follow_usage_refresh(cx);
-                        return;
-                    }
-                    if completing {
-                        this.finish_usage_refresh(snapshot.refresh_failed);
-                        if !snapshot.refresh_failed {
-                            this.usage_updated_at = snapshot.refresh_completed_at.or(snapshot.usage_updated_at);
-                        }
-                    }
-                    if !snapshot.refresh_failed || !completing {
-                        this.usage_updated_at = this.usage_updated_at.into_iter().chain(snapshot.usage_updated_at).max_by(f64::total_cmp);
-                    }
-                    Ok(snapshot.rows)
-                }
-                Err(error) => {
-                    if this.usage_follow.is_some() {
-                        // The event stream reconnects and signals another GET. A transient GET
-                        // failure doesn't tell us whether the provider has finished.
-                        return;
-                    }
-                    if refresh {
-                        this.finish_usage_refresh(true);
-                    }
-                    Err(error)
-                }
-            };
-            this.usage_read_started = read.is_ok().then_some(started);
-            this.agents_limits = agents_state(&read);
-            this.limits = reading(read, &this.limits);
-            this.mark_old_usage(cx);
-            let restarting = this.agents_limits.as_ref().is_some_and(kuvo_box::Refusal::agents_restarting);
-            this.again_while_restarting("usage", restarting, cx);
-        }, cx);
-    }
-
-    fn follow_usage_refresh(&mut self, cx: &mut Context<Self>) {
-        if self.usage_follow.is_some() {
-            return;
-        }
-        let Some(client) = &self.client else { return };
-        let follow = client.follow_usage(Timing::default());
-        let updates = follow.updates().clone();
-        self.usage_follow = Some(follow);
-        let task = cx.spawn(async move |this, cx| {
-            while let Ok(update) = updates.recv().await {
-                if matches!(update, Followed::Now(_)) {
-                    let took = this.update(cx, |this, cx| {
-                        if this.usage_follow.is_some() {
-                            this.read_limits(false, cx);
-                        }
-                    });
-                    if took.is_err() {
-                        break;
-                    }
-                }
-            }
-        });
-        self.tasks.insert("follow-usage-refresh".into(), task);
-    }
-
-    fn finish_usage_refresh(&mut self, failed: bool) {
-        self.usage_refresh_failed = failed;
-        self.done("usage-refresh");
-        self.usage_follow = None;
-        self.tasks.remove("follow-usage-refresh");
-    }
-
-    fn usage_elapsed(&self) -> Duration {
-        // Time asleep counts even when a monotonic clock pauses. A backwards clock change must
-        // also leave the snapshot ageing.
-        self.usage_read_started.map_or(Duration::MAX, |(started, wall)| {
-            started.elapsed().max(wall.elapsed().unwrap_or_default())
-        })
-    }
-
-    /// Switch to the snapshot’s old state at the deadline supplied with it.
-    fn mark_old_usage(&mut self, cx: &mut Context<Self>) {
-        const TASK: &str = "usage-display-deadline";
-        let Reading::Ready(accounts) = &self.limits else { return };
-        let elapsed = self.usage_elapsed();
-        let next = accounts.iter().filter_map(|account| account.usage.as_ref())
-            .flat_map(|usage| &usage.meters)
-            .filter(|meter| !meter.old_at(elapsed))
-            .map(|meter| Duration::from_millis(meter.fresh_for_ms))
-            .min();
-        self.tasks.remove(TASK);
-        if !self.live || self.side != Side::Computer || self.section() != "usage" {
-            return;
-        }
-        let minute = Duration::from_secs(60);
-        let delay = next.map_or(minute, |deadline| (deadline - elapsed).min(minute));
-        let task = cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(delay).await;
-            this.update(cx, |this, cx| {
-                this.list.remeasure();
-                cx.notify();
-                this.mark_old_usage(cx);
-            }).ok();
-        });
-        self.tasks.insert(TASK.into(), task);
-    }
-
     fn run<T: Send + 'static>(
         &mut self,
         name: impl Into<String>,
@@ -1365,12 +1212,11 @@ impl SettingsView {
                 this.again_while_restarting("accounts", restarting, cx);
             }, cx),
             (Some(Drawn::Own), "usage") => {
-                if !self.usage_refreshing() {
-                    self.read_limits(false, cx);
-                }
-                self.run("read-usage", |client| client.usage_settings(), |this, read, _| {
+                self.run("read-usage", |client| client.usage_settings(), |this, read, cx| {
                     this.agents_usage = agents_state(&read);
                     this.usage = reading(read, &this.usage);
+                    let restarting = this.agents_usage.as_ref().is_some_and(kuvo_box::Refusal::agents_restarting);
+                    this.again_while_restarting("usage", restarting, cx);
                 }, cx);
             }
             (Some(Drawn::Own), "models") => {

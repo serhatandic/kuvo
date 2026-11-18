@@ -351,6 +351,14 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "agents-rail-down", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(ring_card) },
     Screen { slug: "agents-rail-restarting", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "agents-conversation-down", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(conversation_agents_down) },
+    Screen { slug: "insights-overview", width: 1280., height: 960., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "insights-tokens", width: 1280., height: 960., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "insights-computer", width: 1280., height: 960., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "insights-breakdown-skill", width: 1280., height: 960., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "insights-session-drilldown", width: 1280., height: 960., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "insights-empty", width: 1280., height: 960., session: None, typed: None, empty: true, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "insights-partial", width: 1280., height: 960., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "insights-ring-filter", width: 1280., height: 960., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "settings-a-usage", width: 1280., height: 1400., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(usage) },
     Screen { slug: "usage-many", width: 1140., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(usage) },
     Screen { slug: "usage-one", width: 920., height: 600., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(usage) },
@@ -1457,6 +1465,7 @@ fn main() -> anyhow::Result<()> {
                 });
             }
             match screen.slug {
+                "insights-partial" => stand_in.set_insights_partial(),
                 "usage-many" => stand_in.set_usage_sample(UsageSample::Many),
                 "usage-one" => stand_in.set_usage_sample(UsageSample::One),
                 "usage-failed" => stand_in.set_usage_sample(UsageSample::Failed),
@@ -1637,6 +1646,9 @@ fn main() -> anyhow::Result<()> {
                         field.update(cx, |field, cx| field.set_text(typed, cx));
                     }
                     window.focus(&field.focus_handle(cx), cx);
+                    if screen.slug.starts_with("insights-") {
+                        workspace.insights_sample(screen.slug, window, cx);
+                    }
                     if let Some(panel) = screen.panel {
                         panel(workspace, window, cx);
                     }
