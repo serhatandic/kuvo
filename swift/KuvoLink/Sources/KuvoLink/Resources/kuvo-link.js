@@ -701,10 +701,12 @@ function fresh(since, now, duration) {
   return wall >= 0 && uptime >= 0 && wall < duration && uptime < duration;
 }
 function primaryFenced(link) {
-  if (link?.setup?.role !== "primary" || !link.setup.standby)
+  if (link?.setup?.role !== "primary")
     return false;
   if (link.leadershipPending)
     return true;
+  if (!link.setup.standby)
+    return false;
   const lease = json(file);
   return !isObject(lease) || lease.stamp !== stamp(link) || typeof lease.wall !== "number" || typeof lease.uptime !== "number" || !fresh({ wall: lease.wall, uptime: lease.uptime }, leaseClock(), LEASE_MS);
 }
@@ -732,35 +734,44 @@ function upgradeFormat(format, from, value, steps) {
     throw new UnsupportedFormatVersion(format, version, steps.length);
   return steps.slice(version).reduce((record, step) => step(record), value);
 }
-function objectFormat(name, steps) {
+function objectFormat(name, version, decode = (fields) => fields) {
   return {
-    version: steps.length,
+    version,
     read(value) {
       if (!isObject(value))
         throw new Error(`${name} isn't a JSON object.`);
       const { formatVersion: from, ...fields } = value;
-      return upgradeFormat(name, from, fields, steps);
+      return decode(fields, readableVersion(name, from, version));
     },
     write(fields) {
-      return { ...fields, formatVersion: steps.length };
+      return { ...fields, formatVersion: version };
     }
   };
 }
+function readableVersion(name, from, current) {
+  const version = formatVersion(name, from, 0, current);
+  if (version > current)
+    throw new UnsupportedFormatVersion(name, version, current);
+  return version;
+}
 function additiveListFormat(name) {
-  const steps = [(items) => items];
+  const version = 1;
   return {
     read(value) {
       if (!Array.isArray(value))
         throw new Error(`${name} isn't a JSON array.`);
       const marker = value[0];
-      return isObject(marker) && Object.hasOwn(marker, "formatVersion") ? upgradeFormat(name, marker.formatVersion, value.slice(1), steps) : upgradeFormat(name, undefined, value, steps);
+      if (!isObject(marker) || !Object.hasOwn(marker, "formatVersion"))
+        return value;
+      readableVersion(name, marker.formatVersion, version);
+      return value.slice(1);
     },
     write(items) {
-      return [{ formatVersion: steps.length }, ...items];
+      return [{ formatVersion: version }, ...items];
     }
   };
 }
-var UnsupportedFormatVersion, additiveObjectFormat = (name) => objectFormat(name, [(fields) => fields]);
+var UnsupportedFormatVersion, additiveObjectFormat = (name) => objectFormat(name, 1);
 var init_format_version = __esm(() => {
   UnsupportedFormatVersion = class UnsupportedFormatVersion extends Error {
     constructor(format, found, current) {
@@ -3301,6 +3312,88 @@ var init_commands = __esm(() => {
   pending = new Map;
 });
 
+// box/src/shared/documents.ts
+var DOC_KINDS;
+var init_documents = __esm(() => {
+  DOC_KINDS = ["peers", "phones", "personalities", "leadership", "setup-shared", "setup-checkpoint"];
+});
+
+// box/src/link/documents/format.ts
+import crypto7 from "node:crypto";
+function signingKeyOf(seed) {
+  let key = signingKeys.get(seed);
+  if (!key) {
+    key = crypto7.createPublicKey(edPrivate(seed)).export({ format: "der", type: "spki" }).subarray(ED_SPKI.length).toString("base64url");
+    signingKeys.set(seed, key);
+  }
+  return key;
+}
+function signDoc(seed, kind, n, body) {
+  const bytes = docBytes(signingKeyOf(seed), kind, n, body);
+  return { d: bytes.toString("base64url"), s: crypto7.sign(null, Buffer.concat([DOC_SIGNED, bytes]), edPrivate(seed)).toString("base64url") };
+}
+function readDoc(envelope) {
+  if (!isObject(envelope) || typeof envelope.d !== "string" || typeof envelope.s !== "string" || envelope.d.length > Math.ceil(MOST_DOC * 4 / 3) + 4)
+    return null;
+  let bytes, doc;
+  try {
+    bytes = Buffer.from(envelope.d, "base64url");
+    if (bytes.length > MOST_DOC || bytes.toString("base64url") !== envelope.d)
+      return null;
+    doc = JSON.parse(bytes.toString("utf8"));
+  } catch {
+    return null;
+  }
+  if (!isObject(doc) || doc.v !== DOC_VERSION || !DOC_KINDS.includes(doc.kind) || typeof doc.origin !== "string" || !SIGN.test(doc.origin) || !Number.isSafeInteger(doc.n) || doc.n < 1 || !isObject(doc.body))
+    return null;
+  try {
+    const signature = Buffer.from(envelope.s, "base64url");
+    if (signature.length !== 64 || !crypto7.verify(null, Buffer.concat([DOC_SIGNED, bytes]), edPublic(doc.origin), signature))
+      return null;
+  } catch {
+    return null;
+  }
+  return { origin: doc.origin, kind: doc.kind, n: doc.n, body: doc.body, h: shortHash(bytes), envelope: { d: envelope.d, s: envelope.s } };
+}
+function held(envelope) {
+  if (typeof envelope?.d !== "string")
+    return null;
+  let doc = heldDocs.get(envelope.d);
+  if (!doc) {
+    try {
+      const bytes = Buffer.from(envelope.d, "base64url");
+      const parsed = JSON.parse(bytes.toString("utf8"));
+      if (!isObject(parsed) || parsed.v !== DOC_VERSION)
+        return null;
+      doc = { origin: parsed.origin, kind: parsed.kind, n: parsed.n, body: isObject(parsed.body) ? parsed.body : {}, h: shortHash(bytes), envelope };
+    } catch {
+      return null;
+    }
+    if (heldDocs.size >= 256)
+      heldDocs.delete(heldDocs.keys().next().value);
+    heldDocs.set(envelope.d, doc);
+  }
+  return doc;
+}
+var DOC_VERSION = 1, DOC_SIGNED, MOST_DOC, DOC_PART = 40000, MOST_PARTS, SIGN, ED_PKCS8, ED_SPKI, newSigningSeed = () => crypto7.randomBytes(32).toString("base64url"), edPrivate = (seed) => crypto7.createPrivateKey({ key: Buffer.concat([ED_PKCS8, Buffer.from(seed, "base64url")]), format: "der", type: "pkcs8" }), edPublic = (key) => crypto7.createPublicKey({ key: Buffer.concat([ED_SPKI, Buffer.from(key, "base64url")]), format: "der", type: "spki" }), signingKeys, ownSign = (link) => {
+  try {
+    return typeof link?.sign === "string" ? signingKeyOf(link.sign) : null;
+  } catch {
+    return null;
+  }
+}, signWith = (seed, bytes) => crypto7.sign(null, bytes, edPrivate(seed)).toString("base64url"), shortHash = (bytes) => crypto7.createHash("sha256").update(bytes).digest().subarray(0, 8).toString("base64url"), bodyHash = (body) => shortHash(Buffer.from(JSON.stringify(body))), docBytes = (origin, kind, n, body) => Buffer.from(JSON.stringify({ v: DOC_VERSION, kind, origin, n, body })), heldDocs, docKey = (origin, kind) => `${origin} ${kind}`;
+var init_format = __esm(() => {
+  init_documents();
+  DOC_SIGNED = Buffer.from("kuvo-link doc v1\x00");
+  MOST_DOC = 512 * 1024;
+  MOST_PARTS = Math.ceil(MOST_DOC * 4 / 3 / DOC_PART) + 1;
+  SIGN = /^[A-Za-z0-9_-]{43}$/;
+  ED_PKCS8 = Buffer.from("302e020100300506032b657004220420", "hex");
+  ED_SPKI = Buffer.from("302a300506032b6570032100", "hex");
+  signingKeys = new Map;
+  heldDocs = new Map;
+});
+
 // box/src/shared/work-queue-owner.ts
 var YOURS = "usr_you", OWNER;
 var init_work_queue_owner = __esm(() => {
@@ -3401,97 +3494,6 @@ var init_data_declarations = __esm(() => {
   SHARED_KINDS = Object.keys(DATA_DECLARATIONS).filter(sharedKind);
 });
 
-// box/src/shared/documents.ts
-var DOC_KINDS;
-var init_documents = __esm(() => {
-  DOC_KINDS = ["peers", "phones", "personalities", "leadership", "setup-shared", "setup-checkpoint"];
-});
-
-// box/src/link/documents/format.ts
-import crypto7 from "node:crypto";
-function signingKeyOf(seed) {
-  let key = signingKeys.get(seed);
-  if (!key) {
-    key = crypto7.createPublicKey(edPrivate(seed)).export({ format: "der", type: "spki" }).subarray(ED_SPKI.length).toString("base64url");
-    signingKeys.set(seed, key);
-  }
-  return key;
-}
-function signDoc(seed, kind, n, body) {
-  const bytes = docBytes(signingKeyOf(seed), kind, n, body);
-  return { d: bytes.toString("base64url"), s: crypto7.sign(null, Buffer.concat([DOC_SIGNED, bytes]), edPrivate(seed)).toString("base64url") };
-}
-function readDoc(envelope) {
-  if (!isObject(envelope) || typeof envelope.d !== "string" || typeof envelope.s !== "string" || envelope.d.length > Math.ceil(MOST_DOC * 4 / 3) + 4)
-    return null;
-  let bytes, doc;
-  try {
-    bytes = Buffer.from(envelope.d, "base64url");
-    if (bytes.length > MOST_DOC || bytes.toString("base64url") !== envelope.d)
-      return null;
-    doc = JSON.parse(bytes.toString("utf8"));
-  } catch {
-    return null;
-  }
-  if (!isObject(doc) || doc.v !== DOC_VERSION || !DOC_KINDS.includes(doc.kind) || typeof doc.origin !== "string" || !SIGN.test(doc.origin) || !Number.isSafeInteger(doc.n) || doc.n < 1 || !isObject(doc.body))
-    return null;
-  try {
-    const signature = Buffer.from(envelope.s, "base64url");
-    if (signature.length !== 64 || !crypto7.verify(null, Buffer.concat([DOC_SIGNED, bytes]), edPublic(doc.origin), signature))
-      return null;
-  } catch {
-    return null;
-  }
-  return { origin: doc.origin, kind: doc.kind, n: doc.n, body: doc.body, h: shortHash(bytes), envelope: { d: envelope.d, s: envelope.s } };
-}
-function held(envelope) {
-  if (typeof envelope?.d !== "string")
-    return null;
-  let doc = heldDocs.get(envelope.d);
-  if (!doc) {
-    try {
-      const bytes = Buffer.from(envelope.d, "base64url");
-      const parsed = JSON.parse(bytes.toString("utf8"));
-      if (!isObject(parsed) || parsed.v !== DOC_VERSION)
-        return null;
-      doc = { origin: parsed.origin, kind: parsed.kind, n: parsed.n, body: isObject(parsed.body) ? parsed.body : {}, h: shortHash(bytes), envelope };
-    } catch {
-      return null;
-    }
-    if (heldDocs.size >= 256)
-      heldDocs.delete(heldDocs.keys().next().value);
-    heldDocs.set(envelope.d, doc);
-  }
-  return doc;
-}
-var DOC_VERSION = 1, DOC_SIGNED, MOST_DOC, DOC_PART = 40000, MOST_PARTS, SIGN, ED_PKCS8, ED_SPKI, newSigningSeed = () => crypto7.randomBytes(32).toString("base64url"), edPrivate = (seed) => crypto7.createPrivateKey({ key: Buffer.concat([ED_PKCS8, Buffer.from(seed, "base64url")]), format: "der", type: "pkcs8" }), edPublic = (key) => crypto7.createPublicKey({ key: Buffer.concat([ED_SPKI, Buffer.from(key, "base64url")]), format: "der", type: "spki" }), signingKeys, ownSign = (link) => {
-  try {
-    return typeof link?.sign === "string" ? signingKeyOf(link.sign) : null;
-  } catch {
-    return null;
-  }
-}, signWith = (seed, bytes) => crypto7.sign(null, bytes, edPrivate(seed)).toString("base64url"), shortHash = (bytes) => crypto7.createHash("sha256").update(bytes).digest().subarray(0, 8).toString("base64url"), bodyHash = (body) => shortHash(Buffer.from(JSON.stringify(body))), docBytes = (origin, kind, n, body) => Buffer.from(JSON.stringify({ v: DOC_VERSION, kind, origin, n, body })), heldDocs, docKey = (origin, kind) => `${origin} ${kind}`;
-var init_format = __esm(() => {
-  init_documents();
-  DOC_SIGNED = Buffer.from("kuvo-link doc v1\x00");
-  MOST_DOC = 512 * 1024;
-  MOST_PARTS = Math.ceil(MOST_DOC * 4 / 3 / DOC_PART) + 1;
-  SIGN = /^[A-Za-z0-9_-]{43}$/;
-  ED_PKCS8 = Buffer.from("302e020100300506032b657004220420", "hex");
-  ED_SPKI = Buffer.from("302a300506032b6570032100", "hex");
-  signingKeys = new Map;
-  heldDocs = new Map;
-});
-
-// box/src/link/crypto/keys.ts
-import crypto8 from "node:crypto";
-var PKCS8, SPKI, EMPTY, privateKey = (raw) => crypto8.createPrivateKey({ key: Buffer.concat([PKCS8, raw]), format: "der", type: "pkcs8" }), publicKey = (raw) => crypto8.createPublicKey({ key: Buffer.concat([SPKI, raw]), format: "der", type: "spki" }), newKey = () => crypto8.generateKeyPairSync("x25519").privateKey.export({ format: "der", type: "pkcs8" }).subarray(PKCS8.length), publicOf = (raw) => crypto8.createPublicKey(privateKey(raw)).export({ format: "der", type: "spki" }).subarray(SPKI.length), dh = (raw, remote) => crypto8.diffieHellman({ privateKey: privateKey(raw), publicKey: publicKey(remote) }), addressOf = (secret) => crypto8.createHash("sha256").update("kuvo-link address v1").update(secret).digest().subarray(0, 16);
-var init_keys2 = __esm(() => {
-  PKCS8 = Buffer.from("302e020100300506032b656e04220420", "hex");
-  SPKI = Buffer.from("302a300506032b656e032100", "hex");
-  EMPTY = Buffer.alloc(0);
-});
-
 // box/src/link/state.ts
 import fs20 from "node:fs";
 import path18 from "node:path";
@@ -3556,355 +3558,89 @@ var init_state = __esm(() => {
   macLink = { config: null, overlay: null, status: { state: "off" }, host: null, wake: null, statusFollowers: new Set, phoneFollowers: new Set };
   machineLink = { host: null };
   written = [];
-  linkFormat = objectFormat("Link state", [migratedLink]);
+  linkFormat = objectFormat("Link state", 1, (fields, from) => from === 0 ? migratedLink(fields) : fields);
   LOCK = path18.join(RUN, ".link.lock");
 });
 
-// box/src/link/setup/record.ts
-import crypto9 from "node:crypto";
-function setupOf(body) {
-  const setup = isObject(body) && isObject(body.setup) ? body.setup : null;
-  if (!setup || typeof setup.id !== "string" || !SETUP_ID.test(setup.id) || !Number.isSafeInteger(setup.epoch) || setup.epoch < 1 || typeof setup.primary !== "string" || !STATIC_KEY.test(setup.primary))
+// box/src/link/setup/membership.ts
+function membershipOf(value) {
+  if (!isObject(value) || !Array.isArray(value.boxes) || !value.boxes.every(fitsPeer))
     return null;
-  return { id: setup.id, epoch: setup.epoch, primary: setup.primary };
+  const boxes = value.boxes.map((box) => {
+    const { id: _localDestination, ...portable } = cleanPeer(box);
+    return portable;
+  });
+  if (new Set(boxes.map((box) => box.key)).size !== boxes.length)
+    return null;
+  const devices = isObject(value.devices) ? value.devices : {};
+  const revisions = value.removalRevisions;
+  const left = Array.isArray(value.left) ? value.left : [];
+  const removed = value.removedHere;
+  const tombstones = [...new Set([...Array.isArray(removed) ? removed : [], ...left].filter((key) => typeof key === "string" && KEY.test(key)))];
+  return {
+    boxes,
+    left: tombstones,
+    moved: cleanMoved(value.moved),
+    devices: {
+      phones: (Array.isArray(devices.phones) ? devices.phones : []).filter((phone) => fits2(phone, [])).map((phone) => ({ ...phone, pairing: phone.pairing ?? undefined })),
+      removed: (Array.isArray(devices.removed) ? devices.removed : []).filter((entry) => fits2(entry, []) && typeof entry.pairing === "string")
+    },
+    removalRevisions: Object.fromEntries(Object.entries(isObject(revisions) ? revisions : {}).filter(([key, n]) => KEY.test(key) && Number.isSafeInteger(n) && Number(n) > 0)),
+    vouchBlocked: Array.isArray(value.vouchBlocked) ? value.vouchBlocked : []
+  };
 }
-function ledSetup(doc) {
-  if (doc?.kind !== "peers")
-    return null;
-  const setup = setupOf(doc.body);
-  if (!setup)
-    return null;
-  const boxes = Array.isArray(doc.body.boxes) ? doc.body.boxes : [];
-  return boxes.some((box) => isObject(box) && box.key === setup.primary && box.sign === doc.origin && (box.kind === "mac" || box.kind === "machine")) ? setup : null;
+function acceptedNames(link) {
+  const value = link.sharedSetup === link.setup?.id ? link.shared?.setupNames?.value : undefined;
+  return isObject(value) ? value : {};
 }
-function followedSetup(link) {
-  const setup = link?.setup;
-  if (!setup || setup.aside)
+function acceptedName(link, key, fallback) {
+  const name = key && (acceptedNames(link)[key] ?? (link.setup?.checkpointed ? undefined : link.peerNames?.[key]));
+  return typeof name === "string" && name ? name : fallback;
+}
+function acceptedMembership(link) {
+  if (!link?.setup || link.setup.aside || link.sharedSetup !== link.setup.id)
     return null;
-  if (setup.role === "primary") {
-    let own = null;
-    try {
-      own = publicOf(Buffer.from(link.key, "base64url")).toString("base64url");
-    } catch {}
-    if (setup.primary !== own)
-      return null;
+  const value = link.shared?.membershipAndAccess?.value;
+  return isObject(value) && !Object.hasOwn(value, "fields") && link.setup.checkpointed ? membershipOf(value) : null;
+}
+function namedRoster(link, boxes) {
+  return boxes.map((box) => ({ ...box, name: acceptedName(link, box.key, box.name) }));
+}
+function projectMembership(link, membership, keepLocalPairings = false) {
+  const setup = link.setup;
+  const here = setup.role === "primary";
+  const old = new Map((link.phones ?? []).map((phone) => [phone.key, phone]));
+  const local = (link.phones ?? []).filter((phone) => phone.from === "pair" && (phone.local || keepLocalPairings)).map((phone) => ({ ...phone, local: true }));
+  const transferred = membership.devices.phones.map((phone) => ({
+    ...phone,
+    from: here ? "pair" : "mac",
+    ...here ? {} : { mac: setup.primary },
+    added: old.get(phone.key)?.added,
+    address: old.get(phone.key)?.address ?? phone.address
+  }));
+  link.phones = [...transferred, ...local.filter((phone) => !transferred.some((each) => each.key === phone.key))];
+  link.removed = membership.devices.removed;
+  if (here) {
+    link.macPeers = membership.boxes.filter((peer) => peer.key !== ownKey(link));
+    link.macMoved = membership.moved;
+    link.left = membership.left.slice(-64);
+    link.removedHere = membership.left;
+    link.removalRevisions = membership.removalRevisions;
+    link.vouchBlocked = membership.vouchBlocked;
   }
-  return setup;
 }
-function setupDoc(link) {
-  const setup = followedSetup(link);
-  if (setup?.role !== "member")
-    return null;
-  const doc = held(link.docs?.[docKey(setup.sign, "peers")]);
-  const word = doc && setupOf(doc.body);
-  if (!setup.managed || word && word.id === setup.id && word.epoch === setup.epoch && word.primary === setup.primary)
-    return doc;
-  return held(link?.leadership?.[setup.epoch]);
-}
-function lowerEpoch(link, doc) {
-  const kept = link?.setup;
-  const said = doc.kind === "peers" ? setupOf(doc.body) : null;
-  return Boolean(kept && said && said.id === kept.id && said.epoch < kept.epoch);
-}
-function startsFromOthers(link) {
-  const value = link?.startsFromOthers === "on" || link?.startsFromOthers === "off" ? link.startsFromOthers : null;
-  const setup = followedSetup(link);
-  const main = setup ? setup.role === "primary" : IS_MAC;
-  return { value, default: main ? "off" : "on" };
-}
-var SETUP_ID, STATIC_KEY, newSetupID = () => `set_${crypto9.randomBytes(16).toString("base64url")}`, requiresStandby = (setup) => Boolean(setup?.standby || setup?.sharedSaves);
-var init_record = __esm(() => {
-  init_keys2();
-  init_format();
-  init_home();
-  SETUP_ID = /^set_[A-Za-z0-9_-]{22}$/;
-  STATIC_KEY = /^[A-Za-z0-9_-]{43}$/;
+var init_membership = __esm(() => {
+  init_known();
+  init_phones();
 });
 
-// box/src/link/setup/shared.ts
-import crypto10 from "node:crypto";
-function publishedShared(link) {
-  const setup = followedSetup(link);
-  if (!setup || setup.role !== "primary" || setup.id !== link.sharedSetup || !link.sign || primaryFenced(link))
-    return [];
-  if (setup.checkpointed) {
-    const values = Object.fromEntries(SHARED_KINDS.filter((kind) => sharedPolicy(kind).publish && link.shared?.[kind]).map((kind) => [kind, link.shared[kind]]));
-    return [signDoc(link.sign, "setup-shared", setup.epoch, { id: setup.id, epoch: setup.epoch, replica: values })];
-  }
-  return SHARED_KINDS.flatMap((kind) => {
-    if (!sharedPolicy(kind).publish)
-      return [];
-    if (!setup.checkpointed && sharedPolicy(kind).checkpointOnly)
-      return [];
-    const entry = link.shared?.[kind];
-    return entry ? [signDoc(link.sign, "setup-shared", entry.sequence, {
-      id: setup.id,
-      epoch: setup.epoch,
-      kind,
-      value: entry.value,
-      published: true
-    })] : [];
-  });
-}
-function sharedValues(given) {
-  if (!isObject(given))
-    return null;
-  for (const [kind, entry] of Object.entries(given)) {
-    if (!sharedKind(kind) || !isObject(entry) || !Number.isSafeInteger(entry.sequence) || Number(entry.sequence) < 1 || !Object.hasOwn(entry, "value"))
-      return null;
-  }
-  return given;
-}
-function sharedValue(link, kind) {
-  const setup = link?.setup;
-  return setup && !setup.aside && link?.sharedSetup === setup.id ? link.shared?.[kind]?.value : undefined;
-}
-function scopeShared(link, id) {
-  if (link.sharedSetup === id)
-    return;
-  installShared(link, undefined);
-  link.sharedSetup = id;
-}
-function identity(doc) {
-  const { operation, baseRevision } = doc.body;
-  if (operation === undefined && baseRevision === undefined)
-    return crypto10.createHash("sha256").update(doc.envelope.s).digest("base64url");
-  return typeof operation === "string" && OPERATION_ID.test(operation) && baseRevision === doc.n - 1 ? operation : null;
-}
-function pendingEntry(link, kind) {
-  for (const [key, envelope] of Object.entries(link.sharedPending ?? {})) {
-    const doc = held(envelope);
-    if (doc?.body.kind === kind)
-      return { key, doc };
-  }
-  return null;
-}
-function pendingShared(link, kind) {
-  return pendingEntry(link, kind)?.doc ?? null;
-}
-function asSave(doc) {
-  return { id: doc.body.id, epoch: doc.body.epoch, sequence: doc.n, operation: identity(doc) };
-}
-function stageShared(link, kind, value, effects, requested) {
-  const setup = followedSetup(link);
-  const operation = requested ?? crypto10.randomBytes(16).toString("base64url");
-  if (!link.sign || setup?.role !== "primary" || setup.sign !== ownSign(link) || !setup.standby && (!setup.checkpointed || requiresStandby(setup)) || link.leadershipPending || !sharedKind(kind) || value === undefined || !OPERATION_ID.test(operation))
-    return null;
-  scopeShared(link, setup.id);
-  if (Object.hasOwn(link.sharedOutcomes ?? {}, operation))
-    return null;
-  const pending = pendingShared(link, kind);
-  if (pending) {
-    return (!requested || identity(pending) === requested) && JSON.stringify(pending.body.value) === JSON.stringify(value) && JSON.stringify(pending.body.effects) === JSON.stringify(effects) ? asSave(pending) : null;
-  }
-  if (Object.hasOwn(link.sharedPending ?? {}, operation))
-    return null;
-  const sequence = (link.shared?.[kind]?.sequence ?? 0) + 1;
-  if (!Number.isSafeInteger(sequence))
-    return null;
-  const proposed = Object.values(link.sharedPending ?? {}).flatMap((envelope) => {
-    const doc = held(envelope);
-    return doc ? [[doc.body.kind, { sequence: doc.n, value: doc.body.value }]] : [];
-  });
-  const next = { ...link.shared, ...Object.fromEntries(proposed), [kind]: { sequence, value } };
-  if (Buffer.byteLength(JSON.stringify(next)) > MAX_SHARED_BYTES)
-    return null;
-  const envelope = signDoc(link.sign, "setup-shared", sequence, {
-    id: setup.id,
-    epoch: setup.epoch,
-    kind,
-    value,
-    operation,
-    baseRevision: sequence - 1,
-    ...effects ? { effects } : {}
-  });
-  if (envelope.d.length > MOST_DOC * 4 / 3)
-    return null;
-  if (setup.standby)
-    link.sharedPending = { ...link.sharedPending, [operation]: envelope };
-  else {
-    link.shared = next;
-    remember(link, held(envelope), operation, "committed");
-    if (kind === "membershipAndAccess")
-      applyAccess(link, value, effects);
-  }
-  return { id: setup.id, epoch: setup.epoch, sequence, operation };
-}
-function remember(link, doc, operation, status) {
-  link.sharedOutcomes = { ...link.sharedOutcomes, [operation]: {
-    kind: doc.body.kind,
-    epoch: doc.body.epoch,
-    sequence: doc.n,
-    baseRevision: doc.n - 1,
-    proposal: doc.envelope.s,
-    status
-  } };
-}
-function matchesMembership(link, value) {
-  if (!isObject(value) || Object.hasOwn(value, "fields"))
-    return false;
-  const roster = membershipOf(value)?.boxes;
-  const setup = link.setup;
-  return Boolean(roster?.some((peer) => peer.key === setup.primary && peer.sign === setup.sign) && (!setup.standby || roster.some((peer) => peer.key === setup.standby.key && peer.sign === setup.standby.sign)));
-}
-function takeShared(link, sender, doc) {
-  const setup = followedSetup(link);
-  const { id, epoch, kind, value, receipt } = doc.body;
-  if (!setup || !link.sign || id !== setup.id || epoch !== setup.epoch)
-    return null;
-  if (setup.checkpointed && setup.role === "member" && setup.primary === sender && setup.sign === doc.origin && setup.standby?.key !== ownKey(link) && doc.n === epoch && doc.body.replica !== undefined) {
-    const replica = sharedValues(doc.body.replica);
-    if (!replica || !matchesMembership(link, replica.membershipAndAccess?.value) || Object.keys(replica).some((key) => !sharedPolicy(key).publish))
-      return null;
-    scopeShared(link, setup.id);
-    const entries = Object.entries(replica);
-    if (entries.some(([key, entry]) => entry.sequence < (link.shared?.[key]?.sequence ?? 0)))
-      return null;
-    if (entries.some(([key, entry]) => entry.sequence > (link.shared?.[key]?.sequence ?? 0))) {
-      link.shared = { ...link.shared, ...replica };
-      const membership = acceptedMembership(link);
-      if (membership)
-        projectMembership(link, membership);
-    }
-    return null;
-  }
-  if (!sharedKind(kind))
-    return null;
-  if (doc.body.published === true) {
-    if (setup.role === "member" && setup.primary === sender && setup.sign === doc.origin && !setup.checkpointed && setup.standby && sharedPolicy(kind).publish && !sharedPolicy(kind).checkpointOnly && Object.hasOwn(doc.body, "value")) {
-      scopeShared(link, setup.id);
-      if (doc.n <= (link.shared?.[kind]?.sequence ?? 0))
-        return null;
-      link.shared = { ...link.shared, [kind]: { sequence: doc.n, value } };
-      const membership = kind === "membershipAndAccess" && acceptedMembership(link);
-      if (membership)
-        projectMembership(link, membership);
-    }
-    return null;
-  }
-  if (!setup.standby)
-    return null;
-  if (receipt === undefined) {
-    if (setup.standby.key !== ownKey(link) || setup.standby.sign !== ownSign(link) || sender !== setup.primary || doc.origin !== setup.sign || !Object.hasOwn(doc.body, "value"))
-      return null;
-    scopeShared(link, setup.id);
-    const operation = identity(doc);
-    if (!operation)
-      return null;
-    const answer = () => signDoc(link.sign, "setup-shared", doc.n, { id, epoch, kind, receipt: doc.envelope.s });
-    const outcome = link.sharedOutcomes?.[operation];
-    if (outcome)
-      return outcome.status === "committed" && outcome.proposal === doc.envelope.s ? answer() : null;
-    const legacyReceipt = held(link.sharedReceipts?.[kind]);
-    if (legacyReceipt?.body.receipt === doc.envelope.s) {
-      remember(link, doc, operation, "committed");
-      return legacyReceipt.envelope;
-    }
-    if (doc.n !== (link.shared?.[kind]?.sequence ?? 0) + 1 || setup.checkpointed && kind === "membershipAndAccess" && !matchesMembership(link, value))
-      return null;
-    const next = { ...link.shared, [kind]: { sequence: doc.n, value } };
-    if (Buffer.byteLength(JSON.stringify(next)) > MAX_SHARED_BYTES)
-      return null;
-    link.shared = next;
-    remember(link, doc, operation, "committed");
-    const membership = kind === "membershipAndAccess" && acceptedMembership(link);
-    if (membership)
-      projectMembership(link, membership);
-    return answer();
-  }
-  if (setup.role !== "primary" || setup.sign !== ownSign(link) || setup.standby.key !== sender || setup.standby.sign !== doc.origin || primaryFenced(link))
-    return null;
-  const pending = pendingEntry(link, kind);
-  if (pending?.doc.n !== doc.n || pending.doc.envelope.s !== receipt)
-    return null;
-  const operation = identity(pending.doc);
-  if (!operation)
-    return null;
-  link.shared = { ...link.shared, [kind]: { sequence: doc.n, value: pending.doc.body.value } };
-  remember(link, pending.doc, operation, "committed");
-  if (kind === "membershipAndAccess")
-    applyAccess(link, pending.doc.body.value, pending.doc.body.effects);
-  delete link.sharedPending[pending.key];
-  if (!Object.keys(link.sharedPending).length)
-    delete link.sharedPending;
-  return null;
-}
-function operationOutcome(link, id, operation) {
-  if (!link || link.sharedSetup !== id || !OPERATION_ID.test(operation))
-    return null;
-  const decided = Object.hasOwn(link.sharedOutcomes ?? {}, operation) && link.sharedOutcomes[operation];
-  if (decided)
-    return decided;
-  const pending = Object.values(link.sharedPending ?? {}).map(held).find((doc) => doc && identity(doc) === operation);
-  return pending ? { status: "pending", sequence: pending.n, baseRevision: pending.n - 1, epoch: pending.body.epoch, kind: pending.body.kind } : null;
-}
-async function waitShared(save) {
-  const until = Date.now() + 3000;
-  while (Date.now() < until) {
-    const link = readLink();
-    const outcome = operationOutcome(link, save.id, save.operation);
-    if (outcome?.status === "committed")
-      return "saved";
-    if (outcome?.status === "interrupted")
-      return "interrupted";
-    if (link?.setup?.id !== save.id)
-      break;
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-  return "pending";
-}
-function committedOperations(link) {
-  return Object.fromEntries(Object.entries(link.sharedOutcomes ?? {}).filter(([, outcome]) => outcome.status === "committed"));
-}
-function installShared(link, values, outcomes) {
-  if (link.sharedSetup !== link.setup?.id)
-    delete link.sharedOutcomes;
-  link.sharedOutcomes = { ...link.sharedOutcomes, ...outcomes };
-  for (const envelope of [...Object.values(link.sharedPending ?? {}), ...Object.values(link.sharedInterrupted ?? {})]) {
-    const proposal = held(envelope);
-    if (!proposal || !sharedKind(proposal.body.kind))
-      continue;
-    const operation = identity(proposal);
-    if (!operation || link.sharedOutcomes[operation])
-      continue;
-    const accepted = values?.[proposal.body.kind];
-    const legacyMatch = !outcomes && proposal.n === accepted?.sequence && JSON.stringify(proposal.body.value) === JSON.stringify(accepted.value);
-    remember(link, proposal, operation, legacyMatch ? "committed" : "interrupted");
-  }
-  if (values && Object.keys(values).length)
-    link.shared = values;
-  else
-    delete link.shared;
-  delete link.sharedPending;
-  delete link.sharedInterrupted;
-  delete link.sharedReceipts;
-  link.sharedSetup = values ? link.setup?.id : undefined;
-}
-function changeShared(kind, change, operation) {
-  let save = null;
-  updateLink((link) => {
-    if (!link || link.setup?.role !== "primary" || !link.setup.standby)
-      return null;
-    save = stageShared(link, kind, change(sharedValue(link, kind), link), undefined, operation);
-    return save ? link : null;
-  }, { durable: true });
-  return save;
-}
-function submitShared(kind, value) {
-  return changeShared(kind, () => value);
-}
-var MAX_SHARED_BYTES, PENDING_SAVE = "Pending until the standby is back.", OPERATION_ID;
-var init_shared = __esm(() => {
-  init_data_declarations();
-  init_format();
-  init_known();
-  init_state();
-  init_lease();
-  init_access();
-  init_membership();
-  init_record();
-  MAX_SHARED_BYTES = Math.floor(MOST_DOC / 3);
-  OPERATION_ID = /^[A-Za-z0-9_-]{22,43}$/;
+// box/src/link/crypto/keys.ts
+import crypto8 from "node:crypto";
+var PKCS8, SPKI, EMPTY, privateKey = (raw) => crypto8.createPrivateKey({ key: Buffer.concat([PKCS8, raw]), format: "der", type: "pkcs8" }), publicKey = (raw) => crypto8.createPublicKey({ key: Buffer.concat([SPKI, raw]), format: "der", type: "spki" }), newKey = () => crypto8.generateKeyPairSync("x25519").privateKey.export({ format: "der", type: "pkcs8" }).subarray(PKCS8.length), publicOf = (raw) => crypto8.createPublicKey(privateKey(raw)).export({ format: "der", type: "spki" }).subarray(SPKI.length), dh = (raw, remote) => crypto8.diffieHellman({ privateKey: privateKey(raw), publicKey: publicKey(remote) }), addressOf = (secret) => crypto8.createHash("sha256").update("kuvo-link address v1").update(secret).digest().subarray(0, 16);
+var init_keys2 = __esm(() => {
+  PKCS8 = Buffer.from("302e020100300506032b656e04220420", "hex");
+  SPKI = Buffer.from("302a300506032b656e032100", "hex");
+  EMPTY = Buffer.alloc(0);
 });
 
 // box/src/link/personalities/library.ts
@@ -4013,8 +3749,69 @@ var init_library = __esm(() => {
   personalityLibraryVersion = personalitySteps.length;
 });
 
+// box/src/link/setup/record.ts
+import crypto9 from "node:crypto";
+function setupOf(body) {
+  const setup = isObject(body) && isObject(body.setup) ? body.setup : null;
+  if (!setup || typeof setup.id !== "string" || !SETUP_ID.test(setup.id) || !Number.isSafeInteger(setup.epoch) || setup.epoch < 1 || typeof setup.primary !== "string" || !STATIC_KEY.test(setup.primary))
+    return null;
+  return { id: setup.id, epoch: setup.epoch, primary: setup.primary };
+}
+function ledSetup(doc) {
+  if (doc?.kind !== "peers")
+    return null;
+  const setup = setupOf(doc.body);
+  if (!setup)
+    return null;
+  const boxes = Array.isArray(doc.body.boxes) ? doc.body.boxes : [];
+  return boxes.some((box) => isObject(box) && box.key === setup.primary && box.sign === doc.origin && (box.kind === "mac" || box.kind === "machine")) ? setup : null;
+}
+function followedSetup(link) {
+  const setup = link?.setup;
+  if (!setup || setup.aside)
+    return null;
+  if (setup.role === "primary") {
+    let own = null;
+    try {
+      own = publicOf(Buffer.from(link.key, "base64url")).toString("base64url");
+    } catch {}
+    if (setup.primary !== own)
+      return null;
+  }
+  return setup;
+}
+function setupDoc(link) {
+  const setup = followedSetup(link);
+  if (setup?.role !== "member")
+    return null;
+  const doc = held(link.docs?.[docKey(setup.sign, "peers")]);
+  const word = doc && setupOf(doc.body);
+  if (!setup.managed || word && word.id === setup.id && word.epoch === setup.epoch && word.primary === setup.primary)
+    return doc;
+  return held(link?.leadership?.[setup.epoch]);
+}
+function lowerEpoch(link, doc) {
+  const kept = link?.setup;
+  const said = doc.kind === "peers" ? setupOf(doc.body) : null;
+  return Boolean(kept && said && said.id === kept.id && said.epoch < kept.epoch);
+}
+function startsFromOthers(link) {
+  const value = link?.startsFromOthers === "on" || link?.startsFromOthers === "off" ? link.startsFromOthers : null;
+  const setup = followedSetup(link);
+  const main = setup ? setup.role === "primary" : IS_MAC;
+  return { value, default: main ? "off" : "on" };
+}
+var SETUP_ID, STATIC_KEY, newSetupID = () => `set_${crypto9.randomBytes(16).toString("base64url")}`, requiresStandby = (setup) => Boolean(setup?.standby || setup?.sharedSaves);
+var init_record = __esm(() => {
+  init_keys2();
+  init_format();
+  init_home();
+  SETUP_ID = /^set_[A-Za-z0-9_-]{22}$/;
+  STATIC_KEY = /^[A-Za-z0-9_-]{43}$/;
+});
+
 // box/src/link/setup/checkpoint.ts
-import crypto11 from "node:crypto";
+import crypto10 from "node:crypto";
 import fs22 from "node:fs";
 import path20 from "node:path";
 function checkpointFile(hash) {
@@ -4144,7 +3941,7 @@ function leadershipDocuments(envelope) {
   const pages = checkpoint && archivesOf(checkpoint);
   return checkpoint && pages ? [checkpoint.envelope, ...pages.map((page) => page.envelope), envelope] : [];
 }
-var CHECKPOINT_FEATURE = "setup.checkpoints", HASH, OPERATIONS_PER_PAGE = 256, checkpointHash = (doc) => crypto11.createHash("sha256").update(doc.body.archive === true ? "outcomes\x00" + JSON.stringify(doc.body) : doc.envelope.d).digest("base64url"), location = (hash) => path20.join(RUN, "setup-checkpoints", hash + ".json");
+var CHECKPOINT_FEATURE = "setup.checkpoints", HASH, OPERATIONS_PER_PAGE = 256, checkpointHash = (doc) => crypto10.createHash("sha256").update(doc.body.archive === true ? "outcomes\x00" + JSON.stringify(doc.body) : doc.envelope.d).digest("base64url"), location = (hash) => path20.join(RUN, "setup-checkpoints", hash + ".json");
 var init_checkpoint = __esm(() => {
   init_format();
   init_files2();
@@ -4154,186 +3951,6 @@ var init_checkpoint = __esm(() => {
   init_shared();
   init_data_declarations();
   HASH = /^[\w-]{43}$/;
-});
-
-// box/src/link/setup/leadership.ts
-function leadershipOf(link) {
-  const setup = link?.setup;
-  return setup?.managed ? held(link?.leadership?.[setup.epoch]) : null;
-}
-function approveLeadership(link, proposal, checkpoint) {
-  const current = link.setup;
-  if (!current?.standby || current.standby.key !== ownKey(link) || current.standby.sign !== ownSign(link) || current.sign !== proposal.origin || proposal.body.proposal !== true || !link.sign)
-    return null;
-  const resolved = resolveCheckpoint(proposal, checkpoint);
-  if ((current.checkpointed || Object.hasOwn(proposal.body, "checkpoint")) && !resolved)
-    return null;
-  const values = resolved?.shared ?? sharedValues(proposal.body.shared) ?? {};
-  for (const [kind, entry] of Object.entries(link.shared ?? {})) {
-    if (resolved && kind === "membershipAndAccess" && !current.checkpointed)
-      continue;
-    if (resolved && kind === "queueNumberAllocation") {
-      const ledger = entry.value;
-      const next = values.queueNumberAllocation?.value;
-      if (!isObject(ledger) || !isObject(next) || Number(next.next) < Number(ledger.next) || JSON.stringify(next.given ?? {}) !== JSON.stringify(ledger.given ?? {}) || JSON.stringify(next.granted ?? {}) !== JSON.stringify(ledger.granted ?? {}))
-        return null;
-      continue;
-    }
-    if (JSON.stringify(values[kind]) !== JSON.stringify(entry))
-      return null;
-  }
-  if (resolved) {
-    for (const [operation, outcome] of Object.entries(committedOperations(link))) {
-      if (JSON.stringify(resolved.outcomes[operation]) !== JSON.stringify(outcome))
-        return null;
-    }
-  }
-  return readDoc(signDoc(link.sign, "leadership", proposal.n, { ...proposal.body, approval: proposal.envelope.s }));
-}
-function takeLeadership(link, doc, checkpoint) {
-  const current = link.setup;
-  const next = setupOf(doc.body);
-  if (doc.kind !== "leadership" || !current || current.aside || !next || next.id !== current.id || doc.n !== next.epoch || next.epoch !== current.epoch + 1 || doc.origin !== (current.standby?.sign ?? current.sign) || doc.body.previous !== current.primary)
-    return false;
-  const resolved = resolveCheckpoint(doc, checkpoint);
-  if ((current.checkpointed || Object.hasOwn(doc.body, "checkpoint")) && !resolved)
-    return false;
-  const body = resolved?.membership ?? doc.body;
-  if (!Array.isArray(body.boxes) || !body.boxes.every(fitsPeer))
-    return false;
-  const shared = resolved?.shared ?? sharedValues(doc.body.shared);
-  if (doc.body.shared !== undefined && !shared)
-    return false;
-  const takeover = doc.body.takeover === true;
-  if (takeover) {
-    if (!current.standby || next.primary !== current.standby.key || doc.body.proposal)
-      return false;
-  } else if (current.standby) {
-    const { approval, ...proposal } = doc.body;
-    if (proposal.proposal !== true || !readDoc({
-      d: docBytes(current.sign, "leadership", doc.n, proposal).toString("base64url"),
-      s: approval
-    }))
-      return false;
-  } else if (doc.body.proposal)
-    return false;
-  const peers = body.boxes.map(cleanPeer);
-  if (new Set(peers.map((peer) => peer.key)).size !== peers.length)
-    return false;
-  const primary = peers.find((peer) => peer.key === next.primary);
-  const standby = peers.find((peer) => peer.key === doc.body.standby && peer.key !== next.primary && peer.sign !== primary?.sign);
-  if (!primary?.sign || !peers.some((peer) => peer.key === current.primary && peer.sign === current.sign) || takeover && primary.sign !== current.standby?.sign || doc.body.standby != null && !standby?.sign || next.primary === current.primary && (doc.body.standby ?? null) === (current.standby?.key ?? null) && !(resolved && !current.checkpointed) && !(typeof doc.body.numberCeiling === "number" && doc.body.numberCeiling > (current.numberCeiling ?? 0)))
-    return false;
-  const ceiling = doc.body.numberCeiling;
-  if (standby && (typeof ceiling !== "number" || !Number.isSafeInteger(ceiling) || ceiling < 1))
-    return false;
-  const own = ownKey(link);
-  if (!own)
-    return false;
-  const left = Array.isArray(body.left) ? body.left.filter((key) => typeof key === "string" && KEY.test(key)) : [];
-  if (!peers.some((peer) => peer.key === own)) {
-    if (!left.includes(own))
-      return false;
-    delete link.setup;
-    delete link.leadership;
-    delete link.leadershipPending;
-    installShared(link, undefined);
-    link.macs = [];
-    delete link.mac;
-    delete link.macSigns;
-    link.phones = (link.phones ?? []).filter((phone) => phone.from === "pair");
-    return true;
-  }
-  const here = own === primary.key;
-  if (here && ownSign(link) !== primary.sign)
-    return false;
-  const stillHere = here && current.role === "primary";
-  if (resolved)
-    preserveCheckpoint(resolved.checkpoint);
-  link.setup = {
-    ...next,
-    ...resolved || current.checkpointed ? { checkpointed: true } : {},
-    sign: primary.sign,
-    role: here ? "primary" : "member",
-    managed: true,
-    ...requiresStandby(current) || standby || doc.body.sharedSaves === true ? { sharedSaves: true } : {},
-    ...standby?.sign ? { standby: { key: standby.key, sign: standby.sign }, numberCeiling: ceiling } : {}
-  };
-  link.leadership = { ...link.leadership, [next.epoch]: doc.envelope };
-  delete link.leadershipPending;
-  installShared(link, shared ?? undefined, resolved?.outcomes);
-  const membership = acceptedMembership(link);
-  if (membership)
-    delete link.peerNames;
-  if (stillHere) {
-    if (membership)
-      projectMembership(link, membership);
-    return true;
-  }
-  link.macs = here ? [] : [primary.key];
-  link.macSigns = here ? {} : { [primary.key]: primary.sign };
-  link.macNames = here ? {} : { [primary.key]: primary.name };
-  link.macSeen = here ? {} : { [primary.key]: Date.now() };
-  if (here)
-    delete link.mac;
-  else
-    link.mac = primary.key;
-  if (link.docs)
-    delete link.docs[docKey(primary.sign, "phones")];
-  if (takeover) {
-    link.removed = [];
-    delete link.untold;
-    delete link.untoldMembership;
-    delete link.pendingMachineCleanup;
-  }
-  delete link.pairing;
-  delete link.appPairing;
-  if (membership)
-    projectMembership(link, membership, current.role === "member");
-  else
-    projectLegacyDevices(link, doc.body.devices, primary.key, here, current.role === "member");
-  if (here && !membership) {
-    link.macPeers = peers.filter((peer) => peer.key !== own);
-    link.macMoved = cleanMoved(doc.body.moved);
-    link.left = left;
-    link.removedHere = left;
-    if (isObject(doc.body.removalRevisions)) {
-      link.removalRevisions = Object.fromEntries(Object.entries(doc.body.removalRevisions).filter(([key, n]) => KEY.test(key) && Number.isSafeInteger(n) && Number(n) > 0));
-    }
-    delete link.peerNames;
-    link.vouchBlocked = Array.isArray(doc.body.vouchBlocked) ? doc.body.vouchBlocked : [];
-  } else if (!here) {
-    delete link.macPeers;
-    delete link.macMoved;
-    delete link.left;
-    delete link.removedHere;
-    delete link.peerNames;
-    delete link.vouchBlocked;
-  }
-  foldPhones(link);
-  return true;
-}
-function projectLegacyDevices(link, value, primary, here, wasMember) {
-  const snapshot = isObject(value) ? value : {};
-  const local = (link.phones ?? []).filter((phone) => phone.from === "pair" && (wasMember || phone.local)).map((phone) => ({ ...phone, local: true }));
-  const transferred = (Array.isArray(snapshot.phones) ? snapshot.phones : []).filter((phone) => fits2(phone, [primary])).map((phone) => ({ ...phone, pairing: phone.pairing ?? undefined, from: here ? "pair" : "mac", ...here ? {} : { mac: primary } }));
-  const transferredKeys = new Set(transferred.map((phone) => phone.key));
-  link.phones = [...transferred, ...local.filter((phone) => !transferredKeys.has(phone.key))];
-  for (const entry of Array.isArray(snapshot.removed) ? snapshot.removed : []) {
-    if (fits2(entry, []) && typeof entry.pairing === "string" && !link.removed?.some((each) => each.key === entry.key && each.pairing === entry.pairing)) {
-      (link.removed ??= []).push({ key: entry.key, pairing: entry.pairing });
-    }
-  }
-}
-var NUMBER_RESERVE = 2000, STANDBY_UNLINK = "Choose another standby first.", PRIMARY_UNLINK = "Choose another primary first.";
-var init_leadership = __esm(() => {
-  init_format();
-  init_known();
-  init_phones();
-  init_checkpoint();
-  init_membership();
-  init_shared();
-  init_record();
 });
 
 // box/node_modules/dequal/dist/index.mjs
@@ -12877,7 +12494,7 @@ var init_statuses = __esm(() => {
 });
 
 // box/src/link/work-queue/migrate.ts
-import crypto12 from "node:crypto";
+import crypto11 from "node:crypto";
 import fs23 from "node:fs";
 import path21 from "node:path";
 function modelRecord() {
@@ -12938,7 +12555,7 @@ function migrate() {
     for (const name of fs23.readdirSync(WORK_QUEUE))
       if (name.startsWith("before-statuses."))
         fs23.rmSync(path21.join(WORK_QUEUE, name), { recursive: true, force: true });
-    const making = path21.join(WORK_QUEUE, `before-statuses.${crypto12.randomBytes(6).toString("hex")}`);
+    const making = path21.join(WORK_QUEUE, `before-statuses.${crypto11.randomBytes(6).toString("hex")}`);
     fs23.mkdirSync(path21.join(making, "queues"), { recursive: true, mode: 448 });
     const copy = (from, to) => {
       fs23.copyFileSync(from, to);
@@ -13117,7 +12734,7 @@ var init_migrate = __esm(() => {
 });
 
 // box/src/link/work-queue/store.ts
-import crypto13 from "node:crypto";
+import crypto12 from "node:crypto";
 import fs24 from "node:fs";
 import path22 from "node:path";
 function itemOf(given, owner) {
@@ -13433,7 +13050,7 @@ var WORK_QUEUE2, QUEUES2, FILES, LOCK3, KEPT_OWNER, ITEM_ID, SESSION, KEPT_REMOV
     return null;
   const day = new Date(`${given.trim()}T00:00:00Z`);
   return Number.isNaN(day.getTime()) || day.toISOString().slice(0, 10) !== given.trim() ? null : given.trim();
-}, queueFollowers, fileOf2 = (owner) => path22.join(QUEUES2, `${owner}.json`), newItemID = () => `wqi_${crypto13.randomBytes(15).toString("base64url")}`, whoOf = (given) => {
+}, queueFollowers, fileOf2 = (owner) => path22.join(QUEUES2, `${owner}.json`), newItemID = () => `wqi_${crypto12.randomBytes(15).toString("base64url")}`, whoOf = (given) => {
   if (!isObject(given))
     return null;
   if (given.user === true)
@@ -13938,7 +13555,7 @@ var init_reach = __esm(() => {
 });
 
 // box/src/link/work-queue/numbers.ts
-import crypto14 from "node:crypto";
+import crypto13 from "node:crypto";
 import fs27 from "node:fs";
 import path26 from "node:path";
 function openNumbers(file) {
@@ -14181,6 +13798,8 @@ function takeNumber(primary, { file = NUMBERS_FILE, now = Date.now(), link = rea
       return null;
     notePrimary(kept, primary, current, now);
     if ("self" in primary && !usesBlocks(current)) {
+      if (primaryFenced(current))
+        return null;
       const number = counterOf(kept);
       if (number > (current?.setup?.numberCeiling ?? MOST_NUMBER - 1))
         return null;
@@ -14239,8 +13858,9 @@ function claimNumbers(primary, numbers, { file = NUMBERS_FILE, now = Date.now(),
     if ("self" in primary && current?.setup?.managed && current.setup.role !== "primary")
       return { granted: null };
     notePrimary(kept, primary, current, now);
-    if ("self" in primary && !usesBlocks(current))
-      return { granted: grantOn(kept, "self", claims, {}, current?.setup?.numberCeiling) };
+    if ("self" in primary && !usesBlocks(current)) {
+      return { granted: primaryFenced(current) ? null : grantOn(kept, "self", claims, {}, current?.setup?.numberCeiling) };
+    }
     const highest = claims[claims.length - 1][1];
     kept.leases = kept.leases.map(([from, to]) => [Math.max(from, highest + 1), to]).filter(([from, to]) => from <= to);
     const back = joined(kept.asking?.restores ?? [], overlap(rangesOf2(restores), claims)).slice(-MOST_RANGES);
@@ -14307,6 +13927,8 @@ function giveBlock(by, ask, { file = NUMBERS_FILE, now = Date.now() } = {}) {
       return null;
     installNumberAuthority(kept, current);
     if (!usesBlocks(current)) {
+      if (primaryFenced(current))
+        return null;
       kept.primary ??= "self";
       return allocate(kept);
     }
@@ -14554,7 +14176,7 @@ var NUMBERS_FILE, BLOCK = 50, LOW = 15, ASK_AGAIN = 30000, MOST_GIVEN = 500, MOS
       ranges.push([from, to]);
   }
   return ranges;
-}, rangesOf2 = (numbers) => joined([...numbers].filter((n) => Number.isInteger(n) && n > 0).map((n) => [n, n])), overlap = (ranges, within) => joined(ranges.flatMap(([from, to]) => within.flatMap(([a, b]) => Math.max(from, a) <= Math.min(to, b) ? [[Math.max(from, a), Math.min(to, b)]] : []))), inRanges = (ranges, n) => ranges.some(([from, to]) => n >= from && n <= to), cleanRanges = (value) => Array.isArray(value) ? value.filter(isRange).slice(-MOST_RANGES) : [], numbersFormat, LOST_FOR, FOUND_AWAY_WITHIN = 3600000, earlier = (a, b) => a.kind !== b.kind ? a.kind === "mac" : b.since !== Number.MAX_SAFE_INTEGER && a.since < b.since, rank = (a, b) => (a.kind === b.kind ? 0 : a.kind === "mac" ? -1 : 1) || a.since - b.since || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0), keyOf = (primary, link) => ("self" in primary) ? "self" : ("peer" in primary) ? primary.peer.key : readNumbers().primary ?? (link?.mac || undefined), askID = () => `wqn_${crypto14.randomBytes(12).toString("base64url")}`, leftIn = (leases) => leases.reduce((sum, [from, to]) => sum + to - from + 1, 0), TOP_MOST, cappedTop = (top) => Math.min(top, TOP_MOST), toldTopOf = (key) => {
+}, rangesOf2 = (numbers) => joined([...numbers].filter((n) => Number.isInteger(n) && n > 0).map((n) => [n, n])), overlap = (ranges, within) => joined(ranges.flatMap(([from, to]) => within.flatMap(([a, b]) => Math.max(from, a) <= Math.min(to, b) ? [[Math.max(from, a), Math.min(to, b)]] : []))), inRanges = (ranges, n) => ranges.some(([from, to]) => n >= from && n <= to), cleanRanges = (value) => Array.isArray(value) ? value.filter(isRange).slice(-MOST_RANGES) : [], numbersFormat, LOST_FOR, FOUND_AWAY_WITHIN = 3600000, earlier = (a, b) => a.kind !== b.kind ? a.kind === "mac" : b.since !== Number.MAX_SAFE_INTEGER && a.since < b.since, rank = (a, b) => (a.kind === b.kind ? 0 : a.kind === "mac" ? -1 : 1) || a.since - b.since || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0), keyOf = (primary, link) => ("self" in primary) ? "self" : ("peer" in primary) ? primary.peer.key : readNumbers().primary ?? (link?.mac || undefined), askID = () => `wqn_${crypto13.randomBytes(12).toString("base64url")}`, leftIn = (leases) => leases.reduce((sum, [from, to]) => sum + to - from + 1, 0), TOP_MOST, cappedTop = (top) => Math.min(top, TOP_MOST), toldTopOf = (key) => {
   const told = readTold(key);
   return Math.max(told?.top ?? 0, ...(told?.items ?? []).map((item) => item.number ?? 0));
 }, lookedForWaiting = 0;
@@ -14573,7 +14195,7 @@ var init_numbers = __esm(() => {
   init_store();
   NUMBERS_FILE = path26.join(WORK_QUEUE2, "numbers.json");
   ASK_ID = /^wqn_[A-Za-z0-9_-]{8,40}$/;
-  numbersFormat = objectFormat("Work Queue number ledger", [(fields) => fields]);
+  numbersFormat = objectFormat("Work Queue number ledger", 1);
   LOST_FOR = 3 * 86400000;
   TOP_MOST = MOST_NUMBER - 1 - 4 * BLOCK;
 });
@@ -14647,7 +14269,7 @@ var init_settle = __esm(() => {
 });
 
 // box/src/link/documents/parts.ts
-import crypto15 from "node:crypto";
+import crypto14 from "node:crypto";
 function assemble(parts, from, part, most = MOST_PARTS) {
   if (!fitsPart(part, most))
     return null;
@@ -14665,7 +14287,7 @@ function assemble(parts, from, part, most = MOST_PARTS) {
     return null;
   parts.delete(key);
   const d = Array.from({ length: part.of }, (_, i) => pending.pieces.get(i)).join("");
-  if (crypto15.createHash("sha256").update(d).digest("base64url") !== part.whole)
+  if (crypto14.createHash("sha256").update(d).digest("base64url") !== part.whole)
     return null;
   return { d, s: pending.s };
 }
@@ -14675,7 +14297,7 @@ var init_parts = __esm(() => {
 });
 
 // box/src/link/documents/work.ts
-import crypto16 from "node:crypto";
+import crypto15 from "node:crypto";
 function takesFrom(link, origin, kind) {
   if (kind === "leadership")
     return Boolean(link.setup);
@@ -14854,7 +14476,7 @@ function docMails(docs) {
         give = [];
         size = 0;
       }
-      const whole = crypto16.createHash("sha256").update(envelope.d).digest("base64url");
+      const whole = crypto15.createHash("sha256").update(envelope.d).digest("base64url");
       const of = Math.ceil(envelope.d.length / DOC_PART);
       for (let i = 0;i < of; i++)
         mails.push({ part: { whole, i, of, d: envelope.d.slice(i * DOC_PART, (i + 1) * DOC_PART), s: envelope.s } });
@@ -15145,7 +14767,13 @@ function updateAccess(change, { localOnly = false } = {}) {
   let save = null;
   let busy = false;
   const changed = updateLink((link) => {
-    if (localOnly || !link?.setup || !link.setup.checkpointed && !requiresStandby(link.setup) || link.setup.role !== "primary")
+    if (localOnly || link?.setup?.role !== "primary")
+      return change(link);
+    if (link.leadershipPending) {
+      busy = true;
+      return null;
+    }
+    if (!link.setup.checkpointed && !requiresStandby(link.setup))
       return change(link);
     if (!link.setup.standby && requiresStandby(link.setup) || pendingShared(link, "membershipAndAccess")) {
       busy = true;
@@ -15232,6 +14860,292 @@ var init_access = __esm(() => {
   ];
 });
 
+// box/src/link/setup/shared.ts
+import crypto16 from "node:crypto";
+function publishedShared(link) {
+  const setup = followedSetup(link);
+  if (!setup || setup.role !== "primary" || setup.id !== link.sharedSetup || !link.sign || primaryFenced(link))
+    return [];
+  if (setup.checkpointed) {
+    const values = Object.fromEntries(SHARED_KINDS.filter((kind) => sharedPolicy(kind).publish && link.shared?.[kind]).map((kind) => [kind, link.shared[kind]]));
+    return [signDoc(link.sign, "setup-shared", setup.epoch, { id: setup.id, epoch: setup.epoch, replica: values })];
+  }
+  return SHARED_KINDS.flatMap((kind) => {
+    if (!sharedPolicy(kind).publish)
+      return [];
+    if (!setup.checkpointed && sharedPolicy(kind).checkpointOnly)
+      return [];
+    const entry = link.shared?.[kind];
+    return entry ? [signDoc(link.sign, "setup-shared", entry.sequence, {
+      id: setup.id,
+      epoch: setup.epoch,
+      kind,
+      value: entry.value,
+      published: true
+    })] : [];
+  });
+}
+function sharedValues(given) {
+  if (!isObject(given))
+    return null;
+  for (const [kind, entry] of Object.entries(given)) {
+    if (!sharedKind(kind) || !isObject(entry) || !Number.isSafeInteger(entry.sequence) || Number(entry.sequence) < 1 || !Object.hasOwn(entry, "value"))
+      return null;
+  }
+  return given;
+}
+function sharedValue(link, kind) {
+  const setup = link?.setup;
+  return setup && !setup.aside && link?.sharedSetup === setup.id ? link.shared?.[kind]?.value : undefined;
+}
+function scopeShared(link, id) {
+  if (link.sharedSetup === id)
+    return;
+  installShared(link, undefined);
+  link.sharedSetup = id;
+}
+function identity(doc) {
+  const { operation, baseRevision } = doc.body;
+  if (operation === undefined && baseRevision === undefined)
+    return crypto16.createHash("sha256").update(doc.envelope.s).digest("base64url");
+  return typeof operation === "string" && OPERATION_ID.test(operation) && baseRevision === doc.n - 1 ? operation : null;
+}
+function pendingEntry(link, kind) {
+  for (const [key, envelope] of Object.entries(link.sharedPending ?? {})) {
+    const doc = held(envelope);
+    if (doc?.body.kind === kind)
+      return { key, doc };
+  }
+  return null;
+}
+function pendingShared(link, kind) {
+  return link ? pendingEntry(link, kind)?.doc ?? null : null;
+}
+function asSave(doc) {
+  return { id: doc.body.id, epoch: doc.body.epoch, sequence: doc.n, operation: identity(doc) };
+}
+function stageShared(link, kind, value, effects, requested) {
+  const setup = followedSetup(link);
+  const operation = requested ?? crypto16.randomBytes(16).toString("base64url");
+  if (!link.sign || setup?.role !== "primary" || setup.sign !== ownSign(link) || !setup.standby && (!setup.checkpointed || requiresStandby(setup)) || link.leadershipPending || !sharedKind(kind) || value === undefined || !OPERATION_ID.test(operation))
+    return null;
+  scopeShared(link, setup.id);
+  if (Object.hasOwn(link.sharedOutcomes ?? {}, operation))
+    return null;
+  const pending = pendingShared(link, kind);
+  if (pending) {
+    return (!requested || identity(pending) === requested) && JSON.stringify(pending.body.value) === JSON.stringify(value) && JSON.stringify(pending.body.effects) === JSON.stringify(effects) ? asSave(pending) : null;
+  }
+  if (Object.hasOwn(link.sharedPending ?? {}, operation))
+    return null;
+  const sequence = (link.shared?.[kind]?.sequence ?? 0) + 1;
+  if (!Number.isSafeInteger(sequence))
+    return null;
+  const proposed = Object.values(link.sharedPending ?? {}).flatMap((envelope) => {
+    const doc = held(envelope);
+    return doc ? [[doc.body.kind, { sequence: doc.n, value: doc.body.value }]] : [];
+  });
+  const next = { ...link.shared, ...Object.fromEntries(proposed), [kind]: { sequence, value } };
+  if (Buffer.byteLength(JSON.stringify(next)) > MAX_SHARED_BYTES)
+    return null;
+  const envelope = signDoc(link.sign, "setup-shared", sequence, {
+    id: setup.id,
+    epoch: setup.epoch,
+    kind,
+    value,
+    operation,
+    baseRevision: sequence - 1,
+    ...effects ? { effects } : {}
+  });
+  if (envelope.d.length > MOST_DOC * 4 / 3)
+    return null;
+  if (setup.standby)
+    link.sharedPending = { ...link.sharedPending, [operation]: envelope };
+  else {
+    link.shared = next;
+    remember(link, held(envelope), operation, "committed");
+    if (kind === "membershipAndAccess")
+      applyAccess(link, value, effects);
+  }
+  return { id: setup.id, epoch: setup.epoch, sequence, operation };
+}
+function remember(link, doc, operation, status) {
+  link.sharedOutcomes = { ...link.sharedOutcomes, [operation]: {
+    kind: doc.body.kind,
+    epoch: doc.body.epoch,
+    sequence: doc.n,
+    baseRevision: doc.n - 1,
+    proposal: doc.envelope.s,
+    status
+  } };
+}
+function matchesMembership(link, value) {
+  if (!isObject(value) || Object.hasOwn(value, "fields"))
+    return false;
+  const roster = membershipOf(value)?.boxes;
+  const setup = link.setup;
+  return Boolean(roster?.some((peer) => peer.key === setup.primary && peer.sign === setup.sign) && (!setup.standby || roster.some((peer) => peer.key === setup.standby.key && peer.sign === setup.standby.sign)));
+}
+function takeShared(link, sender, doc) {
+  const setup = followedSetup(link);
+  const { id, epoch, kind, value, receipt } = doc.body;
+  if (!setup || !link.sign || id !== setup.id || epoch !== setup.epoch)
+    return null;
+  if (setup.checkpointed && setup.role === "member" && setup.primary === sender && setup.sign === doc.origin && setup.standby?.key !== ownKey(link) && doc.n === epoch && doc.body.replica !== undefined) {
+    const replica = sharedValues(doc.body.replica);
+    if (!replica || !matchesMembership(link, replica.membershipAndAccess?.value) || Object.keys(replica).some((key) => !sharedPolicy(key).publish))
+      return null;
+    scopeShared(link, setup.id);
+    const entries = Object.entries(replica);
+    if (entries.some(([key, entry]) => entry.sequence < (link.shared?.[key]?.sequence ?? 0)))
+      return null;
+    if (entries.some(([key, entry]) => entry.sequence > (link.shared?.[key]?.sequence ?? 0))) {
+      link.shared = { ...link.shared, ...replica };
+      const membership = acceptedMembership(link);
+      if (membership)
+        projectMembership(link, membership);
+    }
+    return null;
+  }
+  if (!sharedKind(kind))
+    return null;
+  if (doc.body.published === true) {
+    if (setup.role === "member" && setup.primary === sender && setup.sign === doc.origin && !setup.checkpointed && setup.standby && sharedPolicy(kind).publish && !sharedPolicy(kind).checkpointOnly && Object.hasOwn(doc.body, "value")) {
+      scopeShared(link, setup.id);
+      if (doc.n <= (link.shared?.[kind]?.sequence ?? 0))
+        return null;
+      link.shared = { ...link.shared, [kind]: { sequence: doc.n, value } };
+      const membership = kind === "membershipAndAccess" && acceptedMembership(link);
+      if (membership)
+        projectMembership(link, membership);
+    }
+    return null;
+  }
+  if (!setup.standby)
+    return null;
+  if (receipt === undefined) {
+    if (setup.standby.key !== ownKey(link) || setup.standby.sign !== ownSign(link) || sender !== setup.primary || doc.origin !== setup.sign || !Object.hasOwn(doc.body, "value"))
+      return null;
+    scopeShared(link, setup.id);
+    const operation = identity(doc);
+    if (!operation)
+      return null;
+    const answer = () => signDoc(link.sign, "setup-shared", doc.n, { id, epoch, kind, receipt: doc.envelope.s });
+    const outcome = link.sharedOutcomes?.[operation];
+    if (outcome)
+      return outcome.status === "committed" && outcome.proposal === doc.envelope.s ? answer() : null;
+    const legacyReceipt = held(link.sharedReceipts?.[kind]);
+    if (legacyReceipt?.body.receipt === doc.envelope.s) {
+      remember(link, doc, operation, "committed");
+      return legacyReceipt.envelope;
+    }
+    if (doc.n !== (link.shared?.[kind]?.sequence ?? 0) + 1 || setup.checkpointed && kind === "membershipAndAccess" && !matchesMembership(link, value))
+      return null;
+    const next = { ...link.shared, [kind]: { sequence: doc.n, value } };
+    if (Buffer.byteLength(JSON.stringify(next)) > MAX_SHARED_BYTES)
+      return null;
+    link.shared = next;
+    remember(link, doc, operation, "committed");
+    const membership = kind === "membershipAndAccess" && acceptedMembership(link);
+    if (membership)
+      projectMembership(link, membership);
+    return answer();
+  }
+  if (setup.role !== "primary" || setup.sign !== ownSign(link) || setup.standby.key !== sender || setup.standby.sign !== doc.origin || primaryFenced(link))
+    return null;
+  const pending = pendingEntry(link, kind);
+  if (pending?.doc.n !== doc.n || pending.doc.envelope.s !== receipt)
+    return null;
+  const operation = identity(pending.doc);
+  if (!operation)
+    return null;
+  link.shared = { ...link.shared, [kind]: { sequence: doc.n, value: pending.doc.body.value } };
+  remember(link, pending.doc, operation, "committed");
+  if (kind === "membershipAndAccess")
+    applyAccess(link, pending.doc.body.value, pending.doc.body.effects);
+  delete link.sharedPending[pending.key];
+  if (!Object.keys(link.sharedPending).length)
+    delete link.sharedPending;
+  return null;
+}
+function operationOutcome(link, id, operation) {
+  if (!link || link.sharedSetup !== id || !OPERATION_ID.test(operation))
+    return null;
+  const decided = Object.hasOwn(link.sharedOutcomes ?? {}, operation) && link.sharedOutcomes[operation];
+  if (decided)
+    return decided;
+  const pending = Object.values(link.sharedPending ?? {}).map(held).find((doc) => doc && identity(doc) === operation);
+  return pending ? { status: "pending", sequence: pending.n, baseRevision: pending.n - 1, epoch: pending.body.epoch, kind: pending.body.kind } : null;
+}
+async function waitShared(save, timeout = 3000, signal) {
+  const until = Date.now() + timeout;
+  while (Date.now() < until && !signal?.aborted) {
+    const link = readLink();
+    const outcome = operationOutcome(link, save.id, save.operation);
+    if (outcome?.status === "committed")
+      return "saved";
+    if (outcome?.status === "interrupted")
+      return "interrupted";
+    if (link?.setup?.id !== save.id || link.setup.epoch !== save.epoch)
+      return "interrupted";
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  return "pending";
+}
+function committedOperations(link) {
+  return Object.fromEntries(Object.entries(link.sharedOutcomes ?? {}).filter(([, outcome]) => outcome.status === "committed"));
+}
+function installShared(link, values, outcomes) {
+  if (link.sharedSetup !== link.setup?.id)
+    delete link.sharedOutcomes;
+  link.sharedOutcomes = { ...link.sharedOutcomes, ...outcomes };
+  for (const envelope of [...Object.values(link.sharedPending ?? {}), ...Object.values(link.sharedInterrupted ?? {})]) {
+    const proposal = held(envelope);
+    if (!proposal || !sharedKind(proposal.body.kind))
+      continue;
+    const operation = identity(proposal);
+    if (!operation || link.sharedOutcomes[operation])
+      continue;
+    const accepted = values?.[proposal.body.kind];
+    const legacyMatch = !outcomes && proposal.n === accepted?.sequence && JSON.stringify(proposal.body.value) === JSON.stringify(accepted.value);
+    remember(link, proposal, operation, legacyMatch ? "committed" : "interrupted");
+  }
+  if (values && Object.keys(values).length)
+    link.shared = values;
+  else
+    delete link.shared;
+  delete link.sharedPending;
+  delete link.sharedInterrupted;
+  delete link.sharedReceipts;
+  link.sharedSetup = values ? link.setup?.id : undefined;
+}
+function changeShared(kind, change, operation) {
+  let save = null;
+  updateLink((link) => {
+    if (!link || link.setup?.role !== "primary" || !link.setup.standby)
+      return null;
+    save = stageShared(link, kind, change(sharedValue(link, kind), link), undefined, operation);
+    return save ? link : null;
+  }, { durable: true });
+  return save;
+}
+function submitShared(kind, value) {
+  return changeShared(kind, () => value);
+}
+var MAX_SHARED_BYTES, PENDING_SAVE = "Pending until the standby is back.", OPERATION_ID;
+var init_shared = __esm(() => {
+  init_data_declarations();
+  init_format();
+  init_known();
+  init_state();
+  init_lease();
+  init_access();
+  init_membership();
+  init_record();
+  MAX_SHARED_BYTES = Math.floor(MOST_DOC / 3);
+  OPERATION_ID = /^[A-Za-z0-9_-]{22,43}$/;
+});
+
 // box/src/link/documents/changed.ts
 import fs28 from "node:fs";
 import path27 from "node:path";
@@ -15306,7 +15220,7 @@ import crypto17 from "node:crypto";
 function pairedPhone(link, key, pairing) {
   return (link?.phones ?? []).find((phone) => phone.key === key && (pairing === undefined || (phone.pairing ?? "") === pairing));
 }
-function authorizePhonePairing(key, hello, address) {
+function stagePhonePairing(key, hello, address) {
   const encoded = key.toString("base64url");
   const current = () => {
     const phone = pairedPhone(readLink(), encoded);
@@ -15314,6 +15228,18 @@ function authorizePhonePairing(key, hello, address) {
   };
   if (!hello?.pair)
     return current();
+  const before = readLink();
+  const pending = pendingShared(before, "membershipAndAccess");
+  if (pending) {
+    const hash = bodyHash(String(hello.pair));
+    const effects = pending.body.effects ?? pending.body.value;
+    const devices = isObject(pending.body.value) && pending.body.value.devices || pending.body.devices;
+    if (isObject(effects) && isObject(effects.pairing) && Object.values(effects.pairing).includes(hash) && isObject(devices) && Array.isArray(devices.phones)) {
+      const phone = devices.phones.find((phone) => isObject(phone) && phone.key === encoded);
+      if (typeof phone?.pairing === "string" && !pairedPhone(before, encoded, phone.pairing))
+        return { save: asSave(pending), pairing: phone.pairing };
+    }
+  }
   let paired;
   const { save, changed } = updateAccess((link) => {
     const given = Buffer.from(String(hello.pair), "base64url");
@@ -15340,11 +15266,25 @@ function authorizePhonePairing(key, hello, address) {
     delete link[slot];
     return link;
   });
-  if (save || !changed)
+  if (save && paired)
+    return { save, pairing: paired };
+  if (!changed)
     return current();
   if (paired)
     noteDocsChanged();
   return paired ?? current();
+}
+async function authorizePhonePairing(key, hello, address, signal) {
+  const staged = stagePhonePairing(key, hello, address);
+  if (typeof staged !== "object")
+    return staged;
+  noteDocsChanged();
+  if (await waitShared(staged.save, Infinity, signal) !== "saved" || signal?.aborted)
+    return false;
+  return pairedPhone(readLink(), key.toString("base64url"), staged.pairing) ? staged.pairing : false;
+}
+function authorizePhone(...args) {
+  return typeof stagePhonePairing(...args) === "string";
 }
 function noteRemoved(link, key, pairing) {
   link.removed ??= [];
@@ -15518,13 +15458,14 @@ function pairingLink(link) {
   });
   return `kuvo-link://pair?${query}`;
 }
-var canIssuePairing = (phone) => phone.from !== "mac" || !phone.by && phone.kind !== "desktop", authorizePhone = (...args) => authorizePhonePairing(...args) !== false, PAIRING, MOST_AT_ONCE = 16, MOST_KEPT2 = 256, removedAlready = (link, key, pairing) => (link.removed ?? []).some((r) => r.key === key && r.pairing === pairing), MOST_BLOCKED = 64, vouchedWords = (link, key, name) => key && (link?.phones ?? []).some((each) => each.by === key) ? ` Kuvo Code’s app on ${name} is taken off your devices.` : "", vouchBlockOf = (link, key) => key ? (link?.vouchBlocked ?? []).find((each) => each.key === key) : undefined, fits2 = (entry, macs) => typeof entry?.key === "string" && KEY.test(entry.key) && !macs.includes(entry.key) && (entry.pairing == null || typeof entry.pairing === "string" && PAIRING.test(entry.pairing)), newPairing = () => crypto17.randomBytes(12).toString("base64url"), MOST_DESKTOPS = 16, hasVoucherSpace = (link, key) => (link.phones ?? []).filter((phone) => phone.key !== key && (phone.kind === "desktop" || phone.by)).length < MOST_DESKTOPS, ownPhones = (link) => ({
+var canIssuePairing = (phone) => phone.from !== "mac" || !phone.by && phone.kind !== "desktop", PAIRING, MOST_AT_ONCE = 16, MOST_KEPT2 = 256, removedAlready = (link, key, pairing) => (link.removed ?? []).some((r) => r.key === key && r.pairing === pairing), MOST_BLOCKED = 64, vouchedWords = (link, key, name) => key && (link?.phones ?? []).some((each) => each.by === key) ? ` Kuvo Code’s app on ${name} is taken off your devices.` : "", vouchBlockOf = (link, key) => key ? (link?.vouchBlocked ?? []).find((each) => each.key === key) : undefined, fits2 = (entry, macs) => typeof entry?.key === "string" && KEY.test(entry.key) && !macs.includes(entry.key) && (entry.pairing == null || typeof entry.pairing === "string" && PAIRING.test(entry.pairing)), newPairing = () => crypto17.randomBytes(12).toString("base64url"), MOST_DESKTOPS = 16, hasVoucherSpace = (link, key) => (link.phones ?? []).filter((phone) => phone.key !== key && (phone.kind === "desktop" || phone.by)).length < MOST_DESKTOPS, ownPhones = (link) => ({
   ...link.setup?.managed && link.setup.role === "primary" ? { epoch: link.setup.epoch } : {},
   phones: (link.phones ?? []).filter((phone) => phone.from === "pair" && !phone.local).map((phone) => ({ key: phone.key, name: phone.name ?? "", ...phone.address ? { address: phone.address } : {}, pairing: phone.pairing ?? "", ...phone.kind === "desktop" ? { kind: "desktop" } : {}, ...phone.by ? { by: phone.by } : {} })),
   removed: (link.removed ?? []).map(({ key, pairing }) => ({ key, pairing })),
   ...acceptedMembership(link)?.devices
 }), PAIRING_MINUTES = 10, newPairingToken = (issuer = null) => ({ token: crypto17.randomBytes(16).toString("base64url"), expires: Date.now() + PAIRING_MINUTES * 60000, issuer }), phoneDocs = (link) => Object.values(link?.docs ?? {}).map(held).filter((doc) => doc?.kind === "phones");
 var init_phones = __esm(() => {
+  init_shared();
   init_membership();
   init_access();
   init_lease();
@@ -15537,76 +15478,205 @@ var init_phones = __esm(() => {
   PAIRING = /^[A-Za-z0-9_-]{0,32}$/;
 });
 
-// box/src/link/setup/membership.ts
-function membershipOf(value) {
-  if (!isObject(value) || !Array.isArray(value.boxes) || !value.boxes.every(fitsPeer))
+// box/src/link/setup/leadership.ts
+function leadershipOf(link) {
+  const setup = link?.setup;
+  return setup?.managed ? held(link?.leadership?.[setup.epoch]) : null;
+}
+function pendingStandby(link) {
+  const proposal = held(link.leadershipPending);
+  if (proposal?.body.standbyAcceptance !== true || proposal.body.proposal !== true)
+    return;
+  return resolveCheckpoint(proposal)?.membership.boxes.find((peer) => peer.key === proposal.body.standby);
+}
+function approveLeadership(link, proposal, checkpoint) {
+  const current = link.setup;
+  if (!current || current.sign !== proposal.origin || proposal.body.proposal !== true || !link.sign)
     return null;
-  const boxes = value.boxes.map((box) => {
-    const { id: _localDestination, ...portable } = cleanPeer(box);
-    return portable;
-  });
-  if (new Set(boxes.map((box) => box.key)).size !== boxes.length)
+  const resolved = resolveCheckpoint(proposal, checkpoint);
+  if (proposal.body.standbyAcceptance === true) {
+    if (current.standby || !resolved || proposal.body.recovery === true && !requiresStandby(current))
+      return null;
+    const replacement = resolved.membership.boxes.find((peer) => peer.key === proposal.body.standby);
+    if (!replacement || replacement.key !== ownKey(link) || replacement.sign !== ownSign(link))
+      return null;
+    return readDoc(signDoc(link.sign, "leadership", proposal.n, { ...proposal.body, approval: proposal.envelope.s }));
+  }
+  if (current.standby?.key !== ownKey(link) || current.standby?.sign !== ownSign(link))
     return null;
-  const devices = isObject(value.devices) ? value.devices : {};
-  const revisions = value.removalRevisions;
-  const left = Array.isArray(value.left) ? value.left : [];
-  const removed = value.removedHere;
-  const tombstones = [...new Set([...Array.isArray(removed) ? removed : [], ...left].filter((key) => typeof key === "string" && KEY.test(key)))];
-  return {
-    boxes,
-    left: tombstones,
-    moved: cleanMoved(value.moved),
-    devices: {
-      phones: (Array.isArray(devices.phones) ? devices.phones : []).filter((phone) => fits2(phone, [])).map((phone) => ({ ...phone, pairing: phone.pairing ?? undefined })),
-      removed: (Array.isArray(devices.removed) ? devices.removed : []).filter((entry) => fits2(entry, []) && typeof entry.pairing === "string")
-    },
-    removalRevisions: Object.fromEntries(Object.entries(isObject(revisions) ? revisions : {}).filter(([key, n]) => KEY.test(key) && Number.isSafeInteger(n) && Number(n) > 0)),
-    vouchBlocked: Array.isArray(value.vouchBlocked) ? value.vouchBlocked : []
+  if ((current.checkpointed || Object.hasOwn(proposal.body, "checkpoint")) && !resolved)
+    return null;
+  const values = resolved?.shared ?? sharedValues(proposal.body.shared) ?? {};
+  for (const [kind, entry] of Object.entries(link.shared ?? {})) {
+    if (resolved && kind === "membershipAndAccess" && !current.checkpointed)
+      continue;
+    if (resolved && kind === "queueNumberAllocation") {
+      const ledger = entry.value;
+      const next = values.queueNumberAllocation?.value;
+      if (!isObject(ledger) || !isObject(next) || Number(next.next) < Number(ledger.next) || JSON.stringify(next.given ?? {}) !== JSON.stringify(ledger.given ?? {}) || JSON.stringify(next.granted ?? {}) !== JSON.stringify(ledger.granted ?? {}))
+        return null;
+      continue;
+    }
+    if (JSON.stringify(values[kind]) !== JSON.stringify(entry))
+      return null;
+  }
+  if (resolved) {
+    for (const [operation, outcome] of Object.entries(committedOperations(link))) {
+      if (JSON.stringify(resolved.outcomes[operation]) !== JSON.stringify(outcome))
+        return null;
+    }
+  }
+  return readDoc(signDoc(link.sign, "leadership", proposal.n, { ...proposal.body, approval: proposal.envelope.s }));
+}
+function takeLeadership(link, doc, checkpoint) {
+  const current = link.setup;
+  const next = setupOf(doc.body);
+  const acceptance = doc.body.standbyAcceptance === true;
+  if (doc.body.recovery === true && !acceptance)
+    return false;
+  if (doc.kind !== "leadership" || !current || current.aside || !next || next.id !== current.id || doc.n !== next.epoch || next.epoch !== current.epoch + 1 || !acceptance && doc.origin !== (current.standby?.sign ?? current.sign) || doc.body.previous !== current.primary)
+    return false;
+  const resolved = resolveCheckpoint(doc, checkpoint);
+  if ((current.checkpointed || Object.hasOwn(doc.body, "checkpoint")) && !resolved)
+    return false;
+  const body = resolved?.membership ?? doc.body;
+  if (!Array.isArray(body.boxes) || !body.boxes.every(fitsPeer))
+    return false;
+  const shared = resolved?.shared ?? sharedValues(doc.body.shared);
+  if (doc.body.shared !== undefined && !shared)
+    return false;
+  const takeover = doc.body.takeover === true;
+  if (takeover) {
+    if (!current.standby || next.primary !== current.standby.key || doc.body.proposal)
+      return false;
+  } else if (current.standby || acceptance) {
+    const { approval, ...proposal } = doc.body;
+    if (proposal.proposal !== true || !readDoc({
+      d: docBytes(current.sign, "leadership", doc.n, proposal).toString("base64url"),
+      s: approval
+    }))
+      return false;
+  } else if (doc.body.proposal)
+    return false;
+  const peers = body.boxes.map(cleanPeer);
+  if (new Set(peers.map((peer) => peer.key)).size !== peers.length)
+    return false;
+  const primary = peers.find((peer) => peer.key === next.primary);
+  const standby = peers.find((peer) => peer.key === doc.body.standby && peer.key !== next.primary && peer.sign !== primary?.sign);
+  if (acceptance && (takeover || !resolved || current.standby || doc.body.recovery === true && !requiresStandby(current) || next.primary !== current.primary || standby?.sign !== doc.origin || current.role === "primary" && held(link.leadershipPending)?.envelope.s !== doc.body.approval))
+    return false;
+  if (!primary?.sign || !peers.some((peer) => peer.key === current.primary && peer.sign === current.sign) || takeover && primary.sign !== current.standby?.sign || doc.body.standby != null && !standby?.sign || next.primary === current.primary && (doc.body.standby ?? null) === (current.standby?.key ?? null) && !(resolved && !current.checkpointed) && !(typeof doc.body.numberCeiling === "number" && doc.body.numberCeiling > (current.numberCeiling ?? 0)))
+    return false;
+  const ceiling = doc.body.numberCeiling;
+  if (standby && (typeof ceiling !== "number" || !Number.isSafeInteger(ceiling) || ceiling < 1))
+    return false;
+  const own = ownKey(link);
+  if (!own)
+    return false;
+  const left = Array.isArray(body.left) ? body.left.filter((key) => typeof key === "string" && KEY.test(key)) : [];
+  if (!peers.some((peer) => peer.key === own)) {
+    if (!left.includes(own))
+      return false;
+    delete link.setup;
+    delete link.leadership;
+    delete link.leadershipPending;
+    installShared(link, undefined);
+    link.macs = [];
+    delete link.mac;
+    delete link.macSigns;
+    link.phones = (link.phones ?? []).filter((phone) => phone.from === "pair");
+    return true;
+  }
+  const here = own === primary.key;
+  if (here && ownSign(link) !== primary.sign)
+    return false;
+  const stillHere = here && current.role === "primary";
+  if (resolved)
+    preserveCheckpoint(resolved.checkpoint);
+  link.setup = {
+    ...next,
+    ...resolved || current.checkpointed ? { checkpointed: true } : {},
+    sign: primary.sign,
+    role: here ? "primary" : "member",
+    managed: true,
+    ...requiresStandby(current) || standby || doc.body.sharedSaves === true ? { sharedSaves: true } : {},
+    ...standby?.sign ? { standby: { key: standby.key, sign: standby.sign }, numberCeiling: ceiling } : {}
   };
+  link.leadership = { ...link.leadership, [next.epoch]: doc.envelope };
+  delete link.leadershipPending;
+  installShared(link, shared ?? undefined, resolved?.outcomes);
+  const membership = acceptedMembership(link);
+  if (membership)
+    delete link.peerNames;
+  if (stillHere) {
+    if (membership)
+      projectMembership(link, membership);
+    return true;
+  }
+  link.macs = here ? [] : [primary.key];
+  link.macSigns = here ? {} : { [primary.key]: primary.sign };
+  link.macNames = here ? {} : { [primary.key]: primary.name };
+  link.macSeen = here ? {} : { [primary.key]: Date.now() };
+  if (here)
+    delete link.mac;
+  else
+    link.mac = primary.key;
+  if (link.docs)
+    delete link.docs[docKey(primary.sign, "phones")];
+  if (takeover) {
+    link.removed = [];
+    delete link.untold;
+    delete link.untoldMembership;
+    delete link.pendingMachineCleanup;
+  }
+  delete link.pairing;
+  delete link.appPairing;
+  if (membership)
+    projectMembership(link, membership, current.role === "member");
+  else
+    projectLegacyDevices(link, doc.body.devices, primary.key, here, current.role === "member");
+  if (here && !membership) {
+    link.macPeers = peers.filter((peer) => peer.key !== own);
+    link.macMoved = cleanMoved(doc.body.moved);
+    link.left = left;
+    link.removedHere = left;
+    if (isObject(doc.body.removalRevisions)) {
+      link.removalRevisions = Object.fromEntries(Object.entries(doc.body.removalRevisions).filter(([key, n]) => KEY.test(key) && Number.isSafeInteger(n) && Number(n) > 0));
+    }
+    delete link.peerNames;
+    link.vouchBlocked = Array.isArray(doc.body.vouchBlocked) ? doc.body.vouchBlocked : [];
+  } else if (!here) {
+    delete link.macPeers;
+    delete link.macMoved;
+    delete link.left;
+    delete link.removedHere;
+    delete link.peerNames;
+    delete link.vouchBlocked;
+  }
+  foldPhones(link);
+  return true;
 }
-function acceptedNames(link) {
-  const value = link.sharedSetup === link.setup?.id ? link.shared?.setupNames?.value : undefined;
-  return isObject(value) ? value : {};
-}
-function acceptedName(link, key, fallback) {
-  const name = key && (acceptedNames(link)[key] ?? (link.setup?.checkpointed ? undefined : link.peerNames?.[key]));
-  return typeof name === "string" && name ? name : fallback;
-}
-function acceptedMembership(link) {
-  if (!link?.setup || link.setup.aside || link.sharedSetup !== link.setup.id)
-    return null;
-  const value = link.shared?.membershipAndAccess?.value;
-  return isObject(value) && !Object.hasOwn(value, "fields") && link.setup.checkpointed ? membershipOf(value) : null;
-}
-function namedRoster(link, boxes) {
-  return boxes.map((box) => ({ ...box, name: acceptedName(link, box.key, box.name) }));
-}
-function projectMembership(link, membership, keepLocalPairings = false) {
-  const setup = link.setup;
-  const here = setup.role === "primary";
-  const old = new Map((link.phones ?? []).map((phone) => [phone.key, phone]));
-  const local = (link.phones ?? []).filter((phone) => phone.from === "pair" && (phone.local || keepLocalPairings)).map((phone) => ({ ...phone, local: true }));
-  const transferred = membership.devices.phones.map((phone) => ({
-    ...phone,
-    from: here ? "pair" : "mac",
-    ...here ? {} : { mac: setup.primary },
-    added: old.get(phone.key)?.added,
-    address: old.get(phone.key)?.address ?? phone.address
-  }));
-  link.phones = [...transferred, ...local.filter((phone) => !transferred.some((each) => each.key === phone.key))];
-  link.removed = membership.devices.removed;
-  if (here) {
-    link.macPeers = membership.boxes.filter((peer) => peer.key !== ownKey(link));
-    link.macMoved = membership.moved;
-    link.left = membership.left.slice(-64);
-    link.removedHere = membership.left;
-    link.removalRevisions = membership.removalRevisions;
-    link.vouchBlocked = membership.vouchBlocked;
+function projectLegacyDevices(link, value, primary, here, wasMember) {
+  const snapshot = isObject(value) ? value : {};
+  const local = (link.phones ?? []).filter((phone) => phone.from === "pair" && (wasMember || phone.local)).map((phone) => ({ ...phone, local: true }));
+  const transferred = (Array.isArray(snapshot.phones) ? snapshot.phones : []).filter((phone) => fits2(phone, [primary])).map((phone) => ({ ...phone, pairing: phone.pairing ?? undefined, from: here ? "pair" : "mac", ...here ? {} : { mac: primary } }));
+  const transferredKeys = new Set(transferred.map((phone) => phone.key));
+  link.phones = [...transferred, ...local.filter((phone) => !transferredKeys.has(phone.key))];
+  for (const entry of Array.isArray(snapshot.removed) ? snapshot.removed : []) {
+    if (fits2(entry, []) && typeof entry.pairing === "string" && !link.removed?.some((each) => each.key === entry.key && each.pairing === entry.pairing)) {
+      (link.removed ??= []).push({ key: entry.key, pairing: entry.pairing });
+    }
   }
 }
-var init_membership = __esm(() => {
+var NUMBER_RESERVE = 2000, STANDBY_UNLINK = "Choose another standby first.", PRIMARY_UNLINK = "Choose another primary first.";
+var init_leadership = __esm(() => {
+  init_format();
   init_known();
   init_phones();
+  init_checkpoint();
+  init_membership();
+  init_shared();
+  init_record();
 });
 
 // box/src/link/crypto/noise.ts
@@ -16067,11 +16137,18 @@ function openMail(body, link) {
   const key = Buffer.from(link.key, "base64url");
   const peers = peersOf(link);
   const named = new Set(peers.map((peer) => peer.key));
-  const senders = [...peers, ...macsOf(link).filter((key) => !named.has(key)).map((key) => ({ key, kind: "mac" }))];
+  const recovery = pendingStandby(link);
+  const senders = [...peers, ...recovery && !named.has(recovery.key) ? [recovery] : [], ...macsOf(link).filter((key) => !named.has(key)).map((key) => ({ key, kind: "mac" }))];
   for (const sender of senders) {
     try {
       const payload = JSON.parse(openOneWay(body, key, Buffer.from(sender.key, "base64url")).payload.toString("utf8"));
-      return { sender, payload: mailFormat.read(payload) };
+      const given = mailFormat.read(payload);
+      if (sender === recovery) {
+        if (!isObject(given.docs) || !Array.isArray(given.docs.give))
+          return null;
+        return { sender, payload: { docs: { give: given.docs.give.filter((envelope) => held(envelope)?.kind === "leadership") }, at: given.at } };
+      }
+      return { sender, payload: given };
     } catch (error) {
       if (error instanceof UnsupportedFormatVersion) {
         console.warn(error.message);
@@ -16104,6 +16181,7 @@ var KEY, ADDRESS, macsOf = (link) => [...new Set([...Array.isArray(link?.macs) ?
   } catch {}
 }, MAC_GONE_AFTER, MOST_PEERS = 64, fitsPeer = (peer) => isObject(peer) && typeof peer.key === "string" && KEY.test(peer.key) && typeof peer.address === "string" && ADDRESS.test(peer.address) && (peer.kind === "mac" || peer.kind === "machine"), cleanPeer = ({ key, address, name, kind, id, sign }) => ({ key, address, kind, name: plainName(name).slice(0, 100), ...typeof id === "string" ? { id: id.slice(0, 200) } : {}, ...typeof sign === "string" && SIGN.test(sign) ? { sign } : {} }), cleanMoved = (moved) => (Array.isArray(moved) ? moved : []).filter((each) => isObject(each) && typeof each.session === "string" && /^ses_[A-Za-z0-9]{1,60}$/.test(each.session) && typeof each.key === "string" && KEY.test(each.key)).slice(0, 500).map(({ session, key }) => ({ session, key })), writesOwnPeers = (link) => IS_MAC && !link?.setup?.managed || followedSetup(link)?.role === "primary", renamed = (link, peer) => ({ ...peer, name: acceptedName(link, peer.key, peer.name) }), mailFormat, MAX_MAIL;
 var init_known = __esm(() => {
+  init_leadership();
   init_membership();
   init_format_version();
   init_text();
@@ -16120,7 +16198,7 @@ var init_known = __esm(() => {
   ONLINE_FILE = path28.join(RUN, "online");
   AWAY_AFTER = 5 * 60000;
   MAC_GONE_AFTER = 30 * 24 * 3600 * 1000;
-  mailFormat = objectFormat("Peer mail", [(fields) => fields]);
+  mailFormat = objectFormat("Peer mail", 1);
   MAX_MAIL = 65600 - 17;
 });
 
@@ -19146,6 +19224,7 @@ var init_features = __esm(() => {
     "setup.mainOnly",
     "setup.ready",
     "setup.shared-saves",
+    "setup.standby-acceptance",
     "setup.takeover",
     "setup.welcomed",
     "shell.stop",
@@ -24863,6 +24942,7 @@ if [ -x "$E" ] && [ -f "$K/bin/kuvo-link.js" ]; then
   ${only ? "" : "echo kept; exit 0"}
   export KUVO_UNINSTALL_FROM_SSH=1
   said=$( ${link("uninstall")} ); did=$?
+  case "$said" in '{"result":"refused",'*) printf '%s\n' "$said"; exit "$did" ;; esac
 fi
 ${only ? "" : "exit 1"}
 (${uninstallCleanup}) || case $? in
@@ -27556,7 +27636,7 @@ function changeKeptHosts(change) {
     }
     const next = change(isObject(whole.machines) ? whole.machines : {});
     if (next)
-      writePrivate(PHONE_LINK_FILE, JSON.stringify({ ...whole, machines: next }, null, 2));
+      writeDurablePrivate(PHONE_LINK_FILE, JSON.stringify({ ...whole, machines: next }, null, 2));
     return true;
   });
 }
@@ -41887,9 +41967,9 @@ function phoneTrustWait(link, key, host) {
     return;
   return checking;
 }
-function authorizeDesktopConnection(host, key, hello, address) {
+function authorizeDesktopConnection(host, key, hello, address, signal) {
   const waiting = phoneTrustWait(readLink(), key.toString("base64url"), host);
-  return waiting ? { ...waiting, waiting: waiting.message } : authorizePhonePairing(key, hello, address);
+  return waiting ? { ...waiting, waiting: waiting.message } : authorizePhonePairing(key, hello, address, signal);
 }
 function confirmPhoneMembership(host, sender, link, given) {
   const pending = freshness.get(host);
@@ -42788,23 +42868,31 @@ async function handoverHere(target, position, requester) {
     return ready;
   if (!isObject(ready.value) || ready.value.sign !== next.sign)
     return answer4(409, "The chosen computer's signing key changed. Refresh your setup and try again.");
-  return proposeLeadership(position, target, setup.standby?.key !== target ? setup.standby ?? null : null, requester, next.sign);
+  return proposeLeadership(position, target, setup.standby?.key !== target ? setup.standby ?? null : null, { requester, targetSign: next.sign });
 }
-async function proposeLeadership(position, target, standby, requester, targetSign, retiredStandby) {
+function enrollStandby(setup, peer, prepare) {
+  return proposeLeadership({ setup: setup.id, epoch: setup.epoch }, setup.primary, peer, { recovery: { peer, prepare } });
+}
+async function proposeLeadership(position, target, standby, { requester, targetSign, recovery } = {}) {
+  let oversized = false;
+  let unsupportedLibrary = false;
   const changed = changeNumbers((numbers) => updateLink((link) => {
     const current = followedSetup(link);
     if (!link?.sign || current?.role !== "primary" || current.sign !== ownSign(link) || current.id !== position.setup || current.epoch !== position.epoch || primaryFenced(link) || Object.keys(link.sharedPending ?? {}).length)
       return null;
-    if (retiredStandby && (standby || current.standby?.key !== retiredStandby))
+    if (recovery && (!standby || current.standby || !requiresStandby(current) || target !== current.primary || recovery.peer.key !== standby.key || recovery.peer.sign !== standby.sign))
       return null;
     const members = peersOf(link);
     if (requester && !members.some((peer) => peer.key === requester))
       return null;
     if (target !== current.primary && (!members.some((peer) => peer.key === target && peer.sign === targetSign) || members.some((peer) => !peer.sign || !takesForwarded(peer.key, HANDOVER_FEATURE) || Object.keys(link.shared ?? {}).length && !takesForwarded(peer.key, "setup.shared-saves"))))
       return null;
-    if (standby && (standby.key === target || !members.some((peer) => peer.key === standby.key && peer.sign === standby.sign) || members.some((peer) => !peer.sign || !takesForwarded(peer.key, "setup.shared-saves"))))
+    if (standby?.key === target)
+      return null;
+    if (standby && !recovery && (!members.some((peer) => peer.key === standby.key && peer.sign === standby.sign) || members.some((peer) => !peer.sign || !takesForwarded(peer.key, "setup.shared-saves"))))
       return null;
     const supportsCheckpoint = members.every((peer) => takesForwarded(peer.key, CHECKPOINT_FEATURE));
+    const acceptance = Boolean(standby && !current.standby && (recovery || members.every((peer) => takesForwarded(peer.key, STANDBY_ACCEPTANCE))));
     const migrating = Boolean(!current.checkpointed && current.standby && supportsCheckpoint);
     const renewing = target === current.primary && (standby?.key ?? null) === (current.standby?.key ?? null);
     if (renewing && (!standby || !current.numberCeiling || !migrating && current.numberCeiling >= MOST_NUMBER - 1))
@@ -42821,8 +42909,10 @@ async function proposeLeadership(position, target, standby, requester, targetSig
     if (renewing && !migrating && next + NUMBER_RESERVE - 1 <= current.numberCeiling)
       return null;
     const shared = { ...link.sharedSetup === current.id ? link.shared : {} };
+    let hasLibrary = false;
     if (standby && !current.standby) {
       const library = readPersonalities();
+      hasLibrary = library.personalities.length > 0 || library.removed.length > 0;
       const zone = readZoneSetting();
       if (zone && !shared.setupTimeZone)
         shared.setupTimeZone = { sequence: 1, value: zone };
@@ -42834,43 +42924,57 @@ async function proposeLeadership(position, target, standby, requester, targetSig
         if (usage.imported || Object.keys(units).length)
           shared.setupUsageDisplay = { sequence: 1, value: { units, imported: usage.imported } };
       }
-      if (!shared.setupPersonalities && Buffer.byteLength(JSON.stringify({ ...shared, library })) < MAX_SHARED_BYTES) {
+      if (!shared.setupPersonalities) {
         shared.setupPersonalities = { sequence: 1, value: library };
       }
     }
     const authority = {
       setup: { id: current.id, epoch, primary: target },
       previous: current.primary,
-      ...retiredStandby ? { retiredStandby } : {},
       ...standby || requiresStandby(current) ? { sharedSaves: true } : {},
       ...standby ? { standby: standby.key, numberCeiling: renewing && migrating ? current.numberCeiling : Math.min(MOST_NUMBER - 1, next + NUMBER_RESERVE - 1) } : {},
-      ...current.standby ? { proposal: true } : {}
+      ...current.standby || acceptance ? { proposal: true } : {},
+      ...acceptance ? { standbyAcceptance: true } : {},
+      ...recovery ? { recovery: true } : {}
     };
     const ledger = { next, given: numbers.given, granted };
-    let doc;
-    if (current.checkpointed || supportsCheckpoint) {
+    const checkpointed = current.checkpointed || supportsCheckpoint || acceptance;
+    if (checkpointed) {
       const membership = acceptedMembership(link) ?? captureMembership(link);
       if (!membership)
         return null;
-      shared.membershipAndAccess = { sequence: shared.membershipAndAccess?.sequence ?? 1, value: membership };
+      if (recovery) {
+        if (membership.boxes.some((peer) => peer.key === recovery.peer.key) || membership.left.includes(recovery.peer.key))
+          return null;
+        const { id: _destination, ...portable } = recovery.peer;
+        membership.boxes.push(portable);
+      }
+      shared.membershipAndAccess = { sequence: (shared.membershipAndAccess?.sequence ?? (recovery ? 0 : 1)) + (recovery ? 1 : 0), value: membership };
       shared.queueNumberAllocation = { sequence: shared.queueNumberAllocation?.sequence ?? 1, value: ledger };
-      doc = checkpointedTransition(link, authority, shared);
-    } else {
-      doc = readDoc(signDoc(link.sign, "leadership", epoch, {
-        ...authority,
-        boxes,
-        left,
-        moved,
-        devices: ownPhones(link),
-        vouchBlocked: link.vouchBlocked ?? [],
-        shared,
-        removalRevisions: link.removalRevisions,
-        numbers: ledger
-      }));
     }
+    if (standby && !current.standby && Buffer.byteLength(JSON.stringify(shared)) > MAX_SHARED_BYTES) {
+      oversized = true;
+      return null;
+    }
+    if (hasLibrary && !acceptance) {
+      unsupportedLibrary = true;
+      return null;
+    }
+    const doc = checkpointed ? checkpointedTransition(link, authority, shared) : readDoc(signDoc(link.sign, "leadership", epoch, {
+      ...authority,
+      boxes,
+      left,
+      moved,
+      devices: ownPhones(link),
+      vouchBlocked: link.vouchBlocked ?? [],
+      shared,
+      removalRevisions: link.removalRevisions,
+      numbers: ledger
+    }));
     if (!doc || !boxes.every((box) => box.key && box.sign && box.address))
       return null;
-    if (current.standby)
+    recovery?.prepare(link);
+    if (current.standby || acceptance)
       link.leadershipPending = doc.envelope;
     else {
       if (!takeLeadership(link, doc))
@@ -42879,8 +42983,15 @@ async function proposeLeadership(position, target, standby, requester, targetSig
     }
     return link;
   }, { durable: true }));
+  if (oversized)
+    return answer4(413, "The personality library and setup settings are too large to replicate. Shorten the personality library before choosing a standby.");
+  if (unsupportedLibrary)
+    return answer4(409, "Update all members before choosing a standby so it can verify the personality library.");
   if (!changed)
     return answer4(409, "The setup changed or the standby couldn't be reached. Refresh your setup and try again.");
+  if (recovery && changed.leadershipPending) {
+    return { status: 202, value: { primary: target, epoch: changed.setup.epoch + 1 } };
+  }
   if (changed.leadershipPending) {
     const deadline = Date.now() + 12000;
     while (Date.now() < deadline) {
@@ -42950,12 +43061,12 @@ async function standbyHere(target, position, requester, reason = "user choice") 
     return answer4(ready.status, ready.refused);
   if (ready.status !== 200 || !isObject(ready.value) || ready.value.sign !== peer.sign)
     return answer4(409, "The chosen standby hasn't caught up yet.");
-  const outcome = await proposeLeadership(position, setup.primary, { key: target, sign: peer.sign }, requester);
+  const outcome = await proposeLeadership(position, setup.primary, { key: target, sign: peer.sign }, { requester });
   if (outcome.status === 202)
     console.info(`Standby selected: ${target} (${reason}).`);
   return outcome;
 }
-var HANDOVER_FEATURE = "setup.handover", answer4 = (status, message) => ({ status, value: { message } });
+var STANDBY_ACCEPTANCE = "setup.standby-acceptance", HANDOVER_FEATURE = "setup.handover", answer4 = (status, message) => ({ status, value: { message } });
 var init_handover = __esm(() => {
   init_settings3();
   init_library();
@@ -43413,22 +43524,20 @@ async function removeComputerHere(key, pendingOnly = false) {
   const link = readLink();
   const setup = followedSetup(link);
   if (!pendingOnly && setup?.role === "primary" && (setup.standby?.key === key || !setup.standby && leadershipOf(link)?.body.retiredStandby === key)) {
-    const replacement = peersOf(link).find((peer) => peer.key !== key && takesForwarded(peer.key, "setup.shared-saves"));
-    if (!replacement)
+    const candidates = peersOf(link).filter((peer) => peer.key !== key && takesForwarded(peer.key, "setup.shared-saves"));
+    if (!candidates.length)
       return answer5(409, { message: STANDBY_UNLINK });
-    if (setup.standby) {
-      const retired = await proposeLeadership({ setup: setup.id, epoch: setup.epoch }, setup.primary, null, undefined, undefined, key);
-      if (retired.status !== 202)
-        return answer5(409, { message: "The standby must answer before it can be removed." });
+    let outcome = answer5(409, { message: STANDBY_UNLINK });
+    for (const candidate of candidates) {
+      outcome = await standbyHere(candidate.key, { setup: setup.id, epoch: setup.epoch });
+      const current = readLink();
+      if (outcome.status === 202)
+        break;
+      if (current?.leadershipPending || current?.setup?.id !== setup.id || current.setup.epoch !== setup.epoch)
+        return outcome;
     }
-    const after = followedSetup(readLink());
-    if (!after || after.id !== setup.id || after.role !== "primary")
-      return answer5(409, { message: "The setup changed. Refresh it and try again." });
-    if (!after.standby) {
-      const selected = await standbyHere(replacement.key, { setup: after.id, epoch: after.epoch });
-      if (selected.status !== 202 && !readLink()?.setup?.standby)
-        return selected;
-    }
+    if (outcome.status !== 202)
+      return outcome;
   }
   return finishRemoval(prepareRemoval(key, pendingOnly));
 }
@@ -51303,28 +51412,55 @@ async function uninstallCommand(args) {
     console.log(JSON.stringify(uninstallCheck()));
     return 0;
   }
+  const needsHandover = (link) => {
+    return link?.setup?.role === "primary" && (peersOf(link).some((peer) => peer.key !== link.setup.primary) || Boolean(link.leadershipPending || pendingShared(link, "membershipAndAccess")));
+  };
+  const refuse = (message = PRIMARY_UNLINK) => {
+    console.log(JSON.stringify({ result: "refused", message }));
+    console.error(message);
+    return 1;
+  };
+  if (needsHandover(readLink()))
+    return refuse();
   const overSSH = process.env.KUVO_UNINSTALL_FROM_SSH === "1";
   const publishing = IS_MAC && !mainElsewhere(readLink());
   const revoked = overSSH || await revokeDesktop();
-  let done;
+  let refusal = "Kuvo Code couldn’t check who leads this setup right now. Try uninstalling again.";
+  let done = { stopped: false, launchAgent: false, crontab: false, startsAgain: [], left: [K], message: "Kuvo Code couldn’t confirm it had stopped on this computer." };
+  const cleared = { cleanup: null };
+  let identityCleared = false;
   try {
-    done = uninstall2();
-  } catch (error) {
-    logCleanup(error);
-    done = { stopped: false, launchAgent: false, crontab: false, startsAgain: [], left: [K], message: "Kuvo Code couldn’t confirm it had stopped on this computer." };
-  }
-  const cleanup = overSSH ? null : run3("sh", ["-c", `K=$1
+    updateLink((link) => {
+      if (needsHandover(link)) {
+        refusal = PRIMARY_UNLINK;
+        return null;
+      }
+      refusal = "";
+      try {
+        done = uninstall2();
+      } catch (error) {
+        logCleanup(error);
+      }
+      cleared.cleanup = overSSH ? null : run3("sh", ["-c", `K=$1
 E=$2
 ${uninstallCleanup}`, "kuvo-cleanup", K, process.execPath]);
-  const identityCleared = (overSSH || clearDesktopKeychain()) && cleanup?.status !== 81;
-  const credentialsCleared = cleanup === null || cleanup.status === 0;
-  if (cleanup && !credentialsCleared)
-    logCleanup(cleanup.error ?? cleanup.stderr);
+      identityCleared = (overSSH || clearDesktopKeychain()) && cleared.cleanup?.status !== 81;
+      return null;
+    });
+  } catch (error) {
+    logCleanup(error);
+  }
+  if (refusal)
+    return refuse(refusal);
+  const result = cleared.cleanup;
+  const credentialsCleared = result === null || result.status === 0;
+  if (result && !credentialsCleared)
+    logCleanup(result.error ?? result.stderr);
   if (!revoked)
     done.message += publishing ? " Kuvo Code couldn’t confirm the desktop removal reached every other computer." : " Kuvo Code couldn’t confirm that your main computer revoked this desktop’s access.";
   if (!identityCleared)
     done.message += " Kuvo Code couldn’t delete this desktop’s local identity.";
-  if (!credentialsCleared && cleanup?.status !== 81)
+  if (!credentialsCleared && result?.status !== 81)
     done.message += " Kuvo Code couldn’t clear all its keys and sign-ins. Run uninstall again.";
   const finished = done.stopped && done.startsAgain.length === 0 && revoked && identityCleared && credentialsCleared;
   console.log(JSON.stringify({ result: finished ? "uninstalled" : "unfinished", ...done }));
@@ -51344,6 +51480,8 @@ var init_uninstall = __esm(() => {
   init_phone_sync();
   init_phones();
   init_card();
+  init_leadership();
+  init_shared();
   init_main_only();
   init_marks();
   init_serve_kept();
@@ -52953,14 +53091,24 @@ function takeUpdateLock() {
   fs137.writeFileSync(path143.join(UPDATE_LOCK, "pid"), String(process.pid), { mode: 384 });
   return true;
 }
-function keepForRollback(files, engine, bundles = new Set) {
+function keepForRollback(files, engine, bundles, keeper) {
   fs137.rmSync(ROLLBACK, { recursive: true, force: true });
   fs137.mkdirSync(path143.join(ROLLBACK, "files"), { recursive: true, mode: 448 });
+  const guard = /^if \[ "\$\{1:-\}" = check-rollback-layout \]/m.test(fs137.readFileSync(keeper, "utf8"));
+  let checkLayout = 'test ! -e "$K/folder-version.json" && test ! -L "$K/folder-version.json"';
+  if (guard) {
+    fs137.copyFileSync(keeper, path143.join(ROLLBACK, "layout-guard.sh"));
+    checkLayout = 'sh "$B/layout-guard.sh" check-rollback-layout "$K"';
+  } else if (fs137.lstatSync(path143.join(K, "folder-version.json"), { throwIfNoEntry: false })) {
+    fs137.copyFileSync(path143.join(K, "folder-version.json"), path143.join(ROLLBACK, "folder-version.json"));
+    checkLayout = 'cmp -s "$K/folder-version.json" "$B/folder-version.json"';
+  }
   const lines = [
     "#!/bin/sh",
     `K=${quote(K)}; B=${quote(ROLLBACK)}`,
     `p=$(cat "$K/run/.updating/pid" 2>/dev/null)`,
     `if [ -n "$p" ] && [ "$p" != "\${KUVO_UPDATER:-}" ] && kill -0 "$p" 2>/dev/null && { if [ -d /proc ]; then grep -q kuvo-link "/proc/$p/cmdline" 2>/dev/null; else ps -ww -o command= -p "$p" 2>/dev/null | grep -q kuvo-link; fi; }; then exit 0; fi`,
+    `{ ${checkLayout}; } || exit 1`,
     `halt=; if ! grep -q '^bridge)' "$B/files/bin/kuvo-start" 2>/dev/null; then halt=stop; elif ${engine ? `[ ! -f "$B/engine-started" ]` : "false"}; then halt=engine-stop; grep -q '^engine-stop)' "$K/bin/kuvo-start" 2>/dev/null || halt=stop; fi`,
     `if [ -n "$halt" ]; then sh "$K/bin/kuvo-start" "$halt" >/dev/null 2>&1 || exit 1; fi`
   ];
@@ -53288,7 +53436,7 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
     if (otherEngine && !roomForData())
       throw new Error("There isn't room on it to keep its data while it updates.");
     const newerEngine = otherEngine && newerVersion(manifest.engine, previous?.version);
-    keepForRollback(files, newerEngine ? manifest.engine : null, new Set(bundles));
+    keepForRollback(files, newerEngine ? manifest.engine : null, new Set(bundles), path143.join(stage, "files", "bin", "kuvo-start"));
     noteUpdate({ trial: { from: before, to: manifest.version, at: clock() }, running: null });
     fs137.rmSync(path143.join(RUN, "update-restore"), { force: true });
     fs137.writeFileSync(UPDATE_TRIAL, manifest.version, { mode: 384 });
@@ -57487,7 +57635,7 @@ var init_files4 = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "330041c2555a";
+var BRIDGE_VERSION = "67a13c9607f4";
 
 // box/src/link/rehome/paths.ts
 import { createHash as createHash4 } from "node:crypto";
@@ -57929,7 +58077,9 @@ var init_outside2 = __esm(() => {
 });
 
 // box/src/shared/folder-version.ts
+import { spawnSync as spawnSync15 } from "node:child_process";
 import fs149 from "node:fs";
+import os17 from "node:os";
 import path157 from "node:path";
 function checkpoint(file, current) {
   const format = `Kuvo folder at ${path157.dirname(file)}`;
@@ -57961,9 +58111,49 @@ function checkFolderVersion(folder) {
   checkpoint(path157.resolve(folder, FOLDER_VERSION_FILE), steps.length);
 }
 function upgradeKuvoFolder(folder, importLegacy) {
-  upgradeFolder(folder, steps, importLegacy);
+  upgradeFolder(folder, steps, importLegacy, () => checkTrialRecovery(folder));
 }
-function upgradeFolder(folder, ordered, importLegacy) {
+function checkTrialRecovery(folder) {
+  if (!fs149.existsSync(path157.join(folder, "run", "update-trial")))
+    return;
+  const bin = path157.join(folder, "updates", "rollback", "files", "bin");
+  const saved = path157.join(bin, "kuvo-link.js");
+  let engine;
+  try {
+    engine = /^V=([\w.-]+)$/m.exec(fs149.readFileSync(path157.join(bin, "kuvo-start"), "utf8"))?.[1];
+  } catch {}
+  const oldRuntime = engine && path157.join(folder, "engine", engine, "opencode");
+  let runtime = process.execPath;
+  if (oldRuntime)
+    try {
+      fs149.accessSync(oldRuntime, fs149.constants.X_OK);
+      runtime = oldRuntime;
+    } catch {}
+  const refuse = () => {
+    throw new Error(`The saved Kuvo Code can't recover folder layout ${steps.length}. Roll back the trial before updating the folder.`);
+  };
+  if (!fs149.existsSync(saved))
+    return refuse();
+  const scratch = fs149.mkdtempSync(path157.join(os17.tmpdir(), "kuvo-layout-probe-"));
+  try {
+    const probe = path157.join(scratch, ".kuvo-code");
+    fs149.mkdirSync(probe, { mode: 448 });
+    const accepts = (version) => {
+      fs149.writeFileSync(path157.join(probe, FOLDER_VERSION_FILE), JSON.stringify({ version }));
+      const flags = runtime === oldRuntime || process.versions.bun ? ["--config=/dev/null", "--no-env-file"] : [];
+      return spawnSync15(runtime, [...flags, saved, "here", ".kuvo-machine-probe"], {
+        env: { ...process.env, HOME: scratch, KUVO_HOME: probe, BUN_BE_BUN: "1", BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0" },
+        stdio: "ignore",
+        timeout: 15000
+      }).status === 0;
+    };
+    if (!accepts(steps.length) || steps.length > 1 && accepts(2147483647))
+      refuse();
+  } finally {
+    fs149.rmSync(scratch, { recursive: true, force: true });
+  }
+}
+function upgradeFolder(folder, ordered, importLegacy, beforeSteps) {
   folder = path157.resolve(folder);
   const file = path157.join(folder, FOLDER_VERSION_FILE);
   const current = ordered.length;
@@ -57973,6 +58163,8 @@ function upgradeFolder(folder, ordered, importLegacy) {
 `, path157.dirname(folder));
   locked(path157.join(folder, ".folder-upgrade.lock"), () => {
     const start = checkpoint(file, current);
+    if (start.version < current)
+      beforeSteps?.();
     for (let version = start.version;version < current; version++) {
       const upgradingTo = version + 1;
       if (start.upgradingTo !== upgradingTo)
@@ -59324,14 +59516,21 @@ __export(exports_upgrades, {
   parsePlist: () => parsePlist,
   runUpgrades: () => runUpgrades
 });
-import { spawnSync as spawnSync15 } from "node:child_process";
+import { spawnSync as spawnSync16 } from "node:child_process";
 import crypto53 from "node:crypto";
 import fs156 from "node:fs";
 import path165 from "node:path";
-function writeWhole(file, text) {
+function replaceStaged(file, bytes, mode = 384) {
   fs156.mkdirSync(path165.dirname(file), { recursive: true, mode: 448 });
   const temporary = `${file}.${process.pid}.new`;
-  fs156.writeFileSync(temporary, text, { mode: 384 });
+  const fd = fs156.openSync(temporary, "w", mode);
+  try {
+    fs156.writeFileSync(fd, bytes);
+    fs156.fchmodSync(fd, mode);
+    fs156.fsyncSync(fd);
+  } finally {
+    fs156.closeSync(fd);
+  }
   fs156.renameSync(temporary, file);
 }
 function parsePlist(xml) {
@@ -59395,13 +59594,13 @@ function appPreferences(appFolder) {
   const real = located(homeFolder()) === located(accountHome()) && id === "run.kuvo.code";
   if (!real && !exists5(file))
     return {};
-  const asked = real ? spawnSync15("/usr/bin/defaults", ["export", id, "-"], { encoding: "utf8", timeout: 60000, maxBuffer: 256 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"] }) : spawnSync15("/usr/bin/plutil", ["-convert", "xml1", "-o", "-", file], { encoding: "utf8", timeout: 60000, maxBuffer: 256 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"] });
+  const asked = real ? spawnSync16("/usr/bin/defaults", ["export", id, "-"], { encoding: "utf8", timeout: 60000, maxBuffer: 256 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"] }) : spawnSync16("/usr/bin/plutil", ["-convert", "xml1", "-o", "-", file], { encoding: "utf8", timeout: 60000, maxBuffer: 256 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"] });
   const read = asked.status === 0 && asked.stdout ? parsePlist(asked.stdout) : null;
   if (!isObject(read))
     throw new Said("Kuvo couldn't read the earlier Kuvo Code's settings, so nothing was moved. Try again.");
   return read;
 }
-function projects({ prefs, staged, S }) {
+function projects({ writeWhole, prefs, staged, S }) {
   const order = strings(prefs.projectFolders);
   const settings = isObject(prefs.projectSettings) ? prefs.projectSettings : {};
   const bots = (folder) => folder.startsWith(path165.join(S, "bots") + "/") || folder.includes("/.kuvo-code/bots/");
@@ -59429,7 +59628,7 @@ function projects({ prefs, staged, S }) {
   }
   writeWhole(file, JSON.stringify({ version: projectsVersion, projects: list }, null, 2));
 }
-function worktrees({ prefs, staged }) {
+function worktrees({ writeWhole, prefs, staged }) {
   const kept = isObject(prefs.worktrees) ? prefs.worktrees : {};
   const removed = stringMap(prefs.removedWorktrees);
   if (!Object.keys(kept).length && !Object.keys(removed).length)
@@ -59463,7 +59662,7 @@ function worktrees({ prefs, staged }) {
     ...Object.keys(handedOver).length ? { handedOver } : {}
   }), null, 2));
 }
-function machines({ prefs, staged }) {
+function machines({ writeWhole, prefs, staged }) {
   const listed = [...Array.isArray(prefs["machines.unsaved"]) ? prefs["machines.unsaved"] : [], ...Array.isArray(prefs.machines) ? prefs.machines : []].filter((each) => isObject(each) && typeof each.destination === "string" && each.destination.length > 0);
   const file = staged("machines.json");
   if (!listed.length)
@@ -59503,7 +59702,7 @@ function keysNamedIn(value, keys) {
     return Object.fromEntries(Object.entries(value).map(([key, inner]) => [key, keysNamedIn(inner, keys)]));
   return value;
 }
-function engineSettings({ prefs, staged, home, dropped }) {
+function engineSettings({ writeWhole, prefs, staged, home, dropped }) {
   const file = staged("config/opencode/opencode.json");
   const settings = settingsOf(file);
   const account = homeFolder();
@@ -59532,7 +59731,8 @@ function engineSettings({ prefs, staged, home, dropped }) {
     writeWhole(gitFile, JSON.stringify(gitPreferencesFormat.write({ ...kept, moved: true })));
   }
   if (JSON.stringify(next) !== JSON.stringify(settings))
-    writeSettings3(file, next);
+    writeWhole(file, JSON.stringify(next, null, 2) + `
+`);
   for (const bot of listOf9(staged("bots"))) {
     const own = path165.join(staged("bots"), bot, "workspace", ".opencode", "opencode.json");
     const had = exists5(own) ? readJSON4(own) : undefined;
@@ -59540,10 +59740,11 @@ function engineSettings({ prefs, staged, home, dropped }) {
       continue;
     const renamed = keysNamedIn(had, `${shown}/box/keys`);
     if (JSON.stringify(renamed) !== JSON.stringify(had))
-      writeSettings3(own, renamed);
+      writeWhole(own, JSON.stringify(renamed, null, 2) + `
+`);
   }
 }
-function boxSettings({ prefs, staged }) {
+function boxSettings({ writeWhole, prefs, staged }) {
   const merged = (name, change) => {
     const file = staged(name);
     const had = readJSON4(file);
@@ -59575,7 +59776,7 @@ function boxSettings({ prefs, staged }) {
 `);
   }
 }
-function link2({ prefs, staged, home }) {
+function link2({ writeWhole, prefs, staged, home }) {
   const set = typeof prefs.phoneLink === "boolean";
   const own = typeof prefs["phoneLink.relay"] === "string" ? prefs["phoneLink.relay"].replace(/\/+$/, "") : "";
   let relay = "";
@@ -59591,10 +59792,10 @@ function link2({ prefs, staged, home }) {
   const real = located(home) === located(path165.join(accountHome(), ".kuvo-code"));
   if (!relay && !real)
     return;
-  const named = spawnSync15("/usr/sbin/scutil", ["--get", "ComputerName"], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] });
+  const named = spawnSync16("/usr/sbin/scutil", ["--get", "ComputerName"], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] });
   writeWhole(file, JSON.stringify({ phones: set ? prefs.phoneLink : true, relay: relay || DEFAULT_RELAY, name: (named.status === 0 ? named.stdout.trim().slice(0, 100) : "") || "Mac", app: "" }));
 }
-function welcomed({ staged }) {
+function welcomed({ writeWhole, staged }) {
   const file = staged("run/welcomed.json");
   if (!exists5(file))
     writeWhole(file, JSON.stringify(welcomeFormat.write({ moved: true })));
@@ -59603,7 +59804,7 @@ function listedBots(S) {
   const list = readJSON4(path165.join(S, "bots.json"));
   return (Array.isArray(list) ? list : []).filter((bot) => isObject(bot) && typeof bot.id === "string" && /^bot_[A-Za-z0-9]+$/.test(bot.id) && typeof bot.name === "string" && typeof bot.folder === "string" && typeof bot.sessionID === "string");
 }
-function bots({ S, staged, prefs, dropped }) {
+function bots({ writeWhole, S, staged, prefs, dropped }) {
   if (exists5(path165.join(S, "bots.json")) && !Array.isArray(readJSON4(path165.join(S, "bots.json"))))
     dropped.push("The earlier Kuvo Code's list of bots couldn't be read. Bots made with a version before 0.7 may be missing: their folders are brought along, in ~/.kuvo-code/bots.");
   const theirs = prefs.calibration === undefined ? listedBots(S).filter((bot) => bot.machine).length : 0;
@@ -59645,7 +59846,7 @@ function bots({ S, staged, prefs, dropped }) {
       writeWhole(path165.join(folder, "via"), "bridge");
   }
 }
-function personalities({ S, staged }) {
+function personalities({ writeWhole, S, staged }) {
   const made = readJSON4(path165.join(S, "personalities.json")), removed = readJSON4(path165.join(S, "personalities-removed.json"));
   if (!Array.isArray(made) && !Array.isArray(removed))
     return;
@@ -59680,7 +59881,7 @@ function chatMessages(file) {
   }
   return kept;
 }
-function groupChats({ S, prefs, staged, dropped }) {
+function groupChats({ writeWhole, seal, S, prefs, staged, dropped }) {
   const root = staged("groups");
   const waiting = isObject(prefs.groupMemoryWaiting) ? prefs.groupMemoryWaiting : null;
   if (waiting) {
@@ -59742,8 +59943,9 @@ function groupChats({ S, prefs, staged, dropped }) {
       seats++;
     }
     writeWhole(path165.join(folder, "messages.json"), JSON.stringify(messages, null, 2));
-    writeWhole(path165.join(folder, "group.json"), JSON.stringify({ kuvo: 1, status: held.has(chat.id) ? "held" : "active", group }, null, 2));
     fs156.rmSync(path165.join(root, `${chat.id}.json`), { force: true });
+    seal(root);
+    writeWhole(path165.join(folder, "group.json"), JSON.stringify({ kuvo: 1, status: held.has(chat.id) ? "held" : "active", group }, null, 2));
   }
   if (failed)
     dropped.push(`${failed === 1 ? "One group chat" : `${failed} group chats`} couldn't be read, and ${failed === 1 ? "wasn't" : "weren't"} brought along. ${failed === 1 ? "It's" : "They're"} still in the earlier Kuvo Code's folder (groups.json).`);
@@ -59752,7 +59954,7 @@ function groupChats({ S, prefs, staged, dropped }) {
   if (seats)
     dropped.push(`In your group chats, ${seats === 1 ? "a bot on one of your machines takes its seat" : `${seats} bots on your machines take their seats`} again at ${seats === 1 ? "its" : "their"} next turn: the conversation ${seats === 1 ? "it" : "they"} had there before stays on that machine, unused.`);
 }
-function letters2({ S, staged, dropped }) {
+function letters2({ writeWhole, S, staged, dropped }) {
   const waiting = readJSON4(path165.join(S, "agent-messages.json")), mailed = readJSON4(path165.join(S, "agent-letters.json")), seen = readJSON4(path165.join(S, "agent-letters-seen.json"));
   if (!Array.isArray(waiting) && !Array.isArray(mailed) && !isObject(seen))
     return;
@@ -59802,7 +60004,7 @@ function letters2({ S, staged, dropped }) {
   if (left)
     dropped.push(`${left === 1 ? "A message" : `${left} messages`} one of your agents sent to an agent on a machine that was away ${left === 1 ? "wasn't" : "weren't"} delivered, and ${left === 1 ? "isn't" : "aren't"} brought along.`);
 }
-function usage({ prefs, staged }) {
+function usage({ seal, prefs, staged }) {
   const parts = {};
   const placed = prefs["openusage.layout.v1"];
   if (Array.isArray(placed)) {
@@ -59830,8 +60032,10 @@ function usage({ prefs, staged }) {
   const file = path165.join(staged("agents"), "usage", "settings.json");
   fs156.mkdirSync(path165.dirname(file), { recursive: true, mode: 448 });
   new UsageSettings(file).take(parts);
+  if (exists5(file))
+    seal(file);
 }
-function enginePlugin(release, { staged }) {
+function enginePlugin(release, { staged, writeWhole }) {
   const name = "config/opencode/plugins/kuvo-code.js";
   let brought;
   try {
@@ -59839,11 +60043,7 @@ function enginePlugin(release, { staged }) {
   } catch {
     return;
   }
-  const file = staged(name);
-  const temporary = `${file}.${process.pid}.new`;
-  fs156.writeFileSync(temporary, brought, { mode: 420 });
-  fs156.chmodSync(temporary, 420);
-  fs156.renameSync(temporary, file);
+  writeWhole(staged(name), brought, 420);
 }
 function said5({ S, prefs, dropped }) {
   const count = (value) => isObject(value) ? Object.keys(value).length : Array.isArray(value) ? value.length : 0;
@@ -59892,7 +60092,18 @@ function said5({ S, prefs, dropped }) {
 }
 function runUpgrades(run, move) {
   const made = new Set;
+  const seal = (entry) => {
+    const placement = move.placements.find((each) => entry === each.staged || entry.startsWith(each.staged + path165.sep));
+    if (!placement)
+      throw new Error("An import attempted to sync outside staging");
+    syncDurableFile(entry, path165.dirname(placement.staged));
+  };
   const upgrade = {
+    seal,
+    writeWhole(file, bytes, mode) {
+      replaceStaged(file, bytes, mode);
+      seal(file);
+    },
     S: move.appFolder,
     home: move.home,
     prefs: appPreferences(move.appFolder),
@@ -59917,11 +60128,17 @@ function runUpgrades(run, move) {
   for (const each of [projects, worktrees, machines, engineSettings, boxSettings, link2, welcomed, bots, personalities, groupChats, letters2, usage, said5])
     each(upgrade);
   enginePlugin(run.release, upgrade);
-  for (const name of madeHere)
-    if (name !== "box")
+  for (const name of places) {
+    const folder = upgrade.staged(name);
+    if (madeHere.includes(name) && name !== "box")
       try {
-        fs156.rmdirSync(upgrade.staged(name));
+        fs156.rmdirSync(folder);
       } catch {}
+    if (exists5(folder))
+      seal(folder);
+    else
+      syncDurableFile(path165.dirname(folder));
+  }
   return upgrade.dropped;
 }
 var exists5 = (file) => {
@@ -59949,13 +60166,13 @@ var exists5 = (file) => {
   } catch {
     return;
   }
-}, strings = (value) => Array.isArray(value) ? value.filter((each) => typeof each === "string") : [], stringMap = (value) => isObject(value) ? Object.fromEntries(Object.entries(value).filter((each) => typeof each[1] === "string")) : {}, here = (folder) => typeof folder === "string" && path165.isAbsolute(folder) ? folder : null, writeSettings3 = (file, settings) => writeWhole(file, JSON.stringify(settings, null, 2) + `
-`), isDate = (value) => typeof value === "string" && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?(Z|[+-]\d\d:?\d\d)$/.test(value) && Number.isFinite(Date.parse(value)), KINDS5, STATES3;
+}, strings = (value) => Array.isArray(value) ? value.filter((each) => typeof each === "string") : [], stringMap = (value) => isObject(value) ? Object.fromEntries(Object.entries(value).filter((each) => typeof each[1] === "string")) : {}, here = (folder) => typeof folder === "string" && path165.isAbsolute(folder) ? folder : null, isDate = (value) => typeof value === "string" && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?(Z|[+-]\d\d:?\d\d)$/.test(value) && Number.isFinite(Date.parse(value)), KINDS5, STATES3;
 var init_upgrades = __esm(() => {
   init_git_words();
   init_projects3();
   init_worktree_records();
   init_settings3();
+  init_files();
   init_home();
   init_library();
   init_link();
@@ -59968,11 +60185,11 @@ var init_upgrades = __esm(() => {
 });
 
 // box/src/link/rehome/run-steps.ts
-import { spawnSync as spawnSync16 } from "node:child_process";
+import { spawnSync as spawnSync17 } from "node:child_process";
 import fs157 from "node:fs";
 import path166 from "node:path";
 function tool(program, args, timeout = 180000) {
-  const ran = spawnSync16(program, args, { encoding: "utf8", timeout, stdio: ["ignore", "pipe", "pipe"] });
+  const ran = spawnSync17(program, args, { encoding: "utf8", timeout, stdio: ["ignore", "pipe", "pipe"] });
   let said = null;
   try {
     said = JSON.parse((ran.stdout ?? "").trim().split(`
@@ -60031,7 +60248,7 @@ function heldOpen(folder) {
   const files = databasesIn(folder).flatMap((file) => [file, `${file}-wal`, `${file}-shm`]).filter(exists6);
   if (!files.length || process.platform !== "darwin")
     return [];
-  const asked = spawnSync16("/usr/sbin/lsof", ["-F", "pcfa", "--", ...files], { encoding: "utf8", timeout: 30000, stdio: ["ignore", "pipe", "ignore"] });
+  const asked = spawnSync17("/usr/sbin/lsof", ["-F", "pcfa", "--", ...files], { encoding: "utf8", timeout: 30000, stdio: ["ignore", "pipe", "ignore"] });
   const names = new Set;
   let pid = 0, name = "";
   for (const line of (asked.stdout ?? "").split(`
@@ -60188,7 +60405,7 @@ var init_run_steps = __esm(() => {
 });
 
 // box/src/link/rehome/move.ts
-import { spawnSync as spawnSync17 } from "node:child_process";
+import { spawnSync as spawnSync18 } from "node:child_process";
 import fs158 from "node:fs";
 import path167 from "node:path";
 function releaseRefusal(release) {
@@ -61121,7 +61338,7 @@ var BESIDE, BESIDE_WHOLE, APP_ATTACHMENTS = "Attachments", PROCESS_RECORD, SERVE
     }
   return Number.isInteger(pid) && pid > 1 ? pid : null;
 }, ran2 = (command, args, timeout = 120000) => {
-  const result = spawnSync17(command, args, { encoding: "utf8", timeout, maxBuffer: 64 * 1024 * 1024 });
+  const result = spawnSync18(command, args, { encoding: "utf8", timeout, maxBuffer: 64 * 1024 * 1024 });
   return { status: result.status, output: `${result.stdout ?? ""}`, errors: `${result.stderr ?? ""}` };
 }, nearest = (file) => {
   let folder = file;
@@ -61698,7 +61915,7 @@ var init_activity = __esm(() => {
 });
 
 // box/src/link/vault/use.ts
-import os17 from "node:os";
+import os18 from "node:os";
 function allowOnce(caller, item) {
   once.set(onceKey(caller, item), Date.now() + ONCE_FOR);
 }
@@ -61775,7 +61992,7 @@ function tripwire(item, caller, site) {
 }
 var AUTOPILOT_HOW = "autopilot", tell3 = () => false, setVaultTell = (to) => {
   tell3 = to;
-}, machineName = () => IS_MAC ? undefined : os17.hostname(), whoOf3 = (caller) => ({
+}, machineName = () => IS_MAC ? undefined : os18.hostname(), whoOf3 = (caller) => ({
   ...caller.bot ? { bot: caller.bot } : {},
   ...caller.botName ? { botName: caller.botName } : {},
   ...caller.root ? { session: caller.root } : {},
@@ -62375,7 +62592,7 @@ function kept6() {
     for (const seen of Array.isArray(noted) ? noted.slice(0, 40) : []) {
       if (typeof seen?.id !== "string" || typeof seen.destination !== "string" || !Array.isArray(seen.steps))
         continue;
-      if (isOver2(seen))
+      if (isOver2(seen) || seen.enrollment)
         finished2.push(seen);
       else {
         const { question: _question, ...rest } = seen;
@@ -62392,14 +62609,42 @@ function kept6() {
   return finished2;
 }
 function allTries() {
-  return [...[...running4.values()].map((each) => each.seen).reverse(), ...kept6()];
+  return [...[...running4.values()].map((each) => each.seen).reverse(), ...kept6().map(reconcileEnrollment)];
 }
-function note3() {
+function note3(durable = false) {
   try {
-    writePrivate(TRIES_FILE, JSON.stringify(allTries()));
+    const active = [...running4.values()].reverse().map((each) => ({ ...each.seen, enrollment: each.enrollment }));
+    (durable ? writeDurablePrivate : writePrivate)(TRIES_FILE, JSON.stringify([...active, ...kept6()]));
   } catch {}
   for (const tell of [...tryFollowers])
     tell();
+}
+function reconcileEnrollment(seen) {
+  const { enrollment, ...attempt } = seen;
+  if (!enrollment)
+    return attempt;
+  const { save, peer } = enrollment;
+  const link = readLink();
+  const outcome = operationOutcome(link, save.id, save.operation);
+  if (outcome?.status === "pending" || !outcome && link?.setup?.id === save.id && link.setup.epoch === save.epoch)
+    return attempt;
+  const computer = outcome?.status === "committed" && peersOf(link).find((each) => each.key === peer.key);
+  if (computer)
+    return {
+      ...attempt,
+      computer: { key: computer.key, name: computer.name },
+      state: "done",
+      title: doneTitle(attempt.kind, attempt.name),
+      steps: attempt.steps.map((step) => step.state === "now" ? { ...step, state: "done" } : step)
+    };
+  const title = failedTitle(attempt.kind, attempt.name);
+  return {
+    ...attempt,
+    state: "failed",
+    title,
+    steps: attempt.steps.map((step) => step.state === "now" ? { ...step, state: "failed" } : step),
+    failure: { title, message: `The setup changed before ${peer.name} was saved. Add it again from the primary.`, again: true }
+  };
 }
 function startTry(kind, destination, name, steps, work) {
   const seen = { id: newID("add_"), kind, destination, name, state: "working", title: workingTitle(kind, name), steps: steps.map(([id, title]) => ({ id, title, state: "waiting" })) };
@@ -62419,6 +62664,13 @@ function startTry(kind, destination, name, steps, work) {
     },
     commit() {
       it.committed = true;
+    },
+    saving(save, peer) {
+      it.committed = true;
+      it.enrollment = { save, peer };
+      if (it.seen.state === "stopping")
+        it.seen = { ...it.seen, state: "working", title: workingTitle(kind, name) };
+      note3(true);
     },
     step(id, detail) {
       tell.check();
@@ -62546,6 +62798,9 @@ var init_tries = __esm(() => {
   init_text();
   init_files2();
   init_home();
+  init_known();
+  init_shared();
+  init_state();
   TRIES_FILE = path174.join(RUN, "adding.json");
   Stopped = class Stopped extends Error {
   };
@@ -62893,6 +63148,16 @@ function checkAdd(link, grant, name, key) {
 }
 async function setUp2(tell, destination, name, kind, expectedKey, grant) {
   tell.step("checking", `Connecting to ${name}`);
+  const pending = pendingShared(readLink(), "membershipAndAccess");
+  const pendingKey = keptHosts()?.[destination]?.key;
+  const candidate = pending && membershipOf(pending.body.value)?.boxes.find((peer) => peer.key === pendingKey);
+  if (kind === "add" && pending && candidate && !peersOf(readLink()).some((peer) => peer.key === candidate.key)) {
+    tell.step("joining");
+    const save = asSave(pending);
+    tell.saving?.(save, candidate);
+    tell.came(await finishEnrollment(candidate, save));
+    return;
+  }
   const mine = boxVersion();
   const files = ownFiles();
   if (!files || !mine)
@@ -62901,6 +63166,7 @@ async function setUp2(tell, destination, name, kind, expectedKey, grant) {
   const checkGrant = () => checkAdd(readLink(), grant, name, expectedKey);
   const account = new AccountReservation(reach, name, tell);
   const reserved = account.run;
+  let finish;
   await account.use(async () => {
     const answer = await reach.run(probe2(ENGINE_VERSION), { cut: true, most: 120000 });
     if (answer.status !== 0)
@@ -63035,9 +63301,15 @@ async function setUp2(tell, destination, name, kind, expectedKey, grant) {
       }
       tell.step("joining");
       const identity = /^id ([0-9a-f]{32})$/m.exec(started.stdout)?.[1] ?? probe.id;
-      const computer = await join3(reserved, destination, name, identity, account.token, expectedKey, grant);
+      finish = await join3(reserved, destination, name, identity, account.token, (peer, save) => {
+        unjoined = false;
+        tell.commit?.();
+        if (!tell.signal.aborted)
+          tell.step("joining", "Waiting for the standby to save this computer");
+        if (save)
+          tell.saving?.(save, peer);
+      }, expectedKey, grant);
       unjoined = false;
-      tell.came(computer);
     } catch (error) {
       if (!unjoined || !account.canRollBack || error instanceof AccountOccupied)
         throw error;
@@ -63052,8 +63324,10 @@ async function setUp2(tell, destination, name, kind, expectedKey, grant) {
       throw new Failed(`${failure.message} ${undone?.status === 0 ? `Kuvo Code was stopped on ${name} again, and the keys and sign-ins copied there were deleted.` : still}`, failure.again, failure.title);
     }
   });
+  if (finish)
+    tell.came(await finish());
 }
-async function join3(run, destination, name, identity, token, expectedKey, grant) {
+async function join3(run, destination, name, identity, token, staged, expectedKey, grant) {
   const beforeLink = readLink();
   const relay = IS_MAC ? macLink.config?.relay : beforeLink?.relay;
   const removedWhileAdding = (link) => expectedKey && link?.removedHere?.includes(expectedKey);
@@ -63077,17 +63351,44 @@ async function join3(run, destination, name, identity, token, expectedKey, grant
     throw new Failed(`Kuvo Code on ${name} couldn’t join your computers. ${lastLine(ran.stderr)}`.trim());
   }
   const peer = { key: said.key, sign: said.sign, address: said.address, name, id: destination };
-  let named = name;
+  const keepRecord = () => {
+    const saved = savedMachines();
+    if (!saved)
+      throw new Failed(`${ownName()}’s list of machines can’t be read right now.`);
+    const had = saved.find((each) => each.destination === destination);
+    writeDurablePrivate(LIST_FILE, JSON.stringify(had ? saved.map((each) => each === had && identity ? { ...each, identity } : each) : [...saved, { destination, ...identity ? { identity } : {} }], null, 2));
+  };
+  const setup = followedSetup(readLink());
+  if (!expectedKey && setup?.role === "primary" && !setup.standby && requiresStandby(setup)) {
+    if (said.standbyAcceptance !== true)
+      throw new Failed(`Update Kuvo Code on ${name} before using it as the replacement standby.`);
+    const result = await enrollStandby(setup, { ...peer, kind: "machine" }, (link) => {
+      checkAdd(link, grant, name, peer.key);
+      if (removedWhileAdding(link))
+        throw removedDuringAdd(name);
+      keepRecord();
+      keepHost(destination, peer);
+    });
+    if (result.status !== 202)
+      throw new Failed(isObject(result.value) ? String(result.value.message) : "The replacement couldn't be saved.");
+    staged(peer);
+    macDocsChanged();
+    return async () => {
+      while (true) {
+        const current = readLink()?.setup;
+        if (current?.id !== setup.id || current.epoch > setup.epoch)
+          break;
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      return finishEnrollment(peer, null);
+    };
+  }
   const { changed, save, busy } = updateAccess((link) => {
     checkAdd(link, grant, name, expectedKey);
     checkAdd(link, grant, name, peer.key);
     if (removedWhileAdding(link))
       throw removedDuringAdd(name);
-    const saved = savedMachines();
-    if (!saved)
-      throw new Failed(`${ownName()}’s list of machines can’t be read right now.`);
-    const had = saved.find((each) => each.destination === destination);
-    writePrivate(LIST_FILE, JSON.stringify(had ? saved.map((each) => each === had && identity ? { ...each, identity } : each) : [...saved, { destination, ...identity ? { identity } : {} }], null, 2));
+    keepRecord();
     const replaced = peerAtDestination(link, destination);
     keepHost(destination, { name, address: peer.address, key: peer.key, sign: peer.sign });
     const state = link ?? { phones: [] };
@@ -63099,21 +63400,35 @@ async function join3(run, destination, name, identity, token, expectedKey, grant
   });
   if (busy)
     throw new Failed("An access change is already waiting to be saved.");
-  if (save && await waitShared(save) !== "saved")
-    throw new Failed(PENDING_SAVE);
-  const enrolled = save ? readLink() : changed;
-  if (!enrolled || !peersOf(enrolled).some((each) => each.key === peer.key))
+  if (save)
+    staged(peer, save);
+  if (!save && !changed)
     throw new Failed(`${ownName()} couldn’t keep ${name}’s record.`);
-  named = peersOf(enrolled).find((each) => each.key === peer.key)?.name ?? name;
+  const docs = Array.isArray(said.docs) ? said.docs : [];
+  return async () => {
+    const computer = await finishEnrollment(peer, save);
+    if (docs.length)
+      await receiveDocs(peer, { give: docs }, liveLink()).catch(() => {});
+    return computer;
+  };
+}
+async function finishEnrollment(peer, save) {
+  if (save) {
+    macDocsChanged();
+    if (await waitShared(save, Infinity) !== "saved") {
+      throw new Failed(`The setup changed before ${peer.name} was saved. Add it again from the primary.`);
+    }
+  }
+  const enrolled = peersOf(readLink()).find((each) => each.key === peer.key);
+  if (!enrolled)
+    throw new Failed(`${ownName()} couldn’t keep ${peer.name}’s record.`);
   if (IS_MAC && macLink.config) {
     macLink.config = { ...macLink.config, machines: true };
     macLinkCheck();
     macLink.wake?.();
   }
   macDocsChanged();
-  if (Array.isArray(said.docs) && said.docs.length)
-    await receiveDocs(peer, { give: said.docs }, liveLink()).catch(() => {});
-  return { key: peer.key, name: named };
+  return { key: enrolled.key, name: enrolled.name };
 }
 function begin(kind, destination, name, steps, work) {
   let it = null;
@@ -63327,6 +63642,8 @@ var init_flow2 = __esm(() => {
   init_ssh2();
   init_tries();
   init_lead();
+  init_membership();
+  init_handover();
   init_record();
   init_marks();
   AccountOccupied = class AccountOccupied extends Failed {
@@ -63576,7 +63893,7 @@ var init_keep_up = __esm(() => {
 
 // box/src/link/areas/computers.ts
 import fs168 from "node:fs";
-import os18 from "node:os";
+import os19 from "node:os";
 function systemName(platform = process.platform, read = (file) => fs168.readFileSync(file, "utf8")) {
   try {
     if (platform === "darwin") {
@@ -63630,7 +63947,7 @@ function ownComputer() {
     agents: agentsFact()
   };
 }
-function ownAddresses(interfaces = os18.networkInterfaces(), name = os18.hostname()) {
+function ownAddresses(interfaces = os19.networkInterfaces(), name = os19.hostname()) {
   const virtual = /^(docker|br-|cni|veth|virbr|vmnet|vboxnet|flannel|lxc|lxd|podman|kube|cali|weave|tun|utun|bridge)/;
   const found = Object.entries(interfaces).filter(([name]) => !virtual.test(name)).flatMap(([, each]) => each ?? []).filter((each) => each.family === "IPv4" && !each.internal && !each.address.startsWith("169.254.")).map((each) => each.address);
   const tailnet = (address) => {
@@ -64940,7 +65257,7 @@ init_text();
 import { spawn as spawn26 } from "node:child_process";
 import crypto76 from "node:crypto";
 import fs221 from "node:fs";
-import os25 from "node:os";
+import os26 from "node:os";
 import path230 from "node:path";
 import { fileURLToPath as fileURLToPath5 } from "node:url";
 
@@ -65694,7 +66011,7 @@ import path183 from "node:path";
 // box/src/link/compat/launch-lock.ts
 init_files2();
 init_home();
-import { spawnSync as spawnSync18 } from "node:child_process";
+import { spawnSync as spawnSync19 } from "node:child_process";
 import fs174 from "node:fs";
 import path182 from "node:path";
 var LOCK18 = path182.join(RUN, ".launching");
@@ -65724,7 +66041,7 @@ function holding3(pid) {
   try {
     if (fs174.existsSync("/proc/self"))
       return SCRIPTS.test(fs174.readFileSync(`/proc/${pid}/cmdline`, "latin1"));
-    return SCRIPTS.test(spawnSync18("ps", ["-ww", "-o", "command=", "-p", pid], { encoding: "utf8" }).stdout ?? "");
+    return SCRIPTS.test(spawnSync19("ps", ["-ww", "-o", "command=", "-p", pid], { encoding: "utf8" }).stdout ?? "");
   } catch {
     return false;
   }
@@ -66675,7 +66992,7 @@ init_run_command();
 import { execFile as execFile13, execFileSync as execFileSync3, spawn as spawn18 } from "node:child_process";
 import crypto62 from "node:crypto";
 import fs179 from "node:fs";
-import os19 from "node:os";
+import os20 from "node:os";
 import path189 from "node:path";
 
 // box/src/link/areas/file.ts
@@ -67203,7 +67520,7 @@ function trash(file) {
   if (process.platform === "darwin" && !process.env.KUVO_CHANGES_TRASH) {
     if (fs179.existsSync("/usr/bin/trash"))
       return void execFileSync3("/usr/bin/trash", [file], { stdio: "ignore" });
-    const bin = path189.join(os19.homedir(), ".Trash");
+    const bin = path189.join(os20.homedir(), ".Trash");
     into = path189.join(bin, name);
     for (let n = 2;fs179.existsSync(into); n++)
       into = path189.join(bin, `${name} ${n}`);
@@ -68253,7 +68570,7 @@ init_update();
 import { execFileSync as execFileSync4, spawn as spawn19 } from "node:child_process";
 import crypto64 from "node:crypto";
 import fs182 from "node:fs";
-import os20 from "node:os";
+import os21 from "node:os";
 import path192 from "node:path";
 // box/src/link/browser/linux.json
 var linux_default = {
@@ -70480,7 +70797,7 @@ function pinned(system) {
   }
   return PINNED[system];
 }
-function runtimeHere(platform = testSystem() ?? process.platform, arch = os20.arch()) {
+function runtimeHere(platform = testSystem() ?? process.platform, arch = os21.arch()) {
   const system = platform === "linux" ? "linux" : platform === "darwin" ? "darwin" : null;
   if (!system)
     return { unsupported: `The browser runs on Linux and macOS; this machine is ${platform}.` };
@@ -71178,7 +71495,7 @@ init_home();
 init_files4();
 init_scripts();
 init_files2();
-import { spawn as spawn21, spawnSync as spawnSync19 } from "node:child_process";
+import { spawn as spawn21, spawnSync as spawnSync20 } from "node:child_process";
 import crypto65 from "node:crypto";
 import fs185 from "node:fs";
 import path195 from "node:path";
@@ -71380,7 +71697,7 @@ var NOT_NEW = {
 function bundleID(bundle) {
   const plist = path195.join(bundle, "Contents", "Info.plist");
   if (process.platform === "darwin") {
-    const asked = spawnSync19("/usr/bin/plutil", ["-extract", "CFBundleIdentifier", "raw", "-o", "-", plist], { encoding: "utf8", timeout: 30000 });
+    const asked = spawnSync20("/usr/bin/plutil", ["-extract", "CFBundleIdentifier", "raw", "-o", "-", plist], { encoding: "utf8", timeout: 30000 });
     const said = asked.status === 0 ? asked.stdout.trim() : "";
     if (/^[A-Za-z0-9][A-Za-z0-9.-]*$/.test(said))
       return said;
@@ -71607,7 +71924,7 @@ async function newMac({ home, appFolder, app, release, engine }, judged) {
   }
   const engines = fs185.readdirSync(path195.join(home, "engine")).filter((name) => fs185.existsSync(path195.join(home, "engine", name, "opencode"))).sort();
   const version = engines.includes(pinned) ? pinned : engines.pop();
-  const ran = version ? spawnSync19(path195.join(home, "engine", version, "opencode"), [...OWN_RUNTIME, path195.join(home, "bin", "kuvo-link.js"), "helper", "start", "--app", app], {
+  const ran = version ? spawnSync20(path195.join(home, "engine", version, "opencode"), [...OWN_RUNTIME, path195.join(home, "bin", "kuvo-link.js"), "helper", "start", "--app", app], {
     cwd: home,
     encoding: "utf8",
     timeout: 180000,
@@ -71678,7 +71995,7 @@ async function newMachine({ home, release, engine }, judged) {
       return { result: "done", verdict: "machine", started: false, message: "It's made, and starts by itself only in ~/.kuvo-code.", ...setAside };
     }
     const standIns = path195.dirname(tools.crontab);
-    const ran = spawnSync19("sh", ["-c", start(engineVersion, computerName(), "{}")], {
+    const ran = spawnSync20("sh", ["-c", start(engineVersion, computerName(), "{}")], {
       cwd: home,
       input: "",
       encoding: "utf8",
@@ -71704,13 +72021,13 @@ init_move2();
 // box/src/link/rehome/passwords.ts
 init_uninstall();
 init_move2();
-import { spawnSync as spawnSync21 } from "node:child_process";
+import { spawnSync as spawnSync22 } from "node:child_process";
 import fs187 from "node:fs";
 import path197 from "node:path";
 
 // box/src/link/rehome/run.ts
 init_home();
-import { spawnSync as spawnSync20 } from "node:child_process";
+import { spawnSync as spawnSync21 } from "node:child_process";
 import fs186 from "node:fs";
 import path196 from "node:path";
 init_verdict();
@@ -71807,7 +72124,7 @@ function ancestors() {
   let pid = process.ppid;
   for (let depth = 0;pid > 1 && depth < 32 && !own.has(pid); depth++) {
     own.add(pid);
-    const asked = spawnSync20("/bin/ps", ["-o", "ppid=", "-p", String(pid)], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] });
+    const asked = spawnSync21("/bin/ps", ["-o", "ppid=", "-p", String(pid)], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] });
     pid = Number((asked.stdout ?? "").trim());
     if (!Number.isInteger(pid))
       break;
@@ -71826,7 +72143,7 @@ function bundleSays(bundle, key) {
   }
   let kept = plists.get(file);
   if (kept?.changed !== changed) {
-    const asked = spawnSync20("/usr/bin/plutil", ["-convert", "xml1", "-o", "-", file], { encoding: "utf8", timeout: 5000, maxBuffer: 16 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"] });
+    const asked = spawnSync21("/usr/bin/plutil", ["-convert", "xml1", "-o", "-", file], { encoding: "utf8", timeout: 5000, maxBuffer: 16 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"] });
     const read = asked.status === 0 && asked.stdout ? parsePlist(asked.stdout) : null;
     kept = { changed, said: isObject(read) ? read : {} };
     if (asked.status === 0 && !asked.error && !asked.signal)
@@ -71841,7 +72158,7 @@ function touching(appFolder, app) {
   const folders = [...new Set([appFolder, located(appFolder)])];
   const under = (file) => folders.some((folder) => file === folder || file.startsWith(folder + "/"));
   const own = (file) => folders.some((folder) => ["engine", "box"].some((name) => file.startsWith(path196.join(folder, name) + "/")) && !file.startsWith(path196.join(folder, "box", "artifacts") + "/"));
-  const asked = spawnSync20("/usr/sbin/lsof", ["-n", "-w", "-F", "pcfan", "-u", String(process.getuid())], { encoding: "utf8", timeout: 60000, maxBuffer: 256 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"] });
+  const asked = spawnSync21("/usr/sbin/lsof", ["-n", "-w", "-F", "pcfan", "-u", String(process.getuid())], { encoding: "utf8", timeout: 60000, maxBuffer: 256 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"] });
   if (asked.error || asked.signal)
     console.error(`lsof couldn't say what uses the earlier Kuvo Code's folder: ${asked.error?.message ?? asked.signal}`);
   const mine = ancestors(), mover = located(app.bundle), moversProgram = bundleSays(app.bundle, "CFBundleExecutable");
@@ -71906,7 +72223,7 @@ var alive3 = (pid) => {
     if (error.code !== "EPERM")
       return false;
   }
-  const asked = spawnSync20("/bin/ps", ["-o", "stat=", "-p", String(pid)], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] });
+  const asked = spawnSync21("/bin/ps", ["-o", "stat=", "-p", String(pid)], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] });
   return asked.status === 0 && !(asked.stdout ?? "").trim().startsWith("Z");
 };
 async function stopOldSetup(appFolder, app, { asked = 15000, made = 5000 } = {}) {
@@ -71914,7 +72231,7 @@ async function stopOldSetup(appFolder, app, { asked = 15000, made = 5000 } = {})
   if (found.some((each) => each.old)) {
     const tools = launchTools();
     if (tools) {
-      const out = spawnSync20(tools.launchctl, ["bootout", `gui/${process.getuid?.() ?? 0}/${app.id}.box`], { timeout: 30000, encoding: "utf8", stdio: ["ignore", "ignore", "pipe"] });
+      const out = spawnSync21(tools.launchctl, ["bootout", `gui/${process.getuid?.() ?? 0}/${app.id}.box`], { timeout: 30000, encoding: "utf8", stdio: ["ignore", "ignore", "pipe"] });
       console.error(`launchctl bootout ${app.id}.box: ${out.status ?? out.signal} ${(out.stderr ?? "").trim()}`);
     }
     const old = found.filter((each) => each.old);
@@ -71962,7 +72279,7 @@ async function stopOldKeeper(appFolder) {
   const runs = () => {
     if (pid === null)
       return false;
-    const asked = spawnSync20("/bin/ps", ["-ww", "-o", "command=", "-p", String(pid)], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] });
+    const asked = spawnSync21("/bin/ps", ["-ww", "-o", "command=", "-p", String(pid)], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] });
     return asked.status === 0 && /(^|\s)--box(\s|$)/.test(asked.stdout ?? "");
   };
   if (!runs())
@@ -72001,7 +72318,7 @@ function startHelper(home, app) {
   const version = engines.pop();
   if (!version)
     return { started: false, message: "Kuvo's engine isn't in place, so it couldn't be started. Try again." };
-  const ran = spawnSync20(path196.join(home, "engine", version, "opencode"), [...OWN_RUNTIME, path196.join(home, "bin", "kuvo-link.js"), "helper", "start", "--app", app], {
+  const ran = spawnSync21(path196.join(home, "engine", version, "opencode"), [...OWN_RUNTIME, path196.join(home, "bin", "kuvo-link.js"), "helper", "start", "--app", app], {
     cwd: home,
     encoding: "utf8",
     timeout: 180000,
@@ -72059,7 +72376,7 @@ async function settleOwed(home, options) {
   if (owes("agent")) {
     const tools = launchTools();
     if (tools && app)
-      spawnSync20(tools.launchctl, ["bootout", `gui/${process.getuid?.() ?? 0}/${app}.box`], { timeout: 30000, stdio: "ignore" });
+      spawnSync21(tools.launchctl, ["bootout", `gui/${process.getuid?.() ?? 0}/${app}.box`], { timeout: 30000, stdio: "ignore" });
     settled2(home, "agent");
   }
   return { ...started !== undefined ? { started } : {}, ...message ? { message } : {} };
@@ -72069,7 +72386,7 @@ function savedSignInsListed() {
   const login = path196.join(homeFolder(), "Library", "Keychains", "login.keychain-db");
   if (!tools || !exists9(login))
     return null;
-  const found = spawnSync20(tools.security, ["find-internet-password", "-c", "KUVO", login], { stdio: "ignore", timeout: 30000 });
+  const found = spawnSync21(tools.security, ["find-internet-password", "-c", "KUVO", login], { stdio: "ignore", timeout: 30000 });
   return found.status === 0 ? true : found.status === 44 ? false : null;
 }
 function keysOf2(home, given) {
@@ -72244,7 +72561,7 @@ function freeName2(host, account, taken) {
       return `${host} ${n}`;
 }
 async function handOverPasswords({ home, keys, agentSites, agentAccounts, wait = 30000 }) {
-  const read = spawnSync21(keys, ["passwords", "--home", home], { encoding: "utf8", timeout: 1800000, maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
+  const read = spawnSync22(keys, ["passwords", "--home", home], { encoding: "utf8", timeout: 1800000, maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
   let said = null;
   try {
     said = JSON.parse((read.stdout ?? "").trim().split(`
@@ -72320,7 +72637,7 @@ async function handOverPasswords({ home, keys, agentSites, agentAccounts, wait =
           return { done: false, why: `the vault answered ${grant.status} to letting agents use a sign-in`, added, short, kept };
         granted.add(item.id);
       }
-      const removed = spawnSync21(keys, ["delete-originals", "--home", home, "--password", login.host, "--account", login.account], { input: JSON.stringify({ password: login.password }), encoding: "utf8", timeout: 180000, maxBuffer: 1024 * 1024, stdio: ["pipe", "pipe", "pipe"] });
+      const removed = spawnSync22(keys, ["delete-originals", "--home", home, "--password", login.host, "--account", login.account], { input: JSON.stringify({ password: login.password }), encoding: "utf8", timeout: 180000, maxBuffer: 1024 * 1024, stdio: ["pipe", "pipe", "pipe"] });
       if (removed.status !== 0 && reasonOf(removed.stdout) === "copy-missing") {
         kept++;
         continue;
@@ -72724,7 +73041,7 @@ function takeoverTick(host) {
   if (!host?.welcomed)
     return;
   if (setup.role === "primary" && link.leadershipPending) {
-    const standby = peersOf(link).find((peer) => peer.key === setup.standby?.key);
+    const standby = peersOf(link).find((peer) => peer.key === setup.standby?.key) ?? pendingStandby(link);
     if (standby)
       sendDocs(host, link, [{ to: standby, docs: { give: leadershipDocuments(link.leadershipPending) } }]);
     return;
@@ -72849,6 +73166,7 @@ function promote(host, position) {
 
 // box/src/link/main.ts
 init_lead();
+init_record();
 init_leadership();
 init_main_only();
 init_card();
@@ -72998,7 +73316,7 @@ init_exchange();
 init_phone_sync();
 init_client();
 init_agents();
-import os23 from "node:os";
+import os24 from "node:os";
 
 // box/src/link/peers/mail.ts
 init_exchange();
@@ -73257,11 +73575,15 @@ var requestOf = (head, body, headers) => ({
 });
 
 class LinkHost {
+  handshakes = new Map;
   constructor({ key, hello, authorize, handle, connect, send, confirmed, mail }) {
     Object.assign(this, { key, hello, authorize, handle, connect, send, confirmed, mail });
     this.sessions = new Map;
   }
   reset() {
+    for (const pending of this.handshakes.values())
+      pending.abort();
+    this.handshakes.clear();
     for (const session of this.sessions.values())
       this.end(session, false);
   }
@@ -73269,6 +73591,10 @@ class LinkHost {
     return this.sessions.size;
   }
   forget(address) {
+    const prefix = address.toString("base64url") + ":";
+    for (const [id, pending] of this.handshakes)
+      if (id.startsWith(prefix))
+        pending.abort();
     for (const session of this.sessions.values())
       if (session.from.equals(address))
         this.end(session, false);
@@ -73310,6 +73636,7 @@ class LinkHost {
         return this.message(session, message);
       }
       case Frame.close:
+        this.handshakes.get(id)?.abort();
         if (session)
           this.end(session, false);
         return;
@@ -73328,7 +73655,15 @@ class LinkHost {
     }
     if (hello?.v !== 1)
       return refuse();
-    const authorized = await this.authorize(responder.rs, hello, from);
+    this.handshakes.get(id)?.abort();
+    const pending = new AbortController;
+    this.handshakes.set(id, pending);
+    const authorized = await Promise.resolve(this.authorize(responder.rs, hello, from, pending.signal)).finally(() => {
+      if (this.handshakes.get(id) === pending)
+        this.handshakes.delete(id);
+    });
+    if (pending.signal.aborted)
+      return;
     if (typeof authorized === "object") {
       const { message } = responder.writeMessage2(Buffer.from(JSON.stringify({ ...this.hello, ...authorized })));
       this.send(relaySend(from, frame(Frame.handshake2, number, message)));
@@ -75178,7 +75513,7 @@ init_home();
 init_asks2();
 import crypto67 from "node:crypto";
 import fs194 from "node:fs";
-import os21 from "node:os";
+import os22 from "node:os";
 import path204 from "node:path";
 
 // box/src/link/vault/mask.ts
@@ -75341,7 +75676,7 @@ async function askForItem(caller, args, signal) {
     always: alwaysFor2(caller) !== null,
     ...site ? { site } : {},
     ...asker,
-    ...IS_MAC ? {} : { machine: os21.hostname() }
+    ...IS_MAC ? {} : { machine: os22.hostname() }
   }, stops));
   if (onAutopilot)
     return leftUndone();
@@ -77769,7 +78104,7 @@ init_groups();
 
 // box/src/link/areas/info.ts
 import fs202 from "node:fs";
-import os22 from "node:os";
+import os23 from "node:os";
 import path209 from "node:path";
 
 // box/src/shared/bundle.ts
@@ -77836,7 +78171,7 @@ function macInfo(engine, started, chats, agents) {
   const moving = movingNow();
   return {
     kind: "mac",
-    name: config?.name || os22.hostname(),
+    name: config?.name || os23.hostname(),
     app: config?.app || MAC_APP_VERSION || "",
     engine: engine.version ?? MAC_ENGINE_VERSION ?? "",
     features: macFeatures(),
@@ -77944,6 +78279,7 @@ async function* noticesRoute(context) {
 // box/src/link/areas/personalities.ts
 init_follow();
 init_shared();
+init_lease();
 init_record();
 init_state();
 init_library();
@@ -77965,7 +78301,10 @@ async function* personalitiesDocumentRoute(context) {
     return yield* method === "GET" ? json(200, personalitiesDocument()) : json(405, {});
   if (method !== "POST")
     return yield* json(405, {});
-  const setup = readLink()?.setup;
+  const link = readLink();
+  if (link?.leadershipPending)
+    return yield* json(503, { message: LEADERSHIP_WAIT });
+  const setup = link?.setup;
   if (requiresStandby(setup)) {
     if (setup?.role !== "primary")
       return yield* json(409, { message: "Change your setup's personalities on its primary." });
@@ -77975,30 +78314,36 @@ async function* personalitiesDocumentRoute(context) {
     if (!isObject(given?.document) || !Array.isArray(given.document.personalities) || given.document.removed !== undefined && !Array.isArray(given.document.removed)) {
       return yield* json(400, { message: "Send a library of personalities: {document: {personalities, removed}}." });
     }
-    const document2 = given.document;
-    let changed = [];
-    let full = false;
-    const save = changeShared("setupPersonalities", (value) => {
-      const before = isObject(value) ? mergePersonalities(value) : readPersonalities();
-      const after = mergePersonalities(before, document2);
-      if (!fitsLibrary(after)) {
-        full = true;
-        return;
-      }
-      const was = new Map([...before.personalities, ...before.removed].map((entry) => [entry.id, JSON.stringify(entry)]));
-      changed = [...after.personalities, ...after.removed].filter((entry) => was.get(entry.id) !== JSON.stringify(entry)).map((entry) => entry.id);
-      return after;
-    });
-    if (full)
-      return yield* json(400, { message: FULL_LIBRARY });
-    if (!save)
-      return yield* json(409, { message: "A personality change is already waiting to be saved." });
-    if (await waitShared(save) !== "saved")
-      return yield* json(202, { pending: true, message: PENDING_SAVE });
-    return yield* json(200, { changed });
+    const saved = await savePersonalityLibrary(given.document);
+    return yield* json(saved.status, saved.status === 200 ? { changed: saved.changed } : saved.value);
   }
   const [status, value] = takePersonalitiesDocument(parsed(request.body), readEngine, readBridge);
   return yield* json(status, value);
+}
+async function savePersonalityLibrary(document2) {
+  const setup = readLink()?.setup;
+  if (setup?.role !== "primary")
+    return { status: 409, value: { message: "Change your setup's personalities on its primary." } };
+  if (!setup.standby)
+    return { status: 503, value: { message: PENDING_SAVE } };
+  let changed = [];
+  let library;
+  const save = changeShared("setupPersonalities", (value) => {
+    const before = isObject(value) ? mergePersonalities(value) : readPersonalities();
+    library = mergePersonalities(before, document2);
+    if (!fitsLibrary(library))
+      return;
+    const was = new Map([...before.personalities, ...before.removed].map((entry) => [entry.id, JSON.stringify(entry)]));
+    changed = [...library.personalities, ...library.removed].filter((entry) => was.get(entry.id) !== JSON.stringify(entry)).map((entry) => entry.id);
+    return library;
+  });
+  if (library && !fitsLibrary(library))
+    return { status: 400, value: { message: FULL_LIBRARY } };
+  if (!save || !library)
+    return { status: 409, value: { message: "The personality library couldn't be staged. Another save may be pending or the setup may be out of space." } };
+  if (await waitShared(save) !== "saved")
+    return { status: 202, value: { pending: true, message: PENDING_SAVE } };
+  return { status: 200, library, changed };
 }
 async function* personalityRoute(context, personality) {
   const { request, readEngine, readBridge, json } = context;
@@ -78010,7 +78355,10 @@ async function* personalityRoute(context, personality) {
   }
   const method = request.method.toUpperCase();
   const body = parsed(request.body);
-  const setup = readLink()?.setup;
+  const link = readLink();
+  if (method !== "GET" && link?.leadershipPending)
+    return yield* json(503, { message: LEADERSHIP_WAIT });
+  const setup = link?.setup;
   if (requiresStandby(setup) && method !== "GET") {
     if (setup?.role !== "primary")
       return yield* json(409, { message: "Change your setup's personalities on its primary." });
@@ -86714,7 +87062,7 @@ async function* toApp(request, phone, signal) {
   yield { body: Buffer.from(JSON.stringify({ message: OWN_HOME_MAC && !openAppHost() ? APP_CLOSED : APP_NOT_ANSWERING })) };
 }
 var answersAlone = () => OWN_HOME_MAC && !openAppHost();
-function macFront(handle = engineHandler(readEngineFile, { name: os23.hostname() }), timing) {
+function macFront(handle = engineHandler(readEngineFile, { name: os24.hostname() }), timing) {
   return versionedRoutes(async function* (request, phone, signal) {
     const route = String(request.path ?? "").split("?")[0];
     if (!macAppAnswers(route) || boxAnswers(route) || answersAlone())
@@ -86752,7 +87100,7 @@ async function runMacLink() {
       const host = new LinkHost({
         key: Buffer.from(link.key, "base64url"),
         hello: { v: 1, kind: "mac", name: config.name, app: config.app, engine: engine.version ?? null },
-        authorize: (key, hello, address) => Boolean(macLink.config?.phones) && authorizeDesktopConnection(host, key, hello, address),
+        authorize: (key, hello, address, signal) => Boolean(macLink.config?.phones) && authorizeDesktopConnection(host, key, hello, address, signal),
         confirmed: confirmPhone,
         mail: (_from, body) => receiveMail(body, host, (sender, payload) => peerMail(sender, payload, host, peerPlaces)),
         handle: macFront(engineHandler(readEngineFile, { name: config.name }, readBridgeFile, (changed) => host.keepOnly(new Set((changed.phones ?? []).map((phone) => phone.key))), macLink.hold)),
@@ -86988,11 +87336,11 @@ init_client();
 init_paths();
 import crypto73 from "node:crypto";
 import http from "node:http";
-import os24 from "node:os";
+import os25 from "node:os";
 var IDLE_TOLD = 5000;
 var IDLE_KEPT = 60000;
 var HEARTBEAT = 20000;
-function serveBox(password, handle = engineHandler(readEngineFile, { name: os24.hostname() })) {
+function serveBox(password, handle = engineHandler(readEngineFile, { name: os25.hostname() })) {
   const expected = Buffer.from("Basic " + Buffer.from(`opencode:${password}`).toString("base64"));
   const server = http.createServer({ keepAliveTimeout: IDLE_TOLD, keepAliveTimeoutBuffer: IDLE_KEPT }, async (request, response) => {
     const given = Buffer.from(request.headers.authorization ?? "");
@@ -87070,7 +87418,7 @@ init_helper();
 init_home();
 init_marks();
 init_uninstall();
-import { spawn as spawn24, spawnSync as spawnSync22 } from "node:child_process";
+import { spawn as spawn24, spawnSync as spawnSync23 } from "node:child_process";
 import crypto74 from "node:crypto";
 import fs217 from "node:fs";
 import path225 from "node:path";
@@ -87228,7 +87576,7 @@ function handOverCommand(args) {
     return done("stayed", `${HELPER_NAME} from before the update didn't stop: it moves to the new one at your next login.`);
   const domain = `gui/${process.getuid?.() ?? 0}`;
   const until = Date.now() + 5000;
-  while (Date.now() < until && new RegExp(`\\bpid = ${pid}\\b`).test(spawnSync22(tools.launchctl, ["print", `${domain}/${LAUNCH_AGENT}`], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] }).stdout ?? ""))
+  while (Date.now() < until && new RegExp(`\\bpid = ${pid}\\b`).test(spawnSync23(tools.launchctl, ["print", `${domain}/${LAUNCH_AGENT}`], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] }).stdout ?? ""))
     pause3(100);
   if (stoppedHere())
     return done("stopped", "Kuvo on this Mac was stopped as it went: nothing was started.");
@@ -87238,7 +87586,7 @@ function handOverCommand(args) {
   if (started.stopped)
     return done("stopped", "Kuvo on this Mac was stopped as it went: nothing was started.");
   if (!started.disabled && !stoppedHere()) {
-    const opened = spawnSync22(tools.open, ["-g", "-j", "-n", helperBundle(), "--args", "keep", "--home", K], { encoding: "utf8", timeout: 30000, stdio: ["ignore", "ignore", "pipe"] });
+    const opened = spawnSync23(tools.open, ["-g", "-j", "-n", helperBundle(), "--args", "keep", "--home", K], { encoding: "utf8", timeout: 30000, stdio: ["ignore", "ignore", "pipe"] });
     if (opened.status === 0)
       return done("handed", `${HELPER_NAME} runs the new version now, opened until you log out: launchd didn't start it (${started.message})`);
   }
@@ -87296,7 +87644,7 @@ init_mac();
 init_client();
 init_home();
 init_update();
-import { spawn as spawn25, spawnSync as spawnSync23 } from "node:child_process";
+import { spawn as spawn25, spawnSync as spawnSync24 } from "node:child_process";
 import fs219 from "node:fs";
 import path227 from "node:path";
 import { performance as performance2 } from "node:perf_hooks";
@@ -87439,7 +87787,7 @@ function rollBackCode() {
   const start = path227.join(K, "bin", "kuvo-start");
   if (!fs219.existsSync(start))
     return false;
-  const ran = spawnSync23("sh", [start, "rollback"], { cwd: K, env: { ...process.env, KUVO_UPDATER: String(process.pid) }, stdio: "ignore", timeout: 600000 });
+  const ran = spawnSync24("sh", [start, "rollback"], { cwd: K, env: { ...process.env, KUVO_UPDATER: String(process.pid) }, stdio: "ignore", timeout: 600000 });
   return ran.status === 0 && !updateOnTrial();
 }
 async function settleUpdate({ clock = () => performance2.now(), every = HEALTH.every, window: window2 = HEALTH.window, failingFor = HEALTH.failingFor, wait = sleep, look, rollBack = rollBackCode, well = () => {} } = {}) {
@@ -87470,7 +87818,7 @@ async function settleUpdate({ clock = () => performance2.now(), every = HEALTH.e
       return putBack2(trial, to, null, rollBack);
     } finally {
       if (!updateOnTrial())
-        spawnSync23("sh", [path227.join(K, "bin", "kuvo-start"), "start"], { cwd: K, env: process.env, stdio: "ignore", timeout: 600000 });
+        spawnSync24("sh", [path227.join(K, "bin", "kuvo-start"), "start"], { cwd: K, env: process.env, stdio: "ignore", timeout: 600000 });
       dropJudgeMark();
     }
   }
@@ -87825,7 +88173,7 @@ init_client();
 init_home();
 init_fleet();
 init_update();
-import { spawnSync as spawnSync24 } from "node:child_process";
+import { spawnSync as spawnSync25 } from "node:child_process";
 import fs220 from "node:fs";
 import path229 from "node:path";
 var REPAIR_FILE = path229.join(RUN, "repair.json");
@@ -87877,7 +88225,7 @@ function repairFromRelease(options = {}) {
   try {
     if (updateOnTrial() || fs220.existsSync(path229.join(RUN, ".rolling-back")) || boxVersion() !== running)
       return said({ result: "none", why: "busy" });
-    const listing = spawnSync24("tar", ["-tvzf", "-"], { input: pack, maxBuffer: 1e7, timeout: 120000 }).stdout?.toString("utf8") ?? "";
+    const listing = spawnSync25("tar", ["-tvzf", "-"], { input: pack, maxBuffer: 1e7, timeout: 120000 }).stdout?.toString("utf8") ?? "";
     const put = [];
     for (const file of installOrder(wrong)) {
       const to = path229.join(K, file), next = `${to}.repair-${process.pid}`;
@@ -87959,7 +88307,7 @@ function matches2(file, sha, data) {
 var released = new Map;
 function unpacked(pack, file) {
   for (const name of ["./" + file, file]) {
-    const read = spawnSync24("tar", ["-xzOf", "-", name], { input: pack, maxBuffer: 200000000, timeout: 120000 });
+    const read = spawnSync25("tar", ["-xzOf", "-", name], { input: pack, maxBuffer: 200000000, timeout: 120000 });
     if (read.status === 0 && read.stdout?.length) {
       released.set(hexSHA256(read.stdout), read.stdout);
       return read.stdout;
@@ -88176,7 +88524,7 @@ async function run7() {
   keepApprovals();
   keepGroupSettings();
   keepOldBranchPrefix();
-  holdVault(engineHandler(readEngineFile, { name: os25.hostname() }, readBridgeFile));
+  holdVault(engineHandler(readEngineFile, { name: os26.hostname() }, readBridgeFile));
   setVaultTell(tell);
   watchVaultAsks(tell, answered);
   watchSandboxAsks(tell, answered);
@@ -88323,11 +88671,11 @@ async function run7() {
     } catch {}
     const host = new LinkHost({
       key: Buffer.from(link.key, "base64url"),
-      hello: { v: 1, kind: "machine", name: link.name || os25.hostname(), app: BRIDGE_VERSION, engine: engine.version ?? null },
-      authorize: (key, hello, address) => authorizeDesktopConnection(host, key, hello, address),
+      hello: { v: 1, kind: "machine", name: link.name || os26.hostname(), app: BRIDGE_VERSION, engine: engine.version ?? null },
+      authorize: (key, hello, address, signal) => authorizeDesktopConnection(host, key, hello, address, signal),
       confirmed: confirmPhone,
       mail: (_from, body) => receiveMail(body, host, (sender, payload) => peerMail(sender, payload, host, peerPlaces), (mac, given, at) => hold.attend(`mac:${mac}`, given, at)),
-      handle: engineHandler(readEngineFile, { name: link.name || os25.hostname() }, readBridgeFile, (changed) => host.keepOnly(new Set((changed.phones ?? []).map((phone) => phone.key))), hold),
+      handle: engineHandler(readEngineFile, { name: link.name || os26.hostname() }, readBridgeFile, (changed) => host.keepOnly(new Set((changed.phones ?? []).map((phone) => phone.key))), hold),
       connect: engineConnect(readEngineFile, () => host.unsent?.() ?? 0),
       send: () => {}
     });
@@ -88407,7 +88755,7 @@ async function box(command) {
       try {
         given = JSON.parse(await input());
       } catch {}
-      const handle = engineHandler(readEngineFile, { name: os25.hostname() }, readBridgeFile);
+      const handle = engineHandler(readEngineFile, { name: os26.hostname() }, readBridgeFile);
       const { headers: givenHeaders, error } = routeRequestHeaders(given?.headers);
       if (error)
         return say({ status: 400, routeVersion: ROUTE_VERSION, body: JSON.stringify(error) });
@@ -88463,11 +88811,29 @@ async function box(command) {
       try {
         given = JSON.parse(await input() || "null");
       } catch {}
-      const before = JSON.stringify(readPersonalities());
-      const met = changePersonalities((library) => mergePersonalities(library, given));
-      if (JSON.stringify(met) !== before)
-        noteDocsChanged();
-      return say({ status: 200, ...met });
+      let legacy;
+      let waiting = false;
+      updateLink((link) => {
+        if (requiresStandby(link?.setup))
+          return null;
+        if (link?.leadershipPending) {
+          waiting = true;
+          return null;
+        }
+        const before = JSON.stringify(readPersonalities());
+        const library = changePersonalities((current) => mergePersonalities(current, given));
+        legacy = { library, changed: JSON.stringify(library) !== before };
+        return null;
+      });
+      if (waiting)
+        return say({ status: 503, message: LEADERSHIP_WAIT });
+      if (legacy) {
+        if (legacy.changed)
+          noteDocsChanged();
+        return say({ status: 200, ...legacy.library });
+      }
+      const saved = await savePersonalityLibrary(given);
+      return say({ status: saved.status, ...saved.status === 200 ? saved.library : saved.value });
     }
     default:
       console.error("Usage: kuvo-link.js box adopt | read | change | key <name> | route | reconnect <server> | personalities | update-status | update-now");
@@ -88513,7 +88879,7 @@ async function keptServe() {
   fs221.mkdirSync(RUN, { recursive: true, mode: 448 });
   initializeMachineSetup();
   const password = crypto76.randomBytes(24).toString("hex");
-  const server = serveBox(password, engineHandler(readEngineFile, { name: os25.hostname() }, readBridgeFile));
+  const server = serveBox(password, engineHandler(readEngineFile, { name: os26.hostname() }, readBridgeFile));
   await new Promise((resolve, reject) => {
     server.once("error", reject);
     server.listen(0, "127.0.0.1", resolve);
@@ -88581,7 +88947,7 @@ async function serve() {
     await dropBotsOwnKeys(runningEngine2).catch(() => {});
   if (IS_MAC)
     macLink.hold = macNoticeHold();
-  const server = serveBox(password, engineHandler(readEngineFile, { name: os25.hostname() }, readBridgeFile, () => {}, macLink.hold));
+  const server = serveBox(password, engineHandler(readEngineFile, { name: os26.hostname() }, readBridgeFile, () => {}, macLink.hold));
   await new Promise((resolve, reject) => {
     server.once("error", reject);
     server.listen(0, "127.0.0.1", resolve);
@@ -88594,7 +88960,7 @@ async function serve() {
   keepApprovals();
   keepGroupSettings();
   keepEngineDefaults();
-  holdVault(engineHandler(readEngineFile, { name: os25.hostname() }, readBridgeFile));
+  holdVault(engineHandler(readEngineFile, { name: os26.hostname() }, readBridgeFile));
   const port = server.address().port;
   if (OWN_HOME_MAC)
     writeServeRecord({ pid: process.pid, port, password, kept: false });
@@ -88741,7 +89107,7 @@ async function setup() {
     if (!next.phones.length && !peersOf(next).length)
       return current ? next : null;
     next.relay = String(input.relay);
-    next.name = String(input.name || next.name || os25.hostname()).slice(0, 100);
+    next.name = String(input.name || next.name || os26.hostname()).slice(0, 100);
     link = next;
     return next;
   });
@@ -88781,6 +89147,7 @@ async function setup() {
     address: addressOf(Buffer.from(link.secret, "base64url")).toString("base64url"),
     key: publicOf(Buffer.from(link.key, "base64url")).toString("base64url"),
     peers: true,
+    standbyAcceptance: true,
     sign: ownSign(link),
     docs: setupDocs(link)
   }));
@@ -88826,7 +89193,7 @@ function pair(relay) {
     main = mainElsewhere(current);
     if (main)
       return null;
-    const next = current ?? { secret: crypto76.randomBytes(32).toString("base64url"), key: newKey().toString("base64url"), name: os25.hostname(), phones: [] };
+    const next = current ?? { secret: crypto76.randomBytes(32).toString("base64url"), key: newKey().toString("base64url"), name: os26.hostname(), phones: [] };
     next.sign ??= newSigningSeed();
     if (relay)
       next.relay = relay;

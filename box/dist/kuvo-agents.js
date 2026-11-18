@@ -38,35 +38,44 @@ function upgradeFormat(format, from, value, steps) {
     throw new UnsupportedFormatVersion(format, version, steps.length);
   return steps.slice(version).reduce((record, step) => step(record), value);
 }
-function objectFormat(name, steps) {
+function objectFormat(name, version, decode = (fields) => fields) {
   return {
-    version: steps.length,
+    version,
     read(value) {
       if (!isObject(value))
         throw new Error(`${name} isn't a JSON object.`);
       const { formatVersion: from, ...fields } = value;
-      return upgradeFormat(name, from, fields, steps);
+      return decode(fields, readableVersion(name, from, version));
     },
     write(fields) {
-      return { ...fields, formatVersion: steps.length };
+      return { ...fields, formatVersion: version };
     }
   };
 }
+function readableVersion(name, from, current) {
+  const version = formatVersion(name, from, 0, current);
+  if (version > current)
+    throw new UnsupportedFormatVersion(name, version, current);
+  return version;
+}
 function additiveListFormat(name) {
-  const steps = [(items) => items];
+  const version = 1;
   return {
     read(value) {
       if (!Array.isArray(value))
         throw new Error(`${name} isn't a JSON array.`);
       const marker = value[0];
-      return isObject(marker) && Object.hasOwn(marker, "formatVersion") ? upgradeFormat(name, marker.formatVersion, value.slice(1), steps) : upgradeFormat(name, undefined, value, steps);
+      if (!isObject(marker) || !Object.hasOwn(marker, "formatVersion"))
+        return value;
+      readableVersion(name, marker.formatVersion, version);
+      return value.slice(1);
     },
     write(items) {
-      return [{ formatVersion: steps.length }, ...items];
+      return [{ formatVersion: version }, ...items];
     }
   };
 }
-var UnsupportedFormatVersion, additiveObjectFormat = (name) => objectFormat(name, [(fields) => fields]);
+var UnsupportedFormatVersion, additiveObjectFormat = (name) => objectFormat(name, 1);
 var init_format_version = __esm(() => {
   UnsupportedFormatVersion = class UnsupportedFormatVersion extends Error {
     constructor(format, found, current) {
@@ -40648,7 +40657,9 @@ var init_records = __esm(() => {
 });
 
 // box/src/shared/folder-version.ts
+import { spawnSync as spawnSync4 } from "child_process";
 import fs15 from "fs";
+import os2 from "os";
 import path11 from "path";
 function checkpoint(file, current) {
   const format = `Kuvo folder at ${path11.dirname(file)}`;
@@ -40677,9 +40688,49 @@ function checkpoint(file, current) {
   return { version, upgradingTo };
 }
 function upgradeKuvoFolder(folder, importLegacy) {
-  upgradeFolder(folder, steps, importLegacy);
+  upgradeFolder(folder, steps, importLegacy, () => checkTrialRecovery(folder));
 }
-function upgradeFolder(folder, ordered, importLegacy) {
+function checkTrialRecovery(folder) {
+  if (!fs15.existsSync(path11.join(folder, "run", "update-trial")))
+    return;
+  const bin = path11.join(folder, "updates", "rollback", "files", "bin");
+  const saved = path11.join(bin, "kuvo-link.js");
+  let engine;
+  try {
+    engine = /^V=([\w.-]+)$/m.exec(fs15.readFileSync(path11.join(bin, "kuvo-start"), "utf8"))?.[1];
+  } catch {}
+  const oldRuntime = engine && path11.join(folder, "engine", engine, "opencode");
+  let runtime = process.execPath;
+  if (oldRuntime)
+    try {
+      fs15.accessSync(oldRuntime, fs15.constants.X_OK);
+      runtime = oldRuntime;
+    } catch {}
+  const refuse = () => {
+    throw new Error(`The saved Kuvo Code can't recover folder layout ${steps.length}. Roll back the trial before updating the folder.`);
+  };
+  if (!fs15.existsSync(saved))
+    return refuse();
+  const scratch = fs15.mkdtempSync(path11.join(os2.tmpdir(), "kuvo-layout-probe-"));
+  try {
+    const probe = path11.join(scratch, ".kuvo-code");
+    fs15.mkdirSync(probe, { mode: 448 });
+    const accepts = (version) => {
+      fs15.writeFileSync(path11.join(probe, FOLDER_VERSION_FILE), JSON.stringify({ version }));
+      const flags = runtime === oldRuntime || process.versions.bun ? ["--config=/dev/null", "--no-env-file"] : [];
+      return spawnSync4(runtime, [...flags, saved, "here", ".kuvo-machine-probe"], {
+        env: { ...process.env, HOME: scratch, KUVO_HOME: probe, BUN_BE_BUN: "1", BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0" },
+        stdio: "ignore",
+        timeout: 15000
+      }).status === 0;
+    };
+    if (!accepts(steps.length) || steps.length > 1 && accepts(2147483647))
+      refuse();
+  } finally {
+    fs15.rmSync(scratch, { recursive: true, force: true });
+  }
+}
+function upgradeFolder(folder, ordered, importLegacy, beforeSteps) {
   folder = path11.resolve(folder);
   const file = path11.join(folder, FOLDER_VERSION_FILE);
   const current = ordered.length;
@@ -40689,6 +40740,8 @@ function upgradeFolder(folder, ordered, importLegacy) {
 `, path11.dirname(folder));
   locked(path11.join(folder, ".folder-upgrade.lock"), () => {
     const start = checkpoint(file, current);
+    if (start.version < current)
+      beforeSteps?.();
     for (let version = start.version;version < current; version++) {
       const upgradingTo = version + 1;
       if (start.upgradingTo !== upgradingTo)
@@ -42311,4 +42364,4 @@ if (!isMainThread && process.argv.includes("--insights-db-worker")) {
 } else {
   await init_main().then(() => ({}));
 }
-// Built from Packages/Box/src/agents 57933dbd155b040c5b5be4b21371873d7fd459784f2ba8eeff7bc652d99d242a
+// Built from Packages/Box/src/agents 91c89bbb0b07f76969b730d7e4364e28122462c2505f1ce036bb6066e9bbef2c
