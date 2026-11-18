@@ -27,10 +27,10 @@ const kept = new Map<string, Kept>()
 /** How long an ended one's output can still be read. */
 const keptAfter = 10 * 60_000
 
-/** A command left running, from now: its id here. */
-export function addShell(sessionID: string, directory: string, command: string, output: Kept["output"], stop: Kept["stop"]): string {
+/** A command left running: its id here. */
+export function addShell(sessionID: string, directory: string, command: string, output: Kept["output"], stop: Kept["stop"], started = Date.now()): string {
   const id = newID("shl")
-  const job: ShellJob = { id, status: "running", command, cwd: directory, metadata: { sessionID }, time: { started: Date.now() } }
+  const job: ShellJob = { id, status: "running", command, cwd: directory, metadata: { sessionID }, time: { started } }
   kept.set(id, { job, output, stop })
   emit("shell.created", { info: job }, directory)
   return id

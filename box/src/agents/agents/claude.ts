@@ -1380,7 +1380,7 @@ class ClaudeThread implements Thread {
         const resumed = type === "local_agent" && known?.toolUseID && message.tool_use_id && message.tool_use_id !== known.toolUseID ? known.toolUseID : undefined
         // (Whether it runs in the background is Claude Code's to say: its Agent tool's default is.)
         const backgrounded = typeof message.is_backgrounded === "boolean" ? message.is_backgrounded : known?.backgrounded
-        this.tasks.set(message.task_id, { ...known, type, description: message.description ?? known?.description ?? "", toolUseID: resumed ?? message.tool_use_id ?? known?.toolUseID, backgrounded })
+        this.tasks.set(message.task_id, { ...known, type, description: message.description ?? known?.description ?? "", toolUseID: resumed ?? message.tool_use_id ?? known?.toolUseID, backgrounded, since: known?.since ?? Date.now() })
         if (type === "local_agent" && typeof message.tool_use_id === "string" && !resumed) {
           this.rememberSubagent(message.tool_use_id, { agentID: message.task_id })
           // A subagent's own (the turn's have theirs from their call): its session from the start,
@@ -1455,6 +1455,7 @@ class ClaudeThread implements Thread {
           if (shell && !this.liveTasks.has(taskID)) endShell(shell)
         })
       },
+      task.since,
     )
   }
 

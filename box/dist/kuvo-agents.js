@@ -10133,8 +10133,8 @@ ${text}`;
         if (this.loading || replayed || sessionID && this.sessionID && sessionID !== this.sessionID)
           return;
         const before = this.tasks;
-        this.tasks = new Map(tasks.map((task) => [task.id, { ...task, started: before.get(task.id)?.started ?? task.started ?? Date.now() }]));
-        if (before.size !== this.tasks.size || [...this.tasks.keys()].some((id) => !before.has(id)))
+        this.tasks = new Map(tasks.map((task) => [task.id, { ...task, started: task.started ?? before.get(task.id)?.started ?? Date.now() }]));
+        if (before.size !== this.tasks.size || [...this.tasks.values()].some((task) => before.get(task.id)?.started !== task.started))
           emit("session.background.updated", { sessionID: this.session.id }, this.session.location.directory);
       }
     };
@@ -16147,9 +16147,9 @@ class Queue {
 // box/src/agents/shells.ts
 var kept = new Map;
 var keptAfter = 10 * 60000;
-function addShell(sessionID, directory, command, output, stop) {
+function addShell(sessionID, directory, command, output, stop, started = Date.now()) {
   const id = newID("shl");
-  const job = { id, status: "running", command, cwd: directory, metadata: { sessionID }, time: { started: Date.now() } };
+  const job = { id, status: "running", command, cwd: directory, metadata: { sessionID }, time: { started } };
   kept.set(id, { job, output, stop });
   emit("shell.created", { info: job }, directory);
   return id;
@@ -17252,7 +17252,7 @@ ${input.text}` } : input, this.copies());
         const type = message.task_type ?? known?.type ?? "";
         const resumed = type === "local_agent" && known?.toolUseID && message.tool_use_id && message.tool_use_id !== known.toolUseID ? known.toolUseID : undefined;
         const backgrounded = typeof message.is_backgrounded === "boolean" ? message.is_backgrounded : known?.backgrounded;
-        this.tasks.set(message.task_id, { ...known, type, description: message.description ?? known?.description ?? "", toolUseID: resumed ?? message.tool_use_id ?? known?.toolUseID, backgrounded });
+        this.tasks.set(message.task_id, { ...known, type, description: message.description ?? known?.description ?? "", toolUseID: resumed ?? message.tool_use_id ?? known?.toolUseID, backgrounded, since: known?.since ?? Date.now() });
         if (type === "local_agent" && typeof message.tool_use_id === "string" && !resumed) {
           this.rememberSubagent(message.tool_use_id, { agentID: message.task_id });
           if (this.active)
@@ -17330,7 +17330,7 @@ ${input.text}` } : input, this.copies());
         if (shell && !this.liveTasks.has(taskID))
           endShell(shell);
       });
-    });
+    }, task.since);
   }
   async taskOutput(taskID) {
     const task = this.tasks.get(taskID);
@@ -19687,6 +19687,7 @@ class CodexThread {
     if (this.server !== server)
       return;
     this.loaded = false;
+    this.commandStarts.clear();
     const active = this.active;
     if (!active)
       return;
@@ -19717,6 +19718,7 @@ class CodexThread {
         left.request("thread/unsubscribe", { threadId: this.nativeID }).catch(() => {});
       this.server = rpc;
       this.loaded = false;
+      this.commandStarts.clear();
     }
     const fenced = this.agent.isFenced(rpc);
     const instructions = [hooks.instructions(), ASKING_WORDS].filter(Boolean).join(`
@@ -19803,6 +19805,7 @@ class CodexThread {
     return this.backgroundLanes.size > 0 || this.liveTerminals.length > 0;
   }
   terminals = [];
+  commandStarts = new Map;
   terminalsRead;
   listFailures = 0;
   get liveTerminals() {
@@ -19830,9 +19833,11 @@ class CodexThread {
         let cursor;
         do {
           const answer = await server.request("thread/backgroundTerminals/list", { threadId: threadID, ...cursor ? { cursor } : {} }, 30000);
-          for (const terminal of Array.isArray(answer?.data) ? answer.data : [])
-            if (typeof terminal?.processId === "string")
-              listed.push({ id: terminal.processId, command: String(terminal.command ?? "") });
+          for (const terminal of Array.isArray(answer?.data) ? answer.data : []) {
+            if (typeof terminal?.processId !== "string")
+              continue;
+            listed.push({ id: terminal.processId, itemId: typeof terminal.itemId === "string" ? terminal.itemId : undefined });
+          }
           cursor = typeof answer?.nextCursor === "string" && answer.nextCursor && !seen.has(answer.nextCursor) ? answer.nextCursor : undefined;
           if (cursor)
             seen.add(cursor);
@@ -19849,9 +19854,14 @@ class CodexThread {
         this.terminalsRead = setTimeout(() => void this.readTerminals(), codexTiming.terminals);
       return;
     }
-    const before = this.terminals;
-    this.terminals = listed.map((terminal) => ({ ...terminal, since: before.find((known) => known.id === terminal.id)?.since ?? Date.now() }));
-    if (before.length !== this.terminals.length || this.terminals.some((terminal) => !before.some((known) => known.id === terminal.id)))
+    const before = new Map(this.terminals.map((terminal) => [terminal.id, terminal]));
+    this.terminals = listed.map(({ id, itemId }) => {
+      const started = itemId === undefined ? undefined : this.commandStarts.get(itemId);
+      return { id, since: started ?? before.get(id)?.since ?? Date.now() };
+    });
+    for (const id of [...this.commandStarts.keys()].slice(0, Math.max(0, this.commandStarts.size - 200)))
+      this.commandStarts.delete(id);
+    if (before.size !== this.terminals.length || this.terminals.some((terminal) => before.get(terminal.id)?.since !== terminal.since))
       emit("session.background.updated", { sessionID: this.session.id }, this.session.location.directory);
     if (this.terminals.length)
       this.terminalsRead = setTimeout(() => void this.readTerminals(), codexTiming.terminals);
@@ -20243,6 +20253,9 @@ ${said.map((each) => each.text).join(`
       this.loaded = false;
       return;
     }
+    const item = params?.item;
+    if (method === "item/started" && item?.type === "commandExecution" && typeof item.id === "string" && !this.commandStarts.has(item.id))
+      this.commandStarts.set(item.id, Date.now());
     if (!active)
       return;
     const turn = active.turn;
@@ -39622,4 +39635,4 @@ if (!onMachine) {
 }
 process.on("SIGTERM", () => stop());
 process.on("SIGINT", () => stop());
-// Built from Packages/Box/src/agents 632f573a8bc4ad3ef196a8b36f03c150f4ed941f364d304111a26961eb0ebb8c
+// Built from Packages/Box/src/agents 09c0fa65ac27351e4aaf4908bd355f0f647055645fc29fe63a4abfd597fa4dd8

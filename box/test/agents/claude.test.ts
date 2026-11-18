@@ -1,7 +1,7 @@
 // Claude Code's thread against a fake SDK: messages you send partway, taken late or never.
 
 import "../safety"
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test"
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, setSystemTime, test } from "bun:test"
 import { spawnSync } from "node:child_process"
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { homedir, tmpdir } from "node:os"
@@ -415,6 +415,27 @@ describe("Claude Code, messages sent partway", () => {
 })
 
 describe("Claude Code, on its own", () => {
+  test("a foreground command keeps its start time when moved to the background", async () => {
+    const since = Date.now()
+    const id = sessions.create({ model: { providerID: provider, id: "default" }, location: { directory: root } }).id
+    sessions.prompt(id, { id: "msg_claude_bg_00000", text: "Run the tests.", files: [], delivery: "steer" })
+    await until(() => fake.sent.length === 1)
+    const first = fake.sent[0].uuid
+    try {
+      setSystemTime(since)
+      fake.out.push({ type: "system", subtype: "task_started", task_id: "t1", task_type: "local_bash", description: "npm test", is_backgrounded: false })
+      fake.say("The tests are starting.", [first])
+      await until(() => texts(id).join(" ").includes("The tests are starting."))
+      expect(sessions.background()[id]).toBeUndefined()
+      setSystemTime(since + 7_200)
+      fake.out.push({ type: "system", subtype: "task_updated", task_id: "t1", patch: { is_backgrounded: true } })
+      await until(() => Boolean(sessions.background()[id]?.commands.length))
+      expect(sessions.background()[id]?.commands[0]).toMatchObject({ command: "npm test", started: since })
+    } finally {
+      setSystemTime()
+    }
+  })
+
   test("a command it leaves running shows in the bar; when it ends, the turn it starts on its own shows too", async () => {
     const id = sessions.create({ model: { providerID: provider, id: "default" }, location: { directory: root } }).id
     sessions.prompt(id, { id: "msg_claude_bg_00001", text: "start the server", files: [], delivery: "steer" })

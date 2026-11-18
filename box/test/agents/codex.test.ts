@@ -1,7 +1,7 @@
 // Codex's thread against a fake `codex app-server`: what Codex 0.16x sends, shown, not lost.
 
 import "../safety"
-import { afterAll, afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from "bun:test"
+import { afterAll, afterEach, beforeEach, describe, expect, setDefaultTimeout, setSystemTime, test } from "bun:test"
 import { chmodSync, linkSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
@@ -20,6 +20,7 @@ import { callServer, computerServers, KEYS } from "./support/servers"
 import { forgetServers } from "../../src/agents/servers"
 import { subagentEngine } from "./support/subagents"
 import { fencePolicy } from "../../src/link/fence/policy"
+import { FIRST_LOOK, finishHeld, workWatcher } from "../../src/link/work/wakes"
 import type { Roster } from "../../src/agents/roster"
 import { Sessions, timing } from "../../src/agents/sessions"
 import { Store } from "../../src/agents/store"
@@ -59,7 +60,7 @@ const endsAsTold: [string, any] = ["(ends as told)", {}]
 /** In a turn's events: Codex works until something's steered in, and as it takes it, says a sleep's started, that it ended, and that its turn is over, in the same breath. */
 const takesAsItSleeps: [string, any] = ["(takes it as it starts to sleep, and ends)", {}]
 /** In a turn's events: Codex leaves `command` running in a background terminal, until a file `terminal-done` is in its folder. */
-const leavesTerminal = (command: string): [string, any] => ["(leaves a terminal)", { processId: "p1", command }]
+const leavesTerminal = (command: string, processId = "p1"): [string, any] => ["(leaves a terminal)", { processId, command }]
 
 /**
  * A Codex whose turn sends `events` (each `[method, params]`, with the thread's id filled in): an
@@ -427,6 +428,94 @@ describe("Commands Codex leaves running in a background terminal (#262)", () => 
     }
   }
   const lists = () => sent().filter((message) => message.method === "thread/backgroundTerminals/list").length
+
+  test.each(["before", "after", "unknown"] as const)("a terminal's start relative to the lead's instruction: %s", async (when) => {
+    const commandStart = Date.now()
+    const asked = commandStart + (when === "after" ? -7_200 : 7_200)
+    const listed = commandStart + 3_600_000
+    const item = command("c-p1", "find .")
+    const finish = { type: "session.execution.succeeded", data: { sessionID: "" } }
+    const lead = { id: "ses_lead", title: "Lead", location: { directory: root } }
+    const prompts: { text: string; delivery: string }[] = []
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      async fetch(request) {
+        const path = new URL(request.url).pathname
+        if (path === "/api/session/background") return Response.json({ data: sessions.background() })
+        if (path === "/api/session") return Response.json({ data: [] })
+        if (path === "/api/session/active") return Response.json({ data: {} })
+        if (path === `/api/session/${lead.id}`) return Response.json({ data: lead })
+        if (path === `/api/session/${lead.id}/prompt`) {
+          prompts.push(await request.json() as typeof prompts[number])
+          return Response.json({})
+        }
+        if (path === `/api/session/${finish.data.sessionID}`) return Response.json({
+          data: { id: finish.data.sessionID, title: "Codex", location: { directory: root }, metadata: { kuvo: { startedBy: lead.id, wake: ["finished"] } } },
+        })
+        if (path === `/api/session/${finish.data.sessionID}/message`) return Response.json({ data: [
+          { id: "msg_idle", type: "idle", time: { created: listed } },
+          { id: "msg_reply", type: "assistant", time: { created: listed }, content: [{ type: "text", text: "The tests pass." }] },
+          { id: "msg_asked", type: "user", time: { created: asked }, text: "[Message from Lead · ses_lead] (To answer, use send_message to ses_lead.)\n\nCheck the tests." },
+        ] })
+        return Response.json({ data: [] })
+      },
+    })
+    const target = { port: server.port!, password: "p" }
+    const toldFile = join(root, "told.json")
+    const scheduled: { at: number; run: () => unknown }[] = []
+    let now = listed
+    const pass = async (ms: number) => {
+      now += ms
+      while (scheduled.length && scheduled[0].at <= now) await scheduled.shift()!.run()
+    }
+    const watch = workWatcher(target, () => [target], {
+      from: "bridge", bridgeRuns: () => true, now: () => now, toldFile,
+      file: join(root, "wakes.json"), backgroundFile: join(root, "background.json"),
+      schedule: (run, delay = 0) => { scheduled.push({ at: now + delay, run }); scheduled.sort((a, b) => a.at - b.at) },
+    })
+    try {
+      await watch.caughtUp
+      setSystemTime(commandStart)
+      const events: [string, any][] = when === "unknown"
+        ? [
+          ["item/completed", { item: { ...item, status: "completed", exitCode: 0 } }],
+          // The same command in a different terminal does have a known start.
+          ["item/started", { item: command("c-p2", "find .") }],
+          leavesTerminal("find .", "p2"),
+        ]
+        : [["item/started", { item }]]
+      const id = start([...events, leavesTerminal("find ."), untilTold])
+      finish.data.sessionID = id
+      await until(() => tools(id).some((tool) => tool.id === (when === "unknown" ? "c-p2" : item.id)))
+      setSystemTime(listed)
+      sessions.prompt(id, { id: "msg_codex_list_001", text: "Carry on.", files: [], delivery: "steer" })
+      await until(() => ended(id) && sessions.background()[id]?.tasks.length === (when === "unknown" ? 2 : 1))
+      await watch(finish)
+      await pass(5_000)
+      if (when === "before") {
+        expect(prompts).toHaveLength(1)
+        expect(finishHeld(id, toldFile)).toBe(false)
+      } else {
+        expect(prompts).toHaveLength(0)
+        expect(finishHeld(id, toldFile)).toBe(true)
+      }
+      expect(sessions.background()[id]?.tasks).toEqual(when === "unknown"
+        ? [{ id: "p2", since: commandStart }, { id: "p1", since: listed }]
+        : [{ id: "p1", since: commandStart }])
+      await sessions.stopBackground(id)
+      // Even with no background event, the scheduled check releases the held finish.
+      await pass(FIRST_LOOK)
+      await pass(5_000)
+      expect(finishHeld(id, toldFile)).toBe(false)
+      expect(prompts).toHaveLength(1)
+      expect(prompts[0]).toMatchObject({ text: expect.stringContaining("[Session finished]"), delivery: "queue" })
+    } finally {
+      setSystemTime()
+      watch.gone()
+      await server.stop(true)
+    }
+  })
 
   test("they keep its Codex running past its idle close, shown as still at work, until they end; it isn't woken for that, as in Codex's own CLI", () =>
     quickly(async () => {

@@ -717,8 +717,8 @@ export class AcpThread implements Thread {
         // process before: a new one starts with nothing going.)
         if (this.loading || replayed || (sessionID && this.sessionID && sessionID !== this.sessionID)) return
         const before = this.tasks
-        this.tasks = new Map(tasks.map((task) => [task.id, { ...task, started: before.get(task.id)?.started ?? task.started ?? Date.now() }]))
-        if (before.size !== this.tasks.size || [...this.tasks.keys()].some((id) => !before.has(id))) emit("session.background.updated", { sessionID: this.session.id }, this.session.location.directory)
+        this.tasks = new Map(tasks.map((task) => [task.id, { ...task, started: task.started ?? before.get(task.id)?.started ?? Date.now() }]))
+        if (before.size !== this.tasks.size || [...this.tasks.values()].some((task) => before.get(task.id)?.started !== task.started)) emit("session.background.updated", { sessionID: this.session.id }, this.session.location.directory)
       },
     }
   }
