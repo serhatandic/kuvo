@@ -8,7 +8,7 @@ import path from "node:path"
 // copy made first, in one step; each queue's file written whole; the same end after a run cut off.
 // (The scenarios with a client and agents: bridge-tests/work-queue-statuses.test.js.)
 
-const { WORK_QUEUE, allItems, changeQueues, Refusal } = await import("../src/link/work-queue/store")
+const { WORK_QUEUE, allItems, changeQueues, readQueueSettingAside, Refusal } = await import("../src/link/work-queue/store")
 const { addLabel } = await import("../src/link/work-queue/labels")
 const { forgetMigrated } = await import("../src/link/work-queue/migrate")
 const { labels } = await import("../src/link/work-queue/labels")
@@ -50,6 +50,7 @@ test("what was kept is copied whole before anything is written, and every item k
   }
   expect(labels().map(each => each.name)).toEqual(["Tests & tooling", "Edge cases", "Parked"])
   expect(JSON.parse(fs.readFileSync(path.join(WORK_QUEUE, "model.json"), "utf8")).model).toBe(2)
+  expect(JSON.parse(fs.readFileSync(path.join(WORK_QUEUE, "queues", "ses_a.json"), "utf8")).formatVersion).toBe(1)
   expect(fs.existsSync(path.join(WORK_QUEUE, "categories.json"))).toBe(false)
   // (Only its own folders and files there: nothing left of the copy's making.)
   expect(fs.readdirSync(WORK_QUEUE).filter(name => !name.startsWith(".")).sort()).toEqual(["before-statuses", "labels.json", "model.json", "queues"])
@@ -99,3 +100,18 @@ test("where the copy can't be made, items still read (each said anew) and nothin
   expect(labels().map(each => each.name)).toEqual(["Tests & tooling", "Edge cases", "Parked"])
 })
 
+
+test("a future owner file stays in place before and after the status migration", () => {
+  keep()
+  const file = path.join(WORK_QUEUE, "queues", "ses_a.json")
+  const future = JSON.stringify({ formatVersion: 2, work: [{ id: "future" }] })
+  fs.writeFileSync(file, future)
+  expect(() => allItems()).toThrow(/Work Queue owner file format version 2 is unsupported/)
+  expect(fs.existsSync(before)).toBe(false)
+  expect(fs.readFileSync(file, "utf8")).toBe(future)
+
+  fs.writeFileSync(path.join(WORK_QUEUE, "model.json"), JSON.stringify({ model: 2 }))
+  expect(() => readQueueSettingAside("ses_a")).toThrow(/Work Queue owner file format version 2 is unsupported/)
+  expect(() => changeQueues(() => {})).toThrow(/Work Queue owner file format version 2 is unsupported/)
+  expect(fs.readFileSync(file, "utf8")).toBe(future)
+})

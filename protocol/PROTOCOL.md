@@ -33,7 +33,8 @@ In text (links, JSON) keys, secrets, addresses and tokens are base64url without 
 An absent JSON format marker denotes the pre-marker layout (version 0). The link state
 (`run/link.json`) and Work Queue number ledger (`run/work-queue/numbers.json`) now write
 `formatVersion: 1` beside their existing fields. Readers upgrade old files in memory and persist
-the version with a normal atomic write. The ledger commits it under the writer lock. Insights
+the version with a normal atomic write. The ledger commits it under the writer lock. Work Queue
+owner files also write version 1 with the existing item shape. Insights
 adopts its existing database as SQLite `user_version = 1` in the same transaction as its schema
 step. These readers report unsupported versions before writing any replacement.
 

@@ -15,7 +15,7 @@ Baseline is piece T at `819e4f5a6`. Scope is the computer's Kuvo home (including
 | Add, reinstall and seed | `run/{adding,keep-up,machine-helper-job,seeded}.json`, `updates/installed.json`, `link/add` and `link/install` | Unmarked. Requests and receipts use state/step names. No common unknown schema check. |
 | Work Queue ledger | `run/work-queue/numbers.json`, `link/work-queue/numbers.ts` | Unmarked. Old readers normalize lease/claim fields and ignore extra keys. Piece U stamps version 1 on the next write and refuses unsupported versions before allocating. |
 | Work Queue categories/status migration | `run/work-queue/{model,categories}.json`, `before-statuses/`, `link/work-queue/migrate.ts` | `model:2` marks the status model. The old migration keeps a whole snapshot and converts entries without statuses. Higher model numbers are currently treated as done. |
-| Work Queue items and history | `run/work-queue/queues/<owner>.json` and old backups, `link/work-queue/store.ts` | Unmarked item/file shapes. Known fields are normalized, corrupt files can be set aside, and queues with unfamiliar owners stay on disk. |
+| Work Queue items and history | `run/work-queue/queues/<owner>.json` and old backups, `link/work-queue/store.ts` | Unmarked item/file shapes. Known fields are normalized, corrupt files can be set aside, and queues with unfamiliar owners stay on disk. Piece U stamps migrated and changed owner files and leaves unknown versions where they are. |
 | Work Queue labels, delivery and receipts | `run/work-queue/{labels,acted,seen,queues-carried,queues-scanned}.json` and the journals in `link/work-queue` | Unmarked. Validates fields by operation and uses IDs/timestamps for retries. |
 | Managed attachment files | `run/work-queue/files/`, session attachments, `link/server/attached.ts` | Byte streams. File type/name/hash, size and identity belong to owner metadata. Consumers interpret the media type. |
 | Engine database | `data/opencode/opencode*.db{,-wal,-shm}` | Engine migration history is checked during the staged legacy move. |
@@ -87,7 +87,7 @@ The route registry in `box/src/link/server/router.ts`, Mac relay dispatcher in `
 
 - 50 stored families. Fifteen include at least one schema marker or migration history. The other 35 lacked an independent Kuvo schema mark or rely on an external format. Several of the 15 contain companion files that are unmarked.
 - 19 message families. Three already had an explicit schema version or inherited a negotiated one (hello/framing, session messages, signed documents). The other 16 lacked an independent payload mark, even where the encryption prologue was versioned. Payloads within a family are listed in the route, mail and socket registries above.
-- Piece U adds independent versions to three stored formats (`link.json`, `numbers.json`, Insights) and two wire contracts (peer mail and route bodies, including direct bridge HTTP). It wraps the legacy desktop import and aligns cached signed-document validation.
+- Piece U adds independent versions to four stored formats (`link.json`, `numbers.json`, Work Queue owner files, Insights) and two wire contracts (peer mail and route bodies, including direct bridge HTTP). It wraps the legacy desktop import and aligns cached signed-document validation.
 - Future readers add a tested step at index n for n→n+1. JSON changes run in memory on read, then persist using the owner's atomic locked write. SQL changes commit with the schema mark in the same transaction. Neither runs an upgrade function for a version ahead of the reader.
 - Keep the initial formats additive while pre-version boxes remain. They can consume v1 and may omit the stamp if they rewrite a file. Before sending a genuinely incompatible message or writing a format a rollback build cannot read, teach neighbouring builds how to accept it or refuse it and negotiate the writer version. Use signed document versions, a new advertised capability or separately deployed relay opcodes as appropriate.
 
@@ -96,7 +96,7 @@ The route registry in `box/src/link/server/router.ts`, Mac relay dispatcher in `
 The audit groups aliases, dynamic files and routes by ownership and encoding. Legacy layout selection,
 third-party schemas, unchanged lock files and opaque bytes are recorded so they can be considered on
 their own terms. The new writer/reader adapters currently cover the formats listed above. Untouched
-durable formats and file writers, including the Work Queue item store and move journals, still need a
+durable formats and file writers, including Work Queue labels and move journals, still need a
 per-owner migration audit. A binary relay change needs the relay deployment and neighbouring client
 readers. Existing mobile and desktop callers can continue to omit the route header; their request
 writers and UI for incompatibility have not been changed.

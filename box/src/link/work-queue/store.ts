@@ -7,6 +7,7 @@
 //
 // (Named apart from `engine/queue.ts`, which is a conversation's queue of messages.)
 
+import { UnsupportedFormatVersion } from "../../shared/format-version";
 import { writeDurablePrivate } from "../../shared/files";
 import { mentionIndexOf, mentionLinkOf, mentionSnapshot, pruneRelations, relationOf, syncMentions, type MentionIndex, type MentionLink, type MentionSnapshot, type Relation } from "./relations";
 import crypto from "node:crypto";
@@ -16,7 +17,7 @@ import { isObject } from "../../shared/json";
 import { listOf, locked, textOf, writePrivate } from "../files";
 import { RUN } from "../home";
 import { sourceKeyOf } from "./sources";
-import { migrateOnce } from "./migrate";
+import { migrateOnce, queueFileFormat } from "./migrate";
 import { fromCategory, PRIORITY_ID } from "./statuses";
 
 export const WORK_QUEUE = path.join(RUN, "work-queue");
@@ -253,6 +254,7 @@ function migratedToRead(): void {
   try {
     migrateOnce();
   } catch (error) {
+    if (error instanceof UnsupportedFormatVersion) throw error;
     if (!saidUnmoved) console.error(`Work Queue: its items couldn't be moved over to statuses yet (${(error as Error)?.message ?? error}): shown as they are, and tried again.`);
     saidUnmoved = true;
   }
@@ -300,10 +302,12 @@ export function readQueue(owner: string): Queue {
   } catch {
     throw new UnreadableQueue(owner, true);
   }
-  if (!isObject(kept) || !Array.isArray(kept.items)) throw new UnreadableQueue(owner, true);
+  if (!isObject(kept)) throw new UnreadableQueue(owner, true);
+  const fields = queueFileFormat.read(kept);
+  if (!Array.isArray(fields.items)) throw new UnreadableQueue(owner, true);
   // (An item twice in one file: once.)
   const seen = new Set<string>();
-  const items = kept.items.map(each => itemOf(each, owner)).filter((each): each is Item => each !== null && !seen.has(each.id) && seen.add(each.id) !== undefined);
+  const items = fields.items.map(each => itemOf(each, owner)).filter((each): each is Item => each !== null && !seen.has(each.id) && seen.add(each.id) !== undefined);
   return { owner, items };
 }
 
@@ -371,8 +375,10 @@ export function readKeptQueue(owner: string): Queue | null {
   } catch {
     return null;
   }
-  if (!isObject(kept) || !Array.isArray(kept.items)) return null;
-  const items = kept.items.map(each => itemOf(each, owner));
+  if (!isObject(kept)) return null;
+  const fields = queueFileFormat.read(kept);
+  if (!Array.isArray(fields.items)) return null;
+  const items = fields.items.map(each => itemOf(each, owner));
   return items.every(each => each !== null) ? { owner, items: items as Item[] } : null;
 }
 
@@ -477,7 +483,7 @@ export class Book {
       any = true;
       if (!queue.items.length) fs.rmSync(fileOf(owner), { force: true });
       else {
-        const data = JSON.stringify({ owner, items: queue.items });
+        const data = JSON.stringify(queueFileFormat.write({ owner, items: queue.items }));
         if (durable) writeDurablePrivate(fileOf(owner), data, path.dirname(WORK_QUEUE));
         else writePrivate(fileOf(owner), data);
       }

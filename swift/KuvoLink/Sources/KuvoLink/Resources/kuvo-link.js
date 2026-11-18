@@ -11782,6 +11782,11 @@ function migrateItem(item, name) {
 }
 function migrate() {
   fs45.mkdirSync(WORK_QUEUE, { recursive: true, mode: 448 });
+  for (const name of queueFiles2(QUEUES)) {
+    const queue = jsonOf(path47.join(QUEUES, name));
+    if (isObject(queue))
+      queueFileFormat.read(queue);
+  }
   const nothing = !queueFiles2(QUEUES).length && !fs45.existsSync(CATEGORIES_FILE);
   if (nothing && !fs45.existsSync(BEFORE))
     return void writePrivate(MODEL_FILE, JSON.stringify({ model: MODEL2, at: Date.now() }));
@@ -11874,7 +11879,7 @@ function migrate() {
       return each;
     });
     if (changed)
-      writePrivate(file, JSON.stringify(queue));
+      writePrivate(file, JSON.stringify(queueFileFormat.write(queue)));
   }
   fs45.rmSync(CATEGORIES_FILE, { force: true });
   writePrivate(MODEL_FILE, JSON.stringify({ model: MODEL2, at: Date.now(), ...started.length ? { started } : {} }));
@@ -11923,7 +11928,7 @@ function migrateOnce() {
   }
   done = true;
 }
-var WORK_QUEUE, QUEUES, CATEGORIES_FILE, LABELS_FILE, LOCK2, MOVING2, MODEL_FILE, BEFORE, MODEL2 = 2, done = false, jsonOf = (file) => {
+var WORK_QUEUE, QUEUES, CATEGORIES_FILE, LABELS_FILE, LOCK2, MOVING2, MODEL_FILE, BEFORE, MODEL2 = 2, queueFileFormat, done = false, jsonOf = (file) => {
   try {
     return JSON.parse(fs45.readFileSync(file, "utf8"));
   } catch {
@@ -11946,6 +11951,7 @@ var WORK_QUEUE, QUEUES, CATEGORIES_FILE, LABELS_FILE, LOCK2, MOVING2, MODEL_FILE
   } catch {}
 };
 var init_migrate = __esm(() => {
+  init_format_version();
   init_text();
   init_files2();
   init_home();
@@ -11958,6 +11964,7 @@ var init_migrate = __esm(() => {
   MOVING2 = path47.join(WORK_QUEUE, ".moving-to-statuses");
   MODEL_FILE = path47.join(WORK_QUEUE, "model.json");
   BEFORE = path47.join(WORK_QUEUE, "before-statuses");
+  queueFileFormat = objectFormat("Work Queue owner file", [(fields) => fields]);
 });
 
 // box/src/link/work-queue/store.ts
@@ -12016,6 +12023,8 @@ function migratedToRead() {
   try {
     migrateOnce();
   } catch (error) {
+    if (error instanceof UnsupportedFormatVersion)
+      throw error;
     if (!saidUnmoved)
       console.error(`Work Queue: its items couldn't be moved over to statuses yet (${error?.message ?? error}): shown as they are, and tried again.`);
     saidUnmoved = true;
@@ -12048,10 +12057,13 @@ function readQueue(owner) {
   } catch {
     throw new UnreadableQueue(owner, true);
   }
-  if (!isObject(kept) || !Array.isArray(kept.items))
+  if (!isObject(kept))
+    throw new UnreadableQueue(owner, true);
+  const fields = queueFileFormat.read(kept);
+  if (!Array.isArray(fields.items))
     throw new UnreadableQueue(owner, true);
   const seen = new Set;
-  const items = kept.items.map((each) => itemOf(each, owner)).filter((each) => each !== null && !seen.has(each.id) && seen.add(each.id) !== undefined);
+  const items = fields.items.map((each) => itemOf(each, owner)).filter((each) => each !== null && !seen.has(each.id) && seen.add(each.id) !== undefined);
   return { owner, items };
 }
 function setAside(owner, now = Date.now()) {
@@ -12092,9 +12104,12 @@ function readKeptQueue(owner) {
   } catch {
     return null;
   }
-  if (!isObject(kept) || !Array.isArray(kept.items))
+  if (!isObject(kept))
     return null;
-  const items = kept.items.map((each) => itemOf(each, owner));
+  const fields = queueFileFormat.read(kept);
+  if (!Array.isArray(fields.items))
+    return null;
+  const items = fields.items.map((each) => itemOf(each, owner));
   return items.every((each) => each !== null) ? { owner, items } : null;
 }
 function onceEach(queues) {
@@ -12184,7 +12199,7 @@ class Book {
       if (!queue.items.length)
         fs46.rmSync(fileOf2(owner), { force: true });
       else {
-        const data = JSON.stringify({ owner, items: queue.items });
+        const data = JSON.stringify(queueFileFormat.write({ owner, items: queue.items }));
         if (durable)
           writeDurablePrivate(fileOf2(owner), data, path48.dirname(WORK_QUEUE2));
         else
@@ -12290,6 +12305,7 @@ var WORK_QUEUE2, QUEUES2, FILES2, LOCK3, YOURS = "usr_you", OWNER2, KEPT_OWNER, 
   }
 }, readAll = () => onceEach(owners().map(readQueueOrNone)), Refusal, QueueSetAside, matching2 = (items, ref) => items.filter((item) => refNames(ref, item)).sort((a, b) => Number(Boolean(a.removed)) - Number(Boolean(b.removed))), refNames = (ref, item) => ("id" in ref) ? item.id === ref.id : ("number" in ref) ? item.number === ref.number : Boolean(item.source) && sourceKeyOf(item.source) === ref.source, filesOf2 = (item) => path48.join(FILES2, item);
 var init_store = __esm(() => {
+  init_format_version();
   init_files();
   init_relations();
   init_files2();
@@ -57681,7 +57697,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "874c35842a7a";
+var BRIDGE_VERSION = "2ad1eeabb95c";
 
 // box/src/link/rehome/move.ts
 init_outside();

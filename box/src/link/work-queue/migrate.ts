@@ -11,6 +11,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { objectFormat } from "../../shared/format-version";
 import { isObject } from "../../shared/json";
 import { plainName } from "../../shared/text";
 import { locked, writePrivate } from "../files";
@@ -29,6 +30,8 @@ export const MODEL_FILE = path.join(WORK_QUEUE, "model.json");
 /** What was kept before, whole: the queues' files and `categories.json`. */
 export const BEFORE = path.join(WORK_QUEUE, "before-statuses");
 export const MODEL = 2;
+// A separate file schema from the category/status migration. Old and new writers agree on fields.
+export const queueFileFormat = objectFormat("Work Queue owner file", [fields => fields]);
 
 let done = false;
 
@@ -89,6 +92,11 @@ const onDisk = (folder: string): void => {
 
 function migrate(): void {
   fs.mkdirSync(WORK_QUEUE, { recursive: true, mode: 0o700 });
+  // A stale/missing status-model marker must never let an older reader rewrite a future file.
+  for (const name of queueFiles(QUEUES)) {
+    const queue = jsonOf(path.join(QUEUES, name));
+    if (isObject(queue)) queueFileFormat.read(queue);
+  }
   // What was kept, copied whole, once: made beside and put in place in one step, so a copy cut off
   // is never taken for the whole of it.
   // (A box that kept nothing yet has nothing to copy or move.)
@@ -179,7 +187,7 @@ function migrate(): void {
       if (place !== undefined) each.order = place;
       return each;
     });
-    if (changed) writePrivate(file, JSON.stringify(queue));
+    if (changed) writePrivate(file, JSON.stringify(queueFileFormat.write(queue)));
   }
   // (The categories are in the copy, and labels now: the file nothing reads any more goes.)
   fs.rmSync(CATEGORIES_FILE, { force: true });
