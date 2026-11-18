@@ -102,7 +102,7 @@ export class Insights {
     await this.db.write("failed", false)
     await this.db.write("local", { scanned: this.now(), issues })
     this.sync()
-    for (const peer of this.peers()) {
+    for (const peer of this.directory.peerBoxes()) {
       const served = await this.db.read<{ after: number; epoch?: string }>(`served/${peer.key}`)
       if (served) await this.sendPage(peer.key, served.after, served.epoch)
     }
@@ -119,15 +119,11 @@ export class Insights {
     })()
   }
 
-  private peers() {
-    return this.directory.peerBoxes().filter(({ key }) => this.directory.isYours(key))
-  }
-
   private sync(force = false) {
     const now = this.now()
     const fresh = force && (this.refreshed === undefined || now - this.refreshed > 30_000)
     if (fresh) this.refreshed = now
-    for (const peer of this.peers()) {
+    for (const peer of this.directory.peerBoxes()) {
       if (!fresh && now - (this.requested.get(peer.key) ?? -Infinity) < 30_000) continue
       void this.pull(peer.key, fresh).catch((error) => console.error("Insights peer sync:", error))
     }
@@ -158,7 +154,7 @@ export class Insights {
   }
 
   private async receive(from: string, mail: InsightsMail) {
-    if (!this.directory.isYours(from) || !validAt(mail.after)) return
+    if (!this.directory.isPeer(from) || !validAt(mail.after)) return
     if (mail.action === "pull") {
       const epoch = small(mail.epoch) ? mail.epoch : undefined
       await this.db.write(`served/${from}`, { after: mail.after, epoch })
@@ -172,7 +168,7 @@ export class Insights {
     if (priorEpoch && priorEpoch !== mail.epoch && !mail.reset) return
     const own = this.directory.own()?.key ?? this.local
     const records = mail.records.map(recordFrom).filter((record): record is InsightRecord =>
-      !!record && (record.computer === own || this.directory.isYours(record.computer)))
+      !!record && (record.computer === own || this.directory.isPeer(record.computer)))
     const pricing = this.pricing.current()
     await this.db.take(records, pricing, this.now(), from, mail.next, mail.epoch)
     if (!mail.more && validAt(mail.scanned) && mail.scanned <= this.now() + DAY) await this.db.write(`peer/${from}`, {
@@ -195,7 +191,7 @@ export class Insights {
     const offset = Number(params.get("offset") ?? 0)
     if (!validAt(offset) || offset > 1_000_000 || (route === "detail" && !filter.session)) return
     const own = this.directory.own() ?? { key: this.local, name: hostname() }
-    const peers = this.peers()
+    const peers = this.directory.peerBoxes()
     const computers = [own, ...peers]
     const localKeys = own.key === this.local ? [own.key] : [own.key, this.local]
     const keys = [...localKeys, ...peers.map(({ key }) => key)]

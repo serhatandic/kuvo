@@ -209,7 +209,7 @@ test("resume peer pages, reject vouched computers, and price incoming records lo
   const directory = new LinkDirectory(post)
   const mail = new Insights(db, {} as InsightsScan, new PricingStore(undefined, null), directory, post, "first", () => now)
   directory.set({ self: { key: "first", name: "First" }, boxes: [{ key: "second", name: "Second" }], also: [{ key: "shared", name: "Shared" }], bots: [] })
-  const page = { kind: "insights" as const, action: "page" as const, after: 0, next: 100, more: true, epoch: "first-generation", scanned: now, records: [event("remote", "second")] }
+  const page = { kind: "insights" as const, action: "page" as const, after: 0, next: 100, more: true, epoch: "first-generation", scanned: now, records: [event("remote", "second"), event("outside", "shared")] }
   await mail.take("shared", page)
   expect(await db.read("cursor/shared")).toBeUndefined()
   await mail.take("second", page)
@@ -219,7 +219,7 @@ test("resume peer pages, reject vouched computers, and price incoming records lo
   await mail.take("second", { ...page, after: 101, next: 2, more: false, epoch: "new-generation", reset: true, records: [event("next", "second")] })
   expect(await db.read<number>("cursor/second")).toBe(2)
   expect(await db.read<string>("peer-epoch/second")).toBe("new-generation")
-  expect((await show(db, {}, ["second"])).totals).toMatchObject({ sessions: 1, calls: 2, tokens: 304 })
+  expect((await show(db, {}, ["second", "shared"])).totals).toMatchObject({ sessions: 1, calls: 2, tokens: 304 })
   const asked = new URLSearchParams("period=7&zone=UTC")
   expect((await insightsRoutes(mail, "GET", [], asked)).status).toBe(200)
   expect((await insightsRoutes(mail, "GET", ["sessions", "session"], asked)).status).toBe(200)
