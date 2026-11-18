@@ -27,7 +27,7 @@ import { publishDesktopRemoval } from "./documents/phone-sync";
 import { removeAsMac } from "./phones";
 import { SETUP_CARD } from "./setup/card";
 import { mainElsewhere } from "./setup/main-only";
-import { LAUNCH_AGENT, REBOOT_TAG } from "./marks";
+import { LAUNCH_AGENT, MACHINE_WATCH_AGENT, REBOOT_TAG } from "./marks";
 import { SERVE_FILE, SERVE_ROLE } from "./serve-kept";
 import { macLink, readLink, updateLink } from "./state";
 import { forwardAct } from "./work-queue/forward";
@@ -156,13 +156,14 @@ export function uninstall(): Uninstalled {
   let crontabLine = false;
   const startsAgain: string[] = [];
   // Its start at login first, so nothing starts it again as it stops.
-  if (tools && process.platform === "darwin") {
-    const plist = path.join(tools.agents, `${LAUNCH_AGENT}.plist`);
+  if (tools && process.platform === "darwin") for (const label of [MACHINE_WATCH_AGENT, LAUNCH_AGENT]) {
+    const plist = path.join(tools.agents, `${label}.plist`);
     if (fs.existsSync(plist)) {
       const uid = process.getuid?.() ?? 0;
-      run(tools.launchctl, ["bootout", `gui/${uid}/${LAUNCH_AGENT}`]);
+      run(tools.launchctl, ["bootout", `gui/${uid}/${label}`]);
       try { fs.rmSync(plist, { force: true }); } catch {}
-      if (fs.existsSync(plist)) startsAgain.push("its launch agent"); else launchAgent = true;
+      if (fs.existsSync(plist)) startsAgain.push(label === LAUNCH_AGENT ? "its launch agent" : "its Files permission watcher");
+      else if (label === LAUNCH_AGENT) launchAgent = true;
     }
   }
   if (tools) {

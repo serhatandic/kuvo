@@ -22,6 +22,7 @@ export interface BridgeRecord {
   port: number;
   password: string;
   build?: string | null;
+  machineHandover?: true;
   renewal?: RenewalRecord | null;
 }
 

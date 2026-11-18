@@ -32,7 +32,7 @@ import type { LinkState } from "../state";
 import type { Asker } from "../server/context";
 import { boxVersion, newerVersion } from "../updates/update";
 import { addressProblem } from "./address";
-import { ENGINE_VERSION, RELEASE_FILES, engineFor, ownFiles, tarOf, type Kind } from "./files";
+import { ENGINE_VERSION, RELEASE_FILES, engineFor, machineHelperPack, ownFiles, tarOf, type Kind } from "./files";
 import * as scripts from "./scripts";
 import { gatherSeed } from "./seed";
 import { type HostKey, type Ran, type Way, hangUp, lastLine, reachedAs, readHostKey, remote, troubleOf, trustHostKeys, vaultAgent } from "./ssh";
@@ -475,6 +475,12 @@ async function setUp(tell: Telling, destination: string, name: string, kind: "ad
       else {
         const placed = await reserved(scripts.filesInstall(files), { input: tarOf(files), sent: tell.sent, most: 900_000 });
         if (placed.status !== 0) throw new Failed(`Kuvo Code’s files couldn’t be put on ${name}. ${lastLine(placed.stderr)}`.trim());
+      }
+      if (probe.kind.system === "darwin") {
+        const helper = machineHelperPack();
+        if (!helper) throw new Failed(`Kuvo Code on ${ownName()} has no Kuvo Helper to give ${name}. Update Kuvo Code here, then try again.`);
+        const placed = await reach.run(scripts.helperInstall(helper.sum), { input: helper.bytes, sent: tell.sent, cut: true, most: 120_000 });
+        if (placed.status !== 0) throw new Failed(`Kuvo Helper couldn’t be put on ${name}. ${lastLine(placed.stderr)}`.trim());
       }
       if (probe.engine) tell.skip("engine", "It has it already");
       else {

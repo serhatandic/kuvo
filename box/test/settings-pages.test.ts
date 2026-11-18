@@ -698,11 +698,12 @@ async function fromAway(path: string): Promise<any> {
   return JSON.parse(text)
 }
 const update = (more: Record<string, unknown> = {}) => ({ setUp: true, version: "1.0.0", engine: "2.2.6", latest: "1.0.0", last: null, updating: null, blocked: null, ...more })
-const allowed = (screenRecording: boolean | null, accessibility: boolean | null) => ({
+const allowed = (screenRecording: boolean | null, accessibility: boolean | null, files = true) => ({
   applies: true, name: "Kuvo Helper", known: screenRecording !== null, screenRecording, accessibility, bundle: "/Users/sam/.kuvo-code/bin/Kuvo Helper.app",
   list: [
-    { id: "screenRecording" as const, name: "Screen Recording", line: "For agents that look at the screen.", settings: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture", byHand: true, allowed: screenRecording, asks: screenRecording === false },
-    { id: "accessibility" as const, name: "Accessibility", line: "For agents that click and type in other apps.", settings: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility", byHand: true, allowed: accessibility, asks: accessibility === false },
+    { id: "screenRecording" as const, name: "Screen Recording", line: "For agents that look at the screen.", settings: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture", byHand: true, byHandLine: "Add Helper by hand.", unknownLine: "Waiting for Helper.", allowed: screenRecording, asks: screenRecording === false },
+    { id: "accessibility" as const, name: "Accessibility", line: "For agents that click and type in other apps.", settings: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility", byHand: true, byHandLine: "Add Helper by hand.", unknownLine: "Waiting for Helper.", allowed: accessibility, asks: accessibility === false },
+    { id: "fullDiskAccess" as const, name: "Files", line: "For agents that work with your files anywhere on this Mac.", settings: "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_AllFiles", byHand: true, byHandLine: "Add Helper by hand.", unknownLine: "Waiting for Helper.", allowed: files, asks: !files },
   ],
 })
 /** A Mac's own box, as its helper keeps it, with its link's switch kept by the test. */
@@ -734,7 +735,7 @@ test.if(onMac)("This Mac's page says how it stands in its rows' titles: running,
       ["Login Items", "Kuvo starts when you log in to this Mac.", "On"],
       ["Screen Recording", "For agents that look at the screen.", "Allowed"],
       ["Accessibility", "For agents that click and type in other apps.", "Allowed"],
-      ["Files and Folders", "macOS asks when an agent first opens Desktop, Documents or Downloads.", "Asked when needed"],
+      ["Files", "For agents that work with your files anywhere on this Mac.", "Allowed"],
     ]],
   ])
   // No word of a box or a core anywhere on it.
@@ -742,12 +743,13 @@ test.if(onMac)("This Mac's page says how it stands in its rows' titles: running,
 })
 
 test.if(onMac)("what needs you on This Mac is a warning with the way to it: Login Items off, a permission not allowed, an update that failed twice; an update that's ready installs by itself", async () => {
-  thisMac({ atLogin: () => false, permissions: () => allowed(false, null), update: () => update({ latest: "1.0.1" }), working: async () => true })
+  thisMac({ atLogin: () => false, permissions: () => allowed(false, null, false), update: () => update({ latest: "1.0.1" }), working: async () => true })
   const shown = (await fromApp("GET", "kuvo/settings/computer")).json
   expect(rowOf(shown, "state").line).toBe("Kuvo Helper keeps it running.")
   expect(rowOf(shown, "login-items")).toMatchObject({ tone: "warning", line: "Off, so Kuvo on this Mac doesn’t start at login.", actions: [{ id: "open-login-items", title: "Open Login Items", opens: "x-apple.systempreferences:com.apple.LoginItems-Settings.extension" }] })
   expect(rowOf(shown, "allows-screenRecording")).toMatchObject({ tone: "warning", line: "Not allowed. Agents can’t look at the screen.", actions: [{ title: "Open System Settings", opens: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture" }] })
-  expect(rowOf(shown, "allows-accessibility")).toMatchObject({ kind: "status", value: "Not known yet" })
+  expect(rowOf(shown, "allows-accessibility")).toMatchObject({ kind: "status", value: "Not known yet", line: "Waiting for Helper. For agents that click and type in other apps." })
+  expect(rowOf(shown, "allows-fullDiskAccess")).toMatchObject({ tone: "warning", line: "Not allowed. Agents may be blocked from opening protected files." })
   expect(rowOf(shown, "version")).toMatchObject({ title: "Kuvo Code 1.0.1 is ready", line: "It installs by itself within a few days of its release, or as soon as another of your computers has it.", kind: "status" })
   expect(rowOf(shown, "version").actions).toBeUndefined()
   // Its update failed: Update Now, and work under way is said before it's stopped.

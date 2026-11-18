@@ -1411,11 +1411,11 @@ const FIRST_RUN: &[FirstRunScreen] = &[
     // A Mac whose Kuvo says macOS doesn't allow Kuvo Helper either yet: a step of its own after the
     // agents; and with System Settings opened on one added by hand (its tile isn't in the picture).
     FirstRunScreen { slug: "first-run-allow", scenario: Scenario::Nothing, size: (1280., 820.), before: nothing_allowed, then: to_allow, after: nothing_before },
-    FirstRunScreen { slug: "first-run-allow-asking", scenario: Scenario::Nothing, size: (1280., 820.), before: |stand_in| { nothing_allowed(stand_in); stand_in.set_permissions(|permissions| permissions.accessibility = true); }, then: |run, cx| {
+    FirstRunScreen { slug: "first-run-allow-asking", scenario: Scenario::Nothing, size: (1280., 820.), before: |stand_in| { nothing_allowed(stand_in); stand_in.set_permissions(|permissions| { permissions.accessibility = true; permissions.screen_recording = true; }); }, then: |run, cx| {
         to_allow(run, cx);
         if let Some(permissions) = run.permissions().cloned() {
             permissions.update(cx, |permissions, cx| {
-                permissions.open_settings("screenRecording", cx);
+                permissions.open_settings("fullDiskAccess", cx);
                 if let Some(tile) = permissions.tile() {
                     tile.update(cx, |_, window, _| window.remove_window()).ok();
                 }
@@ -1434,7 +1434,12 @@ fn first_run_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path
             continue;
         }
         for appearance in [Appearance::Light, Appearance::Dark] {
-            cx.update(|cx| Theme::set_appearance(appearance, cx));
+            cx.update(|cx| {
+                // Each onboarding picture starts on a fresh desktop, even if an earlier
+                // picture marked the shared app context as welcomed.
+                kuvo::yours::init(None, cx);
+                Theme::set_appearance(appearance, cx);
+            });
             let stand_in = StandIn::first_run(Replies::Never, NOW, screen.scenario);
             (screen.before)(&stand_in);
             let client = BoxClient::new(stand_in.clone());
@@ -1681,7 +1686,7 @@ fn main() -> anyhow::Result<()> {
             if screen.slug.starts_with("settings-this-mac") {
                 use kuvo::stand_in::permissions::Permissions;
                 // (All put off, so the page is seen without the heads-up over it.)
-                let later = vec!["screenRecording".to_owned(), "accessibility".to_owned()];
+                let later = vec!["screenRecording".to_owned(), "accessibility".to_owned(), "fullDiskAccess".to_owned()];
                 match screen.slug {
                     "settings-this-mac-attention" | "settings-this-mac-narrow" => {
                         stand_in.set_permissions(|permissions| *permissions = Permissions { accessibility: true, later, ..Permissions::nothing_allowed() });
@@ -1692,7 +1697,7 @@ fn main() -> anyhow::Result<()> {
                     }
                     "settings-this-mac-restart" => stand_in.set_computer(|computer| computer.working = true),
                     "settings-this-mac" | "settings-this-mac-devices-off" => {}
-                    _ => stand_in.set_permissions(|permissions| *permissions = Permissions { screen_recording: true, accessibility: true, ..Permissions::nothing_allowed() }),
+                    _ => stand_in.set_permissions(|permissions| *permissions = Permissions { screen_recording: true, accessibility: true, full_disk_access: true, ..Permissions::nothing_allowed() }),
                 }
             }
             if screen.slug == "settings-a-unreached" {
@@ -2156,7 +2161,7 @@ fn launch_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path::P
                     }
                     "launch-moved-allow" => {
                         let stand_in = StandIn::at(Replies::Never, NOW);
-                        stand_in.set_permissions(|permissions| *permissions = Permissions { accessibility: true, ..Permissions::nothing_allowed() });
+                        stand_in.set_permissions(|permissions| *permissions = Permissions { screen_recording: true, accessibility: true, ..Permissions::nothing_allowed() });
                         let boxes = kuvo::home::stand_in_boxes(stand_in);
                         let first = boxes.nearest().expect("the stand-in is the nearest box");
                         launch.show_allow(boxes, first, window, cx);

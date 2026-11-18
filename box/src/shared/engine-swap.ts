@@ -25,13 +25,15 @@ export interface EngineSwap {
   letGo?: number;
   /** The swapper's process. */
   pid: number;
+  /** The machine’s first restart under Kuvo Helper. */
+  machineHelper?: true;
   /** What keeps it waiting that holding wouldn't outlast: a terminal open, or a question waiting on you. */
   blocked?: "terminal" | "ask";
 }
 
 /** How long a hold lasts at most before it's let go of (as the coding agents' bridge's renewal), and
- * how long a swap's start may take on top of that (a slow migration) before nothing is held whatever
- * the file says: holding is always bounded, even by a swapper that went. */
+ * how long an ordinary swap's start may take on top of that (a slow migration). A saved machine
+ * launch replacement keeps its hold while recovery is still pending. */
 export const HOLD_MOST = 30 * 60_000;
 export const SWAP_MOST = 30 * 60_000;
 
@@ -47,24 +49,40 @@ export function readSwap(run: string): EngineSwap | null {
   }
 }
 
-/** The swap under way, while its swapper runs (one that went holds nothing). */
-export function swapUnderWay(run: string): EngineSwap | null {
-  const swap = readSwap(run);
-  return swap && processRuns(swap.pid, "kuvo-link") ? swap : null;
+function machineRecovery(run: string, swap: EngineSwap): boolean {
+  if (!swap.machineHelper || typeof swap.holding !== "number") return false;
+  try {
+    const job = JSON.parse(fs.readFileSync(path.join(run, "machine-helper-job.json"), "utf8"));
+    return !!job.version && ["installing", "waiting", "workers", "restoring"].includes(job.phase);
+  } catch {
+    return false;
+  }
 }
 
-/** Whether what's sent into a conversation on the engine waits on the box now: while a swapper that
- * runs holds, swaps or goes back, and never longer than `HOLD_MOST` and `SWAP_MOST` from when it
- * began holding. */
+/** The swap under way, including a machine whose launch replacement still needs recovery. */
+export function swapUnderWay(run: string): EngineSwap | null {
+  const swap = readSwap(run);
+  if (!swap) return null;
+  if (processRuns(swap.pid, "kuvo-link")) return swap;
+  if (machineRecovery(run, swap)) return { ...swap, stage: "back" };
+  return null;
+}
+
+/** Holds last until a machine's launch recovery restores service. Ordinary engine changes hold
+ * for at most `HOLD_MOST` and `SWAP_MOST` from when they began holding. */
 export function swapHolds(run: string, now = Date.now()): boolean {
   const swap = swapUnderWay(run);
   if (!swap || swap.stage === "waiting") return false;
-  return typeof swap.holding === "number" && now - swap.holding < HOLD_MOST + SWAP_MOST;
+  return machineRecovery(run, swap) || (typeof swap.holding === "number" && now - swap.holding < HOLD_MOST + SWAP_MOST);
 }
 
 /** What a client shows while an engine change waits or goes, in one plain line (null: none under way). */
 export function swapLine(swap: EngineSwap | null): string | null {
   if (!swap) return null;
+  if (swap.machineHelper) {
+    if (swap.stage === "waiting") return "Kuvo will move to Kuvo Helper once the running sessions finish.";
+    return "Kuvo is moving to Kuvo Helper. New messages wait and go once it’s ready.";
+  }
   switch (swap.stage) {
     case "waiting": return swap.blocked === "terminal" ? "An update to Kuvo’s engine is ready. It installs once nothing is running: close the open terminals to let it."
       : swap.blocked === "ask" ? "An update to Kuvo’s engine is ready. It installs once nothing is running: answer what’s waiting on you to let it."

@@ -37,6 +37,8 @@ export interface QueueState {
   resumed?: number;
   /** What waits on the box until the queue goes on, first come first (none: left out). */
   waiting?: Waiting[];
+  /** The saved prefix of an interrupted engine inbox transfer, in delivery order. */
+  inboxMoved?: string[];
   /** Paused as its goal was (the goal's Pause, `link/work/goals.ts`'s `goalHolds`), until the goal
    * goes on: kept only while it's paused, never in a route's answer. */
   heldFor?: "goal";
@@ -148,6 +150,8 @@ export const keptWaiting = (value: unknown): Waiting[] => (Array.isArray(value) 
 
 const keptState = (value: unknown): QueueState => {
   const waiting = keptWaiting(isObject(value) ? value.waiting : undefined);
+  const inboxMoved = isObject(value) && Array.isArray(value.inboxMoved)
+    ? value.inboxMoved.filter((id): id is string => typeof id === "string" && waiting.some(item => item.id === id)) : [];
   return {
     paused: isObject(value) && value.paused === true,
     held: isObject(value) && Array.isArray(value.held) ? value.held.filter((id): id is string => typeof id === "string") : [],
@@ -155,6 +159,7 @@ const keptState = (value: unknown): QueueState => {
     ...(waiting.length ? { waiting } : {}),
     ...(isObject(value) && Array.isArray(value.order) && value.order.length
       ? { order: [...new Set(value.order.filter((id): id is string => typeof id === "string"))] } : {}),
+    ...(inboxMoved.length ? { inboxMoved } : {}),
     ...(isObject(value) && value.paused === true && value.heldFor === "goal" ? { heldFor: "goal" as const } : {}),
     ...(isObject(value) && isObject(value.arriving) && Object.keys(value.arriving).length
       ? { arriving: Object.fromEntries(Object.entries(value.arriving).filter((each): each is [string, number] => typeof each[1] === "number")) } : {}),

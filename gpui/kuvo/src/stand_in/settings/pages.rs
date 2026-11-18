@@ -183,6 +183,7 @@ impl Settings {
             for (id, title, pane, allowed, is_for, not) in [
                 ("screenRecording", "Screen Recording", "Privacy_ScreenCapture", permissions.screen_recording, "For agents that look at the screen.", "Not allowed. Agents can’t look at the screen."),
                 ("accessibility", "Accessibility", "Privacy_Accessibility", permissions.accessibility, "For agents that click and type in other apps.", "Not allowed. Agents can’t click or type in other apps."),
+                ("fullDiskAccess", "Files", "Privacy_AllFiles", permissions.full_disk_access, "For agents that work with your files anywhere on this Mac.", "Not allowed. Agents may be blocked from opening protected files."),
             ] {
                 let row_id = format!("allows-{id}");
                 allows.push(if !permissions.known {
@@ -190,10 +191,9 @@ impl Settings {
                 } else if allowed {
                     row(json!({ "id": row_id, "title": title, "line": is_for, "kind": "status", "value": "Allowed" }))
                 } else {
-                    row(json!({ "id": row_id, "title": title, "line": not, "tone": "warning", "kind": "actions", "value": "Not allowed", "actions": [opens_here(&format!("open-{id}"), "Open System Settings", &format!("x-apple.systempreferences:com.apple.preference.security?{pane}"))] }))
+                    row(json!({ "id": row_id, "title": title, "line": not, "tone": "warning", "kind": "actions", "value": "Not allowed", "actions": [opens_here(&format!("open-{id}"), "Open System Settings", &crate::stand_in::permissions::settings_pane(pane))] }))
                 });
             }
-            allows.push(row(json!({ "id": "allows-files", "title": "Files and Folders", "line": "macOS asks when an agent first opens Desktop, Documents or Downloads.", "kind": "status", "value": "Asked when needed" })));
             groups.push(json!({ "id": "macos", "title": "What macOS Allows Kuvo Helper", "note": "Kuvo Helper is the program your agents run under. Only you allow these, in System Settings.", "rows": allows }));
         }
         json!({ "id": "computer", "title": if here { "This Mac" } else { name }, "groups": groups })

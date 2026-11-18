@@ -96,7 +96,7 @@ private final class InTheTests {}
         try FileManager.default.createDirectory(at: contents.appending(path: "Resources"), withIntermediateDirectories: true)
         let info: [String: Any] = [
             "CFBundleIdentifier": Self.app, "CFBundleName": "Kuvo Code", "CFBundleExecutable": "Kuvo Code", "CFBundlePackageType": "APPL",
-            "CFBundleShortVersionString": "0.0.4", "CFBundleVersion": "4", "LSMinimumSystemVersion": "26.0",
+            "CFBundleShortVersionString": "0.0.4", "CFBundleVersion": "4", "LSMinimumSystemVersion": "13.0",
             "NSCalendarsFullAccessUsageDescription": "The agent reads your calendar when you've turned it on.",
             "NSMicrophoneUsageDescription": "Kuvo Code listens while you talk.",
         ]
@@ -422,12 +422,12 @@ private final class InTheTests {}
         var isRunning: Bool { ended.value == nil }
     }
 
-    private func keeping(_ more: [String] = []) throws -> Kept {
+    private func keeping(_ more: [String] = [], mode: String = "keep") throws -> Kept {
         let process = Process()
         let ended = Ended()
         process.terminationHandler = { ended.note($0.terminationStatus) }
         process.executableURL = BoxHelperBundle.executable(of: helperInApp)
-        process.arguments = ["keep"] + own + more
+        process.arguments = [mode] + own + more
         process.environment = ["HOME": home.path, "PATH": "/usr/bin:/bin"]
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
@@ -573,6 +573,37 @@ private final class InTheTests {}
         try write(outside.appending(path: "x"), "x")
         #expect(try await post(host, "/trash", ["path": outside.path]).status == 200)
         #expect(FileManager.default.fileExists(atPath: outside.path))
+    }
+
+    @Test func machineModeKeepsOnlyTheKeeperAndLeavesMachineCredentialsInPlace() throws {
+        try standIns()
+        try write(box.appending(path: "box/kind"), "machine\n")
+        let key = box.appending(path: "box/keys/KUVO_KEY_GITHUB_TOKEN")
+        try write(key, "machine-key")
+        let helper = try keeping(["--test-permissions", "full-disk-access"], mode: "keep-machine")
+        defer { cleanUp([helper]) }
+        until { !text(home.appending(path: "keep.parent")).isEmpty }
+        #expect(text(home.appending(path: "keep.parent")).trimmingCharacters(in: .whitespacesAndNewlines) == String(helper.process.processIdentifier))
+        #expect(text(box.appending(path: "box/kind")) == "machine\n")
+        #expect(text(key) == "machine-key")
+        #expect(!FileManager.default.fileExists(atPath: run.appending(path: "host.json").path))
+        #expect(!FileManager.default.fileExists(atPath: home.appending(path: "serve.stdin").path))
+        let facts = run.appending(path: "permissions.json")
+        until { json(facts)["fullDiskAccess"] as? Bool == true }
+        #expect(json(facts)["fullDiskAccess"] as? Bool == true)
+    }
+
+    @Test func machinePermissionWatcherReportsFilesWithoutStartingAWorker() throws {
+        try standIns()
+        try write(box.appending(path: "box/kind"), "machine\n")
+        let helper = try keeping(["--test-permissions", "full-disk-access"], mode: "watch-machine")
+        defer { cleanUp([helper]) }
+        let facts = run.appending(path: "permissions.json")
+        until { json(facts)["fullDiskAccess"] as? Bool == true }
+        #expect(json(facts)["pid"] as? Int == Int(helper.process.processIdentifier))
+        #expect(json(facts)["fullDiskAccess"] as? Bool == true)
+        #expect(text(home.appending(path: "keep.parent")).isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: run.appending(path: "host.json").path))
     }
 
     @Test func itStartsNoBoxWhileAMoveIsUnfinished() throws {
@@ -792,13 +823,19 @@ private final class InTheTests {}
         #expect(json(facts)["screenRecording"] as? Bool == false)
         // Switched on in System Settings: the box, asked by a client, asks the helper, which notes
         // it before it answers.
-        try write(said, "screen-recording")
+        try write(said, "screen-recording,full-disk-access")
         let asked = try await post(json(run.appending(path: "host.json")), "/permissions", [:])
         #expect(asked.status == 200)
+        #expect(json(facts)["fullDiskAccess"] as? Bool == true)
         #expect(json(facts)["screenRecording"] as? Bool == true)
         #expect(json(facts)["accessibility"] as? Bool == false)
         #expect(json(facts)["pid"] as? Int == Int(helper.process.processIdentifier), "still the helper's own word, which the box checks")
         #expect(helper.isRunning, "never started again for it")
+        // A subprocess that failed to answer clears its last successful grant.
+        try FileManager.default.removeItem(at: said)
+        #expect(try await post(json(run.appending(path: "host.json")), "/permissions", [:]).status == 200)
+        #expect(json(facts)["fullDiskAccess"] as? Bool == nil)
+        #expect(json(facts)["observedAt"] as? Int != nil)
         // Switched off again: said as it's next asked.
         try write(said, "")
         #expect(try await post(json(run.appending(path: "host.json")), "/permissions", [:]).status == 200)
@@ -813,7 +850,7 @@ private final class InTheTests {}
         let ran = try helper(["permissions", "--test-permissions-file", said.path])
         #expect(ran.status == 0)
         let answer = try #require(try JSONSerialization.jsonObject(with: Data(ran.output.utf8)) as? [String: Bool])
-        #expect(answer == ["screenRecording": false, "accessibility": true])
+        #expect(answer == ["screenRecording": false, "accessibility": true, "fullDiskAccess": false])
     }
 
     // MARK: kuvo-keys, the hand-over

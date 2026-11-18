@@ -120,7 +120,7 @@ test("an update on trial that nothing judges: the keeper starts a judge of its o
   // Three judges that never looked (the new link doesn't run at all): the keeper puts it back.
   write(path.join(R, "update-settle.tries"), "3");
   stop = keep(where);
-  await until(() => exists(path.join(folder, "restored")), "the code put back");
+  await until(() => exists(path.join(folder, "restored")) && !exists(path.join(R, "update-trial")), "the rollback finished");
   await stop();
   assert.equal(exists(path.join(R, "update-trial")), false);
   assert.equal(exists(path.join(R, "update-settle.tries")), false);

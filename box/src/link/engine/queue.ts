@@ -15,6 +15,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { isObject } from "../../shared/json";
+import { processRuns } from "../../shared/platform";
 import { locked, writeDurablePrivate, writePrivate } from "../files";
 import { RUN } from "../home";
 import { asked, call, readBridgeFile } from "./client";
@@ -51,16 +52,17 @@ interface InboxEntry {
 
 /** A queue as a client reads it: with `line`, the words to show while what waits on the box waits for
  * the engine to change (PROTOCOL.md, "A new engine"). */
-export const shownQueue = ({ paused, held, waiting }: QueueState): QueueState & { line?: string } => {
-  const line = waiting?.length && !paused && swapHolds(RUN) ? swapLine(swapUnderWay(RUN)) : null;
+export const shownQueue = ({ paused, held, waiting, inboxMoved }: QueueState): QueueState & { line?: string } => {
+  const line = waiting?.length && !paused
+    ? (swapHolds(RUN) ? swapLine(swapUnderWay(RUN)) : inboxMoved?.length ? "Messages wait while Kuvo checks the engine’s inbox." : null) : null;
   return { paused, held, ...(waiting?.length ? { waiting } : {}), ...(line ? { line } : {}) };
 };
 
 /** Whether what's sent to `target` waits on the box now: it's the engine (not the coding agents'
  * bridge, whose turns an engine change never touches) and its change holds (PROTOCOL.md, "A new
  * engine"). */
-export function swapHoldsFor(target: Target): boolean {
-  if (!swapHolds(RUN)) return false;
+export function swapHoldsFor(target: Target, session?: string): boolean {
+  if (!swapHolds(RUN) && !(session && queueOf(session).inboxMoved?.length)) return false;
   try { return readBridgeFile()?.port !== target.port; } catch { return true; }
 }
 
@@ -78,9 +80,11 @@ export const changeQueue = (session: string, change: (state: QueueState) => Queu
 
 const address = (session: string) => encodeURIComponent(session);
 
-async function inboxOf(target: Target, session: string, patience?: number): Promise<InboxEntry[]> {
+async function inboxOf(target: Target, session: string, patience?: number, strict = false): Promise<InboxEntry[]> {
   const answer = await asked(target, "GET", `api/session/${address(session)}/inbox`, undefined, patience) as { data?: unknown } | null;
-  return Array.isArray(answer?.data) ? answer.data.filter((item): item is InboxEntry => isObject(item) && typeof item.id === "string" && (item.delivery === "steer" || item.delivery === "queue")) : [];
+  const valid = (item: unknown): item is InboxEntry => isObject(item) && typeof item.id === "string" && (item.delivery === "steer" || item.delivery === "queue");
+  if (strict && (!Array.isArray(answer?.data) || !answer.data.every(valid))) throw new Error("The engine did not list the whole inbox.");
+  return Array.isArray(answer?.data) ? answer.data.filter(valid) : [];
 }
 
 export async function moveInbox(target: Target, session: string): Promise<InboxEntry[]> {
@@ -168,7 +172,7 @@ const waitingFile = (id: string) => files.waitingFile(FILES, id);
  * engine, is being changed (`swapHoldsFor`): true. Neither, false: it isn't kept. `place`: where it goes
  * (last, else). */
 export const keepWaiting = (session: string, message: Outgoing & { id: string }, shown: Shown = {}, place?: files.Place, target?: Target): boolean =>
-  files.keepWaiting(FILES, session, message, shown, tellFollowers, place, target ? swapHoldsFor(target) : false);
+  files.keepWaiting(FILES, session, message, shown, tellFollowers, place, target ? swapHoldsFor(target, session) : false);
 
 /** A message of yours a Stop named as still on its way, as it comes (`kuvo/sessions/<id>/stop
  * {items}`): kept on the box while the queue is paused (as what arrives then is) and held, after
@@ -233,11 +237,12 @@ export async function sendInto(target: Target, session: string, message: Outgoin
  * longer paused either): how it was shown, what goes, whole (null if its file is lost), and whether
  * it was held; null when it isn't waiting. `before`: what came after it then, as `orderOf` shows
  * them with `inbox`. */
-function takeWaiting(session: string, item?: string, resume = false, inbox: InboxEntry[] = []): { shown: Waiting; message: (Outgoing & { id: string }) | null; held: boolean; before?: string } | null {
+function takeWaiting(session: string, item?: string, resume = false, inbox: InboxEntry[] = [], delivering = true): { shown: Waiting; message: (Outgoing & { id: string }) | null; held: boolean; before?: string } | null {
   let shown: Waiting | undefined;
   let held = false;
   let before: string | undefined;
   changeQueue(session, state => {
+    if (delivering && state.inboxMoved?.length) return state;
     const next = item ?? orderOf([], state)[0];
     shown = state.waiting?.find(each => each.id === next);
     if (!shown) return state;
@@ -452,7 +457,7 @@ export function forgetQueue(session: string): void {
  * gone, and what came after it, as `orderOf` shows them with `inbox` (for Undo to put back as it
  * was, where it was); null when it isn't there. */
 export function dropWaiting(session: string, item: string, inbox: InboxEntry[] = []): ReturnType<typeof takeWaiting> {
-  const dropped = takeWaiting(session, item, false, inbox);
+  const dropped = takeWaiting(session, item, false, inbox, false);
   if (dropped) changeQueue(session, state => withoutOrder(state, item));
   return dropped;
 }
@@ -563,12 +568,12 @@ export async function takeBackFromInbox(target: Target, session: string, item: s
  * by resuming if it's for the next step; one waiting on the box, sent to go now. */
 export async function drain(target: Target, session: string): Promise<void> {
   // (Nothing starts on an engine being changed: what waits goes once the new one runs.)
-  if (queueOf(session).paused || swapHoldsFor(target) || (await isRunning(target, session))) return;
+  if (queueOf(session).paused || swapHoldsFor(target, session) || (await isRunning(target, session))) return;
   const inbox = await inboxOf(target, session);
   // Re-read the saved order after the final asynchronous check, so a concurrent move wins.
   if (await isRunning(target, session)) return;
   const state = queueOf(session);
-  if (state.paused) return;
+  if (state.paused || swapHoldsFor(target, session)) return;
   const first = orderOf(inbox, state)[0];
   if (!first) {
     if (state.order?.length) changeQueue(session, current => current.order?.every(id => state.order!.includes(id)) ? { ...current, order: [] } : current);
@@ -680,15 +685,17 @@ export async function resumeQueue(target: Target, session: string): Promise<Queu
  * on from there with it), the queue no longer paused. False when it isn't waiting. */
 export async function sendNow(target: Target, session: string, item: string): Promise<boolean> {
   // While the engine is being changed: no longer paused, and it goes first once the new one runs.
-  if (swapHoldsFor(target)) return goesFirst(session, item);
+  if (swapHoldsFor(target, session)) return goesFirst(session, item);
   if (queueOf(session).waiting?.some(each => each.id === item)) {
     const running = await isRunning(target, session);
+    if (swapHoldsFor(target, session)) return goesFirst(session, item);
     if (!(await sendWaiting(target, session, item, { whilePaused: true }))) return false;
     changeQueue(session, state => ({ ...state, paused: false, resumed: Date.now() }), true);
     if (running) await interrupt(target, session, true);
     return true;
   }
   const entry = (await inboxOf(target, session)).find(each => each.id === item);
+  if (swapHoldsFor(target, session)) return goesFirst(session, item);
   if (!entry) return false;
   // (What waits on the box stays, to go after it.)
   changeQueue(session, state => ({ ...state, paused: false, held: state.held.filter(id => id !== item), resumed: Date.now() }));
@@ -705,7 +712,7 @@ export async function sendNow(target: Target, session: string, item: string): Pr
  * with nothing running, goes as Send Now sends it. A queue a Stop holds stays held. `toAgents`:
  * `target` is the bridge. False when it isn't waiting; it throws when the inbox can't be read. */
 export async function steerQueued(target: Target, session: string, item: string, toAgents: boolean): Promise<boolean> {
-  if (swapHoldsFor(target)) return goesFirst(session, item);
+  if (swapHoldsFor(target, session)) return goesFirst(session, item);
   // (The engine's inbox as it is: one that can't be read says so, rather than Send Now stopping
   // the step you meant to keep going.)
   const entry = (await inboxOf(target, session)).find(each => each.id === item);
@@ -742,48 +749,82 @@ function goesFirst(session: string, item: string): boolean {
  * another (PROTOCOL.md, "A new engine"), so nothing it held is lost with it. One the engine gave to
  * the agent first is left. It throws when the inbox can't be read. */
 export async function moveInboxToBox(target: Target, session: string): Promise<number> {
-  const inbox = messagesIn(await inboxOf(target, session));
-  if (!inbox.length) return 0;
+  const claim = path.join(RUN, ".inbox-transfers", crypto.createHash("sha256").update(session).digest("hex"));
+  const taken = locked(FILES.lock, () => {
+    let owner = 0;
+    try { owner = Number(fs.readFileSync(claim, "utf8")); } catch {}
+    if (owner === process.pid || processRuns(owner, "kuvo-link")) return false;
+    writePrivate(claim, String(process.pid));
+    return true;
+  });
+  if (!taken) throw new Error("The engine’s inbox is already being moved.");
+  try {
+    return await transferInbox(target, session);
+  } finally {
+    fs.rmSync(claim, { force: true });
+  }
+}
+
+async function transferInbox(target: Target, session: string): Promise<number> {
+  const inbox = messagesIn(await inboxOf(target, session, undefined, true));
+  if (!inbox.length) {
+    if (queueOf(session).inboxMoved) changeQueue(session, state => ({ ...state, inboxMoved: undefined }));
+    return 0;
+  }
   let moved = 0;
-  const order = orderOf(inbox, queueOf(session)).filter(id => inbox.some(entry => entry.id === id));
+  // (In the order they'd go, ahead of what waits on the box already.)
   const remaining = new Set(inbox.map(entry => entry.id));
-  const renamed: Record<string, string> = {};
-  const kept: Waiting[] = [];
+  const order = orderOf(inbox, queueOf(session)).filter(id => remaining.has(id));
   for (const id of order) {
     const entry = inbox.find(each => each.id === id)!;
     const text = typeof entry.payload?.text === "string" ? entry.payload.text : typeof entry.text === "string" ? entry.text : null;
     if (text === null) continue;
     // (An ID the box can't name a file by: one of its own, the same each time.)
-    const own = /^msg_[A-Za-z0-9]{1,80}$/.test(id) ? id : (renamed[id] = `msg_${crypto.createHash("sha256").update(id).digest("hex").slice(0, 32)}`);
+    const own = /^msg_[A-Za-z0-9]{1,80}$/.test(id) ? id : `msg_${crypto.createHash("sha256").update(id).digest("hex").slice(0, 32)}`;
     const files = sendableFiles(entry.payload?.files);
     const message = { id: own, text, delivery: entry.delivery, ...(files.length ? { files } : {}), ...(isObject(entry.payload?.metadata) ? { metadata: entry.payload!.metadata as Record<string, unknown> } : {}) };
     const shown = shownOfInbox(entry);
     const waiting: Waiting = { id: own, ...(shown.from ? { from: shown.from } : {}), text: shown.words, ...(shown.files.length ? { files: shown.files } : {}), ...(shown.keyword ? { keyword: shown.keyword } : {}), at: Date.now() };
     // Kept on the box, in its place (after those moved before it, ahead of what waited there), before
     // it's taken from the engine: cut off between the two, it's in both rather than in neither.
+    const saved = waitingFile(own);
+    const alreadyKept = fs.existsSync(saved);
     changeQueue(session, state => {
-      writeDurablePrivate(waitingFile(own), JSON.stringify(message), RUN);
-      // Keep the slot of a steered entry once it stops being fixed in the engine's inbox.
+      writeDurablePrivate(saved, JSON.stringify(message), RUN);
       const ranked = state.order && orderOf(inbox.filter(entry => remaining.has(entry.id)), state);
+      const prefix = new Set(state.inboxMoved).add(own);
+      const pending = new Map((state.waiting ?? []).map(item => [item.id, item]));
+      pending.set(own, waiting);
       return {
         ...state,
         held: state.held.map(each => (each === id ? own : each)),
-        ...(ranked ? { order: ranked.map(each => each === id ? own : each) } : {}),
-        waiting: [...kept, waiting, ...(state.waiting ?? []).filter(each => each.id !== own && !kept.some(one => one.id === each.id))],
+        inboxMoved: [...prefix],
+        ...(ranked ? { order: [...new Set(ranked.map(each => each === id ? own : each))] } : {}),
+        waiting: [...Array.from(prefix, id => pending.get(id)!), ...Array.from(pending.values()).filter(item => !prefix.has(item.id))],
       };
     }, true);
+    if (!queueOf(session).inboxMoved?.includes(own)) throw new Error("The box couldn’t save the inbox order.");
     try {
       await asked(target, "DELETE", `api/session/${address(session)}/inbox/${address(id)}`);
-    } catch {
-      // (Taken by the agent first, or kept by the engine: it stays where it is, and only there.)
-      changeQueue(session, state => ({ ...state, held: state.held.map(each => (each === own ? id : each)), ...(state.order ? { order: state.order.map(each => each === own ? id : each) } : {}), waiting: (state.waiting ?? []).filter(each => each.id !== own) }));
-      fs.rmSync(waitingFile(own), { force: true });
+    } catch (error) {
+      // Lost replies can follow a successful delete. Keep the saved copy and defer the restart.
+      if (alreadyKept || !(error instanceof Error) || error.message !== "It answered 404.") throw error;
+      // (The agent took it first.)
+      changeQueue(session, state => ({
+        ...withoutOrder(state, own),
+        held: state.held.filter(each => each !== own),
+        inboxMoved: state.inboxMoved?.filter(each => each !== own),
+        waiting: (state.waiting ?? []).filter(each => each.id !== own),
+      }), true);
+      fs.rmSync(saved, { force: true });
+      remaining.delete(id);
       continue;
     }
     remaining.delete(id);
-    kept.push(waiting);
     moved++;
   }
+  if (messagesIn(await inboxOf(target, session, undefined, true)).length) throw new Error("The engine still holds pending messages.");
+  changeQueue(session, state => ({ ...state, inboxMoved: undefined }));
   return moved;
 }
 
@@ -798,6 +839,12 @@ export async function releaseWaiting(target: Target): Promise<number> {
     if (state.paused || !state.waiting?.length) continue;
     try {
       await asked(target, "GET", `api/session/${address(session)}`);
+      // A failed transfer may have left the same item on both sides. Finish it before sending
+      // even the saved prefix, and leave this session held if the inbox still can't be cleared.
+      if (queueOf(session).inboxMoved?.length) {
+        if (await isRunning(target, session)) continue;
+        await moveInboxToBox(target, session);
+      }
     } catch {
       continue;
     }

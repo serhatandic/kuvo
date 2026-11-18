@@ -1942,9 +1942,9 @@ client connected: a client's Computers area and its switcher draw it, and ask no
     kind, else the pinned package fetched and checked on the box's computer (the computer added
     downloads no code); then, in one script, the computer's settings made its own (one with none starts
     with the box's, below), how its keeper starts it (`run/launch.env`: the session's PATH, shell and
-    language and its name; no password or key), its `machine-id` made once, the `@reboot` line and a Mac's launch agent, and
-    `kuvo-start start`: its own keeper starts its engine, with a port and passwords that never
-    leave it; then `kuvo-link.js setup` there with this box's keys and documents, its answer
+    language and its name; no password or key), and its `machine-id` made once. On Linux it adds
+    the `@reboot` line and runs `kuvo-start start`. On Darwin it installs and starts Kuvo Helper’s
+    launch agent. The keeper starts the engine with a port and passwords that never leave it; then `kuvo-link.js setup` there with this box's keys and documents, its answer
     written as the box's own record of it (its peers document, `machines.json`, and
     `phone-link.json` for `kuvo/hosts`).
   - **What a new computer starts with** (`seeding`), once, as it's added, and only one that had
@@ -3533,9 +3533,11 @@ turns, what's sent meanwhile held on the box, never cut:
   the box's queue meanwhile; Send Now and Steer put the item first. The coding agents' bridge waits
   before it starts anything on the engine (a conversation on the engine's models, a review, a group
   chat's seat) until the hold ends. What the engine's inboxes held is kept on the box before it's
-  taken from the engine, so a swapper cut off between the two leaves it in both, never neither. The queue's answer carries `line` while what waits on it waits for this
-  (the box's words; `kuvo/update`'s `engineChange.line` says the same for the computer, as its
-  update line in `computers`). Once it's done or let go of, what waits for each conversation the
+  taken from the engine, so a swapper cut off between the two leaves it in both, never neither.
+  If a transfer stops partway through, that conversation stays held while Kuvo clears the remaining
+  inbox and then sends the saved messages in order. The queue's answer carries `line` while it holds.
+  During an engine change, `kuvo/update`'s `engineChange.line` and the update line in `computers`
+  tell the computer's state. Once the hold ends, what waits for each conversation the
   engine has that isn't paused goes, each once and in its order: the first to start a turn where
   none runs, the rest (and all, into one that runs) as each was sent.
 
@@ -8827,8 +8829,17 @@ ID is the app's with `.box` after it (`run.kuvo.code.box`); an update keeps that
 its place, which is what macOS keeps your permissions and its Keychain items by. (Until #713 it
 was named Kuvo Code Box, in no release.)
 
-- **Started** by the launch agent `run.kuvo.code.machine` (one per computer, a machine's runs
-  `kuvo-start` with `/bin/sh`): `kuvo-link.js helper install [--load] [--app <bundle ID>]` writes
+A Darwin machine box uses the same signed Helper and launch agent with `keep-machine --home <box>`.
+Helper starts its keeper and the box continues to use its machine credentials. An existing machine
+starts a permission watcher under the signed Helper while the existing launch job still runs
+worker restarts and ordinary engine updates. After the watcher sees the Files grant, Kuvo waits
+for quiet, holds incoming messages, keeps pending inbox messages, and saves the launch job before
+switching it. It rechecks the grant with the Helper that will run the workers. New installs and
+migrations both verify that the engine and bridge answer before completing the switch. If
+migration fails or is interrupted, Kuvo restores the previous job and holds messages until both
+services answer. A failed adoption backs off so ordinary engine updates can proceed.
+
+- **Started** by the launch agent `run.kuvo.code.machine` (one per computer): `kuvo-link.js helper install [--load] [--app <bundle ID>]` writes
   `~/Library/LaunchAgents/run.kuvo.code.machine.plist` (`ProgramArguments`: the helper, `keep
   --home <box>`; `RunAtLoad`; `KeepAlive {SuccessfulExit: false}`; `AbandonProcessGroup`;
   `AssociatedBundleIdentifiers: [<the app's ID>]`, by default `run.kuvo.code`), and with `--load`
@@ -8890,20 +8901,21 @@ was named Kuvo Code Box, in no release.)
   that SIGKILL. The box turned off (`run/off`, `kuvo-start off`) with its keeper
   gone, it does the same.
 - **What macOS allows** (`box.permissions`). Everything the box runs is asked about, and allowed,
-  as Kuvo Helper, and only the helper can ask macOS what it's allowed. It does (neither call asks
-  you anything) as it starts, every minute (and within ten seconds of the note going), and whenever
+  as Kuvo Helper, and the helper checks Screen Recording, Accessibility and Full Disk Access without prompting.
+  It checks as it starts, every minute (and within ten seconds of the note going), and whenever
   the box asks it to (its host's `permissions {}` → `{}`, answered once it has noted it; a helper
   from before that answers `404`), each time in a process of its own that never asked before
-  (`Kuvo Helper permissions`, its own child, which says `{"screenRecording", "accessibility"}` and
+  (`Kuvo Helper permissions`, its own child, which says `{"screenRecording", "accessibility", "fullDiskAccess"}` and
   exits), one at a time: macOS answers Screen Recording once for each process, so a running helper
   asking itself would never see a change you make. Where that process can't say (within five
-  seconds), the note stays as it is. It writes `run/permissions.json` when that changes or the note's gone: `{"v": 1, "pid": <its own>, "started": <when its process started, in
-  seconds>, "screenRecording": bool, "accessibility": bool}`, `0600`, taken away as it goes. The box says it:
+  seconds), the note reports unknown. Old observations expire. It writes `run/permissions.json` after each check: `{"v": 1, "pid": <its own>, "started": <when its process started, in
+  seconds>, "observedAt": <milliseconds since epoch>, "screenRecording": bool, "accessibility": bool, "fullDiskAccess": bool or null}`, `0600`, taken away as it goes. A failed check writes just the process identity and observation time. The box says it:
   - `GET kuvo/box/permissions` → `{applies, name, known, screenRecording, accessibility, bundle, list}`,
     the helper asked to look again first (above), so what you just switched on in System Settings
     is said at once; where it can't be asked, or hasn't answered within two seconds, the note as it
     is. Settings › This Mac reads it the same way.
-    `applies`: whether this box runs under such a program (a Mac's own box in a home of its own);
+    `applies`: whether this box runs under Kuvo Helper (a Mac’s own box in a home of its own or
+    a Darwin machine using Helper, which reports only Files and refreshes its note every five seconds);
     `name`: what System Settings lists it as (`"Kuvo Helper"`), null where it doesn't apply;
     `known`: whether the helper runs now and has said (a note whose `pid` isn't a running process
     of yours that started when `started` says, to within three seconds, as `ps` has it, says
@@ -8912,13 +8924,17 @@ was named Kuvo Code Box, in no release.)
   - `bundle`: that program on the Mac (a full path to `bin/Kuvo Helper.app` in the box's home),
     what you drag into a list in System Settings; null where it doesn't apply.
   - `list`: each permission in words, for a client to draw without naming any itself:
-    `[{id, name, line, allowed, settings, byHand, asks}]`. `id` is `screenRecording` or `accessibility`;
+    `[{id, name, line, allowed, settings, byHand, byHandLine, unknownLine, asks}]`. `id` is `screenRecording`, `accessibility` or `fullDiskAccess`;
     `name` what System Settings calls it; `line` what agents need it for, in a sentence (a client
-    draws it under the name; one from an older box may be missing it); `allowed` as above; `settings` the address that opens
+    draws it under the name); `allowed` as above; `settings` the address that opens
     its list in System Settings (`x-apple.systempreferences:…`), which only an app on that Mac
-    can open; `byHand`: macOS asks nothing for it, you add the program to the list yourself (both,
-    today: the helper never asks); `asks`: whether a client brings it up now, true while it's
-    known not to be allowed and you haven't put it off. Empty where it doesn't apply.
+    can open; `byHand`: macOS asks nothing for it, you add the program to the list yourself; `asks`: whether a client brings it up now, true while it's
+    known not to be allowed and you haven't put it off. `byHandLine` gives the instruction for
+    granting it, and `unknownLine` is shown while the box can't say. Empty where it doesn't apply.
+    The Files row opens Privacy & Security › Full Disk Access. Helper uses a filesystem probe and
+    reports unknown when the result is inconclusive. It tries a
+    one-byte read of `/Library/Application Support/com.apple.TCC/TCC.db`, falling back to the
+    per-user database if the system one is absent.
   - `POST kuvo/box/permissions {later: "<id>"}` puts one off (a client's "Not Now"), kept in the
     box (`box/permissions-later.json`) so every client agrees and none asks at each open; once
     it's allowed it's no longer put off, so one taken away later is brought up again. It answers
@@ -9790,8 +9806,8 @@ The sections now:
   (whether Kuvo Helper is on in Login Items, `launchctl print-disabled`; off, a warning with Open
   Login Items; left out where launchd can't be asked, a copy's home, or its launch agent isn't in place), `allows-<id>` for each
   permission (`Allowed`; not allowed, a warning with Open System Settings, which `opens` the
-  address of its list; not known while the helper hasn't said), and `allows-files`, which macOS
-  asks about by itself. What opens only on that Mac is given to the app beside it alone (`can:
+  address of its list; not known while the helper hasn’t said). For Files the row is
+  `allows-fullDiskAccess`. What opens only on that Mac is given to the app beside it alone (`can:
   {why}` elsewhere). A client that has a way to help with a permission added by hand (the desktop
   app's drag tile) matches the address it opens to `kuvo/box/permissions`' `list`. Linux has no
   helper and nothing macOS allows: that group isn't there.

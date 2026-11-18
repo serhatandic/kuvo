@@ -90,7 +90,7 @@ trap 'rm -rf "$HELPER_BUILD"' EXIT
 helper_icon=""
 [ ! -f "$APP/Contents/Resources/AppIcon.icns" ] || helper_icon="$APP/Contents/Resources/AppIcon.icns"
 KUVO_SIGNED_KEYS=0 SIGN_IDENTITY="$SIGN_IDENTITY" APP_ID="$(info CFBundleIdentifier)" VERSION="$(info CFBundleShortVersionString)" BUILD="$(info CFBundleVersion)" \
-    MIN_SYSTEM="$(info LSMinimumSystemVersion)" ICON="$helper_icon" ./scripts/build-helper.sh "$HELPER_BUILD"
+    ICON="$helper_icon" ./scripts/build-helper.sh "$HELPER_BUILD"
 mkdir -p "$APP/Contents/Helpers"
 rm -rf "$APP/Contents/Helpers/Kuvo Helper.app"
 mv "$HELPER_BUILD/Kuvo Helper.app" "$APP/Contents/Helpers/"

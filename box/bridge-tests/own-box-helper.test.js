@@ -258,6 +258,11 @@ async function served(where) {
   return { ask, stop: async () => { child.stdin.end(); await ended; } };
 }
 
+const filesPermission = (allowed, asks = allowed === false) => ({
+  id: "fullDiskAccess", name: "Files", line: "For agents that work with your files anywhere on this Mac.",
+  settings: "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_AllFiles", byHand: true, byHandLine: "Drag Kuvo Helper into the list in System Settings, then switch it on.", unknownLine: "Kuvo Helper hasn’t said yet.", allowed, asks,
+});
+
 test("kuvo/box/permissions: what macOS allows Kuvo Helper, as the helper running this box noted it", { skip: process.platform !== "darwin" && "only a Mac's box has the helper" }, async () => {
   const where = home("mac");
   const box = await served(where);
@@ -267,32 +272,40 @@ test("kuvo/box/permissions: what macOS allows Kuvo Helper, as the helper running
   const bundle = path.join(where.K, "bin", "Kuvo Helper.app");
   // Each permission in words: what System Settings calls it, the address of its list there, that
   // you add the helper to it by hand, and whether a client brings it up now.
-  const listed = (screenRecording, accessibility, asks = {}) => [
-    { id: "screenRecording", name: "Screen Recording", line: "For agents that look at the screen.", settings: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture", byHand: true, allowed: screenRecording, asks: asks.screenRecording ?? screenRecording === false },
-    { id: "accessibility", name: "Accessibility", line: "For agents that click and type in other apps.", settings: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility", byHand: true, allowed: accessibility, asks: asks.accessibility ?? accessibility === false },
+  const listed = (screenRecording, accessibility, asks = {}, files = null) => [
+    { id: "screenRecording", name: "Screen Recording", line: "For agents that look at the screen.", settings: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture", byHand: true, byHandLine: "Drag Kuvo Helper into the list in System Settings, then switch it on.", unknownLine: "Kuvo Helper hasn’t said yet.", allowed: screenRecording, asks: asks.screenRecording ?? screenRecording === false },
+    { id: "accessibility", name: "Accessibility", line: "For agents that click and type in other apps.", settings: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility", byHand: true, byHandLine: "Drag Kuvo Helper into the list in System Settings, then switch it on.", unknownLine: "Kuvo Helper hasn’t said yet.", allowed: accessibility, asks: asks.accessibility ?? accessibility === false },
+    filesPermission(files, asks.fullDiskAccess ?? files === false),
   ];
   const unknown = { applies: true, name: "Kuvo Helper", known: false, screenRecording: null, accessibility: null, bundle, list: listed(null, null) };
   // No helper has said: it applies here, and nothing's known (so nothing's brought up).
   assert.deepEqual(await box.ask("kuvo/box/permissions"), { status: 200, body: unknown });
   // The helper running this box (a stand-in: this test's own process) noted what it's allowed.
-  write(facts, JSON.stringify({ v: 1, pid: process.pid, started, screenRecording: true, accessibility: false }));
+  write(facts, JSON.stringify({ v: 1, pid: process.pid, observedAt: Date.now(), started, screenRecording: true, accessibility: false }));
   assert.deepEqual((await box.ask("kuvo/box/permissions")).body, { applies: true, name: "Kuvo Helper", known: true, screenRecording: true, accessibility: false, bundle, list: listed(true, false) });
+  // Older helpers only know about the first two permissions.
+  write(facts, JSON.stringify({ v: 1, pid: process.pid, observedAt: Date.now(), started, screenRecording: true, accessibility: false, fullDiskAccess: false }));
+  assert.deepEqual((await box.ask("kuvo/box/permissions")).body.list, listed(true, false, {}, false));
+  assert.deepEqual((await box.ask("kuvo/box/permissions", "POST", { later: "fullDiskAccess" })).body.list.at(-1), filesPermission(false, false));
+  write(facts, JSON.stringify({ v: 1, pid: process.pid, observedAt: Date.now(), started, screenRecording: true, accessibility: false, fullDiskAccess: true }));
+  assert.deepEqual((await box.ask("kuvo/box/permissions")).body.list.at(-1), filesPermission(true));
+  write(facts, JSON.stringify({ v: 1, pid: process.pid, observedAt: Date.now(), started, screenRecording: true, accessibility: false }));
   // Not Now: put off in the box, so no client brings it up again, at this open or the next.
   assert.deepEqual((await box.ask("kuvo/box/permissions", "POST", { later: "accessibility" })).body.list, listed(true, false, { accessibility: false }));
   assert.deepEqual((await box.ask("kuvo/box/permissions")).body.list, listed(true, false, { accessibility: false }));
   assert.equal((await box.ask("kuvo/box/permissions", "POST", { later: "the moon" })).status, 400);
   assert.equal((await box.ask("kuvo/box/permissions", "POST", {})).status, 400);
   // Granted since: the helper notes it again, and the box says it as it's asked.
-  write(facts, JSON.stringify({ v: 1, pid: process.pid, started, screenRecording: true, accessibility: true }));
+  write(facts, JSON.stringify({ v: 1, pid: process.pid, observedAt: Date.now(), started, screenRecording: true, accessibility: true }));
   assert.equal((await box.ask("kuvo/box/permissions")).body.accessibility, true);
   // Taken away again later: it was allowed in between, so it's brought up again.
-  write(facts, JSON.stringify({ v: 1, pid: process.pid, started, screenRecording: true, accessibility: false }));
+  write(facts, JSON.stringify({ v: 1, pid: process.pid, observedAt: Date.now(), started, screenRecording: true, accessibility: false }));
   assert.deepEqual((await box.ask("kuvo/box/permissions")).body.list, listed(true, false));
-  write(facts, JSON.stringify({ v: 1, pid: process.pid, started, screenRecording: true, accessibility: true }));
+  write(facts, JSON.stringify({ v: 1, pid: process.pid, observedAt: Date.now(), started, screenRecording: true, accessibility: true }));
   // A helper killed where it stood left its note, and its number went to another process of yours
   // (here this test's, which started at another time than the note says its writer did).
   for (const other of [started - 3600, started + 600]) {
-    write(facts, JSON.stringify({ v: 1, pid: process.pid, started: other, screenRecording: true, accessibility: true }));
+    write(facts, JSON.stringify({ v: 1, pid: process.pid, observedAt: Date.now(), started: other, screenRecording: true, accessibility: true }));
     assert.deepEqual((await box.ask("kuvo/box/permissions")).body, unknown, String(other));
   }
   // A note left by a helper that's gone (it ended without taking it away) says nothing of now.
@@ -303,14 +316,14 @@ test("kuvo/box/permissions: what macOS allows Kuvo Helper, as the helper running
   write(facts, JSON.stringify({ v: 1, pid: 1, started, screenRecording: true, accessibility: true }));
   assert.deepEqual((await box.ask("kuvo/box/permissions")).body, unknown);
   // Nor one that isn't the helper's (half written, another version's, not facts).
-  for (const text of ["{", "[]", JSON.stringify({ v: 2, pid: process.pid, started, screenRecording: true, accessibility: true }), JSON.stringify({ v: 1, pid: process.pid, started, screenRecording: "yes", accessibility: true }), JSON.stringify({ v: 1, pid: 0, started, screenRecording: true, accessibility: true }), JSON.stringify({ v: 1, pid: process.pid, screenRecording: true, accessibility: true })]) {
+  for (const text of ["{", "[]", JSON.stringify({ v: 2, pid: process.pid, observedAt: Date.now(), started, screenRecording: true, accessibility: true }), JSON.stringify({ v: 1, pid: process.pid, observedAt: Date.now(), started, screenRecording: "yes", accessibility: true }), JSON.stringify({ v: 1, pid: 0, started, screenRecording: true, accessibility: true }), JSON.stringify({ v: 1, pid: process.pid, screenRecording: true, accessibility: true })]) {
     write(facts, text);
     assert.deepEqual((await box.ask("kuvo/box/permissions")).body, unknown, text);
   }
   // Not Now that can't be kept (its file's place taken by a folder) is said, never thrown.
   fs.rmSync(path.join(where.K, "box", "permissions-later.json"), { force: true });
   fs.mkdirSync(path.join(where.K, "box", "permissions-later.json", "in the way"), { recursive: true });
-  write(facts, JSON.stringify({ v: 1, pid: process.pid, started, screenRecording: false, accessibility: true }));
+  write(facts, JSON.stringify({ v: 1, pid: process.pid, observedAt: Date.now(), started, screenRecording: false, accessibility: true }));
   const unkept = await box.ask("kuvo/box/permissions", "POST", { later: "screenRecording" });
   assert.equal(unkept.status, 500);
   assert.equal(typeof unkept.body.message, "string");
@@ -331,7 +344,7 @@ test("kuvo/box/permissions: a permission switched on in System Settings is said 
   let allowed = false;
   let knows = true;
   const asked = [];
-  const note = () => write(facts, JSON.stringify({ v: 1, pid: process.pid, started, screenRecording: allowed, accessibility: false }));
+  const note = () => write(facts, JSON.stringify({ v: 1, pid: process.pid, observedAt: Date.now(), started, screenRecording: allowed, accessibility: false }));
   const host = http.createServer((request, response) => {
     let body = "";
     request.on("data", chunk => { body += chunk; });
@@ -370,7 +383,7 @@ test("kuvo/box/permissions: a permission switched on in System Settings is said 
 test("kuvo/box/permissions: a machine's box runs under no such program, and says so", async () => {
   const where = home("machine", { helper: false });
   // (Whatever a file there says: nothing here is the helper's word.)
-  write(path.join(where.run, "permissions.json"), JSON.stringify({ v: 1, pid: process.pid, started: Math.floor(Date.now() / 1000 - process.uptime()), screenRecording: true, accessibility: true }));
+  write(path.join(where.run, "permissions.json"), JSON.stringify({ v: 1, pid: process.pid, observedAt: Date.now(), started: Math.floor(Date.now() / 1000 - process.uptime()), screenRecording: true, accessibility: true }));
   const box = await served(where);
   assert.deepEqual(await box.ask("kuvo/box/permissions"), { status: 200, body: { applies: false, name: null, known: false, screenRecording: null, accessibility: null, bundle: null, list: [] } });
   // Nothing to put off where nothing's asked.
@@ -447,4 +460,40 @@ esac
   // (Its own look for whether it's loaded, then the waits: kickstarted only once it's gone.)
   assert.ok(asked.slice(0, kick).filter(line => line.startsWith("print gui")).length >= 4, asked.join("\n"));
   assert.equal(Number(read(path.join(where.home, "looks")).trim()) >= 4, true);
+});
+
+
+test("a Darwin machine under Kuvo Helper reports Files from the Helper's note", { skip: process.platform !== "darwin" }, async () => {
+  const where = home("machine");
+  write(path.join(where.run, "machine-helper"), "");
+  const facts = path.join(where.run, "permissions.json");
+  const program = path.join(where.K, "bin", "Kuvo Helper.app", "Contents", "MacOS", "Kuvo Helper");
+  const shell = path.join(where.K, "bin", "kuvo-start");
+  const standIn = (...args) => spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)", ...args], { stdio: "ignore" });
+  const helper = standIn(program, "keep-machine");
+  const keeper = standIn(shell, "keep");
+  const started = Math.floor(Date.now() / 1000);
+  write(path.join(where.run, "box.pid"), String(keeper.pid));
+  write(path.join(where.run, "machine-keeper"), `${keeper.pid} ${helper.pid}\n`);
+  const note = (fullDiskAccess, pid = helper.pid) => write(facts, JSON.stringify({ v: 1, pid, observedAt: Date.now(), started, screenRecording: true, accessibility: true, fullDiskAccess }));
+  const box = await served(where);
+  try {
+    note(false);
+    const denied = (await box.ask("kuvo/box/permissions")).body;
+    assert.equal(denied.applies, true);
+    assert.equal(denied.known, true);
+    assert.deepEqual(denied.list, [filesPermission(false)]);
+    note(true);
+    assert.deepEqual((await box.ask("kuvo/box/permissions")).body.list, [filesPermission(true)]);
+    note(true, keeper.pid);
+    assert.deepEqual((await box.ask("kuvo/box/permissions")).body.list, [filesPermission(null)]);
+    note(true);
+    const stale = JSON.parse(fs.readFileSync(facts, "utf8"));
+    write(facts, JSON.stringify({ ...stale, observedAt: Date.now() - 60_000 }));
+    assert.deepEqual((await box.ask("kuvo/box/permissions")).body.list, [filesPermission(null)]);
+  } finally {
+    helper.kill();
+    keeper.kill();
+    await box.stop();
+  }
 });

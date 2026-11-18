@@ -27,7 +27,7 @@ nonisolated private let log = Logger(subsystem: "run.kuvo.code", category: "box-
 @MainActor
 public final class BoxHelper {
     let home: URL
-    let host: BoxHelperHost
+    let host: BoxHelperHost?
     /// The children's environment: the few of its own a shell needs (launchd's is clean).
     let environment: [String: String]
     /// Whether macOS is asking you something now (a test's says).
@@ -37,7 +37,6 @@ public final class BoxHelper {
     /// (`Permissions.afresh`). Nil where that couldn't be told: the note stays as it is, never
     /// written from what this process was told once (which would undo what you switched on since).
     var allowed: @Sendable () async -> Permissions? = { await Permissions.afresh() }
-    private var notedPermissions: Permissions?
     /// The last look asked for, and one asked for that hasn't begun (waiting for the one before),
     /// which a later ask shares: one process at a time, and an earlier look's answer never written
     /// over a later one's.
@@ -88,7 +87,7 @@ public final class BoxHelper {
         return now != sealAtStart
     }
 
-    init(home: URL, host: BoxHelperHost, environment: [String: String]) {
+    init(home: URL, host: BoxHelperHost?, environment: [String: String]) {
         self.home = home
         self.host = host
         self.environment = environment
@@ -119,6 +118,8 @@ public final class BoxHelper {
         if let every = option("--test-look-every").flatMap(Double.init), every > 0 { lookEvery = every }
         #endif
         let appBundle = option("--app")
+        let watching = words.first == "watch-machine"
+        let machine = words.first == "keep-machine" || watching
         var keychain = HostKeychain()
         #if DEBUG
         // Tests alone: a keychain file of their own.
@@ -129,20 +130,23 @@ public final class BoxHelper {
         let saidFile = option("--test-permissions-file")
         let saidHere = option("--test-permissions") ?? ""
         let saidOnce = Set((saidFile.map { (try? String(contentsOfFile: $0, encoding: .utf8)) ?? "" } ?? saidHere).split(whereSeparator: { $0 == "," || $0.isWhitespace }).map(String.init))
-        let inThisProcess: @Sendable () -> Permissions = { Permissions(screenRecording: saidOnce.contains("screen-recording"), accessibility: saidOnce.contains("accessibility")) }
+        let inThisProcess: @Sendable () -> Permissions = { Permissions(screenRecording: saidOnce.contains("screen-recording"), accessibility: saidOnce.contains("accessibility"), fullDiskAccess: saidOnce.contains("full-disk-access")) }
         #else
         let inThisProcess: @Sendable () -> Permissions = { Permissions.asMacOSSays }
         #endif
         // `permissions`: what macOS allows this program, asked by this process, which has never asked
         // before (macOS answers Screen Recording once for each process: `Permissions.afresh`).
         if words == ["permissions"] {
+            #if DEBUG
+            if let saidFile, !FileManager.default.fileExists(atPath: saidFile) { exit(1) }
+            #endif
             say(inThisProcess().said)
             exit(0)
         }
         #if DEBUG
         // (A debug build is the tests' alone, and never reaches your login keychain: the release's is
         // built by scripts/build-helper.sh.)
-        guard keychain.isTests else { fail("A test build of \(BoxHelperBundle.name) reads only a test's keychain: --test-keychain <file> --test-keychain-password <password>.") }
+        guard machine || keychain.isTests else { fail("A test build of \(BoxHelperBundle.name) reads only a test's keychain: --test-keychain <file> --test-keychain-password <password>.") }
         // (Asked afresh, as the release's is, where the test's file says.)
         let allowed: @Sendable () async -> Permissions?
         if let saidFile {
@@ -164,11 +168,11 @@ public final class BoxHelper {
         let allowed: @Sendable () async -> Permissions? = { await Permissions.afresh() }
         #endif
         let home: URL
-        switch box(given: given, bundle: Bundle.main.bundleURL, accountHome: accountHome(), pinned: pinned, keeping: command == "keep") {
+        switch box(given: given, bundle: Bundle.main.bundleURL, accountHome: accountHome(), pinned: pinned, keeping: command == "keep" || machine) {
         case .success(let found): home = found
         case .failure(let refused):
             // (Kept by launchd, a box it won't run ends cleanly: it isn't started again and again.)
-            if command == "keep" {
+            if command == "keep" || machine {
                 log.error("\(refused.why, privacy: .public)")
                 FileHandle.standardError.write(Data((refused.why + "\n").utf8))
                 exit(0)
@@ -176,7 +180,8 @@ public final class BoxHelper {
             fail(refused.why)
         }
         switch command {
-        case "keep" where words.count <= 1:
+        case "keep", "keep-machine", "watch-machine":
+            guard words.count <= 1 else { fail("Specify only one keeper mode.") }
             // In the menu bar (`MenuBarItem`), while it keeps the box: its own build always; the
             // tests' never in your menu bar (`--test-app-loop`: AppKit's run loop, without the item).
             #if DEBUG
@@ -184,7 +189,7 @@ public final class BoxHelper {
             #else
             let (loop, drawn) = (true, true)
             #endif
-            let helper = MainActor.assumeIsolated { keep(home: home, keychain: keychain, prefix: prefix, app: app, allowed: allowed) }
+            let helper = MainActor.assumeIsolated { keep(home: home, keychain: keychain, prefix: prefix, app: app, machine: machine, watching: watching, allowed: allowed) }
             guard loop else { dispatchMain() }
             MainActor.assumeIsolated {
                 let application = NSApplication.shared
@@ -193,7 +198,7 @@ public final class BoxHelper {
                 // told to stop first, as SIGTERM does, never an exit that leaves the box running.
                 HelperApp.shared = HelperApp(helper: helper)
                 application.delegate = HelperApp.shared
-                if drawn { MenuBarItem.shared = MenuBarItem(helper: helper, app: app) }
+                if drawn && !machine { MenuBarItem.shared = MenuBarItem(helper: helper, app: app) }
                 application.run()
             }
             exit(0)
@@ -239,7 +244,7 @@ public final class BoxHelper {
                 fail(error.localizedDescription)
             }
         default:
-            fail("Usage: \(BoxHelperBundle.name) [keep] [--home <box>] | keys check|uncopy|clear|back [--app <Kuvo Code.app>] | permissions")
+            fail("Usage: \(BoxHelperBundle.name) [keep|keep-machine|watch-machine] [--home <box>] | keys check|uncopy|clear|back [--app <Kuvo Code.app>] | permissions")
         }
     }
 
@@ -312,7 +317,7 @@ public final class BoxHelper {
 
     /// The box kept, in this process, for as long as it runs.
     @discardableResult
-    private static func keep(home: URL, keychain: HostKeychain, prefix: String, app: String, allowed: @escaping @Sendable () async -> Permissions?) -> BoxHelper {
+    private static func keep(home: URL, keychain: HostKeychain, prefix: String, app: String, machine: Bool, watching: Bool, allowed: @escaping @Sendable () async -> Permissions?) -> BoxHelper {
         let run = home.appending(path: "run")
         try? FileManager.default.createDirectory(at: run, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         // One at a time: one opened while launchd's runs goes at once, and cleanly.
@@ -332,7 +337,12 @@ public final class BoxHelper {
         }
         // Nor while a move of the box is unfinished, or its keys are half moved: the old box may
         // start too, with the same keys (two boxes as one), and the app's keeper finishes it.
-        if let why = unsettled(home: home, keychain: keychain, prefix: prefix, app: app) {
+        let kind = (try? String(contentsOf: home.appending(path: "box/kind"), encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if machine && !(kind == "machine" || kind == nil) {
+            log.error("Machine keeper mode requires a machine box")
+            exit(0)
+        }
+        if !machine, let why = unsettled(home: home, keychain: keychain, prefix: prefix, app: app) {
             try? PrivateFile.write(Data(why.utf8), to: run.appending(path: "helper-trouble"))
             log.notice("\(why, privacy: .public)")
             exit(0)
@@ -348,9 +358,11 @@ public final class BoxHelper {
         try? FileManager.default.removeItem(at: run.appending(path: "helper-trouble"))
         var environment = childEnvironment(ProcessInfo.processInfo.environment)
         environment["HOME"] = Self.homeAround(home)
-        let helper = BoxHelper(home: home, host: BoxHelperHost(home: home, keychain: keychain, prefix: prefix, app: app), environment: environment)
+        if machine { environment["KUVO_MACHINE_HELPER_PID"] = String(getpid()) }
+        let host = machine ? nil : BoxHelperHost(home: home, keychain: keychain, prefix: prefix, app: app)
+        let helper = BoxHelper(home: home, host: host, environment: environment)
         helper.allowed = allowed
-        helper.begin()
+        helper.begin(watching: watching)
         return helper
     }
 
@@ -409,18 +421,23 @@ public final class BoxHelper {
     // MARK: Running
 
     /// Started: its host interface, `serve`, and the keeper; then it looks after them.
-    func begin() {
+    func begin(watching: Bool = false) {
         signal(SIGTERM, SIG_IGN)
         signal(SIGINT, SIG_IGN)
         for number in [SIGTERM, SIGINT] {
             let source = DispatchSource.makeSignalSource(signal: number, queue: .main)
-            source.setEventHandler { MainActor.assumeIsolated { self.finish(0) } }
+            source.setEventHandler { @Sendable in Task { @MainActor in self.finish(0) } }
             source.resume()
             signals.append(source)
         }
-        host.failed = { [weak self] in Task { @MainActor in await self?.startHost() } }
+        if host == nil {
+            if !watching { startKeeper() }
+            looking = Task { await look() }
+            return
+        }
+        host?.failed = { [weak self] in Task { @MainActor in await self?.startHost() } }
         // (Asked by the box as a client asks it: what macOS allows it then, not ten seconds ago.)
-        host.permissionsNow = { [weak self] in await self?.notePermissions() }
+        host?.permissionsNow = { [weak self] in await self?.notePermissions() }
         Task {
             await notePermissions()
             await startHost()
@@ -432,6 +449,7 @@ public final class BoxHelper {
 
     /// Its host interface, started (again): tried every so often until it does.
     private func startHost() async {
+        guard let host else { return }
         var wait = 1.0
         while !finishing {
             do {
@@ -478,7 +496,7 @@ public final class BoxHelper {
     }
 
     private func startServe() {
-        guard !finishing else { return }
+        guard !finishing, let host else { return }
         let (fileKey, retry) = host.vaultFileKey()
         serveLacksFileKey = fileKey == nil && retry
         let password = HostProof.secret()
@@ -520,9 +538,9 @@ public final class BoxHelper {
         while !finishing, !Task.isCancelled {
             noteAsking(asking())
             // (And at once where the note's gone: whatever took it away, the box hears again.)
-            if round % 6 == 0 || !FileManager.default.fileExists(atPath: permissionsFile.path(percentEncoded: false)) { await notePermissions() }
+            if host == nil || round % 6 == 0 || !FileManager.default.fileExists(atPath: permissionsFile.path(percentEncoded: false)) { await notePermissions() }
             round += 1
-            if serveLacksFileKey, let serve, serve.isRunning, host.vaultFileKey().key != nil {
+            if serveLacksFileKey, let serve, serve.isRunning, host?.vaultFileKey().key != nil {
                 log.info("The vault's key can be read now: the box's server starts again with it")
                 serve.planned = true
                 serve.terminate()
@@ -534,7 +552,7 @@ public final class BoxHelper {
                 log.notice("A new Kuvo Helper is in place: this one goes, for launchd to start it")
                 return finish(Self.renewed)
             }
-            try? await Task.sleep(for: .seconds(Self.lookEvery))
+            try? await Task.sleep(for: .seconds(host == nil ? min(Self.lookEvery, 5) : Self.lookEvery))
         }
     }
 
@@ -564,15 +582,19 @@ public final class BoxHelper {
     }
 
     private func lookAtPermissions() async {
-        guard let now = await allowed(), !finishing else { return }
-        // (Written again where the note's gone: whatever took it away, the box hears again.)
-        guard now != notedPermissions || !FileManager.default.fileExists(atPath: permissionsFile.path(percentEncoded: false)) else { return }
+        let now = await allowed()
+        guard !finishing else { return }
         var info = proc_bsdinfo()
         let size = Int32(MemoryLayout<proc_bsdinfo>.size)
         guard proc_pidinfo(getpid(), PROC_PIDTBSDINFO, 0, &info, size) == size else { return }
-        let record: [String: Any] = ["v": 1, "pid": Int(getpid()), "started": Int(info.pbi_start_tvsec), "screenRecording": now.screenRecording, "accessibility": now.accessibility]
-        guard let data = try? JSONSerialization.data(withJSONObject: record, options: [.sortedKeys]), (try? PrivateFile.write(data, to: permissionsFile)) != nil else { return }
-        notedPermissions = now
+        var record = now?.said ?? [:]
+        record["v"] = 1
+        record["pid"] = Int(getpid())
+        record["started"] = Int(info.pbi_start_tvsec)
+        record["observedAt"] = Int(Date().timeIntervalSince1970 * 1000)
+        if let data = try? JSONSerialization.data(withJSONObject: record, options: [.sortedKeys]) {
+            try? PrivateFile.write(data, to: permissionsFile)
+        }
     }
 
     /// Everything it started, told to stop (`serve` by its stdin closing, the keeper by SIGTERM: the
@@ -584,7 +606,7 @@ public final class BoxHelper {
         looking?.cancel()
         serve?.terminate()
         keeper?.terminate()
-        host.stop()
+        host?.stop()
         noteAsking(false)
         try? FileManager.default.removeItem(at: permissionsFile)
         let children = [serve, keeper].compactMap { $0 }
@@ -623,21 +645,36 @@ final class HelperApp: NSObject, NSApplicationDelegate {
 }
 
 /// What macOS allows the helper (and so everything the box runs under it), where macOS can be asked
-/// without asking you: Screen Recording and Accessibility. (Files and Folders and Local Network
-/// can't be asked about: they show only in what fails.)
+/// without prompting: Screen Recording, Accessibility and Full Disk Access.
 struct Permissions: Equatable, Sendable {
     var screenRecording: Bool
     var accessibility: Bool
+    var fullDiskAccess: Bool?
 
     /// As macOS says of this process now. Neither call asks you anything. (macOS answers Screen
     /// Recording once for each process, and keeps to that answer however it changes after: only
     /// a process that never asked before hears the change.)
     nonisolated static var asMacOSSays: Permissions {
-        Permissions(screenRecording: CGPreflightScreenCaptureAccess(), accessibility: AXIsProcessTrusted())
+        Permissions(screenRecording: CGPreflightScreenCaptureAccess(), accessibility: AXIsProcessTrusted(),
+                    fullDiskAccess: canReadPrivacyDatabase)
+    }
+
+    /// Full Disk Access protects the system TCC database. Probe a read without querying it.
+    /// The older per-user database is a fallback if the system database is missing.
+    private nonisolated static var canReadPrivacyDatabase: Bool? {
+        let relative = "Library/Application Support/com.apple.TCC/TCC.db"
+        var descriptor = Darwin.open("/" + relative, O_RDONLY | O_CLOEXEC)
+        if descriptor < 0, errno == ENOENT, let home = BoxHelper.accountHome() {
+            descriptor = Darwin.open(home.appending(path: relative).path(percentEncoded: false), O_RDONLY | O_CLOEXEC)
+        }
+        guard descriptor >= 0 else { return errno == EPERM ? false : nil }
+        defer { Darwin.close(descriptor) }
+        var byte: UInt8 = 0
+        return Darwin.read(descriptor, &byte, 1) == 1 ? true : nil
     }
 
     /// As said in JSON (`permissions`).
-    var said: [String: Any] { ["screenRecording": screenRecording, "accessibility": accessibility] }
+    var said: [String: Any] { ["screenRecording": screenRecording, "accessibility": accessibility, "fullDiskAccess": fullDiskAccess.map { $0 as Any } ?? NSNull()] }
 
     /// As macOS says of this program now, asked by a process of its own that never asked before
     /// (`Kuvo Helper permissions`, its own child, so macOS asks about the same program): what you
@@ -663,7 +700,7 @@ struct Permissions: Equatable, Sendable {
                 let data = output.fileHandleForReading.readDataToEndOfFile()
                 guard ended.terminationStatus == 0, let said = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
                       let screenRecording = said["screenRecording"] as? Bool, let accessibility = said["accessibility"] as? Bool else { return answer(nil) }
-                answer(Permissions(screenRecording: screenRecording, accessibility: accessibility))
+                answer(Permissions(screenRecording: screenRecording, accessibility: accessibility, fullDiskAccess: said["fullDiskAccess"] as? Bool))
             }
             do { try process.run() } catch { return answer(nil) }
             // No answer at five seconds (still running, or its output held open by something else):
@@ -705,7 +742,7 @@ final class Child {
     /// `executable` started with `arguments`, its stdin `input` (kept open after it, for as long as
     /// it runs) or nothing, its output nowhere; `session`: in a session of its own.
     static func spawn(_ executable: String, _ arguments: [String], environment: [String: String], directory: URL, session: Bool,
-                      input: Data? = nil, previous: Child? = nil, ended: @escaping (Child) -> Void) -> Child? {
+                      input: Data? = nil, previous: Child? = nil, ended: @escaping @MainActor (Child) -> Void) -> Child? {
         var pipe: [Int32] = [-1, -1]
         if input != nil {
             guard Darwin.pipe(&pipe) == 0 else { return nil }
@@ -723,7 +760,12 @@ final class Child {
         posix_spawn_file_actions_adddup2(&actions, input != nil ? pipe[0] : null, 0)
         posix_spawn_file_actions_adddup2(&actions, null, 1)
         posix_spawn_file_actions_adddup2(&actions, null, 2)
-        posix_spawn_file_actions_addchdir(&actions, directory.path(percentEncoded: false))
+        let folder = directory.path(percentEncoded: false)
+        if #available(macOS 26, *) {
+            posix_spawn_file_actions_addchdir(&actions, folder)
+        } else {
+            posix_spawn_file_actions_addchdir_np(&actions, folder)
+        }
         var attributes: posix_spawnattr_t?
         posix_spawnattr_init(&attributes)
         defer { posix_spawnattr_destroy(&attributes) }
@@ -758,8 +800,8 @@ final class Child {
             child.input = pipe[1]
         }
         let source = DispatchSource.makeProcessSource(identifier: pid, eventMask: .exit, queue: .main)
-        source.setEventHandler { [weak child] in
-            MainActor.assumeIsolated {
+        source.setEventHandler { @Sendable [weak child] in
+            Task { @MainActor in
                 guard let child, child.isRunning else { return }
                 // (It has exited: collected now, however soon the notice came.)
                 var status: Int32 = 0
@@ -786,7 +828,7 @@ final class Child {
             child.closeInput()
             source.cancel()
             child.source = nil
-            DispatchQueue.main.async { MainActor.assumeIsolated { ended(child) } }
+            Task { @MainActor in ended(child) }
         }
         return child
     }
