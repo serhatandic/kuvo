@@ -15,6 +15,7 @@ import { isObject } from "../../shared/json";
 import { plainName } from "../../shared/text";
 import { noteDocsChanged } from "../documents/changed";
 import { macDocsChanged } from "../documents/exchange";
+import { phoneTrustWait } from "../documents/phone-sync";
 import { macPeersBody } from "../documents/work";
 import { IS_MAC } from "../home";
 import { ownName } from "../letters/start";
@@ -156,10 +157,13 @@ export async function pairDeviceFromHere(given: unknown, signal?: AbortSignal | 
   if (!main) return pairHere(device);
   const named = main.name || peersOf(link).find(peer => peer.key === main.key)?.name || "your main computer";
   // (Set aside: its main computer doesn't name it now. Stepping aside never opens pairing again.)
-  if (link?.setup?.aside) return answer(409, { message: `${named} doesn't list this computer in its setup now, so it can't add your devices by itself.` });
+  if (link?.setup?.aside) return answer(409, { message: `${named} doesn't list this computer in its setup now. Re-add this computer from ${named} to pair this app.` });
   // Let in already (the main computer's phones document lists it): the same answer, nothing asked.
   const known = (link?.phones ?? []).find(phone => phone.key === device.key);
-  if (known) return answer(200, { paired: true, pairing: known.pairing ?? "" });
+  if (known) {
+    const waiting = phoneTrustWait(link, device.key, IS_MAC ? macLink.host : undefined);
+    return waiting ? answer(503, { message: waiting }) : answer(200, { paired: true, pairing: known.pairing ?? "" });
+  }
   if ((link?.removed ?? []).some(each => each.key === device.key)) return answer(409, REMOVED);
   const waiting = { message: `${named} isn't answering. This app reaches your other computers once it does.` };
   const peer = peersOf(link).find(each => each.key === main.key);

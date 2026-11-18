@@ -216,6 +216,21 @@ fn from_a_member_computer_the_app_pairs_through_its_own_box_and_reaches_the_othe
 }
 
 #[test]
+fn a_computer_confirming_its_list_shows_waiting_for_an_already_paired_app() {
+    let setup = Setup::new();
+    let waiting = "Waiting to confirm this app with your other computers…";
+    setup.mini.1.set_pairing_wait(Some(waiting));
+    let boxes = setup.boxes();
+    boxes.read_list().unwrap();
+    boxes.settle();
+    let host = setup.mini.1.key_text();
+    assert_eq!(boxes.check(&host), Some(Reach::Waiting(waiting.into())));
+    assert_eq!(boxes.pairing(), Pairing::Paired);
+    setup.mini.1.set_pairing_wait(None);
+    assert_eq!(boxes.check(&host), Some(Reach::Connected));
+}
+
+#[test]
 fn a_device_thats_removed_stays_out_until_you_pair_it_again_yourself() {
     let setup = Setup::new();
     let boxes = setup.boxes();

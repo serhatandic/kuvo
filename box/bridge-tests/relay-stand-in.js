@@ -79,7 +79,11 @@ export async function relayStandIn({ addressOf }, { changed: told = () => {} } =
     const kind = message[0];
     if (kind === 1 && message.length === 33 && !state.address) {
       const address = addressOf(message.subarray(1));
-      if (offline.has(address.toString("hex"))) return;
+      if (offline.has(address.toString("hex"))) {
+        state.held = { address, welcome: () => take(message, state, give) };
+        return;
+      }
+      state.held = undefined;
       state.address = address;
       devices.set(state.address.toString("hex"), give);
       give(Buffer.concat([Buffer.from([1]), state.address]));
@@ -149,7 +153,10 @@ export async function relayStandIn({ addressOf }, { changed: told = () => {} } =
       const key = address.toString("hex");
       offline.add(key);
       for (const [socket, state] of sockets) if (state.address?.equals(address)) socket.destroy();
-      return () => offline.delete(key);
+      return () => {
+        offline.delete(key);
+        for (const [socket, state] of sockets) if (!socket.destroyed && state.held?.address.equals(address)) state.held.welcome();
+      };
     },
     // A device in this process: what comes for it, in order (`next`), and what it sends.
     device(secret = crypto.randomBytes(32)) {

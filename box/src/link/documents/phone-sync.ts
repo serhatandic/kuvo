@@ -3,22 +3,35 @@
 // authenticated sending box and this connection's random challenge.
 
 import { randomBytes } from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
 import { isObject } from "../../shared/json";
-import { IS_MAC } from "../home";
+import { writePrivate } from "../../shared/files";
+import { IS_MAC, RUN } from "../home";
+import { runningBridge } from "../keeper";
 import { macSign, readLink, updateLink } from "../state";
 import type { LinkState } from "../state";
 import { macsOf, mailFor, peersOf } from "../peers/known";
 import type { MailSender, Peer } from "../peers/known";
-import { ownPhones, pairedPhone, removeAsMac } from "../phones";
-import type { LinkHost } from "../relay/host";
+import { authorizePhonePairing, ownPhones, pairedPhone, removeAsMac } from "../phones";
+import type { LinkHost, PhoneHello } from "../relay/host";
 import { mainElsewhere } from "../setup/main-only";
-import { docKey, held, readDoc } from "./format";
-import { docMails, ownDoc } from "./work";
+import { docKey, held, ownSign, readDoc, SIGN } from "./format";
+import { docMails, macPeersBody, ownDoc } from "./work";
 import type { SignedDoc } from "../../shared/documents";
 
 const challenge = (): string => randomBytes(16).toString("base64url");
-interface Freshness { id: string; sign: string; asked: number; ready: boolean }
-const freshness = new WeakMap<LinkHost, Map<string, Freshness>>();
+interface ListCheck { id: string; ready: boolean }
+interface PhoneTrust {
+  lists: Map<string, ListCheck>;
+  asked: number;
+  probed: Set<string>;
+  offline: Set<string>;
+  saved?: string;
+}
+const freshness = new WeakMap<LinkHost, PhoneTrust>();
+const TRUST_FILE = path.join(RUN, "phone-trust.json");
+interface KnownTrust { ready: string[]; offline: string[] }
 interface Receipt { pending: Set<string>; fingerprint: string }
 const receipts = new WeakMap<LinkHost, Map<string, Receipt>>();
 
@@ -27,7 +40,7 @@ function send(host: LinkHost, link: LinkState, to: Peer | MailSender, message: R
   if (bytes) host.send(bytes);
 }
 
-function givePhones(host: LinkHost, link: LinkState, peer: Peer | MailSender, envelope: SignedDoc): void {
+function giveDoc(host: LinkHost, link: LinkState, peer: Peer | MailSender, envelope: SignedDoc): void {
   for (const docs of docMails({ give: [envelope] })) send(host, link, peer, { docs });
 }
 
@@ -37,35 +50,85 @@ function authoritySign(link: LinkState, key: string): string | undefined {
   return macSign(link, key) ?? (link.setup?.primary === key ? link.setup.sign : undefined);
 }
 
-/** Request each of the member's authorities' current signed lists on this connection. */
+const knownTrust = (pending: PhoneTrust): KnownTrust => ({
+  ready: [...pending.lists].filter(([, each]) => each.ready).map(([origin]) => origin),
+  offline: [...pending.offline],
+});
+
+// The local server for a machine runs separately from the process that owns the relay.
+function keepTrust(pending: PhoneTrust): void {
+  if (IS_MAC) return;
+  const text = JSON.stringify({ pid: process.pid, ...knownTrust(pending) });
+  if (pending.saved === text) return;
+  try {
+    writePrivate(TRUST_FILE, text);
+    pending.saved = text;
+  } catch {}
+}
+
+export function clearPhoneTrust(host: LinkHost): void {
+  if (!IS_MAC && freshness.has(host)) try { fs.rmSync(TRUST_FILE, { force: true }); } catch {}
+}
+
+function savedTrust(): KnownTrust | undefined {
+  try {
+    const record = JSON.parse(fs.readFileSync(TRUST_FILE, "utf8"));
+    if (record.pid === runningBridge() && Array.isArray(record.ready) && Array.isArray(record.offline)) return record;
+  } catch {}
+  return undefined;
+}
+
+/** Request each signing Mac's list from all known peers, including other members that hold it. */
 export function refreshPhoneTrust(host: LinkHost): void {
   if (!host.welcomed) return;
   const link = readLink();
   const main = mainElsewhere(link);
   if (!link || !main) return;
-  const pending = freshness.get(host) ?? new Map<string, Freshness>();
+  const pending: PhoneTrust = freshness.get(host) ?? { lists: new Map(), asked: 0, probed: new Set(), offline: new Set() };
   freshness.set(host, pending);
-  for (const key of new Set([main.key, ...macsOf(link)])) {
-    const sign = authoritySign(link, key);
-    const peer = peersOf(link).find(each => each.key === key);
-    if (!peer || !sign) continue;
-    const known = pending.get(key);
-    if (known?.sign === sign && (known.ready || Date.now() - known.asked < 2_000)) continue;
-    const next = { id: known?.sign === sign ? known.id : challenge(), sign, asked: Date.now(), ready: false };
-    pending.set(key, next);
-    send(host, link, peer, { phoneSync: { id: next.id } });
+  if (Date.now() - pending.asked < 2_000) return;
+  pending.asked = Date.now();
+  const peers = peersOf(link);
+  const origins = new Set([main.key, ...macsOf(link)].map(key => authoritySign(link, key)).filter((sign): sign is string => Boolean(sign)));
+  for (const origin of origins) {
+    const check = pending.lists.get(origin) ?? { id: challenge(), ready: false };
+    if (check.ready) continue;
+    pending.lists.set(origin, check);
+    for (const peer of peers) {
+      pending.probed.add(peer.address);
+      send(host, link, peer, { phoneSync: { id: check.id, origin } });
+    }
   }
+  keepTrust(pending);
 }
 
-/** Cached desktop pairings (and devices descended from a voucher) don't open on reconnect until
- * their authority answers a fresh challenge with a signed list. Independent phones still can. */
-export function freshDesktopTrust(host: LinkHost, key: Buffer): boolean {
-  const link = readLink();
-  if (!link || !mainElsewhere(link)) return true;
-  const phone = pairedPhone(link, key.toString("base64url"));
-  if (phone?.from !== "mac" || (phone.kind !== "desktop" && !phone.by)) return true;
-  const known = phone.mac && freshness.get(host)?.get(phone.mac);
-  return Boolean(known && known.ready && phone.mac && known.sign === authoritySign(link, phone.mac));
+/** Relay delivery and unreachable notices describe reachability on this connection only. */
+export function notePhoneTrustReach(host: LinkHost, address: Buffer, reachable: boolean): void {
+  const pending = freshness.get(host);
+  const at = address.toString("base64url");
+  if (!pending?.probed.has(at)) return;
+  if (reachable) pending.offline.delete(at);
+  else pending.offline.add(at);
+  keepTrust(pending);
+}
+
+/** Accept an inherited desktop pairing once a peer confirms the signed list or the relay
+ * reports all peers unreachable. Keep asking while relying on the cached authorization. */
+export function phoneTrustWait(link: LinkState | null, key: string, host?: LinkHost | null): string | undefined {
+  if (!link || !mainElsewhere(link)) return;
+  const phone = pairedPhone(link, key);
+  if (phone?.from !== "mac" || (phone.kind !== "desktop" && !phone.by)) return;
+  const origin = phone.mac && authoritySign(link, phone.mac);
+  if (!origin) return "This app’s pairing no longer has a signing computer. Re-add this computer from your main computer to pair again.";
+  const pending = host && freshness.get(host);
+  const checked = pending ? knownTrust(pending) : host === undefined && !IS_MAC ? savedTrust() : undefined;
+  if (checked && (checked.ready.includes(origin) || peersOf(link).every(peer => checked.offline.includes(peer.address)))) return;
+  return "Waiting to confirm this app with your other computers…";
+}
+
+export function authorizeDesktopConnection(host: LinkHost, key: Buffer, hello: PhoneHello, address: Buffer) {
+  const waiting = phoneTrustWait(readLink(), key.toString("base64url"), host);
+  return waiting ? { waiting } : authorizePhonePairing(key, hello, address);
 }
 
 /** The caller has already been authenticated by peer mail. A proof is accepted only after the
@@ -78,10 +141,21 @@ export function takePhoneSync(sender: MailSender, given: unknown, host: LinkHost
   if (given.ack === true && typeof given.list === "string") {
     const requested = receipts.get(host)?.get(id);
     if (requested?.fingerprint === given.list) requested.pending.delete(sender.key);
-    const known = freshness.get(host)?.get(sender.key);
-    if (known?.id === id && known.sign === authoritySign(link, sender.key)) {
-      const doc = held(link.docs?.[docKey(known.sign, "phones")]);
-      if (doc && fingerprint(doc) === given.list) known.ready = true;
+    if (!peersOf(link).some(peer => peer.key === sender.key)) return;
+    const pending = freshness.get(host);
+    if (!pending) return;
+    for (const [origin, check] of pending.lists) {
+      if (check.id !== id) continue;
+      // An older list can't replace the one this box has. Only the signed list it now holds
+      // can confirm the challenge, including when both boxes already held that same list.
+      const doc = readDoc(link.docs?.[docKey(origin, "phones")]);
+      const peers = typeof given.peers === "string" ? readDoc(link.docs?.[docKey(origin, "peers")]) : null;
+      const hasPeers = given.peers === undefined || (peers?.origin === origin && peers.kind === "peers" && fingerprint(peers) === given.peers);
+      if (hasPeers && doc?.origin === origin && doc.kind === "phones" && fingerprint(doc) === given.list) {
+        check.ready = true;
+        keepTrust(pending);
+      }
+      break;
     }
     return;
   }
@@ -94,17 +168,30 @@ export function takePhoneSync(sender: MailSender, given: unknown, host: LinkHost
     }
     return;
   }
-  if (!IS_MAC || !peersOf(link).some(peer => peer.key === sender.key)) return;
-  let envelope: SignedDoc | undefined;
-  const latest = updateLink(current => {
-    if (!current || !peersOf(current).some(peer => peer.key === sender.key)) return null;
-    envelope = ownDoc(current, "phones", ownPhones(current))?.envelope;
-    return envelope ? current : null;
-  });
+  if (!peersOf(link).some(peer => peer.key === sender.key)) return;
+  const self = IS_MAC ? ownSign(link) : null;
+  const origin = given.origin === undefined ? self : given.origin;
+  if (typeof origin !== "string" || !SIGN.test(origin)) return;
+  let envelope = link.docs?.[docKey(origin, "phones")];
+  let membership = link.docs?.[docKey(origin, "peers")];
+  let latest = link;
+  if (origin === self) {
+    envelope = undefined;
+    const changed = updateLink(current => {
+      if (!current || ownSign(current) !== origin || !peersOf(current).some(peer => peer.key === sender.key)) return null;
+      envelope = ownDoc(current, "phones", ownPhones(current))?.envelope;
+      membership = ownDoc(current, "peers", macPeersBody(current))?.envelope;
+      return envelope ? current : null;
+    });
+    if (!changed) return;
+    latest = changed;
+  }
   const doc = envelope && readDoc(envelope);
-  if (latest && envelope && doc) {
-    givePhones(host, latest, sender, envelope);
-    send(host, latest, sender, { phoneSync: { id, list: fingerprint(doc), ack: true } });
+  if (envelope && doc?.origin === origin && doc.kind === "phones") {
+    const word = membership && readDoc(membership);
+    if (membership && word?.kind === "peers" && word.origin === origin) giveDoc(host, latest, sender, membership);
+    giveDoc(host, latest, sender, envelope);
+    send(host, latest, sender, { phoneSync: { id, list: fingerprint(doc), ...(word ? { peers: fingerprint(word) } : {}), ack: true } });
   }
 }
 
@@ -131,7 +218,7 @@ export async function publishDesktopRemoval(host: LinkHost | null, key: string, 
   const deadline = Date.now() + 5_000;
   try {
     for (const peer of peers) {
-      givePhones(host, link, peer, envelope);
+      giveDoc(host, link, peer, envelope);
       send(host, link, peer, { phoneSync: { id, list: receipt.fingerprint } });
     }
     while (receipt.pending.size && host.welcomed && !signal?.aborted && Date.now() < deadline) {

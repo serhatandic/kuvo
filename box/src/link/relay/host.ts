@@ -49,13 +49,15 @@ export interface SocketEvents {
 export interface LinkHostOptions {
   key: Buffer;
   hello: BoxHello;
-  authorize: (key: Buffer, hello: PhoneHello, address: Buffer) => boolean | string | Promise<boolean | string>;
+  authorize: (key: Buffer, hello: PhoneHello, address: Buffer) => PhoneAuthorization | Promise<PhoneAuthorization>;
   handle: (request: LinkRequest, phone: SessionPhone, signal: AbortSignal) => Answer;
   connect?: (request: LinkRequest, phone: SessionPhone, events: SocketEvents) => SocketHandle;
   send: (bytes: Buffer) => boolean | void;
   confirmed?: (phone: SessionPhone) => void;
   mail?: (from: Buffer, body: Buffer, frame: Buffer) => void;
 }
+
+type PhoneAuthorization = boolean | string | { waiting: string };
 
 /** A message's head from a phone, as this host reads it (PROTOCOL.md, "Messages in a session"). */
 interface PhoneHead {
@@ -199,6 +201,13 @@ export class LinkHost {
     }
     if (hello?.v !== 1) return refuse();
     const authorized = await this.authorize(responder.rs, hello, from);
+    if (typeof authorized === "object") {
+      // The peer must authenticate the box before it can show the waiting message. No session
+      // or request handler is installed for this handshake.
+      const { message } = responder.writeMessage2(Buffer.from(JSON.stringify({ ...this.hello, ...authorized })));
+      this.send(relaySend(from, frame(Frame.handshake2, number, message)));
+      return;
+    }
     if (typeof authorized !== "string" && !authorized) return refuse();
     const pairing = typeof authorized === "string" ? authorized : undefined;
     const { message, transport } = responder.writeMessage2(Buffer.from(JSON.stringify(this.hello)));

@@ -45,6 +45,8 @@ pub enum Reach {
     Away(String),
     /// It turned this device away: not paired there (yet), or removed.
     NotPaired,
+    /// This computer is checking a pairing it already knows.
+    Waiting(String),
     /// The list doesn't say where it is (its Kuvo Code is older, or it's known only by another
     /// computer's word): it can't be reached from here.
     Unreached,
@@ -80,7 +82,7 @@ impl Row {
 
     /// Whether its sessions can be opened from here now.
     pub fn usable(&self) -> bool {
-        matches!(self.reach, Reach::Nearest | Reach::Connected | Reach::Connecting | Reach::Held { .. })
+        matches!(self.reach, Reach::Nearest | Reach::Connected | Reach::Connecting | Reach::Held { .. } | Reach::Waiting(_))
     }
 }
 
@@ -579,12 +581,13 @@ impl Boxes {
             },
             Err(Error::NeedsUpdating { missing }) => Reach::Held { missing },
             Err(error) if link::is_unpaired(&error) => Reach::NotPaired,
+            Err(Error::Refused(refusal)) if refusal.reason.as_deref() == Some(link::PAIRING_WAIT) => Reach::Waiting(refusal.message),
             Err(error) => {
                 let since = *state.failing.entry(key.to_owned()).or_insert_with(Instant::now);
                 if since.elapsed() >= self.inner.timing.away_after { Reach::Away(error.to_string()) } else { Reach::Connecting }
             }
         };
-        if matches!(reach, Reach::Connected | Reach::Held { .. } | Reach::NotPaired) {
+        if matches!(reach, Reach::Connected | Reach::Held { .. } | Reach::NotPaired | Reach::Waiting(_)) {
             state.failing.remove(key);
         }
         let changed = state.reach.insert(key.to_owned(), reach.clone()).as_ref() != Some(&reach);
@@ -650,7 +653,7 @@ impl Boxes {
                     match state.reach.get(*key) {
                         None | Some(Reach::Connecting) => since.is_none_or(|since| since >= timing.away_after.min(Duration::from_secs(2))) || !state.failing.contains_key(*key),
                         Some(Reach::Connected | Reach::Held { .. }) => linked.link.as_ref().is_some_and(|(link, host)| !link.is_open(host)) || matches!(state.reach.get(*key), Some(Reach::Held { .. })) && since.is_none_or(|since| since >= timing.follow.held_again),
-                        Some(Reach::NotPaired) => since.is_none_or(|since| since >= timing.away_after),
+                        Some(Reach::NotPaired | Reach::Waiting(_)) => since.is_none_or(|since| since >= timing.away_after),
                         Some(Reach::Away(_)) => {
                             let back = state.list.iter().any(|computer| computer.key == **key && computer.reach == "connected");
                             since.is_none_or(|since| since >= if back { timing.away_after } else { timing.look_again })
@@ -699,7 +702,7 @@ impl Boxes {
             }
             // Again when something changes, when a computer that just stopped answering is due,
             // or after a while.
-            let soon = state.reach.iter().any(|(key, reach)| matches!(reach, Reach::Connecting | Reach::NotPaired) && state.linked.contains_key(key)) || matches!(state.pairing, Some(Pairing::Waiting(_)) | None) && Self::wants_pairing(&state);
+            let soon = state.reach.iter().any(|(key, reach)| matches!(reach, Reach::Connecting | Reach::NotPaired | Reach::Waiting(_)) && state.linked.contains_key(key)) || matches!(state.pairing, Some(Pairing::Waiting(_)) | None) && Self::wants_pairing(&state);
             let wait = if soon { timing.away_after.min(timing.look_again) } else { timing.look_again };
             let _ = self.inner.woken.wait_timeout(state, wait);
         }

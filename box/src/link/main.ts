@@ -51,7 +51,7 @@ import { addressOf, newKey, publicOf } from "./crypto/keys";
 import { IKInitiator, IKResponder, openOneWay, PROLOGUE, sealOneWay } from "./crypto/noise";
 import { docsNoted, noteDocsChanged, onDocsChanged } from "./documents/changed";
 import { docsChanged, macDocsChanged } from "./documents/exchange";
-import { freshDesktopTrust, refreshPhoneTrust } from "./documents/phone-sync";
+import { authorizeDesktopConnection, refreshPhoneTrust } from "./documents/phone-sync";
 import { newSigningSeed, ownSign, SIGN } from "./documents/format";
 import { docsWork, ownDocs, pruneDocs } from "./documents/work";
 import { bridgeTarget, peerPlaces, peerTargets, readBridgeFile, readEngineFile } from "./engine/client";
@@ -104,7 +104,7 @@ import { peerMail, receiveMail } from "./peers/mail";
 import { tellSeatPeers, watchSeats, whereChanged } from "./peers/seats";
 import { changePersonalities, mergePersonalities, readPersonalities } from "./personalities/library";
 import { takePersonalities } from "./personalities/take";
-import { authorizePhonePairing, confirmPhone, foldPhones, newPairingToken, PAIRING_MINUTES, pairingLink } from "./phones";
+import { confirmPhone, foldPhones, newPairingToken, PAIRING_MINUTES, pairingLink } from "./phones";
 import { connectOnce, nextTry } from "./relay/connection";
 import { LinkHost } from "./relay/host";
 import { engineHandler } from "./server/router";
@@ -113,7 +113,7 @@ import { macLink, macSign, onLinkWritten, readLink, updateLink } from "./state";
 import { keepKeyFiles } from "./keys";
 import { keepAwakeWhileWorking } from "./work/awake";
 import { runningServe, SERVE_FILE, SERVE_NEEDED } from "./serve-kept";
-import { uninstallCommand } from "./uninstall";
+import { logCleanup, uninstallCommand } from "./uninstall";
 import { helperCommand } from "./helper";
 import { handOverCommand, watchHelperBuild } from "./compat/helper-handover";
 import { keepMachinesUp } from "./add/keep-up";
@@ -590,7 +590,7 @@ async function run(): Promise<void> {
     const host: LinkHost = new LinkHost({
       key: Buffer.from(link!.key!, "base64url"),
       hello: { v: 1, kind: "machine", name: link!.name || os.hostname(), app: BRIDGE_VERSION, engine: engine.version ?? null },
-      authorize: (key, hello, address) => freshDesktopTrust(host, key) && authorizePhonePairing(key, hello, address),
+      authorize: (key, hello, address) => authorizeDesktopConnection(host, key, hello, address),
       confirmed: confirmPhone,
       mail: (_from, body) => receiveMail(body, host, (sender, payload) => peerMail(sender, payload, host, peerPlaces), (mac, given, at) => hold.attend(`mac:${mac}`, given, at)),
       handle: engineHandler(readEngineFile, { name: link!.name || os.hostname() }, readBridgeFile, changed => host.keepOnly(new Set((changed.phones ?? []).map(phone => phone.key))), hold),
@@ -1168,10 +1168,16 @@ if (main) {
   else if (mode === "box") await box(argument);
   else if (mode === "serve") await serve();
   else if (mode === "leave") {
-    // (A Mac removing this machine runs it over SSH, and reads nothing it says.)
-    const name = typeof argument === "string" ? macName(readLink(), argument) : "";
-    if (!leave(argument)) {
-      console.error("That isn't one of the Macs that set this computer up.");
+    const before = readLink();
+    if (!before || typeof argument !== "string" || !KEY.test(argument)) {
+      console.error("Kuvo Code couldn’t confirm which setup this computer should leave.");
+      process.exit(1);
+    }
+    const name = macName(before, argument);
+    if (macsOf(before).includes(argument)) try { leave(argument); } catch (error) { logCleanup(error); }
+    const after = readLink();
+    if (!after || macsOf(after).includes(argument)) {
+      console.error("Kuvo Code couldn’t confirm that this computer left the setup. Run the command again.");
       process.exit(1);
     }
     console.error(`${name || "That Mac"} is let go: this computer is no longer one of its computers.`);

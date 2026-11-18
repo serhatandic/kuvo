@@ -283,6 +283,7 @@ pub fn reach_line(row: &Row) -> String {
         Reach::Held { .. } => row.computer.reach_title("held"),
         Reach::Away(_) => row.computer.reach_title("away"),
         Reach::NotPaired => row.computer.reach_title("notPaired"),
+        Reach::Waiting(message) => message.clone(),
         // The list itself says why where it can (it's away, it's older); else that this app has no
         // way to it.
         Reach::Unreached if row.computer.is_older() || row.computer.reach == "away" => computer_line(&row.computer),

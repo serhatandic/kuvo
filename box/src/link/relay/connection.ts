@@ -1,6 +1,7 @@
 // The relay connection: one at a time, served until it ends.
 
 import { addressOf, EMPTY } from "../crypto/keys";
+import { clearPhoneTrust, notePhoneTrustReach } from "../documents/phone-sync";
 import { notePushed } from "../notices/push";
 import { noteUnreachable } from "../peers/reach";
 import { connectionEnded, connectionStarted, fenceBack, noteDropped } from "./dropped";
@@ -64,6 +65,7 @@ export function connectOnce(relay: string, secret: Buffer, host: LinkHost, onWel
       clearTimeout(opening);
       try { socket.close(); } catch {}
       host.reset();
+      clearPhoneTrust(host);
       host.send = () => {};
       host.welcomed = false;
       resolve(welcomed);
@@ -91,6 +93,9 @@ export function connectOnce(relay: string, secret: Buffer, host: LinkHost, onWel
         host.welcomed = true;
         try { onWelcome(host); } catch {}
         return;
+      }
+      if (!message.address.equals(self) && (message.kind === "deliver" || message.kind === "unreachable")) {
+        notePhoneTrustReach(host, message.address, message.kind === "deliver");
       }
       fromRelay(host, message, self);
     };

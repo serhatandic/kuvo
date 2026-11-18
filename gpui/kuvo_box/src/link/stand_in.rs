@@ -193,6 +193,7 @@ struct HostState {
     sessions: HashMap<Address, HostSession>,
     hellos: Vec<Value>,
     quiet: bool,
+    waiting: Option<String>,
     connection: u64,
 }
 
@@ -223,7 +224,7 @@ impl Host {
                 relay: relay.clone(),
                 served,
                 name: name.to_owned(),
-                state: Mutex::new(HostState { out: None, paired: HashSet::new(), tokens: HashSet::new(), sessions: HashMap::new(), hellos: Vec::new(), quiet: false, connection: 0 }),
+                state: Mutex::new(HostState { out: None, paired: HashSet::new(), tokens: HashSet::new(), sessions: HashMap::new(), hellos: Vec::new(), quiet: false, waiting: None, connection: 0 }),
             }),
         };
         host.connect();
@@ -277,6 +278,10 @@ impl Host {
     /// without closing).
     pub fn set_quiet(&self, quiet: bool) {
         self.state().quiet = quiet;
+    }
+
+    pub fn set_pairing_wait(&self, message: Option<&str>) {
+        self.state().waiting = message.map(str::to_owned);
     }
 
     /// Off the relay, as a computer that slept or stopped: its sessions go with its connection.
@@ -352,8 +357,12 @@ impl Host {
                             return Self::send(&mut state, &from, &frames::frame(Kind::Close, number, &[]));
                         }
                         state.hellos.push(hello);
-                        let (message, transport) = responder.write_message_2(json!({ "v": 1, "kind": "machine", "name": self.inner.name, "app": "0.8.0", "engine": null }).to_string().as_bytes());
-                        state.sessions.insert(from, HostSession { number, transport, incoming: HashMap::new(), running: HashMap::new() });
+                        let mut answer = json!({ "v": 1, "kind": "machine", "name": self.inner.name, "app": "0.8.0", "engine": null });
+                        if let Some(waiting) = &state.waiting { answer["waiting"] = json!(waiting); }
+                        let (message, transport) = responder.write_message_2(answer.to_string().as_bytes());
+                        if state.waiting.is_none() {
+                            state.sessions.insert(from, HostSession { number, transport, incoming: HashMap::new(), running: HashMap::new() });
+                        }
                         Self::send(&mut state, &from, &frames::frame(Kind::Handshake2, number, &message));
                     }
                     Kind::Transport => {

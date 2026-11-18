@@ -16,6 +16,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { isObject, parsed } from "../shared/json";
 import { engineRole, runsAs } from "../shared/platform";
+import { uninstallCleanup } from "./add/scripts";
 import { allWakes } from "./areas/wakes";
 import { listBots } from "./bots/list";
 import { APP_FOLDER, IN_TEST_FOLDER, IS_MAC, K, REAL_BOX, RUN, accountHome, homeFolder, located, recordedKind } from "./home";
@@ -211,7 +212,7 @@ export function uninstall(): Uninstalled {
 const identityFile = path.join(K, "desktop", "identity");
 export const DESKTOP_UNINSTALL_ROUTE = "kuvo/box/uninstall-desktop";
 
-function logCleanup(detail: unknown): void {
+export function logCleanup(detail: unknown): void {
   try { fs.appendFileSync(path.join(RUN, "uninstall.log"), `${String(detail)}\n`, { mode: 0o600 }); } catch {}
 }
 
@@ -293,18 +294,16 @@ export async function* desktopUninstallRoute({ request, signal, json }: RouteCon
   return yield* json(503, { message: "Kuvo Code couldn’t confirm the desktop removal reached every other computer." });
 }
 
-function clearDesktopIdentity(): boolean {
-  let cleared = true;
-  try { fs.rmSync(identityFile, { force: true }); } catch (error) { logCleanup(error); cleared = false; }
+function clearDesktopKeychain(): boolean {
   // Only the real Mac's own root can name the released app's item. Other roots own their files.
   if (process.platform === "darwin" && REAL_BOX && located(K) === located(path.join(accountHome(), ".kuvo-code"))) {
     const removed = run("/usr/bin/security", ["delete-generic-password", "-s", "run.kuvo.code.desktop", "-a", "link-identity"]);
     if (removed.status !== 0 && removed.status !== 44) {
       logCleanup(removed.error ?? removed.stderr);
-      cleared = false;
+      return false;
     }
   }
-  return cleared;
+  return true;
 }
 
 /** `uninstall [--check]`: prints one JSON line, says what it did on stderr, and exits 0 when it's
@@ -338,7 +337,6 @@ export async function uninstallCommand(args: string[]): Promise<number> {
   const overSSH = process.env.KUVO_UNINSTALL_FROM_SSH === "1";
   const publishing = IS_MAC && !mainElsewhere(readLink());
   const revoked = overSSH || await revokeDesktop();
-  const identityCleared = overSSH || clearDesktopIdentity();
   let done: Uninstalled;
   try {
     done = uninstall();
@@ -346,11 +344,17 @@ export async function uninstallCommand(args: string[]): Promise<number> {
     logCleanup(error);
     done = { stopped: false, launchAgent: false, crontab: false, startsAgain: [], left: [K], message: "Kuvo Code couldn’t confirm it had stopped on this computer." };
   }
+  // The SSH wrapper runs the same cleanup locally on the target, including with older boxes.
+  const cleanup = overSSH ? null : run("sh", ["-c", `K=$1\nE=$2\n${uninstallCleanup}`, "kuvo-cleanup", K, process.execPath]);
+  const identityCleared = (overSSH || clearDesktopKeychain()) && cleanup?.status !== 81;
+  const credentialsCleared = cleanup === null || cleanup.status === 0;
+  if (cleanup && !credentialsCleared) logCleanup(cleanup.error ?? cleanup.stderr);
   if (!revoked) done.message += publishing
     ? " Kuvo Code couldn’t confirm the desktop removal reached every other computer."
     : " Kuvo Code couldn’t confirm that your main computer revoked this desktop’s access.";
   if (!identityCleared) done.message += " Kuvo Code couldn’t delete this desktop’s local identity.";
-  const finished = done.stopped && done.startsAgain.length === 0 && revoked && identityCleared;
+  if (!credentialsCleared && cleanup?.status !== 81) done.message += " Kuvo Code couldn’t clear all its keys and sign-ins. Run uninstall again.";
+  const finished = done.stopped && done.startsAgain.length === 0 && revoked && identityCleared && credentialsCleared;
   console.log(JSON.stringify({ result: finished ? "uninstalled" : "unfinished", ...done }));
   console.error(done.message);
   return finished ? 0 : 1;

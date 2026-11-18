@@ -243,13 +243,18 @@ each box pairs and removes (`phones`), and each box's view of your personalities
   `personalities`). Over SSH, setup carries the
   Mac's documents (`docs`, its own and those it has of its machines) and its answer the machine's.
   A box doesn't give documents to a Mac that gave it no signing key.
-- **Phone authorization after reconnect**: a member asks the Mac that signed the pairing's list
-  with authenticated mail `phoneSync: {id}` (`id` is 16 random bytes, base64url). The Mac sends
-  its current signed phones document, then `phoneSync: {id, list, ack: true}`, with `list` formatted
-  as `n:h`. The member waits for both before opening sessions for that Mac's inherited desktop
-  and voucher-bound pairings. On primary uninstall, the primary sends its updated signed list
-  and `phoneSync: {id, list}`. Peers answer with the same `id` and `list` and `ack: true` after
-  installing that list and closing sessions for devices it removes.
+- **Phone authorization after reconnect**: a member asks its peers for the signing Mac's lists
+  with authenticated mail `phoneSync: {id, origin}` (`id` is 16 random bytes, base64url, and
+  `origin` is the Mac's signing key). Any peer can send the signed peers and phones documents
+  it has, then `phoneSync: {id, list, peers?, ack: true}` with each document identified as `n:h`.
+  The member verifies the signatures and accepts replies matching the documents it has installed.
+  Inherited desktop and voucher-bound pairings wait for confirmation unless the relay reports
+  every known peer unreachable. A member using its cached list keeps asking and closes revoked
+  sessions as soon as it takes a signed removal. Independent phones connect throughout.
+  A waiting pairing receives `waiting` (plain words) in the authenticated second handshake
+  message, with no session opened. On primary uninstall, the primary sends its updated signed
+  list and `phoneSync: {id, list}`. Peers answer with the same `id` and `list` and `ack: true`
+  after installing that list and closing sessions for devices it removes.
 - **Later**: each box's agents (`{"agents"}`, "Peers") are a list of its own too, still sent as
   they change and every ten minutes; they could become a fourth kind.
 
@@ -11509,6 +11514,9 @@ When another computer uninstalls over SSH, the controller revokes access after a
 probe and before sending the destructive command. If the reply is lost, the controller keeps
 the committed revocation and reports the cleanup as unconfirmed with instructions to finish
 it on the target computer. Stopping the wait after revocation keeps the final cleanup outcome.
+Local and SSH uninstall run the same repeatable cleanup of the desktop folder, keys and sign-ins.
+For a computer also used by another Mac, SSH asks it to leave just this setup and checks that
+the command confirmed the departure before reporting it complete.
 Nothing of the box
 starts again, and nothing of it runs:
 - the launch agent that starts it at login on a Mac (`~/Library/LaunchAgents/run.kuvo.code.machine.plist`)
