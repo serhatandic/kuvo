@@ -6979,6 +6979,9 @@
             "literal": "notices"
            },
            {
+            "literal": "ownership.transfer-decisions"
+           },
+           {
             "literal": "personalities"
            },
            {
@@ -7769,6 +7772,9 @@
            },
            {
             "literal": "notices"
+           },
+           {
+            "literal": "ownership.transfer-decisions"
            },
            {
             "literal": "personalities"
