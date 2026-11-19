@@ -351,16 +351,16 @@ async function standbyNetwork(t, releaseKey) {
   return net;
 }
 
-test("failure bench: normal save callers carry proofs to the successor", { timeout: 45_000 }, async t => {
-  const bun = testBun();
-  assert.ok(bun, NO_BUN);
+async function releaseNetwork(t) {
   const { privateKey, publicKey } = crypto.generateKeyPairSync("ed25519");
   const pin = publicKey.export({ type: "spki", format: "der" }).subarray(-32).toString("base64");
-  const { a, b, c, relay, see } = await standbyNetwork(t, pin);
+  const net = await standbyNetwork(t, pin);
+  const { a, b, see } = net;
   await see(b, 2, a);
   const root = path.dirname(a.run);
   const release = path.join(root, "release");
-  const pack = Buffer.from("The interrupted save must never unpack this.");
+  const manifestPath = path.join(release, "boxes.json");
+  const pack = Buffer.from("This fixture is deliberately not a tarball.");
   const manifestFor = version => Buffer.from(JSON.stringify({
     kuvo: "box/1", version, engine: "1.0.0",
     pack: { url: "https://example.invalid/pack.tgz", sha256: crypto.createHash("sha256").update(pack).digest("hex") },
@@ -369,13 +369,50 @@ test("failure bench: normal save callers carry proofs to the successor", { timeo
   fs.writeFileSync(path.join(release, "pack.tgz"), pack);
   const offer = version => {
     const manifest = manifestFor(version);
-    fs.writeFileSync(path.join(release, "boxes.json"), JSON.stringify({
+    fs.writeFileSync(manifestPath, JSON.stringify({
       manifest: manifest.toString("base64"), key: pin,
       signature: crypto.sign(null, Buffer.concat([Buffer.from("kuvo-box v1\n"), manifest]), privateKey).toString("base64"),
     }));
   };
   fs.mkdirSync(path.join(root, "bin"), { recursive: true });
   fs.writeFileSync(path.join(root, "bin", "box-version"), "0.9.0");
+  return { ...net, release, manifestPath, offer };
+}
+
+test("failure bench: a local release retry returns its committed receipt after the manifest is restored", { timeout: 45_000 }, async t => {
+  const { a, b, relay, release, manifestPath, offer } = await releaseNetwork(t);
+  const kind = "setupSecurityAndReleaseChoice";
+  offer("0.10.0");
+  const resume = relay.pause(a.address, b.address);
+  t.after(resume);
+  const first = await a.updateFrom(release);
+  assert.equal(first.result, "waiting");
+  assertReceipt(a, kind, "pending", first.save);
+  resume();
+  await until("the release choice committed", () => a.read().sharedOutcomes?.[first.save.operation]?.status === "committed", t.signal);
+
+  const manifest = fs.readFileSync(manifestPath);
+  fs.unlinkSync(manifestPath);
+  const unreadable = await a.updateFrom(release);
+  assert.equal(unreadable.result, "failed");
+  assert.equal(unreadable.message, "That release can't be read.");
+  assert.equal(unreadable.save, undefined);
+  fs.writeFileSync(manifestPath, manifest);
+
+  const recovered = await a.updateFrom(release);
+  assert.equal(recovered.result, "failed"); // The deliberately invalid pack can't be unpacked.
+  assertReceipt(a, kind, "committed", recovered.save);
+  assert.equal(recovered.save.operation, first.save.operation);
+  assert.deepEqual(recovered.save.proof, first.save.proof);
+  const repeated = await a.updateFrom(release);
+  assert.equal(repeated.result, "failed");
+  assert.equal(repeated.save, undefined);
+});
+
+test("failure bench: normal save callers carry proofs to the successor", { timeout: 45_000 }, async t => {
+  const bun = testBun();
+  assert.ok(bun, NO_BUN);
+  const { a, b, c, relay, see, release, offer } = await releaseNetwork(t);
   const settings = fileURLToPath(new URL("../src/agents/usage/settings.ts", import.meta.url));
   const usage = async (box, method, rest, body) => {
     const { status, value, err } = await box.evaluate(bun, ["-e", `

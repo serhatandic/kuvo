@@ -543,7 +543,12 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
   if (!takeUpdateLock()) return { result: "busy", message: UPDATING_ALREADY };
   let trial = false, stopped = false, swapped = false, stage: string | null = null;
   let releaseSave: SetupSaveReceipt | undefined;
-  const releaseResult = (outcome: UpdateResultBody): UpdateOutcome => releaseSave ? withReleaseSave(outcome, releaseSave) : outcome;
+  let recoveredReleaseSave: SetupSaveReceipt | undefined;
+  const releaseResult = (outcome: UpdateOutcome): UpdateOutcome => {
+    const result = outcome.save || !releaseSave ? outcome : withReleaseSave(outcome, releaseSave);
+    if (recoveredReleaseSave && result.save === recoveredReleaseSave) noteUpdate({ releaseSave: null });
+    return result;
+  };
   // The engine's data as it was copied before a newer engine ran (`keepData`): a newer engine that
   // wrote nothing to it by the time a failed swap is put back goes back with the rest.
   let dataKept: string | null = null;
@@ -569,11 +574,14 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
     const kept = updateState().releaseSave;
     let previousSave: SetupSaveReceipt | undefined;
     if (kept && kept.save.setup === setup?.id) {
-      const known = await askSetupOutcome(RUN, kept.save, "setupSecurityAndReleaseChoice");
       previousSave = kept.save;
-      if (known.receipt && known.receipt.status !== "pending") {
-        previousSave = known.receipt;
-        noteUpdate({ releaseSave: null });
+      if (previousSave.status === "pending") {
+        const known = await askSetupOutcome(RUN, previousSave, "setupSecurityAndReleaseChoice");
+        if (known.receipt && known.receipt.status !== "pending") {
+          previousSave = known.receipt;
+          // A retry can fail before it has checked which release it is taking.
+          noteUpdate({ releaseSave: previousSave.status === "committed" ? { ...kept, save: previousSave } : null });
+        }
       }
       if (!from && previousSave.status !== "committed") return waitingForReleaseSave(kept.version, previousSave);
       if (previousSave.status === "committed") setup = localSetupValue(RUN, "setupSecurityAndReleaseChoice");
@@ -595,7 +603,8 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
     const manifest = verifyBoxes(released.toString("utf8"), keys);
     const alreadyChosen = choice?.version === manifest.version && choice?.sha256 === manifest.pack.sha256;
     if (previousSave && kept?.version === manifest.version && kept.sha256 === manifest.pack.sha256) {
-      if (previousSave.status !== "committed" || !alreadyChosen) return waitingForReleaseSave(manifest.version, previousSave);
+      if (previousSave.status === "committed") recoveredReleaseSave = previousSave;
+      if (previousSave.status !== "committed" || !alreadyChosen) return releaseResult(waitingForReleaseSave(manifest.version, previousSave));
       releaseSave = previousSave;
     }
     if (setup && !setup.primary && !alreadyChosen) return { result: "waiting", message: "Your setup's primary has selected a different release." };
