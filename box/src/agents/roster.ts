@@ -19,6 +19,13 @@ export class Roster {
     this.sync()
   }
 
+  private observe?: (agent: Agent) => void
+
+  observeLimits(observer: (agent: Agent) => void) {
+    this.observe = observer
+    for (const agent of this.all()) observer(agent)
+  }
+
   /** Every account's agent, each agent's own sign-in first, then the accounts you added. */
   all(): Agent[] {
     return this.accounts.all().flatMap((record) => this.agents.get(providerID(record.kind, record.id)) ?? [])
@@ -39,7 +46,9 @@ export class Roster {
         existing.instance.label = record.label
         continue
       }
-      this.agents.set(id, this.make(record))
+      const agent = this.make(record)
+      this.agents.set(id, agent)
+      this.observe?.(agent)
     }
     for (const [id, agent] of this.agents) {
       if (wanted.has(id)) continue

@@ -21,8 +21,8 @@ import { fenceAgent, fenceRules } from "../fence"
 import { emit } from "../events"
 import { withOwnFolders } from "../machine"
 import { newID } from "../ids"
-import { antigravityCredential, AntigravityPlan } from "../usage/antigravity-plan"
-import { fingerprint } from "../limits"
+import { antigravityCredential, antigravityGeneration } from "../../usage/antigravity-plan"
+import { fingerprint } from "../../usage/limits"
 import { placeWhole } from "../../shared/files"
 import { run, which } from "../proc"
 import { RPC, RPCError } from "../rpc"
@@ -423,15 +423,19 @@ export class AntigravityAgent implements Agent {
     return this.instance.home ? join(this.instance.home, "profile") : join(this.root, "profile")
   }
 
-  readonly antigravity = new AntigravityPlan(() => this.profile, () => join(this.context.home, "usage", "antigravity", this.instance.id))
-  readonly limits = this.antigravity.limits
-
   private get tokenFile() {
     return join(this.profile, "antigravity-acp", "acp_token.json")
   }
 
   private get modelsFile() {
     return join(this.profile, "kuvo-models.json")
+  }
+
+  usageSignIn(): string | undefined {
+    try {
+      const credential = antigravityCredential(JSON.parse(readFileSync(this.tokenFile, "utf8")))
+      return credential ? antigravityGeneration(credential) : undefined
+    } catch { return undefined }
   }
 
   /** A refresh token stays with the sign-in when Google renews its access token. */
@@ -672,7 +676,6 @@ export class AntigravityAgent implements Agent {
   }
 
   async signOut() {
-    this.antigravity.signOut()
     rmSync(this.tokenFile, { force: true })
     rmSync(this.modelsFile, { force: true })
   }

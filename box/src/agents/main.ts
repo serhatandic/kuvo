@@ -1,4 +1,3 @@
-import { GitHubSignIn } from "./github-sign-in"
 // Kuvo Code's agents bridge: sessions with the coding agents you already have (Claude Code, Codex,
 // Cursor, Grok, Antigravity), signed in as you, served to the app in the engine's own API.
 //
@@ -17,9 +16,6 @@ import { boxZoneIs } from "../shared/zone"
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs"
 import { basename, dirname, join } from "node:path"
 import { Accounts, parseProvider } from "./accounts"
-import { record as recordArtifacts } from "./artifacts/record"
-import type { Source } from "./artifacts/recorder"
-import { ArtifactStore } from "./artifacts/store"
 import { Auto } from "./auto"
 import { Deps } from "./deps"
 import { EngineAgent, EngineLink } from "./engine"
@@ -28,7 +24,6 @@ import { Goals, type GoalPlaces } from "./goals"
 import { SideQuestions } from "./btw"
 import { Handoffs } from "./handoff"
 import { Reviews } from "./reviews"
-import { VoiceWords } from "./voice"
 import { setToolProgram } from "./kuvotools"
 import { usesToolRelay } from "./toolrelay"
 import { dropCarriedSignIns, dropOwnPrograms, formerGroupsMemoryKey, groupsMemoryKey, machineEngine as recordedEngine, machineHome, onMachine, takeOwnFolders } from "./machine"
@@ -42,7 +37,6 @@ import { keeperEngine } from "../shared/engines"
 import { writeSecret } from "../shared/files"
 import { leftSignIns } from "./signin"
 import { commandLineOf } from "../shared/platform"
-import { isRealBridgeFolder } from "../shared/account"
 import { updateUnderWay } from "../shared/updating"
 import { swapUnderWay, untilSwapLets } from "../shared/engine-swap"
 import { spawn } from "node:child_process"
@@ -67,23 +61,9 @@ import { LinkDirectory, PeerPost, type PeerParts } from "./groups/post"
 import { GroupRunner } from "./groups/runner"
 import { GroupStore } from "./groups/store"
 import { queueFiles } from "../shared/queues"
-import { HangWatch, isEngine } from "../shared/hang"
 import { notesBeside } from "./notes"
-import { agentAccounts, BOX_ONLY_SERVICES, Limits } from "./limits"
-import { signedInAgents, signIns } from "./sign-ins"
-import { LimitsPeers } from "./limits-peers"
-import { LimitResets } from "./limits-resets"
-import { Insights } from "./usage/insights"
-import { InsightsDB } from "./usage/insights-db"
-import { InsightsScan } from "./usage/insights-scan"
-import { insightKey } from "./usage/insight-records"
-import { PricingStore } from "./usage/pricing"
-import { antigravitySources, claudeSources, codexSources, cursorSources, engineCodexSource, engineHostedSources, grokSources, ownComputer, Usage, USAGE_SERVICES, UsageSettings } from "./usage/usage"
-import { antigravityTransport } from "./usage/antigravity-plan"
-import { cursorEndpoints } from "./usage/cursor-api"
-import { UsagePeers } from "./usage/usage-peers"
-import { SettingsPeers } from "./usage/settings-peers"
-import { ENGINE_SERVICES, EngineAccounts } from "./engine-limits"
+import { BoxServicesClient } from "./box-services"
+import { servicePath } from "../shared/box-services"
 
 import { commitTransfer, finishTransfer, prepareStandby, readTransfer, standBy, standbyFailed, TRANSFER_PROTOCOL, type Transfer } from "./bridge-transfer"
 
@@ -288,7 +268,6 @@ setInterval(noteInside, 5_000).unref?.()
 // KUVO_TRASH). One that fails to start leaves the rest of the bridge as it is.
 let self: ReturnType<typeof requester> | undefined
 // The record of what agents made, told of each chat's part given to a bot (set once it starts, below).
-let partGiven: ((prompt: string, chat: string) => void) | undefined
 let groups: { runner: GroupRunner; store: GroupStore; peers: PeerParts } | undefined
 const groupFolders = onMachine
   ? { root: join(machineHome!, "groups"), bots: process.env.KUVO_BOTS ?? join(machineHome!, "bots"), trash: join(machineHome!, "trash") }
@@ -301,14 +280,11 @@ const groupMemoryKey = groupsMemoryKey
 const post = new PeerPost(groupFolders ? join(groupFolders.root, "peer-outbox.json") : undefined)
 const directory = new LinkDirectory(post)
 const peers: PeerParts = { post, directory }
-// The record of what agents made here: on a machine, in its Kuvo Code folder; on the Mac, where
-// the app says (its box's own folder). Its bots' folders, where their memory is.
-const artifactsFolder = onMachine ? join(machineHome!, "artifacts") : process.env.KUVO_ARTIFACTS || undefined
-const botsFolder = groupFolders?.bots ?? (onMachine ? join(machineHome!, "bots") : process.env.KUVO_BOTS || undefined)
 // Who there is to name with "&" in a chat: the agents the box's link lists (on the Mac, where the app says).
 const agentsFile = onMachine ? join(machineHome!, "run", "agents.json") : process.env.KUVO_AGENTS_FILE || undefined
 // The box's queues, where a chat's part for a conversation you stopped waits (on the Mac, the box's run folder the app says).
 const runFolder = onMachine ? join(machineHome!, "run") : process.env.KUVO_RUN || undefined
+const boxServices = new BoxServicesClient(runFolder)
 // Sessions' turns held with the box's link, in its run folder.
 notesBeside(runFolder)
 // What would start a turn on the engine waits while the engine is being changed (PROTOCOL.md, "A
@@ -339,7 +315,7 @@ if (groupFolders) {
         return { name: agent.name, signedOut: !account.signedIn && agent.methods().length > 0 }
       },
       peers: directory,
-      given: (prompt, part) => partGiven?.(prompt, part.chat),
+      given: (prompt, part) => boxServices.tell("api/kuvo/artifacts/given", { prompt, chat: part.chat }),
       queues: runFolder ? queueFiles(runFolder) : undefined,
     })
     const server = new SeatServer(runner.seats, post, { store, remembered: (from, memory) => runner.remembered(from, memory) })
@@ -379,151 +355,19 @@ setInterval(() => goals.resumeDue(), 60_000).unref?.()
 const sideQuestions = new SideQuestions(join(home, "side-questions.json"), places)
 const handoffs = new Handoffs(places)
 const reviews = new Reviews(join(home, "reviews.json"), places)
-// The project's words for voice input to listen for, in the same conversations.
-const voice = new VoiceWords(places)
-// Your plans' limits for each account here, read on their makers' schedules and kept between runs.
-// The engine's sign-ins too (Settings › Accounts), as the engine lists them with their secrets.
-const engineAccounts = new EngineAccounts(() => link.request("GET", "/api/credential"))
-// The coding agents' accounts are those signed in here, as Settings › Accounts shows them
-// (sign-ins.ts): one signed out is gone from the rings at once, and what was read of it with it.
-const limits = new Limits(
-  () => [...agentAccounts(signedInAgents(roster.all())), ...engineAccounts.accounts()],
-  join(home, "limits.json"),
-  Date.now,
-  async () => void (await Promise.all([engineAccounts.refresh(), signIns.round(roster.all())])),
-  () => engineAccounts.answered && signIns.allSaid(roster.all()),
-)
-// Signed in: read now (what was kept of it went as it signed out). Signed out: told at once.
-signIns.changed = (provider) => {
-  if (signIns.signedIn(provider)) return void limits.readAgain(provider).catch(() => {})
-  limits.ownChanged()
-  void limits.tick()
-}
-// A sign-in the bridge hears of itself (Claude ending one in a run, an account removed): asked again.
-subscribe((event) => {
-  if (event.type !== "integration.updated" || event.data?.accountRefresh === true) return
-  const agent = roster.all().find((each) => each.providerID === (event.data as { integrationID?: unknown } | undefined)?.integrationID)
-  if (agent) void signIns.ask(agent, false)
-  else limits.ownChanged()
+const usageFollow = new AbortController()
+roster.observeLimits(agent => {
+  const source = agent.limits
+  if (!source) return
+  source.generation = () => boxServices.generation(agent.providerID)
+  source.heard = (window, generation) => {
+    if (generation !== undefined && generation !== source.generation!()) return
+    const signIn = source.signIn?.()
+    if (signIn) void boxServices.observe(agent.providerID, { window, signIn })
+  }
 })
-// (Each coding agent's service is covered here, whether or not one is signed in now.)
-limits.covers = () => agentAccounts(roster.all()).map((account) => account.service)
-// (And Antigravity's, which only boxes read: covered here signed in or not.)
-limits.alsoServices = [...ENGINE_SERVICES, ...BOX_ONLY_SERVICES]
-// Shared with your other computers' boxes: each account read once across them, and listed on each.
-peers.limits = new LimitsPeers(limits, post, directory, join(home, "limits-peers.json"))
-// Spending their resets, here or on the computer with the sign-in, once each (a journal of each).
-peers.resets = new LimitResets(limits, join(home, "limits-resets.json"), Date.now, post, directory)
-// What each account used, by the quarter hour, from its agent's logs here, priced; shared the same
-// way. Prices come from the web only to a real box's bridge: never in a test, however it started
-// this (the Mac app's tests start it through the app; test-safety.js also says
-// KUVO_TEST_PRICE_FEEDS=off).
-const noPriceFeeds = process.env.KUVO_TEST_PRICE_FEEDS === "off" || !isRealBridgeFolder(home)
-delete process.env.KUVO_TEST_PRICE_FEEDS
-const usageFolder = join(home, "usage")
-const usageSettings = new UsageSettings(join(usageFolder, "settings.json"), undefined, undefined, runFolder)
-if (runFolder) setInterval(() => usageSettings.followShared(), 2_000).unref()
-limits.settings = usageSettings
-limits.ownKey = () => directory.own()?.key ?? ""
-const claudeUsage = claudeSources(usageFolder)
-const codexUsage = codexSources(usageFolder, () => usageSettings.codexFallback)
-// The engine's own databases: in Kuvo Code's folder on a machine (`data/opencode`), in the app's
-// on a Mac (KUVO_ENGINE_DB_FOLDER, which its keeper gives the bridge).
-const engineData = process.env.KUVO_ENGINE_DB_FOLDER || (onMachine && machineHome ? process.env.KUVO_ENGINE_DATA || join(machineHome, "data", "opencode") : undefined)
-// (Until the engine has listed its sign-ins, as the bridge starts: as this box kept it before.)
-const engineCodexUsage = engineCodexSource(
-  engineData,
-  () => (engineAccounts.answered ? engineAccounts.accounts().some((account) => account.provider === "openai") : undefined),
-  () => usage.has("openai"),
-)
-const antigravityUsage = antigravitySources(usageFolder)
-const grokUsage = grokSources(usageFolder)
-const engineHostedUsage = engineHostedSources(engineData)
-// Cursor's plan and its usage history, asked of Cursor with Kuvo Code's own Cursor sign-in: only
-// from a real box's bridge, never a test's, whatever sign-in its folder holds.
-cursorEndpoints.live = !noPriceFeeds
-antigravityTransport.live = !noPriceFeeds
-const cursorUsage = cursorSources(usageFolder, (provider, identity) => limits.held(provider) || (identity !== undefined && !!usage.peers?.readsWhole("cursor", identity)))
-const pricing = new PricingStore(join(usageFolder, "pricing"), noPriceFeeds ? null : undefined)
-const usage = new Usage(() => [...claudeUsage(roster.all()), ...codexUsage(roster.all()), ...grokUsage(roster.all()), ...engineCodexUsage(), ...engineHostedUsage(), ...cursorUsage(roster.all()), ...antigravityUsage(roster.all())], pricing, (provider) => limits.identity(provider), join(usageFolder, "usage.json"))
-usage.settings = usageSettings
-const localUsageKey = insightKey("kuvo insight computer", ownComputer()).slice(0, 32)
-const usageComputer = () => directory.own()?.key ?? localUsageKey
-store.origin = usageComputer
-try {
-  mkdirSync(usageFolder, { recursive: true, mode: 0o700 })
-  store.usageAccount = (provider) => {
-    const service = parseProvider(provider)?.kind ?? (provider === "openai" ? "codex" : provider)
-    const identity = limits.identity(provider)
-    return identity ? `${service}#${identity}` : undefined
-  }
-  const scanner = new InsightsScan({
-    root: home, cache: join(usageFolder, "insights-logs"), agents: () => roster.all(), store,
-    bots: () => groups?.store.allBots() ?? [],
-    computer: usageComputer, engine: engineData,
-  })
-  const insights = new Insights(new InsightsDB(join(usageFolder, "insights.sqlite"), build ? script : undefined), scanner, pricing, directory, post, localUsageKey)
-  peers.insights = usage.insights = insights
-} catch (error) {
-  console.error("Insights index:", error instanceof Error ? error.message : error)
-}
-
-// The engine's sign-ins known (a box's first ChatGPT use shows at once, not a round later).
-engineAccounts.onAnswered = () => void usage.tick()
-// (OpenCode's hosted spend only where this box knows its engine's folder: else a client reads it as before.)
-if (!engineData) usage.services = USAGE_SERVICES.filter((service) => service !== "opencode")
-peers.usage = new UsagePeers(usage, post, directory, join(usageFolder, "peers.json"))
-// The usage panel's settings, the same on your own computers: told as they change, and each minute
-// looked at to say every ten minutes what they are.
-peers.settings = new SettingsPeers(usageSettings, post, directory)
-setInterval(() => peers.settings?.tell(), 60_000).unref?.()
-
-// What every conversation here makes, recorded as it's made: the engine's and this bridge's own.
-// One that fails to start leaves the rest of the bridge as it is.
-let artifacts: ArtifactStore | undefined
-let artifactFormatError: UnsupportedFormatVersion | undefined
-let noted: ((session: string, path: string, via: string) => Promise<boolean>) | undefined
-if (artifactsFolder) {
-  try {
-    // With the files Codex's kept replies cited as what it made, read as the bridge started: shown.
-    artifacts = new ArtifactStore(artifactsFolder, { bots: botsFolder, shown: sessions.cited })
-    const { recorder } = recordArtifacts(artifacts, { bots: botsFolder })
-    const engineSource: Source = {
-      name: "engine",
-      session: async (id) => {
-        const found = await link.request<any>("GET", `/api/session/${encodeURIComponent(id)}`)
-        return found?.data ?? found
-      },
-      agent: () => "engine",
-    }
-    const bridgeSource: Source = {
-      name: "bridge",
-      session: async (id) => {
-        try {
-          return sessions.get(id)
-        } catch {
-          return undefined
-        }
-      },
-      agent: (id) => {
-        try {
-          const provider = sessions.get(id).model?.providerID
-          return (provider && parseProvider(provider)?.kind) || "engine"
-        } catch {
-          return undefined
-        }
-      },
-    }
-    partGiven = (prompt, chat) => recorder.given(prompt, chat)
-    noted = (session, path, via) => recorder.noted([engineSource, bridgeSource], session, path, via)
-    link.watch((event) => void recorder.heard(engineSource, event))
-    subscribe((event) => void recorder.heard(bridgeSource, event))
-  } catch (error) {
-    if (error instanceof UnsupportedFormatVersion) artifactFormatError = error
-    console.error("artifacts:", error)
-  }
-}
-
+store.origin = () => boxServices.attribution().computer ?? directory.own()?.key ?? ""
+store.usageAccount = provider => boxServices.attribution().accounts?.[provider]
 // Nothing starts a coding agent before it listens (an app's first ask, a group chat, a goal), and it
 // listens once the box has set up its sandbox: on this Mac the app starts it before the box, so an
 // agent started then would run outside the sandbox until it stops.
@@ -550,21 +394,17 @@ if (transfer) {
     clearTimeout(deadline)
   }
 }
-limits.start()
-usage.start()
-usage.insights?.start()
 const carrying = new Carrying(sessions, store, (provider) => sessions.agent(provider), (kind) => roster.all().filter((agent) => parseProvider(agent.providerID)?.kind === kind))
 let server: ReturnType<typeof Bun.serve>
 /** Making way for a newer bridge in its place, on a machine (below). */
 let renewal: Renewal | undefined
-const githubSignIn = new GitHubSignIn(context)
 let transferring = false
-const answer = handler({ roster, sessions, auto, link, password, programHome: home, version, build, groups, peers, goals, sideQuestions, handoffs, places, reviews, voice, artifacts, artifactFormatError, noted, restartOutside, carrying, limits, usage, refreshAccounts: true, githubSignIn }, () => transferring)
+const answer = handler({ roster, sessions, auto, link, password, programHome: home, version, build, groups, peers, goals, sideQuestions, handoffs, places, reviews, restartOutside, carrying, boxServices, refreshAccounts: true }, () => transferring)
 /** Requests being answered now (but the event feed's, which stays open): a newer bridge waits for them. */
 let answering = 0
 const serveRequest = (request: Request) => {
   if (transferring) return answer(request)
-  if (new URL(request.url).pathname === "/api/event") return answer(request)
+  if (new URL(request.url).pathname === "/api/event" || servicePath(new URL(request.url).pathname)) return answer(request)
   answering++
   if (request.method !== "GET" && request.method !== "HEAD") renewal?.busied()
   return answer(request).finally(() => answering--)
@@ -579,7 +419,12 @@ try {
   // On a machine, its port taken: the launch gives it another.
   process.exit(onMachine && /in use|EADDRINUSE/i.test(String(error?.code ?? error?.message ?? error)) ? 98 : 1)
 }
+// The standalone Mac app writes bridge.json itself and does not yet add capability fields.
+if (!onMachine && runFolder) {
+  try { writeSecret(join(runFolder, "bridge-box-services.pid"), String(process.pid)) } catch {}
+}
 console.log(JSON.stringify({ url: `http://127.0.0.1:${server.port}` }))
+void boxServices.follow(usageFollow.signal)
 self = requester(`http://127.0.0.1:${server.port}`, password)
 // Once the engine's there (the app says where, a moment after this starts on the Mac): parts under
 // way are followed again, and meetings held.
@@ -627,7 +472,7 @@ const writeRecord = (renewal: RenewalRecord | null, first = false) => {
     try { readRendezvous(bridgeRecordFormat, record) } catch (error) {
       if (error instanceof UnsupportedFormatVersion) throw error
     }
-    writeSecret(record, JSON.stringify(bridgeRecordFormat.write({ pid: process.pid, port: server.port, password, build, renewal, ...(machineHandover ? { machineHandover: true } : {}) })))
+    writeSecret(record, JSON.stringify(bridgeRecordFormat.write({ pid: process.pid, port: server.port, password, build, renewal, boxServices: true, ...(machineHandover ? { machineHandover: true } : {}) })))
   } catch (error) {
     if (first) throw error
     if (error instanceof UnsupportedFormatVersion) console.error(error.message)
@@ -666,7 +511,7 @@ let launchSaid: { at: number; lets: boolean } | undefined
 const wholeWork = () => {
   const here = sessions.work()
   const outsideTurns = answering > 0 || (groups?.runner.busy() ?? false) || updatesUnderWay()
-  const other = here.other || goals.busy() || sideQuestions.busy() || reviews.busy() || handoffs.busy() || signInsWaiting() || githubSignIn.waiting()
+  const other = here.other || goals.busy() || sideQuestions.busy() || reviews.busy() || handoffs.busy() || signInsWaiting()
   return { turns: here.turns || outsideTurns, other, outsideTurns }
 }
 const transferBuilds = new Set<string>()
@@ -845,10 +690,6 @@ if (renewing) subscribe((event) => {
   renewing.look()
 })
 
-// This box's engine, ended should it hang (it's started again as after a crash), on a machine and on
-// this Mac alike. This box's link watches this bridge in turn (link/main.ts).
-if (runFolder) new HangWatch({ name: "engine", run: runFolder, record: join(runFolder, "engine.json"), isIt: isEngine }).start()
-
 let stopping = false
 /** Ends this bridge. `handOver`: it makes way on purpose (Renewal), and on a box its keeper keeps it,
  * so it says so (`run/agents-renewing`, for the link to answer "restarting" and let requests wait),
@@ -857,6 +698,7 @@ let stopping = false
 function stop(handOver = false, startReplacement = true) {
   if (stopping) return
   stopping = true
+  usageFollow.abort()
   const run = onMachine ? join(machineHome!, "run") : undefined
   if (handOver && run) {
     try {
@@ -868,7 +710,6 @@ function stop(handOver = false, startReplacement = true) {
   sideQuestions.stopAll()
   reviews.stopAll()
   cancelSignIns()
-  githubSignIn.cancel()
   // (Unless a newer bridge has put its own there.)
   try {
     if (record && readRendezvous<BridgeRecord>(bridgeRecordFormat, record).pid === process.pid) rmSync(record, { force: true })

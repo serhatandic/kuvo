@@ -225,8 +225,9 @@ export class GroupStore {
     readonly bots: string,
     /** Who there is to name with "&" (`named.ts`): the agents file the box's link writes. */
     readonly agentsFile?: string,
+    create = true,
   ) {
-    mkdirSync(root, { recursive: true, mode: 0o700 })
+    if (create) mkdirSync(root, { recursive: true, mode: 0o700 })
   }
 
   private folder(id: string) {

@@ -1,4 +1,4 @@
-import { checked, SETTINGS_UNITS, type SettingsUnit } from "../../agents/usage/settings";
+import { checked, SETTINGS_UNITS, type SettingsUnit } from "../../usage/settings";
 import { isObject } from "../../shared/json";
 import { plainName } from "../../shared/text";
 import { noteDocsChanged } from "../documents/changed";

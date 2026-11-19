@@ -8,7 +8,7 @@
 // than a hold.
 
 import path from "node:path";
-import { NOTICE_CATCHUP_MS } from "../../agents/usage/notices";
+import { NOTICE_CATCHUP_MS } from "../../usage/notices";
 import { finishUsage, usageDelivered } from "./usage-delivery";
 import { isObject } from "../../shared/json";
 import { RUN } from "../home";

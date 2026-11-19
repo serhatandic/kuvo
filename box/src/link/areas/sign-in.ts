@@ -1,3 +1,4 @@
+import { readServices } from "../../shared/box-services";
 import { GITHUB_SIGN_IN_BUSY, GITHUB_WORK_QUEUE } from "../../shared/github";
 // Signing in to an account (PROTOCOL.md, "Signing in"): the ways a client offers, in the box's order
 // and words, for one account (`kuvo/sign-in/methods`) or every one listed (`kuvo/sign-in/accounts`,
@@ -194,6 +195,10 @@ export const isPlan = (offered: OfferedMethods): boolean => offered.methods.some
 /** Where `query` asks about: the coding agents' bridge (`agents=1`, for an agent's account), else
  * the engine; or why it can't be asked now. */
 async function placeOf(query: URLSearchParams, context: RouteContext): Promise<{ target: Target } | { down: AgentsAway | { message: string } }> {
+  if (query.get("integration") === GITHUB_WORK_QUEUE) {
+    const services = readServices(RUN);
+    if (services) return { target: services };
+  }
   if (query.get("agents") === "1" || query.get("integration") === GITHUB_WORK_QUEUE) {
     // (While the bridge restarts, waited for: PROTOCOL.md, "The coding agents' state".)
     const bridge = await bridgeBack(context.bridge, context.signal);
@@ -338,7 +343,7 @@ function useHostBrowser(request: LinkRequest): string {
 
 /** GitHub for Work Queue shares the provider account sheet, and keeps its sign-in on this computer. */
 export async function workQueueAccount(context: RouteContext): Promise<ListedAccount | null> {
-  const target = context.bridge();
+  const target = readServices(RUN) ?? context.bridge();
   if (!target) return null;
   return await call(target, "GET", `/api/integration/${GITHUB_WORK_QUEUE}`, undefined, AbortSignal.timeout(6_000))
     .then(value => isObject(value) && value.id === GITHUB_WORK_QUEUE ? value : null, () => null);
@@ -347,7 +352,7 @@ export async function workQueueAccount(context: RouteContext): Promise<ListedAcc
 /** Compatibility for the phone's provider API. */
 export async function* workQueueSignInRoute(context: RouteContext): AsyncGenerator<AnswerPiece> {
   const { request, json, signal } = context;
-  const bridge = await bridgeBack(context.bridge, signal);
+  const bridge = readServices(RUN) ?? await bridgeBack(context.bridge, signal);
   if (!bridge) return yield* json(503, { message: "GitHub sign-in is starting up on this computer. Try again in a moment." });
   const method = request.method.toUpperCase();
   try {

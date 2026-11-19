@@ -1,3 +1,8 @@
+import { updateUnderWay } from "../shared/updating";
+import { locked } from "../shared/files";
+import { isMainThread } from "node:worker_threads";
+import { readServices } from "../shared/box-services";
+import { processRuns } from "../shared/platform";
 import { isObject } from "../shared/json";
 import { usesAcceptedSaves } from "./setup/record";
 // (The command line: what each command does is in the modules beside it, box/README.md.)
@@ -801,7 +806,7 @@ function firstLine(): Promise<Record<string, unknown>> {
 }
 
 /** The coding agents' bridge beside this box's engine, ended should it hang (it's started again as after
- * a crash), wherever this runs. The bridge watches the engine in turn (agents/main.ts). */
+ * a crash), wherever this runs. The link services watch the engine independently. */
 function keepBridgeAnswering(): void {
   new HangWatch({ name: "bridge", run: RUN, record: BRIDGE_FILE, isIt: runsBridge }).start();
 }
@@ -853,6 +858,62 @@ async function keptServe(): Promise<void> {
     if (!fs.existsSync(SERVE_NEEDED()) || !mine()) leave();
     scheduleWipe();
   }, every);
+}
+
+// The app's own box has no shell keeper. Its HTTP server keeps the services subprocess by stdin.
+function keepAppServices(): void {
+  const child = spawn(process.execPath, ["--config=/dev/null", "--no-env-file", fileURLToPath(import.meta.url), "box-services", "--app"], {
+    env: { ...process.env, BUN_BE_BUN: "1" }, stdio: ["pipe", "ignore", "inherit"],
+  });
+  child.stdin?.on("error", () => {});
+  child.on("error", error => console.error("Box services:", error.message));
+  child.once("close", () => setTimeout(keepAppServices, 5_000).unref());
+}
+
+async function runBoxServices(): Promise<void> {
+  const app = process.argv.includes("--app");
+  if (app !== Boolean(APP_FOLDER) || typeof Bun === "undefined") return;
+  const script = fileURLToPath(import.meta.url);
+  const bridgeOwnsServices = () => {
+    try {
+      const record = readBridgeFile();
+      if (record.boxServices === true || !processRuns(record.pid, "kuvo-agents")) return false;
+      if (app) {
+        try { if (fs.readFileSync(path.join(RUN, "bridge-box-services.pid"), "utf8").trim() === String(record.pid)) return false; } catch {}
+      }
+      return true;
+    } catch { return false; }
+  };
+  const { serveBoxServices } = await import("./services");
+  const home = path.join(APP_FOLDER ?? K, "agents");
+  process.env.KUVO_AGENTS_HOME = home;
+  if (!app) {
+    const login = OWN_HOME_MAC && REAL_BOX ? await loginEnvironment() : undefined;
+    for (const name of ["CODEX_HOME", "GROK_HOME", "CLAUDE_CONFIG_DIR", "CURSOR_API_KEY", "GH_CONFIG_DIR", "GH_TOKEN", "GITHUB_TOKEN"]) {
+      if (login?.[name] !== undefined) process.env[name] = login[name];
+    }
+    const loginPath = login?.PATH ?? savedLoginPath(K);
+    if (loginPath) process.env.PATH = joinPath(path.join(K, "bin"), loginPath);
+  }
+  fs.mkdirSync(RUN, { recursive: true, mode: 0o700 });
+  const leave = locked(path.join(RUN, ".box-services-start"), () => {
+    if (fs.existsSync(path.join(RUN, ".rolling-back")) || updateUnderWay(RUN)) return;
+    const current = readServices(RUN);
+    if ((current && processRuns(current.pid, "box-services")) || bridgeOwnsServices()) return;
+    return serveBoxServices({
+      home, run: RUN, box: APP_FOLDER ?? K, bots: path.join(APP_FOLDER ?? K, "bots"), artifacts: path.join(K, "artifacts"),
+      engineData: APP_FOLDER ? path.join(APP_FOLDER, "opencode", "data", "opencode") : path.join(K, "data", "opencode"),
+      managedDefaults: !IS_MAC, bundle: script,
+    });
+  }, { exclusive: true });
+  if (!leave) return;
+  if (app) {
+    process.stdin.on("end", leave);
+    process.stdin.resume();
+  } else leaveForNewCode(script, leave);
+  setInterval(() => {
+    if (bridgeOwnsServices() || ["off", "paused"].some(name => fs.existsSync(path.join(RUN, name)))) leave();
+  }, 2_000).unref();
 }
 
 async function serve(): Promise<void> {
@@ -908,6 +969,7 @@ async function serve(): Promise<void> {
   // to your phones through this Mac's link: listening before it says where it is, so what reaches
   // the vault from then on finds it open.
   holdVault(engineHandler(readEngineFile, { name: os.hostname() }, readBridgeFile));
+  if (APP_FOLDER && typeof Bun !== "undefined") keepAppServices();
   const port = (server.address() as AddressInfo).port;
   // A Mac's box in a home of its own says where it answers itself, for its clients (`run/serve.json`,
   // as one kept for them does), before it says so on stdout: its helper started it, and no app
@@ -1285,7 +1347,10 @@ export function selftest(): boolean {
 }
 
 const main = process.argv[1] && fs.realpathSync(process.argv[1]) === fs.realpathSync(fileURLToPath(import.meta.url));
-if (main) {
+if (!isMainThread && process.argv.includes("--insights-db-worker")) {
+  const { serveInsightsDB } = await import("../usage/insights-db-worker");
+  serveInsightsDB();
+} else if (main) {
   const [mode, argument] = process.argv.slice(2);
   try {
     // The installer and move own the destination until placement. A probe must not adopt it.
@@ -1315,6 +1380,7 @@ if (main) {
   else if (mode === "pair") pair(argument);
   else if (mode === "box") await box(argument);
   else if (mode === "serve") await serve();
+  else if (mode === "box-services") await runBoxServices();
   else if (mode === "leave") {
     const before = readLink();
     if (!before || typeof argument !== "string" || !KEY.test(argument)) {

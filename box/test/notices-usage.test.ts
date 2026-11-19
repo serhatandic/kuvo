@@ -1,7 +1,7 @@
 import "./safety"
 import { expect, test } from "bun:test"
 import { randomUUID, randomBytes } from "node:crypto"
-import { newNotice, initialState, noticeAccountName } from "../src/agents/usage/notices"
+import { newNotice, initialState, noticeAccountName } from "../src/usage/notices"
 import { usageNotices, usageSnapshot, catchUpUsage } from "../src/link/notices/usage"
 import { readTold, toldLately } from "../src/link/notices/told"
 import { NoticeHold } from "../src/link/notices/hold"

@@ -1,3 +1,4 @@
+import { readServices } from "../../shared/box-services";
 // What a bot asks you before it does it (PROTOCOL.md, "Work": `kuvo/work/asks`): making a
 // project, or cloning one; and what any agent asks before it uses one of your plans' resets
 // (`use_limit_reset`). Kept in `run/work/asks.json` until you answer, on whichever client you
@@ -18,7 +19,7 @@ import { sendInto } from "../engine/queue";
 import { boxNote } from "../../shared/queues";
 import { messageID } from "../engine/sessions";
 import { locked, textOf, writePrivate } from "../files";
-import { HERE } from "../home";
+import { HERE, RUN } from "../home";
 import { placeOfSession } from "../letters/letter";
 import { tellMovedAway } from "../letters/outbox";
 import { frozen } from "../moves/records";
@@ -189,7 +190,7 @@ export async function answerOf(id: string, { wait = 10 * 60_000, every = 1000, s
 /** What the asked action does, in its maker's words; done now. `always`: a reset's Always Allow, kept with the account first. */
 export async function doWork(action: WorkAction, given: KeptAsk["given"], asker: Asker, always = false): Promise<{ text: string; isError: boolean }> {
   if (action === "resetLimits") {
-    const bridge = bridgeTarget();
+    const bridge = readServices(RUN) ?? bridgeTarget();
     if (!given.reset) return { text: "There's no reset to use in that ask.", isError: true };
     if (!bridge) return { text: `The coding agents aren't running on ${HERE} now, so the reset wasn't used.`, isError: true };
     return spendReset(bridge, given.reset.row, asker.name, { always });

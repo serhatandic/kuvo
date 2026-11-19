@@ -66,7 +66,7 @@ folder_current() {
 }
 # Stop and rollback must work even when the trial bridge cannot execute.
 case "${1:-keep}" in
-stop|engine-stop|engine-halt|off|pause|rollback|check-rollback-layout) ;;
+stop|engine-stop|engine-halt|off|pause|rollback|quiesce-services|check-rollback-layout) ;;
 *)
   if [ -f "$K/bin/kuvo-link.js" ] && [ -x "$K/engine/$V/opencode" ] && ! folder_current; then
     KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$K/engine/$V/opencode" --config=/dev/null --no-env-file "$K/bin/kuvo-link.js" folder-upgrade </dev/null || {
@@ -238,30 +238,43 @@ lock() { take_lock "${1:-2400}"; }
 # The engine and its coding agents' bridge, stopped (under the lock), and the agents' processes it
 # keeps under holders.
 halt() {
+  holders=$(held_owners)
   a=$(cat "$R/agents.pid" 2>/dev/null)
   if is "$a" kuvo-agents; then kill -- "-$a" 2>/dev/null || kill "$a" 2>/dev/null; fi
   rm -f "$R/agents.pid"
-  halt_held
+  halt_held "$holders"
   rm -f "$R/agents/handover.json" "$R/agents/previous/kuvo-agents.js"
   halt_engine
 }
 # A holder's process, as its record names it (run/agents/hold/<id>.json), once it's one.
 # (Only once that process is that very holder, its program and its id on its command line.)
-held_pid() { i=$(basename "$1" .json); h=$(sed -n 's/^{"proto":"hold\/1","holder":[^,]*,"id":"'"$i"'","kind":"[a-z]*","pid":\([0-9]*\),.*/\1/p' "$1" 2>/dev/null); is "$h" "kuvo-hold-[0-9a-f]*\.js .* $i " && echo "$h"; }
+is_holder() { is "$1" "kuvo-hold-[0-9a-f]*\.js .* $2 "; }
+held_owners() {
+  for record in "$R"/agents/hold/*.json; do
+    [ -f "$record" ] || continue
+    id=$(basename "$record" .json)
+    case "$id" in ''|*[!0-9a-f]*) continue ;; esac
+    pid=$(sed -n 's/^{"proto":"hold\/1","holder":[^,]*,"id":"'"$id"'","kind":"[a-z]*","pid":\([0-9]*\),.*/\1/p' "$record" 2>/dev/null)
+    is_holder "$pid" "$id" && printf '%s:%s\n' "$pid" "$id"
+  done
+}
 # The coding agents' processes under holders (kuvo-agents' hold/), which outlive a bridge that
 # crashes: each holder stopped by its own pid (never by a name), stopping its agent as the bridge
 # would (its stdin closed, then told, then made to after 15 s), and waited for, 20 s at most.
 halt_held() {
-  for f in "$R"/agents/hold/*.json; do
-    [ -f "$f" ] || continue
-    h=$(held_pid "$f") && [ -n "$h" ] && kill "$h" 2>/dev/null
+  # A holder removes its record as it exits. Wait for the recorded process itself, including
+  # holders that began to exit when the bridge was signalled. After signalling, wait for the
+  # PID to be reaped even when its command line is already gone.
+  holders="$1 $(held_owners)"
+  for owner in $holders; do
+    pid=${owner%%:*}; id=${owner#*:}
+    is_holder "$pid" "$id" && kill "$pid" 2>/dev/null
   done
   n=0
   while [ $n -lt 200 ]; do
     left=
-    for f in "$R"/agents/hold/*.json; do
-      [ -f "$f" ] || continue
-      h=$(held_pid "$f") && [ -n "$h" ] && left=1
+    for owner in $holders; do
+      kill -0 "${owner%%:*}" 2>/dev/null && left=1
     done
     [ -z "$left" ] && break
     sleep 0.1; n=$((n + 1))
@@ -590,6 +603,16 @@ keep)
     if [ -f "$R/serve.needed" ] && [ -f "$K/bin/kuvo-link.js" ] && [ -n "$V" ] && ! own_mac && ! { s=$(sed -n 's/.*"pid":\([0-9]*\).*/\1/p' "$R/serve.json" 2>/dev/null); is "$s" kuvo-link.js && is "$s" --kept; }; then
       (environment; cd "$K/workspace" 2>/dev/null || cd "$K"; KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$S" "$K/engine/$V/opencode" --config=/dev/null --no-env-file "$K/bin/kuvo-link.js" serve --kept >"$R/serve.log" 2>&1 </dev/null &)
     fi
+    # A separate owner for these services is a capability of the installed bridge. The live
+    # bridge may be stopped, or may still be running older code while it finishes a turn.
+    if [ ! -e "$R/paused" ] && [ ! -e "$R/off" ] && [ ! -d "$R/.rolling-back" ] &&
+       [ -f "$K/bin/kuvo-link.js" ] && [ -n "$V" ] &&
+       grep -q '^// Box services ownership v1$' "$K/bin/kuvo-agents.js" 2>/dev/null &&
+       ! is "$(sed -n 's/.*"pid":\([0-9]*\).*/\1/p' "$R/box-services.json" 2>/dev/null)" box-services &&
+       ! is "${services_starting-}" box-services; then
+      (environment; cd "$K"; exec env KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$S" "$K/engine/$V/opencode" --config=/dev/null --no-env-file "$K/bin/kuvo-link.js" box-services) >"$R/box-services.log" 2>&1 </dev/null &
+      services_starting=$!
+    fi
     # Wake-ups that are due, each minute, while the engine's up, as the engine was started:
     # beside this loop, which a slow watch never holds up, one round at a time.
     round=$((round + 1))
@@ -747,6 +770,35 @@ restart)
   sh "$K/bin/kuvo-start" box
   up
   ;;
+quiesce-services)
+  # A rollback to the old owner must finish stopping these writers before restoring its bridge.
+  # The rollback's own fence prevents another services process from starting meanwhile.
+  attempt=0
+  while [ -d "$R/.box-services-start" ]; do
+    for owner in "$R/.box-services-start"/owner-*; do break; done
+    [ -f "$owner" ] || break
+    p=${owner##*/owner-}; p=${p%%-*}
+    case "$p" in ''|*[!0-9]*) exit 1 ;; esac
+    kill -0 "$p" 2>/dev/null || break
+    [ "$attempt" -lt 300 ] || exit 1
+    attempt=$((attempt + 1)); sleep 0.1
+  done
+  p=$(sed -n 's/.*"pid":\([0-9]*\).*/\1/p' "$R/box-services.json" 2>/dev/null)
+  case "$p" in ''|*[!0-9]*|0|1) exit 0 ;; esac
+  services_here() {
+    kill -0 "$p" 2>/dev/null || return 1
+    if [ -d /proc/self ]; then tr '\0' ' ' <"/proc/$p/cmdline" 2>/dev/null; else ps -ww -o command= -p "$p" 2>/dev/null; fi |
+      tr -s / | grep -Fq -- "$(printf '%s' "$K/bin/kuvo-link.js box-services" | tr -s /)"
+  }
+  services_here || exit 0
+  kill -TERM "$p" 2>/dev/null || exit 1
+  attempt=0
+  while services_here; do
+    [ "$attempt" -lt 150 ] || exit 1
+    attempt=$((attempt + 1)); sleep 0.1
+  done
+  ;;
+
 rollback)
   # The update on trial judged unwell (or its judge never ran): the code it replaced put back, as
   # it kept it (updates/rollback/restore.sh), never the engine's data. Nothing kept: the trial ends.
@@ -819,6 +871,10 @@ rollback)
   was=$(sed -n 's/^V=//p' "$kept" 2>/dev/null | head -n 1)
   if grep -q 'data/opencode.db' "$K/updates/rollback/restore.sh" 2>/dev/null && [ -n "$ran" ] && [ -n "$was" ] && [ "$ran" != "$was" ] && [ "$(printf '%s\n%s\n' "$was" "$ran" | sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1)" = "$ran" ]; then
     sed "s/^V=.*/V=$ran/" "$kept" >"$kept.new" && chmod 700 "$kept.new" && mv -f "$kept.new" "$kept"
+  fi
+  # A restore script from the preceding release didn't yet know about the separate services owner.
+  if ! grep -q '^// Box services ownership v1$' "$K/updates/rollback/files/bin/kuvo-agents.js" 2>/dev/null; then
+    sh "$0" quiesce-services || exit 1
   fi
   sh "$K/updates/rollback/restore.sh" >/dev/null 2>&1 || exit 1
   rm -f "$R/update-restore" "$R/update-settle.tries"

@@ -8,11 +8,12 @@
 
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs"
 import { SEAT_MAIL_KINDS, type SeatLine, type SeatMailKind } from "../../shared/seats"
-import type { LimitsDirectory, LimitsMail, LimitsPeers } from "../limits-peers"
-import { isInsightsMail, type Insights, type InsightsMail } from "../usage/insights"
-import { isUsageMail, type UsageMail, type UsagePeers } from "../usage/usage-peers"
-import { isSettingsMail, type SettingsMail, type SettingsPeers } from "../usage/settings-peers"
-import { isResetMail, type LimitResets, type ResetMail } from "../limits-resets"
+import type { LimitsDirectory, LimitsMail } from "../../usage/limits-peers"
+import type { InsightsMail } from "../../usage/insights"
+import type { UsageMail } from "../../usage/usage-peers"
+import type { SettingsMail } from "../../usage/settings-peers"
+import type { ResetMail } from "../../usage/limits-resets"
+import { usageMail } from "../../shared/box-services"
 import { RemoteHome, type Clock, type PeerBot, type PeerDirectory, type PeerTransport, type SeatMail, type SeatServer, realClock } from "./peer"
 import type { GroupRunner } from "./runner"
 
@@ -45,7 +46,7 @@ export class PeerPost implements PeerTransport {
     try {
       if (file && existsSync(file)) kept = JSON.parse(readFileSync(file, "utf8"))
     } catch {}
-    this.kept = Array.isArray(kept) ? kept.filter((line) => line && typeof line.id === "string" && typeof line.to === "string" && isSeatMail(line.mail)) : []
+    this.kept = Array.isArray(kept) ? kept.filter((line) => line && typeof line.id === "string" && typeof line.to === "string" && (isSeatMail(line.mail) || usageMail(line.mail?.kind))) : []
   }
 
   send(to: string, mail: SeatMail | LimitsMail | UsageMail | InsightsMail | SettingsMail | ResetMail, durable: boolean) {
@@ -142,16 +143,7 @@ export interface PeerParts {
   directory: LinkDirectory
   server?: SeatServer
   runner?: GroupRunner
-  limits?: LimitsPeers
-  usage?: UsagePeers
-  insights?: Insights
-  /** The usage panel's settings, between your own computers only. */
-  settings?: SettingsPeers
-  /** Plan resets passed between your own computers (limits-resets.ts). */
-  resets?: LimitResets
 }
-
-const isLimitsMail = (value: any): value is LimitsMail => value !== null && typeof value === "object" && value.kind === "limits"
 
 export function receive(parts: PeerParts, from: string, mail: SeatMail) {
   if (!parts.server || !parts.runner) return
@@ -201,29 +193,6 @@ export async function peerRoutes(parts: PeerParts | undefined, method: string, p
   if (what === "mail" && method === "GET") return parts.post.follow(signal)
   if (what === "mail" && method === "POST") {
     const given = await body().catch(() => undefined)
-    if (typeof given?.from === "string" && given.from && isLimitsMail(given.mail)) {
-      parts.limits?.take(given.from, given.mail)
-      return json({})
-    }
-    if (typeof given?.from === "string" && given.from && isInsightsMail(given.mail)) {
-      await parts.insights?.take(given.from, given.mail)
-      return json({})
-    }
-    // What its accounts used (PROTOCOL.md, "Usage history").
-    if (typeof given?.from === "string" && given.from && isUsageMail(given.mail)) {
-      parts.usage?.take(given.from, given.mail)
-      return json({})
-    }
-    // A plan's reset, passed to the computer with its sign-in, and its answer (PROTOCOL.md, "Plan limits", "Resets").
-    if (typeof given?.from === "string" && given.from && isResetMail(given.mail)) {
-      parts.resets?.take(given.from, given.mail)
-      return json({})
-    }
-    // The usage panel's settings (PROTOCOL.md, "Usage settings").
-    if (typeof given?.from === "string" && given.from && isSettingsMail(given.mail)) {
-      parts.settings?.take(given.from, given.mail)
-      return json({})
-    }
     // Group chats that didn't start here: the link says not now, so what mustn't be lost comes again.
     if (!parts.server || !parts.runner) return json({ message: "Group chats don't run here." }, 404)
     if (typeof given?.from !== "string" || !given.from || !isSeatMail(given.mail)) return json({ message: "That isn't group chat mail." }, 400)

@@ -1,3 +1,4 @@
+import { readServices } from "../../shared/box-services";
 // use_limit_reset: one of an account's rate-limit resets (Claude's reset grants, Codex's reset
 // credits) used now, for an agent that's at a limit and has work to finish. It spends what's the
 // user's, so each use asks them first, on the permission card in the conversation (Allow, Always
@@ -11,7 +12,7 @@
 import { isObject } from "../../shared/json";
 import type { Target } from "../../shared/records";
 import { call } from "../engine/client";
-import { HERE } from "../home";
+import { HERE, RUN } from "../home";
 import { describePlanLimits, rowTitle } from "./plan-limits";
 
 /** What a card asks about a reset: the account, by its row's id and name, what it has and where it's used. */
@@ -118,6 +119,7 @@ export async function useResetTool(
   ask: (given: ResetGiven) => Promise<{ text: string; isError: boolean }>,
   signal?: AbortSignal,
 ): Promise<{ text: string; isError: boolean }> {
+  bridge = readServices(RUN) ?? bridge;
   if (!bridge) return refused(`The coding agents aren't running on ${HERE} now, so no reset can be used. Try again in a moment.`);
   if (!asker) return refused("Only a conversation on this computer can use a reset from here.");
   const wanted = typeof args.account === "string" ? args.account.trim() : "";

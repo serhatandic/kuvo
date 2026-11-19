@@ -7,7 +7,7 @@ import { EngineLink } from "../../src/agents/engine"
 import type { GoalPlaces } from "../../src/agents/goals"
 import { server } from "../../src/agents/groups/api"
 import { run } from "../../src/agents/proc"
-import { voiceRoutes, VoiceWords } from "../../src/agents/voice"
+import { voiceRoutes, VoiceWords } from "../../src/link/voice"
 import { StandIn } from "./support/standin"
 
 // The words voice input listens for in a conversation, as a box picks them from its folder and

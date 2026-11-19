@@ -3,7 +3,7 @@
 // page at a time, as the real ones answer. Nothing real is asked: `cursorEndpoints` point here while
 // it runs, and go back when it stops.
 
-import { cursorEndpoints } from "../../../src/agents/usage/cursor-api"
+import { cursorEndpoints } from "../../../src/usage/cursor-api"
 
 const real = { ...cursorEndpoints }
 

@@ -83,7 +83,7 @@ export interface RunnerContext {
   /** Your other computers and their bots, which take their turns in chats here on their own computer. */
   peers?: PeerDirectory
   /** A chat's part given to a bot's own conversation (see `SeatContext.given`). */
-  given?: (prompt: string, part: { chat: string; bot: string }) => void
+  given?: (prompt: string, part: { chat: string; bot: string }) => void | Promise<void>
   /** The box's queues (see `SeatContext.queues`). */
   queues?: QueueFiles
 }

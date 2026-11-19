@@ -22,8 +22,8 @@ import { newID } from "../ids"
 import { onMachine, ownFoldersConfig, yourHomes } from "../machine"
 import { install, maintenance, update, type MaintenanceDefinition } from "../maintenance"
 import { which } from "../proc"
-import { chatGPTIdentity, LimitsProblem, type LimitExtra, type LimitReading, type LimitsSource, type LimitWindow } from "../limits"
-import { codexCredits, readCodexResets, spendCodexReset, type ChatGPTSignIn } from "../codex-resets"
+import { chatGPTIdentity, fingerprint, type LimitsSource, type LimitWindow } from "../../usage/limits"
+import { CodexCredentials } from "../../usage/codex-credentials"
 import { RPC, RPCError } from "../rpc"
 import { hold, type Held } from "../hold/client"
 import { agentHoldFolder, noteTurn, type HeldTurn } from "../hold/adopt"
@@ -119,6 +119,7 @@ export function rolloutOf(home: string, id: string): string | undefined {
         const found = list(join(sessions, year, month, day)).find(named)
         if (found) return join(sessions, year, month, day, found)
       }
+  return undefined
 }
 
 export class CodexAgent implements Agent {
@@ -156,104 +157,24 @@ export class CodexAgent implements Agent {
   /** Your plan's usage windows as Codex last said, by limit ("codex" is the plan's; others, a model's). */
   rateLimits = new Map<string, any>()
 
-  /**
-   * Its plan's limits, as Codex reads them from ChatGPT with its own sign-in (`account/rateLimits/read`
-   * on your account's app-server), every ten minutes; what a turn hears between (`account/rateLimits/updated`).
-   */
+  private readonly credentials: CodexCredentials
+
+  /** Observations from turns, delivered to the box's usage reader. */
   readonly limits: LimitsSource = {
     every: 10 * 60_000,
-    read: (now) => this.readLimits(now),
+    signIn: () => fingerprint(this.credentials.current()?.token),
     identity: () => this.chatGPTAccount(),
-    // (Its reset credits are read again with every read: what was read stands while that fails.)
-    reset: (attempt, now) => spendCodexReset(this.chatGPTSignIn(), attempt, now),
   }
 
-  /** Its ChatGPT sign-in, as its home's `auth.json` keeps it (none in the Keychain): to read and spend its reset credits. */
-  private chatGPTSignIn(): ChatGPTSignIn | undefined {
-    try {
-      const tokens = JSON.parse(readFileSync(join(this.home, "auth.json"), "utf8"))?.tokens
-      const token = typeof tokens?.access_token === "string" && tokens.access_token ? tokens.access_token : undefined
-      return token ? { token, ...(typeof tokens.account_id === "string" && tokens.account_id ? { account: tokens.account_id } : {}) } : undefined
-    } catch {
-      return undefined
-    }
-  }
-
-  /** Who its ChatGPT sign-in is, as its token in its home says (never sent anywhere); none in the Keychain. */
   private chatGPTAccount(): string | undefined {
-    try {
-      const tokens = JSON.parse(readFileSync(join(this.home, "auth.json"), "utf8"))?.tokens
-      return chatGPTIdentity(tokens?.access_token, tokens?.account_id)
-    } catch {
-      return undefined
-    }
-  }
-
-  /** Its reset credits as last read from ChatGPT, and with which sign-in: kept while a read fails. */
-  private resetsRead?: { as: string | undefined; extra: LimitExtra }
-
-  /**
-   * Its reset credits, read with its own sign-in each time its limits are (they change outside its
-   * turns: another computer, the website); as last read where this read fails; none where none was.
-   */
-  private async readResets(now: number): Promise<LimitExtra | undefined> {
-    const signIn = this.chatGPTSignIn()
-    const as = this.chatGPTAccount()
-    if (!signIn) return undefined
-    const read = await readCodexResets(signIn, now)
-    if (read) this.resetsRead = { as, extra: read }
-    return this.resetsRead && this.resetsRead.as === as ? this.resetsRead.extra : undefined
+    const auth = this.credentials.current()
+    return chatGPTIdentity(auth?.token, auth?.account)
   }
 
   /** Who each app-server is signed in as: it reads its sign-in as it starts, and keeps it. */
   private signedInAs = new WeakMap<RPC, string | undefined>()
   private planRead?: { as: string | undefined; plan: string }
   private tokenPlan?: string
-  private noPlan = false
-
-  /** Read on the plan's schedule, starting the account's app-server if there is no active one. */
-  private async readLimits(at: number): Promise<LimitReading | null> {
-    if (!this.executable()) throw new LimitsProblem("none", "Codex isn't installed here.")
-    // Only through a Codex signed in as its home is now: one started before you signed in to
-    // another account still reads the one before, whose limits aren't this one's.
-    const now = this.chatGPTAccount()
-    const current = (server: RPC | undefined): server is RPC => !!server && !server.isClosed && this.signedInAs.get(server) === now
-    const running = [...this.slots.values()].map((slot) => slot.server).find(current)
-    if (!now && this.noPlan && !running) throw new LimitsProblem("none", "No ChatGPT plan is signed in here.")
-    // Its reset credits, from ChatGPT, whether or not Codex is asked now.
-    const resets = await this.readResets(at)
-    const onlyResets = (): LimitReading | null => (resets ? { windows: [], extras: [resets], extrasOnly: true } : null)
-    let rpc: RPC
-    let account: any
-    try {
-      rpc = running ?? (await this.rpc())
-      if (!current(rpc)) return onlyResets()
-      account = (await rpc.request("account/read", {}, 20_000))?.account
-    } catch (caught) {
-      throw new LimitsProblem("failed", `Codex couldn't say: ${caught instanceof Error ? caught.message : String(caught)}`)
-    }
-    // Signed out, or an API key: no plan to read.
-    this.noPlan = account?.type !== "chatgpt"
-    if (this.noPlan) throw new LimitsProblem("none", account ? "An API key has no plan limits." : "Not signed in to Codex here.")
-    let result: any
-    try {
-      result = await rpc.request("account/rateLimits/read", {}, 30_000)
-    } catch (caught) {
-      const words = caught instanceof Error ? caught.message : String(caught)
-      if (/\b429\b|too many/i.test(words)) throw new LimitsProblem("rate-limited", "ChatGPT is turning away reads of the plan's limits for now.")
-      if (/\b401\b|unauthori[sz]ed|sign in again|expired/i.test(words)) throw new LimitsProblem("expired", "ChatGPT turned its sign-in away: sign in to Codex again here.")
-      throw new LimitsProblem("failed", `Codex couldn't read the plan's limits: ${words}`)
-    }
-    const snapshots: any[] = result?.rateLimitsByLimitId ? Object.values(result.rateLimitsByLimitId) : result?.rateLimits ? [result.rateLimits] : []
-    const windows = snapshots.flatMap((snapshot) => codexWindows(snapshot))
-    const reported = snapshots.find((snapshot) => snapshot?.planType && snapshot.planType !== "unknown")?.planType
-    if (reported && now === this.chatGPTAccount()) this.notePlan(reported, now)
-    const type = reported ?? account.planType
-    // Its credits (the plan's own snapshot's), and its reset credits.
-    const credits = codexCredits(snapshots.find((snapshot) => snapshot?.credits)?.credits)
-    const extras = [credits, resets].filter((extra): extra is LimitExtra => !!extra)
-    return { windows, ...(typeof type === "string" && type !== "unknown" ? { plan: codexPlan(type) } : {}), ...(extras.length ? { extras } : {}) }
-  }
 
   /** Its own sign-in: Kuvo Code's on a machine (in its folder there), yours on a Mac (`~/.codex`,
    * which Codex in Terminal uses too: `signOutShared`). An added account is removed instead. */
@@ -267,6 +188,7 @@ export class CodexAgent implements Agent {
     readonly instance: AgentAccount = { id: "default" },
   ) {
     this.providerID = providerID("codex", instance.id)
+    this.credentials = new CodexCredentials(this.home)
     if (instance.id === "default") {
       this.signOutShared = !instance.home
       this.signOut = async () => {
@@ -398,6 +320,7 @@ export class CodexAgent implements Agent {
    * for it now (the box's sandbox turned on or off since: another).
    */
   async rpc(thread?: CodexThread, starting = false): Promise<RPC> {
+    await this.credentials.prepare()
     if (thread && !starting && thread.server && !thread.server.isClosed) return thread.server
     const key = !fenceRules() ? SHARED : thread ? thread.session.id : ACCOUNT
     const slot = this.slot(key)
@@ -757,7 +680,6 @@ export class CodexAgent implements Agent {
       if (!info) {
         account = { installed: true, signedIn: false, message: "Sign in to Codex with ChatGPT or an OpenAI API key." }
       } else if (info.type === "chatgpt") {
-        this.noPlan = false
         if (this.tokenPlan !== undefined && this.tokenPlan !== info.planType) this.planRead = undefined
         this.tokenPlan = info.planType
         const type = this.planRead?.as === identity ? this.planRead?.plan ?? info.planType : info.planType
@@ -824,7 +746,6 @@ export class CodexAgent implements Agent {
     this.rateLimits.clear()
     this.planRead = undefined
     this.tokenPlan = undefined
-    this.noPlan = false
     this.known.reset()
     this.forgetModels()
     this.nextTokenRefresh = Date.now() + 10 * 60_000

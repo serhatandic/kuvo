@@ -1,10 +1,9 @@
+import { servicePath } from "../shared/box-services"
+import type { BoxServicesClient } from "./box-services"
 import type { Feature } from "../shared/features"
-import { insightsRoutes } from "./usage/insights"
 import { UnsupportedFormatVersion } from "../shared/format-version"
 import { ROUTE_VERSION, ROUTE_VERSION_HEADER, routeVersionError } from "../shared/route-version"
-import { GITHUB_WORK_QUEUE } from "../shared/github"
 import { failureWords } from "../shared/sign-in-failure"
-import type { GitHubSignIn } from "./github-sign-in"
 import { AccountRefresh } from "./account-refresh"
 import { watchSignIn } from "./signin-watch"
 // The bridge's HTTP API: the engine's, the parts the app uses for a session, its models and its
@@ -22,9 +21,6 @@ import { sideQuestionRoutes, type SideQuestions } from "./btw"
 import { branchRoutes } from "./branch"
 import { handoffRoutes, type Handoffs } from "./handoff"
 import { reviewRoutes, type Reviews } from "./reviews"
-import { voiceRoutes, type VoiceWords } from "./voice"
-import { limitsRoutes, type Limits } from "./limits"
-import { usageRoutes, type Usage } from "./usage/usage"
 import { isOutdated, type Maintenance } from "./maintenance"
 import { forgetUpdate, inUpdateAll, programUpdate, resumeProgramUpdates, updateAll, updateProgram } from "./updates"
 import { refreshLoginPath } from "./proc"
@@ -32,16 +28,13 @@ import { setToolServer } from "./kuvotools"
 import { noteToolServer } from "./fence"
 import { newID } from "./ids"
 import { BadRequest, NotFound, Sessions } from "./sessions"
-import { artifactRoutes, notedRoute } from "./artifacts/routes"
 import { carryRoutes, type Carrying } from "./carry"
-import type { ArtifactStore } from "./artifacts/store"
 import { linkRoutes } from "./groups/link"
 import { peerRoutes, type PeerParts } from "./groups/post"
 import { groupRoutes } from "./groups/routes"
 import type { GroupRunner } from "./groups/runner"
 import type { GroupStore } from "./groups/store"
 import { shell, shellOutput, shells, stopShell } from "./shells"
-import { signIns } from "./sign-ins"
 import type { Integration, Model } from "./wire"
 
 export interface Context {
@@ -63,28 +56,17 @@ export interface Context {
   restartOutside?: () => void
   /** Goals that conversations here and on the engine work toward (goals.ts). */
   goals?: Goals
-  /** The record of what this computer's agents made (artifacts/store.ts); none where it couldn't start. */
-  artifacts?: ArtifactStore
-  artifactFormatError?: UnsupportedFormatVersion
-  /** A file a conversation got without a tool call naming it (artifacts/recorder.ts, `noted`). */
-  noted?: (session: string, path: string, via: string) => Promise<boolean>
   /** The box's other keywords: side questions, handoffs and reviews (btw.ts, handoff.ts, reviews.ts). */
   sideQuestions?: SideQuestions
   handoffs?: Handoffs
   /** Where conversations are, for branching one (branch.ts). */
   places?: GoalPlaces
   reviews?: Reviews
-  /** The project's words for voice input to listen for (voice.ts). */
-  voice?: VoiceWords
   /** Conversations on their way to and from your other computers (carry.ts). */
   carrying?: Carrying
-  /** Your plans' limits for each account here (limits.ts). */
-  limits?: Limits
-  /** What your accounts used, by the day (usage/usage.ts). */
-  usage?: Usage
+  boxServices?: BoxServicesClient
   /** Recheck signed-in accounts even while no client is looking. */
   refreshAccounts?: boolean
-  githubSignIn?: GitHubSignIn
 }
 
 const attempts = new Map<string, { agent: Agent; attempt: SignInAttempt; created: number; expires: number; stop: () => void; finish: () => void }>()
@@ -273,23 +255,22 @@ export function handler(context: Context, transferring?: () => boolean) {
   const note = (agent: Agent, value: Maintenance) => maintainedNow(agent, value, roster.all().filter(each => each.id === agent.id))
   const programs = { home: context.programHome, hold: sessions?.holdProgram?.bind(sessions) }
   resumeProgramUpdates(() => roster.all(), note, programs)
-  const accounts = new AccountRefresh(context.limits)
-  const signedIn = (agent: Agent) => void accounts.signedIn(agent).then(() => context.usage?.refresh()).catch(() => {})
+  const accounts = new AccountRefresh(undefined, Date.now, (provider, signedIn, signIn) => context.boxServices?.observe(provider, { signedIn, signIn }))
+  const signedIn = (agent: Agent) => void accounts.signedIn(agent).catch(() => {})
   if (context.refreshAccounts) {
     const checkPrograms = async () => {
       const agents = roster.all()
       await Promise.allSettled(agents.filter(agent => agent.instance.id === "default" && agent.maintenance).map(async agent => {
         const value = await agent.maintenance!()
         if (!note(agent, value)) return
-        for (const each of agents) if (each.id === agent.id) emit("integration.updated", { integrationID: each.providerID })
+        for (const each of agents) if (each.id === agent.id) emit("integration.updated", { integrationID: each.providerID, programMaintenance: true })
       }))
     }
     setInterval(() => void checkPrograms(), PROGRAM_RELEASE_INTERVAL).unref?.()
     void checkPrograms()
-    setInterval(() => void accounts.round(roster.all()), 60_000).unref?.()
     subscribe(event => {
       if (event.type === "model.updated" && event.data?.accountRefresh !== true) accounts.catalogChanged(roster.all(), typeof event.data?.program === "string" ? event.data.program : undefined)
-      const changed = event.type === "kuvo.agent.account.changed" || (event.type === "integration.updated" && event.data?.accountRefresh !== true)
+      const changed = event.type === "kuvo.agent.account.changed" || (event.type === "integration.updated" && event.data?.accountRefresh !== true && event.data?.programMaintenance !== true)
       if (!changed) return
       const id = event.data?.integrationID
       const agent = typeof id === "string" ? agentFor(id) : undefined
@@ -308,31 +289,15 @@ export function handler(context: Context, transferring?: () => boolean) {
 
       if (area === "info") return json({ version: context.version, pid: process.pid, build: context.build ?? null })
       if (area === "event") {
-        if (context.refreshAccounts) void accounts.round(roster.all(), true)
+        if (context.refreshAccounts && url.searchParams.get("passive") !== "1") void accounts.round(roster.all(), true)
         return feed()
       }
 
-      // Sign-in
-      if (area === "integration" && a === GITHUB_WORK_QUEUE) {
-        const github = context.githubSignIn
-        if (!github) return error(404, "GitHub sign-in isn’t available here.")
-        if (!b && method === "GET") return located(await github.integration())
-        if (b === "connect" && c === "oauth" && !e) {
-          const owner = request.headers.get("x-kuvo-sign-in-owner")
-          if (!owner) return error(400, "Start GitHub sign-in from Accounts.")
-          if (!d && method === "POST") {
-            if ((await body()).methodID !== "device") return error(400, "Choose Sign in with GitHub.")
-            try { return located(await github.begin(owner)) }
-            catch (failure) {
-              if ((failure as { status?: number }).status === 409) return error(409, (failure as Error).message)
-              throw failure
-            }
-          }
-          if (d && method === "GET") return located(github.status(d, owner))
-          if (d && method === "DELETE") { github.cancel(d, owner); return json({}) }
-        }
-        return error(404, "That GitHub sign-in action isn’t available.")
+      if (servicePath(url.pathname)) {
+        return context.boxServices?.forward(request) ?? error(503, "The box's services are starting. Try again in a moment.")
       }
+
+      // Sign-in
       if (area === "integration") {
         if (!a) {
           // `fresh`: asked anew (you refreshed, or came back to the app), with your shell's PATH read again.
@@ -625,8 +590,8 @@ export function handler(context: Context, transferring?: () => boolean) {
           await target.removeAccount?.().catch(() => {})
           target.shutdown?.()
           // Signed out as it goes: gone from the rings at once (sign-ins.ts).
-          signIns.record(target.providerID, { signedIn: false })
           roster.accounts.remove(target.providerID)
+          await context.boxServices?.observe(target.providerID, { signedIn: false, signIn: null })
           roster.sync()
           emit("integration.updated", { integrationID: target.providerID })
           emit("model.updated", {})
@@ -671,19 +636,9 @@ export function handler(context: Context, transferring?: () => boolean) {
       if (extension === "handoff") return await handoffRoutes(context.handoffs, method, parts.slice(3), body)
       if (extension === "branch") return await branchRoutes(context.places, method, parts.slice(3), body)
       if (extension === "reviews") return await reviewRoutes(context.reviews, method, parts.slice(3), body)
-      if (extension === "voice") return await voiceRoutes(context.voice, method, parts.slice(3))
-      if (extension === "limits") return await limitsRoutes(context.limits, method, parts.slice(3), body)
-      if (extension === "insights") return await insightsRoutes(context.usage?.insights, method, parts.slice(3), url.searchParams)
-      if (extension === "usage") return await usageRoutes(context.usage, method, parts.slice(3), url.searchParams, body)
       if (extension === "groups") return await groupRoutes(context.groups?.runner, context.groups?.store, method, parts.slice(3), body)
       // The same, as a client reads and changes them (`kuvo/groups`, which the box's link passes on).
       if (extension === "link" && b === "groups") return await linkRoutes(context.groups?.runner, context.groups?.store, method, parts.slice(4), body, request.signal)
-      // What this computer's agents made (`kuvo/artifacts`, which the box's link passes on).
-      if (extension === "artifacts" && b === "noted" && !c) return await notedRoute(context.noted, method, body)
-      if (extension === "link" && b === "artifacts") {
-        if (context.artifactFormatError) throw context.artifactFormatError
-        return await artifactRoutes(context.artifacts, method, parts.slice(4), url.searchParams, body, request.signal)
-      }
       // Group chats and plan limits across your computers, as the box's link carries their mail (groups/post.ts).
       if (extension === "peers") return await peerRoutes(context.peers ?? context.groups?.peers, method, parts.slice(3), body, request.signal)
 

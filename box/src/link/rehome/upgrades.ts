@@ -19,7 +19,7 @@ import path from "node:path";
 import { gitPreferencesFormat } from "../areas/git-words";
 import { projectsVersion, readProjectFields } from "../areas/projects";
 import { readWorktreeFields, worktreeRecordsFormat } from "../areas/worktree-records";
-import { UsageSettings } from "../../agents/usage/settings";
+import { UsageSettings } from "../../usage/settings";
 import { syncDurableFile } from "../../shared/files";
 import { isObject } from "../../shared/json";
 import { accountHome, homeFolder, located } from "../home";

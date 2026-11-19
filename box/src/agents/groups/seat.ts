@@ -115,7 +115,7 @@ export interface SeatContext {
   place?: string
   agentAccount?: (provider: string) => Promise<{ name: string; signedOut: boolean } | undefined>
   /** A chat's part given to a bot's own conversation, by the message that starts it: what the bot makes there is the chat's too (the record of what agents made). */
-  given?: (prompt: string, part: { chat: string; bot: string }) => void
+  given?: (prompt: string, part: { chat: string; bot: string }) => void | Promise<void>
   /** The box's queues: a part for a conversation you stopped waits there until you resume it. */
   queues?: QueueFiles
 }
@@ -517,7 +517,7 @@ export class Seats implements SeatHome {
     const api = this.ownAPI(bot)
     if (!api) throw new Error("the coding agents aren’t running")
     const promptID = newID("msg")
-    this.context.given?.(promptID, { chat, bot: bot.id })
+    await this.context.given?.(promptID, { chat, bot: bot.id })
     // Its conversation stopped by you: it waits on the box with what else came, shown as the
     // chat's, and goes once you resume it (PROTOCOL.md, "What arrives waits").
     const queues = this.context.queues

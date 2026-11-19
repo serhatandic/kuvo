@@ -1,3 +1,5 @@
+import { fingerprint, type LimitsSource } from "../../usage/limits"
+import { claudeToken } from "../../shared/agent-credentials"
 // Claude Code, with the Claude Agent SDK, as T3 Code runs it: your own `claude`, signed in with
 // your own plan or key (`claude auth login`), one long-lived Claude Code per session fed message
 // by message, its replies streamed into the session as the engine's own would be.
@@ -14,9 +16,8 @@ import type { Agent, AgentContext, Account, ConversationFiles, ConversationPlace
 import type { Limit } from "../auto"
 import { accountName, ContextWindows, failure, KnownAccount, lostWorkNote, model, signOutWith, TookTooLong } from "../agent"
 import { fileDiff, fromPatch } from "../diff"
-import { install, installedVersion, maintenance, update, type MaintenanceDefinition } from "../maintenance"
-import { fingerprint, type LimitsSource } from "../limits"
-import { CLAUDE_GRANTS_EVERY, CLAUDE_LIMITS_EVERY, claimableGrant, claimClaudeGrant, claudeIdentity, claudeOrganization, credentialsIn, sameClaudeAccount, tokenAccount, grantsExtra, heardWindows, limitWarning, MAC_TOKEN_CANT, readClaudeGrants, readClaudeLimits, type ClaudeGrants, type ClaudeSignIn } from "./claude-limits"
+import { install, maintenance, update, type MaintenanceDefinition } from "../maintenance"
+import { claudeIdentity, credentialsIn, heardWindows, limitWarning, type ClaudeSignIn } from "../../usage/claude-limits"
 import { emit } from "../events"
 import { run, which } from "../proc"
 import { Queue } from "../queue"
@@ -419,89 +420,16 @@ export class ClaudeAgent implements Agent {
     return join(this.context.home, "claude", "tokens", `${this.instance.id}.json`)
   }
 
-  /**
-   * Its plan's limits (claude-limits.ts), with Kuvo Code's own sign-in only: never yours in
-   * Terminal. On Linux they're read from Anthropic, whose limit on reads is the computer's, so one
-   * turned away holds every Claude account here (`bucket`); on a Mac its token can't read them, so
-   * only what its turns hear tells them, and who it's for is as Anthropic told Claude Code running
-   * with it.
-   */
-  /** Whether its sign-in is a Mac's token (as this computer's Claude is, from when it's made). */
+  /** The account and sign-in a turn's observed rate limits apply to. */
   private readonly byToken = ClaudeAgent.keychain
-
-  readonly limits: LimitsSource = this.byToken
-    ? {
-        every: CLAUDE_LIMITS_EVERY,
-        // (Signed in to another account since, what its turns told goes: limits.ts, `switched`.)
-        signIn: () => fingerprint(this.token()),
-        identity: () => {
-          const token = this.token()
-          return token ? claudeIdentity(this.configHome, token) : undefined
-        },
-        // Its token can only run Claude: its extra usage and resets show from another computer
-        // signed in to Claude Code with the same account, where there's one (limits-rows.ts).
-        facts: () => [{ id: "resets", name: "Rate Limit Resets", kind: "unreadable", message: MAC_TOKEN_CANT }],
-      }
-    : {
-        every: CLAUDE_LIMITS_EVERY,
-        bucket: "anthropic",
-        read: async (now) => {
-          const signIn = this.limitsSignIn()
-          const version = signIn ? await this.programVersion() : undefined
-          const reading = await readClaudeLimits(signIn, version, now)
-          // Its resets, read after its windows, at most hourly (Anthropic limits this read hard).
-          const resets = signIn ? await this.grantsExtra(signIn, version, now) : undefined
-          return resets ? { ...reading, extras: [...(reading.extras ?? []), resets] } : reading
-        },
-        signIn: () => fingerprint(this.limitsSignIn()?.token),
-        identity: () => (this.instance.home ? claudeIdentity(this.instance.home) : undefined),
-        reset: async (attempt, now) => {
-          // (The very sign-in Anthropic was asked about, where it was: one signed in since isn't spent with.)
-          const signIn = (attempt.signIn as ClaudeSignIn | undefined) ?? this.limitsSignIn()
-          const version = signIn ? await this.programVersion() : undefined
-          // None read since the box started (a restart since its row said it has them): read now,
-          // as the hourly read would.
-          if (signIn && !(this.grants && this.grants.as === fingerprint(signIn.token))) await this.grantsExtra(signIn, version, now)
-          const grants = this.grants && this.grants.as === fingerprint(signIn?.token) ? this.grants.status : undefined
-          const grant = claimableGrant(grants, now)?.id
-          if (!signIn || (!grant && !attempt.target)) return { outcome: "no-reset" }
-          return claimClaudeGrant(signIn, version, await claudeOrganization(this.instance.home, signIn, version), grant, attempt)
-        },
-        // Read again at the next read, what was read standing meanwhile (a read that fails then
-        // keeps it, never none).
-        afterReset: () => {
-          if (this.grants) this.grants = { ...this.grants, at: -Infinity }
-        },
-        // Whether its token is the account Claude Code's record says, as Anthropic says, right
-        // before a reset is spent with it.
-        spender: async () => {
-          const signIn = this.limitsSignIn()
-          const recorded = this.instance.home ? claudeIdentity(this.instance.home) : undefined
-          const token = signIn ? await tokenAccount(signIn, await this.programVersion()) : undefined
-          return recorded && token ? { same: sameClaudeAccount(recorded, token), signIn } : undefined
-        },
-      }
-
-  /** Its reset grants as last read, with which sign-in (a fingerprint), and when. */
-  private grants?: { as: string | undefined; at: number; status: ClaudeGrants | undefined }
-
-  /**
-   * Its reset grants as a `resets` extra: read again once an hour has gone by since the last try (a
-   * failed one counts: an outage or a 429 isn't asked again every read), as last read meanwhile;
-   * none where none was ever read.
-   */
-  private async grantsExtra(signIn: ClaudeSignIn, version: string | undefined, now: number) {
-    const as = fingerprint(signIn.token)
-    const kept = this.grants && this.grants.as === as ? this.grants : undefined
-    if (!kept || now - kept.at >= CLAUDE_GRANTS_EVERY) {
-      try {
-        this.grants = { as, at: now, status: await readClaudeGrants(signIn, version) }
-      } catch {
-        this.grants = { as, at: now, status: kept?.status }
-      }
-    }
-    const status = this.grants && this.grants.as === as ? this.grants.status : undefined
-    return status ? grantsExtra(status, now) : undefined
+  readonly limits: LimitsSource = {
+    every: 15 * 60_000,
+    signIn: () => fingerprint(this.limitsSignIn()?.token),
+    identity: () => {
+      if (!this.byToken) return this.instance.home ? claudeIdentity(this.instance.home) : undefined
+      const token = this.token()
+      return token ? claudeIdentity(this.configHome, token) : undefined
+    },
   }
 
   /**
@@ -516,25 +444,9 @@ export class ClaudeAgent implements Agent {
     return this.instance.home ? credentialsIn(this.instance.home) : undefined
   }
 
-  private version?: { at: number; value?: string }
-
-  /** Claude Code's version here, asked at most hourly. */
-  protected async programVersion(): Promise<string | undefined> {
-    if (this.version && Date.now() - this.version.at < 3_600_000) return this.version.value
-    const executable = this.executable()
-    const value = executable ? await installedVersion(executable).catch(() => undefined) : undefined
-    this.version = { at: Date.now(), value }
-    return value
-  }
-
   /** Kuvo Code's own token, on a Mac, while it has one. */
   token(): string | undefined {
-    try {
-      const token = JSON.parse(readFileSync(this.tokenFile, "utf8"))?.token
-      return typeof token === "string" && token ? token : undefined
-    } catch {
-      return undefined
-    }
+    return claudeToken(this.tokenFile)
   }
 
   async signIn(methodID: string, options: SignInOptions = {}): Promise<SignInAttempt> {
