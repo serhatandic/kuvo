@@ -35,6 +35,20 @@ function checkpoint(box, epoch) {
 const pendingOperation = (box, kind) => Object.entries(box.read().sharedPending ?? {})
   .find(([, envelope]) => link.readDoc(envelope).body.kind === kind)?.[0];
 
+function assertReceipt(box, kind, status, save) {
+  assert.ok(save, `${kind} ${status} reply has a receipt`);
+  assert.equal(save.status, status, kind);
+  assert.equal(save.pending, status === "pending" ? true : undefined, kind);
+  assert.equal(save.setup, box.read().setup.id, kind);
+  assert.equal(save.epoch, box.read().setup.epoch, kind);
+  const proof = link.readDoc(save.proof);
+  assert.equal(proof?.origin, box.sign, kind);
+  assert.equal(proof.body.kind, kind);
+  assert.equal(proof.body.operation, save.operation, kind);
+  if (status === "pending") assert.equal(save.operation, pendingOperation(box, kind), kind);
+  else assert.equal(box.read().sharedOutcomes?.[save.operation]?.status, status, kind);
+}
+
 async function until(what, read, signal) {
   while (!signal.aborted) {
     const value = read();
@@ -349,16 +363,19 @@ test("failure bench: normal save callers carry proofs to the successor", { timeo
   const root = path.dirname(a.run);
   const release = path.join(root, "release");
   const pack = Buffer.from("The interrupted save must never unpack this.");
-  const manifest = Buffer.from(JSON.stringify({
-    kuvo: "box/1", version: "0.10.0", engine: "1.0.0",
+  const manifestFor = version => Buffer.from(JSON.stringify({
+    kuvo: "box/1", version, engine: "1.0.0",
     pack: { url: "https://example.invalid/pack.tgz", sha256: crypto.createHash("sha256").update(pack).digest("hex") },
   }));
   fs.mkdirSync(release);
   fs.writeFileSync(path.join(release, "pack.tgz"), pack);
-  fs.writeFileSync(path.join(release, "boxes.json"), JSON.stringify({
-    manifest: manifest.toString("base64"), key: pin,
-    signature: crypto.sign(null, Buffer.concat([Buffer.from("kuvo-box v1\n"), manifest]), privateKey).toString("base64"),
-  }));
+  const offer = version => {
+    const manifest = manifestFor(version);
+    fs.writeFileSync(path.join(release, "boxes.json"), JSON.stringify({
+      manifest: manifest.toString("base64"), key: pin,
+      signature: crypto.sign(null, Buffer.concat([Buffer.from("kuvo-box v1\n"), manifest]), privateKey).toString("base64"),
+    }));
+  };
   fs.mkdirSync(path.join(root, "bin"), { recursive: true });
   fs.writeFileSync(path.join(root, "bin", "box-version"), "0.9.0");
   const settings = fileURLToPath(new URL("../src/agents/usage/settings.ts", import.meta.url));
@@ -366,30 +383,69 @@ test("failure bench: normal save callers carry proofs to the successor", { timeo
     const { status, value, err } = await box.evaluate(bun, ["-e", `
       import { UsageSettings, settingsRoutes } from ${JSON.stringify(settings)};
       const settings = new UsageSettings(undefined, undefined, undefined, ${JSON.stringify(box.run)});
-      const reply = await settingsRoutes(settings, () => ["gpt-test"], ${JSON.stringify(method)}, ${JSON.stringify(rest)}, async () => (${JSON.stringify(body)}));
+      const reply = await settingsRoutes(settings, () => ["gpt-test", "gpt-next"], ${JSON.stringify(method)}, ${JSON.stringify(rest)}, async () => (${JSON.stringify(body)}));
       console.log(JSON.stringify({ status: reply.status, value: await reply.json() }));
     `]);
     assert.equal(status, 0, err);
     return value;
   };
 
+  const changeZone = async value => {
+    const clock = await a.route("GET", "kuvo/settings/clock", undefined, true);
+    assert.equal(clock.status, 200);
+    const row = clock.value.groups.flatMap(group => group.rows).find(row => row.id === "time-zone");
+    assert.ok(row);
+    return a.route("PATCH", "kuvo/settings/clock", { row: row.id, was: row.revision, value }, true);
+  };
+  const takeLibrary = document => a.route("POST", "kuvo/personalities/take", { document }, true);
+  const editPersonality = name => a.route("POST", "kuvo/personalities", { name, description: "A receipt-backed edit." }, true);
+  offer("0.9.9");
+  const [savedDisplay, savedLabel, savedName, savedZone, savedLibrary, savedRelease] = await Promise.all([
+    usage(a, "PUT", [], { codexFallback: "gpt-test" }),
+    a.route("POST", "kuvo/work-queue/labels", { add: "Online label" }, true),
+    rename(a, c, "Online name"),
+    changeZone("America/New_York"),
+    takeLibrary({ personalities: [personality(2)], removed: [] }),
+    a.updateFrom(release),
+  ]);
+  for (const answer of [savedDisplay, savedLabel, savedName, savedZone, savedLibrary]) {
+    assert.equal(answer.status, 200, JSON.stringify(answer));
+  }
+  // The release choice commits before unpacking. The fixture's invalid tarball stops installation.
+  assert.equal(savedRelease.result, "failed", JSON.stringify(savedRelease));
+  const savedTool = await a.labelTool({ add: "Online tool label" });
+  assert.equal(savedTool.isError, false);
+  const savedPersonality = await editPersonality("Online personality");
+  assert.equal(savedPersonality.status, 200, JSON.stringify(savedPersonality));
+  for (const [kind, save] of [
+    ["setupUsageDisplay", savedDisplay.value.data.save], ["queueLabels", savedLabel.value], ["queueLabels", savedTool.save],
+    ["setupNames", savedName.value], ["setupTimeZone", savedZone.value], ["setupPersonalities", savedLibrary.value],
+    ["setupPersonalities", savedPersonality.value], ["setupSecurityAndReleaseChoice", savedRelease.save],
+  ]) assertReceipt(a, kind, "committed", save);
+
+  // The individual edit and the library merge share a kind. Settle the edit before staging the merge.
+  const holdEdit = relay.pause(a.address, b.address);
+  t.after(holdEdit);
+  const pendingEdit = await editPersonality("Outage personality");
+  assert.equal(pendingEdit.status, 202, JSON.stringify(pendingEdit));
+  assertReceipt(a, "setupPersonalities", "pending", pendingEdit.value);
+  holdEdit();
+  await until("the edit settled", () => a.read().sharedOutcomes?.[pendingEdit.value.operation]?.status === "committed", t.signal);
+
+  offer("0.10.0");
   const resume = relay.pause(a.address, b.address);
   t.after(resume);
   const args = { add: "Outage label" };
   const document = { personalities: [personality(1)], removed: [] };
-  const clock = await a.route("GET", "kuvo/settings/clock", undefined, true);
-  assert.equal(clock.status, 200);
-  const row = clock.value.groups.flatMap(group => group.rows).find(row => row.id === "time-zone");
-  assert.ok(row);
   const [display, tool, update, label, name, removal, zone, library, sshLibrary] = await Promise.all([
-    usage(a, "PUT", [], { codexFallback: "gpt-test" }),
+    usage(a, "PUT", [], { codexFallback: "gpt-next" }),
     a.labelTool(args),
     a.updateFrom(release),
     a.route("POST", "kuvo/work-queue/labels", args, true),
     rename(a, c, "Outage name"),
     a.route("DELETE", `kuvo/computers/${c.key}`),
-    a.route("PATCH", "kuvo/settings/clock", { row: row.id, was: row.revision, value: "Asia/Tokyo" }, true),
-    a.route("POST", "kuvo/personalities/take", { document }, true),
+    changeZone("Asia/Tokyo"),
+    takeLibrary(document),
     a.command(["box", "personalities"], JSON.stringify(document)),
   ]);
   assert.equal(display.status, 202);
@@ -415,9 +471,7 @@ test("failure bench: normal save callers carry proofs to the successor", { timeo
     ["setupPersonalities", sshLibrary.value.save],
   ];
   for (const [kind, save] of receipts) {
-    assert.equal(save?.operation, pendingOperation(a, kind), kind);
-    assert.equal(save.status, "pending", kind);
-    assert.equal(link.readDoc(save.proof)?.origin, a.sign, kind);
+    assertReceipt(a, kind, "pending", save);
     assert.equal((await link.askSetupStatus(b.run, { id: save.setup, operation: save.operation })).status, 404, kind);
   }
   assert.ok(tool.text.endsWith(JSON.stringify(tool.save)));
@@ -580,6 +634,64 @@ test("failure bench: local uninstall refuses a primary before clearing identity 
   const child = spawn(process.execPath, [script, "uninstall"], { env: { ...a.env, HOME: home, KUVO_HOME: home }, stdio: "ignore" });
   assert.equal((await once(child, "exit"))[0], 0);
   assert.ok(fs.existsSync(path.join(home, "run", "off")));
+});
+
+test("failure bench: access routes return receipts with and without a standby acknowledgement", { timeout: 90_000 }, async t => {
+  const { a, b, c, relay } = await standbyNetwork(t);
+  const device = name => ({ key: link.publicOf(link.newKey()).toString("base64url"), name, kind: "desktop" });
+  const pair = (box, asking) => box.route("POST", "kuvo/devices/pair", asking, true);
+  const remove = asking => a.route("POST", "kuvo/phones/remove", { phones: [{ key: asking.key }] }, true);
+  const allow = () => a.route("POST", `kuvo/computers/${c.key}/allow-devices`, undefined, true);
+  const access = async (status, request) => {
+    const resume = status === "pending" ? relay.pause(a.address, b.address) : () => {};
+    t.after(resume);
+    const reply = await request();
+    assert.equal(reply.status, status === "pending" ? 202 : 200, JSON.stringify(reply));
+    assertReceipt(a, "membershipAndAccess", status, reply.value);
+    resume();
+    if (status === "pending") {
+      await until("access change settled", () => a.read().sharedOutcomes?.[reply.value.operation]?.status === "committed", t.signal);
+    }
+    return reply.value;
+  };
+
+  // The fixture starts with this voucher blocked. Removing its app blocks it again.
+  for (const status of ["pending", "committed"]) {
+    await access(status, allow);
+    const local = device(`Local ${status}`);
+    const member = device(`Vouched ${status}`);
+    await access(status, () => pair(a, local));
+    const vouched = await access(status, () => pair(c, member));
+    if (status === "committed") assert.equal(vouched.paired, true);
+    await access(status, () => remove(local));
+    await access(status, () => remove(member));
+  }
+  await access("committed", () => a.route("DELETE", `kuvo/computers/${c.key}`));
+});
+
+test("failure bench: forwarded computer changes carry receipts through the member route", { timeout: 75_000 }, async t => {
+  for (const status of ["pending", "committed"]) {
+    await t.test(status, async t => {
+      const { a, b, c, relay } = await standbyNetwork(t);
+      // Keep both directions of forwarding open while holding the primary's proposal to the standby.
+      const release = status === "pending" ? relay.intercept(a.address, b.address, packet => {
+        const give = link.openMail(link.readFrame(packet.payload).body, b.read())?.payload?.docs?.give;
+        return give?.some(envelope => {
+          const doc = link.readDoc(envelope);
+          return doc?.kind === "setup-shared" && !doc.body.published && !doc.body.receipt
+            && ["setupNames", "membershipAndAccess"].includes(doc.body.kind);
+        });
+      }) : () => {};
+      t.after(release);
+      for (const [kind, reply] of [
+        ["setupNames", await rename(b, c, `Forwarded ${status}`)],
+        ["membershipAndAccess", await b.route("DELETE", `kuvo/computers/${c.key}`)],
+      ]) {
+        assert.equal(reply.status, status === "pending" ? 202 : 200, JSON.stringify(reply));
+        assertReceipt(a, kind, status, reply.value);
+      }
+    });
+  }
 });
 
 test("failure bench: a QR handshake carries its durable pairing receipt to the successor", { timeout: 45_000 }, async t => {

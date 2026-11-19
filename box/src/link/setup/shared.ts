@@ -4,7 +4,7 @@ import { setupLayoutDeferred } from "../../shared/folder-version";
 import crypto from "node:crypto";
 import { SHARED_KINDS, sharedKind, sharedPolicy, type SharedKind } from "../../shared/data-declarations";
 import type { Doc, SignedDoc } from "../../shared/documents";
-import { INTERRUPTED_SAVE, PENDING_SAVE, type Receipt } from "../../shared/routes/setup-save";
+import { INTERRUPTED_SAVE, PENDING_SAVE, type InterruptedReply, type PendingReply, type Receipt, type SaveReply } from "../../shared/routes/setup-save";
 import { isObject } from "../../shared/json";
 import { held, MOST_DOC, ownSign, readDoc, signDoc } from "../documents/format";
 import { K } from "../home";
@@ -288,7 +288,9 @@ export function withSaveOutcome({ setup, epoch, operation, proof }: Pick<Receipt
   return { ...reference, status };
 }
 
-export function sharedSaveReply(receipt: Receipt) {
+export function sharedSaveReply(receipt: Exclude<Receipt, { status: "committed" }>): PendingReply | InterruptedReply;
+export function sharedSaveReply(receipt: Receipt): SaveReply;
+export function sharedSaveReply(receipt: Receipt): SaveReply {
   if (receipt.status === "committed") return { status: 200, value: receipt } as const;
   if (receipt.status === "pending") return { status: 202, value: receipt } as const;
   return { status: 409, value: receipt } as const;

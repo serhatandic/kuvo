@@ -14,6 +14,7 @@
 
 import { upgradeKuvoFolder } from "../../shared/folder-version";
 import { syncDurableFile, writeDurablePrivate } from "../../shared/files";
+import type { SaveEnvelope } from "../../shared/routes/setup-save";
 import { askSetupOutcome, askSetupSave, localSetupValue, type SetupSaveReceipt } from "../../shared/setup-local";
 import { INTERRUPTED_SAVE } from "../setup/shared";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
@@ -135,14 +136,19 @@ export const boxVersion = (): string | null => {
 export type UpdateResult = LastUpdate["result"];
 
 /** What `update` says happened: its result, the version it's at or found, and why, in words. */
-export interface UpdateOutcome {
+interface UpdateResultBody {
   result: UpdateResult;
   version?: string;
   message?: string;
-  save?: SetupSaveReceipt;
+}
+type ReleaseSaveOutcome = UpdateResultBody & SaveEnvelope;
+export type UpdateOutcome = ReleaseSaveOutcome | (UpdateResultBody & { save?: never });
+
+function withReleaseSave(outcome: UpdateResultBody, save: SetupSaveReceipt): ReleaseSaveOutcome {
+  return { ...outcome, save };
 }
 
-function waitingForReleaseSave(version: string, save: SetupSaveReceipt): UpdateOutcome {
+function waitingForReleaseSave(version: string, save: SetupSaveReceipt): ReleaseSaveOutcome {
   return { result: "waiting", version, message: save.status === "interrupted" ? INTERRUPTED_SAVE : save.message, save };
 }
 
@@ -537,6 +543,7 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
   if (!takeUpdateLock()) return { result: "busy", message: UPDATING_ALREADY };
   let trial = false, stopped = false, swapped = false, stage: string | null = null;
   let releaseSave: SetupSaveReceipt | undefined;
+  const releaseResult = (outcome: UpdateResultBody): UpdateOutcome => releaseSave ? withReleaseSave(outcome, releaseSave) : outcome;
   // The engine's data as it was copied before a newer engine ran (`keepData`): a newer engine that
   // wrote nothing to it by the time a failed swap is put back goes back with the rest.
   let dataKept: string | null = null;
@@ -599,13 +606,13 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
     // under its version) is taken when its files aren't the ones in place (below); GitHub's is the
     // one this version came from.
     const again = !!from && sameVersion(manifest.version, before);
-    if (!newerVersion(manifest.version, before) && !again) return { result: "current", version: before };
+    if (!newerVersion(manifest.version, before) && !again) return releaseResult({ result: "current", version: before });
     // (Its files read from the folder's pack, before anything's said to be under way.)
-    if (again && !folderDiffers(from!, manifest)) return { result: "current", version: before };
+    if (again && !folderDiffers(from!, manifest)) return releaseResult({ result: "current", version: before });
     // Never an older engine than the one running: it may not read what the newer one wrote.
     const behind = engineBehind(manifest.engine);
-    if (behind) return { result: "blocked", message: behind };
-    if (!now && !from && clock() - (Date.parse(manifest.released!) || clock()) < RELEASE_AGE) return { result: "waiting", version: manifest.version, message: "It takes a release a few days after it's out." };
+    if (behind) return releaseResult({ result: "blocked", message: behind });
+    if (!now && !from && clock() - (Date.parse(manifest.released!) || clock()) < RELEASE_AGE) return releaseResult({ result: "waiting", version: manifest.version, message: "It takes a release a few days after it's out." });
     // Only a release with another engine that its code wasn't checked with waits for nothing to be at
     // work (that engine is started in the one running's place with its code); or now, on your word:
     // a client asks you first, saying what stops. One whose code was checked with the engine running
@@ -622,7 +629,7 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
     if (hexSHA256(pack) !== manifest.pack.sha256) throw new Error("The release's files aren't what it says.");
     const authority = localSetupValue(RUN, "setupSecurityAndReleaseChoice");
     if (authority?.id !== setup?.id || authority?.epoch !== setup?.epoch || authority?.sequence !== setup?.sequence) {
-      return { result: "waiting", version: manifest.version, message: "The setup changed while this release was being checked." };
+      return releaseResult({ result: "waiting", version: manifest.version, message: "The setup changed while this release was being checked." });
     }
     // A candidate pack can wait on disk. The fleet advertises only the accepted choice.
     keepRelease(released, pack);
@@ -633,14 +640,17 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
       });
       const save = releaseSave = response.receipt;
       if (save?.status === "pending") noteUpdate({ releaseSave: { version: manifest.version, sha256: manifest.pack.sha256, save } });
-      if (response.status !== 200) return { result: "waiting", version: manifest.version, message: response.message, ...(save ? { save } : {}) };
+      if (response.status !== 200) {
+        if (save) return waitingForReleaseSave(manifest.version, save);
+        return releaseResult({ result: "waiting", version: manifest.version, message: response.message });
+      }
     }
     fs.writeFileSync(path.join(stage, "pack.tgz"), pack, { mode: 0o600 });
     if (ran("tar", ["xzf", path.join(stage, "pack.tgz"), "-C", path.join(stage, "files")]).status !== 0) throw new Error("The release's files couldn't be unpacked.");
     const box: BoxFiles = JSON.parse(fs.readFileSync(path.join(stage, "files", "box.json"), "utf8"));
     if (box?.version !== manifest.version || box.engine !== manifest.engine || !isObject(box.files)) throw new Error("The release's files aren't what it says.");
     const apart = engineChanges && engineApart(box, running);
-    if (!whileBusy && engineChanges && !apart && await boxBusy()) return { ...(releaseSave ? { save: releaseSave } : {}), result: "busy", message: "Something is running there now." };
+    if (!whileBusy && engineChanges && !apart && await boxBusy()) return releaseResult({ result: "busy", message: "Something is running there now." });
     const files = installOrder(Object.keys(box.files));
     // (Each a file, never a link to one elsewhere.)
     const matches = (file: string, sha: unknown): boolean => fs.lstatSync(file, { throwIfNoEntry: false })?.isFile() === true && hexSHA256(fs.readFileSync(file)) === sha;
@@ -713,7 +723,7 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
       if (triedBefore && (triedBefore.status !== 0 || !triedBefore.output.includes("ok"))) throw new Error("The new link doesn't work with the engine at work here.");
     }
     if (ran("sh", ["-n", path.join(stage, "files", "bin", "kuvo-start")]).status !== 0) throw new Error("The new keeper doesn't read.");
-    if (!whileBusy && engineChanges && !apart && await boxBusy()) return { ...(releaseSave ? { save: releaseSave } : {}), result: "busy", message: "Something is running there now." };
+    if (!whileBusy && engineChanges && !apart && await boxBusy()) return releaseResult({ result: "busy", message: "Something is running there now." });
 
     // What's there kept; then the new in its place, one file at a time.
     step("installing");
@@ -792,7 +802,7 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
     // On trial from here: judged by the one health rule (`updates/health.ts`), by this process once
     // it's done here, or by the judge the keeper starts should this one go first.
     noteUpdate({ trial: { from: before, to: manifest.version, at: clock(), swapped: swappedAt, ...(features ? { features } : {}), ...(dataKept !== null ? { dataKept } : {}) } });
-    return { ...(releaseSave ? { save: releaseSave } : {}), result: "updated", version: manifest.version };
+    return releaseResult({ result: "updated", version: manifest.version });
   } catch (error) {
     brokeOff = fetching;
     const message = String((error as Error | undefined)?.message ?? error).slice(0, 300);
@@ -822,7 +832,7 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
     }
     if (trial) noteUpdate({ trial: null });
     noteUpdate({ last: { at: clock(), result: "failed", message, from: before } });
-    return { ...(releaseSave ? { save: releaseSave } : {}), result: "failed", message };
+    return releaseResult({ result: "failed", message });
   } finally {
     clearUpdateStaging();
     fs.rmSync(UPDATE_LOCK, { recursive: true, force: true });

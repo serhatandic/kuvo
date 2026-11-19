@@ -67,7 +67,10 @@ export function localSetupValue(run: string, kind: string): LocalSetupValue | nu
   } catch { return null; }
 }
 
-type LocalSaveAnswer = { status: number; message?: string; receipt?: Receipt; legacyPending?: { pending: true; operation: string } };
+export type LocalSaveAnswer = { status: number; message?: string } & (
+  | { receipt: Receipt; legacyPending?: never }
+  | { receipt?: never; legacyPending?: { pending: true; operation: string } }
+);
 type LocalStatus = LocalSaveAnswer & { outcome?: Receipt["status"] };
 
 export function askSetupOutcome(run: string, reference: SetupSaveReference, kind?: SharedKind): Promise<LocalSaveAnswer> {
@@ -121,14 +124,16 @@ function askLocalSetup(run: string, body: object, reference?: Partial<Receipt>):
         const value: unknown = JSON.parse(Buffer.from(reply.body, "base64").toString());
         if (!Number.isInteger(reply.status)) return finish();
         const result = isObject(value) ? value : {};
-        const outcome = result.status;
+        const outcome: unknown = result.status;
         const receipt = setupSaveReceipt({ ...reference, ...result });
-        finish({ status: reply.status, message: typeof result.message === "string" ? result.message : undefined,
-          ...(receipt ? { receipt } : {}),
-          ...(!receipt && reply.status === 202 && typeof result.operation === "string"
-            ? { legacyPending: { pending: true, operation: result.operation } } : {}),
+        const response: Pick<LocalStatus, "status" | "message" | "outcome"> = { status: reply.status, message: typeof result.message === "string" ? result.message : undefined,
           ...(outcome === "pending" || outcome === "committed" || outcome === "interrupted" ? { outcome } : {}),
-        });
+        };
+        if (receipt) return finish({ ...response, receipt });
+        if (reply.status === 202 && typeof result.operation === "string") {
+          return finish({ ...response, legacyPending: { pending: true, operation: result.operation } });
+        }
+        finish(response);
       } catch { finish(); }
     });
   });

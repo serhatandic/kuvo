@@ -4,6 +4,7 @@
 
 import type { BridgeRecord, EngineRecord } from "../../shared/records";
 import type { NoticeHold } from "../notices/hold";
+import type { SaveReply } from "../../shared/routes/setup-save";
 import type { LinkState } from "../state";
 
 /** A request to the box: its method, its path (with any query), its headers and body. */
@@ -84,6 +85,11 @@ export interface RouteContext {
   hold: NoticeHold | null;
   json: (status: number, value: unknown) => AnswerPiece[];
   text: (status: number, words: string) => AnswerPiece[];
+}
+
+/** Serialize either outcome of a shared save through the route's JSON encoder. */
+export function savedJson<T extends SaveReply>(json: RouteContext["json"], reply: T): AnswerPiece[] {
+  return json(reply.status, reply.value);
 }
 
 /** What LinkHost (or this Mac's app's HTTP server) runs for each request: its answer, as it comes.

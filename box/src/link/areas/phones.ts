@@ -14,7 +14,7 @@ import { IS_MAC } from "../home";
 import { canIssuePairing, newPairingToken, pairedPhone, pairingLink, removeAsMac, removePhones } from "../phones";
 import { mainElsewhere, pairElsewhere } from "../setup/main-only";
 import { pairDeviceFromHere } from "../peers/devices";
-import { fromLocalApp } from "../server/context";
+import { fromLocalApp, savedJson } from "../server/context";
 import type { AnswerPiece, RouteContext } from "../server/context";
 import { macLink, readLink, updateLink } from "../state";
 import type { LinkState, Pairing } from "../state";
@@ -56,8 +56,7 @@ export async function* phonesRemoveRoute(context: RouteContext): AsyncGenerator<
   if (busy) return yield* json(409, { message: "An access change is already waiting to be saved." });
   const receipt = await awaitSharedSave(save);
   if (receipt && receipt.status !== "committed") {
-    const reply = sharedSaveReply(receipt);
-    return yield* json(reply.status, reply.value);
+    return yield* savedJson(json, sharedSaveReply(receipt));
   }
   const main = primary as ReturnType<typeof mainElsewhere>;
   if (main) return yield* json(409, { message: `Remove devices from ${main.name || "your main computer"}.`, primary: main.key });
@@ -65,7 +64,8 @@ export async function* phonesRemoveRoute(context: RouteContext): AsyncGenerator<
   noteDocsChanged();
   // Once this answer is on its way: a phone that removed itself gets it too.
   setTimeout(() => phonesChanged(readLink() ?? changed), 200);
-  return yield* json(200, receipt ?? {});
+  if (receipt) return yield* savedJson(json, { status: 200, value: receipt });
+  return yield* json(200, {});
 }
 
 /** What a Mac says while it lets no device in: the one switch for phones and desktop apps alike. */

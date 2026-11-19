@@ -12,6 +12,7 @@
 // Platform: the same on macOS and Linux; only a Mac's box has the switch ("Let my devices connect").
 
 import { updateAccess } from "../setup/access";
+import type { SaveReply, SavedReply, UnsavedReply } from "../../shared/routes/setup-save";
 import { setupSaveReceipt } from "../../shared/setup-local";
 import { awaitSharedSave, bindSave, queryOperation, sharedSaveReply, withSaveOutcome } from "../setup/shared";
 import { readDoc } from "../documents/format";
@@ -68,7 +69,8 @@ export function givenDevice(given: unknown, link: LinkState | null = readLink())
   return { key: given.key as string, name: plainName(given.name).slice(0, MOST_NAME), kind: "desktop" };
 }
 
-const answer = (status: number, value: unknown): Acted => ({ status, value });
+type DeviceReply = SaveReply | UnsavedReply<200 | 400 | 403 | 404 | 409 | 503>;
+const answer = <S extends 200 | 400 | 403 | 404 | 409 | 503>(status: S, value: UnsavedReply<S>["value"] & Record<string, unknown>): UnsavedReply<S> => ({ status, value });
 
 /** What a removed device is told (`reason`, for the app to offer making a new key, on your word). */
 const REMOVED = { message: "This app was removed from your devices.", reason: "removed" };
@@ -82,11 +84,11 @@ const switchOffWords = () => ({ message: `“Let my devices connect” is off on
 /** `device` paired on this box, which pairs phones itself: at once, as a paired device of its own.
  * Refused as a phone's pairing is: a Mac that lets no device in, or a box with no relay. `by`: the
  * member's box key. Its membership and permission to vouch are checked under the pairing lock. */
-export async function pairHere(device: AskingDevice, by?: string): Promise<Acted> {
+export async function pairHere(device: AskingDevice, by?: string): Promise<DeviceReply> {
   if (switchOff()) return answer(409, switchOffWords());
   let made: ReturnType<typeof pairDevice> | null = null;
   let fresh = false;
-  let refusal: Acted | undefined;
+  let refusal: UnsavedReply<400 | 409> | undefined;
   let computer: string | undefined;
   const { save, busy } = updateAccess(link => {
     const main = mainElsewhere(link);
@@ -129,7 +131,9 @@ export async function pairHere(device: AskingDevice, by?: string): Promise<Acted
     // (A Mac's link comes up for its first device, as for a phone's pairing.)
     macLink.wake?.();
   }
-  return answer(200, { paired: true, pairing: paired.pairing, ...receipt });
+  const value = { paired: true as const, pairing: paired.pairing };
+  if (receipt) return { status: 200, value: { ...value, ...receipt } } satisfies SavedReply<typeof value>;
+  return answer(200, value);
 }
 
 /** Compatibility for clients whose member box vouches for them. The primary uses the same
@@ -139,7 +143,7 @@ const ownMachines = (link: LinkState): Set<string> =>
 
 /** A member's box vouching for the app on its computer (`area: "devices"`, by mail): paired here
  * only on the setup's main computer, for a box its own peers document names. */
-export async function deviceAct(sender: MailSender, act: Act): Promise<Acted> {
+export async function deviceAct(sender: MailSender, act: Act): Promise<DeviceReply> {
   if (act.method === "GET") {
     if (act.item !== sender.key) return answer(403, { message: "A computer can only check its own device revocation." });
     const receipt = setupSaveReceipt(act.body?.save);
@@ -160,7 +164,7 @@ export async function deviceAct(sender: MailSender, act: Act): Promise<Acted> {
     const receipt = await awaitSharedSave(save && bindSave(save, changed.sign!, { revokedVoucher: sender.key }));
     if (receipt && receipt.status !== "committed") return sharedSaveReply(receipt);
     macDocsChanged({ closeRemoved: readLink() });
-    return answer(200, receipt ?? {});
+    return receipt ? sharedSaveReply(receipt) : answer(200, {});
   }
   const device = act.method === "POST" ? givenDevice({ ...(act.body ?? {}), key: act.item }, null) : null;
   if (!device) return answer(400, NOT_GIVEN);

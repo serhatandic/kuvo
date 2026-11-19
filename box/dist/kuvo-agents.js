@@ -3601,13 +3601,17 @@ function askLocalSetup(run, body, reference) {
         const result = isObject(value) ? value : {};
         const outcome = result.status;
         const receipt = setupSaveReceipt({ ...reference, ...result });
-        finish({
+        const response = {
           status: reply.status,
           message: typeof result.message === "string" ? result.message : undefined,
-          ...receipt ? { receipt } : {},
-          ...!receipt && reply.status === 202 && typeof result.operation === "string" ? { legacyPending: { pending: true, operation: result.operation } } : {},
           ...outcome === "pending" || outcome === "committed" || outcome === "interrupted" ? { outcome } : {}
-        });
+        };
+        if (receipt)
+          return finish({ ...response, receipt });
+        if (reply.status === 202 && typeof result.operation === "string") {
+          return finish({ ...response, legacyPending: { pending: true, operation: result.operation } });
+        }
+        finish(response);
       } catch {
         finish();
       }
@@ -28306,7 +28310,7 @@ async function settingsRoutes(settings, choices, method, rest, body) {
     if (!reference)
       return json10({ message: "Send the setup save receipt." }, 400);
     const result = await settings.saveOutcome(reference);
-    return result?.receipt ? json10(result.receipt) : json10({ message: result?.message }, result?.status ?? 503);
+    return result?.receipt ? savedJson(result.receipt) : json10({ message: result?.message }, result?.status ?? 503);
   }
   const shared = settings.shared();
   if (shared && !shared.primary)
@@ -28316,13 +28320,15 @@ async function settingsRoutes(settings, choices, method, rest, body) {
     if (!shared)
       return answer3(settings, extra);
     const result = await settings.saveDraft(shared, draft);
-    if (result.status !== 200)
-      return json10(result.receipt ?? {
-        message: result.message,
-        ...result.legacyPending ?? (result.status === 202 ? { pending: true } : {})
-      }, result.status);
+    if (result.status !== 200) {
+      if (result.receipt)
+        return savedJson(result.receipt, result.status);
+      return json10({ message: result.message, ...result.legacyPending ?? (result.status === 202 ? { pending: true } : {}) }, result.status);
+    }
     settings.followShared();
-    return answer3(settings, { ...extra, ...result.receipt ? { save: result.receipt } : {} });
+    if (result.receipt)
+      return answer3(settings, { ...extra, save: result.receipt });
+    return answer3(settings, extra);
   };
   if (!rest.length && method === "PUT") {
     const given = await body().catch(() => {
@@ -28371,7 +28377,7 @@ var SETTINGS_UNITS, LAYOUT_LISTS, MOST_IDS = 1000, MOST_PROVIDERS = 200, ID, ids
   if (!Number.isSafeInteger(stamp.v) || stamp.v < 0 || typeof stamp.by !== "string" || stamp.by.length > 200)
     return null;
   return { v: stamp.v, by: stamp.by, ...stamp.imported === true ? { imported: true } : {} };
-}, FIELDS, versionOf = (stamp) => `${stamp.v}/${stamp.by}${stamp.imported ? "/i" : ""}`, settingsSteps, checkSettingsFormat = (value) => upgradeFormat("Usage settings", value?.kuvo, value, settingsSteps), json10 = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } }), answer3 = (settings, extra = {}) => json10({ data: { settings: settings.values(), versions: settings.versions(), imported: settings.imported, notificationAvailability: notificationAvailability(), ...extra } });
+}, FIELDS, versionOf = (stamp) => `${stamp.v}/${stamp.by}${stamp.imported ? "/i" : ""}`, settingsSteps, checkSettingsFormat = (value) => upgradeFormat("Usage settings", value?.kuvo, value, settingsSteps), json10 = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } }), savedJson = (receipt, status = 200) => json10(receipt, status), answer3 = (settings, extra = {}) => json10({ data: { settings: settings.values(), versions: settings.versions(), imported: settings.imported, notificationAvailability: notificationAvailability(), ...extra } });
 var init_settings = __esm(() => {
   init_setup_local();
   init_format_version();
@@ -42437,4 +42443,4 @@ if (!isMainThread && process.argv.includes("--insights-db-worker")) {
 } else {
   await init_main().then(() => ({}));
 }
-// Built from Packages/Box/src/agents 4baf23c4ab759f587195bf7870e2d7740c2f17cdab5a2495937afb94b962f13e
+// Built from Packages/Box/src/agents 8cdca7831c33353b21dc119cc0fd1c5da679a4f0ec46700d69bb88a669f2f23f

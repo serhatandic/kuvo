@@ -46,7 +46,7 @@ import { PRIMARY_UNLINK } from "../setup/leadership";
 import { mainElsewhere } from "../setup/main-only";
 import { acceptedMembership, acceptedName } from "../setup/membership";
 import { followedSetup } from "../setup/record";
-import { fromLocalApp } from "../server/context";
+import { fromLocalApp, savedJson } from "../server/context";
 import { macLink, readLink } from "../state";
 import type { LinkState } from "../state";
 import { boxVersion } from "../updates/update";
@@ -369,11 +369,8 @@ async function* allowDevices(context: RouteContext, key: string): AsyncGenerator
     && allowVouching(kept, key, Boolean(kept.setup?.standby)) ? kept : null));
   if (busy) return yield* json(409, { message: "An access change is already waiting to be saved." });
   const receipt = await awaitSharedSave(save);
-  if (receipt && receipt.status !== "committed") {
-    const reply = sharedSaveReply(receipt);
-    return yield* json(reply.status, reply.value);
-  }
-  return yield* json(200, receipt ?? {});
+  if (!receipt) return yield* json(200, {});
+  return yield* savedJson(json, sharedSaveReply(receipt));
 }
 
 export async function* computersRoute(context: RouteContext, match: RegExpMatchArray): AsyncGenerator<AnswerPiece> {

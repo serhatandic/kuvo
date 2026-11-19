@@ -12,7 +12,8 @@
 import { createHash, randomBytes } from "node:crypto"
 import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs"
 import { dirname } from "node:path"
-import { askSetupOutcome, askSetupSave, localSetupValue, setupSaveReference, type LocalSetupValue, type SetupSaveReference } from "../../shared/setup-local"
+import type { Receipt, SaveEnvelope } from "../../shared/routes/setup-save"
+import { askSetupOutcome, askSetupSave, localSetupValue, setupSaveReference, type LocalSaveAnswer, type LocalSetupValue, type SetupSaveReference } from "../../shared/setup-local"
 
 import { upgradeFormat, UnsupportedFormatVersion } from "../../shared/format-version"
 import { notificationAvailability } from "./notices"
@@ -357,12 +358,12 @@ export class UsageSettings {
     return draft
   }
 
-  saveDraft(shared: LocalSetupValue, draft: UsageSettings) {
+  saveDraft(shared: LocalSetupValue, draft: UsageSettings): Promise<LocalSaveAnswer> {
     return askSetupSave(this.run!, { kind: "setupUsageDisplay", id: shared.id, epoch: shared.epoch, sequence: shared.sequence,
       value: { units: draft.kept(), imported: draft.imported } })
   }
 
-  saveOutcome(reference: SetupSaveReference) {
+  saveOutcome(reference: SetupSaveReference): Promise<LocalSaveAnswer> | null {
     return this.run ? askSetupOutcome(this.run, reference, "setupUsageDisplay") : null
   }
 
@@ -539,6 +540,7 @@ export class UsageSettings {
 const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } })
 
 /** What a client reads: each part set (one never set is the panel's own default), and whether a Mac's came in. */
+const savedJson = (receipt: Receipt, status = 200) => json(receipt, status)
 const answer = (settings: UsageSettings, extra: Record<string, unknown> = {}) => json({ data: { settings: settings.values(), versions: settings.versions(), imported: settings.imported, notificationAvailability: notificationAvailability(), ...extra } })
 
 /**
@@ -557,7 +559,7 @@ export async function settingsRoutes(settings: UsageSettings, choices: () => str
     const reference = setupSaveReference(await body().catch(() => undefined))
     if (!reference) return json({ message: "Send the setup save receipt." }, 400)
     const result = await settings.saveOutcome(reference)
-    return result?.receipt ? json(result.receipt) : json({ message: result?.message }, result?.status ?? 503)
+    return result?.receipt ? savedJson(result.receipt) : json({ message: result?.message }, result?.status ?? 503)
   }
   const shared = settings.shared()
   if (shared && !shared.primary) return json({ message: "Change your setup's usage settings on its primary." }, 409)
@@ -565,11 +567,13 @@ export async function settingsRoutes(settings: UsageSettings, choices: () => str
   const saved = async (extra: Record<string, unknown>) => {
     if (!shared) return answer(settings, extra)
     const result = await settings.saveDraft(shared, draft)
-    if (result.status !== 200) return json(result.receipt ?? {
-      message: result.message, ...(result.legacyPending ?? (result.status === 202 ? { pending: true } : {})),
-    }, result.status)
+    if (result.status !== 200) {
+      if (result.receipt) return savedJson(result.receipt, result.status)
+      return json({ message: result.message, ...(result.legacyPending ?? (result.status === 202 ? { pending: true } : {})) }, result.status)
+    }
     settings.followShared()
-    return answer(settings, { ...extra, ...(result.receipt ? { save: result.receipt } : {}) })
+    if (result.receipt) return answer(settings, { ...extra, save: result.receipt } satisfies SaveEnvelope & Record<string, unknown>)
+    return answer(settings, extra)
   }
   if (!rest.length && method === "PUT") {
     const given = await body().catch(() => undefined)

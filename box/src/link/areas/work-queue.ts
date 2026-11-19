@@ -33,7 +33,7 @@ import { callQueueTool, QUEUE_INSTRUCTIONS, QUEUE_TOOLS } from "../work-queue/to
 import { canOf, overdueOf, todayHere, factsOf, inView, linkedTo, nameOf, overseenBy, ownersOf, refOf, summaryOf, type Computer, type Facts, type ItemSummary } from "../work-queue/view";
 import { ATTACHMENTS, forwardAct, seekElsewhere, takesForwarded, type Acted } from "../work-queue/forward";
 import { actHere, addHere, fileOf, GITHUB_WAIT, MOST_FORWARDED_FILE, withCan } from "../work-queue/acts";
-import { fromLocalApp, type AnswerPiece, type RouteContext } from "../server/context";
+import { fromLocalApp, savedJson, type AnswerPiece, type RouteContext } from "../server/context";
 import type { Target } from "../../shared/records";
 
 export const WORK_QUEUE_ROUTE = /^kuvo\/work-queue(?:\/(tools|events|refs|labels|import|items(?:\/([^/]+)(?:\/(restore|files\/([^/]+)))?)?))?$/;
@@ -253,16 +253,15 @@ export async function* workQueueRoute(context: RouteContext, match: RegExpMatchA
       : given.remove !== undefined ? removeLabel(given.remove, stripLabel)
       : { refused: "Send {add, color?}, {change, name?, color?} or {remove}." };
     if ("refused" in outcome) return yield* json(400, { message: outcome.refused });
-    const receipt = await awaitSharedSave(outcome.save);
+    const receipt = "save" in outcome ? await awaitSharedSave(outcome.save) : null;
     if (receipt && receipt.status !== "committed") {
-      const reply = sharedSaveReply(receipt);
-      return yield* json(reply.status, reply.value);
+      return yield* savedJson(json, sharedSaveReply(receipt));
     }
-    if (outcome.save) {
-      if (given.remove !== undefined) stripLabel(outcome.done.id);
-    }
+    if (receipt && given.remove !== undefined) stripLabel(outcome.done.id);
     tellQueuesAgain();
-    return yield* json(200, { ...receipt, labels: labels(), ...(given.remove === undefined ? { label: outcome.done } : {}) });
+    const value = { labels: labels(), ...(given.remove === undefined ? { label: outcome.done } : {}) };
+    if (receipt) return yield* savedJson(json, { status: 200, value: { ...receipt, ...value } });
+    return yield* json(200, value);
   }
 
   if (part === "items") {

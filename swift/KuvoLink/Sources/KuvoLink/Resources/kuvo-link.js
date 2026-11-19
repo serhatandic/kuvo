@@ -508,13 +508,17 @@ function askLocalSetup(run, body, reference) {
         const result = isObject(value) ? value : {};
         const outcome = result.status;
         const receipt = setupSaveReceipt({ ...reference, ...result });
-        finish({
+        const response = {
           status: reply.status,
           message: typeof result.message === "string" ? result.message : undefined,
-          ...receipt ? { receipt } : {},
-          ...!receipt && reply.status === 202 && typeof result.operation === "string" ? { legacyPending: { pending: true, operation: result.operation } } : {},
           ...outcome === "pending" || outcome === "committed" || outcome === "interrupted" ? { outcome } : {}
-        });
+        };
+        if (receipt)
+          return finish({ ...response, receipt });
+        if (reply.status === 202 && typeof result.operation === "string") {
+          return finish({ ...response, legacyPending: { pending: true, operation: result.operation } });
+        }
+        finish(response);
       } catch {
         finish();
       }
@@ -27934,6 +27938,9 @@ var init_accounts = __esm(() => {
 });
 
 // box/src/link/server/context.ts
+function savedJson(json, reply) {
+  return json(reply.status, reply.value);
+}
 var fromLocalApp = (request) => request.served === true && (request.fromApp === true || request.fromMac === true), fromAPhone = (request) => request.fromMac !== true && request.fromApp !== true && request.desktop !== true;
 
 // box/src/link/mac/app-route.ts
@@ -42673,7 +42680,10 @@ async function pairHere(device, by) {
     noteDocsChanged();
     macLink.wake?.();
   }
-  return answer3(200, { paired: true, pairing: paired.pairing, ...receipt });
+  const value = { paired: true, pairing: paired.pairing };
+  if (receipt)
+    return { status: 200, value: { ...value, ...receipt } };
+  return answer3(200, value);
 }
 async function deviceAct(sender, act) {
   if (act.method === "GET") {
@@ -42703,7 +42713,7 @@ async function deviceAct(sender, act) {
     if (receipt && receipt.status !== "committed")
       return sharedSaveReply(receipt);
     macDocsChanged({ closeRemoved: readLink() });
-    return answer3(200, receipt ?? {});
+    return receipt ? sharedSaveReply(receipt) : answer3(200, {});
   }
   const device = act.method === "POST" ? givenDevice({ ...act.body ?? {}, key: act.item }, null) : null;
   if (!device)
@@ -43911,7 +43921,9 @@ async function renameHere(key, name) {
   if (!changed && (readLink()?.setup?.standby || readLink()?.setup?.checkpointed))
     return answer5(409, { message: "A computer name is already waiting to be saved. Try again when it has saved." });
   macDocsChanged();
-  return answer5(200, { name, ...receipt });
+  if (receipt)
+    return { status: 200, value: { name, ...receipt } };
+  return answer5(200, { name });
 }
 async function removeComputerHere(key, pendingOnly = false) {
   const link = readLink();
@@ -43936,7 +43948,7 @@ async function removeComputerHere(key, pendingOnly = false) {
 }
 function removeHere(key, pendingOnly = false) {
   const removal = prepareRemoval(key, pendingOnly);
-  return removal.save?.status === "pending" ? sharedSaveReply(removal.save) : completeRemoval(removal, removal.save);
+  return removal.save && removal.save.status !== "committed" ? sharedSaveReply(removal.save) : completeRemoval(removal, removal.save);
 }
 async function finishRemoval(removal) {
   const { save } = removal;
@@ -44005,11 +44017,13 @@ function completeRemoval({ changed, blocked, gone, already, needsCleanup, key, b
     return answer5(404, { message: `That isn't one of ${ownName()}'s machines.` });
   macDocsChanged({ closeRemoved: save ? readLink() : changed });
   tellGone(gone);
-  if (needsCleanup && !cleanRemovalList(key))
-    return answer5(503, {
-      ...save ? save : {},
-      message: "The computer’s access was removed, but the saved machines list couldn’t be updated."
-    });
+  if (needsCleanup && !cleanRemovalList(key)) {
+    const message = "The computer’s access was removed, but the saved machines list couldn’t be updated.";
+    if (!save)
+      return answer5(503, { message });
+    const value = { ...save, message };
+    return { status: 503, value };
+  }
   return save ? sharedSaveReply(save) : answer5(200, {});
 }
 function cleanRemovalList(key) {
@@ -51864,10 +51878,19 @@ async function uninstallCommand(args) {
   const publishing = IS_MAC && !mainElsewhere(readLink());
   const revocation = overSSH ? { status: "revoked" } : await revokeDesktop();
   const save = "save" in revocation ? revocation.save : undefined;
-  if (save && save.status !== "committed" || "status" in revocation && revocation.status === "retry") {
-    const message = save?.message ?? REVOCATION_UNCONFIRMED;
-    console.log(JSON.stringify({ result: save?.status === "pending" ? "pending" : "unfinished", message, ...save ? { save } : {} }));
-    console.error(message);
+  if (save && save.status !== "committed") {
+    const reply = {
+      result: save.status === "pending" ? "pending" : "unfinished",
+      message: save.message,
+      save
+    };
+    console.log(JSON.stringify(reply));
+    console.error(reply.message);
+    return 1;
+  }
+  if ("status" in revocation && revocation.status === "retry") {
+    console.log(JSON.stringify({ result: "unfinished", message: REVOCATION_UNCONFIRMED }));
+    console.error(REVOCATION_UNCONFIRMED);
     return 1;
   }
   const revoked = "save" in revocation ? revocation.save.status === "committed" : revocation.status === "revoked";
@@ -51909,7 +51932,8 @@ ${uninstallCleanup}`, "kuvo-cleanup", K, process.execPath]);
   if (!credentialsCleared && result?.status !== 81)
     done.message += " Kuvo Code couldn’t clear all its keys and sign-ins. Run uninstall again.";
   const finished = done.stopped && done.startsAgain.length === 0 && revoked && identityCleared && credentialsCleared;
-  console.log(JSON.stringify({ result: finished ? "uninstalled" : "unfinished", ...done, ...save ? { save } : {} }));
+  const reply = { result: finished ? "uninstalled" : "unfinished", ...done };
+  console.log(JSON.stringify(save ? { ...reply, save } : reply));
   console.error(done.message);
   return finished ? 0 : 1;
 }
@@ -53451,6 +53475,9 @@ function verifyBoxes(text, keys = UPDATE_KEYS) {
     throw new Error("That isn't a release.");
   return manifest;
 }
+function withReleaseSave(outcome, save) {
+  return { ...outcome, save };
+}
 function waitingForReleaseSave(version, save) {
   return { result: "waiting", version, message: save.status === "interrupted" ? INTERRUPTED_SAVE : save.message, save };
 }
@@ -53717,6 +53744,7 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
     return { result: "busy", message: UPDATING_ALREADY };
   let trial = false, stopped = false, swapped = false, stage = null;
   let releaseSave;
+  const releaseResult = (outcome) => releaseSave ? withReleaseSave(outcome, releaseSave) : outcome;
   let dataKept = null;
   let keeperEnv = {};
   let checkedEngine = null;
@@ -53775,14 +53803,14 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
       noteUpdate({ latest: manifest.version, checked: clock() });
     const again = !!from && sameVersion(manifest.version, before);
     if (!newerVersion(manifest.version, before) && !again)
-      return { result: "current", version: before };
+      return releaseResult({ result: "current", version: before });
     if (again && !folderDiffers(from, manifest))
-      return { result: "current", version: before };
+      return releaseResult({ result: "current", version: before });
     const behind = engineBehind(manifest.engine);
     if (behind)
-      return { result: "blocked", message: behind };
+      return releaseResult({ result: "blocked", message: behind });
     if (!now && !from && clock() - (Date.parse(manifest.released) || clock()) < RELEASE_AGE)
-      return { result: "waiting", version: manifest.version, message: "It takes a release a few days after it's out." };
+      return releaseResult({ result: "waiting", version: manifest.version, message: "It takes a release a few days after it's out." });
     const running = runningEngineVersion();
     const engineChanges = running !== manifest.engine;
     step("downloading");
@@ -53794,7 +53822,7 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
       throw new Error("The release's files aren't what it says.");
     const authority = localSetupValue(RUN, "setupSecurityAndReleaseChoice");
     if (authority?.id !== setup?.id || authority?.epoch !== setup?.epoch || authority?.sequence !== setup?.sequence) {
-      return { result: "waiting", version: manifest.version, message: "The setup changed while this release was being checked." };
+      return releaseResult({ result: "waiting", version: manifest.version, message: "The setup changed while this release was being checked." });
     }
     keepRelease(released, pack);
     if (setup && !alreadyChosen) {
@@ -53808,8 +53836,11 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
       const save = releaseSave = response.receipt;
       if (save?.status === "pending")
         noteUpdate({ releaseSave: { version: manifest.version, sha256: manifest.pack.sha256, save } });
-      if (response.status !== 200)
-        return { result: "waiting", version: manifest.version, message: response.message, ...save ? { save } : {} };
+      if (response.status !== 200) {
+        if (save)
+          return waitingForReleaseSave(manifest.version, save);
+        return releaseResult({ result: "waiting", version: manifest.version, message: response.message });
+      }
     }
     fs138.writeFileSync(path144.join(stage, "pack.tgz"), pack, { mode: 384 });
     if (ran("tar", ["xzf", path144.join(stage, "pack.tgz"), "-C", path144.join(stage, "files")]).status !== 0)
@@ -53819,7 +53850,7 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
       throw new Error("The release's files aren't what it says.");
     const apart = engineChanges && engineApart(box, running);
     if (!whileBusy && engineChanges && !apart && await boxBusy())
-      return { ...releaseSave ? { save: releaseSave } : {}, result: "busy", message: "Something is running there now." };
+      return releaseResult({ result: "busy", message: "Something is running there now." });
     const files = installOrder(Object.keys(box.files));
     const matches = (file, sha) => fs138.lstatSync(file, { throwIfNoEntry: false })?.isFile() === true && hexSHA256(fs138.readFileSync(file)) === sha;
     for (const file of files) {
@@ -53899,7 +53930,7 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
     if (ran("sh", ["-n", path144.join(stage, "files", "bin", "kuvo-start")]).status !== 0)
       throw new Error("The new keeper doesn't read.");
     if (!whileBusy && engineChanges && !apart && await boxBusy())
-      return { ...releaseSave ? { save: releaseSave } : {}, result: "busy", message: "Something is running there now." };
+      return releaseResult({ result: "busy", message: "Something is running there now." });
     step("installing");
     let previous = {};
     try {
@@ -53961,7 +53992,7 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
     if (apart && now)
       writePrivate(SWAP_NOW, String(clock()));
     noteUpdate({ trial: { from: before, to: manifest.version, at: clock(), swapped: swappedAt, ...features ? { features } : {}, ...dataKept !== null ? { dataKept } : {} } });
-    return { ...releaseSave ? { save: releaseSave } : {}, result: "updated", version: manifest.version };
+    return releaseResult({ result: "updated", version: manifest.version });
   } catch (error) {
     brokeOff = fetching;
     const message = String(error?.message ?? error).slice(0, 300);
@@ -53988,7 +54019,7 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
     if (trial)
       noteUpdate({ trial: null });
     noteUpdate({ last: { at: clock(), result: "failed", message, from: before } });
-    return { ...releaseSave ? { save: releaseSave } : {}, result: "failed", message };
+    return releaseResult({ result: "failed", message });
   } finally {
     clearUpdateStaging();
     fs138.rmSync(UPDATE_LOCK, { recursive: true, force: true });
@@ -58116,7 +58147,7 @@ var init_files4 = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "7ef77bc44e47";
+var BRIDGE_VERSION = "b1a11362d55b";
 
 // box/src/link/rehome/paths.ts
 import { createHash as createHash4 } from "node:crypto";
@@ -64580,11 +64611,9 @@ async function* allowDevices(context, key) {
   if (busy)
     return yield* json(409, { message: "An access change is already waiting to be saved." });
   const receipt = await awaitSharedSave(save);
-  if (receipt && receipt.status !== "committed") {
-    const reply = sharedSaveReply(receipt);
-    return yield* json(reply.status, reply.value);
-  }
-  return yield* json(200, receipt ?? {});
+  if (!receipt)
+    return yield* json(200, {});
+  return yield* savedJson(json, sharedSaveReply(receipt));
 }
 async function* computersRoute(context, match) {
   const { request, signal, json, info, bridge } = context;
@@ -74092,7 +74121,8 @@ class LinkHost {
     if (pending.signal.aborted)
       return;
     if (typeof authorized === "object" && "waiting" in authorized) {
-      const { message } = responder.writeMessage2(Buffer.from(JSON.stringify({ ...this.hello, ...authorized })));
+      const reply = "reason" in authorized ? { ...this.hello, ...authorized } : { ...this.hello, ...authorized };
+      const { message } = responder.writeMessage2(Buffer.from(JSON.stringify(reply)));
       this.send(relaySend(from, frame(Frame.handshake2, number, message)));
       return;
     }
@@ -76908,7 +76938,7 @@ async function run6(name, args, caller, targets, signal) {
       const outcome = asked[0] === "add" ? addLabel(args.add, args.color) : asked[0] === "rename" ? typeof args.to === "string" && args.to.trim() ? changeLabel(args.rename, { name: args.to }) : { refused: "Say its new name (to)." } : asked[0] === "recolor" ? typeof args.color === "string" && args.color.trim() ? changeLabel(args.recolor, { color: args.color }) : { refused: "Say its new colour (color)." } : removeLabel(args.remove, stripLabel);
       if ("refused" in outcome)
         return refused6(outcome.refused);
-      const receipt = await awaitSharedSave(outcome.save);
+      const receipt = "save" in outcome ? await awaitSharedSave(outcome.save) : null;
       if (receipt && receipt.status !== "committed") {
         const message = receipt.message;
         return withSave(receipt.status === "pending" ? said7(message) : refused6(message), receipt);
@@ -77779,8 +77809,7 @@ async function* saveLocalSetup(context) {
   }, operation);
   if (!save)
     return yield* json(409, { message: "The setup changed or a save is already pending." });
-  const reply = sharedSaveReply(await waitShared(save));
-  return yield* json(reply.status, reply.value);
+  return yield* savedJson(json, sharedSaveReply(await waitShared(save)));
 }
 
 // box/src/link/server/router.ts
@@ -78765,7 +78794,11 @@ async function* personalitiesDocumentRoute(context) {
       return yield* json(400, { message: "Send a library of personalities: {document: {personalities, removed}}." });
     }
     const saved = await savePersonalityLibrary(given.document);
-    return yield* json(saved.status, saved.status === 200 ? { changed: saved.changed, ...saved.receipt } : saved.value);
+    if (saved.status === 200)
+      return yield* savedJson(json, { status: 200, value: { changed: saved.changed, ...saved.receipt } });
+    if ("refusal" in saved)
+      return yield* json(saved.status, saved.refusal);
+    return yield* savedJson(json, saved);
   }
   const [status, value] = takePersonalitiesDocument(parsed(request.body), readEngine, readBridge);
   return yield* json(status, value);
@@ -78773,9 +78806,9 @@ async function* personalitiesDocumentRoute(context) {
 async function savePersonalityLibrary(document2) {
   const setup = readLink()?.setup;
   if (setup?.role !== "primary")
-    return { status: 409, value: { message: "Change your setup's personalities on its primary." } };
+    return { status: 409, refusal: { message: "Change your setup's personalities on its primary." } };
   if (!setup.standby)
-    return { status: 503, value: { message: PENDING_SAVE } };
+    return { status: 503, refusal: { message: PENDING_SAVE } };
   let changed = [];
   let library;
   const save = changeShared("setupPersonalities", (value) => {
@@ -78788,9 +78821,9 @@ async function savePersonalityLibrary(document2) {
     return library;
   });
   if (library && !fitsLibrary(library))
-    return { status: 400, value: { message: FULL_LIBRARY } };
+    return { status: 400, refusal: { message: FULL_LIBRARY } };
   if (!save || !library)
-    return { status: 409, value: { message: "The personality library couldn't be staged. Another save may be pending or the setup may be out of space." } };
+    return { status: 409, refusal: { message: "The personality library couldn't be staged. Another save may be pending or the setup may be out of space." } };
   const reply = sharedSaveReply(await waitShared(save));
   if (reply.status !== 200)
     return reply;
@@ -78831,8 +78864,8 @@ async function* personalityRoute(context, personality) {
       return yield* json(409, { message: "A personality change is already waiting to be saved." });
     const reply = sharedSaveReply(await waitShared(save));
     if (reply.status !== 200)
-      return yield* json(reply.status, reply.value);
-    return yield* json(200, { ...answer[1], ...reply.value });
+      return yield* savedJson(json, reply);
+    return yield* savedJson(json, { status: 200, value: { ...answer[1], ...reply.value } });
   }
   const [status, value] = answerPersonalities(method, id, body);
   if (status === 200 && id !== undefined)
@@ -78877,8 +78910,7 @@ async function* phonesRemoveRoute(context) {
     return yield* json(409, { message: "An access change is already waiting to be saved." });
   const receipt = await awaitSharedSave(save);
   if (receipt && receipt.status !== "committed") {
-    const reply = sharedSaveReply(receipt);
-    return yield* json(reply.status, reply.value);
+    return yield* savedJson(json, sharedSaveReply(receipt));
   }
   const main = primary;
   if (main)
@@ -78887,7 +78919,9 @@ async function* phonesRemoveRoute(context) {
     return yield* json(400, { message: "Only phones paired here can be removed, and never your Mac." });
   noteDocsChanged();
   setTimeout(() => phonesChanged(readLink() ?? changed), 200);
-  return yield* json(200, receipt ?? {});
+  if (receipt)
+    return yield* savedJson(json, { status: 200, value: receipt });
+  return yield* json(200, {});
 }
 var SWITCH_OFF = "“Let my devices connect” is off on this Mac.";
 async function* pairingRoute(context) {
@@ -81563,17 +81597,17 @@ async function* workQueueRoute(context, match) {
     const outcome = typeof given.add === "string" ? addLabel(given.add, given.color) : given.change !== undefined ? changeLabel(given.change, { name: given.name, color: given.color }) : given.remove !== undefined ? removeLabel(given.remove, stripLabel) : { refused: "Send {add, color?}, {change, name?, color?} or {remove}." };
     if ("refused" in outcome)
       return yield* json(400, { message: outcome.refused });
-    const receipt = await awaitSharedSave(outcome.save);
+    const receipt = "save" in outcome ? await awaitSharedSave(outcome.save) : null;
     if (receipt && receipt.status !== "committed") {
-      const reply = sharedSaveReply(receipt);
-      return yield* json(reply.status, reply.value);
+      return yield* savedJson(json, sharedSaveReply(receipt));
     }
-    if (outcome.save) {
-      if (given.remove !== undefined)
-        stripLabel(outcome.done.id);
-    }
+    if (receipt && given.remove !== undefined)
+      stripLabel(outcome.done.id);
     tellQueuesAgain();
-    return yield* json(200, { ...receipt, labels: labels(), ...given.remove === undefined ? { label: outcome.done } : {} });
+    const value = { labels: labels(), ...given.remove === undefined ? { label: outcome.done } : {} };
+    if (receipt)
+      return yield* savedJson(json, { status: 200, value: { ...receipt, ...value } });
+    return yield* json(200, value);
   }
   if (part === "items") {
     if (method !== "POST")
@@ -86788,8 +86822,7 @@ async function clockChange(_context, at, value) {
       const save = submitShared("setupTimeZone", choice);
       if (!save)
         return { status: 409, message: "A time zone change is already waiting to be saved." };
-      const reply = sharedSaveReply(await waitShared(save));
-      return { status: reply.status, message: reply.status === 200 ? "" : reply.value.message, save: reply.value };
+      return { save: sharedSaveReply(await waitShared(save)) };
     }
     return setZone(String(value)) ? null : { status: 400, message: "This computer doesn't know that time zone." };
   } catch {
@@ -87112,12 +87145,20 @@ async function* settingsPageRoute(context, match) {
       }
       done = await section.change(context, at, given.value, given.confirmed);
     }
+    if (done && "save" in done) {
+      const reply = done.save;
+      if (reply.status !== 200)
+        return reply;
+      changed4();
+      const value = { ...await section.read(context), ...reply.value };
+      return { status: 200, value };
+    }
     if (done?.stale)
       return { status: 409, value: { message: done.message, page: await section.read(context) } };
     if (done && done.status !== 200)
-      return { status: done.status, value: { message: done.message, ...done.save, ...done.fields ? { fields: done.fields } : {} } };
+      return { status: done.status, value: { message: done.message, ...done.fields ? { fields: done.fields } : {} } };
     changed4();
-    return { status: 200, value: { ...await section.read(context), ...done?.save } };
+    return { status: 200, value: await section.read(context) };
   });
   return yield* json(status, value);
 }
@@ -88480,7 +88521,6 @@ init_noise();
 init_frames();
 init_mask();
 init_setup_local();
-init_setup_local();
 init_format();
 init_home();
 
@@ -89291,10 +89331,24 @@ async function box(command) {
         return say({ status: 200, ...legacy.library });
       }
       const saved = await savePersonalityLibrary(given);
-      if (saved.status === 200)
-        return say({ ...saved.library, operation: saved.receipt.operation, save: saved.receipt, status: 200 });
-      const receipt = setupSaveReceipt(saved.value);
-      return say({ ...saved.value, ...receipt ? { save: receipt, outcome: receipt.status } : {}, status: saved.status });
+      if (saved.status === 200) {
+        const reply = {
+          ...saved.library,
+          operation: saved.receipt.operation,
+          save: saved.receipt,
+          status: 200
+        };
+        return say(reply);
+      }
+      if ("refusal" in saved)
+        return say({ ...saved.refusal, status: saved.status });
+      const reply = {
+        ...saved.value,
+        save: saved.value,
+        outcome: saved.value.status,
+        status: saved.status
+      };
+      return say(reply);
     }
     default:
       console.error("Usage: kuvo-link.js box adopt | read | change | key <name> | route | reconnect <server> | personalities | update-status | update-now");

@@ -11,6 +11,7 @@
 // computer's own, for its own clients: never handed on from another box (areas/computers.ts).
 
 import { updateAccess } from "../setup/access";
+import type { CommittedReceipt, SaveReply, SavedReply, UnsavedReply } from "../../shared/routes/setup-save";
 import { awaitSharedSave, sharedSaveReply, stageShared, type Receipt } from "../setup/shared";
 import { isObject } from "../../shared/json";
 import { LEADERSHIP_WAIT, primaryFenced } from "../setup/lease";
@@ -157,11 +158,14 @@ export function givenName(name: unknown): string | null {
   return clean && clean.length <= MOST_NAME ? clean : null;
 }
 
-const answer = (status: number, value: unknown): Acted => ({ status, value });
+type RenameReply = SaveReply<{ name: string }> | UnsavedReply<200, { name: string }> | UnsavedReply<404 | 409 | 503>;
+type RemovalReply = SaveReply | { status: 503; value: CommittedReceipt } | UnsavedReply<200 | 404 | 409 | 503>;
+
+const answer = <S extends number, T extends UnsavedReply<S>["value"]>(status: S, value: T): UnsavedReply<S, T> => ({ status, value });
 
 /** Renames the machine `key` here, on the box that writes its record: its peers document names it so
  * from now on, and your other computers take it from there. */
-export async function renameHere(key: string, name: string): Promise<Acted> {
+export async function renameHere(key: string, name: string): Promise<RenameReply> {
   let found = false;
   let waitingForStandby = false;
   let save: Receipt | null = null;
@@ -187,7 +191,8 @@ export async function renameHere(key: string, name: string): Promise<Acted> {
   if (receipt && receipt.status !== "committed") return sharedSaveReply(receipt);
   if (!changed && (readLink()?.setup?.standby || readLink()?.setup?.checkpointed)) return answer(409, { message: "A computer name is already waiting to be saved. Try again when it has saved." });
   macDocsChanged();
-  return answer(200, { name, ...receipt });
+  if (receipt) return { status: 200, value: { name, ...receipt } } satisfies SavedReply<{ name: string }>;
+  return answer(200, { name });
 }
 
 /** Retire the old standby, install a replacement, then save the access change. */
@@ -216,12 +221,12 @@ export async function removeComputerHere(key: string, pendingOnly = false): Prom
  * every device its box vouched for (`setMacPeers`; `takeOffVouched`, phones.ts), as this box's
  * phones document then says to your other computers. It keeps running there, as a box of its own. */
 // Legacy in-process callers can complete immediately. The routed removal waits for a receipt.
-export function removeHere(key: string, pendingOnly = false): Acted {
+export function removeHere(key: string, pendingOnly = false): RemovalReply {
   const removal = prepareRemoval(key, pendingOnly);
-  return removal.save?.status === "pending" ? sharedSaveReply(removal.save) : completeRemoval(removal, removal.save);
+  return removal.save && removal.save.status !== "committed" ? sharedSaveReply(removal.save) : completeRemoval(removal, removal.save);
 }
 
-async function finishRemoval(removal: ReturnType<typeof prepareRemoval>): Promise<Acted> {
+async function finishRemoval(removal: ReturnType<typeof prepareRemoval>): Promise<RemovalReply> {
   const { save } = removal;
   const receipt = await awaitSharedSave(save);
   if (receipt && receipt.status !== "committed") return sharedSaveReply(receipt);
@@ -273,17 +278,19 @@ function prepareRemoval(key: string, pendingOnly: boolean) {
   return { ...result, blocked, gone, already, needsCleanup, key };
 }
 
-function completeRemoval({ changed, blocked, gone, already, needsCleanup, key, busy }: ReturnType<typeof prepareRemoval>, save?: Receipt | null): Acted {
+function completeRemoval({ changed, blocked, gone, already, needsCleanup, key, busy }: ReturnType<typeof prepareRemoval>, save: CommittedReceipt | null): RemovalReply {
   if (busy) return answer(409, { message: "An access change is already waiting to be saved." });
   if (blocked) return answer(409, { message: blocked });
   if (!gone.length && !already) return answer(404, { message: `That isn't one of ${ownName()}'s machines.` });
   macDocsChanged({ closeRemoved: save ? readLink() : changed });
   tellGone(gone);
   // Once the removal is durable, clean up its saved address. Leave a retry if the list fails.
-  if (needsCleanup && !cleanRemovalList(key)) return answer(503, {
-    ...(save ? save : {}),
-    message: "The computer’s access was removed, but the saved machines list couldn’t be updated.",
-  });
+  if (needsCleanup && !cleanRemovalList(key)) {
+    const message = "The computer’s access was removed, but the saved machines list couldn’t be updated.";
+    if (!save) return answer(503, { message });
+    const value: CommittedReceipt = { ...save, message };
+    return { status: 503, value };
+  }
   return save ? sharedSaveReply(save) : answer(200, {});
 }
 

@@ -88,15 +88,16 @@ function colorFor(given: unknown): string | { refused: string } {
 }
 
 /** What a change says: done (the label now), or why not. */
-export type LabelOutcome = { done: Label; save?: Receipt } | { refused: string };
+type LocalLabelOutcome = { done: Label } | { refused: string };
+export type LabelOutcome = LocalLabelOutcome | { done: Label; save: Receipt };
 
-function editLabels(work: (kept: Kept, removed: string[]) => LabelOutcome): LabelOutcome {
+function editLabels(work: (kept: Kept, removed: string[]) => LocalLabelOutcome): LabelOutcome {
   const setup = readLink()?.setup;
   if (!requiresStandby(setup)) return change(kept => work(kept, []));
   if (setup?.role !== "primary") return { refused: "Change your setup's labels on its primary." };
   if (!setup.standby) return { refused: "Your primary is waiting for a standby." };
   migratedToChange();
-  const result: { outcome: LabelOutcome } = { outcome: { refused: "A label change is already waiting to be saved." } };
+  const result: { outcome: LocalLabelOutcome } = { outcome: { refused: "A label change is already waiting to be saved." } };
   const save = changeShared("queueLabels", value => {
     const before = setupLabels(value) ?? { labels: readKept().labels, removed: [] };
     result.outcome = work({ labels: before.labels, fromPrimary: [] }, before.removed);

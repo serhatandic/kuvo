@@ -15,3 +15,19 @@ export type Receipt = Reference & (
   | { status: "interrupted"; pending?: never; message: string }
 );
 export type SetupSaveReceipt = Receipt;
+export type CommittedReceipt = Extract<Receipt, { status: "committed" }>;
+export type PendingReceipt = Extract<Receipt, { status: "pending" }>;
+export type InterruptedReceipt = Extract<Receipt, { status: "interrupted" }>;
+
+export type SavedReply<T extends object = object> = { status: 200; value: T & CommittedReceipt };
+export type PendingReply = { status: 202; value: PendingReceipt };
+export type InterruptedReply = { status: 409; value: InterruptedReceipt };
+export type SaveReply<T extends object = object> = SavedReply<T> | PendingReply | InterruptedReply;
+
+// Local, legacy and refused changes can reply without a shared operation.
+export type UnsavedReply<S extends number, T extends object = object> = {
+  status: S;
+  value: T & { status?: never; operation?: never; proof?: never };
+};
+
+export type SaveEnvelope<R extends Receipt = Receipt> = { save: R };

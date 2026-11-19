@@ -151,7 +151,7 @@ export { addressOf, newKey, publicOf } from "./crypto/keys";
 export { CipherState, IKInitiator, IKResponder, MAIL_PROLOGUE, openOneWay, PROLOGUE, sealOneWay } from "./crypto/noise";
 export { decodeMessage, encodeMessage, Frame, frame, pieces, readFrame, readRelay, relayHello, relayPush, relaySend } from "./relay/frames";
 export { isSecretName, markingHashes, masked, maskedHexValues, maskedNamed, namesHash, showsAll } from "./notices/mask";
-import { setupSaveReceipt } from "../shared/setup-local";
+import type { CommittedReceipt, Receipt, SaveEnvelope } from "../shared/routes/setup-save";
 export { askSetupOutcome, askSetupSave, askSetupStatus } from "../shared/setup-local";
 export { docBytes, MOST_DOC, newSigningSeed, ownSign, readDoc, signDoc, signingKeyOf } from "./documents/format";
 export { IS_MAC, LINK_FILE } from "./home";
@@ -762,9 +762,17 @@ async function box(command: string): Promise<void> {
         return say({ status: 200, ...legacy.library });
       }
       const saved = await savePersonalityLibrary(given);
-      if (saved.status === 200) return say({ ...saved.library, operation: saved.receipt.operation, save: saved.receipt, status: 200 });
-      const receipt = setupSaveReceipt(saved.value);
-      return say({ ...saved.value, ...(receipt ? { save: receipt, outcome: receipt.status } : {}), status: saved.status });
+      if (saved.status === 200) {
+        const reply: SaveEnvelope<CommittedReceipt> & typeof saved.library & { status: 200; operation: string } = {
+          ...saved.library, operation: saved.receipt.operation, save: saved.receipt, status: 200,
+        };
+        return say(reply);
+      }
+      if ("refusal" in saved) return say({ ...saved.refusal, status: saved.status });
+      const reply: SaveEnvelope & Omit<Receipt, "status"> & { status: 202 | 409; outcome: "pending" | "interrupted" } = {
+        ...saved.value, save: saved.value, outcome: saved.value.status, status: saved.status,
+      };
+      return say(reply);
     }
     default:
       console.error("Usage: kuvo-link.js box adopt | read | change | key <name> | route | reconnect <server> | personalities | update-status | update-now");

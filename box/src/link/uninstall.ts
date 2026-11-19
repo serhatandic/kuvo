@@ -14,6 +14,7 @@
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import type { SaveEnvelope } from "../shared/routes/setup-save";
 import { setupSaveReceipt, type SetupSaveReceipt } from "../shared/setup-local";
 import { isObject, parsed } from "../shared/json";
 import { engineRole, runsAs } from "../shared/platform";
@@ -404,10 +405,17 @@ export async function uninstallCommand(args: string[]): Promise<number> {
   const publishing = IS_MAC && !mainElsewhere(readLink());
   const revocation: DesktopRevocation = overSSH ? { status: "revoked" } : await revokeDesktop();
   const save = "save" in revocation ? revocation.save : undefined;
-  if ((save && save.status !== "committed") || ("status" in revocation && revocation.status === "retry")) {
-    const message = save?.message ?? REVOCATION_UNCONFIRMED;
-    console.log(JSON.stringify({ result: save?.status === "pending" ? "pending" : "unfinished", message, ...(save ? { save } : {}) }));
-    console.error(message);
+  if (save && save.status !== "committed") {
+    const reply: SaveEnvelope<typeof save> & { result: "pending" | "unfinished"; message: string } = {
+      result: save.status === "pending" ? "pending" : "unfinished", message: save.message, save,
+    };
+    console.log(JSON.stringify(reply));
+    console.error(reply.message);
+    return 1;
+  }
+  if ("status" in revocation && revocation.status === "retry") {
+    console.log(JSON.stringify({ result: "unfinished", message: REVOCATION_UNCONFIRMED }));
+    console.error(REVOCATION_UNCONFIRMED);
     return 1;
   }
   const revoked = "save" in revocation ? revocation.save.status === "committed" : revocation.status === "revoked";
@@ -437,7 +445,8 @@ export async function uninstallCommand(args: string[]): Promise<number> {
   if (!identityCleared) done.message += " Kuvo Code couldn’t delete this desktop’s local identity.";
   if (!credentialsCleared && result?.status !== 81) done.message += " Kuvo Code couldn’t clear all its keys and sign-ins. Run uninstall again.";
   const finished = done.stopped && done.startsAgain.length === 0 && revoked && identityCleared && credentialsCleared;
-  console.log(JSON.stringify({ result: finished ? "uninstalled" : "unfinished", ...done, ...(save ? { save } : {}) }));
+  const reply = { result: finished ? "uninstalled" : "unfinished", ...done };
+  console.log(JSON.stringify(save ? { ...reply, save } satisfies typeof reply & SaveEnvelope<typeof save> : reply));
   console.error(done.message);
   return finished ? 0 : 1;
 }

@@ -26,7 +26,7 @@ import { worktreesRoute } from "./worktrees";
 import { isObject, parsed, sortedJSON } from "../../shared/json";
 import { actionsOf, asked, expectedRevision, item, mtime, noActions, refusal, revised, row, rowsOf, said, STALE, staleOrRefusal, unreadPage } from "./settings-kit";
 import { listsHere } from "../work/model-rule";
-import type { Refused, Section } from "./settings-kit";
+import type { Refused, Section, SettingChange } from "./settings-kit";
 import { skillsSection } from "./settings-skills";
 import { customAutoSection } from "./settings-custom-auto";
 import { commandsSection } from "./settings-commands";
@@ -64,6 +64,7 @@ import { boxAnswers } from "../mac/keeper-runs";
 import { askHolder, heldRead, holdsVault } from "../vault/holder";
 import { hasZoneRules, readZoneSetting, setZone, zoneChoice, ZONE_FILE, zoneFilesFor, zoneHere } from "../zone/setting";
 import { ownClock } from "../../shared/zone";
+import type { SaveReply } from "../../shared/routes/setup-save";
 import type { AnswerPiece, RouteContext } from "../server/context";
 
 export const SETTINGS_PAGE_ROUTE = /^kuvo\/settings(?:\/([^/]+)(?:\/(events)|\/([^/]+)\/([^/]+)(?:\/(check))?)?)?$/;
@@ -651,7 +652,7 @@ async function clockPage(context: RouteContext): Promise<SettingsPage> {
   };
 }
 
-async function clockChange(_context: RouteContext, at: SettingItem, value: unknown): Promise<Refused | null> {
+async function clockChange(_context: RouteContext, at: SettingItem, value: unknown): Promise<SettingChange | null> {
   if (at.id !== "time-zone") return { status: 400, message: "That isn't something to change." };
   // (Its own clock while none is set is what applies already: nothing to write. The zone it shows
   // picked again is nothing to write either, but where it's only carried from before: then it's yours.)
@@ -665,8 +666,7 @@ async function clockChange(_context: RouteContext, at: SettingItem, value: unkno
       if (!choice) return { status: 400, message: "This computer doesn't know that time zone." };
       const save = submitShared("setupTimeZone", choice);
       if (!save) return { status: 409, message: "A time zone change is already waiting to be saved." };
-      const reply = sharedSaveReply(await waitShared(save));
-      return { status: reply.status, message: reply.status === 200 ? "" : reply.value.message, save: reply.value };
+      return { save: sharedSaveReply(await waitShared(save)) };
     }
     return setZone(String(value)) ? null : { status: 400, message: "This computer doesn't know that time zone." };
   } catch {
@@ -962,7 +962,7 @@ export async function* settingsPageRoute(context: RouteContext, match: RegExpMat
     if (!at) return { status: 404, value: { message: "That isn't on this page now." } };
     const action = rowPart !== undefined ? actionsOf(at).find(each => each.id === idOf(actionPart)) : undefined;
     if (expectedRevision(at, action) !== given.was) return { status: 409, value: { message: CHANGED_SINCE, page } };
-    let done: Refused | null;
+    let done: SettingChange | null;
     if (rowPart !== undefined) {
       if (!action) return { status: 404, value: { message: "That isn't something it does." } };
       if (action.opens !== undefined) return { status: 400, value: { message: "That opens a page: open it in the app." } };
@@ -981,10 +981,17 @@ export async function* settingsPageRoute(context: RouteContext, match: RegExpMat
       }
       done = await section.change(context, at, given.value, given.confirmed);
     }
+    if (done && "save" in done) {
+      const reply = done.save;
+      if (reply.status !== 200) return reply;
+      changed();
+      const value = { ...await section.read(context), ...reply.value };
+      return { status: 200, value } satisfies SaveReply;
+    }
     if (done?.stale) return { status: 409, value: { message: done.message, page: await section.read(context) } };
-    if (done && done.status !== 200) return { status: done.status, value: { message: done.message, ...done.save, ...(done.fields ? { fields: done.fields } : {}) } };
+    if (done && done.status !== 200) return { status: done.status, value: { message: done.message, ...(done.fields ? { fields: done.fields } : {}) } };
     changed();
-    return { status: 200, value: { ...await section.read(context), ...done?.save } };
+    return { status: 200, value: await section.read(context) };
   });
   return yield* json(status, value);
 }

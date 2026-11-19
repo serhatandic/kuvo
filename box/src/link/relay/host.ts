@@ -7,7 +7,7 @@ import type { Transport } from "../crypto/noise";
 import { routeRefusalHeaders, routeRequestHeaders } from "../server/format";
 import type { Answer, AnyPiece, Asker, LinkRequest } from "../server/context";
 import { decodeMessage, encodeMessage, Frame, frame, pieces, readFrame, relaySend } from "./frames";
-import type { Receipt } from "../../shared/routes/setup-save";
+import type { CommittedReceipt, SaveEnvelope } from "../../shared/routes/setup-save";
 import type { Head } from "./frames";
 
 /** What a phone says as its session opens (PROTOCOL.md, "Sessions"): `pair` only while pairing. */
@@ -61,9 +61,12 @@ export interface LinkHostOptions {
   mail?: (from: Buffer, body: Buffer, frame: Buffer) => void;
 }
 
-export type PhoneAuthorization = boolean | string
-  | { waiting: string; save?: Receipt }
-  | { pairing: string; save: Extract<Receipt, { status: "committed" }> };
+type TrustWait = { waiting: string; reason: "pairing-wait" | "pairing-readd" };
+type PairingWait = { waiting: string } & SaveEnvelope;
+type Paired = { pairing: string } & SaveEnvelope<CommittedReceipt>;
+
+export type PhoneAuthorization = boolean | string | TrustWait | PairingWait | Paired;
+type SavedBoxHello = BoxHello & (PairingWait | SaveEnvelope<CommittedReceipt>);
 
 /** A message's head from a phone, as this host reads it (PROTOCOL.md, "Messages in a session"). */
 interface PhoneHead {
@@ -220,13 +223,16 @@ export class LinkHost {
     if (typeof authorized === "object" && "waiting" in authorized) {
       // The peer must authenticate the box before it can show the waiting message. No session
       // or request handler is installed for this handshake.
-      const { message } = responder.writeMessage2(Buffer.from(JSON.stringify({ ...this.hello, ...authorized })));
+      const reply = "reason" in authorized ? { ...this.hello, ...authorized }
+        : { ...this.hello, ...authorized } satisfies BoxHello & PairingWait;
+      const { message } = responder.writeMessage2(Buffer.from(JSON.stringify(reply)));
       this.send(relaySend(from, frame(Frame.handshake2, number, message)));
       return;
     }
     if (authorized === false) return refuse();
     const pairing = typeof authorized === "string" ? authorized : typeof authorized === "object" ? authorized.pairing : undefined;
-    const reply = typeof authorized === "object" ? { ...this.hello, save: authorized.save } : this.hello;
+    const reply = typeof authorized === "object"
+      ? { ...this.hello, save: authorized.save } satisfies SavedBoxHello : this.hello;
     const { message, transport } = responder.writeMessage2(Buffer.from(JSON.stringify(reply)));
     // One session per phone: a new one replaces what's left of the last.
     for (const old of this.sessions.values()) if (old.from.equals(from)) this.end(old, false);

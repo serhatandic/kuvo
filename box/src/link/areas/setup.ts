@@ -32,7 +32,7 @@ import { listsHere } from "../work/model-rule";
 import { readEndedSignIns } from "./accounts";
 import type { ListedAccount } from "./sign-in";
 import type { Target } from "../../shared/records";
-import type { AnswerPiece, RouteContext } from "../server/context";
+import { savedJson, type AnswerPiece, type RouteContext } from "../server/context";
 
 // Those following it here: told as this process writes link.json; what another process wrote
 // (`setup` and `leave`, over SSH), looked for each second (`followed`, with no folder to watch).
@@ -170,6 +170,5 @@ export async function* saveLocalSetup(context: RouteContext): AsyncGenerator<Ans
     return value;
   }, operation);
   if (!save) return yield* json(409, { message: "The setup changed or a save is already pending." });
-  const reply = sharedSaveReply(await waitShared(save));
-  return yield* json(reply.status, reply.value);
+  return yield* savedJson(json, sharedSaveReply(await waitShared(save)));
 }

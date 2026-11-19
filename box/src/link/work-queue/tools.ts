@@ -39,7 +39,7 @@ export interface ToolAnswer { text: string; isError: boolean; save?: SetupSaveRe
 
 const said = (text: string): ToolAnswer => ({ text, isError: false });
 const refused = (text: string): ToolAnswer => ({ text, isError: true });
-const withSave = (answer: ToolAnswer, save: SetupSaveReceipt): ToolAnswer => ({
+const withSave = (answer: ToolAnswer, save: SetupSaveReceipt): ToolAnswer & { save: SetupSaveReceipt } => ({
   ...answer, save,
   // Some tool transports only forward the text.
   text: `${answer.text} Save receipt: ${JSON.stringify(save)}`,
@@ -420,7 +420,7 @@ async function run(name: string, args: Record<string, unknown>, caller: QueueCal
         : asked[0] === "recolor" ? (typeof args.color === "string" && args.color.trim() ? changeLabel(args.recolor, { color: args.color }) : { refused: "Say its new colour (color)." })
         : removeLabel(args.remove, stripLabel);
       if ("refused" in outcome) return refused(outcome.refused);
-      const receipt = await awaitSharedSave(outcome.save);
+      const receipt = "save" in outcome ? await awaitSharedSave(outcome.save) : null;
       if (receipt && receipt.status !== "committed") {
         const message = receipt.message;
         return withSave(receipt.status === "pending" ? said(message) : refused(message), receipt);

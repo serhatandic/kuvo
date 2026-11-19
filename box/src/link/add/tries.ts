@@ -14,6 +14,7 @@ import { writeDurablePrivate, writePrivate } from "../files";
 import { RUN } from "../home";
 import { peersOf } from "../peers/known";
 import { replacementOutcome, type ReplacementEnrollment } from "../setup/leadership";
+import type { SaveEnvelope } from "../../shared/routes/setup-save";
 import { queryOperation, withSaveOutcome, type Receipt } from "../setup/shared";
 import { readLink } from "../state";
 
@@ -85,7 +86,7 @@ export function allTries(): AddTry[] {
     if (save?.status !== "pending") return attempt;
     const outcome = queryOperation(save.setup, save.operation, save.proof);
     if (!outcome || outcome.status === "pending") return attempt;
-    return { ...attempt, save: withSaveOutcome(save, outcome.status) };
+    return { ...attempt, save: withSaveOutcome(save, outcome.status) } satisfies AddTry & SaveEnvelope;
   });
 }
 
@@ -176,12 +177,12 @@ export function startTry(kind: AddTry["kind"], destination: string, name: string
     saving(save, peer) {
       it.committed = true;
       it.enrollment = { save, peer };
-      it.seen = { ...it.seen, save };
+      it.seen = { ...it.seen, save } satisfies AddTry & SaveEnvelope;
       if (it.seen.state === "stopping") it.seen = { ...it.seen, state: "working", title: workingTitle(kind, name) };
       note(true);
     },
     saved(save) {
-      it.seen = { ...it.seen, save };
+      it.seen = { ...it.seen, save } satisfies AddTry & SaveEnvelope;
       note(true);
     },
     replacing(replacement, peer) {
