@@ -67,7 +67,7 @@ pub fn open_shown_file(client: &BoxClient, shown: &ShownFile) -> Result<(), Open
     let path = downloaded.path().join(name);
     write_received(&bytes, &path)?;
     open_path(&path)?;
-    downloaded.keep();
+    let _ = downloaded.keep();
     Ok(())
 }
 
