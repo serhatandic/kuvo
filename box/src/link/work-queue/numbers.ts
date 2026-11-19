@@ -16,6 +16,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { setupSaveReceipt } from "../../shared/setup-local";
 import { isObject } from "../../shared/json";
 import { IS_MAC, RUN } from "../home";
 import { objectFormat } from "../../shared/format-version";
@@ -26,7 +27,7 @@ import { awaySince, lastFoundAway, PEER_CHECKED, readReach } from "../peers/reac
 import { followedSetup, requiresStandby } from "../setup/record";
 import { primaryFenced } from "../setup/lease";
 import { leadershipOf } from "../setup/leadership";
-import { pendingShared, stageShared } from "../setup/shared";
+import { pendingShared, stageShared, type Receipt } from "../setup/shared";
 import { readLink, updateLink } from "../state";
 import { allItems, changeQueues, OWNER, WORK_QUEUE } from "./store";
 import type { Book, Item } from "./store";
@@ -63,6 +64,7 @@ export interface Numbers {
   next?: number;
   leadership?: string;
   allocation?: number;
+  allocationSave?: Receipt;
   /** By ask: the block given, the claims granted with it, and the box it went to (`by`; missing in
    * what an older primary kept). */
   given?: Record<string, { from: number; to: number; granted: Ranges; at: number; by?: string }>;
@@ -125,6 +127,7 @@ export function readNumbers(file = NUMBERS_FILE): Numbers {
 }
 
 function numbersOf(kept: Record<string, unknown>): Numbers {
+  const allocationSave = setupSaveReceipt(kept.allocationSave);
   const asking = isObject(kept.asking) && typeof kept.asking.id === "string" && typeof kept.asking.count === "number" && typeof kept.asking.since === "number"
     ? { id: kept.asking.id, count: kept.asking.count, since: kept.asking.since, ...(typeof kept.asking.sent === "number" ? { sent: kept.asking.sent } : {}), ...(Array.isArray(kept.asking.claims) ? { claims: cleanRanges(kept.asking.claims) } : {}), ...(Array.isArray(kept.asking.restores) ? { restores: cleanRanges(kept.asking.restores) } : {}) }
     : undefined;
@@ -136,6 +139,7 @@ function numbersOf(kept: Record<string, unknown>): Numbers {
     ...(typeof kept.next === "number" && Number.isInteger(kept.next) && kept.next > 0 ? { next: kept.next } : {}),
     ...(typeof kept.leadership === "string" ? { leadership: kept.leadership } : {}),
     ...(typeof kept.allocation === "number" ? { allocation: kept.allocation } : {}),
+    ...(allocationSave ? { allocationSave } : {}),
     ...(isObject(kept.given) ? { given: kept.given as Numbers["given"] } : {}),
     ...(isObject(kept.granted) ? { granted: Object.fromEntries(Object.entries(kept.granted).map(([box, ranges]) => [box, cleanRanges(ranges)])) } : {}),
     leases: cleanRanges(kept.leases),
@@ -562,6 +566,7 @@ export function giveBlock(by: string, ask: unknown, { file = NUMBERS_FILE, now =
       if (by !== link.setup.primary && !peersOf(link).some(peer => peer.key === by)) return null;
       const ledger = { ...kept };
       installNumberAuthority(ledger, link);
+      if (!pendingShared(link, "queueNumberAllocation")) delete kept.allocationSave;
       // After promotion and rotation the accepted asks still get their original block.
       if (ledger.given?.[id]) {
         answer = allocate(ledger);
@@ -574,7 +579,12 @@ export function giveBlock(by: string, ask: unknown, { file = NUMBERS_FILE, now =
       if (pendingShared(link, "queueNumberAllocation")) return null;
       if (!allocate(ledger, link.setup.numberCeiling)) return null;
       const { next, given, granted } = ledger;
-      return stageShared(link, "queueNumberAllocation", { next, given, granted }) !== null ? link : null;
+      const save = stageShared(link, "queueNumberAllocation", { next, given, granted });
+      if (!save) return null;
+      // The number request is retried by ask id. Keep the receipt beside the ledger, and only
+      // answer the ask from the accepted ledger above.
+      kept.allocationSave = save;
+      return link;
     }, { durable: true });
     return answer;
   }, file);

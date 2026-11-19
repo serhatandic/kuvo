@@ -7,7 +7,7 @@
 
 import { setupLayoutDeferred } from "../../shared/folder-version";
 import { updateAccess } from "../setup/access";
-import { asSave, PENDING_SAVE, pendingShared, waitShared, type SharedSave } from "../setup/shared";
+import { asSave, PENDING_SAVE, pendingShared, waitShared, type Receipt } from "../setup/shared";
 import { LEADERSHIP_WAIT, primaryFenced } from "../setup/lease";
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -427,8 +427,8 @@ async function setUp(tell: Telling, destination: string, name: string, kind: "ad
   if (kind === "add" && beforeEnrollment?.sign && pending && candidate && !peersOf(beforeEnrollment).some(peer => peer.key === candidate.key)) {
     tell.step("joining");
     const save = asSave(pending, beforeEnrollment.sign);
-    tell.saving?.(save, candidate);
-    tell.came(await finishEnrollment(candidate, save));
+    tell.saving(save, candidate);
+    tell.came(await finishEnrollment(tell, candidate, save));
     return;
   }
   const mine = boxVersion();
@@ -565,11 +565,11 @@ async function setUp(tell: Telling, destination: string, name: string, kind: "ad
       }
       tell.step("joining");
       const identity = /^id ([0-9a-f]{32})$/m.exec(started.stdout)?.[1] ?? probe.id;
-      finish = await join(reserved, destination, name, identity, account.token, (peer, enrollment) => {
+      finish = await join(tell, reserved, destination, name, identity, account.token, (peer, enrollment) => {
         // The winning epoch decides this proposal. A local stop or timeout cannot undo it.
         if (!tell.signal.aborted) tell.step("joining", "Waiting for the standby to save this computer");
         if ("proposalHash" in enrollment) tell.replacing?.(enrollment, peer);
-        else tell.saving?.(enrollment, peer);
+        else tell.saving(enrollment, peer);
         tell.commit?.();
         unjoined = false;
       }, expectedKey, grant);
@@ -595,7 +595,7 @@ async function setUp(tell: Telling, destination: string, name: string, kind: "ad
 // Signs the computer into your setup: this box's keys and documents given over SSH (the trust
 // between them), its own taken back, and its record written here, for your other computers and
 // phones to take from this box.
-async function join(run: Reach["run"], destination: string, name: string, identity: string | null, token: string, staged: (peer: { key: string; name: string }, enrollment: SharedSave | ReplacementEnrollment) => void, expectedKey?: string, grant?: AddGrant): Promise<() => Promise<{ key: string; name: string }>> {
+async function join(tell: Telling, run: Reach["run"], destination: string, name: string, identity: string | null, token: string, staged: (peer: { key: string; name: string }, enrollment: Receipt | ReplacementEnrollment) => void, expectedKey?: string, grant?: AddGrant): Promise<() => Promise<{ key: string; name: string }>> {
   const beforeLink = readLink();
   const relay = IS_MAC ? macLink.config?.relay : beforeLink?.relay;
   const removedWhileAdding = (link: LinkState | null) => expectedKey && link?.removedHere?.includes(expectedKey);
@@ -641,7 +641,7 @@ async function join(run: Reach["run"], destination: string, name: string, identi
         status = replacementOutcome(readLink(), enrollment);
       }
       if (status !== "committed") throw new Failed(`The setup changed before ${peer.name} was saved. Add it again from the primary.`);
-      return finishEnrollment(peer, null);
+      return finishEnrollment(tell, peer, null);
     };
   }
   const { changed, save, busy } = updateAccess(link => {
@@ -664,17 +664,19 @@ async function join(run: Reach["run"], destination: string, name: string, identi
   if (!save && !changed) throw new Failed(`${ownName()} couldn’t keep ${name}’s record.`);
   const docs = Array.isArray(said.docs) ? said.docs : [];
   return async () => {
-    const computer = await finishEnrollment(peer, save);
+    const computer = await finishEnrollment(tell, peer, save);
     // Its own documents, signed with the key it just gave, taken as if by mail.
     if (docs.length) await receiveDocs(peer, { give: docs }, liveLink()).catch(() => {});
     return computer;
   };
 }
 
-async function finishEnrollment(peer: { key: string; name: string }, save: SharedSave | null) {
+async function finishEnrollment(tell: Telling, peer: { key: string; name: string }, save: Receipt | null) {
   if (save) {
     macDocsChanged();
-    if (await waitShared(save, Infinity) !== "saved") {
+    const receipt = await waitShared(save, Infinity);
+    tell.saved(receipt);
+    if (receipt.status !== "committed") {
       throw new Failed(`The setup changed before ${peer.name} was saved. Add it again from the primary.`);
     }
   }
@@ -750,7 +752,7 @@ export async function lookAtWork(key: string): Promise<{ version: string | null;
   const quiet: Telling = {
     signal: stop.signal,
     check() { if (stop.signal.aborted) throw new Stopped(); },
-    step() {}, sent() {}, skip() {}, came() {}, rename() {},
+    step() {}, sent() {}, skip() {}, came() {}, rename() {}, saving() {}, saved() {},
     ask: async () => { throw new Failed(`${at.name}’s host key isn’t one ${ownName()} knows.`); },
   };
   const reach = new Reach(at.destination, at.name, quiet, otherAddressesOf(at.destination));
@@ -823,7 +825,7 @@ export function beginUninstall(key: string): Running | null {
         throw new Failed("Kuvo Code couldn’t confirm that access was revoked. Try uninstalling again.");
       }
       const receipt = setupSaveReceipt(removed.value);
-      if (receipt) tell.saved?.(receipt);
+      if (receipt) tell.saved(receipt);
       if (removed.status === 202 || receipt?.status === "interrupted") throw new Failed(receipt?.message ?? PENDING_SAVE);
       const current = readLink();
       const cleanupOnly = removed.status === 503 && current?.removedHere?.includes(key)

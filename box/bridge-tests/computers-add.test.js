@@ -2300,9 +2300,9 @@ test("failure bench: a Linux primary starts fresh, enrolls over SSH and pairs de
     });
     for (const save of [vouched.body, enrollmentReceipt]) {
       const { setup: id, operation, proof } = save;
-      const resolved = await link.askSetupSave(path.join(memberBox, "run"), { id, operation, proof });
+      const resolved = await link.askSetupOutcome(path.join(memberBox, "run"), { setup: id, operation, proof });
       assert.equal(resolved.status, 200);
-      assert.equal(resolved.outcome, "committed");
+      assert.equal(resolved.receipt.status, "committed");
     }
     const before = inBox(memberBox).shared;
     const target = path.join(homes["replacement-standby"], ".kuvo-code");

@@ -14,7 +14,7 @@ import { writeDurablePrivate, writePrivate } from "../files";
 import { RUN } from "../home";
 import { peersOf } from "../peers/known";
 import { replacementOutcome, type ReplacementEnrollment } from "../setup/leadership";
-import { queryOperation, sharedSaveReply, type SharedSave } from "../setup/shared";
+import { queryOperation, withSaveOutcome, type Receipt } from "../setup/shared";
 import { readLink } from "../state";
 
 export const TRIES_FILE = path.join(RUN, "adding.json");
@@ -46,7 +46,8 @@ export interface Running {
 
 const running = new Map<string, Running>();
 type EnrollmentPeer = { key: string; name: string };
-type Enrollment = ({ save: SharedSave } | { replacement: ReplacementEnrollment }) & { peer: EnrollmentPeer };
+type KeptEnrollmentSave = Receipt | (Omit<Receipt, "setup" | "status"> & { id: string });
+type Enrollment = ({ save: KeptEnrollmentSave } | { replacement: ReplacementEnrollment }) & { peer: EnrollmentPeer };
 type SavedTry = AddTry & { enrollment?: Enrollment };
 let finished: SavedTry[] | null = null;
 let asks = 0;
@@ -84,8 +85,7 @@ export function allTries(): AddTry[] {
     if (save?.status !== "pending") return attempt;
     const outcome = queryOperation(save.setup, save.operation, save.proof);
     if (!outcome || outcome.status === "pending") return attempt;
-    const { pending, message, ...reference } = save;
-    return { ...attempt, save: { ...reference, status: outcome.status } };
+    return { ...attempt, save: withSaveOutcome(save, outcome.status) };
   });
 }
 
@@ -110,8 +110,7 @@ function reconcileEnrollment(seen: SavedTry): AddTry {
   const link = readLink();
   const status = "replacement" in enrollment
     ? replacementOutcome(link, enrollment.replacement)
-    : queryOperation(enrollment.save.id, enrollment.save.operation, enrollment.save.proof)?.status
-      ?? (link?.setup?.id === enrollment.save.id && link.setup.epoch === enrollment.save.epoch ? "pending" : "interrupted");
+    : enrollmentOutcome(link, enrollment.save);
   if (status === "pending") return attempt;
   const computer = status === "committed" && (peersOf(link).find(each => each.key === peer.key)
     ?? ("replacement" in enrollment ? peer : null));
@@ -122,6 +121,13 @@ function reconcileEnrollment(seen: SavedTry): AddTry {
     failure: { title, message: `The setup changed before ${peer.name} was saved. Add it again from the primary.`, again: true } };
 }
 
+function enrollmentOutcome(link: ReturnType<typeof readLink>, save: KeptEnrollmentSave) {
+  // Older saved attempts used id for the setup and had no outcome in enrollment.
+  const setup = "setup" in save ? save.setup : save.id;
+  return queryOperation(setup, save.operation, save.proof)?.status
+    ?? (link?.setup?.id === setup && link.setup.epoch === save.epoch ? "pending" : "interrupted");
+}
+
 /** What a try's work is given to say how it goes. */
 export interface Telling {
   signal: AbortSignal;
@@ -129,8 +135,8 @@ export interface Telling {
   check(): void;
   /** An irreversible change has been saved; keep the cleanup outcome even if asked to stop. */
   commit?(): void;
-  saving?(save: SharedSave, peer: EnrollmentPeer): void;
-  saved?(receipt: SetupSaveReceipt): void;
+  saving(save: Receipt, peer: EnrollmentPeer): void;
+  saved(receipt: SetupSaveReceipt): void;
   replacing?(replacement: ReplacementEnrollment, peer: EnrollmentPeer): void;
   /** The step under way now (those before it done), with what it says beside it. */
   step(id: string, detail?: string): void;
@@ -170,7 +176,7 @@ export function startTry(kind: AddTry["kind"], destination: string, name: string
     saving(save, peer) {
       it.committed = true;
       it.enrollment = { save, peer };
-      it.seen = { ...it.seen, save: sharedSaveReply(save, "pending").value };
+      it.seen = { ...it.seen, save };
       if (it.seen.state === "stopping") it.seen = { ...it.seen, state: "working", title: workingTitle(kind, name) };
       note(true);
     },

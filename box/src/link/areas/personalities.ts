@@ -69,7 +69,7 @@ export async function savePersonalityLibrary(document: GivenLibrary | null): Pro
   });
   if (library && !fitsLibrary(library)) return { status: 400, value: { message: FULL_LIBRARY } };
   if (!save || !library) return { status: 409, value: { message: "The personality library couldn't be staged. Another save may be pending or the setup may be out of space." } };
-  const reply = sharedSaveReply(save, await waitShared(save));
+  const reply = sharedSaveReply(await waitShared(save));
   if (reply.status !== 200) return reply;
   return { status: 200, library, changed, receipt: reply.value };
 }
@@ -99,7 +99,7 @@ export async function* personalityRoute(context: RouteContext, personality: RegE
     });
     if (answer[0] !== 200) return yield* json(...answer);
     if (!save) return yield* json(409, { message: "A personality change is already waiting to be saved." });
-    const reply = sharedSaveReply(save, await waitShared(save));
+    const reply = sharedSaveReply(await waitShared(save));
     if (reply.status !== 200) return yield* json(reply.status, reply.value);
     return yield* json(200, { ...answer[1], ...reply.value });
   }

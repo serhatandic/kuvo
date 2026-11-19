@@ -207,22 +207,22 @@ test("vouching checks the membership recorded when the pairing write acquires it
   fresh();
   link.updateLink(state => ({ ...state, setup: { id: `set_${"a".repeat(22)}`, epoch: 1, primary: k(link.publicOf(mac)), sign: link.signingKeyOf(state.sign), role: "primary" } }));
   const key = k(link.publicOf(link.newKey()));
-  const mkdir = fs.mkdirSync;
+  const rename = fs.renameSync;
   let removed = false;
-  fs.mkdirSync = (folder, ...args) => {
-    if (folder === path.join(run, ".link.lock") && !removed) {
+  fs.renameSync = (from, to) => {
+    if (to === path.join(run, ".link.lock") && !removed) {
       removed = true;
       const state = link.readLink();
       state.removedHere = [attic.pub];
       link.writeLink(link.setMacPeers(state, { peers: [devbox.peer, mini.peer], removed: [attic.pub] }).link);
     }
-    return mkdir(folder, ...args);
+    return rename(from, to);
   };
   let result;
   try {
     result = await link.deviceAct(attic.peer, { method: "POST", item: key, body: { name: "Fresh app", kind: "desktop" } });
   } finally {
-    fs.mkdirSync = mkdir;
+    fs.renameSync = rename;
   }
   assert.equal(removed, true);
   assert.deepEqual(result, { status: 409, value: { message: "Only computers in Studio's own setup can add your devices." } });

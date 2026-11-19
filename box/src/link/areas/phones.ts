@@ -3,7 +3,7 @@
 // (`kuvo/devices/pair`, peers/devices.ts).
 
 import { updateAccess } from "../setup/access";
-import { awaitSharedSave } from "../setup/shared";
+import { awaitSharedSave, sharedSaveReply } from "../setup/shared";
 import { LEADERSHIP_WAIT, primaryFenced } from "../setup/lease";
 import { parsed } from "../../shared/json";
 import type { Body } from "../../shared/json";
@@ -55,14 +55,17 @@ export async function* phonesRemoveRoute(context: RouteContext): AsyncGenerator<
   });
   if (busy) return yield* json(409, { message: "An access change is already waiting to be saved." });
   const receipt = await awaitSharedSave(save);
-  if (receipt && receipt.status !== 200) return yield* json(receipt.status, receipt.value);
+  if (receipt && receipt.status !== "committed") {
+    const reply = sharedSaveReply(receipt);
+    return yield* json(reply.status, reply.value);
+  }
   const main = primary as ReturnType<typeof mainElsewhere>;
   if (main) return yield* json(409, { message: `Remove devices from ${main.name || "your main computer"}.`, primary: main.key });
   if (!changed) return yield* json(400, { message: "Only phones paired here can be removed, and never your Mac." });
   noteDocsChanged();
   // Once this answer is on its way: a phone that removed itself gets it too.
   setTimeout(() => phonesChanged(readLink() ?? changed), 200);
-  return yield* json(200, receipt?.value ?? {});
+  return yield* json(200, receipt ?? {});
 }
 
 /** What a Mac says while it lets no device in: the one switch for phones and desktop apps alike. */

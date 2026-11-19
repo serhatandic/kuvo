@@ -7,7 +7,7 @@ import { UnsupportedFormatVersion } from "../../shared/format-version";
 import { isObject } from "../../shared/json";
 import { plainName } from "../../shared/text";
 import { locked, textOf, writePrivate } from "../files";
-import { changeShared, sharedValue, type SharedSave } from "../setup/shared";
+import { changeShared, sharedValue, type Receipt } from "../setup/shared";
 import { requiresStandby } from "../setup/record";
 import { readLink } from "../state";
 import { LABELS_LOCK, labelsFormat } from "./migrate";
@@ -88,7 +88,7 @@ function colorFor(given: unknown): string | { refused: string } {
 }
 
 /** What a change says: done (the label now), or why not. */
-export type LabelOutcome = { done: Label; save?: SharedSave } | { refused: string };
+export type LabelOutcome = { done: Label; save?: Receipt } | { refused: string };
 
 function editLabels(work: (kept: Kept, removed: string[]) => LabelOutcome): LabelOutcome {
   const setup = readLink()?.setup;

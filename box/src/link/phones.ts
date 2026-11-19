@@ -1,4 +1,4 @@
-import { asSave, pendingShared, waitShared, type SharedSave } from "./setup/shared";
+import { asSave, bindSave, pendingShared, queryOperation, waitShared, withSaveOutcome, type Receipt } from "./setup/shared";
 import { acceptedMembership } from "./setup/membership";
 // Paired phones (PROTOCOL.md, "Paired phones")
 // A pairing adds a phone; a removal, from a phone on the list, takes one off for good (`removed`,
@@ -15,11 +15,12 @@ import { isObject } from "../shared/json";
 import { addressOf, publicOf } from "./crypto/keys";
 import { noteDocsChanged } from "./documents/changed";
 import { mainElsewhere } from "./setup/main-only";
-import { bodyHash, held } from "./documents/format";
+import { bodyHash, held, readDoc } from "./documents/format";
 import { ADDRESS, KEY, macDoc, macsOf } from "./peers/known";
 import { readLink, updateLink } from "./state";
 import type { Doc, SignedDoc } from "../shared/documents";
-import type { PhoneHello } from "./relay/host";
+import { setupSaveReceipt } from "../shared/setup-local";
+import type { PhoneAuthorization, PhoneHello } from "./relay/host";
 import type { LinkState, Pairing, Phone } from "./state";
 
 /** The current pairing for a relay session or token issuer. Older pairings use the empty id. */
@@ -34,7 +35,7 @@ export const canIssuePairing = (phone: Phone): boolean => phone.from !== "mac" |
 // Lets in phones in link.json, and a new one showing the pairing token (once, in time), noting
 // where it is on the relay, for its notifications. Where a paired one is changes once its session
 // proves its own (confirmPhone): the first handshake message can be replayed from elsewhere.
-function stagePhonePairing(key: Buffer, hello: PhoneHello | null | undefined, address: Buffer | undefined): string | false | { save: SharedSave; pairing: string } {
+function stagePhonePairing(key: Buffer, hello: PhoneHello | null | undefined, address: Buffer | undefined): string | false | { save: Receipt; pairing: string } {
   const encoded = key.toString("base64url");
   const current = () => {
     const phone = pairedPhone(readLink(), encoded);
@@ -50,7 +51,11 @@ function stagePhonePairing(key: Buffer, hello: PhoneHello | null | undefined, ad
     if (isObject(effects) && isObject(effects.pairing) && Object.values(effects.pairing).includes(hash)
       && isObject(devices) && Array.isArray(devices.phones)) {
       const phone = devices.phones.find(phone => isObject(phone) && phone.key === encoded);
-      if (before?.sign && typeof phone?.pairing === "string" && !pairedPhone(before, encoded, phone.pairing)) return { save: asSave(pending, before.sign), pairing: phone.pairing };
+      if (before?.sign && typeof phone?.pairing === "string" && !pairedPhone(before, encoded, phone.pairing)) {
+        const pairing = phone.pairing;
+        const save = bindSave(asSave(pending, before.sign), before.sign, { pairedKey: encoded, pairing });
+        return { save, pairing };
+      }
     }
   }
   // Showing the token: a pairing of its own, paired before or not (one removed comes back).
@@ -80,22 +85,43 @@ function stagePhonePairing(key: Buffer, hello: PhoneHello | null | undefined, ad
     delete link![slot];
     return link;
   });
-  if (save && paired) return { save, pairing: paired };
+  if (save) {
+    // Shared staging may also consume an invalid issuer's token without adding a phone.
+    return { save: bindSave(save, changed!.sign!, { pairedKey: encoded, pairing: paired ?? "" }), pairing: paired ?? "" };
+  }
   if (!changed) return current();
   if (paired) noteDocsChanged();
   return paired ?? current();
 }
 
-export async function authorizePhonePairing(key: Buffer, hello: PhoneHello, address: Buffer, signal?: AbortSignal): Promise<string | false> {
+function pairingAuthorization(key: string, pairing: string, save: Receipt): PhoneAuthorization {
+  if (save.status === "committed" && pairing && pairedPhone(readLink(), key, pairing)) return { pairing, save };
+  return { waiting: save.message ?? "This pairing is no longer available.", save };
+}
+
+export async function authorizePhonePairing(key: Buffer, hello: PhoneHello, address: Buffer, signal?: AbortSignal): Promise<PhoneAuthorization> {
+  const encoded = key.toString("base64url");
+  if (hello.save !== undefined) {
+    const receipt = setupSaveReceipt(hello.save);
+    if (!receipt) return false;
+    const ticket = readDoc(receipt.proof);
+    if (ticket?.body.pairedKey !== encoded || typeof ticket.body.pairing !== "string") return false;
+    const outcome = queryOperation(receipt.setup, receipt.operation, receipt.proof, "membershipAndAccess");
+    if (!outcome) return false;
+    return pairingAuthorization(encoded, ticket.body.pairing, withSaveOutcome({ ...receipt, epoch: Number(outcome.epoch) }, outcome.status));
+  }
   const staged = stagePhonePairing(key, hello, address);
   if (typeof staged !== "object") return staged;
   noteDocsChanged();
-  if (await waitShared(staged.save, Infinity, signal) !== "saved" || signal?.aborted) return false;
-  return pairedPhone(readLink(), key.toString("base64url"), staged.pairing) ? staged.pairing : false;
+  const receipt = await waitShared(staged.save, undefined, signal);
+  return pairingAuthorization(encoded, staged.pairing, receipt);
 }
 
-export function authorizePhone(...args: Parameters<typeof stagePhonePairing>): boolean {
-  return typeof stagePhonePairing(...args) === "string";
+export function authorizePhone(...args: Parameters<typeof stagePhonePairing>): PhoneAuthorization {
+  const staged = stagePhonePairing(...args);
+  return typeof staged === "object"
+    ? pairingAuthorization(args[0].toString("base64url"), staged.pairing, staged.save)
+    : typeof staged === "string";
 }
 
 const PAIRING = /^[A-Za-z0-9_-]{0,32}$/;

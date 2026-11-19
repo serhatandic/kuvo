@@ -7,6 +7,7 @@ import type { Transport } from "../crypto/noise";
 import { routeRefusalHeaders, routeRequestHeaders } from "../server/format";
 import type { Answer, AnyPiece, Asker, LinkRequest } from "../server/context";
 import { decodeMessage, encodeMessage, Frame, frame, pieces, readFrame, relaySend } from "./frames";
+import type { Receipt } from "../../shared/routes/setup-save";
 import type { Head } from "./frames";
 
 /** What a phone says as its session opens (PROTOCOL.md, "Sessions"): `pair` only while pairing. */
@@ -15,6 +16,8 @@ export interface PhoneHello {
   name?: string;
   app?: string;
   pair?: string;
+  /** Receipt from an earlier token pairing on this setup. */
+  save?: unknown;
   /** What the client is (`clients.kind`): `desktop` for Kuvo Code's desktop app; none, or anything
    * else, is a phone. */
   client?: string;
@@ -58,7 +61,9 @@ export interface LinkHostOptions {
   mail?: (from: Buffer, body: Buffer, frame: Buffer) => void;
 }
 
-type PhoneAuthorization = boolean | string | { waiting: string };
+export type PhoneAuthorization = boolean | string
+  | { waiting: string; save?: Receipt }
+  | { pairing: string; save: Extract<Receipt, { status: "committed" }> };
 
 /** A message's head from a phone, as this host reads it (PROTOCOL.md, "Messages in a session"). */
 interface PhoneHead {
@@ -212,16 +217,17 @@ export class LinkHost {
       if (this.handshakes.get(id) === pending) this.handshakes.delete(id);
     });
     if (pending.signal.aborted) return;
-    if (typeof authorized === "object") {
+    if (typeof authorized === "object" && "waiting" in authorized) {
       // The peer must authenticate the box before it can show the waiting message. No session
       // or request handler is installed for this handshake.
       const { message } = responder.writeMessage2(Buffer.from(JSON.stringify({ ...this.hello, ...authorized })));
       this.send(relaySend(from, frame(Frame.handshake2, number, message)));
       return;
     }
-    if (typeof authorized !== "string" && !authorized) return refuse();
-    const pairing = typeof authorized === "string" ? authorized : undefined;
-    const { message, transport } = responder.writeMessage2(Buffer.from(JSON.stringify(this.hello)));
+    if (authorized === false) return refuse();
+    const pairing = typeof authorized === "string" ? authorized : typeof authorized === "object" ? authorized.pairing : undefined;
+    const reply = typeof authorized === "object" ? { ...this.hello, save: authorized.save } : this.hello;
+    const { message, transport } = responder.writeMessage2(Buffer.from(JSON.stringify(reply)));
     // One session per phone: a new one replaces what's left of the last.
     for (const old of this.sessions.values()) if (old.from.equals(from)) this.end(old, false);
     const phone: SessionPhone = { key: responder.rs, name: String(hello.name ?? ""), address: from, pairing, ...(hello.client === "desktop" ? { kind: "desktop" as const } : {}) };

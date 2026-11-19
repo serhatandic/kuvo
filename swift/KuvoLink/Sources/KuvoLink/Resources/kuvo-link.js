@@ -346,6 +346,48 @@ function accountName() {
 var account, testHome;
 var init_account = () => {};
 
+// box/src/shared/shape.ts
+function fitsShape(shape, value) {
+  if (shape === "any")
+    return true;
+  if (shape === "null")
+    return value === null;
+  if (typeof shape === "string")
+    return shape === "number" ? typeof value === "number" && Number.isFinite(value) : typeof value === (shape === "bool" ? "boolean" : shape);
+  if ("literal" in shape)
+    return value === shape.literal;
+  if ("oneOf" in shape)
+    return shape.oneOf.some((each) => fitsShape(each, value));
+  if ("list" in shape)
+    return Array.isArray(value) && value.every((each) => fitsShape(shape.list, each));
+  if (value === null || typeof value !== "object" || Array.isArray(value))
+    return false;
+  const fields = value;
+  if ("map" in shape)
+    return Object.values(fields).every((each) => fitsShape(shape.map, each));
+  const declared = Object.entries(shape.object);
+  return declared.every(([key, field]) => key.endsWith("?") && !(key.slice(0, -1) in fields) || (key.replace(/\?$/, "") in fields) && fitsShape(field, fields[key.replace(/\?$/, "")])) && Object.keys(fields).every((key) => Object.hasOwn(shape.object, key) || Object.hasOwn(shape.object, key + "?"));
+}
+var string = "string", number = "number", bool = "bool", any = "any", list = (of) => ({ list: of }), map = (of) => ({ map: of }), object = (fields) => ({ object: fields }), oneOf = (...of) => ({ oneOf: of }), literal = (value) => ({ literal: value }), words = (...each) => ({ oneOf: each.map((word) => ({ literal: word })) }), nullable = (shape) => oneOf(shape, "null"), NOTHING, BYTES = "bytes";
+var init_shape = __esm(() => {
+  NOTHING = object({});
+});
+
+// box/src/shared/routes/setup-save.ts
+var SAVE_RECEIPT, PENDING_SAVE = "Pending until the standby is back.", INTERRUPTED_SAVE = "The primary changed before this save committed.";
+var init_setup_save = __esm(() => {
+  init_shape();
+  SAVE_RECEIPT = object({
+    setup: string,
+    epoch: number,
+    operation: string,
+    proof: object({ d: string, s: string }),
+    status: words("pending", "committed", "interrupted"),
+    "pending?": literal(true),
+    "message?": string
+  });
+});
+
 // box/src/shared/setup-local.ts
 import fs3 from "node:fs";
 import net from "node:net";
@@ -362,13 +404,12 @@ function setupSaveReceipt(value) {
   const { epoch, status, message } = value;
   if (status !== "pending" && status !== "committed" && status !== "interrupted")
     return null;
-  return {
-    ...reference,
-    epoch: Number(epoch),
-    status,
-    ...status === "pending" ? { pending: true } : {},
-    ...typeof message === "string" ? { message } : {}
-  };
+  const identity = { ...reference, epoch: Number(epoch) };
+  if (status === "pending")
+    return { ...identity, status, pending: true, message: typeof message === "string" ? message : PENDING_SAVE };
+  if (status === "interrupted")
+    return { ...identity, status, message: typeof message === "string" ? message : INTERRUPTED_SAVE };
+  return { ...identity, status, ...typeof message === "string" ? { message } : {} };
 }
 function localSetupValue(run, kind) {
   try {
@@ -401,9 +442,15 @@ function localSetupValue(run, kind) {
 }
 function askSetupOutcome(run, reference, kind) {
   const { setup, operation, proof } = reference;
-  return askSetupSave(run, { id: setup, operation, proof, kind }, reference);
+  return askLocalSetup(run, { id: setup, operation, proof, kind }, reference);
 }
-function askSetupSave(run, body, reference) {
+function askSetupSave(run, body) {
+  return askLocalSetup(run, body, { setup: body.id, epoch: body.epoch });
+}
+function askSetupStatus(run, body) {
+  return askLocalSetup(run, body);
+}
+function askLocalSetup(run, body, reference) {
   const fallback = { status: 503, message: "The box that keeps your setup isn't answering." };
   const socketPath = path3.join(run, "vault.sock");
   let key;
@@ -464,9 +511,8 @@ function askSetupSave(run, body, reference) {
         finish({
           status: reply.status,
           message: typeof result.message === "string" ? result.message : undefined,
-          ...typeof result.operation === "string" ? { operation: result.operation } : {},
-          ...isObject(result.proof) && typeof result.proof.d === "string" && typeof result.proof.s === "string" ? { proof: { d: result.proof.d, s: result.proof.s } } : {},
           ...receipt ? { receipt } : {},
+          ...!receipt && reply.status === 202 && typeof result.operation === "string" ? { legacyPending: { pending: true, operation: result.operation } } : {},
           ...outcome === "pending" || outcome === "committed" || outcome === "interrupted" ? { outcome } : {}
         });
       } catch {
@@ -477,6 +523,7 @@ function askSetupSave(run, body, reference) {
 }
 var LOCAL_SETUP_SAVE = "kuvo/setup/save-local", setups;
 var init_setup_local = __esm(() => {
+  init_setup_save();
   setups = new Map;
 });
 
@@ -10104,7 +10151,7 @@ function tokenizeListContinuation(effects, ok2, nok) {
     self.containerState._closeFlow = true;
     self.interrupt = undefined;
     ok(self.parser.constructs.disable.null, "expected `disable.null` to be populated");
-    return factorySpace(effects, effects.attempt(list, ok2, nok), types.linePrefix, self.parser.constructs.disable.null.includes("codeIndented") ? undefined : constants.tabSize)(code);
+    return factorySpace(effects, effects.attempt(list2, ok2, nok), types.linePrefix, self.parser.constructs.disable.null.includes("codeIndented") ? undefined : constants.tabSize)(code);
   }
 }
 function tokenizeIndent(effects, ok2, nok) {
@@ -10132,7 +10179,7 @@ function tokenizeListItemPrefixWhitespace(effects, ok2, nok) {
     return !markdownSpace(code) && tail && tail[1].type === types.listItemPrefixWhitespace ? ok2(code) : nok(code);
   }
 }
-var list, listItemPrefixWhitespaceConstruct, indentConstruct;
+var list2, listItemPrefixWhitespaceConstruct, indentConstruct;
 var init_list = __esm(() => {
   init_development();
   init_dev5();
@@ -10140,7 +10187,7 @@ var init_list = __esm(() => {
   init_default();
   init_blank_line();
   init_thematic_break();
-  list = {
+  list2 = {
     continuation: { tokenize: tokenizeListContinuation },
     exit: tokenizeListEnd,
     name: "list",
@@ -10454,12 +10501,12 @@ function resolveAllLineSuffixes(events, context) {
   editMap.consume(events);
   return events;
 }
-var resolver, string, text;
+var resolver, string2, text;
 var init_text2 = __esm(() => {
   init_development();
   init_default();
   resolver = { resolveAll: createResolver() };
-  string = initializeFactory("string");
+  string2 = initializeFactory("string");
   text = initializeFactory("text");
 });
 
@@ -10473,28 +10520,28 @@ __export(exports_constructs, {
   flow: () => flow2,
   flowInitial: () => flowInitial,
   insideSpan: () => insideSpan,
-  string: () => string2,
+  string: () => string3,
   text: () => text2
 });
-var document3, contentInitial, flowInitial, flow2, string2, text2, insideSpan, attentionMarkers, disable;
+var document3, contentInitial, flowInitial, flow2, string3, text2, insideSpan, attentionMarkers, disable;
 var init_constructs = __esm(() => {
   init_dev12();
   init_default();
   init_text2();
   document3 = {
-    [codes.asterisk]: list,
-    [codes.plusSign]: list,
-    [codes.dash]: list,
-    [codes.digit0]: list,
-    [codes.digit1]: list,
-    [codes.digit2]: list,
-    [codes.digit3]: list,
-    [codes.digit4]: list,
-    [codes.digit5]: list,
-    [codes.digit6]: list,
-    [codes.digit7]: list,
-    [codes.digit8]: list,
-    [codes.digit9]: list,
+    [codes.asterisk]: list2,
+    [codes.plusSign]: list2,
+    [codes.dash]: list2,
+    [codes.digit0]: list2,
+    [codes.digit1]: list2,
+    [codes.digit2]: list2,
+    [codes.digit3]: list2,
+    [codes.digit4]: list2,
+    [codes.digit5]: list2,
+    [codes.digit6]: list2,
+    [codes.digit7]: list2,
+    [codes.digit8]: list2,
+    [codes.digit9]: list2,
     [codes.greaterThan]: blockQuote
   };
   contentInitial = {
@@ -10515,7 +10562,7 @@ var init_constructs = __esm(() => {
     [codes.graveAccent]: codeFenced,
     [codes.tilde]: codeFenced
   };
-  string2 = {
+  string3 = {
     [codes.ampersand]: characterReference,
     [codes.backslash]: characterEscape
   };
@@ -11498,7 +11545,7 @@ function parse(options) {
     document: create(document2),
     flow: create(flow),
     lazy: {},
-    string: create(string),
+    string: create(string2),
     text: create(text)
   };
   return parser;
@@ -13544,12 +13591,12 @@ import path25 from "node:path";
 function toldItemOf(given, latest = Infinity) {
   if (!isObject(given) || typeof given.id !== "string" || !ITEM_ID.test(given.id) || typeof given.owner !== "string" || !OWNER.test(given.owner))
     return null;
-  const title = words(given.title, 200);
+  const title = words2(given.title, 200);
   const status = typeof given.status === "string" && STATUS_ID.test(given.status) ? given.status : "todo";
   const labels = (Array.isArray(given.labels) ? given.labels : []).filter((each) => typeof each === "string" && LABEL_ID.test(each)).slice(0, 20);
   const assignee = assigneeOf(given.assignee);
-  const progress = isObject(given.progress) ? { ...typeof given.progress.value === "number" && given.progress.value >= 0 && given.progress.value <= 1 ? { value: given.progress.value } : {}, ...typeof given.progress.note === "string" ? { note: words(given.progress.note, 300) } : {} } : undefined;
-  const sessions = (Array.isArray(given.sessions) ? given.sessions : []).filter((each) => isObject(each) && typeof each.session === "string" && SESSION2.test(each.session)).slice(0, 20).map((each) => ({ session: each.session, title: words(each.title, 200) || "New Session", working: each.working === true }));
+  const progress = isObject(given.progress) ? { ...typeof given.progress.value === "number" && given.progress.value >= 0 && given.progress.value <= 1 ? { value: given.progress.value } : {}, ...typeof given.progress.note === "string" ? { note: words2(given.progress.note, 300) } : {} } : undefined;
+  const sessions = (Array.isArray(given.sessions) ? given.sessions : []).filter((each) => isObject(each) && typeof each.session === "string" && SESSION2.test(each.session)).slice(0, 20).map((each) => ({ session: each.session, title: words2(each.title, 200) || "New Session", working: each.working === true }));
   const lastNote = isObject(given.lastNote) && typeof given.lastNote.text === "string" ? { at: time(given.lastNote.at), by: whoOf2(given.lastNote.by), text: cut(given.lastNote.text, 500) } : undefined;
   const source = isObject(given.source) && typeof given.source.kind === "string" && typeof given.source.ref === "string" ? Object.fromEntries(Object.entries(given.source).filter(([key, value]) => ["kind", "ref", "url", "host", "id", "name"].includes(key) && typeof value === "string").map(([key, value]) => [key, value.slice(0, 2000)])) : undefined;
   if (source?.url && /^github/.test(source.kind) && !/^https:\/\/github\.com\//.test(source.url))
@@ -13566,7 +13613,7 @@ function toldItemOf(given, latest = Infinity) {
     order: typeof given.order === "number" && Number.isFinite(given.order) ? given.order : 0,
     priority: typeof given.priority === "string" && PRIORITY_ID.test(given.priority) ? given.priority : "normal",
     labels,
-    ...assignee ? { assignee: { ...assignee, name: words(isObject(given.assignee) ? given.assignee.name : "", 100) || assignee.id } } : {},
+    ...assignee ? { assignee: { ...assignee, name: words2(isObject(given.assignee) ? given.assignee.name : "", 100) || assignee.id } } : {},
     ...dayOf(given.due) ? { due: dayOf(given.due) } : {},
     ...progress && Object.keys(progress).length ? { progress } : {},
     sessions,
@@ -13580,7 +13627,7 @@ function toldItemOf(given, latest = Infinity) {
     ...source ? { source } : {},
     ...seen ? { seen } : {},
     ...keptIn ? { keptIn } : {},
-    ...isObject(given.handing) && typeof given.handing.to === "string" && OWNER.test(given.handing.to) ? { handing: { to: given.handing.to, name: words(given.handing.name, 100) } } : {},
+    ...isObject(given.handing) && typeof given.handing.to === "string" && OWNER.test(given.handing.to) ? { handing: { to: given.handing.to, name: words2(given.handing.name, 100) } } : {},
     created: stamp3(given.created),
     updated: stamp3(given.updated),
     ...typeof given.doneAt === "number" ? { doneAt: time(given.doneAt) } : {}
@@ -13656,12 +13703,12 @@ function patchTold(key, id, item, deleted) {
       console.error(error.message);
   }
 }
-var TOLD, MOST_TOLD = 1500, MOST_TOLD_DONE = 100, fileOf3 = (key) => path25.join(TOLD, `${key}.json`), SESSION2, KIND = (value) => value === "mac" || value === "machine" ? value : null, count = (value) => typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : 0, time = (value) => typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0, whole = (value, most = 999999) => typeof value === "number" && Number.isInteger(value) && value > 0 && value <= most ? value : undefined, words = (value, most) => typeof value === "string" ? cut(plainName(value), most) : "", whoOf2 = (value) => whoOf(value) ?? { name: "someone else" }, stamp3 = (value) => isObject(value) ? { at: time(value.at), by: whoOf2(value.by) } : { at: 0, by: whoOf2(null) }, ownerOf = (given) => {
+var TOLD, MOST_TOLD = 1500, MOST_TOLD_DONE = 100, fileOf3 = (key) => path25.join(TOLD, `${key}.json`), SESSION2, KIND = (value) => value === "mac" || value === "machine" ? value : null, count = (value) => typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : 0, time = (value) => typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0, whole = (value, most = 999999) => typeof value === "number" && Number.isInteger(value) && value > 0 && value <= most ? value : undefined, words2 = (value, most) => typeof value === "string" ? cut(plainName(value), most) : "", whoOf2 = (value) => whoOf(value) ?? { name: "someone else" }, stamp3 = (value) => isObject(value) ? { at: time(value.at), by: whoOf2(value.by) } : { at: 0, by: whoOf2(null) }, ownerOf = (given) => {
   if (!isObject(given) || typeof given.owner !== "string" || !OWNER.test(given.owner))
     return null;
   const kind = given.kind === "bot" || given.kind === "group" || given.kind === "you" ? given.kind : "session";
-  const bot = isObject(given.bot) && typeof given.bot.id === "string" && /^bot_[A-Za-z0-9]{1,60}$/.test(given.bot.id) ? { id: given.bot.id, name: words(given.bot.name, 100) } : undefined;
-  return { owner: given.owner, kind, title: typeof given.title === "string" ? words(given.title, 200) : null, ...bot ? { bot } : {}, ...typeof given.startedBy === "string" && SESSION2.test(given.startedBy) ? { startedBy: given.startedBy } : {} };
+  const bot = isObject(given.bot) && typeof given.bot.id === "string" && /^bot_[A-Za-z0-9]{1,60}$/.test(given.bot.id) ? { id: given.bot.id, name: words2(given.bot.name, 100) } : undefined;
+  return { owner: given.owner, kind, title: typeof given.title === "string" ? words2(given.title, 200) : null, ...bot ? { bot } : {}, ...typeof given.startedBy === "string" && SESSION2.test(given.startedBy) ? { startedBy: given.startedBy } : {} };
 }, toldFormat, LOCK4, toldKeys = () => listOf(TOLD).filter((name) => name.endsWith(".json")).map((name) => name.slice(0, -5)).filter((key) => KEY.test(key)), forgetTold = (key) => {
   if (!KEY.test(key))
     return;
@@ -13772,6 +13819,7 @@ function readNumbers(file = NUMBERS_FILE) {
   return numbersOf(openNumbers(file)?.fields ?? {});
 }
 function numbersOf(kept) {
+  const allocationSave = setupSaveReceipt(kept.allocationSave);
   const asking = isObject(kept.asking) && typeof kept.asking.id === "string" && typeof kept.asking.count === "number" && typeof kept.asking.since === "number" ? { id: kept.asking.id, count: kept.asking.count, since: kept.asking.since, ...typeof kept.asking.sent === "number" ? { sent: kept.asking.sent } : {}, ...Array.isArray(kept.asking.claims) ? { claims: cleanRanges(kept.asking.claims) } : {}, ...Array.isArray(kept.asking.restores) ? { restores: cleanRanges(kept.asking.restores) } : {} } : undefined;
   return {
     ...typeof kept.primary === "string" ? { primary: kept.primary } : {},
@@ -13781,6 +13829,7 @@ function numbersOf(kept) {
     ...typeof kept.next === "number" && Number.isInteger(kept.next) && kept.next > 0 ? { next: kept.next } : {},
     ...typeof kept.leadership === "string" ? { leadership: kept.leadership } : {},
     ...typeof kept.allocation === "number" ? { allocation: kept.allocation } : {},
+    ...allocationSave ? { allocationSave } : {},
     ...isObject(kept.given) ? { given: kept.given } : {},
     ...isObject(kept.granted) ? { granted: Object.fromEntries(Object.entries(kept.granted).map(([box, ranges]) => [box, cleanRanges(ranges)])) } : {},
     leases: cleanRanges(kept.leases),
@@ -14137,6 +14186,8 @@ function giveBlock(by, ask, { file = NUMBERS_FILE, now = Date.now() } = {}) {
         return null;
       const ledger = { ...kept };
       installNumberAuthority(ledger, link);
+      if (!pendingShared(link, "queueNumberAllocation"))
+        delete kept.allocationSave;
       if (ledger.given?.[id]) {
         answer = allocate(ledger);
         return null;
@@ -14150,7 +14201,11 @@ function giveBlock(by, ask, { file = NUMBERS_FILE, now = Date.now() } = {}) {
       if (!allocate(ledger, link.setup.numberCeiling))
         return null;
       const { next, given, granted } = ledger;
-      return stageShared(link, "queueNumberAllocation", { next, given, granted }) !== null ? link : null;
+      const save = stageShared(link, "queueNumberAllocation", { next, given, granted });
+      if (!save)
+        return null;
+      kept.allocationSave = save;
+      return link;
     }, { durable: true });
     return answer;
   }, file);
@@ -14378,6 +14433,7 @@ var NUMBERS_FILE, BLOCK = 50, LOW = 15, ASK_AGAIN = 30000, MOST_GIVEN = 500, MOS
   return Math.max(told?.top ?? 0, ...(told?.items ?? []).map((item) => item.number ?? 0));
 }, lookedForWaiting = 0;
 var init_numbers = __esm(() => {
+  init_setup_local();
   init_home();
   init_format_version();
   init_files2();
@@ -15118,7 +15174,7 @@ function pendingEntry(link, kind) {
 function pendingShared(link, kind) {
   return link ? pendingEntry(link, kind)?.doc ?? null : null;
 }
-function asSave(doc, seed) {
+function asSave(doc, seed, status = "pending") {
   const id = doc.body.id;
   const epoch = doc.body.epoch;
   const operation = identity(doc);
@@ -15130,7 +15186,11 @@ function asSave(doc, seed) {
     baseRevision: doc.n - 1,
     proposal: doc.envelope.s
   });
-  return { id, epoch, sequence: doc.n, operation, proof };
+  return withSaveOutcome({ setup: id, epoch, operation, proof }, status);
+}
+function bindSave(save, seed, binding) {
+  const ticket = held(save.proof);
+  return { ...save, proof: signDoc(seed, ticket.kind, ticket.n, { ...ticket.body, ...binding }) };
 }
 function stageShared(link, kind, value, effects, requested) {
   const setup = followedSetup(link);
@@ -15176,7 +15236,7 @@ function stageShared(link, kind, value, effects, requested) {
     if (kind === "membershipAndAccess")
       applyAccess(link, value, effects);
   }
-  return asSave(doc, link.sign);
+  return asSave(doc, link.sign, setup.standby ? "pending" : "committed");
 }
 function remember(link, doc, operation, status) {
   link.sharedOutcomes = { ...link.sharedOutcomes, [operation]: {
@@ -15336,35 +15396,41 @@ function queryOperation(id, operation, proof, expectedKind) {
   }, { durable: true });
   return result;
 }
-function sharedSaveReply(save, result) {
-  const { id, epoch, operation, proof } = save;
-  const receipt = { setup: id, epoch, operation, proof };
-  if (result === "saved")
-    return { status: 200, value: { ...receipt, status: "committed" } };
-  if (result === "pending")
-    return { status: 202, value: { ...receipt, status: "pending", pending: true, message: PENDING_SAVE } };
-  return { status: 409, value: { ...receipt, status: "interrupted", message: INTERRUPTED_SAVE } };
+function withSaveOutcome({ setup, epoch, operation, proof }, status) {
+  const reference = { setup, epoch, operation, proof };
+  if (status === "pending")
+    return { ...reference, status, pending: true, message: PENDING_SAVE };
+  if (status === "interrupted")
+    return { ...reference, status, message: INTERRUPTED_SAVE };
+  return { ...reference, status };
+}
+function sharedSaveReply(receipt) {
+  if (receipt.status === "committed")
+    return { status: 200, value: receipt };
+  if (receipt.status === "pending")
+    return { status: 202, value: receipt };
+  return { status: 409, value: receipt };
 }
 async function awaitSharedSave(save) {
-  return save ? sharedSaveReply(save, await waitShared(save)) : null;
+  return save ? waitShared(save) : null;
 }
 async function waitShared(save, timeout = 3000, signal) {
+  if (save.status !== "pending")
+    return save;
   const until = Date.now() + timeout;
   while (!signal?.aborted) {
     const link = readLink();
-    const sameEpoch = link?.setup?.id === save.id && link.setup.epoch === save.epoch;
-    const outcome = sameEpoch ? operationOutcome(link, save.id, save.operation) : queryOperation(save.id, save.operation, save.proof);
-    if (outcome?.status === "committed")
-      return "saved";
-    if (outcome?.status === "interrupted")
-      return "interrupted";
+    const sameEpoch = link?.setup?.id === save.setup && link.setup.epoch === save.epoch;
+    const outcome = sameEpoch ? operationOutcome(link, save.setup, save.operation) : queryOperation(save.setup, save.operation, save.proof);
+    if (outcome?.status === "committed" || outcome?.status === "interrupted")
+      return withSaveOutcome(save, outcome.status);
     if (!sameEpoch)
-      return "interrupted";
+      return withSaveOutcome(save, "interrupted");
     if (Date.now() >= until)
       break;
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
-  return "pending";
+  return save;
 }
 function committedOperations(link) {
   return Object.fromEntries(Object.entries(link.sharedOutcomes ?? {}).filter(([, outcome]) => outcome.status === "committed"));
@@ -15406,10 +15472,11 @@ function changeShared(kind, change, operation) {
 function submitShared(kind, value) {
   return changeShared(kind, () => value);
 }
-var MAX_SHARED_BYTES, PENDING_SAVE = "Pending until the standby is back.", INTERRUPTED_SAVE = "The primary changed before this save committed.", OPERATION_ID;
+var MAX_SHARED_BYTES, OPERATION_ID;
 var init_shared = __esm(() => {
   init_folder_version();
   init_data_declarations();
+  init_setup_save();
   init_format();
   init_home();
   init_known();
@@ -15513,8 +15580,11 @@ function stagePhonePairing(key, hello, address) {
     const devices = isObject(pending.body.value) && pending.body.value.devices || pending.body.devices;
     if (isObject(effects) && isObject(effects.pairing) && Object.values(effects.pairing).includes(hash) && isObject(devices) && Array.isArray(devices.phones)) {
       const phone = devices.phones.find((phone) => isObject(phone) && phone.key === encoded);
-      if (before?.sign && typeof phone?.pairing === "string" && !pairedPhone(before, encoded, phone.pairing))
-        return { save: asSave(pending, before.sign), pairing: phone.pairing };
+      if (before?.sign && typeof phone?.pairing === "string" && !pairedPhone(before, encoded, phone.pairing)) {
+        const pairing = phone.pairing;
+        const save = bindSave(asSave(pending, before.sign), before.sign, { pairedKey: encoded, pairing });
+        return { save, pairing };
+      }
     }
   }
   let paired;
@@ -15543,25 +15613,44 @@ function stagePhonePairing(key, hello, address) {
     delete link[slot];
     return link;
   });
-  if (save && paired)
-    return { save, pairing: paired };
+  if (save) {
+    return { save: bindSave(save, changed.sign, { pairedKey: encoded, pairing: paired ?? "" }), pairing: paired ?? "" };
+  }
   if (!changed)
     return current();
   if (paired)
     noteDocsChanged();
   return paired ?? current();
 }
+function pairingAuthorization(key, pairing, save) {
+  if (save.status === "committed" && pairing && pairedPhone(readLink(), key, pairing))
+    return { pairing, save };
+  return { waiting: save.message ?? "This pairing is no longer available.", save };
+}
 async function authorizePhonePairing(key, hello, address, signal) {
+  const encoded = key.toString("base64url");
+  if (hello.save !== undefined) {
+    const receipt = setupSaveReceipt(hello.save);
+    if (!receipt)
+      return false;
+    const ticket = readDoc(receipt.proof);
+    if (ticket?.body.pairedKey !== encoded || typeof ticket.body.pairing !== "string")
+      return false;
+    const outcome = queryOperation(receipt.setup, receipt.operation, receipt.proof, "membershipAndAccess");
+    if (!outcome)
+      return false;
+    return pairingAuthorization(encoded, ticket.body.pairing, withSaveOutcome({ ...receipt, epoch: Number(outcome.epoch) }, outcome.status));
+  }
   const staged = stagePhonePairing(key, hello, address);
   if (typeof staged !== "object")
     return staged;
   noteDocsChanged();
-  if (await waitShared(staged.save, Infinity, signal) !== "saved" || signal?.aborted)
-    return false;
-  return pairedPhone(readLink(), key.toString("base64url"), staged.pairing) ? staged.pairing : false;
+  const receipt = await waitShared(staged.save, undefined, signal);
+  return pairingAuthorization(encoded, staged.pairing, receipt);
 }
 function authorizePhone(...args) {
-  return typeof stagePhonePairing(...args) === "string";
+  const staged = stagePhonePairing(...args);
+  return typeof staged === "object" ? pairingAuthorization(args[0].toString("base64url"), staged.pairing, staged.save) : typeof staged === "string";
 }
 function noteRemoved(link, key, pairing) {
   link.removed ??= [];
@@ -15752,6 +15841,7 @@ var init_phones = __esm(() => {
   init_format();
   init_known();
   init_state();
+  init_setup_local();
   PAIRING = /^[A-Za-z0-9_-]{0,32}$/;
 });
 
@@ -16513,52 +16603,25 @@ var init_known = __esm(() => {
   MAX_MAIL = 65600 - 17;
 });
 
-// box/src/shared/shape.ts
-function fitsShape(shape, value) {
-  if (shape === "any")
-    return true;
-  if (shape === "null")
-    return value === null;
-  if (typeof shape === "string")
-    return shape === "number" ? typeof value === "number" && Number.isFinite(value) : typeof value === (shape === "bool" ? "boolean" : shape);
-  if ("literal" in shape)
-    return value === shape.literal;
-  if ("oneOf" in shape)
-    return shape.oneOf.some((each) => fitsShape(each, value));
-  if ("list" in shape)
-    return Array.isArray(value) && value.every((each) => fitsShape(shape.list, each));
-  if (value === null || typeof value !== "object" || Array.isArray(value))
-    return false;
-  const fields = value;
-  if ("map" in shape)
-    return Object.values(fields).every((each) => fitsShape(shape.map, each));
-  const declared = Object.entries(shape.object);
-  return declared.every(([key, field]) => key.endsWith("?") && !(key.slice(0, -1) in fields) || (key.replace(/\?$/, "") in fields) && fitsShape(field, fields[key.replace(/\?$/, "")])) && Object.keys(fields).every((key) => Object.hasOwn(shape.object, key) || Object.hasOwn(shape.object, key + "?"));
-}
-var string3 = "string", number = "number", bool = "bool", any = "any", list2 = (of) => ({ list: of }), map = (of) => ({ map: of }), object = (fields) => ({ object: fields }), oneOf = (...of) => ({ oneOf: of }), literal = (value) => ({ literal: value }), words2 = (...each) => ({ oneOf: each.map((word) => ({ literal: word })) }), nullable = (shape) => oneOf(shape, "null"), NOTHING, BYTES = "bytes";
-var init_shape = __esm(() => {
-  NOTHING = object({});
-});
-
 // box/src/shared/routes/projects.ts
 var PROJECT, PROJECTS, PROJECT_ROUTES;
 var init_projects = __esm(() => {
   init_shape();
   PROJECT = object({
-    directory: string3,
-    "name?": string3,
-    folders: list2(string3),
-    "run?": string3,
+    directory: string,
+    "name?": string,
+    folders: list(string),
+    "run?": string,
     "removed?": bool,
-    "madeBy?": object({ bot: string3, name: string3, at: number }),
+    "madeBy?": object({ bot: string, name: string, at: number }),
     "addedByBox?": bool
   });
-  PROJECTS = object({ projects: list2(PROJECT), worktrees: map(string3) });
+  PROJECTS = object({ projects: list(PROJECT), worktrees: map(string) });
   PROJECT_ROUTES = [
     { route: "GET kuvo/projects", feature: "projects", answers: { 200: PROJECTS } },
     { route: "GET kuvo/projects/events", feature: "projects", answers: { 200: PROJECTS } },
     { route: "PUT kuvo/projects", feature: "projects", answers: { 200: object({ project: PROJECT }) } },
-    { route: "DELETE kuvo/projects", feature: "projects", answers: { 200: object({ archived: number, sessions: list2(string3) }), 409: object({ message: string3, archived: number, kept: number, sessions: list2(string3) }) } }
+    { route: "DELETE kuvo/projects", feature: "projects", answers: { 200: object({ archived: number, sessions: list(string) }), 409: object({ message: string, archived: number, kept: number, sessions: list(string) }) } }
   ];
 });
 
@@ -16568,157 +16631,157 @@ var init_work2 = __esm(() => {
   init_shape();
   init_projects();
   LIMITS = object({ "atOnce?": number, "perDay?": number, "depth?": number, "tokensPerDay?": number });
-  WORKS_FOR = object({ bot: string3, name: string3 });
+  WORKS_FOR = object({ bot: string, name: string });
   ANSWER = object({
-    "session?": string3,
-    ask: string3,
-    "call?": string3,
-    what: string3,
-    decision: words2("allow", "deny", "answer"),
-    reason: string3,
-    by: object({ "bot?": string3, name: string3 }),
+    "session?": string,
+    ask: string,
+    "call?": string,
+    what: string,
+    decision: words("allow", "deny", "answer"),
+    reason: string,
+    by: object({ "bot?": string, name: string }),
     at: number
   });
-  WORK_ACCOUNT = object({ name: string3, title: string3, "label?": string3 });
+  WORK_ACCOUNT = object({ name: string, title: string, "label?": string });
   WORK_SESSION = object({
-    session: string3,
-    title: string3,
-    folder: string3,
-    "project?": string3,
-    startedBy: string3,
+    session: string,
+    title: string,
+    folder: string,
+    "project?": string,
+    startedBy: string,
     depth: number,
-    "model?": object({ id: string3, providerID: string3, "variant?": string3 }),
-    "mode?": string3,
+    "model?": object({ id: string, providerID: string, "variant?": string }),
+    "mode?": string,
     "account?": WORK_ACCOUNT,
-    state: words2("working", "asking", "finished", "failed", "stopped", "idle"),
-    "asks?": string3,
+    state: words("working", "asking", "finished", "failed", "stopped", "idle"),
+    "asks?": string,
     started: number,
     tokens: number,
     "cost?": number,
-    "lastReply?": string3
+    "lastReply?": string
   });
   WORK_ASK = object({
-    id: string3,
-    action: words2("makeProject", "cloneProject", "resetLimits"),
-    session: string3,
-    name: string3,
-    "bot?": string3,
-    project: string3,
-    "clone?": string3,
-    folderName: string3,
-    folder: nullable(string3),
-    "suggested?": string3,
-    "reset?": object({ row: string3, account: string3, service: string3, count: number, "refills?": list2(string3), "on?": string3 }),
-    "words?": object({ title: string3, body: string3 }),
+    id: string,
+    action: words("makeProject", "cloneProject", "resetLimits"),
+    session: string,
+    name: string,
+    "bot?": string,
+    project: string,
+    "clone?": string,
+    folderName: string,
+    folder: nullable(string),
+    "suggested?": string,
+    "reset?": object({ row: string, account: string, service: string, count: number, "refills?": list(string), "on?": string }),
+    "words?": object({ title: string, body: string }),
     at: number
   });
-  WORK_ASKS = object({ asks: list2(WORK_ASK) });
-  WORK_ASK_ANSWERED = object({ answer: words2("allow", "always", "deny"), text: string3, isError: bool });
-  WORK_SETTINGS = object({ projectsFolder: nullable(string3), "suggested?": string3, "keepsAwake?": bool, "awakeNow?": bool });
-  UNANSWERING = object({ provider: string3, "model?": string3, "only?": words2("paid", "free"), "models?": list2(string3), why: string3, since: number, until: number });
-  UNANSWERING_LIST = object({ held: list2(UNANSWERING) });
+  WORK_ASKS = object({ asks: list(WORK_ASK) });
+  WORK_ASK_ANSWERED = object({ answer: words("allow", "always", "deny"), text: string, isError: bool });
+  WORK_SETTINGS = object({ projectsFolder: nullable(string), "suggested?": string, "keepsAwake?": bool, "awakeNow?": bool });
+  UNANSWERING = object({ provider: string, "model?": string, "only?": words("paid", "free"), "models?": list(string), why: string, since: number, until: number });
+  UNANSWERING_LIST = object({ held: list(UNANSWERING) });
   WORK = object({
-    bot: string3,
-    sessions: list2(WORK_SESSION),
-    answered: list2(ANSWER),
+    bot: string,
+    sessions: list(WORK_SESSION),
+    answered: list(ANSWER),
     today: object({ started: number, "answered?": number, working: number, tokens: number, "cost?": number }),
     limits: nullable(LIMITS),
-    "asks?": list2(WORK_ASK),
-    "projects?": list2(PROJECT)
+    "asks?": list(WORK_ASK),
+    "projects?": list(PROJECT)
   });
-  OVERSIGHT_MARK = object({ id: string3, bot: string3, session: string3, kind: words2("started", "told", "read", "answered", "stopped", "finished"), at: number });
-  OVERSIGHT = object({ marks: list2(OVERSIGHT_MARK) });
+  OVERSIGHT_MARK = object({ id: string, bot: string, session: string, kind: words("started", "told", "read", "answered", "stopped", "finished"), at: number });
+  OVERSIGHT = object({ marks: list(OVERSIGHT_MARK) });
   WORK_CHANGED = object({ changed: map(number) });
   BACKGROUND_LIST = object({ sessions: map(object({ commands: number, subagents: number, tasks: number, since: number })) });
   SESSION_BACKGROUND = object({
-    commands: list2(object({ id: string3, command: string3, started: number, "folder?": string3, "ports?": list2(number), "agents?": bool })),
-    subagents: list2(object({ session: string3, since: number, "title?": string3, "asking?": bool }))
+    commands: list(object({ id: string, command: string, started: number, "folder?": string, "ports?": list(number), "agents?": bool })),
+    subagents: list(object({ session: string, since: number, "title?": string, "asking?": bool }))
   });
-  GOAL_APP = object({ name: string3, "id?": string3 });
+  GOAL_APP = object({ name: string, "id?": string });
   GOAL_STEP = object({
-    id: string3,
-    text: string3,
-    state: words2("todo", "doing", "done", "waiting", "paused", "skipped"),
+    id: string,
+    text: string,
+    state: words("todo", "doing", "done", "waiting", "paused", "skipped"),
     "progress?": number,
-    "note?": string3,
-    "detail?": string3,
-    "phase?": string3,
-    "site?": string3,
+    "note?": string,
+    "detail?": string,
+    "phase?": string,
+    "site?": string,
     "app?": GOAL_APP,
-    "after?": list2(string3),
-    "sessions?": list2(string3),
+    "after?": list(string),
+    "sessions?": list(string),
     "resumes?": number,
     "until?": number,
     "began?": number,
     "ended?": number
   });
   GOAL_CHECK = object({
-    id: string3,
-    text: string3,
-    "detail?": string3,
-    state: words2("ok", "needs", "failed"),
-    by: words2("bot", "box"),
-    "site?": string3,
-    "action?": object({ kind: words2("open", "projectsFolder"), label: string3, "url?": string3 })
+    id: string,
+    text: string,
+    "detail?": string,
+    state: words("ok", "needs", "failed"),
+    by: words("bot", "box"),
+    "site?": string,
+    "action?": object({ kind: words("open", "projectsFolder"), label: string, "url?": string })
   });
   GOAL_WAITING = object({
-    id: string3,
-    kind: words2("you", "judgment", "outside", "ask"),
-    text: string3,
-    "detail?": string3,
-    "url?": string3,
-    "site?": string3,
+    id: string,
+    kind: words("you", "judgment", "outside", "ask"),
+    text: string,
+    "detail?": string,
+    "url?": string,
+    "site?": string,
     "app?": GOAL_APP,
-    "session?": string3,
-    "step?": string3,
+    "session?": string,
+    "step?": string,
     at: number
   });
   GOAL_DECIDED = object({
-    id: string3,
-    text: string3,
-    choice: string3,
-    "why?": string3,
-    "options?": list2(string3),
+    id: string,
+    text: string,
+    choice: string,
+    "why?": string,
+    "options?": list(string),
     "multiple?": bool,
-    "session?": string3,
+    "session?": string,
     at: number,
-    "yours?": object({ choice: string3, at: number })
+    "yours?": object({ choice: string, at: number })
   });
-  GOAL_SPEND = object({ what: string3, cap: number, currency: string3, per: words2("day", "week", "month", "goal"), spent: number, "until?": number });
-  GOAL_FOLDER = object({ project: string3, folder: nullable(string3), shown: nullable(string3), "there?": bool });
+  GOAL_SPEND = object({ what: string, cap: number, currency: string, per: words("day", "week", "month", "goal"), spent: number, "until?": number });
+  GOAL_FOLDER = object({ project: string, folder: nullable(string), shown: nullable(string), "there?": bool });
   GOAL_PLAN = object({
-    id: string3,
-    bot: string3,
-    name: string3,
-    session: string3,
-    goal: string3,
-    "title?": string3,
-    state: words2("proposed", "running", "done", "stopped", "declined"),
-    steps: list2(GOAL_STEP),
-    checks: list2(GOAL_CHECK),
-    spend: list2(GOAL_SPEND),
-    public: list2(object({ id: string3, text: string3, on: bool })),
-    projects: list2(string3),
+    id: string,
+    bot: string,
+    name: string,
+    session: string,
+    goal: string,
+    "title?": string,
+    state: words("proposed", "running", "done", "stopped", "declined"),
+    steps: list(GOAL_STEP),
+    checks: list(GOAL_CHECK),
+    spend: list(GOAL_SPEND),
+    public: list(object({ id: string, text: string, on: bool })),
+    projects: list(string),
     wake: bool,
-    digest: words2("day", "week", "milestones", "none"),
+    digest: words("day", "week", "milestones", "none"),
     "ends?": number,
     proposed: number,
     "started?": number,
     "ended?": number,
-    waiting: list2(GOAL_WAITING),
-    paused: list2(object({ why: string3, "until?": number, "session?": string3 })),
+    waiting: list(GOAL_WAITING),
+    paused: list(object({ why: string, "until?": number, "session?": string })),
     waited: number,
-    watching: list2(string3),
+    watching: list(string),
     "next?": number,
-    "lastDigest?": object({ at: number, text: string3 }),
-    "report?": string3,
-    mode: words2("interactive", "autopilot"),
-    decided: list2(GOAL_DECIDED),
+    "lastDigest?": object({ at: number, text: string }),
+    "report?": string,
+    mode: words("interactive", "autopilot"),
+    decided: list(GOAL_DECIDED),
     alone: bool,
-    "folders?": list2(GOAL_FOLDER)
+    "folders?": list(GOAL_FOLDER)
   });
-  GOAL_PLANS = object({ goals: list2(GOAL_PLAN) });
-  REFUSED = object({ message: string3 });
+  GOAL_PLANS = object({ goals: list(GOAL_PLAN) });
+  REFUSED = object({ message: string });
   WORK_ROUTES = [
     { route: "GET kuvo/work", feature: "work", answers: { 200: WORK, 400: REFUSED, 404: REFUSED, 503: REFUSED } },
     { route: "GET kuvo/work/events", feature: "work", answers: { 200: WORK_CHANGED } },
@@ -16737,10 +16800,10 @@ var init_work2 = __esm(() => {
     { route: "GET kuvo/work/unanswering", feature: "work.unanswering", answers: { 200: UNANSWERING_LIST } },
     { route: "GET kuvo/work/goals", feature: "work.goals", answers: { 200: GOAL_PLANS } },
     { route: "GET kuvo/work/goals/events", feature: "work.goals", answers: { 200: GOAL_PLANS } },
-    { route: "POST kuvo/work/goals/ask", feature: "work.goals", answers: { 200: object({ text: string3 }), 400: REFUSED, 404: REFUSED, 409: REFUSED } },
+    { route: "POST kuvo/work/goals/ask", feature: "work.goals", answers: { 200: object({ text: string }), 400: REFUSED, 404: REFUSED, 409: REFUSED } },
     { route: "POST kuvo/work/goals/:id", feature: "work.goals", answers: { 200: object({ goal: GOAL_PLAN }), 400: REFUSED, 404: REFUSED, 409: REFUSED, 502: REFUSED } },
     { route: "GET kuvo/work/apps/icon", feature: "work.goals.apps", answers: { 200: BYTES, 400: REFUSED, 404: REFUSED } },
-    { route: "POST kuvo/projects/new", feature: "work.projects", answers: { 201: object({ project: PROJECT, text: string3 }), 400: REFUSED, 403: object({ message: string3, needs: string3 }), 409: REFUSED, 502: REFUSED } }
+    { route: "POST kuvo/projects/new", feature: "work.projects", answers: { 201: object({ project: PROJECT, text: string }), 400: REFUSED, 403: object({ message: string, needs: string }), 409: REFUSED, 502: REFUSED } }
   ];
 });
 
@@ -16748,203 +16811,203 @@ var init_work2 = __esm(() => {
 var CARRIED, STARTED, SESSION_MOVED, CONFIRM, SESSION_ACTION, SESSION_ACTIONS, SESSION_CHANGED, LIVES_ELSEWHERE, TOOL_ANSWER, REFUSED2, WAITING, QUEUE, ADDED, REMOVED, QUEUE_ITEM, QUEUE_SHOWN, QUEUE_READ, ASK_CHOICE, PERMISSION_ASK, ASKED_QUESTION, QUESTION_ASK, SANDBOX_ASK_SHOWN, VAULT_ASK_SHOWN, OTHER_ASK, SESSION_ASK, SESSION_ASKS, MENTION, MENTIONS, GLANCE_CHECKS, GLANCE_PULL, GLANCE, GLANCES, MODEL_ACTION, SESSION_MODEL, SESSION_MODELS, MODEL_REF, STARRED, MODELS_OFFERED, MODELS_STARRED, SESSION_KINDS, SESSION_FACTS, LISTED_PROJECT, ASKS_WORDS, NEEDS_YOU2, BOT_STATES, BOT_NOW, WAITING_ON_YOU, SESSION_LIST, SESSION_ROUTES;
 var init_sessions = __esm(() => {
   init_shape();
-  CARRIED = object({ session: string3 });
-  STARTED = object({ session: string3, title: nullable(string3), folder: string3, project: nullable(string3), "answer?": nullable(string3), "got?": words2("askFirst", "acceptEdits", "auto"), "info?": any, "worktree?": object({ project: string3, root: string3, "folder?": string3, branch: string3, "base?": string3 }) });
-  SESSION_MOVED = object({ session: string3, directory: string3, "info?": any });
-  CONFIRM = object({ title: string3, message: string3, label: string3 });
+  CARRIED = object({ session: string });
+  STARTED = object({ session: string, title: nullable(string), folder: string, project: nullable(string), "answer?": nullable(string), "got?": words("askFirst", "acceptEdits", "auto"), "info?": any, "worktree?": object({ project: string, root: string, "folder?": string, branch: string, "base?": string }) });
+  SESSION_MOVED = object({ session: string, directory: string, "info?": any });
+  CONFIRM = object({ title: string, message: string, label: string });
   SESSION_ACTION = object({
-    id: words2("pin", "unpin", "rename", "archive", "unarchive", "delete"),
-    label: string3,
+    id: words("pin", "unpin", "rename", "archive", "unarchive", "delete"),
+    label: string,
     "destructive?": literal(true),
     "confirm?": CONFIRM
   });
-  SESSION_ACTIONS = object({ session: string3, actions: list2(SESSION_ACTION), "held?": string3 });
-  SESSION_CHANGED = object({ session: string3, info: any });
-  LIVES_ELSEWHERE = object({ message: string3, "computer?": string3 });
-  TOOL_ANSWER = object({ text: string3, isError: bool });
-  REFUSED2 = object({ message: string3 });
-  WAITING = object({ id: string3, "from?": string3, text: string3, "files?": list2(string3), "keyword?": string3, at: number });
-  QUEUE = object({ paused: bool, held: list2(string3), "waiting?": list2(WAITING), "line?": string3 });
-  ADDED = object({ paused: bool, held: list2(string3), "waiting?": list2(WAITING), "line?": string3, waits: bool });
-  REMOVED = object({ id: string3, text: string3, "files?": list2(any), delivery: oneOf(literal("steer"), literal("queue")), "from?": string3, words: string3, keyword: nullable(string3), draft: string3, "before?": string3 });
+  SESSION_ACTIONS = object({ session: string, actions: list(SESSION_ACTION), "held?": string });
+  SESSION_CHANGED = object({ session: string, info: any });
+  LIVES_ELSEWHERE = object({ message: string, "computer?": string });
+  TOOL_ANSWER = object({ text: string, isError: bool });
+  REFUSED2 = object({ message: string });
+  WAITING = object({ id: string, "from?": string, text: string, "files?": list(string), "keyword?": string, at: number });
+  QUEUE = object({ paused: bool, held: list(string), "waiting?": list(WAITING), "line?": string });
+  ADDED = object({ paused: bool, held: list(string), "waiting?": list(WAITING), "line?": string, waits: bool });
+  REMOVED = object({ id: string, text: string, "files?": list(any), delivery: oneOf(literal("steer"), literal("queue")), "from?": string, words: string, keyword: nullable(string), draft: string, "before?": string });
   QUEUE_ITEM = object({
-    id: string3,
-    words: string3,
-    files: list2(string3),
-    keyword: nullable(string3),
-    from: nullable(string3),
-    on: words2("engine", "box"),
-    delivery: words2("steer", "queue"),
+    id: string,
+    words: string,
+    files: list(string),
+    keyword: nullable(string),
+    from: nullable(string),
+    on: words("engine", "box"),
+    delivery: words("steer", "queue"),
     held: bool
   });
-  QUEUE_SHOWN = object({ paused: bool, held: list2(string3), "waiting?": list2(WAITING), "line?": string3, items: nullable(list2(QUEUE_ITEM)) });
-  QUEUE_READ = object({ paused: bool, held: list2(string3), "waiting?": list2(WAITING), "line?": string3, "items?": nullable(list2(QUEUE_ITEM)) });
+  QUEUE_SHOWN = object({ paused: bool, held: list(string), "waiting?": list(WAITING), "line?": string, items: nullable(list(QUEUE_ITEM)) });
+  QUEUE_READ = object({ paused: bool, held: list(string), "waiting?": list(WAITING), "line?": string, "items?": nullable(list(QUEUE_ITEM)) });
   ASK_CHOICE = object({
-    answer: words2("once", "always", "reject", "instead"),
-    title: string3,
-    named: nullable(string3),
-    placeholder: nullable(string3),
-    help: nullable(string3),
-    spoken: nullable(string3),
-    "after?": string3,
-    "item?": string3,
+    answer: words("once", "always", "reject", "instead"),
+    title: string,
+    named: nullable(string),
+    placeholder: nullable(string),
+    help: nullable(string),
+    spoken: nullable(string),
+    "after?": string,
+    "item?": string,
     "confirm?": bool
   });
   PERMISSION_ASK = object({
-    id: string3,
+    id: string,
     kind: literal("permission"),
-    session: string3,
-    title: string3,
-    message: nullable(string3),
-    command: nullable(string3),
-    files: list2(object({ file: string3, patch: string3, additions: number, deletions: number, status: nullable(words2("added", "deleted", "modified")) })),
-    resources: list2(string3),
-    choices: list2(ASK_CHOICE)
+    session: string,
+    title: string,
+    message: nullable(string),
+    command: nullable(string),
+    files: list(object({ file: string, patch: string, additions: number, deletions: number, status: nullable(words("added", "deleted", "modified")) })),
+    resources: list(string),
+    choices: list(ASK_CHOICE)
   });
   ASKED_QUESTION = object({
-    key: string3,
-    title: nullable(string3),
-    question: string3,
-    options: list2(object({ value: string3, label: string3, description: nullable(string3) })),
+    key: string,
+    title: nullable(string),
+    question: string,
+    options: list(object({ value: string, label: string, description: nullable(string) })),
     multiple: bool,
     custom: bool,
     required: bool
   });
-  QUESTION_ASK = object({ id: string3, kind: literal("question"), session: string3, title: string3, questions: list2(ASKED_QUESTION) });
+  QUESTION_ASK = object({ id: string, kind: literal("question"), session: string, title: string, questions: list(ASKED_QUESTION) });
   SANDBOX_ASK_SHOWN = object({
-    id: string3,
+    id: string,
     kind: literal("sandbox"),
-    session: string3,
-    title: string3,
-    message: string3,
-    command: string3,
-    stopped: list2(object({ label: string3, detail: string3 })),
-    error: nullable(string3),
-    asker: string3,
-    why: string3,
-    choices: list2(ASK_CHOICE)
+    session: string,
+    title: string,
+    message: string,
+    command: string,
+    stopped: list(object({ label: string, detail: string })),
+    error: nullable(string),
+    asker: string,
+    why: string,
+    choices: list(ASK_CHOICE)
   });
   VAULT_ASK_SHOWN = object({
-    id: string3,
+    id: string,
     kind: literal("vault"),
-    session: string3,
-    need: words2("use", "item"),
-    title: string3,
-    message: nullable(string3),
-    site: nullable(string3),
-    note: nullable(string3),
-    choices: list2(ASK_CHOICE)
+    session: string,
+    need: words("use", "item"),
+    title: string,
+    message: nullable(string),
+    site: nullable(string),
+    note: nullable(string),
+    choices: list(ASK_CHOICE)
   });
-  OTHER_ASK = object({ id: string3, kind: literal("other"), session: string3, title: string3, message: string3, dismiss: bool });
+  OTHER_ASK = object({ id: string, kind: literal("other"), session: string, title: string, message: string, dismiss: bool });
   SESSION_ASK = oneOf(PERMISSION_ASK, QUESTION_ASK, SANDBOX_ASK_SHOWN, VAULT_ASK_SHOWN, OTHER_ASK);
-  SESSION_ASKS = object({ asks: list2(SESSION_ASK) });
-  MENTION = object({ text: string3, title: string3, detail: nullable(string3), kind: words2("file", "folder", "bot", "session"), session: nullable(string3) });
-  MENTIONS = object({ mentions: list2(MENTION) });
+  SESSION_ASKS = object({ asks: list(SESSION_ASK) });
+  MENTION = object({ text: string, title: string, detail: nullable(string), kind: words("file", "folder", "bot", "session"), session: nullable(string) });
+  MENTIONS = object({ mentions: list(MENTION) });
   GLANCE_CHECKS = object({ passed: number, failed: number, pending: number });
   GLANCE_PULL = object({
     number,
-    url: string3,
-    "state?": words2("open", "draft", "merged", "closed"),
+    url: string,
+    "state?": words("open", "draft", "merged", "closed"),
     "additions?": number,
     "deletions?": number,
     "checks?": GLANCE_CHECKS
   });
   GLANCE = object({
-    "branch?": string3,
+    "branch?": string,
     "additions?": number,
     "deletions?": number,
     "pull?": GLANCE_PULL,
-    "account?": object({ name: string3, "label?": string3 }),
+    "account?": object({ name: string, "label?": string }),
     "asked?": number
   });
   GLANCES = object({ sessions: map(GLANCE) });
-  MODEL_ACTION = object({ do: words2("signIn", "addKey", "install", "choose"), label: string3, help: string3 });
+  MODEL_ACTION = object({ do: words("signIn", "addKey", "install", "choose"), label: string, help: string });
   SESSION_MODEL = object({
-    model: nullable(object({ providerID: string3, id: string3, "variant?": string3 })),
-    "name?": string3,
+    model: nullable(object({ providerID: string, id: string, "variant?": string })),
+    "name?": string,
     runs: bool,
-    "missing?": words2("model", "signIn", "key", "install", "gone"),
-    "account?": object({ id: string3, name: string3, "label?": string3 }),
-    "plan?": object({ name: string3, agent: string3, provider: string3 }),
+    "missing?": words("model", "signIn", "key", "install", "gone"),
+    "account?": object({ id: string, name: string, "label?": string }),
+    "plan?": object({ name: string, agent: string, provider: string }),
     "connects?": bool,
-    "refusal?": string3,
+    "refusal?": string,
     "choose?": bool,
     "action?": MODEL_ACTION
   });
   SESSION_MODELS = object({ sessions: map(SESSION_MODEL) });
-  MODEL_REF = object({ providerID: string3, id: string3, "variant?": string3 });
-  STARRED = object({ providerID: string3, id: string3 });
+  MODEL_REF = object({ providerID: string, id: string, "variant?": string });
+  STARRED = object({ providerID: string, id: string });
   MODELS_OFFERED = object({
-    models: list2(object({ providerID: string3, id: string3, name: string3, side: words2("engine", "agents"), efforts: list2(string3), aliases: list2(string3), "retiring?": bool, "hidden?": bool, "free?": bool })),
+    models: list(object({ providerID: string, id: string, name: string, side: words("engine", "agents"), efforts: list(string), aliases: list(string), "retiring?": bool, "hidden?": bool, "free?": bool })),
     known: object({ engine: bool, agents: bool }),
-    "providers?": list2(object({ id: string3, name: string3, "label?": string3 })),
-    "starred?": list2(STARRED),
-    "listing?": list2(string3),
-    "unavailable?": list2(object({ id: string3 })),
-    "generations?": map(string3),
+    "providers?": list(object({ id: string, name: string, "label?": string })),
+    "starred?": list(STARRED),
+    "listing?": list(string),
+    "unavailable?": list(object({ id: string })),
+    "generations?": map(string),
     "scoped?": bool,
-    "note?": string3,
+    "note?": string,
     "starting?": nullable(MODEL_REF)
   });
-  MODELS_STARRED = object({ starred: list2(STARRED) });
+  MODELS_STARRED = object({ starred: list(STARRED) });
   SESSION_KINDS = ["project", "chat", "bot", "seat", "hidden", "subagent"];
   SESSION_FACTS = object({
-    kind: words2(...SESSION_KINDS),
-    "project?": string3,
-    directory: string3,
-    "title?": string3,
+    kind: words(...SESSION_KINDS),
+    "project?": string,
+    directory: string,
+    "title?": string,
     created: number,
     updated: number,
-    "parent?": string3,
+    "parent?": string,
     "pinned?": bool,
     "archived?": bool,
     "running?": bool,
     "wakeTurn?": literal(true),
     "asked?": number,
     "away?": bool,
-    "bot?": string3,
+    "bot?": string,
     "thinking?": literal(true),
-    "blocked?": words2("error", "limit"),
+    "blocked?": words("error", "limit"),
     "retrying?": literal(true),
     "unread?": number
   });
-  LISTED_PROJECT = object({ "name?": string3, "updated?": number, asking: number, working: number });
-  ASKS_WORDS = object({ kind: words2("permission", "question", "sandbox", "vault", "other"), summary: string3 });
-  NEEDS_YOU2 = object({ session: string3, asks: ASKS_WORDS });
+  LISTED_PROJECT = object({ "name?": string, "updated?": number, asking: number, working: number });
+  ASKS_WORDS = object({ kind: words("permission", "question", "sandbox", "vault", "other"), summary: string });
+  NEEDS_YOU2 = object({ session: string, asks: ASKS_WORDS });
   BOT_STATES = ["idle", "working", "thinking", "needsYou", "blocked", "done", "asleep"];
   BOT_NOW = object({
     working: number,
     asking: number,
     "finished?": number,
     "waking?": literal(true),
-    state: words2(...BOT_STATES),
+    state: words(...BOT_STATES),
     since: number,
     "thinking?": number,
     "blocked?": number,
-    "blockedBy?": words2("error", "limit")
+    "blockedBy?": words("error", "limit")
   });
   WAITING_ON_YOU = object({ sessions: number, bots: number, queue: number });
   SESSION_LIST = object({
-    at: string3,
+    at: string,
     "full?": bool,
     sessions: map(SESSION_FACTS),
-    "gone?": list2(string3),
+    "gone?": list(string),
     projects: map(LISTED_PROJECT),
-    archivedGroups: list2(object({ directory: string3, title: string3, kind: words2("project", "chat", "bot"), sessions: list2(string3) })),
-    needsYou: list2(NEEDS_YOU2),
-    "pending?": list2(string3)
+    archivedGroups: list(object({ directory: string, title: string, kind: words("project", "chat", "bot"), sessions: list(string) })),
+    needsYou: list(NEEDS_YOU2),
+    "pending?": list(string)
   });
   SESSION_ROUTES = [
     { route: "POST kuvo/sessions/:id/agents", feature: "sessions.agents", answers: { 200: CARRIED } },
-    { route: "POST kuvo/sessions/:id/folders", feature: "projects.folders", answers: { 200: object({ session: string3 }), 404: REFUSED2, 405: REFUSED2, 502: REFUSED2, 503: REFUSED2 } },
+    { route: "POST kuvo/sessions/:id/folders", feature: "projects.folders", answers: { 200: object({ session: string }), 404: REFUSED2, 405: REFUSED2, 502: REFUSED2, 503: REFUSED2 } },
     { route: "POST kuvo/sessions/:id/move", feature: "sessions.move", answers: { 200: SESSION_MOVED, 400: REFUSED2, 404: REFUSED2, 405: REFUSED2, 409: REFUSED2, 502: REFUSED2, 503: REFUSED2 } },
     { route: "POST kuvo/sessions/deletes", feature: "sessions.actions", answers: { 200: CONFIRM, 400: REFUSED2, 404: REFUSED2, 405: REFUSED2, 503: REFUSED2 } },
     { route: "GET kuvo/sessions/:id/actions", feature: "sessions.actions", answers: { 200: SESSION_ACTIONS, 400: REFUSED2, 404: REFUSED2, 405: REFUSED2, 409: LIVES_ELSEWHERE, 503: REFUSED2 } },
     { route: "POST kuvo/sessions/:id/archive", feature: "sessions.actions", answers: { 200: SESSION_CHANGED, 400: REFUSED2, 404: REFUSED2, 405: REFUSED2, 409: LIVES_ELSEWHERE, 502: REFUSED2, 503: REFUSED2 } },
     { route: "POST kuvo/sessions/:id/pin", feature: "sessions.actions", answers: { 200: SESSION_CHANGED, 400: REFUSED2, 404: REFUSED2, 405: REFUSED2, 409: LIVES_ELSEWHERE, 502: REFUSED2, 503: REFUSED2 } },
     { route: "POST kuvo/sessions/:id/rename", feature: "sessions.actions", answers: { 200: SESSION_CHANGED, 400: REFUSED2, 404: REFUSED2, 405: REFUSED2, 409: LIVES_ELSEWHERE, 502: REFUSED2, 503: REFUSED2 } },
-    { route: "DELETE kuvo/sessions/:id", feature: "sessions.actions", answers: { 200: object({ session: string3 }), 400: REFUSED2, 405: REFUSED2, 409: LIVES_ELSEWHERE, 502: REFUSED2, 503: REFUSED2 } },
-    { route: "POST kuvo/sessions", feature: "sessions.start.empty", answers: { 200: STARTED, 400: REFUSED2, 403: REFUSED2, 404: REFUSED2, 409: object({ message: string3, reason: words2("fullAccessOff") }), 429: REFUSED2, 502: object({ message: string3, "session?": string3 }), 503: REFUSED2 } },
+    { route: "DELETE kuvo/sessions/:id", feature: "sessions.actions", answers: { 200: object({ session: string }), 400: REFUSED2, 405: REFUSED2, 409: LIVES_ELSEWHERE, 502: REFUSED2, 503: REFUSED2 } },
+    { route: "POST kuvo/sessions", feature: "sessions.start.empty", answers: { 200: STARTED, 400: REFUSED2, 403: REFUSED2, 404: REFUSED2, 409: object({ message: string, reason: words("fullAccessOff") }), 429: REFUSED2, 502: object({ message: string, "session?": string }), 503: REFUSED2 } },
     { route: "POST kuvo/agent-tools", feature: "agent-tools", answers: { 200: TOOL_ANSWER, 400: REFUSED2 } },
     { route: "GET kuvo/sessions/queues/events", feature: "queue.items", answers: { 200: object({ queues: map(QUEUE) }) } },
     { route: "GET kuvo/sessions/glance", feature: "sessions.glance", answers: { 200: GLANCES, 400: REFUSED2, 503: REFUSED2 } },
@@ -16971,7 +17034,7 @@ var init_sessions = __esm(() => {
     { route: "POST kuvo/sessions/:id/queue/:item/now", feature: "queue.items", answers: { 200: QUEUE, 404: REFUSED2, 502: REFUSED2, 503: REFUSED2 } },
     { route: "POST kuvo/sessions/:id/queue/:item/steer", feature: "queue.steer", answers: { 200: QUEUE, 404: REFUSED2, 502: REFUSED2, 503: REFUSED2 } },
     { route: "POST kuvo/sessions/:id/queue/add", feature: "queue.items", answers: { 200: ADDED, 400: REFUSED2, 404: REFUSED2, 502: REFUSED2, 503: REFUSED2 } },
-    { route: "DELETE kuvo/sessions/:id/queue/:item", feature: "queue.items", answers: { 200: object({ paused: bool, held: list2(string3), "waiting?": list2(WAITING), "line?": string3, "removed?": REMOVED }), 404: REFUSED2, 502: REFUSED2, 503: REFUSED2 } }
+    { route: "DELETE kuvo/sessions/:id/queue/:item", feature: "queue.items", answers: { 200: object({ paused: bool, held: list(string), "waiting?": list(WAITING), "line?": string, "removed?": REMOVED }), 404: REFUSED2, 502: REFUSED2, 503: REFUSED2 } }
   ];
 });
 
@@ -16986,57 +17049,57 @@ var init_bots = __esm(() => {
     shapes: ["round", "squircle", "pebble", "gem", "bloom", "loaf", "capsule", "dome"],
     faces: ["calm", "happy", "sleepy", "wink", "curious", "bright"]
   };
-  LOOK = object({ color: words2(...LOOKS.colors), shape: words2(...LOOKS.shapes), face: words2(...LOOKS.faces) });
-  MODEL2 = object({ id: string3, providerID: string3, "variant?": string3 });
-  DELETES = list2(object({ what: string3, words: string3, "kept?": literal(true) }));
+  LOOK = object({ color: words(...LOOKS.colors), shape: words(...LOOKS.shapes), face: words(...LOOKS.faces) });
+  MODEL2 = object({ id: string, providerID: string, "variant?": string });
+  DELETES = list(object({ what: string, words: string, "kept?": literal(true) }));
   BOT = object({
-    id: string3,
-    session: string3,
-    name: string3,
+    id: string,
+    session: string,
+    name: string,
     look: LOOK,
-    "machine?": string3,
-    job: string3,
-    jobDetails: string3,
+    "machine?": string,
+    job: string,
+    jobDetails: string,
     paused: bool,
     "wakes?": number,
     watching: number,
     agents: bool,
-    "personality?": string3,
+    "personality?": string,
     "model?": MODEL2,
-    folder: string3,
-    "project?": string3,
-    "created?": string3,
+    folder: string,
+    "project?": string,
+    "created?": string,
     "limits?": LIMITS,
-    "allowed?": list2(words2("makeProject", "cloneProject")),
+    "allowed?": list(words("makeProject", "cloneProject")),
     "now?": BOT_NOW,
     deletes: DELETES
   });
   BOT_ELSEWHERE = object({
-    id: string3,
-    "session?": string3,
-    "name?": string3,
+    id: string,
+    "session?": string,
+    "name?": string,
     "look?": LOOK,
-    "job?": string3,
-    box: string3,
-    computer: string3,
-    "kind?": words2("mac", "machine"),
+    "job?": string,
+    box: string,
+    computer: string,
+    "kind?": words("mac", "machine"),
     "deletes?": DELETES,
     "waiting?": literal(true),
     "refused?": literal(true),
     "unlisted?": literal(true)
   });
-  HELD_EDIT = object({ bot: string3, box: string3, computer: string3, "name?": string3, "look?": LOOK, "change?": map(any), "delete?": literal(true), since: number, "waits?": string3 });
-  REFUSED_EDIT = object({ bot: string3, box: string3, computer: string3, "name?": string3, "look?": LOOK, message: string3, at: number });
-  BOTS2 = object({ bots: list2(BOT), "held?": list2(HELD_EDIT), "refused?": list2(REFUSED_EDIT), "elsewhere?": list2(BOT_ELSEWHERE) });
+  HELD_EDIT = object({ bot: string, box: string, computer: string, "name?": string, "look?": LOOK, "change?": map(any), "delete?": literal(true), since: number, "waits?": string });
+  REFUSED_EDIT = object({ bot: string, box: string, computer: string, "name?": string, "look?": LOOK, message: string, at: number });
+  BOTS2 = object({ bots: list(BOT), "held?": list(HELD_EDIT), "refused?": list(REFUSED_EDIT), "elsewhere?": list(BOT_ELSEWHERE) });
   HELD = object({ held: HELD_EDIT });
   TEMPLATES = object({
-    templates: list2(object({ id: string3, name: string3, job: string3, instructions: string3, look: LOOK, "personality?": string3, wantsProject: bool })),
-    personalities: list2(object({ id: string3, name: string3, description: string3, "custom?": bool })),
-    looks: object({ colors: list2(string3), shapes: list2(string3), faces: list2(string3) }),
+    templates: list(object({ id: string, name: string, job: string, instructions: string, look: LOOK, "personality?": string, wantsProject: bool })),
+    personalities: list(object({ id: string, name: string, description: string, "custom?": bool })),
+    looks: object({ colors: list(string), shapes: list(string), faces: list(string) }),
     startingModel: map(nullable(MODEL2)),
-    projects: list2(object({ directory: string3, name: string3, "machine?": string3 }))
+    projects: list(object({ directory: string, name: string, "machine?": string }))
   });
-  MADE = object({ bot: BOT, firstMessage: nullable(string3) });
+  MADE = object({ bot: BOT, firstMessage: nullable(string) });
   CHANGED = object({ bot: nullable(BOT) });
   BOT_ROUTES = [
     { route: "GET kuvo/bots", feature: "bots", answers: { 200: BOTS2 } },
@@ -17047,7 +17110,7 @@ var init_bots = __esm(() => {
     { route: "PATCH kuvo/bots/:id", feature: "bots.edit", answers: { 200: CHANGED, 202: HELD } },
     { route: "DELETE kuvo/bots/:id", feature: "bots.edit", answers: { 200: NOTHING, 202: HELD } },
     { route: "POST kuvo/bots/:id/arrived", feature: "bots", answers: { 200: CHANGED } },
-    { route: "POST kuvo/bots/:id/seen", feature: "bots.state", answers: { 200: NOTHING, 404: object({ message: string3 }), 405: NOTHING, 500: object({ message: string3 }), 502: object({ message: string3 }), 503: object({ message: string3 }) } }
+    { route: "POST kuvo/bots/:id/seen", feature: "bots.state", answers: { 200: NOTHING, 404: object({ message: string }), 405: NOTHING, 500: object({ message: string }), 502: object({ message: string }), 503: object({ message: string }) } }
   ];
 });
 
@@ -19601,11 +19664,11 @@ var init_mac = __esm(() => {
     "update"
   ];
   HOSTS = object({
-    hosts: list2(object({ kind: literal("machine"), name: string3, address: string3, key: string3, relay: string3, machine: string3, anotherMac: bool, removed: bool }))
+    hosts: list(object({ kind: literal("machine"), name: string, address: string, key: string, relay: string, machine: string, anotherMac: bool, removed: bool }))
   });
   MACHINES = object({
-    machines: list2(object({ id: string3, name: string3, otherAddresses: list2(string3), connection: string3, status: string3 })),
-    hosts: list2(string3)
+    machines: list(object({ id: string, name: string, otherAddresses: list(string), connection: string, status: string })),
+    hosts: list(string)
   });
 });
 
@@ -26918,20 +26981,20 @@ var init_browser = __esm(() => {
     { id: "kagi", title: "Kagi", url: "https://kagi.com/search?q=%s" },
     { id: "ecosia", title: "Ecosia", url: "https://www.ecosia.org/search?q=%s" }
   ];
-  SEARCH_ENGINE = words2("google", "duckDuckGo", "bing", "brave", "kagi", "ecosia");
-  HISTORY_SITE = object({ host: string3, url: string3, title: string3, visits: number, lastVisit: number, icon: bool });
-  BROWSER_HISTORY = object({ sites: list2(HISTORY_SITE) });
-  DATA_SITE = object({ site: string3, kinds: list2(words2("cookies", "storage")) });
-  BROWSER_SITES = object({ sites: list2(DATA_SITE) });
+  SEARCH_ENGINE = words("google", "duckDuckGo", "bing", "brave", "kagi", "ecosia");
+  HISTORY_SITE = object({ host: string, url: string, title: string, visits: number, lastVisit: number, icon: bool });
+  BROWSER_HISTORY = object({ sites: list(HISTORY_SITE) });
+  DATA_SITE = object({ site: string, kinds: list(words("cookies", "storage")) });
+  BROWSER_SITES = object({ sites: list(DATA_SITE) });
   BROWSER_SETTINGS = object({
     searchEngine: SEARCH_ENGINE,
-    searchEngines: list2(object({ id: SEARCH_ENGINE, title: string3 })),
+    searchEngines: list(object({ id: SEARCH_ENGINE, title: string })),
     tidiesAgentTabs: bool,
     offersToSave: bool,
-    never: list2(string3)
+    never: list(string)
   });
   BROWSER_ROUTES = [
-    { route: "GET kuvo/browser/view", feature: "browser.view", answers: { 101: BYTES, 426: object({ message: string3 }) } },
+    { route: "GET kuvo/browser/view", feature: "browser.view", answers: { 101: BYTES, 426: object({ message: string }) } },
     { route: "GET kuvo/browser/history", feature: "browser.data", answers: { 200: BROWSER_HISTORY } },
     { route: "DELETE kuvo/browser/history", feature: "browser.data", answers: { 200: BROWSER_HISTORY } },
     { route: "DELETE kuvo/browser/history/:host", feature: "browser.data", answers: { 200: BROWSER_HISTORY } },
@@ -29226,78 +29289,78 @@ var init_vault = __esm(() => {
   ITEM_KINDS = ["login", "key", "file", "note"];
   GRANT_HOWS = ["own", "ask"];
   VAULT_ITEM = object({
-    id: string3,
-    kind: words2(...ITEM_KINDS),
-    name: string3,
-    sites: list2(string3),
-    "username?": string3,
-    fields: list2(string3),
-    "fileName?": string3,
+    id: string,
+    kind: words(...ITEM_KINDS),
+    name: string,
+    sites: list(string),
+    "username?": string,
+    fields: list(string),
+    "fileName?": string,
     "readable?": bool,
     "signInOnly?": bool,
     created: number,
     changed: number,
     "used?": number
   });
-  VAULT_WHO = object({ "bot?": string3, "project?": string3, "everyone?": bool });
-  VAULT_GRANT = object({ item: string3, who: VAULT_WHO, how: words2(...GRANT_HOWS), at: number });
+  VAULT_WHO = object({ "bot?": string, "project?": string, "everyone?": bool });
+  VAULT_GRANT = object({ item: string, who: VAULT_WHO, how: words(...GRANT_HOWS), at: number });
   VAULT_STATE = object({
     made: bool,
     locked: bool,
     paused: bool,
-    pausedBots: map(string3),
-    store: words2("keychain", "encrypted"),
+    pausedBots: map(string),
+    store: words("keychain", "encrypted"),
     keptDays: number,
     "agents?": bool,
     "agentsWaiting?": bool,
     "tampered?": bool,
     "generations?": map(number)
   });
-  VAULT = object({ state: VAULT_STATE, items: list2(VAULT_ITEM), grants: list2(VAULT_GRANT) });
-  VAULT_ITEM_ANSWER = object({ item: VAULT_ITEM, "key?": string3 });
-  VAULT_VALUES = object({ values: map(string3) });
-  VAULT_GRANTS = object({ grants: list2(VAULT_GRANT) });
+  VAULT = object({ state: VAULT_STATE, items: list(VAULT_ITEM), grants: list(VAULT_GRANT) });
+  VAULT_ITEM_ANSWER = object({ item: VAULT_ITEM, "key?": string });
+  VAULT_VALUES = object({ values: map(string) });
+  VAULT_GRANTS = object({ grants: list(VAULT_GRANT) });
   VAULT_ACTIVITY = object({
-    id: string3,
+    id: string,
     at: number,
-    what: words2("used", "asked", "allowed", "declined", "refused", "added", "changed", "removed", "granted", "ungranted", "paused", "resumed", "shown"),
-    "item?": string3,
-    "itemName?": string3,
-    "kind?": words2(...ITEM_KINDS),
-    "bot?": string3,
-    "botName?": string3,
-    "session?": string3,
-    "sessionName?": string3,
-    "client?": string3,
+    what: words("used", "asked", "allowed", "declined", "refused", "added", "changed", "removed", "granted", "ungranted", "paused", "resumed", "shown"),
+    "item?": string,
+    "itemName?": string,
+    "kind?": words(...ITEM_KINDS),
+    "bot?": string,
+    "botName?": string,
+    "session?": string,
+    "sessionName?": string,
+    "client?": string,
     "mine?": bool,
-    "site?": string3,
-    "program?": string3,
-    "how?": string3,
-    "why?": string3
+    "site?": string,
+    "program?": string,
+    "how?": string,
+    "why?": string
   });
-  VAULT_ACTIVITIES = object({ entries: list2(VAULT_ACTIVITY) });
+  VAULT_ACTIVITIES = object({ entries: list(VAULT_ACTIVITY) });
   VAULT_ASK = object({
-    id: string3,
-    kind: words2("use", "item"),
+    id: string,
+    kind: words("use", "item"),
     at: number,
-    "session?": string3,
-    "sessionName?": string3,
-    "bot?": string3,
-    "botName?": string3,
-    "item?": string3,
-    "itemName?": string3,
-    "need?": string3,
-    "why?": string3,
-    "site?": string3,
-    "machine?": string3,
-    "group?": string3,
+    "session?": string,
+    "sessionName?": string,
+    "bot?": string,
+    "botName?": string,
+    "item?": string,
+    "itemName?": string,
+    "need?": string,
+    "why?": string,
+    "site?": string,
+    "machine?": string,
+    "group?": string,
     "always?": bool
   });
-  VAULT_ASKS = object({ asks: list2(VAULT_ASK) });
-  VAULT_KEY = object({ key: string3 });
-  VAULT_TOOL_LIST = object({ tools: list2(any) });
-  VAULT_TOOL = object({ text: string3, isError: bool });
-  VAULT_FILL = object({ item: object({ id: string3, name: string3 }), "username?": string3, values: map(string3) });
+  VAULT_ASKS = object({ asks: list(VAULT_ASK) });
+  VAULT_KEY = object({ key: string });
+  VAULT_TOOL_LIST = object({ tools: list(any) });
+  VAULT_TOOL = object({ text: string, isError: bool });
+  VAULT_FILL = object({ item: object({ id: string, name: string }), "username?": string, values: map(string) });
 });
 
 // box/src/link/bots/deletes.ts
@@ -42032,7 +42095,7 @@ var FORWARD_FEATURE = "work-queue.forward", ATTACHMENTS = "work-queue.attachment
     return null;
   const { method, action, name } = given;
   const fits = method === "GET" && action === undefined || method === "DELETE" && action === undefined || method === "POST" && action === "restore" || method === "PATCH" && action === undefined || method === "GET" && action === "file" && typeof name === "string" && name.length > 0 && name.length <= 300;
-  const devices = given.area === "devices" && (method === "POST" || method === "DELETE") && action === undefined;
+  const devices = given.area === "devices" && (method === "GET" || method === "POST" || method === "DELETE") && action === undefined;
   const setup = given.area === "setup" && (method === "GET" || method === "POST") && action === undefined;
   if (!fits && !devices && !setup)
     return null;
@@ -42593,8 +42656,8 @@ async function pairHere(device, by) {
   if (busy)
     return answer3(409, { message: "An access change is already waiting to be saved." });
   const receipt = await awaitSharedSave(save);
-  if (receipt && receipt.status !== 200)
-    return receipt;
+  if (receipt && receipt.status !== "committed")
+    return sharedSaveReply(receipt);
   if (refusal)
     return refusal;
   const paired = made;
@@ -42610,9 +42673,20 @@ async function pairHere(device, by) {
     noteDocsChanged();
     macLink.wake?.();
   }
-  return answer3(200, { paired: true, pairing: paired.pairing, ...receipt?.value });
+  return answer3(200, { paired: true, pairing: paired.pairing, ...receipt });
 }
 async function deviceAct(sender, act) {
+  if (act.method === "GET") {
+    if (act.item !== sender.key)
+      return answer3(403, { message: "A computer can only check its own device revocation." });
+    const receipt = setupSaveReceipt(act.body?.save);
+    if (!receipt || readDoc(receipt.proof)?.body.revokedVoucher !== sender.key)
+      return answer3(404, {});
+    const outcome = queryOperation(receipt.setup, receipt.operation, receipt.proof, "membershipAndAccess");
+    if (!outcome)
+      return answer3(404, {});
+    return sharedSaveReply(withSaveOutcome({ ...receipt, epoch: Number(outcome.epoch) }, outcome.status));
+  }
   if (act.method === "DELETE") {
     if (act.item !== sender.key)
       return answer3(403, { message: "A computer can only revoke its own devices." });
@@ -42625,11 +42699,11 @@ async function deviceAct(sender, act) {
     });
     if (busy || !changed)
       return answer3(409, { message: "This computer couldn’t confirm the devices were revoked." });
-    const receipt = await awaitSharedSave(save);
-    if (receipt && receipt.status !== 200)
-      return receipt;
+    const receipt = await awaitSharedSave(save && bindSave(save, changed.sign, { revokedVoucher: sender.key }));
+    if (receipt && receipt.status !== "committed")
+      return sharedSaveReply(receipt);
     macDocsChanged({ closeRemoved: readLink() });
-    return answer3(200, receipt?.value ?? {});
+    return answer3(200, receipt ?? {});
   }
   const device = act.method === "POST" ? givenDevice({ ...act.body ?? {}, key: act.item }, null) : null;
   if (!device)
@@ -42683,6 +42757,7 @@ var init_devices = __esm(() => {
   init_access();
   init_setup_local();
   init_shared();
+  init_format();
   init_text();
   init_changed();
   init_exchange();
@@ -43831,12 +43906,12 @@ async function renameHere(key, name) {
   if (!found)
     return answer5(404, { message: `That isn't one of ${ownName()}'s machines.` });
   const receipt = await awaitSharedSave(save);
-  if (receipt && receipt.status !== 200)
-    return receipt;
+  if (receipt && receipt.status !== "committed")
+    return sharedSaveReply(receipt);
   if (!changed && (readLink()?.setup?.standby || readLink()?.setup?.checkpointed))
     return answer5(409, { message: "A computer name is already waiting to be saved. Try again when it has saved." });
   macDocsChanged();
-  return answer5(200, { name, ...receipt?.value });
+  return answer5(200, { name, ...receipt });
 }
 async function removeComputerHere(key, pendingOnly = false) {
   const link = readLink();
@@ -43861,14 +43936,14 @@ async function removeComputerHere(key, pendingOnly = false) {
 }
 function removeHere(key, pendingOnly = false) {
   const removal = prepareRemoval(key, pendingOnly);
-  return removal.save ? sharedSaveReply(removal.save, "pending") : completeRemoval(removal);
+  return removal.save?.status === "pending" ? sharedSaveReply(removal.save) : completeRemoval(removal, removal.save);
 }
 async function finishRemoval(removal) {
   const { save } = removal;
   const receipt = await awaitSharedSave(save);
-  if (receipt && receipt.status !== 200)
-    return receipt;
-  return completeRemoval(removal);
+  if (receipt && receipt.status !== "committed")
+    return sharedSaveReply(receipt);
+  return completeRemoval(removal, receipt);
 }
 function prepareRemoval(key, pendingOnly) {
   let blocked = null;
@@ -43921,7 +43996,7 @@ function prepareRemoval(key, pendingOnly) {
   }, { localOnly: pendingOnly });
   return { ...result, blocked, gone, already, needsCleanup, key };
 }
-function completeRemoval({ changed, blocked, gone, already, needsCleanup, key, busy, save }) {
+function completeRemoval({ changed, blocked, gone, already, needsCleanup, key, busy }, save) {
   if (busy)
     return answer5(409, { message: "An access change is already waiting to be saved." });
   if (blocked)
@@ -43932,10 +44007,10 @@ function completeRemoval({ changed, blocked, gone, already, needsCleanup, key, b
   tellGone(gone);
   if (needsCleanup && !cleanRemovalList(key))
     return answer5(503, {
-      ...save ? sharedSaveReply(save, "saved").value : {},
+      ...save ? save : {},
       message: "The computer’s access was removed, but the saved machines list couldn’t be updated."
     });
-  return save ? sharedSaveReply(save, "saved") : answer5(200, {});
+  return save ? sharedSaveReply(save) : answer5(200, {});
 }
 function cleanRemovalList(key) {
   let saved = true;
@@ -51631,39 +51706,81 @@ function desktopKey() {
   }
   return;
 }
+function keptRevocation() {
+  try {
+    return setupSaveReceipt(JSON.parse(fs133.readFileSync(REVOCATION_FILE, "utf8")));
+  } catch {
+    return null;
+  }
+}
+function sameSave(receipt, expected) {
+  return receipt.setup === expected.setup && receipt.operation === expected.operation && receipt.proof.d === expected.proof.d && receipt.proof.s === expected.proof.s;
+}
+async function revokeMemberDesktop(link, main) {
+  const previous = keptRevocation();
+  let save = previous?.setup === link?.setup?.id && previous?.status === "pending" ? previous : null;
+  const requiresConfirmation = Boolean(link?.setup?.checkpointed || requiresStandby(link?.setup));
+  const unconfirmed = requiresConfirmation ? "retry" : "unconfirmed";
+  try {
+    let key = link && ownKey(link);
+    if (!key && IS_MAC) {
+      const card = JSON.parse(fs133.readFileSync(SETUP_CARD, "utf8"));
+      if (isObject(card) && isObject(card.self) && typeof card.self.key === "string")
+        key = card.self.key;
+    }
+    if (!key || !KEY.test(key))
+      return save ? { save } : { status: unconfirmed };
+    const ask = (destination, receipt) => forwardAct({ ...destination, name: destination.name || "your main computer", kind: "mac" }, "This computer", { area: "devices", method: receipt ? "GET" : "DELETE", item: key, ...receipt ? { body: { save: receipt } } : {} }, undefined, readLink(), Date.now(), { backgroundRelay: IS_MAC });
+    const queried = Boolean(save);
+    const reply = await ask(main, save ?? undefined);
+    const received = !("refused" in reply) && setupSaveReceipt(reply.value);
+    if (received && (!save || sameSave(received, save))) {
+      save = received;
+      writeDurablePrivate(REVOCATION_FILE, JSON.stringify(save));
+      const current = mainElsewhere(readLink());
+      if (save.status === "pending" && current && (!queried || current.key !== main.key)) {
+        const checked = await ask(current, save);
+        const next = !("refused" in checked) && setupSaveReceipt(checked.value);
+        if (next && sameSave(next, save)) {
+          writeDurablePrivate(REVOCATION_FILE, JSON.stringify(next));
+          save = next;
+        }
+      }
+      return { save };
+    }
+    if (save)
+      return { save };
+    if (!("refused" in reply) && reply.status === 200)
+      return { status: "revoked" };
+    logCleanup("refused" in reply ? reply.refused : `Device revocation returned ${reply.status}`);
+    if (reply.status === 202)
+      return { status: "retry" };
+  } catch (error) {
+    logCleanup(error);
+  }
+  return save ? { save } : { status: unconfirmed };
+}
 async function revokeDesktop() {
   try {
     const link = readLink();
     const main = mainElsewhere(link);
-    if (main) {
-      let key = link && ownKey(link);
-      if (!key && IS_MAC) {
-        const card = JSON.parse(fs133.readFileSync(SETUP_CARD, "utf8"));
-        if (isObject(card) && isObject(card.self) && typeof card.self.key === "string")
-          key = card.self.key;
-      }
-      if (!key || !KEY.test(key))
-        return false;
-      const reply = await forwardAct({ ...main, name: main.name || "your main computer", kind: "mac" }, "This computer", { area: "devices", method: "DELETE", item: key }, undefined, link, Date.now(), { backgroundRelay: IS_MAC });
-      if (!("refused" in reply) && reply.status === 200)
-        return true;
-      logCleanup("refused" in reply ? reply.refused : `Device revocation returned ${reply.status}`);
-      return false;
-    }
+    if (main)
+      return revokeMemberDesktop(link, main);
     const key = desktopKey();
     const needsPublish = IS_MAC && peersOf(link).length > 0;
     if (key) {
       if (needsPublish && await askLivePrimary(key))
-        return true;
+        return { status: "revoked" };
       const changed = updateLink((current) => current && current.phones?.some((phone) => phone.key === key) && removeAsMac(current, [{ key }]) ? current : null);
       if (changed)
         noteDocsChanged();
-      return !needsPublish;
+      return { status: needsPublish ? "unconfirmed" : "revoked" };
     }
-    return !needsPublish || !(link?.phones ?? []).some((phone) => phone.from === "pair" && phone.kind === "desktop" && !phone.by);
+    const hasDesktop = (link?.phones ?? []).some((phone) => phone.from === "pair" && phone.kind === "desktop" && !phone.by);
+    return { status: needsPublish && hasDesktop ? "unconfirmed" : "revoked" };
   } catch (error) {
     logCleanup(error);
-    return false;
+    return { status: "unconfirmed" };
   }
 }
 async function askLivePrimary(key) {
@@ -51745,7 +51862,15 @@ async function uninstallCommand(args) {
     return refuse();
   const overSSH = process.env.KUVO_UNINSTALL_FROM_SSH === "1";
   const publishing = IS_MAC && !mainElsewhere(readLink());
-  const revoked = overSSH || await revokeDesktop();
+  const revocation = overSSH ? { status: "revoked" } : await revokeDesktop();
+  const save = "save" in revocation ? revocation.save : undefined;
+  if (save && save.status !== "committed" || "status" in revocation && revocation.status === "retry") {
+    const message = save?.message ?? REVOCATION_UNCONFIRMED;
+    console.log(JSON.stringify({ result: save?.status === "pending" ? "pending" : "unfinished", message, ...save ? { save } : {} }));
+    console.error(message);
+    return 1;
+  }
+  const revoked = "save" in revocation ? revocation.save.status === "committed" : revocation.status === "revoked";
   let refusal = "Kuvo Code couldn’t check who leads this setup right now. Try uninstalling again.";
   let done = { stopped: false, launchAgent: false, crontab: false, startsAgain: [], left: [K], message: "Kuvo Code couldn’t confirm it had stopped on this computer." };
   const cleared = { cleanup: null };
@@ -51778,18 +51903,19 @@ ${uninstallCleanup}`, "kuvo-cleanup", K, process.execPath]);
   if (result && !credentialsCleared)
     logCleanup(result.error ?? result.stderr);
   if (!revoked)
-    done.message += publishing ? " Kuvo Code couldn’t confirm the desktop removal reached every other computer." : " Kuvo Code couldn’t confirm that your main computer revoked this desktop’s access.";
+    done.message += publishing ? " Kuvo Code couldn’t confirm the desktop removal reached every other computer." : ` ${REVOCATION_UNCONFIRMED}`;
   if (!identityCleared)
     done.message += " Kuvo Code couldn’t delete this desktop’s local identity.";
   if (!credentialsCleared && result?.status !== 81)
     done.message += " Kuvo Code couldn’t clear all its keys and sign-ins. Run uninstall again.";
   const finished = done.stopped && done.startsAgain.length === 0 && revoked && identityCleared && credentialsCleared;
-  console.log(JSON.stringify({ result: finished ? "uninstalled" : "unfinished", ...done }));
+  console.log(JSON.stringify({ result: finished ? "uninstalled" : "unfinished", ...done, ...save ? { save } : {} }));
   console.error(done.message);
   return finished ? 0 : 1;
 }
-var run3 = (program, args, input) => spawnSync9(program, args, { input, encoding: "utf8", timeout: 30000, stdio: ["pipe", "pipe", "pipe"] }), identityFile, DESKTOP_UNINSTALL_ROUTE = "kuvo/box/uninstall-desktop";
+var run3 = (program, args, input) => spawnSync9(program, args, { input, encoding: "utf8", timeout: 30000, stdio: ["pipe", "pipe", "pipe"] }), identityFile, DESKTOP_UNINSTALL_ROUTE = "kuvo/box/uninstall-desktop", REVOCATION_FILE, REVOCATION_UNCONFIRMED = "Kuvo Code couldn’t confirm that your main computer revoked this desktop’s access.";
 var init_uninstall = __esm(() => {
+  init_setup_local();
   init_platform();
   init_scripts();
   init_wakes2();
@@ -51797,11 +51923,13 @@ var init_uninstall = __esm(() => {
   init_home();
   init_known();
   init_keys2();
+  init_files2();
   init_changed();
   init_phone_sync();
   init_phones();
   init_card();
   init_leadership();
+  init_record();
   init_shared();
   init_main_only();
   init_marks();
@@ -51809,6 +51937,7 @@ var init_uninstall = __esm(() => {
   init_state();
   init_forward();
   identityFile = path139.join(K, "desktop", "identity");
+  REVOCATION_FILE = path139.join(RUN, "uninstall-save.json");
 });
 
 // box/src/link/helper.ts
@@ -54419,29 +54548,29 @@ var init_settings4 = __esm(() => {
   init_shape();
   CONFIG = map(any);
   CONFIG_APPLIED = object({
-    made: list2(object({ path: list2(string3), value: any })),
-    leftOut: list2(list2(string3)),
-    kept: list2(list2(string3)),
-    macOnly: list2(string3),
-    keys: list2(string3),
+    made: list(object({ path: list(string), value: any })),
+    leftOut: list(list(string)),
+    kept: list(list(string)),
+    macOnly: list(string),
+    keys: list(string),
     applied: bool,
     settings: CONFIG
   });
   MCP_ACCESS = ["signIn", "open", "local"];
   MCP_CATALOG_SERVER = object({
-    id: string3,
-    title: string3,
-    summary: string3,
-    access: words2(...MCP_ACCESS),
+    id: string,
+    title: string,
+    summary: string,
+    access: words(...MCP_ACCESS),
     added: bool,
     integration: bool,
     macOnly: bool
   });
-  MCP_CATALOG = object({ servers: list2(MCP_CATALOG_SERVER) });
-  KEYS = object({ keys: list2(string3) });
-  KEY2 = object({ value: string3 });
-  CLAUDE_CODE_IMPORT = object({ name: string3, description: string3, path: list2(string3), settings: map(string3), imported: bool });
-  CLAUDE_CODE = object({ agents: list2(CLAUDE_CODE_IMPORT), commands: list2(CLAUDE_CODE_IMPORT) });
+  MCP_CATALOG = object({ servers: list(MCP_CATALOG_SERVER) });
+  KEYS = object({ keys: list(string) });
+  KEY2 = object({ value: string });
+  CLAUDE_CODE_IMPORT = object({ name: string, description: string, path: list(string), settings: map(string), imported: bool });
+  CLAUDE_CODE = object({ agents: list(CLAUDE_CODE_IMPORT), commands: list(CLAUDE_CODE_IMPORT) });
 });
 
 // box/src/link/areas/mcp-catalog.ts
@@ -57987,7 +58116,7 @@ var init_files4 = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "3bc8ebbc7dd4";
+var BRIDGE_VERSION = "7ef77bc44e47";
 
 // box/src/link/rehome/paths.ts
 import { createHash as createHash4 } from "node:crypto";
@@ -62858,8 +62987,7 @@ function allTries() {
     const outcome = queryOperation(save.setup, save.operation, save.proof);
     if (!outcome || outcome.status === "pending")
       return attempt;
-    const { pending, message, ...reference } = save;
-    return { ...attempt, save: { ...reference, status: outcome.status } };
+    return { ...attempt, save: withSaveOutcome(save, outcome.status) };
   });
 }
 function note3(durable = false, required = false) {
@@ -62879,7 +63007,7 @@ function reconcileEnrollment(seen) {
     return attempt;
   const { peer } = enrollment;
   const link = readLink();
-  const status = "replacement" in enrollment ? replacementOutcome(link, enrollment.replacement) : queryOperation(enrollment.save.id, enrollment.save.operation, enrollment.save.proof)?.status ?? (link?.setup?.id === enrollment.save.id && link.setup.epoch === enrollment.save.epoch ? "pending" : "interrupted");
+  const status = "replacement" in enrollment ? replacementOutcome(link, enrollment.replacement) : enrollmentOutcome(link, enrollment.save);
   if (status === "pending")
     return attempt;
   const computer = status === "committed" && (peersOf(link).find((each) => each.key === peer.key) ?? ("replacement" in enrollment ? peer : null));
@@ -62899,6 +63027,10 @@ function reconcileEnrollment(seen) {
     steps: attempt.steps.map((step) => step.state === "now" ? { ...step, state: "failed" } : step),
     failure: { title, message: `The setup changed before ${peer.name} was saved. Add it again from the primary.`, again: true }
   };
+}
+function enrollmentOutcome(link, save) {
+  const setup = "setup" in save ? save.setup : save.id;
+  return queryOperation(setup, save.operation, save.proof)?.status ?? (link?.setup?.id === setup && link.setup.epoch === save.epoch ? "pending" : "interrupted");
 }
 function startTry(kind, destination, name, steps, work) {
   const seen = { id: newID("add_"), kind, destination, name, state: "working", title: workingTitle(kind, name), steps: steps.map(([id, title]) => ({ id, title, state: "waiting" })) };
@@ -62922,7 +63054,7 @@ function startTry(kind, destination, name, steps, work) {
     saving(save, peer) {
       it.committed = true;
       it.enrollment = { save, peer };
-      it.seen = { ...it.seen, save: sharedSaveReply(save, "pending").value };
+      it.seen = { ...it.seen, save };
       if (it.seen.state === "stopping")
         it.seen = { ...it.seen, state: "working", title: workingTitle(kind, name) };
       note3(true);
@@ -63427,8 +63559,8 @@ async function setUp2(tell, destination, name, kind, expectedKey, grant) {
   if (kind === "add" && beforeEnrollment?.sign && pending && candidate && !peersOf(beforeEnrollment).some((peer) => peer.key === candidate.key)) {
     tell.step("joining");
     const save = asSave(pending, beforeEnrollment.sign);
-    tell.saving?.(save, candidate);
-    tell.came(await finishEnrollment(candidate, save));
+    tell.saving(save, candidate);
+    tell.came(await finishEnrollment(tell, candidate, save));
     return;
   }
   const mine = boxVersion();
@@ -63574,13 +63706,13 @@ async function setUp2(tell, destination, name, kind, expectedKey, grant) {
       }
       tell.step("joining");
       const identity = /^id ([0-9a-f]{32})$/m.exec(started.stdout)?.[1] ?? probe.id;
-      finish = await join3(reserved, destination, name, identity, account.token, (peer, enrollment) => {
+      finish = await join3(tell, reserved, destination, name, identity, account.token, (peer, enrollment) => {
         if (!tell.signal.aborted)
           tell.step("joining", "Waiting for the standby to save this computer");
         if ("proposalHash" in enrollment)
           tell.replacing?.(enrollment, peer);
         else
-          tell.saving?.(enrollment, peer);
+          tell.saving(enrollment, peer);
         tell.commit?.();
         unjoined = false;
       }, expectedKey, grant);
@@ -63602,7 +63734,7 @@ async function setUp2(tell, destination, name, kind, expectedKey, grant) {
   if (finish)
     tell.came(await finish());
 }
-async function join3(run, destination, name, identity, token, staged, expectedKey, grant) {
+async function join3(tell, run, destination, name, identity, token, staged, expectedKey, grant) {
   const beforeLink = readLink();
   const relay = IS_MAC ? macLink.config?.relay : beforeLink?.relay;
   const removedWhileAdding = (link) => expectedKey && link?.removedHere?.includes(expectedKey);
@@ -63659,7 +63791,7 @@ async function join3(run, destination, name, identity, token, staged, expectedKe
       }
       if (status !== "committed")
         throw new Failed(`The setup changed before ${peer.name} was saved. Add it again from the primary.`);
-      return finishEnrollment(peer, null);
+      return finishEnrollment(tell, peer, null);
     };
   }
   const { changed, save, busy } = updateAccess((link) => {
@@ -63685,16 +63817,18 @@ async function join3(run, destination, name, identity, token, staged, expectedKe
     throw new Failed(`${ownName()} couldn’t keep ${name}’s record.`);
   const docs = Array.isArray(said.docs) ? said.docs : [];
   return async () => {
-    const computer = await finishEnrollment(peer, save);
+    const computer = await finishEnrollment(tell, peer, save);
     if (docs.length)
       await receiveDocs(peer, { give: docs }, liveLink()).catch(() => {});
     return computer;
   };
 }
-async function finishEnrollment(peer, save) {
+async function finishEnrollment(tell, peer, save) {
   if (save) {
     macDocsChanged();
-    if (await waitShared(save, Infinity) !== "saved") {
+    const receipt = await waitShared(save, Infinity);
+    tell.saved(receipt);
+    if (receipt.status !== "committed") {
       throw new Failed(`The setup changed before ${peer.name} was saved. Add it again from the primary.`);
     }
   }
@@ -63763,6 +63897,8 @@ async function lookAtWork2(key) {
     skip() {},
     came() {},
     rename() {},
+    saving() {},
+    saved() {},
     ask: async () => {
       throw new Failed(`${at.name}’s host key isn’t one ${ownName()} knows.`);
     }
@@ -63839,7 +63975,7 @@ function beginUninstall(key) {
       }
       const receipt = setupSaveReceipt(removed.value);
       if (receipt)
-        tell.saved?.(receipt);
+        tell.saved(receipt);
       if (removed.status === 202 || receipt?.status === "interrupted")
         throw new Failed(receipt?.message ?? PENDING_SAVE);
       const current = readLink();
@@ -64444,9 +64580,11 @@ async function* allowDevices(context, key) {
   if (busy)
     return yield* json(409, { message: "An access change is already waiting to be saved." });
   const receipt = await awaitSharedSave(save);
-  if (receipt && receipt.status !== 200)
-    return yield* json(receipt.status, receipt.value);
-  return yield* json(200, receipt?.value ?? {});
+  if (receipt && receipt.status !== "committed") {
+    const reply = sharedSaveReply(receipt);
+    return yield* json(reply.status, reply.value);
+  }
+  return yield* json(200, receipt ?? {});
 }
 async function* computersRoute(context, match) {
   const { request, signal, json, info, bridge } = context;
@@ -73953,15 +74091,16 @@ class LinkHost {
     });
     if (pending.signal.aborted)
       return;
-    if (typeof authorized === "object") {
+    if (typeof authorized === "object" && "waiting" in authorized) {
       const { message } = responder.writeMessage2(Buffer.from(JSON.stringify({ ...this.hello, ...authorized })));
       this.send(relaySend(from, frame(Frame.handshake2, number, message)));
       return;
     }
-    if (typeof authorized !== "string" && !authorized)
+    if (authorized === false)
       return refuse();
-    const pairing = typeof authorized === "string" ? authorized : undefined;
-    const { message, transport } = responder.writeMessage2(Buffer.from(JSON.stringify(this.hello)));
+    const pairing = typeof authorized === "string" ? authorized : typeof authorized === "object" ? authorized.pairing : undefined;
+    const reply = typeof authorized === "object" ? { ...this.hello, save: authorized.save } : this.hello;
+    const { message, transport } = responder.writeMessage2(Buffer.from(JSON.stringify(reply)));
     for (const old of this.sessions.values())
       if (old.from.equals(from))
         this.end(old, false);
@@ -76756,7 +76895,7 @@ async function run6(name, args, caller, targets, signal) {
         if (!outcome)
           return refused6("This computer couldn't find that label save.");
         const status = outcome.status;
-        return withSave(said7(`The label save is ${status}.`), { ...reference, epoch: Number(outcome.epoch), status, ...status === "pending" ? { pending: true } : {} });
+        return withSave(said7(`The label save is ${status}.`), withSaveOutcome({ ...reference, epoch: Number(outcome.epoch) }, status));
       }
       const asked = ["add", "rename", "recolor", "remove"].filter((each) => typeof args[each] === "string" && args[each].trim());
       const listed = () => labels().length ? labels().map((each) => `${each.name} (${each.color})`).join(", ") : "none yet";
@@ -76770,14 +76909,14 @@ async function run6(name, args, caller, targets, signal) {
       if ("refused" in outcome)
         return refused6(outcome.refused);
       const receipt = await awaitSharedSave(outcome.save);
-      if (receipt && receipt.status !== 200) {
-        const message = receipt.value.message;
-        return withSave(receipt.status === 202 ? said7(message) : refused6(message), receipt.value);
+      if (receipt && receipt.status !== "committed") {
+        const message = receipt.message;
+        return withSave(receipt.status === "pending" ? said7(message) : refused6(message), receipt);
       }
       if (receipt && asked[0] === "remove")
         stripLabel(outcome.done.id);
       const answer = said7(`${asked[0] === "add" ? "Made" : asked[0] === "remove" ? "Removed (and took off every item here)" : "Changed"} the label ${outcome.done.name}. Labels now: ${listed()}.`);
-      return receipt ? withSave(answer, receipt.value) : answer;
+      return receipt ? withSave(answer, receipt) : answer;
     }
     case "queue_import": {
       const given = givenItems(args.items);
@@ -77640,7 +77779,7 @@ async function* saveLocalSetup(context) {
   }, operation);
   if (!save)
     return yield* json(409, { message: "The setup changed or a save is already pending." });
-  const reply = sharedSaveReply(save, await waitShared(save));
+  const reply = sharedSaveReply(await waitShared(save));
   return yield* json(reply.status, reply.value);
 }
 
@@ -78652,7 +78791,7 @@ async function savePersonalityLibrary(document2) {
     return { status: 400, value: { message: FULL_LIBRARY } };
   if (!save || !library)
     return { status: 409, value: { message: "The personality library couldn't be staged. Another save may be pending or the setup may be out of space." } };
-  const reply = sharedSaveReply(save, await waitShared(save));
+  const reply = sharedSaveReply(await waitShared(save));
   if (reply.status !== 200)
     return reply;
   return { status: 200, library, changed, receipt: reply.value };
@@ -78690,7 +78829,7 @@ async function* personalityRoute(context, personality) {
       return yield* json(...answer);
     if (!save)
       return yield* json(409, { message: "A personality change is already waiting to be saved." });
-    const reply = sharedSaveReply(save, await waitShared(save));
+    const reply = sharedSaveReply(await waitShared(save));
     if (reply.status !== 200)
       return yield* json(reply.status, reply.value);
     return yield* json(200, { ...answer[1], ...reply.value });
@@ -78737,8 +78876,10 @@ async function* phonesRemoveRoute(context) {
   if (busy)
     return yield* json(409, { message: "An access change is already waiting to be saved." });
   const receipt = await awaitSharedSave(save);
-  if (receipt && receipt.status !== 200)
-    return yield* json(receipt.status, receipt.value);
+  if (receipt && receipt.status !== "committed") {
+    const reply = sharedSaveReply(receipt);
+    return yield* json(reply.status, reply.value);
+  }
   const main = primary;
   if (main)
     return yield* json(409, { message: `Remove devices from ${main.name || "your main computer"}.`, primary: main.key });
@@ -78746,7 +78887,7 @@ async function* phonesRemoveRoute(context) {
     return yield* json(400, { message: "Only phones paired here can be removed, and never your Mac." });
   noteDocsChanged();
   setTimeout(() => phonesChanged(readLink() ?? changed), 200);
-  return yield* json(200, receipt?.value ?? {});
+  return yield* json(200, receipt ?? {});
 }
 var SWITCH_OFF = "“Let my devices connect” is off on this Mac.";
 async function* pairingRoute(context) {
@@ -81423,14 +81564,16 @@ async function* workQueueRoute(context, match) {
     if ("refused" in outcome)
       return yield* json(400, { message: outcome.refused });
     const receipt = await awaitSharedSave(outcome.save);
-    if (receipt && receipt.status !== 200)
-      return yield* json(receipt.status, receipt.value);
+    if (receipt && receipt.status !== "committed") {
+      const reply = sharedSaveReply(receipt);
+      return yield* json(reply.status, reply.value);
+    }
     if (outcome.save) {
       if (given.remove !== undefined)
         stripLabel(outcome.done.id);
     }
     tellQueuesAgain();
-    return yield* json(200, { ...receipt?.value, labels: labels(), ...given.remove === undefined ? { label: outcome.done } : {} });
+    return yield* json(200, { ...receipt, labels: labels(), ...given.remove === undefined ? { label: outcome.done } : {} });
   }
   if (part === "items") {
     if (method !== "POST")
@@ -85689,104 +85832,104 @@ var vaultSection = {
 // box/src/shared/routes/settings-pages.ts
 init_shape();
 var SETTING_KINDS = ["switch", "choice", "text", "number", "folder", "secret", "status", "actions", "list", "meter", "open", "steps", "custom"];
-var SETTING_CAN = oneOf(literal(true), object({ why: string3 }));
-var SETTING_CONFIRM = object({ title: string3, body: string3, button: string3 });
-var SETTING_CHOICE = object({ id: string3, title: string3, "line?": string3, "verified?": bool, "model?": object({ providerID: string3, id: string3 }) });
-var SETTING_FOLDER = object({ choose: string3, clear: string3, prompt: string3, message: string3 });
+var SETTING_CAN = oneOf(literal(true), object({ why: string }));
+var SETTING_CONFIRM = object({ title: string, body: string, button: string });
+var SETTING_CHOICE = object({ id: string, title: string, "line?": string, "verified?": bool, "model?": object({ providerID: string, id: string }) });
+var SETTING_FOLDER = object({ choose: string, clear: string, prompt: string, message: string });
 var SETTING_FIELD_KINDS = ["text", "lines", "choice", "switch", "folder", "pairs", "secret", "file"];
-var SETTING_FIELD_SHOWS = object({ route: string3, field: string3 });
+var SETTING_FIELD_SHOWS = object({ route: string, field: string });
 var SETTING_FIELD = object({
-  id: string3,
-  title: string3,
-  kind: words2(...SETTING_FIELD_KINDS),
-  "line?": string3,
+  id: string,
+  title: string,
+  kind: words(...SETTING_FIELD_KINDS),
+  "line?": string,
   "value?": any,
-  "placeholder?": string3,
-  "choices?": list2(SETTING_CHOICE),
+  "placeholder?": string,
+  "choices?": list(SETTING_CHOICE),
   "mono?": bool,
   "folder?": SETTING_FOLDER,
-  "pairs?": object({ key: string3, value: string3 }),
-  "shown?": object({ field: string3, is: list2(string3) }),
+  "pairs?": object({ key: string, value: string }),
+  "shown?": object({ field: string, is: list(string) }),
   "can?": SETTING_CAN,
   "multi?": bool,
   "shows?": SETTING_FIELD_SHOWS,
   "secret?": bool,
   "verified?": bool,
-  "file?": object({ choose: string3, none: string3 })
+  "file?": object({ choose: string, none: string })
 });
-var SETTING_FORM = object({ title: string3, submit: string3, fields: list2(SETTING_FIELD), "note?": string3, "revision?": string3 });
+var SETTING_FORM = object({ title: string, submit: string, fields: list(SETTING_FIELD), "note?": string, "revision?": string });
 var SETTING_ACTION = object({
-  id: string3,
-  title: string3,
-  "style?": words2("default", "destructive"),
+  id: string,
+  title: string,
+  "style?": words("default", "destructive"),
   "confirm?": SETTING_CONFIRM,
-  "opens?": string3,
+  "opens?": string,
   "can?": SETTING_CAN,
   "form?": SETTING_FORM,
   "verified?": bool
 });
 var SETTING_BADGE_TONES = ["quiet", "good", "busy", "warning", "failed"];
-var SETTING_BADGE = object({ words: string3, tone: words2(...SETTING_BADGE_TONES) });
+var SETTING_BADGE = object({ words: string, tone: words(...SETTING_BADGE_TONES) });
 var SETTING_FLOW_STATES = ["waiting", "done", "failed"];
 var SETTING_FLOW = object({
-  id: string3,
-  state: words2(...SETTING_FLOW_STATES),
-  title: string3,
-  line: string3,
-  "opens?": string3,
-  "code?": object({ title: string3, placeholder: string3, action: string3 }),
-  actions: list2(SETTING_ACTION)
+  id: string,
+  state: words(...SETTING_FLOW_STATES),
+  title: string,
+  line: string,
+  "opens?": string,
+  "code?": object({ title: string, placeholder: string, action: string }),
+  actions: list(SETTING_ACTION)
 });
-var SETTING_WINDOW = object({ title: string3, used: number, "resets?": number });
-var SETTING_PART = object({ id: string3, title: string3, value: number, words: string3, "parts?": list2(object({ title: string3, value: number, words: string3 })) });
+var SETTING_WINDOW = object({ title: string, used: number, "resets?": number });
+var SETTING_PART = object({ id: string, title: string, value: number, words: string, "parts?": list(object({ title: string, value: number, words: string })) });
 var ROW_FIELDS = {
-  id: string3,
-  title: string3,
-  "line?": string3,
-  "tone?": words2("quiet", "warning"),
-  kind: words2(...SETTING_KINDS),
+  id: string,
+  title: string,
+  "line?": string,
+  "tone?": words("quiet", "warning"),
+  kind: words(...SETTING_KINDS),
   "value?": any,
   "can?": SETTING_CAN,
-  revision: string3,
+  revision: string,
   "confirm?": SETTING_CONFIRM,
-  "busy?": string3,
-  "choices?": list2(SETTING_CHOICE),
+  "busy?": string,
+  "choices?": list(SETTING_CHOICE),
   "lines?": object({ min: number, max: number }),
   "folder?": SETTING_FOLDER,
-  "search?": object({ placeholder: string3, empty: string3 }),
-  "unit?": object({ name: string3, factor: number, decimals: number, rounding: literal("nearest") }),
-  "suggestions?": list2(object({ value: number, title: string3 })),
+  "search?": object({ placeholder: string, empty: string }),
+  "unit?": object({ name: string, factor: number, decimals: number, rounding: literal("nearest") }),
+  "suggestions?": list(object({ value: number, title: string })),
   "confirmBelow?": object({ value: number, confirm: SETTING_CONFIRM }),
-  "placeholder?": string3,
+  "placeholder?": string,
   "min?": number,
   "max?": number,
   "set?": bool,
-  "actions?": list2(SETTING_ACTION),
-  "windows?": list2(SETTING_WINDOW),
-  "parts?": list2(SETTING_PART),
-  "section?": string3,
-  "address?": string3,
+  "actions?": list(SETTING_ACTION),
+  "windows?": list(SETTING_WINDOW),
+  "parts?": list(SETTING_PART),
+  "section?": string,
+  "address?": string,
   "start?": SETTING_ACTION,
-  "name?": string3,
+  "name?": string,
   "badge?": SETTING_BADGE,
-  "notice?": object({ words: string3, tone: words2("quiet", "warning") }),
+  "notice?": object({ words: string, tone: words("quiet", "warning") }),
   "flow?": SETTING_FLOW
 };
 var SETTING_ITEM = object(ROW_FIELDS);
-var SETTING_ROW = object({ ...ROW_FIELDS, "items?": list2(SETTING_ITEM), "add?": SETTING_ACTION, "empty?": string3 });
-var SETTING_GROUP = object({ id: string3, "title?": string3, "note?": string3, rows: list2(SETTING_ROW) });
-var SETTING_NOTE = object({ words: string3, tone: words2("quiet", "warning") });
-var SETTINGS_PAGE = object({ id: string3, title: string3, "line?": string3, groups: list2(SETTING_GROUP), "notes?": list2(SETTING_NOTE) });
-var SETTINGS_SECTION = object({ id: string3, title: string3, group: string3, icon: string3, line: string3, keywords: list2(string3) });
-var SETTINGS_SECTIONS = object({ sections: list2(SETTINGS_SECTION) });
-var SETTINGS_STALE = object({ message: string3, "page?": SETTINGS_PAGE });
-var SETTINGS_CHANGE = object({ row: string3, value: any, was: string3, "confirmed?": bool });
-var REFUSED4 = object({ message: string3 });
-var SETTING_FIELD_WORDS = object({ id: string3, words: string3, tone: words2("quiet", "good", "warning") });
-var SETTINGS_ACT = object({ was: string3, "values?": map(any) });
-var SETTINGS_CHECK = object({ "was?": string3, values: map(any) });
-var SETTINGS_CHECKED = object({ fields: list2(SETTING_FIELD_WORDS), ready: bool, "values?": map(any) });
-var SETTINGS_FORM_REFUSED = object({ message: string3, "fields?": list2(SETTING_FIELD_WORDS) });
+var SETTING_ROW = object({ ...ROW_FIELDS, "items?": list(SETTING_ITEM), "add?": SETTING_ACTION, "empty?": string });
+var SETTING_GROUP = object({ id: string, "title?": string, "note?": string, rows: list(SETTING_ROW) });
+var SETTING_NOTE = object({ words: string, tone: words("quiet", "warning") });
+var SETTINGS_PAGE = object({ id: string, title: string, "line?": string, groups: list(SETTING_GROUP), "notes?": list(SETTING_NOTE) });
+var SETTINGS_SECTION = object({ id: string, title: string, group: string, icon: string, line: string, keywords: list(string) });
+var SETTINGS_SECTIONS = object({ sections: list(SETTINGS_SECTION) });
+var SETTINGS_STALE = object({ message: string, "page?": SETTINGS_PAGE });
+var SETTINGS_CHANGE = object({ row: string, value: any, was: string, "confirmed?": bool });
+var REFUSED4 = object({ message: string });
+var SETTING_FIELD_WORDS = object({ id: string, words: string, tone: words("quiet", "good", "warning") });
+var SETTINGS_ACT = object({ was: string, "values?": map(any) });
+var SETTINGS_CHECK = object({ "was?": string, values: map(any) });
+var SETTINGS_CHECKED = object({ fields: list(SETTING_FIELD_WORDS), ready: bool, "values?": map(any) });
+var SETTINGS_FORM_REFUSED = object({ message: string, "fields?": list(SETTING_FIELD_WORDS) });
 var SETTINGS_PAGE_ROUTES = [
   { route: "GET kuvo/settings", feature: "settings", answers: { 200: SETTINGS_SECTIONS } },
   { route: "GET kuvo/settings/:section", feature: "settings", answers: { 200: SETTINGS_PAGE, 404: REFUSED4 } },
@@ -86645,7 +86788,7 @@ async function clockChange(_context, at, value) {
       const save = submitShared("setupTimeZone", choice);
       if (!save)
         return { status: 409, message: "A time zone change is already waiting to be saved." };
-      const reply = sharedSaveReply(save, await waitShared(save));
+      const reply = sharedSaveReply(await waitShared(save));
       return { status: reply.status, message: reply.status === 200 ? "" : reply.value.message, save: reply.value };
     }
     return setZone(String(value)) ? null : { status: 400, message: "This computer doesn't know that time zone." };
@@ -89823,7 +89966,9 @@ export {
   askAnswer,
   askNotice,
   askReachAgain,
+  askSetupOutcome,
   askSetupSave,
+  askSetupStatus,
   askToSend,
   askedSince,
   atWorkNow,

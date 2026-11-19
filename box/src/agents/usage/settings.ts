@@ -566,7 +566,7 @@ export async function settingsRoutes(settings: UsageSettings, choices: () => str
     if (!shared) return answer(settings, extra)
     const result = await settings.saveDraft(shared, draft)
     if (result.status !== 200) return json(result.receipt ?? {
-      message: result.message, ...(result.status === 202 ? { pending: true, operation: result.operation, proof: result.proof } : {}),
+      message: result.message, ...(result.legacyPending ?? (result.status === 202 ? { pending: true } : {})),
     }, result.status)
     settings.followShared()
     return answer(settings, { ...extra, ...(result.receipt ? { save: result.receipt } : {}) })

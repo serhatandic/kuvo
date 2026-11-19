@@ -13,7 +13,8 @@
 
 import { updateAccess } from "../setup/access";
 import { setupSaveReceipt } from "../../shared/setup-local";
-import { awaitSharedSave } from "../setup/shared";
+import { awaitSharedSave, bindSave, queryOperation, sharedSaveReply, withSaveOutcome } from "../setup/shared";
+import { readDoc } from "../documents/format";
 import { isObject } from "../../shared/json";
 import { plainName } from "../../shared/text";
 import { noteDocsChanged } from "../documents/changed";
@@ -116,7 +117,7 @@ export async function pairHere(device: AskingDevice, by?: string): Promise<Acted
   });
   if (busy) return answer(409, { message: "An access change is already waiting to be saved." });
   const receipt = await awaitSharedSave(save);
-  if (receipt && receipt.status !== 200) return receipt;
+  if (receipt && receipt.status !== "committed") return sharedSaveReply(receipt);
   if (refusal) return refusal;
   const paired = made as ReturnType<typeof pairDevice> | null;
   if (!paired) return answer(409, { message: IS_MAC ? `${ownName()} isn't ready for your devices yet. Try again in a moment.` : "This machine has no relay to pair through." });
@@ -128,7 +129,7 @@ export async function pairHere(device: AskingDevice, by?: string): Promise<Acted
     // (A Mac's link comes up for its first device, as for a phone's pairing.)
     macLink.wake?.();
   }
-  return answer(200, { paired: true, pairing: paired.pairing, ...receipt?.value });
+  return answer(200, { paired: true, pairing: paired.pairing, ...receipt });
 }
 
 /** Compatibility for clients whose member box vouches for them. The primary uses the same
@@ -139,6 +140,14 @@ const ownMachines = (link: LinkState): Set<string> =>
 /** A member's box vouching for the app on its computer (`area: "devices"`, by mail): paired here
  * only on the setup's main computer, for a box its own peers document names. */
 export async function deviceAct(sender: MailSender, act: Act): Promise<Acted> {
+  if (act.method === "GET") {
+    if (act.item !== sender.key) return answer(403, { message: "A computer can only check its own device revocation." });
+    const receipt = setupSaveReceipt(act.body?.save);
+    if (!receipt || readDoc(receipt.proof)?.body.revokedVoucher !== sender.key) return answer(404, {});
+    const outcome = queryOperation(receipt.setup, receipt.operation, receipt.proof, "membershipAndAccess");
+    if (!outcome) return answer(404, {});
+    return sharedSaveReply(withSaveOutcome({ ...receipt, epoch: Number(outcome.epoch) }, outcome.status));
+  }
   if (act.method === "DELETE") {
     if (act.item !== sender.key) return answer(403, { message: "A computer can only revoke its own devices." });
     const { changed, save, busy } = updateAccess(link => {
@@ -148,10 +157,10 @@ export async function deviceAct(sender: MailSender, act: Act): Promise<Acted> {
       return link;
     });
     if (busy || !changed) return answer(409, { message: "This computer couldn’t confirm the devices were revoked." });
-    const receipt = await awaitSharedSave(save);
-    if (receipt && receipt.status !== 200) return receipt;
+    const receipt = await awaitSharedSave(save && bindSave(save, changed.sign!, { revokedVoucher: sender.key }));
+    if (receipt && receipt.status !== "committed") return sharedSaveReply(receipt);
     macDocsChanged({ closeRemoved: readLink() });
-    return answer(200, receipt?.value ?? {});
+    return answer(200, receipt ?? {});
   }
   const device = act.method === "POST" ? givenDevice({ ...(act.body ?? {}), key: act.item }, null) : null;
   if (!device) return answer(400, NOT_GIVEN);

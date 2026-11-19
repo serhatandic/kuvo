@@ -6,7 +6,7 @@ import path from "node:path";
 import type { SignedDoc } from "./documents";
 import type { SharedKind } from "./data-declarations";
 import { isObject } from "./json";
-import type { SetupSaveReceipt } from "./routes/setup-save";
+import { INTERRUPTED_SAVE, PENDING_SAVE, type Receipt, type SetupSaveReceipt } from "./routes/setup-save";
 
 export type { SetupSaveReceipt };
 
@@ -37,8 +37,10 @@ export function setupSaveReceipt(value: unknown): SetupSaveReceipt | null {
   if (!reference || !isObject(value) || !Number.isSafeInteger(value.epoch)) return null;
   const { epoch, status, message } = value;
   if (status !== "pending" && status !== "committed" && status !== "interrupted") return null;
-  return { ...reference, epoch: Number(epoch), status, ...(status === "pending" ? { pending: true } : {}),
-    ...(typeof message === "string" ? { message } : {}) };
+  const identity = { ...reference, epoch: Number(epoch) };
+  if (status === "pending") return { ...identity, status, pending: true, message: typeof message === "string" ? message : PENDING_SAVE };
+  if (status === "interrupted") return { ...identity, status, message: typeof message === "string" ? message : INTERRUPTED_SAVE };
+  return { ...identity, status, ...(typeof message === "string" ? { message } : {}) };
 }
 
 const setups = new Map<string, { inode: number; mtime: number; link: Record<string, unknown> }>();
@@ -65,21 +67,24 @@ export function localSetupValue(run: string, kind: string): LocalSetupValue | nu
   } catch { return null; }
 }
 
-interface LocalSaveAnswer {
-  status: number;
-  message?: string;
-  operation?: string;
-  proof?: SignedDoc;
-  outcome?: SetupSaveReceipt["status"];
-  receipt?: SetupSaveReceipt;
-}
+type LocalSaveAnswer = { status: number; message?: string; receipt?: Receipt; legacyPending?: { pending: true; operation: string } };
+type LocalStatus = LocalSaveAnswer & { outcome?: Receipt["status"] };
 
 export function askSetupOutcome(run: string, reference: SetupSaveReference, kind?: SharedKind): Promise<LocalSaveAnswer> {
   const { setup, operation, proof } = reference;
-  return askSetupSave(run, { id: setup, operation, proof, kind }, reference);
+  return askLocalSetup(run, { id: setup, operation, proof, kind }, reference);
 }
 
-export function askSetupSave(run: string, body: object, reference?: SetupSaveReference): Promise<LocalSaveAnswer> {
+export function askSetupSave(run: string, body: { id: string; epoch: number; kind: SharedKind; sequence: number; value: object }): Promise<LocalSaveAnswer> {
+  return askLocalSetup(run, body, { setup: body.id, epoch: body.epoch });
+}
+
+// The holder also supports inspecting a known operation by id on the same setup, without a proof.
+export function askSetupStatus(run: string, body: { id: string; operation: string }): Promise<LocalStatus> {
+  return askLocalSetup(run, body);
+}
+
+function askLocalSetup(run: string, body: object, reference?: Partial<Receipt>): Promise<LocalStatus> {
   const fallback = { status: 503, message: "The box that keeps your setup isn't answering." };
   const socketPath = path.join(run, "vault.sock");
   let key: string;
@@ -91,7 +96,7 @@ export function askSetupSave(run: string, body: object, reference?: SetupSaveRef
   } catch { return Promise.resolve(fallback); }
   return new Promise(resolve => {
     const socket = net.createConnection(socketPath);
-    const finish = (answer: LocalSaveAnswer = fallback) => { socket.destroy(); resolve(answer); };
+    const finish = (answer: LocalStatus = fallback) => { socket.destroy(); resolve(answer); };
     socket.setEncoding("utf8").setTimeout(8_000);
     socket.on("connect", () => socket.write(JSON.stringify({ hello: "", key }) + "\n"));
     socket.on("timeout", () => finish());
@@ -119,9 +124,9 @@ export function askSetupSave(run: string, body: object, reference?: SetupSaveRef
         const outcome = result.status;
         const receipt = setupSaveReceipt({ ...reference, ...result });
         finish({ status: reply.status, message: typeof result.message === "string" ? result.message : undefined,
-          ...(typeof result.operation === "string" ? { operation: result.operation } : {}),
-          ...(isObject(result.proof) && typeof result.proof.d === "string" && typeof result.proof.s === "string" ? { proof: { d: result.proof.d, s: result.proof.s } } : {}),
           ...(receipt ? { receipt } : {}),
+          ...(!receipt && reply.status === 202 && typeof result.operation === "string"
+            ? { legacyPending: { pending: true, operation: result.operation } } : {}),
           ...(outcome === "pending" || outcome === "committed" || outcome === "interrupted" ? { outcome } : {}),
         });
       } catch { finish(); }

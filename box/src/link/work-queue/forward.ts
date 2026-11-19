@@ -429,7 +429,7 @@ const actOf = (given: unknown): Act | null => {
   const { method, action, name } = given;
   const fits = (method === "GET" && action === undefined) || (method === "DELETE" && action === undefined) || (method === "POST" && action === "restore") || (method === "PATCH" && action === undefined)
     || (method === "GET" && action === "file" && typeof name === "string" && name.length > 0 && name.length <= 300);
-  const devices = given.area === "devices" && (method === "POST" || method === "DELETE") && action === undefined;
+  const devices = given.area === "devices" && (method === "GET" || method === "POST" || method === "DELETE") && action === undefined;
   const setup = given.area === "setup" && (method === "GET" || method === "POST") && action === undefined;
   if (!fits && !devices && !setup) return null;
   if (given.area !== undefined && !devices && !setup && !(given.area === "computers" && (method === "PATCH" || method === "DELETE") && action === undefined)) return null;

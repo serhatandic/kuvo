@@ -3463,6 +3463,27 @@ var init_github_sign_in = __esm(() => {
   ENV = { GH_PROMPT_DISABLED: "1", GH_NO_UPDATE_NOTIFIER: "1", NO_COLOR: "1" };
 });
 
+// box/src/shared/shape.ts
+var string = "string", number2 = "number", object = (fields) => ({ object: fields }), literal = (value) => ({ literal: value }), words = (...each) => ({ oneOf: each.map((word) => ({ literal: word })) }), NOTHING2;
+var init_shape = __esm(() => {
+  NOTHING2 = object({});
+});
+
+// box/src/shared/routes/setup-save.ts
+var SAVE_RECEIPT, PENDING_SAVE = "Pending until the standby is back.", INTERRUPTED_SAVE = "The primary changed before this save committed.";
+var init_setup_save = __esm(() => {
+  init_shape();
+  SAVE_RECEIPT = object({
+    setup: string,
+    epoch: number2,
+    operation: string,
+    proof: object({ d: string, s: string }),
+    status: words("pending", "committed", "interrupted"),
+    "pending?": literal(true),
+    "message?": string
+  });
+});
+
 // box/src/shared/setup-local.ts
 import fs3 from "fs";
 import net from "net";
@@ -3479,13 +3500,12 @@ function setupSaveReceipt(value) {
   const { epoch, status, message } = value;
   if (status !== "pending" && status !== "committed" && status !== "interrupted")
     return null;
-  return {
-    ...reference,
-    epoch: Number(epoch),
-    status,
-    ...status === "pending" ? { pending: true } : {},
-    ...typeof message === "string" ? { message } : {}
-  };
+  const identity = { ...reference, epoch: Number(epoch) };
+  if (status === "pending")
+    return { ...identity, status, pending: true, message: typeof message === "string" ? message : PENDING_SAVE };
+  if (status === "interrupted")
+    return { ...identity, status, message: typeof message === "string" ? message : INTERRUPTED_SAVE };
+  return { ...identity, status, ...typeof message === "string" ? { message } : {} };
 }
 function localSetupValue(run, kind) {
   try {
@@ -3518,9 +3538,12 @@ function localSetupValue(run, kind) {
 }
 function askSetupOutcome(run, reference, kind) {
   const { setup, operation, proof } = reference;
-  return askSetupSave(run, { id: setup, operation, proof, kind }, reference);
+  return askLocalSetup(run, { id: setup, operation, proof, kind }, reference);
 }
-function askSetupSave(run, body, reference) {
+function askSetupSave(run, body) {
+  return askLocalSetup(run, body, { setup: body.id, epoch: body.epoch });
+}
+function askLocalSetup(run, body, reference) {
   const fallback = { status: 503, message: "The box that keeps your setup isn't answering." };
   const socketPath = path3.join(run, "vault.sock");
   let key;
@@ -3581,9 +3604,8 @@ function askSetupSave(run, body, reference) {
         finish({
           status: reply.status,
           message: typeof result.message === "string" ? result.message : undefined,
-          ...typeof result.operation === "string" ? { operation: result.operation } : {},
-          ...isObject(result.proof) && typeof result.proof.d === "string" && typeof result.proof.s === "string" ? { proof: { d: result.proof.d, s: result.proof.s } } : {},
           ...receipt ? { receipt } : {},
+          ...!receipt && reply.status === 202 && typeof result.operation === "string" ? { legacyPending: { pending: true, operation: result.operation } } : {},
           ...outcome === "pending" || outcome === "committed" || outcome === "interrupted" ? { outcome } : {}
         });
       } catch {
@@ -3594,6 +3616,7 @@ function askSetupSave(run, body, reference) {
 }
 var LOCAL_SETUP_SAVE = "kuvo/setup/save-local", setups;
 var init_setup_local = __esm(() => {
+  init_setup_save();
   setups = new Map;
 });
 
@@ -5324,7 +5347,7 @@ function changes(before, after, prose) {
     }
     const pairs = Math.min(gone.length, come.length);
     for (let p = 0;p < pairs; p++) {
-      const runs = words(gone[p], come[p]);
+      const runs = words2(gone[p], come[p]);
       const kept = runs.filter((run) => run.t === " ").reduce((sum, run) => sum + run.text.trim().length, 0);
       const size = Math.min(gone[p].trim().length, come[p].trim().length) || 1;
       if (kept / size < 1 - rewritten) {
@@ -5349,7 +5372,7 @@ function changes(before, after, prose) {
 function tokens(text) {
   return text.match(/\s+|[\p{L}\p{N}_'\u2019-]+|[^\s\p{L}\p{N}_'\u2019-]/gu) ?? [];
 }
-function words(before, after) {
+function words2(before, after) {
   const ops = edits(tokens(before), tokens(after));
   const runs = [];
   const push = (t, text) => {
@@ -13663,7 +13686,7 @@ class LimitResets {
       result = await this.attach(confirm, rowID, { via: asked.via, provider: asked.provider, by, unasked });
     }
     const { already: _, open: __, message, ...told } = result;
-    return { done: { ...told, ...message ?? words2(result.outcome) ? { message: message ?? words2(result.outcome) } : {}, row: this.limits.rows().find((each) => each.id === rowID) } };
+    return { done: { ...told, ...message ?? words3(result.outcome) ? { message: message ?? words3(result.outcome) } : {}, row: this.limits.rows().find((each) => each.id === rowID) } };
   }
   rerun(spend, rowID, given = {}) {
     return spend.via ? this.passed(spend) : this.here(spend.id, rowID, spend.provider ?? given.provider, spend.by ?? given.by, spend.unasked === true);
@@ -13889,7 +13912,7 @@ class LimitResets {
     renameSync10(this.file + ".new", this.file);
   }
 }
-function words2(outcome) {
+function words3(outcome) {
   switch (outcome) {
     case "reset":
       return;
@@ -15511,14 +15534,14 @@ function isoTime(value) {
 }
 function planFacts(usage) {
   const isEnabled = usage.enabled !== false;
-  const planUsage = object(usage.planUsage);
+  const planUsage = object2(usage.planUsage);
   const limit = planUsage ? numberOf(planUsage.limit) : undefined;
   const totalPercentUsed = planUsage ? numberOf(planUsage.totalPercentUsed) : undefined;
   const auto = planUsage ? numberOf(planUsage.autoPercentUsed) : undefined;
   const api = planUsage ? numberOf(planUsage.apiPercentUsed) : undefined;
   const spent = (planUsage ? numberOf(planUsage.totalSpend) : undefined) ?? (limit ?? 0) - ((planUsage ? numberOf(planUsage.remaining) : undefined) ?? limit ?? 0);
   const hasModelPools = auto !== undefined && api !== undefined && auto >= 0 && api >= 0 ? auto > 0 || api > 0 || spent === 0 : false;
-  const spendLimitUsage = object(usage.spendLimitUsage);
+  const spendLimitUsage = object2(usage.spendLimitUsage);
   const spendLimitType = text3(spendLimitUsage?.limitType)?.toLowerCase();
   const pooledLimit = numberOf(spendLimitUsage?.pooledLimit) ?? 0;
   const hasPlanUsage = planUsage !== undefined;
@@ -15577,7 +15600,7 @@ function creditsLine(creditGrants, stripeBalanceCents) {
 }
 function mapUsage(usage, planName, creditGrants, stripeBalanceCents) {
   const facts = planFacts(usage);
-  const planUsage = object(usage.planUsage);
+  const planUsage = object2(usage.planUsage);
   if (!facts.isEnabled || !planUsage)
     throw new CursorPlanError("No active Cursor subscription.", true);
   const normalizedPlan = planName?.trim().toLowerCase() ?? "";
@@ -15591,7 +15614,7 @@ function mapUsage(usage, planName, creditGrants, stripeBalanceCents) {
   const computedPercentUsed = facts.limit !== undefined && facts.limit > 0 ? planUsedCents / facts.limit * 100 : 0;
   const totalUsagePercent = facts.totalPercentUsed ?? computedPercentUsed;
   const cycle = billingCycle(usage);
-  const spendLimitUsage = object(usage.spendLimitUsage);
+  const spendLimitUsage = object2(usage.spendLimitUsage);
   const isTeam = normalizedPlan === "team" || facts.isTeamByShape;
   if (isTeam && facts.hasModelPools) {
     if (facts.totalPercentUsed !== undefined)
@@ -15625,7 +15648,7 @@ function mapUsage(usage, planName, creditGrants, stripeBalanceCents) {
 }
 function mapRequestBasedUsage(usage, planName, unavailable) {
   const lines = [];
-  const gpt4 = object(usage?.["gpt-4"]);
+  const gpt4 = object2(usage?.["gpt-4"]);
   const limit = numberOf(gpt4?.maxRequestUsage);
   if (gpt4 && limit !== undefined && limit > 0) {
     const cycleStart = isoTime(usage?.startOfMonth);
@@ -15690,7 +15713,7 @@ function summaryCycle(summary, requestUsage) {
   return { ...requestStart !== undefined ? { resetsAt: requestStart + BILLING_PERIOD_MS } : {}, periodMs: BILLING_PERIOD_MS };
 }
 function dollarMeter(value) {
-  const bucket = object(value);
+  const bucket = object2(value);
   if (!bucket || bucket.enabled === false)
     return;
   const limit = numberOf(bucket.limit);
@@ -15702,7 +15725,7 @@ function dollarMeter(value) {
   return { used: Math.max(0, used), limit };
 }
 function usableDollarBucket(value) {
-  const bucket = object(value);
+  const bucket = object2(value);
   if (!bucket || bucket.enabled === false)
     return false;
   return dollarMeter(bucket) !== undefined || (numberOf(bucket.used) ?? 0) > 0;
@@ -15712,15 +15735,15 @@ function hasUsableSummary(summary) {
   const end = isoTime(summary.billingCycleEnd);
   if (start !== undefined && end !== undefined && end > start)
     return true;
-  const individual = object(summary.individualUsage);
-  const team = object(summary.teamUsage);
-  const plan = object(individual?.plan);
+  const individual = object2(summary.individualUsage);
+  const team = object2(summary.teamUsage);
+  const plan = object2(individual?.plan);
   if (["totalPercentUsed", "autoPercentUsed", "apiPercentUsed"].some((key) => numberOf(plan?.[key]) !== undefined))
     return true;
   return [individual?.onDemand, individual?.overall, team?.onDemand, team?.pooled].some(usableDollarBucket);
 }
 function onDemandBucket(value, cycle, lines) {
-  const bucket = object(value);
+  const bucket = object2(value);
   if (!bucket || bucket.enabled === false)
     return false;
   const meter = dollarMeter(bucket);
@@ -15736,9 +15759,9 @@ function onDemandBucket(value, cycle, lines) {
   return false;
 }
 function summaryOnDemand(summary, cycle, lines) {
-  if (onDemandBucket(object(summary?.individualUsage)?.onDemand, cycle, lines))
+  if (onDemandBucket(object2(summary?.individualUsage)?.onDemand, cycle, lines))
     return;
-  onDemandBucket(object(summary?.teamUsage)?.onDemand, cycle, lines);
+  onDemandBucket(object2(summary?.teamUsage)?.onDemand, cycle, lines);
 }
 function appendMissingOnDemand(summary, lines) {
   if (lines.some((line) => line.label === "On-demand"))
@@ -15748,7 +15771,7 @@ function appendMissingOnDemand(summary, lines) {
 function mapSummary(summary, requestUsage, planName, unavailable) {
   const cycle = summaryCycle(summary, requestUsage);
   const lines = [];
-  const requests = object(requestUsage?.["gpt-4"]);
+  const requests = object2(requestUsage?.["gpt-4"]);
   const limit = numberOf(requests?.maxRequestUsage);
   const hasRequests = !!requests && limit !== undefined && limit > 0;
   if (hasRequests) {
@@ -15756,12 +15779,12 @@ function mapSummary(summary, requestUsage, planName, unavailable) {
     for (const label of ["Total usage", "Requests"])
       lines.push(progress(label, used, limit, "count", cycle.resetsAt, cycle.periodMs, "requests"));
   } else {
-    const individual = object(summary?.individualUsage);
-    const team = object(summary?.teamUsage);
+    const individual = object2(summary?.individualUsage);
+    const team = object2(summary?.teamUsage);
     const limitType = text3(summary?.limitType)?.toLowerCase();
     const dollarTotal = (meter) => lines.push(progress("Total usage", dollars(meter.used), dollars(meter.limit), "dollars", cycle.resetsAt, cycle.periodMs));
     const pooled = dollarMeter(team?.pooled);
-    const percent = numberOf(object(individual?.plan)?.totalPercentUsed);
+    const percent = numberOf(object2(individual?.plan)?.totalPercentUsed);
     const overall = dollarMeter(individual?.overall);
     if (limitType === "team" && pooled)
       dollarTotal(pooled);
@@ -15772,7 +15795,7 @@ function mapSummary(summary, requestUsage, planName, unavailable) {
     else if (pooled)
       dollarTotal(pooled);
   }
-  const plan = object(object(summary?.individualUsage)?.plan);
+  const plan = object2(object2(summary?.individualUsage)?.plan);
   for (const [key, label] of [
     ["autoPercentUsed", "Cursor Models"],
     ["apiPercentUsed", "Other Models"]
@@ -15835,7 +15858,7 @@ async function optional(client, request) {
     throw new LimitsProblem("rate-limited", "Cursor is turning reads away for now.", client.holdFor(answer.headers.get("retry-after")) ?? client.heldUntil());
   if (!answer || answer.status < 200 || answer.status >= 300)
     return;
-  return object(answer.body);
+  return object2(answer.body);
 }
 async function readCursorPlan(client, now = Date.now) {
   let access = await client.accessToken();
@@ -15859,14 +15882,14 @@ async function readCursorPlan(client, now = Date.now) {
     throw new LimitsProblem("rate-limited", "Cursor is turning reads away for now.", client.holdFor(answer.headers.get("retry-after")));
   if (answer.status < 200 || answer.status >= 300)
     throw new LimitsProblem("failed", `Cursor answered ${answer.status}.`);
-  const usage = object(answer.body);
+  const usage = object2(answer.body);
   if (!usage)
     throw new LimitsProblem("failed", "Cursor's answer wasn't one it gives.");
   const user = cursorSession(access)?.user;
   const identity = user ? `cursor:${user.toLowerCase()}` : undefined;
   const membership = undefined;
   const planBody = await optional(client, () => client.dashboard("GetPlanInfo", access));
-  const planInfoName = trimmed2(object(planBody?.planInfo)?.planName);
+  const planInfoName = trimmed2(object2(planBody?.planInfo)?.planName);
   const planInfoUnavailable = planInfoName === undefined;
   const routing = routingPlanName(planInfoName, membership);
   const display = resolvedPlanName(planInfoName, membership);
@@ -15935,7 +15958,7 @@ async function readCursorPlan(client, now = Date.now) {
 var DAY_MS2, BILLING_PERIOD_MS, WEEK_MS, CursorPlanError, ORG, text3 = (value) => typeof value === "string" ? value : undefined, trimmed2 = (value) => {
   const found = text3(value)?.trim();
   return found ? found : undefined;
-}, object = (value) => value && typeof value === "object" && !Array.isArray(value) ? value : undefined, clampPercent = (value) => Number.isFinite(value) ? Math.min(Math.max(value, 0), 100) : 0, dollars = (cents) => Math.round(cents) / 100, titled = (value) => value.split(/\s+/).filter(Boolean).map((word) => word.slice(0, 1).toUpperCase() + word.slice(1)).join(" "), progress = (label, used, limit, format, resetsAt, periodMs, suffix) => ({
+}, object2 = (value) => value && typeof value === "object" && !Array.isArray(value) ? value : undefined, clampPercent = (value) => Number.isFinite(value) ? Math.min(Math.max(value, 0), 100) : 0, dollars = (cents) => Math.round(cents) / 100, titled = (value) => value.split(/\s+/).filter(Boolean).map((word) => word.slice(0, 1).toUpperCase() + word.slice(1)).join(" "), progress = (label, used, limit, format, resetsAt, periodMs, suffix) => ({
   label,
   kind: "progress",
   used,
@@ -24747,11 +24770,11 @@ function chatGPTSignInOf(credential) {
 function whamWindows(limit, prefix, model, now) {
   return ["primary", "secondary"].flatMap((which) => {
     const window = limit?.[`${which}_window`];
-    const used = number2(window?.used_percent);
+    const used = number3(window?.used_percent);
     if (!window || used === undefined)
       return [];
-    const seconds = number2(window.limit_window_seconds);
-    const resetsAt = number2(window.reset_at) !== undefined ? number2(window.reset_at) * 1000 : number2(window.reset_after_seconds) !== undefined ? now + number2(window.reset_after_seconds) * 1000 : undefined;
+    const seconds = number3(window.limit_window_seconds);
+    const resetsAt = number3(window.reset_at) !== undefined ? number3(window.reset_at) * 1000 : number3(window.reset_after_seconds) !== undefined ? now + number3(window.reset_after_seconds) * 1000 : undefined;
     return [{ id: prefix + which, used: used / 100, ...seconds ? { minutes: Math.round(seconds / 60) } : {}, ...resetsAt ? { resetsAt } : {}, ...model ? { model } : {} }];
   });
 }
@@ -24765,7 +24788,7 @@ async function readGrok(secret, _credential, now) {
   const end = date(period?.end);
   if (!start || !end || end <= start)
     throw new LimitsProblem("failed", "xAI's answer wasn't what Kuvo Code reads.");
-  const used = number2(body.config.creditUsagePercent) ?? 0;
+  const used = number3(body.config.creditUsagePercent) ?? 0;
   return { windows: [{ id: "weekly", used: used / 100, minutes: Math.round((end - start) / 60000), resetsAt: end }] };
 }
 async function readCopilot(secret, _credential, now) {
@@ -24775,11 +24798,11 @@ async function readCopilot(secret, _credential, now) {
   const snapshots = body?.quota_snapshots;
   for (const [id, name] of [["premium_interactions", "Premium requests"], ["chat", "Chat"], ["completions", "Completions"]]) {
     const snapshot = snapshots?.[id];
-    const entitlement = number2(snapshot?.entitlement);
-    const remaining = number2(snapshot?.remaining);
+    const entitlement = number3(snapshot?.entitlement);
+    const remaining = number3(snapshot?.remaining);
     if (!snapshot || snapshot.unlimited === true || entitlement === -1 || remaining === -1 || !entitlement)
       continue;
-    const percentLeft = number2(snapshot.percent_remaining);
+    const percentLeft = number3(snapshot.percent_remaining);
     const used = percentLeft !== undefined ? 1 - percentLeft / 100 : remaining !== undefined ? 1 - remaining / entitlement : undefined;
     if (used === undefined)
       continue;
@@ -24794,8 +24817,8 @@ async function readCopilot(secret, _credential, now) {
   }
   if (!snapshots) {
     for (const [id, name] of [["chat", "Chat"], ["completions", "Completions"]]) {
-      const limit = number2(body?.monthly_quotas?.[id]);
-      const remaining = number2(body?.limited_user_quotas?.[id]);
+      const limit = number3(body?.monthly_quotas?.[id]);
+      const remaining = number3(body?.limited_user_quotas?.[id]);
       if (!limit || remaining === undefined)
         continue;
       windows.push({ id, used: 1 - remaining / limit, minutes: MONTH, name, ...resetsAt ? { resetsAt } : {}, amount: { used: Math.max(0, limit - remaining), limit, unit: "requests" } });
@@ -24871,7 +24894,7 @@ function billingExtras(body) {
   const copilot = items.filter((item) => String(item?.product ?? "").trim().toLowerCase() === "copilot" && ["ai-units", "ai-credits"].includes(String(item?.unitType ?? "").trim().toLowerCase()));
   if (!copilot.length)
     return null;
-  const sum = (field) => copilot.reduce((total, item) => total + Math.max(0, number2(item?.[field]) ?? 0), 0);
+  const sum = (field) => copilot.reduce((total, item) => total + Math.max(0, number3(item?.[field]) ?? 0), 0);
   return [
     { id: "org_credits", name: "Org Credits", kind: "spent", amount: sum("grossQuantity"), unit: "credits" },
     { id: "org_spend", name: "Org Spend", kind: "spent", amount: sum("netAmount"), unit: "usd" }
@@ -24881,16 +24904,16 @@ async function readOpenRouter(secret, _credential, now) {
   const headers = { Authorization: `Bearer ${secret}` };
   const key = (await fetched(engineEndpoints.openrouterKey, headers, now, "OpenRouter"))?.data;
   const windows = [];
-  const limit = number2(key?.limit);
+  const limit = number3(key?.limit);
   if (limit && limit > 0) {
-    const left = Math.max(0, number2(key.limit_remaining) ?? limit - (number2(key.usage) ?? 0));
+    const left = Math.max(0, number3(key.limit_remaining) ?? limit - (number3(key.usage) ?? 0));
     windows.push({ id: "key", used: 1 - left / limit, name: "Key limit", amount: { used: limit - left, limit, unit: "usd" } });
   }
   let balance;
   try {
     const credits = (await fetched(engineEndpoints.openrouterCredits, headers, now, "OpenRouter"))?.data;
-    const total = number2(credits?.total_credits);
-    const spent = number2(credits?.total_usage);
+    const total = number3(credits?.total_credits);
+    const spent = number3(credits?.total_usage);
     if (total !== undefined && spent !== undefined)
       balance = { left: Math.max(0, total - spent), ...total > 0 ? { limit: total } : {}, unit: "usd" };
   } catch (caught) {
@@ -24900,7 +24923,7 @@ async function readOpenRouter(secret, _credential, now) {
   const plan = key?.is_free_tier === true ? "Free tier" : key?.is_free_tier === false ? "Pay as you go" : undefined;
   const extras = [];
   for (const [field, id, name, ends] of [["usage_daily", "today", "Today", endOfDay], ["usage_weekly", "week", "This Week", endOfWeek], ["usage_monthly", "month", "This Month", endOfMonth]]) {
-    const spent = number2(key?.[field]);
+    const spent = number3(key?.[field]);
     if (spent !== undefined)
       extras.push({ id, name, kind: "spent", amount: Math.max(0, spent), unit: "usd", resetsAt: ends(now) });
   }
@@ -24917,18 +24940,18 @@ async function readZai(secret, _credential, now) {
   const windows = [];
   for (const entry of limits) {
     const type = entry?.type ?? entry?.name;
-    const resetsAt = number2(entry?.nextResetTime);
+    const resetsAt = number3(entry?.nextResetTime);
     if (type === "CREDIT_LIMIT" || type === "TOKENS_LIMIT") {
-      const unit = UNIT[number2(entry.unit) ?? 0];
-      const count = number2(entry.number);
-      const percent = number2(entry.percentage);
+      const unit = UNIT[number3(entry.unit) ?? 0];
+      const count = number3(entry.number);
+      const percent = number3(entry.percentage);
       if (!unit || !count || percent === undefined)
         continue;
       const minutes = unit * count;
       windows.push({ id: minutes < 1440 ? "session" : `window_${minutes}`, used: percent / 100, minutes, ...resetsAt ? { resetsAt } : {} });
     } else if (type === "TIME_LIMIT") {
-      const used = number2(entry.currentValue);
-      const limit = number2(entry.usage);
+      const used = number3(entry.currentValue);
+      const limit = number3(entry.usage);
       if (used === undefined || !limit)
         continue;
       windows.push({ id: "web_search", used: used / limit, name: "Web searches", ...resetsAt ? { resetsAt } : {}, amount: { used, limit, unit: "requests" } });
@@ -24943,7 +24966,7 @@ async function readOpenCodeGo(secret, _credential, now) {
     throw new LimitsProblem("none", "No OpenCode Go plan on this key.");
   const windows = [];
   for (const [id, minutes] of [["rolling", 300], ["weekly", 10080], ["monthly", MONTH]]) {
-    const percent = number2(usage[id]?.percent);
+    const percent = number3(usage[id]?.percent);
     if (percent === undefined)
       continue;
     let resetsAt = date(usage[id].resetsAt);
@@ -24953,7 +24976,7 @@ async function readOpenCodeGo(secret, _credential, now) {
   }
   return { windows, plan: "Go" };
 }
-var engineEndpoints, EVERY2, MONTH = 43200, byKey = (value) => value.key?.trim() ? `key:${value.key.trim()}` : undefined, READERS, ENGINE_SERVICES, number2 = (value) => {
+var engineEndpoints, EVERY2, MONTH = 43200, byKey = (value) => value.key?.trim() ? `key:${value.key.trim()}` : undefined, READERS, ENGINE_SERVICES, number3 = (value) => {
   const found = typeof value === "string" && value.trim() ? Number(value) : value;
   return typeof found === "number" && Number.isFinite(found) ? found : undefined;
 }, date = (value) => {
@@ -28296,7 +28319,7 @@ async function settingsRoutes(settings, choices, method, rest, body) {
     if (result.status !== 200)
       return json10(result.receipt ?? {
         message: result.message,
-        ...result.status === 202 ? { pending: true, operation: result.operation, proof: result.proof } : {}
+        ...result.legacyPending ?? (result.status === 202 ? { pending: true } : {})
       }, result.status);
     settings.followShared();
     return answer3(settings, { ...extra, ...result.receipt ? { save: result.receipt } : {} });
@@ -42414,4 +42437,4 @@ if (!isMainThread && process.argv.includes("--insights-db-worker")) {
 } else {
   await init_main().then(() => ({}));
 }
-// Built from Packages/Box/src/agents c07777dcd1cace801154ffa837be5b58fffde5969e56474c4c2b02363561d0c5
+// Built from Packages/Box/src/agents 4baf23c4ab759f587195bf7870e2d7740c2f17cdab5a2495937afb94b962f13e

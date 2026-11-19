@@ -418,7 +418,7 @@ test("failure bench: normal save callers carry proofs to the successor", { timeo
     assert.equal(save?.operation, pendingOperation(a, kind), kind);
     assert.equal(save.status, "pending", kind);
     assert.equal(link.readDoc(save.proof)?.origin, a.sign, kind);
-    assert.equal((await link.askSetupSave(b.run, { id: save.setup, operation: save.operation })).status, 404, kind);
+    assert.equal((await link.askSetupStatus(b.run, { id: save.setup, operation: save.operation })).status, 404, kind);
   }
   assert.ok(tool.text.endsWith(JSON.stringify(tool.save)));
   const queriedUsage = await usage(b, "POST", ["save"], display.value);
@@ -428,9 +428,9 @@ test("failure bench: normal save callers carry proofs to the successor", { timeo
   assert.equal(queriedTool.save?.status, "interrupted");
   assert.deepEqual(queriedTool.save.proof, tool.save.proof);
   for (const [kind, save] of receipts) {
-    const outcome = await link.askSetupSave(b.run, { id: save.setup, operation: save.operation, proof: save.proof });
+    const outcome = await link.askSetupOutcome(b.run, { setup: save.setup, operation: save.operation, proof: save.proof });
     assert.equal(outcome.status, 200, kind);
-    assert.equal(outcome.outcome, "interrupted", kind);
+    assert.equal(outcome.receipt.status, "interrupted", kind);
   }
 });
 
@@ -454,13 +454,13 @@ test("failure bench: only the standby takes over across a split and the old prim
   assert.equal(a.read().setup.epoch, 2);
   // The primary is still partitioned. Ask the successor using the receipt from the save.
   assert.equal(blocked.value.operation, interrupted);
-  const lostOnSuccessor = await link.askSetupSave(b.run, { id: stale.setup.id, operation: interrupted, proof: blocked.value.proof });
+  const lostOnSuccessor = await link.askSetupOutcome(b.run, { setup: stale.setup.id, operation: interrupted, proof: blocked.value.proof });
   assert.equal(lostOnSuccessor.status, 200);
-  assert.equal(lostOnSuccessor.outcome, "interrupted");
-  assert.equal(lostOnSuccessor.operation, interrupted);
+  assert.equal(lostOnSuccessor.receipt.status, "interrupted");
+  assert.equal(lostOnSuccessor.receipt.operation, interrupted);
   const checked = link.readDoc(blocked.value.proof);
   const forgedProof = link.signDoc(c.seed, "setup-shared", checked.n, checked.body);
-  assert.equal((await link.askSetupSave(b.run, { id: stale.setup.id, operation: interrupted, proof: forgedProof })).status, 404);
+  assert.equal((await link.askSetupOutcome(b.run, { setup: stale.setup.id, operation: interrupted, proof: forgedProof })).status, 404);
   const winning = link.readDoc(b.read().leadership[3]);
   assert.equal(winning.origin, b.sign);
   assert.equal(winning.body.takeover, true);
@@ -475,7 +475,7 @@ test("failure bench: only the standby takes over across a split and the old prim
   await see(b, 4, b);
   assert.equal(b.read().setup.standby.key, c.key);
   await see(c, 4, b);
-  assert.equal((await link.askSetupSave(c.run, { id: stale.setup.id, operation: interrupted })).outcome, "interrupted");
+  assert.equal((await link.askSetupStatus(c.run, { id: stale.setup.id, operation: interrupted })).outcome, "interrupted");
   await until("new primary leased", () => b.lease(4, c), t.signal);
   assert.equal((await a.route("POST", "kuvo/phones/remove", { phones: [{ key: phone, pairing }] })).status, 409);
 
@@ -490,7 +490,7 @@ test("failure bench: only the standby takes over across a split and the old prim
   a.start();
   await see(a, 4, b);
   assert.equal(a.read().peerNames, undefined);
-  const lost = await link.askSetupSave(a.run, { id: stale.setup.id, operation: interrupted });
+  const lost = await link.askSetupStatus(a.run, { id: stale.setup.id, operation: interrupted });
   assert.equal(lost.status, 200);
   assert.equal(lost.outcome, "interrupted");
   assert.equal(a.read().sharedOutcomes[interrupted].baseRevision, 1);
@@ -582,15 +582,24 @@ test("failure bench: local uninstall refuses a primary before clearing identity 
   assert.ok(fs.existsSync(path.join(home, "run", "off")));
 });
 
-test("failure bench: a QR handshake waits for its own durable pairing receipt", { timeout: 35_000 }, async t => {
-  const { a, b, relay } = await standbyNetwork(t);
+test("failure bench: a QR handshake carries its durable pairing receipt to the successor", { timeout: 45_000 }, async t => {
+  const { a, b, c, relay, see } = await standbyNetwork(t);
   const pairing = await a.route("POST", "kuvo/phones/pair");
   assert.equal(pairing.status, 200);
   const qr = new URL(pairing.value.link);
-  const device = relay.device();
   const newKey = link.newKey();
   const deviceKey = link.publicOf(newKey).toString("base64url");
-  const initiator = new link.IKInitiator(newKey, Buffer.from(qr.searchParams.get("key"), "base64url"), link.PROLOGUE);
+  async function open(box, key, hello, session) {
+    const device = relay.device();
+    const initiator = new link.IKInitiator(key, Buffer.from(box.key, "base64url"), link.PROLOGUE);
+    device.send(box.address, link.frame(link.Frame.handshake1, session, initiator.writeMessage1(Buffer.from(JSON.stringify({
+      v: 1, name: "New QR phone", ...hello,
+    })))));
+    const frame = link.readFrame(link.readRelay(await device.next(15_000)).payload);
+    if (frame.kind !== link.Frame.handshake2) return { frame: frame.kind };
+    const { payload, transport } = initiator.readMessage2(frame.body);
+    return { hello: JSON.parse(payload), transport, device };
+  }
   const receipts = [];
   const release = relay.intercept(b.address, a.address, packet => {
     // Keep leases flowing while holding the signed access receipt.
@@ -599,24 +608,68 @@ test("failure bench: a QR handshake waits for its own durable pairing receipt", 
     return false;
   });
   t.after(release);
-  device.send(a.address, link.frame(link.Frame.handshake1, 44, initiator.writeMessage1(Buffer.from(JSON.stringify({
-    v: 1, name: "New QR phone", pair: qr.searchParams.get("token"),
-  })))));
-  let frame;
-  const reply = device.next(15_000).then(bytes => { frame = link.readFrame(link.readRelay(bytes).payload); });
-  // Register the rejection handler before assertions so a failed test can also close the relay.
-  reply.catch(() => {});
-  await until("the standby persists the phone and tries to send its receipt", () => receipts[0], t.signal);
-  await delay(3_250);
-  assert.equal(frame, undefined, "the box has sent neither a refusal nor a session");
+  const pending = await open(a, newKey, { pair: qr.searchParams.get("token") }, 44);
+  const save = pending.hello.save;
+  assert.equal(pending.hello.v, 1);
+  assert.ok(pending.hello.waiting);
+  assert.equal(save.status, "pending");
+  assert.equal(save.pending, true);
+  assert.equal(save.operation, pendingOperation(a, "membershipAndAccess"));
+  assert.equal(link.readDoc(save.proof).origin, a.sign);
+  assert.ok(receipts.length);
   assert.ok(b.read().phones.some(phone => phone.key === deviceKey));
   assert.ok(!a.read().phones.some(phone => phone.key === deviceKey));
-  release();
-  relay.replay(receipts[0]);
-  await reply;
-  assert.equal(frame.kind, link.Frame.handshake2);
-  assert.equal(JSON.parse(initiator.readMessage2(frame.body).payload).v, 1);
-  assert.ok(a.read().phones.some(phone => phone.key === deviceKey));
+  pending.device.send(a.address, link.frame(link.Frame.transport, 44, pending.transport.seal(
+    link.encodeMessage({ t: "req", id: 1, m: "GET", p: "kuvo/setup", end: true }, Buffer.alloc(0)),
+  )));
+  assert.equal(link.readFrame(link.readRelay(await pending.device.next(5_000)).payload).kind, link.Frame.close);
+  const recovered = await open(a, newKey, { pair: qr.searchParams.get("token") }, 45);
+  assert.deepEqual(recovered.hello.save, save);
+
+  await a.stop();
+  b.clock(3 * HOUR + 5_000);
+  await Promise.all([see(b, 3, b), see(c, 3, b)]);
+  const forged = await open(b, link.newKey(), { save }, 46);
+  assert.equal(forged.frame, link.Frame.close);
+  const committed = await open(b, newKey, { save }, 47);
+  assert.equal(committed.hello.waiting, undefined);
+  assert.deepEqual(committed.hello.save, {
+    setup: save.setup, epoch: save.epoch, operation: save.operation, proof: save.proof, status: "committed",
+  });
+  assert.ok(b.read().phones.some(phone => phone.key === deviceKey));
+});
+
+test("failure bench: member uninstall keeps its pending revocation and retries the same save", { timeout: 45_000 }, async t => {
+  const { a, b, c, relay, see } = await standbyNetwork(t);
+  await see(c, 2, a);
+  const identity = path.join(c.env.HOME, "desktop", "identity");
+  fs.mkdirSync(path.dirname(identity));
+  fs.writeFileSync(identity, "keep this identity while pending");
+  const restore = relay.pause(a.address, b.address);
+  t.after(restore);
+  const pending = await c.command(["uninstall"]);
+  assert.equal(pending.status, 1, pending.err);
+  assert.equal(pending.value.result, "pending");
+  const save = pending.value.save;
+  assert.equal(save.status, "pending");
+  assert.equal(save.operation, pendingOperation(a, "membershipAndAccess"));
+  assert.equal(link.readDoc(save.proof).origin, a.sign);
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(c.run, "uninstall-save.json"), "utf8")), save);
+  assert.equal(fs.readFileSync(identity, "utf8"), "keep this identity while pending");
+  assert.equal(c.child.exitCode, null);
+  assert.equal(fs.existsSync(path.join(c.run, "off")), false);
+  const stillPending = await c.command(["uninstall"]);
+  assert.equal(stillPending.status, 1, stillPending.err);
+  assert.deepEqual(stillPending.value.save, save);
+  restore();
+  await until("revocation committed", () => a.read().sharedOutcomes?.[save.operation]?.status === "committed", t.signal);
+  const finished = await c.command(["uninstall"]);
+  assert.equal(finished.status, 0, finished.err);
+  assert.equal(finished.value.result, "uninstalled");
+  assert.deepEqual(finished.value.save, {
+    setup: save.setup, epoch: save.epoch, operation: save.operation, proof: save.proof, status: "committed",
+  });
+  assert.equal(fs.existsSync(identity), false);
 });
 
 const personality = (i, length = 40) => ({ id: `custom.personal-${i}`, name: `Personality ${i}`, description: "x".repeat(length), updated: i + 1 });
@@ -633,7 +686,7 @@ test("failure bench: the SSH personalities command saves through the standby", {
   assert.equal(saved.value.save?.status, "committed");
   const { setup, operation, proof } = saved.value.save;
   assert.equal(link.readDoc(proof)?.body.operation, operation);
-  assert.equal((await link.askSetupSave(b.run, { id: setup, operation, proof })).outcome, "committed");
+  assert.equal((await link.askSetupOutcome(b.run, { setup, operation, proof })).receipt.status, "committed");
   assert.deepEqual((await a.route("GET", "kuvo/personalities")).value.personalities.map(each => each.id), ["custom.personal-1"]);
   assert.deepEqual(b.read().shared.setupPersonalities.value.personalities.map(each => each.id), ["custom.personal-1"]);
   assert.equal(oldBytes(), before, "the SSH save did not write to the legacy file");
@@ -755,9 +808,9 @@ test("failure bench: a save waits durably through standby and primary restarts",
   assert.equal(answer.status, 202);
   assert.equal(answer.value.pending, true);
   assert.ok(pendingOperation(a, "setupNames"));
-  assert.ok(display.operation);
-  assert.equal(pendingOperation(a, usage.kind), display.operation);
-  assert.equal((await link.askSetupSave(a.run, { id: usage.id, operation: display.operation })).outcome, "pending");
+  assert.ok(display.receipt.operation);
+  assert.equal(pendingOperation(a, usage.kind), display.receipt.operation);
+  assert.equal((await link.askSetupStatus(a.run, { id: usage.id, operation: display.receipt.operation })).outcome, "pending");
   assert.equal(await setupName(a, c.key), c.name);
   const item = await a.route("POST", "kuvo/work-queue/items", { title: "Everyday work" }, true);
   assert.equal(item.status, 200);
@@ -773,12 +826,12 @@ test("failure bench: a save waits durably through standby and primary restarts",
   }, t.signal);
   assert.equal(await setupName(a, c.key), "Waits on disk");
   assert.deepEqual(b.read().shared.setupUsageDisplay.value, usage.value);
-  assert.equal((await link.askSetupSave(a.run, { id: usage.id, operation: display.operation })).outcome, "committed");
+  assert.equal((await link.askSetupStatus(a.run, { id: usage.id, operation: display.receipt.operation })).outcome, "committed");
   await until("display preferences published to an ordinary member", () => c.read().shared?.setupUsageDisplay?.sequence === 1, t.signal);
   const later = await link.askSetupSave(a.run, { ...usage, sequence: 1, value: { units: {}, imported: false } });
   assert.equal(later.status, 200);
-  assert.notEqual(later.operation, display.operation);
-  assert.equal((await link.askSetupSave(b.run, { id: usage.id, operation: display.operation })).outcome, "committed");
+  assert.notEqual(later.receipt.operation, display.receipt.operation);
+  assert.equal((await link.askSetupStatus(b.run, { id: usage.id, operation: display.receipt.operation })).outcome, "committed");
   assert.equal((await a.route("GET", "kuvo/work-queue/labels")).value.labels[0].name, "Saved label");
   assert.equal((await link.askSetupSave(c.run, usage)).status, 409);
 });

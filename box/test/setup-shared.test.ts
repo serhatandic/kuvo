@@ -33,7 +33,7 @@ test("only the assigned standby receipts the primary's exact save and pending ow
 
   expect(stageShared(member, "ownershipAssignments", ownership)).toBeNull();
   const save = stageShared(primary, "ownershipAssignments", ownership)!;
-  expect(save.sequence).toBe(1);
+  expect(readDoc(save.proof)?.n).toBe(1);
   expect(save.operation).toMatch(/^[\w-]{22}$/);
   expect(sharedValue(primary, "ownershipAssignments")).toBeUndefined();
   const proposal = pendingShared(primary, "ownershipAssignments")!;
@@ -103,7 +103,7 @@ test("each interrupted operation remains queryable when a later epoch reuses its
   setup.epoch++;
   installShared(primary, {}, {});
   const second = stageShared(primary, "setupNames", { [b.key]: "Second attempt" })!;
-  expect(second.sequence).toBe(first.sequence);
+  expect(readDoc(second.proof)?.n).toBe(readDoc(first.proof)!.n);
   expect(second.operation).not.toBe(first.operation);
   setup.epoch++;
   installShared(primary, {}, {});

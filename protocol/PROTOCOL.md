@@ -197,6 +197,13 @@ payload:
 `kind` is `mac` or `machine`. Each side checks `v` and closes the session on a version it
 doesn't know.
 
+If pairing by token is waiting for a standby save, the authenticated second message includes
+`waiting` and `save`. The box opens no session. The client retries with `save` in the first
+message, using the same static key and addressing the setup's current primary. The signed proof
+binds the operation to the device key and the pairing it created. A committed save opens a
+session only while that exact pairing is still valid. The second message carries the updated
+receipt; a pending, interrupted or no-longer-valid pairing carries `waiting` and opens no session.
+
 Transport messages then go both ways, in order (the relay keeps the order of one
 connection). Any message that doesn't decrypt ends the session.
 
@@ -11710,6 +11717,12 @@ name; whether its launch agent and crontab line are there, `checked` false where
 how many bots, wake-ups and watches, phones paired, and your other computers it talks to). This
 Mac's box in its app's folder refuses both (exit 1, `{result: "refused", message}`): the app's own
 keeper runs it, and removing Kuvo Code removes that.
+
+On a member, a standby-backed device revocation adds `save` to the result. While the revocation
+is pending the command exits 1 with `{result: "pending", message, save}` and keeps the local
+identity and box running. The member stores the receipt and checks the same operation with the
+current primary on retry. A confirmed interruption exits 1 with the interrupted receipt; the
+next invocation can request a new revocation.
 
 **A server that hangs while running** (from 0.9.201, on this Mac and on machines alike:
 `src/shared/hang.ts`). The coding agents' bridge watches the engine, and the link watches the

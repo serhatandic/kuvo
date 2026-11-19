@@ -1,4 +1,4 @@
-import { awaitSharedSave, queryOperation } from "../setup/shared";
+import { awaitSharedSave, queryOperation, withSaveOutcome } from "../setup/shared";
 import { setupSaveReference, type SetupSaveReceipt } from "../../shared/setup-local";
 import { relationsOf } from "./relations";
 // The Work Queue's tools (PROTOCOL.md, "The Work Queue", "Tools"): how every agent, whatever runs
@@ -408,7 +408,7 @@ async function run(name: string, args: Record<string, unknown>, caller: QueueCal
         const outcome = queryOperation(reference.setup, reference.operation, reference.proof, "queueLabels");
         if (!outcome) return refused("This computer couldn't find that label save.");
         const status = outcome.status;
-        return withSave(said(`The label save is ${status}.`), { ...reference, epoch: Number(outcome.epoch), status, ...(status === "pending" ? { pending: true } : {}) });
+        return withSave(said(`The label save is ${status}.`), withSaveOutcome({ ...reference, epoch: Number(outcome.epoch) }, status));
       }
       const asked = ["add", "rename", "recolor", "remove"].filter(each => typeof args[each] === "string" && (args[each] as string).trim());
       const listed = () => (labels().length ? labels().map(each => `${each.name} (${each.color})`).join(", ") : "none yet");
@@ -421,13 +421,13 @@ async function run(name: string, args: Record<string, unknown>, caller: QueueCal
         : removeLabel(args.remove, stripLabel);
       if ("refused" in outcome) return refused(outcome.refused);
       const receipt = await awaitSharedSave(outcome.save);
-      if (receipt && receipt.status !== 200) {
-        const message = receipt.value.message;
-        return withSave(receipt.status === 202 ? said(message) : refused(message), receipt.value);
+      if (receipt && receipt.status !== "committed") {
+        const message = receipt.message;
+        return withSave(receipt.status === "pending" ? said(message) : refused(message), receipt);
       }
       if (receipt && asked[0] === "remove") stripLabel(outcome.done.id);
       const answer = said(`${asked[0] === "add" ? "Made" : asked[0] === "remove" ? "Removed (and took off every item here)" : "Changed"} the label ${outcome.done.name}. Labels now: ${listed()}.`);
-      return receipt ? withSave(answer, receipt.value) : answer;
+      return receipt ? withSave(answer, receipt) : answer;
     }
     case "queue_import": {
       const given = givenItems(args.items);

@@ -14,6 +14,7 @@
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { setupSaveReceipt, type SetupSaveReceipt } from "../shared/setup-local";
 import { isObject, parsed } from "../shared/json";
 import { engineRole, runsAs } from "../shared/platform";
 import { uninstallCleanup } from "./add/scripts";
@@ -22,11 +23,13 @@ import { listBots } from "./bots/list";
 import { APP_FOLDER, IN_TEST_FOLDER, IS_MAC, K, REAL_BOX, RUN, accountHome, homeFolder, located, recordedKind } from "./home";
 import { KEY, ownKey, peersOf } from "./peers/known";
 import { publicOf } from "./crypto/keys";
+import { writeDurablePrivate } from "./files";
 import { noteDocsChanged } from "./documents/changed";
 import { publishDesktopRemoval } from "./documents/phone-sync";
 import { removeAsMac } from "./phones";
 import { SETUP_CARD } from "./setup/card";
 import { PRIMARY_UNLINK } from "./setup/leadership";
+import { requiresStandby } from "./setup/record";
 import { pendingShared } from "./setup/shared";
 import { mainElsewhere } from "./setup/main-only";
 import { LAUNCH_AGENT, MACHINE_WATCH_AGENT, REBOOT_TAG } from "./marks";
@@ -237,36 +240,84 @@ function desktopKey(): string | undefined {
   return undefined;
 }
 
-async function revokeDesktop(): Promise<boolean> {
+const REVOCATION_FILE = path.join(RUN, "uninstall-save.json");
+
+type DesktopRevocation = { status: "revoked" | "unconfirmed" | "retry" } | { save: SetupSaveReceipt };
+
+const REVOCATION_UNCONFIRMED = "Kuvo Code couldn’t confirm that your main computer revoked this desktop’s access.";
+
+function keptRevocation(): SetupSaveReceipt | null {
+  try { return setupSaveReceipt(JSON.parse(fs.readFileSync(REVOCATION_FILE, "utf8"))); } catch { return null; }
+}
+
+function sameSave(receipt: SetupSaveReceipt, expected: SetupSaveReceipt): boolean {
+  return receipt.setup === expected.setup && receipt.operation === expected.operation
+    && receipt.proof.d === expected.proof.d && receipt.proof.s === expected.proof.s;
+}
+
+async function revokeMemberDesktop(link: ReturnType<typeof readLink>, main: NonNullable<ReturnType<typeof mainElsewhere>>): Promise<DesktopRevocation> {
+  const previous = keptRevocation();
+  let save: SetupSaveReceipt | null = previous?.setup === link?.setup?.id && previous?.status === "pending" ? previous : null;
+  const requiresConfirmation = Boolean(link?.setup?.checkpointed || requiresStandby(link?.setup));
+  const unconfirmed = requiresConfirmation ? "retry" : "unconfirmed";
+  try {
+    let key = link && ownKey(link);
+    // A Mac command may have only its public setup card; its running box holds the private keys.
+    if (!key && IS_MAC) {
+      const card: unknown = JSON.parse(fs.readFileSync(SETUP_CARD, "utf8"));
+      if (isObject(card) && isObject(card.self) && typeof card.self.key === "string") key = card.self.key;
+    }
+    if (!key || !KEY.test(key)) return save ? { save } : { status: unconfirmed };
+    const ask = (destination: typeof main, receipt?: SetupSaveReceipt) => forwardAct(
+      { ...destination, name: destination.name || "your main computer", kind: "mac" }, "This computer",
+      { area: "devices", method: receipt ? "GET" : "DELETE", item: key, ...(receipt ? { body: { save: receipt } } : {}) },
+      undefined, readLink(), Date.now(), { backgroundRelay: IS_MAC },
+    );
+    const queried = Boolean(save);
+    const reply = await ask(main, save ?? undefined);
+    const received = !("refused" in reply) && setupSaveReceipt(reply.value);
+    if (received && (!save || sameSave(received, save))) {
+      // Keep the first receipt before checking the current primary. A retry can then resume the
+      // same revocation after a crash or handover.
+      save = received;
+      writeDurablePrivate(REVOCATION_FILE, JSON.stringify(save));
+      const current = mainElsewhere(readLink());
+      if (save.status === "pending" && current && (!queried || current.key !== main.key)) {
+        const checked = await ask(current, save);
+        const next = !("refused" in checked) && setupSaveReceipt(checked.value);
+        if (next && sameSave(next, save)) {
+          writeDurablePrivate(REVOCATION_FILE, JSON.stringify(next));
+          save = next;
+        }
+      }
+      return { save };
+    }
+    if (save) return { save };
+    if (!("refused" in reply) && reply.status === 200) return { status: "revoked" };
+    logCleanup("refused" in reply ? reply.refused : `Device revocation returned ${reply.status}`);
+    if (reply.status === 202) return { status: "retry" };
+  } catch (error) { logCleanup(error); }
+  return save ? { save } : { status: unconfirmed };
+}
+
+async function revokeDesktop(): Promise<DesktopRevocation> {
   try {
     const link = readLink();
     const main = mainElsewhere(link);
-    if (main) {
-      let key = link && ownKey(link);
-      // A Mac command may have only its public setup card; its running box holds the private keys.
-      if (!key && IS_MAC) {
-        const card: unknown = JSON.parse(fs.readFileSync(SETUP_CARD, "utf8"));
-        if (isObject(card) && isObject(card.self) && typeof card.self.key === "string") key = card.self.key;
-      }
-      if (!key || !KEY.test(key)) return false;
-      const reply = await forwardAct({ ...main, name: main.name || "your main computer", kind: "mac" }, "This computer",
-        { area: "devices", method: "DELETE", item: key }, undefined, link, Date.now(), { backgroundRelay: IS_MAC });
-      if (!("refused" in reply) && reply.status === 200) return true;
-      logCleanup("refused" in reply ? reply.refused : `Device revocation returned ${reply.status}`);
-      return false;
-    }
+    if (main) return revokeMemberDesktop(link, main);
     const key = desktopKey();
     const needsPublish = IS_MAC && peersOf(link).length > 0;
     if (key) {
-      if (needsPublish && await askLivePrimary(key)) return true;
+      if (needsPublish && await askLivePrimary(key)) return { status: "revoked" };
       const changed = updateLink(current => current && current.phones?.some(phone => phone.key === key) && removeAsMac(current, [{ key }]) ? current : null);
       if (changed) noteDocsChanged();
-      return !needsPublish;
+      return { status: needsPublish ? "unconfirmed" : "revoked" };
     }
-    return !needsPublish || !(link?.phones ?? []).some(phone => phone.from === "pair" && phone.kind === "desktop" && !phone.by);
+    const hasDesktop = (link?.phones ?? []).some(phone => phone.from === "pair" && phone.kind === "desktop" && !phone.by);
+    return { status: needsPublish && hasDesktop ? "unconfirmed" : "revoked" };
   } catch (error) {
     logCleanup(error);
-    return false;
+    return { status: "unconfirmed" };
   }
 }
 
@@ -351,7 +402,15 @@ export async function uninstallCommand(args: string[]): Promise<number> {
   // The SSH controller has already revoked access before asking its remote to stop.
   const overSSH = process.env.KUVO_UNINSTALL_FROM_SSH === "1";
   const publishing = IS_MAC && !mainElsewhere(readLink());
-  const revoked = overSSH || await revokeDesktop();
+  const revocation: DesktopRevocation = overSSH ? { status: "revoked" } : await revokeDesktop();
+  const save = "save" in revocation ? revocation.save : undefined;
+  if ((save && save.status !== "committed") || ("status" in revocation && revocation.status === "retry")) {
+    const message = save?.message ?? REVOCATION_UNCONFIRMED;
+    console.log(JSON.stringify({ result: save?.status === "pending" ? "pending" : "unfinished", message, ...(save ? { save } : {}) }));
+    console.error(message);
+    return 1;
+  }
+  const revoked = "save" in revocation ? revocation.save.status === "committed" : revocation.status === "revoked";
   let refusal = "Kuvo Code couldn’t check who leads this setup right now. Try uninstalling again.";
   let done: Uninstalled = { stopped: false, launchAgent: false, crontab: false, startsAgain: [], left: [K], message: "Kuvo Code couldn’t confirm it had stopped on this computer." };
   const cleared = { cleanup: null as ReturnType<typeof run> | null };
@@ -374,11 +433,11 @@ export async function uninstallCommand(args: string[]): Promise<number> {
   if (result && !credentialsCleared) logCleanup(result.error ?? result.stderr);
   if (!revoked) done.message += publishing
     ? " Kuvo Code couldn’t confirm the desktop removal reached every other computer."
-    : " Kuvo Code couldn’t confirm that your main computer revoked this desktop’s access.";
+    : ` ${REVOCATION_UNCONFIRMED}`;
   if (!identityCleared) done.message += " Kuvo Code couldn’t delete this desktop’s local identity.";
   if (!credentialsCleared && result?.status !== 81) done.message += " Kuvo Code couldn’t clear all its keys and sign-ins. Run uninstall again.";
   const finished = done.stopped && done.startsAgain.length === 0 && revoked && identityCleared && credentialsCleared;
-  console.log(JSON.stringify({ result: finished ? "uninstalled" : "unfinished", ...done }));
+  console.log(JSON.stringify({ result: finished ? "uninstalled" : "unfinished", ...done, ...(save ? { save } : {}) }));
   console.error(done.message);
   return finished ? 0 : 1;
 }

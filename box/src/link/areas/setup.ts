@@ -170,6 +170,6 @@ export async function* saveLocalSetup(context: RouteContext): AsyncGenerator<Ans
     return value;
   }, operation);
   if (!save) return yield* json(409, { message: "The setup changed or a save is already pending." });
-  const reply = sharedSaveReply(save, await waitShared(save));
+  const reply = sharedSaveReply(await waitShared(save));
   return yield* json(reply.status, reply.value);
 }

@@ -8,7 +8,7 @@ import { ownPhones } from "../phones";
 import { updateLink, type LinkState } from "../state";
 import { acceptedMembership, membershipOf, projectMembership } from "./membership";
 import { requiresStandby } from "./record";
-import { pendingShared, stageShared, type SharedSave } from "./shared";
+import { pendingShared, stageShared, type Receipt } from "./shared";
 
 const localEffects = DATA_DECLARATIONS.membershipAndAccess.shared.localEffects;
 // COMPAT(layout 4): an older standby expects the full projection in its proposal.
@@ -27,8 +27,8 @@ export function captureMembership(link: LinkState, self?: Peer) {
   });
 }
 
-export function updateAccess(change: (link: LinkState | null) => LinkState | null | undefined | void, { localOnly = false } = {}): { changed: LinkState | null; save: SharedSave | null; busy: boolean } {
-  let save: SharedSave | null = null;
+export function updateAccess(change: (link: LinkState | null) => LinkState | null | undefined | void, { localOnly = false } = {}): { changed: LinkState | null; save: Receipt | null; busy: boolean } {
+  let save: Receipt | null = null;
   let busy = false;
   const changed = updateLink(link => {
     if (localOnly || link?.setup?.role !== "primary") return change(link);

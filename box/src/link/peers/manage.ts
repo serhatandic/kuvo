@@ -11,7 +11,7 @@
 // computer's own, for its own clients: never handed on from another box (areas/computers.ts).
 
 import { updateAccess } from "../setup/access";
-import { awaitSharedSave, sharedSaveReply, stageShared, type SharedSave } from "../setup/shared";
+import { awaitSharedSave, sharedSaveReply, stageShared, type Receipt } from "../setup/shared";
 import { isObject } from "../../shared/json";
 import { LEADERSHIP_WAIT, primaryFenced } from "../setup/lease";
 import { plainName } from "../../shared/text";
@@ -164,7 +164,7 @@ const answer = (status: number, value: unknown): Acted => ({ status, value });
 export async function renameHere(key: string, name: string): Promise<Acted> {
   let found = false;
   let waitingForStandby = false;
-  let save: SharedSave | null = null;
+  let save: Receipt | null = null;
   const changed = updateLink(link => {
     if (!link || mainElsewhere(link) || !peersOf(link).some(peer => peer.key === key)) return null;
     found = true;
@@ -184,10 +184,10 @@ export async function renameHere(key: string, name: string): Promise<Acted> {
   if (waitingForStandby) return answer(503, { message: LEADERSHIP_WAIT });
   if (!found) return answer(404, { message: `That isn't one of ${ownName()}'s machines.` });
   const receipt = await awaitSharedSave(save);
-  if (receipt && receipt.status !== 200) return receipt;
+  if (receipt && receipt.status !== "committed") return sharedSaveReply(receipt);
   if (!changed && (readLink()?.setup?.standby || readLink()?.setup?.checkpointed)) return answer(409, { message: "A computer name is already waiting to be saved. Try again when it has saved." });
   macDocsChanged();
-  return answer(200, { name, ...receipt?.value });
+  return answer(200, { name, ...receipt });
 }
 
 /** Retire the old standby, install a replacement, then save the access change. */
@@ -218,14 +218,14 @@ export async function removeComputerHere(key: string, pendingOnly = false): Prom
 // Legacy in-process callers can complete immediately. The routed removal waits for a receipt.
 export function removeHere(key: string, pendingOnly = false): Acted {
   const removal = prepareRemoval(key, pendingOnly);
-  return removal.save ? sharedSaveReply(removal.save, "pending") : completeRemoval(removal);
+  return removal.save?.status === "pending" ? sharedSaveReply(removal.save) : completeRemoval(removal, removal.save);
 }
 
 async function finishRemoval(removal: ReturnType<typeof prepareRemoval>): Promise<Acted> {
   const { save } = removal;
   const receipt = await awaitSharedSave(save);
-  if (receipt && receipt.status !== 200) return receipt;
-  return completeRemoval(removal);
+  if (receipt && receipt.status !== "committed") return sharedSaveReply(receipt);
+  return completeRemoval(removal, receipt);
 }
 
 function prepareRemoval(key: string, pendingOnly: boolean) {
@@ -273,7 +273,7 @@ function prepareRemoval(key: string, pendingOnly: boolean) {
   return { ...result, blocked, gone, already, needsCleanup, key };
 }
 
-function completeRemoval({ changed, blocked, gone, already, needsCleanup, key, busy, save }: ReturnType<typeof prepareRemoval>): Acted {
+function completeRemoval({ changed, blocked, gone, already, needsCleanup, key, busy }: ReturnType<typeof prepareRemoval>, save?: Receipt | null): Acted {
   if (busy) return answer(409, { message: "An access change is already waiting to be saved." });
   if (blocked) return answer(409, { message: blocked });
   if (!gone.length && !already) return answer(404, { message: `That isn't one of ${ownName()}'s machines.` });
@@ -281,10 +281,10 @@ function completeRemoval({ changed, blocked, gone, already, needsCleanup, key, b
   tellGone(gone);
   // Once the removal is durable, clean up its saved address. Leave a retry if the list fails.
   if (needsCleanup && !cleanRemovalList(key)) return answer(503, {
-    ...(save ? sharedSaveReply(save, "saved").value : {}),
+    ...(save ? save : {}),
     message: "The computer’s access was removed, but the saved machines list couldn’t be updated.",
   });
-  return save ? sharedSaveReply(save, "saved") : answer(200, {});
+  return save ? sharedSaveReply(save) : answer(200, {});
 }
 
 function cleanRemovalList(key: string): boolean {

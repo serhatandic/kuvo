@@ -4,6 +4,7 @@ import { setupLayoutDeferred } from "../../shared/folder-version";
 import crypto from "node:crypto";
 import { SHARED_KINDS, sharedKind, sharedPolicy, type SharedKind } from "../../shared/data-declarations";
 import type { Doc, SignedDoc } from "../../shared/documents";
+import { INTERRUPTED_SAVE, PENDING_SAVE, type Receipt } from "../../shared/routes/setup-save";
 import { isObject } from "../../shared/json";
 import { held, MOST_DOC, ownSign, readDoc, signDoc } from "../documents/format";
 import { K } from "../home";
@@ -15,7 +16,8 @@ import { acceptedMembership, membershipOf, projectMembership } from "./membershi
 import { followedSetup, requiresStandby } from "./record";
 import { sealedPrimary } from "./checkpoint";
 
-export type { SharedKind };
+export type { Receipt, SharedKind };
+export { PENDING_SAVE, INTERRUPTED_SAVE };
 export type SharedValues = Partial<Record<SharedKind, { sequence: number; value: unknown }>>;
 export type OperationOutcome = {
   kind: SharedKind;
@@ -28,8 +30,6 @@ export type OperationOutcome = {
 export type OperationOutcomes = Record<string, OperationOutcome>;
 
 export const MAX_SHARED_BYTES = Math.floor(MOST_DOC / 3);
-export const PENDING_SAVE = "Pending until the standby is back.";
-export const INTERRUPTED_SAVE = "The primary changed before this save committed.";
 export const OPERATION_ID = /^[A-Za-z0-9_-]{22,43}$/;
 
 export function publishedShared(link: LinkState): SignedDoc[] {
@@ -89,9 +89,7 @@ export function pendingShared(link: LinkState | null | undefined, kind: SharedKi
   return link ? pendingEntry(link, kind)?.doc ?? null : null;
 }
 
-export interface SharedSave { id: string; epoch: number; sequence: number; operation: string; proof: SignedDoc }
-
-export function asSave(doc: Doc, seed: string): SharedSave {
+export function asSave(doc: Doc, seed: string, status: Receipt["status"] = "pending"): Receipt {
   const id = doc.body.id as string;
   const epoch = doc.body.epoch as number;
   const operation = identity(doc)!;
@@ -99,11 +97,17 @@ export function asSave(doc: Doc, seed: string): SharedSave {
   const proof = signDoc(seed, "setup-shared", doc.n, {
     id, epoch, operation, kind: doc.body.kind, baseRevision: doc.n - 1, proposal: doc.envelope.s,
   });
-  return { id, epoch, sequence: doc.n, operation, proof };
+  return withSaveOutcome({ setup: id, epoch, operation, proof }, status);
+}
+
+/** Bind a receipt to the authenticated caller of a membership operation. */
+export function bindSave(save: Receipt, seed: string, binding: { pairedKey: string; pairing: string } | { revokedVoucher: string }): Receipt {
+  const ticket = held(save.proof)!;
+  return { ...save, proof: signDoc(seed, ticket.kind, ticket.n, { ...ticket.body, ...binding }) };
 }
 
 /** Stage under the link lock. Independent kinds proceed independently; one kind is serialized. */
-export function stageShared(link: LinkState, kind: SharedKind, value: unknown, effects?: object, requested?: string): SharedSave | null {
+export function stageShared(link: LinkState, kind: SharedKind, value: unknown, effects?: object, requested?: string): Receipt | null {
   const setup = followedSetup(link);
   const operation = requested ?? crypto.randomBytes(16).toString("base64url");
   if (setupLayoutDeferred(K) || !link.sign || setup?.role !== "primary" || setup.sign !== ownSign(link) || (!setup.standby && (!setup.checkpointed || requiresStandby(setup)))
@@ -135,7 +139,7 @@ export function stageShared(link: LinkState, kind: SharedKind, value: unknown, e
     remember(link, doc, operation, "committed");
     if (kind === "membershipAndAccess") applyAccess(link, value, effects);
   }
-  return asSave(doc, link.sign);
+  return asSave(doc, link.sign, setup.standby ? "pending" : "committed");
 }
 
 function remember(link: LinkState, doc: Doc, operation: string, status: OperationOutcome["status"]) {
@@ -277,33 +281,38 @@ export function queryOperation(id: string, operation: string, proof: unknown, ex
   return result;
 }
 
-export function sharedSaveReply(save: SharedSave, result: Awaited<ReturnType<typeof waitShared>>) {
-  const { id, epoch, operation, proof } = save;
-  const receipt = { setup: id, epoch, operation, proof };
-  if (result === "saved") return { status: 200, value: { ...receipt, status: "committed" as const } } as const;
-  if (result === "pending") return { status: 202, value: { ...receipt, status: "pending" as const, pending: true, message: PENDING_SAVE } } as const;
-  return { status: 409, value: { ...receipt, status: "interrupted" as const, message: INTERRUPTED_SAVE } } as const;
+export function withSaveOutcome({ setup, epoch, operation, proof }: Pick<Receipt, "setup" | "epoch" | "operation" | "proof">, status: Receipt["status"]): Receipt {
+  const reference = { setup, epoch, operation, proof };
+  if (status === "pending") return { ...reference, status, pending: true, message: PENDING_SAVE };
+  if (status === "interrupted") return { ...reference, status, message: INTERRUPTED_SAVE };
+  return { ...reference, status };
 }
 
-export async function awaitSharedSave(save: SharedSave | null | undefined) {
-  return save ? sharedSaveReply(save, await waitShared(save)) : null;
+export function sharedSaveReply(receipt: Receipt) {
+  if (receipt.status === "committed") return { status: 200, value: receipt } as const;
+  if (receipt.status === "pending") return { status: 202, value: receipt } as const;
+  return { status: 409, value: receipt } as const;
 }
 
-export async function waitShared(save: SharedSave, timeout = 3_000, signal?: AbortSignal): Promise<"saved" | "pending" | "interrupted"> {
+export async function awaitSharedSave(save: Receipt | null | undefined) {
+  return save ? waitShared(save) : null;
+}
+
+export async function waitShared(save: Receipt, timeout = 3_000, signal?: AbortSignal): Promise<Receipt> {
+  if (save.status !== "pending") return save;
   const until = Date.now() + timeout;
   while (!signal?.aborted) {
     const link = readLink();
-    const sameEpoch = link?.setup?.id === save.id && link.setup.epoch === save.epoch;
+    const sameEpoch = link?.setup?.id === save.setup && link.setup.epoch === save.epoch;
     const outcome = sameEpoch
-      ? operationOutcome(link, save.id, save.operation)
-      : queryOperation(save.id, save.operation, save.proof);
-    if (outcome?.status === "committed") return "saved";
-    if (outcome?.status === "interrupted") return "interrupted";
-    if (!sameEpoch) return "interrupted";
+      ? operationOutcome(link, save.setup, save.operation)
+      : queryOperation(save.setup, save.operation, save.proof);
+    if (outcome?.status === "committed" || outcome?.status === "interrupted") return withSaveOutcome(save, outcome.status);
+    if (!sameEpoch) return withSaveOutcome(save, "interrupted");
     if (Date.now() >= until) break;
     await new Promise(resolve => setTimeout(resolve, 50));
   }
-  return "pending";
+  return save;
 }
 
 export function committedOperations(link: LinkState): OperationOutcomes {
@@ -333,8 +342,8 @@ export function installShared(link: LinkState, values: SharedValues | undefined,
 }
 
 /** Derive the new value under the link lock, after checking the writer again. */
-export function changeShared(kind: SharedKind, change: (value: unknown, link: LinkState) => unknown, operation?: string): SharedSave | null {
-  let save: SharedSave | null = null;
+export function changeShared(kind: SharedKind, change: (value: unknown, link: LinkState) => unknown, operation?: string): Receipt | null {
+  let save: Receipt | null = null;
   updateLink(link => {
     if (!link || link.setup?.role !== "primary" || !link.setup.standby) return null;
     save = stageShared(link, kind, change(sharedValue(link, kind), link), undefined, operation);
@@ -343,6 +352,6 @@ export function changeShared(kind: SharedKind, change: (value: unknown, link: Li
   return save;
 }
 
-export function submitShared(kind: SharedKind, value: unknown): SharedSave | null {
+export function submitShared(kind: SharedKind, value: unknown): Receipt | null {
   return changeShared(kind, () => value);
 }
