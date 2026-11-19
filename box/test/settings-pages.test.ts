@@ -127,12 +127,27 @@ test("a site never offered is offered again from its row", async () => {
   const shown = await page("browser")
   const site = rowOf(shown, "never-localhost:3000")
   expect(site).toMatchObject({ title: "localhost:3000", kind: "actions", actions: [{ id: "offer-again", title: "Offer Again" }] })
+  // A client can add a different host from the same list without putting the old list back.
+  const added = "kuvo/browser/settings/never/NEW.example"
+  expect((await ask(handler, "PUT", added)).json.never).toEqual(["example.com", "localhost:3000", "new.example"])
+  expect((await ask(handler, "PUT", added)).json.never).toEqual(["example.com", "localhost:3000", "new.example"])
   const done = await act("browser", site, "offer-again")
   expect(done.status).toBe(200)
-  expect(rowOf(done.json, "never").items.map((row: any) => row.title)).toEqual(["example.com"])
-  expect((await ask(handler, "GET", "kuvo/browser/settings")).json.never).toEqual(["example.com"])
+  expect(rowOf(done.json, "never").items.map((row: any) => row.title)).toEqual(["example.com", "new.example"])
+  expect((await ask(handler, "GET", "kuvo/browser/settings")).json.never).toEqual(["example.com", "new.example"])
   // Done once already: from the same reading, it's gone.
   expect((await act("browser", site, "offer-again")).status).toBe(404)
+  const port = "kuvo/browser/settings/never/localhost%3A3000"
+  expect((await ask(handler, "PUT", port)).json.never).toEqual(["example.com", "localhost:3000", "new.example"])
+  expect((await ask(handler, "DELETE", port)).json.never).toEqual(["example.com", "new.example"])
+  expect((await ask(handler, "DELETE", port)).json.never).toEqual(["example.com", "new.example"])
+  expect((await ask(handler, "PUT", "kuvo/browser/settings/never/not%2Fa%2Fhost")).status).toBe(400)
+  for (const host of ["example.com:99999", "[broken]"]) {
+    expect((await ask(handler, "PUT", `kuvo/browser/settings/never/${encodeURIComponent(host)}`)).status).toBe(400)
+  }
+  expect((await ask(handler, "GET", "kuvo/browser/settings")).json.never).toEqual(["example.com", "new.example"])
+  await ask(handler, "PATCH", "kuvo/browser/settings", { never: ["example.com", "example.com:99999"] })
+  expect((await ask(handler, "DELETE", "kuvo/browser/settings/never/example.com%3A99999")).json.never).toEqual(["example.com"])
 })
 
 test("Full Access can't be turned on from Settings, and says why; it can be turned off, as kuvo/approval turns it off", async () => {

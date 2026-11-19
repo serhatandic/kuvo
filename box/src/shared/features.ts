@@ -70,6 +70,7 @@ export const FEATURES = [
   "branch",
   "browser",
   "browser.data",
+  "browser.data.never",
   "browser.view",
   "btw",
   "btw.threads",

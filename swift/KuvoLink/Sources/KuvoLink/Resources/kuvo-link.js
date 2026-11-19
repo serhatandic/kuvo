@@ -1,4 +1,4 @@
-// Kuvo folder layout 18 58357fa8c519
+// Kuvo folder layout 18 fe449b68262c
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
 var __create = Object.create;
@@ -1139,7 +1139,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "58357fa8c519";
+var BRIDGE_VERSION = "fe449b68262c";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -20876,6 +20876,7 @@ var init_features = __esm(() => {
     "branch",
     "browser",
     "browser.data",
+    "browser.data.never",
     "browser.view",
     "btw",
     "btw.threads",
@@ -28530,7 +28531,9 @@ var init_browser = __esm(() => {
     { route: "DELETE kuvo/browser/sites", feature: "browser.data", answers: { 200: BROWSER_SITES } },
     { route: "DELETE kuvo/browser/sites/:site", feature: "browser.data", answers: { 200: BROWSER_SITES } },
     { route: "GET kuvo/browser/settings", feature: "browser.data", answers: { 200: BROWSER_SETTINGS } },
-    { route: "PATCH kuvo/browser/settings", feature: "browser.data", answers: { 200: BROWSER_SETTINGS } }
+    { route: "PATCH kuvo/browser/settings", feature: "browser.data", answers: { 200: BROWSER_SETTINGS } },
+    { route: "PUT kuvo/browser/settings/never/:host", feature: "browser.data.never", answers: { 200: BROWSER_SETTINGS, 400: object({ message: string }) } },
+    { route: "DELETE kuvo/browser/settings/never/:host", feature: "browser.data.never", answers: { 200: BROWSER_SETTINGS, 400: object({ message: string }) } }
   ];
 });
 
@@ -28567,7 +28570,16 @@ function neverSite(value) {
   }
   return /^[a-z0-9.:[\]-]{1,260}$/.test(host) ? host : null;
 }
-function changeBrowserSettings(change, folder = BROWSER_FOLDER) {
+function canOfferToHost(host) {
+  if (host.endsWith(":"))
+    return false;
+  try {
+    return Boolean(new URL(`http://${host}`).hostname);
+  } catch {
+    return false;
+  }
+}
+function changeBrowserSettings(change, folder = BROWSER_FOLDER, { onlyIfUnset = false } = {}) {
   if (!isObject(change))
     return "Send the settings to change, as an object.";
   const known = ["searchEngine", "tidiesAgentTabs", "offersToSave", "never"];
@@ -28581,38 +28593,54 @@ function changeBrowserSettings(change, folder = BROWSER_FOLDER) {
       return `${key} is true or false.`;
   let never;
   if ("never" in change) {
-    if (!Array.isArray(change.never) || change.never.length > 1000)
+    if (!Array.isArray(change.never) || change.never.length > MAX_NEVER_SITES)
       return "never is a list of sites.";
     const sites = change.never.map(neverSite);
     if (sites.some((each) => each === null))
       return "never is a list of sites, each a host (example.com).";
     never = [...new Set(sites)].sort();
   }
-  const kept = readKept5(folder);
-  if (isEngine(change.searchEngine))
-    kept.searchEngine = change.searchEngine;
-  if (typeof change.offersToSave === "boolean")
-    kept.offersToSave = change.offersToSave;
-  if (never)
-    kept.never = never;
-  writePrivate(settingsFile(folder), JSON.stringify(kept));
-  if (change.tidiesAgentTabs === true)
-    fs68.rmSync(keepsTabsFile(folder), { force: true });
-  if (change.tidiesAgentTabs === false)
-    writePrivate(keepsTabsFile(folder), "");
-  return null;
+  return editSettings(folder, () => {
+    if (onlyIfUnset && hasSettings(folder))
+      return "The browser already has settings.";
+    const kept = readKept5(folder);
+    if (isEngine(change.searchEngine))
+      kept.searchEngine = change.searchEngine;
+    if (typeof change.offersToSave === "boolean")
+      kept.offersToSave = change.offersToSave;
+    if (never)
+      kept.never = never;
+    writePrivate(settingsFile(folder), JSON.stringify(kept));
+    if (change.tidiesAgentTabs === true)
+      fs68.rmSync(keepsTabsFile(folder), { force: true });
+    if (change.tidiesAgentTabs === false)
+      writePrivate(keepsTabsFile(folder), "");
+    return null;
+  });
 }
-function offerAgain(site, folder = BROWSER_FOLDER) {
-  const kept = readKept5(folder);
-  const never = Array.isArray(kept.never) ? kept.never : [];
-  if (!never.includes(site))
-    return false;
-  kept.never = never.filter((each) => each !== site);
-  writePrivate(settingsFile(folder), JSON.stringify(kept));
-  return true;
+function changeNeverSite(site, neverOffer, folder = BROWSER_FOLDER) {
+  const host = neverSite(site);
+  const badHost = "Name a site by its host (example.com).";
+  if (neverOffer && (!host || !canOfferToHost(host)))
+    return badHost;
+  return editSettings(folder, () => {
+    const kept = readKept5(folder);
+    const never = Array.isArray(kept.never) ? kept.never : [];
+    const id = !neverOffer && typeof site === "string" && never.includes(site) ? site : host;
+    if (!id)
+      return badHost;
+    if (never.includes(id) === neverOffer)
+      return null;
+    if (neverOffer && never.length >= MAX_NEVER_SITES)
+      return `No more than ${MAX_NEVER_SITES} sites can be listed.`;
+    kept.never = neverOffer ? [...never, id].sort() : never.filter((each) => each !== id);
+    writePrivate(settingsFile(folder), JSON.stringify(kept));
+    return null;
+  });
 }
-var settingsFile = (folder) => path68.join(folder, "settings.json"), keepsTabsFile = (folder) => path68.join(folder, "keeps-agent-tabs"), browserSettingsFiles = (folder = BROWSER_FOLDER) => [settingsFile(folder), keepsTabsFile(folder)], isEngine = (value) => SEARCH_ENGINES.some((engine) => engine.id === value), hasSettings = (folder = BROWSER_FOLDER) => fs68.existsSync(settingsFile(folder));
+var settingsFile = (folder) => path68.join(folder, "settings.json"), keepsTabsFile = (folder) => path68.join(folder, "keeps-agent-tabs"), editSettings = (folder, edit) => locked(path68.join(folder, ".settings.lock"), edit, { exclusive: true }), MAX_NEVER_SITES = 1000, browserSettingsFiles = (folder = BROWSER_FOLDER) => [settingsFile(folder), keepsTabsFile(folder)], isEngine = (value) => SEARCH_ENGINES.some((engine) => engine.id === value), hasSettings = (folder = BROWSER_FOLDER) => fs68.existsSync(settingsFile(folder));
 var init_settings2 = __esm(() => {
+  init_files();
   init_browser();
   init_files2();
   init_history();
@@ -28625,6 +28653,13 @@ function part(text) {
   } catch {
     return null;
   }
+}
+async function* browserNeverRoute({ request, json }, match) {
+  const method = request.method.toUpperCase();
+  if (method !== "PUT" && method !== "DELETE")
+    return yield* json(405, {});
+  const problem = changeNeverSite(part(match[1]), method === "PUT");
+  return yield* problem ? json(400, { message: problem }) : json(200, readBrowserSettings());
 }
 async function* browserDataRoute(context, match) {
   const { request, json } = context;
@@ -28676,13 +28711,14 @@ async function* browserViewRoute({ json }) {
     return yield* json(404, { message: NO_VIEW_ON_MAC });
   yield* json(426, { message: "Open this route as a WebSocket." });
 }
-var BROWSER_DATA_ROUTE, NO_VIEW_ON_MAC = "Kuvo on a Mac has no browser of its own yet: its agents browse in Kuvo Code's panel on that Mac.";
+var BROWSER_DATA_ROUTE, BROWSER_NEVER_ROUTE, NO_VIEW_ON_MAC = "Kuvo on a Mac has no browser of its own yet: its agents browse in Kuvo Code's panel on that Mac.";
 var init_routes = __esm(() => {
   init_home();
   init_history();
   init_settings2();
   init_sites();
   BROWSER_DATA_ROUTE = /^kuvo\/browser\/(?:(history|sites)(?:\/([^/]+))?|(icons)\/([^/]+)|(settings))$/;
+  BROWSER_NEVER_ROUTE = /^kuvo\/browser\/settings\/never\/([^/]+)$/;
 });
 
 // box/src/link/server/paths.ts
@@ -65654,8 +65690,8 @@ async function browserChange(context, at, value) {
 async function browserAct(context, at, action) {
   if (!at.id.startsWith("never-") || action.id !== "offer-again")
     return { status: 404, message: "That isn't something it does." };
-  offerAgain(at.id.slice(6));
-  return null;
+  const problem = changeNeverSite(at.id.slice(6), false);
+  return problem ? { status: 400, message: problem } : null;
 }
 async function gitPage(context) {
   const read = await asked6(context, settingsRoute, "GET", "kuvo/config");
@@ -89976,7 +90012,7 @@ function takeInAppBrowserData(appFolder, folder = BROWSER_FOLDER) {
         change.offersToSave = read.offersToSave;
       if (read.never)
         change.never = read.never.filter((site) => /^[a-z0-9.:[\]-]{1,260}$/i.test(site.trim()));
-      if (Object.keys(change).length && changeBrowserSettings(change, folder) === null)
+      if (Object.keys(change).length && changeBrowserSettings(change, folder, { onlyIfUnset: true }) === null)
         took.settings = Object.keys(change).sort();
     }
   }
@@ -95717,6 +95753,7 @@ var ROUTES = [
   { feature: "browser", when: (route) => !IS_MAC && route === "kuvo/browser", answer: browserRoute },
   { feature: "browser.view", when: (route) => route === "kuvo/browser/view", answer: browserViewRoute },
   { feature: "browser.data", when: (route) => route.match(BROWSER_DATA_ROUTE), answer: browserDataRoute },
+  { feature: "browser.data.never", when: (route) => route.match(BROWSER_NEVER_ROUTE), answer: browserNeverRoute },
   { feature: "integrations", when: (route, request) => /^kuvo\/integrations(\/|\?|$)/.test(request.path), answer: integrationsRoute },
   { feature: "folders", when: (route) => route === "kuvo/folders", answer: foldersRoute },
   { feature: "folders.tree", when: (route) => route === "kuvo/folders/tree", answer: folderTreeRoute },

@@ -88,7 +88,7 @@ import { appOpenRoute, appRoute } from "../mac/app";
 import { proofRoute } from "../mac/app-keys";
 import { serveRoute } from "../serve-kept";
 import { browserRoute } from "../browser/install";
-import { browserViewRoute, BROWSER_DATA_ROUTE, browserDataRoute } from "../browser/routes";
+import { browserViewRoute, BROWSER_DATA_ROUTE, BROWSER_NEVER_ROUTE, browserDataRoute, browserNeverRoute } from "../browser/routes";
 import { IS_MAC, OWN_HOME_MAC } from "../home";
 import { vaultRoute } from "../areas/vault";
 import { AGENTS, agentsRoute, engineRoute } from "./forward";
@@ -148,6 +148,7 @@ const ROUTES: (Route | Route<RegExpMatchArray>)[] = [
   { feature: "browser.view", when: route => route === "kuvo/browser/view", answer: browserViewRoute },
   // Its browser's history, sites with data, and settings: every box's own (PROTOCOL.md, "The browser's data").
   { feature: "browser.data", when: route => route.match(BROWSER_DATA_ROUTE), answer: browserDataRoute },
+  { feature: "browser.data.never", when: route => route.match(BROWSER_NEVER_ROUTE), answer: browserNeverRoute },
   { feature: "integrations", when: (route, request) => /^kuvo\/integrations(\/|\?|$)/.test(request.path), answer: integrationsRoute },
   { feature: "folders", when: route => route === "kuvo/folders", answer: foldersRoute },
   { feature: "folders.tree", when: route => route === "kuvo/folders/tree", answer: folderTreeRoute },

@@ -4014,9 +4014,13 @@ no client shows yet.
     close an hour after their last use; whether the browser offers to save a password you sign in
     with, and the sites you said Never to (hosts).
   - `PATCH kuvo/browser/settings` with any of `searchEngine`, `tidiesAgentTabs`, `offersToSave` and
-    `never` (the whole list) → the settings, or `400 {"message"}` for one that isn't right. The
+    `never` (the whole list, for older callers) → the settings, or `400 {"message"}` for one that isn't right. The
     agents' tools search with the box's engine once it has one (before, the one its Mac names,
     `KUVO_SEARCH`); `kuvo-browser.js` is built with the engines' addresses.
+  - `PUT kuvo/browser/settings/never/<host>` adds one host, and `DELETE` on the same path takes
+    it out (`browser.data.never`). Use the host as a percent-encoded path segment, including its
+    port if present. Both return the settings after the edit and can be sent again. The box
+    keeps other hosts and settings as they stand when it applies the edit.
 - **Taken in once, on this Mac's box**: as its own browser's keeper first starts (`kuvo-link.js
   browser take-in`; on a machine it only notes there's nothing to take), what its app's panel kept
   before (Kuvo Code 0.5–0.7), so nothing the app keeps meanwhile is left behind: its history (`Browser/history.json` in the app's folder,
@@ -7901,6 +7905,7 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `branch` | `kuvo/agents/api/kuvo/branch/<session>`: Branch from here, marked |
 | `browser` | a machine only: `kuvo/browser`, its browser set up by the box itself ("The browser on a machine") |
 | `browser.data` | `kuvo/browser/history`, `…/icons/<host>`, `…/sites` and `…/settings`: the browser's data, every box's own ("The browser's data") |
+| `browser.data.never` | `PUT` and `DELETE kuvo/browser/settings/never/<host>`: add or remove one Never Offered host |
 | `browser.view` | `kuvo/browser/view`: authenticated live view socket (“The browser’s live view”) |
 | `btw` | `kuvo/agents/api/kuvo/btw…`: side questions ("Side questions, handoffs and reviews") |
 | `btw.threads` | a side question's `thread`, follow-ups and a thread's removal (bridge 0.9.98) |

@@ -5,16 +5,24 @@ import { parsed } from "../../shared/json";
 import { IS_MAC } from "../home";
 import type { AnswerPiece, RouteContext } from "../server/context";
 import { forgetHistory, iconOf, readHistory } from "./history";
-import { changeBrowserSettings, readBrowserSettings } from "./settings";
+import { changeBrowserSettings, changeNeverSite, readBrowserSettings } from "./settings";
 import { browserSites, removeSiteData, siteOf } from "./sites";
 
 /** The routes this file answers: the history (a site's in it), a site's icon, the sites with data
  * (one of them), the settings. */
 export const BROWSER_DATA_ROUTE = /^kuvo\/browser\/(?:(history|sites)(?:\/([^/]+))?|(icons)\/([^/]+)|(settings))$/;
+export const BROWSER_NEVER_ROUTE = /^kuvo\/browser\/settings\/never\/([^/]+)$/;
 
 /** A path's part as it was sent (`%3A` in `localhost%3A3000`), or null when it won't decode. */
 function part(text: string): string | null {
   try { return decodeURIComponent(text); } catch { return null; }
+}
+
+export async function* browserNeverRoute({ request, json }: RouteContext, match: RegExpMatchArray): AsyncGenerator<AnswerPiece> {
+  const method = request.method.toUpperCase();
+  if (method !== "PUT" && method !== "DELETE") return yield* json(405, {});
+  const problem = changeNeverSite(part(match[1]!), method === "PUT");
+  return yield* problem ? json(400, { message: problem }) : json(200, readBrowserSettings());
 }
 
 export async function* browserDataRoute(context: RouteContext, match: RegExpMatchArray): AsyncGenerator<AnswerPiece> {

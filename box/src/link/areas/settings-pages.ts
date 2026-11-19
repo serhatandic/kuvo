@@ -46,7 +46,7 @@ import { sandboxRoute } from "./sandbox";
 import { GIT_SETTINGS, DEFAULT_BRANCH_PREFIX, cleanBranchPrefix } from "./git-words";
 import { settingsRoute } from "./settings";
 import { BROWSER_DATA_ROUTE, browserDataRoute } from "../browser/routes";
-import { browserSettingsFiles, offerAgain } from "../browser/settings";
+import { browserSettingsFiles, changeNeverSite } from "../browser/settings";
 import { ALLOWED_FILE } from "../fence/allowed";
 import { fenceState, SOFTWARE_UPDATE } from "../fence/state";
 import { followedLive } from "../follow";
@@ -353,8 +353,8 @@ async function browserChange(context: RouteContext, at: SettingItem, value: unkn
 async function browserAct(context: RouteContext, at: SettingItem, action: SettingAction): Promise<Refused | null> {
   if (!at.id.startsWith("never-") || action.id !== "offer-again") return { status: 404, message: "That isn't something it does." };
   // (That one alone: a site said Never to meanwhile stays.)
-  offerAgain(at.id.slice(6));
-  return null;
+  const problem = changeNeverSite(at.id.slice(6), false);
+  return problem ? { status: 400, message: problem } : null;
 }
 
 // MARK: Git

@@ -7,7 +7,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { takeInAppBrowserData } from "../src/link/browser/from-app"
 import { forgetHistory, HISTORY_LIMIT, iconOf, readHistory } from "../src/link/browser/history"
-import { changeBrowserSettings, readBrowserSettings } from "../src/link/browser/settings"
+import { changeBrowserSettings, changeNeverSite, hasSettings, readBrowserSettings } from "../src/link/browser/settings"
 import { browserSites, removeSiteData, siteSignInsHere, siteOf } from "../src/link/browser/sites"
 import { offShape } from "./route-answer"
 
@@ -148,6 +148,14 @@ test("a box with settings of its own keeps them when the app's are taken in", ()
   const { app } = appBefore()
   takeInAppBrowserData(app, folder)
   expect(readBrowserSettings(folder)).toMatchObject({ searchEngine: "kagi", tidiesAgentTabs: true, offersToSave: true, never: [] })
+})
+
+test("a first client edit wins over preferences already read for take-in", () => {
+  expect(hasSettings(folder)).toBe(false)
+  const previouslyRead = { offersToSave: false, never: ["old.example"] }
+  expect(changeNeverSite("new.example", true, folder)).toBeNull()
+  expect(changeBrowserSettings(previouslyRead, folder, { onlyIfUnset: true })).not.toBeNull()
+  expect(readBrowserSettings(folder)).toMatchObject({ offersToSave: true, never: ["new.example"] })
 })
 
 test("the settings: each checked and kept, where the keeper reads them", () => {
