@@ -1149,8 +1149,11 @@ fn status_marks_sit_in_trailing_column_without_covering_bot_faces(cx: &mut TestA
     assert!(blocked.left() >= ops.right(), "blocked mark should sit in trailing column");
 
     let offline = bounds(cx, "bot-avatar-offline").unwrap();
-    let wren = bounds(cx, "bot-bot_wren-avatar").unwrap();
-    assert!(offline.left() >= wren.right(), "offline mark should sit in trailing column");
+    let scout = bounds(cx, "bot-bot_scout-avatar").unwrap();
+    assert!(
+        offline.left() >= scout.right() && offline.center().y >= scout.top() && offline.center().y <= scout.bottom(),
+        "offline mark should sit in Scout's trailing column"
+    );
 }
 
 #[gpui::test]

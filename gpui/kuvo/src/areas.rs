@@ -978,30 +978,15 @@ impl AreaView {
                 || crate::bot_face::still_avatar(&there.id, &unknown_bot_look(), state, COMPACT_FACE),
                 |look| crate::bot_face::still_avatar(&there.id, look, state, COMPACT_FACE),
             );
-            let change = if there.waiting {
-                Some((format!("Waiting for {}", there.computer), c.accent, "bot-avatar-change-waiting"))
-            } else if there.refused {
-                Some((format!("Change declined on {}", there.computer), c.warning, "bot-avatar-change-refused"))
+            let mark = self.elsewhere_mark(listed, &there, now);
+            let tooltip = if there.waiting && state == State::Offline {
+                format!("{} · Waiting for {}", there.name, there.computer)
+            } else if there.refused && state == State::Offline {
+                format!("{} · Change declined on {}", there.name, there.computer)
             } else {
-                None
+                mark.as_ref().map_or_else(|| there.name.clone(), |mark| mark.tooltip(&there.name))
             };
-            let (tooltip, gutter) = if let Some((words, color, selector)) = change {
-                let mark = div()
-                    .debug_selector(move || selector.into())
-                    .flex_none()
-                    .size(px(6.))
-                    .rounded(radius::PILL)
-                    .bg(color)
-                    .into_any_element();
-                (format!("{} · {words}", there.name), Some(mark))
-            } else if let Some(mark) = self.remote_bot(listed).and_then(|(_, bot, reached)| SidebarMark::of(bot, reached, now)) {
-                (mark.tooltip(&there.name), Some(mark.gutter(&c)))
-            } else if state == State::Offline {
-                let mark = SidebarMark::Offline;
-                (mark.tooltip(&there.name), Some(mark.gutter(&c)))
-            } else {
-                (there.name, None)
-            };
+            let gutter = mark.as_ref().map(|mark| mark.gutter(&c));
             rows.push(self.avatar_row(format!("elsewhere:{}", there.id), &there.id, tooltip, face, gutter, RemoteSource::of(listed), cx));
         }
         rows
@@ -1076,6 +1061,27 @@ impl AreaView {
         let bot = remote.bots.iter().find(|bot| bot.id == listed.id)?;
         let away = ready(&self.computers).is_some_and(|computers| computers.iter().any(|each| each.key == listed.computer_key && each.reach == "away"));
         Some((remote, bot, remote.reached && !away))
+    }
+
+    /// Status mark shared by full rows and the compact avatar strip for a bot on another computer.
+    /// Offline bots always show the Offline hollow circle; pending/refused remote edits never reuse
+    /// the "Waiting on you" blue dot.
+    fn elsewhere_mark(&self, listed: &Elsewhere, there: &There, now: f64) -> Option<SidebarMark> {
+        if self.elsewhere_state(&there.computer) == State::Offline {
+            return Some(SidebarMark::Offline);
+        }
+        if there.refused {
+            return Some(SidebarMark::ChangeRefused(format!("Change declined on {}", there.computer)));
+        }
+        if let Some((_, bot, reached)) = self.remote_bot(listed) {
+            if let Some(mark) = SidebarMark::of(bot, reached, now) {
+                return Some(mark);
+            }
+        }
+        if there.waiting {
+            return Some(SidebarMark::ChangeWaiting(format!("Waiting for {}", there.computer)));
+        }
+        None
     }
 
     fn bots_rows(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
@@ -1160,8 +1166,6 @@ impl AreaView {
                 let selector = format!("elsewhere-{}", there.id);
                 let computer = there.computer.as_str();
                 // What waits for it or was refused, else where it lives.
-                let remote_bot = self.remote_bot(listed);
-                let offline = self.elsewhere_state(computer) == State::Offline;
                 let line = if there.waiting {
                     format!("Waiting for {computer}")
                 } else if there.refused {
@@ -1176,11 +1180,7 @@ impl AreaView {
                     Some(look) => bot_face(&there.id, look, px(BOT_FACE)),
                     None => div().flex().flex_none().items_center().justify_center().size(px(BOT_FACE)).rounded(radius::PILL).bg(c.sunken).child(Icon::new(kuvo_ui::IconName::Bot).color(c.icon)).into_any_element(),
                 };
-                let mark = match remote_bot {
-                    Some((_, bot, reached)) => SidebarMark::of(bot, reached, self.now()),
-                    None if offline => Some(SidebarMark::Offline),
-                    None => None,
-                };
+                let mark = self.elsewhere_mark(listed, &there, self.now());
                 let detail_color = mark.as_ref().map_or(c.text_muted, |mark| mark.detail_color(&c));
                 let avatar = crate::bot_face::sidebar_avatar(&there.id, &there.name, face, mark.as_ref());
                 let trailing = mark.as_ref().map(|mark| mark.trailing(&c));

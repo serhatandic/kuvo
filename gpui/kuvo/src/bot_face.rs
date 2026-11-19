@@ -55,6 +55,8 @@ pub(crate) enum SidebarMark {
     Wake { short: String, tooltip: String },
     Blocked,
     Offline,
+    ChangeWaiting(String),
+    ChangeRefused(String),
 }
 
 fn terse_wake(due_ms: f64, now_ms: f64) -> Option<String> {
@@ -125,13 +127,14 @@ impl SidebarMark {
             Self::Wake { tooltip, .. } => tooltip.as_str(),
             Self::Blocked => "Blocked",
             Self::Offline => "Offline",
+            Self::ChangeWaiting(words) | Self::ChangeRefused(words) => words.as_str(),
         };
         format!("{name} · {words}")
     }
 
     pub(crate) fn detail_color(&self, colors: &Colors) -> Hsla {
         match self {
-            Self::Blocked => colors.warning,
+            Self::Blocked | Self::ChangeRefused(_) => colors.warning,
             Self::Offline => colors.text_faint,
             _ => colors.text_muted,
         }
@@ -187,6 +190,24 @@ impl SidebarMark {
                 .w(px(16.))
                 .child(hollow_dot(px(8.), colors.text_faint))
                 .into_any_element(),
+            Self::ChangeWaiting(_) => div()
+                .debug_selector(|| "bot-avatar-change-waiting".into())
+                .flex_none()
+                .flex()
+                .items_center()
+                .justify_center()
+                .w(px(16.))
+                .child(Icon::new(IconName::Clock).size(IconSize::XSmall).color(colors.icon))
+                .into_any_element(),
+            Self::ChangeRefused(_) => div()
+                .debug_selector(|| "bot-avatar-change-refused".into())
+                .flex_none()
+                .flex()
+                .items_center()
+                .justify_center()
+                .w(px(16.))
+                .child(Icon::new(IconName::Warning).size(IconSize::Nav).color(colors.warning))
+                .into_any_element(),
         }
     }
 
@@ -225,6 +246,22 @@ impl SidebarMark {
                 .debug_selector(|| "bot-avatar-offline".into())
                 .flex_none()
                 .child(hollow_dot(px(6.), colors.text_faint))
+                .into_any_element(),
+            Self::ChangeWaiting(_) => div()
+                .debug_selector(|| "bot-avatar-change-waiting".into())
+                .flex_none()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(Icon::new(IconName::Clock).size(IconSize::Indicator).color(colors.icon))
+                .into_any_element(),
+            Self::ChangeRefused(_) => div()
+                .debug_selector(|| "bot-avatar-change-refused".into())
+                .flex_none()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(Icon::new(IconName::Warning).size(IconSize::Indicator).color(colors.warning))
                 .into_any_element(),
         }
     }

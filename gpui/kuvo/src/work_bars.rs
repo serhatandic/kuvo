@@ -18,7 +18,7 @@ use kuvo_box::{BoxClient, Follow, Timing};
 use kuvo_ui::{
     ActiveTheme, Button, ButtonSize, Icon, IconName, IconSize, StyledType, TypeSize,
     icon::{Mark, provider_mark, provider_mark_color},
-    menu::{PopoverMenu, PopoverMenuHandle},
+    menu::{PopoverMenu, PopoverMenuHandle, Tooltip},
     small::status_dot,
     theme::{radius, space},
 };
@@ -946,7 +946,9 @@ impl ActivityCard {
                     }))
             }));
 
-        let media_strip = (!images.is_empty()).then(|| {
+        let visible_images: Vec<&Artifact> = images.iter().take(STRIP_IMAGES).copied().collect();
+        let captions = strip_captions(&visible_images.iter().map(|a| a.name.as_str()).collect::<Vec<_>>());
+        let media_strip = (!visible_images.is_empty()).then(|| {
             let hover = c.hover;
             div()
                 .debug_selector(|| "activity-media-strip".into())
@@ -956,18 +958,19 @@ impl ActivityCard {
                 .px(space::S2)
                 .pt(space::S1)
                 .pb(space::S2)
-                .children(images.iter().take(STRIP_IMAGES).map(|artifact| {
+                .children(visible_images.into_iter().zip(captions).map(|(artifact, caption)| {
                     let selector = format!("activity-output-{}", artifact.id);
-                    let caption = short_caption(&artifact.name);
+                    let caption_selector = format!("activity-output-caption-{caption}");
+                    let full_name = artifact.name.clone();
                     let preview = match self.thumbnails.get(&artifact.id).and_then(|(_, img)| img.as_ref()) {
                         Some(image) => gpui::img(image.clone())
-                            .w(px(78.))
-                            .h(px(50.))
+                            .w(px(94.))
+                            .h(px(56.))
                             .object_fit(gpui::ObjectFit::Cover)
                             .into_any_element(),
                         None => div()
-                            .w(px(78.))
-                            .h(px(50.))
+                            .w(px(94.))
+                            .h(px(56.))
                             .bg(c.sunken)
                             .flex()
                             .items_center()
@@ -975,22 +978,23 @@ impl ActivityCard {
                             .child(Icon::new(IconName::Image).size(IconSize::Medium).color(c.icon))
                             .into_any_element(),
                     };
-                    let clicked = (*artifact).clone();
+                    let clicked = artifact.clone();
                     div()
                         .id(SharedString::from(selector.clone()))
                         .debug_selector(move || selector)
                         .flex_none()
-                        .w(px(78.))
+                        .w(px(94.))
                         .flex()
                         .flex_col()
                         .gap(px(3.))
                         .cursor_pointer()
                         .tab_index(0)
+                        .tooltip(move |_, cx| Tooltip::new(full_name.clone()).build(cx))
                         .on_click(cx.listener(move |this, _, window, cx| this.open_output(&clicked, window, cx)))
                         .child(
                             div()
-                                .w(px(78.))
-                                .h(px(50.))
+                                .w(px(94.))
+                                .h(px(56.))
                                 .rounded(radius::NAV)
                                 .overflow_hidden()
                                 .border_1()
@@ -999,7 +1003,8 @@ impl ActivityCard {
                         )
                         .child(
                             div()
-                                .w(px(78.))
+                                .debug_selector(move || caption_selector)
+                                .w(px(94.))
                                 .truncate()
                                 .text_ui(TypeSize::Caption)
                                 .text_color(c.text_muted)
@@ -1011,8 +1016,8 @@ impl ActivityCard {
                         .id("activity-more-images")
                         .debug_selector(|| "activity-more-images".into())
                         .flex_none()
-                        .w(px(58.))
-                        .h(px(50.))
+                        .w(px(56.))
+                        .h(px(56.))
                         .rounded(radius::NAV)
                         .bg(c.sunken)
                         .border_1()
@@ -1355,7 +1360,7 @@ impl Render for ActivityCard {
             .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .tab_group()
             .occlude()
-            .w(px(if self.preview.is_some() { 460. } else { 356. }).min(window.viewport_size().width - px(16.)))
+            .w(px(if self.preview.is_some() { 460. } else { 396. }).min(window.viewport_size().width - px(16.)))
             .max_h(max_h)
             .overflow_y_scroll()
             .p(space::S3)
@@ -1420,12 +1425,213 @@ fn middle_trim(name: &str, max_chars: usize) -> String {
     format!("{start}…{end}")
 }
 
-fn short_caption(name: &str) -> String {
-    let stem = match name.rsplit_once('.') {
-        Some((stem, ext)) if !stem.is_empty() && ext.len() <= 4 => stem,
+const CAPTION_LIMIT: usize = 15;
+
+fn is_caption_sep(ch: char) -> bool {
+    matches!(ch, '-' | '_' | ' ' | '.' | '/')
+}
+
+fn strip_extension(name: &str) -> &str {
+    match name.rsplit_once('.') {
+        Some((stem, ext))
+            if !stem.is_empty()
+                && !ext.is_empty()
+                && ext.len() <= 5
+                && ext.chars().all(|c| c.is_ascii_alphanumeric()) =>
+        {
+            stem
+        }
         _ => name,
-    };
-    middle_trim(stem, 13)
+    }
+}
+
+fn shared_prefix_bytes(stems: &[&str]) -> usize {
+    if stems.len() < 2 {
+        return 0;
+    }
+    let first = stems[0];
+    let mut raw_bytes = 0usize;
+    let mut raw_chars = 0usize;
+    let mut sep_bytes = 0usize;
+    let mut iters: Vec<_> = stems[1..].iter().map(|s| s.chars()).collect();
+    for ch in first.chars() {
+        if iters.iter_mut().all(|it| it.next() == Some(ch)) {
+            raw_bytes += ch.len_utf8();
+            raw_chars += 1;
+            if is_caption_sep(ch) {
+                sep_bytes = raw_bytes;
+            }
+        } else {
+            break;
+        }
+    }
+    if sep_bytes > 0 && stems.iter().all(|s| s.len() > sep_bytes) {
+        return sep_bytes;
+    }
+    if raw_chars >= 6 && stems.iter().all(|s| s.len() > raw_bytes) {
+        // Keep at least a couple of characters of context if stripping leaves 1-char tails.
+        let min_tail = stems.iter().map(|s| s[raw_bytes..].chars().count()).min().unwrap_or(0);
+        if min_tail >= 2 {
+            return raw_bytes;
+        }
+        let back = 2 - min_tail;
+        let keep_chars = raw_chars.saturating_sub(back);
+        if keep_chars >= 4 {
+            let cut = first.char_indices().nth(keep_chars).map_or(0, |(idx, _)| idx);
+            if stems.iter().all(|s| s.len() > cut) {
+                return cut;
+            }
+        }
+    }
+    0
+}
+
+fn shared_suffix_bytes(stems: &[&str]) -> usize {
+    if stems.len() < 2 {
+        return 0;
+    }
+    let first = stems[0];
+    let mut raw_bytes = 0usize;
+    let mut sep_bytes = 0usize;
+    let mut iters: Vec<_> = stems[1..].iter().map(|s| s.chars().rev()).collect();
+    for ch in first.chars().rev() {
+        if iters.iter_mut().all(|it| it.next() == Some(ch)) {
+            raw_bytes += ch.len_utf8();
+            if is_caption_sep(ch) {
+                sep_bytes = raw_bytes;
+            }
+        } else {
+            break;
+        }
+    }
+    if sep_bytes > 0 && stems.iter().all(|s| s.len() > sep_bytes) {
+        sep_bytes
+    } else {
+        0
+    }
+}
+
+fn take_chars(s: &str, max: usize) -> String {
+    s.chars().take(max).collect()
+}
+
+fn join_pair(first: &str, last: &str, limit: usize) -> String {
+    let first_len = first.chars().count();
+    let last_len = last.chars().count();
+    if first_len + 1 + last_len <= limit {
+        return format!("{first}-{last}");
+    }
+    let tail_budget = last_len.min((limit / 2).max(4));
+    let head_budget = limit.saturating_sub(tail_budget + 1);
+    if head_budget >= 3 {
+        let head = take_chars(first, head_budget);
+        let tail = if last_len <= tail_budget {
+            last.to_owned()
+        } else {
+            take_chars(last, tail_budget)
+        };
+        format!("{head}-{tail}")
+    } else {
+        take_chars(first, limit.saturating_sub(1)) + "…"
+    }
+}
+
+fn compact_stem(stem: &str, limit: usize) -> String {
+    if stem.chars().count() <= limit {
+        return stem.to_owned();
+    }
+    let tokens: Vec<&str> = stem.split(|c| matches!(c, '-' | '_' | ' ')).filter(|t| !t.is_empty()).collect();
+    match tokens.as_slice() {
+        [first, .., last] if tokens.len() >= 2 => join_pair(first, last, limit),
+        _ => middle_trim(stem, limit),
+    }
+}
+
+/// Builds readable, distinct captions for the visible thumbnail strip: drops extensions and any
+/// prefix (or suffix, when needed) shared across visible names, then keeps distinguishing tokens
+/// within the tile's width. Full filenames remain on hover.
+fn strip_captions(names: &[&str]) -> Vec<String> {
+    if names.is_empty() {
+        return Vec::new();
+    }
+    let raw_stems: Vec<&str> = names.iter().map(|name| strip_extension(name)).collect();
+    let prefix = shared_prefix_bytes(&raw_stems);
+    let mut trimmed: Vec<&str> = raw_stems
+        .iter()
+        .map(|s| s[prefix..].trim_start_matches(is_caption_sep))
+        .collect();
+    if trimmed.iter().any(|s| s.is_empty()) {
+        trimmed = raw_stems.clone();
+    }
+    if trimmed.len() >= 2 && trimmed.iter().any(|s| s.chars().count() > CAPTION_LIMIT) {
+        let suffix = shared_suffix_bytes(&trimmed);
+        if suffix > 0 {
+            let shortened: Vec<&str> = trimmed
+                .iter()
+                .map(|s| s[..s.len() - suffix].trim_end_matches(is_caption_sep))
+                .collect();
+            if shortened.iter().all(|s| !s.is_empty()) {
+                trimmed = shortened;
+            }
+        }
+    }
+
+    let mut captions: Vec<String> = trimmed.iter().map(|s| compact_stem(s, CAPTION_LIMIT)).collect();
+
+    // If shortening made two visible tiles collide, switch each colliding tile to its first
+    // differing token (paired with its trailing token when it fits), or fall back to extensions.
+    let mut seen: HashMap<String, Vec<usize>> = HashMap::new();
+    for (idx, cap) in captions.iter().enumerate() {
+        seen.entry(cap.clone()).or_default().push(idx);
+    }
+    for group in seen.into_values().filter(|g| g.len() > 1) {
+        let tokenized: Vec<Vec<&str>> = group
+            .iter()
+            .map(|&i| trimmed[i].split(|c| matches!(c, '-' | '_' | ' ')).filter(|t| !t.is_empty()).collect())
+            .collect();
+        let max_tokens = tokenized.iter().map(Vec::len).max().unwrap_or(0);
+        let diff_at = (0..max_tokens).find(|&pos| {
+            let first = tokenized[0].get(pos).copied();
+            tokenized[1..].iter().any(|toks| toks.get(pos).copied() != first)
+        });
+        let mut resolved = Vec::with_capacity(group.len());
+        if let Some(pos) = diff_at {
+            for toks in &tokenized {
+                let candidate = match (toks.get(pos).copied(), toks.last().copied()) {
+                    (Some(diff), Some(last)) if pos + 1 < toks.len() && diff != last => {
+                        join_pair(diff, last, CAPTION_LIMIT)
+                    }
+                    (Some(diff), _) => {
+                        if diff.chars().count() <= CAPTION_LIMIT {
+                            diff.to_owned()
+                        } else {
+                            middle_trim(diff, CAPTION_LIMIT)
+                        }
+                    }
+                    _ => String::new(),
+                };
+                resolved.push(candidate);
+            }
+        }
+        let unique = resolved.len() == group.len()
+            && resolved.iter().all(|s| !s.is_empty())
+            && resolved.iter().collect::<HashSet<_>>().len() == group.len();
+        if unique {
+            for (idx, cap) in group.into_iter().zip(resolved) {
+                captions[idx] = cap;
+            }
+        } else {
+            for idx in group {
+                let name = names[idx];
+                captions[idx] = if name.chars().count() <= CAPTION_LIMIT {
+                    name.to_owned()
+                } else {
+                    middle_trim(name, CAPTION_LIMIT)
+                };
+            }
+        }
+    }
+    captions
 }
 
 fn append_outputs(outputs: &mut Outputs, page: Outputs) {
@@ -1561,5 +1767,45 @@ mod tests {
     #[test]
     fn mixed_activity_specifies_whom_sessions_wait_for() {
         assert_eq!(sessions_label(2, 1), "2 working · 1 waiting for you");
+    }
+
+    #[test]
+    fn strip_captions_drops_shared_long_prefix_and_extension_for_distinct_labels() {
+        let captions = strip_captions(&[
+            "screens-insights-overview-light.png",
+            "screens-insights-overview-dark.png",
+            "screens-computer-pairing-waiting-light.png",
+        ]);
+        assert_eq!(captions, vec!["insights-light", "insights-dark", "computer-light"]);
+        assert_eq!(captions.iter().collect::<HashSet<_>>().len(), 3);
+    }
+
+    #[test]
+    fn strip_captions_keeps_differing_part_when_three_names_share_same_prefix_and_suffix() {
+        let short = strip_captions(&[
+            "screens-settings-models-providers-light.png",
+            "screens-settings-models-accounts-light.png",
+            "screens-settings-models-defaults-light.png",
+        ]);
+        assert_eq!(short, vec!["providers-light", "accounts-light", "defaults-light"]);
+
+        let long = strip_captions(&[
+            "screens-settings-models-providers-overview-light.png",
+            "screens-settings-models-accounts-overview-light.png",
+            "screens-settings-models-defaults-overview-light.png",
+        ]);
+        assert_eq!(long, vec!["providers", "accounts", "defaults"]);
+        assert_eq!(long.iter().collect::<HashSet<_>>().len(), 3);
+    }
+
+    #[test]
+    fn strip_captions_disambiguates_colliding_outer_tokens() {
+        let captions = strip_captions(&[
+            "screens-insights-alpha-overview-light.png",
+            "screens-insights-beta-overview-light.png",
+            "screens-insights-gamma-overview-light.png",
+        ]);
+        assert_eq!(captions, vec!["alpha", "beta", "gamma"]);
+        assert_eq!(captions.iter().collect::<HashSet<_>>().len(), 3);
     }
 }

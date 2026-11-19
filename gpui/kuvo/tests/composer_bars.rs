@@ -390,3 +390,47 @@ fn activity_outputs_media_strip_recent_files_and_see_all_stays_bounded(cx: &mut 
     assert!(!shown(cx, "activity-all-outputs"));
     assert!(shown(cx, "activity-media-strip"));
 }
+
+#[gpui::test]
+fn activity_outputs_media_strip_keeps_shared_prefix_captions_distinct_with_full_name_tooltip(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let png = {
+        let img = image::RgbImage::from_pixel(4, 4, image::Rgb([10, 122, 255]));
+        let mut out = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut out, image::ImageFormat::Png).unwrap();
+        out.into_inner()
+    };
+    let names = [
+        ("art_img_000000000000000000000001", "screens-insights-overview-light.png", "insights-light"),
+        ("art_img_000000000000000000000002", "screens-insights-overview-dark.png", "insights-dark"),
+        ("art_img_000000000000000000000003", "screens-computer-pairing-waiting-light.png", "computer-light"),
+    ];
+    for (id, name, _) in names {
+        stand_in.add_output("ses_signup", json!({
+            "id": id,
+            "path": format!("/tmp/{name}"),
+            "name": name,
+            "kind": "image", "type": "image/png",
+            "latest": { "n": 1 },
+        }), &png);
+    }
+
+    let (_, cx) = conversation(cx, &stand_in, "ses_signup");
+    click(cx, "conversation-activity-button");
+    assert!(shown(cx, "activity-media-strip"));
+
+    for (_, _, expected_caption) in names {
+        assert!(
+            shown(cx, &format!("activity-output-caption-{expected_caption}")),
+            "expected readable distinct caption {expected_caption}"
+        );
+    }
+
+    // Hovering a thumbnail shows the full filename in a tooltip.
+    let first_tile = bounds(cx, "activity-output-art_img_000000000000000000000001").unwrap();
+    cx.simulate_mouse_move(first_tile.center(), None, gpui::Modifiers::default());
+    cx.run_until_parked();
+    cx.executor().advance_clock(std::time::Duration::from_secs(1));
+    cx.run_until_parked();
+    assert!(shown(cx, "tooltip-screens-insights-overview-light.png"));
+}

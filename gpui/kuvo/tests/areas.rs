@@ -1032,13 +1032,43 @@ fn compact_sidebar_marks_remote_bot_changes(cx: &mut TestAppContext) {
     stand_in.refuse_bot_edit("bot_wren", "lab", "The change was declined.");
     let (_, cx) = open(cx, stand_in);
     click(cx, "rail-bots");
+
+    // Full rows: offline Scout (with a waiting change) shows Offline, online Wren (refused) shows ChangeRefused.
+    let scout_row_face = bounds(cx, "bot-bot_scout-avatar").unwrap();
+    let wren_row_face = bounds(cx, "bot-bot_wren-avatar").unwrap();
+    let row_offline = bounds(cx, "bot-avatar-offline").unwrap();
+    let row_refused = bounds(cx, "bot-avatar-change-refused").unwrap();
+    assert!(row_offline.left() >= scout_row_face.right()
+        && row_offline.center().y >= scout_row_face.top()
+        && row_offline.center().y <= scout_row_face.bottom(),
+        "full row should show offline mark for offline Scout");
+    assert!(row_refused.left() >= wren_row_face.right()
+        && row_refused.center().y >= wren_row_face.top()
+        && row_refused.center().y <= wren_row_face.bottom(),
+        "full row should show refused mark for online Wren");
+    assert!(bounds(cx, "bot-avatar-change-waiting").is_none());
+
+    // Compact strip must show the exact same marks in the gutter under each face (never NeedsYou for Scout).
     drag_sidebar(cx, -210.);
+    let scout_avatar = bounds(cx, "bot-avatar-elsewhere:bot_scout").unwrap();
     let scout_face = bounds(cx, "bot-avatar-face-elsewhere:bot_scout").unwrap();
+    let wren_avatar = bounds(cx, "bot-avatar-elsewhere:bot_wren").unwrap();
     let wren_face = bounds(cx, "bot-avatar-face-elsewhere:bot_wren").unwrap();
-    let waiting = bounds(cx, "bot-avatar-change-waiting").unwrap();
-    let refused = bounds(cx, "bot-avatar-change-refused").unwrap();
-    assert!(bounds(cx, "bot-avatar-elsewhere:bot_scout").is_some());
-    assert!(bounds(cx, "bot-avatar-elsewhere:bot_wren").is_some());
-    assert!(waiting.top() >= scout_face.bottom(), "remote waiting dot should sit under face");
-    assert!(refused.top() >= wren_face.bottom(), "remote refused dot should sit under face");
+    let compact_offline = bounds(cx, "bot-avatar-offline").unwrap();
+    let compact_refused = bounds(cx, "bot-avatar-change-refused").unwrap();
+    assert!(scout_avatar.contains(&compact_offline.center()));
+    assert!(compact_offline.top() >= scout_face.bottom(), "offline mark should sit under Scout's face");
+    assert!(wren_avatar.contains(&compact_refused.center()));
+    assert!(compact_refused.top() >= wren_face.bottom(), "refused mark should sit under Wren's face");
+    assert!(bounds(cx, "bot-avatar-change-waiting").is_none());
+    // NeedsYou mark must not appear on Scout's tile.
+    let needs_you = bounds(cx, "bot-avatar-needs-you").unwrap();
+    assert!(!scout_avatar.contains(&needs_you.center()), "offline Scout must not reuse the NeedsYou blue dot");
+
+    // Hovering Scout still tells the user it is waiting for studio-mini.
+    cx.simulate_mouse_move(scout_avatar.center(), None, Modifiers::default());
+    cx.run_until_parked();
+    cx.executor().advance_clock(std::time::Duration::from_secs(1));
+    cx.run_until_parked();
+    assert!(bounds(cx, "tooltip-Scout · Waiting for studio-mini").is_some());
 }
