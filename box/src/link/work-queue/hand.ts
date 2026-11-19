@@ -18,10 +18,12 @@ import { boxOf } from "../letters/calls";
 import { placeOfSession } from "../letters/letter";
 import { rootOf } from "../letters/tools";
 import { frozen } from "../moves/records";
-import { peersOf, removedBoxes } from "../peers/known";
+import { ownKey, peersOf, removedBoxes } from "../peers/known";
 import { awaySince } from "../peers/reach";
 import { offlineEditsReady } from "../ownership/store";
 import { readLink } from "../state";
+import { commitTransfer } from "../ownership/transfer";
+import { assignmentFor, mayActivate } from "../ownership/resolve";
 import { keepLabel, labels } from "./labels";
 import { isClosed, statusNamed } from "./statuses";
 import { intoTodo, linkSession } from "./ops";
@@ -104,10 +106,11 @@ export function handUpkeep(link: LinkState | null, now = Date.now()): Item[] {
   const peers = peersOf(link);
   const removed = removedBoxes(link);
   const there = (item: Item) => Boolean(boxOf(item.handing!.to, link)) || peers.some(peer => peer.key === item.handing!.key);
-  const late = handing.filter(item => now - item.handing!.at > HAND_LIFE);
-  const left = handing.filter(item => !late.includes(item) && !boxOf(item.handing!.to, link) && removed.has(item.handing!.key));
+  const committed = (item: Item) => acceptedHandoff(item, link);
+  const late = handing.filter(item => !committed(item) && now - item.handing!.at > HAND_LIFE);
+  const left = handing.filter(item => !committed(item) && !late.includes(item) && !boxOf(item.handing!.to, link) && removed.has(item.handing!.key));
   const missing = handing.filter(item => !late.includes(item) && !left.includes(item) && !there(item));
-  const lost = missing.filter(item => item.handing!.missing !== undefined && now - item.handing!.missing > LOST_FOR);
+  const lost = missing.filter(item => !committed(item) && item.handing!.missing !== undefined && now - item.handing!.missing > LOST_FOR);
   // Since when each is missing, kept with it; one back again, no longer.
   const noted = new Map([...missing.filter(item => item.handing!.missing === undefined).map(item => [item.handing!.id, now] as const), ...handing.filter(item => there(item) && item.handing!.missing !== undefined).map(item => [item.handing!.id, undefined] as const)]);
   if (noted.size) changeQueues(book => {
@@ -162,8 +165,14 @@ export function sendHandings(host: Pick<LinkHost, "send">, link: LinkState | nul
 
 /** `item`'s hand-off called off (you deleted it, or an agent did): it isn't sent again. (One that got
  * there already is that computer's, as its view says.) */
+function acceptedHandoff(item: Item, link = readLink()): boolean {
+  const transfer = assignmentFor(link, { kind: "queueItems", id: item.id, queue: item.owner });
+  return Boolean(transfer && transfer.move === item.handing?.id && transfer.computer !== ownKey(link ?? {}));
+}
+
 export function callOffHanding(item: Item, who: Who, now: number): void {
   if (!item.handing) return;
+  if (acceptedHandoff(item)) refuse("That item’s new owner already accepted the handoff.");
   const { id, name, to } = item.handing;
   delete item.handing;
   item.notes.push({ at: now, by: who, text: `Its hand-off to ${name || to} on another computer was called off.` });
@@ -199,9 +208,10 @@ export function refuseLiveElsewhere(item: Item, items?: Item[], titled?: (owner:
 /** Hand-offs that won't go, back as they were, each with a note of why. */
 function giveBack(ids: string[], why: string, now: number): void {
   const gone = new Set(ids);
+  const link = readLink();
   changeQueues(book => {
     for (const item of book.items()) {
-      if (!item.handing || !gone.has(item.handing.id)) continue;
+      if (!item.handing || !gone.has(item.handing.id) || acceptedHandoff(item, link)) continue;
       const { id, name, to, by } = item.handing;
       delete item.handing;
       item.notes.push({ at: now, by, text: `Couldn't be handed to ${name || to} on another computer: ${why.replace(/[.\s]+$/, "")}. It's still here.` });
@@ -264,7 +274,8 @@ export async function handArrived(sender: MailSender, given: unknown, reply: (pa
   if (!isObject(given) || typeof given.id !== "string" || !HAND_ID.test(given.id) || typeof given.to !== "string" || !/^ses_[A-Za-z0-9]{1,60}$/.test(given.to)) return;
   const id = given.id;
   const answer = (ok: boolean, why?: string, retry = false) => reply({ handed: { id, ok, ...(why ? { why } : {}), ...(retry ? { retry: true } : {}) } });
-  if (!peersOf(readLink()).some(peer => peer.key === sender.key)) return;
+  const link = readLink();
+  if (!peersOf(link).some(peer => peer.key === sender.key)) return;
   if (seenHand(id, now)) return answer(true);
   const from = typeof given.from === "string" && OWNER.test(given.from) ? given.from : null;
   const item = itemOf(given.item, given.to);
@@ -279,6 +290,9 @@ export async function handArrived(sender: MailSender, given: unknown, reply: (pa
     return answer(false, `${HERE} can't look up its conversations now.`, true);
   }
   const owner = root?.session ?? given.to;
+  if (link?.setup?.checkpointed && !mayActivate({ kind: "queueItems", queue: owner })) {
+    return answer(false, "Waiting for the destination queue’s ownership to settle.", true);
+  }
   if (root?.place.data.metadata?.kuvo?.seat) return answer(false, "That's a group chat's seat: hand it to the bot's own conversation.");
   // The files that came with it: names it keeps, sizes it takes.
   const files = (Array.isArray(given.files) ? given.files : []).flatMap(each => {
@@ -298,7 +312,7 @@ export async function handArrived(sender: MailSender, given: unknown, reply: (pa
   let twinHere: Item | null = null;
   let again = false;
   const primary = primaryOf();
-  changeQueues((book: Book) => {
+  const place = (apply: boolean) => changeQueues((book: Book) => {
     let here = book.find({ id: item.id });
     if (deletionFor(item.id)) {
       refused = "That Work Queue item has been deleted.";
@@ -313,7 +327,7 @@ export async function handArrived(sender: MailSender, given: unknown, reply: (pa
     // One deleted here, its hand-off called off after it had got there: what comes back is the live
     // one, in its place.
     if (here?.removed) {
-      book.queue(here.owner).items = book.queue(here.owner).items.filter(each => each.id !== here!.id);
+      if (apply) book.queue(here.owner).items = book.queue(here.owner).items.filter(each => each.id !== here!.id);
       here = null;
     }
     if (here) return;
@@ -327,6 +341,7 @@ export async function handArrived(sender: MailSender, given: unknown, reply: (pa
       refused = `That queue has ${MOST_ITEMS} open items already.`;
       return;
     }
+    if (!apply) return;
     if (!statusNamed(item.status)) intoTodo(item, item.status, now);
     item.owner = owner;
     delete item.relations;
@@ -343,13 +358,33 @@ export async function handArrived(sender: MailSender, given: unknown, reply: (pa
     }
     // (One that came without a number takes one here, as one added here would.)
     if (item.number === undefined) numberWaiting(book, primary, null);
-  }, now, { onItsOwn: true });
-  if (again) return answer(false, `${HERE} is still handing that item on: it comes again once that's done.`, true);
-  if (twinHere) {
-    const twin: Item = twinHere;
-    return answer(false, `${twin.source!.ref} is in the Work Queue there already, ${twinWhere(twin, await titlesHere([twin.owner], targets))}: one item for each issue`);
+  }, now, { onItsOwn: true, durable: Boolean(link?.setup?.checkpointed) });
+  const rejected = async (): Promise<boolean> => {
+    if (again) {
+      answer(false, `${HERE} is still handing that item on: it comes again once that's done.`, true);
+    } else if (twinHere) {
+      const twin: Item = twinHere;
+      answer(false, `${twin.source!.ref} is in the Work Queue there already, ${twinWhere(twin, await titlesHere([twin.owner], targets))}: one item for each issue`);
+    } else if (refused) {
+      answer(false, refused);
+    } else return false;
+    return true;
+  };
+  if (link?.setup?.checkpointed) {
+    // Validate while it is still held at the source. The replacement can see the
+    // accepted owner before this box exposes the live item or acknowledges arrival.
+    place(false);
+    if (await rejected()) return;
+    const own = ownKey(link);
+    if (!own || !await commitTransfer(link, { kind: "queue", id, from: sender.key, to: own, thing: item.id, queue: owner })) {
+      return answer(false, "Waiting for the primary to confirm the item’s new owner.", true);
+    }
   }
-  if (refused) return answer(false, refused);
+  place(true);
+  if (link?.setup?.checkpointed && (again || twinHere || refused)) {
+    return answer(false, "The destination changed while the item was on its way. The handoff is still pending.", true);
+  }
+  if (await rejected()) return;
   seenHand(id, now, true);
   answer(true);
 }

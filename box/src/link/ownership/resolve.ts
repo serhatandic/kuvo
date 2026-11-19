@@ -48,21 +48,33 @@ export function replacementOwner(link: LinkState | null, key: string): string {
   return members.has(current) ? current : key;
 }
 
+export function authorityAddress(ref: DataReference): string {
+  const queueRecord = dataOwner(ref.kind) === undefined;
+  if (queueRecord && ref.id) return `queue item:${ref.id}`;
+  return `${dataOwner(ref.kind, ref.queue)}:${queueRecord ? ref.queue : ref.id}`;
+}
+
+export function assignmentFor(link: LinkState | null, ref: DataReference) {
+  const assignments = sharedValue(link, "ownershipAssignments");
+  const address = authorityAddress(ref);
+  const value = isObject(assignments) && Object.hasOwn(assignments, address) ? assignments[address] : undefined;
+  return isObject(value) && typeof value.computer === "string" && KEY.test(value.computer)
+    ? { computer: value.computer, move: value.move, queue: value.queue } : undefined;
+}
+
 /** Accepted setup state is the ownership decision. Routing hints cannot replace it. */
 export function acceptedOwner(link: LinkState | null, ref: DataReference): string | undefined {
   const scope = dataOwner(ref.kind, ref.queue);
-  const id = dataOwner(ref.kind) === undefined ? ref.queue : ref.id;
-  if (!id || !DATA_ID.test(id)) return;
-  const assignments = sharedValue(link, "ownershipAssignments");
-  const address = `${scope}:${id}`;
-  const assignment = isObject(assignments) && Object.hasOwn(assignments, address) ? assignments[address] : undefined;
-  if (isObject(assignment) && typeof assignment.computer === "string" && KEY.test(assignment.computer))
-    return replacementOwner(link, assignment.computer);
-  if (scope === "session computer") {
-    const moved = acceptedMembership(link)?.moved.find(each => each.session === id);
-    if (moved) return replacementOwner(link, moved.key);
-  }
-  return undefined;
+  const queueRecord = dataOwner(ref.kind) === undefined;
+  const id = queueRecord ? ref.queue : ref.id;
+  const item = queueRecord && ref.id ? assignmentFor(link, ref) : undefined;
+  const assignment = id && DATA_ID.test(id) ? assignmentFor(link, queueRecord ? { ...ref, id: undefined } : ref) : undefined;
+  const moved = scope === "session computer" && acceptedMembership(link)?.moved.find(each => each.session === id);
+  const queueOwner = assignment?.computer ?? (moved ? moved.key : undefined);
+  const accepted = item && item.queue !== ref.queue
+    ? (typeof item.queue === "string" ? acceptedOwner(link, { kind: ref.kind, queue: item.queue }) : undefined) ?? item.computer
+    : queueOwner ?? item?.computer;
+  return accepted ? replacementOwner(link, accepted) : undefined;
 }
 
 /** Aggregate stores such as the engine DB use the same decision for each affected ID. */
@@ -79,15 +91,19 @@ export function sessionsFencedHere(authority: { link: LinkState | null; origin?:
 
 /** Decide whether a stored copy can run. Advertisements can locate a record, but cannot
  * authorize a copy. A replacement has the old computer's provenance, with a new key. */
-export function mayActivate(ref: DataReference, { link = readLink(), origin }: {
-  link?: LinkState | null; origin?: string | null;
+export function mayActivate(ref: DataReference, { link = readLink(), origin, activating }: {
+  link?: LinkState | null; origin?: string | null; activating?: string;
 } = {}): boolean {
   const scope = dataOwner(ref.kind, ref.queue);
   if (!scope || scope === "client") return false;
   const own = link && ownKey(link);
   const id = dataOwner(ref.kind) === undefined ? ref.queue : ref.id;
-  if (id && frozen().has(id)) return false;
+  if (id && (activating ? frozen(liveMoves().filter(move => move.id !== activating)) : frozen()).has(id)) return false;
   const accepted = acceptedOwner(link, ref);
+  if (activating) {
+    if (followedSetup(link)?.checkpointed) return accepted === own && assignmentFor(link, ref)?.move === activating;
+    if (!accepted) return true; // The legacy switch was authenticated and durably recorded by the move protocol.
+  }
   if (accepted) return accepted === own;
   if (scope === "primary") {
     const primary = followedSetup(link)?.primary ?? link?.setup?.primary;
@@ -98,7 +114,7 @@ export function mayActivate(ref: DataReference, { link = readLink(), origin }: {
   if (departure && replacementOwner(link, departure.key) !== own) return false;
   // Legacy move notices lack a setup-level decision. Treat a remote notice as
   // a reason to hold a recovered copy, never as permission to activate one.
-  const hinted = origin && scope === "session computer" && id ? movedOf(link).get(id) : undefined;
+  const hinted = origin && id ? movedOf(link).get(id) : undefined;
   if (hinted && replacementOwner(link, hinted) !== own) return false;
   return !origin || replacementOwner(link, origin) === own;
 }
@@ -125,12 +141,13 @@ export function ownerOf(ref: DataReference, {
     const primary = setup?.primary ?? link?.setup?.primary;
     return primary ? named(primary) : here();
   }
-  if (scope === "local computer") return ref.computer ? named(ref.computer) : here();
+
 
   const id = dataOwner(ref.kind) === undefined ? ref.queue : ref.id;
-  if (!id || !DATA_ID.test(id)) return null;
   const accepted = acceptedOwner(link, ref);
   if (accepted) return named(accepted);
+  if (scope === "local computer") return ref.computer ? named(ref.computer) : here();
+  if (!id || !DATA_ID.test(id)) return null;
 
   const switched = liveMoves().find(move => move.role === "from" && (move.stage === "switching" || move.stage === "finishing")
     && (move.thing === id || move.sessions.includes(id)));
@@ -143,4 +160,12 @@ export function ownerOf(ref: DataReference, {
   if (candidates.length === 1) return named(candidates[0]!.key);
   if (candidates.length > 1) return null;
   return ref.computer ? named(ref.computer) : null;
+}
+
+/** Decide what a replacement can install from the available item and ownership evidence. */
+export function queueCopyDecision(ref: DataReference, authority: Parameters<typeof mayActivate>[1],
+  evidence: { deleted: boolean; handing: boolean; departed: boolean; claimed: boolean }): "active" | "deleted" | "held" {
+  if (evidence.deleted) return "deleted";
+  if (evidence.handing || evidence.departed || evidence.claimed || !mayActivate(ref, authority)) return "held";
+  return "active";
 }

@@ -25,6 +25,8 @@ export interface MoveRecord extends Move {
   /** The other box's key. */
   peer: string;
   wasPaused: boolean;
+  /** The primary acknowledged this source’s ownership transfer. */
+  ownershipCommitted?: true;
   /** The original pause was persisted before this source wrote its move marker. */
   pauseRecorded?: boolean;
   folder?: string;

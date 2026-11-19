@@ -1,3 +1,4 @@
+import type { ReviewReceipt } from "./store"
 // The group chats that live on this computer, run here: the lead first, then whoever's named or
 // next in line, one bot at a time, until they've nothing to add; the lead's wrap-up and who does
 // what; each part in its bot's own conversation, its report back in the chat; meetings at their
@@ -391,6 +392,51 @@ export class GroupRunner {
       }
     }
     return true
+  }
+
+  /** Settle the restored transcript while held, then commit activation with its receipt. */
+  finishRestoreReview(id: string, operation: string, decision: ReviewReceipt["decision"]): ReviewReceipt | undefined {
+    const kept = this.chats.get(id)
+    if (!kept) return undefined
+    if (kept.reviewReceipt) {
+      const receipt = kept.reviewReceipt
+      if (receipt.operation !== operation || receipt.decision !== decision) return undefined
+      if (receipt.status === "committed") return receipt
+    }
+    if (!kept.restoreReview) return undefined
+    const receipt: ReviewReceipt = { operation, decision, status: "committed" }
+    if (!kept.reviewReceipt) {
+      const pending: ReviewReceipt = { ...receipt, status: "pending" }
+      this.context.store.saveGroup({ ...kept, reviewReceipt: pending })
+      kept.reviewReceipt = pending
+    }
+    const reviewed = structuredClone(kept)
+    for (const message of reviewed.messages) {
+      for (const task of message.tasks ?? []) {
+        // A working part may already have run on the old computer. A resume starts only waiting parts.
+        if (task.state === "working" || (decision === "discard" && (task.state === "waiting" || task.state === "proposed"))) {
+          task.state = "failed"
+          task.finished ??= stamp()
+          delete task.prompt
+          delete task.lost
+        }
+      }
+    }
+    if (decision === "discard") delete reviewed.group.meeting
+    delete reviewed.turning
+    delete reviewed.talking
+    delete reviewed.paused
+    delete reviewed.restoreReview
+    reviewed.status = "active"
+    reviewed.reviewReceipt = receipt
+    this.context.store.saveMessages(reviewed)
+    this.context.store.saveGroup(reviewed)
+    this.chats.set(id, reviewed)
+    this.keepAwake(id)
+    this.told(id)
+    emit("kuvo.group.reset", { id })
+    this.began(id)
+    return receipt
   }
 
   /** Started here: its parts under way are followed, its bots remember it, its meetings are held. */

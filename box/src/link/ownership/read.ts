@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { dataKind, dataOwner, type DataKind } from "../../shared/data-declarations";
 import { isObject, parsed } from "../../shared/json";
 import { OWNER } from "../../shared/work-queue-owner";
@@ -33,6 +34,7 @@ interface Snapshot {
   at: number;
   value?: unknown;
   absent?: true;
+  generation?: string;
   files: string[];
   messages: string[];
 }
@@ -182,7 +184,10 @@ export async function readOwned(context: RouteContext) {
   if (!ref || !ownershipReady()) return json(200, view(resolved, null, query, !resolved.reachable));
   if (!resolved.local && (!resolved.key || !peersOf(link).some(peer => peer.key === resolved.key)))
     return json(200, view({ ...resolved, reachable: false }, null, query, true));
-  const cache = recordKey(followedSetup(link)?.id ?? "", resolved.key ?? "", kind, id, offset ?? "");
+  const record = [followedSetup(link)?.id ?? "", resolved.key ?? "", kind, id];
+  const absence = recordKey(...record);
+  const cache = recordKey(...record, offset ?? "");
+  const generation = resolved.local ? undefined : readRecord<Snapshot>("reads", absence)?.generation;
   const peer = peersOf(link).find(each => each.key === resolved.key);
   const answer = local ?? (resolved.local
     ? await localRead(ref, context, { targets: targetsOf(context), bridge: Boolean(context.bridge()) }, resolved.key).catch(() => null)
@@ -194,18 +199,22 @@ export async function readOwned(context: RouteContext) {
       return json(409, { message: "The owner changed. Read the record again." });
   }
   if (answer?.status === 200) {
-    const saved = { at: Date.now(), ...snapshot(answer.value, kind) };
+    const absent = resolved.local ? undefined : readRecord<Snapshot>("reads", absence);
+    if (absent && absent.generation !== generation) return json(200, view(resolved, absent, query, true));
+    const saved = { at: Date.now(), ...snapshot(answer.value, kind), generation };
     if (!resolved.local) keepRecord("reads", cache, saved);
     return json(200, view(resolved, saved, query, false));
   }
   if (answer?.status === 404 && !("refused" in answer)) {
     const absent: Snapshot = { at: Date.now(), absent: true, files: [], messages: [] };
-    if (!resolved.local) keepRecord("reads", cache, absent);
+    if (!resolved.local) keepRecord("reads", absence, { ...absent, generation: randomUUID() });
     return json(200, view(resolved, absent, query, false));
   }
   const unavailable = !answer || ("refused" in answer && answer.status !== 409);
   const snapshotAllowed = !resolved.local && kind !== "pendingSessionWork" && (unavailable || (answer && answer.status >= 500));
-  const last = snapshotAllowed ? readRecord<Snapshot>("reads", cache) : undefined;
+  const absent = snapshotAllowed ? readRecord<Snapshot>("reads", absence) : undefined;
+  const page = snapshotAllowed ? readRecord<Snapshot>("reads", cache) : undefined;
+  const last = page?.generation === absent?.generation ? page : absent;
   return json(200, view(unavailable && !resolved.local ? { ...resolved, reachable: false } : resolved, last ?? null, query, true));
 }
 

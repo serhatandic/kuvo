@@ -6961,6 +6961,9 @@
             "literal": "moves"
            },
            {
+            "literal": "moves.accepted-ownership"
+           },
+           {
             "literal": "moves.agents"
            },
            {
@@ -7748,6 +7751,9 @@
            },
            {
             "literal": "moves"
+           },
+           {
+            "literal": "moves.accepted-ownership"
            },
            {
             "literal": "moves.agents"

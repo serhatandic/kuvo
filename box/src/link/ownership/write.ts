@@ -18,7 +18,7 @@ import { followedSetup } from "../setup/record";
 import { readLink } from "../state";
 import { forwardAct, takesForwarded, type Act, type Acted } from "../work-queue/forward";
 import { mayActivate, type DataReference, type Owner } from "./resolve";
-import { MUTATION_FEATURE, mutationKey, runMutation } from "./mutation";
+import { MUTATION_FEATURE, mutationKey, mutationNonce, runMutation } from "./mutation";
 import { ownershipReady } from "./store";
 
 type Method = "PATCH" | "POST" | "DELETE";
@@ -59,6 +59,8 @@ export function ownerWrite(method: string, path: string, body: unknown): Write |
 export async function sendOwnerWrite(write: Write, body: unknown, owner: Owner, context: RouteContext, operation?: string): Promise<Acted> {
   if (write.path.startsWith("kuvo/work-queue/") && !workQueueClient(context))
     return { status: 403, value: { message: "Open this from a paired Kuvo Code client." } };
+  if (write.ref.kind === "queueItems" && !operation)
+    return { status: 400, value: { message: "Send a valid operation id." } };
   const link = readLink();
   const peer = peersOf(link).find(each => each.key === owner.key);
   if (!peer) return { status: 409, value: { message: `Open this record on ${owner.name} to change it.` } };
@@ -104,6 +106,9 @@ export async function writeForPeer(sender: MailSender, act: Act, places: PeerPla
     || (id && (frozen().has(id) || awaySessions().includes(id)))) return denied;
   const request: RouteContext["request"] = { fromOwnerPeer: true, method: write.method, path: write.path, headers: act.operation ? { "x-kuvo-operation": act.operation } : {}, body: Buffer.from(JSON.stringify(act.body?.value ?? null)), desktop: true };
   const json: RouteContext["json"] = (status, value) => [{ head: { status, headers: { "content-type": "application/json" } } }, { body: Buffer.from(JSON.stringify(value)) }];
+  if (write.ref.kind === "queueItems" && (!act.operation || !mutationNonce(request, act.body?.value))) {
+    return { status: 400, value: { message: "Send a valid operation id." } };
+  }
   return runOwnerWrite(write, act.body?.value, {
     request, route: write.path, phone: undefined, signal: AbortSignal.timeout(15_000), info: { name: "" },
     phonesChanged: () => {}, hold: null, readEngine: readEngineFile, readBridge: readBridgeFile,

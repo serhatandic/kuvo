@@ -59,7 +59,7 @@ async function until(what, read, signal) {
   throw new Error(`Timed out waiting for ${what}`);
 }
 
-async function network(t, takeover = false, releaseKey, owned = false) {
+async function network(t, takeover = false, releaseKey, owned = false, movingGroup) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-handover-"));
   const relay = await relayStandIn(link);
   const boxScript = releaseKey ? path.join(root, "kuvo-link.mjs") : script;
@@ -71,8 +71,27 @@ async function network(t, takeover = false, releaseKey, owned = false) {
   let labelCall;
   const prompts = [];
   const groupMessages = [];
-  const bridgePID = owned ? await runningAs("kuvo-agents", t) : null;
+  const bridgePID = owned || movingGroup ? await runningAs("kuvo-agents", t) : null;
+  const groupCopies = new Map(movingGroup ? [["Lab", { group: movingGroup, messages: [], status: "active" }]] : []);
   const engine = http.createServer((request, response) => {
+    const groupPath = movingGroup && /^\/api\/kuvo\/groups(?:\/(grp_[a-z0-9]+)(?:\/(hold|activate|release))?)?$/.exec(request.url);
+    if (groupPath) {
+      const box = Buffer.from(request.headers.authorization?.slice(6) ?? "", "base64").toString().split(":")[1];
+      const chat = groupCopies.get(box);
+      const send = (status, data) => response.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify({ data }));
+      if (!groupPath[1]) return send(200, chat ? [chat] : []);
+      if (request.method === "PUT") {
+        const parts = [];
+        request.on("data", part => parts.push(part));
+        request.on("end", () => { groupCopies.set(box, JSON.parse(Buffer.concat(parts))); send(200, true); });
+        return;
+      }
+      if (!chat) return send(404, null);
+      if (groupPath[2] === "hold") chat.status = "held";
+      if (groupPath[2] === "activate") chat.status = "active";
+      if (groupPath[2] === "release") groupCopies.delete(box);
+      return send(200, chat);
+    }
     if (owned) {
       const local = request.headers.authorization === "Basic " + Buffer.from("opencode:Lab").toString("base64");
       const send = (status, value) => response.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(value));
@@ -143,7 +162,7 @@ async function network(t, takeover = false, releaseKey, owned = false) {
     const run = path.join(home, "run");
     fs.mkdirSync(path.join(run, "work-queue"), { recursive: true });
     fs.writeFileSync(path.join(run, "engine.json"), JSON.stringify({ port: engine.address().port, password: owned ? name : "test" }));
-    if (bridgePID && name === "Lab") fs.writeFileSync(path.join(run, "bridge.json"), JSON.stringify({
+    if (bridgePID && (name === "Lab" || movingGroup && name === "Studio")) fs.writeFileSync(path.join(run, "bridge.json"), JSON.stringify({
       pid: bridgePID, port: engine.address().port, password: name,
     }));
     const read = file => JSON.parse(fs.readFileSync(path.join(run, file), "utf8"));
@@ -232,13 +251,16 @@ async function network(t, takeover = false, releaseKey, owned = false) {
   });
   const [a, b, c] = boxes;
   const setup = { id: `set_${crypto.randomBytes(16).toString("base64url")}`, epoch: 1, primary: a.key };
-  const book = link.signDoc(a.seed, "peers", 1, { setup, boxes: boxes.map(box => box.entry), moved: [], left: [] });
+  const roster = { boxes: boxes.map(box => box.entry), moved: [], left: [] };
+  const accepted = movingGroup ? { managed: true, checkpointed: true } : {};
+  const book = link.signDoc(a.seed, "peers", 1, { setup, ...roster, ...accepted });
   const phone = link.publicOf(link.newKey()).toString("base64url");
   const pairing = crypto.randomBytes(16).toString("base64url");
   for (const box of boxes) {
     fs.writeFileSync(path.join(box.run, "link.json"), JSON.stringify({
       ...box.identity,
-      setup: { ...setup, role: box === a ? "primary" : "member", sign: a.sign },
+      setup: { ...setup, ...accepted, role: box === a ? "primary" : "member", sign: a.sign },
+      ...(movingGroup ? { sharedSetup: setup.id, shared: { membershipAndAccess: { sequence: 1, value: roster } } } : {}),
       ...(box === a ? {
         macPeers: [b.entry, c.entry], phones: [{ key: phone, pairing, from: "pair", name: "Device" }],
         vouchBlocked: [{ key: c.key, device: "Revoked", at: 1 }],
@@ -246,6 +268,12 @@ async function network(t, takeover = false, releaseKey, owned = false) {
     }));
   }
   fs.writeFileSync(path.join(a.run, "work-queue", "numbers.json"), JSON.stringify({ primary: "self", next: 401, leases: [] }));
+  if (movingGroup) for (const bot of movingGroup.members) {
+    const dir = path.join(a.env.HOME, "bots", bot);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "bot.json"), JSON.stringify({ kuvo: 1, id: bot, name: bot }));
+    fs.writeFileSync(path.join(dir, "session"), "ses_" + bot.slice(4));
+  }
   // Start the members first so the primary can immediately hear their feature advertisement.
   for (const box of [b, c, a]) box.start();
   await until("connected setup", () => boxes.every(box => relay.has(box.address)) && a.heard(b.key) && a.heard(c.key) && c.heard(a.key) && b.heard(a.key), t.signal);
@@ -253,8 +281,57 @@ async function network(t, takeover = false, releaseKey, owned = false) {
     const setup = box.read().setup;
     return setup.epoch === epoch && setup.primary === primary.key && setup.role === (box === primary ? "primary" : "member") && setup;
   }, t.signal);
-  return { boxes, a, b, c, relay, see, phone, pairing, prompts, groupMessages };
+  return { boxes, a, b, c, relay, see, phone, pairing, prompts, groupMessages, groupCopies };
 }
+
+test("failure bench: a real idle group move survives source loss and replacement restore", { timeout: 55_000 }, async t => {
+  const group = { id: "grp_recovery", name: "Recovered group", members: ["bot_one", "bot_two"], created: "2026-11-01T00:00:00Z", seats: {}, heard: {} };
+  const { a, b, c, groupCopies } = await network(t, false, undefined, false, group);
+  const groupPath = "groups/" + group.id;
+  const oldGroup = path.join(c.env.HOME, groupPath);
+  fs.mkdirSync(oldGroup, { recursive: true });
+  fs.writeFileSync(path.join(oldGroup, "group.json"), JSON.stringify({ kuvo: 1, status: "active", group }));
+  fs.writeFileSync(path.join(oldGroup, "messages.json"), "[]");
+  const folder = path.join(c.env.TMPDIR, "backups");
+  fs.mkdirSync(folder);
+  const destination = { kind: "disk", path: folder };
+  const source = "b_" + crypto.randomBytes(16).toString("base64url");
+  const recoveryKey = crypto.randomBytes(32).toString("base64url");
+  const point = "2026-11-19T000000.000Z-daily-0123456789abcdef";
+  const backup = await c.evaluate(testBun(), ["--config=/dev/null", "--no-env-file", "-e", `
+    import { captureBackup, scratchFolder } from ${JSON.stringify(new URL("../src/link/backup/engine.ts", import.meta.url).href)};
+    import { destinationStore } from ${JSON.stringify(new URL("../src/link/backup/destination.ts", import.meta.url).href)};
+    const destination = ${JSON.stringify(destination)};
+    const source = ${JSON.stringify(source)};
+    const point = ${JSON.stringify(point)};
+    const scratch = scratchFolder();
+    const file = scratch + "/archive";
+    const manifest = captureBackup(file, ${JSON.stringify(recoveryKey)}, source, point, Date.now(), [], scratch);
+    await destinationStore(destination, source).put(point, file);
+    console.log(JSON.stringify(manifest));
+  `]);
+  assert.equal(backup.status, 0, backup.err);
+  assert.equal(backup.value.paired, true);
+
+  const moved = await c.route("POST", "kuvo/moves", { kind: "group", id: group.id, to: a.key, receipt: true }, true);
+  assert.equal(moved.status, 202, JSON.stringify(moved.value));
+  const receipt = path.join(c.run, "moves", moved.value.move.id + ".outcome.json");
+  await until("move completed", () => fs.existsSync(receipt), t.signal);
+  assert.equal(groupCopies.get("Studio")?.status, "active", JSON.stringify(JSON.parse(fs.readFileSync(receipt))));
+  assert.equal(groupCopies.has("Lab"), false);
+  await c.stop("SIGTERM");
+  fs.rmSync(c.env.HOME, { recursive: true });
+  assert.equal((await a.route("DELETE", "kuvo/computers/" + c.key)).status, 200);
+  const matched = await a.route("POST", "kuvo/box/backups/match", { source, previous: c.key, replacement: b.key }, true);
+  assert.equal(matched.status, 200, JSON.stringify(matched.value));
+  await until("replacement ownership replica", () => b.read().shared?.ownershipAssignments?.value?.["replacement:" + c.key], t.signal);
+
+  const recovered = await b.route("POST", "kuvo/box/backups/restore", { destination, source, id: point, recoveryKey, confirm: true }, true);
+  assert.equal(recovered.status, 200, JSON.stringify(recovered.value));
+  assert.ok(recovered.value.unavailable.some(entry => entry.entry === groupPath + "/group.json" && entry.reason === "moved"));
+  assert.equal(fs.existsSync(path.join(b.env.HOME, groupPath, "group.json")), false);
+  assert.equal(groupCopies.get("Studio")?.status, "active");
+});
 
 test("failure bench: an away owner leaves saved reads and accepts an unsent message on return", { timeout: 50_000 }, async t => {
   const { a, b, c, relay, prompts, groupMessages } = await network(t, false, undefined, true);
@@ -341,7 +418,7 @@ test("failure bench: a member runs its own conversation and Work Queue while the
   assert.equal(c.read().setup.primary, a.key);
   assert.equal((await c.route("POST", "kuvo/sessions/ses_owned/send", { id: "msg_local", words: "Keep going." })).status, 200);
   assert.deepEqual(prompts.map(prompt => prompt.id), ["msg_local"]);
-  const work = await c.route("POST", "kuvo/work-queue/items", { owner: "ses_owned", title: "Continue on Lab" }, true);
+  const work = await c.route("POST", "kuvo/work-queue/items", { owner: "ses_owned", operation: "continue-on-lab", title: "Continue on Lab" }, true);
   assert.equal(work.status, 200);
   assert.equal((await c.route("GET", `kuvo/work-queue/items/${work.value.item.id}`)).value.item.title, "Continue on Lab");
   const create = { owner: "ses_owned", title: "Desk sends to Lab", operation: "one-create-from-desk" };
@@ -670,7 +747,7 @@ test("failure bench: only the standby takes over across a split and the old prim
   assert.equal(blocked.value.pending, true);
   const interrupted = pendingOperation(a, "membershipAndAccess");
   assert.ok(interrupted);
-  const work = await a.route("POST", "kuvo/work-queue/items", { title: "Work survives the split" }, true);
+  const work = await a.route("POST", "kuvo/work-queue/items", { operation: "work-survives-split", title: "Work survives the split" }, true);
   assert.equal(work.status, 200);
   const stale = a.read();
 
@@ -1095,7 +1172,7 @@ test("failure bench: a save waits durably through standby and primary restarts",
   assert.equal(pendingOperation(a, usage.kind), display.receipt.operation);
   assert.equal((await link.askSetupStatus(a.run, { id: usage.id, operation: display.receipt.operation })).outcome, "pending");
   assert.equal(await setupName(a, c.key), c.name);
-  const item = await a.route("POST", "kuvo/work-queue/items", { title: "Everyday work" }, true);
+  const item = await a.route("POST", "kuvo/work-queue/items", { operation: "everyday-work", title: "Everyday work" }, true);
   assert.equal(item.status, 200);
   assert.equal(item.value.item.number, undefined);
   await a.stop();
@@ -1122,7 +1199,7 @@ test("failure bench: a save waits durably through standby and primary restarts",
 test("failure bench: number blocks stay unique across a takeover", { timeout: 55_000 }, async t => {
   const { a, b, c, relay, see } = await standbyNetwork(t);
   const make = async (box, title) => {
-    const answer = await box.route("POST", "kuvo/work-queue/items", { title }, true);
+    const answer = await box.route("POST", "kuvo/work-queue/items", { title, operation: crypto.randomUUID() }, true);
     assert.equal(answer.status, 200);
     return answer.value.item;
   };

@@ -1,5 +1,6 @@
 import "./safety"
 import { expect, spyOn, test } from "bun:test";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -16,7 +17,7 @@ test("references follow the shared Work Queue rule and preserve UTF-16 offsets",
 
 test("mentions from descriptions and notes, and a stored relationship read from both ends", async () => {
   const make = (title: string, number: number) => {
-    const added = addHere({ title });
+    const added = addHere({ title }, false, randomUUID());
     expect(added.status).toBe(200);
     const item = allItems().find(each => each.title === title)!;
     changeQueues(book => { book.items().find(each => each.id === item.id)!.number = number; });
@@ -61,7 +62,7 @@ test("mentions from descriptions and notes, and a stored relationship read from 
 test("inline attachment anchors follow the stored files and their collision-safe names", async () => {
   const file = { name: "Login [wide].png", uri: "data:image/png;base64,YWJj" };
   const marker = (index: number) => `![Attachment](kuvo-attachment:draft/${index}/Login%20%5Bwide%5D.png)`;
-  const result = addHere({ title: "Two captures", body: `Before\n${marker(1)}\nBetween\n${marker(0)}\nAfter`, files: [file, file] });
+  const result = addHere({ title: "Two captures", body: `Before\n${marker(1)}\nBetween\n${marker(0)}\nAfter`, files: [file, file] }, false, randomUUID());
   expect(result.status).toBe(200);
   const saved = allItems().find(item => item.title === "Two captures")!;
   const [first, second] = saved.files;
@@ -102,7 +103,7 @@ const read = async (id: string) => {
   } }).item;
 };
 const add = (title: string, given = {}) => {
-  const answer = addHere({ title, ...given });
+  const answer = addHere({ title, ...given }, false, randomUUID());
   expect(answer.status).toBe(200);
   return (answer.value as { item: { id: string } }).item.id;
 };

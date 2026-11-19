@@ -436,6 +436,51 @@ test("a restored queue item with a newer departure is held with its files", () =
   assert.equal(fs.readFileSync(path.join(target, "backup/recovered", id, "home", file), "utf8"), "keep with held item");
 });
 
+test("held Work Queue items can be kept or discarded through recovery", () => {
+  const owner = scratch(), dest = scratch(), replacement = scratch();
+  const box = home(owner), target = home(replacement);
+  const keep = "wqi_" + "K".repeat(20), discard = "wqi_" + "D".repeat(20);
+  const queue = "run/work-queue/queues/usr_you.json";
+  const handing = { id: "wqh_restore", to: "ses_other", key: "A".repeat(43), at: 1, by: { user: true } };
+  put(box, "folder-version.json", '{"version":7}');
+  put(target, "folder-version.json", '{"version":7}');
+  put(box, queue, JSON.stringify({ owner: "usr_you", items: [
+    { id: keep, title: "Keep this", handing, files: [{ name: "proof.txt", size: 5 }] },
+    { id: discard, title: "Discard this", handing },
+  ] }));
+  put(box, `run/work-queue/files/${keep}/proof.txt`, "proof");
+  take(owner, dest);
+  recover(replacement, dest);
+  bunIn(replacement, `
+    import assert from "node:assert/strict";
+    import fs from "node:fs";
+    import { engineHandler } from ${JSON.stringify(new URL("../src/link/server/router.ts", import.meta.url).href)};
+    import { collected } from ${JSON.stringify(new URL("../src/link/server/sent-once.ts", import.meta.url).href)};
+    const keep = ${JSON.stringify(keep)}, discard = ${JSON.stringify(discard)};
+    const handle = engineHandler();
+    const ask = async (method, given = {}, fromApp = true) => {
+      const reply = await collected(handle({ fromApp, served: true, method, path: "kuvo/box/backups/pending", headers: {},
+        body: Buffer.from(JSON.stringify(given)) }, {}));
+      return { status: reply.status, body: JSON.parse(reply.body) };
+    };
+    const pending = (await ask("GET")).body.queueItems;
+    assert.deepEqual(pending.map(item => item.id).sort(), [discard, keep]);
+    assert.equal(pending.find(item => item.id === keep).canKeep, true);
+    const choice = { kind: "queueItem", id: keep, operation: "keep-recovered-item", decision: "keep" };
+    assert.equal((await ask("POST", choice, false)).status, 403);
+    const reviewed = await ask("POST", choice);
+    assert.equal(reviewed.status, 200, JSON.stringify(reviewed.body));
+    assert.deepEqual(await ask("POST", choice), reviewed);
+    assert.equal((await ask("POST", { ...choice, decision: "discard" })).status, 409);
+    assert.equal((await ask("POST", { kind: "queueItem", id: discard, operation: "discard-recovered-item", decision: "discard" })).status, 200);
+    assert.deepEqual((await ask("GET")).body.queueItems, []);
+    const restored = JSON.parse(fs.readFileSync(process.env.KUVO_HOME + "/${queue}", "utf8")).items;
+    assert.deepEqual(restored.map(item => item.id), [keep]);
+    assert.equal(restored[0].handing, undefined);
+    assert.equal(fs.readFileSync(process.env.KUVO_HOME + "/run/work-queue/files/" + keep + "/proof.txt", "utf8"), "proof");
+  `);
+});
+
 test("restore inventories the upgraded home and external roots", () => {
   bunIn(scratch(), `
     import assert from "node:assert/strict";
@@ -462,7 +507,7 @@ test("failure bench: a paired backup cannot reactivate an item handed off after 
   const old = scratch(), primary = scratch(), replacement = scratch(), dest = scratch();
   const oldBox = home(old), item = "wqi_" + "B".repeat(20);
   put(oldBox, "folder-version.json", '{"version":7}');
-  put(oldBox, "run/work-queue/queues/usr_you.json", JSON.stringify({ owner: "usr_you", items: [{ id: item, title: "Before handoff" }] }));
+  put(oldBox, "run/work-queue/queues/usr_you.json", JSON.stringify({ owner: "usr_you", items: [{ id: item, title: "Before handoff" }, { id: "wqi_" + "C".repeat(20), title: "Unchanged" }] }));
   const authority = `
     import { publicOf } from ${cryptoKeys};
     import { signingKeyOf } from ${setup};
@@ -479,14 +524,13 @@ test("failure bench: a paired backup cannot reactivate an item handed off after 
         membershipAndAccess: { sequence: after ? 2 : 1, value: {
           left: after ? [old] : [], boxes: [primary, after ? replacement : old, recipient].map(peer),
         } },
-        ...(after ? { ownershipAssignments: { sequence: 1, value: { ["replacement:" + old]: { computer: replacement, source } } } } : {}),
+        ...(after ? { ownershipAssignments: { sequence: 1, value: { ["replacement:" + old]: { computer: replacement, source }, ["queue item:wqi_" + "B".repeat(20)]: { computer: recipient, queue: "ses_recipient" } } } } : {}),
       },
     });
   `;
   bunIn(old, `${authority} writeLink(state(43, false));`);
   assert.equal(JSON.parse(take(old, dest)).paired, true);
-  // The source learned about the handoff after the backup. Its local fence
-  // is deliberately unavailable to the freshly enrolled replacement.
+  // The handoff after the backup reached the recipient. The primary accepted its new owner.
   const record = n => JSON.stringify(new URL("../src/link/" + n + ".ts", import.meta.url).href);
   bunIn(old, `${authority}
     import { noteDeparture } from ${record("work-queue/store")};
@@ -518,7 +562,7 @@ test("failure bench: a paired backup cannot reactivate an item handed off after 
     console.log(JSON.stringify(await restore(destination, a.source, a.id, a.key)));
   `));
   assert.ok(result.held.some(entry => entry.startsWith("work-queue-items/")));
-  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(home(replacement), "run/work-queue/queues/usr_you.json"), "utf8")).items, []);
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(home(replacement), "run/work-queue/queues/usr_you.json"), "utf8")).items.map(item => item.title), ["Unchanged"]);
 });
 
 test("failure bench: the replacement group runner holds meetings, resumed turns and waiting work for review", () => {
@@ -568,6 +612,21 @@ test("failure bench: the replacement group runner holds meetings, resumed turns 
     const detail = await (await linkRoutes(runner, store, "GET", ["grp_a"], async () => {})).json();
     assert.equal(detail.messages[0].text, "Decisions");
     assert.equal((await linkRoutes(runner, store, "POST", ["grp_a", "keep-going"], async () => {})).status, 409);
+    const review = async (decision, operation) => {
+      const response = await linkRoutes(runner, store, "POST", ["grp_a", "restore-review"], async () => ({ decision, operation }));
+      return { status: response.status, body: await response.json() };
+    };
+    const done = await review("discard", "discard-review-1");
+    assert.equal(done.status, 200);
+    assert.deepEqual(await review("discard", "discard-review-1"), done);
+    assert.equal((await review("resume", "discard-review-1")).status, 409);
+    assert.equal(store.read("grp_a").status, "active");
+    assert.equal(store.read("grp_a").restoreReview, undefined);
+    assert.equal(store.read("grp_a").turning, undefined);
+    assert.equal(store.read("grp_a").group.meeting, undefined);
+    assert.ok(store.read("grp_a").messages[0].tasks.every(task => task.state === "failed"));
+    runner.keepGoing = () => {};
+    assert.equal((await linkRoutes(runner, store, "POST", ["grp_a", "keep-going"], async () => {})).status, 200);
   `);
 });
 

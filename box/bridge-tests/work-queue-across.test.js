@@ -1518,7 +1518,7 @@ test("a deleted item never stands for its issue while another item is it: adding
 test("a file replaced by a symlink is skipped in a hand-off and refused in a peer fetch", async () => {
   write(path.join(queues, "numbers.json"), { primary: mac.pub, leases: [[100, 149]] });
   const added = await route("POST", "kuvo/work-queue/items", {
-    owner: "ses_lead", title: "Attachment kept here",
+    operation: "attachment-kept-here", owner: "ses_lead", title: "Attachment kept here",
     files: [{ name: "photo.png", uri: "data:image/png;base64,bG9jYWw=" }],
   });
   assert.equal(added.status, 200);
@@ -1539,8 +1539,8 @@ test("a file replaced by a symlink is skipped in a hand-off and refused in a pee
 
 test("a split mention follows its original item through the move despite the destination reusing its number", async () => {
   write(path.join(queues, "numbers.json"), { primary: mac.pub, leases: [[42, 61]] });
-  const target = (await route("POST", "kuvo/work-queue/items", { owner: "ses_lead", title: "Original #42" })).body.item;
-  const source = (await route("POST", "kuvo/work-queue/items", { owner: "ses_child", title: "Follow-up", body: "See #42" })).body.item;
+  const target = (await route("POST", "kuvo/work-queue/items", { operation: "original-42", owner: "ses_lead", title: "Original #42" })).body.item;
+  const source = (await route("POST", "kuvo/work-queue/items", { operation: "follow-up-42", owner: "ses_child", title: "Follow-up", body: "See #42" })).body.item;
   const relationIds = async id => (await route("GET", `kuvo/work-queue/items/${id}`)).body.item.itemRelations.map(({ kind, id }) => [kind, id]);
   assert.deepEqual(await relationIds(target.id), [["mentioned-in", source.id]]);
 

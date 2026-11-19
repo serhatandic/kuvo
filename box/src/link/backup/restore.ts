@@ -1,3 +1,4 @@
+import { recoveredQueueDecision } from "../work-queue/recovery";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -7,7 +8,7 @@ import { swapUnderWay } from "../../shared/engine-swap";
 import { acceptedMembership } from "../setup/membership";
 import { primaryFenced } from "../setup/lease";
 import { followedSetup } from "../setup/record";
-import { awaitSharedSave, sharedValue, stageShared, type Receipt } from "../setup/shared";
+import { awaitSharedSave, pendingShared, sharedValue, stageShared, type Receipt } from "../setup/shared";
 import { readLink, updateLink, type LinkState } from "../state";
 import { ownSign } from "../documents/format";
 import { mayActivate, replacementOwner, sessionsFencedHere } from "../ownership/resolve";
@@ -25,7 +26,6 @@ import { outputPath, recordReferences, roots, stat, storageOf } from "./location
 import { restoreProjects } from "./projects";
 import { stageRestore } from "./stage";
 import { portableApproval } from "../work/approval";
-import { restoredQueueItem } from "../work-queue/recovery";
 
 const JOURNAL = path.join(BACKUP, "restore.json");
 const RESTORING = path.join(BACKUP, "restoring");
@@ -87,7 +87,8 @@ export function restoreForPeer(sender: MailSender, act: Act): Acted {
   const source = act.body?.source;
   const old = act.body?.origin;
   const match = backupSource(source) && validKey(old) ? replacementEntry(link, old) : undefined;
-  if (setup?.role !== "primary" || setup.conflict || primaryFenced(link) || link?.leadershipPending || act.body?.setup !== setup.id ||
+  if (setup?.role !== "primary" || setup.conflict || primaryFenced(link) || link?.leadershipPending ||
+      pendingShared(link, "ownershipAssignments") || pendingShared(link, "membershipAndAccess") || act.body?.setup !== setup.id ||
       !validKey(old) || !live(link, sender.key) || live(link, old) || !acceptedMembership(link)?.left.includes(old) ||
       !isObject(match) || match.source !== source || replacementOwner(link, old) !== sender.key) {
     return { status: 409, value: { message: "The primary has no current match for this replacement." } };
@@ -237,7 +238,7 @@ export async function restore(dest: Destination, source: string, id: string, key
           if (!isObject(saved) || !Array.isArray(saved.items)) throw new Error("The backup contains an unreadable Work Queue.");
           const remaining = saved.items.filter(item => {
             if (!isObject(item) || typeof item.id !== "string") throw new Error("The backup contains an unreadable Work Queue item.");
-            const decision = restoredQueueItem({ ...item, id: item.id }, queue, manifest.paired, authority,
+            const decision = recoveredQueueDecision({ ...item, id: item.id }, queue, authority,
               { deletion: savedFence("deletions", item.id), departure: savedFence("departures", item.id) });
             if (decision !== "active") {
               removedItems.add(item.id);
@@ -247,7 +248,7 @@ export async function restore(dest: Destination, source: string, id: string, key
                 const entry = `work-queue-items/${recordKey(item.id)}.json`;
                 const held = outputPath(recovery, entry.split("/"));
                 const copy = path.join(scratch, recordKey(name, item.id));
-                writeDurablePrivate(copy, JSON.stringify(item));
+                writeDurablePrivate(copy, JSON.stringify({ ...item, owner: queue }));
                 add(copy, held, entry);
                 result.held.push(entry);
               }
@@ -288,7 +289,8 @@ export async function restore(dest: Destination, source: string, id: string, key
               (isObject(record.group) && record.group.meeting) ||
               (Array.isArray(messages) && messages.some(message => isObject(message) && Array.isArray(message.tasks) &&
                 message.tasks.some(task => isObject(task) && (task.state === "waiting" || task.state === "working")))))) {
-            writeDurablePrivate(file, JSON.stringify({ ...record, status: "held", restoreReview: true }));
+            const { reviewReceipt: _previousReview, ...pending } = record;
+            writeDurablePrivate(file, JSON.stringify({ ...pending, status: "held", restoreReview: true }));
             result.held.push(name);
           }
         }

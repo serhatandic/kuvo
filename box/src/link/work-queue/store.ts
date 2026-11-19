@@ -153,6 +153,7 @@ export interface Item {
   removed?: { at: number; by: Who };
   offlineEdits?: EditHistory;
   creationReceipt?: CreationReceipt;
+  restoreReview?: string;
 }
 
 /** An owner's queue, as its file keeps it. */

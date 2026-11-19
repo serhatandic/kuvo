@@ -89,6 +89,13 @@ export async function groupRoutes(runner: GroupRunner | undefined, store: GroupS
   if (method !== "POST") return error(405, "Not allowed")
   const found = runner.get(id)
   if (!found) return error(404, "No such chat.")
+  if (action === "restore-review") {
+    const { operation, decision } = await body() ?? {}
+    if (typeof operation !== "string" || !/^[A-Za-z0-9_-]{1,80}$/.test(operation) || (decision !== "resume" && decision !== "discard"))
+      return error(400, "Send an operation id and choose whether to resume or discard the recovered work.")
+    const receipt = runner.finishRestoreReview(id, operation, decision)
+    return receipt ? json(receipt) : error(409, "This group has no matching review to finish.")
+  }
   if (found.restoreReview) return error(409, "Review the recovered group work before starting this chat.")
   switch (action) {
     case "activate":

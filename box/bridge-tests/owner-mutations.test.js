@@ -52,14 +52,16 @@ test("one queue creation receipt covers direct requests and fresh forwarding att
   import { allItems } from ${url("work-queue/store")};
   const route = "kuvo/work-queue/items", operation = "client-create-once";
   const value = { owner: "usr_you", title: "Build once" };
-  const attempt = async (suffix, sent = value) => {
+  const attempt = async (suffix, sent = value, nonce = operation) => {
     let answer;
     await takeAct(peer(from), { id: "wqa_" + suffix.repeat(22), at: Date.now(), area: "ownership",
-      item: route, method: "POST", operation, body: { value: sent } }, reply => { answer = reply.acted; },
+      item: route, method: "POST", ...(nonce ? { operation: nonce } : {}), body: { value: sent } }, reply => { answer = reply.acted; },
       act => writeForPeer(peer(from), act, { targets: [] }));
     const { id: _delivery, ...result } = answer;
     return result;
   };
+  assert.equal((await ask("POST", route, value)).status, 400);
+  assert.equal((await attempt("D", value, "")).status, 400);
   const first = await attempt("A");
   assert.equal(first.status, 200);
   forgetActs();
@@ -119,14 +121,14 @@ test("authoritative absence replaces a remote record in the snapshot cache", () 
   import { FORWARDS, forwardsSoon, takeActed } from ${url("work-queue/forward")};
   const run = path.join(process.env.KUVO_HOME, "run");
   fs.writeFileSync(path.join(run, "peer-agents.json"), JSON.stringify({ [from]: { features: ["data.ownership"], heard: Date.now(), list: [] } }));
-  const route = "kuvo/data/owner?kind=botSettings&id=bot_a&computer=" + from;
+  const route = "kuvo/data/owner?kind=conversations&id=ses_a&computer=" + from;
   let status = 200;
   forwardsSoon.send = () => {
     const [file] = fs.readdirSync(FORWARDS);
     const { act } = JSON.parse(fs.readFileSync(path.join(FORWARDS, file), "utf8"));
     takeActed(peer(from), { id: act.id, status, value: status === 200 ? { name: "Before deletion" } : null });
   };
-  const received = (await ask("GET", route, {})).value;
+  const received = (await ask("GET", route + "&offset=msg_older", {})).value;
   assert.equal(received.data.name, "Before deletion");
   status = 404;
   const gone = (await ask("GET", route, {})).value;
@@ -134,10 +136,15 @@ test("authoritative absence replaces a remote record in the snapshot cache", () 
   assert.equal(gone.stale, false);
   assert.ok(gone.lastReceivedAt >= received.lastReceivedAt);
   status = 503;
-  const offline = (await ask("GET", route, {})).value;
+  const offline = (await ask("GET", route + "&offset=msg_older", {})).value;
   assert.equal(offline.state, "neverReceived");
   assert.equal(offline.lastReceivedAt, gone.lastReceivedAt);
   assert.equal(offline.data, undefined);
+  status = 200;
+  assert.equal((await ask("GET", route, {})).value.state, "received");
+  status = 503;
+  assert.equal((await ask("GET", route, {})).value.state, "received");
+  assert.equal((await ask("GET", route + "&offset=msg_older", {})).value.state, "neverReceived");
 `));
 
 test("a setup draft above the owner capacity reaches a terminal receipt and stays recoverable", () => isolated(`

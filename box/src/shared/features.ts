@@ -147,6 +147,7 @@ export const FEATURES = [
   "models.readiness",
   "models.starred",
   "moves",
+  "moves.accepted-ownership",
   "moves.agents",
   "moves.check",
   "named",

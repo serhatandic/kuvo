@@ -270,9 +270,9 @@ export async function* workQueueRoute(context: RouteContext, match: RegExpMatchA
     if (method !== "POST") return yield* json(405, {});
     if (!workQueueClient(context)) return yield* json(403, { message: notClient(context) });
     const nonce = mutationNonce(request, given);
-    if (nonce === null) return yield* json(400, { message: "Send a valid operation id." });
+    if (!nonce) return yield* json(400, { message: "Send a valid operation id." });
     const setup = followedSetup(readLink());
-    return yield* answered(addHere(given, fromLocalApp(request), nonce && mutationKey(setup?.id ?? "", nonce)), json);
+    return yield* answered(addHere(given, fromLocalApp(request), mutationKey(setup?.id ?? "", nonce)), json);
   }
 
   if (part === "import") {

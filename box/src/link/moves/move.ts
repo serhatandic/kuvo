@@ -35,6 +35,9 @@ import { mailFor, ownKey, peersOf } from "../peers/known";
 import type { MailSender, Peer } from "../peers/known";
 import type { LinkHost } from "../relay/host";
 import { readLink } from "../state";
+import { followedSetup } from "../setup/record";
+import { mayActivate } from "../ownership/resolve";
+import { commitTransfer, moveReference, transferAccepted } from "../ownership/transfer";
 import { goalRuns, proposedGoals } from "../work/goals";
 import { workAsks } from "../work/asks";
 import { ofBot, under, workSessions } from "../work/tree";
@@ -486,8 +489,9 @@ export async function beginMove(kind: MoveKind, thing: string, to: string, signa
   const own = link ? ownKey(link) : null;
   const peer = peersOf(link).find(each => each.key === to);
   if (!own || !peer || to === own) return { ok: false, status: 404, message: "That computer isn’t one of yours." };
-  if (olderThanMoves(to)) return { ok: false, status: 409, message: say.needsUpdate(plainName(peer.name) || "That computer") };
   if (moveOf(thing)) return { ok: false, status: 409, message: say.moving };
+  if (!mayActivate(moveReference(kind, thing), { link })) return { ok: false, status: 409, message: "This record is held while its owner changes." };
+  if (olderThanMoves(to) || (followedSetup(link)?.checkpointed && !readPeerAgents()[to]?.features?.includes("moves.accepted-ownership"))) return { ok: false, status: 409, message: say.needsUpdate(plainName(peer.name) || "That computer") };
   const what = await movable(kind, thing, signal);
   if (!what) return { ok: false, status: 404, message: "It isn’t on this computer any more." };
   if (what.why) return { ok: false, status: 409, message: what.why };
@@ -831,7 +835,7 @@ const sameBundle = (record: BundleIdentity, given: Record<string, unknown>): boo
 
 function offer(record: MoveRecord, ticks = performance.now()): void {
   markedRetry(record, ticks);
-  tell(record.peer, { op: "offer", safeSwitch: true, id: record.id, ...bundleIdentity(record), kind: record.kind, thing: record.thing, name: record.name, size: record.size, wasPaused: record.wasPaused, ...(record.pausedAs !== undefined ? { pausedAs: record.pausedAs } : {}), from: record.from, ...(record.members ? { members: record.members } : {}), ...(record.lane ? { lane: true } : {}) });
+  tell(record.peer, { op: "offer", safeSwitch: true, ...(followedSetup(readLink())?.checkpointed ? { acceptedOwnership: true } : {}), id: record.id, ...bundleIdentity(record), kind: record.kind, thing: record.thing, name: record.name, size: record.size, wasPaused: record.wasPaused, ...(record.pausedAs !== undefined ? { pausedAs: record.pausedAs } : {}), from: record.from, ...(record.members ? { members: record.members } : {}), ...(record.lane ? { lane: true } : {}) });
 }
 
 // The next parts to the other box, up to `IN_FLIGHT` on their way.
@@ -897,8 +901,24 @@ async function arrived(record: MoveRecord, placed?: unknown): Promise<void> {
   if (sending) sending.since = performance.now();
   if (now) {
     markedRetry(now);
-    tell(now.peer, { op: "switch", safeSwitch: true, id: now.id, ...bundleIdentity(now) });
+    sendSwitch(now);
   }
+}
+
+const sendingSwitch = new Set<string>();
+
+function sendSwitch(record: MoveRecord): void {
+  if (sendingSwitch.has(record.id)) return;
+  sendingSwitch.add(record.id);
+  const link = readLink();
+  void (async () => {
+    if (!record.ownershipCommitted && !await commitTransfer(link, record)) return;
+    if (readMove(record.id)?.stage !== "switching") return;
+    if (followedSetup(link)?.checkpointed && !record.ownershipCommitted) {
+      changeMove(record.id, each => { each.ownershipCommitted = true; });
+    }
+    tell(record.peer, { op: "switch", safeSwitch: true, id: record.id, ...bundleIdentity(record) });
+  })().catch(logActivation).finally(() => sendingSwitch.delete(record.id));
 }
 
 /** Confirmed ownership, independent of whether the original could be archived yet. */
@@ -1032,6 +1052,8 @@ async function takeOffer(sender: MailSender, given: Record<string, unknown>): Pr
   const lane = given.lane === true;
   if (!["bot", "chat", "group"].includes(kind) || !/^[A-Za-z0-9_]{1,80}$/.test(thing) || typeof hash !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(hash) || size <= 0) return void answer({ op: "refused", message: "That isn’t a move." });
   if (given.safeSwitch !== true || typeof generation !== "number" || !Number.isSafeInteger(generation) || generation < 1) return void answer({ op: "refused", message: "Update Kuvo on the source computer before trying the move again." });
+  if (Boolean(followedSetup(readLink())?.checkpointed) !== (given.acceptedOwnership === true))
+    return void answer({ op: "refused", message: "Update both computers and wait for their current setup before trying the move again." });
   const was = readMove(id);
   if (was && (was.role !== "to" || was.peer !== sender.key || was.thing !== thing || was.kind !== kind)) return void answer({ op: "refused", message: say.moving });
   if (was?.generation !== undefined && generation < was.generation) return;
@@ -1315,6 +1337,9 @@ async function tellMoved(record: MoveRecord): Promise<void> {
 
 /** Switched to: the copy here goes on from now, as it was where it came from. */
 async function switchHere(record: MoveRecord): Promise<void> {
+  const authority = { link: readLink(), activating: record.id };
+  if (![moveReference(record.kind, record.thing), ...record.sessions.map(id => ({ kind: "conversations" as const, id }))]
+    .every(ref => mayActivate(ref, authority))) throw new Error("Waiting for the accepted move ownership.");
   forgetMovedAway([record.thing, ...record.sessions]);
   if (record.kind === "group") {
     await groupAction(readBridgeFile(), record.thing, "activate");
@@ -1453,9 +1478,11 @@ function answerDecision(sender: MailSender, id: string, request: Record<string, 
 
 /** A copy here that won't be switched to from now on (`dropping`, and noted as dropped): what's
  * here of it stays held until it's gone. */
-function letGo(id: string): MoveRecord | null {
+function letGo(id: string, explicit = false): MoveRecord | null {
   const record = readMove(id);
-  if (!record || record.role !== "to" || record.activation || endedAs(id) === "switched" || uncertainOldCopy(record)) return null;
+  const link = readLink();
+  if (!record || record.role !== "to" || record.activation || endedAs(id) === "switched" || uncertainOldCopy(record) || transferAccepted(link, record) ||
+    (!explicit && followedSetup(link)?.checkpointed && record.complete && !record.dropping && record.setUpSince === undefined)) return null;
   noteEnded(id, "dropped", Date.now(), record.sessions, undefined, record.peer, bundleIdentity(record));
   if (!record.dropping) changeMove(id, each => { each.dropping = true; each.dropSince = Date.now(); });
   return record;
@@ -1597,6 +1624,8 @@ async function moveMail(sender: MailSender, given: Record<string, unknown>, id: 
       if (mine?.activation) { if (matched) return completeActivation(id).catch(logActivation); return; }
       if (endedFor(id, sender.key)) return answerDecision(sender, id, given);
       if (given.safeSwitch !== true || mine?.role !== "to" || !matched || mine.generation === undefined) return;
+      const link = readLink();
+      if (followedSetup(link)?.checkpointed && !transferAccepted(link, mine)) return;
       if (mine.complete && !mine.dropping && mine.setUpSince === undefined && (mine.sessions.length || mine.kind === "group")) {
         const last = mine.kind === "group" ? undefined : await newestMessage(mine.lane === true, mine.sessions[0]!).catch(() => undefined);
         const committed = changeMove(id, each => { each.activation = { at: Date.now(), ...(last ? { last } : {}) }; });
@@ -1629,7 +1658,7 @@ async function moveMail(sender: MailSender, given: Record<string, unknown>, id: 
     case "drop":
       if (record && !matched) return;
       if (mine?.activation) return completeActivation(id).catch(logActivation);
-      if (mine?.role === "to") return letGoOf(sender, id, given);
+      if (mine?.role === "to") return letGoOf(sender, id, given, true);
       return answerDecision(sender, id, given);
     // To the box it leaves.
     case "ready":
@@ -1671,11 +1700,12 @@ async function moveMail(sender: MailSender, given: Record<string, unknown>, id: 
       if (mine?.role !== "from" || !matched || mine.stage !== "copying" || mine.failed) return;
       return takeBack(id, typeof given.message === "string" ? given.message : "It couldn’t go there.", 409);
     case "switched":
+      if (mine && !mine.ownershipCommitted && followedSetup(readLink())?.checkpointed && !transferAccepted(readLink(), mine)) return;
       if (mine?.role !== "from" || !matched || mine.failed || (mine.stage !== "switching" && mine.stage !== "finishing")) return;
       return finish(id).catch(() => {});
     case "dropped":
       // Its copy there is gone before it was switched to: the original here goes on, as it was.
-      if (mine?.role === "from" && matched && mine.stage === "switching" && !mine.failed && given.neverSwitched === true) {
+      if (mine?.role === "from" && matched && mine.stage === "switching" && !mine.failed && given.neverSwitched === true && !followedSetup(readLink())?.checkpointed) {
         return failSource(mine, `${mine.name} couldn’t be set up there, so it stayed here. Try again.`, 409, false);
       }
       if (mine?.role === "from" && matched && mine.failed && mine.step === "drop" && readOutcome(id)) return void forgetMove(id);
@@ -1703,9 +1733,9 @@ async function moveMail(sender: MailSender, given: Record<string, unknown>, id: 
 /** The copy here of a move the box it came from takes back: said `dropped` as soon as it's marked
  * so (it's never switched to after), so that box goes on with its original at once; what's here of
  * it goes now, or, held meanwhile, once its engine or group chats let it (`keepMoving`). */
-async function letGoOf(sender: MailSender, id: string, request: Record<string, unknown>): Promise<void> {
+async function letGoOf(sender: MailSender, id: string, request: Record<string, unknown>, explicit = false): Promise<void> {
   try {
-    letGo(id);
+    letGo(id, explicit);
   } catch {
     return;
   }
@@ -1737,7 +1767,8 @@ export function keepMoving(now = Date.now(), ticks = performance.now()): void {
     groupsLookedAt = ticks;
     wakeHeldGroups().catch(() => {});
   }
-  const peers = new Set(peersOf(readLink()).map(peer => peer.key));
+  const link = readLink();
+  const peers = new Set(peersOf(link).map(peer => peer.key));
   let names: string[] = [];
   try { names = fs.readdirSync(MOVES).filter(name => name.endsWith(".outcome.json")); } catch {}
   for (const name of names) {
@@ -1771,6 +1802,13 @@ export function keepMoving(now = Date.now(), ticks = performance.now()): void {
   for (const record of records) {
     const due = retryDue(record, now, ticks);
     const sent = outgoing.get(record.id);
+    if (record.role === "to" && !record.activation && record.complete && !record.dropping && record.setUpSince === undefined &&
+      followedSetup(link)?.checkpointed && transferAccepted(link, record) && !queues.has(record.id)) {
+      // The destination can finish even if the source disappeared after committing ownership.
+      inTurn(record.id, () => moveMail({ key: record.peer, kind: "mac" },
+        { op: "switch", safeSwitch: true, ...bundleIdentity(record) }, record.id)).catch(logActivation);
+      continue;
+    }
     if (record.role === "to" && record.activation) {
       if (due && !queues.has(record.id)) inTurn(record.id, () => completeActivation(record.id)).catch(logActivation);
       continue;
@@ -1841,7 +1879,7 @@ export function keepMoving(now = Date.now(), ticks = performance.now()): void {
         if (pending) {
           markedRetry(pending, ticks);
           if (pending.generation === undefined) tell(record.peer, { op: "decision?", id: record.id });
-          else tell(record.peer, { op: "switch", safeSwitch: true, id: record.id, ...bundleIdentity(pending) });
+          else sendSwitch(pending);
         }
       }
       continue;

@@ -2,7 +2,7 @@ import { isObject, parsed } from "../../shared/json";
 import { destinationOf, destinationStore } from "../backup/destination";
 import { backupBefore, backupStatus, config, configure, disable, erasePoint, selectedProjects } from "../backup/engine";
 import { matchReplacement, restore, restoreStatus } from "../backup/restore";
-import { pendingAfterRestore, returnPending } from "../backup/pending";
+import { pendingAfterRestore, pendingQueueItems, returnPending, settleQueueItem } from "../backup/pending";
 import { exportVault, importVault } from "../backup/vault";
 import { fromLocalApp, type AnswerPiece, type RouteContext } from "../server/context";
 import { holdsVault } from "../vault/holder";
@@ -20,7 +20,10 @@ export async function* computerBackupsRoute({ request, route, json: result, sign
   try {
     if (method === "GET" && !action) return yield* json(200, { ...backupStatus(), restore: restoreStatus() });
     if (action === "/pending") {
-      if (method === "GET") return yield* json(200, { waiting: pendingAfterRestore() });
+      if (method === "GET") return yield* json(200, { waiting: pendingAfterRestore(), queueItems: pendingQueueItems() });
+      if (given.kind === "queueItem") {
+        return yield* json(200, await settleQueueItem(String(given.id ?? ""), String(given.operation ?? ""), given.decision));
+      }
       if (given.confirmStillDue !== true) return yield* json(409, { message: "Check whether this work already ran, then confirm it’s still due." });
       return yield* json(200, await returnPending(String(given.session ?? ""), String(given.id ?? "")));
     }

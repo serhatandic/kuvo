@@ -36415,6 +36415,53 @@ class GroupRunner {
     }
     return true;
   }
+  finishRestoreReview(id, operation, decision) {
+    const kept = this.chats.get(id);
+    if (!kept)
+      return;
+    if (kept.reviewReceipt) {
+      const receipt = kept.reviewReceipt;
+      if (receipt.operation !== operation || receipt.decision !== decision)
+        return;
+      if (receipt.status === "committed")
+        return receipt;
+    }
+    if (!kept.restoreReview)
+      return;
+    const receipt = { operation, decision, status: "committed" };
+    if (!kept.reviewReceipt) {
+      const pending = { ...receipt, status: "pending" };
+      this.context.store.saveGroup({ ...kept, reviewReceipt: pending });
+      kept.reviewReceipt = pending;
+    }
+    const reviewed = structuredClone(kept);
+    for (const message of reviewed.messages) {
+      for (const task of message.tasks ?? []) {
+        if (task.state === "working" || decision === "discard" && (task.state === "waiting" || task.state === "proposed")) {
+          task.state = "failed";
+          task.finished ??= stamp3();
+          delete task.prompt;
+          delete task.lost;
+        }
+      }
+    }
+    if (decision === "discard")
+      delete reviewed.group.meeting;
+    delete reviewed.turning;
+    delete reviewed.talking;
+    delete reviewed.paused;
+    delete reviewed.restoreReview;
+    reviewed.status = "active";
+    reviewed.reviewReceipt = receipt;
+    this.context.store.saveMessages(reviewed);
+    this.context.store.saveGroup(reviewed);
+    this.chats.set(id, reviewed);
+    this.keepAwake(id);
+    this.told(id);
+    emit("kuvo.group.reset", { id });
+    this.began(id);
+    return receipt;
+  }
   began(id) {
     this.resumeWork(id);
     this.rememberSoon(id);
@@ -37723,10 +37770,12 @@ class GroupStore {
     const messages = JSON.parse(fs8.readFileSync(join41(this.folder(id), "messages.json"), "utf8"));
     if (!isMessages(messages))
       throw new Error("The group transcript could not be read");
-    return { group: record.group, ...typeof record.moveImport === "string" ? { moveImport: record.moveImport } : {}, status: record.restoreReview === true || record.status === "held" ? "held" : "active", ...record.restoreReview === true ? { restoreReview: true } : {}, talking: record.talking === true, paused: record.paused === true, ...isTurning(record.turning) ? { turning: record.turning } : {}, messages };
+    const receipt = record.reviewReceipt;
+    const reviewReceipt = (receipt?.status === "committed" || receipt?.status === "pending") && typeof receipt.operation === "string" && (receipt.decision === "resume" || receipt.decision === "discard") ? receipt : undefined;
+    return { group: record.group, reviewReceipt, ...typeof record.moveImport === "string" ? { moveImport: record.moveImport } : {}, status: record.restoreReview === true || record.status === "held" ? "held" : "active", ...record.restoreReview === true ? { restoreReview: true } : {}, talking: record.talking === true, paused: record.paused === true, ...isTurning(record.turning) ? { turning: record.turning } : {}, messages };
   }
   saveGroup(kept) {
-    writeDurablePrivate(join41(this.folder(kept.group.id), "group.json"), JSON.stringify({ kuvo: version2, status: kept.status, ...kept.restoreReview ? { restoreReview: true } : {}, ...kept.moveImport ? { moveImport: kept.moveImport } : {}, ...kept.talking ? { talking: true } : {}, ...kept.paused ? { paused: true } : {}, ...kept.turning ? { turning: kept.turning } : {}, group: kept.group }, null, 2), dirname21(this.root));
+    writeDurablePrivate(join41(this.folder(kept.group.id), "group.json"), JSON.stringify({ kuvo: version2, status: kept.status, reviewReceipt: kept.reviewReceipt, ...kept.restoreReview ? { restoreReview: true } : {}, ...kept.moveImport ? { moveImport: kept.moveImport } : {}, ...kept.talking ? { talking: true } : {}, ...kept.paused ? { paused: true } : {}, ...kept.turning ? { turning: kept.turning } : {}, group: kept.group }, null, 2), dirname21(this.root));
   }
   saveMessages(kept) {
     writeDurablePrivate(join41(this.folder(kept.group.id), "messages.json"), JSON.stringify(kept.messages, null, 2), dirname21(this.root));
@@ -38054,6 +38103,13 @@ async function groupRoutes(runner, store, method, parts, body) {
   const found = runner.get(id);
   if (!found)
     return error(404, "No such chat.");
+  if (action === "restore-review") {
+    const { operation, decision } = await body() ?? {};
+    if (typeof operation !== "string" || !/^[A-Za-z0-9_-]{1,80}$/.test(operation) || decision !== "resume" && decision !== "discard")
+      return error(400, "Send an operation id and choose whether to resume or discard the recovered work.");
+    const receipt = runner.finishRestoreReview(id, operation, decision);
+    return receipt ? json13(receipt) : error(409, "This group has no matching review to finish.");
+  }
   if (found.restoreReview)
     return error(409, "Review the recovered group work before starting this chat.");
   switch (action) {
@@ -38271,6 +38327,8 @@ async function linkRoutes(runner, store, method, parts, body, signal) {
       return json14({}, 404);
     return action ? following((withMessages) => chat(runner, store, id, withMessages), id, signal) : json14(chat(runner, store, id));
   }
+  if (method === "POST" && action === "restore-review")
+    return groupRoutes(runner, store, method, [id, action], body);
   if (runner.get(id)?.restoreReview)
     return message2(409, "Review the recovered group work before starting this chat.");
   if (method === "PATCH" && !action) {
@@ -42454,4 +42512,4 @@ if (!isMainThread && process.argv.includes("--insights-db-worker")) {
 } else {
   await init_main().then(() => ({}));
 }
-// Built from Packages/Box/src/agents 3f70367e95b426a4cbaf74b2cb5088c0494b5dafae42abafee16205342b0ba1b
+// Built from Packages/Box/src/agents b2f97014d85d0e33127e8676a1060cadbb0541b0cfff93738b03984d392cb382

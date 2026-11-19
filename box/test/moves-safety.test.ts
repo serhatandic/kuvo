@@ -468,7 +468,7 @@ for (const failure of ["attachment write", "index sync", "none"] as const) {
     const added = handler({
       method: "POST", path: "kuvo/work-queue/items", headers: {}, fromApp: true,
       body: Buffer.from(JSON.stringify({
-        owner: arrivingSession, title: "Keep the attachment", files: [{ uri: "data:image/png;base64,YXR0YWNobWVudA==", name: "plan.png" }],
+        operation: "keep-attachment", owner: arrivingSession, title: "Keep the attachment", files: [{ uri: "data:image/png;base64,YXR0YWNobWVudA==", name: "plan.png" }],
       })),
     }, undefined)
     expect((await added.next()).value).toMatchObject({ head: { status: 200 } })

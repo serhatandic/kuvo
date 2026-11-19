@@ -7065,7 +7065,9 @@ and `name` is the saved file name. The box applies it to the current description
 lock and answers `inlineImagesApplied: true`. The file stays attached.
 
 `POST kuvo/work-queue/items` `{title, body?, status?, priority?, labels?, assignee?, due?, top?,
-owner?, files?}` → `{item}`: an item added, `todo` and `normal` unless said, numbered as an agent's is. The
+owner?, files?, operation?}` → `{item}`. Each create requires a client-generated operation ID
+in `x-kuvo-operation` or `operation`. Retry the same action with the same ID and fields.
+The item starts as `todo` and `normal` unless specified. The
 box decides whose queue it's in: `owner`'s where a client names one (the conversation whose queue
 it's looking at); else, for a bot of this box (`assignee`), that bot's; else your own (`usr_you`).
 A title is one line: line breaks become spaces, one over 800 characters is refused (400), and what's

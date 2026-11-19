@@ -239,6 +239,7 @@ export async function linkRoutes(runner: GroupRunner | undefined, store: GroupSt
     if (!chat(runner, store, id)) return json({}, 404)
     return action ? following((withMessages) => chat(runner, store, id, withMessages), id, signal) : json(chat(runner, store, id))
   }
+  if (method === "POST" && action === "restore-review") return groupRoutes(runner, store, method, [id, action], body)
   if (runner.get(id)?.restoreReview) return message(409, "Review the recovered group work before starting this chat.");
   // Its name, purpose, bots or meeting, as Edit Group Chat changes them: a meeting as you set it up,
   // worked out here, on your clock.

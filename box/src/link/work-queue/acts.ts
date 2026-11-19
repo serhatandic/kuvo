@@ -25,12 +25,12 @@ import type { Target } from "../../shared/records";
  * read that takes longer goes on, for the next ask or the view's next line). */
 export const GITHUB_WAIT = 3_000;
 
-function refuseQueueOwner(queue: string): void {
+function refuseQueueOwner(queue: string, id?: string): void {
   if (!ownershipReady()) return;
   // A stored item supplies its existing location. An accepted assignment or completed move takes precedence.
-  const owner = ownerOf({ kind: "queueItems", queue });
+  const owner = ownerOf({ kind: "queueItems", queue, id });
   if (owner && !owner.local) throw new Refusal(`Open this queue on ${owner.name} to change it.`);
-  if (!mayActivate({ kind: "queueItems", queue })) throw new Refusal("This queue is held while its owner changes.");
+  if (!mayActivate({ kind: "queueItems", queue, id })) throw new Refusal("This queue is held while its owner changes.");
 }
 
 const YOU = { user: true } as const;
@@ -59,10 +59,10 @@ const fieldsOf = ({ title, body, status, priority, labels, assignee, due, before
 /** An item you add from a client (`POST kuvo/work-queue/items`): in the queue `owner` names (a
  * conversation's, the one you're looking at); else, for a bot of this box, in that bot's; else in
  * your own (`usr_you`). Todo and Normal unless said. */
-export function addHere(given: Record<string, unknown>, local = false, operation?: string): Acted {
+export function addHere(given: Record<string, unknown>, local: boolean, operation: string): Acted {
   const now = Date.now();
   const primary = primaryOf();
-  const id = operation ? `wqi_${operation.slice(0, 20)}` : undefined;
+  const id = `wqi_${operation.slice(0, 20)}`;
   const digest = fingerprint({ owner: given.owner, ...fieldsOf(given) });
   const itemAnswer = (item: Item): Acted => ({ status: 200, value: {
     item: { ...withCan(summaryOf(item, new Set(), new Map(), assignable())), mentionTargets: item.mentionIndex?.targets ?? [] },
@@ -70,14 +70,12 @@ export function addHere(given: Record<string, unknown>, local = false, operation
   let staged: ReturnType<typeof stageClientFiles> | undefined;
   try {
     const result = changeQueues(book => {
-      if (id) {
-        const item = book.find({ id });
-        const deletion = deletionFor(id);
-        const departure = departureFor(id);
-        const receipt = item?.creationReceipt ?? deletion?.creationReceipt ?? departure?.creationReceipt;
-        if (receipt?.operation === operation && receipt && receipt.digest === digest) return receipt.answer;
-        if (item || deletion || departure) return { status: 409, value: { message: "That operation id is in use or its item has moved." } };
-      }
+      const existing = book.find({ id });
+      const deletion = deletionFor(id);
+      const departure = departureFor(id);
+      const receipt = existing?.creationReceipt ?? deletion?.creationReceipt ?? departure?.creationReceipt;
+      if (receipt?.operation === operation && receipt && receipt.digest === digest) return receipt.answer;
+      if (existing || deletion || departure) return { status: 409, value: { message: "That operation id is in use or its item has moved." } };
       if (given.owner !== undefined && (typeof given.owner !== "string" || !OWNER.test(given.owner)))
         throw new Refusal("That's no queue to add it to (owner): a conversation's address, or a group chat's id.");
       const assignee = given.assignee === undefined || given.assignee === null ? null : assigneeFor(given.assignee);
@@ -90,9 +88,9 @@ export function addHere(given: Record<string, unknown>, local = false, operation
       const item = addItem(book, owner, fields, acting, primary, undefined, id);
       applyFileOps(acting);
       numberWaiting(book, primary, null);
-      if (operation) book.recordCreation(item, () => ({ operation, digest, answer: itemAnswer(item) }));
+      book.recordCreation(item, () => ({ operation, digest, answer: itemAnswer(item) }));
       return { item };
-    }, now, { durable: Boolean(operation) });
+    }, now, { durable: true });
     const answer = "item" in result ? result.item.creationReceipt?.answer ?? itemAnswer(result.item) : result;
     if (answer.status === 200) tellQueuesAgain();
     return answer;
@@ -126,7 +124,7 @@ export async function actHere({ method, action, ref, given = {}, targets, signal
   const inBook = (work: (item: Item, book: Book) => void, { handing = false } = {}) => () => changeQueues(book => {
     const item = find(book.items());
     if (!item) throw new Missing("There's no item like that.");
-    refuseQueueOwner(item.owner);
+    refuseQueueOwner(item.owner, item.id);
     refuseMoving([item.owner]);
     if (!handing) refuseHanding(item);
     work(item, book);
