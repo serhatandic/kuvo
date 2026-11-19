@@ -246,7 +246,8 @@ setInterval(() => {
   if (!fs.existsSync(run) || fs.existsSync(run + "/.machine-handover.pid")) process.exit(0);
 }, 100);
 `);
-const release = path.join(base, "release");
+// Keep the packed release apart from the SSH target named "release", which runs live workers.
+const release = path.join(base, "box-release-fixture");
 const packed = spawnSync("sh", [path.join(checkout, "scripts", "box-release.sh"), "--files", "1.0.0", release], {
   env: { ...process.env, BUN: process.env.BUN || process.env.KUVO_TEST_BUN || (process.versions.bun ? process.execPath : "bun"), BOX_SOURCES: root }, encoding: "utf8",
 });
@@ -1797,7 +1798,7 @@ test("Stop after committed revocation retains the unconfirmed SSH cleanup and lo
   assert.equal(fs.existsSync(path.join(kuvo, "run", "off")), false);
 });
 
-function machineFixture(name, { legacy = true } = {}) {
+function machineFixture(name, { legacy = true, workerReadyMs = 30_000 } = {}) {
   const folder = path.join(base, name);
   homes[name] = folder;
   const root = path.join(folder, ".kuvo-code");
@@ -1834,7 +1835,9 @@ function machineFixture(name, { legacy = true } = {}) {
     write(plist, '<string>exec sh "$HOME/.kuvo-code/bin/kuvo-start"</string>');
     write(path.join(run, "fake-launchd"), "legacy\n");
   }
-  const env = { ...process.env, HOME: folder, KUVO_HOME: root, KUVO_TEST_KEEP_ROUND: "1", KUVO_TEST_SWAP_EVERY: "100", KUVO_TEST_SWAP_QUIET: "700", KUVO_TEST_SWAP_START_MOST: "9000" };
+  // Give real keeper/launcher processes a test deadline even under load. A deliberately
+  // unhealthy fixture uses a shorter deadline to exercise rollback without waiting needlessly.
+  const env = { ...process.env, HOME: folder, KUVO_HOME: root, KUVO_TEST_KEEP_ROUND: "1", KUVO_TEST_SWAP_EVERY: "100", KUVO_TEST_SWAP_QUIET: "700", KUVO_TEST_SWAP_START_MOST: String(workerReadyMs) };
   const start = path.join(root, "bin", "kuvo-start");
   const installHelper = () => fs.cpSync(path.join(home, helperBundle), path.join(root, helperBundle), { recursive: true });
   const nextEngine = () => {
@@ -1854,7 +1857,7 @@ function machineFixture(name, { legacy = true } = {}) {
 for (const reinstall of [false, true]) test(`a fresh Darwin installer rolls back when the bridge never answers${reinstall ? " during reinstall" : ""}`, {
   skip: process.platform !== "darwin",
 }, async () => {
-  const { folder, root, plist, bridge, helperWorkers, journal, adopted, until, env, installHelper, stop } = machineFixture(reinstall ? "installer-bridge-reinstall" : "installer-bridge", { legacy: false });
+  const { folder, root, plist, bridge, helperWorkers, journal, adopted, until, env, installHelper, stop } = machineFixture(reinstall ? "installer-bridge-reinstall" : "installer-bridge", { legacy: false, workerReadyMs: 9_000 });
   installHelper();
   if (reinstall) write(adopted, "");
   write(path.join(folder, "fail-helper-bridge"), "");
@@ -1880,10 +1883,12 @@ test("a stopped Darwin machine starts through its existing launch job", {
   const { folder, root, run, plist, bridge, adopted, env, installHelper, stop } = machineFixture("installer-stopped-legacy");
   installHelper();
   write(path.join(run, "stopped"), "");
-  const installer = spawn(process.execPath, [path.join(root, "bin/kuvo-link.js"), "helper", "machine-start"], { env, stdio: "ignore" });
-  const exited = new Promise(resolve => installer.once("exit", resolve));
+  const installer = spawn(process.execPath, [path.join(root, "bin/kuvo-link.js"), "helper", "machine-start"], { env, stdio: ["ignore", "ignore", "pipe"] });
+  let stderr = "";
+  installer.stderr.on("data", chunk => { stderr += chunk; });
+  const exited = new Promise(resolve => installer.once("close", resolve));
   try {
-    assert.equal(await exited, 0);
+    assert.equal(await exited, 0, stderr);
     assert.match(fs.readFileSync(path.join(folder, "launchctl.log"), "utf8"), /^kickstart gui\/\d+\/run\.kuvo\.code\.machine$/m);
     assert.match(fs.readFileSync(plist, "utf8"), /exec sh/);
     assert.equal(bridge().helper, 0);
@@ -1922,7 +1927,9 @@ test("an adopted Darwin reinstall reports failure while the bridge returns 503",
 }, async () => {
   const { folder, root, plist, engine, bridge, helperWorkers, journal, adopted, env, installHelper, stop } = machineFixture("installer-already-adopted", { legacy: false });
   installHelper();
-  const installer = () => spawnSync(process.execPath, [path.join(root, "bin/kuvo-link.js"), "helper", "machine-start"], { env, encoding: "utf8", timeout: 40_000 });
+  const installer = (readyMs = env.KUVO_TEST_SWAP_START_MOST) => spawnSync(process.execPath, [path.join(root, "bin/kuvo-link.js"), "helper", "machine-start"], {
+    env: { ...env, KUVO_TEST_SWAP_START_MOST: readyMs }, encoding: "utf8", timeout: 40_000,
+  });
   try {
     const first = installer();
     assert.equal(first.status, 0, first.stderr);
@@ -1934,7 +1941,7 @@ test("an adopted Darwin reinstall reports failure while the bridge returns 503",
 
     write(path.join(folder, "fail-helper-bridge"), "");
     assert.equal((await fetch(`http://127.0.0.1:${bridge().port}/api/session/active`)).status, 503);
-    const again = installer();
+    const again = installer("9000");
     assert.equal(again.status, 1, again.stderr);
     assert.match(again.stderr, /didn’t finish starting/);
     assert.equal(fs.readFileSync(plist, "utf8"), registered);
@@ -1970,13 +1977,16 @@ for (const scenario of ["grant", "worker failure", "interruption", "bootstrap de
   skip: process.platform !== "darwin",
 }, async () => {
   const name = "legacy-" + scenario.replaceAll(" ", "-");
-  const { folder, run, plist, engine, bridge, journal, swap, adopted, until, env, start, installHelper, nextEngine, stop } = machineFixture(name);
+  const rollback = scenario === "rollback holds";
+  const workerFailure = scenario === "worker failure";
+  const { folder, run, plist, engine, bridge, journal, swap, adopted, until, env, start, installHelper, nextEngine, stop } = machineFixture(name, {
+    workerReadyMs: rollback || workerFailure ? 9_000 : undefined,
+  });
   const legacy = spawn("sh", [start, "keep"], { env, stdio: "ignore" });
   try {
     await until(() => bridge().pid && engine().pid, "legacy workers should start");
     const oldEngine = engine().pid, oldBridge = bridge().pid;
     const deferred = scenario.startsWith("deferred");
-    const rollback = scenario === "rollback holds";
     if (deferred) write(path.join(folder, "files-access"), "false");
     else if (rollback) {
       write(path.join(folder, "files-access"), "true");
@@ -2016,7 +2026,7 @@ for (const scenario of ["grant", "worker failure", "interruption", "bootstrap de
       assert.equal(bridge().pid, oldBridge);
       for (const worker of [engine(), bridge()]) assert.ok((await fetch(`http://127.0.0.1:${worker.port}/api/session/active`)).ok);
       if (scenario === "bootstrap denied") write(path.join(folder, "refuse-helper"), "");
-      if (scenario === "worker failure") write(path.join(folder, "fail-helper-bridge"), "");
+      if (workerFailure) write(path.join(folder, "fail-helper-bridge"), "");
       if (scenario === "interruption") write(path.join(folder, "pause-helper-bootstrap"), "");
       if (scenario === "partial inbox") write(path.join(folder, "engine-inbox.json"), JSON.stringify(["A", "B", "C"].map(text => ({
         id: `msg_${text}`, delivery: "queue", type: "user", payload: { text },
@@ -2064,7 +2074,7 @@ for (const scenario of ["grant", "worker failure", "interruption", "bootstrap de
       return;
     }
 
-    if (scenario === "worker failure") {
+    if (workerFailure) {
       await until(() => !fs.existsSync(journal) && fs.existsSync(path.join(run, "machine-helper-retry")) && bridge().pid !== oldBridge, "the previous launch path restored working service");
       assert.match(fs.readFileSync(plist, "utf8"), /exec sh/);
       assert.equal(fs.existsSync(adopted), false);
