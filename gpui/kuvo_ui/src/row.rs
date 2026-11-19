@@ -458,6 +458,7 @@ pub struct TextRow {
     leading: Vec<AnyElement>,
     trailing: Vec<AnyElement>,
     fill: bool,
+    max_lines: Option<usize>,
     gap: Pixels,
     text_size: TypeSize,
     text_color: Option<Hsla>,
@@ -488,12 +489,20 @@ impl TextRow {
             leading: Vec::new(),
             trailing: Vec::new(),
             fill: true,
+            max_lines: None,
             gap: space::S2,
             text_size: TypeSize::Small,
             text_color: None,
             font_weight: None,
             mono: false,
         }
+    }
+
+    /// Limits a wrapping row to at most `lines` lines, ending the last line in an ellipsis when
+    /// clipped (preventing GPUI's bare `line_clamp` from hard-clipping mid-word).
+    pub fn max_lines(mut self, lines: usize) -> Self {
+        self.max_lines = Some(lines);
+        self
     }
 
     /// Attaches a debug selector to the row (and `<selector>-text` to its text slot) for tests.
@@ -661,6 +670,7 @@ impl TextRow {
                 let body = div()
                     .flex_1()
                     .min_w_0()
+                    .when_some(self.max_lines, |d, lines| d.line_clamp(lines).text_ellipsis())
                     .when_some(text_selector, |d, selector| d.debug_selector(move || selector))
                     .map(|d| match self.custom_body {
                         Some(custom) => d.child(custom),

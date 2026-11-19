@@ -74,10 +74,9 @@ impl QueueView {
                 let reference = item.zip(queue.clone()).map(|(item, queue)| super::preview::Reference::new(item.clone(), queue, self.client.clone(), self.live));
                 let status = item.map_or("", |item| item.status.as_str());
                 let label = reference.as_ref().map(|reference| reference.status().to_owned());
-                div().id(("item-relation-row", at)).debug_selector(move || format!("item-relation-{at}"))
-                    .group(group.clone()).flex().items_center().gap(space::S2).h(px(28.)).min_w_0()
+                let row = div().id(("item-relation-row", at)).debug_selector(move || format!("item-relation-{at}"))
+                    .group(group.clone()).w_full().flex().items_center().gap(space::S2).h(px(28.)).min_w_0()
                     .cursor_pointer().hover(|row| row.bg(c.hover)).rounded(radius::NAV).px(space::S1)
-                    .when_some(reference, |row, reference| row.hoverable_tooltip(reference.hover()).tooltip_show_delay(super::preview::DELAY))
                     .on_click(cx.listener(move |this, _, _, cx| this.open_reference(open.clone(), cx)))
                     .child(div().flex_none().child(status_mark(status, cx)))
                     .children(relation.number.map(|number| div().flex_none().text_ui(TypeSize::Caption).text_color(c.text_muted).child(format!("#{number}"))))
@@ -90,7 +89,11 @@ impl QueueView {
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     cx.stop_propagation();
                                     this.set_relation(remove.clone(), None, cx);
-                                })))))
+                                })))));
+                match reference {
+                    Some(reference) => reference.hover_popover(("item-relation-hover", at), row, true),
+                    None => row.into_any_element(),
+                }
             }).collect();
             (!rows.is_empty()).then(|| div().flex().items_start().gap(space::S2).py(px(2.))
                 .child(div().w(px(100.)).h(px(28.)).flex().items_center().flex_none()

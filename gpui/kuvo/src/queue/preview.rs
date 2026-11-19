@@ -1,9 +1,13 @@
 //! The same Work Queue preview for references in descriptions, links, and conversations.
 use std::{rc::Rc, time::Duration};
 
-use gpui::{AnyElement, AnyView, App, AppContext as _, Context, ElementId, InteractiveElement, IntoElement, ParentElement, Render, StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder as _, px};
+use gpui::{AnyElement, AnyView, App, AppContext as _, Context, ElementId, InteractiveElement, IntoElement, ParentElement, Pixels, Render, StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder as _, px};
 use kuvo_box::{BoxClient, work_queue::{Item, QueueSaid, Whole}};
-use kuvo_ui::{ActiveTheme, StyledType, TypeSize, menu::hover_card_frame, theme::{radius, space}};
+use kuvo_ui::{
+    ActiveTheme, StyledType, TextRow, TypeSize,
+    menu::{HoverPopover, card_frame},
+    theme::{MEDIUM, radius, space},
+};
 
 use super::marks::{label_dot, status_mark};
 
@@ -34,8 +38,19 @@ impl Reference {
         move |_, cx| cx.new(|cx| Preview::new(reference.clone(), cx)).into()
     }
 
+    pub fn hover_popover(&self, id: impl Into<ElementId>, trigger: impl IntoElement, fill: bool) -> AnyElement {
+        let mut popover = HoverPopover::new(id, trigger, self.hover())
+            .delay(DELAY)
+            .expected_height(HOVER_CARD_EXPECTED_HEIGHT);
+        if fill {
+            popover = popover.fill();
+        }
+        popover.into_any_element()
+    }
+
     pub fn chip(&self, id: impl Into<ElementId>, open: impl Fn(&mut Window, &mut App) + 'static, cx: &App) -> AnyElement {
         let c = &cx.theme().colors;
+        let id = id.into();
         let number = self.item.number;
         let mark = div().flex_none().child(status_mark(&self.item.status, cx));
         #[cfg(feature = "shots")]
@@ -43,16 +58,27 @@ impl Reference {
             Some(number) => ShotHoverPoint::capture(ShotHoverTarget::Reference(number), mark),
             None => mark,
         };
-        div().id(id).debug_selector(move || number.map_or_else(|| "item-chip".into(), |number| format!("item-chip-{number}")))
-            .flex().items_center().gap(space::S1_5).h(TypeSize::Body.line_height()).max_w(px(340.)).min_w_0()
-            .px(space::S1_5).rounded(radius::NAV).bg(c.sunken).border_1().border_color(c.border)
-            .cursor_pointer().hover(|d| d.bg(c.hover))
-            .hoverable_tooltip(self.hover()).tooltip_show_delay(DELAY)
+        let chip = div()
+            .id(id.clone())
+            .debug_selector(move || number.map_or_else(|| "item-chip".into(), |number| format!("item-chip-{number}")))
+            .flex()
+            .items_center()
+            .gap(space::S1_5)
+            .h(TypeSize::Body.line_height())
+            .max_w(px(340.))
+            .min_w_0()
+            .px(space::S1_5)
+            .rounded(radius::NAV)
+            .bg(c.sunken)
+            .border_1()
+            .border_color(c.border)
+            .cursor_pointer()
+            .hover(|d| d.bg(c.hover))
             .on_click(move |_, window, cx| open(window, cx))
             .child(mark)
             .children(number.map(|number| div().flex_none().text_ui(TypeSize::Body).text_color(c.text_muted).child(format!("#{number}"))))
-            .child(div().min_w_0().truncate().text_ui(TypeSize::Body).text_color(c.text).child(self.item.title.clone()))
-            .into_any_element()
+            .child(div().min_w_0().truncate().text_ui(TypeSize::Body).text_color(c.text).child(self.item.title.clone()));
+        self.hover_popover((id, "hover"), chip, false)
     }
 }
 
@@ -88,6 +114,10 @@ impl gpui::Global for ShotHoverPoint {}
 
 pub(crate) const DELAY: Duration = Duration::from_millis(300);
 
+/// Conservative full height (title + metadata + labels + 3-line excerpt) used before the first
+/// frame so the card picks above or below up front and never flips once the body loads.
+pub(crate) const HOVER_CARD_EXPECTED_HEIGHT: Pixels = px(260.);
+
 struct Preview {
     reference: Reference,
     whole: Option<Whole>,
@@ -118,10 +148,7 @@ impl Preview {
 }
 
 fn excerpt(body: &str) -> String {
-    let protected = kuvo_ui::markdown::image_ranges(body);
-    let mut text = body.to_owned();
-    for (range, _) in protected.into_iter().rev() { text.replace_range(range, " "); }
-    text.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(320).collect()
+    kuvo_ui::markdown::plain_text(body).chars().take(320).collect()
 }
 
 impl Render for Preview {
@@ -133,17 +160,86 @@ impl Render for Preview {
             .map_or("Normal priority".to_owned(), |priority| format!("{} priority", priority.name));
         let labels = item.labels.iter().filter_map(|id| reference.queue.labels.iter().find(|label| &label.id == id));
         let assignee = item.assignee.as_ref().map(|assignee| if assignee.name.is_empty() { "Assigned" } else { &assignee.name }).unwrap_or("Unassigned");
-        hover_card_frame(div().debug_selector(|| "queue-item-hover-card".into()).flex().flex_col().gap(space::S2)
-            .child(div().medium().text_ui(TypeSize::Body).line_clamp(2).child(item.title.clone()))
-            .child(div().flex().items_center().gap(space::S1_5).text_ui(TypeSize::Caption).text_color(c.text_muted)
-                .child(status_mark(&item.status, cx)).child(reference.status_name(&item.status).to_owned()).child("·").child(priority))
-            .child(div().text_ui(TypeSize::Caption).truncate().text_color(c.text_muted).child(assignee.to_owned()))
-            .when(!item.labels.is_empty(), |d| d.child(div().flex().flex_wrap().gap(space::S2)
-                .children(labels.map(|label| div().flex().items_center().gap(space::S1).text_ui(TypeSize::Caption)
-                    .text_color(c.text_muted).child(label_dot(&label.color)).child(label.name.clone())))))
-            .when_some(item.computer.as_ref(), |d, computer| d.child(div().text_ui(TypeSize::Caption)
-                .text_color(c.text_muted).child(crate::bots::computer_name(&computer.name).to_owned())))
-            .when_some(self.whole.as_ref().map(|whole| &whole.body).filter(|body| !body.is_empty()), |d, body| d.child(div()
-                .text_ui(TypeSize::Small).text_color(c.text_muted).line_clamp(3).child(body.clone()))), cx)
+        let content = div()
+            .debug_selector(|| "queue-item-hover-card".into())
+            .w_full()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .gap(space::S2)
+            .child(
+                TextRow::wrapping("queue-hover-title", item.title.clone())
+                    .debug_selector("queue-hover-title")
+                    .max_lines(2)
+                    .text_size(TypeSize::Body)
+                    .font_weight(MEDIUM)
+                    .text_color(c.text),
+            )
+            .child(
+                TextRow::truncated("queue-hover-status", format!("{} · {priority}", reference.status_name(&item.status)))
+                    .hug()
+                    .gap(space::S1_5)
+                    .text_size(TypeSize::Caption)
+                    .text_color(c.text_muted)
+                    .leading(status_mark(&item.status, cx)),
+            )
+            .child(
+                TextRow::truncated("queue-hover-assignee", assignee.to_owned())
+                    .text_size(TypeSize::Caption)
+                    .text_color(c.text_muted),
+            )
+            .when(!item.labels.is_empty(), |d| {
+                d.child(
+                    div()
+                        .w_full()
+                        .min_w_0()
+                        .flex()
+                        .flex_wrap()
+                        .gap(space::S2)
+                        .children(labels.map(|label| {
+                            div()
+                                .max_w_full()
+                                .min_w_0()
+                                .flex()
+                                .items_center()
+                                .gap(space::S1)
+                                .text_ui(TypeSize::Caption)
+                                .text_color(c.text_muted)
+                                .child(div().flex_none().child(label_dot(&label.color)))
+                                .child(div().min_w_0().truncate().child(label.name.clone()))
+                        })),
+                )
+            })
+            .when_some(item.computer.as_ref(), |d, computer| {
+                d.child(
+                    TextRow::truncated("queue-hover-computer", crate::bots::computer_name(&computer.name).to_owned())
+                        .text_size(TypeSize::Caption)
+                        .text_color(c.text_muted),
+                )
+            })
+            .when_some(self.whole.as_ref().map(|whole| &whole.body).filter(|body| !body.is_empty()), |d, body| {
+                d.child(
+                    TextRow::wrapping("queue-hover-body", body.clone())
+                        .debug_selector("queue-hover-body")
+                        .max_lines(3)
+                        .text_size(TypeSize::Small)
+                        .text_color(c.text_muted),
+                )
+            });
+        card_frame(content, cx)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::excerpt;
+
+    #[test]
+    fn excerpt_strips_markdown_and_images_to_plain_text() {
+        let raw = "The user, 11-18: \"file this\", ![shot](kuvo-attachment:file/abc). **What's wrong:** in `AskCard`, [links](https://example.com) and *italics* overflow.";
+        assert_eq!(
+            excerpt(raw),
+            "The user, 11-18: \"file this\", . What's wrong: in AskCard, links and italics overflow."
+        );
     }
 }

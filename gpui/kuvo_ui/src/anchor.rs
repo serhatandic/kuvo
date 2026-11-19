@@ -61,22 +61,23 @@ pub struct Placement {
     pub side: Side,
     pub align: Align,
     pub gap: Pixels,
+    pub lock_side: bool,
 }
 
 impl Placement {
     /// Under the trigger, at its leading edge: a button's menu, a title bar's, a row's.
     pub const fn below() -> Self {
-        Self { side: Side::Below, align: Align::Start, gap: GAP }
+        Self { side: Side::Below, align: Align::Start, gap: GAP, lock_side: false }
     }
 
     /// Over the trigger, at its leading edge: a control near the window's foot.
     pub const fn above() -> Self {
-        Self { side: Side::Above, align: Align::Start, gap: GAP }
+        Self { side: Side::Above, align: Align::Start, gap: GAP, lock_side: false }
     }
 
     /// To the trigger's right, top-aligned: a rail item's card.
     pub const fn beside() -> Self {
-        Self { side: Side::Right, align: Align::Start, gap: GAP }
+        Self { side: Side::Right, align: Align::Start, gap: GAP, lock_side: false }
     }
 
     /// Lined up with the trigger's trailing edge: a trigger at the end of a bar or a row.
@@ -92,6 +93,13 @@ impl Placement {
         self
     }
 
+    /// Keeps the chosen side without flipping across the trigger if content grows after the first
+    /// frame (used with [`choose_vertical_side`] so hover cards decide above vs below upfront).
+    pub const fn lock_side(mut self) -> Self {
+        self.lock_side = true;
+        self
+    }
+
     /// The way it moves in: away from the trigger.
     fn motion(self) -> Direction {
         match self.side {
@@ -102,25 +110,57 @@ impl Placement {
     }
 }
 
+/// Decides whether a popover with up to `expected_height` opens below or above `trigger` inside
+/// `window`, before its first frame is drawn, so async content loading never flips it after
+/// opening.
+pub fn choose_vertical_side(
+    trigger: Bounds<Pixels>,
+    window: Bounds<Pixels>,
+    expected_height: Pixels,
+    gap: Pixels,
+) -> Side {
+    let room_below = (window.bottom() - MARGIN) - (trigger.bottom() + gap);
+    let room_above = (trigger.top() - gap) - (window.top() + MARGIN);
+    if room_below >= expected_height {
+        Side::Below
+    } else if room_above >= expected_height {
+        Side::Above
+    } else if room_above > room_below {
+        Side::Above
+    } else {
+        Side::Below
+    }
+}
+
 /// The rule: where a popover of `size` opens from `trigger`, inside `window` (both in window
 /// coordinates). It goes on the placement's side, lined up with the placement's edge; on either
 /// axis, if it would leave the window and the other side (or edge) leaves it less, it flips; then
 /// it's shifted to stay [`MARGIN`] inside the window (pinned to the top left if it's larger).
 pub fn place(trigger: Bounds<Pixels>, size: Size<Pixels>, window: Bounds<Pixels>, placement: Placement) -> Bounds<Pixels> {
-    let Placement { side, align, gap } = placement;
+    let Placement { side, align, gap, lock_side } = placement;
     let (left, right) = (window.left() + MARGIN, window.right() - MARGIN);
     let (top, bottom) = (window.top() + MARGIN, window.bottom() - MARGIN);
     let start_first = align == Align::Start;
     let (x, y) = match side {
         Side::Below | Side::Above => {
             let (below, above) = (trigger.bottom() + gap, trigger.top() - gap - size.height);
-            let y = if side == Side::Below { pick(below, above, size.height, top, bottom) } else { pick(above, below, size.height, top, bottom) };
+            let y = if lock_side {
+                if side == Side::Below { below } else { above }
+            } else if side == Side::Below {
+                pick(below, above, size.height, top, bottom)
+            } else {
+                pick(above, below, size.height, top, bottom)
+            };
             let (leading, trailing) = (trigger.left(), trigger.right() - size.width);
             let x = if start_first { pick(leading, trailing, size.width, left, right) } else { pick(trailing, leading, size.width, left, right) };
             (x, y)
         }
         Side::Right => {
-            let x = pick(trigger.right() + gap, trigger.left() - gap - size.width, size.width, left, right);
+            let x = if lock_side {
+                trigger.right() + gap
+            } else {
+                pick(trigger.right() + gap, trigger.left() - gap - size.width, size.width, left, right)
+            };
             let (level, raised) = (trigger.top(), trigger.bottom() - size.height);
             let y = if start_first { pick(level, raised, size.height, top, bottom) } else { pick(raised, level, size.height, top, bottom) };
             (x, y)
@@ -307,5 +347,37 @@ mod tests {
         assert_eq!(placed.bottom(), px(692.), "8 px from the foot");
         let huge = size(px(1200.), px(900.));
         assert_eq!(place(button, huge, window(), Placement::below()).origin, point(px(8.), px(8.)), "pinned to the top left");
+    }
+
+    #[test]
+    fn choose_vertical_side_picks_side_from_available_room_before_first_frame() {
+        let high = at(100., 60., 120., 24.);
+        assert_eq!(choose_vertical_side(high, window(), px(260.), space::S1_5), Side::Below);
+
+        // Room below is ~122px (< 260px), room above is ~526px (>= 260px).
+        let low = at(100., 540., 120., 24.);
+        assert_eq!(choose_vertical_side(low, window(), px(260.), space::S1_5), Side::Above);
+
+        // When neither side fits the full expected height, pick whichever side has more room.
+        let tight = Bounds { origin: Point::default(), size: size(px(1000.), px(300.)) };
+        assert_eq!(choose_vertical_side(at(100., 180., 120., 24.), tight, px(260.), space::S1_5), Side::Above);
+        assert_eq!(choose_vertical_side(at(100., 80., 120., 24.), tight, px(260.), space::S1_5), Side::Below);
+    }
+
+    #[test]
+    fn locked_side_stays_above_as_card_grows_from_short_to_tall() {
+        let trigger = at(100., 540., 120., 24.);
+        let side = choose_vertical_side(trigger, window(), px(260.), space::S1_5);
+        assert_eq!(side, Side::Above);
+
+        let placement = Placement::above().flush().lock_side();
+        // Even when Frame 1 is short (80px, which would fit below), it opens above.
+        let frame1 = place(trigger, size(px(280.), px(80.)), window(), placement);
+        assert_eq!(frame1.bottom(), trigger.top());
+
+        // When async body loads and height grows to 220px, it stays above without flipping.
+        let frame2 = place(trigger, size(px(280.), px(220.)), window(), placement);
+        assert_eq!(frame2.bottom(), trigger.top());
+        assert!(frame2.top() >= window().top() + MARGIN);
     }
 }

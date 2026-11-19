@@ -80,6 +80,15 @@ impl Render for Host {
                             .leading(keycap("2".into(), c.border_strong, c.text_muted)),
                     )
                     .child(
+                        TextRow::wrapping("title-unclamped", LONG_SUMMARY)
+                            .debug_selector("title-unclamped"),
+                    )
+                    .child(
+                        TextRow::wrapping("title-clamped", LONG_SUMMARY)
+                            .debug_selector("title-clamped")
+                            .max_lines(2),
+                    )
+                    .child(
                         div().debug_selector(|| "nav-row-wrap".into()).w_full().min_w_0().child(
                             NavRow::new("nav-long", LONG_SUMMARY)
                                 .icon(IconName::Folder)
@@ -157,13 +166,22 @@ fn wrapping_text_rows_stay_within_container_and_wrap_vertically(cx: &mut TestApp
     let short = bounds(cx, "option-short");
     let wrapped = bounds(cx, "option-wrap");
     let wrapped_text = bounds(cx, "option-wrap-text");
+    let unclamped = bounds(cx, "title-unclamped");
+    let clamped = bounds(cx, "title-clamped");
+    let clamped_text = bounds(cx, "title-clamped-text");
 
     assert_within(container, short, "option-short");
     assert_within(container, wrapped, "option-wrap");
     assert_within(container, wrapped_text, "option-wrap-text");
+    assert_within(container, clamped, "title-clamped");
+    assert_within(container, clamped_text, "title-clamped-text");
     assert!(
         wrapped.size.height > short.size.height,
         "long option should wrap to multiple lines: wrapped={wrapped:?}, short={short:?}"
+    );
+    assert!(
+        clamped.size.height > short.size.height && clamped.size.height < unclamped.size.height,
+        "2-line clamped text should wrap past 1 line yet stay shorter than unclamped: clamped={clamped:?}, unclamped={unclamped:?}, short={short:?}"
     );
 }
 

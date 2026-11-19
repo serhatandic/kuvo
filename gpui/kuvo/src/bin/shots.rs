@@ -158,6 +158,7 @@ const SCREENS: &[Screen] = &[
     // group, sent with waited reply, and a failed send.
     Screen { slug: "agent-messages", width: 1280., height: 820., session: Some("ses_dark"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "text-overflow", width: 1080., height: 820., session: Some("ses_dark"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(text_overflow_open) },
+    Screen { slug: "work-item-hover", width: 1080., height: 760., session: Some("ses_dark"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "agent-letters", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(agent_letters) },
     // Selecting text (`kuvo_ui/src/selection.rs`): across a paragraph, inside a code block, across
     // messages, the right-click menu over a selection, and a drag in three steps.
@@ -1861,6 +1862,52 @@ fn text_overflow_open(workspace: &mut Workspace, _window: &mut Window, cx: &mut 
     }
 }
 
+/// Real conversation with a `#840` work-item reference chip near the bottom, long title, and
+/// markdown body (reproducing `.feedback/work-item-popover-dark.png` in light and dark).
+fn stage_work_item_hover(stand_in: &StandIn) {
+    use serde_json::json;
+    stand_in.set_facts("ses_dark", |facts| {
+        facts["title"] = json!("Outputs popover rework & image viewer");
+    });
+    stand_in.work_item_fixture("wqi_234", json!({
+        "owner": "ses_dark",
+        "number": 840,
+        "title": "Text runs past the right edge instead of wrapping or truncating: question options and step summaries",
+        "body": "The user, 11-18 13:53: \"file this view bug\", with the shot below. **What's wrong:** in a question card from a bot (`AskCard`), long option rows and `steps()` summaries overflow instead of wrapping or truncating with an ellipsis.",
+        "status": "todo",
+        "priority": "normal",
+        "labels": ["lbl_design"],
+        "assignee": null,
+    }), None);
+    let reply = "Added. It's now part of #840, the shared text-row fix for single-line truncation and wrapping options.";
+    let start = reply.find("#840").unwrap();
+    stand_in.work_queue_mention_fixture(reply, json!([
+        { "start": start, "end": start + 4, "number": 840 }
+    ]));
+    stand_in.add_message("ses_dark", json!({
+        "type": "user", "id": "msg_wh_u1", "time": { "created": NOW - 120_000.0 },
+        "text": "We had a text overflow problem happening in a couple places, we can add this to the list: it also happened in question prompts' options."
+    }));
+    stand_in.add_message("ses_dark", json!({
+        "type": "assistant", "id": "msg_wh_a1", "time": { "created": NOW - 110_000.0, "completed": NOW - 95_000.0 },
+        "agent": "build", "finish": "stop",
+        "content": [
+            { "type": "text", "text": "Looking at both overflow sites: the steps-group summary row in entries.rs and the numbered option rows in ask_card.rs both wrapped their text in flex_none containers, which stops GPUI from shrinking or wrapping the text inside its column." }
+        ]
+    }));
+    stand_in.add_message("ses_dark", json!({
+        "type": "user", "id": "msg_wh_u2", "time": { "created": NOW - 80_000.0 },
+        "text": "Add it to the Work Queue and hand it off so it gets fixed in one shared text-row primitive with before/after screenshots."
+    }));
+    stand_in.add_message("ses_dark", json!({
+        "type": "assistant", "id": "msg_wh_a2", "time": { "created": NOW - 70_000.0, "completed": NOW - 30_000.0 },
+        "agent": "build", "finish": "stop",
+        "content": [
+            { "type": "text", "text": reply }
+        ]
+    }));
+}
+
 /// The messages from other agents in view, the longer one opened.
 fn agent_letters(workspace: &mut Workspace, _window: &mut Window, cx: &mut Context<Workspace>) {
     if let Some(view) = workspace.conversation() {
@@ -2516,6 +2563,9 @@ fn main() -> anyhow::Result<()> {
             if screen.slug == "text-overflow" {
                 stage_text_overflow(&stand_in);
             }
+            if screen.slug == "work-item-hover" {
+                stage_work_item_hover(&stand_in);
+            }
             if screen.slug == "mode-chip-held" {
                 stand_in.set_approvals(false, Some("The sandbox isn’t running on this computer."));
             }
@@ -2757,6 +2807,7 @@ fn main() -> anyhow::Result<()> {
             use kuvo::queue::{ShotHoverPoint, ShotHoverTarget};
             let hover = match screen.slug {
                 "queue-item-hover-card" => Some((ShotHoverTarget::Reference(234), 320)),
+                "work-item-hover" => Some((ShotHoverTarget::Reference(840), 320)),
                 "queue-item-status-tooltip" => Some((ShotHoverTarget::ItemStatus, 520)),
                 _ => None,
             };
@@ -2773,6 +2824,9 @@ fn main() -> anyhow::Result<()> {
                 })?;
                 cx.run_until_parked();
                 cx.advance_clock(std::time::Duration::from_millis(delay_ms));
+                cx.update_window(any, |_, window, _| window.refresh())?;
+                cx.run_until_parked();
+                cx.advance_clock(kuvo_ui::motion::MotionDuration::Fast.duration());
                 cx.update_window(any, |_, window, _| window.refresh())?;
                 cx.run_until_parked();
                 cx.update(|cx| { cx.remove_global::<ShotHoverPoint>(); });
