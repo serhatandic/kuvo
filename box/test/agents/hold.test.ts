@@ -14,7 +14,8 @@ import { spawn } from "node:child_process"
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, watch, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { attach, hold, heldIn, heldProcess, holdFolder, HOLDER, type HoldRecord } from "../../src/agents/hold/client"
-import { adoptHeld } from "../../src/agents/hold/adopt"
+import { forgetOldAntigravity } from "../../src/agents/agents/antigravity"
+import { ANTIGRAVITY_ACP, adoptHeld } from "../../src/agents/hold/adopt"
 import { RPC } from "../../src/agents/rpc"
 
 // (In the run's own home: short enough for a socket's path, and never /tmp.)
@@ -289,6 +290,34 @@ describe("an agent under a holder", () => {
     later.end()
     await later.closed
     expect(existsSync(join(folder, `${held.id}.journal`))).toBe(false)
+  })
+
+  test("a managed Antigravity release stays installed through its last holder", async () => {
+    const { dir, folder } = shortFolder()
+    const old = join(dir, "antigravity", "1.2.0")
+    const current = join(dir, "antigravity", ANTIGRAVITY_ACP)
+    mkdirSync(old, { recursive: true })
+    mkdirSync(current, { recursive: true })
+    const agent = join(dir, "old-antigravity.js")
+    writeFileSync(agent, 'process.stdin.on("end", () => process.exit(0)); process.stdin.resume();')
+    const held = await hold([process.execPath, agent], {
+      folder, kind: "raw", env: { BUN_BE_BUN: process.env.BUN_BE_BUN, PATH: process.env.PATH },
+      meta: { kind: "antigravity", version: "1.2.0" },
+    })
+    const complete = join(current, ".complete")
+    writeFileSync(complete, "")
+    forgetOldAntigravity(dir, folder)
+    expect(existsSync(old)).toBe(true)
+    expect(existsSync(current)).toBe(true)
+    rmSync(complete)
+    held.end()
+    await held.closed
+    forgetOldAntigravity(dir, folder)
+    expect(existsSync(old)).toBe(true)
+    writeFileSync(join(current, ".complete"), "")
+    forgetOldAntigravity(dir, folder)
+    expect(existsSync(old)).toBe(false)
+    expect(existsSync(current)).toBe(true)
   })
 
   test("a transfer pins replay until the successor releases it", async () => {

@@ -298,7 +298,7 @@ export class CodexAgent implements Agent {
   async update() {
     const definition = this.definition
     if (!definition) return { updated: false, message: "Codex isn't installed." }
-    return update(definition, this.context.temporary)
+    return update(definition, this.context.temporary, { home: this.context.home, program: this.id })
   }
 
   /** Its program, with OpenAI's installer. */
@@ -2027,7 +2027,7 @@ class CodexThread implements Thread {
       case "turn/plan/updated": {
         // Its to-do list, one a turn, brought up to date as it works through it.
         const todos = ((params.plan ?? []) as { step: string; status: string }[]).map((entry) => ({ content: entry.step, status: entry.status === "inProgress" ? "in_progress" : entry.status }))
-        const id = lane.plan?.id ?? newID("call")
+        const id = lane.plan?.id ?? turn.syntheticToolID("todowrite")
         lane.plan = { id, todos }
         if (!turn.hasTool(id)) turn.toolStart(id, "todowrite", { todos })
         else turn.toolCalled(id, { todos })
@@ -2054,7 +2054,7 @@ class CodexThread implements Thread {
       case "hook/completed": {
         // A hook of yours ran (Codex's settings): a step, with what it said.
         const run = params.run ?? {}
-        const id = `hook:${run.id ?? newID("call")}`
+        const id = run.id == null ? turn.syntheticToolID("hook", "hook:") : `hook:${run.id}`
         if (!turn.hasTool(id)) {
           lane.toolsSinceText = true
           turn.toolStart(id, "hook", { description: `${run.eventName ?? "hook"} hook`, source: run.sourcePath })
@@ -2250,7 +2250,7 @@ class CodexThread implements Thread {
         continue
       }
       // Part of its message, not a step of its own: the words after it go on in the same step.
-      const id = `cited-${newID("call")}`
+      const id = lane.turn.syntheticToolID(`${toolServerName}_show_file`, "cited-")
       lane.turn.toolStart(id, `${toolServerName}_show_file`, { path: each.made })
       lane.turn.toolSucceeded(id, "Shown in the conversation.")
     }

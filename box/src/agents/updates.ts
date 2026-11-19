@@ -22,7 +22,9 @@ export type ProgramUpdate =
 const NEWS_KEPT = 60 * 60_000
 
 const kept = new Map<string, ProgramUpdate>()
-const underWay = new Map<string, Promise<UpdateResult>>()
+const underWay = new Map<string, { done: Promise<UpdateResult>; confirm: AbortController }>()
+
+type HoldProgram = (program: string, confirm: AbortSignal) => Promise<() => void>
 
 /** Whether its program is updating now (`agent.id`: one program serves every account with it). */
 export function isUpdating(program: string): boolean {
@@ -87,17 +89,24 @@ export type Noted = (agent: Agent, maintained: Maintenance) => boolean
  * program is now (its version) is `noted` before anyone is told; each account with it runs the
  * new one (`programUpdated`). Never fails: what went wrong is its outcome.
  */
-export function updateProgram(agent: Agent, accounts: () => Agent[], noted: Noted): Promise<UpdateResult> {
+export function updateProgram(agent: Agent, accounts: () => Agent[], noted: Noted, hold?: HoldProgram, confirmed = false): Promise<UpdateResult> {
   const program = agent.id
   const running = underWay.get(program)
-  if (running) return running
+  if (running) {
+    if (confirmed) running.confirm.abort()
+    return running.done
+  }
+  const confirm = new AbortController()
+  if (confirmed) confirm.abort()
   kept.set(program, { state: "updating", at: Date.now() })
   const done = (async (): Promise<UpdateResult> => {
     let result: UpdateResult = { updated: false, message: "The update stopped without saying how it went." }
     // Under way before the agent is asked: an update that throws as it's asked still ends (and
     // isn't left under way for good, holding a newer bridge back).
     await null
+    let release: (() => void) | undefined
     try {
+      release = await hold?.(program, confirm.signal)
       result = agent.update ? await agent.update() : { updated: false, message: `Update ${agent.name} the way you installed it.` }
       // Its version as it is now (the update read it afresh): what its accounts list from here.
       const maintained = await agent.maintenance?.().catch(() => undefined)
@@ -111,10 +120,11 @@ export function updateProgram(agent: Agent, accounts: () => Agent[], noted: Note
       underWay.delete(program)
       told(agent, accounts())
       if (result.updated) emit("model.updated", { program })
+      release?.()
     }
     return result
   })()
-  underWay.set(program, done)
+  underWay.set(program, { done, confirm })
   told(agent, accounts())
   return done
 }
@@ -125,7 +135,7 @@ export function updateProgram(agent: Agent, accounts: () => Agent[], noted: Note
  * sign-in first, then of the accounts added to it, by what's `known` of it (what Accounts showed),
  * read only where nothing is. Started, not waited for: the programs it started, by `agent.id`.
  */
-export async function updateAll(agents: Agent[], accounts: () => Agent[], noted: Noted, known: (agent: Agent) => Maintenance | undefined): Promise<string[]> {
+export async function updateAll(agents: Agent[], accounts: () => Agent[], noted: Noted, known: (agent: Agent) => Maintenance | undefined, hold?: HoldProgram): Promise<string[]> {
   const byProgram = new Map<string, Agent[]>()
   // An agent's own sign-in ahead of the accounts added to it.
   const ordered = [...agents.filter((agent) => agent.instance.id === "default"), ...agents.filter((agent) => agent.instance.id !== "default")]
@@ -149,7 +159,7 @@ export async function updateAll(agents: Agent[], accounts: () => Agent[], noted:
   const started: string[] = []
   for (const agent of picked) {
     if (!agent || isUpdating(agent.id)) continue
-    void updateProgram(agent, accounts, noted)
+    void updateProgram(agent, accounts, noted, hold)
     started.push(agent.id)
   }
   return started

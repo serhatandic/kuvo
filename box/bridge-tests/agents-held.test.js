@@ -32,6 +32,17 @@ const log = what => fs.appendFileSync(path.join(folder, "log"), JSON.stringify({
 const send = message => process.stdout.write(JSON.stringify(message) + "\n");
 let buffer = "", threads = 0, turns = 0, asks = 100;
 const open = new Map();
+const installed = () => { try { return fs.readFileSync(path.join(folder, "codex-version"), "utf8"); } catch { return "0.169.0"; } };
+const startedWith = installed();
+if (process.argv[3] === "update") {
+  fs.writeFileSync(path.join(folder, "installer-started"), "");
+  const timer = setInterval(() => {
+    if (!fs.existsSync(path.join(folder, "finish-install"))) return;
+    clearInterval(timer);
+    fs.writeFileSync(path.join(folder, "codex-version"), "0.170.0");
+    process.exit(0);
+  }, 20);
+} else {
 process.stdin.on("end", () => { log({ ended: true }); process.exit(0); });
 process.stdin.on("data", chunk => {
   buffer += chunk;
@@ -43,27 +54,30 @@ process.stdin.on("data", chunk => {
     if (message.method === undefined && open.has(message.id)) {
       const { threadId, turnId } = open.get(message.id);
       open.delete(message.id);
-      log({ answered: message.result?.decision });
+      log({ answered: message.result?.decision, startedWith, files: installed() });
       send({ method: "item/started", params: { threadId, turnId, item: { type: "agentMessage", id: "m" + turnId, text: "" } } });
       send({ method: "item/agentMessage/delta", params: { threadId, turnId, itemId: "m" + turnId, delta: "Ran it." } });
       send({ method: "item/completed", params: { threadId, turnId, item: { type: "agentMessage", id: "m" + turnId, text: "Ran it." } } });
       send({ method: "turn/completed", params: { threadId, turn: { id: turnId, status: "completed" } } });
     } else if (message.method === "thread/start") send({ id: message.id, result: { thread: { id: "t" + ++threads } } });
     else if (message.method === "thread/resume") send({ id: message.id, result: { thread: { id: message.params.threadId } } });
+    else if (message.method === "thread/backgroundTerminals/list") send({ id: message.id, result: { data: [] } });
     else if (message.method === "turn/start") {
       const threadId = message.params.threadId, turnId = "u" + ++turns, id = asks++;
       send({ id: message.id, result: { turn: { id: turnId, status: "inProgress" } } });
       send({ method: "turn/started", params: { threadId, turn: { id: turnId } } });
+      send({ method: "turn/plan/updated", params: { threadId, turnId, plan: [{ step: "Keep the same row", status: "inProgress" }] } });
       send({ method: "item/started", params: { threadId, turnId, item: { type: "agentMessage", id: "a" + turnId, text: "" } } });
       send({ method: "item/completed", params: { threadId, turnId, item: { type: "agentMessage", id: "a" + turnId, text: "Asking first." } } });
       open.set(id, { threadId, turnId });
       send({ id, method: "item/commandExecution/requestApproval", params: { threadId, turnId, itemId: "c" + turnId, command: "echo held" } });
-      log({ asked: id, parent: process.ppid });
+      log({ asked: id, parent: process.ppid, startedWith });
     } else if (message.method === "account/read") send({ id: message.id, result: { account: { type: "apiKey" } } });
     else if (message.method === "model/list") send({ id: message.id, result: { data: [{ id: "gpt-test", model: "gpt-test", displayName: "GPT Test", isDefault: true }] } });
     else if (message.id !== undefined) send({ id: message.id, result: {} });
   }
 });
+}
 `;
 
 /** Claude Code as far as this asks it: signed in; a message asks to run a command, and once that's
@@ -107,6 +121,7 @@ process.stdin.on("data", chunk => {
       send({ type: "control_response", response: { subtype: "success", request_id: message.request_id, response, ...(message.request.subtype === "initialize" ? { pending_permission_requests: open ? [ask] : [] } : {}) } });
     } else if (message.type === "user") {
       send({ type: "system", subtype: "init", session_id: session, claude_code_version: process.env.STAND_IN_VERSION, cwd: process.cwd(), tools: ["Bash"], model: "claude-opus-5-5", permissionMode: "default", uuid: "00000000-0000-4000-8000-000000000000" });
+      send({ type: "system", subtype: "memory_recall", session_id: session, uuid: "00000000-0000-4000-8000-000000000006", paths: ["MEMORY.md"] });
       assistant("m1", [{ type: "text", text: "Asking first." }, { type: "tool_use", id: "toolu_1", name: "Bash", input: { command: "touch held.txt" } }]);
       open = true;
       send(ask);
@@ -231,7 +246,7 @@ const alive = pid => { try { process.kill(pid, 0); return true; } catch { return
 
 /** A machine's box in folders of the test's own (`~/.kuvo-code` in a home of its own, for its
  * keeper), its bridge kept running as its launch keeps it. */
-async function machine({ claudeVersion = "2.1.325", liveTransfer = false, cursor = false } = {}) {
+async function machine({ claudeVersion = "2.1.325", liveTransfer = false, cursor = false, programUpdate = false } = {}) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "kh-")));
   removeAtEnd(root);
   const home = path.join(root, ".kuvo-code");
@@ -240,7 +255,9 @@ async function machine({ claudeVersion = "2.1.325", liveTransfer = false, cursor
   fs.writeFileSync(path.join(home, "run", "agents.log"), "");
   const fake = path.join(home, "fake");
   fs.writeFileSync(path.join(fake, "app-server.js"), CODEX);
-  fs.writeFileSync(path.join(fake, "codex"), `#!/bin/sh\nexport BUN_BE_BUN=1\n[ "$1" = "--version" ] && { echo "codex-cli 0.169.0"; exit 0; }\nexec "${bun}" "${path.join(fake, "app-server.js")}" "${fake}"\n`, { mode: 0o755 });
+  fs.writeFileSync(path.join(fake, "codex-version"), "0.169.0");
+  if (programUpdate) fs.writeFileSync(path.join(home, "agents", "accounts.json"), JSON.stringify([{ kind: "codex", id: "work" }]));
+  fs.writeFileSync(path.join(fake, "codex"), `#!/bin/sh\nexport BUN_BE_BUN=1\n[ "$1" = "--version" ] && { printf "codex-cli "; cat "${fake}/codex-version"; exit 0; }\nexec "${bun}" "${path.join(fake, "app-server.js")}" "${fake}" "$@"\n`, { mode: 0o755 });
   fs.writeFileSync(path.join(fake, "claude.js"), CLAUDE);
   fs.writeFileSync(path.join(fake, "claude"), `#!/bin/sh\nexport BUN_BE_BUN=1 STAND_IN_FOLDER="${fake}" STAND_IN_VERSION="${claudeVersion}"\nexec "${bun}" "${path.join(fake, "claude.js")}" "$@"\n`, { mode: 0o755 });
   fs.writeFileSync(path.join(fake, "grok.js"), GROK);
@@ -257,6 +274,8 @@ async function machine({ claudeVersion = "2.1.325", liveTransfer = false, cursor
     fs.mkdirSync(sdk, { recursive: true });
     fs.writeFileSync(path.join(sdk, "package.json"), '{"name":"@cursor/sdk","version":"1.0.35","type":"module","main":"index.js"}');
     fs.writeFileSync(path.join(sdk, "index.js"), CURSOR_SDK);
+  }
+  if (cursor || programUpdate) {
     // The fixture's auth is local. Block any account/limits probes outside this scratch box.
     const bundle = path.join(home, "bin", "kuvo-agents.js");
     const network = 'const localFetch = globalThis.fetch; globalThis.fetch = (url, ...args) => { const address = new URL(typeof url === "string" || url instanceof URL ? url : url.url); return address.hostname === "127.0.0.1" ? localFetch(url, ...args) : Promise.reject(new Error("Outside this test")); };\n';
@@ -268,6 +287,7 @@ async function machine({ claudeVersion = "2.1.325", liveTransfer = false, cursor
   const holders = path.join(home, "run", "agents", "hold");
   // (Holders run in sessions of their own: any this left are stopped, by their own pid.)
   atEnd(() => {
+    if (programUpdate) fs.writeFileSync(path.join(fake, "finish-install"), "");
     for (const name of fs.existsSync(holders) ? fs.readdirSync(holders) : []) {
       if (!name.endsWith(".json")) continue;
       try { process.kill(JSON.parse(fs.readFileSync(path.join(holders, name), "utf8")).pid, "SIGTERM"); } catch {}
@@ -389,6 +409,12 @@ async function continueWhileAsking({ provider, model, log, liveTransfer = false 
   assert.deepEqual(messages.filter(each => each.type === "user").map(each => each.text), ["run it"]);
   assert.deepEqual(textOf(messages), ["Asking first.", "Ran it."], "what the agent said before the crash and after, once each");
   assert.deepEqual(messages.filter(each => each.type === "idle").map(each => each.outcome), ["succeeded"], "one turn, not cut");
+  const syntheticTool = provider === "codex-cli" ? "todowrite" : provider === "claude-code" ? "memory" : undefined;
+  if (syntheticTool && liveTransfer) {
+    const ids = page => page.flatMap(each => Array.isArray(each.content) ? each.content : []).filter(part => part.type === "tool" && part.name === syntheticTool).map(part => part.id);
+    assert.equal(ids(beforeCut).length, 1);
+    assert.deepEqual(ids(messages), ids(beforeCut), "the synthetic tool keeps its original ID");
+  }
   if (provider === "grok-cli" && liveTransfer) {
     assert.equal(notices(beforeCut).length, 1);
     assert.deepEqual(notices(messages), notices(beforeCut), "ACP's mode notice keeps its original ID and appears once");
@@ -413,6 +439,75 @@ test("Claude Code: a crash while it waits on your approval, then a stop", { skip
 
 test("Grok (ACP): a crash while it waits on your approval, then a stop", { skip: bun ? false : NO_BUN }, () =>
   continueWhileAsking({ provider: "grok-cli", model: "grok-test", log: "grok.log" }));
+
+test("Codex keeps the visible plan tool ID through a live bridge update", { skip: bun ? false : NO_BUN }, () =>
+  continueWhileAsking({ provider: "codex-cli", model: "gpt-test", log: "log", liveTransfer: true }));
+
+test("a native program update waits for its held turn and queues the next prompt", { skip: bun ? false : NO_BUN }, async () => {
+  const box = await machine({ programUpdate: true });
+  await box.up();
+  const make = async (title, providerID = "codex-cli", id = "gpt-test") => {
+    const response = await box.api("POST", "api/session", {
+      title, location: { directory: path.join(box.home, "work") }, model: { providerID, id },
+    });
+    assert.equal(response.status, 200);
+    return response.json.data.id;
+  };
+  const first = await make("On the old program", "codex-cli@work");
+  const next = await make("On the new program");
+  const grok = await make("A different program", "grok-cli", "grok-test");
+  const send = (session, id) => box.api("POST", `api/session/${session}/prompt`, { id, text: "run it", delivery: "steer" });
+  const pending = async session => (await box.api("GET", `api/session/${session}/permission`)).json?.data?.[0];
+  assert.equal((await send(first, "msg_programupdate0001")).status, 200);
+  const ask = await until(() => pending(first), "the active turn's approval");
+  const old = box.log().find(each => "asked" in each);
+  assert.equal(box.held().find(holder => holder.child === old.pid)?.pid, old.parent);
+  assert.equal((await box.api("POST", "api/kuvo/updates/codex-cli", {})).status, 200);
+  const installer = path.join(box.home, "fake", "installer-started");
+  assert.equal((await send(next, "msg_programupdate0002")).status, 200);
+  assert.equal((await send(grok, "msg_programupdate0003")).status, 200);
+  const unrelated = await until(() => pending(grok), "the other program to keep admitting work");
+  await new Promise(resolve => setTimeout(resolve, 500));
+  assert.equal(fs.existsSync(installer), false, "the in-place installer must wait for the running turn");
+  assert.equal(box.log().filter(each => "asked" in each).length, 1, "the next turn stays in the inbox");
+  const reply = (session, id) => box.api("POST", `api/session/${session}/permission/${id}/reply`, { decision: "once" });
+  assert.equal((await reply(first, ask.id)).status, 200);
+  assert.equal((await reply(grok, unrelated.id)).status, 200);
+  await until(() => fs.existsSync(installer), "the installer to start once the active turn finishes");
+  assert.deepEqual(box.log().filter(each => "answered" in each).map(each => [each.pid, each.startedWith, each.files]), [[old.pid, "0.169.0", "0.169.0"]]);
+  assert.equal(box.log().filter(each => "asked" in each).length, 1, "the prompt is still queued during installation");
+  assert.deepEqual((await box.api("GET", `api/session/${next}/inbox`)).json.data.map(each => each.id), ["msg_programupdate0002"]);
+  fs.writeFileSync(path.join(box.home, "fake", "finish-install"), "");
+  const later = await until(() => pending(next), "the queued prompt to run on the new program");
+  const seen = box.log().filter(each => "asked" in each);
+  assert.equal(seen.length, 2);
+  assert.equal(seen[1].startedWith, "0.170.0");
+  assert.notEqual(seen[1].pid, old.pid);
+  assert.equal((await reply(next, later.id)).status, 200);
+});
+
+test("a replacement bridge keeps prompts queued until a detached program installer exits", { skip: bun ? false : NO_BUN }, async () => {
+  const box = await machine({ programUpdate: true });
+  const first = await box.up();
+  const made = await box.api("POST", "api/session", {
+    title: "Wait across restart", location: { directory: path.join(box.home, "work") },
+    model: { providerID: "codex-cli", id: "gpt-test" },
+  });
+  assert.equal(made.status, 200);
+  const session = made.json.data.id;
+  assert.equal((await box.api("POST", "api/kuvo/updates/codex-cli", {})).status, 200);
+  await until(() => fs.existsSync(path.join(box.home, "fake", "installer-started")), "the detached installer to start");
+  process.kill(first, "SIGKILL");
+  await box.up(first);
+  const id = "msg_programrestart0001";
+  assert.equal((await box.api("POST", `api/session/${session}/prompt`, { id, text: "run after restart", delivery: "steer" })).status, 200);
+  assert.deepEqual((await box.api("GET", `api/session/${session}/inbox`)).json.data.map(each => each.id), [id]);
+  assert.deepEqual(box.log().filter(each => "asked" in each), []);
+  fs.writeFileSync(path.join(box.home, "fake", "finish-install"), "");
+  const ask = await until(async () => (await box.api("GET", `api/session/${session}/permission`)).json?.data?.[0], "the queued turn to start after installation");
+  assert.deepEqual(box.log().filter(each => "asked" in each).map(each => each.startedWith), ["0.170.0"]);
+  assert.equal((await box.api("POST", `api/session/${session}/permission/${ask.id}/reply`, { decision: "once" })).status, 200);
+});
 
 test("Claude Code keeps its pending approval through a live bridge update", { skip: bun ? false : NO_BUN }, () =>
   continueWhileAsking({ provider: "claude-code", model: "default", log: "claude.log", liveTransfer: true }));

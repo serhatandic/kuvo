@@ -34,6 +34,7 @@ import { usesToolRelay } from "./toolrelay"
 import { dropCarriedSignIns, dropOwnPrograms, formerGroupsMemoryKey, groupsMemoryKey, machineEngine as recordedEngine, machineHome, onMachine, takeOwnFolders } from "./machine"
 import { Snapshots } from "./snapshots"
 import { Roster } from "./roster"
+import { forgetOldAntigravity } from "./agents/antigravity"
 import { cancelSignIns, handler, signInsWaiting } from "./server"
 import { updatesUnderWay } from "./updates"
 import { launchLets, Renewal } from "./renewal"
@@ -245,6 +246,7 @@ const sessions = new Sessions(
   (directory) => link.titleModel(directory),
   heldTurns,
   transfer?.sessions,
+  home,
 )
 // Tells the box's link, as it changes, whether every agent's process here runs in its sandbox
 // (none started before it came on still runs): only then do agents use the vault.
@@ -622,6 +624,12 @@ if (transfer) {
   sessions.reconcilePermissions()
 }
 
+
+const cleanAntigravity = () => {
+  try { forgetOldAntigravity(home) } catch (error) { console.error("Antigravity versions:", error) }
+}
+cleanAntigravity()
+setInterval(cleanAntigravity, 60_000).unref?.()
 
 // A newer bridge put in its place on a machine (a Mac that connected brought it): it makes way at
 // the first quiet moment, never cutting a turn, and the machine's launch starts the new one, which

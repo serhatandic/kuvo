@@ -171,8 +171,8 @@ const waitingFile = (id: string) => files.waitingFile(FILES, id);
 /** `message` kept on the box while `session`'s queue is paused (see `Shown`), or while `target`, the
  * engine, is being changed (`swapHoldsFor`): true. Neither, false: it isn't kept. `place`: where it goes
  * (last, else). */
-export const keepWaiting = (session: string, message: Outgoing & { id: string }, shown: Shown = {}, place?: files.Place, target?: Target): boolean =>
-  files.keepWaiting(FILES, session, message, shown, tellFollowers, place, target ? swapHoldsFor(target, session) : false);
+export const keepWaiting = (session: string, message: Outgoing & { id: string }, shown: Shown = {}, place?: files.Place, target?: Target | null): boolean =>
+  files.keepWaiting(FILES, session, message, shown, tellFollowers, place, target === null ? swapHolds(RUN) : target ? swapHoldsFor(target, session) : false);
 
 /** A message of yours a Stop named as still on its way, as it comes (`kuvo/sessions/<id>/stop
  * {items}`): kept on the box while the queue is paused (as what arrives then is) and held, after

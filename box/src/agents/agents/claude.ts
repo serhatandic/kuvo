@@ -264,7 +264,7 @@ export class ClaudeAgent implements Agent {
   async update() {
     const definition = this.definition
     if (!definition) return { updated: false, message: "Claude Code isn't installed." }
-    return update(definition, this.context.temporary)
+    return update(definition, this.context.temporary, { home: this.context.home, program: this.id })
   }
 
   /** Its program, with Anthropic's installer. */
@@ -2077,7 +2077,7 @@ class ClaudeThread implements Thread {
         if (message.outcome === "error" || message.exit_code) turn.notice(`Your ${message.hook_name ?? message.hook_event ?? ""} hook failed${this.hookWords(String(message.stderr ?? ""))}.`)
         return
       case "memory_recall": {
-        const id = newID("call")
+        const id = turn.syntheticToolID("memory")
         turn.toolStart(id, "memory", { description: "Recalled from memory" })
         const paths = Array.isArray(message.paths) ? message.paths.join("\n") : ""
         turn.toolSucceeded(id, paths || (typeof message.content === "string" ? message.content : ""))

@@ -19807,7 +19807,7 @@ var withoutOrder = (state, id) => ({
   ...state.order ? { order: state.order.filter((each) => each !== id) } : {}
 });
 var waitingFile2 = (id) => waitingFile(FILES, id);
-var keepWaiting2 = (session, message, shown = {}, place, target) => keepWaiting(FILES, session, message, shown, tellFollowers, place, target ? swapHoldsFor(target, session) : false);
+var keepWaiting2 = (session, message, shown = {}, place, target) => keepWaiting(FILES, session, message, shown, tellFollowers, place, target === null ? swapHolds(RUN) : target ? swapHoldsFor(target, session) : false);
 var keepWaitingHeld = (session, message, words) => keepWaiting2(session, message, words === undefined ? {} : { words: words.trim() }, (state, waiting) => {
   const came = (state.cameHeld ?? []).filter((id) => id !== waiting.id);
   const held = state.held.filter((id) => id !== waiting.id);
@@ -57768,7 +57768,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "3414ebcb5a66";
+var BRIDGE_VERSION = "27f3d7f42893";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -73134,6 +73134,31 @@ function answerHeaders(response) {
   }
   return out;
 }
+function heldEngineTurn(session, kind, payload, target) {
+  if (!(target ? swapHoldsFor(target, session) : swapHolds(RUN)))
+    return;
+  let body = null;
+  try {
+    body = JSON.parse(payload?.toString() ?? "");
+  } catch {}
+  if (kind === "prompt" && isObject(body) && typeof body.text === "string") {
+    if (body.id !== undefined && !isWaitingID(body.id))
+      return { status: 400, body: { message: BAD_WAITING_ID } };
+    const message = {
+      id: isWaitingID(body.id) ? body.id : messageID(),
+      text: body.text,
+      delivery: body.delivery === "queue" ? "queue" : "steer",
+      ...Array.isArray(body.files) ? { files: body.files } : {},
+      ...isObject(body.metadata) ? { metadata: body.metadata } : {}
+    };
+    if (keepWaiting2(session, message, {}, undefined, target))
+      return { status: 200, body: { waits: true } };
+    if (target === null && !swapHolds(RUN))
+      return;
+  }
+  return { status: 503, body: { message: swapLine(swapUnderWay(RUN)) ?? "Kuvo is checking the engine’s inbox.", engineChanging: true } };
+}
+var engineTurn = /^\/?api\/session\/([^/?]+)\/(prompt|command|shell|compact|summarize)$/;
 async function* forward(target, path, request, signal, allows, naming = null, down = engineDown, toAgents = false, currentBridge) {
   const method = request.method.toUpperCase();
   const sent = canonicalPath(path);
@@ -73145,9 +73170,9 @@ async function* forward(target, path, request, signal, allows, naming = null, do
   const url = new URL(`http://127.0.0.1:${target.port}/${sent}`);
   const headers = { authorization: `Basic ${Buffer.from(`opencode:${target.password}`).toString("base64")}` };
   const sendTo = async (body, signal) => {
-    const held = await holdEnginePrompt(body);
+    const held = heldSession && toEngine && heldEngineTurn(heldSession, toEngine[2], body, target);
     if (held)
-      return held;
+      return Response.json(held.body, { status: held.status });
     const response = await fetch(url, { method, headers, body, signal });
     if (!currentBridge || response.headers.get("x-kuvo-bridge-handover") !== "1")
       return response;
@@ -73178,36 +73203,12 @@ async function* forward(target, path, request, signal, allows, naming = null, do
     yield { body: Buffer.from(JSON.stringify({ message: MOVING })) };
     return;
   }
-  const toEngine = method === "POST" && /^\/api\/session\/([^/]+)\/(prompt|command|shell|compact|summarize)$/.exec(url.pathname);
+  const toEngine = method === "POST" && engineTurn.exec(url.pathname);
   let heldSession;
   try {
     if (toEngine && !toAgents)
       heldSession = decodeURIComponent(toEngine[1]);
   } catch {}
-  const holdEnginePrompt = async (payload) => {
-    const session = heldSession;
-    if (!toEngine || !session || !swapHoldsFor(target, session))
-      return;
-    const answer = (status, body) => Response.json(body, { status });
-    let body = null;
-    try {
-      body = JSON.parse(payload?.toString() ?? "");
-    } catch {}
-    if (toEngine[2] === "prompt" && isObject(body) && typeof body.text === "string") {
-      if (body.id !== undefined && !isWaitingID(body.id))
-        return answer(400, { message: BAD_WAITING_ID });
-      const message = {
-        id: isWaitingID(body.id) ? body.id : messageID(),
-        text: body.text,
-        delivery: body.delivery === "queue" ? "queue" : "steer",
-        ...Array.isArray(body.files) ? { files: body.files } : {},
-        ...isObject(body.metadata) ? { metadata: body.metadata } : {}
-      };
-      if (keepWaiting2(session, message, {}, undefined, target))
-        return answer(200, { waits: true });
-    }
-    return answer(503, { message: swapLine(swapUnderWay(RUN)) ?? "Kuvo is checking the engine’s inbox.", engineChanging: true });
-  };
   const cancelled = method === "DELETE" && /^\/api\/session\/([^/]+)\/inbox\/([^/]+)$/.exec(url.pathname);
   if (cancelled)
     forgetSent(decodeURIComponent(cancelled[1]), decodeURIComponent(cancelled[2]));
@@ -73376,10 +73377,28 @@ async function* engineRoute(context) {
   let engine = null;
   try {
     engine = readEngine();
-  } catch {
-    if (!stop || !bridge())
-      return yield* json(503, { message: engineDown() });
+  } catch {}
+  if (!engine && !stop && request.method.toUpperCase() === "POST" && swapHolds(RUN)) {
+    const turn = engineTurn.exec(canonicalPath(request.path)?.split("?")[0] ?? "");
+    if (turn) {
+      try {
+        const session = decodeURIComponent(turn[1]);
+        const body = withPartsIn(turn[2] === "prompt" && !request.fromMac && !request.desktop ? fromPhone(request.body) : request.body);
+        const saved = await admitPrompt(session, async () => heldEngineTurn(session, turn[2], body, null));
+        if (saved)
+          return yield* json(saved.status, saved.body);
+        try {
+          engine = readEngine();
+        } catch {}
+      } catch (error) {
+        if (error instanceof MoveAdmissionClosed)
+          return yield* json(409, { message: error.message });
+        return yield* json(503, { message: engineDown() });
+      }
+    }
   }
+  if (!engine && (!stop || !bridge()))
+    return yield* json(503, { message: engineDown() });
   if (stop) {
     if (request.method.toUpperCase() !== "POST")
       return yield* text(405, "Stop it with POST.");

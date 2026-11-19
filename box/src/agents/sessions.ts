@@ -7,6 +7,9 @@
 // nothing runs starts at once ("steer"), or waits for a nudge ("queue"); after a turn that ends
 // on its own the next one starts; after Stop, or an error, nothing does until the app says.
 
+import { programInstallation } from "./maintenance"
+import { HOLD_MOST } from "../shared/engine-swap"
+import { pause } from "../shared/wait"
 import { createHash } from "node:crypto"
 import { spawn as spawnProcess } from "node:child_process"
 import { readFileSync, realpathSync, statSync } from "node:fs"
@@ -34,7 +37,8 @@ import { plain } from "./proc"
 import type { Snapshots } from "./snapshots"
 import { AGENTS_TEXT_BYTES } from "../shared/text"
 import { workOrder, type WorkOrder } from "../shared/work-order"
-import type { HeldTurn } from "./hold/adopt"
+import { agentHoldFolder, type HeldTurn } from "./hold/adopt"
+import { heldIn } from "./hold/client"
 import { noTokens } from "./wire"
 
 type Delivery = "steer" | "queue"
@@ -948,6 +952,7 @@ export class Sessions {
     /** Turns an earlier bridge left under way in agents' processes under holders, by session (hold/adopt.ts). */
     held: Map<string, HeldTurn> = new Map(),
     transfer?: Record<string, TransferSession>,
+    private readonly programHome?: string,
   ) {
     this.transferred = new Map()
     if (transfer && [...held].some(([id, turn]) => {
@@ -1709,7 +1714,7 @@ export class Sessions {
     if (queue.some((waiting) => waiting.id === input.id) || record.messages.some((message) => message.id === input.id)) return
     const doing = live.doing
     // While a turn runs, it waits for it, unless the agent at work takes it partway (Codex does).
-    const into = doing.kind === "running" && input.delivery !== "queue" && !doing.run.compacting && doing.run.agent?.thread.steer ? doing.run : undefined
+    const into = doing.kind === "running" && !this.programHeld(doing.run.agent?.provider) && input.delivery !== "queue" && !doing.run.compacting && doing.run.agent?.thread.steer ? doing.run : undefined
     // While nothing runs (or only files are being kept or put back: it goes once that's done), one
     // to go after the turn goes now, as the engine's do (a bot's wake-up), unless others wait
     // before it (held after a Stop).
@@ -1805,8 +1810,10 @@ export class Sessions {
       this.showMessage(id, record, input)
       const missed = () => this.subagentNote(id, `${agent.name} didn't take that message: write to the conversation that started it.`)
       this.sending++
-      void send({ id: input.id, text: attached.text, files: attached.files }, () => this.resumedRun(parentID, parentLive, id))
-        .then((sent) => sent || missed(), missed)
+      void this.useProgram(found.id, async () => {
+        const current = this.threadOf(parentID, parentLive, parent, provider)?.subagentMessages?.(id)
+        return current?.({ id: input.id, text: attached.text, files: attached.files }, () => this.resumedRun(parentID, parentLive, id))
+      }).then((sent) => sent || missed(), missed)
         .finally(() => this.sending--)
       return
     }
@@ -1973,7 +1980,7 @@ export class Sessions {
     if (delivery !== "steer") return
     const live = this.live.get(id)
     const doing = live?.doing
-    if (into && live && doing?.kind === "running" && !doing.run.compacting && doing.run.agent?.thread.steer && !live.steering.has(inputID)) {
+    if (into && live && doing?.kind === "running" && !this.programHeld(doing.run.agent?.provider) && !doing.run.compacting && doing.run.agent?.thread.steer && !live.steering.has(inputID)) {
       void this.steerNow(id, live, doing.run, input)
       return
     }
@@ -2037,8 +2044,9 @@ export class Sessions {
     if (index < 0) return
     // Held for a newer bridge (renewal.ts): it stays in line, kept, to go first there. (Not a group
     // chat's seat: a discussion under way goes on to its end, and the bridge waits for it.)
-    if (this.holding && !isSeat(record.session)) {
-      const input = queue[index]
+    const input = queue[index]!
+    const model = input.adopt ?? (input.compact ? this.holdingModel(record) : record.session.model)
+    if ((this.holding && !isSeat(record.session)) || this.programHeld(model?.providerID)) {
       input.held = true
       if (input.delivery !== "steer") {
         input.delivery = "steer"
@@ -2047,7 +2055,7 @@ export class Sessions {
       this.store.save(id, true)
       return
     }
-    const [input] = queue.splice(index, 1)
+    queue.splice(index, 1)
     this.start(id, live, input)
   }
 
@@ -2096,18 +2104,18 @@ export class Sessions {
     if (given) {
       const agent = candidates.some((candidate) => candidate.providerID === given.providerID) ? this.agent(given.providerID) : undefined
       if (!agent?.generate) throw new BadRequest(`${this.agent(given.providerID)?.name ?? "That agent"} can't answer on ${given.id} for this session.`)
-      return agent.generate(prompt, given)
+      return this.useProgram(agent.id, () => agent.generate!(prompt, given))
     }
     for (const candidate of candidates) {
       const agent = this.agent(candidate.providerID)
-      if (agent?.generate) return agent.generate(prompt, candidate)
+      if (agent?.generate) return this.useProgram(agent.id, () => agent.generate!(prompt, candidate))
     }
     // Its agent can't answer one so (Antigravity, Cursor, Grok): another you're signed in to, on a
     // quick model of its own, as a session's title is written.
     for (const agent of orAnother ? this.roster.all() : []) {
       if (!agent.generate || candidates.some((candidate) => candidate.providerID === agent.providerID)) continue
       if (!(await agent.account().catch(() => undefined))?.signedIn) continue
-      const answer = await agent.generate(prompt).catch(() => "")
+      const answer = await this.useProgram(agent.id, () => agent.generate!(prompt)).catch(() => "")
       if (answer.trim()) return answer
     }
     throw new BadRequest(`${this.agent(candidates[0]?.providerID)?.name ?? "This session's agent"} can't write this outside the conversation${orAnother ? ", and no other agent you're signed in to can" : ""}.`)
@@ -2129,7 +2137,7 @@ export class Sessions {
     for (const agent of answer.trim() ? [] : this.roster.all()) {
       if (!agent.generate || agent.providerID === own) continue
       if (!(await agent.account().catch(() => undefined))?.signedIn) continue
-      answer = await agent.generate(prompt).catch(() => "")
+      answer = await this.useProgram(agent.id, () => agent.generate!(prompt)).catch(() => "")
       if (answer.trim()) break
     }
     // None could: the app names it.
@@ -2426,6 +2434,11 @@ export class Sessions {
 
   /** The message on one agent's model, with what that agent hasn't seen of the conversation. */
   private async runOn(id: string, record: Record_, live: Live, run: Run, model: ModelRef, input: RunInput, userMessage: string): Promise<RunResult> {
+    const program = this.agent(model.providerID)?.id
+    return this.useProgram(program, () => this.runOnAgent(id, record, live, run, model, input, userMessage), run.abort.signal, Boolean(input.held || input.adopt))
+  }
+
+  private async runOnAgent(id: string, record: Record_, live: Live, run: Run, model: ModelRef, input: RunInput, userMessage: string): Promise<RunResult> {
     const { turn } = run
     const signal = run.abort.signal
     // A turn its agent began on its own, stopped before it was taken: it stops there too.
@@ -3409,6 +3422,102 @@ export class Sessions {
     if (this.holding === on) return
     this.holding = on
     if (!on) this.wakeHeld()
+  }
+
+  private programHolds = new Map<string, Promise<void>>()
+  private programUses = new Map<string, number>()
+
+  private recoveryChecks = new Set<string>()
+  private completedInstalls = new Set<string>()
+
+  private installerRunning(program: string): boolean {
+    const state = this.programHome && programInstallation(this.programHome, program)
+    if (state === "ended" && !this.completedInstalls.has(program)) {
+      this.completedInstalls.add(program)
+      // Account probes can open a pooled app-server during a recovered installation.
+      for (const account of this.roster.all()) if (account.id === program) account.programUpdated?.()
+    }
+    if (state !== "running") return false
+    this.completedInstalls.delete(program)
+    if (!this.recoveryChecks.has(program)) {
+      this.recoveryChecks.add(program)
+      const check = () => {
+        if (this.installerRunning(program)) setTimeout(check, 1_000).unref?.()
+        else {
+          this.recoveryChecks.delete(program)
+          this.wakeHeld()
+        }
+      }
+      setTimeout(check, 1_000).unref?.()
+    }
+    return true
+  }
+
+  private programHeld(provider?: string): boolean {
+    const program = provider && this.agent(provider)?.id
+    return !!program && (this.programHolds.has(program) || this.installerRunning(program))
+  }
+
+  private async useProgram<T>(program: string | undefined, work: () => Promise<T>, signal?: AbortSignal, alreadyRunning = false): Promise<T> {
+    if (!program || program === "engine") return work()
+    // Auto can switch to a different program after the turn has left the inbox. Check again at
+    // the actual call, before doing any work on that program.
+    let held: Promise<void> | undefined
+    while (!alreadyRunning) {
+      held = this.programHolds.get(program)
+      if (!held) {
+        if (!this.installerRunning(program)) break
+        signal?.throwIfAborted()
+        await pause(100, signal)
+        continue
+      }
+      if (!signal) await held
+      else {
+        const stop = Promise.withResolvers<void>()
+        const aborted = () => stop.resolve()
+        signal.addEventListener("abort", aborted, { once: true })
+        try {
+          signal.throwIfAborted()
+          await Promise.race([held, stop.promise])
+        } finally { signal.removeEventListener("abort", aborted) }
+      }
+    }
+    if (!alreadyRunning) signal?.throwIfAborted()
+    this.programUses.set(program, (this.programUses.get(program) ?? 0) + 1)
+    try { return await work() } finally {
+      const left = this.programUses.get(program)! - 1
+      if (left) this.programUses.set(program, left)
+      else this.programUses.delete(program)
+    }
+  }
+
+  /** Fence this program across accounts, then let the turns already admitted finish. */
+  async holdProgram(program: string, confirm: AbortSignal): Promise<() => void> {
+    const held = Promise.withResolvers<void>()
+    this.programHolds.set(program, held.promise)
+    const release = () => {
+      this.programHolds.delete(program)
+      held.resolve()
+      this.wakeHeld()
+    }
+    const holders = program === "claude" || program === "codex" || program === "grok" ? agentHoldFolder(program) : undefined
+    const work = () => this.programUses.has(program) || [...this.live.values()].some(live =>
+      this.agent(live.own?.adopt?.providerID ?? "")?.id === program ||
+      [...live.threads].some(([provider, thread]) => thread.keepsWorking && this.agent(provider)?.id === program),
+    ) || (holders !== undefined && heldIn(holders).some(record =>
+      !record.exited && record.meta.kind === program && Object.keys(record.meta.turns ?? {}).length > 0,
+    ))
+    try {
+      const until = performance.now() + HOLD_MOST
+      while (this.installerRunning(program) || (work() && !confirm.aborted)) {
+        if (performance.now() >= until) throw new Error("This program is still working. Its update can be tried again after the running turns finish.")
+        await pause(100, confirm.aborted ? undefined : confirm)
+      }
+      return release
+    } catch (error) {
+      release()
+      throw error
+    }
   }
 
   private holding = false

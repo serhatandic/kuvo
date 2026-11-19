@@ -14,7 +14,8 @@ import { pathToFileURL } from "node:url"
 import { providerID, type AgentAccount } from "../accounts"
 import type { Agent, AgentContext, Account, SignInAttempt, SubagentRun, Thread, SubagentTask, TurnHooks } from "../agent"
 import { accountName, ContextWindows, failure, model } from "../agent"
-import { ANTIGRAVITY_ACP } from "../hold/adopt"
+import { agentHoldFolder, ANTIGRAVITY_ACP } from "../hold/adopt"
+import { heldIn } from "../hold/client"
 import { AcpThread } from "../acp"
 import { fenceAgent, fenceRules } from "../fence"
 import { emit } from "../events"
@@ -32,6 +33,21 @@ import type { Turn } from "../turn"
 import type { Model, OAuthStatus, Session } from "../wire"
 
 const version = ANTIGRAVITY_ACP
+function heldVersions(folder = agentHoldFolder("antigravity")) {
+  return folder ? heldIn(folder).filter(holder => holder.meta.kind === "antigravity").map(holder => holder.meta.version) : []
+}
+
+/** Installed releases live side by side. A holder from an earlier bridge may still use one. */
+export function forgetOldAntigravity(home: string, holders = agentHoldFolder("antigravity")) {
+  const root = join(home, "antigravity")
+  if (!existsSync(join(root, version, ".complete"))) return
+  const held = heldVersions(holders)
+  for (const name of readdirSync(root)) {
+    if (name === version || !/^\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$/.test(name)) continue
+    if (!held.some(using => using === undefined || using === name)) rmSync(join(root, name), { recursive: true, force: true })
+  }
+}
+
 const releases: Record<string, { url: string; sha256: string; bytes: number }> = {
   "darwin-arm64": {
     url: "https://dl.google.com/agy-extensions/releases/macos/agy-acp-server-1.3.0-darwin-arm64.zip",
@@ -505,12 +521,16 @@ export class AntigravityAgent implements Agent {
       rmSync(archive, { force: true })
       for (const name of [executableName, harnessName]) chmodSync(join(staging, name), 0o755)
       writeFileSync(join(staging, ".complete"), JSON.stringify({ version, sha256: release.sha256 }))
-      rmSync(this.folder, { recursive: true, force: true })
-      renameSync(staging, this.folder)
-      // Older versions go.
-      for (const name of readdirSync(this.root)) {
-        if (name !== version && name !== "profile" && /^\d/.test(name)) rmSync(join(this.root, name), { recursive: true, force: true })
+      // Another account can finish staging the same release first.
+      if (this.isInstalled) return
+      if (existsSync(this.folder)) {
+        if (heldVersions().some(using => using === undefined || using === version)) {
+          throw new Error("Antigravity is still using this version. Try again once its agent stops.")
+        }
+        rmSync(this.folder, { recursive: true, force: true })
       }
+      renameSync(staging, this.folder)
+      forgetOldAntigravity(this.context.home)
     } finally {
       this.downloaded = undefined
       rmSync(staging, { recursive: true, force: true })

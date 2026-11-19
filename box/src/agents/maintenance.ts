@@ -9,8 +9,9 @@
 // update`). A program under some other `node_modules` (a project's, a version manager's) is left
 // to you. Nothing runs until you ask; an update counts only if the version changed.
 
-import { existsSync, realpathSync } from "node:fs"
-import { basename, join } from "node:path"
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync } from "node:fs"
+import { basename, dirname, join } from "node:path"
+import { writeSecret } from "../shared/files"
 import { ownEnvironment } from "./machine"
 import { plain, refreshLoginPath, run, runGroup, which } from "./proc"
 
@@ -85,13 +86,43 @@ export interface UpdateResult {
   message?: string
 }
 
+const INSTALL_TIMEOUT = 10 * 60_000
+const installFile = (home: string, program: string) => join(home, "program-installing", program)
+
+/** A detached installer can outlive the bridge that started it. Its replacement also holds turns. */
+export function programInstallation(home: string, program: string): "running" | "ended" | undefined {
+  if (!/^[a-z][a-z0-9-]*$/.test(program)) return undefined
+  try {
+    const [pid, until] = readFileSync(installFile(home, program), "utf8").split(" ").map(Number)
+    // A bridge that stops between reserving the install and recording its group leaves the
+    // reservation for the installer's full timeout.
+    if (pid === 0) return Date.now() < until ? "running" : "ended"
+    if (!Number.isSafeInteger(pid) || pid < 2) return undefined
+    try { process.kill(-pid, 0); return "running" } catch (error) {
+      return (error as NodeJS.ErrnoException).code === "EPERM" ? "running" : "ended"
+    }
+  } catch { return undefined }
+}
+
 /** Runs the update, once at a time per program, and says whether the version changed. */
-export function update(definition: MaintenanceDefinition, temporary: string): Promise<UpdateResult> {
+export function update(definition: MaintenanceDefinition, temporary: string, install?: { home: string; program: string }): Promise<UpdateResult> {
   return oneAtATime(definition.name, "update", async (): Promise<UpdateResult> => {
     const before = await maintenance(definition, true)
     if (!before.command) return { updated: false, version: before.installed, message: `Update ${definition.name} the way you installed it.` }
     // As you'd run it in your terminal (on a machine, with its own folders, not Kuvo Code's).
-    const ran = await runGroup(before.command[0], before.command.slice(1), { cwd: temporary, env: { ...ownEnvironment(), ...before.env }, timeout: 10 * 60_000 })
+    const marker = install && installFile(install.home, install.program)
+    if (marker) {
+      mkdirSync(dirname(marker), { recursive: true, mode: 0o700 })
+      writeSecret(marker, `0 ${Date.now() + INSTALL_TIMEOUT + 3_000}`)
+    }
+    const ran = await runGroup(before.command[0], before.command.slice(1), {
+      cwd: temporary,
+      env: { ...ownEnvironment(), ...before.env },
+      timeout: INSTALL_TIMEOUT,
+      started: marker ? pid => {
+        try { writeSecret(marker, `${pid} 0`) } catch (error) { console.error("Couldn't record the installer process group:", error) }
+      } : undefined,
+    }).finally(() => { if (marker) rmSync(marker, { force: true }) })
     const after = await maintenance(definition, true)
     const changed = Boolean(after.installed && after.installed !== before.installed)
     // Unchanged, it's up to date only if the newest is known to be what it has.

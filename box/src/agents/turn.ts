@@ -88,6 +88,7 @@ export class Turn {
 
   private replayedNotices: NoticeMessage[] = []
   private replayedCompactions: CompactionMessage[] = []
+  private replayedToolIDs = new Map<string, string[]>()
   private completedChildren = new Map<string, string>()
 
   /** Rebuild the transcript with the same visible records and completed child sessions. */
@@ -96,7 +97,11 @@ export class Turn {
       if (message.type === "assistant") {
         this.replayedSteps.push(message)
         for (const tool of message.content) {
-          if (tool.type !== "tool" || (tool.state.status !== "completed" && tool.state.status !== "error")) continue
+          if (tool.type !== "tool") continue
+          const ids = this.replayedToolIDs.get(tool.name)
+          if (ids) ids.push(tool.id)
+          else this.replayedToolIDs.set(tool.name, [tool.id])
+          if (tool.state.status !== "completed" && tool.state.status !== "error") continue
           const child = (tool.state.metadata as { sessionID?: unknown } | undefined)?.sessionID
           if (typeof child === "string") this.completedChildren.set(tool.id, child)
         }
@@ -106,6 +111,13 @@ export class Turn {
         this.replayedCompactions.push(message)
       }
     }
+  }
+
+  /** A row synthesized by the adapter, where the provider supplied no tool-call ID. */
+  syntheticToolID(name: string, prefix = ""): string {
+    const ids = this.replayedToolIDs.get(name)
+    const index = ids?.findIndex(id => id.startsWith(prefix + "call_")) ?? -1
+    return index < 0 ? prefix + newID("call") : ids!.splice(index, 1)[0]!
   }
 
   takeCompletedChild(toolCallID: string) {

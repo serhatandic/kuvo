@@ -11,7 +11,7 @@ import { engineDown, stopShell } from "../areas/engine";
 import { RUN } from "../home";
 import { oauthStartBody, workQueueAccount } from "../areas/sign-in";
 import { isObject, parsed } from "../../shared/json";
-import { swapLine, swapUnderWay } from "../../shared/engine-swap";
+import { swapHolds, swapLine, swapUnderWay } from "../../shared/engine-swap";
 import { keepWaiting, swapHoldsFor } from "../engine/queue";
 import { messageID } from "../engine/sessions";
 import { holdArchived } from "../areas/wakes";
@@ -95,6 +95,27 @@ export function answerHeaders(response: Response): Record<string, string> {
   return out;
 }
 
+function heldEngineTurn(session: string, kind: string, payload: RequestInit["body"], target: Target | null) {
+  if (!(target ? swapHoldsFor(target, session) : swapHolds(RUN))) return;
+  let body: unknown = null;
+  try { body = JSON.parse(payload?.toString() ?? ""); } catch {}
+  if (kind === "prompt" && isObject(body) && typeof body.text === "string") {
+    if (body.id !== undefined && !isWaitingID(body.id)) return { status: 400, body: { message: BAD_WAITING_ID } };
+    const message = {
+      id: isWaitingID(body.id) ? body.id : messageID(),
+      text: body.text,
+      delivery: body.delivery === "queue" ? "queue" as const : "steer" as const,
+      ...(Array.isArray(body.files) ? { files: body.files } : {}),
+      ...(isObject(body.metadata) ? { metadata: body.metadata } : {}),
+    };
+    if (keepWaiting(session, message, {}, undefined, target)) return { status: 200, body: { waits: true } };
+    if (target === null && !swapHolds(RUN)) return;
+  }
+  return { status: 503, body: { message: swapLine(swapUnderWay(RUN)) ?? "Kuvo is checking the engine’s inbox.", engineChanging: true } };
+}
+
+const engineTurn = /^\/?api\/session\/([^/?]+)\/(prompt|command|shell|compact|summarize)$/;
+
 // Passes `path` to the engine or the agents' bridge on this machine, with its password, and
 // streams back what it answers. What's sent is the path as `canonicalPath` writes it, which is
 // what `allows` checks.
@@ -109,8 +130,8 @@ export async function* forward(target: Target, path: string, request: LinkReques
   const url = new URL(`http://127.0.0.1:${target.port}/${sent}`);
   const headers: Record<string, string> = { authorization: `Basic ${Buffer.from(`opencode:${target.password}`).toString("base64")}` };
   const sendTo = async (body: RequestInit["body"], signal?: AbortSignal) => {
-    const held = await holdEnginePrompt(body);
-    if (held) return held;
+    const held = heldSession && toEngine && heldEngineTurn(heldSession, toEngine[2]!, body, target);
+    if (held) return Response.json(held.body, { status: held.status });
     const response = await fetch(url, { method, headers, body, signal });
     if (!currentBridge || response.headers.get("x-kuvo-bridge-handover") !== "1") return response;
     // This response comes from the admission fence, before the request ran. It is safe to
@@ -145,28 +166,9 @@ export async function* forward(target: Target, path: string, request: LinkReques
   // The engine being changed (PROTOCOL.md, "A new engine"): a message sent to it straight waits on
   // the box and goes once the new one runs, as one sent through `kuvo/sessions/<id>/send` does; a
   // command or shell, which would run on the engine stopped next, is said to wait.
-  const toEngine = method === "POST" && /^\/api\/session\/([^/]+)\/(prompt|command|shell|compact|summarize)$/.exec(url.pathname);
+  const toEngine = method === "POST" && engineTurn.exec(url.pathname);
   let heldSession: string | undefined;
   try { if (toEngine && !toAgents) heldSession = decodeURIComponent(toEngine[1]!); } catch { /* let the engine answer an invalid address */ }
-  const holdEnginePrompt = async (payload: RequestInit["body"]) => {
-    const session = heldSession;
-    if (!toEngine || !session || !swapHoldsFor(target, session)) return;
-    const answer = (status: number, body: object) => Response.json(body, { status });
-    let body: unknown = null;
-    try { body = JSON.parse(payload?.toString() ?? ""); } catch {}
-    if (toEngine[2] === "prompt" && isObject(body) && typeof body.text === "string") {
-      if (body.id !== undefined && !isWaitingID(body.id)) return answer(400, { message: BAD_WAITING_ID });
-      const message = {
-        id: isWaitingID(body.id) ? body.id : messageID(),
-        text: body.text,
-        delivery: body.delivery === "queue" ? "queue" as const : "steer" as const,
-        ...(Array.isArray(body.files) ? { files: body.files } : {}),
-        ...(isObject(body.metadata) ? { metadata: body.metadata } : {}),
-      };
-      if (keepWaiting(session, message, {}, undefined, target)) return answer(200, { waits: true });
-    }
-    return answer(503, { message: swapLine(swapUnderWay(RUN)) ?? "Kuvo is checking the engine’s inbox.", engineChanging: true });
-  };
   // A message taken out of the engine's inbox: sent again under its id (Undo), it goes again.
   const cancelled = method === "DELETE" && /^\/api\/session\/([^/]+)\/inbox\/([^/]+)$/.exec(url.pathname);
   if (cancelled) forgetSent(decodeURIComponent(cancelled[1]!), decodeURIComponent(cancelled[2]!));
@@ -353,10 +355,25 @@ export async function* engineRoute(context: RouteContext): AsyncGenerator<Answer
   let engine: EngineRecord | null = null;
   try {
     engine = readEngine();
-  } catch {
-    // A coding agent's command stops without the engine.
-    if (!stop || !bridge()) return yield* json(503, { message: engineDown() });
+  } catch {}
+  if (!engine && !stop && request.method.toUpperCase() === "POST" && swapHolds(RUN)) {
+    const turn = engineTurn.exec(canonicalPath(request.path)?.split("?")[0] ?? "");
+    if (turn) {
+      try {
+        const session = decodeURIComponent(turn[1]!);
+        const body = withPartsIn(turn[2] === "prompt" && !request.fromMac && !request.desktop ? fromPhone(request.body) : request.body);
+        const saved = await admitPrompt(session, async () => heldEngineTurn(session, turn[2]!, body, null));
+        if (saved) return yield* json(saved.status, saved.body);
+        // The restart may have finished while this request reached the queue.
+        try { engine = readEngine(); } catch {}
+      } catch (error) {
+        if (error instanceof MoveAdmissionClosed) return yield* json(409, { message: error.message });
+        return yield* json(503, { message: engineDown() });
+      }
+    }
   }
+  // A coding agent's command stops without the engine.
+  if (!engine && (!stop || !bridge())) return yield* json(503, { message: engineDown() });
   if (stop) {
     if (request.method.toUpperCase() !== "POST") return yield* text(405, "Stop it with POST.");
     const headers: Record<string, string> = {};

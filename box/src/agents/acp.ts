@@ -10,7 +10,6 @@ import { failure, lostWorkNote } from "./agent"
 import { resetsIn, type Limit } from "./auto"
 import { fileDiff } from "./diff"
 import { emit } from "./events"
-import { newID } from "./ids"
 import { RPC, RPCError } from "./rpc"
 import { allowedFolders, fenceAgent, fenceAttachments, fenceCopy, fenceKey, fenceRules, seatBot, fullAccessMark } from "./fence"
 import { isKuvoTool, kuvoToolName, kuvoTools, loadKuvoTools, toolServerName } from "./kuvotools"
@@ -857,7 +856,7 @@ export class AcpThread implements Thread {
         // One to-do list a turn, brought up to date as the agent works through it.
         const todos = (update.entries ?? []).map((entry: any) => ({ content: entry.content, status: entry.status === "in_progress" ? "in_progress" : entry.status }))
         // Its own for each attempt: Auto may go on with another agent in the same turn.
-        const id = active.plan?.id ?? newID("call")
+        const id = active.plan?.id ?? turn.syntheticToolID("todowrite")
         active.plan = { id, todos }
         if (!turn.hasTool(id)) turn.toolStart(id, "todowrite", { todos })
         else turn.toolCalled(id, { todos })
@@ -876,7 +875,7 @@ export class AcpThread implements Thread {
   private content(active: Active, turn: Turn, content: any, kind: "text" | "reasoning") {
     const picture = content?.type === "image" ? pictureData(content.data, content.mimeType) : content?.type === "resource" && content.resource?.blob ? pictureData(content.resource.blob, content.resource.mimeType) : undefined
     if (picture) {
-      const id = newID("call")
+      const id = turn.syntheticToolID("generate_image")
       active.toolsSinceText = true
       turn.toolStart(id, "generate_image", {})
       turn.toolSucceeded(id, withPictures("", [picture]))

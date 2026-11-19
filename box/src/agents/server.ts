@@ -601,9 +601,10 @@ export function handler(context: Context) {
       // picks (`metadata.updateAll`); `POST kuvo/updates/<provider>`: that account's program;
       // `DELETE kuvo/updates/<provider>?at=…`: how that one went, seen, for every client.
       if (area === "kuvo" && a === "updates" && !c) {
+        const hold = sessions?.holdProgram.bind(sessions)
         if (!b) {
           if (method !== "POST") return error(405, "Not allowed.")
-          return json({ data: { updating: await updateAll(roster.all(), () => roster.all(), maintainedNow, (agent) => lastMaintained.get(agent.id)) } })
+          return json({ data: { updating: await updateAll(roster.all(), () => roster.all(), maintainedNow, (agent) => lastMaintained.get(agent.id), hold) } })
         }
         const agent = agentFor(b)
         if (!agent) return error(404, `No agent ${b}.`)
@@ -616,7 +617,8 @@ export function handler(context: Context) {
         }
         if (method !== "POST") return error(405, "Not allowed.")
         if (!agent.update || !agent.maintenance) return error(400, `Update ${agent.name} the way you installed it.`)
-        void updateProgram(agent, () => roster.all(), maintainedNow)
+        const confirmed = (await body())?.confirmed === true
+        void updateProgram(agent, () => roster.all(), maintainedNow, hold, confirmed)
         return json({ data: { updating: [agent.id] } })
       }
 
