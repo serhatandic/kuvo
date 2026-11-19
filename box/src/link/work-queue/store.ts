@@ -13,7 +13,7 @@ import { observeQueueItem } from "./offline-fields";
 
 import { OWNER } from "../../shared/work-queue-owner";
 import { UnsupportedFormatVersion } from "../../shared/format-version";
-import { writeDurablePrivate } from "../../shared/files";
+import { syncDurableFile, writeDurablePrivate } from "../../shared/files";
 import { mentionIndexOf, mentionLinkOf, mentionSnapshot, pruneRelations, relationOf, syncMentions, type MentionIndex, type MentionLink, type MentionSnapshot, type Relation } from "./relations";
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -88,7 +88,7 @@ export interface Source { kind: string; ref: string; url?: string; host?: string
 export type ItemRef = { id: string } | { number: number } | { source: string };
 /** An item on its way to a conversation on another computer (`hand.ts`): it stays here, unchanged,
  * until that computer has it. */
-export interface Handing { id: string; to: string; key: string; name: string; at: number; by: Who; sent?: number; missing?: number }
+export interface Handing { id: string; to: string; key: string; name: string; at: number; by: Who; sent?: number; missing?: number; carried?: true }
 
 /** Who an item is for: a bot (its id), or a coding agent (its kind). */
 export interface Assignee { kind: "bot" | "agent"; id: string }
@@ -200,7 +200,7 @@ const KNOWN = new Set(["id", "number", "owner", "title", "body", "category", "st
 const handingOf = (given: unknown): Handing | null => {
   if (!isObject(given) || typeof given.id !== "string" || !/^wqh_[A-Za-z0-9_-]{8,40}$/.test(given.id) || typeof given.to !== "string" || !OWNER.test(given.to)
     || typeof given.key !== "string" || typeof given.at !== "number") return null;
-  return { id: given.id, to: given.to, key: given.key, name: typeof given.name === "string" ? given.name : "", at: given.at, by: whoOf(given.by) ?? { user: true }, ...(typeof given.sent === "number" ? { sent: given.sent } : {}), ...(typeof given.missing === "number" ? { missing: given.missing } : {}) };
+  return { id: given.id, to: given.to, key: given.key, name: typeof given.name === "string" ? given.name : "", at: given.at, by: whoOf(given.by) ?? { user: true }, ...(typeof given.sent === "number" ? { sent: given.sent } : {}), ...(typeof given.missing === "number" ? { missing: given.missing } : {}), ...(given.carried === true ? { carried: true } : {}) };
 };
 
 /** An event as it was read (or came with an item from another box): when, its kind and who, of a
@@ -505,10 +505,12 @@ export class Book {
     changed.sort(([a, queueA], [b, queueB]) => Number(gained(b, queueB)) - Number(gained(a, queueA)));
     for (const [owner, queue] of changed) {
       any = true;
-      if (!queue.items.length) fs.rmSync(fileOf(owner), { force: true });
-      else {
+      if (!queue.items.length) {
+        fs.rmSync(fileOf(owner), { force: true });
+        if (durable) syncDurableFile(QUEUES, WORK_QUEUE);
+      } else {
         const data = JSON.stringify(queueFileFormat.write({ owner, items: queue.items }));
-        if (durable || queue.items.some(item => item.offlineEdits)) writeDurablePrivate(fileOf(owner), data, path.dirname(WORK_QUEUE));
+        if (durable || queue.items.some(item => item.offlineEdits || item.handing)) writeDurablePrivate(fileOf(owner), data, path.dirname(WORK_QUEUE));
         else writePrivate(fileOf(owner), data);
       }
       this.before.set(owner, JSON.stringify(queue.items));

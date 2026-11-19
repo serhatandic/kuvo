@@ -27,6 +27,8 @@ export interface MoveRecord extends Move {
   wasPaused: boolean;
   /** The primary acknowledged this source’s ownership transfer. */
   ownershipCommitted?: true;
+  /** The copy arrived and the primary is deciding ownership. */
+  assigning?: true;
   /** The original pause was persisted before this source wrote its move marker. */
   pauseRecorded?: boolean;
   folder?: string;
@@ -81,6 +83,8 @@ export interface MoveRecord extends Move {
   /** Since when the box it leaves has asked the other to let its copy go (taken back); on the box it
    * goes to, since when its copy's been let go of. */
   dropSince?: number;
+  /** A checkpointed destination holds until it hears the terminal drop. */
+  dropUntilAck?: true;
   started: number;
   /** It talks with a coding agent: its conversations are on the agents bridge, not the engine, and
    * each agent's own go with them (`carry.ts`). */

@@ -24,6 +24,12 @@ import {
 } from "./store";
 import { nameOf, refOf } from "./view";
 import { doneByRead, seenOf } from "./github";
+import { mayActivate } from "../ownership/resolve";
+import { transferSupport } from "../ownership/transfer";
+import { ownershipReady } from "../ownership/store";
+import { ownKey } from "../peers/known";
+import { followedSetup } from "../setup/record";
+import { readLink, type LinkState } from "../state";
 import { frozen } from "../moves/records";
 
 /** A session is linked to this many items at most: linking one more drops its oldest link. */
@@ -667,8 +673,33 @@ export function handItem(book: Book, item: Item, to: string, who: Who, now: numb
   const from = item.owner;
   if (from === to) refuse(`${nameOf(item)} is in that queue already.`);
   if (openIn(book, to) >= MOST_ITEMS) refuse(`That queue has ${MOST_ITEMS} open items already.`);
+  if (!stageLocalHand(item, to, who, now, readLink())) placeLocalHand(book, item, to, who, now);
+}
+
+/** Record the intent before asking the primary to assign the item to its new queue. */
+export function stageLocalHand(item: Item, to: string, who: Who, now: number, link: LinkState | null, carried = false): boolean {
+  if (!followedSetup(link)?.checkpointed) return false;
+  if (!ownershipReady()) refuse("Wait for Kuvo Code to finish updating.");
+  const unsupported = transferSupport(link);
+  if (unsupported) refuse(unsupported);
+  if (!mayActivate({ kind: "queueItems", queue: item.owner, id: item.id }, { link }) ||
+    !mayActivate({ kind: "queueItems", queue: to }, { link })) refuse("This queue is held while its owner changes.");
+  const key = ownKey(link!);
+  if (!key) throw new Refusal("This computer is missing from the setup.");
+  item.handing = { id: `wqh_${crypto.randomBytes(12).toString("base64url")}`, to, key, name: to, at: now, by: who,
+    ...(carried ? { carried: true } : {}),
+  };
+  return true;
+}
+
+/** Place a local handoff after its accepted queue assignment is durable. */
+export function placeLocalHand(book: Book, item: Item, to: string, who: Who, now: number): void {
+  const from = item.owner;
+  const carried = item.handing?.carried;
+  delete item.handing;
   book.give(item, to);
+  item.updated = { at: now, by: who };
+  if (carried) return;
   noteHanded(item, from, to, now);
   if (to.startsWith("ses_") && !isClosed(item.status)) linkSession(book, item, to, now);
-  item.updated = { at: now, by: who };
 }

@@ -153,6 +153,7 @@ export const FEATURES = [
   "named",
   "names.titles",
   "notices",
+  "ownership.transfer-decisions",
   "personalities",
   "personalities.events",
   "phones",

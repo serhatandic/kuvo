@@ -64,16 +64,18 @@ export function assignmentFor(link: LinkState | null, ref: DataReference) {
 
 /** Accepted setup state is the ownership decision. Routing hints cannot replace it. */
 export function acceptedOwner(link: LinkState | null, ref: DataReference): string | undefined {
-  const scope = dataOwner(ref.kind, ref.queue);
   const queueRecord = dataOwner(ref.kind) === undefined;
+  if (queueRecord && ref.id) {
+    const item = assignmentFor(link, ref);
+    const queue = item && typeof item.queue === "string" ? item.queue : ref.queue;
+    const owner = acceptedOwner(link, { kind: ref.kind, queue });
+    return owner ?? (item && replacementOwner(link, item.computer));
+  }
   const id = queueRecord ? ref.queue : ref.id;
-  const item = queueRecord && ref.id ? assignmentFor(link, ref) : undefined;
-  const assignment = id && DATA_ID.test(id) ? assignmentFor(link, queueRecord ? { ...ref, id: undefined } : ref) : undefined;
+  const scope = dataOwner(ref.kind, ref.queue);
+  const assignment = id && DATA_ID.test(id) ? assignmentFor(link, ref) : undefined;
   const moved = scope === "session computer" && acceptedMembership(link)?.moved.find(each => each.session === id);
-  const queueOwner = assignment?.computer ?? (moved ? moved.key : undefined);
-  const accepted = item && item.queue !== ref.queue
-    ? (typeof item.queue === "string" ? acceptedOwner(link, { kind: ref.kind, queue: item.queue }) : undefined) ?? item.computer
-    : queueOwner ?? item?.computer;
+  const accepted = assignment?.computer ?? (moved ? moved.key : undefined);
   return accepted ? replacementOwner(link, accepted) : undefined;
 }
 
@@ -91,14 +93,18 @@ export function sessionsFencedHere(authority: { link: LinkState | null; origin?:
 
 /** Decide whether a stored copy can run. Advertisements can locate a record, but cannot
  * authorize a copy. A replacement has the old computer's provenance, with a new key. */
-export function mayActivate(ref: DataReference, { link = readLink(), origin, activating }: {
-  link?: LinkState | null; origin?: string | null; activating?: string;
+export function mayActivate(ref: DataReference, { link = readLink(), origin, activating, moves }: {
+  link?: LinkState | null; origin?: string | null; activating?: string; moves?: ReturnType<typeof liveMoves>;
 } = {}): boolean {
   const scope = dataOwner(ref.kind, ref.queue);
   if (!scope || scope === "client") return false;
   const own = link && ownKey(link);
   const id = dataOwner(ref.kind) === undefined ? ref.queue : ref.id;
-  if (id && (activating ? frozen(liveMoves().filter(move => move.id !== activating)) : frozen()).has(id)) return false;
+  if (id && (activating ? frozen((moves ?? liveMoves()).filter(move => move.id !== activating)) : frozen(moves)).has(id)) return false;
+  if (dataOwner(ref.kind) === undefined && ref.id) {
+    const queue = assignmentFor(link, ref)?.queue;
+    if (typeof queue === "string" && queue !== ref.queue) return false;
+  }
   const accepted = acceptedOwner(link, ref);
   if (activating) {
     if (followedSetup(link)?.checkpointed) return accepted === own && assignmentFor(link, ref)?.move === activating;

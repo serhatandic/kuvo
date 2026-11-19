@@ -8,7 +8,7 @@ import { K, RUN } from "../home";
 
 const root = path.join(RUN, "owned-data");
 const format = additiveObjectFormat("Owned data");
-type Family = "mutations" | "reads" | "outbox" | "accepted" | "edit-outbox" | "edit-snapshots" | "edit-deletions" | "edit-departures";
+type Family = "transfer-settlements" | "mutations" | "reads" | "outbox" | "accepted" | "edit-outbox" | "edit-snapshots" | "edit-deletions" | "edit-departures";
 
 export const offlineEditsReady = () => offlineEditLayoutReady(K);
 const ready = (family: Family) => family.startsWith("edit-") ? offlineEditsReady() : ownershipReady();
@@ -40,4 +40,8 @@ export function readRecord<T extends object>(family: Family, key: string): T | u
 export function keepRecord(family: Family, key: string, value: object): void {
   if (!ready(family)) throw new Error("Wait for Kuvo Code to finish updating.");
   writeDurablePrivate(path.join(root, family, key + ".json"), JSON.stringify(format.write(value)), K);
+}
+
+export function removeRecord(family: Family, key: string): void {
+  if (ready(family)) fs.rmSync(path.join(root, family, key + ".json"), { force: true });
 }

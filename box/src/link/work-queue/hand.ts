@@ -21,12 +21,13 @@ import { frozen } from "../moves/records";
 import { ownKey, peersOf, removedBoxes } from "../peers/known";
 import { awaySince } from "../peers/reach";
 import { offlineEditsReady } from "../ownership/store";
+import { followedSetup } from "../setup/record";
 import { readLink } from "../state";
-import { commitTransfer } from "../ownership/transfer";
+import { decideTransfer, noteTransferSettled } from "../ownership/transfer";
 import { assignmentFor, mayActivate } from "../ownership/resolve";
 import { keepLabel, labels } from "./labels";
 import { isClosed, statusNamed } from "./statuses";
-import { intoTodo, linkSession } from "./ops";
+import { intoTodo, linkSession, placeLocalHand } from "./ops";
 import {
   allItems, changeQueues, deletionFor, FILE_NAME, filesOf, itemOf, MOST_FILE, MOST_HANDED_FILES, MOST_ITEMS, noteDeparture, noteHanded, OWNER, placeIn, Refusal, WORK_QUEUE, whoOf,
   type Book, type Item, type Who,
@@ -101,7 +102,10 @@ function handingNow(): Item[] {
  * on its way still. */
 export function handUpkeep(link: LinkState | null, now = Date.now()): Item[] {
   if (!link?.key) return [];
-  const handing = handingNow();
+  const own = ownKey(link);
+  const pending = handingNow();
+  for (const item of pending) if (item.handing!.key === own) void finishLocalHand(item);
+  const handing = pending.filter(item => item.handing!.key !== own);
   if (!handing.length) return [];
   const peers = peersOf(link);
   const removed = removedBoxes(link);
@@ -125,6 +129,38 @@ export function handUpkeep(link: LinkState | null, now = Date.now()): Item[] {
   if (left.length) giveBack(left.map(item => item.handing!.id), "you removed that computer", now);
   if (lost.length) giveBack(lost.map(item => item.handing!.id), "that computer hasn't been one of yours for 3 days", now);
   return handing.filter(item => !late.includes(item) && !left.includes(item) && !missing.includes(item));
+}
+
+const localHands = new Map<string, Promise<string | undefined>>();
+
+export function finishLocalHand(item: Item, link = readLink()): Promise<string | undefined> {
+  const hand = item.handing;
+  const own = link && ownKey(link);
+  if (!hand || !own || hand.key !== own || !followedSetup(link)?.checkpointed) return Promise.resolve(undefined);
+  const pending = localHands.get(hand.id);
+  if (pending) return pending;
+  const move = { kind: "queue", id: hand.id, thing: item.id, from: own, to: own, fromQueue: item.owner, queue: hand.to } as const;
+  const task = (async () => {
+    const decision = await decideTransfer(link, move);
+    if (decision.status === "pending") return;
+    changeQueues(book => {
+      const current = book.find({ id: item.id });
+      if (!current || current.handing?.id !== hand.id) return;
+      if (decision.status === "refused") {
+        delete current.handing;
+        current.notes.push({ at: Date.now(), by: hand.by, text: decision.message });
+      } else {
+        noteTransferSettled(link, move);
+        placeLocalHand(book, current, hand.to, hand.by, Math.max(Date.now(), current.updated.at + 1));
+      }
+    }, Date.now(), { durable: true });
+    return decision.status === "refused" ? decision.message : undefined;
+  })().catch(error => {
+    console.error("kuvo-link: local Work Queue handoff will retry", error);
+    return undefined;
+  }).finally(() => localHands.delete(hand.id));
+  localHands.set(hand.id, task);
+  return task;
 }
 
 // When the hand-offs were last looked after on a round without the relay: once a minute.
@@ -172,6 +208,7 @@ function acceptedHandoff(item: Item, link = readLink()): boolean {
 
 export function callOffHanding(item: Item, who: Who, now: number): void {
   if (!item.handing) return;
+  if (item.handing.key === ownKey(readLink() ?? {})) refuse("Wait for the local handoff to finish before deleting the item.");
   if (acceptedHandoff(item)) refuse("That item’s new owner already accepted the handoff.");
   const { id, name, to } = item.handing;
   delete item.handing;
@@ -233,13 +270,16 @@ export function handedBack(sender: MailSender, given: unknown, now = Date.now())
   if (given.retry === true) return void sent.set(given.id, { at: now, key: sender.key });
   if (given.ok !== true) return giveBack([given.id], typeof given.why === "string" ? plainName(given.why).slice(0, 300) || "it was refused" : "it was refused", now);
   sent.delete(given.id);
+  const link = readLink();
+  const own = link && ownKey(link);
   changeQueues(book => {
     const found = book.find({ id: item.id });
     const handing = found?.handing;
     if (!found || !handing || handing.id !== given.id) return;
     noteDeparture(found.id, { queue: handing.to, computer: sender.key, creationReceipt: found.creationReceipt });
     book.queue(found.owner).items = book.queue(found.owner).items.filter(each => each.id !== found.id);
-  }, now, { onItsOwn: true });
+    if (own) noteTransferSettled(link, { kind: "queue", id: handing.id, thing: found.id, from: own, to: sender.key, queue: handing.to });
+  }, now, { onItsOwn: true, durable: Boolean(link?.setup?.checkpointed) });
   if (!allItems().some(each => each.id === item.id)) fs.rmSync(filesOf(item.id), { recursive: true, force: true });
 }
 
@@ -376,9 +416,9 @@ export async function handArrived(sender: MailSender, given: unknown, reply: (pa
     place(false);
     if (await rejected()) return;
     const own = ownKey(link);
-    if (!own || !await commitTransfer(link, { kind: "queue", id, from: sender.key, to: own, thing: item.id, queue: owner })) {
-      return answer(false, "Waiting for the primary to confirm the item’s new owner.", true);
-    }
+    const decision = own && await decideTransfer(link, { kind: "queue", id, from: sender.key, to: own, thing: item.id, queue: owner, fromQueue: from });
+    if (decision && decision.status === "refused") return answer(false, decision.message);
+    if (!decision || decision.status !== "committed") return answer(false, "Waiting for the primary to confirm the item’s new owner.", true);
   }
   place(true);
   if (link?.setup?.checkpointed && (again || twinHere || refused)) {

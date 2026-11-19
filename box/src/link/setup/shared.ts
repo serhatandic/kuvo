@@ -33,6 +33,7 @@ export type OperationOutcome = {
   status: "committed" | "interrupted";
   offlineEdit?: EditRecord;
   mutationDigest?: string;
+  transferRefusal?: string;
 };
 export type OperationOutcomes = Record<string, OperationOutcome>;
 
@@ -133,7 +134,7 @@ export function bindSave(save: Receipt, seed: string, binding: { pairedKey: stri
 }
 
 /** Stage under the link lock. Independent kinds proceed independently; one kind is serialized. */
-export function stageShared(link: LinkState, kind: SharedKind, value: unknown, effects?: object, requested?: string, edits?: EditHistory): Receipt | null {
+export function stageShared(link: LinkState, kind: SharedKind, value: unknown, effects?: object, requested?: string, edits?: EditHistory, { reportCapacity = false } = {}): Receipt | null {
   const setup = followedSetup(link);
   const operation = requested ?? crypto.randomBytes(16).toString("base64url");
   if (setupLayoutDeferred(K) || !link.sign || setup?.role !== "primary" || setup.sign !== ownSign(link) || (!setup.standby && (!setup.checkpointed || requiresStandby(setup)))
@@ -158,7 +159,7 @@ export function stageShared(link: LinkState, kind: SharedKind, value: unknown, e
   const entry = entryOf(sequence, value, offlineEdits);
   const next = { ...link.shared, ...Object.fromEntries(proposed), [kind]: entry };
   if (Buffer.byteLength(JSON.stringify(next)) > MAX_SHARED_BYTES) {
-    if (edits && Buffer.byteLength(JSON.stringify({ ...link.shared, [kind]: entry })) > MAX_SHARED_BYTES)
+    if ((edits || reportCapacity) && Buffer.byteLength(JSON.stringify({ ...link.shared, [kind]: entry })) > MAX_SHARED_BYTES)
       throw new SharedCapacity("This edit exceeds the setup’s saved preference capacity.");
     return null;
   }
@@ -166,7 +167,7 @@ export function stageShared(link: LinkState, kind: SharedKind, value: unknown, e
     id: setup.id, epoch: setup.epoch, kind, value, operation, baseRevision: sequence - 1, ...(offlineEdits ? { offlineEdits } : {}), ...(offlineEdit ? { offlineEdit } : {}), ...(effects ? { effects } : {}),
   });
   if (envelope.d.length > MOST_DOC * 4 / 3) {
-    if (edits) throw new SharedCapacity("This edit exceeds the setup’s proposal capacity.");
+    if (edits || reportCapacity) throw new SharedCapacity("This edit exceeds the setup’s proposal capacity.");
     return null;
   }
   const doc = held(envelope)!;

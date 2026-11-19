@@ -7,12 +7,15 @@ import fs from "node:fs";
 import path from "node:path";
 import { writeDurablePrivate } from "../../shared/files";
 import { offlineEditsReady } from "../ownership/store";
+import { assignmentFor } from "../ownership/resolve";
+import { ownKey } from "../peers/known";
+import { readLink } from "../state";
 import { isObject } from "../../shared/json";
 import { keepLabel, labels } from "./labels";
 import { statusNamed } from "./statuses";
-import { intoTodo } from "./ops";
+import { intoTodo, stageLocalHand } from "./ops";
 import { pruneRelations } from "./relations";
-import { allItems, changeQueues, FILE_NAME, filesOf, itemOf, ITEM_ID, deletionFor, keepDeletion, queueDeletions, OWNER, readKeptQueue, readQueueSettingAside, WORK_QUEUE, type Item, type QueueDeletion } from "./store";
+import { allItems, changeQueues, FILE_NAME, Refusal, filesOf, itemOf, ITEM_ID, deletionFor, keepDeletion, queueDeletions, OWNER, readKeptQueue, readQueueSettingAside, WORK_QUEUE, type Item, type QueueDeletion } from "./store";
 
 /** What a move carries: each owner's items, the labels they have, and which items
  * have files (packed beside `move.json`, in `work-queue/<item>/`). */
@@ -29,7 +32,12 @@ export function packWorkQueues(owners: readonly string[]): CarriedQueues | null 
   const wanted = new Set(owners);
   // Preserve the corrupt-queue check on the owners being moved.
   for (const owner of wanted) if (OWNER.test(owner)) readQueueSettingAside(owner);
-  const items = allItems().filter(item => wanted.has(item.owner));
+  const here = readLink();
+  const own = here && ownKey(here);
+  const all = allItems();
+  if (own && all.some(item => item.handing?.key === own && (wanted.has(item.owner) || wanted.has(item.handing.to))))
+    throw new Refusal("A Work Queue handoff is still in progress. Try the move again once it finishes.");
+  const items = all.filter(item => wanted.has(item.owner));
   for (const owner of wanted) if (!OWNER.test(owner)) items.push(...readKeptQueue(owner)?.items ?? []);
   const deletions = queueDeletions().filter(deletion => wanted.has(deletion.queue));
   if (!items.length && !deletions.length) return null;
@@ -126,9 +134,15 @@ export function forgetWorkQueues(owners: readonly string[]): void {
 /** A conversation carried on as another here: its queue, and its links, under the new one. */
 export function carryWorkQueue(from: string, to: string): void {
   if (!OWNER.test(from) || !OWNER.test(to) || from === to) return;
+  const link = readLink(), now = Date.now();
   changeQueues(book => {
+    for (const item of [...book.queue(from).items]) {
+      // The carry route may be called again from the new session's metadata.
+      if (item.handing) continue;
+      const tracked = assignmentFor(link, { kind: "queueItems", id: item.id, queue: from });
+      if (!tracked || !stageLocalHand(item, to, { user: true }, now, link, true)) book.give(item, to);
+    }
     for (const deletion of queueDeletions()) if (deletion.queue === from) keepDeletion({ ...deletion, queue: to });
-    for (const item of [...book.queue(from).items]) book.give(item, to);
     for (const item of book.items()) {
       for (const link of item.sessions) if (link.session === from) link.session = to;
       if (item.handedBy === from) item.handedBy = to;

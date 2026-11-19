@@ -28,7 +28,7 @@ const steps: readonly Step[] = [
   () => {},
   // 5. Reserve immutable setup checkpoints and operation records. Layout 4 records remain readable.
   () => {},
-  // 6. Reserve owner snapshots and message operations. Existing data stays in place.
+  // 6. Reserve owner snapshots, message operations and ownership receipts. Existing data stays in place.
   () => {},
   // 7. Reserve offline edits, their receipts and compact deletion markers.
   () => {},
