@@ -13,6 +13,7 @@ import { REMOVAL_ID, removalRecords, type MemberRemoval, type WipePreparationCla
 
 export interface Membership {
   boxes: Peer[];
+  successorOrder?: string[];
   left: string[];
   moved: MovedSession[];
   devices: { phones: Phone[]; removed: { key: string; pairing: string }[] };
@@ -40,7 +41,11 @@ export function membershipOf(value: unknown): Membership | null {
     const { id: _localDestination, ...portable } = cleanPeer(box);
     return portable;
   });
-  if (new Set(boxes.map(box => box.key)).size !== boxes.length) return null;
+  const boxKeys = new Set(boxes.map(box => box.key));
+  if (boxKeys.size !== boxes.length) return null;
+  const order = value.successorOrder;
+  if (order !== undefined && (!Array.isArray(order) || order.length !== boxes.length
+    || new Set(order).size !== boxes.length || !order.every(key => typeof key === "string" && boxKeys.has(key)))) return null;
   const devices = isObject(value.devices) ? value.devices : {};
   const revisions = value.removalRevisions;
   const left = Array.isArray(value.left) ? value.left : [];
@@ -58,20 +63,21 @@ export function membershipOf(value: unknown): Membership | null {
       typeof claim.choiceHash === "string" && /^[A-Za-z0-9_-]{43}$/.test(claim.choiceHash)
       ? [[key, { operation: claim.operation, choiceHash: claim.choiceHash }]] : [];
   }));
-  const boxKeys = boxes.map(box => box.key);
+  const keys = [...boxKeys];
   const revoked = (Array.isArray(devices.removed) ? devices.removed : [])
-    .filter(entry => fits(entry, boxKeys) && typeof entry.pairing === "string")
+    .filter(entry => fits(entry, keys) && typeof entry.pairing === "string")
     .map(({ key, pairing }) => ({ key, pairing: pairing as string }));
   const isRevoked = (phone: Phone) => revoked.some(each => each.key === phone.key && each.pairing === (phone.pairing ?? ""));
   return {
     boxes,
+    ...(order ? { successorOrder: order } : {}),
     ...(computerHistory ? { computerHistory } : {}),
     ...(Object.keys(wipePreparations).length ? { wipePreparations } : {}),
     ...(Object.keys(removals).length ? { removals } : {}),
     left: tombstones,
     moved: cleanMoved(value.moved),
     devices: {
-      phones: (Array.isArray(devices.phones) ? devices.phones : []).filter(phone => fits(phone, boxKeys)).map(portableDevice).filter(phone => !isRevoked(phone)),
+      phones: (Array.isArray(devices.phones) ? devices.phones : []).filter(phone => fits(phone, keys)).map(portableDevice).filter(phone => !isRevoked(phone)),
       removed: revoked,
     },
     removalRevisions: Object.fromEntries(Object.entries(isObject(revisions) ? revisions : {})

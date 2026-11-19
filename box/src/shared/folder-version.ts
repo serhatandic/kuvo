@@ -46,6 +46,8 @@ const steps: readonly Step[] = [
   () => {},
   // 13. Reserve durable credential cleanup and signed final-standby retirement.
   () => {},
+  // 14. Reserve the computer reliability order in accepted setup membership.
+  () => {},
 ];
 
 function migrateDeviceGrants(folder: string): void {
@@ -169,6 +171,12 @@ export function computerHistoryLayoutReady(folder: string): boolean {
 /** Keep the former device grant contract until a deferred layout-11 migration can run. */
 export function deviceGrantsLayoutDeferred(folder: string): boolean {
   return trialOpen(folder) && checkpoint(path.join(folder, FOLDER_VERSION_FILE), steps.length).version < 11;
+}
+
+/** Reliability ordering is written after the layout step commits. */
+export function successorRankLayoutReady(folder: string): boolean {
+  try { return checkpoint(path.join(folder, FOLDER_VERSION_FILE), steps.length).version >= 14; }
+  catch { return false; }
 }
 
 /** A trial can advance only as far as the saved reader can open. Before layout markers,

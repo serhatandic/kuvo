@@ -3808,6 +3808,13 @@ function computerHistoryLayoutReady(folder) {
 function deviceGrantsLayoutDeferred(folder) {
   return trialOpen(folder) && checkpoint(path18.join(folder, FOLDER_VERSION_FILE), steps.length).version < 11;
 }
+function successorRankLayoutReady(folder) {
+  try {
+    return checkpoint(path18.join(folder, FOLDER_VERSION_FILE), steps.length).version >= 14;
+  } catch {
+    return false;
+  }
+}
 function checkTrialRecovery(folder, start, importing) {
   if (!trialOpen(folder))
     return;
@@ -3908,6 +3915,7 @@ var init_folder_version = __esm(() => {
     () => {},
     () => {},
     migrateDeviceGrants,
+    () => {},
     () => {},
     () => {}
   ];
@@ -4509,7 +4517,11 @@ function membershipOf(value) {
     const { id: _localDestination, ...portable } = cleanPeer(box);
     return portable;
   });
-  if (new Set(boxes.map((box) => box.key)).size !== boxes.length)
+  const boxKeys = new Set(boxes.map((box) => box.key));
+  if (boxKeys.size !== boxes.length)
+    return null;
+  const order = value.successorOrder;
+  if (order !== undefined && (!Array.isArray(order) || order.length !== boxes.length || new Set(order).size !== boxes.length || !order.every((key) => typeof key === "string" && boxKeys.has(key))))
     return null;
   const devices = isObject(value.devices) ? value.devices : {};
   const revisions = value.removalRevisions;
@@ -4527,18 +4539,19 @@ function membershipOf(value) {
     const claim = preparation[key];
     return isObject(claim) && typeof claim.operation === "string" && OPERATION_ID.test(claim.operation) && typeof claim.choiceHash === "string" && /^[A-Za-z0-9_-]{43}$/.test(claim.choiceHash) ? [[key, { operation: claim.operation, choiceHash: claim.choiceHash }]] : [];
   }));
-  const boxKeys = boxes.map((box) => box.key);
-  const revoked = (Array.isArray(devices.removed) ? devices.removed : []).filter((entry) => fits2(entry, boxKeys) && typeof entry.pairing === "string").map(({ key, pairing }) => ({ key, pairing }));
+  const keys = [...boxKeys];
+  const revoked = (Array.isArray(devices.removed) ? devices.removed : []).filter((entry) => fits2(entry, keys) && typeof entry.pairing === "string").map(({ key, pairing }) => ({ key, pairing }));
   const isRevoked = (phone) => revoked.some((each) => each.key === phone.key && each.pairing === (phone.pairing ?? ""));
   return {
     boxes,
+    ...order ? { successorOrder: order } : {},
     ...computerHistory ? { computerHistory } : {},
     ...Object.keys(wipePreparations).length ? { wipePreparations } : {},
     ...Object.keys(removals).length ? { removals } : {},
     left: tombstones,
     moved: cleanMoved(value.moved),
     devices: {
-      phones: (Array.isArray(devices.phones) ? devices.phones : []).filter((phone) => fits2(phone, boxKeys)).map(portableDevice).filter((phone) => !isRevoked(phone)),
+      phones: (Array.isArray(devices.phones) ? devices.phones : []).filter((phone) => fits2(phone, keys)).map(portableDevice).filter((phone) => !isRevoked(phone)),
       removed: revoked
     },
     removalRevisions: Object.fromEntries(Object.entries(isObject(revisions) ? revisions : {}).filter(([key, n]) => KEY.test(key) && Number.isSafeInteger(n) && Number(n) > 0))
@@ -15766,13 +15779,54 @@ var init_work = __esm(() => {
   ownDocumentKinds = ["peers", "phones", "personalities"];
 });
 
+// box/src/link/setup/reliability.ts
+function resetAvailability() {
+  availability.clear();
+}
+function observeAvailability(key, now, preferred, reason) {
+  const last = availability.get(key);
+  const since = last && fresh(last.at, now, 3 * HEARTBEAT_MS) ? last.since : now;
+  availability.set(key, { at: now, since, preferred, reason });
+}
+function availableComputer(key, now) {
+  const sample = availability.get(key);
+  return sample && fresh(sample.at, now, testSetupClock() ? 1e4 : 3 * HEARTBEAT_MS) ? sample : undefined;
+}
+function observedUptime(since, now) {
+  return Math.floor((now.uptime - since.uptime) / RANK_INTERVAL);
+}
+function rankComputers(boxes, previous, now = leaseClock()) {
+  if (!successorRankLayoutReady(K))
+    return previous;
+  const places = new Map(previous?.map((key, rank) => [key, rank]));
+  return boxes.map((peer) => {
+    const sample = availableComputer(peer.key, now);
+    const preference = sample?.preferred ? 2 : !sample && peer.kind === "machine" ? 1 : 0;
+    return {
+      key: peer.key,
+      uptime: sample ? observedUptime(sample.since, now) : 0,
+      preference,
+      place: places.get(peer.key) ?? boxes.length
+    };
+  }).sort((a, b) => b.uptime - a.uptime || a.place - b.place || b.preference - a.preference || a.key.localeCompare(b.key)).map((box) => box.key);
+}
+var availability, RANK_INTERVAL;
+var init_reliability = __esm(() => {
+  init_folder_version();
+  init_home();
+  init_lease();
+  availability = new Map;
+  RANK_INTERVAL = 6 * HEARTBEAT_MS;
+});
+
 // box/src/link/setup/access.ts
-function captureMembership(link, self) {
+function captureMembership(link, self, order) {
   const { boxes, left, moved } = primaryPeersBody(link);
   const projected = Array.isArray(link.macPeers) ? link.macPeers : [];
   const roster = self ? [self, ...projected] : boxes;
   return membershipOf({
     boxes: roster,
+    successorOrder: rankComputers(roster, order),
     left,
     moved,
     computerHistory: computerHistory(link),
@@ -15825,7 +15879,7 @@ function updateAccess(change, { localOnly = false, operation, checkpoint = false
         devices: ownPhones(modified)
       }, undefined, operation);
     } else {
-      const membership = captureMembership(modified, accepted?.boxes.find((box) => box.key === link.setup.primary));
+      const membership = captureMembership(modified, accepted?.boxes.find((box) => box.key === link.setup.primary), accepted?.successorOrder);
       const fields = Object.fromEntries(localEffects.filter((key) => JSON.stringify(modified[key]) !== JSON.stringify(link[key])).map((key) => [key, modified[key] ?? null]));
       if (membership)
         save = stageShared(link, "membershipAndAccess", membership, { fields, pairing }, operation);
@@ -15867,6 +15921,7 @@ var init_access = __esm(() => {
   init_computer_history();
   init_membership();
   init_record();
+  init_reliability();
   init_shared();
   localEffects = DATA_DECLARATIONS.membershipAndAccess.shared.localEffects;
   legacyFields = [
@@ -55485,6 +55540,7 @@ async function proposeLeadership(position, target, standby, { requester, targetS
           return null;
         const { id: _destination, ...portable } = recovery.peer;
         membership.boxes.push(portable);
+        membership.successorOrder = rankComputers(membership.boxes, membership.successorOrder);
         recovery.record?.(membership, link);
       }
       shared.membershipAndAccess = { sequence: (shared.membershipAndAccess?.sequence ?? (recovery ? 0 : 1)) + (recovery ? 1 : 0), value: membership };
@@ -55629,6 +55685,7 @@ var init_handover = __esm(() => {
   init_card();
   init_leadership();
   init_lease();
+  init_reliability();
   init_record();
 });
 
@@ -77684,7 +77741,7 @@ var init_files4 = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "4cd12e96318b";
+var BRIDGE_VERSION = "fcbf74b996d1";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync17 } from "node:child_process";
@@ -90414,6 +90471,7 @@ init_checkpoint();
 init_membership();
 init_leadership();
 init_lease();
+init_reliability();
 init_shared();
 init_record();
 import crypto81 from "node:crypto";
@@ -90429,7 +90487,7 @@ var ping;
 var pong;
 var lastPrimary;
 var ownPrimarySince;
-var candidates = new Map;
+var rankCheckedAt = 0;
 function reset(setup, now) {
   const next = `${setup.id}:${setup.epoch}`;
   if (position2 === next)
@@ -90437,7 +90495,8 @@ function reset(setup, now) {
   position2 = next;
   since2 = now;
   ping = pong = lastTick = lastPrimary = ownPrimarySince = undefined;
-  candidates.clear();
+  resetAvailability();
+  rankCheckedAt = Date.now();
   loggedDelay = undefined;
 }
 function send2(host, link, to, value) {
@@ -90459,12 +90518,12 @@ function receiveAuthority2(sender, given, host) {
   if (given.kind === "available" && setup.role === "primary") {
     if (typeof given.preferred !== "boolean" || typeof given.reason !== "string")
       return;
-    const last = candidates.get(sender.key);
-    const since = last && fresh(last.at, now, 3 * HEARTBEAT_MS) ? last.since : now;
-    candidates.set(sender.key, { at: now, since, preferred: given.preferred, reason: given.reason.slice(0, 40) });
+    observeAvailability(sender.key, now, given.preferred, given.reason.slice(0, 40));
+    if (sender.key === setup.standby?.key)
+      return;
     const peer = peersOf(link).find((peer) => peer.key === sender.key);
-    const give = publishedShared(link);
-    if (peer && give.length && peer.key !== setup.standby?.key)
+    const give = peer ? publishedShared(link) : [];
+    if (peer && give.length)
       sendDocs(host, link, [{ to: peer, docs: { give } }]);
     return;
   }
@@ -90529,6 +90588,11 @@ function takeoverTick(host) {
   const settings = standbySettings();
   if (setup.role === "primary") {
     ownPrimarySince ??= now;
+    observeAvailability(setup.primary, now, settings.alwaysOn, settings.reason);
+    if (realNow - rankCheckedAt >= RANK_INTERVAL && !primaryFenced(link)) {
+      rankCheckedAt = realNow;
+      refreshRank(setup, now);
+    }
     if (setup.standby) {
       const ledger = sharedValue(link, "queueNumberAllocation");
       const next = Math.max(readNumbers().next ?? 1, isObject(ledger) ? Number(ledger.next) || 1 : 1);
@@ -90551,10 +90615,9 @@ function takeoverTick(host) {
     });
     return;
   }
-  if (setup.standby?.key !== ownKey(link) || setup.standby.sign !== ownSign(link)) {
-    send2(host, link, setup.primary, { kind: "available", preferred: settings.alwaysOn, reason: settings.reason });
+  send2(host, link, setup.primary, { kind: "available", preferred: settings.alwaysOn, reason: settings.reason });
+  if (setup.standby?.key !== ownKey(link) || setup.standby.sign !== ownSign(link))
     return;
-  }
   if (loggedDelay !== settings.delay) {
     loggedDelay = settings.delay;
     console.info(`Standby watching epoch ${setup.epoch} with a ${settings.delay / 60000}-minute takeover delay.`);
@@ -90572,12 +90635,27 @@ function availableStandby(link, now) {
   const available = peersOf(link).flatMap((peer) => {
     if (peer.key === retiring || !peer.sign || !takesForwarded(peer.key, "setup.shared-saves"))
       return [];
-    const candidate = candidates.get(peer.key);
-    return candidate && fresh(candidate.at, now, testSetupClock() ? 1e4 : 3 * HEARTBEAT_MS) ? [{ peer, ...candidate }] : [];
+    const candidate = availableComputer(peer.key, now);
+    return candidate ? [{ peer, ...candidate }] : [];
   });
-  const observed = (since) => Math.floor((now.uptime - since.uptime) / (6 * HEARTBEAT_MS));
-  available.sort((a, b) => observed(b.since) - observed(a.since) || Number(b.preferred) - Number(a.preferred) || a.peer.key.localeCompare(b.peer.key));
+  available.sort((a, b) => observedUptime(b.since, now) - observedUptime(a.since, now) || Number(b.preferred) - Number(a.preferred) || a.peer.key.localeCompare(b.peer.key));
   return available[0];
+}
+function refreshRank(position, now) {
+  const changed = updateLink((link) => {
+    const setup = followedSetup(link);
+    if (!link || setup?.role !== "primary" || setup.id !== position.id || setup.epoch !== position.epoch || link.localWipe || primaryFenced(link) || pendingShared(link, "membershipAndAccess"))
+      return null;
+    const membership = acceptedMembership(link);
+    if (!membership)
+      return null;
+    const order = rankComputers(membership.boxes, membership.successorOrder, now);
+    if (!order || order.every((key, index) => key === membership.successorOrder?.[index]))
+      return null;
+    return stageShared(link, "membershipAndAccess", { ...membership, successorOrder: order }) ? link : null;
+  }, { durable: true });
+  if (changed)
+    noteDocsChanged();
 }
 function promote(host, position) {
   const changed = updateLink((link) => {

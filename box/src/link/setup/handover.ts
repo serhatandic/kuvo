@@ -25,6 +25,7 @@ import { changeNumbers, installNumberAuthority, MOST_NUMBER, topOf } from "../wo
 import { writeCard } from "./card";
 import { leadershipProposalHash, NUMBER_RESERVE, takeLeadership, type ReplacementEnrollment } from "./leadership";
 import { LEADERSHIP_WAIT, primaryFenced } from "./lease";
+import { rankComputers } from "./reliability";
 import { followedSetup, requiresStandby, type SetupRecord } from "./record";
 
 export const SOLE_PRIMARY_FEATURE = "setup.sole-primary";
@@ -159,6 +160,7 @@ export async function proposeLeadership(
         if (membership.boxes.some(peer => peer.key === recovery.peer.key) || membership.left.includes(recovery.peer.key)) return null;
         const { id: _destination, ...portable } = recovery.peer;
         membership.boxes.push(portable);
+        membership.successorOrder = rankComputers(membership.boxes, membership.successorOrder);
         recovery.record?.(membership, link);
       }
       shared.membershipAndAccess = { sequence: (shared.membershipAndAccess?.sequence ?? (recovery ? 0 : 1)) + (recovery ? 1 : 0), value: membership };

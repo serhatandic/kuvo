@@ -1,5 +1,5 @@
 // The current standby alone can advance a delegated epoch. Its fresh round trip with the
-// primary renews a short lease. A failed round trip never refreshes either side's clock.
+// primary renews a short lease. Availability reports are separate from that lease.
 import crypto from "node:crypto";
 import { isObject } from "../../shared/json";
 import { noteDocsChanged } from "../documents/changed";
@@ -16,7 +16,8 @@ import { CHECKPOINT_FEATURE, checkpointedTransition, leadershipDocuments } from 
 import { acceptedMembership, acceptedName } from "./membership";
 import { leadershipOf, pendingStandby, takeLeadership } from "./leadership";
 import { fresh, grantLease, HEARTBEAT_MS, leaseClock, LEASE_MS, primaryFenced, standbySettings, testSetupClock } from "./lease";
-import { publishedShared, sharedValue } from "./shared";
+import { availableComputer, observeAvailability, observedUptime, rankComputers, RANK_INTERVAL, resetAvailability } from "./reliability";
+import { pendingShared, publishedShared, sharedValue, stageShared } from "./shared";
 import { followedSetup, setupDoc } from "./record";
 
 type Clock = ReturnType<typeof leaseClock>;
@@ -34,7 +35,7 @@ let ping: { token: string; at: Clock } | undefined;
 let pong: { token: string; reply: string; at: Clock } | undefined;
 let lastPrimary: Clock | undefined;
 let ownPrimarySince: Clock | undefined;
-const candidates = new Map<string, { at: Clock; since: Clock; preferred: boolean; reason: string }>();
+let rankCheckedAt = 0;
 
 function reset(setup: Position, now: Clock) {
   const next = `${setup.id}:${setup.epoch}`;
@@ -42,7 +43,8 @@ function reset(setup: Position, now: Clock) {
   position = next;
   since = now;
   ping = pong = lastTick = lastPrimary = ownPrimarySince = undefined;
-  candidates.clear();
+  resetAvailability();
+  rankCheckedAt = Date.now();
   loggedDelay = undefined;
 }
 
@@ -62,12 +64,11 @@ export function receiveAuthority(sender: MailSender, given: Record<string, unkno
   reset(setup, now);
   if (given.kind === "available" && setup.role === "primary") {
     if (typeof given.preferred !== "boolean" || typeof given.reason !== "string") return;
-    const last = candidates.get(sender.key);
-    const since = last && fresh(last.at, now, 3 * HEARTBEAT_MS) ? last.since : now;
-    candidates.set(sender.key, { at: now, since, preferred: given.preferred, reason: given.reason.slice(0, 40) });
+    observeAvailability(sender.key, now, given.preferred, given.reason.slice(0, 40));
+    if (sender.key === setup.standby?.key) return;
     const peer = peersOf(link).find(peer => peer.key === sender.key);
-    const give = publishedShared(link);
-    if (peer && give.length && peer.key !== setup.standby?.key) sendDocs(host, link, [{ to: peer, docs: { give } }]);
+    const give = peer ? publishedShared(link) : [];
+    if (peer && give.length) sendDocs(host, link, [{ to: peer, docs: { give } }]);
     return;
   }
   if (!setup.standby || !signal(given.token)) return;
@@ -123,6 +124,11 @@ function takeoverTick(host: LinkHost | null | undefined): void {
   const settings = standbySettings();
   if (setup.role === "primary") {
     ownPrimarySince ??= now;
+    observeAvailability(setup.primary, now, settings.alwaysOn, settings.reason);
+    if (realNow - rankCheckedAt >= RANK_INTERVAL && !primaryFenced(link)) {
+      rankCheckedAt = realNow;
+      refreshRank(setup, now);
+    }
     if (setup.standby) {
       const ledger = sharedValue(link, "queueNumberAllocation");
       const next = Math.max(readNumbers().next ?? 1, isObject(ledger) ? Number(ledger.next) || 1 : 1);
@@ -143,10 +149,8 @@ function takeoverTick(host: LinkHost | null | undefined): void {
       .finally(() => { selecting = false; });
     return;
   }
-  if (setup.standby?.key !== ownKey(link) || setup.standby.sign !== ownSign(link)) {
-    send(host, link, setup.primary, { kind: "available", preferred: settings.alwaysOn, reason: settings.reason });
-    return;
-  }
+  send(host, link, setup.primary, { kind: "available", preferred: settings.alwaysOn, reason: settings.reason });
+  if (setup.standby?.key !== ownKey(link) || setup.standby.sign !== ownSign(link)) return;
   if (loggedDelay !== settings.delay) {
     loggedDelay = settings.delay;
     console.info(`Standby watching epoch ${setup.epoch} with a ${settings.delay / 60_000}-minute takeover delay.`);
@@ -164,13 +168,26 @@ function availableStandby(link: LinkState, now: Clock) {
   const retiring = leadershipOf(link)?.body.retiredStandby;
   const available = peersOf(link).flatMap(peer => {
     if (peer.key === retiring || !peer.sign || !takesForwarded(peer.key, "setup.shared-saves")) return [];
-    const candidate = candidates.get(peer.key);
-    return candidate && fresh(candidate.at, now, testSetupClock() ? 10_000 : 3 * HEARTBEAT_MS) ? [{ peer, ...candidate }] : [];
+    const candidate = availableComputer(peer.key, now);
+    return candidate ? [{ peer, ...candidate }] : [];
   });
   // Use platform preference during bootstrap, then prefer sustained observed availability.
-  const observed = (since: Clock) => Math.floor((now.uptime - since.uptime) / (6 * HEARTBEAT_MS));
-  available.sort((a, b) => observed(b.since) - observed(a.since) || Number(b.preferred) - Number(a.preferred) || a.peer.key.localeCompare(b.peer.key));
+  available.sort((a, b) => observedUptime(b.since, now) - observedUptime(a.since, now) || Number(b.preferred) - Number(a.preferred) || a.peer.key.localeCompare(b.peer.key));
   return available[0];
+}
+
+function refreshRank(position: Position, now: Clock) {
+  const changed = updateLink(link => {
+    const setup = followedSetup(link);
+    if (!link || setup?.role !== "primary" || setup.id !== position.id || setup.epoch !== position.epoch
+      || link.localWipe || primaryFenced(link) || pendingShared(link, "membershipAndAccess")) return null;
+    const membership = acceptedMembership(link);
+    if (!membership) return null;
+    const order = rankComputers(membership.boxes, membership.successorOrder, now);
+    if (!order || order.every((key, index) => key === membership.successorOrder?.[index])) return null;
+    return stageShared(link, "membershipAndAccess", { ...membership, successorOrder: order }) ? link : null;
+  }, { durable: true });
+  if (changed) noteDocsChanged();
 }
 
 function promote(host: LinkHost, position: Position) {

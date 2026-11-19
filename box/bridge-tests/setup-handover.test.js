@@ -803,6 +803,16 @@ test("failure bench: only the standby takes over across a split and the old prim
   assert.equal((await a.route("GET", `kuvo/work-queue/items/${work.value.item.id}`)).value.item.title, "Work survives the split");
 });
 
+test("failure bench: signed membership carries every computer's successor rank", { timeout: 35_000 }, async t => {
+  const { a, b, c, see } = await standbyNetwork(t);
+  await Promise.all([see(b, 2, a), see(c, 2, a)]);
+  const order = checkpoint(a, 2).shared.membershipAndAccess.value.successorOrder;
+  assert.deepEqual(new Set(order), new Set([a.key, b.key, c.key]));
+  assert.equal(order.length, 3);
+  assert.ok(order.indexOf(b.key) < order.indexOf(c.key), "the configured always-on machine ranks ahead of the nonpreferred machine");
+  for (const box of [a, b, c]) assert.deepEqual(box.read().shared.membershipAndAccess.value.successorOrder, order);
+});
+
 test("failure bench: losing both primary and standby never promotes another member", { timeout: 35_000 }, async t => {
   const { a, b, c, see } = await standbyNetwork(t);
   await b.stop("SIGTERM");

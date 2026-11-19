@@ -8,8 +8,11 @@ import { newSigningSeed, readDoc, signDoc, signingKeyOf } from "../src/link/docu
 import { changedWork, digestOf, docsWork } from "../src/link/documents/work";
 import { readLink, writeLink, type LinkState } from "../src/link/state";
 import { grantLease, leaseClock } from "../src/link/setup/lease";
-import { RUN } from "../src/link/home";
+import { K, RUN } from "../src/link/home";
 import { cacheCheckpoint, checkpointHash, checkpointedTransition, leadershipDocuments } from "../src/link/setup/checkpoint";
+import { upgradeKuvoFolder } from "../src/shared/folder-version";
+import { membershipOf } from "../src/link/setup/membership";
+import { observeAvailability, rankComputers, RANK_INTERVAL, resetAvailability } from "../src/link/setup/reliability";
 import { takeLeadership } from "../src/link/setup/leadership";
 import { newSetupID, type SetupRecord } from "../src/link/setup/record";
 import { installShared, operationOutcome, pendingShared, queryOperation, sharedValue, stageShared, takeShared } from "../src/link/setup/shared";
@@ -19,6 +22,31 @@ function identity() {
   const sign = newSigningSeed();
   return { key: publicOf(secret).toString("base64url"), seed: secret.toString("base64url"), address: addressOf(secret).toString("base64url"), sign, signer: signingKeyOf(sign) };
 }
+
+test("accepted successor order prefers servers at bootstrap and learns sustained availability", () => {
+  upgradeKuvoFolder(K);
+  const boxes = [identity(), identity(), identity()].map(({ key, signer, address }, index) => ({
+    key, sign: signer, address, name: `Computer ${index}`, kind: index === 0 ? "machine" as const : "mac" as const,
+  }));
+  const [server, laptop, other] = boxes;
+  resetAvailability();
+  const bootstrap = rankComputers(boxes)!;
+  expect(bootstrap[0]).toBe(server!.key);
+  const clock = leaseClock();
+  for (let elapsed = 0; elapsed <= RANK_INTERVAL; elapsed += 10_000) {
+    observeAvailability(laptop!.key, { uptime: clock.uptime + elapsed, wall: clock.wall + elapsed }, false, "Laptop");
+  }
+  const now = { uptime: clock.uptime + RANK_INTERVAL, wall: clock.wall + RANK_INTERVAL };
+  observeAvailability(server!.key, now, true, "Server");
+  const order = rankComputers(boxes, bootstrap, now)!;
+  expect(order[0]).toBe(laptop!.key);
+  expect(membershipOf({ boxes, successorOrder: order })?.successorOrder).toEqual(order);
+  expect(membershipOf({ boxes })?.successorOrder).toBeUndefined();
+  expect(membershipOf({ boxes, successorOrder: [laptop!.key, server!.key, server!.key] })).toBeNull();
+  expect(membershipOf({ boxes, successorOrder: [laptop!.key, other!.key] })).toBeNull();
+  resetAvailability();
+  expect(rankComputers(boxes, order, now)).toEqual(order);
+});
 
 test("only the assigned standby receipts the primary's exact save and pending ownership transfers survive takeover", () => {
   const a = identity(), b = identity(), c = identity();

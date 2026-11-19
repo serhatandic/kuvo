@@ -376,6 +376,12 @@ and you can choose another member as primary once both computers are connected.
   when membership removal initiated the change. A setup with no reachable eligible member
   waits to appoint a standby. A missing standby can still hold its delegation and cannot be
   replaced by the primary alone.
+- **Successor rank.** Layout 14 records `successorOrder` in signed, accepted setup
+  membership. The list contains each enrolled computer's static key once. Linux and
+  configured always-on computers are preferred at bootstrap, followed by computers
+  enrolled as machines without an availability report. A longer recent stretch of
+  observed availability moves a computer up. Tied observations keep the accepted order.
+  The current epoch certificate still grants takeover authority to its designated standby.
 - **Primary lease.** The standby sends a fresh authenticated challenge every ten seconds.
   The primary answers with another nonce. The standby returns a lease response only for the
   outstanding exchange. The primary measures a sixty-second term from when it answered the
@@ -393,6 +399,15 @@ and you can choose another member as primary once both computers are connected.
   installs the higher signed epoch as a member on
   reconnect and uses the winning membership and device state. Local work stays with its owner.
   Folder layout 3 reserves these records. Older box builds refuse to open that layout.
+  Extending takeover past the first standby requires a shared fencing rule. With five
+  computers A through E, a partition separating primary A and standby B from C, D,
+  and E allows A to renew its existing two-computer lease while C, D, and E can form a
+  majority for a different primary. If B also loses A's heartbeat, B can sign the next
+  epoch alone. Giving each voter one vote per epoch does not make either old authority
+  intersect the new majority. A quorum-based extension therefore needs quorum leases,
+  quorum elections and quorum saves. A deliberate user recovery with fewer voters can
+  supersede changes on an isolated majority and must surface that consequence before
+  asking for approval.
 - **Number reservations.** A delegated epoch reserves a bounded range above the certified counter.
   Only the standby can certify a new bound. With folder layout 4, the primary saves each grant
   through the standby before issuing it. Takeover retains those grants and skips the outgoing

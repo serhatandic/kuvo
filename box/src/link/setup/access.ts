@@ -9,6 +9,7 @@ import { updateLink, type LinkState } from "../state";
 import { computerHistory } from "./computer-history";
 import { acceptedMembership, membershipOf, projectMembership } from "./membership";
 import { requiresStandby } from "./record";
+import { rankComputers } from "./reliability";
 import { pendingShared, stageShared, type Receipt } from "./shared";
 
 const localEffects = DATA_DECLARATIONS.membershipAndAccess.shared.localEffects;
@@ -17,13 +18,13 @@ const legacyFields = ["macPeers", "macMoved", "peerNames", "left", "removedHere"
   "phones", "removed", "computerHistory", ...localEffects.filter(key => key !== "localWipe"),
 ] as const satisfies readonly (keyof LinkState)[];
 
-export function captureMembership(link: LinkState, self?: Peer) {
+export function captureMembership(link: LinkState, self?: Peer, order?: string[]) {
   const { boxes, left, moved } = primaryPeersBody(link);
   // A draft starts with the accepted base names. Shared name overrides belong to setupNames.
   const projected = Array.isArray(link.macPeers) ? link.macPeers : [];
   const roster = self ? [self, ...projected] : boxes;
   return membershipOf({
-    boxes: roster, left, moved, computerHistory: computerHistory(link), devices: ownPhones(link), removalRevisions: link.removalRevisions, removedHere: link.removedHere,
+    boxes: roster, successorOrder: rankComputers(roster, order), left, moved, computerHistory: computerHistory(link), devices: ownPhones(link), removalRevisions: link.removalRevisions, removedHere: link.removedHere,
     removals: link.memberRemovals, wipePreparations: link.wipePreparations,
   });
 }
@@ -63,7 +64,7 @@ export function updateAccess(change: (link: LinkState | null) => LinkState | nul
         devices: ownPhones(modified),
       }, undefined, operation);
     } else {
-      const membership = captureMembership(modified, accepted?.boxes.find(box => box.key === link.setup!.primary));
+      const membership = captureMembership(modified, accepted?.boxes.find(box => box.key === link.setup!.primary), accepted?.successorOrder);
       const fields = Object.fromEntries(localEffects.filter(key => JSON.stringify(modified[key]) !== JSON.stringify(link[key])).map(key => [key, modified[key] ?? null]));
       if (membership) save = stageShared(link, "membershipAndAccess", membership, { fields, pairing }, operation);
     }
