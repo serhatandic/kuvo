@@ -26,13 +26,22 @@ test("an app-owned box probes the saved baseline as a disposable machine", () =>
   fs.mkdirSync(run, { recursive: true });
   fs.mkdirSync(saved, { recursive: true });
   fs.writeFileSync(path.join(run, "update-trial"), "0.10.0");
-  fs.writeFileSync(path.join(saved, "kuvo-link.js"), baseline);
-  const probed = spawnSync(process.execPath, [script, "folder-upgrade"], {
+  const reader = path.join(saved, "kuvo-link.js");
+  const marker = path.join(home, "folder-version.json");
+  const upgrade = () => spawnSync(process.execPath, [script, "folder-upgrade"], {
     env: { ...process.env, HOME: base, KUVO_HOME: home, KUVO_BOX: "mac", KUVO_ENGINE_CONFIG: path.join(base, "app", "config") },
     encoding: "utf8", timeout: 10_000,
   });
+  fs.writeFileSync(reader, baseline);
+  const probed = upgrade();
   assert.equal(probed.status, 0, probed.stderr);
-  assert.equal(fs.existsSync(path.join(home, "folder-version.json")), false);
+  assert.equal(fs.existsSync(marker), false);
+
+  fs.writeFileSync(reader, "// An empty script cannot prove it will recover the folder.\n");
+  const refused = upgrade();
+  assert.equal(refused.status, 1, refused.stderr);
+  assert.match(refused.stderr, /The saved Kuvo Code can't recover folder layout 11/);
+  assert.equal(fs.existsSync(marker), false);
 });
 
 const runUpdate = (name, interrupted) => test(name, async () => {
@@ -116,9 +125,10 @@ setInterval(() => { if (!fs.existsSync(${JSON.stringify(home)})) process.exit(0)
 V=1.0.0
 K="$KUVO_HOME"; R="$K/run"
 noted() { sed -n 's/.*"pid":\\([0-9]*\\).*/\\1/p' "$R/engine.json" 2>/dev/null; }
+old_engine() { [ -n "$1" ] && ps -ww -o command= -p "$1" | grep -Fq -- '${oldEngine}'; }
 case "$1" in
-stop) touch "$R/stopped"; pid=$(noted); if [ -n "$pid" ]; then kill "$pid" 2>/dev/null; while kill -0 "$pid" 2>/dev/null; do sleep 0.1; done; fi; rm -f "$R/engine.json" ;;
-start) rm -f "$R/stopped"; '${process.execPath}' '${oldEngine}' >/dev/null 2>&1 & pid=$!; until [ "$(noted)" = "$pid" ]; do kill -0 "$pid" 2>/dev/null || exit 3; sleep 0.1; done ;;
+stop) touch "$R/stopped"; pid=$(noted); if old_engine "$pid"; then kill "$pid" 2>/dev/null; while old_engine "$pid"; do sleep 0.1; done; fi; rm -f "$R/engine.json" ;;
+start) rm -f "$R/stopped"; old_engine "$(noted)" && exit 0; '${process.execPath}' '${oldEngine}' >/dev/null 2>&1 & pid=$!; until [ "$(noted)" = "$pid" ]; do kill -0 "$pid" 2>/dev/null || exit 3; sleep 0.1; done ;;
 esac
 `;
 
@@ -260,7 +270,11 @@ fs.renameSync = (from, to) => {
     recovering = spawn("sh", [path.join(home, "bin", "kuvo-start"), "keep"], {
       env: { ...env, KUVO_TEST_KEEP_ROUND: "1" }, stdio: "ignore",
     });
-    await waitFor(() => !fs.existsSync(trial), "the keeper should recover the interrupted update");
+    await waitFor(() => !fs.existsSync(trial) && fs.existsSync(engineFile), "the keeper should recover the interrupted update");
+    const restarted = read(engineFile);
+    started.add(restarted.pid);
+    assert.equal(restarted.version, "1.0.0");
+    assert.ok(alive(restarted.pid), "the original engine is running again");
     assert.equal(fs.readFileSync(path.join(home, "bin", "box-version"), "utf8"), "0.9.0");
     assert.deepEqual(fs.readFileSync(installed), baseline);
     assert.equal(fs.existsSync(marker), false);

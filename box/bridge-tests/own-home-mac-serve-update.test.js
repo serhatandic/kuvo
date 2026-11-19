@@ -29,7 +29,7 @@ const built = fileURLToPath(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resou
 // A Mac's box in a home of its own, on 0.10.0, its update to it on trial and up (the update saw its
 // engine and bridge answer), your phones paired: what the update had kept to put back, there.
 write(path.join(K, "box", "kind"), "mac\n");
-write(path.join(K, "folder-version.json"), '{"version":7}\n');
+write(path.join(K, "folder-version.json"), '{"version":11}\n');
 write(path.join(K, "bin", "box-version"), "0.10.0");
 write(path.join(K, "bin", "kuvo-link.js"), fs.readFileSync(built, "utf8"));
 write(path.join(K, "bin", "kuvo-start"), "#!/bin/sh\nexit 0\n", 0o755);

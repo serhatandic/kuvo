@@ -26,7 +26,7 @@ const support = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-link
 const macHome = path.join(support, "mac");
 const machineHome = path.join(support, "machine");
 for (const home of [macHome, machineHome]) fs.mkdirSync(path.join(home, "run"), { recursive: true });
-fs.writeFileSync(path.join(macHome, "folder-version.json"), '{"version":7}\n');
+fs.writeFileSync(path.join(macHome, "folder-version.json"), '{"version":11}\n');
 
 // Each time a stand-in records something: what a test waits on looks again.
 const waitingForChange = [];
