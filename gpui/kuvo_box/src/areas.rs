@@ -439,6 +439,23 @@ impl Computer {
         self.kind == "mac"
     }
 
+    /// Short OS label for this computer, derived from what its box reported in `system`.
+    /// A headless computer added over SSH (`kind == "machine"`) may run macOS or Linux, so
+    /// `system` takes precedence and an unknown machine reports `""` rather than assuming Linux.
+    pub fn os_label(&self) -> &'static str {
+        if let Some(system) = self.system.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            let lower = system.to_ascii_lowercase();
+            if lower.starts_with("macos") || lower.starts_with("mac os") || lower == "mac" || lower.starts_with("darwin") {
+                return "macOS";
+            }
+            if lower.starts_with("windows") {
+                return "Windows";
+            }
+            return "Linux";
+        }
+        if self.is_mac() { "macOS" } else { "" }
+    }
+
     /// Its box is one this client can't speak to at all (the update gate, PROTOCOL.md: it lacks
     /// the baseline), so it would hold it. Only where the list says what it has; one that doesn't
     /// say isn't called older. One that's only behind (`is_behind`) is used as it is.
@@ -967,5 +984,23 @@ mod tests {
         assert!(!computer(None).is_older(), "one that doesn't say isn't called older");
         assert!(computer(Some(vec!["typed".into()])).is_older());
         assert!(!computer(Some(crate::gate::REQUIRED.iter().map(|name| (*name).to_owned()).collect())).is_older());
+    }
+
+    #[test]
+    fn computer_os_label_uses_reported_system_not_machine_kind() {
+        let computer = |kind: &str, system: Option<&str>| super::Computer {
+            kind: kind.into(),
+            system: system.map(str::to_owned),
+            ..Default::default()
+        };
+        assert_eq!(computer("machine", Some("macOS 15.1")).os_label(), "macOS");
+        assert_eq!(computer("machine", Some("macOS")).os_label(), "macOS");
+        assert_eq!(computer("machine", Some("Darwin 24.1.0")).os_label(), "macOS");
+        assert_eq!(computer("machine", Some("Ubuntu 24.04.1 LTS")).os_label(), "Linux");
+        assert_eq!(computer("machine", Some("Linux")).os_label(), "Linux");
+        assert_eq!(computer("machine", Some("Windows 11")).os_label(), "Windows");
+        assert_eq!(computer("machine", None).os_label(), "");
+        assert_eq!(computer("mac", None).os_label(), "macOS");
+        assert_eq!(computer("mac", Some("macOS 15.1")).os_label(), "macOS");
     }
 }

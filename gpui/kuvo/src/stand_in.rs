@@ -561,6 +561,13 @@ impl StandIn {
         self.state().areas.as_macs.push(key.to_owned());
     }
 
+    /// Sets the `system` string reported for computer `key` (or clears it when `None`).
+    pub fn set_computer_system(&self, key: &str, system: Option<&str>) {
+        let mut state = self.state();
+        state.areas.systems.retain(|(existing, _)| existing != key);
+        state.areas.systems.push((key.to_owned(), system.map(str::to_owned)));
+    }
+
     /// Its list of computers has this computer alone.
     pub fn computers_alone(&self) {
         self.state().areas.computers_alone = true;

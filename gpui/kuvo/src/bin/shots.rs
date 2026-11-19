@@ -2264,7 +2264,7 @@ fn home_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path::Pat
     // (And #772's: an older machine's page with its one card, waiting with Update Now, failing with
     // Try Again, under way, and offered by the box that lists it; a computer that can't be used,
     // older or out of reach, as the window shows it.)
-    for slug in ["switcher", "elsewhere", "quit-note", "update-waiting", "update-running", "update-setup", "update-ssh", "update-own-waiting", "update-own-running", "page-update-waiting", "page-update-failed", "page-update-running", "page-older-offer", "blocked-held", "blocked-unreached", "computer-pairing-waiting", "computer-pairing-readd", "bots-background-offline", "insights-needs-update", "bots-remote-wake"] {
+    for slug in ["switcher", "elsewhere", "quit-note", "update-waiting", "update-running", "update-setup", "update-ssh", "update-own-waiting", "update-own-running", "page-update-waiting", "page-update-failed", "page-update-running", "page-older-offer", "blocked-held", "blocked-unreached", "computer-pairing-waiting", "computer-pairing-readd", "bots-background-offline", "insights-needs-update", "bots-remote-wake", "settings-mac-machine"] {
         if !only.is_empty() && !only.iter().any(|only| only == slug) {
             continue;
         }
@@ -2286,6 +2286,8 @@ fn home_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path::Pat
             } else if slug == "insights-needs-update" {
                 stand_in.peer_box("key_devbox").expect("devbox").set_lacks(&["usage.insights"]);
                 stand_in.bring_up_to_date("key_devbox", "waiting", false, 0);
+            } else if slug == "settings-mac-machine" {
+                stand_in.set_computer_system("key_devbox", Some("macOS 15.1"));
             } else if slug.starts_with("update-") {
                 stand_in.peer_box("key_devbox").expect("devbox").set_older(true);
                 if slug == "update-setup" {
@@ -2343,6 +2345,11 @@ fn home_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path::Pat
                     }
                     if slug == "bots-remote-wake" {
                         home.workspace().clone().update(cx, |workspace, cx| workspace.show_area(Area::Bots, window, cx));
+                    }
+                    if slug == "settings-mac-machine" {
+                        home.workspace().clone().update(cx, |workspace, cx| {
+                            workspace.show_setting(&kuvo::settings::box_key("key_devbox", "accounts"), window, cx);
+                        });
                     }
                     if slug == "insights-needs-update" {
                         assert!(home.switch_to("key_devbox", window, cx));

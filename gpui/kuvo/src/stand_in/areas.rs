@@ -60,6 +60,8 @@ pub struct Areas {
     pub to_set_up: Vec<String>,
     /// The computers it lists as Macs (`kind: mac`), by key.
     pub as_macs: Vec<String>,
+    /// Override `system` strings for computers, by key (`None` removes `system`).
+    pub systems: Vec<(String, Option<String>)>,
     /// The older computers it can't bring up itself, by key, with why in its words (no action).
     pub cant_bring_up: Vec<(String, String)>,
     /// An empty box that lists your computers all the same (another computer's, in a test).
@@ -414,6 +416,16 @@ fn listed(areas: &Areas) -> Vec<Value> {
             }
             if areas.as_macs.iter().any(|key| computer["key"] == json!(key)) {
                 computer["kind"] = json!("mac");
+            }
+            if let Some((_, system)) = areas.systems.iter().find(|(key, _)| computer["key"] == json!(key)) {
+                match system {
+                    Some(system) => computer["system"] = json!(system),
+                    None => {
+                        if let Some(map) = computer.as_object_mut() {
+                            map.remove("system");
+                        }
+                    }
+                }
             }
             if let Some((_, why)) = areas.cant_bring_up.iter().find(|(key, _)| computer["key"] == json!(key)) {
                 let name = computer["name"].as_str().unwrap_or_default().to_owned();
