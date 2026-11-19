@@ -473,6 +473,9 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "bots-sidebar-states", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bots) },
     Screen { slug: "bots-compact-states", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bots) },
     Screen { slug: "outputs-popover-media", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(conversation_activity) },
+    Screen { slug: "outputs-popover-images", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(conversation_activity_images) },
+    Screen { slug: "outputs-popover-bot", width: 1280., height: 860., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_activity) },
+    Screen { slug: "stage-viewer-single", width: 1280., height: 820., session: Some("ses_dark"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(open_single_picture) },
 ];
 
 /// An area's row, picked: what its page shows.
@@ -585,6 +588,19 @@ fn bot_quiet(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Wo
 }
 fn conversation_activity(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     let activity = workspace.conversation().expect("conversation").read(cx).bars().clone();
+    activity.update(cx, |activity, cx| activity.open_activity(window, cx));
+}
+
+fn conversation_activity_images(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    let activity = workspace.conversation().expect("conversation").read(cx).bars().clone();
+    activity.update(cx, |activity, cx| {
+        activity.open_activity_outputs(kuvo::work_bars::OutputKind::Images, window, cx);
+    });
+}
+
+fn bot_activity(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    bot_chat(workspace, window, cx);
+    let activity = workspace.bot_chat().expect("bot chat").1.read(cx).bars().clone();
     activity.update(cx, |activity, cx| activity.open_activity(window, cx));
 }
 
@@ -1793,6 +1809,35 @@ fn open_a_picture(workspace: &mut Workspace, window: &mut Window, cx: &mut Conte
     }
 }
 
+/// A conversation with a single picture, opened in the Stage viewer (no nav arrows or filmstrip).
+fn open_single_picture(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    if let Some(view) = workspace.conversation() {
+        view.update(cx, |view, cx| view.open_picture("msg_single_pic#0", window, cx));
+    }
+}
+
+fn stage_single_picture(stand_in: &StandIn) {
+    use serde_json::json;
+    let path = "/Users/sam/Projects/website/shots/pricing-hero.png";
+    stand_in.set_facts("ses_dark", |facts| {
+        facts["title"] = json!("Pricing hero review");
+    });
+    stand_in.put_file(path, encode_png(pricing_hero_image()));
+    stand_in.add_message("ses_dark", json!({
+        "type": "user", "id": "msg_single_pic", "time": { "created": NOW - 60_000.0 },
+        "text": "Does the new pricing hero spacing look balanced?",
+        "files": [{ "mime": "image/png", "name": "pricing-hero.png", "url": format!("file://{path}") }],
+    }));
+    stand_in.add_message("ses_dark", json!({
+        "type": "assistant", "id": "msg_single_reply",
+        "time": { "created": NOW - 50_000.0, "completed": NOW - 45_000.0 },
+        "agent": "build", "finish": "stop",
+        "content": [
+            { "type": "text", "text": "Yes — the headline spacing, tier cards, and primary button contrast look balanced." },
+        ],
+    }));
+}
+
 fn tool_groups_open(workspace: &mut Workspace, _window: &mut Window, cx: &mut Context<Workspace>) {
     if let Some(view) = workspace.conversation() {
         view.update(cx, |view, cx| {
@@ -2451,7 +2496,7 @@ fn main() -> anyhow::Result<()> {
                 stand_in.add_bot("bot_ops", "Ops Watcher", json!({ "color": "orange", "shape": "capsule", "face": "bright" }));
                 stand_in.set_bot_now("bot_ops", json!({ "working": 0, "asking": 0, "blocked": 1, "blockedBy": "limit", "state": "blocked", "since": NOW - 120_000. }));
             }
-            if screen.slug == "outputs-popover-media" {
+            if matches!(screen.slug, "outputs-popover-media" | "outputs-popover-images") {
                 use serde_json::json;
                 let mini_screen = |dark: bool, accent: [u8; 3], bars: bool| -> Vec<u8> {
                     let (w, h) = (240u32, 152u32);
@@ -2484,12 +2529,19 @@ fn main() -> anyhow::Result<()> {
                     out.into_inner()
                 };
 
-                let commands: Vec<_> = ["npm run dev", "npx vitest --watch", "tail -f logs/signup.log"].iter().enumerate()
-                    .map(|(index, command)| json!({ "id": format!("sh_{index}"), "command": command, "started": NOW })).collect();
+                let commands: Vec<_> = [
+                    ("npm run dev", 754_000.0),
+                    ("npx vitest --watch", 212_000.0),
+                    ("tail -f logs/signup.log", 61_000.0),
+                ]
+                .iter()
+                .enumerate()
+                .map(|(index, (command, ago))| json!({ "id": format!("sh_{index}"), "command": command, "started": NOW - ago }))
+                .collect();
                 let subagents = vec![
-                    json!({ "session": "ses_sub0", "title": "Check the signup forms", "since": NOW, "asking": false }),
-                    json!({ "session": "ses_sub1", "title": "Run the browser tests", "since": NOW, "asking": true }),
-                    json!({ "session": "ses_sub2", "title": "Review the report", "since": NOW, "asking": false }),
+                    json!({ "session": "ses_sub0", "title": "Check the signup forms", "since": NOW - 90_000.0, "asking": false }),
+                    json!({ "session": "ses_sub1", "title": "Run the browser tests", "since": NOW - 45_000.0, "asking": true }),
+                    json!({ "session": "ses_sub2", "title": "Review the report", "since": NOW - 20_000.0, "asking": false }),
                 ];
                 stand_in.set_background("ses_signup", json!({ "commands": commands, "subagents": subagents }), &[]);
                 for (index, (provider, model)) in [("codex-cli", "gpt-6"), ("codex-cli", "gpt-6"), ("claude-code", "opus")].iter().enumerate() {
@@ -2522,6 +2574,28 @@ fn main() -> anyhow::Result<()> {
                 }
                 stand_in.set_queue("ses_signup", vec![]);
             }
+            if screen.slug == "outputs-popover-bot" {
+                use serde_json::json;
+                stand_in.set_bot_wakes(
+                    "bot_mira",
+                    vec![
+                        json!({
+                            "id": "wk_brief", "due": NOW / 1000. + 25. * 60., "every": "1d",
+                            "summary": "Send Friday beta readiness brief", "cancelKey": "wk_brief"
+                        }),
+                    ],
+                    vec![
+                        json!({
+                            "letters": "ci", "next": NOW / 1000. + 180., "every": "5m",
+                            "summary": "Check CI on kuvo/beta35 release branch"
+                        }),
+                        json!({
+                            "letters": "inbox", "next": NOW / 1000. + 420., "every": "10m",
+                            "summary": "Watch support queue for new P0 reports"
+                        }),
+                    ],
+                );
+            }
             if matches!(screen.slug, "composer-queue-two" | "composer-queue-long" | "composer-queue-dragging") {
                 use serde_json::json;
                 let messages = if screen.slug != "composer-queue-long" {
@@ -2547,6 +2621,9 @@ fn main() -> anyhow::Result<()> {
             }
             if screen.slug.starts_with("pictures-") {
                 stage_pictures(&stand_in);
+            }
+            if screen.slug == "stage-viewer-single" {
+                stage_single_picture(&stand_in);
             }
             if screen.slug == "show-file-pictures" {
                 stage_show_file_pictures(&stand_in);
@@ -2846,63 +2923,7 @@ fn main() -> anyhow::Result<()> {
     }
     first_run_shots(&mut cx, &only, &out)?;
     launch_shots(&mut cx, &only, &out)?;
-    popover_viewer_draft_shots(&mut cx, &only, &out)?;
     home_shots(&mut cx, &only, &out)
-}
-
-/// Stand-in design drafts for the unified image viewer (`draft-viewer-*`) and Outputs popover
-/// (`draft-popover-*`), rendered light and dark for user selection before building for real.
-fn popover_viewer_draft_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path::Path) -> anyhow::Result<()> {
-    use kuvo::drafts::image_viewer::{ImageViewerDraftView, ViewerDraft, ViewerMode};
-    use kuvo::drafts::outputs_popover::{OutputsPopoverDraftView, PopoverDraft, PopoverMode};
-
-    fn render_one<V: gpui::Render + 'static>(
-        cx: &mut HeadlessAppContext,
-        out: &std::path::Path,
-        slug: &str,
-        w: f32,
-        h: f32,
-        build: impl Fn(&mut gpui::Context<V>) -> V,
-    ) -> anyhow::Result<()> {
-        for appearance in [Appearance::Light, Appearance::Dark] {
-            cx.update(|cx| Theme::set_appearance(appearance, cx));
-            let window = cx.open_window(size(px(w), px(h)), |_, cx| cx.new(|cx| build(cx)))?;
-            let any = window.into();
-            cx.run_until_parked();
-            cx.update_window(any, |_, window, _| window.refresh())?;
-            cx.run_until_parked();
-            let image = cx.capture_screenshot(any)?;
-            let name = format!("screens-{slug}-{}.png", if appearance.is_dark() { "dark" } else { "light" });
-            image.save(out.join(&name))?;
-            println!("{name}: {}x{}", image.width(), image.height());
-            cx.update_window(any, |_, window, _| window.remove_window())?;
-            cx.run_until_parked();
-        }
-        Ok(())
-    }
-
-    for draft in ViewerDraft::ALL {
-        let slug_multi = draft.slug_multi();
-        if only.is_empty() || only.iter().any(|arg| arg == slug_multi || arg == "draft-viewer") {
-            render_one(cx, out, slug_multi, 1280., 820., |_| ImageViewerDraftView::new(draft, ViewerMode::Multi))?;
-        }
-        let slug_cases = draft.slug_cases();
-        if only.is_empty() || only.iter().any(|arg| arg == slug_cases || arg == "draft-viewer") {
-            render_one(cx, out, slug_cases, 1360., 900., |_| ImageViewerDraftView::new(draft, ViewerMode::Cases))?;
-        }
-    }
-
-    for draft in PopoverDraft::ALL {
-        let slug_main = draft.slug_main();
-        if only.is_empty() || only.iter().any(|arg| arg == slug_main || arg == "draft-popover") {
-            render_one(cx, out, slug_main, 1280., 860., |_| OutputsPopoverDraftView::new(draft, PopoverMode::Main))?;
-        }
-        let slug_flows = draft.slug_flows();
-        if only.is_empty() || only.iter().any(|arg| arg == slug_flows || arg == "draft-popover") {
-            render_one(cx, out, slug_flows, 1400., 840., |_| OutputsPopoverDraftView::new(draft, PopoverMode::Flows))?;
-        }
-    }
-    Ok(())
 }
 
 /// The app opening on a computer (`launch-*`: this Mac's row in the Welcome card as it's set up,
