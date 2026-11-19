@@ -1233,7 +1233,13 @@ if (main) {
     if (["here", "backup-identity", "install", "rehome", "uninstall", "login-path", "login-env"].includes(mode)) checkFolderVersion(K);
     else if (mode !== "selftest") upgradeKuvoFolder(K);
   } catch (error) {
-    console.error(error instanceof Error ? error.message : String(error));
+    const message = error instanceof Error ? error.message : String(error);
+    if (mode === "box" && argument === "route") {
+      const reply = { status: 503, routeVersion: ROUTE_VERSION, body: JSON.stringify({ message }) };
+      await new Promise<void>(resolve => process.stdout.write(JSON.stringify(reply) + "\n", resolve));
+      process.exit(0);
+    }
+    console.error(message);
     process.exit(1);
   }
   if (mode === "folder-upgrade") process.exit(0);

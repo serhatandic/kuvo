@@ -215,8 +215,13 @@ test("an update another of your computers hands over while a coding agent's turn
   const { out, pinned } = pack();
   const mini = peerHolding(out);
   const miniKey = link.publicOf(link.newKey()).toString("base64url");
-  const lab = readJSON(path.join(RUN, "link.json"));
-  link.writeLink({ ...lab, mac: miniKey, macs: [miniKey], legacy: { [miniKey]: { at: 1, peers: [{ key: miniKey, address: link.addressOf(crypto.randomBytes(32)).toString("base64url"), name: "mini", kind: "mac" }] } } });
+  const lab = await until(() => {
+    const kept = link.readLink();
+    return kept?.setup?.role === "primary" ? kept : null;
+  }, "the machine's own setup to start");
+  const peer = { key: miniKey, address: link.addressOf(crypto.randomBytes(32)).toString("base64url"), name: "mini", kind: "mac" };
+  link.writeLink({ ...lab, macPeers: [peer] });
+  assert.deepEqual(link.peersOf(link.readLink()).map(each => each.key), [miniKey]);
   let offered = 0;
   link.fleetWith({ keys: [pinned], blocked: null, send: mini.send, offered: () => { offered++; } });
   link.peerMail({ key: miniKey, kind: "mac" }, { agents: { at: Date.now(), list: [], computer: { version: "1.0.0", kuvo: "0.10.0", release: "0.10.0" } } }, null);

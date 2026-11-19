@@ -141,6 +141,8 @@ const address = `http://127.0.0.1:${server.address().port}`;
 test("a box takes a release with the real keeper: it starts the release's engine and the bridge, notes them, and stops and starts them when asked", async () => {
   // A machine on 0.9.0, its engine 1.0.0 running, as a Mac last started it (`run/launch.env`),
   // its keeper noted as running.
+  // This update exercises the keeper and engine swap on an already upgraded folder.
+  write(path.join(home, "folder-version.json"), '{"version":7}\n');
   write(path.join(home, "bin", "box-version"), "0.9.0");
   write(path.join(home, "bin", "kuvo-start"), oldKeeper, 0o700);
   write(path.join(home, "bin", "kuvo-link.js"), "// the old link\n", 0o600);
