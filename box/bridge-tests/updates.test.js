@@ -105,7 +105,7 @@ function machine() {
   fs.rmSync(home, { recursive: true, force: true });
   fs.mkdirSync(path.join(home, "run"), { recursive: true });
   // The stand-in release changes code within the same layout. Layout changes use real builds in folder-version.test.js.
-  write(path.join(home, "folder-version.json"), '{"version":9}\n');
+  write(path.join(home, "folder-version.json"), '{"version":10}\n');
   write(path.join(home, "bin", "box-version"), "0.9.0");
   write(path.join(home, "bin", "kuvo-start"), keeper("1.0.0"), 0o700);
   write(path.join(home, "bin", "kuvo-link.js"), "// the old link\n", 0o600);
