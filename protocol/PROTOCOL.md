@@ -586,6 +586,32 @@ new primary keeps the existing grants and advances beyond the old epoch's
 number ceiling, including any part reserved under a version that predates
 shared saves.
 
+### Data owners
+
+A desktop client can ask `GET kuvo/data/owner?kind=<declaration>&id=<record>` on its box. Use
+`computer=<key>` to locate an older record that has no directory entry, and `queue=<owner>` for
+a Work Queue record. A known owner takes precedence over the supplied address. Setup-wide kinds
+use the current primary. Computer-local kinds use the named computer or the box being asked.
+The feature is `data.ownership`.
+
+The reply carries `owner {key, name, scope, local, reachable}`. A read carries `state: "received"`,
+`lastReceivedAt` in milliseconds and `data`, including when the data is an empty list. An away
+owner's last page is marked `stale`. When no page has been received there is no `data`, the state
+is `"neverReceived"` and the time is null. Supply repeated `message=<id>` and `file=<name>` to
+check references. The reply lists unavailable references by kind. Conversation reads return a page
+with its engine cursor. Pass it as `offset` to read the next page. Other declarations can return
+ownership metadata for use beside their existing routes.
+
+A normal desktop `POST kuvo/sessions/<id>/send` to a known remote owner returns a pending
+operation. When the client already knows the owner of an unlisted conversation, it can use
+`POST kuvo/data/messages?session=<id>&computer=<key>` with the same message body. For a group, use `group=<id>` in place of `session=<id>` and supply
+`text`. Send a stable message ID. The serving box saves the unsent message before answering 202. A committed receipt has
+an `acceptedAt` time from the owning box. Poll `GET kuvo/data/messages/<operation>` on the box
+that saved it. Pending messages and receipts survive a restart. If acceptance cannot be safely
+determined after an owner interruption, the client should show the interrupted status and open
+the owner's conversation before offering to resend. Send Now and commands require the owner's
+normal client connection. The peer outbox takes inline attachments up to 128 KiB of message JSON.
+
 ### Peers
 
 Your computers talk to each other over the relay, Mac or not. A Mac connects to

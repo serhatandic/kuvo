@@ -83,6 +83,7 @@ export const FEATURES = [
   "computers.words",
   "config",
   "config.apply",
+  "data.ownership",
   "devices.allow",
   "devices.pair",
   "engine.restart",

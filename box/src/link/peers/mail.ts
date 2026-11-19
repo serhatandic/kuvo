@@ -1,3 +1,5 @@
+import { ownerOf } from "../ownership/resolve";
+import { ownershipReady } from "../ownership/store";
 // Mail from other boxes
 // What a Mac or a peer sends this box, opened and handed on: a Mac's lists, its peers' agents,
 // documents, letters and how they went, and group chats' seats.
@@ -13,7 +15,7 @@ import { leaveAnswer, letterWent } from "../letters/outbox";
 import { takeLetter } from "../letters/take";
 import { callsBack, takeCall } from "../letters/calls";
 import { rowsBack, rowsWent, takeRows } from "../work/elsewhere";
-import { requiresStandby } from "../setup/record";
+import { usesAcceptedSaves } from "../setup/record";
 import { receiveAuthority } from "../setup/takeover";
 import { noteHeard } from "./reach";
 import { takeMoving, tellMovingAgain } from "../moves/elsewhere";
@@ -59,7 +61,7 @@ export function peerMail(sender: MailSender, payload: Record<string, unknown>, h
   // A release asked for, or handed over in parts (`updates/fleet.ts`).
   if (isObject(payload.release)) try { takeReleaseMail(sender, payload.release); } catch {}
   // Your time zone (`zone/setting.ts`), from any of your computers.
-  if (isObject(payload.zone) && !requiresStandby(readLink()?.setup)) takeZone(payload.zone);
+  if (isObject(payload.zone) && !usesAcceptedSaves(readLink()?.setup)) takeZone(payload.zone);
   // Documents (PROTOCOL.md, "Documents"): given, in parts, or a digest of what it has.
   if (isObject(payload.setupAuthority)) try { receiveAuthority(sender, payload.setupAuthority, host); } catch {}
   if (isObject(payload.docs)) receiveDocs(sender, payload.docs as DocsMail, host).catch(() => {});
@@ -105,8 +107,8 @@ export function peerMail(sender: MailSender, payload: Record<string, unknown>, h
       if (bytes) try { host?.send(bytes); } catch {}
     };
     takeBotEdit(sender, payload.botEdit, reply, {
-      change: (bot, change, at) => changeBot(bot, change, readEngineFile, bridgeTarget, undefined, undefined, at),
-      delete: bot => deleteBot(bot, readEngineFile, bridgeTarget),
+      change: (bot, change, at) => botOwnedHere(bot) ? changeBot(bot, change, readEngineFile, bridgeTarget, undefined, undefined, at) : Promise.resolve(botMoved()),
+      delete: bot => botOwnedHere(bot) ? deleteBot(bot, readEngineFile, bridgeTarget) : Promise.resolve(botMoved()),
     }).catch(() => {});
   }
   if (isObject(payload.botEdited)) takeBotEdited(sender, payload.botEdited);
@@ -115,6 +117,9 @@ export function peerMail(sender: MailSender, payload: Record<string, unknown>, h
     if (payload.delivered.ok === true) rowsWent(sender, payload.delivered.id);
   }
 }
+
+const botOwnedHere = (id: string) => !ownershipReady() || ownerOf({ kind: "botSettings", id }, { localRecord: true })?.local;
+const botMoved = () => ({ status: 409, value: { message: "The bot lives on another computer now." } });
 
 // What came by mail, from a Mac or a peer: a Mac's lists, or what peers tell each other
 // (`peerMail`, its agents and their letters); `attended(mac, given, at)`: a Mac in use, or not any

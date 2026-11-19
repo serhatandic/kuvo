@@ -57,6 +57,10 @@ export const DATA_DECLARATIONS = {
   pendingSessionWork: { owner: "session computer", conflict: "owner order", backup: true, families: ["Pending work and work status", "Local fences and audit"] },
   sessionGoals: { owner: "session computer", conflict: "fields", backup: true, families: ["Pending work and work status"] },
   sessionSchedules: { owner: "session computer", conflict: "fields", backup: true, families: ["Wake-ups and watches"] },
+  ownerReadSnapshots: { owner: "local computer", conflict: "regenerate", backup: false, families: ["Peer directory and reach"] },
+  ownerMessageOutbox: { owner: "local computer", conflict: "owner order", backup: false, families: ["Letters, receipts and calls"] },
+  ownerGroupMessageReceipts: { owner: "group host", conflict: "owner order", backup: true, families: ["Group chats and bridge delivery", "Letters, receipts and calls"] },
+  ownerMessageReceipts: { owner: "session computer", conflict: "owner order", backup: true, families: ["Letters, receipts and calls"] },
   sessionLettersAndDelivery: { owner: "session computer", conflict: "owner order", backup: true, families: ["Letters, receipts and calls", "Legacy Mac source"] },
   searchIndex: { owner: "local computer", conflict: "regenerate", backup: false, families: ["Search database"] },
 
@@ -112,14 +116,23 @@ export const DATA_DECLARATIONS = {
   clientLogs: { owner: "client", conflict: "regenerate", backup: false, families: ["Desktop settings", "Logs and disposable caches"] },
 } as const satisfies Record<string, DataDeclaration>;
 
-type Declaration = keyof typeof DATA_DECLARATIONS;
+export type DataKind = keyof typeof DATA_DECLARATIONS;
+type Declaration = DataKind;
+
+export function dataKind(kind: unknown): kind is DataKind {
+  return typeof kind === "string" && Object.hasOwn(DATA_DECLARATIONS, kind);
+}
+
+export function dataOwner(kind: DataKind, queue?: string): DataOwner | undefined {
+  const owner = (DATA_DECLARATIONS[kind] as DataDeclaration).owner;
+  return typeof owner === "string" ? owner : queue === undefined ? undefined : owner(queue);
+}
 export type SharedKind = {
   [K in Declaration]: typeof DATA_DECLARATIONS[K] extends { owner: "primary"; shared: object } ? K : never
 }[Declaration];
 
 export function sharedKind(kind: unknown): kind is SharedKind {
-  return typeof kind === "string" && Object.hasOwn(DATA_DECLARATIONS, kind)
-    && DATA_DECLARATIONS[kind as Declaration].owner === "primary" && "shared" in DATA_DECLARATIONS[kind as Declaration];
+  return dataKind(kind) && DATA_DECLARATIONS[kind].owner === "primary" && "shared" in DATA_DECLARATIONS[kind];
 }
 
 export const SHARED_KINDS = Object.keys(DATA_DECLARATIONS).filter(sharedKind);

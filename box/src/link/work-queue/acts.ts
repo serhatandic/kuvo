@@ -1,3 +1,5 @@
+import { ownerOf } from "../ownership/resolve";
+import { ownershipReady } from "../ownership/store";
 // What you do to an item from a client, on the box that keeps it (PROTOCOL.md, "The Work Queue"):
 // add one, read it whole, change it, delete it or bring it back. The same whether your client asked this box
 // (`kuvo/work-queue/items/…`) or another of your computers' boxes handed it on (`forward.ts`).
@@ -21,6 +23,13 @@ import type { Target } from "../../shared/records";
 /** How long a client's ask waits for GitHub to say what its issues and pull requests are now (a
  * read that takes longer goes on, for the next ask or the view's next line). */
 export const GITHUB_WAIT = 3_000;
+
+function refuseQueueOwner(queue: string): void {
+  if (!ownershipReady()) return;
+  // A stored item supplies its existing location. An accepted assignment or completed move takes precedence.
+  const owner = ownerOf({ kind: "queueItems", queue });
+  if (owner && !owner.local) throw new Refusal(`Open this queue on ${owner.name} to change it.`);
+}
 
 const YOU = { user: true } as const;
 // An item a client named that isn't here.
@@ -59,6 +68,7 @@ export function addHere(given: Record<string, unknown>, local = false): Acted {
         if (given.owner !== undefined && (typeof given.owner !== "string" || !OWNER.test(given.owner))) throw new Refusal("That's no queue to add it to (owner): a conversation's address, or a group chat's id.");
         const assignee = given.assignee === undefined || given.assignee === null ? null : assigneeFor(given.assignee);
         const owner = (given.owner as string | undefined) ?? botSession(assignee ?? undefined) ?? YOURS;
+        refuseQueueOwner(owner);
         refuseMoving([owner]);
         const { before: _, after: __, ...fields } = fieldsOf(given);
         const acting: Acting = { who: YOU, now, staged: staged!.staged, fileOps: [] };
@@ -95,6 +105,7 @@ export async function actHere({ method, action, ref, given = {}, targets, signal
   const inBook = (work: (item: Item, book: Book) => void, { handing = false } = {}) => () => changeQueues(book => {
     const item = find(book.items());
     if (!item) throw new Missing("There's no item like that.");
+    refuseQueueOwner(item.owner);
     refuseMoving([item.owner]);
     if (!handing) refuseHanding(item);
     work(item, book);

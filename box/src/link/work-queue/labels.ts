@@ -8,7 +8,7 @@ import { isObject } from "../../shared/json";
 import { plainName } from "../../shared/text";
 import { locked, textOf, writePrivate } from "../files";
 import { changeShared, sharedValue, type Receipt } from "../setup/shared";
-import { requiresStandby } from "../setup/record";
+import { requiresStandby, usesAcceptedSaves } from "../setup/record";
 import { readLink } from "../state";
 import { LABELS_LOCK, labelsFormat } from "./migrate";
 import { migratedToChange, noteQueuesChanged, Refusal, WORK_QUEUE } from "./store";
@@ -93,9 +93,9 @@ export type LabelOutcome = LocalLabelOutcome | { done: Label; save: Receipt };
 
 function editLabels(work: (kept: Kept, removed: string[]) => LocalLabelOutcome): LabelOutcome {
   const setup = readLink()?.setup;
-  if (!requiresStandby(setup)) return change(kept => work(kept, []));
+  if (!usesAcceptedSaves(setup)) return change(kept => work(kept, []));
   if (setup?.role !== "primary") return { refused: "Change your setup's labels on its primary." };
-  if (!setup.standby) return { refused: "Your primary is waiting for a standby." };
+  if (requiresStandby(setup) && !setup.standby) return { refused: "Your primary is waiting for a standby." };
   migratedToChange();
   const result: { outcome: LocalLabelOutcome } = { outcome: { refused: "A label change is already waiting to be saved." } };
   const save = changeShared("queueLabels", value => {
@@ -181,7 +181,7 @@ const thePrimarys = (name: string, change: "Change" | "Remove"): string =>
 export function removeLabel(which: unknown, strip: (id: string) => void): LabelOutcome {
   const found = labelNamed(which);
   if (!found) return { refused: `There's no label ${String(which ?? "")}.` };
-  if (requiresStandby(readLink()?.setup)) return editLabels((kept, removed) => {
+  if (usesAcceptedSaves(readLink()?.setup)) return editLabels((kept, removed) => {
     const index = kept.labels.findIndex(each => each.id === found.id);
     if (index < 0) return { refused: `There's no label ${found.name}.` };
     kept.labels.splice(index, 1);

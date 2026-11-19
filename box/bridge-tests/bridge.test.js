@@ -1544,7 +1544,7 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
   // (Only a 404's body is read: an event stream never ends.)
   const isRoute = async (method, route, body = {}) => {
     let status = 0, said = "";
-    for await (const part of handle({ method, path: route, headers: {}, body: Buffer.from(JSON.stringify(body)) }, {}, undefined)) {
+    for await (const part of handle({ method, path: route, headers: {}, ...(route === "kuvo/data/owner" ? { desktop: true } : {}), body: Buffer.from(JSON.stringify(body)) }, {}, undefined)) {
       if (part.head) status = part.head.status;
       if (status !== 404) break;
       if (part.body) said += part.body.toString();
@@ -1653,6 +1653,7 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     "computers.words": ["GET", "kuvo/computers"],
     config: ["GET", "kuvo/config"],
     "config.apply": ["GET", "kuvo/config/apply"],
+    "data.ownership": ["GET", "kuvo/data/owner"],
     // (A computer let add Kuvo Code's app to your devices again, on the main computer: a GET is the wrong method.)
     "devices.allow": ["GET", "kuvo/computers/none/allow-devices"],
     // (Kuvo Code's desktop app paired as one of your devices, only from the app on this computer: a GET is the wrong method.)

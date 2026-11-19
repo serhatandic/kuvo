@@ -6,6 +6,7 @@
 import { any, bool, type Infer, list, literal, NOTHING, nullable, number, object, oneOf, type RouteShape, string, words } from "../shape";
 import { LOOK } from "./bots";
 import { MENTIONS } from "./sessions";
+import { OWNER_MESSAGE_COMMITTED, OWNER_MESSAGE_INTERRUPTED, OWNER_MESSAGE_PENDING } from "./ownership";
 
 /** A bot as a chat lists it: who it is, how it looks (left out when its description doesn't
  * say), its own conversation and folder, and whether that runs with the coding agents. One of
@@ -127,7 +128,7 @@ export const GROUP_ROUTES: RouteShape[] = [
   { route: "GET kuvo/groups/joinable", feature: "groups.joinable", answers: { 200: JOINABLE } },
   { route: "GET kuvo/groups/:id", feature: "groups", answers: { 200: CHAT } },
   { route: "GET kuvo/groups/:id/events", feature: "groups", answers: { 200: CHAT } },
-  { route: "POST kuvo/groups/:id", feature: "groups", answers: { 200: NOTHING } },
+  { route: "POST kuvo/groups/:id", feature: "groups", answers: { 200: oneOf(NOTHING, OWNER_MESSAGE_COMMITTED), 202: OWNER_MESSAGE_PENDING, 400: REFUSED, 409: oneOf(OWNER_MESSAGE_INTERRUPTED, REFUSED), 503: REFUSED } },
   { route: "PATCH kuvo/groups/:id", feature: "groups.edit", answers: { 200: GROUP_CHANGED } },
   { route: "DELETE kuvo/groups/:id", feature: "groups.delete", answers: { 200: NOTHING } },
   { route: "POST kuvo/groups/:id/stop", feature: "groups", answers: { 200: NOTHING } },

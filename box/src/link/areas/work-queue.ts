@@ -52,7 +52,7 @@ const NOT_PROVED = "This machine couldn't tell the request was from the Mac that
 // proof for this request alone, as the vault takes it (anyone on this computer can run `box route`,
 // an agent's command too): you.
 const notClient = ({ request }: RouteContext) => (request.fromMac && request.headers["x-kuvo-vault-proof"] ? NOT_PROVED : ONLY_CLIENTS);
-const fromClient = ({ request, phone }: RouteContext) => Boolean(phone?.key || request.fromApp || (request.fromMac && provedRequest(request)));
+export const workQueueClient = ({ request, phone }: RouteContext) => Boolean(request.fromOwnerPeer || phone?.key || request.fromApp || (request.fromMac && provedRequest(request)));
 const queryOf = (request: RouteContext["request"]) => new URLSearchParams(request.path.split("?")[1] ?? "");
 
 // Whether every word of `q` is in what an item says: its title, its number or its issue's name,
@@ -218,7 +218,7 @@ export async function* workQueueRoute(context: RouteContext, match: RegExpMatchA
     // it, an outside one later, goes whole.)
     if (method !== "GET" && method !== "POST") return yield* json(405, {});
     if (method === "POST" && typeof given.text === "string") {
-      if (!fromClient(context)) return yield* json(403, { message: notClient(context) });
+      if (!workQueueClient(context)) return yield* json(403, { message: notClient(context) });
       return yield* json(200, { mentions: references(given.text.slice(0, MOST_BODY)) });
     }
     const listed = method === "POST" ? (Array.isArray(given.refs) ? given.refs : []) : (queryOf(request).get("refs") ?? "").split(",");
@@ -246,7 +246,7 @@ export async function* workQueueRoute(context: RouteContext, match: RegExpMatchA
   if (part === "labels") {
     if (method === "GET") return yield* json(200, { labels: labels() });
     if (method !== "POST") return yield* json(405, {});
-    if (!fromClient(context)) return yield* json(403, { message: notClient(context) });
+    if (!workQueueClient(context)) return yield* json(403, { message: notClient(context) });
     // (Removed, it's taken off every item here first, deleted ones too.)
     const outcome = typeof given.add === "string" ? addLabel(given.add, given.color)
       : given.change !== undefined ? changeLabel(given.change, { name: given.name, color: given.color })
@@ -266,13 +266,13 @@ export async function* workQueueRoute(context: RouteContext, match: RegExpMatchA
 
   if (part === "items") {
     if (method !== "POST") return yield* json(405, {});
-    if (!fromClient(context)) return yield* json(403, { message: notClient(context) });
+    if (!workQueueClient(context)) return yield* json(403, { message: notClient(context) });
     return yield* answered(addHere(given, fromLocalApp(context.request)), json);
   }
 
   if (part === "import") {
     if (method !== "POST") return yield* json(405, {});
-    if (!fromClient(context)) return yield* json(403, { message: notClient(context) });
+    if (!workQueueClient(context)) return yield* json(403, { message: notClient(context) });
     const owner = typeof given.owner === "string" && OWNER.test(given.owner) ? given.owner : null;
     if (!owner) return yield* json(400, { message: "Say whose queue it goes in (owner): a conversation's address." });
     try {
@@ -325,7 +325,7 @@ export async function* workQueueRoute(context: RouteContext, match: RegExpMatchA
   // a client: asked of each of them, so a client asks one box whichever keeps it. Null when none
   // has it; `refuse` when some couldn't say, so it may be there.
   const seek = async (): Promise<{ far: Elsewhere; whole: Record<string, unknown> } | { refuse: { message: string; computers: Computer[] } } | null> => {
-    if (!fromClient(context)) return null;
+    if (!workQueueClient(context)) return null;
     const sought = await seekElsewhere(named, ref, signal);
     if ("missing" in sought) return null;
     if ("unsure" in sought) return { refuse: { message: sought.message, computers: sought.unsure } };
@@ -336,20 +336,20 @@ export async function* workQueueRoute(context: RouteContext, match: RegExpMatchA
     // One on another of your computers: whole, as that computer's box answers for a client (`told:
     // false`); else as it last told it (`told: true`), without what only it keeps (its description,
     // notes, what happened to it, files, links).
-    let far = itemElsewhere(ref, readLink(), { deleted: fromClient(context) });
+    let far = itemElsewhere(ref, readLink(), { deleted: workQueueClient(context) });
     if (!far) {
       const sought = await seek();
       if (!sought) return yield* json(404, { message: "There's no such item." });
       if ("refuse" in sought) return yield* json(503, sought.refuse);
       return yield* json(200, { item: { ...fromThere(sought.whole, sought.far.computer), told: false } });
     }
-    if (fromClient(context)) {
+    if (workQueueClient(context)) {
       const there = await forwardAct(far.computer, nameOf(far), { method: "GET", item: far.id }, signal);
       const whole = there.status === 200 && "value" in there && isObject(there.value) && isObject(there.value.item) ? there.value.item : null;
       if (whole) return yield* json(200, { item: { ...fromThere(whole, far.computer), told: false } });
     }
     // (As it was told: nothing to do to it from here until its computer answers.)
-    const cant = { away: awaySince(far.computer.key) !== null, apart: !fromClient(context) || !takesForwarded(far.computer.key), attaching: takesForwarded(far.computer.key, ATTACHMENTS) };
+    const cant = { away: awaySince(far.computer.key) !== null, apart: !workQueueClient(context) || !takesForwarded(far.computer.key), attaching: takesForwarded(far.computer.key, ATTACHMENTS) };
     await readSeen([itemElsewhere(ref, readLink(), { asTold: true }) ?? far], GITHUB_WAIT);
     far = itemElsewhere({ id: far.id }) ?? far;
     const { handedFrom: _, ...summary } = far;
@@ -359,7 +359,7 @@ export async function* workQueueRoute(context: RouteContext, match: RegExpMatchA
     let name = "";
     try { name = decodeURIComponent(rawFile ?? ""); } catch {}
     // One kept with an item on another of your computers: from there, for a client (up to a few MB).
-    const forClient = !find(allItems()) && fromClient(context) && Boolean(name) && name.length <= 300;
+    const forClient = !find(allItems()) && workQueueClient(context) && Boolean(name) && name.length <= 300;
     let far: Elsewhere | null = forClient ? itemElsewhere(ref) : null;
     if (forClient && !far) {
       const sought = await seek();
@@ -384,7 +384,7 @@ export async function* workQueueRoute(context: RouteContext, match: RegExpMatchA
     : method === "PATCH" && action === undefined ? { method: "PATCH" }
     : null;
   if (!asked) return yield* json(405, {});
-  if (!fromClient(context)) return yield* json(403, { message: notClient(context) });
+  if (!workQueueClient(context)) return yield* json(403, { message: notClient(context) });
   // One on another of your computers is done there, by that computer's box: this one hands it on
   // and answers with what it said (a client never works out where an item is).
   let far: Elsewhere | null = null;

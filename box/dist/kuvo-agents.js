@@ -40801,7 +40801,7 @@ function checkTrialRecovery(folder, start) {
     if (!accepts(2147483647)) {
       if (accepts(steps.length))
         return;
-      if (start.version === 4 && start.upgradingTo === undefined && accepts(start.version))
+      if ((start.version === 4 || start.version === 5) && start.upgradingTo === undefined && accepts(start.version))
         return false;
     }
     refuse();
@@ -40836,6 +40836,7 @@ var init_folder_version = __esm(() => {
   init_format_version();
   steps = [
     (_folder, importLegacy) => importLegacy?.(),
+    () => {},
     () => {},
     () => {},
     () => {},
@@ -42443,4 +42444,4 @@ if (!isMainThread && process.argv.includes("--insights-db-worker")) {
 } else {
   await init_main().then(() => ({}));
 }
-// Built from Packages/Box/src/agents 8cdca7831c33353b21dc119cc0fd1c5da679a4f0ec46700d69bb88a669f2f23f
+// Built from Packages/Box/src/agents 2f72ea680b0b73d989923db0f3bdf0b5db8c184ad6f65178d86374cb0d78176f

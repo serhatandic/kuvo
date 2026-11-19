@@ -12,6 +12,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { NO_BUN, testBun } from "./bun-for-tests.js";
 import { relayStandIn } from "./relay-stand-in.js";
+import { runningAs } from "./running-as.js";
 
 const script = fileURLToPath(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url));
 const link = await import(script);
@@ -58,7 +59,7 @@ async function until(what, read, signal) {
   throw new Error(`Timed out waiting for ${what}`);
 }
 
-async function network(t, takeover = false, releaseKey) {
+async function network(t, takeover = false, releaseKey, owned = false) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-handover-"));
   const relay = await relayStandIn(link);
   const boxScript = releaseKey ? path.join(root, "kuvo-link.mjs") : script;
@@ -68,7 +69,43 @@ async function network(t, takeover = false, releaseKey) {
     fs.writeFileSync(boxScript, source.replace(link.UPDATE_KEYS[0], releaseKey));
   }
   let labelCall;
+  const prompts = [];
+  const groupMessages = [];
+  const bridgePID = owned ? await runningAs("kuvo-agents", t) : null;
   const engine = http.createServer((request, response) => {
+    if (owned) {
+      const local = request.headers.authorization === "Basic " + Buffer.from("opencode:Lab").toString("base64");
+      const send = (status, value) => response.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(value));
+      if (request.url.startsWith("/api/kuvo/link/groups")) {
+        if (!local) return send(404, {});
+        if (request.url.endsWith("/groups")) return send(200, { groups: [{ id: "grp_lab" }] });
+        if (request.method === "POST") {
+          const parts = [];
+          request.on("data", part => parts.push(part));
+          request.on("end", () => {
+            groupMessages.push(JSON.parse(Buffer.concat(parts)));
+            send(200, {});
+          });
+          return;
+        }
+        return send(200, { messages: groupMessages });
+      }
+      if (request.url.startsWith("/api/session/ses_owned")) {
+        if (!local) return send(404, {});
+        if (request.url.endsWith("/prompt")) {
+          const parts = [];
+          request.on("data", part => parts.push(part));
+          request.on("end", () => {
+            prompts.push(JSON.parse(Buffer.concat(parts)));
+            send(200, { data: {} });
+          });
+          return;
+        }
+        if (request.url.includes("/message?")) return send(200, { data: prompts.map(prompt => ({ id: prompt.id, type: "user", text: prompt.text })), cursor: {} });
+        return send(200, { data: { id: "ses_owned", title: "Lab’s conversation", time: { updated: Date.now() } } });
+      }
+      if (request.url.startsWith("/api/session?")) return send(200, { data: local ? [{ id: "ses_owned", title: "Lab’s conversation", time: { updated: Date.now() } }] : [] });
+    }
     const call = request.url.startsWith("/api/session/ses_labels/message") && labelCall;
     const data = call ? [{ content: [{ type: "tool", name: "queue_labels", state: { status: "running", input: call } }] }] : [];
     response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ data }));
@@ -105,7 +142,10 @@ async function network(t, takeover = false, releaseKey) {
     const env = { HOME: home, KUVO_HOME: home, PATH: process.env.PATH, TMPDIR: root };
     const run = path.join(home, "run");
     fs.mkdirSync(path.join(run, "work-queue"), { recursive: true });
-    fs.writeFileSync(path.join(run, "engine.json"), JSON.stringify({ port: engine.address().port, password: "test" }));
+    fs.writeFileSync(path.join(run, "engine.json"), JSON.stringify({ port: engine.address().port, password: owned ? name : "test" }));
+    if (bridgePID && name === "Lab") fs.writeFileSync(path.join(run, "bridge.json"), JSON.stringify({
+      pid: bridgePID, port: engine.address().port, password: name,
+    }));
     const read = file => JSON.parse(fs.readFileSync(path.join(run, file), "utf8"));
     const clock = offset => {
       const file = path.join(run, "test-setup-clock.json");
@@ -213,8 +253,100 @@ async function network(t, takeover = false, releaseKey) {
     const setup = box.read().setup;
     return setup.epoch === epoch && setup.primary === primary.key && setup.role === (box === primary ? "primary" : "member") && setup;
   }, t.signal);
-  return { boxes, a, b, c, relay, see, phone, pairing };
+  return { boxes, a, b, c, relay, see, phone, pairing, prompts, groupMessages };
 }
+
+test("failure bench: an away owner leaves saved reads and accepts an unsent message on return", { timeout: 50_000 }, async t => {
+  const { a, b, c, relay, prompts, groupMessages } = await network(t, false, undefined, true);
+  const read = (box, query = "") => box.route("GET", `kuvo/data/owner?kind=conversations&id=ses_owned&computer=${c.key}${query}`);
+  const before = await read(b);
+  assert.equal(before.status, 200);
+  assert.equal(before.value.owner.key, c.key);
+  assert.equal(before.value.owner.name, "Lab");
+  assert.equal(before.value.owner.reachable, true);
+  assert.equal(before.value.state, "received");
+  assert.deepEqual(before.value.data.messages, []);
+  assert.ok(before.value.lastReceivedAt > 0);
+  const group = "kuvo/data/owner?kind=groupTranscript&id=grp_lab";
+  const groupRead = await b.route("GET", group);
+  assert.equal(groupRead.value.owner.key, c.key);
+  assert.deepEqual(groupRead.value.data.messages, []);
+
+  const rejoin = relay.disconnect(c.address);
+  await c.stop("SIGTERM");
+  const stale = await read(b, "&file=plan.md&message=msg_unknown");
+  assert.equal(stale.value.owner.reachable, false);
+  assert.equal(stale.value.stale, true);
+  assert.equal(stale.value.state, "received");
+  assert.equal(stale.value.lastReceivedAt, before.value.lastReceivedAt);
+  assert.deepEqual(stale.value.unavailable, { files: ["plan.md"], messages: ["msg_unknown"] });
+  const unseen = await read(a);
+  assert.equal(unseen.value.state, "neverReceived");
+  assert.equal(unseen.value.lastReceivedAt, null);
+  assert.equal(Object.hasOwn(unseen.value, "data"), false);
+
+  const message = { id: "msg_owned", words: "This belongs to Lab." };
+  const sent = await b.route("POST", "kuvo/sessions/ses_owned/send", message);
+  assert.equal(sent.status, 202);
+  const operation = sent.value.operation;
+  const check = () => b.route("GET", `kuvo/data/messages/${operation}`);
+  assert.equal((await check()).value.status, "pending");
+  assert.deepEqual(prompts, []);
+  const groupSend = await b.route("POST", `kuvo/data/messages?group=grp_lab&computer=${c.key}`, { id: "msg_group", text: "This belongs in Lab’s group." });
+  assert.equal(groupSend.status, 202);
+  const groupReceipt = () => b.route("GET", `kuvo/data/messages/${groupSend.value.operation}`);
+  assert.equal((await groupReceipt()).value.status, "pending");
+  assert.deepEqual(groupMessages, []);
+
+  // The sender restarts, and the owner accepts without the primary in the network.
+  await b.stop("SIGTERM");
+  await a.stop("SIGTERM");
+  b.start();
+  assert.equal((await check()).value.status, "pending");
+  rejoin();
+  const releaseReceipt = relay.pause(c.address, b.address);
+  c.start();
+  await until("owner accepted the prompt", () => prompts.length === 1, t.signal);
+  assert.equal((await check()).value.status, "pending", "the sender has no receipt yet");
+  await c.stop("SIGTERM");
+  releaseReceipt();
+  c.start();
+  let receipt;
+  while (!t.signal.aborted) {
+    receipt = (await check()).value;
+    if (receipt.status !== "pending") break;
+    await delay(150);
+  }
+  assert.equal(receipt.status, "committed");
+  assert.equal(receipt.operation, operation);
+  assert.equal(receipt.owner, c.key);
+  assert.ok(receipt.acceptedAt >= before.value.lastReceivedAt);
+  assert.equal((await b.route("POST", "kuvo/sessions/ses_owned/send", message)).value.status, "committed");
+  assert.deepEqual(prompts.map(prompt => prompt.id), [message.id]);
+  assert.deepEqual((await read(b)).value.data.messages.map(prompt => prompt.id), [message.id]);
+  let groupOutcome;
+  while (!t.signal.aborted) {
+    groupOutcome = (await groupReceipt()).value;
+    if (groupOutcome.status !== "pending") break;
+    await delay(150);
+  }
+  assert.equal(groupOutcome.status, "committed");
+  assert.deepEqual(groupMessages.map(message => message.id), ["msg_group"]);
+});
+
+test("failure bench: a member runs its own conversation and Work Queue while the primary is away", { timeout: 35_000 }, async t => {
+  const { a, b, c, prompts } = await network(t, false, undefined, true);
+  await a.stop("SIGTERM");
+  assert.equal(c.read().setup.primary, a.key);
+  assert.equal((await c.route("POST", "kuvo/sessions/ses_owned/send", { id: "msg_local", words: "Keep going." })).status, 200);
+  assert.deepEqual(prompts.map(prompt => prompt.id), ["msg_local"]);
+  const work = await c.route("POST", "kuvo/work-queue/items", { owner: "ses_owned", title: "Continue on Lab" }, true);
+  assert.equal(work.status, 200);
+  assert.equal((await c.route("GET", `kuvo/work-queue/items/${work.value.item.id}`)).value.item.title, "Continue on Lab");
+  const forwarded = await b.route("POST", "kuvo/work-queue/items", { owner: "ses_owned", title: "Desk sends to Lab" }, true);
+  assert.equal(forwarded.status, 200);
+  assert.equal((await c.route("GET", `kuvo/work-queue/items/${forwarded.value.item.id}`)).value.item.title, "Desk sends to Lab");
+});
 
 test("failure bench: an offline member follows two handovers and the former primary can be unlinked", { timeout: 50_000 }, async t => {
   const { a, b, c, see, phone, pairing } = await network(t);

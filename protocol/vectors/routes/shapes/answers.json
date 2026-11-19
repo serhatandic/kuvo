@@ -6769,6 +6769,9 @@
             "literal": "config.apply"
            },
            {
+            "literal": "data.ownership"
+           },
+           {
             "literal": "devices.allow"
            },
            {
@@ -7544,6 +7547,9 @@
            },
            {
             "literal": "config.apply"
+           },
+           {
+            "literal": "data.ownership"
            },
            {
             "literal": "devices.allow"
@@ -13901,7 +13907,93 @@
    "feature": "groups",
    "answers": {
     "200": {
-     "object": {}
+     "oneOf": [
+      {
+       "object": {}
+      },
+      {
+       "object": {
+        "status": {
+         "oneOf": [
+          {
+           "literal": "committed"
+          }
+         ]
+        },
+        "operation": "string",
+        "owner": "string",
+        "acceptedAt": "number"
+       }
+      }
+     ]
+    },
+    "202": {
+     "object": {
+      "status": {
+       "oneOf": [
+        {
+         "literal": "pending"
+        }
+       ]
+      },
+      "operation": "string",
+      "owner": "string",
+      "message": "string"
+     }
+    },
+    "400": {
+     "object": {
+      "message": "string",
+      "reason?": "string",
+      "action?": {
+       "object": {
+        "label": "string",
+        "route": "string"
+       }
+      }
+     }
+    },
+    "409": {
+     "oneOf": [
+      {
+       "object": {
+        "status": {
+         "oneOf": [
+          {
+           "literal": "interrupted"
+          }
+         ]
+        },
+        "operation": "string",
+        "owner": "string",
+        "message": "string"
+       }
+      },
+      {
+       "object": {
+        "message": "string",
+        "reason?": "string",
+        "action?": {
+         "object": {
+          "label": "string",
+          "route": "string"
+         }
+        }
+       }
+      }
+     ]
+    },
+    "503": {
+     "object": {
+      "message": "string",
+      "reason?": "string",
+      "action?": {
+       "object": {
+        "label": "string",
+        "route": "string"
+       }
+      }
+     }
     }
    }
   },
@@ -14902,6 +14994,233 @@
         }
        }
       }
+     }
+    }
+   }
+  },
+  {
+   "route": "GET kuvo/data/owner",
+   "feature": "data.ownership",
+   "answers": {
+    "200": {
+     "object": {
+      "owner": {
+       "object": {
+        "key": {
+         "oneOf": [
+          "string",
+          "null"
+         ]
+        },
+        "name": "string",
+        "local": "bool",
+        "reachable": "bool",
+        "scope": {
+         "oneOf": [
+          {
+           "literal": "primary"
+          },
+          {
+           "literal": "session computer"
+          },
+          {
+           "literal": "group host"
+          },
+          {
+           "literal": "bot home"
+          },
+          {
+           "literal": "local computer"
+          },
+          {
+           "literal": "client"
+          }
+         ]
+        }
+       }
+      },
+      "stale": "bool",
+      "state": {
+       "oneOf": [
+        {
+         "literal": "received"
+        },
+        {
+         "literal": "neverReceived"
+        }
+       ]
+      },
+      "lastReceivedAt": {
+       "oneOf": [
+        "number",
+        "null"
+       ]
+      },
+      "data?": "any",
+      "unavailable": {
+       "object": {
+        "files": {
+         "list": "string"
+        },
+        "messages": {
+         "list": "string"
+        }
+       }
+      }
+     }
+    },
+    "400": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "403": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "404": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "409": {
+     "object": {
+      "message": "string"
+     }
+    }
+   }
+  },
+  {
+   "route": "POST kuvo/data/messages",
+   "feature": "data.ownership",
+   "answers": {
+    "200": {
+     "object": {
+      "status": {
+       "oneOf": [
+        {
+         "literal": "committed"
+        }
+       ]
+      },
+      "operation": "string",
+      "owner": "string",
+      "acceptedAt": "number"
+     }
+    },
+    "202": {
+     "object": {
+      "status": {
+       "oneOf": [
+        {
+         "literal": "pending"
+        }
+       ]
+      },
+      "operation": "string",
+      "owner": "string",
+      "message": "string"
+     }
+    },
+    "400": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "403": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "409": {
+     "oneOf": [
+      {
+       "object": {
+        "status": {
+         "oneOf": [
+          {
+           "literal": "interrupted"
+          }
+         ]
+        },
+        "operation": "string",
+        "owner": "string",
+        "message": "string"
+       }
+      },
+      {
+       "object": {
+        "message": "string"
+       }
+      }
+     ]
+    },
+    "503": {
+     "object": {
+      "message": "string"
+     }
+    }
+   }
+  },
+  {
+   "route": "GET kuvo/data/messages/:operation",
+   "feature": "data.ownership",
+   "answers": {
+    "200": {
+     "oneOf": [
+      {
+       "object": {
+        "status": {
+         "oneOf": [
+          {
+           "literal": "pending"
+          }
+         ]
+        },
+        "operation": "string",
+        "owner": "string",
+        "message": "string"
+       }
+      },
+      {
+       "object": {
+        "status": {
+         "oneOf": [
+          {
+           "literal": "committed"
+          }
+         ]
+        },
+        "operation": "string",
+        "owner": "string",
+        "acceptedAt": "number"
+       }
+      },
+      {
+       "object": {
+        "status": {
+         "oneOf": [
+          {
+           "literal": "interrupted"
+          }
+         ]
+        },
+        "operation": "string",
+        "owner": "string",
+        "message": "string"
+       }
+      }
+     ]
+    },
+    "403": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "404": {
+     "object": {
+      "message": "string"
      }
     }
    }
@@ -30672,6 +30991,20 @@
    "feature": "messages.send",
    "answers": {
     "200": "any",
+    "202": {
+     "object": {
+      "status": {
+       "oneOf": [
+        {
+         "literal": "pending"
+        }
+       ]
+      },
+      "operation": "string",
+      "owner": "string",
+      "message": "string"
+     }
+    },
     "400": {
      "object": {
       "message": "string"
@@ -30688,9 +31021,27 @@
      }
     },
     "409": {
-     "object": {
-      "message": "string"
-     }
+     "oneOf": [
+      {
+       "object": {
+        "status": {
+         "oneOf": [
+          {
+           "literal": "interrupted"
+          }
+         ]
+        },
+        "operation": "string",
+        "owner": "string",
+        "message": "string"
+       }
+      },
+      {
+       "object": {
+        "message": "string"
+       }
+      }
+     ]
     },
     "503": {
      "object": {

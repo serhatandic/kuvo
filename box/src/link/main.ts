@@ -1,3 +1,4 @@
+import { usesAcceptedSaves } from "./setup/record";
 // (The command line: what each command does is in the modules beside it, box/README.md.)
 // Kuvo Code's link on a machine: lets the phones you've paired reach this machine's engine
 // through the relay, so its sessions and bots work from the phone with the Mac closed. The
@@ -81,7 +82,6 @@ import { pushRows } from "./work/elsewhere";
 import { pushNumbers } from "./work-queue/numbers";
 import { startTakeover } from "./setup/takeover";
 import { initializeMachineSetup, noteSetupNow, settleOwnSetup } from "./setup/lead";
-import { requiresStandby } from "./setup/record";
 import { PRIMARY_UNLINK } from "./setup/leadership";
 import { macName, mainElsewhere, pairElsewhere } from "./setup/main-only";
 import { writeCard } from "./setup/card";
@@ -749,7 +749,7 @@ async function box(command: string): Promise<void> {
       let legacy: { library: ReturnType<typeof readPersonalities>; changed: boolean } | undefined;
       let waiting = false;
       updateLink(link => {
-        if (requiresStandby(link?.setup)) return null;
+        if (usesAcceptedSaves(link?.setup)) return null;
         if (link?.leadershipPending) { waiting = true; return null; }
         const before = JSON.stringify(readPersonalities());
         const library = changePersonalities(current => mergePersonalities(current, given));

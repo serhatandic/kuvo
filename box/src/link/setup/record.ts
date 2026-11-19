@@ -103,3 +103,7 @@ export function startsFromOthers(link: LinkState | null | undefined): { value: "
 /** A delegated setup waits for its next standby after promotion or retirement. */
 export const requiresStandby = (setup: SetupRecord | null | undefined): boolean =>
   Boolean(setup?.standby || setup?.sharedSaves);
+
+/** Once a setup uses accepted checkpoints, shared settings also go through them without a standby. */
+export const usesAcceptedSaves = (setup: SetupRecord | null | undefined): boolean =>
+  Boolean(setup?.checkpointed || requiresStandby(setup));

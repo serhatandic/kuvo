@@ -1,3 +1,4 @@
+import { sendOwnerMessages } from "../ownership/messages";
 // What you do to an item another of your computers keeps, done there (PROTOCOL.md, "The Work
 // Queue", "Across your computers", Done where it's kept): a client sends it to any box, and that box,
 // which knows which computer keeps the item (as that one told it), hands it to that computer's box
@@ -43,7 +44,7 @@ export const ATTACHMENTS = "work-queue.attachments";
 export const takesForwarded = (key: string, feature = FORWARD_FEATURE): boolean => (readPeerAgents()[key]?.features ?? []).includes(feature);
 
 /** What a box says it takes of each other area's asks. */
-const AREA_FEATURES = { computers: "computers.manage", devices: "devices.pair", setup: "setup.handover" } as const;
+const AREA_FEATURES = { ownership: "data.ownership", computers: "computers.manage", devices: "devices.pair", setup: "setup.handover" } as const;
 
 export const FORWARDS = path.join(WORK_QUEUE, "forward");
 // What a keeper did for the asks it took, by asker and id (changes only: a read is done again).
@@ -80,7 +81,7 @@ const MOST_REMEMBERED = 2_000;
  * `item` is the sender's box key, `peers/devices.ts`); a Work Queue item's otherwise. */
 export interface Act {
   id: string;
-  area?: "computers" | "devices" | "setup";
+  area?: "computers" | "devices" | "setup" | "ownership";
   method: "GET" | "DELETE" | "POST" | "PATCH";
   item: string;
   action?: "restore" | "file";
@@ -273,6 +274,7 @@ const sent = new Map<string, number>();
  * each again every few seconds while it's waited for. What's past its wait is cleared. `ownOnly`
  * (this Mac's box): only what this process left. */
 export function sendForwards(host: Pick<LinkHost, "send" | "welcomed"> | null | undefined, link: LinkState | null = readLink(), now = Date.now(), { ownOnly = IS_MAC }: { ownOnly?: boolean } = {}): void {
+  sendOwnerMessages(host, link, now);
   const names = listOf(FORWARDS);
   const here = new Set<string>();
   for (const name of names) {
@@ -390,7 +392,7 @@ export async function takeAct(sender: MailSender, given: unknown, reply: (payloa
   const kept = changes ? readDone(now).get(key) : undefined;
   // (Renaming or removing one of your machines, or pairing your app, is the same done twice: one
   // cut short is done again.)
-  const redo = kept !== undefined && kept.answer === null && act.area !== undefined && act.area !== "setup";
+  const redo = kept !== undefined && kept.answer === null && act.area !== undefined && act.area !== "setup" && act.area !== "ownership";
   if (kept && !redo) {
     const value = kept.answer ?? { status: 409, value: { message: `${here} stopped while it was doing this, so it can't tell whether it was done. Look again in a moment.` } };
     did.set(key, { until: kept.until, answer: value, answered: now });
@@ -431,7 +433,8 @@ const actOf = (given: unknown): Act | null => {
     || (method === "GET" && action === "file" && typeof name === "string" && name.length > 0 && name.length <= 300);
   const devices = given.area === "devices" && (method === "GET" || method === "POST" || method === "DELETE") && action === undefined;
   const setup = given.area === "setup" && (method === "GET" || method === "POST") && action === undefined;
-  if (!fits && !devices && !setup) return null;
-  if (given.area !== undefined && !devices && !setup && !(given.area === "computers" && (method === "PATCH" || method === "DELETE") && action === undefined)) return null;
-  return { id: given.id, ...(given.area === "computers" || devices || setup ? { area: given.area } : {}), method, item: given.item, ...(action ? { action } : {}), ...(action === "file" ? { name } : {}), ...(isObject(given.body) ? { body: given.body } : {}), at: given.at } as Act;
+  const ownership = given.area === "ownership" && (method === "GET" || method === "PATCH" || method === "POST" || method === "DELETE") && action === undefined;
+  if (!fits && !devices && !setup && !ownership) return null;
+  if (given.area !== undefined && !devices && !setup && !ownership && !(given.area === "computers" && (method === "PATCH" || method === "DELETE") && action === undefined)) return null;
+  return { id: given.id, ...(given.area === "computers" || devices || setup || ownership ? { area: given.area } : {}), method, item: given.item, ...(action ? { action } : {}), ...(action === "file" ? { name } : {}), ...(isObject(given.body) ? { body: given.body } : {}), at: given.at } as Act;
 };

@@ -7,7 +7,7 @@ import type { Body } from "../../shared/json";
 import { followed } from "../follow";
 import { PENDING_SAVE, changeShared, sharedSaveReply, waitShared } from "../setup/shared";
 import { LEADERSHIP_WAIT } from "../setup/lease";
-import { requiresStandby } from "../setup/record";
+import { requiresStandby, usesAcceptedSaves } from "../setup/record";
 import { readLink } from "../state";
 import { mergePersonalities, fitsLibrary, type GivenLibrary, type PersonalityLibrary, FULL_LIBRARY, PERSONALITIES_FILE, personalitiesDocument, personalityFollowers, readPersonalities } from "../personalities/library";
 import { answerPersonalities, retellBots, takePersonalitiesDocument } from "../personalities/take";
@@ -35,9 +35,9 @@ export async function* personalitiesDocumentRoute(context: RouteContext): AsyncG
   const link = readLink();
   if (link?.leadershipPending) return yield* json(503, { message: LEADERSHIP_WAIT });
   const setup = link?.setup;
-  if (requiresStandby(setup)) {
+  if (usesAcceptedSaves(setup)) {
     if (setup?.role !== "primary") return yield* json(409, { message: "Change your setup's personalities on its primary." });
-    if (!setup.standby) return yield* json(503, { message: PENDING_SAVE });
+    if (requiresStandby(setup) && !setup.standby) return yield* json(503, { message: PENDING_SAVE });
     const given = parsed(request.body) as Body<"document">;
     if (!isObject(given?.document) || !Array.isArray(given.document.personalities)
       || (given.document.removed !== undefined && !Array.isArray(given.document.removed))) {
@@ -60,7 +60,7 @@ export async function savePersonalityLibrary(document: GivenLibrary | null): Pro
 > {
   const setup = readLink()?.setup;
   if (setup?.role !== "primary") return { status: 409, refusal: { message: "Change your setup's personalities on its primary." } };
-  if (!setup.standby) return { status: 503, refusal: { message: PENDING_SAVE } };
+  if (requiresStandby(setup) && !setup.standby) return { status: 503, refusal: { message: PENDING_SAVE } };
   let changed: string[] = [];
   let library: PersonalityLibrary | undefined;
   const save = changeShared("setupPersonalities", value => {
@@ -88,9 +88,9 @@ export async function* personalityRoute(context: RouteContext, personality: RegE
   const link = readLink();
   if (method !== "GET" && link?.leadershipPending) return yield* json(503, { message: LEADERSHIP_WAIT });
   const setup = link?.setup;
-  if (requiresStandby(setup) && method !== "GET") {
+  if (usesAcceptedSaves(setup) && method !== "GET") {
     if (setup?.role !== "primary") return yield* json(409, { message: "Change your setup's personalities on its primary." });
-    if (!setup.standby) return yield* json(503, { message: PENDING_SAVE });
+    if (requiresStandby(setup) && !setup.standby) return yield* json(503, { message: PENDING_SAVE });
     let answer: ReturnType<typeof answerPersonalities> = [409, { message: "The setup changed." }];
     const save = changeShared("setupPersonalities", value => {
       const before = isObject(value) ? mergePersonalities(value) : readPersonalities();

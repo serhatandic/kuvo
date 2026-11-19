@@ -1,3 +1,4 @@
+import { usesAcceptedSaves } from "../setup/record";
 import { acceptedMembership, acceptedName, namedRoster } from "../setup/membership";
 // Documents (PROTOCOL.md, "Documents")
 // What boxes copy between them: the primary's membership (its peers document), the phones each box
@@ -109,7 +110,7 @@ interface Outgoing {
 function takesFrom(link: LinkState, origin: string, kind: DocKind): boolean {
   if (kind === "leadership") return Boolean(link.setup);
   if (kind === "setup-shared" || kind === "setup-checkpoint") return false;
-  if (kind === "personalities" && requiresStandby(link.setup)) return false;
+  if (kind === "personalities" && usesAcceptedSaves(link.setup)) return false;
   if (kind === "phones" && link.setup?.managed) return origin === link.setup.sign;
   const macs = macsOf(link).map(mac => macSign(link, mac)).filter(Boolean);
   const setup = followedSetup(link);
@@ -232,7 +233,7 @@ export function ownDocs(state: Pick<DocsState, "link" | "library">): Partial<Rec
     if (phones) docs.phones = phones;
   }
   const library = mergePersonalities(state.library);
-  if (!requiresStandby(state.link.setup) && Buffer.byteLength(JSON.stringify(library)) <= MOST_DOC - 4096) {
+  if (!usesAcceptedSaves(state.link.setup) && Buffer.byteLength(JSON.stringify(library)) <= MOST_DOC - 4096) {
     const personalities = ownDoc(state.link, "personalities", library);
     if (personalities) docs.personalities = personalities;
   }

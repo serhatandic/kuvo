@@ -28,6 +28,8 @@ const steps: readonly Step[] = [
   () => {},
   // 5. Reserve immutable setup checkpoints and operation records. Layout 4 records remain readable.
   () => {},
+  // 6. Reserve owner snapshots and message operations. Existing data stays in place.
+  () => {},
 ];
 
 interface Checkpoint {
@@ -74,6 +76,12 @@ export function setupLayoutDeferred(folder: string): boolean {
   catch { return true; }
 }
 
+/** Owner records are created only after the folder runner commits layout 6. */
+export function ownershipLayoutReady(folder: string): boolean {
+  try { return checkpoint(path.join(folder, FOLDER_VERSION_FILE), steps.length).version >= 6; }
+  catch { return false; }
+}
+
 /** A trial can advance only as far as the saved reader can open. Before layout markers,
  * readers ignored the probe completely and can recover only the additive layout 1. */
 function checkTrialRecovery(folder: string, start: Checkpoint): void | false {
@@ -101,9 +109,9 @@ function checkTrialRecovery(folder: string, start: Checkpoint): void | false {
     };
     if (!accepts(2_147_483_647)) {
       if (accepts(steps.length)) return;
-      // The only deferred step is additive. The trial's setup writers stay on hold
+      // The remaining steps are additive. The trial's new writers stay on hold
       // until confirmation, and rollback can reopen the original marker as-is.
-      if (start.version === 4 && start.upgradingTo === undefined && accepts(start.version)) return false;
+      if ((start.version === 4 || start.version === 5) && start.upgradingTo === undefined && accepts(start.version)) return false;
     }
     refuse();
   } finally {

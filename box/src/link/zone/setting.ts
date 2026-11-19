@@ -7,7 +7,7 @@
 // Platform: the same on a Mac's box and a machine's; on a Mac, bots go by its clock while no zone is
 // picked (no zone file), as they always have.
 
-import { requiresStandby } from "../setup/record";
+import { usesAcceptedSaves } from "../setup/record";
 import { sharedValue } from "../setup/shared";
 import { readLink } from "../state";
 import fs from "node:fs";
@@ -191,7 +191,7 @@ export function zoneHere(setting: ZoneSetting | null = readZoneSetting()): { zon
  * clock, nor what an older Mac gave it before. */
 export function zoneMail(): ZoneMail | null {
   const setting = readZoneSetting();
-  return !requiresStandby(readLink()?.setup) && setting && !setting.carried && setting.n >= 1 ? { zone: setting.zone, n: setting.n, ...(setting.zoneinfo ? { zoneinfo: setting.zoneinfo } : {}) } : null;
+  return !usesAcceptedSaves(readLink()?.setup) && setting && !setting.carried && setting.n >= 1 ? { zone: setting.zone, n: setting.n, ...(setting.zoneinfo ? { zoneinfo: setting.zoneinfo } : {}) } : null;
 }
 
 export function publishZoneSetting(setting: ZoneSetting): void {

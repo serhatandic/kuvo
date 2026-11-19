@@ -29,7 +29,7 @@ function launch(home, program, args, options = {}) {
   });
 }
 
-test("folder layout 5 adopts existing data in place and the current layout opens read-only", () => {
+test("folder layout 6 adopts existing data in place and the current layout opens read-only", () => {
   const home = scratch();
   const folder = path.join(home, ".kuvo-code");
   fs.mkdirSync(folder);
@@ -38,7 +38,7 @@ test("folder layout 5 adopts existing data in place and the current layout opens
   const marker = path.join(folder, "folder-version.json");
   const result = launch(home, process.execPath, [link, "folder-upgrade"]);
   assert.equal(result.status, 0, result.stderr);
-  assert.deepEqual(JSON.parse(fs.readFileSync(marker, "utf8")), { version: 5 });
+  assert.deepEqual(JSON.parse(fs.readFileSync(marker, "utf8")), { version: 6 });
   assert.equal(fs.readFileSync(path.join(folder, "machines.json"), "utf8"), raw);
   assert.deepEqual(fs.readdirSync(folder).sort(), ["folder-version.json", "machines.json"]);
   const inode = fs.statSync(marker).ino;
@@ -78,12 +78,12 @@ test("failure bench: startup refuses a newer folder without changing it", () => 
   const folder = path.join(home, ".kuvo-code");
   fs.mkdirSync(folder);
   const marker = path.join(folder, "folder-version.json");
-  for (const raw of ['{"version":6}\n', '{"version":5,"upgradingTo":6}\n']) {
+  for (const raw of ['{"version":7}\n', '{"version":6,"upgradingTo":7}\n']) {
     fs.writeFileSync(marker, raw);
     const result = launch(home, process.execPath, [link, "serve"]);
     assert.equal(result.status, 1, result.stderr);
     assert.equal(result.stdout, "");
-    assert.match(result.stderr, /Kuvo folder at .* format version 6 is unsupported \(this build writes 5\)/);
+    assert.match(result.stderr, /Kuvo folder at .* format version 7 is unsupported \(this build writes 6\)/);
     assert.equal(fs.readFileSync(marker, "utf8"), raw);
     assert.deepEqual(fs.readdirSync(folder), ["folder-version.json"]);
   }
@@ -113,7 +113,7 @@ test("the agents bridge refuses the newer layout before initializing its store",
   });
   assert.equal(result.status, 1, result.stderr);
   assert.equal(result.stdout, "");
-  assert.match(result.stderr, /Kuvo folder at .* format version 6 is unsupported \(this build writes 5\)/);
+  assert.match(result.stderr, /Kuvo folder at .* format version 7 is unsupported \(this build writes 6\)/);
   assert.deepEqual(fs.readdirSync(folder), ["folder-version.json"]);
 });
 
@@ -137,7 +137,7 @@ exec ${JSON.stringify(process.execPath)} "$3" "$4"
     // A failure to guard a startup must still fail fast and leave no detached test process.
     const result = launch(home, "/bin/sh", [staged, "status"], { input: "\n" });
     assert.equal(result.status, 1, result.stderr);
-    assert.match(result.stderr, /Kuvo folder at .* format version 6 is unsupported \(this build writes 5\)/);
+    assert.match(result.stderr, /Kuvo folder at .* format version 7 is unsupported \(this build writes 6\)/);
     assert.deepEqual(fs.readdirSync(folder).sort(), ["bin", "engine", "folder-version.json"]);
   }
 });
@@ -153,7 +153,7 @@ test("failure bench: a broken trial can stop and restore the saved bridge for it
   for (const dir of [path.dirname(current), path.dirname(old), engine, path.join(folder, "run")]) {
     fs.mkdirSync(dir, { recursive: true });
   }
-  // This is the shipped layout-4 bridge, and the trial is the built layout-5 bridge.
+  // This is the shipped layout-4 bridge, and the trial is the built layout-6 bridge.
   const previous = layout4Build();
   fs.writeFileSync(old, previous);
   fs.copyFileSync(link, current);
@@ -173,7 +173,7 @@ cp "${old}" "${current}" && rm "${folder}/run/update-trial"
   fs.writeFileSync(marker, '{"version":4,"upgradingTo":5}\n');
   const refused = launch(home, process.execPath, [current, "folder-upgrade"]);
   assert.equal(refused.status, 1, refused.stderr);
-  assert.match(refused.stderr, /saved Kuvo Code can't recover folder layout 5/);
+  assert.match(refused.stderr, /saved Kuvo Code can't recover folder layout 6/);
   assert.equal(fs.readFileSync(marker, "utf8"), '{"version":4,"upgradingTo":5}\n');
 
   // An incompatible marker must never let restore put back the older binary.
@@ -243,7 +243,7 @@ test("failure bench: the legacy import seals group files and directory entries b
     assert.ok(synced.slice(metadataSync + 1).includes(group));
     assert.ok(synced.slice(metadataSync + 1).includes(path.dirname(group)));
     assert.ok(synced.slice(metadataSync + 1).includes(staging));
-    assert.equal(JSON.parse(fs.readFileSync(path.join(work, "folder-version.json"))).version, 5);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(work, "folder-version.json"))).version, 6);
   `]);
   assert.equal(child.status, 0, child.stderr);
 });

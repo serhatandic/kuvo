@@ -86,6 +86,7 @@ export function takeAgents(sender: { key: string; kind: "mac" | "machine"; id?: 
     const computer = keptComputer(given.computer);
     all[sender.key] = { at: given.at as number, heard: Date.now(), kind: sender.kind, ...(sender.id ? { id: sender.id } : {}), list: (given.list as unknown[]).filter(fitsAgent).slice(0, MOST_AGENTS).map(keptAgent),
       ...(Array.isArray(given.features) ? { features: keptFeatures(given.features), ...(featuresCut(given.features) ? { featuresCut: true as const } : {}) } : {}), ...(Array.isArray(given.moved) ? { moved: keptMoved(given.moved) } : {}),
+      ...(Array.isArray(given.groups) ? { groups: given.groups.filter((id): id is string => typeof id === "string" && /^grp_[a-z0-9]{1,60}$/.test(id)).slice(0, 100) } : {}),
       ...(typeof given.setup === "string" && SETUP_ID.test(given.setup) ? { setup: given.setup } : {}),
       ...(given.trash === "trash" || given.trash === "kuvo" ? { trash: given.trash } : {}),
       ...(computer ? { computer } : {}) };

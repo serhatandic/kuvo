@@ -32,6 +32,10 @@ const REQUIRED_KINDS = [
   "sessionGoals",
   "sessionSchedules",
   "sessionLettersAndDelivery",
+  "ownerReadSnapshots",
+  "ownerMessageOutbox",
+  "ownerMessageReceipts",
+  "ownerGroupMessageReceipts",
   "searchIndex",
 
   "botSettings",

@@ -3,7 +3,7 @@
 // changes, and written with what they told into `run/agents.json` (what a Mac that's gone told,
 // forgotten).
 
-import { setupLayoutDeferred } from "../../shared/folder-version";
+import { ownershipLayoutReady, setupLayoutDeferred } from "../../shared/folder-version";
 import fs from "node:fs";
 import path from "node:path";
 import { FEATURES } from "../../shared/features";
@@ -13,11 +13,11 @@ import { boxProjects } from "../areas/projects";
 import { carryMacKit } from "../bots/kit";
 import { folderGoes, listBots } from "../bots/list";
 import { currentDigest } from "../documents/work";
-import { readBridgeFile } from "../engine/client";
+import { bridgeTarget, readBridgeFile } from "../engine/client";
 import { locked, textOf, writePrivate } from "../files";
 import { IS_MAC, K } from "../home";
 import { isChatsFolder } from "../engine/chats";
-import { awaySessions, movedAway } from "../moves/records";
+import { awaySessions, frozen, movedAway } from "../moves/records";
 import { readLink } from "../state";
 import { AGENTS_FILE, composeAgents, fitsAgent, isPutAway, keptAgent, MAC_AGENTS_FILE, PEER_AGENTS_FILE, PEER_LOCK, readPeerAgents } from "./directory";
 import { mailFor, movedOf, peersOf } from "./known";
@@ -146,7 +146,11 @@ export async function refreshOwn(readEngine: () => Target, link: LinkState | nul
 // What this box answers, as its agents' mail says (`kuvo/info`'s features).
 const ownFeatures = (): readonly string[] => {
   const features = IS_MAC ? macFeatures() : FEATURES;
-  return setupLayoutDeferred(K) ? features.filter(feature => feature !== "setup.checkpoints" && feature !== "setup.standby-acceptance") : features;
+  return features.filter(feature => {
+    if (feature === "data.ownership") return ownershipLayoutReady(K);
+    if (feature === "setup.checkpoints" || feature === "setup.standby-acceptance") return !setupLayoutDeferred(K);
+    return true;
+  });
 };
 
 // Tells each peer this box's agents: when they change, and every ten minutes, with a digest of
@@ -172,7 +176,10 @@ export async function announce(host: Pick<LinkHost, "send">, readEngine: () => T
   // And where a bot deleted here ends up (the Trash, or Kuvo Code's trash folder), so a box that
   // lists this one's bots says what deleting one takes with it as this computer would.
   const trash = folderGoes().to;
-  const json = JSON.stringify([ownList, moved, where, computer && { ...computer, working: undefined }, trash, zone]);
+  const bridge = ownershipLayoutReady(K) && bridgeTarget();
+  const held = bridge ? frozen() : new Set<string>();
+  const groups = bridge && (await (await import("../areas/groups")).listedGroups(bridge, AbortSignal.timeout(3_000)))?.map(group => group.id).filter(id => !held.has(id)).slice(0, 100);
+  const json = JSON.stringify([ownList, moved, where, groups, computer && { ...computer, working: undefined }, trash, zone]);
   let have: DigestEntry[] | false | null = null;
   for (const peer of peersOf(link)) {
     if (only !== undefined && peer.key !== only) continue;
@@ -189,7 +196,7 @@ export async function announce(host: Pick<LinkHost, "send">, readEngine: () => T
     for (const told of zones) {
       for (const count of [ownList.length, Math.floor(ownList.length / 2), Math.floor(ownList.length / 4)]) {
         sent = ownList.slice(0, count);
-        bytes = mailFor(peer, { agents: { at: now, list: sent, features: ownFeatures(), moved, trash, ...where, ...(computer ? { computer } : {}) }, ...(told ? { zone: told } : {}), ...docs, at: now, ...(ask ? { ask: "agents" } : {}) }, link);
+        bytes = mailFor(peer, { agents: { at: now, list: sent, features: ownFeatures(), moved, trash, ...where, ...(groups ? { groups } : {}), ...(computer ? { computer } : {}) }, ...(told ? { zone: told } : {}), ...docs, at: now, ...(ask ? { ask: "agents" } : {}) }, link);
         if (bytes) break;
       }
       if (bytes) break;

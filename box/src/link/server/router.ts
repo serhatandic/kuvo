@@ -1,3 +1,9 @@
+import { parsed } from "../../shared/json";
+import { ownerWrite, sendOwnerWrite } from "../ownership/write";
+import { ownerOf, DATA_ID } from "../ownership/resolve";
+import { messageReceipt, queueOwnerMessage, sendAddressedMessage } from "../ownership/messages";
+import { readOwned } from "../ownership/read";
+import { ownershipReady } from "../ownership/store";
 import { LOCAL_SETUP_SAVE } from "../../shared/setup-local";
 import { GITHUB_WORK_QUEUE } from "../../shared/github";
 // The box's routes
@@ -292,6 +298,37 @@ export function engineHandler(readEngine: () => EngineRecord = readEngineFile, i
     if (phone?.kind === "desktop") request = { ...request, desktop: true };
     const route = request.path.split("?")[0];
     const context: RouteContext = { request, phone, signal, route, readEngine, readBridge, bridge, info, phonesChanged, hold, json, text };
+    const desktop = request.desktop || request.fromMac || request.fromApp;
+    if (route === "kuvo/data/owner" || route === "kuvo/data/messages" || route.startsWith("kuvo/data/messages/")) {
+      if (!desktop) return yield* json(403, { message: "Open this from Kuvo Code." });
+      if (route === "kuvo/data/messages" && request.method.toUpperCase() === "POST")
+        return yield* sendAddressedMessage(context);
+      if (route === "kuvo/data/messages" || request.method.toUpperCase() !== "GET") return yield* json(405, {});
+      return yield* (route === "kuvo/data/owner" ? await readOwned(context) : messageReceipt(context, route.slice("kuvo/data/messages/".length)));
+    }
+    if (ownershipReady() && !["GET", "HEAD"].includes(request.method.toUpperCase())) {
+      if (desktop) {
+        const body = parsed(request.body);
+        const write = ownerWrite(request.method.toUpperCase(), route, body);
+        const owner = write && ownerOf(write.ref, { name: info.name });
+        if (write && owner && !owner.local) {
+          const result = await sendOwnerWrite(write, body, owner, context);
+          return yield* json(result.status, result.value);
+        }
+      }
+      const session = /^(?:(?:kuvo\/agents\/)?api\/session|kuvo\/sessions|kuvo\/wakes)\/(ses_[A-Za-z0-9_-]+)(?:\/|$)/.exec(route)?.[1];
+      const group = /^kuvo\/groups\/(grp_[a-z0-9]+)(?:\/|$)/.exec(route)?.[1];
+      if ((session || group) && DATA_ID.test((session ?? group)!)) {
+        const owner = ownerOf({ kind: session ? "conversations" : "groupTranscript", id: session ?? group }, { name: info.name });
+        if (owner && !owner.local) {
+          if (desktop && request.method.toUpperCase() === "POST" && session && SEND_ROUTE.test(route))
+            return yield* queueOwnerMessage(context, session, owner);
+          if (desktop && request.method.toUpperCase() === "POST" && group && route === `kuvo/groups/${group}`)
+            return yield* queueOwnerMessage(context, group, owner);
+          return yield* json(409, { computer: owner.key, message: `Open this record on ${owner.name} to change it.` });
+        }
+      }
+    }
     if (route === LOCAL_SETUP_SAVE) return yield* saveLocalSetup(context);
     const matched = matchBoxRoute(route, request, phone);
     // Each answer receives its own predicate's match, a pairing TypeScript cannot follow.

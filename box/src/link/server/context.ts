@@ -27,6 +27,8 @@ export interface LinkRequest {
   vaultClient?: boolean;
   /** Authenticated with the local holder socket key. */
   fromHolder?: true;
+  /** An allowlisted operation from an authenticated computer in this setup. */
+  fromOwnerPeer?: true;
 }
 
 /** Who asks: a phone, by its static key and where it is on the relay; nothing for this Mac's app. */

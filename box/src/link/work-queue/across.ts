@@ -1,3 +1,4 @@
+import { takeMessageReceipt, takeOwnerMessage } from "../ownership/messages";
 // The Work Queue across your computers (PROTOCOL.md, "The Work Queue", "Across your computers"):
 // one list for everything. Each box tells every other its items (summaries, the owners they name,
 // its labels and how it numbers) as they change, unasked, so the All view and a lead's
@@ -15,7 +16,7 @@ import { computerName } from "../peers/computer-name";
 import { readPeerAgents } from "../peers/directory";
 import { ownKey, peersOf, removedBoxes } from "../peers/known";
 import { awaySince, readReach } from "../peers/reach";
-import { requiresStandby } from "../setup/record";
+import { usesAcceptedSaves } from "../setup/record";
 import { sharedValue } from "../setup/shared";
 import { readLink } from "../state";
 import { followsBy, labels as labelsHere, LABELS_FILE, setupLabels, takePrimaryLabels, type Label } from "./labels";
@@ -249,7 +250,7 @@ function takeTold(sender: MailSender, given: unknown, reply: (payload: Record<st
   if (before?.primary?.key !== told.primary?.key || before?.primary?.since !== told.primary?.since) noteSetupNow(Date.now(), { soon: 0 });
   const primary = primaryOf(link);
   if ("self" in primary) movePast(Math.max(told.top ?? 0, ...told.items.map(item => item.number ?? 0)));
-  else if (!requiresStandby(link?.setup) && "peer" in primary && (primary.via ? primary.via.key === sender.key && told.primary?.key === primary.peer.key : primary.peer.key === sender.key)) {
+  else if (!usesAcceptedSaves(link?.setup) && "peer" in primary && (primary.via ? primary.via.key === sender.key && told.primary?.key === primary.peer.key : primary.peer.key === sender.key)) {
     // (Read only when a label it no longer has is one this box might keep.)
     let counts: Map<string, number> | null = null;
     takePrimaryLabels(told.labels, id => {
@@ -285,8 +286,21 @@ export async function takeWorkQueueMail(sender: MailSender, given: unknown, host
   }
   if (isObject(whole.handed)) handedBack(sender, whole.handed);
   if (isObject(whole.hand)) await handArrived(sender, whole.hand, reply, places).catch(() => {});
+  if (isObject(whole.ownerMessageReceipt)) takeMessageReceipt(sender, whole.ownerMessageReceipt);
+  if (isObject(whole.ownerMessage)) await takeOwnerMessage(sender, whole.ownerMessage, reply);
   if (isObject(whole.acted)) takeActed(sender, whole.acted);
-  if (isObject(whole.act)) await takeAct(sender, whole.act, reply, act => (act.area === "computers" ? writerAct(sender, act) : act.area === "devices" ? deviceAct(sender, act) : act.area === "setup" ? setupAct(sender, act) : actForPeer(act, places().targets))).catch(() => {});
+  if (isObject(whole.act)) await takeAct(sender, whole.act, reply, async act => {
+    switch (act.area) {
+      case "ownership": {
+        if (act.method === "GET") return (await import("../ownership/read")).readForPeer(sender, act, places());
+        return (await import("../ownership/write")).writeForPeer(sender, act, places());
+      }
+      case "computers": return writerAct(sender, act);
+      case "devices": return deviceAct(sender, act);
+      case "setup": return setupAct(sender, act);
+      default: return actForPeer(act, places().targets);
+    }
+  }).catch(() => {});
 }
 
 
