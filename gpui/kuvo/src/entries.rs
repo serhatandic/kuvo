@@ -263,18 +263,19 @@ impl Fold {
 }
 
 /// What a conversation's rows do beyond opening and closing what's in them: open another of your
-/// conversations (one an agent's message is from), and whether it waits on you now (a step under
-/// way then is what it waits on, and shows outside its group).
+/// conversations (one an agent's message is from), whether it waits on you now (a step under way
+/// then is what it waits on, and shows outside its group), and the clock for formatting times.
 #[derive(Clone)]
 pub struct Around {
     pub open_session: Rc<dyn Fn(&str, &mut Window, &mut App)>,
     pub waiting: bool,
+    pub now: f64,
 }
 
 impl Around {
     /// Rows drawn on their own (a group chat's): nothing to open, and nothing waits.
     pub fn none() -> Around {
-        Around { open_session: Rc::new(|_, _, _| {}), waiting: false }
+        Around { open_session: Rc::new(|_, _, _| {}), waiting: false, now: time::now_ms() }
     }
 }
 
@@ -317,7 +318,7 @@ pub fn render(
         }
         Entry::Steps { key, items } => {
             let sel = |base: &[u32]| Selectable::new(selection.clone(), SharedString::from(key.clone()), base);
-            steps(key, items, open, toggle, around.waiting, &sel, looks, cx)
+            steps(key, items, open, toggle, around.waiting, around.now, &sel, looks, cx)
         }
         Entry::TurnEnd { outcome, worked, .. } => turn_end(outcome, *worked, cx),
         Entry::Working { title } => working(title, cx),
@@ -535,6 +536,12 @@ fn content_units(step: &Step, n: usize, at: u32, open: &HashSet<Fold>) -> Vec<Un
                     units.extend(diff_units(&parse_patch(&file.patch), open.contains(&Fold::Whole(step.id.clone(), n, p)), &[at, p as u32]));
                 }
             }
+            Some(Details::Note { primary, secondary }) => {
+                units.push(Unit::new(&[at, 0], primary, Lead::Paragraph));
+                if let Some(secondary) = secondary {
+                    units.push(Unit::new(&[at, 1], secondary, Lead::Paragraph));
+                }
+            }
             None => {}
         },
         _ => {}
@@ -730,7 +737,7 @@ fn agent_step(step: &Step, open: &HashSet<Fold>, toggle: impl Fn(Fold, &mut App)
             Content::Text(text) if !text.trim().is_empty() => {
                 blocks.push(words_block(step, n, text, sel, looks));
             }
-            _ => blocks.extend(content_blocks(step, n, n as u32, open, toggle.clone(), false, sel, looks, cx)),
+            _ => blocks.extend(content_blocks(step, n, n as u32, open, toggle.clone(), false, time::now_ms(), sel, looks, cx)),
         }
     }
     flush_files(&mut pending_files, &mut blocks);
@@ -813,7 +820,7 @@ fn made_pictures(step: &Step, n: usize, looks: &Looks, cx: &App) -> Option<AnyEl
 /// A step's thinking or tool step `n`, drawn as item `at` of its row: its line, why it failed and
 /// what it's opened to. `waits`: it's what the conversation waits on you for.
 #[allow(clippy::too_many_arguments)]
-fn content_blocks(step: &Step, n: usize, at: u32, open: &HashSet<Fold>, toggle: impl Fn(Fold, &mut App) + Clone + 'static, waits: bool, sel: &dyn Fn(&[u32]) -> Selectable, looks: &Looks, cx: &App) -> Vec<AnyElement> {
+fn content_blocks(step: &Step, n: usize, at: u32, open: &HashSet<Fold>, toggle: impl Fn(Fold, &mut App) + Clone + 'static, waits: bool, now: f64, sel: &dyn Fn(&[u32]) -> Selectable, looks: &Looks, cx: &App) -> Vec<AnyElement> {
     let c = &cx.theme().colors;
     let chevron = |opened: bool| Icon::new(if opened { IconName::ChevronDown } else { IconName::ChevronRight }).size(IconSize::Nav).color(c.text_faint);
     let key = format!("{}:{n}", step.id);
@@ -823,7 +830,7 @@ fn content_blocks(step: &Step, n: usize, at: u32, open: &HashSet<Fold>, toggle: 
             let fold = Fold::Thinking(step.id.clone(), n);
             let opened = open.contains(&fold);
             let label = if *done { "Thought" } else { "Thinking" };
-            let row = step_row(SharedString::from(format!("think-{key}")), IconName::Sparkle, label.into(), None, !*done, false, cx)
+            let row = step_row(SharedString::from(format!("think-{key}")), IconName::Sparkle, label.into(), None, false, !*done, false, cx)
                 .cursor_pointer()
                 .hover(|s| s.opacity(0.8))
                 .on_click(move |_, _, cx| toggle(fold.clone(), cx))
@@ -845,13 +852,14 @@ fn content_blocks(step: &Step, n: usize, at: u32, open: &HashSet<Fold>, toggle: 
         }
         Content::Tool { name, state, title, doing, .. } => {
             let (busy, failed) = call_status(state);
-            let (icon, label, target) = call_label(name, title.as_deref(), doing.as_deref(), state, busy);
+            let pres = call_presentation(name, title.as_deref(), doing.as_deref(), state, busy, step.time.created, now);
             let shown = details(name, state);
+            let error = failed.then(|| tool_error(state)).flatten();
             let fold = Fold::Step(step.id.clone(), n);
             // (What it brought back for itself shows once it's opened.)
             let opens = shown.is_some() || pictures::has_own(name, state);
             let opened = opens && open.contains(&fold);
-            let mut row = step_row(SharedString::from(format!("tool-{key}")), icon, label, target, busy, failed, cx);
+            let mut row = step_row(SharedString::from(format!("tool-{key}")), pres.icon, pres.label, pres.target, pres.target_mono, busy, failed, cx);
             // One with something to show opens to it.
             if opens {
                 let toggle = toggle.clone();
@@ -875,11 +883,28 @@ fn content_blocks(step: &Step, n: usize, at: u32, open: &HashSet<Fold>, toggle: 
                         .into_any_element(),
                 );
             }
-            if failed && let Some(error) = tool_error(state) {
-                blocks.push(div().ml(UNDER).text_ui(TypeSize::Caption).text_color(c.danger).child(first_line(&error)).into_any_element());
+            // When closed (or when there's nothing else to open), show the plain error right under the row.
+            if !opened && let Some(error) = &error {
+                blocks.push(div().ml(UNDER).text_ui(TypeSize::Caption).text_color(c.danger).child(first_line(error)).into_any_element());
             }
             if let (true, Some(shown)) = (opened, shown) {
-                blocks.push(div().ml(UNDER).child(details_view(&key, step, n, at, shown, open, toggle, sel)).into_any_element());
+                let guide = div()
+                    .ml(px(7.))
+                    .pl(space::S3)
+                    .border_l_1()
+                    .border_color(if failed { c.danger.opacity(0.45) } else { c.border })
+                    .flex()
+                    .flex_col()
+                    .gap(space::S1_5)
+                    .child(details_view(&key, step, n, at, shown, open, toggle, sel, cx))
+                    .children(error.map(|error| {
+                        div()
+                            .text_ui(TypeSize::Small)
+                            .text_color(c.danger)
+                            .child(error)
+                            .into_any_element()
+                    }));
+                blocks.push(guide.into_any_element());
             }
             if opened && !pictures::is_made(name, state) {
                 let prefix = format!("{}:{n}-", step.id);
@@ -935,7 +960,7 @@ fn folds(items: &[(Rc<Step>, usize)]) -> bool {
 /// failed, or that waits on you, shows under it even while it's folded. Completed
 /// `kuvo-browser_show_file` calls render in the conversation flow without a redundant step line.
 #[allow(clippy::too_many_arguments)]
-fn steps(key: &str, items: &[(Rc<Step>, usize)], open: &HashSet<Fold>, toggle: impl Fn(Fold, &mut App) + Clone + 'static, waiting: bool, sel: &dyn Fn(&[u32]) -> Selectable, looks: &Looks, cx: &App) -> AnyElement {
+fn steps(key: &str, items: &[(Rc<Step>, usize)], open: &HashSet<Fold>, toggle: impl Fn(Fold, &mut App) + Clone + 'static, waiting: bool, now: f64, sel: &dyn Fn(&[u32]) -> Selectable, looks: &Looks, cx: &App) -> AnyElement {
     let c = &cx.theme().colors;
     // What it waits on you for: its last step under way.
     let waits_at = waiting.then(|| waiting_at(items)).flatten();
@@ -960,7 +985,7 @@ fn steps(key: &str, items: &[(Rc<Step>, usize)], open: &HashSet<Fold>, toggle: i
                 continue;
             }
             flush_files(&mut pending_files, &mut blocks);
-            blocks.extend(content_blocks(step, *n, at as u32, open, toggle.clone(), waits_at == Some(at), sel, looks, cx));
+            blocks.extend(content_blocks(step, *n, at as u32, open, toggle.clone(), waits_at == Some(at), now, sel, looks, cx));
         }
         flush_files(&mut pending_files, &mut blocks);
         return div().flex().flex_col().gap(GAP).children(blocks).into_any_element();
@@ -972,7 +997,7 @@ fn steps(key: &str, items: &[(Rc<Step>, usize)], open: &HashSet<Fold>, toggle: i
         .enumerate()
         .filter(|(at, _)| rendered_files[*at].is_none())
         .filter_map(|(_, (step, n))| match &step.content[*n] {
-            Content::Tool { name, state, title, doing, .. } => Some(Call { name, title: title.as_deref(), doing: doing.as_deref(), state }),
+            Content::Tool { name, state, title, doing, .. } => Some(Call { name, title: title.as_deref(), doing: doing.as_deref(), state, created: step.time.created }),
             _ => None,
         })
         .collect();
@@ -986,13 +1011,13 @@ fn steps(key: &str, items: &[(Rc<Step>, usize)], open: &HashSet<Fold>, toggle: i
         Icon::new(IconName::Check).size(IconSize::Nav).color(c.text_faint).into_any_element()
     };
     // Under way: what it's doing now, then what it did before it.
-    let (label, target, rest) = match under_way {
+    let (label, target, target_mono, rest) = match under_way {
         Some(call) => {
-            let (_, label, target) = call_label(call.name, call.title, call.doing, call.state, true);
+            let pres = call_presentation(call.name, call.title, call.doing, call.state, true, call.created, now);
             let done: Vec<Call> = calls.iter().filter(|each| !call_status(each.state).0).cloned().collect();
-            (label, target, (!done.is_empty()).then(|| summary(&done)))
+            (pres.label, pres.target, pres.target_mono, (!done.is_empty()).then(|| summary(&done)))
         }
-        None => (SharedString::from(summary(&calls)), None, None),
+        None => (SharedString::from(summary(&calls)), None, false, None),
     };
     let selector = id.to_string();
     let toggle_group = toggle.clone();
@@ -1010,7 +1035,15 @@ fn steps(key: &str, items: &[(Rc<Step>, usize)], open: &HashSet<Fold>, toggle: i
         .on_click(move |_, _, cx| toggle_group(fold.clone(), cx))
         .child(div().flex().flex_none().w(px(16.)).justify_center().child(leading))
         .child(div().flex_none().child(label))
-        .children(target.map(|target| div().min_w_0().truncate().text_mono(TypeSize::Small).text_color(c.text_faint).child(target)))
+        .children(target.map(|target| {
+            div()
+                .min_w_0()
+                .truncate()
+                .when(target_mono, |d| d.text_mono(TypeSize::Small))
+                .when(!target_mono, |d| d.text_ui(TypeSize::Small))
+                .text_color(c.text_faint)
+                .child(target)
+        }))
         .children(rest.map(|rest| div().min_w_0().truncate().text_color(c.text_faint).child(format!("· {}", lowered(&rest)))))
         .child(Icon::new(if opened { IconName::ChevronDown } else { IconName::ChevronRight }).size(IconSize::Nav).color(c.text_faint));
     let body = if opened {
@@ -1018,7 +1051,7 @@ fn steps(key: &str, items: &[(Rc<Step>, usize)], open: &HashSet<Fold>, toggle: i
             .iter()
             .enumerate()
             .filter(|(at, _)| rendered_files[*at].is_none())
-            .flat_map(|(at, (step, n))| content_blocks(step, *n, at as u32, open, toggle.clone(), waits_at == Some(at), sel, looks, cx))
+            .flat_map(|(at, (step, n))| content_blocks(step, *n, at as u32, open, toggle.clone(), waits_at == Some(at), now, sel, looks, cx))
             .collect();
         // Each step, along a line from the group's.
         (!expanded.is_empty()).then(|| div().ml(px(7.)).pl(space::S3).border_l_1().border_color(c.border).flex().flex_col().gap(GAP).children(expanded).into_any_element())
@@ -1030,7 +1063,7 @@ fn steps(key: &str, items: &[(Rc<Step>, usize)], open: &HashSet<Fold>, toggle: i
                 continue;
             }
             if shown_in_group(key, items, at, open, waiting) {
-                needs_you.extend(content_blocks(step, *n, at as u32, open, toggle.clone(), waits_at == Some(at), sel, looks, cx));
+                needs_you.extend(content_blocks(step, *n, at as u32, open, toggle.clone(), waits_at == Some(at), now, sel, looks, cx));
             } else {
                 needs_you.extend(made_pictures(step, *n, looks, cx));
             }
@@ -1049,6 +1082,7 @@ struct Call<'a> {
     title: Option<&'a str>,
     doing: Option<&'a str>,
     state: &'a Value,
+    created: f64,
 }
 
 /// What a group of tool steps did, in a line: each kind once, in the order it first came, counted
@@ -1323,6 +1357,9 @@ pub enum Details {
     Output { command: Option<String>, text: String },
     /// The files it changed, each as a diff.
     Changes(Vec<Changed>),
+    /// Human-only content for a Kuvo or MCP tool call (message text, Work Queue note,
+    /// wake-up note, or an unknown tool's main text argument and main text result).
+    Note { primary: String, secondary: Option<String> },
 }
 
 /// One file a step changed, as the engine says it (`metadata.files`).
@@ -1342,27 +1379,24 @@ impl Details {
     pub fn counts(&self) -> Option<(usize, usize)> {
         match self {
             Details::Changes(files) => Some(files.iter().fold((0, 0), |(a, r), file| (a + file.added, r + file.removed))),
-            Details::Output { .. } => None,
+            Details::Output { .. } | Details::Note { .. } => None,
         }
     }
 }
 
 /// What a step printed, as the engine keeps it: its text blocks (`state.content`), one after another.
 fn printed(state: &Value) -> String {
-    let blocks = state.get("content").and_then(Value::as_array).cloned().unwrap_or_default();
-    let texts: Vec<&str> = blocks.iter().filter(|block| block.get("type").and_then(Value::as_str) == Some("text")).filter_map(|block| block.get("text").and_then(Value::as_str)).collect();
-    texts.join("\n")
+    crate::tool_step::printed(state)
 }
 
-/// Why a step failed, as the engine says it.
+/// Why a step failed, in plain words without a repeated "Error:" prefix.
 fn tool_error(state: &Value) -> Option<String> {
-    let error = state.get("error")?;
-    error.as_str().map(str::to_owned).or_else(|| error.get("message").and_then(Value::as_str).map(str::to_owned))
+    crate::tool_step::tool_error(state)
 }
 
 /// What a tool step shows when it's opened (none: it has nothing to show, and doesn't open): the
-/// files it changed, as diffs; a command's output; a search's results. As the Mac's step rows show
-/// them; a file read, or a step that's still running, shows nothing more.
+/// files it changed, as diffs; a command's output; a search's results; or a Kuvo/MCP tool's human
+/// note. A file read, or a step that's still running, shows nothing more.
 pub fn details(name: &str, state: &Value) -> Option<Details> {
     let status = state.get("status").and_then(Value::as_str).unwrap_or("");
     if matches!(status, "running" | "streaming" | "pending") {
@@ -1392,13 +1426,16 @@ pub fn details(name: &str, state: &Value) -> Option<Details> {
         // A command shows what it printed, or that it printed nothing.
         "shell" if status == "completed" || !text.trim().is_empty() => Some(Details::Output { command, text }),
         "grep" | "glob" | "list" | "ls" | "websearch" if !text.trim().is_empty() => Some(Details::Output { command: None, text }),
-        _ => None,
+        _ => crate::tool_step::note(name, state).map(|note| Details::Note {
+            primary: note.primary,
+            secondary: note.secondary,
+        }),
     }
 }
 
-/// An opened step's output or changes, each folded until it's shown whole.
+/// An opened step's output, changes, or human note.
 #[allow(clippy::too_many_arguments)]
-fn details_view(key: &str, step: &Step, n: usize, at: u32, shown: Details, open: &HashSet<Fold>, toggle: impl Fn(Fold, &mut App) + Clone + 'static, sel: &dyn Fn(&[u32]) -> Selectable) -> AnyElement {
+fn details_view(key: &str, step: &Step, n: usize, at: u32, shown: Details, open: &HashSet<Fold>, toggle: impl Fn(Fold, &mut App) + Clone + 'static, sel: &dyn Fn(&[u32]) -> Selectable, cx: &App) -> AnyElement {
     let whole = |part: usize| Fold::Whole(step.id.clone(), n, part);
     match shown {
         Details::Output { command, text } => {
@@ -1432,12 +1469,33 @@ fn details_view(key: &str, step: &Step, n: usize, at: u32, shown: Details, open:
             });
             div().flex().flex_col().gap(space::S2).children(views).into_any_element()
         }
+        Details::Note { primary, secondary } => {
+            let c = &cx.theme().colors;
+            div()
+                .flex()
+                .flex_col()
+                .gap(space::S1_5)
+                .child(
+                    div()
+                        .text_ui(TypeSize::Small)
+                        .text_color(c.text)
+                        .child(SelectableText::new(SharedString::from(format!("note-{key}-0")), primary).selectable(Some(sel(&[at]).unit(&[0])))),
+                )
+                .children(secondary.map(|secondary| {
+                    div()
+                        .text_ui(TypeSize::Small)
+                        .text_color(c.text_muted)
+                        .child(SelectableText::new(SharedString::from(format!("note-{key}-1")), secondary).selectable(Some(sel(&[at]).unit(&[1]))))
+                }))
+                .into_any_element()
+        }
     }
 }
 
 /// A tool step or thinking, as one quiet line: its icon (or a spinner while it runs), what it did,
 /// and what it did it to.
-fn step_row(id: SharedString, icon: IconName, label: SharedString, target: Option<SharedString>, busy: bool, failed: bool, cx: &App) -> gpui::Stateful<gpui::Div> {
+#[allow(clippy::too_many_arguments)]
+fn step_row(id: SharedString, icon: IconName, label: SharedString, target: Option<SharedString>, target_mono: bool, busy: bool, failed: bool, cx: &App) -> gpui::Stateful<gpui::Div> {
     let c = &cx.theme().colors;
     let leading: AnyElement = if busy {
         spinner(SharedString::from(format!("{id}-spin")), IconSize::Nav, c.text_muted).into_any_element()
@@ -1458,7 +1516,15 @@ fn step_row(id: SharedString, icon: IconName, label: SharedString, target: Optio
         .text_color(c.text_muted)
         .child(div().flex().flex_none().w(px(16.)).justify_center().child(leading))
         .child(div().flex_none().child(label))
-        .children(target.map(|target| div().min_w_0().truncate().text_mono(TypeSize::Small).text_color(c.text_faint).child(target)))
+        .children(target.map(|target| {
+            div()
+                .min_w_0()
+                .truncate()
+                .when(target_mono, |d| d.text_mono(TypeSize::Small))
+                .when(!target_mono, |d| d.text_ui(TypeSize::Small))
+                .text_color(c.text_faint)
+                .child(target)
+        }))
 }
 
 /// What a tool step did, in words: its icon, what it did (or does, while it runs), and to what.
@@ -1493,10 +1559,8 @@ pub fn tool_label(name: &str, state: &Value, busy: bool) -> (IconName, SharedStr
     (icon, if busy { doing } else { done }.into(), target.map(SharedString::from))
 }
 
-/// What a tool step did, in words, with what its box says of it: the engine's own tools by what
-/// they did and to what ([`tool_label`]); any other (Kuvo Code's own, an MCP server's) by the
-/// plain title its box gives it (`title`, and `doing` while it runs: PROTOCOL.md, "Tool steps").
-pub fn call_label(name: &str, title: Option<&str>, doing: Option<&str>, state: &Value, busy: bool) -> (IconName, SharedString, Option<SharedString>) {
+/// Full closed-row presentation for any tool step, formatting wake-up times against `created_ms`/`now_ms`.
+fn call_presentation(name: &str, title: Option<&str>, doing: Option<&str>, state: &Value, busy: bool, created_ms: f64, now_ms: f64) -> crate::tool_step::Presentation {
     if name == "kuvo-browser_show_file" {
         let path = state.pointer("/input/path").and_then(Value::as_str);
         let icon = match path.map(kuvo_box::shown_files::guess_type) {
@@ -1515,13 +1579,26 @@ pub fn call_label(name: &str, title: Option<&str>, doing: Option<&str>, state: &
         } else {
             title.unwrap_or("Showed a file")
         };
-        return (icon, SharedString::from(label.to_owned()), target);
+        return crate::tool_step::Presentation {
+            icon,
+            label: SharedString::from(label.to_owned()),
+            target,
+            target_mono: true,
+        };
     }
-    let said = if busy { doing.or(title) } else { title };
-    match said {
-        Some(said) => (IconName::Sliders, SharedString::from(said.to_owned()), None),
-        None => tool_label(name, state, busy),
+    if let Some(pres) = crate::tool_step::present(name, title, doing, state, busy, created_ms, now_ms) {
+        return pres;
     }
+    let (icon, label, target) = tool_label(name, state, busy);
+    crate::tool_step::Presentation { icon, label, target, target_mono: true }
+}
+
+/// What a tool step did, in words, with what its box says of it: the engine's own tools by what
+/// they did and to what ([`tool_label`]); Kuvo tools and MCP servers in plain human words
+/// ([`crate::tool_step::present`]).
+pub fn call_label(name: &str, title: Option<&str>, doing: Option<&str>, state: &Value, busy: bool) -> (IconName, SharedString, Option<SharedString>) {
+    let pres = call_presentation(name, title, doing, state, busy, 0.0, time::now_ms());
+    (pres.icon, pres.label, pres.target)
 }
 
 /// A path as a row shows it: its last two parts.
@@ -1570,7 +1647,7 @@ fn shell_run(run: &kuvo_box::messages::ShellRun, open: &HashSet<Fold>, toggle: i
     let exit = run.exit.filter(|exit| *exit != 0).map(|exit| format!("exit {exit}"));
     let fold = Fold::Whole(run.id.clone(), 0, 0);
     let output = run.output.as_ref().map(|output| OutputWell::new(SharedString::from(format!("shell-output-{}", run.id)), output.output.clone()).command(run.command.clone()).whole(open.contains(&fold)).on_toggle(move |_, cx| toggle(fold.clone(), cx)).selectable(sel(&[0])));
-    div().flex().flex_col().gap(space::S2).child(step_row(SharedString::from(format!("shell-{}", run.id)), IconName::Terminal, if busy { "Running".into() } else { "You ran".into() }, Some(first_line(&run.command).into()), busy, failed, cx)
+    div().flex().flex_col().gap(space::S2).child(step_row(SharedString::from(format!("shell-{}", run.id)), IconName::Terminal, if busy { "Running".into() } else { "You ran".into() }, Some(first_line(&run.command).into()), true, busy, failed, cx)
         .children(exit.map(|exit| div().text_ui(TypeSize::Caption).text_color(c.danger).child(exit))))
         .children(output)
         .when(run.output.as_ref().is_some_and(|output| output.truncated), |d| d.child(div().text_ui(TypeSize::Caption).text_color(c.text_faint).child("Output cut short")))
@@ -1780,7 +1857,7 @@ mod tests {
     }
 
     fn calls(calls: &[(&str, Option<&str>, Value)]) -> String {
-        let calls: Vec<Call> = calls.iter().map(|(name, title, state)| Call { name, title: *title, doing: None, state }).collect();
+        let calls: Vec<Call> = calls.iter().map(|(name, title, state)| Call { name, title: *title, doing: None, state, created: 0.0 }).collect();
         summary(&calls)
     }
 

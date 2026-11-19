@@ -17,8 +17,6 @@ pub mod composer;
 pub mod confirm_you;
 pub mod computers;
 pub mod conversation;
-#[cfg(feature = "stand-in")]
-pub mod drafts;
 pub mod entries;
 pub mod first_run;
 pub mod groups;
@@ -47,6 +45,7 @@ pub mod sidebar;
 pub mod stand_in;
 pub mod time;
 pub mod title_bar;
+pub mod tool_step;
 pub mod updates;
 pub mod work_bars;
 pub mod workspace;

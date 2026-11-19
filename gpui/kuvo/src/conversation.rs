@@ -171,6 +171,8 @@ pub struct ConversationView {
     shown_info: HashMap<String, crate::shown_files::InfoRead>,
     /// Live state of opening a shown file via `open_shown::open_shown_file`, by `ShownFile::id`.
     shown_open: HashMap<String, crate::shown_files::OpenState>,
+    /// Fixed clock for shots and tests (none: system clock).
+    now: Option<f64>,
 }
 
 impl Focusable for ConversationView {
@@ -241,6 +243,7 @@ impl ConversationView {
             row_shown_files: HashMap::new(),
             shown_info: HashMap::new(),
             shown_open: HashMap::new(),
+            now: None,
         };
         if live {
             let follow = Rc::new(client.follow_conversation(&session, Timing::default()));
@@ -299,6 +302,14 @@ impl ConversationView {
 
     pub fn session(&self) -> &str {
         &self.session
+    }
+
+    pub fn set_now(&mut self, now: f64) {
+        self.now = Some(now);
+    }
+
+    fn now(&self) -> f64 {
+        self.now.unwrap_or_else(crate::time::now_ms)
     }
 
     pub fn set_computer_key(&mut self, key: Option<String>) {
@@ -1745,7 +1756,11 @@ impl Render for ConversationView {
                 let toggle_view = list_view.clone();
                 let toggle = move |fold: Fold, cx: &mut App| toggle_view.update(cx, |this, cx| this.toggle(fold, cx));
                 let bars = this.bars.clone();
-                let around = entries::Around { open_session: Rc::new(move |session: &str, window: &mut Window, cx: &mut App| bars.update(cx, |bars, cx| bars.open(session, window, cx))), waiting: this.asks.read(cx).is_asking() && this.entries.iter().rposition(|entry| matches!(entry, Entry::Steps { .. })) == Some(ix) };
+                let around = entries::Around {
+                    open_session: Rc::new(move |session: &str, window: &mut Window, cx: &mut App| bars.update(cx, |bars, cx| bars.open(session, window, cx))),
+                    waiting: this.asks.read(cx).is_asking() && this.entries.iter().rposition(|entry| matches!(entry, Entry::Steps { .. })) == Some(ix),
+                    now: this.now(),
+                };
                 let shown = this.row_pictures.get(entry.key()).map(|(_, _, pictures)| pictures.as_slice()).unwrap_or(&[]);
                 let files: Vec<crate::shown_files::ViewModel> = this
                     .row_shown_files
@@ -1777,7 +1792,7 @@ impl Render for ConversationView {
                     let (copy_key, quote_key) = (key.clone(), key.clone());
                     entries::Actions {
                         time,
-                        now: crate::time::now_ms(),
+                        now: this.now(),
                         copied: this.copied.as_ref().is_some_and(|(copied, _)| *copied == key),
                         copy: Rc::new(move |_, cx| copier.update(cx, |this, cx| this.copy_message(&copy_key, cx))),
                         quote: Rc::new(move |window, cx| quoter.update(cx, |this, cx| this.quote_message(&quote_key, window, cx))),

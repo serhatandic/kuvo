@@ -1548,6 +1548,12 @@ impl Workspace {
     pub fn set_now(&mut self, now: f64, cx: &mut Context<Self>) {
         self.now = Some(now);
         self.refresh_conversation_wakes(cx);
+        if let Some(view) = self.conversation().cloned() {
+            view.update(cx, |view, _| view.set_now(now));
+        }
+        if let Some(chat) = &self.bot_chat {
+            chat.view.clone().update(cx, |view, _| view.set_now(now));
+        }
         self.rings.update(cx, |rings, _| rings.set_now(now));
         if let Some(run) = self.first_run().cloned() {
             run.update(cx, |run, _| run.set_now(now));
@@ -1648,9 +1654,13 @@ impl Workspace {
         let preview = std::rc::Rc::new(move |path: &str, window: &mut Window, cx: &mut App| {
             workspace.update(cx, |workspace, cx| workspace.preview_file(path, window, cx)).ok();
         });
+        let now = self.now;
         view.update(cx, |view, _| {
             view.set_computer_key(computer_key);
             view.set_preview_file(preview);
+            if let Some(now) = now {
+                view.set_now(now);
+            }
         });
     }
 

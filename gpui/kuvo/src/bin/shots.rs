@@ -151,6 +151,9 @@ const SCREENS: &[Screen] = &[
     // strip, then PDF & Markdown cards, missing tombstones, and a still-loading call.
     Screen { slug: "show-file-pictures", width: 1280., height: 1080., session: Some("ses_dark"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "show-file-cards", width: 1280., height: 1040., session: Some("ses_dark"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    // Inline tool-call details in the real conversation view: command, edit, sent message, Work
+    // Queue update, scheduled & canceled wake-ups, failed call, and an unknown MCP tool.
+    Screen { slug: "tool-details", width: 1280., height: 1420., session: Some("ses_dark"), typed: None, empty: false, opens: &[("msg_td_a1", 0), ("msg_td_a1", 1), ("msg_td_a1", 2), ("msg_td_a1", 3), ("msg_td_a1", 4), ("msg_td_a1", 7)], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "agent-letters", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(agent_letters) },
     // Selecting text (`kuvo_ui/src/selection.rs`): across a paragraph, inside a code block, across
     // messages, the right-click menu over a selection, and a drag in three steps.
@@ -1353,6 +1356,142 @@ fn stage_show_file_cards(stand_in: &StandIn) {
     }));
 }
 
+/// Real conversation turn for `tool-details`: command with output, file edit with diff, sent
+/// message, Work Queue update, scheduled wake-up, canceled wake-up, failed call, and an unknown
+/// MCP tool fallback — rendered in the real ConversationView.
+fn stage_tool_details(stand_in: &StandIn) {
+    use serde_json::json;
+    stand_in.set_facts("ses_dark", |facts| {
+        facts["title"] = json!("Finish shown-files view and update Mira");
+    });
+    let patch = "\
+--- a/gpui/kuvo/src/entries.rs
++++ b/gpui/kuvo/src/entries.rs
+@@ -512,7 +512,10 @@ fn folds(items: &[(Rc<Step>, usize)]) -> bool {
+ fn is_completed_show_file(content: &Content) -> bool {
+     match content {
+         Content::Tool { name, state, .. } if name == \"kuvo-browser_show_file\" => {
+-            state_status(state) == Some(\"completed\")
++            let done = state_status(state) == Some(\"completed\");
++            let has_path = input_path(state).is_some();
++            done && has_path
+         }
+         _ => false,
+     }
+ }";
+
+    stand_in.add_message("ses_dark", json!({
+        "type": "user", "id": "msg_td_u1", "time": { "created": NOW - 180_000.0 },
+        "text": "Finish wiring the shown-files view, run the unit tests, let Mira know, update #231, remind me at 19:30 to check the release build, cancel the groundwork reminder, close #999, and log the dark mode border issue in Linear."
+    }));
+    stand_in.add_message("ses_dark", json!({
+        "type": "assistant", "id": "msg_td_a1", "time": { "created": NOW - 160_000.0, "completed": NOW - 120_000.0 },
+        "agent": "build", "finish": "stop",
+        "content": [
+            {
+                "type": "tool", "id": "prt_td_0", "name": "shell",
+                "state": {
+                    "status": "completed",
+                    "input": { "command": "cargo test -p kuvo shown_files" },
+                    "content": [{ "type": "text", "text": "running 7 tests\ntest shown_files::tests::adapt_maps_document_states ... ok\ntest shown_files::tests::adapt_maps_picture_missing_vs_failed ... ok\ntest result: ok. 7 passed; 0 failed; 0 ignored" }]
+                }
+            },
+            {
+                "type": "tool", "id": "prt_td_1", "name": "edit",
+                "state": {
+                    "status": "completed",
+                    "input": { "filePath": "/Users/sam/Projects/kuvo/gpui/kuvo/src/entries.rs" },
+                    "content": [{ "type": "text", "text": "Edited." }],
+                    "metadata": {
+                        "files": [{
+                            "file": "/Users/sam/Projects/kuvo/gpui/kuvo/src/entries.rs",
+                            "patch": patch,
+                            "additions": 3,
+                            "deletions": 1,
+                            "status": "modified"
+                        }]
+                    }
+                }
+            },
+            {
+                "type": "tool", "id": "prt_td_2", "name": "kuvo-browser_send_message",
+                "title": "Sent a message", "doing": "Sending a message",
+                "state": {
+                    "status": "completed",
+                    "input": {
+                        "to": "&Mira (ses_1ac77df1a001YU3j)",
+                        "wait": false,
+                        "text": "Groundwork is merged and Flow is wired into ConversationView. All 7 shown-files tests pass."
+                    },
+                    "content": [{ "type": "text", "text": "Delivered to &Mira (ses_1ac77df1a001YU3j)." }]
+                }
+            },
+            {
+                "type": "tool", "id": "prt_td_3", "name": "kuvo-browser_queue_update",
+                "title": "Updated a Work Queue item", "doing": "Updating a Work Queue item",
+                "state": {
+                    "status": "completed",
+                    "input": {
+                        "item": "231",
+                        "status": "in-review",
+                        "note": "Flow view wired to kuvo/900c-groundwork; light and dark shots rendered."
+                    },
+                    "content": [{ "type": "text", "text": "Updated #231 — status set to In review." }]
+                }
+            },
+            {
+                "type": "tool", "id": "prt_td_4", "name": "kuvo-browser_schedule_wake_up",
+                "title": "Scheduled a wake-up", "doing": "Scheduling a wake-up",
+                "state": {
+                    "status": "completed",
+                    "input": {
+                        "when": "today 19:30",
+                        "summary": "Check whether the release build passed",
+                        "note": "Check CI for kuvo/900-batch-c-drafts and report any failing checks."
+                    },
+                    "content": [{ "type": "text", "text": "Scheduled wake_8f2a for today at 19:30 (+03:00)." }]
+                }
+            },
+            {
+                "type": "tool", "id": "prt_td_5", "name": "kuvo-browser_cancel_wake_up",
+                "title": "Canceled a wake-up", "doing": "Canceling a wake-up",
+                "state": {
+                    "status": "completed",
+                    "input": { "id": "wake_4b19" },
+                    "content": [{ "type": "text", "text": "Canceled wake_4b19 (Check groundwork branch)." }]
+                }
+            },
+            {
+                "type": "tool", "id": "prt_td_6", "name": "kuvo-browser_queue_update",
+                "title": "Updated a Work Queue item", "doing": "Updating a Work Queue item",
+                "state": {
+                    "status": "failed",
+                    "input": { "item": "999", "status": "done" },
+                    "error": "Error: #999 not found"
+                }
+            },
+            {
+                "type": "tool", "id": "prt_td_7", "name": "linear_create_issue",
+                "title": "Linear · Create issue", "doing": "Linear · Creating issue",
+                "state": {
+                    "status": "completed",
+                    "input": {
+                        "team_id": "team_9f2a8b1c",
+                        "draft": false,
+                        "title": "Tighten dark mode borders",
+                        "description": "Hairline borders on cards blend into the page background in dark appearance."
+                    },
+                    "content": [{ "type": "text", "text": "Created KUV-412 in Design Backlog." }]
+                }
+            },
+            {
+                "type": "text",
+                "text": "All seven shown-files tests pass, Mira has the update, #231 is now In review, the 19:30 wake-up is set, the groundwork reminder is canceled, and KUV-412 is logged in Linear. I couldn’t close #999 because that item wasn’t found."
+            }
+        ]
+    }));
+}
+
 fn encode_png(img: image::RgbImage) -> Vec<u8> {
     let mut bytes = std::io::Cursor::new(Vec::new());
     img.write_to(&mut bytes, image::ImageFormat::Png).expect("encode stand-in PNG");
@@ -2086,6 +2225,9 @@ fn main() -> anyhow::Result<()> {
             if screen.slug == "show-file-cards" {
                 stage_show_file_cards(&stand_in);
             }
+            if screen.slug == "tool-details" {
+                stage_tool_details(&stand_in);
+            }
             if screen.slug == "mode-chip-held" {
                 stand_in.set_approvals(false, Some("The sandbox isn’t running on this computer."));
             }
@@ -2362,36 +2504,7 @@ fn main() -> anyhow::Result<()> {
     }
     first_run_shots(&mut cx, &only, &out)?;
     launch_shots(&mut cx, &only, &out)?;
-    tool_details_draft_shots(&mut cx, &only, &out)?;
     home_shots(&mut cx, &only, &out)
-}
-
-/// Stand-in design drafts for tool call details (`tool-details-inline`, `tool-details-ledger`,
-/// `tool-details-rail`), rendered light and dark for user selection before building for real.
-fn tool_details_draft_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path::Path) -> anyhow::Result<()> {
-    use kuvo::drafts::tool_details::{Draft, ToolDetailsDraft};
-    for draft in Draft::ALL {
-        let slug = draft.slug();
-        if !only.is_empty() && !only.iter().any(|arg| arg == slug || arg == "tool-details") {
-            continue;
-        }
-        let (w, h) = draft.size();
-        for appearance in [Appearance::Light, Appearance::Dark] {
-            cx.update(|cx| Theme::set_appearance(appearance, cx));
-            let window = cx.open_window(size(px(w), px(h)), |_, cx| cx.new(|_| ToolDetailsDraft::new(draft)))?;
-            let any = window.into();
-            cx.run_until_parked();
-            cx.update_window(any, |_, window, _| window.refresh())?;
-            cx.run_until_parked();
-            let image = cx.capture_screenshot(any)?;
-            let name = format!("screens-{slug}-{}.png", if appearance.is_dark() { "dark" } else { "light" });
-            image.save(out.join(&name))?;
-            println!("{name}: {}x{}", image.width(), image.height());
-            cx.update_window(any, |_, window, _| window.remove_window())?;
-            cx.run_until_parked();
-        }
-    }
-    Ok(())
 }
 
 /// The app opening on a computer (`launch-*`: this Mac's row in the Welcome card as it's set up,
