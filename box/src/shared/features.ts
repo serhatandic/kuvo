@@ -96,6 +96,7 @@ export const FEATURES = [
   "engine.restart",
   "engine.start",
   "file",
+  "file.info",
   "file.text",
   "folders",
   "folders.files",

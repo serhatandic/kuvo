@@ -10,6 +10,8 @@ pub enum Error {
     NotRunning(String),
     /// The box couldn't be reached at all (SSH failed, the connection dropped).
     Unreachable(String),
+    /// The file is no longer on the box.
+    NotFound,
     /// The box answered, and said no: its status and its words.
     Refused(Refusal),
     /// The box is older than this client needs (PROTOCOL.md, "The update gate"): it lacks these
@@ -100,6 +102,7 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Error::NotRunning(why) | Error::Unreachable(why) | Error::BadAnswer(why) => f.write_str(why),
+            Error::NotFound => f.write_str("That file isn’t there anymore."),
             Error::Refused(refusal) => f.write_str(&refusal.message),
             Error::NeedsUpdating { .. } => f.write_str("This computer’s Kuvo is older than this app."),
         }

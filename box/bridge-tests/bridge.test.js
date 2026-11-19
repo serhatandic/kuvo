@@ -1678,6 +1678,7 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     "engine.restart": ["GET", "kuvo/engine/restart"],
     "engine.start": ["GET", "kuvo/engine/start"],
     file: ["GET", "kuvo/file"],
+    "file.info": ["GET", "kuvo/file/info"],
     "file.text": ["GET", "kuvo/file/text"],
     folders: ["DELETE", "kuvo/folders"],
     "folders.files": ["GET", "kuvo/folders?files=1"],

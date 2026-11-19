@@ -10,7 +10,7 @@ use std::collections::HashSet;
 use std::rc::Rc;
 
 use gpui::{
-    AnyElement, App, FontWeight, InteractiveElement, Window, IntoElement, ParentElement, SharedString, StatefulInteractiveElement, Styled, div,
+    AnyElement, App, InteractiveElement, Window, IntoElement, ParentElement, SharedString, StatefulInteractiveElement, Styled, div,
     prelude::FluentBuilder as _, px, relative,
 };
 use kuvo_box::messages::{Content, Message, News, Step};
@@ -44,6 +44,9 @@ pub enum Entry {
     /// What the agent did between its words, one after another across its steps: tool steps and
     /// thinking, each by its step and where it is in it. Drawn as one group.
     Steps { key: String, items: Vec<(Rc<Step>, usize)> },
+    /// A message this agent sent to another agent (`send_message`), standing on its own in the
+    /// conversation in order with the words and steps around it.
+    Sent { key: String, step: Rc<Step>, part: usize },
     /// How long a turn worked, or how it ended, at its end.
     TurnEnd { id: String, outcome: String, worked: Option<f64> },
     /// A run under way, after what it has said so far.
@@ -63,6 +66,15 @@ impl Entry {
                 Some(Content::Text(text)) => Some(text.as_str()),
                 _ => None,
             }).collect(),
+            Entry::Sent { step, part, .. } => match step.content.get(*part) {
+                Some(Content::Tool { state, .. }) => state
+                    .pointer("/input/text")
+                    .or_else(|| state.pointer("/input/message"))
+                    .and_then(Value::as_str)
+                    .into_iter()
+                    .collect(),
+                _ => Vec::new(),
+            },
             Entry::Outgoing { words, .. } => vec![words.as_str()],
             _ => Vec::new(),
         }
@@ -75,7 +87,7 @@ impl Entry {
             Entry::Working { .. } => "working",
             Entry::Message(message) => message.id(),
             Entry::TurnEnd { id, .. } | Entry::Outgoing { id, .. } => id,
-            Entry::Words { key, .. } | Entry::Steps { key, .. } => key,
+            Entry::Words { key, .. } | Entry::Steps { key, .. } | Entry::Sent { key, .. } => key,
         }
     }
 
@@ -161,8 +173,8 @@ pub fn entries(mut conversation: Conversation) -> (Vec<Entry>, Vec<u64>) {
 
 /// The rows of one of the agent's steps: its words, each run of them a row, and what it did between
 /// them (tool steps, thinking) going on in `group`, the one the steps before it left open, or a new
-/// one. Each row is known by where it starts (the step's id at its start), so a group stays the same
-/// row as what it did grows; a group drawn from several steps changes with any of them.
+/// one. Messages sent to other agents (`send_message`) leave the step group and stand on their own
+/// in order with the text and steps around them.
 fn agent_rows(step: Rc<Step>, revision: u64, group: &mut Option<usize>, rows: &mut Vec<Entry>, revisions: &mut Vec<u64>) {
     let key = |n: usize| if n == 0 { step.id.clone() } else { format!("{}#{n}", step.id) };
     let mut words: Vec<usize> = Vec::new();
@@ -179,6 +191,12 @@ fn agent_rows(step: Rc<Step>, revision: u64, group: &mut Option<usize>, rows: &m
             Content::Text(text) if !text.trim().is_empty() => {
                 *group = None;
                 words.push(n);
+            }
+            Content::Tool { name, .. } if crate::tool_step::is_send_message(name) => {
+                flush(&mut words, false, n, rows, revisions);
+                *group = None;
+                rows.push(Entry::Sent { key: key(n), step: step.clone(), part: n });
+                revisions.push(revision);
             }
             Content::Reasoning { .. } | Content::Tool { .. } => {
                 flush(&mut words, false, n, rows, revisions);
@@ -263,18 +281,19 @@ impl Fold {
 }
 
 /// What a conversation's rows do beyond opening and closing what's in them: open another of your
-/// conversations (one an agent's message is from), and whether it waits on you now (a step under
-/// way then is what it waits on, and shows outside its group).
+/// conversations (one an agent's message is from), whether it waits on you now (a step under way
+/// then is what it waits on, and shows outside its group), and the clock for formatting times.
 #[derive(Clone)]
 pub struct Around {
     pub open_session: Rc<dyn Fn(&str, &mut Window, &mut App)>,
     pub waiting: bool,
+    pub now: f64,
 }
 
 impl Around {
     /// Rows drawn on their own (a group chat's): nothing to open, and nothing waits.
     pub fn none() -> Around {
-        Around { open_session: Rc::new(|_, _, _| {}), waiting: false }
+        Around { open_session: Rc::new(|_, _, _| {}), waiting: false, now: time::now_ms() }
     }
 }
 
@@ -317,7 +336,11 @@ pub fn render(
         }
         Entry::Steps { key, items } => {
             let sel = |base: &[u32]| Selectable::new(selection.clone(), SharedString::from(key.clone()), base);
-            steps(key, items, open, toggle, around.waiting, &sel, looks, cx)
+            steps(key, items, open, toggle, around.waiting, around.now, &sel, looks, cx)
+        }
+        Entry::Sent { key, step, part } => {
+            let sel = |base: &[u32]| Selectable::new(selection.clone(), SharedString::from(key.clone()), base);
+            from_agents(key, &sent_letters(step, *part), step.time.created, open, toggle, around, &sel, cx)
         }
         Entry::TurnEnd { outcome, worked, .. } => turn_end(outcome, *worked, cx),
         Entry::Working { title } => working(title, cx),
@@ -493,6 +516,12 @@ pub fn units(entry: &Entry, open: &HashSet<Fold>) -> Vec<Unit> {
             }
             units
         }
+        Entry::Sent { key, step, part } => sent_letters(step, *part)
+            .iter()
+            .enumerate()
+            .filter(|(n, letter)| letter.opens(open, key, *n))
+            .flat_map(|(n, letter)| markdown::units(&letter.said, &[n as u32]))
+            .collect(),
         // (As the box's copy will be: what you wrote.)
         Entry::Outgoing { words, .. } => words_units(words),
         _ => Vec::new(),
@@ -511,6 +540,14 @@ pub fn message_units(message: &Message, open: &HashSet<Fold>) -> Vec<Unit> {
             for (n, content) in step.content.iter().enumerate() {
                 match content {
                     Content::Text(text) if !text.trim().is_empty() => units.extend(markdown::units(text, &[n as u32])),
+                    Content::Tool { name, .. } if crate::tool_step::is_send_message(name) => {
+                        let card_key = format!("{}:{n}", step.id);
+                        for (c_ix, letter) in sent_letters(step, n).iter().enumerate() {
+                            if letter.opens(open, &card_key, c_ix) {
+                                units.extend(markdown::units(&letter.said, &[n as u32, c_ix as u32]));
+                            }
+                        }
+                    }
                     _ => units.extend(content_units(step, n, n as u32, open)),
                 }
             }
@@ -533,6 +570,12 @@ fn content_units(step: &Step, n: usize, at: u32, open: &HashSet<Fold>) -> Vec<Un
             Some(Details::Changes(files)) => {
                 for (p, file) in files.iter().enumerate() {
                     units.extend(diff_units(&parse_patch(&file.patch), open.contains(&Fold::Whole(step.id.clone(), n, p)), &[at, p as u32]));
+                }
+            }
+            Some(Details::Note { primary, secondary }) => {
+                units.push(Unit::new(&[at, 0], primary, Lead::Paragraph));
+                if let Some(secondary) = secondary {
+                    units.push(Unit::new(&[at, 1], secondary, Lead::Paragraph));
                 }
             }
             None => {}
@@ -624,7 +667,8 @@ fn user_message(ix: usize, parts: &Parts, sel: Selectable, cx: &App) -> AnyEleme
     // What went with it, above it: the keyword it was sent with as typed, who wrote it.
     let mut above: Vec<AnyElement> = Vec::new();
     if let Some(mail) = &parts.mail {
-        above.push(div().text_ui(TypeSize::Caption).text_color(c.text_muted).child(format!("From &{}", mail.name)).into_any_element());
+        let name = crate::tool_step::clean_person(&mail.name).unwrap_or_else(|| "Another agent".to_owned());
+        above.push(div().text_ui(TypeSize::Caption).text_color(c.text_muted).child(format!("From {name}")).into_any_element());
     }
     if parts.phone {
         above.push(div().text_ui(TypeSize::Caption).text_color(c.text_faint).child("From iPhone").into_any_element());
@@ -713,14 +757,32 @@ fn user_message(ix: usize, parts: &Parts, sel: Selectable, cx: &App) -> AnyEleme
 
 fn agent_step(step: &Step, open: &HashSet<Fold>, toggle: impl Fn(Fold, &mut App) + Clone + 'static, sel: &dyn Fn(&[u32]) -> Selectable, looks: &Looks, cx: &App) -> AnyElement {
     let mut blocks: Vec<AnyElement> = Vec::new();
+    let mut pending_files: Vec<crate::shown_files::ViewModel> = Vec::new();
+    let flush_files = |pending: &mut Vec<crate::shown_files::ViewModel>, blocks: &mut Vec<AnyElement>| {
+        if !pending.is_empty() {
+            let batch = std::mem::take(pending);
+            blocks.push(crate::shown_files::render_group(&batch, &looks.file_actions, cx));
+        }
+    };
     for (n, content) in step.content.iter().enumerate() {
+        if let Some(file) = rendered_shown_file(step, n, looks) {
+            pending_files.push(file.clone());
+            continue;
+        }
+        flush_files(&mut pending_files, &mut blocks);
         match content {
             Content::Text(text) if !text.trim().is_empty() => {
                 blocks.push(words_block(step, n, text, sel, looks));
             }
-            _ => blocks.extend(content_blocks(step, n, n as u32, open, toggle.clone(), false, sel, looks, cx)),
+            Content::Tool { name, .. } if crate::tool_step::is_send_message(name) => {
+                let card_key = format!("{}:{n}", step.id);
+                let nested_sel = |base: &[u32]| sel(&[n as u32, base.first().copied().unwrap_or(0)]);
+                blocks.push(from_agents(&card_key, &sent_letters(step, n), step.time.created, open, toggle.clone(), &Around::none(), &nested_sel, cx));
+            }
+            _ => blocks.extend(content_blocks(step, n, n as u32, open, toggle.clone(), false, time::now_ms(), sel, looks, cx)),
         }
     }
+    flush_files(&mut pending_files, &mut blocks);
     if let Some(error) = &step.error {
         blocks.push(callout(error_words(error), cx));
     }
@@ -761,11 +823,35 @@ fn words_block(step: &Step, n: usize, text: &str, sel: &dyn Fn(&[u32]) -> Select
     div().child(words).into_any_element()
 }
 
-/// What tool step `n` of a step made, showed you, or took of a page to show you: large, in the flow,
-/// shown whether or not its group is opened.
+/// The adapted shown file for tool item `(step, n)`, when it is a completed
+/// `kuvo-browser_show_file` call that renders directly in the conversation flow.
+fn rendered_shown_file<'a>(step: &Step, n: usize, looks: &'a Looks<'a>) -> Option<&'a crate::shown_files::ViewModel> {
+    let Content::Tool { name, .. } = &step.content[n] else { return None };
+    if name != "kuvo-browser_show_file" {
+        return None;
+    }
+    let id = format!("{}:{n}-shown", step.id);
+    looks.files.iter().find(|file| file.id == id)
+}
+
+/// Whether `content` is a completed `kuvo-browser_show_file` call (which renders in the flow
+/// instead of as a step line, matching `kuvo_box::shown_files::of_step`).
+fn is_completed_show_file(content: &Content) -> bool {
+    let Content::Tool { name, state, .. } = content else { return false };
+    name == "kuvo-browser_show_file"
+        && state.get("status").and_then(Value::as_str) == Some("completed")
+        && state
+            .pointer("/input/path")
+            .and_then(Value::as_str)
+            .and_then(|path| path.rsplit('/').next())
+            .is_some_and(|name| !name.is_empty())
+}
+
+/// What tool step `n` of a step made or took of a page to show you: large, in the flow,
+/// shown whether or not its group is opened. (`kuvo-browser_show_file` renders via `shown_files`.)
 fn made_pictures(step: &Step, n: usize, looks: &Looks, cx: &App) -> Option<AnyElement> {
     let Content::Tool { name, state, .. } = &step.content[n] else { return None };
-    if !pictures::is_made(name, state) {
+    if name == "kuvo-browser_show_file" || !pictures::is_made(name, state) {
         return None;
     }
     let prefix = format!("{}:{n}-", step.id);
@@ -776,7 +862,7 @@ fn made_pictures(step: &Step, n: usize, looks: &Looks, cx: &App) -> Option<AnyEl
 /// A step's thinking or tool step `n`, drawn as item `at` of its row: its line, why it failed and
 /// what it's opened to. `waits`: it's what the conversation waits on you for.
 #[allow(clippy::too_many_arguments)]
-fn content_blocks(step: &Step, n: usize, at: u32, open: &HashSet<Fold>, toggle: impl Fn(Fold, &mut App) + Clone + 'static, waits: bool, sel: &dyn Fn(&[u32]) -> Selectable, looks: &Looks, cx: &App) -> Vec<AnyElement> {
+fn content_blocks(step: &Step, n: usize, at: u32, open: &HashSet<Fold>, toggle: impl Fn(Fold, &mut App) + Clone + 'static, waits: bool, now: f64, sel: &dyn Fn(&[u32]) -> Selectable, looks: &Looks, cx: &App) -> Vec<AnyElement> {
     let c = &cx.theme().colors;
     let chevron = |opened: bool| Icon::new(if opened { IconName::ChevronDown } else { IconName::ChevronRight }).size(IconSize::Nav).color(c.text_faint);
     let key = format!("{}:{n}", step.id);
@@ -786,7 +872,7 @@ fn content_blocks(step: &Step, n: usize, at: u32, open: &HashSet<Fold>, toggle: 
             let fold = Fold::Thinking(step.id.clone(), n);
             let opened = open.contains(&fold);
             let label = if *done { "Thought" } else { "Thinking" };
-            let row = step_row(SharedString::from(format!("think-{key}")), IconName::Sparkle, label.into(), None, !*done, false, cx)
+            let row = step_row(SharedString::from(format!("think-{key}")), IconName::Sparkle, label.into(), None, false, !*done, false, cx)
                 .cursor_pointer()
                 .hover(|s| s.opacity(0.8))
                 .on_click(move |_, _, cx| toggle(fold.clone(), cx))
@@ -808,13 +894,14 @@ fn content_blocks(step: &Step, n: usize, at: u32, open: &HashSet<Fold>, toggle: 
         }
         Content::Tool { name, state, title, doing, .. } => {
             let (busy, failed) = call_status(state);
-            let (icon, label, target) = call_label(name, title.as_deref(), doing.as_deref(), state, busy);
+            let pres = call_presentation(name, title.as_deref(), doing.as_deref(), state, busy, step.time.created, now);
             let shown = details(name, state);
+            let error = failed.then(|| tool_error(state)).flatten();
             let fold = Fold::Step(step.id.clone(), n);
             // (What it brought back for itself shows once it's opened.)
             let opens = shown.is_some() || pictures::has_own(name, state);
             let opened = opens && open.contains(&fold);
-            let mut row = step_row(SharedString::from(format!("tool-{key}")), icon, label, target, busy, failed, cx);
+            let mut row = step_row(SharedString::from(format!("tool-{key}")), pres.icon, pres.label, pres.target, pres.target_mono, busy, failed, cx);
             // One with something to show opens to it.
             if opens {
                 let toggle = toggle.clone();
@@ -838,11 +925,28 @@ fn content_blocks(step: &Step, n: usize, at: u32, open: &HashSet<Fold>, toggle: 
                         .into_any_element(),
                 );
             }
-            if failed && let Some(error) = tool_error(state) {
-                blocks.push(div().ml(UNDER).text_ui(TypeSize::Caption).text_color(c.danger).child(first_line(&error)).into_any_element());
+            // When closed (or when there's nothing else to open), show the plain error right under the row.
+            if !opened && let Some(error) = &error {
+                blocks.push(div().ml(UNDER).text_ui(TypeSize::Caption).text_color(c.danger).child(first_line(error)).into_any_element());
             }
             if let (true, Some(shown)) = (opened, shown) {
-                blocks.push(div().ml(UNDER).child(details_view(&key, step, n, at, shown, open, toggle, sel)).into_any_element());
+                let guide = div()
+                    .ml(px(7.))
+                    .pl(space::S3)
+                    .border_l_1()
+                    .border_color(if failed { c.danger.opacity(0.45) } else { c.border })
+                    .flex()
+                    .flex_col()
+                    .gap(space::S1_5)
+                    .child(details_view(&key, step, n, at, shown, open, toggle, sel, cx))
+                    .children(error.map(|error| {
+                        div()
+                            .text_ui(TypeSize::Small)
+                            .text_color(c.danger)
+                            .child(error)
+                            .into_any_element()
+                    }));
+                blocks.push(guide.into_any_element());
             }
             if opened && !pictures::is_made(name, state) {
                 let prefix = format!("{}:{n}-", step.id);
@@ -883,36 +987,59 @@ fn waiting_at(items: &[(Rc<Step>, usize)]) -> Option<usize> {
     items.iter().rposition(|(step, n)| matches!(&step.content[*n], Content::Tool { state, .. } if call_status(state).0))
 }
 
-/// Whether a group folds to a line: it holds more than one tool step.
+/// Whether a group folds to a line: it holds more than one tool step (excluding completed
+/// `kuvo-browser_show_file` calls, which render directly in the flow without a step line).
 fn folds(items: &[(Rc<Step>, usize)]) -> bool {
-    items.iter().filter(|(step, n)| matches!(step.content[*n], Content::Tool { .. })).count() > 1
+    items
+        .iter()
+        .filter(|(step, n)| matches!(step.content[*n], Content::Tool { .. }) && !is_completed_show_file(&step.content[*n]))
+        .count()
+        > 1
 }
 
 /// What the agent did between its words, as one group: a line summing it up ("Read 4 files, ran 2
 /// commands") that opens to each step, with the step under way on it as it runs. A step that
-/// failed, or that waits on you, shows under it even while it's folded.
+/// failed, or that waits on you, shows under it even while it's folded. Completed
+/// `kuvo-browser_show_file` calls render in the conversation flow without a redundant step line.
 #[allow(clippy::too_many_arguments)]
-fn steps(key: &str, items: &[(Rc<Step>, usize)], open: &HashSet<Fold>, toggle: impl Fn(Fold, &mut App) + Clone + 'static, waiting: bool, sel: &dyn Fn(&[u32]) -> Selectable, looks: &Looks, cx: &App) -> AnyElement {
+fn steps(key: &str, items: &[(Rc<Step>, usize)], open: &HashSet<Fold>, toggle: impl Fn(Fold, &mut App) + Clone + 'static, waiting: bool, now: f64, sel: &dyn Fn(&[u32]) -> Selectable, looks: &Looks, cx: &App) -> AnyElement {
     let c = &cx.theme().colors;
     // What it waits on you for: its last step under way.
     let waits_at = waiting.then(|| waiting_at(items)).flatten();
-    let lines = |only: &dyn Fn(usize) -> bool| -> Vec<AnyElement> {
-        items
-            .iter()
-            .enumerate()
-            .filter(|(at, _)| only(*at))
-            .flat_map(|(at, (step, n))| content_blocks(step, *n, at as u32, open, toggle.clone(), waits_at == Some(at), sel, looks, cx))
-            .collect()
-    };
-    if !folds(items) {
-        return div().flex().flex_col().gap(GAP).children(lines(&|_| true)).into_any_element();
+    let rendered_files: Vec<Option<&crate::shown_files::ViewModel>> = items.iter().map(|(step, n)| rendered_shown_file(step, *n, looks)).collect();
+    let non_shown_tools = items
+        .iter()
+        .enumerate()
+        .filter(|(at, (step, n))| rendered_files[*at].is_none() && matches!(step.content[*n], Content::Tool { .. }))
+        .count();
+    if non_shown_tools <= 1 {
+        let mut blocks: Vec<AnyElement> = Vec::new();
+        let mut pending_files: Vec<crate::shown_files::ViewModel> = Vec::new();
+        let flush_files = |pending: &mut Vec<crate::shown_files::ViewModel>, blocks: &mut Vec<AnyElement>| {
+            if !pending.is_empty() {
+                let batch = std::mem::take(pending);
+                blocks.push(crate::shown_files::render_group(&batch, &looks.file_actions, cx));
+            }
+        };
+        for (at, (step, n)) in items.iter().enumerate() {
+            if let Some(file) = rendered_files[at] {
+                pending_files.push(file.clone());
+                continue;
+            }
+            flush_files(&mut pending_files, &mut blocks);
+            blocks.extend(content_blocks(step, *n, at as u32, open, toggle.clone(), waits_at == Some(at), now, sel, looks, cx));
+        }
+        flush_files(&mut pending_files, &mut blocks);
+        return div().flex().flex_col().gap(GAP).children(blocks).into_any_element();
     }
     let fold = Fold::Group(key.to_owned());
     let opened = open.contains(&fold);
     let calls: Vec<Call> = items
         .iter()
-        .filter_map(|(step, n)| match &step.content[*n] {
-            Content::Tool { name, state, title, doing, .. } => Some(Call { name, title: title.as_deref(), doing: doing.as_deref(), state }),
+        .enumerate()
+        .filter(|(at, _)| rendered_files[*at].is_none())
+        .filter_map(|(_, (step, n))| match &step.content[*n] {
+            Content::Tool { name, state, title, doing, .. } => Some(Call { name, title: title.as_deref(), doing: doing.as_deref(), state, created: step.time.created }),
             _ => None,
         })
         .collect();
@@ -926,13 +1053,13 @@ fn steps(key: &str, items: &[(Rc<Step>, usize)], open: &HashSet<Fold>, toggle: i
         Icon::new(IconName::Check).size(IconSize::Nav).color(c.text_faint).into_any_element()
     };
     // Under way: what it's doing now, then what it did before it.
-    let (label, target, rest) = match under_way {
+    let (label, target, target_mono, rest) = match under_way {
         Some(call) => {
-            let (_, label, target) = call_label(call.name, call.title, call.doing, call.state, true);
+            let pres = call_presentation(call.name, call.title, call.doing, call.state, true, call.created, now);
             let done: Vec<Call> = calls.iter().filter(|each| !call_status(each.state).0).cloned().collect();
-            (label, target, (!done.is_empty()).then(|| summary(&done)))
+            (pres.label, pres.target, pres.target_mono, (!done.is_empty()).then(|| summary(&done)))
         }
-        None => (SharedString::from(summary(&calls)), None, None),
+        None => (SharedString::from(summary(&calls)), None, false, None),
     };
     let selector = id.to_string();
     let toggle_group = toggle.clone();
@@ -950,25 +1077,44 @@ fn steps(key: &str, items: &[(Rc<Step>, usize)], open: &HashSet<Fold>, toggle: i
         .on_click(move |_, _, cx| toggle_group(fold.clone(), cx))
         .child(div().flex().flex_none().w(px(16.)).justify_center().child(leading))
         .child(div().flex_none().child(label))
-        .children(target.map(|target| div().min_w_0().truncate().text_mono(TypeSize::Small).text_color(c.text_faint).child(target)))
+        .children(target.map(|target| {
+            div()
+                .min_w_0()
+                .truncate()
+                .when(target_mono, |d| d.text_mono(TypeSize::Small))
+                .when(!target_mono, |d| d.text_ui(TypeSize::Small))
+                .text_color(c.text_faint)
+                .child(target)
+        }))
         .children(rest.map(|rest| div().min_w_0().truncate().text_color(c.text_faint).child(format!("· {}", lowered(&rest)))))
         .child(Icon::new(if opened { IconName::ChevronDown } else { IconName::ChevronRight }).size(IconSize::Nav).color(c.text_faint));
     let body = if opened {
+        let expanded: Vec<AnyElement> = items
+            .iter()
+            .enumerate()
+            .filter(|(at, _)| rendered_files[*at].is_none())
+            .flat_map(|(at, (step, n))| content_blocks(step, *n, at as u32, open, toggle.clone(), waits_at == Some(at), now, sel, looks, cx))
+            .collect();
         // Each step, along a line from the group's.
-        Some(div().ml(px(7.)).pl(space::S3).border_l_1().border_color(c.border).flex().flex_col().gap(GAP).children(lines(&|_| true)).into_any_element())
+        (!expanded.is_empty()).then(|| div().ml(px(7.)).pl(space::S3).border_l_1().border_color(c.border).flex().flex_col().gap(GAP).children(expanded).into_any_element())
     } else {
         // What needs you, and what it showed you, in its place.
         let mut needs_you = Vec::new();
         for (at, (step, n)) in items.iter().enumerate() {
+            if rendered_files[at].is_some() {
+                continue;
+            }
             if shown_in_group(key, items, at, open, waiting) {
-                needs_you.extend(content_blocks(step, *n, at as u32, open, toggle.clone(), waits_at == Some(at), sel, looks, cx));
+                needs_you.extend(content_blocks(step, *n, at as u32, open, toggle.clone(), waits_at == Some(at), now, sel, looks, cx));
             } else {
                 needs_you.extend(made_pictures(step, *n, looks, cx));
             }
         }
         (!needs_you.is_empty()).then(|| div().flex().flex_col().gap(GAP).children(needs_you).into_any_element())
     };
-    div().flex().flex_col().gap(GAP).child(line).children(body).into_any_element()
+    let shown_batch: Vec<crate::shown_files::ViewModel> = rendered_files.into_iter().flatten().cloned().collect();
+    let flow = (!shown_batch.is_empty()).then(|| crate::shown_files::render_group(&shown_batch, &looks.file_actions, cx));
+    div().flex().flex_col().gap(GAP).child(line).children(body).children(flow).into_any_element()
 }
 
 /// A tool step, as a group's line sums it up.
@@ -978,6 +1124,7 @@ struct Call<'a> {
     title: Option<&'a str>,
     doing: Option<&'a str>,
     state: &'a Value,
+    created: f64,
 }
 
 /// What a group of tool steps did, in a line: each kind once, in the order it first came, counted
@@ -1068,19 +1215,21 @@ fn lowered(words: &str) -> String {
     letters.next().map(|first| first.to_lowercase().chain(letters).collect()).unwrap_or_default()
 }
 
-/// What a card in a conversation is: a message from another agent, one of its sessions' news, or a
-/// wake-up (or watch) of its own. Each has its own mark and title.
+/// What a card in a conversation is: a message from or to another agent, one of its sessions'
+/// news, or a wake-up (or watch) of its own. Each has its own mark and title.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     Mail,
+    Sent,
     News,
     Wake,
 }
 
-/// A message the user didn't write, as its card shows it: what it is, who it's from (a wake-up:
-/// "Woke up", as the phone says it), what happened ("finished", "asks"), what it said, the line it shows folded where it
-/// isn't its first (a wake-up's summary), and the conversation it's from (none where it can't be
-/// opened).
+/// A message between agents (or a wake-up / session news card): what it is, who it's from or to
+/// (a wake-up: "Woke up", as the phone says it), what happened ("finished", "asks"), what it said,
+/// the line it shows folded where it isn't its first (a wake-up's summary), the conversation it
+/// connects to (none where it can't be opened), whether a send is still running, and any failure
+/// reason.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Letter {
     pub kind: Kind,
@@ -1089,6 +1238,8 @@ pub struct Letter {
     pub said: String,
     pub preview: Option<String>,
     pub session: Option<String>,
+    pub busy: bool,
+    pub error: Option<String>,
 }
 
 impl Letter {
@@ -1115,17 +1266,17 @@ impl Letter {
         self.said.trim().lines().find(|line| !line.trim().is_empty()).unwrap_or("").trim().trim_start_matches(['#', '>', '-', '*', ' ']).replace("**", "").replace('`', "")
     }
 
-    /// Its mark, and the colour it's drawn in: a send mark for a message, an alarm clock for a
-    /// wake-up, and for a session's news what happened (finished, asks, stopped).
+    /// Its mark, and the colour it's drawn in: a quiet send mark for a message (both directions),
+    /// an alarm clock for a wake-up, and for a session's news what happened (finished, asks, stopped).
     fn mark(&self, c: &kuvo_ui::theme::Colors) -> (IconName, gpui::Hsla) {
         match (self.kind, self.status.as_deref()) {
-            (Kind::Mail, _) => (IconName::Send, c.accent),
-            (Kind::Wake, _) => (IconName::Alarm, c.accent),
+            (Kind::Mail | Kind::Sent, _) => (IconName::Send, c.text_muted),
+            (Kind::Wake, _) => (IconName::Alarm, c.text_muted),
             (Kind::News, Some("finished")) => (IconName::Check, c.success),
             (Kind::News, Some("asks")) => (IconName::Question, c.accent),
             (Kind::News, Some("stopped" | "not summarized")) => (IconName::Warning, c.warning),
             (Kind::News, Some("stopped by you")) => (IconName::Close, c.text_muted),
-            (Kind::News, _) => (IconName::Send, c.accent),
+            (Kind::News, _) => (IconName::Send, c.text_muted),
         }
     }
 }
@@ -1135,27 +1286,60 @@ impl Letter {
 pub fn letters(user: &kuvo_box::messages::UserMessage) -> Vec<Letter> {
     // Its sessions' news its box couldn't read: whole, from them, rather than lost.
     if let Some(text) = user.unread_news() {
-        return vec![Letter { kind: Kind::News, from: "Its sessions".into(), status: None, said: text, preview: None, session: None }];
+        return vec![Letter { kind: Kind::News, from: "Its sessions".into(), status: None, said: text, preview: None, session: None, busy: false, error: None }];
     }
     // A wake-up of its own: its summary, opening to its note.
     if let Some(wake) = user.wake() {
-        return vec![Letter { kind: Kind::Wake, from: "Woke up".into(), status: None, said: wake.note, preview: Some(wake.summary), session: None }];
+        return vec![Letter { kind: Kind::Wake, from: "Woke up".into(), status: None, said: wake.note, preview: Some(wake.summary), session: None, busy: false, error: None }];
     }
     let news: Vec<News> = user.news();
     if !news.is_empty() {
         return news
             .into_iter()
-            .map(|news| Letter { kind: Kind::News, from: news.title, status: news.status, said: news.said, preview: None, session: Some(news.session).filter(|session| session.starts_with("ses")) })
+            .map(|news| Letter { kind: Kind::News, from: news.title, status: news.status, said: news.said, preview: None, session: Some(news.session).filter(|session| session.starts_with("ses")), busy: false, error: None })
             .collect();
     }
     let parts = user.parts();
     let Some(mail) = parts.mail else { return Vec::new() };
-    vec![Letter { kind: Kind::Mail, from: mail.name, status: None, said: parts.words.trim().to_owned(), preview: None, session: Some(mail.session).filter(|session| session != "unknown" && !session.is_empty()) }]
+    let from = crate::tool_step::clean_person(&mail.name).unwrap_or_else(|| "Another agent".to_owned());
+    vec![Letter { kind: Kind::Mail, from, status: None, said: parts.words.trim().to_owned(), preview: None, session: Some(mail.session).filter(|session| session != "unknown" && !session.is_empty()), busy: false, error: None }]
 }
 
-/// Messages from other agents (or a lead's sessions' news), each as a card of its own: a send mark,
-/// "From <name>" and what happened, the time and Open (its conversation), and its first line,
-/// opening to all of it.
+/// The card(s) for a `send_message` tool call: "To <name>" with the sent text (and any error if it
+/// failed), followed immediately by "From <name>" if the call waited and got a reply back.
+pub fn sent_letters(step: &Step, part: usize) -> Vec<Letter> {
+    let Some(Content::Tool { state, title, .. }) = step.content.get(part) else {
+        return Vec::new();
+    };
+    let sent = crate::tool_step::sent_message(title.as_deref(), state);
+    let mut cards = vec![Letter {
+        kind: Kind::Sent,
+        from: sent.to,
+        status: None,
+        said: sent.text,
+        preview: None,
+        session: sent.session.clone(),
+        busy: sent.busy,
+        error: sent.error,
+    }];
+    if let Some((reply_from, reply_text)) = sent.reply {
+        cards.push(Letter {
+            kind: Kind::Mail,
+            from: reply_from,
+            status: None,
+            said: reply_text,
+            preview: None,
+            session: sent.session,
+            busy: false,
+            error: None,
+        });
+    }
+    cards
+}
+
+/// Messages between agents (both "From <name>" and "To <name>"), a lead's sessions' news, and
+/// wake-ups, each as one calm bordered card: its mark, direction + name, time and Open (its
+/// conversation), and its text (or first line, opening to all of it).
 #[allow(clippy::too_many_arguments)]
 fn from_agents(message: &str, letters: &[Letter], at: f64, open: &HashSet<Fold>, toggle: impl Fn(Fold, &mut App) + Clone + 'static, around: &Around, sel: &dyn Fn(&[u32]) -> Selectable, cx: &App) -> AnyElement {
     let c = &cx.theme().colors;
@@ -1166,6 +1350,7 @@ fn from_agents(message: &str, letters: &[Letter], at: f64, open: &HashSet<Fold>,
         let id = SharedString::from(format!("letter-{message}-{n}"));
         let selector = id.to_string();
         let preview = letter.folded_line();
+        let failed = letter.error.is_some();
         let open_it = letter.session.clone().map(|session| {
             let open_session = around.open_session.clone();
             let selector = format!("open-{message}-{n}");
@@ -1176,36 +1361,48 @@ fn from_agents(message: &str, letters: &[Letter], at: f64, open: &HashSet<Fold>,
                 .px(space::S1_5)
                 .rounded(radius::NAV)
                 .text_ui(TypeSize::Caption)
-                .text_color(c.accent)
+                .text_color(c.text_muted)
                 .cursor_pointer()
-                .hover(|s| s.bg(c.hover))
+                .hover(|s| s.bg(c.hover).text_color(c.text))
                 .on_click(move |_, window, cx| {
                     cx.stop_propagation();
                     open_session(&session, window, cx)
                 })
                 .child("Open")
         });
-        // One line: "From" and its name (cut short where it's long) for a message; a session's name
-        // and what happened ("Sign-in finished"); "Woke up".
+        // One line: "From <name>" or "To <name>" for messages; a session's name and what happened
+        // ("Sign-in finished"); "Woke up".
+        let direction = match letter.kind {
+            Kind::Mail => Some("From"),
+            Kind::Sent => Some("To"),
+            Kind::News | Kind::Wake => None,
+        };
         let from = div()
             .flex()
             .items_center()
             .gap(space::S1)
             .min_w_0()
             .text_color(c.text_muted)
-            .when(letter.kind == Kind::Mail, |d| d.child(div().flex_none().child("From")))
-            .child(div().min_w_0().truncate().text_color(c.text).font_weight(FontWeight::SEMIBOLD).child(letter.from.clone()))
+            .children(direction.map(|dir| div().flex_none().child(dir)))
+            .child(div().min_w_0().truncate().text_color(c.text).font_weight(kuvo_ui::theme::MEDIUM).child(letter.from.clone()))
             .children(letter.status.clone().map(|status| div().flex_none().child(status)));
         let (mark, tint) = letter.mark(c);
+        let leading: AnyElement = if letter.busy {
+            spinner(SharedString::from(format!("{id}-spin")), IconSize::Nav, c.text_muted).into_any_element()
+        } else if failed {
+            Icon::new(IconName::Warning).size(IconSize::Nav).color(c.danger).into_any_element()
+        } else {
+            Icon::new(mark).size(IconSize::Nav).color(tint).into_any_element()
+        };
         let head = div()
             .flex()
             .items_center()
             .gap(space::S1_5)
             .min_w_0()
             .text_ui(TypeSize::Small)
-            .child(div().flex().flex_none().w(px(16.)).justify_center().child(Icon::new(mark).size(IconSize::Nav).color(tint)))
+            .child(div().flex().flex_none().w(px(16.)).justify_center().child(leading))
             .child(div().flex().flex_1().min_w_0().child(from))
-            .child(div().flex_none().text_ui(TypeSize::Caption).text_color(c.text_faint).child(time::when(at, time::now_ms())))
+            .child(div().flex_none().text_ui(TypeSize::Caption).text_color(c.text_faint).child(time::when(at, around.now)))
             .children(open_it)
             .when(letter.folds(), |d| d.child(Icon::new(if whole { IconName::ChevronDown } else { IconName::ChevronRight }).size(IconSize::Nav).color(c.text_faint)));
         let said: AnyElement = if whole {
@@ -1213,6 +1410,14 @@ fn from_agents(message: &str, letters: &[Letter], at: f64, open: &HashSet<Fold>,
         } else {
             div().ml(UNDER).min_w_0().truncate().text_ui(TypeSize::Small).text_color(c.text_muted).child(preview).into_any_element()
         };
+        let error = letter.error.clone().map(|error| {
+            div()
+                .ml(UNDER)
+                .text_ui(TypeSize::Small)
+                .text_color(c.danger)
+                .child(error)
+                .into_any_element()
+        });
         div()
             .id(id)
             .debug_selector(move || selector)
@@ -1221,13 +1426,14 @@ fn from_agents(message: &str, letters: &[Letter], at: f64, open: &HashSet<Fold>,
             .gap(space::S1)
             .px(space::S3)
             .py(space::S2)
-            .rounded(radius::CARD)
+            .rounded(radius::POPOVER)
             .border_1()
-            .border_color(c.border)
-            .bg(c.card)
+            .border_color(if failed { c.danger.opacity(0.35) } else { c.border })
+            .bg(c.sunken.opacity(0.5))
             .when(letter.folds(), |d| d.cursor_pointer().on_click(move |_, _, cx| toggle(fold.clone(), cx)))
             .child(head)
             .when(!letter.said.trim().is_empty(), |d| d.child(said))
+            .children(error)
     });
     div().flex().flex_col().gap(GAP).children(cards).into_any_element()
 }
@@ -1252,6 +1458,9 @@ pub enum Details {
     Output { command: Option<String>, text: String },
     /// The files it changed, each as a diff.
     Changes(Vec<Changed>),
+    /// Human-only content for a Kuvo or MCP tool call (message text, Work Queue note,
+    /// wake-up note, or an unknown tool's main text argument and main text result).
+    Note { primary: String, secondary: Option<String> },
 }
 
 /// One file a step changed, as the engine says it (`metadata.files`).
@@ -1271,27 +1480,24 @@ impl Details {
     pub fn counts(&self) -> Option<(usize, usize)> {
         match self {
             Details::Changes(files) => Some(files.iter().fold((0, 0), |(a, r), file| (a + file.added, r + file.removed))),
-            Details::Output { .. } => None,
+            Details::Output { .. } | Details::Note { .. } => None,
         }
     }
 }
 
 /// What a step printed, as the engine keeps it: its text blocks (`state.content`), one after another.
 fn printed(state: &Value) -> String {
-    let blocks = state.get("content").and_then(Value::as_array).cloned().unwrap_or_default();
-    let texts: Vec<&str> = blocks.iter().filter(|block| block.get("type").and_then(Value::as_str) == Some("text")).filter_map(|block| block.get("text").and_then(Value::as_str)).collect();
-    texts.join("\n")
+    crate::tool_step::printed(state)
 }
 
-/// Why a step failed, as the engine says it.
+/// Why a step failed, in plain words without a repeated "Error:" prefix.
 fn tool_error(state: &Value) -> Option<String> {
-    let error = state.get("error")?;
-    error.as_str().map(str::to_owned).or_else(|| error.get("message").and_then(Value::as_str).map(str::to_owned))
+    crate::tool_step::tool_error(state)
 }
 
 /// What a tool step shows when it's opened (none: it has nothing to show, and doesn't open): the
-/// files it changed, as diffs; a command's output; a search's results. As the Mac's step rows show
-/// them; a file read, or a step that's still running, shows nothing more.
+/// files it changed, as diffs; a command's output; a search's results; or a Kuvo/MCP tool's human
+/// note. A file read, or a step that's still running, shows nothing more.
 pub fn details(name: &str, state: &Value) -> Option<Details> {
     let status = state.get("status").and_then(Value::as_str).unwrap_or("");
     if matches!(status, "running" | "streaming" | "pending") {
@@ -1321,13 +1527,16 @@ pub fn details(name: &str, state: &Value) -> Option<Details> {
         // A command shows what it printed, or that it printed nothing.
         "shell" if status == "completed" || !text.trim().is_empty() => Some(Details::Output { command, text }),
         "grep" | "glob" | "list" | "ls" | "websearch" if !text.trim().is_empty() => Some(Details::Output { command: None, text }),
-        _ => None,
+        _ => crate::tool_step::note(name, state).map(|note| Details::Note {
+            primary: note.primary,
+            secondary: note.secondary,
+        }),
     }
 }
 
-/// An opened step's output or changes, each folded until it's shown whole.
+/// An opened step's output, changes, or human note.
 #[allow(clippy::too_many_arguments)]
-fn details_view(key: &str, step: &Step, n: usize, at: u32, shown: Details, open: &HashSet<Fold>, toggle: impl Fn(Fold, &mut App) + Clone + 'static, sel: &dyn Fn(&[u32]) -> Selectable) -> AnyElement {
+fn details_view(key: &str, step: &Step, n: usize, at: u32, shown: Details, open: &HashSet<Fold>, toggle: impl Fn(Fold, &mut App) + Clone + 'static, sel: &dyn Fn(&[u32]) -> Selectable, cx: &App) -> AnyElement {
     let whole = |part: usize| Fold::Whole(step.id.clone(), n, part);
     match shown {
         Details::Output { command, text } => {
@@ -1361,12 +1570,33 @@ fn details_view(key: &str, step: &Step, n: usize, at: u32, shown: Details, open:
             });
             div().flex().flex_col().gap(space::S2).children(views).into_any_element()
         }
+        Details::Note { primary, secondary } => {
+            let c = &cx.theme().colors;
+            div()
+                .flex()
+                .flex_col()
+                .gap(space::S1_5)
+                .child(
+                    div()
+                        .text_ui(TypeSize::Small)
+                        .text_color(c.text)
+                        .child(SelectableText::new(SharedString::from(format!("note-{key}-0")), primary).selectable(Some(sel(&[at]).unit(&[0])))),
+                )
+                .children(secondary.map(|secondary| {
+                    div()
+                        .text_ui(TypeSize::Small)
+                        .text_color(c.text_muted)
+                        .child(SelectableText::new(SharedString::from(format!("note-{key}-1")), secondary).selectable(Some(sel(&[at]).unit(&[1]))))
+                }))
+                .into_any_element()
+        }
     }
 }
 
 /// A tool step or thinking, as one quiet line: its icon (or a spinner while it runs), what it did,
 /// and what it did it to.
-fn step_row(id: SharedString, icon: IconName, label: SharedString, target: Option<SharedString>, busy: bool, failed: bool, cx: &App) -> gpui::Stateful<gpui::Div> {
+#[allow(clippy::too_many_arguments)]
+fn step_row(id: SharedString, icon: IconName, label: SharedString, target: Option<SharedString>, target_mono: bool, busy: bool, failed: bool, cx: &App) -> gpui::Stateful<gpui::Div> {
     let c = &cx.theme().colors;
     let leading: AnyElement = if busy {
         spinner(SharedString::from(format!("{id}-spin")), IconSize::Nav, c.text_muted).into_any_element()
@@ -1387,7 +1617,15 @@ fn step_row(id: SharedString, icon: IconName, label: SharedString, target: Optio
         .text_color(c.text_muted)
         .child(div().flex().flex_none().w(px(16.)).justify_center().child(leading))
         .child(div().flex_none().child(label))
-        .children(target.map(|target| div().min_w_0().truncate().text_mono(TypeSize::Small).text_color(c.text_faint).child(target)))
+        .children(target.map(|target| {
+            div()
+                .min_w_0()
+                .truncate()
+                .when(target_mono, |d| d.text_mono(TypeSize::Small))
+                .when(!target_mono, |d| d.text_ui(TypeSize::Small))
+                .text_color(c.text_faint)
+                .child(target)
+        }))
 }
 
 /// What a tool step did, in words: its icon, what it did (or does, while it runs), and to what.
@@ -1422,15 +1660,46 @@ pub fn tool_label(name: &str, state: &Value, busy: bool) -> (IconName, SharedStr
     (icon, if busy { doing } else { done }.into(), target.map(SharedString::from))
 }
 
-/// What a tool step did, in words, with what its box says of it: the engine's own tools by what
-/// they did and to what ([`tool_label`]); any other (Kuvo Code's own, an MCP server's) by the
-/// plain title its box gives it (`title`, and `doing` while it runs: PROTOCOL.md, "Tool steps").
-pub fn call_label(name: &str, title: Option<&str>, doing: Option<&str>, state: &Value, busy: bool) -> (IconName, SharedString, Option<SharedString>) {
-    let said = if busy { doing.or(title) } else { title };
-    match said {
-        Some(said) => (IconName::Sliders, SharedString::from(said.to_owned()), None),
-        None => tool_label(name, state, busy),
+/// Full closed-row presentation for any tool step, formatting wake-up times against `created_ms`/`now_ms`.
+fn call_presentation(name: &str, title: Option<&str>, doing: Option<&str>, state: &Value, busy: bool, created_ms: f64, now_ms: f64) -> crate::tool_step::Presentation {
+    if name == "kuvo-browser_show_file" {
+        let path = state.pointer("/input/path").and_then(Value::as_str);
+        let icon = match path.map(kuvo_box::shown_files::guess_type) {
+            Some((kuvo_box::shown_files::FileKind::Picture, _)) => IconName::Image,
+            _ => IconName::File,
+        };
+        let target = path
+            .and_then(|path| path.rsplit('/').next())
+            .filter(|name| !name.is_empty())
+            .map(|name| SharedString::from(name.to_owned()));
+        let (_, failed) = call_status(state);
+        let label = if busy {
+            doing.unwrap_or("Showing a file")
+        } else if failed {
+            "Couldn’t show file"
+        } else {
+            title.unwrap_or("Showed a file")
+        };
+        return crate::tool_step::Presentation {
+            icon,
+            label: SharedString::from(label.to_owned()),
+            target,
+            target_mono: true,
+        };
     }
+    if let Some(pres) = crate::tool_step::present(name, title, doing, state, busy, created_ms, now_ms) {
+        return pres;
+    }
+    let (icon, label, target) = tool_label(name, state, busy);
+    crate::tool_step::Presentation { icon, label, target, target_mono: true }
+}
+
+/// What a tool step did, in words, with what its box says of it: the engine's own tools by what
+/// they did and to what ([`tool_label`]); Kuvo tools and MCP servers in plain human words
+/// ([`crate::tool_step::present`]).
+pub fn call_label(name: &str, title: Option<&str>, doing: Option<&str>, state: &Value, busy: bool) -> (IconName, SharedString, Option<SharedString>) {
+    let pres = call_presentation(name, title, doing, state, busy, 0.0, time::now_ms());
+    (pres.icon, pres.label, pres.target)
 }
 
 /// A path as a row shows it: its last two parts.
@@ -1479,7 +1748,7 @@ fn shell_run(run: &kuvo_box::messages::ShellRun, open: &HashSet<Fold>, toggle: i
     let exit = run.exit.filter(|exit| *exit != 0).map(|exit| format!("exit {exit}"));
     let fold = Fold::Whole(run.id.clone(), 0, 0);
     let output = run.output.as_ref().map(|output| OutputWell::new(SharedString::from(format!("shell-output-{}", run.id)), output.output.clone()).command(run.command.clone()).whole(open.contains(&fold)).on_toggle(move |_, cx| toggle(fold.clone(), cx)).selectable(sel(&[0])));
-    div().flex().flex_col().gap(space::S2).child(step_row(SharedString::from(format!("shell-{}", run.id)), IconName::Terminal, if busy { "Running".into() } else { "You ran".into() }, Some(first_line(&run.command).into()), busy, failed, cx)
+    div().flex().flex_col().gap(space::S2).child(step_row(SharedString::from(format!("shell-{}", run.id)), IconName::Terminal, if busy { "Running".into() } else { "You ran".into() }, Some(first_line(&run.command).into()), true, busy, failed, cx)
         .children(exit.map(|exit| div().text_ui(TypeSize::Caption).text_color(c.danger).child(exit))))
         .children(output)
         .when(run.output.as_ref().is_some_and(|output| output.truncated), |d| d.child(div().text_ui(TypeSize::Caption).text_color(c.text_faint).child("Output cut short")))
@@ -1689,7 +1958,7 @@ mod tests {
     }
 
     fn calls(calls: &[(&str, Option<&str>, Value)]) -> String {
-        let calls: Vec<Call> = calls.iter().map(|(name, title, state)| Call { name, title: *title, doing: None, state }).collect();
+        let calls: Vec<Call> = calls.iter().map(|(name, title, state)| Call { name, title: *title, doing: None, state, created: 0.0 }).collect();
         summary(&calls)
     }
 
@@ -1774,14 +2043,80 @@ mod tests {
         let Entry::Message(message) = &rows[0] else { panic!() };
         let Message::User(user) = &**message else { panic!() };
         let mail = letters(user);
-        assert_eq!(mail, [Letter { kind: Kind::Mail, from: "Mira".into(), status: None, said: "Done.\n\nAll green.".into(), preview: None, session: Some("ses_m".into()) }]);
+        assert_eq!(mail, [Letter { kind: Kind::Mail, from: "Mira".into(), status: None, said: "Done.\n\nAll green.".into(), preview: None, session: Some("ses_m".into()), busy: false, error: None }]);
         assert!(mail[0].folds(), "more than its first line");
         let Entry::Message(message) = &rows[1] else { panic!() };
         let Message::User(user) = &**message else { panic!() };
-        assert_eq!(letters(user), [Letter { kind: Kind::News, from: "Sign-in".into(), status: Some("asks".into()), said: "May I run npm i?".into(), preview: None, session: Some("ses_a".into()) }]);
+        assert_eq!(letters(user), [Letter { kind: Kind::News, from: "Sign-in".into(), status: Some("asks".into()), said: "May I run npm i?".into(), preview: None, session: Some("ses_a".into()), busy: false, error: None }]);
         // Its words are selectable once it's shown whole.
         assert!(units(&rows[0], &HashSet::new()).is_empty());
         assert!(!units(&rows[0], &HashSet::from([Fold::Card("m1".into(), 0)])).is_empty());
+    }
+
+    #[test]
+    fn sent_messages_leave_step_groups_and_show_waited_replies_and_errors() {
+        let (rows, _) = entries(conversation(
+            json!([
+                { "type": "user", "id": "u_in", "time": { "created": 1 }, "text": "[From &Check the other forms] Same bug here.", "metadata": { "kuvo": { "parts": { "words": "Same bug here.", "mail": { "name": "&Check the other forms", "session": "ses_sub" } } } } },
+                step("a1", 2.0, json!([
+                    tool_part("t0", "read", "completed", json!({ "filePath": "/p/a.ts" })),
+                    { "type": "tool", "id": "t1", "name": "kuvo-browser_send_message", "title": "Sent a message", "state": {
+                        "status": "completed",
+                        "input": { "to": "ses_mira", "wait": false, "text": "Taking a look now." },
+                        "content": [{ "type": "text", "text": "Sent to Mira. Its answer, if it writes one, comes to you as a message." }]
+                    }},
+                    tool_part("t2", "shell", "completed", json!({ "command": "cargo test" })),
+                    { "type": "tool", "id": "t3", "name": "kuvo-browser_send_message", "title": "Sent a message", "state": {
+                        "status": "completed",
+                        "input": { "to": "&Release helper (ses_rel)", "wait": true, "text": "Is beta.35 green?" },
+                        "content": [{ "type": "text", "text": "Release helper answered:\n\nGreen on macOS and Linux." }]
+                    }},
+                    { "type": "tool", "id": "t4", "name": "kuvo-browser_send_message", "title": "Sent a message", "state": {
+                        "status": "failed",
+                        "input": { "to": "ses_build", "wait": false, "text": "Run notarized build." },
+                        "error": "Error: Build runner can't be reached now. Try again later."
+                    }},
+                    { "type": "text", "text": "Done checking." }
+                ])),
+            ]),
+            false,
+            None,
+        ));
+        // Received card strips leading &.
+        let Entry::Message(msg) = &rows[0] else { panic!("received") };
+        let Message::User(user) = &**msg else { panic!("user") };
+        assert_eq!(letters(user)[0].from, "Check the other forms");
+
+        // Order: received, steps[read], sent(Mira), steps[shell], sent(Release helper + reply), sent(Build runner failed), words.
+        assert_eq!(rows.len(), 7);
+        let Entry::Steps { items: before, .. } = &rows[1] else { panic!("steps before") };
+        assert_eq!(before.len(), 1);
+        let Entry::Sent { step, part, .. } = &rows[2] else { panic!("sent 1") };
+        let cards1 = sent_letters(step, *part);
+        assert_eq!(cards1.len(), 1);
+        assert_eq!(cards1[0].kind, Kind::Sent);
+        assert_eq!(cards1[0].from, "Mira");
+        assert_eq!(cards1[0].said, "Taking a look now.");
+        assert_eq!(cards1[0].error, None);
+        // Short sent message is immediately selectable without folding.
+        assert!(!units(&rows[2], &HashSet::new()).is_empty());
+
+        let Entry::Steps { items: mid, .. } = &rows[3] else { panic!("steps mid") };
+        assert_eq!(mid.len(), 1);
+
+        let Entry::Sent { step, part, .. } = &rows[4] else { panic!("sent 2") };
+        let cards2 = sent_letters(step, *part);
+        assert_eq!(cards2.len(), 2);
+        assert_eq!((cards2[0].kind, cards2[0].from.as_str(), cards2[0].said.as_str()), (Kind::Sent, "Release helper", "Is beta.35 green?"));
+        assert_eq!((cards2[1].kind, cards2[1].from.as_str(), cards2[1].said.as_str()), (Kind::Mail, "Release helper", "Green on macOS and Linux."));
+
+        let Entry::Sent { step, part, .. } = &rows[5] else { panic!("sent 3") };
+        let cards3 = sent_letters(step, *part);
+        assert_eq!(cards3.len(), 1);
+        assert_eq!(cards3[0].from, "Build runner");
+        assert_eq!(cards3[0].error.as_deref(), Some("Build runner can't be reached now. Try again later."));
+
+        assert!(matches!(&rows[6], Entry::Words { .. }));
     }
 
     /// A wake-up its box marked shows as a card of its own (#768): its summary folded, its note
@@ -1802,7 +2137,7 @@ mod tests {
         let Message::User(user) = &**message else { panic!() };
         assert!(user.is_letter());
         let wake = letters(user);
-        assert_eq!(wake, [Letter { kind: Kind::Wake, from: "Woke up".into(), status: None, said: note.into(), preview: Some("Pacing check".into()), session: None }]);
+        assert_eq!(wake, [Letter { kind: Kind::Wake, from: "Woke up".into(), status: None, said: note.into(), preview: Some("Pacing check".into()), session: None, busy: false, error: None }]);
         assert_eq!(wake[0].folded_line(), "Pacing check");
         assert!(wake[0].folds(), "it opens to the whole note");
         assert!(units(&rows[0], &HashSet::new()).is_empty(), "folded, only its summary shows");
@@ -1825,5 +2160,30 @@ mod tests {
         assert!(details("grep", &json!({ "status": "completed", "content": [] })).is_none());
         assert!(details("read", &json!({ "status": "completed", "content": [{ "type": "text", "text": "file" }] })).is_none());
         assert!(details("shell", &json!({ "status": "running", "input": { "command": "npm test" } })).is_none());
+    }
+
+    #[test]
+    fn completed_show_file_does_not_fold_a_group_while_running_and_failed_keep_their_line() {
+        let (rows, _) = entries(conversation(
+            json!([step("a", 1.0, json!([
+                tool_part("s1", "kuvo-browser_show_file", "completed", json!({ "path": "/p/one.png" })),
+                tool_part("s2", "kuvo-browser_show_file", "completed", json!({ "path": "/p/two.png" })),
+                tool_part("s3", "kuvo-browser_show_file", "completed", json!({ "path": "/p/three.png" })),
+            ]))]),
+            false,
+            None,
+        ));
+        let Entry::Steps { items, .. } = &rows[0] else { panic!("steps") };
+        assert!(!folds(items), "three completed show_file calls render directly in the flow without a group header");
+
+        let running = json!({ "status": "running", "input": { "path": "/docs/pricing-hero.png" } });
+        let (icon, label, target) = call_label("kuvo-browser_show_file", Some("Showed a file"), Some("Showing a file"), &running, true);
+        assert_eq!(icon, IconName::Image);
+        assert_eq!((label.as_ref(), target.as_deref()), ("Showing a file", Some("pricing-hero.png")));
+
+        let failed = json!({ "status": "failed", "input": { "path": "/docs/report.pdf" }, "error": "Permission denied" });
+        let (icon, label, target) = call_label("kuvo-browser_show_file", Some("Showed a file"), Some("Showing a file"), &failed, false);
+        assert_eq!(icon, IconName::File);
+        assert_eq!((label.as_ref(), target.as_deref()), ("Couldn’t show file", Some("report.pdf")));
     }
 }

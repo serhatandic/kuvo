@@ -24,6 +24,8 @@ pub enum Read {
     /// `thumb`: the same, made small once as it was read (where it's large), for drawing it in the
     /// conversation; `image` whole, for the viewer.
     Shown { image: Arc<Image>, thumb: Arc<Image>, width: u32, height: u32 },
+    /// The file is no longer on disk (`Error::NotFound`): calm missing state, no retry.
+    Missing,
     /// It couldn't be read (`again`: trying again may bring it), or isn't a kind that shows here.
     Failed { why: String, again: bool },
 }
@@ -43,13 +45,23 @@ pub struct Looks<'a> {
     pub open: Rc<dyn Fn(&str, &mut Window, &mut App)>,
     /// Reads one that couldn't be read again, by its source's key.
     pub again: Rc<dyn Fn(&str, &mut Window, &mut App)>,
+    /// Files shown via `kuvo-browser_show_file` in this row, adapted to pure view-models.
+    pub files: &'a [crate::shown_files::ViewModel],
+    pub file_actions: crate::shown_files::Actions,
 }
 
 impl Looks<'static> {
     /// None read, and nothing opens (where a view draws no pictures yet).
     pub fn none() -> Looks<'static> {
         static EMPTY: std::sync::LazyLock<HashMap<String, Read>> = std::sync::LazyLock::new(HashMap::new);
-        Looks { read: &EMPTY, shown: &[], open: Rc::new(|_, _, _| {}), again: Rc::new(|_, _, _| {}) }
+        Looks {
+            read: &EMPTY,
+            shown: &[],
+            open: Rc::new(|_, _, _| {}),
+            again: Rc::new(|_, _, _| {}),
+            files: &[],
+            file_actions: crate::shown_files::Actions::none(),
+        }
     }
 }
 
@@ -66,15 +78,19 @@ pub fn read(client: &BoxClient, source: &Source) -> Read {
             Ok(meta) if meta.len() as usize > PICTURE_MOST => return Read::Failed { why: "This image is too large to show here.".into(), again: false },
             Ok(_) => match std::fs::read(path) {
                 Ok(bytes) => bytes,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Read::Missing,
                 Err(_) => return failed(true),
             },
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Read::Missing,
             Err(_) => return failed(true),
         },
         Source::File(uri) => match client.file_bytes(uri, PICTURE_MOST) {
             Ok((bytes, _)) => bytes,
+            // No longer on disk: calm missing state, no retry.
+            Err(kuvo_box::Error::NotFound) => return Read::Missing,
             // Too large to show: trying again wouldn't change that.
             Err(kuvo_box::Error::Refused(refusal)) if refusal.status == 413 => return Read::Failed { why: "This image is too large to show here.".into(), again: false },
-            // Not there yet, or its computer couldn't be reached: Try Again.
+            // Computer offline or unreachable: Try again.
             Err(_) => return failed(true),
         },
     };
@@ -196,6 +212,12 @@ pub fn picture(picture: &Picture, most_w: f32, most_h: f32, looks: &Looks, cx: &
         read => {
             let (w, h) = (most_w.min(240.), most_h.min(140.));
             let (lead, words, again): (AnyElement, String, bool) = match read {
+                // Non-show_file pictures (e.g. a phone photo not yet on disk) keep Try Again.
+                Some(Read::Missing) => (
+                    Icon::new(IconName::Image).size(IconSize::Card).color(c.text_faint).into_any_element(),
+                    picture.name.as_ref().map_or_else(|| "Couldn't read it".to_owned(), |name| format!("{name}\nCouldn't read it")),
+                    true,
+                ),
                 // (Named, as a file that can't be drawn here is still what was sent: a HEIC photo.)
                 Some(Read::Failed { why, again }) => (Icon::new(IconName::Image).size(IconSize::Card).color(c.text_faint).into_any_element(), picture.name.as_ref().map_or_else(|| why.clone(), |name| format!("{name}\n{why}")), *again),
                 _ => (spinner(SharedString::from(format!("reading-{}", picture.id)), IconSize::Nav, c.text_faint).into_any_element(), name, false),
@@ -250,6 +272,7 @@ pub fn viewer(picture: &Picture, at: usize, count: usize, read: Option<&Read>, w
             let (w, h) = fitted(*width, *height, most_w.max(80.), most_h.max(80.));
             div().w(px(w)).h(px(h)).child(img(image.clone()).size_full().object_fit(ObjectFit::Contain)).into_any_element()
         }
+        Some(Read::Missing) => div().text_ui(TypeSize::Body).text_color(gpui::white()).child("That file isn’t there anymore.").into_any_element(),
         Some(Read::Failed { why, .. }) => div().text_ui(TypeSize::Body).text_color(gpui::white()).child(why.clone()).into_any_element(),
         _ => spinner("viewer-reading", IconSize::Card, gpui::white()).into_any_element(),
     };
@@ -298,7 +321,14 @@ pub fn words_pictures(step: &str, n: usize, text: &str, most: (f32, f32), looks:
             if alt.is_empty() {
                 found.name = None;
             }
-            let looks = Looks { read: &read, shown: &[], open: open.clone(), again: again.clone() };
+            let looks = Looks {
+                read: &read,
+                shown: &[],
+                open: open.clone(),
+                again: again.clone(),
+                files: &[],
+                file_actions: crate::shown_files::Actions::none(),
+            };
             return picture(&found, most.0, most.1, &looks, cx);
         }
         let c = &cx.theme().colors;

@@ -1807,13 +1807,20 @@ impl StandIn {
         if method == "GET" && let Some(bytes) = state.output_bytes.get(route) {
             return Ok(Response { status: 200, content_type: Some("application/octet-stream".into()), body: bytes.clone() });
         }
-        // A file on its computer, by its address (`kuvo/file`).
-        if (method, route) == ("GET", "kuvo/file") {
+        // A file on its computer, by its address (`kuvo/file` and `kuvo/file/info`).
+        if (method, route) == ("GET", "kuvo/file") || route == "kuvo/file/info" {
+            let info = route == "kuvo/file/info";
+            if method != "GET" { return answer(405, json!({})); }
             let uri = query(path, "uri").map(decoded).unwrap_or_default();
             let Some(file) = uri.strip_prefix("file://").map(decoded) else { return answer(400, json!({ "message": "Give a file:// address." })) };
+            let name = file.rsplit('/').next().unwrap_or(&file);
+            let (kind, mime) = kuvo_box::shown_files::guess_type(&file);
             return match state.files.get(&file) {
-                Some(bytes) => Ok(Response { status: 200, content_type: Some("application/octet-stream".into()), body: bytes.clone() }),
-                None => answer(404, json!({ "message": "There's no such file." })),
+                Some(bytes) if info => answer(200, json!({ "exists": true, "name": name, "size": bytes.len(), "kind": kind, "mime": mime })),
+                None if info => answer(200, json!({ "exists": false, "name": name, "size": null, "kind": null, "mime": null })),
+                Some(bytes) if query(path, "withMode") == Some("1") => Ok(Response { status: 200, content_type: Some("application/vnd.kuvo.file; executable=0".into()), body: bytes.clone() }),
+                Some(bytes) => Ok(Response { status: 200, content_type: Some(mime.into()), body: bytes.clone() }),
+                None => answer(404, json!({ "message": "There's no such file.", "reason": "fileNotFound" })),
             };
         }
         let body = request.body.clone().unwrap_or(Value::Null);
@@ -1906,7 +1913,7 @@ impl StandIn {
             }
             ("GET", ["kuvo", "info"]) => {
                 let mut features: Vec<&str> = kuvo_box::gate::REQUIRED.to_vec();
-                features.extend(["queue", "asks"]);
+                features.extend(["queue", "asks", "file.info"]);
                 features.extend(state.queue.features());
                 if !state.before_update_here { features.push(crate::home::UPDATES_ITSELF); }
                 features.retain(|name| !state.lacks.iter().any(|lacks| lacks == name));

@@ -161,6 +161,18 @@ pub struct ConversationView {
     /// The picture opened over it, by its id, and the keyboard for it (← →, Escape).
     viewing: Option<String>,
     viewer_focus: FocusHandle,
+    /// The conversation's computer key, attached to `ShownFile`s before remote open.
+    computer_key: Option<String>,
+    /// Previews a shown text file in the workspace side panel.
+    preview_file: Option<Rc<dyn Fn(&str, &mut Window, &mut App)>>,
+    /// Each row's extracted `kuvo-browser_show_file` calls, cached by row revision.
+    row_shown_files: HashMap<String, (u64, Vec<kuvo_box::shown_files::ShownFile>)>,
+    /// Metadata fetched via `BoxClient::file_info` for non-picture shown files, by `ShownFile::id`.
+    shown_info: HashMap<String, crate::shown_files::InfoRead>,
+    /// Live state of opening a shown file via `open_shown::open_shown_file`, by `ShownFile::id`.
+    shown_open: HashMap<String, crate::shown_files::OpenState>,
+    /// Fixed clock for shots and tests (none: system clock).
+    now: Option<f64>,
 }
 
 impl Focusable for ConversationView {
@@ -226,6 +238,12 @@ impl ConversationView {
             sent_pictures: HashMap::new(),
             viewing: None,
             viewer_focus: cx.focus_handle(),
+            computer_key: None,
+            preview_file: None,
+            row_shown_files: HashMap::new(),
+            shown_info: HashMap::new(),
+            shown_open: HashMap::new(),
+            now: None,
         };
         if live {
             let follow = Rc::new(client.follow_conversation(&session, Timing::default()));
@@ -284,6 +302,22 @@ impl ConversationView {
 
     pub fn session(&self) -> &str {
         &self.session
+    }
+
+    pub fn set_now(&mut self, now: f64) {
+        self.now = Some(now);
+    }
+
+    fn now(&self) -> f64 {
+        self.now.unwrap_or_else(crate::time::now_ms)
+    }
+
+    pub fn set_computer_key(&mut self, key: Option<String>) {
+        self.computer_key = key;
+    }
+
+    pub fn set_preview_file(&mut self, preview: Rc<dyn Fn(&str, &mut Window, &mut App)>) {
+        self.preview_file = Some(preview);
     }
 
     pub(crate) fn set_wakes(&mut self, wakes: Option<crate::wakes::Status>, computer: String, now: Option<f64>, cx: &mut Context<Self>) {
@@ -821,6 +855,8 @@ impl ConversationView {
                 self.note_sent(cx);
                 self.find_pictures();
                 self.read_pictures(cx);
+                self.find_shown_files();
+                self.read_shown_files(cx);
                 self.composer.update(cx, |composer, cx| {
                     composer.set_running(running, cx);
                     composer.set_place(place, cx);
@@ -1065,7 +1101,7 @@ impl ConversationView {
                 let read = task.await;
                 this.update(cx, |this, cx| {
                     // (Unless it has moved again since; and one shown stays, if where it is now can't give it.)
-                    let keeps = matches!(read, Read::Failed { .. }) && matches!(this.pictures.get(&key), Some(Read::Shown { .. }));
+                    let keeps = matches!(read, Read::Failed { .. } | Read::Missing) && matches!(this.pictures.get(&key), Some(Read::Shown { .. }));
                     if !keeps && this.read_from.get(&key).is_some_and(|now| pictures::same_place(now, &source)) {
                         this.pictures.insert(key.clone(), read);
                         this.picture_changed(&key);
@@ -1079,10 +1115,160 @@ impl ConversationView {
 
     /// Reads a picture that couldn't be read again (Try Again), by its source's key.
     pub fn read_picture_again(&mut self, key: &str, cx: &mut Context<Self>) {
-        if matches!(self.pictures.get(key), Some(Read::Failed { .. })) {
+        if matches!(self.pictures.get(key), Some(Read::Failed { .. } | Read::Missing)) {
             self.pictures.remove(key);
             self.read_pictures(cx);
             self.picture_changed(key);
+            cx.notify();
+        }
+    }
+
+    /// Completed `kuvo-browser_show_file` calls in `entry`, extracted via `kuvo_box::shown_files::of_step`.
+    fn shown_files_of(&self, entry: &Entry) -> Vec<kuvo_box::shown_files::ShownFile> {
+        let computer = self.computer_key.as_deref();
+        match entry {
+            Entry::Message(message) => match &**message {
+                Message::Assistant(step) => kuvo_box::shown_files::of_step(step)
+                    .into_iter()
+                    .map(|file| file.in_conversation(&self.session, computer))
+                    .collect(),
+                _ => Vec::new(),
+            },
+            Entry::Steps { items, .. } => {
+                // One Step can be split across multiple Entry::Steps rows; extract once per step
+                // and keep only the items that belong to this row, in row order.
+                let mut by_step: HashMap<&str, HashMap<String, kuvo_box::shown_files::ShownFile>> = HashMap::new();
+                for (step, _) in items {
+                    by_step.entry(step.id.as_str()).or_insert_with(|| {
+                        kuvo_box::shown_files::of_step(step)
+                            .into_iter()
+                            .map(|file| (file.id.clone(), file.in_conversation(&self.session, computer)))
+                            .collect()
+                    });
+                }
+                items
+                    .iter()
+                    .filter_map(|(step, n)| {
+                        let id = format!("{}:{n}-shown", step.id);
+                        by_step.get(step.id.as_str())?.get(&id).cloned()
+                    })
+                    .collect()
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// Extracts each row's shown files whenever its revision changes.
+    fn find_shown_files(&mut self) {
+        let mut found = HashMap::new();
+        for (entry, revision) in self.entries.iter().zip(&self.revisions) {
+            if !matches!(entry, Entry::Message(_) | Entry::Steps { .. }) {
+                continue;
+            }
+            let key = entry.key().to_owned();
+            let kept = self.row_shown_files.remove(&key).filter(|(was, _)| was == revision);
+            let row = kept.unwrap_or_else(|| (*revision, self.shown_files_of(entry)));
+            found.insert(key, row);
+        }
+        self.row_shown_files = found;
+    }
+
+    /// Marks rows containing shown file `id` dirty so the chat list re-renders them.
+    fn shown_file_changed(&self, id: &str) {
+        for (ix, entry) in self.entries.iter().enumerate() {
+            if self
+                .row_shown_files
+                .get(entry.key())
+                .is_some_and(|(_, files)| files.iter().any(|file| file.id == id))
+            {
+                self.list.changed(ix);
+            }
+        }
+    }
+
+    /// Fetches `file_info` metadata off the UI thread for non-picture shown files not yet fetched.
+    /// (Picture shown files are fetched by `read_pictures` via `file_bytes`.)
+    fn read_shown_files(&mut self, cx: &mut Context<Self>) {
+        let pending: Vec<(String, String)> = self
+            .entries
+            .iter()
+            .filter_map(|entry| self.row_shown_files.get(entry.key()))
+            .flat_map(|(_, files)| files.iter())
+            .filter(|file| file.kind != kuvo_box::shown_files::FileKind::Picture)
+            .filter(|file| !self.shown_info.contains_key(&file.id))
+            .map(|file| (file.id.clone(), file.uri.clone()))
+            .collect();
+        for (id, uri) in pending {
+            self.shown_info.insert(id.clone(), crate::shown_files::InfoRead::Loading);
+            let client = self.client.clone();
+            let task = cx.background_executor().spawn(async move { crate::shown_files::read_info(&client, &uri) });
+            self.tasks.retain(|task| !task.is_ready());
+            self.tasks.push(cx.spawn(async move |this, cx| {
+                let info = task.await;
+                this.update(cx, |this, cx| {
+                    this.shown_info.insert(id.clone(), info);
+                    this.shown_file_changed(&id);
+                    cx.notify();
+                })
+                .ok();
+            }));
+        }
+    }
+
+    /// Opens shown file `id` via `open_shown::open_shown_file` off the UI thread.
+    pub fn open_shown_file(&mut self, id: &str, cx: &mut Context<Self>) {
+        if matches!(self.shown_open.get(id), Some(crate::shown_files::OpenState::Opening)) {
+            return;
+        }
+        let Some(shown) = self
+            .row_shown_files
+            .values()
+            .flat_map(|(_, files)| files.iter())
+            .find(|file| file.id == id)
+            .cloned()
+        else {
+            return;
+        };
+        let shown = shown.in_conversation(&self.session, self.computer_key.as_deref());
+        let id = id.to_owned();
+        self.shown_open.insert(id.clone(), crate::shown_files::OpenState::Opening);
+        self.shown_file_changed(&id);
+        cx.notify();
+        let client = self.client.clone();
+        let task = cx.background_executor().spawn(async move { crate::open_shown::open_shown_file(&client, &shown) });
+        self.tasks.retain(|task| !task.is_ready());
+        self.tasks.push(cx.spawn(async move |this, cx| {
+            let result = task.await;
+            this.update(cx, |this, cx| {
+                match result {
+                    Ok(()) => {
+                        this.shown_open.remove(&id);
+                    }
+                    Err(crate::open_shown::OpenShownError::Box(kuvo_box::Error::NotFound)) => {
+                        this.shown_info.insert(id.clone(), crate::shown_files::InfoRead::Missing);
+                        this.shown_open.insert(id.clone(), crate::shown_files::OpenState::Missing);
+                    }
+                    Err(error) => {
+                        this.shown_open.insert(id.clone(), crate::shown_files::OpenState::Failed(error.to_string()));
+                    }
+                }
+                this.shown_file_changed(&id);
+                cx.notify();
+            })
+            .ok();
+        }));
+    }
+
+    /// Retries a failed shown-file fetch (either picture bytes or `file_info`).
+    pub fn retry_shown_file(&mut self, id: &str, cx: &mut Context<Self>) {
+        if matches!(self.pictures.get(id), Some(Read::Failed { .. })) {
+            self.read_picture_again(id, cx);
+        }
+        if matches!(self.shown_info.get(id), Some(crate::shown_files::InfoRead::Failed(_))) {
+            self.shown_info.remove(id);
+            self.shown_open.remove(id);
+            self.read_shown_files(cx);
+            self.shown_file_changed(id);
             cx.notify();
         }
     }
@@ -1548,6 +1734,14 @@ impl Render for ConversationView {
             let again: std::rc::Rc<dyn Fn(&str, &mut Window, &mut App)> = std::rc::Rc::new(move |key: &str, _: &mut Window, cx: &mut App| {
                 reader.update(cx, |this, cx| this.read_picture_again(key, cx));
             });
+            let file_opener = view.clone();
+            let open_file: std::rc::Rc<dyn Fn(&str, &mut Window, &mut App)> = std::rc::Rc::new(move |id: &str, _: &mut Window, cx: &mut App| {
+                file_opener.update(cx, |this, cx| this.open_shown_file(id, cx));
+            });
+            let file_retrier = view.clone();
+            let retry_file: std::rc::Rc<dyn Fn(&str, &mut Window, &mut App)> = std::rc::Rc::new(move |id: &str, _: &mut Window, cx: &mut App| {
+                file_retrier.update(cx, |this, cx| this.retry_shown_file(id, cx));
+            });
             let list = chat_list(&self.list, move |ix, _window, cx| {
                 let cx: &App = cx;
                 let this = list_view.read(cx);
@@ -1562,16 +1756,43 @@ impl Render for ConversationView {
                 let toggle_view = list_view.clone();
                 let toggle = move |fold: Fold, cx: &mut App| toggle_view.update(cx, |this, cx| this.toggle(fold, cx));
                 let bars = this.bars.clone();
-                let around = entries::Around { open_session: Rc::new(move |session: &str, window: &mut Window, cx: &mut App| bars.update(cx, |bars, cx| bars.open(session, window, cx))), waiting: this.asks.read(cx).is_asking() && this.entries.iter().rposition(|entry| matches!(entry, Entry::Steps { .. })) == Some(ix) };
+                let around = entries::Around {
+                    open_session: Rc::new(move |session: &str, window: &mut Window, cx: &mut App| bars.update(cx, |bars, cx| bars.open(session, window, cx))),
+                    waiting: this.asks.read(cx).is_asking() && this.entries.iter().rposition(|entry| matches!(entry, Entry::Steps { .. })) == Some(ix),
+                    now: this.now(),
+                };
                 let shown = this.row_pictures.get(entry.key()).map(|(_, _, pictures)| pictures.as_slice()).unwrap_or(&[]);
-                let looks = Looks { read: &this.pictures, shown, open: open.clone(), again: again.clone() };
+                let files: Vec<crate::shown_files::ViewModel> = this
+                    .row_shown_files
+                    .get(entry.key())
+                    .map(|(_, row_files)| {
+                        row_files
+                            .iter()
+                            .map(|file| {
+                                crate::shown_files::adapt(
+                                    file,
+                                    this.shown_info.get(&file.id),
+                                    this.pictures.get(&file.id),
+                                    this.shown_open.get(&file.id),
+                                )
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let file_actions = crate::shown_files::Actions {
+                    open_picture: open.clone(),
+                    open_file: open_file.clone(),
+                    preview_file: this.preview_file.clone(),
+                    retry: retry_file.clone(),
+                };
+                let looks = Looks { read: &this.pictures, shown, open: open.clone(), again: again.clone(), files: &files, file_actions };
                 let actions = entries::copyable(entry).map(|(_, time)| {
                     let key = entry.key().to_owned();
                     let (copier, quoter) = (list_view.clone(), list_view.clone());
                     let (copy_key, quote_key) = (key.clone(), key.clone());
                     entries::Actions {
                         time,
-                        now: crate::time::now_ms(),
+                        now: this.now(),
                         copied: this.copied.as_ref().is_some_and(|(copied, _)| *copied == key),
                         copy: Rc::new(move |_, cx| copier.update(cx, |this, cx| this.copy_message(&copy_key, cx))),
                         quote: Rc::new(move |window, cx| quoter.update(cx, |this, cx| this.quote_message(&quote_key, window, cx))),

@@ -117,7 +117,8 @@ const ROUTES: (Route | Route<RegExpMatchArray>)[] = [
   { feature: "sandbox", when: route => route === "kuvo/sandbox" || route.startsWith("kuvo/sandbox/"), answer: sandboxRoute },
   { feature: "file", when: route => route === "kuvo/file", answer: ({ request, json }: RouteContext) => fileAt(request.path, json) },
   // The same file as a viewer shows it: its text, or that it isn't text (`file.text`).
-  { feature: "file.text", when: route => route === "kuvo/file/text", answer: ({ request, json }: RouteContext) => (request.method.toUpperCase() === "GET" ? fileAt(request.path, json, true) : json(405, {})) },
+  { feature: "file.text", when: route => route === "kuvo/file/text", answer: ({ request, json }: RouteContext) => (request.method.toUpperCase() === "GET" ? fileAt(request.path, json, "text") : json(405, {})) },
+  { feature: "file.info", when: route => route === "kuvo/file/info", answer: ({ request, json }: RouteContext) => (request.method.toUpperCase() === "GET" ? fileAt(request.path, json, "info") : json(405, {})) },
   { feature: "update", when: route => route === "kuvo/update", answer: updateRoute },
   // A release from a folder here, offered by Kuvo Code (PROTOCOL.md, "Updates").
   { feature: "box.backups", when: route => route === "kuvo/box/backups" || route.startsWith("kuvo/box/backups/"),
