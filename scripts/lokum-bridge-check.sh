@@ -172,6 +172,11 @@ if [[ ${#files[@]} -eq 0 ]] || [[ " ${files[*]} " == *" bridge-tests/folder-vers
     git --no-optional-locks show "4330569c2f1c39eef166f65d2abb1b7256ef7dcb:swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js" > "$fixture_dir/$layout"
     history+=(-C "$fixture_dir" "$layout")
 fi
+if [[ ${#files[@]} -eq 0 ]] || [[ " ${files[*]} " == *" bridge-tests/update-real-keeper.test.js "* ]]; then
+    baseline=box/bridge-tests/.layout-0.mjs
+    git --no-optional-locks show "11323b39316e0ec1f9b6281ab9bba9153db8e822:swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js" > "$fixture_dir/$baseline"
+    history+=(-C "$fixture_dir" "$baseline")
+fi
 COPYFILE_DISABLE=1 tar --no-xattrs --exclude node_modules --exclude .build -czf - \
     box/bridge-tests protocol/vectors swift/KuvoLink/Sources/KuvoLink/Resources \
     swift/KuvoCode/Stores/PhoneLink.swift \

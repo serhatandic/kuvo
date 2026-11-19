@@ -358,7 +358,9 @@ keep)
     pick
     if [ -f "$R/update-trial" ]; then
       saw_trial=1
-    elif [ -n "$saw_trial" ] && [ -f "$K/bin/kuvo-link.js" ] && [ -x "$K/engine/$V/opencode" ]; then
+    elif { [ -n "$saw_trial" ] || [ ! -e "$K/folder-version.json" ]; } && [ -f "$K/bin/kuvo-link.js" ] && [ -x "$K/engine/$V/opencode" ]; then
+      # Rollback can restore a pre-marker keeper before this keeper has seen a new boot token.
+      if ! grep -q '"folder-upgrade"' "$K/bin/kuvo-link.js"; then exec sh "$K/bin/kuvo-start" keep; fi
       # A confirming process from the previous release may leave the folder step to the keeper.
       KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$K/engine/$V/opencode" --config=/dev/null --no-env-file "$K/bin/kuvo-link.js" folder-upgrade </dev/null || exit 1
       saw_trial=

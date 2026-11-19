@@ -3,9 +3,11 @@ import { acceptedMembership, projectMembership } from "./setup/membership";
 import { updateAccess } from "./setup/access";
 import { primaryFenced } from "./setup/lease";
 import crypto from "node:crypto";
+import { legacyFolderTrial } from "../shared/folder-version";
 import { isObject } from "../shared/json";
 import { addressOf, publicOf } from "./crypto/keys";
 import { noteDocsChanged } from "./documents/changed";
+import { K } from "./home";
 import { mainElsewhere } from "./setup/main-only";
 import { bodyHash, held, readDoc } from "./documents/format";
 import { ADDRESS, KEY, macDoc, macsOf, ownKey, peersOf } from "./peers/known";
@@ -29,7 +31,7 @@ function stagePhonePairing(key: Buffer, hello: PhoneHello | null | undefined, ad
     const phone = pairedPhone(readLink(), encoded);
     return phone ? phone.pairing ?? "" : false;
   };
-  if (!hello?.pair) return current();
+  if (!hello?.pair || legacyFolderTrial(K)) return current();
   const before = readLink();
   const pending = pendingShared(before, "membershipAndAccess");
   if (pending) {
@@ -213,6 +215,7 @@ export function foldPhones(link: LinkState, now = Date.now()): void {
       if (fits(entry, macs) && typeof entry.pairing === "string") noteRemoved(link, entry.key, entry.pairing);
     }
   }
+  const preserveVoucher = legacyFolderTrial(K);
   const known = new Map((link.phones ?? []).map(phone => [phone.key, phone]));
   const signed = macs.filter(mac => macDoc(link, mac, "phones"));
   const listed: Phone[] = [];
@@ -237,6 +240,7 @@ export function foldPhones(link: LinkState, now = Date.now()): void {
         address: typeof phone.address === "string" && ADDRESS.test(phone.address) ? phone.address : known.get(phone.key as string)?.address,
         pairing: typeof phone.pairing === "string" ? phone.pairing : "",
         ...(phone.kind === "desktop" ? { kind: "desktop" as const } : {}),
+        ...(preserveVoucher && typeof phone.by === "string" && KEY.test(phone.by) ? { by: phone.by } : {}),
       });
     }
   }
@@ -247,12 +251,19 @@ export function foldPhones(link: LinkState, now = Date.now()): void {
 }
 
 // This box's own phones document: the phones paired here, and every removal it knows of.
-export const ownPhones = (link: LinkState) => ({
-  ...(link.setup?.managed && link.setup.role === "primary" ? { epoch: link.setup.epoch } : {}),
-  phones: (link.phones ?? []).filter(phone => phone.from === "pair").map(phone => ({ key: phone.key, name: phone.name ?? "", ...(phone.address ? { address: phone.address } : {}), pairing: phone.pairing ?? "", ...(phone.kind === "desktop" ? { kind: "desktop" as const } : {}) })),
-  removed: (link.removed ?? []).map(({ key, pairing }) => ({ key, pairing })),
-  ...acceptedMembership(link)?.devices,
-});
+export const ownPhones = (link: LinkState) => {
+  const preserveVoucher = legacyFolderTrial(K);
+  return {
+    ...(link.setup?.managed && link.setup.role === "primary" ? { epoch: link.setup.epoch } : {}),
+    phones: (link.phones ?? []).filter(phone => phone.from === "pair").map(phone => ({
+      key: phone.key, name: phone.name ?? "", ...(phone.address ? { address: phone.address } : {}),
+      pairing: phone.pairing ?? "", ...(phone.kind === "desktop" ? { kind: "desktop" as const } : {}),
+      ...(preserveVoucher && "by" in phone && typeof phone.by === "string" ? { by: phone.by } : {}),
+    })),
+    removed: (link.removed ?? []).map(({ key, pairing }) => ({ key, pairing })),
+    ...acceptedMembership(link)?.devices,
+  };
+};
 
 // A phone's session proved its own: its notifications go where it is now.
 export function confirmPhone(phone: { key: Buffer; address?: Buffer }): void {

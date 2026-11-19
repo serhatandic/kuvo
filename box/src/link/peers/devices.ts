@@ -4,12 +4,13 @@ import { setupSaveReceipt } from "../../shared/setup-local";
 import { awaitSharedSave, bindSave, queryOperation, removalReceipt, sharedSaveReply, withSaveOutcome } from "../setup/shared";
 import { createHash } from "node:crypto";
 import { readDoc } from "../documents/format";
+import { legacyFolderTrial } from "../../shared/folder-version";
 import { isObject } from "../../shared/json";
 import { plainName } from "../../shared/text";
 import { noteDocsChanged } from "../documents/changed";
 import { macDocsChanged } from "../documents/exchange";
 import { phoneTrustWait } from "../documents/phone-sync";
-import { IS_MAC } from "../home";
+import { IS_MAC, K } from "../home";
 import { ownName } from "../letters/start";
 import { fits, pairDevice, pairedPhone, removeAsMac, removePhones } from "../phones";
 import { mainElsewhere } from "../setup/main-only";
@@ -57,6 +58,7 @@ const switchOffWords = () => ({ message: `“Let my devices connect” is off on
 
 /** A primary pairs the desktop key sent beside it or forwarded by an enrolled member. */
 export async function pairHere(device: AskingDevice, member?: string): Promise<DeviceReply> {
+  if (legacyFolderTrial(K)) return answer(503, { message: "Wait for the Kuvo Code update to finish before pairing a device." });
   if (switchOff()) return answer(409, switchOffWords());
   let made: ReturnType<typeof pairDevice> | null = null;
   let fresh = false;
@@ -113,6 +115,7 @@ export type DeviceActor = { key: string; pairing: string };
 /** Apply both local and forwarded removals at the authority. Any relay actor must still
  * hold the same pairing when the primary takes the lock. */
 export async function removeDevicesHere(entries: unknown, actor: DeviceActor | null, { member, operation, onRemoved }: { member?: string; operation?: string; onRemoved?: (link: LinkState) => void } = {}): Promise<DeviceReply> {
+  if (legacyFolderTrial(K)) return answer(503, { message: "Wait for the Kuvo Code update to finish before removing devices." });
   const { changed, save, busy } = updateAccess(link => {
     if (mainElsewhere(link) || (member && (!link || followedSetup(link)?.role !== "primary" || !ownMachines(link).has(member)))) return null;
     const kept = link ?? (!actor && !member ? { phones: [], removed: [] } : null);

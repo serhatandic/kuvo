@@ -3722,11 +3722,14 @@ function checkFolderVersion(folder) {
   checkpoint(path18.resolve(folder, FOLDER_VERSION_FILE), steps.length);
 }
 function upgradeKuvoFolder(folder, importLegacy) {
-  upgradeFolder(folder, steps, importLegacy, (start) => checkTrialRecovery(folder, start));
+  upgradeFolder(folder, steps, importLegacy, (start) => checkTrialRecovery(folder, start, importLegacy !== undefined));
+}
+function legacyFolderTrial(folder) {
+  return fs20.existsSync(path18.join(folder, "run", "update-trial")) && !fs20.lstatSync(path18.join(folder, FOLDER_VERSION_FILE), { throwIfNoEntry: false });
 }
 function setupLayoutDeferred(folder) {
   try {
-    return checkpoint(path18.join(folder, FOLDER_VERSION_FILE), steps.length).version === 4;
+    return checkpoint(path18.join(folder, FOLDER_VERSION_FILE), steps.length).version === 4 || legacyFolderTrial(folder);
   } catch {
     return true;
   }
@@ -3766,7 +3769,7 @@ function computerHistoryLayoutReady(folder) {
     return false;
   }
 }
-function checkTrialRecovery(folder, start) {
+function checkTrialRecovery(folder, start, importing) {
   if (!fs20.existsSync(path18.join(folder, "run", "update-trial")))
     return;
   const bin = path18.join(folder, "updates", "rollback", "files", "bin");
@@ -3791,14 +3794,26 @@ function checkTrialRecovery(folder, start) {
   try {
     const probe = path18.join(scratch, ".kuvo-code");
     fs20.mkdirSync(probe, { mode: 448 });
+    const marker = path18.join(probe, FOLDER_VERSION_FILE);
     const accepts = (version) => {
-      fs20.writeFileSync(path18.join(probe, FOLDER_VERSION_FILE), JSON.stringify({ version }));
+      if (version === undefined)
+        fs20.rmSync(marker, { force: true });
+      else
+        fs20.writeFileSync(marker, JSON.stringify({ version }));
       const flags = runtime === oldRuntime || process.versions.bun ? ["--config=/dev/null", "--no-env-file"] : [];
-      return spawnSync2(runtime, [...flags, saved, "here", ".kuvo-machine-probe"], {
+      const result = spawnSync2(runtime, [...flags, saved, "here", ".kuvo-machine-probe"], {
         env: { ...process.env, HOME: scratch, KUVO_HOME: probe, BUN_BE_BUN: "1", BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0" },
-        stdio: "ignore",
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
         timeout: 15000
-      }).status === 0;
+      });
+      if (result.status !== 0)
+        return false;
+      try {
+        return isObject(JSON.parse(result.stdout));
+      } catch {
+        return false;
+      }
     };
     if (!accepts(2147483647)) {
       if (accepts(steps.length))
@@ -3806,6 +3821,8 @@ function checkTrialRecovery(folder, start) {
       if (start.version >= 4 && start.version < steps.length && start.upgradingTo === undefined && accepts(start.version))
         return false;
     }
+    if (!importing && start.version === 0 && start.upgradingTo === undefined && legacyFolderTrial(folder) && accepts())
+      return false;
     refuse();
   } finally {
     fs20.rmSync(scratch, { recursive: true, force: true });
@@ -15118,7 +15135,7 @@ function noteConflict(link, doc) {
   setup.conflict = { primary: said.primary, epoch: said.epoch };
 }
 function managedFields(doc) {
-  if (doc.body.managed !== true)
+  if (doc.body.managed !== true || legacyFolderTrial(K))
     return {};
   const boxes = Array.isArray(doc.body.boxes) ? doc.body.boxes : [];
   const standby = boxes.filter(fitsPeer).map(cleanPeer).find((peer) => peer.key === doc.body.standby && peer.sign !== doc.origin);
@@ -15131,6 +15148,7 @@ function managedFields(doc) {
   };
 }
 var init_settle = __esm(() => {
+  init_folder_version();
   init_home();
   init_known();
   init_state();
@@ -15203,6 +15221,8 @@ function takenBy(link, to, origin, kind) {
 function takeDoc(link, envelope) {
   const doc = readDoc(envelope);
   if (!doc)
+    return null;
+  if (doc.kind === "peers" && doc.body.managed === true && legacyFolderTrial(K))
     return null;
   if (doc.kind === "leadership")
     return takeLeadership(link, doc) ? doc : null;
@@ -15609,6 +15629,7 @@ var init_work = __esm(() => {
   init_record();
   init_membership();
   init_documents();
+  init_folder_version();
   init_keys();
   init_home();
   init_known();
@@ -16237,7 +16258,7 @@ function stagePhonePairing(key, hello, address) {
     const phone = pairedPhone(readLink(), encoded);
     return phone ? phone.pairing ?? "" : false;
   };
-  if (!hello?.pair)
+  if (!hello?.pair || legacyFolderTrial(K))
     return current();
   const before = readLink();
   const pending = pendingShared(before, "membershipAndAccess");
@@ -16387,6 +16408,7 @@ function foldPhones(link, now = Date.now()) {
         noteRemoved(link, entry.key, entry.pairing);
     }
   }
+  const preserveVoucher = legacyFolderTrial(K);
   const known = new Map((link.phones ?? []).map((phone) => [phone.key, phone]));
   const signed = macs.filter((mac) => macDoc(link, mac, "phones"));
   const listed = [];
@@ -16414,7 +16436,8 @@ function foldPhones(link, now = Date.now()) {
         mac,
         address: typeof phone.address === "string" && ADDRESS.test(phone.address) ? phone.address : known.get(phone.key)?.address,
         pairing: typeof phone.pairing === "string" ? phone.pairing : "",
-        ...phone.kind === "desktop" ? { kind: "desktop" } : {}
+        ...phone.kind === "desktop" ? { kind: "desktop" } : {},
+        ...preserveVoucher && typeof phone.by === "string" && KEY.test(phone.by) ? { by: phone.by } : {}
       });
     }
   }
@@ -16452,19 +16475,31 @@ function pairingLink(link) {
   });
   return `kuvo-link://pair?${query}`;
 }
-var PAIRING, MOST_AT_ONCE = 16, MOST_DEVICES = 64, MOST_KEPT2 = 256, removedAlready = (link, key, pairing) => (link.removed ?? []).some((r) => r.key === key && r.pairing === pairing), fits2 = (entry, macs) => typeof entry?.key === "string" && KEY.test(entry.key) && !macs.includes(entry.key) && (entry.pairing == null || typeof entry.pairing === "string" && PAIRING.test(entry.pairing)), newPairing = () => crypto17.randomBytes(12).toString("base64url"), deviceBoxKeys = (link) => [...macsOf(link), ...peersOf(link).map((peer) => peer.key), ownKey(link) ?? ""], ownPhones = (link) => ({
-  ...link.setup?.managed && link.setup.role === "primary" ? { epoch: link.setup.epoch } : {},
-  phones: (link.phones ?? []).filter((phone) => phone.from === "pair").map((phone) => ({ key: phone.key, name: phone.name ?? "", ...phone.address ? { address: phone.address } : {}, pairing: phone.pairing ?? "", ...phone.kind === "desktop" ? { kind: "desktop" } : {} })),
-  removed: (link.removed ?? []).map(({ key, pairing }) => ({ key, pairing })),
-  ...acceptedMembership(link)?.devices
-}), PAIRING_MINUTES = 10, newPairingToken = (issuer = null) => ({ token: crypto17.randomBytes(16).toString("base64url"), expires: Date.now() + PAIRING_MINUTES * 60000, issuer }), phoneDocs = (link) => Object.values(link?.docs ?? {}).map(held).filter((doc) => doc?.kind === "phones");
+var PAIRING, MOST_AT_ONCE = 16, MOST_DEVICES = 64, MOST_KEPT2 = 256, removedAlready = (link, key, pairing) => (link.removed ?? []).some((r) => r.key === key && r.pairing === pairing), fits2 = (entry, macs) => typeof entry?.key === "string" && KEY.test(entry.key) && !macs.includes(entry.key) && (entry.pairing == null || typeof entry.pairing === "string" && PAIRING.test(entry.pairing)), newPairing = () => crypto17.randomBytes(12).toString("base64url"), deviceBoxKeys = (link) => [...macsOf(link), ...peersOf(link).map((peer) => peer.key), ownKey(link) ?? ""], ownPhones = (link) => {
+  const preserveVoucher = legacyFolderTrial(K);
+  return {
+    ...link.setup?.managed && link.setup.role === "primary" ? { epoch: link.setup.epoch } : {},
+    phones: (link.phones ?? []).filter((phone) => phone.from === "pair").map((phone) => ({
+      key: phone.key,
+      name: phone.name ?? "",
+      ...phone.address ? { address: phone.address } : {},
+      pairing: phone.pairing ?? "",
+      ...phone.kind === "desktop" ? { kind: "desktop" } : {},
+      ...preserveVoucher && "by" in phone && typeof phone.by === "string" ? { by: phone.by } : {}
+    })),
+    removed: (link.removed ?? []).map(({ key, pairing }) => ({ key, pairing })),
+    ...acceptedMembership(link)?.devices
+  };
+}, PAIRING_MINUTES = 10, newPairingToken = (issuer = null) => ({ token: crypto17.randomBytes(16).toString("base64url"), expires: Date.now() + PAIRING_MINUTES * 60000, issuer }), phoneDocs = (link) => Object.values(link?.docs ?? {}).map(held).filter((doc) => doc?.kind === "phones");
 var init_phones = __esm(() => {
   init_shared();
   init_membership();
   init_access();
   init_lease();
+  init_folder_version();
   init_keys();
   init_changed();
+  init_home();
   init_main_only();
   init_format();
   init_known();
@@ -66455,6 +66490,8 @@ function givenDevice(given, link = readLink()) {
   return { key: given.key, name: plainName(given.name).slice(0, MOST_NAME3), kind: "desktop" };
 }
 async function pairHere(device, member) {
+  if (legacyFolderTrial(K))
+    return answer7(503, { message: "Wait for the Kuvo Code update to finish before pairing a device." });
   if (switchOff())
     return answer7(409, switchOffWords());
   let made = null;
@@ -66511,6 +66548,8 @@ async function pairHere(device, member) {
   return answer7(200, value);
 }
 async function removeDevicesHere(entries, actor, { member, operation, onRemoved } = {}) {
+  if (legacyFolderTrial(K))
+    return answer7(503, { message: "Wait for the Kuvo Code update to finish before removing devices." });
   const { changed, save, busy } = updateAccess((link) => {
     if (mainElsewhere(link) || member && (!link || followedSetup(link)?.role !== "primary" || !ownMachines(link).has(member)))
       return null;
@@ -66613,6 +66652,7 @@ var init_devices = __esm(() => {
   init_setup_local();
   init_shared();
   init_format();
+  init_folder_version();
   init_text();
   init_changed();
   init_exchange();
@@ -76556,7 +76596,7 @@ var init_files4 = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "d97685032bab";
+var BRIDGE_VERSION = "4bad1f2d542a";
 
 // box/src/link/rehome/paths.ts
 import { createHash as createHash7 } from "node:crypto";
@@ -82009,8 +82049,11 @@ async function* manage(context, key, action) {
     const plan = await planForComputer(key, isObject(body) ? body.projects : undefined, signal);
     return yield* json(plan.status, plan.value);
   }
-  if (action === "/allow-devices")
+  if (action === "/allow-devices") {
+    if (legacyFolderTrial(K))
+      return yield* json(503, { message: "Wait for the Kuvo Code update to finish before changing device access." });
     return yield* json(404, { message: "Pair devices with your setup." });
+  }
   const connect = action === "/connect";
   const explicit = action === "/unlink" || action === "/unlink-and-wipe";
   const what = explicit ? method === "POST" ? "remove" : null : connect ? method === "POST" ? "connect" : null : method === "PATCH" ? "rename" : method === "DELETE" ? "remove" : null;
@@ -82126,6 +82169,7 @@ var COMPUTERS_ROUTE, MOST_HERE = 100, system = null, ownFeatures = () => IS_MAC 
   }
 };
 var init_computers = __esm(() => {
+  init_folder_version();
   init_computer_name();
   init_account_names();
   init_features();
@@ -91445,6 +91489,7 @@ function bundleBuild(file) {
 // box/src/link/areas/info.ts
 init_engines();
 init_store();
+init_folder_version();
 init_features();
 init_platform();
 init_mac();
@@ -91476,7 +91521,9 @@ async function* infoRoute(context) {
     fs225.mkdirSync(chats, { recursive: true });
   } catch {}
   yield { head: { status: 200, headers: { "content-type": "application/json" } } };
-  yield { body: Buffer.from(JSON.stringify(IS_MAC ? macInfo(engine, started, chats, Boolean(bridge())) : machineInfo(engine, started, chats, Boolean(bridge()), info))) };
+  const box = IS_MAC ? macInfo(engine, started, chats, Boolean(bridge())) : machineInfo(engine, started, chats, Boolean(bridge()), info);
+  const features = legacyFolderTrial(K) ? [...box.features, "devices.allow"] : box.features;
+  yield { body: Buffer.from(JSON.stringify({ ...box, features })) };
 }
 function macInfo(engine, started, chats, agents) {
   const config = macLink.config;

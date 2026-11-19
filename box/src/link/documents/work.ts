@@ -12,9 +12,10 @@ import { acceptedMembership, acceptedName, namedRoster } from "../setup/membersh
 
 import crypto from "node:crypto";
 import { type Doc, DOC_KINDS, type DocKind, type SignedDoc } from "../../shared/documents";
+import { legacyFolderTrial } from "../../shared/folder-version";
 import { isObject } from "../../shared/json";
 import { addressOf } from "../crypto/keys";
-import { IS_MAC } from "../home";
+import { IS_MAC, K } from "../home";
 import { cleanMoved, leaveMac, macDoc, macDocs, macsOf, ownKey, peersOf, writesOwnPeers } from "../peers/known";
 import { mergePersonalities, MOST_COUNT, readPersonalities } from "../personalities/library";
 import { foldPhones, ownPhones } from "../phones";
@@ -152,6 +153,7 @@ const docPeers = (link: LinkState): Peer[] => peersOf(link).filter(peer => typeo
 export function takeDoc(link: LinkState, envelope: unknown): TakenDoc | null {
   const doc = readDoc(envelope);
   if (!doc) return null;
+  if (doc.kind === "peers" && doc.body.managed === true && legacyFolderTrial(K)) return null;
   if (doc.kind === "leadership") return takeLeadership(link, doc) ? doc : null;
   if (doc.kind === "setup-shared" || doc.kind === "setup-checkpoint") return null;
   if (doc.kind === "peers" && link.setup) {

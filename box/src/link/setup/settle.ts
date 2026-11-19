@@ -2,8 +2,9 @@
 // legacy mac/macs fields also cover this trust when the enroller is a Linux box.
 // A member keeps its current primary and epoch rules when it has several legacy enrollers.
 
+import { legacyFolderTrial } from "../../shared/folder-version";
 import type { Doc } from "../../shared/documents";
-import { IS_MAC } from "../home";
+import { IS_MAC, K } from "../home";
 import { cleanPeer, fitsPeer, macDoc, macsOf } from "../peers/known";
 import { macSign } from "../state";
 import { rankedPrimary } from "../work-queue/numbers";
@@ -65,7 +66,7 @@ export function noteConflict(link: LinkState, doc: Doc): void {
 }
 
 function managedFields(doc: Doc): Pick<SetupRecord, "managed" | "standby" | "numberCeiling" | "checkpointed" | "sharedSaves"> {
-  if (doc.body.managed !== true) return {};
+  if (doc.body.managed !== true || legacyFolderTrial(K)) return {};
   const boxes = Array.isArray(doc.body.boxes) ? doc.body.boxes : [];
   const standby = boxes.filter(fitsPeer).map(cleanPeer).find(peer => peer.key === doc.body.standby && peer.sign !== doc.origin);
   const ceiling = doc.body.numberCeiling;

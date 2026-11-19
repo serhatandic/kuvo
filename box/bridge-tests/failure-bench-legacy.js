@@ -20,6 +20,12 @@ export function layout4Build(checkout) {
     "6f24ff74ca472a74045b4ebb1038ffb4ff199b331006c607b915f383f406d0b4", ".layout-4.mjs", checkout);
 }
 
+// The deployed bridge before folder markers, with its own updater and health judge.
+export function layout0Build(checkout) {
+  return buildFixture("11323b39316e0ec1f9b6281ab9bba9153db8e822",
+    "1ee6ffd6cbfb32ad10a8fa95e40733a49dd08a494579b171c6692e1245654e18", ".layout-0.mjs", checkout);
+}
+
 function buildFixture(ref, digest, filename, checkout = fileURLToPath(new URL("../..", import.meta.url))) {
   const archived = path.join(checkout, "box", "bridge-tests", filename);
   let build;

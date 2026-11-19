@@ -40858,9 +40858,12 @@ function checkpoint(file, current) {
   return { version, upgradingTo };
 }
 function upgradeKuvoFolder(folder, importLegacy) {
-  upgradeFolder(folder, steps, importLegacy, (start) => checkTrialRecovery(folder, start));
+  upgradeFolder(folder, steps, importLegacy, (start) => checkTrialRecovery(folder, start, importLegacy !== undefined));
 }
-function checkTrialRecovery(folder, start) {
+function legacyFolderTrial(folder) {
+  return fs15.existsSync(path11.join(folder, "run", "update-trial")) && !fs15.lstatSync(path11.join(folder, FOLDER_VERSION_FILE), { throwIfNoEntry: false });
+}
+function checkTrialRecovery(folder, start, importing) {
   if (!fs15.existsSync(path11.join(folder, "run", "update-trial")))
     return;
   const bin = path11.join(folder, "updates", "rollback", "files", "bin");
@@ -40885,14 +40888,26 @@ function checkTrialRecovery(folder, start) {
   try {
     const probe = path11.join(scratch, ".kuvo-code");
     fs15.mkdirSync(probe, { mode: 448 });
+    const marker = path11.join(probe, FOLDER_VERSION_FILE);
     const accepts = (version) => {
-      fs15.writeFileSync(path11.join(probe, FOLDER_VERSION_FILE), JSON.stringify({ version }));
+      if (version === undefined)
+        fs15.rmSync(marker, { force: true });
+      else
+        fs15.writeFileSync(marker, JSON.stringify({ version }));
       const flags = runtime === oldRuntime || process.versions.bun ? ["--config=/dev/null", "--no-env-file"] : [];
-      return spawnSync4(runtime, [...flags, saved, "here", ".kuvo-machine-probe"], {
+      const result = spawnSync4(runtime, [...flags, saved, "here", ".kuvo-machine-probe"], {
         env: { ...process.env, HOME: scratch, KUVO_HOME: probe, BUN_BE_BUN: "1", BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0" },
-        stdio: "ignore",
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
         timeout: 15000
-      }).status === 0;
+      });
+      if (result.status !== 0)
+        return false;
+      try {
+        return isObject(JSON.parse(result.stdout));
+      } catch {
+        return false;
+      }
     };
     if (!accepts(2147483647)) {
       if (accepts(steps.length))
@@ -40900,6 +40915,8 @@ function checkTrialRecovery(folder, start) {
       if (start.version >= 4 && start.version < steps.length && start.upgradingTo === undefined && accepts(start.version))
         return false;
     }
+    if (!importing && start.version === 0 && start.upgradingTo === undefined && legacyFolderTrial(folder) && accepts())
+      return false;
     refuse();
   } finally {
     fs15.rmSync(scratch, { recursive: true, force: true });
@@ -42545,4 +42562,4 @@ if (!isMainThread && process.argv.includes("--insights-db-worker")) {
 } else {
   await init_main().then(() => ({}));
 }
-// Built from Packages/Box/src/agents 12c0f963ec8a83fab24771b356b2ebb88921fe144ff2adb942022645e289b091
+// Built from Packages/Box/src/agents 59ebf766acb5aaac72e962660512899355156fa260b7631b061f1e76201c5180

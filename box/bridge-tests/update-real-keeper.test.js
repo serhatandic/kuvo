@@ -1,11 +1,5 @@
-// A box taking a release whose keeper is the real one (PROTOCOL.md, "Updates"): the pack
-// scripts/box-release.sh makes, with `kuvo-start`, `kuvo-launch` and `kuvo-setsid` as
-// box/src/keeper has them, installed by the real link and then run: the new keeper starts the new
-// engine, notes it, starts the agents' bridge, and stops and starts them again when asked. Only the
-// engine's binary is a stand-in (it answers as one, and runs the link's script as the engine's Bun
-// does), and so are the bridge and the old version's keeper. In a home of the test's own
-// (`$HOME/.kuvo-code`, as the real keeper names its folder), with a keeper already noted as
-// running there, as on a box that updates itself, so the real one starts no second keeper.
+// The deployed, pre-marker updater taking a signed release with the real keeper. Engines and
+// the agents bridge are stand-ins, but both versions' Box CLI entry points are the built files.
 // Run with `node --test box/bridge-tests/update-real-keeper.test.js`.
 import "./test-safety.js";
 import assert from "node:assert/strict";
@@ -16,33 +10,33 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { layout0Build } from "./failure-bench-legacy.js";
 import { atEnd, removeAtEnd } from "./at-end.js";
 
-const base = fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-real-keeper-"));
-const home = path.join(base, ".kuvo-code");
-process.env.HOME = base;
-process.env.KUVO_HOME = home;
-const link = await import("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");
 const script = fileURLToPath(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url));
 const checkout = fileURLToPath(new URL("../..", import.meta.url));
-const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-real-keeper-release-"));
-removeAtEnd(base);
-removeAtEnd(scratch);
+const baseline = layout0Build();
+const runUpdate = (name, interrupted) => test(name, async () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-real-keeper-"));
+  const home = path.join(base, ".kuvo-code");
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-real-keeper-release-"));
+  const env = { ...process.env, HOME: base, KUVO_HOME: home };
+  removeAtEnd(base);
+  removeAtEnd(scratch);
 
-function write(file, text, mode = 0o644) {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, text, { mode });
-  fs.chmodSync(file, mode);
-}
-const sha256 = data => crypto.createHash("sha256").update(data).digest("hex");
-const read = file => JSON.parse(fs.readFileSync(file, "utf8"));
-const engineFile = path.join(home, "run", "engine.json");
-const alive = pid => { try { process.kill(pid, 0); return true; } catch { return false; } };
-const command = pid => spawnSync("ps", ["-ww", "-o", "command=", "-p", String(pid)], { encoding: "utf8" }).stdout.trim();
-// The coding agents' bridge, a stand-in: it answers where its keeper said, notes itself as the real
-// one does (run/bridge.json), and says where it answers, as the launcher waits to read.
-const bridgeStandIn = `import fs from "node:fs"; import http from "node:http"; import path from "node:path";
+  function write(file, text, mode = 0o644) {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, text, { mode });
+    fs.chmodSync(file, mode);
+  }
+  const read = file => JSON.parse(fs.readFileSync(file, "utf8"));
+  const engineFile = path.join(home, "run", "engine.json");
+  const alive = pid => { try { process.kill(pid, 0); return true; } catch { return false; } };
+  const command = pid => spawnSync("ps", ["-ww", "-o", "command=", "-p", String(pid)], { encoding: "utf8" }).stdout.trim();
+  // The coding agents' bridge, a stand-in: it answers where its keeper said, notes itself as the real
+  // one does (run/bridge.json), and says where it answers, as the launcher waits to read.
+  const bridgeStandIn = `import fs from "node:fs"; import http from "node:http"; import path from "node:path";
 const port = Number(process.env.KUVO_AGENTS_PORT), password = process.env.KUVO_AGENTS_PASSWORD;
 http.createServer((request, response) => { response.writeHead(200, { "content-type": "application/json" }); response.end(JSON.stringify({ pid: process.pid })); }).listen(port, "127.0.0.1", () => {
   fs.writeFileSync(path.join(process.env.KUVO_HOME, "run", "bridge.json"), JSON.stringify({ pid: process.pid, port, password }));
@@ -50,12 +44,12 @@ http.createServer((request, response) => { response.writeHead(200, { "content-ty
 });
 setInterval(() => { if (!fs.existsSync(process.env.KUVO_HOME)) process.exit(0); }, 300);
 `;
-const realKeeper = (...args) => spawnSync("sh", [path.join(home, "bin", "kuvo-start"), ...args], { env: process.env, encoding: "utf8", timeout: 120_000 });
+  const realKeeper = (...args) => spawnSync("sh", [path.join(home, "bin", "kuvo-start"), ...args], { env, encoding: "utf8", timeout: 120_000 });
 
-// The engine, as the real launcher starts it (`opencode serve --port <port> --hostname 127.0.0.1`):
-// it says it's listening, as the launcher waits to read, and answers as one does.
-const fakeEngine = path.join(scratch, "engine.mjs");
-fs.writeFileSync(fakeEngine, `
+  // The engine, as the real launcher starts it (`opencode serve --port <port> --hostname 127.0.0.1`):
+  // it says it's listening, as the launcher waits to read, and answers as one does.
+  const fakeEngine = path.join(scratch, "engine.mjs");
+  fs.writeFileSync(fakeEngine, `
 import fs from "node:fs"; import http from "node:http";
 const port = Number(process.argv[process.argv.indexOf("--port") + 1]);
 const server = http.createServer((request, response) => {
@@ -65,21 +59,21 @@ const server = http.createServer((request, response) => {
 server.listen(port, "127.0.0.1", () => console.log("server listening on http://127.0.0.1:" + port));
 setInterval(() => { if (!fs.existsSync(${JSON.stringify(home)})) process.exit(0); }, 300);
 `);
-// What only the keeper's own loop does (`kuvo-start keep`: ending an older Mac's watchdogs by
-// pattern, keeping a Mac awake, setting up the box's browser), which this test never means to
-// reach: stand-ins first on the PATH, in the box's own `bin` (where the launcher's PATH starts)
-// and before the system's, each only noting it was asked.
-const reached = path.join(scratch, "reached");
-const tools = path.join(scratch, "tools");
-function standInTools(folder) {
-  for (const tool of ["pkill", "caffeinate", "crontab", "launchctl"]) write(path.join(folder, tool), `#!/bin/sh\necho "${tool} $*" >>'${reached}'\n`, 0o755);
-}
-standInTools(tools);
-process.env.PATH = `${tools}${path.delimiter}${process.env.PATH}`;
-// Its binary: its version, the link's script run as the engine's Bun runs it (here this Node), and
-// the engine itself as its own child, so the process the keeper started and looks for by its
-// path (`<home>/engine/<version>/opencode`) is this one, and goes with its engine when it's told to.
-const engineBinary = version => `#!/bin/sh
+  // What only the keeper's own loop does (`kuvo-start keep`: ending an older Mac's watchdogs by
+  // pattern, keeping a Mac awake, setting up the box's browser), which this test never means to
+  // reach: stand-ins first on the PATH, in the box's own `bin` (where the launcher's PATH starts)
+  // and before the system's, each only noting it was asked.
+  const reached = path.join(scratch, "reached");
+  const tools = path.join(scratch, "tools");
+  function standInTools(folder) {
+    for (const tool of ["pkill", "caffeinate", "crontab", "launchctl"]) write(path.join(folder, tool), `#!/bin/sh\necho "${tool} $*" >>'${reached}'\n`, 0o755);
+  }
+  standInTools(tools);
+  env.PATH = `${tools}${path.delimiter}${env.PATH}`;
+  // Its binary: its version, the link's script run as the engine's Bun runs it (here this Node), and
+  // the engine itself as its own child, so the process the keeper started and looks for by its
+  // path (`<home>/engine/<version>/opencode`) is this one, and goes with its engine when it's told to.
+  const engineBinary = version => `#!/bin/sh
 [ "$1" = --config=/dev/null ] && shift
 [ "$1" = --no-env-file ] && shift
 case "$1" in
@@ -88,9 +82,9 @@ case "$1" in
 serve) trap 'kill "$c" 2>/dev/null' TERM INT HUP; BUN_BE_BUN=1 '${process.execPath}' '${fakeEngine}' "$@" & c=$!; wait "$c" ;;
 esac
 `;
-// The version before's keeper and engine, stand-ins as in updates.test.js: only its stop is asked.
-const oldEngine = path.join(scratch, "old-engine.mjs");
-fs.writeFileSync(oldEngine, `
+  // The version before's keeper and engine, stand-ins as in updates.test.js: only its stop is asked.
+  const oldEngine = path.join(scratch, "old-engine.mjs");
+  fs.writeFileSync(oldEngine, `
 import fs from "node:fs"; import http from "node:http";
 const server = http.createServer((request, response) => { response.writeHead(200, { "content-type": "application/json" }); response.end(JSON.stringify({ data: request.url.startsWith("/api/session/active") ? {} : [] })); });
 const noted = ${JSON.stringify(engineFile)};
@@ -100,7 +94,8 @@ server.listen(0, "127.0.0.1", () => {
 });
 setInterval(() => { if (!fs.existsSync(${JSON.stringify(home)})) process.exit(0); }, 300);
 `);
-const oldKeeper = `#!/bin/sh
+  const oldKeeper = `#!/bin/sh
+V=1.0.0
 K="$KUVO_HOME"; R="$K/run"
 noted() { sed -n 's/.*"pid":\\([0-9]*\\).*/\\1/p' "$R/engine.json" 2>/dev/null; }
 case "$1" in
@@ -109,50 +104,63 @@ start) rm -f "$R/stopped"; '${process.execPath}' '${oldEngine}' >/dev/null 2>&1 
 esac
 `;
 
-// What the test started, stopped by its own process: the engines by the pids noted, the keeper's
-// stand-in, and (through the real keeper's stop, which ends its group) the bridge.
-const started = new Set();
-let keeping;
-atEnd(async () => {
-  // Off first (a box removed): from here no start, the update's own included, starts an engine
-  // or a keeper, even once the keeper's stand-in below is gone.
-  try { write(path.join(home, "run", "off"), ""); } catch {}
-  if (fs.existsSync(path.join(home, "bin", "kuvo-start"))) realKeeper("stop");
-  // Only what's still the test's own: a pid given to another process since is left alone.
-  for (const pid of started) if (command(pid).includes(base) || command(pid).includes(scratch)) try { process.kill(pid); } catch {}
-  if (keeping && keeping.exitCode === null && keeping.signalCode === null) {
-    keeping.kill();
-    await new Promise(resolve => keeping.once("exit", resolve));
-  }
-});
+  // What the test started, stopped by its own process: the engines by the pids noted, the keeper's
+  // stand-in, and (through the real keeper's stop, which ends its group) the bridge.
+  const started = new Set();
+  let keeping;
+  let recovering;
+  atEnd(async () => {
+    // Off first (a box removed): from here no start, the update's own included, starts an engine
+    // or a keeper, even once the keeper's stand-in below is gone.
+    try { write(path.join(home, "run", "off"), ""); } catch {}
+    if (recovering?.exitCode === null && recovering.signalCode === null) {
+      recovering.kill();
+      await new Promise(resolve => recovering.once("exit", resolve));
+    }
+    if (fs.existsSync(path.join(home, "bin", "kuvo-start"))) realKeeper("stop");
+    // Only what's still the test's own: a pid given to another process since is left alone.
+    for (const pid of started) if (command(pid).includes(base) || command(pid).includes(scratch)) try { process.kill(pid); } catch {}
+    if (keeping && keeping.exitCode === null && keeping.signalCode === null) {
+      keeping.kill();
+      await new Promise(resolve => keeping.once("exit", resolve));
+    }
+  });
 
-const { privateKey, publicKey } = crypto.generateKeyPairSync("ed25519");
-const pinned = publicKey.export({ type: "spki", format: "der" }).subarray(-32).toString("base64");
-let served = {};
-const server = http.createServer((request, response) => {
-  const body = served[request.url];
-  response.writeHead(body ? 200 : 404, { connection: "close" });
-  response.end(body ?? "");
-});
-await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
-atEnd(() => server.close());
-const address = `http://127.0.0.1:${server.address().port}`;
+  const { privateKey, publicKey } = crypto.generateKeyPairSync("ed25519");
+  const pinned = publicKey.export({ type: "spki", format: "der" }).subarray(-32).toString("base64");
+  let served = {};
+  const server = http.createServer((request, response) => {
+    const body = served[request.url];
+    response.writeHead(body ? 200 : 404, { connection: "close" });
+    response.end(body ?? "");
+  });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  atEnd(() => server.close());
+  const address = `http://127.0.0.1:${server.address().port}`;
 
-test("a box takes a release with the real keeper: it starts the release's engine and the bridge, notes them, and stops and starts them when asked", async () => {
-  // A machine on 0.9.0, its engine 1.0.0 running, as a Mac last started it (`run/launch.env`),
-  // its keeper noted as running.
-  // This update exercises the keeper and engine swap on an already upgraded folder.
-  write(path.join(home, "folder-version.json"), '{"version":7}\n');
+  const marker = path.join(home, "folder-version.json");
+  const trial = path.join(home, "run", "update-trial");
+  const state = path.join(home, "run", "update.json");
+  const installed = path.join(home, "bin", "kuvo-link.js");
+  const saved = path.join(home, "updates", "rollback", "files", "bin", "kuvo-link.js");
+  const ledger = path.join(home, "run", "work-queue", "numbers.json");
+  const data = '{"next":301,"numbers":{},"since":1234}\n';
+  const linkFile = path.join(home, "run", "link.json");
+  const device = { key: Buffer.alloc(32, 1).toString("base64url"), from: "pair", kind: "desktop", pairing: "existing-pairing" };
+  const voucher = Buffer.alloc(32, 2).toString("base64url");
+  const grants = { phones: [{ ...device, by: voucher }], vouchBlocked: [{ key: voucher, device: "Another Mac", at: 1234 }] };
+  write(ledger, data);
+  write(linkFile, JSON.stringify(grants));
   write(path.join(home, "bin", "box-version"), "0.9.0");
   write(path.join(home, "bin", "kuvo-start"), oldKeeper, 0o700);
-  write(path.join(home, "bin", "kuvo-link.js"), "// the old link\n", 0o600);
+  write(installed, baseline, 0o600);
   write(path.join(home, "engine", "1.0.0", "opencode"), engineBinary("1.0.0"), 0o755);
   write(path.join(home, "run", "launch.env"), "LANG=C\n", 0o600);
   write(path.join(home, "run", "launch.notes"), '{"mac":"mac-1"}', 0o600);
   standInTools(path.join(home, "bin"));
   keeping = spawn("sh", ["-c", "while :; do sleep 1; done", "kuvo-start"], { stdio: "ignore" });
   write(path.join(home, "run", "box.pid"), `${keeping.pid}\n`);
-  assert.equal(spawnSync("sh", [path.join(home, "bin", "kuvo-start"), "start"], { env: process.env, timeout: 60_000 }).status, 0, "the old engine runs");
+  assert.equal(spawnSync("sh", [path.join(home, "bin", "kuvo-start"), "start"], { env, timeout: 60_000 }).status, 0, "the old engine runs");
   const before = read(engineFile).pid;
   started.add(before);
 
@@ -175,15 +183,83 @@ test("a box takes a release with the real keeper: it starts the release's engine
   write(path.join(root, "box/src/shared/engine-pin.json"), JSON.stringify({ version: "1.1.0", linux: builds, darwin: builds }));
   const out = path.join(scratch, "box-release");
   const packed = spawnSync("sh", [path.join(checkout, "scripts", "box-release.sh"), "0.10.0", "https://example.invalid/releases/download/v0.10.0/box-0.10.0.tar.gz", out], {
-    env: { ...process.env, BUN: process.env.BUN || process.env.KUVO_TEST_BUN || (process.versions.bun ? process.execPath : "bun"), NODE: process.execPath, BOX_SOURCES: root, KUVO_BOX_SIGNING_KEY: privateKey.export({ type: "pkcs8", format: "pem" }) }, encoding: "utf8",
+    env: { ...env, BUN: env.BUN || process.env.KUVO_TEST_BUN || (process.versions.bun ? process.execPath : "bun"), NODE: process.execPath, BOX_SOURCES: root, KUVO_BOX_SIGNING_KEY: privateKey.export({ type: "pkcs8", format: "pem" }) }, encoding: "utf8",
   });
   assert.equal(packed.status, 0, packed.stderr);
 
-  // Taken from the folder, as a box takes the release an app on its computer carries.
-  assert.deepEqual(link.offerUpdate(out, { keys: [pinned], blocked: null }), { status: 202, version: "0.10.0" });
-  const taken = await link.takeOffer({ keys: [pinned], blocked: null });
-  assert.equal(taken.result, "updated", JSON.stringify(taken));
+  // The real baseline CLI saves its own bridge before swapping in the signed release.
+  const waitFor = async (ready, reason) => {
+    for (let count = 0; count < 300; count++) {
+      if (ready()) return;
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    assert.fail(`${reason}\n${output}\n${fs.existsSync(state) ? fs.readFileSync(state, "utf8") : ""}`);
+  };
+  const cut = path.join(scratch, "cut.mjs");
+  if (interrupted) write(cut, `
+import fs from "node:fs";
+const rename = fs.renameSync;
+fs.renameSync = (from, to) => {
+  rename(from, to);
+  if (to === ${JSON.stringify(path.join(home, "bin", "kuvo-start"))}) process.kill(process.pid, "SIGKILL");
+};
+`);
+  const updater = spawn(process.execPath, [
+    ...(interrupted ? ["--import", pathToFileURL(cut).href] : []),
+    installed, "update", "--now", "--from", out, "--key", pinned,
+  ], { env: { ...env, KUVO_TEST_HEALTH_WINDOW: "3000", KUVO_TEST_HEALTH_EVERY: "200" }, stdio: ["ignore", "pipe", "pipe"] });
+  let output = "";
+  updater.stdout.on("data", chunk => { output += chunk; });
+  updater.stderr.on("data", chunk => { output += chunk; });
+  const ended = new Promise((resolve, reject) => {
+    updater.once("error", reject);
+    updater.once("exit", (code, signal) => resolve({ code, signal }));
+  });
+  atEnd(async () => {
+    if (updater.exitCode === null && updater.signalCode === null) {
+      updater.kill();
+      await ended;
+    }
+  });
+  if (interrupted) {
+    assert.deepEqual(await ended, { code: null, signal: "SIGKILL" }, output);
+    assert.equal(read(state).trial.swapped, undefined, "one or more files are still being installed");
+  } else {
+    await waitFor(() => fs.existsSync(state) && !!read(state).trial?.judged?.well, "the baseline judge should see a healthy trial");
+  }
   assert.equal(fs.readFileSync(path.join(home, "bin", "box-version"), "utf8"), "0.10.0");
+  assert.equal(fs.readFileSync(trial, "utf8"), "0.10.0");
+  assert.deepEqual(fs.readFileSync(saved), baseline);
+  assert.deepEqual(fs.readFileSync(installed), fs.readFileSync(script));
+  assert.equal(fs.existsSync(marker), false, "the saved pre-marker bridge still has an unmarked folder");
+  assert.equal(fs.readFileSync(ledger, "utf8"), data);
+  assert.equal(realKeeper("check-rollback-layout").status, 0);
+  assert.deepEqual(read(linkFile), grants);
+
+  if (interrupted) {
+    // The real keeper launches the replacement judge, which sees the incomplete swap and
+    // calls the keeper's rollback. Test code never calls rollback or rewrites the marker.
+    recovering = spawn("sh", [path.join(home, "bin", "kuvo-start"), "keep"], {
+      env: { ...env, KUVO_TEST_KEEP_ROUND: "1" }, stdio: "ignore",
+    });
+    await waitFor(() => !fs.existsSync(trial), "the keeper should recover the interrupted update");
+    assert.equal(fs.readFileSync(path.join(home, "bin", "box-version"), "utf8"), "0.9.0");
+    assert.deepEqual(fs.readFileSync(installed), baseline);
+    assert.equal(fs.existsSync(marker), false);
+    assert.equal(fs.readFileSync(ledger, "utf8"), data);
+    assert.deepEqual(read(linkFile), grants);
+    const restored = spawnSync(process.execPath, [installed, "box", "route"], {
+      env, input: '{"method":"GET","path":"kuvo/info"}', encoding: "utf8", timeout: 10_000,
+    });
+    assert.equal(restored.status, 0, restored.stderr);
+    assert.equal(JSON.parse(restored.stdout).status, 200);
+    return;
+  }
+
+  assert.deepEqual(await ended, { code: 0, signal: null }, output);
+  assert.equal(read(state).last.result, "updated", output);
+  assert.equal(fs.existsSync(trial), false);
+  assert.equal(fs.existsSync(path.dirname(path.dirname(path.dirname(saved)))), false);
   assert.equal(alive(before), false, "the engine before, stopped");
 
   // The real keeper's files in place, for the release's engine, and what they started.
@@ -208,9 +284,6 @@ test("a box takes a release with the real keeper: it starts the release's engine
   // Only your own to read, as the launcher leaves them.
   assert.equal((fs.statSync(engineFile).mode & 0o777).toString(8), "600");
   assert.equal(fs.existsSync(path.join(home, "run", ".launching")), false, "the start's lock let go");
-  // Judged well by the one health rule (its clock the test's: a look a second, three seconds in all).
-  let ticks = 0;
-  assert.equal(await link.settleUpdate({ clock: () => ticks, every: 1000, window: 3000, wait: async () => { ticks += 1000; } }), "well");
 
   // Stop: the engine and the bridge go, and it stays stopped; Start: a new engine, noted anew.
   const stopped = realKeeper("stop");
@@ -220,6 +293,9 @@ test("a box takes a release with the real keeper: it starts the release's engine
   assert.equal(fs.existsSync(engineFile), false);
   assert.equal(fs.existsSync(path.join(home, "run", "stopped")), true);
   assert.equal(realKeeper("engine").status, 0);
+  assert.deepEqual(read(marker), { version: 11 }, "the keeper commits the layout once the baseline judge confirms");
+  assert.deepEqual(read(linkFile).phones, [device], "the migration preserves the existing device pairing");
+  assert.equal(Object.hasOwn(read(linkFile), "vouchBlocked"), false);
   assert.equal(fs.existsSync(engineFile), false, "stopped on purpose, its keeper starts none");
   const again = realKeeper("start");
   assert.equal(again.status, 0, again.stderr);
@@ -237,3 +313,5 @@ test("a box takes a release with the real keeper: it starts the release's engine
   assert.equal(Number(fs.readFileSync(path.join(home, "run", "box.pid"), "utf8")), keeping.pid);
   assert.equal(fs.existsSync(reached), false, `nothing of the keeper's own loop ran: ${fs.existsSync(reached) ? fs.readFileSync(reached, "utf8") : ""}`);
 });
+runUpdate("the pre-marker updater confirms a release using the real keeper, then the folder upgrades", false);
+runUpdate("the real keeper rolls an interrupted pre-marker updater back to the saved baseline", true);

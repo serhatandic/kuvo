@@ -1,3 +1,4 @@
+import { legacyFolderTrial } from "../../shared/folder-version";
 import { ownComputerName } from "../computer-name";
 import { serviceTitle } from "../../shared/account-names";
 // Your computers, as this box knows them (PROTOCOL.md, "Computers", `kuvo/computers`): itself, its
@@ -23,7 +24,7 @@ import { appBehind } from "../mac/app";
 import type { AskingSession, AtWorkSession, Target, ToldComputer } from "../../shared/records";
 import { call, readEngineFile } from "../engine/client";
 import { followedLive } from "../follow";
-import { IS_MAC, LINK_FILE, MAC_APP_VERSION, MAC_ENGINE_VERSION } from "../home";
+import { IS_MAC, K, LINK_FILE, MAC_APP_VERSION, MAC_ENGINE_VERSION } from "../home";
 import { keptList, listFollowers, listNow, type Kept } from "../lists/sessions";
 import { MOST_ASKING, MOST_AT_WORK, PEER_AGENTS_FILE, readPeerAgents } from "../peers/directory";
 import { addressOf } from "../crypto/keys";
@@ -299,7 +300,10 @@ async function* manage(context: RouteContext, key: string, action: string | unde
     const plan = await planForComputer(key, isObject(body) ? body.projects : undefined, signal);
     return yield* json(plan.status, plan.value);
   }
-  if (action === "/allow-devices") return yield* json(404, { message: "Pair devices with your setup." });
+  if (action === "/allow-devices") {
+    if (legacyFolderTrial(K)) return yield* json(503, { message: "Wait for the Kuvo Code update to finish before changing device access." });
+    return yield* json(404, { message: "Pair devices with your setup." });
+  }
   const connect = action === "/connect";
   const explicit = action === "/unlink" || action === "/unlink-and-wipe";
   const what = explicit ? (method === "POST" ? "remove" : null) : connect ? (method === "POST" ? "connect" : null) : method === "PATCH" ? "rename" : method === "DELETE" ? "remove" : null;
