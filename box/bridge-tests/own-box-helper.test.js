@@ -225,7 +225,7 @@ test("a Mac's box in a home of its own says where its server answers, as its hel
   });
   const recordFile = path.join(where.run, "serve.json");
   const record = JSON.parse(read(recordFile));
-  assert.deepEqual(record, { pid: child.pid, port: Number(new URL(url).port), password, kept: false });
+  assert.deepEqual(record, { pid: child.pid, port: Number(new URL(url).port), password, kept: false, formatVersion: 1 });
   assert.equal(fs.statSync(recordFile).mode & 0o777, 0o600);
   const info = await fetch(`${url}/kuvo/info`, { headers: { authorization: "Basic " + Buffer.from(`opencode:${password}`).toString("base64") } });
   assert.equal(info.status, 200);

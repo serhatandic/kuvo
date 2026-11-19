@@ -34,7 +34,7 @@ const fresh = (extra = {}) => {
   fs.mkdirSync(run, { recursive: true });
   link.forgetQueueActs();
   link.writeLink({ secret: crypto.randomBytes(32).toString("base64url"), key: k(here.key), relay: "wss://relay.test", name: "devbox", id: "devbox", mac: mac.pub, macs: [mac.pub], phones: [],
-    peersFrom: { [mac.pub]: { at: 1, peers: [mac.peer, here.peer, second.peer, third.peer] } }, ...extra });
+    legacy: { [mac.pub]: { at: 1, peers: [mac.peer, here.peer, second.peer, third.peer] } }, ...extra });
 };
 const mailFrom = (from, payload) => link.sealOneWay(Buffer.from(JSON.stringify(payload)), from.key, link.publicOf(here.key)).message;
 const takeMail = (sender, payload) => link.peerMail(sender, payload, null);
@@ -156,7 +156,7 @@ test("a machine offers renaming and removing your machines where the Mac that wr
 
   // The Mac's record names it so: listed by it here, and this machine by its own new name too.
   const mine = { ...mac.peer, name: "Studio" };
-  link.writeLink({ ...link.readLink(), peersFrom: undefined, legacy: { [mac.pub]: { at: 2, peers: [mine, { ...here.peer, name: "Garage" }, { ...second.peer, name: "Build box" }, third.peer], moved: [] } } });
+  link.writeLink({ ...link.readLink(), legacy: { [mac.pub]: { at: 2, peers: [mine, { ...here.peer, name: "Garage" }, { ...second.peer, name: "Build box" }, third.peer], moved: [] } } });
   computers = await listed();
   assert.deepEqual([computers.here?.name, computers["Build box"]?.key], ["Garage", second.pub]);
 
@@ -201,7 +201,7 @@ test("what you do to a machine can't reach the Mac that writes its record: refus
   // A machine two of your Macs set up, in no setup yet: every computer either Mac names is listed
   // (#783), and with no one Mac writing its record, rename and remove aren't offered here.
   const other = box("mac", "Air");
-  fresh({ macs: [mac.pub, other.pub], peersFrom: { [mac.pub]: { at: 1, peers: [mac.peer, here.peer, second.peer] }, [other.pub]: { at: 1, peers: [other.peer, here.peer] } } });
+  fresh({ macs: [mac.pub, other.pub], legacy: { [mac.pub]: { at: 1, peers: [mac.peer, here.peer, second.peer] }, [other.pub]: { at: 1, peers: [other.peer, here.peer] } } });
   const computers = await listed();
   assert.deepEqual(Object.keys(computers).sort(), ["Air", "Studio", "here", "second"]);
   assert.deepEqual(ids(computers.here), []);
@@ -210,7 +210,7 @@ test("what you do to a machine can't reach the Mac that writes its record: refus
   // keeps: Rename and Remove are offered for Studio's alone.
   const fourth = box("machine", "fourth");
   fresh({ macs: [mac.pub, other.pub], setup: { id: "set_AAAAAAAAAAAAAAAAAAAAAA", epoch: 1, primary: mac.pub, sign: mac.pub, role: "member" },
-    peersFrom: { [mac.pub]: { at: 1, peers: [mac.peer, here.peer, second.peer] }, [other.pub]: { at: 1, peers: [other.peer, here.peer, fourth.peer] } } });
+    legacy: { [mac.pub]: { at: 1, peers: [mac.peer, here.peer, second.peer] }, [other.pub]: { at: 1, peers: [other.peer, here.peer, fourth.peer] } } });
   tell(mac, { features: MAC_TAKES, computer: { version: "1.1.0", working: 0 } });
   const both = await listed();
   assert.deepEqual([ids(both.second), ids(both.fourth)], [["rename", "remove"], []]);
