@@ -12,8 +12,12 @@ import type { LinkState } from "../state";
 const file = path.join(RUN, "setup-lease.json");
 export const LEASE_MS = 60_000;
 export const HEARTBEAT_MS = 10_000;
-export const MIN_DELAY = 60 * 60_000;
 export const DEFAULT_DELAY = LEASE_MS + 120_000;
+
+/** Probes run together, so even the last successor waits at most one heartbeat for replies. */
+export function takeoverProbeWindow(standby: boolean, earlierSuccessors: number, heartbeat = HEARTBEAT_MS) {
+  return standby && earlierSuccessors === 0 ? 0 : heartbeat;
+}
 
 function json(file: string): unknown {
   try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return null; }
@@ -21,10 +25,8 @@ function json(file: string): unknown {
 
 export function standbySettings() {
   const settings = json(path.join(K, "setup-takeover.json"));
-  const minutes = isObject(settings) ? settings.delayMinutes : null;
   const alwaysOn = isObject(settings) && typeof settings.alwaysOn === "boolean" ? settings.alwaysOn : undefined;
   return {
-    delay: typeof minutes === "number" && Number.isSafeInteger(minutes) && minutes >= 60 && minutes <= 10_080 ? minutes * 60_000 : DEFAULT_DELAY,
     alwaysOn: alwaysOn ?? process.platform === "linux",
     reason: alwaysOn !== undefined ? "box configuration" : process.platform === "linux" ? "Linux host" : "non-Linux host",
   };

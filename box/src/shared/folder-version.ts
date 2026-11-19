@@ -48,6 +48,8 @@ const steps: readonly Step[] = [
   () => {},
   // 14. Reserve signed successor order, branch ancestry and merged access revocations.
   () => {},
+  // 15. Reserve accepted rank revisions and the persisted standby pin.
+  () => {},
 ];
 
 function migrateDeviceGrants(folder: string): void {
@@ -174,6 +176,11 @@ export function deviceGrantsLayoutDeferred(folder: string): boolean {
 }
 
 /** Reliability ordering is written after the layout step commits. */
+export function successorRevisionLayoutReady(folder: string): boolean {
+  try { return checkpoint(path.join(folder, FOLDER_VERSION_FILE), steps.length).version >= 15; }
+  catch { return false; }
+}
+
 export function successorRankLayoutReady(folder: string): boolean {
   try { return checkpoint(path.join(folder, FOLDER_VERSION_FILE), steps.length).version >= 14; }
   catch { return false; }

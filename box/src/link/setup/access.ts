@@ -7,7 +7,7 @@ import type { Peer } from "../peers/known";
 import { ownPhones } from "../phones";
 import { updateLink, type LinkState } from "../state";
 import { computerHistory } from "./computer-history";
-import { acceptedMembership, membershipOf, projectMembership } from "./membership";
+import { acceptedMembership, membershipOf, projectMembership, type Membership } from "./membership";
 import { requiresStandby } from "./record";
 import { rankComputers } from "./reliability";
 import { pendingShared, stageShared, type Receipt } from "./shared";
@@ -18,13 +18,19 @@ const legacyFields = ["macPeers", "macMoved", "peerNames", "left", "removedHere"
   "phones", "removed", "computerHistory", ...localEffects.filter(key => key !== "localWipe"),
 ] as const satisfies readonly (keyof LinkState)[];
 
-export function captureMembership(link: LinkState, self?: Peer, order?: string[]) {
+export function captureMembership(link: LinkState, self?: Peer, previous?: Membership) {
   const { boxes, left, moved } = primaryPeersBody(link);
   // A draft starts with the accepted base names. Shared name overrides belong to setupNames.
   const projected = Array.isArray(link.macPeers) ? link.macPeers : [];
   const roster = self ? [self, ...projected] : boxes;
+  // Keep the agreed order through unrelated edits. New computers enter at the end.
+  const existing = previous?.successorOrder;
+  const order = existing ? [...existing.filter(key => roster.some(peer => peer.key === key)),
+    ...roster.filter(peer => peer.key && !existing.includes(peer.key)).map(peer => peer.key)] : rankComputers(roster);
+  const pin = previous?.successorPin;
   return membershipOf({
-    boxes: roster, successorOrder: rankComputers(roster, order), left, moved, computerHistory: computerHistory(link), devices: ownPhones(link), removalRevisions: link.removalRevisions, removedHere: link.removedHere,
+    boxes: roster, successorOrder: order, successorPin: order?.[0] === pin ? pin : undefined,
+    successorRevisions: previous?.successorRevisions, left, moved, computerHistory: computerHistory(link), devices: ownPhones(link), removalRevisions: link.removalRevisions, removedHere: link.removedHere,
     removals: link.memberRemovals, wipePreparations: link.wipePreparations,
   });
 }
@@ -64,7 +70,7 @@ export function updateAccess(change: (link: LinkState | null) => LinkState | nul
         devices: ownPhones(modified),
       }, undefined, operation);
     } else {
-      const membership = captureMembership(modified, accepted?.boxes.find(box => box.key === link.setup!.primary), accepted?.successorOrder);
+      const membership = captureMembership(modified, accepted?.boxes.find(box => box.key === link.setup!.primary), accepted ?? undefined);
       const fields = Object.fromEntries(localEffects.filter(key => JSON.stringify(modified[key]) !== JSON.stringify(link[key])).map(key => [key, modified[key] ?? null]));
       if (membership) save = stageShared(link, "membershipAndAccess", membership, { fields, pairing }, operation);
     }

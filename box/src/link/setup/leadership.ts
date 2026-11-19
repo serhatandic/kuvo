@@ -199,9 +199,13 @@ export function takeLeadership(link: LinkState, doc: Doc, checkpoint?: Doc, fork
   const staged = stagedFork(link, doc, checkpoint, forks);
   const next = setupOf(doc.body);
   if (!staged || !next || next.epoch < link.setup.epoch) return false;
+  const otherRanks = new Set(acceptedMembership(staged.source)?.successorRevisions?.map(revision =>
+    JSON.stringify([revision.authority, revision.operation, revision.order])));
+  const commonRank = old?.successorRevisions?.findLast(revision =>
+    otherRanks.has(JSON.stringify([revision.authority, revision.operation, revision.order])))?.order ?? staged.rank;
   const rank = (key: string) => {
-    const index = staged.rank.indexOf(key);
-    return index < 0 ? staged.rank.length : index;
+    const index = commonRank.indexOf(key);
+    return index < 0 ? commonRank.length : index;
   };
   const compare = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0;
   const difference = rank(next.primary) - rank(link.setup.primary) || compare(next.primary, link.setup.primary) || compare(doc.h, active.h);
@@ -266,6 +270,7 @@ function installLeadership(link: LinkState, doc: Doc, checkpoint?: Doc, discardi
     || (next.primary === current.primary && (doc.body.standby ?? null) === (current.standby?.key ?? null)
       && !(resolved && !current.checkpointed)
       && !(chained && !current.successorChain)
+      && typeof doc.body.supersedes !== "string"
       && !(typeof doc.body.numberCeiling === "number" && doc.body.numberCeiling > (current.numberCeiling ?? 0)))) return false;
   const ceiling = doc.body.numberCeiling;
   if (standby && (typeof ceiling !== "number" || !Number.isSafeInteger(ceiling) || ceiling < 1)) return false;

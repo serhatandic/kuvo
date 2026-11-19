@@ -370,9 +370,10 @@ and you can choose another member as primary once both computers are connected.
   the primary chooses one reachable member. A member advertises its preference based on whether
   it runs Linux, which is treated as more likely to be always on. Set `alwaysOn` to true or false
   in the box's `setup-takeover.json` to override the platform default. Equal preferences sort by
-  static key. A client can `POST kuvo/setup/standby {standby, epoch?}` on any box. The primary
-  checks that the target answers at this epoch, with the same response semantics as handover.
-  The existing standby must sign its retirement before a replacement can have authority, even
+  static key during bootstrap. A client can `POST kuvo/setup/standby {standby, epoch?}` on any box.
+  In a ranked setup this pins the chosen computer first in signed membership, until the user
+  changes the choice or removes the computer. The primary checks the target answers at this
+  epoch. A reachable standby normally approves replacement, even
   when membership removal initiated the change. A setup with no reachable eligible member
   waits to appoint a standby. A missing standby can still hold its delegation and cannot be
   replaced by the primary alone.
@@ -380,7 +381,11 @@ and you can choose another member as primary once both computers are connected.
   membership. The list contains each enrolled computer's static key once. Linux and
   configured always-on computers are preferred at bootstrap, followed by other computers
   enrolled as machines. A longer recent stretch of observed availability moves a computer
-  up. Tied observations keep the accepted order. A signed epoch enables the successor
+  up among unpinned computers. Tied observations keep the accepted order. Rank refreshes
+  are ordinary standby-acknowledged membership revisions and keep the epoch. Layout 15
+  keeps the pin and rank revision history with accepted membership. The first
+  available computer in the accepted order becomes standby through a signed handover. A
+  fallback standby leaves the pin in place. A signed epoch enables the successor
   chain once all current computers advertise `setup.successor-chain`. Older setups
   keep their existing standby delegation until they can make that transition.
 - **Primary lease and saves.** The current standby sends an authenticated challenge every
@@ -392,16 +397,22 @@ and you can choose another member as primary once both computers are connected.
   is acknowledged by the current standby. If it stays unreachable, the primary can
   propose the first available successor as replacement. That successor durably accepts
   the checkpoint and new epoch before the primary can renew its lease and save through it.
+  When the approver of a pending leadership proposal remains unreachable, the primary can
+  supersede that proposal with a standby assignment in the same proposed epoch. It stays
+  fenced until the replacement accepts and grants a lease. A promoted primary in a
+  delegated setup waits for a standby lease before handing leadership to another computer.
 - **Takeover.** A ranked successor probes the primary and every higher-ranked successor
-  (the current standby has first place). After missing the primary for about three minutes
+  in the signed order, including any that outrank the assigned standby. After missing
+  the primary for about three minutes
   (the sixty-second lease plus a two-minute margin), the highest-ranked reachable
   successor signs the next epoch using its accepted checkpoint. Lower ranks give earlier
   ranks time to answer before taking over. Restarting or losing the relay resets the
-  observation period. An operator can set `delayMinutes` in `setup-takeover.json` to
-  between 60 and 10,080 minutes. There is no approval prompt.
+  observation period. Concurrent probes share one response window, independent of rank depth.
+  Retained `delayMinutes` settings are ignored. There is no approval prompt.
 - **Reconnecting after a split.** A partition can leave two writable primaries temporarily.
-  On reconnect the higher verified epoch wins. At equal epochs, the common predecessor's
-  signed successor order breaks ties, then stable keys and certificate hashes if needed.
+  On reconnect the higher verified epoch wins. At equal epochs, the latest rank revision
+  accepted on both branches breaks ties, falling back to the last common epoch checkpoint
+  for older records. Stable keys and certificate hashes settle any remaining ties.
   The loser installs the winning checkpoint and steps down. Shared setup edits that only
   existed on the losing branch are discarded. Computer and device removals and credential
   revocations from either verified branch are carried forward as a union. Local work and

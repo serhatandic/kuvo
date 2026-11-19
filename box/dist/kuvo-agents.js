@@ -40965,6 +40965,7 @@ var init_folder_version = __esm(() => {
     migrateDeviceGrants,
     () => {},
     () => {},
+    () => {},
     () => {}
   ];
 });
@@ -42569,4 +42570,4 @@ if (!isMainThread && process.argv.includes("--insights-db-worker")) {
 } else {
   await init_main().then(() => ({}));
 }
-// Built from Packages/Box/src/agents 3577ca1da030944c206e644f370d7ddcb0414cb3cbc66a1325244bffbf2934d3
+// Built from Packages/Box/src/agents 74dc33a501fc024d33d72f13090b3d2742704c345874b564250282f06768f931

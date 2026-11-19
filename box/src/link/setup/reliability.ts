@@ -28,7 +28,7 @@ export function observedUptime(since: Clock, now: Clock) {
 }
 
 /** All computers, in reliability order. Keep the accepted order when observations tie. */
-export function rankComputers(boxes: Peer[], previous?: string[], now = leaseClock()): string[] | undefined {
+export function rankComputers(boxes: Peer[], previous?: string[], now = leaseClock(), pin?: string): string[] | undefined {
   if (!successorRankLayoutReady(K)) return previous;
   const places = new Map(previous?.map((key, rank) => [key, rank]));
   return boxes.map(peer => {
@@ -36,7 +36,7 @@ export function rankComputers(boxes: Peer[], previous?: string[], now = leaseClo
     const preference = sample?.preferred ? 2 : !sample && peer.kind === "machine" ? 1 : 0;
     return { key: peer.key, uptime: sample ? observedUptime(sample.since, now) : 0,
       preference, place: places.get(peer.key) ?? boxes.length };
-  }).sort((a, b) => b.uptime - a.uptime
+  }).sort((a, b) => Number(b.key === pin) - Number(a.key === pin) || b.uptime - a.uptime
     || a.place - b.place || b.preference - a.preference || a.key.localeCompare(b.key))
     .map(box => box.key);
 }

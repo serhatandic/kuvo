@@ -82,7 +82,7 @@ test.if(mac)("what 0.7.2 kept itself comes along: projects, worktrees, machines,
   expect(snapshot(m.S)).toEqual(before)
   expect(readFileSync(join(m.home, "Library", "Preferences", "run.kuvo.code.trial713.plist")).equals(preferencesBefore)).toBe(true)
   const { K } = m
-  expect(readJSON(join(K, "folder-version.json"))).toEqual({ version: 14 })
+  expect(readJSON(join(K, "folder-version.json"))).toEqual({ version: 15 })
   const worktree = join(K, "data", "opencode", "worktree", m.rootCommit.slice(0, 6), "feature one")
   // Projects, in the sidebar's order, with their names, folders and Run commands; one kept only
   // for its settings, removed as it was; never a bot's folder, nor a machine's.

@@ -1,4 +1,6 @@
 // The standby renews the primary lease. Ranked computers probe their predecessors before taking over.
+import { successorRevisionLayoutReady } from "../../shared/folder-version";
+import { K } from "../home";
 import crypto from "node:crypto";
 import { isObject } from "../../shared/json";
 import { noteDocsChanged } from "../documents/changed";
@@ -14,7 +16,7 @@ import { proposeLeadership, standbyHere } from "./handover";
 import { CHECKPOINT_FEATURE, checkpointedTransition, leadershipDocuments } from "./checkpoint";
 import { acceptedMembership, acceptedName } from "./membership";
 import { leadershipOf, leadershipPosition, pendingStandby, successorCertificates, successorHistory, takeLeadership } from "./leadership";
-import { DEFAULT_DELAY, fresh, grantLease, HEARTBEAT_MS, leaseClock, LEASE_MS, primaryFenced, standbySettings, testSetupClock } from "./lease";
+import { DEFAULT_DELAY, fresh, grantLease, HEARTBEAT_MS, leaseClock, LEASE_MS, primaryFenced, standbySettings, takeoverProbeWindow, testSetupClock } from "./lease";
 import { availableComputer, observeAvailability, observedUptime, rankComputers, RANK_INTERVAL, resetAvailability } from "./reliability";
 import { pendingShared, publishedShared, sharedValue, stageShared } from "./shared";
 import { revocationDocuments } from "./revocations";
@@ -31,7 +33,9 @@ let lastTick: Clock | undefined;
 let lastTip: Clock | undefined;
 let lastRound = 0;
 let selecting = false;
-let loggedDelay: number | undefined;
+let logged = false;
+let pendingWait: { signature: string; since: number } | undefined;
+const recentTips = new Map<string, number>();
 let ping: { token: string; at: Clock } | undefined;
 let pong: { token: string; reply: string; at: Clock } | undefined;
 let lastPrimary: Clock | undefined;
@@ -59,7 +63,9 @@ function reset(setup: Position, now: Clock) {
   clearProbes();
   standbyUnavailable = undefined;
   rankCheckedAt = Date.now();
-  loggedDelay = undefined;
+  logged = false;
+  pendingWait = undefined;
+  recentTips.clear();
 }
 
 function send(host: LinkHost, link: LinkState, to: string, value: Record<string, unknown>) {
@@ -78,6 +84,7 @@ export function receiveAuthority(sender: MailSender, given: Record<string, unkno
   if (setup.successorChain && given.kind === "tip" && isObject(given.history)) {
     const peer = peersOf(link).find(peer => peer.key === sender.key);
     if (!peer) return;
+    recentTips.set(sender.key, Date.now());
     const remote = Object.fromEntries(Object.entries(given.history).slice(0, 16)
       .filter(([epoch, hash]) => /^[1-9][0-9]*$/.test(epoch) && typeof hash === "string")) as Record<number, string>;
     const give = successorCertificates(link, remote);
@@ -162,6 +169,19 @@ function takeoverTick(host: LinkHost | null | undefined): void {
   }
   if (setup.role === "primary" && link.leadershipPending) {
     const standby = pendingStandby(link) ?? peersOf(link).find(peer => peer.key === setup.standby?.key);
+    const signature = link.leadershipPending.s;
+    const wait = testing ? 3_000 : 3 * HEARTBEAT_MS;
+    if (pendingWait?.signature !== signature || standby && realNow - (recentTips.get(standby.key) ?? 0) < wait) {
+      pendingWait = { signature, since: realNow };
+    }
+    if (!selecting && setup.successorChain && successorRevisionLayoutReady(K) && realNow - pendingWait.since >= wait) {
+      const next = availableStandby(link, now, standby?.key);
+      if (next?.peer.sign) {
+        assignStandby(setup, { key: next.peer.key, sign: next.peer.sign },
+          { supersedes: signature, ...(setup.standby && setup.standby.key !== next.peer.key ? { replace: true as const } : {}) });
+        return;
+      }
+    }
     if (standby) sendDocs(host, link, [{ to: standby, docs: { give: leadershipDocuments(link.leadershipPending) } }]);
     return;
   }
@@ -185,18 +205,21 @@ function takeoverTick(host: LinkHost | null | undefined): void {
       const migrating = !setup.checkpointed && peersOf(link).every(peer => takesForwarded(peer.key, CHECKPOINT_FEATURE)) ||
         !setup.successorChain && acceptedMembership(link)?.successorOrder &&
           peersOf(link).every(peer => takesForwarded(peer.key, "setup.successor-chain"));
-      if (!primaryFenced(link)) standbyUnavailable = undefined;
+      if (!primaryFenced(link)) {
+        standbyUnavailable = undefined;
+        const nextStandby = setup.successorChain && successorRevisionLayoutReady(K) && availableStandby(link, now);
+        if (!selecting && nextStandby && nextStandby.peer.sign && nextStandby.peer.key !== setup.standby.key && availableComputer(setup.standby.key, now)) {
+          assignStandby(setup, { key: nextStandby.peer.key, sign: nextStandby.peer.sign });
+          return;
+        }
+      }
       else if (setup.successorChain) {
         standbyUnavailable ??= now;
         if (!selecting && now.wall - standbyUnavailable.wall >= DEFAULT_DELAY - LEASE_MS &&
           now.uptime - standbyUnavailable.uptime >= DEFAULT_DELAY - LEASE_MS) {
           const next = availableStandby(link, now, setup.standby.key);
           if (next?.peer.sign) {
-            selecting = true;
-            void proposeLeadership({ setup: setup.id, epoch: setup.epoch }, setup.primary,
-              { key: next.peer.key, sign: next.peer.sign }, { replace: true })
-              .catch(error => console.warn("Standby replacement:", error.message))
-              .finally(() => { selecting = false; });
+            assignStandby(setup, { key: next.peer.key, sign: next.peer.sign }, { replace: true });
           }
         }
       }
@@ -220,16 +243,15 @@ function takeoverTick(host: LinkHost | null | undefined): void {
   const own = ownKey(link);
   const standby = setup.standby?.key === own && setup.standby?.sign === ownSign(link);
   const order = acceptedMembership(link)?.successorOrder ?? [];
-  const earlier = setup.successorChain && own ? [setup.primary, ...(setup.standby ? [setup.standby.key] : []),
-    ...order.filter(key => key !== setup.primary && key !== setup.standby?.key)] : [];
+  const earlier = setup.successorChain && own ? [setup.primary, ...order.filter(key => key !== setup.primary)] : [];
   const rank = own ? earlier.indexOf(own) : -1;
   if (!standby && rank < 1) return;
-  if (loggedDelay !== settings.delay) {
-    loggedDelay = settings.delay;
-    console.info(`Standby watching epoch ${setup.epoch} with a ${settings.delay / 60_000}-minute takeover delay.`);
+  if (!logged) {
+    logged = true;
+    console.info(`Standby watching epoch ${setup.epoch} with a ${DEFAULT_DELAY / 60_000}-minute takeover delay.`);
   }
   const heard = lastPrimary ?? since;
-  const expired = now.uptime - heard.uptime >= settings.delay && now.wall - heard.wall >= settings.delay;
+  const expired = now.uptime - heard.uptime >= DEFAULT_DELAY && now.wall - heard.wall >= DEFAULT_DELAY;
   const higher = rank > 1 ? earlier.slice(1, rank) : [];
   const reachableHigher = higher.some(key => {
     const reply = reached.get(key);
@@ -238,13 +260,13 @@ function takeoverTick(host: LinkHost | null | undefined): void {
   if (expired && !reachableHigher) {
     eligibleSince ??= realNow;
     // Give a fresh probe of the earlier successors time to return before taking their place.
-    const grace = Math.max(0, rank - 1) * (testing ? 800 : HEARTBEAT_MS);
+    const grace = takeoverProbeWindow(standby, higher.length, testing ? 800 : HEARTBEAT_MS);
     if (realNow - eligibleSince >= grace) {
       promote(host, setup);
       return;
     }
   } else eligibleSince = undefined;
-  for (const key of standby ? [] : [setup.primary, ...higher]) {
+  for (const key of standby ? higher : [setup.primary, ...higher]) {
     const token = nonce();
     probes.set(key, { token, at: now });
     send(host, link, key, { kind: "rank-probe", token });
@@ -255,6 +277,13 @@ function takeoverTick(host: LinkHost | null | undefined): void {
   }
 }
 
+function assignStandby(setup: Position, peer: { key: string; sign: string }, options?: { replace?: true; supersedes?: string }) {
+  selecting = true;
+  void proposeLeadership({ setup: setup.id, epoch: setup.epoch }, setup.primary, peer, options)
+    .catch(error => console.warn("Standby selection:", error.message))
+    .finally(() => { selecting = false; });
+}
+
 function availableStandby(link: LinkState, now: Clock, unavailable?: string) {
   const retiring = leadershipOf(link)?.body.retiredStandby;
   const available = peersOf(link).flatMap(peer => {
@@ -262,13 +291,17 @@ function availableStandby(link: LinkState, now: Clock, unavailable?: string) {
     const candidate = availableComputer(peer.key, now);
     return candidate ? [{ peer, ...candidate }] : [];
   });
-  // Use platform preference during bootstrap, then prefer sustained observed availability.
   const order = link.setup?.successorChain ? acceptedMembership(link)?.successorOrder : undefined;
-  const rank = (key: string) => {
-    const index = order?.indexOf(key) ?? -1;
-    return index < 0 ? Infinity : index;
-  };
-  available.sort((a, b) => rank(a.peer.key) - rank(b.peer.key) || observedUptime(b.since, now) - observedUptime(a.since, now) || Number(b.preferred) - Number(a.preferred) || a.peer.key.localeCompare(b.peer.key));
+  if (order) {
+    const byKey = new Map(available.map(candidate => [candidate.peer.key, candidate]));
+    for (const key of order) {
+      const candidate = byKey.get(key);
+      if (candidate) return candidate;
+    }
+    return undefined;
+  }
+  // Before there is a signed order, bootstrap from the availability reports.
+  available.sort((a, b) => observedUptime(b.since, now) - observedUptime(a.since, now) || Number(b.preferred) - Number(a.preferred) || a.peer.key.localeCompare(b.peer.key));
   return available[0];
 }
 
@@ -279,7 +312,7 @@ function refreshRank(position: Position, now: Clock) {
       || link.localWipe || primaryFenced(link) || pendingShared(link, "membershipAndAccess")) return null;
     const membership = acceptedMembership(link);
     if (!membership) return null;
-    const order = rankComputers(membership.boxes, membership.successorOrder, now);
+    const order = rankComputers(membership.boxes, membership.successorOrder, now, membership.successorPin);
     if (!order || order.every((key, index) => key === membership.successorOrder?.[index])) return null;
     return stageShared(link, "membershipAndAccess", { ...membership, successorOrder: order }) ? link : null;
   }, { durable: true });
@@ -335,7 +368,7 @@ function promote(host: LinkHost, position: Position) {
     return doc && takeLeadership(link, doc) ? link : null;
   }, { durable: true });
   if (!changed?.setup) return;
-  console.info(`Standby took over at setup epoch ${changed.setup.epoch} after ${standbySettings().delay / 60_000} minutes without its primary.`);
+  console.info(`Standby took over at setup epoch ${changed.setup.epoch} after ${DEFAULT_DELAY / 60_000} minutes without its primary.`);
   sendDocs(host, changed, peersOf(changed).map(to => ({ to, docs: { give: leadershipDocuments(changed.leadership![changed.setup!.epoch]!) } })));
   noteDocsChanged();
   try { writeCard(); } catch {}

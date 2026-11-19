@@ -556,7 +556,6 @@ test("failure bench: losing the successor before readiness keeps the old primary
   reconnect();
 });
 
-const HOUR = 3_600_000;
 
 async function standbyNetwork(t, releaseKey) {
   const net = await network(t, true, releaseKey);
@@ -887,9 +886,55 @@ test("failure bench: a newer split epoch wins over an earlier, better-ranked suc
   assert.deepEqual(b.read().leadership[4], fallback.read().leadership[4]);
 });
 
+test("failure bench: a pending handover is superseded when its approver is lost across restart", { timeout: 45_000 }, async t => {
+  const { a, b, c, relay, see, phone, pairing } = await standbyNetwork(t);
+  await see(c, 2, a);
+  const release = relay.intercept(a.address, b.address, packet => {
+    const mail = link.openMail(link.readFrame(packet.payload)?.body ?? Buffer.alloc(0), b.read())?.payload;
+    return mail?.docs?.give?.some(envelope => link.readDoc(envelope)?.body.proposal === true);
+  });
+  const handover = submit(a, c, 2);
+  const pending = await until("signed pending handover", () => a.read().leadershipPending, t.signal);
+  assert.equal(b.read().setup.epoch, 2);
+  await b.stop("SIGTERM");
+  release();
+  await a.stop("SIGTERM");
+  a.start();
+  await Promise.all([see(a, 3, a), see(c, 3, a)]);
+  assert.equal(link.readDoc(a.read().leadership[3]).body.supersedes, pending.s);
+  assert.equal(a.read().setup.standby.key, c.key);
+  assert.equal((await handover).status, 409);
+  await until("replacement lease", () => a.lease(3, c), t.signal);
+  const saved = await a.route("POST", "kuvo/phones/remove", { phones: [{ key: phone, pairing }] }, true);
+  assert.equal(saved.status, 200);
+  await until("replacement acknowledges a save", () => c.read().removed?.some(device => device.key === phone), t.signal);
+});
+
+test("failure bench: a promoted primary cannot hand over before its standby grants a lease", { timeout: 40_000 }, async t => {
+  const { a, b, c, relay, see } = await standbyNetwork(t);
+  const unblock = relay.intercept(c.address, b.address, packet => {
+    const mail = link.openMail(link.readFrame(packet.payload)?.body ?? Buffer.alloc(0), b.read())?.payload;
+    return mail?.setupAuthority?.kind === "available";
+  });
+  await a.stop("SIGTERM");
+  b.clock(TAKEOVER + 5_000);
+  c.clock(TAKEOVER + 5_000);
+  await Promise.all([see(b, 3, b), see(c, 3, b)]);
+  assert.equal(b.read().setup.standby, undefined);
+  assert.equal((await submit(b, c, 3)).status, 503);
+  assert.equal(b.read().setup.epoch, 3);
+  unblock();
+  await see(b, 4, b);
+  await until("primary leased", () => b.lease(4, c), t.signal);
+  assert.equal((await submit(b, c, 4)).status, 202);
+  await see(c, 5, c);
+});
+
 test("failure bench: a fenced primary replaces an unavailable standby before saving again", { timeout: 45_000 }, async t => {
   const { a, b, c, see, phone, pairing } = await standbyNetwork(t);
   await see(c, 2, a);
+  const pin = await a.route("POST", "kuvo/setup/standby", { standby: b.key, epoch: 2 });
+  assert.deepEqual(pin, { status: 200, value: { primary: a.key, epoch: 2 } });
   await b.stop("SIGTERM");
   a.clock(TAKEOVER + 5_000);
   c.clock(TAKEOVER + 5_000);
@@ -899,10 +944,17 @@ test("failure bench: a fenced primary replaces an unavailable standby before sav
   c.clock(2 * TAKEOVER);
   await Promise.all([see(a, 3, a), see(c, 3, a)]);
   assert.equal(a.read().setup.standby.key, c.key);
+  assert.equal(a.read().shared.membershipAndAccess.value.successorPin, b.key);
+  assert.equal(a.read().shared.membershipAndAccess.value.successorOrder[0], b.key);
   await until("new standby renews the lease", () => a.lease(3, c), t.signal);
   const remove = await a.route("POST", "kuvo/phones/remove", { phones: [{ key: phone, pairing }] }, true);
   assert.equal(remove.status, 200);
   await until("replacement acknowledged the save", () => c.read().removed.some(device => device.key === phone && device.pairing === pairing), t.signal);
+  b.clock(2 * TAKEOVER);
+  b.start();
+  await Promise.all([see(a, 4, a), see(b, 4, a), see(c, 4, a)]);
+  assert.equal(a.read().setup.standby.key, b.key, "the returning first ranked computer resumes as standby");
+  await until("returning standby renewed the lease", () => a.lease(4, b), t.signal);
 });
 
 test("failure bench: a device revoked on a losing branch stays revoked on both sides", { timeout: 70_000 }, async t => {
@@ -940,6 +992,10 @@ test("failure bench: only the old standby can approve a standby replacement and 
   assert.deepEqual(selected, { status: 202, value: { primary: a.key, epoch: 3 } });
   await Promise.all([see(b, 3, a), see(c, 3, a)]);
   assert.equal(link.readDoc(c.read().leadership[3]).origin, b.sign);
+  const ranked = c.read().shared.membershipAndAccess.value;
+  assert.equal(ranked.successorPin, c.key);
+  assert.equal(ranked.successorOrder[0], c.key);
+  assert.equal(ranked.successorRevisions.at(-1).order[0], c.key);
   await until("replacement granted lease", () => a.lease(3, c), t.signal);
   assert.deepEqual(await submit(a, b, 3), { status: 202, value: { primary: b.key, epoch: 4 } });
   await Promise.all([see(b, 4, b), see(c, 4, b)]);
@@ -947,14 +1003,14 @@ test("failure bench: only the old standby can approve a standby replacement and 
   assert.equal(b.read().setup.standby.key, c.key);
 });
 
-test("failure bench: a lost primary is replaced after the configured delay", { timeout: 40_000 }, async t => {
+test("failure bench: the takeover deadline ignores a retained delay override", { timeout: 40_000 }, async t => {
   const { a, b, c, see } = await standbyNetwork(t);
   fs.writeFileSync(path.join(b.env.HOME, "setup-takeover.json"), JSON.stringify({ delayMinutes: 60, alwaysOn: true }));
   await a.stop("SIGKILL");
   b.clock(3_000);
   await delay(700);
   await see(b, 2, a);
-  b.clock(HOUR + 1_000);
+  b.clock(TAKEOVER + 5_000);
   await Promise.all([see(b, 3, b), see(c, 3, b)]);
   assert.equal(a.read().setup.epoch, 2);
 });

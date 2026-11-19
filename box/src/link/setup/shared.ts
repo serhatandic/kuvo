@@ -1,6 +1,6 @@
 // The standby's durable acceptance commits an operation. Proposals, outcomes and accepted
 // values share the link lock. An operation keeps its identity even when its kind is edited again.
-import { setupLayoutDeferred } from "../../shared/folder-version";
+import { setupLayoutDeferred, successorRevisionLayoutReady } from "../../shared/folder-version";
 import crypto from "node:crypto";
 import { SHARED_KINDS, sharedKind, sharedPolicy, type SharedKind } from "../../shared/data-declarations";
 import type { Doc, SignedDoc } from "../../shared/documents";
@@ -155,6 +155,16 @@ export function stageShared(link: LinkState, kind: SharedKind, value: unknown, e
   scopeShared(link, setup.id);
   if (Object.hasOwn(link.sharedOutcomes ?? {}, operation)) return null;
   const pending = pendingShared(link, kind);
+  if (kind === "membershipAndAccess" && setup.successorChain && successorRevisionLayoutReady(K)) {
+    const before = acceptedMembership(link);
+    const after = membershipOf(value);
+    if (!before || !after?.successorOrder) return null;
+    const orderChanged = JSON.stringify(before.successorOrder) !== JSON.stringify(after.successorOrder) || before.successorPin !== after.successorPin;
+    const authority = held(link.leadership?.[setup.epoch])?.h ?? setup.leadershipHash ?? setup.sign;
+    const revision = { authority, operation: pending ? identity(pending) ?? operation : operation, order: after.successorOrder };
+    value = membershipOf({ ...after, successorRevisions: orderChanged
+      ? [...before.successorRevisions ?? [], revision] : before.successorRevisions });
+  }
   if (pending) {
     return (!requested || identity(pending) === requested) && JSON.stringify(pending.body.value) === JSON.stringify(value)
       && JSON.stringify(pending.body.effects) === JSON.stringify(effects) ? asSave(pending, link.sign) : null;

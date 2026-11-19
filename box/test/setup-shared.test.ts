@@ -7,7 +7,7 @@ import { addressOf, newKey, publicOf } from "../src/link/crypto/keys";
 import { newSigningSeed, readDoc, signDoc, signingKeyOf } from "../src/link/documents/format";
 import { changedWork, digestOf, docsWork } from "../src/link/documents/work";
 import { readLink, writeLink, type LinkState } from "../src/link/state";
-import { grantLease, leaseClock } from "../src/link/setup/lease";
+import { grantLease, HEARTBEAT_MS, leaseClock, takeoverProbeWindow } from "../src/link/setup/lease";
 import { K, RUN } from "../src/link/home";
 import { cacheCheckpoint, checkpointHash, checkpointedTransition, leadershipDocuments } from "../src/link/setup/checkpoint";
 import { upgradeKuvoFolder } from "../src/shared/folder-version";
@@ -24,6 +24,14 @@ function identity() {
   const sign = newSigningSeed();
   return { key: publicOf(secret).toString("base64url"), seed: secret.toString("base64url"), address: addressOf(secret).toString("base64url"), sign, signer: signingKeyOf(sign) };
 }
+
+test("takeover probes share one heartbeat regardless of how many predecessors are offline", () => {
+  expect(takeoverProbeWindow(true, 0)).toBe(0);
+  for (const count of [1, 12, 63]) {
+    expect(takeoverProbeWindow(true, count)).toBe(HEARTBEAT_MS);
+    expect(takeoverProbeWindow(false, count)).toBe(HEARTBEAT_MS);
+  }
+});
 
 test("accepted successor order prefers servers at bootstrap and learns sustained availability", () => {
   upgradeKuvoFolder(K);
@@ -42,6 +50,7 @@ test("accepted successor order prefers servers at bootstrap and learns sustained
   observeAvailability(server!.key, now, true, "Server");
   const order = rankComputers(boxes, bootstrap, now)!;
   expect(order[0]).toBe(laptop!.key);
+  expect(rankComputers(boxes, bootstrap, now, server!.key)?.[0]).toBe(server!.key);
   expect(membershipOf({ boxes, successorOrder: order })?.successorOrder).toEqual(order);
   expect(membershipOf({ boxes })?.successorOrder).toBeUndefined();
   expect(membershipOf({ boxes, successorOrder: [laptop!.key, server!.key, server!.key] })).toBeNull();
@@ -58,7 +67,7 @@ test("competing successors reconcile conflicting certificates at the same epoch 
   const setup: SetupRecord = { id, epoch: 1, primary: a.key, sign: a.signer, role: "primary", managed: true, checkpointed: true };
   const source: LinkState = { key: a.seed, sign: a.sign, setup };
   const pairing = "paired";
-  const membership = { boxes, successorOrder: [b.key, c.key, a.key], devices: { phones: [{ key: phone.key, name: "Phone", pairing }], removed: [] } };
+  const membership = { boxes, successorOrder: [a.key, b.key, c.key], devices: { phones: [{ key: phone.key, name: "Phone", pairing }], removed: [] } };
   const values = { membershipAndAccess: { sequence: 1, value: membership } };
   const parent = checkpointedTransition(source, {
     setup: { id, epoch: 2, primary: a.key }, previous: a.key, successorChain: true, standby: b.key, numberCeiling: 2_000,
@@ -66,20 +75,29 @@ test("competing successors reconcile conflicting certificates at the same epoch 
   expect(takeLeadership(source, parent)).toBe(true);
 
   const follower: LinkState = { ...structuredClone(source), key: b.seed, sign: b.sign, setup: { ...source.setup!, role: "member" } };
+  const refresh = stageShared(source, "membershipAndAccess", { ...membership, successorOrder: [b.key, c.key, a.key] })!;
+  const accepted = pendingShared(source, "membershipAndAccess")!;
+  const receipt = readDoc(takeShared(follower, a.key, accepted))!;
+  grantLease(source, leaseClock());
+  takeShared(source, b.key, receipt);
+  expect(operationOutcome(source, id, refresh.operation)?.status).toBe("committed");
+  expect(source.setup?.epoch).toBe(2);
+  expect(acceptedMembership(follower)?.successorRevisions?.at(-1)?.operation).toBe(refresh.operation);
+  const agreed = source.shared!;
   const proposal = checkpointedTransition(source, {
     setup: { id, epoch: 3, primary: a.key }, previous: a.key, proposal: true, successorChain: true, standby: b.key, numberCeiling: 4_000,
-  }, { ...values, setupNames: { sequence: 1, value: { [a.key]: "Discarded" } } })!;
+  }, { ...agreed, setupNames: { sequence: 1, value: { [a.key]: "Discarded" } } })!;
   const lower = readDoc(signDoc(b.sign, "leadership", 3, { ...proposal.body, approval: proposal.envelope.s }))!;
   const higher = checkpointedTransition(follower, {
     setup: { id, epoch: 3, primary: b.key }, previous: a.key, takeover: true, successorChain: true,
-  }, values)!;
+  }, follower.shared!)!;
   expect(takeLeadership(source, lower)).toBe(true);
   expect(takeLeadership(follower, higher)).toBe(true);
   expect(source.setup?.role).toBe("primary");
   expect(follower.setup?.role).toBe("primary");
 
   // These were accepted saves made on A's branch after its epoch certificate.
-  source.shared!.membershipAndAccess = { sequence: 2, value: { ...membership, boxes: boxes.slice(0, 2),
+  source.shared!.membershipAndAccess = { sequence: 2, value: { ...membership, successorRevisions: acceptedMembership(source)?.successorRevisions, boxes: boxes.slice(0, 2),
     successorOrder: [b.key, a.key], left: [c.key], devices: { phones: [], removed: [{ key: phone.key, pairing }] } } };
   const revoked = publishRevocations(source)!;
   expect(revoked).toBeTruthy();
