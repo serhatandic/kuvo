@@ -12,7 +12,10 @@
 import { createHash, randomBytes } from "node:crypto"
 import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs"
 import { dirname } from "node:path"
+import type { Receipt, SaveEnvelope } from "../../shared/routes/setup-save"
+import { askSetupOutcome, askSetupSave, localSetupValue, setupSaveReference, type LocalSaveAnswer, type LocalSetupValue, type SetupSaveReference } from "../../shared/setup-local"
 
+import { upgradeFormat, UnsupportedFormatVersion } from "../../shared/format-version"
 import { notificationAvailability } from "./notices"
 
 /** The parts of the settings, each changed and shared whole. */
@@ -280,6 +283,10 @@ function keeping(unit: SettingsUnit, before: unknown, given: unknown, knows?: Kn
 /** A part's version as a client names it, to say what a change of it was made from. */
 export const versionOf = (stamp: Stamp) => `${stamp.v}/${stamp.by}${stamp.imported ? "/i" : ""}`
 
+const settingsSteps = [(value: unknown) => value]
+const checkSettingsFormat = (value: { kuvo?: unknown } | null) =>
+  upgradeFormat("Usage settings", value?.kuvo, value, settingsSteps)
+
 /**
  * A box's usage settings, kept in its usage folder (`settings.json`, which keeps Codex's fallback
  * model where a box from before reads it too). `self`: this box's link key, once the link says it.
@@ -296,6 +303,7 @@ export class UsageSettings {
   setup?: string | null
   /** The highest version seen, so a change counts on from it whatever this clock says. */
   private highest = 0
+  private sharedRevision?: string
   private listeners: ((units: SettingsUnit[]) => void)[] = []
   /** Who made a change before the link named this box: two such never tie. */
   private readonly unnamed = "?" + randomBytes(8).toString("hex")
@@ -304,10 +312,12 @@ export class UsageSettings {
     private readonly file?: string,
     private readonly now: () => number = Date.now,
     public self: () => string = () => "",
+    private readonly run?: string,
   ) {
     if (!file) return
     try {
       const saved = JSON.parse(readFileSync(file, "utf8"))
+      checkSettingsFormat(saved)
       this.units = unitsFrom(saved?.units)
       this.imported = saved?.imported === true
       if (typeof saved?.setup === "string" || saved?.setup === null) this.setup = saved.setup
@@ -317,8 +327,44 @@ export class UsageSettings {
         const value = checked("codexFallback", codex.fallback === "" ? null : codex.fallback)
         if (value !== undefined) this.units.codexFallback = { value, stamp: { v: Math.floor(statSync(file).mtimeMs), by: "", imported: true } }
       }
-    } catch {}
+    } catch (error) {
+      if (error instanceof UnsupportedFormatVersion) throw error
+    }
     for (const unit of Object.values(this.units)) if (!unit.stamp.imported) this.highest = Math.max(this.highest, unit.stamp.v)
+  }
+
+  shared(): LocalSetupValue | null {
+    return this.run ? localSetupValue(this.run, "setupUsageDisplay") : null
+  }
+
+  followShared() {
+    const shared = this.shared()
+    if (!shared || !shared.sequence) return
+    const revision = `${shared.id}:${shared.epoch}:${shared.sequence}`
+    if (revision === this.sharedRevision) return
+    this.sharedRevision = revision
+    const value = shared.value as { units?: unknown; imported?: boolean } | undefined
+    this.units = unitsFrom(value?.units)
+    this.imported = value?.imported === true
+    for (const unit of Object.values(this.units)) this.highest = Math.max(this.highest, unit.stamp.v)
+    this.changed([...SETTINGS_UNITS], false)
+  }
+
+  draft(): UsageSettings {
+    const draft = new UsageSettings(undefined, this.now, this.self)
+    draft.units = this.kept()
+    draft.imported = this.imported
+    draft.highest = this.highest
+    return draft
+  }
+
+  saveDraft(shared: LocalSetupValue, draft: UsageSettings): Promise<LocalSaveAnswer> {
+    return askSetupSave(this.run!, { kind: "setupUsageDisplay", id: shared.id, epoch: shared.epoch, sequence: shared.sequence,
+      value: { units: draft.kept(), imported: draft.imported } })
+  }
+
+  saveOutcome(reference: SetupSaveReference): Promise<LocalSaveAnswer> | null {
+    return this.run ? askSetupOutcome(this.run, reference, "setupUsageDisplay") : null
   }
 
   /** Told each time parts change (here, or from another of your computers). */
@@ -475,18 +521,26 @@ export class UsageSettings {
   private save() {
     if (!this.file) return
     try {
+      try {
+        checkSettingsFormat(JSON.parse(readFileSync(this.file, "utf8")))
+      } catch (error) {
+        if (error instanceof UnsupportedFormatVersion) throw error
+      }
       mkdirSync(dirname(this.file), { recursive: true })
       // (Codex's fallback model where a box from before reads it, while it's one this box chose or took.)
       const codex = this.units.codexFallback ? { codex: { fallback: this.units.codexFallback.value } } : {}
-      writeFileSync(this.file + ".new", JSON.stringify({ ...codex, kuvo: 1, units: this.units, ...(this.imported ? { imported: true } : {}), ...(this.setup !== undefined ? { setup: this.setup } : {}) }), { mode: 0o600 })
+      writeFileSync(this.file + ".new", JSON.stringify({ ...codex, kuvo: settingsSteps.length, units: this.units, ...(this.imported ? { imported: true } : {}), ...(this.setup !== undefined ? { setup: this.setup } : {}) }), { mode: 0o600 })
       renameSync(this.file + ".new", this.file)
-    } catch {}
+    } catch (error) {
+      if (error instanceof UnsupportedFormatVersion) throw error
+    }
   }
 }
 
 const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } })
 
 /** What a client reads: each part set (one never set is the panel's own default), and whether a Mac's came in. */
+const savedJson = (receipt: Receipt, status = 200) => json(receipt, status)
 const answer = (settings: UsageSettings, extra: Record<string, unknown> = {}) => json({ data: { settings: settings.values(), versions: settings.versions(), imported: settings.imported, notificationAvailability: notificationAvailability(), ...extra } })
 
 /**
@@ -495,10 +549,32 @@ const answer = (settings: UsageSettings, extra: Record<string, unknown> = {}) =>
  * whole; `knows: {cards, meters}`, those the client's app knows: what it doesn't is kept; `based:
  * {part: version}`, what each was changed from: one changed since is left, `stale`) answers the same; `POST api/kuvo/usage/settings/import` with what a Mac kept before takes
  * the parts no box has set, once, and answers with `took` (PROTOCOL.md, "Usage settings").
+ * `POST api/kuvo/usage/settings/save` checks a returned setup save receipt on this box.
  * `choices`: the models Codex's fallback model may be now.
  */
 export async function settingsRoutes(settings: UsageSettings, choices: () => string[], method: string, rest: string[], body: () => Promise<any>): Promise<Response> {
+  settings.followShared()
   if (!rest.length && method === "GET") return answer(settings)
+  if (rest.length === 1 && rest[0] === "save" && method === "POST") {
+    const reference = setupSaveReference(await body().catch(() => undefined))
+    if (!reference) return json({ message: "Send the setup save receipt." }, 400)
+    const result = await settings.saveOutcome(reference)
+    return result?.receipt ? savedJson(result.receipt) : json({ message: result?.message }, result?.status ?? 503)
+  }
+  const shared = settings.shared()
+  if (shared && !shared.primary) return json({ message: "Change your setup's usage settings on its primary." }, 409)
+  const draft = shared ? settings.draft() : settings
+  const saved = async (extra: Record<string, unknown>) => {
+    if (!shared) return answer(settings, extra)
+    const result = await settings.saveDraft(shared, draft)
+    if (result.status !== 200) {
+      if (result.receipt) return savedJson(result.receipt, result.status)
+      return json({ message: result.message, ...(result.legacyPending ?? (result.status === 202 ? { pending: true } : {})) }, result.status)
+    }
+    settings.followShared()
+    if (result.receipt) return answer(settings, { ...extra, save: result.receipt } satisfies SaveEnvelope & Record<string, unknown>)
+    return answer(settings, extra)
+  }
   if (!rest.length && method === "PUT") {
     const given = await body().catch(() => undefined)
     if (!given || typeof given !== "object" || Array.isArray(given)) return json({ message: "Say which settings change, each whole." }, 400)
@@ -506,9 +582,9 @@ export async function settingsRoutes(settings: UsageSettings, choices: () => str
       return json({ message: "This model's prices aren't available now. Choose another model or None." }, 400)
     }
     const { knows, based, ...parts } = given as Record<string, unknown>
-    const changed = settings.change(parts, knowsFrom(knows), based && typeof based === "object" && !Array.isArray(based) ? (based as Record<string, unknown>) : undefined)
+    const changed = draft.change(parts, knowsFrom(knows), based && typeof based === "object" && !Array.isArray(based) ? (based as Record<string, unknown>) : undefined)
     if ("message" in changed) return json({ message: changed.message }, 400)
-    return answer(settings, changed.stale.length ? { stale: changed.stale } : {})
+    return changed.changed.length ? saved(changed.stale.length ? { stale: changed.stale } : {}) : answer(settings, changed.stale.length ? { stale: changed.stale } : {})
   }
   if (rest.length === 1 && rest[0] === "import" && method === "POST") {
     const given = await body().catch(() => undefined)
@@ -516,7 +592,8 @@ export async function settingsRoutes(settings: UsageSettings, choices: () => str
     // (A fallback model this box can't price with now isn't one to take.)
     const { codexFallback, ...rest } = given as Record<string, unknown>
     const usable = codexFallback === null || (typeof codexFallback === "string" && choices().includes(codexFallback))
-    return answer(settings, { took: settings.take(usable ? { ...rest, codexFallback } : rest) })
+    if (settings.imported) return answer(settings, { took: [] })
+    return saved({ took: draft.take(usable ? { ...rest, codexFallback } : rest) })
   }
   return json({ message: "Not available for this agent." }, 404)
 }

@@ -111,15 +111,15 @@ test("a machine removed from any of your computers stays removed when this Mac's
   assert.equal((await ask("GET", `kuvo/link/setup?key=${attic.pub}`)).status, 200);
   assert.equal((await ask("PUT", "kuvo/link/peers", { peers: [devbox.peer, mini.peer, attic.peer], moved: [] })).status, 200);
   assert.deepEqual(names(), ["devbox", "mini"]);
-  // A stale record on disk is insufficient. Only the completed SSH join restores this peer.
+  // A stale record on disk is insufficient. Re-enrollment needs fresh credentials.
   fs.writeFileSync(path.join(home, "machines.json"), JSON.stringify([{ destination: "devbox" }, { destination: "mini" }, { destination: "attic" }]));
   assert.equal((await ask("PUT", "kuvo/link/peers", { peers: [devbox.peer, mini.peer, attic.peer], moved: [] })).status, 200);
   assert.deepEqual([names(), link.macPeersBody(link.readLink()).left], [["devbox", "mini"], [attic.pub]]);
-  link.updateLink(state => link.setMacPeers(state, { peers: [devbox.peer, mini.peer, attic.peer] }, attic.pub).link);
-  assert.deepEqual(names(), ["devbox", "mini", "attic"]);
-  // Removed again later, and it's removed again.
-  assert.equal((await handed(devbox, { method: "DELETE", item: attic.pub }))[0].status, 200);
-  assert.equal((await ask("PUT", "kuvo/link/peers", { peers: [devbox.peer, mini.peer, attic.peer], moved: [] })).status, 200);
+  const freshAttic = box("machine", "attic");
+  assert.equal((await ask("PUT", "kuvo/link/peers", { peers: [devbox.peer, mini.peer, freshAttic.peer] })).status, 200);
+  assert.deepEqual([names(), link.macPeersBody(link.readLink()).left], [["devbox", "mini", "attic"], [attic.pub]]);
+  assert.equal((await handed(devbox, { method: "DELETE", item: freshAttic.pub }))[0].status, 200);
+  assert.equal((await ask("PUT", "kuvo/link/peers", { peers: [devbox.peer, mini.peer, attic.peer, freshAttic.peer], moved: [] })).status, 200);
   assert.deepEqual(names(), ["devbox", "mini"]);
 
   // Renamed here, and missing from the app's list for a moment (it couldn't be set up just then):
@@ -203,54 +203,47 @@ test("link updates time out without writing when another writer still owns the l
   assert.ok(link.updateLink(state => state), "a fresh update can retry after the lock is released");
 });
 
-test("vouching checks the membership recorded when the pairing write acquires its lock", async () => {
+test("forwarded pairing checks the membership recorded when the pairing write acquires its lock", async () => {
   fresh();
   link.updateLink(state => ({ ...state, setup: { id: `set_${"a".repeat(22)}`, epoch: 1, primary: k(link.publicOf(mac)), sign: link.signingKeyOf(state.sign), role: "primary" } }));
   const key = k(link.publicOf(link.newKey()));
-  const mkdir = fs.mkdirSync;
+  const rename = fs.renameSync;
   let removed = false;
-  fs.mkdirSync = (folder, ...args) => {
-    if (folder === path.join(run, ".link.lock") && !removed) {
+  fs.renameSync = (from, to) => {
+    if (to === path.join(run, ".link.lock") && !removed) {
       removed = true;
       const state = link.readLink();
       state.removedHere = [attic.pub];
       link.writeLink(link.setMacPeers(state, { peers: [devbox.peer, mini.peer], removed: [attic.pub] }).link);
     }
-    return mkdir(folder, ...args);
+    return rename(from, to);
   };
   let result;
   try {
     result = await link.deviceAct(attic.peer, { method: "POST", item: key, body: { name: "Fresh app", kind: "desktop" } });
   } finally {
-    fs.mkdirSync = mkdir;
+    fs.renameSync = rename;
   }
   assert.equal(removed, true);
   assert.deepEqual(result, { status: 409, value: { message: "Only computers in Studio's own setup can add your devices." } });
   assert.equal(link.readLink().phones.some(each => each.key === key), false);
 });
 
-test("a vouched app's pairing links inherit its voucher and expire with its pairing", async () => {
+test("unlinking a member preserves the setup pairing and its invitations", async () => {
   fresh();
   link.macLink.appSaid = undefined;
-  const appKey = link.publicOf(link.newKey());
-  const childKey = link.publicOf(link.newKey());
+  const key = link.publicOf(link.newKey());
+  const invited = link.publicOf(link.newKey());
   link.updateLink(state => {
-    link.pairDevice(state, { key: k(appKey), name: "Attic screen", by: attic.pub });
+    link.pairDevice(state, { key: k(key), name: "Desktop" });
     return state;
   });
-  const issuer = { key: appKey, pairing: link.readLink().phones.find(each => each.key === k(appKey)).pairing };
-  const issued = async () => {
-    const response = await ask("POST", "kuvo/phones/pair", undefined, issuer);
-    assert.equal(response.status, 200);
-    return new URL(response.body.link).searchParams.get("token");
-  };
-  assert.equal(link.authorizePhone(childKey, { pair: await issued(), name: "Attic phone" }), true);
-  const childVoucher = link.readLink().phones.find(each => each.key === k(childKey)).by;
-  const pending = await issued();
+  const grant = link.readLink().phones.find(each => each.key === k(key));
+  const invite = await ask("POST", "kuvo/phones/pair", undefined, { key, pairing: grant.pairing });
+  assert.equal(invite.status, 200);
   assert.equal((await ask("DELETE", `kuvo/computers/${attic.pub}`)).status, 200);
-  const afterRemoval = link.authorizePhone(appKey, { pair: pending, name: "Attic screen", client: "desktop" });
-  assert.deepEqual({ childVoucher, afterRemoval, childAccess: link.authorizePhone(childKey, {}) },
-    { childVoucher: attic.pub, afterRemoval: false, childAccess: false });
+  assert.equal(link.authorizePhone(key, {}), true);
+  assert.equal(link.authorizePhone(invited, { pair: new URL(invite.body.link).searchParams.get("token"), name: "Phone" }), true);
 });
 
 test("a pairing link cannot outlive its issuer's pairing even when the same key is paired again", async () => {
@@ -360,59 +353,22 @@ test("a name you gave a machine is the one your phones are given for it too", as
   assert.deepEqual(hosts.map(each => [each.machine, each.name]), [["devbox", "Build box"]]);
 });
 
-test("removing a computer takes Kuvo Code's app on it off your devices, however it's removed: every device its box added, on every computer, and no other (#753)", async () => {
+test("removing a computer and removing a device are distinct changes", async () => {
   fresh();
   link.macLink.appSaid = undefined;
-  const device = () => k(link.publicOf(link.newKey()));
-  const phone = device(), own = device(), atticOne = device(), atticTwo = device(), miniOne = device(), devboxOne = device();
+  const laptop = k(link.publicOf(link.newKey()));
+  const phone = k(link.publicOf(link.newKey()));
   link.updateLink(state => {
-    link.pairPhone(state, { key: phone, name: "My iPhone", added: 1, from: "pair", pairing: "its-own" });
-    // (Kuvo Code's app beside this box, and those your machines' boxes vouched for: `by`.)
-    link.pairDevice(state, { key: own, name: "Studio screen" });
-    link.pairDevice(state, { key: atticOne, name: "Attic screen", by: attic.pub });
-    link.pairDevice(state, { key: atticTwo, name: "Attic laptop", by: attic.pub });
-    link.pairDevice(state, { key: miniOne, name: "Mini screen", by: mini.pub });
-    link.pairDevice(state, { key: devboxOne, name: "Devbox screen", by: devbox.pub });
+    link.pairDevice(state, { key: laptop, name: "Attic screen" });
+    link.pairPhone(state, { key: phone, name: "Phone", from: "pair", pairing: "phone-pairing" });
     return state;
   });
-  const devices = async () => (await ask("GET", "kuvo/phones")).body.phones.map(each => each.name).sort();
-  const pairingOf = key => link.readLink().phones.find(each => each.key === key).pairing;
-  const removals = () => link.ownPhones(link.readLink()).removed;
-  // Its confirm says so before you remove it, where its app is one of your devices.
-  const confirm = async (computer, id = "remove") => (await link.listComputers("Studio", null)).find(each => each.key === computer.pub).actions.find(action => action.id === id).confirm.message;
-  assert.equal(await confirm(attic), "Your other computers stop reaching attic. Kuvo Code’s app on attic is taken off your devices. It keeps running, with its sessions, and you can add it again later.");
-
-  // Removed from this Mac: both devices its box added go, noted among the removals by the pairing
-  // each had, which this box's phones document carries to your other computers.
-  const gone = [atticOne, atticTwo].map(key => ({ key, pairing: pairingOf(key) }));
+  const pairing = link.readLink().phones.find(each => each.key === laptop).pairing;
   assert.deepEqual(await ask("DELETE", `kuvo/computers/${attic.pub}`), { status: 200, body: {} });
-  assert.deepEqual(await devices(), ["Devbox screen", "Mini screen", "My iPhone", "Studio screen"]);
-  assert.deepEqual(removals(), gone);
-  // Removed as any device is: asking again pairs neither, whichever computer vouches.
-  assert.deepEqual(link.pairDevice(link.readLink(), { key: atticOne, name: "Attic screen", by: mini.pub }), { removed: true });
-  // No computer is kept from adding its app by it: one that's removed adds none anyway.
-  assert.equal(link.readLink().vouchBlocked, undefined);
-
-  // Removed from another of your computers, which hands it here: the same.
-  assert.equal((await handed(devbox, { method: "DELETE", item: mini.pub }))[0].status, 200);
-  assert.deepEqual(await devices(), ["Devbox screen", "My iPhone", "Studio screen"]);
-  // And as the Mac app before 1.0 removes one (its machines said again, with the one it removed).
-  assert.equal((await ask("PUT", "kuvo/link/peers", { peers: [], moved: [], removed: [devbox.pub] })).status, 200);
-  assert.deepEqual(await devices(), ["My iPhone", "Studio screen"], "the phone, and the app this Mac paired itself, stay");
-  assert.deepEqual(removals().map(each => each.key), [atticOne, atticTwo, miniOne, devboxOne]);
-});
-
-test("a computer removed before its devices went with it loses them when it's removed again (#753)", async () => {
-  fresh();
-  link.macLink.appSaid = undefined;
-  const left = k(link.publicOf(link.newKey()));
-  // As a box before this left it: the computer gone from its machines, the device it added still in.
-  link.updateLink(state => {
-    link.pairDevice(state, { key: left, name: "Attic screen", by: attic.pub });
-    return { ...link.setMacPeers(state, { peers: [devbox.peer, mini.peer], moved: [] }).link, removedHere: [attic.pub] };
-  });
-  assert.deepEqual((await ask("GET", "kuvo/phones")).body.phones.map(each => each.name), ["Attic screen"]);
-  assert.deepEqual(link.removeHere(attic.pub), { status: 200, value: {} });
-  assert.deepEqual((await ask("GET", "kuvo/phones")).body.phones, []);
-  assert.deepEqual(link.ownPhones(link.readLink()).removed.map(each => each.key), [left]);
+  assert.equal(link.peersOf(link.readLink()).some(each => each.key === attic.pub), false);
+  assert.deepEqual(link.ownPhones(link.readLink()).removed, []);
+  assert.deepEqual((await ask("GET", "kuvo/phones")).body.phones.map(each => each.key), [laptop, phone]);
+  assert.equal((await ask("POST", "kuvo/phones/remove", { phones: [{ key: laptop, pairing }] })).status, 200);
+  assert.deepEqual(link.ownPhones(link.readLink()).removed, [{ key: laptop, pairing }]);
+  assert.deepEqual((await ask("GET", "kuvo/phones")).body.phones.map(each => each.key), [phone]);
 });

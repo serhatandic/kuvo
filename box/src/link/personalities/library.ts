@@ -7,10 +7,13 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { upgradeFormat, UnsupportedFormatVersion } from "../../shared/format-version";
 import { isObject } from "../../shared/json";
 import { plainName } from "../../shared/text";
 import { MOST_DOC } from "../documents/format";
 import { textOf, locked, writePrivate } from "../files";
+import { sharedValue } from "../setup/shared";
+import { readLink } from "../state";
 import { BOTS, RUN } from "../home";
 import type { Personality as PersonalityShape } from "../../shared/routes/personalities";
 
@@ -114,10 +117,19 @@ export function mergePersonalities(...libraries: (GivenLibrary | null | undefine
   };
 }
 
+const personalitySteps = [(library: GivenLibrary) => library];
+export const personalityLibraryVersion = personalitySteps.length;
+
 export function readPersonalities(file = PERSONALITIES_FILE): PersonalityLibrary {
+  if (file === PERSONALITIES_FILE) {
+    const shared = sharedValue(readLink(), "setupPersonalities");
+    if (isObject(shared)) return mergePersonalities(shared);
+  }
   try {
-    return mergePersonalities(JSON.parse(fs.readFileSync(file, "utf8")));
-  } catch {
+    const kept: GivenLibrary & { kuvo?: unknown } = JSON.parse(fs.readFileSync(file, "utf8"));
+    return mergePersonalities(upgradeFormat("Personality library", kept?.kuvo, kept, personalitySteps));
+  } catch (error) {
+    if (error instanceof UnsupportedFormatVersion) throw error;
     return { personalities: [], removed: [] };
   }
 }
@@ -127,7 +139,7 @@ export function changePersonalities(change: (library: PersonalityLibrary) => Giv
   return locked(lock, () => {
     const library = mergePersonalities(change(readPersonalities(file)));
     // Written only when it changed (a Mac meets this copy every minute).
-    const text = JSON.stringify({ kuvo: 1, ...library }, null, 2) + "\n";
+    const text = JSON.stringify({ kuvo: personalityLibraryVersion, ...library }, null, 2) + "\n";
     if (textOf(file) !== text) {
       writePrivate(file, text);
       for (const tell of personalityFollowers) tell();

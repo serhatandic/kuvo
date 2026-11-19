@@ -9,6 +9,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { additiveObjectFormat, UnsupportedFormatVersion } from "../../shared/format-version";
 import { isObject } from "../../shared/json";
 import { processRuns } from "../../shared/platform";
 import { plainName } from "../../shared/text";
@@ -76,8 +77,12 @@ const time = (value: unknown) => (typeof value === "number" && Number.isFinite(v
 const SETUP_ID = /^set_[A-Za-z0-9_-]{22}$/;
 
 /** A card as it came, cleaned; undefined for what isn't one. */
-export function cardOf(given: unknown): FoundCard | undefined {
-  if (!isObject(given) || !isObject(given.self)) return undefined;
+export const setupCardFormat = additiveObjectFormat("Setup discovery card");
+
+export function cardOf(value: unknown): FoundCard | undefined {
+  if (!isObject(value)) return undefined;
+  const given = setupCardFormat.read(value);
+  if (!isObject(given.self)) return undefined;
   const primary = isObject(given.primary) && key(given.primary.key) ? { key: key(given.primary.key)!, name: words(given.primary.name), heard: time(given.primary.heard) } : null;
   const kind = given.self.kind === "mac" || given.self.kind === "machine" ? given.self.kind : null;
   return {
@@ -119,7 +124,9 @@ export function foundOf(lines: readonly string[]): FoundBox[] {
     const current = found[found.length - 1];
     if (!current) continue;
     if (line.startsWith("card ")) {
-      try { current.card ??= cardOf(JSON.parse(line.slice(5))); } catch {}
+      try { current.card ??= cardOf(JSON.parse(line.slice(5))); } catch (error) {
+        if (error instanceof UnsupportedFormatVersion) throw error;
+      }
       continue;
     }
     const field = /^link (mac|macs|seen|name|phones) (\S+)(?: (.+))?$/.exec(line);

@@ -149,6 +149,17 @@ committed changes run.
 
 Run quick, targeted box and bridge tests with `scripts/test-box.sh [box|bridge|all] [extra test args]`. It queues for one of the box lane's two heavy slots, installs locked dependencies when needed, and summarizes results.
 
+Run `scripts/failure-bench.sh` from a checkout with the history named in
+`box/bridge-tests/failure-bench-legacy-ref.txt`. The bench covers membership while a peer is away,
+signed revocations arriving late or out of order, and recovery after an updater stops during a file
+swap. It uses separate temporary state for each box and runs a previous build in the reconnect
+scenario. For Linux, use `scripts/lokum-bridge-check.sh "$PWD" <name> '--test-name-pattern=^failure bench:' devices-two-boxes.test.js updates.test.js`.
+
+To add a scenario, prefix its name with `failure bench:` and register its file in the runner.
+Reuse `relay-stand-in.js` to disconnect a box or intercept selected packets and replay them in an
+explicit order. Pass time through the operation's clock and wait hooks where available, as the
+update judge tests do. Assert the recovered state through the real routes and persisted data.
+
 The runner uses `~/.bun/bin/bun` by default; set `KUVO_TEST_BUN` to another Bun or an engine (a machine's `~/.kuvo-code/engine/<version>/opencode`,
 which they run as Bun). Run them on a Linux machine too, in a test folder of your own with
 `TMPDIR` inside it, before calling a box change done:

@@ -115,6 +115,7 @@ export const said = (answer: { status: number; value: any }, fallback: string): 
 /** A change or an action refused, in words: its status, and why; `stale` where the row changed since
  * it was read (answered with the page now); `fields`, a form's words under its fields. */
 export type Refused = { status: number; message: string; stale?: true; fields?: SettingFieldWords[] };
+export type SettingChange = Refused | { save: import("../../shared/routes/setup-save").SaveReply };
 export const refusal = (answer: { status: number; value: any }): Refused | null =>
   answer.status >= 200 && answer.status < 300 ? null : { status: answer.status, message: said(answer, `It couldn't be changed (${answer.status}).`) };
 export const STALE: Refused = { status: 409, message: CHANGED_SINCE, stale: true };
@@ -132,7 +133,7 @@ export async function noActions(): Promise<Refused | null> {
 export interface Section {
   /** (`quiet`: read only, following no flow, for a form's check.) */
   read: (context: RouteContext, quiet?: boolean) => Promise<SettingsPage>;
-  change: (context: RouteContext, at: SettingItem, value: unknown, confirmed?: unknown) => Promise<Refused | null>;
+  change: (context: RouteContext, at: SettingItem, value: unknown, confirmed?: unknown) => Promise<SettingChange | null>;
   act: (context: RouteContext, at: SettingItem, action: SettingAction, values?: Record<string, unknown>) => Promise<Refused | null>;
   check?: (context: RouteContext, at: SettingItem, action: SettingAction, values: Record<string, unknown>) => Promise<SettingsChecked>;
   /** What's looked at each second for a change another process made (cheap). */

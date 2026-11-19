@@ -2,7 +2,7 @@ import "./safety"
 import { afterAll, beforeEach, expect, test } from "bun:test"
 import fs from "node:fs"
 import path from "node:path"
-import { ask, follow } from "./route-answer"
+import { ask, follow, unshaped } from "./route-answer"
 import { interceptSync } from "./disk-fault"
 
 // The queue as one list every client draws (PROTOCOL.md, "The queue", `queue.items`): what the
@@ -288,4 +288,47 @@ test("reorder interleaved with enqueue and Send Now delivers each message once i
   expect(await releaseWaiting(target)).toBe(3)
   expect(delivered.ses_q).toEqual(["msg_a", "msg_c", "msg_b", "msg_d"])
   expect(await listed()).toEqual([])
+})
+
+test("waiting queues read legacy data and refuse future indexes and payloads before deleting or resuming", async () => {
+  const id = await stopAndAdd()
+  const file = path.join(WAITING_DIR, `${id}.json`)
+  const { formatVersion, ...legacy } = JSON.parse(fs.readFileSync(file, "utf8"))
+  const indexed = fs.readFileSync(QUEUES_FILE, "utf8")
+  const saved = JSON.parse(indexed)
+  expect(formatVersion).toBe(1)
+  expect(saved.ses_q.formatVersion).toBe(1)
+  fs.writeFileSync(file, JSON.stringify(legacy))
+  delete saved.ses_q.formatVersion
+  fs.writeFileSync(QUEUES_FILE, JSON.stringify(saved))
+  expect((await ask(handler, "GET", "kuvo/sessions/ses_q/queue?items=1")).json.items).toContainEqual(expect.objectContaining({ id, words: "Also the docs." }))
+
+  const future = JSON.stringify({ ...legacy, formatVersion: 2 })
+  fs.writeFileSync(file, future)
+  const legacyIndex = fs.readFileSync(QUEUES_FILE, "utf8")
+  // A format refusal is a global route error, outside the queue-specific answer shapes.
+  async function refused(method: string, action: string) {
+    const response = handler({ method, path: `kuvo/sessions/ses_q/queue/${action}`, headers: {}, fromApp: true }, undefined)
+    const head = await response.next()
+    const body = await response.next()
+    expect(head.value && "head" in head.value && head.value.head.status).toBe(409)
+    expect(unshaped({ object: { code: { literal: "unsupportedFormatVersion" }, message: "string" } }, JSON.parse(body.value && "body" in body.value ? Buffer.from(body.value.body).toString("utf8") : "null"))).toBeNull()
+    expect((await response.next()).done).toBe(true)
+  }
+  try {
+    for (const [method, route] of [["DELETE", id], ["POST", "resume"]] as const) {
+      await refused(method, route)
+    }
+    expect(fs.readFileSync(file, "utf8")).toBe(future)
+    expect(fs.readFileSync(QUEUES_FILE, "utf8")).toBe(legacyIndex)
+    expect(delivered.ses_q).toBeUndefined()
+
+    const futureIndex = JSON.stringify({ ...saved, ses_q: { ...saved.ses_q, formatVersion: 2 } })
+    fs.writeFileSync(QUEUES_FILE, futureIndex)
+    await refused("POST", "hold")
+    expect(fs.readFileSync(QUEUES_FILE, "utf8")).toBe(futureIndex)
+  } finally {
+    fs.writeFileSync(file, JSON.stringify(legacy))
+    fs.writeFileSync(QUEUES_FILE, indexed)
+  }
 })

@@ -195,8 +195,8 @@ function noteDown(state: Extract<AgentsState, { state: "down" }>) {
 }
 
 /** The bridge, once it's back, while it's restarting: up to `within` ms (30 s), looked for every
- * 200 ms; null at once when it's down for another reason, or after that wait. */
-export async function bridgeBack(bridge: () => Target | null, signal?: AbortSignal, within = 30_000, place: Partial<AgentsPlace> = {}): Promise<Target | null> {
+ * 200 ms. An explicit handover refusal proves it is transferring before any keeper mark changes. */
+export async function bridgeBack(bridge: () => Target | null, signal?: AbortSignal, within = 30_000, place: Partial<AgentsPlace> & { transferring?: boolean } = {}): Promise<Target | null> {
   const from = Date.now();
   while (true) {
     const found = bridge();
@@ -205,10 +205,9 @@ export async function bridgeBack(bridge: () => Target | null, signal?: AbortSign
       return found;
     }
     // (A retired Mac app's own box: its app starts the bridge, whenever that is.)
-    if (signal?.aborted || Date.now() - from >= within || (IS_MAC && !OWN_HOME_MAC && place.run === undefined)) return null;
+    if (signal?.aborted || Date.now() - from >= within) return null;
     // (One that came up between the two looks: looked for again.)
-    const state = agentsState({ ...place, bridge }).state;
-    if (state === "down") return null;
+    if (!place.transferring && ((IS_MAC && !OWN_HOME_MAC && place.run === undefined) || agentsState({ ...place, bridge }).state === "down")) return null;
     await pause(200, signal);
   }
 }

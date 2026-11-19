@@ -8,6 +8,8 @@ import { peerTargets, readEngineFile } from "../engine/client";
 import { deliverLeftAnswers, givenUp, macWaiting, outboxSoon, sendOutbox } from "../letters/outbox";
 import { pushRows } from "../work/elsewhere";
 import { pushNumbers } from "../work-queue/numbers";
+import { scheduleWipe } from "../setup/wipe";
+import { sendRemovalUpdates } from "../setup/removal";
 import { noteSetupNow } from "../setup/lead";
 import { pushQueues } from "../work-queue/across";
 import { forwardsSoon, sendForwards } from "../work-queue/forward";
@@ -72,6 +74,8 @@ export function runMacPeers(): void {
       else refreshOwn(readEngineFile).catch(() => {});
     }, 60_000),
     setInterval(() => {
+      scheduleWipe();
+      try { sendRemovalUpdates(macLink.host); } catch {}
       macSendOutbox();
       forwardsSoon.send();
       heldSoon.send();

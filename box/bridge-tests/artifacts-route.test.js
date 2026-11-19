@@ -21,6 +21,10 @@ const picture = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0xf
 const bridge = http.createServer((request, response) => {
   const url = new URL(request.url, "http://x");
   if (url.pathname === "/api/kuvo/link/artifacts/events") {
+    if (url.searchParams.get("bot") === "bot_future") {
+      response.writeHead(409, { "content-type": "application/json" });
+      return response.end(JSON.stringify({ code: "unsupportedFormatVersion", message: "Artifact index format version 2 is unsupported (this build writes 1)." }));
+    }
     response.writeHead(200, { "content-type": "application/x-ndjson" });
     response.write(JSON.stringify({ artifacts: [], next: null }) + "\n");
     return; // Never ends, as a followed route doesn't.
@@ -75,4 +79,13 @@ test("bytes sent as text that aren't text come back whole too", async () => {
   const answer = await route({ method: "GET", path: "kuvo/artifacts/art_0123456789abcdef01234567/versions/2" });
   assert.equal(answer.status, 200);
   assert.deepEqual(Buffer.from(answer.bodyBase64 ?? "", "base64"), picture);
+});
+
+test("a refused artifact index reports its format over SSH", async () => {
+  const answer = await route({ method: "GET", path: "kuvo/artifacts/events?bot=bot_future" });
+  assert.equal(answer.status, 409);
+  assert.deepEqual(JSON.parse(answer.body), {
+    code: "unsupportedFormatVersion",
+    message: "Artifact index format version 2 is unsupported (this build writes 1).",
+  });
 });

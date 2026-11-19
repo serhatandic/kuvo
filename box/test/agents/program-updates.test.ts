@@ -60,8 +60,8 @@ class Program {
 }
 
 /** The bridge's routes, for these agents alone; each ask is as a client of its own makes it. */
-function bridge(agents: Agent[]) {
-  const answer = handler({ roster: { all: () => agents, find: (id: string) => agents.find((agent) => agent.providerID === id) }, password: "pw" } as any)
+function bridge(agents: Agent[], holdProgram?: (program: string, deadline: number) => Promise<() => void>) {
+  const answer = handler({ roster: { all: () => agents, find: (id: string) => agents.find((agent) => agent.providerID === id) }, password: "pw", ...(holdProgram ? { sessions: { holdProgram } } : {}) } as any)
   const ask = async (route: string, method = "GET", body?: unknown) => {
     const headers: Record<string, string> = { authorization: "Basic " + Buffer.from("opencode:pw").toString("base64") }
     if (body !== undefined) headers["content-type"] = "application/json"
@@ -136,6 +136,28 @@ describe("updating the agents' programs", () => {
     // A read that began before it ended still says the version before: the news stays.
     claude.installed = "1.0.0"
     expect((await box.accounts())["claude-all-cli"].programUpdate).toMatchObject({ state: "updated", version: "2.0.0" })
+  })
+
+  test("a confirmation body cannot bypass a live program's drain", async () => {
+    const codex = new Program("codex-confirm", "1.0.0", "2.0.0")
+    const waiting = Promise.withResolvers<void>()
+    const quiet = Promise.withResolvers<void>()
+    const box = bridge([codex.account()], async () => {
+      waiting.resolve()
+      await quiet.promise
+      return () => {}
+    })
+    await box.ask("kuvo/updates/codex-confirm-cli", "POST", {})
+    await waiting.promise
+    expect(codex.updates).toBe(0)
+    await box.ask("kuvo/updates/codex-confirm-cli", "POST", { confirmed: true })
+    expect(codex.updates).toBe(0)
+    const ended = told("codex-confirm-cli")
+    quiet.resolve()
+    await Bun.sleep(0)
+    expect(codex.updates).toBe(1)
+    codex.end({ updated: true, version: "2.0.0" })
+    await ended
   })
 
   test("one that fails says why to every client, and is offered again until the version moves on", async () => {

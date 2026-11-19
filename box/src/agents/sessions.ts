@@ -7,6 +7,8 @@
 // nothing runs starts at once ("steer"), or waits for a nudge ("queue"); after a turn that ends
 // on its own the next one starts; after Stop, or an error, nothing does until the app says.
 
+import { programInstallation } from "./maintenance"
+import { pause } from "../shared/wait"
 import { createHash } from "node:crypto"
 import { spawn as spawnProcess } from "node:child_process"
 import { readFileSync, realpathSync, statSync } from "node:fs"
@@ -34,7 +36,8 @@ import { plain } from "./proc"
 import type { Snapshots } from "./snapshots"
 import { AGENTS_TEXT_BYTES } from "../shared/text"
 import { workOrder, type WorkOrder } from "../shared/work-order"
-import type { HeldTurn } from "./hold/adopt"
+import { agentHoldFolder, type HeldTurn } from "./hold/adopt"
+import { heldIn } from "./hold/client"
 import { noTokens } from "./wire"
 
 type Delivery = "steer" | "queue"
@@ -89,6 +92,21 @@ interface Run {
  * What comes in meanwhile waits in the session's `own`, `go` and `waiting`, and `advance` starts
  * what's next whenever the session is idle.
  */
+export interface TransferSession {
+  message: string
+  permissions: { id: string; key: string }[]
+  always: Live["always"]
+  agentState?: unknown
+}
+
+function turnInput(message: Message): boolean {
+  return message.type === "user" || (message.type === "synthetic" && !(message.metadata?.kuvo as { notice?: boolean } | undefined)?.notice)
+}
+
+function permissionKey(ask: Pick<PermissionRequest, "action" | "resources">, tool?: string): string {
+  return JSON.stringify([ask.action, ask.resources, tool ?? null])
+}
+
 type Doing = { kind: "idle" } | { kind: "running" | "stopping"; run: Run } | { kind: "keeping" | "reverting" } | { kind: "deleting" }
 
 interface Live {
@@ -103,7 +121,7 @@ interface Live {
   waiting: (() => void)[]
   /** Your messages being handed to the turn under way: not started meanwhile, and cancelled only once it's known the agent didn't take one. */
   steering: Map<string, { cancelled: boolean }>
-  permissions: Map<string, { request: PermissionRequest; resolve: (decision: Decision) => void; turn?: Turn }>
+  permissions: Map<string, { request: PermissionRequest; key: string; resolve: (decision: Decision) => void; turn?: Turn }>
   forms: Map<string, { form: FormRequest; resolve: (answer: FormAnswer | null) => void; declined?: (words: string) => void }>
   /** "Always allow" answers given in this session: an action, on these patterns. */
   always: { action: string; patterns: string[] }[]
@@ -932,10 +950,22 @@ export class Sessions {
     private readonly titleModel?: (directory: string) => Promise<ModelRef | undefined>,
     /** Turns an earlier bridge left under way in agents' processes under holders, by session (hold/adopt.ts). */
     held: Map<string, HeldTurn> = new Map(),
+    transfer?: Record<string, TransferSession>,
+    private readonly programHome?: string,
   ) {
+    this.transferred = new Map()
+    if (transfer && [...held].some(([id, turn]) => {
+      const message = store.get(id)?.messages.findLast(turnInput)
+      return !this.resumable(id, turn) || message?.id !== transfer[id]?.message
+    })) throw new Error("A session in the handover cannot be resumed.")
     // Those taken up again (`resumeHeld`); the others' agents let go of (their turns end as below).
     for (const [id, turn] of held) {
-      if (this.resumable(id, turn)) this.resuming.set(id, turn)
+      if (this.resumable(id, turn)) {
+        const saved = transfer?.[id]
+        if (saved) this.transferred.set(id, saved)
+        turn.state = saved?.agentState
+        this.resuming.set(id, turn)
+      }
       else turn.gate.drop(turn.thread)
     }
     // Turns a quit or crash cut short: ended, as Stop ends one.
@@ -1045,17 +1075,17 @@ export class Sessions {
    * open, on that agent (not Auto, which went through models of its own), and began with a message
    * (not a summary, nor a subagent's task, which its parent's turn runs).
    */
-  private resumable(id: string, held: HeldTurn): boolean {
+  private resumable(id: string, held: { meta: { provider: string } }): boolean {
     const record = this.store.get(id)
     if (!record || record.session.parentID || record.session.model?.providerID !== held.meta.provider) return false
-    const lastUser = record.messages.findLastIndex((message) => message.type === "user" || message.type === "synthetic" || message.type === "compaction")
+    const lastUser = record.messages.findLastIndex(message => turnInput(message) || message.type === "compaction")
     const message = record.messages[lastUser]
     if (!message || message.type === "compaction") return false
     // (One you sent partway, into the turn: its turn began with the message before it, and is made
     // again from there, around it. Not yet: such a turn ends as before.)
     const lastIdle = record.messages.findLastIndex((each) => each.type === "idle")
     if (lastIdle > lastUser) return false
-    return record.messages.slice(lastIdle + 1, lastUser).every((each) => each.type !== "user" && each.type !== "synthetic")
+    return !record.messages.slice(lastIdle + 1, lastUser).some(turnInput)
   }
 
   /** Its steps closed, and their tools stopped mid-way (a crash): whether any were. */
@@ -1683,7 +1713,7 @@ export class Sessions {
     if (queue.some((waiting) => waiting.id === input.id) || record.messages.some((message) => message.id === input.id)) return
     const doing = live.doing
     // While a turn runs, it waits for it, unless the agent at work takes it partway (Codex does).
-    const into = doing.kind === "running" && input.delivery !== "queue" && !doing.run.compacting && doing.run.agent?.thread.steer ? doing.run : undefined
+    const into = doing.kind === "running" && !this.programHeld(doing.run.agent?.provider) && input.delivery !== "queue" && !doing.run.compacting && doing.run.agent?.thread.steer ? doing.run : undefined
     // While nothing runs (or only files are being kept or put back: it goes once that's done), one
     // to go after the turn goes now, as the engine's do (a bot's wake-up), unless others wait
     // before it (held after a Stop).
@@ -1779,8 +1809,10 @@ export class Sessions {
       this.showMessage(id, record, input)
       const missed = () => this.subagentNote(id, `${agent.name} didn't take that message: write to the conversation that started it.`)
       this.sending++
-      void send({ id: input.id, text: attached.text, files: attached.files }, () => this.resumedRun(parentID, parentLive, id))
-        .then((sent) => sent || missed(), missed)
+      void this.useProgram(found.id, async () => {
+        const current = this.threadOf(parentID, parentLive, parent, provider)?.subagentMessages?.(id)
+        return current?.({ id: input.id, text: attached.text, files: attached.files }, () => this.resumedRun(parentID, parentLive, id))
+      }).then((sent) => sent || missed(), missed)
         .finally(() => this.sending--)
       return
     }
@@ -1947,7 +1979,7 @@ export class Sessions {
     if (delivery !== "steer") return
     const live = this.live.get(id)
     const doing = live?.doing
-    if (into && live && doing?.kind === "running" && !doing.run.compacting && doing.run.agent?.thread.steer && !live.steering.has(inputID)) {
+    if (into && live && doing?.kind === "running" && !this.programHeld(doing.run.agent?.provider) && !doing.run.compacting && doing.run.agent?.thread.steer && !live.steering.has(inputID)) {
       void this.steerNow(id, live, doing.run, input)
       return
     }
@@ -2011,8 +2043,9 @@ export class Sessions {
     if (index < 0) return
     // Held for a newer bridge (renewal.ts): it stays in line, kept, to go first there. (Not a group
     // chat's seat: a discussion under way goes on to its end, and the bridge waits for it.)
-    if (this.holding && !isSeat(record.session)) {
-      const input = queue[index]
+    const input = queue[index]!
+    const model = input.adopt ?? (input.compact ? this.holdingModel(record) : record.session.model)
+    if ((this.holding && !isSeat(record.session)) || this.programHeld(model?.providerID)) {
       input.held = true
       if (input.delivery !== "steer") {
         input.delivery = "steer"
@@ -2021,7 +2054,7 @@ export class Sessions {
       this.store.save(id, true)
       return
     }
-    const [input] = queue.splice(index, 1)
+    queue.splice(index, 1)
     this.start(id, live, input)
   }
 
@@ -2070,18 +2103,18 @@ export class Sessions {
     if (given) {
       const agent = candidates.some((candidate) => candidate.providerID === given.providerID) ? this.agent(given.providerID) : undefined
       if (!agent?.generate) throw new BadRequest(`${this.agent(given.providerID)?.name ?? "That agent"} can't answer on ${given.id} for this session.`)
-      return agent.generate(prompt, given)
+      return this.useProgram(agent.id, () => agent.generate!(prompt, given))
     }
     for (const candidate of candidates) {
       const agent = this.agent(candidate.providerID)
-      if (agent?.generate) return agent.generate(prompt, candidate)
+      if (agent?.generate) return this.useProgram(agent.id, () => agent.generate!(prompt, candidate))
     }
     // Its agent can't answer one so (Antigravity, Cursor, Grok): another you're signed in to, on a
     // quick model of its own, as a session's title is written.
     for (const agent of orAnother ? this.roster.all() : []) {
       if (!agent.generate || candidates.some((candidate) => candidate.providerID === agent.providerID)) continue
       if (!(await agent.account().catch(() => undefined))?.signedIn) continue
-      const answer = await agent.generate(prompt).catch(() => "")
+      const answer = await this.useProgram(agent.id, () => agent.generate!(prompt)).catch(() => "")
       if (answer.trim()) return answer
     }
     throw new BadRequest(`${this.agent(candidates[0]?.providerID)?.name ?? "This session's agent"} can't write this outside the conversation${orAnother ? ", and no other agent you're signed in to can" : ""}.`)
@@ -2103,7 +2136,7 @@ export class Sessions {
     for (const agent of answer.trim() ? [] : this.roster.all()) {
       if (!agent.generate || agent.providerID === own) continue
       if (!(await agent.account().catch(() => undefined))?.signedIn) continue
-      answer = await agent.generate(prompt).catch(() => "")
+      answer = await this.useProgram(agent.id, () => agent.generate!(prompt)).catch(() => "")
       if (answer.trim()) break
     }
     // None could: the app names it.
@@ -2251,8 +2284,13 @@ export class Sessions {
     } catch (error) {
       result = { outcome: "failed", error: failure(error) }
     }
+    if (held.gate.preparing) {
+      held.gate.release(held.thread)
+      await held.gate.activated
+    }
     const outcome: Outcome = abort.signal.aborted ? "interrupted" : result.outcome
     // Never taken up by its agent: what was kept of it stays, its tools closed as a crash's are.
+    this.transferred.delete(id)
     if (!run.heldTaken) this.closeTools(record)
     const before = record.messages[record.messages.length - 1]?.id
     turn.finish(outcome, outcome === "interrupted" ? undefined : result.error)
@@ -2395,6 +2433,11 @@ export class Sessions {
 
   /** The message on one agent's model, with what that agent hasn't seen of the conversation. */
   private async runOn(id: string, record: Record_, live: Live, run: Run, model: ModelRef, input: RunInput, userMessage: string): Promise<RunResult> {
+    const program = this.agent(model.providerID)?.id
+    return this.useProgram(program, () => this.runOnAgent(id, record, live, run, model, input, userMessage), run.abort.signal, Boolean(input.held || input.adopt))
+  }
+
+  private async runOnAgent(id: string, record: Record_, live: Live, run: Run, model: ModelRef, input: RunInput, userMessage: string): Promise<RunResult> {
     const { turn } = run
     const signal = run.abort.signal
     // A turn its agent began on its own, stopped before it was taken: it stops there too.
@@ -2449,7 +2492,9 @@ export class Sessions {
         heldTaken = true
         // (Once its agent's lines come: until then, a take-up that fails leaves them as they were.)
         const opened = record.messages.findIndex((message) => message.id === userMessage)
-        const kept = new Set(record.messages.slice(opened + 1).filter((message) => message.type === "assistant").map((message) => message.id))
+        const previous = record.messages.slice(opened + 1)
+        const kept = new Set<Message>(previous.filter(message => message.type === "assistant"))
+        turn.reuseMessages(this.transferred.has(id) ? previous : previous.filter(message => message.type !== "assistant"))
         const taken = input.held
         let result: RunResult
         try {
@@ -2458,7 +2503,7 @@ export class Sessions {
           void (taken.began ?? taken.held.firstLine).then(() => {
             if (runOf(live.doing) !== run || run.heldTaken) return
             run.heldTaken = true
-            record.messages.splice(0, record.messages.length, ...record.messages.filter((message) => !kept.has(message.id)))
+            record.messages.splice(0, record.messages.length, ...record.messages.filter((message) => !kept.has(message)))
             this.store.save(id)
           })
           result = await Promise.race([running, abandoned])
@@ -2871,6 +2916,20 @@ export class Sessions {
     const directory = parent.location.directory
     const now = Date.now()
     const model = parentTurn.currentModel
+    const replayed = parentTurn.takeCompletedChild(toolCallID)
+    if (replayed) {
+      // Providers can rebuild their in-memory child lane from the journal. Its visible work
+      // already has a session and transcript, so replay must not append to either.
+      parentTurn.toolProgress(toolCallID, { sessionID: replayed })
+      return {
+        sessionID: replayed,
+        turn: new Turn(this.store, replayed, directory, model, task.agent ?? parent.agent ?? "build", true),
+        end() {},
+        permission: async () => "reject",
+        inBackground() {},
+        messages() {},
+      }
+    }
     const before = task.sessionID ? this.store.get(task.sessionID) : undefined
     const messages = task.messages ?? cantTakeMessages(this.agent(model.providerID)?.name)
     if (before && before.session.parentID === id) {
@@ -3100,8 +3159,11 @@ export class Sessions {
     const unfenced = isShell(ask.action) && this.autoWithoutSandbox(live, session) && !this.allowedBefore(live, ask)
     if (!unknown && !unclassified && !unfenced && !hidesFromBlocks(live.blocks, ask) && (effect === "allow" || this.allowedBefore(live, ask))) return "once"
     if (turn.isEnded || refusesAsks(live.doing)) return "reject"
+    const key = permissionKey(ask, ask.toolCallID)
+    const kept = this.transferred.get(id)?.permissions
+    const at = kept?.findIndex(each => each.key === key) ?? -1
     const request: PermissionRequest = {
-      id: newID("per"),
+      id: at < 0 ? newID("per") : kept!.splice(at, 1)[0]!.id,
       sessionID: id,
       action: ask.action,
       resources: ask.resources,
@@ -3117,6 +3179,7 @@ export class Sessions {
     return new Promise<Decision>((resolve) => {
       live.permissions.set(request.id, {
         request,
+        key,
         turn,
         resolve: (decision) => {
           if (decision === "always") live.always.push({ action: ask.action, patterns: request.save ?? ask.resources })
@@ -3159,6 +3222,19 @@ export class Sessions {
       }
     }
     return waiting
+  }
+
+  /** A client reconnecting can ask or reply before the agent has replayed its old approval. */
+  async permissionsReady(id: string, signal: AbortSignal): Promise<boolean> {
+    while (this.transferred.get(id)?.permissions.length) {
+      if (signal.aborted) return false
+      if (performance.now() >= this.permissionReplayUntil) {
+        this.transferred.get(id)!.permissions.length = 0
+        break
+      }
+      await Bun.sleep(20)
+    }
+    return true
   }
 
   permissions(id: string): PermissionRequest[] {
@@ -3311,13 +3387,16 @@ export class Sessions {
       this.resuming.delete(id)
       const record = this.store.get(id)
       const live = this.state(id)
-      const message = record?.messages.findLast((each) => each.type === "user" || each.type === "synthetic")
+      const message = record?.messages.findLast(turnInput)
       if (!record || !message || live.doing.kind !== "idle") {
         held.gate.drop(held.thread)
+        this.transferred.delete(id)
         // (Its turn ends as one a crash cut short.)
         this.repair(id)
         continue
       }
+      const transfer = this.transferred.get(id)
+      if (transfer) live.always = transfer.always
       this.start(id, live, { id: message.id, text: "", files: [], delivery: "steer", resume: held })
     }
   }
@@ -3344,12 +3423,139 @@ export class Sessions {
     if (!on) this.wakeHeld()
   }
 
+  private programHolds = new Map<string, Promise<void>>()
+  private programUses = new Map<string, number>()
+
+  private recoveryChecks = new Set<string>()
+  private completedInstalls = new Set<string>()
+
+  private installerRunning(program: string): boolean {
+    const state = this.programHome && programInstallation(this.programHome, program)
+    if (state === "ended" && !this.completedInstalls.has(program)) {
+      this.completedInstalls.add(program)
+      // Account probes can open a pooled app-server during a recovered installation.
+      for (const account of this.roster.all()) if (account.id === program) account.programUpdated?.()
+    }
+    if (state !== "running") return false
+    this.completedInstalls.delete(program)
+    if (!this.recoveryChecks.has(program)) {
+      this.recoveryChecks.add(program)
+      const check = () => {
+        if (this.installerRunning(program)) setTimeout(check, 1_000).unref?.()
+        else {
+          this.recoveryChecks.delete(program)
+          this.wakeHeld()
+        }
+      }
+      setTimeout(check, 1_000).unref?.()
+    }
+    return true
+  }
+
+  private programHeld(provider?: string): boolean {
+    const program = provider && this.agent(provider)?.id
+    return !!program && (this.programHolds.has(program) || this.installerRunning(program))
+  }
+
+  private async useProgram<T>(program: string | undefined, work: () => Promise<T>, signal?: AbortSignal, alreadyRunning = false): Promise<T> {
+    if (!program || program === "engine") return work()
+    // Auto can switch to a different program after the turn has left the inbox. Check again at
+    // the actual call, before doing any work on that program.
+    let held: Promise<void> | undefined
+    while (!alreadyRunning) {
+      held = this.programHolds.get(program)
+      if (!held) {
+        if (!this.installerRunning(program)) break
+        signal?.throwIfAborted()
+        await pause(100, signal)
+        continue
+      }
+      if (!signal) await held
+      else {
+        const stop = Promise.withResolvers<void>()
+        const aborted = () => stop.resolve()
+        signal.addEventListener("abort", aborted, { once: true })
+        try {
+          signal.throwIfAborted()
+          await Promise.race([held, stop.promise])
+        } finally { signal.removeEventListener("abort", aborted) }
+      }
+    }
+    if (!alreadyRunning) signal?.throwIfAborted()
+    this.programUses.set(program, (this.programUses.get(program) ?? 0) + 1)
+    try { return await work() } finally {
+      const left = this.programUses.get(program)! - 1
+      if (left) this.programUses.set(program, left)
+      else this.programUses.delete(program)
+    }
+  }
+
+  /** Fence this program across accounts, then let the turns already admitted finish. */
+  async holdProgram(program: string, deadline: number): Promise<() => void> {
+    const held = Promise.withResolvers<void>()
+    this.programHolds.set(program, held.promise)
+    const release = () => {
+      this.programHolds.delete(program)
+      held.resolve()
+      this.wakeHeld()
+    }
+    const holders = program === "claude" || program === "codex" || program === "grok" ? agentHoldFolder(program) : undefined
+    const work = () => this.programUses.has(program) || [...this.live.values()].some(live =>
+      this.agent(live.own?.adopt?.providerID ?? "")?.id === program ||
+      [...live.threads].some(([provider, thread]) => thread.keepsWorking && this.agent(provider)?.id === program),
+    ) || (holders !== undefined && heldIn(holders).some(record =>
+      !record.exited && record.meta.kind === program && Object.keys(record.meta.turns ?? {}).length > 0,
+    ))
+    try {
+      while (Date.now() < deadline) {
+        if (!this.installerRunning(program) && !work()) return release
+        await pause(100)
+      }
+      throw new Error("The program's update wait expired. Try again after the running turns finish.")
+    } catch (error) {
+      release()
+      throw error
+    }
+  }
+
   private holding = false
   /** Your `!` commands running now, and your messages on their way to a subagent. */
   private commands = 0
   private sending = 0
   /** Sessions being deleted now. */
   private removing = 0
+
+  private transferred: Map<string, TransferSession>
+  private permissionReplayUntil = Infinity
+
+  /** A checkpointed ask may have been withdrawn while the controller was away. */
+  reconcilePermissions() {
+    this.permissionReplayUntil = performance.now() + 10_000
+    setTimeout(() => {
+      for (const session of this.transferred.values()) session.permissions.length = 0
+    }, 10_000).unref?.()
+  }
+
+  /** Snapshot only turns our replay path can rebuild without starting a new prompt. */
+  transfer(providers: ReadonlyMap<string, string>): Record<string, TransferSession> | undefined {
+    if (this.commands || this.sending || this.removing || Object.keys(this.background()).length) return undefined
+    const sessions: Record<string, TransferSession> = {}
+    for (const [id, live] of this.live) {
+      if (live.own || live.steering.size || live.waiting.length || live.forms.size || live.subagents.size) return undefined
+      if (live.doing.kind === "idle") continue
+      const provider = providers.get(id)
+      if (!provider || live.doing.kind !== "running" || live.doing.run.agent?.provider !== provider ||
+          live.doing.run.relayed?.length || !this.resumable(id, { meta: { provider } })) return undefined
+      const message = this.store.get(id)?.messages.findLast(turnInput)
+      if (!message) return undefined
+      const permissions = [...live.permissions].map(([id, { key }]) => ({ id, key }))
+      if (new Set(permissions.map(each => each.key)).size !== permissions.length) return undefined
+      const agentState = live.doing.run.agent.thread.transferState?.()
+      if (agentState === false) return undefined
+      sessions[id] = { message: message.id, permissions, always: live.always, agentState }
+    }
+    return Object.keys(sessions).length === providers.size ? sessions : undefined
+  }
 
   /** What's under way, for a newer bridge to wait for: turns (a subagent's too, a message being
    * handed to one, the files kept after one), your `!` commands, a session being deleted, which it

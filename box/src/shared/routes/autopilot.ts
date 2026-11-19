@@ -26,8 +26,8 @@ export type SessionAutopilot = Infer<typeof SESSION_AUTOPILOT>;
 const REFUSED = object({ message: string });
 
 export const AUTOPILOT_ROUTES: RouteShape[] = [
-  { route: "GET kuvo/sessions/:id/autopilot", answers: { 200: SESSION_AUTOPILOT, 404: REFUSED, 503: REFUSED } },
-  { route: "PUT kuvo/sessions/:id/autopilot", answers: { 200: SESSION_AUTOPILOT, 400: REFUSED, 404: REFUSED, 502: REFUSED, 503: REFUSED } },
-  { route: "POST kuvo/sessions/:id/autopilot", answers: { 200: SESSION_AUTOPILOT, 400: REFUSED, 404: REFUSED, 502: REFUSED, 503: REFUSED } },
-  { route: "POST kuvo/sessions/:id/autopilot/asked", answers: { 200: ASK_WAITING, 400: REFUSED, 404: REFUSED, 503: REFUSED } },
+  { route: "GET kuvo/sessions/:id/autopilot", feature: "autopilot", answers: { 200: SESSION_AUTOPILOT, 404: REFUSED, 503: REFUSED } },
+  { route: "PUT kuvo/sessions/:id/autopilot", feature: "autopilot", answers: { 200: SESSION_AUTOPILOT, 400: REFUSED, 404: REFUSED, 502: REFUSED, 503: REFUSED } },
+  { route: "POST kuvo/sessions/:id/autopilot", feature: "autopilot", answers: { 200: SESSION_AUTOPILOT, 400: REFUSED, 404: REFUSED, 502: REFUSED, 503: REFUSED } },
+  { route: "POST kuvo/sessions/:id/autopilot/asked", feature: "autopilot", answers: { 200: ASK_WAITING, 400: REFUSED, 404: REFUSED, 503: REFUSED } },
 ];

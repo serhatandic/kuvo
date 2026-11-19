@@ -4,6 +4,7 @@
 import { FEATURES } from "../features";
 import { bool, BYTES, type Infer, list, literal, map, NOTHING, nullable, number, object, oneOf, type RouteShape, string, words } from "../shape";
 import { MAC_FEATURES } from "./mac";
+import { SAVE_RECEIPT } from "./setup-save";
 
 /** One of a machine's pieces (`kuvo/info`'s `pieces`): the version it runs (null while it doesn't,
  * or doesn't say), the one its files hold now, and whether it runs another than those (`behind`). */
@@ -50,7 +51,7 @@ export const INFO = oneOf(
       link: PIECE,
       agents: object({
         running: nullable(string), current: nullable(string), behind: bool, renewal: nullable(object({ since: number, holding: bool })),
-        waits: nullable(words("quiet", "holding", "engine", "restart")),
+        waits: nullable(words("quiet", "holding", "engine", "restart", "handover")),
       }),
       engine: PIECE,
     }),
@@ -67,6 +68,7 @@ const LAST_UPDATE = object({
   "message?": string,
   "from?": string,
   "to?": string,
+  "save?": SAVE_RECEIPT,
 });
 /** This box's updates (`kuvo/update`): whether they're set up, its version and its engine's, the
  * latest it knows of, how the last one went, the step under way, why it can't update, and the
@@ -80,6 +82,12 @@ export const UPDATE = object({
   updating: nullable(STEP),
   blocked: nullable(string),
   "offered?": string,
+  "waiting?": object({
+    version: string,
+    reason: words("ready", "release-age", "blocked", "stopped", "retry", "installing", "trial", "engine", "agents", "handover"),
+    detail: string,
+    sessionsAtWork: nullable(number),
+  }),
   "offerFailed?": object({ version: string, at: number, takenBack: bool, "message?": string }),
   // A newer engine waiting to take the running one's place, or doing so (PROTOCOL.md, "A new
   // engine"): where that stands and its line for clients; and how the last such change went.
@@ -227,6 +235,7 @@ export const SETUP = object({
   primary: nullable(object({ key: string, name: string, kind: words("mac", "machine") })),
   you: object({ key: nullable(string), role: nullable(words("primary", "member")) }),
   computers: list(object({ key: string, name: string, kind: words("mac", "machine"), role: words("primary", "member"), app: bool })),
+  "standby?": string,
   "conflict?": object({ primary: string, epoch: number }),
   startsFromOthers: object({ value: nullable(words("on", "off")), default: words("on", "off") }),
   heldBy: list(string),
@@ -334,12 +343,11 @@ export type Found = Infer<typeof FOUND>;
 /** What can be done with one of your computers from the box that lists it (`computers.manage`):
  * which, its button's words, and where a client asks first, the question, what it comes to and the
  * words of the button that goes ahead, all the box's; `why`, it can't be done now, in words a
- * client shows beside it. `allow-devices` (`devices.allow`): on your setup's main computer, a
- * computer kept from adding Kuvo Code's app to your devices is let do it again. `setup` and
+ * client shows beside it. `setup` and
  * `uninstall` (`computers.add`): on the box that set a machine up over SSH, setting it up again
  * and uninstalling Kuvo Code from it. `update` (`computers.update`): on that box, bringing a machine
  * whose Kuvo is older than its own up to date now (asked first while something is at work there). */
-export const COMPUTER_ACTION = object({ id: words("rename", "connect", "remove", "allow-devices", "setup", "uninstall", "update", "update-here", "add"), label: string, "confirm?": object({ title: string, message: string, label: string }), "why?": string });
+export const COMPUTER_ACTION = object({ id: words("rename", "connect", "remove", "setup", "uninstall", "update", "update-here", "add"), label: string, "confirm?": object({ title: string, message: string, label: string }), "why?": string });
 export type ComputerAction = Infer<typeof COMPUTER_ACTION>;
 
 /** How the box that set a machine up over SSH brings its older Kuvo up to date (`computers.update`):
@@ -358,9 +366,7 @@ export type ComputerUpdate = Infer<typeof COMPUTER_UPDATE>;
  * where a paired device reaches its box
  * itself (`address`, on the relay, and `relay`, its URL: only on your own computers); how many of its sessions are at work and
  * which (the first few, by id and title), where it said; the services whose plan limits it reads;
- * what can be done with it from here (`actions`); and `vouching` (`devices.allow`, on your setup's
- * main computer alone): it's kept from adding Kuvo Code's app to your devices, since one it added
- * was removed, in words a client shows as they are. */
+ * and what can be done with it from here (`actions`). */
 export const LISTED_COMPUTER = object({
   key: string, name: string, kind: words("mac", "machine"), "here?": literal(true), "id?": string,
   title: string, reachTitles: map(string), "detail?": string, "notice?": object({ title: string, detail: string }), "settingsNotice?": object({ title: string, detail: string }), "workingTitle?": string,
@@ -371,13 +377,13 @@ export const LISTED_COMPUTER = object({
   "agents?": object({ state: words("running", "restarting", "down"), "why?": string }),
   via: words("here", "relay"), "address?": string, "relay?": string,
   "working?": number, "atWork?": list(object({ id: string, "title?": string })), limits: list(string), limitServices: list(object({ id: string, title: string })),
-  actions: list(COMPUTER_ACTION), "vouching?": object({ blocked: literal(true), words: string }),
+  actions: list(COMPUTER_ACTION),
   "update?": COMPUTER_UPDATE,
   // (This Mac's own row: Kuvo here runs this version, newer than the desktop app that opened with
   // it, which checks for its own update then.)
   "appCheck?": string,
 });
-export const COMPUTERS = object({ computers: list(LISTED_COMPUTER) });
+export const COMPUTERS = object({ "wipePending?": list(object({ key: string, name: string, operation: string, "error?": string, "unresolved?": list(string) })), computers: list(LISTED_COMPUTER) });
 export type ListedComputer = Infer<typeof LISTED_COMPUTER>;
 
 /** A file as a viewer shows it (`kuvo/file/text`): its text (`content`, read as `encoding`, UTF-8,
@@ -417,6 +423,7 @@ export const ADD_TRY = object({
   "failure?": object({ title: string, message: string, again: bool }),
   "computer?": object({ key: string, name: string }),
   "known?": bool,
+  "save?": SAVE_RECEIPT,
 });
 export type AddTry = Infer<typeof ADD_TRY>;
 /** Adding computers, as this box says it: whether it adds them (`why`, in words, where it
@@ -427,67 +434,105 @@ export type Adding = Infer<typeof ADDING>;
 const ADD_REFUSED = object({ message: string, "primary?": string });
 const ADD_ANSWERS = { 400: ADD_REFUSED, 404: ADD_REFUSED, 405: ADD_REFUSED, 409: ADD_REFUSED, 503: ADD_REFUSED };
 
+const NOTICE = object({
+  "title?": string, "subtitle?": string, "body?": string, category: string,
+  "thread?": string, "data?": map(string),
+});
+const NOTICES = object({ telling: bool, notices: list(object({ id: string, at: number, notice: NOTICE, "by?": literal("agent") })) });
+
+const COMPUTER_REMOVAL = object({ operation: string, accessRemoved: bool,
+  state: words("saving", "interrupted", "unlinked", "moving", "exporting", "review", "wipe-pending", "wiped", "cancelled", "lost") });
+const WIPE_EXPORT = object({ source: string, id: string, at: number });
+const PLANNED_ITEM = { kind: words("bot", "chat", "group"), id: string, name: string } as const;
+const REMOVAL_PLAN = object({ plan: object({
+  complete: bool, unresolved: list(string), source: object({ key: string, name: string }),
+  movable: list(object({ ...PLANNED_ITEM, destinations: list(object({ key: string, name: string, kind: words("mac", "machine") })) })),
+  moving: list(object(PLANNED_ITEM)), exportOnly: list(object(PLANNED_ITEM)), childSessions: list(object(PLANNED_ITEM)),
+  stays: list(words("unselected-project-files", "child-sessions", "native-agent-histories", "credentials-and-vault")),
+  "projects?": list(string),
+}) });
+const COMPUTER_REMOVAL_REPLY = oneOf(
+  object({ setup: string, epoch: number, operation: string, proof: object({ d: string, s: string }), status: words("pending", "committed", "interrupted"),
+    "message?": string, "pending?": literal(true), removal: COMPUTER_REMOVAL, "export?": WIPE_EXPORT, "unresolved?": list(string) }),
+  object({ removal: COMPUTER_REMOVAL, "export?": WIPE_EXPORT, "unresolved?": list(string), "message?": string }),
+);
+const REMOVAL_ANSWERS = { 200: COMPUTER_REMOVAL_REPLY, 202: COMPUTER_REMOVAL_REPLY,
+  400: object({ message: string }), 403: object({ message: string }), 404: object({ message: string }), 405: object({ message: string }),
+  409: oneOf(object({ message: string, "export?": WIPE_EXPORT }), COMPUTER_REMOVAL_REPLY), 500: object({ message: string }),
+  503: oneOf(object({ message: string }), COMPUTER_REMOVAL_REPLY) };
+
 export const BOX_ROUTES: RouteShape[] = [
-  { route: "GET kuvo/computers/add", answers: { 200: ADDING, ...ADD_ANSWERS } },
-  { route: "GET kuvo/computers/add/events", answers: { 200: ADDING, ...ADD_ANSWERS } },
-  { route: "POST kuvo/computers/add", answers: { 202: object({ try: ADD_TRY }), ...ADD_ANSWERS } },
-  { route: "POST kuvo/computers/add/:id/answer", answers: { 200: object({ try: ADD_TRY }), ...ADD_ANSWERS } },
-  { route: "DELETE kuvo/computers/add/:id", answers: { 200: NOTHING, ...ADD_ANSWERS } },
-  { route: "POST kuvo/computers/:key/setup", answers: { 202: object({ try: ADD_TRY }), ...ADD_ANSWERS } },
-  { route: "POST kuvo/computers/:key/uninstall", answers: { 202: object({ try: ADD_TRY }), ...ADD_ANSWERS } },
-  { route: "POST kuvo/computers/:key/update", answers: { 202: object({ try: ADD_TRY }), ...ADD_ANSWERS } },
-  { route: "GET kuvo/computers", answers: { 200: COMPUTERS, 405: object({ message: string }) } },
-  { route: "GET kuvo/computers/events", answers: { 200: COMPUTERS, 405: object({ message: string }) } },
-  { route: "PATCH kuvo/computers/:key", answers: { 200: object({ name: string }), 400: object({ message: string }), 404: object({ message: string }), 405: object({ message: string }), 409: object({ message: string }), 500: object({ message: string }), 503: object({ message: string }) } },
-  { route: "DELETE kuvo/computers/:key", answers: { 200: NOTHING, 404: object({ message: string }), 405: object({ message: string }), 409: object({ message: string }), 500: object({ message: string }), 503: object({ message: string }) } },
-  { route: "POST kuvo/computers/:key/connect", answers: { 202: NOTHING, 404: object({ message: string }), 409: object({ message: string }), 503: object({ message: string }) } },
-  { route: "POST kuvo/computers/:key/allow-devices", answers: { 200: NOTHING, 403: object({ message: string }), 404: object({ message: string }), 405: object({ message: string }), 409: object({ message: string, "primary?": string }) } },
-  { route: "GET kuvo/info", answers: { 200: INFO } },
-  { route: "GET kuvo/update", answers: { 200: UPDATE } },
-  { route: "POST kuvo/update", answers: { 202: UPDATE } },
-  { route: "POST kuvo/box/update", answers: { 202: UPDATE } },
-  { route: "GET kuvo/box/rehome", answers: { 200: REHOME } },
-  { route: "POST kuvo/box/rehome", answers: { 200: REHOME } },
-  { route: "GET kuvo/box/permissions", answers: { 200: BOX_PERMISSIONS } },
-  { route: "POST kuvo/box/permissions", answers: { 200: BOX_PERMISSIONS, 400: object({ message: string }), 409: object({ message: string }), 500: object({ message: string }) } },
-  { route: "GET kuvo/box/app", answers: { 200: BOX_APP } },
-  { route: "POST kuvo/box/app", answers: { 200: BOX_APP } },
-  { route: "POST kuvo/box/app/open", answers: { 200: BOX_APP } },
-  { route: "GET kuvo/box/serve", answers: { 200: BOX_SERVE } },
-  { route: "GET kuvo/box/at-work", answers: { 200: AT_WORK, 405: object({ message: string }) } },
-  { route: "GET kuvo/box/at-work/events", answers: { 200: AT_WORK, 405: object({ message: string }) } },
-  { route: "POST kuvo/box/stop", answers: { 202: object({ stopping: literal(true) }), 403: object({ message: string }), 409: object({ message: string }), 500: object({ message: string }) } },
-  { route: "POST kuvo/box/serve", answers: { 200: BOX_SERVE } },
-  { route: "GET kuvo/browser", answers: { 200: BROWSER } },
-  { route: "POST kuvo/browser", answers: { 202: BROWSER } },
-  { route: "GET kuvo/file", answers: { 200: BYTES } },
-  { route: "GET kuvo/file/text", answers: { 200: FILE_TEXT, 400: FILE_REFUSED, 403: FILE_REFUSED, 404: FILE_REFUSED, 413: FILE_REFUSED } },
-  { route: "GET kuvo/phones", answers: { 200: PHONES } },
-  { route: "POST kuvo/phones/remove", answers: { 200: NOTHING } },
-  { route: "POST kuvo/phones/pair", answers: { 200: PAIRING } },
-  { route: "POST kuvo/devices/pair", answers: { 200: DEVICE_PAIRED, 400: object({ message: string }), 403: object({ message: string }), 409: object({ message: string, "reason?": words("removed", "blocked") }), 503: object({ message: string }) } },
-  { route: "DELETE kuvo/phones/pair", answers: { 200: NOTHING } },
-  { route: "GET kuvo/setup", answers: { 200: SETUP } },
-  { route: "GET kuvo/setup/events", answers: { 200: SETUP } },
-  { route: "POST kuvo/setup/judge", answers: { 200: JUDGED } },
-  { route: "POST kuvo/setup/attached", answers: { 200: NOTHING } },
-  { route: "GET kuvo/setup/ready", answers: { 200: SETUP_READY } },
-  { route: "POST kuvo/setup/welcomed", answers: { 200: WELCOMED, 400: object({ message: string }) } },
-  { route: "GET kuvo/attention", answers: { 200: ATTENTION } },
-  { route: "POST kuvo/attention", answers: { 200: object({ for: number }) } },
-  { route: "POST kuvo/attention/notice", answers: { 200: NOTHING } },
-  { route: "POST kuvo/attention/answered", answers: { 200: NOTHING } },
-  { route: "GET kuvo/named", answers: { 200: NAMED } },
-  { route: "GET kuvo/accounts/ended", answers: { 200: ENDED } },
-  { route: "POST kuvo/accounts/:provider/forget", answers: { 200: NOTHING } },
-  { route: "GET kuvo/accounts/refreshable", answers: { 200: REFRESHABLE } },
-  { route: "POST kuvo/accounts/:provider/refresh", answers: { 200: MODELS_REFRESHED } },
-  { route: "GET kuvo/accounts/credentials", answers: { 200: CREDENTIALS } },
-  { route: "GET kuvo/accounts/found", answers: { 200: FOUND } },
-  { route: "POST kuvo/accounts/found/use", answers: { 200: NOTHING } },
-  { route: "POST kuvo/engine/:control", answers: { 202: NOTHING } },
+  { route: "GET kuvo/computers/add", feature: "computers.add", answers: { 200: ADDING, ...ADD_ANSWERS } },
+  { route: "GET kuvo/computers/add/events", feature: "computers.add", answers: { 200: ADDING, ...ADD_ANSWERS } },
+  { route: "POST kuvo/computers/add", feature: "computers.add", answers: { 202: object({ try: ADD_TRY }), ...ADD_ANSWERS } },
+  { route: "POST kuvo/computers/add/:id/answer", feature: "computers.add", answers: { 200: object({ try: ADD_TRY }), ...ADD_ANSWERS } },
+  { route: "DELETE kuvo/computers/add/:id", feature: "computers.add", answers: { 200: NOTHING, ...ADD_ANSWERS } },
+  { route: "POST kuvo/computers/:key/setup", feature: "computers.add", answers: { 202: object({ try: ADD_TRY }), ...ADD_ANSWERS } },
+  { route: "POST kuvo/computers/:key/uninstall", feature: "computers.add", answers: { 202: object({ try: ADD_TRY }), ...ADD_ANSWERS } },
+  { route: "POST kuvo/computers/:key/update", feature: "computers.update", answers: { 202: object({ try: ADD_TRY }), ...ADD_ANSWERS } },
+  { route: "GET kuvo/computers", feature: "computers", answers: { 200: COMPUTERS, 405: object({ message: string }) } },
+  { route: "GET kuvo/computers/events", feature: "computers", answers: { 200: COMPUTERS, 405: object({ message: string }) } },
+  { route: "PATCH kuvo/computers/:key", feature: "computers.manage", answers: { 200: object({ name: string }), 400: object({ message: string }), 404: object({ message: string }), 405: object({ message: string }), 409: object({ message: string }), 500: object({ message: string }), 503: object({ message: string }) } },
+  { route: "DELETE kuvo/computers/:key", feature: "computers.manage", answers: { ...REMOVAL_ANSWERS, 200: oneOf(NOTHING, COMPUTER_REMOVAL_REPLY) } },
+  { route: "POST kuvo/computers/:key/removal-plan", feature: "computers.wipe-preparation", answers: {
+    200: REMOVAL_PLAN, 403: object({ message: string }), 404: object({ message: string }), 405: object({ message: string }),
+    409: object({ message: string }), 503: object({ message: string }),
+  } },
+  { route: "POST kuvo/computers/:key/unlink", feature: "computers.removal", answers: REMOVAL_ANSWERS },
+  { route: "POST kuvo/computers/:key/unlink-and-wipe", feature: "computers.removal", answers: REMOVAL_ANSWERS },
+  { route: "POST kuvo/computers/:key/connect", feature: "computers.manage", answers: { 202: NOTHING, 404: object({ message: string }), 409: object({ message: string }), 503: object({ message: string }) } },
+  { route: "GET kuvo/info", feature: "info", answers: { 200: INFO } },
+  { route: "GET kuvo/update", feature: "update", answers: { 200: UPDATE } },
+  { route: "POST kuvo/update", feature: "update", answers: { 202: UPDATE } },
+  { route: "POST kuvo/box/update", feature: "box.update", answers: { 202: UPDATE } },
+  { route: "GET kuvo/box/rehome", feature: "box.rehome", answers: { 200: REHOME } },
+  { route: "POST kuvo/box/rehome", feature: "box.rehome", answers: { 200: REHOME } },
+  { route: "GET kuvo/box/permissions", feature: "box.permissions", answers: { 200: BOX_PERMISSIONS } },
+  { route: "POST kuvo/box/permissions", feature: "box.permissions", answers: { 200: BOX_PERMISSIONS, 400: object({ message: string }), 409: object({ message: string }), 500: object({ message: string }) } },
+  { route: "GET kuvo/box/app", feature: "box.app", answers: { 200: BOX_APP } },
+  { route: "POST kuvo/box/app", feature: "box.app", answers: { 200: BOX_APP } },
+  { route: "POST kuvo/box/app/open", feature: "box.app", answers: { 200: BOX_APP } },
+  { route: "POST kuvo/box/proof", feature: "box.appKeys", answers: { 200: object({ mac: string, at: number, nonce: string, proof: string }) } },
+  { route: "GET kuvo/box/serve", feature: "box.serve", answers: { 200: BOX_SERVE } },
+  { route: "GET kuvo/box/at-work", feature: "box.atWork", answers: { 200: AT_WORK, 405: object({ message: string }) } },
+  { route: "GET kuvo/box/at-work/events", feature: "box.atWork", answers: { 200: AT_WORK, 405: object({ message: string }) } },
+  { route: "POST kuvo/box/stop", feature: "box.atWork", answers: { 202: object({ stopping: literal(true) }), 403: object({ message: string }), 409: object({ message: string }), 500: object({ message: string }) } },
+  { route: "POST kuvo/box/serve", feature: "box.serve", answers: { 200: BOX_SERVE } },
+  { route: "GET kuvo/browser", feature: "browser", answers: { 200: BROWSER } },
+  { route: "POST kuvo/browser", feature: "browser", answers: { 202: BROWSER } },
+  { route: "GET kuvo/file", feature: "file", answers: { 200: BYTES } },
+  { route: "GET kuvo/file/text", feature: "file.text", answers: { 200: FILE_TEXT, 400: FILE_REFUSED, 403: FILE_REFUSED, 404: FILE_REFUSED, 413: FILE_REFUSED } },
+  { route: "GET kuvo/phones", feature: "phones", answers: { 200: PHONES } },
+  { route: "POST kuvo/phones/remove", feature: "phones", answers: { 200: NOTHING } },
+  { route: "POST kuvo/phones/pair", feature: "phones.pair", answers: { 200: PAIRING } },
+  { route: "POST kuvo/devices/pair", feature: "devices.pair", answers: { 200: DEVICE_PAIRED, 400: object({ message: string }), 403: object({ message: string }), 409: object({ message: string, "reason?": words("removed", "blocked") }), 503: object({ message: string }) } },
+  { route: "DELETE kuvo/phones/pair", feature: "phones.pair", answers: { 200: NOTHING } },
+  { route: "GET kuvo/setup", feature: "setup", answers: { 200: SETUP } },
+  { route: "POST kuvo/setup/standby", feature: "setup.takeover", answers: { 200: object({ primary: string, epoch: number }), 202: object({ primary: string, epoch: number }), 409: object({ message: string }), 503: object({ message: string }) } },
+  { route: "POST kuvo/setup/handover", feature: "setup.handover", answers: { 200: object({ primary: string, epoch: number }), 202: object({ primary: string, epoch: number }), 409: object({ message: string }), 503: object({ message: string }) } },
+  { route: "GET kuvo/setup/events", feature: "setup", answers: { 200: SETUP } },
+  { route: "POST kuvo/setup/judge", feature: "setup", answers: { 200: JUDGED } },
+  { route: "POST kuvo/setup/attached", feature: "setup", answers: { 200: NOTHING } },
+  { route: "GET kuvo/setup/ready", feature: "setup.ready", answers: { 200: SETUP_READY } },
+  { route: "POST kuvo/setup/welcomed", feature: "setup.welcomed", answers: { 200: WELCOMED, 400: object({ message: string }) } },
+  { route: "GET kuvo/attention", feature: "attention", answers: { 200: ATTENTION } },
+  { route: "POST kuvo/attention", feature: "attention", answers: { 200: object({ for: number }) } },
+  { route: "POST kuvo/attention/notice", feature: "attention", answers: { 200: NOTHING } },
+  { route: "POST kuvo/attention/answered", feature: "attention", answers: { 200: NOTHING } },
+  { route: "GET kuvo/notices", feature: "notices", answers: { 200: NOTICES } },
+  { route: "GET kuvo/notices/events", feature: "notices", answers: { 200: NOTICES } },
+  { route: "GET kuvo/named", feature: "named", answers: { 200: NAMED } },
+  { route: "GET kuvo/accounts/ended", feature: "accounts.ended", answers: { 200: ENDED } },
+  { route: "POST kuvo/accounts/:provider/forget", feature: "accounts.ended", answers: { 200: NOTHING } },
+  { route: "GET kuvo/accounts/refreshable", feature: "accounts.refresh", answers: { 200: REFRESHABLE } },
+  { route: "POST kuvo/accounts/:provider/refresh", feature: "accounts.refresh", answers: { 200: MODELS_REFRESHED } },
+  { route: "GET kuvo/accounts/credentials", feature: "accounts.credentials", answers: { 200: CREDENTIALS } },
+  { route: "GET kuvo/accounts/found", feature: "accounts.found", answers: { 200: FOUND } },
+  { route: "POST kuvo/accounts/found/use", feature: "accounts.found", answers: { 200: NOTHING } },
+  { route: "POST kuvo/engine/start", feature: "engine.start", answers: { 202: NOTHING } },
+  { route: "POST kuvo/engine/restart", feature: "engine.restart", answers: { 202: NOTHING } },
   // Try Again for the coding agents (PROTOCOL.md, "The coding agents' state"): the box's own route,
   // among those it passes on to the bridge (`kuvo/agents/…`).
-  { route: "POST kuvo/agents/start", answers: { 200: NOTHING, 405: NOTHING, 409: object({ message: string }), 503: object({ message: string, reason: string, "action?": object({ label: string, route: string }) }) } },
-  { route: "POST kuvo/shell/:id/stop", answers: { 200: object({ stopped: words("signal", "removed") }) } },
+  { route: "POST kuvo/agents/start", feature: "agents.start", answers: { 200: NOTHING, 405: NOTHING, 409: object({ message: string }), 503: object({ message: string, reason: string, "action?": object({ label: string, route: string }) }) } },
+  { route: "POST kuvo/shell/:id/stop", feature: "shell.stop", answers: { 200: object({ stopped: words("signal", "removed") }) } },
 ];

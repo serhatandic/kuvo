@@ -80,7 +80,11 @@ const NOT_RUNNING: &str = "Kuvo on this Mac isn't running.";
 /// The record in `folder`, checked: a whole one, naming a process that runs as the box's server.
 pub fn serve_record(folder: &Path, runs_serve: impl Fn(i64) -> bool) -> Result<ServeRecord> {
     let text = fs::read(folder.join("run/serve.json")).map_err(|_| Error::NotRunning(NOT_RUNNING.into()))?;
-    let record: ServeRecord = serde_json::from_slice(&text).map_err(|_| Error::NotRunning(NOT_RUNNING.into()))?;
+    let value: serde_json::Value = serde_json::from_slice(&text).map_err(|_| Error::NotRunning(NOT_RUNNING.into()))?;
+    if value.get("formatVersion").is_some_and(|version| !matches!(version.as_u64(), Some(0 | 1))) {
+        return Err(Error::BadAnswer("The box server's rendezvous format version is unsupported (this client reads version 1).".into()));
+    }
+    let record: ServeRecord = serde_json::from_value(value).map_err(|_| Error::NotRunning(NOT_RUNNING.into()))?;
     if record.pid <= 1 || !(1..=65535).contains(&record.port) || record.password.is_empty() {
         return Err(Error::NotRunning(NOT_RUNNING.into()));
     }
@@ -202,5 +206,9 @@ mod tests {
         let record = serve_record(folder, |pid| pid == 99).unwrap();
         // Never its password, wherever it's shown.
         assert!(!format!("{record:?}").contains("secret"));
+        std::fs::write(folder.join("run/serve.json"), r#"{"pid": 99, "port": 80, "password": "secret", "formatVersion": 1}"#).unwrap();
+        assert!(serve_record(folder, |_| true).is_ok());
+        std::fs::write(folder.join("run/serve.json"), r#"{"pid": 99, "port": 80, "password": "secret", "formatVersion": 2}"#).unwrap();
+        assert!(matches!(serve_record(folder, |_| panic!("unreadable record")), Err(Error::BadAnswer(_))));
     }
 }

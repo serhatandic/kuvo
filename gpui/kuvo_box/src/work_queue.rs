@@ -592,6 +592,10 @@ impl BoxClient {
 
     /// Adds an item. Whose queue it goes in, and what's left out, are the box's to decide.
     pub fn add_work_item(&self, new: &NewItem) -> Result<Item> {
+        self.item_answer(Self::work_item_create(new, &Self::new_id()))
+    }
+
+    fn work_item_create(new: &NewItem, operation: &str) -> Request {
         let mut body = Map::new();
         body.insert("title".into(), json!(new.title));
         if !new.files.is_empty() { body.insert("files".into(), json!(new.files)); }
@@ -613,7 +617,9 @@ impl BoxClient {
         if let Some(due) = &new.due {
             body.insert("due".into(), json!(due));
         }
-        self.item_answer(Request::post("kuvo/work-queue/items", Value::Object(body)))
+        Request::post("kuvo/work-queue/items", Value::Object(body))
+            .header("x-kuvo-operation", operation)
+            .header("idempotency-key", operation)
     }
 
     /// Changes an item: what it says, where it stands, its priority, labels, assignee or due day.
@@ -715,6 +721,20 @@ mod tests {
         assert_eq!((issue.can.delete, issue.can.why.as_deref()), (true, Some("It's closed on GitHub.")));
         let waiting: Item = serde_json::from_str(r#"{"id":"wqi_3","title":"New"}"#).unwrap();
         assert_eq!((waiting.label(), waiting.can), (None, Can::default()));
+    }
+
+    #[test]
+    fn a_create_carries_one_operation_identity_for_box_and_transport_retries() {
+        let new = NewItem { title: "One action".into(), ..Default::default() };
+        let operation = BoxClient::new_id();
+        let request = BoxClient::work_item_create(&new, &operation);
+        assert_eq!(request.path, "kuvo/work-queue/items");
+        assert_eq!(request.headers, vec![
+            ("x-kuvo-operation".into(), operation.clone()),
+            ("idempotency-key".into(), operation),
+        ]);
+        assert_eq!(request.body, Some(json!({ "title": "One action" })));
+        assert_ne!(BoxClient::work_item_create(&new, &BoxClient::new_id()), request);
     }
 
     #[test]

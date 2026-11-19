@@ -1398,7 +1398,7 @@ test("a picture you attach to an item is kept with it: a file of this computer o
   const app = { fromApp: true, served: true };
   const local = path.join(home, "pasted image.png");
   fs.writeFileSync(local, "first image");
-  const created = await route("POST", "kuvo/work-queue/items", { title: "Pictures", files: [{ uri: new URL(`file://${local}`).href, name: "first.png" }] }, app);
+  const created = await route("POST", "kuvo/work-queue/items", { operation: "pictures-local", title: "Pictures", files: [{ uri: new URL(`file://${local}`).href, name: "first.png" }] }, app);
   assert.equal(created.status, 200);
   assert.equal(created.body.item.can.attach, true, "attaching is offered for one kept here");
   const id = created.body.item.id;
@@ -1414,7 +1414,7 @@ test("a picture you attach to an item is kept with it: a file of this computer o
   const secret = path.join(home, "secret.txt");
   fs.writeFileSync(secret, "not yours");
   for (const [as, phone] of [[{}, { key: Buffer.alloc(32, 7) }], [{ fromApp: true }, undefined], [{ fromMac: true, desktop: true }, { key: Buffer.alloc(32, 8), kind: "desktop" }]]) {
-    const added = await route("POST", "kuvo/work-queue/items", { title: "Sneaky", files: [{ uri: new URL(`file://${secret}`).href, name: "secret.txt" }] }, { ...as }, phone);
+    const added = await route("POST", "kuvo/work-queue/items", { operation: "pictures-refused", title: "Sneaky", files: [{ uri: new URL(`file://${secret}`).href, name: "secret.txt" }] }, { ...as }, phone);
     assert.equal(added.status, 400, "a path is refused");
     const changed = await route("PATCH", `kuvo/work-queue/items/${id}`, { files: [{ uri: new URL(`file://${secret}`).href, name: "secret.txt" }] }, { ...as }, phone);
     assert.equal(changed.status, 400);

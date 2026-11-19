@@ -17,6 +17,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { atEnd, removeAtEnd } from "./at-end.js";
+import { relayStandIn } from "./relay-stand-in.js";
 
 // (Short: a shared connection's socket goes under the box's folder on Linux.)
 const base = fs.realpathSync(fs.mkdtempSync("/tmp/k"));
@@ -54,6 +55,18 @@ const command = pid => spawnSync("ps", ["-ww", "-o", "command=", "-p", String(pi
 const crontabFile = path.join(fake, "crontab");
 write(path.join(tools, "crontab"), `#!/bin/sh\ncase "$1" in -l) [ -f '${crontabFile}' ] && cat '${crontabFile}' || { echo "no crontab for you" >&2; exit 1; } ;; -) cat >'${crontabFile}' ;; esac\n`, 0o755);
 for (const tool of ["pkill", "caffeinate", "codesign", "open"]) write(path.join(tools, tool), `#!/bin/sh\necho "${tool} $*" >>'${path.join(fake, "reached")}'\n`, 0o755);
+
+// IDs belong to simulated hardware, outside the simulated OS account's Kuvo data.
+write(path.join(tools, "ioreg"), `#!/bin/sh
+[ -f "$HOME/hardware-id" ] && printf '"IOPlatformUUID" = "%s"\\n' "$(/bin/cat "$HOME/hardware-id")"
+`, 0o755);
+write(path.join(tools, "cat"), `#!/bin/sh
+case "$1" in
+  /sys/class/dmi/id/product_uuid) exec /bin/cat "$HOME/hardware-id" ;;
+  /etc/machine-id) exec /bin/cat "$HOME/os-image-id" ;;
+esac
+exec /bin/cat "$@"
+`, 0o755);
 
 // The signed bundle and launchctl are stand-ins. No program in this fixture reaches TCC.
 const helperBundle = "bin/Kuvo Helper.app";
@@ -206,7 +219,11 @@ const root = path.join(base, "sources");
 for (const file of ["box/src/keeper/kuvo-start", "box/src/keeper/kuvo-launch", "box/src/keeper/kuvo-setsid", "box/src/keeper/kuvo-wake", "box/src/keeper/kuvo-npx", "box/src/keeper/runtime/node", "box/src/plugins/kuvo-code.js", "box/src/shared/bot-words.json", "box/src/shared/engine-pin.json", "box/dist/kuvo-browser.js"]) {
   write(path.join(root, file), fs.readFileSync(path.join(checkout, file)));
 }
-write(path.join(root, "swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js"), fs.readFileSync(script));
+const builtLink = fs.readFileSync(script, "utf8");
+// These boxes test SSH updates. A real release check must not take their update lock.
+const offlineLink = builtLink.replace(/^(\s*UPDATE_KEYS = )\[[^\n]*\];$/m, "$1[];");
+assert.notEqual(offlineLink, builtLink);
+write(path.join(root, "swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js"), offlineLink);
 write(path.join(root, "box/dist/kuvo-agents.js"), `
 import fs from "node:fs";
 import http from "node:http";
@@ -229,7 +246,8 @@ setInterval(() => {
   if (!fs.existsSync(run) || fs.existsSync(run + "/.machine-handover.pid")) process.exit(0);
 }, 100);
 `);
-const release = path.join(base, "release");
+// Keep the packed release apart from the SSH target named "release", which runs live workers.
+const release = path.join(base, "box-release-fixture");
 const packed = spawnSync("sh", [path.join(checkout, "scripts", "box-release.sh"), "--files", "1.0.0", release], {
   env: { ...process.env, BUN: process.env.BUN || process.env.KUVO_TEST_BUN || (process.versions.bun ? process.execPath : "bun"), BOX_SOURCES: root }, encoding: "utf8",
 });
@@ -337,6 +355,11 @@ if [ -f "$F/trace" ]; then
     kill -TERM "$$"
   fi
 fi
+# Exercise a remote bridge that still returns the revoked credentials on SSH Add.
+if [ -f "$F/stale-join-$dest" ]; then
+  text=$(printf %s "$cmd" | sed -n 's/.*printf %s \\([A-Za-z0-9+/=]*\\) | base64 -d.*/\\1/p' | base64 -d 2>/dev/null)
+  case "$text" in *'kuvo-link.js" setup'*) cat >/dev/null; cat "$F/stale-join-$dest"; exit 0 ;; esac
+fi
 if [ -f "$F/track" ] || [ -f "$F/lose-uninstall-reply" ]; then
   text=$(printf %s "$cmd" | sed -n 's/.*printf %s \\([A-Za-z0-9+/=]*\\) | base64 -d.*/\\1/p' | base64 -d 2>/dev/null)
   if [ -f "$F/track" ]; then
@@ -397,6 +420,7 @@ const here = http.createServer((request, response) => {
     if (request.url === "/hello") return json({ proof: crypto.createHmac("sha256", "host-password").update(`kuvo-host-hello\u0000${given.nonce}\u0000127.0.0.1:${here.address().port}`).digest("hex") });
     if (request.url === "/keys/names") return json({ names: Object.keys(mine.keys) });
     if (request.url === "/keys/get") return given.name in mine.keys ? json({ value: mine.keys[given.name] }) : response.writeHead(404).end();
+    if (request.url?.startsWith("/api/session")) return json({ data: [] });
     if (request.url === "/api/integration") return json({ data: mine.integrations });
     if (request.url === "/api/credential") return json({ data: mine.credentials });
     response.writeHead(404).end();
@@ -457,7 +481,7 @@ const over = id => until(id, found => !found || found.state === "done" || found.
 const steps = found => found.steps.map(step => `${step.id}:${step.state}`);
 const sshLog = () => (fs.existsSync(path.join(fake, "log")) ? fs.readFileSync(path.join(fake, "log"), "utf8").trim().split("\n") : []);
 // (Two more computers, each a home of its own: a Mac that has Kuvo Code's app, and one with nothing.)
-const homes = Object.fromEntries(["macbook", "mini", "nas", "attic", "race", "claim", "rotate", "interrupted", "network-drop", "release", "add-first", "uninstall-first", "prepare", "old-reservation", "prepare-error", "probe-removal", "stop-uninstall"].map(name => [name, path.join(base, name)]));
+const homes = Object.fromEntries(["macbook", "mini", "nas", "attic", "race", "claim", "rotate", "interrupted", "network-drop", "release", "add-first", "uninstall-first", "prepare", "old-reservation", "prepare-error", "probe-removal", "stop-uninstall", "primary-member", "late-enrollment", "replacement-standby", "backup-uninstall", "rejoin", "rejoin-neighbor", "rejoin-neighbor-return", "rejoin-clone-name", "rejoin-image", "rejoin-image-copy"].map(name => [name, path.join(base, name)]));
 for (const [name, folder] of Object.entries(homes)) {
   fs.mkdirSync(folder, { recursive: true });
   fs.writeFileSync(path.join(fake, `home-${name}`), folder);
@@ -921,17 +945,17 @@ test("a phone's Add a Machine (the old Mac app's `POST kuvo/machines`) is this b
 test("uninstalling while it's being set up waits for the start under way, then nothing runs there and nothing starts it again (#603)", async () => {
   const peer = link.macPeersBody(link.readLink()).boxes.find(each => each.kind === "machine");
   const engine = read(path.join(remote, "run", "engine.json")).pid;
-  // Kuvo Code's app there is one of your devices, added by its box (`by`), with the key it keeps
-  // in its own folder there; a phone is another (#753).
+  // The desktop and phone have independent grants. The desktop keeps its key on this machine.
   write(path.join(remote, "desktop", "identity"), "its-device-key", 0o600);
   const appThere = k(link.publicOf(link.newKey()));
   link.updateLink(state => {
-    link.pairDevice(state, { key: appThere, name: "Studio screen", by: peer.key });
+    link.pairDevice(state, { key: appThere, name: "Studio screen" });
     link.pairPhone(state, { key: k(link.publicOf(link.newKey())), name: "My iPhone", added: 1, from: "pair", pairing: "its-own" });
     return state;
   });
   const confirms = (await ask("GET", "kuvo/computers")).body.computers.find(each => each.key === peer.key).actions.find(action => action.id === "uninstall").confirm.message;
-  assert.match(confirms, /The sign-ins and keys it keeps are deleted\. Kuvo Code’s app on studio is taken off your devices\. Its sessions stay/);
+  assert.match(confirms, /The sign-ins and keys it keeps are deleted\. Its sessions stay/);
+  assert.doesNotMatch(confirms, /taken off your devices/);
   // A Set Up Again, held at its start there (the script that can't be cut short).
   fs.writeFileSync(path.join(fake, "hold"), 'bin/kuvo-start" start');
   const setup = await ask("POST", `kuvo/computers/${peer.key}/setup`);
@@ -970,9 +994,10 @@ test("uninstalling while it's being set up waits for the start under way, then n
   assert.deepEqual(read(path.join(home, "machines.json")), []);
   assert.ok(fs.existsSync(path.join(remote, "data")));
   assert.equal((await ask("POST", `kuvo/computers/${peer.key}/uninstall`)).status, 404, "no longer one it set up");
-  // Kuvo Code's app there is no device of yours now: its key deleted there, and taken off here,
-  // removed as any device is (so on every computer). The phone stays.
+  // Uninstall clears the local key. The primary keeps independent device grants until removed.
   assert.equal(fs.existsSync(path.join(remote, "desktop")), false, "the app's key there is deleted");
+  assert.deepEqual((await ask("GET", "kuvo/phones")).body.phones.map(each => each.name).sort(), ["My iPhone", "Studio screen"]);
+  assert.equal((await ask("POST", "kuvo/phones/remove", { phones: [{ key: appThere }] })).status, 200);
   assert.deepEqual((await ask("GET", "kuvo/phones")).body.phones.map(each => each.name), ["My iPhone"]);
   assert.deepEqual(link.ownPhones(link.readLink()).removed.map(each => each.key), [appThere]);
 });
@@ -1050,14 +1075,14 @@ test("a Mac with an existing app folder is added without copying sign-ins or key
   assert.equal((await over(uninstall.body.try.id)).state, "done");
 });
 
-test("a computer set up again with keys made anew is still the one whose app goes with it when it's removed (#753)", async () => {
+test("a computer set up again with keys made anew keeps its independently paired app", async () => {
   // (Its host key is trusted already, from when it was added before: nothing is asked.)
   const done = await over((await ask("POST", "kuvo/computers/add", { destination: "macbook" })).body.try.id);
   assert.equal(done.state, "done", JSON.stringify(done.failure));
-  // Kuvo Code's app there, one of your devices on its box's word.
+  // Kuvo Code's app there has a device grant of its own.
   const appThere = k(link.publicOf(link.newKey()));
   link.updateLink(state => {
-    link.pairDevice(state, { key: appThere, name: "MacBook screen", by: done.computer.key });
+    link.pairDevice(state, { key: appThere, name: "MacBook screen" });
     return state;
   });
   // Its box's keys are lost there (stopped, its link's file gone), and it's set up again: the same
@@ -1075,10 +1100,11 @@ test("a computer set up again with keys made anew is still the one whose app goe
   const now = link.macPeersBody(link.readLink()).boxes.filter(each => each.kind === "machine");
   assert.deepEqual(now.map(each => [each.name, each.key === done.computer.key]), [["macbook", false]], "the one computer, by another key");
   assert.deepEqual((await ask("GET", "kuvo/phones")).body.phones.map(each => each.name), ["My iPhone", "MacBook screen"], "its app is still one of your devices");
-  // Taken off your computers: its app goes with it all the same.
+  // Removing the computer leaves the app's grant until its own removal.
   const uninstall = await ask("POST", `kuvo/computers/${now[0].key}/uninstall`);
   assert.equal((await over(uninstall.body.try.id)).state, "done");
-  assert.deepEqual((await ask("GET", "kuvo/phones")).body.phones.map(each => each.name), ["My iPhone"]);
+  assert.deepEqual((await ask("GET", "kuvo/phones")).body.phones.map(each => each.name), ["My iPhone", "MacBook screen"]);
+  assert.equal((await ask("POST", "kuvo/phones/remove", { phones: [{ key: appThere }] })).status, 200);
 });
 
 test("an add that fails, or is stopped, after Kuvo Code started on a computer that had nothing leaves nothing running there and no key behind", async () => {
@@ -1386,6 +1412,7 @@ test("a failed final release is reported and an abandoned reservation can be cle
     const result = await added("release");
     assert.equal(result.state, "failed");
     assert.match(result.failure.message, /finished the change but couldn’t clear the account/);
+    assert.ok(result.computer?.key, "the failed release reports the committed computer");
     const original = fs.readlinkSync(reservationAt(folder));
     fs.rmSync(fail);
     const question = await retryAdd("release");
@@ -1566,15 +1593,16 @@ test("an alias Add honours only its original pairing and cannot restore a key re
   const fresh = await ask("POST", "kuvo/computers/add", { destination: macbookAlias }, authorized);
   const done = await over(fresh.body.try.id);
   assert.equal(done.state, "done", JSON.stringify(done.failure));
-  assert.equal(done.computer.key, original.key, "a fresh Add can restore the same key");
+  assert.notEqual(done.computer.key, original.key, "a fresh Add must use a new key");
+  assert.ok(link.readLink().removedHere.includes(original.key), "the old key stays revoked");
 });
 
-test("uninstall revokes the paired desktop even when its identity folder cleanup fails", async () => {
+test("uninstall revokes the computer even when its desktop identity folder cleanup fails", async () => {
   // The preceding test leaves this box joined through the alias.
   const computer = macbookPeer();
   const appKey = link.publicOf(link.newKey());
   link.updateLink(state => {
-    link.pairDevice(state, { key: k(appKey), name: "MacBook desktop", by: computer.key });
+    link.pairDevice(state, { key: k(appKey), name: "MacBook desktop" });
     return state;
   });
   const pairing = link.readLink().phones.find(each => each.key === k(appKey)).pairing;
@@ -1595,7 +1623,10 @@ test("uninstall revokes the paired desktop even when its identity folder cleanup
   assert.equal(result.state, "failed");
   assert.equal(fs.readFileSync(identity, "utf8"), "paired identity");
   assert.deepEqual(pidsThere(kuvo).filter(alive), [], "the service stopped");
-  assert.equal(link.authorizePhone(appKey, {}), false, "the surviving identity cannot connect");
+  assert.equal(macbookPeer(), undefined, "the computer membership was revoked");
+  assert.equal(link.authorizePhone(appKey, {}), true, "the separate device grant is still valid");
+  assert.equal((await ask("POST", "kuvo/phones/remove", { phones: [{ key: k(appKey), pairing }] })).status, 200);
+  assert.equal(link.authorizePhone(appKey, {}), false, "the device removal revokes the surviving identity");
   assert.ok(link.ownPhones(link.readLink()).removed.some(each => each.key === k(appKey) && each.pairing === pairing));
   assert.match(result.failure.message, /access to your other computers was revoked.*desktop identity folder/i);
 });
@@ -1626,7 +1657,7 @@ test("uninstall revokes access before SSH cleanup and reports a lost reply witho
   assert.equal((await ask("POST", "kuvo/machines", { destination: "macbook" })).status, 200);
   const computer = macbookPeer();
   const key = link.publicOf(link.newKey());
-  link.updateLink(state => { link.pairDevice(state, { key: k(key), name: "MacBook desktop", by: computer.key }); return state; });
+  link.updateLink(state => { link.pairDevice(state, { key: k(key), name: "MacBook desktop" }); return state; });
   const marker = path.join(fake, "lose-uninstall-reply");
   fs.writeFileSync(marker, "");
   let result;
@@ -1642,8 +1673,9 @@ test("uninstall revokes access before SSH cleanup and reports a lost reply witho
     letsIn: link.authorizePhone(key, {}), present: Boolean(macbookPeer()),
   }, {
     state: "failed", message: "macbook’s access to your other computers was revoked. Kuvo Code couldn’t confirm whether cleanup finished on that computer. Run the local uninstall command (kuvo-link.js uninstall) on that computer to finish cleanup.",
-    letsIn: false, present: false,
+    letsIn: true, present: false,
   });
+  assert.equal((await ask("POST", "kuvo/phones/remove", { phones: [{ key: k(key) }] })).status, 200);
   assert.deepEqual(pidsThere(path.join(homes.macbook, ".kuvo-code")).filter(alive), []);
 });
 
@@ -1686,6 +1718,23 @@ for (const [destination, heldScript, step, expected] of [
     assert.deepEqual(ran, expected);
   });
 }
+
+test("SSH uninstall leaves membership intact when the remote pre-wipe backup fails", async () => {
+  const installed = await added("backup-uninstall");
+  assert.equal(installed.state, "done", JSON.stringify(installed.failure));
+  const { computer } = installed;
+  const kuvo = path.join(homes["backup-uninstall"], ".kuvo-code");
+  const identity = path.join(kuvo, "desktop", "identity");
+  write(identity, "keep until backup succeeds", 0o600);
+  write(path.join(kuvo, "backup", "configuration.json"), '{"version":999}');
+  const started = await ask("POST", `kuvo/computers/${computer.key}/uninstall`);
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  const ended = await over(started.body.try.id);
+  assert.equal(ended.state, "failed");
+  assert.match(ended.failure.message, /Unsupported backup configuration/);
+  assert.ok(link.readLink().macPeers.some(peer => peer.key === computer.key));
+  assert.equal(fs.readFileSync(identity, "utf8"), "keep until backup succeeds");
+});
 
 test("SSH uninstall stops if the refreshed peer list drops the target during the probe", async () => {
   const addedForProbe = await added("probe-removal");
@@ -1749,7 +1798,7 @@ test("Stop after committed revocation retains the unconfirmed SSH cleanup and lo
   assert.equal(fs.existsSync(path.join(kuvo, "run", "off")), false);
 });
 
-function machineFixture(name, { legacy = true } = {}) {
+function machineFixture(name, { legacy = true, workerReadyMs = 30_000 } = {}) {
   const folder = path.join(base, name);
   homes[name] = folder;
   const root = path.join(folder, ".kuvo-code");
@@ -1757,6 +1806,11 @@ function machineFixture(name, { legacy = true } = {}) {
   const plist = path.join(folder, "Library/LaunchAgents/run.kuvo.code.machine.plist");
   const engine = () => read(path.join(run, "engine.json"));
   const bridge = () => read(path.join(run, "bridge.json"));
+  const helperWorkers = () => {
+    const [, helper] = fs.readFileSync(path.join(run, "machine-keeper"), "utf8").trim().split(/\s+/).map(Number);
+    const owned = (kind, pid) => fs.readFileSync(path.join(run, kind + ".launch"), "utf8").trim() === pid + " " + helper;
+    return helper > 1 && bridge().helper === helper && owned("agents", bridge().pid) && owned("engine", engine().pid);
+  };
   const journal = path.join(run, "machine-helper-job.json");
   const swap = path.join(run, "engine-swap.json");
   const adopted = path.join(run, "machine-helper-adopted");
@@ -1781,7 +1835,9 @@ function machineFixture(name, { legacy = true } = {}) {
     write(plist, '<string>exec sh "$HOME/.kuvo-code/bin/kuvo-start"</string>');
     write(path.join(run, "fake-launchd"), "legacy\n");
   }
-  const env = { ...process.env, HOME: folder, KUVO_HOME: root, KUVO_TEST_KEEP_ROUND: "1", KUVO_TEST_SWAP_EVERY: "100", KUVO_TEST_SWAP_QUIET: "700", KUVO_TEST_SWAP_START_MOST: "9000" };
+  // Give real keeper/launcher processes a test deadline even under load. A deliberately
+  // unhealthy fixture uses a shorter deadline to exercise rollback without waiting needlessly.
+  const env = { ...process.env, HOME: folder, KUVO_HOME: root, KUVO_TEST_KEEP_ROUND: "1", KUVO_TEST_SWAP_EVERY: "100", KUVO_TEST_SWAP_QUIET: "700", KUVO_TEST_SWAP_START_MOST: String(workerReadyMs) };
   const start = path.join(root, "bin", "kuvo-start");
   const installHelper = () => fs.cpSync(path.join(home, helperBundle), path.join(root, helperBundle), { recursive: true });
   const nextEngine = () => {
@@ -1795,20 +1851,20 @@ function machineFixture(name, { legacy = true } = {}) {
     spawnSync(path.join(tools, "launchctl"), ["bootout", "stub/run.kuvo.code.machine.permissions"], { env });
     spawnSync("sh", [start, "off"], { env, timeout: 40_000 });
   };
-  return { folder, root, run, plist, engine, bridge, journal, swap, adopted, until, env, start, installHelper, nextEngine, stop };
+  return { folder, root, run, plist, engine, bridge, helperWorkers, journal, swap, adopted, until, env, start, installHelper, nextEngine, stop };
 }
 
 for (const reinstall of [false, true]) test(`a fresh Darwin installer rolls back when the bridge never answers${reinstall ? " during reinstall" : ""}`, {
   skip: process.platform !== "darwin",
 }, async () => {
-  const { folder, root, plist, engine, bridge, journal, adopted, until, env, installHelper, stop } = machineFixture(reinstall ? "installer-bridge-reinstall" : "installer-bridge", { legacy: false });
+  const { folder, root, plist, bridge, helperWorkers, journal, adopted, until, env, installHelper, stop } = machineFixture(reinstall ? "installer-bridge-reinstall" : "installer-bridge", { legacy: false, workerReadyMs: 9_000 });
   installHelper();
   if (reinstall) write(adopted, "");
   write(path.join(folder, "fail-helper-bridge"), "");
   const installer = spawn(process.execPath, [path.join(root, "bin/kuvo-link.js"), "helper", "machine-start"], { env, stdio: "ignore" });
   const exited = new Promise(resolve => installer.once("exit", resolve));
   try {
-    await until(() => engine().pid && bridge().pid, "the installer should have started both workers");
+    await until(() => helperWorkers(), "the installer should have started both workers under Helper");
     assert.equal((await fetch(`http://127.0.0.1:${bridge().port}/api/session/active`)).status, 503);
     assert.ok(fs.existsSync(journal), "the startup trial is still recoverable");
     assert.equal(fs.existsSync(adopted), false);
@@ -1827,10 +1883,12 @@ test("a stopped Darwin machine starts through its existing launch job", {
   const { folder, root, run, plist, bridge, adopted, env, installHelper, stop } = machineFixture("installer-stopped-legacy");
   installHelper();
   write(path.join(run, "stopped"), "");
-  const installer = spawn(process.execPath, [path.join(root, "bin/kuvo-link.js"), "helper", "machine-start"], { env, stdio: "ignore" });
-  const exited = new Promise(resolve => installer.once("exit", resolve));
+  const installer = spawn(process.execPath, [path.join(root, "bin/kuvo-link.js"), "helper", "machine-start"], { env, stdio: ["ignore", "ignore", "pipe"] });
+  let stderr = "";
+  installer.stderr.on("data", chunk => { stderr += chunk; });
+  const exited = new Promise(resolve => installer.once("close", resolve));
   try {
-    assert.equal(await exited, 0);
+    assert.equal(await exited, 0, stderr);
     assert.match(fs.readFileSync(path.join(folder, "launchctl.log"), "utf8"), /^kickstart gui\/\d+\/run\.kuvo\.code\.machine$/m);
     assert.match(fs.readFileSync(plist, "utf8"), /exec sh/);
     assert.equal(bridge().helper, 0);
@@ -1867,20 +1925,23 @@ test("a stopped Darwin machine reports a refused legacy launch job", {
 test("an adopted Darwin reinstall reports failure while the bridge returns 503", {
   skip: process.platform !== "darwin",
 }, async () => {
-  const { folder, root, plist, engine, bridge, journal, adopted, env, installHelper, stop } = machineFixture("installer-already-adopted", { legacy: false });
+  const { folder, root, plist, engine, bridge, helperWorkers, journal, adopted, env, installHelper, stop } = machineFixture("installer-already-adopted", { legacy: false });
   installHelper();
-  const installer = () => spawnSync(process.execPath, [path.join(root, "bin/kuvo-link.js"), "helper", "machine-start"], { env, encoding: "utf8", timeout: 40_000 });
+  const installer = (readyMs = env.KUVO_TEST_SWAP_START_MOST) => spawnSync(process.execPath, [path.join(root, "bin/kuvo-link.js"), "helper", "machine-start"], {
+    env: { ...env, KUVO_TEST_SWAP_START_MOST: readyMs }, encoding: "utf8", timeout: 40_000,
+  });
   try {
     const first = installer();
     assert.equal(first.status, 0, first.stderr);
     const registered = fs.readFileSync(plist, "utf8");
     assert.match(registered, /Kuvo Helper<\/string><string>keep-machine<\/string>/);
     assert.ok(fs.existsSync(adopted));
+    assert.ok(helperWorkers(), "the clean install adopted both Helper-owned workers before the reinstall");
     const workers = [engine().pid, bridge().pid];
 
     write(path.join(folder, "fail-helper-bridge"), "");
     assert.equal((await fetch(`http://127.0.0.1:${bridge().port}/api/session/active`)).status, 503);
-    const again = installer();
+    const again = installer("9000");
     assert.equal(again.status, 1, again.stderr);
     assert.match(again.stderr, /didn’t finish starting/);
     assert.equal(fs.readFileSync(plist, "utf8"), registered);
@@ -1895,13 +1956,13 @@ test("an adopted Darwin reinstall reports failure while the bridge returns 503",
 test("a Darwin keeper finishes an interrupted fresh install when both services answer", {
   skip: process.platform !== "darwin",
 }, async () => {
-  const { folder, root, engine, bridge, journal, adopted, until, env, installHelper, stop } = machineFixture("installer-interrupted", { legacy: false });
+  const { folder, root, helperWorkers, journal, adopted, until, env, installHelper, stop } = machineFixture("installer-interrupted", { legacy: false });
   installHelper();
   write(path.join(folder, "fail-helper-bridge"), "");
   const installer = spawn(process.execPath, [path.join(root, "bin/kuvo-link.js"), "helper", "machine-start"], { env, stdio: "ignore" });
   const exited = new Promise(resolve => installer.once("exit", resolve));
   try {
-    await until(() => read(journal).phase === "waiting" && engine().pid && bridge().pid, "both workers start during the trial");
+    await until(() => read(journal).phase === "waiting" && helperWorkers(), "both Helper-owned workers start during the trial");
     assert.ok(installer.kill("SIGKILL"));
     await exited;
     fs.rmSync(path.join(folder, "fail-helper-bridge"));
@@ -1916,13 +1977,16 @@ for (const scenario of ["grant", "worker failure", "interruption", "bootstrap de
   skip: process.platform !== "darwin",
 }, async () => {
   const name = "legacy-" + scenario.replaceAll(" ", "-");
-  const { folder, run, plist, engine, bridge, journal, swap, adopted, until, env, start, installHelper, nextEngine, stop } = machineFixture(name);
+  const rollback = scenario === "rollback holds";
+  const workerFailure = scenario === "worker failure";
+  const { folder, run, plist, engine, bridge, journal, swap, adopted, until, env, start, installHelper, nextEngine, stop } = machineFixture(name, {
+    workerReadyMs: rollback || workerFailure ? 9_000 : undefined,
+  });
   const legacy = spawn("sh", [start, "keep"], { env, stdio: "ignore" });
   try {
     await until(() => bridge().pid && engine().pid, "legacy workers should start");
     const oldEngine = engine().pid, oldBridge = bridge().pid;
     const deferred = scenario.startsWith("deferred");
-    const rollback = scenario === "rollback holds";
     if (deferred) write(path.join(folder, "files-access"), "false");
     else if (rollback) {
       write(path.join(folder, "files-access"), "true");
@@ -1962,7 +2026,7 @@ for (const scenario of ["grant", "worker failure", "interruption", "bootstrap de
       assert.equal(bridge().pid, oldBridge);
       for (const worker of [engine(), bridge()]) assert.ok((await fetch(`http://127.0.0.1:${worker.port}/api/session/active`)).ok);
       if (scenario === "bootstrap denied") write(path.join(folder, "refuse-helper"), "");
-      if (scenario === "worker failure") write(path.join(folder, "fail-helper-bridge"), "");
+      if (workerFailure) write(path.join(folder, "fail-helper-bridge"), "");
       if (scenario === "interruption") write(path.join(folder, "pause-helper-bootstrap"), "");
       if (scenario === "partial inbox") write(path.join(folder, "engine-inbox.json"), JSON.stringify(["A", "B", "C"].map(text => ({
         id: `msg_${text}`, delivery: "queue", type: "user", payload: { text },
@@ -2010,7 +2074,7 @@ for (const scenario of ["grant", "worker failure", "interruption", "bootstrap de
       return;
     }
 
-    if (scenario === "worker failure") {
+    if (workerFailure) {
       await until(() => !fs.existsSync(journal) && fs.existsSync(path.join(run, "machine-helper-retry")) && bridge().pid !== oldBridge, "the previous launch path restored working service");
       assert.match(fs.readFileSync(plist, "utf8"), /exec sh/);
       assert.equal(fs.existsSync(adopted), false);
@@ -2034,4 +2098,452 @@ for (const scenario of ["grant", "worker failure", "interruption", "bootstrap de
     stop();
     if (legacy.exitCode === null && legacy.signalCode === null) legacy.kill();
   }
+});
+
+test("failure bench: a Linux primary starts fresh, enrolls over SSH and pairs devices", { timeout: 300_000 }, async t => {
+  const relay = await relayStandIn(link);
+  atEnd(() => relay.close());
+  const primaryHome = path.join(base, "primary");
+  const primaryBox = path.join(primaryHome, ".kuvo-code");
+  const memberHome = homes["primary-member"];
+  const memberBox = path.join(memberHome, ".kuvo-code");
+  fs.cpSync(release, primaryBox, { recursive: true });
+  // On macOS this also exercises the real Mac machine-install and attachment paths.
+  if (process.platform === "darwin") fs.cpSync(path.join(home, helperBundle), path.join(primaryBox, helperBundle), { recursive: true });
+  write(path.join(primaryBox, "engine", engineVersion, "opencode"), engineBinary, 0o755);
+  const env = { ...process.env, HOME: primaryHome, KUVO_HOME: primaryBox, KUVO_TEST_RELAY: relay.url };
+  const run = (boxEnv, ...args) => {
+    const result = spawnSync(process.execPath, [script, ...args], { env: boxEnv, encoding: "utf8", timeout: 10_000 });
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout;
+  };
+  const start = (boxEnv, ...args) => {
+    const child = spawn(process.execPath, [script, ...args], { env: boxEnv, stdio: ["ignore", "ignore", "inherit"] });
+    atEnd(() => new Promise(resolve => {
+      if (child.exitCode !== null || child.signalCode !== null) return resolve();
+      child.once("exit", resolve);
+      child.kill("SIGTERM");
+    }));
+    return child;
+  };
+  const waitFor = async (description, find, timeout = 30_000) => {
+    const until = Date.now() + timeout;
+    do {
+      const value = await find();
+      if (value) return value;
+      await new Promise(resolve => setTimeout(resolve, 100));
+    } while (Date.now() < until);
+    assert.fail(description);
+  };
+  const inBox = (box, file = "link.json") => read(path.join(box, "run", file));
+  const localServer = async (box, boxEnv) => {
+    write(path.join(box, "run", "serve.needed"), "");
+    const child = start(boxEnv, "serve", "--kept");
+    const record = await waitFor("the kept server starts", () => {
+      try { const current = inBox(box, "serve.json"); return alive(current.pid) && current; } catch (error) { if (error.code !== "ENOENT") throw error; }
+    });
+    const ask = async (method, route, body) => {
+      const answer = await fetch(`http://127.0.0.1:${record.port}/${route}`, {
+        method, signal: AbortSignal.timeout(20_000),
+        headers: { authorization: `Basic ${Buffer.from(`opencode:${record.password}`).toString("base64")}`, "x-kuvo-from": "mac" },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      });
+      return { status: answer.status, body: await answer.json() };
+    };
+    return Object.assign(ask, {
+      async stop() {
+        if (record.pid === child.pid) {
+          const exited = new Promise(resolve => child.once("exit", resolve));
+          child.kill("SIGTERM");
+          await exited;
+        } else {
+          // The SSH installation's own keeper can start the server first.
+          const { stdout } = spawnSync("ps", ["-ww", "-o", "command=", "-p", String(record.pid)], { encoding: "utf8" });
+          assert.ok(stdout.includes(path.join(box, "bin", "kuvo-link.js") + " serve --kept"), stdout);
+          process.kill(record.pid, "SIGTERM");
+        }
+        await waitFor("the old server has removed its record", () => {
+          try { return inBox(box, "serve.json").pid !== record.pid; } catch (error) { if (error.code === "ENOENT") return true; throw error; }
+        });
+      },
+    });
+  };
+
+  assert.equal(fs.existsSync(path.join(primaryBox, "run", "link.json")), false);
+  run(env, "setup-local");
+  const first = inBox(primaryBox);
+  const primary = first.setup;
+  assert.equal(primary.role, "primary");
+  assert.equal(primary.epoch, 1);
+  assert.equal(primary.primary, k(link.publicOf(Buffer.from(first.key, "base64url"))));
+  assert.equal(primary.sign, link.ownSign(first));
+  assert.equal(first.relay, relay.url);
+  run(env, "setup-local");
+  assert.deepEqual(inBox(primaryBox), first, "a fresh primary keeps its identity on restart");
+  const primaryApp = await localServer(primaryBox, env);
+  assert.equal((await primaryApp("GET", "kuvo/computers/add")).body.can, true);
+
+  const begun = await primaryApp("POST", "kuvo/computers/add", { destination: "primary-member" });
+  assert.equal(begun.status, 202, JSON.stringify(begun.body));
+  const route = `kuvo/computers/add/${begun.body.try.id}`;
+  const tryNow = async () => {
+    const listed = await primaryApp("GET", "kuvo/computers/add");
+    assert.equal(listed.status, 200, JSON.stringify(listed.body));
+    const attempt = listed.body.tries.find(each => each.id === begun.body.try.id);
+    assert.ok(attempt);
+    return attempt;
+  };
+  const question = await waitFor("SSH asks to trust the new host key", async () => {
+    const attempt = await tryNow();
+    assert.notEqual(attempt.state, "failed", JSON.stringify(attempt.failure));
+    return attempt.question;
+  });
+  assert.equal(question.id, "hostKey");
+  assert.equal((await primaryApp("POST", `${route}/answer`, { answer: "trust", at: question.at })).status, 200);
+  const done = await waitFor("the SSH add finishes", async () => {
+    const attempt = await tryNow();
+    assert.notEqual(attempt.state, "failed", JSON.stringify(attempt.failure));
+    return attempt.state === "done" && attempt;
+  }, 60_000);
+  const member = done.computer.key;
+  const memberEnv = { ...env, HOME: memberHome, KUVO_HOME: memberBox };
+  assert.deepEqual(inBox(memberBox).setup, { ...primary, role: "member" }, "SSH installed the signed setup");
+  let memberApp = await localServer(memberBox, memberEnv);
+  assert.equal((await memberApp("GET", "kuvo/computers/add")).body.can, false);
+  assert.equal((await memberApp("POST", "kuvo/phones/pair")).body.primary, primary.primary);
+  assert.deepEqual((await primaryApp("GET", "kuvo/setup")).body.computers.map(each => each.key), [primary.primary, member]);
+
+  fs.copyFileSync(path.join(home, "run", "engine.json"), path.join(primaryBox, "run", "engine.json"));
+  const originalPrimaryProcess = start(env, "run");
+  const peers = await waitFor("the member installs the signed roster including its own entry", () => {
+    const doc = link.readDoc(inBox(memberBox).docs[`${primary.sign} peers`]);
+    return doc?.body.boxes.some(each => each.key === member) && doc;
+  });
+  assert.equal(peers.origin, primary.sign);
+  assert.deepEqual(peers.body.setup, { id: primary.id, epoch: 1, primary: primary.primary });
+  assert.deepEqual(peers.body.boxes.map(each => [each.key, each.kind]), [[primary.primary, "machine"], [member, "machine"]]);
+  const forged = link.signDoc(link.newSigningSeed(), "peers", peers.n + 1, peers.body);
+  assert.equal(link.takeDoc(inBox(memberBox), forged), null, "membership is trusted by key, not by the claimed primary");
+
+  const desktop = { key: k(link.publicOf(link.newKey())), name: "New desktop", kind: "desktop" };
+  const paired = await primaryApp("POST", "kuvo/devices/pair", desktop);
+  assert.equal(paired.status, 200, JSON.stringify(paired.body));
+  assert.ok(paired.body.pairing);
+  await waitFor("the member takes the primary's signed pairing", () => {
+    const state = inBox(memberBox);
+    const phones = link.readDoc(state.docs[`${primary.sign} phones`]);
+    return phones?.origin === primary.sign && phones.body.phones.some(each => each.key === desktop.key && each.pairing === paired.body.pairing)
+      && state.phones.some(each => each.key === desktop.key && each.pairing === paired.body.pairing);
+  });
+
+  await t.test("a member forwards pairing to the primary", async () => {
+    const device = { ...desktop, key: k(link.publicOf(link.newKey())), name: "Member desktop" };
+    const made = await waitFor("the member can forward pairing once it hears from the primary", async () => {
+      const answer = await memberApp("POST", "kuvo/devices/pair", device);
+      assert.ok(answer.status === 200 || answer.status === 503, JSON.stringify(answer));
+      return answer.status === 200 && answer.body;
+    });
+    assert.ok(made.pairing);
+    const grant = inBox(primaryBox).phones.find(each => each.key === device.key);
+    assert.equal(grant?.pairing, made.pairing);
+    assert.equal(grant.by, undefined);
+  });
+
+  await t.test("a Mac member's desktop attaches to its existing box as a window", { skip: process.platform !== "darwin" }, async () => {
+    const decision = JSON.parse(run({ ...memberEnv, KUVO_HOME: path.join(memberHome, "app", "box") }, "here", ".kuvo-code"));
+    assert.equal(decision.use, "attach");
+    assert.equal(decision.opens, "window");
+    assert.equal(decision.box.primary.key, primary.primary);
+    assert.equal((await memberApp("POST", "kuvo/setup/attached")).status, 200);
+    assert.equal(inBox(memberBox, "setup-card.json").app, true);
+    assert.equal((await memberApp("GET", "kuvo/setup")).body.you.role, "member");
+  });
+  const addOn = async (ask, destination, replace) => {
+    const begun = await ask("POST", "kuvo/computers/add", { destination, ...(replace ? { replace } : {}) });
+    assert.equal(begun.status, 202, JSON.stringify(begun.body));
+    const id = begun.body.try.id;
+    const current = async () => (await ask("GET", "kuvo/computers/add")).body.tries.find(attempt => attempt.id === id);
+    const checked = await waitFor("SSH checks the host key", async () => {
+      const attempt = await current();
+      return (attempt.question || attempt.state !== "working" || attempt.steps[0].state === "done") && attempt;
+    });
+    if (checked.question) {
+      assert.equal((await ask("POST", `kuvo/computers/add/${id}/answer`, { answer: "trust", at: checked.question.at })).status, 200);
+    }
+    return current;
+  };
+  const selected = await primaryApp("POST", "kuvo/setup/standby", { standby: member, epoch: 1 });
+  assert.equal(selected.status, 202, JSON.stringify(selected.body));
+  await waitFor("the primary has the standby's lease", () => {
+    try { return inBox(primaryBox, "setup-lease.json").stamp === `${primary.id}:2:${member}`; } catch { return false; }
+  });
+  write(path.join(primaryBox, "box", "keys", "KUVO_KEY_NOTION_TOKEN"), "fixture-seeded-key");
+  const oldAddress = link.addressOf(Buffer.from(first.secret, "base64url"));
+  const standbyAddress = link.addressOf(Buffer.from(inBox(memberBox).secret, "base64url"));
+
+  const deviceSave = await memberApp("POST", "kuvo/devices/pair", { ...desktop, key: k(link.publicOf(link.newKey())), name: "Standby desktop" });
+  assert.equal(deviceSave.status, 200, JSON.stringify(deviceSave.body));
+  assert.equal(deviceSave.body.status, "committed");
+  assert.equal(link.readDoc(deviceSave.body.proof)?.body.operation, deviceSave.body.operation);
+  let enrollmentReceipt;
+
+  await t.test("a delayed membership receipt keeps the fresh SSH installation and the same proposal", async () => {
+    const delayed = [];
+    const release = relay.intercept(standbyAddress, oldAddress, packet => {
+      const envelope = link.openMail(link.readFrame(packet.payload).body, inBox(primaryBox))?.payload?.docs?.give?.[0];
+      if (link.readDoc(envelope)?.body.kind === "membershipAndAccess" && link.readDoc(envelope)?.body.receipt) {
+        delayed.push(packet);
+        return true;
+      }
+      return false;
+    });
+    try {
+      const attempt = await addOn(primaryApp, "late-enrollment");
+      await waitFor("the standby accepted enrollment and attempts to reply", async () => {
+        const current = await attempt();
+        assert.equal(current.state, "working", JSON.stringify(current));
+        return delayed[0];
+      }, 60_000);
+      const operation = Object.keys(inBox(primaryBox).sharedPending)[0];
+      const target = path.join(homes["late-enrollment"], ".kuvo-code");
+      await new Promise(resolve => setTimeout(resolve, 3_300));
+      const afterRestart = id => {
+        const result = spawnSync(process.execPath, ["--input-type=module", "-e",
+          `import { allTries } from ${JSON.stringify(script)}; console.log(JSON.stringify(allTries().find(each => each.id === ${JSON.stringify(id)})))`,
+        ], { env, encoding: "utf8", timeout: 5_000 });
+        assert.equal(result.status, 0, result.stderr);
+        return JSON.parse(result.stdout);
+      };
+      const pending = await attempt();
+      assert.equal(pending.state, "working", JSON.stringify(pending));
+      assert.equal(pending.save?.status, "pending");
+      assert.equal(pending.save.operation, operation);
+      assert.equal(link.readDoc(pending.save.proof)?.body.operation, operation);
+      const joined = inBox(target);
+      assert.equal(joined.setup.epoch, 2);
+      assert.equal(joined.leadership, undefined);
+      assert.ok(link.digestOf(joined).some(entry => entry[1] === "leadership" && entry[2] === 2));
+      const restarted = afterRestart(pending.id);
+      assert.equal(restarted.state, "working");
+      assert.deepEqual(restarted.save, pending.save);
+      assert.deepEqual(Object.keys(inBox(primaryBox).sharedPending), [operation]);
+      assert.equal(fs.readFileSync(path.join(target, "box", "keys", "KUVO_KEY_NOTION_TOKEN"), "utf8").trim(), "fixture-seeded-key");
+      assert.ok(pidsThere(target).some(alive), "the installation is still running");
+      assert.equal(fs.existsSync(path.join(target, "run", "off")), false);
+      release();
+      relay.replay(delayed[0]);
+      const done = await waitFor("the original add commits", async () => {
+        const current = await attempt();
+        assert.notEqual(current.state, "failed", JSON.stringify(current.failure));
+        return current.state === "done" && current;
+      });
+      assert.equal(inBox(primaryBox).sharedOutcomes[operation].status, "committed");
+      assert.equal(afterRestart(done.id).state, "done");
+      assert.equal(done.save?.status, "committed");
+      assert.deepEqual(done.save.proof, pending.save.proof);
+      enrollmentReceipt = done.save;
+      for (const ask of [primaryApp, memberApp]) {
+        await waitFor("the client's roster includes the new member", async () => {
+          const roster = await ask("GET", "kuvo/computers");
+          assert.equal(roster.status, 200);
+          return roster.body.computers.some(each => each.key === done.computer.key);
+        });
+      }
+      const gone = await primaryApp("DELETE", `kuvo/computers/${done.computer.key}`);
+      assert.equal(gone.status, 200, JSON.stringify(gone.body));
+    } finally { release(); }
+  });
+
+  await t.test("unlink revokes both old keys and reinstall restores the computer’s list position", async () => {
+    const firstID = "aaaaaaaa-abcd-4444-8888-aaaaaaaaaaaa";
+    const otherID = "bbbbbbbb-abcd-4444-8888-bbbbbbbbbbbb";
+    write(path.join(homes.rejoin, "hardware-id"), firstID);
+    write(path.join(homes["rejoin-clone-name"], "hardware-id"), otherID);
+    const add = async (name, replace, failure) => {
+      const current = await addOn(primaryApp, name, replace);
+      let last;
+      const ended = await waitFor(`Add ${name} finishes`, async () => {
+        last = await current();
+        return (last.state === "done" || last.state === "failed") && last;
+      }, 60_000).catch(error => assert.fail(`${error.message}: ${JSON.stringify(last)}`));
+      if (failure) {
+        assert.equal(ended.state, "failed", JSON.stringify(ended));
+        assert.match(ended.failure.message, failure);
+      } else assert.equal(ended.state, "done", JSON.stringify(ended.failure));
+      return ended.computer;
+    };
+    const target = path.join(homes.rejoin, ".kuvo-code");
+    const first = await add("rejoin");
+    const neighbor = await add("rejoin-neighbor");
+    const old = inBox(target);
+    const oldPeer = { key: first.key, address: k(link.addressOf(Buffer.from(old.secret, "base64url"))), sign: link.ownSign(old) };
+    const membership = box => inBox(box).shared.membershipAndAccess.value;
+    const keys = async () => (await primaryApp("GET", "kuvo/setup")).body.computers.map(each => each.key);
+    const before = await keys();
+    assert.deepEqual(before.slice(-2), [first.key, neighbor.key]);
+    const signed = link.signDoc(old.sign, "personalities", 50, { personalities: [], removed: [] });
+    const targets = [primaryBox, memberBox].map(box => {
+      const current = inBox(box);
+      const to = { address: k(link.addressOf(Buffer.from(current.secret, "base64url"))), key: k(link.publicOf(Buffer.from(current.key, "base64url"))) };
+      const frame = link.mailFor(to, { docs: { give: [signed] } }, old);
+      const { body } = link.readFrame(frame.subarray(17));
+      assert.equal(link.openMail(body, current)?.sender.key, first.key);
+      return { box, body };
+    });
+    const removed = await primaryApp("DELETE", `kuvo/computers/${first.key}`, { wipe: false });
+    assert.equal(removed.status, 200, JSON.stringify(removed.body));
+    for (const { box, body } of targets) {
+      assert.ok(membership(box).left.includes(first.key));
+      const current = inBox(box);
+      assert.equal(link.openMail(body, current), null, "old Noise key");
+      assert.equal(link.takeDoc(current, signed), null, "old document signer");
+    }
+
+    await waitFor("the removed member finishes unlinking", () => inBox(target).setup?.role === "primary");
+    const stale = path.join(fake, "stale-join-rejoin");
+    try {
+      write(stale, JSON.stringify(oldPeer));
+      await add("rejoin", undefined, /presented membership keys that cannot be used/);
+      write(stale, JSON.stringify({ ...oldPeer, key: k(link.publicOf(link.newKey())) }));
+      await add("rejoin", undefined, /presented membership keys that cannot be used/);
+      assert.deepEqual((await keys()).slice(-1), [neighbor.key]);
+    } finally { fs.rmSync(stale, { force: true }); }
+    const returned = await add("rejoin");
+    const rejoined = inBox(target);
+    assert.notEqual(returned.key, first.key);
+    assert.notEqual(link.ownSign(rejoined), oldPeer.sign);
+    assert.notEqual(rejoined.secret, old.secret);
+    assert.equal(inBox(target).setup.id, primary.id);
+    assert.deepEqual((await keys()).slice(-2), [returned.key, neighbor.key]);
+
+    // Put the same host name in front of genuinely different hardware.
+    write(path.join(fake, "home-rejoin"), homes["rejoin-clone-name"]);
+    const distinct = await add("rejoin");
+    assert.equal(distinct.name, returned.name);
+    assert.notEqual(distinct.key, returned.key);
+    assert.deepEqual((await keys()).slice(-3), [returned.key, neighbor.key, distinct.key]);
+
+    // Lose the live completion mail. The next SSH Add can recover the signed receipt
+    // from outside the deleted installation and still replace both revoked keys.
+    const returnedKey = Buffer.from(returned.key, "base64url");
+    const primaryAddress = link.addressOf(Buffer.from(inBox(primaryBox).secret, "base64url"));
+    const prefix = Buffer.from("kuvo-removal-v1\0");
+    const operation = crypto.randomBytes(16).toString("base64url");
+    const releaseDone = relay.intercept(null, primaryAddress, ({ payload }) => {
+      const frame = link.readFrame(payload);
+      if (frame?.kind !== link.Frame.mail || !frame.body.subarray(0, prefix.length).equals(prefix)) return false;
+      const body = frame.body.subarray(prefix.length);
+      if (!body.subarray(0, returnedKey.length).equals(returnedKey)) return false;
+      const message = link.openOneWay(body.subarray(returnedKey.length), Buffer.from(inBox(primaryBox).key, "base64url"), returnedKey);
+      return JSON.parse(message.payload).done === operation;
+    });
+    let installed;
+    try {
+      const wipe = await primaryApp("POST", `kuvo/computers/${returned.key}/unlink-and-wipe`, { operation });
+      assert.equal(wipe.status, 200, JSON.stringify(wipe.body));
+      const proof = path.join(homes.rejoin, ".kuvo-code-removal-receipts", operation + ".ack");
+      await waitFor("the old installation is erased and its receipt is recoverable", () => !fs.existsSync(target) && fs.existsSync(proof));
+      assert.equal(membership(primaryBox).removals[returned.key].delivered, undefined);
+      write(path.join(fake, "home-rejoin-installed"), homes.rejoin);
+      installed = await add("rejoin-installed");
+      assert.equal(membership(primaryBox).removals[returned.key].delivered, true);
+    } finally { releaseDone(); }
+    assert.notEqual(installed.key, returned.key);
+    assert.equal(installed.name, "rejoin-installed");
+    assert.deepEqual((await keys()).slice(-3), [installed.key, neighbor.key, distinct.key]);
+    const kept = membership(primaryBox);
+    assert.ok(kept.left.includes(first.key) && kept.left.includes(returned.key));
+    assert.ok(kept.computerHistory.slots.some(slot => slot.key === installed.key && slot.previous.join() === [first.key, returned.key].join()));
+    assert.equal(JSON.stringify(kept).includes(firstID.replaceAll("-", "")), false);
+    assert.deepEqual(membership(memberBox).computerHistory, kept.computerHistory);
+
+    // Neither installation has a usable platform ID. A deliberate choice still
+    // keeps the selected computer's place and records its previous membership.
+    const chosen = await add("rejoin-neighbor-return", neighbor.key);
+    assert.notEqual(chosen.key, neighbor.key);
+    assert.deepEqual((await keys()).slice(-3), [installed.key, chosen.key, distinct.key]);
+    assert.ok(membership(primaryBox).computerHistory.slots.some(slot => slot.key === chosen.key && slot.previous.includes(neighbor.key)));
+    for (const { key } of [installed, chosen, distinct]) {
+      assert.equal((await primaryApp("DELETE", `kuvo/computers/${key}`)).status, 200);
+    }
+
+    if (process.platform === "linux") {
+      const image = "cccccccc-abcd-4444-8888-cccccccccccc";
+      write(path.join(homes["rejoin-image"], "os-image-id"), image);
+      write(path.join(homes["rejoin-image-copy"], "os-image-id"), image);
+      const original = await add("rejoin-image");
+      await add("rejoin-image-copy", undefined, /Confirm which computer to replace/);
+      assert.ok((await keys()).includes(original.key));
+      const replacement = await add("rejoin-image-copy", original.key);
+      assert.notEqual(replacement.key, original.key);
+      assert.equal(membership(primaryBox).computerHistory.slots.find(slot => slot.key === replacement.key)?.fingerprintSource, "os-id");
+      assert.ok(membership(primaryBox).left.includes(original.key));
+      assert.equal((await primaryApp("DELETE", `kuvo/computers/${replacement.key}`)).status, 200);
+    }
+  });
+
+  await t.test("after losing the primary, the surviving box enrolls and activates a replacement standby", async () => {
+    const made = await primaryApp("POST", "kuvo/personalities", { name: "Survivor", description: "Save this across recovery." });
+    assert.equal(made.status, 200, JSON.stringify(made.body));
+    const saved = await memberApp("GET", "kuvo/setup");
+    assert.equal(saved.body.standby, member);
+    const clock = offset => {
+      write(path.join(memberBox, "run", "test-setup-clock.json.new"), JSON.stringify({ offset }));
+      fs.renameSync(path.join(memberBox, "run", "test-setup-clock.json.new"), path.join(memberBox, "run", "test-setup-clock.json"));
+    };
+    fs.writeFileSync(path.join(memberBox, "setup-takeover.json"), JSON.stringify({ alwaysOn: true, delayMinutes: 60 }));
+    clock(0);
+    const absent = relay.disconnect(oldAddress);
+    atEnd(absent);
+    originalPrimaryProcess.kill("SIGTERM");
+    await new Promise(resolve => setTimeout(resolve, 2_300));
+    clock(61 * 60_000);
+    await waitFor("the standby promotes with no replacement", () => {
+      const setup = inBox(memberBox).setup;
+      return setup.role === "primary" && setup.epoch === 3 && !setup.standby;
+    });
+    for (const save of [deviceSave.body, enrollmentReceipt]) {
+      const { setup: id, operation, proof } = save;
+      const resolved = await link.askSetupOutcome(path.join(memberBox, "run"), { setup: id, operation, proof });
+      assert.equal(resolved.status, 200);
+      assert.equal(resolved.receipt.status, "committed");
+    }
+    const before = inBox(memberBox).shared;
+    const target = path.join(homes["replacement-standby"], ".kuvo-code");
+    const replies = [];
+    const release = relay.intercept(null, standbyAddress, packet => {
+      const file = path.join(target, "run", "link.json");
+      if (!fs.existsSync(file)) return false;
+      const address = link.addressOf(Buffer.from(read(file).secret, "base64url"));
+      if (!address.equals(packet.from)) return false;
+      replies.push(packet);
+      return true;
+    });
+    atEnd(release);
+    const attempt = await addOn((...args) => memberApp(...args), "replacement-standby");
+    await waitFor("the replacement installs its certificate while replies are held", () => {
+      const file = path.join(target, "run", "link.json");
+      return replies.length && fs.existsSync(file) && read(file).leadership?.[4];
+    });
+    assert.ok(inBox(memberBox).leadershipPending);
+    await memberApp.stop();
+    memberApp = await localServer(memberBox, memberEnv);
+    assert.equal((await attempt()).state, "working", "the restarted server keeps the save in flight");
+    release();
+    replies.forEach(relay.replay);
+    const done = await waitFor("recovery adds a new standby over SSH", async () => {
+      const current = await attempt();
+      assert.notEqual(current.state, "failed", JSON.stringify(current.failure));
+      return current.state === "done" && current;
+    });
+    const standby = inBox(target);
+    const recovered = inBox(memberBox);
+    assert.equal(recovered.setup.epoch, 4);
+    assert.equal(recovered.setup.standby.key, done.computer.key);
+    assert.deepEqual(standby.setup.standby, recovered.setup.standby);
+    assert.equal(link.readDoc(recovered.leadership[4]).origin, recovered.setup.standby.sign);
+    assert.deepEqual(standby.shared.setupPersonalities, before.setupPersonalities);
+    assert.deepEqual(standby.shared.membershipAndAccess, recovered.shared.membershipAndAccess);
+    assert.ok(standby.shared.queueNumberAllocation.value.next >= before.queueNumberAllocation.value.next);
+  });
 });

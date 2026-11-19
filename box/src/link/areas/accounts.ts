@@ -7,13 +7,14 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { upgradeFormat, UnsupportedFormatVersion } from "../../shared/format-version";
 import { isObject } from "../../shared/json";
 import type { EngineRecord, Target } from "../../shared/records";
 import { engineGet, engineList } from "../engine/client";
 import { REFRESHABLE, refreshModels } from "../engine/models";
 import type { EngineAnswer, UncheckedAnswer } from "../engine/client";
 import type { EngineSession } from "../engine/sessions";
-import { writePrivate } from "../files";
+import { locked, writePrivate } from "../files";
 import { RUN } from "../home";
 import type { AnswerPiece, RouteContext } from "../server/context";
 import type { Credentials } from "../../shared/routes/box";
@@ -53,6 +54,9 @@ export interface EngineCredential {
 /** A sign-in as `kuvo/credentials` lists it. */
 export type ListedCredential = Credentials["credentials"][number];
 
+// Provider IDs are map keys. A key containing a slash is reserved by the accounts routes.
+const ENDED_VERSION = "/formatVersion";
+const endedSteps = [(entries: Record<string, unknown>) => entries];
 const ENDED_SIGN_INS_FILE = path.join(RUN, "ended-sign-ins.json");
 
 /** The sign-ins that ended, as kept: each plan's saved sign-in (its credential's id) that runs were
@@ -60,19 +64,25 @@ const ENDED_SIGN_INS_FILE = path.join(RUN, "ended-sign-ins.json");
 export function readEndedSignIns(): Map<string, string> {
   try {
     const kept = JSON.parse(fs.readFileSync(ENDED_SIGN_INS_FILE, "utf8"));
-    return new Map(Object.entries(isObject(kept) ? kept : {}).filter(([, credential]) => typeof credential === "string") as [string, string][]);
-  } catch {
+    if (!isObject(kept)) return new Map();
+    const { [ENDED_VERSION]: version, ...entries } = kept;
+    const upgraded = upgradeFormat("Ended sign-ins", version, entries, endedSteps);
+    return new Map(Object.entries(upgraded).filter(([, credential]) => typeof credential === "string") as [string, string][]);
+  } catch (error) {
+    if (error instanceof UnsupportedFormatVersion) throw error;
     return new Map();
   }
 }
 
 function changeEndedSignIns(change: (ended: Map<string, string>) => void) {
-  const ended = readEndedSignIns();
-  change(ended);
-  try {
-    if (ended.size) writePrivate(ENDED_SIGN_INS_FILE, JSON.stringify(Object.fromEntries(ended)));
-    else fs.rmSync(ENDED_SIGN_INS_FILE, { force: true });
-  } catch {}
+  locked(`${ENDED_SIGN_INS_FILE}.lock`, () => {
+    const ended = readEndedSignIns();
+    change(ended);
+    try {
+      if (ended.size) writePrivate(ENDED_SIGN_INS_FILE, JSON.stringify({ ...Object.fromEntries(ended), [ENDED_VERSION]: endedSteps.length }));
+      else fs.rmSync(ENDED_SIGN_INS_FILE, { force: true });
+    } catch {}
+  });
 }
 
 export async function noteSignIn(event: SignInEvent, source: Target): Promise<void> {
@@ -122,6 +132,7 @@ export async function forgetPlan(engine: Target, id: string): Promise<{ status: 
   if (!integrations || !Array.isArray(entries)) return { status: 503, message: "The engine isn't answering. Try again in a moment." };
   const plan = (integrations as EngineIntegration[]).find(each => each?.id === id);
   if (!plan || plan.metadata?.source === "mcp") return { status: 404 };
+  readEndedSignIns();
   let refused = 0;
   for (const entry of entries as EngineCredential[]) {
     if (entry?.integrationID !== id || typeof entry.id !== "string") continue;
@@ -153,7 +164,10 @@ export async function* accountsRoute(context: RouteContext): AsyncGenerator<Answ
   if (!engine?.port) return yield* json(503, { message: "The engine isn't running." });
   if (route === "kuvo/accounts/ended") {
     if (!["GET", "HEAD"].includes(request.method.toUpperCase())) return yield* json(405, {});
-    const providers = await endedProviders(engine).catch(() => null);
+    const providers = await endedProviders(engine).catch(error => {
+      if (error instanceof UnsupportedFormatVersion) throw error;
+      return null;
+    });
     if (!providers) return yield* json(503, { message: "The engine isn't answering. Try again in a moment." });
     return yield* json(200, { providers });
   }
@@ -166,7 +180,10 @@ export async function* accountsRoute(context: RouteContext): AsyncGenerator<Answ
     const refreshed = await refreshModels(engine, id).catch(() => ({ status: 503 as const, message: "The engine isn't answering. Try again in a moment." }));
     return yield* json(refreshed.status, refreshed.status === 200 ? { waiting: refreshed.waiting } : { message: refreshed.message });
   }
-  const forgot = await forgetPlan(engine, id).catch(() => ({ status: 503 as const, message: "The engine isn't answering. Try again in a moment." }));
+  const forgot = await forgetPlan(engine, id).catch(error => {
+    if (error instanceof UnsupportedFormatVersion) throw error;
+    return { status: 503 as const, message: "The engine isn't answering. Try again in a moment." };
+  });
   return yield* json(forgot.status, "message" in forgot ? { message: forgot.message } : {});
 }
 

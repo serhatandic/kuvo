@@ -12,7 +12,7 @@ import { BOTS, HERE, IS_MAC, K, RUN } from "../home";
 import { hostTrash } from "../host-interface";
 import { botPersonalities } from "../personalities/library";
 import { BOT_STEP, botHere, botLook, botModel, changeDescription, isModel, isMoving, MOVING, noteBotsChanged, sameModel } from "./here";
-import { givenJob, givenJobFields, jobOf, writeJob } from "./jobs";
+import { givenJob, givenJobFields, jobOf, projectSavedJob, writeJob } from "./jobs";
 import { NO_KIT, readKit, runsWithAgents } from "./kit";
 import { listBots } from "./list";
 import { fitsLook, signInRefusal } from "./make";
@@ -89,7 +89,9 @@ interface BridgeGroups {
 // the Mac tells it: the kit's words, with its job as its memory has it now. The Mac takes the
 // change in as it next connects (Bots.takeIn). `at`: when it was made (an edit another computer held,
 // as of when you made each field), noted for each field it names (`noteEdited`).
-export async function changeBot(id: string, given: BotChange | null | undefined, readEngine: () => Target, readBridge: () => Target | null, machine?: string, signal?: AbortSignal, at: number | Record<string, number> = Date.now()): Promise<ChangedAnswer> {
+export type CommitBot = (current: BotDescription | null, next: BotDescription, job?: Job) => BotDescription;
+
+export async function changeBot(id: string, given: BotChange | null | undefined, readEngine: () => Target, readBridge: () => Target | null, machine?: string, signal?: AbortSignal, at: number | Record<string, number> = Date.now(), commit?: CommitBot): Promise<ChangedAnswer> {
   const no = (status: OtherStatus, message: string): ChangedAnswer => ({ status, value: { message } });
   const here = botHere(id);
   if (!here) return no(404, "That bot isn’t there any more.");
@@ -183,10 +185,14 @@ export async function changeBot(id: string, given: BotChange | null | undefined,
     if (Object.keys(work).length) changed.work = work;
     else delete changed.work;
   }
+  const saveDescription = (job?: Job) => changeDescription(here.folder, now => {
+    const next = keepAllowed(onto(now, described, changed), now, namesAllowed);
+    return commit ? commit(now, next, job) : next;
+  }, Boolean(commit));
   // Only its work's settings changed: its description kept, nothing to tell it.
   if (limitsChanged && !Object.keys(given).some(key => key !== "work")) {
     try {
-      changeDescription(here.folder, now => keepAllowed(onto(now, described, changed), now, namesAllowed));
+      saveDescription();
     } catch (error) {
       return no(503, `The bot couldn’t be changed: ${(error as Error | null)?.message ?? error}`);
     }
@@ -215,10 +221,11 @@ export async function changeBot(id: string, given: BotChange | null | undefined,
     if (renamed || switched || looks || changed.personality !== described.personality) changed.updated = stamp();
     try {
       if (newJob) {
-        writeJob(here, job!);
+        if (!commit) writeJob(here, job!);
         changed.job = job!.line;
       }
-      here.described = changeDescription(here.folder, now => keepAllowed(onto(now, described, changed), now, namesAllowed));
+      here.described = saveDescription(newJob ? job : undefined);
+      if (commit && newJob) try { projectSavedJob(here); } catch {}
     } catch (error) {
       return no(503, `The bot couldn’t be changed: ${(error as Error | null)?.message ?? error}`);
     }
@@ -230,6 +237,8 @@ export async function changeBot(id: string, given: BotChange | null | undefined,
     if (retold) await tellBot(target, here, here.session, toldNow(kit, here, changed), AbortSignal.timeout(BOT_STEP));
     noteBotsChanged();
     if (limitsChanged) noteWorkChanged(id);
+  } else if (commit) {
+    try { saveDescription(); } catch (error) { return no(503, String(error)); }
   }
   noteEdited(id, EDITED_FIELDS.filter(field => field in given), at);
   return { status: 200, value: { bot: listBots(machine).find(each => each.id === id) ?? null } satisfies ChangedBot };

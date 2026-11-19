@@ -1,18 +1,19 @@
 // Group chats that live here
 
+import { mayActivate } from "../ownership/resolve";
 import { IS_MAC } from "../home";
 import { agentsAway, type AgentsAway, AGENTS_RESTARTING, bridgeBack } from "./agents-down";
 import { listedAgents, nameMissing, refreshOwnShared } from "../server/naming";
 import type { Target } from "../../shared/records";
 import type { Groups, ListedGroup } from "../../shared/routes/groups";
-import type { AnswerPiece, LinkRequest, RouteContext } from "../server/context";
+import { fromLocalApp, type AnswerPiece, type LinkRequest, type RouteContext } from "../server/context";
 
 // What a client asks of them (PROTOCOL.md, `kuvo/groups`): the list and one chat (read, or followed
 // as they change), who can be in one, and what it does (makes, changes or deletes one, writes to it,
 // stops it, lets it keep going, looks at it, takes a message back, starts the work a wrap-up split
 // up). The coding agents' bridge that runs them answers in the shapes a client takes, with every
 // rule of what can be: passed on as it answers.
-export const GROUP_ROUTE = /^kuvo\/groups(?:\/(events|joinable|grp_[a-z0-9]+(?:\/(?:events|stop|keep-going|viewed|undo|start))?))?$/;
+export const GROUP_ROUTE = /^kuvo\/groups(?:\/(events|joinable|grp_[a-z0-9]+(?:\/(?:events|stop|keep-going|viewed|undo|start|restore-review))?))?$/;
 
 // What the bridge's own group chat API (`/api/kuvo/groups…`, src/agents/groups/routes.ts) answers
 // is the asker's to say (`Value`), with its status as it came; anything that isn't JSON comes as {}.
@@ -83,6 +84,11 @@ export function* groupJSON(status: number, value: { message: string } | AgentsAw
 // What it answers is the bridge's, passed on as it comes, in the shapes of shared/routes/groups.ts.
 export async function* groupsRoute(context: RouteContext): AsyncGenerator<AnswerPiece> {
   const { request, signal, route, readEngine, bridge } = context;
+  if (route.endsWith("/restore-review")) {
+    if (!fromLocalApp(request)) return yield* groupJSON(403, { message: "Review recovered group work on this computer." });
+    if (!mayActivate({ kind: "groupSettings", id: route.split("/")[2] }))
+      return yield* groupJSON(409, { message: "This group belongs to another computer or is moving." });
+  }
   const target = await bridgeBack(bridge, signal);
   if (!target) return yield* groupJSON(503, groupsAbsent());
   // Who a message names with "&" is worked out there, from the list as it is now: worked out

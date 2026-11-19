@@ -12,17 +12,19 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { layout4Build } from "./failure-bench-legacy.js";
 import { runningAs } from "./running-as.js";
 import { atEnd, removeAtEnd } from "./at-end.js";
 
-const home = fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-link-updates-"));
+const boxHome = fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-link-updates-"));
+const home = path.join(boxHome, ".kuvo-code");
 process.env.KUVO_HOME = home;
 const link = await import("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");
 const script = fileURLToPath(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url));
 const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-link-release-"));
 const engines = new Set();
-removeAtEnd(home);
+removeAtEnd(boxHome);
 removeAtEnd(scratch);
 atEnd(() => {
   for (const pid of engines) try { process.kill(pid); } catch {}
@@ -31,12 +33,27 @@ atEnd(() => {
 
 // The engine: answers as one does, notes itself as the keeper's start does, runs until stopped.
 const fakeEngine = path.join(scratch, "engine.mjs");
-fs.writeFileSync(fakeEngine, `
+fs.writeFileSync(fakeEngine, String.raw`
 import fs from "node:fs"; import http from "node:http"; import path from "node:path";
 const [version, root] = process.argv.slice(2);
+const sent = new Map();
 const server = http.createServer((request, response) => {
   response.writeHead(200, { "content-type": "application/json" });
-  response.end(JSON.stringify({ data: request.url.startsWith("/api/session/active") ? {} : [] }));
+  const run = path.join(root, "run");
+  if (request.method === "POST" && request.url === "/api/session/ses_race/prompt") {
+    let body = "";
+    request.on("data", chunk => { body += chunk; });
+    request.on("end", () => {
+      const prompt = JSON.parse(body);
+      sent.set(prompt.id, prompt);
+      fs.appendFileSync(path.join(run, "prompt-engines"), version + "\n");
+      response.end(JSON.stringify({ data: {} }));
+    });
+    return;
+  }
+  const id = request.url.split("/message/")[1];
+  const active = fs.existsSync(path.join(run, "engine-busy")) ? { ses_race: { type: "busy" } } : {};
+  response.end(JSON.stringify({ data: request.url.startsWith("/api/session/active") ? active : id ? sent.get(id) : [] }));
 });
 // Noted whole or not at all: a reader never finds it half written.
 const noted = path.join(root, "run", "engine.json");
@@ -102,6 +119,8 @@ function machine() {
   stopEngine();
   fs.rmSync(home, { recursive: true, force: true });
   fs.mkdirSync(path.join(home, "run"), { recursive: true });
+  // The stand-in release changes code within the same layout. Layout changes use real builds in folder-version.test.js.
+  write(path.join(home, "folder-version.json"), '{"version":18}\n');
   write(path.join(home, "bin", "box-version"), "0.9.0");
   write(path.join(home, "bin", "kuvo-start"), keeper("1.0.0"), 0o700);
   write(path.join(home, "bin", "kuvo-link.js"), "// the old link\n", 0o600);
@@ -148,10 +167,10 @@ await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
 atEnd(() => server.close());
 const base = `http://127.0.0.1:${server.address().port}`;
 
-function release({ version = "0.10.0", engine: engineVersion = "1.1.0", released = new Date(Date.now() - 10 * 86_400_000), breaks = false, engineBreaks = null, linkBreaks = false, tamper = false, key = privateKey, bundle = null, extra = null, link = false } = {}) {
+function release({ version = "0.10.0", engine: engineVersion = "1.1.0", released = new Date(Date.now() - 10 * 86_400_000), breaks = false, engineBreaks = null, linkBreaks = false, tamper = false, key = privateKey, bundle = null, extra = null, link = false, keeperScript = null } = {}) {
   const files = path.join(scratch, `files-${crypto.randomUUID()}`);
   write(path.join(files, "bin", "box-version"), version);
-  write(path.join(files, "bin", "kuvo-start"), keeper(engineVersion, breaks), 0o700);
+  write(path.join(files, "bin", "kuvo-start"), keeperScript ?? keeper(engineVersion, breaks), 0o700);
   // (One that `linkBreaks` passes its self-test, and answers nothing else.)
   write(path.join(files, "bin", "kuvo-link.js"), linkBreaks ? 'if (process.argv.includes("selftest")) console.log("ok"); else process.exit(1);\n' : fs.readFileSync(script, "utf8"), 0o600);
   write(path.join(files, "bin", "kuvo-wake"), "# the new wake-ups\n", 0o755);
@@ -276,6 +295,61 @@ test("a box updates to a newer release: its engine and files swapped, started ag
   assert.equal((await update()).result, "current");
 });
 
+test("a direct incompatible release reports the engine turn blocking it", async () => {
+  machine();
+  release();
+  const busy = path.join(home, "run", "engine-busy");
+  write(busy, "");
+  const outcome = await update({ whileBusy: false });
+  assert.equal(outcome.result, "busy");
+  const own = path.join(scratch, "status-home");
+  fs.mkdirSync(own);
+  const kuvoHome = path.join(own, ".kuvo-code");
+  fs.symlinkSync(home, kuvoHome);
+  const statusHere = () => {
+    const env = { ...process.env, HOME: own, KUVO_HOME: kuvoHome };
+    const result = spawnSync(process.execPath, [script, "box", "update-status"], { env, encoding: "utf8", timeout: 15_000 });
+    assert.equal(result.status, 0, result.stderr);
+    return JSON.parse(result.stdout);
+  };
+  const status = statusHere();
+  assert.equal(status.waiting.version, "0.10.0");
+  assert.equal(status.waiting.reason, "engine");
+  assert.equal(status.waiting.sessionsAtWork, 1);
+  assert.equal(outcome.version, "0.10.0");
+  fs.unlinkSync(busy);
+  assert.equal(statusHere().waiting.reason, "ready");
+});
+
+test("a prompt in the final activity check waits for the replacement engine", async t => {
+  machine();
+  release();
+  const old = read(engineFile);
+  const handler = link.engineHandler(() => old, {}, () => ({}));
+  let samples = 0, forwarded;
+  const bridge = http.createServer(async (_request, response) => {
+    if (++samples === 2) {
+      const parts = [];
+      for await (const part of handler({
+        method: "POST", path: "api/session/ses_race/prompt", fromMac: true,
+        headers: { "content-type": "application/json" },
+        body: Buffer.from(JSON.stringify({ id: "msg_engineswaprace0001", text: "send once after restart", delivery: "steer" })),
+      }, null, null)) parts.push(part);
+      forwarded = { status: parts[0]?.head?.status, body: JSON.parse(Buffer.concat(parts.flatMap(part => part.body ? [part.body] : [])).toString()) };
+    }
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end('{"data":{}}');
+  });
+  await new Promise(resolve => bridge.listen(0, "127.0.0.1", resolve));
+  t.after(() => { bridge.closeAllConnections(); bridge.close(); });
+  write(path.join(home, "run", "bridge.json"), JSON.stringify({ port: bridge.address().port, password: "pw" }));
+  const result = await update({ whileBusy: false });
+  assert.equal(result.result, "updated");
+  assert.equal(samples, 2);
+  assert.deepEqual(forwarded, { status: 200, body: { waits: true } });
+  assert.equal(fs.readFileSync(path.join(home, "run", "prompt-engines"), "utf8"), "1.1.0\n");
+});
+
 test("a well update, with no link running and no relay, is judged well by a judge of its own (as the keeper starts it), on any box", async () => {
   machine();
   release();
@@ -290,7 +364,7 @@ test("a well update, with no link running and no relay, is judged well by a judg
   assert.equal(fs.existsSync(path.join(home, "run", "update-judge.pid")), false, "its mark goes with it");
 });
 
-test("a judge cut off midway is taken up again where it was; time the computer slept doesn't count", async () => {
+test("failure bench: a judge cut off midway is taken up again where it was; time the computer slept doesn't count", async () => {
   machine();
   release();
   assert.equal((await update()).result, "updated");
@@ -373,25 +447,159 @@ test("a rollback begun that didn't get it all back is carried on by the next jud
   engines.add(read(engineFile).pid);
 });
 
-test("an updater cut off with the engine stopped for a new one is never judged: put back, and the old engine started again on the data as it was", async () => {
+test("failure bench: an updater killed during a file swap rolls back and preserves the engine data", { timeout: 90_000 }, async () => {
   machine();
   release();
-  assert.equal((await update()).result, "updated");
-  // As if it had been cut off after it stopped the engine and swapped some files: the new engine
-  // never started.
-  stopEngine();
-  const state = read(path.join(home, "run", "update.json"));
-  write(path.join(home, "run", "update.json"), JSON.stringify({ ...state, trial: { ...state.trial, engineStopped: true } }));
-  fs.rmSync(path.join(home, "updates", "rollback", "engine-started"), { force: true });
-  fs.writeFileSync(path.join(home, "run", "stopped"), "");
+  const cut = path.join(home, "bin", "kuvo-link.js");
+  const ledger = path.join(home, "run", "work-queue", "numbers.json");
+  const stored = { primary: "self", next: 47, leases: [], since: 1_000 };
+  write(ledger, JSON.stringify(stored));
+  const boot = path.join(scratch, "update-until-first-rename.mjs");
+  // Let the updater finish the first atomic rename. Kill its process there, before the second
+  // file or the new engine can run. This leaves the actual on-disk trial and rollback journal.
+  write(boot, `
+import fs from "node:fs";
+const rename = fs.renameSync;
+fs.renameSync = (from, to) => {
+  rename(from, to);
+  if (to === ${JSON.stringify(path.join(home, "bin", "box-version"))}) process.kill(process.pid, "SIGKILL");
+};
+const link = await import(${JSON.stringify(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url).href)});
+const result = await link.update({ now: true, keys: [${JSON.stringify(pinned)}], url: ${JSON.stringify(`${base}/boxes.json`)}, blocked: null });
+throw new Error("The updater did not reach the cut: " + JSON.stringify(result));
+`);
+  const child = spawn(process.execPath, [boot], { stdio: ["ignore", "ignore", "inherit"] });
+  const ended = new Promise((resolve, reject) => {
+    child.once("error", reject);
+    child.once("exit", (code, signal) => resolve({ code, signal }));
+  });
+  atEnd(() => {
+    if (child.exitCode === null && child.signalCode === null) child.kill();
+  });
+  assert.deepEqual(await ended, { code: null, signal: "SIGKILL" });
+  assert.equal(boxVersion(), "0.10.0", "one file is already new");
+  assert.equal(fs.readFileSync(cut, "utf8"), "// the old link\n", "the remaining files are still old");
+  assert.equal(fs.existsSync(engineFile), false, "neither engine is running");
+
   looks = 0;
   assert.equal(await settle(), "unwell");
-  assert.equal(looks, 0, "never judged");
+  assert.equal(looks, 0, "the partial update never runs for health checks");
   assert.equal(boxVersion(), "0.9.0");
+  assert.equal(fs.readFileSync(cut, "utf8"), "// the old link\n");
   await waitFor(() => fs.existsSync(engineFile) && read(engineFile).version === "1.0.0", "the old engine runs again");
   engines.add(read(engineFile).pid);
   assert.equal(fs.readFileSync(path.join(home, "data", "opencode", "opencode.db"), "utf8"), "the old engine's data");
   assert.equal(fs.existsSync(path.join(home, "run", "update-trial")), false);
+  assert.equal(fs.existsSync(path.join(home, "updates", "rollback")), false);
+  assert.deepEqual(read(ledger), stored);
+
+  assert.equal((await update()).result, "updated", "retry takes the same signed release");
+  engines.add(read(engineFile).pid);
+  assert.equal(boxVersion(), "0.10.0");
+  const resumed = spawnSync(process.execPath, ["--input-type=module", "-e",
+    `import { askToSend } from ${JSON.stringify(pathToFileURL(cut).href)}; askToSend();`,
+  ], { encoding: "utf8", timeout: 10_000 });
+  assert.equal(resumed.status, 0, resumed.stderr);
+  assert.deepEqual(read(ledger), { ...stored, formatVersion: 1 });
+  assert.equal(fs.readFileSync(path.join(home, "data", "opencode", "opencode.db"), "utf8"), "the old engine's data");
+});
+
+function layoutTrial() {
+  machine();
+  const previous = layout4Build();
+  const current = path.join(home, "bin", "kuvo-link.js");
+  write(current, previous);
+  write(path.join(home, "bin", "kuvo-start"), keeper("1.0.0").replace("stop)", "bridge) : ;;\nstop)"), 0o700);
+  const keeperScript = fs.readFileSync(new URL("../src/keeper/kuvo-start", import.meta.url), "utf8").replaceAll("@ENGINE@", "1.0.0");
+  release({ engine: "1.0.0", keeperScript });
+  const marker = path.join(home, "folder-version.json");
+  const data = path.join(home, "data", "opencode", "opencode.db");
+  write(marker, '{"version":4}\n');
+  const off = path.join(home, "run", "off");
+  // Keep the box entry point from detaching a keeper. The test starts the recovery keeper itself.
+  write(off, "");
+  write(path.join(home, "bin", "kuvo-setsid"), '#!/bin/sh\nexec "$@"\n', 0o700);
+  write(path.join(home, "run", "engine-ran"), "1.0.0\n");
+  const trace = path.join(home, "run", "keeper-test.log");
+  write(path.join(home, "engine", "1.0.0", "opencode"), engineBinary("1.0.0").replace('*.js) exec "$FAKE_NODE" "$@"',
+    `*.js) if [ "$2" = update ] && [ "$3" = --settle ]; then exec "$FAKE_NODE" "$@" >>${JSON.stringify(trace)} 2>&1; fi
+    exec "$FAKE_NODE" "$@"`), 0o755);
+  const env = { ...process.env, HOME: boxHome, KUVO_TEST_KEEP_ROUND: "1" };
+  return { current, data, env, marker, off, previous, trace, keeper: path.join(home, "bin", "kuvo-start") };
+}
+
+async function installedUpdater(current, env, cut) {
+  const boot = path.join(scratch, "kuvo-link-layout-update.mjs");
+  write(boot, `
+import fs from "node:fs";
+const rename = fs.renameSync;
+const cut = ${JSON.stringify(cut ?? null)};
+fs.renameSync = (from, to) => {
+  rename(from, to);
+  if (to === cut) process.kill(process.pid, "SIGKILL");
+};
+const link = await import(${JSON.stringify(pathToFileURL(current).href)});
+const result = await link.update({ now: true, keys: [${JSON.stringify(pinned)}], url: ${JSON.stringify(`${base}/boxes.json`)}, blocked: null });
+console.log(JSON.stringify(result));
+`);
+  const child = spawn(process.execPath, [boot], { env, stdio: ["ignore", "pipe", "inherit"] });
+  atEnd(() => { if (child.exitCode === null && child.signalCode === null) child.kill(); });
+  let output = "";
+  child.stdout.on("data", chunk => { output += chunk; });
+  return new Promise((resolve, reject) => {
+    child.once("error", reject);
+    child.once("close", (code, signal) => resolve({ code, signal, output }));
+  });
+}
+
+test("failure bench: a layout 4 update runs the real keeper preflight and confirms the current layout", async () => {
+  const { current, data, env, marker, off, keeper } = layoutTrial();
+  const run = await installedUpdater(current, env);
+  assert.equal(run.code, 0, run.output);
+  assert.equal(JSON.parse(run.output.trim().split("\n").at(-1)).result, "updated");
+  assert.deepEqual(read(marker), { version: 4 });
+  const preflight = spawnSync("sh", [keeper, "box"], { env, encoding: "utf8", timeout: 15_000 });
+  assert.equal(preflight.status, 0, preflight.stderr);
+  assert.deepEqual(read(marker), { version: 4 }, "the saved bridge can still open the trial folder");
+  fs.unlinkSync(off);
+  assert.equal(await settle(), "well");
+  assert.deepEqual(read(marker), { version: 18 });
+  assert.equal(fs.existsSync(path.join(home, "updates", "rollback")), false);
+  assert.equal(fs.readFileSync(data, "utf8"), "the old engine's data");
+  assert.deepEqual(fs.readFileSync(current), fs.readFileSync(script));
+});
+
+test("failure bench: a layout 4 keeper recovers after the updater loses the file swap", { timeout: 45_000 }, async t => {
+  const { current, data, env, marker, off, previous, trace, keeper } = layoutTrial();
+  const cut = await installedUpdater(current, env, keeper);
+  assert.equal(cut.code, null, cut.output);
+  assert.equal(cut.signal, "SIGKILL");
+  assert.deepEqual(fs.readFileSync(current), fs.readFileSync(script));
+  assert.deepEqual(read(marker), { version: 4 });
+  fs.unlinkSync(off);
+  const orphan = spawn("sh", [keeper, "keep"], { env, stdio: ["ignore", "ignore", "inherit"] });
+  t.after(async () => {
+    if (orphan.exitCode !== null || orphan.signalCode !== null) return;
+    const exited = new Promise(resolve => orphan.once("exit", resolve));
+    orphan.kill();
+    await exited;
+  });
+  const diagnostics = () => ["update.json", "update-settle.tries", "update-judge.pid", "update-restore", ".rolling-back/pid", path.basename(trace)]
+    .flatMap(file => {
+      const at = path.join(home, "run", file);
+      return fs.existsSync(at) ? [`${file}: ${fs.readFileSync(at, "utf8")}`] : [];
+    }).join("\n");
+  try {
+    await waitFor(() => !fs.existsSync(path.join(home, "run", "update-trial"))
+      || orphan.exitCode !== null, "the keeper settles the orphaned trial", 250);
+  } catch (error) {
+    assert.fail(`${error.message}\n${diagnostics()}`);
+  }
+  assert.equal(fs.existsSync(path.join(home, "run", "update-trial")), false, "the keeper recovered before exiting");
+  assert.deepEqual(read(marker), { version: 4 });
+  assert.deepEqual(fs.readFileSync(current), previous);
+  assert.equal(boxVersion(), "0.9.0");
+  assert.equal(fs.readFileSync(data, "utf8"), "the old engine's data");
 });
 
 test("a bridge that won't take the new build (it doesn't run here) isn't well", async t => {
@@ -436,8 +644,8 @@ test("an agent's browser waiting on you (a sign-in) holds an update the box begi
   release();
   write(path.join(home, "run", "browser.pid"), String(await runningAs("kuvo-browser", t)));
   write(path.join(home, "run", "browser-asks.json"), JSON.stringify({ asks: [{ id: "ask_1", kind: "signIn", host: "github.com", session: "ses_1", username: true, password: true }] }));
-  // (Update Now, on your word, goes ahead: a client asks first. Not by night.)
-  assert.deepEqual(await update({ now: false }), { result: "busy", message: "Something is running there now." });
+  assert.deepEqual(await update({ now: false }), { result: "busy", version: "0.10.0", message: "Something is running there now." });
+  assert.deepEqual(read(path.join(home, "run", "update.json")).engineBusy, { version: "0.10.0", message: "Something is running there now." });
   assert.equal(fs.readFileSync(path.join(home, "bin", "box-version"), "utf8"), "0.9.0");
   assert.equal(read(engineFile).version, "1.0.0", "its engine still runs");
 });

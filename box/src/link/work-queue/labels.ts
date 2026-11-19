@@ -3,13 +3,17 @@
 // recolour and remove them. Kept in `run/work-queue/labels.json`.
 
 import path from "node:path";
+import { UnsupportedFormatVersion } from "../../shared/format-version";
 import { isObject } from "../../shared/json";
 import { plainName } from "../../shared/text";
 import { locked, textOf, writePrivate } from "../files";
+import { changeShared, sharedValue, type Receipt } from "../setup/shared";
+import { requiresStandby, usesAcceptedSaves } from "../setup/record";
+import { readLink } from "../state";
+import { LABELS_LOCK, labelsFormat } from "./migrate";
 import { migratedToChange, noteQueuesChanged, Refusal, WORK_QUEUE } from "./store";
 
 export const LABELS_FILE = path.join(WORK_QUEUE, "labels.json");
-const LOCK = path.join(WORK_QUEUE, ".labels.lock");
 export const MOST_LABELS = 60;
 /** How many labels one item carries at most. */
 export const MOST_LABELS_EACH = 10;
@@ -44,18 +48,28 @@ export function followsBy(says: () => boolean): void {
 
 function readKept(): Kept {
   try {
-    const kept = JSON.parse(textOf(LABELS_FILE) ?? "null");
+    const value: unknown = JSON.parse(textOf(LABELS_FILE) ?? "null");
+    const kept = isObject(value) ? labelsFormat.read(value) : {};
     const seen = new Set<string>();
-    const labels = (isObject(kept) && Array.isArray(kept.labels) ? kept.labels : []).map(labelOf).filter((each: Label | null): each is Label => each !== null && !seen.has(each.id) && seen.add(each.id) !== undefined);
-    const fromPrimary = isObject(kept) && Array.isArray(kept.fromPrimary) ? kept.fromPrimary.filter((each: unknown): each is string => typeof each === "string" && LABEL_ID.test(each)) : [];
-    return { labels, fromPrimary, ...(isObject(kept) && typeof kept.primary === "string" ? { primary: kept.primary } : {}) };
-  } catch {
+    const labels = (Array.isArray(kept.labels) ? kept.labels : []).map(labelOf).filter((each: Label | null): each is Label => each !== null && !seen.has(each.id) && seen.add(each.id) !== undefined);
+    const fromPrimary = Array.isArray(kept.fromPrimary) ? kept.fromPrimary.filter((each: unknown): each is string => typeof each === "string" && LABEL_ID.test(each)) : [];
+    return { labels, fromPrimary, ...(typeof kept.primary === "string" ? { primary: kept.primary } : {}) };
+  } catch (error) {
+    if (error instanceof UnsupportedFormatVersion) throw error;
     return { labels: [], fromPrimary: [] };
   }
 }
 
 /** Every label, in the order clients show them (as they were made). */
-export const labels = (): Label[] => readKept().labels;
+export const labels = (): Label[] => setupLabels(sharedValue(readLink(), "queueLabels"))?.labels ?? readKept().labels;
+
+export function setupLabels(value: unknown) {
+  if (!isObject(value) || !Array.isArray(value.labels) || !Array.isArray(value.removed)) return null;
+  return {
+    labels: value.labels.map(labelOf).filter((each): each is Label => each !== null),
+    removed: value.removed.filter((id): id is string => typeof id === "string" && LABEL_ID.test(id)),
+  };
+}
 
 /** The label `given` names (its id or its name, any case), or null for none. */
 export function labelNamed(given: unknown, among: Label[] = labels()): Label | null {
@@ -74,7 +88,24 @@ function colorFor(given: unknown): string | { refused: string } {
 }
 
 /** What a change says: done (the label now), or why not. */
-export type LabelOutcome = { done: Label } | { refused: string };
+type LocalLabelOutcome = { done: Label } | { refused: string };
+export type LabelOutcome = LocalLabelOutcome | { done: Label; save: Receipt };
+
+function editLabels(work: (kept: Kept, removed: string[]) => LocalLabelOutcome): LabelOutcome {
+  const setup = readLink()?.setup;
+  if (!usesAcceptedSaves(setup)) return change(kept => work(kept, []));
+  if (setup?.role !== "primary") return { refused: "Change your setup's labels on its primary." };
+  if (requiresStandby(setup) && !setup.standby) return { refused: "Your primary is waiting for a standby." };
+  migratedToChange();
+  const result: { outcome: LocalLabelOutcome } = { outcome: { refused: "A label change is already waiting to be saved." } };
+  const save = changeShared("queueLabels", value => {
+    const before = setupLabels(value) ?? { labels: readKept().labels, removed: [] };
+    result.outcome = work({ labels: before.labels, fromPrimary: [] }, before.removed);
+    return "done" in result.outcome ? before : undefined;
+  });
+  if ("refused" in result.outcome) return result.outcome;
+  return save ? { done: result.outcome.done, save } : { refused: "A label change is already waiting to be saved." };
+}
 
 const change = (work: (kept: Kept) => LabelOutcome): LabelOutcome => {
   // (Not before the categories from before statuses are labels: `migrate.ts` makes them.)
@@ -84,13 +115,13 @@ const change = (work: (kept: Kept) => LabelOutcome): LabelOutcome => {
     if (error instanceof Refusal) return { refused: error.message };
     throw error;
   }
-  const outcome = locked(LOCK, () => {
+  const outcome = locked(LABELS_LOCK, () => {
     const kept = readKept();
     const outcome = work(kept);
     const fromPrimary = kept.fromPrimary.filter(id => kept.labels.some(each => each.id === id));
-    if ("done" in outcome) writePrivate(LABELS_FILE, JSON.stringify({ labels: kept.labels, ...(fromPrimary.length ? { fromPrimary } : {}), ...(kept.primary ? { primary: kept.primary } : {}) }));
+    if ("done" in outcome) writePrivate(LABELS_FILE, JSON.stringify(labelsFormat.write({ labels: kept.labels, ...(fromPrimary.length ? { fromPrimary } : {}), ...(kept.primary ? { primary: kept.primary } : {}) })));
     return outcome;
-  });
+  }, { required: true });
   // (Every queue's view names them.)
   if ("done" in outcome) noteQueuesChanged();
   return outcome;
@@ -104,11 +135,11 @@ export function addLabel(name: unknown, color?: unknown): LabelOutcome {
   if (!slug) return { refused: `${named} can't be a label's name: use letters or numbers.` };
   const wanted = color === undefined || color === null || color === "" ? null : colorFor(color);
   if (wanted && typeof wanted !== "string") return wanted;
-  return change(kept => {
+  return editLabels((kept, removed) => {
     if (labelNamed(named, kept.labels)) return { refused: `There's a label called ${named} already.` };
     if (kept.labels.length >= MOST_LABELS) return { refused: `There are ${MOST_LABELS} labels already: remove one first.` };
     let id = `lbl_${slug}`;
-    for (let n = 2; kept.labels.some(each => each.id === id); n++) id = `lbl_${slug.slice(0, 36)}-${n}`;
+    for (let n = 2; (removed.includes(id) || kept.labels.some(each => each.id === id)); n++) id = `lbl_${slug.slice(0, 36)}-${n}`;
     const used = (each: string) => kept.labels.filter(label => label.color === each).length;
     const picked = wanted ?? [...LABEL_COLORS.slice(0, -1)].sort((a, b) => used(a) - used(b))[0];
     const made = { id, name: named, color: picked };
@@ -125,7 +156,7 @@ export function changeLabel(which: unknown, { name, color }: { name?: unknown; c
   const wanted = color === undefined ? undefined : colorFor(color);
   if (wanted !== undefined && typeof wanted !== "string") return wanted;
   if (named === undefined && wanted === undefined) return { refused: "Say its new name (name), its new colour (color), or both." };
-  return change(kept => {
+  return editLabels(kept => {
     const found = labelNamed(which, kept.labels);
     if (!found) return { refused: `There's no label ${String(which ?? "")}.` };
     if (kept.fromPrimary.includes(found.id) && follows()) return { refused: thePrimarys(found.name, "Change") };
@@ -150,6 +181,13 @@ const thePrimarys = (name: string, change: "Change" | "Remove"): string =>
 export function removeLabel(which: unknown, strip: (id: string) => void): LabelOutcome {
   const found = labelNamed(which);
   if (!found) return { refused: `There's no label ${String(which ?? "")}.` };
+  if (usesAcceptedSaves(readLink()?.setup)) return editLabels((kept, removed) => {
+    const index = kept.labels.findIndex(each => each.id === found.id);
+    if (index < 0) return { refused: `There's no label ${found.name}.` };
+    kept.labels.splice(index, 1);
+    removed.push(found.id);
+    return { done: found };
+  });
   if (readKept().fromPrimary.includes(found.id) && follows()) return { refused: thePrimarys(found.name, "Remove") };
   try {
     strip(found.id);

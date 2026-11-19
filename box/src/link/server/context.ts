@@ -4,6 +4,7 @@
 
 import type { BridgeRecord, EngineRecord } from "../../shared/records";
 import type { NoticeHold } from "../notices/hold";
+import type { SaveReply } from "../../shared/routes/setup-save";
 import type { LinkState } from "../state";
 
 /** A request to the box: its method, its path (with any query), its headers and body. */
@@ -24,6 +25,10 @@ export interface LinkRequest {
   desktop?: boolean;
   /** Proved, over the vault's socket, to hold the vault's unlock key (vault/holder.ts): a client. */
   vaultClient?: boolean;
+  /** Authenticated with the local holder socket key. */
+  fromHolder?: true;
+  /** An allowlisted operation from an authenticated computer in this setup. */
+  fromOwnerPeer?: true;
 }
 
 /** Who asks: a phone, by its static key and where it is on the relay; nothing for this Mac's app. */
@@ -48,7 +53,7 @@ export const fromLocalApp = (request: LinkRequest): boolean => request.served ==
 export const fromAPhone = (request: LinkRequest): boolean => request.fromMac !== true && request.fromApp !== true && request.desktop !== true;
 
 /** A piece of an answer: its head (status and headers) first, then its body, in pieces. */
-export type AnswerPiece = { head: { status: number; headers: Record<string, string> } } | { body: Buffer };
+export type AnswerPiece = { head: { status: number; headers: Record<string, string>; notAdmitted?: true } } | { body: Buffer };
 /** An answer, as it comes. */
 export type Answer = AsyncIterable<AnswerPiece> | Iterable<AnswerPiece>;
 /** An answer's piece, read alike whichever it is (its head, its body). */
@@ -82,6 +87,11 @@ export interface RouteContext {
   hold: NoticeHold | null;
   json: (status: number, value: unknown) => AnswerPiece[];
   text: (status: number, words: string) => AnswerPiece[];
+}
+
+/** Serialize either outcome of a shared save through the route's JSON encoder. */
+export function savedJson<T extends SaveReply>(json: RouteContext["json"], reply: T): AnswerPiece[] {
+  return json(reply.status, reply.value);
 }
 
 /** What LinkHost (or this Mac's app's HTTP server) runs for each request: its answer, as it comes.

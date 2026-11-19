@@ -240,7 +240,7 @@ fn a_paired_device_asks_a_box_on_another_computer_and_says_its_a_desktop() {
     assert_eq!(read["method"], "POST");
     assert_eq!(read["path"], "echo?x=1");
     assert_eq!(read["body"], json!({ "words": "hello" }));
-    assert_eq!(read["headers"], json!([["idempotency-key", "msg_1"]]));
+    assert_eq!(read["headers"], json!([["idempotency-key", "msg_1"], ["x-kuvo-route-version", "1"]]));
     // What it said as its session opened: a desktop, so the box doesn't take it for a phone.
     let hellos = world.host.hellos();
     assert_eq!(hellos.len(), 1, "one session, however many requests");

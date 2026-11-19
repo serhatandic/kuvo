@@ -66,6 +66,10 @@ const UNTITLED = "New Session";
 class Moving extends Error {}
 class Stale extends Error {}
 
+export function sessionMovedElsewhere(computer: string, name = "") {
+  return { message: `It’s on ${plainName(name) || "another of your computers"} now. Change it there.`, computer };
+}
+
 /** Optional state comparison for settings actions, checked inside the session's existing turn. */
 export const sessionActionState = (session: EngineSession, confirm?: unknown) => ({ updated: session.time.updated, archived: isArchived(session), ...(confirm === undefined ? {} : { confirm }) });
 const checkWas = (given: Record<string, unknown>, session: EngineSession | null) => {
@@ -79,7 +83,7 @@ function livesElsewhere(session: string): { message: string; computer: string } 
   if (!moved) return null;
   const peer = peersOf(readLink()).find(each => each.key === moved.key);
   const name = peer ? computerName(peer) : "";
-  return { message: `It’s on ${plainName(name) || "another of your computers"} now. Change it there.`, computer: moved.key };
+  return sessionMovedElsewhere(moved.key, name);
 }
 
 /** Archived by the engine itself (`time.archived`), which only the engine can undo. */

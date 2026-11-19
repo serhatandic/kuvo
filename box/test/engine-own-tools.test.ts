@@ -53,12 +53,15 @@ async function listed(server: { command: string[]; environment: Record<string, s
     send({ id: 2, method: "tools/list", params: {} })
     await child.stdin.flush()
     const reader = child.stdout.getReader()
+    const decoder = new TextDecoder()
     let text = ""
     for (;;) {
       const { value, done } = await reader.read()
       if (done) throw new Error(`The tools ended without listing any: ${text}`)
-      text += new TextDecoder().decode(value)
-      for (const line of text.split("\n")) {
+      text += decoder.decode(value, { stream: true })
+      const lines = text.split("\n")
+      text = lines.pop()!
+      for (const line of lines) {
         if (!line.trim()) continue
         const message = JSON.parse(line)
         if (message.id === 2) return message.result.tools.map((tool: { name: string }) => tool.name)

@@ -7,13 +7,17 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { SignedDoc } from "../shared/documents";
+import { objectFormat, UnsupportedFormatVersion } from "../shared/format-version";
 import { isObject } from "../shared/json";
 import { SIGN } from "./documents/format";
-import { locked, writeSecret } from "./files";
+import { locked, privateFolder, writeDurablePrivate, writeSecret } from "./files";
 import { IS_MAC, LINK_FILE, RUN } from "./home";
 import type { NoticeHold } from "./notices/hold";
 import type { Peer } from "./peers/known";
 import type { LinkHost } from "./relay/host";
+import type { OperationOutcomes, SharedKind, SharedValues } from "./setup/shared";
+import type { LocalWipe, MemberRemoval, WipePreparationClaim } from "./setup/removal-record";
+import type { ComputerHistory } from "./setup/computer-history";
 import type { SetupRecord } from "./setup/record";
 
 /** A phone this box lets in (PROTOCOL.md, "Paired phones"). */
@@ -23,15 +27,14 @@ export interface Phone {
   added?: number;
   /** Paired here, or listed by one of its Macs (`mac`, that Mac's key). */
   from?: "pair" | "mac";
+  /** A member's independent pairing, kept local when it later becomes primary. */
+  local?: true;
   mac?: string;
   /** Where it is on the relay, for its notifications. */
   address?: string;
   pairing?: string;
   /** What it is, as it said (`clients.kind`): Kuvo Code's desktop app; none for a phone. */
   kind?: "desktop";
-  /** The box that vouched for it (its static key), on the main computer that paired it on that
-   * box's word (`kuvo/devices/pair`), or inherited from the issuer of a pairing link. */
-  by?: string;
 }
 
 /** A pairing link waiting: its token, good until `expires` (ms). */
@@ -42,6 +45,8 @@ export interface Pairing {
   issuer?: { key: string; pairing: string } | null;
 }
 
+import type { SetupRevocations } from "./setup/membership";
+
 export interface LinkState {
   relay?: string;
   secret?: string;
@@ -51,8 +56,8 @@ export interface LinkState {
   name?: string;
   /** Its id on its Macs (their name for this machine). */
   id?: string;
-  /** The Macs that set it up, the last first named in `mac`; their signing keys, and when each was
-   * last heard from (ms), moved on by the time this machine was off since (`noteOnline`). */
+  /** Direct SSH enrollers, including a Linux primary, in legacy fields. `mac` names the
+   * last enroller. Last-heard times (ms) account for time this box was off (`noteOnline`). */
   mac?: string;
   macs?: string[];
   macSigns?: Record<string, string>;
@@ -65,14 +70,10 @@ export interface LinkState {
   views?: Record<string, { n: number; h: string }>;
   phones?: Phone[];
   removed?: { key: string; pairing: string }[];
-  /** The boxes this main computer takes no vouch from (`devices.allow`): a desktop app each vouched
-   * for was removed from your devices (`device`, its name; `at`, when, ms), until you allow that
-   * computer again (`kuvo/computers/<key>/allow-devices`). One entry a box, the newest 64. */
-  vouchBlocked?: { key: string; device: string; at: number }[];
   /** A phone's pairing link, and (this Mac's) the one Settings › Phone shows. */
   pairing?: Pairing;
   appPairing?: Pairing;
-  /** Machines a Mac removed, for this Mac's peers document. */
+  /** Removed members, for the primary's peers document. */
   left?: string[];
   /** Whether each Mac that started its engine leaves a newer box as it is, by the Mac's id. */
   tolerantIDs?: Record<string, boolean>;
@@ -87,12 +88,34 @@ export interface LinkState {
   removedHere?: string[];
   /** Per-key removal revisions, retained across re-adds so an older SSH Add can't restore trust. */
   removalRevisions?: Record<string, number>;
+  computerHistory?: ComputerHistory;
+  memberRemovals?: Record<string, MemberRemoval>;
+  wipePreparations?: Record<string, WipePreparationClaim>;
+  preJoinPairings?: Phone[];
+  localWipe?: LocalWipe;
+  localUnlink?: { setup: string; operation: string; primary: Peer; generation?: string; completed?: true };
+  removalSource?: { setup: string; operation: string; moveTo?: string };
+  removalAcks?: Record<string, string>;
   /** A removed peer's saved destination, kept until its machines-list cleanup succeeds. */
   pendingMachineCleanup?: Record<string, string>;
   /** Machines this Mac removed that haven't heard it yet (they hear it once it's back on the relay). */
   untold?: Peer[];
+  /** Peers documents at the epoch that revoked an offline member. */
+  untoldMembership?: Record<string, SignedDoc>;
   /** The setup it's in, and its role there (PROTOCOL.md, "Your setup"). */
   setup?: SetupRecord;
+  /** Verified leadership changes, indexed by setup epoch for offline catch-up. */
+  leadership?: Record<number, SignedDoc>;
+  setupRevocations?: SetupRevocations;
+  discardedRevocations?: { setup: string; certificates: SignedDoc[]; proof: SignedDoc };
+  /** A fenced primary resends its proposal until the previous standby settles the epoch. */
+  leadershipPending?: SignedDoc;
+  sharedSetup?: string;
+  shared?: SharedValues;
+  sharedPending?: Record<string, SignedDoc>;
+  sharedOutcomes?: OperationOutcomes;
+  sharedInterrupted?: Partial<Record<SharedKind, SignedDoc>>;
+  sharedReceipts?: Partial<Record<SharedKind, SignedDoc>>;
   /** This Mac's static key as its box last had it, and the ones before (made anew since): a machine
    * this Mac sets up again lets those go (`replaces` in setup). */
   keyNow?: string;
@@ -133,6 +156,10 @@ export const macLink: {
   phoneFollowers: Set<() => void>;
 } = { config: null, overlay: null, status: { state: "off" }, host: null, wake: null, statusFollowers: new Set(), phoneFollowers: new Set() };
 
+/** A machine's bridge owns the relay even when a separate local server answers clients. */
+export const machineLink: { host: LinkHost | null } = { host: null };
+export const liveLink = () => IS_MAC ? macLink.host : machineLink.host;
+
 const written: ((link: LinkState) => void)[] = [];
 /** What follows each write, from now on (the box says it as it starts). */
 export const onLinkWritten = (then: (link: LinkState) => void) => {
@@ -147,9 +174,9 @@ export const macSign = (link: LinkState | null | undefined, mac: string): string
 // COMPAT(beta.1 peers-list): link.json as the bridge beta.1 put on machines (0.9.23) left it. Goes on the user's word, once no Mac from before 1.0 connects.
 // link.json as an earlier bridge left it: each Mac's list it had (`peersFrom`) kept as that Mac's
 // word until it signs a document; what lists passed on and their dates needed, gone.
-function migratedLink(link: any) {
+function migratedLink(link: Record<string, any>): Record<string, unknown> {
   // (Read as it was left, whatever its shape.)
-  if (!isObject(link as unknown) || !(link.peersFrom || link.vouched || link.macAts)) return link;
+  if (!(link.peersFrom || link.vouched || link.macAts)) return link;
   for (const [mac, given] of Object.entries(link.peersFrom ?? {})) {
     if (!macSign(link, mac) && isObject(given)) {
       link.legacy ??= {};
@@ -162,22 +189,31 @@ function migratedLink(link: any) {
   return link;
 }
 
+const linkFormat = objectFormat("Link state", 1, (fields, from) => from === 0 ? migratedLink(fields) : fields);
+
 export function readLink(): LinkState | null {
   let link = null;
   try {
-    link = migratedLink(JSON.parse(fs.readFileSync(LINK_FILE, "utf8")));
-  } catch {}
+    link = linkFormat.read(JSON.parse(fs.readFileSync(LINK_FILE, "utf8"))) as LinkState;
+  } catch (error) {
+    if (error instanceof UnsupportedFormatVersion) throw error;
+  }
   // This Mac's: its keys from its app (kept in your Keychain, never in a file here), and its relay
   // and name as its app says, beside what the file keeps.
   if (IS_MAC && macLink.overlay) return { phones: [], ...(link ?? {}), ...macLink.overlay };
   return link;
 }
 
-export function writeLink(link: LinkState) {
+export function writeLink(link: LinkState, durable = false) {
   // This Mac's keys and what its app says stay out of the file.
   const kept = IS_MAC ? Object.fromEntries(Object.entries(link).filter(([key]) => !MAC_OVERLAY.includes(key))) : link;
   // (Its keys, on a machine.)
-  writeSecret(LINK_FILE, JSON.stringify(kept, null, 2));
+  readLink();
+  const text = JSON.stringify(linkFormat.write(kept), null, 2);
+  if (durable || link.shared || link.sharedPending || link.sharedOutcomes || link.sharedInterrupted) {
+    privateFolder(path.dirname(LINK_FILE));
+    writeDurablePrivate(LINK_FILE, text);
+  } else writeSecret(LINK_FILE, text);
   for (const then of written) then(link);
 }
 
@@ -185,10 +221,14 @@ export function writeLink(link: LinkState) {
 // changed and written under a lock (run/.link.lock), so none writes over another's (a removal,
 // say). `change` returns the link to write, or nothing to leave it. A busy lock fails the update.
 const LOCK = path.join(RUN, ".link.lock");
-export function updateLink(change: (link: LinkState | null) => LinkState | null | undefined | void): LinkState | null {
+export function updateLink(change: (link: LinkState | null) => LinkState | null | undefined | void, { durable = false } = {}): LinkState | null {
   return locked(LOCK, () => {
-    const changed = change(readLink());
-    if (changed) writeLink(changed);
+    const current = readLink();
+    const managed = current?.setup?.managed;
+    const shared = current?.shared;
+    const before = JSON.stringify(current?.setup ?? null);
+    const changed = change(current);
+    if (changed) writeLink(changed, durable || shared !== changed.shared || (before !== JSON.stringify(changed.setup ?? null) && Boolean(changed.setup?.managed || managed)));
     return changed ?? null;
   }, { exclusive: true });
 }

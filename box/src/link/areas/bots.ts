@@ -1,3 +1,5 @@
+import { ownerOf } from "../ownership/resolve";
+import { ownershipReady } from "../ownership/store";
 // This box's bots: listed and followed, made, changed and deleted as the Mac's New Bot and Edit
 // Bot do, brought here from another computer, and told what they are now.
 
@@ -56,9 +58,11 @@ export async function* botRoute(context: RouteContext, oneBot: RegExpMatchArray)
   const deleting = request.method.toUpperCase() === "DELETE";
   // One that lives on another of your computers: held here for it, and handed on once it answers
   // ("Held for another computer"). `on` names that computer for one this box hasn't heard of yet.
-  if (!botHere(id)) {
+  const here = botHere(id);
+  const owner = ownershipReady() ? ownerOf({ kind: "botSettings", id }, { localRecord: Boolean(here) }) : null;
+  if (!here || (owner && !owner.local)) {
     const query = new URLSearchParams(request.path.split("?")[1] ?? "");
-    const held = holdEdit(id, deleting ? { delete: true } : { change: parsed(request.body) }, query.get("on"), { removed: query.has("removed") });
+    const held = holdEdit(id, deleting ? { delete: true } : { change: parsed(request.body) }, owner && !owner.local ? owner.key : query.get("on"), { removed: query.has("removed") });
     return yield* json(held.status, held.value);
   }
   const { status, value } = !deleting

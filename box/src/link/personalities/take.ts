@@ -58,7 +58,7 @@ export async function retellBots(ids: string[], readEngine: () => Target = readE
 }
 
 // What a phone asks of the library (`kuvo/personalities`): `[status, value]`.
-export function answerPersonalities(method: string, id: string | undefined, body: Body<"name" | "description">, file = PERSONALITIES_FILE, lock = PERSONALITIES_LOCK): PersonalitiesAnswer {
+export function answerPersonalities(method: string, id: string | undefined, body: Body<"name" | "description">, file = PERSONALITIES_FILE, lock = PERSONALITIES_LOCK, change = changePersonalities): PersonalitiesAnswer {
   const now = Date.now();
   const incomplete: PersonalitiesAnswer = [400, { message: "A personality needs a name and a description." }];
   const full: PersonalitiesAnswer = [400, { message: FULL_LIBRARY }];
@@ -69,21 +69,21 @@ export function answerPersonalities(method: string, id: string | undefined, body
     const made = keptPersonality({ id: `custom.${crypto.randomUUID().toLowerCase()}`, name: body?.name, description: body?.description, updated: now }) as Personality | null;
     if (!made) return incomplete;
     let refused = false;
-    changePersonalities(library => {
+    change(library => {
       const after = { ...library, personalities: [...library.personalities, made] };
       if (fitsLibrary(after)) return after;
       refused = true;
       return library;
     }, file, lock);
     if (refused) return full;
-    noteDocsChanged();
+    if (change === changePersonalities) noteDocsChanged();
     return [200, made];
   }
   if (!PERSONALITY_ID.test(id)) return [404, {}];
   let found: Personality | null = null;
   if (method === "PATCH") {
     let refused: PersonalitiesAnswer | null = null;
-    changePersonalities(library => {
+    change(library => {
       const kept = library.personalities.find(each => each.id === id);
       if (!kept) return library;
       const changed = keptPersonality({ ...kept, name: body?.name ?? kept.name, description: body?.description ?? kept.description, updated: kept.updated + 1 }) as Personality | null;
@@ -94,18 +94,18 @@ export function answerPersonalities(method: string, id: string | undefined, body
       return after;
     }, file, lock);
     if (refused) return refused;
-    if (found) noteDocsChanged();
+    if (found && change === changePersonalities) noteDocsChanged();
     return found ? [200, found] : [404, {}];
   }
   if (method === "DELETE") {
-    changePersonalities(library => {
+    change(library => {
       const kept = library.personalities.find(each => each.id === id);
       if (!kept) return library;
       found = kept;
       // Counted past its last change; among removals, the newest are the ones kept.
       return { personalities: library.personalities.filter(each => each.id !== id), removed: [...library.removed, { id, removed: Math.max(now, kept.updated + 1) }] };
     }, file, lock);
-    if (found) noteDocsChanged();
+    if (found && change === changePersonalities) noteDocsChanged();
     return found ? [200, {}] : [404, {}];
   }
   return [405, {}];

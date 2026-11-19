@@ -14,7 +14,7 @@ import { GitHubSignIn } from "./github-sign-in"
 // engine, with KUVO_ENGINE_PORT and OPENCODE_PASSWORD, which it takes until the record says more.)
 
 import { boxZoneIs } from "../shared/zone"
-import { mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs"
 import { basename, dirname, join } from "node:path"
 import { Accounts, parseProvider } from "./accounts"
 import { record as recordArtifacts } from "./artifacts/record"
@@ -30,9 +30,11 @@ import { Handoffs } from "./handoff"
 import { Reviews } from "./reviews"
 import { VoiceWords } from "./voice"
 import { setToolProgram } from "./kuvotools"
+import { usesToolRelay } from "./toolrelay"
 import { dropCarriedSignIns, dropOwnPrograms, formerGroupsMemoryKey, groupsMemoryKey, machineEngine as recordedEngine, machineHome, onMachine, takeOwnFolders } from "./machine"
 import { Snapshots } from "./snapshots"
 import { Roster } from "./roster"
+import { forgetOldAntigravity } from "./agents/antigravity"
 import { cancelSignIns, handler, signInsWaiting } from "./server"
 import { updatesUnderWay } from "./updates"
 import { launchLets, Renewal } from "./renewal"
@@ -44,11 +46,13 @@ import { isRealBridgeFolder } from "../shared/account"
 import { updateUnderWay } from "../shared/updating"
 import { swapUnderWay, untilSwapLets } from "../shared/engine-swap"
 import { spawn } from "node:child_process"
-import { bundleBuild } from "../shared/bundle"
-import type { RenewalRecord } from "../shared/records"
+import { buildOf, bundleBuild } from "../shared/bundle"
+import { bridgeRecordFormat, readRendezvous, type BridgeRecord, type RenewalRecord } from "../shared/records"
+import { UnsupportedFormatVersion } from "../shared/format-version"
+import { installedLinkBuild, isInstalledBundle, KUVO_FOLDER_LAYOUT, upgradeKuvoFolder } from "../shared/folder-version"
 import { Sessions } from "./sessions"
-import { adoptHeld } from "./hold/adopt"
-import { stopAllHeld } from "./hold/client"
+import { adoptHeld, adoptTransfer, canTransfer, type HeldMeta, type TransferHolder } from "./hold/adopt"
+import { controlledHolders, HOLD_PROTO, releaseHolders, stopAllHeld, type Held } from "./hold/client"
 import { runsAs } from "../shared/platform"
 import { noteAgentsInside, untilSandboxDecided } from "./fence"
 import { useSavedLoginPath } from "./proc"
@@ -81,15 +85,21 @@ import { UsagePeers } from "./usage/usage-peers"
 import { SettingsPeers } from "./usage/settings-peers"
 import { ENGINE_SERVICES, EngineAccounts } from "./engine-limits"
 
+import { commitTransfer, finishTransfer, prepareStandby, readTransfer, standBy, standbyFailed, TRANSFER_PROTOCOL, type Transfer } from "./bridge-transfer"
+
 const version = "1"
 // The build it runs, as its bundle names it (none from its sources): read as it starts, so a newer
 // one put in its place is told from it (renewal.ts).
 const script = Bun.main
 const build = bundleBuild(script)
+const transferLayout = `folder-layout=${KUVO_FOLDER_LAYOUT}`
+const transferCapability = `${TRANSFER_PROTOCOL} ${transferLayout}`
 // `selftest`: it loads and runs on this engine, and says which build it is (a bridge about to make
 // way for it asks first, renewal.ts).
 if (process.argv.slice(2).includes("selftest")) {
-  console.log(`ok ${build}`)
+  const adopt = process.argv.includes("adopt-check") && process.argv.includes(transferLayout)
+  const capability = process.argv.includes("holder-check") ? TRANSFER_PROTOCOL : adopt ? transferCapability : ""
+  console.log(`ok ${build}${capability ? ` ${capability}` : ""}`)
   process.exit(0)
 }
 const home = process.env.KUVO_AGENTS_HOME
@@ -109,6 +119,31 @@ if (!home || !password || (onMachine && (!machineHome || !Number(process.env.KUV
   console.error(onMachine ? "KUVO_AGENTS_HOME, KUVO_HOME, KUVO_AGENTS_PORT and KUVO_AGENTS_PASSWORD are needed." : "KUVO_AGENTS_HOME and OPENCODE_PASSWORD are needed.")
   process.exit(2)
 }
+if (machineHome) {
+  const folder = machineHome
+  try {
+    upgradeKuvoFolder(folder, undefined, () => {
+      if (kept && isInstalledBundle(folder, script, "kuvo-agents.js")
+        && existsSync(join(folder, "bin", "kuvo-link.js")) && installedLinkBuild(folder)?.layout !== KUVO_FOLDER_LAYOUT) {
+        throw new Error("The installed Box link must open its folder before the agents bridge.")
+      }
+    })
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error))
+    process.exit(1)
+  }
+}
+const bridgeRun = machineHome ? join(machineHome, "run") : undefined
+const watchingScript = kept && machineHome ? join(machineHome, "bin", "kuvo-agents.js") : script
+const standby = kept && bridgeRun && process.argv.includes("handover-standby") ? await standBy(bridgeRun, build) : undefined
+const recovered = kept && bridgeRun && process.argv.includes("handover-recovery") ? readTransfer(bridgeRun) : undefined
+if (recovered && (recovered.from !== build || !standbyFailed(recovered))) process.exit(1)
+const transfer = standby?.transfer ?? recovered
+const launchEnv = kept ? { ...process.env } : undefined
+// The installation replaces the pathname atomically. Keep this exact build for a failed takeover.
+const original = kept && build ? readFileSync(script) : undefined
+const hasOriginal = original && buildOf(original.toString("utf8")) === build
+
 // On a box: its engine, where its record says now (or where a launch from before said), and Kuvo
 // Code's tools as the engine has them.
 const machineEngine = onMachine ? recordedEngine() ?? (process.env.KUVO_ENGINE_PORT ? { url: `http://127.0.0.1:${process.env.KUVO_ENGINE_PORT}`, password: process.env.OPENCODE_PASSWORD } : undefined) : undefined
@@ -141,7 +176,9 @@ const temporary = process.env.TMPDIR?.replace(/\/$/, "") || join(home, "tmp")
 mkdirSync(temporary, { recursive: true })
 // What an agent left unpacked when the bridge last stopped without cleaning up (Antigravity's
 // agent unpacks itself, about 1 GB, for each run), and half-finished downloads.
-rmSync(join(temporary, "antigravity"), { recursive: true, force: true })
+if (!transfer?.holders.some(holder => holder.kind === "antigravity")) {
+  rmSync(join(temporary, "antigravity"), { recursive: true, force: true })
+}
 // And the page of a sign-in one was in the middle of.
 leftSignIns(temporary)
 try {
@@ -177,7 +214,7 @@ if (onMachine) {
 rmSync(join(home, "cache", "install"), { recursive: true, force: true })
 const context = { home, temporary, deps }
 const roster = new Roster(new Accounts(home), context)
-const store = new Store(join(home, "sessions"))
+const store = new Store(join(home, "sessions"), Boolean(transfer))
 const auto = new Auto(home)
 // The engine's own models, run in sessions here (the app says where the engine is).
 const link = new EngineLink()
@@ -206,13 +243,17 @@ function engineAgent(providerID: string): EngineAgent | undefined {
 // (Not while another bridge runs here, which has them: this one won't get its port.)
 const otherBridge = (() => {
   try {
-    const pid = JSON.parse(readFileSync(join(machineHome!, "run", "bridge.json"), "utf8"))?.pid
+    const pid = readRendezvous<BridgeRecord>(bridgeRecordFormat, join(machineHome!, "run", "bridge.json")).pid
     return pid !== process.pid && runsAs(pid, /kuvo-agents/)
-  } catch {
+  } catch (error) {
+    if (error instanceof UnsupportedFormatVersion) throw error
     return false
   }
 })()
-const heldTurns = onMachine && !otherBridge ? await adoptHeld() : new Map()
+const heldTurns = transfer
+  ? await adoptTransfer(machineHome!, transfer.holders, Boolean(recovered))
+  : onMachine && !otherBridge ? await adoptHeld() : new Map()
+if (standby && Object.keys(standby.transfer.sessions).some(id => !heldTurns.has(id))) throw new Error("A session is missing from the handover.")
 const sessions = new Sessions(
   store,
   roster,
@@ -223,6 +264,8 @@ const sessions = new Sessions(
   new Snapshots(join(home, "snapshots")),
   (directory) => link.titleModel(directory),
   heldTurns,
+  transfer?.sessions,
+  home,
 )
 // Tells the box's link, as it changes, whether every agent's process here runs in its sandbox
 // (none started before it came on still runs): only then do agents use the vault.
@@ -378,7 +421,8 @@ peers.resets = new LimitResets(limits, join(home, "limits-resets.json"), Date.no
 const noPriceFeeds = process.env.KUVO_TEST_PRICE_FEEDS === "off" || !isRealBridgeFolder(home)
 delete process.env.KUVO_TEST_PRICE_FEEDS
 const usageFolder = join(home, "usage")
-const usageSettings = new UsageSettings(join(usageFolder, "settings.json"))
+const usageSettings = new UsageSettings(join(usageFolder, "settings.json"), undefined, undefined, runFolder)
+if (runFolder) setInterval(() => usageSettings.followShared(), 2_000).unref()
 limits.settings = usageSettings
 limits.ownKey = () => directory.own()?.key ?? ""
 const claudeUsage = claudeSources(usageFolder)
@@ -437,6 +481,7 @@ setInterval(() => peers.settings?.tell(), 60_000).unref?.()
 // What every conversation here makes, recorded as it's made: the engine's and this bridge's own.
 // One that fails to start leaves the rest of the bridge as it is.
 let artifacts: ArtifactStore | undefined
+let artifactFormatError: UnsupportedFormatVersion | undefined
 let noted: ((session: string, path: string, via: string) => Promise<boolean>) | undefined
 if (artifactsFolder) {
   try {
@@ -474,6 +519,7 @@ if (artifactsFolder) {
     link.watch((event) => void recorder.heard(engineSource, event))
     subscribe((event) => void recorder.heard(bridgeSource, event))
   } catch (error) {
+    if (error instanceof UnsupportedFormatVersion) artifactFormatError = error
     console.error("artifacts:", error)
   }
 }
@@ -484,6 +530,26 @@ if (artifactsFolder) {
 await untilSandboxDecided()
 // The turns it left under way go on here, before anything can be sent to their sessions.
 sessions.resumeHeld()
+const gates = [...new Set([...heldTurns.values()].map(turn => turn.gate))]
+if (transfer) {
+  let deadline: ReturnType<typeof setTimeout> | undefined
+  try {
+    const timeout = new Promise<never>((_, reject) => {
+      deadline = setTimeout(() => reject(new Error("Timed out restoring the held sessions.")), 45_000)
+    })
+    await Promise.race([timeout, Promise.all(gates.map(async gate => {
+      const ready = await Promise.race([gate.readyToOwn, gate.held.closed.then(() => false)])
+      if (!ready || !gate.held.isOpen) throw new Error("An adapter could not restore its held sessions.")
+    }))])
+    if (gates.some(gate => gate.failed || !gate.held.isOpen)) throw new Error("A holder disconnected during startup.")
+  } catch (error) {
+    for (const gate of gates) gate.held.detach()
+    console.error("Bridge handover:", error)
+    process.exit(1)
+  } finally {
+    clearTimeout(deadline)
+  }
+}
 limits.start()
 usage.start()
 usage.insights?.start()
@@ -492,24 +558,22 @@ let server: ReturnType<typeof Bun.serve>
 /** Making way for a newer bridge in its place, on a machine (below). */
 let renewal: Renewal | undefined
 const githubSignIn = new GitHubSignIn(context)
-const answer = handler({ roster, sessions, auto, link, password, version, build, groups, peers, goals, sideQuestions, handoffs, places, reviews, voice, artifacts, noted, restartOutside, carrying, limits, usage, refreshAccounts: true, githubSignIn })
+let transferring = false
+const answer = handler({ roster, sessions, auto, link, password, programHome: home, version, build, groups, peers, goals, sideQuestions, handoffs, places, reviews, voice, artifacts, artifactFormatError, noted, restartOutside, carrying, limits, usage, refreshAccounts: true, githubSignIn }, () => transferring)
 /** Requests being answered now (but the event feed's, which stays open): a newer bridge waits for them. */
 let answering = 0
+const serveRequest = (request: Request) => {
+  if (transferring) return answer(request)
+  if (new URL(request.url).pathname === "/api/event") return answer(request)
+  answering++
+  if (request.method !== "GET" && request.method !== "HEAD") renewal?.busied()
+  return answer(request).finally(() => answering--)
+}
 try {
-  server = Bun.serve({
-    hostname: "127.0.0.1",
-    port,
-    idleTimeout: 0,
-    fetch: (request) => {
-      if (new URL(request.url).pathname === "/api/event") return answer(request)
-      answering++
-      // One that can start something (a message, a change) starts a quiet moment's count again; one
-      // that only reads doesn't: the link asks whether it answers every half minute, and a client
-      // reads what it shows (counted while they're answered all the same).
-      if (request.method !== "GET" && request.method !== "HEAD") renewal?.busied()
-      return answer(request).finally(() => answering--)
-    },
-  })
+  if (standby) {
+    server = standby.server
+    server.reload({ fetch: serveRequest })
+  } else server = Bun.serve({ hostname: "127.0.0.1", port, idleTimeout: 0, fetch: serveRequest })
 } catch (error: any) {
   console.error("couldn't listen:", error?.message ?? error)
   // On a machine, its port taken: the launch gives it another.
@@ -560,14 +624,38 @@ const keeperHandover = () => {
 const writeRecord = (renewal: RenewalRecord | null, first = false) => {
   if (!record) return
   try {
-    writeSecret(record, JSON.stringify({ pid: process.pid, port: server.port, password, build, renewal, ...(machineHandover ? { machineHandover: true } : {}) }))
+    try { readRendezvous(bridgeRecordFormat, record) } catch (error) {
+      if (error instanceof UnsupportedFormatVersion) throw error
+    }
+    writeSecret(record, JSON.stringify(bridgeRecordFormat.write({ pid: process.pid, port: server.port, password, build, renewal, ...(machineHandover ? { machineHandover: true } : {}) })))
   } catch (error) {
     if (first) throw error
+    if (error instanceof UnsupportedFormatVersion) console.error(error.message)
   }
 }
 writeRecord(null, true)
+if (kept && runFolder) {
+  // This folder has crossed the one-time restart from pre-holder bridges.
+  try { writeSecret(join(runFolder, "agents-live-handover"), TRANSFER_PROTOCOL) } catch {}
+}
 // Back after a hand-over (a bridge before this one made way on purpose): no longer "restarting".
 if (onMachine) rmSync(join(machineHome!, "run", "agents-renewing"), { force: true })
+if (transfer) {
+  finishTransfer(bridgeRun!)
+  store.commit()
+  for (const gate of gates) {
+    gate.commit()
+    gate.held.unpin()
+  }
+  sessions.reconcilePermissions()
+}
+
+
+const cleanAntigravity = () => {
+  try { forgetOldAntigravity(home) } catch (error) { console.error("Antigravity versions:", error) }
+}
+cleanAntigravity()
+setInterval(cleanAntigravity, 60_000).unref?.()
 
 // A newer bridge put in its place on a machine (a Mac that connected brought it): it makes way at
 // the first quiet moment, never cutting a turn, and the machine's launch starts the new one, which
@@ -575,18 +663,106 @@ if (onMachine) rmSync(join(machineHome!, "run", "agents-renewing"), { force: tru
 // whose keeper starts the box again once nothing runs.)
 /** Whether its launch starts it again, as last worked out (`lets`, below). */
 let launchSaid: { at: number; lets: boolean } | undefined
+const wholeWork = () => {
+  const here = sessions.work()
+  const outsideTurns = answering > 0 || (groups?.runner.busy() ?? false) || updatesUnderWay()
+  const other = here.other || goals.busy() || sideQuestions.busy() || reviews.busy() || handoffs.busy() || signInsWaiting() || githubSignIn.waiting()
+  return { turns: here.turns || outsideTurns, other, outsideTurns }
+}
+const transferBuilds = new Set<string>()
+let retryTransfer = 0
+
+function liveTransfer(newer: string): Promise<void> | undefined {
+  if (!bridgeRun || !build || !hasOriginal || !launchEnv || !transferBuilds.has(newer) ||
+      newer === recovered?.to || Date.now() < retryTransfer) return
+  const plan = () => {
+    const work = wholeWork()
+    const controllers = controlledHolders()
+    if (work.outsideTurns || work.other || !controllers) return
+    const providers = new Map<string, string>()
+    const holders: TransferHolder[] = []
+    for (const held of controllers) {
+      const { turns, kind, provider, version, sdk } = held.meta as Partial<HeldMeta>
+      if (!turns || !Object.keys(turns).length) continue
+      // An agent's sandbox names this bridge's relay port. An issued key can also refer to
+      // a live MCP connection, which has to stay with its original bridge until the turn ends.
+      if (!kind || !provider || held.meta.sandboxed === true ||
+          (held.meta.fenced === true && kind !== "cursor" && kind !== "antigravity")) return
+      for (const note of Object.values(turns)) {
+        if (providers.has(note.session) || usesToolRelay(note.session) ||
+            (kind === "codex" && !note.turn) ||
+            (kind === "cursor" && (!note.turn || !Number.isSafeInteger(Number(note.turn)))) ||
+            ((kind === "cursor" || kind === "antigravity") && note.request === undefined)) return
+        providers.set(note.session, provider)
+      }
+      holders.push({ id: held.id, generation: held.generation, proto: HOLD_PROTO, provider, kind, turns,
+        version: typeof version === "string" ? version : undefined, sdk: typeof sdk === "string" ? sdk : undefined, acked: held.seen })
+    }
+    if (!canTransfer(holders)) return
+    const active = sessions.transfer(providers)
+    if (!active) return
+    return { formatVersion: 1, from: build, to: newer, old: process.pid, next: 0, holders, sessions: active } satisfies Transfer
+  }
+  const first = plan()
+  if (!first) return
+  return (async () => {
+    const engine = keeperEngine(machineHome!)
+    const runtime = engine ? join(machineHome!, "engine", engine, "opencode") : process.execPath
+    const candidate = await prepareStandby(runtime, watchingScript, launchEnv, first)
+    if (!candidate) {
+      retryTransfer = Date.now() + 60_000
+      return
+    }
+    const wasHeld = renewal?.state?.holding === true
+    transferring = true
+    sessions.hold(true)
+    let committed = false
+    const pinned = new Set<Held>()
+    try {
+      const cut = plan()
+      if (!cut || !sameTurns(cut, first)) return
+      const held = new Map(controlledHolders()?.map(controller => [controller.id, controller]))
+      const ready = await Promise.all(cut.holders.map(async holder => {
+        const controller = held.get(holder.id)
+        if (!controller) return false
+        pinned.add(controller)
+        return controller.prepare(Math.min(...Object.values(holder.turns).map(turn => turn.from)))
+      }))
+      const final = plan()
+      if (ready.includes(false) || !final || !sameTurns(final, first) || bundleBuild(watchingScript) !== newer ||
+          updateUnderWay(bridgeRun) || keeperHandover() || candidate.exitCode !== null || !candidate.connected) return
+      final.next = candidate.pid!
+      store.flushForTransfer(Object.keys(final.sessions))
+      commitTransfer(bridgeRun, final, original!)
+      committed = true
+      releaseHolders(new Set(final.holders.map(holder => holder.id)))
+      server.stop(true)
+      process.exit(0)
+    } finally {
+      if (!committed) {
+        for (const holder of pinned) holder.unpin()
+        candidate.kill()
+        transferring = false
+        if (!wasHeld) sessions.hold(false)
+        retryTransfer = Date.now() + 30_000
+      }
+    }
+  })()
+}
+
+function sameTurns(a: Transfer, b: Transfer) {
+  const turns = (plan: Transfer) => plan.holders.map(({ id, generation, turns }) => ({ id, generation, turns }))
+  return JSON.stringify(turns(a)) === JSON.stringify(turns(b))
+}
+
 renewal =
   onMachine && build
     ? new Renewal({
-        script,
+        script: watchingScript,
         build,
-        work: () => {
-          const here = sessions.work()
-          // (An agent's program updating is cut by nothing: an installer stopped halfway can leave it broken.)
-          const turns = here.turns || answering > 0 || (groups?.runner.busy() ?? false) || updatesUnderWay()
-          const other = here.other || goals.busy() || sideQuestions.busy() || reviews.busy() || handoffs.busy() || signInsWaiting() || githubSignIn.waiting()
-          return { turns, other }
-        },
+        work: wholeWork,
+        transfer: kept ? liveTransfer : undefined,
+        drainNow: (next) => kept && transferBuilds.has(next),
         hold: (on) => sessions.hold(on),
         renew: () => {
           const moving = keeperHandover()
@@ -621,7 +797,7 @@ renewal =
           return lets
         },
         uptime: () => performance.now(),
-        longEnough: renewUptime,
+        longEnough: renewUptime ?? (kept ? 0 : undefined),
         // Only for a bundle that loads and runs on this engine.
         check: (newer) =>
           new Promise<boolean | undefined>((done) => {
@@ -629,7 +805,7 @@ renewal =
             // (On the engine its keeper starts it on, which may be newer than the one it runs on.)
             const engine = kept ? keeperEngine(machineHome!) : null
             const runtime = engine ? join(machineHome!, "engine", engine, "opencode") : process.execPath
-            const checking = spawn(runtime, ["--config=/dev/null", "--no-env-file", script, "selftest"], { env, stdio: ["ignore", "pipe", "ignore"] })
+            const checking = spawn(runtime, ["--config=/dev/null", "--no-env-file", watchingScript, "selftest", "adopt-check", transferLayout], { env, stdio: ["ignore", "pipe", "ignore"] })
             let said = ""
             checking.stdout.on("data", (chunk) => (said += chunk))
             let late = false
@@ -640,7 +816,13 @@ renewal =
               clearTimeout(timer)
               // (Ended by a signal, out of memory say, or out of time: nothing said of the bundle.)
               // (Making way for its engine: the bundle in place, its own build, runs on that one.)
-              done(late || signal ? undefined : code === 0 && said.trim() === `ok ${newer.startsWith("engine ") ? bundleBuild(script) : newer}`)
+              const expected = `ok ${newer.startsWith("engine ") ? bundleBuild(watchingScript) : newer}`
+              // The previous executable must be able to reopen the folder if the candidate dies.
+              // An older self-test without a layout can still lead to a quiet restart.
+              const reply = said.trim()
+              const supportsTransfer = reply === `${expected} ${transferCapability}`
+              if (supportsTransfer && code === 0) transferBuilds.add(newer)
+              done(late || signal ? undefined : code === 0 && (supportsTransfer || reply === expected || reply === `${expected} ${TRANSFER_PROTOCOL}`))
             })
           }),
         // (One its keeper keeps, on another engine than the keeper's now: an update brought a new one.)
@@ -689,7 +871,7 @@ function stop(handOver = false, startReplacement = true) {
   githubSignIn.cancel()
   // (Unless a newer bridge has put its own there.)
   try {
-    if (record && JSON.parse(readFileSync(record, "utf8")).pid === process.pid) rmSync(record, { force: true })
+    if (record && readRendezvous<BridgeRecord>(bridgeRecordFormat, record).pid === process.pid) rmSync(record, { force: true })
   } catch {}
   sessions.closeAll()
   // Every agent it holds stops with it (an app-server no session closes too), whatever exits first.

@@ -155,7 +155,8 @@ test("the probe's lines are what a box's link.json says: a box writes it as the 
   const written = spawnSync(process.execPath, ["--input-type=module", "-e", `const link = await import(${JSON.stringify(script)}); link.writeLink(JSON.parse(process.env.LINK));`],
     { env: { PATH: process.env.PATH, BUN_BE_BUN: process.env.BUN_BE_BUN, HOME: support, TMPDIR: support, KUVO_HOME: folder, LINK: JSON.stringify(vector.link) }, encoding: "utf8" });
   assert.equal(written.status, 0, written.stderr);
-  assert.equal(fs.readFileSync(path.join(folder, "run", "link.json"), "utf8"), vector.files[".kuvo-code/run/link.json"]);
+  const prior = JSON.parse(vector.files[".kuvo-code/run/link.json"]);
+  assert.equal(fs.readFileSync(path.join(folder, "run", "link.json"), "utf8"), JSON.stringify({ ...prior, formatVersion: 1 }, null, 2));
 });
 
 // Kuvo Code opening on a Mac, in a home of the test's own: its own box in its app folder, and the
@@ -329,4 +330,22 @@ test("a box its Mac removed is no box, whatever's left of it: its keeper still e
 test("what in the app's own box folder says a box ran there is the vector's, which the app's tests hold the app's list to", () => {
   const vector = JSON.parse(fs.readFileSync(fileURLToPath(new URL("../../protocol/vectors/routes/setup/own-box-ran.json", import.meta.url)), "utf8"));
   assert.deepEqual(link.OWN_BOX_RAN, vector.files);
+});
+
+test("an unsupported setup card cannot be mistaken for an empty computer", async () => {
+  const file = path.join(run, "setup-card.json");
+  const future = JSON.stringify(card({ formatVersion: 2 }));
+  write(file, future);
+  try {
+    assert.throws(() => link.writeCard(), /Setup discovery card format version 2/);
+    assert.equal(fs.readFileSync(file, "utf8"), future);
+    const response = await judge(`box machine .kuvo-code\ncard ${future}`);
+    assert.equal(response.status, 409);
+    assert.equal(response.json.code, "unsupportedFormatVersion");
+    assert.match(response.json.message, /Setup discovery card format version 2/);
+  } finally {
+    fs.rmSync(file, { force: true });
+  }
+  link.writeCard();
+  assert.equal(JSON.parse(fs.readFileSync(file, "utf8")).formatVersion, 1);
 });

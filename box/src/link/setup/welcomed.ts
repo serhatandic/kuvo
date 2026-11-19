@@ -4,18 +4,31 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { additiveObjectFormat, UnsupportedFormatVersion } from "../../shared/format-version";
+import { isObject } from "../../shared/json";
 import { writePrivate } from "../files";
 import { RUN } from "../home";
 
+export const welcomeFormat = additiveObjectFormat("Setup welcome record");
 const FILE = () => path.join(RUN, "welcomed.json");
 
 /** Whether the first run is done with this box. */
-export const isWelcomed = (): boolean => fs.existsSync(FILE());
+export function isWelcomed(): boolean {
+  if (!fs.existsSync(FILE())) return false;
+  try {
+    const value: unknown = JSON.parse(fs.readFileSync(FILE(), "utf8"));
+    if (isObject(value)) welcomeFormat.read(value);
+  } catch (error) {
+    if (error instanceof UnsupportedFormatVersion) throw error;
+  }
+  return true;
+}
 
 /** The first run done (`true`, kept from the first time), or to be had again (`false`). */
 export function setWelcomed(welcomed: boolean): void {
+  const before = isWelcomed();
   if (!welcomed) return fs.rmSync(FILE(), { force: true });
-  if (isWelcomed()) return;
+  if (before) return;
   fs.mkdirSync(RUN, { recursive: true, mode: 0o700 });
-  writePrivate(FILE(), JSON.stringify({ at: Date.now() }));
+  writePrivate(FILE(), JSON.stringify(welcomeFormat.write({ at: Date.now() })));
 }

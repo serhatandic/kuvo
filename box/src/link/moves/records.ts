@@ -4,14 +4,17 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { additiveObjectFormat, UnsupportedFormatVersion } from "../../shared/format-version";
 import { isObject } from "../../shared/json";
 import type { Move, MoveKind, MoveStage } from "../../shared/routes/moves";
 import { syncDurableFile, writeDurablePrivate, writePrivate } from "../files";
+import { locked } from "../../shared/files";
 import { RUN } from "../home";
 
 export const MOVES = path.join(RUN, "moves");
-// Conversations moved away from here, by where they live now, for two days.
+// Committed departures from this computer. Their routing advertisements expire independently.
 const MOVED_FILE = path.join(MOVES, "moved.json");
+const DEPARTURE_LOCK = path.join(MOVES, ".departures.lock");
 export const MOVED_FOR = 2 * 24 * 3600_000;
 
 /** A move as this box keeps it: what clients see of it (`Move`), and what it needs to carry on. On
@@ -19,9 +22,15 @@ export const MOVED_FOR = 2 * 24 * 3600_000;
  * hash and size; tries made; when each step was last sent. On the box it's going to (`to`): the
  * folder its copy went in, and the parts of the bundle that came. */
 export interface MoveRecord extends Move {
+  wipePreparation?: true;
+  removalOperation?: string;
   /** The other box's key. */
   peer: string;
   wasPaused: boolean;
+  /** The primary acknowledged this source’s ownership transfer. */
+  ownershipCommitted?: true;
+  /** The copy arrived and the primary is deciding ownership. */
+  assigning?: true;
   /** The original pause was persisted before this source wrote its move marker. */
   pauseRecorded?: boolean;
   folder?: string;
@@ -76,6 +85,8 @@ export interface MoveRecord extends Move {
   /** Since when the box it leaves has asked the other to let its copy go (taken back); on the box it
    * goes to, since when its copy's been let go of. */
   dropSince?: number;
+  /** A checkpointed destination holds until it hears the terminal drop. */
+  dropUntilAck?: true;
   started: number;
   /** It talks with a coding agent: its conversations are on the agents bridge, not the engine, and
    * each agent's own go with them (`carry.ts`). */
@@ -96,6 +107,11 @@ export interface MoveRecord extends Move {
   failedStatus?: number;
 }
 
+const journalFormat = additiveObjectFormat("Move journal");
+const decisionFormat = additiveObjectFormat("Move ownership receipt");
+const hintFormat = additiveObjectFormat("Move routing hint");
+const movedAwayFormat = additiveObjectFormat("Moved conversation");
+
 const fileOf = (id: string) => path.join(MOVES, `${id}.json`);
 export const bundleOf = (id: string) => path.join(MOVES, id);
 
@@ -110,11 +126,12 @@ export function readMoves(strict = false): MoveRecord[] {
   const records: MoveRecord[] = [];
   for (const name of names) {
     try {
-      const record = JSON.parse(fs.readFileSync(path.join(MOVES, name), "utf8"));
+      const value: unknown = JSON.parse(fs.readFileSync(path.join(MOVES, name), "utf8"));
+      const record = isObject(value) ? journalFormat.read(value) : null;
       if (fits(record)) records.push(record);
       else if (strict) throw new Error("An ownership record could not be read");
     } catch (error) {
-      if (strict && (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      if (error instanceof UnsupportedFormatVersion || (strict && (error as NodeJS.ErrnoException).code !== "ENOENT")) throw error;
     }
   }
   return records.sort((one, other) => one.started - other.started);
@@ -139,13 +156,20 @@ export function movesChanged(): void {
   for (const follower of [...moveFollowers]) try { follower(); } catch {}
 }
 
+function checkJournal(id: string): void {
+  const value = jsonIfPresent(fileOf(id));
+  if (isObject(value)) journalFormat.read(value);
+}
+
 export function saveMove(record: MoveRecord): void {
-  writeDurablePrivate(fileOf(record.id), JSON.stringify(record), RUN);
+  checkJournal(record.id);
+  writeDurablePrivate(fileOf(record.id), JSON.stringify(journalFormat.write(record)), RUN);
   movesChanged();
 }
 
 /** Gone, with what came of its bundle. */
 export function forgetMove(id: string): void {
+  checkJournal(id);
   try { fs.rmSync(fileOf(id), { force: true }); } catch {}
   try { fs.rmSync(bundleOf(id), { recursive: true, force: true }); } catch {}
   movesChanged();
@@ -199,36 +223,56 @@ export function switchedMove(session: string, records = liveMoves()): MoveRecord
   return records.find(each => each.role === "from" && (each.stage === "switching" || each.stage === "finishing") && each.sessions.includes(session)) ?? null;
 }
 
-/** A conversation moved away from here in the last two days, and where it lives now (a box's key). */
+/** A record moved away from here and where ownership went. */
 export interface MovedAway {
   session: string;
   key: string;
   at: number;
 }
 
-export function movedAway(now = Date.now()): MovedAway[] {
+export function committedDepartures(): MovedAway[] {
   try {
     const kept: unknown = JSON.parse(fs.readFileSync(MOVED_FILE, "utf8"));
     if (!Array.isArray(kept)) return [];
-    return kept.filter((each): each is MovedAway => isObject(each) && typeof each.session === "string" && typeof each.key === "string" && typeof each.at === "number" && now - each.at < MOVED_FOR);
-  } catch {
+    return kept.flatMap((value): MovedAway[] => {
+      if (!isObject(value)) return [];
+      const { session, key, at } = movedAwayFormat.read(value);
+      return typeof session === "string" && typeof key === "string" && typeof at === "number"
+        ? [{ session, key, at }] : [];
+    });
+  } catch (error) {
+    if (error instanceof UnsupportedFormatVersion) throw error;
     return [];
   }
 }
 
+/** Only recent session changes need to be advertised. The activation fence remains. */
+export function movedAway(now = Date.now()): MovedAway[] {
+  return committedDepartures().filter(each => each.session.startsWith("ses_") && now - each.at < MOVED_FOR);
+}
+
 export function noteMovedAway(sessions: readonly string[], key: string, now = Date.now()): void {
-  const kept = movedAway(now).filter(each => !sessions.includes(each.session));
-  writePrivate(MOVED_FILE, JSON.stringify([...kept, ...sessions.map(session => ({ session, key, at: now }))]));
-  // (Clients leave them out from here on: `kuvo/moves`' `moved`.)
-  movesChanged();
+  const updated = locked(DEPARTURE_LOCK, () => {
+    const current = committedDepartures();
+    const changed = new Set(sessions.filter(session => !current.some(each => each.session === session && each.key === key)));
+    if (!changed.size) return false;
+    const kept = current.filter(each => !changed.has(each.session));
+    for (const session of changed) kept.push({ session, key, at: now });
+    writeDurablePrivate(MOVED_FILE, JSON.stringify(kept.map(movedAwayFormat.write)), RUN);
+    return true;
+  }, { required: true });
+  if (updated) movesChanged();
 }
 
 /** Moved here again (back from where it went): no longer away. */
-export function forgetMovedAway(sessions: readonly string[], now = Date.now()): void {
-  const kept = movedAway(now);
-  if (!kept.some(each => sessions.includes(each.session))) return;
-  writePrivate(MOVED_FILE, JSON.stringify(kept.filter(each => !sessions.includes(each.session))));
-  movesChanged();
+export function forgetMovedAway(sessions: readonly string[]): void {
+  const updated = locked(DEPARTURE_LOCK, () => {
+    const kept = committedDepartures();
+    if (!kept.some(each => sessions.includes(each.session))) return false;
+    writeDurablePrivate(MOVED_FILE, JSON.stringify(kept.filter(each => !sessions.includes(each.session)).map(movedAwayFormat.write)), RUN);
+    return true;
+  }, { required: true });
+  if (updated) movesChanged();
 }
 
 export type { Move, MoveKind, MoveStage };
@@ -257,15 +301,17 @@ const fileForDecision = (id: string) => path.join(DECISIONS, `${id}.json`);
 function decision(id: string): { value: Decision; file: string } | null {
   if (!DECISION_ID.test(id)) return null;
   const file = fileForDecision(id);
-  const one = jsonIfPresent(file);
-  if (one !== undefined) {
+  const value = jsonIfPresent(file);
+  if (value !== undefined) {
+    const one = decisionFormat.read(value);
     if (!isDecision(one)) throw new Error("A move’s ownership receipt could not be read");
     return { value: one, file };
   }
   const legacy = jsonIfPresent(LEGACY_DECISIONS);
   if (legacy !== undefined && !isObject(legacy)) throw new Error("Legacy move decisions could not be read");
-  const old = legacy?.[id];
-  if (old === undefined) return null;
+  const valueBefore = legacy?.[id];
+  if (valueBefore === undefined) return null;
+  const old = decisionFormat.read(valueBefore);
   if (!isDecision(old)) throw new Error("A legacy move decision could not be read");
   return { value: old, file: LEGACY_DECISIONS };
 }
@@ -290,8 +336,13 @@ export function noteEnded(id: string, as: Decision["as"], now = Date.now(), sess
     syncDurableFile(before.file, RUN);
     return;
   }
-  if (sessions.length) writeDurablePrivate(path.join(HINTS, `${id}.json`), JSON.stringify({ as, at: now, sessions }), RUN);
-  writeDurablePrivate(fileForDecision(id), JSON.stringify({ as, at: now, ...bundle, ...(last ? { last } : {}), ...(peer ? { peer } : {}) }), RUN);
+  const hintFile = path.join(HINTS, `${id}.json`);
+  if (sessions.length) {
+    const hint = jsonIfPresent(hintFile);
+    if (hint !== undefined) hintFormat.read(hint);
+    writeDurablePrivate(hintFile, JSON.stringify(hintFormat.write({ as, at: now, sessions })), RUN);
+  }
+  writeDurablePrivate(fileForDecision(id), JSON.stringify(decisionFormat.write({ as, at: now, ...bundle, ...(last ? { last } : {}), ...(peer ? { peer } : {}) })), RUN);
 }
 
 /** A rename can be visible after its directory sync failed. Seal the receipt before replying. */
@@ -310,9 +361,12 @@ export function compactDecisionHints(now = Date.now()): void {
   for (const name of hintFiles()) {
     const file = path.join(HINTS, name);
     try {
-      const hint = jsonIfPresent(file);
+      const value = jsonIfPresent(file);
+      const hint = value === undefined ? null : hintFormat.read(value);
       if (isDecision(hint) && now - hint.at >= MOVED_FOR) fs.rmSync(file, { force: true });
-    } catch {} // Ownership receipts are independent of these routing hints.
+    } catch (error) {
+      if (error instanceof UnsupportedFormatVersion) throw error;
+    } // Ownership receipts are independent of these routing hints.
   }
 }
 
@@ -326,15 +380,20 @@ function sessionsDecided(as: Decision["as"], now: number): string[] {
   const sessions: string[] = [];
   for (const name of hintFiles()) {
     try {
-      const hinted = sessionsFrom(jsonIfPresent(path.join(HINTS, name)), as, now);
+      const value = jsonIfPresent(path.join(HINTS, name));
+      const hinted = value === undefined ? [] : sessionsFrom(hintFormat.read(value), as, now);
       // An interrupted write can leave a hint for an ownership decision not yet recorded.
       if (hinted.length && decision(name.slice(0, -5))?.value.as === as) sessions.push(...hinted);
-    } catch {}
+    } catch (error) {
+      if (error instanceof UnsupportedFormatVersion) throw error;
+    }
   }
   try {
     const legacy = jsonIfPresent(LEGACY_DECISIONS);
-    if (isObject(legacy)) for (const hint of Object.values(legacy)) sessions.push(...sessionsFrom(hint, as, now));
-  } catch {}
+    if (isObject(legacy)) for (const hint of Object.values(legacy)) sessions.push(...sessionsFrom(decisionFormat.read(hint), as, now));
+  } catch (error) {
+    if (error instanceof UnsupportedFormatVersion) throw error;
+  }
   return sessions;
 }
 

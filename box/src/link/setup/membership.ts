@@ -1,0 +1,199 @@
+// Accepted membership is portable. The link fields used by old callers are projections;
+// SSH configuration, the removal delivery queue and local pairing tokens stay on their box.
+import { deviceGrantsLayoutDeferred, unlinkCleanupLayoutReady } from "../../shared/folder-version";
+import { isObject } from "../../shared/json";
+import { K } from "../home";
+import type { LinkState, Phone } from "../state";
+import type { Peer } from "../peers/known";
+import { KEY, cleanMoved, cleanPeer, fitsPeer, ownKey, type MovedSession } from "../peers/known";
+import { readComputerHistory, type ComputerHistory } from "./computer-history";
+import { fits, type PhoneEntry } from "../phones";
+
+import { REMOVAL_ID, removalRecords, type MemberRemoval, type WipePreparationClaim } from "./removal-record";
+
+export interface Membership {
+  boxes: Peer[];
+  successorOrder?: string[];
+  successorPin?: string;
+  left: string[];
+  moved: MovedSession[];
+  devices: { phones: Phone[]; removed: { key: string; pairing: string }[] };
+  removalRevisions: Record<string, number>;
+  computerHistory?: ComputerHistory;
+  removals?: Record<string, MemberRemoval>;
+  wipePreparations?: Record<string, WipePreparationClaim>;
+}
+
+export interface SetupRevocations {
+  setup: string;
+  computers: string[];
+  signs: string[];
+  devices: Membership["devices"]["removed"];
+}
+
+const uniqueDeviceRevocations = (devices: SetupRevocations["devices"]) =>
+  [...new Map(devices.map(device => [JSON.stringify([device.key, device.pairing]), device])).values()];
+
+export function membershipRevocations(setup: string, membership: Membership): SetupRevocations {
+  return { setup, computers: membership.left, signs: membership.computerHistory?.retiredSigns ?? [], devices: membership.devices.removed };
+}
+
+export function mergeRevocations(link: LinkState, incoming: SetupRevocations) {
+  if (!link.setup?.successorChain || link.setup.id !== incoming.setup) return;
+  const prior = link.setupRevocations?.setup === incoming.setup ? link.setupRevocations : undefined;
+  const devices = uniqueDeviceRevocations([...(prior?.devices ?? []), ...incoming.devices]);
+  const computers = [...new Set([...prior?.computers ?? [], ...incoming.computers])];
+  const signs = [...new Set([...prior?.signs ?? [], ...incoming.signs])];
+  if (computers.length === (prior?.computers.length ?? 0) && signs.length === (prior?.signs.length ?? 0) &&
+    devices.length === (prior?.devices.length ?? 0)) return false;
+  link.setupRevocations = { setup: incoming.setup, computers, signs, devices };
+  return true;
+}
+
+function withRevocations(membership: Membership, revocations: SetupRevocations): Membership | null {
+  const left = [...new Set([...membership.left, ...revocations.computers,
+    ...membership.boxes.filter(peer => peer.sign && revocations.signs.includes(peer.sign)).map(peer => peer.key)])];
+  const boxes = membership.boxes.filter(peer => !left.includes(peer.key));
+  const signs = [...new Set([...membership.computerHistory?.retiredSigns ?? [], ...revocations.signs])];
+  return membershipOf({
+    ...membership, left, boxes,
+    ...(membership.successorOrder ? { successorOrder: membership.successorOrder.filter(key => !left.includes(key)) } : {}),
+    successorPin: membership.successorPin && !left.includes(membership.successorPin) ? membership.successorPin : undefined,
+    computerHistory: { ...membership.computerHistory, setup: revocations.setup, slots: membership.computerHistory?.slots ?? [], retiredSigns: signs },
+    devices: { phones: membership.devices.phones, removed: uniqueDeviceRevocations([...membership.devices.removed, ...revocations.devices]) },
+  });
+}
+
+// Signed snapshots from older boxes still contain the voucher and provenance fields.
+export function portableDevice(phone: PhoneEntry): Phone {
+  return {
+    key: phone.key,
+    name: typeof phone.name === "string" ? phone.name : "",
+    pairing: phone.pairing ?? "",
+    ...(typeof phone.address === "string" ? { address: phone.address } : {}),
+    ...(phone.kind === "desktop" ? { kind: "desktop" as const } : {}),
+    ...(typeof phone.by === "string" && KEY.test(phone.by) && deviceGrantsLayoutDeferred(K) ? { by: phone.by } : {}),
+  };
+}
+
+export function membershipOf(value: unknown): Membership | null {
+  if (!isObject(value) || !Array.isArray(value.boxes) || !value.boxes.every(fitsPeer)) return null;
+  const boxes = value.boxes.map(box => {
+    const { id: _localDestination, ...portable } = cleanPeer(box);
+    return portable;
+  });
+  const boxKeys = new Set(boxes.map(box => box.key));
+  if (boxKeys.size !== boxes.length) return null;
+  const order = value.successorOrder;
+  if (order !== undefined && (!Array.isArray(order) || order.length !== boxes.length
+    || new Set(order).size !== boxes.length || !order.every(key => typeof key === "string" && boxKeys.has(key)))) return null;
+  const pin = value.successorPin;
+  if (pin !== undefined && (typeof pin !== "string" || order?.[0] !== pin)) return null;
+  const devices = isObject(value.devices) ? value.devices : {};
+  const revisions = value.removalRevisions;
+  const left = Array.isArray(value.left) ? value.left : [];
+  const removed = value.removedHere;
+  const tombstones = [...new Set([...(Array.isArray(removed) ? removed : []), ...left]
+    .filter((key): key is string => typeof key === "string" && KEY.test(key)))];
+  if (boxes.some(box => tombstones.includes(box.key))) return null;
+  const computerHistory = readComputerHistory(value.computerHistory, new Set([...tombstones, ...boxes.map(box => box.key)]), new Set(tombstones));
+  if (computerHistory && boxes.some(box => box.sign && computerHistory.retiredSigns.includes(box.sign))) return null;
+  const removals = removalRecords(value.removals, new Set(tombstones), new Set(boxes.map(box => box.key)));
+  const preparation = isObject(value.wipePreparations) ? value.wipePreparations : {};
+  const wipePreparations = Object.fromEntries(boxes.flatMap(({ key }) => {
+    const claim = preparation[key];
+    return isObject(claim) && typeof claim.operation === "string" && REMOVAL_ID.test(claim.operation) &&
+      typeof claim.choiceHash === "string" && /^[A-Za-z0-9_-]{43}$/.test(claim.choiceHash)
+      ? [[key, { operation: claim.operation, choiceHash: claim.choiceHash }]] : [];
+  }));
+  const keys = [...boxKeys];
+  const revoked = (Array.isArray(devices.removed) ? devices.removed : [])
+    .filter(entry => fits(entry, keys) && typeof entry.pairing === "string")
+    .map(({ key, pairing }) => ({ key, pairing: pairing as string }));
+  const isRevoked = (phone: Phone) => revoked.some(each => each.key === phone.key && each.pairing === (phone.pairing ?? ""));
+  return {
+    boxes,
+    ...(order ? { successorOrder: order } : {}),
+    ...(pin ? { successorPin: pin } : {}),
+    ...(computerHistory ? { computerHistory } : {}),
+    ...(Object.keys(wipePreparations).length ? { wipePreparations } : {}),
+    ...(Object.keys(removals).length ? { removals } : {}),
+    left: tombstones,
+    moved: cleanMoved(value.moved),
+    devices: {
+      phones: (Array.isArray(devices.phones) ? devices.phones : []).filter(phone => fits(phone, keys)).map(portableDevice).filter(phone => !isRevoked(phone)),
+      removed: revoked,
+    },
+    removalRevisions: Object.fromEntries(Object.entries(isObject(revisions) ? revisions : {})
+      .filter(([key, n]) => KEY.test(key) && Number.isSafeInteger(n) && Number(n) > 0)) as Record<string, number>,
+  };
+}
+
+export function acceptedNames(link: LinkState): Record<string, unknown> {
+  const value = link.sharedSetup === link.setup?.id ? link.shared?.setupNames?.value : undefined;
+  return isObject(value) ? value : {};
+}
+
+export function acceptedName(link: LinkState, key: string | null, fallback: string): string {
+  const name = key && (acceptedNames(link)[key] ?? (link.setup?.checkpointed ? undefined : link.peerNames?.[key]));
+  return typeof name === "string" && name ? name : fallback;
+}
+
+export function acceptedMembership(link: LinkState | null | undefined): Membership | null {
+  if (!link?.setup || link.setup.aside || link.sharedSetup !== link.setup.id) return null;
+  const value = link.shared?.membershipAndAccess?.value;
+  // Before checkpoint negotiation, older peers can still write or receive layout 4 data.
+  const membership = isObject(value) && !Object.hasOwn(value, "fields") && link.setup.checkpointed ? membershipOf(value) : null;
+  const revocations = link.setupRevocations;
+  return membership && revocations?.setup === link.setup.id ? withRevocations(membership, revocations) : membership;
+}
+
+export function namedRoster(link: LinkState, boxes: Peer[]): Peer[] {
+  return boxes.map(box => ({ ...box, name: acceptedName(link, box.key, box.name) }));
+}
+
+/** Refresh the compatibility fields from an accepted membership, retaining local metadata. */
+export function projectMembership(link: LinkState, membership: Membership, keepLocalPairings = false) {
+  const setup = link.setup!;
+  const here = setup.role === "primary";
+  if (!here && !membership.boxes.some(peer => peer.key === ownKey(link))) {
+    link.phones = [];
+    delete link.preJoinPairings;
+    delete link.pairing;
+    delete link.appPairing;
+    return;
+  }
+  const old = new Map((link.phones ?? []).map(phone => [phone.key, phone]));
+  const quarantine = unlinkCleanupLayoutReady(K);
+  const local = [...(link.preJoinPairings ?? []), ...(link.phones ?? [])]
+    .filter(phone => phone.from === "pair" && (phone.local || keepLocalPairings)
+    && !membership.devices.removed.some(each => each.key === phone.key && each.pairing === (phone.pairing ?? "")))
+    .map((phone): Phone => ({ ...phone, local: true }));
+  const transferred = membership.devices.phones.map((phone): Phone => ({
+    ...phone, from: here ? "pair" : "mac",
+    ...(here ? {} : { mac: setup.primary }),
+    added: old.get(phone.key)?.added ?? Math.floor(Date.now() / 1000),
+    address: old.get(phone.key)?.address ?? phone.address,
+  }));
+  const unmatched = local.filter(phone => !transferred.some(each => each.key === phone.key
+    && (!quarantine || each.pairing === (phone.pairing ?? ""))));
+  if (quarantine) {
+    link.phones = transferred;
+    if (unmatched.length) link.preJoinPairings = unmatched;
+    else delete link.preJoinPairings;
+  } else {
+    link.phones = [...transferred, ...unmatched];
+  }
+  link.removed = membership.devices.removed;
+  if (membership.computerHistory?.setup === setup.id) link.computerHistory = membership.computerHistory;
+  else delete link.computerHistory;
+  if (here) {
+    link.macPeers = membership.boxes.filter(peer => peer.key !== ownKey(link));
+    link.macMoved = membership.moved;
+    link.left = membership.left.slice(-64);
+    link.removedHere = membership.left;
+    link.removalRevisions = membership.removalRevisions;
+    link.memberRemovals = membership.removals;
+    link.wipePreparations = membership.wipePreparations;
+  }
+}

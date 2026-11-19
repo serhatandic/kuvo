@@ -14,6 +14,8 @@ import { pathToFileURL } from "node:url"
 import { providerID, type AgentAccount } from "../accounts"
 import type { Agent, AgentContext, Account, SignInAttempt, SubagentRun, Thread, SubagentTask, TurnHooks } from "../agent"
 import { accountName, ContextWindows, failure, model } from "../agent"
+import { agentHoldFolder, ANTIGRAVITY_ACP } from "../hold/adopt"
+import { heldIn } from "../hold/client"
 import { AcpThread } from "../acp"
 import { fenceAgent, fenceRules } from "../fence"
 import { emit } from "../events"
@@ -30,7 +32,22 @@ import { antigravityCustomAgents, subagentsFor } from "../subagents"
 import type { Turn } from "../turn"
 import type { Model, OAuthStatus, Session } from "../wire"
 
-const version = "1.3.0"
+const version = ANTIGRAVITY_ACP
+function heldVersions(folder = agentHoldFolder("antigravity")) {
+  return folder ? heldIn(folder).filter(holder => holder.meta.kind === "antigravity").map(holder => holder.meta.version) : []
+}
+
+/** Installed releases live side by side. A holder from an earlier bridge may still use one. */
+export function forgetOldAntigravity(home: string, holders = agentHoldFolder("antigravity")) {
+  const root = join(home, "antigravity")
+  if (!existsSync(join(root, version, ".complete"))) return
+  const held = heldVersions(holders)
+  for (const name of readdirSync(root)) {
+    if (name === version || !/^\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$/.test(name)) continue
+    if (!held.some(using => using === undefined || using === name)) rmSync(join(root, name), { recursive: true, force: true })
+  }
+}
+
 const releases: Record<string, { url: string; sha256: string; bytes: number }> = {
   "darwin-arm64": {
     url: "https://dl.google.com/agy-extensions/releases/macos/agy-acp-server-1.3.0-darwin-arm64.zip",
@@ -164,14 +181,16 @@ export class AntigravityFollower {
   private timer?: ReturnType<typeof setInterval>
   private turn?: Turn
   private hooks?: TurnHooks
+  private usedSubagents = false
 
   constructor(
     private readonly brain: string,
     private readonly sessionId: string,
     private readonly every = 1_000,
+    restored?: readonly number[],
   ) {
     // What's there already (a conversation picked up again) was shown with its own turns.
-    for (const step of this.steps(sessionId)) this.seen.add(step.step_index)
+    this.seen = new Set(restored ?? this.steps(sessionId).map(step => step.step_index))
   }
 
   /** Follows a turn of the conversation: each of its turns in turn, the one it began on its own too. */
@@ -179,10 +198,17 @@ export class AntigravityFollower {
     clearInterval(this.timer)
     this.turn = turn
     this.hooks = hooks
+    this.usedSubagents = false
     // One still at work as the last turn ended was ended with it: what it does next opens its session again.
     for (const child of this.children.values()) if (!child.ended && child.run.turn.isEnded) child.ended = true
     this.timer = setInterval(() => this.read(), this.every)
     return this
+  }
+
+  transferState(): number[] | false {
+    // Already rendered subagent rows aren't in the ACP journal. Let this turn finish here.
+    if (this.usedSubagents || this.pending.length || [...this.children.values()].some(child => !child.ended)) return false
+    return [...this.seen]
   }
 
   stop() {
@@ -215,7 +241,10 @@ export class AntigravityFollower {
     for (const step of this.steps(this.sessionId)) {
       if (this.seen.has(step.step_index) || step.status === "RUNNING") continue
       this.seen.add(step.step_index)
-      for (const call of step.tool_calls ?? []) if (call?.name === "invoke_subagent") this.pending.push(...antigravitySubagents(call.args))
+      for (const call of step.tool_calls ?? []) if (call?.name === "invoke_subagent") {
+        this.usedSubagents = true
+        this.pending.push(...antigravitySubagents(call.args))
+      }
       // "Created the following subagents": their conversations, in the order they were asked for.
       if (step.type === "INVOKE_SUBAGENT" && typeof step.content === "string") {
         for (const match of step.content.matchAll(/"conversationId":\s*"([^"]+)"/g)) this.start(match[1])
@@ -225,6 +254,7 @@ export class AntigravityFollower {
   }
 
   private start(id: string) {
+    this.usedSubagents = true
     if (this.children.has(id)) return
     const task = this.pending.shift() ?? { title: "A subagent's task" }
     const row = `agy-subagent:${id}`
@@ -491,12 +521,16 @@ export class AntigravityAgent implements Agent {
       rmSync(archive, { force: true })
       for (const name of [executableName, harnessName]) chmodSync(join(staging, name), 0o755)
       writeFileSync(join(staging, ".complete"), JSON.stringify({ version, sha256: release.sha256 }))
-      rmSync(this.folder, { recursive: true, force: true })
-      renameSync(staging, this.folder)
-      // Older versions go.
-      for (const name of readdirSync(this.root)) {
-        if (name !== version && name !== "profile" && /^\d/.test(name)) rmSync(join(this.root, name), { recursive: true, force: true })
+      // Another account can finish staging the same release first.
+      if (this.isInstalled) return
+      if (existsSync(this.folder)) {
+        if (heldVersions().some(using => using === undefined || using === version)) {
+          throw new Error("Antigravity is still using this version. Try again once its agent stops.")
+        }
+        rmSync(this.folder, { recursive: true, force: true })
       }
+      renameSync(staging, this.folder)
+      forgetOldAntigravity(this.context.home)
     } finally {
       this.downloaded = undefined
       rmSync(staging, { recursive: true, force: true })
@@ -765,8 +799,7 @@ export class AntigravityAgent implements Agent {
         noteContext(model, size) {
           if (agent.windows.note(model, size)) emit("model.updated", {})
         },
-        // (Not run under a holder: no spike has shown a new bridge can take its turn over, so a
-        // crash ends its turn as before, and an update waits for it to end: renewal.ts.)
+        held: { kind: "antigravity", provider: agent.providerID, version },
         fileSystem: true,
         whole: { homes: (env) => agent.places(env).homes, state: ["*"], kept: [], read: (env) => agent.reads(env) },
         authenticatesFirst: true,
@@ -775,9 +808,9 @@ export class AntigravityAgent implements Agent {
         limitScope: "model",
         // Its subagents: from its own record of the conversation (it doesn't tell them).
         // (One for the conversation, from turn to turn: what it has shown isn't shown again.)
-        follow: (sessionId, turn, hooks) => {
+        follow: (sessionId, turn, hooks, restored) => {
           let follower = followers.get(sessionId)
-          if (!follower) followers.set(sessionId, (follower = new AntigravityFollower(join(agent.profile, "antigravity-acp", "brain"), sessionId)))
+          if (!follower) followers.set(sessionId, (follower = new AntigravityFollower(join(agent.profile, "antigravity-acp", "brain"), sessionId, 1_000, Array.isArray(restored) ? restored.filter(Number.isSafeInteger) : undefined)))
           return follower.follow(turn, hooks)
         },
         hides: (call) => /\b(start_subagent|invoke_subagent)\b/.test(`${call?.title ?? ""} ${call?.rawInput?.name ?? ""}`),

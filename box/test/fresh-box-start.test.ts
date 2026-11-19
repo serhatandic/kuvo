@@ -217,6 +217,13 @@ test.if(!!ENGINE)("a computer's first box, installed and started the real way: i
     expect(restarted.status, restarted.stderr).toBe(0)
   }
 
+  if (!mac) {
+    const card = await until(() => JSON.parse(read(path.join(K, "run", "setup-card.json"))), "the standalone setup card")
+    expect(card).toMatchObject({ role: "primary", epoch: 1, computers: 1, self: { kind: "machine" } })
+    expect(card.primary.key).toBe(card.self.key)
+    expect(fs.existsSync(path.join(K, "run", "link.needed"))).toBe(false)
+  }
+
   // The engine answers where it's noted.
   const engine = await until(() => { const noted = engineOf(K); return noted?.port ? noted : null }, "the engine")
   const auth = { authorization: "Basic " + Buffer.from(`opencode:${engine.password}`).toString("base64"), "content-type": "application/json" }

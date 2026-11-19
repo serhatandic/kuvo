@@ -5,7 +5,7 @@
 import { emit } from "./events"
 import { messageID, newID } from "./ids"
 import type { Store } from "./store"
-import type { AssistantMessage, CompactionMessage, Content, ModelRef, StructuredError, TokenUsage, ToolCall, ToolOutput } from "./wire"
+import type { AssistantMessage, CompactionMessage, Content, Message, ModelRef, NoticeMessage, StructuredError, TokenUsage, ToolCall, ToolOutput } from "./wire"
 import { noTokens } from "./wire"
 import { workOrder } from "../shared/work-order"
 
@@ -34,7 +34,7 @@ export class Turn {
   private keyed = new Map<string, { kind: "text" | "reasoning"; ordinal: number; content: Content }>()
   /** Each tool call's step: results come after the step that called them has ended. */
   private tools = new Map<string, { step: AssistantMessage; call: ToolCall }>()
-  private ended = false
+  private ended: boolean
   /** A summary the agent is making by itself (`compacting`), until it's done. */
   private compaction?: CompactionMessage
   /** One just ended, with no model call since: more about it is about that one. */
@@ -51,8 +51,10 @@ export class Turn {
     private readonly directory: string,
     private model: ModelRef,
     private readonly agent: string,
+    completed = false,
   ) {
-    emit("session.execution.started", { sessionID }, directory)
+    this.ended = completed
+    if (!completed) emit("session.execution.started", { sessionID }, directory)
   }
 
   get isEnded() {
@@ -82,6 +84,54 @@ export class Turn {
 
   // MARK: Steps
 
+  private replayedSteps: Pick<AssistantMessage, "id" | "time">[] = []
+
+  private replayedNotices: NoticeMessage[] = []
+  private replayedCompactions: CompactionMessage[] = []
+  private replayedToolIDs = new Map<string, string[]>()
+  private completedChildren = new Map<string, string>()
+
+  /** Rebuild the transcript with the same visible records and completed child sessions. */
+  reuseMessages(messages: readonly Message[]) {
+    for (const message of messages) {
+      if (message.type === "assistant") {
+        this.replayedSteps.push(message)
+        for (const tool of message.content) {
+          if (tool.type !== "tool") continue
+          const ids = this.replayedToolIDs.get(tool.name)
+          if (ids) ids.push(tool.id)
+          else this.replayedToolIDs.set(tool.name, [tool.id])
+          if (tool.state.status !== "completed" && tool.state.status !== "error") continue
+          const child = (tool.state.metadata as { sessionID?: unknown } | undefined)?.sessionID
+          if (typeof child === "string") this.completedChildren.set(tool.id, child)
+        }
+      } else if (message.type === "synthetic" && (message.metadata?.kuvo as { notice?: boolean } | undefined)?.notice) {
+        this.replayedNotices.push(message)
+      } else if (message.type === "compaction" && message.reason === "auto") {
+        this.replayedCompactions.push(message)
+      }
+    }
+  }
+
+  /** A row synthesized by the adapter, where the provider supplied no tool-call ID. */
+  syntheticToolID(name: string, prefix = ""): string {
+    const ids = this.replayedToolIDs.get(name)
+    const index = ids?.findIndex(id => id.startsWith(prefix + "call_")) ?? -1
+    return index < 0 ? prefix + newID("call") : ids!.splice(index, 1)[0]!
+  }
+
+  takeCompletedChild(toolCallID: string) {
+    const child = this.completedChildren.get(toolCallID)
+    this.completedChildren.delete(toolCallID)
+    return child
+  }
+
+  private atReplayPosition(message: Message) {
+    const index = this.messages.indexOf(message)
+    if (index >= 0) this.messages.splice(index, 1)
+    this.messages.push(message)
+  }
+
   /** A new model call. Any step still open ends first. */
   startStep(model?: ModelRef): string {
     if (this.ended) return ""
@@ -90,11 +140,14 @@ export class Turn {
     // have gone through (one an agent dropped, or gave no end for), so it doesn't stay running.
     if (this.compaction) this.compacted(false)
     this.justCompacted = false
+    const replayed = this.replayedSteps.shift()
     const origin = this.store.origin?.()
     const step: AssistantMessage = {
       type: "assistant",
-      id: newID("msg"),
-      time: { created: Date.now(), origin, usageAccount: origin && this.store.usageAccount?.((model ?? this.model).providerID, origin) },
+      id: replayed?.id ?? newID("msg"),
+      time: replayed
+        ? { created: replayed.time.created, origin: replayed.time.origin, usageAccount: replayed.time.usageAccount }
+        : { created: Date.now(), origin, usageAccount: origin && this.store.usageAccount?.((model ?? this.model).providerID, origin) },
       agent: this.agent,
       model: model ?? this.model,
       content: [],
@@ -315,10 +368,16 @@ export class Turn {
   notice(text: string) {
     if (this.ended) return
     // Said again with nothing since (each of your hooks failing the same way): once is enough.
+    const replayed = this.replayedNotices.findIndex(message => message.text === text)
     const last = this.messages.at(-1)
-    if (last?.type === "synthetic" && last.text === text) return
+    if (replayed < 0 && last?.type === "synthetic" && last.text === text) return
     this.endBlock()
     if (this.step) this.endStep()
+    if (replayed >= 0) {
+      this.atReplayPosition(this.replayedNotices.splice(replayed, 1)[0]!)
+      this.save()
+      return
+    }
     const event = emit("session.synthetic", { sessionID: this.sessionID, text, metadata: NOTICE }, this.directory)
     this.messages.push({ type: "synthetic", id: messageID(event.id), time: { created: event.created }, text, metadata: NOTICE })
     this.save()
@@ -335,10 +394,16 @@ export class Turn {
     this.justCompacted = false
     this.endBlock()
     if (this.step) this.endStep()
-    const event = emit("session.compaction.started", { sessionID: this.sessionID, reason: "auto" }, this.directory)
-    const message: CompactionMessage = { type: "compaction", id: messageID(event.id), time: { created: event.created }, status: "running", reason: "auto" }
-    this.compaction = message
-    this.messages.push(message)
+    const replayed = this.replayedCompactions.shift()
+    if (replayed) {
+      this.compaction = { ...replayed, time: { created: replayed.time.created }, status: "running" }
+      const index = this.messages.indexOf(replayed)
+      if (index >= 0) this.messages.splice(index, 1)
+    } else {
+      const event = emit("session.compaction.started", { sessionID: this.sessionID, reason: "auto" }, this.directory)
+      this.compaction = { type: "compaction", id: messageID(event.id), time: { created: event.created }, status: "running", reason: "auto" }
+    }
+    this.messages.push(this.compaction)
     this.store.save(this.sessionID, true)
   }
 

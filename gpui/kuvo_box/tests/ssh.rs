@@ -125,7 +125,10 @@ fn a_machines_box_answers_through_box_route_over_ssh() {
     // its input.
     assert_eq!(machine.read("ran").trim(), format!("1.10.2 --config=/dev/null --no-env-file {}/home/.kuvo-code/bin/kuvo-link.js box route", machine.path().display()));
     assert_eq!(PathBuf::from(machine.read("kuvo-home").trim()), machine.path().join("home/.kuvo-code"));
-    assert_eq!(machine.asked(), vec![json!({ "method": "GET", "path": "kuvo/info" }), json!({ "method": "GET", "path": "kuvo/sessions/list?since=3" })]);
+    assert_eq!(machine.asked(), vec![
+        json!({ "method": "GET", "path": "kuvo/info", "headers": { "x-kuvo-route-version": "1" } }),
+        json!({ "method": "GET", "path": "kuvo/sessions/list?since=3", "headers": { "x-kuvo-route-version": "1" } }),
+    ]);
     // Never a password prompt, nor a terminal; the machine as it was named.
     let arguments = machine.read("ssh-arguments");
     for option in ["BatchMode=yes", "RequestTTY=no", "RemoteCommand=none"] {

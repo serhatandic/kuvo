@@ -87,12 +87,13 @@ export type Worktrees = Infer<typeof WORKTREES>;
 export type WorktreesWhere = Infer<typeof WHERE>;
 
 export const WORKTREE_ROUTES: RouteShape[] = [
-  { route: "GET kuvo/worktrees", answers: { 200: WORKTREES } },
+  { route: "GET kuvo/worktrees", feature: "worktrees", answers: { 200: WORKTREES } },
+  { route: "GET kuvo/worktrees/events", feature: "worktrees.events", answers: { 200: WORKTREES } },
   // A new one, for a session to run in: as the box keeps it.
-  { route: "POST kuvo/worktrees", answers: { 200: WORKTREE_RECORD } },
-  { route: "POST kuvo/worktrees/remove", answers: { 200: NOTHING } },
+  { route: "POST kuvo/worktrees", feature: "worktrees", answers: { 200: WORKTREE_RECORD } },
+  { route: "POST kuvo/worktrees/remove", feature: "worktrees", answers: { 200: NOTHING } },
   // A removed one back where it was, for its sessions: as the box keeps it again.
-  { route: "POST kuvo/worktrees/restore", answers: { 200: WORKTREE_RECORD } },
-  { route: "POST kuvo/worktrees/record", answers: { 200: NOTHING } },
-  { route: "GET kuvo/worktrees/where", answers: { 200: WHERE } },
+  { route: "POST kuvo/worktrees/restore", feature: "worktrees", answers: { 200: WORKTREE_RECORD } },
+  { route: "POST kuvo/worktrees/record", feature: "worktrees", answers: { 200: NOTHING } },
+  { route: "GET kuvo/worktrees/where", feature: "worktrees.where", answers: { 200: WHERE } },
 ];

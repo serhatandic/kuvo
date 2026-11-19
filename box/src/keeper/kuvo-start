@@ -10,8 +10,12 @@
 #   kuvo-start bridge    starts the coding agents' bridge, while the engine runs and it doesn't
 #   kuvo-start bridge-again  Try Again: the bridge started now, one that didn't finish starting ended
 #   kuvo-start rollback  puts back the code an update on trial replaced (never its data)
-K="$HOME/.kuvo-code"; R="$K/run"
-mkdir -p "$R" 2>/dev/null && chmod 700 "$R" 2>/dev/null
+K="$HOME/.kuvo-code"
+if [ "${1:-}" = check-rollback-layout ] && [ -n "${2:-}" ]; then K=$2; fi
+R="$K/run"
+if [ -f "$K/backup/restoring" ]; then
+  case "${1:-box}" in box|keep|start|engine|bridge|bridge-again) echo 'Finish the Kuvo backup restore before starting workers.' >&2; exit 1 ;; esac
+fi
 # Whether process $1 runs and is $2 (in its command line), with any run of slashes in either taken
 # as one: a HOME written with a slash at its end ("/Users/you/", as Kuvo Helper gave it) started its
 # engine as ".../you//.kuvo-code/engine/...", which a start or stop with HOME written without must
@@ -48,6 +52,65 @@ pick() {
   fi
 }
 pick
+# A committed checkpoint exactly matches the layout declared by the installed link.
+# Anything older, newer or interrupted must go through the folder runner.
+folder_current() {
+  IFS= read -r stamp <"$K/bin/kuvo-link.js" || return 1
+  case "$stamp" in '// Kuvo folder layout '*) stamp=${stamp#'// Kuvo folder layout '} ;; *) return 1 ;; esac
+  layout=${stamp%% *}
+  layout_build=${stamp#* }
+  case "$layout" in ''|0*|*[!0-9]*) return 1 ;; esac
+  case "$layout_build" in *[!0-9a-f]*) return 1 ;; esac
+  [ "${#layout_build}" -eq 12 ] || return 1
+  printf '{"version":%s}\n' "$layout" | cmp -s "$K/folder-version.json" -
+}
+# Stop and rollback must work even when the trial bridge cannot execute.
+case "${1:-keep}" in
+stop|engine-stop|engine-halt|off|pause|rollback|check-rollback-layout) ;;
+*)
+  if [ -f "$K/bin/kuvo-link.js" ] && [ -x "$K/engine/$V/opencode" ] && ! folder_current; then
+    KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$K/engine/$V/opencode" --config=/dev/null --no-env-file "$K/bin/kuvo-link.js" folder-upgrade </dev/null || {
+      # A broken trial may be unable to run even the judge. Restore before starting any workers.
+      case "${1:-box}" in
+        box|keep|start)
+          if [ -f "$R/update-trial" ] && ! is "$(cat "$R/.updating/pid" 2>/dev/null)" kuvo-link; then
+            sh "$0" rollback && exec sh "$K/bin/kuvo-start" "$@"
+          fi
+          ;;
+      esac
+      exit 1
+    }
+  fi
+  ;;
+esac
+# The restore checks the actual marker with the saved bridge. A reader from before markers
+# can handle the additive layout only. Never lower a marker to make a restore pass.
+check_rollback_layout() (
+  marker="$K/folder-version.json"
+  [ -e "$marker" ] || [ -L "$marker" ] || exit 0
+  saved="$K/updates/rollback/files/bin/kuvo-link.js"
+  old_keeper="$K/updates/rollback/files/bin/kuvo-start"
+  old=$(sed -n 's/^V=//p' "$old_keeper" 2>/dev/null | head -n 1)
+  runtime="$K/engine/$old/opencode"
+  [ -x "$runtime" ] || runtime="$K/engine/$V/opencode"
+  if [ -f "$saved" ] && [ -x "$runtime" ]; then
+    probe=$(mktemp -d "${TMPDIR:-/tmp}/kuvo-restore.XXXXXX") || exit 1
+    trap 'rm -rf "$probe"' EXIT
+    mkdir "$probe/.kuvo-code" || exit 1
+    KUVO_HOME="$probe/.kuvo-code"; export KUVO_HOME
+    BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0; export BUN_BE_BUN BUN_RUNTIME_TRANSPILER_CACHE_PATH
+    printf '%s\n' '{"version":2147483647}' >"$KUVO_HOME/folder-version.json" || exit 1
+    if ! HOME="$probe" "$runtime" --config=/dev/null --no-env-file "$saved" here .kuvo-machine-probe </dev/null >/dev/null 2>&1; then
+      cp "$marker" "$KUVO_HOME/folder-version.json" || exit 1
+      HOME="$probe" "$runtime" --config=/dev/null --no-env-file "$saved" here .kuvo-machine-probe </dev/null >/dev/null
+      exit $?
+    fi
+  fi
+  grep -Eq '^[[:space:]]*\{[[:space:]]*"version"[[:space:]]*:[[:space:]]*[01][[:space:]]*\}[[:space:]]*$' "$marker" &&
+    [ "$(awk 'END {print NR}' "$marker")" = 1 ]
+)
+if [ "${1:-}" = check-rollback-layout ]; then check_rollback_layout; exit $?; fi
+mkdir -p "$R" 2>/dev/null && chmod 700 "$R" 2>/dev/null
 # Whether this is a Mac's own box (`box/kind` says `mac`), which its helper, Kuvo Helper, runs.
 own_mac() { [ "$(tr -d ' \t\r\n' 2>/dev/null <"$K/box/kind")" = mac ]; }
 machine_helper() { [ -f "$R/machine-helper" ] && ! own_mac && [ "$(uname -s)" = Darwin ]; }
@@ -179,6 +242,7 @@ halt() {
   if is "$a" kuvo-agents; then kill -- "-$a" 2>/dev/null || kill "$a" 2>/dev/null; fi
   rm -f "$R/agents.pid"
   halt_held
+  rm -f "$R/agents/handover.json" "$R/agents/previous/kuvo-agents.js"
   halt_engine
 }
 # A holder's process, as its record names it (run/agents/hold/<id>.json), once it's one.
@@ -220,6 +284,33 @@ halt_engine() {
 word() { od -An -N16 -tx1 /dev/urandom | tr -d ' \n'; }
 number() { echo $(( $(od -An -N2 -tu2 /dev/urandom | tr -d ' ') % 40000 + 20000 )); }
 bridge_runs() { is "$(cat "$R/agents.pid" 2>/dev/null)" kuvo-agents; }
+# The first release with live handover can cleanly restart a pre-holder bridge once. Its normal
+# SIGTERM handler records interrupted turns. Once a handover-capable bridge has started here, all
+# further updates use that bridge's renewal rules, including if a trial puts older files back.
+cross_to_live_handover() {
+  [ ! -e "$R/agents-live-handover" ] && up || return 0
+  [ ! -f "$R/stopped" ] && [ ! -f "$R/off" ] && [ ! -f "$R/paused" ] && ! machine_handover || return 0
+  is "$(cat "$R/.updating/pid" 2>/dev/null)" kuvo-link && return 0
+  old_record=$(cat "$R/bridge.json" 2>/dev/null)
+  old_bridge=$(printf '%s\n' "$old_record" | sed -n 's/^{"pid":\([0-9][0-9]*\),.*/\1/p')
+  is "$old_bridge" "$K/bin/kuvo-agents.js" || return 0
+  old_build=$(printf '%s\n' "$old_record" | sed -n 's/.*"build":"\([0-9a-f]*\)".*/\1/p')
+  # These known bundles precede the first bridge that starts agents under holders.
+  # A record with no known build can still own work and must drain normally.
+  case "$old_build" in
+    2b3fded6f49f21e8b2434216207d63dd8996b579aba9f11bc63a4bd84ae49176|880b2d675db90945ce335237d3572c99850de0baa90cb2d4688fe348294f780d|36df721f8b6034b4f369f11a7815b48aab58dfea24a3fe71e6be07c00f1e5c57) ;;
+    *) return 0 ;;
+  esac
+  grep -Fq 'kuvo-live-handover/1' "$K/bin/kuvo-agents.js" 2>/dev/null || return 0
+  checked=$(BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$K/engine/$B/opencode" --config=/dev/null --no-env-file "$K/bin/kuvo-agents.js" selftest holder-check 2>/dev/null) || return 0
+  case "$checked" in "ok "*" kuvo-live-handover/1") ;; *) return 0 ;; esac
+  # Only the live process from before, still the one answering for this folder after the check.
+  [ ! -e "$R/agents-live-handover" ] &&
+    [ "$old_record" = "$(cat "$R/bridge.json" 2>/dev/null)" ] &&
+    is "$old_bridge" "$K/bin/kuvo-agents.js" || return 0
+  (umask 077; set -C; : >"$R/agents-live-handover") 2>/dev/null || return 0
+  kill -TERM "$old_bridge" 2>/dev/null || :
+}
 case "${1:-box}" in
 box)
   [ -f "$K/bin/kuvo-start" ] || exit 0
@@ -286,7 +377,7 @@ keep)
   # (The watchdog an engine from 0.7 had, which an older Mac's start brings, isn't stopped here:
   # nothing kills by a pattern, and it noted no pid to stop it by. It ends by itself once the
   # engine it watched isn't the one in run/engine.json any more.)
-  fails=0; next=0; started=; round=0; bfails=0; bnext=0; bstarted=
+  fails=0; next=0; started=; round=0; bfails=0; bnext=0; saw_trial=; bstarted=
   while :; do
     [ -f "$K/bin/kuvo-start" ] && [ "$(cat "$R/box.pid" 2>/dev/null)" = "$$" ] || exit 0
     hold
@@ -305,6 +396,15 @@ keep)
       if [ -n "$rv" ] && [ -x "$K/engine/$rv/opencode" ] && [ "$(tr -d ' \t\r\n' <"$R/engine-ran" 2>/dev/null)" != "$rv" ] && ! swapping; then echo "$rv" >"$R/engine-ran.new" && mv -f "$R/engine-ran.new" "$R/engine-ran"; fi
     fi
     pick
+    if [ -f "$R/update-trial" ]; then
+      saw_trial=1
+    elif { [ -n "$saw_trial" ] || [ ! -e "$K/folder-version.json" ]; } && [ -f "$K/bin/kuvo-link.js" ] && [ -x "$K/engine/$V/opencode" ]; then
+      # Rollback can restore a pre-marker keeper before this keeper has seen a new boot token.
+      if ! grep -q '"folder-upgrade"' "$K/bin/kuvo-link.js"; then exec sh "$K/bin/kuvo-start" keep; fi
+      # A confirming process from the previous release may leave the folder step to the keeper.
+      KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$K/engine/$V/opencode" --config=/dev/null --no-env-file "$K/bin/kuvo-link.js" folder-upgrade </dev/null || exit 1
+      saw_trial=
+    fi
     # COMPAT(0.7 keeper): checked each round. Goes 3 months after 0.8.0.
     # Its script replaced: a newer keeper carries on; an older Mac's gets this one back (its
     # mark left as it is, so that Mac doesn't put its own there again).
@@ -366,6 +466,20 @@ keep)
       sh "$me" bridge-again >/dev/null 2>&1 &
     fi
     if [ -f "$R/agents.now" ]; then rm -f "$R/agents.now"; bfails=0; bnext=0; bstarted=; fi
+    cross_to_live_handover
+    # A standby that never published its bridge record gives way to the previous build. Check
+    # that the pending PID is still the keeper's candidate before signalling it.
+    hand="$R/agents/handover.json"
+    if [ -f "$hand" ]; then
+      candidate=$(sed -n 's/.*"next":\([0-9][0-9]*\),.*/\1/p' "$hand" 2>/dev/null)
+      staged=$(stat -c %Y "$hand" 2>/dev/null || stat -f %m "$hand" 2>/dev/null)
+      if [ -n "$candidate" ] && [ -n "$staged" ] && [ "$((now - staged))" -ge 60 ] &&
+         [ "$candidate" = "$(cat "$R/agents.pid" 2>/dev/null)" ] &&
+         ! grep -q "^.*\"pid\":$candidate," "$R/bridge.json" 2>/dev/null &&
+         is "$candidate" 'kuvo-agents.*handover-standby'; then
+        kill -KILL "$candidate" 2>/dev/null
+      fi
+    fi
     if up && [ -f "$K/bin/kuvo-agents.js" ] && [ "$now" -ge "$bnext" ] && ! bridge_runs && ! machine_handover; then
       if [ -n "$bstarted" ]; then
         if [ $((now - bstarted)) -lt 600 ]; then bfails=$((bfails + 1)); else bfails=0; fi
@@ -377,8 +491,14 @@ keep)
       bnext=$((now + bwait))
     fi
     # Down and waiting for its next start: when, for the box to say (run/agents.retry, as for the engine).
-    if up && ! bridge_runs && [ "$bnext" -gt "$now" ]; then
-      [ "$(cat "$R/agents.retry" 2>/dev/null)" = "$bnext" ] || { echo "$bnext" >"$R/agents.retry.new" && mv -f "$R/agents.retry.new" "$R/agents.retry"; }
+    if [ "$bnext" -gt "$now" ] && up && ! bridge_runs; then
+      # Try Again may have cleared the deadline since this round read agents.now.
+      if lock 1; then
+        if [ ! -f "$R/agents.now" ] && ! bridge_runs; then
+          [ "$(cat "$R/agents.retry" 2>/dev/null)" = "$bnext" ] || { echo "$bnext" >"$R/agents.retry.new" && mv -f "$R/agents.retry.new" "$R/agents.retry"; }
+        fi
+        unlock
+      fi
     else
       rm -f "$R/agents.retry"
     fi
@@ -455,7 +575,12 @@ keep)
     if [ -f "$K/bin/kuvo-link.js" ] && [ -n "$V" ] && { [ "$round" -eq 0 ] || { [ $((round % 4)) -eq 0 ] && [ "$now" -ge "$(cat "$R/browser.next" 2>/dev/null || echo 0)" ] && { { [ ! -x "$K/browser/current/chrome" ] && [ ! -x "$K/browser/current/chrome-headless-shell" ]; } || ! grep -q '"state":"ready"' "$R/browser-install.json" 2>/dev/null; }; }; } && ! is "$(cat "$R/.browser-installing/pid" 2>/dev/null)" kuvo-link; then
       (environment; cd "$K"; KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$S" "$K/engine/$V/opencode" --config=/dev/null --no-env-file "$K/bin/kuvo-link.js" browser install >/dev/null 2>&1 </dev/null &)
     fi
-    # The phone link, while a phone is paired with it or a pairing's open.
+    # A standalone machine gets its setup even before a device or a member needs the relay.
+    # While SSH is adding this account, its authenticated setup command initializes it instead.
+    if [ ! -f "$R/link.json" ] && [ ! -L "$HOME/.kuvo-code-adding" ] && [ -f "$K/bin/kuvo-link.js" ] && [ -n "$V" ] && ! own_mac; then
+      (environment; cd "$K"; KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$S" "$K/engine/$V/opencode" --config=/dev/null --no-env-file "$K/bin/kuvo-link.js" setup-local >>"$R/link.log" 2>&1 </dev/null)
+    fi
+    # The relay link, while there are devices or members to reach, or a pairing is open.
     if [ -f "$R/link.needed" ] && [ -f "$K/bin/kuvo-link.js" ] && [ -n "$V" ] && ! is "$(cat "$R/link.pid" 2>/dev/null)" kuvo-link; then
       (environment; cd "$K/workspace" 2>/dev/null || cd "$K"; KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$S" "$K/engine/$V/opencode" --config=/dev/null --no-env-file "$K/bin/kuvo-link.js" run >"$R/link.log" 2>&1 </dev/null &)
     fi
@@ -551,7 +676,9 @@ bridge-again)
   if [ -f "$K/bin/kuvo-link.js" ] && [ -n "$V" ]; then
     (environment; cd "$K"; KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$K/engine/$V/opencode" --config=/dev/null --no-env-file "$K/bin/kuvo-link.js" repair >/dev/null 2>&1 </dev/null)
   fi
+  : >"$R/agents.now"
   if lock 50; then
+    rm -f "$R/agents.retry"
     a=$(cat "$R/agents.pid" 2>/dev/null)
     m=$(stat -c %Y "$R/agents.pid" 2>/dev/null || stat -f %m "$R/agents.pid" 2>/dev/null)
     if is "$a" kuvo-agents && ! grep -q "\"pid\":$a[,}]" "$R/bridge.json" 2>/dev/null && [ -n "$m" ] && [ $(($(date +%s) - m)) -ge 60 ]; then
@@ -562,8 +689,6 @@ bridge-again)
     fi
     unlock
   fi
-  : >"$R/agents.now"
-  rm -f "$R/agents.retry"
   sh "$K/bin/kuvo-start" box
   sh "$K/bin/kuvo-start" bridge
   ;;
@@ -629,8 +754,12 @@ rollback)
   [ -f "$K/updates/rollback/restore.sh" ] || { rm -f "$R/update-trial" "$R/update-restore" "$R/update-settle.tries"; exit 0; }
   # Giving up: the trial ends, and the box starts as it is, never left stopped (what was put back
   # and what wasn't is told by whoever looks next: `updates/rollback` stays where it wasn't all).
+  rollback_unlock() {
+    [ "$(cat "$R/.rolling-back/pid" 2>/dev/null)" != "$$" ] || rm -rf "$R/.rolling-back"
+  }
   give_up() {
     rm -f "$R/update-trial" "$R/update-restore" "$R/update-settle.tries" "$R/stopped"
+    rollback_unlock
     sh "$K/bin/kuvo-start" start >/dev/null 2>&1
     exit 2
   }
@@ -644,7 +773,24 @@ rollback)
     rm -rf "$R/.rolling-back"; mkdir "$R/.rolling-back" 2>/dev/null || give_up
   fi
   echo $$ >"$R/.rolling-back/pid"
-  trap '[ "$(cat "$R/.rolling-back/pid" 2>/dev/null)" = "$$" ] && rm -rf "$R/.rolling-back"' EXIT
+  trap 'rollback_unlock' EXIT
+  [ -f "$R/update-trial" ] || exit 0
+  judge=$(cat "$R/update-judge.pid" 2>/dev/null)
+  if [ "$judge" != "${KUVO_UPDATER:-}" ] && is "$judge" kuvo-link; then exit 1; fi
+  # New folder writers see our fence inside their lock. Let an existing writer finish
+  # before deciding whether the saved code can open the actual checkpoint.
+  tries=0
+  while :; do
+    for owner in "$K/.folder-upgrade.lock"/owner-*; do break; done
+    [ -f "$owner" ] || break
+    pid=${owner##*/owner-}; pid=${pid%%-*}
+    case "$pid" in ''|*[!0-9]*) exit 1 ;; esac
+    kill -0 "$pid" 2>/dev/null || break
+    [ "$tries" -lt 600 ] || exit 1
+    tries=$((tries + 1))
+    sleep 0.1
+  done
+  check_rollback_layout || { echo "The saved Kuvo Code cannot open this folder layout." >&2; exit 1; }
   # Three tries that couldn't put it all back (a disk full, say), and it gives up. A count that
   # can't be read or written back is taken as the last.
   tries=0

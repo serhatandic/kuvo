@@ -1,3 +1,5 @@
+import type { RouteFeature } from "./routes/feature";
+
 // What a route's answer looks like, written once as data (`shared/routes`): the contract suite holds
 // every answer both boxes give to it (protocol/vectors/routes/shapes, which scripts/route-shapes.sh writes
 // from these), and the box's own code gets its types from the same definitions (`Infer`).
@@ -61,6 +63,7 @@ export interface RouteShape {
   /** `METHOD path`, a `:name` part standing for any one part (`GET kuvo/wakes/:session`). A HEAD
    * is held to its GET's shape, or has no body. */
   readonly route: string;
+  readonly feature: RouteFeature;
   readonly body?: Shape;
   readonly answers: { readonly [status: number]: Shape | typeof BYTES };
 }

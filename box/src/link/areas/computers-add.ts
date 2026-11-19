@@ -36,7 +36,7 @@ export async function* computersAddRoute(context: RouteContext, match: RegExpMat
   }
   if (key) {
     if (method !== "POST") return yield* json(405, { message: "Only POST." });
-    if (request.fromMac) return yield* json(409, { message: ONCE });
+    if (request.fromMac && !request.served) return yield* json(409, { message: ONCE });
     const can = canAdd();
     if (!can.can) return yield* json(can.status, { message: can.message, ...(can.primary ? { primary: can.primary } : {}) });
     if (!sshAddressOf(key)) return yield* json(404, { message: "That isn’t a computer this one set up over SSH." });
@@ -61,13 +61,22 @@ export async function* computersAddRoute(context: RouteContext, match: RegExpMat
   }
   if (method === "GET") return yield* json(200, adding());
   if (method !== "POST") return yield* json(405, { message: "GET, or POST {destination}." });
-  if (request.fromMac) return yield* json(409, { message: ONCE });
+  if (request.fromMac && !request.served) return yield* json(409, { message: ONCE });
   const can = canAdd();
   if (!can.can) return yield* json(can.status, { message: can.message, ...(can.primary ? { primary: can.primary } : {}) });
-  const destination = cleanAddress((parsed(request.body) as Body<"destination">)?.destination);
+  const given = parsed(request.body) as Body<"destination" | "replace" | "discardLocalPairings">;
+  const destination = cleanAddress(given?.destination);
+  const replace = given?.replace;
+  if (replace !== undefined && (typeof replace !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(replace))) {
+    return yield* json(400, { message: "Choose the previous membership by its key." });
+  }
+  const discardLocalPairings = given?.discardLocalPairings;
+  if (discardLocalPairings !== undefined && typeof discardLocalPairings !== "boolean") {
+    return yield* json(400, { message: "Choose whether to discard local pairings." });
+  }
   const problem = addressProblem(destination);
   if (problem) return yield* json(400, { message: problem });
-  const begun = beginAdd(destination, context.phone);
+  const begun = beginAdd(destination, context.phone, replace, discardLocalPairings);
   if ("busy" in begun) return yield* json(409, { message: begun.busy });
   return yield* json(202, { try: begun.seen });
 }

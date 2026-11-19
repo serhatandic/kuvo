@@ -7,6 +7,7 @@
 //
 // Run with `node --test box/bridge-tests/work-queue-statuses.test.js`.
 import "./test-safety.js";
+import { randomUUID } from "node:crypto";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import http from "node:http";
@@ -363,19 +364,19 @@ test("a box with no Work Queue yet has nothing to move: no copy is made, and its
 test("you add an item from a client: Todo and Normal unless said, numbered as an agent's, in your own queue or the bot's it's for", async () => {
   await tool("queue_add", { title: "An agent's" }, "ses_lead");
   await ok("POST", "kuvo/work-queue/labels", { add: "Bug", color: "coral" });
-  const plain = (await ok("POST", "kuvo/work-queue/items", { title: "  Mine,\n plainly  " })).item;
+  const plain = (await ok("POST", "kuvo/work-queue/items", { operation: randomUUID(), title: "  Mine,\n plainly  " })).item;
   assert.deepEqual([plain.number, plain.title, plain.status, plain.priority, plain.labels, plain.owner, plain.assignee, plain.due], [2, "Mine, plainly", "todo", "normal", [], "usr_you", undefined, undefined]);
   assert.deepEqual(plain.created.by, { user: true });
   assert.deepEqual(plain.can, { edit: true, set: true, assign: true, close: true, delete: true, restore: false, attach: true });
-  const full = (await ok("POST", "kuvo/work-queue/items", { title: "Fix the crash", body: "It **crashes**.", status: "Backlog", priority: "urgent", labels: ["Bug"], assignee: { kind: "agent", id: "codex-cli" }, due: "2026-12-01" })).item;
+  const full = (await ok("POST", "kuvo/work-queue/items", { operation: randomUUID(), title: "Fix the crash", body: "It **crashes**.", status: "Backlog", priority: "urgent", labels: ["Bug"], assignee: { kind: "agent", id: "codex-cli" }, due: "2026-12-01" })).item;
   assert.deepEqual([full.number, full.status, full.priority, full.labels, full.assignee, full.due, full.owner], [3, "backlog", "urgent", ["lbl_bug"], { kind: "agent", id: "codex-cli", name: "Codex" }, "2026-12-01", "usr_you"]);
   assert.equal((await ok("GET", `kuvo/work-queue/items/${full.id}`)).item.body, "It **crashes**.");
   // For a bot of this box: in that bot's queue, where its agent's tools see it.
-  const forBot = (await ok("POST", "kuvo/work-queue/items", { title: "Scout's to do", assignee: { kind: "bot", id: "bot_scout00001" } })).item;
+  const forBot = (await ok("POST", "kuvo/work-queue/items", { operation: randomUUID(), title: "Scout's to do", assignee: { kind: "bot", id: "bot_scout00001" } })).item;
   assert.deepEqual([forBot.owner, forBot.assignee], ["ses_scout", { kind: "bot", id: "bot_scout00001", name: "Scout", look: { color: "sky", shape: "round", face: "calm" } }]);
   assert.match((await tool("queue_list", {}, "ses_scout")).text, /Todo:\n- #4 "Scout's to do" · for Scout/);
   // Into the queue a client is looking at.
-  assert.equal((await ok("POST", "kuvo/work-queue/items", { title: "For the lead", owner: "ses_lead" })).item.owner, "ses_lead");
+  assert.equal((await ok("POST", "kuvo/work-queue/items", { operation: randomUUID(), title: "For the lead", owner: "ses_lead" })).item.owner, "ses_lead");
 
   // Your own queue is in the All view, and no agent's.
   const all = await view("all");
@@ -394,7 +395,7 @@ test("you add an item from a client: Todo and Normal unless said, numbered as an
   // What isn't an item is refused, in words, and nothing is added.
   for (const [body, why] of [[{ title: "  " }, /Say what it is/], [{ title: "x", status: "soon" }, /no status soon/], [{ title: "x", priority: "max" }, /no priority max/], [{ title: "x", labels: ["Nope"] }, /no label Nope/],
     [{ title: "x", assignee: { kind: "bot", id: "bot_nobody" } }, /no bot or coding agent/], [{ title: "x", due: "next week" }, /due is a day/], [{ title: "x", due: "2026-02-30" }, /due is a day/], [{ title: "x", owner: "elsewhere" }, /no queue to add it to/]]) {
-    const refused = await route("POST", "kuvo/work-queue/items", body);
+    const refused = await route("POST", "kuvo/work-queue/items", { ...body, operation: randomUUID() });
     assert.equal(refused.status, 400, JSON.stringify(body));
     assert.match(refused.body.message, why);
   }
@@ -402,9 +403,9 @@ test("you add an item from a client: Todo and Normal unless said, numbered as an
   // Only a client adds one this way: an agent has its tools.
   assert.equal((await route("POST", "kuvo/work-queue/items", { title: "Sneaky" }, {})).status, 403);
   // The box says which are late: due before today, and still open.
-  const late = (await ok("POST", "kuvo/work-queue/items", { title: "Late", due: "2020-01-01" })).item;
+  const late = (await ok("POST", "kuvo/work-queue/items", { operation: randomUUID(), title: "Late", due: "2020-01-01" })).item;
   assert.equal(late.overdue, true);
-  assert.equal((await ok("POST", "kuvo/work-queue/items", { title: "In time", due: "2999-01-01" })).item.overdue, undefined);
+  assert.equal((await ok("POST", "kuvo/work-queue/items", { operation: randomUUID(), title: "In time", due: "2999-01-01" })).item.overdue, undefined);
   assert.equal((await ok("PATCH", `kuvo/work-queue/items/${late.id}`, { status: "done" })).item.overdue, undefined, "a closed one isn't late");
 
 });
@@ -455,7 +456,7 @@ test("you change what an item says and where it stands; only what's sent changes
 });
 
 test("an item of your own that you give to a bot goes into that bot's queue", async () => {
-  const mine = (await ok("POST", "kuvo/work-queue/items", { title: "Look into the logs" })).item;
+  const mine = (await ok("POST", "kuvo/work-queue/items", { operation: randomUUID(), title: "Look into the logs" })).item;
   assert.equal(mine.owner, "usr_you");
   const given = (await ok("PATCH", `kuvo/work-queue/items/${mine.id}`, { assignee: { kind: "bot", id: "bot_scout00001" } })).item;
   assert.deepEqual([given.owner, given.number, given.handedBy], ["ses_scout", 1, "usr_you"]);
@@ -532,7 +533,7 @@ test("a view filtered by computer, source, owner or label lists only those, and 
   await tool("queue_add", { title: "Lead's bug", labels: ["Bug"] }, "ses_lead");
   await tool("queue_add", { title: "Lead's docs", labels: ["Docs"], status: "backlog" }, "ses_lead");
   await tool("queue_add", { title: "Child's plain" }, "ses_child");
-  await ok("POST", "kuvo/work-queue/items", { title: "Mine, a bug", labels: ["Bug"] });
+  await ok("POST", "kuvo/work-queue/items", { operation: randomUUID(), title: "Mine, a bug", labels: ["Bug"] });
   const kept = read("queues/ses_lead.json");
   kept.items.push({ id: id(9), owner: "ses_lead", title: "An issue", body: "", status: "todo", order: 9, labels: [], notes: [], files: [], links: [], sessions: [], created: { at: 1, by: LEAD }, updated: { at: 1, by: LEAD }, source: { kind: "github-issue", ref: "gh:kuvo/api#12", url: "https://github.com/kuvo/api/issues/12", host: "github.com", id: "I_1" } });
   write(path.join(queues, "queues", "ses_lead.json"), JSON.stringify(kept));

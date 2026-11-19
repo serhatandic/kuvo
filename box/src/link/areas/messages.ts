@@ -8,7 +8,6 @@ import { isObject, parsed } from "../../shared/json";
 import { MOVING } from "../bots/here";
 import { messageID } from "../engine/sessions";
 import { isRefused, placeOfSessionPatiently } from "../letters/letter";
-import { targetsOf } from "../letters/tools";
 import { heldAsItComes, underWay } from "../messages/arriving";
 import { commandParts, commandsSettled, commandTemplate, keptCommand, madeText, sendingCommand } from "../messages/commands";
 import { composeArguments, composeWithParts, fieldsOf, partsOf, withParts } from "../messages/parts";
@@ -18,7 +17,8 @@ import { folderOf } from "../lists/rule";
 import { frozen } from "../moves/records";
 import { keptFiles } from "../server/attached";
 import type { PromptFile } from "../server/attached";
-import { answerHeaders, modelInput } from "../server/forward";
+import { answerHeaders, bridgeRefusedBeforeExecution, bridgeRequest, modelInput, UnsupportedBridgeRouteVersion } from "../server/forward";
+import { agentsAway, AGENTS_RESTARTING, bridgeBack } from "./agents-down";
 import { everyoneFor, listedAgents } from "../server/naming";
 import { REQUEST_HEADERS } from "../server/paths";
 import { holdQueue, keepWaiting, keepWaitingHeld, sendNow, swapHoldsFor, type Outgoing } from "../engine/queue";
@@ -43,14 +43,20 @@ export interface Composed {
   metadata: Record<string, unknown>;
 }
 
+/** While the engine is restarting, keep inline files without making a model request. */
+function messageFiles(target: Target | null, toAgents: boolean, signal?: AbortSignal) {
+  if (!target) return async () => null;
+  const base = new URL(`http://127.0.0.1:${target.port}/`);
+  const headers = { authorization: `Basic ${Buffer.from(`opencode:${target.password}`).toString("base64")}` };
+  return modelInput(base, headers, signal, toAgents);
+}
+
 /** `fields` (with the `files` it carries, as the engine takes them) as the message the conversation
  * `session` at `target` gets: its files kept here as `attachedIn` keeps them, and its text written
  * for the agent (`composeMessage`), from a phone unless `request` is a Kuvo Code app's; a
  * `command`'s arguments as written with only its files' note (`composeArguments`). */
-export async function composed(fields: MessageFields, files: unknown[], session: string, target: Target, toAgents: boolean, request: LinkRequest, readEngine: () => Target, signal?: AbortSignal, metadata?: unknown, command = false): Promise<Composed> {
-  const base = new URL(`http://127.0.0.1:${target.port}/`);
-  const headers = { authorization: `Basic ${Buffer.from(`opencode:${target.password}`).toString("base64")}` };
-  const kept = await keptFiles(files, session, modelInput(base, headers, signal), toAgents);
+export async function composed(fields: MessageFields, files: unknown[], session: string, target: Target | null, toAgents: boolean, request: LinkRequest, readEngine: () => Target, signal?: AbortSignal, metadata?: unknown, command = false): Promise<Composed> {
+  const kept = await keptFiles(files, session, messageFiles(target, toAgents, signal), toAgents);
   // A command's arguments: as written, with its files' note alone.
   if (command) return { text: composeArguments(fields.words, fields.notes, kept ?? {}), files: (kept?.files ?? files) as PromptFile[], metadata: {} };
   // (Everyone worked out again only for a message that names someone.)
@@ -66,10 +72,8 @@ export async function composed(fields: MessageFields, files: unknown[], session:
 /** A message sent again as the agent read it (Retry, another agent's letter put back): its text as
  * it was, the files it carries kept here as `attachedIn` keeps them (a picture for a model that
  * doesn't see goes as a path, its note joining the one the text has), and its parts read from it. */
-export async function sentAgain(text: string, files: unknown[], session: string, target: Target, toAgents: boolean, signal?: AbortSignal, metadata?: unknown): Promise<Composed> {
-  const base = new URL(`http://127.0.0.1:${target.port}/`);
-  const headers = { authorization: `Basic ${Buffer.from(`opencode:${target.password}`).toString("base64")}` };
-  const kept = await keptFiles(files, session, modelInput(base, headers, signal), toAgents);
+export async function sentAgain(text: string, files: unknown[], session: string, target: Target | null, toAgents: boolean, signal?: AbortSignal, metadata?: unknown): Promise<Composed> {
+  const kept = await keptFiles(files, session, messageFiles(target, toAgents, signal), toAgents);
   const written = kept ? withAttachedNote(text, kept.included, kept.paths, true) : text;
   return { text: written, files: (kept?.files ?? files) as PromptFile[], metadata: withParts(metadata, partsOf(written)) };
 }
@@ -106,7 +110,7 @@ export async function* sendRoute(context: RouteContext, match: RegExpMatchArray)
   }
 }
 
-async function* sending(context: RouteContext, session: string): AsyncGenerator<AnswerPiece> {
+async function* sending(context: RouteContext, session: string, retry = true): AsyncGenerator<AnswerPiece> {
   const { request, readEngine, bridge, signal, json } = context;
   const given = parsed(request.body);
   const again = isObject(given) && typeof given.text === "string" ? given.text : null;
@@ -117,18 +121,55 @@ async function* sending(context: RouteContext, session: string): AsyncGenerator<
   // (A command runs with nothing after its name: /init.)
   if (!command && (fields ? isEmpty(fields, files) : !again!.trim() && !files.length)) return yield* json(400, { message: "There's nothing to send." });
   if (frozen().has(session)) return yield* json(409, { message: MOVING });
-  const targets = targetsOf({ readEngine, bridge });
-  if (!targets.length) return yield* json(503, { message: "The engine isn't running." });
-  let place: Awaited<ReturnType<typeof placeOfSessionPatiently>>;
+  const engineHere = () => { try { return readEngine(); } catch { return null; } };
+  const engine = engineHere();
+  let agents: Target | null = bridge();
+  const targets = [engine, agents].filter((target): target is Target => Boolean(target));
+  const notAdmitted = (value: unknown, status = 503): SentAnswer => ({
+    status, headers: { "content-type": "application/json" }, body: Buffer.from(JSON.stringify(value)), notAdmitted: true,
+  });
+  const readSession = async (target: Target, url: URL, signal: AbortSignal) => {
+    if (target !== engine) {
+      const result = await bridgeRequest(target, url, { signal }, bridge, true);
+      agents = result.target;
+      return result;
+    }
+    const headers = { authorization: "Basic " + Buffer.from("opencode:" + target.password).toString("base64") };
+    return { target, response: await fetch(url, { headers, signal }) };
+  };
+  let place: Awaited<ReturnType<typeof placeOfSessionPatiently>> = null;
   try {
-    place = await placeOfSessionPatiently(session, targets);
+    if (targets.length) place = await placeOfSessionPatiently(session, targets, readSession);
+    if (!place && !agents && !swapHoldsFor(null, session)) {
+      agents = bridge(); // It can have published while the engine was answering.
+      if (!agents && agentsAway({ bridge })?.reason === "agentsRestarting") {
+        agents = await bridgeBack(bridge, signal);
+        if (!agents) return yield* answering(notAdmitted({ message: AGENTS_RESTARTING }));
+      }
+      agents ??= bridge();
+      if (agents) place = await placeOfSessionPatiently(session, [agents], readSession);
+    }
   } catch (error) {
-    return yield* json(503, { message: isRefused(error) ? "The engine isn't running." : BUSY });
+    if (retry && engine && !engineHere() && swapHoldsFor(null, session)) return yield* sending(context, session, false);
+    if (!(isRefused(error) && !engineHere() && swapHoldsFor(null, session))) {
+      if (error instanceof UnsupportedBridgeRouteVersion) return yield* answering(notAdmitted(error.refusal, 502));
+      return yield* answering(notAdmitted({ message: isRefused(error) ? "The engine isn't running." : BUSY }));
+    }
   }
-  if (!place) return yield* json(404, { message: "There's no such conversation here." });
-  const target = place.target;
-  const toAgents = bridge()?.port === target.port;
-  const headers: Record<string, string> = { authorization: `Basic ${Buffer.from(`opencode:${target.password}`).toString("base64")}`, "content-type": "application/json" };
+  // Check the bridge first if it is up. A conversation it doesn't own can still be on the
+  // engine whose record the keeper removed for the restart.
+  if (!place) {
+    const current = engineHere();
+    if (retry && current && current.port !== engine?.port) return yield* sending(context, session, false);
+    if (current || !swapHoldsFor(null, session)) {
+      if (!targets.length && !agents) return yield* answering(notAdmitted({ message: "The engine isn't running." }));
+      return yield* answering(notAdmitted({ message: "There's no such conversation here." }, 404));
+    }
+  }
+  const target = place?.target ?? null;
+  const toAgents = target !== null && agents === target;
+  const headers: Record<string, string> = { "content-type": "application/json" };
+  if (target) headers.authorization = `Basic ${Buffer.from(`opencode:${target.password}`).toString("base64")}`;
   const asked = Object.fromEntries(Object.entries(request.headers ?? {}).map(([name, value]) => [name.toLowerCase(), value]));
   for (const name of REQUEST_HEADERS) if (typeof asked[name] === "string") headers[name] = asked[name] as string;
   if (!command && given.id !== undefined && !isWaitingID(given.id)) return yield* json(400, { message: BAD_WAITING_ID });
@@ -136,13 +177,13 @@ async function* sending(context: RouteContext, session: string): AsyncGenerator<
   // A command's message shows as typed: its parts go with it to the coding agents' bridge, and for
   // the engine's, which take none, are kept here once it says which message it made (commands.ts).
   const typed = command && fields ? commandParts(command, fields.words) : null;
-  const at = `http://127.0.0.1:${target.port}/api/session/${encodeURIComponent(session)}/${command ? "command" : "prompt"}`;
+  const at = target && new URL(`http://127.0.0.1:${target.port}/api/session/${encodeURIComponent(session)}/${command ? "command" : "prompt"}`);
   // A message goes on even if whoever sent it goes meanwhile (as `forward` sends one); a command
   // stops with its sender: it has no id, and sent again it would run twice.
   const send = async (): Promise<SentAnswer> => {
     try {
       // (One of yours as the engine has it, asked meanwhile: what it will make, where this box can say.)
-      const template = typed && !toAgents ? commandTemplate(target, folderOf(place.data), command!, signal) : null;
+      const template = typed && !toAgents && place ? commandTemplate(place.target, folderOf(place.data), command!, signal) : null;
       const message = fields
         ? await composed(fields, files, session, target, toAgents, request, readEngine, command ? signal : undefined, undefined, command !== null)
         : await sentAgain(again!, files, session, target, toAgents);
@@ -162,34 +203,47 @@ async function* sending(context: RouteContext, session: string): AsyncGenerator<
         }
         // An engine being changed takes no command meanwhile (it would run on the engine stopped next):
         // said, in words, to send again once it's back.
-        const holding = swapHoldsFor(target, session);
+        const engineTarget = toAgents ? undefined : target;
+        const holding = engineTarget !== undefined && swapHoldsFor(engineTarget, session);
         if (command && holding) return { status: 503, headers: { "content-type": "application/json" }, body: Buffer.from(JSON.stringify({ message: `${swapLine(swapUnderWay(RUN)) ?? "Kuvo is checking the engine’s inbox."} Send this command again then.`, engineChanging: true })) };
         // For after this run while its queue is paused (a Stop, from any client), or while its engine
         // is being changed (PROTOCOL.md, "A new engine"): it waits on the box, as what arrives then does
         // (the engine would run all it holds with the next thing it had).
-        if (!command && (delivery === "queue" || holding) && keepWaiting(session, body as Outgoing & { id: string }, { words: (typeof given.words === "string" ? given.words : fields?.words ?? message.text).trim() }, undefined, target)) {
+        if (!command && (delivery === "queue" || holding) && keepWaiting(session, body as Outgoing & { id: string }, { words: (typeof given.words === "string" ? given.words : fields?.words ?? message.text).trim() }, undefined, engineTarget)) {
           return { status: 200, headers: { "content-type": "application/json" }, body: Buffer.from(JSON.stringify({ waits: true })) };
         }
+        if (!target || !at) return notAdmitted({ message: "The engine isn't running." });
+        let answeredBy = target;
         const post = async (): Promise<SentAnswer> => {
-          const response = await fetch(at, { method: "POST", headers, body: JSON.stringify(body), signal: command ? signal : undefined });
-          return { status: response.status, headers: answerHeaders(response), body: Buffer.from(await response.arrayBuffer()) };
+          const options = { method: "POST", headers, body: JSON.stringify(body), signal: command ? signal : undefined };
+          const result = toAgents ? await bridgeRequest(target, at, options, bridge) : { response: await fetch(at, options), target };
+          const { response } = result;
+          answeredBy = result.target;
+          if (toAgents && bridgeRefusedBeforeExecution(response)) {
+            await response.body?.cancel().catch(() => {});
+            return notAdmitted({ message: AGENTS_RESTARTING, reason: "agentsRestarting" });
+          }
+          return { status: response.status, headers: answerHeaders(response, toAgents), body: Buffer.from(await response.arrayBuffer()) };
         };
         const made = template ? madeText(await template, message.text) : null;
         const answer = typed && !toAgents ? await sendingCommand(session, typed, made, post, each => each.status >= 200 && each.status < 300) : await post();
         // (Taken by the agent meanwhile, it isn't waiting any more: that's as good.)
-        if (now && answer.status >= 200 && answer.status < 300) await sendNow(target, session, (body as { id: string }).id).catch(() => false);
+        if (now && answer.status >= 200 && answer.status < 300) await sendNow(answeredBy, session, (body as { id: string }).id).catch(() => false);
         // (Stop hasn't paused it yet: it holds it with the rest, as it names it.)
-        if (held && id && answer.status >= 200 && answer.status < 300) await holdQueue(target, session, undefined, [id]).catch(() => {});
+        if (held && id && answer.status >= 200 && answer.status < 300) await holdQueue(answeredBy, session, undefined, [id]).catch(() => {});
         return answer;
       });
     } catch (error) {
       if (error instanceof NotListed || error instanceof MoveAdmissionClosed) return { status: 409, headers: { "content-type": "application/json" }, body: Buffer.from(JSON.stringify({ message: error.message })) };
+      if (error instanceof UnsupportedBridgeRouteVersion) return { status: 502, headers: { "content-type": "application/json" }, body: Buffer.from(JSON.stringify(error.refusal)) };
       if (signal?.aborted && command) throw new Error("Stopped.");
       return { status: 503, headers: { "content-type": "application/json" }, body: Buffer.from(JSON.stringify({ message: toAgents ? "The coding agents aren't answering on this computer. Try again in a moment." : "The engine isn't answering. Try again in a moment." })) };
     }
   };
   const once = command ? null : sentKey(toAgents ? "agents" : "engine", session, request.body);
-  return yield* answering(once ? await sentOnce(once, send) : await send());
+  const answer = once ? await sentOnce(once, send) : await send();
+  if (!target && retry && answer.status === 503 && engineHere()) return yield* sending(context, session, false);
+  return yield* answering(answer);
 }
 
 // `kuvo/messages/parts`: `{texts, ids?, session?}`, the texts of messages from before (which carry

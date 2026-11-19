@@ -14,9 +14,31 @@ test("POST accounts with provider creates an isolated account and leaves the fir
     const folder = accounts.home(first)!
     writeFileSync(join(folder, "auth.json"), "first-secret")
     const roster = { accounts, sync() {}, all: () => accounts.all().map(record => ({ id: record.kind, instance: record, providerID: providerID(record.kind, record.id) })) }
-    const answer = handler({ roster, password: "pw" } as any)
-    const response = await answer(new Request("http://agent/api/kuvo/accounts", { method: "POST", headers: { authorization: "Basic " + Buffer.from("opencode:pw").toString("base64"), "content-type": "application/json" }, body: JSON.stringify({ provider: providerID("codex", first.id) }) }))
+    let transferring = true
+    const answer = handler({ roster, password: "pw" } as any, () => transferring)
+    const add = (version?: string) => answer(new Request("http://agent/api/kuvo/accounts", {
+      method: "POST",
+      headers: {
+        authorization: "Basic " + Buffer.from("opencode:pw").toString("base64"),
+        "content-type": "application/json",
+        ...(version === undefined ? {} : { "x-kuvo-route-version": version }),
+      },
+      body: JSON.stringify({ provider: providerID("codex", first.id) }),
+    }))
+    const before = accounts.all().map(record => providerID(record.kind, record.id))
+    const refused = await add("2")
+    expect(refused.status).toBe(400)
+    expect(refused.headers.get("x-kuvo-route-version")).toBe("1")
+    expect((await refused.json() as { code: string }).code).toBe("unsupportedFormatVersion")
+    const fenced = await add("1")
+    expect(fenced.status).toBe(503)
+    expect(fenced.headers.get("x-kuvo-route-version")).toBe("1")
+    expect(fenced.headers.get("x-kuvo-bridge-handover")).toBe("1")
+    expect(accounts.all().map(record => providerID(record.kind, record.id))).toEqual(before)
+    transferring = false
+    const response = await add()
     expect(response.status).toBe(200)
+    expect(response.headers.get("x-kuvo-route-version")).toBe("1")
     const added = (await response.json() as any).data.providerID
     expect(added).toMatch(/^codex-cli@[a-f0-9]{8}$/)
     expect(added).not.toBe(providerID("codex", first.id))
@@ -35,4 +57,27 @@ test.each([true, false])("conditional cancellation preserves signed-in=%s and re
   const response = await answer(new Request("http://agent/api/kuvo/accounts/codex-cli@new?onlyUnsigned=1", { method: "DELETE", headers: { authorization: "Basic " + Buffer.from("opencode:pw").toString("base64") } }))
   expect(response.status).toBe(200)
   expect(removed).toBe(!signedIn)
+})
+
+test("the account index accepts legacy arrays and guards account changes against future formats", () => {
+  const root = mkdtempSync(join(tmpdir(), "kuvo-add-account-"))
+  try {
+    const file = join(root, "accounts.json")
+    const legacy = { kind: "codex", id: "saved", label: "Saved" } as const
+    writeFileSync(file, JSON.stringify([legacy]))
+    const accounts = new Accounts(root)
+    expect(accounts.all()).toContainEqual(legacy)
+    accounts.rename("codex-cli@saved", "Renamed")
+    const current = JSON.parse(readFileSync(file, "utf8"))
+    expect(current).toEqual([{ formatVersion: 1 }, { ...legacy, label: "Renamed" }])
+    expect(current.filter((record: { kind?: string }) => record.kind === "codex")).toEqual([{ ...legacy, label: "Renamed" }])
+    const future = JSON.stringify([{ formatVersion: 2 }, legacy])
+    writeFileSync(file, future)
+    expect(() => new Accounts(root)).toThrow("Managed accounts format version 2 is unsupported")
+    expect(() => accounts.add("codex", "Another")).toThrow("Managed accounts format version 2 is unsupported")
+    expect(() => accounts.remove("codex-cli@saved")).toThrow("Managed accounts format version 2 is unsupported")
+    expect(readFileSync(file, "utf8")).toBe(future)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
 })

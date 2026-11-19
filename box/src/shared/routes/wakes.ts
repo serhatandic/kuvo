@@ -23,11 +23,13 @@ export type Wakes = Infer<typeof WAKES>;
 export type WakeList = Infer<typeof WAKE_LIST>;
 
 export const WAKE_ROUTES: RouteShape[] = [
-  { route: "GET kuvo/wakes", answers: { 200: WAKE_LIST } },
-  { route: "GET kuvo/wakes/:session", answers: { 200: WAKES } },
-  { route: "POST kuvo/wakes/:session", answers: { 200: WAKES } },
-  { route: "POST kuvo/wakes/:session/watch", answers: { 200: WAKES } },
-  { route: "POST kuvo/wakes/:session/pause", answers: { 200: WAKES } },
-  { route: "POST kuvo/wakes/:session/cancel", answers: { 200: NOTHING } },
-  { route: "POST kuvo/wakes/:session/now", answers: { 200: NOTHING } },
+  { route: "GET kuvo/wakes", feature: "wakes", answers: { 200: WAKE_LIST } },
+  { route: "GET kuvo/wakes/events", feature: "wakes.events", answers: { 200: WAKE_LIST } },
+  { route: "GET kuvo/wakes/:session", feature: "wakes", answers: { 200: WAKES } },
+  { route: "GET kuvo/wakes/:session/events", feature: "bots.wake-ups", answers: { 200: WAKES } },
+  { route: "POST kuvo/wakes/:session", feature: "wakes.edit", answers: { 200: WAKES } },
+  { route: "POST kuvo/wakes/:session/watch", feature: "wakes.events", answers: { 200: WAKES } },
+  { route: "POST kuvo/wakes/:session/pause", feature: "wakes.edit", answers: { 200: WAKES } },
+  { route: "POST kuvo/wakes/:session/cancel", feature: "wakes.edit", answers: { 200: NOTHING } },
+  { route: "POST kuvo/wakes/:session/now", feature: "wakes.edit", answers: { 200: NOTHING } },
 ];

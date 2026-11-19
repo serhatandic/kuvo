@@ -105,19 +105,20 @@ function anyMember(id: string, runner: GroupRunner, store: GroupStore) {
   return there ? memberThere(there, runner) : undefined
 }
 
-/** The chats here, as a client lists them: only those that live here now (one moving here isn't, yet). */
+/** A restored chat stays readable during review. An incoming move remains hidden until activated. */
 function list(runner: GroupRunner, store: GroupStore) {
   const groups = runner
     .list()
-    .filter((chat) => chat.status === "active")
-    .map(({ group, state, said, fromBot }) => ({
+    .filter((chat) => chat.status === "active" || chat.restoreReview)
+    .map(({ group, state, said, fromBot, restoreReview }) => ({
       id: group.id,
       name: group.name,
       ...(group.purpose ? { purpose: group.purpose } : {}),
       members: group.members.flatMap((id) => anyMember(id, runner, store) ?? []),
       speaking: state.speaking,
       discussing: Boolean(state.discussing),
-      paused: Boolean(state.paused),
+      paused: Boolean(state.paused || restoreReview),
+      ...(restoreReview ? { restoreReview } : {}),
       unread: Boolean(fromBot && (!group.viewed || Date.parse(fromBot.time) > Date.parse(group.viewed))),
       last: clientMessage(said, false, state.stopped, id => anyMember(id, runner, store)?.name ?? "A bot"),
       meeting: group.meeting ? present({ ...group.meeting, next: seconds(group.meeting.next) }) : undefined,
@@ -128,13 +129,14 @@ function list(runner: GroupRunner, store: GroupStore) {
 /** One chat as a client follows it: its latest messages (unless `withMessages` says not) and its talk; undefined while it isn't here (gone, or moving). */
 function chat(runner: GroupRunner, store: GroupStore, id: string, withMessages = true) {
   const found = runner.get(id)
-  if (!found || found.status !== "active") return undefined
-  const { messages, state } = found
+  if (!found || (found.status !== "active" && !found.restoreReview)) return undefined
+  const { messages, state, restoreReview } = found
   return {
     ...(withMessages ? { messages: messages.slice(-300).map((each) => clientMessage(each, true, state.stopped, id => anyMember(id, runner, store)?.name ?? "A bot")) } : {}),
     speaking: state.speaking,
     discussing: Boolean(state.discussing),
-    paused: Boolean(state.paused),
+    paused: Boolean(state.paused || restoreReview),
+    ...(restoreReview ? { restoreReview } : {}),
     ...(state.activity?.length ? { activity: state.activity } : {}),
     ...(state.stopped?.length ? { stopped: state.stopped } : {}),
   }
@@ -237,6 +239,8 @@ export async function linkRoutes(runner: GroupRunner | undefined, store: GroupSt
     if (!chat(runner, store, id)) return json({}, 404)
     return action ? following((withMessages) => chat(runner, store, id, withMessages), id, signal) : json(chat(runner, store, id))
   }
+  if (method === "POST" && action === "restore-review") return groupRoutes(runner, store, method, [id, action], body)
+  if (runner.get(id)?.restoreReview) return message(409, "Review the recovered group work before starting this chat.");
   // Its name, purpose, bots or meeting, as Edit Group Chat changes them: a meeting as you set it up,
   // worked out here, on your clock.
   if (method === "PATCH" && !action) {

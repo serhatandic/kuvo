@@ -49,6 +49,7 @@ import fs from "node:fs"; import http from "node:http";
 const port = Number(process.argv[process.argv.indexOf("--port") + 1]);
 http.createServer((request, response) => {
   if (request.url.startsWith("/api/event") || request.url.startsWith("/event")) { response.writeHead(200, { "content-type": "text/event-stream" }); response.write(": open\\n\\n"); return; }
+  if (/^\\/api\\/session\\/ses_[^/]+$/.test(request.url)) { response.writeHead(404); response.end(); return; }
   response.writeHead(200, { "content-type": "application/json" });
   response.end(JSON.stringify({ data: request.url.startsWith("/api/session/active") ? {} : [] }));
 }).listen(port, "127.0.0.1", () => console.log("server listening on http://127.0.0.1:" + port));
@@ -122,11 +123,11 @@ esac
     assert.fail(`never: ${what}\n${log}`);
   }
   /** A client's request, through the box's server (`serve --kept`), as Kuvo Code's apps send it. */
-  async function ask(method, route, body) {
+  async function ask(method, route, body, headers = {}) {
     const said = readJSON(path.join(run, "serve.json"));
     if (!said?.port) return { status: 0, json: null };
     try {
-      const response = await fetch(`http://127.0.0.1:${said.port}/${route}`, { method, headers: { authorization: "Basic " + Buffer.from(`opencode:${said.password}`).toString("base64"), "content-type": "application/json" }, body: body ? JSON.stringify(body) : undefined });
+      const response = await fetch(`http://127.0.0.1:${said.port}/${route}`, { method, headers: { authorization: "Basic " + Buffer.from(`opencode:${said.password}`).toString("base64"), "content-type": "application/json", ...headers }, body: body ? JSON.stringify(body) : undefined });
       const text = await response.text();
       return { status: response.status, json: text ? JSON.parse(text) : null };
     } catch {
@@ -161,42 +162,167 @@ test("a client asking all through a bridge's hand-over to a newer one gets every
   const agents = fs.readFileSync(builtAgents, "utf8");
   // The bridge a build before this one, which makes way for this one once it's put in its place.
   // (The keeper looks only every minute: the next bridge comes from the hand-over itself.)
-  const box = machine("kuvo-handover-", { agents: agents.replace(`// Built from Packages/Box/src/agents ${build(agents)}`, `// Built from Packages/Box/src/agents ${"a".repeat(64)}`), round: "60" });
+  const box = machine("kuvo-handover-", {
+    agents: agents.replace(`// Built from Packages/Box/src/agents ${build(agents)}`, `// Built from Packages/Box/src/agents ${"a".repeat(64)}`),
+    round: "60",
+    before(home, run) {
+      const file = path.join(home, "bin", "kuvo-link.js");
+      const link = fs.readFileSync(file, "utf8");
+      const entry = "async function* agentsRoute(context) {";
+      assert.ok(link.includes(entry));
+      const seen = JSON.stringify(path.join(run, "test-cutover-request"));
+      write(file, link.replace(entry, entry + `\nif (context.request.path.endsWith("/api/info?test-cutover=1")) (await import("node:fs")).writeFileSync(${seen}, "");`), 0o600);
+    },
+  });
   await box.serving();
   const first = await box.bridgeUp();
 
   // A client asking again and again, as the rings, Accounts and a conversation do.
   const answers = [];
   let asking = true;
-  let sawHandOver = false;
   const client = (async () => {
     while (asking) {
-      const handingOver = fs.existsSync(path.join(box.run, "agents-renewing")) || !readJSON(path.join(box.run, "bridge.json"));
       const answer = await box.ask("GET", "kuvo/agents/api/info");
-      answers.push({ status: answer.status, pid: answer.json?.pid, message: answer.json?.message, handingOver });
-      if (handingOver) sawHandOver = true;
+      answers.push({ status: answer.status, pid: answer.json?.pid, message: answer.json?.message });
       // (At a client's pace: the rings and a conversation ask every few moments, not without a break.)
       await new Promise(resolve => setTimeout(resolve, 100));
     }
   })();
-  await box.until(() => answers.length >= 3, "the client's first answers");
+  let second;
+  let cutover;
+  const publish = path.join(box.run, "test-publish-bridge");
+  try {
+    await box.until(() => answers.length >= 3, "the client's first answers");
 
-  const file = path.join(box.home, "bin", "kuvo-agents.js");
-  fs.writeFileSync(`${file}.new`, agents);
-  fs.renameSync(`${file}.new`, file);
-  const second = await box.bridgeUp(first);
-  // A few more answers from the new one, then the client stops.
-  const from = answers.length;
-  await box.until(() => answers.slice(from).filter(each => each.pid === second).length >= 3, "answers from the new bridge");
-  asking = false;
-  await client;
+    const file = path.join(box.home, "bin", "kuvo-agents.js");
+    // Keep the standby unpublished until a client has issued a request during the handover.
+    const checkpoint = "transfer = standby?.transfer ?? recovered;";
+    assert.ok(agents.includes(checkpoint));
+    const candidate = agents.replace(checkpoint, checkpoint + `\nif (standby) while (!(await Bun.file(${JSON.stringify(publish)}).exists())) await Bun.sleep(20);`);
+    fs.writeFileSync(`${file}.new`, candidate);
+    fs.renameSync(`${file}.new`, file);
+    await box.until(() => fs.existsSync(path.join(box.run, "agents-renewing")), "the bridge's handover fence");
+    const during = box.ask("GET", "kuvo/agents/api/info?test-cutover=1");
+    await box.until(() => fs.existsSync(path.join(box.run, "test-cutover-request")), "the Box to receive the request before publication");
+    fs.writeFileSync(publish, "");
+    cutover = await during;
+    second = await box.bridgeUp(first);
+    const from = answers.length;
+    await box.until(() => answers.slice(from).filter(each => each.pid === second).length >= 3, "answers from the new bridge");
+  } finally {
+    asking = false;
+    fs.closeSync(fs.openSync(publish, "a"));
+    await client;
+  }
 
   assert.ok(!runs(first), "the bridge before made way");
   assert.ok(!fs.existsSync(path.join(box.run, "agents-renewing")), "the new bridge took the hand-over's mark away");
   const failed = answers.filter(each => each.status !== 200);
   assert.deepEqual(failed, [], "every answer came from a bridge: none said the agents aren't running");
   assert.ok(answers.some(each => each.pid === first) && answers.some(each => each.pid === second), "answered by the bridge before, then by the new one");
-  assert.ok(sawHandOver, "some were asked while the bridge was handing over");
+  assert.deepEqual([cutover.status, cutover.json?.pid], [200, second], "the replacement answers a request issued during the handover");
+});
+
+test("owner-routed app Send can retry the same ID after a live bridge refuses it before execution", { skip: bun ? false : NO_BUN, timeout: 180_000 }, async () => {
+  const agents = fs.readFileSync(builtAgents, "utf8");
+  const id = "msg_handoverretry001";
+  const marks = {};
+  const box = machine("kuvo-send-handover-", {
+    round: "60",
+    before(home, run) {
+      for (const name of ["lookup", "fenced", "refused", "finish", "accepted"]) marks[name] = path.join(run, "test-send-" + name);
+      const quoted = Object.fromEntries(Object.entries(marks).map(([name, file]) => [name, JSON.stringify(file)]));
+      const linkFile = path.join(run, "link.json");
+      const link = readJSON(linkFile);
+      const key = () => crypto.randomBytes(32).toString("base64url");
+      write(linkFile, JSON.stringify({ ...link, setup: { id: "set_" + crypto.randomBytes(16).toString("base64url"), epoch: 1, role: "member", primary: key(), sign: key() } }));
+
+      // The app discovered the old bridge. Hold only this first request until its real fence is up.
+      const boxFile = path.join(home, "bin", "kuvo-link.js");
+      const boxSource = fs.readFileSync(boxFile, "utf8");
+      const located = "const target = place?.target ?? null;";
+      assert.ok(boxSource.includes(located));
+      write(boxFile, boxSource.replace(located, located + `
+if (given.id === ${JSON.stringify(id)}) {
+  const files = await import("node:fs");
+  if (!files.existsSync(${quoted.lookup})) {
+    files.writeFileSync(${quoted.lookup}, "");
+    while (!files.existsSync(${quoted.fenced})) await new Promise(resolve => setTimeout(resolve, 20));
+  }
+}`));
+
+      // Give the retiring bridge time to serve its actual pre-execution fence before it exits.
+      const fenced = "transferring = true;";
+      const refusal = /if \(transferring\)\s+return (answer\d*)\(request\);/;
+      assert.ok(agents.includes(fenced) && refusal.test(agents));
+      const old = agents.replace(fenced, fenced + `
+await Bun.write(${quoted.fenced}, "");
+while (!(await Bun.file(${quoted.finish}).exists())) await Bun.sleep(20);
+`).replace(refusal, (_matched, answer) => `
+if (transferring) return ${answer}(request).then(async response => {
+  if (request.method === "POST" && new URL(request.url).pathname.endsWith("/prompt") &&
+      response.headers.get("x-kuvo-bridge-handover") === "1") {
+    await Bun.write(${quoted.refused}, (await request.clone().json()).id);
+  }
+  return response;
+});
+`).replace(`// Built from Packages/Box/src/agents ${build(agents)}`, `// Built from Packages/Box/src/agents ${"b".repeat(64)}`);
+      write(path.join(home, "bin", "kuvo-agents.js"), old);
+    },
+  });
+  await box.serving();
+  const first = await box.bridgeUp();
+  const made = await box.ask("POST", "kuvo/agents/api/session", {
+    title: "Message across handover", location: { directory: box.home }, model: { providerID: "codex-cli", id: "gpt-test" },
+  });
+  assert.equal(made.status, 200, JSON.stringify(made.json));
+  const route = `kuvo/sessions/${made.json.data.id}/send`;
+  const send = () => box.ask("POST", route, { id, words: "send this once" }, { "x-kuvo-from": "mac" });
+  const during = send();
+  const rawID = "msg_handoverraw0001";
+  let raw;
+  let rawFinished = false;
+  try {
+    await box.until(() => fs.existsSync(marks.lookup), "the app to find the old bridge");
+    // This is an established bridge. Its old PID file cannot stand in for a startup
+    // timer once the bridge has explicitly refused a request for handover.
+    const earlier = new Date(Date.now() - 120_000);
+    fs.utimesSync(path.join(box.run, "agents.pid"), earlier, earlier);
+    const responder = /return (answer\d*)\(request\)\.finally\(\(\) => answering--\);/;
+    assert.ok(responder.test(agents));
+    const next = agents.replace(responder, (_matched, answer) => `return (async () => {
+  const prompt = request.method === "POST" && new URL(request.url).pathname.endsWith("/prompt") ? await request.clone().json() : null;
+  const response = await ${answer}(request);
+  if (prompt && response.ok) {
+    const accepted = Bun.file(${JSON.stringify(marks.accepted)});
+    await Bun.write(accepted, (await accepted.exists() ? await accepted.text() : "") + prompt.id + "\\n");
+  }
+  return response;
+})().finally(() => answering--);`);
+    const file = path.join(box.home, "bin", "kuvo-agents.js");
+    write(file + ".new", next);
+    fs.renameSync(file + ".new", file);
+    const rejected = message => fs.existsSync(marks.refused) && fs.readFileSync(marks.refused, "utf8") === message;
+    await box.until(() => rejected(id), "the retiring bridge to refuse the app's POST before execution");
+    const refused = await during;
+    assert.equal(refused.status, 503);
+    assert.equal(refused.json?.reason, "agentsRestarting");
+    assert.deepEqual(fs.readdirSync(path.join(box.run, "owned-data", "mutations")), [], "the owner released the pre-execution refusal");
+    assert.equal(fs.existsSync(marks.accepted), false);
+    raw = box.ask("POST", `kuvo/agents/api/session/${made.json.data.id}/prompt`, { id: rawID, text: "follow the replacement" }).finally(() => { rawFinished = true; });
+    await box.until(() => rejected(rawID), "the raw prompt to hit the same pre-execution fence");
+    await Promise.race([raw, new Promise(resolve => setTimeout(resolve, 400))]);
+    assert.equal(rawFinished, false, "the fence is expected even though the old bridge's PID record predates this update");
+  } finally {
+    write(marks.fenced, "");
+    write(marks.finish, "");
+    await during;
+  }
+  assert.equal((await raw).status, 200, "the raw prompt follows the replacement on its first request");
+  await box.bridgeUp(first);
+  assert.equal((await send()).status, 200);
+  assert.equal((await send()).status, 200, "the successful ID can be retried");
+  assert.deepEqual(fs.readFileSync(marks.accepted, "utf8").trim().split("\n"), [rawID, id], "the replacement accepted each prompt once");
 });
 
 test("a bridge that keeps stopping is said to in one plain sentence with Try Again; Try Again starts it once it can run", { skip: bun ? false : NO_BUN, timeout: 300_000 }, async () => {

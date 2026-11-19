@@ -1,7 +1,11 @@
+import { computerHistoryLayoutReady } from "../../shared/folder-version";
+import { computerHistory, rememberRetiredSigns } from "../setup/computer-history";
+import { publishedShared } from "../setup/shared";
 // What this Mac's app asks of its box's link (`kuvo/link/…`)
 // Whether it's wanted and how it's doing, its phones and documents, your machines, and the letters
 // and agents of this Mac's conversations.
 
+import { primaryFenced } from "../setup/lease";
 import fs from "node:fs";
 import path from "node:path";
 import { isObject, parsed } from "../../shared/json";
@@ -12,7 +16,7 @@ import { digestOf, ownDocs, pruneDocs } from "../documents/work";
 import { readEngineFile } from "../engine/client";
 import { locked, writePrivate } from "../files";
 import { followed } from "../follow";
-import { IS_MAC } from "../home";
+import { IS_MAC, K } from "../home";
 import { ownName } from "../letters/start";
 import { movedFromOldApp } from "../rehome/moved";
 import { cutText, LETTER_ID, LETTER_MEMORY, LETTERS_SEEN, SENDING } from "../letters/letter";
@@ -21,7 +25,6 @@ import { refreshOwn } from "../peers/agents";
 import { PEER_LOCK, readPeerAgents } from "../peers/directory";
 import { cleanMoved, cleanPeer, fitsPeer, KEY, MOST_PEERS, ownKey, peersOf } from "../peers/known";
 import { readPersonalities } from "../personalities/library";
-import { takeOffVouched } from "../phones";
 import { macLink, readLink, updateLink } from "../state";
 import { keepsOwnConfig, macKeys, macLinkCheck, saveMacConfig, tellGone } from "./link";
 import { noteKeyNow } from "../setup/lead";
@@ -63,30 +66,30 @@ const macPhones = (): MacPhones => {
 // `{key, sign, address, name, id}`; the conversations being moved, `{session, key}` each; and the
 // machines you removed, by key (`removed`): its peers document names them so they let this Mac go,
 // and they hear that once. One just missing from the list (it can't be reached to be set up, say)
-// isn't a peer now, and nothing more; one set up again is no longer removed. One that isn't a
+// isn't a peer now, and nothing more; adding a computer again uses a different key. One that isn't a
 // machine's record is left out (a line in the box's log says so), never the rest with it. No link
 // for what isn't a list.
-export function setMacPeers(link: LinkState, given: unknown, rejoined?: string): MacPeersSet {
+export function setMacPeers(link: LinkState, given: unknown, { staging = false } = {}): MacPeersSet {
   if (!isObject(given) || !Array.isArray(given.peers)) return { link: null, gone: [] };
-  // Only a completed SSH add can restore a removed peer. The app or its saved list can be stale.
+  // Both stale lists and SSH adds must keep revoked membership keys out.
   const removedHere = Array.isArray(link.removedHere) ? link.removedHere : [];
-  const keeps = (key: string) => key === rejoined || !removedHere.includes(key);
-  const now = given.peers.slice(0, MOST_PEERS).map(peer => ({ ...peer, kind: "machine" }))
-    .filter(peer => fitsPeer(peer) && typeof peer.sign === "string" && SIGN.test(peer.sign) && keeps(peer.key)).map(cleanPeer);
+  const keeps = (key: string) => !removedHere.includes(key) && !link.left?.includes(key);
+  const now = given.peers.slice(0, MOST_PEERS).map(peer => ({ ...peer, kind: link.setup?.managed && peer?.kind === "mac" ? "mac" : "machine" }))
+    .filter(peer => fitsPeer(peer) && typeof peer.sign === "string" && SIGN.test(peer.sign) && keeps(peer.key) && !computerHistory(link)?.retiredSigns.includes(peer.sign)).map(cleanPeer);
+  if ((!staging && primaryFenced(link)) || (link.setup?.standby && !now.some(peer => peer.key === link.setup!.standby!.key && peer.sign === link.setup!.standby!.sign))) return { link: null, gone: [] };
   const skipped = given.peers.slice(0, MOST_PEERS).filter(peer => !(isObject(peer) && typeof peer.key === "string" && !keeps(peer.key))).length - now.length;
   if (skipped) console.error(`${skipped} of this Mac's machines weren't records the box could take, and were left out.`);
   const removed = (Array.isArray(given.removed) ? given.removed : []).filter((key: unknown): key is string => typeof key === "string" && KEY.test(key) && !now.some(peer => peer.key === key));
-  const gone = peersOf(link).filter(peer => removed.includes(peer.key));
+  const previousPeers = removed.length ? peersOf(link) : [];
+  const gone = previousPeers.filter(peer => removed.includes(peer.key));
   if (removed.length) {
+    if (computerHistoryLayoutReady(K)) rememberRetiredSigns(link, previousPeers, gone);
     link.removedHere = [...new Set([...removedHere, ...removed])];
     link.removalRevisions ??= {};
     for (const key of new Set(removed)) link.removalRevisions[key] = (link.removalRevisions[key] ?? 0) + 1;
   }
   const kept = (Array.isArray(link.left) ? link.left : []).filter(key => !now.some(peer => peer.key === key) && !removed.includes(key));
   link.left = [...kept, ...removed].slice(-64);
-  // Kuvo Code's app on a computer you removed goes from your devices with it: every device that
-  // computer's box vouched for (`by`), as removing one of them takes off the rest (phones.ts).
-  for (const key of removed) takeOffVouched(link, key);
   // A name you gave one goes once the app names it otherwise (renamed there), or it's removed; one
   // just missing from this list keeps it.
   const before = new Map((Array.isArray(link.macPeers) ? link.macPeers : []).filter(fitsPeer).map(cleanPeer).map(peer => [peer.key, peer.name]));
@@ -96,11 +99,6 @@ export function setMacPeers(link: LinkState, given: unknown, rejoined?: string):
       if (removed.includes(key) || (named && before.has(key) && before.get(key) !== named.name)) delete link.peerNames[key];
     }
     if (!Object.keys(link.peerNames).length) delete link.peerNames;
-  }
-  // (Added again: no longer among those removed.)
-  if (link.removedHere && rejoined && now.some(peer => peer.key === rejoined)) {
-    link.removedHere = link.removedHere.filter(key => key !== rejoined);
-    if (!link.removedHere.length) delete link.removedHere;
   }
   link.macPeers = now;
   link.macMoved = cleanMoved(given.moved);
@@ -112,18 +110,16 @@ export function setMacPeers(link: LinkState, given: unknown, rejoined?: string):
 /** What setting up a machine over SSH gives it (`kuvo/link/setup`; `add/flow.ts`, the box adding
  * one itself): this Mac's key, the key its documents are signed with, its own documents as they
  * are now and those it keeps of your machines, and the keys this Mac had before, made anew since,
- * for the machine to let go. `again`: the key of a machine set up again, no longer one this Mac
- * removed. Null while this Mac's link has no keys. */
-export async function setupGift(again: string | null): Promise<{ mac: string | null; macSign: string | null; docs: SignedDoc[]; replaces: string[] } | null> {
-  await macKeys({ needed: true });
+ * for the machine to let go. Null while this Mac's link has no keys. */
+export async function setupGift(): Promise<{ mac: string | null; macSign: string | null; docs: SignedDoc[]; replaces: string[] } | null> {
+  if (IS_MAC) await macKeys({ needed: true });
   const library = readPersonalities();
   let docs: SignedDoc[] = [];
   const link = updateLink(link => {
     if (!link?.sign) return null;
-    if (again && !link.removedHere?.includes(again) && Array.isArray(link.left)) link.left = link.left.filter(key => key !== again);
     noteKeyNow(link);
     const own = ownDocs({ link, library });
-    docs = [...Object.values(own).map(made => made.envelope), ...Object.values(link.docs ?? {}).sort((a, b) => (a.d < b.d ? -1 : 1))];
+    docs = [...Object.values(own).map(made => made.envelope), ...publishedShared(link), ...Object.values(link.docs ?? {}).sort((a, b) => (a.d < b.d ? -1 : 1))];
     return link;
   });
   if (!link) return null;
@@ -197,12 +193,17 @@ export async function* macLinkRoute(route: string, request: LinkRequest, signal:
       return yield* followed(macPhones, macLink.phoneFollowers, signal);
     case "kuvo/link/peers": {
       if (method !== "PUT") return yield* json(405, {});
-      let gone: Peer[] = [];
+      let gone: Peer[] = [], refused = false;
       const changed = updateLink(link => {
+        if (link?.setup?.managed || mainElsewhere(link)) {
+          refused = true;
+          return null;
+        }
         const made = setMacPeers(link ?? { phones: [] }, parsed(request.body));
         gone = made.gone;
         return made.link;
       });
+      if (refused) return yield* json(409, { message: "Manage setup membership from Computers." });
       if (!changed) return yield* json(400, { message: "Send {peers: [{key, sign, address, name, id}], moved}." });
       macDocsChanged({ closeRemoved: changed });
       tellGone(gone);
@@ -212,8 +213,7 @@ export async function* macLinkRoute(route: string, request: LinkRequest, signal:
       // What setting up a machine over SSH gives it: this Mac's key, the key its documents are
       // signed with, its own documents as they are now and those it keeps of your machines.
       if (method !== "GET") return yield* json(405, {});
-      // `?key=`: a machine set up again, no longer one this Mac removed.
-      const gift = await setupGift(new URLSearchParams(String(request.path ?? "").split("?")[1] ?? "").get("key"));
+      const gift = await setupGift();
       if (!gift) return yield* json(503, { message: "This Mac's link has no keys yet." });
       return yield* json(200, gift);
     }

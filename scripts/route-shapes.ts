@@ -22,8 +22,13 @@ const unordered = ([["FEATURES", FEATURES], ["MAC_FEATURES", MAC_FEATURES], ["MA
 for (const [name] of unordered) console.error(`${name} isn't one of each name, in order (box/src/shared): put it in order, each name once.`);
 if (unordered.length) process.exit(1);
 
+const advertised = new Set<string>([...FEATURES, ...MAC_FEATURES]);
+const missing = ROUTES.filter(route => !advertised.has(route.feature));
+for (const route of missing) console.error(`${route.route}: name an advertised feature for this route (box/src/shared/routes).`);
+if (missing.length) process.exit(1);
+
 const answers = (): string => {
-  const about = "What each route of a box answers (scripts/route-shapes.sh writes it from box/src/shared/routes; never edit it): its JSON by status, or \"bytes\". A shape is \"string\", \"number\", \"bool\", \"null\", \"any\", {list}, {map}, {object} (those fields and no others; a name ending in ? may be left out), {oneOf} or {literal}. A refusal (400 and over) in JSON is `error`, unless its route has a shape of its own for that status; what starts with a `passedOn` path is the engine's or the agents bridge's own.";
+  const about = "What each route of a box answers (scripts/route-shapes.sh writes it from box/src/shared/routes; never edit it): its advertised feature and JSON by status, or \"bytes\". A shape is \"string\", \"number\", \"bool\", \"null\", \"any\", {list}, {map}, {object} (those fields and no others; a name ending in ? may be left out), {oneOf} or {literal}. A refusal (400 and over) in JSON is `error`, unless its route has a shape of its own for that status; what starts with a `passedOn` path is the engine's or the agents bridge's own.";
   return JSON.stringify({ about, error: ERROR, passedOn: PASSED_ON, routes: ROUTES }, null, 1) + "\n";
 };
 

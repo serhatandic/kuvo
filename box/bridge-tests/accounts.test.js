@@ -243,3 +243,35 @@ test("a plan whose sign-in ran out is noted as the box watches its engine, which
     assert.deepEqual(JSON.parse(answer.body), { providers: ["openai"] });
   }
 });
+
+test("ended sign-ins accept the legacy map and refuse future maps before disconnecting a plan", async () => {
+  const file = path.join(home, "run", "ended-sign-ins.json");
+  const restore = fs.existsSync(file) ? fs.readFileSync(file) : null;
+  const usage = engine.inUse.openai;
+  const removed = [...engine.removed];
+  engine.inUse.openai = { credentialID: "crd_version", method: "oauth" };
+  engine.credentials.push({ id: "crd_version", integrationID: "openai", label: "Version test" });
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  try {
+    fs.writeFileSync(file, '{"openai":"crd_version","formatVersion":"a-provider-id-can-use-that-name"}');
+    assert.deepEqual(await ended(), ["openai"]);
+    await refused("ses_a");
+    assert.deepEqual(JSON.parse(fs.readFileSync(file, "utf8")), { openai: "crd_version", formatVersion: "a-provider-id-can-use-that-name", "/formatVersion": 1 });
+    const future = '{"openai":"crd_version","/formatVersion":2}';
+    fs.writeFileSync(file, future);
+    for (const [method, route] of [["GET", "ended"], ["POST", "openai/forget"]]) {
+      const answer = await ask(method, `kuvo/accounts/${route}`);
+      assert.equal(answer.status, 409);
+      assert.equal(answer.json.code, "unsupportedFormatVersion");
+      assert.match(answer.json.message, /Ended sign-ins format version 2/);
+    }
+    assert.equal(fs.readFileSync(file, "utf8"), future);
+    assert.deepEqual(engine.removed, removed);
+    assert.ok(engine.credentials.some(each => each.id === "crd_version"));
+  } finally {
+    engine.inUse.openai = usage;
+    engine.credentials = engine.credentials.filter(each => each.id !== "crd_version");
+    if (restore) fs.writeFileSync(file, restore);
+    else fs.rmSync(file, { force: true });
+  }
+});

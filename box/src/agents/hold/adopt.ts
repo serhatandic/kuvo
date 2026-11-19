@@ -11,25 +11,24 @@
 
 import type { AgentKind } from "../accounts"
 import { machineHome } from "../machine"
-import { attach, forgetOldPrograms, heldIn, holdFolder, isHolder, type Held, type HoldRecord } from "./client"
+import { attach, forgetOldPrograms, heldIn, holdFolder, isHolder, type Held, type HoldRecord, HOLD_PROTO } from "./client"
 
-/**
- * The agents whose processes start under a holder, and whose turns a bridge started after one that
- * crashed takes up again (spikes S1 and S2, .claude/notes/update-handover.md). Antigravity's and
- * Cursor's run as they always have, unheld: no spike has shown that a new bridge can take theirs
- * over, so a bridge that crashes ends their turns (as before), and one that makes way for a newer
- * build waits for them to end (renewal.ts).
- */
-export const HELD_KINDS: ReadonlySet<AgentKind> = new Set<AgentKind>(["codex", "claude", "grok"])
+/** Agents whose live protocol still has a client when the bridge disconnects. */
+export const HELD_KINDS: ReadonlySet<AgentKind> = new Set<AgentKind>(["codex", "claude", "grok", "cursor", "antigravity"])
 
 /** The first Claude Code that sends a client joining it the asks it has open (`pending_permission_requests`, spike S1). */
+export const ANTIGRAVITY_ACP = "1.3.0"
+export const CURSOR_SDK = "1.0.35"
+export const CLAUDE_SDK = "0.3.303"
 export const CLAUDE_REJOINS = "2.1.268"
 
 /** Whether a held agent can be taken up: Claude Code only from the version that sends its open asks again (an older one's ask would wait forever). */
 export function adoptable(meta: Partial<HeldMeta>): boolean {
   if (!meta.kind || !HELD_KINDS.has(meta.kind)) return false
+  if (meta.kind === "antigravity") return meta.version === ANTIGRAVITY_ACP
+  if (meta.kind === "cursor") return meta.sdk === CURSOR_SDK
   if (meta.kind !== "claude") return true
-  return typeof meta.version === "string" && atLeast(meta.version, CLAUDE_REJOINS)
+  return meta.sdk === CLAUDE_SDK && typeof meta.version === "string" && atLeast(meta.version, CLAUDE_REJOINS)
 }
 
 function atLeast(version: string, least: string): boolean {
@@ -82,12 +81,27 @@ export class HeldGate {
   private opened = false
   private opener?: (dropped: string[]) => void
   private taken = 0
+  failed = false
+  private settle!: (ready: boolean) => void
+  private activate!: () => void
+  readonly readyToOwn = new Promise<boolean>(resolve => { this.settle = resolve })
+  readonly activated = new Promise<void>(resolve => { this.activate = resolve })
 
   constructor(
     readonly held: Held,
     threads: string[],
+    private provisional = false,
   ) {
     this.waiting = new Set(threads)
+  }
+
+  get preparing() { return this.provisional }
+
+  /** Start replay only after every holder has an adapter ready to consume it. */
+  commit() {
+    this.provisional = false
+    this.held.own()
+    this.check()
   }
 
   /** What opens it (the agent's RPC starting): set once, by the first turn taken up. */
@@ -102,6 +116,7 @@ export class HeldGate {
   }
 
   drop(thread: string) {
+    if (this.provisional) this.fail()
     if (this.waiting.delete(thread)) this.dropped.push(thread)
     this.check()
   }
@@ -112,12 +127,18 @@ export class HeldGate {
    * the same Codex goes on).
    */
   release(thread: string) {
+    if (this.provisional) return this.fail()
     if (this.waiting.has(thread)) return this.drop(thread)
     if (this.released.has(thread)) return
     this.released.add(thread)
     if (this.opened && this.released.size >= this.taken) this.held.stop()
   }
   private released = new Set<string>()
+
+  private fail() {
+    this.failed = true
+    this.settle(false)
+  }
 
   private check() {
     if (this.opened || this.waiting.size) return
@@ -126,7 +147,10 @@ export class HeldGate {
       return this.held.stop()
     }
     if (!this.opener) return
+    this.settle(true)
+    if (this.provisional) return
     this.opened = true
+    this.activate()
     this.opener(this.dropped)
   }
 }
@@ -141,6 +165,8 @@ export interface HeldTurn {
   gate: HeldGate
   /** Set by an agent whose process runs several conversations (Codex's app-server): once this turn's own first line comes again. Otherwise the agent's first line is. */
   began?: Promise<void>
+  /** Extra provider state understood by a compatible live-transfer adopter. */
+  state?: unknown
 }
 
 /** A holder's process stopped (its agent first, as a bridge stops one), by its own pid, once it's
@@ -165,7 +191,9 @@ export async function adoptHeld(folder = machineHome ? holdFolder(machineHome) :
   for (const record of heldIn(folder)) {
     const meta = record.meta as Partial<HeldMeta>
     const turns = Object.entries(meta.turns ?? {})
-    if (!meta.provider || !adoptable(meta) || !turns.length || record.exited) {
+    // Antigravity's transcript cursor belongs to a live checkpoint. After an unplanned
+    // crash, ordinary session repair closes that turn instead of guessing what was shown.
+    if (!meta.provider || !adoptable(meta) || meta.kind === "antigravity" || !turns.length || record.exited) {
       stopHolder(record)
       continue
     }
@@ -185,6 +213,52 @@ export async function adoptHeld(folder = machineHome ? holdFolder(machineHome) :
     for (const [thread, note] of turns) found.set(note.session, { held, meta: meta as HeldMeta, thread, note, gate })
   }
   return found
+}
+
+/** The portable part of the current controller's plan. No credentials travel in it. */
+export interface TransferHolder {
+  id: string
+  generation: number
+  proto: string
+  kind: AgentKind
+  version?: string
+  sdk?: string
+  provider: string
+  turns: Record<string, HeldTurnNote>
+  acked: number
+}
+
+export function canTransfer(holders: TransferHolder[]): boolean {
+  return holders.every(({ proto, kind, version, sdk }) => proto === HOLD_PROTO && adoptable({ kind, version, sdk }))
+}
+
+/** Validate the entire set before attaching. On failure leave the holders for the recovery bridge. */
+export async function adoptTransfer(home: string, plan: TransferHolder[], recovering = false): Promise<Map<string, HeldTurn>> {
+  const found = new Map<string, HeldTurn>()
+  if (!plan.length) return found
+  const folder = holdFolder(home)
+  if (!folder || !canTransfer(plan)) throw new Error("The bridge cannot adopt these agents.")
+  const records = new Map(heldIn(folder).map(record => [record.id, record]))
+  const attached: Held[] = []
+  try {
+    const attempts = await Promise.allSettled(plan.map(async entry => {
+      const record = records.get(entry.id)
+      if (!record && recovering) return // A reboot or an agent exit can leave a checkpoint without its holder.
+      if (!record || record.generation < entry.generation || record.meta.provider !== entry.provider) {
+        throw new Error("A holder in the handover is unavailable.")
+      }
+      const turns = Object.entries(entry.turns)
+      const held = await attach(folder, record, Math.min(...turns.map(([, note]) => note.from)), "provisional")
+      attached.push(held)
+      const gate = new HeldGate(held, turns.map(([thread]) => thread), true)
+      for (const [thread, note] of turns) found.set(note.session, { held, gate, thread, note, meta: record.meta as HeldMeta })
+    }))
+    for (const attempt of attempts) if (attempt.status === "rejected") throw attempt.reason
+    return found
+  } catch (error) {
+    for (const held of attached) held.detach()
+    throw error
+  }
 }
 
 /** The turns noted in a held agent's record, with `thread`'s set (or taken out, with none). */

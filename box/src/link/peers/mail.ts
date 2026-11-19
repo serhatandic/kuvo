@@ -1,8 +1,12 @@
+import { ownerOf } from "../ownership/resolve";
+import { ownershipReady } from "../ownership/store";
 // Mail from other boxes
 // What a Mac or a peer sends this box, opened and handed on: a Mac's lists, its peers' agents,
 // documents, letters and how they went, and group chats' seats.
 
 import { isObject } from "../../shared/json";
+import { takeActed } from "../work-queue/forward";
+import { receiveRemovalMail } from "../setup/removal";
 import { receiveDocs } from "../documents/exchange";
 import { takePhoneSync } from "../documents/phone-sync";
 import { bridgeTarget, readEngineFile } from "../engine/client";
@@ -13,6 +17,9 @@ import { leaveAnswer, letterWent } from "../letters/outbox";
 import { takeLetter } from "../letters/take";
 import { callsBack, takeCall } from "../letters/calls";
 import { rowsBack, rowsWent, takeRows } from "../work/elsewhere";
+import { removalsOf } from "../setup/removal-record";
+import { usesAcceptedSaves } from "../setup/record";
+import { receiveAuthority } from "../setup/takeover";
 import { noteHeard } from "./reach";
 import { takeMoving, tellMovingAgain } from "../moves/elsewhere";
 import { takeMoveMail } from "../moves/move";
@@ -23,7 +30,7 @@ import { announce, toldPeers, writeAgents } from "./agents";
 import { takeZone } from "../zone/setting";
 import { followPeers, takeReleaseMail } from "../updates/fleet";
 import { takeAgents } from "./directory";
-import { forgetOldMacs, macsOf, mailFor, openMail, peersOf, takeLegacyPeers } from "./known";
+import { forgetOldMacs, macsOf, mailFor, openMail, openRemovalMail, ownKey, peersOf, takeLegacyPeers } from "./known";
 import { takeLimits, takeSeat } from "./seats";
 import { queuesBack, takeWorkQueueMail, tellQueuesAgain } from "../work-queue/across";
 import type { PeerPlaces } from "../engine/client";
@@ -57,8 +64,9 @@ export function peerMail(sender: MailSender, payload: Record<string, unknown>, h
   // A release asked for, or handed over in parts (`updates/fleet.ts`).
   if (isObject(payload.release)) try { takeReleaseMail(sender, payload.release); } catch {}
   // Your time zone (`zone/setting.ts`), from any of your computers.
-  if (isObject(payload.zone)) takeZone(payload.zone);
+  if (isObject(payload.zone) && !usesAcceptedSaves(readLink()?.setup)) takeZone(payload.zone);
   // Documents (PROTOCOL.md, "Documents"): given, in parts, or a digest of what it has.
+  if (isObject(payload.setupAuthority)) try { receiveAuthority(sender, payload.setupAuthority, host); } catch {}
   if (isObject(payload.docs)) receiveDocs(sender, payload.docs as DocsMail, host).catch(() => {});
   if (isObject(payload.phoneSync)) try { takePhoneSync(sender, payload.phoneSync, host); } catch {}
   // It's just connected, and may have missed what this box told it (the relay keeps nothing):
@@ -102,8 +110,8 @@ export function peerMail(sender: MailSender, payload: Record<string, unknown>, h
       if (bytes) try { host?.send(bytes); } catch {}
     };
     takeBotEdit(sender, payload.botEdit, reply, {
-      change: (bot, change, at) => changeBot(bot, change, readEngineFile, bridgeTarget, undefined, undefined, at),
-      delete: bot => deleteBot(bot, readEngineFile, bridgeTarget),
+      change: (bot, change, at) => botOwnedHere(bot) ? changeBot(bot, change, readEngineFile, bridgeTarget, undefined, undefined, at) : Promise.resolve(botMoved()),
+      delete: bot => botOwnedHere(bot) ? deleteBot(bot, readEngineFile, bridgeTarget) : Promise.resolve(botMoved()),
     }).catch(() => {});
   }
   if (isObject(payload.botEdited)) takeBotEdited(sender, payload.botEdited);
@@ -113,6 +121,9 @@ export function peerMail(sender: MailSender, payload: Record<string, unknown>, h
   }
 }
 
+const botOwnedHere = (id: string) => !ownershipReady() || ownerOf({ kind: "botSettings", id }, { localRecord: true })?.local;
+const botMoved = () => ({ status: 409, value: { message: "The bot lives on another computer now." } });
+
 // What came by mail, from a Mac or a peer: a Mac's lists, or what peers tell each other
 // (`peerMail`, its agents and their letters); `attended(mac, given, at)`: a Mac in use, or not any
 // more, as of its mail's `at` (PROTOCOL.md, "kuvo/attention").
@@ -121,11 +132,22 @@ export function receiveMail(
   host: LinkHost | null | undefined,
   peerMail: (sender: MailSender, payload: Record<string, unknown>) => void = () => {},
   attended: (mac: string, given: Attention, at: number) => void = () => {},
+  from?: Buffer,
 ): void {
   const link = readLink();
+  const removal = openRemovalMail(body, link);
+  if (removal) {
+    receiveRemovalMail(removal.key, removal.message, host, from);
+    return;
+  }
   const opened = openMail(body, link);
   if (!opened) return;
   const { sender, payload } = opened;
+  if (link?.removalSource || (link?.localUnlink && !link.localUnlink.completed)) return;
+  if (link?.localWipe || (link && removalsOf(link)[ownKey(link) ?? ""])) {
+    if (isObject(payload.workQueue) && isObject(payload.workQueue.acted)) takeActed(sender, payload.workQueue.acted);
+    return;
+  }
   // It answers: whatever this box's tools last heard of it (PROTOCOL.md, "Peers", `run/peer-reach.json`).
   // Back after not answering: what's kept for it goes now, not at its next minute.
   if (noteHeard(sender.key)) {

@@ -4,8 +4,10 @@
 import { EMPTY } from "../crypto/keys";
 import { IKResponder, PROLOGUE } from "../crypto/noise";
 import type { Transport } from "../crypto/noise";
+import { routeRefusalHeaders, routeRequestHeaders } from "../server/format";
 import type { Answer, AnyPiece, Asker, LinkRequest } from "../server/context";
 import { decodeMessage, encodeMessage, Frame, frame, pieces, readFrame, relaySend } from "./frames";
+import type { CommittedReceipt, SaveEnvelope } from "../../shared/routes/setup-save";
 import type { Head } from "./frames";
 
 /** What a phone says as its session opens (PROTOCOL.md, "Sessions"): `pair` only while pairing. */
@@ -14,6 +16,8 @@ export interface PhoneHello {
   name?: string;
   app?: string;
   pair?: string;
+  /** Receipt from an earlier token pairing on this setup. */
+  save?: unknown;
   /** What the client is (`clients.kind`): `desktop` for Kuvo Code's desktop app; none, or anything
    * else, is a phone. */
   client?: string;
@@ -49,7 +53,7 @@ export interface SocketEvents {
 export interface LinkHostOptions {
   key: Buffer;
   hello: BoxHello;
-  authorize: (key: Buffer, hello: PhoneHello, address: Buffer) => PhoneAuthorization | Promise<PhoneAuthorization>;
+  authorize: (key: Buffer, hello: PhoneHello, address: Buffer, signal: AbortSignal) => PhoneAuthorization | Promise<PhoneAuthorization>;
   handle: (request: LinkRequest, phone: SessionPhone, signal: AbortSignal) => Answer;
   connect?: (request: LinkRequest, phone: SessionPhone, events: SocketEvents) => SocketHandle;
   send: (bytes: Buffer) => boolean | void;
@@ -57,7 +61,12 @@ export interface LinkHostOptions {
   mail?: (from: Buffer, body: Buffer, frame: Buffer) => void;
 }
 
-type PhoneAuthorization = boolean | string | { waiting: string };
+type TrustWait = { waiting: string; reason: "pairing-wait" | "pairing-readd" };
+type PairingWait = { waiting: string } & SaveEnvelope;
+type Paired = { pairing: string } & SaveEnvelope<CommittedReceipt>;
+
+export type PhoneAuthorization = boolean | string | TrustWait | PairingWait | Paired;
+type SavedBoxHello = BoxHello & (PairingWait | SaveEnvelope<CommittedReceipt>);
 
 /** A message's head from a phone, as this host reads it (PROTOCOL.md, "Messages in a session"). */
 interface PhoneHead {
@@ -70,13 +79,11 @@ interface PhoneHead {
   end?: boolean;
 }
 
-// A request as a phone's head says it: its method and path only when they're text, its headers
-// only when they're an object (a path that isn't text is then refused, as one that isn't what it
-// seems).
-const requestOf = (head: PhoneHead, body: Buffer): LinkRequest => ({
+// A request as a phone's head says it: its method and path only when they're text.
+const requestOf = (head: PhoneHead, body: Buffer, headers: LinkRequest["headers"]): LinkRequest => ({
   method: typeof head.m === "string" ? head.m : "GET",
   path: typeof head.p === "string" ? head.p : "",
-  headers: head.h !== null && typeof head.h === "object" && !Array.isArray(head.h) ? (head.h as LinkRequest["headers"]) : {},
+  headers,
   body,
 });
 
@@ -110,6 +117,7 @@ export class LinkHost {
   declare confirmed: LinkHostOptions["confirmed"];
   declare mail: LinkHostOptions["mail"];
   declare sessions: Map<string, PhoneSession>;
+  private handshakes = new Map<string, AbortController>();
   /** While the relay has welcomed this host's connection (relay/connection.ts sets these three). */
   declare welcomed?: boolean;
   /** Ends its relay connection. */
@@ -131,6 +139,8 @@ export class LinkHost {
 
   // The relay connection dropped: what was under way is gone.
   reset() {
+    for (const pending of this.handshakes.values()) pending.abort();
+    this.handshakes.clear();
     for (const session of this.sessions.values()) this.end(session, false);
   }
 
@@ -142,6 +152,8 @@ export class LinkHost {
   // by the phone's own doing: phones count on that rather than checking before each request
   // (PROTOCOL.md, "The relay").
   forget(address: Buffer) {
+    const prefix = address.toString("base64url") + ":";
+    for (const [id, pending] of this.handshakes) if (id.startsWith(prefix)) pending.abort();
     for (const session of this.sessions.values()) if (session.from.equals(address)) this.end(session, false);
   }
 
@@ -182,6 +194,7 @@ export class LinkHost {
         return this.message(session, message as { head: PhoneHead; body: Buffer });
       }
       case Frame.close:
+        this.handshakes.get(id)?.abort();
         if (session) this.end(session, false);
         return;
       case Frame.mail:
@@ -200,17 +213,27 @@ export class LinkHost {
       return refuse();
     }
     if (hello?.v !== 1) return refuse();
-    const authorized = await this.authorize(responder.rs, hello, from);
-    if (typeof authorized === "object") {
+    this.handshakes.get(id)?.abort();
+    const pending = new AbortController();
+    this.handshakes.set(id, pending);
+    const authorized = await Promise.resolve(this.authorize(responder.rs, hello, from, pending.signal)).finally(() => {
+      if (this.handshakes.get(id) === pending) this.handshakes.delete(id);
+    });
+    if (pending.signal.aborted) return;
+    if (typeof authorized === "object" && "waiting" in authorized) {
       // The peer must authenticate the box before it can show the waiting message. No session
       // or request handler is installed for this handshake.
-      const { message } = responder.writeMessage2(Buffer.from(JSON.stringify({ ...this.hello, ...authorized })));
+      const reply = "reason" in authorized ? { ...this.hello, ...authorized }
+        : { ...this.hello, ...authorized } satisfies BoxHello & PairingWait;
+      const { message } = responder.writeMessage2(Buffer.from(JSON.stringify(reply)));
       this.send(relaySend(from, frame(Frame.handshake2, number, message)));
       return;
     }
-    if (typeof authorized !== "string" && !authorized) return refuse();
-    const pairing = typeof authorized === "string" ? authorized : undefined;
-    const { message, transport } = responder.writeMessage2(Buffer.from(JSON.stringify(this.hello)));
+    if (authorized === false) return refuse();
+    const pairing = typeof authorized === "string" ? authorized : typeof authorized === "object" ? authorized.pairing : undefined;
+    const reply = typeof authorized === "object"
+      ? { ...this.hello, save: authorized.save } satisfies SavedBoxHello : this.hello;
+    const { message, transport } = responder.writeMessage2(Buffer.from(JSON.stringify(reply)));
     // One session per phone: a new one replaces what's left of the last.
     for (const old of this.sessions.values()) if (old.from.equals(from)) this.end(old, false);
     const phone: SessionPhone = { key: responder.rs, name: String(hello.name ?? ""), address: from, pairing, ...(hello.client === "desktop" ? { kind: "desktop" as const } : {}) };
@@ -221,7 +244,12 @@ export class LinkHost {
   message(session: PhoneSession, { head, body }: { head: PhoneHead; body: Buffer }) {
     switch (head.t) {
       case "req": {
-        const request = requestOf(head, body);
+        const { headers, error } = routeRequestHeaders(head.h);
+        if (error) {
+          this.seal(session, encodeMessage({ t: "res", id: head.id, s: 400, h: routeRefusalHeaders, end: true }, Buffer.from(JSON.stringify(error))));
+          return;
+        }
+        const request = requestOf(head, body, headers);
         if (String(request.headers.upgrade ?? "").toLowerCase() === "websocket") this.open(session, head.id, request);
         else if (head.end === false) session.incoming.set(head.id, request);
         else this.run(session, head.id, request);

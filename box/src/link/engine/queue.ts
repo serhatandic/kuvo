@@ -12,11 +12,12 @@ import { draftOf, keptCommand } from "../messages/commands";
 import { keptParts, partsOf, withPartsOf } from "../messages/parts";
 import crypto from "node:crypto";
 import fs from "node:fs";
+import { additiveObjectFormat, UnsupportedFormatVersion } from "../../shared/format-version";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { isObject } from "../../shared/json";
 import { processRuns } from "../../shared/platform";
-import { locked, writeDurablePrivate, writePrivate } from "../files";
+import { locked, writePrivate } from "../files";
 import { RUN } from "../home";
 import { asked, call, readBridgeFile } from "./client";
 import { swapHolds, swapLine, swapUnderWay } from "../../shared/engine-swap";
@@ -61,7 +62,8 @@ export const shownQueue = ({ paused, held, waiting, inboxMoved }: QueueState): Q
 /** Whether what's sent to `target` waits on the box now: it's the engine (not the coding agents'
  * bridge, whose turns an engine change never touches) and its change holds (PROTOCOL.md, "A new
  * engine"). */
-export function swapHoldsFor(target: Target, session?: string): boolean {
+export function swapHoldsFor(target: Target | null, session?: string): boolean {
+  if (!target) return swapHolds(RUN);
   if (!swapHolds(RUN) && !(session && queueOf(session).inboxMoved?.length)) return false;
   try { return readBridgeFile()?.port !== target.port; } catch { return true; }
 }
@@ -150,6 +152,7 @@ export async function reorderQueue(target: Target, session: string, item: string
     const inbox = await inboxNow(target, session);
     let moved = false;
     const state = changeQueue(session, state => {
+      checkWaitingFormats(state.waiting);
       const steer = new Set(inbox.filter(each => each.delivery === "steer" && !state.held.includes(each.id)).map(each => each.id));
       const order = orderOf(inbox, state).filter(id => !steer.has(id));
       if (item === anchor || !order.includes(item) || !order.includes(anchor)) return state;
@@ -171,8 +174,8 @@ const waitingFile = (id: string) => files.waitingFile(FILES, id);
 /** `message` kept on the box while `session`'s queue is paused (see `Shown`), or while `target`, the
  * engine, is being changed (`swapHoldsFor`): true. Neither, false: it isn't kept. `place`: where it goes
  * (last, else). */
-export const keepWaiting = (session: string, message: Outgoing & { id: string }, shown: Shown = {}, place?: files.Place, target?: Target): boolean =>
-  files.keepWaiting(FILES, session, message, shown, tellFollowers, place, target ? swapHoldsFor(target, session) : false);
+export const keepWaiting = (session: string, message: Outgoing & { id: string }, shown: Shown = {}, place?: files.Place, target?: Target | null): boolean =>
+  files.keepWaiting(FILES, session, message, shown, tellFollowers, place, target !== undefined && swapHoldsFor(target, session));
 
 /** A message of yours a Stop named as still on its way, as it comes (`kuvo/sessions/<id>/stop
  * {items}`): kept on the box while the queue is paused (as what arrives then is) and held, after
@@ -239,6 +242,7 @@ export async function sendInto(target: Target, session: string, message: Outgoin
  * them with `inbox`. */
 function takeWaiting(session: string, item?: string, resume = false, inbox: InboxEntry[] = [], delivering = true): { shown: Waiting; message: (Outgoing & { id: string }) | null; held: boolean; before?: string } | null {
   let shown: Waiting | undefined;
+  let message: ReturnType<typeof waitingPayload> = null;
   let held = false;
   let before: string | undefined;
   changeQueue(session, state => {
@@ -246,20 +250,19 @@ function takeWaiting(session: string, item?: string, resume = false, inbox: Inbo
     const next = item ?? orderOf([], state)[0];
     shown = state.waiting?.find(each => each.id === next);
     if (!shown) return state;
+    message = waitingPayload(shown.id);
     const order = orderOf(inbox, state);
     before = order[order.indexOf(shown.id) + 1];
     held = state.held.includes(shown.id);
     return { ...state, ...(resume ? { paused: false, resumed: Date.now() } : {}), held: state.held.filter(id => id !== shown!.id), waiting: state.waiting!.filter(each => each !== shown) };
   });
   if (!shown) return null;
-  const message = waitingPayload(shown.id);
   fs.rmSync(waitingFile(shown.id), { force: true });
   return { shown, message, held, ...(before ? { before } : {}) };
 }
 
 function waitingPayload(id: string, strict = false): (Outgoing & { id: string }) | null {
-  let whole: unknown = null;
-  try { whole = JSON.parse(fs.readFileSync(waitingFile(id), "utf8")); } catch {}
+  const whole = files.readWaitingFile(waitingFile(id));
   return isObject(whole) && (!strict || (whole.id === id && (whole.files === undefined || Array.isArray(whole.files)))) &&
     typeof whole.text === "string" && (whole.delivery === "steer" || whole.delivery === "queue")
     ? { id, text: whole.text, delivery: whole.delivery, ...(Array.isArray(whole.files) ? { files: whole.files } : {}), ...(isObject(whole.metadata) ? { metadata: whole.metadata } : {}) }
@@ -274,12 +277,14 @@ export function carryQueue(from: string, to: string, renamed: Record<string, str
   // archived again (a client sends its metadata whole), and its queue is its own by then.
   const again = locked(FILES.lock, () => {
     let carried: Record<string, unknown> = {};
-    try { carried = JSON.parse(fs.readFileSync(CARRIED_FILE, "utf8")) ?? {}; } catch {}
+    try { carried = carriedFormat.read(JSON.parse(fs.readFileSync(CARRIED_FILE, "utf8"))); } catch (error) {
+      if (error instanceof UnsupportedFormatVersion) throw error;
+    }
     if (carried[from] === to) return true;
     delete carried[from];
     carried[from] = to;
     const kept = Object.entries(carried).slice(-MOST_CARRIED);
-    try { writePrivate(CARRIED_FILE, JSON.stringify(Object.fromEntries(kept))); } catch {}
+    try { writePrivate(CARRIED_FILE, JSON.stringify(carriedFormat.write(Object.fromEntries(kept)))); } catch {}
     return false;
   });
   if (again) return;
@@ -295,6 +300,7 @@ export function carryQueue(from: string, to: string, renamed: Record<string, str
 }
 
 // The carries made, from one session to the one it went on in, the latest few hundred.
+const carriedFormat = additiveObjectFormat("Conversation queue carry receipts");
 const CARRIED_FILE = path.join(RUN, "queues-carried.json");
 const MOST_CARRIED = 300;
 
@@ -424,8 +430,9 @@ export function unpackQueues(carried: unknown, sessions: readonly string[]): str
       seen.add(shown.id);
       const brought = message.files ?? [];
       if (!Array.isArray(brought) || !brought.every(file => isObject(file) && typeof file.uri === "string" && BASE64_DATA.test(file.uri))) throw new CantCarry(session);
-      return { shown, message: { id: shown.id, text: message.text, delivery: message.delivery,
-        ...(brought.length ? { files: brought } : {}), ...(isObject(message.metadata) ? { metadata: message.metadata } : {}) } };
+      const payload: Outgoing = { id: shown.id, text: message.text, delivery: message.delivery,
+        ...(brought.length ? { files: brought } : {}), ...(isObject(message.metadata) ? { metadata: message.metadata } : {}) };
+      return { shown, message: payload };
     });
     const ids = new Set(waiting.map(each => each.shown.id));
     if (!queue.held.every((id): id is string => typeof id === "string" && ids.has(id))) throw new CantCarry(session);
@@ -434,9 +441,14 @@ export function unpackQueues(carried: unknown, sessions: readonly string[]): str
       new Set(order).size !== order.length)) throw new CantCarry(session);
     return { session, waiting, held: queue.held, paused: queue.paused, order };
   });
+  const current = readQueues(true);
+  for (const { session, waiting } of prepared) {
+    checkWaitingFormats(current[session]?.waiting);
+    for (const { shown } of waiting) files.readWaitingFile(waitingFile(shown.id));
+  }
   for (const { session, waiting, held, paused, order } of prepared) {
     forgetQueue(session);
-    for (const { shown, message } of waiting) writeDurablePrivate(waitingFile(shown.id), JSON.stringify(message), RUN);
+    for (const { shown, message } of waiting) files.writeWaitingFile(waitingFile(shown.id), message, RUN);
     changeQueue(session, () => ({ paused: true, held, waiting: waiting.map(each => each.shown), ...(order?.length ? { order } : {}) }), true);
     if (!paused) goOn.push(session);
   }
@@ -448,9 +460,14 @@ export function forgetQueue(session: string): void {
   let gone: Waiting[] = [];
   changeQueue(session, state => {
     gone = state.waiting ?? [];
+    checkWaitingFormats(gone);
     return { paused: false, held: [] };
   });
   for (const each of gone) fs.rmSync(waitingFile(each.id), { force: true });
+}
+
+function checkWaitingFormats(waiting: Waiting[] = []): void {
+  for (const { id } of waiting) files.readWaitingFile(waitingFile(id));
 }
 
 /** One taken away from what waits on the box (Remove, or Edit): how it was shown, what would have
@@ -509,12 +526,10 @@ export function queueItems(inbox: InboxEntry[], state: QueueState): QueueItem[] 
     if (kept) {
       let delivery: "steer" | "queue" = "queue";
       let words = kept.text;
-      try {
-        const message = JSON.parse(fs.readFileSync(waitingFile(id), "utf8"));
-        if (message?.delivery === "steer") delivery = "steer";
-        const wake = wakeCard(typeof message?.text === "string" ? message.text : "", message?.metadata);
-        if (wake) words = wake.summary;
-      } catch {}
+      const message = files.readWaitingFile(waitingFile(id));
+      if (message?.delivery === "steer") delivery = "steer";
+      const wake = wakeCard(typeof message?.text === "string" ? message.text : "", message?.metadata);
+      if (wake) words = wake.summary;
       return [{ id, words, files: kept.files ?? [], keyword: kept.keyword ?? null, from: kept.from ?? null, on: "box", delivery, held }];
     }
     const entry = inbox.find(each => each.id === id);
@@ -566,7 +581,11 @@ export async function takeBackFromInbox(target: Target, session: string, item: s
 /** `session`'s next waiting message started, unless its queue is paused or a run is under way: as
  * `orderOf` has them, one in the engine's inbox by steering it (which starts a run) if it's queued,
  * by resuming if it's for the next step; one waiting on the box, sent to go now. */
-export async function drain(target: Target, session: string): Promise<void> {
+export function drain(target: Target, session: string): Promise<void> {
+  return admitPrompt(session, () => drainAdmitted(target, session));
+}
+
+async function drainAdmitted(target: Target, session: string, activating?: string): Promise<void> {
   // (Nothing starts on an engine being changed: what waits goes once the new one runs.)
   if (queueOf(session).paused || swapHoldsFor(target, session) || (await isRunning(target, session))) return;
   const inbox = await inboxOf(target, session);
@@ -580,7 +599,7 @@ export async function drain(target: Target, session: string): Promise<void> {
     return;
   }
   const next = inbox.find(item => item.id === first);
-  if (!next) { await sendWaiting(target, session, first); return; }
+  if (!next) { await sendWaiting(target, session, first, { activating }); return; }
   if (queueOf(session).waiting?.some(item => item.id === next.id) && await acceptedWaiting(target, session, next.id)) confirmWaiting(session, next.id);
   if (next.delivery === "queue") await setDelivery(target, session, next.id, "steer");
   else await interrupt(target, session, true);
@@ -602,7 +621,10 @@ async function acceptedWaiting(target: Target, session: string, item: string): P
 }
 
 function confirmWaiting(session: string, item: string): void {
-  changeQueue(session, state => ({ ...withoutOrder(state, item), held: state.held.filter(id => id !== item), waiting: state.waiting?.filter(each => each.id !== item) }), true);
+  changeQueue(session, state => {
+    files.readWaitingFile(waitingFile(item));
+    return { ...withoutOrder(state, item), held: state.held.filter(id => id !== item), waiting: state.waiting?.filter(each => each.id !== item) };
+  }, true);
   fs.rmSync(waitingFile(item), { force: true });
 }
 
@@ -610,17 +632,20 @@ const waitingSends = new Map<string, { item: string; sent: Promise<boolean> }>()
 
 // Keep the index and payload until acceptance. A process killed before that point can retry with
 // the exact same ID, including when the engine took the prompt but the reply was lost.
-async function sendWaiting(target: Target, session: string, item: string, { whilePaused = false, steer = true } = {}): Promise<boolean> {
+async function sendWaiting(target: Target, session: string, item: string, {
+  whilePaused = false, steer = true, releasingHold = false, activating,
+}: { whilePaused?: boolean; steer?: boolean; releasingHold?: boolean; activating?: string } = {}): Promise<boolean> {
   const pending = waitingSends.get(session);
   if (pending) {
     if (pending.item === item) return pending.sent;
     await pending.sent.catch(() => false);
-    return sendWaiting(target, session, item, { whilePaused, steer });
+    return sendWaiting(target, session, item, { whilePaused, steer, releasingHold, activating });
   }
-  const sent = (async () => {
+  const sent = admitPrompt(session, async () => {
     if (!await acceptedWaiting(target, session, item)) {
       const state = queueOf(session);
       if ((!whilePaused && state.paused) || !state.waiting?.some(each => each.id === item)) return false;
+      if (!releasingHold && swapHoldsFor(target, session)) return false;
       const message = waitingPayload(item);
       if (!message) throw new Error("A waiting message could not be read");
       await asked(target, "POST", `api/session/${address(session)}/prompt`, { ...message, ...(steer ? { delivery: "steer" } : {}) });
@@ -628,7 +653,7 @@ async function sendWaiting(target: Target, session: string, item: string, { whil
     }
     confirmWaiting(session, item);
     return true;
-  })().finally(() => waitingSends.delete(session));
+  }, activating).finally(() => waitingSends.delete(session));
   waitingSends.set(session, { item, sent });
   return sent;
 }
@@ -675,35 +700,42 @@ export async function stopSession(target: Target, session: string, holds = true,
 }
 
 /** Resume: the queue goes on, its next message now. */
-export async function resumeQueue(target: Target, session: string): Promise<QueueState> {
-  changeQueue(session, current => ({ ...current, paused: false, resumed: Date.now() }), true);
-  await drain(target, session);
-  return queueOf(session);
+export async function resumeQueue(target: Target, session: string, activating?: string): Promise<QueueState> {
+  return admitPrompt(session, async () => {
+    changeQueue(session, current => {
+      checkWaitingFormats(current.waiting);
+      return { ...current, paused: false, resumed: Date.now() };
+    }, true);
+    await drainAdmitted(target, session, activating);
+    return queueOf(session);
+  }, activating);
 }
 
 /** Send Now: `item` to the agent right away, the step under way stopped for it (one that runs goes
  * on from there with it), the queue no longer paused. False when it isn't waiting. */
 export async function sendNow(target: Target, session: string, item: string): Promise<boolean> {
-  // While the engine is being changed: no longer paused, and it goes first once the new one runs.
-  if (swapHoldsFor(target, session)) return goesFirst(session, item);
-  if (queueOf(session).waiting?.some(each => each.id === item)) {
-    const running = await isRunning(target, session);
+  return admitPrompt(session, async () => {
+    // While the engine is being changed: no longer paused, and it goes first once the new one runs.
     if (swapHoldsFor(target, session)) return goesFirst(session, item);
-    if (!(await sendWaiting(target, session, item, { whilePaused: true }))) return false;
-    changeQueue(session, state => ({ ...state, paused: false, resumed: Date.now() }), true);
-    if (running) await interrupt(target, session, true);
+    if (queueOf(session).waiting?.some(each => each.id === item)) {
+      const running = await isRunning(target, session);
+      if (swapHoldsFor(target, session)) return goesFirst(session, item);
+      if (!(await sendWaiting(target, session, item, { whilePaused: true }))) return false;
+      changeQueue(session, state => ({ ...state, paused: false, resumed: Date.now() }), true);
+      if (running) await interrupt(target, session, true);
+      return true;
+    }
+    const entry = (await inboxOf(target, session)).find(each => each.id === item);
+    if (swapHoldsFor(target, session)) return goesFirst(session, item);
+    if (!entry) return false;
+    // (What waits on the box stays, to go after it.)
+    changeQueue(session, state => ({ ...state, paused: false, held: state.held.filter(id => id !== item), resumed: Date.now() }));
+    const running = await isRunning(target, session);
+    // Steering wakes an idle session; a running one gets it once the step stops.
+    if (entry.delivery === "queue") await setDelivery(target, session, item, "steer");
+    if (running || entry.delivery === "steer") await interrupt(target, session, true);
     return true;
-  }
-  const entry = (await inboxOf(target, session)).find(each => each.id === item);
-  if (swapHoldsFor(target, session)) return goesFirst(session, item);
-  if (!entry) return false;
-  // (What waits on the box stays, to go after it.)
-  changeQueue(session, state => ({ ...state, paused: false, held: state.held.filter(id => id !== item), resumed: Date.now() }));
-  const running = await isRunning(target, session);
-  // Steering wakes an idle session; a running one gets it once the step stops.
-  if (entry.delivery === "queue") await setDelivery(target, session, item, "steer");
-  if (running || entry.delivery === "steer") await interrupt(target, session, true);
-  return true;
+  });
 }
 
 /** Steer: `item`, queued, to the agent at its next step in the run under way, without stopping it
@@ -712,22 +744,24 @@ export async function sendNow(target: Target, session: string, item: string): Pr
  * with nothing running, goes as Send Now sends it. A queue a Stop holds stays held. `toAgents`:
  * `target` is the bridge. False when it isn't waiting; it throws when the inbox can't be read. */
 export async function steerQueued(target: Target, session: string, item: string, toAgents: boolean): Promise<boolean> {
-  if (swapHoldsFor(target, session)) return goesFirst(session, item);
-  // (The engine's inbox as it is: one that can't be read says so, rather than Send Now stopping
-  // the step you meant to keep going.)
-  const entry = (await inboxOf(target, session)).find(each => each.id === item);
-  if (!entry || !(await isRunning(target, session))) return sendNow(target, session, item);
-  // Only this one is let go of what a Stop held: the rest wait for Resume, as 0.7's Steer left them.
-  changeQueue(session, state => ({ ...withoutOrder(state, item), held: state.held.filter(id => id !== item) }));
-  if (entry.delivery === "steer" && !toAgents) return true;
-  try {
-    await asked(target, "PATCH", `api/session/${address(session)}/inbox/${address(item)}`, { delivery: "steer", ...(toAgents ? { into: true } : {}) });
-  } catch (error) {
-    // (The agent took it meanwhile.)
-    if (/ 404\.$/.test(String((error as Error | null)?.message))) return false;
-    throw error;
-  }
-  return true;
+  return admitPrompt(session, async () => {
+    if (swapHoldsFor(target, session)) return goesFirst(session, item);
+    // (The engine's inbox as it is: one that can't be read says so, rather than Send Now stopping
+    // the step you meant to keep going.)
+    const entry = (await inboxOf(target, session)).find(each => each.id === item);
+    if (!entry || !(await isRunning(target, session))) return sendNow(target, session, item);
+    // Only this one is let go of what a Stop held: the rest wait for Resume, as 0.7's Steer left them.
+    changeQueue(session, state => ({ ...withoutOrder(state, item), held: state.held.filter(id => id !== item) }));
+    if (entry.delivery === "steer" && !toAgents) return true;
+    try {
+      await asked(target, "PATCH", `api/session/${address(session)}/inbox/${address(item)}`, { delivery: "steer", ...(toAgents ? { into: true } : {}) });
+    } catch (error) {
+      // (The agent took it meanwhile.)
+      if (/ 404\.$/.test(String((error as Error | null)?.message))) return false;
+      throw error;
+    }
+    return true;
+  });
 }
 
 // Send Now or Steer while the engine is being changed: `item`, waiting on the box, goes first once
@@ -737,6 +771,7 @@ function goesFirst(session: string, item: string): boolean {
   changeQueue(session, state => {
     const shown = state.waiting?.find(each => each.id === item);
     if (!shown) return state;
+    files.readWaitingFile(waitingFile(item));
     found = true;
     return { ...state, paused: false, resumed: Date.now(), held: state.held.filter(id => id !== item), waiting: [shown, ...state.waiting!.filter(each => each !== shown)],
       order: [item, ...(state.order ?? []).filter(id => id !== item)] };
@@ -781,8 +816,8 @@ async function transferInbox(target: Target, session: string): Promise<number> {
     if (text === null) continue;
     // (An ID the box can't name a file by: one of its own, the same each time.)
     const own = /^msg_[A-Za-z0-9]{1,80}$/.test(id) ? id : `msg_${crypto.createHash("sha256").update(id).digest("hex").slice(0, 32)}`;
-    const files = sendableFiles(entry.payload?.files);
-    const message = { id: own, text, delivery: entry.delivery, ...(files.length ? { files } : {}), ...(isObject(entry.payload?.metadata) ? { metadata: entry.payload!.metadata as Record<string, unknown> } : {}) };
+    const attachments = sendableFiles(entry.payload?.files);
+    const message = { id: own, text, delivery: entry.delivery, ...(attachments.length ? { files: attachments } : {}), ...(isObject(entry.payload?.metadata) ? { metadata: entry.payload!.metadata as Record<string, unknown> } : {}) };
     const shown = shownOfInbox(entry);
     const waiting: Waiting = { id: own, ...(shown.from ? { from: shown.from } : {}), text: shown.words, ...(shown.files.length ? { files: shown.files } : {}), ...(shown.keyword ? { keyword: shown.keyword } : {}), at: Date.now() };
     // Kept on the box, in its place (after those moved before it, ahead of what waited there), before
@@ -790,7 +825,7 @@ async function transferInbox(target: Target, session: string): Promise<number> {
     const saved = waitingFile(own);
     const alreadyKept = fs.existsSync(saved);
     changeQueue(session, state => {
-      writeDurablePrivate(saved, JSON.stringify(message), RUN);
+      files.writeWaitingFile(saved, message, RUN);
       const ranked = state.order && orderOf(inbox.filter(entry => remaining.has(entry.id)), state);
       const prefix = new Set(state.inboxMoved).add(own);
       const pending = new Map((state.waiting ?? []).map(item => [item.id, item]));
@@ -833,7 +868,7 @@ async function transferInbox(target: Target, session: string): Promise<number> {
  * or let go of (PROTOCOL.md, "A new engine"). One the engine doesn't confirm stays in place,
  * and that conversation's rest waits for the next look. Sessions the
  * engine doesn't have (the coding agents') are left. How many went. */
-export async function releaseWaiting(target: Target): Promise<number> {
+export async function releaseWaiting(target: Target, releasingHold = false): Promise<number> {
   let sent = 0;
   for (const [session, state] of Object.entries(readQueues())) {
     if (state.paused || !state.waiting?.length) continue;
@@ -856,7 +891,7 @@ export async function releaseWaiting(target: Target): Promise<number> {
       const now = queueOf(session);
       const next = orderOf([], now)[0];
       if (now.paused || !next) break;
-      if (!(await sendWaiting(target, session, next, { steer }).catch(() => false))) break;
+      if (!(await sendWaiting(target, session, next, { steer, releasingHold }).catch(() => false))) break;
       steer = false;
       sent++;
     }
@@ -1030,6 +1065,7 @@ export function queueWatcher(target: Target, { after = DRAIN_AFTER, schedule = s
 
 // The engine (or the agents' bridge) whose queues were last looked over, by its port, kept in
 // `run/` so a box that starts again beside the same engine doesn't take it for a new one.
+const scannedFormat = additiveObjectFormat("Conversation queue scan receipts");
 const SCANNED_FILE = path.join(RUN, "queues-scanned.json");
 
 // Whether `session`'s last run was stopped or failed, as its newest message says (the run's end,
@@ -1061,10 +1097,12 @@ async function settleFound(target: Target, session: string, known: boolean): Pro
 export async function scanQueues(target: Target & { pid?: number }, found?: ScanFound): Promise<void> {
   const known = locked(FILES.lock, () => {
     let scanned: Record<string, unknown> = {};
-    try { scanned = JSON.parse(fs.readFileSync(SCANNED_FILE, "utf8")) ?? {}; } catch {}
+    try { scanned = scannedFormat.read(JSON.parse(fs.readFileSync(SCANNED_FILE, "utf8"))); } catch (error) {
+      if (error instanceof UnsupportedFormatVersion) throw error;
+    }
     if (target.pid !== undefined && scanned[target.port] === target.pid) return true;
     scanned[target.port] = target.pid;
-    try { writePrivate(SCANNED_FILE, JSON.stringify(scanned)); } catch {}
+    try { writePrivate(SCANNED_FILE, JSON.stringify(scannedFormat.write(scanned))); } catch {}
     return false;
   });
   const page = await asked(target, "GET", "api/session?parentID=null&limit=100&order=desc") as { data?: { id?: string; time?: { updated?: number } }[] } | null;

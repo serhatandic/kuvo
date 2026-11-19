@@ -17,6 +17,7 @@ import { MAC_ROUTES } from "./mac";
 import { MESSAGE_ROUTES } from "./messages";
 import { MISC_ROUTES } from "./misc";
 import { MOVE_ROUTES } from "./moves";
+import { OWNERSHIP_ROUTES } from "./ownership";
 import { PERSONALITY_ROUTES } from "./personalities";
 import { PROJECT_ROUTES } from "./projects";
 import { SANDBOX_ROUTES } from "./sandbox";
@@ -57,6 +58,7 @@ export const ROUTES: RouteShape[] = [
   ...GROUP_ROUTES,
   ...INTEGRATION_ROUTES,
   ...MISC_ROUTES,
+  ...OWNERSHIP_ROUTES,
   ...PERSONALITY_ROUTES,
   ...PROJECT_ROUTES,
   ...SANDBOX_ROUTES,

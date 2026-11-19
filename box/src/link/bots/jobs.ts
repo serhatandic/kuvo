@@ -30,21 +30,39 @@ function readJob(folder: string): Job | null {
   }
 }
 
-export function writeJob(here: BotHere, job: Job): void {
-  const file = path.join(here.folder, JOB_FILE);
+export function projectJob(folder: string, job: Job): void {
+  const file = path.join(folder, JOB_FILE);
   fs.writeFileSync(`${file}.new`, JSON.stringify({ line: job.line, details: job.details, updated: stamp() }, null, 2));
   fs.renameSync(`${file}.new`, file);
-  // COMPAT(0.7 bot-json-job): the job's line in `bot.json` too, where an older Mac reads it. Goes in #717's next part.
-  // Its description says it in a few words too, for what reads only that (a Mac of an earlier version).
-  // (Onto it as it is now, under its lock: what another change saved is kept.)
-  if ((here.described.job ?? "") !== job.line) here.described = changeDescription(here.folder, now => ({ ...(now ?? here.described), job: job.line }));
+}
+
+export function writeJob(here: BotHere, job: Job): void {
+  here.described = changeDescription(here.folder, now => {
+    if (!now) throw new Error("That bot isn't here any more.");
+    projectJob(here.folder, job);
+    // COMPAT(0.7 bot-json-job): the line in the description is what an earlier Mac reads. Goes in #717's next part.
+    if (now.offlineJob) return { ...now, job: job.line, offlineJob: job };
+    return now.job === job.line ? now : { ...now, job: job.line };
+  }, Boolean(here.described.offlineEdits));
+}
+
+export function projectSavedJob(here: BotHere): void {
+  changeDescription(here.folder, now => {
+    if (!now) throw new Error("That bot isn't here any more.");
+    const kept = now.offlineJob;
+    if (isObject(kept) && typeof kept.line === "string" && typeof kept.details === "string")
+      projectJob(here.folder, { line: kept.line, details: kept.details });
+    return now;
+  }, true);
 }
 
 // A bot's job. One from before bots kept it here is taken once from where it was: its memory's
 // Job section, as bots kept it, which stays in its memory as it is; or, without one, what Edit Bot
 // wrote before memories kept jobs (in the app's list, `bots.json`, for one of this Mac's; in its
 // description, for a machine's).
-export function jobOf(here: BotHere): Job {
+export function jobOf(here: BotHere, save = true): Job {
+  const atomic = here.described.offlineJob;
+  if (isObject(atomic) && typeof atomic.line === "string" && typeof atomic.details === "string") return { line: atomic.line, details: atomic.details };
   const kept = readJob(here.folder);
   if (kept) return kept;
   const memory = jobInMemory(textOf(path.join(here.folder, "MEMORY.md")) ?? "");
@@ -55,7 +73,7 @@ export function jobOf(here: BotHere): Job {
     if (listed && listed.jobInMemory !== true) job = { line: plainName(listed.job ?? ""), details: detailsBeyond(plainName(listed.job ?? ""), listed.instructions) };
   }
   // Not while it moves: its folder is the move's until it's there.
-  if (!isMoving(here.folder)) try { writeJob(here, job); } catch {}
+  if (save && !isMoving(here.folder)) try { writeJob(here, job); } catch {}
   return job;
 }
 
@@ -84,7 +102,8 @@ function macListed(): (ListedBot | null)[] {
 export function keepJobs(): void {
   for (const id of listOf(BOTS)) {
     const here = botHere(id);
-    if (here) jobOf(here);
+    if (here?.described.offlineJob && !isMoving(here.folder)) try { projectSavedJob(here); } catch {}
+    else if (here) jobOf(here);
   }
 }
 

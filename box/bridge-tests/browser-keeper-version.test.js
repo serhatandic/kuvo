@@ -1,6 +1,6 @@
 // Which keeper of the browser runs on a machine, now that its version is a hash the box's build
-// writes (KEEPER in box/src/browser/kuvo-browser.js): one from before, or of another build,
-// gives way to the file in place; the same build is left running; and a process started before its
+// writes (KEEPER in box/src/browser/kuvo-browser.js): a compatible idle keeper of another build
+// gives way to the file in place. A busy or legacy keeper keeps its clients, and a process started before its
 // file was replaced (an update) leaves the running keeper be. The live view (`kuvo-browser.js
 // connect`, as the Mac runs it over SSH) meets a stand-in keeper on the keeper's socket.
 //
@@ -27,6 +27,7 @@ async function machine(hello, keyed = () => {}) {
   removeAtEnd(home);
   fs.mkdirSync(path.join(home, "run"), { mode: 0o700 });
   const sockets = new Set();
+  const checks = [];
   let stopped;
   const stop = new Promise((resolve) => (stopped = resolve));
   const keeper = net.createServer((socket) => {
@@ -44,10 +45,17 @@ async function machine(hello, keyed = () => {}) {
         if (message.method === "Kuvo.key") {
           keyed();
           socket.write(JSON.stringify({ method: "Kuvo.hello", params: { targetId: null, viewers: 1, held: [], ...hello } }) + "\n");
+        } else if (message.method === "Kuvo.stopIfIdle" && hello.idleStop) {
+          checks.push(message.method);
+          const idle = !hello.asks?.length && !hello.busy;
+          socket.write(JSON.stringify({ id: message.id, result: { stopping: idle } }) + "\n", () => {
+            if (!idle) return;
+            keeper.close();
+            for (const each of sockets) each.destroy();
+            stopped(true);
+          });
         } else if (message.method === "Kuvo.stop") {
-          keeper.close();
-          for (const each of sockets) each.destroy();
-          stopped(true);
+          assert.fail("A file change must never force the keeper to stop.");
         }
       }
     });
@@ -57,7 +65,7 @@ async function machine(hello, keyed = () => {}) {
     keeper.close();
     for (const each of sockets) each.destroy();
   });
-  return { home, stop };
+  return { home, stop, checks };
 }
 
 /** The live view, from `script` (the built file by default): what it says first. */
@@ -78,17 +86,27 @@ test("the built file has its keeper's version written in", () => {
   assert.match(KEEPER ?? "", /^[0-9a-f]{12}$/);
 });
 
-test("a keeper from before its version was a hash gives way", async () => {
-  const { home, stop } = await machine({ keeper: 50 });
+test("a legacy keeper stays available until it stops by itself", async () => {
+  const { home, checks } = await machine({ keeper: 50 });
+  const first = await liveView(home);
+  assert.equal(first.params.keeper, 50);
+  assert.deepEqual(checks, []);
+});
+
+test("an idle keeper of another build gives way to the file in place", async () => {
+  const { home, stop } = await machine({ keeper: 51, build: "000000000000", idleStop: true });
   liveView(home);
   assert.equal(await stop, true);
 });
 
-test("a keeper of another build gives way to the file in place", async () => {
-  const { home, stop } = await machine({ keeper: 51, build: "000000000000" });
-  liveView(home);
-  assert.equal(await stop, true);
-});
+for (const busy of [{ busy: true }, { asks: [{ id: "ask" }] }]) {
+  test(`a keeper with ${busy.busy ? "a client" : "an open ask"} keeps answering`, async () => {
+    const { home, checks } = await machine({ keeper: 51, build: "000000000000", idleStop: true, ...busy });
+    const first = await liveView(home);
+    assert.equal(first.params.build, "000000000000");
+    assert.deepEqual(checks, ["Kuvo.stopIfIdle"]);
+  });
+}
 
 test("the same build is left running", async () => {
   let asked = false;

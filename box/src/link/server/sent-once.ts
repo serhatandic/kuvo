@@ -8,7 +8,7 @@
 
 import type { AnswerPiece } from "./context";
 
-export type SentAnswer = { status: number; headers: Record<string, string>; body: Buffer };
+export type SentAnswer = { status: number; headers: Record<string, string>; body: Buffer; notAdmitted?: true };
 
 // What a message says when the engine here runs but is too busy to take it in time (504, `busy`):
 // it isn't down, and it can be sent again in a moment (#443).
@@ -24,7 +24,7 @@ export async function collected(pieces: AsyncIterable<AnswerPiece>): Promise<Sen
   const answer: SentAnswer = { status: 200, headers: {}, body: Buffer.alloc(0) };
   const body: Buffer[] = [];
   for await (const piece of pieces) {
-    if ("head" in piece) Object.assign(answer, { status: piece.head.status, headers: piece.head.headers });
+    if ("head" in piece) Object.assign(answer, piece.head);
     else body.push(piece.body);
   }
   return { ...answer, body: Buffer.concat(body) };
@@ -32,7 +32,7 @@ export async function collected(pieces: AsyncIterable<AnswerPiece>): Promise<Sen
 
 // `answer` as a route answers it.
 export function* answering(answer: SentAnswer): Generator<AnswerPiece> {
-  yield { head: { status: answer.status, headers: answer.headers } };
+  yield { head: { status: answer.status, headers: answer.headers, ...(answer.notAdmitted ? { notAdmitted: true } : {}) } };
   if (answer.body.length) yield { body: answer.body };
 }
 

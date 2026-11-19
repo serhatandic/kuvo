@@ -1,4 +1,7 @@
+import type { Feature } from "../shared/features"
 import { insightsRoutes } from "./usage/insights"
+import { UnsupportedFormatVersion } from "../shared/format-version"
+import { ROUTE_VERSION, ROUTE_VERSION_HEADER, routeVersionError } from "../shared/route-version"
 import { GITHUB_WORK_QUEUE } from "../shared/github"
 import { failureWords } from "../shared/sign-in-failure"
 import type { GitHubSignIn } from "./github-sign-in"
@@ -23,7 +26,7 @@ import { voiceRoutes, type VoiceWords } from "./voice"
 import { limitsRoutes, type Limits } from "./limits"
 import { usageRoutes, type Usage } from "./usage/usage"
 import { isOutdated, type Maintenance } from "./maintenance"
-import { forgetUpdate, inUpdateAll, programUpdate, updateAll, updateProgram } from "./updates"
+import { forgetUpdate, inUpdateAll, programUpdate, resumeProgramUpdates, updateAll, updateProgram } from "./updates"
 import { refreshLoginPath } from "./proc"
 import { setToolServer } from "./kuvotools"
 import { noteToolServer } from "./fence"
@@ -47,6 +50,8 @@ export interface Context {
   auto: Auto
   link: EngineLink
   password: string
+  /** Where accepted program updates wait across a bridge restart. */
+  programHome?: string
   version: string
   /** The build it runs, as its bundle names it (none run from its sources). */
   build?: string | null
@@ -60,6 +65,7 @@ export interface Context {
   goals?: Goals
   /** The record of what this computer's agents made (artifacts/store.ts); none where it couldn't start. */
   artifacts?: ArtifactStore
+  artifactFormatError?: UnsupportedFormatVersion
   /** A file a conversation got without a tool call naming it (artifacts/recorder.ts, `noted`). */
   noted?: (session: string, path: string, via: string) => Promise<boolean>
   /** The box's other keywords: side questions, handoffs and reviews (btw.ts, handoff.ts, reviews.ts). */
@@ -229,13 +235,44 @@ function page<T extends { id: string }>(items: T[], url: URL): { data: T[]; curs
   return { data, cursor: { next } }
 }
 
+// The bridge extensions behind kuvo/agents/api/kuvo. A new extension needs a
+// feature advertised by the Box. Internal operations share the bridge's name.
+const BRIDGE_EXTENSIONS = {
+  accounts: "agents.accounts",
+  artifacts: "agents",
+  auto: "auto.lists",
+  branch: "branch",
+  btw: "btw",
+  carry: "moves.agents",
+  engine: "agents",
+  goals: "work.goals",
+  groups: "agents",
+  handoff: "handoff",
+  insights: "usage.insights",
+  limits: "limits",
+  link: "agents",
+  peers: "agents",
+  reviews: "reviews",
+  sandbox: "sandbox",
+  tools: "agents",
+  updates: "agents.updates",
+  usage: "usage.history",
+  voice: "agents.voice",
+} as const satisfies Record<string, Feature>
+
+function bridgeExtension(name: string | undefined): name is keyof typeof BRIDGE_EXTENSIONS {
+  return name !== undefined && Object.hasOwn(BRIDGE_EXTENSIONS, name)
+}
+
 const PROGRAM_RELEASE_INTERVAL = 60 * 60_000
 
-export function handler(context: Context) {
+export function handler(context: Context, transferring?: () => boolean) {
   const expected = "Basic " + Buffer.from(`opencode:${context.password}`).toString("base64")
   const { sessions, roster, auto, link } = context
   const agentFor = (id: string) => roster.find(id)
   const note = (agent: Agent, value: Maintenance) => maintainedNow(agent, value, roster.all().filter(each => each.id === agent.id))
+  const programs = { home: context.programHome, hold: sessions?.holdProgram?.bind(sessions) }
+  resumeProgramUpdates(() => roster.all(), note, programs)
   const accounts = new AccountRefresh(context.limits)
   const signedIn = (agent: Agent) => void accounts.signedIn(agent).then(() => context.usage?.refresh()).catch(() => {})
   if (context.refreshAccounts) {
@@ -260,8 +297,7 @@ export function handler(context: Context) {
     })
   }
 
-  return async (request: Request): Promise<Response> => {
-    if (request.headers.get("authorization") !== expected) return error(401, "Unauthorized")
+  const answer = async (request: Request): Promise<Response> => {
     const url = new URL(request.url)
     const parts = url.pathname.split("/").filter(Boolean).map(decodeURIComponent)
     const method = request.method
@@ -530,6 +566,7 @@ export function handler(context: Context) {
             sessions.selectAgent(id, (await body()).agent)
             return json({})
           case "permission":
+            if (!(await sessions.permissionsReady(id, request.signal))) return json({ message: "Kuvo is restoring this session’s approvals. Try again in a moment." }, 503)
             // What the engine asks for everyone ("global": its MCP servers') isn't asked here.
             if (!c) return json({ data: id === "global" ? [] : sessions.permissions(id) })
             if (d === "reply") {
@@ -560,7 +597,9 @@ export function handler(context: Context) {
       }
 
       // Your accounts with the agents: adding one (it then signs in as any does), naming one, removing one.
-      if (area === "kuvo" && a === "accounts") {
+      const extension = area === "kuvo" && bridgeExtension(a) ? a : undefined
+
+      if (extension === "accounts") {
         if (method === "POST" && !b) {
           const { agent: givenAgent, provider, label } = await body()
           const agent = givenAgent ?? (typeof provider === "string" ? parseProvider(provider)?.kind : undefined)
@@ -599,10 +638,10 @@ export function handler(context: Context) {
       // how it goes (`metadata.programUpdate`). `POST kuvo/updates`: Update All, each program it
       // picks (`metadata.updateAll`); `POST kuvo/updates/<provider>`: that account's program;
       // `DELETE kuvo/updates/<provider>?at=…`: how that one went, seen, for every client.
-      if (area === "kuvo" && a === "updates" && !c) {
+      if (extension === "updates" && !c) {
         if (!b) {
           if (method !== "POST") return error(405, "Not allowed.")
-          return json({ data: { updating: await updateAll(roster.all(), () => roster.all(), maintainedNow, (agent) => lastMaintained.get(agent.id)) } })
+          return json({ data: { updating: await updateAll(roster.all(), () => roster.all(), maintainedNow, (agent) => lastMaintained.get(agent.id), programs) } })
         }
         const agent = agentFor(b)
         if (!agent) return error(404, `No agent ${b}.`)
@@ -615,37 +654,40 @@ export function handler(context: Context) {
         }
         if (method !== "POST") return error(405, "Not allowed.")
         if (!agent.update || !agent.maintenance) return error(400, `Update ${agent.name} the way you installed it.`)
-        void updateProgram(agent, () => roster.all(), maintainedNow)
+        void updateProgram(agent, () => roster.all(), maintainedNow, programs)
         return json({ data: { updating: [agent.id] } })
       }
 
       // Where Kuvo Code's own tools are (the app says each time they start), for every agent here.
       // The group chats that live on this machine.
       // You said to restart the agents started before the box's sandbox was on (`kuvo/sandbox/restart`, from the box's link).
-      if (area === "kuvo" && a === "sandbox" && b === "restart" && !c && method === "POST") {
+      if (extension === "sandbox" && b === "restart" && !c && method === "POST") {
         context.restartOutside?.()
         return json({})
       }
-      if (area === "kuvo" && a === "carry") return await carryRoutes(context.carrying, method, parts.slice(3), body)
-      if (area === "kuvo" && a === "goals") return await goalRoutes(context.goals, method, parts.slice(3), body)
-      if (area === "kuvo" && a === "btw") return await sideQuestionRoutes(context.sideQuestions, method, parts.slice(3), body)
-      if (area === "kuvo" && a === "handoff") return await handoffRoutes(context.handoffs, method, parts.slice(3), body)
-      if (area === "kuvo" && a === "branch") return await branchRoutes(context.places, method, parts.slice(3), body)
-      if (area === "kuvo" && a === "reviews") return await reviewRoutes(context.reviews, method, parts.slice(3), body)
-      if (area === "kuvo" && a === "voice") return await voiceRoutes(context.voice, method, parts.slice(3))
-      if (area === "kuvo" && a === "limits") return await limitsRoutes(context.limits, method, parts.slice(3), body)
-      if (area === "kuvo" && a === "insights") return await insightsRoutes(context.usage?.insights, method, parts.slice(3), url.searchParams)
-      if (area === "kuvo" && a === "usage") return await usageRoutes(context.usage, method, parts.slice(3), url.searchParams, body)
-      if (area === "kuvo" && a === "groups") return await groupRoutes(context.groups?.runner, context.groups?.store, method, parts.slice(3), body)
+      if (extension === "carry") return await carryRoutes(context.carrying, method, parts.slice(3), body)
+      if (extension === "goals") return await goalRoutes(context.goals, method, parts.slice(3), body)
+      if (extension === "btw") return await sideQuestionRoutes(context.sideQuestions, method, parts.slice(3), body)
+      if (extension === "handoff") return await handoffRoutes(context.handoffs, method, parts.slice(3), body)
+      if (extension === "branch") return await branchRoutes(context.places, method, parts.slice(3), body)
+      if (extension === "reviews") return await reviewRoutes(context.reviews, method, parts.slice(3), body)
+      if (extension === "voice") return await voiceRoutes(context.voice, method, parts.slice(3))
+      if (extension === "limits") return await limitsRoutes(context.limits, method, parts.slice(3), body)
+      if (extension === "insights") return await insightsRoutes(context.usage?.insights, method, parts.slice(3), url.searchParams)
+      if (extension === "usage") return await usageRoutes(context.usage, method, parts.slice(3), url.searchParams, body)
+      if (extension === "groups") return await groupRoutes(context.groups?.runner, context.groups?.store, method, parts.slice(3), body)
       // The same, as a client reads and changes them (`kuvo/groups`, which the box's link passes on).
-      if (area === "kuvo" && a === "link" && b === "groups") return await linkRoutes(context.groups?.runner, context.groups?.store, method, parts.slice(4), body, request.signal)
+      if (extension === "link" && b === "groups") return await linkRoutes(context.groups?.runner, context.groups?.store, method, parts.slice(4), body, request.signal)
       // What this computer's agents made (`kuvo/artifacts`, which the box's link passes on).
-      if (area === "kuvo" && a === "artifacts" && b === "noted" && !c) return await notedRoute(context.noted, method, body)
-      if (area === "kuvo" && a === "link" && b === "artifacts") return await artifactRoutes(context.artifacts, method, parts.slice(4), url.searchParams, body, request.signal)
+      if (extension === "artifacts" && b === "noted" && !c) return await notedRoute(context.noted, method, body)
+      if (extension === "link" && b === "artifacts") {
+        if (context.artifactFormatError) throw context.artifactFormatError
+        return await artifactRoutes(context.artifacts, method, parts.slice(4), url.searchParams, body, request.signal)
+      }
       // Group chats and plan limits across your computers, as the box's link carries their mail (groups/post.ts).
-      if (area === "kuvo" && a === "peers") return await peerRoutes(context.peers ?? context.groups?.peers, method, parts.slice(3), body, request.signal)
+      if (extension === "peers") return await peerRoutes(context.peers ?? context.groups?.peers, method, parts.slice(3), body, request.signal)
 
-      if (area === "kuvo" && a === "tools" && method === "PUT") {
+      if (extension === "tools" && method === "PUT") {
         const { url: address, token, timeout } = await body()
         setToolServer(typeof address === "string" && address && typeof token === "string" ? { url: address, token, timeout: Number(timeout) || 960_000 } : undefined)
         noteToolServer(typeof address === "string" && typeof token === "string" ? address : undefined)
@@ -653,14 +695,14 @@ export function handler(context: Context) {
       }
 
       // Where the engine is (the app says each time it starts), for its models in sessions here.
-      if (area === "kuvo" && a === "engine" && method === "PUT") {
+      if (extension === "engine" && method === "PUT") {
         const { url: address, password } = await body()
         link.configure(typeof address === "string" && address ? address : undefined, typeof password === "string" ? password : undefined)
         return json({})
       }
 
       // Auto: your list of models, and the ones held back at a limit until it resets.
-      if (area === "kuvo" && a === "auto") {
+      if (extension === "auto") {
         if (b === "limits" && method === "DELETE") {
           // One account's (you signed in to it again, or switched to another of it), or all.
           const provider = url.searchParams.get("provider")
@@ -707,6 +749,7 @@ export function handler(context: Context) {
 
       return error(404, "Not available for this agent.")
     } catch (caught) {
+      if (caught instanceof UnsupportedFormatVersion) return Response.json({ code: "unsupportedFormatVersion", message: caught.message }, { status: 409 })
       if (/^\/api\/integration\/[^/]+\/connect\/oauth(?:\/|$)/.test(url.pathname)) {
         return error(502, "The sign-in couldn’t continue. Try again.")
       }
@@ -714,6 +757,19 @@ export function handler(context: Context) {
       if (caught instanceof BadRequest) return error(400, caught.message)
       return error(500, caught instanceof Error ? caught.message : String(caught))
     }
+  }
+
+  return async (request: Request): Promise<Response> => {
+    if (request.headers.get("authorization") !== expected) return error(401, "Unauthorized")
+    const refusal = routeVersionError(request.headers.get(ROUTE_VERSION_HEADER) ?? undefined)
+    if (refusal) return Response.json(refusal, { status: 400, headers: { [ROUTE_VERSION_HEADER]: ROUTE_VERSION } })
+    if (transferring?.()) return new Response(null, { status: 503, headers: {
+      [ROUTE_VERSION_HEADER]: ROUTE_VERSION, "retry-after": "1", "x-kuvo-bridge-handover": "1",
+    } })
+    const response = await answer(request)
+    const headers = new Headers(response.headers)
+    headers.set(ROUTE_VERSION_HEADER, ROUTE_VERSION)
+    return new Response(response.body, { status: response.status, statusText: response.statusText, headers })
   }
 }
 

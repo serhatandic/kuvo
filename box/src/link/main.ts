@@ -1,3 +1,5 @@
+import { isObject } from "../shared/json";
+import { usesAcceptedSaves } from "./setup/record";
 // (The command line: what each command does is in the modules beside it, box/README.md.)
 // Kuvo Code's link on a machine: lets the phones you've paired reach this machine's engine
 // through the relay, so its sessions and bots work from the phone with the Mac closed. The
@@ -15,6 +17,10 @@
 // is kuvo-ai's protocol/PROTOCOL.md, with the same in Swift (swift/KuvoLink) for the Mac and
 // the phone.
 
+import { LEADERSHIP_WAIT, primaryFenced } from "./setup/lease";
+import { ROUTE_VERSION, ROUTE_VERSION_HEADER } from "../shared/route-version";
+import { UnsupportedFormatVersion } from "../shared/format-version";
+import { routeRequestHeaders, unsupportedFormatReply } from "./server/format";
 import { takeSeed } from "./add/seed";
 import { spawn } from "node:child_process";
 import crypto from "node:crypto";
@@ -51,8 +57,8 @@ import { addressOf, newKey, publicOf } from "./crypto/keys";
 import { IKInitiator, IKResponder, openOneWay, PROLOGUE, sealOneWay } from "./crypto/noise";
 import { docsNoted, noteDocsChanged, onDocsChanged } from "./documents/changed";
 import { docsChanged, macDocsChanged } from "./documents/exchange";
-import { authorizeDesktopConnection, refreshPhoneTrust } from "./documents/phone-sync";
-import { newSigningSeed, ownSign, SIGN } from "./documents/format";
+import { authorizeDeviceConnection, refreshPhoneTrust } from "./documents/phone-sync";
+import { newSigningSeed, ownSign, readDoc, SIGN } from "./documents/format";
 import { docsWork, ownDocs, pruneDocs } from "./documents/work";
 import { bridgeTarget, peerPlaces, peerTargets, readBridgeFile, readEngineFile } from "./engine/client";
 import { applyCompatibility, engineConfigContent, knowsEngineSettings } from "./engine/compatibility";
@@ -64,7 +70,7 @@ import { writePrivate } from "./files";
 import { browserStatus, installBrowser, startBrowserInstall } from "./browser/install";
 import { foldHistory } from "./browser/history";
 import { takeInAppBrowserData, thisMacsAppFolder } from "./browser/from-app";
-import { APP_FOLDER, BRIDGE_FILE, IS_MAC, K, KEYS_ON_HOST, MAC_APP_VERSION, NEEDED_FILE, OWN_HOME_MAC, OWN_RUNTIME, PID_FILE, REAL_BOX, RUN, scriptIs, socketKey, takeVaultSecrets, VERSION_FILE } from "./home";
+import { APP_FOLDER, BRIDGE_FILE, IS_MAC, K, KEYS_ON_HOST, MAC_APP_VERSION, NEEDED_FILE, OWN_HOME_MAC, OWN_RUNTIME, PID_FILE, REAL_BOX, RUN, scriptIs, socketKey, takeVaultSecrets, upgradeLinkFolder, VERSION_FILE } from "./home";
 import { installCommand } from "./install/command";
 import { rehomeCommand } from "./rehome/command";
 import { clearKept, SERVED_FILE } from "./rehome/move";
@@ -76,7 +82,9 @@ import { SENDING } from "./letters/letter";
 import { watchFolders } from "./follow";
 import { pushRows } from "./work/elsewhere";
 import { pushNumbers } from "./work-queue/numbers";
-import { noteSetupNow } from "./setup/lead";
+import { startTakeover } from "./setup/takeover";
+import { initializeMachineSetup, noteSetupNow, settleOwnSetup } from "./setup/lead";
+import { PRIMARY_UNLINK } from "./setup/leadership";
 import { macName, mainElsewhere, pairElsewhere } from "./setup/main-only";
 import { writeCard } from "./setup/card";
 import { hereNow } from "./setup/judge";
@@ -86,7 +94,7 @@ import { reachAgainSoon, sendReachAgain } from "./peers/reach-again";
 import { heldSoon, sendHeld } from "./bots/held";
 import { handUpkeepSoon } from "./work-queue/hand";
 import { clearStaging } from "./work-queue/ops";
-import { macLinkCheck } from "./mac/link";
+import { macLinkCheck, tellUntold } from "./mac/link";
 import { macNoticeHold, macTell } from "./mac/notices";
 import { runMacPeers } from "./mac/peers";
 import { runMacLink } from "./mac/relay";
@@ -99,9 +107,10 @@ import { HELD_FILE, NoticeHold } from "./notices/hold";
 import { keepTold, markTeller, watchSentByAgents } from "./notices/told";
 import { sendToPhones } from "./notices/push";
 import { announce, forgetMacsAgents, refreshOwn } from "./peers/agents";
-import { forgetOldMacs, KEY, leaveMac, macsOf, noteOnline, peersOf, takeLegacyPeers } from "./peers/known";
+import { forgetOldMacs, KEY, leaveMac, macsOf, noteOnline, ownKey, peersOf, takeLegacyPeers } from "./peers/known";
 import { peerMail, receiveMail } from "./peers/mail";
 import { tellSeatPeers, watchSeats, whereChanged } from "./peers/seats";
+import { savePersonalityLibrary } from "./areas/personalities";
 import { changePersonalities, mergePersonalities, readPersonalities } from "./personalities/library";
 import { takePersonalities } from "./personalities/take";
 import { confirmPhone, foldPhones, newPairingToken, PAIRING_MINUTES, pairingLink } from "./phones";
@@ -109,10 +118,13 @@ import { connectOnce, nextTry } from "./relay/connection";
 import { LinkHost } from "./relay/host";
 import { engineHandler } from "./server/router";
 import { serveBox } from "./server/serve";
-import { macLink, macSign, onLinkWritten, readLink, updateLink } from "./state";
+import { liveLink, machineLink, macLink, macSign, onLinkWritten, readLink, updateLink } from "./state";
 import { keepKeyFiles } from "./keys";
 import { keepAwakeWhileWorking } from "./work/awake";
-import { runningServe, SERVE_FILE, SERVE_NEEDED } from "./serve-kept";
+import { readServeRecord, runningServe, SERVE_FILE, SERVE_NEEDED, writeServeRecord } from "./serve-kept";
+import { scheduleWipe, wipeCommand } from "./setup/wipe";
+import { localRemovalPending } from "./setup/removal-record";
+import { sendRemovalUpdates } from "./setup/removal";
 import { logCleanup, uninstallCommand } from "./uninstall";
 import { helperCommand } from "./helper";
 import { handOverCommand, watchHelperBuild } from "./compat/helper-handover";
@@ -121,10 +133,11 @@ import { leaveForNewCode } from "./updates/code-in-place";
 import { sayWhole } from "./once";
 import { featuresNow, settleUpdate, startSettling } from "./updates/health";
 import { handOverMachine, recoverMachineJob, startMachineInstall, swapEngine } from "./updates/engine-swap";
-import { type UpdateOptions, ON_TRIAL, UPDATING_ALREADY, agentsWorking, dropOldBackups, passingOutcome, updateOnTrial, checkDrift, failedInPassing, offerWaits, isUpdating, noteLauncher, noteOlderMacs, installerSteps, noteUpdate, startOfferedUpdate, startUpdate, takeOffer, untilFree, update, UPDATE_KEYS, releaseRound, updatesBlocked, updateState, updateStatus } from "./updates/update";
+import { type UpdateOptions, UPDATING_ALREADY, agentsWorking, dropOldBackups, passingOutcome, updateOnTrial, checkDrift, failedInPassing, offerWaits, isUpdating, noteLauncher, noteOlderMacs, requestUpdateNow, updateStatusHere, installerSteps, noteUpdate, startOfferedUpdate, startUpdate, takeOffer, untilFree, update, UPDATE_KEYS, releaseRound, updatesBlocked, updateState, updateStatus } from "./updates/update";
 import { clearIncoming, followOver, followPeers, watchHeld } from "./updates/fleet";
+import { checkFolderVersion, setupLayoutDeferred, unlinkCleanupLayoutReady } from "../shared/folder-version";
 import { BRIDGE_VERSION } from "./version";
-import { ADD_RESERVATION, SETUP_OCCUPIED } from "./marks";
+import { ADD_RESERVATION, SETUP_LOCAL_PAIRINGS, SETUP_OCCUPIED } from "./marks";
 import type { AddressInfo } from "node:net";
 import type { SignedDoc } from "../shared/documents";
 import type { EngineRecord } from "../shared/records";
@@ -143,6 +156,8 @@ export { addressOf, newKey, publicOf } from "./crypto/keys";
 export { CipherState, IKInitiator, IKResponder, MAIL_PROLOGUE, openOneWay, PROLOGUE, sealOneWay } from "./crypto/noise";
 export { decodeMessage, encodeMessage, Frame, frame, pieces, readFrame, readRelay, relayHello, relayPush, relaySend } from "./relay/frames";
 export { isSecretName, markingHashes, masked, maskedHexValues, maskedNamed, namesHash, showsAll } from "./notices/mask";
+import type { CommittedReceipt, Receipt, SaveEnvelope } from "../shared/routes/setup-save";
+export { askSetupOutcome, askSetupSave, askSetupStatus } from "../shared/setup-local";
 export { docBytes, MOST_DOC, newSigningSeed, ownSign, readDoc, signDoc, signingKeyOf } from "./documents/format";
 export { IS_MAC, LINK_FILE } from "./home";
 export { boxPlaces } from "./places";
@@ -222,7 +237,7 @@ export { noteDocsChanged } from "./documents/changed";
 export { authorizePhone, confirmPhone, foldPhones, newPairing, ownPhones, pairDevice, pairPhone, removeAsMac, removePhones } from "./phones";
 export { deviceAct, givenDevice, pairDeviceFromHere, pairHere } from "./peers/devices";
 export { noLongerNeeded } from "./keeper";
-export { changedWork, digestOf, docMails, docsWork, greetWork, macPeersBody, ownDoc, takeDoc } from "./documents/work";
+export { changedWork, digestOf, docMails, docsWork, greetWork, primaryPeersBody, primaryPeersBody as macPeersBody, ownDoc, takeDoc } from "./documents/work";
 export { leadsNow, noteSetupNow, settleOwnSetup } from "./setup/lead";
 export { settleSetup } from "./setup/settle";
 export { followedSetup, newSetupID, startsFromOthers } from "./setup/record";
@@ -296,7 +311,7 @@ onDocsChanged(macDocsChanged);
 
 // Your time zone changed here (a pick, a peer's, an older Mac's kit): your other computers hear at once.
 zoneFollowers.add(() => {
-  const host = IS_MAC ? macLink.host : liveHost;
+  const host = liveLink();
   if (host?.welcomed) announce(host, readEngineFile).catch(() => {});
 });
 
@@ -305,7 +320,7 @@ onLinkWritten(link => {
   // settings go between the boxes of one setup).
   if (whereChanged(link)) {
     tellSeatPeers(link, true).catch(() => {});
-    const host = IS_MAC ? macLink.host : liveHost;
+    const host = liveLink();
     if (host?.welcomed) announce(host, readEngineFile, link).catch(() => {});
   }
   if (IS_MAC) {
@@ -322,14 +337,11 @@ onLinkWritten(link => {
   }
   // Devices no longer let in (removed on another computer, as its phones document says) lose what
   // they have open, a moment after, as on a Mac.
-  if (liveHost) setTimeout(() => liveHost?.keepOnly(new Set((readLink()?.phones ?? []).map(phone => phone.key))), 200).unref?.();
+  if (machineLink.host) setTimeout(() => machineLink.host?.keepOnly(new Set((readLink()?.phones ?? []).map(phone => phone.key))), 200).unref?.();
   // For the box's keeper, which keeps this bridge running while it's needed.
   if (needed(link)) fs.writeFileSync(NEEDED_FILE, "", { mode: 0o600 });
   else fs.rmSync(NEEDED_FILE, { force: true });
 });
-
-/** This machine's relay connection now, for what's told at once (`whereChanged`). */
-let liveHost: LinkHost | null = null;
 
 // ---- The commands ----
 
@@ -338,7 +350,7 @@ let liveHost: LinkHost | null = null;
 function machineWelcomed(host: LinkHost): void {
   try { refreshPhoneTrust(host); } catch {}
   announce(host, readEngineFile, undefined, undefined, true).catch(() => {});
-  try { docsChanged(host, { greet: true }); } catch {}
+  try { docsChanged(host, { greet: true }); tellUntold(); sendRemovalUpdates(host); } catch {}
 }
 
 /** This box's engine while it runs, for what's put right in a conversation open there. */
@@ -352,6 +364,7 @@ async function updateIsWell(): Promise<void> {
 }
 
 async function run(): Promise<void> {
+  (await import("./backup/engine")).keepDailyBackups();
   // One bridge at a time: a newer one (the engine restarted) takes over.
   let old: number | null = null;
   try {
@@ -382,6 +395,7 @@ async function run(): Promise<void> {
   updateLink(link => {
     if (!link) return null;
     link.sign ??= newSigningSeed();
+    settleOwnSetup(link);
     foldPhones(link);
     return link;
   });
@@ -399,6 +413,7 @@ async function run(): Promise<void> {
   // is down too, so a phone can start it. Phones removed since lose what they have open, and the
   // box's keeper, if it went, starts again (it keeps this bridge, and the engine, running).
   let current: LinkHost | null = null;
+  startTakeover(() => current);
   setInterval(() => {
     let owner: number | null = null;
     try { owner = Number(fs.readFileSync(PID_FILE, "utf8")); } catch {}
@@ -482,7 +497,8 @@ async function run(): Promise<void> {
   // well is its judge's to say (updates/health.ts).
   followOver(() => current);
   clearIncoming();
-  setInterval(() => { try { followPeers(); } catch {} }, 60_000).unref?.();
+  setInterval(() => { try { followPeers(); tellUntold(); } catch {} }, 60_000).unref?.();
+  keepMachinesUp();
   // A newer signed release held here (Kuvo Code here handed it over, or it was fetched): your other
   // computers hear at once, not at the next minute's round, and take it in parallel with this one.
   watchHeld(() => {
@@ -551,12 +567,14 @@ async function run(): Promise<void> {
       forwardsWatch.close();
       forwardsWatch = watchFolders([FORWARDS], forwardNow, { recursive: false });
     }
+    scheduleWipe();
+    try { sendRemovalUpdates(current); } catch {}
     forwardNow();
     heldNow();
     reachNow();
     if (current) try { refreshPhoneTrust(current); } catch {}
     if (current?.welcomed && docsNoted()) {
-      try { docsChanged(current, { tell: true }); } catch {}
+      try { docsChanged(current, { tell: true }); tellUntold(); } catch {}
       // (A device removed by another process, Kuvo Code beside this box: what it has open ends now.)
       try { current.keepOnly(new Set((readLink()?.phones ?? []).map(phone => phone.key))); } catch {}
     }
@@ -590,15 +608,15 @@ async function run(): Promise<void> {
     const host: LinkHost = new LinkHost({
       key: Buffer.from(link!.key!, "base64url"),
       hello: { v: 1, kind: "machine", name: link!.name || os.hostname(), app: BRIDGE_VERSION, engine: engine.version ?? null },
-      authorize: (key, hello, address) => authorizeDesktopConnection(host, key, hello, address),
+      authorize: (key, hello, address, signal) => !readLink()?.localWipe && !readLink()?.removalSource && !readLink()?.localUnlink && !localRemovalPending(readLink()) && authorizeDeviceConnection(host, key, hello, address, signal),
       confirmed: confirmPhone,
-      mail: (_from, body) => receiveMail(body, host, (sender, payload) => peerMail(sender, payload, host, peerPlaces), (mac, given, at) => hold.attend(`mac:${mac}`, given, at)),
+      mail: (from, body) => receiveMail(body, host, (sender, payload) => peerMail(sender, payload, host, peerPlaces), (mac, given, at) => hold.attend(`mac:${mac}`, given, at), from),
       handle: engineHandler(readEngineFile, { name: link!.name || os.hostname() }, readBridgeFile, changed => host.keepOnly(new Set((changed.phones ?? []).map(phone => phone.key))), hold),
       connect: engineConnect(readEngineFile, (): number => host.unsent?.() ?? 0),
       send: () => {},
     });
     current = host;
-    liveHost = host;
+    machineLink.host = host;
     const started = Date.now();
     const welcomed = await connectOnce(link!.relay!, Buffer.from(link!.secret!, "base64url"), host, machineWelcomed);
     const next = nextTry(attempt, welcomed, Date.now() - started);
@@ -661,17 +679,10 @@ async function box(command: string): Promise<void> {
       return say(setBoxKey(name, value.length ? value : null));
     }
     case "update-status":
-      return say({ status: 200, ...updateStatus() });
+      return say({ status: 200, ...await updateStatusHere() });
     case "update-now": {
-      // On its own, outliving this command: what it does shows in update-status.
-      if (!UPDATE_KEYS.length) return say({ status: 409, message: "Updates aren't set up for this machine yet." });
-      const blocked = updatesBlocked();
-      if (blocked) return say({ status: 409, message: blocked });
-      if (isUpdating()) return say({ status: 409, message: "It's updating already." });
-      if (updateOnTrial()) return say({ status: 409, message: ON_TRIAL });
-      // (Now whatever its age, but never through work: nobody was asked first here.)
-      spawn(process.execPath, [...OWN_RUNTIME, fileURLToPath(import.meta.url), "update", "--now", "--free"], { detached: true, stdio: "ignore", cwd: K, env: process.env }).unref();
-      return say({ status: 202, ...updateStatus(), updating: "checking" });
+      const started = requestUpdateNow();
+      return say(started.status === 409 ? started : { status: 202, ...updateStatus(), updating: "checking" });
     }
     case "route": {
       // A client's request, answered as the bridge answers a phone's: one that answers once,
@@ -681,20 +692,19 @@ async function box(command: string): Promise<void> {
       try { given = JSON.parse(await input()); } catch {}
       // (The coding agents' bridge's sessions too: a wake-up held for one, say.)
       const handle = engineHandler(readEngineFile, { name: os.hostname() }, readBridgeFile);
-      // With the folder it's asked about (`x-opencode-directory`), as a phone's request has it.
-      const folder = (given?.headers as Record<string, unknown> | undefined)?.["x-opencode-directory"];
-      const signInClient = (given?.headers as Record<string, unknown> | undefined)?.["x-kuvo-sign-in-client"];
-      // And the Mac's proof for a request to this machine's vault (or its unlock key, to unlock it),
-      // which makes it a client there (areas/vault.ts); with the body as it was sent, which the proof covers.
-      const vaultHeaders: Record<string, string> = {};
-      for (const name of ["x-kuvo-vault-key", "x-kuvo-vault-proof"]) {
-        const value = (given?.headers as Record<string, unknown> | undefined)?.[name];
-        if (typeof value === "string") vaultHeaders[name] = value;
+      const { headers: givenHeaders, error } = routeRequestHeaders(given?.headers);
+      if (error) return say({ status: 400, routeVersion: ROUTE_VERSION, body: JSON.stringify(error) });
+      // Forward only the folder, sign-in client, vault credentials and route version from SSH.
+      const headers: Record<string, string> = { "content-type": "application/json" };
+      for (const name of ["x-opencode-directory", "x-kuvo-sign-in-client", "x-kuvo-vault-key", "x-kuvo-vault-proof", ROUTE_VERSION_HEADER]) {
+        const value = givenHeaders[name];
+        if (typeof value === "string") headers[name] = value;
       }
       const sentBody = typeof given?.bodyText === "string" ? given.bodyText : given?.body === undefined ? "" : JSON.stringify(given.body);
-      const request = { method: String(given?.method ?? "GET"), path: String(given?.path ?? ""), headers: { "content-type": "application/json", ...(typeof folder === "string" ? { "x-opencode-directory": folder } : {}), ...(typeof signInClient === "string" ? { "x-kuvo-sign-in-client": signInClient } : {}), ...vaultHeaders }, body: Buffer.from(sentBody), fromMac: true };
+      const request = { method: String(given?.method ?? "GET"), path: String(given?.path ?? ""), headers, body: Buffer.from(sentBody), fromMac: true };
       let status = 502;
       let type = "";
+      let routeResponseVersion: string | undefined;
       const chunks: Buffer[] = [];
       // A route that follows something answers with what it says now: its first line. Stopped by
       // its caller (an agent's tool call that waits, cancelled), it stops waiting and answers.
@@ -704,19 +714,20 @@ async function box(command: string): Promise<void> {
         if (part.head) {
           status = part.head.status;
           type = String(part.head.headers?.["content-type"] ?? "");
+          routeResponseVersion = part.head.headers[ROUTE_VERSION_HEADER];
         }
         if (part.body) chunks.push(Buffer.from(part.body));
         if (type.startsWith("application/x-ndjson") && Buffer.concat(chunks).includes(10)) {
           stop.abort();
           const all = Buffer.concat(chunks);
-          return say({ status, body: all.subarray(0, all.indexOf(10) + 1).toString("utf8") });
+          return say({ status, routeVersion: routeResponseVersion, body: all.subarray(0, all.indexOf(10) + 1).toString("utf8") });
         }
       }
       const body = Buffer.concat(chunks);
       // Bytes that aren't text (a picture, a PDF, a file sent as text that isn't UTF-8) go as
       // base64, whole.
       const text = (!type || type.startsWith("text/") || type.includes("json")) && isUTF8(body);
-      return say(text ? { status, body: body.toString("utf8") } : { status, bodyBase64: body.toString("base64"), type });
+      return say(text ? { status, routeVersion: routeResponseVersion, body: body.toString("utf8") } : { status, routeVersion: routeResponseVersion, bodyBase64: body.toString("base64"), type });
     }
     case "github-read":
       // A read of GitHub that was due as `route` answered, made here, outliving it.
@@ -736,10 +747,33 @@ async function box(command: string): Promise<void> {
       // computers if this one changed.
       let given: GivenLibrary | null = null;
       try { given = JSON.parse((await input()) || "null"); } catch {}
-      const before = JSON.stringify(readPersonalities());
-      const met = changePersonalities(library => mergePersonalities(library, given));
-      if (JSON.stringify(met) !== before) noteDocsChanged();
-      return say({ status: 200, ...met });
+      let legacy: { library: ReturnType<typeof readPersonalities>; changed: boolean } | undefined;
+      let waiting = false;
+      updateLink(link => {
+        if (usesAcceptedSaves(link?.setup)) return null;
+        if (link?.leadershipPending) { waiting = true; return null; }
+        const before = JSON.stringify(readPersonalities());
+        const library = changePersonalities(current => mergePersonalities(current, given));
+        legacy = { library, changed: JSON.stringify(library) !== before };
+        return null;
+      });
+      if (waiting) return say({ status: 503, message: LEADERSHIP_WAIT });
+      if (legacy) {
+        if (legacy.changed) noteDocsChanged();
+        return say({ status: 200, ...legacy.library });
+      }
+      const saved = await savePersonalityLibrary(given);
+      if (saved.status === 200) {
+        const reply: SaveEnvelope<CommittedReceipt> & typeof saved.library & { status: 200; operation: string } = {
+          ...saved.library, operation: saved.receipt.operation, save: saved.receipt, status: 200,
+        };
+        return say(reply);
+      }
+      if ("refusal" in saved) return say({ ...saved.refusal, status: saved.status });
+      const reply: SaveEnvelope & Omit<Receipt, "status"> & { status: 202 | 409; outcome: "pending" | "interrupted" } = {
+        ...saved.value, save: saved.value, outcome: saved.value.status, status: saved.status,
+      };
+      return say(reply);
     }
     default:
       console.error("Usage: kuvo-link.js box adopt | read | change | key <name> | route | reconnect <server> | personalities | update-status | update-now");
@@ -787,6 +821,7 @@ async function keptServe(): Promise<void> {
     return;
   }
   fs.mkdirSync(RUN, { recursive: true, mode: 0o700 });
+  initializeMachineSetup();
   const password = crypto.randomBytes(24).toString("hex");
   const server = serveBox(password, engineHandler(readEngineFile, { name: os.hostname() }, readBridgeFile));
   await new Promise<void>((resolve, reject) => {
@@ -798,7 +833,7 @@ async function keptServe(): Promise<void> {
   // commands, found in serve.json).
   try { socketKey(); } catch {}
   const mine = () => {
-    try { return JSON.parse(fs.readFileSync(SERVE_FILE(), "utf8"))?.pid === process.pid; } catch { return false; }
+    try { return readServeRecord().pid === process.pid; } catch { return false; }
   };
   const leave = () => {
     try { if (mine()) fs.rmSync(SERVE_FILE(), { force: true }); } catch {}
@@ -808,17 +843,20 @@ async function keptServe(): Promise<void> {
   process.on("SIGINT", leave);
   // New code put in place (an update): it goes, for the keeper to start it again on it.
   leaveForNewCode(fileURLToPath(import.meta.url), leave);
-  writePrivate(SERVE_FILE(), JSON.stringify({ pid: process.pid, port, password, kept: true }));
+  writeServeRecord({ pid: process.pid, port, password, kept: true });
   console.log(JSON.stringify({ url: `http://127.0.0.1:${port}` }));
   // Not wanted any more, or another took its place (two started at once: the last one stays). (A
   // test's box looks as often as it says.)
   const every = !REAL_BOX && Number(process.env.KUVO_TEST_SERVE_EVERY) > 0 ? Number(process.env.KUVO_TEST_SERVE_EVERY) : 30_000;
+  scheduleWipe();
   setInterval(() => {
     if (!fs.existsSync(SERVE_NEEDED()) || !mine()) leave();
+    scheduleWipe();
   }, every);
 }
 
 async function serve(): Promise<void> {
+  (await import("./backup/engine")).keepDailyBackups();
   if (process.argv.includes("--kept")) return keptServe();
   // Its password, and this Mac's vault's secrets, from the app on stdin (never its environment,
   // which any of your processes can read); a test's box, in OPENCODE_PASSWORD.
@@ -842,6 +880,7 @@ async function serve(): Promise<void> {
   clearNotesLocks();
   // This Mac's settings with what its engine starts with, before a client reads them.
   if (IS_MAC) addMacDefaults();
+  else initializeMachineSetup();
   // And as its catalogs have them now, before it says where it is: this Mac's engine starts only after
   // that. (Any key to take away comes after, below: its app may not answer yet, and an engine
   // running takes settings as they change.)
@@ -873,7 +912,7 @@ async function serve(): Promise<void> {
   // A Mac's box in a home of its own says where it answers itself, for its clients (`run/serve.json`,
   // as one kept for them does), before it says so on stdout: its helper started it, and no app
   // writes it (PROTOCOL.md, "This Mac's box: its helper"). Taken away as it leaves.
-  if (OWN_HOME_MAC) writePrivate(SERVE_FILE(), JSON.stringify({ pid: process.pid, port, password, kept: false }));
+  if (OWN_HOME_MAC) writeServeRecord({ pid: process.pid, port, password, kept: false });
   console.log(JSON.stringify({ url: `http://127.0.0.1:${port}` }));
   // This Mac's vault's newest generations, from its app, before agents use it (vault/store.ts).
   if (IS_MAC) void (async () => {
@@ -914,7 +953,10 @@ async function serve(): Promise<void> {
   // the app's route scenarios, `KUVO_TEST_NO_PEERS`, whose fixture tells its bridge who they are.)
   // Never a real box (a test's folder only).
   const testsAlone = process.env.KUVO_TEST_NO_PEERS && !REAL_BOX;
-  if (IS_MAC && !testsAlone) runMacPeers();
+  if (IS_MAC && !testsAlone) {
+    runMacPeers();
+    startTakeover(liveLink);
+  }
   // Recently Deleted's skills past their 30 days, gone with no client there too.
   keepSkillTrashClear();
   // What a Work Queue change left half read as the box stopped.
@@ -944,7 +986,7 @@ async function serve(): Promise<void> {
     for (let tries = 0; tries < 30 && (macLink.host?.unsent?.() ?? 0) > 0; tries++) await sleep(50);
     // What didn't get out in time isn't lost without a word.
     if ((macLink.host?.unsent?.() ?? 0) > 0) console.error("Kuvo Code quit before what its link had for your phones and machines went out.");
-    try { if (OWN_HOME_MAC && JSON.parse(fs.readFileSync(SERVE_FILE(), "utf8"))?.pid === process.pid) fs.rmSync(SERVE_FILE(), { force: true }); } catch {}
+    try { if (OWN_HOME_MAC && readServeRecord().pid === process.pid) fs.rmSync(SERVE_FILE(), { force: true }); } catch {}
     process.exit(0);
   };
   // The box's files changed under it (an update put new ones there): it goes, as its app gone does,
@@ -982,6 +1024,11 @@ interface SetupInput {
   moved?: unknown[];
   /** The Mac's keys before (made anew since), which it no longer is: let go here. */
   replaces?: unknown;
+  /** Only these live key pairs may be carried through this SSH enrollment. */
+  keepMemberships?: unknown;
+  /** Revoked static keys whose wipe still needs to run. */
+  blockedMemberships?: unknown;
+  discardLocalPairings?: boolean;
 }
 
 // What the Mac sends: the relay, this machine's name, and the phones you've paired with the Mac,
@@ -990,6 +1037,10 @@ interface SetupInput {
 // another relay, or a newer one), and prints the machine's address and public key for the Mac
 // to tell your phones. Nothing left to answer: the bridge stops, and the keys stay.
 async function setup(): Promise<void> {
+  if (setupLayoutDeferred(K)) {
+    console.error("Wait for the Kuvo Code update to finish before joining a setup.");
+    process.exit(1);
+  }
   let input: SetupInput;
   try {
     const chunks: Buffer[] = [];
@@ -1000,6 +1051,16 @@ async function setup(): Promise<void> {
     process.exit(2);
   }
   const mac = typeof input.mac === "string" ? input.mac : undefined;
+  // A legacy SSH add supplies only signed documents. Honor its own revocation
+  // even when the client does not send the live roster separately.
+  let offeredRoster: ReturnType<typeof readDoc> = null;
+  let offeredPhones: ReturnType<typeof readDoc> = null;
+  if (mac && input.macSign && Array.isArray(input.docs)) for (const envelope of input.docs) {
+    const doc = readDoc(envelope);
+    if (doc?.kind === "phones" && doc.origin === input.macSign && (!offeredPhones || doc.n > offeredPhones.n)) offeredPhones = doc;
+    if (doc?.kind === "peers" && doc.origin === input.macSign && (!offeredRoster || doc.n > offeredRoster.n)) offeredRoster = doc;
+  }
+  const revocations = new Set(Array.isArray(offeredRoster?.body.left) ? offeredRoster.body.left : []);
   const running = runningBridge();
   const old = readLink();
   const before = readPersonalities();
@@ -1008,6 +1069,8 @@ async function setup(): Promise<void> {
   const replaced = mac && Array.isArray(input.replaces) ? input.replaces.filter((key): key is string => typeof key === "string" && KEY.test(key) && key !== mac).slice(0, 8) : [];
   let formerMacs: string[] = [];
   let alreadySetUp = false;
+  let blockedMembership = false;
+  let blockedPairings = false;
   updateLink(current => {
     let reserved: string | undefined;
     try { reserved = fs.readlinkSync(path.join(path.dirname(K), ADD_RESERVATION)); } catch {}
@@ -1015,11 +1078,47 @@ async function setup(): Promise<void> {
       alreadySetUp = true;
       return null;
     }
-    if (mac && current && macsOf(current).length && !macsOf(current).some(key => key === mac || replaced.includes(key))) {
+    // Recheck ownership under the same lock used to enroll a peer. A primary that gained
+    // members after the SSH probe cannot be enrolled into a different setup.
+    if (current?.localWipe || current?.localUnlink) {
       alreadySetUp = true;
       return null;
     }
-    const next = current ?? { secret: crypto.randomBytes(32).toString("base64url"), key: newKey().toString("base64url"), phones: [] };
+    if (mac && current && (ownKey(current) === mac
+      || (current.setup?.role === "primary" && peersOf(current).length > 0)
+      || (macsOf(current).length > 0 && !macsOf(current).some(key => key === mac || replaced.includes(key))))) {
+      alreadySetUp = true;
+      return null;
+    }
+    const key = current && ownKey(current);
+    if (key && Array.isArray(input.blockedMemberships) && input.blockedMemberships.includes(key)) {
+      blockedMembership = true;
+      return null;
+    }
+    if (mac && current && unlinkCleanupLayoutReady(K)) {
+      const offered = offeredPhones?.body.phones;
+      const revoked = offeredPhones?.body.removed;
+      const matches = (entry: unknown, key: string, pairing: string) => isObject(entry) && entry.key === key && (entry.pairing ?? "") === pairing;
+      const unmatched = [...(current.phones ?? []), ...(current.preJoinPairings ?? [])].some(phone => phone.from === "pair" &&
+        !(Array.isArray(offered) && offered.some(entry => matches(entry, phone.key, phone.pairing ?? "")) &&
+          !(Array.isArray(revoked) && revoked.some(entry => matches(entry, phone.key, phone.pairing ?? "")))));
+      if (unmatched && input.discardLocalPairings !== true) {
+        blockedPairings = true;
+        return null;
+      }
+      // The incoming signed snapshot supplies grants with the same existing pairing IDs.
+      current.phones = current.phones?.filter(phone => phone.from !== "pair");
+      delete current.preJoinPairings;
+    }
+    const sign = current && ownSign(current);
+    // SSH authorizes an enrollment. Only a key pair still on the primary's roster
+    // may retain its credentials and link grants across this operation.
+    const fresh = mac && (revocations.has(key) || (Array.isArray(input.keepMemberships)
+      && !input.keepMemberships.some(entry => isObject(entry) && entry.key === key && entry.sign === sign)));
+    const next = (fresh && current ? { name: current.name, startsFromOthers: current.startsFromOthers,
+      phones: [] } as LinkState : current) ?? { secret: crypto.randomBytes(32).toString("base64url"), key: newKey().toString("base64url"), phones: [] };
+    next.secret ??= crypto.randomBytes(32).toString("base64url");
+    next.key ??= newKey().toString("base64url");
     next.sign ??= newSigningSeed();
     if (mac) {
       next.mac = mac;
@@ -1057,6 +1156,14 @@ async function setup(): Promise<void> {
     link = next;
     return next;
   });
+  if (blockedPairings) {
+    console.error("Confirm discarding unmatched local device pairings before joining.");
+    process.exit(SETUP_LOCAL_PAIRINGS);
+  }
+  if (blockedMembership) {
+    console.error("Wait for the pending wipe before adding this computer again.");
+    process.exit(1);
+  }
   if (alreadySetUp) {
     console.error("This OS account already has a Kuvo setup. Connect to your own OS account.");
     process.exit(SETUP_OCCUPIED);
@@ -1078,7 +1185,7 @@ async function setup(): Promise<void> {
   // A new relay or name needs a new connection, and a newer bridge replaces an older one.
   let runningVersion = null;
   try { runningVersion = fs.readFileSync(VERSION_FILE, "utf8").trim(); } catch {}
-  const restart = old?.relay !== link.relay || old?.name !== link.name || runningVersion !== BRIDGE_VERSION;
+  const restart = old?.key !== link.key || old?.relay !== link.relay || old?.name !== link.name || runningVersion !== BRIDGE_VERSION;
   // Not while the box updates itself: the bridge running it would end, and the keeper starts the
   // new one once it's done.
   if (!isUpdating()) {
@@ -1090,6 +1197,7 @@ async function setup(): Promise<void> {
     key: publicOf(Buffer.from(link.key!, "base64url")).toString("base64url"),
     // Talks to other boxes itself (PROTOCOL.md, "Peers").
     peers: true,
+    standbyAcceptance: true,
     // Its signing key, and the documents it has, for the Mac to take (PROTOCOL.md, "Documents").
     sign: ownSign(link),
     docs: setupDocs(link),
@@ -1119,7 +1227,7 @@ function setupDocs(link: LinkState): SignedDoc[] {
 export function leave(mac: unknown): boolean {
   if (typeof mac !== "string" || !KEY.test(mac)) return false;
   const link = updateLink(link => {
-    if (!link || !macsOf(link).includes(mac)) return null;
+    if (!link || link.setup?.primary === mac || !macsOf(link).includes(mac)) return null;
     leaveMac(link, mac);
     pruneDocs(link);
     foldPhones(link);
@@ -1134,23 +1242,24 @@ export function leave(mac: unknown): boolean {
 
 function pair(relay: string | undefined): void {
   // Only your setup's main computer pairs phones: a member names it, and pairs none (exit 3).
-  const main = mainElsewhere(readLink());
-  if (main) {
-    console.error(pairElsewhere(main).message);
-    // (Until a takeover can be made: a main computer that's gone for good is let go here, as
-    // removing this computer from it would. What that costs is said with it.)
-    const name = main.name || "it";
-    console.error(`If ${name} is gone for good, \`kuvo-link.js leave ${main.key}\` takes this computer out of its setup: your other computers, and phones paired with ${name}, no longer reach it here. Then it pairs phones itself, or names another main computer.`);
-    process.exit(3);
-  }
+  let main: ReturnType<typeof mainElsewhere> = null;
   const link = updateLink(current => {
+    if (primaryFenced(current)) throw new Error(LEADERSHIP_WAIT);
+    main = mainElsewhere(current);
+    if (main) return null;
     const next = current ?? { secret: crypto.randomBytes(32).toString("base64url"), key: newKey().toString("base64url"), name: os.hostname(), phones: [] };
     next.sign ??= newSigningSeed();
     if (relay) next.relay = relay;
     if (!next.relay) return null;
+    if (!IS_MAC) settleOwnSetup(next);
     next.pairing = newPairingToken();
     return next;
   });
+  const primary = main as ReturnType<typeof mainElsewhere>;
+  if (primary) {
+    console.error(pairElsewhere(primary).message);
+    process.exit(3);
+  }
   if (!link) {
     console.error("Give the relay's address: kuvo-link.js pair wss://…");
     process.exit(1);
@@ -1178,8 +1287,31 @@ export function selftest(): boolean {
 const main = process.argv[1] && fs.realpathSync(process.argv[1]) === fs.realpathSync(fileURLToPath(import.meta.url));
 if (main) {
   const [mode, argument] = process.argv.slice(2);
-  if (mode === "run") await run();
+  try {
+    // The installer and move own the destination until placement. A probe must not adopt it.
+    // The judge only advances the folder when it confirms the trial. It must also be able to
+    // resume a rollback whose intent was already saved.
+    if (["here", "backup-identity", "install", "rehome", "uninstall", "login-path", "login-env"].includes(mode)
+      || (mode === "update" && argument === "--settle")) checkFolderVersion(K);
+    else if (mode !== "selftest") upgradeLinkFolder();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (mode === "box" && argument === "route") {
+      const inaccessible = ["EACCES", "EPERM", "ENOENT", "ENOTDIR", "EROFS"].includes((error as NodeJS.ErrnoException)?.code ?? "");
+      const refusal = error instanceof UnsupportedFormatVersion
+        ? unsupportedFormatReply(error)
+        : { status: inaccessible ? 503 : 500, body: JSON.stringify({ message }) };
+      const reply = { status: refusal.status, routeVersion: ROUTE_VERSION, body: refusal.body };
+      await new Promise<void>(resolve => process.stdout.write(JSON.stringify(reply) + "\n", () => resolve()));
+      process.exit(0);
+    }
+    console.error(message);
+    process.exit(1);
+  }
+  if (mode === "folder-upgrade") process.exit(0);
+  else if (mode === "run") await run();
   else if (mode === "setup") await setup();
+  else if (mode === "setup-local") initializeMachineSetup();
   else if (mode === "pair") pair(argument);
   else if (mode === "box") await box(argument);
   else if (mode === "serve") await serve();
@@ -1187,6 +1319,10 @@ if (main) {
     const before = readLink();
     if (!before || typeof argument !== "string" || !KEY.test(argument)) {
       console.error("Kuvo Code couldn’t confirm which setup this computer should leave.");
+      process.exit(1);
+    }
+    if (before.setup?.primary === argument) {
+      console.error(PRIMARY_UNLINK);
       process.exit(1);
     }
     const name = macName(before, argument);
@@ -1202,6 +1338,11 @@ if (main) {
   // setup?"): whether it uses its own box, or the one already on this Mac, in place. `here <root>`,
   // root the machines' folder's name in the home folder (`.kuvo-code`, or a test's own), with
   // KUVO_HOME the app's own box's folder: both said, never guessed.
+  else if (mode === "backup-identity") {
+    const key = ownKey(readLink() ?? {});
+    if (key) console.log(key);
+    else process.exitCode = 1;
+  }
   else if (mode === "here") {
     try {
       console.log(JSON.stringify(hereNow(argument)));
@@ -1297,6 +1438,7 @@ if (main) {
       if (installer && !told && running !== "checking") { told = true; console.log(JSON.stringify(installerSteps.updating)); }
     };
     let outcome: Awaited<ReturnType<typeof update>> | null;
+    let releaseSave: Receipt | undefined;
     // (A try the app's installer asked for whose download broke off, or whose engine couldn't be
     // stopped, before anything changed, tried again once a little later: what's passing goes by
     // then. Only one that fails again is said, with Try Again. A check that would fail again, or
@@ -1312,10 +1454,11 @@ if (main) {
         if (process.ppid === 1) process.exit(0);
       }
       outcome = offered
-        ? await takeOffer({ now, step, features: featuresNow(), ...test })
+        ? await takeOffer({ now, whileBusy: now && !args.includes("--free"), step, features: featuresNow(), ...test })
         : from && !path.isAbsolute(from)
           ? { result: "failed" as const, message: "Say which folder the release is in, as a full path." }
           : await update({ now, whileBusy: now && !args.includes("--free"), from, step, features: featuresNow(), swapping: () => { swapped = true; }, ...test });
+      releaseSave = outcome?.save ?? releaseSave;
       // (Waiting: something began at work just as it went to update, and nothing changed. Waited for again.)
       if (installer && !now && outcome?.result === "busy") continue;
       if (againOnce && outcome?.result === "failed" && !swapped && failedInPassing()) {
@@ -1332,7 +1475,8 @@ if (main) {
     // or the last update is still on trial, when it's tried again in that round.)
     const round = option("--round");
     if (round && outcome && !passingOutcome(outcome)) noteUpdate({ round });
-    console.log(JSON.stringify(outcome ?? { result: "current", message: "No offered release is due." }));
+    const reply = outcome ?? { result: "current", message: "No offered release is due." };
+    console.log(JSON.stringify(releaseSave ? { ...reply, save: releaseSave } satisfies typeof reply & SaveEnvelope : reply));
     if (installer && outcome && outcome.result !== "updated" && outcome.result !== "current") process.exitCode = 1;
     // Judged here, by the one health rule (updates/health.ts), this process staying until it's well
     // or put back; the installer's, which an app waits on, has a judge of its own do it.
@@ -1377,8 +1521,10 @@ if (main) {
   else if (mode === "install") {
     process.exitCode = await installCommand(process.argv.slice(3));
   }
-  // Removing Kuvo Code from this computer (PROTOCOL.md, "Uninstalling"): `uninstall [--check]`,
-  // from the app or a Terminal line.
+  else if (mode === "wipe-member") {
+    process.exitCode = await wipeCommand();
+  }
+  // Legacy uninstall from the app or a Terminal, with its own dry run.
   else if (mode === "uninstall") {
     process.exitCode = await uninstallCommand(process.argv.slice(3));
   }

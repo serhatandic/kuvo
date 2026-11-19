@@ -68,6 +68,23 @@ export async function keyNames({ prefix = "", suffix = "" }: { prefix?: string; 
   return [...new Set(names.filter((name): name is string => typeof name === "string" && STORED_KEY.test(name) && !BOT_KEY.test(name) && name.startsWith(prefix) && name.endsWith(suffix)))].sort();
 }
 
+/** Unlink must clear both the current keys and any legacy per-bot Keychain entries. */
+export async function clearHostKeys(): Promise<void> {
+  await keyWork(async () => {
+    const host = keyHost();
+    if (!host) return;
+    const names = async () => {
+      const answer = await askHost(host, "keys/names", {});
+      if (!Array.isArray(answer.names) || !answer.names.every(name => typeof name === "string" && STORED_KEY.test(name))) {
+        throw new KeysUnavailable("This Mac's keys couldn't be read.");
+      }
+      return answer.names as string[];
+    };
+    for (const name of new Set(await names())) await askHost(host, "keys/delete", { name });
+    if ((await names()).length) throw new KeysUnavailable("The host still holds Kuvo integration keys.");
+  });
+}
+
 /** One key's value as it's kept; null for one there isn't. */
 export async function readKey(name: string): Promise<string | null> {
   checkedKeyName(name);

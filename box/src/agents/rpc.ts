@@ -59,16 +59,18 @@ export class RPC {
     if (!Array.isArray(command)) {
       const held = (this.held = command)
       held.onStderr((text) => (this.stderr = (this.stderr + text).slice(-8_000)))
-      // (From `start()`: what the holder sends again as this bridge attaches waits for its
-      // handlers, or an ask would be answered "not found".)
-      this.begin = () =>
-        held.onLine((line, _again, seq) => {
-          this.lineSeq = seq
-          const trimmed = line.replace(/\r$/, "")
-          if (trimmed.trim() && (!this.filter || this.filter(trimmed))) this.receive(trimmed)
-        })
+      // Install the reader before announcing readiness. Replay waits for the adapter's handlers
+      // and, during live transfer, for the other adapters.
+      const read = held.prepareReader((line, _again, seq) => {
+        this.lineSeq = seq
+        const trimmed = line.replace(/\r$/, "")
+        if (trimmed.trim() && (!this.filter || this.filter(trimmed))) this.receive(trimmed)
+      })
+      const started = Promise.withResolvers<void>()
+      this.begin = () => { read(); started.resolve() }
+      const exit = held.isProvisional ? started.promise.then(() => held.exited) : held.exited
       // (Taken over by a newer bridge: the agent didn't stop, but it's that bridge's now.)
-      this.exited = held.exited.then((exit) => ended(exit.code ?? (exit.signal === "fenced" || exit.signal === "lost" ? -1 : 1)))
+      this.exited = exit.then((exit) => ended(exit.code ?? (exit.signal === "fenced" || exit.signal === "lost" ? -1 : 1)))
       this.errorsRead = this.exited.then(() => {})
       return
     }

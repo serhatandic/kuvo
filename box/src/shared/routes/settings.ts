@@ -59,14 +59,14 @@ export type ClaudeCodeImport = Infer<typeof CLAUDE_CODE_IMPORT>;
 export type ClaudeCode = Infer<typeof CLAUDE_CODE>;
 
 export const SETTINGS_ROUTES: RouteShape[] = [
-  { route: "GET kuvo/config", answers: { 200: CONFIG } },
-  { route: "PATCH kuvo/config", answers: { 200: CONFIG } },
-  { route: "POST kuvo/config/apply", answers: { 200: CONFIG_APPLIED } },
-  { route: "GET kuvo/mcp/catalog", answers: { 200: MCP_CATALOG } },
-  { route: "POST kuvo/mcp/catalog/:id", answers: { 200: CONFIG } },
-  { route: "GET kuvo/keys", answers: { 200: KEYS } },
-  { route: "GET kuvo/keys/:name", answers: { 200: KEY } },
-  { route: "PUT kuvo/keys/:name", answers: { 200: NOTHING } },
-  { route: "DELETE kuvo/keys/:name", answers: { 200: NOTHING } },
-  { route: "GET kuvo/claude-code", answers: { 200: CLAUDE_CODE } },
+  { route: "GET kuvo/config", feature: "config", answers: { 200: CONFIG } },
+  { route: "PATCH kuvo/config", feature: "config", answers: { 200: CONFIG } },
+  { route: "POST kuvo/config/apply", feature: "config.apply", answers: { 200: CONFIG_APPLIED } },
+  { route: "GET kuvo/mcp/catalog", feature: "mcp.catalog", answers: { 200: MCP_CATALOG } },
+  { route: "POST kuvo/mcp/catalog/:id", feature: "mcp.catalog", answers: { 200: CONFIG } },
+  { route: "GET kuvo/keys", feature: "keys", answers: { 200: KEYS } },
+  { route: "GET kuvo/keys/:name", feature: "keys", answers: { 200: KEY } },
+  { route: "PUT kuvo/keys/:name", feature: "keys", answers: { 200: NOTHING } },
+  { route: "DELETE kuvo/keys/:name", feature: "keys", answers: { 200: NOTHING } },
+  { route: "GET kuvo/claude-code", feature: "claude-code", answers: { 200: CLAUDE_CODE } },
 ];

@@ -11,15 +11,18 @@
 // (`machines`). With only Kuvo Code's desktop app there's none, and it answers those too (`answersAlone`).
 
 import os from "node:os";
+import type { RouteFeature } from "../../shared/routes/feature";
 import { engineConnect } from "../areas/engine";
 import { docsChanged } from "../documents/exchange";
-import { authorizeDesktopConnection, refreshPhoneTrust } from "../documents/phone-sync";
+import { localRemovalPending } from "../setup/removal-record";
+import { authorizeDeviceConnection, refreshPhoneTrust } from "../documents/phone-sync";
 import { peerPlaces, readBridgeFile, readEngineFile } from "../engine/client";
 import { announce } from "../peers/agents";
 import { peerMail, receiveMail } from "../peers/mail";
 import { confirmPhone } from "../phones";
 import { connectOnce, nextTry } from "../relay/connection";
 import { LinkHost } from "../relay/host";
+import { versionedRoutes } from "../server/format";
 import { engineHandler } from "../server/router";
 import { OWN_HOME_MAC } from "../home";
 import { boxAnswers } from "./keeper-runs";
@@ -41,7 +44,14 @@ import type { LinkState } from "../state";
 // hands its own requests for anything else to this box. Everything else a phone asks this box
 // answers itself, as a machine's does, with the app open or closed; and with only Kuvo Code's
 // desktop app, these too (`answersAlone`).
-export const MAC_APP_ROUTES = ["kuvo/machines", "kuvo/hosts", "kuvo/asks", "kuvo/mac", "kuvo/engine"];
+const MAC_APP_ROUTE_FEATURES = {
+  "kuvo/machines": "machines",
+  "kuvo/hosts": "hosts",
+  "kuvo/asks": "asks",
+  "kuvo/mac": "mac",
+  "kuvo/engine": "engine.restart",
+} as const satisfies Record<string, RouteFeature>;
+export const MAC_APP_ROUTES = Object.keys(MAC_APP_ROUTE_FEATURES);
 export const macAppAnswers = (route: string): boolean => MAC_APP_ROUTES.some(area => route === area || route.startsWith(`${area}/`)) && !isRetiredMachineRoute(route);
 
 export { boxAnswers, keeperRuns } from "./keeper-runs";
@@ -71,12 +81,12 @@ export const answersAlone = (): boolean => OWN_HOME_MAC && !openAppHost();
 // areas that had moved onto it, and the app the rest). In a home of its own with no app to ask,
 // all of it here (`answersAlone`).
 export function macFront(handle: LinkHandler = engineHandler(readEngineFile, { name: os.hostname() }), timing?: AppTiming): LinkHandler {
-  return async function* (request: LinkRequest, phone: Asker | undefined, signal?: AbortSignal): AsyncGenerator<AnswerPiece> {
+  return versionedRoutes(async function* (request, phone, signal) {
     const route = String(request.path ?? "").split("?")[0];
     if (!macAppAnswers(route) || boxAnswers(route) || answersAlone()) return yield* handle(request, phone, signal);
-    if (isMachinesRoute(route)) return yield* machinesRoute(request, phone, signal, route, timing);
+    if (isMachinesRoute(route)) return readLink()?.setup?.checkpointed ? yield* handle(request, phone, signal) : yield* machinesRoute(request, phone, signal, route, timing);
     yield* toApp(request, phone, signal);
-  };
+  });
 }
 
 // This Mac's box's link: up while it's wanted, its keys from the app, your phones answered here,
@@ -113,10 +123,10 @@ export async function runMacLink(): Promise<void> {
         key: Buffer.from(link.key, "base64url"),
         hello: { v: 1, kind: "mac", name: config!.name, app: config!.app, engine: engine.version ?? null },
         // Phones only while the phone link's on (the relay can be up for your machines alone).
-        authorize: (key, hello, address) => Boolean(macLink.config?.phones) && authorizeDesktopConnection(host, key, hello, address),
+        authorize: (key, hello, address, signal) => Boolean(macLink.config?.phones) && !readLink()?.localWipe && !readLink()?.removalSource && !readLink()?.localUnlink && !localRemovalPending(readLink()) && authorizeDeviceConnection(host, key, hello, address, signal),
         confirmed: confirmPhone,
         // Mail from your machines, taken here as a machine takes it (`peerMail`).
-        mail: (_from, body) => receiveMail(body, host, (sender, payload) => peerMail(sender, payload, host, peerPlaces)),
+        mail: (from, body) => receiveMail(body, host, (sender, payload) => peerMail(sender, payload, host, peerPlaces), undefined, from),
         handle: macFront(engineHandler(readEngineFile, { name: config!.name }, readBridgeFile, changed => host.keepOnly(new Set((changed.phones ?? []).map(phone => phone.key))), macLink.hold)),
         connect: engineConnect(readEngineFile, (): number => host.unsent?.() ?? 0),
         send: () => {},

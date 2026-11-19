@@ -8,15 +8,17 @@
 // your own computers.
 // Platform: the same on macOS and Linux.
 
+import { localSetupValue } from "../../shared/setup-local";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { isObject } from "../../shared/json";
 import { listOf, writePrivate } from "../files";
-import { REAL_BOX, UPDATES } from "../home";
+import { REAL_BOX, RUN, UPDATES } from "../home";
 import { watchFolders } from "../follow";
 import { readPeerAgents } from "../peers/directory";
 import { mailFor, peersOf } from "../peers/known";
+import { followedSetup } from "../setup/record";
 import type { LinkState } from "../state";
 import type { LinkHost } from "../relay/host";
 import { readLink } from "../state";
@@ -56,6 +58,7 @@ export interface Held {
   version: string;
   boxes: string;
   pack: string;
+  sha256: string;
   size: number;
 }
 
@@ -76,7 +79,7 @@ export function heldRelease(keys: string[] = ownWays().keys ?? UPDATE_KEYS, fold
       packChecked = { stamp, sha: manifest.pack.sha256, ok: crypto.createHash("sha256").update(fs.readFileSync(pack)).digest("hex") === manifest.pack.sha256 };
     }
     if (!packChecked.ok) return null;
-    return { version: manifest.version, boxes, pack, size: stat.size };
+    return { version: manifest.version, boxes, pack, sha256: manifest.pack.sha256, size: stat.size };
   } catch { return null; }
 }
 
@@ -142,7 +145,10 @@ export function watchHeld(changed: () => void): { close: () => void } {
 /** What this box tells its peers of its Kuvo (`computer.kuvo`, `computer.release`). */
 export function fleetFacts(): { kuvo?: string; release?: string } {
   const kuvo = boxVersion(), held = heldRelease();
-  return { ...(kuvo ? { kuvo } : {}), ...(held ? { release: held.version } : {}) };
+  const setup = localSetupValue(RUN, "setupSecurityAndReleaseChoice");
+  const choice = isObject(setup?.value) ? setup.value : null;
+  const published = held && (!setup || held.version === kuvo || (held.version === choice?.version && held.sha256 === choice?.sha256));
+  return { ...(kuvo ? { kuvo } : {}), ...(published ? { release: held.version } : {}) };
 }
 
 // ---- Pulling a newer one ----
@@ -230,11 +236,19 @@ function heldAround(now: number): { peer: string; version: string }[] {
   const mine = boxVersion();
   if (!mine) return [];
   const told = readPeerAgents();
-  const peers = peersOf(readLink());
-  return peers.map(({ key }) => ({ peer: key, version: told[key]?.computer?.release }))
+  const link = readLink();
+  const peers = peersOf(link);
+  return peers.filter(peer => releaseAuthority(peer.key, link)).map(({ key }) => ({ peer: key, version: told[key]?.computer?.release }))
     .filter((each): each is { peer: string; version: string } => typeof each.version === "string" && newerVersion(each.version, mine))
     .filter(each => now - (tried.get(`${each.peer} ${each.version}`) ?? -Infinity) >= TRIED_FOR)
     .sort((a, b) => (newerVersion(a.version, b.version) ? -1 : newerVersion(b.version, a.version) ? 1 : a.peer < b.peer ? -1 : a.peer > b.peer ? 1 : 0));
+}
+
+// Repair may use any copy of the running release. A transferred setup takes newer fleet
+// releases from its current primary, which chooses its own release through the normal updater.
+function releaseAuthority(peer: string, link = readLink()): boolean {
+  const setup = followedSetup(link);
+  return !setup?.managed || (setup.role === "member" && setup.primary === peer);
 }
 
 /** No sound release of the version this box runs kept here (an older updater kept none, or it was
@@ -278,6 +292,7 @@ export function followPeers(asked: FleetOptions = {}): void {
     }
     endPull(null);
   }
+  if (pull && !pull.forRepair && !releaseAuthority(pull.peer)) endPull(null, now);
   if (pull) {
     // (Caught up meanwhile: it goes.)
     if (!newerVersion(pull.version, boxVersion())) return endPull(null);
@@ -427,6 +442,7 @@ function finish(current: Pull, options: FleetOptions, now: number): void {
     fs.rmSync(INCOMING, { recursive: true, force: true });
     return;
   }
+  if (!releaseAuthority(current.peer)) return endPull(null, now);
   const offered = offerUpdate(folder, { keys: options.keys ?? UPDATE_KEYS, blocked: options.blocked === undefined ? updatesBlocked() : options.blocked, clock: options.clock });
   if (offered.status !== 202) {
     if (offered.message === UPDATING_ALREADY || isUpdating()) return;

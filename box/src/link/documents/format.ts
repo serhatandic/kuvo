@@ -8,6 +8,7 @@ import crypto from "node:crypto";
 import { type Doc, DOC_KINDS, type DocKind, type SignedDoc } from "../../shared/documents";
 import { isObject } from "../../shared/json";
 
+const DOC_VERSION = 1;
 const DOC_SIGNED = Buffer.from("kuvo-link doc v1\0");
 // A document at most so big (its JSON), and in a mail at most so much of one; a bigger one goes in parts.
 export const MOST_DOC = 512 * 1024;
@@ -47,7 +48,7 @@ export const signWith = (seed: string, bytes: Buffer): string => crypto.sign(nul
 export const shortHash = (bytes: Buffer) => crypto.createHash("sha256").update(bytes).digest().subarray(0, 8).toString("base64url");
 export const bodyHash = (body: unknown) => shortHash(Buffer.from(JSON.stringify(body)));
 // The bytes an origin signs for one version of its document.
-export const docBytes = (origin: string, kind: DocKind, n: number, body: object) => Buffer.from(JSON.stringify({ v: 1, kind, origin, n, body }));
+export const docBytes = (origin: string, kind: DocKind, n: number, body: object) => Buffer.from(JSON.stringify({ v: DOC_VERSION, kind, origin, n, body }));
 
 // Version `n` of the document of `kind` that the key `seed` signs: `{d, s}`, as it's given.
 export function signDoc(seed: string, kind: DocKind, n: number, body: object): SignedDoc {
@@ -68,7 +69,7 @@ export function readDoc(envelope: unknown): Doc | null {
   } catch {
     return null;
   }
-  if (!isObject(doc) || doc.v !== 1 || !(DOC_KINDS as readonly unknown[]).includes(doc.kind) || typeof doc.origin !== "string" || !SIGN.test(doc.origin)
+  if (!isObject(doc) || doc.v !== DOC_VERSION || !(DOC_KINDS as readonly unknown[]).includes(doc.kind) || typeof doc.origin !== "string" || !SIGN.test(doc.origin)
     || !Number.isSafeInteger(doc.n) || (doc.n as number) < 1 || !isObject(doc.body)) return null;
   try {
     const signature = Buffer.from(envelope.s, "base64url");
@@ -89,7 +90,8 @@ export function held(envelope: SignedDoc | null | undefined): Doc | null {
     try {
       const bytes = Buffer.from(envelope.d, "base64url");
       const parsed = JSON.parse(bytes.toString("utf8"));
-      doc = { origin: parsed.origin, kind: parsed.kind, n: parsed.n, body: isObject(parsed.body) ? parsed.body : {}, h: shortHash(bytes), envelope };
+      if (!isObject(parsed) || parsed.v !== DOC_VERSION) return null;
+      doc = { origin: parsed.origin as string, kind: parsed.kind as DocKind, n: parsed.n as number, body: isObject(parsed.body) ? parsed.body : {}, h: shortHash(bytes), envelope };
     } catch {
       return null;
     }

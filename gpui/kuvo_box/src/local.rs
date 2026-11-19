@@ -16,7 +16,7 @@ use base64::Engine as _;
 
 use crate::error::{Error, Result};
 use crate::place;
-use crate::transport::{Closer, Request, Response, Stream, Transport};
+use crate::transport::{check_route_version, Closer, Request, Response, Stream, Transport, ROUTE_VERSION_HEADER};
 
 /// Who a client is to a box on its own computer, as its server takes it (`x-kuvo-from`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -130,7 +130,7 @@ impl LocalServer {
         let mut head = format!("{} /{} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\n", request.method.to_ascii_uppercase(), path, port);
         let token = base64::engine::general_purpose::STANDARD.encode(format!("opencode:{password}"));
         head.push_str(&format!("Authorization: Basic {token}\r\nx-kuvo-from: {}\r\n", self.speaker.header()));
-        for (name, value) in &request.headers {
+        for (name, value) in request.wire_headers() {
             // (A header can't carry a line break: one that does isn't sent.)
             if name.contains(['\r', '\n', ':']) || value.contains(['\r', '\n']) {
                 continue;
@@ -168,6 +168,7 @@ impl LocalServer {
         self.write_request(&mut stream, port, &password, request)?;
         let mut reader = BufReader::new(stream);
         let head = read_head(&mut reader).map_err(|error| self.dropped(error))?;
+        check_route_version(head.route_version.as_deref())?;
         if head.status == 401 {
             return Err(Error::NotRunning(format!("Kuvo Code on {} didn't take this client's password: it may have started again.", self.label)));
         }
@@ -220,6 +221,7 @@ struct Head {
     content_type: Option<String>,
     length: Option<u64>,
     chunked: bool,
+    route_version: Option<String>,
 }
 
 /// Reads the head, skipping interim answers (`100 Continue`, the box's `102 Processing` while it
@@ -236,7 +238,7 @@ fn read_head(reader: &mut impl BufRead) -> io::Result<Head> {
         if !version.starts_with("HTTP/1.") {
             return Err(bad("HTTP/1.x"));
         }
-        let mut head = Head { status, content_type: None, length: None, chunked: false };
+        let mut head = Head { status, content_type: None, length: None, chunked: false, route_version: None };
         loop {
             let mut header = String::new();
             if reader.read_line(&mut header)? == 0 {
@@ -249,6 +251,7 @@ fn read_head(reader: &mut impl BufRead) -> io::Result<Head> {
             let Some((name, value)) = header.split_once(':') else { continue };
             let value = value.trim();
             match name.trim().to_ascii_lowercase().as_str() {
+                ROUTE_VERSION_HEADER => head.route_version = Some(value.to_owned()),
                 "content-type" => head.content_type = Some(value.to_owned()),
                 "content-length" => head.length = value.parse().ok(),
                 "transfer-encoding" => head.chunked = value.to_ascii_lowercase().contains("chunked"),

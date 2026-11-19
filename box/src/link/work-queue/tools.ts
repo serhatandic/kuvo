@@ -1,3 +1,5 @@
+import { awaitSharedSave, queryOperation, withSaveOutcome } from "../setup/shared";
+import { setupSaveReference, type SetupSaveReceipt } from "../../shared/setup-local";
 import { relationsOf } from "./relations";
 // The Work Queue's tools (PROTOCOL.md, "The Work Queue", "Tools"): how every agent, whatever runs
 // it (the engine, Claude Code, Codex, Cursor, Grok, Antigravity), keeps its work items. The box
@@ -23,7 +25,7 @@ import { canonicalOf, readIssue, seenOf, sourceOf, withSeen, type IssueRead } fr
 import { issueAt, refText, sameSource, sourceKey, sourceKeyOf, type IssueAt } from "./sources";
 import { itemElsewhere, itemsElsewhere, takesQueues, type ItemElsewhere } from "./across";
 import { computerName } from "../peers/computer-name";
-import { callOffHanding, elsewhereOf, handElsewhere, refuseLiveElsewhere } from "./hand";
+import { callOffHanding, elsewhereOf, finishLocalHand, handElsewhere, refuseLiveElsewhere } from "./hand";
 import { readPeerAgents } from "../peers/directory";
 import { awaySince } from "../peers/reach";
 import type { Peer } from "../peers/known";
@@ -33,10 +35,15 @@ import type { BridgeRecord, EngineRecord, Target } from "../../shared/records";
 import type { Caller } from "../vault/who";
 
 /** What a tool says back to its agent. */
-export interface ToolAnswer { text: string; isError: boolean }
+export interface ToolAnswer { text: string; isError: boolean; save?: SetupSaveReceipt }
 
 const said = (text: string): ToolAnswer => ({ text, isError: false });
 const refused = (text: string): ToolAnswer => ({ text, isError: true });
+const withSave = (answer: ToolAnswer, save: SetupSaveReceipt): ToolAnswer & { save: SetupSaveReceipt } => ({
+  ...answer, save,
+  // Some tool transports only forward the text.
+  text: `${answer.text} Save receipt: ${JSON.stringify(save)}`,
+});
 
 const ITEM = { type: ["string", "integer"], description: "Like #243 or gh:owner/repo#12." };
 const ISSUE = { type: "string", description: "gh:owner/repo#12 or its URL." };
@@ -131,8 +138,9 @@ const DEFINED = [
   },
   {
     name: "queue_labels",
-    description: "List the labels (kinds of work; one set for every queue), or make one change the user asked for: add, rename (with to), recolor (with color) or remove (off every item).",
+    description: "List shared labels. On request add, rename, recolor, or remove from all items.",
     inputSchema: { type: "object", properties: {
+      save: { type: "object", description: "Check a change with its returned save receipt." },
       add: { type: "string" },
       rename: { type: "string" },
       to: { type: "string" },
@@ -371,6 +379,10 @@ async function run(name: string, args: Record<string, unknown>, caller: QueueCal
         return item;
       });
       if (to.peer) return said(`Handing ${nameOf(item)} to ${to.name} on ${computerName(to.peer)}: it goes into its queue there, linked to it, as soon as that computer has it${awaySince(to.peer.key) !== null ? " (it isn't answering now: it goes once it's back)" : ""}, and stays in your view. Until then it's unchanged here.`);
+      const refusedHand = await finishLocalHand(item);
+      if (refusedHand) return refused(refusedHand);
+      if (item.handing && allItems().some(each => each.handing?.id === item.handing!.id))
+        return said(`Handing ${nameOf(item)} to ${to.name}. Waiting for the primary to confirm the new queue.`);
       return said(`Handed ${nameOf(item)} to ${to.name}: it's in its queue now${to.owner.startsWith("ses_") ? ", linked to it" : ""}, and stays in your view.`);
     }
     case "queue_remove": {
@@ -394,6 +406,14 @@ async function run(name: string, args: Record<string, unknown>, caller: QueueCal
       return said(args.undo === true ? `Brought back ${nameOf(item)}.` : `Deleted ${nameOf(item)}. The user can bring it back for 30 days.`);
     }
     case "queue_labels": {
+      if (args.save !== undefined) {
+        const reference = setupSaveReference(args.save);
+        if (!reference) return refused("Send the save receipt from the label change.");
+        const outcome = queryOperation(reference.setup, reference.operation, reference.proof, "queueLabels");
+        if (!outcome) return refused("This computer couldn't find that label save.");
+        const status = outcome.status;
+        return withSave(said(`The label save is ${status}.`), withSaveOutcome({ ...reference, epoch: Number(outcome.epoch) }, status));
+      }
       const asked = ["add", "rename", "recolor", "remove"].filter(each => typeof args[each] === "string" && (args[each] as string).trim());
       const listed = () => (labels().length ? labels().map(each => `${each.name} (${each.color})`).join(", ") : "none yet");
       if (!asked.length) return said(`Labels (one set for every queue; an item carries several): ${listed()}. Statuses aren't labels: ${STATUSES.map(each => each.name).join(", ")}. Priorities: ${PRIORITIES.map(each => each.name).join(", ")}.`);
@@ -404,7 +424,14 @@ async function run(name: string, args: Record<string, unknown>, caller: QueueCal
         : asked[0] === "recolor" ? (typeof args.color === "string" && args.color.trim() ? changeLabel(args.recolor, { color: args.color }) : { refused: "Say its new colour (color)." })
         : removeLabel(args.remove, stripLabel);
       if ("refused" in outcome) return refused(outcome.refused);
-      return said(`${asked[0] === "add" ? "Made" : asked[0] === "remove" ? "Removed (and took off every item here)" : "Changed"} the label ${outcome.done.name}. Labels now: ${listed()}.`);
+      const receipt = "save" in outcome ? await awaitSharedSave(outcome.save) : null;
+      if (receipt && receipt.status !== "committed") {
+        const message = receipt.message;
+        return withSave(receipt.status === "pending" ? said(message) : refused(message), receipt);
+      }
+      if (receipt && asked[0] === "remove") stripLabel(outcome.done.id);
+      const answer = said(`${asked[0] === "add" ? "Made" : asked[0] === "remove" ? "Removed (and took off every item here)" : "Changed"} the label ${outcome.done.name}. Labels now: ${listed()}.`);
+      return receipt ? withSave(answer, receipt) : answer;
     }
     case "queue_import": {
       const given = givenItems(args.items);

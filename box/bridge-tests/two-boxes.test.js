@@ -250,20 +250,26 @@ test("this Mac's documents reach a machine; a phone the machine lets go reaches 
   const again = await ask("GET", "kuvo/link/setup");
   assert.ok(again.json.docs.map(link.readDoc).find(doc => doc?.origin === macSign && doc.kind === "peers").body.left.includes(lab.key));
   const back = setUp(again.json.docs);
-  assert.equal(back.key, lab.key, JSON.stringify(back));
+  assert.notEqual(back.key, lab.key, JSON.stringify(back));
+  assert.notEqual(back.sign, lab.sign);
   assert.ok((machineLink()?.macs ?? []).includes(mac));
   const peers = { peers: [{ key: lab.key, sign: lab.sign, address: lab.address, name: "lab", id: "lab" }], moved: [] };
   assert.equal((await ask("PUT", "kuvo/link/peers", peers)).status, 200);
   assert.equal(link.macPeersBody(link.readLink()).boxes.some(box => box.key === lab.key), false, "a legacy list cannot restore trust");
   // The SSH Add has completed on the stand-in machine. Commit the fresh pairing as Add does.
-  link.updateLink(current => link.setMacPeers(current, peers, lab.key).link);
-  assert.equal(link.macPeersBody(link.readLink()).boxes.some(box => box.key === lab.key), true);
+  assert.equal((await ask("PUT", "kuvo/link/peers", { peers: [{ ...back, name: "lab", id: "lab" }], moved: [] })).status, 200);
+  assert.equal(link.macPeersBody(link.readLink()).boxes.some(box => box.key === back.key), true);
+  assert.ok(link.macPeersBody(link.readLink()).left.includes(lab.key));
   link.macDocsChanged();
+  // Re-enrollment changes the relay address. Wait until the replacement
+  // connects and takes its signed roster before disconnecting the Mac.
+  await arrived(() => relay.has(Buffer.from(back.address, "base64url")));
+  await onTheMachine(() => link.readDoc(machineLink()?.docs?.[`${macSign} peers`])?.body.boxes.some(box => box.key === back.key));
 
   // Removed while this Mac's box is off the relay: the machine hears it once it's back.
   link.stopMacLink();
   await arrived(() => !relay.has(macAddress));
-  assert.equal((await ask("PUT", "kuvo/link/peers", { peers: [], moved: [], removed: [lab.key] })).status, 200);
+  assert.equal((await ask("PUT", "kuvo/link/peers", { peers: [], moved: [], removed: [back.key] })).status, 200);
   link.runMacLink();
   await onTheMachine(() => !(machineLink()?.macs ?? []).includes(mac));
 });

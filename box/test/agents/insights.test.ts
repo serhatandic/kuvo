@@ -9,7 +9,7 @@ import { LinkDirectory, PeerPost } from "../../src/agents/groups/post"
 import { Store } from "../../src/agents/store"
 import { Insights, insightsRoutes } from "../../src/agents/usage/insights"
 import { InsightsDB } from "../../src/agents/usage/insights-db"
-import { dayBounds } from "../../src/agents/usage/insights-store"
+import { dayBounds, InsightsStore } from "../../src/agents/usage/insights-store"
 import { InsightsScan } from "../../src/agents/usage/insights-scan"
 import { insightKey, type InsightRecord } from "../../src/agents/usage/insight-records"
 import { generationEvent } from "../../src/agents/usage/antigravity-history"
@@ -355,3 +355,35 @@ test("legacy history stays on its provider slot through sign-in changes, while o
     await db.close()
   }
 })
+
+
+test("opening an unversioned Insights database stamps it without losing records", () => {
+  const file = join(dir, "database-version.sqlite");
+  // Create exactly the deployed schema, then simulate a database from before the stamp.
+  const previous = new InsightsStore(file);
+  previous.take([event("previous")], priced, now);
+  previous.write("cursor/peer", 17);
+  previous.close();
+  const raw = new Database(file);
+  raw.exec("PRAGMA user_version = 0");
+  raw.close();
+
+  const updated = new InsightsStore(file);
+  expect(updated.read<number>("cursor/peer")).toBe(17);
+  expect(updated.read<number>("sequence")).toBe(1);
+  updated.close();
+
+  const check = new Database(file);
+  expect(check.query("PRAGMA user_version").get()).toEqual({ user_version: 1 });
+  expect(check.query("SELECT seq FROM event").get()).toEqual({ seq: 1 });
+  check.exec("PRAGMA user_version = 2");
+  check.close();
+  expect(() => new InsightsStore(file)).toThrow("Insights database format version 2 is unsupported");
+  const refused = new Database(file, { readonly: true });
+  try {
+    expect(refused.query("PRAGMA user_version").get()).toEqual({ user_version: 2 });
+    expect(refused.query("SELECT seq FROM event").get()).toEqual({ seq: 1 });
+  } finally {
+    refused.close();
+  }
+});

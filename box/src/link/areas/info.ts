@@ -6,6 +6,8 @@ import os from "node:os";
 import path from "node:path";
 import { bundleBuild } from "../../shared/bundle";
 import { keeperEngine } from "../../shared/engines";
+import { offlineEditsReady, ownershipReady } from "../ownership/store";
+import { deviceGrantsLayoutDeferred } from "../../shared/folder-version";
 import { FEATURES } from "../../shared/features";
 import { engineRuns, processRuns as runs } from "../../shared/platform";
 import type { BridgeRecord, EngineRecord } from "../../shared/records";
@@ -22,6 +24,12 @@ import { rehomeHome } from "../rehome/route";
 import { rehomeStatus } from "../rehome/state";
 import { integrationCatalog } from "./integrations";
 
+function editFeatures<T extends string>(features: readonly T[]): T[] {
+  const ownership = ownershipReady();
+  const edits = offlineEditsReady();
+  return features.filter(feature => (feature !== "data.offline-edits" || edits) && (feature !== "data.mutation-identity" || ownership));
+}
+
 export async function* infoRoute(context: RouteContext): AsyncGenerator<AnswerPiece> {
   const { readEngine, bridge, info } = context;
   let engine: Partial<EngineRecord> = {};
@@ -35,7 +43,11 @@ export async function* infoRoute(context: RouteContext): AsyncGenerator<AnswerPi
   const chats = CHATS;
   try { fs.mkdirSync(chats, { recursive: true }); } catch {}
   yield { head: { status: 200, headers: { "content-type": "application/json" } } };
-  yield { body: Buffer.from(JSON.stringify(IS_MAC ? macInfo(engine, started, chats, Boolean(bridge())) : machineInfo(engine, started, chats, Boolean(bridge()), info))) };
+  const box = IS_MAC ? macInfo(engine, started, chats, Boolean(bridge())) : machineInfo(engine, started, chats, Boolean(bridge()), info);
+  // The pre-marker judge requires every feature it shipped. Its voucher route waits
+  // while the legacy grants are still in use, then retires with the layout upgrade.
+  const features = deviceGrantsLayoutDeferred(K) ? [...box.features, "devices.allow"] : box.features;
+  yield { body: Buffer.from(JSON.stringify({ ...box, features })) };
 }
 
 // A Mac's: its name and its app's version as its app last said them (kept for when it's closed),
@@ -46,7 +58,7 @@ function macInfo(engine: Partial<EngineRecord>, started: number | null, chats: s
   const integrations = Object.fromEntries(integrationCatalog().filter(each => typeof each.title === "string").map(each => [each.id, each.title]));
   const moving = movingNow();
   return { kind: "mac", name: config?.name || os.hostname(), app: config?.app || MAC_APP_VERSION || "", engine: engine.version ?? MAC_ENGINE_VERSION ?? "",
-    features: macFeatures() as BoxInfo["features"], agents, started, chats, integrations, ...(moving ? { moving } : {}) };
+    features: editFeatures(macFeatures()) as BoxInfo["features"], agents, started, chats, integrations, ...(moving ? { moving } : {}) };
 }
 
 /** How this Mac's box's move into its home of its own stands, for a phone: while one waits, is under
@@ -74,7 +86,7 @@ function machineInfo(engine: Partial<EngineRecord>, started: number | null, chat
   try { link = readLink(); } catch {}
   const macs = macsOf(link).map(key => ({ key, ...(link?.macNames?.[key] ? { name: link.macNames[key] } : {}), seen: link?.macSeen?.[key] ?? 0 }));
   const phones = new Set((link?.phones ?? []).map(phone => phone.key)).size;
-  return { kind: "machine", bridge: BRIDGE_VERSION, engine: engine.version ?? null, started, running, stopped, agents, chats, features: [...FEATURES], ...(home ? { home } : {}), macs, phones, pieces: pieces(engine, running), ...info };
+  return { kind: "machine", bridge: BRIDGE_VERSION, engine: engine.version ?? null, started, running, stopped, agents, chats, features: editFeatures(FEATURES), ...(home ? { home } : {}), macs, phones, pieces: pieces(engine, running), ...info };
 }
 
 type Pieces = NonNullable<MachineInfo["pieces"]>;
@@ -101,7 +113,7 @@ export function pieces(engine: Partial<EngineRecord>, engineRuns: boolean): Piec
   const renewal = agentsBehind && bridge.renewal && typeof bridge.renewal.since === "number" ? { since: bridge.renewal.since, holding: bridge.renewal.holding === true } : null;
   // What it waits for: one that doesn't say its build doesn't make way by itself.
   const said = bridge.renewal?.waits;
-  const waits = !agentsBehind ? null : !build ? "restart" : said === "holding" || said === "engine" || said === "restart" ? said : "quiet";
+  const waits = !agentsBehind ? null : !build ? "restart" : said === "holding" || said === "engine" || said === "restart" || said === "handover" ? said : "quiet";
   // The engine, against the one its keeper starts (`bin/kuvo-start`'s, while it's there, else the
   // newest there is).
   const running = engineRuns ? engine.version ?? null : null;

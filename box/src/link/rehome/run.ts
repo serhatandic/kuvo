@@ -30,6 +30,7 @@ import { NOTHING_TO_MOVE, diskKind, freeBytes, locked, nearest, planMove, releas
 import { PATH_REWRITER, type Rewriter } from "./rewrite";
 import { parsePlist } from "./upgrades";
 import { deleteOriginalKeys, heldRefusal } from "./run-steps";
+import { checkFolderVersion } from "../../shared/folder-version";
 import { moveUnderWay, noteRecord, notePhase, readRecord, rehomeFolder, rehomeStatus, type RunPlan } from "./state";
 
 /** The rewriter of a move the box runs itself: the engine's database is judged from a clone of it
@@ -457,6 +458,8 @@ export async function rehomeSettle(home: string): Promise<RehomeOutcome> {
 export async function rehomeRun(folders: Folders, options: RunOptions): Promise<RunOutcome> {
   const { appFolder, home } = folders;
   if (process.platform !== "darwin") return { result: "refused", message: NOTHING_TO_MOVE, status: rehomeStatus(home) };
+  checkFolderVersion(home);
+  checkFolderVersion(path.join(appFolder, "box"));
   return locked(home, options.waiting ?? (() => {}), async () => {
     try {
       return await whole();

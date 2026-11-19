@@ -25,10 +25,11 @@ export type PersonalityLibraryDocument = Infer<typeof LIBRARY>;
 export type PersonalitiesTaken = Infer<typeof TAKEN>;
 
 export const PERSONALITY_ROUTES: RouteShape[] = [
-  { route: "GET kuvo/personalities", answers: { 200: PERSONALITIES } },
-  { route: "POST kuvo/personalities", answers: { 200: PERSONALITY } },
-  { route: "GET kuvo/personalities/document", answers: { 200: LIBRARY } },
-  { route: "POST kuvo/personalities/take", answers: { 200: TAKEN } },
-  { route: "PATCH kuvo/personalities/:id", answers: { 200: PERSONALITY } },
-  { route: "DELETE kuvo/personalities/:id", answers: { 200: NOTHING } },
+  { route: "GET kuvo/personalities", feature: "personalities", answers: { 200: PERSONALITIES } },
+  { route: "GET kuvo/personalities/events", feature: "personalities.events", answers: { 200: PERSONALITIES } },
+  { route: "POST kuvo/personalities", feature: "personalities", answers: { 200: PERSONALITY } },
+  { route: "GET kuvo/personalities/document", feature: "personalities", answers: { 200: LIBRARY } },
+  { route: "POST kuvo/personalities/take", feature: "personalities", answers: { 200: TAKEN } },
+  { route: "PATCH kuvo/personalities/:id", feature: "personalities", answers: { 200: PERSONALITY } },
+  { route: "DELETE kuvo/personalities/:id", feature: "personalities", answers: { 200: NOTHING } },
 ];

@@ -28,7 +28,6 @@ extension BoxGate {
         "computers.reach", // #742: where each of your computers is reached, for a client that connects to each directly
         "computers.reach-words",
         "computers.words",
-        "devices.allow", // #742: a computer whose app was removed adds none until you allow it again
         "devices.pair", // #742: the desktop app pairs through the box on its own computer
         "file.text", // #708, the side panel and the sandbox's row work nothing out from what the box lists
         "folders.suggested", // #733, the facts a first run draws, which no client works out

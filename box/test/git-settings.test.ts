@@ -112,7 +112,7 @@ test("your Mac's own branch prefix, moved as the box's settings become its own, 
   const { moveGitSettings } = await import("../src/link/areas/git-words")
   expect(moveGitSettings({ branchPrefix: "team/" })).toEqual({ status: 200, moved: true })
   expect((await settings()).branch_prefix).toBe("team/")
-  expect(kept()).toEqual({ moved: true })
+  expect(kept()).toEqual({ moved: true, formatVersion: 1 })
   expect((await phonesWorktree()).branch).toMatch(/^team\/brave-otter-\d+$/)
 })
 

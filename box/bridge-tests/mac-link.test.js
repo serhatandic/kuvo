@@ -83,6 +83,8 @@ Object.assign(process.env, {
   KUVO_HOST_URL: `http://127.0.0.1:${appHost.address().port}`,
   KUVO_HOST_PASSWORD: "host-password",
 });
+fs.mkdirSync(process.env.KUVO_HOME, { recursive: true });
+fs.writeFileSync(path.join(process.env.KUVO_HOME, "folder-version.json"), '{"version":11}\n');
 const link = await import("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");
 
 const relay = await relayStandIn(link, { changed: poke });

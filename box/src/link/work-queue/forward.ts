@@ -1,3 +1,6 @@
+import { sendOfflineEdits } from "../ownership/edits";
+import { peerPlaces } from "../engine/client";
+import { sendOwnerMessages } from "../ownership/messages";
 // What you do to an item another of your computers keeps, done there (PROTOCOL.md, "The Work
 // Queue", "Across your computers", Done where it's kept): a client sends it to any box, and that box,
 // which knows which computer keeps the item (as that one told it), hands it to that computer's box
@@ -12,8 +15,10 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { additiveObjectFormat, UnsupportedFormatVersion } from "../../shared/format-version";
 import { isObject } from "../../shared/json";
-import { listOf, writePrivate } from "../files";
+import { locked } from "../../shared/files";
+import { listOf, writeDurablePrivate, writePrivate } from "../files";
 import { watchFolders } from "../follow";
 import { ownName } from "../letters/start";
 import { readPeerAgents } from "../peers/directory";
@@ -42,18 +47,23 @@ export const ATTACHMENTS = "work-queue.attachments";
 export const takesForwarded = (key: string, feature = FORWARD_FEATURE): boolean => (readPeerAgents()[key]?.features ?? []).includes(feature);
 
 /** What a box says it takes of each other area's asks. */
-const AREA_FEATURES = { computers: "computers.manage", devices: "devices.pair" } as const;
+const AREA_FEATURES = { ownership: "data.ownership", computers: "computers.manage", devices: "devices.pair", setup: "setup.handover" } as const;
 
 export const FORWARDS = path.join(WORK_QUEUE, "forward");
 // What a keeper did for the asks it took, by asker and id (changes only: a read is done again).
+const forwardFormat = additiveObjectFormat("Work Queue forwarded request");
+const answerFormat = additiveObjectFormat("Work Queue forwarded answer");
+const doneFormat = additiveObjectFormat("Work Queue forwarded action receipts");
 const DONE_FILE = path.join(WORK_QUEUE, "acted.json");
+const DONE_LOCK = path.join(WORK_QUEUE, ".acted.lock");
 const ID = /^wqa_[A-Za-z0-9_-]{16,40}$/;
 const LEFT = /^(wqa_[A-Za-z0-9_-]{16,40})\.json$/;
 
 /** How long a box waits for the computer that keeps an item to answer; a file longer, as its
  * answer comes in parts (a test's shorter). */
 export const forwardTiming = { wait: 20_000, file: 60_000 };
-const waitFor = (act: { action?: unknown }) => (act.action === "file" ? forwardTiming.file : forwardTiming.wait);
+const waitFor = (act: { area?: unknown; method?: unknown; action?: unknown }) =>
+  (act.action === "file" ? forwardTiming.file : act.area === "setup" && act.method === "POST" ? 2 * forwardTiming.wait + AGAIN_AFTER : forwardTiming.wait);
 /** How often what's waiting goes again while it's waited for (the keeper takes each id once). */
 const AGAIN_AFTER = 5_000;
 /** How soon a keeper answers an ask sent again: a file's not while it's waited for (it can be big). */
@@ -69,19 +79,18 @@ const MOST_REMEMBERED = 2_000;
  * files (`action` `file`, `name`), a delete, a change (`PATCH`, with what it said, `body`), or a
  * bringing back (`action` `restore`). `area` `computers`: one of your machines (`item`, its key)
  * renamed (`PATCH {name}`) or removed (`DELETE`) on the box that writes its record
- * (`peers/manage.ts`); `area` `devices`: Kuvo Code's desktop app on the asking box's computer
- * (`item`, its key; `body`, `{name, kind}`) paired on the setup's main computer, which the asking
- * box vouches for (`POST`), or the asking box revokes its own vouched devices (`DELETE`,
- * `item` is the sender's box key, `peers/devices.ts`); a Work Queue item's otherwise. */
+ * (`peers/manage.ts`); `area` `devices` forwards pairing and revocation to the primary
+ * (`peers/devices.ts`). The default area is the Work Queue. */
 export interface Act {
   id: string;
-  area?: "computers" | "devices";
+  area?: "computers" | "devices" | "setup" | "ownership";
   method: "GET" | "DELETE" | "POST" | "PATCH";
   item: string;
-  action?: "restore" | "file";
+  action?: "restore" | "file" | "removal-plan";
   name?: string;
   body?: Record<string, unknown>;
   at: number;
+  operation?: string;
 }
 
 /** What the box that keeps it answered: as its own route would have (a file: `{type, data}`, its
@@ -96,11 +105,12 @@ export const forwardsSoon: { send: () => void } = { send: () => {} };
 
 const left = (id: string) => path.join(FORWARDS, `${id}.json`);
 const answerOf = (id: string) => path.join(FORWARDS, `${id}.answer.json`);
-const read = (file: string): Record<string, unknown> | null => {
+const read = (format: ReturnType<typeof additiveObjectFormat>, file: string): Record<string, unknown> | null => {
   try {
     const value: unknown = JSON.parse(fs.readFileSync(file, "utf8"));
-    return isObject(value) ? value : null;
-  } catch {
+    return isObject(value) ? format.read(value) : null;
+  } catch (error) {
+    if (error instanceof UnsupportedFormatVersion) throw error;
     return null;
   }
 };
@@ -118,7 +128,7 @@ export async function forwardAct(computer: Computer, named: string, act: Omit<Ac
   if (!backgroundRelay && offRelay()) return { status: 503, refused: `${here} isn't connected to your other computers now, so nothing was changed on ${computer.name}. Try again in a moment.` };
   const id = `wqa_${crypto.randomBytes(16).toString("base64url")}`;
   try {
-    writePrivate(left(id), JSON.stringify({ to: peer.key, act: { ...act, id, at: now } }));
+    writePrivate(left(id), JSON.stringify(forwardFormat.write({ to: peer.key, act: { ...act, id, at: now } })));
   } catch {
     return { status: 503, refused: `${here} couldn't send it to ${computer.name}. Try again in a moment.` };
   }
@@ -132,6 +142,8 @@ export async function forwardAct(computer: Computer, named: string, act: Omit<Ac
     return answer;
   } finally {
     madeHere.delete(id);
+    read(forwardFormat, left(id));
+    read(answerFormat, answerOf(id));
     fs.rmSync(left(id), { force: true });
     fs.rmSync(answerOf(id), { force: true });
   }
@@ -227,22 +239,27 @@ const madeHere = new Set<string>();
 // The answer to `id` once it's left beside it; "away" once the relay finds that computer not there
 // (after it was sent), "late" past the wait or once its asker went.
 function answered(id: string, key: string, wait: number, signal?: AbortSignal | null): Promise<Acted | "away" | "late"> {
-  return new Promise(resolve => {
+  return new Promise((resolve, reject) => {
     const until = Date.now() + wait;
     let done = false;
-    const finish = (value: Acted | "away" | "late") => {
+    const finish = (value: Acted | "away" | "late" | Error) => {
       if (done) return;
       done = true;
       watch.close();
       clearInterval(timer);
       signal?.removeEventListener("abort", gone);
-      resolve(value);
+      if (value instanceof Error) reject(value);
+      else resolve(value);
     };
     const check = () => {
-      const answer = read(answerOf(id));
-      if (answer && typeof answer.status === "number") return finish({ status: answer.status, value: answer.value });
-      if (awaySince(key) !== null) return finish("away");
-      if (Date.now() >= until || signal?.aborted) finish("late");
+      try {
+        const answer = read(answerFormat, answerOf(id));
+        if (answer && typeof answer.status === "number") return finish({ status: answer.status, value: answer.value });
+        if (awaySince(key) !== null) return finish("away");
+        if (Date.now() >= until || signal?.aborted) finish("late");
+      } catch (error) {
+        finish(error instanceof Error ? error : new Error(String(error)));
+      }
     };
     const gone = () => finish("late");
     // (The system's watch, and a look every half second for what one missed.)
@@ -260,16 +277,19 @@ const sent = new Map<string, number>();
  * each again every few seconds while it's waited for. What's past its wait is cleared. `ownOnly`
  * (this Mac's box): only what this process left. */
 export function sendForwards(host: Pick<LinkHost, "send" | "welcomed"> | null | undefined, link: LinkState | null = readLink(), now = Date.now(), { ownOnly = IS_MAC }: { ownOnly?: boolean } = {}): void {
+  sendOwnerMessages(host, link, now);
+  sendOfflineEdits(host, link, now, peerPlaces);
   const names = listOf(FORWARDS);
   const here = new Set<string>();
   for (const name of names) {
     const id = LEFT.exec(name)?.[1];
     if (!id) continue;
     here.add(id);
-    const kept = read(path.join(FORWARDS, name));
+    const kept = read(forwardFormat, path.join(FORWARDS, name));
     const act = isObject(kept?.act) ? kept.act : null;
     // (Its asker is gone: a process that stopped mid-wait leaves it.)
     if (!act || typeof act.at !== "number" || now - act.at > waitFor(act) + AGAIN_AFTER) {
+      read(answerFormat, answerOf(id));
       fs.rmSync(path.join(FORWARDS, name), { force: true });
       fs.rmSync(answerOf(id), { force: true });
       here.delete(id);
@@ -288,7 +308,10 @@ export function sendForwards(host: Pick<LinkHost, "send" | "welcomed"> | null | 
   // (An answer whose ask is gone.)
   for (const name of names) {
     const id = /^(wqa_[A-Za-z0-9_-]{16,40})\.answer\.json$/.exec(name)?.[1];
-    if (id && !here.has(id)) fs.rmSync(answerOf(id), { force: true });
+    if (id && !here.has(id)) {
+      read(answerFormat, answerOf(id));
+      fs.rmSync(answerOf(id), { force: true });
+    }
   }
 }
 
@@ -297,9 +320,11 @@ export function takeActed(sender: MailSender, given: unknown): void {
   if (!isObject(given) || typeof given.id !== "string" || !ID.test(given.id)) return;
   const status = given.status;
   if (typeof status !== "number" || !Number.isInteger(status) || status < 200 || status > 599) return;
-  const kept = read(left(given.id));
+  const kept = read(forwardFormat, left(given.id));
   if (kept?.to !== sender.key) return;
-  try { writePrivate(answerOf(given.id), JSON.stringify({ status, value: given.value ?? null })); } catch {}
+  const file = answerOf(given.id);
+  read(answerFormat, file);
+  try { writePrivate(file, JSON.stringify(answerFormat.write({ status, value: given.value ?? null }))); } catch {}
 }
 
 // What this box did for each ask, by asker and id, and when it last answered it: so one sent again
@@ -324,7 +349,14 @@ function prune<T extends { until: number; answer: Acted | null; answered?: numbe
 }
 
 function readDone(now: number): Map<string, { until: number; answer: Acted | null }> {
-  const kept = read(DONE_FILE) ?? {};
+  let kept: Record<string, unknown> = {};
+  try {
+    const value = JSON.parse(fs.readFileSync(DONE_FILE, "utf8"));
+    if (!isObject(value)) throw new Error("The forwarding receipts are unreadable.");
+    kept = doneFormat.read(value);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
   const fresh = new Map<string, { until: number; answer: Acted | null }>();
   for (const [key, each] of Object.entries(kept)) {
     if (isObject(each) && typeof each.until === "number") fresh.set(key, { until: each.until, answer: isObject(each.answer) ? each.answer as unknown as Acted : null });
@@ -333,14 +365,17 @@ function readDone(now: number): Map<string, { until: number; answer: Acted | nul
   return fresh;
 }
 
-function keepDone(key: string, done: Done, now: number): void {
-  try {
+function keepDone(key: string, done: Done, now: number, claim = false): Done | undefined {
+  return locked(DONE_LOCK, () => {
     const kept = readDone(now);
+    const existing = kept.get(key);
+    if (claim && existing) return existing;
     kept.delete(key);
     kept.set(key, { until: done.until, answer: done.answer });
     prune(kept, now);
-    writePrivate(DONE_FILE, JSON.stringify(Object.fromEntries(kept)));
-  } catch {}
+    writeDurablePrivate(DONE_FILE, JSON.stringify(doneFormat.write(Object.fromEntries(kept))), path.dirname(WORK_QUEUE));
+    return undefined;
+  }, { required: true });
 }
 
 /** An ask from another of your computers' boxes: done here as this box's own client's (`run`), and
@@ -366,10 +401,13 @@ export async function takeAct(sender: MailSender, given: unknown, reply: (payloa
   }
   // A change this box took before it last started: as it went, or, cut short then, that it may
   // have been done.
-  const kept = changes ? readDone(now).get(key) : undefined;
+  const unavailable = { status: 503, value: { message: "This computer couldn’t persist the forwarded operation." } };
+  let kept: Done | undefined;
+  try { kept = changes ? readDone(now).get(key) : undefined; }
+  catch { return answer(unavailable); }
   // (Renaming or removing one of your machines, or pairing your app, is the same done twice: one
   // cut short is done again.)
-  const redo = kept !== undefined && kept.answer === null && act.area !== undefined;
+  const redo = kept !== undefined && kept.answer === null && act.area !== undefined && act.area !== "setup" && act.area !== "ownership";
   if (kept && !redo) {
     const value = kept.answer ?? { status: 409, value: { message: `${here} stopped while it was doing this, so it can't tell whether it was done. Look again in a moment.` } };
     did.set(key, { until: kept.until, answer: value, answered: now });
@@ -379,14 +417,25 @@ export async function takeAct(sender: MailSender, given: unknown, reply: (payloa
   // remembered until it would be too old to take, so none is ever taken twice.)
   if (!redo && (now - act.at > ACT_MEMORY || act.at - now > AHEAD)) return answer({ status: 409, value: { message: `${here}'s clock and ${computerName(peer)}'s are too far apart to take it: check both computers' time.` } });
   const entry: Done = { until: kept?.until ?? Math.max(now, act.at) + ACT_MEMORY, answer: null };
+  if (changes) {
+    try {
+      const previous = keepDone(key, entry, now, !redo);
+      if (previous) return answer(previous.answer ?? { status: 409, value: { message: "This operation was already claimed." } });
+    } catch { return answer(unavailable); }
+  }
   did.set(key, entry);
-  if (changes) keepDone(key, entry, now);
   try {
     entry.answer = await run(act);
   } catch {
     entry.answer = { status: 500, value: { message: `Something went wrong on ${here}. Try again in a moment.` } };
   }
-  if (changes) keepDone(key, entry, now);
+  if (changes) {
+    try { keepDone(key, entry, now); }
+    catch {
+      entry.answered = Date.now();
+      return answer({ status: 503, value: { message: "This computer couldn’t persist the operation’s outcome. Check the record before retrying." } });
+    }
+  }
   entry.answered = Date.now();
   answer(entry.answer);
   // (A read's answer isn't kept: a file's can be big, and one asked again is read again.)
@@ -400,16 +449,18 @@ export function forgetActs(): void {
   sent.clear();
 }
 
-// (Nothing else is an act: letting a computer add Kuvo Code's app to your devices again,
-// `kuvo/computers/<key>/allow-devices`, is never one, so the box kept from it can't ask for itself.)
 const actOf = (given: unknown): Act | null => {
   if (!isObject(given) || typeof given.id !== "string" || !ID.test(given.id) || typeof given.item !== "string" || !given.item || given.item.length > 300) return null;
   if (typeof given.at !== "number" || !Number.isFinite(given.at)) return null;
   const { method, action, name } = given;
   const fits = (method === "GET" && action === undefined) || (method === "DELETE" && action === undefined) || (method === "POST" && action === "restore") || (method === "PATCH" && action === undefined)
     || (method === "GET" && action === "file" && typeof name === "string" && name.length > 0 && name.length <= 300);
-  const devices = given.area === "devices" && (method === "POST" || method === "DELETE") && action === undefined;
-  if (!fits && !devices) return null;
-  if (given.area !== undefined && !devices && !(given.area === "computers" && (method === "PATCH" || method === "DELETE") && action === undefined)) return null;
-  return { id: given.id, ...(given.area === "computers" || given.area === "devices" ? { area: given.area } : {}), method, item: given.item, ...(action ? { action } : {}), ...(action === "file" ? { name } : {}), ...(isObject(given.body) ? { body: given.body } : {}), at: given.at } as Act;
+  const devices = given.area === "devices" && (method === "GET" || method === "POST" || method === "DELETE") && action === undefined;
+  const setup = given.area === "setup" && (method === "GET" || method === "POST") && action === undefined;
+  const ownership = given.area === "ownership" && (method === "GET" || method === "PATCH" || method === "POST" || method === "DELETE") && action === undefined;
+  const removalPlan = given.area === "computers" && action === "removal-plan" && (method === "GET" || method === "POST");
+  if (!fits && !devices && !setup && !ownership && !removalPlan) return null;
+  if (given.area !== undefined && !devices && !setup && !ownership && !removalPlan && !(given.area === "computers" && (method === "PATCH" || method === "DELETE") && action === undefined)) return null;
+  if (given.operation !== undefined && (typeof given.operation !== "string" || !/^[A-Za-z0-9_-]{1,80}$/.test(given.operation))) return null;
+  return { id: given.id, ...(given.operation ? { operation: given.operation } : {}), ...(given.area === "computers" || devices || setup || ownership ? { area: given.area } : {}), method, item: given.item, ...(action ? { action } : {}), ...(action === "file" ? { name } : {}), ...(isObject(given.body) ? { body: given.body } : {}), at: given.at } as Act;
 };

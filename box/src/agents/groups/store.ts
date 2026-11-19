@@ -21,11 +21,19 @@ export const version = 1
 /** "held": brought here, not yet started (a move under way); "active": talking here. */
 export type Status = "held" | "active"
 
+export interface ReviewReceipt {
+  operation: string
+  decision: "resume" | "discard"
+  status: "pending" | "committed"
+}
+
 export interface Kept {
   group: Group
   status: Status
   /** The incoming move that created this record, for guarded rollback. */
   moveImport?: string
+  restoreReview?: true
+  reviewReceipt?: ReviewReceipt
   /** Talking when the runner last stopped: it says so, and waits for Keep Going. */
   talking?: boolean
   /** Paused at its limit of turns: it waits for Keep Going, however often the runner starts over. */
@@ -251,11 +259,14 @@ export class GroupStore {
     if (!record || typeof record.kuvo !== "number" || record.kuvo > version || !isGroup(record.group, id)) return undefined
     const messages: unknown = JSON.parse(fs.readFileSync(join(this.folder(id), "messages.json"), "utf8"))
     if (!isMessages(messages)) throw new Error("The group transcript could not be read")
-    return { group: record.group, ...(typeof record.moveImport === "string" ? { moveImport: record.moveImport } : {}), status: record.status === "held" ? "held" : "active", talking: record.talking === true, paused: record.paused === true, ...(isTurning(record.turning) ? { turning: record.turning } : {}), messages }
+    const receipt = record.reviewReceipt
+    const reviewReceipt: ReviewReceipt | undefined = (receipt?.status === "committed" || receipt?.status === "pending") && typeof receipt.operation === "string" &&
+      (receipt.decision === "resume" || receipt.decision === "discard") ? receipt : undefined
+    return { group: record.group, reviewReceipt, ...(typeof record.moveImport === "string" ? { moveImport: record.moveImport } : {}), status: record.restoreReview === true || record.status === "held" ? "held" : "active", ...(record.restoreReview === true ? { restoreReview: true } : {}), talking: record.talking === true, paused: record.paused === true, ...(isTurning(record.turning) ? { turning: record.turning } : {}), messages }
   }
 
   saveGroup(kept: Kept) {
-    writeDurablePrivate(join(this.folder(kept.group.id), "group.json"), JSON.stringify({ kuvo: version, status: kept.status, ...(kept.moveImport ? { moveImport: kept.moveImport } : {}), ...(kept.talking ? { talking: true } : {}), ...(kept.paused ? { paused: true } : {}), ...(kept.turning ? { turning: kept.turning } : {}), group: kept.group }, null, 2), dirname(this.root))
+    writeDurablePrivate(join(this.folder(kept.group.id), "group.json"), JSON.stringify({ kuvo: version, status: kept.status, reviewReceipt: kept.reviewReceipt, ...(kept.restoreReview ? { restoreReview: true } : {}), ...(kept.moveImport ? { moveImport: kept.moveImport } : {}), ...(kept.talking ? { talking: true } : {}), ...(kept.paused ? { paused: true } : {}), ...(kept.turning ? { turning: kept.turning } : {}), group: kept.group }, null, 2), dirname(this.root))
   }
 
   saveMessages(kept: Kept) {
@@ -324,7 +335,7 @@ export class GroupStore {
     if (!described?.name || !sessionID) return undefined
     // Its job, as its box keeps it (`job.json`: what it does in a few words, and all of it); its
     // description says it in a few words for one the box hasn't kept yet.
-    const job = read(join(folder, "job.json"))
+    const job = described.offlineJob ?? read(join(folder, "job.json"))
     const directory = text(join(folder, "directory"))?.trim() || join(folder, "workspace")
     return {
       id,

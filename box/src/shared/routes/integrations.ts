@@ -55,7 +55,7 @@ export type Integrations = Infer<typeof INTEGRATIONS>;
 export type IntegrationAdded = Infer<typeof INTEGRATION_ADDED>;
 
 export const INTEGRATION_ROUTES: RouteShape[] = [
-  { route: "GET kuvo/integrations", answers: { 200: INTEGRATIONS } },
-  { route: "POST kuvo/integrations/:id", answers: { 200: INTEGRATION_ADDED } },
-  { route: "DELETE kuvo/integrations/:id", answers: { 200: NOTHING } },
+  { route: "GET kuvo/integrations", feature: "integrations", answers: { 200: INTEGRATIONS } },
+  { route: "POST kuvo/integrations/:id", feature: "integrations", answers: { 200: INTEGRATION_ADDED } },
+  { route: "DELETE kuvo/integrations/:id", feature: "integrations", answers: { 200: NOTHING } },
 ];

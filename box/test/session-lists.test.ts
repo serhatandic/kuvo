@@ -580,8 +580,11 @@ test("a list kept by the same start, or by routes alone, resumes: no whole read 
 
 test("a route never writes over the list the long-running process keeps, nor takes away its mark", async () => {
   // (A process named as the long-running one is: it started as the route read the engine.)
-  const link = Bun.spawn(["/bin/sh", "-c", "while :; do sleep 1; done", "kuvo-link"], { stdin: "ignore", stdout: "ignore", stderr: "ignore" })
+  const link = Bun.spawn(["/bin/sh", "-c", "printf ready; while :; do sleep 1; done", "kuvo-link"], { stdin: "ignore", stdout: "pipe", stderr: "ignore" })
   try {
+    // Wait for exec before relying on the shell's command line to identify the owner.
+    const ready = link.stdout.getReader()
+    try { expect((await ready.read()).done).toBe(false) } finally { ready.releaseLock() }
     const kept = { epoch: "kept", seq: 3, floor: 0, sessions: {}, gone: {}, projects: {}, owner: link.pid }
     mkdirSync(join(LIST_FILE, ".."), { recursive: true })
     writeFileSync(LIST_FILE, JSON.stringify(kept))

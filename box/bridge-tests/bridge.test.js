@@ -1158,8 +1158,11 @@ test("setup keeps the machine's keys and its own phones, takes the Mac's documen
   const folder = fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-link-setup-"));
   fs.mkdirSync(path.join(folder, "workspace"));
   const script = fileURLToPath(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url));
+  const tryingSetup = input =>
+    spawnSync(process.execPath, [script, "setup"], { input: JSON.stringify({ relay: "ws://127.0.0.1:9", name: "test", mac: MAC, macSign: link.signingKeyOf(seed), ...input }), env: { ...process.env, KUVO_HOME: folder }, encoding: "utf8" });
   const setup = input => {
-    const result = spawnSync(process.execPath, [script, "setup"], { input: JSON.stringify({ relay: "ws://127.0.0.1:9", name: "test", mac: MAC, macSign: link.signingKeyOf(seed), ...input }), env: { ...process.env, KUVO_HOME: folder }, encoding: "utf8" });
+    const result = tryingSetup(input);
+    assert.equal(result.status, 0, result.stderr);
     return JSON.parse(result.stdout);
   };
   const pidFile = path.join(folder, "run", "link.pid");
@@ -1177,7 +1180,7 @@ test("setup keeps the machine's keys and its own phones, takes the Mac's documen
     // The file exists briefly before its PID is written; setup also needs its version file.
     let pid = 0;
     let ready = false;
-    for (let i = 0; i < 50; i++) {
+    for (const deadline = Date.now() + 15_000; Date.now() < deadline;) {
       try {
         pid = Number(fs.readFileSync(pidFile, "utf8"));
         ready = Number.isInteger(pid) && pid > 0 && fs.readFileSync(path.join(folder, "run", "link.version"), "utf8").trim() === link.BRIDGE_VERSION;
@@ -1204,10 +1207,16 @@ test("setup keeps the machine's keys and its own phones, takes the Mac's documen
     setup({ docs: [phones([A, B])], macID: "MAC-1", tolerates: 1 });
     assert.deepEqual(JSON.parse(fs.readFileSync(linkFile, "utf8")).tolerantIDs, { "MAC-1": true });
 
-    // A phone paired with the machine itself stays when the Mac's phones change.
+    // A phone paired with the machine stays if its pairing is in the new setup.
+    // An unmatched pairing requires explicit permission to discard it.
     const saved = JSON.parse(fs.readFileSync(linkFile, "utf8"));
-    fs.writeFileSync(linkFile, JSON.stringify({ ...saved, phones: [...saved.phones, { key: C, name: "C", added: 1, from: "pair", pairing: "" }] }));
-    setup({ docs: [phones([B])] });
+    const withOwn = JSON.stringify({ ...saved, phones: [...saved.phones, { key: C, name: "C", added: 1, from: "pair", pairing: "" }] });
+    fs.writeFileSync(linkFile, withOwn);
+    const refused = tryingSetup({ docs: [phones([B])] });
+    assert.notEqual(refused.status, 0);
+    assert.match(refused.stderr, /Confirm discarding unmatched local device pairings/);
+    assert.equal(fs.readFileSync(linkFile, "utf8"), withOwn);
+    setup({ docs: [phones([B, C])] });
     assert.deepEqual(JSON.parse(fs.readFileSync(linkFile, "utf8")).phones.map(p => p.key), [B, C]);
 
     // Nothing left to answer: the bridge stops, and the machine keeps its keys; no phone keeps
@@ -1542,9 +1551,9 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
   // Whether it's a route here: not refused as a path (403), nor answered as one this box doesn't
   // have (404 with nothing to say); a route's own 404 (no such bot) says why.
   // (Only a 404's body is read: an event stream never ends.)
-  const isRoute = async (method, route, body = {}) => {
+  const isRoute = async (method, route, access = {}) => {
     let status = 0, said = "";
-    for await (const part of handle({ method, path: route, headers: {}, body: Buffer.from(JSON.stringify(body)) }, {}, undefined)) {
+    for await (const part of handle({ method, path: route, headers: {}, ...access, body: Buffer.from("{}") }, {}, undefined)) {
       if (part.head) status = part.head.status;
       if (status !== 404) break;
       if (part.body) said += part.body.toString();
@@ -1563,6 +1572,10 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     "agent-tools": ["POST", "kuvo/agent-tools"],
     "agent-tools.own": ["POST", "kuvo/agent-tools"],
     agents: ["GET", "kuvo/agents/api/session"],
+    "agents.accounts": ["GET", "kuvo/agents/api/kuvo/accounts"],
+    "agents.start": ["GET", "kuvo/agents/start"],
+    "agents.updates": ["POST", "kuvo/agents/api/kuvo/updates"],
+    "agents.voice": ["POST", "kuvo/agents/api/kuvo/voice"],
     approval: ["GET", "kuvo/approval"],
     // (A new conversation's mode, the last picked: kuvo/approval's `default`.)
     "approval.default": ["GET", "kuvo/approval"],
@@ -1604,6 +1617,7 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     "box.appKeys": ["GET", "kuvo/box/proof"],
     // (What Kuvo Helper draws in the menu bar, and Stop Kuvo on this Mac.)
     "box.atWork": ["GET", "kuvo/box/at-work"],
+    "box.backups": ["GET", "kuvo/box/backups", { served: true, fromApp: true }],
     // (A command, `kuvo-link.js helper`, not a route: kuvo/info names it.)
     "box.helper": ["GET", "kuvo/info"],
     // (A box in a home of its own: on a Mac's, kuvo/work/settings's keepsAwake.)
@@ -1626,6 +1640,7 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     "box.uninstall": ["GET", "kuvo/info"],
     // (A release from a folder here, which only Kuvo Code offers: a GET is the wrong method.)
     "box.update": ["GET", "kuvo/box/update"],
+    "box.update.no-cut": ["GET", "kuvo/update"],
     branch: ["POST", "kuvo/agents/api/kuvo/branch/ses_none"],
     // (Its browser, set up by the box itself.)
     browser: ["GET", "kuvo/browser"],
@@ -1647,16 +1662,19 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     // (Where a client reaches each of your own computers itself, in kuvo/computers' answer.)
     "computers.reach": ["GET", "kuvo/computers"],
     "computers.reach-words": ["GET", "kuvo/computers"],
+    "computers.removal": ["POST", "kuvo/computers/none/unlink"],
+    "computers.removal-operations": ["GET", "kuvo/info"],
     // (How a machine this box keeps up to date stands, and this box's own update, in kuvo/computers' answer.)
     "computers.update": ["GET", "kuvo/computers"],
     "computers.update.here": ["GET", "kuvo/computers"],
+    "computers.wipe-preparation": ["POST", "kuvo/computers/none/removal-plan", { served: true, fromApp: true }],
     "computers.words": ["GET", "kuvo/computers"],
     config: ["GET", "kuvo/config"],
     "config.apply": ["GET", "kuvo/config/apply"],
-    // (A computer let add Kuvo Code's app to your devices again, on the main computer: a GET is the wrong method.)
-    "devices.allow": ["GET", "kuvo/computers/none/allow-devices"],
+    "data.ownership": ["GET", "kuvo/data/owner", { desktop: true }],
     // (Kuvo Code's desktop app paired as one of your devices, only from the app on this computer: a GET is the wrong method.)
     "devices.pair": ["GET", "kuvo/devices/pair"],
+    "devices.remove.forward": ["GET", "kuvo/info"],
     "engine.restart": ["GET", "kuvo/engine/restart"],
     "engine.start": ["GET", "kuvo/engine/start"],
     file: ["GET", "kuvo/file"],
@@ -1699,6 +1717,7 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     "groups.seats": ["GET", "kuvo/groups/joinable"],
     "groups.task-title": ["GET", "kuvo/groups"],
     handoff: ["POST", "kuvo/agents/api/kuvo/handoff/ses_none"],
+    info: ["GET", "kuvo/info"],
     integrations: ["GET", "kuvo/integrations"],
     keys: ["GET", "kuvo/keys"],
     // (What its agents' mail says it takes (a letter that reads a conversation), on the agents' tools.)
@@ -1734,12 +1753,16 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     // (Your starred models, kept by the box: its own route.)
     "models.starred": ["GET", "kuvo/models/starred"],
     moves: ["GET", "kuvo/moves"],
+    "moves.accepted-ownership": ["GET", "kuvo/moves"],
     // (Moves with a coding agent's own conversation: what kuvo/moves takes besides.)
     "moves.agents": ["GET", "kuvo/moves"],
     // (The check before a move holds anything, which a box asks of another in its mail.)
     "moves.check": ["GET", "kuvo/moves/places?kind=bot&id=bot_none"],
     named: ["GET", "kuvo/named"],
     "names.titles": ["GET", "kuvo/computers"],
+    notices: ["GET", "kuvo/notices"],
+    // Ownership transfer decisions are a peer capability advertised in info.
+    "ownership.transfer-decisions": ["GET", "kuvo/info"],
     personalities: ["GET", "kuvo/personalities"],
     "personalities.events": ["POST", "kuvo/personalities/events"],
     phones: ["GET", "kuvo/phones"],
@@ -1793,6 +1816,7 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     "sessions.models": ["POST", "kuvo/sessions/models"],
     "sessions.move": ["POST", "kuvo/sessions/ses_none/move"],
     "sessions.needsYou": ["POST", "kuvo/sessions/list"],
+    "sessions.read": ["POST", "kuvo/sessions/read"],
     "sessions.start": ["POST", "kuvo/sessions"],
     // (A client's start without a task, `kuvo/sessions` too.)
     "sessions.start.empty": ["POST", "kuvo/sessions"],
@@ -1803,8 +1827,16 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     "settings.vault": ["GET", "kuvo/settings/vault"],
     // (Your setup, and who's its main computer.)
     setup: ["GET", "kuvo/setup"],
+    // These capabilities are exchanged between peers.
+    "setup.checkpoints": ["GET", "kuvo/info"],
+    "setup.handover": ["POST", "kuvo/setup/handover"],
     "setup.mainOnly": ["GET", "kuvo/setup"],
     "setup.ready": ["GET", "kuvo/setup/ready"],
+    "setup.shared-saves": ["POST", "kuvo/setup/save-local", { fromHolder: true }],
+    "setup.sole-primary": ["GET", "kuvo/info"],
+    "setup.standby-acceptance": ["GET", "kuvo/info"],
+    "setup.successor-chain": ["GET", "kuvo/info"],
+    "setup.takeover": ["GET", "kuvo/setup/standby"],
     "setup.welcomed": ["GET", "kuvo/setup"],
     "shell.stop": ["POST", "kuvo/shell/sh_none/stop"],
     "sign-in.accounts.kinds": ["GET", "kuvo/sign-in/accounts"],
@@ -1858,7 +1890,7 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
   const named = (await answer(handle, "GET", "kuvo/info")).json.features;
   assert.deepEqual(Object.keys(routes), Object.keys(routes).sort(), "the routes are one a line, in order");
   assert.deepEqual([...named].sort(), Object.keys(routes).sort(), "every name has a route here, and every route here its name");
-  for (const [feature, [method, route]] of Object.entries(routes)) assert.ok(await isRoute(method, route), `${feature}: ${method} ${route}`);
+  for (const [feature, [method, route, access]] of Object.entries(routes)) assert.ok(await isRoute(method, route, access), `${feature}: ${method} ${route}`);
   // The Mac's own aren't here: a route this box doesn't have.
   for (const route of ["kuvo/hosts", "kuvo/machines", "kuvo/mac"]) assert.equal(await status("GET", route), 404, route);
   fs.rmSync(path.join(home, "chats"), { recursive: true, force: true });

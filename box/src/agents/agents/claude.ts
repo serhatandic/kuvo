@@ -35,13 +35,13 @@ import { instructionsNote, toldOf } from "../told"
 import { pictureData, pictureFile, withPictures } from "../pictures"
 import type { Turn } from "../turn"
 import { hold, heldProcess, type Held } from "../hold/client"
-import { agentHoldFolder, noteTurn, type HeldTurn } from "../hold/adopt"
+import { CLAUDE_SDK, agentHoldFolder, noteTurn, type HeldTurn } from "../hold/adopt"
 
 /** How the agent SDK asks for Claude Code to be started (its `spawnClaudeCodeProcess`). */
 type SpawnOptions = { command: string; args: string[]; cwd?: string; env: Record<string, string | undefined>; signal?: AbortSignal }
 import type { FileDiff, FormField, Model, ModelRef, PermissionRule, Session, TokenUsage } from "../wire"
 
-const SDK = [{ name: "@anthropic-ai/claude-agent-sdk", version: "0.3.303" }]
+const SDK = [{ name: "@anthropic-ai/claude-agent-sdk", version: CLAUDE_SDK }]
 const places = [join(homedir(), ".local/bin"), join(homedir(), ".claude/local"), "/opt/homebrew/bin", "/usr/local/bin"]
 /** Kept of a tool's output: enough to read, not a whole file's worth. */
 const outputLimit = 30_000
@@ -261,10 +261,10 @@ export class ClaudeAgent implements Agent {
     return definition ? maintenance(definition, fresh) : {}
   }
 
-  async update() {
+  async update(attempt?: string) {
     const definition = this.definition
     if (!definition) return { updated: false, message: "Claude Code isn't installed." }
-    return update(definition, this.context.temporary)
+    return update(definition, this.context.temporary, { home: this.context.home, program: this.id, attempt })
   }
 
   /** Its program, with Anthropic's installer. */
@@ -1283,6 +1283,7 @@ class ClaudeThread implements Thread {
       this.held = taken.held
       this.holding = Promise.resolve(taken.held)
       this.open(sdk, input.model.id, input.model.variant, input.plan, opened?.append ?? hooks.instructions(), hooks, opened?.skills, undefined, taken)
+      if (taken.gate.preparing) await this.query.initializationResult()
     } catch (error) {
       // (Not taken up after all: its Claude Code stops, as the bridge before would have stopped it.)
       taken.held.stop()
@@ -1593,9 +1594,14 @@ class ClaudeThread implements Thread {
         // Its subagents' words and thinking too, for their sessions (by default only their tools).
         forwardSubagentText: true,
         permissionMode: plan ? "plan" : "default",
-        canUseTool: (name: string, input: Record<string, unknown>, options: any) => this.canUseTool(name, input, options),
+        canUseTool: (name: string, input: Record<string, unknown>, options: any) => taken?.gate.preparing
+          ? taken.gate.activated.then(() => this.canUseTool(name, input, options))
+          : this.canUseTool(name, input, options),
         // Before any tool runs, even one Claude Code's own settings allow (yours, or a project's).
-        hooks: { PreToolUse: [{ hooks: [async (hookInput: any) => this.preToolUse(hookInput)] }] },
+        hooks: { PreToolUse: [{ hooks: [async (hookInput: any) => {
+          if (taken?.gate.preparing) await taken.gate.activated
+          return this.preToolUse(hookInput)
+        }] }] },
         systemPrompt: { type: "preset", preset: "claude_code", ...(append ? { append } : {}) },
         ...(skills ? { plugins: [{ type: "local" as const, path: skills, skipMcpDiscovery: true }] } : {}),
         // Your subagents, over one of the same name in ~/.claude/agents (as its --agents flag's are).
@@ -1613,7 +1619,7 @@ class ClaudeThread implements Thread {
         stderr: () => {},
       },
     })
-    void this.read(this.query)
+    void this.read(this.query, taken)
   }
 
   /**
@@ -1783,11 +1789,14 @@ class ClaudeThread implements Thread {
     return Boolean(this.query) && this.sandboxedNow === undefined
   }
 
-  private async read(query: any) {
+  private async read(query: any, taken?: HeldTurn) {
     let ended: unknown
     const usage = this.usageGeneration
     try {
-      for await (const message of query) this.handle(message, usage)
+      for await (const message of query) {
+        if (taken?.gate.preparing) await taken.gate.activated
+        this.handle(message, usage)
+      }
     } catch (error) {
       ended = error
     }
@@ -2068,7 +2077,7 @@ class ClaudeThread implements Thread {
         if (message.outcome === "error" || message.exit_code) turn.notice(`Your ${message.hook_name ?? message.hook_event ?? ""} hook failed${this.hookWords(String(message.stderr ?? ""))}.`)
         return
       case "memory_recall": {
-        const id = newID("call")
+        const id = turn.syntheticToolID("memory")
         turn.toolStart(id, "memory", { description: "Recalled from memory" })
         const paths = Array.isArray(message.paths) ? message.paths.join("\n") : ""
         turn.toolSucceeded(id, paths || (typeof message.content === "string" ? message.content : ""))

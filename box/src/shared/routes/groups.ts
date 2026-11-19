@@ -6,6 +6,7 @@
 import { any, bool, type Infer, list, literal, NOTHING, nullable, number, object, oneOf, type RouteShape, string, words } from "../shape";
 import { LOOK } from "./bots";
 import { MENTIONS } from "./sessions";
+import { OWNER_MESSAGE_COMMITTED, OWNER_MESSAGE_INTERRUPTED, OWNER_MESSAGE_PENDING } from "./ownership";
 
 /** A bot as a chat lists it: who it is, how it looks (left out when its description doesn't
  * say), its own conversation and folder, and whether that runs with the coding agents. One of
@@ -72,6 +73,7 @@ export const GROUP = object({
   "speaking?": string,
   discussing: bool,
   paused: bool,
+  "restoreReview?": literal(true),
   unread: bool,
   "last?": MESSAGE,
   "meeting?": MEETING,
@@ -97,6 +99,7 @@ export const CHAT = object({
   "speaking?": string,
   discussing: bool,
   paused: bool,
+  "restoreReview?": literal(true),
   "activity?": list(ACTIVITY),
   "stopped?": list(string),
 });
@@ -121,17 +124,19 @@ export type GroupChat = Infer<typeof CHAT>;
 export type Joinable = Infer<typeof JOINABLE>;
 
 export const GROUP_ROUTES: RouteShape[] = [
-  { route: "GET kuvo/groups", answers: { 200: GROUPS } },
-  { route: "POST kuvo/groups", answers: { 201: GROUP_CHANGED } },
-  { route: "GET kuvo/groups/joinable", answers: { 200: JOINABLE } },
-  { route: "GET kuvo/groups/:id", answers: { 200: CHAT } },
-  { route: "POST kuvo/groups/:id", answers: { 200: NOTHING } },
-  { route: "PATCH kuvo/groups/:id", answers: { 200: GROUP_CHANGED } },
-  { route: "DELETE kuvo/groups/:id", answers: { 200: NOTHING } },
-  { route: "POST kuvo/groups/:id/stop", answers: { 200: NOTHING } },
-  { route: "POST kuvo/groups/:id/keep-going", answers: { 200: NOTHING } },
-  { route: "POST kuvo/groups/:id/viewed", answers: { 200: NOTHING } },
-  { route: "POST kuvo/groups/:id/undo", answers: { 200: UNDONE } },
-  { route: "POST kuvo/groups/:id/start", answers: { 200: NOTHING } },
-  { route: "GET kuvo/groups/:id/mentions", answers: { 200: MENTIONS, 404: REFUSED, 503: REFUSED } },
+  { route: "GET kuvo/groups", feature: "groups", answers: { 200: GROUPS } },
+  { route: "GET kuvo/groups/events", feature: "groups", answers: { 200: GROUPS } },
+  { route: "POST kuvo/groups", feature: "groups.make", answers: { 201: GROUP_CHANGED } },
+  { route: "GET kuvo/groups/joinable", feature: "groups.joinable", answers: { 200: JOINABLE } },
+  { route: "GET kuvo/groups/:id", feature: "groups", answers: { 200: CHAT } },
+  { route: "GET kuvo/groups/:id/events", feature: "groups", answers: { 200: CHAT } },
+  { route: "POST kuvo/groups/:id", feature: "groups", answers: { 200: oneOf(NOTHING, OWNER_MESSAGE_COMMITTED), 202: OWNER_MESSAGE_PENDING, 400: REFUSED, 409: oneOf(OWNER_MESSAGE_INTERRUPTED, REFUSED), 503: REFUSED } },
+  { route: "PATCH kuvo/groups/:id", feature: "groups.edit", answers: { 200: GROUP_CHANGED } },
+  { route: "DELETE kuvo/groups/:id", feature: "groups.delete", answers: { 200: NOTHING } },
+  { route: "POST kuvo/groups/:id/stop", feature: "groups", answers: { 200: NOTHING } },
+  { route: "POST kuvo/groups/:id/keep-going", feature: "groups", answers: { 200: NOTHING } },
+  { route: "POST kuvo/groups/:id/viewed", feature: "groups", answers: { 200: NOTHING } },
+  { route: "POST kuvo/groups/:id/undo", feature: "groups", answers: { 200: UNDONE } },
+  { route: "POST kuvo/groups/:id/start", feature: "groups", answers: { 200: NOTHING } },
+  { route: "GET kuvo/groups/:id/mentions", feature: "groups.mentions", answers: { 200: MENTIONS, 404: REFUSED, 503: REFUSED } },
 ];

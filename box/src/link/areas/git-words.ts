@@ -4,6 +4,7 @@
 // them, the same for every client. A Mac's own from before moves to each box once (`moveGitSettings`).
 
 import fs from "node:fs";
+import { additiveObjectFormat, UnsupportedFormatVersion } from "../../shared/format-version";
 import { isObject } from "../../shared/json";
 import { locked, writePrivate } from "../files";
 import { CONFIG_LOCK } from "../home";
@@ -24,18 +25,21 @@ export const DEFAULT_BRANCH_PREFIX = "kuvo/";
 /** What `box/git.json` keeps: whether a Mac's settings from before moved here (`moved`). (A box
  * from before kept the branch prefix a client last gave there too, `branchPrefix`, taken into the
  * settings once: `keepOldBranchPrefix`.) */
+export const gitPreferencesFormat = additiveObjectFormat("Git preferences migration record");
+
 function readGitFile(file = BRANCH_PREFIX_FILE): Record<string, unknown> {
   try {
     const kept: unknown = JSON.parse(fs.readFileSync(file, "utf8"));
-    return isObject(kept) ? kept : {};
-  } catch {
+    return isObject(kept) ? gitPreferencesFormat.read(kept) : {};
+  } catch (error) {
+    if (error instanceof UnsupportedFormatVersion) throw error;
     return {};
   }
 }
 
 /** `box/git.json` with `change` made, the rest as it was. */
 function keepInGitFile(change: Record<string, unknown>, file = BRANCH_PREFIX_FILE): void {
-  writePrivate(file, JSON.stringify({ ...readGitFile(file), ...change }));
+  writePrivate(file, JSON.stringify(gitPreferencesFormat.write({ ...readGitFile(file), ...change })));
 }
 
 /** A branch prefix as git takes it in a branch's name: without spaces, the characters a branch
@@ -95,17 +99,19 @@ function takeOldBranchPrefix(file: string, gitFile: string): void {
   if (typeof kept.branchPrefix === "string" && valueAt(settings, [...GIT_SETTINGS.branchPrefix]) === undefined
     && writeSettings(settings!, [{ path: [...GIT_SETTINGS.branchPrefix], value: kept.branchPrefix }], file).status !== 200) return;
   const { branchPrefix: _taken, ...rest } = kept;
-  writePrivate(gitFile, JSON.stringify(rest));
+  writePrivate(gitFile, JSON.stringify(gitPreferencesFormat.write(rest)));
 }
 
 /** As a machine's box starts, or its settings become its own (`box adopt`): the branch prefix a box
  * from before kept, taken into its settings, once they are its own (else when a Mac moves its
  * Settings › Git here, `moveGitSettings`). */
 export function keepOldBranchPrefix(file = CONFIG_FILE, lock = CONFIG_LOCK, gitFile = BRANCH_PREFIX_FILE): void {
-  if (!("branchPrefix" in readGitFile(gitFile)) || !ownsSettings()) return;
   try {
+    if (!("branchPrefix" in readGitFile(gitFile)) || !ownsSettings()) return;
     locked(lock, () => takeOldBranchPrefix(file, gitFile));
-  } catch {}
+  } catch (error) {
+    if (error instanceof UnsupportedFormatVersion) console.error(error.message);
+  }
 }
 
 /** What `kuvo/git/settings/move` answers: whether this box took them now, and its settings as they are. */

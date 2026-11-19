@@ -1,16 +1,14 @@
-// What a box takes of your setup (PROTOCOL.md, "Your setup"): a machine follows the setup its Mac
-// leads, as its peers document names it; it never goes back to a lower epoch of it, and at the same
-// epoch keeps the main computer it has (noting the other). A machine more than one Mac set up is
-// yours all the same (only you set your computers up: no one else's Mac shares one), and follows
-// one setup: the one it has, or, where more than one of its Macs leads one, the one led by the Mac
-// it numbers from. This Mac's box leads its own (`lead.ts`), and takes none.
+// A member follows the signed setup of a computer that enrolled it over SSH. The
+// legacy mac/macs fields also cover this trust when the enroller is a Linux box.
+// A member keeps its current primary and epoch rules when it has several legacy enrollers.
 
+import { legacyFolderTrial } from "../../shared/folder-version";
 import type { Doc } from "../../shared/documents";
-import { IS_MAC } from "../home";
-import { macDoc, macsOf } from "../peers/known";
+import { IS_MAC, K } from "../home";
+import { cleanPeer, fitsPeer, macDoc, macsOf } from "../peers/known";
 import { macSign } from "../state";
 import { rankedPrimary } from "../work-queue/numbers";
-import { followedSetup, ledSetup } from "./record";
+import { followedSetup, ledSetup, type SetupRecord } from "./record";
 import type { LinkState } from "../state";
 
 /** This box's setup brought up to date with the peers documents it holds (in place, under
@@ -20,7 +18,7 @@ import type { LinkState } from "../state";
 export function settleSetup(link: LinkState): void {
   // (Within it: a machine with no Mac; one set up by a Mac; the setup it keeps, as its main
   // computer's newest document says it; and one it takes.)
-  if (IS_MAC) return;
+  if (IS_MAC || link.setup?.managed) return;
   const macs = macsOf(link);
   if (!macs.length) {
     if (link.setup?.role === "member") delete link.setup;
@@ -44,6 +42,7 @@ export function settleSetup(link: LinkState): void {
       kept.id = own.setup!.id;
       kept.epoch = own.setup!.epoch;
       delete kept.aside;
+      if (own.doc) Object.assign(kept, managedFields(own.doc));
     } else if (doc && !ledSetup(doc)) kept.aside = true;
     return;
   }
@@ -51,7 +50,7 @@ export function settleSetup(link: LinkState): void {
   // up: the one it numbers from, the first you set up; none until that's one of them.)
   const ranked = offers.length > 1 ? rankedPrimary(link) : null;
   const taken = offers.length === 1 ? offers[0] : offers.find(each => ranked && "peer" in ranked && ranked.peer.key === each.mac);
-  if (taken) link.setup = { id: taken.setup!.id, epoch: taken.setup!.epoch, primary: taken.setup!.primary, sign: taken.doc!.origin, role: "member" };
+  if (taken) link.setup = { id: taken.setup!.id, epoch: taken.setup!.epoch, primary: taken.setup!.primary, sign: taken.doc!.origin, role: "member", ...managedFields(taken.doc!) };
 }
 
 /** A peers document this box is given (`takeDoc`), looked at for one more thing: one of its own
@@ -64,4 +63,16 @@ export function noteConflict(link: LinkState, doc: Doc): void {
   if (setup?.role !== "member" || !said || said.id !== setup.id || said.epoch !== setup.epoch || said.primary === setup.primary) return;
   if (!macsOf(link).includes(said.primary) || macSign(link, said.primary) !== doc.origin) return;
   setup.conflict = { primary: said.primary, epoch: said.epoch };
+}
+
+function managedFields(doc: Doc): Pick<SetupRecord, "managed" | "standby" | "numberCeiling" | "checkpointed" | "sharedSaves" | "successorChain" | "leadershipHash"> {
+  if (doc.body.managed !== true || legacyFolderTrial(K)) return {};
+  const boxes = Array.isArray(doc.body.boxes) ? doc.body.boxes : [];
+  const standby = boxes.filter(fitsPeer).map(cleanPeer).find(peer => peer.key === doc.body.standby && peer.sign !== doc.origin);
+  const ceiling = doc.body.numberCeiling;
+  return { managed: true, ...(doc.body.checkpointed === true ? { checkpointed: true as const } : {}),
+    ...(doc.body.checkpointed === true && doc.body.successorChain === true && typeof doc.body.leadershipHash === "string" &&
+      /^[\w-]{11}$/.test(doc.body.leadershipHash) ? { successorChain: true as const, leadershipHash: doc.body.leadershipHash } : {}),
+    ...(doc.body.sharedSaves === true ? { sharedSaves: true as const } : {}), ...(standby?.sign && typeof ceiling === "number" && Number.isSafeInteger(ceiling) && ceiling > 0
+    ? { standby: { key: standby.key, sign: standby.sign }, numberCeiling: ceiling } : {}) };
 }

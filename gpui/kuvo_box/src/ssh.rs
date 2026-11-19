@@ -15,7 +15,7 @@ use base64::Engine as _;
 use serde::Deserialize;
 
 use crate::error::{Error, Result};
-use crate::transport::{Closer, Request, Response, Stream, Transport};
+use crate::transport::{check_route_version, Closer, Request, Response, Stream, Transport, ROUTE_VERSION_HEADER};
 
 /// One machine, by what `ssh` connects to (`me@devbox`, a `Host` in `~/.ssh/config`).
 #[derive(Debug, Clone)]
@@ -169,11 +169,17 @@ exec "$K/engine/$E/opencode" --config=/dev/null --no-env-file "$K/bin/kuvo-link.
 #[derive(Deserialize)]
 struct Routed {
     status: u16,
+    #[serde(default, rename = "routeVersion", deserialize_with = "present_version")]
+    route_version: Option<serde_json::Value>,
     body: Option<String>,
     #[serde(rename = "bodyBase64")]
     body_base64: Option<String>,
     #[serde(rename = "type")]
     content_type: Option<String>,
+}
+
+fn present_version<'de, D: serde::Deserializer<'de>>(decoder: D) -> std::result::Result<Option<serde_json::Value>, D::Error> {
+    serde_json::Value::deserialize(decoder).map(Some)
 }
 
 impl SshBox {
@@ -185,10 +191,9 @@ impl SshBox {
         // The folder a request is about, as a phone's request names it; the rest are the engine's
         // password's and the link's own, which `box route` adds itself.
         let headers: serde_json::Map<String, serde_json::Value> = request
-            .headers
-            .iter()
-            .filter(|(name, _)| name == "x-opencode-directory" || name == "x-kuvo-sign-in-client")
-            .map(|(name, value)| (name.clone(), serde_json::Value::String(value.clone())))
+            .wire_headers()
+            .filter(|(name, _)| matches!(*name, "x-opencode-directory" | "x-kuvo-sign-in-client" | ROUTE_VERSION_HEADER))
+            .map(|(name, value)| (name.to_owned(), serde_json::Value::String(value.to_owned())))
             .collect();
         if !headers.is_empty() {
             asked["headers"] = serde_json::Value::Object(headers);
@@ -197,6 +202,7 @@ impl SshBox {
         let last = output.lines().map(str::trim).rfind(|line| !line.is_empty()).unwrap_or("");
         let routed: Routed = serde_json::from_str(last)
             .map_err(|_| Error::BadAnswer(format!("Kuvo Code on {} didn't answer as it should: {}", self.destination, last.chars().take(200).collect::<String>())))?;
+        check_route_version(routed.route_version.as_ref().map(|value| value.as_str().unwrap_or("")))?;
         let body = match (routed.body_base64, routed.body) {
             (Some(encoded), _) => base64::engine::general_purpose::STANDARD
                 .decode(encoded)

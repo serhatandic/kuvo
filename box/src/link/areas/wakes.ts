@@ -406,6 +406,10 @@ export async function* answerWakes(session: string, action: WakeAction | undefin
   if (action === "pause" && typeof given.paused !== "boolean") return yield* json(400, { message: "Send {\"paused\": true} or false." });
   if (!folder) return yield* json(action === "pause" ? 200 : 404, action === "pause" ? listed() : {});
   if (isMoving(folder)) return yield* json(409, { message: MOVING });
+  if ((action === "now" || action === "pause" && given.paused === false)
+    && textOf(path.join(folder, "paused")) === "restore-review" && given.confirmRestoreRetry !== true) {
+    return yield* json(409, { message: "Check whether this restored work already ran before retrying.", confirmRestoreRetry: true });
+  }
   if (action === "pause") {
     // A hold of your own, until you take it away (archiving's and a move's are theirs: one
     // resumed while it's archived waits until it's back).

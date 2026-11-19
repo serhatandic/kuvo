@@ -9,6 +9,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import { readAttachment } from "./attachment-file";
 import path from "node:path";
+import { additiveObjectFormat, UnsupportedFormatVersion } from "../../shared/format-version";
 import { isObject } from "../../shared/json";
 import { plainName } from "../../shared/text";
 import { locked, writePrivate } from "../files";
@@ -17,14 +18,18 @@ import { boxOf } from "../letters/calls";
 import { placeOfSession } from "../letters/letter";
 import { rootOf } from "../letters/tools";
 import { frozen } from "../moves/records";
-import { peersOf, removedBoxes } from "../peers/known";
+import { ownKey, peersOf, removedBoxes } from "../peers/known";
 import { awaySince } from "../peers/reach";
+import { offlineEditsReady } from "../ownership/store";
+import { followedSetup } from "../setup/record";
 import { readLink } from "../state";
+import { decideTransfer, noteTransferSettled } from "../ownership/transfer";
+import { assignmentFor, mayActivate } from "../ownership/resolve";
 import { keepLabel, labels } from "./labels";
 import { isClosed, statusNamed } from "./statuses";
-import { intoTodo, linkSession } from "./ops";
+import { intoTodo, linkSession, placeLocalHand } from "./ops";
 import {
-  allItems, changeQueues, FILE_NAME, filesOf, itemOf, MOST_FILE, MOST_HANDED_FILES, MOST_ITEMS, noteHanded, OWNER, placeIn, Refusal, WORK_QUEUE, whoOf,
+  allItems, changeQueues, deletionFor, FILE_NAME, filesOf, isLiveItem, itemOf, MOST_FILE, MOST_HANDED_FILES, MOST_ITEMS, noteDeparture, noteHanded, OWNER, placeIn, Refusal, WORK_QUEUE, whoOf,
   type Book, type Item, type Who,
 } from "./store";
 import { mailsFor } from "./parts";
@@ -41,6 +46,7 @@ import type { Target } from "../../shared/records";
 /** How long a hand-off waits for the box it goes to: then it's given up, and said. */
 export const HAND_LIFE = 30 * 86_400_000;
 const HAND_ID = /^wqh_[A-Za-z0-9_-]{8,40}$/;
+const handFormat = additiveObjectFormat("Work Queue handoff receipts");
 const SEEN = path.join(WORK_QUEUE, "handed.json");
 const SEEN_LOCK = path.join(WORK_QUEUE, ".handed.lock");
 
@@ -85,7 +91,7 @@ const queuesMark = (): string => {
 };
 function handingNow(): Item[] {
   const mark = queuesMark();
-  if (!scanned || scanned.mark !== mark || Date.now() - scanned.at > 60_000) scanned = { mark, at: Date.now(), items: allItems().filter(item => item.handing && !item.removed) };
+  if (!scanned || scanned.mark !== mark || Date.now() - scanned.at > 60_000) scanned = { mark, at: Date.now(), items: allItems().filter(item => item.handing && isLiveItem(item)) };
   return scanned.items;
 }
 
@@ -96,15 +102,19 @@ function handingNow(): Item[] {
  * on its way still. */
 export function handUpkeep(link: LinkState | null, now = Date.now()): Item[] {
   if (!link?.key) return [];
-  const handing = handingNow();
+  const own = ownKey(link);
+  const pending = handingNow();
+  for (const item of pending) if (item.handing!.key === own) void finishLocalHand(item);
+  const handing = pending.filter(item => item.handing!.key !== own);
   if (!handing.length) return [];
   const peers = peersOf(link);
   const removed = removedBoxes(link);
   const there = (item: Item) => Boolean(boxOf(item.handing!.to, link)) || peers.some(peer => peer.key === item.handing!.key);
-  const late = handing.filter(item => now - item.handing!.at > HAND_LIFE);
-  const left = handing.filter(item => !late.includes(item) && !boxOf(item.handing!.to, link) && removed.has(item.handing!.key));
+  const committed = (item: Item) => acceptedHandoff(item, link);
+  const late = handing.filter(item => !committed(item) && now - item.handing!.at > HAND_LIFE);
+  const left = handing.filter(item => !committed(item) && !late.includes(item) && !boxOf(item.handing!.to, link) && removed.has(item.handing!.key));
   const missing = handing.filter(item => !late.includes(item) && !left.includes(item) && !there(item));
-  const lost = missing.filter(item => item.handing!.missing !== undefined && now - item.handing!.missing > LOST_FOR);
+  const lost = missing.filter(item => !committed(item) && item.handing!.missing !== undefined && now - item.handing!.missing > LOST_FOR);
   // Since when each is missing, kept with it; one back again, no longer.
   const noted = new Map([...missing.filter(item => item.handing!.missing === undefined).map(item => [item.handing!.id, now] as const), ...handing.filter(item => there(item) && item.handing!.missing !== undefined).map(item => [item.handing!.id, undefined] as const)]);
   if (noted.size) changeQueues(book => {
@@ -119,6 +129,38 @@ export function handUpkeep(link: LinkState | null, now = Date.now()): Item[] {
   if (left.length) giveBack(left.map(item => item.handing!.id), "you removed that computer", now);
   if (lost.length) giveBack(lost.map(item => item.handing!.id), "that computer hasn't been one of yours for 3 days", now);
   return handing.filter(item => !late.includes(item) && !left.includes(item) && !missing.includes(item));
+}
+
+const localHands = new Map<string, Promise<string | undefined>>();
+
+export function finishLocalHand(item: Item, link = readLink()): Promise<string | undefined> {
+  const hand = item.handing;
+  const own = link && ownKey(link);
+  if (!hand || !own || hand.key !== own || !followedSetup(link)?.checkpointed) return Promise.resolve(undefined);
+  const pending = localHands.get(hand.id);
+  if (pending) return pending;
+  const move = { kind: "queue", id: hand.id, thing: item.id, from: own, to: own, fromQueue: item.owner, queue: hand.to } as const;
+  const task = (async () => {
+    const decision = await decideTransfer(link, move);
+    if (decision.status === "pending") return;
+    changeQueues(book => {
+      const current = book.find({ id: item.id });
+      if (!current || current.handing?.id !== hand.id) return;
+      if (decision.status === "refused") {
+        delete current.handing;
+        current.notes.push({ at: Date.now(), by: hand.by, text: decision.message });
+      } else {
+        noteTransferSettled(link, move);
+        placeLocalHand(book, current, hand.to, hand.by, Math.max(Date.now(), current.updated.at + 1));
+      }
+    }, Date.now(), { durable: true });
+    return decision.status === "refused" ? decision.message : undefined;
+  })().catch(error => {
+    console.error("kuvo-link: local Work Queue handoff will retry", error);
+    return undefined;
+  }).finally(() => localHands.delete(hand.id));
+  localHands.set(hand.id, task);
+  return task;
 }
 
 // When the hand-offs were last looked after on a round without the relay: once a minute.
@@ -159,8 +201,15 @@ export function sendHandings(host: Pick<LinkHost, "send">, link: LinkState | nul
 
 /** `item`'s hand-off called off (you deleted it, or an agent did): it isn't sent again. (One that got
  * there already is that computer's, as its view says.) */
+function acceptedHandoff(item: Item, link = readLink()): boolean {
+  const transfer = assignmentFor(link, { kind: "queueItems", id: item.id, queue: item.owner });
+  return Boolean(transfer && transfer.move === item.handing?.id && transfer.computer !== ownKey(link ?? {}));
+}
+
 export function callOffHanding(item: Item, who: Who, now: number): void {
   if (!item.handing) return;
+  if (item.handing.key === ownKey(readLink() ?? {})) refuse("Wait for the local handoff to finish before deleting the item.");
+  if (acceptedHandoff(item)) refuse("That item’s new owner already accepted the handoff.");
   const { id, name, to } = item.handing;
   delete item.handing;
   item.notes.push({ at: now, by: who, text: `Its hand-off to ${name || to} on another computer was called off.` });
@@ -196,9 +245,10 @@ export function refuseLiveElsewhere(item: Item, items?: Item[], titled?: (owner:
 /** Hand-offs that won't go, back as they were, each with a note of why. */
 function giveBack(ids: string[], why: string, now: number): void {
   const gone = new Set(ids);
+  const link = readLink();
   changeQueues(book => {
     for (const item of book.items()) {
-      if (!item.handing || !gone.has(item.handing.id)) continue;
+      if (!item.handing || !gone.has(item.handing.id) || acceptedHandoff(item, link)) continue;
       const { id, name, to, by } = item.handing;
       delete item.handing;
       item.notes.push({ at: now, by, text: `Couldn't be handed to ${name || to} on another computer: ${why.replace(/[.\s]+$/, "")}. It's still here.` });
@@ -220,28 +270,39 @@ export function handedBack(sender: MailSender, given: unknown, now = Date.now())
   if (given.retry === true) return void sent.set(given.id, { at: now, key: sender.key });
   if (given.ok !== true) return giveBack([given.id], typeof given.why === "string" ? plainName(given.why).slice(0, 300) || "it was refused" : "it was refused", now);
   sent.delete(given.id);
+  const link = readLink();
+  const own = link && ownKey(link);
   changeQueues(book => {
     const found = book.find({ id: item.id });
-    if (!found || found.handing?.id !== given.id) return;
+    const handing = found?.handing;
+    if (!found || !handing || handing.id !== given.id) return;
+    noteDeparture(found.id, { queue: handing.to, computer: sender.key, creationReceipt: found.creationReceipt });
     book.queue(found.owner).items = book.queue(found.owner).items.filter(each => each.id !== found.id);
-  }, now, { onItsOwn: true });
+    if (own) noteTransferSettled(link, { kind: "queue", id: handing.id, thing: found.id, from: own, to: sender.key, queue: handing.to });
+  }, now, { onItsOwn: true, durable: Boolean(link?.setup?.checkpointed) });
   if (!allItems().some(each => each.id === item.id)) fs.rmSync(filesOf(item.id), { recursive: true, force: true });
 }
 
-// Hand-offs taken here, by id, remembered 30 days: one sent again is had, never taken twice.
+// Hand-offs taken here, by id. Layout 7 keeps their compact receipts so a late replay
+// cannot restore a copy after this box has handed the item onward.
 function seenHand(id: string, now: number, note = false): boolean {
   try {
     fs.mkdirSync(WORK_QUEUE, { recursive: true, mode: 0o700 });
     return locked(SEEN_LOCK, () => {
-      let seen: Record<string, number> = {};
-      try { seen = JSON.parse(fs.readFileSync(SEEN, "utf8")) ?? {}; } catch {}
+      let seen: Record<string, unknown> = {};
+      try { seen = handFormat.read(JSON.parse(fs.readFileSync(SEEN, "utf8"))); } catch (error) {
+        if (error instanceof UnsupportedFormatVersion) throw error;
+      }
       if (!note) return id in seen;
-      for (const [key, at] of Object.entries(seen)) if (now - at > HAND_LIFE) delete seen[key];
+      if (!offlineEditsReady()) {
+        for (const [key, at] of Object.entries(seen)) if (typeof at === "number" && now - at > HAND_LIFE) delete seen[key];
+      }
       seen[id] = now;
-      writePrivate(SEEN, JSON.stringify(seen));
+      writePrivate(SEEN, JSON.stringify(handFormat.write(seen)));
       return true;
     });
-  } catch {
+  } catch (error) {
+    if (error instanceof UnsupportedFormatVersion) throw error;
     return false;
   }
 }
@@ -253,7 +314,8 @@ export async function handArrived(sender: MailSender, given: unknown, reply: (pa
   if (!isObject(given) || typeof given.id !== "string" || !HAND_ID.test(given.id) || typeof given.to !== "string" || !/^ses_[A-Za-z0-9]{1,60}$/.test(given.to)) return;
   const id = given.id;
   const answer = (ok: boolean, why?: string, retry = false) => reply({ handed: { id, ok, ...(why ? { why } : {}), ...(retry ? { retry: true } : {}) } });
-  if (!peersOf(readLink()).some(peer => peer.key === sender.key)) return;
+  const link = readLink();
+  if (!peersOf(link).some(peer => peer.key === sender.key)) return;
   if (seenHand(id, now)) return answer(true);
   const from = typeof given.from === "string" && OWNER.test(given.from) ? given.from : null;
   const item = itemOf(given.item, given.to);
@@ -268,6 +330,9 @@ export async function handArrived(sender: MailSender, given: unknown, reply: (pa
     return answer(false, `${HERE} can't look up its conversations now.`, true);
   }
   const owner = root?.session ?? given.to;
+  if (link?.setup?.checkpointed && !mayActivate({ kind: "queueItems", queue: owner })) {
+    return answer(false, "Waiting for the destination queue’s ownership to settle.", true);
+  }
   if (root?.place.data.metadata?.kuvo?.seat) return answer(false, "That's a group chat's seat: hand it to the bot's own conversation.");
   // The files that came with it: names it keeps, sizes it takes.
   const files = (Array.isArray(given.files) ? given.files : []).flatMap(each => {
@@ -287,8 +352,12 @@ export async function handArrived(sender: MailSender, given: unknown, reply: (pa
   let twinHere: Item | null = null;
   let again = false;
   const primary = primaryOf();
-  changeQueues((book: Book) => {
+  const place = (apply: boolean) => changeQueues((book: Book) => {
     let here = book.find({ id: item.id });
+    if (deletionFor(item.id)) {
+      refused = "That Work Queue item has been deleted.";
+      return;
+    }
     // One handed from here that hasn't heard it arrived yet (its receipt lost) and comes back: it
     // waits until that's settled, so it's never lost between the two.
     if (here?.handing) {
@@ -298,7 +367,7 @@ export async function handArrived(sender: MailSender, given: unknown, reply: (pa
     // One deleted here, its hand-off called off after it had got there: what comes back is the live
     // one, in its place.
     if (here?.removed) {
-      book.queue(here.owner).items = book.queue(here.owner).items.filter(each => each.id !== here!.id);
+      if (apply) book.queue(here.owner).items = book.queue(here.owner).items.filter(each => each.id !== here!.id);
       here = null;
     }
     if (here) return;
@@ -312,6 +381,7 @@ export async function handArrived(sender: MailSender, given: unknown, reply: (pa
       refused = `That queue has ${MOST_ITEMS} open items already.`;
       return;
     }
+    if (!apply) return;
     if (!statusNamed(item.status)) intoTodo(item, item.status, now);
     item.owner = owner;
     delete item.relations;
@@ -328,13 +398,33 @@ export async function handArrived(sender: MailSender, given: unknown, reply: (pa
     }
     // (One that came without a number takes one here, as one added here would.)
     if (item.number === undefined) numberWaiting(book, primary, null);
-  }, now, { onItsOwn: true });
-  if (again) return answer(false, `${HERE} is still handing that item on: it comes again once that's done.`, true);
-  if (twinHere) {
-    const twin: Item = twinHere;
-    return answer(false, `${twin.source!.ref} is in the Work Queue there already, ${twinWhere(twin, await titlesHere([twin.owner], targets))}: one item for each issue`);
+  }, now, { onItsOwn: true, durable: Boolean(link?.setup?.checkpointed) });
+  const rejected = async (): Promise<boolean> => {
+    if (again) {
+      answer(false, `${HERE} is still handing that item on: it comes again once that's done.`, true);
+    } else if (twinHere) {
+      const twin: Item = twinHere;
+      answer(false, `${twin.source!.ref} is in the Work Queue there already, ${twinWhere(twin, await titlesHere([twin.owner], targets))}: one item for each issue`);
+    } else if (refused) {
+      answer(false, refused);
+    } else return false;
+    return true;
+  };
+  if (link?.setup?.checkpointed) {
+    // Validate while it is still held at the source. The replacement can see the
+    // accepted owner before this box exposes the live item or acknowledges arrival.
+    place(false);
+    if (await rejected()) return;
+    const own = ownKey(link);
+    const decision = own && await decideTransfer(link, { kind: "queue", id, from: sender.key, to: own, thing: item.id, queue: owner, fromQueue: from });
+    if (decision && decision.status === "refused") return answer(false, decision.message);
+    if (!decision || decision.status !== "committed") return answer(false, "Waiting for the primary to confirm the item’s new owner.", true);
   }
-  if (refused) return answer(false, refused);
+  place(true);
+  if (link?.setup?.checkpointed && (again || twinHere || refused)) {
+    return answer(false, "The destination changed while the item was on its way. The handoff is still pending.", true);
+  }
+  if (await rejected()) return;
   seenHand(id, now, true);
   answer(true);
 }

@@ -21,6 +21,7 @@ import { writeDurablePrivate } from "../shared/files"
 import { baseProvider, parseProvider, type AgentKind } from "./accounts"
 import type { Agent, ConversationFiles } from "./agent"
 import { NotFound, type Sessions } from "./sessions"
+import { readSession } from "./store"
 import type { Record_, Store } from "./store"
 import type { Session } from "./wire"
 
@@ -387,7 +388,7 @@ export class Carrying {
             throw new CantCarry("its conversation didn't come whole")
           }
         }
-        const session = (await read("session.json")) as Session
+        const session = readSession(await read("session.json"))
         const messages = await read("messages.json")
         const agent = (await read("agent.json", {})) as Record<string, any>
         if (session?.id !== id || !Array.isArray(messages)) throw new CantCarry("its conversation didn't come whole")

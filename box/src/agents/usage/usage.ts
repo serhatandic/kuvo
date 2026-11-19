@@ -36,6 +36,7 @@ import { insightKey, type NativeUsage } from "./insight-records"
 import type { Insights } from "./insights"
 import type { UsagePeers } from "./usage-peers"
 import { settingsRoutes, type UsageSettings } from "./settings"
+import type { SetupSaveReceipt } from "../../shared/setup-local"
 
 export { UsageSettings } from "./settings"
 
@@ -532,9 +533,15 @@ export async function usageRoutes(usage: Usage | undefined, method: string, rest
     const given = (await body())?.codex
     const model = given && typeof given === "object" ? given.fallback : undefined
     if (model !== null && typeof model !== "string") return json({ message: "Say {codex: {fallback}}: a model, or null for none." }, 400)
-    if (!usage.setCodexFallback(model === "" ? null : model)) return json({ message: "This model's prices aren't available now. Choose another model or None." }, 400)
+    let save: SetupSaveReceipt | undefined
+    if (usage.settings?.shared()) {
+      const answer = await settingsRoutes(usage.settings, () => usage.codexChoices(), "PUT", [], async () => ({ codexFallback: model === "" ? null : model }))
+      if (answer.status !== 200) return answer
+      const reply = await answer.json() as { data: { save?: SetupSaveReceipt } }
+      save = reply.data.save
+    } else if (!usage.setCodexFallback(model === "" ? null : model)) return json({ message: "This model's prices aren't available now. Choose another model or None." }, 400)
     await Promise.race([usage.refresh(), new Promise((resolve) => setTimeout(resolve, 5_000).unref?.())])
-    return json({ data: usage.view(zone) })
+    return json({ data: { ...usage.view(zone), ...(save ? { save } : {}) } })
   }
   if (rest[0] === "settings") return usage.settings ? settingsRoutes(usage.settings, () => usage.codexChoices(), method, rest.slice(1), body) : json({ message: "Usage settings aren't kept on this computer." }, 503)
   if (rest.length === 1 && rest[0] === "refresh" && method === "POST") {

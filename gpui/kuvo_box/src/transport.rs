@@ -4,7 +4,17 @@
 use std::io::BufRead;
 use std::sync::Arc;
 
-use crate::error::Result;
+use crate::error::{Error, Result};
+
+pub(crate) const ROUTE_VERSION_HEADER: &str = "x-kuvo-route-version";
+const ROUTE_VERSION: &str = "1";
+
+pub(crate) fn check_route_version(given: Option<&str>) -> Result<()> {
+    match given {
+        None | Some(ROUTE_VERSION) => Ok(()),
+        Some(_) => Err(Error::BadAnswer("The box's route format version is unsupported (this client reads version 1).".into())),
+    }
+}
 
 /// A request for one of a box's routes (PROTOCOL.md, "Messages in a session"): its method, its
 /// path without a leading slash (`kuvo/info`, `api/session/ses_1/message?limit=50`), the headers
@@ -33,6 +43,13 @@ impl Request {
     pub fn header(mut self, name: &str, value: impl Into<String>) -> Request {
         self.headers.push((name.to_ascii_lowercase(), value.into()));
         self
+    }
+
+    pub(crate) fn wire_headers(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.headers.iter()
+            .filter(|(name, _)| !name.eq_ignore_ascii_case(ROUTE_VERSION_HEADER))
+            .map(|(name, value)| (name.as_str(), value.as_str()))
+            .chain(std::iter::once((ROUTE_VERSION_HEADER, ROUTE_VERSION)))
     }
 
     /// The route it asks, without its query.
@@ -124,4 +141,19 @@ pub trait Transport: Send + Sync {
     /// reached the box don't go (PROTOCOL.md, "Sending again"). One that may have reached it still
     /// goes, and its box takes it once.
     fn take_back(&self, _keys: &[String]) {}
+}
+
+#[cfg(test)]
+mod version_tests {
+    use super::*;
+
+    #[test]
+    fn route_writers_send_one_current_version_and_read_the_legacy_and_current_versions() {
+        let request = Request::get("kuvo/info").header("X-Kuvo-Route-Version", "0").header("other", "value");
+        assert_eq!(request.wire_headers().collect::<Vec<_>>(), [("other", "value"), (ROUTE_VERSION_HEADER, "1")]);
+        assert!(check_route_version(None).is_ok());
+        assert!(check_route_version(Some("1")).is_ok());
+        assert!(matches!(check_route_version(Some("2")), Err(Error::BadAnswer(_))));
+        assert!(matches!(check_route_version(Some("")), Err(Error::BadAnswer(_))));
+    }
 }

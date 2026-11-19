@@ -19,6 +19,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { additiveObjectFormat, UnsupportedFormatVersion } from "../../shared/format-version";
 import { isObject } from "../../shared/json";
 import { writePrivate } from "../files";
 import { K, OWN_RUNTIME, SCRIPT } from "../home";
@@ -132,9 +133,11 @@ export interface Reader<Ask, Value> {
   again?(ask: Ask, before: Read<Value> | undefined): Ask | null;
 }
 
+const readsFormat = additiveObjectFormat("GitHub readings cache");
+
 export function readKept<Value>(file: string): Kept<Value> {
   try {
-    const kept = JSON.parse(fs.readFileSync(file, "utf8"));
+    const kept = readsFormat.read(JSON.parse(fs.readFileSync(file, "utf8")));
     const reads: Kept<Value>["reads"] = {};
     for (const [key, read] of Object.entries(isObject(kept.reads) ? kept.reads : {})) {
       if (!isObject(read) || typeof read.at !== "number") continue;
@@ -144,7 +147,8 @@ export function readKept<Value>(file: string): Kept<Value> {
       reads[key] = "value" in read ? read as unknown as Read<Value> : { at: read.at, value: (read.pull ?? null) as Value | null };
     }
     return { reads, hosts: isObject(kept.hosts) ? kept.hosts as Kept<Value>["hosts"] : {} };
-  } catch {
+  } catch (error) {
+    if (error instanceof UnsupportedFormatVersion) throw error;
     return { reads: {}, hosts: {} };
   }
 }
@@ -210,7 +214,7 @@ const askedAt = (read: Read<unknown>): number => read.checked ?? read.at;
 function keep<Value>(reader: Reader<unknown, Value>, kept: Kept<Value>, now: number): void {
   for (const [key, read] of Object.entries(kept.reads)) if (now - askedAt(read) > reader.keptFor) delete kept.reads[key];
   for (const [host, until] of Object.entries(kept.hosts)) if (until <= now) delete kept.hosts[host];
-  writePrivate(reader.file, JSON.stringify(kept) + "\n");
+  writePrivate(reader.file, JSON.stringify(readsFormat.write(kept)) + "\n");
 }
 
 /** What a read found of one thing, kept after what was read of it before. */

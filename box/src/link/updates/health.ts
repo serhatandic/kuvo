@@ -15,6 +15,7 @@
 // in a row over a minute at least, or starts again and again: its code is put back (never its
 // data), each piece taking it as it takes any new code.
 
+import { setupLayoutDeferred } from "../../shared/folder-version";
 import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -215,15 +216,14 @@ export async function settleUpdate({ clock = () => performance.now(), every = HE
   if (fs.existsSync(path.join(RUN, "update-restore"))) {
     try { return putBack(trial, to, null, rollBack); } finally { dropJudgeMark(); }
   }
-  // Its updater cut off after it stopped the engine for a new one, its files maybe half swapped:
-  // never judged (a new engine started on them would write what the old can't read), put back,
-  // and the engine started again.
-  if (trial.engineStopped) {
+  // A cut during installation leaves a mix of releases. Restore the old code before starting
+  // any more of the update, including an engine that was stopped for the swap.
+  if (trial.installing || trial.engineStopped || (opened && setupLayoutDeferred(K) && !trial.swapped)) {
     try {
       return putBack(trial, to, null, rollBack);
     } finally {
       // (Only once it's all put back: a new engine never starts on files half restored.)
-      if (!updateOnTrial()) spawnSync("sh", [path.join(K, "bin", "kuvo-start"), "start"], { cwd: K, env: process.env, stdio: "ignore", timeout: 600_000 });
+      if (trial.engineStopped && !updateOnTrial()) spawnSync("sh", [path.join(K, "bin", "kuvo-start"), "start"], { cwd: K, env: process.env, stdio: "ignore", timeout: 600_000 });
       dropJudgeMark();
     }
   }

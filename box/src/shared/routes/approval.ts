@@ -70,10 +70,10 @@ const REFUSED = object({ message: string });
 const NOT_THAT = object({ message: string, reason: REASON });
 
 export const APPROVAL_ROUTES: RouteShape[] = [
-  { route: "GET kuvo/approval", answers: { 200: APPROVAL_HERE } },
-  { route: "PATCH kuvo/approval", answers: { 200: APPROVAL_HERE, 400: REFUSED } },
-  { route: "GET kuvo/sessions/:id/approval", answers: { 200: SESSION_APPROVAL, 404: REFUSED, 503: REFUSED } },
-  { route: "PUT kuvo/sessions/:id/approval", answers: { 200: SESSION_APPROVAL, 400: REFUSED, 404: REFUSED, 409: NOT_THAT, 502: REFUSED, 503: REFUSED } },
-  { route: "GET kuvo/sessions/:id/decisions", answers: { 200: REVIEW_DECISIONS } },
-  { route: "POST kuvo/sessions/:id/decisions", answers: { 200: REVIEW_DECISIONS, 400: REFUSED, 404: REFUSED, 500: REFUSED } },
+  { route: "GET kuvo/approval", feature: "approval", answers: { 200: APPROVAL_HERE } },
+  { route: "PATCH kuvo/approval", feature: "approval", answers: { 200: APPROVAL_HERE, 400: REFUSED } },
+  { route: "GET kuvo/sessions/:id/approval", feature: "approval", answers: { 200: SESSION_APPROVAL, 404: REFUSED, 503: REFUSED } },
+  { route: "PUT kuvo/sessions/:id/approval", feature: "approval", answers: { 200: SESSION_APPROVAL, 400: REFUSED, 404: REFUSED, 409: NOT_THAT, 502: REFUSED, 503: REFUSED } },
+  { route: "GET kuvo/sessions/:id/decisions", feature: "approval.reviewer", answers: { 200: REVIEW_DECISIONS } },
+  { route: "POST kuvo/sessions/:id/decisions", feature: "approval.reviewer", answers: { 200: REVIEW_DECISIONS, 400: REFUSED, 404: REFUSED, 500: REFUSED } },
 ];

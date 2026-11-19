@@ -524,3 +524,14 @@ describe("across your own computers", () => {
     expect((await dev.read()).settings).toEqual({ notifications: alerts(true), codexFallback: null })
   })
 })
+
+test("usage settings reject a future disk format without saving over it", () => {
+  const file = join(base, "future-settings.json")
+  const future = JSON.stringify({ kuvo: 2, units: { something: { data: ["keep"] } } })
+  writeFileSync(file, JSON.stringify({ codex: { fallback: "model-legacy" } }))
+  const running = new UsageSettings(file)
+  writeFileSync(file, future)
+  expect(() => new UsageSettings(file)).toThrow(/Usage settings format version 2/)
+  expect(() => running.inNoSetup()).toThrow(/Usage settings format version 2/)
+  expect(readFileSync(file, "utf8")).toBe(future)
+})

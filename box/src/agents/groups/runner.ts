@@ -1,3 +1,4 @@
+import type { ReviewReceipt } from "./store"
 // The group chats that live on this computer, run here: the lead first, then whoever's named or
 // next in line, one bot at a time, until they've nothing to add; the lead's wrap-up and who does
 // what; each part in its bot's own conversation, its report back in the chat; meetings at their
@@ -283,6 +284,7 @@ export class GroupRunner {
       return {
         group: kept.group,
         status: kept.status,
+        ...(kept.restoreReview ? { restoreReview: true } : {}),
         state: this.talk(kept.group.id),
         last: kept.messages.at(-1),
         said: said.at(-1),
@@ -293,7 +295,7 @@ export class GroupRunner {
 
   get(id: string) {
     const kept = this.chats.get(id)
-    return kept && { group: kept.group, status: kept.status, state: this.talk(id), messages: kept.messages }
+    return kept && { group: kept.group, status: kept.status, ...(kept.restoreReview ? { restoreReview: true } : {}), state: this.talk(id), messages: kept.messages }
   }
 
   private chat(id: string): Kept | undefined {
@@ -374,7 +376,7 @@ export class GroupRunner {
 
   activate(id: string): boolean {
     const kept = this.chats.get(id)
-    if (!kept) return false
+    if (!kept || kept.restoreReview) return false
     if (kept.status === "active") {
       // A bridge restart can read a rename whose directory sync failed in the previous process.
       this.context.store.saveGroup(kept)
@@ -390,6 +392,51 @@ export class GroupRunner {
       }
     }
     return true
+  }
+
+  /** Settle the restored transcript while held, then commit activation with its receipt. */
+  finishRestoreReview(id: string, operation: string, decision: ReviewReceipt["decision"]): ReviewReceipt | undefined {
+    const kept = this.chats.get(id)
+    if (!kept) return undefined
+    if (kept.reviewReceipt) {
+      const receipt = kept.reviewReceipt
+      if (receipt.operation !== operation || receipt.decision !== decision) return undefined
+      if (receipt.status === "committed") return receipt
+    }
+    if (!kept.restoreReview) return undefined
+    const receipt: ReviewReceipt = { operation, decision, status: "committed" }
+    if (!kept.reviewReceipt) {
+      const pending: ReviewReceipt = { ...receipt, status: "pending" }
+      this.context.store.saveGroup({ ...kept, reviewReceipt: pending })
+      kept.reviewReceipt = pending
+    }
+    const reviewed = structuredClone(kept)
+    for (const message of reviewed.messages) {
+      for (const task of message.tasks ?? []) {
+        // A working part may already have run on the old computer. A resume starts only waiting parts.
+        if (task.state === "working" || (decision === "discard" && (task.state === "waiting" || task.state === "proposed"))) {
+          task.state = "failed"
+          task.finished ??= stamp()
+          delete task.prompt
+          delete task.lost
+        }
+      }
+    }
+    if (decision === "discard") delete reviewed.group.meeting
+    delete reviewed.turning
+    delete reviewed.talking
+    delete reviewed.paused
+    delete reviewed.restoreReview
+    reviewed.status = "active"
+    reviewed.reviewReceipt = receipt
+    this.context.store.saveMessages(reviewed)
+    this.context.store.saveGroup(reviewed)
+    this.chats.set(id, reviewed)
+    this.keepAwake(id)
+    this.told(id)
+    emit("kuvo.group.reset", { id })
+    this.began(id)
+    return receipt
   }
 
   /** Started here: its parts under way are followed, its bots remember it, its meetings are held. */
@@ -633,7 +680,7 @@ export class GroupRunner {
     if (under) return under.done
     const kept = this.chats.get(id)
     const turning = kept?.turning
-    if (!kept || !turning) return Promise.resolve()
+    if (!kept || kept.restoreReview || !turning) return Promise.resolve()
     const bot = this.member(turning.bot)
     if (!bot || bot.box || kept.status !== "active" || !kept.group.members.includes(turning.bot)) {
       this.setTurning(id, undefined)

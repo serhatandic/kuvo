@@ -1,3 +1,5 @@
+import { readEditForPeer, takeOfflineEdit, takeOfflineEditReceipt } from "../ownership/edits";
+import { takeMessageReceipt, takeOwnerMessage } from "../ownership/messages";
 // The Work Queue across your computers (PROTOCOL.md, "The Work Queue", "Across your computers"):
 // one list for everything. Each box tells every other its items (summaries, the owners they name,
 // its labels and how it numbers) as they change, unasked, so the All view and a lead's
@@ -8,25 +10,29 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { additiveObjectFormat, UnsupportedFormatVersion } from "../../shared/format-version";
 import { isObject } from "../../shared/json";
 import { IS_MAC } from "../home";
 import { computerName } from "../peers/computer-name";
 import { readPeerAgents } from "../peers/directory";
 import { ownKey, peersOf, removedBoxes } from "../peers/known";
 import { awaySince, readReach } from "../peers/reach";
+import { usesAcceptedSaves } from "../setup/record";
+import { sharedValue } from "../setup/shared";
 import { readLink } from "../state";
-import { followsBy, labels as labelsHere, LABELS_FILE, takePrimaryLabels, type Label } from "./labels";
+import { followsBy, labels as labelsHere, LABELS_FILE, setupLabels, takePrimaryLabels, type Label } from "./labels";
 import { isClosed } from "./statuses";
 import { stripLabel } from "./ops";
 import { handArrived, handedBack, sendHandings } from "./hand";
 import { actForPeer } from "./acts";
 import { takeAct, takeActed } from "./forward";
 import { deviceAct } from "../peers/devices";
+import { setupAct } from "../setup/handover";
 import { writerAct } from "../peers/manage";
 import { mailsFor, takePart } from "./parts";
 import { movePast, ownSince, primaryOf, takeNumbersMail, topOf } from "./numbers";
 import { noteSetupNow } from "../setup/lead";
-import { allItems, OWNER, queueFollowers, refNames, WORK_QUEUE, type Item, type ItemRef } from "./store";
+import { allItems, changeQueues, OWNER, queueFollowers, refNames, WORK_QUEUE, type Item, type ItemRef } from "./store";
 import { doneByRead, SEEN_FILE, seenOf, withSeen } from "./github";
 import { forgetTold, keepTold, MOST_TOLD, MOST_TOLD_DONE, patchTold, readTold, TOLD, toldItemOf, toldKeys, toldOf, type Numbering, type ToldItem } from "./told";
 import { locked, writePrivate } from "../files";
@@ -125,6 +131,23 @@ const marks = () => [path.join(WORK_QUEUE, "queues"), LABELS_FILE, path.join(WOR
 let titles = new Map<string, unknown>();
 let titlesAt = 0;
 
+let labelRevision = "";
+function reconcileSetupLabels(link: LinkState) {
+  const selected = setupLabels(sharedValue(link, "queueLabels"));
+  if (!selected) return;
+  const revision = `${link.sharedSetup}:${link.shared?.queueLabels?.sequence}`;
+  if (labelRevision === revision) return;
+  const removed = new Set(selected.removed);
+  if (removed.size) changeQueues(book => {
+    for (const item of book.items()) if (item.labels.some(id => removed.has(id))) {
+      item.labels = item.labels.filter(id => !removed.has(id));
+    }
+  }, undefined, { onItsOwn: true });
+  labelRevision = revision;
+  telling = null;
+  for (const tell of queueFollowers) tell();
+}
+
 /** This box's Work Queue told to each computer that takes it, on its rounds: worked out again when
  * a queue changes, and each minute (who's at work changes it too); to one computer once in 15
  * seconds at most, again each minute until it says it has it, and nothing while it's the same and
@@ -132,6 +155,7 @@ let titlesAt = 0;
  * conversations go first (`hand.ts`), whatever's told. */
 export async function pushQueues(host: Pick<LinkHost, "send">, link: LinkState | null = readLink(), targets: Target[], now = Date.now()): Promise<void> {
   if (!link?.key) return;
+  reconcileSetupLabels(link);
   const peers = peersOf(link);
   // What's kept of computers you removed goes.
   const removed = removedBoxes(link);
@@ -227,7 +251,7 @@ function takeTold(sender: MailSender, given: unknown, reply: (payload: Record<st
   if (before?.primary?.key !== told.primary?.key || before?.primary?.since !== told.primary?.since) noteSetupNow(Date.now(), { soon: 0 });
   const primary = primaryOf(link);
   if ("self" in primary) movePast(Math.max(told.top ?? 0, ...told.items.map(item => item.number ?? 0)));
-  else if ("peer" in primary && (primary.via ? primary.via.key === sender.key && told.primary?.key === primary.peer.key : primary.peer.key === sender.key)) {
+  else if (!usesAcceptedSaves(link?.setup) && "peer" in primary && (primary.via ? primary.via.key === sender.key && told.primary?.key === primary.peer.key : primary.peer.key === sender.key)) {
     // (Read only when a label it no longer has is one this box might keep.)
     let counts: Map<string, number> | null = null;
     takePrimaryLabels(told.labels, id => {
@@ -251,7 +275,9 @@ export async function takeWorkQueueMail(sender: MailSender, given: unknown, host
   if (!whole) return;
   const reply = (payload: Record<string, unknown>) => {
     const link = readLink();
-    const to = peersOf(link).find(peer => peer.key === sender.key);
+    const ownRemoval = isObject(whole.act) && whole.act.area === "computers" && whole.act.method === "DELETE"
+      && whole.act.item === sender.key && Object.hasOwn(payload, "acted");
+    const to = peersOf(link).find(peer => peer.key === sender.key) ?? (ownRemoval && "address" in sender ? sender : undefined);
     const mails = link && to ? mailsFor(to, payload, link) : null;
     if (mails) try { for (const bytes of mails) host?.send(bytes); } catch {}
   };
@@ -263,8 +289,26 @@ export async function takeWorkQueueMail(sender: MailSender, given: unknown, host
   }
   if (isObject(whole.handed)) handedBack(sender, whole.handed);
   if (isObject(whole.hand)) await handArrived(sender, whole.hand, reply, places).catch(() => {});
+  if (isObject(whole.offlineEditReceipt)) takeOfflineEditReceipt(sender, whole.offlineEditReceipt);
+  if (isObject(whole.offlineEdit)) await takeOfflineEdit(sender, whole.offlineEdit, reply, places()).catch(error => console.error("Offline edit:", error));
+  if (isObject(whole.ownerMessageReceipt)) takeMessageReceipt(sender, whole.ownerMessageReceipt);
+  if (isObject(whole.ownerMessage)) await takeOwnerMessage(sender, whole.ownerMessage, reply);
   if (isObject(whole.acted)) takeActed(sender, whole.acted);
-  if (isObject(whole.act)) await takeAct(sender, whole.act, reply, act => (act.area === "computers" ? writerAct(sender, act) : act.area === "devices" ? deviceAct(sender, act) : actForPeer(act, places().targets))).catch(() => {});
+  if (isObject(whole.act)) await takeAct(sender, whole.act, reply, async act => {
+    switch (act.area) {
+      case "ownership": {
+        if (act.method === "POST" && act.item === "transfer-ownership") return (await import("../ownership/transfer")).transferForPeer(sender, act);
+        if (act.method === "GET" && act.item === "backup-restore") return (await import("../backup/restore")).restoreForPeer(sender, act);
+        if (act.method === "GET" && act.item === "offline-edit") return readEditForPeer(sender, act, places());
+        if (act.method === "GET") return (await import("../ownership/read")).readForPeer(sender, act, places());
+        return (await import("../ownership/write")).writeForPeer(sender, act, places());
+      }
+      case "computers": return writerAct(sender, act);
+      case "devices": return deviceAct(sender, act);
+      case "setup": return setupAct(sender, act);
+      default: return actForPeer(act, places().targets);
+    }
+  }).catch(() => {});
 }
 
 
@@ -344,6 +388,7 @@ export function itemElsewhere(ref: ItemRef, link: LinkState | null = readLink(),
 // Items you deleted on another computer through this box (`run/work-queue/deleted-there.json`, by
 // id: the computer's key, when, and the item as its box answered), for Undo: a day, 200 at most,
 // and only until that computer, or this box, has it again.
+const deletedThereFormat = additiveObjectFormat("Work Queue remote undo receipts");
 const DELETED_THERE = path.join(WORK_QUEUE, "deleted-there.json");
 const DELETED_LOCK = path.join(WORK_QUEUE, ".deleted-there.lock");
 const DELETED_FOR = 86_400_000;
@@ -351,11 +396,11 @@ type DeletedThere = Record<string, { key: string; at: number; item: unknown }>;
 
 function readDeletedThere(now = Date.now()): DeletedThere {
   try {
-    const kept: unknown = JSON.parse(fs.readFileSync(DELETED_THERE, "utf8"));
-    if (!isObject(kept)) return {};
+    const kept = deletedThereFormat.read(JSON.parse(fs.readFileSync(DELETED_THERE, "utf8")));
     const here = new Set(allItems().map(item => item.id));
     return Object.fromEntries(Object.entries(kept).filter(([id, each]) => isObject(each) && typeof each.key === "string" && typeof each.at === "number" && now - each.at < DELETED_FOR && !here.has(id))) as DeletedThere;
-  } catch {
+  } catch (error) {
+    if (error instanceof UnsupportedFormatVersion) throw error;
     return {};
   }
 }
@@ -363,7 +408,7 @@ function readDeletedThere(now = Date.now()): DeletedThere {
 // The latest 200 kept, or the file gone when none are.
 function keepDeletedThere(entries: [string, DeletedThere[string]][]): void {
   if (!entries.length) return void fs.rmSync(DELETED_THERE, { force: true });
-  writePrivate(DELETED_THERE, JSON.stringify(Object.fromEntries(entries.sort(([, a], [, b]) => b.at - a.at).slice(0, 200))));
+  writePrivate(DELETED_THERE, JSON.stringify(deletedThereFormat.write(Object.fromEntries(entries.sort(([, a], [, b]) => b.at - a.at).slice(0, 200)))));
 }
 
 // What's kept of items deleted there, gone for those a computer tells of again (brought back).
@@ -371,15 +416,18 @@ function keepDeletedThere(entries: [string, DeletedThere[string]][]): void {
 function forgetDeletedThere(told: Set<string>): void {
   let ids: string[];
   try {
-    const kept: unknown = JSON.parse(fs.readFileSync(DELETED_THERE, "utf8"));
-    ids = isObject(kept) ? Object.keys(kept) : [];
-  } catch {
+    const kept = deletedThereFormat.read(JSON.parse(fs.readFileSync(DELETED_THERE, "utf8")));
+    ids = Object.keys(kept);
+  } catch (error) {
+    if (error instanceof UnsupportedFormatVersion) console.error(error.message);
     return;
   }
   if (!ids.some(id => told.has(id))) return;
   try {
-    locked(DELETED_LOCK, () => keepDeletedThere(Object.entries(readDeletedThere()).filter(([id]) => !told.has(id))));
-  } catch {}
+    locked(DELETED_LOCK, () => keepDeletedThere(Object.entries(readDeletedThere()).filter(([id]) => !told.has(id))), { required: true });
+  } catch (error) {
+    if (error instanceof UnsupportedFormatVersion) console.error(error.message);
+  }
 }
 
 /** A change you made through this box to an item the computer `key` keeps, as its box answered
@@ -396,8 +444,10 @@ export function changedThere(key: string, action: "delete" | "change" | "restore
       if (action === "delete") kept[id] = { key, at: now, item };
       else delete kept[id];
       keepDeletedThere(Object.entries(kept));
-    });
-  } catch {}
+    }, { required: true });
+  } catch (error) {
+    if (error instanceof UnsupportedFormatVersion) console.error(error.message);
+  }
   for (const tell of queueFollowers) tell();
 }
 

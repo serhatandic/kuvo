@@ -133,3 +133,14 @@ test("a machine whose settings still come from a Mac takes nothing until they're
   assert.equal((await route("POST", "kuvo/git/settings/move", { commitInstructions: "From the Mac." })).json.moved, true);
   assert.equal((await settings()).commit_instructions, "From the Mac.");
 });
+
+test("the Git settings import preserves an unsupported migration record", async () => {
+  const file = path.join(home, "box", "git.json");
+  const future = JSON.stringify({ formatVersion: 2, moved: false, data: ["keep"] });
+  fs.writeFileSync(file, future);
+  const answer = await route("POST", "kuvo/git/settings/move", { branchPrefix: "ada/" });
+  assert.equal(answer.status, 409);
+  assert.equal(answer.json.code, "unsupportedFormatVersion");
+  assert.equal(fs.readFileSync(file, "utf8"), future);
+  assert.equal((await settings()).branch_prefix, undefined);
+});

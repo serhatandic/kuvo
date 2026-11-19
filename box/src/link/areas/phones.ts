@@ -2,15 +2,17 @@
 // pair another; and Kuvo Code's desktop app on this computer paired as one of your devices
 // (`kuvo/devices/pair`, peers/devices.ts).
 
+import { LEADERSHIP_WAIT, primaryFenced } from "../setup/lease";
 import { parsed } from "../../shared/json";
 import type { Body } from "../../shared/json";
 import type { PAIRING } from "../../shared/routes/box";
 import type { Infer } from "../../shared/shape";
-import { noteDocsChanged } from "../documents/changed";
 import { IS_MAC } from "../home";
-import { canIssuePairing, newPairingToken, pairedPhone, pairingLink, removeAsMac, removePhones } from "../phones";
+import { newPairingToken, pairedPhone, pairingLink } from "../phones";
 import { mainElsewhere, pairElsewhere } from "../setup/main-only";
-import { pairDeviceFromHere } from "../peers/devices";
+import { ownKey } from "../peers/known";
+import { forwardAct, takesForwarded } from "../work-queue/forward";
+import { pairDeviceFromHere, removeDevicesHere, DEVICES_REMOVE_FEATURE } from "../peers/devices";
 import { fromLocalApp } from "../server/context";
 import type { AnswerPiece, RouteContext } from "../server/context";
 import { macLink, readLink, updateLink } from "../state";
@@ -32,24 +34,27 @@ export async function* phonesRoute(context: RouteContext): AsyncGenerator<Answer
 // Removing some, by a device paired here (a phone, or the desktop app over the link), or Kuvo Code's
 // app on this computer, beside any box.
 export async function* phonesRemoveRoute(context: RouteContext): AsyncGenerator<AnswerPiece> {
-  const { request, phone, phonesChanged, json } = context;
+  const { request, phone, signal, json, phonesChanged } = context;
   if (request.method.toUpperCase() !== "POST") return yield* json(405, {});
-  const given = parsed(request.body) as Body<"phones">;
-  // This Mac's app removes as the Mac does (Settings › Phone, or a removal a machine's
-  // document brought), and so does Kuvo Code beside a machine's box, over its own server: any
-  // device, never one of the Macs that set the machine up.
-  const asMac = (IS_MAC && request.fromApp === true) || fromLocalApp(request);
-  // On this Mac, one before any phone's paired here (no link file yet) is kept all the same,
-  // so the phone stays out once it's taken.
-  const changed = updateLink(kept => {
-    const link: LinkState | null = kept ?? (asMac ? { phones: [], removed: [] } : null);
-    return link && (asMac ? removeAsMac(link, given?.phones) : removePhones(link, phone?.key?.toString("base64url"), given?.phones)) ? link : null;
-  });
-  if (!changed) return yield* json(400, { message: "Only phones paired here can be removed, and never your Mac." });
-  noteDocsChanged();
-  // Once this answer is on its way: a phone that removed itself gets it too.
-  setTimeout(() => phonesChanged(readLink() ?? changed), 200);
-  return yield* json(200, {});
+  const entries = (parsed(request.body) as Body<"phones">)?.phones;
+  const link = readLink();
+  const key = phone?.key?.toString("base64url");
+  const local = fromLocalApp(request) || (IS_MAC && request.fromApp === true);
+  const device = key && pairedPhone(link, key, phone?.pairing);
+  if (!local && !device) return yield* json(400, { message: "Only a device paired with your setup can remove devices." });
+  const actor = local || !device ? null : { key: device.key, pairing: device.pairing ?? "" };
+  const main = mainElsewhere(link);
+  if (!main) {
+    const done = await removeDevicesHere(entries, actor, { onRemoved: phonesChanged });
+    return yield* json(done.status, done.value);
+  }
+  const member = link && ownKey(link);
+  if (!member || link?.setup?.aside || !takesForwarded(main.key, DEVICES_REMOVE_FEATURE)) {
+    return yield* json(409, { message: "Remove devices from your primary computer, or update it to remove them from here.", primary: main.key });
+  }
+  const done = await forwardAct({ ...main, kind: "mac" }, "Your devices",
+    { area: "devices", method: "DELETE", item: member, body: { phones: entries, actor } }, signal, link);
+  return yield* json(done.status, "refused" in done ? { message: done.refused } : done.value);
 }
 
 /** What a Mac says while it lets no device in: the one switch for phones and desktop apps alike. */
@@ -77,13 +82,14 @@ export async function* pairingRoute(context: RouteContext): AsyncGenerator<Answe
   // Only your setup's main computer pairs phones: a member names it (PROTOCOL.md, "Your setup").
   let refusal: { message: string; primary?: string } | undefined;
   const link = updateLink(current => {
+    if (primaryFenced(current)) { refusal = { message: LEADERSHIP_WAIT }; return null; }
     const main = mainElsewhere(current);
     if (main) { refusal = pairElsewhere(main); return null; }
     if (IS_MAC && !macLink.config?.phones) { refusal = { message: SWITCH_OFF }; return null; }
     if (!current?.relay || !current.secret) return null;
     const key = phone?.key;
     const device = key && pairedPhone(current, key.toString("base64url"), phone.pairing);
-    if (key && (!device || !canIssuePairing(device))) {
+    if (key && !device) {
       refusal = { message: "Ask for a pairing link on the computer that paired this device." };
       return null;
     }
@@ -98,7 +104,7 @@ export async function* pairingRoute(context: RouteContext): AsyncGenerator<Answe
 
 // `POST kuvo/devices/pair {key, name, kind: "desktop"}`: Kuvo Code's desktop app on this computer
 // paired as one of your devices, with no link to paste: here where this box pairs phones, else by
-// the setup's main computer, which this box vouches to (peers/devices.ts). Only for the app beside
+// the setup's main computer, which this box contacts (peers/devices.ts). Only for the app beside
 // this box, over the box's own server (`fromLocalApp`): never a client over the relay, nor `box
 // route`, which an agent's command here could run. It uses no pairing token, and ends none.
 export async function* devicesPairRoute(context: RouteContext): AsyncGenerator<AnswerPiece> {

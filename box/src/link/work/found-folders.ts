@@ -5,30 +5,40 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { additiveObjectFormat, UnsupportedFormatVersion } from "../../shared/format-version";
 import { isObject } from "../../shared/json";
 import { writePrivate } from "../files";
 import { BOX } from "../home";
 import { askedAbout } from "../fence/policy";
 
+const foundFoldersFormat = additiveObjectFormat("First-seen project paths");
 const FOUND_FILE = path.join(BOX, "found-folders.json");
 const MOST_FOUND = 2000;
 let firstFound: Map<string, string> | null = null;
 function foundFolders(): Map<string, string> {
   if (firstFound) return firstFound;
-  firstFound = new Map();
+  const found = new Map<string, string>();
   try {
     const kept = JSON.parse(fs.readFileSync(FOUND_FILE, "utf8"));
-    if (isObject(kept)) for (const [folder, real] of Object.entries(kept)) if (typeof real === "string" && path.isAbsolute(real)) firstFound.set(folder, real);
-  } catch {}
-  return firstFound;
+    if (isObject(kept)) for (const [folder, real] of Object.entries(foundFoldersFormat.read(kept))) if (typeof real === "string" && path.isAbsolute(real)) found.set(folder, real);
+  } catch (error) {
+    if (error instanceof UnsupportedFormatVersion) throw error;
+  }
+  return firstFound = found;
 }
 function keepFound(folder: string, real: string): void {
   const found = foundFolders();
   if (found.get(folder) === real) return;
+  try {
+    const kept = JSON.parse(fs.readFileSync(FOUND_FILE, "utf8"));
+    if (isObject(kept)) foundFoldersFormat.read(kept);
+  } catch (error) {
+    if (error instanceof UnsupportedFormatVersion) throw error;
+  }
   found.delete(folder);
   found.set(folder, real);
   while (found.size > MOST_FOUND) found.delete(found.keys().next().value!);
-  try { writePrivate(FOUND_FILE, JSON.stringify(Object.fromEntries(found))); } catch {}
+  try { writePrivate(FOUND_FILE, JSON.stringify(foundFoldersFormat.write(Object.fromEntries(found)))); } catch {}
 }
 export function foundAt(folder: string): string {
   const known = foundFolders().get(folder);

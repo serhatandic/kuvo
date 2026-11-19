@@ -11,6 +11,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { additiveObjectFormat, UnsupportedFormatVersion } from "../../shared/format-version";
 import { isObject } from "../../shared/json";
 import { plainName } from "../../shared/text";
 import { locked, writePrivate } from "../files";
@@ -21,7 +22,8 @@ const WORK_QUEUE = path.join(RUN, "work-queue");
 const QUEUES = path.join(WORK_QUEUE, "queues");
 const CATEGORIES_FILE = path.join(WORK_QUEUE, "categories.json");
 const LABELS_FILE = path.join(WORK_QUEUE, "labels.json");
-const LOCK = path.join(WORK_QUEUE, ".lock");
+export const LABELS_LOCK = path.join(WORK_QUEUE, ".labels.lock");
+export const QUEUES_LOCK = path.join(WORK_QUEUE, ".lock");
 // What says a process is moving the items over now (a folder: made by one alone).
 const MOVING = path.join(WORK_QUEUE, ".moving-to-statuses");
 /** What says which way this box keeps its items: `{model: 2}` once they have statuses. */
@@ -29,6 +31,22 @@ export const MODEL_FILE = path.join(WORK_QUEUE, "model.json");
 /** What was kept before, whole: the queues' files and `categories.json`. */
 export const BEFORE = path.join(WORK_QUEUE, "before-statuses");
 export const MODEL = 2;
+// A separate file schema from the category/status migration. Old and new writers agree on fields.
+export const queueFileFormat = additiveObjectFormat("Work Queue owner file");
+
+export const labelsFormat = additiveObjectFormat("Work Queue labels");
+const modelFormat = additiveObjectFormat("Work Queue status model");
+const categoriesFormat = additiveObjectFormat("Work Queue legacy categories");
+
+function modelRecord(): Record<string, unknown> | null {
+  const value = jsonOf(MODEL_FILE);
+  if (!isObject(value)) return null;
+  const kept = modelFormat.read(value);
+  if (typeof kept.model === "number" && kept.model > MODEL) {
+    throw new UnsupportedFormatVersion("Work Queue status model", kept.model, MODEL);
+  }
+  return kept;
+}
 
 let done = false;
 
@@ -89,11 +107,20 @@ const onDisk = (folder: string): void => {
 
 function migrate(): void {
   fs.mkdirSync(WORK_QUEUE, { recursive: true, mode: 0o700 });
+  // A stale/missing status-model marker must never let an older reader rewrite a future file.
+  for (const name of queueFiles(QUEUES)) {
+    const queue = jsonOf(path.join(QUEUES, name));
+    if (isObject(queue)) queueFileFormat.read(queue);
+  }
   // What was kept, copied whole, once: made beside and put in place in one step, so a copy cut off
   // is never taken for the whole of it.
   // (A box that kept nothing yet has nothing to copy or move.)
+  const labels = jsonOf(LABELS_FILE);
+  const keptLabels = isObject(labels) ? labelsFormat.read(labels) : null;
+  const categories = jsonOf(CATEGORIES_FILE);
+  if (isObject(categories)) categoriesFormat.read(categories);
   const nothing = !queueFiles(QUEUES).length && !fs.existsSync(CATEGORIES_FILE);
-  if (nothing && !fs.existsSync(BEFORE)) return void writePrivate(MODEL_FILE, JSON.stringify({ model: MODEL, at: Date.now() }));
+  if (nothing && !fs.existsSync(BEFORE)) return void writePrivate(MODEL_FILE, JSON.stringify(modelFormat.write({ model: MODEL, at: Date.now() })));
   if (!fs.existsSync(BEFORE)) {
     for (const name of fs.readdirSync(WORK_QUEUE)) if (name.startsWith("before-statuses.")) fs.rmSync(path.join(WORK_QUEUE, name), { recursive: true, force: true });
     const making = path.join(WORK_QUEUE, `before-statuses.${crypto.randomBytes(6).toString("hex")}`);
@@ -114,7 +141,8 @@ function migrate(): void {
   }
   // (Only from the copy: something else by its name is no copy to work from.)
   if (!fs.statSync(path.join(BEFORE, "queues"), { throwIfNoEntry: false })?.isDirectory()) throw new Error(`${BEFORE} isn't the copy of what was kept`);
-  const kept = jsonOf(path.join(BEFORE, "categories.json"));
+  const copied = jsonOf(path.join(BEFORE, "categories.json"));
+  const kept = isObject(copied) ? categoriesFormat.read(copied) : null;
   const custom = (isObject(kept) && Array.isArray(kept.custom) ? kept.custom : [])
     .filter((each: unknown): each is { id: string; name: string } => isObject(each) && typeof each.id === "string" && /^cat_[a-z0-9-]{1,40}$/.test(each.id) && typeof each.name === "string");
   const names = new Map(custom.map(each => [each.id, each.name]));
@@ -153,7 +181,7 @@ function migrate(): void {
       ...[...used].filter(id => id !== PARKED_LABEL && !names.has(id)).sort().map(id => ({ id, name: id.slice(4).replace(/-/g, " "), color: colorBefore(id) })),
       ...(used.has(PARKED_LABEL) ? [{ id: PARKED_LABEL, name: "Parked", color: "graphite" }] : []),
     ];
-    const kept = jsonOf(LABELS_FILE);
+    const kept = keptLabels;
     const there: unknown[] = isObject(kept) && Array.isArray(kept.labels) ? kept.labels : [];
     const has = new Set(there.flatMap(each => (isObject(each) && typeof each.id === "string" ? [each.id] : [])));
     const needed = new Set(queueFiles(QUEUES).flatMap(name => {
@@ -161,7 +189,7 @@ function migrate(): void {
       return isObject(queue) && Array.isArray(queue.items) ? queue.items.flatMap(each => (isObject(each) && typeof each.status !== "string" ? fromCategory(each.category, typeof each.category === "string" ? names.get(each.category) : undefined).label ?? [] : [])) : [];
     }));
     const more = made.filter(each => !has.has(each.id) && (kept === null || needed.has(each.id)));
-    if (more.length) writePrivate(LABELS_FILE, JSON.stringify({ ...(isObject(kept) ? kept : {}), labels: [...there, ...more] }));
+    if (more.length) writePrivate(LABELS_FILE, JSON.stringify(labelsFormat.write({ ...kept, labels: [...there, ...more] })));
   }
   // Each queue as it's kept now: every item still under a category said anew, as worked out from
   // what was kept before (one added since, by an older box, on its own).
@@ -179,35 +207,35 @@ function migrate(): void {
       if (place !== undefined) each.order = place;
       return each;
     });
-    if (changed) writePrivate(file, JSON.stringify(queue));
+    if (changed) writePrivate(file, JSON.stringify(queueFileFormat.write(queue)));
   }
   // (The categories are in the copy, and labels now: the file nothing reads any more goes.)
   fs.rmSync(CATEGORIES_FILE, { force: true });
   // (`started`: the items a session had said it was on, to be In progress if it's at work now.)
-  writePrivate(MODEL_FILE, JSON.stringify({ model: MODEL, at: Date.now(), ...(started.length ? { started } : {}) }));
+  writePrivate(MODEL_FILE, JSON.stringify(modelFormat.write({ model: MODEL, at: Date.now(), ...(started.length ? { started } : {}) })));
 }
 
 /** The items a session had said it was working on when they were moved over (`started`), still to
  * be looked at; none once they have been. */
 export function startedThen(): string[] {
-  const kept = jsonOf(MODEL_FILE);
+  const kept = modelRecord();
   return isObject(kept) && Array.isArray(kept.started) ? kept.started.filter((each): each is string => typeof each === "string") : [];
 }
 
 /** They've been looked at: said so, for good. */
 export function forgetStarted(): void {
-  const kept = jsonOf(MODEL_FILE);
+  const kept = modelRecord();
   if (!isObject(kept) || kept.started === undefined) return;
   const { started: _, ...rest } = kept;
-  writePrivate(MODEL_FILE, JSON.stringify(rest));
+  writePrivate(MODEL_FILE, JSON.stringify(modelFormat.write(rest)));
 }
 
 /** The items here kept with statuses, from now on: moved over from categories where they weren't
  * yet (see above). Called before anything reads or changes the queues; nothing once it's done. */
 export function migrateOnce(): void {
+  const kept = modelRecord();
   if (done) return;
-  const kept = jsonOf(MODEL_FILE);
-  if (isObject(kept) && typeof kept.model === "number" && kept.model >= MODEL) {
+  if (isObject(kept) && typeof kept.model === "number" && kept.model === MODEL) {
     done = true;
     return;
   }
@@ -228,10 +256,10 @@ export function migrateOnce(): void {
     fs.mkdirSync(MOVING);
   }
   try {
-    locked(LOCK, () => {
-      const again = jsonOf(MODEL_FILE);
-      if (!(isObject(again) && typeof again.model === "number" && again.model >= MODEL)) migrate();
-    }, { stale: 60_000, wait: 10_000 });
+    locked(QUEUES_LOCK, () => {
+      const again = modelRecord();
+      if (again?.model !== MODEL) locked(LABELS_LOCK, migrate, { required: true });
+    }, { exclusive: true, wait: 10_000 });
   } finally {
     fs.rmSync(MOVING, { recursive: true, force: true });
   }

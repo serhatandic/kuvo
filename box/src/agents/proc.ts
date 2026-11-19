@@ -77,7 +77,7 @@ export async function runGit(args: string[], options: { cwd?: string; env?: Reco
 }
 
 /** Runs a program as a process group of its own (an installer piping `curl` into `bash`): on `timeout`, all of it stops. */
-export function runGroup(command: string, args: string[], options: { cwd?: string; env?: Record<string, string | undefined>; timeout?: number } = {}): Promise<Ran> {
+export function runGroup(command: string, args: string[], options: { cwd?: string; env?: Record<string, string | undefined>; timeout?: number; started?: (pid: number) => void } = {}): Promise<Ran> {
   const env = { ...process.env, ...options.env }
   for (const name of Object.keys(env)) if (env[name] === undefined) delete env[name]
   return new Promise((resolve) => {
@@ -105,6 +105,7 @@ export function runGroup(command: string, args: string[], options: { cwd?: strin
       if (timer) clearTimeout(timer)
       resolve({ code: code ?? -1, stdout, stderr })
     })
+    if (child.pid) options.started?.(child.pid)
   })
 }
 

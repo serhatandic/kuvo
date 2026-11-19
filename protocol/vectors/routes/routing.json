@@ -213,7 +213,7 @@
       "name": "the phones paired here, removing some, and pairing another, with the phone link off",
       "steps": [
         { "send": "GET kuvo/phones", "expect": { "status": 200, "json": { "phones": [] } } },
-        { "send": "POST kuvo/phones/remove", "body": { "phones": [] }, "expect": { "status": 400, "json": { "message": "Only phones paired here can be removed, and never your Mac." } } },
+        { "send": "POST kuvo/phones/remove", "body": { "phones": [] }, "expect": { "status": 400, "json": { "message": "Only a device paired with your setup can remove devices." } } },
         { "send": "GET kuvo/phones/remove", "expect": { "status": 405 } },
         { "send": "POST kuvo/phones/pair", "expect": { "status": 409, "json": { "message": "<string>" } } },
         { "send": "DELETE kuvo/phones/pair", "expect": { "status": 200, "json": {} } },

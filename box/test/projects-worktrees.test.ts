@@ -1,6 +1,6 @@
 import "./safety"
 import { afterEach, expect, test } from "bun:test"
-import { mkdirSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 
 // A session in a worktree is its project's: the box's projects say which project each worktree
@@ -47,6 +47,7 @@ test("a worktree made after a client began following is filed under its project 
   const { updateWorktrees } = await import("../src/link/areas/worktree-records")
   updateWorktrees(list => [...list, { project: shop, root: tree, folder: tree, branch: "kuvo/swift-wolf" }])
   expect((await lines.next()).value.worktrees).toEqual({ [tree]: shop })
+  expect(JSON.parse(readFileSync(join(home, "box", "worktrees.json"), "utf8")).formatVersion).toBe(1)
   stop.abort()
   await lines.return(undefined)
 })
@@ -98,4 +99,30 @@ test("a project's other folders are filed under it, and so is a worktree of one,
   expect(answer.worktrees).toMatchObject({ [web]: shop, [admin]: shop, [webTree]: shop })
   expect(answer.worktrees[site]).toBeUndefined()
   expect(answer.worktrees["/work/legacy"]).toBeUndefined()
+})
+
+test("project and worktree edits refuse future records and leave their bytes in place", async () => {
+  keep({ worktrees: [] })
+  const { changeProjects } = await import("../src/link/areas/projects")
+  const { updateWorktrees } = await import("../src/link/areas/worktree-records")
+  const projects = join(home, "box", "projects.json")
+  const trees = join(home, "box", "worktrees.json")
+  const futureProjects = JSON.stringify({ version: 2, data: [shop] })
+  const futureTrees = JSON.stringify({ formatVersion: 2, data: [tree] })
+  writeFileSync(projects, futureProjects)
+  writeFileSync(trees, futureTrees)
+  expect(() => changeProjects(() => [])).toThrow(/Project list format version 2/)
+  expect(() => updateWorktrees(() => [])).toThrow(/Worktree records format version 2/)
+  expect(readFileSync(projects, "utf8")).toBe(futureProjects)
+  expect(readFileSync(trees, "utf8")).toBe(futureTrees)
+})
+
+test("the first-seen folder index preserves a future file when recording a new project", async () => {
+  keep({ worktrees: [] })
+  const { foundAt } = await import("../src/link/work/found-folders")
+  const file = join(home, "box", "found-folders.json")
+  const future = JSON.stringify({ formatVersion: 2, future: [shop] })
+  writeFileSync(file, future)
+  expect(() => foundAt("/work/never-seen-project-920")).toThrow(/First-seen project paths format version 2/)
+  expect(readFileSync(file, "utf8")).toBe(future)
 })

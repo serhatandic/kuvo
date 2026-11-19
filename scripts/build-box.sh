@@ -53,7 +53,11 @@ build() {
     echo "scripts/build-box.sh: couldn't hash the built link (sha256sum or shasum)." >&2
     exit 1
   fi
-  sed "s/\"$(printf '%s' "$SOURCE_VERSION" | sed 's/\./\\./g')\"/\"$hash\"/g" "$raw" >"$1"
+  layout=$(BUN_BE_BUN=1 "$BUN" --config=/dev/null --no-env-file -e 'import { KUVO_FOLDER_LAYOUT } from "./box/src/shared/folder-version"; console.log(KUVO_FOLDER_LAYOUT)')
+  {
+    printf '// Kuvo folder layout %s %s\n' "$layout" "$hash"
+    sed "s/\"$(printf '%s' "$SOURCE_VERSION" | sed 's/\./\\./g')\"/\"$hash\"/g" "$raw"
+  } >"$1"
 }
 
 if [ "${1:-}" = "--check" ]; then

@@ -1,9 +1,12 @@
+import { pendingStandby } from "../setup/leadership";
+import { acceptedMembership, acceptedName, namedRoster } from "../setup/membership";
 // Peers (PROTOCOL.md, "Peers")
 // The other boxes a Mac set this one up with: itself and its other machines, each as that Mac's
 // newest peers document names them, so one a Mac removed leaves every box it lists. Its Macs: those
 // that set it up, each until it removes this box or isn't heard from in 30 days. And mail between
 // them: sealed for one of them, and opened from one.
 
+import { objectFormat, UnsupportedFormatVersion } from "../../shared/format-version";
 import type { Doc, DocKind } from "../../shared/documents";
 import { isObject } from "../../shared/json";
 import { plainName } from "../../shared/text";
@@ -66,7 +69,7 @@ export const KEY = /^[A-Za-z0-9_-]{43}$/;
 
 export const ADDRESS = /^[A-Za-z0-9_-]{22}$/;
 
-// The Macs that set this machine up (`setup`), whose documents and mail it takes.
+// Direct SSH enrollers whose documents and mail this machine trusts (legacy mac/macs fields).
 export const macsOf = (link: LinkState | null | undefined): string[] => [...new Set([...(Array.isArray(link?.macs) ? link.macs : []), ...(typeof link?.mac === "string" ? [link.mac] : [])])];
 
 // Only time this machine's box ran counts toward a Mac's 30 days: while it was off, no Mac could
@@ -125,7 +128,7 @@ export function forgetOldMacs(link: LinkState, keep?: string, now = Date.now()):
   link.macSeen ??= {};
   for (const mac of macsOf(link)) link.macSeen[mac] ??= now;
   if (keep) link.macSeen[keep] = now;
-  const gone = macsOf(link).filter(mac => mac !== keep && now - link.macSeen![mac]! > MAC_GONE_AFTER);
+  const gone = macsOf(link).filter(mac => mac !== keep && mac !== followedSetup(link)?.primary && now - link.macSeen![mac]! > MAC_GONE_AFTER);
   if (!gone.length) return;
   for (const mac of gone) leaveMac(link, mac);
   if ((gone as (string | undefined)[]).includes(link.mac)) link.mac = keep;
@@ -149,7 +152,10 @@ export function leaveMac(link: LinkState, mac: string): void {
   for (const field of ["macSeen", "macSigns", "macNames", "legacy"] as const) if (link[field]) delete link[field][mac];
   link.phones = (link.phones ?? []).filter(phone => !(phone.from === "mac" && phone.mac === mac));
   // The setup that Mac leads goes with it, as its peers document does (PROTOCOL.md, "Your setup").
-  if (link.setup?.role === "member" && link.setup.primary === mac) delete link.setup;
+  if (link.setup?.role === "member" && link.setup.primary === mac) {
+    delete link.setup;
+    delete link.leadership;
+  }
 }
 
 export const MOST_PEERS = 64;
@@ -176,7 +182,7 @@ export function takeLegacyPeers(link: LinkState, mac: string, peers: unknown, at
 // Mac that set this box up is yours, so each one's word counts.
 function macWords(link: LinkState | null | undefined, only?: string): MacWord[] {
   return macDocs(link).filter(each => only === undefined || each.mac === only).map(({ mac, doc }) => {
-    if (doc) return { boxes: Array.isArray(doc.body.boxes) ? doc.body.boxes.slice(0, MOST_PEERS) : [], moved: doc.body.moved };
+    if (doc) return { boxes: Array.isArray(doc.body.boxes) ? doc.body.boxes.slice(0, MOST_PEERS + 1) : [], moved: doc.body.moved };
     // COMPAT(beta.1 peers-list): a beta.1 Mac's list, in place of its peers document. Goes on the user's word, once no Mac from before 1.0 connects.
     return link?.legacy?.[mac] ? { boxes: link.legacy[mac].peers ?? [], moved: link.legacy[mac].moved } : null;
   }).filter(Boolean) as MacWord[];
@@ -188,7 +194,8 @@ export function movedOf(link: LinkState | null | undefined): Map<string, string>
   const moved = new Map<string, string>();
   // COMPAT(beta.1 mac-moves): a Mac's word, from an app that ran moves before its boxes did. Goes on the user's word, once no Mac from before 1.0 connects.
   // A Mac's word: what this Mac's app says (`kuvo/link/peers`), or a Mac's peers document.
-  if (IS_MAC) for (const { session, key } of cleanMoved(link?.macMoved)) moved.set(session, key);
+  const accepted = acceptedMembership(link);
+  if (accepted || IS_MAC) for (const { session, key } of accepted?.moved ?? cleanMoved(link?.macMoved)) moved.set(session, key);
   else for (const word of macWords(link)) for (const { session, key } of cleanMoved(word.moved)) moved.set(session, key);
   // Over it, the word of the box that moved each: this one's, and its peers'; the newest last.
   const now = Date.now();
@@ -225,10 +232,10 @@ export function macDocs(link: LinkState | null | undefined): { mac: string; doc:
 /** The boxes you removed, so they're no peers of this one (`left`: this Mac's own record, or what
  * its Macs' peers documents say), not those just missing from a list for now. */
 export function removedBoxes(link: LinkState | null | undefined): Set<string> {
-  const left = IS_MAC ? (Array.isArray(link?.left) ? link.left : []) : macDocs(link).map(each => each.doc).flatMap(doc => {
+  const left = acceptedMembership(link)?.left ?? (writesOwnPeers(link) ? (Array.isArray(link?.left) ? link.left : []) : macDocs(link).map(each => each.doc).flatMap(doc => {
     const named = doc?.body.left;
     return Array.isArray(named) ? named.filter((key): key is string => typeof key === "string") : [];
-  });
+  }));
   const peers = new Set(peersOf(link).map(peer => peer.key));
   return new Set(left.filter(key => !peers.has(key)));
 }
@@ -244,11 +251,17 @@ export function ownListed(): { session: string; name: string | null }[] {
   }
 }
 
-// This box's peers now: every box its Macs name, itself left out.
+/** The legacy Mac writes its list even when set aside. A machine writes one as primary. */
+export const writesOwnPeers = (link: LinkState | null | undefined): boolean =>
+  (IS_MAC && !link?.setup?.managed) || followedSetup(link)?.role === "primary";
+
+// This box's peers now: the ones it enrolled, or those its enrolling computers name.
 export function peersOf(link: LinkState | null | undefined): Peer[] {
   if (!link) return [];
+  const membership = acceptedMembership(link);
+  if (membership) return namedRoster(link, membership.boxes.filter(peer => peer.key !== ownKey(link)));
   // This Mac's box: its machines, as its app set them up (`kuvo/link/peers`), by the names you gave them.
-  if (IS_MAC) return (Array.isArray(link.macPeers) ? link.macPeers : []).filter(fitsPeer).slice(0, MOST_PEERS).map(cleanPeer).map(peer => renamed(link, peer));
+  if (writesOwnPeers(link)) return (Array.isArray(link.macPeers) ? link.macPeers : []).filter(fitsPeer).slice(0, MOST_PEERS).map(cleanPeer).map(peer => renamed(link, peer));
   const own = ownKey(link);
   const byKey = new Map<string, Peer>();
   for (const word of macWords(link)) {
@@ -258,16 +271,15 @@ export function peersOf(link: LinkState | null | undefined): Peer[] {
 }
 
 // A machine of this Mac by the name you gave it, where you gave one.
-const renamed = (link: LinkState, peer: Peer): Peer => {
-  const name = link.peerNames?.[peer.key];
-  return typeof name === "string" && name ? { ...peer, name } : peer;
-};
+const renamed = (link: LinkState, peer: Peer): Peer => ({ ...peer, name: acceptedName(link, peer.key, peer.name) });
 
 /** The boxes this box's Macs name (in a setup, its main computer's first; `only`, that one Mac's
  * word alone), itself among them: what each is called there, and what it is. A Mac's box names its
  * own machines (`peersOf`). */
 export function namedBoxes(link: LinkState | null | undefined, only?: string): Peer[] {
-  if (!link || IS_MAC) return [];
+  if (!link || writesOwnPeers(link)) return [];
+  const membership = acceptedMembership(link);
+  if (membership && (only === undefined || only === link.setup?.primary)) return namedRoster(link, membership.boxes);
   const byKey = new Map<string, Peer>();
   for (const word of macWords(link, only)) for (const box of word.boxes) if (fitsPeer(box) && !byKey.has(box.key)) byKey.set(box.key, cleanPeer(box));
   return [...byKey.values()];
@@ -279,6 +291,9 @@ export function ownKey(link: Pick<LinkState, "key">): string | null {
   try { return publicOf(Buffer.from(link.key!, "base64url")).toString("base64url"); } catch { return null; }
 }
 
+// The Noise prologue versions encryption. This versions the authenticated JSON inside it.
+const mailFormat = objectFormat("Peer mail", 1);
+
 // A mail frame's body opened: from one of this box's Macs, or one of its peers. `{sender, payload}`,
 // or null for one from anyone else (or that isn't one).
 export function openMail(body: Buffer, link: LinkState | null | undefined): OpenedMail | null {
@@ -286,12 +301,26 @@ export function openMail(body: Buffer, link: LinkState | null | undefined): Open
   const key = Buffer.from(link.key, "base64url");
   const peers = peersOf(link);
   const named = new Set(peers.map(peer => peer.key));
-  const senders = [...peers, ...macsOf(link).filter(key => !named.has(key)).map(key => ({ key, kind: "mac" as const }))];
+  const recovery = pendingStandby(link);
+  const revoked = new Set(acceptedMembership(link)?.left);
+  const enrollers = macsOf(link).filter(key => !named.has(key) && !revoked.has(key));
+  const senders = [...peers, ...(recovery && !named.has(recovery.key) ? [recovery] : []), ...enrollers.map(key => ({ key, kind: "mac" as const }))];
   for (const sender of senders) {
     try {
       const payload = JSON.parse(openOneWay(body, key, Buffer.from(sender.key, "base64url")).payload.toString("utf8"));
-      return isObject(payload) ? { sender, payload } : null;
-    } catch {}
+      const given = mailFormat.read(payload);
+      if (sender === recovery) {
+        // A prospective standby may return its certificate, but has no access to other mail.
+        if (!isObject(given.docs) || !Array.isArray(given.docs.give)) return null;
+        return { sender, payload: { docs: { give: given.docs.give.filter(envelope => held(envelope)?.kind === "leadership") }, at: given.at } };
+      }
+      return { sender, payload: given };
+    } catch (error) {
+      if (error instanceof UnsupportedFormatVersion) {
+        console.warn(error.message);
+        return null;
+      }
+    }
   }
   return null;
 }
@@ -299,9 +328,25 @@ export function openMail(body: Buffer, link: LinkState | null | undefined): Open
 // Mail for a peer, as the relay takes it, sealed for its key alone; null for one too big to go, or
 // for a box with no address this box knows (a Mac whose mail came before any peers document said
 // where it is: nothing can go back to it yet).
-export function mailFor(peer: Pick<Peer, "key"> & { address?: string }, payload: unknown, link: LinkState): Buffer | null {
+// Removal-only mail carries a key hint so a returning box can hear the signed epoch
+// chain even if it never met the current primary. This key grants no ordinary peer access.
+const REMOVAL_MAIL = Buffer.from("kuvo-removal-v1\0");
+
+export function openRemovalMail(body: Buffer, link: LinkState | null): { key: string; message: Record<string, unknown> } | null {
+  if (!link?.key || !body.subarray(0, REMOVAL_MAIL.length).equals(REMOVAL_MAIL) || body.length <= REMOVAL_MAIL.length + 32) return null;
+  const sender = body.subarray(REMOVAL_MAIL.length, REMOVAL_MAIL.length + 32);
+  try {
+    const opened = openOneWay(body.subarray(REMOVAL_MAIL.length + 32), Buffer.from(link.key, "base64url"), sender);
+    const message = mailFormat.read(JSON.parse(opened.payload.toString("utf8")));
+    return { key: sender.toString("base64url"), message };
+  } catch { return null; }
+}
+
+export function mailFor(peer: Pick<Peer, "key"> & { address?: string }, payload: object, link: LinkState, removalOnly = false): Buffer | null {
   if (!peer.address) return null;
-  const sealed = frame(Frame.mail, 0, sealOneWay(Buffer.from(JSON.stringify(payload)), Buffer.from(link.key!, "base64url"), Buffer.from(peer.key, "base64url")).message);
+  const key = Buffer.from(link.key!, "base64url");
+  const message = sealOneWay(Buffer.from(JSON.stringify(mailFormat.write(payload))), key, Buffer.from(peer.key, "base64url")).message;
+  const sealed = frame(Frame.mail, 0, removalOnly ? Buffer.concat([REMOVAL_MAIL, publicOf(key), message]) : message);
   if (sealed.length > MAX_MAIL) return null;
   return relaySend(Buffer.from(peer.address, "base64url"), sealed);
 }

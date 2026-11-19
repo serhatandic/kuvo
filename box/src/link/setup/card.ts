@@ -5,9 +5,10 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { writePrivate } from "../files";
+import { textOf, writePrivate } from "../files";
 import { IS_MAC, RUN } from "../home";
-import { ATTACHED_FILE } from "./judge";
+import { UnsupportedFormatVersion } from "../../shared/format-version";
+import { ATTACHED_FILE, cardOf, setupCardFormat } from "./judge";
 import { macsOf, ownKey } from "../peers/known";
 import { readPeerAgents } from "../peers/directory";
 import { readLink } from "../state";
@@ -34,7 +35,7 @@ export function cardNow(): Record<string, unknown> {
     epoch: view.epoch,
     role: view.you.role,
     primary: primary ? { key: primary.key, name: primary.name, heard } : null,
-    self: { key: own, name: String(link?.name ?? ""), kind: IS_MAC ? "mac" : "machine" },
+    self: { key: own, name: view.computers.find(box => box.key === own)?.name ?? String(link?.name ?? ""), kind: IS_MAC ? "mac" : "machine" },
     // (Or Kuvo Code on this Mac attached to it in place: `POST kuvo/setup/attached`.)
     app: IS_MAC || fs.existsSync(path.join(RUN, ATTACHED_FILE)),
     computers: view.computers.length,
@@ -44,12 +45,13 @@ export function cardNow(): Record<string, unknown> {
   };
 }
 
-let written = "";
 /** The card written, if it changed. */
 export function writeCard(): void {
-  const text = JSON.stringify(cardNow());
-  if (text === written && fs.existsSync(SETUP_CARD)) return;
-  fs.mkdirSync(RUN, { recursive: true, mode: 0o700 });
+  const text = JSON.stringify(setupCardFormat.write(cardNow()));
+  const before = textOf(SETUP_CARD);
+  if (text === before) return;
+  try { cardOf(JSON.parse(before ?? "null")); } catch (error) {
+    if (error instanceof UnsupportedFormatVersion) throw error;
+  }
   writePrivate(SETUP_CARD, text);
-  written = text;
 }

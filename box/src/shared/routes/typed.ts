@@ -42,6 +42,6 @@ const REFUSED = object({ message: string });
 const SEND_REFUSED = object({ message: string, "restore?": TYPED_RESTORE });
 
 export const TYPED_ROUTES: RouteShape[] = [
-  { route: "GET kuvo/sessions/:id/typed", answers: { 200: TYPED_OFFERS, 404: REFUSED, 503: REFUSED } },
-  { route: "POST kuvo/sessions/:id/typed", answers: { 200: TYPED, 400: REFUSED, 404: SEND_REFUSED, 503: SEND_REFUSED } },
+  { route: "GET kuvo/sessions/:id/typed", feature: "typed", answers: { 200: TYPED_OFFERS, 404: REFUSED, 503: REFUSED } },
+  { route: "POST kuvo/sessions/:id/typed", feature: "typed", answers: { 200: TYPED, 400: REFUSED, 404: SEND_REFUSED, 503: SEND_REFUSED } },
 ];

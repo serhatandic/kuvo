@@ -183,6 +183,8 @@ const botFolder = id => path.join(botsRoot, id);
 
 function freshBox() {
   for (const folder of [home, botsRoot, wakesRoot, path.join(root, "work"), path.join(root, "worktrees")]) fs.rmSync(folder, { recursive: true, force: true });
+  // The in-process handler stands in for a Box that has finished startup.
+  write(path.join(home, "folder-version.json"), '{"version":11}\n');
   // A machine's release brings what it makes bots with; this Mac's box has its app's kit.
   for (const [name, text] of Object.entries(boxFiles)) write(path.join(home, "bin", name), text);
   if (box === "mac") write(path.join(botsRoot, "kit.json"), macKit());

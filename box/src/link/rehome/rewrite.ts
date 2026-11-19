@@ -6,6 +6,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { additiveListFormat, additiveObjectFormat, UnsupportedFormatVersion } from "../../shared/format-version";
 import { enginesIn } from "../../shared/engines";
 import { checkWithEngine } from "./engine-check";
 import { databaseCounts, databaseFolders, databaseLeftovers, databasesIn, rewriteDataFolders, rewriteDatabase, schemaRefusal } from "./database";
@@ -76,13 +77,21 @@ const listOf = (folder: string): string[] => { try { return fs.readdirSync(folde
  * `folders.json`, written as it rewrites). */
 const foldersFile = (move: MoveContext) => path.join(move.work, "folders.json");
 const countsFile = (move: MoveContext) => path.join(move.work, "counts.json");
+const foldersFormat = additiveListFormat("Rehome project folders");
+const countsFormat = additiveObjectFormat("Rehome database counts");
+
 function readFolders(move: MoveContext): string[] {
   try {
-    const kept = JSON.parse(fs.readFileSync(foldersFile(move), "utf8"));
-    return Array.isArray(kept) ? kept.filter((each: unknown): each is string => typeof each === "string") : [];
-  } catch {
+    const kept = foldersFormat.read(JSON.parse(fs.readFileSync(foldersFile(move), "utf8")));
+    return kept.filter((each): each is string => typeof each === "string");
+  } catch (error) {
+    if (error instanceof UnsupportedFormatVersion) throw error;
     return [];
   }
+}
+
+function readDatabaseCounts(move: MoveContext): Record<string, ReturnType<typeof databaseCounts>> {
+  return countsFormat.read(JSON.parse(fs.readFileSync(countsFile(move), "utf8"))) as Record<string, ReturnType<typeof databaseCounts>>;
 }
 
 /** The engine the staged box starts: the version its keeper names (`V=` in `bin/kuvo-start`), else
@@ -172,13 +181,16 @@ export const PATH_REWRITER: Rewriter = {
       const placement = placementOf(move, name);
       for (const each of placement ? listOf(placement.from) : []) folders.add(name === "bots" ? path.join(placement!.from, each, "workspace") : path.join(placement!.from, each));
     }
+    // A pending recovery record from a newer build must survive a rewrite retry.
+    readFolders(move);
     const list = [...folders].filter(folder => path.isAbsolute(folder)).sort();
-    fs.writeFileSync(foldersFile(move), JSON.stringify(list), { mode: 0o600 });
+    fs.writeFileSync(foldersFile(move), JSON.stringify(foldersFormat.write(list)), { mode: 0o600 });
     // The engine's (what each held counted first, from the copy, to hold the rewrite to).
     if (engineData) {
+      if (exists(countsFile(move))) readDatabaseCounts(move);
       const counts: Record<string, ReturnType<typeof databaseCounts>> = {};
       for (const database of databasesIn(engineData)) counts[path.basename(database)] = databaseCounts(database);
-      fs.writeFileSync(countsFile(move), JSON.stringify(counts), { mode: 0o600 });
+      fs.writeFileSync(countsFile(move), JSON.stringify(countsFormat.write(counts)), { mode: 0o600 });
       for (const database of databasesIn(engineData)) {
         const { projects } = rewriteDatabase(database, map);
         rewriteDataFolders(engineData, database, projects, map);
@@ -205,7 +217,7 @@ export const PATH_REWRITER: Rewriter = {
       if (rewritten.length) throw new Error(`The engine's database still names where Kuvo was: ${rewritten.join(", ")}`);
       notes.push(...elsewhere.map(each => `${path.basename(database)}: ${each}`));
       // The same sessions and projects as before.
-      const before = (JSON.parse(fs.readFileSync(countsFile(move), "utf8")) as Record<string, ReturnType<typeof databaseCounts>>)[path.basename(database)];
+      const before = readDatabaseCounts(move)[path.basename(database)];
       if (!before) throw new Error(`The engine's database ${path.basename(database)} wasn't counted before it was rewritten.`);
       const after = databaseCounts(database);
       if (before.sessions !== after.sessions || before.projects !== after.projects) {
@@ -240,10 +252,10 @@ export const PATH_REWRITER: Rewriter = {
       journal({ act: "rename", from, to });
       fs.renameSync(from, to);
     };
+    const folders = readFolders(move);
     // Worktrees' links, from each repository's place now.
     repairWorktrees(placements.filter(each => !each.installed).map(each => each.to), map, journal);
     // Your own Claude Code's and Grok's history of each folder that moved.
-    const folders = readFolders(move);
     const own = ownAgentHomes();
     renameClaudeHistory(own.claude, folders, map, rename);
     if (renameGrokSessions(own.grok, map, rename)) setAsideGrokIndex(own.grok, rename);

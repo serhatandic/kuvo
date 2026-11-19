@@ -1,6 +1,7 @@
 import "./safety"
 import { afterAll, expect, test } from "bun:test"
 import { spawn } from "node:child_process"
+import { once } from "node:events"
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
@@ -111,8 +112,9 @@ test("waits: another process holds the move's lock; one that's gone holds nothin
   const held = computer()
   held.put(join(held.S, "box", "run", "keeper.json"), "{}")
   // A mover, by its command line (`… rehome`), alive until it's told to go.
-  const mover = spawn(process.execPath, ["-e", "process.stdin.resume()", "rehome"], { stdio: ["pipe", "ignore", "ignore"] })
+  const mover = spawn(process.execPath, ["-e", "process.stdout.write('ready'); process.stdin.resume()", "rehome"], { stdio: ["pipe", "pipe", "ignore"] })
   try {
+    await once(mover.stdout, "data")
     held.put(join(held.K, "updates", "rehome", "lock", "pid"), String(mover.pid))
     expect(held.verdict()).toEqual({ verdict: "waits", verb: null })
   } finally {

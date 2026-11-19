@@ -6,6 +6,7 @@
 // touches them. Noted in `run/moves/left.json`, one entry each.
 
 import fs from "node:fs";
+import { additiveObjectFormat, UnsupportedFormatVersion } from "../../shared/format-version";
 import path from "node:path";
 import { isObject } from "../../shared/json";
 import type { MoveKind } from "../../shared/routes/moves";
@@ -37,6 +38,7 @@ export interface LeftEntry {
   ranAt?: number;
 }
 
+const leftFormat = additiveObjectFormat("Move cleanup entry");
 const FILE = path.join(MOVES, "left.json");
 
 const fits = (one: unknown): one is LeftEntry => isObject(one) && typeof one.id === "string" && typeof one.thing === "string" && typeof one.to === "string" && typeof one.at === "number" && Array.isArray(one.sessions);
@@ -44,14 +46,15 @@ const fits = (one: unknown): one is LeftEntry => isObject(one) && typeof one.id 
 export function readLeft(): LeftEntry[] {
   try {
     const kept: unknown = JSON.parse(fs.readFileSync(FILE, "utf8"));
-    return Array.isArray(kept) ? kept.filter(fits) : [];
-  } catch {
+    return Array.isArray(kept) ? kept.map(value => isObject(value) ? leftFormat.read(value) : value).filter(fits) : [];
+  } catch (error) {
+    if (error instanceof UnsupportedFormatVersion) throw error;
     return [];
   }
 }
 
 function writeLeft(entries: LeftEntry[]): void {
-  if (entries.length) writePrivate(FILE, JSON.stringify(entries));
+  if (entries.length) writePrivate(FILE, JSON.stringify(entries.map(leftFormat.write)));
   else fs.rmSync(FILE, { force: true });
 }
 

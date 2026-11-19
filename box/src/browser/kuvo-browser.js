@@ -157,11 +157,11 @@ function sameKey(given) {
 }
 
 /// A connection to the keeper, the key given first.
-function keeperConnection() {
+function keeperConnection(quiet = false) {
   const socket = net.createConnection(SOCKET);
   socket.once("connect", () => {
     try {
-      socket.write(JSON.stringify({ method: "Kuvo.key", params: { key: socketKey() } }) + "\n");
+      socket.write(JSON.stringify({ method: "Kuvo.key", params: { key: socketKey(), quiet } }) + "\n");
     } catch {
       socket.destroy();
     }
@@ -220,7 +220,7 @@ function runningKeeper() {
       if (end < 0) return;
       try {
         const params = JSON.parse(buffer.slice(0, end)).params;
-        done({ number: typeof params?.keeper === "number" ? params.keeper : 1, build: typeof params?.build === "string" ? params.build : null });
+        done({ number: typeof params?.keeper === "number" ? params.keeper : 1, build: typeof params?.build === "string" ? params.build : null, idleStop: params?.idleStop === true });
       } catch {
         done({ number: 1, build: null });
       }
@@ -230,14 +230,29 @@ function runningKeeper() {
 }
 
 /// Asks the running keeper to stop, and waits until it has.
-async function stopKeeper() {
-  await new Promise((resolve) => {
-    const socket = keeperConnection();
-    socket.once("connect", () => socket.end(JSON.stringify({ method: "Kuvo.stop" }) + "\n", resolve));
-    socket.once("error", resolve);
+async function stopIdleKeeper() {
+  const agreed = await new Promise((resolve) => {
+    const socket = keeperConnection(true);
+    const done = value => {
+      clearTimeout(timer);
+      socket.destroy();
+      resolve(value);
+    };
+    const timer = setTimeout(() => done(false), 2000);
+    socket.once("connect", () => socket.write(JSON.stringify({ id: 1, method: "Kuvo.stopIfIdle" }) + "\n"));
+    socket.once("error", () => done(false));
+    socket.once("close", () => done(false));
+    lines(socket, line => {
+      try {
+        const reply = JSON.parse(line);
+        if (reply.id === 1) done(reply.result?.stopping === true);
+      } catch {}
+    });
   });
+  if (!agreed) return false;
   const deadline = Date.now() + 10_000;
   while (Date.now() < deadline && (await reachable())) await sleep(200);
+  return !(await reachable());
 }
 
 /// What the box's own script (`kuvo-link.js`) answers `args` with, as JSON: null when it can't.
@@ -305,8 +320,9 @@ async function setUp(told, { repair = false, wait = 15 * 60_000 } = {}) {
 /// it goes, for `wait` at most); it doesn't start: the box sets it up again, once.
 async function ensure(told, wait) {
   if (await reachable()) {
-    if (!replacesKeeper(await runningKeeper())) return null;
-    await stopKeeper();
+    const running = await runningKeeper();
+    if (!replacesKeeper(running) || !running.idleStop) return null;
+    if (!(await stopIdleKeeper())) return null;
   }
   for (let attempt = 0; ; attempt++) {
     if (!browserBinary(CURRENT)) {
@@ -1352,7 +1368,7 @@ async function host() {
   };
   const idleSoon = () => {
     clearTimeout(idle);
-    idle = setTimeout(stop, IDLE);
+    idle = setTimeout(() => { if (!clients.size && !asks.size) void stop(); }, IDLE);
   };
 
   chrome.on("exit", () => {
@@ -1583,7 +1599,7 @@ async function host() {
       }
       if (client.status?.working) { announcePages(); broadcast({ method: "Kuvo.status", params: (status = everyStatus()) }); }
       if (client.viewer) broadcast({ method: "Kuvo.viewers", params: { count: viewers() } });
-      if (!client.quiet && ![...clients].some((each) => !each.quiet)) idleSoon();
+      if (!clients.size) idleSoon();
     });
     let serial = Promise.resolve();
     lines(socket, text => {
@@ -1596,7 +1612,7 @@ async function host() {
       }
       if (!message || typeof message !== "object" || Array.isArray(message)) return;
       const run = async () => {
-      if (client.closed) return;
+      if (client.closed || stopping) return;
       if (!client.keyed) {
         if (message.method !== "Kuvo.key" || !sameKey(message.params?.key)) return refuse();
         client.keyed = true;
@@ -1605,8 +1621,8 @@ async function host() {
         // The box reading what the browser keeps (its cookies) or removing a site's data: it doesn't
         // keep the browser running.
         client.quiet = message.params?.quiet === true;
-        if (!client.quiet) clearTimeout(idle);
-        send(client, { method: "Kuvo.hello", params: { targetId: active, status, version: VERSION, keeper: KEEPER_NUMBER, build: KEEPER, asks: [...asks.values()].map((ask) => ask.params), viewers: viewers(), held: [...held.keys()], holdMacs: Object.fromEntries(holdMacs), passkeys: Object.fromEntries(passkeyPages) } });
+        clearTimeout(idle);
+        send(client, { method: "Kuvo.hello", params: { targetId: active, status, version: VERSION, keeper: KEEPER_NUMBER, build: KEEPER, idleStop: true, asks: [...asks.values()].map((ask) => ask.params), viewers: viewers(), held: [...held.keys()], holdMacs: Object.fromEntries(holdMacs), passkeys: Object.fromEntries(passkeyPages) } });
         send(client, { method: "Kuvo.pages", params: pages() });
         for (const [targetId, size] of sizes) send(client, { method: "Kuvo.viewport", params: { targetId, ...size } });
         return;
@@ -1650,6 +1666,12 @@ async function host() {
           }
           if (previousTarget && (!client.status.working || previousTarget !== client.status.targetId)) restoreAfterIdle(previousTarget);
           return message.id !== undefined && send(client, { id: message.id, result: {} });
+        }
+        case "Kuvo.stopIfIdle": {
+          const idle = client.quiet && clients.size === 1 && !asks.size;
+          send(client, { id: message.id, result: { stopping: idle } });
+          if (idle) return stop();
+          return;
         }
         case "Kuvo.stop":
           return stop();

@@ -1,18 +1,23 @@
+import { removalDeliveryPending, removalsOf } from "../setup/removal-record";
+import { leadershipDocuments } from "../setup/checkpoint";
 // This Mac's box's link (PROTOCOL.md, "This Mac's box: the relay"): whether it's wanted, how it's
 // doing, its keys from the app, and the machines told they're let go. mac/relay runs it.
 
+import { held } from "../documents/format";
+import { setupOf } from "../setup/record";
+import { primaryFenced } from "../setup/lease";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { isObject } from "../../shared/json";
-import { macPeersBody, ownDoc } from "../documents/work";
+import { docMails, ownDoc, primaryPeersBody } from "../documents/work";
 import { writePrivate } from "../files";
 import { plainName } from "../../shared/text";
 import { accountHome, K, located, MAC_APP_VERSION, OWN_HOME_MAC, RUN } from "../home";
 import { linkHost } from "../host-interface";
-import { cleanPeer, fitsPeer, mailFor, peersOf } from "../peers/known";
-import { macLink, readLink, updateLink } from "../state";
+import { cleanPeer, fitsPeer, mailFor, peersOf, writesOwnPeers } from "../peers/known";
+import { liveLink, readLink, updateLink, macLink } from "../state";
 import { anyMachines } from "./machines";
 import type { SignedDoc } from "../../shared/documents";
 import type { Peer } from "../peers/known";
@@ -30,7 +35,8 @@ export type LinkStatusState = "off" | "connecting" | "connected" | "failed";
 export function macNeeded(link: LinkState | null | undefined, now = Date.now()): boolean {
   const config = macLink.config;
   if (!config) return false;
-  if (config.machines) return true;
+  if (link?.localWipe || link?.localUnlink || Object.values(removalsOf(link)).some(removalDeliveryPending)) return true;
+  if (config.machines || (link?.setup?.managed && peersOf(link).length)) return true;
   const pairing = (["pairing", "appPairing"] as const).some(slot => link?.[slot] && now < link[slot]!.expires);
   return Boolean(config.phones && ((link?.phones ?? []).length || pairing));
 }
@@ -172,7 +178,9 @@ export function tellGone(gone: Peer[]): void {
   updateLink((link: LinkState | null) => {
     if (!link) return null;
     const untold = (Array.isArray(link.untold) ? link.untold : []).filter(peer => !gone.some(each => each.key === peer.key));
-    if (!left.length && untold.length === (link.untold?.length ?? 0)) return null;
+    const answered = went.some(key => link.untoldMembership?.[key]);
+    if (!left.length && !answered && untold.length === (link.untold?.length ?? 0)) return null;
+    for (const key of went) if (link.untoldMembership) delete link.untoldMembership[key];
     link.untold = [...untold, ...left].slice(-64);
     if (!link.untold.length) delete link.untold;
     return link;
@@ -181,15 +189,15 @@ export function tellGone(gone: Peer[]): void {
 
 // Mails `gone` this Mac's peers document; the keys of those it went to.
 function sendGone(gone: Peer[]): string[] {
-  const host: LinkHost | null = macLink.host;
+  const host: LinkHost | null = liveLink();
   if (!host?.welcomed) return [];
   let envelope: SignedDoc | null = null;
   const link = updateLink(link => {
-    const made = link?.sign ? ownDoc(link, "peers", macPeersBody(link)) : null;
+    const made = link?.sign && writesOwnPeers(link) && !primaryFenced(link) ? ownDoc(link, "peers", primaryPeersBody(link)) : null;
     envelope = made?.envelope ?? null;
     return made?.changed ? link : null;
   }) ?? readLink();
-  if (!envelope || !link?.key) return [];
+  if (!link?.key) return [];
   const went: string[] = [];
   for (const peer of gone) {
     // (One that signs no documents takes none: nothing to tell it.)
@@ -197,8 +205,19 @@ function sendGone(gone: Peer[]): string[] {
       went.push(peer.key);
       continue;
     }
-    const bytes = mailFor(peer, { docs: { give: [envelope] }, at: Date.now() }, link);
-    try { if (bytes && host.send(bytes)) went.push(peer.key); } catch {}
+    const removal = link.untoldMembership?.[peer.key] ?? envelope;
+    if (!removal) continue;
+    const word = setupOf(held(removal)?.body);
+    const chain = Object.entries(link.leadership ?? {})
+      .filter(([epoch]) => word && Number(epoch) <= word.epoch).map(([, cert]) => leadershipDocuments(cert));
+    if (chain.some(documents => !documents.length)) continue;
+    try {
+      const sent = docMails({ give: [...chain.flat(), removal] }).every(docs => {
+        const bytes = mailFor(peer, { docs, at: Date.now() }, link);
+        return bytes && host.send(bytes);
+      });
+      if (sent) went.push(peer.key);
+    } catch {}
   }
   return went;
 }
@@ -212,6 +231,7 @@ export function tellUntold(): void {
     updateLink((link: LinkState | null) => {
       if (!link?.untold) return null;
       link.untold = link.untold.filter(peer => !again.some(each => each.key === peer.key));
+      for (const peer of again) if (link.untoldMembership) delete link.untoldMembership[peer.key];
       return link;
     });
   }

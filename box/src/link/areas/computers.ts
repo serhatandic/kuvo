@@ -1,3 +1,4 @@
+import { deviceGrantsLayoutDeferred } from "../../shared/folder-version";
 import { ownComputerName } from "../computer-name";
 import { serviceTitle } from "../../shared/account-names";
 // Your computers, as this box knows them (PROTOCOL.md, "Computers", `kuvo/computers`): itself, its
@@ -7,7 +8,7 @@ import { serviceTitle } from "../../shared/account-names";
 // services' plan limits it reads, and what can be done with it from here: renamed, removed
 // (`peers/manage.ts`, handed to the box that writes its record) or reached again
 // (`peers/reach-again.ts`); and, on your setup's main computer, which computer is kept from adding
-// Kuvo Code's app to your devices (`vouching`), with letting it again (`…/allow-devices`). Every box answers it alike, a Mac's and a machine's, with no client
+// Every box answers alike, with no client
 // there: each tells its peers its own facts with its agents (`peers/agents.ts`), so none is a hub.
 // Platform: the system's name is read from macOS's own record of its version, or Linux's
 // `os-release`; the rest is the same on both.
@@ -23,12 +24,16 @@ import { appBehind } from "../mac/app";
 import type { AskingSession, AtWorkSession, Target, ToldComputer } from "../../shared/records";
 import { call, readEngineFile } from "../engine/client";
 import { followedLive } from "../follow";
-import { IS_MAC, LINK_FILE, MAC_APP_VERSION, MAC_ENGINE_VERSION } from "../home";
+import { IS_MAC, K, LINK_FILE, MAC_APP_VERSION, MAC_ENGINE_VERSION } from "../home";
 import { keptList, listFollowers, listNow, type Kept } from "../lists/sessions";
 import { MOST_ASKING, MOST_AT_WORK, PEER_AGENTS_FILE, readPeerAgents } from "../peers/directory";
 import { addressOf } from "../crypto/keys";
 import { ADDRESS, ownKey, peersOf } from "../peers/known";
-import { actionsOf, givenName, MOST_NAME, oldAppAttached, refusal, removeHere, renameHere, writerFacts, writerOf } from "../peers/manage";
+import { KEY } from "../peers/known";
+import { WIPE_PREPARATION_FOLDER, pendingPreparations, planForComputer } from "../setup/before-wipe";
+import { PREPARATION_FEATURE, REMOVAL_FEATURE, pendingWipes, removalsOf } from "../setup/removal-record";
+import { takesForwarded } from "../work-queue/forward";
+import { lonePrimary, readRemovalRequest, actionsOf, givenName, MOST_NAME, oldAppAttached, refusal, removeComputerHere, renameHere, writerFacts, writerOf } from "../peers/manage";
 import { offRelay } from "../letters/leave";
 import { plainName } from "../../shared/text";
 import { peerIsAway, PEER_REACH, readReach } from "../peers/reach";
@@ -38,19 +43,18 @@ import { forwardAct } from "../work-queue/forward";
 import { sshActions } from "../add/flow";
 import { KEEP_UP_FILE, keepingUp } from "../add/keep-up";
 import { tryFollowers } from "../add/tries";
-import { allowVouching, vouchBlockOf } from "../phones";
-import { blockedWords } from "../peers/devices";
+import { updateAccess } from "../setup/access";
+import { PRIMARY_UNLINK } from "../setup/leadership";
 import { mainElsewhere } from "../setup/main-only";
-import { followedSetup } from "../setup/record";
+import { acceptedMembership, acceptedName } from "../setup/membership";
 import { fromLocalApp } from "../server/context";
-import { updateLink } from "../state";
 import { macLink, readLink } from "../state";
 import type { LinkState } from "../state";
 import { boxVersion } from "../updates/update";
 import type { AnswerPiece, RouteContext } from "../server/context";
 import { agentsState } from "./agents-down";
 
-export const COMPUTERS_ROUTE = /^kuvo\/computers(?:(\/events)|\/([A-Za-z0-9_-]{1,60})(\/connect|\/allow-devices)?)?$/;
+export const COMPUTERS_ROUTE = /^kuvo\/computers(?:(\/events)|\/([A-Za-z0-9_-]{1,60})(\/connect|\/allow-devices|\/unlink|\/unlink-and-wipe|\/removal-plan)?)?$/;
 
 /** The most sessions at work this box names of itself (it counts them all). */
 const MOST_HERE = 100;
@@ -222,9 +226,10 @@ export async function listComputers(name: string, bridge: Target | null, signal?
   const byName = <T extends { name: string; key: string }>(boxes: T[]) => [...boxes].sort((a, b) => a.name.localeCompare(b.name) || a.key.localeCompare(b.key));
   const { version, kuvo, engine, system: runs, agents } = ownComputer();
   const atWork = atWorkHere();
+  const localName = acceptedMembership(link)?.boxes.find(box => box.key === own)?.name ?? ownComputerName();
   const computers: Omit<ListedComputer, "actions" | "limitServices" | "title" | "reachTitles">[] = [{
     key: own ?? "",
-    name: ownComputerName(),
+    name: link ? acceptedName(link, own, localName) : localName,
     kind: IS_MAC ? "mac" : "machine",
     here: true,
     reach: "connected",
@@ -253,15 +258,12 @@ export async function listComputers(name: string, bridge: Target | null, signal?
   };
   const peers = peersOf(link);
   const reach = readReach();
-  const leads = followedSetup(link)?.role === "primary";
   for (const peer of byName(peers)) {
     const said = told[peer.key];
     const { away, reach: standing } = peerReach(peer.key, told, reach, tries, now);
     const mine = said?.computer;
     // What it said it answers, whole (a list longer than peers keep can't say what's missing).
     const features = said?.features && !said.featuresCut ? said.features : undefined;
-    // (Kept from vouching, as only the main computer knows: a device it added was removed.)
-    const blocked = vouchBlockOf(link, peer.key);
     computers.push({
       key: peer.key,
       name: peer.name,
@@ -278,7 +280,6 @@ export async function listComputers(name: string, bridge: Target | null, signal?
       // by one that never said it (an older box).
       ...(mine?.working !== undefined ? (away ? { working: 0, atWork: [] } : { working: mine.working, ...(mine.atWork ? { atWork: mine.atWork } : {}) }) : {}),
       limits: limits.get(peer.key) ?? [],
-      ...(leads && blocked ? { vouching: { blocked: true as const, words: blockedWords(blocked.device, peer.name) } } : {}),
     });
   }
   return withActions();
@@ -292,21 +293,52 @@ const mtime = (file: string): number => { try { return fs.statSync(file).mtimeMs
 async function* manage(context: RouteContext, key: string, action: string | undefined): AsyncGenerator<AnswerPiece> {
   const { request, signal, json, info } = context;
   const method = request.method.toUpperCase();
-  if (action === "/allow-devices") return yield* allowDevices(context, key);
+  if (action === "/removal-plan") {
+    if (method !== "POST") return yield* json(405, { message: "Only POST." });
+    if (!fromLocalApp(request)) return yield* json(403, { message: "Open the removal plan from Kuvo Code." });
+    const body = parsed(request.body);
+    const plan = await planForComputer(key, isObject(body) ? body.projects : undefined, signal);
+    return yield* json(plan.status, plan.value);
+  }
+  if (action === "/allow-devices") {
+    if (deviceGrantsLayoutDeferred(K)) return yield* json(503, { message: "Wait for the Kuvo Code update to finish before changing device access." });
+    return yield* json(404, { message: "Pair devices with your setup." });
+  }
   const connect = action === "/connect";
-  const what = connect ? (method === "POST" ? "connect" : null) : method === "PATCH" ? "rename" : method === "DELETE" ? "remove" : null;
-  if (!what) return yield* json(405, { message: connect ? "Only POST." : "Rename (PATCH) or remove (DELETE)." });
+  const explicit = action === "/unlink" || action === "/unlink-and-wipe";
+  const what = explicit ? (method === "POST" ? "remove" : null) : connect ? (method === "POST" ? "connect" : null) : method === "PATCH" ? "rename" : method === "DELETE" ? "remove" : null;
+  if (!what) return yield* json(405, { message: connect || explicit ? "Only POST." : "Rename (PATCH) or remove (DELETE)." });
+  const before = readLink();
+  const removal = what === "remove" ? readRemovalRequest(request.body?.length ? parsed(request.body) ?? false : undefined) : {};
+  if (!removal) return yield* json(400, { message: "Send a valid removal request." });
+  if (what === "remove" && !KEY.test(key)) return yield* json(404, { message: "That isn’t one of your computers." });
+  if (explicit) removal.wipe = action === "/unlink-and-wipe";
+  if ((removal.prepare || removal.retryPreparation || removal.resolve || removal.supersedes) && (!fromLocalApp(request) || action !== "/unlink-and-wipe")) {
+    return yield* json(403, { message: "Prepare the wipe from Kuvo Code." });
+  }
+  if (what === "remove" && before?.setup?.primary === key && !lonePrimary(before, key)) return yield* json(409, { message: PRIMARY_UNLINK });
+  const removalWriter = what === "remove" ? writerOf(before) : null;
+  const modern = explicit || removal.operation !== undefined || removal.save !== undefined || removal.wipe !== undefined;
+  if (modern && removalWriter && !removalWriter.here && !takesForwarded(removalWriter.key, REMOVAL_FEATURE)) {
+    return yield* json(409, { message: "Update the primary before removing computers from this setup." });
+  }
+  if (removal.prepare && removalWriter && !removalWriter.here && !takesForwarded(removalWriter.key, PREPARATION_FEATURE)) {
+    return yield* json(409, { message: "Update the primary before preparing a wipe." });
+  }
+  const forwardRemoval = (writer: Extract<NonNullable<ReturnType<typeof writerOf>>, { here: false }>, cleanup = false) =>
+    forwardAct({ key: writer.key, name: writer.name, kind: "mac" }, "This computer",
+      { area: "computers", item: key, method: "DELETE", body: { ...removal, ...(cleanup ? { cleanup: true } : {}) } }, signal);
   const computers = await listComputers(info.name ?? "", null, signal ?? undefined);
   const computer = computers.find(each => each.key === key);
   if (!computer) {
     // A failed list write may outlive the peer in the directory. Only retry cleanup in this case.
-    const writer = what === "remove" ? writerOf(readLink()) : null;
+    const writer = removalWriter;
     if (!writer) return yield* json(404, { message: "That isn't one of your computers." });
     if (writer.here) {
-      const done = removeHere(key, true);
+      const done = await removeComputerHere(key, !(modern || removalsOf(before)[key]), removal);
       return yield* json(done.status, done.value);
     }
-    const there = await forwardAct({ key: writer.key, name: writer.name, kind: "mac" }, "This computer", { area: "computers", item: key, method: "DELETE", body: { cleanup: true } }, signal);
+    const there = await forwardRemoval(writer, !(modern || removalsOf(before)[key]));
     return yield* json(there.status, "refused" in there ? { message: there.refused } : isObject(there.value) ? there.value : {});
   }
   const here = computers[0]!.name;
@@ -326,42 +358,14 @@ async function* manage(context: RouteContext, key: string, action: string | unde
   if (why) return yield* json(409, { message: why });
   const writer = writerOf(link)!;
   if (writer.here) {
-    const done = what === "rename" ? renameHere(key, name!) : removeHere(key);
+    const done = what === "rename" ? await renameHere(key, name!) : await removeComputerHere(key, false, removal);
     return yield* json(done.status, done.value);
   }
   // (Handed to the box that writes it: it does it as its own client's, and says how it went.)
-  const there = await forwardAct({ key: writer.key, name: writer.name, kind: "mac" }, `${computer.name}`, { area: "computers", item: key, ...(what === "rename" ? { method: "PATCH", body: { name } } : { method: "DELETE" }) }, signal);
+  const there = what === "remove" ? await forwardRemoval(writer) : await forwardAct(
+    { key: writer.key, name: writer.name, kind: "mac" }, computer.name, { area: "computers", item: key, method: "PATCH", body: { name } }, signal);
   if ("refused" in there) return yield* json(there.status, { message: there.refused });
   return yield* json(there.status, isObject(there.value) ? there.value : {});
-}
-
-/** `POST kuvo/computers/<key>/allow-devices` (`devices.allow`): the computer `key`, kept from adding
- * Kuvo Code's app to your devices since one it added was removed, is let do it again. The main
- * computer's own, and only for its own clients: a device paired with it, over the relay, or Kuvo
- * Code's app beside it, over the box's own server. Never `box route`, which an agent's command
- * could run, never a device the computer `key` itself vouched for, and never handed on from another box (no act carries it, work-queue/forward.ts): the
- * computer that's kept out can't let itself back in. */
-async function* allowDevices(context: RouteContext, key: string): AsyncGenerator<AnswerPiece> {
-  const { request, phone, signal, json, info } = context;
-  if (request.method.toUpperCase() !== "POST") return yield* json(405, { message: "Only POST." });
-  const link = readLink();
-  const asking = phone?.key?.toString("base64url");
-  const device = asking === undefined ? undefined : (link?.phones ?? []).find(each => each.key === asking);
-  // (Nor a device that same computer vouched for: whoever sits there would be allowing themselves.)
-  if ((!device && !fromLocalApp(request)) || (device?.by !== undefined && device.by === key)) return yield* json(403, { message: "Only Kuvo Code on this computer, or one of your devices, allows a computer to add your devices again." });
-  const computers = await listComputers(info.name ?? "", null, signal ?? undefined);
-  const computer = computers.find(each => each.key === key);
-  if (!computer) return yield* json(404, { message: "That isn't one of your computers." });
-  const here = computers[0]!.name;
-  // Only the main computer keeps a computer from it, so only it allows it again.
-  const main = mainElsewhere(link);
-  if (main) return yield* json(409, { message: `Allow it from ${main.name || peersOf(link).find(peer => peer.key === main.key)?.name || "your main computer"}.`, primary: main.key });
-  if (followedSetup(link)?.role !== "primary") return yield* json(409, { message: `${here} isn't your setup's main computer, so no computer adds your devices through it.` });
-  if (computer.here) return yield* json(409, { message: `${here} is the computer you're asking: it adds its own app itself.` });
-  if (computer.via !== "relay") return yield* json(409, { message: `${computer.name} isn't one of ${here}'s own computers, so it adds none of your devices.` });
-  // (Not kept from it: the same answer. What was removed stays removed: its app makes a new key.)
-  updateLink(kept => (kept && allowVouching(kept, key) ? kept : null));
-  return yield* json(200, {});
 }
 
 export async function* computersRoute(context: RouteContext, match: RegExpMatchArray): AsyncGenerator<AnswerPiece> {
@@ -370,7 +374,11 @@ export async function* computersRoute(context: RouteContext, match: RegExpMatchA
   if (request.method.toUpperCase() !== "GET") return yield* json(405, { message: "Only GET." });
   // (Its own sessions at work, from its list: read first where this process hasn't yet.)
   await listNow(context, signal ?? undefined).catch(() => null);
-  const read = async () => ({ computers: await listComputers(info.name ?? "", bridge(), signal ?? undefined) });
+  const read = async () => {
+    const computers = await listComputers(info.name ?? "", bridge(), signal ?? undefined);
+    const pending = [...pendingWipes(readLink()), ...pendingPreparations()];
+    return { computers, ...(pending.length ? { wipePending: pending } : {}) };
+  };
   if (!match[1]) return yield* json(200, await read());
   yield { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };
   // A line now, and one as it changes: its peers, what they told, which are away (their files),
@@ -391,5 +399,5 @@ export async function* computersRoute(context: RouteContext, match: RegExpMatchA
     return () => { listFollowers.delete(listTold); tryFollowers.delete(told); };
   };
   return yield* followedLive(read, listen, signal,
-    { look: () => `${mtime(PEER_AGENTS_FILE)} ${mtime(PEER_REACH)} ${mtime(LINK_FILE)} ${mtime(REACH_AGAIN)} ${mtime(KEEP_UP_FILE)} ${oldAppAttached()}` });
+    { look: () => `${mtime(PEER_AGENTS_FILE)} ${mtime(PEER_REACH)} ${mtime(LINK_FILE)} ${mtime(WIPE_PREPARATION_FOLDER)} ${mtime(REACH_AGAIN)} ${mtime(KEEP_UP_FILE)} ${oldAppAttached()}` });
 }

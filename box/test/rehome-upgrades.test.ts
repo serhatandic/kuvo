@@ -1,8 +1,10 @@
 import "./safety"
 import { afterAll, expect, test } from "bun:test"
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { rewriteOwnFile } from "../src/link/rehome/own"
+import { PATH_REWRITER } from "../src/link/rehome/rewrite"
 import { parsePlist } from "../src/link/rehome/upgrades"
 import { mac07, preferences, put, readJSON, run, snapshot, type Mac } from "./rehome-run-world"
 
@@ -80,6 +82,7 @@ test.if(mac)("what 0.7.2 kept itself comes along: projects, worktrees, machines,
   expect(snapshot(m.S)).toEqual(before)
   expect(readFileSync(join(m.home, "Library", "Preferences", "run.kuvo.code.trial713.plist")).equals(preferencesBefore)).toBe(true)
   const { K } = m
+  expect(readJSON(join(K, "folder-version.json"))).toEqual({ version: 18 })
   const worktree = join(K, "data", "opencode", "worktree", m.rootCommit.slice(0, 6), "feature one")
   // Projects, in the sidebar's order, with their names, folders and Run commands; one kept only
   // for its settings, removed as it was; never a bot's folder, nor a machine's.
@@ -90,6 +93,7 @@ test.if(mac)("what 0.7.2 kept itself comes along: projects, worktrees, machines,
   ] })
   // Worktrees' records, where they are now; one whose folder is gone isn't one; a removed one's project.
   expect(readJSON(join(K, "box", "worktrees.json"))).toEqual({
+    formatVersion: 1,
     worktrees: [{ project: m.repository, root: worktree, folder: worktree, branch: "kuvo/feature-one", base: "main" }], removed: {}, restorable: [],
     handedOver: { [join(K, "data", "opencode", "worktree", "gone")]: m.repository },
   })
@@ -100,7 +104,7 @@ test.if(mac)("what 0.7.2 kept itself comes along: projects, worktrees, machines,
   expect(settings.mcp.servers.notion.headers.Authorization).toBe("Bearer {file:~/.kuvo-code/box/keys/KUVO_KEY_NOTION_TOKEN}")
   expect(settings).toMatchObject({ branch_prefix: "me/", commit_instructions: "Sign off every commit.", instructions: [join(K, "opencode-files", "global-prompt.md")] })
   expect(readFileSync(join(K, "opencode-files", "global-prompt.md"), "utf8")).toBe("be brief")
-  expect(readJSON(join(K, "box", "git.json"))).toEqual({ moved: true })
+  expect(readJSON(join(K, "box", "git.json"))).toEqual({ moved: true, formatVersion: 1 })
   expect(readJSON(join(K, "box", "work.json"))).toEqual({ keepsAwake: false })
   // Your starred models come along, for every client's picker.
   expect(readJSON(join(K, "box", "models.json"))).toEqual({ starred: [{ providerID: "anthropic", id: "claude-opus-5-5" }, { providerID: "openai", id: "gpt-6" }] })
@@ -206,3 +210,40 @@ test("a property list reads as the app's preferences are kept: text, numbers, sw
   const read = parsePlist(`<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "x">\n<plist version="1.0">\n<dict>\n\t<key>a &amp; b</key>\n\t<string>one &lt;two&gt;</string>\n\t<key>empty</key>\n\t<string></string>\n\t<key>n</key>\n\t<integer>3</integer>\n\t<key>r</key>\n\t<real>2.5</real>\n\t<key>on</key>\n\t<true/>\n\t<key>off</key>\n\t<false/>\n\t<key>list</key>\n\t<array>\n\t\t<string>x</string>\n\t\t<dict>\n\t\t\t<key>k</key>\n\t\t\t<string>v</string>\n\t\t</dict>\n\t</array>\n\t<key>none</key>\n\t<array/>\n\t<key>kept</key>\n\t<data>\n\t${Buffer.from(JSON.stringify({ deep: [1, "two"] })).toString("base64")}\n\t</data>\n\t<key>after</key>\n\t<string>still read</string>\n</dict>\n</plist>\n`)
   expect(read).toEqual({ "a & b": "one <two>", empty: "", n: 3, r: 2.5, on: true, off: false, list: ["x", { k: "v" }], none: [], kept: { deep: [1, "two"] }, after: "still read" })
 }, 120_000)
+
+test("rehome stamps its folders list without changing what the previous reader sees", () => {
+  const work = mkdtempSync(join(root, "folders-"))
+  const from = join(work, "app", "bots")
+  const home = join(work, "box")
+  const staged = join(work, "staged")
+  const expected = join(from, "bot_scout", "workspace")
+  mkdirSync(expected, { recursive: true })
+  mkdirSync(staged)
+  const move = { way: "move" as const, home, appFolder: join(work, "app"), placements: [{ from, to: join(home, "bots"), staged }], map: [], work }
+  const file = join(work, "folders.json")
+  writeFileSync(file, JSON.stringify([expected]))
+  PATH_REWRITER.rewrite(move)
+  expect(readJSON(file)).toEqual([{ formatVersion: 1 }, expected])
+  expect(readJSON(file).filter((entry: unknown) => typeof entry === "string")).toEqual([expected])
+  const future = JSON.stringify([{ formatVersion: 2 }, work])
+  writeFileSync(file, future)
+  expect(() => PATH_REWRITER.outside(move, () => { throw new Error("Unexpected recovery mutation") })).toThrow("Rehome project folders format version 2 is unsupported")
+  expect(() => PATH_REWRITER.rewrite(move)).toThrow("Rehome project folders format version 2 is unsupported")
+  expect(readFileSync(file, "utf8")).toBe(future)
+})
+
+test("rehome rewrites supported artifact indexes and leaves a future log byte for byte", () => {
+  const work = mkdtempSync(join(root, "artifact-log-"))
+  const from = join(work, "old")
+  const to = join(work, "new")
+  const file = join(work, "2026-11.jsonl")
+  const input = { file, relative: "artifacts/log/2026-11.jsonl", kind: "lines-json" as const }
+  const line = { a: { id: "art_test", path: join(from, "notes.md") }, formatVersion: 1 }
+  writeFileSync(file, JSON.stringify(line) + "\n")
+  expect(rewriteOwnFile(input, [{ from, to }])).toBe(true)
+  expect(readJSON(file)).toEqual({ ...line, a: { ...line.a, path: join(to, "notes.md") } })
+  const future = JSON.stringify(line) + "\n" + JSON.stringify({ ...line, formatVersion: 2 }) + "\n"
+  writeFileSync(file, future)
+  expect(() => rewriteOwnFile(input, [{ from, to }])).toThrow("Artifact index format version 2 is unsupported")
+  expect(readFileSync(file, "utf8")).toBe(future)
+})

@@ -1,17 +1,22 @@
 // Documents, between this box and the others
 // What other boxes send taken, and what changed here sent, as documents/work says.
 
+import { noteDocsChanged } from "./changed";
 import { IS_MAC } from "../home";
 import { forgetMacsAgents, writeAgents } from "../peers/agents";
 import { mailFor } from "../peers/known";
-import { readPersonalities } from "../personalities/library";
-import { takePersonalities } from "../personalities/take";
+import { personalityFollowers, readPersonalities } from "../personalities/library";
+import { retellBots, takePersonalities } from "../personalities/take";
+import { sharedValue } from "../setup/shared";
+import { publishZoneSetting, readZoneSetting } from "../zone/setting";
 import { writeCard } from "../setup/card";
-import { macLink, updateLink } from "../state";
+import { liveLink, updateLink } from "../state";
 import { confirmPhoneMembership } from "./phone-sync";
 import { changedWork, docMails, docsWork, greetWork } from "./work";
+import type { Doc } from "../../shared/documents";
 import type { PersonalityLibrary } from "../personalities/library";
 import type { LinkHost } from "../relay/host";
+import type { SuccessorForks } from "../setup/leadership";
 import type { LinkState } from "../state";
 import type { PendingParts } from "./parts";
 import type { DocSend, DocSender, DocsMail, DocsState } from "./work";
@@ -21,9 +26,11 @@ type DocsDone = Pick<ReturnType<typeof docsWork>, "given" | "left" | "send">;
 
 // Parts of documents on their way here, from each box (`assemble`).
 const docParts = new Map<string, PendingParts>();
+const checkpoints = new Map<string, Doc>();
+const successorForks: SuccessorForks = new Map();
 
 // Sends what `work` says goes (`[{to, docs}]`), in as many mails as each takes.
-function sendDocs(host: Pick<LinkHost, "send"> | null | undefined, link: LinkState, sends: DocSend[] | null | undefined): void {
+export function sendDocs(host: Pick<LinkHost, "send"> | null | undefined, link: LinkState, sends: DocSend[] | null | undefined): void {
   if (!host || !link?.key) return;
   for (const { to, docs } of sends ?? []) {
     for (const payload of docMails(docs)) {
@@ -40,10 +47,12 @@ export async function receiveDocs(sender: DocSender, docs: DocsMail, host: LinkH
   const before = readPersonalities();
   // (Set inside updateLink's change, which TypeScript can't follow: hence the `as`.)
   let work = null as DocsDone | null, library = before, setup = "";
+  let shared: LinkState["shared"];
   const link = updateLink(link => {
     if (!link) return null;
     setup = JSON.stringify(link.setup ?? null);
-    const state: DocsState = { link, library: before, parts: docParts };
+    shared = link.shared;
+    const state: DocsState = { link, library: before, parts: docParts, checkpoints, successorForks };
     work = docsWork(state, sender, docs);
     library = state.library;
     return link;
@@ -53,14 +62,26 @@ export async function receiveDocs(sender: DocSender, docs: DocsMail, host: LinkH
   // Its setup changed with them (taken, or set aside): its card says so now.
   if (JSON.stringify(link.setup ?? null) !== setup) try { writeCard(); } catch {}
   await afterDocs(work, before, library, link, host);
+  if (link.setup?.role === "primary" && shared?.membershipAndAccess !== link.shared?.membershipAndAccess) noteDocsChanged();
+  if (shared?.setupTimeZone !== link.shared?.setupTimeZone && sharedValue(link, "setupTimeZone")) {
+    const zone = readZoneSetting();
+    if (zone) publishZoneSetting(zone);
+  }
+  if (shared?.setupPersonalities !== link.shared?.setupPersonalities && sharedValue(link, "setupPersonalities")) {
+    const now = readPersonalities();
+    const prior = new Map([...before.personalities, ...before.removed].map(entry => [entry.id, JSON.stringify(entry)]));
+    const changed = [...now.personalities, ...now.removed].filter(entry => prior.get(entry.id) !== JSON.stringify(entry)).map(entry => entry.id);
+    for (const tell of personalityFollowers) tell();
+    if (changed.length) retellBots(changed).catch(() => {});
+  }
 }
 
 async function afterDocs(work: DocsDone, before: PersonalityLibrary, library: PersonalityLibrary, link: LinkState, host: LinkHost | null | undefined): Promise<void> {
+  sendDocs(host, link, work.send);
   host?.keepOnly?.(new Set((link.phones ?? []).map(phone => phone.key)));
   if (library !== before) await takePersonalities(library).catch(() => {});
   for (const mac of work.left) forgetMacsAgents(mac, link);
   writeAgents(link);
-  sendDocs(host, link, work.send);
 }
 
 // Something changed here, or this box just connected (`greet`): its own documents that changed go
@@ -85,9 +106,9 @@ export function docsChanged(host: LinkHost | null | undefined, { greet = false, 
 // Something of this Mac's documents changed (a phone, a personality, your machines): what changed
 // goes to your machines now, if it's on the relay; they get it as they meet otherwise.
 export function macDocsChanged({ closeRemoved }: { closeRemoved?: LinkState | null } = {}): void {
-  const host = macLink.host;
-  // Computer removals close their devices' sessions here as well as on the boxes receiving the
-  // phones document. Direct phone removal sends its answer before closing the session.
+  const host = liveLink();
+  // A device removal can send its answer before asking this box to close the session.
   if (closeRemoved) host?.keepOnly?.(new Set((closeRemoved.phones ?? []).map(phone => phone.key)));
   if (host?.welcomed) try { docsChanged(host); } catch {}
+  else if (!IS_MAC) noteDocsChanged();
 }

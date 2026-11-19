@@ -28,6 +28,47 @@ or storage, and only the device itself can receive what's sent to its address.
 
 In text (links, JSON) keys, secrets, addresses and tokens are base64url without padding.
 
+## Format versions during an update
+
+A computer's Kuvo folder carries one layout version in `folder-version.json`. An absent
+file denotes layout 0. The startup gate refuses a future version or a migration in progress
+to a future version before opening the folder for writes. The ordered steps checkpoint
+their in-progress and completed versions in the same atomic file. Layout 1 adopts the
+deployed layout in place. During a legacy Mac move, that step imports the earlier app's
+data into staging, and rehome publishes the checkpoint with the imported files.
+
+Existing family markers validate their own contents. An absent JSON format marker denotes the pre-marker layout (version 0). The link state
+(`run/link.json`) and Work Queue number ledger (`run/work-queue/numbers.json`) now write
+`formatVersion: 1` beside their existing fields. Readers upgrade old files in memory and persist
+the version with a normal atomic write. The ledger commits it under the writer lock. Work Queue
+owner files, labels, handoff and forwarded action receipts use additive version 1. Setup cards,
+welcome files, move journals and manifests, and server and bridge rendezvous records also add
+version 1 beside their existing fields. Conversation queue entries and waiting payloads use
+additive version 1. The artifact index and vault activity log mark each JSON line, including
+compacted lines. The managed accounts and rehome folder arrays have a header entry that the
+legacy readers filter out. The signed vault pause envelope uses its existing v2 marker.
+Insights adopts its existing database as SQLite `user_version = 1` in the same transaction as its
+schema step. These readers report unsupported versions before writing any replacement.
+
+For authenticated box-to-box mail, the v1 Noise prologue stays the same. The JSON inside now
+includes `formatVersion: 1`. An absent field is the original body, which has the same payload
+shape. A box ignores an unsupported explicit version before dispatch, without acknowledging the
+mail, and logs the refusal. The signed document's `v` still applies to its signed bytes.
+
+The desktop writes `x-kuvo-route-version: 1` on routed HTTP, relay and SSH requests. If the header is absent,
+the original route body shapes apply. Routed replies advertise version 1 in the response
+headers (`routeVersion: "1"` in a `box route` reply over SSH). An unsupported explicit request
+gets HTTP 400 and `code: "unsupportedFormatVersion"` before dispatch. An unsupported stored
+format found before the reply starts gets HTTP 409 with the same code and the format name.
+The desktop accepts legacy replies with no marker and declines an explicit unknown version. Route features still
+govern whether a route exists. Socket handshakes and upstream protocols retain their own rules.
+
+A layout change adds a tested, replayable folder step from n to n+1. Layout 1 preserves
+the existing files so pre-marker builds can still use them during rollback. A future
+incompatible layout requires stopping older writers and a compatible rollback plan.
+Computers in an updating fleet continue to exchange messages using their wire versions. See the format inventory in
+`.claude/notes/848-U-versions-inventory.md`.
+
 ## The relay
 
 One WebSocket per device, binary messages, first byte the kind:
@@ -156,6 +197,13 @@ payload:
 `kind` is `mac` or `machine`. Each side checks `v` and closes the session on a version it
 doesn't know.
 
+If pairing by token is waiting for a standby save, the authenticated second message includes
+`waiting` and `save`. The box opens no session. The client retries with `save` in the first
+message, using the same static key and addressing the setup's current primary. The signed proof
+binds the operation to the device key and the pairing it created. A committed save opens a
+session only while that exact pairing is still valid. The second message carries the updated
+receipt; a pending, interrupted or no-longer-valid pairing carries `waiting` and opens no session.
+
 Transport messages then go both ways, in order (the relay keeps the order of one
 connection). Any message that doesn't decrypt ends the session.
 
@@ -182,16 +230,17 @@ their agents and letters ("Peers").
 
 ### Documents
 
-What your computers share is three kinds of document: who a Mac's boxes are (`peers`), the phones
-each box pairs and removes (`phones`), and each box's view of your personalities
-(`personalities`). Each origin signs its own; any box passes a copy on; no clock decides anything.
+What your computers share is four kinds of document: which computers a primary enrolled (`peers`), the phones
+each box pairs and removes (`phones`), each box's view of your personalities
+(`personalities`), and changes to setup authority (`leadership`). Each origin signs its own; any box passes a copy on; no clock decides anything.
 
 - **Keys**: each box and Mac has a signing key (Ed25519) beside its static key: a Mac in its
   Keychain (`sign`), a machine in `run/link.json` (`sign`, the 32-byte seed), made with its other
   keys. A document's origin is that key's public half. Trust comes from SSH: setup gives the
-  machine the Mac's (`macSign`) and its answer gives the Mac the machine's (`sign`). A Mac's peers
-  document names each box with both its keys, so boxes learn each other's from a document they
-  already verify. A box made anew (its folder gone) is a new origin; the Mac's next setup names it.
+  member the primary's (`macSign`) and its answer gives the primary the member's (`sign`). The
+  primary's peers document names each box with both its keys, so members learn each other's from a
+  document they already verify. A box made anew (its folder gone) is a new origin. The next SSH setup
+  names it.
 - **Format**: `{"d": <bytes>, "s": <signature>}`, base64url without padding. The bytes are JSON,
   `{"v": 1, "kind", "origin", "n", "body"}`, as the origin wrote them, and the signature is over
   `"kuvo-link doc v1\0"` and the bytes. A box checks the signature before it reads them, and keeps
@@ -207,25 +256,22 @@ each box pairs and removes (`phones`), and each box's view of your personalities
   ("Your setup"); `phones` and
   `personalities` from those Macs, from its peers and from itself. Documents from an origin it no
   longer takes them from go.
-- **`peers`**, one per Mac: `{boxes: [{key, sign, address, name, kind: "mac"|"machine", id?}],
-  moved: [{session, key}], left: [key], setup?: {id, epoch, primary}}`: the Mac itself and each of
-  its machines whose bridge signs, the same document for all of them, and the setup it leads
-  ("Your setup"; older boxes read only `boxes`, `moved` and `left`). A box's peers are every box its Macs' documents name,
-  itself left out ("Peers"). `left` names the machines that Mac removed (never one it still has,
-  under another name): a box that finds itself there and no longer among `boxes` stops counting
-  that Mac, as `leave` does. The Mac mails it to a machine as it removes it, once.
+- **`peers`**, one per primary (and per legacy Mac enroller): `{boxes: [{key, sign, address, name,
+  kind: "mac"|"machine", id?}], moved: [{session, key}], left: [key], setup?: {id, epoch, primary}}`:
+  the primary itself and its signed members, the same document for all of them, and the setup it
+  leads ("Your setup"). Each box leaves itself out when it builds its list of peers. `left` names
+  the computers the primary removed. A box that finds itself there and no longer among `boxes`
+  drops that enroller, as `leave` does. The primary mails the document to the member it removes.
 - **This Mac's box** keeps the Mac's side (bridge 0.9.62): it signs the Mac's documents with the
   Mac's signing key (from the app, in memory only), takes its machines' and passes them on, and
   mails them on its relay connection, as a machine's bridge does; its peers are the machines its
   app set up (`kuvo/link/peers`, "This Mac's box: the relay"). It takes `peers` only of its own (a
   copy it lost count of), and `phones` and `personalities` from its machines and itself.
-- **`phones`**, one per box: `{phones: [{key, name, address?, pairing, kind?, by?}], removed: [{key,
-  pairing}]}`: the phones paired there, and every removal it knows of ("Paired phones"); `kind:
-  "desktop"` on Kuvo Code's desktop app (`clients.kind`; left out for a phone, and a box that
-  doesn't know it reads the entry as a phone's). `by` is the voucher's box key. A box
-  lets in its own and its Macs' phones, less every pairing removed in any phones document it
-  takes, which it notes as its own removal too. The Mac's inbound switch leaves signed
-  phone lists and removals available to its peers.
+- **`phones`** carries `{phones: [{key, name, address?, pairing, kind?}], removed: [{key, pairing}]}`.
+  Managed setups publish the primary's device grants for compatibility. A checkpointed box uses
+  accepted membership and access as its authority. `kind: "desktop"` identifies the desktop app
+  in client lists. The inbound switch leaves signed grants and removals available to peers.
+  Older setups still read signed phone lists from their enrollers.
 - **`personalities`**, each box's view: the library (`{personalities, removed}`, "Personalities").
   A box meets a view it takes with its own, and signs its own again if it changed; views aren't
   passed on (each box's own already has what it took). Its own goes past 512 KB never: a change
@@ -240,74 +286,158 @@ each box pairs and removes (`phones`), and each box's view of your personalities
   newer. A document it took goes on to its other peers that would take it (not back where it came
   from, nor to its origin); one of its own that changed, to all of them. A box that would take it
   is one its setup's document, or one of its Macs', names (with its origin, for `phones` and
-  `personalities`). Over SSH, setup carries the
-  Mac's documents (`docs`, its own and those it has of its machines) and its answer the machine's.
-  A box doesn't give documents to a Mac that gave it no signing key.
-- **Phone authorization after reconnect**: a member asks its peers for the signing Mac's lists
-  with authenticated mail `phoneSync: {id, origin}` (`id` is 16 random bytes, base64url, and
-  `origin` is the Mac's signing key). Any peer can send the signed peers and phones documents
-  it has, then `phoneSync: {id, list, peers?, ack: true}` with each document identified as `n:h`.
-  The member verifies the signatures and accepts replies matching the documents it has installed.
-  If an older signing Mac replies with only a phones fingerprint, the member requests that Mac's
-  signed peers document through the normal digest exchange and waits until it has verified the
-  document and it matches the one installed.
-  Inherited desktop and voucher-bound pairings wait for confirmation unless the relay reports
-  every known peer unreachable. A member using its cached list keeps asking and closes revoked
-  sessions as soon as it takes a signed removal. Independent phones connect throughout.
-  A waiting pairing receives `waiting` (the box's message) and the pairing reason in the
-  authenticated second handshake, with no session opened. On primary uninstall, the primary sends its updated signed
-  list and `phoneSync: {id, list}`. Peers answer with the same `id` and `list` and `ack: true`
-  after installing that list and closing sessions for devices it removes.
+  `personalities`). Over SSH, setup carries the primary's documents (`docs`) and its answer carries
+  the member's. A box gives documents to peers whose signing keys it knows.
+- **Device authorization after reconnect.** Members request a fresh confirmation with
+  `phoneSync: {id, origin}` (`id` is 16 random bytes, base64url). The primary sends the signed
+  peers and phones documents and, in a checkpointed setup, the accepted shared values. It
+  follows with `phoneSync: {id, list, peers, ack: true}`, with document fingerprints as `n:h`.
+  Managed members wait for the primary and require checkpointed grants to match accepted
+  membership. Legacy members can confirm an inherited desktop grant from a peer or use their
+  cached list when every peer is unreachable. They close revoked sessions as removals arrive.
+  A waiting handshake returns the pairing reason and `waiting` without opening a session.
 - **Later**: each box's agents (`{"agents"}`, "Peers") are a list of its own too, still sent as
-  they change and every ten minutes; they could become a fourth kind.
+  they change and every ten minutes.
 
 ### Your setup
 
-All of your computers that know each other are one **setup**, with one **main computer**: a Mac
-with the app, whose box signs who's in it. Every other computer is a **member**. (Built so far: the
-setup, who's main, what boxes take and number by it, and pairing and adding only from the main
-computer. Changing the main computer and joining two setups come later: #183.)
+Your **setup** has one **main computer** (its primary), whose box signs who's in it. Any supported
+computer can be the primary. Every other computer is a **member**. The first primary is chosen automatically,
+and you can choose another member as primary once both computers are connected.
 
 - **The setup** has an id (`set_` and 16 random bytes, base64url) and an epoch (a whole number, one
-  more with each change of main computer, never lower on any box). Its main computer's peers
+  more with each change of authority, never lower on any box). Its main computer's peers
   document names it: `setup: {id, epoch, primary}`, `primary` the main computer's static key, which
-  the document names among its `boxes` as a Mac signing with the document's key ("Documents").
+  the document names among its `boxes` with the document's signing key ("Documents"). Both
+  `mac` and `machine` can identify the primary's box.
 - **Kept** in `run/link.json` as `setup: {id, epoch, primary, sign, role: "primary"|"member",
   aside?, conflict?}` (`sign`, the main computer's signing key). `aside`: kept only so a lower
   epoch of it is never taken, and followed for nothing else (its main computer stopped naming it).
-- **Who leads one**: a Mac's box, or a box no Mac set up, once it numbers on its own ("Numbers").
-  A box its Mac let go waits for that Mac first, as "Numbers" says. It's made once, at epoch 1, and looked at once a minute and as a machine's word on how it
-  numbers changes: a Mac that stops leading (it numbers through another Mac) sets it aside and its document names it no more; leading again, it names the same
-  one. A Mac whose keys were made anew (its static key, or its signing key alone) makes a new setup:
-  the one it led with its old keys is no longer its own, and its machines take the new one from it.
-  Setting a machine up again, it names its static keys before (`replaces` in `kuvo/link/setup` and
-  setup's input), which the machine lets go as `leave` does, so it's never two Macs to it. (Leading follows its machines' word, as the Work Queue's numbers already do
-  without a setup. Known gap until setups can be joined (#183's phase 7, with which leading holds
-  against a member's word alone): a machine's word, an earlier Mac named, sets the setup aside, so
-  a stolen member key can make a leading Mac step aside. Members still refuse
-  pairing and adding while it's aside ("Only the main computer adds and pairs").)
-- **What a box takes it from**: a machine follows the setup its Mac leads, from that Mac's
-  document: with more than one of its Macs leading one, the one it has, else the one led by the
-  Mac it numbers from ("Numbers": the first you set up); one it has set aside makes way for one
-  another of its Macs leads. Its main computer's signing key (as that Mac's setup over SSH last
-  gave it) is the setup's trust root, and no `peers` is taken at a lower epoch of the setup
-  (whoever signed it). It takes `peers` from each of its Macs too: every Mac that set a computer up
-  over SSH is yours (no one else's Mac sets up your computers, #783), so its peers are the boxes
-  any of its Macs names, its setup's document first. A Mac that names itself the main computer of
-  the same setup at the same epoch is taken for its boxes alone, never as the main computer: the
-  box keeps the one it has and notes `conflict: {primary, epoch}` (gone with that epoch). A machine with no Mac leads its own; set up by a Mac, it
-  gives that up (a setup of no other computer joins its Mac's). A box drops its setup when that Mac
-  stops counting there (it removed the box, or wasn't heard from in 30 days), as it drops that
-  Mac's documents. A box that follows no setup (kept until every box knows setups) takes `peers`
-  from its own Macs, as before. The card (below) is a hint for what looks from outside, never
-  trusted for any of this.
+  `managed: true` means the setup follows signed leadership changes, independent of legacy numbering.
+- **Who leads one**: the first box you set up independently creates its setup at epoch 1. A
+  standalone machine's keeper creates its local identity and setup before there is any device or
+  member to reach. A new member follows the computer that enrolls it over SSH. A machine's primary
+  role holds when it adds members. Legacy Mac leadership still follows "Numbers": a box its Mac
+  let go waits for that Mac, and a Mac numbering through another Mac sets its setup aside until
+  it leads again. A primary whose keys were made anew creates a new setup. On a later SSH setup it
+  supplies its previous static keys (`replaces`) so the member lets those keys go.
+- **What a box takes it from**: a member follows the setup named by the computer that enrolled it
+  over SSH. When older links name several enrollers, the member keeps the setup it follows,
+  or takes the setup it numbers from ("Numbers"). A setup set aside makes way for one another
+  enroller leads. The primary's signing key (received over SSH) is the setup's trust root.
+  The member refuses a lower epoch of the setup it keeps. If another trusted enroller offers
+  the same setup at the same epoch, the member keeps its primary and records
+  `conflict: {primary, epoch}`. An empty standalone machine can give up its one-computer setup
+  when it joins the enroller's setup. A member drops its setup when it receives a signed removal. The primary of an active setup does
+  not expire as an enroller. The SSH and stored fields named `mac`,
+  `macs` and `macSigns` still carry these trust records, including for a Linux enroller.
+  The discovery card is a hint and grants no trust.
 - **Existing links**: boxes keep direct connections established over SSH, including links from
   older releases. Each box follows one setup. Extra computers named in old agents mail, and
   old directory and numbering flags, carry no membership. The SSH setup command refuses an
   additional setup on an account already enrolled, while reconnection and key rotation still work.
 
+- **`POST kuvo/setup/handover {primary, epoch?}`** (`setup.handover`). An authenticated client
+  can ask any member. The box forwards the request to the current primary with the setup id and
+  epoch. The primary asks the chosen member to confirm the same setup and epoch by authenticated
+  peer mail. Every enrolled box must already have advertised support. An offline member can catch
+  up later. A target that cannot confirm leaves the old primary in charge.
+  The primary returns `202 {primary, epoch}` after committing the change. Delivery may still be in
+  progress. A request for the primary already in effect returns `200` with that key and epoch.
+  A conflicting epoch returns `409 {message}`. Clients follow `kuvo/setup/events`.
+- **Leadership record.** The outgoing primary signs a `leadership` document with `n` equal to
+  the next setup epoch. The body names `setup: {id, epoch, primary}` and `previous`, and carries
+  `boxes`, `moved`, `left`, `devices` (grants and removals), and `numbers`
+  (the allocation counter and grant receipts). It saves the certificate and its demotion in a
+  single durable `run/link.json` replacement before sending anything. The destination installs
+  its primary role from that certificate and signs subsequent membership and device lists with
+  its own key. After the transfer, only the primary publishes setup device grants and removals.
+  A receiver takes only the next epoch of its setup. The preceding primary signs when the
+  epoch has no standby. With a standby, planned transitions normally use its signing key.
+  Ranked takeovers and replacing an unreachable standby use the rules below. For a planned transition the primary durably fences itself and saves its signed
+  proposal in `leadershipPending` before sending. The standby signs the same body with the
+  primary's detached signature in `approval`. It commits once before it replies. An interrupted
+  primary resends the proposal and installs the same certificate when it hears it. The
+  certificate names the next standby with `standby` (a static key in `boxes`) when one is
+  appointed. The new primary's peers document repeats that key and `numberCeiling` for new
+  SSH enrollments. A member that already follows the setup changes authority only through
+  the certificate chain.
+  At that epoch, only the certified primary's membership document counts. Members keep the
+  verified certificates by epoch and trade them in the regular document exchange, oldest first,
+  so a member can cross multiple epochs even with the old primary offline. Folder layout 2
+  reserves this state while adopting existing link state in place.
+- **Standby selection** (`setup.takeover`). Once every enrolled member has advertised support,
+  the primary chooses one reachable member. A member advertises its preference based on whether
+  it runs Linux, which is treated as more likely to be always on. Set `alwaysOn` to true or false
+  in the box's `setup-takeover.json` to override the platform default. Equal preferences sort by
+  static key during bootstrap. A client can `POST kuvo/setup/standby {standby, epoch?}` on any box.
+  In a ranked setup this pins the chosen computer first in signed membership, until the user
+  changes the choice or removes the computer. On a first assignment, the choice is stored
+  with the signed assignment and the pin is saved after the standby accepts and grants a
+  lease. Automatic replacement and retirement preserve any pin for a remaining computer.
+  The primary checks the target answers at this
+  epoch. A reachable standby normally approves replacement, even
+  when membership removal initiated the change. A setup with no reachable eligible member
+  waits to appoint a standby. A missing standby can still hold its delegation and cannot be
+  replaced by the primary alone.
+- **Successor rank.** Layout 14 records `successorOrder` in signed, accepted setup
+  membership. The list contains each enrolled computer's static key once. Linux and
+  configured always-on computers are preferred at bootstrap, followed by other computers
+  enrolled as machines. A longer recent stretch of observed availability moves a computer
+  up among unpinned computers. Tied observations keep the accepted order. Rank refreshes
+  are ordinary standby-acknowledged membership revisions and keep the epoch. The first
+  available computer in the accepted order becomes standby through a signed handover. A
+  fallback standby leaves the pin in place. A signed epoch enables the successor
+  chain once all current computers advertise `setup.successor-chain`. Older setups
+  keep their existing standby delegation until they can make that transition.
+- **Primary lease and saves.** The current standby sends an authenticated challenge every
+  ten seconds. The primary answers with a fresh nonce and the standby returns a lease
+  response for that exchange. The primary measures sixty seconds from its answer, using
+  wall time and uptime. The lease in `run/setup-lease.json` is bound to the setup, epoch,
+  standby and, in a ranked chain, the active certificate. An expired lease, or an outstanding leadership proposal, fences shared setup
+  changes. Everyday local work continues using the grants it already holds. A shared save
+  is acknowledged by the current standby. If it stays unreachable, the primary can
+  propose the first available successor as replacement. That successor durably accepts
+  the checkpoint and new epoch before the primary can renew its lease and save through it.
+  When the approver of a pending leadership proposal remains unreachable, the primary can
+  supersede that proposal with a standby assignment in the same proposed epoch, including
+  when the ranked chain has yet to be accepted. A returning candidate adopts a newer
+  first assignment signed by the same primary for the same epoch and predecessor.
+  The primary stays
+  fenced until the replacement accepts and grants a lease. A promoted primary in a
+  delegated setup waits for a standby lease before handing leadership to another computer.
+- **Takeover.** A ranked successor probes the primary and every higher-ranked successor
+  in the signed order, including any that outrank the assigned standby. After missing
+  the primary for about three minutes
+  (the sixty-second lease plus a two-minute margin), the highest-ranked reachable
+  successor signs the next epoch using its accepted checkpoint. Lower ranks give earlier
+  ranks time to answer before taking over. Restarting or losing the relay resets the
+  observation period. Concurrent probes share one response window, independent of rank depth.
+  Retained `delayMinutes` settings are ignored. There is no approval prompt.
+- **Reconnecting after a split.** A partition can leave two writable primaries temporarily.
+  On reconnect the higher verified epoch wins. At equal epochs, the rank in the last common
+  epoch checkpoint decides between different primaries, with stable computer keys settling any
+  remaining ties. For the same primary at the same epoch, only a newer signed first-standby
+  assignment can replace the accepted certificate.
+  The loser installs the winning checkpoint and steps down. Shared setup edits that only
+  existed on the losing branch are discarded. Computer and device removals and credential
+  revocations from either verified branch are carried forward as a union. Local work and
+  its files stay with their owners. A successor may also be missing a save that only the
+  failed primary and standby ever stored.
+- **Number reservations.** A delegated epoch reserves a bounded range above the certified counter.
+  Only the standby can certify a new bound. With folder layout 4, the primary saves each grant
+  through the standby before issuing it. Takeover retains those grants and skips the outgoing
+  epoch's remaining reservation. Existing local items and leased blocks remain usable.
+- **Reachability during leadership changes.** A restarted or reconnected member catches up
+  with certificates in order. A pending proposal can finish after the initiating request
+  times out. The existing primary may not be unlinked. The removal route and link CLI answer
+  “Choose another primary first.”
+- **Release choice after handover.** Members take newer fleet releases from the certified
+  primary. Same-version repair can still use copies held by peers. File permissions and OS
+  approvals are enforced where the files and processes live.
+
 - **`GET kuvo/setup`** (and `kuvo/setup/events`, a line now and one at each change), on every box,
-  for every client: `{setup, epoch, primary: {key, name, kind}, you: {key, role}, computers: [{key,
+  for every client: `{setup, epoch, standby?, primary: {key, name, kind}, you: {key, role}, computers: [{key,
   name, kind, role, app}], conflict?, startsFromOthers: {value, default}, heldBy: [key], welcomed}`. Facts only, the same on
   every box of one setup (but `welcomed`, this box's own): `kind` is `mac` for a Mac with the app (`app`), `machine` otherwise; in no
   setup, `setup`, `epoch`, `primary` and `you.role` are null and `computers` is empty.
@@ -337,29 +467,20 @@ computer. Changing the main computer and joining two setups come later: #183.)
   `GET` (or `HEAD`), whatever can't be said; `405` otherwise. Read as it's asked (the accounts anew
   each time; the models as the box keeps them, read again once its engine or bridge says
   something changed), so a client asks again after a sign-in.
-- **Only the main computer adds and pairs** (`setup.mainOnly`). The one exception is Kuvo Code's
-  own desktop app on a member's computer, which that member's box vouches for and the main computer
-  still pairs ("Paired phones", `kuvo/devices/pair`): the member itself pairs no one. A member (a box whose setup names
-  another computer as main, kept aside too: its main computer not naming it now) answers, with `primary` the main computer's static key and words naming it for a client to
-  show as they are:
+- **Only the primary adds computers and pairs devices** (`setup.mainOnly`). A member forwards
+  the desktop app's pairing request to the primary (`kuvo/devices/pair`). A member gives pairing
+  links and legacy add requests a `primary` key with a message naming that computer:
   - `POST kuvo/phones/pair`: `409 {"message": "Pair new phones from <main>.", primary}`, and
-    `kuvo-link.js pair` prints those words and stops (exit 3), with no pairing made, saying too,
-    until a takeover can be made, how to let a main computer that's gone for good go there
-    (`kuvo-link.js leave <its key>`, as removing the computer from it would) and what that costs:
-    the computer leaves that setup, so its other computers, and phones paired with that main
-    computer, no longer reach it; then it pairs by itself, or names another Mac's setup's main
-    computer. `leave` says what it did, or exits 1 for a key that isn't one of its Macs. A
+    `kuvo-link.js pair` prints those words and stops (exit 3), with no pairing made. A
     pairing link made before the box became a member pairs no one;
-  - adding or removing computers as a Mac's app takes them (`POST kuvo/machines`, `DELETE
-    kuvo/machines/<id>`, `POST kuvo/machines/<id>/uninstall`, `DELETE kuvo/hosts/<id>`), and any
-    method on `kuvo/link/peers` from an app or `box route` there: `409 {"message": "Add and remove computers from <main>.", primary}`,
-    so only the main computer's app says who's in the setup. The rest of `kuvo/machines…` and
-    `kuvo/hosts…` but `GET kuvo/hosts` go to the engine as before (`404`);
+  - adding computers, SSH uninstall, and writing `kuvo/link/peers` go through the primary.
+    `DELETE kuvo/computers/<key>` and `PATCH kuvo/computers/<key>` can be sent to any member.
+    Checkpointed members also forward legacy machine deletions that carry a roster key;
   - `GET kuvo/hosts`, as a Mac answers it: the machines the document of the setup it follows names
     (itself too), each `{kind: "machine", name, address, key, relay, machine, anotherMac: false,
     removed: false}` (`machine`, the id the main computer's app knows it by), by name. Only what
     that document says: a machine it leaves out isn't listed, and `anotherMac` and `removed` are
-    always false. Not the main computer's Mac: a phone pairs with it. Set aside (its main
+    always false. The primary is left out because the device pairs with it. Set aside (its main
     computer leads no setup now), it lists what each of its Macs' own peers documents names, all
     yours. `503 {"message"}` before it holds that document, or while it has no relay.
 
@@ -450,6 +571,103 @@ computer. Changing the main computer and joining two setups come later: #183.)
     box that's `stopped` starts it again in place (by launchd, through its Mac's launch agent
     `run.kuvo.code.machine` where it's there, else its own `kuvo-start`), and says one that won't
     start so, to try again, rather than waiting on it.
+
+### Saving setup-wide changes
+
+A setup that delegates to a standby advertises `setup.shared-saves`. Its primary
+stages edits for primary-owned data kinds from the Box data declarations. It keeps
+one outstanding save per kind in its private link state. Other kinds and work
+owned by individual computers can continue. A client that times out waiting for
+the receipt gets HTTP 202 with `pending: true`. A subsequent read shows the
+accepted value once it arrives.
+
+The primary uses an active lease to send a signed `setup-shared` document to the
+designated standby. The document identifies the setup, epoch, data kind, and
+next sequence and carries the replacement value. The standby persists the
+value and a signed receipt before sending it. The receipt names the same setup,
+epoch, kind and sequence and covers the primary's exact proposal signature.
+Retries receive the same receipt. The primary checks the current lease, epoch,
+standby key and proposal before applying the edit, publishing it, or replying
+that it saved. An ordinary member can take published settings only from the
+primary signer of its current epoch.
+
+Takeover carries the accepted shared values, access removals and allocation
+ledger into the signed leadership certificate. A handover or standby
+replacement carries the same accepted values. The former standby receipt
+authority ends when it signs the next epoch. An outbox entry interrupted by
+an epoch change is kept locally for inspection. A caller must resubmit it
+against the new epoch if the standby had yet to accept it.
+
+The primary saves Work Queue grants before it hands them out, including blocks
+it requests for itself. Each box consumes its own blocks locally when it is
+offline. An item stays awaiting a number when its box has no block left. The
+new primary keeps the existing grants and advances beyond the old epoch's
+number ceiling, including any part reserved under a version that predates
+shared saves.
+
+### Data owners
+
+A desktop client can ask `GET kuvo/data/owner?kind=<declaration>&id=<record>` on its box. Use
+`computer=<key>` to locate an older record that has no directory entry, and `queue=<owner>` for
+a Work Queue record. A known owner takes precedence over the supplied address. Setup-wide kinds
+use the current primary. Computer-local kinds use the named computer or the box being asked.
+The feature is `data.ownership`.
+
+The reply carries `owner {key, name, scope, local, reachable}`. A read carries `state: "received"`,
+`lastReceivedAt` in milliseconds and `data`, including when the data is an empty list. An away
+owner's last page is marked `stale`. When no page has been received there is no `data`, the state
+is `"neverReceived"` and the time is null. Supply repeated `message=<id>` and `file=<name>` to
+check references. The reply lists unavailable references by kind. Conversation reads return a page
+with its engine cursor. Pass it as `offset` to read the next page. Other declarations can return
+ownership metadata for use beside their existing routes.
+
+A normal desktop `POST kuvo/sessions/<id>/send` to a known remote owner returns a pending
+operation. When the client already knows the owner of an unlisted conversation, it can use
+`POST kuvo/data/messages?session=<id>&computer=<key>` with the same message body. For a group, use `group=<id>` in place of `session=<id>` and supply
+`text`. Send a stable message ID. The serving box saves the unsent message before answering 202. A committed receipt has
+an `acceptedAt` time from the owning box. Poll `GET kuvo/data/messages/<operation>` on the box
+that saved it. Pending messages and receipts survive a restart. If acceptance cannot be safely
+determined after an owner interruption, the client should show the interrupted status and open
+the owner's conversation before offering to resend. Send Now and commands require the owner's
+normal client connection. The peer outbox takes inline attachments up to 128 KiB of message JSON.
+
+### Offline field edits
+
+A paired desktop client uses `data.offline-edits` after the Box enables folder layout 7.
+`GET kuvo/data/edits?kind=<kind>` returns `{owner, stale, revision, fields, choices, deleted}`.
+For `queueItems`, add `queue=<conversation>` and `id=<wqi_id>`. For `botSettings`, supply
+the bot ID. Supply `computer=<key>` as an address hint when the owner has not been
+discovered. A serving box with a previously received owner view can return it as stale.
+
+Submit `POST kuvo/data/edits` with a new client operation ID, `ref` (the same address),
+`baseRevision` (the revision read before editing), and only the `fields` being changed.
+For a new Work Queue item, generate its permanent `wqi_` ID and send `create: true` with
+`baseRevision: null`. Use `delete: true` to delete an existing item at a known revision.
+Queue fields include title, body, status, priority, labels, assignee, due, and order
+(`{before: id}`, `{after: id}`, or `{top: true}`). Add `notes: [{id, text}]` and
+`attachments: [{id, file: {name, uri}}]` with stable IDs. Attachments carry inline data.
+The edit envelope can be up to 512 KiB. Edit the text of an existing note under the
+`note:<id>` field returned by its owner.
+
+Bot settings fields include name, look, personality, jobLine, jobDetails, model, and limits.
+The primary accepts setup time zone, computer names, existing labels and personalities,
+and usage display edits on setups that use accepted saves. Names are keyed by box key,
+labels and personalities by `<id>:<field>`, and usage settings by their existing unit name.
+Changes that grant access use their existing permission and membership routes.
+
+HTTP 202 means the serving box saved the proposal locally. Poll
+`GET kuvo/data/edits/<operation>` there using the operation ID in the reply. A terminal
+receipt names the owner revision. `choice` carries the IDs of outstanding choices created
+by that proposal, alongside any independent changes that committed. Read the owner's
+current view to get the original, accepted, and proposed values. Resolve a choice with a
+new operation ID, the current revision, and `resolve: {id, use: "accepted"|"proposed"}`.
+Ordinary note and description edits merge at the passages written against the original.
+A proposal with a retired base gets `refresh` and needs an owner view before a new edit.
+A deletion defeats late edits. While Recently Deleted still has the item, its receipt is
+`deleted`. After the 30-day window a compact ID fence stays and the receipt asks for a
+fresh copy. Poll replies include separately recoverable pending text for a deletion,
+refresh, or interrupted edit. Read `GET kuvo/data/edits/outbox` for local pending drafts and
+recoverable text after a restart. Recovering that text never restores the item.
 
 ### Peers
 
@@ -1729,11 +1947,9 @@ client connected: a client's Computers area and its switcher draw it, and ask no
     offer them, `{id, label, confirm?, why?}`, as accounts' are ("Signing in"): `label` the
     button's words, `confirm` `{title, message, label}` where a client asks first (its question,
     what it comes to, its button), all the box's; `why`, it can't be done now, in words a client
-    shows beside it, its button not taken (asked anyway, it's refused with those words). `rename` (a machine whose record the writer keeps, below:
-    never a Mac, which goes by its own name), `connect` (a peer
-    this box reaches through the relay that's `away`, while no try is under way) and `remove` (as
-    `rename`, never the box itself). `allow-devices` (`devices.allow`), last, with its `confirm`:
-    only on a computer that carries `vouching`, below. `update` (`computers.update`, below: Update
+    shows beside it, its button not taken (asked anyway, it's refused with those words). `rename`
+    changes the accepted name of a managed setup computer. `connect` retries an away peer, and
+    `remove` asks the primary to unlink a member. `update` (`computers.update`, below: Update
     Now, with its `confirm` while something may be at work there) on a machine this box keeps up to
     date. `update-here` (`computers.update.here`: Update Now, `POST kuvo/update {now: true}` of this
     box, with its `confirm` while sessions are at work) on this box's own row while a release Kuvo
@@ -1766,19 +1982,11 @@ client connected: a client's Computers area and its switcher draw it, and ask no
   - `appCheck?`: on this Mac's own row, the Kuvo version this Mac runs while it's newer than the
     desktop app that last registered with `kuvo/box/app` ("Updates", This Mac's app follows): that
     app looks for its own update, once for each version. Left out on every other row and box.
-  - `vouching?` (`devices.allow`, #742): `{"blocked": true, "words": "<Device> was removed from
-    your devices. <Computer> can't add Kuvo Code's app again until you allow it."}` on a computer
-    whose box is kept from vouching for Kuvo Code's desktop app ("Paired phones",
-    `kuvo/devices/pair`), `words` for a client to show as they are. Only the setup's main computer
-    says it (it alone keeps the list); left out
-    otherwise, and by every other box.
   `405` for anything but `GET`.
 - **Managing them** (`computers.manage`, #735), from any box, with no client or Mac's app open. A
-  machine's record (its name, that it's one of your computers) is in the peers document of the Mac
-  that set it up, which your other computers take it from ("Your setup"): so one box writes it, as
-  one numbers the Work Queue. The **writer** is this Mac's box for its own machines (a Mac that isn't
-  a member of another's setup); for every other box, its setup's main computer, or the one Mac
-  that set up a machine in no setup; none on a machine more than one Mac set up outside a setup. A Mac's box reaches only its own machines, never another Mac,
+  machine's record (its name, that it's one of your computers) is in the signed peers document of
+  the computer that set it up ("Your setup"). The primary writes the setup’s accepted membership and names.
+  Outside a setup, a legacy machine can use the one Mac that set it up as its writer. A Mac's box reaches only its own machines, never another Mac,
   so on a Mac that's a member of another Mac's setup nothing is offered, and asked it says to do it
   from the main computer (a known gap until a member Mac can hand it on). A box that isn't the writer hands what you do to it by mail,
   as a Work Queue item's change goes to the computer that keeps it ("The Work Queue", Done where
@@ -1797,44 +2005,69 @@ client connected: a client's Computers area and its switcher draw it, and ask no
     document, named among those you removed (`left`, which the machine hears and lets that Mac go),
     and off that Mac's list of machines (`machines.json`); its app listing it again
     (`kuvo/link/peers`), or setting it up as it connects (`kuvo/link/setup?key=`), doesn't bring it
-    back (`removedHere` in link.json). Only a completed SSH add restores that peer. If saving the
+    back (`removedHere` in link.json). Adding it again over SSH creates a new membership with a
+    fresh box key, signing key and relay address. If saving the
     machines list fails, the removal still revokes access and the request reports the incomplete
     change. It keeps running there, as a box of its own, with its sessions.
-    **Kuvo Code's app on it goes from your devices with it** (#753): every device that computer's
-    box vouched for (`by`, "Paired phones", `kuvo/devices/pair`) is taken off the writer's list,
-    each by the pairing it has now and noted among the removals as any removal is, so the
-    writer's phones document carries them, they're out on every computer, their sessions end,
-    and none is paired again by asking. The same however the computer is removed (handed by
-    another box, `uninstall` below, or `removed` in `kuvo/link/peers`). What another computer
-    vouched for, a phone, and what the writer paired itself stay. The removed computer isn't
-    noted as kept from vouching (`vouchBlocked`): it's no machine of the writer's now, so its
-    vouch isn't taken, and added again it vouches as a new one does. (A computer set up again
-    with keys made anew is the same computer: what the writer keeps by its box's key, `by` on
-    the devices it vouched for and its entry in `vouchBlocked`, goes by the new key as its
-    record does, so removing it later still takes its app off.) `confirm.message` says
-    "Kuvo Code’s app on <computer> is taken off your devices." on the box that knows of such a
-    device. Member boxes learn `by` from the signed phones document. The main computer writes
-    the revocation and shares it with the other boxes. `200 {}`, and the same for one removed already (whose devices,
-    were any left from before this, go then).
+    Device pairings belong to the setup and continue to reach its remaining members.
+  - **Unlink and wipe** (`computers.removal`, #904). `POST kuvo/computers/<key>/unlink`
+    leaves the sessions and bots on that computer in a new standalone setup.
+    `POST kuvo/computers/<key>/unlink-and-wipe` also schedules their deletion with Kuvo Code.
+    Both take an optional client-generated `operation` (16 random bytes in base64url) and return
+    the accepted membership receipt plus `removal: {operation, state, accessRemoved}`. The
+    same operation or the original receipt in `save` returns the same current removal result. A standby-backed save can reply 202 while
+    waiting for acceptance. The primary commits the unlink without contacting the target and
+    publishes the updated roster and device grants. A primary with other computers must hand
+    over first. Unlinking the only computer wipes it, leaving no setup.
+    `GET kuvo/computers` and its events include `wipePending: [{key, name, operation}]` while a
+    wipe remains unconfirmed. A returning target challenges the current primary and verifies
+    its signed instruction for the operation, setup, epoch, and target before acting. This
+    exchange does not restore peer access. An unlink acknowledgement follows verification that
+    the target's Kuvo engine and agent sign-ins and integration keys have been cleared.
+    A wipe target runs the preparation hook and verifies
+    any configured pre-wipe backup before stopping Kuvo Code and deleting its folder. It reports
+    completion after deletion. Layout 12 keeps a completion receipt outside the wiped folder.
+    Relay retries and the SSH Add probe can deliver the operation-bound acknowledgment. A
+    confirmed lost disk can close a pending wipe with `resolve: "lost"` and the existing
+    operation. This records the loss and permits a fresh enrollment while retaining both old
+    key revocations. The removal continues to report `lost` after a fresh enrollment.
+  - **Prepare removal** (`computers.wipe-preparation`, `computers.removal-operations`, #905). Before unlink or wipe, the local
+    desktop can ask `POST kuvo/computers/<key>/removal-plan` with optional `projects` (absolute
+    paths on that computer). The source returns its current inventory in `plan`, including
+    move destinations, active moves, export-only items, child sessions and categories that
+    stay behind. `complete: false` means the listed `unresolved` work or stores could not be
+    verified. An unreachable source
+    returns 503. Only explicitly selected project folders appear in the plan.
+    To save data first, send `prepare: {moveTo?, export?: {destination, recoveryKey, projects?}}`
+    with the wipe's `operation`. Accepted membership keeps the operation and a hash of
+    its choices through primary changes. The recovery key and paths live in private
+    preparation journals on the boxes doing the work. After a primary change, re-send the
+    original choices if the source hasn't received them yet. The desktop generates and keeps a 32-byte base64url recovery
+    key before sending an export choice. A disk destination is an existing folder outside Kuvo
+    on the source, or select a current backup computer with the existing SSH destination shape.
+    In layout 12, revocation commits before preparation. The removed source can transfer the
+    accepted inventory to the selected destination over removal-only mail. The destination
+    can confirm that operation over the same channel when ordinary peer reachability is stale.
+    Each move has its
+    own accepted change identity and a destination receipt. Sessions with attached child
+    sessions can be exported. If both choices are made, the archive captures the remaining
+    source work after the moves. The source binds readiness to the version of that work and
+    the selected projects. A SQLite checkpoint or close leaves this version unchanged when
+    the committed data is unchanged. Changes invalidate readiness, including changes detected after the
+    primary sent its grant. The source verifies the archive again and checks the generation
+    after stopping Kuvo before deleting its folder.
+    An accepted preparation failure reports `review`, an error, and unresolved IDs when known.
+    Retry after correcting the problem with `retryPreparation: true` and the original operation.
+    Before deletion is authorized, `resolve: "cancel"` keeps the source work and finishes unlinking.
+    A replacement `operation`, `supersedes` naming the prior operation and a new `prepare`
+    replace the plan while access stays revoked. Completed moves retain their ownership
+    decisions. The `export: {source, id, at}` reference, destination and key open through the
+    existing restore route with the same replacement approval rules.
   - `POST kuvo/computers/<key>/connect`: this box's own, for a peer that's `away`: its link tells
     that computer its agents now, asking for theirs (`run/reach-again.json`, sent by the process
     that holds the relay connection, as `box route` leaves it), so its answer marks it back
     (`noteHeard`), and it's listed `connecting` for 20 seconds meanwhile. `202 {}`; `503` while this
     box is off the relay itself.
-  - `POST kuvo/computers/<key>/allow-devices` (`devices.allow`, #742): the computer is let add
-    Kuvo Code's app to your devices again: off the main computer's list (`vouchBlocked` in
-    link.json), `200 {}`, and the same for one that isn't on it; `kuvo/computers` and its events
-    say so at once. What was removed stays removed. **The main computer's own, for its own
-    clients only**: a device paired with it, over the relay (a phone, or the desktop app's
-    session), or Kuvo Code's app beside its box, over the box's own server (as for
-    `kuvo/devices/pair`). `403 {"message"}` from `box route` (a Mac over SSH, an agent's command),
-    from a device the computer `<key>` itself vouched for (`by`, whether or not it's kept out
-    now: nobody at that computer allows it), and from anything else; `405` for anything but `POST`; `404` for a key the box doesn't list.
-    It's never handed to another box: no act carries it (an ask by mail that names it is dropped,
-    as any that isn't an act), so the computer kept out can't allow itself, and a member's box
-    answers `409 {"message": "Allow it from <main>.", "primary": "<its key>"}`. `409 {"message"}`
-    too on a box that leads no setup, for the box itself, and for a computer that isn't the main
-    computer's own.
   - **While the old app is attached** (the Mac app before 0.8, which keeps its own list of machines
     and writes all of it back, `machines.json` and `kuvo/link/peers`, so a removal there wouldn't
     hold): the box that writes a machine's record takes no removal, from a client of its own or
@@ -1869,11 +2102,10 @@ client connected: a client's Computers area and its switcher draw it, and ask no
   answers what it asks. (Before, a Mac's app did all of it: `kuvo/machines`, which stays the old
   app's.) SSH is used to set a computer up, set it up again and uninstall it, never after: the
   computer's own keeper runs it, and boxes talk through the relay ("Peers").
-  - **Who adds**: a Mac's box that isn't a member of another's setup ("Your setup", Only the main
-    computer adds), with a relay and keys for its link and its own release's files in its folder.
-    A member answers `409 {message, primary}`; a Linux box `409 {message}` (only a Mac's box
-    writes the record of a setup's computers yet, #183); a Mac while the old app is attached to
-    its box `409` (that app keeps its own list); `503 {message}` for the rest, a list of machines
+  - **Who adds**: the primary, with a relay and keys for its link and its release files. A legacy
+    Mac outside a setup can still enroll computers. A member answers `409 {message, primary}`.
+    A Mac while the old app is attached to its box answers `409` (that app keeps its own list).
+    The rest return `503 {message}`, a list of machines
     that can't be told among them: read as `kuvo/machines` reads it ("Machines": there and won't
     read, or not there while `phone-link.json` keeps machines), so no computer is added over a
     list that's only missing (#753). `GET kuvo/computers/add` says the same as `can: false` with
@@ -1882,12 +2114,17 @@ client connected: a client's Computers area and its switcher draw it, and ask no
     computer's `~/.ssh/config` and the files it includes (names only, never a pattern), 50 at
     most, those not an address of a computer it set up; `tries`, those under way first, then the
     last few that are over. `GET kuvo/computers/add/events` (ndjson) follows it.
-  - `POST kuvo/computers/add {"destination"}` → `202 {try}`. A destination is what `ssh` takes: a
+  - `POST kuvo/computers/add {"destination", "replace"?}` → `202 {try}`. A destination is what `ssh` takes: a
     Host's name, a host's name or `user@host`; one with `:`, `/`, white space or a leading `-`
     (a port, a path, an IPv6 address, an option) is `400 {message}` and never reaches `ssh`. One
     being added or set up at that address already is answered as it is; one being stopped is
     waited for, and the new try runs after it; `409 {message}` while that computer is being
     uninstalled, and through `kuvo-link.js box route`, which can't stay to do it.
+    If an installation matches a saved computer fingerprint, Add updates that computer's
+    position and membership history. The probe hashes the operating system or hardware UUID on
+    the enrolled computer with the setup ID as a salt. The raw ID stays on that computer.
+    When automatic evidence is missing, `replace` explicitly selects the most recent membership
+    of the same computer by its key. A name or SSH address alone does not establish identity.
   - **A try**: `{id, kind, destination, name, state, title, steps, question?, failure?, computer?,
     known?}`. `kind` is `add`, `setup` or `uninstall`; `state` is `working`, `asking`, `stopping`,
     `failed` or `done`; `steps` are `[{id, title, state, detail?, sent?, total?}]`, each
@@ -1939,7 +2176,8 @@ client connected: a client's Computers area and its switcher draw it, and ask no
     data then) or a machine's, judged from the probe by the rule the installer judges one by
     (`machineBoxIn`), where its installer leaves that data as it is; puts its own release's files there, each checked by its
     SHA-256 before it's put in place, unless they're there already or the computer has a newer
-    Kuvo Code, which is left as it is; the engine, its own binary where the two are the same
+    Kuvo Code, which is left as it is. For a Mac, it supplies the signed Kuvo Helper from its
+    files or its verified release archive. It supplies the engine, its own binary where the two are the same
     kind, else the pinned package fetched and checked on the box's computer (the computer added
     downloads no code); then, in one script, the computer's settings made its own (one with none starts
     with the box's, below), how its keeper starts it (`run/launch.env`: the session's PATH, shell and
@@ -3146,13 +3384,10 @@ did: the box keeps working as itself ("For released Macs").
   `POST kuvo/update {now: true}`), whatever its age. Either way, whatever is at work there: an update
   stops nothing. A release with another engine than the one running, whose `box.json` lists the
   running one in `engines`, takes its code at once and changes the engine later, without cutting a
-  turn ("A new engine"). Only one that doesn't list it (or lists none: a box two engine releases
-  behind) restarts the engine with its code: that one waits until nothing runs, or Update Now, which
-  a client asks about first, saying what stops (`keepingSelfUp` gives the words; a release that keeps
-  the engine, or changes it apart, has no question). Where a release offered here waits, newer than
-  the box, Update Now takes that one (`computers.update.here`), however it rested after failing;
-  `409` with words to show where it can't even so (its engine stopped on purpose, its last update
-  not yet said to be well).
+  turn ("A new engine"). A release without compatibility for the running engine waits for that
+  engine's work to finish. The box's Update Now route also waits in that case. It checks for a
+  signed release immediately and can retry one that failed before. It returns 409 when an update
+  or trial is under way or the box has been stopped.
 - **Your computers follow each other** (one fleet, one version): every box runs the newest signed
   release any of your computers holds, and a box that's behind takes it from one that holds it, by
   itself, at once.
@@ -3350,14 +3585,18 @@ did: the box keeps working as itself ("For released Macs").
     only there while one does. `offerFailed` `{version, at, takenBack, message?}` is how taking such
     a release last failed (taken back once it was in place, or before anything changed, when it
     stays offered and is tried again), apart from the release check's update (`last`); gone once one's
-    taken.
+    taken. With `box.update.no-cut`, `waiting` is present when the target computer knows of a
+    newer release or a part of an installed release is still taking over. It carries
+    `{version, reason, detail, sessionsAtWork}`. The reason names the state, the detail gives the
+    box's words, and the count includes turns awaiting approval. A null count means a running
+    process could not be reached. Query the route on each computer whose progress is shown.
   - `POST {now: true}` starts one, in a process of its own (`kuvo-link.js update --now`, or
     `--offered --now` for an offered release): 202 with the status (`updating` `checking`), or 409
     `{message}` when it's not set up, is blocked, is updating already, or its last update is still
     on trial. The release check's goes the same way (`update --round <round>`, which notes the
     round once it went, unless something was at work). Other methods answer 405: there's nothing to turn off.
-  - A Mac does the same over SSH with `kuvo-link.js box update-status` and `update-now` (which,
-    with nobody asked first, never goes ahead while something is at work there).
+  - Over SSH, `kuvo-link.js box update-status` and `kuvo-link.js box update-now` use the same
+    status and no-cut update path.
 - `kuvo-link.js update [--now] [--from <folder>] [--round <round>]` updates from a shell, `--from`
   from a release in a folder there (a full path), taken at once, whatever its age. `update --offered
   [--now]` takes the release offered with `kuvo/box/update` when it's due (with `--now`, on your
@@ -3396,7 +3635,27 @@ new version without cutting a turn:
     (`waits: "restart"`), holding nothing. Each renewal is one of those runs. A check that couldn't
     run (it couldn't start, a signal ended it, a minute went by) is tried again at the next look.
 
-  It goes:
+  A keeper-managed bridge starts a compatible replacement as a standby with its own port. If
+  all active turns can transfer, the current bridge seals its session writes and records the
+  holder generations, replay ranges, and pending approvals in `run/agents/handover.json`. The
+  holders keep the replay ranges through the switch. The replacement takes control once the
+  previous bridge exits, publishes its port, and replays into the existing session and reply. A
+  client reconnects for events. The keeper starts the saved previous build if the replacement
+  exits or fails to publish within a minute. Only the active bridge writes the store.
+
+  Codex, Grok, Claude Code 2.1.268 or later with the same Agent SDK, Antigravity ACP 1.3.0, and
+  Cursor with the same worker SDK can transfer when their journal is complete. Antigravity's ACP
+  server keeps its native session and answers the original prompt request after an approval.
+  Cursor's worker keeps its SDK run alive and sends updates with that run's ID. Open forms,
+  steered turns, shell commands, bridge-owned MCP connections, and Antigravity's separate
+  subagent transcript activity fall back together to Renewal. Sandboxed Codex, Claude Code and
+  Grok also use Renewal because their launchers depend on the original bridge. A standby-compatible build can
+  start a bounded drain at once. On the first upgrade from a bridge that predates holders, the
+  keeper checks that the replacement can start and requests one clean bridge restart. That
+  bridge marks its active turns interrupted through its normal shutdown. The engine stays up
+  independently. The keeper marks the transition so future upgrades use live handover or Renewal.
+
+  Renewal goes:
   - **At the first quiet moment**: nothing has run for half a minute: no turn (a subagent's, a
     message being handed to one or on its way to a subagent, the files kept after one, a session
     being deleted), no `!` command of yours, no discussion in a group chat here (a chat talking, a
@@ -3429,6 +3688,17 @@ new version without cutting a turn:
   - On every box in a home of its own (a machine's, a Mac's), whose keeper keeps its bridge. A Mac's
     box in the app's folder: the app's keeper starts the whole box again from a newer app once
     nothing runs on it.
+- **Data formats**: `agents/sessions/*/session.json` and `run/link.json` are additive object
+  formats with `formatVersion: 1` on writes. Readers accept unstamped legacy records. Writers
+  refuse records stamped with an unsupported version. The bridge uses the shared
+  `folder-version.json` upgrade runner before opening a Kuvo folder. Layout 18 reserves the
+  bridge handover and program and engine drain recovery records. It leaves existing session
+  files in place, and their v1 stamp is added on the next save. A rollback to the previous
+  layout can still read these session files while the update is on trial. Both bridges must
+  advertise the same folder layout to transfer live, so the saved bridge can reopen it if the
+  standby fails. Across layouts the bridge waits for a quiet restart.
+- **The browser keeper** checks for attached clients and open asks before giving way to a newer
+  build. Older keepers continue serving until their normal idle shutdown.
 - **The bridge apart from the engine**: the keeper keeps the bridge running (`kuvo-start bridge`,
   each round while the engine runs and no bridge does, with the engine's backoff: one that ran
   under ten minutes makes it wait longer). It starts it through `kuvo-launch` with `KUVO_BRIDGE=1`,
@@ -4166,7 +4436,11 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
     picks, once; `POST …/kuvo/updates/<provider>` updates that account's program; both answer as
     they start, `{data: {updating: [<agent>]}}` (`metadata.agent`), with `integration.updated`
     for each account with the program as it starts and as it ends (and `model.updated` once it
-    updated). A client draws them, says an outcome once and then that it was seen. Update All on
+    updated). For an in-place update, the box holds new turns on that program across its accounts
+    while running turns finish and the installer runs. Other programs keep taking turns. If work
+    still runs after 30 minutes, the update ends and the held messages go ahead. A replacement
+    bridge restores the pending update and its original deadline before admitting queued turns.
+    A client draws the outcomes, says each once and then that it was seen. Update All on
     the phone asks each computer. Installing done,
     `integration.updated` and `model.updated` follow, and how an update went before is gone.
   - Signing in to an agent: `POST kuvo/agents/api/integration/<provider>/connect/oauth {methodID,
@@ -6868,7 +7142,9 @@ and `name` is the saved file name. The box applies it to the current description
 lock and answers `inlineImagesApplied: true`. The file stays attached.
 
 `POST kuvo/work-queue/items` `{title, body?, status?, priority?, labels?, assignee?, due?, top?,
-owner?, files?}` → `{item}`: an item added, `todo` and `normal` unless said, numbered as an agent's is. The
+owner?, files?, operation?}` → `{item}`. Each create requires a client-generated operation ID
+in `x-kuvo-operation` or `operation`. Retry the same action with the same ID and fields.
+The item starts as `todo` and `normal` unless specified. The
 box decides whose queue it's in: `owner`'s where a client names one (the conversation whose queue
 it's looking at); else, for a bot of this box (`assignee`), that bot's; else your own (`usr_you`).
 A title is one line: line breaks become spaces, one over 800 characters is refused (400), and what's
@@ -7542,6 +7818,11 @@ tell: nothing is assumed, old or new, and the next ask reads it again. Each sayi
 A client checks only names newer than the gate's (`BoxGate.required` and what came before them,
 which a box that isn't held has) and a kind's own (`update`, `engine.start`).
 
+Each client-facing Box route registration and route contract names an advertised feature. Use
+the feature that introduced the route. The required list still names the capabilities clients
+need for the update gate. It can be smaller than the set of advertised features. Keep checking
+`kuvo/info` before depending on any advertised name.
+
 One row a name, in order, so branches that each add one merge cleanly.
 
 | Name | What it answers |
@@ -7553,6 +7834,10 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `agent-tools` | `POST kuvo/agent-tools`: the agents' tools, answered by the box (bridge 0.9.100) |
 | `agent-tools.own` | `POST kuvo/agent-tools` answers the wake-up tools, `set_job` and the show tools too ("Agents' tools") |
 | `agents` | `kuvo/agents/api/…`: the coding agents (`agents` in `kuvo/info` says whether their bridge is up now) |
+| `agents.accounts` | `kuvo/agents/api/kuvo/accounts…`: add, rename and remove named coding-agent accounts |
+| `agents.start` | `POST kuvo/agents/start`: restart the coding agents' bridge when it fails to start |
+| `agents.updates` | `kuvo/agents/api/kuvo/updates…`: start program updates and acknowledge the results |
+| `agents.voice` | `kuvo/agents/api/kuvo/voice…`: voice routes |
 | `approval` | `kuvo/approval` and `kuvo/sessions/<id>/approval` ("Approval", bridge 0.9.180) |
 | `approval.default` | A new conversation's approval where its client doesn't say: Auto the first time on a computer, then the last one picked there (`kuvo/approval`'s `default`, bridge 0.9.185); one a client made with `kuvo.approval` alone gets that ("Approval") |
 | `approval.fullAccess` | Full Access as it is since bridge 0.9.184: its commands run outside the sandbox, nothing asks or is reviewed, `kuvo/approval`'s `fullAccess` is whether you confirmed it on this computer (asked the first time it's picked), and Tell Auto is gone ("Approval") |
@@ -7603,13 +7888,16 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `computers` | `kuvo/computers` and `…/events`: your computers as one list, from any box ("Computers", #711) |
 | `computers.add` | `kuvo/computers/add…`: a box adds a computer over SSH itself, with its tries' steps, questions and words; `POST kuvo/computers/<key>/setup` and `/uninstall`, and `setup` and `uninstall` in `actions` ("Computers", Adding one, #636) |
 | `computers.facts` | `features`, `working` (left out where never said) and `atWork` on each of `kuvo/computers`' computers ("Computers", #735) |
+| `computers.removal-operations` | Revocation before preparation, generation-bound wipe grants, and recoverable completion receipts |
+| `computers.wipe-preparation` | Removal plans and verified move/export choices before a wipe |
+| `computers.removal` | `POST kuvo/computers/<key>/unlink`, `POST kuvo/computers/<key>/unlink-and-wipe`, and pending wipes in the computer list |
 | `computers.manage` | `actions` on each of `kuvo/computers`' computers, `PATCH` and `DELETE kuvo/computers/<key>` (done by the box that writes the machine's record, or handed to it) and `POST kuvo/computers/<key>/connect` ("Computers", Managing them, #735) |
 | `computers.reach` | `address` and `relay` on each of your own computers in `kuvo/computers` ("Computers", #742) |
 | `computers.update.here` | The box takes a release Kuvo Code here offered as soon as nothing's at work, Update Now (`POST kuvo/update {now}`) takes it now whatever is at work, and its own row in `kuvo/computers` says how that stands (`update`, `update-here`); `kuvo-install update` ("Updates", "Computers", "Installing this computer's box") |
 | `config` | `kuvo/config` |
 | `config.apply` | `POST kuvo/config/apply` |
-| `devices.allow` | Removing a desktop app a computer's box vouched for keeps that box from vouching (`409`, `reason: "blocked"`), and the main computer says so on it in `kuvo/computers` (`vouching`, the `allow-devices` action) and takes `POST kuvo/computers/<key>/allow-devices` from its own clients ("Paired phones", "Computers", #742) |
-| `devices.pair` | `POST kuvo/devices/pair`: Kuvo Code's desktop app on the box's computer paired as one of your devices, by the main computer on a member's word; and `kuvo/phones/remove` from the app beside any box ("Paired phones", #742) |
+| `devices.pair` | `POST kuvo/devices/pair` pairs the local desktop app through the primary. |
+| `devices.remove.forward` | A member forwards `kuvo/phones/remove` to the primary. |
 | `engine.restart` | `POST kuvo/engine/restart` |
 | `engine.start` | a machine only: `POST kuvo/engine/start` |
 | `file` | `kuvo/file` |
@@ -7644,6 +7932,7 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `groups.seats` | its bots take turns in chats on other computers ("Peers", group chats) |
 | `handoff` | `kuvo/agents/api/kuvo/handoff…`: handoffs |
 | `hosts` | a Mac: `kuvo/hosts…` (with its app closed its box still lists them, and `DELETE` says the app must be open; a box in a home of its own answers all of it itself); a member of a setup answers it too, with `setup.mainOnly` |
+| `info` | `GET kuvo/info`: Box identity and advertised features. This discovery request is available before the gate opens. |
 | `integrations` | `kuvo/integrations…` |
 | `keys` | `kuvo/keys…` |
 | `letters-read` | (in a peer's agents' mail) it takes a letter with `read` (bridge 0.9.100) |
@@ -7670,6 +7959,7 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `moves.check` | between boxes, `check` before a move holds anything: whether the box it goes to can run it; a move's `note` says what it does differently there ("kuvo/moves") |
 | `named` | `kuvo/named` |
 | `names.titles` | Computer `limitServices`, work `account.title`, usage `serviceTitles`: display words supplied by the box |
+| `notices` | `GET kuvo/notices` and `…/events`: notices the Box has already worded |
 | `personalities` | `kuvo/personalities…` |
 | `personalities.events` | `kuvo/personalities/events` |
 | `phones` | `kuvo/phones` and `POST kuvo/phones/remove` |
@@ -7711,12 +8001,16 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `sessions.models` | `GET kuvo/sessions/models` ("A session's model") |
 | `sessions.move` | `POST kuvo/sessions/<id>/move`: a conversation moved into a project, given its folders ("Projects", #341) |
 | `sessions.needsYou` | `needsYou`, each project's `asking` and `working`, and each session's `bot`, in `kuvo/sessions/list` ("Session lists", #711) |
+| `sessions.read` | `POST kuvo/sessions/read`: mark conversations on this Box as read |
 | `sessions.start` | `POST kuvo/sessions`: a session started with a task (bridge 0.9.100) |
 | `sessions.start.empty` | `POST kuvo/sessions` from a client without a task, `agent`, `model` as `{providerID, id, variant?}`, and `info` and `worktree` in its answer (#341) |
 | `settings` | `kuvo/settings`, `kuvo/settings/<section>`, `…/events`, a row changed with `PATCH` and an action done with `POST …/<row>/<action>`: the box's settings as it describes them, General, Permissions, Browser, Git, Worktrees, Storage and Archived Sessions ("A box's settings", #727) |
 | `settings.flows` | In `kuvo/settings`: an action's `form`, checked as it's typed (`POST …/<row>/<action>/check`) and sent as `values`; a row's `badge`, `notice` and `flow` (a sign-in the box leads); and the MCP Servers section built with them ("A box's settings", #727) |
 | `settings.vault` | In `kuvo/settings`: the Vault section ("A box's settings"), and a form's `secret` and `file` fields, a `secret` pairs, Show (`shows`), and checks that never carry a value |
 | `setup` | `kuvo/setup`, `…/events`: your setup and its main computer ("Your setup") |
+| `setup.handover` | a member can ask the primary to transfer the setup to another enrolled computer at the next epoch |
+| `setup.successor-chain` | ranked takeover and deterministic convergence of signed setup epochs |
+| `setup.takeover` | a signed standby can advance the setup epoch, and clients can choose another standby |
 | `setup.mainOnly` | a member refuses pairing and adding with `409 {message, primary}`, and answers `GET kuvo/hosts` from its setup ("Your setup", Only the main computer adds and pairs) |
 | `setup.ready` | `GET kuvo/setup/ready`: whether a first run has anything to ask about your accounts here, decided by the box ("Your setup") |
 | `setup.welcomed` | `welcomed` in `kuvo/setup`, and `POST kuvo/setup/welcomed`: whether you've had the first run with this box ("Your setup", #733) |
@@ -7790,8 +8084,7 @@ asks you to confirm), then keeps the phone's static key. A token works for 10 mi
 once.
 
 Kuvo Code's desktop app pairs without a link: it asks the box on its own computer (`POST
-kuvo/devices/pair`, "Paired phones"), which pairs its key or, on a member of a setup, vouches for
-it to the main computer. Its key and relay secret are its own, made on its computer and never
+kuvo/devices/pair`, "Paired phones"), which requests the grant from the primary. Its key and relay secret are its own, made on its computer and never
 given to a box; what it then knows of each computer (`key`, `address`, `relay`: `kuvo/computers`)
 is what a pairing link holds.
 
@@ -11356,152 +11649,29 @@ repository written by anything.
 
 ### Paired phones
 
-Each computer keeps the phones paired with it, and the ones removed, by the pairing they came in
-with (`pairing`, made where the phone paired, new each time). The same rules on a Mac and a
-machine's bridge, held to `vectors/link.json` (`phoneBooks`):
+The primary keeps the setup's device grants. A phone and a desktop app use the same grants.
+Each grant identifies the device's public key and pairing ID. Layout 11 removes the old voucher
+fields from local device records while preserving keys, pairing IDs and removals. Signed
+records from earlier versions remain readable. A standalone or legacy box can still read
+pairings from before accepted membership.
 
-- A pairing adds a phone, with a pairing nothing removed (what removed its others still keeps
-  them out).
-- A phone paired with it, or a Mac (one that set it up, `macs`), removes phones, at most 16 at a
-  time, each a phone's key (32 bytes); a removal never names a Mac. What's removed stays removed,
-  its pairing noted (the last 256 kept): the phone can't come in or change anything, and no list
-  brings it back. Only a pairing of its own, with a new `pairing`, lets the phone in again, though
-  its key is one the computer has.
-- A removal of an older pairing than the one there leaves that one.
-- Each box's phones document ("Documents") lists the phones paired there, and every removal it
-  knows of. A machine lets in the phones its Macs' documents list that nothing removed, beside its
-  own; a phone a Mac's document no longer lists goes off, not for good, and another Mac's phones
-  stay. A removal in any phones document a box takes is noted there too, so one removed anywhere
-  is removed everywhere, reached or not. One from before Macs were named (no `mac`) stays until a
-  Mac signs its phones. A Mac the machine hasn't heard from in 30 days (setup or any mail) of its
-  box running (noted every few minutes in `run/online`; time off doesn't count, and a clock set
-  wrong and then right moves no Mac on) no longer counts, and its phones go; it counts again once
-  it sets the machine up.
-
-On both, for a paired phone:
-
-- `kuvo/phones`: `{"phones": [{key, name, added, pairing, kind, you}]}`, `added` in seconds since
-  1970, `you` the one asking, `kind` (`clients.kind`) `phone` or `desktop` (Kuvo Code's desktop
-  app: as it said when it paired by token, as `kuvo/devices/pair` paired it, or as the phones
-  document that lists it says).
-- `POST kuvo/phones/remove` with `{"phones": [{key, pairing}]}` (`pairing` left out: the one
-  there): removes them there, itself too, and their sessions end, once the answer's on its way.
-  `200 {}`, or `400 {"message"}` when it names a Mac, nothing, too many or something that isn't a
-  phone's key, or the one asking isn't paired there. A removal goes to each computer the phone pairs with, Mac
-  and machines (`kuvo/hosts`); each also passes on the removals it has in its phones document.
-  Any device paired there removes any other, a phone the desktop app and the desktop app a phone;
-  and so does Kuvo Code's app on the box's own computer, beside any box (over the box's own
-  server, as for `kuvo/devices/pair` below; before `devices.pair`, only this Mac's app beside its
-  own box): never a Mac that set the machine up, and never by `box route`. A device removed on
-  another computer loses its sessions here as its removal arrives (a machine's link ends them as
-  it takes the document, and within 3 seconds of a removal another process made).
-- `POST kuvo/phones/pair`: a link for another phone to pair with, as Settings › Phone shows one
-  (as a QR code): `{"link": "kuvo-link://pair?…", "ends"}`, good once, until `ends` (seconds
-  since 1970). On a Mac it's the phones' own, apart from the one Settings › Phone shows, so
-  neither ends the other; a new one takes the place of one a phone asked for before. `DELETE
-  kuvo/phones/pair` ends it, as Done does (`200 {}`, with or without one); `?token=<its token>`
-  ends that one alone, so one closed late never ends a newer one (bridge 0.9.61). `409 {"message"}`
-  while the Mac lets no device in (its one switch, "Let my devices connect": `phones` in
-  `kuvo/link/config`, which gates phones and desktop apps alike). A machine's bridge answers it too, with the Mac closed: the phone
-  it pairs is the machine's own (as `kuvo-link.js pair` pairs one), and `409` when the machine has
-  no relay. On a member of a setup, `409 {"message", primary}`: only its main computer pairs
-  ("Your setup", `setup.mainOnly`).
-  A link requested over the relay is valid only while the requesting key still has the same
-  pairing. A device it pairs inherits the requesting device's voucher, if any. A device vouched
-  for by another box requests links on the box that paired it. An inherited desktop pairing from
-  before vouchers were included in phones documents follows the same rule.
-- `POST kuvo/devices/pair` with `{"key": "<the app's static key, 32 bytes, base64url>", "name":
-  "<up to 100 characters>", "kind": "desktop"}` (`devices.pair`, #742): Kuvo Code's desktop app on
-  this computer paired as one of your devices, with no link to paste and no token (it ends no
-  pairing link that waits). **Only from Kuvo Code's app on the box's own computer**: a request
-  over the box's own server there, with its password (`serve`, or `serve --kept`), that says
-  `x-kuvo-from: app` (a Mac's own box) or `x-kuvo-from: mac` (Kuvo Code attached to a box in
-  place, "Kept for clients"). `403 {"message"}` from a phone or any client over the relay, the
-  desktop app's own session too, and from `box route`, which a Mac over SSH and an agent's command
-  on the box can run; `405` for anything but `POST`; `400 {"message"}` for a key that isn't one
-  (or is a box's), a name too long, or another `kind`.
-  - **Where the box pairs phones** (your setup's main computer, or a box in no setup): the key is
-    paired at once, as a device paired there (`from: "pair"`, `kind: "desktop"`, a new `pairing`),
-    and its phones document carries it to your other computers. `200 {"paired": true, "pairing"}`.
-    Refused as a phone's pairing is: `409 {"message"}` on a Mac that lets no device in, and where
-    there's no relay.
-  - **On a member of a setup, its box vouches for the app**: it hands the ask to the main
-    computer's box by mail, as what you do to one of your machines is handed on ("Computers",
-    Managing them: `{workQueue: {act: {id, area: "devices", method: "POST", item: <the app's key>,
-    body: {name, kind: "desktop"}, at}}}`, answered `{workQueue: {acted: {id, status, value}}}`),
-    once the main computer's agents name `devices.pair`. The main computer pairs it, as above,
-    only when all of this holds: the mail opens as one of its peers'; its own peers document names
-    the sender as one of its machines; it's the main computer of a setup it leads
-    now; and it lets devices in. A member that is a Mac with its own switch off ("Let my devices
-    connect") vouches for none: `409` in the switch's words, with nothing asked of the main
-    computer, so each Mac's switch counts. (Only you set your computers up: since #783 a machine
-    more than one Mac set up vouches as any other machine of the setup's main computer.)
-    The member answers `200 {"paired": true, "pairing"}` with what it
-    said, or `409 {"message", "reason"?}` in the main computer's words (`reason`: `removed`, the
-    key was removed; `blocked`, `devices.allow`, this computer is kept from vouching, below). `503 {"message": "<main>
-    isn't answering. This app reaches your other computers once it does."}` when no answer comes
-    in 20 seconds, the main computer is away, this box is off the relay, or it hasn't heard yet
-    what the main computer takes; `409 {"message"}` for a main computer from before this. The app
-    asks again later: asked again, by either way, a key that's let in answers `200` with the
-    pairing it has, and nothing new is made. With the main computer's app closed it pairs all the
-    same: its box answers.
-  - **A member its main computer doesn't name now** answers `409 {"message"}`: it neither pairs
-    nor vouches.
-  - **A known pairing being refreshed** answers `503 {reason: "pairing-wait", message}`, “Checking
-    this app with your other computers…”. The desktop shows a quiet spinner and checks again.
-    **A known pairing whose signing computer is gone** answers `409 {reason: "pairing-readd",
-    title, message, action}`. The box supplies “This app needs to be paired again”, “The computer
-    that added this app was removed. Pair this app again from one of your computers.”, and
-    `{label: "Pair Again…", route: "kuvo/devices/pair"}`. This action runs the desktop's existing
-    Pair Again flow. Over the relay the same notice is carried in the authenticated handshake,
-    with its message also in `waiting` for older desktops.
-  - **Removed stays removed**: a key with any pairing among the removals is never paired by this
-    route, here or by the main computer: `409 {"message": "This app was removed from your
-    devices.", "reason": "removed"}`. The app then makes a new key only on your word. (A pairing by
-    token still lets a removed key back in, as above.)
-  - **And the computer that vouched adds no other** (`devices.allow`), so whoever sits at it
-    can't have its app make a new key and come back. The main computer keeps who vouched on the
-    device it pairs on a member's word (`by`, that box's static key, on its entry in the main
-    computer's link.json and its phones document; none on one its own app or a local token
-    paired). When that device is removed, by any way the removal reaches the main computer's box
-    (`kuvo/phones/remove` from a paired device there, from Kuvo Code's app beside it, or a removal
-    another box's phones document brings), the main computer's box:
-    - **removes every other device that same box vouched for** (all with that `by`), each by the
-      pairing it has now, noted among the removals as any removal is: its phones document carries
-      them, so they're out on every computer and their sessions end, and none is paired again by
-      asking (`reason: "removed"`). Pairings from other vouchers and independent pairings stay;
-    - notes the box that vouched (`vouchBlocked` in link.json: `[{key, device, at}]`, the box's
-      key, the removed device's name and when, in milliseconds; one entry a box, the newest 64)
-      and from then on answers that box's vouch, for any new key, `409 {"message": "<Device> on
-      <computer> was removed from your devices, so <computer> can't add Kuvo Code's app by itself
-      now. Allow it again from Kuvo Code on <main> or another computer's app: Computers,
-      <computer>.", "reason": "blocked"}`, which the member's box passes on to its app as it is.
-
-    A removal that names a pairing the device doesn't have now takes nothing off and keeps no
-    computer out. It lasts until you allow that computer again on the main computer (`POST
-    kuvo/computers/<key>/allow-devices`, "Computers"), which neither the computer kept out nor a
-    device it vouched for can ask for. Allowing it un-removes nothing: the keys that were removed
-    stay out, the app there makes a new one on your word, and the vouch for that one is taken. (A
-    key that's let in now is still answered `200` with the pairing it has, and a removed one
-    `removed`, before this is looked at.)
-    **Not covered:**
-    - a desktop app the main computer's own box paired for the app beside it has no voucher, so
-      removing it keeps its key out and nothing more: that computer is the main one, which pairs
-      your devices itself. The same for a box in no setup;
-    - a device first vouched for and later paired again by token is the main computer's own from
-      then on (no `by`): removing it keeps no computer out;
-    - `by` and `vouchBlocked` are kept in the main computer's link.json alone, so **choosing a new
-      main computer drops them**: the new one knows neither who vouched for the devices it took
-      over nor which computer was kept out, and takes that computer's vouch again.
-
-    To keep a member out for good, remove the computer (`DELETE kuvo/computers/<key>`): its box
-    then vouches for nothing, and every device it vouched for goes with it ("Computers",
-    Managing them, #753).
-  - **At most 16 desktop apps** are paired this way at once: one more is `409 {"message"}` until
-    one is removed, so a box that vouches never fills the list.
-  - Every box of the setup lets the device in from the main computer's phones document, as it
-    does a phone (above). A machine more than one Mac set up lets in what each of its Macs lists,
-    a desktop device too.
+- `GET kuvo/phones` returns `{phones: [{key, name, added, pairing, kind, you}]}`.
+  `added` is seconds since 1970. `kind` is `phone` or `desktop` for display.
+- `POST kuvo/phones/pair` issues a one-use invitation from the primary. The token is valid for
+  ten minutes and, for an invitation from a paired device, only while that pairing remains
+  current. A member answers with the primary's key. `DELETE kuvo/phones/pair?token=<token>`
+  ends that invitation.
+- `POST kuvo/devices/pair` with `{key, name, kind: "desktop"}` is the authenticated local
+  desktop bootstrap. Members forward it to the primary over peer mail. A repeated request
+  for the same key returns its existing pairing ID. A revoked key needs a new invitation.
+  Both pairing routes share the device list and its capacity.
+- `POST kuvo/phones/remove` with `{phones: [{key, pairing?}]}` removes the named grants.
+  An omitted ID resolves to the current pairing. An explicit older ID cannot revoke a newer
+  pairing. Any paired device or authenticated local desktop can ask through any member.
+  The member forwards the actor's pairing to the primary, which rechecks it before saving.
+  The change uses the membership and access receipt in checkpointed setups. A committed
+  revocation closes the affected sessions and travels with accepted membership to returning
+  members.
 
 A machine keeps itself running: its keeper (`bin/kuvo-start keep`, `run/box.pid`) starts its
 engine again when it ends, unless it was stopped on purpose (`run/stopped`), and keeps the bridge
@@ -11530,7 +11700,7 @@ own box (`409`): its server is Kuvo Code's to run.
 
 **Uninstalling** (`box.uninstall`, #333 piece 3). Removing Kuvo Code from a computer is the box's
 own command, which the app or a Terminal line runs: `kuvo-link.js uninstall`. Before stopping,
-a member asks its main computer to revoke devices it vouched for. The command removes the desktop
+a member asks the primary to revoke the local desktop's device key. The command removes the desktop
 identity file and, on the real Mac's own box, asks the Keychain to delete the released app's item.
 An unconfirmed revocation or failed identity deletion is reported as incomplete.
 On the primary, the live box signs and publishes the desktop removal before shutting down.
@@ -11570,6 +11740,12 @@ name; whether its launch agent and crontab line are there, `checked` false where
 how many bots, wake-ups and watches, phones paired, and your other computers it talks to). This
 Mac's box in its app's folder refuses both (exit 1, `{result: "refused", message}`): the app's own
 keeper runs it, and removing Kuvo Code removes that.
+
+On a member, a standby-backed device revocation adds `save` to the result. While the revocation
+is pending the command exits 1 with `{result: "pending", message, save}` and keeps the local
+identity and box running. The member stores the receipt and checks the same operation with the
+current primary on retry. A confirmed interruption exits 1 with the interrupted receipt; the
+next invocation can request a new revocation.
 
 **A server that hangs while running** (from 0.9.201, on this Mac and on machines alike:
 `src/shared/hang.ts`). The coding agents' bridge watches the engine, and the link watches the
@@ -11891,6 +12067,11 @@ it, goes once no box is from before beta.31:
   record, once its command line says it's this box's engine. <!-- compat: beta.30 engine-record -->
 - A Kuvo Helper from before beta.31, which doesn't leave for a new build of itself, is handed over
   once by its `serve` ("This Mac's box: its helper", A helper from before beta.31). <!-- compat: beta.30 helper-handover -->
+
+**Layout 4 setups**: older standby proposals carry the full projection, leadership certificates
+may carry devices alongside the roster, and a standby can be selected before setup checkpoints
+exist. <!-- compat: layout.4 setup -->
+
 ## The browser's live view
 
 Feature `browser.view`, a machine's box's (until a Mac's box has a browser of its own: a Mac's

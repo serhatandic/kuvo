@@ -9,6 +9,7 @@
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { upgradeKuvoFolder } from "../../shared/folder-version";
 import { isObject } from "../../shared/json";
 import { databaseCounts, databasesIn, soundness, tableCounts } from "./database";
 import { mapped, moves } from "./paths";
@@ -157,11 +158,13 @@ export async function migrateStaged(_run: RunPlan, move: MoveContext): Promise<v
 
 /** What an earlier Kuvo Code kept in its own files and preferences, brought into the box's own in
  * the staged copy (`upgrades.ts`): what it didn't carry, in words to show once. */
-export async function upgradeStaged(run: RunPlan, move: MoveContext): Promise<string[]> {
+export async function upgradeStaged(run: RunPlan, move: MoveContext): Promise<void> {
   // (Loaded as it's needed: it reads with the box's own readers, which the move's own files,
   // loaded alone by its tests, don't bring.)
   const { runUpgrades } = await import("./upgrades");
-  return runUpgrades(run, move);
+  upgradeKuvoFolder(move.work, () => {
+    noteRecord(move.home, { dropped: runUpgrades(run, move) });
+  });
 }
 
 // Counts

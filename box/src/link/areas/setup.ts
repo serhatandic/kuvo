@@ -8,25 +8,31 @@ import { computerInSentence } from "../computer-name";
 
 import fs from "node:fs";
 import path from "node:path";
-import { parsed, type Body } from "../../shared/json";
+import { sharedKind, sharedPolicy } from "../../shared/data-declarations";
+import { isObject, parsed, type Body } from "../../shared/json";
 import { writePrivate } from "../files";
 import { RUN } from "../home";
 import { followed } from "../follow";
+import { handover, selectStandby } from "../setup/handover";
 import { writeCard } from "../setup/card";
 import { appsOf, ATTACHED_FILE, foundOf, judgeComputer, oursNow } from "../setup/judge";
-import { addElsewhere, mainElsewhere, memberHosts } from "../setup/main-only";
+import { addElsewhere, mainElsewhere, setupHosts } from "../setup/main-only";
+import { ownMachinesRoute } from "../mac/own-machines";
+import { changeShared, OPERATION_ID, queryOperation, retrySharedValue, sharedSaveReply, waitShared } from "../setup/shared";
+import { followedSetup } from "../setup/record";
 import { setupView } from "../setup/view";
 import { engineRoute } from "../server/forward";
 import { onLinkWritten, readLink } from "../state";
 import { isWelcomed, setWelcomed } from "../setup/welcomed";
 import { firstRunReady, type Listed } from "../setup/ready";
 import { call } from "../engine/client";
+import { verifyBoxes } from "../updates/update";
 import { plainName } from "../../shared/text";
 import { listsHere } from "../work/model-rule";
 import { readEndedSignIns } from "./accounts";
 import type { ListedAccount } from "./sign-in";
 import type { Target } from "../../shared/records";
-import type { AnswerPiece, RouteContext } from "../server/context";
+import { savedJson, type AnswerPiece, type RouteContext } from "../server/context";
 
 // Those following it here: told as this process writes link.json; what another process wrote
 // (`setup` and `leave`, over SSH), looked for each second (`followed`, with no folder to watch).
@@ -38,6 +44,16 @@ onLinkWritten(() => {
 export async function* setupRoute(context: RouteContext): AsyncGenerator<AnswerPiece> {
   const { request, route, signal, json } = context;
   const method = request.method.toUpperCase();
+  if (route === "kuvo/setup/standby") {
+    if (method !== "POST") return yield* json(405, {});
+    const done = await selectStandby(parsed(request.body), signal);
+    return yield* json(done.status, done.value);
+  }
+  if (route === "kuvo/setup/handover") {
+    if (method !== "POST") return yield* json(405, {});
+    const done = await handover(parsed(request.body), signal);
+    return yield* json(done.status, done.value);
+  }
   if (route === "kuvo/setup/judge") {
     if (method !== "POST") return yield* json(405, {});
     // The probe's lines as it printed them (RemoteEngineInstaller's, in OpenCodeKit).
@@ -106,10 +122,65 @@ export async function* memberComputersRoute(context: RouteContext): AsyncGenerat
   const method = request.method.toUpperCase();
   const link = readLink();
   const main = mainElsewhere(link);
-  if (!main) return yield* engineRoute(context);
+  if (!main) {
+    if (followedSetup(link)?.role === "primary") return yield* ownMachinesRoute(context);
+    return yield* engineRoute(context);
+  }
+  if (link?.setup?.checkpointed && (route.startsWith("kuvo/machines") || method === "DELETE" && route.startsWith("kuvo/hosts/"))) return yield* ownMachinesRoute(context);
   if (ADDS_OR_REMOVES(method, route)) return yield* json(409, addElsewhere(main));
-  if (method !== "GET" || route !== "kuvo/hosts") return yield* engineRoute(context);
-  const hosts = memberHosts(link);
+  if ((method !== "GET" && method !== "HEAD") || route !== "kuvo/hosts") return yield* engineRoute(context);
+  const hosts = setupHosts(link);
   if (hosts) return yield* json(200, hosts);
   return yield* json(503, { message: "This computer can't list your computers yet. Try again in a moment." });
+}
+
+export async function* saveLocalSetup(context: RouteContext): AsyncGenerator<AnswerPiece> {
+  const { request, json } = context;
+  if (!request.fromHolder || request.method !== "POST") return yield* json(403, {});
+  const given = parsed(request.body);
+  if (isObject(given) && typeof given.id === "string" && typeof given.operation === "string" && given.value === undefined) {
+    const expectedKind = given.kind;
+    if (expectedKind !== undefined && !sharedKind(expectedKind)) return yield* json(400, {});
+    const outcome = queryOperation(given.id, given.operation, given.proof, expectedKind);
+    if (!outcome) return yield* json(404, {});
+    const { kind, epoch, sequence, baseRevision, status } = outcome;
+    return yield* json(200, { operation: given.operation, kind, epoch, sequence, baseRevision, status });
+  }
+  if (!isObject(given) || !isObject(given.value)) return yield* json(400, { message: "Send the setup settings to save." });
+  const kind = given.kind;
+  if (!sharedKind(kind)) return yield* json(400, {});
+  const policy = sharedPolicy(kind).localSave;
+  if (!policy) return yield* json(400, {});
+  const operation = given.operation;
+  if (operation !== undefined && (typeof operation !== "string" || !OPERATION_ID.test(operation))) return yield* json(400, {});
+  const value = given.value;
+  if (policy === "usage" && (!isObject(value.units) || typeof value.imported !== "boolean")) return yield* json(400, {});
+  if (policy === "release") {
+    try {
+      if (typeof value.signed !== "string" || value.signed.length > 128_000) return yield* json(400, {});
+      const manifest = verifyBoxes(Buffer.from(value.signed, "base64").toString());
+      if (manifest.version !== value.version || manifest.pack.sha256 !== value.sha256) return yield* json(400, {});
+    } catch {
+      return yield* json(400, { message: "This release could not be verified." });
+    }
+  }
+  const expected = given.sequence;
+  const current = readLink();
+  if (current?.setup?.id === given.id && current?.setup?.epoch === given.epoch && operation) {
+    const previous = retrySharedValue(current!, kind, operation, expected, value);
+    if (previous) return yield* savedJson(json, sharedSaveReply(await waitShared(previous)));
+  }
+  const save = changeShared(kind, (_before, link) => {
+    if (!link.setup || link.setup.id !== given.id || link.setup.epoch !== given.epoch
+      || (link.sharedSetup === given.id ? link.shared?.[kind]?.sequence ?? 0 : 0) !== expected) return undefined;
+    return value;
+  }, operation);
+  if (!save) {
+    const latest = readLink();
+    const previous = latest?.setup?.id === given.id && latest?.setup?.epoch === given.epoch && operation
+      ? retrySharedValue(latest!, kind, operation, expected, value) : null;
+    if (previous) return yield* savedJson(json, sharedSaveReply(await waitShared(previous)));
+    return yield* json(409, { message: "The setup changed or a save is already pending." });
+  }
+  return yield* savedJson(json, sharedSaveReply(await waitShared(save)));
 }

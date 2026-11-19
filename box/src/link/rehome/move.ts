@@ -22,6 +22,7 @@ import { agentsWorking } from "../updates/update";
 import { BRIDGE_VERSION } from "../version";
 import { setKeepsAwake } from "../work/settings";
 import { undoKeychain } from "./outside";
+import { FOLDER_VERSION_FILE } from "../../shared/folder-version";
 import { beforeForward, countsHold, handOverKeys, migrateStaged, noteCounts, relinkStaged, takeBackKeys, upgradeStaged } from "./run-steps";
 import { Said } from "./said";
 import { PATH_REWRITER, pathMap, type MoveContext, type PathMap, type Rewriter } from "./rewrite";
@@ -565,7 +566,7 @@ async function carryOn(journal: Journal, rewriter: Rewriter): Promise<void> {
   // release's engine.
   if (journal.run && at("upgrade")) {
     stepTo(journal, "upgrade");
-    noteRecord(home, { dropped: await upgradeStaged(journal.run, move) });
+    await upgradeStaged(journal.run, move);
     stopPoint("after-upgrade");
   }
   if (journal.run && at("database")) {
@@ -601,6 +602,13 @@ async function carryOn(journal: Journal, rewriter: Rewriter): Promise<void> {
       madeFolder(home, path.dirname(placement.to), keptLike(journal));
       place(home, placement.staged, placement.to, placement.from, journal.way === "back");
       if (++placed === 1) stopPoint("in-place");
+    }
+    // Publish the staged layout checkpoint with the staged files, under the move's undo journal.
+    const version = path.join(move.work, FOLDER_VERSION_FILE);
+    if (journal.run && exists(version)) {
+      const destination = path.join(home, FOLDER_VERSION_FILE);
+      if (exists(destination)) throw new Said("The destination Kuvo folder was opened during the move. Stop Kuvo there and try again.");
+      rename(home, version, destination);
     }
     if (journal.way === "move") {
       // Its kind, last of the box's own files: a Mac's, in a home of its own.

@@ -10,6 +10,7 @@
 import { randomBytes } from "node:crypto"
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
+import { additiveListFormat, UnsupportedFormatVersion } from "../shared/format-version"
 import { yourHomes } from "./machine"
 
 export type AgentKind = "claude" | "codex" | "cursor" | "grok" | "antigravity"
@@ -52,14 +53,23 @@ export function parseProvider(provider: string): { kind: AgentKind; id: string }
   return { kind, id: id ?? "default" }
 }
 
+const accountFormat = additiveListFormat("Managed accounts")
+
 export class Accounts {
-  private records: AccountRecord[] = []
+  private records: AccountRecord[]
 
   constructor(private readonly root: string) {
+    this.records = this.read()
+  }
+
+  private read(): AccountRecord[] {
     try {
-      const saved = JSON.parse(readFileSync(this.file, "utf8")) as AccountRecord[]
-      this.records = saved.filter((record) => kinds.includes(record.kind) && record.id && record.id !== "default")
-    } catch {}
+      const saved = accountFormat.read(JSON.parse(readFileSync(this.file, "utf8"))) as AccountRecord[]
+      return saved.filter((record) => kinds.includes(record?.kind) && record?.id && record.id !== "default")
+    } catch (error) {
+      if (error instanceof UnsupportedFormatVersion) throw error
+      return []
+    }
   }
 
   private get file() {
@@ -82,35 +92,38 @@ export class Accounts {
   }
 
   add(kind: AgentKind, label?: string): AccountRecord {
+    const records = this.read()
     const record: AccountRecord = { kind, id: randomBytes(4).toString("hex"), label: label?.trim() || undefined }
     mkdirSync(this.home(record)!, { recursive: true, mode: 0o700 })
-    this.records.push(record)
-    this.save()
+    this.save([...records, record])
     return record
   }
 
   rename(provider: string, label: string | undefined) {
     const parsed = parseProvider(provider)
-    const record = this.records.find((record) => record.kind === parsed?.kind && record.id === parsed?.id)
+    const records = this.read()
+    const record = records.find((record) => record.kind === parsed?.kind && record.id === parsed?.id)
     if (!record) return
     record.label = label?.trim() || undefined
-    this.save()
+    this.save(records)
   }
 
   /** Forgets an added account, and everything kept in its folder. */
   remove(provider: string): AccountRecord | undefined {
     const parsed = parseProvider(provider)
-    const index = this.records.findIndex((record) => record.kind === parsed?.kind && record.id === parsed?.id)
+    const records = this.read()
+    const index = records.findIndex((record) => record.kind === parsed?.kind && record.id === parsed?.id)
     if (index < 0) return undefined
-    const [record] = this.records.splice(index, 1)
-    this.save()
+    const [record] = records.splice(index, 1)
+    this.save(records)
     rmSync(this.home(record)!, { recursive: true, force: true })
     return record
   }
 
-  private save() {
+  private save(records: AccountRecord[]) {
     mkdirSync(this.root, { recursive: true })
-    writeFileSync(this.file + ".new", JSON.stringify(this.records, null, 2))
+    writeFileSync(this.file + ".new", JSON.stringify(accountFormat.write(records), null, 2))
     renameSync(this.file + ".new", this.file)
+    this.records = records
   }
 }

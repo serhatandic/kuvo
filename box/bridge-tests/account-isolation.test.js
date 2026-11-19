@@ -84,10 +84,12 @@ test("SSH setup rejects a second setup on the same account and preserves its sav
   removeAtEnd(home);
   const run = path.join(home, ".kuvo-code", "run");
   fs.mkdirSync(run, { recursive: true });
+  // This case checks setup refusal on a current box. Legacy grant migration has its own test.
+  fs.writeFileSync(path.join(run, "..", "folder-version.json"), '{"version":18}\n');
   const link = path.join(run, "link.json");
   const kept = JSON.stringify({
     mac: "a".repeat(43), macs: ["a".repeat(43)],
-    phones: [{ key: "b".repeat(43), pairing: "existing-device", by: "c".repeat(43) }],
+    phones: [{ key: "b".repeat(43), pairing: "existing-device" }],
     vouched: { legacy: true },
   });
   fs.writeFileSync(link, kept);

@@ -1,6 +1,15 @@
 // What a box's programs write in its `run` folder for each other, as each reads it.
 
+import fs from "node:fs";
+import { additiveObjectFormat } from "./format-version";
 import type { BotLook } from "./routes/bots";
+
+export const serveRecordFormat = additiveObjectFormat("Box server rendezvous");
+export const bridgeRecordFormat = additiveObjectFormat("Coding agents bridge rendezvous");
+
+export function readRendezvous<T>(format: ReturnType<typeof additiveObjectFormat>, file: string): T {
+  return format.read(JSON.parse(fs.readFileSync(file, "utf8"))) as T;
+}
 
 /** `run/engine.json`: the engine running here, as its launch wrote it (this Mac's app, or a machine's keeper). */
 export interface EngineRecord {
@@ -39,7 +48,7 @@ export interface RenewalRecord {
  * turns under way while new ones wait (`holding`), the engine that bundle came with (`engine`), or
  * a restart of its engine, as it won't make way by itself (`restart`: a bridge from before it did,
  * one whose launch wouldn't start it again, or a bundle that doesn't run here). */
-export type RenewalWait = "quiet" | "holding" | "engine" | "restart";
+export type RenewalWait = "quiet" | "holding" | "engine" | "restart" | "handover";
 
 /** `run/tools.json`: the port of this Mac's app's own server for Kuvo Code's tools, as the app last
  * told the agents bridge (the box's sandbox refuses it, as Kuvo Code's other servers). */
@@ -76,6 +85,7 @@ export interface ToldAgents {
   features?: string[];
   /** Its `features` were longer than a peer keeps (`keptFeatures`): the list is cut, so it can't say what's missing. */
   featuresCut?: true;
+  groups?: string[];
   /** Conversations it moved away lately, by the key of the box each lives on now, and when. */
   moved?: { session: string; key: string; at: number }[];
   /** The setup it follows (its id), where it said one (PROTOCOL.md, "Your setup"). */
