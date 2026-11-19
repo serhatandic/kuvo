@@ -10,7 +10,7 @@ use std::collections::HashSet;
 use std::rc::Rc;
 
 use gpui::{
-    AnyElement, App, FontWeight, InteractiveElement, Window, IntoElement, ParentElement, SharedString, StatefulInteractiveElement, Styled, div,
+    AnyElement, App, InteractiveElement, Window, IntoElement, ParentElement, SharedString, StatefulInteractiveElement, Styled, div,
     prelude::FluentBuilder as _, px, relative,
 };
 use kuvo_box::messages::{Content, Message, News, Step};
@@ -44,6 +44,9 @@ pub enum Entry {
     /// What the agent did between its words, one after another across its steps: tool steps and
     /// thinking, each by its step and where it is in it. Drawn as one group.
     Steps { key: String, items: Vec<(Rc<Step>, usize)> },
+    /// A message this agent sent to another agent (`send_message`), standing on its own in the
+    /// conversation in order with the words and steps around it.
+    Sent { key: String, step: Rc<Step>, part: usize },
     /// How long a turn worked, or how it ended, at its end.
     TurnEnd { id: String, outcome: String, worked: Option<f64> },
     /// A run under way, after what it has said so far.
@@ -63,6 +66,15 @@ impl Entry {
                 Some(Content::Text(text)) => Some(text.as_str()),
                 _ => None,
             }).collect(),
+            Entry::Sent { step, part, .. } => match step.content.get(*part) {
+                Some(Content::Tool { state, .. }) => state
+                    .pointer("/input/text")
+                    .or_else(|| state.pointer("/input/message"))
+                    .and_then(Value::as_str)
+                    .into_iter()
+                    .collect(),
+                _ => Vec::new(),
+            },
             Entry::Outgoing { words, .. } => vec![words.as_str()],
             _ => Vec::new(),
         }
@@ -75,7 +87,7 @@ impl Entry {
             Entry::Working { .. } => "working",
             Entry::Message(message) => message.id(),
             Entry::TurnEnd { id, .. } | Entry::Outgoing { id, .. } => id,
-            Entry::Words { key, .. } | Entry::Steps { key, .. } => key,
+            Entry::Words { key, .. } | Entry::Steps { key, .. } | Entry::Sent { key, .. } => key,
         }
     }
 
@@ -161,8 +173,8 @@ pub fn entries(mut conversation: Conversation) -> (Vec<Entry>, Vec<u64>) {
 
 /// The rows of one of the agent's steps: its words, each run of them a row, and what it did between
 /// them (tool steps, thinking) going on in `group`, the one the steps before it left open, or a new
-/// one. Each row is known by where it starts (the step's id at its start), so a group stays the same
-/// row as what it did grows; a group drawn from several steps changes with any of them.
+/// one. Messages sent to other agents (`send_message`) leave the step group and stand on their own
+/// in order with the text and steps around them.
 fn agent_rows(step: Rc<Step>, revision: u64, group: &mut Option<usize>, rows: &mut Vec<Entry>, revisions: &mut Vec<u64>) {
     let key = |n: usize| if n == 0 { step.id.clone() } else { format!("{}#{n}", step.id) };
     let mut words: Vec<usize> = Vec::new();
@@ -179,6 +191,12 @@ fn agent_rows(step: Rc<Step>, revision: u64, group: &mut Option<usize>, rows: &m
             Content::Text(text) if !text.trim().is_empty() => {
                 *group = None;
                 words.push(n);
+            }
+            Content::Tool { name, .. } if crate::tool_step::is_send_message(name) => {
+                flush(&mut words, false, n, rows, revisions);
+                *group = None;
+                rows.push(Entry::Sent { key: key(n), step: step.clone(), part: n });
+                revisions.push(revision);
             }
             Content::Reasoning { .. } | Content::Tool { .. } => {
                 flush(&mut words, false, n, rows, revisions);
@@ -319,6 +337,10 @@ pub fn render(
         Entry::Steps { key, items } => {
             let sel = |base: &[u32]| Selectable::new(selection.clone(), SharedString::from(key.clone()), base);
             steps(key, items, open, toggle, around.waiting, around.now, &sel, looks, cx)
+        }
+        Entry::Sent { key, step, part } => {
+            let sel = |base: &[u32]| Selectable::new(selection.clone(), SharedString::from(key.clone()), base);
+            from_agents(key, &sent_letters(step, *part), step.time.created, open, toggle, around, &sel, cx)
         }
         Entry::TurnEnd { outcome, worked, .. } => turn_end(outcome, *worked, cx),
         Entry::Working { title } => working(title, cx),
@@ -494,6 +516,12 @@ pub fn units(entry: &Entry, open: &HashSet<Fold>) -> Vec<Unit> {
             }
             units
         }
+        Entry::Sent { key, step, part } => sent_letters(step, *part)
+            .iter()
+            .enumerate()
+            .filter(|(n, letter)| letter.opens(open, key, *n))
+            .flat_map(|(n, letter)| markdown::units(&letter.said, &[n as u32]))
+            .collect(),
         // (As the box's copy will be: what you wrote.)
         Entry::Outgoing { words, .. } => words_units(words),
         _ => Vec::new(),
@@ -512,6 +540,14 @@ pub fn message_units(message: &Message, open: &HashSet<Fold>) -> Vec<Unit> {
             for (n, content) in step.content.iter().enumerate() {
                 match content {
                     Content::Text(text) if !text.trim().is_empty() => units.extend(markdown::units(text, &[n as u32])),
+                    Content::Tool { name, .. } if crate::tool_step::is_send_message(name) => {
+                        let card_key = format!("{}:{n}", step.id);
+                        for (c_ix, letter) in sent_letters(step, n).iter().enumerate() {
+                            if letter.opens(open, &card_key, c_ix) {
+                                units.extend(markdown::units(&letter.said, &[n as u32, c_ix as u32]));
+                            }
+                        }
+                    }
                     _ => units.extend(content_units(step, n, n as u32, open)),
                 }
             }
@@ -631,7 +667,8 @@ fn user_message(ix: usize, parts: &Parts, sel: Selectable, cx: &App) -> AnyEleme
     // What went with it, above it: the keyword it was sent with as typed, who wrote it.
     let mut above: Vec<AnyElement> = Vec::new();
     if let Some(mail) = &parts.mail {
-        above.push(div().text_ui(TypeSize::Caption).text_color(c.text_muted).child(format!("From &{}", mail.name)).into_any_element());
+        let name = crate::tool_step::clean_person(&mail.name).unwrap_or_else(|| "Another agent".to_owned());
+        above.push(div().text_ui(TypeSize::Caption).text_color(c.text_muted).child(format!("From {name}")).into_any_element());
     }
     if parts.phone {
         above.push(div().text_ui(TypeSize::Caption).text_color(c.text_faint).child("From iPhone").into_any_element());
@@ -736,6 +773,11 @@ fn agent_step(step: &Step, open: &HashSet<Fold>, toggle: impl Fn(Fold, &mut App)
         match content {
             Content::Text(text) if !text.trim().is_empty() => {
                 blocks.push(words_block(step, n, text, sel, looks));
+            }
+            Content::Tool { name, .. } if crate::tool_step::is_send_message(name) => {
+                let card_key = format!("{}:{n}", step.id);
+                let nested_sel = |base: &[u32]| sel(&[n as u32, base.first().copied().unwrap_or(0)]);
+                blocks.push(from_agents(&card_key, &sent_letters(step, n), step.time.created, open, toggle.clone(), &Around::none(), &nested_sel, cx));
             }
             _ => blocks.extend(content_blocks(step, n, n as u32, open, toggle.clone(), false, time::now_ms(), sel, looks, cx)),
         }
@@ -1173,19 +1215,21 @@ fn lowered(words: &str) -> String {
     letters.next().map(|first| first.to_lowercase().chain(letters).collect()).unwrap_or_default()
 }
 
-/// What a card in a conversation is: a message from another agent, one of its sessions' news, or a
-/// wake-up (or watch) of its own. Each has its own mark and title.
+/// What a card in a conversation is: a message from or to another agent, one of its sessions'
+/// news, or a wake-up (or watch) of its own. Each has its own mark and title.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     Mail,
+    Sent,
     News,
     Wake,
 }
 
-/// A message the user didn't write, as its card shows it: what it is, who it's from (a wake-up:
-/// "Woke up", as the phone says it), what happened ("finished", "asks"), what it said, the line it shows folded where it
-/// isn't its first (a wake-up's summary), and the conversation it's from (none where it can't be
-/// opened).
+/// A message between agents (or a wake-up / session news card): what it is, who it's from or to
+/// (a wake-up: "Woke up", as the phone says it), what happened ("finished", "asks"), what it said,
+/// the line it shows folded where it isn't its first (a wake-up's summary), the conversation it
+/// connects to (none where it can't be opened), whether a send is still running, and any failure
+/// reason.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Letter {
     pub kind: Kind,
@@ -1194,6 +1238,8 @@ pub struct Letter {
     pub said: String,
     pub preview: Option<String>,
     pub session: Option<String>,
+    pub busy: bool,
+    pub error: Option<String>,
 }
 
 impl Letter {
@@ -1220,17 +1266,17 @@ impl Letter {
         self.said.trim().lines().find(|line| !line.trim().is_empty()).unwrap_or("").trim().trim_start_matches(['#', '>', '-', '*', ' ']).replace("**", "").replace('`', "")
     }
 
-    /// Its mark, and the colour it's drawn in: a send mark for a message, an alarm clock for a
-    /// wake-up, and for a session's news what happened (finished, asks, stopped).
+    /// Its mark, and the colour it's drawn in: a quiet send mark for a message (both directions),
+    /// an alarm clock for a wake-up, and for a session's news what happened (finished, asks, stopped).
     fn mark(&self, c: &kuvo_ui::theme::Colors) -> (IconName, gpui::Hsla) {
         match (self.kind, self.status.as_deref()) {
-            (Kind::Mail, _) => (IconName::Send, c.accent),
-            (Kind::Wake, _) => (IconName::Alarm, c.accent),
+            (Kind::Mail | Kind::Sent, _) => (IconName::Send, c.text_muted),
+            (Kind::Wake, _) => (IconName::Alarm, c.text_muted),
             (Kind::News, Some("finished")) => (IconName::Check, c.success),
             (Kind::News, Some("asks")) => (IconName::Question, c.accent),
             (Kind::News, Some("stopped" | "not summarized")) => (IconName::Warning, c.warning),
             (Kind::News, Some("stopped by you")) => (IconName::Close, c.text_muted),
-            (Kind::News, _) => (IconName::Send, c.accent),
+            (Kind::News, _) => (IconName::Send, c.text_muted),
         }
     }
 }
@@ -1240,27 +1286,60 @@ impl Letter {
 pub fn letters(user: &kuvo_box::messages::UserMessage) -> Vec<Letter> {
     // Its sessions' news its box couldn't read: whole, from them, rather than lost.
     if let Some(text) = user.unread_news() {
-        return vec![Letter { kind: Kind::News, from: "Its sessions".into(), status: None, said: text, preview: None, session: None }];
+        return vec![Letter { kind: Kind::News, from: "Its sessions".into(), status: None, said: text, preview: None, session: None, busy: false, error: None }];
     }
     // A wake-up of its own: its summary, opening to its note.
     if let Some(wake) = user.wake() {
-        return vec![Letter { kind: Kind::Wake, from: "Woke up".into(), status: None, said: wake.note, preview: Some(wake.summary), session: None }];
+        return vec![Letter { kind: Kind::Wake, from: "Woke up".into(), status: None, said: wake.note, preview: Some(wake.summary), session: None, busy: false, error: None }];
     }
     let news: Vec<News> = user.news();
     if !news.is_empty() {
         return news
             .into_iter()
-            .map(|news| Letter { kind: Kind::News, from: news.title, status: news.status, said: news.said, preview: None, session: Some(news.session).filter(|session| session.starts_with("ses")) })
+            .map(|news| Letter { kind: Kind::News, from: news.title, status: news.status, said: news.said, preview: None, session: Some(news.session).filter(|session| session.starts_with("ses")), busy: false, error: None })
             .collect();
     }
     let parts = user.parts();
     let Some(mail) = parts.mail else { return Vec::new() };
-    vec![Letter { kind: Kind::Mail, from: mail.name, status: None, said: parts.words.trim().to_owned(), preview: None, session: Some(mail.session).filter(|session| session != "unknown" && !session.is_empty()) }]
+    let from = crate::tool_step::clean_person(&mail.name).unwrap_or_else(|| "Another agent".to_owned());
+    vec![Letter { kind: Kind::Mail, from, status: None, said: parts.words.trim().to_owned(), preview: None, session: Some(mail.session).filter(|session| session != "unknown" && !session.is_empty()), busy: false, error: None }]
 }
 
-/// Messages from other agents (or a lead's sessions' news), each as a card of its own: a send mark,
-/// "From <name>" and what happened, the time and Open (its conversation), and its first line,
-/// opening to all of it.
+/// The card(s) for a `send_message` tool call: "To <name>" with the sent text (and any error if it
+/// failed), followed immediately by "From <name>" if the call waited and got a reply back.
+pub fn sent_letters(step: &Step, part: usize) -> Vec<Letter> {
+    let Some(Content::Tool { state, title, .. }) = step.content.get(part) else {
+        return Vec::new();
+    };
+    let sent = crate::tool_step::sent_message(title.as_deref(), state);
+    let mut cards = vec![Letter {
+        kind: Kind::Sent,
+        from: sent.to,
+        status: None,
+        said: sent.text,
+        preview: None,
+        session: sent.session.clone(),
+        busy: sent.busy,
+        error: sent.error,
+    }];
+    if let Some((reply_from, reply_text)) = sent.reply {
+        cards.push(Letter {
+            kind: Kind::Mail,
+            from: reply_from,
+            status: None,
+            said: reply_text,
+            preview: None,
+            session: sent.session,
+            busy: false,
+            error: None,
+        });
+    }
+    cards
+}
+
+/// Messages between agents (both "From <name>" and "To <name>"), a lead's sessions' news, and
+/// wake-ups, each as one calm bordered card: its mark, direction + name, time and Open (its
+/// conversation), and its text (or first line, opening to all of it).
 #[allow(clippy::too_many_arguments)]
 fn from_agents(message: &str, letters: &[Letter], at: f64, open: &HashSet<Fold>, toggle: impl Fn(Fold, &mut App) + Clone + 'static, around: &Around, sel: &dyn Fn(&[u32]) -> Selectable, cx: &App) -> AnyElement {
     let c = &cx.theme().colors;
@@ -1271,6 +1350,7 @@ fn from_agents(message: &str, letters: &[Letter], at: f64, open: &HashSet<Fold>,
         let id = SharedString::from(format!("letter-{message}-{n}"));
         let selector = id.to_string();
         let preview = letter.folded_line();
+        let failed = letter.error.is_some();
         let open_it = letter.session.clone().map(|session| {
             let open_session = around.open_session.clone();
             let selector = format!("open-{message}-{n}");
@@ -1281,36 +1361,48 @@ fn from_agents(message: &str, letters: &[Letter], at: f64, open: &HashSet<Fold>,
                 .px(space::S1_5)
                 .rounded(radius::NAV)
                 .text_ui(TypeSize::Caption)
-                .text_color(c.accent)
+                .text_color(c.text_muted)
                 .cursor_pointer()
-                .hover(|s| s.bg(c.hover))
+                .hover(|s| s.bg(c.hover).text_color(c.text))
                 .on_click(move |_, window, cx| {
                     cx.stop_propagation();
                     open_session(&session, window, cx)
                 })
                 .child("Open")
         });
-        // One line: "From" and its name (cut short where it's long) for a message; a session's name
-        // and what happened ("Sign-in finished"); "Woke up".
+        // One line: "From <name>" or "To <name>" for messages; a session's name and what happened
+        // ("Sign-in finished"); "Woke up".
+        let direction = match letter.kind {
+            Kind::Mail => Some("From"),
+            Kind::Sent => Some("To"),
+            Kind::News | Kind::Wake => None,
+        };
         let from = div()
             .flex()
             .items_center()
             .gap(space::S1)
             .min_w_0()
             .text_color(c.text_muted)
-            .when(letter.kind == Kind::Mail, |d| d.child(div().flex_none().child("From")))
-            .child(div().min_w_0().truncate().text_color(c.text).font_weight(FontWeight::SEMIBOLD).child(letter.from.clone()))
+            .children(direction.map(|dir| div().flex_none().child(dir)))
+            .child(div().min_w_0().truncate().text_color(c.text).font_weight(kuvo_ui::theme::MEDIUM).child(letter.from.clone()))
             .children(letter.status.clone().map(|status| div().flex_none().child(status)));
         let (mark, tint) = letter.mark(c);
+        let leading: AnyElement = if letter.busy {
+            spinner(SharedString::from(format!("{id}-spin")), IconSize::Nav, c.text_muted).into_any_element()
+        } else if failed {
+            Icon::new(IconName::Warning).size(IconSize::Nav).color(c.danger).into_any_element()
+        } else {
+            Icon::new(mark).size(IconSize::Nav).color(tint).into_any_element()
+        };
         let head = div()
             .flex()
             .items_center()
             .gap(space::S1_5)
             .min_w_0()
             .text_ui(TypeSize::Small)
-            .child(div().flex().flex_none().w(px(16.)).justify_center().child(Icon::new(mark).size(IconSize::Nav).color(tint)))
+            .child(div().flex().flex_none().w(px(16.)).justify_center().child(leading))
             .child(div().flex().flex_1().min_w_0().child(from))
-            .child(div().flex_none().text_ui(TypeSize::Caption).text_color(c.text_faint).child(time::when(at, time::now_ms())))
+            .child(div().flex_none().text_ui(TypeSize::Caption).text_color(c.text_faint).child(time::when(at, around.now)))
             .children(open_it)
             .when(letter.folds(), |d| d.child(Icon::new(if whole { IconName::ChevronDown } else { IconName::ChevronRight }).size(IconSize::Nav).color(c.text_faint)));
         let said: AnyElement = if whole {
@@ -1318,6 +1410,14 @@ fn from_agents(message: &str, letters: &[Letter], at: f64, open: &HashSet<Fold>,
         } else {
             div().ml(UNDER).min_w_0().truncate().text_ui(TypeSize::Small).text_color(c.text_muted).child(preview).into_any_element()
         };
+        let error = letter.error.clone().map(|error| {
+            div()
+                .ml(UNDER)
+                .text_ui(TypeSize::Small)
+                .text_color(c.danger)
+                .child(error)
+                .into_any_element()
+        });
         div()
             .id(id)
             .debug_selector(move || selector)
@@ -1326,13 +1426,14 @@ fn from_agents(message: &str, letters: &[Letter], at: f64, open: &HashSet<Fold>,
             .gap(space::S1)
             .px(space::S3)
             .py(space::S2)
-            .rounded(radius::CARD)
+            .rounded(radius::POPOVER)
             .border_1()
-            .border_color(c.border)
-            .bg(c.card)
+            .border_color(if failed { c.danger.opacity(0.35) } else { c.border })
+            .bg(c.sunken.opacity(0.5))
             .when(letter.folds(), |d| d.cursor_pointer().on_click(move |_, _, cx| toggle(fold.clone(), cx)))
             .child(head)
             .when(!letter.said.trim().is_empty(), |d| d.child(said))
+            .children(error)
     });
     div().flex().flex_col().gap(GAP).children(cards).into_any_element()
 }
@@ -1942,14 +2043,80 @@ mod tests {
         let Entry::Message(message) = &rows[0] else { panic!() };
         let Message::User(user) = &**message else { panic!() };
         let mail = letters(user);
-        assert_eq!(mail, [Letter { kind: Kind::Mail, from: "Mira".into(), status: None, said: "Done.\n\nAll green.".into(), preview: None, session: Some("ses_m".into()) }]);
+        assert_eq!(mail, [Letter { kind: Kind::Mail, from: "Mira".into(), status: None, said: "Done.\n\nAll green.".into(), preview: None, session: Some("ses_m".into()), busy: false, error: None }]);
         assert!(mail[0].folds(), "more than its first line");
         let Entry::Message(message) = &rows[1] else { panic!() };
         let Message::User(user) = &**message else { panic!() };
-        assert_eq!(letters(user), [Letter { kind: Kind::News, from: "Sign-in".into(), status: Some("asks".into()), said: "May I run npm i?".into(), preview: None, session: Some("ses_a".into()) }]);
+        assert_eq!(letters(user), [Letter { kind: Kind::News, from: "Sign-in".into(), status: Some("asks".into()), said: "May I run npm i?".into(), preview: None, session: Some("ses_a".into()), busy: false, error: None }]);
         // Its words are selectable once it's shown whole.
         assert!(units(&rows[0], &HashSet::new()).is_empty());
         assert!(!units(&rows[0], &HashSet::from([Fold::Card("m1".into(), 0)])).is_empty());
+    }
+
+    #[test]
+    fn sent_messages_leave_step_groups_and_show_waited_replies_and_errors() {
+        let (rows, _) = entries(conversation(
+            json!([
+                { "type": "user", "id": "u_in", "time": { "created": 1 }, "text": "[From &Check the other forms] Same bug here.", "metadata": { "kuvo": { "parts": { "words": "Same bug here.", "mail": { "name": "&Check the other forms", "session": "ses_sub" } } } } },
+                step("a1", 2.0, json!([
+                    tool_part("t0", "read", "completed", json!({ "filePath": "/p/a.ts" })),
+                    { "type": "tool", "id": "t1", "name": "kuvo-browser_send_message", "title": "Sent a message", "state": {
+                        "status": "completed",
+                        "input": { "to": "ses_mira", "wait": false, "text": "Taking a look now." },
+                        "content": [{ "type": "text", "text": "Sent to Mira. Its answer, if it writes one, comes to you as a message." }]
+                    }},
+                    tool_part("t2", "shell", "completed", json!({ "command": "cargo test" })),
+                    { "type": "tool", "id": "t3", "name": "kuvo-browser_send_message", "title": "Sent a message", "state": {
+                        "status": "completed",
+                        "input": { "to": "&Release helper (ses_rel)", "wait": true, "text": "Is beta.35 green?" },
+                        "content": [{ "type": "text", "text": "Release helper answered:\n\nGreen on macOS and Linux." }]
+                    }},
+                    { "type": "tool", "id": "t4", "name": "kuvo-browser_send_message", "title": "Sent a message", "state": {
+                        "status": "failed",
+                        "input": { "to": "ses_build", "wait": false, "text": "Run notarized build." },
+                        "error": "Error: Build runner can't be reached now. Try again later."
+                    }},
+                    { "type": "text", "text": "Done checking." }
+                ])),
+            ]),
+            false,
+            None,
+        ));
+        // Received card strips leading &.
+        let Entry::Message(msg) = &rows[0] else { panic!("received") };
+        let Message::User(user) = &**msg else { panic!("user") };
+        assert_eq!(letters(user)[0].from, "Check the other forms");
+
+        // Order: received, steps[read], sent(Mira), steps[shell], sent(Release helper + reply), sent(Build runner failed), words.
+        assert_eq!(rows.len(), 7);
+        let Entry::Steps { items: before, .. } = &rows[1] else { panic!("steps before") };
+        assert_eq!(before.len(), 1);
+        let Entry::Sent { step, part, .. } = &rows[2] else { panic!("sent 1") };
+        let cards1 = sent_letters(step, *part);
+        assert_eq!(cards1.len(), 1);
+        assert_eq!(cards1[0].kind, Kind::Sent);
+        assert_eq!(cards1[0].from, "Mira");
+        assert_eq!(cards1[0].said, "Taking a look now.");
+        assert_eq!(cards1[0].error, None);
+        // Short sent message is immediately selectable without folding.
+        assert!(!units(&rows[2], &HashSet::new()).is_empty());
+
+        let Entry::Steps { items: mid, .. } = &rows[3] else { panic!("steps mid") };
+        assert_eq!(mid.len(), 1);
+
+        let Entry::Sent { step, part, .. } = &rows[4] else { panic!("sent 2") };
+        let cards2 = sent_letters(step, *part);
+        assert_eq!(cards2.len(), 2);
+        assert_eq!((cards2[0].kind, cards2[0].from.as_str(), cards2[0].said.as_str()), (Kind::Sent, "Release helper", "Is beta.35 green?"));
+        assert_eq!((cards2[1].kind, cards2[1].from.as_str(), cards2[1].said.as_str()), (Kind::Mail, "Release helper", "Green on macOS and Linux."));
+
+        let Entry::Sent { step, part, .. } = &rows[5] else { panic!("sent 3") };
+        let cards3 = sent_letters(step, *part);
+        assert_eq!(cards3.len(), 1);
+        assert_eq!(cards3[0].from, "Build runner");
+        assert_eq!(cards3[0].error.as_deref(), Some("Build runner can't be reached now. Try again later."));
+
+        assert!(matches!(&rows[6], Entry::Words { .. }));
     }
 
     /// A wake-up its box marked shows as a card of its own (#768): its summary folded, its note
@@ -1970,7 +2137,7 @@ mod tests {
         let Message::User(user) = &**message else { panic!() };
         assert!(user.is_letter());
         let wake = letters(user);
-        assert_eq!(wake, [Letter { kind: Kind::Wake, from: "Woke up".into(), status: None, said: note.into(), preview: Some("Pacing check".into()), session: None }]);
+        assert_eq!(wake, [Letter { kind: Kind::Wake, from: "Woke up".into(), status: None, said: note.into(), preview: Some("Pacing check".into()), session: None, busy: false, error: None }]);
         assert_eq!(wake[0].folded_line(), "Pacing check");
         assert!(wake[0].folds(), "it opens to the whole note");
         assert!(units(&rows[0], &HashSet::new()).is_empty(), "folded, only its summary shows");

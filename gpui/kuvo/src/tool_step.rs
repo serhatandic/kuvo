@@ -76,6 +76,24 @@ fn kuvo_tool_name(name: &str) -> &str {
         .unwrap_or(name)
 }
 
+/// Whether `name` is Kuvo's inter-agent `send_message` tool, which renders as a standalone
+/// message card in the conversation rather than inside a step group.
+pub fn is_send_message(name: &str) -> bool {
+    kuvo_tool_name(name) == "send_message"
+}
+
+/// A message sent by this agent via `send_message`, plus its optional waited reply or error.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SentMessage {
+    pub to: String,
+    pub session: Option<String>,
+    pub text: String,
+    pub busy: bool,
+    pub error: Option<String>,
+    /// `(sender_name, reply_text)` when `send_message` waited and received a reply.
+    pub reply: Option<(String, String)>,
+}
+
 /// Joins text blocks from `state.content`.
 pub fn printed(state: &Value) -> String {
     let blocks = state
@@ -199,6 +217,24 @@ pub fn note(name: &str, state: &Value) -> Option<Note> {
 
 // MARK: Known Kuvo tools
 
+/// Extracts a standalone `send_message` card (and optional waited reply) from a tool step.
+pub fn sent_message(title: Option<&str>, state: &Value) -> SentMessage {
+    let input = state.get("input").unwrap_or(&Value::Null);
+    let status = state.get("status").and_then(Value::as_str).unwrap_or("");
+    let busy = matches!(status, "running" | "streaming" | "pending");
+    let failed = status == "failed" || status == "error";
+    let to = resolve_recipient(title, state, input).unwrap_or_else(|| "an agent".to_owned());
+    let session = resolve_recipient_session(state, input);
+    let text = first_text_field(input, &["text", "message", "body", "content"]).unwrap_or_default();
+    let error = failed.then(|| tool_error(state)).flatten();
+    let reply = if busy || failed {
+        None
+    } else {
+        extract_waited_reply(state, input, &to)
+    };
+    SentMessage { to, session, text, busy, error, reply }
+}
+
 fn present_send_message(title: Option<&str>, state: &Value, input: &Value, busy: bool) -> Presentation {
     let recipient = resolve_recipient(title, state, input);
     let label = match (busy, recipient) {
@@ -217,34 +253,89 @@ fn present_send_message(title: Option<&str>, state: &Value, input: &Value, busy:
 
 fn note_send_message(state: &Value, input: &Value) -> Option<Note> {
     let primary = first_text_field(input, &["text", "message", "body", "content"])?;
-    let reply = extract_message_reply(state);
+    let reply = extract_waited_reply(state, input, "an agent").map(|(_, body)| body);
     Some(Note { primary, secondary: reply })
 }
 
-fn extract_message_reply(state: &Value) -> Option<String> {
+fn extract_waited_reply(state: &Value, input: &Value, fallback_name: &str) -> Option<(String, String)> {
     let status = state.get("status").and_then(Value::as_str).unwrap_or("");
-    if status == "failed" || status == "error" {
+    if matches!(status, "running" | "streaming" | "pending" | "failed" | "error") {
         return None;
     }
     let raw = printed(state);
     let trimmed = raw.trim();
-    if trimmed.is_empty() || is_confirmation(trimmed) {
+    if trimmed.is_empty() || is_confirmation(trimmed) || is_send_status_note(trimmed) {
         return None;
     }
     // `send_message(wait: true)` prints "<Name> answered:\n\n<reply>".
     if let Some((head, rest)) = trimmed.split_once('\n') {
-        if head.trim_end().ends_with("answered:") {
+        if let Some(who) = head.trim_end().strip_suffix(" answered:") {
             let reply = rest.trim();
             if !reply.is_empty() && !is_confirmation(reply) {
-                return Some(reply.to_owned());
+                let sender = clean_person(who).unwrap_or_else(|| fallback_name.to_owned());
+                return Some((sender, reply.to_owned()));
             }
             return None;
         }
     }
-    if contains_internal_id(trimmed) {
-        return None;
+    // Only treat bare output text as a reply when the call explicitly waited for one.
+    let waited = input.get("wait").and_then(Value::as_bool) == Some(true);
+    if waited && !contains_internal_id(trimmed) {
+        return Some((fallback_name.to_owned(), trimmed.to_owned()));
     }
-    Some(trimmed.to_owned())
+    None
+}
+
+/// Non-reply delivery/status lines returned by Kuvo's `send_message` tool.
+fn is_send_status_note(text: &str) -> bool {
+    let lower = text.trim().to_ascii_lowercase();
+    lower.starts_with("sent to ")
+        || lower.starts_with("on its way to ")
+        || lower.starts_with("delivered to ")
+        || lower.starts_with("your other computers can't be reached")
+        || lower.starts_with("your other computers can\u{2019}t be reached")
+        || lower.contains("hasn't answered yet")
+        || lower.contains("hasn\u{2019}t answered yet")
+        || (lower.contains("is stopped") && lower.contains("waits"))
+}
+
+fn resolve_recipient_session(state: &Value, input: &Value) -> Option<String> {
+    for field in ["session", "toSession", "to_session"] {
+        if let Some(raw) = state.pointer(&format!("/metadata/{field}")).and_then(Value::as_str) {
+            let s = raw.trim();
+            if is_session_address(s) {
+                return Some(s.to_owned());
+            }
+        }
+    }
+    if let Some(raw) = input.get("to").and_then(Value::as_str) {
+        let s = raw.trim();
+        if is_session_address(s) {
+            return Some(s.to_owned());
+        }
+        if let Some(found) = extract_session_in_parens(s) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+fn is_session_address(s: &str) -> bool {
+    s.starts_with("ses") && s.len() > 3 && !s.contains(char::is_whitespace) && s != "unknown"
+}
+
+fn extract_session_in_parens(text: &str) -> Option<String> {
+    let mut rest = text;
+    while let Some(open) = rest.find('(') {
+        let after = &rest[open + 1..];
+        let close = after.find(')')?;
+        let inside = after[..close].trim();
+        if is_session_address(inside) {
+            return Some(inside.to_owned());
+        }
+        rest = &after[close + 1..];
+    }
+    None
 }
 
 fn resolve_recipient(title: Option<&str>, state: &Value, input: &Value) -> Option<String> {
@@ -272,16 +363,57 @@ fn resolve_recipient(title: Option<&str>, state: &Value, input: &Value) -> Optio
         }
     }
     let out = printed(state);
-    let first = out.lines().next().unwrap_or("").trim();
-    if let Some(rest) = first.strip_prefix("Delivered to ") {
-        let rest = rest.trim_end_matches('.');
-        if let Some(name) = clean_person(rest) {
+    if let Some(name) = recipient_from_status_line(out.lines().next().unwrap_or("")) {
+        return Some(name);
+    }
+    if let Some(err) = tool_error(state) {
+        if let Some(name) = recipient_from_status_line(err.lines().next().unwrap_or("")) {
             return Some(name);
         }
     }
-    if let Some(who) = first.strip_suffix(" answered:") {
-        if let Some(name) = clean_person(who) {
+    None
+}
+
+fn recipient_from_status_line(line: &str) -> Option<String> {
+    let first = line.trim();
+    if let Some(rest) = first.strip_prefix("Delivered to ") {
+        let head = rest.split('.').next().unwrap_or(rest);
+        if let Some(name) = clean_person(head) {
             return Some(name);
+        }
+    }
+    if let Some(rest) = first.strip_prefix("Sent to ") {
+        let head = rest.split('.').next().unwrap_or(rest);
+        if let Some(name) = clean_person(head) {
+            return Some(name);
+        }
+    }
+    if let Some(rest) = first.strip_prefix("On its way to ") {
+        let head = rest.split('.').next().unwrap_or(rest);
+        let head = head.split(" on ").next().unwrap_or(head);
+        if let Some(name) = clean_person(head) {
+            return Some(name);
+        }
+    }
+    if let Some(rest) = first.strip_prefix("It didn't reach ").or_else(|| first.strip_prefix("It didn\u{2019}t reach ")) {
+        let head = rest.split([':', '.']).next().unwrap_or(rest);
+        if let Some(name) = clean_person(head) {
+            return Some(name);
+        }
+    }
+    for suffix in [
+        " answered:",
+        " hasn't answered yet",
+        " hasn\u{2019}t answered yet",
+        " can't be reached now",
+        " can\u{2019}t be reached now",
+        " is moving to another computer",
+        " is stopped",
+    ] {
+        if let Some(idx) = first.find(suffix) {
+            if let Some(name) = clean_person(&first[..idx]) {
+                return Some(name);
+            }
         }
     }
     None
@@ -1135,17 +1267,15 @@ fn is_confirmation(text: &str) -> bool {
     false
 }
 
-/// Cleans a person/agent name: strips leading `&`/`@` and parenthetical internal IDs (`(ses_…)`),
-/// returning `None` if nothing human remains.
+/// Cleans a person/agent name: strips leading `&`/`@`, parenthetical internal IDs (`(ses_…)`),
+/// and trailing `" · ses_…"` suffixes, returning `None` if nothing human remains.
 pub fn clean_person(raw: &str) -> Option<String> {
     let stripped = strip_parenthetical_ids(raw);
-    let stripped = stripped
-        .split(" · ")
-        .next()
-        .unwrap_or(&stripped)
-        .trim()
-        .trim_start_matches(['&', '@'])
-        .trim();
+    let stripped = match stripped.rsplit_once(" · ") {
+        Some((head, tail)) if is_internal_id(tail.trim()) => head,
+        _ => &stripped,
+    };
+    let stripped = stripped.trim().trim_start_matches(['&', '@']).trim();
     if stripped.is_empty() || is_internal_id(stripped) {
         return None;
     }
@@ -1454,5 +1584,55 @@ mod tests {
         assert!(!is_internal_id("#231"));
         assert!(!is_internal_id("KUV-412"));
         assert!(!is_internal_id("Check groundwork branch"));
+    }
+
+    #[test]
+    fn sent_message_handles_plain_waited_reply_and_failed_sends() {
+        // Plain send: resolves display name from box confirmation, keeps session for Open, no fake reply.
+        let plain = json!({
+            "status": "completed",
+            "input": { "to": "ses_mira", "wait": false, "text": "Flow view is wired and all tests pass." },
+            "content": [{ "type": "text", "text": "Sent to Mira. Its answer, if it writes one, comes to you as a message." }]
+        });
+        let msg = sent_message(Some("Sent a message"), &plain);
+        assert_eq!(msg.to, "Mira");
+        assert_eq!(msg.session.as_deref(), Some("ses_mira"));
+        assert_eq!(msg.text, "Flow view is wired and all tests pass.");
+        assert!(!msg.busy);
+        assert_eq!(msg.error, None);
+        assert_eq!(msg.reply, None);
+
+        // Waited send with reply: surfaces both sent text and "From <name>" reply, stripping leading &.
+        let waited = json!({
+            "status": "completed",
+            "input": { "to": "&Release helper (ses_rel)", "wait": true, "text": "Is beta.35 green on CI?" },
+            "content": [{ "type": "text", "text": "Release helper answered:\n\nGreen on macOS and Linux. Ready to tag." }]
+        });
+        let msg = sent_message(Some("Sent a message"), &waited);
+        assert_eq!(msg.to, "Release helper");
+        assert_eq!(msg.session.as_deref(), Some("ses_rel"));
+        assert_eq!(msg.reply, Some(("Release helper".into(), "Green on macOS and Linux. Ready to tag.".into())));
+
+        // Waited send that timed out: does not fabricate a reply card.
+        let timed_out = json!({
+            "status": "completed",
+            "input": { "to": "ses_rel", "wait": true, "text": "Still waiting?" },
+            "content": [{ "type": "text", "text": "Release helper hasn't answered yet. It may still write back with send_message." }]
+        });
+        let msg = sent_message(Some("Sent a message"), &timed_out);
+        assert_eq!(msg.to, "Release helper");
+        assert_eq!(msg.reply, None);
+
+        // Failed send: resolves name from error, cleans Error: prefix, no reply.
+        let failed = json!({
+            "status": "failed",
+            "input": { "to": "ses_build", "wait": false, "text": "Kick off the notarized build." },
+            "error": "Error: Build runner can't be reached now. Try again later."
+        });
+        let msg = sent_message(Some("Sent a message"), &failed);
+        assert_eq!(msg.to, "Build runner");
+        assert_eq!(msg.session.as_deref(), Some("ses_build"));
+        assert_eq!(msg.error.as_deref(), Some("Build runner can't be reached now. Try again later."));
+        assert_eq!(msg.reply, None);
     }
 }

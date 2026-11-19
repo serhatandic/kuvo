@@ -151,9 +151,12 @@ const SCREENS: &[Screen] = &[
     // strip, then PDF & Markdown cards, missing tombstones, and a still-loading call.
     Screen { slug: "show-file-pictures", width: 1280., height: 1080., session: Some("ses_dark"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "show-file-cards", width: 1280., height: 1040., session: Some("ses_dark"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
-    // Inline tool-call details in the real conversation view: command, edit, sent message, Work
-    // Queue update, scheduled & canceled wake-ups, failed call, and an unknown MCP tool.
-    Screen { slug: "tool-details", width: 1280., height: 1420., session: Some("ses_dark"), typed: None, empty: false, opens: &[("msg_td_a1", 0), ("msg_td_a1", 1), ("msg_td_a1", 2), ("msg_td_a1", 3), ("msg_td_a1", 4), ("msg_td_a1", 7)], search: None, walks: 0, attach: &[], panel: None },
+    // Inline tool-call details in the real conversation view: command, edit, Work Queue update,
+    // scheduled & canceled wake-ups, failed call, and an unknown MCP tool.
+    Screen { slug: "tool-details", width: 1280., height: 1420., session: Some("ses_dark"), typed: None, empty: false, opens: &[("msg_td_a1", 0), ("msg_td_a1", 1), ("msg_td_a1", 3), ("msg_td_a1", 4), ("msg_td_a1", 7)], search: None, walks: 0, attach: &[], panel: None },
+    // Unified From / To agent message cards: received message, sent mid-turn outside the step
+    // group, sent with waited reply, and a failed send.
+    Screen { slug: "agent-messages", width: 1280., height: 820., session: Some("ses_dark"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "agent-letters", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(agent_letters) },
     // Selecting text (`kuvo_ui/src/selection.rs`): across a paragraph, inside a code block, across
     // messages, the right-click menu over a selection, and a drag in three steps.
@@ -1492,6 +1495,126 @@ fn stage_tool_details(stand_in: &StandIn) {
     }));
 }
 
+/// Real conversation for `agent-messages`: a received message from another agent, a sent message
+/// in the middle of a turn (outside the step group, not counted in the summary), a sent message
+/// with a waited reply (`To` followed immediately by `From`), and a failed send.
+fn stage_agent_messages(stand_in: &StandIn) {
+    use serde_json::json;
+    stand_in.set_facts("ses_dark", |facts| {
+        facts["title"] = json!("Coordinate beta.35 release");
+    });
+
+    // 1. Received message from another agent (note leading `&` in metadata is stripped).
+    stand_in.add_message("ses_dark", json!({
+        "type": "user",
+        "id": "msg_am_recv",
+        "time": { "created": NOW - 240_000.0 },
+        "text": "[From &Check the other forms] The profile form resets email when the server rejects it too. Sharing the validation helper should fix both.",
+        "metadata": {
+            "kuvo": {
+                "parts": {
+                    "words": "The profile form resets email when the server rejects it too. Sharing the validation helper should fix both.",
+                    "mail": { "name": "&Check the other forms", "session": "ses_sub" }
+                }
+            }
+        }
+    }));
+
+    // 2. Assistant turn: steps before, sent message mid-turn (leaves the step group), steps after,
+    //    sent message with waited reply, failed send, and wrap-up text.
+    stand_in.add_message("ses_dark", json!({
+        "type": "assistant",
+        "id": "msg_am_a1",
+        "time": { "created": NOW - 180_000.0, "completed": NOW - 120_000.0 },
+        "agent": "build",
+        "finish": "stop",
+        "content": [
+            {
+                "type": "tool",
+                "id": "prt_am_0",
+                "name": "read",
+                "state": {
+                    "status": "completed",
+                    "input": { "filePath": "/Users/sam/Projects/kuvo/src/lib/validate.ts" },
+                    "content": [{ "type": "text", "text": "export function validateEmail() {}" }]
+                }
+            },
+            {
+                "type": "tool",
+                "id": "prt_am_1",
+                "name": "shell",
+                "state": {
+                    "status": "completed",
+                    "input": { "command": "cargo test -p kuvo --lib" },
+                    "content": [{ "type": "text", "text": "test result: ok. 110 passed; 0 failed" }]
+                }
+            },
+            {
+                "type": "tool",
+                "id": "prt_am_2",
+                "name": "kuvo-browser_send_message",
+                "title": "Sent a message",
+                "doing": "Sending a message",
+                "state": {
+                    "status": "completed",
+                    "input": {
+                        "to": "ses_mira",
+                        "wait": false,
+                        "text": "Groundwork is merged and the shared validation helper covers both forms. Ready for review."
+                    },
+                    "content": [{
+                        "type": "text",
+                        "text": "Sent to Mira. Its answer, if it writes one, comes to you as a message."
+                    }]
+                }
+            },
+            {
+                "type": "text",
+                "text": "I let Mira know the form fix is ready. Checking release status and kicking off the package next."
+            },
+            {
+                "type": "tool",
+                "id": "prt_am_3",
+                "name": "kuvo-browser_send_message",
+                "title": "Sent a message",
+                "doing": "Sending a message",
+                "state": {
+                    "status": "completed",
+                    "input": {
+                        "to": "&Release helper (ses_rel)",
+                        "wait": true,
+                        "text": "Is beta.35 green on macOS and Linux?"
+                    },
+                    "content": [{
+                        "type": "text",
+                        "text": "Release helper answered:\n\nBoth builds are green and notarized. Good to tag when ready."
+                    }]
+                }
+            },
+            {
+                "type": "tool",
+                "id": "prt_am_4",
+                "name": "kuvo-browser_send_message",
+                "title": "Sent a message",
+                "doing": "Sending a message",
+                "state": {
+                    "status": "failed",
+                    "input": {
+                        "to": "ses_build",
+                        "wait": false,
+                        "text": "Trigger the beta.35 release package."
+                    },
+                    "error": "Error: Build runner can't be reached now. Try again later."
+                }
+            },
+            {
+                "type": "text",
+                "text": "Release helper confirmed macOS and Linux are green, but Build runner couldn’t be reached to start packaging. I can retry once it’s back online."
+            }
+        ]
+    }));
+}
+
 fn encode_png(img: image::RgbImage) -> Vec<u8> {
     let mut bytes = std::io::Cursor::new(Vec::new());
     img.write_to(&mut bytes, image::ImageFormat::Png).expect("encode stand-in PNG");
@@ -2227,6 +2350,9 @@ fn main() -> anyhow::Result<()> {
             }
             if screen.slug == "tool-details" {
                 stage_tool_details(&stand_in);
+            }
+            if screen.slug == "agent-messages" {
+                stage_agent_messages(&stand_in);
             }
             if screen.slug == "mode-chip-held" {
                 stand_in.set_approvals(false, Some("The sandbox isn’t running on this computer."));
