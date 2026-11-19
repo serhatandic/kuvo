@@ -103,12 +103,12 @@ test("failure bench: startup refuses a newer folder without changing it", () => 
   const folder = path.join(home, ".kuvo-code");
   fs.mkdirSync(folder);
   const marker = path.join(folder, "folder-version.json");
-  for (const raw of ['{"version":12}\n', '{"version":11,"upgradingTo":12}\n']) {
+  for (const raw of ['{"version":13}\n', '{"version":12,"upgradingTo":13}\n']) {
     fs.writeFileSync(marker, raw);
     const result = launch(home, process.execPath, [link, "serve"]);
     assert.equal(result.status, 1, result.stderr);
     assert.equal(result.stdout, "");
-    assert.match(result.stderr, /Kuvo folder at .* format version 12 is unsupported \(this build writes 11\)/);
+    assert.match(result.stderr, /Kuvo folder at .* format version 13 is unsupported \(this build writes 12\)/);
     const route = launch(home, process.execPath, [link, "box", "route"], { input: '{"method":"GET","path":"kuvo/info"}' });
     assert.equal(route.status, 0, route.stderr);
     assert.deepEqual(JSON.parse(route.stdout), {
@@ -137,13 +137,13 @@ test("the agents bridge refuses the newer layout before initializing its store",
   const home = scratch();
   const folder = path.join(home, ".kuvo-code");
   fs.mkdirSync(folder);
-  fs.writeFileSync(path.join(folder, "folder-version.json"), '{"version":12}');
+  fs.writeFileSync(path.join(folder, "folder-version.json"), '{"version":13}');
   const result = launch(home, bun, [agents], {
     env: { KUVO_AGENTS_HOME: path.join(folder, "agents"), OPENCODE_PASSWORD: "test" },
   });
   assert.equal(result.status, 1, result.stderr);
   assert.equal(result.stdout, "");
-  assert.match(result.stderr, /Kuvo folder at .* format version 12 is unsupported \(this build writes 11\)/);
+  assert.match(result.stderr, /Kuvo folder at .* format version 13 is unsupported \(this build writes 12\)/);
   assert.deepEqual(fs.readdirSync(folder), ["folder-version.json"]);
 });
 
@@ -159,7 +159,7 @@ test("keeper and engine launcher refuse the newer layout before making runtime f
 [ "$4" = folder-upgrade ] || exit 77
 exec ${JSON.stringify(process.execPath)} "$3" "$4"
 `, { mode: 0o700 });
-  fs.writeFileSync(path.join(folder, "folder-version.json"), '{"version":12}');
+  fs.writeFileSync(path.join(folder, "folder-version.json"), '{"version":13}');
   for (const script of ["kuvo-start", "kuvo-launch"]) {
     const source = fs.readFileSync(new URL(`../src/keeper/${script}`, import.meta.url), "utf8");
     const staged = path.join(home, script);
@@ -167,7 +167,7 @@ exec ${JSON.stringify(process.execPath)} "$3" "$4"
     // A failure to guard a startup must still fail fast and leave no detached test process.
     const result = launch(home, "/bin/sh", [staged, "status"], { input: "\n" });
     assert.equal(result.status, 1, result.stderr);
-    assert.match(result.stderr, /Kuvo folder at .* format version 12 is unsupported \(this build writes 11\)/);
+    assert.match(result.stderr, /Kuvo folder at .* format version 13 is unsupported \(this build writes 12\)/);
     assert.deepEqual(fs.readdirSync(folder).sort(), ["bin", "engine", "folder-version.json"]);
   }
 });
