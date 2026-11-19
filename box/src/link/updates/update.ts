@@ -142,6 +142,10 @@ export interface UpdateOutcome {
   save?: SetupSaveReceipt;
 }
 
+function waitingForReleaseSave(version: string, save: SetupSaveReceipt): UpdateOutcome {
+  return { result: "waiting", version, message: save.status === "interrupted" ? INTERRUPTED_SAVE : save.message, save };
+}
+
 /** An update being tried (`trial`): from and to which version, since when, when its files were
  * put in place (`swapped`), the features the box said before (what it must still say), how its
  * judging stands (`updates/health.ts`), and whether it was judged well. */
@@ -554,7 +558,19 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
   };
   try {
     step("checking");
-    const setup = localSetupValue(RUN, "setupSecurityAndReleaseChoice");
+    let setup = localSetupValue(RUN, "setupSecurityAndReleaseChoice");
+    const kept = updateState().releaseSave;
+    let previousSave: SetupSaveReceipt | undefined;
+    if (kept && kept.save.setup === setup?.id) {
+      const known = await askSetupOutcome(RUN, kept.save, "setupSecurityAndReleaseChoice");
+      previousSave = kept.save;
+      if (known.receipt && known.receipt.status !== "pending") {
+        previousSave = known.receipt;
+        noteUpdate({ releaseSave: null });
+      }
+      if (!from && previousSave.status !== "committed") return waitingForReleaseSave(kept.version, previousSave);
+      if (previousSave.status === "committed") setup = localSetupValue(RUN, "setupSecurityAndReleaseChoice");
+    }
     const choice = isObject(setup?.value) ? setup.value : null;
     let released: Buffer;
     if (!from && setup && (!setup.primary || (typeof choice?.version === "string" && newerVersion(choice.version, before)))) {
@@ -571,16 +587,9 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
     }
     const manifest = verifyBoxes(released.toString("utf8"), keys);
     const alreadyChosen = choice?.version === manifest.version && choice?.sha256 === manifest.pack.sha256;
-    const kept = updateState().releaseSave;
-    if (kept && kept.save.setup === setup?.id && kept.version === manifest.version && kept.sha256 === manifest.pack.sha256) {
-      const known = await askSetupOutcome(RUN, kept.save, "setupSecurityAndReleaseChoice");
-      const save = known.receipt ?? kept.save;
-      releaseSave = save;
-      if (known.receipt && save.status !== "pending") noteUpdate({ releaseSave: null });
-      if (save.status !== "committed" || !alreadyChosen) {
-        return { result: "waiting", version: manifest.version,
-          message: save.status === "interrupted" ? INTERRUPTED_SAVE : known.message ?? kept.save.message, save };
-      }
+    if (previousSave && kept?.version === manifest.version && kept.sha256 === manifest.pack.sha256) {
+      if (previousSave.status !== "committed" || !alreadyChosen) return waitingForReleaseSave(manifest.version, previousSave);
+      releaseSave = previousSave;
     }
     if (setup && !setup.primary && !alreadyChosen) return { result: "waiting", message: "Your setup's primary has selected a different release." };
     taking(manifest.version);

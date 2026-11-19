@@ -157,7 +157,8 @@ async function network(t, takeover = false, releaseKey) {
       async updateFrom(from) {
         const { status, value, err } = await this.evaluate(process.execPath, ["--input-type=module", "-e", `
           import { update } from ${JSON.stringify(boxScript)};
-          console.log(JSON.stringify(await update({ now: true, from: ${JSON.stringify(from)}, blocked: null })));
+          console.log(JSON.stringify(await update({ now: true, from: ${JSON.stringify(from)}, blocked: null,
+            url: ${JSON.stringify(`http://127.0.0.1:${engine.address().port}/no-release`)} })));
         `]);
         assert.equal(status, 0, err);
         return value;
@@ -400,6 +401,9 @@ test("failure bench: normal save callers carry proofs to the successor", { timeo
   const repeated = await a.updateFrom(release);
   assert.deepEqual(repeated.save?.proof, update.save?.proof);
   assert.equal(repeated.save?.operation, update.save?.operation);
+  const automatic = await a.updateFrom();
+  assert.equal(automatic.result, "waiting", JSON.stringify(automatic));
+  assert.deepEqual(automatic.save, update.save);
   await a.stop();
   b.clock(3 * HOUR + 5_000);
   await see(b, 3, b);
