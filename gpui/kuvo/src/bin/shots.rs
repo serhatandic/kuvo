@@ -2729,7 +2729,63 @@ fn main() -> anyhow::Result<()> {
     }
     first_run_shots(&mut cx, &only, &out)?;
     launch_shots(&mut cx, &only, &out)?;
+    popover_viewer_draft_shots(&mut cx, &only, &out)?;
     home_shots(&mut cx, &only, &out)
+}
+
+/// Stand-in design drafts for the unified image viewer (`draft-viewer-*`) and Outputs popover
+/// (`draft-popover-*`), rendered light and dark for user selection before building for real.
+fn popover_viewer_draft_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path::Path) -> anyhow::Result<()> {
+    use kuvo::drafts::image_viewer::{ImageViewerDraftView, ViewerDraft, ViewerMode};
+    use kuvo::drafts::outputs_popover::{OutputsPopoverDraftView, PopoverDraft, PopoverMode};
+
+    fn render_one<V: gpui::Render + 'static>(
+        cx: &mut HeadlessAppContext,
+        out: &std::path::Path,
+        slug: &str,
+        w: f32,
+        h: f32,
+        build: impl Fn(&mut gpui::Context<V>) -> V,
+    ) -> anyhow::Result<()> {
+        for appearance in [Appearance::Light, Appearance::Dark] {
+            cx.update(|cx| Theme::set_appearance(appearance, cx));
+            let window = cx.open_window(size(px(w), px(h)), |_, cx| cx.new(|cx| build(cx)))?;
+            let any = window.into();
+            cx.run_until_parked();
+            cx.update_window(any, |_, window, _| window.refresh())?;
+            cx.run_until_parked();
+            let image = cx.capture_screenshot(any)?;
+            let name = format!("screens-{slug}-{}.png", if appearance.is_dark() { "dark" } else { "light" });
+            image.save(out.join(&name))?;
+            println!("{name}: {}x{}", image.width(), image.height());
+            cx.update_window(any, |_, window, _| window.remove_window())?;
+            cx.run_until_parked();
+        }
+        Ok(())
+    }
+
+    for draft in ViewerDraft::ALL {
+        let slug_multi = draft.slug_multi();
+        if only.is_empty() || only.iter().any(|arg| arg == slug_multi || arg == "draft-viewer") {
+            render_one(cx, out, slug_multi, 1280., 820., |_| ImageViewerDraftView::new(draft, ViewerMode::Multi))?;
+        }
+        let slug_cases = draft.slug_cases();
+        if only.is_empty() || only.iter().any(|arg| arg == slug_cases || arg == "draft-viewer") {
+            render_one(cx, out, slug_cases, 1360., 900., |_| ImageViewerDraftView::new(draft, ViewerMode::Cases))?;
+        }
+    }
+
+    for draft in PopoverDraft::ALL {
+        let slug_main = draft.slug_main();
+        if only.is_empty() || only.iter().any(|arg| arg == slug_main || arg == "draft-popover") {
+            render_one(cx, out, slug_main, 1280., 860., |_| OutputsPopoverDraftView::new(draft, PopoverMode::Main))?;
+        }
+        let slug_flows = draft.slug_flows();
+        if only.is_empty() || only.iter().any(|arg| arg == slug_flows || arg == "draft-popover") {
+            render_one(cx, out, slug_flows, 1400., 840., |_| OutputsPopoverDraftView::new(draft, PopoverMode::Flows))?;
+        }
+    }
+    Ok(())
 }
 
 /// The app opening on a computer (`launch-*`: this Mac's row in the Welcome card as it's set up,
