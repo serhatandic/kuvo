@@ -491,8 +491,14 @@ keep)
       bnext=$((now + bwait))
     fi
     # Down and waiting for its next start: when, for the box to say (run/agents.retry, as for the engine).
-    if up && ! bridge_runs && [ "$bnext" -gt "$now" ]; then
-      [ "$(cat "$R/agents.retry" 2>/dev/null)" = "$bnext" ] || { echo "$bnext" >"$R/agents.retry.new" && mv -f "$R/agents.retry.new" "$R/agents.retry"; }
+    if [ "$bnext" -gt "$now" ] && up && ! bridge_runs; then
+      # Try Again may have cleared the deadline since this round read agents.now.
+      if lock 1; then
+        if [ ! -f "$R/agents.now" ] && ! bridge_runs; then
+          [ "$(cat "$R/agents.retry" 2>/dev/null)" = "$bnext" ] || { echo "$bnext" >"$R/agents.retry.new" && mv -f "$R/agents.retry.new" "$R/agents.retry"; }
+        fi
+        unlock
+      fi
     else
       rm -f "$R/agents.retry"
     fi
@@ -670,7 +676,9 @@ bridge-again)
   if [ -f "$K/bin/kuvo-link.js" ] && [ -n "$V" ]; then
     (environment; cd "$K"; KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$K/engine/$V/opencode" --config=/dev/null --no-env-file "$K/bin/kuvo-link.js" repair >/dev/null 2>&1 </dev/null)
   fi
+  : >"$R/agents.now"
   if lock 50; then
+    rm -f "$R/agents.retry"
     a=$(cat "$R/agents.pid" 2>/dev/null)
     m=$(stat -c %Y "$R/agents.pid" 2>/dev/null || stat -f %m "$R/agents.pid" 2>/dev/null)
     if is "$a" kuvo-agents && ! grep -q "\"pid\":$a[,}]" "$R/bridge.json" 2>/dev/null && [ -n "$m" ] && [ $(($(date +%s) - m)) -ge 60 ]; then
@@ -681,8 +689,6 @@ bridge-again)
     fi
     unlock
   fi
-  : >"$R/agents.now"
-  rm -f "$R/agents.retry"
   sh "$K/bin/kuvo-start" box
   sh "$K/bin/kuvo-start" bridge
   ;;
