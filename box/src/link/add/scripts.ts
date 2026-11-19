@@ -359,8 +359,17 @@ if [ "$desktop_failed" -ne 0 ]; then exit 81; fi
 if [ "$cleanup_failed" -ne 0 ]; then exit 82; fi
 `;
 
+/** The remote must finish verifying its backup while it can still reach its destination.
+ * A box without backup configuration can also be an older release without this command. */
+export const prepareUninstall = (version: string, key: string): string => String.raw`${K}
+if [ ! -e "$K/backup/configuration.json" ]; then echo '{"result":"prepared"}'; exit 0; fi
+${engineOf(version)}
+if [ ! -x "$E" ] || [ ! -f "$K/bin/kuvo-link.js" ]; then exit 1; fi
+command=uninstall
+${link(`"$command" --prepare-wipe ${quote(key)}`)}`;
+
 /** Takes Kuvo Code off the computer, or disconnects it from this setup if another Mac uses it. */
-export const uninstall = (version: string, key: string, only: boolean): string => String.raw`${K}
+export const uninstall = (version: string, key: string, only: boolean, prepared = false): string => String.raw`${K}
 ${engineOf(version)}
 did=0
 said='{"result":"none"}'
@@ -370,6 +379,7 @@ if [ -x "$E" ] && [ -f "$K/bin/kuvo-link.js" ]; then
   fi
   ${only ? "" : "echo kept; exit 0"}
   export KUVO_UNINSTALL_FROM_SSH=1
+  ${prepared ? `export KUVO_UNINSTALL_PREPARED_BY=${quote(key)}` : ""}
   said=$( ${link("uninstall")} ); did=$?
   case "$said" in '{"result":"refused",'*) printf '%s\n' "$said"; exit "$did" ;; esac
 fi

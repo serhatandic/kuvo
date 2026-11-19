@@ -22,11 +22,12 @@ import { editQueue, queueEditView } from "../work-queue/offline";
 import { allItems, deletionFor, departureFor, ITEM_ID, MOST_FILES, MOST_NOTE, OWNER, Refusal, YOURS } from "../work-queue/store";
 import { editStatus, type EditReceipt, type EditTarget, type OfflineEdit } from "./edit-types";
 import { fingerprint } from "./merge";
-import { ownerOf } from "./resolve";
+import { MUTATION_FEATURE, MUTATION_ID, mutationKey, mutationNonce } from "./mutation";
+import { mayActivate, ownerOf } from "./resolve";
 import { keepRecord, offlineEditsReady, readRecord, recordKey, records } from "./store";
 
 const LOCK = path.join(RUN, "owned-data", ".edits.lock");
-const ID = /^[A-Za-z0-9_-]{1,80}$/;
+const ID = MUTATION_ID;
 const MAX_BYTES = 512 * 1024;
 const MAX_PENDING = 200;
 const FEATURE = "data.offline-edits";
@@ -124,7 +125,7 @@ function stillOwns(ref: EditTarget, link: LinkState, checked?: string) {
     const bot = botHere(ref.id);
     if (!bot || isMoving(bot.folder) || frozen().has(bot.session) || awaySessions().includes(bot.session)) return false;
   }
-  return ownerOf(ref, { link, localRecord: true })?.local === true;
+  return mayActivate(ref, { link });
 }
 
 async function confirmQueue(ref: EditTarget, places: PeerPlaces): Promise<string | undefined> {
@@ -180,9 +181,9 @@ function finish(outgoing: Outgoing, owner: string, receipt: EditReceipt) {
   }, { required: true });
 }
 
-export async function saveOfflineEdit(context: RouteContext, places: PeerPlaces) {
+export async function saveOfflineEdit(context: RouteContext, places: PeerPlaces, proposal: unknown = parsed(context.request.body)) {
   const { request, json } = context;
-  const given = (request.body?.length ?? 0) <= MAX_BYTES ? editOf(parsed(request.body)) : undefined;
+  const given = (request.body?.length ?? 0) <= MAX_BYTES ? editOf(proposal) : undefined;
   if (!given) return json(400, { message: "Send a supported edit with its operation id, record address and base revision (inline attachments only)." });
   const link = readLink();
   const setup = followedSetup(link);
@@ -192,7 +193,11 @@ export async function saveOfflineEdit(context: RouteContext, places: PeerPlaces)
     return json(409, { message: "This setup has not enabled accepted preference saves." });
   const owner = location(given.ref, link) ?? (await confirmQueue(given.ref, places)
     ? ownerOf(given.ref, { link, localRecord: true }) : null);
-  const operation = operationOf(setup.id, sender, given.operation);
+  const legacy = operationOf(setup.id, sender, given.operation);
+  const current = mutationKey(setup.id, given.operation);
+  const legacyOwner = owner?.key && !owner.local && !takesForwarded(owner.key, MUTATION_FEATURE);
+  const operation = readRecord<Outgoing>("edit-outbox", current) ? current
+    : readRecord<Outgoing>("edit-outbox", legacy) || legacyOwner ? legacy : current;
   const envelope = { setup: setup.id, nonce: given.operation, edit: { ...given, operation } };
   const digest = fingerprint(envelope);
   const stored = locked(LOCK, () => {
@@ -215,6 +220,28 @@ export async function saveOfflineEdit(context: RouteContext, places: PeerPlaces)
   }
   const kept = readRecord<Outgoing>("edit-outbox", operation)!;
   return json(editStatus(kept.receipt), kept.receipt);
+}
+
+/** An ordinary route carrying a base revision submits the same proposal as the edit outbox. */
+export function ordinaryEdit(context: RouteContext, body: Record<string, unknown>): unknown {
+  const { route, request } = context;
+  const method = request.method.toUpperCase();
+  const item = /^kuvo\/work-queue\/items\/(wqi_[A-Za-z0-9_-]{20})$/.exec(route);
+  const bot = /^kuvo\/bots\/(bot_[A-Za-z0-9]{1,95})$/.exec(route);
+  const nonce = mutationNonce(request, body);
+  if (body.baseRevision === undefined) return;
+  if (item && (method === "PATCH" || method === "DELETE"))
+    return { ...body, operation: nonce, ref: { kind: "queueItems", id: item[1], queue: body.owner, computer: body.computer },
+      ...(method === "DELETE" ? { delete: true } : {}) };
+  if (route === "kuvo/work-queue/items" && method === "POST")
+    return { ...body, operation: nonce, create: true, ref: { kind: "queueItems", id: body.id, queue: body.owner, computer: body.computer } };
+  if (bot && method === "PATCH")
+    return { ...body, operation: nonce, ref: { kind: "botSettings", id: bot[1], computer: body.computer } };
+  if (route === "kuvo/settings/clock" && method === "PATCH")
+    return { ...body, operation: nonce, ref: { kind: "setupTimeZone" }, fields: body.fields ?? { zone: body.value } };
+  if (route === "kuvo/personalities" && method === "PATCH" || route === "kuvo/work-queue/labels" && method === "POST")
+    return { ...body, operation: nonce, ref: { kind: route === "kuvo/personalities" ? "setupPersonalities" : "queueLabels" } };
+  return undefined;
 }
 
 export function offlineEditReceipt(context: RouteContext, operation: string) {
@@ -339,7 +366,7 @@ export async function takeOfflineEdit(sender: MailSender, given: Record<string, 
   if (!offlineEditsReady() || Buffer.byteLength(JSON.stringify(given)) > MAX_BYTES + 512) return;
   const { setup, nonce } = given;
   const edit = editOf(given.edit);
-  if (typeof setup !== "string" || typeof nonce !== "string" || !ID.test(nonce) || !edit || edit.operation !== operationOf(setup, sender.key, nonce)) return;
+  if (typeof setup !== "string" || typeof nonce !== "string" || !ID.test(nonce) || !edit || (edit.operation !== mutationKey(setup, nonce) && edit.operation !== operationOf(setup, sender.key, nonce))) return;
   if (applying.has(edit.operation)) return;
   applying.add(edit.operation);
   try {

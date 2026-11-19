@@ -4,6 +4,8 @@
 // bring back, keep the labels, and import an old backlog. Agents do the same through the tools
 // (`kuvo/work-queue/tools`).
 
+import { mutationKey, mutationNonce } from "../ownership/mutation";
+import { followedSetup } from "../setup/record";
 import { awaitSharedSave, sharedSaveReply } from "../setup/shared";
 import { references } from "../work-queue/relations";
 import fs from "node:fs";
@@ -267,7 +269,10 @@ export async function* workQueueRoute(context: RouteContext, match: RegExpMatchA
   if (part === "items") {
     if (method !== "POST") return yield* json(405, {});
     if (!workQueueClient(context)) return yield* json(403, { message: notClient(context) });
-    return yield* answered(addHere(given, fromLocalApp(context.request)), json);
+    const nonce = mutationNonce(request, given);
+    if (nonce === null) return yield* json(400, { message: "Send a valid operation id." });
+    const setup = followedSetup(readLink());
+    return yield* answered(addHere(given, fromLocalApp(request), nonce && mutationKey(setup?.id ?? "", nonce)), json);
   }
 
   if (part === "import") {

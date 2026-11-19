@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { bundleBuild } from "../../shared/bundle";
 import { keeperEngine } from "../../shared/engines";
-import { offlineEditsReady } from "../ownership/store";
+import { offlineEditsReady, ownershipReady } from "../ownership/store";
 import { FEATURES } from "../../shared/features";
 import { engineRuns, processRuns as runs } from "../../shared/platform";
 import type { BridgeRecord, EngineRecord } from "../../shared/records";
@@ -24,7 +24,9 @@ import { rehomeStatus } from "../rehome/state";
 import { integrationCatalog } from "./integrations";
 
 function editFeatures<T extends string>(features: readonly T[]): T[] {
-  return offlineEditsReady() ? [...features] : features.filter(feature => feature !== "data.offline-edits");
+  const ownership = ownershipReady();
+  const edits = offlineEditsReady();
+  return features.filter(feature => (feature !== "data.offline-edits" || edits) && (feature !== "data.mutation-identity" || ownership));
 }
 
 export async function* infoRoute(context: RouteContext): AsyncGenerator<AnswerPiece> {

@@ -8,11 +8,13 @@ import { additiveObjectFormat, UnsupportedFormatVersion } from "../../shared/for
 import { isObject } from "../../shared/json";
 import type { Move, MoveKind, MoveStage } from "../../shared/routes/moves";
 import { syncDurableFile, writeDurablePrivate, writePrivate } from "../files";
+import { locked } from "../../shared/files";
 import { RUN } from "../home";
 
 export const MOVES = path.join(RUN, "moves");
-// Conversations moved away from here, by where they live now, for two days.
+// Committed departures from this computer. Their routing advertisements expire independently.
 const MOVED_FILE = path.join(MOVES, "moved.json");
+const DEPARTURE_LOCK = path.join(MOVES, ".departures.lock");
 export const MOVED_FOR = 2 * 24 * 3600_000;
 
 /** A move as this box keeps it: what clients see of it (`Move`), and what it needs to carry on. On
@@ -213,21 +215,21 @@ export function switchedMove(session: string, records = liveMoves()): MoveRecord
   return records.find(each => each.role === "from" && (each.stage === "switching" || each.stage === "finishing") && each.sessions.includes(session)) ?? null;
 }
 
-/** A conversation moved away from here in the last two days, and where it lives now (a box's key). */
+/** A record moved away from here and where ownership went. */
 export interface MovedAway {
   session: string;
   key: string;
   at: number;
 }
 
-export function movedAway(now = Date.now()): MovedAway[] {
+export function committedDepartures(): MovedAway[] {
   try {
     const kept: unknown = JSON.parse(fs.readFileSync(MOVED_FILE, "utf8"));
     if (!Array.isArray(kept)) return [];
     return kept.flatMap((value): MovedAway[] => {
       if (!isObject(value)) return [];
       const { session, key, at } = movedAwayFormat.read(value);
-      return typeof session === "string" && typeof key === "string" && typeof at === "number" && now - at < MOVED_FOR
+      return typeof session === "string" && typeof key === "string" && typeof at === "number"
         ? [{ session, key, at }] : [];
     });
   } catch (error) {
@@ -236,19 +238,33 @@ export function movedAway(now = Date.now()): MovedAway[] {
   }
 }
 
+/** Only recent session changes need to be advertised. The activation fence remains. */
+export function movedAway(now = Date.now()): MovedAway[] {
+  return committedDepartures().filter(each => each.session.startsWith("ses_") && now - each.at < MOVED_FOR);
+}
+
 export function noteMovedAway(sessions: readonly string[], key: string, now = Date.now()): void {
-  const kept = movedAway(now).filter(each => !sessions.includes(each.session));
-  writePrivate(MOVED_FILE, JSON.stringify([...kept, ...sessions.map(session => ({ session, key, at: now }))].map(movedAwayFormat.write)));
-  // (Clients leave them out from here on: `kuvo/moves`' `moved`.)
-  movesChanged();
+  const updated = locked(DEPARTURE_LOCK, () => {
+    const current = committedDepartures();
+    const changed = new Set(sessions.filter(session => !current.some(each => each.session === session && each.key === key)));
+    if (!changed.size) return false;
+    const kept = current.filter(each => !changed.has(each.session));
+    for (const session of changed) kept.push({ session, key, at: now });
+    writeDurablePrivate(MOVED_FILE, JSON.stringify(kept.map(movedAwayFormat.write)), RUN);
+    return true;
+  }, { required: true });
+  if (updated) movesChanged();
 }
 
 /** Moved here again (back from where it went): no longer away. */
-export function forgetMovedAway(sessions: readonly string[], now = Date.now()): void {
-  const kept = movedAway(now);
-  if (!kept.some(each => sessions.includes(each.session))) return;
-  writePrivate(MOVED_FILE, JSON.stringify(kept.filter(each => !sessions.includes(each.session)).map(movedAwayFormat.write)));
-  movesChanged();
+export function forgetMovedAway(sessions: readonly string[]): void {
+  const updated = locked(DEPARTURE_LOCK, () => {
+    const kept = committedDepartures();
+    if (!kept.some(each => sessions.includes(each.session))) return false;
+    writeDurablePrivate(MOVED_FILE, JSON.stringify(kept.filter(each => !sessions.includes(each.session)).map(movedAwayFormat.write)), RUN);
+    return true;
+  }, { required: true });
+  if (updated) movesChanged();
 }
 
 export type { Move, MoveKind, MoveStage };

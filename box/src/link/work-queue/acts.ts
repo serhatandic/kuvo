@@ -1,4 +1,5 @@
-import { ownerOf } from "../ownership/resolve";
+import { fingerprint } from "../ownership/merge";
+import { ownerOf, mayActivate } from "../ownership/resolve";
 import { ownershipReady } from "../ownership/store";
 // What you do to an item from a client, on the box that keeps it (PROTOCOL.md, "The Work Queue"):
 // add one, read it whole, change it, delete it or bring it back. The same whether your client asked this box
@@ -14,7 +15,7 @@ import { numberWaiting, primaryOf } from "./numbers";
 import { addItem, applyFileOps, stageClientFiles, changeItem, handItem, refuseClosedThere, refuseHanding, refuseMoving, removeItem, restoreItem, type Acting, type Fields } from "./ops";
 import { assignable, assigneeFor, botSession } from "./assignees";
 import { frozen } from "../moves/records";
-import { allItems, changeQueues, matching, MOST_HANDED_FILES, OWNER, Refusal, YOURS, type Book, type Item, type ItemRef } from "./store";
+import { allItems, changeQueues, deletionFor, departureFor, matching, MOST_HANDED_FILES, OWNER, Refusal, YOURS, type Book, type Item, type ItemRef } from "./store";
 import { itemsElsewhere, tellQueuesAgain } from "./across";
 import { canOf, factsOf, nameOf, ownersOf, refOf, summaryOf, titlesHere, wholeOf, type ItemSummary } from "./view";
 import type { Act, Acted } from "./forward";
@@ -29,6 +30,7 @@ function refuseQueueOwner(queue: string): void {
   // A stored item supplies its existing location. An accepted assignment or completed move takes precedence.
   const owner = ownerOf({ kind: "queueItems", queue });
   if (owner && !owner.local) throw new Refusal(`Open this queue on ${owner.name} to change it.`);
+  if (!mayActivate({ kind: "queueItems", queue })) throw new Refusal("This queue is held while its owner changes.");
 }
 
 const YOU = { user: true } as const;
@@ -57,27 +59,46 @@ const fieldsOf = ({ title, body, status, priority, labels, assignee, due, before
 /** An item you add from a client (`POST kuvo/work-queue/items`): in the queue `owner` names (a
  * conversation's, the one you're looking at); else, for a bot of this box, in that bot's; else in
  * your own (`usr_you`). Todo and Normal unless said. */
-export function addHere(given: Record<string, unknown>, local = false): Acted {
+export function addHere(given: Record<string, unknown>, local = false, operation?: string): Acted {
   const now = Date.now();
   const primary = primaryOf();
+  const id = operation ? `wqi_${operation.slice(0, 20)}` : undefined;
+  const digest = fingerprint({ owner: given.owner, ...fieldsOf(given) });
+  const itemAnswer = (item: Item): Acted => ({ status: 200, value: {
+    item: { ...withCan(summaryOf(item, new Set(), new Map(), assignable())), mentionTargets: item.mentionIndex?.targets ?? [] },
+  } });
   let staged: ReturnType<typeof stageClientFiles> | undefined;
   try {
-    return changed(() => {
+    const result = changeQueues(book => {
+      if (id) {
+        const item = book.find({ id });
+        const deletion = deletionFor(id);
+        const departure = departureFor(id);
+        const receipt = item?.creationReceipt ?? deletion?.creationReceipt ?? departure?.creationReceipt;
+        if (receipt?.operation === operation && receipt && receipt.digest === digest) return receipt.answer;
+        if (item || deletion || departure) return { status: 409, value: { message: "That operation id is in use or its item has moved." } };
+      }
+      if (given.owner !== undefined && (typeof given.owner !== "string" || !OWNER.test(given.owner)))
+        throw new Refusal("That's no queue to add it to (owner): a conversation's address, or a group chat's id.");
+      const assignee = given.assignee === undefined || given.assignee === null ? null : assigneeFor(given.assignee);
+      const owner = (given.owner as string | undefined) ?? botSession(assignee ?? undefined) ?? YOURS;
+      refuseQueueOwner(owner);
+      refuseMoving([owner]);
       staged = stageClientFiles(given.files, local);
-      return changeQueues(book => {
-        if (given.owner !== undefined && (typeof given.owner !== "string" || !OWNER.test(given.owner))) throw new Refusal("That's no queue to add it to (owner): a conversation's address, or a group chat's id.");
-        const assignee = given.assignee === undefined || given.assignee === null ? null : assigneeFor(given.assignee);
-        const owner = (given.owner as string | undefined) ?? botSession(assignee ?? undefined) ?? YOURS;
-        refuseQueueOwner(owner);
-        refuseMoving([owner]);
-        const { before: _, after: __, ...fields } = fieldsOf(given);
-        const acting: Acting = { who: YOU, now, staged: staged!.staged, fileOps: [] };
-        const item = addItem(book, owner, fields, acting, primary);
-        applyFileOps(acting);
-        numberWaiting(book, primary, null);
-        return item;
-      });
-    });
+      const { before: _, after: __, ...fields } = fieldsOf(given);
+      const acting: Acting = { who: YOU, now, staged: staged.staged, fileOps: [] };
+      const item = addItem(book, owner, fields, acting, primary, undefined, id);
+      applyFileOps(acting);
+      numberWaiting(book, primary, null);
+      if (operation) book.recordCreation(item, () => ({ operation, digest, answer: itemAnswer(item) }));
+      return { item };
+    }, now, { durable: Boolean(operation) });
+    const answer = "item" in result ? result.item.creationReceipt?.answer ?? itemAnswer(result.item) : result;
+    if (answer.status === 200) tellQueuesAgain();
+    return answer;
+  } catch (error) {
+    if (error instanceof Refusal) return { status: 400, value: { message: error.message } };
+    throw error;
   } finally { staged?.clear(); }
 }
 

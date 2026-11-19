@@ -18,7 +18,7 @@ import { writeCard } from "../setup/card";
 import { appsOf, ATTACHED_FILE, foundOf, judgeComputer, oursNow } from "../setup/judge";
 import { addElsewhere, mainElsewhere, setupHosts } from "../setup/main-only";
 import { ownMachinesRoute } from "../mac/own-machines";
-import { changeShared, OPERATION_ID, queryOperation, sharedSaveReply, waitShared } from "../setup/shared";
+import { changeShared, OPERATION_ID, queryOperation, retrySharedValue, sharedSaveReply, waitShared } from "../setup/shared";
 import { followedSetup } from "../setup/record";
 import { setupView } from "../setup/view";
 import { engineRoute } from "../server/forward";
@@ -164,11 +164,22 @@ export async function* saveLocalSetup(context: RouteContext): AsyncGenerator<Ans
     }
   }
   const expected = given.sequence;
+  const current = readLink();
+  if (current?.setup?.id === given.id && current?.setup?.epoch === given.epoch && operation) {
+    const previous = retrySharedValue(current!, kind, operation, expected, value);
+    if (previous) return yield* savedJson(json, sharedSaveReply(await waitShared(previous)));
+  }
   const save = changeShared(kind, (_before, link) => {
     if (!link.setup || link.setup.id !== given.id || link.setup.epoch !== given.epoch
       || (link.sharedSetup === given.id ? link.shared?.[kind]?.sequence ?? 0 : 0) !== expected) return undefined;
     return value;
   }, operation);
-  if (!save) return yield* json(409, { message: "The setup changed or a save is already pending." });
+  if (!save) {
+    const latest = readLink();
+    const previous = latest?.setup?.id === given.id && latest?.setup?.epoch === given.epoch && operation
+      ? retrySharedValue(latest!, kind, operation, expected, value) : null;
+    if (previous) return yield* savedJson(json, sharedSaveReply(await waitShared(previous)));
+    return yield* json(409, { message: "The setup changed or a save is already pending." });
+  }
   return yield* savedJson(json, sharedSaveReply(await waitShared(save)));
 }

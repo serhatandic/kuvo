@@ -1,8 +1,9 @@
-import { editRouteAllowed, offlineEditOutbox, offlineEditReceipt, readOfflineEdit, saveOfflineEdit } from "../ownership/edits";
-import { parsed } from "../../shared/json";
-import { ownerWrite, sendOwnerWrite } from "../ownership/write";
-import { ownerOf, DATA_ID } from "../ownership/resolve";
-import { messageReceipt, queueOwnerMessage, sendAddressedMessage } from "../ownership/messages";
+import { mutationNonce } from "../ownership/mutation";
+import { ordinaryEdit, editRouteAllowed, offlineEditOutbox, offlineEditReceipt, readOfflineEdit, saveOfflineEdit } from "../ownership/edits";
+import { isObject, parsed } from "../../shared/json";
+import { ownerWrite, runOwnerWrite, sendOwnerWrite } from "../ownership/write";
+import { mayActivate, ownerOf, DATA_ID } from "../ownership/resolve";
+import { ownerMessageHere, messageReceipt, queueOwnerMessage, sendAddressedMessage } from "../ownership/messages";
 import { readOwned } from "../ownership/read";
 import { offlineEditsReady, ownershipReady } from "../ownership/store";
 import { LOCAL_SETUP_SAVE } from "../../shared/setup-local";
@@ -322,23 +323,43 @@ export function engineHandler(readEngine: () => EngineRecord = readEngineFile, i
     if (ownershipReady() && !["GET", "HEAD"].includes(request.method.toUpperCase())) {
       if (desktop) {
         const body = parsed(request.body);
+        const proposal = isObject(body) && ordinaryEdit(context, body);
+        if (proposal) {
+          if (!editRouteAllowed(context)) return yield* json(403, { message: "Open this from a paired Kuvo Code client." });
+          if (!offlineEditsReady()) return yield* json(503, { message: "Wait for Kuvo Code to finish updating." });
+          return yield* await saveOfflineEdit(context, peerPlaces(), proposal);
+        }
         const write = ownerWrite(request.method.toUpperCase(), route, body);
+        const nonce = write ? mutationNonce(request, body) : undefined;
+        if (nonce === null) return yield* json(400, { message: "Send a valid operation id." });
         const owner = write && ownerOf(write.ref, { name: info.name });
         if (write && owner && !owner.local) {
-          const result = await sendOwnerWrite(write, body, owner, context);
+          const result = await sendOwnerWrite(write, body, owner, context, nonce);
+          return yield* json(result.status, result.value);
+        }
+        if (write && nonce && editRouteAllowed(context)) {
+          if (!mayActivate(write.ref)) return yield* json(409, { message: "This record is held while its owner changes." });
+          const result = await runOwnerWrite(write, body, context, nonce);
           return yield* json(result.status, result.value);
         }
       }
       const session = /^(?:(?:kuvo\/agents\/)?api\/session|kuvo\/sessions|kuvo\/wakes)\/(ses_[A-Za-z0-9_-]+)(?:\/|$)/.exec(route)?.[1];
       const group = /^kuvo\/groups\/(grp_[a-z0-9]+)(?:\/|$)/.exec(route)?.[1];
       if ((session || group) && DATA_ID.test((session ?? group)!)) {
-        const owner = ownerOf({ kind: session ? "conversations" : "groupTranscript", id: session ?? group }, { name: info.name });
+        const ref = { kind: session ? "conversations" as const : "groupTranscript" as const, id: session ?? group };
+        const owner = ownerOf(ref, { name: info.name });
         if (owner && !owner.local) {
           if (desktop && request.method.toUpperCase() === "POST" && session && SEND_ROUTE.test(route))
             return yield* queueOwnerMessage(context, session, owner);
           if (desktop && request.method.toUpperCase() === "POST" && group && route === `kuvo/groups/${group}`)
             return yield* queueOwnerMessage(context, group, owner);
           return yield* json(409, { computer: owner.key, message: `Open this record on ${owner.name} to change it.` });
+        }
+        if (!mayActivate(ref) && owner?.local)
+          return yield* json(409, { message: "This record is held while its owner changes." });
+        if (desktop && request.method.toUpperCase() === "POST" && (session && SEND_ROUTE.test(route) || group && route === `kuvo/groups/${group}`)) {
+          const result = await ownerMessageHere(context, (session ?? group)!);
+          if (result) return yield* result;
         }
       }
     }

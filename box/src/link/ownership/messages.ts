@@ -3,12 +3,12 @@ import path from "node:path";
 import { locked } from "../../shared/files";
 import { isObject, parsed } from "../../shared/json";
 import { alive } from "../../shared/platform";
+import { takesForwarded } from "../work-queue/forward";
 import { isWaitingID } from "../../shared/queues";
 import { inline } from "../server/attached";
 import { bridgeTarget, readBridgeFile, readEngineFile } from "../engine/client";
 import { targetsOf } from "../letters/tools";
 import { placeOfSessionPatiently } from "../letters/letter";
-import { awaySessions, frozen } from "../moves/records";
 import { KEY, ownKey, peersOf, type MailSender } from "../peers/known";
 import type { LinkHost } from "../relay/host";
 import type { RouteContext } from "../server/context";
@@ -17,7 +17,9 @@ import { followedSetup } from "../setup/record";
 import { K } from "../home";
 import { readLink, type LinkState } from "../state";
 import { mailsFor } from "../work-queue/parts";
-import { ownerOf, type Owner } from "./resolve";
+import { mayActivate, ownerOf, type Owner } from "./resolve";
+import { fingerprint } from "./merge";
+import { MUTATION_FEATURE, mutationKey, runMutation } from "./mutation";
 import { keepRecord, ownershipReady, readRecord, recordKey, records } from "./store";
 
 const MAX_BODY = 128 * 1024;
@@ -42,7 +44,6 @@ interface Outgoing {
 }
 
 const sending = new Map<string, number>();
-const accepting = new Set<string>();
 
 const groupID = /^grp_[a-z0-9]{1,60}$/;
 const sessionID = /^ses_[A-Za-z0-9_-]{1,95}$/;
@@ -59,7 +60,8 @@ function prompt(value: unknown, group: boolean): Operation["body"] | undefined {
   return { ...value, id: value.id };
 }
 
-const operationOf = (setup: string, sender: string, record: string, id: string) => recordKey(setup, sender, record, id);
+const legacyOperation = (setup: string, sender: string, record: string, id: string) => recordKey(setup, sender, record, id);
+const operationOf = (setup: string, record: string, id: string) => mutationKey(setup, recordKey(record, id));
 
 export function queueOwnerMessage(context: RouteContext, record: string, owner: Owner) {
   const { request, json } = context;
@@ -70,8 +72,11 @@ export function queueOwnerMessage(context: RouteContext, record: string, owner: 
     return json(503, { message: `Send this message on ${owner.name}.` });
   const body = prompt(parsed(request.body), groupID.test(record));
   if (!body) return json(400, { message: "Send a message with a stable id and inline attachments under 128 KiB total. Send commands and Send Now on the session’s computer." });
-  const operation = operationOf(setup.id, sender, record, body.id);
-  const digest = recordKey(JSON.stringify(body));
+  const legacy = legacyOperation(setup.id, sender, record, body.id);
+  const current = operationOf(setup.id, record, body.id);
+  const operation = readRecord<Outgoing>("outbox", current) ? current
+    : readRecord<Outgoing>("outbox", legacy) || !takesForwarded(owner.key, MUTATION_FEATURE) ? legacy : current;
+  const digest = operation === legacy ? recordKey(JSON.stringify(body)) : fingerprint(body);
   const receipt = locked(LOCK, () => {
     const existing = readRecord<Outgoing>("outbox", operation);
     if (existing) return existing.digest === digest ? existing.receipt : null;
@@ -156,11 +161,27 @@ export function takeMessageReceipt(sender: MailSender, given: Record<string, unk
 }
 
 interface Accepted {
-  setup: string;
-  record: string;
   digest: string;
   receipt: MessageReceipt;
   claimant?: number;
+}
+
+async function deliverMessage(context: RouteContext, record: string, setup: string, body: Operation["body"]) {
+  const { groupsRoute } = await import("../areas/groups");
+  const { sendRoute, SEND_ROUTE } = await import("../areas/messages");
+  return runMutation(operationOf(setup, record, body.id), { record, body }, async () => {
+    const answer = await collected(groupID.test(record) ? groupsRoute(context) : sendRoute(context, context.route.match(SEND_ROUTE)!));
+    return { status: answer.status, value: parsed(answer.body) ?? {} };
+  });
+}
+
+/** Direct submission and relayed owner mail use the same acceptance record. */
+export async function ownerMessageHere(context: RouteContext, record: string) {
+  const setup = followedSetup(readLink());
+  const body = prompt(parsed(context.request.body), groupID.test(record));
+  if (!setup || !body || !mayActivate(messageRecord(record))) return null;
+  const answer = await deliverMessage(context, record, setup.id, body);
+  return context.json(answer.status, answer.value);
 }
 
 export async function takeOwnerMessage(sender: MailSender, given: Record<string, unknown>, reply: (answer: Record<string, unknown>) => void): Promise<void> {
@@ -172,61 +193,36 @@ export async function takeOwnerMessage(sender: MailSender, given: Record<string,
   if (typeof record !== "string" || (!sessionID.test(record) && !groupID.test(record))) return;
   const group = groupID.test(record);
   const body = prompt(given.body, group);
-  if (!setup || setup.id !== given.setup || !key || owner !== key || !peersOf(link).some(peer => peer.key === sender.key)
-    || !body || operation !== operationOf(setup.id, sender.key, record, body.id)) return;
+  if (!setup || setup.id !== given.setup || !key || owner !== key || !peersOf(link).some(peer => peer.key === sender.key) || !body) return;
+  const legacy = legacyOperation(setup.id, sender.key, record, body.id);
+  if (operation !== operationOf(setup.id, record, body.id) && operation !== legacy) return;
   const id = operation as string;
-  const digest = recordKey(JSON.stringify(body));
   const sendReceipt = (receipt: MessageReceipt) => reply({ ownerMessageReceipt: receipt });
   const refused = (message: string): MessageReceipt => ({ status: "interrupted", operation: id, owner: key, message });
-  if (accepting.has(id)) return;
-  const replay = (earlier: Accepted) => {
-    if (earlier.digest !== digest) return;
-    if (earlier.receipt.status === "pending" && earlier.claimant && earlier.claimant !== process.pid && alive(earlier.claimant)) return;
+  const earlier = readRecord<Accepted>("accepted", legacy);
+  if (earlier) {
+    if (earlier.digest !== recordKey(JSON.stringify(body))) return;
+    if (earlier.receipt.status === "pending" && earlier.claimant && alive(earlier.claimant)) return;
     return sendReceipt(earlier.receipt.status === "pending"
       ? refused("The owner restarted before recording acceptance. Check the conversation before sending again.")
-      : earlier.receipt);
-  };
-  const earlier = readRecord<Accepted>("accepted", id);
-  if (earlier) return replay(earlier);
-  if (frozen().has(record) || awaySessions().includes(record)) return;
-  accepting.add(id);
-  try {
-    const bridge = () => {
-      const target = bridgeTarget();
-      return target ? readBridgeFile() : null;
-    };
-    const request = { method: "POST", path: group ? `kuvo/groups/${record}` : `kuvo/sessions/${record}/send`, headers: {}, body: Buffer.from(JSON.stringify(body)), desktop: true };
-    const json = (status: number, value: unknown) => [{ head: { status, headers: { "content-type": "application/json" } } }, { body: Buffer.from(JSON.stringify(value)) }];
-    const context: RouteContext = { request, route: request.path, phone: undefined, signal: undefined, bridge, readBridge: readBridgeFile,
-      readEngine: readEngineFile, info: { name: "" }, hold: null, phonesChanged: () => {}, json, text: json };
-    const { groupsRoute, listedGroups } = await import("../areas/groups");
-    const { sendRoute, SEND_ROUTE } = await import("../areas/messages");
-    const target = group ? bridge() : null;
-    const present = group ? target && (await listedGroups(target, AbortSignal.timeout(5_000)))?.some(chat => chat.id === record)
-      : await placeOfSessionPatiently(record, targetsOf(context));
-    if (!present || frozen().has(record) || awaySessions().includes(record)) return;
-    const current = readLink();
-    if (followedSetup(current)?.id !== setup.id || !peersOf(current).some(peer => peer.key === sender.key)
-      || !ownerOf(messageRecord(record), { link: current, localRecord: true })?.local) return;
-    // A crash after handing the prompt to the engine can leave an unknown outcome. Keep
-    // the claim first so retries cannot run it twice, even if the engine discarded its ID.
-    const save = (receipt: MessageReceipt) => keepRecord("accepted", id, {
-      setup: setup.id, record, digest, receipt, ...(receipt.status === "pending" ? { claimant: process.pid } : {}),
-    });
-    const claimed = locked(LOCK, () => {
-      const previous = readRecord<Accepted>("accepted", id);
-      if (!previous) save({ status: "pending", operation: id, owner: key, message: "Checking acceptance." });
-      return previous;
-    }, { required: true });
-    if (claimed) return replay(claimed);
-    const answer = await collected(group ? groupsRoute(context) : sendRoute(context, request.path.match(SEND_ROUTE)!));
-    const error = parsed(answer.body);
-    const receipt: MessageReceipt = answer.status >= 200 && answer.status < 300
-      ? { status: "committed", operation: id, owner: key, acceptedAt: Date.now() }
-      : refused(isObject(error) && typeof error.message === "string" ? error.message : "The owner couldn’t confirm acceptance. Check the conversation before sending again.");
-    save(receipt);
-    sendReceipt(receipt);
-  } finally {
-    accepting.delete(id);
+      : { ...earlier.receipt, operation: id });
   }
+  const bridge = () => bridgeTarget() ? readBridgeFile() : null;
+  const request = { method: "POST", path: group ? `kuvo/groups/${record}` : `kuvo/sessions/${record}/send`, headers: {}, body: Buffer.from(JSON.stringify(body)), desktop: true };
+  const json: RouteContext["json"] = (status, value) => [{ head: { status, headers: { "content-type": "application/json" } } }, { body: Buffer.from(JSON.stringify(value)) }];
+  const context: RouteContext = { request, route: request.path, phone: undefined, signal: undefined, bridge, readBridge: readBridgeFile,
+    readEngine: readEngineFile, info: { name: "" }, hold: null, phonesChanged: () => {}, json, text: json };
+  const { listedGroups } = await import("../areas/groups");
+  const target = group ? bridge() : null;
+  const present = group ? target && (await listedGroups(target, AbortSignal.timeout(5_000)))?.some(chat => chat.id === record)
+    : await placeOfSessionPatiently(record, targetsOf(context));
+  const current = readLink();
+  if (!present || followedSetup(current)?.id !== setup.id || !peersOf(current).some(peer => peer.key === sender.key)
+    || !mayActivate(messageRecord(record), { link: current })) return;
+  const answer = await deliverMessage(context, record, setup.id, body);
+  const value = answer.value;
+  const receipt: MessageReceipt = answer.status >= 200 && answer.status < 300
+    ? { status: "committed", operation: id, owner: key, acceptedAt: answer.acceptedAt ?? Date.now() }
+    : refused(isObject(value) && typeof value.message === "string" ? value.message : "The owner couldn’t confirm acceptance. Check the conversation before sending again.");
+  sendReceipt(receipt);
 }

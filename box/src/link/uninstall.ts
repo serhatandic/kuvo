@@ -363,10 +363,13 @@ function clearDesktopKeychain(): boolean {
   return true;
 }
 
+const wipePrepared = (by: string) => path.join(RUN, `wipe-prepared-${by}.json`);
+
 /** `uninstall [--check]`: prints one JSON line, says what it did on stderr, and exits 0 when it's
  * done, 1 when refused or incomplete, 2 for what it doesn't know. */
 export async function uninstallCommand(args: string[]): Promise<number> {
-  const unknown = args.filter(arg => arg !== "--check");
+  const prepareBy = args[0] === "--prepare-wipe" && args.length === 2 && KEY.test(args[1]) ? args[1] : undefined;
+  const unknown = prepareBy ? [] : args.filter(arg => arg !== "--check");
   if (unknown.length) {
     console.error("Usage: kuvo-link.js uninstall [--check]");
     return 2;
@@ -401,10 +404,27 @@ export async function uninstallCommand(args: string[]): Promise<number> {
     return 1;
   };
   if (needsHandover(readLink())) return refuse();
-  try { await (await import("./backup/engine")).backupBefore("wipe"); }
-  catch (error) { return refuse((error as Error).message); }
-  // The SSH controller has already revoked access before asking its remote to stop.
   const overSSH = process.env.KUVO_UNINSTALL_FROM_SSH === "1";
+  const preparedBy = process.env.KUVO_UNINSTALL_PREPARED_BY;
+  try {
+    const { backupBefore, config } = await import("./backup/engine");
+    if (prepareBy) {
+      if (!peersOf(readLink()).some(peer => peer.key === prepareBy))
+        return refuse("Only a current member can prepare this computer for removal.");
+      const point = await backupBefore("wipe");
+      writeDurablePrivate(wipePrepared(prepareBy), JSON.stringify({ key: ownKey(readLink() ?? {}), point }), K);
+      console.log(JSON.stringify({ result: "prepared" }));
+      return 0;
+    }
+    if (overSSH && preparedBy && KEY.test(preparedBy) && config()?.enabled) {
+      const mark = JSON.parse(fs.readFileSync(wipePrepared(preparedBy), "utf8"));
+      if (!mark.point || mark.key !== ownKey(readLink() ?? {}))
+        return refuse("The verified pre-wipe backup could not be confirmed.");
+    } else {
+      await backupBefore("wipe");
+    }
+  } catch (error) { return refuse((error as Error).message); }
+  // The SSH controller has already revoked access before asking its remote to stop.
   const publishing = IS_MAC && !mainElsewhere(readLink());
   const revocation: DesktopRevocation = overSSH ? { status: "revoked" } : await revokeDesktop();
   const save = "save" in revocation ? revocation.save : undefined;

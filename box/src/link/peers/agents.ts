@@ -148,7 +148,7 @@ const ownFeatures = (): readonly string[] => {
   const features = IS_MAC ? macFeatures() : FEATURES;
   return features.filter(feature => {
     if (feature === "data.offline-edits") return offlineEditLayoutReady(K);
-    if (feature === "data.ownership") return ownershipLayoutReady(K);
+    if (feature === "data.ownership" || feature === "data.mutation-identity") return ownershipLayoutReady(K);
     if (feature === "setup.checkpoints" || feature === "setup.standby-acceptance") return !setupLayoutDeferred(K);
     return true;
   });

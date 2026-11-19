@@ -1,3 +1,4 @@
+import type { Acted } from "./forward";
 import type { EditHistory } from "../ownership/merge";
 import { keepRecord, offlineEditsReady, readRecord, recordKey, records } from "../ownership/store";
 import { observeQueueItem } from "./offline-fields";
@@ -152,6 +153,7 @@ export interface Item {
   doneAt?: number;
   removed?: { at: number; by: Who };
   offlineEdits?: EditHistory;
+  creationReceipt?: CreationReceipt;
 }
 
 /** An owner's queue, as its file keeps it. */
@@ -165,12 +167,13 @@ export const queueFollowers = new Set<() => void>();
 
 const fileOf = (owner: string) => path.join(QUEUES, `${owner}.json`);
 
-export interface QueueDeletion { id: string; queue: string; at: number }
+export interface CreationReceipt { operation: string; digest: string; answer: Acted }
+export interface QueueDeletion { id: string; queue: string; at: number; creationReceipt?: CreationReceipt }
 export const deletionFor = (id: string) => readRecord<QueueDeletion>("edit-deletions", recordKey(id));
 export const queueDeletions = () => records("edit-deletions").flatMap(key => readRecord<QueueDeletion>("edit-deletions", key) ?? []);
 export const keepDeletion = (deletion: QueueDeletion) => keepRecord("edit-deletions", recordKey(deletion.id), deletion);
 
-export interface QueueDeparture { queue: string; computer: string }
+export interface QueueDeparture { queue: string; computer: string; creationReceipt?: CreationReceipt }
 export const departureFor = (id: string) => readRecord<QueueDeparture>("edit-departures", recordKey(id));
 export function noteDeparture(id: string, departure: QueueDeparture) {
   if (offlineEditsReady()) keepRecord("edit-departures", recordKey(id), departure);
@@ -425,6 +428,11 @@ export class Book {
   private readonly queues = new Map<string, Queue>();
   private readonly before = new Map<string, string>();
   private readonly mentionsBefore = new Map<string, MentionSnapshot>();
+  private readonly creations = new Map<Item, () => CreationReceipt>();
+
+  recordCreation(item: Item, receipt: () => CreationReceipt): void {
+    this.creations.set(item, receipt);
+  }
 
   constructor() {
     for (const owner of owners()) this.load(owner);
@@ -487,6 +495,7 @@ export class Book {
     pruneRelations(items, gone);
     if (offlineEditsReady()) for (const item of items) if (item.offlineEdits) observeQueueItem(item);
     syncMentions(items, this.mentionsBefore);
+    for (const [item, receipt] of this.creations) item.creationReceipt = receipt();
     let any = false;
     const changed = [...this.queues].filter(([owner, queue]) => JSON.stringify(queue.items) !== this.before.get(owner));
     const gained = (owner: string, queue: Queue) => {
@@ -532,7 +541,7 @@ export function changeQueues<T>(work: (book: Book) => T, now = Date.now(), { onI
       if (!gone.length) continue;
       queue.items = queue.items.filter(item => !gone.includes(item));
       for (const item of gone) {
-        if (offlineEditsReady()) keepDeletion({ id: item.id, queue: item.owner, at: item.removed!.at });
+        if (offlineEditsReady()) keepDeletion({ id: item.id, queue: item.owner, at: item.removed!.at, creationReceipt: item.creationReceipt });
         purged.push(item.id);
       }
     }

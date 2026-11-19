@@ -227,7 +227,7 @@ export function handedBack(sender: MailSender, given: unknown, now = Date.now())
     const found = book.find({ id: item.id });
     const handing = found?.handing;
     if (!found || !handing || handing.id !== given.id) return;
-    noteDeparture(found.id, { queue: handing.to, computer: sender.key });
+    noteDeparture(found.id, { queue: handing.to, computer: sender.key, creationReceipt: found.creationReceipt });
     book.queue(found.owner).items = book.queue(found.owner).items.filter(each => each.id !== found.id);
   }, now, { onItsOwn: true });
   if (!allItems().some(each => each.id === item.id)) fs.rmSync(filesOf(item.id), { recursive: true, force: true });

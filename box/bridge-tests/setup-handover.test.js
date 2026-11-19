@@ -322,6 +322,7 @@ test("failure bench: an away owner leaves saved reads and accepts an unsent mess
   assert.equal(receipt.owner, c.key);
   assert.ok(receipt.acceptedAt >= before.value.lastReceivedAt);
   assert.equal((await b.route("POST", "kuvo/sessions/ses_owned/send", message)).value.status, "committed");
+  assert.equal((await c.route("POST", "kuvo/sessions/ses_owned/send", message)).status, 200);
   assert.deepEqual(prompts.map(prompt => prompt.id), [message.id]);
   assert.deepEqual((await read(b)).value.data.messages.map(prompt => prompt.id), [message.id]);
   let groupOutcome;
@@ -343,8 +344,11 @@ test("failure bench: a member runs its own conversation and Work Queue while the
   const work = await c.route("POST", "kuvo/work-queue/items", { owner: "ses_owned", title: "Continue on Lab" }, true);
   assert.equal(work.status, 200);
   assert.equal((await c.route("GET", `kuvo/work-queue/items/${work.value.item.id}`)).value.item.title, "Continue on Lab");
-  const forwarded = await b.route("POST", "kuvo/work-queue/items", { owner: "ses_owned", title: "Desk sends to Lab" }, true);
+  const create = { owner: "ses_owned", title: "Desk sends to Lab", operation: "one-create-from-desk" };
+  const forwarded = await b.route("POST", "kuvo/work-queue/items", create, true);
   assert.equal(forwarded.status, 200);
+  assert.deepEqual(await b.route("POST", "kuvo/work-queue/items", create, true), forwarded);
+  assert.deepEqual(await c.route("POST", "kuvo/work-queue/items", create, true), forwarded);
   assert.equal((await c.route("GET", `kuvo/work-queue/items/${forwarded.value.item.id}`)).value.item.title, "Desk sends to Lab");
 });
 

@@ -84,6 +84,7 @@ export const FEATURES = [
   "computers.words",
   "config",
   "config.apply",
+  "data.mutation-identity",
   "data.offline-edits",
   "data.ownership",
   "devices.allow",

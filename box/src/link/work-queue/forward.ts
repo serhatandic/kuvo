@@ -17,7 +17,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { additiveObjectFormat, UnsupportedFormatVersion } from "../../shared/format-version";
 import { isObject } from "../../shared/json";
-import { listOf, writePrivate } from "../files";
+import { locked } from "../../shared/files";
+import { listOf, writeDurablePrivate, writePrivate } from "../files";
 import { watchFolders } from "../follow";
 import { ownName } from "../letters/start";
 import { readPeerAgents } from "../peers/directory";
@@ -54,6 +55,7 @@ const forwardFormat = additiveObjectFormat("Work Queue forwarded request");
 const answerFormat = additiveObjectFormat("Work Queue forwarded answer");
 const doneFormat = additiveObjectFormat("Work Queue forwarded action receipts");
 const DONE_FILE = path.join(WORK_QUEUE, "acted.json");
+const DONE_LOCK = path.join(WORK_QUEUE, ".acted.lock");
 const ID = /^wqa_[A-Za-z0-9_-]{16,40}$/;
 const LEFT = /^(wqa_[A-Za-z0-9_-]{16,40})\.json$/;
 
@@ -90,6 +92,7 @@ export interface Act {
   name?: string;
   body?: Record<string, unknown>;
   at: number;
+  operation?: string;
 }
 
 /** What the box that keeps it answered: as its own route would have (a file: `{type, data}`, its
@@ -348,7 +351,14 @@ function prune<T extends { until: number; answer: Acted | null; answered?: numbe
 }
 
 function readDone(now: number): Map<string, { until: number; answer: Acted | null }> {
-  const kept = read(doneFormat, DONE_FILE) ?? {};
+  let kept: Record<string, unknown> = {};
+  try {
+    const value = JSON.parse(fs.readFileSync(DONE_FILE, "utf8"));
+    if (!isObject(value)) throw new Error("The forwarding receipts are unreadable.");
+    kept = doneFormat.read(value);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
   const fresh = new Map<string, { until: number; answer: Acted | null }>();
   for (const [key, each] of Object.entries(kept)) {
     if (isObject(each) && typeof each.until === "number") fresh.set(key, { until: each.until, answer: isObject(each.answer) ? each.answer as unknown as Acted : null });
@@ -357,16 +367,17 @@ function readDone(now: number): Map<string, { until: number; answer: Acted | nul
   return fresh;
 }
 
-function keepDone(key: string, done: Done, now: number): void {
-  try {
+function keepDone(key: string, done: Done, now: number, claim = false): Done | undefined {
+  return locked(DONE_LOCK, () => {
     const kept = readDone(now);
+    const existing = kept.get(key);
+    if (claim && existing) return existing;
     kept.delete(key);
     kept.set(key, { until: done.until, answer: done.answer });
     prune(kept, now);
-    writePrivate(DONE_FILE, JSON.stringify(doneFormat.write(Object.fromEntries(kept))));
-  } catch (error) {
-    if (error instanceof UnsupportedFormatVersion) throw error;
-  }
+    writeDurablePrivate(DONE_FILE, JSON.stringify(doneFormat.write(Object.fromEntries(kept))), path.dirname(WORK_QUEUE));
+    return undefined;
+  }, { required: true });
 }
 
 /** An ask from another of your computers' boxes: done here as this box's own client's (`run`), and
@@ -392,7 +403,10 @@ export async function takeAct(sender: MailSender, given: unknown, reply: (payloa
   }
   // A change this box took before it last started: as it went, or, cut short then, that it may
   // have been done.
-  const kept = changes ? readDone(now).get(key) : undefined;
+  const unavailable = { status: 503, value: { message: "This computer couldn’t persist the forwarded operation." } };
+  let kept: Done | undefined;
+  try { kept = changes ? readDone(now).get(key) : undefined; }
+  catch { return answer(unavailable); }
   // (Renaming or removing one of your machines, or pairing your app, is the same done twice: one
   // cut short is done again.)
   const redo = kept !== undefined && kept.answer === null && act.area !== undefined && act.area !== "setup" && act.area !== "ownership";
@@ -405,14 +419,25 @@ export async function takeAct(sender: MailSender, given: unknown, reply: (payloa
   // remembered until it would be too old to take, so none is ever taken twice.)
   if (!redo && (now - act.at > ACT_MEMORY || act.at - now > AHEAD)) return answer({ status: 409, value: { message: `${here}'s clock and ${computerName(peer)}'s are too far apart to take it: check both computers' time.` } });
   const entry: Done = { until: kept?.until ?? Math.max(now, act.at) + ACT_MEMORY, answer: null };
+  if (changes) {
+    try {
+      const previous = keepDone(key, entry, now, !redo);
+      if (previous) return answer(previous.answer ?? { status: 409, value: { message: "This operation was already claimed." } });
+    } catch { return answer(unavailable); }
+  }
   did.set(key, entry);
-  if (changes) keepDone(key, entry, now);
   try {
     entry.answer = await run(act);
   } catch {
     entry.answer = { status: 500, value: { message: `Something went wrong on ${here}. Try again in a moment.` } };
   }
-  if (changes) keepDone(key, entry, now);
+  if (changes) {
+    try { keepDone(key, entry, now); }
+    catch {
+      entry.answered = Date.now();
+      return answer({ status: 503, value: { message: "This computer couldn’t persist the operation’s outcome. Check the record before retrying." } });
+    }
+  }
   entry.answered = Date.now();
   answer(entry.answer);
   // (A read's answer isn't kept: a file's can be big, and one asked again is read again.)
@@ -439,5 +464,6 @@ const actOf = (given: unknown): Act | null => {
   const ownership = given.area === "ownership" && (method === "GET" || method === "PATCH" || method === "POST" || method === "DELETE") && action === undefined;
   if (!fits && !devices && !setup && !ownership) return null;
   if (given.area !== undefined && !devices && !setup && !ownership && !(given.area === "computers" && (method === "PATCH" || method === "DELETE") && action === undefined)) return null;
-  return { id: given.id, ...(given.area === "computers" || devices || setup || ownership ? { area: given.area } : {}), method, item: given.item, ...(action ? { action } : {}), ...(action === "file" ? { name } : {}), ...(isObject(given.body) ? { body: given.body } : {}), at: given.at } as Act;
+  if (given.operation !== undefined && (typeof given.operation !== "string" || !/^[A-Za-z0-9_-]{1,80}$/.test(given.operation))) return null;
+  return { id: given.id, ...(given.operation ? { operation: given.operation } : {}), ...(given.area === "computers" || devices || setup || ownership ? { area: given.area } : {}), method, item: given.item, ...(action ? { action } : {}), ...(action === "file" ? { name } : {}), ...(isObject(given.body) ? { body: given.body } : {}), at: given.at } as Act;
 };

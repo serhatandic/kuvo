@@ -915,6 +915,8 @@ async function finish(id: string): Promise<void> {
   if (record.kind === "bot") noteBotsChanged();
   outgoing.delete(id);
   try {
+    // Acknowledged ownership outlives both the source cleanup and its routing advertisement.
+    noteMovedAway([...new Set([record.thing, ...record.sessions])], record.to);
     if (record.kind === "group") {
       await groupAction(readBridgeFile(), record.thing, "release");
       forgetWorkQueues([record.thing]);
@@ -942,7 +944,6 @@ async function finish(id: string): Promise<void> {
       const trash = await toTrash(place);
       noteLeft({ id, thing: record.thing, kind: record.kind, to: record.to, at: Date.now(), sessions: [...record.sessions], ...(record.lane ? { lane: true } : {}), ...(trash ? { trash } : {}), ...(record.leftOf?.length ? { left: record.leftOf } : {}) });
     }
-    noteMovedAway(record.sessions, record.to);
     changeMove(id, each => { each.cleanupPending = false; });
     ended(id, confirmedOutcome(record, false));
     forgetMove(id);
@@ -1314,10 +1315,10 @@ async function tellMoved(record: MoveRecord): Promise<void> {
 
 /** Switched to: the copy here goes on from now, as it was where it came from. */
 async function switchHere(record: MoveRecord): Promise<void> {
+  forgetMovedAway([record.thing, ...record.sessions]);
   if (record.kind === "group") {
     await groupAction(readBridgeFile(), record.thing, "activate");
   } else {
-    forgetMovedAway(record.sessions);
     await backHere(record.thing).catch(error => console.error(`kuvo-link: what an earlier move of ${record.name} left couldn't all be cleared: ${String((error as Error | null)?.message ?? error)}`));
     // Told where it is now, before anything could run it here.
     await tellMoved(record).catch(error => console.error(`kuvo-link: ${record.name} couldn't be told it moved: ${String((error as Error | null)?.message ?? error)}`));

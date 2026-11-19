@@ -12,7 +12,7 @@ import { LEADERSHIP_WAIT, primaryFenced } from "../setup/lease";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import type { AddTry, ComputerAction, ListedComputer } from "../../shared/routes/box";
-import { isObject } from "../../shared/json";
+import { isObject, parsed } from "../../shared/json";
 import { plainName } from "../../shared/text";
 import { setupSaveReceipt } from "../../shared/setup-local";
 import { macDocsChanged, receiveDocs } from "../documents/exchange";
@@ -816,6 +816,12 @@ export function beginUninstall(key: string): Running | null {
       macs.delete(own);
       const only = macs.size === 0;
       tell.step("removing", only ? undefined : "Another Mac uses it too, so Kuvo Code stays there");
+      if (only) {
+        const prepared = await account.run(scripts.prepareUninstall(ENGINE_VERSION, own), { most: 600_000 });
+        const reply = parsed(prepared.stdout.trim().split("\n").at(-1));
+        if (prepared.status !== 0 || !isObject(reply) || reply.result !== "prepared")
+          throw new Failed(isObject(reply) && typeof reply.message === "string" ? reply.message : `Kuvo Code couldn’t verify the pre-wipe backup on ${at.name}.`);
+      }
       // Persist the revocation before the first destructive command. SSH may lose the reply.
       let removed: Awaited<ReturnType<typeof removeComputerHere>>;
       try {
@@ -839,7 +845,7 @@ export function beginUninstall(key: string): Running | null {
       let cleanup = "";
       // Never cut short: let the remote removal finish even if the client stops waiting.
       try {
-        const ran = await account.run(scripts.uninstall(ENGINE_VERSION, own, only), { most: 600_000 });
+        const ran = await account.run(scripts.uninstall(ENGINE_VERSION, own, only, only), { most: 600_000 });
         const last = ran.stdout.trim().split("\n").pop();
         let said: unknown;
         try { said = last && JSON.parse(last); } catch {}

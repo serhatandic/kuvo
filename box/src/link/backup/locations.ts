@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import type { DataReference } from "../ownership/resolve";
 import { DATA_DECLARATIONS, type DataDeclaration, type DataKind } from "../../shared/data-declarations";
 import { APP_FOLDER, BOTS, ENGINE_DATA, K, MAC_ATTACHMENTS, SESSION_WAKES } from "../home";
 
@@ -19,17 +20,37 @@ const component = (pattern: string) => new RegExp("^" + pattern.split("*")
   .map(part => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("[^/]*") + "$");
 
 const selectors = Object.entries(DATA_DECLARATIONS).flatMap(([key, policy]: [string, DataDeclaration]) =>
-  !policy.backup ? [] : (policy.storage ?? []).map(pattern => {
+  !policy.backup ? [] : (policy.storage ?? []).map(location => {
+    const pattern = typeof location === "string" ? location : location.pattern;
+    const restore = typeof location === "string" ? policy.restore : location.restore;
     const [root, ...parts] = pattern.replace(/\/$/, "").split("/");
-    return { kind: key as DataKind, root, parts: parts.map(component), tree: pattern.endsWith("/") };
+    return { kind: key as DataKind, restore, root, parts: parts.map(component), tree: pattern.endsWith("/") };
   }));
 
 const temporary = (name: string) => name.startsWith(".") || /\.(?:tmp|new|lock)$/.test(name);
-export function kindOf(name: string): DataKind | undefined {
+export function storageOf(name: string) {
   const [root, ...parts] = name.split("/");
   if (parts.some(temporary)) return undefined;
   return selectors.find(rule => rule.root === root && (rule.tree ? parts.length >= rule.parts.length : parts.length === rule.parts.length)
-    && rule.parts.every((match, i) => match.test(parts[i]!)))?.kind;
+    && rule.parts.every((match, i) => match.test(parts[i]!)));
+}
+
+export const kindOf = (name: string): DataKind | undefined => storageOf(name)?.kind;
+
+/** Map individual files to the same record address used by writes. Aggregate
+ * stores (for example SQLite) resolve their record IDs with their own reader. */
+export function recordReferences(name: string, sessionFor: (root: string, id: string) => string): DataReference[] {
+  const [root, first, second] = name.split("/");
+  if (root === "bots" && second) return [
+    { kind: "botSettings", id: first }, { kind: "conversations", id: sessionFor(root, first) },
+  ];
+  if (root === "groups" && second) return [{ kind: "groupSettings", id: first }];
+  if (root === "agents" && first === "sessions" && second) return [{ kind: "conversations", id: second }];
+  if (root === "wakes") return [{ kind: "conversations", id: sessionFor(root, first) }];
+  if ((root === "attachments" || root === "macAttachments") && first.startsWith("ses_"))
+    return [{ kind: "sessionFiles", id: first }];
+  return [];
+
 }
 
 export function stat(file: string): fs.Stats | undefined {
@@ -44,10 +65,10 @@ export function* tree(file: string, name: string, include: (name: string) => boo
   }
 }
 
-export function* durableFiles(): Generator<{ name: string; file: string; kind: DataKind }> {
+export function* durableFiles(layout: Readonly<Record<string, string | null>> = roots): Generator<{ name: string; file: string; kind: DataKind }> {
   const seen = new Set<string>();
   for (const { root, parts, tree: recursive } of selectors) {
-    const base = roots[root];
+    const base = layout[root];
     if (!base) continue;
     function* walk(file: string, name: string, at: number): Generator<{ file: string; name: string }> {
       if (at === parts.length) {

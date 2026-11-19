@@ -459,7 +459,7 @@ const over = id => until(id, found => !found || found.state === "done" || found.
 const steps = found => found.steps.map(step => `${step.id}:${step.state}`);
 const sshLog = () => (fs.existsSync(path.join(fake, "log")) ? fs.readFileSync(path.join(fake, "log"), "utf8").trim().split("\n") : []);
 // (Two more computers, each a home of its own: a Mac that has Kuvo Code's app, and one with nothing.)
-const homes = Object.fromEntries(["macbook", "mini", "nas", "attic", "race", "claim", "rotate", "interrupted", "network-drop", "release", "add-first", "uninstall-first", "prepare", "old-reservation", "prepare-error", "probe-removal", "stop-uninstall", "primary-member", "late-enrollment", "replacement-standby"].map(name => [name, path.join(base, name)]));
+const homes = Object.fromEntries(["macbook", "mini", "nas", "attic", "race", "claim", "rotate", "interrupted", "network-drop", "release", "add-first", "uninstall-first", "prepare", "old-reservation", "prepare-error", "probe-removal", "stop-uninstall", "primary-member", "late-enrollment", "replacement-standby", "backup-uninstall"].map(name => [name, path.join(base, name)]));
 for (const [name, folder] of Object.entries(homes)) {
   fs.mkdirSync(folder, { recursive: true });
   fs.writeFileSync(path.join(fake, `home-${name}`), folder);
@@ -1688,6 +1688,23 @@ for (const [destination, heldScript, step, expected] of [
     assert.deepEqual(ran, expected);
   });
 }
+
+test("SSH uninstall leaves membership intact when the remote pre-wipe backup fails", async () => {
+  const installed = await added("backup-uninstall");
+  assert.equal(installed.state, "done", JSON.stringify(installed.failure));
+  const { computer } = installed;
+  const kuvo = path.join(homes["backup-uninstall"], ".kuvo-code");
+  const identity = path.join(kuvo, "desktop", "identity");
+  write(identity, "keep until backup succeeds", 0o600);
+  write(path.join(kuvo, "backup", "configuration.json"), '{"version":999}');
+  const started = await ask("POST", `kuvo/computers/${computer.key}/uninstall`);
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  const ended = await over(started.body.try.id);
+  assert.equal(ended.state, "failed");
+  assert.match(ended.failure.message, /Unsupported backup configuration/);
+  assert.ok(link.readLink().macPeers.some(peer => peer.key === computer.key));
+  assert.equal(fs.readFileSync(identity, "utf8"), "keep until backup succeeds");
+});
 
 test("SSH uninstall stops if the refreshed peer list drops the target during the probe", async () => {
   const addedForProbe = await added("probe-removal");

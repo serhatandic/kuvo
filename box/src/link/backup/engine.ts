@@ -11,7 +11,7 @@ import { updateUnderWay } from "../../shared/updating";
 import { held, ownSign } from "../documents/format";
 import { exclusiveWhile, privateFolder, writeDurablePrivate } from "../files";
 import { K, OWN_RUNTIME, RUN, homeFolder, located } from "../home";
-import { ownerOf } from "../ownership/resolve";
+import { mayActivate } from "../ownership/resolve";
 import { ownKey, peersOf } from "../peers/known";
 import { leadershipDocuments, resolveCheckpoint } from "../setup/checkpoint";
 import { followedSetup } from "../setup/record";
@@ -19,7 +19,7 @@ import { readLink, updateLink } from "../state";
 import { authenticate, archiveContext, newRecoveryKey, seal, type Entry } from "./archive";
 import { destinationStore, expiredPoints, separateDisk, verifyBackupComputer, type Destination } from "./destination";
 import { scrubEngine } from "./sqlite";
-import { durableFiles, inside, roots, tree } from "./locations";
+import { durableFiles, inside, recordReferences, roots, stat, tree } from "./locations";
 
 export const BACKUP = path.join(K, "backup");
 const CONFIG = path.join(BACKUP, "configuration.json");
@@ -195,17 +195,18 @@ export function captureBackup(file: string, key: string, source: string, id: str
   const manifest: Manifest = { format: 1, source, id, at: now, version, origin: boundary.origin, signer: boundary.signer, setup: boundary.setup,
     paired: boundary.paired, projects: projects.map(project => path.basename(project)) };
   const link = boundary.link;
+  const sessionFor = (root: string, id: string) => {
+    const base = roots[root];
+    const file = base && path.join(base, id, "session");
+    return file && stat(file)?.isFile() ? fs.readFileSync(file, "utf8").trim() : id;
+  };
   function* entries(): Generator<Entry> {
     yield bytes("meta/manifest.json", manifest);
     yield* boundary.entries;
     let db = 0;
     for (const item of durableFiles()) {
-      const [root, id] = item.name.split("/");
-      if (["bots", "wakes", "groups"].includes(root) || item.name.startsWith("agents/sessions/")) {
-        const kind = root === "bots" ? "botSettings" : root === "groups" ? "groupSettings" : "conversations";
-        const record = root === "bots" && id.endsWith(".json") ? undefined : root === "bots" || root === "groups" || root === "wakes" ? id : item.name.split("/")[2];
-        if (record && ownerOf({ kind, id: record }, { link, localRecord: true })?.local === false) continue;
-      }
+      const [root] = item.name.split("/");
+      if (!recordReferences(item.name, sessionFor).every(ref => mayActivate(ref, { link }))) continue;
       if (item.name.startsWith("engine/") && item.name.endsWith(".db") || item.name === "agents/usage/insights.sqlite") {
         const copy = path.join(scratch, `db-${db++}`);
         snapshotDatabase(item.file, copy);

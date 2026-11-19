@@ -350,3 +350,138 @@ test("the built box previews a destination before enabling and requires the loca
     } finally { server.closeAllConnections(); server.close(); }
   `);
 });
+
+test("accepted moves fence the same old copy during normal writes and restore", () => {
+  bunIn(scratch(), `
+    import assert from "node:assert/strict";
+    import { publicOf } from ${cryptoKeys};
+    import { newSigningSeed, signingKeyOf } from ${setup};
+    import { writeLink, readLink } from ${JSON.stringify(new URL("../src/link/state.ts", import.meta.url).href)};
+    import * as ownership from ${JSON.stringify(new URL("../src/link/ownership/resolve.ts", import.meta.url).href)};
+    import { noteMovedAway } from ${JSON.stringify(new URL("../src/link/moves/records.ts", import.meta.url).href)};
+    const seed = Buffer.alloc(32, 42).toString("base64url");
+    const keyOf = n => publicOf(Buffer.alloc(32, n)).toString("base64url");
+    const own = keyOf(42), old = keyOf(43), target = keyOf(44);
+    const sign = newSigningSeed(), id = "set_" + "A".repeat(22);
+    const peer = key => ({ key, kind: "machine", name: key, address: "A".repeat(22) });
+    writeLink({ key: seed, sign, setup: { id, primary: own, sign: signingKeyOf(sign), role: "primary", managed: true, checkpointed: true, epoch: 1 },
+      sharedSetup: id, shared: {
+        membershipAndAccess: { sequence: 1, value: { left: [old], boxes: [own, target].map(peer), moved: [{ session: "ses_a", key: target }] } },
+        ownershipAssignments: { sequence: 1, value: { ["replacement:" + old]: { computer: own } } },
+      } });
+    noteMovedAway(["ses_a"], own);
+    const link = readLink(), ref = { kind: "conversations", id: "ses_a" };
+    assert.equal(ownership.ownerOf(ref, { link, localRecord: true }).key, target);
+    assert.equal(ownership.mayActivate(ref, { link }), false);
+    assert.equal(ownership.mayActivate(ref, { link, origin: old }), false);
+    assert.deepEqual(ownership.sessionsFencedHere({ link, origin: old }), ["ses_a"]);
+    assert.equal(ownership.mayActivate({ ...ref, id: "ses_b" }, { link, origin: old }), true);
+  `);
+});
+
+test("a restored queue item with a newer departure is held with its files", () => {
+  const owner = scratch(), dest = scratch(), replacement = scratch();
+  const box = home(owner), target = home(replacement), item = "wqi_" + "A".repeat(20);
+  put(box, "folder-version.json", '{"version":7}');
+  put(target, "folder-version.json", '{"version":7}');
+  put(box, "run/work-queue/queues/usr_you.json", JSON.stringify({ owner: "usr_you", items: [{ id: item, title: "At the backup point" }] }));
+  put(box, `run/work-queue/files/${item}/file.bin`, "keep with held item");
+  take(owner, dest);
+  bunIn(replacement, `
+    import { noteDeparture } from ${JSON.stringify(new URL("../src/link/work-queue/store.ts", import.meta.url).href)};
+    noteDeparture(${JSON.stringify(item)}, { queue: "ses_elsewhere", computer: "A".repeat(43) });
+  `);
+  const result = recover(replacement, dest);
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(target, "run/work-queue/queues/usr_you.json"), "utf8")).items, []);
+  const held = result.held.find(entry => entry.startsWith("work-queue-items/"));
+  assert.ok(held);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(target, "backup/recovered", id, held), "utf8")).id, item);
+  const file = `run/work-queue/files/${item}/file.bin`;
+  assert.equal(fs.existsSync(path.join(target, file)), false);
+  assert.equal(fs.readFileSync(path.join(target, "backup/recovered", id, "home", file), "utf8"), "keep with held item");
+});
+
+test("restore inventories the upgraded home and external roots", () => {
+  bunIn(scratch(), `
+    import assert from "node:assert/strict";
+    import fs from "node:fs";
+    import path from "node:path";
+    import { upgradeFolder } from ${JSON.stringify(new URL("../src/shared/folder-version.ts", import.meta.url).href)};
+    import { stageRestore } from ${url("stage")};
+    const stage = path.join(process.env.HOME, "staged"), legacy = path.join(process.env.HOME, "legacy");
+    fs.writeFileSync(legacy, "legacy");
+    const upgraded = stageRestore(stage, 0, [
+      { name: "home/run/named.json", file: legacy },
+      { name: "bots/bot_a/notes.md", file: legacy },
+    ], folder => upgradeFolder(folder, [at => {
+      fs.renameSync(path.join(at, "run/named.json"), path.join(at, "run/archived.json"));
+      const notes = path.join(at, "bots/bot_a");
+      fs.renameSync(path.join(notes, "notes.md"), path.join(notes, "MEMORY.md"));
+    }]));
+    assert.deepEqual([...upgraded.keys()].sort(), ["bots/bot_a/MEMORY.md", "home/run/archived.json"]);
+    for (const file of upgraded.values()) assert.equal(fs.readFileSync(file, "utf8"), "legacy");
+  `);
+});
+
+test("a paired backup cannot reactivate an item handed off after that backup", () => {
+  const old = scratch(), primary = scratch(), replacement = scratch(), dest = scratch();
+  const oldBox = home(old), item = "wqi_" + "B".repeat(20);
+  put(oldBox, "folder-version.json", '{"version":7}');
+  put(oldBox, "run/work-queue/queues/usr_you.json", JSON.stringify({ owner: "usr_you", items: [{ id: item, title: "Before handoff" }] }));
+  const authority = `
+    import { publicOf } from ${cryptoKeys};
+    import { signingKeyOf } from ${setup};
+    import { writeLink } from ${JSON.stringify(new URL("../src/link/state.ts", import.meta.url).href)};
+    const seed = n => Buffer.alloc(32, n).toString("base64url");
+    const keyOf = n => publicOf(Buffer.alloc(32, n)).toString("base64url");
+    const primary = keyOf(42), old = keyOf(43), replacement = keyOf(44), recipient = keyOf(45);
+    const peer = key => ({ key, kind: "machine", name: key, address: "A".repeat(22) });
+    const id = "set_" + "A".repeat(22), source = ${JSON.stringify(source)};
+    const setup = { id, primary, sign: signingKeyOf(seed(46)), managed: true, checkpointed: true, epoch: 1 };
+    const state = (n, after) => ({
+      key: seed(n), sign: seed(n + 4), setup: { ...setup, role: n === 42 ? "primary" : "member" }, sharedSetup: id,
+      shared: {
+        membershipAndAccess: { sequence: after ? 2 : 1, value: {
+          left: after ? [old] : [], boxes: [primary, after ? replacement : old, recipient].map(peer),
+        } },
+        ...(after ? { ownershipAssignments: { sequence: 1, value: { ["replacement:" + old]: { computer: replacement, source } } } } : {}),
+      },
+    });
+  `;
+  bunIn(old, `${authority} writeLink(state(43, false));`);
+  assert.equal(JSON.parse(take(old, dest)).paired, true);
+  // The source learned about the handoff after the backup. Its local fence
+  // is deliberately unavailable to the freshly enrolled replacement.
+  const record = n => JSON.stringify(new URL("../src/link/" + n + ".ts", import.meta.url).href);
+  bunIn(old, `${authority}
+    import { noteDeparture } from ${record("work-queue/store")};
+    noteDeparture(${JSON.stringify(item)}, { queue: "ses_recipient", computer: recipient });
+  `);
+  fs.rmSync(oldBox, { recursive: true });
+  const approved = JSON.parse(bunIn(primary, `${authority}
+    import { restoreForPeer } from ${url("restore")};
+    writeLink(state(42, true));
+    console.log(JSON.stringify(restoreForPeer(peer(replacement), { body: { source, origin: old, setup: id } })));
+  `));
+  assert.equal(approved.status, 200);
+  const result = JSON.parse(bunIn(replacement, `
+    import fs from "node:fs";
+    import path from "node:path";
+    import { restore } from ${url("restore")};
+    import { FORWARDS, forwardsSoon, takeActed } from ${record("work-queue/forward")};
+    ${authority}
+    ${install(dest)}
+    writeLink(state(44, true));
+    const run = path.join(process.env.KUVO_HOME, "run");
+    fs.writeFileSync(path.join(run, "peer-agents.json"), JSON.stringify({ [primary]: { features: ["data.ownership"], heard: Date.now(), list: [] } }));
+    forwardsSoon.send = () => {
+      const [file] = fs.readdirSync(FORWARDS);
+      const { act } = JSON.parse(fs.readFileSync(path.join(FORWARDS, file), "utf8"));
+      if (act.item !== "backup-restore") throw new Error("Unexpected owner request");
+      takeActed(peer(primary), { id: act.id, ...${JSON.stringify(approved)} });
+    };
+    console.log(JSON.stringify(await restore(destination, a.source, a.id, a.key)));
+  `));
+  assert.ok(result.held.some(entry => entry.startsWith("work-queue-items/")));
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(home(replacement), "run/work-queue/queues/usr_you.json"), "utf8")).items, []);
+});

@@ -1,8 +1,6 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { dataOwner } from "../../shared/data-declarations";
-import { backupFolderVersion, FOLDER_VERSION_FILE, upgradeKuvoFolder } from "../../shared/folder-version";
 import { isObject } from "../../shared/json";
 import { processRuns } from "../../shared/platform";
 import { swapUnderWay } from "../../shared/engine-swap";
@@ -12,19 +10,20 @@ import { followedSetup } from "../setup/record";
 import { awaitSharedSave, sharedValue, stageShared, type Receipt } from "../setup/shared";
 import { readLink, updateLink, type LinkState } from "../state";
 import { ownSign } from "../documents/format";
-import { DATA_ID, ownerOf, replacementOwner } from "../ownership/resolve";
+import { mayActivate, replacementOwner, sessionsFencedHere } from "../ownership/resolve";
 import { recordKey } from "../ownership/store";
 import { fingerprint } from "../ownership/merge";
-import { departureFor, deletionFor, YOURS } from "../work-queue/store";
 import { forwardAct, type Act, type Acted } from "../work-queue/forward";
-import { KEY, movedOf, ownKey, peersOf, type MailSender } from "../peers/known";
+import { KEY, ownKey, peersOf, type MailSender } from "../peers/known";
 import { syncDurableFile, writeDurablePrivate } from "../files";
 import { K, RUN } from "../home";
 import { archiveContext, openArchive } from "./archive";
 import { destinationStore, POINT, SOURCE, type Destination } from "./destination";
 import { BACKUP, backupLock, scratchFolder, type Manifest } from "./engine";
 import { scrubEngine } from "./sqlite";
-import { kindOf, outputPath, roots, stat } from "./locations";
+import { outputPath, recordReferences, roots, stat, storageOf } from "./locations";
+import { stageRestore } from "./stage";
+import { restoredQueueItem } from "../work-queue/recovery";
 
 const JOURNAL = path.join(BACKUP, "restore.json");
 const RESTORING = path.join(BACKUP, "restoring");
@@ -75,7 +74,7 @@ export function matchReplacement(source: string, previous: string, replacement: 
 function ownershipBoundary(link: LinkState | null) {
   return fingerprint({
     assignments: sharedValue(link, "ownershipAssignments") ?? null,
-    moved: acceptedMembership(link)?.moved ?? [],
+    membership: acceptedMembership(link) ?? null,
     epoch: followedSetup(link)?.epoch,
   });
 }
@@ -184,8 +183,8 @@ export async function restore(dest: Destination, source: string, id: string, key
     const scratch = scratchFolder();
     try {
       const archived = openArchive(await destinationStore(dest, source).get(id, scratch), key, archiveContext(source, id), scratch);
-      const byName = new Map(archived.map(entry => [entry.name, entry.file]));
-      const manifest = readManifest(byName.has("meta/manifest.json") && json(byName.get("meta/manifest.json")!), source, id);
+      const manifestFile = archived.find(entry => entry.name === "meta/manifest.json")?.file;
+      const manifest = readManifest(manifestFile && json(manifestFile), source, id);
 
       const link = await checkTrust(manifest, signal);
       noWorkers();
@@ -196,41 +195,18 @@ export async function restore(dest: Destination, source: string, id: string, key
         return journal.result as Restored;
       }
 
-      const stage = path.join(scratch, "layout");
-      fs.mkdirSync(stage, { mode: 0o700 });
-      writeDurablePrivate(path.join(stage, FOLDER_VERSION_FILE), JSON.stringify({ version: manifest.version }));
-      backupFolderVersion(stage);
-      for (const { name, file } of archived) {
-        if (!kindOf(name) || !name.startsWith("home/")) continue;
-        const at = path.join(stage, name.slice(5));
-        fs.mkdirSync(path.dirname(at), { recursive: true, mode: 0o700 });
-        fs.linkSync(file, at);
-        byName.set(name, at);
-      }
-      upgradeKuvoFolder(stage);
+      const byName = stageRestore(path.join(scratch, "layout"), manifest.version, archived);
 
       const result: Restored = { id, at: manifest.at, installed: 0, held: [], unavailable: [], savedAfterPoint: "unavailable unless verified elsewhere", credentials: "sign-in required" };
       const recovery = path.join(BACKUP, "recovered", id);
-      const oldAssignments = sharedValue(link, "ownershipAssignments");
       const archivedJSON = (name: string) => byName.has(name) ? json(byName.get(name)!) : undefined;
       const savedFence = (family: "deletions" | "departures", id: string) => archivedJSON(`home/run/owned-data/edit-${family}/${recordKey(id)}.json`);
       const sessionFor = (root: string, id: string) => {
         const file = byName.get(`${root}/${id}/session`);
         return file ? fs.readFileSync(file, "utf8").trim() : id;
       };
-      const own = ownKey(link ?? {});
-      const moved = new Set([...movedOf(link)].filter(([, computer]) => computer !== manifest.origin && replacementOwner(link, computer) !== own).map(([id]) => id));
-      if (isObject(oldAssignments)) {
-        for (const [address, value] of Object.entries(oldAssignments)) {
-          if (!address.startsWith("session computer:") || !isObject(value) || value.computer === manifest.origin || typeof value.computer === "string" && replacementOwner(link, value.computer) === own) continue;
-          const session = address.slice("session computer:".length);
-          if (DATA_ID.test(session)) moved.add(session);
-        }
-      }
-      const remoteRecord = (kind: Parameters<typeof ownerOf>[0]["kind"], ref: string, queue = false) => {
-        const owner = ownerOf({ kind, ...(queue ? { queue: ref } : { id: ref }) }, { link, localRecord: true });
-        return owner && !owner.local && owner.key !== manifest.origin;
-      };
+      const authority = { link, origin: manifest.paired ? manifest.origin : null };
+      const heldItems = new Set<string>();
 
       // Restored schedules live behind a native pause marker. Pending spools that lack a reliable
       // delivery answer remain reviewable recovery files, outside all executable spools.
@@ -241,16 +217,12 @@ export async function restore(dest: Destination, source: string, id: string, key
       for (const [name, file] of byName) {
         if (name === "meta/manifest.json") continue;
         const [root, ...parts] = name.split("/");
-        const kind = kindOf(name);
-        const scope = kind ? dataOwner(kind, parts.at(-1)?.replace(/\.json$/, "")) : undefined;
+        const storage = storageOf(name);
+        const kind = storage?.kind;
         const base = roots[root];
         const id = root === "agents" ? parts[1] : parts[0];
         const queue = kind === "queueItems" ? parts.at(-1)!.slice(0, -5) : null;
-        if (root !== "projects" && name !== "meta/accepted.json" && !kind) throw new Error("The archive contains an undeclared record.");
-        const session = root === "bots" || root === "wakes" ? sessionFor(root, id) : id;
-        if (scope === "session computer" && session && (["wakes", "agents", "attachments", "macAttachments"].includes(root)) && moved.has(session) ||
-          root === "bots" && (moved.has(session) || remoteRecord("botSettings", id)) || root === "groups" && remoteRecord("groupSettings", id) ||
-          queue && queue !== YOURS && remoteRecord("queueItems", queue, true)) {
+        if (!recordReferences(name, sessionFor).every(ref => mayActivate(ref, authority))) {
           result.unavailable.push({ entry: name, reason: "moved" });
           continue;
         }
@@ -260,12 +232,20 @@ export async function restore(dest: Destination, source: string, id: string, key
           if (!isObject(saved) || !Array.isArray(saved.items)) throw new Error("The backup contains an unreadable Work Queue.");
           const remaining = saved.items.filter(item => {
             if (!isObject(item) || typeof item.id !== "string") throw new Error("The backup contains an unreadable Work Queue item.");
-            const deleted = item.removed || deletionFor(item.id) || savedFence("deletions", item.id);
-            const left = departureFor(item.id) ?? savedFence("departures", item.id);
-            const away = isObject(left) && validKey(left.computer) && replacementOwner(link, left.computer) !== own;
-            if (deleted || away || isObject(item.handing)) {
+            const decision = restoredQueueItem({ ...item, id: item.id }, queue, manifest.paired, authority,
+              { deletion: savedFence("deletions", item.id), departure: savedFence("departures", item.id) });
+            if (decision !== "active") {
               removedItems.add(item.id);
-              result.unavailable.push({ entry: item.id, reason: deleted ? "deleted" : "moved or transfer needs review" });
+              result.unavailable.push({ entry: item.id, reason: decision === "deleted" ? "deleted" : "moved or transfer needs review" });
+              if (decision === "held") {
+                heldItems.add(item.id);
+                const entry = `work-queue-items/${recordKey(item.id)}.json`;
+                const held = outputPath(recovery, entry.split("/"));
+                const copy = path.join(scratch, recordKey(name, item.id));
+                writeDurablePrivate(copy, JSON.stringify(item));
+                add(copy, held, entry);
+                result.held.push(entry);
+              }
               return Boolean(item.removed); // Keep its deletion fence.
             }
             if (Array.isArray(item.files)) for (const attachment of item.files) {
@@ -295,16 +275,12 @@ export async function restore(dest: Destination, source: string, id: string, key
           writeDurablePrivate(file, JSON.stringify(saved));
         }
 
-        if (root === "engine" && name.endsWith(".db")) scrubEngine(file, [...moved], true);
+        if (root === "engine" && name.endsWith(".db")) scrubEngine(file, sessionsFencedHere(authority), true);
         if (kind === "botSchedules" || kind === "sessionSchedules") {
           if (parts.length === 2 && parts[1] === "paused") continue;
           if (parts.length > 2 && base) frozen.add(outputPath(base, [parts[0], "paused"]));
         }
-        const needsReview = kind === "pendingSessionWork" || kind === "sessionGoals" || kind === "sessionQueue" ||
-          kind === "sessionLettersAndDelivery" && name.startsWith("home/run/outbox/") ||
-          kind === "queueNumberUse" || kind === "setupStandbySettings" ||
-          name === "home/box/permissions.json" || name === "home/box/permissions-later.json" || root === "meta" || root === "projects";
-        if (needsReview || !base) {
+        if (storage?.restore !== "portable" || !base) {
           add(file, outputPath(recovery, name.split("/")), name);
           result.held.push(name);
         } else {
@@ -320,7 +296,13 @@ export async function restore(dest: Destination, source: string, id: string, key
       if (ownershipBoundary(readLink()) !== ownershipBoundary(link)) throw new Error("Ownership changed during restore. Verify the replacement again.");
       for (const target of frozen) if (!stat(target)) place(paused, target);
       for (const { file, target, name } of placements) {
-        if (name.startsWith("home/run/work-queue/files/") && removedItems.has(name.split("/")[4])) continue;
+        if (name.startsWith("home/run/work-queue/files/") && removedItems.has(name.split("/")[4])) {
+          if (heldItems.has(name.split("/")[4])) {
+            place(file, outputPath(recovery, name.split("/")));
+            result.held.push(name);
+          }
+          continue;
+        }
         if (stat(target) && !sameFile(target, file)) {
           addConflict(name, file);
           continue;

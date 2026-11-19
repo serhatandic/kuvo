@@ -8,7 +8,7 @@ import { INTERRUPTED_SAVE, PENDING_SAVE, type InterruptedReply, type PendingRepl
 import { isObject } from "../../shared/json";
 import { held, MOST_DOC, ownSign, readDoc, signDoc } from "../documents/format";
 import { K } from "../home";
-import type { EditHistory, EditRecord } from "../ownership/merge";
+import { fingerprint, type EditHistory, type EditRecord } from "../ownership/merge";
 import { ownKey } from "../peers/known";
 import { readLink, updateLink, type LinkState } from "../state";
 import { primaryFenced } from "./lease";
@@ -32,6 +32,7 @@ export type OperationOutcome = {
   proposal: string;
   status: "committed" | "interrupted";
   offlineEdit?: EditRecord;
+  mutationDigest?: string;
 };
 export type OperationOutcomes = Record<string, OperationOutcome>;
 
@@ -99,11 +100,29 @@ export function asSave(doc: Doc, seed: string, status: Receipt["status"] = "pend
   const id = doc.body.id as string;
   const epoch = doc.body.epoch as number;
   const operation = identity(doc)!;
-  // The caller can prove it received an operation without exposing the proposed value or effects.
-  const proof = signDoc(seed, "setup-shared", doc.n, {
-    id, epoch, operation, kind: doc.body.kind, baseRevision: doc.n - 1, proposal: doc.envelope.s,
-  });
+  return saveForProposal(seed, id, epoch, operation, doc.body.kind as SharedKind, doc.n, doc.envelope.s, status);
+}
+
+function saveForProposal(seed: string, id: string, epoch: number, operation: string, kind: SharedKind, sequence: number,
+  proposal: string, status: Receipt["status"]) {
+  // The ticket can identify an operation without exposing its value or effects.
+  const proof = signDoc(seed, "setup-shared", sequence, { id, epoch, operation, kind, baseRevision: sequence - 1, proposal });
   return withSaveOutcome({ setup: id, epoch, operation, proof }, status);
+}
+
+/** Retry a holder save using its original precondition and value. The signed setup
+ * outcome is the receipt even after later saves have superseded the value. */
+export function retrySharedValue(link: LinkState, kind: SharedKind, operation: string, baseRevision: unknown, value: unknown): Receipt | null {
+  const setup = followedSetup(link);
+  if (!setup || !link.sign || ownSign(link) !== setup.sign) return null;
+  const lookup = operationOutcome(link, setup.id, operation);
+  if (!lookup || lookup.kind !== kind || lookup.epoch !== setup.epoch || lookup.baseRevision !== baseRevision) return null;
+  const digest = fingerprint({ kind, value });
+  if ("proposal" in lookup) return lookup.mutationDigest === digest
+    ? saveForProposal(link.sign, setup.id, setup.epoch, operation, kind, lookup.sequence, lookup.proposal, lookup.status)
+    : null;
+  const pending = pendingShared(link, kind);
+  return pending && fingerprint({ kind, value: pending.body.value }) === digest ? asSave(pending, link.sign) : null;
 }
 
 /** Bind a receipt to the authenticated caller of a membership operation. */
@@ -155,6 +174,7 @@ function remember(link: LinkState, doc: Doc, operation: string, status: Operatio
   link.sharedOutcomes = { ...link.sharedOutcomes, [operation]: {
     kind: doc.body.kind as SharedKind, epoch: doc.body.epoch as number, sequence: doc.n,
     baseRevision: doc.n - 1, proposal: doc.envelope.s, status,
+    ...(sharedKind(doc.body.kind) && sharedPolicy(doc.body.kind).localSave && !doc.body.offlineEdit ? { mutationDigest: fingerprint({ kind: doc.body.kind, value: doc.body.value }) } : {}),
     ...(status === "committed" && isObject(doc.body.offlineEdit) ? { offlineEdit: doc.body.offlineEdit as EditRecord } : {}),
   } };
 }
