@@ -773,6 +773,27 @@ fn resizable_sidebar_switches_to_avatars_below_the_threshold(cx: &mut TestAppCon
 }
 
 #[gpui::test]
+fn resizable_sessions_sidebar_fits_rows_and_times_inside_sidebar_width(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.set_facts("ses_signup", |facts| {
+        facts["title"] = serde_json::json!("Fix the sign-up form wiping on a taken email when the previous invitation has expired");
+    });
+    let (_, cx) = open(cx, stand_in);
+    for (delta, expected) in [(-56., px(216.)), (144., px(360.))] {
+        drag_sidebar(cx, delta);
+        assert_eq!(resizable_sidebar_width(cx), expected);
+        let sidebar = bounds(cx, "area-sidebar").unwrap();
+        let search = bounds(cx, "sidebar-search").unwrap();
+        let row = bounds(cx, "session-project-ses_signup").unwrap();
+        let when = bounds(cx, "session-when-project-ses_signup").unwrap();
+        assert!(search.right() <= sidebar.right(), "search fits in sidebar: {search:?} / {sidebar:?}");
+        assert!(row.right() <= sidebar.right(), "nested project row fits in sidebar: {row:?} / {sidebar:?}");
+        assert!(when.right() <= sidebar.right(), "time label stays inside sidebar: {when:?} / {sidebar:?}");
+        assert!(when.right() >= sidebar.right() - px(24.), "time label stays right-aligned: {when:?} / {sidebar:?}");
+    }
+}
+
+#[gpui::test]
 fn resizable_sidebar_search_opens_bots_and_sessions_without_expanding(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
     stand_in.set_facts("ses_signup", |facts| {

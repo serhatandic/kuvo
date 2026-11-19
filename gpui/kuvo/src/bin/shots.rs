@@ -192,6 +192,7 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "titlebar-session", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "sidebar-long-computer", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue) },
     Screen { slug: "sidebar-wide", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bots) },
+    Screen { slug: "sidebar-narrow-sessions", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "sidebar-narrow-bots", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bots) },
     Screen { slug: "sidebar-search-results", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(sidebar_search_results) },
     Screen { slug: "sidebar-search-empty", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(sidebar_search_empty) },
@@ -1533,6 +1534,7 @@ fn main() -> anyhow::Result<()> {
                 change(Change::TextSize(text_size), cx);
                 let width = match screen.slug {
                     "sidebar-wide" => 420.,
+                    "sidebar-narrow-sessions" => 228.,
                     "sidebar-narrow-bots" | "sidebar-search-results" | "sidebar-search-empty" => kuvo::sidebar::COMPACT_WIDTH,
                     _ => kuvo::sidebar::WIDTH,
                 };
