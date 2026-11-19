@@ -1,20 +1,31 @@
-// `kuvo/computers/add…` (PROTOCOL.md, "Computers", Adding one; `computers.add`): adding a computer
-// over SSH from this box, for any client: whether it adds them and the hosts to suggest, its tries
-// as they go (their steps, questions and words, all the box's), an answer to what one asks, one
-// stopped or forgotten; and, for a computer it set up, setting it up again and uninstalling Kuvo
-// Code from it, or bringing its older Kuvo up to date now (`add/keep-up.ts`). The work is
-// `add/flow.ts`; a client only asks and draws.
+// The client asks any box. The primary keeps the attempts and runs SSH there.
 
-import { parsed, type Body } from "../../shared/json";
+import { addComputersLayoutReady } from "../../shared/folder-version";
+import { isObject, parsed } from "../../shared/json";
 import type { Adding } from "../../shared/routes/box";
+import { sleep } from "../../shared/wait";
 import { addressProblem, cleanAddress, suggestedHosts } from "../add/address";
 import { beginAdd, beginSetup, beginUninstall, canAdd, sshAddressOf, takenAddresses } from "../add/flow";
+import { createInstallerInvite, installerCodeFrom } from "../add/invite";
 import { bringUp } from "../add/keep-up";
 import { allTries, answerTry, endTry, tryFollowers } from "../add/tries";
 import { followed } from "../follow";
-import type { AnswerPiece, RouteContext } from "../server/context";
+import { writePrivate } from "../files";
+import { IS_MAC, K } from "../home";
+import { KEY, peersOf, type MailSender } from "../peers/known";
+import { keepKeeper } from "../keeper";
+import { pairedPhone } from "../phones";
+import { runningServe, SERVE_NEEDED } from "../serve-kept";
+import { followedSetup } from "../setup/record";
+import { readLink } from "../state";
+import type { AnswerPiece, Asker, RouteContext } from "../server/context";
+import { forwardAct, type Act, type Acted } from "../work-queue/forward";
 
-export const COMPUTERS_ADD_ROUTE = /^kuvo\/computers\/(?:add(?:(\/events)|\/(add_[a-z0-9]{1,40})(\/answer)?)?|([A-Za-z0-9_-]{43})\/(setup|uninstall|update))$/;
+export const LOCAL_COMPUTER_ADD = "kuvo/internal/computers/add";
+export const COMPUTERS_ADD_ROUTE = /^kuvo\/computers\/(?:add(?:(\/events|\/code)|\/(add_[a-z0-9]{1,40})(\/answer)?)?|([A-Za-z0-9_-]{43})\/(setup|uninstall|update))$/;
+const KEY_ACTION = /^(setup|uninstall|update|autoUpdate)\/([A-Za-z0-9_-]{43})$/;
+const TRY_ID = /^add_[a-z0-9]{1,40}$/;
+const refused = (status: number, message: string): Acted => ({ status, value: { message } });
 
 /** Adding computers, as this box says it now. */
 export function adding(): Adding {
@@ -22,61 +33,177 @@ export function adding(): Adding {
   return { can: can.can, ...(can.can ? {} : { why: can.message }), hosts: can.can ? suggestedHosts(takenAddresses()) : [], tries: allTries() };
 }
 
-// What a try needs a process that stays: `kuvo-link.js box route` answers once and ends.
+// Re-setup, update and uninstall use the SSH configuration of the box which saved that address.
 export const ONCE = "Ask this through Kuvo running on this computer: a single request can’t stay to do it.";
+
+async function addHere(method: string, item: string, body: unknown, asker?: Asker): Promise<Acted> {
+  const keyed = KEY_ACTION.exec(item);
+  if (keyed) {
+    if (method !== "POST") return refused(405, "Only POST.");
+    const can = canAdd();
+    if (!can.can) return { status: can.status, value: { message: can.message, ...(can.primary ? { primary: can.primary } : {}) } };
+    const action = keyed[1]!;
+    const key = keyed[2]!;
+    if (!sshAddressOf(key)) return refused(404, "That isn’t a computer this one set up over SSH.");
+    const begun = action === "setup" ? beginSetup(key)
+      : action === "uninstall" ? beginUninstall(key) : bringUp(key, action === "autoUpdate");
+    if (!begun) return refused(404, "That isn’t a computer this one set up over SSH.");
+    return "busy" in begun ? refused(409, begun.busy) : { status: 202, value: { try: begun.seen } };
+  }
+  if (item === "code") {
+    return method === "POST" ? createInstallerInvite(isObject(body) ? body.invite : undefined, asker) : refused(405, "Only POST.");
+  }
+  const given = isObject(body) ? body : {};
+  if (item.startsWith("answer/") && TRY_ID.test(item.slice(7))) {
+    if (method !== "POST") return refused(405, "Only POST.");
+    const answered = typeof given.answer === "string" && typeof given.at === "number" ? answerTry(item.slice(7), given.answer, given.at) : null;
+    return answered ? { status: 200, value: { try: answered } } : refused(409, "It isn’t asking that now.");
+  }
+  if (TRY_ID.test(item)) {
+    if (method !== "DELETE") return refused(405, "Only DELETE.");
+    return endTry(item) ? { status: 200, value: {} } : refused(404, "There’s no such try.");
+  }
+  if (item !== "add") return refused(404, "There’s no such add request.");
+  if (method === "GET") return { status: 200, value: adding() };
+  if (method !== "POST") return refused(405, "GET, or POST {destination}.");
+  const can = canAdd();
+  if (!can.can) return { status: can.status, value: { message: can.message, ...(can.primary ? { primary: can.primary } : {}) } };
+  const destination = cleanAddress(given.destination);
+  const { replace, discardLocalPairings } = given;
+  if (replace !== undefined && (typeof replace !== "string" || !KEY.test(replace))) return refused(400, "Choose the previous membership by its key.");
+  if (discardLocalPairings !== undefined && typeof discardLocalPairings !== "boolean") return refused(400, "Choose whether to discard local pairings.");
+  const problem = addressProblem(destination);
+  if (problem) return refused(400, problem);
+  const begun = beginAdd(destination, asker, replace, discardLocalPairings);
+  return "busy" in begun ? refused(409, begun.busy) : { status: 202, value: { try: begun.seen } };
+}
+
+export async function addComputerAct(sender: MailSender, act: Act): Promise<Acted> {
+  const link = readLink();
+  const setup = followedSetup(link);
+  if (!addComputersLayoutReady(K) || setup?.role !== "primary" || setup.id !== act.body?.setup || setup.epoch !== act.body.epoch
+    || !peersOf(link).some(peer => peer.key === sender.key)) return refused(409, "The setup changed. Refresh it and try again.");
+  if (KEY_ACTION.test(act.item)) return refused(409, "Ask the computer that saved that SSH address.");
+  return addOnPrimary(act.method, act.item, act.body.input, act.body.actor);
+}
+
+function actorOf(phone?: Asker) {
+  return phone?.key ? { key: phone.key.toString("base64url"), pairing: phone.pairing ?? "" } : null;
+}
+
+function addForActor(method: string, item: string, input: unknown, actor: unknown): Promise<Acted> {
+  if (actor === null) return addHere(method, item, input);
+  if (!isObject(actor) || typeof actor.key !== "string" || !KEY.test(actor.key) || typeof actor.pairing !== "string"
+    || !pairedPhone(readLink(), actor.key, actor.pairing)) return Promise.resolve(refused(403, "Pair this device before adding a computer."));
+  return addHere(method, item, input, { key: Buffer.from(actor.key, "base64url"), pairing: actor.pairing });
+}
+
+/** The machine's kept local server owns SSH attempts even if a relay session starts one.
+ * Code issuance has no in-process attempt and can run on any process of the primary. */
+async function addOnPrimary(method: string, item: string, input: unknown, actor: unknown, served = false, signal?: AbortSignal, oneShot = false): Promise<Acted> {
+  if (served || IS_MAC && !oneShot || !IS_MAC && item === "code") return addForActor(method, item, input, actor);
+  try {
+    let server = runningServe();
+    if (!server) {
+      if (method === "GET") return addForActor(method, item, input, actor);
+      if (IS_MAC) return refused(409, ONCE);
+      writePrivate(SERVE_NEEDED(), "");
+      keepKeeper();
+      const until = Date.now() + 20_000;
+      while (!server && Date.now() < until && !signal?.aborted) {
+        await sleep(200);
+        server = runningServe();
+      }
+    }
+    if (!server) return refused(503, "Kuvo’s local server hasn’t started yet. Try again in a moment.");
+    const timeout = AbortSignal.timeout(oneShot ? 50_000 : 8_000);
+    const response = await fetch(`http://127.0.0.1:${server.port}/${LOCAL_COMPUTER_ADD}`, {
+      method: "POST",
+      headers: { authorization: `Basic ${Buffer.from(`opencode:${server.password}`).toString("base64")}` },
+      signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
+      body: JSON.stringify({ method, item, input, actor, forward: IS_MAC && oneShot }),
+    });
+    return { status: response.status, value: await response.json() };
+  } catch { return refused(503, "Kuvo’s local server did not answer. Check the add attempts before retrying."); }
+}
+
+/** The automatic SSH retry uses the same worker as a manual attempt. */
+export async function automaticSshUpdate(key: string): Promise<void> {
+  const result = await addOnPrimary("POST", `autoUpdate/${key}`, undefined, null);
+  if (result.status === 503 && isObject(result.value)) console.error(result.value.message);
+}
+
+export async function* localComputerAdd(context: RouteContext): AsyncGenerator<AnswerPiece> {
+  const { request, json } = context;
+  if (request.served !== true || request.method !== "POST") return yield* json(403, {});
+  const given = parsed(request.body);
+  if (!isObject(given) || typeof given.method !== "string" || typeof given.item !== "string") return yield* json(400, {});
+  if (!["GET", "POST", "DELETE"].includes(given.method)) return yield* json(405, {});
+  if (given.forward !== true && readLink()?.setup?.role === "member") return yield* json(409, { message: "The setup changed. Refresh it and try again." });
+  const result = given.forward === true
+    ? await addFrom(context, given.method as Act["method"], given.item, given.input, given.actor)
+    : await addForActor(given.method, given.item, given.input, given.actor);
+  return yield* json(result.status, result.value);
+}
+
+async function addFrom(context: RouteContext, method: Act["method"], item: string, input?: unknown, actor: unknown = actorOf(context.phone)): Promise<Acted> {
+  const oneShot = context.request.fromMac === true && context.request.served !== true;
+  if (IS_MAC && oneShot) return addOnPrimary(method, item, input, actor, false, context.signal, true);
+  const link = readLink();
+  const setup = followedSetup(link);
+  if (KEY_ACTION.test(item) || setup?.role !== "member") return addOnPrimary(method, item, input, actor, context.request.served, context.signal);
+  const primary = peersOf(link).find(peer => peer.key === setup.primary);
+  if (!primary) return refused(503, "This computer can't reach your primary.");
+  const result = await forwardAct(primary, "Adding computers", {
+    area: "addComputer", method, item,
+    body: { setup: setup.id, epoch: setup.epoch, actor, input },
+  }, context.signal, link, Date.now(), { backgroundRelay: true });
+  if ("refused" in result) {
+    return method === "GET" ? { status: 200, value: { can: false, why: result.refused, hosts: [], tries: [] } } : refused(result.status, result.refused);
+  }
+  return result;
+}
 
 export async function* computersAddRoute(context: RouteContext, match: RegExpMatchArray): AsyncGenerator<AnswerPiece> {
   const { request, signal, json } = context;
-  const method = request.method.toUpperCase();
-  const [, events, id, answering, key, action] = match;
-  if (events) {
+  const method = request.method.toUpperCase() as Act["method"];
+  const [, suffix, id, answering, key, action] = match;
+  if (suffix === "/events") {
     if (method !== "GET") return yield* json(405, { message: "Only GET." });
+    if (followedSetup(readLink())?.role !== "member" && (request.served || IS_MAC && !request.fromMac)) {
+      yield { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };
+      for await (const part of followed(adding, tryFollowers, signal)) {
+        if (followedSetup(readLink())?.role === "member") break;
+        yield part;
+      }
+      return;
+    }
+    const initial = await addFrom(context, "GET", "add");
+    if (initial.status !== 200) return yield* json(initial.status, initial.value);
     yield { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };
-    return yield* followed(adding, tryFollowers, signal);
+    let last = JSON.stringify(initial.value);
+    yield { body: Buffer.from(last + "\n") };
+    while (!signal?.aborted) {
+      await sleep(1500);
+      if (signal?.aborted) break;
+      const answer = await addFrom(context, "GET", "add");
+      const next = JSON.stringify(answer.status === 200 ? answer.value : {
+        can: false, why: isObject(answer.value) ? answer.value.message : "Your primary stopped answering.", hosts: [], tries: [],
+      });
+      if (next === last) continue;
+      last = next;
+      yield { body: Buffer.from(next + "\n") };
+    }
+    return;
   }
   if (key) {
     if (method !== "POST") return yield* json(405, { message: "Only POST." });
-    if (request.fromMac && !request.served) return yield* json(409, { message: ONCE });
-    const can = canAdd();
-    if (!can.can) return yield* json(can.status, { message: can.message, ...(can.primary ? { primary: can.primary } : {}) });
-    if (!sshAddressOf(key)) return yield* json(404, { message: "That isn’t a computer this one set up over SSH." });
-    // (Update Now: this box's own, brought up as it would by itself, but now.)
-    const begun = action === "setup" ? beginSetup(key) : action === "update" ? bringUp(key, false) : beginUninstall(key);
-    if (!begun) return yield* json(404, { message: "That isn’t a computer this one set up over SSH." });
-    if ("busy" in begun) return yield* json(409, { message: begun.busy });
-    return yield* json(202, { try: begun.seen });
+    const result = await addFrom(context, method, `${action}/${key}`);
+    return yield* json(result.status, result.value);
   }
-  if (id && answering) {
-    if (method !== "POST") return yield* json(405, { message: "Only POST." });
-    const given = parsed(request.body) as Body<"answer" | "at">;
-    // (An answer names the ask it's for: one that doesn't is never taken.)
-    const answered = typeof given?.answer === "string" && typeof given.at === "number" ? answerTry(id, given.answer, given.at) : null;
-    if (!answered) return yield* json(409, { message: "It isn’t asking that now." });
-    return yield* json(200, { try: answered });
-  }
-  if (id) {
-    if (method !== "DELETE") return yield* json(405, { message: "Only DELETE." });
-    if (!endTry(id)) return yield* json(404, { message: "There’s no such try." });
-    return yield* json(200, {});
-  }
-  if (method === "GET") return yield* json(200, adding());
-  if (method !== "POST") return yield* json(405, { message: "GET, or POST {destination}." });
-  if (request.fromMac && !request.served) return yield* json(409, { message: ONCE });
-  const can = canAdd();
-  if (!can.can) return yield* json(can.status, { message: can.message, ...(can.primary ? { primary: can.primary } : {}) });
-  const given = parsed(request.body) as Body<"destination" | "replace" | "discardLocalPairings">;
-  const destination = cleanAddress(given?.destination);
-  const replace = given?.replace;
-  if (replace !== undefined && (typeof replace !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(replace))) {
-    return yield* json(400, { message: "Choose the previous membership by its key." });
-  }
-  const discardLocalPairings = given?.discardLocalPairings;
-  if (discardLocalPairings !== undefined && typeof discardLocalPairings !== "boolean") {
-    return yield* json(400, { message: "Choose whether to discard local pairings." });
-  }
-  const problem = addressProblem(destination);
-  if (problem) return yield* json(400, { message: problem });
-  const begun = beginAdd(destination, context.phone, replace, discardLocalPairings);
-  if ("busy" in begun) return yield* json(409, { message: begun.busy });
-  return yield* json(202, { try: begun.seen });
+  if (method !== "GET" && method !== "POST" && method !== "DELETE") return yield* json(405, { message: "Only GET, POST or DELETE." });
+  const result = suffix === "/code" && method === "POST"
+    ? await installerCodeFrom(invite => addFrom(context, method, "code", { invite }))
+    : await addFrom(context, method, suffix === "/code" ? "code" : id ? answering ? `answer/${id}` : id : "add", parsed(request.body));
+  return yield* json(result.status, result.value);
 }

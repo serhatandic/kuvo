@@ -76,6 +76,7 @@ export const FEATURES = [
   "clients.kind",
   "computers",
   "computers.add",
+  "computers.add.from-any-client",
   "computers.facts",
   "computers.manage",
   "computers.reach",

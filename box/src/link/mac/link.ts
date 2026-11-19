@@ -8,6 +8,7 @@ import { setupOf } from "../setup/record";
 import { primaryFenced } from "../setup/lease";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
+import { installerInvitesLive } from "../add/invite-state";
 import os from "node:os";
 import path from "node:path";
 import { isObject } from "../../shared/json";
@@ -36,7 +37,7 @@ export function macNeeded(link: LinkState | null | undefined, now = Date.now()):
   const config = macLink.config;
   if (!config) return false;
   if (link?.localWipe || link?.localUnlink || Object.values(removalsOf(link)).some(removalDeliveryPending)) return true;
-  if (config.machines || (link?.setup?.managed && peersOf(link).length)) return true;
+  if (installerInvitesLive(link, now) || config.machines || (link?.setup?.managed && peersOf(link).length)) return true;
   const pairing = (["pairing", "appPairing"] as const).some(slot => link?.[slot] && now < link[slot]!.expires);
   return Boolean(config.phones && ((link?.phones ?? []).length || pairing));
 }

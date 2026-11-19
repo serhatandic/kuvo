@@ -4,6 +4,7 @@ import { ownershipReady } from "../ownership/store";
 // What a Mac or a peer sends this box, opened and handed on: a Mac's lists, its peers' agents,
 // documents, letters and how they went, and group chats' seats.
 
+import { receiveInstallerClaim } from "../add/invite";
 import { isObject } from "../../shared/json";
 import { takeActed } from "../work-queue/forward";
 import { receiveRemovalMail } from "../setup/removal";
@@ -135,6 +136,7 @@ export function receiveMail(
   from?: Buffer,
 ): void {
   const link = readLink();
+  if (receiveInstallerClaim(body, link, host, from)) return;
   const removal = openRemovalMail(body, link);
   if (removal) {
     receiveRemovalMail(removal.key, removal.message, host, from);

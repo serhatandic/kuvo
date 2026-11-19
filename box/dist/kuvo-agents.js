@@ -41948,6 +41948,7 @@ var init_folder_version = __esm(() => {
     () => {},
     () => {},
     migrateRankHistory,
+    () => {},
     () => {}
   ];
   KUVO_FOLDER_LAYOUT = steps.length;
@@ -43718,4 +43719,4 @@ if (!isMainThread && process.argv.includes("--insights-db-worker")) {
 } else {
   await init_main().then(() => ({}));
 }
-// Built from Packages/Box/src/agents 39fb03807836bab329375bd6b65e4b3568525aa9895c2c64bb18ed9f30d2ac38
+// Built from Packages/Box/src/agents a8eab78b950e2db6ebc53a9684030824ca1a2b79af5969928b26e9fbf6a961ba

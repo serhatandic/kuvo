@@ -47,7 +47,7 @@ export const ATTACHMENTS = "work-queue.attachments";
 export const takesForwarded = (key: string, feature = FORWARD_FEATURE): boolean => (readPeerAgents()[key]?.features ?? []).includes(feature);
 
 /** What a box says it takes of each other area's asks. */
-const AREA_FEATURES = { ownership: "data.ownership", computers: "computers.manage", devices: "devices.pair", setup: "setup.handover" } as const;
+const AREA_FEATURES = { ownership: "data.ownership", computers: "computers.manage", addComputer: "computers.add.from-any-client", devices: "devices.pair", setup: "setup.handover" } as const;
 
 export const FORWARDS = path.join(WORK_QUEUE, "forward");
 // What a keeper did for the asks it took, by asker and id (changes only: a read is done again).
@@ -63,7 +63,7 @@ const LEFT = /^(wqa_[A-Za-z0-9_-]{16,40})\.json$/;
  * answer comes in parts (a test's shorter). */
 export const forwardTiming = { wait: 20_000, file: 60_000 };
 const waitFor = (act: { area?: unknown; method?: unknown; action?: unknown }) =>
-  (act.action === "file" ? forwardTiming.file : act.area === "setup" && act.method === "POST" ? 2 * forwardTiming.wait + AGAIN_AFTER : forwardTiming.wait);
+  (act.action === "file" ? forwardTiming.file : (act.area === "setup" || act.area === "addComputer") && act.method !== "GET" ? 2 * forwardTiming.wait + AGAIN_AFTER : forwardTiming.wait);
 /** How often what's waiting goes again while it's waited for (the keeper takes each id once). */
 const AGAIN_AFTER = 5_000;
 /** How soon a keeper answers an ask sent again: a file's not while it's waited for (it can be big). */
@@ -83,7 +83,7 @@ const MOST_REMEMBERED = 2_000;
  * (`peers/devices.ts`). The default area is the Work Queue. */
 export interface Act {
   id: string;
-  area?: "computers" | "devices" | "setup" | "ownership";
+  area?: "addComputer" | "computers" | "devices" | "setup" | "ownership";
   method: "GET" | "DELETE" | "POST" | "PATCH";
   item: string;
   action?: "restore" | "file" | "removal-plan";
@@ -407,7 +407,7 @@ export async function takeAct(sender: MailSender, given: unknown, reply: (payloa
   catch { return answer(unavailable); }
   // (Renaming or removing one of your machines, or pairing your app, is the same done twice: one
   // cut short is done again.)
-  const redo = kept !== undefined && kept.answer === null && act.area !== undefined && act.area !== "setup" && act.area !== "ownership";
+  const redo = kept !== undefined && kept.answer === null && act.area !== undefined && act.area !== "addComputer" && act.area !== "setup" && act.area !== "ownership";
   if (kept && !redo) {
     const value = kept.answer ?? { status: 409, value: { message: `${here} stopped while it was doing this, so it can't tell whether it was done. Look again in a moment.` } };
     did.set(key, { until: kept.until, answer: value, answered: now });
@@ -459,8 +459,9 @@ const actOf = (given: unknown): Act | null => {
   const setup = given.area === "setup" && (method === "GET" || method === "POST") && action === undefined;
   const ownership = given.area === "ownership" && (method === "GET" || method === "PATCH" || method === "POST" || method === "DELETE") && action === undefined;
   const removalPlan = given.area === "computers" && action === "removal-plan" && (method === "GET" || method === "POST");
-  if (!fits && !devices && !setup && !ownership && !removalPlan) return null;
-  if (given.area !== undefined && !devices && !setup && !ownership && !removalPlan && !(given.area === "computers" && (method === "PATCH" || method === "DELETE") && action === undefined)) return null;
+  const addComputer = given.area === "addComputer" && (method === "GET" || method === "POST" || method === "DELETE") && action === undefined;
+  if (!fits && !addComputer && !devices && !setup && !ownership && !removalPlan) return null;
+  if (given.area !== undefined && !addComputer && !devices && !setup && !ownership && !removalPlan && !(given.area === "computers" && (method === "PATCH" || method === "DELETE") && action === undefined)) return null;
   if (given.operation !== undefined && (typeof given.operation !== "string" || !/^[A-Za-z0-9_-]{1,80}$/.test(given.operation))) return null;
-  return { id: given.id, ...(given.operation ? { operation: given.operation } : {}), ...(given.area === "computers" || devices || setup || ownership ? { area: given.area } : {}), method, item: given.item, ...(action ? { action } : {}), ...(action === "file" ? { name } : {}), ...(isObject(given.body) ? { body: given.body } : {}), at: given.at } as Act;
+  return { id: given.id, ...(given.operation ? { operation: given.operation } : {}), ...(given.area === "computers" || addComputer || devices || setup || ownership ? { area: given.area } : {}), method, item: given.item, ...(action ? { action } : {}), ...(action === "file" ? { name } : {}), ...(isObject(given.body) ? { body: given.body } : {}), at: given.at } as Act;
 };

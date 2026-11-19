@@ -5,7 +5,7 @@
 // of it before (#636). Each step is told as it goes (`tries.ts`); every word a client shows is here.
 // The setup's primary enrolls members and signs the resulting membership list.
 
-import { computerHistoryLayoutReady, setupLayoutDeferred } from "../../shared/folder-version";
+import { addComputersLayoutReady, computerHistoryLayoutReady, setupLayoutDeferred } from "../../shared/folder-version";
 import { updateAccess } from "../setup/access";
 import { asSave, PENDING_SAVE, pendingShared, waitShared, type Receipt } from "../setup/shared";
 import { LEADERSHIP_WAIT, primaryFenced } from "../setup/lease";
@@ -691,7 +691,7 @@ async function join(tell: Telling, run: Reach["run"], destination: string, name:
   if (ran.status !== 0 || !isObject(said) || typeof said.address !== "string" || !ADDRESS.test(said.address) || typeof said.key !== "string" || !KEY.test(said.key) || typeof said.sign !== "string" || !SIGN.test(said.sign)) {
     throw new Failed(`Kuvo Code on ${name} couldn’t join your computers. ${lastLine(ran.stderr)}`.trim());
   }
-  const peer = { key: said.key, sign: said.sign, address: said.address, name, id: destination };
+  const peer = { key: said.key, sign: said.sign, address: said.address, name, id: destination, kind: "machine" as const };
   const checkEnrollment = (link: LinkState | null) => {
     checkAdd(link, grant, name, expectedKey);
     checkAdd(link, grant, name, peer.key);
@@ -755,37 +755,11 @@ async function join(tell: Telling, run: Reach["run"], destination: string, name:
       },
     };
   }
-  let gone: Peer[] = [];
-  const { changed, save, busy } = updateAccess(link => {
-    checkEnrollment(link);
-    const state = link ?? { phones: [] };
-    const peers = peersOf(state);
-    const predecessor = match.predecessor;
-    const replaced = predecessor && predecessor !== peer.key ? peers.find(each => each.key === predecessor) : undefined;
-    const already = peers.some(each => each.key === peer.key);
-    if (!already && !replaced && peers.length >= MOST_PEERS) throw new Failed("The setup already has the maximum number of computers.");
-    const index = peers.findIndex(each => each.key === (replaced?.key ?? peer.key));
-    const roster = [...peers];
-    if (index < 0) roster.push({ ...peer, kind: "machine" });
-    else roster[index] = { ...peer, kind: roster[index]!.kind };
-    const history = match.setup ? historyFor(state, peers) : undefined;
-    const made = setMacPeers(state, { peers: orderComputers(history, roster), moved: state.macMoved, removed: replaced ? [replaced.key] : [] });
-    if (!made.link) return null;
-    if (history) {
-      const retired = computerHistory(state);
-      if (retired) history.retiredSigns = [...new Set([...history.retiredSigns, ...retired.retiredSigns])];
-      rememberEnrollment(history, peer.key, match.fingerprint, predecessor, match.fingerprintSource);
-      state.computerHistory = history;
-      state.macPeers = orderComputers(history, peersOf(state));
-    }
-    gone = replaced ? [replaced] : [];
+  const { gone, save } = stageEnrollment(peer, checkEnrollment, match, () => {
     keepRecord();
     keepHost(destination, peer);
-    return state;
   });
-  if (busy) throw new Failed("An access change is already waiting to be saved.");
   if (save) staged(peer, save);
-  if (!save && !changed) throw new Failed(`${ownName()} couldn’t keep ${name}’s record.`);
   const docs = Array.isArray(said.docs) ? said.docs : [];
   return {
     waitsForStandby: save?.status === "pending",
@@ -800,6 +774,56 @@ async function join(tell: Telling, run: Reach["run"], destination: string, name:
       return computer;
     },
   };
+}
+
+export function stageInstallerEnrollment(peer: Peer & { sign: string }, expectedSetup: string, operation: string, checkInvite: (link: LinkState | null) => void) {
+  return stageEnrollment(peer, link => {
+    checkInvite(link);
+    checkAdd(link, undefined, peer.name, peer.key);
+    checkFreshKeys(link, peer, peer.name);
+    if (followedSetup(link)?.id !== expectedSetup) throw new Failed("The setup changed. Start a new add.");
+  }, { setup: expectedSetup }, undefined, operation);
+}
+
+/** Save a member through the primary's roster and accepted membership operation. */
+function stageEnrollment(
+  peer: Peer & { sign: string },
+  checkEnrollment: (link: LinkState | null) => void,
+  match: { setup?: string; fingerprint?: string; fingerprintSource?: FingerprintSource; predecessor?: string },
+  keep: () => void = () => {},
+  operation?: string,
+): { gone: Peer[]; save: Receipt | null } {
+  let gone: Peer[] = [];
+  const { changed, save, busy } = updateAccess(link => {
+    checkEnrollment(link);
+    const state = link ?? { phones: [] };
+    const peers = peersOf(state);
+    const predecessor = match.predecessor;
+    const replaced = predecessor && predecessor !== peer.key ? peers.find(each => each.key === predecessor) : undefined;
+    const already = peers.some(each => each.key === peer.key);
+    if (!already && !replaced && peers.length >= MOST_PEERS) throw new Failed("The setup already has the maximum number of computers.");
+    const index = peers.findIndex(each => each.key === (replaced?.key ?? peer.key));
+    const roster = [...peers];
+    if (index < 0) roster.push(peer);
+    else roster[index] = { ...peer, kind: roster[index]!.kind };
+    const history = match.setup ? historyFor(state, peers) : undefined;
+    if (match.setup && state.setup && addComputersLayoutReady(K)) state.setup.managed = true;
+    const made = setMacPeers(state, { peers: orderComputers(history, roster), moved: state.macMoved, removed: replaced ? [replaced.key] : [] });
+    if (!made.link) return null;
+    if (history) {
+      const retired = computerHistory(state);
+      if (retired) history.retiredSigns = [...new Set([...history.retiredSigns, ...retired.retiredSigns])];
+      rememberEnrollment(history, peer.key, match.fingerprint, predecessor, match.fingerprintSource);
+      state.computerHistory = history;
+      state.macPeers = orderComputers(history, peersOf(state));
+    }
+    gone = replaced ? [replaced] : [];
+    keep();
+    return state;
+  }, { operation, checkpoint: Boolean(match.setup && addComputersLayoutReady(K)) });
+  if (busy) throw new Failed("An access change is already waiting to be saved.");
+  if (!save && !changed) throw new Failed(`${ownName()} couldn’t keep ${peer.name}’s record.`);
+  return { gone, save };
 }
 
 async function finishEnrollment(tell: Telling, peer: { key: string; name: string }, save: Receipt | null) {

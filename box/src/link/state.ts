@@ -48,6 +48,8 @@ export interface Pairing {
 import type { SetupRevocations } from "./setup/membership";
 
 export interface LinkState {
+  installerInvites?: Record<string, import("./add/invite-state").InstallerInvite>;
+  installerClaim?: import("./add/invite-state").InstallerClaim;
   relay?: string;
   secret?: string;
   /** Its static key, and its signing key's seed (base64url). */

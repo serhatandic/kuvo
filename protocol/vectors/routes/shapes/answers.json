@@ -4606,6 +4606,54 @@
    }
   },
   {
+   "route": "POST kuvo/computers/add/code",
+   "feature": "computers.add.from-any-client",
+   "answers": {
+    "201": {
+     "object": {
+      "code": "string",
+      "expires": "number"
+     }
+    },
+    "400": {
+     "object": {
+      "message": "string",
+      "primary?": "string"
+     }
+    },
+    "403": {
+     "object": {
+      "message": "string",
+      "primary?": "string"
+     }
+    },
+    "404": {
+     "object": {
+      "message": "string",
+      "primary?": "string"
+     }
+    },
+    "405": {
+     "object": {
+      "message": "string",
+      "primary?": "string"
+     }
+    },
+    "409": {
+     "object": {
+      "message": "string",
+      "primary?": "string"
+     }
+    },
+    "503": {
+     "object": {
+      "message": "string",
+      "primary?": "string"
+     }
+    }
+   }
+  },
+  {
    "route": "GET kuvo/computers/add",
    "feature": "computers.add",
    "answers": {
@@ -8703,6 +8751,9 @@
             "literal": "computers.add"
            },
            {
+            "literal": "computers.add.from-any-client"
+           },
+           {
             "literal": "computers.facts"
            },
            {
@@ -9517,6 +9568,9 @@
            },
            {
             "literal": "computers.add"
+           },
+           {
+            "literal": "computers.add.from-any-client"
            },
            {
             "literal": "computers.facts"

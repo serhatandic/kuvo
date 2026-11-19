@@ -49,7 +49,7 @@ import { GLANCE_ROUTE, glanceRoute } from "../areas/glance";
 import { LIST_ROUTE, listRoute } from "../lists/sessions";
 import { WAITING_ROUTE, waitingRoute } from "../areas/waiting";
 import { COMPUTERS_ROUTE, computersRoute } from "../areas/computers";
-import { COMPUTERS_ADD_ROUTE, computersAddRoute } from "../areas/computers-add";
+import { COMPUTERS_ADD_ROUTE, LOCAL_COMPUTER_ADD, computersAddRoute, localComputerAdd } from "../areas/computers-add";
 import { SESSION_MODELS_ROUTE, sessionModelsRoute } from "../areas/session-models";
 import { MODELS_OFFERED_ROUTE, modelsOfferedRoute } from "../areas/models-offered";
 import { MODELS_STARRED_ROUTE, modelsStarredRoute } from "../areas/models-starred";
@@ -203,6 +203,7 @@ const ROUTES: (Route | Route<RegExpMatchArray>)[] = [
   { feature: "sessions.list", when: route => route.match(LIST_ROUTE), answer: listRoute },
   { feature: "waiting", when: route => route.match(WAITING_ROUTE), answer: waitingRoute },
   // Adding one over SSH, before a computer's own routes, which it starts like (PROTOCOL.md, "Computers", Adding one).
+  { feature: "computers.add.from-any-client", when: route => route === "kuvo/computers/add/code" ? route.match(COMPUTERS_ADD_ROUTE) : null, answer: computersAddRoute },
   { feature: "computers.add", when: route => route.match(COMPUTERS_ADD_ROUTE), answer: computersAddRoute },
   { feature: "computers", when: route => route.match(COMPUTERS_ROUTE), answer: computersRoute },
   // What a session's model button shows, and whether its model can run (PROTOCOL.md, "A session's model").
@@ -367,6 +368,7 @@ export function engineHandler(readEngine: () => EngineRecord = readEngineFile, i
         }
       }
     }
+    if (route === LOCAL_COMPUTER_ADD) return yield* localComputerAdd(context);
     if (route === LOCAL_SETUP_SAVE) return yield* saveLocalSetup(context);
     const matched = matchBoxRoute(route, request, phone);
     // Each answer receives its own predicate's match, a pairing TypeScript cannot follow.

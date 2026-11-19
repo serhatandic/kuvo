@@ -65,7 +65,7 @@ export function noteConflict(link: LinkState, doc: Doc): void {
   setup.conflict = { primary: said.primary, epoch: said.epoch };
 }
 
-function managedFields(doc: Doc): Pick<SetupRecord, "managed" | "standby" | "numberCeiling" | "checkpointed" | "sharedSaves" | "successorChain" | "leadershipHash"> {
+export function managedFields(doc: Doc): Pick<SetupRecord, "managed" | "standby" | "numberCeiling" | "checkpointed" | "sharedSaves" | "successorChain" | "leadershipHash"> {
   if (doc.body.managed !== true || legacyFolderTrial(K)) return {};
   const boxes = Array.isArray(doc.body.boxes) ? doc.body.boxes : [];
   const standby = boxes.filter(fitsPeer).map(cleanPeer).find(peer => peer.key === doc.body.standby && peer.sign !== doc.origin);

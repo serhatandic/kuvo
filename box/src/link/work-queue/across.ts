@@ -303,6 +303,7 @@ export async function takeWorkQueueMail(sender: MailSender, given: unknown, host
         if (act.method === "GET") return (await import("../ownership/read")).readForPeer(sender, act, places());
         return (await import("../ownership/write")).writeForPeer(sender, act, places());
       }
+      case "addComputer": return (await import("../areas/computers-add")).addComputerAct(sender, act);
       case "computers": return writerAct(sender, act);
       case "devices": return deviceAct(sender, act);
       case "setup": return setupAct(sender, act);

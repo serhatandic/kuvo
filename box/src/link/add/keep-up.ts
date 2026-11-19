@@ -132,7 +132,10 @@ function noteRunning(why: string | null): void {
  * its own (by what it said of itself, or, where it says nothing, by looking over SSH), is brought up
  * to date, whatever is at work there (nothing is cut short). Never two rounds at once, never one under
  * way for that machine, never while one rests after failing or being stopped. */
-export async function keepUpRound(clock: () => number = Date.now): Promise<void> {
+type StartUpdate = (key: string, clock: () => number) => void | Promise<void>;
+const startHere: StartUpdate = (key, clock) => { bringUp(key, true, clock); };
+
+export async function keepUpRound(clock: () => number = Date.now, start: StartUpdate = startHere): Promise<void> {
   if (going) return;
   const can = canAdd();
   if (!can.can) return noteRunning(can.message);
@@ -185,7 +188,7 @@ export async function keepUpRound(clock: () => number = Date.now): Promise<void>
       }
       // (What's at work there is left as it is: nothing it does is cut short.)
       changeKept(peer.key, before => ({ ...(before ?? {}), older: true, mine, checked: now, working: looked.working, since: undefined, busyLooks: undefined, unreached: undefined, unreachedSince: undefined, unreachedWhy: undefined, failed: undefined }));
-      bringUp(peer.key, true, clock);
+      await start(peer.key, clock);
     }
   } finally {
     going = false;
@@ -194,8 +197,8 @@ export async function keepUpRound(clock: () => number = Date.now): Promise<void>
 
 /** Rounds from now on, the first 20 seconds in (an older machine is brought up soon after this box
  * is). (A box that set nothing up over SSH, as a test's, does nothing in them.) */
-export function keepMachinesUp(): void {
-  const round = () => { keepUpRound().catch(error => console.error(`Kuvo's round keeping machines up to date failed: ${String(error)}`)); };
+export function keepMachinesUp(start?: StartUpdate): void {
+  const round = () => { keepUpRound(Date.now, start).catch(error => console.error(`Kuvo's round keeping machines up to date failed: ${String(error)}`)); };
   setTimeout(round, 20_000).unref?.();
   setInterval(round, KEEP_UP_ROUND).unref?.();
 }

@@ -470,6 +470,7 @@ const REMOVAL_ANSWERS = { 200: COMPUTER_REMOVAL_REPLY, 202: COMPUTER_REMOVAL_REP
   503: oneOf(object({ message: string }), COMPUTER_REMOVAL_REPLY) };
 
 export const BOX_ROUTES: RouteShape[] = [
+  { route: "POST kuvo/computers/add/code", feature: "computers.add.from-any-client", answers: { 201: object({ code: string, expires: number }), 403: ADD_REFUSED, ...ADD_ANSWERS } },
   { route: "GET kuvo/computers/add", feature: "computers.add", answers: { 200: ADDING, ...ADD_ANSWERS } },
   { route: "GET kuvo/computers/add/events", feature: "computers.add", answers: { 200: ADDING, ...ADD_ANSWERS } },
   { route: "POST kuvo/computers/add", feature: "computers.add", answers: { 202: object({ try: ADD_TRY }), ...ADD_ANSWERS } },

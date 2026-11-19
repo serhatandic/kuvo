@@ -71,7 +71,8 @@ import { browserStatus, installBrowser, startBrowserInstall } from "./browser/in
 import { foldHistory } from "./browser/history";
 import { takeInAppBrowserData, thisMacsAppFolder } from "./browser/from-app";
 import { APP_FOLDER, BRIDGE_FILE, IS_MAC, K, KEYS_ON_HOST, MAC_APP_VERSION, NEEDED_FILE, OWN_HOME_MAC, OWN_RUNTIME, PID_FILE, REAL_BOX, RUN, scriptIs, socketKey, takeVaultSecrets, upgradeLinkFolder, VERSION_FILE } from "./home";
-import { installCommand } from "./install/command";
+import { activeInstallerClaim } from "./add/invite-state";
+import { enrollInstalled, installCommand, installerCode } from "./install/command";
 import { rehomeCommand } from "./rehome/command";
 import { clearKept, SERVED_FILE } from "./rehome/move";
 import { settleOwedAtStart } from "./rehome/route";
@@ -128,6 +129,7 @@ import { sendRemovalUpdates } from "./setup/removal";
 import { logCleanup, uninstallCommand } from "./uninstall";
 import { helperCommand } from "./helper";
 import { handOverCommand, watchHelperBuild } from "./compat/helper-handover";
+import { automaticSshUpdate } from "./areas/computers-add";
 import { keepMachinesUp } from "./add/keep-up";
 import { leaveForNewCode } from "./updates/code-in-place";
 import { sayWhole } from "./once";
@@ -498,7 +500,7 @@ async function run(): Promise<void> {
   followOver(() => current);
   clearIncoming();
   setInterval(() => { try { followPeers(); tellUntold(); } catch {} }, 60_000).unref?.();
-  keepMachinesUp();
+  keepMachinesUp(automaticSshUpdate);
   // A newer signed release held here (Kuvo Code here handed it over, or it was fetched): your other
   // computers hear at once, not at the next minute's round, and take it in parallel with this one.
   watchHeld(() => {
@@ -574,7 +576,14 @@ async function run(): Promise<void> {
     reachNow();
     if (current) try { refreshPhoneTrust(current); } catch {}
     if (current?.welcomed && docsNoted()) {
-      try { docsChanged(current, { tell: true }); tellUntold(); } catch {}
+      try {
+        docsChanged(current, { tell: true });
+        tellUntold();
+        const link = readLink();
+        if (link?.installerClaim && link.setup?.role === "member") {
+          void announce(current, readEngineFile, link, Date.now(), true, link.setup.primary).catch(() => {});
+        }
+      } catch {}
       // (A device removed by another process, Kuvo Code beside this box: what it has open ends now.)
       try { current.keepOnly(new Set((readLink()?.phones ?? []).map(phone => phone.key))); } catch {}
     }
@@ -1080,7 +1089,7 @@ async function setup(): Promise<void> {
     }
     // Recheck ownership under the same lock used to enroll a peer. A primary that gained
     // members after the SSH probe cannot be enrolled into a different setup.
-    if (current?.localWipe || current?.localUnlink) {
+    if (current?.localWipe || current?.localUnlink || activeInstallerClaim(current)) {
       alreadySetUp = true;
       return null;
     }
@@ -1520,6 +1529,13 @@ if (main) {
   // computer's box"): `install --status | --new | --move`, which `kuvo-install` hands over to.
   else if (mode === "install") {
     process.exitCode = await installCommand(process.argv.slice(3));
+  }
+  else if (mode === "join") {
+    try { console.log(JSON.stringify(await enrollInstalled(await installerCode()))); }
+    catch (error) {
+      console.error(error instanceof Error ? error.message : String(error));
+      process.exitCode = 1;
+    }
   }
   else if (mode === "wipe-member") {
     process.exitCode = await wipeCommand();

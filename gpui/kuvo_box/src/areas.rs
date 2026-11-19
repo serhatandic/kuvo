@@ -300,6 +300,13 @@ pub struct Adding {
     pub tries: Vec<AddTry>,
 }
 
+/// A private installer code and its expiration in Unix milliseconds.
+#[derive(Clone, Deserialize)]
+pub struct ComputerInstallerCode {
+    pub code: String,
+    pub expires: u64,
+}
+
 /// A try at adding a computer over SSH, setting one up again or uninstalling Kuvo Code from one,
 /// as its box runs it: every word is the box's.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
@@ -759,6 +766,11 @@ impl BoxClient {
     /// host's name or `user@host`): the try it began. Refused in its words.
     pub fn add_computer(&self, destination: &str) -> Result<AddTry> {
         Ok(self.value::<Tried>(&Request::post("kuvo/computers/add", serde_json::json!({ "destination": destination })))?.tried)
+    }
+
+    /// Creates a single-use installer code through the current primary.
+    pub fn computer_installer_code(&self) -> Result<ComputerInstallerCode> {
+        self.value(&Request::post("kuvo/computers/add/code", serde_json::json!({})))
     }
 
     /// Answers what the try `id` asks (its ask numbered `at`), with one of its answers' ids.

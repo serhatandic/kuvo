@@ -1,4 +1,4 @@
-// `kuvo-link.js install --status | --new | --move` (PROTOCOL.md, "Installing this computer's box";
+// `kuvo-link.js install --status | --new | --move | --join` (PROTOCOL.md, "Installing this computer's box";
 // #713 §4.1): what `kuvo-install` hands over to, from the release an app carries, on the engine it
 // took: this process's `KUVO_HOME` is the box's home, and its script is the release's, unpacked in
 // `<home>/updates/install/release`.
@@ -13,6 +13,7 @@
 // on Linux it's a machine's, in `~/.kuvo-code`, started as a computer that's added is (the one
 // start script, `add/scripts.ts`), with its `@reboot` line and no helper.
 
+import { joinWithInstallerCode } from "../add/invite";
 import { spawn, spawnSync } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -29,10 +30,11 @@ import { homeOfRoot, rehomeNew, runningIn, settled } from "../rehome/move";
 import { giveLock, progressOf, rehomeFolder, rehomeStatus, stepIndex, takeLock } from "../rehome/state";
 import { Said } from "../rehome/said";
 import { sleep } from "../../shared/wait";
+import { keeperEngine } from "../updates/engine-swap";
 import { launchTools } from "../uninstall";
 import { judgeInstall, MAKING, type InstallVerdict, type Judgement } from "./verdict";
 
-const USAGE = "Usage: kuvo-link.js install --status | --new | --move, with --root <name> [--app <bundle>] [--release <folder> --engine <folder>]";
+const USAGE = "Usage: kuvo-link.js install --status | --new | --move | --join, with --root <name> [--app <bundle>] [--release <folder> --engine <folder>]";
 /** The app whose folder is the real one, and the only one that installs into the real `~/.kuvo-code`. */
 const REAL_APP = "run.kuvo.code";
 
@@ -96,10 +98,10 @@ export async function installCommand(args: string[]): Promise<number> {
   delete process.env.KUVO_BOX;
   const option = (name: string): string | undefined => (args.indexOf(name) >= 0 ? args[args.indexOf(name) + 1] : undefined);
   const say = (value: unknown) => console.log(JSON.stringify(value));
-  const verbs = ["--status", "--new", "--move"].filter(verb => args.includes(verb));
+  const verbs = ["--status", "--new", "--move", "--join"].filter(verb => args.includes(verb));
   let home: string;
   try {
-    if (verbs.length !== 1) throw new Error("Say one of --status, --new and --move.");
+    if (verbs.length !== 1) throw new Error("Say one of --status, --new, --move and --join.");
     home = homeOfRoot(option("--root"));
     if (located(home) !== located(K)) throw new Error("kuvo-link.js install runs with KUVO_HOME the box's home.");
   } catch (error) {
@@ -142,8 +144,15 @@ export async function installCommand(args: string[]): Promise<number> {
       say({ ...answer, status: judged().status });
       return EXIT[answer.result];
     }
-    const answer = mac ? await newMac({ home, appFolder: appFolder!, app: app!, release, engine }, judged) : await newMachine({ home, release, engine }, judged);
-    say({ ...answer, status: judged().status });
+    const joining = verbs[0] === "--join";
+    const code = joining ? await installerCode() : null;
+    const existing = judged();
+    const answer = joining && (existing.verdict === "machine" || existing.verdict === "ours" && helperRuns())
+      ? { result: "nothing" as const, verdict: existing.verdict }
+      : mac ? await newMac({ home, appFolder: appFolder!, app: app!, release, engine }, judged) : await newMachine({ home, release, engine }, judged);
+    const membership = code !== null && (answer.result === "done" || answer.result === "nothing")
+      ? joinInstalledBox(home, code) : undefined;
+    say({ ...answer, status: judged().status, ...(membership ? { membership } : {}) });
     return EXIT[answer.result];
   } catch (error) {
     // (Only what's said for the person at the computer is shown: anything else in one sentence,
@@ -152,6 +161,41 @@ export async function installCommand(args: string[]): Promise<number> {
     say({ result: "failed", message: error instanceof Said ? error.message : "Kuvo couldn't finish setting up on this computer this time. Try again.", ...judged() });
     return EXIT.failed;
   }
+}
+
+export async function installerCode(): Promise<string> {
+  if (process.stdin.isTTY) process.stderr.write("Enter the installer code shown on your device: ");
+  let text = "";
+  for await (const chunk of process.stdin.iterator({ destroyOnReturn: false })) {
+    text += chunk.toString();
+    if (text.length > 4200) throw new Said("That installer code is too long.");
+    if (text.includes("\n")) break;
+  }
+  process.stdin.pause();
+  if (!text.trim()) throw new Said("Enter the installer code shown on your device.");
+  return text.split("\n")[0]!;
+}
+
+function joinInstalledBox(home: string, code: string): { setup: string; primary: string } {
+  // A fresh Mac has just written box/kind. Its installed process must read the new kind before
+  // obtaining its identity from its helper. The installer’s staging engine can already be gone.
+  const version = keeperEngine();
+  if (!version) throw new Said("The installed computer's engine is unavailable. Restart Kuvo and try again.");
+  const runtime = path.join(home, "engine", version, "opencode");
+  const joined = spawnSync(runtime, ["--config=/dev/null", "--no-env-file", path.join(home, "bin", "kuvo-link.js"), "join"], {
+    cwd: home, input: `${code}\n`, encoding: "utf8", timeout: 80_000, env: { ...process.env, BUN_BE_BUN: "1", BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0" },
+  });
+  if (joined.status !== 0) throw new Said((joined.stderr ?? "").trim().split("\n").at(-1) || "Kuvo couldn’t finish joining your setup. Retry with the same installer code.");
+  try {
+    const value: unknown = JSON.parse((joined.stdout ?? "").trim().split("\n").at(-1) ?? "");
+    if (isObject(value) && typeof value.setup === "string" && typeof value.primary === "string") return { setup: value.setup, primary: value.primary };
+  } catch {}
+  throw new Said("Kuvo couldn’t read the membership from this computer. Retry with the same installer code.");
+}
+
+export async function enrollInstalled(code: string) {
+  try { return await joinWithInstallerCode(code); }
+  catch (error) { throw new Said(error instanceof Error ? error.message : "The installer could not join your setup."); }
 }
 
 /** Whether what starts a Mac's own box is in place and launchd has it: its launch agent's file

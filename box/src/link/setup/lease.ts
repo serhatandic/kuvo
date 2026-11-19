@@ -1,3 +1,4 @@
+import { activeInstallerClaim } from "../add/invite-state";
 // A lease is local and disposable. Binding it to the setup and two local clocks means
 // restoring a lease file or restarting a box never gives it a fresh term.
 import fs from "node:fs";
@@ -57,6 +58,7 @@ export function fresh(since: { wall: number; uptime: number }, now: ReturnType<t
 
 export function primaryFenced(link: LinkState | null | undefined): boolean {
   if (link?.setup?.role !== "primary") return false;
+  if (activeInstallerClaim(link)) return true;
   if (link.leadershipPending) return true;
   const revoked = link.setupRevocations;
   if (link.setup.successorChain && revoked?.setup === link.setup.id) {

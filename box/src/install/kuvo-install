@@ -1,9 +1,10 @@
 #!/bin/sh
 # Installs this computer's box from the release an app carries (protocol/PROTOCOL.md, "Installing
 # this computer's box"): run from the folder that holds it, beside `boxes.json` and the pack.
-#   sh kuvo-install status|new|move|update [--now] [--app <bundle>] [--root <name>]
+#   sh kuvo-install status|new|move|update|join [--now] [--app <bundle>] [--root <name>]
 #     status   what this computer holds (a verdict), and what to run next
 #     new      a new box, made in its home and started
+#     join     install and enter a code from one of your devices
 #     move     the old app's box and data moved into its home
 #     update   (COMPAT(beta.30 installer): for a box from before computers.update.here. Goes once no box is from before beta.31.)
 #              the box that's there brought up to this release (`kuvo-link.js update --installer`):
@@ -23,7 +24,7 @@
 set -u
 
 usage() {
-    echo "Usage: sh kuvo-install status|new|move|update [--now] [--app <bundle>] [--root <name>]" >&2
+    echo "Usage: sh kuvo-install status|new|move|update|join [--now] [--app <bundle>] [--root <name>]" >&2
     exit 2
 }
 # (Its words hold no quotes or backslashes, so they're JSON as they are.)
@@ -39,7 +40,7 @@ refuse() {
 step() { printf '{"step":"%s","title":"%s"}\n' "$1" "$2"; }
 
 VERB=${1:-}
-case "$VERB" in status | new | move | update) shift ;; *) usage ;; esac
+case "$VERB" in status | new | move | update | join) shift ;; *) usage ;; esac
 APP="" ROOT=.kuvo-code NOW=""
 while [ $# -gt 0 ]; do
     case "$1" in

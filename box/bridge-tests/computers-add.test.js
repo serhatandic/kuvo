@@ -2206,6 +2206,8 @@ test("failure bench: a Linux primary starts fresh, enrolls over SSH and pairs de
     return attempt.state === "done" && attempt;
   }, 60_000);
   const member = done.computer.key;
+  assert.equal(done.save.status, "committed");
+  assert.ok(inBox(primaryBox).shared.membershipAndAccess.value.boxes.some(peer => peer.key === member));
   const memberEnv = { ...env, HOME: memberHome, KUVO_HOME: memberBox };
   assert.deepEqual(inBox(memberBox).setup, { ...primary, role: "member" }, "SSH installed the signed setup");
   let memberApp = await localServer(memberBox, memberEnv);

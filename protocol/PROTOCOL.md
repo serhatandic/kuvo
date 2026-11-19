@@ -484,6 +484,25 @@ and you can choose another member as primary once both computers are connected.
     computer leads no setup now), it lists what each of its Macs' own peers documents names, all
     yours. `503 {"message"}` before it holds that document, or while it has no relay.
 
+  **Adding from any client** (`computers.add.from-any-client`). The existing
+  `kuvo/computers/add` routes connect to the current primary, including when a client asks a
+  member. SSH runs on the primary and uses its SSH configuration and keys. The primary keeps
+  the attempts and answers. A phone's pairing must still be valid when the primary acts.
+  Once an attempt is saved, the accepted membership and its receipt decide the result.
+
+  **`POST kuvo/computers/add/code`** returns `201 {code, expires}` from the primary.
+  The code contains the relay and the primary's public relay identity plus an opaque 192-bit
+  token. Treat it as private and give it only to the installer (`sh kuvo-install join`,
+  with `--app <bundle>` on macOS and the code on standard input). The primary stores the token hash in layout 19. An unused code
+  expires after 15 minutes and is scoped to the issuing setup and epoch. The installer
+  exchanges Noise-encrypted mail with that primary. An authenticated availability reply precedes the local enrollment
+  reservation. The confirmed claim pins the new computer's
+  keys and address, and a lost answer can be retried with the same code and identity for
+  up to 24 hours. The primary sends its signed roster only after the membership is accepted.
+  A computer already in another setup must be unlinked before joining. An unclaimed
+  standalone box without members or pairings can join. Code enrollment leaves SSH
+  configuration on each computer as it was.
+
   Known gap until setups can be joined (#183's phase 7): a member set aside refuses all this in its
   main computer's name, but it still takes what each Mac that set it up gives over SSH, as before
   setups (a second Mac's app sets it up as one of its own): that Mac's phones reach it, and that Mac's `kuvo-link.js setup`
@@ -2103,7 +2122,7 @@ client connected: a client's Computers area and its switcher draw it, and ask no
   app's.) SSH is used to set a computer up, set it up again and uninstall it, never after: the
   computer's own keeper runs it, and boxes talk through the relay ("Peers").
   - **Who adds**: the primary, with a relay and keys for its link and its release files. A legacy
-    Mac outside a setup can still enroll computers. A member answers `409 {message, primary}`.
+    Mac outside a setup can still enroll computers. Members forward adds to the current primary.
     A Mac while the old app is attached to its box answers `409` (that app keeps its own list).
     The rest return `503 {message}`, a list of machines
     that can't be told among them: read as `kuvo/machines` reads it ("Machines": there and won't
@@ -2119,7 +2138,7 @@ client connected: a client's Computers area and its switcher draw it, and ask no
     (a port, a path, an IPv6 address, an option) is `400 {message}` and never reaches `ssh`. One
     being added or set up at that address already is answered as it is; one being stopped is
     waited for, and the new try runs after it; `409 {message}` while that computer is being
-    uninstalled, and through `kuvo-link.js box route`, which can't stay to do it.
+    uninstalled. On a machine the kept server runs the attempt for local, SSH and relay clients.
     If an installation matches a saved computer fingerprint, Add updates that computer's
     position and membership history. The probe hashes the operating system or hardware UUID on
     the enrolled computer with the setup ID as a salt. The raw ID stays on that computer.
