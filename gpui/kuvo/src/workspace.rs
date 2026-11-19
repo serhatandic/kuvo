@@ -1439,6 +1439,22 @@ impl Workspace {
             let away = self.shown_row().and_then(|row| row.computer.notice.clone());
             let (title, detail) = away.map(|notice| (notice.title, notice.detail)).unwrap_or_else(|| unreached_words(&name));
             ("unreached", title, detail, false, true, Some(("Try Again".to_owned(), BlockedDo::TryAgain)))
+        } else if self.area == Area::Insights
+            && matches!(self.client.gate(), kuvo_box::gate::Gate::Behind { .. })
+            && !self.client.gate().has("usage.insights")
+        {
+            let computer = if name == "This Mac" { "this Mac" } else { name.as_str() };
+            let title = format!("Kuvo on {computer} needs to update to show Insights");
+            let fallback_detail = format!("Update Kuvo on {computer} to see usage and cost insights here.");
+            let (detail, busy, attention, action) = if let Some(update) = self.older_update() {
+                let action = update.action.as_ref().filter(|action| action.why.is_none() && update.does.is_some()).map(|action| (action.label.clone(), BlockedDo::Update));
+                let gates_words = update.detail == held_words(None, true).1 || update.detail.ends_with(HELD_ELSEWHERE) || update.detail.is_empty();
+                let detail = if gates_words { fallback_detail } else { update.detail };
+                (detail, update.updating || self.update_card.sending, update.attention, action)
+            } else {
+                (fallback_detail, self.update_card.sending, false, None)
+            };
+            ("held", title, detail, busy, attention, action)
         } else if self.box_state == BoxState::Connecting && self.reaching_again && !self.client.here() {
             let (title, _) = unreached_words(&name);
             ("unreached", title, format!("Reaching {name}…"), true, false, None)
@@ -1446,9 +1462,18 @@ impl Workspace {
             return None;
         };
         // Another of yours that works now: this Mac's own first, then the first answering.
+        let needs_insights = self.area == Area::Insights
+            && !self.client.gate().is_held()
+            && !self.client.gate().has("usage.insights");
         let shown = self.switching.as_ref().and_then(|switching| switching.shown.clone());
         let switch_to = self.switching.as_ref().and_then(|switching| {
-            let works = |row: &&kuvo_box::boxes::Row| Some(row.key()) != shown.as_deref() && !row.computer.is_older() && matches!(row.reach, kuvo_box::boxes::Reach::Nearest | kuvo_box::boxes::Reach::Connected);
+            let works = |row: &&kuvo_box::boxes::Row| {
+                Some(row.key()) != shown.as_deref()
+                    && !row.computer.is_older()
+                    && matches!(row.reach, kuvo_box::boxes::Reach::Nearest | kuvo_box::boxes::Reach::Connected)
+                    && (!needs_insights
+                        || row.computer.features.as_deref().is_none_or(|features| features.iter().any(|feature| feature == "usage.insights")))
+            };
             let rows = &switching.rows;
             rows.iter().find(|row| works(row) && matches!(row.reach, kuvo_box::boxes::Reach::Nearest)).or_else(|| rows.iter().find(works)).map(|row| (row.key().to_owned(), row.computer.name.clone()))
         });
@@ -2340,6 +2365,11 @@ impl Workspace {
             queue.update(cx, |queue, cx| queue.select(Some(format!("item:{item}")), cx));
             self.show_area(Area::Queue, window, cx);
         }
+    }
+
+    pub fn open_insights(&mut self, filter: Option<crate::area::UsageFilter>, window: &mut Window, cx: &mut Context<Self>) {
+        self.insights.update(cx, |insights, cx| insights.ring(filter, cx));
+        self.show_area(Area::Insights, window, cx);
     }
 
     #[cfg(feature = "stand-in")]
@@ -3697,7 +3727,7 @@ impl Render for Workspace {
             }
         }
         let in_insights = self.area == Area::Insights;
-        let show_insights = in_insights && !self.client.gate().is_held();
+        let show_insights = in_insights && self.client.gate().has("usage.insights");
         let insights = self.insights.clone();
         insights.update(cx, |view, cx| view.shown(show_insights, cx));
         let sessions = self.area == Area::Sessions;
@@ -3787,10 +3817,7 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &ShowComputers, window, cx| this.show_area(Area::Computers, window, cx)))
             .on_action(cx.listener(|this, _: &ShowSettings, window, cx| this.show_area(Area::Settings, window, cx)))
             .on_action(cx.listener(|this, _: &ShowUsage, window, cx| this.show_area(Area::Insights, window, cx)))
-            .on_action(cx.listener(|this, filter: &UsageFilter, window, cx| {
-                this.insights.update(cx, |insights, cx| insights.ring(Some(filter.clone()), cx));
-                this.show_area(Area::Insights, window, cx);
-            }))
+            .on_action(cx.listener(|this, filter: &UsageFilter, window, cx| this.open_insights(Some(filter.clone()), window, cx)))
             .on_action(cx.listener(|this, _: &ShowAccounts, window, cx| this.show_setting(&crate::settings::box_key("", "accounts"), window, cx)))
             .on_action(cx.listener(|this, _: &Back, window, cx| this.go_back(window, cx)))
             .on_action(cx.listener(|this, _: &Forward, window, cx| this.go_forward(window, cx)))

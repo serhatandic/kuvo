@@ -586,3 +586,45 @@ fn a_background_computer_disconnecting_does_not_grey_out_the_shown_computers_bot
     cx.run_until_parked();
     assert_eq!(cx.update(|_, cx| kuvo::bot_face::faces(cx).borrow().shown("bot_scout")), Some(State::Working));
 }
+
+#[gpui::test]
+fn insights_on_a_computer_without_usage_insights_shows_the_update_state(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let devbox = stand_in.peer_box("key_devbox").expect("devbox");
+    devbox.set_lacks(&["usage.insights"]);
+    stand_in.bring_up_to_date("key_devbox", "waiting", false, 0);
+    let (home, cx) = open(cx, stand_in.clone());
+
+    click(cx, "computer-switcher");
+    click(cx, "menu-item-devbox");
+    // The computer is behind (not held), so Sessions works normally.
+    assert!(!shown(cx, "blocked-held"));
+    assert!(shown(cx, "session-project-ses_releases"));
+
+    // Opening Insights (e.g. from the rail or clicking a usage ring) shows the update state instead
+    // of calling /api/kuvo/insights and showing "Not available for this agent.".
+    workspace(&home, cx).update_in(cx, |ws, window, cx| {
+        ws.open_insights(
+            Some(kuvo::area::UsageFilter { title: "Claude".into(), provider: "claude".into(), account: None }),
+            window,
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    assert!(shown(cx, "blocked-held"), "Insights on an older computer must show the update state");
+    let blocked = workspace(&home, cx).read_with(cx, |ws, _| ws.blocked()).expect("blocked state");
+    assert_eq!(blocked.title, "Kuvo on devbox needs to update to show Insights");
+    assert_eq!(blocked.action.as_ref().map(|(label, _)| label.as_str()), Some("Update Now"));
+    assert_eq!(blocked.switch_to.as_ref().map(|(_, name)| name.as_str()), Some("Stand-in Mac"));
+    assert!(
+        devbox.seen_at("GET", "kuvo/agents/api/kuvo/insights").is_empty(),
+        "must not request insights from a computer lacking usage.insights"
+    );
+
+    // Update Now triggers the computer's update, and switching goes to a computer that supports Insights.
+    click(cx, "blocked-action");
+    assert_eq!(stand_in.seen_at("POST", "kuvo/computers/key_devbox/update").len(), 1);
+    click(cx, "blocked-switch");
+    assert_eq!(home.read_with(cx, |home, _| home.shown_key()).as_deref(), Some("key_stand_in"));
+    assert!(!shown(cx, "blocked-held"));
+}
