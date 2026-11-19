@@ -416,7 +416,9 @@ and you can choose another member as primary once both computers are connected.
   Retained `delayMinutes` settings are ignored. There is no approval prompt.
 - **Reconnecting after a split.** A partition can leave two writable primaries temporarily.
   On reconnect the higher verified epoch wins. At equal epochs, the rank in the last common
-  epoch checkpoint decides, with stable keys and certificate hashes settling any remaining ties.
+  epoch checkpoint decides between different primaries, with stable computer keys settling any
+  remaining ties. For the same primary at the same epoch, only a newer signed first-standby
+  assignment can replace the accepted certificate.
   The loser installs the winning checkpoint and steps down. Shared setup edits that only
   existed on the losing branch are discarded. Computer and device removals and credential
   revocations from either verified branch are carried forward as a union. Local work and

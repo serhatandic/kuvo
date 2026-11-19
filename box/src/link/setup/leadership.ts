@@ -247,23 +247,34 @@ export function takeLeadership(link: LinkState, doc: Doc, checkpoint?: Doc, fork
   const active = leadershipOf(link);
   if (!active || !link.setup?.successorChain || doc.body.successorChain !== true ||
     held(link.leadership?.[doc.n])?.h === doc.h) return false;
-  const replacement = supersededFirstStandby(link, active, doc, checkpoint);
-  const staged = replacement ? { source: replacement, rank: [] } : stagedFork(link, doc, checkpoint, forks);
   const next = setupOf(doc.body);
-  if (!staged || !next || next.epoch < link.setup.epoch) return false;
-  const rank = (key: string) => {
-    const index = staged.rank.indexOf(key);
-    return index < 0 ? staged.rank.length : index;
-  };
-  const compare = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0;
-  const difference = rank(next.primary) - rank(link.setup.primary) || compare(next.primary, link.setup.primary) || compare(doc.h, active.h);
-  if (!replacement && next.epoch === link.setup.epoch && difference >= 0) return false;
+  if (!next) return false;
+  let source: LinkState;
+  if (next.epoch === link.setup.epoch && next.primary === link.setup.primary) {
+    // A standby acceptance does not create a competing primary. Only a newer
+    // assignment signed by this primary can replace the accepted certificate.
+    const replacement = supersededFirstStandby(link, active, doc, checkpoint);
+    if (!replacement) return false;
+    source = replacement;
+  } else {
+    const staged = stagedFork(link, doc, checkpoint, forks);
+    if (!staged || next.epoch < link.setup.epoch) return false;
+    if (next.epoch === link.setup.epoch) {
+      const rank = (key: string) => {
+        const index = staged.rank.indexOf(key);
+        return index < 0 ? staged.rank.length : index;
+      };
+      const difference = rank(next.primary) - rank(link.setup.primary);
+      if (difference > 0 || (difference === 0 && next.primary > link.setup.primary)) return false;
+    }
+    source = staged.source;
+  }
   const losing = acceptedMembership(link);
-  if (losing) mergeRevocations(staged.source, membershipRevocations(next.id, losing));
-  const merged = acceptedMembership(staged.source);
-  if (merged) projectMembership(staged.source, merged);
-  for (const key of Object.keys(link) as (keyof LinkState)[]) if (!Object.hasOwn(staged.source, key)) delete link[key];
-  Object.assign(link, staged.source);
+  if (losing) mergeRevocations(source, membershipRevocations(next.id, losing));
+  const merged = acceptedMembership(source);
+  if (merged) projectMembership(source, merged);
+  for (const key of Object.keys(link) as (keyof LinkState)[]) if (!Object.hasOwn(source, key)) delete link[key];
+  Object.assign(link, source);
   return true;
 }
 

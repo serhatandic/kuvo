@@ -15,7 +15,7 @@ import { membershipOf } from "../src/link/setup/membership";
 import { observeAvailability, rankComputers, RANK_INTERVAL, resetAvailability } from "../src/link/setup/reliability";
 import { acceptedMembership } from "../src/link/setup/membership";
 import { publishRevocations } from "../src/link/setup/revocations";
-import { takeLeadership } from "../src/link/setup/leadership";
+import { approveLeadership, takeLeadership } from "../src/link/setup/leadership";
 import { newSetupID, type SetupRecord } from "../src/link/setup/record";
 import { installShared, MAX_SHARED_BYTES, operationOutcome, pendingShared, queryOperation, sharedValue, stageShared, takeShared } from "../src/link/setup/shared";
 
@@ -115,6 +115,72 @@ test("competing successors reconcile conflicting certificates at the same epoch 
   expect(acceptedMembership(source)?.devices.removed).toEqual([{ key: phone.key, pairing }]);
   expect(takeLeadership(follower, lower)).toBe(false);
   expect(follower.setup?.role).toBe("primary");
+});
+
+test("a superseded standby cannot replay its lower-hash acceptance after a ranked takeover", () => {
+  upgradeKuvoFolder(K);
+  const a = identity(), b = identity(), c = identity(), former = identity();
+  const id = newSetupID();
+  const boxes = [a, b, c, former].map(box => ({ key: box.key, sign: box.signer, address: box.address, name: "Computer", kind: "machine" }));
+  const initial: LinkState = { key: former.seed, sign: former.sign,
+    setup: { id, epoch: 1, primary: former.key, sign: former.signer, role: "primary", managed: true, checkpointed: true } };
+  const values = { membershipAndAccess: { sequence: 1, value: { boxes, successorOrder: boxes.map(box => box.key) } } };
+  const chain = checkpointedTransition(initial, {
+    setup: { id, epoch: 2, primary: former.key }, previous: former.key, standby: a.key, successorChain: true, numberCeiling: 2_000,
+  }, values)!;
+  expect(takeLeadership(initial, chain)).toBe(true);
+  const member = (computer: typeof a, state: LinkState): LinkState => ({
+    ...structuredClone(state), key: computer.seed, sign: computer.sign, setup: { ...state.setup!, role: "member" },
+  });
+  const primary = member(a, initial);
+  const takeover = checkpointedTransition(primary, {
+    setup: { id, epoch: 3, primary: a.key }, previous: former.key, takeover: true, successorChain: true,
+  }, values)!;
+  expect(takeLeadership(primary, takeover)).toBe(true);
+  expect(primary.setup).toMatchObject({ epoch: 3, primary: a.key, role: "primary", successorChain: true });
+  expect(primary.setup?.standby).toBeUndefined();
+  const stale = member(b, primary);
+  const standby = member(c, primary);
+  const proposal = (computer: typeof a, numberCeiling: number, supersedes?: string) => checkpointedTransition(primary, {
+    setup: { id, epoch: 4, primary: a.key }, previous: a.key, standby: computer.key, standbyAcceptance: true,
+    successorChain: true, proposal: true, numberCeiling, ...(supersedes ? { supersedes, assignmentRevision: 1 } : {}),
+  }, values)!;
+
+  // Produce genuine signed certificates in the hash order that previously won
+  // replay, regardless of the randomly generated computer keys.
+  const assignments = Array.from({ length: 16 }, (_, i) => approveLeadership(stale, proposal(b, 4_000 + i))!);
+  const earlier = assignments.reduce((lowest, each) => each.h < lowest.h ? each : lowest);
+  const replacements = Array.from({ length: 16 }, (_, i) => {
+    const request = proposal(c, 6_000 + i, earlier.body.approval as string);
+    return { request, certificate: approveLeadership(standby, request)! };
+  });
+  const { request, certificate: later } = replacements.reduce((highest, each) => each.certificate.h > highest.certificate.h ? each : highest);
+  expect(earlier.h < later.h).toBe(true);
+  expect(takeLeadership(stale, earlier)).toBe(true);
+  expect(takeLeadership(standby, later)).toBe(true);
+  primary.leadershipPending = request.envelope;
+  expect(takeLeadership(primary, later)).toBe(true);
+
+  grantLease(primary, leaseClock());
+  const saved = stageShared(primary, "setupNames", { [a.key]: "Updated name" })!;
+  const save = pendingShared(primary, "setupNames")!;
+  const staleReceipt = takeShared(stale, a.key, save)!;
+  expect(readDoc(staleReceipt)?.origin).toBe(b.signer);
+  const library = { personalities: [], removed: [] };
+  for (const link of [primary, standby]) {
+    const state = { link, library, successorForks: new Map() };
+    const replay = docsWork(state, { key: b.key, sign: b.signer }, { give: [...leadershipDocuments(earlier.envelope), staleReceipt] });
+    expect(replay.took.some(doc => doc.kind === "leadership")).toBe(false);
+    expect(link.leadership?.[4]).toEqual(later.envelope);
+    expect(link.setup?.standby?.key).toBe(c.key);
+    expect(state.successorForks.has(earlier.h)).toBe(false);
+  }
+  expect(operationOutcome(primary, id, saved.operation)?.status).toBe("pending");
+  const receipt = readDoc(takeShared(standby, a.key, save))!;
+  takeShared(primary, c.key, receipt);
+  expect(operationOutcome(primary, id, saved.operation)?.status).toBe("committed");
+  expect(takeLeadership(stale, later)).toBe(true);
+  expect(stale.setup?.standby?.key).toBe(c.key);
 });
 
 test("accepted rank changes keep no history after many full-roster reorderings", () => {
