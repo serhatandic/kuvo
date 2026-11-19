@@ -2013,6 +2013,21 @@ client connected: a client's Computers area and its switcher draw it, and ask no
     device. Member boxes learn `by` from the signed phones document. The main computer writes
     the revocation and shares it with the other boxes. `200 {}`, and the same for one removed already (whose devices,
     were any left from before this, go then).
+  - **Unlink and wipe** (`computers.removal`, #904). `POST kuvo/computers/<key>/unlink`
+    leaves the sessions and bots on that computer in a new standalone setup.
+    `POST kuvo/computers/<key>/unlink-and-wipe` also schedules their deletion with Kuvo Code.
+    Both take an optional client-generated `operation` (16 random bytes in base64url) and return
+    the accepted membership receipt plus `removal: {operation, state}`. A retry can send the
+    same operation or the original receipt in `save`. A standby-backed save can reply 202 while
+    waiting for acceptance. The primary commits the unlink without contacting the target and
+    publishes the updated roster and device grants. A primary with other computers must hand
+    over first. Unlinking the only computer wipes it, leaving no setup.
+    `GET kuvo/computers` and its events include `wipePending: [{key, name, operation}]` while a
+    wipe remains unconfirmed. A returning target challenges the current primary and verifies
+    its signed instruction for the operation, setup, epoch, and target before acting. This
+    exchange does not restore peer access. The target runs the preparation hook and verifies
+    any configured pre-wipe backup before stopping Kuvo Code and deleting its folder. It reports
+    completion after deletion. If it never returns, its wipe remains pending.
   - `POST kuvo/computers/<key>/connect`: this box's own, for a peer that's `away`: its link tells
     that computer its agents now, asking for theirs (`run/reach-again.json`, sent by the process
     that holds the relay connection, as `box route` leaves it), so its answer marks it back
@@ -7811,6 +7826,7 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `computers` | `kuvo/computers` and `…/events`: your computers as one list, from any box ("Computers", #711) |
 | `computers.add` | `kuvo/computers/add…`: a box adds a computer over SSH itself, with its tries' steps, questions and words; `POST kuvo/computers/<key>/setup` and `/uninstall`, and `setup` and `uninstall` in `actions` ("Computers", Adding one, #636) |
 | `computers.facts` | `features`, `working` (left out where never said) and `atWork` on each of `kuvo/computers`' computers ("Computers", #735) |
+| `computers.removal` | `POST kuvo/computers/<key>/unlink`, `POST kuvo/computers/<key>/unlink-and-wipe`, and pending wipes in the computer list |
 | `computers.manage` | `actions` on each of `kuvo/computers`' computers, `PATCH` and `DELETE kuvo/computers/<key>` (done by the box that writes the machine's record, or handed to it) and `POST kuvo/computers/<key>/connect` ("Computers", Managing them, #735) |
 | `computers.reach` | `address` and `relay` on each of your own computers in `kuvo/computers` ("Computers", #742) |
 | `computers.update.here` | The box takes a release Kuvo Code here offered as soon as nothing's at work, Update Now (`POST kuvo/update {now}`) takes it now whatever is at work, and its own row in `kuvo/computers` says how that stands (`update`, `update-here`); `kuvo-install update` ("Updates", "Computers", "Installing this computer's box") |

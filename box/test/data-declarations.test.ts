@@ -11,6 +11,7 @@ const REQUIRED_KINDS = [
   "setupReplica",
   "setupSaveOutbox",
   "setupNames",
+  "computerRemovalDelivery",
   "setupStandbyLease",
   "setupStandbySettings",
   "setupSecurityAndReleaseChoice",

@@ -16,6 +16,7 @@ import type { NoticeHold } from "./notices/hold";
 import type { Peer } from "./peers/known";
 import type { LinkHost } from "./relay/host";
 import type { OperationOutcomes, SharedKind, SharedValues } from "./setup/shared";
+import type { LocalWipe, MemberRemoval } from "./setup/removal-record";
 import type { SetupRecord } from "./setup/record";
 
 /** A phone this box lets in (PROTOCOL.md, "Paired phones"). */
@@ -91,6 +92,9 @@ export interface LinkState {
   removedHere?: string[];
   /** Per-key removal revisions, retained across re-adds so an older SSH Add can't restore trust. */
   removalRevisions?: Record<string, number>;
+  memberRemovals?: Record<string, MemberRemoval>;
+  localWipe?: LocalWipe;
+  removalAcks?: Record<string, string>;
   /** A removed peer's saved destination, kept until its machines-list cleanup succeeds. */
   pendingMachineCleanup?: Record<string, string>;
   /** Machines this Mac removed that haven't heard it yet (they hear it once it's back on the relay). */

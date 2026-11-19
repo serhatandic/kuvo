@@ -275,7 +275,9 @@ export async function takeWorkQueueMail(sender: MailSender, given: unknown, host
   if (!whole) return;
   const reply = (payload: Record<string, unknown>) => {
     const link = readLink();
-    const to = peersOf(link).find(peer => peer.key === sender.key);
+    const ownRemoval = isObject(whole.act) && whole.act.area === "computers" && whole.act.method === "DELETE"
+      && whole.act.item === sender.key && Object.hasOwn(payload, "acted");
+    const to = peersOf(link).find(peer => peer.key === sender.key) ?? (ownRemoval && "address" in sender ? sender : undefined);
     const mails = link && to ? mailsFor(to, payload, link) : null;
     if (mails) try { for (const bytes of mails) host?.send(bytes); } catch {}
   };

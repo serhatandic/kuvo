@@ -103,6 +103,7 @@ export function setMacPeers(link: LinkState, given: unknown, rejoined?: string, 
   // (Added again: no longer among those removed.)
   if (link.removedHere && rejoined && now.some(peer => peer.key === rejoined)) {
     link.removedHere = link.removedHere.filter(key => key !== rejoined);
+    if (link.memberRemovals) delete link.memberRemovals[rejoined];
     if (!link.removedHere.length) delete link.removedHere;
   }
   link.macPeers = now;

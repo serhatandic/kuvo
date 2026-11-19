@@ -13,7 +13,7 @@ import { pendingShared, stageShared, type Receipt } from "./shared";
 const localEffects = DATA_DECLARATIONS.membershipAndAccess.shared.localEffects;
 // COMPAT(layout 4): an older standby expects the full projection in its proposal.
 const legacyFields = ["macPeers", "macMoved", "peerNames", "left", "removedHere", "removalRevisions",
-  "phones", "removed", "vouchBlocked", ...localEffects,
+  "phones", "removed", "vouchBlocked", ...localEffects.filter(key => key !== "localWipe"),
 ] as const satisfies readonly (keyof LinkState)[];
 
 export function captureMembership(link: LinkState, self?: Peer) {
@@ -23,20 +23,21 @@ export function captureMembership(link: LinkState, self?: Peer) {
   const roster = self ? [self, ...projected] : boxes;
   return membershipOf({
     boxes: roster, left, moved, devices: ownPhones(link), removalRevisions: link.removalRevisions, removedHere: link.removedHere,
-    vouchBlocked: link.vouchBlocked,
+    vouchBlocked: link.vouchBlocked, removals: link.memberRemovals,
   });
 }
 
-export function updateAccess(change: (link: LinkState | null) => LinkState | null | undefined | void, { localOnly = false } = {}): { changed: LinkState | null; save: Receipt | null; busy: boolean } {
+export function updateAccess(change: (link: LinkState | null) => LinkState | null | undefined | void, { localOnly = false, operation, checkpoint = false }: { localOnly?: boolean; operation?: string; checkpoint?: boolean } = {}): { changed: LinkState | null; save: Receipt | null; busy: boolean } {
   let save: Receipt | null = null;
   let busy = false;
   const changed = updateLink(link => {
     if (localOnly || link?.setup?.role !== "primary") return change(link);
-    if (link.leadershipPending) {
+    if (link.leadershipPending || link.localWipe) {
       busy = true;
       return null;
     }
-    if (!link.setup.checkpointed && !requiresStandby(link.setup)) return change(link);
+    const bootstrap = checkpoint && !link.setup.checkpointed && !requiresStandby(link.setup);
+    if (!bootstrap && !link.setup.checkpointed && !requiresStandby(link.setup)) return change(link);
     if ((!link.setup.standby && requiresStandby(link.setup)) || pendingShared(link, "membershipAndAccess")) {
       busy = true;
       return null;
@@ -52,17 +53,18 @@ export function updateAccess(change: (link: LinkState | null) => LinkState | nul
     if (!modified) return null;
     const pairing = Object.fromEntries((["pairing", "appPairing"] as const).flatMap(slot =>
       link[slot] && !modified[slot] ? [[slot, bodyHash(link[slot].token)]] : []));
+    if (bootstrap) link.setup = { ...link.setup, managed: true, checkpointed: true };
     if (!link.setup.checkpointed) {
       const fields = Object.fromEntries(legacyFields.map(key => [key, modified[key] ?? null]));
       const { boxes, left, moved } = primaryPeersBody(modified);
       save = stageShared(link, "membershipAndAccess", {
         epoch: link.setup.epoch, fields, pairing, boxes, left, moved,
         devices: ownPhones(modified), vouchBlocked: modified.vouchBlocked ?? [],
-      });
+      }, undefined, operation);
     } else {
       const membership = captureMembership(modified, accepted?.boxes.find(box => box.key === link.setup!.primary));
       const fields = Object.fromEntries(localEffects.filter(key => JSON.stringify(modified[key]) !== JSON.stringify(link[key])).map(key => [key, modified[key] ?? null]));
-      if (membership) save = stageShared(link, "membershipAndAccess", membership, { fields, pairing });
+      if (membership) save = stageShared(link, "membershipAndAccess", membership, { fields, pairing }, operation);
     }
     busy = save === null;
     return busy ? null : link;

@@ -3,7 +3,7 @@
 // changes, and written with what they told into `run/agents.json` (what a Mac that's gone told,
 // forgotten).
 
-import { offlineEditLayoutReady, ownershipLayoutReady, setupLayoutDeferred } from "../../shared/folder-version";
+import { removalLayoutReady, offlineEditLayoutReady, ownershipLayoutReady, setupLayoutDeferred } from "../../shared/folder-version";
 import fs from "node:fs";
 import path from "node:path";
 import { FEATURES } from "../../shared/features";
@@ -147,6 +147,7 @@ export async function refreshOwn(readEngine: () => Target, link: LinkState | nul
 const ownFeatures = (): readonly string[] => {
   const features = IS_MAC ? macFeatures() : FEATURES;
   return features.filter(feature => {
+    if (feature === "computers.removal") return removalLayoutReady(K);
     if (feature === "data.offline-edits") return offlineEditLayoutReady(K);
     if (feature === "data.ownership" || feature === "data.mutation-identity") return ownershipLayoutReady(K);
     if (feature === "setup.checkpoints" || feature === "setup.standby-acceptance") return !setupLayoutDeferred(K);

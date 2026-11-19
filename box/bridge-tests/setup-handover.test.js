@@ -59,8 +59,8 @@ async function until(what, read, signal) {
   throw new Error(`Timed out waiting for ${what}`);
 }
 
-async function network(t, takeover = false, releaseKey, owned = false, movingGroup) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-handover-"));
+async function network(t, takeover = false, releaseKey, owned = false, movingGroup, disposableInstall = false) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), disposableInstall ? "kd-" : "kuvo-handover-"));
   const relay = await relayStandIn(link);
   const boxScript = releaseKey ? path.join(root, "kuvo-link.mjs") : script;
   if (releaseKey) {
@@ -151,14 +151,15 @@ async function network(t, takeover = false, releaseKey, owned = false, movingGro
   });
 
   const boxes = ["Studio", "Desk", "Lab"].map(name => {
-    const home = path.join(root, name);
+    const account = path.join(root, name);
+    const home = disposableInstall ? path.join(account, ".kuvo-code") : account;
     const secret = crypto.randomBytes(32);
     const privateKey = link.newKey();
     const seed = link.newSigningSeed();
     const address = link.addressOf(secret);
     const key = link.publicOf(privateKey).toString("base64url");
     const sign = link.signingKeyOf(seed);
-    const env = { HOME: home, KUVO_HOME: home, PATH: process.env.PATH, TMPDIR: root };
+    const env = { HOME: account, KUVO_HOME: home, PATH: process.env.PATH, TMPDIR: root };
     const run = path.join(home, "run");
     fs.mkdirSync(path.join(run, "work-queue"), { recursive: true });
     fs.writeFileSync(path.join(run, "engine.json"), JSON.stringify({ port: engine.address().port, password: owned ? name : "test" }));
@@ -176,7 +177,7 @@ async function network(t, takeover = false, releaseKey, owned = false, movingGro
       fs.writeFileSync(path.join(home, "setup-takeover.json"), JSON.stringify({ alwaysOn: name === "Desk" }));
     }
     return {
-      key, sign, seed, address, name, run, env,
+      key, sign, seed, address, name, home, run, env,
       entry: { key, sign, address: address.toString("base64url"), name, kind: "machine" },
       identity: { key: privateKey.toString("base64url"), sign: seed, secret: secret.toString("base64url"), name, relay: relay.url },
       read: () => read("link.json"),
@@ -1435,4 +1436,138 @@ test("failure bench: a bot's offline name and instructions are applied only at i
   assert.deepEqual(after.choices, []);
   assert.equal(fs.existsSync(path.join(path.dirname(a.run), "bots", ref.id)), false);
   assert.equal(fs.existsSync(path.join(path.dirname(b.run), "bots", ref.id)), false);
+});
+
+const waitForWipe = async (box, signal) => {
+  try {
+    await until("box erased", () => !fs.existsSync(box.home), AbortSignal.any([signal, AbortSignal.timeout(12_000)]));
+  } catch (error) {
+    const log = path.join(box.run, "uninstall.log");
+    throw new Error(`${error.message} on ${box.name}: journal=${JSON.stringify(box.read().localWipe)}, log=${fs.existsSync(log) ? fs.readFileSync(log, "utf8") : "(none)"}`, { cause: error });
+  }
+};
+const removalOf = (box, peer) => box.read().shared?.membershipAndAccess?.value.removals?.[peer.key];
+
+function seedLocalWork(box) {
+  const bot = path.join(box.home, "bots", "bot_retained", "notes.md");
+  const session = path.join(box.home, "agents", "sessions", "ses_retained", "messages.json");
+  for (const file of [bot, session]) {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, "local work");
+  }
+  return [bot, session];
+}
+
+test("failure bench: online unlink from a member keeps the target’s sessions and bots standalone", { timeout: 25_000 }, async t => {
+  const { a, b, c } = await network(t);
+  const data = seedLocalWork(b);
+  const original = b.read().setup.id;
+  const operation = crypto.randomBytes(16).toString("base64url");
+  const removed = await c.route("POST", `kuvo/computers/${b.key}/unlink`, { operation });
+  assert.equal(removed.status, 200, JSON.stringify(removed.value));
+  assertReceipt(a, "membershipAndAccess", "committed", removed.value);
+  assert.deepEqual(removed.value.removal, { operation, state: "unlinked" });
+  await until("new standalone setup", () => b.read().setup?.id !== original && b.read().setup?.role === "primary", t.signal);
+  await until("unlink reached all members", () => removalOf(a, b)?.delivered && removalOf(c, b)?.delivered, t.signal);
+  assert.deepEqual(b.read().phones, []);
+  assert.deepEqual(link.peersOf(b.read()), []);
+  assert.deepEqual(data.map(file => fs.readFileSync(file, "utf8")), ["local work", "local work"]);
+  assert.deepEqual(link.peersOf(c.read()).map(peer => peer.key), [a.key]);
+  const retry = await a.route("POST", `kuvo/computers/${b.key}/unlink`, { operation });
+  assert.deepEqual(retry.value.proof, removed.value.proof);
+});
+
+test("failure bench: an offline member is unlinked at commit and wipes after returning", { timeout: 30_000 }, async t => {
+  const { a, b, c, relay } = await network(t, false, undefined, false, undefined, true);
+  const data = seedLocalWork(b);
+  const dest = path.join(b.env.HOME, "external-backup");
+  fs.mkdirSync(dest);
+  fs.mkdirSync(path.join(b.home, "backup"));
+  const source = "b_" + crypto.randomBytes(16).toString("base64url");
+  fs.writeFileSync(path.join(b.home, "backup", "configuration.json"), JSON.stringify({
+    version: 1, enabled: true, source, key: crypto.randomBytes(32).toString("base64url"),
+    dest: { kind: "disk", path: dest }, disk: fs.statSync(dest).dev, projects: [],
+  }));
+  await b.stop();
+  await until("target offline", () => !relay.has(b.address), t.signal);
+  const operation = crypto.randomBytes(16).toString("base64url");
+  const removed = await a.route("POST", `kuvo/computers/${b.key}/unlink-and-wipe`, { operation });
+  assert.equal(removed.status, 200, JSON.stringify(removed.value));
+  assertReceipt(a, "membershipAndAccess", "committed", removed.value);
+  assert.deepEqual(removed.value.removal, { operation, state: "wipe-pending" });
+  assert.equal(link.peersOf(a.read()).some(peer => peer.key === b.key), false);
+  await until("pending wipe on another client’s box", () => removalOf(c, b)?.operation === operation, t.signal);
+  assert.deepEqual((await c.route("GET", "kuvo/computers")).value.wipePending, [{ key: b.key, name: b.name, operation }]);
+  assert.ok(data.every(file => fs.existsSync(file)));
+  b.start();
+  await waitForWipe(b, t.signal);
+  await until("completion replicated", () => removalOf(a, b)?.delivered && removalOf(c, b)?.delivered, AbortSignal.any([t.signal, AbortSignal.timeout(8500)]));
+  assert.equal((await c.route("GET", "kuvo/computers")).value.wipePending, undefined);
+  assert.ok(fs.readdirSync(path.join(dest, "kuvo-backups", source)).some(file => file.includes("-wipe-")), "verified backup survived wipe");
+});
+
+test("failure bench: a missing computer stays wipe-pending across primary restart", { timeout: 25_000 }, async t => {
+  const { a, b, c, relay } = await network(t);
+  await b.stop();
+  const result = await a.route("POST", `kuvo/computers/${b.key}/unlink-and-wipe`);
+  assert.equal(result.status, 200, JSON.stringify(result.value));
+  await a.stop("SIGTERM");
+  a.start();
+  await until("primary reconnected", () => relay.has(a.address), t.signal);
+  await until("pending removal replicated", () => removalOf(c, b)?.operation === result.value.operation, t.signal);
+  assert.deepEqual((await a.route("GET", "kuvo/computers")).value.wipePending, [{ key: b.key, name: b.name, operation: result.value.operation }]);
+  assert.equal(link.peersOf(a.read()).some(peer => peer.key === b.key), false);
+});
+
+test("failure bench: unlinking the only computer wipes its local setup", { timeout: 25_000 }, async t => {
+  const { a, b, c } = await network(t, false, undefined, false, undefined, true);
+  const data = seedLocalWork(a);
+  const blocked = await a.route("POST", `kuvo/computers/${a.key}/unlink`);
+  assert.equal(blocked.status, 409);
+  assert.match(blocked.value.message, /Choose another primary/);
+  for (const peer of [b, c]) {
+    const result = await a.route("POST", `kuvo/computers/${peer.key}/unlink`);
+    assert.equal(result.status, 200, JSON.stringify(result.value));
+  }
+  await until("both unlinks delivered", () => removalOf(a, b)?.delivered && removalOf(a, c)?.delivered, AbortSignal.any([t.signal, AbortSignal.timeout(8500)]));
+  const last = await a.route("POST", `kuvo/computers/${a.key}/unlink`);
+  assert.equal(last.status, 200, JSON.stringify(last.value));
+  assert.deepEqual(last.value.removal, { operation: last.value.operation, state: "wipe-pending" });
+  await waitForWipe(a, t.signal);
+  assert.ok(data.every(file => !fs.existsSync(file)));
+});
+
+test("failure bench: a pending wipe follows the setup through handover", { timeout: 30_000 }, async t => {
+  const { a, b, c, see, relay } = await network(t, false, undefined, false, undefined, true);
+  seedLocalWork(b);
+  await b.stop();
+  await until("target offline", () => !relay.has(b.address), t.signal);
+  const result = await a.route("POST", `kuvo/computers/${b.key}/unlink-and-wipe`);
+  assert.equal(result.status, 200, JSON.stringify(result.value));
+  assert.equal((await submit(a, c, 1)).status, 202);
+  await Promise.all([see(a, 2, c), see(c, 2, c)]);
+  assert.equal(removalOf(c, b).operation, result.value.operation);
+  assert.equal(removalOf(c, b).delivered, undefined);
+  b.start();
+  await waitForWipe(b, t.signal);
+  await until("new primary records completion", () => removalOf(c, b)?.delivered, t.signal);
+});
+
+test("failure bench: a failed pre-wipe backup leaves the removed computer’s data in place", { timeout: 25_000 }, async t => {
+  const { a, b } = await network(t, false, undefined, false, undefined, true);
+  const data = seedLocalWork(b);
+  fs.mkdirSync(path.join(b.home, "backup"));
+  fs.writeFileSync(path.join(b.home, "backup", "configuration.json"), JSON.stringify({
+    version: 1, enabled: true, source: "b_" + crypto.randomBytes(16).toString("base64url"),
+    key: crypto.randomBytes(32).toString("base64url"), disk: 1, projects: [],
+    dest: { kind: "disk", path: path.join(b.env.HOME, "missing-disk") },
+  }));
+  const result = await a.route("POST", `kuvo/computers/${b.key}/unlink-and-wipe`);
+  assert.equal(result.status, 200, JSON.stringify(result.value));
+  const log = path.join(b.run, "uninstall.log");
+  await until("backup attempt failed", () => fs.existsSync(log) && fs.readFileSync(log, "utf8").includes("missing-disk"), t.signal);
+  assert.deepEqual(data.map(file => fs.readFileSync(file, "utf8")), ["local work", "local work"]);
+  assert.equal(b.read().localWipe.operation, result.value.operation);
+  assert.equal(b.read().localWipe.prepared, undefined);
+  assert.equal(removalOf(a, b).delivered, undefined);
 });

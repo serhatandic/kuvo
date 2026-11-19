@@ -351,7 +351,7 @@ export async function* desktopUninstallRoute({ request, signal, json }: RouteCon
   return yield* json(503, { message: "Kuvo Code couldn’t confirm the desktop removal reached every other computer." });
 }
 
-function clearDesktopKeychain(): boolean {
+export function clearDesktopKeychain(): boolean {
   // Only the real Mac's own root can name the released app's item. Other roots own their files.
   if (process.platform === "darwin" && REAL_BOX && located(K) === located(path.join(accountHome(), ".kuvo-code"))) {
     const removed = run("/usr/bin/security", ["delete-generic-password", "-s", "run.kuvo.code.desktop", "-a", "link-identity"]);
@@ -406,6 +406,14 @@ export async function uninstallCommand(args: string[]): Promise<number> {
   if (needsHandover(readLink())) return refuse();
   const overSSH = process.env.KUVO_UNINSTALL_FROM_SSH === "1";
   const preparedBy = process.env.KUVO_UNINSTALL_PREPARED_BY;
+  if (!overSSH && !prepareBy && readLink()?.localWipe) {
+    const { wipeCommand } = await import("./setup/wipe");
+    const status = await wipeCommand();
+    const message = status === 0 ? "Kuvo Code and its data were wiped." : "The wipe is still pending. Check the pre-wipe backup and try again.";
+    console.log(JSON.stringify({ result: status === 0 ? "uninstalled" : "unfinished", message }));
+    console.error(message);
+    return status;
+  }
   try {
     const { backupBefore, config } = await import("./backup/engine");
     if (prepareBy) {

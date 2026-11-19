@@ -5,6 +5,8 @@ import { ownershipReady } from "../ownership/store";
 // documents, letters and how they went, and group chats' seats.
 
 import { isObject } from "../../shared/json";
+import { takeActed } from "../work-queue/forward";
+import { receiveRemovalMail } from "../setup/removal";
 import { receiveDocs } from "../documents/exchange";
 import { takePhoneSync } from "../documents/phone-sync";
 import { bridgeTarget, readEngineFile } from "../engine/client";
@@ -15,6 +17,7 @@ import { leaveAnswer, letterWent } from "../letters/outbox";
 import { takeLetter } from "../letters/take";
 import { callsBack, takeCall } from "../letters/calls";
 import { rowsBack, rowsWent, takeRows } from "../work/elsewhere";
+import { removalsOf } from "../setup/removal-record";
 import { usesAcceptedSaves } from "../setup/record";
 import { receiveAuthority } from "../setup/takeover";
 import { noteHeard } from "./reach";
@@ -27,7 +30,7 @@ import { announce, toldPeers, writeAgents } from "./agents";
 import { takeZone } from "../zone/setting";
 import { followPeers, takeReleaseMail } from "../updates/fleet";
 import { takeAgents } from "./directory";
-import { forgetOldMacs, macsOf, mailFor, openMail, peersOf, takeLegacyPeers } from "./known";
+import { forgetOldMacs, macsOf, mailFor, openMail, openRemovalMail, ownKey, peersOf, takeLegacyPeers } from "./known";
 import { takeLimits, takeSeat } from "./seats";
 import { queuesBack, takeWorkQueueMail, tellQueuesAgain } from "../work-queue/across";
 import type { PeerPlaces } from "../engine/client";
@@ -129,11 +132,21 @@ export function receiveMail(
   host: LinkHost | null | undefined,
   peerMail: (sender: MailSender, payload: Record<string, unknown>) => void = () => {},
   attended: (mac: string, given: Attention, at: number) => void = () => {},
+  from?: Buffer,
 ): void {
   const link = readLink();
+  const removal = openRemovalMail(body, link);
+  if (removal) {
+    receiveRemovalMail(removal.key, removal.message, host, from);
+    return;
+  }
   const opened = openMail(body, link);
   if (!opened) return;
   const { sender, payload } = opened;
+  if (link?.localWipe || (link && removalsOf(link)[ownKey(link) ?? ""])) {
+    if (isObject(payload.workQueue) && isObject(payload.workQueue.acted)) takeActed(sender, payload.workQueue.acted);
+    return;
+  }
   // It answers: whatever this box's tools last heard of it (PROTOCOL.md, "Peers", `run/peer-reach.json`).
   // Back after not answering: what's kept for it goes now, not at its next minute.
   if (noteHeard(sender.key)) {

@@ -326,9 +326,25 @@ export function openMail(body: Buffer, link: LinkState | null | undefined): Open
 // Mail for a peer, as the relay takes it, sealed for its key alone; null for one too big to go, or
 // for a box with no address this box knows (a Mac whose mail came before any peers document said
 // where it is: nothing can go back to it yet).
-export function mailFor(peer: Pick<Peer, "key"> & { address?: string }, payload: object, link: LinkState): Buffer | null {
+// Removal-only mail carries a key hint so a returning box can hear the signed epoch
+// chain even if it never met the current primary. This key grants no ordinary peer access.
+const REMOVAL_MAIL = Buffer.from("kuvo-removal-v1\0");
+
+export function openRemovalMail(body: Buffer, link: LinkState | null): { key: string; message: Record<string, unknown> } | null {
+  if (!link?.key || !body.subarray(0, REMOVAL_MAIL.length).equals(REMOVAL_MAIL) || body.length <= REMOVAL_MAIL.length + 32) return null;
+  const sender = body.subarray(REMOVAL_MAIL.length, REMOVAL_MAIL.length + 32);
+  try {
+    const opened = openOneWay(body.subarray(REMOVAL_MAIL.length + 32), Buffer.from(link.key, "base64url"), sender);
+    const message = mailFormat.read(JSON.parse(opened.payload.toString("utf8")));
+    return { key: sender.toString("base64url"), message };
+  } catch { return null; }
+}
+
+export function mailFor(peer: Pick<Peer, "key"> & { address?: string }, payload: object, link: LinkState, removalOnly = false): Buffer | null {
   if (!peer.address) return null;
-  const sealed = frame(Frame.mail, 0, sealOneWay(Buffer.from(JSON.stringify(mailFormat.write(payload))), Buffer.from(link.key!, "base64url"), Buffer.from(peer.key, "base64url")).message);
+  const key = Buffer.from(link.key!, "base64url");
+  const message = sealOneWay(Buffer.from(JSON.stringify(mailFormat.write(payload))), key, Buffer.from(peer.key, "base64url")).message;
+  const sealed = frame(Frame.mail, 0, removalOnly ? Buffer.concat([REMOVAL_MAIL, publicOf(key), message]) : message);
   if (sealed.length > MAX_MAIL) return null;
   return relaySend(Buffer.from(peer.address, "base64url"), sealed);
 }

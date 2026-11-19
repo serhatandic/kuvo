@@ -87,6 +87,7 @@ export interface PrimaryPeersBody {
   boxes: PeersBox[];
   moved: MovedSession[];
   left: string[];
+  removalKeys?: string[];
   setup?: SetupWord;
   managed?: true;
   checkpointed?: true;
@@ -262,7 +263,8 @@ export function primaryPeersBody(link: LinkState): PrimaryPeersBody {
   const leads = setup?.role === "primary" && setup.primary === me.key && setup.sign === me.sign;
   const accepted = acceptedMembership(link);
   const boxes = accepted ? namedRoster(link, accepted.boxes) : [me, ...peers.map((peer): PeersBox => ({ ...peer, kind: setup?.managed ? peer.kind : "machine" }))];
-  return { boxes, moved: accepted?.moved ?? cleanMoved(link.macMoved), left: accepted?.left.slice(-64) ?? (Array.isArray(link.left) ? link.left : []).filter(key => !current.has(key)),
+  const removals = accepted?.removals;
+  return { boxes, ...(removals ? { removalKeys: Object.keys(removals) } : {}), moved: accepted?.moved ?? cleanMoved(link.macMoved), left: accepted?.left.slice(-64) ?? (Array.isArray(link.left) ? link.left : []).filter(key => !current.has(key)),
     ...(leads && setup ? { setup: { id: setup.id, epoch: setup.epoch, primary: setup.primary }, ...(setup.managed ? { managed: true as const } : {}), ...(setup.checkpointed ? { checkpointed: true as const } : {}), ...(setup.sharedSaves ? { sharedSaves: true as const } : {}), ...(setup.standby ? { standby: setup.standby.key, numberCeiling: setup.numberCeiling, vouchBlocked: accepted?.vouchBlocked ?? link.vouchBlocked ?? [] } : {}) } : {}) };
 }
 
@@ -382,7 +384,13 @@ export function docsWork(state: DocsState, sender: DocSender, docs: DocsMail, { 
     if (doc.kind !== "peers") continue;
     const mac = macsOf(link).find(each => macSign(link, each) === doc.origin);
     const named = Array.isArray(doc.body.boxes) && doc.body.boxes.some(box => box?.key === own);
-    if (mac && !named && Array.isArray(doc.body.left) && doc.body.left.includes(own)) left.push(mac);
+    if (mac && !named && Array.isArray(doc.body.left) && doc.body.left.includes(own)
+      && !(Array.isArray(doc.body.removalKeys) && doc.body.removalKeys.includes(own))) left.push(mac);
+    if (own && link.setup?.role === "member" && doc.origin === link.setup.sign && doc.body.checkpointed === true
+      && setupOf(doc.body)?.id === link.setup.id && setupOf(doc.body)?.epoch === link.setup.epoch) {
+      link.setup.checkpointed = true;
+      if (doc.body.managed === true) link.setup.managed = true;
+    }
   }
   for (const mac of left.filter(each => each !== stay)) leaveMac(link, mac);
   // Who its boxes are as the documents it took say (its setup with them), then the rest.

@@ -127,6 +127,19 @@ export function retrySharedValue(link: LinkState, kind: SharedKind, operation: s
   return pending && fingerprint({ kind, value: pending.body.value }) === digest ? asSave(pending, link.sign) : null;
 }
 
+/** Retry a membership operation whose accepted record still names this action. */
+export function removalReceipt(link: LinkState, operation: string): Receipt | null {
+  const setup = followedSetup(link);
+  if (!setup || setup.role !== "primary" || !link.sign || ownSign(link) !== setup.sign) return null;
+  const pending = pendingShared(link, "membershipAndAccess");
+  if (pending && identity(pending) === operation) return asSave(pending, link.sign);
+  const result = link.sharedOutcomes?.[operation];
+  return result?.kind === "membershipAndAccess" && (result.epoch === setup.epoch
+    || sealedPrimary(link, result.epoch)?.sign === setup.sign)
+    ? saveForProposal(link.sign, setup.id, result.epoch, operation, result.kind, result.sequence, result.proposal, result.status)
+    : null;
+}
+
 /** Bind a receipt to the authenticated caller of a membership operation. */
 export function bindSave(save: Receipt, seed: string, binding: { pairedKey: string; pairing: string } | { revokedVoucher: string }): Receipt {
   const ticket = held(save.proof)!;

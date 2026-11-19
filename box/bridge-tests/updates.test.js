@@ -482,7 +482,7 @@ console.log(JSON.stringify(result));
   });
 }
 
-test("failure bench: a layout 4 update runs the real keeper preflight and confirms layout 7", async () => {
+test("failure bench: a layout 4 update runs the real keeper preflight and confirms layout 8", async () => {
   const { current, data, env, marker, off, keeper } = layoutTrial();
   const run = await installedUpdater(current, env);
   assert.equal(run.code, 0, run.output);
@@ -493,7 +493,7 @@ test("failure bench: a layout 4 update runs the real keeper preflight and confir
   assert.deepEqual(read(marker), { version: 4 }, "the saved bridge can still open the trial folder");
   fs.unlinkSync(off);
   assert.equal(await settle(), "well");
-  assert.deepEqual(read(marker), { version: 7 });
+  assert.deepEqual(read(marker), { version: 8 });
   assert.equal(fs.existsSync(path.join(home, "updates", "rollback")), false);
   assert.equal(fs.readFileSync(data, "utf8"), "the old engine's data");
   assert.deepEqual(fs.readFileSync(current), fs.readFileSync(script));

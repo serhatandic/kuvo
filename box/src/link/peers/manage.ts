@@ -10,16 +10,23 @@
 // Letting a computer add Kuvo Code's app to your devices again (`allow-devices`) is the main
 // computer's own, for its own clients: never handed on from another box (areas/computers.ts).
 
+import crypto from "node:crypto";
+import { removalLayoutReady } from "../../shared/folder-version";
+import { membershipOf } from "../setup/membership";
+import { REMOVAL_ID, removalsOf, type MemberRemoval } from "../setup/removal-record";
+import { setupSaveReceipt } from "../../shared/setup-local";
+import { beforeMembershipWipe } from "../setup/before-wipe";
+import { scheduleWipe, wipeSupportedHere } from "../setup/wipe";
 import { updateAccess } from "../setup/access";
 import type { CommittedReceipt, SaveReply, SavedReply, UnsavedReply } from "../../shared/routes/setup-save";
-import { awaitSharedSave, sharedSaveReply, stageShared, type Receipt } from "../setup/shared";
+import { awaitSharedSave, pendingShared, queryOperation, removalReceipt, sharedSaveReply, stageShared, withSaveOutcome, type Receipt } from "../setup/shared";
 import { isObject } from "../../shared/json";
 import { LEADERSHIP_WAIT, primaryFenced } from "../setup/lease";
 import { plainName } from "../../shared/text";
 import type { ComputerAction, ListedComputer } from "../../shared/routes/box";
 import { ownDoc, primaryPeersBody } from "../documents/work";
 import { macDocsChanged } from "../documents/exchange";
-import { IS_MAC } from "../home";
+import { IS_MAC, K } from "../home";
 import { movedFromOldApp } from "../rehome/moved";
 import { tellGone } from "../mac/link";
 import { LIST_FILE, localDestination, peerAtDestination, savedMachines } from "../mac/machines";
@@ -109,9 +116,11 @@ export function writerFacts(link: LinkState | null = readLink()): WriterFacts {
 export function whyNot(computer: Pick<ListedComputer, "key" | "name" | "kind" | "here" | "via">, what: "rename" | "remove", here: string, link: LinkState | null = readLink(), facts: WriterFacts = writerFacts(link)): string | null {
   const name = computer.name || "This computer";
   const { writer } = facts;
-  if (what === "remove" && link?.setup && computer.key === link.setup.primary) return PRIMARY_UNLINK;
+  if (what === "remove" && computer.key && computer.key === link?.setup?.primary) {
+    return lonePrimary(link, computer.key) ? null : PRIMARY_UNLINK;
+  }
   if (computer.kind === "mac" && (what === "rename" || !link?.setup?.managed)) return what === "rename" ? `${name} is a Mac: it goes by the name it has there.` : `A Mac can't be removed from here.`;
-  if (what === "remove" && computer.here) return `${here} can't remove itself: remove it from another of your computers.`;
+  if (what === "remove" && computer.here && !link?.setup?.managed) return `${here} can't remove itself: remove it from another of your computers.`;
   if (!writer) return macsOf(link).length > 1 ? `${what === "rename" ? "Rename" : "Remove"} ${name} from the Mac that added it.` : `No Mac keeps ${name}'s record, so it can't be ${what === "rename" ? "renamed" : "removed"} from here.`;
   if (!facts.reachable) return `${here} can't reach ${(writer as { name: string }).name}, which keeps your machines' records: ${what} ${name} from there.`;
   if (!computer.key || !facts.machines.has(computer.key)) return `${name} isn't one of ${writer.here ? here : writer.name}’s machines, so it can't be ${what === "rename" ? "renamed" : "removed"} from here.`;
@@ -142,7 +151,9 @@ export function actionsOf(computer: ListedComputer, here: string, trying: boolea
   if (!whyNot(computer, "remove", here, link, facts)) {
     // (Offered, and while it waits for the old app to be quit, said why rather than left out.)
     const waits = waitsFor(computer, here, facts);
-    actions.push({ id: "remove", label: "Remove", ...(waits ? { why: waits } : { confirm: { title: `Remove ${name}?`, message: `Your other computers stop reaching ${name}.${vouchedWords(link, computer.key, name)} It keeps running, with its sessions, and you can add it again later.`, label: "Remove" } }) });
+    const last = computer.key && lonePrimary(link, computer.key);
+    if (last && wipeSupportedHere()) actions.push({ id: "remove", label: "Wipe", confirm: { title: `Wipe ${name}?`, message: "This is the only computer. Wiping deletes Kuvo Code and its sessions and bots. No setup is left.", label: "Wipe" } });
+    else if (!last) actions.push({ id: "remove", label: link?.setup?.checkpointed ? "Unlink" : "Remove", ...(waits ? { why: waits } : { confirm: { title: `Remove ${name}?`, message: `Your other computers stop reaching ${name}.${vouchedWords(link, computer.key, name)} It keeps running, with its sessions, and you can add it again later.`, label: "Remove" } }) });
   }
   // (Kept from adding Kuvo Code's app to your devices, as this box, the main computer, says of it:
   // `vouching`, areas/computers.ts.)
@@ -195,8 +206,94 @@ export async function renameHere(key: string, name: string): Promise<RenameReply
   return answer(200, { name });
 }
 
-/** Retire the old standby, install a replacement, then save the access change. */
-export async function removeComputerHere(key: string, pendingOnly = false): Promise<Acted> {
+export function lonePrimary(link: LinkState | null, key: string): boolean {
+  return followedSetup(link)?.role === "primary" && link?.setup?.primary === key && !peersOf(link).length
+    && !link.leadershipPending && !pendingShared(link, "membershipAndAccess");
+}
+
+export function readRemovalRequest(body: unknown): RemovalRequest | null {
+  if (body == null) return {};
+  if (!isObject(body) || (body.wipe !== undefined && typeof body.wipe !== "boolean")
+    || (body.operation !== undefined && (typeof body.operation !== "string" || !REMOVAL_ID.test(body.operation)))
+    || (body.save !== undefined && !setupSaveReceipt(body.save))) return null;
+  return { wipe: body.wipe as boolean | undefined, operation: body.operation as string | undefined, save: body.save };
+}
+
+export interface RemovalRequest {
+  wipe?: boolean;
+  operation?: string;
+  save?: unknown;
+}
+
+function removalReply({ operation, wipe, delivered }: Omit<MemberRemoval, "peer">, receipt: Receipt | null, status?: number): Acted {
+  const receiptStatus = receipt ? sharedSaveReply(receipt).status : 200;
+  let state = "unlinked";
+  if (receipt?.status === "pending") state = "saving";
+  else if (receipt?.status === "interrupted") state = "interrupted";
+  else if (wipe) state = delivered ? "wiped" : "wipe-pending";
+  return { status: status ?? receiptStatus, value: { ...receipt, removal: { operation, state } } };
+}
+
+export async function removeComputerHere(key: string, pendingOnly = false, request: RemovalRequest = {}): Promise<Acted> {
+  const link = readLink();
+  const setup = followedSetup(link);
+  const previous = removalsOf(link)[key];
+  const pending = membershipOf(pendingShared(link, "membershipAndAccess")?.body.value)?.removals?.[key];
+  const last = lonePrimary(link, key);
+  const modern = !pendingOnly && (request.wipe !== undefined || request.operation !== undefined || setup?.checkpointed || last);
+  if (modern && !removalLayoutReady(K)) return answer(503, { message: "Finish updating Kuvo Code before removing this computer." });
+  const ticket = setupSaveReceipt(request.save);
+  if (ticket) {
+    const outcome = queryOperation(ticket.setup, ticket.operation, ticket.proof, "membershipAndAccess");
+    if (!outcome) return answer(404, { message: "That removal receipt is unknown." });
+    return sharedSaveReply(withSaveOutcome(ticket, outcome.status));
+  }
+  if (modern && (!setup || setup.role !== "primary")) return answer(409, { message: "Only the primary can remove a computer." });
+  if (modern && !setup?.checkpointed && requiresStandby(setup)) {
+    return answer(409, { message: "Finish upgrading accepted setup saves before removing this computer." });
+  }
+  if (key === setup?.primary && !last) return answer(409, { message: PRIMARY_UNLINK });
+  if (last && !wipeSupportedHere()) return answer(409, { message: "Wiping from this route requires Kuvo Code in ~/.kuvo-code." });
+  if (link?.localWipe && !last) return answer(409, { message: "This computer is already scheduled to be wiped." });
+
+  const existing = previous ?? pending;
+  const operation = request.operation ?? existing?.operation ?? (last ? link?.localWipe?.operation : undefined)
+    ?? crypto.randomBytes(16).toString("base64url");
+  if (modern && existing) {
+    if ((request.operation && operation !== existing.operation) || (request.wipe !== undefined && request.wipe !== existing.wipe))
+      return answer(409, { message: "This computer has already been removed with a different request." });
+    const receipt = link && removalReceipt(link, operation);
+    if (receipt?.status === "committed" || (!receipt && previous)) cleanRemovalList(key);
+    return removalReply(existing, receipt);
+  }
+  if (last && link?.localWipe) {
+    if (link.localWipe.operation !== operation) return answer(409, { message: "A wipe is already scheduled for this computer." });
+    scheduleWipe();
+    return removalReply({ operation, wipe: true }, removalReceipt(link, operation));
+  }
+  const removal = modern ? { operation, wipe: last || request.wipe === true } : undefined;
+  if (removal?.wipe && setup && (last || peersOf(link).some(peer => peer.key === key))) {
+    try { await beforeMembershipWipe({ phase: "before-unlink", setup: setup.id, operation, key }); }
+    catch (error) { return answer(409, { message: error instanceof Error ? error.message : "The wipe isn’t ready." }); }
+  }
+  if (last) {
+    const { save, busy } = updateAccess(current => {
+      if (!current || !lonePrimary(current, key) || current.localWipe || current.setup?.id !== setup?.id) return null;
+      current.localWipe = { setup: current.setup!.id, operation };
+      current.phones = [];
+      delete current.pairing;
+      delete current.appPairing;
+      return current;
+    }, { operation, checkpoint: true });
+    if (busy || !save) return answer(409, { message: "The setup changed before the wipe could be saved. Refresh it and try again." });
+    scheduleWipe();
+    return removalReply({ operation, wipe: true }, save);
+  }
+  return removePeer(key, pendingOnly, removal, setup?.id);
+}
+
+/** Retire the old standby before saving the access change. */
+async function removePeer(key: string, pendingOnly: boolean, removal?: Pick<MemberRemoval, "operation" | "wipe">, setupID?: string): Promise<Acted> {
   const link = readLink();
   const setup = followedSetup(link);
   if (!pendingOnly && setup?.role === "primary" && (setup.standby?.key === key
@@ -212,7 +309,9 @@ export async function removeComputerHere(key: string, pendingOnly = false): Prom
     }
     if (outcome.status !== 202) return outcome;
   }
-  return finishRemoval(prepareRemoval(key, pendingOnly));
+  const result = await finishRemoval(prepareRemoval(key, pendingOnly, removal, setupID));
+  const receipt = removal && setupSaveReceipt(result.value);
+  return removal && receipt ? removalReply(removal, receipt, result.status) : result;
 }
 
 /** Removes the machine `key` here, on the box that writes its record: its peers document names it
@@ -233,13 +332,14 @@ async function finishRemoval(removal: ReturnType<typeof prepareRemoval>): Promis
   return completeRemoval(removal, receipt);
 }
 
-function prepareRemoval(key: string, pendingOnly: boolean) {
+function prepareRemoval(key: string, pendingOnly: boolean, removal?: Pick<MemberRemoval, "operation" | "wipe">, setupID?: string) {
   let blocked: string | null = null;
   let gone: Peer[] = [];
   let already = false;
   let needsCleanup = false;
   const result = updateAccess(link => {
     if (!link) return null;
+    if (removal && link.setup?.id !== setupID) { blocked = "The setup changed. Refresh it and try again."; return null; }
     if (pendingOnly && primaryFenced(link)) { blocked = LEADERSHIP_WAIT; return null; }
     // A new removal needs a receipt, while cleanup on retry only changes the local address list.
     if (link.setup?.standby?.key === key) { blocked = STANDBY_UNLINK; return null; }
@@ -260,7 +360,10 @@ function prepareRemoval(key: string, pendingOnly: boolean) {
     if (!made.link) return null;
     gone = made.gone;
     if (made.link.peerNames) delete made.link.peerNames[key];
-    if (made.link.setup?.managed) {
+    if (removal) {
+      const { id: _destination, ...portable } = peer;
+      made.link.memberRemovals = { ...made.link.memberRemovals, [key]: { ...removal, peer: portable } };
+    } else if (made.link.setup?.managed) {
       // Keep the removal at this epoch for a member that misses it before standby rotation.
       // Build on a copy so the normal publisher still advances its own document counter.
       const roster = ownDoc({ ...made.link }, "peers", primaryPeersBody(made.link));
@@ -274,7 +377,7 @@ function prepareRemoval(key: string, pendingOnly: boolean) {
     }
     if (destination) made.link.pendingMachineCleanup = { ...made.link.pendingMachineCleanup, [key]: destination };
     return made.link;
-  }, { localOnly: pendingOnly });
+  }, { localOnly: pendingOnly, operation: removal?.operation, checkpoint: Boolean(removal) });
   return { ...result, blocked, gone, already, needsCleanup, key };
 }
 
@@ -283,7 +386,8 @@ function completeRemoval({ changed, blocked, gone, already, needsCleanup, key, b
   if (blocked) return answer(409, { message: blocked });
   if (!gone.length && !already) return answer(404, { message: `That isn't one of ${ownName()}'s machines.` });
   macDocsChanged({ closeRemoved: save ? readLink() : changed });
-  tellGone(gone);
+  const removals = removalsOf(readLink());
+  tellGone(gone.filter(peer => !removals[peer.key]));
   // Once the removal is durable, clean up its saved address. Leave a retry if the list fails.
   if (needsCleanup && !cleanRemovalList(key)) {
     const message = "The computer’s access was removed, but the saved machines list couldn’t be updated.";
@@ -334,7 +438,6 @@ export function forgetSaved(id: string): boolean {
 export async function writerAct(sender: MailSender, act: Act): Promise<Acted> {
   const link = readLink();
   const writer = writerOf(link);
-  if (act.method === "DELETE" && act.item === link?.setup?.primary) return answer(409, { message: PRIMARY_UNLINK });
   if (!writer?.here) return answer(409, { message: `${ownName()} doesn't keep your machines' records.` });
   // (The same rules as the asking box's, again here: it may be older, or not say true.)
   const target = peersOf(link).find(peer => peer.key === act.item);
@@ -344,6 +447,9 @@ export async function writerAct(sender: MailSender, act: Act): Promise<Acted> {
     if (!name) return answer(400, { message: `Give it a name of up to ${MOST_NAME} characters.` });
     return renameHere(act.item, name);
   }
-  if (act.method === "DELETE") return removeComputerHere(act.item, act.body?.cleanup === true);
+  if (act.method === "DELETE") {
+    const request = readRemovalRequest(act.body);
+    return request ? removeComputerHere(act.item, act.body?.cleanup === true, request) : answer(400, { message: "Send a valid removal request." });
+  }
   return answer(405, { message: "Rename or remove." });
 }

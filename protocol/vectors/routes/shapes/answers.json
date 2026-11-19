@@ -6008,6 +6008,15 @@
    "answers": {
     "200": {
      "object": {
+      "wipePending?": {
+       "list": {
+        "object": {
+         "key": "string",
+         "name": "string",
+         "operation": "string"
+        }
+       }
+      },
       "computers": {
        "list": {
         "object": {
@@ -6210,6 +6219,15 @@
    "answers": {
     "200": {
      "object": {
+      "wipePending?": {
+       "list": {
+        "object": {
+         "key": "string",
+         "name": "string",
+         "operation": "string"
+        }
+       }
+      },
       "computers": {
        "list": {
         "object": {
@@ -6452,7 +6470,248 @@
    "feature": "computers.manage",
    "answers": {
     "200": {
-     "object": {}
+     "oneOf": [
+      {
+       "object": {}
+      },
+      {
+       "oneOf": [
+        {
+         "object": {
+          "setup": "string",
+          "epoch": "number",
+          "operation": "string",
+          "proof": {
+           "object": {
+            "d": "string",
+            "s": "string"
+           }
+          },
+          "status": {
+           "oneOf": [
+            {
+             "literal": "pending"
+            },
+            {
+             "literal": "committed"
+            },
+            {
+             "literal": "interrupted"
+            }
+           ]
+          },
+          "pending?": {
+           "literal": true
+          },
+          "message?": "string"
+         }
+        },
+        {
+         "object": {
+          "setup": "string",
+          "epoch": "number",
+          "operation": "string",
+          "proof": {
+           "object": {
+            "d": "string",
+            "s": "string"
+           }
+          },
+          "status": {
+           "oneOf": [
+            {
+             "literal": "pending"
+            },
+            {
+             "literal": "committed"
+            },
+            {
+             "literal": "interrupted"
+            }
+           ]
+          },
+          "message?": "string",
+          "pending?": {
+           "literal": true
+          },
+          "removal": {
+           "object": {
+            "operation": "string",
+            "state": {
+             "oneOf": [
+              {
+               "literal": "saving"
+              },
+              {
+               "literal": "interrupted"
+              },
+              {
+               "literal": "unlinked"
+              },
+              {
+               "literal": "wipe-pending"
+              },
+              {
+               "literal": "wiped"
+              }
+             ]
+            }
+           }
+          }
+         }
+        },
+        {
+         "object": {
+          "removal": {
+           "object": {
+            "operation": "string",
+            "state": {
+             "oneOf": [
+              {
+               "literal": "saving"
+              },
+              {
+               "literal": "interrupted"
+              },
+              {
+               "literal": "unlinked"
+              },
+              {
+               "literal": "wipe-pending"
+              },
+              {
+               "literal": "wiped"
+              }
+             ]
+            }
+           }
+          }
+         }
+        }
+       ]
+      }
+     ]
+    },
+    "202": {
+     "oneOf": [
+      {
+       "object": {
+        "setup": "string",
+        "epoch": "number",
+        "operation": "string",
+        "proof": {
+         "object": {
+          "d": "string",
+          "s": "string"
+         }
+        },
+        "status": {
+         "oneOf": [
+          {
+           "literal": "pending"
+          },
+          {
+           "literal": "committed"
+          },
+          {
+           "literal": "interrupted"
+          }
+         ]
+        },
+        "pending?": {
+         "literal": true
+        },
+        "message?": "string"
+       }
+      },
+      {
+       "object": {
+        "setup": "string",
+        "epoch": "number",
+        "operation": "string",
+        "proof": {
+         "object": {
+          "d": "string",
+          "s": "string"
+         }
+        },
+        "status": {
+         "oneOf": [
+          {
+           "literal": "pending"
+          },
+          {
+           "literal": "committed"
+          },
+          {
+           "literal": "interrupted"
+          }
+         ]
+        },
+        "message?": "string",
+        "pending?": {
+         "literal": true
+        },
+        "removal": {
+         "object": {
+          "operation": "string",
+          "state": {
+           "oneOf": [
+            {
+             "literal": "saving"
+            },
+            {
+             "literal": "interrupted"
+            },
+            {
+             "literal": "unlinked"
+            },
+            {
+             "literal": "wipe-pending"
+            },
+            {
+             "literal": "wiped"
+            }
+           ]
+          }
+         }
+        }
+       }
+      },
+      {
+       "object": {
+        "removal": {
+         "object": {
+          "operation": "string",
+          "state": {
+           "oneOf": [
+            {
+             "literal": "saving"
+            },
+            {
+             "literal": "interrupted"
+            },
+            {
+             "literal": "unlinked"
+            },
+            {
+             "literal": "wipe-pending"
+            },
+            {
+             "literal": "wiped"
+            }
+           ]
+          }
+         }
+        }
+       }
+      }
+     ]
+    },
+    "400": {
+     "object": {
+      "message": "string"
+     }
     },
     "404": {
      "object": {
@@ -6465,9 +6724,129 @@
      }
     },
     "409": {
-     "object": {
-      "message": "string"
-     }
+     "oneOf": [
+      {
+       "object": {
+        "message": "string"
+       }
+      },
+      {
+       "oneOf": [
+        {
+         "object": {
+          "setup": "string",
+          "epoch": "number",
+          "operation": "string",
+          "proof": {
+           "object": {
+            "d": "string",
+            "s": "string"
+           }
+          },
+          "status": {
+           "oneOf": [
+            {
+             "literal": "pending"
+            },
+            {
+             "literal": "committed"
+            },
+            {
+             "literal": "interrupted"
+            }
+           ]
+          },
+          "pending?": {
+           "literal": true
+          },
+          "message?": "string"
+         }
+        },
+        {
+         "object": {
+          "setup": "string",
+          "epoch": "number",
+          "operation": "string",
+          "proof": {
+           "object": {
+            "d": "string",
+            "s": "string"
+           }
+          },
+          "status": {
+           "oneOf": [
+            {
+             "literal": "pending"
+            },
+            {
+             "literal": "committed"
+            },
+            {
+             "literal": "interrupted"
+            }
+           ]
+          },
+          "message?": "string",
+          "pending?": {
+           "literal": true
+          },
+          "removal": {
+           "object": {
+            "operation": "string",
+            "state": {
+             "oneOf": [
+              {
+               "literal": "saving"
+              },
+              {
+               "literal": "interrupted"
+              },
+              {
+               "literal": "unlinked"
+              },
+              {
+               "literal": "wipe-pending"
+              },
+              {
+               "literal": "wiped"
+              }
+             ]
+            }
+           }
+          }
+         }
+        },
+        {
+         "object": {
+          "removal": {
+           "object": {
+            "operation": "string",
+            "state": {
+             "oneOf": [
+              {
+               "literal": "saving"
+              },
+              {
+               "literal": "interrupted"
+              },
+              {
+               "literal": "unlinked"
+              },
+              {
+               "literal": "wipe-pending"
+              },
+              {
+               "literal": "wiped"
+              }
+             ]
+            }
+           }
+          }
+         }
+        }
+       ]
+      }
+     ]
     },
     "500": {
      "object": {
@@ -6475,9 +6854,1145 @@
      }
     },
     "503": {
+     "oneOf": [
+      {
+       "object": {
+        "message": "string"
+       }
+      },
+      {
+       "oneOf": [
+        {
+         "object": {
+          "setup": "string",
+          "epoch": "number",
+          "operation": "string",
+          "proof": {
+           "object": {
+            "d": "string",
+            "s": "string"
+           }
+          },
+          "status": {
+           "oneOf": [
+            {
+             "literal": "pending"
+            },
+            {
+             "literal": "committed"
+            },
+            {
+             "literal": "interrupted"
+            }
+           ]
+          },
+          "pending?": {
+           "literal": true
+          },
+          "message?": "string"
+         }
+        },
+        {
+         "object": {
+          "setup": "string",
+          "epoch": "number",
+          "operation": "string",
+          "proof": {
+           "object": {
+            "d": "string",
+            "s": "string"
+           }
+          },
+          "status": {
+           "oneOf": [
+            {
+             "literal": "pending"
+            },
+            {
+             "literal": "committed"
+            },
+            {
+             "literal": "interrupted"
+            }
+           ]
+          },
+          "message?": "string",
+          "pending?": {
+           "literal": true
+          },
+          "removal": {
+           "object": {
+            "operation": "string",
+            "state": {
+             "oneOf": [
+              {
+               "literal": "saving"
+              },
+              {
+               "literal": "interrupted"
+              },
+              {
+               "literal": "unlinked"
+              },
+              {
+               "literal": "wipe-pending"
+              },
+              {
+               "literal": "wiped"
+              }
+             ]
+            }
+           }
+          }
+         }
+        },
+        {
+         "object": {
+          "removal": {
+           "object": {
+            "operation": "string",
+            "state": {
+             "oneOf": [
+              {
+               "literal": "saving"
+              },
+              {
+               "literal": "interrupted"
+              },
+              {
+               "literal": "unlinked"
+              },
+              {
+               "literal": "wipe-pending"
+              },
+              {
+               "literal": "wiped"
+              }
+             ]
+            }
+           }
+          }
+         }
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  {
+   "route": "POST kuvo/computers/:key/unlink",
+   "feature": "computers.removal",
+   "answers": {
+    "200": {
+     "oneOf": [
+      {
+       "object": {
+        "setup": "string",
+        "epoch": "number",
+        "operation": "string",
+        "proof": {
+         "object": {
+          "d": "string",
+          "s": "string"
+         }
+        },
+        "status": {
+         "oneOf": [
+          {
+           "literal": "pending"
+          },
+          {
+           "literal": "committed"
+          },
+          {
+           "literal": "interrupted"
+          }
+         ]
+        },
+        "pending?": {
+         "literal": true
+        },
+        "message?": "string"
+       }
+      },
+      {
+       "object": {
+        "setup": "string",
+        "epoch": "number",
+        "operation": "string",
+        "proof": {
+         "object": {
+          "d": "string",
+          "s": "string"
+         }
+        },
+        "status": {
+         "oneOf": [
+          {
+           "literal": "pending"
+          },
+          {
+           "literal": "committed"
+          },
+          {
+           "literal": "interrupted"
+          }
+         ]
+        },
+        "message?": "string",
+        "pending?": {
+         "literal": true
+        },
+        "removal": {
+         "object": {
+          "operation": "string",
+          "state": {
+           "oneOf": [
+            {
+             "literal": "saving"
+            },
+            {
+             "literal": "interrupted"
+            },
+            {
+             "literal": "unlinked"
+            },
+            {
+             "literal": "wipe-pending"
+            },
+            {
+             "literal": "wiped"
+            }
+           ]
+          }
+         }
+        }
+       }
+      },
+      {
+       "object": {
+        "removal": {
+         "object": {
+          "operation": "string",
+          "state": {
+           "oneOf": [
+            {
+             "literal": "saving"
+            },
+            {
+             "literal": "interrupted"
+            },
+            {
+             "literal": "unlinked"
+            },
+            {
+             "literal": "wipe-pending"
+            },
+            {
+             "literal": "wiped"
+            }
+           ]
+          }
+         }
+        }
+       }
+      }
+     ]
+    },
+    "202": {
+     "oneOf": [
+      {
+       "object": {
+        "setup": "string",
+        "epoch": "number",
+        "operation": "string",
+        "proof": {
+         "object": {
+          "d": "string",
+          "s": "string"
+         }
+        },
+        "status": {
+         "oneOf": [
+          {
+           "literal": "pending"
+          },
+          {
+           "literal": "committed"
+          },
+          {
+           "literal": "interrupted"
+          }
+         ]
+        },
+        "pending?": {
+         "literal": true
+        },
+        "message?": "string"
+       }
+      },
+      {
+       "object": {
+        "setup": "string",
+        "epoch": "number",
+        "operation": "string",
+        "proof": {
+         "object": {
+          "d": "string",
+          "s": "string"
+         }
+        },
+        "status": {
+         "oneOf": [
+          {
+           "literal": "pending"
+          },
+          {
+           "literal": "committed"
+          },
+          {
+           "literal": "interrupted"
+          }
+         ]
+        },
+        "message?": "string",
+        "pending?": {
+         "literal": true
+        },
+        "removal": {
+         "object": {
+          "operation": "string",
+          "state": {
+           "oneOf": [
+            {
+             "literal": "saving"
+            },
+            {
+             "literal": "interrupted"
+            },
+            {
+             "literal": "unlinked"
+            },
+            {
+             "literal": "wipe-pending"
+            },
+            {
+             "literal": "wiped"
+            }
+           ]
+          }
+         }
+        }
+       }
+      },
+      {
+       "object": {
+        "removal": {
+         "object": {
+          "operation": "string",
+          "state": {
+           "oneOf": [
+            {
+             "literal": "saving"
+            },
+            {
+             "literal": "interrupted"
+            },
+            {
+             "literal": "unlinked"
+            },
+            {
+             "literal": "wipe-pending"
+            },
+            {
+             "literal": "wiped"
+            }
+           ]
+          }
+         }
+        }
+       }
+      }
+     ]
+    },
+    "400": {
      "object": {
       "message": "string"
      }
+    },
+    "404": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "405": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "409": {
+     "oneOf": [
+      {
+       "object": {
+        "message": "string"
+       }
+      },
+      {
+       "oneOf": [
+        {
+         "object": {
+          "setup": "string",
+          "epoch": "number",
+          "operation": "string",
+          "proof": {
+           "object": {
+            "d": "string",
+            "s": "string"
+           }
+          },
+          "status": {
+           "oneOf": [
+            {
+             "literal": "pending"
+            },
+            {
+             "literal": "committed"
+            },
+            {
+             "literal": "interrupted"
+            }
+           ]
+          },
+          "pending?": {
+           "literal": true
+          },
+          "message?": "string"
+         }
+        },
+        {
+         "object": {
+          "setup": "string",
+          "epoch": "number",
+          "operation": "string",
+          "proof": {
+           "object": {
+            "d": "string",
+            "s": "string"
+           }
+          },
+          "status": {
+           "oneOf": [
+            {
+             "literal": "pending"
+            },
+            {
+             "literal": "committed"
+            },
+            {
+             "literal": "interrupted"
+            }
+           ]
+          },
+          "message?": "string",
+          "pending?": {
+           "literal": true
+          },
+          "removal": {
+           "object": {
+            "operation": "string",
+            "state": {
+             "oneOf": [
+              {
+               "literal": "saving"
+              },
+              {
+               "literal": "interrupted"
+              },
+              {
+               "literal": "unlinked"
+              },
+              {
+               "literal": "wipe-pending"
+              },
+              {
+               "literal": "wiped"
+              }
+             ]
+            }
+           }
+          }
+         }
+        },
+        {
+         "object": {
+          "removal": {
+           "object": {
+            "operation": "string",
+            "state": {
+             "oneOf": [
+              {
+               "literal": "saving"
+              },
+              {
+               "literal": "interrupted"
+              },
+              {
+               "literal": "unlinked"
+              },
+              {
+               "literal": "wipe-pending"
+              },
+              {
+               "literal": "wiped"
+              }
+             ]
+            }
+           }
+          }
+         }
+        }
+       ]
+      }
+     ]
+    },
+    "500": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "503": {
+     "oneOf": [
+      {
+       "object": {
+        "message": "string"
+       }
+      },
+      {
+       "oneOf": [
+        {
+         "object": {
+          "setup": "string",
+          "epoch": "number",
+          "operation": "string",
+          "proof": {
+           "object": {
+            "d": "string",
+            "s": "string"
+           }
+          },
+          "status": {
+           "oneOf": [
+            {
+             "literal": "pending"
+            },
+            {
+             "literal": "committed"
+            },
+            {
+             "literal": "interrupted"
+            }
+           ]
+          },
+          "pending?": {
+           "literal": true
+          },
+          "message?": "string"
+         }
+        },
+        {
+         "object": {
+          "setup": "string",
+          "epoch": "number",
+          "operation": "string",
+          "proof": {
+           "object": {
+            "d": "string",
+            "s": "string"
+           }
+          },
+          "status": {
+           "oneOf": [
+            {
+             "literal": "pending"
+            },
+            {
+             "literal": "committed"
+            },
+            {
+             "literal": "interrupted"
+            }
+           ]
+          },
+          "message?": "string",
+          "pending?": {
+           "literal": true
+          },
+          "removal": {
+           "object": {
+            "operation": "string",
+            "state": {
+             "oneOf": [
+              {
+               "literal": "saving"
+              },
+              {
+               "literal": "interrupted"
+              },
+              {
+               "literal": "unlinked"
+              },
+              {
+               "literal": "wipe-pending"
+              },
+              {
+               "literal": "wiped"
+              }
+             ]
+            }
+           }
+          }
+         }
+        },
+        {
+         "object": {
+          "removal": {
+           "object": {
+            "operation": "string",
+            "state": {
+             "oneOf": [
+              {
+               "literal": "saving"
+              },
+              {
+               "literal": "interrupted"
+              },
+              {
+               "literal": "unlinked"
+              },
+              {
+               "literal": "wipe-pending"
+              },
+              {
+               "literal": "wiped"
+              }
+             ]
+            }
+           }
+          }
+         }
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  {
+   "route": "POST kuvo/computers/:key/unlink-and-wipe",
+   "feature": "computers.removal",
+   "answers": {
+    "200": {
+     "oneOf": [
+      {
+       "object": {
+        "setup": "string",
+        "epoch": "number",
+        "operation": "string",
+        "proof": {
+         "object": {
+          "d": "string",
+          "s": "string"
+         }
+        },
+        "status": {
+         "oneOf": [
+          {
+           "literal": "pending"
+          },
+          {
+           "literal": "committed"
+          },
+          {
+           "literal": "interrupted"
+          }
+         ]
+        },
+        "pending?": {
+         "literal": true
+        },
+        "message?": "string"
+       }
+      },
+      {
+       "object": {
+        "setup": "string",
+        "epoch": "number",
+        "operation": "string",
+        "proof": {
+         "object": {
+          "d": "string",
+          "s": "string"
+         }
+        },
+        "status": {
+         "oneOf": [
+          {
+           "literal": "pending"
+          },
+          {
+           "literal": "committed"
+          },
+          {
+           "literal": "interrupted"
+          }
+         ]
+        },
+        "message?": "string",
+        "pending?": {
+         "literal": true
+        },
+        "removal": {
+         "object": {
+          "operation": "string",
+          "state": {
+           "oneOf": [
+            {
+             "literal": "saving"
+            },
+            {
+             "literal": "interrupted"
+            },
+            {
+             "literal": "unlinked"
+            },
+            {
+             "literal": "wipe-pending"
+            },
+            {
+             "literal": "wiped"
+            }
+           ]
+          }
+         }
+        }
+       }
+      },
+      {
+       "object": {
+        "removal": {
+         "object": {
+          "operation": "string",
+          "state": {
+           "oneOf": [
+            {
+             "literal": "saving"
+            },
+            {
+             "literal": "interrupted"
+            },
+            {
+             "literal": "unlinked"
+            },
+            {
+             "literal": "wipe-pending"
+            },
+            {
+             "literal": "wiped"
+            }
+           ]
+          }
+         }
+        }
+       }
+      }
+     ]
+    },
+    "202": {
+     "oneOf": [
+      {
+       "object": {
+        "setup": "string",
+        "epoch": "number",
+        "operation": "string",
+        "proof": {
+         "object": {
+          "d": "string",
+          "s": "string"
+         }
+        },
+        "status": {
+         "oneOf": [
+          {
+           "literal": "pending"
+          },
+          {
+           "literal": "committed"
+          },
+          {
+           "literal": "interrupted"
+          }
+         ]
+        },
+        "pending?": {
+         "literal": true
+        },
+        "message?": "string"
+       }
+      },
+      {
+       "object": {
+        "setup": "string",
+        "epoch": "number",
+        "operation": "string",
+        "proof": {
+         "object": {
+          "d": "string",
+          "s": "string"
+         }
+        },
+        "status": {
+         "oneOf": [
+          {
+           "literal": "pending"
+          },
+          {
+           "literal": "committed"
+          },
+          {
+           "literal": "interrupted"
+          }
+         ]
+        },
+        "message?": "string",
+        "pending?": {
+         "literal": true
+        },
+        "removal": {
+         "object": {
+          "operation": "string",
+          "state": {
+           "oneOf": [
+            {
+             "literal": "saving"
+            },
+            {
+             "literal": "interrupted"
+            },
+            {
+             "literal": "unlinked"
+            },
+            {
+             "literal": "wipe-pending"
+            },
+            {
+             "literal": "wiped"
+            }
+           ]
+          }
+         }
+        }
+       }
+      },
+      {
+       "object": {
+        "removal": {
+         "object": {
+          "operation": "string",
+          "state": {
+           "oneOf": [
+            {
+             "literal": "saving"
+            },
+            {
+             "literal": "interrupted"
+            },
+            {
+             "literal": "unlinked"
+            },
+            {
+             "literal": "wipe-pending"
+            },
+            {
+             "literal": "wiped"
+            }
+           ]
+          }
+         }
+        }
+       }
+      }
+     ]
+    },
+    "400": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "404": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "405": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "409": {
+     "oneOf": [
+      {
+       "object": {
+        "message": "string"
+       }
+      },
+      {
+       "oneOf": [
+        {
+         "object": {
+          "setup": "string",
+          "epoch": "number",
+          "operation": "string",
+          "proof": {
+           "object": {
+            "d": "string",
+            "s": "string"
+           }
+          },
+          "status": {
+           "oneOf": [
+            {
+             "literal": "pending"
+            },
+            {
+             "literal": "committed"
+            },
+            {
+             "literal": "interrupted"
+            }
+           ]
+          },
+          "pending?": {
+           "literal": true
+          },
+          "message?": "string"
+         }
+        },
+        {
+         "object": {
+          "setup": "string",
+          "epoch": "number",
+          "operation": "string",
+          "proof": {
+           "object": {
+            "d": "string",
+            "s": "string"
+           }
+          },
+          "status": {
+           "oneOf": [
+            {
+             "literal": "pending"
+            },
+            {
+             "literal": "committed"
+            },
+            {
+             "literal": "interrupted"
+            }
+           ]
+          },
+          "message?": "string",
+          "pending?": {
+           "literal": true
+          },
+          "removal": {
+           "object": {
+            "operation": "string",
+            "state": {
+             "oneOf": [
+              {
+               "literal": "saving"
+              },
+              {
+               "literal": "interrupted"
+              },
+              {
+               "literal": "unlinked"
+              },
+              {
+               "literal": "wipe-pending"
+              },
+              {
+               "literal": "wiped"
+              }
+             ]
+            }
+           }
+          }
+         }
+        },
+        {
+         "object": {
+          "removal": {
+           "object": {
+            "operation": "string",
+            "state": {
+             "oneOf": [
+              {
+               "literal": "saving"
+              },
+              {
+               "literal": "interrupted"
+              },
+              {
+               "literal": "unlinked"
+              },
+              {
+               "literal": "wipe-pending"
+              },
+              {
+               "literal": "wiped"
+              }
+             ]
+            }
+           }
+          }
+         }
+        }
+       ]
+      }
+     ]
+    },
+    "500": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "503": {
+     "oneOf": [
+      {
+       "object": {
+        "message": "string"
+       }
+      },
+      {
+       "oneOf": [
+        {
+         "object": {
+          "setup": "string",
+          "epoch": "number",
+          "operation": "string",
+          "proof": {
+           "object": {
+            "d": "string",
+            "s": "string"
+           }
+          },
+          "status": {
+           "oneOf": [
+            {
+             "literal": "pending"
+            },
+            {
+             "literal": "committed"
+            },
+            {
+             "literal": "interrupted"
+            }
+           ]
+          },
+          "pending?": {
+           "literal": true
+          },
+          "message?": "string"
+         }
+        },
+        {
+         "object": {
+          "setup": "string",
+          "epoch": "number",
+          "operation": "string",
+          "proof": {
+           "object": {
+            "d": "string",
+            "s": "string"
+           }
+          },
+          "status": {
+           "oneOf": [
+            {
+             "literal": "pending"
+            },
+            {
+             "literal": "committed"
+            },
+            {
+             "literal": "interrupted"
+            }
+           ]
+          },
+          "message?": "string",
+          "pending?": {
+           "literal": true
+          },
+          "removal": {
+           "object": {
+            "operation": "string",
+            "state": {
+             "oneOf": [
+              {
+               "literal": "saving"
+              },
+              {
+               "literal": "interrupted"
+              },
+              {
+               "literal": "unlinked"
+              },
+              {
+               "literal": "wipe-pending"
+              },
+              {
+               "literal": "wiped"
+              }
+             ]
+            }
+           }
+          }
+         }
+        },
+        {
+         "object": {
+          "removal": {
+           "object": {
+            "operation": "string",
+            "state": {
+             "oneOf": [
+              {
+               "literal": "saving"
+              },
+              {
+               "literal": "interrupted"
+              },
+              {
+               "literal": "unlinked"
+              },
+              {
+               "literal": "wipe-pending"
+              },
+              {
+               "literal": "wiped"
+              }
+             ]
+            }
+           }
+          }
+         }
+        }
+       ]
+      }
+     ]
     }
    }
   },
@@ -6755,6 +8270,9 @@
            },
            {
             "literal": "computers.reach-words"
+           },
+           {
+            "literal": "computers.removal"
            },
            {
             "literal": "computers.update"
@@ -7550,6 +9068,9 @@
            },
            {
             "literal": "computers.reach-words"
+           },
+           {
+            "literal": "computers.removal"
            },
            {
             "literal": "computers.update"

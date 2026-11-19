@@ -81,7 +81,7 @@ export async function proposeLeadership(
   const changed = changeNumbers(numbers => updateLink(link => {
     const current = followedSetup(link);
     if (!link?.sign || current?.role !== "primary" || current.sign !== ownSign(link) || current.id !== position.setup || current.epoch !== position.epoch
-      || primaryFenced(link) || Object.keys(link.sharedPending ?? {}).length) return null;
+      || link.localWipe || primaryFenced(link) || Object.keys(link.sharedPending ?? {}).length) return null;
     if (recovery && (!standby || current.standby || !requiresStandby(current) || target !== current.primary
       || recovery.peer.key !== standby.key || recovery.peer.sign !== standby.sign)) return null;
     const members = peersOf(link);

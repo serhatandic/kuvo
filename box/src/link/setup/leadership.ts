@@ -146,7 +146,9 @@ export function takeLeadership(link: LinkState, doc: Doc, checkpoint?: Doc): boo
   const own = ownKey(link);
   if (!own) return false;
   const left = Array.isArray(body.left) ? body.left.filter((key): key is string => typeof key === "string" && KEY.test(key)) : [];
-  if (!peers.some(peer => peer.key === own)) {
+  const removed = !peers.some(peer => peer.key === own);
+  const deliveringRemoval = removed && Boolean(resolved?.membership.removals?.[own]);
+  if (removed && !deliveringRemoval) {
     // A member offline since before its removal may first hear of it in this certificate.
     if (!left.includes(own)) return false;
     delete link.setup;

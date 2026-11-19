@@ -32,6 +32,8 @@ const steps: readonly Step[] = [
   () => {},
   // 7. Reserve offline edits, their receipts and compact deletion markers.
   () => {},
+  // 8. Reserve portable computer removals and the local wipe journal.
+  () => {},
 ];
 
 interface Checkpoint {
@@ -97,6 +99,11 @@ export function offlineEditLayoutReady(folder: string): boolean {
   catch { return false; }
 }
 
+export function removalLayoutReady(folder: string): boolean {
+  try { return checkpoint(path.join(folder, FOLDER_VERSION_FILE), steps.length).version >= 8; }
+  catch { return false; }
+}
+
 /** A trial can advance only as far as the saved reader can open. Before layout markers,
  * readers ignored the probe completely and can recover only the additive layout 1. */
 function checkTrialRecovery(folder: string, start: Checkpoint): void | false {
@@ -126,7 +133,7 @@ function checkTrialRecovery(folder: string, start: Checkpoint): void | false {
       if (accepts(steps.length)) return;
       // The remaining steps are additive. The trial's new writers stay on hold
       // until confirmation, and rollback can reopen the original marker as-is.
-      if ((start.version === 4 || start.version === 5 || start.version === 6) && start.upgradingTo === undefined && accepts(start.version)) return false;
+      if ((start.version >= 4 && start.version < steps.length) && start.upgradingTo === undefined && accepts(start.version)) return false;
     }
     refuse();
   } finally {

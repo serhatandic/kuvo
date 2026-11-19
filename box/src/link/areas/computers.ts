@@ -28,7 +28,10 @@ import { keptList, listFollowers, listNow, type Kept } from "../lists/sessions";
 import { MOST_ASKING, MOST_AT_WORK, PEER_AGENTS_FILE, readPeerAgents } from "../peers/directory";
 import { addressOf } from "../crypto/keys";
 import { ADDRESS, ownKey, peersOf } from "../peers/known";
-import { actionsOf, givenName, MOST_NAME, oldAppAttached, refusal, removeComputerHere, renameHere, writerFacts, writerOf } from "../peers/manage";
+import { KEY } from "../peers/known";
+import { REMOVAL_FEATURE, pendingWipes, removalsOf } from "../setup/removal-record";
+import { takesForwarded } from "../work-queue/forward";
+import { lonePrimary, readRemovalRequest, actionsOf, givenName, MOST_NAME, oldAppAttached, refusal, removeComputerHere, renameHere, writerFacts, writerOf } from "../peers/manage";
 import { offRelay } from "../letters/leave";
 import { plainName } from "../../shared/text";
 import { peerIsAway, PEER_REACH, readReach } from "../peers/reach";
@@ -53,7 +56,7 @@ import { boxVersion } from "../updates/update";
 import type { AnswerPiece, RouteContext } from "../server/context";
 import { agentsState } from "./agents-down";
 
-export const COMPUTERS_ROUTE = /^kuvo\/computers(?:(\/events)|\/([A-Za-z0-9_-]{1,60})(\/connect|\/allow-devices)?)?$/;
+export const COMPUTERS_ROUTE = /^kuvo\/computers(?:(\/events)|\/([A-Za-z0-9_-]{1,60})(\/connect|\/allow-devices|\/unlink|\/unlink-and-wipe)?)?$/;
 
 /** The most sessions at work this box names of itself (it counts them all). */
 const MOST_HERE = 100;
@@ -298,20 +301,34 @@ async function* manage(context: RouteContext, key: string, action: string | unde
   const method = request.method.toUpperCase();
   if (action === "/allow-devices") return yield* allowDevices(context, key);
   const connect = action === "/connect";
-  const what = connect ? (method === "POST" ? "connect" : null) : method === "PATCH" ? "rename" : method === "DELETE" ? "remove" : null;
-  if (!what) return yield* json(405, { message: connect ? "Only POST." : "Rename (PATCH) or remove (DELETE)." });
-  if (what === "remove" && readLink()?.setup?.primary === key) return yield* json(409, { message: PRIMARY_UNLINK });
+  const explicit = action === "/unlink" || action === "/unlink-and-wipe";
+  const what = explicit ? (method === "POST" ? "remove" : null) : connect ? (method === "POST" ? "connect" : null) : method === "PATCH" ? "rename" : method === "DELETE" ? "remove" : null;
+  if (!what) return yield* json(405, { message: connect || explicit ? "Only POST." : "Rename (PATCH) or remove (DELETE)." });
+  const before = readLink();
+  const removal = what === "remove" ? readRemovalRequest(request.body?.length ? parsed(request.body) ?? false : undefined) : {};
+  if (!removal) return yield* json(400, { message: "Send a valid removal request." });
+  if (what === "remove" && !KEY.test(key)) return yield* json(404, { message: "That isn’t one of your computers." });
+  if (explicit) removal.wipe = action === "/unlink-and-wipe";
+  if (what === "remove" && before?.setup?.primary === key && !lonePrimary(before, key)) return yield* json(409, { message: PRIMARY_UNLINK });
+  const removalWriter = what === "remove" ? writerOf(before) : null;
+  const modern = explicit || removal.operation !== undefined || removal.save !== undefined || removal.wipe !== undefined;
+  if (modern && removalWriter && !removalWriter.here && !takesForwarded(removalWriter.key, REMOVAL_FEATURE)) {
+    return yield* json(409, { message: "Update the primary before removing computers from this setup." });
+  }
+  const forwardRemoval = (writer: Extract<NonNullable<ReturnType<typeof writerOf>>, { here: false }>, cleanup = false) =>
+    forwardAct({ key: writer.key, name: writer.name, kind: "mac" }, "This computer",
+      { area: "computers", item: key, method: "DELETE", body: { ...removal, ...(cleanup ? { cleanup: true } : {}) } }, signal);
   const computers = await listComputers(info.name ?? "", null, signal ?? undefined);
   const computer = computers.find(each => each.key === key);
   if (!computer) {
     // A failed list write may outlive the peer in the directory. Only retry cleanup in this case.
-    const writer = what === "remove" ? writerOf(readLink()) : null;
+    const writer = removalWriter;
     if (!writer) return yield* json(404, { message: "That isn't one of your computers." });
     if (writer.here) {
-      const done = await removeComputerHere(key, true);
+      const done = await removeComputerHere(key, !(modern || removalsOf(before)[key]), removal);
       return yield* json(done.status, done.value);
     }
-    const there = await forwardAct({ key: writer.key, name: writer.name, kind: "mac" }, "This computer", { area: "computers", item: key, method: "DELETE", body: { cleanup: true } }, signal);
+    const there = await forwardRemoval(writer, !(modern || removalsOf(before)[key]));
     return yield* json(there.status, "refused" in there ? { message: there.refused } : isObject(there.value) ? there.value : {});
   }
   const here = computers[0]!.name;
@@ -331,11 +348,12 @@ async function* manage(context: RouteContext, key: string, action: string | unde
   if (why) return yield* json(409, { message: why });
   const writer = writerOf(link)!;
   if (writer.here) {
-    const done = what === "rename" ? await renameHere(key, name!) : await removeComputerHere(key);
+    const done = what === "rename" ? await renameHere(key, name!) : await removeComputerHere(key, false, removal);
     return yield* json(done.status, done.value);
   }
   // (Handed to the box that writes it: it does it as its own client's, and says how it went.)
-  const there = await forwardAct({ key: writer.key, name: writer.name, kind: "mac" }, `${computer.name}`, { area: "computers", item: key, ...(what === "rename" ? { method: "PATCH", body: { name } } : { method: "DELETE" }) }, signal);
+  const there = what === "remove" ? await forwardRemoval(writer) : await forwardAct(
+    { key: writer.key, name: writer.name, kind: "mac" }, computer.name, { area: "computers", item: key, method: "PATCH", body: { name } }, signal);
   if ("refused" in there) return yield* json(there.status, { message: there.refused });
   return yield* json(there.status, isObject(there.value) ? there.value : {});
 }
@@ -379,7 +397,11 @@ export async function* computersRoute(context: RouteContext, match: RegExpMatchA
   if (request.method.toUpperCase() !== "GET") return yield* json(405, { message: "Only GET." });
   // (Its own sessions at work, from its list: read first where this process hasn't yet.)
   await listNow(context, signal ?? undefined).catch(() => null);
-  const read = async () => ({ computers: await listComputers(info.name ?? "", bridge(), signal ?? undefined) });
+  const read = async () => {
+    const computers = await listComputers(info.name ?? "", bridge(), signal ?? undefined);
+    const pending = pendingWipes(readLink());
+    return { computers, ...(pending.length ? { wipePending: pending } : {}) };
+  };
   if (!match[1]) return yield* json(200, await read());
   yield { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };
   // A line now, and one as it changes: its peers, what they told, which are away (their files),

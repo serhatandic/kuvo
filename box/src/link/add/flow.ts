@@ -27,6 +27,7 @@ import { ADDRESS, KEY, ownKey, peersOf } from "../peers/known";
 import { readPeerAgents } from "../peers/directory";
 import { pairedPhone, vouchedWords, vouchMoved } from "../phones";
 import { machineBoxIn } from "../install/verdict";
+import { removalsOf } from "../setup/removal-record";
 import { oldAppAttached, removeComputerHere } from "../peers/manage";
 import { appsOf, foundOf, judgeComputer, oursNow } from "../setup/judge";
 import { addElsewhere, mainElsewhere } from "../setup/main-only";
@@ -407,6 +408,8 @@ const ADD_REVOKED = "The device that started this add is no longer paired. Start
 const removedDuringAdd = (name: string) => new Failed(`${name} was removed from your computers. Add it again to restore access.`);
 
 function checkAdd(link: LinkState | null, grant: AddGrant | undefined, name: string, key?: string): void {
+  const removal = key ? removalsOf(link)[key] : undefined;
+  if (removal?.wipe && !removal.delivered) throw new Failed(`Wait for the pending wipe on ${name} before adding it again.`);
   if (setupLayoutDeferred(K)) throw new Failed("Wait for the Kuvo Code update to finish before adding a computer.");
   if (primaryFenced(link)) throw new Failed(LEADERSHIP_WAIT, false);
   const main = mainElsewhere(link);
@@ -794,6 +797,24 @@ export function beginUninstall(key: string): Running | null {
   if (now?.seen.kind === "uninstall") return now;
   if (now) stopTry(now);
   return begin("uninstall", at.destination, at.name, UNINSTALL_STEPS, async tell => {
+    if (followedSetup(readLink())?.checkpointed) {
+      tell.step("removing");
+      const result = await removeComputerHere(key, false, { wipe: true });
+      const receipt = setupSaveReceipt(result.value);
+      if (receipt) {
+        tell.saved(receipt);
+        if (receipt.status === "pending") {
+          const outcome = await waitShared(receipt, Infinity);
+          tell.saved(outcome);
+          if (outcome.status !== "committed") throw new Failed(outcome.message ?? "The setup changed before the removal committed.");
+        }
+      }
+      if (result.status !== 200 && result.status !== 202) throw new Failed(
+        isObject(result.value) && typeof result.value.message === "string" ? result.value.message : "The removal couldn’t be saved.");
+      tell.commit?.();
+      tell.step("forgetting");
+      return;
+    }
     const reach = new Reach(at.destination, at.name, tell, otherAddressesOf(at.destination));
     const account = new AccountReservation(reach, at.name, tell);
     tell.step("checking", `Connecting to ${at.name}`);
@@ -879,8 +900,14 @@ export function sshActions(computer: Pick<ListedComputer, "key" | "name" | "kind
   const name = computer.name || "this machine";
   const busy = underWay(at.destination);
   const why = busy ? (busy.seen.kind === "uninstall" ? "Kuvo Code is being uninstalled from it now." : busy.seen.kind === "update" ? "It’s being updated now." : "It’s being set up now.") : null;
+  const link = readLink();
+  const wipe = followedSetup(link)?.checkpointed;
+  const label = wipe ? "Unlink and wipe" : "Uninstall";
+  const message = wipe
+    ? `${name} leaves this setup immediately. Kuvo Code, its sessions and its bots are deleted when that computer is online and its pre-wipe checks pass.`
+    : `${here} connects to ${name} over SSH and stops Kuvo Code there: its engine and agents, and what starts them after a restart. The sign-ins and keys it keeps are deleted.${vouchedWords(link, computer.key, name)} Its sessions stay in ~/.kuvo-code on ${name}.`;
   return [
     { id: "setup", label: "Set Up Again", ...(why ? { why } : {}) },
-    { id: "uninstall", label: "Uninstall", ...(busy?.seen.kind === "uninstall" ? { why: why! } : { confirm: { title: `Uninstall Kuvo Code from ${name}?`, message: `${here} connects to ${name} over SSH and stops Kuvo Code there: its engine and agents, and what starts them after a restart. The sign-ins and keys it keeps are deleted.${vouchedWords(readLink(), computer.key, name)} Its sessions stay in ~/.kuvo-code on ${name}.`, label: "Uninstall" } }) },
+    { id: "uninstall", label, ...(busy?.seen.kind === "uninstall" ? { why: why! } : { confirm: { title: wipe ? `Unlink and wipe ${name}?` : `Uninstall Kuvo Code from ${name}?`, message, label } }) },
   ];
 }

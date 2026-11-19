@@ -120,6 +120,8 @@ import { liveLink, machineLink, macLink, macSign, onLinkWritten, readLink, updat
 import { keepKeyFiles } from "./keys";
 import { keepAwakeWhileWorking } from "./work/awake";
 import { readServeRecord, runningServe, SERVE_FILE, SERVE_NEEDED, writeServeRecord } from "./serve-kept";
+import { scheduleWipe, wipeCommand } from "./setup/wipe";
+import { sendRemovalUpdates } from "./setup/removal";
 import { logCleanup, uninstallCommand } from "./uninstall";
 import { helperCommand } from "./helper";
 import { handOverCommand, watchHelperBuild } from "./compat/helper-handover";
@@ -345,7 +347,7 @@ onLinkWritten(link => {
 function machineWelcomed(host: LinkHost): void {
   try { refreshPhoneTrust(host); } catch {}
   announce(host, readEngineFile, undefined, undefined, true).catch(() => {});
-  try { docsChanged(host, { greet: true }); tellUntold(); } catch {}
+  try { docsChanged(host, { greet: true }); tellUntold(); sendRemovalUpdates(host); } catch {}
 }
 
 /** This box's engine while it runs, for what's put right in a conversation open there. */
@@ -562,6 +564,8 @@ async function run(): Promise<void> {
       forwardsWatch.close();
       forwardsWatch = watchFolders([FORWARDS], forwardNow, { recursive: false });
     }
+    scheduleWipe();
+    try { sendRemovalUpdates(current); } catch {}
     forwardNow();
     heldNow();
     reachNow();
@@ -601,9 +605,9 @@ async function run(): Promise<void> {
     const host: LinkHost = new LinkHost({
       key: Buffer.from(link!.key!, "base64url"),
       hello: { v: 1, kind: "machine", name: link!.name || os.hostname(), app: BRIDGE_VERSION, engine: engine.version ?? null },
-      authorize: (key, hello, address, signal) => authorizeDesktopConnection(host, key, hello, address, signal),
+      authorize: (key, hello, address, signal) => !readLink()?.localWipe && authorizeDesktopConnection(host, key, hello, address, signal),
       confirmed: confirmPhone,
-      mail: (_from, body) => receiveMail(body, host, (sender, payload) => peerMail(sender, payload, host, peerPlaces), (mac, given, at) => hold.attend(`mac:${mac}`, given, at)),
+      mail: (from, body) => receiveMail(body, host, (sender, payload) => peerMail(sender, payload, host, peerPlaces), (mac, given, at) => hold.attend(`mac:${mac}`, given, at), from),
       handle: engineHandler(readEngineFile, { name: link!.name || os.hostname() }, readBridgeFile, changed => host.keepOnly(new Set((changed.phones ?? []).map(phone => phone.key))), hold),
       connect: engineConnect(readEngineFile, (): number => host.unsent?.() ?? 0),
       send: () => {},
@@ -848,8 +852,10 @@ async function keptServe(): Promise<void> {
   // Not wanted any more, or another took its place (two started at once: the last one stays). (A
   // test's box looks as often as it says.)
   const every = !REAL_BOX && Number(process.env.KUVO_TEST_SERVE_EVERY) > 0 ? Number(process.env.KUVO_TEST_SERVE_EVERY) : 30_000;
+  scheduleWipe();
   setInterval(() => {
     if (!fs.existsSync(SERVE_NEEDED()) || !mine()) leave();
+    scheduleWipe();
   }, every);
 }
 
@@ -1061,6 +1067,10 @@ async function setup(): Promise<void> {
     }
     // Recheck ownership under the same lock used to enroll a peer. A primary that gained
     // members after the SSH probe cannot be enrolled into a different setup.
+    if (current?.localWipe) {
+      alreadySetUp = true;
+      return null;
+    }
     if (mac && current && (ownKey(current) === mac
       || (current.setup?.role === "primary" && peersOf(current).length > 0)
       || (macsOf(current).length > 0 && !macsOf(current).some(key => key === mac || replaced.includes(key))))) {
@@ -1449,8 +1459,10 @@ if (main) {
   else if (mode === "install") {
     process.exitCode = await installCommand(process.argv.slice(3));
   }
-  // Removing Kuvo Code from this computer (PROTOCOL.md, "Uninstalling"): `uninstall [--check]`,
-  // from the app or a Terminal line.
+  else if (mode === "wipe-member") {
+    process.exitCode = await wipeCommand();
+  }
+  // Legacy uninstall from the app or a Terminal, with its own dry run.
   else if (mode === "uninstall") {
     process.exitCode = await uninstallCommand(process.argv.slice(3));
   }
