@@ -530,6 +530,7 @@ export function handler(context: Context) {
             sessions.selectAgent(id, (await body()).agent)
             return json({})
           case "permission":
+            if (!(await sessions.permissionsReady(id, request.signal))) return json({ message: "Kuvo is restoring this session’s approvals. Try again in a moment." }, 503)
             // What the engine asks for everyone ("global": its MCP servers') isn't asked here.
             if (!c) return json({ data: id === "global" ? [] : sessions.permissions(id) })
             if (d === "reply") {

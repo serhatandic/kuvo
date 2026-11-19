@@ -7,6 +7,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { SignedDoc } from "../shared/documents";
+import { objectFormat, UnsupportedFormatVersion } from "../shared/format-version";
 import { isObject } from "../shared/json";
 import { SIGN } from "./documents/format";
 import { locked, writeSecret } from "./files";
@@ -147,9 +148,9 @@ export const macSign = (link: LinkState | null | undefined, mac: string): string
 // COMPAT(beta.1 peers-list): link.json as the bridge beta.1 put on machines (0.9.23) left it. Goes on the user's word, once no Mac from before 1.0 connects.
 // link.json as an earlier bridge left it: each Mac's list it had (`peersFrom`) kept as that Mac's
 // word until it signs a document; what lists passed on and their dates needed, gone.
-function migratedLink(link: any) {
+function migratedLink(link: Record<string, any>): Record<string, unknown> {
   // (Read as it was left, whatever its shape.)
-  if (!isObject(link as unknown) || !(link.peersFrom || link.vouched || link.macAts)) return link;
+  if (!(link.peersFrom || link.vouched || link.macAts)) return link;
   for (const [mac, given] of Object.entries(link.peersFrom ?? {})) {
     if (!macSign(link, mac) && isObject(given)) {
       link.legacy ??= {};
@@ -162,11 +163,15 @@ function migratedLink(link: any) {
   return link;
 }
 
+const linkFormat = objectFormat("Link state", [migratedLink]);
+
 export function readLink(): LinkState | null {
   let link = null;
   try {
-    link = migratedLink(JSON.parse(fs.readFileSync(LINK_FILE, "utf8")));
-  } catch {}
+    link = linkFormat.read(JSON.parse(fs.readFileSync(LINK_FILE, "utf8"))) as LinkState;
+  } catch (error) {
+    if (error instanceof UnsupportedFormatVersion) throw error;
+  }
   // This Mac's: its keys from its app (kept in your Keychain, never in a file here), and its relay
   // and name as its app says, beside what the file keeps.
   if (IS_MAC && macLink.overlay) return { phones: [], ...(link ?? {}), ...macLink.overlay };
@@ -177,7 +182,8 @@ export function writeLink(link: LinkState) {
   // This Mac's keys and what its app says stay out of the file.
   const kept = IS_MAC ? Object.fromEntries(Object.entries(link).filter(([key]) => !MAC_OVERLAY.includes(key))) : link;
   // (Its keys, on a machine.)
-  writeSecret(LINK_FILE, JSON.stringify(kept, null, 2));
+  readLink();
+  writeSecret(LINK_FILE, JSON.stringify(linkFormat.write(kept), null, 2));
   for (const then of written) then(link);
 }
 

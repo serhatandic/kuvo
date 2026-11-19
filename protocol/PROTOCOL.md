@@ -3146,13 +3146,10 @@ did: the box keeps working as itself ("For released Macs").
   `POST kuvo/update {now: true}`), whatever its age. Either way, whatever is at work there: an update
   stops nothing. A release with another engine than the one running, whose `box.json` lists the
   running one in `engines`, takes its code at once and changes the engine later, without cutting a
-  turn ("A new engine"). Only one that doesn't list it (or lists none: a box two engine releases
-  behind) restarts the engine with its code: that one waits until nothing runs, or Update Now, which
-  a client asks about first, saying what stops (`keepingSelfUp` gives the words; a release that keeps
-  the engine, or changes it apart, has no question). Where a release offered here waits, newer than
-  the box, Update Now takes that one (`computers.update.here`), however it rested after failing;
-  `409` with words to show where it can't even so (its engine stopped on purpose, its last update
-  not yet said to be well).
+  turn ("A new engine"). A release without compatibility for the running engine waits for that
+  engine's work to finish. The box's Update Now route also waits in that case. It checks for a
+  signed release immediately and can retry one that failed before. It returns 409 when an update
+  or trial is under way or the box has been stopped.
 - **Your computers follow each other** (one fleet, one version): every box runs the newest signed
   release any of your computers holds, and a box that's behind takes it from one that holds it, by
   itself, at once.
@@ -3350,14 +3347,18 @@ did: the box keeps working as itself ("For released Macs").
     only there while one does. `offerFailed` `{version, at, takenBack, message?}` is how taking such
     a release last failed (taken back once it was in place, or before anything changed, when it
     stays offered and is tried again), apart from the release check's update (`last`); gone once one's
-    taken.
+    taken. With `box.update.no-cut`, `waiting` is present when the target computer knows of a
+    newer release or a part of an installed release is still taking over. It carries
+    `{version, reason, detail, sessionsAtWork}`. The reason names the state, the detail gives the
+    box's words, and the count includes turns awaiting approval. A null count means a running
+    process could not be reached. Query the route on each computer whose progress is shown.
   - `POST {now: true}` starts one, in a process of its own (`kuvo-link.js update --now`, or
     `--offered --now` for an offered release): 202 with the status (`updating` `checking`), or 409
     `{message}` when it's not set up, is blocked, is updating already, or its last update is still
     on trial. The release check's goes the same way (`update --round <round>`, which notes the
     round once it went, unless something was at work). Other methods answer 405: there's nothing to turn off.
-  - A Mac does the same over SSH with `kuvo-link.js box update-status` and `update-now` (which,
-    with nobody asked first, never goes ahead while something is at work there).
+  - Over SSH, `kuvo-link.js box update-status` and `kuvo-link.js box update-now` use the same
+    status and no-cut update path.
 - `kuvo-link.js update [--now] [--from <folder>] [--round <round>]` updates from a shell, `--from`
   from a release in a folder there (a full path), taken at once, whatever its age. `update --offered
   [--now]` takes the release offered with `kuvo/box/update` when it's due (with `--now`, on your
@@ -3396,7 +3397,21 @@ new version without cutting a turn:
     (`waits: "restart"`), holding nothing. Each renewal is one of those runs. A check that couldn't
     run (it couldn't start, a signal ended it, a minute went by) is tried again at the next look.
 
-  It goes:
+  A keeper-managed bridge starts a compatible replacement as a standby with its own port. If
+  all active turns can transfer, the current bridge seals its session writes and records the
+  holder generations, replay ranges, and pending approvals in `run/agents/handover.json`. The
+  holders keep the replay ranges through the switch. The replacement takes control once the
+  previous bridge exits, publishes its port, and replays into the existing session and reply. A
+  client reconnects for events. The keeper starts the saved previous build if the replacement
+  exits or fails to publish within a minute. Only the active bridge writes the store.
+
+  Codex, Grok, and Claude Code 2.1.268 or later with the same Agent SDK can transfer if their
+  active turns have a complete journal. Open forms, steered turns, shell commands, sandboxed agents
+  and turns using the bridge’s MCP relay fall back together to Renewal. A standby-compatible build can
+  start a bounded drain at once. The first update from a bridge without the live protocol uses
+  that bridge's Renewal path.
+
+  Renewal goes:
   - **At the first quiet moment**: nothing has run for half a minute: no turn (a subagent's, a
     message being handed to one or on its way to a subagent, the files kept after one, a session
     being deleted), no `!` command of yours, no discussion in a group chat here (a chat talking, a
@@ -3429,6 +3444,12 @@ new version without cutting a turn:
   - On every box in a home of its own (a machine's, a Mac's), whose keeper keeps its bridge. A Mac's
     box in the app's folder: the app's keeper starts the whole box again from a newer app once
     nothing runs on it.
+- **Data formats**: `agents/sessions/*/session.json` and `run/link.json` are additive object
+  formats with `formatVersion: 1` on writes. Readers accept unstamped legacy records. Writers
+  refuse records stamped with an unsupported version. The bridge checks the shared
+  `folder-version.json` checkpoint before it starts with a Kuvo folder.
+- **The browser keeper** checks for attached clients and open asks before giving way to a newer
+  build. Older keepers continue serving until their normal idle shutdown.
 - **The bridge apart from the engine**: the keeper keeps the bridge running (`kuvo-start bridge`,
   each round while the engine runs and no bridge does, with the engine's backoff: one that ran
   under ten minutes makes it wait longer). It starts it through `kuvo-launch` with `KUVO_BRIDGE=1`,

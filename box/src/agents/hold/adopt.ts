@@ -11,7 +11,7 @@
 
 import type { AgentKind } from "../accounts"
 import { machineHome } from "../machine"
-import { attach, forgetOldPrograms, heldIn, holdFolder, isHolder, type Held, type HoldRecord } from "./client"
+import { attach, forgetOldPrograms, heldIn, holdFolder, isHolder, type Held, type HoldRecord, HOLD_PROTO } from "./client"
 
 /**
  * The agents whose processes start under a holder, and whose turns a bridge started after one that
@@ -23,13 +23,14 @@ import { attach, forgetOldPrograms, heldIn, holdFolder, isHolder, type Held, typ
 export const HELD_KINDS: ReadonlySet<AgentKind> = new Set<AgentKind>(["codex", "claude", "grok"])
 
 /** The first Claude Code that sends a client joining it the asks it has open (`pending_permission_requests`, spike S1). */
+export const CLAUDE_SDK = "0.3.303"
 export const CLAUDE_REJOINS = "2.1.268"
 
 /** Whether a held agent can be taken up: Claude Code only from the version that sends its open asks again (an older one's ask would wait forever). */
 export function adoptable(meta: Partial<HeldMeta>): boolean {
   if (!meta.kind || !HELD_KINDS.has(meta.kind)) return false
   if (meta.kind !== "claude") return true
-  return typeof meta.version === "string" && atLeast(meta.version, CLAUDE_REJOINS)
+  return meta.sdk === CLAUDE_SDK && typeof meta.version === "string" && atLeast(meta.version, CLAUDE_REJOINS)
 }
 
 function atLeast(version: string, least: string): boolean {
@@ -185,6 +186,52 @@ export async function adoptHeld(folder = machineHome ? holdFolder(machineHome) :
     for (const [thread, note] of turns) found.set(note.session, { held, meta: meta as HeldMeta, thread, note, gate })
   }
   return found
+}
+
+/** The portable part of the current controller's plan. No credentials travel in it. */
+export interface TransferHolder {
+  id: string
+  generation: number
+  proto: string
+  kind: AgentKind
+  version?: string
+  sdk?: string
+  provider: string
+  turns: Record<string, HeldTurnNote>
+  acked: number
+}
+
+export function canTransfer(holders: TransferHolder[]): boolean {
+  return holders.every(({ proto, kind, version, sdk }) => proto === HOLD_PROTO && adoptable({ kind, version, sdk }))
+}
+
+/** Validate the entire set before attaching. On failure leave the holders for the recovery bridge. */
+export async function adoptTransfer(home: string, plan: TransferHolder[], recovering = false): Promise<Map<string, HeldTurn>> {
+  const found = new Map<string, HeldTurn>()
+  if (!plan.length) return found
+  const folder = holdFolder(home)
+  if (!folder || !canTransfer(plan)) throw new Error("The bridge cannot adopt these agents.")
+  const records = new Map(heldIn(folder).map(record => [record.id, record]))
+  const attached: Held[] = []
+  try {
+    const attempts = await Promise.allSettled(plan.map(async entry => {
+      const record = records.get(entry.id)
+      if (!record && recovering) return // A reboot or an agent exit can leave a checkpoint without its holder.
+      if (!record || record.generation < entry.generation || record.meta.provider !== entry.provider) {
+        throw new Error("A holder in the handover is unavailable.")
+      }
+      const turns = Object.entries(entry.turns)
+      const held = await attach(folder, record, Math.min(...turns.map(([, note]) => note.from)), true)
+      attached.push(held)
+      const gate = new HeldGate(held, turns.map(([thread]) => thread))
+      for (const [thread, note] of turns) found.set(note.session, { held, gate, thread, note, meta: record.meta as HeldMeta })
+    }))
+    for (const attempt of attempts) if (attempt.status === "rejected") throw attempt.reason
+    return found
+  } catch (error) {
+    for (const held of attached) held.detach()
+    throw error
+  }
 }
 
 /** The turns noted in a held agent's record, with `thread`'s set (or taken out, with none). */

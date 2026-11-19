@@ -39,7 +39,7 @@ export interface RenewalRecord {
  * turns under way while new ones wait (`holding`), the engine that bundle came with (`engine`), or
  * a restart of its engine, as it won't make way by itself (`restart`: a bridge from before it did,
  * one whose launch wouldn't start it again, or a bundle that doesn't run here). */
-export type RenewalWait = "quiet" | "holding" | "engine" | "restart";
+export type RenewalWait = "quiet" | "holding" | "engine" | "restart" | "handover";
 
 /** `run/tools.json`: the port of this Mac's app's own server for Kuvo Code's tools, as the app last
  * told the agents bridge (the box's sandbox refuses it, as Kuvo Code's other servers). */

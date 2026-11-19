@@ -60,6 +60,9 @@ export interface RenewalOptions {
   hold: (on: boolean) => void
   /** Goes, for the newer one to start. */
   renew: () => void
+  /** Start a compatible replacement while every current turn can be transferred. */
+  transfer?: (build: string) => Promise<void> | undefined
+  drainNow?: (build: string) => boolean
   /** How it stands, as it changes (null: no newer one in place). */
   told: (state: RenewalRecord | null) => void
   /** Not now (the box is updating itself, which starts everything again anyway). */
@@ -178,7 +181,20 @@ export class Renewal {
       this.letGo()
       return this.tell(blocked)
     }
-    if (!this.holding && this.checked.get(build) !== "checking" && this.holdsNow(this.from, now)) {
+    if (this.checked.get(build) === true && !build.startsWith("engine ")) {
+      const transfer = this.options.transfer?.(build)
+      if (transfer) {
+        this.going = true
+        this.tell("handover")
+        void transfer.catch(error => console.error("bridge transfer:", error)).finally(() => {
+          this.going = false
+          this.tell(this.holding ? "holding" : "quiet")
+        })
+        return
+      }
+    }
+    const beginDrain = this.from === this.since && this.checked.get(build) === true && this.options.drainNow?.(build)
+    if (!this.holding && this.checked.get(build) !== "checking" && (beginDrain || this.holdsNow(this.from, now))) {
       this.holding = true
       this.heldAt = now
       this.options.hold(true)

@@ -17,6 +17,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { bundleBuild } from "../../shared/bundle";
 import { isObject, parsed } from "../../shared/json";
 import { updateUnderWay } from "../../shared/updating";
 import type { Body } from "../../shared/json";
@@ -581,7 +582,7 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
     const box: BoxFiles = JSON.parse(fs.readFileSync(path.join(stage, "files", "box.json"), "utf8"));
     if (box?.version !== manifest.version || box.engine !== manifest.engine || !isObject(box.files)) throw new Error("The release's files aren't what it says.");
     const apart = engineChanges && engineApart(box, running);
-    if (!whileBusy && engineChanges && !apart && await boxBusy()) return { result: "busy", message: "Something is running there now." };
+    if (!whileBusy && engineChanges && !apart && (await agentsWorking() !== false || readAsks().length > 0)) return { result: "busy", message: "Something is running there now." };
     const files = installOrder(Object.keys(box.files));
     // (Each a file, never a link to one elsewhere.)
     const matches = (file: string, sha: unknown): boolean => fs.lstatSync(file, { throwIfNoEntry: false })?.isFile() === true && hexSHA256(fs.readFileSync(file)) === sha;
@@ -654,7 +655,7 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
       if (triedBefore && (triedBefore.status !== 0 || !triedBefore.output.includes("ok"))) throw new Error("The new link doesn't work with the engine at work here.");
     }
     if (ran("sh", ["-n", path.join(stage, "files", "bin", "kuvo-start")]).status !== 0) throw new Error("The new keeper doesn't read.");
-    if (!whileBusy && engineChanges && !apart && await boxBusy()) return { result: "busy", message: "Something is running there now." };
+    if (!whileBusy && engineChanges && !apart && (await agentsWorking() !== false || readAsks().length > 0)) return { result: "busy", message: "Something is running there now." };
 
     // What's there kept; then the new in its place, one file at a time.
     step("installing");
@@ -1035,19 +1036,67 @@ export function updateStatus(): UpdateStatus {
   };
 }
 
+/** Waiting facts are read on the target computer, including sessions awaiting an approval. */
+export async function updateStatusHere(readEngine = readEngineFile, readBridge = readBridgeFile): Promise<UpdateStatus> {
+  const status = updateStatus();
+  const state = updateState();
+  const available = [status.offered, heldVersion(), status.latest]
+    .filter((version): version is string => newerVersion(version, status.version) || (version === status.offered && offerWaits()))
+    .sort((a, b) => newerVersion(a, b) ? -1 : newerVersion(b, a) ? 1 : 0)[0];
+  let bridge: BridgeRecord | null = null;
+  try { bridge = readBridge(); } catch {}
+  const to = bundleBuild(path.join(K, "bin", "kuvo-agents.js"));
+  const bridgeBehind = bridge?.build && to && bridge.build !== to && (!bridge.pid || runs(bridge.pid, "kuvo-agents"));
+  const switching = fs.existsSync(path.join(RUN, "agents", "handover.json"));
+  const version = available ?? ((switching || bridgeBehind || status.engineChange || updateOnTrial()) ? status.version : null);
+  if (!version) return status;
+
+  type Waiting = NonNullable<UpdateStatus["waiting"]>;
+  const facts = (): Pick<Waiting, "reason" | "detail"> => {
+    if (status.blocked) return { reason: "blocked", detail: status.blocked };
+    if (["stopped", "paused", "off"].some(mark => fs.existsSync(path.join(RUN, mark)))) return { reason: "stopped", detail: "Start this computer’s box to update it." };
+    if (status.updating) return { reason: "installing", detail: "Kuvo is installing the update." };
+    if (available && state.offerFailed?.version === available && (offerFailedTwice(available) || offerRests(available, Date.now()))) {
+      return { reason: "retry", detail: state.offerFailed.message ?? "The last attempt to install this release failed." };
+    }
+    if (available && offerChangesEngine() && status.offered === available) {
+      return { reason: "engine", detail: "This release needs an engine change before it can install." };
+    }
+    if (switching || bridge?.renewal?.waits === "handover") return { reason: "handover", detail: "Kuvo is transferring running sessions." };
+    if (bridgeBehind) {
+      if (bridge?.renewal?.waits === "restart") return { reason: "agents", detail: "The coding agents’ bridge could not start the new build." };
+      return { reason: "agents", detail: "Some work is still using the previous coding agents’ bridge." };
+    }
+    if (status.engineChange) return { reason: "engine", detail: status.engineChange.line };
+    if (updateOnTrial()) return { reason: "trial", detail: "Kuvo is checking that the installed release is healthy." };
+    if (available === state.latest && state.last?.result === "waiting" && state.last.version === available) {
+      return { reason: "release-age", detail: state.last.message ?? "Automatic release checks wait a few days after publication." };
+    }
+    return { reason: "ready", detail: "The update is ready to install." };
+  };
+  const counts = await Promise.all(([[readEngine, "opencode"], [readBridge, "kuvo-agents"]] as const).map(async ([read, program]) => {
+    let target: EngineRecord | BridgeRecord;
+    const missing = program === "kuvo-agents" && switching ? null : 0;
+    try { target = read(); } catch { return missing; }
+    if (!target?.port || !target.password || (target.pid !== undefined && !runs(target.pid, program))) return missing;
+    const active = (await asked(target, "GET", "api/session/active", undefined, 3_000).catch(() => null) as UncheckedAnswer | null)?.data;
+    return Array.isArray(active) ? active.length : isObject(active) ? Object.keys(active).length : null;
+  }));
+  return { ...status, waiting: { version, ...facts(), sessionsAtWork: counts.includes(null) ? null : counts.reduce<number>((sum, count) => sum + (count ?? 0), 0) } };
+}
+
 // An update in a process of its own (`kuvo-link.js update [--now] [--offered] [--round <round>]`,
 // as the offered release's is): a phone's or a Mac's Update Now, or the release check's. Never in the
 // process that asks (a client's server, a machine's bridge), which the update restarts, or which may
-// be stopped meanwhile: the update outlives it, and says how it went in `run/update.json`. Once
-// "updated", it stops a machine's bridge for the keeper to start the new one (a Mac's server goes
-// by itself, its files changed). One at a time: false when one runs, or this process just started
+// be stopped meanwhile: the update outlives it, and says how it went in `run/update.json`. Each
+// piece takes the new files in its own time. One at a time: false when one runs, or this process just started
 // one. `round`: the release check's round it's for, noted by it unless something was at work. `keys` and `url`: a
 // test's (a test's folder only).
 let updateStarted: ChildProcess | null = null;
 export function startUpdate({ now = false, offered = false, round, keys, url, from }: { now?: boolean; offered?: boolean; round?: string; keys?: string[]; url?: string; from?: string } = {}): boolean {
   if (updateStarted || isUpdating()) return false;
   const test = !REAL_BOX && keys?.length ? ["--key", keys[0], ...(url ? ["--url", url] : [])] : [];
-  const args = [...OWN_RUNTIME, SCRIPT, "update", ...(now ? ["--now"] : []), ...(offered ? ["--offered"] : []), ...(round ? ["--round", round] : []), ...(from ? ["--from", from] : []), ...test];
+  const args = [...OWN_RUNTIME, SCRIPT, "update", ...(now ? ["--now", "--free"] : []), ...(offered ? ["--offered"] : []), ...(round ? ["--round", round] : []), ...(from ? ["--from", from] : []), ...test];
   const child = spawn(process.execPath, args, { detached: true, stdio: "ignore", cwd: K, env: process.env });
   updateStarted = child;
   const done = () => { if (updateStarted === child) updateStarted = null; };
@@ -1057,26 +1106,27 @@ export function startUpdate({ now = false, offered = false, round, keys, url, fr
   return true;
 }
 
-// This box's updates (PROTOCOL.md, "Updates"): how it stands, Update Now. It always updates
-// by itself: there's no switch.
+/** Check for a signed release immediately, through the same no-cut path as an automatic update. */
+export function requestUpdateNow(): { status: 202 } | { status: 409; message: string } {
+  const blocked = !UPDATE_KEYS.length ? "Updates aren't set up for this machine yet." : updatesBlocked();
+  if (blocked) return { status: 409, message: blocked };
+  if (isUpdating()) return { status: 409, message: UPDATING_ALREADY };
+  const held = offerHeld() ?? (["paused", "off"].some(mark => fs.existsSync(path.join(RUN, mark))) ? "Start this computer’s box to update it." : null);
+  if (held) return { status: 409, message: held };
+  const offered = offerWaits();
+  const kept = !offered && newerVersion(heldVersion(), boxVersion()) ? HELD : undefined;
+  return startUpdate({ now: true, offered, from: kept }) ? { status: 202 } : { status: 409, message: UPDATING_ALREADY };
+}
+
 export async function* updateRoute(context: RouteContext): AsyncGenerator<AnswerPiece> {
-  const { request, json } = context;
+  const { request, json, readEngine, readBridge } = context;
   const method = request.method.toUpperCase();
-  if (method === "GET") return yield* json(200, updateStatus());
+  if (method === "GET") return yield* json(200, await updateStatusHere(readEngine, readBridge));
   if (method === "POST") {
     if ((parsed(request.body) as Body<"now">)?.now !== true) return yield* json(400, { message: "Say to update now (now)." });
-    if (!UPDATE_KEYS.length) return yield* json(409, { message: "Updates aren't set up for this machine yet." });
-    const blocked = updatesBlocked();
-    if (blocked) return yield* json(409, { message: blocked });
-    // A release Kuvo Code here offered, newer than this box, is what Update Now takes, whatever is
-    // at work (the client asked first); else a newer one held here (one that failed here twice,
-    // which nothing takes by itself any more: `updates/fleet.ts`); else the newest from GitHub.
-    const offered = offerWaits();
-    const held = offered ? offerHeld() : updateOnTrial() ? ON_TRIAL : null;
-    if (held) return yield* json(409, { message: held });
-    const kept = !offered && newerVersion(heldVersion(), boxVersion()) ? HELD : undefined;
-    // (Said as under way at once: its own process takes the update's lock a moment later.)
-    return yield* (startUpdate({ now: true, offered, from: kept }) ? json(202, { ...updateStatus(), updating: "checking" }) : json(409, { message: UPDATING_ALREADY }));
+    const started = requestUpdateNow();
+    if (started.status === 409) return yield* json(409, { message: started.message });
+    return yield* json(202, { ...updateStatus(), updating: "checking" });
   }
   return yield* json(405, {});
 }

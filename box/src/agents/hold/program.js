@@ -87,6 +87,8 @@ const orphan = Number(spec.orphan) || 15 * 60_000
 let journal = []
 let journalFile = openSync(journalPath, "w+", 0o600)
 let journaled = 0
+let pinned
+let pausedForJournal = false
 let seq = 0
 /** Requests the agent sent that no bridge has answered, by id: their line and its number. */
 const pending = new Map()
@@ -175,15 +177,21 @@ function fromAgent(line) {
   writeSync(journalFile, text, 0, text.length, journaled)
   journal.push({ s: seq, at: journaled, bytes: text.length, ask })
   journaled += text.length
-  if (journaled > journalBytes) prune()
+  if (journaled > journalBytes) {
+    if (pinned === undefined) prune()
+    else {
+      pausedForJournal = true
+      child.stdout.pause()
+    }
+  }
   pump(controller)
 }
 
 /** The journal's older half gone: the newer copied to a file of its own, put in its place. */
 function prune() {
-  let kept = 0
-  let from = journal.length
-  while (from > 1 && kept + journal[from - 1].bytes <= journalBytes / 2) kept += journal[--from].bytes
+  let from = journal.length - 1
+  let kept = journal[from].bytes
+  while (from > 0 && kept + journal[from - 1].bytes <= journalBytes / 2) kept += journal[--from].bytes
   const start = journal[from].at
   const temporary = `${journalPath}.${randomBytes(4).toString("hex")}`
   const fresh = openSync(temporary, "w+", 0o600)
@@ -258,6 +266,10 @@ function pump(socket) {
     if (found.entry.ask && next <= socket.liveFrom) continue
     if (!socket.write(JSON.stringify({ s: next, o: found.line }) + "\n")) return wait(socket)
   }
+  if (socket.replayThrough !== undefined && socket.releaseReplay && socket.sent >= socket.replayThrough) {
+    socket.replayThrough = undefined
+    unpin()
+  }
   if (exited && !socket.heardEnd) {
     socket.heardEnd = true
     send(socket, { x: exited })
@@ -275,7 +287,7 @@ function wait(socket) {
     socket.off("drain", go)
     socket.off("close", go)
     socket.waiting = false
-    child.stdout.resume()
+    if (!pausedForJournal) child.stdout.resume()
   }
   const go = () => {
     socket.unwait()
@@ -324,6 +336,10 @@ function welcome(socket, hello) {
     send(socket, { refused: `A bridge of generation ${generation} has this agent.` })
     return socket.end()
   }
+  if (hello.complete && hello.from + 1 < (journal[0]?.s ?? seq + 1)) {
+    send(socket, { refused: "The turn is no longer in the journal." })
+    return socket.end()
+  }
   if (controller && controller !== socket) {
     // (One that stopped reading holds nothing back now: the newer bridge's lines go on at once.)
     if (controller.waiting) controller.unwait()
@@ -341,8 +357,20 @@ function welcome(socket, hello) {
   // Then what came since where it starts (what's still in the journal), and on as it comes.
   socket.sent = Math.max(from, first - 1)
   socket.liveFrom = seq
+  if (pinned !== undefined) {
+    socket.replayThrough = seq
+    socket.releaseReplay = !hello.complete
+  }
   pump(socket)
   writeRecord()
+}
+
+function unpin() {
+  pinned = undefined
+  if (!pausedForJournal) return
+  pausedForJournal = false
+  if (journaled > journalBytes) prune()
+  if (!controller?.waiting && !ending) child.stdout.resume()
 }
 
 function fromBridge(socket, frame) {
@@ -352,9 +380,22 @@ function fromBridge(socket, frame) {
   else if (frame.meta && typeof frame.meta === "object") {
     meta = { ...meta, ...frame.meta }
     writeRecord()
+  } else if (frame.prepare !== undefined) {
+    // The current controller reserves the replay range before agreeing to a transfer.
+    const from = frame.prepare
+    const ready = !exited && Number.isSafeInteger(from) && from <= seq && from + 1 >= (journal[0]?.s ?? seq + 1)
+    if (ready) pinned = from
+    send(socket, { prepared: ready })
+  } else if (frame.unpin) {
+    if (socket.replayThrough === undefined) unpin()
+    else {
+      socket.releaseReplay = true
+      pump(socket)
+    }
+    if (exited && socket.heardEnd && pinned === undefined) leave()
   } else if (frame.end) child.stdin.end()
   else if (typeof frame.signal === "string" && !exited) signal(frame.signal)
-  else if (frame.bye && exited) leave()
+  else if (frame.bye && exited && pinned === undefined) leave()
 }
 
 const server = net.createServer((socket) => {
@@ -367,7 +408,7 @@ const server = net.createServer((socket) => {
     if (socket !== controller) return
     controller = undefined
     // Heard of its agent's end, and gone (or asked to stop, its agent ended): nothing left to hold.
-    if (exited && (socket.heardEnd || stopping)) return leave()
+    if (exited && (stopping || (socket.heardEnd && pinned === undefined))) return leave()
     if (!ending) waitForBridge()
   })
   lines(

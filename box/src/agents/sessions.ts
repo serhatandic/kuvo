@@ -89,6 +89,16 @@ interface Run {
  * What comes in meanwhile waits in the session's `own`, `go` and `waiting`, and `advance` starts
  * what's next whenever the session is idle.
  */
+export interface TransferSession {
+  message: string
+  permissions: { id: string; key: string }[]
+  always: Live["always"]
+}
+
+function permissionKey(ask: Pick<PermissionRequest, "action" | "resources">, tool?: string): string {
+  return JSON.stringify([ask.action, ask.resources, tool ?? null])
+}
+
 type Doing = { kind: "idle" } | { kind: "running" | "stopping"; run: Run } | { kind: "keeping" | "reverting" } | { kind: "deleting" }
 
 interface Live {
@@ -103,7 +113,7 @@ interface Live {
   waiting: (() => void)[]
   /** Your messages being handed to the turn under way: not started meanwhile, and cancelled only once it's known the agent didn't take one. */
   steering: Map<string, { cancelled: boolean }>
-  permissions: Map<string, { request: PermissionRequest; resolve: (decision: Decision) => void; turn?: Turn }>
+  permissions: Map<string, { request: PermissionRequest; key: string; resolve: (decision: Decision) => void; turn?: Turn }>
   forms: Map<string, { form: FormRequest; resolve: (answer: FormAnswer | null) => void; declined?: (words: string) => void }>
   /** "Always allow" answers given in this session: an action, on these patterns. */
   always: { action: string; patterns: string[] }[]
@@ -932,7 +942,13 @@ export class Sessions {
     private readonly titleModel?: (directory: string) => Promise<ModelRef | undefined>,
     /** Turns an earlier bridge left under way in agents' processes under holders, by session (hold/adopt.ts). */
     held: Map<string, HeldTurn> = new Map(),
+    transfer?: Record<string, TransferSession>,
   ) {
+    this.transferred = new Map(Object.entries(transfer ?? {}))
+    if (transfer && [...held].some(([id, turn]) => {
+      const message = store.get(id)?.messages.findLast(each => each.type === "user" || each.type === "synthetic")
+      return !this.resumable(id, turn) || message?.id !== transfer[id]?.message
+    })) throw new Error("A session in the handover cannot be resumed.")
     // Those taken up again (`resumeHeld`); the others' agents let go of (their turns end as below).
     for (const [id, turn] of held) {
       if (this.resumable(id, turn)) this.resuming.set(id, turn)
@@ -1045,7 +1061,7 @@ export class Sessions {
    * open, on that agent (not Auto, which went through models of its own), and began with a message
    * (not a summary, nor a subagent's task, which its parent's turn runs).
    */
-  private resumable(id: string, held: HeldTurn): boolean {
+  private resumable(id: string, held: { meta: { provider: string } }): boolean {
     const record = this.store.get(id)
     if (!record || record.session.parentID || record.session.model?.providerID !== held.meta.provider) return false
     const lastUser = record.messages.findLastIndex((message) => message.type === "user" || message.type === "synthetic" || message.type === "compaction")
@@ -2253,6 +2269,7 @@ export class Sessions {
     }
     const outcome: Outcome = abort.signal.aborted ? "interrupted" : result.outcome
     // Never taken up by its agent: what was kept of it stays, its tools closed as a crash's are.
+    this.transferred.delete(id)
     if (!run.heldTaken) this.closeTools(record)
     const before = record.messages[record.messages.length - 1]?.id
     turn.finish(outcome, outcome === "interrupted" ? undefined : result.error)
@@ -2449,7 +2466,9 @@ export class Sessions {
         heldTaken = true
         // (Once its agent's lines come: until then, a take-up that fails leaves them as they were.)
         const opened = record.messages.findIndex((message) => message.id === userMessage)
-        const kept = new Set(record.messages.slice(opened + 1).filter((message) => message.type === "assistant").map((message) => message.id))
+        const steps = record.messages.slice(opened + 1).filter((message) => message.type === "assistant")
+        const kept = new Set<Message>(steps)
+        if (this.transferred.has(id)) turn.reuseSteps(steps)
         const taken = input.held
         let result: RunResult
         try {
@@ -2458,7 +2477,7 @@ export class Sessions {
           void (taken.began ?? taken.held.firstLine).then(() => {
             if (runOf(live.doing) !== run || run.heldTaken) return
             run.heldTaken = true
-            record.messages.splice(0, record.messages.length, ...record.messages.filter((message) => !kept.has(message.id)))
+            record.messages.splice(0, record.messages.length, ...record.messages.filter((message) => !kept.has(message)))
             this.store.save(id)
           })
           result = await Promise.race([running, abandoned])
@@ -3100,8 +3119,11 @@ export class Sessions {
     const unfenced = isShell(ask.action) && this.autoWithoutSandbox(live, session) && !this.allowedBefore(live, ask)
     if (!unknown && !unclassified && !unfenced && !hidesFromBlocks(live.blocks, ask) && (effect === "allow" || this.allowedBefore(live, ask))) return "once"
     if (turn.isEnded || refusesAsks(live.doing)) return "reject"
+    const key = permissionKey(ask, ask.toolCallID)
+    const kept = this.transferred.get(id)?.permissions
+    const at = kept?.findIndex(each => each.key === key) ?? -1
     const request: PermissionRequest = {
-      id: newID("per"),
+      id: at < 0 ? newID("per") : kept!.splice(at, 1)[0]!.id,
       sessionID: id,
       action: ask.action,
       resources: ask.resources,
@@ -3117,6 +3139,7 @@ export class Sessions {
     return new Promise<Decision>((resolve) => {
       live.permissions.set(request.id, {
         request,
+        key,
         turn,
         resolve: (decision) => {
           if (decision === "always") live.always.push({ action: ask.action, patterns: request.save ?? ask.resources })
@@ -3159,6 +3182,16 @@ export class Sessions {
       }
     }
     return waiting
+  }
+
+  /** A client reconnecting can ask or reply before the agent has replayed its old approval. */
+  async permissionsReady(id: string, signal: AbortSignal): Promise<boolean> {
+    const deadline = performance.now() + 10_000
+    while (this.transferred.get(id)?.permissions.length) {
+      if (signal.aborted || performance.now() >= deadline) return false
+      await Bun.sleep(20)
+    }
+    return true
   }
 
   permissions(id: string): PermissionRequest[] {
@@ -3318,6 +3351,8 @@ export class Sessions {
         this.repair(id)
         continue
       }
+      const transfer = this.transferred.get(id)
+      if (transfer) live.always = transfer.always
       this.start(id, live, { id: message.id, text: "", files: [], delivery: "steer", resume: held })
     }
   }
@@ -3350,6 +3385,27 @@ export class Sessions {
   private sending = 0
   /** Sessions being deleted now. */
   private removing = 0
+
+  private transferred: Map<string, TransferSession>
+
+  /** Snapshot only turns our replay path can rebuild without starting a new prompt. */
+  transfer(providers: ReadonlyMap<string, string>): Record<string, TransferSession> | undefined {
+    if (this.commands || this.sending || this.removing || Object.keys(this.background()).length) return undefined
+    const sessions: Record<string, TransferSession> = {}
+    for (const [id, live] of this.live) {
+      if (live.own || live.steering.size || live.waiting.length || live.forms.size) return undefined
+      if (live.doing.kind === "idle") continue
+      const provider = providers.get(id)
+      if (!provider || live.doing.kind !== "running" || live.doing.run.agent?.provider !== provider ||
+          live.doing.run.relayed?.length || !this.resumable(id, { meta: { provider } })) return undefined
+      const message = this.store.get(id)?.messages.findLast(each => each.type === "user" || each.type === "synthetic")
+      if (!message) return undefined
+      const permissions = [...live.permissions].map(([id, { key }]) => ({ id, key }))
+      if (new Set(permissions.map(each => each.key)).size !== permissions.length) return undefined
+      sessions[id] = { message: message.id, permissions, always: live.always }
+    }
+    return Object.keys(sessions).length === providers.size ? sessions : undefined
+  }
 
   /** What's under way, for a newer bridge to wait for: turns (a subagent's too, a message being
    * handed to one, the files kept after one), your `!` commands, a session being deleted, which it

@@ -207,14 +207,14 @@ export async function hold(command: string[], options: HoldOptions): Promise<Hel
 const startingHolders = new Set<number>()
 
 /** Attaches to a holder an earlier bridge started, one generation past the last that attached. */
-export async function attach(folder: string, record: HoldRecord, from?: number): Promise<Held> {
-  return connect(folder, record.id, record.key, record.generation + 1, record.pid, from)
+export async function attach(folder: string, record: HoldRecord, from?: number, complete = false): Promise<Held> {
+  return connect(folder, record.id, record.key, record.generation + 1, record.pid, from, complete)
 }
 
-async function connect(folder: string, id: string, key: string, generation: number, holder: number, from?: number): Promise<Held> {
+async function connect(folder: string, id: string, key: string, generation: number, holder: number, from?: number, complete = false): Promise<Held> {
   const socket = net.connect(join(folder, `${id}.sock`))
   const held = new Held(id, holder, socket)
-  socket.write(JSON.stringify({ hello: HOLD_PROTO, key, generation, ...(from !== undefined ? { from } : {}) }) + "\n")
+  socket.write(JSON.stringify({ hello: HOLD_PROTO, key, generation, complete, ...(from !== undefined ? { from } : {}) }) + "\n")
   // (A holder that doesn't answer, wedged, is given up on.)
   const late = setTimeout(() => socket.destroy(), WITHIN)
   try {
@@ -229,6 +229,18 @@ async function connect(folder: string, id: string, key: string, generation: numb
 
 /** The holders this bridge drives now. */
 const live = new Set<Held>()
+
+/** The attached holders' current metadata is ahead of the copies on disk. */
+export function controlledHolders(): readonly Held[] | undefined {
+  return startingHolders.size ? undefined : [...live]
+}
+
+export function releaseHolders(keep: ReadonlySet<string>) {
+  for (const held of live) {
+    if (keep.has(held.id)) held.detach()
+    else held.stop()
+  }
+}
 
 /**
  * Every agent this bridge drives under a holder, stopped as it ends on purpose (Stop, making way
@@ -281,6 +293,7 @@ export class Held {
   private ended = false
   private ackTimer?: ReturnType<typeof setTimeout>
   private acked = 0
+  private preparing?: (ready: boolean) => void
 
   constructor(
     readonly id: string,
@@ -303,6 +316,7 @@ export class Held {
     socket.on("error", () => {})
     socket.on("close", () => {
       this.ended = true
+      this.preparing?.(false)
       clearTimeout(this.ackTimer)
       if (!hello) refuse(new Error("The agent's holder isn't there."))
       // Gone with no word of its agent's end: a newer bridge took over (it's that one's now), or this
@@ -353,6 +367,8 @@ export class Held {
           exit({ code: frame.x.code ?? null, signal: frame.x.signal ?? null })
           this.send({ ack: this.seen })
           this.send({ bye: true })
+        } else if (typeof frame.prepared === "boolean") {
+          this.preparing?.(frame.prepared)
         } else if (frame.fenced) {
           this.fenced = true
         }
@@ -394,7 +410,7 @@ export class Held {
   }
 
   private send(frame: Record<string, unknown>) {
-    if (this.ended || this.socket.destroyed) return false
+    if (this.ended || this.letGo || this.socket.destroyed) return false
     this.socket.write(JSON.stringify(frame) + "\n")
     return true
   }
@@ -422,7 +438,7 @@ export class Held {
    * exiting at once could leave unsent): its stdin closed, then told, then made to; the holder goes
    * once it has. Not after a newer bridge took it over. */
   stop() {
-    if (this.fenced || this.heardEnd) return
+    if (this.fenced || this.letGo || this.heardEnd) return
     // (Its socket closed: only once that's still the holder, never a process with its number since.)
     if (this.ended) return this.stopHolder()
     try {
@@ -443,11 +459,32 @@ export class Held {
     if (!this.fenced) this.send({ meta })
   }
 
+  prepare(from: number): Promise<boolean> {
+    if (this.ended || this.fenced || this.heardEnd || this.preparing) return Promise.resolve(false)
+    return new Promise((done) => {
+      const timer = setTimeout(() => finish(false), 2_000)
+      const finish = (ready: boolean) => {
+        clearTimeout(timer)
+        this.preparing = undefined
+        done(ready)
+      }
+      this.preparing = finish
+      this.send({ prepare: from })
+    })
+  }
+
+  unpin() {
+    this.send({ unpin: true })
+  }
+
   /** Let go of it without stopping it (another bridge will attach). */
   detach() {
-    this.letGo = true
+    if (this.letGo) return
     clearTimeout(this.ackTimer)
     if (this.seen > this.acked) this.send({ ack: this.seen })
+    // The Claude SDK can call its subprocess cleanup on process exit. This controller has
+    // given up the agent, including its ability to stop it.
+    this.letGo = true
     this.socket.end()
   }
 }

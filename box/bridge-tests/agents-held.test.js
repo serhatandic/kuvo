@@ -180,7 +180,7 @@ const alive = pid => { try { process.kill(pid, 0); return true; } catch { return
 
 /** A machine's box in folders of the test's own (`~/.kuvo-code` in a home of its own, for its
  * keeper), its bridge kept running as its launch keeps it. */
-async function machine({ claudeVersion = "2.1.325" } = {}) {
+async function machine({ claudeVersion = "2.1.325", liveTransfer = false } = {}) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "kh-")));
   removeAtEnd(root);
   const home = path.join(root, ".kuvo-code");
@@ -226,25 +226,28 @@ async function machine({ claudeVersion = "2.1.325" } = {}) {
   };
   // Its launch, as it keeps a machine's bridge: started again a moment after it ends, its pid noted
   // where the keeper looks (`run/agents.pid`).
+  if (liveTransfer) env.KUVO_AGENTS_KEPT = "1";
+  const direct = 'echo $$ >"$5"; exec "$2" --config=/dev/null --no-env-file "$3" >>"$4" 2>&1';
   const loop = 'while kill -0 "$1" 2>/dev/null; do "$2" --config=/dev/null --no-env-file "$3" >>"$4" 2>&1 </dev/null & echo $! >"$5"; wait $!; sleep 1; done';
-  const launch = spawn("sh", ["-c", loop, "kuvo-agents", String(process.pid), bun, path.join(home, "bin", "kuvo-agents.js"), path.join(home, "run", "agents.log"), path.join(home, "run", "agents.pid")], { cwd: path.join(home, "work"), env, stdio: "ignore", detached: true });
+  const launch = spawn("sh", ["-c", liveTransfer ? direct : loop, "kuvo-agents", String(process.pid), bun, path.join(home, "bin", "kuvo-agents.js"), path.join(home, "run", "agents.log"), path.join(home, "run", "agents.pid")], { cwd: path.join(home, "work"), env, stdio: "ignore", detached: true });
   atEnd(() => new Promise(resolve => {
     if (launch.exitCode !== null) return resolve();
     launch.on("exit", () => resolve());
     try { process.kill(-launch.pid, "SIGTERM"); } catch { resolve(); }
   }));
 
+  if (liveTransfer) atEnd(() => spawnSync("sh", [keeper, "stop"], { env: { PATH: "/usr/bin:/bin", HOME: root }, timeout: 30_000 }));
+  const record = () => { try { return JSON.parse(fs.readFileSync(path.join(home, "run", "bridge.json"), "utf8")); } catch { return null; } };
   const auth = { authorization: "Basic " + Buffer.from("opencode:pw").toString("base64"), "content-type": "application/json", "x-opencode-directory": encodeURIComponent(path.join(home, "work")) };
   const api = async (method, route, body) => {
     try {
-      const response = await fetch(`http://127.0.0.1:${port}/${route}`, { method, headers: auth, body: body ? JSON.stringify(body) : undefined });
+      const response = await fetch(`http://127.0.0.1:${record()?.port ?? port}/${route}`, { method, headers: auth, body: body ? JSON.stringify(body) : undefined });
       const text = await response.text();
       return { status: response.status, json: text ? JSON.parse(text) : null };
     } catch {
       return { status: 0, json: null };
     }
   };
-  const record = () => { try { return JSON.parse(fs.readFileSync(path.join(home, "run", "bridge.json"), "utf8")); } catch { return null; } };
   const up = besides => until(async () => {
     const said = record();
     if (!said?.pid || said.pid === besides) return null;
@@ -263,8 +266,8 @@ const textOf = messages => messages.filter(each => each.type === "assistant").fl
  * the bridge killed while it asks, the next bridge asking once more, your answer, the turn's end,
  * and the box stopped.
  */
-async function crashWhileAsking({ provider, model, log }) {
-  const box = await machine();
+async function continueWhileAsking({ provider, model, log, liveTransfer = false }) {
+  const box = await machine({ liveTransfer });
   const first = await box.up();
   const made = await box.api("POST", "api/session", { title: "Held", location: { directory: path.join(box.home, "work") }, model: { providerID: provider, id: model } });
   assert.equal(made.status, 200, JSON.stringify(made.json));
@@ -272,22 +275,28 @@ async function crashWhileAsking({ provider, model, log }) {
   assert.equal((await box.api("POST", `api/session/${session}/prompt`, { id: "msg_heldagent00000001", delivery: "steer", text: "run it" })).status, 200);
   const asked = await until(() => box.log(log).find(each => "asked" in each), "the agent to ask", 60_000, async () =>
     `\n${fs.readFileSync(path.join(box.home, "run", "agents.log"), "utf8").slice(-3000)}\n${JSON.stringify((await box.api("GET", `api/session/${session}/message?limit=100&order=asc`)).json?.data ?? []).slice(-2000)}\n${JSON.stringify(box.log(log))}`);
-  await until(async () => (await box.api("GET", `api/session/${session}/permission`)).json?.data?.length === 1, "the approval to show");
+  const priorAsk = await until(async () => (await box.api("GET", `api/session/${session}/permission`)).json?.data?.[0], "the approval to show");
   const holder = box.held().find(each => each.child === asked.pid);
   assert.ok(holder, `the agent runs under a holder: ${JSON.stringify(box.held().map(each => [each.pid, each.child, each.meta]))}`);
   assert.equal(asked.parent, holder.pid);
   await until(() => Object.values(box.held().find(each => each.pid === holder.pid)?.meta.turns ?? {})[0]?.session === session, "the holder's record to say which session's turn is under way");
   assert.equal(fs.statSync(box.holders).mode & 0o777, 0o700, "only you reach the holders");
 
-  process.kill(first, "SIGKILL");
+  if (liveTransfer) {
+    const bundle = path.join(box.home, "bin", "kuvo-agents.js");
+    const changed = fs.readFileSync(bundle, "utf8").replace(/(Built from Packages\/Box\/src\/agents )[0-9a-f]{16,64}/, "$1" + "d".repeat(64));
+    fs.writeFileSync(bundle + ".new", changed);
+    fs.renameSync(bundle + ".new", bundle);
+  } else process.kill(first, "SIGKILL");
   const second = await box.up(first);
   assert.notEqual(second, first);
-  assert.ok(alive(asked.pid), "the agent lived on through the crash");
+  assert.ok(alive(asked.pid), "the original agent process lived through the bridge change");
   const asks = await until(async () => {
     const data = (await box.api("GET", `api/session/${session}/permission`)).json?.data;
     return data?.length ? data : null;
   }, "the approval to show again");
   assert.equal(asks.length, 1, "asked once");
+  if (liveTransfer) assert.equal(asks[0].id, priorAsk.id, "the pending approval kept its identity");
   assert.equal((await box.api("POST", `api/session/${session}/permission/${asks[0].id}/reply`, { decision: "once" })).status, 200);
   const messages = await until(async () => {
     const page = (await box.api("GET", `api/session/${session}/message?limit=100&order=asc`)).json?.data ?? [];
@@ -309,13 +318,19 @@ async function crashWhileAsking({ provider, model, log }) {
 }
 
 test("Codex: a crash while it waits on your approval, then a stop", { skip: bun ? false : NO_BUN }, () =>
-  crashWhileAsking({ provider: "codex-cli", model: "gpt-test", log: "log" }));
+  continueWhileAsking({ provider: "codex-cli", model: "gpt-test", log: "log" }));
 
 test("Claude Code: a crash while it waits on your approval, then a stop", { skip: bun ? false : NO_BUN }, () =>
-  crashWhileAsking({ provider: "claude-code", model: "default", log: "claude.log" }));
+  continueWhileAsking({ provider: "claude-code", model: "default", log: "claude.log" }));
 
 test("Grok (ACP): a crash while it waits on your approval, then a stop", { skip: bun ? false : NO_BUN }, () =>
-  crashWhileAsking({ provider: "grok-cli", model: "grok-test", log: "grok.log" }));
+  continueWhileAsking({ provider: "grok-cli", model: "grok-test", log: "grok.log" }));
+
+test("Claude Code keeps its pending approval through a live bridge update", { skip: bun ? false : NO_BUN }, () =>
+  continueWhileAsking({ provider: "claude-code", model: "default", log: "claude.log", liveTransfer: true }));
+
+test("Grok (ACP) keeps its pending approval through a live bridge update", { skip: bun ? false : NO_BUN }, () =>
+  continueWhileAsking({ provider: "grok-cli", model: "grok-test", log: "grok.log", liveTransfer: true }));
 
 test("Claude Code older than 2.1.268 (it doesn't ask again what's open, as a new client joins): a crash ends its turn as before, and it's stopped, not left waiting", { skip: bun ? false : NO_BUN }, async () => {
   const box = await machine({ claudeVersion: "2.1.200" });

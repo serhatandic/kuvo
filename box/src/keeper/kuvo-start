@@ -179,6 +179,7 @@ halt() {
   if is "$a" kuvo-agents; then kill -- "-$a" 2>/dev/null || kill "$a" 2>/dev/null; fi
   rm -f "$R/agents.pid"
   halt_held
+  rm -f "$R/agents/handover.json" "$R/agents/previous/kuvo-agents.js"
   halt_engine
 }
 # A holder's process, as its record names it (run/agents/hold/<id>.json), once it's one.
@@ -366,6 +367,19 @@ keep)
       sh "$me" bridge-again >/dev/null 2>&1 &
     fi
     if [ -f "$R/agents.now" ]; then rm -f "$R/agents.now"; bfails=0; bnext=0; bstarted=; fi
+    # A standby that never published its bridge record gives way to the previous build. Check
+    # that the pending PID is still the keeper's candidate before signalling it.
+    hand="$R/agents/handover.json"
+    if [ -f "$hand" ]; then
+      candidate=$(sed -n 's/.*"next":\([0-9][0-9]*\),.*/\1/p' "$hand" 2>/dev/null)
+      staged=$(stat -c %Y "$hand" 2>/dev/null || stat -f %m "$hand" 2>/dev/null)
+      if [ -n "$candidate" ] && [ -n "$staged" ] && [ "$((now - staged))" -ge 60 ] &&
+         [ "$candidate" = "$(cat "$R/agents.pid" 2>/dev/null)" ] &&
+         ! grep -q "^.*\"pid\":$candidate," "$R/bridge.json" 2>/dev/null &&
+         is "$candidate" 'kuvo-agents.*handover-standby'; then
+        kill -KILL "$candidate" 2>/dev/null
+      fi
+    fi
     if up && [ -f "$K/bin/kuvo-agents.js" ] && [ "$now" -ge "$bnext" ] && ! bridge_runs && ! machine_handover; then
       if [ -n "$bstarted" ]; then
         if [ $((now - bstarted)) -lt 600 ]; then bfails=$((bfails + 1)); else bfails=0; fi

@@ -98,7 +98,7 @@ export function answerHeaders(response: Response): Record<string, string> {
 // Passes `path` to the engine or the agents' bridge on this machine, with its password, and
 // streams back what it answers. What's sent is the path as `canonicalPath` writes it, which is
 // what `allows` checks.
-export async function* forward(target: Target, path: string, request: LinkRequest, signal: AbortSignal | undefined, allows: (path: string, method: string) => boolean, naming: Naming | null = null, down: () => string = engineDown, toAgents = false): AsyncGenerator<AnswerPiece> {
+export async function* forward(target: Target, path: string, request: LinkRequest, signal: AbortSignal | undefined, allows: (path: string, method: string) => boolean, naming: Naming | null = null, down: () => string = engineDown, toAgents = false, currentBridge?: () => Target | null): AsyncGenerator<AnswerPiece> {
   const method = request.method.toUpperCase();
   const sent = canonicalPath(path);
   if (sent === null || !allows(sent, method)) {
@@ -108,6 +108,22 @@ export async function* forward(target: Target, path: string, request: LinkReques
   }
   const url = new URL(`http://127.0.0.1:${target.port}/${sent}`);
   const headers: Record<string, string> = { authorization: `Basic ${Buffer.from(`opencode:${target.password}`).toString("base64")}` };
+  const sendTo = async (body: RequestInit["body"], signal?: AbortSignal) => {
+    const response = await fetch(url, { method, headers, body, signal });
+    if (!currentBridge || response.headers.get("x-kuvo-bridge-handover") !== "1") return response;
+    // This response comes from the admission fence, before the request ran. It is safe to
+    // forward the same body after publication, including a reply or a write without an ID.
+    const next = await bridgeBack(() => {
+      const found = currentBridge();
+      return found && found.port !== target.port ? found : null;
+    }, signal);
+    if (!next) return response;
+    await response.body?.cancel();
+    const destination = new URL(url);
+    destination.port = String(next.port);
+    const authorization = `Basic ${Buffer.from(`opencode:${next.password}`).toString("base64")}`;
+    return fetch(destination, { method, headers: { ...headers, authorization }, body, signal });
+  };
   const given = Object.fromEntries(Object.entries(request.headers ?? {}).map(([k, v]) => [k.toLowerCase(), v]));
   // (These are single headers, never a list.)
   for (const name of REQUEST_HEADERS) if (given[name]) headers[name] = given[name] as string;
@@ -218,7 +234,7 @@ export async function* forward(target: Target, path: string, request: LinkReques
       try {
         const body = await outgoing();
         return await admitted(async () => {
-          const response = await fetch(url, { method, headers, body });
+          const response = await sendTo(body);
           return { status: response.status, headers: answerHeaders(response), body: Buffer.from(await response.arrayBuffer()) };
         });
       } catch (error) {
@@ -231,7 +247,7 @@ export async function* forward(target: Target, path: string, request: LinkReques
   }
   const send = async () => {
     const body = method === "GET" || method === "HEAD" ? undefined : await outgoing();
-    return admitted(() => fetch(url, { method, headers, body, signal: delivering }));
+    return admitted(() => sendTo(body, delivering));
   };
   let response: Response;
   try {
@@ -320,20 +336,20 @@ export async function* agentsRoute(context: RouteContext): AsyncGenerator<Answer
   const method = request.method.toUpperCase();
   if ((method === "GET" || method === "HEAD") && !/^\/?api\/event(\?|$)/.test(path)) {
     let failed = false;
-    const first = forward(target, path, request, signal, agentsAllowed, namingHere(readEngine), () => ((failed = true), notAnswering), true);
+    const first = forward(target, path, request, signal, agentsAllowed, namingHere(readEngine), () => ((failed = true), notAnswering), true, bridge);
     const head = await first.next();
     if (failed && !signal?.aborted) {
       const next = await bridgeBack(() => { const found = bridge(); return found && (found.port !== target.port || found.password !== target.password) ? found : null; }, signal);
       if (next) {
         await first.return(undefined);
-        return yield* forward(next, path, request, signal, agentsAllowed, namingHere(readEngine), () => notAnswering, true);
+        return yield* forward(next, path, request, signal, agentsAllowed, namingHere(readEngine), () => notAnswering, true, bridge);
       }
     }
     if (head.done) return;
     yield head.value;
     return yield* first;
   }
-  return yield* forward(target, path, request, signal, agentsAllowed, namingHere(readEngine), () => notAnswering, true);
+  return yield* forward(target, path, request, signal, agentsAllowed, namingHere(readEngine), () => notAnswering, true, bridge);
 }
 
 // What's left goes to the engine (the paths a phone may ask for), and a command stopped to whichever

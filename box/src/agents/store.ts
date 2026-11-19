@@ -5,7 +5,11 @@
 import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { writeDurablePrivate } from "../shared/files"
+import { additiveObjectFormat, UnsupportedFormatVersion } from "../shared/format-version"
 import type { Message, Session } from "./wire"
+
+const sessionFormat = additiveObjectFormat("Coding-agent session")
+export const readSession = (value: unknown) => sessionFormat.read(value) as unknown as Session
 
 export interface Record_ {
   session: Session
@@ -26,7 +30,7 @@ export class Store {
     for (const id of readdirSync(root)) {
       try {
         const folder = join(root, id)
-        const session = JSON.parse(readFileSync(join(folder, "session.json"), "utf8")) as Session
+        const session = readSession(JSON.parse(readFileSync(join(folder, "session.json"), "utf8")))
         let messages: Message[] = []
         try {
           messages = JSON.parse(readFileSync(join(folder, "messages.json"), "utf8"))
@@ -57,6 +61,7 @@ export class Store {
 
   /** A session that came whole from another computer. */
   addWhole(record: Record_) {
+    this.checkWritable(record.session.id)
     this.records.set(record.session.id, record)
     this.save(record.session.id, true)
   }
@@ -71,11 +76,13 @@ export class Store {
   }
 
   add(session: Session) {
+    this.checkWritable(session.id)
     this.records.set(session.id, { session, messages: [], agent: {} })
     this.save(session.id, true)
   }
 
   remove(id: string) {
+    this.checkWritable(id)
     this.records.delete(id)
     clearTimeout(this.pending.get(id))
     this.pending.delete(id)
@@ -104,15 +111,34 @@ export class Store {
     for (const id of [...this.pending.keys()]) this.save(id, true)
   }
 
+  /** A bridge can give up its state only once every pending write succeeds. */
+  flushForTransfer(active: string[]) {
+    for (const id of new Set([...this.pending.keys(), ...active])) {
+      const record = this.records.get(id)
+      if (record) this.writeRecord(id, record, true)
+      clearTimeout(this.pending.get(id))
+      this.pending.delete(id)
+    }
+  }
+
   /** The queue handoff keeps its backup until the bridge has sealed the accepted input. */
   sealPrompt(id: string, record: Record_) {
     this.writeRecord(id, record, true)
   }
 
+  private checkWritable(id: string) {
+    try {
+      readSession(JSON.parse(readFileSync(this.fileOf(id, "session.json"), "utf8")))
+    } catch (error) {
+      if (error instanceof UnsupportedFormatVersion) throw error
+    }
+  }
+
   private writeRecord(id: string, record: Record_, durable = false) {
+    this.checkWritable(id)
     const folder = join(this.root, id)
     mkdirSync(folder, { recursive: true })
-    for (const [name, value] of [["session.json", record.session], ["messages.json", record.messages], ["agent.json", record.agent]] as const) {
+    for (const [name, value] of [["session.json", sessionFormat.write(record.session)], ["messages.json", record.messages], ["agent.json", record.agent]] as const) {
       const file = join(folder, name)
       const text = JSON.stringify(value)
       if (durable) writeDurablePrivate(file, text, this.root)
@@ -132,7 +158,7 @@ export class Store {
       // Not written now (a full disk, say): the session goes on as it is, and it's tried again in a
       // while, or as everything waiting is written.
       console.error(`session ${id} not written:`, error)
-      if (!this.pending.has(id)) this.pending.set(id, setTimeout(() => {
+      if (!(error instanceof UnsupportedFormatVersion) && !this.pending.has(id)) this.pending.set(id, setTimeout(() => {
         this.pending.delete(id)
         this.write(id)
       }, 5_000))

@@ -35,13 +35,13 @@ import { instructionsNote, toldOf } from "../told"
 import { pictureData, pictureFile, withPictures } from "../pictures"
 import type { Turn } from "../turn"
 import { hold, heldProcess, type Held } from "../hold/client"
-import { agentHoldFolder, noteTurn, type HeldTurn } from "../hold/adopt"
+import { CLAUDE_SDK, agentHoldFolder, noteTurn, type HeldTurn } from "../hold/adopt"
 
 /** How the agent SDK asks for Claude Code to be started (its `spawnClaudeCodeProcess`). */
 type SpawnOptions = { command: string; args: string[]; cwd?: string; env: Record<string, string | undefined>; signal?: AbortSignal }
 import type { FileDiff, FormField, Model, ModelRef, PermissionRule, Session, TokenUsage } from "../wire"
 
-const SDK = [{ name: "@anthropic-ai/claude-agent-sdk", version: "0.3.303" }]
+const SDK = [{ name: "@anthropic-ai/claude-agent-sdk", version: CLAUDE_SDK }]
 const places = [join(homedir(), ".local/bin"), join(homedir(), ".claude/local"), "/opt/homebrew/bin", "/usr/local/bin"]
 /** Kept of a tool's output: enough to read, not a whole file's worth. */
 const outputLimit = 30_000

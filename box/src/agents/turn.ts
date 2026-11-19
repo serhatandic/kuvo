@@ -82,6 +82,13 @@ export class Turn {
 
   // MARK: Steps
 
+  private replayedSteps: Pick<AssistantMessage, "id" | "time">[] = []
+
+  /** Keep the identity of previously visible steps as the holder replays their contents. */
+  reuseSteps(steps: readonly AssistantMessage[]) {
+    this.replayedSteps = steps.map(({ id, time }) => ({ id, time }))
+  }
+
   /** A new model call. Any step still open ends first. */
   startStep(model?: ModelRef): string {
     if (this.ended) return ""
@@ -90,11 +97,14 @@ export class Turn {
     // have gone through (one an agent dropped, or gave no end for), so it doesn't stay running.
     if (this.compaction) this.compacted(false)
     this.justCompacted = false
+    const replayed = this.replayedSteps.shift()
     const origin = this.store.origin?.()
     const step: AssistantMessage = {
       type: "assistant",
-      id: newID("msg"),
-      time: { created: Date.now(), origin, usageAccount: origin && this.store.usageAccount?.((model ?? this.model).providerID, origin) },
+      id: replayed?.id ?? newID("msg"),
+      time: replayed
+        ? { created: replayed.time.created, origin: replayed.time.origin, usageAccount: replayed.time.usageAccount }
+        : { created: Date.now(), origin, usageAccount: origin && this.store.usageAccount?.((model ?? this.model).providerID, origin) },
       agent: this.agent,
       model: model ?? this.model,
       content: [],
