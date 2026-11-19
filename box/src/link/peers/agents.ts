@@ -30,6 +30,7 @@ import type { EngineSession } from "../engine/sessions";
 import type { LinkHost } from "../relay/host";
 import type { LinkState } from "../state";
 import type { AgentsFile, BridgeRecord, ListedAgent, Target, ToldAgents } from "../../shared/records";
+import { fleetTurnCount } from "../updates/progress";
 
 /** What this box last told a peer of its agents (`announce`): all of them as JSON, when, and the
  * sessions that fit in that mail. */
@@ -166,7 +167,7 @@ export const toldPeers = new Map<string, ToldPeer>();
 export async function announce(host: Pick<LinkHost, "send">, readEngine: () => Target, link: LinkState | null = readLink(), now = Date.now(), ask = false, only?: string): Promise<void> {
   if (!link?.key) return;
   await refreshOwn(readEngine, link);
-  if (!ownList) return;
+  const list = ownList ?? [];
   // With the conversations it moved away lately, and where each lives now.
   const moved = movedAway(now).map(({ session, key, at }) => ({ session, key, at }));
   // And the setup it follows (the usage panel's settings go between the boxes of one setup).
@@ -175,6 +176,7 @@ export async function announce(host: Pick<LinkHost, "send">, readEngine: () => T
   // And what it is and runs, and which of its sessions are at work ("Computers"): told again at
   // once (each round) as one starts or stops working, else with the rest (every ten minutes).
   const computer = ownComputer();
+  if (computer.fleetUpdate) computer.fleetUpdate = await fleetTurnCount(computer.fleetUpdate);
   // And your time zone, carried box to box (`zone/setting.ts`).
   const zone = zoneMail();
   // And where a bot deleted here ends up (the Trash, or Kuvo Code's trash folder), so a box that
@@ -183,7 +185,7 @@ export async function announce(host: Pick<LinkHost, "send">, readEngine: () => T
   const bridge = ownershipLayoutReady(K) && bridgeTarget();
   const held = bridge ? frozen() : new Set<string>();
   const groups = bridge && (await (await import("../areas/groups")).listedGroups(bridge, AbortSignal.timeout(3_000)))?.map(group => group.id).filter(id => !held.has(id)).slice(0, 100);
-  const json = JSON.stringify([ownList, moved, where, groups, computer && { ...computer, working: undefined }, trash, zone]);
+  const json = JSON.stringify([list, moved, where, groups, computer && { ...computer, working: undefined }, trash, zone]);
   let have: DigestEntry[] | false | null = null;
   for (const peer of peersOf(link)) {
     if (only !== undefined && peer.key !== only) continue;
@@ -198,8 +200,8 @@ export async function announce(host: Pick<LinkHost, "send">, readEngine: () => T
     // (Your zone with its rules where they fit, else without them: the peer's own, if it has them.)
     const zones = zone ? [zone, ...(zone.zoneinfo ? [{ zone: zone.zone, n: zone.n }] : [])] : [null];
     for (const told of zones) {
-      for (const count of [ownList.length, Math.floor(ownList.length / 2), Math.floor(ownList.length / 4)]) {
-        sent = ownList.slice(0, count);
+      for (const count of [list.length, Math.floor(list.length / 2), Math.floor(list.length / 4), 0]) {
+        sent = list.slice(0, count);
         bytes = mailFor(peer, { agents: { at: now, list: sent, features: ownFeatures(), moved, trash, ...where, ...(groups ? { groups } : {}), ...(computer ? { computer } : {}) }, ...(told ? { zone: told } : {}), ...docs, at: now, ...(ask ? { ask: "agents" } : {}) }, link);
         if (bytes) break;
       }
@@ -207,7 +209,7 @@ export async function announce(host: Pick<LinkHost, "send">, readEngine: () => T
     }
     if (!bytes) continue;
     try {
-      host.send(bytes);
+      if (host.send(bytes) === false) continue;
       toldPeers.set(peer.key, { json, at: now, sessions: new Set(sent.map(agent => agent.session)) });
     } catch {}
   }

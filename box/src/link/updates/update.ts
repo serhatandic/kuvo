@@ -4,7 +4,7 @@
 // (`updates/fleet.ts`), or now (Update Now, from a Mac or a phone). None waits for night or for
 // work to end: an update stops nothing (but see `engineApart`). Never to an older one, only what
 // a key pinned here signed, only in a machine's own ~/.kuvo-code (not a test's or a demo's), and
-// only while every Mac that started its engine lately leaves a newer box as it is. It checks what
+// with layout compatibility checked against the setup’s computers. It checks what
 // it got, tries the new engine and bridge, keeps what it had, swaps its files one by one and
 // starts again; then it's judged by the one health rule (updates/health.ts), and goes back to the
 // code it had (never the data) when that finds it unwell. A release can come from a folder on this
@@ -12,10 +12,10 @@
 // checked the same way and taken at the next quiet moment; and it can carry a signed Mac bundle
 // (the box's helper), swapped whole.
 
-import { beginFolderRollback } from "../../shared/folder-version";
+import { beginFolderRollback, installedLinkBuild } from "../../shared/folder-version";
 import { syncDurableFile, writeDurablePrivate } from "../../shared/files";
 import type { SaveEnvelope } from "../../shared/routes/setup-save";
-import { askSetupOutcome, askSetupSave, localSetupValue, type SetupSaveReceipt } from "../../shared/setup-local";
+import { askSetupOutcome, askSetupSave, type SetupSaveReceipt } from "../../shared/setup-local";
 import { INTERRUPTED_SAVE } from "../setup/shared";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import crypto from "node:crypto";
@@ -43,7 +43,10 @@ import { keeperEngine, SWAP_NOW } from "./engine-swap";
 import { installHoldFile, swapLine, swapUnderWay, type EngineSwap } from "../../shared/engine-swap";
 import { waitForPromptWrites } from "../moves/admission";
 import { releaseWaiting } from "../engine/queue";
-import { HELD, keepRelease } from "./fleet";
+import { HELD, heldRelease, keepRelease } from "./fleet";
+import { layoutHold, RELEASE_CHOICE, releaseChoice, releaseSetup } from "./choice";
+import { appendUpdateEvent } from "./journal";
+import { requestFleetRetry } from "./progress";
 
 // The releases' public keys (scripts/set-box-key.sh, scripts/sign-box.mjs), base64: with none, no
 // box updates itself.
@@ -106,6 +109,9 @@ export interface BoxRelease {
   kuvo: "box/1";
   version: string;
   engine: string;
+  spreads?: boolean;
+  layout?: number;
+  clientProtocol?: number;
   released?: string;
   pack: { url: string; sha256: string };
   linux?: Record<string, { url?: string; integrity?: string } | undefined>;
@@ -126,6 +132,8 @@ export function verifyBoxes(text: string, keys: string[] = UPDATE_KEYS): BoxRele
   if (!crypto.verify(null, Buffer.concat([Buffer.from("kuvo-box v1\n"), bytes]), publicKey, Buffer.from(given.signature, "base64"))) throw new Error("Its signature doesn't match.");
   const manifest: BoxRelease = JSON.parse(bytes.toString("utf8"));
   if (manifest?.kuvo !== "box/1" || !RELEASE_VERSION.test(manifest.version ?? "") || typeof manifest.engine !== "string" || !/^[0-9][0-9A-Za-z.-]*$/.test(manifest.engine)
+    || (manifest.layout !== undefined && (!Number.isSafeInteger(manifest.layout) || manifest.layout < 0))
+    || (manifest.clientProtocol !== undefined && (!Number.isSafeInteger(manifest.clientProtocol) || manifest.clientProtocol < 1))
     || !isObject(manifest.pack) || typeof manifest.pack.url !== "string" || !/^[0-9a-f]{64}$/.test(manifest.pack.sha256 ?? "")) throw new Error("That isn't a release.");
   return manifest;
 }
@@ -192,7 +200,8 @@ export interface UpdateState {
   round?: string;
   /** A release offered from a folder here that failed as it was taken: its version, when, whether
    * it was put in place and taken back, and how many times in a row it failed. */
-  offerFailed?: { version: string; at: number; takenBack: boolean; tries?: number; message?: string };
+  offerFailed?: { version: string; at: number; takenBack: boolean; tries?: number; message?: string; retryNow?: true };
+  fleetFailedAt?: { version: string; at: number };
   /** How the last change of engine went (`updates/engine-swap.ts`). */
   engine?: import("./engine-swap").EngineChangeLast;
 }
@@ -221,17 +230,9 @@ export function noteLauncher(readEngine: () => EngineRecord = readEngineFile, no
   try { writePrivate(LAUNCHERS, JSON.stringify(all)); } catch {}
 }
 
-// COMPAT(0.7 visits): `launchers.json`, Macs that started the engine without saying they tolerate newer boxes, hold updates back. Goes on the user's word, once no Mac from before 1.0 connects.
-// Why this box doesn't update itself now, or null: it isn't a machine's own folder, or a Mac that
-// started its engine lately would put back older versions (one that didn't say it leaves a newer
-// box as it is).
-export function updatesBlocked(link: LinkState | null = readLink(), now = Date.now(), root = K): string | null {
-  if (path.resolve(root) !== path.join(homeFolder(), ".kuvo-code")) return "Only a machine's own Kuvo Code folder updates itself.";
-  let launchers: Record<string, number> = {};
-  try { launchers = JSON.parse(fs.readFileSync(LAUNCHERS, "utf8")) ?? {}; } catch {}
-  const behind = Object.entries(launchers).filter(([mac, at]) => now - at < MAC_MEMORY && link?.tolerantIDs?.[mac] !== true);
-  if (behind.length) return "A Mac that connects to this machine has an older Kuvo Code, which would put back older versions: update Kuvo Code there first.";
-  return null;
+/** Why this folder cannot update itself. Client versions are checked on connection. */
+export function updatesBlocked(_link?: LinkState | null, _now?: number, root = K): string | null {
+  return path.resolve(root) === path.join(homeFolder(), ".kuvo-code") ? null : "Only a machine's own Kuvo Code folder updates itself.";
 }
 
 // Whether something runs on the box: a conversation working (the engine's, the coding agents'),
@@ -553,6 +554,12 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
   let releaseSave: SetupSaveReceipt | undefined;
   let recoveredReleaseSave: SetupSaveReceipt | undefined;
   const releaseResult = (outcome: UpdateOutcome): UpdateOutcome => {
+    const target = releaseChoice()?.version;
+    if (target && from !== OFFERED && (outcome.result === "failed" || outcome.result === "blocked")) {
+      const reason = outcome.message ?? "Kuvo couldn’t install the release.";
+      appendUpdateEvent(target, outcome.result, reason);
+      recordOfferFailure(target, reason, swapped && boxVersion() === before && !updateOnTrial() && !fs.existsSync(ROLLBACK), clock());
+    }
     const result = outcome.save || !releaseSave ? outcome : withReleaseSave(outcome, releaseSave);
     if (recoveredReleaseSave && result.save === recoveredReleaseSave) noteUpdate({ releaseSave: null });
     return result;
@@ -578,13 +585,14 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
   };
   try {
     step("checking");
-    let setup = localSetupValue(RUN, "setupSecurityAndReleaseChoice");
+    let setup = releaseSetup();
+    if (setup) whileBusy = false;
     const kept = updateState().releaseSave;
     let previousSave: SetupSaveReceipt | undefined;
     if (kept && kept.save.setup === setup?.id) {
       previousSave = kept.save;
       if (previousSave.status === "pending") {
-        const known = await askSetupOutcome(RUN, previousSave, "setupSecurityAndReleaseChoice");
+        const known = await askSetupOutcome(RUN, previousSave, RELEASE_CHOICE);
         if (known.receipt && known.receipt.status !== "pending") {
           previousSave = known.receipt;
           // A retry can fail before it has checked which release it is taking.
@@ -592,11 +600,12 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
         }
       }
       if (!from && previousSave.status !== "committed") return waitingForReleaseSave(kept.version, previousSave);
-      if (previousSave.status === "committed") setup = localSetupValue(RUN, "setupSecurityAndReleaseChoice");
+      if (previousSave.status === "committed") setup = releaseSetup();
     }
     const choice = isObject(setup?.value) ? setup.value : null;
     let released: Buffer;
-    if (!from && setup && (!setup.primary || (typeof choice?.version === "string" && newerVersion(choice.version, before)))) {
+    if (!from && setup && !setup.primary) return { result: "waiting", message: "This computer follows the release chosen by the main computer." };
+    if (!from && setup && typeof choice?.version === "string" && newerVersion(choice.version, before)) {
       if (typeof choice?.signed !== "string") return { result: "waiting", message: "Your setup's primary hasn't selected a release yet." };
       released = Buffer.from(choice.signed, "base64");
     } else if (from) released = readRelease(path.join(from, "boxes.json"), 1_000_000);
@@ -615,6 +624,9 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
       if (previousSave.status !== "committed" || !alreadyChosen) return releaseResult(waitingForReleaseSave(manifest.version, previousSave));
       releaseSave = previousSave;
     }
+    if (setup && typeof choice?.version === "string" && !alreadyChosen && !newerVersion(manifest.version, choice.version))
+      return { result: "waiting", version: manifest.version, message: "The setup already selected a release at least as new." };
+    if (setup && manifest.spreads !== true) return { result: "blocked", version: manifest.version, message: "This release is for one computer and cannot be selected for a setup." };
     if (setup && !setup.primary && !alreadyChosen) return { result: "waiting", message: "Your setup's primary has selected a different release." };
     taking(manifest.version);
     // (Only GitHub's says what the newest release is.)
@@ -625,7 +637,8 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
     const again = !!from && sameVersion(manifest.version, before);
     if (!newerVersion(manifest.version, before) && !again) return releaseResult({ result: "current", version: before });
     // (Its files read from the folder's pack, before anything's said to be under way.)
-    if (again && !folderDiffers(from!, manifest)) return releaseResult({ result: "current", version: before });
+    const unchanged = again && !folderDiffers(from!, manifest);
+    if (unchanged && (!setup?.primary || alreadyChosen)) return releaseResult({ result: "current", version: before });
     // Never an older engine than the one running: it may not read what the newer one wrote.
     const behind = engineBehind(manifest.engine);
     if (behind) return releaseResult({ result: "blocked", message: behind });
@@ -644,16 +657,17 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
     fs.mkdirSync(path.join(stage, "files"), { recursive: true, mode: 0o700 });
     const pack = from ? readRelease(path.join(from, packName(manifest)), 100_000_000) : await download(() => fetchedPatiently(manifest.pack.url, 100_000_000, 300_000));
     if (hexSHA256(pack) !== manifest.pack.sha256) throw new Error("The release's files aren't what it says.");
-    const authority = localSetupValue(RUN, "setupSecurityAndReleaseChoice");
+    const authority = releaseSetup();
     if (authority?.id !== setup?.id || authority?.epoch !== setup?.epoch || authority?.sequence !== setup?.sequence) {
       return releaseResult({ result: "waiting", version: manifest.version, message: "The setup changed while this release was being checked." });
     }
     // A candidate pack can wait on disk. The fleet advertises only the accepted choice.
-    keepRelease(released, pack);
+    const keptPack = keepRelease(released, pack);
     if (setup && !alreadyChosen) {
+      if (!keptPack || heldRelease(keys)?.sha256 !== manifest.pack.sha256) throw new Error("Couldn’t retain the signed release for the other computers.");
       const response = await askSetupSave(RUN, {
-        kind: "setupSecurityAndReleaseChoice", id: setup.id, epoch: setup.epoch, sequence: setup.sequence,
-        value: { version: manifest.version, sha256: manifest.pack.sha256, signed: released.toString("base64") },
+        kind: RELEASE_CHOICE, id: setup.id, epoch: setup.epoch, sequence: setup.sequence,
+        value: { version: manifest.version, sha256: manifest.pack.sha256, signed: released.toString("base64"), layout: manifest.layout, clientProtocol: manifest.clientProtocol },
       });
       const save = releaseSave = response.receipt;
       if (save?.status === "pending") noteUpdate({ releaseSave: { version: manifest.version, sha256: manifest.pack.sha256, save } });
@@ -746,6 +760,11 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
     }
     if (ran("sh", ["-n", path.join(stage, "files", "bin", "kuvo-start")]).status !== 0) throw new Error("The new keeper doesn't read.");
 
+    const layout = installedLinkBuild(path.join(stage, "files"))?.layout ?? 0;
+    if (manifest.layout !== undefined && manifest.layout !== layout) throw new Error("The release’s folder layout doesn’t match its manifest.");
+    const checkLayout = () => layoutHold(layout);
+    if (unchanged) return releaseResult({ result: "current", version: before });
+
     // What's there kept; then the new in its place, one file at a time.
     step("installing");
     // Finish any remote backup before reading the engine and fencing new turns.
@@ -766,6 +785,14 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
     }
     // What's there kept, and how to put it back, before anything changes: a swap the update doesn't
     // get past (the machine going down) is put back too.
+    const latestSetup = releaseSetup();
+    const latestChoice = releaseChoice();
+    if (latestSetup?.id !== setup?.id || latestSetup?.epoch !== setup?.epoch
+      || (latestSetup && (latestChoice?.version !== manifest.version || latestChoice.sha256 !== manifest.pack.sha256))) {
+      return releaseResult({ result: "waiting", version: manifest.version, message: "The main computer changed the release while this update was preparing." });
+    }
+    const heldLayout = checkLayout();
+    if (heldLayout) return releaseResult({ result: "blocked", version: manifest.version, message: heldLayout });
     const newerEngine = otherEngine && newerVersion(manifest.engine, previous?.version);
     keepForRollback(files, newerEngine ? manifest.engine : null, new Set(bundles), path.join(stage, "files", "bin", "kuvo-start"));
     noteUpdate({ trial: { from: before, to: manifest.version, at: clock(), installing: true }, running: null });
@@ -978,7 +1005,7 @@ export function packName(manifest: Pick<BoxRelease, "pack">): string {
  * there, the signed release it runs, which it hands to your other computers (`release`), and one
  * being pulled from one of them (`incoming`, `updates/fleet.ts`). */
 export function clearUpdateStaging(folder = UPDATES): void {
-  const kept = new Set(["rollback", "installed.json", "rehome", "offered", "backups", "release", "incoming"]);
+  const kept = new Set(["rollback", "installed.json", "rehome", "offered", "backups", "release", "running", "previous-choice", "incoming"]);
   for (const name of listOf(folder)) if (!kept.has(name)) fs.rmSync(path.join(folder, name), { recursive: true, force: true });
 }
 
@@ -1008,36 +1035,6 @@ export function confirmUpdate(clock = Date.now): boolean {
   return true;
 }
 
-// COMPAT(0.7 visits): "an older Mac" in `launchers.json`. Goes on the user's word, once no Mac from before 1.0 connects.
-// An older Mac (Kuvo Code 0.7 and before) to hold updates back for, from now: it would put back
-// its own files.
-function noteOlderMac(at: number): void {
-  let launchers: Record<string, number> = {};
-  try { launchers = JSON.parse(fs.readFileSync(LAUNCHERS, "utf8")) ?? {}; } catch {}
-  if ((launchers["an older Mac"] ?? 0) >= at) return;
-  launchers["an older Mac"] = at;
-  try { writePrivate(LAUNCHERS, JSON.stringify(launchers)); } catch {}
-}
-
-// COMPAT(0.7 visits): `run/attached` and `run/older-mac`, an older Mac's visits. Goes on the user's word, once no Mac from before 1.0 connects.
-// An older Kuvo Code on a Mac touches `run/attached` each time it connects, and this one never
-// does: one that did lately holds this box's updates back (it would put back its own files). Not
-// a touch from before a Kuvo Code that marks the box last put its files there: that was most
-// likely the same Mac before it updated, and an older one still around touches it again.
-export function noteOlderMacs(): boolean {
-  let at = 0, marked = 0;
-  try {
-    at = fs.statSync(path.join(RUN, "attached")).mtimeMs;
-    marked = fs.statSync(path.join(K, "bin", "box-version")).mtimeMs;
-  } catch {}
-  if (at <= marked) at = 0;
-  // One a Mac's mark saw since the last check (`run/older-mac`), which marking hides.
-  try { at = Math.max(at, fs.statSync(path.join(RUN, "older-mac")).mtimeMs); } catch {}
-  if (!at || Date.now() - at > MAC_MEMORY) return false;
-  noteOlderMac(at);
-  return true;
-}
-
 /** What an update put there (`updates/installed.json`): its version, and each file's SHA-256. */
 interface Installed {
   version: string;
@@ -1050,8 +1047,7 @@ export const MAC_INSTALLING = 3600_000;
 // COMPAT(0.7 visits): drift, an older Mac's files put back over an update's. Goes on the user's word, once no Mac from before 1.0 connects.
 // Whether a Mac that doesn't leave a newer box as it is (an older Kuvo Code) put its own files back
 // since the box updated itself (seen twice, ten minutes apart, and not while a Mac says it puts its
-// files in place): then the box doesn't update itself for a while, as that Mac would undo it, and
-// says why. Its version mark stays, so no other older Mac takes it further back.
+// files in place): the box records what happened. Its version mark stays, so no other older Mac takes it further back.
 export function checkDrift(now = Date.now()): boolean {
   const record = path.join(UPDATES, "installed.json"), pending = path.join(RUN, "update-drift");
   // A Mac's note that it puts its files in place (`run/mac-installing`) counts for an hour. One
@@ -1085,7 +1081,6 @@ export function checkDrift(now = Date.now()): boolean {
     try { writePrivate(pending, installed.version); } catch {}
     return false;
   }
-  noteOlderMac(now);
   noteUpdate({ last: { at: now, result: "failed", message: "An older Kuvo Code on a Mac put its own files back here: update Kuvo Code on your Macs." } });
   return true;
 }
@@ -1120,7 +1115,10 @@ export function noteTrialEnded(reason = ""): void {
   // (Counted with the failures of that version before it: twice, and Update Now is offered.)
   const before = updateState().offerFailed;
   const tries = before?.version === trial.to ? (before.tries ?? 1) + 1 : 1;
-  noteUpdate({ trial: null, last: { at: Date.now(), result: "failed", message, from: trial.from, to: trial.to }, offerFailed: { version: trial.to, at: Date.now(), takenBack: back, tries, message } });
+  const at = Date.now();
+  noteUpdate({ trial: null, last: { at, result: "failed", message, from: trial.from, to: trial.to },
+    offerFailed: { version: trial.to, at, takenBack: back, tries, message }, fleetFailedAt: { version: trial.to, at } });
+  appendUpdateEvent(trial.to, "rollback", message, at);
 }
 
 export function updateStatus(): UpdateStatus {
@@ -1219,19 +1217,33 @@ export function startUpdate({ now = false, offered = false, round, keys, url, fr
   updateStarted = child;
   const done = () => { if (updateStarted === child) updateStarted = null; };
   child.once("exit", done);
-  child.once("error", done);
+  child.once("error", error => {
+    done();
+    if (!offered) return;
+    const version = offeredVersion();
+    if (version) recordOfferFailure(version, `Couldn’t start the updater: ${error.message}`, false);
+  });
+  child.once("exit", (_code, signal) => {
+    const version = offered && offeredVersion();
+    if (version && signal) recordOfferFailure(version, "The updater stopped before it could finish.", false);
+  });
   child.unref();
   return true;
 }
 
 /** Check for a signed release immediately, through the same no-cut path as an automatic update. */
 export function requestUpdateNow(): { status: 202 } | { status: 409; message: string } {
+  const choice = releaseChoice();
+  if (choice && newerVersion(choice.version, boxVersion())) return requestFleetRetry(choice.version);
+  if (choice && !releaseSetup()?.primary) return { status: 409, message: "This computer follows its main computer’s release." };
   const blocked = !UPDATE_KEYS.length ? "Updates aren't set up for this machine yet." : updatesBlocked();
   if (blocked) return { status: 409, message: blocked };
   if (isUpdating()) return { status: 409, message: UPDATING_ALREADY };
   const held = offerHeld() ?? (["paused", "off"].some(mark => fs.existsSync(path.join(RUN, mark))) ? "Start this computer’s box to update it." : null);
   if (held) return { status: 409, message: held };
   const offered = offerWaits();
+  if (releaseSetup() && !releaseSetup()?.primary && !offered)
+    return { status: 409, message: "This computer follows the release chosen by the main computer." };
   const kept = !offered && newerVersion(heldVersion(), boxVersion()) ? HELD : undefined;
   return startUpdate({ now: true, offered, from: kept }) ? { status: 202 } : { status: 409, message: UPDATING_ALREADY };
 }
@@ -1277,7 +1289,7 @@ export function offeredSince(): number {
 }
 
 // The SHA-256 of the offered release's pack, as its manifest says (checked as it was offered), or null.
-function offeredPack(): string | null {
+export function offeredPack(): string | null {
   try {
     const given = JSON.parse(fs.readFileSync(path.join(OFFERED, "boxes.json"), "utf8"));
     const sha = JSON.parse(Buffer.from(given.manifest, "base64").toString("utf8"))?.pack?.sha256;
@@ -1334,10 +1346,14 @@ export function offerFailedTwice(version: string | null | undefined, failed: Upd
   return !!failed && failed.version === version && (failed.tries ?? 1) > 1;
 }
 
+export function offerRetryAt(failed: NonNullable<UpdateState["offerFailed"]>): number {
+  return failed.at + (offerFailedAgain(failed.version, failed) ? OFFER_REST : OFFER_RETRY);
+}
+
 export function offerRests(version: string, now: number): boolean {
   const { offerFailed: failed, trial } = updateState();
-  if (failed?.version === version && now - failed.at < (offerFailedAgain(version, failed) ? OFFER_REST : OFFER_RETRY)) return true;
-  return trial?.to === version && boxVersion() !== version && !updateOnTrial() && now - trial.at < OFFER_REST;
+  if (failed?.version === version && !failed.retryNow && now < offerRetryAt(failed)) return true;
+  return !failed?.retryNow && trial?.to === version && boxVersion() !== version && !updateOnTrial() && now - trial.at < OFFER_REST;
 }
 
 /** A release offered from a folder on this computer (`kuvo/box/update {from}`: the one Kuvo Code
@@ -1367,7 +1383,12 @@ export function offerUpdate(from: unknown, { keys = UPDATE_KEYS, blocked = updat
   const behind = engineBehind(manifest.engine);
   if (behind) return { status: 409, message: behind };
   const offered = offeredVersion();
-  if (offered && newerVersion(offered, manifest.version)) return { status: 409, message: `A newer release (${offered}) waits to be taken already.` };
+  const setup = releaseSetup();
+  const choice = releaseChoice();
+  if (setup && manifest.spreads !== true) return { status: 409, message: "This release cannot be shared with your setup." };
+  if (setup && !setup.primary && (choice?.version !== manifest.version || choice.sha256 !== manifest.pack.sha256))
+    return { status: 409, message: "Only the release chosen by the main computer can update this computer." };
+  if (offered && newerVersion(offered, manifest.version) && (!setup || setup.primary || offered === choice?.version)) return { status: 409, message: `A newer release (${offered}) waits to be taken already.` };
   const { offerFailed: failed } = updateState();
   if (offerRests(manifest.version, clock()) && (failed?.version !== manifest.version || failed.takenBack)) return { status: 409, message: `It tried ${manifest.version} lately and went back to what it had: it takes it again tomorrow.` };
   // The same, offered again (as Kuvo Code reconnects): it's there already. (The same version built
@@ -1393,7 +1414,7 @@ export function offerUpdate(from: unknown, { keys = UPDATE_KEYS, blocked = updat
       } catch {
         return { status: 422, message: "The release's files aren't what it says." };
       }
-      if (!differs) {
+      if (!differs && (!setup?.primary || (choice?.version === manifest.version && choice.sha256 === manifest.pack.sha256))) {
         // (The release it runs, signed: kept to hand to your other computers, where it holds none
         // as new yet, as a box an app installed does.)
         keepRelease(boxes, pack);
@@ -1432,12 +1453,30 @@ export async function offerDue({ blocked = updatesBlocked(), clock = Date.now, n
     if (!isUpdating()) dropOffer();
     return false;
   }
+  const setup = releaseSetup();
+  const choice = releaseChoice();
+  if (setup && !setup.primary && (offered !== choice?.version || offeredPack() !== choice.sha256)) return false;
   if (blocked || !before || isUpdating() || updateOnTrial() || fs.existsSync(path.join(RUN, "stopped"))) return false;
   if (now) return true;
   // (One that failed here twice waits for your word, Update Now, or a newer one.)
-  if (offerFailedTwice(offered)) return false;
+  if (!setup && offerFailedTwice(offered)) return false;
   // (Only one with another engine waits for nothing to be at work.)
   return !updateStarted && !offerRests(offered, clock()) && !(offerChangesEngine() && await boxBusy());
+}
+
+function recordOfferFailure(version: string, message: string, takenBack: boolean, at = Date.now()): void {
+  const previous = updateState().offerFailed;
+  const tries = previous?.version === version ? (previous.tries ?? 1) + 1 : 1;
+  noteUpdate({ offerFailed: { version, at, takenBack, tries, message }, fleetFailedAt: { version, at } });
+}
+
+export function noteInterruptedOffer(): void {
+  const version = offeredVersion();
+  if (!version || !updateState().running || isUpdating() || updateOnTrial()) return;
+  const message = "Kuvo restarted while it was installing the offered release.";
+  recordOfferFailure(version, message, false);
+  noteUpdate({ running: null });
+  appendUpdateEvent(version, "staging", message);
 }
 
 /** The release offered from a folder here, taken when it's due (`offerDue`), as `update --offered`
@@ -1447,13 +1486,16 @@ export async function offerDue({ blocked = updatesBlocked(), clock = Date.now, n
  * failure. Busy, it waits. Nothing due: null. */
 export async function takeOffer(options: UpdateOptions = {}): Promise<UpdateOutcome | null> {
   if (!(await offerDue(options))) return null;
-  let version = offeredVersion()!, takenBack = false;
-  const outcome = await update({ ...options, from: OFFERED, swapping: () => { takenBack = true; }, taking: taken => { version = taken; } });
-  if (outcome.result === "failed") {
-    const before = updateState().offerFailed;
-    const tries = before?.version === version ? (before.tries ?? 1) + 1 : 1;
-    noteUpdate({ offerFailed: { version, at: (options.clock ?? Date.now)(), takenBack, tries, ...(outcome.message ? { message: outcome.message } : {}) } });
-  }
+  let version = offeredVersion()!, swapped = false;
+  const before = boxVersion();
+  appendUpdateEvent(version, "staging", "Preparing the accepted offer.");
+  const outcome = await update({ ...options, from: OFFERED, swapping: () => { swapped = true; }, taking: taken => { version = taken; },
+    step: step => { appendUpdateEvent(version, step, "Installing the offered release."); options.step?.(step); } });
+  appendUpdateEvent(version, outcome.result, outcome.message ?? "The installer finished this attempt.");
+  const takenBack = outcome.result === "failed" && swapped && !!before && boxVersion() === before &&
+    !updateOnTrial() && !fs.existsSync(ROLLBACK);
+  if (outcome.result === "failed" || (outcome.result === "blocked" && releaseSetup()))
+    recordOfferFailure(version, outcome.message ?? "Kuvo couldn’t install the release.", takenBack, (options.clock ?? Date.now)());
   // (Taken: forgotten once it's judged well (`confirmUpdate`), so one taken back after its trial
   // counts with the failures before it. Here already: forgotten now.)
   if (outcome.result === "current") noteUpdate({ offerFailed: null });
@@ -1505,12 +1547,11 @@ export async function untilFree(from: string, { keys = UPDATE_KEYS, blocked }: P
  * Now's is, when it's due: never in the process that asks, whose answer it would outlive, and
  * which isn't the bridge that goes for the keeper to start the new one. */
 let offerSpawned = 0;
-export async function startOfferedUpdate(clock: () => number = Date.now): Promise<boolean> {
+export async function startOfferedUpdate(clock: () => number = Date.now, manual = false): Promise<boolean> {
   // (Asked again every few seconds while one waits: not a second process while the first starts.)
-  if (clock() - offerSpawned < 60_000 || !(await offerDue())) return false;
+  if ((!manual && clock() - offerSpawned < 60_000) || !(await offerDue())) return false;
   offerSpawned = clock();
-  spawn(process.execPath, [...OWN_RUNTIME, SCRIPT, "update", "--offered"], { detached: true, stdio: "ignore", cwd: K, env: process.env }).unref();
-  return true;
+  return startUpdate({ offered: true, now: manual });
 }
 
 // A release from a folder on this computer (PROTOCOL.md, "Updates"): offered by Kuvo Code here

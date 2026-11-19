@@ -95,7 +95,7 @@ function infoFromFiles(): Promise<{ status: number; features: string[] } | null>
     const finish = (value: { status: number; features: string[] } | null) => { if (!done) { done = true; resolve(value); } };
     let child: ReturnType<typeof spawn>;
     try {
-      child = spawn(runtime, ["--config=/dev/null", "--no-env-file", script, "box", "route"], { cwd: K, env: { ...process.env, BUN_BE_BUN: "1", BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0", KUVO_HOME: K }, stdio: ["pipe", "pipe", "ignore"] });
+      child = spawn(runtime, ["--config=/dev/null", "--no-env-file", script, "box", "route", "--internal"], { cwd: K, env: { ...process.env, BUN_BE_BUN: "1", BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0", KUVO_HOME: K }, stdio: ["pipe", "pipe", "ignore"] });
     } catch { return finish(null); }
     const timer = setTimeout(() => { try { child.kill("SIGKILL"); } catch {} finish(null); }, 60_000);
     child.stdout!.on("data", chunk => { out += chunk; });

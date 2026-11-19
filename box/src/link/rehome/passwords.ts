@@ -89,7 +89,7 @@ export async function handOverPasswords({ home, keys, agentSites, agentAccounts,
   const server = await serverOf(home, wait);
   if (!server) return { done: false, why: "Kuvo isn't answering on this Mac yet", added: 0, short: 0, kept: 0 };
   const ask = async (method: string, route: string, body?: unknown): Promise<{ status: number; value: Record<string, unknown> }> => {
-    const answer = await fetch(`${server.url}/${route}`, { method, headers: { authorization: server.authorization, "content-type": "application/json", "x-kuvo-from": "app" }, body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(60_000) });
+    const answer = await fetch(`${server.url}/${route}`, { method, headers: { authorization: server.authorization, "content-type": "application/json", "x-kuvo-from": "app", "x-kuvo-internal": "1" }, body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(60_000) });
     let value: unknown = null;
     try { value = await answer.json(); } catch {}
     return { status: answer.status, value: isObject(value) ? value : {} };

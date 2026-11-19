@@ -159,7 +159,8 @@ export async function* saveLocalSetup(context: RouteContext): AsyncGenerator<Ans
     try {
       if (typeof value.signed !== "string" || value.signed.length > 128_000) return yield* json(400, {});
       const manifest = verifyBoxes(Buffer.from(value.signed, "base64").toString());
-      if (manifest.version !== value.version || manifest.pack.sha256 !== value.sha256) return yield* json(400, {});
+      if (manifest.version !== value.version || manifest.pack.sha256 !== value.sha256 || manifest.spreads !== true
+        || value.layout !== manifest.layout || value.clientProtocol !== manifest.clientProtocol) return yield* json(400, {});
     } catch {
       return yield* json(400, { message: "This release could not be verified." });
     }

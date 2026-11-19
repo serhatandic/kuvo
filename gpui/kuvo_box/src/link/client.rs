@@ -97,6 +97,7 @@ pub mod words {
     /// A refusal's `reason` when the box doesn't take this device (never paired, or removed).
     pub const UNPAIRED: &str = "unpaired";
     pub const PAIRING_WAIT: &str = "pairing-wait";
+    pub const CLIENT_UPDATE_REQUIRED: &str = "client-update-required";
     pub const PAIRING_READD: &str = "pairing-readd";
 }
 
@@ -616,8 +617,10 @@ impl LinkClient {
                 match opened {
                     Some((HandshakeHello { hello, waiting: Some(message), reason, title, action }, _)) if hello.v == 1 => {
                         let readd = reason.as_deref() == Some(words::PAIRING_READD);
-                        let refusal = Refusal { status: if readd { 409 } else { 503 }, message, title,
-                            reason: Some(if readd { words::PAIRING_READD } else { words::PAIRING_WAIT }.into()), older_box: false, action };
+                        let update = reason.as_deref() == Some(words::CLIENT_UPDATE_REQUIRED);
+                        let refusal = Refusal { status: if update { 426 } else if readd { 409 } else { 503 }, message, title,
+                            reason: Some(if update { words::CLIENT_UPDATE_REQUIRED } else if readd { words::PAIRING_READD } else { words::PAIRING_WAIT }.into()),
+                            older_box: false, action };
                         self.end(state, &from, Error::Refused(refusal), false);
                     }
                     Some((HandshakeHello { hello, .. }, transport)) if hello.v == 1 => {

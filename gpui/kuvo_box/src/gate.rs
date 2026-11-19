@@ -47,7 +47,7 @@ pub fn missing_baseline<S: AsRef<str>>(features: &[S]) -> Vec<String> {
 /// and Auto's decisions.
 pub fn is_allowed(path: &str) -> bool {
     let route = path.split('?').next().unwrap_or(path);
-    if ["kuvo/info", "kuvo/update", "kuvo/box/update", "kuvo/box/app", "kuvo/box/proof", "kuvo/box/at-work", "kuvo/agent-tools", "kuvo/computers", "kuvo/computers/events", "kuvo/devices/pair"].contains(&route) {
+    if ["kuvo/info", "kuvo/update", "kuvo/update/retry", "kuvo/update/dismiss", "kuvo/box/update", "kuvo/box/app", "kuvo/box/proof", "kuvo/box/at-work", "kuvo/agent-tools", "kuvo/computers", "kuvo/computers/events", "kuvo/devices/pair"].contains(&route) {
         return true;
     }
     if route.starts_with("api/") || route.starts_with("kuvo/agents/") {

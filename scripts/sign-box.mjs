@@ -12,6 +12,7 @@
 // the manifest's bytes, so nothing else signed with the key passes for one.
 import crypto from "node:crypto";
 import fs from "node:fs";
+import path from "node:path";
 
 const [version, pack, url, boxFile] = process.argv.slice(2);
 if (!version || !pack || !url || !boxFile || !process.env.KUVO_BOX_SIGNING_KEY) {
@@ -28,6 +29,9 @@ if (box.version !== version) {
   console.error(`The box's files are ${box.version}'s, not ${version}'s.`);
   process.exit(1);
 }
+// The built link's header is also used by the keeper before starting the code.
+const link = fs.readFileSync(path.join(path.dirname(boxFile), "bin", "kuvo-link.js"), "utf8");
+const layout = /^\/\/ Kuvo folder layout ([1-9][0-9]*) [0-9a-f]{12}\n/.exec(link);
 const data = fs.readFileSync(pack);
 // (box/src/install/kuvo-install reads this with `sed`, on a computer with nothing to parse JSON
 // yet: one line, with `version`, `engine` and `sha256` each named once, and each system's builds
@@ -37,6 +41,7 @@ const manifest = Buffer.from(JSON.stringify({
   version,
   released: new Date().toISOString(),
   engine: box.engine,
+  ...(layout ? { layout: Number(layout[1]), clientProtocol: 1 } : {}),
   linux: box.linux,
   darwin: box.darwin,
   pack: { url, sha256: crypto.createHash("sha256").update(data).digest("hex"), size: data.length },

@@ -204,6 +204,7 @@ public struct PhoneHello: Codable, Equatable, Sendable {
     public var app: String
     /// The pairing token, while pairing.
     public var pair: String?
+    public var setupProtocol: Int? = 1
 
     public init(name: String, app: String, pair: String? = nil) {
         self.name = name
@@ -221,6 +222,9 @@ public struct HostHello: Codable, Equatable, Sendable {
     public var name: String
     public var app: String
     public var engine: String?
+    public var reason: String?
+    public var waiting: String?
+    public var target: String?
 
     public init(kind: Kind, name: String, app: String, engine: String?) {
         self.kind = kind

@@ -589,7 +589,7 @@ async function releaseNetwork(t) {
   const manifestPath = path.join(release, "boxes.json");
   const pack = Buffer.from("This fixture is deliberately not a tarball.");
   const manifestFor = version => Buffer.from(JSON.stringify({
-    kuvo: "box/1", version, engine: "1.0.0",
+    kuvo: "box/1", version, engine: "1.0.0", spreads: true,
     pack: { url: "https://example.invalid/pack.tgz", sha256: crypto.createHash("sha256").update(pack).digest("hex") },
   }));
   fs.mkdirSync(release);
@@ -607,7 +607,7 @@ async function releaseNetwork(t) {
 }
 
 test("failure bench: a local release retry returns its committed receipt after the manifest is restored", { timeout: 45_000 }, async t => {
-  const { a, b, relay, release, manifestPath, offer } = await releaseNetwork(t);
+  const { a, b, c, relay, release, manifestPath, offer } = await releaseNetwork(t);
   const kind = "setupSecurityAndReleaseChoice";
   offer("0.10.0");
   const resume = relay.pause(a.address, b.address);
@@ -617,6 +617,7 @@ test("failure bench: a local release retry returns its committed receipt after t
   assertReceipt(a, kind, "pending", first.save);
   resume();
   await until("the release choice committed", () => a.read().sharedOutcomes?.[first.save.operation]?.status === "committed", t.signal);
+  await until("both members accepted the same release choice", () => [b, c].every(box => box.read().shared?.[kind]?.value?.version === "0.10.0"), t.signal);
 
   const manifest = fs.readFileSync(manifestPath);
   fs.unlinkSync(manifestPath);

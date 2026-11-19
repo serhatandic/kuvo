@@ -133,8 +133,7 @@ import { leaveForNewCode } from "./updates/code-in-place";
 import { sayWhole } from "./once";
 import { featuresNow, settleUpdate, startSettling } from "./updates/health";
 import { handOverMachine, recoverMachineJob, startMachineInstall, swapEngine } from "./updates/engine-swap";
-import { type UpdateOptions, UPDATING_ALREADY, agentsWorking, dropOldBackups, passingOutcome, updateOnTrial, checkDrift, failedInPassing, offerWaits, isUpdating, noteLauncher, noteOlderMacs, requestUpdateNow, updateStatusHere, installerSteps, noteUpdate, startOfferedUpdate, startUpdate, takeOffer, untilFree, update, UPDATE_KEYS, releaseRound, updatesBlocked, updateState, updateStatus } from "./updates/update";
-import { clearIncoming, followOver, followPeers, watchHeld } from "./updates/fleet";
+import { type UpdateOptions, UPDATING_ALREADY, agentsWorking, dropOldBackups, passingOutcome, updateOnTrial, failedInPassing, isUpdating, requestUpdateNow, updateStatusHere, installerSteps, noteUpdate, takeOffer, untilFree, update, updateStatus } from "./updates/update";
 import { checkFolderVersion, setupLayoutDeferred, unlinkCleanupLayoutReady } from "../shared/folder-version";
 import { BRIDGE_VERSION } from "./version";
 import { ADD_RESERVATION, SETUP_LOCAL_PAIRINGS, SETUP_OCCUPIED } from "./marks";
@@ -217,8 +216,12 @@ export { codeCheck, codeInPlace } from "./updates/code-in-place";
 export { HEALTH, lookAtPieces, rollBackCode, settleUpdate } from "./updates/health";
 export { appBehind, registerDesktop } from "./mac/app";
 export { noteTrialEnded } from "./updates/update";
+export { layoutHold } from "./updates/choice";
+export { clientUpdateRequired, computerUpdateRequired } from "./updates/client";
+export { dismissFleetUpdate, fleetSummary, localFleetUpdate, requestFleetRetry } from "./updates/progress";
+export { requestedRetry, transferAttempt } from "./updates/attempt";
 export { fleetFacts, fleetWith, followPeers, forgetFleet, heldRelease, keepRelease, newestHeld, pullUnderWay, takeReleaseMail, watchHeld } from "./updates/fleet";
-export { UPDATE_KEYS, agentsWorking, boxVersion, dropOldBackups, checkDrift, confirmUpdate, isUpdating, newerVersion, noteLauncher, noteOlderMacs, offerDue, offerHeld, offerUpdate, offerWaits, offeredVersion, releaseRound, startUpdate, takeOffer, update, updateStatus, updatesBlocked, verifyBoxes, versionOrder } from "./updates/update";
+export { UPDATE_KEYS, agentsWorking, boxVersion, dropOldBackups, checkDrift, confirmUpdate, isUpdating, newerVersion, noteLauncher, offerDue, offerHeld, offerUpdate, offerWaits, offeredVersion, releaseRound, startUpdate, takeOffer, update, updateStatus, updatesBlocked, verifyBoxes, versionOrder } from "./updates/update";
 export { FILE_LIMIT } from "./areas/file";
 export { firstMessageOf, jobInMemory, jobLine, keepJobs } from "./bots/jobs";
 export { listBots } from "./bots/list";
@@ -277,6 +280,7 @@ export { forgetMigrated as forgetQueueMigrated } from "./work-queue/migrate";
 export { atWorkForSure as queueAtWorkForSure, forgetSettled as forgetQueueSettled, settleStarted as settleQueueStarted } from "./work-queue/started";
 import { atWorkForSure, settleStarted } from "./work-queue/started";
 import { repairWithFetch } from "./updates/repair";
+import { keepFleetUpdates } from "./updates/keep";
 export { readReach } from "./peers/reach";
 export { peerPlaces } from "./engine/client";
 export { answerPersonalities, retellBots, takePersonalities, takePersonalitiesDocument } from "./personalities/take";
@@ -491,35 +495,9 @@ async function run(): Promise<void> {
   refreshOwn(readEngineFile).catch(() => {});
   // Your time zone in its bots' and conversations' folders, kept so as it runs.
   keepZone();
-  // Updates (PROTOCOL.md, "Updates"): a release Kuvo Code here offered, at the next round; one a
-  // peer holds, as its mail says it (`updates/fleet.ts`), and looked at again each minute; and the
-  // release check, once in each six hours at any hour, waiting for no quiet moment. Whether one is
-  // well is its judge's to say (updates/health.ts).
-  followOver(() => current);
-  clearIncoming();
-  setInterval(() => { try { followPeers(); tellUntold(); } catch {} }, 60_000).unref?.();
+  keepFleetUpdates(liveLink);
+  setInterval(() => { try { tellUntold(); } catch {} }, 60_000).unref?.();
   keepMachinesUp();
-  // A newer signed release held here (Kuvo Code here handed it over, or it was fetched): your other
-  // computers hear at once, not at the next minute's round, and take it in parallel with this one.
-  watchHeld(() => {
-    if (current?.welcomed) announce(current, readEngineFile).catch(() => {});
-  });
-  const rounds = () => {
-    noteLauncher();
-    noteOlderMacs();
-    try { checkDrift(); } catch {}
-    try { dropOldBackups(); } catch {}
-    startOfferedUpdate().catch(() => {});
-    const round = releaseRound();
-    if (updateState().round === round || !UPDATE_KEYS.length) return;
-    // (In a process of its own, which notes the round once it went, unless something was at work.)
-    startUpdate({ round });
-  };
-  setTimeout(rounds, 60_000);
-  setInterval(rounds, 600_000);
-  // While a release Kuvo Code here offered waits, it's taken as soon as nothing's at work (a look
-  // at the engine here every 20 seconds, only then), not at the next ten-minute round.
-  setInterval(() => { if (offerWaits()) startOfferedUpdate().catch(() => {}); }, 20_000).unref?.();
   // Recently Deleted's skills past their 30 days, gone with no client there too.
   keepSkillTrashClear();
   // What a Work Queue change left half read as the box stopped.
@@ -696,12 +674,12 @@ async function box(command: string): Promise<void> {
       if (error) return say({ status: 400, routeVersion: ROUTE_VERSION, body: JSON.stringify(error) });
       // Forward only the folder, sign-in client, vault credentials and route version from SSH.
       const headers: Record<string, string> = { "content-type": "application/json" };
-      for (const name of ["x-opencode-directory", "x-kuvo-sign-in-client", "x-kuvo-vault-key", "x-kuvo-vault-proof", ROUTE_VERSION_HEADER]) {
+      for (const name of ["x-opencode-directory", "x-kuvo-sign-in-client", "x-kuvo-vault-key", "x-kuvo-vault-proof", "x-kuvo-client-version", "x-kuvo-client-id", ROUTE_VERSION_HEADER]) {
         const value = givenHeaders[name];
         if (typeof value === "string") headers[name] = value;
       }
       const sentBody = typeof given?.bodyText === "string" ? given.bodyText : given?.body === undefined ? "" : JSON.stringify(given.body);
-      const request = { method: String(given?.method ?? "GET"), path: String(given?.path ?? ""), headers, body: Buffer.from(sentBody), fromMac: true };
+      const request = { method: String(given?.method ?? "GET"), path: String(given?.path ?? ""), headers, body: Buffer.from(sentBody), fromMac: true, internal: process.argv[5] === "--internal" };
       let status = 502;
       let type = "";
       let routeResponseVersion: string | undefined;
@@ -955,6 +933,7 @@ async function serve(): Promise<void> {
   const testsAlone = process.env.KUVO_TEST_NO_PEERS && !REAL_BOX;
   if (IS_MAC && !testsAlone) {
     runMacPeers();
+    keepFleetUpdates(liveLink);
     startTakeover(liveLink);
   }
   // Recently Deleted's skills past their 30 days, gone with no client there too.

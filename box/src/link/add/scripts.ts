@@ -323,7 +323,7 @@ ${link("box seed")}`;
  * standard input): its answer is the last line, `{status, body}`. */
 export const route = (version: string): string => `${K}
 ${engineOf(version)}
-${link("box route")}`;
+${link("box route --internal")}`;
 
 /** What Kuvo there is, and whether anything is at work on it now, for bringing an older one up to
  * date only while nothing is (`keep-up.ts`): its engine and its coding agents' bridge asked, as a

@@ -59,6 +59,12 @@ public enum LinkError: Error, Equatable, LocalizedError {
     }
 }
 
+public struct ClientUpdateRequired: Error, Equatable, LocalizedError {
+    public let target: String?
+    public let message: String
+    public var errorDescription: String? { message }
+}
+
 /// A host the phone is paired with.
 public struct PairedHost: Codable, Hashable, Sendable {
     public var address: String
@@ -427,10 +433,11 @@ public actor LinkClient {
 
     /// Ends `session`, telling the host unless it no longer has it (the relay said it's gone).
     /// What's safe to send again goes again, unless `repeating` is false (ended on purpose).
-    private func end(_ session: Session, with error: LinkError, tellingHost: Bool = true, repeating: Bool = true) {
+    private func end(_ session: Session, with error: LinkError, tellingHost: Bool = true, repeating: Bool = true, refusal: ClientUpdateRequired? = nil) {
         let address = session.host.linkAddress
         if sessions[address] === session { sessions[address] = nil }
-        for waiter in session.waiting { waiter.resume(throwing: error) }
+        let reported: any Error = refusal.map { $0 as any Error } ?? error
+        for waiter in session.waiting { waiter.resume(throwing: reported) }
         session.waiting = []
         session.checking = false
         session.unanswered = [:]
@@ -441,9 +448,9 @@ public actor LinkClient {
             session.streams[id] = nil
             again(attempt, after: error)
         }
-        for stream in session.streams.values { stream.finish(throwing: error) }
+        for stream in session.streams.values { stream.finish(throwing: reported) }
         session.streams = [:]
-        for socket in session.sockets.values { socket.finish(throwing: error) }
+        for socket in session.sockets.values { socket.finish(throwing: reported) }
         session.sockets = [:]
         if tellingHost, session.transport != nil { relay?.send(.send(to: address, payload: LinkFrame(.close, session: session.id).data)) }
         session.transport = nil
@@ -840,6 +847,10 @@ public actor LinkClient {
             do {
                 let (payload, transport) = try initiator.readMessage2(frame.body)
                 let hello = try JSONDecoder().decode(HostHello.self, from: payload)
+                if hello.reason == "client-update-required" {
+                    return end(session, with: .unsupportedVersion, refusal: ClientUpdateRequired(
+                        target: hello.target, message: hello.waiting ?? "Update Kuvo Code to connect to your setup."))
+                }
                 session.initiator = nil
                 session.transport = transport
                 session.lastHeard = clock.now()

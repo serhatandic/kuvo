@@ -231,6 +231,8 @@ pub struct Computer {
     /// SSH says: how that stands, in its words. None: it's up to date, or no box here updates it.
     #[serde(default, deserialize_with = "readable_one")]
     pub update: Option<ComputerUpdate>,
+    #[serde(default, rename = "fleetUpdate", deserialize_with = "readable_one")]
+    pub fleet_update: Option<FleetUpdate>,
     /// This Mac's own row: the newer Kuvo version this Mac runs than the desktop app that last
     /// opened with it, which checks for its own update then (once for each version).
     #[serde(default, rename = "appCheck")]
@@ -474,11 +476,43 @@ impl Computer {
     }
 }
 
+/// Progress toward the accepted release on one computer.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FleetUpdate {
+    pub current: Option<String>,
+    pub target: String,
+    pub state: String,
+    pub stage: Option<String>,
+    pub running_turns: Option<u64>,
+    pub reason: Option<String>,
+    pub rolled_back_to: Option<String>,
+    pub next_retry_at: Option<u64>,
+    pub failed_at: Option<u64>,
+    pub last_failure_at: Option<u64>,
+    pub can_retry: bool,
+}
+
+/// Progress across the setup, included in every Computers snapshot.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct FleetUpdateSummary {
+    pub target: String,
+    pub stage: String,
+    pub done: usize,
+    pub updating: usize,
+    pub behind: usize,
+    pub failed: usize,
+    pub dismissed: bool,
+    pub failures: Vec<String>,
+}
+
 /// Your computers, the answering box first.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
 pub struct Computers {
     #[serde(default, deserialize_with = "readable")]
     pub computers: Vec<Computer>,
+    #[serde(default, rename = "fleetUpdate", deserialize_with = "readable_one")]
+    pub fleet_update: Option<FleetUpdateSummary>,
 }
 
 // MARK: Plan limits
@@ -720,7 +754,21 @@ impl BoxClient {
 
     /// Your computers as one list, the box that answers first.
     pub fn computers(&self) -> Result<Vec<Computer>> {
-        Ok(self.get::<Computers>("kuvo/computers")?.computers)
+        Ok(self.computers_snapshot()?.computers)
+    }
+
+    pub fn computers_snapshot(&self) -> Result<Computers> {
+        self.get("kuvo/computers")
+    }
+
+    /// Retries the named accepted release on the computer this client reaches.
+    pub fn retry_fleet_update(&self, target: &str) -> Result<FleetUpdate> {
+        self.value(&Request::post("kuvo/update/retry", serde_json::json!({ "target": target })))
+    }
+
+    /// Dismisses the header for this device and this update on the source of the list.
+    pub fn dismiss_fleet_update(&self, target: &str) -> Result<FleetUpdateSummary> {
+        self.value(&Request::post("kuvo/update/dismiss", serde_json::json!({ "target": target })))
     }
 
     /// Renames one of your machines (`computers.manage`): done by the box that writes its record,

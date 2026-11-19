@@ -3541,7 +3541,7 @@ function localSetupValue(run, kind) {
     }
     const link = kept.link;
     const setup = link?.setup;
-    if (!isObject(setup) || setup.aside || !setup.standby && !setup.sharedSaves || typeof setup.id !== "string" || typeof setup.epoch !== "number")
+    if (!isObject(setup) || setup.aside || !setup.standby && !setup.sharedSaves && !(setup.checkpointed && kind === "setupSecurityAndReleaseChoice") || typeof setup.id !== "string" || typeof setup.epoch !== "number")
       return null;
     const values = link.sharedSetup === setup.id && isObject(link.shared) ? link.shared : null;
     const entry = values && Object.hasOwn(values, kind) && isObject(values[kind]) ? values[kind] : null;
@@ -43718,4 +43718,4 @@ if (!isMainThread && process.argv.includes("--insights-db-worker")) {
 } else {
   await init_main().then(() => ({}));
 }
-// Built from Packages/Box/src/agents 39fb03807836bab329375bd6b65e4b3568525aa9895c2c64bb18ed9f30d2ac38
+// Built from Packages/Box/src/agents 459db668956c970244e9d3702db9aa7d64d61806f04050ea888a87e964883194

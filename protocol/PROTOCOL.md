@@ -3388,9 +3388,57 @@ did: the box keeps working as itself ("For released Macs").
   engine's work to finish. The box's Update Now route also waits in that case. It checks for a
   signed release immediately and can retry one that failed before. It returns 409 when an update
   or trial is under way or the box has been stopped.
-- **Your computers follow each other** (one fleet, one version): every box runs the newest signed
-  release any of your computers holds, and a box that's behind takes it from one that holds it, by
-  itself, at once.
+- **Fleet versions** (#848 J): the main computer selects the release through the accepted
+  setup save, `setupSecurityAndReleaseChoice`. A selection binds the version to the signed
+  manifest and its pack hash. A standby acknowledges it when the setup requires a standby.
+  Once accepted, members pull that exact signed release from the main computer or standby over
+  the existing peer connection. A member cannot take a different release from its desktop app or
+  select a release from the feed. Older setups that have yet to adopt accepted saves use the
+  compatibility release announcements. Signed builds meant for a single computer cannot be
+  selected for a setup.
+  - **Layout**: the installer checks the packed link’s layout before swapping any files or calling
+    the folder migration steps. Every member must be able to read the layout. Computers advertise
+    their reader ceiling in `computer.layout`. The known beta.35 release supports layout 18.
+    A future higher layout needs a reader-capability rollout before it can become writable.
+    Pre-layout beta.34 boxes must first be brought to beta.35 through the existing compatibility
+    installer. A box still running the old updater can still have its legacy visit hold.
+  - **Transfer attempts**: the relay owner records manifest request, pack download, offer and
+    installation, including interruptions and rejection reasons. Transfer retries back off from
+    30 seconds up to an hour per source. Install failures use the offered update’s one-hour or
+    one-day rest and may be retried early through the request API. A trial must pass the health
+    check before it is considered installed. The existing live handover applies.
+  - **Admission**: the box’s own wake, browser and maintenance calls use the internal local
+    request path. A computer below its accepted target returns `503` with
+    `{reason: "computer-update-required", message, current, target}` for normal client work
+    until it catches up. Update, Computers and active-turn approval routes remain available.
+    The desktop reports its release in the relay hello’s `app` or the local/SSH
+    `x-kuvo-client-version` header. A phone sends `setupProtocol` (currently 1) in its relay
+    hello because the phone has its own marketing version. A signed manifest with
+    `clientProtocol` activates the fleet version gates. An incompatible authenticated client
+    gets `reason: "client-update-required"`, `target`, `title` and the message in `waiting`
+    on the encrypted refusal hello, or HTTP `426` with `message` instead of `waiting`.
+    A pairing token remains available after a version refusal.
+  - **Request API** (`update.fleet` feature): `GET kuvo/computers` and each NDJSON snapshot on
+    `GET kuvo/computers/events` can include a top-level `fleetUpdate` and
+    `computers[].fleetUpdate`. They are present once the setup has an accepted target. An older
+    computer that has not reported its progress can still be shown behind.
+    - A row has `{current, target, state, canRetry, lastFailureAt?}`. `current` can be null.
+      States are `up-to-date`, `behind` (optional `reason`), `updating` (`stage:
+      "downloading" | "waiting" | "switching"`, optional `runningTurns`, null if unknown),
+      and `failed` (`reason, rolledBackTo, nextRetryAt, failedAt`). Times are Unix milliseconds.
+    - The summary is `{target, done, updating, behind, failed, stage, dismissed, failures}`.
+      Its stages are `behind`, `downloading`, `waiting`, `switching`, `failed` and
+      `finished`. Show an active update while `!dismissed && stage !== "finished"`.
+      `failures` is a list of opaque failure identifiers clients can retain with a dismissal
+      when their stream switches computer.
+    - `POST kuvo/update/retry {target}` to the affected computer returns `202` with its update
+      state or `409 {message}` when the target changed or `canRetry` is false. A computer can
+      retry after failure or five minutes without progress. Its relay owner consumes the request
+      and starts the same no-cut path used by automatic updates.
+    - `POST kuvo/update/dismiss {target}` to the stream source returns `200` with the summary
+      or `409 {message}` if the target changed. The source remembers the request for the paired
+      device, or the local installation (local callers can distinguish themselves with a stable
+      `x-kuvo-client-id`, 32 lowercase hex digits). A new target or a new failure reopens it.
   - **Held**: a box keeps the newest signed release it has (`updates/release`: `boxes.json` and
     `pack.tgz`) from the moment it's checked there: Kuvo Code here offers it (`kuvo/box/update`,
     and the 409 "with these same files" too), the box fetches it (once the pack's SHA-256 is
@@ -3406,13 +3454,6 @@ did: the box keeps working as itself ("For released Macs").
     is its app's) and `release` (the version it holds), "Peers".
   - **Told at once**: the box's link watches `updates` and, as a newer release is held (whichever
     process kept it), tells its peers in agents mail right away.
-  - **Followed**: as a peer's agents mail comes, and each minute, a box takes the newest `release`
-    your computers say, newer than its own version: the newest version, then the lowest key (a peer
-    that couldn't hand a version over isn't asked for it again for an hour). A version that rests
-    after failing here, or failed here twice, gives way to the next newer one; one as new or newer
-    offered here already is taken first. Not while it's blocked, an update runs (its own release
-    check too) or is on trial, or its engine is stopped on purpose: a pull under way then waits,
-    kept, and is offered once that's over.
   - **Moved**: peer mail `release`, one pull at a time. `{want: <version>}` → `{version, boxes,
     size}` (`boxes`, the signed `boxes.json` as it is) or `{version, none: true}`; then `{version,
     part: <i>}` → `{version, i, d}` (`d`: the pack's 30,000 bytes from `i × 30,000`, base64), up to
@@ -11872,12 +11913,10 @@ before connects (the box notes one: `run/attached`).
   a Mac that marks boxes starts it over once nothing runs, so the box's settings apply again.
   Until then a Mac reading its group chats takes a 404 from that agents bridge as none.
   <!-- compat: 0.7 engine-stop -->
-- **Its visits hold updates back**: `run/attached` from before the box was last marked doesn't
-  count (most likely the same Mac before it updated). A Mac marking the box after such a visit
-  notes it first (`run/older-mac`, with the visit's time), so the mark doesn't hide it. The box
-  doesn't update itself for 30 days after one ("an older Mac" in `run/launchers.json`), nor
-  while a Mac that started its engine in the last 30 days hasn't said it `tolerates` newer boxes,
-  nor for 30 days after drift (its files put back over an update's).
+- **Its visits**: a Mac marking the box after an older visit can keep its time in
+  `run/older-mac`. The box can detect files put back by an older Mac and record the drift.
+  Neither launcher records nor an anonymous visit can hold the fleet’s updates. The keeper
+  still takes away the old watchdog’s mark before the watchdog stops the engine.
   <!-- compat: 0.7 visits -->
 - **Its settings**: its start leaves its settings in the global file and `keys/settings.json`,
   with keys in `keys/`. The first Mac with boxes makes them the box's own (`kuvo-link.js box

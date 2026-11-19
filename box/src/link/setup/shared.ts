@@ -400,7 +400,7 @@ export function installShared(link: LinkState, values: SharedValues | undefined,
 export function changeShared(kind: SharedKind, change: (value: unknown, link: LinkState) => unknown, operation?: string): Receipt | null {
   let save: Receipt | null = null;
   updateLink(link => {
-    if (!link || link.setup?.role !== "primary" || !link.setup.standby) return null;
+    if (!link || link.setup?.role !== "primary" || (!link.setup.standby && kind !== "setupSecurityAndReleaseChoice")) return null;
     save = stageShared(link, kind, change(sharedValue(link, kind), link), undefined, operation);
     return save ? link : null;
   }, { durable: true });

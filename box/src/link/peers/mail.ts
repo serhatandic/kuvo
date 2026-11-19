@@ -59,10 +59,10 @@ export function peerMail(sender: MailSender, payload: Record<string, unknown>, h
     noteBotsChanged();
     // A newer signed release it holds is taken from it now (PROTOCOL.md, "Updates", Your computers
     // follow each other).
-    try { followPeers(); } catch {}
+    followPeers();
   }
   // A release asked for, or handed over in parts (`updates/fleet.ts`).
-  if (isObject(payload.release)) try { takeReleaseMail(sender, payload.release); } catch {}
+  if (isObject(payload.release)) takeReleaseMail(sender, payload.release);
   // Your time zone (`zone/setting.ts`), from any of your computers.
   if (isObject(payload.zone) && !usesAcceptedSaves(readLink()?.setup)) takeZone(payload.zone);
   // Documents (PROTOCOL.md, "Documents"): given, in parts, or a digest of what it has.

@@ -123,6 +123,8 @@ export interface ToldComputer {
   /** The version of the signed release this box holds and hands to your other computers that are
    * behind (PROTOCOL.md, "Updates", Your computers follow each other). */
   release?: string;
+  layout?: number;
+  fleetUpdate?: import("./routes/box").FleetUpdate;
   /** How its coding agents stand (PROTOCOL.md, "The coding agents' state"): running, restarting by
    * themselves, or down, and why (`engine`, `notInstalled`, `outdated`, `keeper`, `crashing`,
    * `stuck`, `notStarting`, `app`), so a computer whose agents are down can be told apart from afar. */

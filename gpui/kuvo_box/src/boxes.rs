@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::areas::{Computer, Computers};
+use crate::areas::{Computer, Computers, FleetUpdateSummary};
 use crate::client::BoxClient;
 use crate::error::{Error, Result};
 use crate::follow::{Follow, Followed, Timing as FollowTiming};
@@ -135,6 +135,14 @@ struct Kept {
     paired: Option<String>,
     #[serde(default)]
     computers: Vec<KeptComputer>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    dismissed_update: Option<DismissedUpdate>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct DismissedUpdate {
+    target: String,
+    failures: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -171,6 +179,7 @@ struct State {
     /// The list as last taken, and whether the nearest box said it.
     list: Vec<Computer>,
     rows: Vec<Row>,
+    fleet_update: Option<FleetUpdateSummary>,
     nearest_key: Option<String>,
     linked: HashMap<String, Linked>,
     /// One connection per relay.
@@ -309,6 +318,39 @@ impl Boxes {
         self.state().rows.clone()
     }
 
+    /// The setup-wide update facts from the same live snapshot as the computers.
+    pub fn fleet_update(&self) -> Option<FleetUpdateSummary> {
+        self.state().fleet_update.clone()
+    }
+
+    pub fn dismiss_fleet_update(&self, target: &str) -> Result<()> {
+        let source = self.lister().ok_or_else(|| Error::NotRunning("None of your computers is answering.".into()))?;
+        let summary = source.dismiss_fleet_update(target)?;
+        let mut state = self.state();
+        state.kept.dismissed_update = Some(DismissedUpdate { target: summary.target.clone(), failures: summary.failures.clone() });
+        self.write_kept(&state);
+        state.fleet_update = Some(summary);
+        drop(state);
+        self.notify();
+        Ok(())
+    }
+
+    fn take_snapshot(&self, list: Computers, from_nearest: bool) {
+        let mut state = self.state();
+        let dismissal = state.kept.dismissed_update.as_ref();
+        let summary = list.fleet_update.map(|mut summary| {
+            if let Some(dismissal) = dismissal {
+                if dismissal.target == summary.target && summary.failures.iter().all(|id| dismissal.failures.contains(id)) {
+                    summary.dismissed = true;
+                }
+            }
+            summary
+        });
+        state.fleet_update = summary;
+        drop(state);
+        self.take(&list.computers, from_nearest);
+    }
+
     pub fn pairing(&self) -> Pairing {
         self.state().pairing.clone().unwrap_or(Pairing::NotAsked)
     }
@@ -350,6 +392,7 @@ impl Boxes {
     fn save(&self, state: &mut State) {
         let kept = Kept {
             paired: state.kept.paired.clone(),
+            dismissed_update: state.kept.dismissed_update.clone(),
             // Public facts of your own computers only, as the list gave them.
             computers: state.list.iter().filter(|computer| !computer.key.is_empty()).map(|computer| KeptComputer { key: computer.key.clone(), name: computer.name.clone(), kind: computer.kind.clone(), address: computer.address.clone(), relay: computer.relay.clone() }).collect(),
         };
@@ -467,8 +510,7 @@ impl Boxes {
     /// Reads the list once from the box it's followed on, and takes it.
     pub fn read_list(&self) -> Result<()> {
         let (client, from_nearest) = self.source().ok_or_else(|| Error::NotRunning("None of your computers is answering.".into()))?;
-        let computers = client.computers()?;
-        self.take(&computers, from_nearest);
+        self.take_snapshot(client.computers_snapshot()?, from_nearest);
         Ok(())
     }
 
@@ -742,7 +784,7 @@ impl Boxes {
         let _ = std::thread::Builder::new().name("kuvo-boxes-list".into()).spawn(move || {
             while let Some(update) = follow.next_blocking() {
                 if let Followed::Now(list) = update {
-                    boxes.take(&list.computers, from_nearest);
+                    boxes.take_snapshot(list, from_nearest);
                 }
             }
         });

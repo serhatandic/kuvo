@@ -229,6 +229,7 @@ export const FEATURES = [
   "skills.trash",
   "typed",
   "update",
+  "update.fleet",
   "usage.history",
   "usage.insights",
   "usage.notices",

@@ -190,11 +190,17 @@ impl SshBox {
         }
         // The folder a request is about, as a phone's request names it; the rest are the engine's
         // password's and the link's own, which `box route` adds itself.
-        let headers: serde_json::Map<String, serde_json::Value> = request
+        let mut headers: serde_json::Map<String, serde_json::Value> = request
             .wire_headers()
             .filter(|(name, _)| matches!(*name, "x-opencode-directory" | "x-kuvo-sign-in-client" | ROUTE_VERSION_HEADER))
             .map(|(name, value)| (name.to_owned(), serde_json::Value::String(value.to_owned())))
             .collect();
+        if let Some(id) = crate::transport::client_installation_id() {
+            headers.insert("x-kuvo-client-id".into(), id.into());
+        }
+        if let Some(version) = option_env!("KUVO_APP_VERSION") {
+            headers.insert("x-kuvo-client-version".into(), version.into());
+        }
         if !headers.is_empty() {
             asked["headers"] = serde_json::Value::Object(headers);
         }

@@ -1,4 +1,4 @@
-// kuvo-browser f12ba9f3a0f56a71
+// kuvo-browser ea9ec5af5f3100f5
 // Built from box/src/browser by scripts/build-browser.sh: change those, then run it. Never edit this file.
 // One capture class's clock and digest; pure so its backoff is tested without sleeps.
 export function framePolicy() {
@@ -102,7 +102,7 @@ const TAB_IDLE = Number(process.env.KUVO_BROWSER_TAB_IDLE || 3600) * 1000;
 // branch bumps it by hand. The keeper of the file that's in place now replaces a different one
 // that's running (its pages close, its sign-ins stay); a process whose file has been replaced since
 // it started never replaces one (`replacesKeeper`).
-const KEEPER = "91e7ec63e8fb";
+const KEEPER = "5af2acf3c2c6";
 // COMPAT(0.7 keeper-number): what a keeper says it is to processes from before KEEPER was a hash. Goes 3 months after 0.8.0.
 // Those compare numbers, raised by hand to 50, and replace a keeper whose number is lower than
 // theirs: every keeper since says 51, so none of them replaces it.
@@ -2792,7 +2792,7 @@ async function onAutopilot(id) {
 /// sees what it began through for others (opening the app) and then ends by itself.
 function boxRoute(request, { timeout = 30_000, cancelled = () => false, once = false } = {}) {
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, [...OWN_RUNTIME, path.join(K, "bin", "kuvo-link.js"), "box", "route"], {
+    const child = spawn(process.execPath, [...OWN_RUNTIME, path.join(K, "bin", "kuvo-link.js"), "box", "route", "--internal"], {
       cwd: K,
       env: { ...process.env, KUVO_HOME: K, BUN_BE_BUN: "1", BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0" },
       stdio: ["pipe", "pipe", "ignore"],
@@ -2923,7 +2923,7 @@ async function appBrowser(call, reply) {
 /// the box may (one that asks you waits for you).
 function vaultRoute(request, call, timeout = 60_000) {
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, [...OWN_RUNTIME, path.join(K, "bin", "kuvo-link.js"), "box", "route"], {
+    const child = spawn(process.execPath, [...OWN_RUNTIME, path.join(K, "bin", "kuvo-link.js"), "box", "route", "--internal"], {
       cwd: K,
       env: { ...process.env, KUVO_HOME: K, BUN_BE_BUN: "1", BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0" },
       stdio: ["pipe", "pipe", "ignore"],

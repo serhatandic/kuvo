@@ -20,6 +20,8 @@ export interface LinkRequest {
   /** Over this box's own server on this computer, with its password (`serve`, `serve --kept`): not
    * `box route`, which anything on the computer can run, nor the relay. */
   served?: boolean;
+  /** A box-owned command or authenticated loopback request. */
+  internal?: boolean;
   /** From Kuvo Code's desktop app over the link (its hello's `client`, PROTOCOL.md "Sessions"):
    * a remote client like a phone for everything it may do, but not read on a small screen. */
   desktop?: boolean;
