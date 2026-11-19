@@ -543,3 +543,46 @@ fn first_run_computer_picker_switches_and_returning_keeps_the_app_open(cx: &mut 
     cx.run_until_parked();
     assert!(shown(cx, "rail-settings") && !shown(cx, "first-run"));
 }
+
+#[gpui::test]
+fn a_background_computer_disconnecting_does_not_grey_out_the_shown_computers_bots(cx: &mut TestAppContext) {
+    use kuvo_ui::bot::State;
+
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let devbox = stand_in.peer_box("key_devbox").expect("devbox");
+    devbox.add_bot("bot_scout", "Scout", json!({ "color": "mint", "shape": "round", "face": "calm" }));
+    devbox.set_bot_now("bot_scout", json!({ "working": 1, "asking": 0, "state": "working", "since": NOW }));
+    let (home, cx) = open(cx, stand_in.clone());
+
+    // Open Bots on this computer so NEAREST has loaded bots (with bot_scout listed under elsewhere).
+    let nearest = workspace(&home, cx);
+    click(cx, "rail-bots");
+    assert_eq!(cx.update(|_, cx| kuvo::bot_face::faces(cx).borrow().shown("bot_mira")), Some(State::NeedsYou));
+
+    // Switch to devbox and open Bots there: bot_scout is working on devbox.
+    click(cx, "computer-switcher");
+    click(cx, "menu-item-devbox");
+    click(cx, "rail-bots");
+    assert_eq!(cx.update(|_, cx| kuvo::bot_face::faces(cx).borrow().shown("bot_scout")), Some(State::Working));
+
+    // The background NEAREST workspace loses connection: it must not overwrite global bot_face
+    // states with Offline and grey out the shown devbox workspace's bots.
+    nearest.update_in(cx, |ws, _, cx| ws.connected(Err(kuvo_box::Error::NotRunning("offline".into())), cx));
+    cx.run_until_parked();
+    assert_eq!(
+        cx.update(|_, cx| kuvo::bot_face::faces(cx).borrow().shown("bot_scout")),
+        Some(State::Working),
+        "disconnecting a background computer must not turn the shown computer's bots grey/offline"
+    );
+
+    // Switching back to the disconnected NEAREST workspace shows its bots offline, and switching
+    // back to the connected devbox restores devbox's live bot faces immediately.
+    let here = home.read_with(cx, |home, _| home.boxes().nearest_key().unwrap());
+    home.update_in(cx, |home, window, cx| assert!(home.switch_to(&here, window, cx)));
+    cx.run_until_parked();
+    assert_eq!(cx.update(|_, cx| kuvo::bot_face::faces(cx).borrow().shown("bot_mira")), Some(State::Offline));
+
+    home.update_in(cx, |home, window, cx| assert!(home.switch_to("key_devbox", window, cx)));
+    cx.run_until_parked();
+    assert_eq!(cx.update(|_, cx| kuvo::bot_face::faces(cx).borrow().shown("bot_scout")), Some(State::Working));
+}

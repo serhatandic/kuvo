@@ -2233,6 +2233,14 @@ impl Workspace {
         self.switching.as_ref()
     }
 
+    /// Whether this workspace is the one the window currently shows: background computers keep
+    /// their workspaces alive, while only the shown one updates shared bot faces (`bot_face`).
+    pub fn set_shown(&mut self, shown: bool, cx: &mut Context<Self>) {
+        if let Some(view) = self.area_view(Area::Bots).cloned() {
+            view.update(cx, |view, cx| view.set_shown(shown, cx));
+        }
+    }
+
     pub fn set_switching(&mut self, switching: Option<crate::home::Switching>, cx: &mut Context<Self>) {
         if self.switching != switching {
             // Why this app isn't paired, whole, on the Computers pages (the switcher's line is short).

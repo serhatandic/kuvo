@@ -149,6 +149,9 @@ pub struct AreaView {
     _bots_follow: Option<(kuvo_box::Follow<kuvo_box::follow::Followed<BotsSaid>>, Task<()>)>,
     /// Whether the box is reached: its bots are drawn offline while it isn't.
     reached: bool,
+    /// Whether this workspace is the one the window currently shows: background computers keep
+    /// their workspaces alive, but only the shown workspace writes to global `bot_face` states.
+    shown: bool,
     fresh_bots: bool,
     /// The bot whose conversation the window shows, and what the box was last told it saw there.
     chat_open: Option<String>,
@@ -307,7 +310,7 @@ impl AreaView {
             });
             (follow, task)
         });
-        AreaView { moves: None, remote_bots: Default::default(), _bots_follow: bots_follow, reached: true, fresh_bots: false, chat_open: None, seen_told: None, followed_meanwhile: None, _groups_follow: groups_follow, groups, _groups: groups_subscriptions, computers_page, _computers_page: computers_subscriptions, queue_page, _queue_page: queue_subscriptions, page, _page: page_subscriptions, area, sidebar_mode: SidebarMode::Full, client, live, bots: Reading::NotYet, queue: Reading::NotYet, computers: Reading::NotYet, this_box: "This Mac".into(), this_kind: String::new(), selected, now: None, reading: None, settings, _settings_picks: picks, _settings_adds: adds, _settings_opens: opens, _settings_changes: changes }
+        AreaView { moves: None, remote_bots: Default::default(), _bots_follow: bots_follow, reached: true, shown: true, fresh_bots: false, chat_open: None, seen_told: None, followed_meanwhile: None, _groups_follow: groups_follow, groups, _groups: groups_subscriptions, computers_page, _computers_page: computers_subscriptions, queue_page, _queue_page: queue_subscriptions, page, _page: page_subscriptions, area, sidebar_mode: SidebarMode::Full, client, live, bots: Reading::NotYet, queue: Reading::NotYet, computers: Reading::NotYet, this_box: "This Mac".into(), this_kind: String::new(), selected, now: None, reading: None, settings, _settings_picks: picks, _settings_adds: adds, _settings_opens: opens, _settings_changes: changes }
     }
 
     /// Settings' view, in the Settings area.
@@ -376,11 +379,20 @@ impl AreaView {
 
     /// What each bot is doing, told to its face (`bot_face`): the box's state, or offline while the
     /// box can't be reached; a bot on another computer is offline while that one is away, and idle
-    /// otherwise (its state is its own box's to say).
+    /// otherwise (its state is its own box's to say). Only the currently shown workspace writes to
+    /// global `bot_face` states, so a background workspace disconnecting never greys out the shown
+    /// computer's bots.
     fn tell_faces(&mut self, cx: &mut Context<Self>) {
+        if !self.shown {
+            return;
+        }
         let Reading::Ready(bots) = &self.bots else { return };
         let mut told: Vec<(String, State)> = bots.bots.iter().map(|bot| (bot.id.clone(), self.bot_state(bot))).collect();
-        told.extend(bots.elsewhere.iter().map(|there| (there.id.clone(), self.elsewhere_state(&there.computer))));
+        for there in &bots.elsewhere {
+            if !bots.bots.iter().any(|bot| bot.id == there.id) {
+                told.push((there.id.clone(), self.elsewhere_state(&there.computer)));
+            }
+        }
         for (id, state) in told {
             crate::bot_face::tell(&id, state, cx);
         }
@@ -401,6 +413,18 @@ impl AreaView {
     /// Whether an active turn is backed by a current bot snapshot.
     pub(crate) fn has_fresh_bots(&self) -> bool {
         self.reached && self.fresh_bots
+    }
+
+    /// Whether this workspace is the one the window currently shows: becoming shown immediately
+    /// restores its bots' live states in `bot_face`.
+    pub fn set_shown(&mut self, shown: bool, cx: &mut Context<Self>) {
+        if self.shown != shown {
+            self.shown = shown;
+            if shown {
+                self.tell_faces(cx);
+                cx.notify();
+            }
+        }
     }
 
     /// Whether the box is reached (the window's own word): its bots are drawn offline while not.

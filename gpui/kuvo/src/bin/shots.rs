@@ -2264,7 +2264,7 @@ fn home_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path::Pat
     // (And #772's: an older machine's page with its one card, waiting with Update Now, failing with
     // Try Again, under way, and offered by the box that lists it; a computer that can't be used,
     // older or out of reach, as the window shows it.)
-    for slug in ["switcher", "elsewhere", "quit-note", "update-waiting", "update-running", "update-setup", "update-ssh", "update-own-waiting", "update-own-running", "page-update-waiting", "page-update-failed", "page-update-running", "page-older-offer", "blocked-held", "blocked-unreached", "computer-pairing-waiting", "computer-pairing-readd"] {
+    for slug in ["switcher", "elsewhere", "quit-note", "update-waiting", "update-running", "update-setup", "update-ssh", "update-own-waiting", "update-own-running", "page-update-waiting", "page-update-failed", "page-update-running", "page-older-offer", "blocked-held", "blocked-unreached", "computer-pairing-waiting", "computer-pairing-readd", "bots-background-offline"] {
         if !only.is_empty() && !only.iter().any(|only| only == slug) {
             continue;
         }
@@ -2292,6 +2292,10 @@ fn home_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path::Pat
                 }
             }
             let devbox = stand_in.peer_box("key_devbox").expect("devbox");
+            if slug == "bots-background-offline" {
+                devbox.add_bot("bot_scout", "Scout", serde_json::json!({ "color": "mint", "shape": "round", "face": "calm" }));
+                devbox.set_bot_now("bot_scout", serde_json::json!({ "working": 1, "asking": 0, "state": "working", "since": NOW }));
+            }
             use kuvo_box::boxes::Pairing;
             let pairing = match slug {
                 "computer-pairing-waiting" => Some(Pairing::Checking("Checking this app with your other computers…".into())),
@@ -2319,6 +2323,13 @@ fn home_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path::Pat
                             switching.pairing = pairing;
                             workspace.set_switching(Some(switching), cx);
                         });
+                    }
+                    if slug == "bots-background-offline" {
+                        let nearest = home.workspace().clone();
+                        nearest.update(cx, |workspace, cx| workspace.show_area(Area::Bots, window, cx));
+                        assert!(home.switch_to("key_devbox", window, cx));
+                        home.workspace().clone().update(cx, |workspace, cx| workspace.show_area(Area::Bots, window, cx));
+                        nearest.update(cx, |workspace, cx| workspace.connected(Err(kuvo_box::Error::NotRunning("offline".into())), cx));
                     }
                     if slug == "elsewhere" {
                         assert!(home.switch_to("key_devbox", window, cx));
