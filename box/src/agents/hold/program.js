@@ -147,7 +147,7 @@ function noteAsks(line) {
   if (!message || typeof message !== "object" || typeof message.method !== "string") return
   const asked = idKey(message.id)
   if (asked !== undefined) {
-    pending.set(asked, { s: seq, line })
+    pending.set(asked, { s: seq, line, method: message.method })
     if (pending.size > MOST_PENDING) pending.delete(pending.keys().next().value)
     return
   }
@@ -383,7 +383,10 @@ function fromBridge(socket, frame) {
   } else if (frame.prepare !== undefined) {
     // The current controller reserves the replay range before agreeing to a transfer.
     const from = frame.prepare
-    const ready = !exited && Number.isSafeInteger(from) && from <= seq && from + 1 >= (journal[0]?.s ?? seq + 1)
+    // ACP may be waiting for a file write or another side effect already begun by this
+    // controller. Only permission decisions replay safely without that controller.
+    const portable = meta.kind !== "antigravity" || [...pending.values()].every(ask => ask.method === "session/request_permission")
+    const ready = portable && !exited && Number.isSafeInteger(from) && from <= seq && from + 1 >= (journal[0]?.s ?? seq + 1)
     if (ready) pinned = from
     send(socket, { prepared: ready })
   } else if (frame.unpin) {

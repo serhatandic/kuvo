@@ -341,6 +341,8 @@ export interface Thread {
    */
   prepare?(input: RunInput, hooks: TurnHooks): Promise<{ fresh: boolean } | undefined>
   run(input: RunInput, turn: Turn, hooks: TurnHooks): Promise<RunResult>
+  /** Bridge-owned state for the current turn, or false if it cannot be transferred now. */
+  transferState?(): unknown
   /**
    * Adds a message of yours (`id`, the session's) to the turn under way, at its next step; false
    * when it can't. One it takes, the turn answers before it ends (or names it in `missed`).

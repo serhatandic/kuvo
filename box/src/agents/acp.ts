@@ -31,7 +31,7 @@ const limitWords = /RESOURCE_EXHAUSTED|usage limit (?:reached|exceeded)|quota ex
 
 export interface AcpFlavor {
   /** Its process runs under a holder on a box, and a bridge started after a crash takes its turn up (hold/adopt.ts): as which agent. None: as it always has. */
-  held?: { kind: AgentKind; provider: string }
+  held?: { kind: AgentKind; provider: string; version?: string }
   /** The command that starts the agent, for this session's approval mode (and its skills and subagents folders, from `skills` and `subagents`; `whole`: run whole in the box's sandbox). */
   command(options: { approvesAll: boolean; plan: boolean; skills?: string; subagents?: string; whole?: boolean }): Promise<{
     argv: string[]
@@ -101,7 +101,7 @@ export interface AcpFlavor {
    * Follows what the agent writes down itself but doesn't tell (Antigravity's subagents and their
    * steps), for the turn under way; stopped, after a last look, as the turn ends.
    */
-  follow?(sessionId: string, turn: Turn, hooks: TurnHooks): { stop(): void } | undefined
+  follow?(sessionId: string, turn: Turn, hooks: TurnHooks, restored?: unknown): TurnFollower | undefined
   /** A tool call that isn't worth a row (Antigravity's start of subagents, which `follow` shows). */
   hides?(call: any): boolean
   /** Files a finished tool call made that it doesn't hand back (Antigravity's generated images). */
@@ -148,6 +148,11 @@ export interface BackgroundTask {
   outputFile?: string
 }
 
+interface TurnFollower {
+  stop(): void
+  transferState?(): unknown
+}
+
 interface Active {
   turn: Turn
   hooks: TurnHooks
@@ -176,7 +181,7 @@ interface Active {
   /** How much of its context the conversation fills, as the agent last said (usage_update). */
   used?: number
   /** What follows the agent's own record of the turn, when it keeps one. */
-  follower?: { stop(): void }
+  follower?: TurnFollower
   /** A turn the agent began on its own, taken here: it ends when it says, or goes quiet. */
   own?: boolean
   quiet?: ReturnType<typeof setTimeout>
@@ -288,7 +293,7 @@ export class AcpThread implements Thread {
     let held: Held | undefined
     try {
       held = holdIn
-        ? await hold(argv, { folder: holdIn, kind: "jsonrpc", cwd, env: launch.cleanEnv ? env : { ...process.env, ...env }, meta: { provider: this.flavor.held!.provider, kind: this.flavor.held!.kind, fenced: Boolean(whole), key: startedWith, turns: {} } }).catch((error) => {
+        ? await hold(argv, { folder: holdIn, kind: "jsonrpc", cwd, env: launch.cleanEnv ? env : { ...process.env, ...env }, meta: { ...this.flavor.held!, fenced: Boolean(whole), key: startedWith, turns: {} } }).catch((error) => {
             console.error(`${this.name}'s holder didn't start:`, error?.message ?? error)
             return undefined
           })
@@ -336,7 +341,7 @@ export class AcpThread implements Thread {
     })
     launch.onOpen?.(rpc)
     rpc.onNotification = (method, params) => this.notification(method, params)
-    rpc.onRequest = (method, params) => this.request(method, params)
+    rpc.onRequest = (method, params) => this.agentRequest(method, params)
     rpc.onExit = () => {
       launch.onExit?.()
       ended?.()
@@ -526,18 +531,32 @@ export class AcpThread implements Thread {
    * one), what it said since the turn began comes again, an ask still open is asked again, and the
    * answer to the prompt that earlier bridge sent ends the turn.
    */
+  transferState(): unknown {
+    return this.requestsAtWork ? false : this.active?.follower?.transferState?.()
+  }
+
+  private requestsAtWork = 0
+
+  private agentRequest(method: string, params: any): Promise<unknown> {
+    if (method === "session/request_permission") return this.request(method, params)
+    this.requestsAtWork++
+    return this.request(method, params).finally(() => this.requestsAtWork--)
+  }
+
   private resumeHeld(input: RunInput, turn: Turn, hooks: TurnHooks): Promise<RunResult> {
     const taken = input.held!
     const flavor = this.flavor
     // (Its own ids past those any earlier bridge sent it.)
     const rpc = new RPC(taken.held, { jsonrpc: true, firstID: 2 ** 30 + taken.held.generation * 2 ** 24, filter: (line) => flavor.filter?.(line) ?? true })
     rpc.onNotification = (method, params) => this.notification(method, params)
-    rpc.onRequest = (method, params) => this.request(method, params)
+    rpc.onRequest = (method, params) => this.agentRequest(method, params)
     this.close()
     this.rpc = rpc
     this.sessionID = taken.thread
     this.fenced = taken.meta.fenced === true
-    this.spawnedWith = typeof taken.meta.key === "string" ? taken.meta.key : undefined
+    // Antigravity's negotiated model and mode options also belong to its original bridge.
+    // Keep the native session for this turn, then reopen it normally for the next prompt.
+    this.spawnedWith = flavor.held?.kind !== "antigravity" && typeof taken.meta.key === "string" ? taken.meta.key : undefined
     return new Promise<RunResult>((resolve) => {
       const active: Active = { turn, hooks, resolve, rpc, tools: new Map(), toolsSinceText: false, ended: false, children: new Map(), served: new Map(), started: Date.now(), prompt: 1 }
       rpc.onExit = () => {
@@ -554,6 +573,7 @@ export class AcpThread implements Thread {
       }
       this.active = active
       turn.startStep()
+      active.follower = flavor.follow?.(taken.thread, turn, hooks, taken.state)
       taken.gate.onOpen(() => rpc.start())
       taken.gate.ready(taken.thread)
     })

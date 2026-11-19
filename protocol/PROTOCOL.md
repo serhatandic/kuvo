@@ -3405,9 +3405,13 @@ new version without cutting a turn:
   client reconnects for events. The keeper starts the saved previous build if the replacement
   exits or fails to publish within a minute. Only the active bridge writes the store.
 
-  Codex, Grok, and Claude Code 2.1.268 or later with the same Agent SDK can transfer if their
-  active turns have a complete journal. Open forms, steered turns, shell commands, sandboxed agents
-  and turns using the bridge’s MCP relay fall back together to Renewal. A standby-compatible build can
+  Codex, Grok, Claude Code 2.1.268 or later with the same Agent SDK, Antigravity ACP 1.3.0, and
+  Cursor with the same worker SDK can transfer when their journal is complete. Antigravity's ACP
+  server keeps its native session and answers the original prompt request after an approval.
+  Cursor's worker keeps its SDK run alive and sends updates with that run's ID. Open forms,
+  steered turns, shell commands, bridge-owned MCP connections, and Antigravity's separate
+  subagent transcript activity fall back together to Renewal. Sandboxed Codex, Claude Code and
+  Grok also use Renewal because their launchers depend on the original bridge. A standby-compatible build can
   start a bounded drain at once. On the first upgrade from a bridge that predates holders, the
   keeper checks that the replacement can start and requests one clean bridge restart. That
   bridge marks its active turns interrupted through its normal shutdown. The engine stays up

@@ -157,7 +157,9 @@ const temporary = process.env.TMPDIR?.replace(/\/$/, "") || join(home, "tmp")
 mkdirSync(temporary, { recursive: true })
 // What an agent left unpacked when the bridge last stopped without cleaning up (Antigravity's
 // agent unpacks itself, about 1 GB, for each run), and half-finished downloads.
-rmSync(join(temporary, "antigravity"), { recursive: true, force: true })
+if (!transfer?.holders.some(holder => holder.kind === "antigravity")) {
+  rmSync(join(temporary, "antigravity"), { recursive: true, force: true })
+}
 // And the page of a sign-in one was in the middle of.
 leftSignIns(temporary)
 try {
@@ -625,9 +627,13 @@ function liveTransfer(newer: string): Promise<void> | undefined {
       if (!turns || !Object.keys(turns).length) continue
       // An agent's sandbox names this bridge's relay port. An issued key can also refer to
       // a live MCP connection, which has to stay with its original bridge until the turn ends.
-      if (!kind || !provider || held.meta.fenced === true || held.meta.sandboxed === true) return
+      if (!kind || !provider || held.meta.sandboxed === true ||
+          (held.meta.fenced === true && kind !== "cursor" && kind !== "antigravity")) return
       for (const note of Object.values(turns)) {
-        if (providers.has(note.session) || usesToolRelay(note.session) || (kind === "codex" && !note.turn)) return
+        if (providers.has(note.session) || usesToolRelay(note.session) ||
+            (kind === "codex" && !note.turn) ||
+            (kind === "cursor" && (!note.turn || !Number.isSafeInteger(Number(note.turn)))) ||
+            ((kind === "cursor" || kind === "antigravity") && note.request === undefined)) return
         providers.set(note.session, provider)
       }
       holders.push({ id: held.id, generation: held.generation, proto: HOLD_PROTO, provider, kind, turns,

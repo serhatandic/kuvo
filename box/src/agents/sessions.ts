@@ -93,6 +93,11 @@ export interface TransferSession {
   message: string
   permissions: { id: string; key: string }[]
   always: Live["always"]
+  agentState?: unknown
+}
+
+function turnInput(message: Message): boolean {
+  return message.type === "user" || (message.type === "synthetic" && !(message.metadata?.kuvo as { notice?: boolean } | undefined)?.notice)
 }
 
 function permissionKey(ask: Pick<PermissionRequest, "action" | "resources">, tool?: string): string {
@@ -946,12 +951,15 @@ export class Sessions {
   ) {
     this.transferred = new Map(Object.entries(transfer ?? {}))
     if (transfer && [...held].some(([id, turn]) => {
-      const message = store.get(id)?.messages.findLast(each => each.type === "user" || each.type === "synthetic")
+      const message = store.get(id)?.messages.findLast(turnInput)
       return !this.resumable(id, turn) || message?.id !== transfer[id]?.message
     })) throw new Error("A session in the handover cannot be resumed.")
     // Those taken up again (`resumeHeld`); the others' agents let go of (their turns end as below).
     for (const [id, turn] of held) {
-      if (this.resumable(id, turn)) this.resuming.set(id, turn)
+      if (this.resumable(id, turn)) {
+        turn.state = transfer?.[id]?.agentState
+        this.resuming.set(id, turn)
+      }
       else turn.gate.drop(turn.thread)
     }
     // Turns a quit or crash cut short: ended, as Stop ends one.
@@ -1064,14 +1072,14 @@ export class Sessions {
   private resumable(id: string, held: { meta: { provider: string } }): boolean {
     const record = this.store.get(id)
     if (!record || record.session.parentID || record.session.model?.providerID !== held.meta.provider) return false
-    const lastUser = record.messages.findLastIndex((message) => message.type === "user" || message.type === "synthetic" || message.type === "compaction")
+    const lastUser = record.messages.findLastIndex(message => turnInput(message) || message.type === "compaction")
     const message = record.messages[lastUser]
     if (!message || message.type === "compaction") return false
     // (One you sent partway, into the turn: its turn began with the message before it, and is made
     // again from there, around it. Not yet: such a turn ends as before.)
     const lastIdle = record.messages.findLastIndex((each) => each.type === "idle")
     if (lastIdle > lastUser) return false
-    return record.messages.slice(lastIdle + 1, lastUser).every((each) => each.type !== "user" && each.type !== "synthetic")
+    return !record.messages.slice(lastIdle + 1, lastUser).some(turnInput)
   }
 
   /** Its steps closed, and their tools stopped mid-way (a crash): whether any were. */
@@ -3344,7 +3352,7 @@ export class Sessions {
       this.resuming.delete(id)
       const record = this.store.get(id)
       const live = this.state(id)
-      const message = record?.messages.findLast((each) => each.type === "user" || each.type === "synthetic")
+      const message = record?.messages.findLast(turnInput)
       if (!record || !message || live.doing.kind !== "idle") {
         held.gate.drop(held.thread)
         // (Its turn ends as one a crash cut short.)
@@ -3398,11 +3406,13 @@ export class Sessions {
       const provider = providers.get(id)
       if (!provider || live.doing.kind !== "running" || live.doing.run.agent?.provider !== provider ||
           live.doing.run.relayed?.length || !this.resumable(id, { meta: { provider } })) return undefined
-      const message = this.store.get(id)?.messages.findLast(each => each.type === "user" || each.type === "synthetic")
+      const message = this.store.get(id)?.messages.findLast(turnInput)
       if (!message) return undefined
       const permissions = [...live.permissions].map(([id, { key }]) => ({ id, key }))
       if (new Set(permissions.map(each => each.key)).size !== permissions.length) return undefined
-      sessions[id] = { message: message.id, permissions, always: live.always }
+      const agentState = live.doing.run.agent.thread.transferState?.()
+      if (agentState === false) return undefined
+      sessions[id] = { message: message.id, permissions, always: live.always, agentState }
     }
     return Object.keys(sessions).length === providers.size ? sessions : undefined
   }

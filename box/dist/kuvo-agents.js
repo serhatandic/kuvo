@@ -10758,228 +10758,6 @@ var init_snapshots = __esm(() => {
   quiet = { GIT_TERMINAL_PROMPT: "0", GIT_CONFIG_NOSYSTEM: "1", GIT_OPTIONAL_LOCKS: "0", GIT_LITERAL_PATHSPECS: "1" };
 });
 
-// box/src/agents/rpc.ts
-class RPC {
-  next = 1;
-  pending = new Map;
-  child;
-  held;
-  closed = false;
-  stderr = "";
-  onNotification = () => {};
-  onRequest = async (method) => {
-    throw new RPCError(-32601, `Method not found: ${method}`);
-  };
-  onExit = () => {};
-  onStray = () => {};
-  exited;
-  constructor(command, options = {}) {
-    this.jsonrpc = options.jsonrpc ?? false;
-    if (options.firstID)
-      this.next = options.firstID;
-    this.filter = options.filter;
-    const ended = (code) => {
-      this.closed = true;
-      for (const { reject } of this.pending.values())
-        reject(new Error(this.stderr.trim().split(`
-`).slice(-3).join(`
-`) || `The agent stopped (exit code ${code}).`));
-      this.pending.clear();
-      this.onExit(code);
-      return code;
-    };
-    if (!Array.isArray(command)) {
-      const held = this.held = command;
-      held.onStderr((text) => this.stderr = (this.stderr + text).slice(-8000));
-      this.begin = () => held.onLine((line, _again, seq) => {
-        this.lineSeq = seq;
-        const trimmed = line.replace(/\r$/, "");
-        if (trimmed.trim() && (!this.filter || this.filter(trimmed)))
-          this.receive(trimmed);
-      });
-      this.exited = held.exited.then((exit) => ended(exit.code ?? (exit.signal === "fenced" || exit.signal === "lost" ? -1 : 1)));
-      this.errorsRead = this.exited.then(() => {});
-      return;
-    }
-    const env = options.cleanEnv ? options.env : { ...process.env, ...options.env };
-    const child = this.child = Bun.spawn(command, { cwd: options.cwd, env, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
-    this.exited = child.exited.then(ended);
-    this.read(child);
-    this.errorsRead = this.readErrors(child).catch(() => {});
-  }
-  begin;
-  lineSeq = 0;
-  start() {
-    const begin = this.begin;
-    this.begin = undefined;
-    begin?.();
-  }
-  errorsRead;
-  jsonrpc;
-  filter;
-  get pid() {
-    return this.child ? this.child.pid : this.held.pid;
-  }
-  get holder() {
-    return this.held;
-  }
-  get nextID() {
-    return this.next;
-  }
-  get isClosed() {
-    return this.closed;
-  }
-  async read(child) {
-    const decoder = new TextDecoder;
-    let buffer = "";
-    for await (const chunk of child.stdout) {
-      buffer += decoder.decode(chunk, { stream: true });
-      let newline;
-      while ((newline = buffer.indexOf(`
-`)) >= 0) {
-        const line = buffer.slice(0, newline).replace(/\r$/, "");
-        buffer = buffer.slice(newline + 1);
-        if (line.trim() && (!this.filter || this.filter(line)))
-          this.receive(line);
-      }
-    }
-  }
-  async readErrors(child) {
-    const decoder = new TextDecoder;
-    for await (const chunk of child.stderr) {
-      this.stderr = (this.stderr + decoder.decode(chunk, { stream: true })).slice(-8000);
-    }
-  }
-  receive(line) {
-    let message;
-    try {
-      message = JSON.parse(line);
-    } catch {
-      return;
-    }
-    if (message.method !== undefined && message.id !== undefined) {
-      this.answer(message.id, message.method, message.params);
-    } else if (message.method !== undefined) {
-      this.onNotification(message.method, message.params);
-    } else if (message.id !== undefined) {
-      const pending = this.pending.get(message.id);
-      if (!pending)
-        return this.onStray(message.id, message.result, message.error);
-      this.pending.delete(message.id);
-      if (message.error)
-        pending.reject(new RPCError(message.error.code ?? -32000, message.error.message ?? "The agent refused.", message.error.data));
-      else
-        pending.resolve(message.result);
-    }
-  }
-  async answer(id, method, params) {
-    try {
-      const result = await this.onRequest(method, params, id);
-      this.write({ id, result: result ?? null });
-    } catch (error) {
-      const code = error instanceof RPCError ? error.code : -32603;
-      this.write({ id, error: { code, message: error instanceof Error ? error.message : String(error) } });
-    }
-  }
-  write(message) {
-    if (this.closed)
-      return;
-    const body = this.jsonrpc ? { jsonrpc: "2.0", ...message } : message;
-    if (this.held)
-      return void this.held.write(JSON.stringify(body));
-    try {
-      this.child.stdin.write(JSON.stringify(body) + `
-`);
-      this.child.stdin.flush();
-    } catch {}
-  }
-  request(method, params, timeout) {
-    if (this.closed)
-      return Promise.reject(new Error(this.stderr.trim().split(`
-`).slice(-3).join(`
-`) || "The agent isn't running."));
-    const id = this.next++;
-    return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
-      this.write(params === undefined ? { id, method } : { id, method, params });
-      if (timeout) {
-        setTimeout(() => {
-          if (!this.pending.has(id))
-            return;
-          this.pending.delete(id);
-          reject(new TookTooLong(`${method} took too long.`));
-        }, timeout);
-      }
-    });
-  }
-  notify(method, params) {
-    this.write(params === undefined ? { method } : { method, params });
-  }
-  kill() {
-    if (this.closed)
-      return;
-    if (this.held)
-      return this.held.stop();
-    try {
-      this.child.stdin.end();
-    } catch {}
-    this.child.kill();
-  }
-}
-var RPCError;
-var init_rpc = __esm(() => {
-  init_agent();
-  RPCError = class RPCError extends Error {
-    code;
-    data;
-    constructor(code, message, data) {
-      super(message);
-      this.code = code;
-      this.data = data;
-    }
-  };
-});
-
-// box/src/agents/pictures.ts
-import { extname as extname2 } from "path";
-import { pathToFileURL } from "url";
-function pictureFile(path) {
-  if (typeof path !== "string" || !path)
-    return;
-  const mime = types2[extname2(path).toLowerCase()];
-  if (!mime)
-    return;
-  return { type: "file", uri: pathToFileURL(path).href, mime, name: path.split("/").pop() };
-}
-function pictureData(data, mime) {
-  if (typeof data !== "string" || !data || typeof mime !== "string" || !mime.startsWith("image/"))
-    return;
-  return { type: "file", uri: `data:${mime};base64,${data}`, mime };
-}
-function withPictures(text, pictures) {
-  const files = pictures.filter((picture) => Boolean(picture));
-  return files.length ? [{ type: "text", text }, ...files] : text;
-}
-var types2;
-var init_pictures = __esm(() => {
-  types2 = { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp", ".heic": "image/heic" };
-});
-
-// box/src/agents/forms.ts
-function elicitationField(key, field, required) {
-  const title = field?.title ?? key;
-  const description = field?.description ?? undefined;
-  if (field?.type === "boolean")
-    return { key, title, description, required, type: "boolean" };
-  if (field?.type === "array") {
-    const options = (field.items?.anyOf ?? field.items?.oneOf ?? (field.items?.enum ?? []).map((value) => ({ const: value, title: value }))).map((option) => ({ value: String(option.const), label: String(option.title ?? option.const) }));
-    return { key, title, description, required, type: "multiselect", options };
-  }
-  const named = field?.oneOf ?? field?.anyOf;
-  const options = named ? named.map((option) => ({ value: String(option.const), label: String(option.title ?? option.const) })) : field?.enum?.map((value, index) => ({ value, label: field.enumNames?.[index] ?? value }));
-  return { key, title, description, required, type: "string", options, custom: !options, ...field?.format === "password" ? { format: "password" } : {} };
-}
-
 // box/src/agents/hold/program.js
 var program_default = `// kuvo-hold (hold/1): keeps one coding agent's process alive apart from the bridge that started
 // it, so a bridge that crashes or makes way for a newer one doesn't take the agent's turn with it.
@@ -11130,7 +10908,7 @@ function noteAsks(line) {
   if (!message || typeof message !== "object" || typeof message.method !== "string") return
   const asked = idKey(message.id)
   if (asked !== undefined) {
-    pending.set(asked, { s: seq, line })
+    pending.set(asked, { s: seq, line, method: message.method })
     if (pending.size > MOST_PENDING) pending.delete(pending.keys().next().value)
     return
   }
@@ -11366,7 +11144,10 @@ function fromBridge(socket, frame) {
   } else if (frame.prepare !== undefined) {
     // The current controller reserves the replay range before agreeing to a transfer.
     const from = frame.prepare
-    const ready = !exited && Number.isSafeInteger(from) && from <= seq && from + 1 >= (journal[0]?.s ?? seq + 1)
+    // ACP may be waiting for a file write or another side effect already begun by this
+    // controller. Only permission decisions replay safely without that controller.
+    const portable = meta.kind !== "antigravity" || [...pending.values()].every(ask => ask.method === "session/request_permission")
+    const ready = portable && !exited && Number.isSafeInteger(from) && from <= seq && from + 1 >= (journal[0]?.s ?? seq + 1)
     if (ready) pinned = from
     send(socket, { prepared: ready })
   } else if (frame.unpin) {
@@ -11995,6 +11776,10 @@ var init_client = __esm(() => {
 function adoptable(meta) {
   if (!meta.kind || !HELD_KINDS.has(meta.kind))
     return false;
+  if (meta.kind === "antigravity")
+    return meta.version === ANTIGRAVITY_ACP;
+  if (meta.kind === "cursor")
+    return meta.sdk === CURSOR_SDK;
   if (meta.kind !== "claude")
     return true;
   return meta.sdk === CLAUDE_SDK && typeof meta.version === "string" && atLeast(meta.version, CLAUDE_REJOINS);
@@ -12077,7 +11862,7 @@ async function adoptHeld(folder = machineHome ? holdFolder(machineHome) : undefi
   for (const record of heldIn(folder)) {
     const meta = record.meta;
     const turns = Object.entries(meta.turns ?? {});
-    if (!meta.provider || !adoptable(meta) || !turns.length || record.exited) {
+    if (!meta.provider || !adoptable(meta) || meta.kind === "antigravity" || !turns.length || record.exited) {
       stopHolder(record);
       continue;
     }
@@ -12144,13 +11929,235 @@ function noteTurn(held, thread, note) {
     delete turns[thread];
   held.note({ turns });
 }
-var HELD_KINDS, CLAUDE_SDK = "0.3.303", CLAUDE_REJOINS = "2.1.268", holding2;
+var HELD_KINDS, ANTIGRAVITY_ACP = "1.3.0", CURSOR_SDK = "1.0.35", CLAUDE_SDK = "0.3.303", CLAUDE_REJOINS = "2.1.268", holding2;
 var init_adopt = __esm(() => {
   init_machine();
   init_client();
-  HELD_KINDS = new Set(["codex", "claude", "grok"]);
+  HELD_KINDS = new Set(["codex", "claude", "grok", "cursor", "antigravity"]);
   holding2 = { on: true };
 });
+
+// box/src/agents/rpc.ts
+class RPC {
+  next = 1;
+  pending = new Map;
+  child;
+  held;
+  closed = false;
+  stderr = "";
+  onNotification = () => {};
+  onRequest = async (method) => {
+    throw new RPCError(-32601, `Method not found: ${method}`);
+  };
+  onExit = () => {};
+  onStray = () => {};
+  exited;
+  constructor(command, options = {}) {
+    this.jsonrpc = options.jsonrpc ?? false;
+    if (options.firstID)
+      this.next = options.firstID;
+    this.filter = options.filter;
+    const ended = (code) => {
+      this.closed = true;
+      for (const { reject } of this.pending.values())
+        reject(new Error(this.stderr.trim().split(`
+`).slice(-3).join(`
+`) || `The agent stopped (exit code ${code}).`));
+      this.pending.clear();
+      this.onExit(code);
+      return code;
+    };
+    if (!Array.isArray(command)) {
+      const held = this.held = command;
+      held.onStderr((text) => this.stderr = (this.stderr + text).slice(-8000));
+      this.begin = () => held.onLine((line, _again, seq) => {
+        this.lineSeq = seq;
+        const trimmed = line.replace(/\r$/, "");
+        if (trimmed.trim() && (!this.filter || this.filter(trimmed)))
+          this.receive(trimmed);
+      });
+      this.exited = held.exited.then((exit) => ended(exit.code ?? (exit.signal === "fenced" || exit.signal === "lost" ? -1 : 1)));
+      this.errorsRead = this.exited.then(() => {});
+      return;
+    }
+    const env = options.cleanEnv ? options.env : { ...process.env, ...options.env };
+    const child = this.child = Bun.spawn(command, { cwd: options.cwd, env, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+    this.exited = child.exited.then(ended);
+    this.read(child);
+    this.errorsRead = this.readErrors(child).catch(() => {});
+  }
+  begin;
+  lineSeq = 0;
+  start() {
+    const begin = this.begin;
+    this.begin = undefined;
+    begin?.();
+  }
+  errorsRead;
+  jsonrpc;
+  filter;
+  get pid() {
+    return this.child ? this.child.pid : this.held.pid;
+  }
+  get holder() {
+    return this.held;
+  }
+  get nextID() {
+    return this.next;
+  }
+  get isClosed() {
+    return this.closed;
+  }
+  async read(child) {
+    const decoder = new TextDecoder;
+    let buffer = "";
+    for await (const chunk of child.stdout) {
+      buffer += decoder.decode(chunk, { stream: true });
+      let newline;
+      while ((newline = buffer.indexOf(`
+`)) >= 0) {
+        const line = buffer.slice(0, newline).replace(/\r$/, "");
+        buffer = buffer.slice(newline + 1);
+        if (line.trim() && (!this.filter || this.filter(line)))
+          this.receive(line);
+      }
+    }
+  }
+  async readErrors(child) {
+    const decoder = new TextDecoder;
+    for await (const chunk of child.stderr) {
+      this.stderr = (this.stderr + decoder.decode(chunk, { stream: true })).slice(-8000);
+    }
+  }
+  receive(line) {
+    let message;
+    try {
+      message = JSON.parse(line);
+    } catch {
+      return;
+    }
+    if (message.method !== undefined && message.id !== undefined) {
+      this.answer(message.id, message.method, message.params);
+    } else if (message.method !== undefined) {
+      this.onNotification(message.method, message.params);
+    } else if (message.id !== undefined) {
+      const pending = this.pending.get(message.id);
+      if (!pending)
+        return this.onStray(message.id, message.result, message.error);
+      this.pending.delete(message.id);
+      if (message.error)
+        pending.reject(new RPCError(message.error.code ?? -32000, message.error.message ?? "The agent refused.", message.error.data));
+      else
+        pending.resolve(message.result);
+    }
+  }
+  async answer(id, method, params) {
+    try {
+      const result = await this.onRequest(method, params, id);
+      this.write({ id, result: result ?? null });
+    } catch (error) {
+      const code = error instanceof RPCError ? error.code : -32603;
+      this.write({ id, error: { code, message: error instanceof Error ? error.message : String(error) } });
+    }
+  }
+  write(message) {
+    if (this.closed)
+      return;
+    const body = this.jsonrpc ? { jsonrpc: "2.0", ...message } : message;
+    if (this.held)
+      return void this.held.write(JSON.stringify(body));
+    try {
+      this.child.stdin.write(JSON.stringify(body) + `
+`);
+      this.child.stdin.flush();
+    } catch {}
+  }
+  request(method, params, timeout) {
+    if (this.closed)
+      return Promise.reject(new Error(this.stderr.trim().split(`
+`).slice(-3).join(`
+`) || "The agent isn't running."));
+    const id = this.next++;
+    return new Promise((resolve, reject) => {
+      this.pending.set(id, { resolve, reject });
+      this.write(params === undefined ? { id, method } : { id, method, params });
+      if (timeout) {
+        setTimeout(() => {
+          if (!this.pending.has(id))
+            return;
+          this.pending.delete(id);
+          reject(new TookTooLong(`${method} took too long.`));
+        }, timeout);
+      }
+    });
+  }
+  notify(method, params) {
+    this.write(params === undefined ? { method } : { method, params });
+  }
+  kill() {
+    if (this.closed)
+      return;
+    if (this.held)
+      return this.held.stop();
+    try {
+      this.child.stdin.end();
+    } catch {}
+    this.child.kill();
+  }
+}
+var RPCError;
+var init_rpc = __esm(() => {
+  init_agent();
+  RPCError = class RPCError extends Error {
+    code;
+    data;
+    constructor(code, message, data) {
+      super(message);
+      this.code = code;
+      this.data = data;
+    }
+  };
+});
+
+// box/src/agents/pictures.ts
+import { extname as extname2 } from "path";
+import { pathToFileURL } from "url";
+function pictureFile(path) {
+  if (typeof path !== "string" || !path)
+    return;
+  const mime = types2[extname2(path).toLowerCase()];
+  if (!mime)
+    return;
+  return { type: "file", uri: pathToFileURL(path).href, mime, name: path.split("/").pop() };
+}
+function pictureData(data, mime) {
+  if (typeof data !== "string" || !data || typeof mime !== "string" || !mime.startsWith("image/"))
+    return;
+  return { type: "file", uri: `data:${mime};base64,${data}`, mime };
+}
+function withPictures(text, pictures) {
+  const files = pictures.filter((picture) => Boolean(picture));
+  return files.length ? [{ type: "text", text }, ...files] : text;
+}
+var types2;
+var init_pictures = __esm(() => {
+  types2 = { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp", ".heic": "image/heic" };
+});
+
+// box/src/agents/forms.ts
+function elicitationField(key, field, required) {
+  const title = field?.title ?? key;
+  const description = field?.description ?? undefined;
+  if (field?.type === "boolean")
+    return { key, title, description, required, type: "boolean" };
+  if (field?.type === "array") {
+    const options = (field.items?.anyOf ?? field.items?.oneOf ?? (field.items?.enum ?? []).map((value) => ({ const: value, title: value }))).map((option) => ({ value: String(option.const), label: String(option.title ?? option.const) }));
+    return { key, title, description, required, type: "multiselect", options };
+  }
+  const named = field?.oneOf ?? field?.anyOf;
+  const options = named ? named.map((option) => ({ value: String(option.const), label: String(option.title ?? option.const) })) : field?.enum?.map((value, index) => ({ value, label: field.enumNames?.[index] ?? value }));
+  return { key, title, description, required, type: "string", options, custom: !options, ...field?.format === "password" ? { format: "password" } : {} };
+}
 
 // box/src/shared/work-order.ts
 import { randomUUID } from "crypto";
@@ -12231,7 +12238,7 @@ class AcpThread {
       this.startingOutside++;
     let held;
     try {
-      held = holdIn ? await hold3(argv, { folder: holdIn, kind: "jsonrpc", cwd, env: launch.cleanEnv ? env : { ...process.env, ...env }, meta: { provider: this.flavor.held.provider, kind: this.flavor.held.kind, fenced: Boolean(whole), key: startedWith, turns: {} } }).catch((error) => {
+      held = holdIn ? await hold3(argv, { folder: holdIn, kind: "jsonrpc", cwd, env: launch.cleanEnv ? env : { ...process.env, ...env }, meta: { ...this.flavor.held, fenced: Boolean(whole), key: startedWith, turns: {} } }).catch((error) => {
         console.error(`${this.name}'s holder didn't start:`, error?.message ?? error);
         return;
       }) : undefined;
@@ -12274,7 +12281,7 @@ class AcpThread {
     });
     launch.onOpen?.(rpc);
     rpc.onNotification = (method, params) => this.notification(method, params);
-    rpc.onRequest = (method, params) => this.request(method, params);
+    rpc.onRequest = (method, params) => this.agentRequest(method, params);
     rpc.onExit = () => {
       launch.onExit?.();
       ended?.();
@@ -12447,17 +12454,27 @@ class AcpThread {
     this.startedOver = false;
     return { fresh };
   }
+  transferState() {
+    return this.requestsAtWork ? false : this.active?.follower?.transferState?.();
+  }
+  requestsAtWork = 0;
+  agentRequest(method, params) {
+    if (method === "session/request_permission")
+      return this.request(method, params);
+    this.requestsAtWork++;
+    return this.request(method, params).finally(() => this.requestsAtWork--);
+  }
   resumeHeld(input, turn, hooks) {
     const taken = input.held;
     const flavor = this.flavor;
     const rpc = new RPC(taken.held, { jsonrpc: true, firstID: 2 ** 30 + taken.held.generation * 2 ** 24, filter: (line) => flavor.filter?.(line) ?? true });
     rpc.onNotification = (method, params) => this.notification(method, params);
-    rpc.onRequest = (method, params) => this.request(method, params);
+    rpc.onRequest = (method, params) => this.agentRequest(method, params);
     this.close();
     this.rpc = rpc;
     this.sessionID = taken.thread;
     this.fenced = taken.meta.fenced === true;
-    this.spawnedWith = typeof taken.meta.key === "string" ? taken.meta.key : undefined;
+    this.spawnedWith = flavor.held?.kind !== "antigravity" && typeof taken.meta.key === "string" ? taken.meta.key : undefined;
     return new Promise((resolve) => {
       const active = { turn, hooks, resolve, rpc, tools: new Map, toolsSinceText: false, ended: false, children: new Map, served: new Map, started: Date.now(), prompt: 1 };
       rpc.onExit = () => {
@@ -12481,6 +12498,7 @@ class AcpThread {
       };
       this.active = active;
       turn.startStep();
+      active.follower = flavor.follow?.(taken.thread, turn, hooks, taken.state);
       taken.gate.onOpen(() => rpc.start());
       taken.gate.ready(taken.thread);
     });
@@ -16900,22 +16918,28 @@ class AntigravityFollower {
   timer;
   turn;
   hooks;
-  constructor(brain, sessionId, every = 1000) {
+  usedSubagents = false;
+  constructor(brain, sessionId, every = 1000, restored) {
     this.brain = brain;
     this.sessionId = sessionId;
     this.every = every;
-    for (const step of this.steps(sessionId))
-      this.seen.add(step.step_index);
+    this.seen = new Set(restored ?? this.steps(sessionId).map((step) => step.step_index));
   }
   follow(turn, hooks) {
     clearInterval(this.timer);
     this.turn = turn;
     this.hooks = hooks;
+    this.usedSubagents = false;
     for (const child of this.children.values())
       if (!child.ended && child.run.turn.isEnded)
         child.ended = true;
     this.timer = setInterval(() => this.read(), this.every);
     return this;
+  }
+  transferState() {
+    if (this.usedSubagents || this.pending.length || [...this.children.values()].some((child) => !child.ended))
+      return false;
+    return [...this.seen];
   }
   stop() {
     clearInterval(this.timer);
@@ -16948,8 +16972,10 @@ class AntigravityFollower {
         continue;
       this.seen.add(step.step_index);
       for (const call of step.tool_calls ?? [])
-        if (call?.name === "invoke_subagent")
+        if (call?.name === "invoke_subagent") {
+          this.usedSubagents = true;
           this.pending.push(...antigravitySubagents(call.args));
+        }
       if (step.type === "INVOKE_SUBAGENT" && typeof step.content === "string") {
         for (const match of step.content.matchAll(/"conversationId":\s*"([^"]+)"/g))
           this.start(match[1]);
@@ -16959,6 +16985,7 @@ class AntigravityFollower {
       this.readChild(child);
   }
   start(id) {
+    this.usedSubagents = true;
     if (this.children.has(id))
       return;
     const task = this.pending.shift() ?? { title: "A subagent's task" };
@@ -17454,15 +17481,16 @@ ${rpc.stderr.trim()}`);
         if (agent.windows.note(model, size))
           emit("model.updated", {});
       },
+      held: { kind: "antigravity", provider: agent.providerID, version },
       fileSystem: true,
       whole: { homes: (env) => agent.places(env).homes, state: ["*"], kept: [], read: (env) => agent.reads(env) },
       authenticatesFirst: true,
       resumes: true,
       limitScope: "model",
-      follow: (sessionId, turn, hooks) => {
+      follow: (sessionId, turn, hooks, restored) => {
         let follower = followers.get(sessionId);
         if (!follower)
-          followers.set(sessionId, follower = new AntigravityFollower(join25(agent.profile, "antigravity-acp", "brain"), sessionId));
+          followers.set(sessionId, follower = new AntigravityFollower(join25(agent.profile, "antigravity-acp", "brain"), sessionId, 1000, Array.isArray(restored) ? restored.filter(Number.isSafeInteger) : undefined));
         return follower.follow(turn, hooks);
       },
       hides: (call) => /\b(start_subagent|invoke_subagent)\b/.test(`${call?.title ?? ""} ${call?.rawInput?.name ?? ""}`),
@@ -17534,10 +17562,11 @@ function unzipper() {
     extract: (archive, folder) => ["-I", "-c", "import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])", archive, folder]
   };
 }
-var version = "1.3.0", releases, executableName = "agy_acp_server.par", harnessName = "localharness_external", signInLine = "Open the following link to authenticate the ACP server:", AgentStopped, scrubbed;
+var version, releases, executableName = "agy_acp_server.par", harnessName = "localharness_external", signInLine = "Open the following link to authenticate the ACP server:", AgentStopped, scrubbed;
 var init_antigravity = __esm(() => {
   init_accounts();
   init_agent();
+  init_adopt();
   init_acp();
   init_fence();
   init_events();
@@ -17551,6 +17580,7 @@ var init_antigravity = __esm(() => {
   init_signin();
   init_skills();
   init_subagents2();
+  version = ANTIGRAVITY_ACP;
   releases = {
     "darwin-arm64": {
       url: "https://dl.google.com/agy-extensions/releases/macos/agy-acp-server-1.3.0-darwin-arm64.zip",
@@ -23531,7 +23561,7 @@ function revived(error) {
 
 class CursorWorker {
   rpc;
-  next = 1;
+  next;
   runs = new Map;
   static JsonlLocalAgentStore = class {
     root;
@@ -23539,8 +23569,10 @@ class CursorWorker {
       this.root = root;
     }
   };
-  constructor(command, options) {
-    this.rpc = new RPC(command, { cwd: options.cwd, env: options.env });
+  constructor(command, options = {}) {
+    const generation = Array.isArray(command) ? 0 : command.generation;
+    this.next = generation * 1e6 + 1;
+    this.rpc = new RPC(command, { cwd: options.cwd, env: options.env, firstID: this.next });
     this.rpc.onNotification = (method, params) => {
       const run = this.runs.get(params?.run);
       if (!run)
@@ -23562,6 +23594,40 @@ class CursorWorker {
       }
       options.ended?.();
     };
+    this.session = options.session;
+    if (!options.adopting)
+      this.rpc.start();
+  }
+  session;
+  watchRun(run, onDelta, agentId) {
+    let told = Promise.resolve();
+    const ended = new Promise((resolve, reject) => this.runs.set(run, {
+      delta: (update) => told = told.then(() => onDelta({ update })).catch(() => {}),
+      ended: (params) => {
+        if (this.rpc.holder)
+          noteTurn(this.rpc.holder, agentId, undefined);
+        told.then(() => params.error ? reject(revived(params.error)) : resolve(params.result));
+      }
+    }));
+    ended.catch(() => {});
+    return {
+      wait: () => ended,
+      cancel: () => this.rpc.request("cancel", { run }).catch(() => {})
+    };
+  }
+  continue(taken, onDelta) {
+    const run = Number(taken.note.turn);
+    const active = this.watchRun(run, onDelta, taken.thread);
+    this.rpc.onStray = (id, _result, error) => {
+      if (id !== taken.note.request || !error)
+        return;
+      const watching = this.runs.get(run);
+      this.runs.delete(run);
+      watching?.ended({ error });
+    };
+    taken.gate.onOpen(() => this.rpc.start());
+    taken.gate.ready(taken.thread);
+    return active;
   }
   get isClosed() {
     return this.rpc.isClosed;
@@ -23574,30 +23640,26 @@ class CursorWorker {
     const { agentId } = await this.rpc.request("create", { options, resume }).catch((error) => Promise.reject(revived(error)));
     if (!agentId)
       return;
+    const worker = this;
     const rpc = this.rpc;
-    const runs = this.runs;
-    const next = () => this.next++;
     return {
       agentId,
       close: () => void rpc.request("close", { agent: agentId }).catch(() => {}),
       async send(message, { onDelta, ...sendOptions }) {
-        const run = next();
-        let told = Promise.resolve();
-        const ended = new Promise((resolve, reject) => runs.set(run, {
-          delta: (update) => told = told.then(() => onDelta({ update })).catch(() => {}),
-          ended: (params) => void told.then(() => params.error ? reject(revived(params.error)) : resolve(params.result))
-        }));
-        ended.catch(() => {});
+        const run = worker.next++;
+        const held = rpc.holder;
+        const active = worker.watchRun(run, onDelta, agentId);
+        if (held && worker.session)
+          noteTurn(held, agentId, { session: worker.session, turn: String(run), from: held.seen, request: rpc.nextID });
         try {
           await rpc.request("send", { agent: agentId, run, message, options: sendOptions });
         } catch (error) {
-          runs.delete(run);
+          worker.runs.delete(run);
+          if (held)
+            noteTurn(held, agentId, undefined);
           throw revived(error);
         }
-        return {
-          wait: () => ended,
-          cancel: () => rpc.request("cancel", { run }).catch(() => {})
-        };
+        return active;
       }
     };
   }
@@ -23612,13 +23674,24 @@ for (const name of ["BUN_BE_BUN", "BUN_RUNTIME_TRANSPILER_CACHE_PATH"]) delete p
 const sdk = await import(Bun.resolveSync("@cursor/sdk", import.meta.dir))
 const agents = new Map()
 const runs = new Map()
+let warmed = false
 const send = (message) => process.stdout.write(JSON.stringify(message) + "\\n")
 const plain = (error) => ({ message: String(error?.message ?? (typeof error?.error === "string" ? error.error : error)), code: error?.code, name: error?.name, status: error?.status })
 // Its conversations' store, by its folder (\`JsonlLocalAgentStore\`).
 const made = (options) => (options?.local?.store ? { ...options, local: { ...options.local, store: new sdk.JsonlLocalAgentStore(options.local.store.root) } } : options)
 async function answer(method, params) {
   if (method === "create") {
-    const agent = params.resume ? await sdk.Agent.resume(params.resume, made(params.options)).catch(() => undefined) : await sdk.Agent.create(made(params.options))
+    const { workerPrewarm, ...options } = params.options
+    if (workerPrewarm && !warmed) {
+      warmed = true
+      try {
+        const cwd = options.local.cwd
+        const platform = await sdk.createAgentPlatform({ workspaceRef: cwd })
+        const release = await platform.prewarmLocalWorkspace({ apiKey: options.apiKey, local: { cwd, settingSources: [], sandboxOptions: { enabled: true } } })
+        await release?.()
+      } catch {}
+    }
+    const agent = params.resume ? await sdk.Agent.resume(params.resume, made(options)).catch(() => undefined) : await sdk.Agent.create(made(options))
     if (!agent) return { agentId: null }
     agents.set(agent.agentId, agent)
     return { agentId: agent.agentId }
@@ -23677,6 +23750,7 @@ process.stdin.on("end", () => process.exit(0))
 `;
 var init_cursor_worker = __esm(() => {
   init_rpc();
+  init_adopt();
 });
 
 // box/src/agents/agents/cursor.ts
@@ -23902,11 +23976,12 @@ class CursorThread {
   startedTools;
   startedFence;
   worker;
+  startingOutside = 0;
   get sandboxed() {
-    return Boolean(this.agent && this.startedFence && this.worker && !this.worker.isClosed);
+    return Boolean(this.startedFence && this.worker && !this.worker.isClosed);
   }
   get outside() {
-    return Boolean(this.agent && !this.startedFence);
+    return this.startingOutside > 0 || Boolean((this.agent || this.worker && !this.worker.isClosed) && !this.startedFence);
   }
   idle;
   active;
@@ -23922,7 +23997,7 @@ class CursorThread {
     const apiKey = await this.owner.apiKey(sdk);
     if (!apiKey || hooks.signal.aborted)
       return;
-    if (hooks.approvesAll(false) && !fenceRules())
+    if (!onMachine && hooks.approvesAll(false) && !fenceRules())
       await this.owner.prime(sdk, apiKey, this.session.location.directory);
     await this.ensureAgent(sdk, await this.options(sdk, input, hooks, apiKey, await this.owner.effort(input.model)), hooks);
     const fresh = this.startedOver;
@@ -23948,6 +24023,7 @@ class CursorThread {
       name: `Kuvo Code: ${this.session.title ?? "session"}`,
       mode,
       apiKey,
+      ...onMachine && approvesAll && !fenced ? { workerPrewarm: true } : {},
       local: {
         cwd,
         ...skills ? { dirs: [skills] } : {},
@@ -23955,7 +24031,7 @@ class CursorThread {
         settingSources: ["project", "user", "team", "mdm", "plugins"],
         sandboxOptions: { enabled: !approvesAll && !fenced },
         enableAgentRetries: true,
-        store: this.owner.agentStore(fenced ? CursorWorker : sdk)
+        store: this.owner.agentStore(fenced || onMachine ? CursorWorker : sdk)
       },
       ...Object.keys(mcpServers).length ? { mcpServers } : {},
       ...Object.keys(agents).length ? { agents } : {}
@@ -23974,11 +24050,19 @@ class CursorThread {
     this.startedSkills = skills;
     this.startedTools = tools;
     this.startedFence = fence;
-    if (fence && !this.worker)
-      this.worker = await this.startWorker(options);
-    const agents = fence ? this.worker : sdk;
+    if ((fence || onMachine) && !this.worker) {
+      if (!fence)
+        this.startingOutside++;
+      try {
+        this.worker = await this.startWorker(options, Boolean(fence));
+      } finally {
+        if (!fence)
+          this.startingOutside--;
+      }
+    }
+    const agents = this.worker ?? sdk;
     const id = this.state.cursorAgent;
-    this.agent = id ? await (fence ? agents.Agent.resume(id, options) : agents.Agent.resume(id, options).catch(() => {
+    this.agent = id ? await (this.worker ? agents.Agent.resume(id, options) : agents.Agent.resume(id, options).catch(() => {
       return;
     })) : undefined;
     if (!this.agent && id) {
@@ -23993,6 +24077,13 @@ class CursorThread {
     }
   }
   async run(input, turn, hooks) {
+    if (input.held) {
+      const taken = input.held;
+      this.stop();
+      this.startedFence = taken.meta.fenced === true ? "previous" : undefined;
+      const worker = this.worker = new CursorWorker(taken.held, { adopting: true, session: this.session.id });
+      return this.stream(turn, hooks, (onDelta) => Promise.resolve(worker.continue(taken, onDelta)), () => {});
+    }
     const sdk = await this.owner.sdk();
     const apiKey = await this.owner.apiKey(sdk);
     if (!apiKey)
@@ -24004,7 +24095,7 @@ class CursorThread {
     const selection = await this.owner.effort(input.model);
     const mode = input.plan ? "plan" : "agent";
     const options = await this.options(sdk, input, hooks, apiKey, selection);
-    if (approvesAll && !fenceRules())
+    if (!onMachine && approvesAll && !fenceRules())
       await this.owner.prime(sdk, apiKey, cwd);
     if (!approvesAll && !input.plan && !this.state.cursorAskNoted) {
       turn.notice("Cursor can't stop to ask you before it acts here: it runs what its sandbox allows and declines the rest. Use Plan mode to have it propose changes first.");
@@ -24022,7 +24113,7 @@ class CursorThread {
         byPath.push(file.path);
     }
     let text = input.text;
-    const others = byPath.map((path) => this.worker ? fenceCopy(cwd, path) : path);
+    const others = byPath.map((path) => this.startedFence ? fenceCopy(cwd, path) : path);
     if (others.length)
       text += `
 
@@ -24051,6 +24142,9 @@ ${text}`;
     };
     if (hooks.signal.aborted)
       return { outcome: "interrupted" };
+    return this.stream(turn, hooks, (onDelta) => this.agent.send(images.length ? { text, images } : text, { model: selection, mode, onDelta }), instructionsTaken, input.model.id);
+  }
+  async stream(turn, hooks, start, instructionsTaken, modelID) {
     const active = { turn, hooks, toolsSinceText: false, sawText: false, output: new Map, subagents: new Map, listed: 0, told: 0 };
     this.active = active;
     turn.startStep();
@@ -24059,7 +24153,7 @@ ${text}`;
       chain = chain.then(() => this.update(active, active, update)).catch((error) => console.error(`Cursor sent an update Kuvo Code couldn't show: ${errorWords(error)}`));
     };
     try {
-      const run = await this.agent.send(images.length ? { text, images } : text, { model: selection, mode, onDelta });
+      const run = await start(onDelta);
       active.run = run;
       if (hooks.signal.aborted)
         await run.cancel().catch(() => {});
@@ -24101,7 +24195,7 @@ ${text}`;
       if (limit)
         return { outcome: "failed", error: { type: "limit", message }, limit };
       if (/Cannot use this model/i.test(message))
-        return { outcome: "failed", error: failure(`Cursor can't run ${input.model.id} with your account. Pick another of its models.`) };
+        return { outcome: "failed", error: failure(`Cursor can't run ${modelID ?? "this model"} with your account. Pick another of its models.`) };
       return { outcome: "failed", error: failure(error) };
     } finally {
       if (this.active === active)
@@ -24227,9 +24321,27 @@ ${text}`;
     for (let waited = 0;waited < 1e4 && this.active === active; waited += 100)
       await Bun.sleep(100);
   }
-  async startWorker(options) {
+  async startWorker(options, fenced) {
     const runtime = await this.owner.runtime();
     const directory = this.session.location.directory;
+    const worker = cursorWorker(runtime);
+    const folder = agentHoldFolder("cursor");
+    const start = async (command, env, ended) => {
+      const held = folder ? await hold3(command, {
+        folder,
+        kind: "jsonrpc",
+        cwd: directory,
+        env: { ...process.env, ...env },
+        meta: { provider: this.owner.providerID, kind: "cursor", sdk: CURSOR_SDK, fenced, turns: {} }
+      }).catch((error) => {
+        console.error("Cursor's holder didn't start:", error?.message ?? error);
+        return;
+      }) : undefined;
+      return new CursorWorker(held ?? command, { cwd: directory, env, ended, session: this.session.id });
+    };
+    const args = ["--config=/dev/null", "--no-env-file", worker];
+    if (!fenced)
+      return start([process.execPath, ...args], { BUN_BE_BUN: "1", OPENCODE_SESSION_ID: this.session.id });
     const attached = fenceAttachments(directory);
     const conversations = options.local.store.root;
     const own = join31(this.owner.context.home, "cursor", "in-sandbox");
@@ -24246,18 +24358,14 @@ ${text}`;
     });
     if (!fence)
       throw new Error("Cursor runs in the sandbox here, and it isn't ready: restart Kuvo Code.");
-    return new CursorWorker([fence.command, "--config=/dev/null", "--no-env-file", cursorWorker(runtime)], {
-      cwd: directory,
-      env: {
-        ...fence.env,
-        KUVO_FENCE_BUN: "1",
-        OPENCODE_SESSION_ID: this.session.id,
-        CURSOR_DATA_DIR: join31(own, "data"),
-        CURSOR_SANDBOX_POLICY_DIR: join31(own, "sandbox-policies"),
-        CUA_APP_SUPPORT_DIR: join31(own, "computer-use")
-      },
-      ended: fence.ended
-    });
+    return start([fence.command, ...args], {
+      ...fence.env,
+      KUVO_FENCE_BUN: "1",
+      OPENCODE_SESSION_ID: this.session.id,
+      CURSOR_DATA_DIR: join31(own, "data"),
+      CURSOR_SANDBOX_POLICY_DIR: join31(own, "sandbox-policies"),
+      CUA_APP_SUPPORT_DIR: join31(own, "computer-use")
+    }, fence.ended);
   }
   stop() {
     clearTimeout(this.idle);
@@ -24435,11 +24543,14 @@ var init_cursor = __esm(() => {
   init_toolrelay();
   init_servers();
   init_cursor_worker();
+  init_adopt();
+  init_client();
+  init_machine();
   init_files();
   init_cursor_api();
   init_cursor_plan();
   effortParameters = ["effort", "reasoning", "reasoning_effort"];
-  SDK2 = [{ name: "@cursor/sdk", version: "1.0.35" }];
+  SDK2 = [{ name: "@cursor/sdk", version: CURSOR_SDK }];
   workerIdle = 15 * 60000;
   cursorUpdates = new Set([
     "text-delta",
@@ -29619,6 +29730,9 @@ import { readFileSync as readFileSync34, realpathSync as realpathSync11, statSyn
 import { homedir as homedir6 } from "os";
 import { dirname as dirname19, join as join39, resolve as resolve8 } from "path";
 import { fileURLToPath as fileURLToPath2 } from "url";
+function turnInput(message) {
+  return message.type === "user" || message.type === "synthetic" && !message.metadata?.kuvo?.notice;
+}
 function permissionKey(ask, tool) {
   return JSON.stringify([ask.action, ask.resources, tool ?? null]);
 }
@@ -30229,14 +30343,15 @@ class Sessions {
     this.titleModel = titleModel;
     this.transferred = new Map(Object.entries(transfer ?? {}));
     if (transfer && [...held].some(([id, turn]) => {
-      const message = store.get(id)?.messages.findLast((each) => each.type === "user" || each.type === "synthetic");
+      const message = store.get(id)?.messages.findLast(turnInput);
       return !this.resumable(id, turn) || message?.id !== transfer[id]?.message;
     }))
       throw new Error("A session in the handover cannot be resumed.");
     for (const [id, turn] of held) {
-      if (this.resumable(id, turn))
+      if (this.resumable(id, turn)) {
+        turn.state = transfer?.[id]?.agentState;
         this.resuming.set(id, turn);
-      else
+      } else
         turn.gate.drop(turn.thread);
     }
     for (const session of store.all())
@@ -30330,14 +30445,14 @@ class Sessions {
     const record = this.store.get(id);
     if (!record || record.session.parentID || record.session.model?.providerID !== held.meta.provider)
       return false;
-    const lastUser = record.messages.findLastIndex((message) => message.type === "user" || message.type === "synthetic" || message.type === "compaction");
+    const lastUser = record.messages.findLastIndex((message) => turnInput(message) || message.type === "compaction");
     const message = record.messages[lastUser];
     if (!message || message.type === "compaction")
       return false;
     const lastIdle = record.messages.findLastIndex((each) => each.type === "idle");
     if (lastIdle > lastUser)
       return false;
-    return record.messages.slice(lastIdle + 1, lastUser).every((each) => each.type !== "user" && each.type !== "synthetic");
+    return !record.messages.slice(lastIdle + 1, lastUser).some(turnInput);
   }
   closeTools(record) {
     let changed = false;
@@ -32436,7 +32551,7 @@ ${live.agentPrompt}` : ""
       this.resuming.delete(id);
       const record = this.store.get(id);
       const live = this.state(id);
-      const message = record?.messages.findLast((each) => each.type === "user" || each.type === "synthetic");
+      const message = record?.messages.findLast(turnInput);
       if (!record || !message || live.doing.kind !== "idle") {
         held.gate.drop(held.thread);
         this.repair(id);
@@ -32486,13 +32601,16 @@ ${live.agentPrompt}` : ""
       const provider = providers.get(id);
       if (!provider || live.doing.kind !== "running" || live.doing.run.agent?.provider !== provider || live.doing.run.relayed?.length || !this.resumable(id, { meta: { provider } }))
         return;
-      const message = this.store.get(id)?.messages.findLast((each) => each.type === "user" || each.type === "synthetic");
+      const message = this.store.get(id)?.messages.findLast(turnInput);
       if (!message)
         return;
       const permissions = [...live.permissions].map(([id, { key }]) => ({ id, key }));
       if (new Set(permissions.map((each) => each.key)).size !== permissions.length)
         return;
-      sessions[id] = { message: message.id, permissions, always: live.always };
+      const agentState = live.doing.run.agent.thread.transferState?.();
+      if (agentState === false)
+        return;
+      sessions[id] = { message: message.id, permissions, always: live.always, agentState };
     }
     return Object.keys(sessions).length === providers.size ? sessions : undefined;
   }
@@ -41689,10 +41807,10 @@ function liveTransfer(newer) {
       const { turns, kind, provider, version, sdk } = held.meta;
       if (!turns || !Object.keys(turns).length)
         continue;
-      if (!kind || !provider || held.meta.fenced === true || held.meta.sandboxed === true)
+      if (!kind || !provider || held.meta.sandboxed === true || held.meta.fenced === true && kind !== "cursor" && kind !== "antigravity")
         return;
       for (const note of Object.values(turns)) {
-        if (providers.has(note.session) || usesToolRelay(note.session) || kind === "codex" && !note.turn)
+        if (providers.has(note.session) || usesToolRelay(note.session) || kind === "codex" && !note.turn || kind === "cursor" && (!note.turn || !Number.isSafeInteger(Number(note.turn))) || (kind === "cursor" || kind === "antigravity") && note.request === undefined)
           return;
         providers.set(note.session, provider);
       }
@@ -41971,7 +42089,9 @@ var init_main = __esm(async () => {
     delete process.env[name];
   temporary = process.env.TMPDIR?.replace(/\/$/, "") || join44(home3, "tmp");
   mkdirSync29(temporary, { recursive: true });
-  rmSync20(join44(temporary, "antigravity"), { recursive: true, force: true });
+  if (!transfer?.holders.some((holder) => holder.kind === "antigravity")) {
+    rmSync20(join44(temporary, "antigravity"), { recursive: true, force: true });
+  }
   leftSignIns(temporary);
   try {
     for (const name of readdirSync23(join44(home3, "antigravity")))
@@ -42350,4 +42470,4 @@ if (!isMainThread && process.argv.includes("--insights-db-worker")) {
 } else {
   await init_main().then(() => ({}));
 }
-// Built from Packages/Box/src/agents dbf7af7cf83b74c7fd95e0acf084794a7d0d6ff5f9d7556552882b9bcdd22daf
+// Built from Packages/Box/src/agents 1177bc053670910a70f9ff7f7865643c46f8baf0b352fca3a5913b354d74e23a

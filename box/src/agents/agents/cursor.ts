@@ -20,7 +20,10 @@ import { dropRelayed, relayedServers, relayedTools, relayPort, serversKey } from
 import { computerServers } from "../servers"
 import type { Turn } from "../turn"
 import type { Model, OAuthStatus, Session } from "../wire"
-import { CursorWorker, cursorWorker } from "./cursor-worker"
+import { CursorWorker, cursorWorker, type CursorRun } from "./cursor-worker"
+import { agentHoldFolder, CURSOR_SDK } from "../hold/adopt"
+import { hold } from "../hold/client"
+import { onMachine } from "../machine"
 import { privateFolder } from "../../shared/files"
 import type { LimitsSource } from "../limits"
 import { CursorClient, cursorKey, cursorKeyUnreadable } from "../usage/cursor-api"
@@ -39,7 +42,7 @@ function readable(path: string): string | undefined {
 /** What Cursor calls a model's effort setting, by model. */
 const effortParameters = ["effort", "reasoning", "reasoning_effort"]
 
-const SDK = [{ name: "@cursor/sdk", version: "1.0.35" }]
+const SDK = [{ name: "@cursor/sdk", version: CURSOR_SDK }]
 const outputLimit = 30_000
 /** How long a session's Cursor, run whole in the sandbox, stays started once it's done (its conversation picked up again after). */
 const workerIdle = 15 * 60_000
@@ -303,7 +306,7 @@ interface Lane {
 
 interface Active extends Lane {
   hooks: TurnHooks
-  run?: any
+  run?: CursorRun
   /** Its subagents (task calls), each told in a session of its own, by their call. */
   subagents: Map<string, Lane & { run: SubagentRun }>
   /** Tool calls it said it would make, and those it told: one its SDK leaves out is said. */
@@ -322,15 +325,15 @@ class CursorThread implements Thread {
   private startedTools?: string
   /** The sandbox as it was started in (none: in the bridge): another one starts it again. */
   private startedFence?: string
-  /** Its SDK in a process of its own, run whole in the box's sandbox while it's on. */
+  /** Its SDK runs in a worker on a box, through the sandbox launcher when enabled. */
   private worker?: CursorWorker
+  private startingOutside = 0
 
   get sandboxed() {
-    return Boolean(this.agent && this.startedFence && this.worker && !this.worker.isClosed)
+    return Boolean(this.startedFence && this.worker && !this.worker.isClosed)
   }
-  // (Its SDK in the bridge's own process, which runs its tools.)
   get outside() {
-    return Boolean(this.agent && !this.startedFence)
+    return this.startingOutside > 0 || Boolean((this.agent || (this.worker && !this.worker.isClosed)) && !this.startedFence)
   }
   /** Stops the worker once it's been done a while. */
   private idle?: ReturnType<typeof setTimeout>
@@ -350,7 +353,7 @@ class CursorThread implements Thread {
     const sdk = await this.owner.sdk()
     const apiKey = await this.owner.apiKey(sdk)
     if (!apiKey || hooks.signal.aborted) return undefined
-    if (hooks.approvesAll(false) && !fenceRules()) await this.owner.prime(sdk, apiKey, this.session.location.directory)
+    if (!onMachine && hooks.approvesAll(false) && !fenceRules()) await this.owner.prime(sdk, apiKey, this.session.location.directory)
     await this.ensureAgent(sdk, await this.options(sdk, input, hooks, apiKey, await this.owner.effort(input.model)), hooks)
     const fresh = this.startedOver
     this.startedOver = false
@@ -385,6 +388,7 @@ class CursorThread implements Thread {
       name: `Kuvo Code: ${this.session.title ?? "session"}`,
       mode,
       apiKey,
+      ...(onMachine && approvesAll && !fenced ? { workerPrewarm: true } : {}),
       // (On a machine, the commands Cursor runs get the bridge's own folders (XDG_… in Kuvo
       // Code's), not the machine's, unlike every other agent's: its SDK runs them in this process
       // with its environment, and takes none for a local agent. Giving the whole bridge the
@@ -397,7 +401,7 @@ class CursorThread implements Thread {
         settingSources: ["project", "user", "team", "mdm", "plugins"],
         sandboxOptions: { enabled: !approvesAll && !fenced },
         enableAgentRetries: true,
-        store: this.owner.agentStore(fenced ? CursorWorker : sdk),
+        store: this.owner.agentStore(fenced || onMachine ? CursorWorker : sdk),
       },
       ...(Object.keys(mcpServers).length ? { mcpServers } : {}),
       ...(Object.keys(agents).length ? { agents } : {}),
@@ -421,12 +425,18 @@ class CursorThread implements Thread {
     this.startedSkills = skills
     this.startedTools = tools
     this.startedFence = fence
-    // Its agents: the SDK's own in the bridge, or the worker's in the sandbox.
-    if (fence && !this.worker) this.worker = await this.startWorker(options)
-    const agents = fence ? this.worker! : sdk
+    if ((fence || onMachine) && !this.worker) {
+      if (!fence) this.startingOutside++
+      try {
+        this.worker = await this.startWorker(options, Boolean(fence))
+      } finally {
+        if (!fence) this.startingOutside--
+      }
+    }
+    const agents = this.worker ?? sdk
     const id = this.state.cursorAgent as string | undefined
-    // (The worker says one that's gone; it stopping isn't that.)
-    this.agent = id ? await (fence ? agents.Agent.resume(id, options) : agents.Agent.resume(id, options).catch(() => undefined)) : undefined
+    // The worker distinguishes a conversation it couldn't resume from a failed connection.
+    this.agent = id ? await (this.worker ? agents.Agent.resume(id, options) : agents.Agent.resume(id, options).catch(() => undefined)) : undefined
     if (!this.agent && id) {
       // In place of one it had: the instructions go again, and what came before is handed over.
       this.startedOver = true
@@ -441,6 +451,13 @@ class CursorThread implements Thread {
   }
 
   async run(input: RunInput, turn: Turn, hooks: TurnHooks): Promise<RunResult> {
+    if (input.held) {
+      const taken = input.held
+      this.stop()
+      this.startedFence = taken.meta.fenced === true ? "previous" : undefined
+      const worker = this.worker = new CursorWorker(taken.held, { adopting: true, session: this.session.id })
+      return this.stream(turn, hooks, onDelta => Promise.resolve(worker.continue(taken, onDelta)), () => {})
+    }
     const sdk = await this.owner.sdk()
     const apiKey = await this.owner.apiKey(sdk)
     if (!apiKey) return { outcome: "failed", error: { type: "auth", message: "Sign in to Cursor in Settings › Accounts." } }
@@ -450,7 +467,7 @@ class CursorThread implements Thread {
     const selection = await this.owner.effort(input.model)
     const mode = input.plan ? "plan" : "agent"
     const options = await this.options(sdk, input, hooks, apiKey, selection)
-    if (approvesAll && !fenceRules()) await this.owner.prime(sdk, apiKey, cwd)
+    if (!onMachine && approvesAll && !fenceRules()) await this.owner.prime(sdk, apiKey, cwd)
     // Cursor's SDK can't stop to ask: said once, so Ask First isn't taken for what it does.
     if (!approvesAll && !input.plan && !this.state.cursorAskNoted) {
       turn.notice("Cursor can't stop to ask you before it acts here: it runs what its sandbox allows and declines the rest. Use Plan mode to have it propose changes first.")
@@ -468,7 +485,7 @@ class CursorThread implements Thread {
     }
     let text = input.text
     // (In the sandbox, which hides where they're kept: copies it reads.)
-    const others = byPath.map((path) => (this.worker ? fenceCopy(cwd, path) : path))
+    const others = byPath.map((path) => (this.startedFence ? fenceCopy(cwd, path) : path))
     if (others.length) text += `\n\nAttached files:\n${others.map((path) => `- ${path}`).join("\n")}`
     // The app's added instructions go with the first message, and again when they change.
     const instructions = hooks.instructions()
@@ -487,6 +504,10 @@ class CursorThread implements Thread {
       instructed = undefined
     }
     if (hooks.signal.aborted) return { outcome: "interrupted" }
+    return this.stream(turn, hooks, onDelta => this.agent.send(images.length ? { text, images } : text, { model: selection, mode, onDelta }), instructionsTaken, input.model.id)
+  }
+
+  private async stream(turn: Turn, hooks: TurnHooks, start: (onDelta: (event: { update: any }) => Promise<void>) => Promise<CursorRun>, instructionsTaken: () => void, modelID?: string): Promise<RunResult> {
     const active: Active = { turn, hooks, toolsSinceText: false, sawText: false, output: new Map(), subagents: new Map(), listed: 0, told: 0 }
     this.active = active
     turn.startStep()
@@ -498,7 +519,7 @@ class CursorThread implements Thread {
         .catch((error) => console.error(`Cursor sent an update Kuvo Code couldn't show: ${errorWords(error)}`))
     }
     try {
-      const run = await this.agent.send(images.length ? { text, images } : text, { model: selection, mode, onDelta })
+      const run = await start(onDelta)
       active.run = run
       // Stopped while it was being sent.
       if (hooks.signal.aborted) await run.cancel().catch(() => {})
@@ -538,7 +559,7 @@ class CursorThread implements Thread {
       const message = errorWords(error) ?? "Cursor stopped with an error."
       const limit = limitOf(message, error)
       if (limit) return { outcome: "failed", error: { type: "limit", message }, limit }
-      if (/Cannot use this model/i.test(message)) return { outcome: "failed", error: failure(`Cursor can't run ${input.model.id} with your account. Pick another of its models.`) }
+      if (/Cannot use this model/i.test(message)) return { outcome: "failed", error: failure(`Cursor can't run ${modelID ?? "this model"} with your account. Pick another of its models.`) }
       return { outcome: "failed", error: failure(error) }
     } finally {
       if (this.active === active) this.active = undefined
@@ -666,9 +687,23 @@ class CursorThread implements Thread {
    * Code's tools. Your sign-in stays with the bridge, which hands the agent the key it runs with, and
    * what Cursor keeps run in the bridge (with the sandbox off) out of its reach.
    */
-  private async startWorker(options: any): Promise<CursorWorker> {
+  private async startWorker(options: any, fenced: boolean): Promise<CursorWorker> {
     const runtime = await this.owner.runtime()
     const directory = this.session.location.directory
+    const worker = cursorWorker(runtime)
+    const folder = agentHoldFolder("cursor")
+    const start = async (command: string[], env: Record<string, string | undefined>, ended?: () => void) => {
+      const held = folder ? await hold(command, {
+        folder, kind: "jsonrpc", cwd: directory, env: { ...process.env, ...env },
+        meta: { provider: this.owner.providerID, kind: "cursor", sdk: CURSOR_SDK, fenced, turns: {} },
+      }).catch(error => {
+        console.error("Cursor's holder didn't start:", error?.message ?? error)
+        return undefined
+      }) : undefined
+      return new CursorWorker(held ?? command, { cwd: directory, env, ended, session: this.session.id })
+    }
+    const args = ["--config=/dev/null", "--no-env-file", worker]
+    if (!fenced) return start([process.execPath, ...args], { BUN_BE_BUN: "1", OPENCODE_SESSION_ID: this.session.id })
     const attached = fenceAttachments(directory)
     const conversations = options.local.store.root as string
     const own = join(this.owner.context.home, "cursor", "in-sandbox")
@@ -683,19 +718,14 @@ class CursorThread implements Thread {
       bot: seatBot(this.session),
     })
     if (!fence) throw new Error("Cursor runs in the sandbox here, and it isn't ready: restart Kuvo Code.")
-    return new CursorWorker([fence.command, "--config=/dev/null", "--no-env-file", cursorWorker(runtime)], {
-      cwd: directory,
-      env: {
-        ...fence.env,
-        // (The engine's runtime, run as Bun.)
-        KUVO_FENCE_BUN: "1",
-        OPENCODE_SESSION_ID: this.session.id,
-        CURSOR_DATA_DIR: join(own, "data"),
-        CURSOR_SANDBOX_POLICY_DIR: join(own, "sandbox-policies"),
-        CUA_APP_SUPPORT_DIR: join(own, "computer-use"),
-      },
-      ended: fence.ended,
-    })
+    return start([fence.command, ...args], {
+      ...fence.env,
+      KUVO_FENCE_BUN: "1",
+      OPENCODE_SESSION_ID: this.session.id,
+      CURSOR_DATA_DIR: join(own, "data"),
+      CURSOR_SANDBOX_POLICY_DIR: join(own, "sandbox-policies"),
+      CUA_APP_SUPPORT_DIR: join(own, "computer-use"),
+    }, fence.ended)
   }
 
   /** Its agent stopped, and the worker it ran in (its key to Kuvo Code's tools kept for the next). */

@@ -192,9 +192,9 @@ function bridgeAPI() {
   return { said, api };
 }
 /** The bridge answering, as a process other than `besides`: its pid and build. */
-const bridgeUp = besides => until(async () => {
+const bridgeUp = (besides, wantedBuild) => until(async () => {
   const said = readJSON(path.join(RUN, "bridge.json"));
-  if (!said?.pid || said.pid === besides || !runs(said.pid)) return null;
+  if (!said?.pid || said.pid === besides || (wantedBuild && said.build !== wantedBuild) || !runs(said.pid)) return null;
   const info = await bridgeAPI().api("GET", "api/info");
   return info.status === 200 && info.json.pid === said.pid ? { pid: said.pid, build: info.json.build } : null;
 }, besides ? "a new bridge to answer" : "the bridge to answer");
@@ -407,7 +407,7 @@ test("Update Now uses the no-cut path even when an engine turn is active", { ski
 
   const nextBuild = "c".repeat(64);
   await requestUpdate("0.11.0", "1.0.0", nextBuild);
-  const next = await bridgeUp(first.pid);
+  const next = await bridgeUp(first.pid, nextBuild);
   assert.equal(next.build, nextBuild);
   assert.equal(readJSON(path.join(RUN, "engine.json")).pid, engine.pid);
   await until(() => !fs.existsSync(path.join(RUN, "update-trial")), "the manual update to settle");

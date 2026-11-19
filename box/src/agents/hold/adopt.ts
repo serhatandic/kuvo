@@ -13,22 +13,20 @@ import type { AgentKind } from "../accounts"
 import { machineHome } from "../machine"
 import { attach, forgetOldPrograms, heldIn, holdFolder, isHolder, type Held, type HoldRecord, HOLD_PROTO } from "./client"
 
-/**
- * The agents whose processes start under a holder, and whose turns a bridge started after one that
- * crashed takes up again (spikes S1 and S2, .claude/notes/update-handover.md). Antigravity's and
- * Cursor's run as they always have, unheld: no spike has shown that a new bridge can take theirs
- * over, so a bridge that crashes ends their turns (as before), and one that makes way for a newer
- * build waits for them to end (renewal.ts).
- */
-export const HELD_KINDS: ReadonlySet<AgentKind> = new Set<AgentKind>(["codex", "claude", "grok"])
+/** Agents whose live protocol still has a client when the bridge disconnects. */
+export const HELD_KINDS: ReadonlySet<AgentKind> = new Set<AgentKind>(["codex", "claude", "grok", "cursor", "antigravity"])
 
 /** The first Claude Code that sends a client joining it the asks it has open (`pending_permission_requests`, spike S1). */
+export const ANTIGRAVITY_ACP = "1.3.0"
+export const CURSOR_SDK = "1.0.35"
 export const CLAUDE_SDK = "0.3.303"
 export const CLAUDE_REJOINS = "2.1.268"
 
 /** Whether a held agent can be taken up: Claude Code only from the version that sends its open asks again (an older one's ask would wait forever). */
 export function adoptable(meta: Partial<HeldMeta>): boolean {
   if (!meta.kind || !HELD_KINDS.has(meta.kind)) return false
+  if (meta.kind === "antigravity") return meta.version === ANTIGRAVITY_ACP
+  if (meta.kind === "cursor") return meta.sdk === CURSOR_SDK
   if (meta.kind !== "claude") return true
   return meta.sdk === CLAUDE_SDK && typeof meta.version === "string" && atLeast(meta.version, CLAUDE_REJOINS)
 }
@@ -142,6 +140,8 @@ export interface HeldTurn {
   gate: HeldGate
   /** Set by an agent whose process runs several conversations (Codex's app-server): once this turn's own first line comes again. Otherwise the agent's first line is. */
   began?: Promise<void>
+  /** Extra provider state understood by a compatible live-transfer adopter. */
+  state?: unknown
 }
 
 /** A holder's process stopped (its agent first, as a bridge stops one), by its own pid, once it's
@@ -166,7 +166,9 @@ export async function adoptHeld(folder = machineHome ? holdFolder(machineHome) :
   for (const record of heldIn(folder)) {
     const meta = record.meta as Partial<HeldMeta>
     const turns = Object.entries(meta.turns ?? {})
-    if (!meta.provider || !adoptable(meta) || !turns.length || record.exited) {
+    // Antigravity's transcript cursor belongs to a live checkpoint. After an unplanned
+    // crash, ordinary session repair closes that turn instead of guessing what was shown.
+    if (!meta.provider || !adoptable(meta) || meta.kind === "antigravity" || !turns.length || record.exited) {
       stopHolder(record)
       continue
     }

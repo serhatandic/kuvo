@@ -156,6 +156,40 @@ process.stdin.on("data", chunk => {
 });
 `;
 
+// The real Cursor worker loads this local SDK stand-in. Its in-memory run is the only thing
+// that can finish the first message, so a bridge cannot pass this by resending it.
+const CURSOR_SDK = String.raw`
+import fs from "node:fs";
+import path from "node:path";
+export class JsonlLocalAgentStore { constructor(root) { this.root = root } }
+export class AuthenticationError extends Error {}
+export const Cursor = { me: async () => ({}), models: { list: async () => [{ id: "cursor-test" }] } };
+const make = agentId => ({
+  agentId, close() {},
+  async send(text, { onDelta }) {
+    const folder = process.env.STAND_IN_FOLDER;
+    fs.appendFileSync(path.join(folder, "cursor.log"), JSON.stringify({ text, pid: process.pid, parent: process.ppid }) + "\n");
+    const say = text => onDelta({ update: { type: "text-delta", text } });
+    await say("Before.");
+    const ending = (async () => {
+      while (!fs.existsSync(path.join(folder, "cursor-release"))) await new Promise(resolve => setTimeout(resolve, 20));
+      await say(" After.");
+      return { status: "finished" };
+    })();
+    return { wait: () => ending, cancel: async () => {} };
+  },
+});
+export const Agent = { create: async () => make("cursor-live"), resume: async id => make(id) };
+`;
+
+// It uses the same ACP request IDs as the Grok stand-in, with Antigravity's authenticate-first
+// and config surface. Its permission and prompt finishes are sent only to the original login.
+const ANTIGRAVITY = GROK
+  .replace('if (!args.includes("stdio")) process.exit(1);', '')
+  .replace('"grok.log"', '"antigravity.log"')
+  .replace('id: "xai.api_key"', 'id: "oauth-personal"')
+  .replace('modelId: "grok-test", name: "Grok Test"', 'modelId: "antigravity-test", name: "Antigravity Test"');
+
 const boxModules = fileURLToPath(new URL("../node_modules", import.meta.url));
 
 const freePort = () => new Promise((resolve, reject) => {
@@ -180,7 +214,7 @@ const alive = pid => { try { process.kill(pid, 0); return true; } catch { return
 
 /** A machine's box in folders of the test's own (`~/.kuvo-code` in a home of its own, for its
  * keeper), its bridge kept running as its launch keeps it. */
-async function machine({ claudeVersion = "2.1.325", liveTransfer = false } = {}) {
+async function machine({ claudeVersion = "2.1.325", liveTransfer = false, cursor = false } = {}) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "kh-")));
   removeAtEnd(root);
   const home = path.join(root, ".kuvo-code");
@@ -194,6 +228,23 @@ async function machine({ claudeVersion = "2.1.325", liveTransfer = false } = {})
   fs.writeFileSync(path.join(fake, "claude"), `#!/bin/sh\nexport BUN_BE_BUN=1 STAND_IN_FOLDER="${fake}" STAND_IN_VERSION="${claudeVersion}"\nexec "${bun}" "${path.join(fake, "claude.js")}" "$@"\n`, { mode: 0o755 });
   fs.writeFileSync(path.join(fake, "grok.js"), GROK);
   fs.writeFileSync(path.join(fake, "grok"), `#!/bin/sh\nexport BUN_BE_BUN=1 STAND_IN_FOLDER="${fake}"\nexec "${bun}" "${path.join(fake, "grok.js")}" "$@"\n`, { mode: 0o755 });
+  const agy = path.join(home, "agents", "antigravity");
+  fs.mkdirSync(path.join(agy, "1.3.0"), { recursive: true });
+  fs.mkdirSync(path.join(agy, "profile", "antigravity-acp"), { recursive: true });
+  fs.writeFileSync(path.join(agy, "profile", "antigravity-acp", "acp_token.json"), "{}", { mode: 0o600 });
+  fs.writeFileSync(path.join(agy, "1.3.0", ".complete"), "");
+  fs.writeFileSync(path.join(fake, "antigravity.js"), ANTIGRAVITY);
+  fs.writeFileSync(path.join(agy, "1.3.0", "agy_acp_server.par"), `#!/bin/sh\nexport BUN_BE_BUN=1 STAND_IN_FOLDER="${fake}"\nexec "${bun}" "${path.join(fake, "antigravity.js")}" "$@"\n`, { mode: 0o755 });
+  if (cursor) {
+    const sdk = path.join(home, "agents", "runtime", "cursor", "node_modules", "@cursor", "sdk");
+    fs.mkdirSync(sdk, { recursive: true });
+    fs.writeFileSync(path.join(sdk, "package.json"), '{"name":"@cursor/sdk","version":"1.0.35","type":"module","main":"index.js"}');
+    fs.writeFileSync(path.join(sdk, "index.js"), CURSOR_SDK);
+    // The fixture's auth is local. Block any account/limits probes outside this scratch box.
+    const bundle = path.join(home, "bin", "kuvo-agents.js");
+    const network = 'const localFetch = globalThis.fetch; globalThis.fetch = (url, ...args) => { const address = new URL(typeof url === "string" || url instanceof URL ? url : url.url); return address.hostname === "127.0.0.1" ? localFetch(url, ...args) : Promise.reject(new Error("Outside this test")); };\n';
+    fs.writeFileSync(bundle, network + fs.readFileSync(bundle, "utf8"));
+  }
   // (Claude's SDK, as the box's own tests have it: nothing is downloaded.)
   fs.mkdirSync(path.join(home, "agents", "runtime", "claude"), { recursive: true });
   fs.symlinkSync(boxModules, path.join(home, "agents", "runtime", "claude", "node_modules"));
@@ -227,6 +278,7 @@ async function machine({ claudeVersion = "2.1.325", liveTransfer = false } = {})
   // Its launch, as it keeps a machine's bridge: started again a moment after it ends, its pid noted
   // where the keeper looks (`run/agents.pid`).
   if (liveTransfer) env.KUVO_AGENTS_KEPT = "1";
+  if (cursor) Object.assign(env, { CURSOR_API_KEY: "fixture-only", STAND_IN_FOLDER: fake });
   const direct = 'echo $$ >"$5"; exec "$2" --config=/dev/null --no-env-file "$3" >>"$4" 2>&1';
   const loop = 'while kill -0 "$1" 2>/dev/null; do "$2" --config=/dev/null --no-env-file "$3" >>"$4" 2>&1 </dev/null & echo $! >"$5"; wait $!; sleep 1; done';
   const launch = spawn("sh", ["-c", liveTransfer ? direct : loop, "kuvo-agents", String(process.pid), bun, path.join(home, "bin", "kuvo-agents.js"), path.join(home, "run", "agents.log"), path.join(home, "run", "agents.pid")], { cwd: path.join(home, "work"), env, stdio: "ignore", detached: true });
@@ -261,6 +313,13 @@ async function machine({ claudeVersion = "2.1.325", liveTransfer = false } = {})
 
 const textOf = messages => messages.filter(each => each.type === "assistant").flatMap(each => each.content ?? []).filter(block => block.type === "text").map(block => block.text);
 
+function changeBridge(box) {
+  const bundle = path.join(box.home, "bin", "kuvo-agents.js");
+  const changed = fs.readFileSync(bundle, "utf8").replace(/(Built from Packages\/Box\/src\/agents )[0-9a-f]{16,64}/, "$1" + "d".repeat(64));
+  fs.writeFileSync(bundle + ".new", changed);
+  fs.renameSync(bundle + ".new", bundle);
+}
+
 /**
  * The crash and the stop, for one agent: its session, a message whose turn asks to run a command,
  * the bridge killed while it asks, the next bridge asking once more, your answer, the turn's end,
@@ -282,12 +341,8 @@ async function continueWhileAsking({ provider, model, log, liveTransfer = false 
   await until(() => Object.values(box.held().find(each => each.pid === holder.pid)?.meta.turns ?? {})[0]?.session === session, "the holder's record to say which session's turn is under way");
   assert.equal(fs.statSync(box.holders).mode & 0o777, 0o700, "only you reach the holders");
 
-  if (liveTransfer) {
-    const bundle = path.join(box.home, "bin", "kuvo-agents.js");
-    const changed = fs.readFileSync(bundle, "utf8").replace(/(Built from Packages\/Box\/src\/agents )[0-9a-f]{16,64}/, "$1" + "d".repeat(64));
-    fs.writeFileSync(bundle + ".new", changed);
-    fs.renameSync(bundle + ".new", bundle);
-  } else process.kill(first, "SIGKILL");
+  if (liveTransfer) changeBridge(box);
+  else process.kill(first, "SIGKILL");
   const second = await box.up(first);
   assert.notEqual(second, first);
   assert.ok(alive(asked.pid), "the original agent process lived through the bridge change");
@@ -331,6 +386,45 @@ test("Claude Code keeps its pending approval through a live bridge update", { sk
 
 test("Grok (ACP) keeps its pending approval through a live bridge update", { skip: bun ? false : NO_BUN }, () =>
   continueWhileAsking({ provider: "grok-cli", model: "grok-test", log: "grok.log", liveTransfer: true }));
+
+test("Antigravity ACP keeps its original session, prompt and approval through a live bridge update", { skip: bun ? false : NO_BUN }, () =>
+  continueWhileAsking({ provider: "antigravity", model: "antigravity-test", log: "antigravity.log", liveTransfer: true }));
+
+test("Cursor's live worker keeps streaming the same SDK run through a bridge update", { skip: bun ? false : NO_BUN }, async () => {
+  const box = await machine({ liveTransfer: true, cursor: true });
+  const first = await box.up();
+  const made = await box.api("POST", "api/session", {
+    title: "Cursor held", location: { directory: path.join(box.home, "work") },
+    model: { providerID: "cursor", id: "cursor-test" },
+  });
+  assert.equal(made.status, 200, JSON.stringify(made.json));
+  const session = made.json.data.id;
+  const message = "msg_heldcursor00000001";
+  assert.equal((await box.api("POST", `api/session/${session}/prompt`, { id: message, delivery: "steer", text: "continue once" })).status, 200);
+  const page = async () => (await box.api("GET", `api/session/${session}/message?limit=100&order=asc`)).json?.data;
+  const visible = await until(async () => (await page())?.find(item => textOf([item]).includes("Before.")), "Cursor's first delta", 20_000, async () => `\n${JSON.stringify(await page())}`);
+  const initial = box.log("cursor.log");
+  assert.equal(initial.length, 1);
+  const original = box.held().find(record => record.child === initial[0].pid);
+  assert.equal(original.pid, initial[0].parent);
+  assert.equal(original.meta.turns["cursor-live"].session, session);
+
+  changeBridge(box);
+  await box.up(first);
+  const current = box.held().find(record => record.id === original.id);
+  assert.equal(current.child, original.child);
+  assert.ok(current.generation > original.generation);
+  fs.writeFileSync(path.join(box.home, "fake", "cursor-release"), "");
+  const messages = await until(async () => {
+    const found = await page();
+    return found?.at(-1)?.type === "idle" ? found : null;
+  }, "the original Cursor SDK run to end");
+  assert.deepEqual(messages.filter(item => item.type === "user").map(item => item.id), [message]);
+  assert.deepEqual(messages.filter(item => item.type === "assistant").map(item => item.id), [visible.id]);
+  assert.deepEqual(textOf(messages), ["Before. After."]);
+  assert.deepEqual(messages.filter(item => item.type === "idle").map(item => item.outcome), ["succeeded"]);
+  assert.deepEqual(box.log("cursor.log"), initial, "the native process received exactly one prompt");
+});
 
 test("Claude Code older than 2.1.268 (it doesn't ask again what's open, as a new client joins): a crash ends its turn as before, and it's stopped, not left waiting", { skip: bun ? false : NO_BUN }, async () => {
   const box = await machine({ claudeVersion: "2.1.200" });
