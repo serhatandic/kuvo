@@ -1,4 +1,4 @@
-import { legacyFolderTrial } from "../../shared/folder-version";
+import { deviceGrantsLayoutDeferred } from "../../shared/folder-version";
 import { ownComputerName } from "../computer-name";
 import { serviceTitle } from "../../shared/account-names";
 // Your computers, as this box knows them (PROTOCOL.md, "Computers", `kuvo/computers`): itself, its
@@ -301,7 +301,7 @@ async function* manage(context: RouteContext, key: string, action: string | unde
     return yield* json(plan.status, plan.value);
   }
   if (action === "/allow-devices") {
-    if (legacyFolderTrial(K)) return yield* json(503, { message: "Wait for the Kuvo Code update to finish before changing device access." });
+    if (deviceGrantsLayoutDeferred(K)) return yield* json(503, { message: "Wait for the Kuvo Code update to finish before changing device access." });
     return yield* json(404, { message: "Pair devices with your setup." });
   }
   const connect = action === "/connect";

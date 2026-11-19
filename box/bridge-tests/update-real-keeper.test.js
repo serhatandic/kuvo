@@ -17,6 +17,24 @@ import { atEnd, removeAtEnd } from "./at-end.js";
 const script = fileURLToPath(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url));
 const checkout = fileURLToPath(new URL("../..", import.meta.url));
 const baseline = layout0Build();
+test("an app-owned box probes the saved baseline as a disposable machine", () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-layout-probe-app-"));
+  removeAtEnd(base);
+  const home = path.join(base, "app", "box");
+  const run = path.join(home, "run");
+  const saved = path.join(home, "updates", "rollback", "files", "bin");
+  fs.mkdirSync(run, { recursive: true });
+  fs.mkdirSync(saved, { recursive: true });
+  fs.writeFileSync(path.join(run, "update-trial"), "0.10.0");
+  fs.writeFileSync(path.join(saved, "kuvo-link.js"), baseline);
+  const probed = spawnSync(process.execPath, [script, "folder-upgrade"], {
+    env: { ...process.env, HOME: base, KUVO_HOME: home, KUVO_BOX: "mac", KUVO_ENGINE_CONFIG: path.join(base, "app", "config") },
+    encoding: "utf8", timeout: 10_000,
+  });
+  assert.equal(probed.status, 0, probed.stderr);
+  assert.equal(fs.existsSync(path.join(home, "folder-version.json")), false);
+});
+
 const runUpdate = (name, interrupted) => test(name, async () => {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-real-keeper-"));
   const home = path.join(base, ".kuvo-code");

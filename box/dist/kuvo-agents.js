@@ -40861,10 +40861,10 @@ function upgradeKuvoFolder(folder, importLegacy) {
   upgradeFolder(folder, steps, importLegacy, (start) => checkTrialRecovery(folder, start, importLegacy !== undefined));
 }
 function legacyFolderTrial(folder) {
-  return fs15.existsSync(path11.join(folder, "run", "update-trial")) && !fs15.lstatSync(path11.join(folder, FOLDER_VERSION_FILE), { throwIfNoEntry: false });
+  return trialOpen(folder) && !fs15.lstatSync(path11.join(folder, FOLDER_VERSION_FILE), { throwIfNoEntry: false });
 }
 function checkTrialRecovery(folder, start, importing) {
-  if (!fs15.existsSync(path11.join(folder, "run", "update-trial")))
+  if (!trialOpen(folder))
     return;
   const bin = path11.join(folder, "updates", "rollback", "files", "bin");
   const saved = path11.join(bin, "kuvo-link.js");
@@ -40889,6 +40889,10 @@ function checkTrialRecovery(folder, start, importing) {
     const probe = path11.join(scratch, ".kuvo-code");
     fs15.mkdirSync(probe, { mode: 448 });
     const marker = path11.join(probe, FOLDER_VERSION_FILE);
+    const env = { ...process.env, HOME: scratch, KUVO_HOME: probe, BUN_BE_BUN: "1", BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0" };
+    for (const key of Object.keys(process.env))
+      if (key.startsWith("KUVO_") && key !== "KUVO_HOME")
+        delete env[key];
     const accepts = (version) => {
       if (version === undefined)
         fs15.rmSync(marker, { force: true });
@@ -40896,7 +40900,7 @@ function checkTrialRecovery(folder, start, importing) {
         fs15.writeFileSync(marker, JSON.stringify({ version }));
       const flags = runtime === oldRuntime || process.versions.bun ? ["--config=/dev/null", "--no-env-file"] : [];
       const result = spawnSync4(runtime, [...flags, saved, "here", ".kuvo-machine-probe"], {
-        env: { ...process.env, HOME: scratch, KUVO_HOME: probe, BUN_BE_BUN: "1", BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0" },
+        env,
         encoding: "utf8",
         stdio: ["ignore", "pipe", "ignore"],
         timeout: 15000
@@ -40943,7 +40947,7 @@ function upgradeFolder(folder, ordered, importLegacy, beforeSteps) {
     }
   }, { exclusive: true, wait: 60000 });
 }
-var FOLDER_VERSION_FILE = "folder-version.json", steps;
+var FOLDER_VERSION_FILE = "folder-version.json", steps, trialOpen = (folder) => fs15.existsSync(path11.join(folder, "run", "update-trial"));
 var init_folder_version = __esm(() => {
   init_files();
   init_format_version();
@@ -42562,4 +42566,4 @@ if (!isMainThread && process.argv.includes("--insights-db-worker")) {
 } else {
   await init_main().then(() => ({}));
 }
-// Built from Packages/Box/src/agents 59ebf766acb5aaac72e962660512899355156fa260b7631b061f1e76201c5180
+// Built from Packages/Box/src/agents 430555c0b12b695a5ea1980d794b972bdaf37eeaaf1e3abf3c0281e6f0d4bab6

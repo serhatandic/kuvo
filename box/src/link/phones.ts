@@ -3,7 +3,7 @@ import { acceptedMembership, projectMembership } from "./setup/membership";
 import { updateAccess } from "./setup/access";
 import { primaryFenced } from "./setup/lease";
 import crypto from "node:crypto";
-import { legacyFolderTrial } from "../shared/folder-version";
+import { deviceGrantsLayoutDeferred } from "../shared/folder-version";
 import { isObject } from "../shared/json";
 import { addressOf, publicOf } from "./crypto/keys";
 import { noteDocsChanged } from "./documents/changed";
@@ -31,7 +31,7 @@ function stagePhonePairing(key: Buffer, hello: PhoneHello | null | undefined, ad
     const phone = pairedPhone(readLink(), encoded);
     return phone ? phone.pairing ?? "" : false;
   };
-  if (!hello?.pair || legacyFolderTrial(K)) return current();
+  if (!hello?.pair || deviceGrantsLayoutDeferred(K)) return current();
   const before = readLink();
   const pending = pendingShared(before, "membershipAndAccess");
   if (pending) {
@@ -215,7 +215,7 @@ export function foldPhones(link: LinkState, now = Date.now()): void {
       if (fits(entry, macs) && typeof entry.pairing === "string") noteRemoved(link, entry.key, entry.pairing);
     }
   }
-  const preserveVoucher = legacyFolderTrial(K);
+  const preserveVoucher = deviceGrantsLayoutDeferred(K);
   const known = new Map((link.phones ?? []).map(phone => [phone.key, phone]));
   const signed = macs.filter(mac => macDoc(link, mac, "phones"));
   const listed: Phone[] = [];
@@ -252,7 +252,7 @@ export function foldPhones(link: LinkState, now = Date.now()): void {
 
 // This box's own phones document: the phones paired here, and every removal it knows of.
 export const ownPhones = (link: LinkState) => {
-  const preserveVoucher = legacyFolderTrial(K);
+  const preserveVoucher = deviceGrantsLayoutDeferred(K);
   return {
     ...(link.setup?.managed && link.setup.role === "primary" ? { epoch: link.setup.epoch } : {}),
     phones: (link.phones ?? []).filter(phone => phone.from === "pair").map(phone => ({

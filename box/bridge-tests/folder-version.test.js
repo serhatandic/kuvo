@@ -199,6 +199,12 @@ cp "${old}" "${current}" && rm "${folder}/run/update-trial"
 `);
   fs.writeFileSync(marker, '{"version":4}\n');
   assert.equal(launch(home, process.execPath, [old, "here", ".probe"]).status, 0);
+  const info = launch(home, process.execPath, [current, "box", "route"], { input: '{"method":"GET","path":"kuvo/info"}' });
+  assert.equal(info.status, 0, info.stderr);
+  const reply = JSON.parse(info.stdout);
+  assert.equal(reply.status, 200, info.stdout);
+  assert.ok(JSON.parse(reply.body).features.includes("devices.allow"));
+  assert.equal(fs.readFileSync(marker, "utf8"), '{"version":4}\n');
   // A trial may defer a clean layout 4, but cannot defer a migration that already started.
   fs.writeFileSync(marker, '{"version":4,"upgradingTo":5}\n');
   const refused = launch(home, process.execPath, [current, "folder-upgrade"]);

@@ -3729,7 +3729,7 @@ function upgradeKuvoFolder(folder, importLegacy) {
   upgradeFolder(folder, steps, importLegacy, (start) => checkTrialRecovery(folder, start, importLegacy !== undefined));
 }
 function legacyFolderTrial(folder) {
-  return fs20.existsSync(path18.join(folder, "run", "update-trial")) && !fs20.lstatSync(path18.join(folder, FOLDER_VERSION_FILE), { throwIfNoEntry: false });
+  return trialOpen(folder) && !fs20.lstatSync(path18.join(folder, FOLDER_VERSION_FILE), { throwIfNoEntry: false });
 }
 function setupLayoutDeferred(folder) {
   try {
@@ -3773,8 +3773,11 @@ function computerHistoryLayoutReady(folder) {
     return false;
   }
 }
+function deviceGrantsLayoutDeferred(folder) {
+  return trialOpen(folder) && checkpoint(path18.join(folder, FOLDER_VERSION_FILE), steps.length).version < 11;
+}
 function checkTrialRecovery(folder, start, importing) {
-  if (!fs20.existsSync(path18.join(folder, "run", "update-trial")))
+  if (!trialOpen(folder))
     return;
   const bin = path18.join(folder, "updates", "rollback", "files", "bin");
   const saved = path18.join(bin, "kuvo-link.js");
@@ -3799,6 +3802,10 @@ function checkTrialRecovery(folder, start, importing) {
     const probe = path18.join(scratch, ".kuvo-code");
     fs20.mkdirSync(probe, { mode: 448 });
     const marker = path18.join(probe, FOLDER_VERSION_FILE);
+    const env = { ...process.env, HOME: scratch, KUVO_HOME: probe, BUN_BE_BUN: "1", BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0" };
+    for (const key of Object.keys(process.env))
+      if (key.startsWith("KUVO_") && key !== "KUVO_HOME")
+        delete env[key];
     const accepts = (version) => {
       if (version === undefined)
         fs20.rmSync(marker, { force: true });
@@ -3806,7 +3813,7 @@ function checkTrialRecovery(folder, start, importing) {
         fs20.writeFileSync(marker, JSON.stringify({ version }));
       const flags = runtime === oldRuntime || process.versions.bun ? ["--config=/dev/null", "--no-env-file"] : [];
       const result = spawnSync2(runtime, [...flags, saved, "here", ".kuvo-machine-probe"], {
-        env: { ...process.env, HOME: scratch, KUVO_HOME: probe, BUN_BE_BUN: "1", BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0" },
+        env,
         encoding: "utf8",
         stdio: ["ignore", "pipe", "ignore"],
         timeout: 15000
@@ -3853,7 +3860,7 @@ function upgradeFolder(folder, ordered, importLegacy, beforeSteps) {
     }
   }, { exclusive: true, wait: 60000 });
 }
-var FOLDER_VERSION_FILE = "folder-version.json", steps;
+var FOLDER_VERSION_FILE = "folder-version.json", steps, trialOpen = (folder) => fs20.existsSync(path18.join(folder, "run", "update-trial"));
 var init_folder_version = __esm(() => {
   init_files();
   init_format_version();
@@ -4349,7 +4356,8 @@ function portableDevice(phone) {
     name: typeof phone.name === "string" ? phone.name : "",
     pairing: phone.pairing ?? "",
     ...typeof phone.address === "string" ? { address: phone.address } : {},
-    ...phone.kind === "desktop" ? { kind: "desktop" } : {}
+    ...phone.kind === "desktop" ? { kind: "desktop" } : {},
+    ...typeof phone.by === "string" && KEY.test(phone.by) && deviceGrantsLayoutDeferred(K) ? { by: phone.by } : {}
   };
 }
 function membershipOf(value) {
@@ -4446,6 +4454,8 @@ function projectMembership(link, membership, keepLocalPairings = false) {
   }
 }
 var init_membership = __esm(() => {
+  init_folder_version();
+  init_home();
   init_known();
   init_computer_history();
   init_phones();
@@ -16262,7 +16272,7 @@ function stagePhonePairing(key, hello, address) {
     const phone = pairedPhone(readLink(), encoded);
     return phone ? phone.pairing ?? "" : false;
   };
-  if (!hello?.pair || legacyFolderTrial(K))
+  if (!hello?.pair || deviceGrantsLayoutDeferred(K))
     return current();
   const before = readLink();
   const pending = pendingShared(before, "membershipAndAccess");
@@ -16412,7 +16422,7 @@ function foldPhones(link, now = Date.now()) {
         noteRemoved(link, entry.key, entry.pairing);
     }
   }
-  const preserveVoucher = legacyFolderTrial(K);
+  const preserveVoucher = deviceGrantsLayoutDeferred(K);
   const known = new Map((link.phones ?? []).map((phone) => [phone.key, phone]));
   const signed = macs.filter((mac) => macDoc(link, mac, "phones"));
   const listed = [];
@@ -16480,7 +16490,7 @@ function pairingLink(link) {
   return `kuvo-link://pair?${query}`;
 }
 var PAIRING, MOST_AT_ONCE = 16, MOST_DEVICES = 64, MOST_KEPT2 = 256, removedAlready = (link, key, pairing) => (link.removed ?? []).some((r) => r.key === key && r.pairing === pairing), fits2 = (entry, macs) => typeof entry?.key === "string" && KEY.test(entry.key) && !macs.includes(entry.key) && (entry.pairing == null || typeof entry.pairing === "string" && PAIRING.test(entry.pairing)), newPairing = () => crypto17.randomBytes(12).toString("base64url"), deviceBoxKeys = (link) => [...macsOf(link), ...peersOf(link).map((peer) => peer.key), ownKey(link) ?? ""], ownPhones = (link) => {
-  const preserveVoucher = legacyFolderTrial(K);
+  const preserveVoucher = deviceGrantsLayoutDeferred(K);
   return {
     ...link.setup?.managed && link.setup.role === "primary" ? { epoch: link.setup.epoch } : {},
     phones: (link.phones ?? []).filter((phone) => phone.from === "pair").map((phone) => ({
@@ -66494,7 +66504,7 @@ function givenDevice(given, link = readLink()) {
   return { key: given.key, name: plainName(given.name).slice(0, MOST_NAME3), kind: "desktop" };
 }
 async function pairHere(device, member) {
-  if (legacyFolderTrial(K))
+  if (deviceGrantsLayoutDeferred(K))
     return answer7(503, { message: "Wait for the Kuvo Code update to finish before pairing a device." });
   if (switchOff())
     return answer7(409, switchOffWords());
@@ -66552,7 +66562,7 @@ async function pairHere(device, member) {
   return answer7(200, value);
 }
 async function removeDevicesHere(entries, actor, { member, operation, onRemoved } = {}) {
-  if (legacyFolderTrial(K))
+  if (deviceGrantsLayoutDeferred(K))
     return answer7(503, { message: "Wait for the Kuvo Code update to finish before removing devices." });
   const { changed, save, busy } = updateAccess((link) => {
     if (mainElsewhere(link) || member && (!link || followedSetup(link)?.role !== "primary" || !ownMachines(link).has(member)))
@@ -76600,7 +76610,7 @@ var init_files4 = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "c69b435522aa";
+var BRIDGE_VERSION = "a0fc714099d3";
 
 // box/src/link/rehome/paths.ts
 import { createHash as createHash7 } from "node:crypto";
@@ -82054,7 +82064,7 @@ async function* manage(context, key, action) {
     return yield* json(plan.status, plan.value);
   }
   if (action === "/allow-devices") {
-    if (legacyFolderTrial(K))
+    if (deviceGrantsLayoutDeferred(K))
       return yield* json(503, { message: "Wait for the Kuvo Code update to finish before changing device access." });
     return yield* json(404, { message: "Pair devices with your setup." });
   }
@@ -91527,7 +91537,7 @@ async function* infoRoute(context) {
   } catch {}
   yield { head: { status: 200, headers: { "content-type": "application/json" } } };
   const box = IS_MAC ? macInfo(engine, started, chats, Boolean(bridge())) : machineInfo(engine, started, chats, Boolean(bridge()), info);
-  const features = legacyFolderTrial(K) ? [...box.features, "devices.allow"] : box.features;
+  const features = deviceGrantsLayoutDeferred(K) ? [...box.features, "devices.allow"] : box.features;
   yield { body: Buffer.from(JSON.stringify({ ...box, features })) };
 }
 function macInfo(engine, started, chats, agents) {

@@ -1,6 +1,8 @@
 // Accepted membership is portable. The link fields used by old callers are projections;
 // SSH configuration, the removal delivery queue and local pairing tokens stay on their box.
+import { deviceGrantsLayoutDeferred } from "../../shared/folder-version";
 import { isObject } from "../../shared/json";
+import { K } from "../home";
 import type { LinkState, Phone } from "../state";
 import type { Peer } from "../peers/known";
 import { KEY, cleanMoved, cleanPeer, fitsPeer, ownKey, type MovedSession } from "../peers/known";
@@ -28,6 +30,7 @@ export function portableDevice(phone: PhoneEntry): Phone {
     pairing: phone.pairing ?? "",
     ...(typeof phone.address === "string" ? { address: phone.address } : {}),
     ...(phone.kind === "desktop" ? { kind: "desktop" as const } : {}),
+    ...(typeof phone.by === "string" && KEY.test(phone.by) && deviceGrantsLayoutDeferred(K) ? { by: phone.by } : {}),
   };
 }
 

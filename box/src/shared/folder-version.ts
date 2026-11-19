@@ -111,10 +111,11 @@ export function upgradeKuvoFolder(folder: string, importLegacy?: () => void): vo
   upgradeFolder(folder, steps, importLegacy, start => checkTrialRecovery(folder, start, importLegacy !== undefined));
 }
 
+const trialOpen = (folder: string) => fs.existsSync(path.join(folder, "run", "update-trial"));
+
 /** The pre-marker updater's trial still uses the deployed data contracts. */
 export function legacyFolderTrial(folder: string): boolean {
-  return fs.existsSync(path.join(folder, "run", "update-trial"))
-    && !fs.lstatSync(path.join(folder, FOLDER_VERSION_FILE), { throwIfNoEntry: false });
+  return trialOpen(folder) && !fs.lstatSync(path.join(folder, FOLDER_VERSION_FILE), { throwIfNoEntry: false });
 }
 
 /** Setup writers with newer on-disk contracts remain fenced while the upgrade is deferred. */
@@ -150,10 +151,15 @@ export function computerHistoryLayoutReady(folder: string): boolean {
   catch { return false; }
 }
 
+/** Keep the former device grant contract until a deferred layout-11 migration can run. */
+export function deviceGrantsLayoutDeferred(folder: string): boolean {
+  return trialOpen(folder) && checkpoint(path.join(folder, FOLDER_VERSION_FILE), steps.length).version < 11;
+}
+
 /** A trial can advance only as far as the saved reader can open. Before layout markers,
  * readers ignored the probe completely and can recover the unmarked layout and additive layout 1. */
 function checkTrialRecovery(folder: string, start: Checkpoint, importing: boolean): void | false {
-  if (!fs.existsSync(path.join(folder, "run", "update-trial"))) return;
+  if (!trialOpen(folder)) return;
   const bin = path.join(folder, "updates", "rollback", "files", "bin");
   const saved = path.join(bin, "kuvo-link.js");
   let engine: string | undefined;
@@ -168,12 +174,16 @@ function checkTrialRecovery(folder: string, start: Checkpoint, importing: boolea
     const probe = path.join(scratch, ".kuvo-code");
     fs.mkdirSync(probe, { mode: 0o700 });
     const marker = path.join(probe, FOLDER_VERSION_FILE);
+    // The saved bridge is probing a disposable machine folder, even when this
+    // process is a Mac's app-owned box with different paths and launch settings.
+    const env: NodeJS.ProcessEnv = { ...process.env, HOME: scratch, KUVO_HOME: probe, BUN_BE_BUN: "1", BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0" };
+    for (const key of Object.keys(process.env)) if (key.startsWith("KUVO_") && key !== "KUVO_HOME") delete env[key];
     const accepts = (version?: number) => {
       if (version === undefined) fs.rmSync(marker, { force: true });
       else fs.writeFileSync(marker, JSON.stringify({ version }));
       const flags = runtime === oldRuntime || process.versions.bun ? ["--config=/dev/null", "--no-env-file"] : [];
       const result = spawnSync(runtime, [...flags, saved, "here", ".kuvo-machine-probe"], {
-        env: { ...process.env, HOME: scratch, KUVO_HOME: probe, BUN_BE_BUN: "1", BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0" },
+        env,
         encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 15_000,
       });
       if (result.status !== 0) return false;

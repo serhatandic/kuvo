@@ -7,7 +7,7 @@ import path from "node:path";
 import { bundleBuild } from "../../shared/bundle";
 import { keeperEngine } from "../../shared/engines";
 import { offlineEditsReady, ownershipReady } from "../ownership/store";
-import { legacyFolderTrial } from "../../shared/folder-version";
+import { deviceGrantsLayoutDeferred } from "../../shared/folder-version";
 import { FEATURES } from "../../shared/features";
 import { engineRuns, processRuns as runs } from "../../shared/platform";
 import type { BridgeRecord, EngineRecord } from "../../shared/records";
@@ -46,7 +46,7 @@ export async function* infoRoute(context: RouteContext): AsyncGenerator<AnswerPi
   const box = IS_MAC ? macInfo(engine, started, chats, Boolean(bridge())) : machineInfo(engine, started, chats, Boolean(bridge()), info);
   // The pre-marker judge requires every feature it shipped. Its voucher route waits
   // while the legacy grants are still in use, then retires with the layout upgrade.
-  const features = legacyFolderTrial(K) ? [...box.features, "devices.allow"] : box.features;
+  const features = deviceGrantsLayoutDeferred(K) ? [...box.features, "devices.allow"] : box.features;
   yield { body: Buffer.from(JSON.stringify({ ...box, features })) };
 }
 
