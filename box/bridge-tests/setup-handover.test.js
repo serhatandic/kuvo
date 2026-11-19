@@ -930,6 +930,35 @@ test("failure bench: a promoted primary cannot hand over before its standby gran
   await see(c, 5, c);
 });
 
+test("failure bench: choosing a first standby after takeover records the pin only after acceptance and lease", { timeout: 45_000 }, async t => {
+  const { a, b, c, relay, see } = await standbyNetwork(t);
+  let acceptance;
+  const release = relay.intercept(c.address, b.address, packet => {
+    const payload = link.openMail(link.readFrame(packet.payload)?.body ?? Buffer.alloc(0), b.read())?.payload;
+    if (payload?.docs?.give?.some(envelope => link.readDoc(envelope)?.body.standbyAcceptance && link.readDoc(envelope).body.approval)) {
+      acceptance = packet;
+      return true;
+    }
+    return payload?.setupAuthority?.kind === "available" || payload?.setupAuthority?.kind === "lease";
+  });
+  await a.stop("SIGTERM");
+  b.clock(TAKEOVER + 5_000);
+  c.clock(TAKEOVER + 5_000);
+  await Promise.all([see(b, 3, b), see(c, 3, b)]);
+  const choosing = b.route("POST", "kuvo/setup/standby", { standby: c.key, epoch: 3 });
+  await until("candidate signed the first assignment", () => acceptance, t.signal);
+  assert.equal(b.read().setup.standby, undefined);
+  assert.equal(c.read().shared.membershipAndAccess.value.successorPin, undefined);
+  assert.equal(b.read().shared.membershipAndAccess.value.successorPin, undefined);
+  release();
+  relay.replay(acceptance);
+  assert.equal((await choosing).status, 202);
+  await until("first lease", () => b.lease(4, c), t.signal);
+  await until("the standby acknowledged its pin", () => b.read().shared.membershipAndAccess.value.successorPin === c.key, t.signal);
+  assert.equal(b.read().setup.epoch, 4);
+  assert.equal(c.read().shared.membershipAndAccess.value.successorPin, c.key);
+});
+
 test("failure bench: a fenced primary replaces an unavailable standby before saving again", { timeout: 45_000 }, async t => {
   const { a, b, c, see, phone, pairing } = await standbyNetwork(t);
   await see(c, 2, a);
@@ -1157,6 +1186,8 @@ test("an unmatched pre-join pairing requires an explicit enrollment decision", {
 
 test("failure bench: standby retirement keeps the live standby until a replacement is ready", { timeout: 45_000 }, async t => {
   const { a, b, c, see, relay } = await standbyNetwork(t);
+  assert.equal((await a.route("POST", "kuvo/setup/standby", { standby: b.key, epoch: 2 })).status, 200);
+  assert.equal(a.read().shared.membershipAndAccess.value.successorPin, b.key);
   const wake = relay.disconnect(c.address);
   try {
     const refused = await a.route("DELETE", `kuvo/computers/${b.key}`);
@@ -1175,6 +1206,8 @@ test("failure bench: standby retirement keeps the live standby until a replaceme
   assert.equal(a.read().setup.standby.key, c.key);
   assert.equal(link.readDoc(c.read().leadership[3]).origin, b.sign);
   assert.ok(a.read().left.includes(b.key));
+  assert.equal(a.read().shared.membershipAndAccess.value.successorPin, undefined);
+  assert.equal(c.read().shared.membershipAndAccess.value.successorPin, undefined);
   await until("standby removal received", () => b.read().setup?.id !== a.read().setup.id, t.signal);
 });
 
@@ -1490,11 +1523,14 @@ test("failure bench: the SSH personalities command saves through the standby", {
   assert.equal(oldBytes(), before, "the SSH save did not write to the legacy file");
 });
 
-test("failure bench: first standby assignment waits for the candidate to install the entire personality library", { timeout: 35_000 }, async t => {
-  const { a, b, c, relay } = await network(t);
+test("failure bench: first standby assignment waits for the candidate to install the entire personality library", { timeout: 55_000 }, async t => {
+  const { a, b, c, relay, see } = await network(t);
   const document = { personalities: [personality(1), personality(2)], removed: [{ id: "custom.retired", removed: 5 }] };
   const saved = await a.command(["box", "personalities"], JSON.stringify(document));
   assert.equal(saved.value.status, 200);
+  // Lose the original acceptance on both paths so it cannot reach A via C.
+  const resumeThird = relay.pause(b.address, c.address);
+  t.after(resumeThird);
   const accepted = [];
   const releases = [b, c].map(from => relay.intercept(from.address, a.address, packet => {
     const give = link.openMail(link.readFrame(packet.payload).body, a.read())?.payload?.docs?.give;
@@ -1517,10 +1553,22 @@ test("failure bench: first standby assignment waits for the candidate to install
   assert.deepEqual(b.read().shared.setupPersonalities.value, {
     personalities: saved.value.personalities, removed: saved.value.removed,
   });
+  const original = a.read().leadershipPending;
+  assert.equal(link.readDoc(original).body.successorChain, true);
+  assert.equal(a.read().setup.successorChain, undefined);
+  await b.stop("SIGTERM");
   release();
-  relay.replay(accepted[0]);
-  assert.equal((await selecting).status, 202);
-  assert.equal(a.read().setup.standby.key, b.key);
+  await a.stop("SIGTERM");
+  await selecting;
+  a.clock(0);
+  c.clock(0);
+  a.start();
+  await Promise.all([see(a, 2, a), see(c, 2, a)]);
+  assert.equal(a.read().setup.standby.key, c.key);
+  assert.equal(link.readDoc(a.read().leadership[2]).body.supersedes, original.s);
+  assert.deepEqual(c.read().shared.setupPersonalities.value, b.read().shared.setupPersonalities.value);
+  assert.equal(a.read().shared.membershipAndAccess.value.successorPin, undefined);
+  await until("replacement grants lease", () => a.lease(2, c), t.signal);
 });
 
 test("failure bench: a first standby refuses a legacy library beyond replica capacity", { timeout: 35_000 }, async t => {

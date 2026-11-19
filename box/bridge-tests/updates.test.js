@@ -105,7 +105,7 @@ function machine() {
   fs.rmSync(home, { recursive: true, force: true });
   fs.mkdirSync(path.join(home, "run"), { recursive: true });
   // The stand-in release changes code within the same layout. Layout changes use real builds in folder-version.test.js.
-  write(path.join(home, "folder-version.json"), '{"version":15}\n');
+  write(path.join(home, "folder-version.json"), '{"version":16}\n');
   write(path.join(home, "bin", "box-version"), "0.9.0");
   write(path.join(home, "bin", "kuvo-start"), keeper("1.0.0"), 0o700);
   write(path.join(home, "bin", "kuvo-link.js"), "// the old link\n", 0o600);
@@ -493,7 +493,7 @@ test("failure bench: a layout 4 update runs the real keeper preflight and confir
   assert.deepEqual(read(marker), { version: 4 }, "the saved bridge can still open the trial folder");
   fs.unlinkSync(off);
   assert.equal(await settle(), "well");
-  assert.deepEqual(read(marker), { version: 15 });
+  assert.deepEqual(read(marker), { version: 16 });
   assert.equal(fs.existsSync(path.join(home, "updates", "rollback")), false);
   assert.equal(fs.readFileSync(data, "utf8"), "the old engine's data");
   assert.deepEqual(fs.readFileSync(current), fs.readFileSync(script));

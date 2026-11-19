@@ -67,6 +67,13 @@ export function pendingStandby(link: LinkState) {
   return resolveCheckpoint(proposal)?.membership.boxes.find(peer => peer.key === proposal.body.standby);
 }
 
+export function canSupersedeStandby(link: LinkState) {
+  const setup = link.setup;
+  const proposal = held(link.leadershipPending);
+  return Boolean(setup && proposal && (setup.successorChain ||
+    !setup.standby && proposal.body.successorChain === true && proposal.body.standbyAcceptance === true));
+}
+
 /** Turn a fenced primary's proposal into a certificate, on the current standby only. */
 export function approveLeadership(link: LinkState, proposal: Doc, checkpoint?: Doc): Doc | null {
   const current = link.setup;
@@ -259,6 +266,10 @@ function installLeadership(link: LinkState, doc: Doc, checkpoint?: Doc, discardi
     || peers.length !== 2 || !peers.some(peer => peer.key === retired && peer.sign === current.standby!.sign))) return false;
   const primary = peers.find(peer => peer.key === next.primary);
   const standby = peers.find(peer => peer.key === doc.body.standby && peer.key !== next.primary && peer.sign !== primary?.sign);
+  const retiring = doc.body.retiringStandby;
+  if (retiring !== undefined && (takeover || acceptance || retiring !== current.standby?.key ||
+    next.primary !== current.primary || !standby || standby.key === retiring)) return false;
+  if (doc.body.pinAfterLease !== undefined && (doc.body.pinAfterLease !== true || !acceptance || current.standby || !standby)) return false;
   const replacement = doc.body.replacesStandby;
   if (replacement !== undefined && (!acceptance || !current.successorChain || replacement !== current.standby?.key || standby?.key === replacement)) return false;
   if (acceptance && (takeover || !resolved || current.standby && replacement === undefined || (doc.body.recovery === true && !requiresStandby(current))

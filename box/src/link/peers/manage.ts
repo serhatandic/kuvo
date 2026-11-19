@@ -432,12 +432,14 @@ async function removePeer(key: string, pendingOnly: boolean, removal?: Omit<Memb
   const setup = followedSetup(link);
   if (!pendingOnly && setup?.role === "primary" && setup.standby?.key === key) {
     const candidates = peersOf(link).filter(peer => peer.key !== key && takesForwarded(peer.key, "setup.shared-saves"));
+    const order = acceptedMembership(link)?.successorOrder;
+    if (order) candidates.sort((a, b) => order.indexOf(a.key) - order.indexOf(b.key));
     const position = { setup: setup.id, epoch: setup.epoch };
     let outcome = peersOf(link).length === 1
       ? await proposeLeadership(position, setup.primary, null, { retire: key })
       : answer(409, { message: STANDBY_UNLINK });
     for (const candidate of candidates) {
-      outcome = await standbyHere(candidate.key, position);
+      outcome = await standbyHere(candidate.key, position, undefined, "standby retirement", setup.successorChain ? key : undefined);
       const current = readLink();
       if (outcome.status === 202) break;
       if (current?.leadershipPending || current?.setup?.id !== setup.id || current.setup.epoch !== setup.epoch) return outcome;

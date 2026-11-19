@@ -17,7 +17,7 @@ import { acceptedMembership } from "../src/link/setup/membership";
 import { publishRevocations } from "../src/link/setup/revocations";
 import { takeLeadership } from "../src/link/setup/leadership";
 import { newSetupID, type SetupRecord } from "../src/link/setup/record";
-import { installShared, operationOutcome, pendingShared, queryOperation, sharedValue, stageShared, takeShared } from "../src/link/setup/shared";
+import { installShared, MAX_RANK_REVISIONS, MAX_SHARED_BYTES, operationOutcome, pendingShared, queryOperation, sharedValue, stageShared, takeShared } from "../src/link/setup/shared";
 
 function identity() {
   const secret = newKey();
@@ -115,6 +115,31 @@ test("competing successors reconcile conflicting certificates at the same epoch 
   expect(acceptedMembership(source)?.devices.removed).toEqual([{ key: phone.key, pairing }]);
   expect(takeLeadership(follower, lower)).toBe(false);
   expect(follower.setup?.role).toBe("primary");
+});
+
+test("accepted rank revisions stay within the shared limit after many full-roster reorderings", () => {
+  upgradeKuvoFolder(K);
+  const [a, b, ...others] = Array.from({ length: 65 }, identity);
+  const boxes = [a!, b!, ...others].map(box => ({ key: box.key, sign: box.signer, address: box.address, name: "Computer", kind: "machine" }));
+  const id = newSetupID();
+  const setup: SetupRecord = { id, epoch: 2, primary: a!.key, sign: a!.signer, role: "primary", managed: true, checkpointed: true, successorChain: true, standby: { key: b!.key, sign: b!.signer } };
+  const base = { membershipAndAccess: { sequence: 1, value: { boxes, successorOrder: boxes.map(peer => peer.key) } } };
+  const leadership = { 2: signDoc(a!.sign, "leadership", 2, { setup }) };
+  const primary: LinkState = { key: a!.seed, sign: a!.sign, setup, leadership, sharedSetup: id, shared: base };
+  const standby: LinkState = { ...primary, key: b!.seed, sign: b!.sign, setup: { ...setup, role: "member" } };
+  grantLease(primary, leaseClock());
+  for (let i = 0; i < 90; i++) {
+    const membership = acceptedMembership(primary)!;
+    const [first, ...rest] = membership.successorOrder!;
+    const save = stageShared(primary, "membershipAndAccess", { ...membership, successorOrder: [...rest, first] });
+    expect(save).not.toBeNull();
+    const receipt = readDoc(takeShared(standby, a!.key, pendingShared(primary, "membershipAndAccess")!));
+    expect(receipt).not.toBeNull();
+    takeShared(primary, b!.key, receipt!);
+    expect(operationOutcome(primary, id, save!.operation)?.status).toBe("committed");
+  }
+  expect(acceptedMembership(primary)?.successorRevisions).toHaveLength(MAX_RANK_REVISIONS);
+  expect(Buffer.byteLength(JSON.stringify(primary.shared))).toBeLessThan(MAX_SHARED_BYTES);
 });
 
 test("only the assigned standby receipts the primary's exact save and pending ownership transfers survive takeover", () => {

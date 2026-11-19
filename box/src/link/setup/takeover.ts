@@ -1,5 +1,5 @@
 // The standby renews the primary lease. Ranked computers probe their predecessors before taking over.
-import { successorRevisionLayoutReady } from "../../shared/folder-version";
+import { standbyIntentLayoutReady, successorRevisionLayoutReady } from "../../shared/folder-version";
 import { K } from "../home";
 import crypto from "node:crypto";
 import { isObject } from "../../shared/json";
@@ -12,10 +12,10 @@ import { readLink, updateLink, type LinkState } from "../state";
 import { readNumbers } from "../work-queue/numbers";
 import { takesForwarded } from "../work-queue/forward";
 import { writeCard } from "./card";
-import { proposeLeadership, standbyHere } from "./handover";
+import { finishFirstStandbyPin, proposeLeadership, standbyHere } from "./handover";
 import { CHECKPOINT_FEATURE, checkpointedTransition, leadershipDocuments } from "./checkpoint";
 import { acceptedMembership, acceptedName } from "./membership";
-import { leadershipOf, leadershipPosition, pendingStandby, successorCertificates, successorHistory, takeLeadership } from "./leadership";
+import { canSupersedeStandby, leadershipOf, leadershipPosition, pendingStandby, successorCertificates, successorHistory, takeLeadership } from "./leadership";
 import { DEFAULT_DELAY, fresh, grantLease, HEARTBEAT_MS, leaseClock, LEASE_MS, primaryFenced, standbySettings, takeoverProbeWindow, testSetupClock } from "./lease";
 import { availableComputer, observeAvailability, observedUptime, rankComputers, RANK_INTERVAL, resetAvailability } from "./reliability";
 import { pendingShared, publishedShared, sharedValue, stageShared } from "./shared";
@@ -81,7 +81,7 @@ export function receiveAuthority(sender: MailSender, given: Record<string, unkno
   const link = readLink();
   const setup = followedSetup(link);
   if (!link || !setup || setup.id !== given.id) return;
-  if (setup.successorChain && given.kind === "tip" && isObject(given.history)) {
+  if ((setup.successorChain || canSupersedeStandby(link)) && given.kind === "tip" && isObject(given.history)) {
     const peer = peersOf(link).find(peer => peer.key === sender.key);
     if (!peer) return;
     recentTips.set(sender.key, Date.now());
@@ -174,7 +174,7 @@ function takeoverTick(host: LinkHost | null | undefined): void {
     if (pendingWait?.signature !== signature || standby && realNow - (recentTips.get(standby.key) ?? 0) < wait) {
       pendingWait = { signature, since: realNow };
     }
-    if (!selecting && setup.successorChain && successorRevisionLayoutReady(K) && realNow - pendingWait.since >= wait) {
+    if (!selecting && canSupersedeStandby(link) && standbyIntentLayoutReady(K) && realNow - pendingWait.since >= wait) {
       const next = availableStandby(link, now, standby?.key);
       if (next?.peer.sign) {
         assignStandby(setup, { key: next.peer.key, sign: next.peer.sign },
@@ -193,6 +193,7 @@ function takeoverTick(host: LinkHost | null | undefined): void {
   lastTick = now;
   const settings = standbySettings();
   if (setup.role === "primary") {
+    if (!primaryFenced(link) && finishFirstStandbyPin(link)) return;
     ownPrimarySince ??= now;
     observeAvailability(setup.primary, now, settings.alwaysOn, settings.reason);
     if (realNow - rankCheckedAt >= RANK_INTERVAL && !primaryFenced(link)) {
@@ -285,7 +286,8 @@ function assignStandby(setup: Position, peer: { key: string; sign: string }, opt
 }
 
 function availableStandby(link: LinkState, now: Clock, unavailable?: string) {
-  const retiring = leadershipOf(link)?.body.retiredStandby;
+  const tip = leadershipOf(link);
+  const retiring = tip?.body.retiringStandby ?? tip?.body.retiredStandby;
   const available = peersOf(link).flatMap(peer => {
     if (peer.key === retiring || peer.key === unavailable || !peer.sign || !takesForwarded(peer.key, "setup.shared-saves")) return [];
     const candidate = availableComputer(peer.key, now);

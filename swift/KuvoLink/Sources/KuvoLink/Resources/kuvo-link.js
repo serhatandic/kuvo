@@ -3824,6 +3824,13 @@ function successorRevisionLayoutReady(folder) {
     return false;
   }
 }
+function standbyIntentLayoutReady(folder) {
+  try {
+    return checkpoint(path18.join(folder, FOLDER_VERSION_FILE), steps.length).version >= 16;
+  } catch {
+    return false;
+  }
+}
 function successorRankLayoutReady(folder) {
   try {
     return checkpoint(path18.join(folder, FOLDER_VERSION_FILE), steps.length).version >= 14;
@@ -3931,6 +3938,7 @@ var init_folder_version = __esm(() => {
     () => {},
     () => {},
     migrateDeviceGrants,
+    () => {},
     () => {},
     () => {},
     () => {},
@@ -16238,7 +16246,8 @@ function stageShared(link, kind, value, effects, requested, edits, { reportCapac
     const orderChanged = JSON.stringify(before.successorOrder) !== JSON.stringify(after.successorOrder) || before.successorPin !== after.successorPin;
     const authority = held(link.leadership?.[setup.epoch])?.h ?? setup.leadershipHash ?? setup.sign;
     const revision = { authority, operation: pending ? identity(pending) ?? operation : operation, order: after.successorOrder };
-    value = membershipOf({ ...after, successorRevisions: orderChanged ? [...before.successorRevisions ?? [], revision] : before.successorRevisions });
+    const history = orderChanged ? [...before.successorRevisions ?? [], revision] : before.successorRevisions;
+    value = membershipOf({ ...after, successorRevisions: standbyIntentLayoutReady(K) ? history?.slice(-MAX_RANK_REVISIONS) : history });
   }
   if (pending) {
     return (!requested || identity(pending) === requested) && JSON.stringify(pending.body.value) === JSON.stringify(value) && JSON.stringify(pending.body.effects) === JSON.stringify(effects) ? asSave(pending, link.sign) : null;
@@ -16525,7 +16534,7 @@ function changeShared(kind, change, operation) {
 function submitShared(kind, value) {
   return changeShared(kind, () => value);
 }
-var entryOf = (sequence, value, offlineEdits) => ({ sequence, value, ...offlineEdits ? { offlineEdits } : {} }), MAX_SHARED_BYTES, SharedCapacity, OPERATION_ID;
+var entryOf = (sequence, value, offlineEdits) => ({ sequence, value, ...offlineEdits ? { offlineEdits } : {} }), MAX_RANK_REVISIONS = 16, MAX_SHARED_BYTES, SharedCapacity, OPERATION_ID;
 var init_shared = __esm(() => {
   init_folder_version();
   init_data_declarations();
@@ -16915,6 +16924,11 @@ function pendingStandby(link) {
     return;
   return resolveCheckpoint(proposal)?.membership.boxes.find((peer) => peer.key === proposal.body.standby);
 }
+function canSupersedeStandby(link) {
+  const setup = link.setup;
+  const proposal = held(link.leadershipPending);
+  return Boolean(setup && proposal && (setup.successorChain || !setup.standby && proposal.body.successorChain === true && proposal.body.standbyAcceptance === true));
+}
 function approveLeadership(link, proposal, checkpoint) {
   const current = link.setup;
   if (setupLayoutDeferred(K) || !current || proposal.n !== current.epoch + 1 || current.sign !== proposal.origin || proposal.body.proposal !== true || !link.sign)
@@ -17135,6 +17149,11 @@ function installLeadership(link, doc, checkpoint, discardingFork = false) {
     return false;
   const primary = peers.find((peer) => peer.key === next.primary);
   const standby = peers.find((peer) => peer.key === doc.body.standby && peer.key !== next.primary && peer.sign !== primary?.sign);
+  const retiring = doc.body.retiringStandby;
+  if (retiring !== undefined && (takeover || acceptance || retiring !== current.standby?.key || next.primary !== current.primary || !standby || standby.key === retiring))
+    return false;
+  if (doc.body.pinAfterLease !== undefined && (doc.body.pinAfterLease !== true || !acceptance || current.standby || !standby))
+    return false;
   const replacement = doc.body.replacesStandby;
   if (replacement !== undefined && (!acceptance || !current.successorChain || replacement !== current.standby?.key || standby?.key === replacement))
     return false;
@@ -55793,7 +55812,7 @@ async function handoverHere(target, position, requester) {
 function enrollStandby(setup, peer, prepare, record) {
   return proposeLeadership({ setup: setup.id, epoch: setup.epoch }, setup.primary, peer, { recovery: { peer, prepare, record } });
 }
-async function proposeLeadership(position, target, standby, { requester, targetSign, recovery, retire, replace, supersedes, pin } = {}) {
+async function proposeLeadership(position, target, standby, { requester, targetSign, recovery, retire, replace, supersedes, pin, retiring } = {}) {
   if (setupLayoutDeferred(K))
     return answer5(503, "Wait for the Kuvo Code update to finish before changing the setup.");
   let oversized = false;
@@ -55807,7 +55826,7 @@ async function proposeLeadership(position, target, standby, { requester, targetS
     if (replace && (!fenced || !current.successorChain || !current.standby || !standby || standby.key === current.standby.key))
       return null;
     if (replace || supersedes) {
-      if (!current.successorChain || !standby || target !== current.primary || acceptedMembership(link)?.left.includes(current.primary))
+      if (!(supersedes ? canSupersedeStandby(link) : current.successorChain) || !standby || target !== current.primary || acceptedMembership(link)?.left.includes(current.primary))
         return null;
     } else if (fenced || Object.keys(link.sharedPending ?? {}).length)
       return null;
@@ -55837,6 +55856,11 @@ async function proposeLeadership(position, target, standby, { requester, targetS
     const supportsCheckpoint = members.every((peer) => takesForwarded(peer.key, CHECKPOINT_FEATURE));
     const acceptance = Boolean(replace || standby && !current.standby && (recovery || members.every((peer) => takesForwarded(peer.key, STANDBY_ACCEPTANCE))));
     const successorChain = current.successorChain || Boolean(standby && supportsCheckpoint && !recovery && successorRankLayoutReady(K) && (!current.checkpointed || !current.standby || acceptedMembership(link)?.successorOrder) && members.every((peer) => takesForwarded(peer.key, "setup.successor-chain")));
+    if (supersedes && !current.standby && !acceptance)
+      return null;
+    const pinAfterLease = pin && successorChain && !current.standby && acceptance && standbyIntentLayoutReady(K);
+    if (retiring && (!standbyIntentLayoutReady(K) || current.standby?.key !== retiring || target !== current.primary || !standby || standby.key === retiring))
+      return null;
     const migrating = Boolean(current.standby && (supportsCheckpoint && !current.checkpointed || successorChain && !current.successorChain));
     const renewing = target === current.primary && (standby?.key ?? null) === (current.standby?.key ?? null);
     if (renewing && (!standby || !current.numberCeiling || !migrating && !supersedes && current.numberCeiling >= MOST_NUMBER - 1))
@@ -55881,6 +55905,8 @@ async function proposeLeadership(position, target, standby, { requester, targetS
       ...acceptance ? { standbyAcceptance: true } : {},
       ...successorChain ? { successorChain: true } : {},
       ...supersedes ? { supersedes } : {},
+      ...pinAfterLease ? { pinAfterLease: true } : {},
+      ...retiring ? { retiringStandby: retiring } : {},
       ...replace ? { replacesStandby: current.standby.key } : {},
       ...recovery ? { recovery: true } : {}
     };
@@ -55892,10 +55918,6 @@ async function proposeLeadership(position, target, standby, { requester, targetS
         return null;
       if (successorChain && !membership.successorOrder)
         membership.successorOrder = rankComputers(membership.boxes);
-      if (pin && successorChain && standby && membership.successorOrder && successorRevisionLayoutReady(K)) {
-        membership.successorPin = standby.key;
-        membership.successorOrder = [standby.key, ...membership.successorOrder.filter((key) => key !== standby.key)];
-      }
       if (recovery) {
         if (membership.boxes.some((peer) => peer.key === recovery.peer.key) || membership.left.includes(recovery.peer.key))
           return null;
@@ -55973,7 +55995,7 @@ async function setupAct(sender, act) {
     return answer5(400, "Send the setup and epoch.");
   if (act.method === "POST") {
     if (act.body.standby === true)
-      return standbyHere(act.item, act.body, sender.key);
+      return standbyHere(act.item, act.body, sender.key, "user choice");
     return handoverHere(act.item, act.body, sender.key);
   }
   const link = readLink();
@@ -55994,14 +56016,36 @@ async function selectStandby(given, signal) {
     return { status: 200, value: { primary: setup.primary, epoch: setup.epoch } };
   const position = { setup: setup.id, epoch: setup.epoch };
   if (setup.role === "primary")
-    return standbyHere(given.standby, position);
+    return standbyHere(given.standby, position, undefined, "user choice");
   const primary = peersOf(link).find((peer) => peer.key === setup.primary);
   if (!primary)
     return answer5(503, "This computer can't reach your primary.");
   const result = await forwardAct(primary, "Changing the standby", { area: "setup", method: "POST", item: given.standby, body: { ...position, standby: true } }, signal, link);
   return "refused" in result ? answer5(result.status, result.refused) : result;
 }
-async function standbyHere(target, position, requester, reason = "user choice") {
+function finishFirstStandbyPin(link) {
+  const setup = followedSetup(link);
+  const tip = leadershipOf(link);
+  const target = setup?.standby?.key;
+  if (!setup || !target || tip?.body.pinAfterLease !== true || !standbyIntentLayoutReady(K))
+    return false;
+  const operation = leadershipProposalHash(tip.envelope.s);
+  const outcome = operationOutcome(link, setup.id, operation);
+  if (outcome && outcome.status !== "pending")
+    return false;
+  if (!outcome && !primaryFenced(link)) {
+    return Boolean(changeShared("membershipAndAccess", (_value, current) => {
+      if (primaryFenced(current) || leadershipOf(current)?.h !== tip.h)
+        return;
+      const membership = acceptedMembership(current);
+      if (!membership?.successorOrder?.includes(target))
+        return;
+      return { ...membership, successorPin: target, successorOrder: [target, ...membership.successorOrder.filter((key) => key !== target)] };
+    }, operation));
+  }
+  return true;
+}
+async function standbyHere(target, position, requester, reason = "automatic selection", retiring) {
   const link = readLink();
   const setup = followedSetup(link);
   if (setup?.role !== "primary" || setup.id !== position.setup || setup.epoch !== position.epoch)
@@ -56018,6 +56062,8 @@ async function standbyHere(target, position, requester, reason = "user choice") 
   if (ready.status !== 200 || !isObject(ready.value) || ready.value.sign !== peer.sign)
     return answer5(409, "The chosen standby hasn't caught up yet.");
   if (reason === "user choice" && setup.successorChain && setup.standby && successorRevisionLayoutReady(K)) {
+    if (finishFirstStandbyPin(link))
+      return answer5(503, LEADERSHIP_WAIT);
     if (requester && !peers.some((member) => member.key === requester))
       return answer5(403, "Only members can choose the standby.");
     const save = changeShared("membershipAndAccess", (_value, current) => {
@@ -56042,9 +56088,28 @@ async function standbyHere(target, position, requester, reason = "user choice") 
     }
     return answer5(503, LEADERSHIP_WAIT);
   }
-  const outcome = await proposeLeadership(position, setup.primary, { key: target, sign: peer.sign }, { requester, ...reason === "user choice" ? { pin: true } : {} });
-  if (outcome.status === 202)
+  const outcome = await proposeLeadership(position, setup.primary, { key: target, sign: peer.sign }, { requester, retiring, ...reason === "user choice" ? { pin: true } : {} });
+  if (outcome.status === 202) {
+    const tip = leadershipOf(readLink());
+    if (reason === "user choice" && tip?.body.pinAfterLease === true && tip.body.standby === target) {
+      const operation = leadershipProposalHash(tip.envelope.s);
+      const deadline = Date.now() + 12000;
+      while (Date.now() < deadline) {
+        const current = readLink();
+        if (current?.setup?.id !== setup.id)
+          break;
+        if (operationOutcome(current, setup.id, operation)?.status === "committed") {
+          console.info(`Standby selected: ${target} (${reason}).`);
+          return outcome;
+        }
+        if (leadershipOf(current)?.h !== tip.h)
+          break;
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      return answer5(503, LEADERSHIP_WAIT);
+    }
     console.info(`Standby selected: ${target} (${reason}).`);
+  }
   return outcome;
 }
 var SOLE_PRIMARY_FEATURE = "setup.sole-primary", STANDBY_ACCEPTANCE = "setup.standby-acceptance", HANDOVER_FEATURE = "setup.handover", answer5 = (status, message) => ({ status, value: { message } });
@@ -56875,10 +56940,13 @@ async function removePeer(key, pendingOnly, removal, setupID) {
   const setup = followedSetup(link);
   if (!pendingOnly && setup?.role === "primary" && setup.standby?.key === key) {
     const candidates = peersOf(link).filter((peer) => peer.key !== key && takesForwarded(peer.key, "setup.shared-saves"));
+    const order = acceptedMembership(link)?.successorOrder;
+    if (order)
+      candidates.sort((a, b) => order.indexOf(a.key) - order.indexOf(b.key));
     const position = { setup: setup.id, epoch: setup.epoch };
     let outcome = peersOf(link).length === 1 ? await proposeLeadership(position, setup.primary, null, { retire: key }) : answer6(409, { message: STANDBY_UNLINK });
     for (const candidate of candidates) {
-      outcome = await standbyHere(candidate.key, position);
+      outcome = await standbyHere(candidate.key, position, undefined, "standby retirement", setup.successorChain ? key : undefined);
       const current = readLink();
       if (outcome.status === 202)
         break;
@@ -78127,7 +78195,7 @@ var init_files4 = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "3e394c35074d";
+var BRIDGE_VERSION = "b3f9deaf58e5";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync17 } from "node:child_process";
@@ -90921,7 +90989,7 @@ function receiveAuthority2(sender, given, host) {
   const setup = followedSetup(link);
   if (!link || !setup || setup.id !== given.id)
     return;
-  if (setup.successorChain && given.kind === "tip" && isObject(given.history)) {
+  if ((setup.successorChain || canSupersedeStandby(link)) && given.kind === "tip" && isObject(given.history)) {
     const peer = peersOf(link).find((peer) => peer.key === sender.key);
     if (!peer)
       return;
@@ -91027,7 +91095,7 @@ function takeoverTick(host) {
     if (pendingWait?.signature !== signature || standby && realNow - (recentTips.get(standby.key) ?? 0) < wait) {
       pendingWait = { signature, since: realNow };
     }
-    if (!selecting && setup.successorChain && successorRevisionLayoutReady(K) && realNow - pendingWait.since >= wait) {
+    if (!selecting && canSupersedeStandby(link) && standbyIntentLayoutReady(K) && realNow - pendingWait.since >= wait) {
       const next = availableStandby(link, now, standby?.key);
       if (next?.peer.sign) {
         assignStandby(setup, { key: next.peer.key, sign: next.peer.sign }, { supersedes: signature, ...setup.standby && setup.standby.key !== next.peer.key ? { replace: true } : {} });
@@ -91048,6 +91116,8 @@ function takeoverTick(host) {
   lastTick = now;
   const settings = standbySettings();
   if (setup.role === "primary") {
+    if (!primaryFenced(link) && finishFirstStandbyPin(link))
+      return;
     ownPrimarySince ??= now;
     observeAvailability(setup.primary, now, settings.alwaysOn, settings.reason);
     if (realNow - rankCheckedAt >= RANK_INTERVAL && !primaryFenced(link)) {
@@ -91137,7 +91207,8 @@ function assignStandby(setup, peer, options) {
   });
 }
 function availableStandby(link, now, unavailable) {
-  const retiring = leadershipOf(link)?.body.retiredStandby;
+  const tip = leadershipOf(link);
+  const retiring = tip?.body.retiringStandby ?? tip?.body.retiredStandby;
   const available = peersOf(link).flatMap((peer) => {
     if (peer.key === retiring || peer.key === unavailable || !peer.sign || !takesForwarded(peer.key, "setup.shared-saves"))
       return [];
