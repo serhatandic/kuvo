@@ -262,7 +262,7 @@ test("local uninstall clears the file identity and reports unconfirmed revocatio
   }));
   const identity = path.join(where.K, "desktop", "identity");
   fs.mkdirSync(path.dirname(identity));
-  fs.writeFileSync(identity, "a desktop identity");
+  fs.writeFileSync(identity, [Buffer.alloc(32, 8), Buffer.alloc(32, 9)].map(part => part.toString("base64url")).join("."));
   const done = await uninstall(where);
   assert.equal(done.status, 1);
   const said = JSON.parse(done.stdout);

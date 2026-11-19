@@ -29,7 +29,7 @@ const built = fileURLToPath(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resou
 // A Mac's box in a home of its own, on 0.10.0, its update to it on trial and up (the update saw its
 // engine and bridge answer), your phones paired: what the update had kept to put back, there.
 write(path.join(K, "box", "kind"), "mac\n");
-write(path.join(K, "folder-version.json"), '{"version":11}\n');
+write(path.join(K, "folder-version.json"), '{"version":18}\n');
 write(path.join(K, "bin", "box-version"), "0.10.0");
 write(path.join(K, "bin", "kuvo-link.js"), fs.readFileSync(built, "utf8"));
 write(path.join(K, "bin", "kuvo-start"), "#!/bin/sh\nexit 0\n", 0o755);
@@ -37,6 +37,7 @@ write(path.join(K, "run", "link.json"), JSON.stringify({ phones: [{ key: "phone-
 write(path.join(K, "run", "update.json"), JSON.stringify({ trial: { from: "0.9.0", to: "0.10.0", at: Date.now(), healthy: true } }));
 write(path.join(K, "run", "update-trial"), "0.10.0");
 write(path.join(K, "updates", "rollback", "restore.sh"), "#!/bin/sh\n");
+write(path.join(K, "updates", "rollback", "files", "bin", "kuvo-link.js"), fs.readFileSync(built, "utf8"));
 // The copy of the engine's data an update kept 31 days ago (a Mac runs no bridge whose rounds would
 // take it away).
 write(path.join(K, "updates", "backups", "2026-10-16-1.0.0-to-1.1.0", "opencode.db"), "the data from before");
