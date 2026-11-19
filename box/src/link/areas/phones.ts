@@ -34,7 +34,7 @@ export async function* phonesRoute(context: RouteContext): AsyncGenerator<Answer
 // Removing some, by a device paired here (a phone, or the desktop app over the link), or Kuvo Code's
 // app on this computer, beside any box.
 export async function* phonesRemoveRoute(context: RouteContext): AsyncGenerator<AnswerPiece> {
-  const { request, phone, signal, json } = context;
+  const { request, phone, signal, json, phonesChanged } = context;
   if (request.method.toUpperCase() !== "POST") return yield* json(405, {});
   const entries = (parsed(request.body) as Body<"phones">)?.phones;
   const link = readLink();
@@ -45,7 +45,7 @@ export async function* phonesRemoveRoute(context: RouteContext): AsyncGenerator<
   const actor = local || !device ? null : { key: device.key, pairing: device.pairing ?? "" };
   const main = mainElsewhere(link);
   if (!main) {
-    const done = await removeDevicesHere(entries, actor);
+    const done = await removeDevicesHere(entries, actor, { onRemoved: phonesChanged });
     return yield* json(done.status, done.value);
   }
   const member = link && ownKey(link);

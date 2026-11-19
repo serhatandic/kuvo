@@ -66507,7 +66507,7 @@ async function pairHere(device, member) {
     return { status: 200, value: { ...value, ...receipt } };
   return answer7(200, value);
 }
-async function removeDevicesHere(entries, actor, member, operation) {
+async function removeDevicesHere(entries, actor, { member, operation, onRemoved } = {}) {
   const { changed, save, busy } = updateAccess((link) => {
     if (mainElsewhere(link) || member && (!link || followedSetup(link)?.role !== "primary" || !ownMachines(link).has(member)))
       return null;
@@ -66525,7 +66525,12 @@ async function removeDevicesHere(entries, actor, member, operation) {
   if (receipt && receipt.status !== "committed")
     return sharedSaveReply(receipt);
   noteDocsChanged();
-  setTimeout(() => macDocsChanged({ closeRemoved: readLink() }), 200);
+  setTimeout(() => {
+    const current = readLink();
+    if (current)
+      onRemoved?.(current);
+    macDocsChanged({ closeRemoved: current });
+  }, 200);
   return receipt ? sharedSaveReply(receipt) : answer7(200, {});
 }
 async function deviceAct(sender, act) {
@@ -66553,7 +66558,7 @@ async function deviceAct(sender, act) {
         return sharedSaveReply(receipt);
       }
     }
-    return removeDevicesHere(act.body?.phones, actor, sender.key, operation);
+    return removeDevicesHere(act.body?.phones, actor, { member: sender.key, operation });
   }
   const device = act.method === "POST" ? givenDevice({ ...act.body ?? {}, key: act.item }, null) : null;
   if (!device)
@@ -76548,7 +76553,7 @@ var init_files4 = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "ca9e21851c94";
+var BRIDGE_VERSION = "d42b4d49fad1";
 
 // box/src/link/rehome/paths.ts
 import { createHash as createHash7 } from "node:crypto";
@@ -91592,7 +91597,7 @@ async function* phonesRoute(context) {
   });
 }
 async function* phonesRemoveRoute(context) {
-  const { request, phone, signal, json } = context;
+  const { request, phone, signal, json, phonesChanged } = context;
   if (request.method.toUpperCase() !== "POST")
     return yield* json(405, {});
   const entries = parsed(request.body)?.phones;
@@ -91605,7 +91610,7 @@ async function* phonesRemoveRoute(context) {
   const actor = local || !device ? null : { key: device.key, pairing: device.pairing ?? "" };
   const main = mainElsewhere(link);
   if (!main) {
-    const done = await removeDevicesHere(entries, actor);
+    const done = await removeDevicesHere(entries, actor, { onRemoved: phonesChanged });
     return yield* json(done.status, done.value);
   }
   const member = link && ownKey(link);

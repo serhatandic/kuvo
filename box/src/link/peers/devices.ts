@@ -112,7 +112,7 @@ export type DeviceActor = { key: string; pairing: string };
 
 /** Apply both local and forwarded removals at the authority. Any relay actor must still
  * hold the same pairing when the primary takes the lock. */
-export async function removeDevicesHere(entries: unknown, actor: DeviceActor | null, member?: string, operation?: string): Promise<DeviceReply> {
+export async function removeDevicesHere(entries: unknown, actor: DeviceActor | null, { member, operation, onRemoved }: { member?: string; operation?: string; onRemoved?: (link: LinkState) => void } = {}): Promise<DeviceReply> {
   const { changed, save, busy } = updateAccess(link => {
     if (mainElsewhere(link) || (member && (!link || followedSetup(link)?.role !== "primary" || !ownMachines(link).has(member)))) return null;
     const kept = link ?? (!actor && !member ? { phones: [], removed: [] } : null);
@@ -126,7 +126,11 @@ export async function removeDevicesHere(entries: unknown, actor: DeviceActor | n
   if (receipt && receipt.status !== "committed") return sharedSaveReply(receipt);
   noteDocsChanged();
   // Let a device that removed itself receive the response.
-  setTimeout(() => macDocsChanged({ closeRemoved: readLink() }), 200);
+  setTimeout(() => {
+    const current = readLink();
+    if (current) onRemoved?.(current);
+    macDocsChanged({ closeRemoved: current });
+  }, 200);
   return receipt ? sharedSaveReply(receipt) : answer(200, {});
 }
 
@@ -153,7 +157,7 @@ export async function deviceAct(sender: MailSender, act: Act): Promise<DeviceRep
         return sharedSaveReply(receipt!);
       }
     }
-    return removeDevicesHere(act.body?.phones, actor as DeviceActor | null, sender.key, operation);
+    return removeDevicesHere(act.body?.phones, actor as DeviceActor | null, { member: sender.key, operation });
   }
   const device = act.method === "POST" ? givenDevice({ ...(act.body ?? {}), key: act.item }, null) : null;
   if (!device) return answer(400, NOT_GIVEN);

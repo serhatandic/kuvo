@@ -74,7 +74,7 @@ function eventually(found) {
   });
 }
 // What this box left for its link to send (another process's, as its server leaves it), as its link sends it.
-async function vouchSent(to) {
+async function pairSent(to) {
   const left = await eventually(() => { try { return fs.readdirSync(forwards).find(name => /^wqa_[\w-]+\.json$/.test(name)); } catch { return null; } });
   const sent = [];
   link.sendQueueForwards({ welcomed: true, send: bytes => sent.push(bytes) }, link.readLink(), Date.now(), { ownOnly: false });
@@ -154,7 +154,14 @@ test("an app removed from your devices stays out: this never pairs it again, and
     { status: 503, body: { reason: "pairing-wait", message: "Checking this app with your other computers…" } });
   assert.ok(!fs.existsSync(forwards) || !fs.readdirSync(forwards).length, "nothing left to send");
 
-  // The box's CLI removes no one (as before); the app beside the box does, but never the Mac.
+  // A member waits for its primary. Without a setup, legacy enrollers still supply the local list.
+  const entries = { phones: [{ key, pairing: "dk" }] };
+  assert.deepEqual(await ask(APP, "POST", "kuvo/phones/remove", entries), {
+    status: 409, body: { message: "Remove devices from your primary computer, or update it to remove them from here.", primary: mac.pub },
+  });
+  assert.equal(link.readLink().phones.length, 2);
+  link.updateLink(state => { delete state.setup; return state; });
+  // The CLI removes no one. The authenticated local app removes devices, with enrollers excluded.
   assert.equal((await ask(CLI, "POST", "kuvo/phones/remove", { phones: [{ key }] })).status, 400);
   assert.equal((await ask(APP, "POST", "kuvo/phones/remove", { phones: [{ key: mac.pub }] })).status, 400, "never the Mac");
   assert.equal(link.readLink().phones.length, 2);
@@ -187,7 +194,7 @@ test("an inherited desktop whose signer is gone gets guidance for pairing again"
   } });
 });
 
-test("a member's box vouches for the app beside it to the main computer, and answers as that one said; with no answer it says to wait", async t => {
+test("a member's box forwards pairing for the app beside it to the main computer, and answers as that one said; with no answer it says to wait", async t => {
   member();
   tell(mac, { features: ["computers", "devices.pair", "work-queue.forward"] });
   const key = device();
@@ -195,7 +202,7 @@ test("a member's box vouches for the app beside it to the main computer, and ans
 
   // Handed to the main computer by mail, and answered with the pairing it made.
   let asked = ask(APP, "POST", "kuvo/devices/pair", given);
-  let act = await vouchSent(mac);
+  let act = await pairSent(mac);
   assert.deepEqual({ ...act, id: undefined, at: undefined }, { id: undefined, at: undefined, area: "devices", method: "POST", item: key, body: { name: "Lab screen", kind: "desktop" } });
   link.receiveMail(mailFrom(mac, { workQueue: { acted: { id: act.id, status: 200, value: { paired: true, pairing: "from-main" } } }, at: Date.now() }), undefined, takeMail);
   assert.deepEqual(await asked, { status: 200, body: { paired: true, pairing: "from-main" } });
@@ -204,19 +211,19 @@ test("a member's box vouches for the app beside it to the main computer, and ans
 
   // The main computer says no (it lets no device in, say): its words, as they are.
   asked = ask(APP, "POST", "kuvo/devices/pair", given);
-  act = await vouchSent(mac);
+  act = await pairSent(mac);
   link.receiveMail(mailFrom(mac, { workQueue: { acted: { id: act.id, status: 409, value: { message: "“Let my devices connect” is off on Studio." } } }, at: Date.now() }), undefined, takeMail);
   assert.deepEqual(await asked, { status: 409, body: { message: "“Let my devices connect” is off on Studio." } });
   // Removed there: said so, with the reason the app goes by.
   asked = ask(APP, "POST", "kuvo/devices/pair", given);
-  act = await vouchSent(mac);
+  act = await pairSent(mac);
   link.receiveMail(mailFrom(mac, { workQueue: { acted: { id: act.id, status: 409, value: { message: "This app was removed from your devices.", reason: "removed" } } }, at: Date.now() }), undefined, takeMail);
   assert.deepEqual(await asked, { status: 409, body: { message: "This app was removed from your devices.", reason: "removed" } });
   // This computer is kept from adding its app (one it added was removed): the main computer's
   // words, and the reason the app goes by.
   const keptOut = { message: "Lab screen on devbox was removed from your devices, so devbox can't add Kuvo Code's app by itself now. Allow it again from Kuvo Code on Studio or another computer's app: Computers, devbox.", reason: "blocked" };
   asked = ask(APP, "POST", "kuvo/devices/pair", given);
-  act = await vouchSent(mac);
+  act = await pairSent(mac);
   link.receiveMail(mailFrom(mac, { workQueue: { acted: { id: act.id, status: 409, value: keptOut } }, at: Date.now() }), undefined, takeMail);
   assert.deepEqual(await asked, { status: 409, body: keptOut });
   // An answer from a box that isn't the main computer is no answer.
@@ -225,7 +232,7 @@ test("a member's box vouches for the app beside it to the main computer, and ans
   link.queueForwardTiming.wait = 300;
   t.after(() => { link.queueForwardTiming.wait = wait; });
   asked = ask(APP, "POST", "kuvo/devices/pair", given);
-  act = await vouchSent(mac);
+  act = await pairSent(mac);
   link.receiveMail(mailFrom(here, { workQueue: { acted: { id: act.id, status: 200, value: { paired: true, pairing: "forged" } } }, at: Date.now() }), undefined, takeMail);
   // No answer in time: the app is told to wait, and asks again later.
   assert.deepEqual(await asked, waits);
