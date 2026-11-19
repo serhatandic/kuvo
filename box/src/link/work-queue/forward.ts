@@ -88,7 +88,7 @@ export interface Act {
   area?: "computers" | "devices" | "setup" | "ownership";
   method: "GET" | "DELETE" | "POST" | "PATCH";
   item: string;
-  action?: "restore" | "file";
+  action?: "restore" | "file" | "removal-plan";
   name?: string;
   body?: Record<string, unknown>;
   at: number;
@@ -462,8 +462,9 @@ const actOf = (given: unknown): Act | null => {
   const devices = given.area === "devices" && (method === "GET" || method === "POST" || method === "DELETE") && action === undefined;
   const setup = given.area === "setup" && (method === "GET" || method === "POST") && action === undefined;
   const ownership = given.area === "ownership" && (method === "GET" || method === "PATCH" || method === "POST" || method === "DELETE") && action === undefined;
-  if (!fits && !devices && !setup && !ownership) return null;
-  if (given.area !== undefined && !devices && !setup && !ownership && !(given.area === "computers" && (method === "PATCH" || method === "DELETE") && action === undefined)) return null;
+  const removalPlan = given.area === "computers" && action === "removal-plan" && (method === "GET" || method === "POST");
+  if (!fits && !devices && !setup && !ownership && !removalPlan) return null;
+  if (given.area !== undefined && !devices && !setup && !ownership && !removalPlan && !(given.area === "computers" && (method === "PATCH" || method === "DELETE") && action === undefined)) return null;
   if (given.operation !== undefined && (typeof given.operation !== "string" || !/^[A-Za-z0-9_-]{1,80}$/.test(given.operation))) return null;
   return { id: given.id, ...(given.operation ? { operation: given.operation } : {}), ...(given.area === "computers" || devices || setup || ownership ? { area: given.area } : {}), method, item: given.item, ...(action ? { action } : {}), ...(action === "file" ? { name } : {}), ...(isObject(given.body) ? { body: given.body } : {}), at: given.at } as Act;
 };

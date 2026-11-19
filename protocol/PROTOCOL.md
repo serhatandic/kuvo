@@ -2028,6 +2028,29 @@ client connected: a client's Computers area and its switcher draw it, and ask no
     exchange does not restore peer access. The target runs the preparation hook and verifies
     any configured pre-wipe backup before stopping Kuvo Code and deleting its folder. It reports
     completion after deletion. If it never returns, its wipe remains pending.
+  - **Prepare removal** (`computers.wipe-preparation`, #905). Before unlink or wipe, the local
+    desktop can ask `POST kuvo/computers/<key>/removal-plan` with optional `projects` (absolute
+    paths on that computer). The source returns its current inventory in `plan`, including
+    move destinations, active moves, export-only items, child sessions and categories that
+    stay behind. `complete: false` means some stores are unavailable. An unreachable source
+    returns 503. Only explicitly selected project folders appear in the plan.
+    To save data first, send `prepare: {moveTo?, export?: {destination, recoveryKey, projects?}}`
+    with the wipe's `operation`. Accepted membership keeps the operation and a hash of
+    its choices through primary changes. The recovery key and paths live in private
+    preparation journals on the boxes doing the work. After a primary change, re-send the
+    original choices if the source hasn't received them yet. The desktop generates and keeps a 32-byte base64url recovery
+    key before sending an export choice. A disk destination is an existing folder outside Kuvo
+    on the source, or select a current backup computer with the existing SSH destination shape.
+    Export runs first if both choices are made. In this case the export captures Kuvo-owned
+    records before the moves. Each move uses the normal transfer and ownership receipts.
+    Sessions with attached child sessions can be exported. The wipe waits for the verified
+    archive and the moves' accepted transfers and acknowledgements. Use the same operation
+    to check again. The primary retries pending preparation, with `moving`, `exporting`, or
+    `wipe-pending` returned while it waits. A failed preparation returns its error and leaves
+    data in place. After correcting an export error, retry the same choices and operation with
+    `retryPreparation: true`. The `export: {source, id, at}` reference and the selected destination and
+    key open through the existing restore route, with the same replacement approval rules.
+    The source checks the requested archive again before deleting its Kuvo folder.
   - `POST kuvo/computers/<key>/connect`: this box's own, for a peer that's `away`: its link tells
     that computer its agents now, asking for theirs (`run/reach-again.json`, sent by the process
     that holds the relay connection, as `box route` leaves it), so its answer marks it back
@@ -7826,6 +7849,7 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `computers` | `kuvo/computers` and `…/events`: your computers as one list, from any box ("Computers", #711) |
 | `computers.add` | `kuvo/computers/add…`: a box adds a computer over SSH itself, with its tries' steps, questions and words; `POST kuvo/computers/<key>/setup` and `/uninstall`, and `setup` and `uninstall` in `actions` ("Computers", Adding one, #636) |
 | `computers.facts` | `features`, `working` (left out where never said) and `atWork` on each of `kuvo/computers`' computers ("Computers", #735) |
+| `computers.wipe-preparation` | Removal plans and verified move/export choices before a wipe |
 | `computers.removal` | `POST kuvo/computers/<key>/unlink`, `POST kuvo/computers/<key>/unlink-and-wipe`, and pending wipes in the computer list |
 | `computers.manage` | `actions` on each of `kuvo/computers`' computers, `PATCH` and `DELETE kuvo/computers/<key>` (done by the box that writes the machine's record, or handed to it) and `POST kuvo/computers/<key>/connect` ("Computers", Managing them, #735) |
 | `computers.reach` | `address` and `relay` on each of your own computers in `kuvo/computers` ("Computers", #742) |

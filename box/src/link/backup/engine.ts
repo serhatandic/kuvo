@@ -240,6 +240,51 @@ export function captureBackup(file: string, key: string, source: string, id: str
   return manifest;
 }
 
+async function writeVerifiedPoint(store: ReturnType<typeof destinationStore>, source: string, key: string, id: string,
+  now: number, projects: string[], scratch: string, insideUpdate = false): Promise<RestorePoint> {
+  const file = path.join(scratch, "archive");
+  const { version } = captureBackup(file, key, source, id, now, projects, scratch, insideUpdate);
+  await store.put(id, file);
+  try { authenticate(await store.get(id, scratch), key, archiveContext(source, id)); }
+  catch (error) { await store.erase(id).catch(() => {}); throw error; }
+  return { id, at: now, version };
+}
+
+export type ExportPoint = { source: string; id: string; at: number };
+type ExportTarget = { destination: Destination; recoveryKey: string };
+
+export function verifyExport(point: ExportPoint, target: ExportTarget): Promise<void> {
+  return backupLock(async () => {
+    const scratch = scratchFolder();
+    try {
+      const store = destinationStore(target.destination, point.source);
+      authenticate(await store.get(point.id, scratch), target.recoveryKey, archiveContext(point.source, point.id));
+    } finally { fs.rmSync(scratch, { recursive: true, force: true }); }
+  });
+}
+
+/** A one-time backup with its own retention and project selection. The caller journals the point
+ * before using it, so a crash after publication resumes by authenticating the same archive. */
+export function exportBeforeWipe(point: ExportPoint, target: ExportTarget, projects: string[]): Promise<void> {
+  return backupLock(async () => {
+    const { destination, recoveryKey } = target;
+    checkComputer(destination);
+    if (destination.kind === "computer") await verifyBackupComputer(destination);
+    if (destination.kind === "disk" && projects.some(folder => inside(folder, destination.path) || inside(destination.path, folder))) {
+      throw new Error("Choose an export folder separate from the selected projects.");
+    }
+    const scratch = scratchFolder();
+    try {
+      const store = destinationStore(destination, point.source);
+      if ((await store.list()).includes(point.id)) {
+        authenticate(await store.get(point.id, scratch), recoveryKey, archiveContext(point.source, point.id));
+      } else {
+        await writeVerifiedPoint(store, point.source, recoveryKey, point.id, point.at, projects, scratch);
+      }
+    } finally { fs.rmSync(scratch, { recursive: true, force: true }); }
+  });
+}
+
 export async function backupBefore(reason: Reason, { now = Date.now(), insideUpdate = false } = {}): Promise<RestorePoint | null> {
   if (!config()?.enabled) return null;
   return backupLock(async () => {
@@ -255,13 +300,7 @@ export async function backupBefore(reason: Reason, { now = Date.now(), insideUpd
       if (kept.dest.kind === "computer") await verifyBackupComputer(kept.dest);
       const store = destinationStore(kept.dest, kept.source);
       scratch = scratchFolder();
-      const file = path.join(scratch, "archive");
-      const id = pointId(reason, now);
-      const { version } = captureBackup(file, kept.key, kept.source, id, now, kept.projects, scratch, insideUpdate);
-      await store.put(id, file);
-      try { authenticate(await store.get(id, scratch), kept.key, archiveContext(kept.source, id)); }
-      catch (error) { await store.erase(id).catch(() => {}); throw error; }
-      const point = { id, at: now, version };
+      const point = await writeVerifiedPoint(store, kept.source, kept.key, pointId(reason, now), now, kept.projects, scratch, insideUpdate);
       save({ ...kept, last: point, ...(reason === "daily" ? { lastDaily: point } : {}), error: undefined });
       for (const expired of expiredPoints(await store.list(), now)) await store.erase(expired);
       return point;

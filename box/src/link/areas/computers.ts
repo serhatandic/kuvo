@@ -29,7 +29,8 @@ import { MOST_ASKING, MOST_AT_WORK, PEER_AGENTS_FILE, readPeerAgents } from "../
 import { addressOf } from "../crypto/keys";
 import { ADDRESS, ownKey, peersOf } from "../peers/known";
 import { KEY } from "../peers/known";
-import { REMOVAL_FEATURE, pendingWipes, removalsOf } from "../setup/removal-record";
+import { WIPE_PREPARATION_FOLDER, pendingPreparations, planForComputer } from "../setup/before-wipe";
+import { PREPARATION_FEATURE, REMOVAL_FEATURE, pendingWipes, removalsOf } from "../setup/removal-record";
 import { takesForwarded } from "../work-queue/forward";
 import { lonePrimary, readRemovalRequest, actionsOf, givenName, MOST_NAME, oldAppAttached, refusal, removeComputerHere, renameHere, writerFacts, writerOf } from "../peers/manage";
 import { offRelay } from "../letters/leave";
@@ -56,7 +57,7 @@ import { boxVersion } from "../updates/update";
 import type { AnswerPiece, RouteContext } from "../server/context";
 import { agentsState } from "./agents-down";
 
-export const COMPUTERS_ROUTE = /^kuvo\/computers(?:(\/events)|\/([A-Za-z0-9_-]{1,60})(\/connect|\/allow-devices|\/unlink|\/unlink-and-wipe)?)?$/;
+export const COMPUTERS_ROUTE = /^kuvo\/computers(?:(\/events)|\/([A-Za-z0-9_-]{1,60})(\/connect|\/allow-devices|\/unlink|\/unlink-and-wipe|\/removal-plan)?)?$/;
 
 /** The most sessions at work this box names of itself (it counts them all). */
 const MOST_HERE = 100;
@@ -299,6 +300,13 @@ const mtime = (file: string): number => { try { return fs.statSync(file).mtimeMs
 async function* manage(context: RouteContext, key: string, action: string | undefined): AsyncGenerator<AnswerPiece> {
   const { request, signal, json, info } = context;
   const method = request.method.toUpperCase();
+  if (action === "/removal-plan") {
+    if (method !== "POST") return yield* json(405, { message: "Only POST." });
+    if (!fromLocalApp(request)) return yield* json(403, { message: "Open the removal plan from Kuvo Code." });
+    const body = parsed(request.body);
+    const plan = await planForComputer(key, isObject(body) ? body.projects : undefined, signal);
+    return yield* json(plan.status, plan.value);
+  }
   if (action === "/allow-devices") return yield* allowDevices(context, key);
   const connect = action === "/connect";
   const explicit = action === "/unlink" || action === "/unlink-and-wipe";
@@ -309,11 +317,17 @@ async function* manage(context: RouteContext, key: string, action: string | unde
   if (!removal) return yield* json(400, { message: "Send a valid removal request." });
   if (what === "remove" && !KEY.test(key)) return yield* json(404, { message: "That isn’t one of your computers." });
   if (explicit) removal.wipe = action === "/unlink-and-wipe";
+  if ((removal.prepare || removal.retryPreparation) && (!fromLocalApp(request) || action !== "/unlink-and-wipe")) {
+    return yield* json(403, { message: "Prepare the wipe from Kuvo Code." });
+  }
   if (what === "remove" && before?.setup?.primary === key && !lonePrimary(before, key)) return yield* json(409, { message: PRIMARY_UNLINK });
   const removalWriter = what === "remove" ? writerOf(before) : null;
   const modern = explicit || removal.operation !== undefined || removal.save !== undefined || removal.wipe !== undefined;
   if (modern && removalWriter && !removalWriter.here && !takesForwarded(removalWriter.key, REMOVAL_FEATURE)) {
     return yield* json(409, { message: "Update the primary before removing computers from this setup." });
+  }
+  if (removal.prepare && removalWriter && !removalWriter.here && !takesForwarded(removalWriter.key, PREPARATION_FEATURE)) {
+    return yield* json(409, { message: "Update the primary before preparing a wipe." });
   }
   const forwardRemoval = (writer: Extract<NonNullable<ReturnType<typeof writerOf>>, { here: false }>, cleanup = false) =>
     forwardAct({ key: writer.key, name: writer.name, kind: "mac" }, "This computer",
@@ -399,7 +413,7 @@ export async function* computersRoute(context: RouteContext, match: RegExpMatchA
   await listNow(context, signal ?? undefined).catch(() => null);
   const read = async () => {
     const computers = await listComputers(info.name ?? "", bridge(), signal ?? undefined);
-    const pending = pendingWipes(readLink());
+    const pending = [...pendingWipes(readLink()), ...pendingPreparations()];
     return { computers, ...(pending.length ? { wipePending: pending } : {}) };
   };
   if (!match[1]) return yield* json(200, await read());
@@ -422,5 +436,5 @@ export async function* computersRoute(context: RouteContext, match: RegExpMatchA
     return () => { listFollowers.delete(listTold); tryFollowers.delete(told); };
   };
   return yield* followedLive(read, listen, signal,
-    { look: () => `${mtime(PEER_AGENTS_FILE)} ${mtime(PEER_REACH)} ${mtime(LINK_FILE)} ${mtime(REACH_AGAIN)} ${mtime(KEEP_UP_FILE)} ${oldAppAttached()}` });
+    { look: () => `${mtime(PEER_AGENTS_FILE)} ${mtime(PEER_REACH)} ${mtime(LINK_FILE)} ${mtime(WIPE_PREPARATION_FOLDER)} ${mtime(REACH_AGAIN)} ${mtime(KEEP_UP_FILE)} ${oldAppAttached()}` });
 }

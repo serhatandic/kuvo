@@ -22,6 +22,7 @@ export const MOVED_FOR = 2 * 24 * 3600_000;
  * hash and size; tries made; when each step was last sent. On the box it's going to (`to`): the
  * folder its copy went in, and the parts of the bundle that came. */
 export interface MoveRecord extends Move {
+  wipePreparation?: true;
   /** The other box's key. */
   peer: string;
   wasPaused: boolean;

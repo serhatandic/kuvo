@@ -11,6 +11,7 @@ import { readZoneSetting } from "../zone/setting";
 import { captureMembership } from "./access";
 import { CHECKPOINT_FEATURE, checkpointedTransition } from "./checkpoint";
 import { acceptedMembership } from "./membership";
+import { PREPARATION_FEATURE } from "./removal-record";
 import { MAX_SHARED_BYTES, type SharedValues } from "./shared";
 import { noteDocsChanged } from "../documents/changed";
 import { ownSign, readDoc, signDoc } from "../documents/format";
@@ -78,6 +79,7 @@ export async function proposeLeadership(
   if (setupLayoutDeferred(K)) return answer(503, "Wait for the Kuvo Code update to finish before changing the setup.");
   let oversized = false;
   let unsupportedLibrary = false;
+  let unsupportedWipePreparation = false;
   const changed = changeNumbers(numbers => updateLink(link => {
     const current = followedSetup(link);
     if (!link?.sign || current?.role !== "primary" || current.sign !== ownSign(link) || current.id !== position.setup || current.epoch !== position.epoch
@@ -85,6 +87,12 @@ export async function proposeLeadership(
     if (recovery && (!standby || current.standby || !requiresStandby(current) || target !== current.primary
       || recovery.peer.key !== standby.key || recovery.peer.sign !== standby.sign)) return null;
     const members = peersOf(link);
+    if (Object.keys(acceptedMembership(link)?.wipePreparations ?? {}).length
+      && ((target !== current.primary && !takesForwarded(target, PREPARATION_FEATURE))
+        || (standby && standby.key !== current.standby?.key && !takesForwarded(standby.key, PREPARATION_FEATURE)))) {
+      unsupportedWipePreparation = true;
+      return null;
+    }
     if (requester && !members.some(peer => peer.key === requester)) return null;
     if (target !== current.primary && (!members.some(peer => peer.key === target && peer.sign === targetSign)
       || members.some(peer => !peer.sign || !takesForwarded(peer.key, HANDOVER_FEATURE)
@@ -169,6 +177,7 @@ export async function proposeLeadership(
     return link;
   }, { durable: true }));
   if (oversized) return answer(413, "The personality library and setup settings are too large to replicate. Shorten the personality library before choosing a standby.");
+  if (unsupportedWipePreparation) return answer(409, "Update the chosen computer so it can keep the pending wipe preparation.");
   if (unsupportedLibrary) return answer(409, "Update all members before choosing a standby so it can verify the personality library.");
   if (!changed) return answer(409, "The setup changed or the standby couldn't be reached. Refresh your setup and try again.");
   if (recovery && changed.leadershipPending) {

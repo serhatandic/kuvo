@@ -4,13 +4,27 @@ import type { LinkState } from "../state";
 import { acceptedMembership } from "./membership";
 
 export const REMOVAL_FEATURE = "computers.removal";
+export const PREPARATION_FEATURE = "computers.wipe-preparation";
 export { OPERATION_ID as REMOVAL_ID } from "./shared";
 import { OPERATION_ID } from "./shared";
+
+export interface WipePreparationClaim {
+  operation: string;
+  choiceHash: string;
+}
+
+export interface ExportReference {
+  source: string;
+  id: string;
+  at: number;
+}
 
 export interface MemberRemoval {
   peer: Peer;
   operation: string;
   wipe: boolean;
+  requiresPreparation?: true;
+  export?: ExportReference;
   delivered?: true;
 }
 
@@ -19,6 +33,7 @@ export interface LocalWipe {
   operation: string;
   primary?: Peer;
   prepared?: true;
+  requiresPreparation?: true;
 }
 
 export function removalRecords(value: unknown, left: Set<string>, current: Set<string>): Record<string, MemberRemoval> {
@@ -27,8 +42,12 @@ export function removalRecords(value: unknown, left: Set<string>, current: Set<s
     if (!left.has(key) || current.has(key) || !isObject(record) || !fitsPeer(record.peer)
       || record.peer.key !== key || typeof record.operation !== "string" || !OPERATION_ID.test(record.operation)
       || typeof record.wipe !== "boolean") return [];
+    const point = record.export;
+    const archive = record.wipe && isObject(point) && typeof point.source === "string" &&
+      typeof point.id === "string" && typeof point.at === "number" && Number.isFinite(point.at)
+      ? { source: point.source, id: point.id, at: point.at } : undefined;
     const { id: _destination, ...peer } = cleanPeer(record.peer);
-    return [[key, { peer, operation: record.operation, wipe: record.wipe, ...(record.delivered === true ? { delivered: true } : {}) }]];
+    return [[key, { peer, operation: record.operation, wipe: record.wipe, ...(record.wipe && record.requiresPreparation === true ? { requiresPreparation: true } : {}), ...(archive ? { export: archive } : {}), ...(record.delivered === true ? { delivered: true } : {}) }]];
   }));
 }
 

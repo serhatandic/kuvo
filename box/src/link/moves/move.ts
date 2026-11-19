@@ -390,12 +390,12 @@ function botsLiveOn(members: string[], peer: Peer): boolean {
 }
 
 /** Where `thing` can go: each of your other computers, and why not one where it can't. */
-export async function placesFor(kind: MoveKind, thing: string, signal?: AbortSignal): Promise<{ places: MovePlace[]; stays?: MoveStays } | null> {
+export async function placesFor(kind: MoveKind, thing: string, signal?: AbortSignal, details = true): Promise<{ places: MovePlace[]; stays?: MoveStays } | null> {
   const what = await movable(kind, thing, signal);
   if (!what) return null;
-  const stays = kind === "group" ? undefined : await staysOf(kind, thing, what, signal);
+  const stays = !details || kind === "group" ? undefined : await staysOf(kind, thing, what, signal);
   const target = what.lane ? bridgeTarget() : engineTarget();
-  const busy = !what.why && what.root && target ? await activeIn(target, [what.root], signal) : false;
+  const busy = details && !what.why && what.root && target ? await activeIn(target, [what.root], signal) : false;
   return { places: placesOf(kind, thing, what, stays, busy), ...(stays && Object.keys(stays).length ? { stays } : {}) };
 }
 
@@ -443,15 +443,19 @@ function question(kind: MoveKind, name: string, peer: Peer, place: string, sourc
 
 function placesOf(kind: MoveKind, thing: string, what: Movable, stays: MoveStays | undefined, busy: boolean): MovePlace[] {
   const moving = moveOf(thing) !== null;
-  const own = ownKey(readLink() ?? {});
+  const link = readLink();
+  const own = ownKey(link ?? {});
+  const unsupported = transferSupport(link);
+  const accepted = followedSetup(link)?.checkpointed;
   const told = readPeerAgents(), reach = readReach();
   const source = ownComputerName();
-  return peersOf(readLink()).filter(peer => peer.key !== own).map(peer => {
+  return peersOf(link).filter(peer => peer.key !== own).map(peer => {
     const name = plainName(peer.name) || (peer.kind === "mac" ? "Mac" : "Machine");
     // Why not, and the same short: the thing's own reason first, then that computer's.
     const not: [string, string] | null = moving ? [say.moving, note.moving]
       : what.why ? [what.why, what.note ?? what.why]
-      : olderThanMoves(peer.key) || (what.lane && olderThanCarrying(peer.key)) ? [say.needsUpdate(name), note.needsUpdate]
+      : unsupported ? [unsupported, note.needsUpdate]
+      : olderThanMoves(peer.key) || (accepted && !told[peer.key]?.features?.includes("moves.accepted-ownership")) || (what.lane && olderThanCarrying(peer.key)) ? [say.needsUpdate(name), note.needsUpdate]
       : peerIsAway(peer.key, told[peer.key]?.heard, reach) ? [say.notConnected(name), "Can’t be reached"]
       // A group chat goes to a machine only where all its bots live (to a Mac, they stay put).
       : kind === "group" && peer.kind === "machine" && !botsLiveOn(what.members ?? [], peer) ? [say.botsNotThere(what.name, name), note.botsNotThere]
@@ -483,7 +487,7 @@ export async function startMove(kind: MoveKind, thing: string, to: string, signa
   return begun.ok ? begun.outcome! : begun;
 }
 
-export async function beginMove(kind: MoveKind, thing: string, to: string, signal?: AbortSignal, wait = false): Promise<
+export async function beginMove(kind: MoveKind, thing: string, to: string, signal?: AbortSignal, wait = false, change?: string): Promise<
   { ok: true; move: Move; outcome?: Promise<MoveOutcome> } | Extract<MoveOutcome, { ok: false }>
 > {
   const link = readLink();
@@ -499,9 +503,10 @@ export async function beginMove(kind: MoveKind, thing: string, to: string, signa
   if (!what) return { ok: false, status: 404, message: "It isn’t on this computer any more." };
   if (what.why) return { ok: false, status: 409, message: what.why };
   if (what.lane && olderThanCarrying(to)) return { ok: false, status: 409, message: say.needsUpdate(plainName(peer.name) || "That computer") };
-  const id = `mov_${crypto.randomBytes(12).toString("base64url").replace(/[-_]/g, "")}`;
+  const id = change ?? `mov_${crypto.randomBytes(12).toString("base64url").replace(/[-_]/g, "")}`;
   const folder = folderOf(kind, thing);
   const record: MoveRecord = {
+    ...(change ? { wipePreparation: true as const } : {}),
     id, kind, thing, name: what.name, from: own, to, role: "from", stage: "holding", sessions: what.root ? [what.root] : [],
     peer: to, wasPaused: false, tries: 0, started: Date.now(), ...(folder && fs.existsSync(folder) ? { folder } : {}), ...(what.lane ? { lane: true } : {}),
     ...(what.model ? { model: what.model } : {}), ...(checksFirst(to) && kind !== "group" ? { step: "check" as const } : {}),
@@ -526,7 +531,7 @@ function noteFirst(record: MoveRecord): boolean {
   let handle: number;
   try { handle = fs.openSync(lock, "wx", 0o600); } catch { return false; }
   try {
-    if (moveOf(record.thing)) return false;
+    if (moveOf(record.thing) || readMove(record.id) || readOutcome(record.id)) return false;
     saveMove(record);
     return true;
   } finally {
@@ -722,6 +727,9 @@ async function carryOn(id: string): Promise<void> {
       contents.exports = exports;
       record.sessions = idsOf(exports);
       digest = conversationHash(exports);
+    }
+    if (record.wipePreparation && record.sessions.length > 1) {
+      throw new Refused(`${record.name} has child sessions. Export it before wiping this computer.`);
     }
     if (record.sessions.some(session => !known.has(session))) {
       if (takenBack()) return;

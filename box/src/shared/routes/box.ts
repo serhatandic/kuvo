@@ -380,7 +380,7 @@ export const LISTED_COMPUTER = object({
   // it, which checks for its own update then.)
   "appCheck?": string,
 });
-export const COMPUTERS = object({ "wipePending?": list(object({ key: string, name: string, operation: string })), computers: list(LISTED_COMPUTER) });
+export const COMPUTERS = object({ "wipePending?": list(object({ key: string, name: string, operation: string, "error?": string })), computers: list(LISTED_COMPUTER) });
 export type ListedComputer = Infer<typeof LISTED_COMPUTER>;
 
 /** A file as a viewer shows it (`kuvo/file/text`): its text (`content`, read as `encoding`, UTF-8,
@@ -437,16 +437,25 @@ const NOTICE = object({
 });
 const NOTICES = object({ telling: bool, notices: list(object({ id: string, at: number, notice: NOTICE, "by?": literal("agent") })) });
 
-const COMPUTER_REMOVAL = object({ operation: string, state: words("saving", "interrupted", "unlinked", "wipe-pending", "wiped") });
+const COMPUTER_REMOVAL = object({ operation: string, state: words("saving", "interrupted", "unlinked", "moving", "exporting", "wipe-pending", "wiped") });
+const WIPE_EXPORT = object({ source: string, id: string, at: number });
+const PLANNED_ITEM = { kind: words("bot", "chat", "group"), id: string, name: string } as const;
+const REMOVAL_PLAN = object({ plan: object({
+  complete: bool, source: object({ key: string, name: string }),
+  movable: list(object({ ...PLANNED_ITEM, destinations: list(object({ key: string, name: string, kind: words("mac", "machine") })) })),
+  moving: list(object(PLANNED_ITEM)), exportOnly: list(object(PLANNED_ITEM)), childSessions: list(object(PLANNED_ITEM)),
+  stays: list(words("unselected-project-files", "child-sessions", "native-agent-histories", "credentials-and-vault")),
+  "projects?": list(string),
+}) });
 const COMPUTER_REMOVAL_REPLY = oneOf(
   SAVE_RECEIPT,
   object({ setup: string, epoch: number, operation: string, proof: object({ d: string, s: string }), status: words("pending", "committed", "interrupted"),
-    "message?": string, "pending?": literal(true), removal: COMPUTER_REMOVAL }),
-  object({ removal: COMPUTER_REMOVAL }),
+    "message?": string, "pending?": literal(true), removal: COMPUTER_REMOVAL, "export?": WIPE_EXPORT }),
+  object({ removal: COMPUTER_REMOVAL, "export?": WIPE_EXPORT, "message?": string }),
 );
 const REMOVAL_ANSWERS = { 200: COMPUTER_REMOVAL_REPLY, 202: COMPUTER_REMOVAL_REPLY,
-  400: object({ message: string }), 404: object({ message: string }), 405: object({ message: string }),
-  409: oneOf(object({ message: string }), COMPUTER_REMOVAL_REPLY), 500: object({ message: string }),
+  400: object({ message: string }), 403: object({ message: string }), 404: object({ message: string }), 405: object({ message: string }),
+  409: oneOf(object({ message: string, "export?": WIPE_EXPORT }), COMPUTER_REMOVAL_REPLY), 500: object({ message: string }),
   503: oneOf(object({ message: string }), COMPUTER_REMOVAL_REPLY) };
 
 export const BOX_ROUTES: RouteShape[] = [
@@ -462,6 +471,10 @@ export const BOX_ROUTES: RouteShape[] = [
   { route: "GET kuvo/computers/events", feature: "computers", answers: { 200: COMPUTERS, 405: object({ message: string }) } },
   { route: "PATCH kuvo/computers/:key", feature: "computers.manage", answers: { 200: object({ name: string }), 400: object({ message: string }), 404: object({ message: string }), 405: object({ message: string }), 409: object({ message: string }), 500: object({ message: string }), 503: object({ message: string }) } },
   { route: "DELETE kuvo/computers/:key", feature: "computers.manage", answers: { ...REMOVAL_ANSWERS, 200: oneOf(NOTHING, COMPUTER_REMOVAL_REPLY) } },
+  { route: "POST kuvo/computers/:key/removal-plan", feature: "computers.wipe-preparation", answers: {
+    200: REMOVAL_PLAN, 403: object({ message: string }), 404: object({ message: string }), 405: object({ message: string }),
+    409: object({ message: string }), 503: object({ message: string }),
+  } },
   { route: "POST kuvo/computers/:key/unlink", feature: "computers.removal", answers: REMOVAL_ANSWERS },
   { route: "POST kuvo/computers/:key/unlink-and-wipe", feature: "computers.removal", answers: REMOVAL_ANSWERS },
   { route: "POST kuvo/computers/:key/connect", feature: "computers.manage", answers: { 202: NOTHING, 404: object({ message: string }), 409: object({ message: string }), 503: object({ message: string }) } },

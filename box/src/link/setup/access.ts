@@ -23,7 +23,7 @@ export function captureMembership(link: LinkState, self?: Peer) {
   const roster = self ? [self, ...projected] : boxes;
   return membershipOf({
     boxes: roster, left, moved, devices: ownPhones(link), removalRevisions: link.removalRevisions, removedHere: link.removedHere,
-    vouchBlocked: link.vouchBlocked, removals: link.memberRemovals,
+    vouchBlocked: link.vouchBlocked, removals: link.memberRemovals, wipePreparations: link.wipePreparations,
   });
 }
 

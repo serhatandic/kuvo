@@ -45,10 +45,11 @@ function references(move: Transfer): DataReference[] {
   return [moveReference(move.kind, move.thing), ...move.sessions.map(id => ({ kind: "conversations" as const, id }))];
 }
 
-export function transferAccepted(link: LinkState | null, move: Transfer): boolean {
+/** The source's completed move receipt can also be checked against a compacted assignment. */
+export function transferAccepted(link: LinkState | null, move: Transfer, { allowSettled = false } = {}): boolean {
   return references(move).every(ref => {
     const assignment = assignmentFor(link, ref);
-    return assignment?.move === move.id && assignment.computer === move.to &&
+    return assignment?.computer === move.to && (assignment.move === move.id || (allowSettled && assignment.move === undefined)) &&
       (move.kind !== "queue" || assignment.queue === move.queue);
   });
 }

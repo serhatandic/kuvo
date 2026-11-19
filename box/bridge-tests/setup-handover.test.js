@@ -270,7 +270,7 @@ async function network(t, takeover = false, releaseKey, owned = false, movingGro
   }
   fs.writeFileSync(path.join(a.run, "work-queue", "numbers.json"), JSON.stringify({ primary: "self", next: 401, leases: [] }));
   if (movingGroup) for (const bot of movingGroup.members) {
-    const dir = path.join(a.env.HOME, "bots", bot);
+    const dir = path.join(a.home, "bots", bot);
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, "bot.json"), JSON.stringify({ kuvo: 1, id: bot, name: bot }));
     fs.writeFileSync(path.join(dir, "session"), "ses_" + bot.slice(4));
@@ -1570,4 +1570,167 @@ test("failure bench: a failed pre-wipe backup leaves the removed computer’s da
   assert.equal(b.read().localWipe.operation, result.value.operation);
   assert.equal(b.read().localWipe.prepared, undefined);
   assert.equal(removalOf(a, b).delivered, undefined);
+});
+
+const operationID = () => crypto.randomBytes(16).toString("base64url");
+const wipeRoute = box => `kuvo/computers/${box.key}/unlink-and-wipe`;
+function preparation(box, role, operation) {
+  const dir = path.join(box.run, "wipe-preparation");
+  if (!fs.existsSync(dir)) return undefined;
+  for (const name of fs.readdirSync(dir)) {
+    if (!name.startsWith(role + "-") || !name.endsWith(".json")) continue;
+    const state = JSON.parse(fs.readFileSync(path.join(dir, name), "utf8"));
+    if (state.operation === operation) return state;
+  }
+  return undefined;
+}
+async function waitForPreparedRemoval(primary, source, operation, signal) {
+  await until("prepared removal committed", () => {
+    const failure = preparation(primary, "intent", operation)?.error ?? preparation(source, "source", operation)?.error;
+    assert.equal(failure, undefined);
+    return removalOf(primary, source)?.operation === operation;
+  }, signal);
+}
+
+test("failure bench: move all verifies accepted ownership before wiping the source", { timeout: 60_000 }, async t => {
+  const group = { id: "grp_beforewipe", name: "Before wipe", members: ["bot_one", "bot_two"], created: "2026-11-01T00:00:00Z", seats: {}, heard: {} };
+  const { a, c, groupCopies } = await network(t, false, undefined, false, group, true);
+  const data = seedLocalWork(c);
+  const planned = await a.route("POST", `kuvo/computers/${c.key}/removal-plan`, {}, true);
+  assert.equal(planned.status, 200, JSON.stringify(planned.value));
+  const plan = planned.value.plan;
+  assert.equal(plan.source.key, c.key);
+  assert.equal(plan.complete, true);
+  assert.deepEqual(plan.movable.map(({ id, destinations }) => [id, destinations.map(place => place.key)]), [[group.id, [a.key]]]);
+  assert.ok(plan.stays.includes("native-agent-histories"));
+  assert.equal(Object.hasOwn(plan, "projects"), false);
+  const temp = c.env.TMPDIR;
+  const project = fs.realpathSync(fs.mkdtempSync(path.join(temp, "chosen-project-")));
+  c.env.TMPDIR = fs.mkdtempSync(path.join(temp, "source-scratch-"));
+  try {
+    const selected = await c.route("POST", `kuvo/computers/${c.key}/removal-plan`, { projects: [project] }, true);
+    assert.equal(selected.status, 200, JSON.stringify(selected.value));
+    assert.deepEqual(selected.value.plan.projects, [project]);
+  } finally { c.env.TMPDIR = temp; }
+  const operation = operationID();
+  const start = await a.route("POST", wipeRoute(c), { operation, prepare: { moveTo: a.key } }, true);
+  assert.equal(start.status, 202, JSON.stringify(start.value));
+  assert.equal(start.value.removal.state, "moving");
+  assert.equal(removalOf(a, c), undefined);
+  await waitForPreparedRemoval(a, c, operation, t.signal);
+  await waitForWipe(c, t.signal);
+  assert.ok(data.every(file => !fs.existsSync(file)));
+  const assignment = a.read().shared.ownershipAssignments.value["group host:" + group.id];
+  assert.equal(assignment.computer, a.key);
+  assert.equal(groupCopies.get("Studio")?.group.id, group.id);
+  assert.equal(groupCopies.get("Studio")?.status, "active");
+  assert.equal(groupCopies.has("Lab"), false);
+});
+
+test("failure bench: an encrypted export survives wipe and imports through restore", { timeout: 50_000 }, async t => {
+  const { a, b, c } = await network(t, false, undefined, false, undefined, true);
+  const data = seedLocalWork(b);
+  const destination = { kind: "disk", path: path.join(b.env.TMPDIR, "manual-export") };
+  fs.mkdirSync(destination.path);
+  const recoveryKey = crypto.randomBytes(32).toString("base64url");
+  const operation = operationID();
+  const start = await a.route("POST", wipeRoute(b), { operation, prepare: { export: { destination, recoveryKey } } }, true);
+  assert.equal(start.status, 202, JSON.stringify(start.value));
+  assert.equal(start.value.removal.state, "exporting");
+  await waitForPreparedRemoval(a, b, operation, t.signal);
+  await waitForWipe(b, t.signal);
+  assert.ok(data.every(file => !fs.existsSync(file)));
+  await until("verified wipe accepted", () => removalOf(a, b)?.delivered, t.signal);
+  const retry = await a.route("POST", wipeRoute(b), { operation });
+  assert.equal(retry.status, 200, JSON.stringify(retry.value));
+  const { source, id } = retry.value.export;
+  const archive = fs.readFileSync(path.join(destination.path, "kuvo-backups", source, id + ".kuvo"));
+  assert.ok(archive.subarray(0, 14).equals(Buffer.from("KUVO backup 1\n")));
+  assert.equal(archive.includes("local work"), false);
+  const matched = await a.route("POST", "kuvo/box/backups/match", { source, previous: b.key, replacement: c.key }, true);
+  assert.equal(matched.status, 200, JSON.stringify(matched.value));
+  await until("replacement ownership replica", () => c.read().shared?.ownershipAssignments?.value?.["replacement:" + b.key], t.signal);
+  const restored = await c.route("POST", "kuvo/box/backups/restore", { destination, source, id, recoveryKey, confirm: true }, true);
+  assert.equal(restored.status, 200, JSON.stringify(restored.value));
+  assert.equal(fs.readFileSync(path.join(c.home, "bots", "bot_retained", "notes.md"), "utf8"), "local work");
+});
+
+test("failure bench: a failed requested export leaves membership and data in place", { timeout: 50_000 }, async t => {
+  const { a, b } = await network(t, false, undefined, false, undefined, true);
+  const data = seedLocalWork(b);
+  const destination = { kind: "disk", path: path.join(b.env.TMPDIR, "missing-export-folder") };
+  const recoveryKey = crypto.randomBytes(32).toString("base64url");
+  const operation = operationID();
+  const start = await a.route("POST", wipeRoute(b), { operation, prepare: { export: { destination, recoveryKey } } }, true);
+  assert.equal(start.status, 202, JSON.stringify(start.value));
+  const failure = await until("export error", () => preparation(a, "intent", operation)?.error, t.signal);
+  assert.match(failure, /ENOENT/);
+  const status = await a.route("GET", "kuvo/computers");
+  assert.equal(status.value.wipePending?.find(pending => pending.operation === operation)?.error, failure);
+  const bypass = await a.route("POST", wipeRoute(b), { operation: operationID() });
+  assert.equal(bypass.status, 409, JSON.stringify(bypass.value));
+  assert.equal(removalOf(a, b), undefined);
+  assert.equal(b.read().localWipe, undefined);
+  assert.ok(data.every(file => fs.existsSync(file)));
+  fs.mkdirSync(destination.path);
+  const retry = await a.route("POST", wipeRoute(b), { operation, retryPreparation: true }, true);
+  assert.equal(retry.status, 202, JSON.stringify(retry.value));
+  await waitForPreparedRemoval(a, b, operation, t.signal);
+  await waitForWipe(b, t.signal);
+});
+
+test("failure bench: an unreachable source keeps a requested export and wipe pending until it returns", { timeout: 50_000 }, async t => {
+  const { a, b, relay } = await network(t, false, undefined, false, undefined, true);
+  const data = seedLocalWork(b);
+  const destination = { kind: "disk", path: path.join(b.env.TMPDIR, "pending-export") };
+  fs.mkdirSync(destination.path);
+  await b.stop();
+  await until("target offline", () => !relay.has(b.address), t.signal);
+  const operation = operationID();
+  const start = await a.route("POST", wipeRoute(b), { operation, prepare: {
+    export: { destination, recoveryKey: crypto.randomBytes(32).toString("base64url") },
+  } }, true);
+  assert.equal(start.status, 202, JSON.stringify(start.value));
+  assert.equal(start.value.removal.state, "wipe-pending");
+  assert.equal(removalOf(a, b), undefined);
+  assert.ok(data.every(file => fs.existsSync(file)));
+  await a.stop("SIGTERM");
+  a.start();
+  await until("primary restarted", () => relay.has(a.address), t.signal);
+  const listed = await a.route("GET", "kuvo/computers");
+  assert.deepEqual(listed.value.wipePending, [{ key: b.key, name: b.name, operation }]);
+  b.start();
+  await waitForPreparedRemoval(a, b, operation, t.signal);
+  await waitForWipe(b, t.signal);
+  assert.ok(data.every(file => !fs.existsSync(file)));
+  assert.ok(fs.readdirSync(path.join(destination.path, "kuvo-backups")).length);
+});
+
+test("failure bench: an offline source’s accepted export preparation survives primary handover", { timeout: 60_000 }, async t => {
+  const { a, b, c, relay, see } = await network(t, false, undefined, false, undefined, true);
+  const data = seedLocalWork(b);
+  const destination = { kind: "disk", path: path.join(b.env.TMPDIR, "handover-export") };
+  fs.mkdirSync(destination.path);
+  const operation = operationID();
+  const prepare = { export: { destination, recoveryKey: crypto.randomBytes(32).toString("base64url") } };
+  await b.stop();
+  await until("source offline", () => !relay.has(b.address), t.signal);
+  const start = await a.route("POST", wipeRoute(b), { operation, prepare }, true);
+  assert.equal(start.status, 202, JSON.stringify(start.value));
+  const membership = a.read().shared.membershipAndAccess.value;
+  assert.equal(membership.wipePreparations[b.key].operation, operation);
+  assert.equal(JSON.stringify(membership).includes(prepare.export.recoveryKey), false);
+  const transfer = await submit(a, c, 1);
+  assert.equal(transfer.status, 202, JSON.stringify(transfer.value));
+  await see(c, 2, c);
+  assert.equal(c.read().shared.membershipAndAccess.value.wipePreparations[b.key].operation, operation);
+  const bypass = await c.route("POST", wipeRoute(b), { operation: operationID() });
+  assert.equal(bypass.status, 409, JSON.stringify(bypass.value));
+  assert.equal(removalOf(c, b), undefined);
+  assert.ok(data.every(file => fs.existsSync(file)));
+  const resumed = await c.route("POST", wipeRoute(b), { operation, prepare }, true);
+  assert.equal(resumed.status, 202, JSON.stringify(resumed.value));
+  b.start();
+  await waitForPreparedRemoval(c, b, operation, t.signal);
+  await waitForWipe(b, t.signal);
 });

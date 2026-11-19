@@ -34,6 +34,8 @@ const steps: readonly Step[] = [
   () => {},
   // 8. Reserve portable computer removals and the local wipe journal.
   () => {},
+  // 9. Reserve wipe preparation intents, source journals and verified export references.
+  () => {},
 ];
 
 interface Checkpoint {
@@ -101,6 +103,11 @@ export function offlineEditLayoutReady(folder: string): boolean {
 
 export function removalLayoutReady(folder: string): boolean {
   try { return checkpoint(path.join(folder, FOLDER_VERSION_FILE), steps.length).version >= 8; }
+  catch { return false; }
+}
+
+export function wipePreparationLayoutReady(folder: string): boolean {
+  try { return checkpoint(path.join(folder, FOLDER_VERSION_FILE), steps.length).version >= 9; }
   catch { return false; }
 }
 

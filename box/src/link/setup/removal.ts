@@ -48,10 +48,12 @@ function saveDelivery(key: string, operation: string): void {
 }
 
 export function sendRemovalUpdates(host = liveLink()): void {
-  if (!removalLayoutReady(K) || !host?.welcomed) return;
+  if (!removalLayoutReady(K)) return;
+  void import("../peers/manage").then(({ resumeWipePreparations }) => resumeWipePreparations()).catch(error => console.error("Wipe preparation:", error));
   const link = readLink();
   const setup = primary(link);
   if (!link?.sign || !setup) return;
+  if (!host?.welcomed) return;
   const removals = removalsOf(link);
   for (const [key, operation] of Object.entries(link.removalAcks ?? {})) {
     if (removals[key]?.operation === operation && !removals[key]?.delivered) saveDelivery(key, operation);
@@ -107,7 +109,7 @@ function takeInstruction(sender: string, message: Record<string, unknown>, host:
     if (!current || position?.id !== setup.id || position.epoch !== setup.epoch || position.primary !== sender
       || position.sign !== proof.origin || ownKey(current) !== own || current.localWipe) return null;
     if (their.wipe) {
-      current.localWipe = { setup: setup.id, operation, primary: peer };
+      current.localWipe = { setup: setup.id, operation, primary: peer, ...(their.requiresPreparation === true ? { requiresPreparation: true } : {}) };
       current.phones = [];
       delete current.pairing;
       delete current.appPairing;
@@ -169,6 +171,7 @@ function deliverToRemoved(sender: string, message: Record<string, unknown>, host
     const instruction = signDoc(link.sign, "setup-shared", setup.epoch, {
       removal: "instruction", setup: setup.id, primary: setup.primary, key: sender,
       operation: record.operation, wipe: record.wipe, nonce: message.nonce,
+      ...(record.requiresPreparation ? { requiresPreparation: true } : {}),
     });
     sendRemoval(host, record.peer, link, { instruction });
   } else if (typeof message.sync === "number" && Number.isSafeInteger(message.sync) && message.sync >= 1 && message.sync < setup.epoch) {

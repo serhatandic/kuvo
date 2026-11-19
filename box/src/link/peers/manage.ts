@@ -11,11 +11,13 @@
 // computer's own, for its own clients: never handed on from another box (areas/computers.ts).
 
 import crypto from "node:crypto";
-import { removalLayoutReady } from "../../shared/folder-version";
+import { removalLayoutReady, wipePreparationLayoutReady } from "../../shared/folder-version";
 import { membershipOf } from "../setup/membership";
 import { REMOVAL_ID, removalsOf, type MemberRemoval } from "../setup/removal-record";
 import { setupSaveReceipt } from "../../shared/setup-local";
-import { beforeMembershipWipe } from "../setup/before-wipe";
+import { beforeMembershipWipe, finishPreparation, forgetFinishedPreparations, pendingPreparations, preparationClaim, preparationOf, removalIntent, removalLock, removalPlanForPeer,
+  type Preparation } from "../setup/before-wipe";
+import { exclusiveWhile } from "../../shared/files";
 import { scheduleWipe, wipeSupportedHere } from "../setup/wipe";
 import { updateAccess } from "../setup/access";
 import type { CommittedReceipt, SaveReply, SavedReply, UnsavedReply } from "../../shared/routes/setup-save";
@@ -42,7 +44,7 @@ import { ownName } from "../letters/start";
 import type { LinkState } from "../state";
 import { takesForwarded, type Act, type Acted } from "../work-queue/forward";
 import { readPeerAgents } from "./directory";
-import { macsOf, namedBoxes, peersOf } from "./known";
+import { KEY, macsOf, namedBoxes, peersOf } from "./known";
 import { awaySince } from "./reach";
 import type { MailSender, Peer } from "./known";
 
@@ -216,25 +218,58 @@ export function readRemovalRequest(body: unknown): RemovalRequest | null {
   if (!isObject(body) || (body.wipe !== undefined && typeof body.wipe !== "boolean")
     || (body.operation !== undefined && (typeof body.operation !== "string" || !REMOVAL_ID.test(body.operation)))
     || (body.save !== undefined && !setupSaveReceipt(body.save))) return null;
-  return { wipe: body.wipe as boolean | undefined, operation: body.operation as string | undefined, save: body.save };
+  const prepare = body.prepare === undefined ? undefined : preparationOf(body.prepare);
+  if (prepare === null || (body.retryPreparation !== undefined && typeof body.retryPreparation !== "boolean")
+    || ((prepare || body.retryPreparation) && (typeof body.operation !== "string" || body.save !== undefined))) return null;
+  return { wipe: body.wipe as boolean | undefined, operation: body.operation as string | undefined, save: body.save, prepare, retryPreparation: body.retryPreparation === true ? true : undefined };
 }
 
 export interface RemovalRequest {
   wipe?: boolean;
   operation?: string;
   save?: unknown;
+  prepare?: Preparation;
+  retryPreparation?: true;
 }
 
-function removalReply({ operation, wipe, delivered }: Omit<MemberRemoval, "peer">, receipt: Receipt | null, status?: number): Acted {
+function removalReply({ operation, wipe, delivered, export: point }: Omit<MemberRemoval, "peer">, receipt: Receipt | null, status?: number): Acted {
   const receiptStatus = receipt ? sharedSaveReply(receipt).status : 200;
   let state = "unlinked";
   if (receipt?.status === "pending") state = "saving";
   else if (receipt?.status === "interrupted") state = "interrupted";
   else if (wipe) state = delivered ? "wiped" : "wipe-pending";
-  return { status: status ?? receiptStatus, value: { ...receipt, removal: { operation, state } } };
+  return { status: status ?? receiptStatus, value: { ...receipt, removal: { operation, state }, ...(point ? { export: point } : {}) } };
 }
 
 export async function removeComputerHere(key: string, pendingOnly = false, request: RemovalRequest = {}): Promise<Acted> {
+  const setup = followedSetup(readLink());
+  if (!setup || !KEY.test(key) || !wipePreparationLayoutReady(K)) return settleComputerRemoval(key, pendingOnly, request);
+  try {
+    return await exclusiveWhile(removalLock(setup.id, key), () => settleComputerRemoval(key, pendingOnly, request));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "";
+    return answer(409, { message: message === "A backup or restore is already running."
+      ? "This computer’s removal is already being checked. Try the same operation again."
+      : message || "The removal is busy." });
+  }
+}
+
+let nextPreparation = 0;
+let resumingPreparations = false;
+export async function resumeWipePreparations() {
+  if (resumingPreparations || Date.now() < nextPreparation) return;
+  resumingPreparations = true;
+  nextPreparation = Date.now() + 5_000;
+  try {
+    const link = readLink();
+    forgetFinishedPreparations(link);
+    if (followedSetup(link)?.role !== "primary" || primaryFenced(link) || link?.localWipe) return;
+    await Promise.all(pendingPreparations().filter(each => !each.error).map(({ key, operation }) =>
+      removeComputerHere(key, false, { wipe: true, operation })));
+  } finally { resumingPreparations = false; }
+}
+
+async function settleComputerRemoval(key: string, pendingOnly: boolean, request: RemovalRequest): Promise<Acted> {
   const link = readLink();
   const setup = followedSetup(link);
   const previous = removalsOf(link)[key];
@@ -256,6 +291,12 @@ export async function removeComputerHere(key: string, pendingOnly = false, reque
   if (last && !wipeSupportedHere()) return answer(409, { message: "Wiping from this route requires Kuvo Code in ~/.kuvo-code." });
   if (link?.localWipe && !last) return answer(409, { message: "This computer is already scheduled to be wiped." });
 
+  if (request.prepare && (!request.wipe || pendingOnly || !wipePreparationLayoutReady(K))) {
+    return answer(409, { message: "Wipe preparation requires a confirmed wipe on the current layout." });
+  }
+  const intent = setup && wipePreparationLayoutReady(K) ? removalIntent(setup.id, key) : undefined;
+  const claim = preparationClaim(link, key);
+  if (request.retryPreparation && (!request.wipe || (!intent?.choice && !claim))) return answer(409, { message: "There is no wipe preparation to retry." });
   const existing = previous ?? pending;
   const operation = request.operation ?? existing?.operation ?? (last ? link?.localWipe?.operation : undefined)
     ?? crypto.randomBytes(16).toString("base64url");
@@ -264,22 +305,35 @@ export async function removeComputerHere(key: string, pendingOnly = false, reque
       return answer(409, { message: "This computer has already been removed with a different request." });
     const receipt = link && removalReceipt(link, operation);
     if (receipt?.status === "committed" || (!receipt && previous)) cleanRemovalList(key);
-    return removalReply(existing, receipt);
+    const result = removalReply(existing, receipt);
+    if (receipt?.status === "committed" && setup) finishPreparation(setup.id, key, operation);
+    return result;
   }
   if (last && link?.localWipe) {
     if (link.localWipe.operation !== operation) return answer(409, { message: "A wipe is already scheduled for this computer." });
     scheduleWipe();
-    return removalReply({ operation, wipe: true }, removalReceipt(link, operation));
+    return removalReply({ operation, wipe: true, export: intent?.point }, removalReceipt(link, operation));
   }
-  const removal = modern ? { operation, wipe: last || request.wipe === true } : undefined;
-  if (removal?.wipe && setup && (last || peersOf(link).some(peer => peer.key === key))) {
-    try { await beforeMembershipWipe({ phase: "before-unlink", setup: setup.id, operation, key }); }
-    catch (error) { return answer(409, { message: error instanceof Error ? error.message : "The wipe isn’t ready." }); }
+  const removal: Omit<MemberRemoval, "peer"> | undefined = modern ? { operation, wipe: last || request.wipe === true,
+    ...(claim || intent?.choice || request.prepare ? { requiresPreparation: true } : {}) } : undefined;
+  const requested = claim?.operation ?? (intent?.choice && intent.operation);
+  if (requested && (!removal?.wipe || requested !== operation)) {
+    return answer(409, { message: "Retry the existing wipe operation with the same choices." });
+  }
+  if (removal?.requiresPreparation && setup && (last || peersOf(link).some(peer => peer.key === key))) {
+    const result = await beforeMembershipWipe({ phase: "before-unlink", setup: setup.id, operation, key, choice: request.prepare, retry: request.retryPreparation });
+    if (result?.status !== 200) return result ?? answer(409, { message: "The wipe isn’t ready." });
+    const exported = isObject(result.value) ? result.value.export : undefined;
+    if (isObject(exported) && typeof exported.source === "string" && typeof exported.id === "string" && typeof exported.at === "number") {
+      removal.export = { source: exported.source, id: exported.id, at: exported.at };
+    }
   }
   if (last) {
     const { save, busy } = updateAccess(current => {
       if (!current || !lonePrimary(current, key) || current.localWipe || current.setup?.id !== setup?.id) return null;
-      current.localWipe = { setup: current.setup!.id, operation };
+      if (current.wipePreparations?.[key]?.operation !== (removal?.requiresPreparation ? operation : undefined)) return null;
+      if (current.wipePreparations) delete current.wipePreparations[key];
+      current.localWipe = { setup: current.setup!.id, operation, ...(removal?.requiresPreparation ? { requiresPreparation: true } : {}) };
       current.phones = [];
       delete current.pairing;
       delete current.appPairing;
@@ -287,13 +341,15 @@ export async function removeComputerHere(key: string, pendingOnly = false, reque
     }, { operation, checkpoint: true });
     if (busy || !save) return answer(409, { message: "The setup changed before the wipe could be saved. Refresh it and try again." });
     scheduleWipe();
-    return removalReply({ operation, wipe: true }, save);
+    return removalReply({ operation, wipe: true, export: removal?.export }, save);
   }
-  return removePeer(key, pendingOnly, removal, setup?.id);
+  const result = await removePeer(key, pendingOnly, removal, setup?.id);
+  if (result.status === 200 && removal?.requiresPreparation && setup) finishPreparation(setup.id, key, operation);
+  return result;
 }
 
 /** Retire the old standby before saving the access change. */
-async function removePeer(key: string, pendingOnly: boolean, removal?: Pick<MemberRemoval, "operation" | "wipe">, setupID?: string): Promise<Acted> {
+async function removePeer(key: string, pendingOnly: boolean, removal?: Omit<MemberRemoval, "peer">, setupID?: string): Promise<Acted> {
   const link = readLink();
   const setup = followedSetup(link);
   if (!pendingOnly && setup?.role === "primary" && (setup.standby?.key === key
@@ -332,7 +388,7 @@ async function finishRemoval(removal: ReturnType<typeof prepareRemoval>): Promis
   return completeRemoval(removal, receipt);
 }
 
-function prepareRemoval(key: string, pendingOnly: boolean, removal?: Pick<MemberRemoval, "operation" | "wipe">, setupID?: string) {
+function prepareRemoval(key: string, pendingOnly: boolean, removal?: Omit<MemberRemoval, "peer">, setupID?: string) {
   let blocked: string | null = null;
   let gone: Peer[] = [];
   let already = false;
@@ -341,6 +397,10 @@ function prepareRemoval(key: string, pendingOnly: boolean, removal?: Pick<Member
     if (!link) return null;
     if (removal && link.setup?.id !== setupID) { blocked = "The setup changed. Refresh it and try again."; return null; }
     if (pendingOnly && primaryFenced(link)) { blocked = LEADERSHIP_WAIT; return null; }
+    if (!pendingOnly && link.wipePreparations?.[key]?.operation !== (removal?.requiresPreparation ? removal.operation : undefined)) {
+      blocked = "The wipe preparation changed. Refresh the removal and try again.";
+      return null;
+    }
     // A new removal needs a receipt, while cleanup on retry only changes the local address list.
     if (link.setup?.standby?.key === key) { blocked = STANDBY_UNLINK; return null; }
     if (link.setup?.primary === key || mainElsewhere(link)) {
@@ -436,6 +496,7 @@ export function forgetSaved(id: string): boolean {
 /** What another of your computers' box handed here (`area: "computers"`): done as this box's own
  * client's, where this box writes that machine's record. */
 export async function writerAct(sender: MailSender, act: Act): Promise<Acted> {
+  if (act.action === "removal-plan") return removalPlanForPeer(sender, act);
   const link = readLink();
   const writer = writerOf(link);
   if (!writer?.here) return answer(409, { message: `${ownName()} doesn't keep your machines' records.` });

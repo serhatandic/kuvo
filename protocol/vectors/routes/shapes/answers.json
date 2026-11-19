@@ -6013,7 +6013,8 @@
         "object": {
          "key": "string",
          "name": "string",
-         "operation": "string"
+         "operation": "string",
+         "error?": "string"
         }
        }
       },
@@ -6224,7 +6225,8 @@
         "object": {
          "key": "string",
          "name": "string",
-         "operation": "string"
+         "operation": "string",
+         "error?": "string"
         }
        }
       },
@@ -6549,6 +6551,12 @@
                "literal": "unlinked"
               },
               {
+               "literal": "moving"
+              },
+              {
+               "literal": "exporting"
+              },
+              {
                "literal": "wipe-pending"
               },
               {
@@ -6556,6 +6564,13 @@
               }
              ]
             }
+           }
+          },
+          "export?": {
+           "object": {
+            "source": "string",
+            "id": "string",
+            "at": "number"
            }
           }
          }
@@ -6577,6 +6592,12 @@
                "literal": "unlinked"
               },
               {
+               "literal": "moving"
+              },
+              {
+               "literal": "exporting"
+              },
+              {
                "literal": "wipe-pending"
               },
               {
@@ -6585,7 +6606,15 @@
              ]
             }
            }
-          }
+          },
+          "export?": {
+           "object": {
+            "source": "string",
+            "id": "string",
+            "at": "number"
+           }
+          },
+          "message?": "string"
          }
         }
        ]
@@ -6667,6 +6696,12 @@
              "literal": "unlinked"
             },
             {
+             "literal": "moving"
+            },
+            {
+             "literal": "exporting"
+            },
+            {
              "literal": "wipe-pending"
             },
             {
@@ -6674,6 +6709,13 @@
             }
            ]
           }
+         }
+        },
+        "export?": {
+         "object": {
+          "source": "string",
+          "id": "string",
+          "at": "number"
          }
         }
        }
@@ -6695,6 +6737,12 @@
              "literal": "unlinked"
             },
             {
+             "literal": "moving"
+            },
+            {
+             "literal": "exporting"
+            },
+            {
              "literal": "wipe-pending"
             },
             {
@@ -6703,12 +6751,25 @@
            ]
           }
          }
-        }
+        },
+        "export?": {
+         "object": {
+          "source": "string",
+          "id": "string",
+          "at": "number"
+         }
+        },
+        "message?": "string"
        }
       }
      ]
     },
     "400": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "403": {
      "object": {
       "message": "string"
      }
@@ -6727,7 +6788,14 @@
      "oneOf": [
       {
        "object": {
-        "message": "string"
+        "message": "string",
+        "export?": {
+         "object": {
+          "source": "string",
+          "id": "string",
+          "at": "number"
+         }
+        }
        }
       },
       {
@@ -6805,6 +6873,12 @@
                "literal": "unlinked"
               },
               {
+               "literal": "moving"
+              },
+              {
+               "literal": "exporting"
+              },
+              {
                "literal": "wipe-pending"
               },
               {
@@ -6812,6 +6886,13 @@
               }
              ]
             }
+           }
+          },
+          "export?": {
+           "object": {
+            "source": "string",
+            "id": "string",
+            "at": "number"
            }
           }
          }
@@ -6833,6 +6914,12 @@
                "literal": "unlinked"
               },
               {
+               "literal": "moving"
+              },
+              {
+               "literal": "exporting"
+              },
+              {
                "literal": "wipe-pending"
               },
               {
@@ -6841,7 +6928,15 @@
              ]
             }
            }
-          }
+          },
+          "export?": {
+           "object": {
+            "source": "string",
+            "id": "string",
+            "at": "number"
+           }
+          },
+          "message?": "string"
          }
         }
        ]
@@ -6935,6 +7030,12 @@
                "literal": "unlinked"
               },
               {
+               "literal": "moving"
+              },
+              {
+               "literal": "exporting"
+              },
+              {
                "literal": "wipe-pending"
               },
               {
@@ -6942,6 +7043,13 @@
               }
              ]
             }
+           }
+          },
+          "export?": {
+           "object": {
+            "source": "string",
+            "id": "string",
+            "at": "number"
            }
           }
          }
@@ -6963,6 +7071,12 @@
                "literal": "unlinked"
               },
               {
+               "literal": "moving"
+              },
+              {
+               "literal": "exporting"
+              },
+              {
                "literal": "wipe-pending"
               },
               {
@@ -6971,12 +7085,189 @@
              ]
             }
            }
-          }
+          },
+          "export?": {
+           "object": {
+            "source": "string",
+            "id": "string",
+            "at": "number"
+           }
+          },
+          "message?": "string"
          }
         }
        ]
       }
      ]
+    }
+   }
+  },
+  {
+   "route": "POST kuvo/computers/:key/removal-plan",
+   "feature": "computers.wipe-preparation",
+   "answers": {
+    "200": {
+     "object": {
+      "plan": {
+       "object": {
+        "complete": "bool",
+        "source": {
+         "object": {
+          "key": "string",
+          "name": "string"
+         }
+        },
+        "movable": {
+         "list": {
+          "object": {
+           "kind": {
+            "oneOf": [
+             {
+              "literal": "bot"
+             },
+             {
+              "literal": "chat"
+             },
+             {
+              "literal": "group"
+             }
+            ]
+           },
+           "id": "string",
+           "name": "string",
+           "destinations": {
+            "list": {
+             "object": {
+              "key": "string",
+              "name": "string",
+              "kind": {
+               "oneOf": [
+                {
+                 "literal": "mac"
+                },
+                {
+                 "literal": "machine"
+                }
+               ]
+              }
+             }
+            }
+           }
+          }
+         }
+        },
+        "moving": {
+         "list": {
+          "object": {
+           "kind": {
+            "oneOf": [
+             {
+              "literal": "bot"
+             },
+             {
+              "literal": "chat"
+             },
+             {
+              "literal": "group"
+             }
+            ]
+           },
+           "id": "string",
+           "name": "string"
+          }
+         }
+        },
+        "exportOnly": {
+         "list": {
+          "object": {
+           "kind": {
+            "oneOf": [
+             {
+              "literal": "bot"
+             },
+             {
+              "literal": "chat"
+             },
+             {
+              "literal": "group"
+             }
+            ]
+           },
+           "id": "string",
+           "name": "string"
+          }
+         }
+        },
+        "childSessions": {
+         "list": {
+          "object": {
+           "kind": {
+            "oneOf": [
+             {
+              "literal": "bot"
+             },
+             {
+              "literal": "chat"
+             },
+             {
+              "literal": "group"
+             }
+            ]
+           },
+           "id": "string",
+           "name": "string"
+          }
+         }
+        },
+        "stays": {
+         "list": {
+          "oneOf": [
+           {
+            "literal": "unselected-project-files"
+           },
+           {
+            "literal": "child-sessions"
+           },
+           {
+            "literal": "native-agent-histories"
+           },
+           {
+            "literal": "credentials-and-vault"
+           }
+          ]
+         }
+        },
+        "projects?": {
+         "list": "string"
+        }
+       }
+      }
+     }
+    },
+    "403": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "404": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "405": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "409": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "503": {
+     "object": {
+      "message": "string"
+     }
     }
    }
   },
@@ -7059,6 +7350,12 @@
              "literal": "unlinked"
             },
             {
+             "literal": "moving"
+            },
+            {
+             "literal": "exporting"
+            },
+            {
              "literal": "wipe-pending"
             },
             {
@@ -7066,6 +7363,13 @@
             }
            ]
           }
+         }
+        },
+        "export?": {
+         "object": {
+          "source": "string",
+          "id": "string",
+          "at": "number"
          }
         }
        }
@@ -7087,6 +7391,12 @@
              "literal": "unlinked"
             },
             {
+             "literal": "moving"
+            },
+            {
+             "literal": "exporting"
+            },
+            {
              "literal": "wipe-pending"
             },
             {
@@ -7095,7 +7405,15 @@
            ]
           }
          }
-        }
+        },
+        "export?": {
+         "object": {
+          "source": "string",
+          "id": "string",
+          "at": "number"
+         }
+        },
+        "message?": "string"
        }
       }
      ]
@@ -7175,6 +7493,12 @@
              "literal": "unlinked"
             },
             {
+             "literal": "moving"
+            },
+            {
+             "literal": "exporting"
+            },
+            {
              "literal": "wipe-pending"
             },
             {
@@ -7182,6 +7506,13 @@
             }
            ]
           }
+         }
+        },
+        "export?": {
+         "object": {
+          "source": "string",
+          "id": "string",
+          "at": "number"
          }
         }
        }
@@ -7203,6 +7534,12 @@
              "literal": "unlinked"
             },
             {
+             "literal": "moving"
+            },
+            {
+             "literal": "exporting"
+            },
+            {
              "literal": "wipe-pending"
             },
             {
@@ -7211,12 +7548,25 @@
            ]
           }
          }
-        }
+        },
+        "export?": {
+         "object": {
+          "source": "string",
+          "id": "string",
+          "at": "number"
+         }
+        },
+        "message?": "string"
        }
       }
      ]
     },
     "400": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "403": {
      "object": {
       "message": "string"
      }
@@ -7235,7 +7585,14 @@
      "oneOf": [
       {
        "object": {
-        "message": "string"
+        "message": "string",
+        "export?": {
+         "object": {
+          "source": "string",
+          "id": "string",
+          "at": "number"
+         }
+        }
        }
       },
       {
@@ -7313,6 +7670,12 @@
                "literal": "unlinked"
               },
               {
+               "literal": "moving"
+              },
+              {
+               "literal": "exporting"
+              },
+              {
                "literal": "wipe-pending"
               },
               {
@@ -7320,6 +7683,13 @@
               }
              ]
             }
+           }
+          },
+          "export?": {
+           "object": {
+            "source": "string",
+            "id": "string",
+            "at": "number"
            }
           }
          }
@@ -7341,6 +7711,12 @@
                "literal": "unlinked"
               },
               {
+               "literal": "moving"
+              },
+              {
+               "literal": "exporting"
+              },
+              {
                "literal": "wipe-pending"
               },
               {
@@ -7349,7 +7725,15 @@
              ]
             }
            }
-          }
+          },
+          "export?": {
+           "object": {
+            "source": "string",
+            "id": "string",
+            "at": "number"
+           }
+          },
+          "message?": "string"
          }
         }
        ]
@@ -7443,6 +7827,12 @@
                "literal": "unlinked"
               },
               {
+               "literal": "moving"
+              },
+              {
+               "literal": "exporting"
+              },
+              {
                "literal": "wipe-pending"
               },
               {
@@ -7450,6 +7840,13 @@
               }
              ]
             }
+           }
+          },
+          "export?": {
+           "object": {
+            "source": "string",
+            "id": "string",
+            "at": "number"
            }
           }
          }
@@ -7471,6 +7868,12 @@
                "literal": "unlinked"
               },
               {
+               "literal": "moving"
+              },
+              {
+               "literal": "exporting"
+              },
+              {
                "literal": "wipe-pending"
               },
               {
@@ -7479,7 +7882,15 @@
              ]
             }
            }
-          }
+          },
+          "export?": {
+           "object": {
+            "source": "string",
+            "id": "string",
+            "at": "number"
+           }
+          },
+          "message?": "string"
          }
         }
        ]
@@ -7567,6 +7978,12 @@
              "literal": "unlinked"
             },
             {
+             "literal": "moving"
+            },
+            {
+             "literal": "exporting"
+            },
+            {
              "literal": "wipe-pending"
             },
             {
@@ -7574,6 +7991,13 @@
             }
            ]
           }
+         }
+        },
+        "export?": {
+         "object": {
+          "source": "string",
+          "id": "string",
+          "at": "number"
          }
         }
        }
@@ -7595,6 +8019,12 @@
              "literal": "unlinked"
             },
             {
+             "literal": "moving"
+            },
+            {
+             "literal": "exporting"
+            },
+            {
              "literal": "wipe-pending"
             },
             {
@@ -7603,7 +8033,15 @@
            ]
           }
          }
-        }
+        },
+        "export?": {
+         "object": {
+          "source": "string",
+          "id": "string",
+          "at": "number"
+         }
+        },
+        "message?": "string"
        }
       }
      ]
@@ -7683,6 +8121,12 @@
              "literal": "unlinked"
             },
             {
+             "literal": "moving"
+            },
+            {
+             "literal": "exporting"
+            },
+            {
              "literal": "wipe-pending"
             },
             {
@@ -7690,6 +8134,13 @@
             }
            ]
           }
+         }
+        },
+        "export?": {
+         "object": {
+          "source": "string",
+          "id": "string",
+          "at": "number"
          }
         }
        }
@@ -7711,6 +8162,12 @@
              "literal": "unlinked"
             },
             {
+             "literal": "moving"
+            },
+            {
+             "literal": "exporting"
+            },
+            {
              "literal": "wipe-pending"
             },
             {
@@ -7719,12 +8176,25 @@
            ]
           }
          }
-        }
+        },
+        "export?": {
+         "object": {
+          "source": "string",
+          "id": "string",
+          "at": "number"
+         }
+        },
+        "message?": "string"
        }
       }
      ]
     },
     "400": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "403": {
      "object": {
       "message": "string"
      }
@@ -7743,7 +8213,14 @@
      "oneOf": [
       {
        "object": {
-        "message": "string"
+        "message": "string",
+        "export?": {
+         "object": {
+          "source": "string",
+          "id": "string",
+          "at": "number"
+         }
+        }
        }
       },
       {
@@ -7821,6 +8298,12 @@
                "literal": "unlinked"
               },
               {
+               "literal": "moving"
+              },
+              {
+               "literal": "exporting"
+              },
+              {
                "literal": "wipe-pending"
               },
               {
@@ -7828,6 +8311,13 @@
               }
              ]
             }
+           }
+          },
+          "export?": {
+           "object": {
+            "source": "string",
+            "id": "string",
+            "at": "number"
            }
           }
          }
@@ -7849,6 +8339,12 @@
                "literal": "unlinked"
               },
               {
+               "literal": "moving"
+              },
+              {
+               "literal": "exporting"
+              },
+              {
                "literal": "wipe-pending"
               },
               {
@@ -7857,7 +8353,15 @@
              ]
             }
            }
-          }
+          },
+          "export?": {
+           "object": {
+            "source": "string",
+            "id": "string",
+            "at": "number"
+           }
+          },
+          "message?": "string"
          }
         }
        ]
@@ -7951,6 +8455,12 @@
                "literal": "unlinked"
               },
               {
+               "literal": "moving"
+              },
+              {
+               "literal": "exporting"
+              },
+              {
                "literal": "wipe-pending"
               },
               {
@@ -7958,6 +8468,13 @@
               }
              ]
             }
+           }
+          },
+          "export?": {
+           "object": {
+            "source": "string",
+            "id": "string",
+            "at": "number"
            }
           }
          }
@@ -7979,6 +8496,12 @@
                "literal": "unlinked"
               },
               {
+               "literal": "moving"
+              },
+              {
+               "literal": "exporting"
+              },
+              {
                "literal": "wipe-pending"
               },
               {
@@ -7987,7 +8510,15 @@
              ]
             }
            }
-          }
+          },
+          "export?": {
+           "object": {
+            "source": "string",
+            "id": "string",
+            "at": "number"
+           }
+          },
+          "message?": "string"
          }
         }
        ]
@@ -8279,6 +8810,9 @@
            },
            {
             "literal": "computers.update.here"
+           },
+           {
+            "literal": "computers.wipe-preparation"
            },
            {
             "literal": "computers.words"
@@ -9077,6 +9611,9 @@
            },
            {
             "literal": "computers.update.here"
+           },
+           {
+            "literal": "computers.wipe-preparation"
            },
            {
             "literal": "computers.words"

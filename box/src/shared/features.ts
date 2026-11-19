@@ -82,6 +82,7 @@ export const FEATURES = [
   "computers.removal",
   "computers.update",
   "computers.update.here",
+  "computers.wipe-preparation",
   "computers.words",
   "config",
   "config.apply",

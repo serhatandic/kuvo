@@ -82,7 +82,6 @@ export async function wipeCommand(): Promise<number> {
       const wipe = confirmedWipe(link);
       if (!link || !wipe) return 1;
       if (!wipe.prepared) {
-        await beforeMembershipWipe({ phase: "before-wipe", ...wipe });
         const { backupBefore } = await import("../backup/engine");
         await backupBefore("wipe");
         const ready = updateLink(current => {
@@ -92,6 +91,7 @@ export async function wipeCommand(): Promise<number> {
         }, { durable: true });
         if (!ready) return 1;
       }
+      await beforeMembershipWipe({ phase: "before-wipe", ...wipe });
       const stopped = uninstall();
       if (!stopped.stopped || stopped.startsAgain.length || !clearDesktopKeychain()) throw new Error(stopped.message);
       fs.rmSync(K, { recursive: true, force: true });

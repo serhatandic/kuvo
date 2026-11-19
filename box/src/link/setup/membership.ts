@@ -6,7 +6,7 @@ import type { Peer } from "../peers/known";
 import { KEY, cleanMoved, cleanPeer, fitsPeer, ownKey, type MovedSession } from "../peers/known";
 import { fits } from "../phones";
 
-import { removalRecords, type MemberRemoval } from "./removal-record";
+import { REMOVAL_ID, removalRecords, type MemberRemoval, type WipePreparationClaim } from "./removal-record";
 
 export interface Membership {
   boxes: Peer[];
@@ -16,6 +16,7 @@ export interface Membership {
   removalRevisions: Record<string, number>;
   vouchBlocked: NonNullable<LinkState["vouchBlocked"]>;
   removals?: Record<string, MemberRemoval>;
+  wipePreparations?: Record<string, WipePreparationClaim>;
 }
 
 export function membershipOf(value: unknown): Membership | null {
@@ -32,8 +33,16 @@ export function membershipOf(value: unknown): Membership | null {
   const tombstones = [...new Set([...(Array.isArray(removed) ? removed : []), ...left]
     .filter((key): key is string => typeof key === "string" && KEY.test(key)))];
   const removals = removalRecords(value.removals, new Set(tombstones), new Set(boxes.map(box => box.key)));
+  const preparation = isObject(value.wipePreparations) ? value.wipePreparations : {};
+  const wipePreparations = Object.fromEntries(boxes.flatMap(({ key }) => {
+    const claim = preparation[key];
+    return isObject(claim) && typeof claim.operation === "string" && REMOVAL_ID.test(claim.operation) &&
+      typeof claim.choiceHash === "string" && /^[A-Za-z0-9_-]{43}$/.test(claim.choiceHash)
+      ? [[key, { operation: claim.operation, choiceHash: claim.choiceHash }]] : [];
+  }));
   return {
     boxes,
+    ...(Object.keys(wipePreparations).length ? { wipePreparations } : {}),
     ...(Object.keys(removals).length ? { removals } : {}),
     left: tombstones,
     moved: cleanMoved(value.moved),
@@ -96,6 +105,7 @@ export function projectMembership(link: LinkState, membership: Membership, keepL
     link.removedHere = membership.left;
     link.removalRevisions = membership.removalRevisions;
     link.memberRemovals = membership.removals;
+    link.wipePreparations = membership.wipePreparations;
     link.vouchBlocked = membership.vouchBlocked;
   }
 }

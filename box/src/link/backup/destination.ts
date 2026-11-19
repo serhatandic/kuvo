@@ -12,9 +12,9 @@ export const SOURCE = /^b_[A-Za-z0-9_-]{22}$/;
 export const POINT = /^\d{4}-\d{2}-\d{2}T\d{6}\.\d{3}Z-(daily|move|wipe|update|vault)-[a-f0-9]{16}$/;
 export type Destination = { kind: "disk"; path: string } | { kind: "computer"; computer: string; ssh: string };
 
-export function destinationOf(value: unknown): Destination {
+export function destinationOf(value: unknown, { resolveDisk = true } = {}): Destination {
   if (isObject(value) && value.kind === "disk" && typeof value.path === "string" && path.isAbsolute(value.path) && !value.path.includes("\0")) {
-    return { kind: "disk", path: located(value.path) };
+    return { kind: "disk", path: resolveDisk ? located(value.path) : value.path };
   }
   if (isObject(value) && value.kind === "computer" && typeof value.computer === "string" && KEY.test(value.computer) &&
       typeof value.ssh === "string" && /^[A-Za-z0-9_][A-Za-z0-9_.@:\[\]-]{0,254}$/.test(value.ssh)) {
