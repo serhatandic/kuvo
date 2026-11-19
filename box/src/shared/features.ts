@@ -80,6 +80,7 @@ export const FEATURES = [
   "computers.reach",
   "computers.reach-words",
   "computers.removal",
+  "computers.removal-operations",
   "computers.update",
   "computers.update.here",
   "computers.wipe-preparation",

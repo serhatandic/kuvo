@@ -27,7 +27,8 @@ import { ADDRESS, KEY, MOST_PEERS, ownKey, peersOf, type Peer } from "../peers/k
 import { readPeerAgents } from "../peers/directory";
 import { pairedPhone } from "../phones";
 import { machineBoxIn } from "../install/verdict";
-import { removalsOf } from "../setup/removal-record";
+import { takeWipeReceipt } from "../setup/removal";
+import { localRemovalPending, removalsOf, wipeOutstanding } from "../setup/removal-record";
 import { oldAppAttached, removeComputerHere } from "../peers/manage";
 import { appsOf, foundOf, judgeComputer, oursNow } from "../setup/judge";
 import { addElsewhere, mainElsewhere } from "../setup/main-only";
@@ -412,7 +413,8 @@ const removedDuringAdd = (name: string) => new Failed(`${name} was removed from 
 
 function checkAdd(link: LinkState | null, grant: AddGrant | undefined, name: string, key?: string): void {
   const removal = key ? (removalsOf(link)[key] ?? link?.memberRemovals?.[key]) : undefined;
-  if (removal?.wipe && !removal.delivered) throw new Failed(`Wait for the pending wipe on ${name} before adding it again.`);
+  if (wipeOutstanding(removal)) throw new Failed(`Wait for the pending wipe on ${name} before adding it again.`);
+  if (localRemovalPending(link)) throw new Failed("Finish or cancel this computer’s removal before adding a computer.");
   if (setupLayoutDeferred(K)) throw new Failed("Wait for the Kuvo Code update to finish before adding a computer.");
   if (primaryFenced(link)) throw new Failed(LEADERSHIP_WAIT, false);
   const main = mainElsewhere(link);
@@ -433,7 +435,7 @@ function checkPredecessor(link: LinkState | null, key: string | undefined, name:
   const removals = link?.memberRemovals ?? removalsOf(link);
   if (prior.some(each => {
     const removal = removals[each];
-    return removal?.wipe && !removal.delivered;
+    return wipeOutstanding(removal);
   })) throw new Failed(`Wait for the pending wipe on ${name} before adding it again.`);
   if (key === link?.setup?.primary) throw new Failed("The primary cannot be replaced through Add.");
   if (key === link?.setup?.standby?.key || link?.wipePreparations?.[key]) {
@@ -489,6 +491,14 @@ async function setUp(tell: Telling, destination: string, name: string, kind: "ad
       return;
     }
     if (/^app-(?:07|box)$/m.test(answer.stdout) && !machineBoxProbed(probe)) throw new Failed(`${name} still has Kuvo Code 0.7’s sessions. Update it to Kuvo first — its sessions move over then — and add it again.`, false);
+    if (kind === "add" && identitySetup) {
+      const prefix = "kuvo removal-ack ";
+      for (const line of answer.stdout.split("\n").filter(line => line.startsWith(prefix)).slice(0, 16)) {
+        let envelope: unknown;
+        try { envelope = JSON.parse(line.slice(prefix.length)); } catch { continue; }
+        await takeWipeReceipt(envelope);
+      }
+    }
     const link = readLink();
     if (identitySetup && followedSetup(link)?.id !== identitySetup) throw new Failed("The setup changed. Start a new add.");
     const history = computerHistory(link);

@@ -313,7 +313,7 @@ async function* manage(context: RouteContext, key: string, action: string | unde
   if (!removal) return yield* json(400, { message: "Send a valid removal request." });
   if (what === "remove" && !KEY.test(key)) return yield* json(404, { message: "That isn’t one of your computers." });
   if (explicit) removal.wipe = action === "/unlink-and-wipe";
-  if ((removal.prepare || removal.retryPreparation) && (!fromLocalApp(request) || action !== "/unlink-and-wipe")) {
+  if ((removal.prepare || removal.retryPreparation || removal.resolve || removal.supersedes) && (!fromLocalApp(request) || action !== "/unlink-and-wipe")) {
     return yield* json(403, { message: "Prepare the wipe from Kuvo Code." });
   }
   if (what === "remove" && before?.setup?.primary === key && !lonePrimary(before, key)) return yield* json(409, { message: PRIMARY_UNLINK });

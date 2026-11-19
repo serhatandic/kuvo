@@ -29,7 +29,7 @@ function launch(home, program, args, options = {}) {
   });
 }
 
-test("folder layout 11 upgrades layout 9 in place and the current layout opens read-only", () => {
+test("folder layout 12 upgrades layout 9 in place and the current layout opens read-only", () => {
   const home = scratch();
   const folder = path.join(home, ".kuvo-code");
   fs.mkdirSync(folder);
@@ -39,7 +39,7 @@ test("folder layout 11 upgrades layout 9 in place and the current layout opens r
   fs.writeFileSync(marker, '{"version":9}\n');
   const result = launch(home, process.execPath, [link, "folder-upgrade"]);
   assert.equal(result.status, 0, result.stderr);
-  assert.deepEqual(JSON.parse(fs.readFileSync(marker, "utf8")), { version: 11 });
+  assert.deepEqual(JSON.parse(fs.readFileSync(marker, "utf8")), { version: 12 });
   assert.equal(fs.readFileSync(path.join(folder, "machines.json"), "utf8"), raw);
   assert.deepEqual(fs.readdirSync(folder).sort(), ["folder-version.json", "machines.json"]);
   const inode = fs.statSync(marker).ino;
@@ -67,7 +67,7 @@ test("layout 11 preserves device keys, pairing IDs, and signed records through m
   for (let attempt = 0; attempt < 2; attempt++) {
     const result = launch(home, process.execPath, [link, "folder-upgrade"]);
     assert.equal(result.status, 0, result.stderr);
-    assert.deepEqual(JSON.parse(fs.readFileSync(marker, "utf8")), { version: 11 });
+    assert.deepEqual(JSON.parse(fs.readFileSync(marker, "utf8")), { version: 12 });
     assert.deepEqual(JSON.parse(fs.readFileSync(file, "utf8")), { formatVersion: 1, phones: [independent, desktop], removed, docs: signed });
   }
 });
@@ -209,7 +209,7 @@ cp "${old}" "${current}" && rm "${folder}/run/update-trial"
   fs.writeFileSync(marker, '{"version":4,"upgradingTo":5}\n');
   const refused = launch(home, process.execPath, [current, "folder-upgrade"]);
   assert.equal(refused.status, 1, refused.stderr);
-  assert.match(refused.stderr, /saved Kuvo Code can't recover folder layout 11/);
+  assert.match(refused.stderr, /saved Kuvo Code can't recover folder layout 12/);
   assert.equal(fs.readFileSync(marker, "utf8"), '{"version":4,"upgradingTo":5}\n');
 
   // An incompatible marker must never let restore put back the older binary.
@@ -279,7 +279,7 @@ test("failure bench: the legacy import seals group files and directory entries b
     assert.ok(synced.slice(metadataSync + 1).includes(group));
     assert.ok(synced.slice(metadataSync + 1).includes(path.dirname(group)));
     assert.ok(synced.slice(metadataSync + 1).includes(staging));
-    assert.equal(JSON.parse(fs.readFileSync(path.join(work, "folder-version.json"))).version, 11);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(work, "folder-version.json"))).version, 12);
   `]);
   assert.equal(child.status, 0, child.stderr);
 });

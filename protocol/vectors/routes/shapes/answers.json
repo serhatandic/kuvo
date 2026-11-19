@@ -6014,7 +6014,10 @@
          "key": "string",
          "name": "string",
          "operation": "string",
-         "error?": "string"
+         "error?": "string",
+         "unresolved?": {
+          "list": "string"
+         }
         }
        }
       },
@@ -6215,7 +6218,10 @@
          "key": "string",
          "name": "string",
          "operation": "string",
-         "error?": "string"
+         "error?": "string",
+         "unresolved?": {
+          "list": "string"
+         }
         }
        }
       },
@@ -6480,36 +6486,6 @@
             }
            ]
           },
-          "pending?": {
-           "literal": true
-          },
-          "message?": "string"
-         }
-        },
-        {
-         "object": {
-          "setup": "string",
-          "epoch": "number",
-          "operation": "string",
-          "proof": {
-           "object": {
-            "d": "string",
-            "s": "string"
-           }
-          },
-          "status": {
-           "oneOf": [
-            {
-             "literal": "pending"
-            },
-            {
-             "literal": "committed"
-            },
-            {
-             "literal": "interrupted"
-            }
-           ]
-          },
           "message?": "string",
           "pending?": {
            "literal": true
@@ -6517,6 +6493,7 @@
           "removal": {
            "object": {
             "operation": "string",
+            "accessRemoved": "bool",
             "state": {
              "oneOf": [
               {
@@ -6535,10 +6512,19 @@
                "literal": "exporting"
               },
               {
+               "literal": "review"
+              },
+              {
                "literal": "wipe-pending"
               },
               {
                "literal": "wiped"
+              },
+              {
+               "literal": "cancelled"
+              },
+              {
+               "literal": "lost"
               }
              ]
             }
@@ -6550,6 +6536,9 @@
             "id": "string",
             "at": "number"
            }
+          },
+          "unresolved?": {
+           "list": "string"
           }
          }
         },
@@ -6558,6 +6547,7 @@
           "removal": {
            "object": {
             "operation": "string",
+            "accessRemoved": "bool",
             "state": {
              "oneOf": [
               {
@@ -6576,10 +6566,19 @@
                "literal": "exporting"
               },
               {
+               "literal": "review"
+              },
+              {
                "literal": "wipe-pending"
               },
               {
                "literal": "wiped"
+              },
+              {
+               "literal": "cancelled"
+              },
+              {
+               "literal": "lost"
               }
              ]
             }
@@ -6591,6 +6590,9 @@
             "id": "string",
             "at": "number"
            }
+          },
+          "unresolved?": {
+           "list": "string"
           },
           "message?": "string"
          }
@@ -6625,36 +6627,6 @@
           }
          ]
         },
-        "pending?": {
-         "literal": true
-        },
-        "message?": "string"
-       }
-      },
-      {
-       "object": {
-        "setup": "string",
-        "epoch": "number",
-        "operation": "string",
-        "proof": {
-         "object": {
-          "d": "string",
-          "s": "string"
-         }
-        },
-        "status": {
-         "oneOf": [
-          {
-           "literal": "pending"
-          },
-          {
-           "literal": "committed"
-          },
-          {
-           "literal": "interrupted"
-          }
-         ]
-        },
         "message?": "string",
         "pending?": {
          "literal": true
@@ -6662,6 +6634,7 @@
         "removal": {
          "object": {
           "operation": "string",
+          "accessRemoved": "bool",
           "state": {
            "oneOf": [
             {
@@ -6680,10 +6653,19 @@
              "literal": "exporting"
             },
             {
+             "literal": "review"
+            },
+            {
              "literal": "wipe-pending"
             },
             {
              "literal": "wiped"
+            },
+            {
+             "literal": "cancelled"
+            },
+            {
+             "literal": "lost"
             }
            ]
           }
@@ -6695,6 +6677,9 @@
           "id": "string",
           "at": "number"
          }
+        },
+        "unresolved?": {
+         "list": "string"
         }
        }
       },
@@ -6703,6 +6688,7 @@
         "removal": {
          "object": {
           "operation": "string",
+          "accessRemoved": "bool",
           "state": {
            "oneOf": [
             {
@@ -6721,10 +6707,19 @@
              "literal": "exporting"
             },
             {
+             "literal": "review"
+            },
+            {
              "literal": "wipe-pending"
             },
             {
              "literal": "wiped"
+            },
+            {
+             "literal": "cancelled"
+            },
+            {
+             "literal": "lost"
             }
            ]
           }
@@ -6736,6 +6731,9 @@
           "id": "string",
           "at": "number"
          }
+        },
+        "unresolved?": {
+         "list": "string"
         },
         "message?": "string"
        }
@@ -6802,36 +6800,6 @@
             }
            ]
           },
-          "pending?": {
-           "literal": true
-          },
-          "message?": "string"
-         }
-        },
-        {
-         "object": {
-          "setup": "string",
-          "epoch": "number",
-          "operation": "string",
-          "proof": {
-           "object": {
-            "d": "string",
-            "s": "string"
-           }
-          },
-          "status": {
-           "oneOf": [
-            {
-             "literal": "pending"
-            },
-            {
-             "literal": "committed"
-            },
-            {
-             "literal": "interrupted"
-            }
-           ]
-          },
           "message?": "string",
           "pending?": {
            "literal": true
@@ -6839,6 +6807,7 @@
           "removal": {
            "object": {
             "operation": "string",
+            "accessRemoved": "bool",
             "state": {
              "oneOf": [
               {
@@ -6857,10 +6826,19 @@
                "literal": "exporting"
               },
               {
+               "literal": "review"
+              },
+              {
                "literal": "wipe-pending"
               },
               {
                "literal": "wiped"
+              },
+              {
+               "literal": "cancelled"
+              },
+              {
+               "literal": "lost"
               }
              ]
             }
@@ -6872,6 +6850,9 @@
             "id": "string",
             "at": "number"
            }
+          },
+          "unresolved?": {
+           "list": "string"
           }
          }
         },
@@ -6880,6 +6861,7 @@
           "removal": {
            "object": {
             "operation": "string",
+            "accessRemoved": "bool",
             "state": {
              "oneOf": [
               {
@@ -6898,10 +6880,19 @@
                "literal": "exporting"
               },
               {
+               "literal": "review"
+              },
+              {
                "literal": "wipe-pending"
               },
               {
                "literal": "wiped"
+              },
+              {
+               "literal": "cancelled"
+              },
+              {
+               "literal": "lost"
               }
              ]
             }
@@ -6913,6 +6904,9 @@
             "id": "string",
             "at": "number"
            }
+          },
+          "unresolved?": {
+           "list": "string"
           },
           "message?": "string"
          }
@@ -6959,36 +6953,6 @@
             }
            ]
           },
-          "pending?": {
-           "literal": true
-          },
-          "message?": "string"
-         }
-        },
-        {
-         "object": {
-          "setup": "string",
-          "epoch": "number",
-          "operation": "string",
-          "proof": {
-           "object": {
-            "d": "string",
-            "s": "string"
-           }
-          },
-          "status": {
-           "oneOf": [
-            {
-             "literal": "pending"
-            },
-            {
-             "literal": "committed"
-            },
-            {
-             "literal": "interrupted"
-            }
-           ]
-          },
           "message?": "string",
           "pending?": {
            "literal": true
@@ -6996,6 +6960,7 @@
           "removal": {
            "object": {
             "operation": "string",
+            "accessRemoved": "bool",
             "state": {
              "oneOf": [
               {
@@ -7014,10 +6979,19 @@
                "literal": "exporting"
               },
               {
+               "literal": "review"
+              },
+              {
                "literal": "wipe-pending"
               },
               {
                "literal": "wiped"
+              },
+              {
+               "literal": "cancelled"
+              },
+              {
+               "literal": "lost"
               }
              ]
             }
@@ -7029,6 +7003,9 @@
             "id": "string",
             "at": "number"
            }
+          },
+          "unresolved?": {
+           "list": "string"
           }
          }
         },
@@ -7037,6 +7014,7 @@
           "removal": {
            "object": {
             "operation": "string",
+            "accessRemoved": "bool",
             "state": {
              "oneOf": [
               {
@@ -7055,10 +7033,19 @@
                "literal": "exporting"
               },
               {
+               "literal": "review"
+              },
+              {
                "literal": "wipe-pending"
               },
               {
                "literal": "wiped"
+              },
+              {
+               "literal": "cancelled"
+              },
+              {
+               "literal": "lost"
               }
              ]
             }
@@ -7070,6 +7057,9 @@
             "id": "string",
             "at": "number"
            }
+          },
+          "unresolved?": {
+           "list": "string"
           },
           "message?": "string"
          }
@@ -7089,6 +7079,9 @@
       "plan": {
        "object": {
         "complete": "bool",
+        "unresolved": {
+         "list": "string"
+        },
         "source": {
          "object": {
           "key": "string",
@@ -7279,36 +7272,6 @@
           }
          ]
         },
-        "pending?": {
-         "literal": true
-        },
-        "message?": "string"
-       }
-      },
-      {
-       "object": {
-        "setup": "string",
-        "epoch": "number",
-        "operation": "string",
-        "proof": {
-         "object": {
-          "d": "string",
-          "s": "string"
-         }
-        },
-        "status": {
-         "oneOf": [
-          {
-           "literal": "pending"
-          },
-          {
-           "literal": "committed"
-          },
-          {
-           "literal": "interrupted"
-          }
-         ]
-        },
         "message?": "string",
         "pending?": {
          "literal": true
@@ -7316,6 +7279,7 @@
         "removal": {
          "object": {
           "operation": "string",
+          "accessRemoved": "bool",
           "state": {
            "oneOf": [
             {
@@ -7334,10 +7298,19 @@
              "literal": "exporting"
             },
             {
+             "literal": "review"
+            },
+            {
              "literal": "wipe-pending"
             },
             {
              "literal": "wiped"
+            },
+            {
+             "literal": "cancelled"
+            },
+            {
+             "literal": "lost"
             }
            ]
           }
@@ -7349,6 +7322,9 @@
           "id": "string",
           "at": "number"
          }
+        },
+        "unresolved?": {
+         "list": "string"
         }
        }
       },
@@ -7357,6 +7333,7 @@
         "removal": {
          "object": {
           "operation": "string",
+          "accessRemoved": "bool",
           "state": {
            "oneOf": [
             {
@@ -7375,10 +7352,19 @@
              "literal": "exporting"
             },
             {
+             "literal": "review"
+            },
+            {
              "literal": "wipe-pending"
             },
             {
              "literal": "wiped"
+            },
+            {
+             "literal": "cancelled"
+            },
+            {
+             "literal": "lost"
             }
            ]
           }
@@ -7390,6 +7376,9 @@
           "id": "string",
           "at": "number"
          }
+        },
+        "unresolved?": {
+         "list": "string"
         },
         "message?": "string"
        }
@@ -7422,36 +7411,6 @@
           }
          ]
         },
-        "pending?": {
-         "literal": true
-        },
-        "message?": "string"
-       }
-      },
-      {
-       "object": {
-        "setup": "string",
-        "epoch": "number",
-        "operation": "string",
-        "proof": {
-         "object": {
-          "d": "string",
-          "s": "string"
-         }
-        },
-        "status": {
-         "oneOf": [
-          {
-           "literal": "pending"
-          },
-          {
-           "literal": "committed"
-          },
-          {
-           "literal": "interrupted"
-          }
-         ]
-        },
         "message?": "string",
         "pending?": {
          "literal": true
@@ -7459,6 +7418,7 @@
         "removal": {
          "object": {
           "operation": "string",
+          "accessRemoved": "bool",
           "state": {
            "oneOf": [
             {
@@ -7477,10 +7437,19 @@
              "literal": "exporting"
             },
             {
+             "literal": "review"
+            },
+            {
              "literal": "wipe-pending"
             },
             {
              "literal": "wiped"
+            },
+            {
+             "literal": "cancelled"
+            },
+            {
+             "literal": "lost"
             }
            ]
           }
@@ -7492,6 +7461,9 @@
           "id": "string",
           "at": "number"
          }
+        },
+        "unresolved?": {
+         "list": "string"
         }
        }
       },
@@ -7500,6 +7472,7 @@
         "removal": {
          "object": {
           "operation": "string",
+          "accessRemoved": "bool",
           "state": {
            "oneOf": [
             {
@@ -7518,10 +7491,19 @@
              "literal": "exporting"
             },
             {
+             "literal": "review"
+            },
+            {
              "literal": "wipe-pending"
             },
             {
              "literal": "wiped"
+            },
+            {
+             "literal": "cancelled"
+            },
+            {
+             "literal": "lost"
             }
            ]
           }
@@ -7533,6 +7515,9 @@
           "id": "string",
           "at": "number"
          }
+        },
+        "unresolved?": {
+         "list": "string"
         },
         "message?": "string"
        }
@@ -7599,36 +7584,6 @@
             }
            ]
           },
-          "pending?": {
-           "literal": true
-          },
-          "message?": "string"
-         }
-        },
-        {
-         "object": {
-          "setup": "string",
-          "epoch": "number",
-          "operation": "string",
-          "proof": {
-           "object": {
-            "d": "string",
-            "s": "string"
-           }
-          },
-          "status": {
-           "oneOf": [
-            {
-             "literal": "pending"
-            },
-            {
-             "literal": "committed"
-            },
-            {
-             "literal": "interrupted"
-            }
-           ]
-          },
           "message?": "string",
           "pending?": {
            "literal": true
@@ -7636,6 +7591,7 @@
           "removal": {
            "object": {
             "operation": "string",
+            "accessRemoved": "bool",
             "state": {
              "oneOf": [
               {
@@ -7654,10 +7610,19 @@
                "literal": "exporting"
               },
               {
+               "literal": "review"
+              },
+              {
                "literal": "wipe-pending"
               },
               {
                "literal": "wiped"
+              },
+              {
+               "literal": "cancelled"
+              },
+              {
+               "literal": "lost"
               }
              ]
             }
@@ -7669,6 +7634,9 @@
             "id": "string",
             "at": "number"
            }
+          },
+          "unresolved?": {
+           "list": "string"
           }
          }
         },
@@ -7677,6 +7645,7 @@
           "removal": {
            "object": {
             "operation": "string",
+            "accessRemoved": "bool",
             "state": {
              "oneOf": [
               {
@@ -7695,10 +7664,19 @@
                "literal": "exporting"
               },
               {
+               "literal": "review"
+              },
+              {
                "literal": "wipe-pending"
               },
               {
                "literal": "wiped"
+              },
+              {
+               "literal": "cancelled"
+              },
+              {
+               "literal": "lost"
               }
              ]
             }
@@ -7710,6 +7688,9 @@
             "id": "string",
             "at": "number"
            }
+          },
+          "unresolved?": {
+           "list": "string"
           },
           "message?": "string"
          }
@@ -7756,36 +7737,6 @@
             }
            ]
           },
-          "pending?": {
-           "literal": true
-          },
-          "message?": "string"
-         }
-        },
-        {
-         "object": {
-          "setup": "string",
-          "epoch": "number",
-          "operation": "string",
-          "proof": {
-           "object": {
-            "d": "string",
-            "s": "string"
-           }
-          },
-          "status": {
-           "oneOf": [
-            {
-             "literal": "pending"
-            },
-            {
-             "literal": "committed"
-            },
-            {
-             "literal": "interrupted"
-            }
-           ]
-          },
           "message?": "string",
           "pending?": {
            "literal": true
@@ -7793,6 +7744,7 @@
           "removal": {
            "object": {
             "operation": "string",
+            "accessRemoved": "bool",
             "state": {
              "oneOf": [
               {
@@ -7811,10 +7763,19 @@
                "literal": "exporting"
               },
               {
+               "literal": "review"
+              },
+              {
                "literal": "wipe-pending"
               },
               {
                "literal": "wiped"
+              },
+              {
+               "literal": "cancelled"
+              },
+              {
+               "literal": "lost"
               }
              ]
             }
@@ -7826,6 +7787,9 @@
             "id": "string",
             "at": "number"
            }
+          },
+          "unresolved?": {
+           "list": "string"
           }
          }
         },
@@ -7834,6 +7798,7 @@
           "removal": {
            "object": {
             "operation": "string",
+            "accessRemoved": "bool",
             "state": {
              "oneOf": [
               {
@@ -7852,10 +7817,19 @@
                "literal": "exporting"
               },
               {
+               "literal": "review"
+              },
+              {
                "literal": "wipe-pending"
               },
               {
                "literal": "wiped"
+              },
+              {
+               "literal": "cancelled"
+              },
+              {
+               "literal": "lost"
               }
              ]
             }
@@ -7867,6 +7841,9 @@
             "id": "string",
             "at": "number"
            }
+          },
+          "unresolved?": {
+           "list": "string"
           },
           "message?": "string"
          }
@@ -7907,36 +7884,6 @@
           }
          ]
         },
-        "pending?": {
-         "literal": true
-        },
-        "message?": "string"
-       }
-      },
-      {
-       "object": {
-        "setup": "string",
-        "epoch": "number",
-        "operation": "string",
-        "proof": {
-         "object": {
-          "d": "string",
-          "s": "string"
-         }
-        },
-        "status": {
-         "oneOf": [
-          {
-           "literal": "pending"
-          },
-          {
-           "literal": "committed"
-          },
-          {
-           "literal": "interrupted"
-          }
-         ]
-        },
         "message?": "string",
         "pending?": {
          "literal": true
@@ -7944,6 +7891,7 @@
         "removal": {
          "object": {
           "operation": "string",
+          "accessRemoved": "bool",
           "state": {
            "oneOf": [
             {
@@ -7962,10 +7910,19 @@
              "literal": "exporting"
             },
             {
+             "literal": "review"
+            },
+            {
              "literal": "wipe-pending"
             },
             {
              "literal": "wiped"
+            },
+            {
+             "literal": "cancelled"
+            },
+            {
+             "literal": "lost"
             }
            ]
           }
@@ -7977,6 +7934,9 @@
           "id": "string",
           "at": "number"
          }
+        },
+        "unresolved?": {
+         "list": "string"
         }
        }
       },
@@ -7985,6 +7945,7 @@
         "removal": {
          "object": {
           "operation": "string",
+          "accessRemoved": "bool",
           "state": {
            "oneOf": [
             {
@@ -8003,10 +7964,19 @@
              "literal": "exporting"
             },
             {
+             "literal": "review"
+            },
+            {
              "literal": "wipe-pending"
             },
             {
              "literal": "wiped"
+            },
+            {
+             "literal": "cancelled"
+            },
+            {
+             "literal": "lost"
             }
            ]
           }
@@ -8018,6 +7988,9 @@
           "id": "string",
           "at": "number"
          }
+        },
+        "unresolved?": {
+         "list": "string"
         },
         "message?": "string"
        }
@@ -8050,36 +8023,6 @@
           }
          ]
         },
-        "pending?": {
-         "literal": true
-        },
-        "message?": "string"
-       }
-      },
-      {
-       "object": {
-        "setup": "string",
-        "epoch": "number",
-        "operation": "string",
-        "proof": {
-         "object": {
-          "d": "string",
-          "s": "string"
-         }
-        },
-        "status": {
-         "oneOf": [
-          {
-           "literal": "pending"
-          },
-          {
-           "literal": "committed"
-          },
-          {
-           "literal": "interrupted"
-          }
-         ]
-        },
         "message?": "string",
         "pending?": {
          "literal": true
@@ -8087,6 +8030,7 @@
         "removal": {
          "object": {
           "operation": "string",
+          "accessRemoved": "bool",
           "state": {
            "oneOf": [
             {
@@ -8105,10 +8049,19 @@
              "literal": "exporting"
             },
             {
+             "literal": "review"
+            },
+            {
              "literal": "wipe-pending"
             },
             {
              "literal": "wiped"
+            },
+            {
+             "literal": "cancelled"
+            },
+            {
+             "literal": "lost"
             }
            ]
           }
@@ -8120,6 +8073,9 @@
           "id": "string",
           "at": "number"
          }
+        },
+        "unresolved?": {
+         "list": "string"
         }
        }
       },
@@ -8128,6 +8084,7 @@
         "removal": {
          "object": {
           "operation": "string",
+          "accessRemoved": "bool",
           "state": {
            "oneOf": [
             {
@@ -8146,10 +8103,19 @@
              "literal": "exporting"
             },
             {
+             "literal": "review"
+            },
+            {
              "literal": "wipe-pending"
             },
             {
              "literal": "wiped"
+            },
+            {
+             "literal": "cancelled"
+            },
+            {
+             "literal": "lost"
             }
            ]
           }
@@ -8161,6 +8127,9 @@
           "id": "string",
           "at": "number"
          }
+        },
+        "unresolved?": {
+         "list": "string"
         },
         "message?": "string"
        }
@@ -8227,36 +8196,6 @@
             }
            ]
           },
-          "pending?": {
-           "literal": true
-          },
-          "message?": "string"
-         }
-        },
-        {
-         "object": {
-          "setup": "string",
-          "epoch": "number",
-          "operation": "string",
-          "proof": {
-           "object": {
-            "d": "string",
-            "s": "string"
-           }
-          },
-          "status": {
-           "oneOf": [
-            {
-             "literal": "pending"
-            },
-            {
-             "literal": "committed"
-            },
-            {
-             "literal": "interrupted"
-            }
-           ]
-          },
           "message?": "string",
           "pending?": {
            "literal": true
@@ -8264,6 +8203,7 @@
           "removal": {
            "object": {
             "operation": "string",
+            "accessRemoved": "bool",
             "state": {
              "oneOf": [
               {
@@ -8282,10 +8222,19 @@
                "literal": "exporting"
               },
               {
+               "literal": "review"
+              },
+              {
                "literal": "wipe-pending"
               },
               {
                "literal": "wiped"
+              },
+              {
+               "literal": "cancelled"
+              },
+              {
+               "literal": "lost"
               }
              ]
             }
@@ -8297,6 +8246,9 @@
             "id": "string",
             "at": "number"
            }
+          },
+          "unresolved?": {
+           "list": "string"
           }
          }
         },
@@ -8305,6 +8257,7 @@
           "removal": {
            "object": {
             "operation": "string",
+            "accessRemoved": "bool",
             "state": {
              "oneOf": [
               {
@@ -8323,10 +8276,19 @@
                "literal": "exporting"
               },
               {
+               "literal": "review"
+              },
+              {
                "literal": "wipe-pending"
               },
               {
                "literal": "wiped"
+              },
+              {
+               "literal": "cancelled"
+              },
+              {
+               "literal": "lost"
               }
              ]
             }
@@ -8338,6 +8300,9 @@
             "id": "string",
             "at": "number"
            }
+          },
+          "unresolved?": {
+           "list": "string"
           },
           "message?": "string"
          }
@@ -8384,36 +8349,6 @@
             }
            ]
           },
-          "pending?": {
-           "literal": true
-          },
-          "message?": "string"
-         }
-        },
-        {
-         "object": {
-          "setup": "string",
-          "epoch": "number",
-          "operation": "string",
-          "proof": {
-           "object": {
-            "d": "string",
-            "s": "string"
-           }
-          },
-          "status": {
-           "oneOf": [
-            {
-             "literal": "pending"
-            },
-            {
-             "literal": "committed"
-            },
-            {
-             "literal": "interrupted"
-            }
-           ]
-          },
           "message?": "string",
           "pending?": {
            "literal": true
@@ -8421,6 +8356,7 @@
           "removal": {
            "object": {
             "operation": "string",
+            "accessRemoved": "bool",
             "state": {
              "oneOf": [
               {
@@ -8439,10 +8375,19 @@
                "literal": "exporting"
               },
               {
+               "literal": "review"
+              },
+              {
                "literal": "wipe-pending"
               },
               {
                "literal": "wiped"
+              },
+              {
+               "literal": "cancelled"
+              },
+              {
+               "literal": "lost"
               }
              ]
             }
@@ -8454,6 +8399,9 @@
             "id": "string",
             "at": "number"
            }
+          },
+          "unresolved?": {
+           "list": "string"
           }
          }
         },
@@ -8462,6 +8410,7 @@
           "removal": {
            "object": {
             "operation": "string",
+            "accessRemoved": "bool",
             "state": {
              "oneOf": [
               {
@@ -8480,10 +8429,19 @@
                "literal": "exporting"
               },
               {
+               "literal": "review"
+              },
+              {
                "literal": "wipe-pending"
               },
               {
                "literal": "wiped"
+              },
+              {
+               "literal": "cancelled"
+              },
+              {
+               "literal": "lost"
               }
              ]
             }
@@ -8495,6 +8453,9 @@
             "id": "string",
             "at": "number"
            }
+          },
+          "unresolved?": {
+           "list": "string"
           },
           "message?": "string"
          }
@@ -8752,6 +8713,9 @@
            },
            {
             "literal": "computers.removal"
+           },
+           {
+            "literal": "computers.removal-operations"
            },
            {
             "literal": "computers.update"
@@ -9553,6 +9517,9 @@
            },
            {
             "literal": "computers.removal"
+           },
+           {
+            "literal": "computers.removal-operations"
            },
            {
             "literal": "computers.update"

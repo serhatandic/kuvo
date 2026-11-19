@@ -1,12 +1,12 @@
 // Delivery is separate from authorization: the accepted roster has already revoked the peer.
 import crypto from "node:crypto";
 import { isObject } from "../../shared/json";
-import { removalLayoutReady } from "../../shared/folder-version";
+import { removalLayoutReady, removalOperationsLayoutReady } from "../../shared/folder-version";
 import { ownSign, readDoc, signDoc } from "../documents/format";
 import { docMails, type DocsState } from "../documents/work";
 import { noteDocsChanged } from "../documents/changed";
 import { K } from "../home";
-import { mailFor, ownKey, peersOf, type Peer } from "../peers/known";
+import { KEY, mailFor, ownKey, peersOf, type Peer } from "../peers/known";
 import { writeAgents } from "../peers/agents";
 import { assemble, type PendingParts } from "../documents/parts";
 import type { LinkHost } from "../relay/host";
@@ -18,7 +18,14 @@ import { primaryFenced } from "./lease";
 import { takeLeadership } from "./leadership";
 import { scheduleWipe } from "./wipe";
 import { followedSetup, newSetupID } from "./record";
-import { REMOVAL_ID, removalsOf, type MemberRemoval } from "./removal-record";
+import { generationOf, REMOVAL_ID, removalDeliveryPending, removalMoveID, removalsOf, selectionOf, type MemberRemoval } from "./removal-record";
+
+import { currentPreparation, forgetFinishedPreparations, removalChoice, retrySource } from "./before-wipe";
+import { receiveRemovalMove } from "./removal-moves";
+import { awaitSharedSave } from "./shared";
+import { readMoves } from "../moves/records";
+import { assignmentFor } from "../ownership/resolve";
+import { moveReference } from "../ownership/transfer";
 
 type Host = Pick<LinkHost, "welcomed" | "send" | "keepOnly">;
 const challengeLifetime = 30_000;
@@ -37,29 +44,58 @@ function primary(link: LinkState | null) {
   return setup?.role === "primary" && link?.sign && !primaryFenced(link) && !link.localWipe ? setup : null;
 }
 
-function saveDelivery(key: string, operation: string): void {
+function updateRemoval(record: MemberRemoval, change: (next: MemberRemoval, draft: LinkState) => void) {
+  const key = record.peer.key;
   const result = updateAccess(draft => {
-    const record = draft?.memberRemovals?.[key];
-    if (!draft || !record || record.operation !== operation || record.delivered) return null;
-    draft.memberRemovals = { ...draft.memberRemovals, [key]: { ...record, delivered: true } };
+    const current = draft?.memberRemovals?.[key];
+    if (!draft || !current || !primary(draft) || JSON.stringify(current) !== JSON.stringify(record)) return null;
+    change(current, draft);
     return draft;
-  });
+  }, { checkpoint: true });
   if (result.save) noteDocsChanged();
+  return result.save;
+}
+
+/** The SSH probe can relay an acknowledgment after the wiping process (or its primary) is gone. */
+export async function takeWipeReceipt(envelope: unknown): Promise<void> {
+  if (!removalOperationsLayoutReady(K)) return;
+  const link = readLink();
+  const setup = primary(link);
+  const proof = readDoc(envelope);
+  if (!setup || proof?.kind !== "setup-shared" || proof.n !== 1 || proof.body.removal !== "completed" ||
+    proof.body.setup !== setup.id || typeof proof.body.source !== "string") return;
+  const record = removalsOf(link)[proof.body.source];
+  if (!record?.wipe || record.resolution || record.delivered || record.peer.sign !== proof.origin ||
+    record.operation !== proof.body.operation || record.generation !== proof.body.generation || (record.plan && !record.generation)) return;
+  await awaitSharedSave(updateRemoval(record, next => { next.delivered = true; }));
+}
+
+export function advanceLocalRemoval(link: LinkState): void {
+  const setup = primary(link);
+  if (!setup || !removalOperationsLayoutReady(K)) return;
+  const record = removalsOf(link)[setup.primary];
+  if (!record?.local || !record.plan || record.resolution) return;
+  if (record.retry) retrySource(setup.id, setup.primary, record.operation, record.retry);
+  const progress = currentPreparation(setup.id, setup.primary, record, removalChoice(setup.id, setup.primary, record.operation));
+  acceptProgress(record, progress, setup.id);
+  scheduleWipe();
 }
 
 export function sendRemovalUpdates(host = liveLink()): void {
   if (!removalLayoutReady(K)) return;
-  void import("../peers/manage").then(({ resumeWipePreparations }) => resumeWipePreparations()).catch(error => console.error("Wipe preparation:", error));
   const link = readLink();
   const setup = primary(link);
   if (!link?.sign || !setup) return;
+  advanceLocalRemoval(link);
   if (!host?.welcomed) return;
+  forgetFinishedPreparations(link);
   const removals = removalsOf(link);
   for (const [key, operation] of Object.entries(link.removalAcks ?? {})) {
-    if (removals[key]?.operation === operation && !removals[key]?.delivered) saveDelivery(key, operation);
+    const record = removals[key];
+    if (record?.operation === operation && !record.delivered && record.resolution !== "lost") updateRemoval(record, next => { next.delivered = true; });
   }
   for (const record of Object.values(removals)) {
-    if (record.delivered || link.removalAcks?.[record.peer.key] === record.operation) continue;
+    if (record.local || !removalDeliveryPending(record)) continue;
     const { peer, operation } = record;
     const offer = signDoc(link.sign, "setup-shared", setup.epoch, {
       removal: "offer", setup: setup.id, primary: setup.primary, key: peer.key, operation,
@@ -102,14 +138,48 @@ function takeInstruction(sender: string, message: Record<string, unknown>, host:
     || their.operation !== asked.operation || their.nonce !== asked.nonce || typeof their.wipe !== "boolean") return;
   const peer = peersOf(link).find(peer => peer.key === sender);
   if (!peer?.sign) return;
-  challenge = undefined;
   const operation = asked.operation;
+  if (their.plan !== undefined) {
+    if (!removalOperationsLayoutReady(K) || !isObject(their.plan) || !generationOf(their.plan.choiceHash)) return;
+    const plan = { choiceHash: their.plan.choiceHash,
+      ...(typeof their.plan.moveTo === "string" && KEY.test(their.plan.moveTo) ? { moveTo: their.plan.moveTo } : {}),
+      ...(their.plan.archive === true ? { archive: true as const } : {}) };
+    const generation = generationOf(their.generation) ? their.generation : undefined;
+    const record = { operation, plan, generation, selection: selectionOf(their.selection) };
+    if (link.removalSource?.operation !== operation) {
+      const changed = updateLink(current => {
+        if (!current || followedSetup(current)?.id !== setup.id || current.setup?.epoch !== setup.epoch || current.localWipe) return null;
+        current.removalSource = { setup: setup.id, operation, ...(plan.moveTo ? { moveTo: plan.moveTo } : {}) };
+        current.phones = [];
+        delete current.pairing;
+        delete current.appPairing;
+        return current;
+      }, { durable: true });
+      if (!changed) return;
+      host?.keepOnly(new Set());
+    }
+    if (typeof their.retry === "string" && REMOVAL_ID.test(their.retry)) retrySource(setup.id, own, operation, their.retry);
+    const progress = currentPreparation(setup.id, own, record, message.choice);
+    if (generation === undefined || progress.generation !== generation) {
+      sendRemoval(host, peer, link, { progress, setup: setup.id, operation, epoch: setup.epoch });
+      return;
+    }
+  }
+  if (!their.wipe && link.removalSource && readMoves(true).some(move => move.role === "from" && move.removalOperation && (!move.failed || move.assigning))) {
+    updateLink(current => {
+      if (!current?.removalSource || !current.removalSource.moveTo) return null;
+      delete current.removalSource.moveTo;
+      return current;
+    }, { durable: true });
+    return;
+  }
+  challenge = undefined;
   const changed = updateLink(current => {
     const position = followedSetup(current);
     if (!current || position?.id !== setup.id || position.epoch !== setup.epoch || position.primary !== sender
       || position.sign !== proof.origin || ownKey(current) !== own || current.localWipe) return null;
     if (their.wipe) {
-      current.localWipe = { setup: setup.id, operation, primary: peer, ...(their.requiresPreparation === true ? { requiresPreparation: true } : {}) };
+      current.localWipe = { setup: setup.id, operation, primary: peer, ...(generationOf(their.generation) ? { generation: their.generation } : {}), ...(their.requiresPreparation === true ? { requiresPreparation: true } : {}) };
       current.phones = [];
       delete current.pairing;
       delete current.appPairing;
@@ -154,26 +224,73 @@ function takeOffer(sender: string, message: Record<string, unknown>, host: Host 
   sendRemoval(host, peer, link, { request: challenge.operation, setup: setup.id, nonce: challenge.nonce });
 }
 
-function deliverToRemoved(sender: string, message: Record<string, unknown>, host: Host | null | undefined, link: LinkState, record: MemberRemoval) {
+function acceptProgress(record: MemberRemoval, progress: Record<string, unknown>, setup: string) {
+  const { generation, invalidated, error, unresolved, export: archive } = progress;
+  const selection = selectionOf(progress.selection);
+  if (generationOf(invalidated) && invalidated === record.generation) {
+    updateRemoval(record, next => {
+      delete next.generation;
+      delete next.export;
+      next.error = typeof error === "string" ? error.slice(0, 500) : "Source work changed after verification. Review or retry the removal plan.";
+    });
+  } else if (!record.generation && !record.error) {
+    if (typeof error === "string") {
+      updateRemoval(record, next => {
+        next.error = error.slice(0, 500);
+        if (Array.isArray(unresolved)) next.unresolved = unresolved.filter(id => typeof id === "string").slice(0, 100);
+      });
+    } else if (record.plan?.moveTo && !record.selection && selection) {
+      updateRemoval(record, next => { next.selection = selection; });
+    } else if (generationOf(generation)) {
+      if (record.plan?.archive && (!isObject(archive) || typeof archive.source !== "string" ||
+        typeof archive.id !== "string" || typeof archive.at !== "number" || !Number.isFinite(archive.at))) return;
+      if (record.plan?.moveTo) {
+        const link = readLink();
+        if (!record.selection || !record.selection.every(({ kind, id }) => {
+          const owner = assignmentFor(link, moveReference(kind, id));
+          return owner?.computer === record.plan?.moveTo && owner?.move === removalMoveID(record.operation, kind, id);
+        })) return;
+      }
+      updateRemoval(record, (next, draft) => {
+        next.generation = generation;
+        if (record.plan?.archive) next.export = archive as NonNullable<MemberRemoval["export"]>;
+        if (record.local) draft.localWipe = { setup, operation: record.operation, generation, requiresPreparation: true };
+      });
+    }
+  }
+}
+
+function deliverToRemoved(sender: string, message: Record<string, unknown>, host: Host | null | undefined, link: LinkState, record: MemberRemoval, from?: Buffer) {
   const setup = primary(link);
   if (!setup || message.setup !== setup.id || !link.sign) return;
-  if (message.done === record.operation) {
-    updateLink(current => {
-      if (!current || primary(current)?.id !== setup.id || removalsOf(current)[sender]?.operation !== record.operation
-        || current.removalAcks?.[sender] === record.operation) return null;
-      current.removalAcks = { ...current.removalAcks, [sender]: record.operation };
-      return current;
-    }, { durable: true });
-    sendRemoval(host, record.peer, link, { recorded: record.operation });
-    saveDelivery(sender, record.operation);
+  if (message.done === record.operation && message.generation === record.generation && record.resolution !== "lost" &&
+    (!record.plan || record.generation || record.resolution === "cancelled")) {
+    if (!record.delivered) {
+      if (!record.wipe || record.resolution === "cancelled") updateLink(current => {
+        if (!current || removalsOf(current)[sender]?.operation !== record.operation) return null;
+        current.removalAcks = { ...current.removalAcks, [sender]: record.operation };
+        return current;
+      }, { durable: true });
+      updateRemoval(record, next => { next.delivered = true; });
+      return;
+    }
+    const receipt = typeof message.receipt === "string" && KEY.test(message.receipt) && from?.length === 16
+      ? { key: message.receipt, address: from.toString("base64url") } : record.peer;
+    sendRemoval(host, receipt, link, { recorded: record.operation, setup: setup.id });
   } else if (message.request === record.operation && typeof message.nonce === "string" && REMOVAL_ID.test(message.nonce)
-    && !record.delivered && link.removalAcks?.[sender] !== record.operation) {
+    && !record.delivered && record.resolution !== "lost") {
+    const preparing = Boolean(record.plan && !record.resolution);
     const instruction = signDoc(link.sign, "setup-shared", setup.epoch, {
       removal: "instruction", setup: setup.id, primary: setup.primary, key: sender,
-      operation: record.operation, wipe: record.wipe, nonce: message.nonce,
-      ...(record.requiresPreparation ? { requiresPreparation: true } : {}),
+      operation: record.operation, wipe: record.wipe && !record.resolution, nonce: message.nonce,
+      ...(preparing ? { plan: record.plan, generation: record.generation, retry: record.retry, selection: record.selection } : {}),
+      ...(record.requiresPreparation && !record.resolution ? { requiresPreparation: true } : {}),
     });
-    sendRemoval(host, record.peer, link, { instruction });
+    const choice = preparing && !record.generation ? removalChoice(setup.id, sender, record.operation) : undefined;
+    sendRemoval(host, record.peer, link, { instruction, ...(choice ? { choice } : {}) });
+  } else if (record.plan && !record.resolution && !record.delivered && message.operation === record.operation &&
+    message.epoch === setup.epoch && isObject(message.progress)) {
+    acceptProgress(record, message.progress, setup.id);
   } else if (typeof message.sync === "number" && Number.isSafeInteger(message.sync) && message.sync >= 1 && message.sync < setup.epoch) {
     const certificate = link.leadership?.[message.sync + 1];
     if (certificate) for (const authority of leadershipDocuments(certificate)) {
@@ -189,8 +306,9 @@ export function receiveRemovalMail(sender: string, message: Record<string, unkno
     if (!removalLayoutReady(K) || !isObject(message)) return;
     const link = readLink();
     if (!link) return;
+    if (receiveRemovalMove(sender, message, host, link)) return;
     const removal = removalsOf(link)[sender];
-    if (removal && primary(link)) return deliverToRemoved(sender, message, host, link, removal);
+    if (removal && primary(link)) return deliverToRemoved(sender, message, host, link, removal, from);
     if (link.localWipe) return;
     if (message.offer !== undefined) return takeOffer(sender, message, host, link, from);
     if (message.instruction !== undefined) return takeInstruction(sender, message, host, link);

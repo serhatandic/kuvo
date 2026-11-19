@@ -2397,12 +2397,31 @@ test("failure bench: a Linux primary starts fresh, enrolls over SSH and pairs de
     assert.notEqual(distinct.key, returned.key);
     assert.deepEqual((await keys()).slice(-3), [returned.key, neighbor.key, distinct.key]);
 
-    // Reinstall under a different host name and without any previous Kuvo files.
-    const oldPath = path.join(homes.rejoin, ".kuvo-code-before-reinstall");
-    spawnSync("sh", [path.join(target, "bin", "kuvo-start"), "off"], { env: { ...process.env, HOME: homes.rejoin }, timeout: 60_000 });
-    fs.renameSync(target, oldPath);
-    write(path.join(fake, "home-rejoin-installed"), homes.rejoin);
-    const installed = await add("rejoin-installed");
+    // Lose the live completion mail. The next SSH Add can recover the signed receipt
+    // from outside the deleted installation and still replace both revoked keys.
+    const returnedKey = Buffer.from(returned.key, "base64url");
+    const primaryAddress = link.addressOf(Buffer.from(inBox(primaryBox).secret, "base64url"));
+    const prefix = Buffer.from("kuvo-removal-v1\0");
+    const operation = crypto.randomBytes(16).toString("base64url");
+    const releaseDone = relay.intercept(null, primaryAddress, ({ payload }) => {
+      const frame = link.readFrame(payload);
+      if (frame?.kind !== link.Frame.mail || !frame.body.subarray(0, prefix.length).equals(prefix)) return false;
+      const body = frame.body.subarray(prefix.length);
+      if (!body.subarray(0, returnedKey.length).equals(returnedKey)) return false;
+      const message = link.openOneWay(body.subarray(returnedKey.length), Buffer.from(inBox(primaryBox).key, "base64url"), returnedKey);
+      return JSON.parse(message.payload).done === operation;
+    });
+    let installed;
+    try {
+      const wipe = await primaryApp("POST", `kuvo/computers/${returned.key}/unlink-and-wipe`, { operation });
+      assert.equal(wipe.status, 200, JSON.stringify(wipe.body));
+      const proof = path.join(homes.rejoin, ".kuvo-code-removal-receipts", operation + ".ack");
+      await waitFor("the old installation is erased and its receipt is recoverable", () => !fs.existsSync(target) && fs.existsSync(proof));
+      assert.equal(membership(primaryBox).removals[returned.key].delivered, undefined);
+      write(path.join(fake, "home-rejoin-installed"), homes.rejoin);
+      installed = await add("rejoin-installed");
+      assert.equal(membership(primaryBox).removals[returned.key].delivered, true);
+    } finally { releaseDone(); }
     assert.notEqual(installed.key, returned.key);
     assert.equal(installed.name, "rejoin-installed");
     assert.deepEqual((await keys()).slice(-3), [installed.key, neighbor.key, distinct.key]);

@@ -123,6 +123,7 @@ import { keepKeyFiles } from "./keys";
 import { keepAwakeWhileWorking } from "./work/awake";
 import { readServeRecord, runningServe, SERVE_FILE, SERVE_NEEDED, writeServeRecord } from "./serve-kept";
 import { scheduleWipe, wipeCommand } from "./setup/wipe";
+import { localRemovalPending } from "./setup/removal-record";
 import { sendRemovalUpdates } from "./setup/removal";
 import { logCleanup, uninstallCommand } from "./uninstall";
 import { helperCommand } from "./helper";
@@ -607,7 +608,7 @@ async function run(): Promise<void> {
     const host: LinkHost = new LinkHost({
       key: Buffer.from(link!.key!, "base64url"),
       hello: { v: 1, kind: "machine", name: link!.name || os.hostname(), app: BRIDGE_VERSION, engine: engine.version ?? null },
-      authorize: (key, hello, address, signal) => !readLink()?.localWipe && authorizeDeviceConnection(host, key, hello, address, signal),
+      authorize: (key, hello, address, signal) => !readLink()?.localWipe && !readLink()?.removalSource && !localRemovalPending(readLink()) && authorizeDeviceConnection(host, key, hello, address, signal),
       confirmed: confirmPhone,
       mail: (from, body) => receiveMail(body, host, (sender, payload) => peerMail(sender, payload, host, peerPlaces), (mac, given, at) => hold.attend(`mac:${mac}`, given, at), from),
       handle: engineHandler(readEngineFile, { name: link!.name || os.hostname() }, readBridgeFile, changed => host.keepOnly(new Set((changed.phones ?? []).map(phone => phone.key))), hold),

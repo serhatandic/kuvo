@@ -36,6 +36,7 @@ import type { MailSender, Peer } from "../peers/known";
 import type { LinkHost } from "../relay/host";
 import { readLink } from "../state";
 import { followedSetup } from "../setup/record";
+import { removalsOf } from "../setup/removal-record";
 import { mayActivate } from "../ownership/resolve";
 import { decideTransfer, moveReference, noteTransferSettled, settleTransfers, transferAccepted, transferSupport } from "../ownership/transfer";
 import { goalRuns, proposedGoals } from "../work/goals";
@@ -251,8 +252,13 @@ export function sendMovesWith(send: typeof sendInstead): void {
 function tell(peer: string, move: Record<string, unknown>): boolean {
   if (sendInstead) return sendInstead(peer, move);
   const link = readLink();
-  const to: Peer | undefined = peersOf(link).find(each => each.key === peer);
-  const bytes = link && to && mailFor(to, { move, at: Date.now() }, link);
+  const removed = removalsOf(link)[peer]?.peer;
+  const to = removed ?? peersOf(link).find(each => each.key === peer);
+  const record = link?.removalSource && typeof move.id === "string" ? readMove(move.id) : null;
+  const operation = record?.removalOperation;
+  const bytes = link && to && (removed || operation
+    ? mailFor(to, { scopedMove: operation ? { ...move, kind: record?.kind, thing: record?.thing } : move, operation }, link, true)
+    : mailFor(to, { move, at: Date.now() }, link));
   if (!bytes) return false;
   // Sent only when the connection took it: one closing, or not welcomed yet, takes nothing.
   try {
@@ -266,6 +272,7 @@ function tell(peer: string, move: Record<string, unknown>): boolean {
 
 /** What's moving, as this box has it: its name and its conversations' root, or why it can't move. */
 interface Movable {
+  unresolved?: true;
   name: string;
   root?: string;
   why?: string;
@@ -315,7 +322,7 @@ async function chatGoalRuns(session: string, signal?: AbortSignal): Promise<bool
   return isObject(goal) && (goal.state === "working" || goal.state === "paused");
 }
 
-async function movable(kind: MoveKind, thing: string, signal?: AbortSignal): Promise<Movable | null> {
+async function movable(kind: MoveKind, thing: string, signal?: AbortSignal, strict = false): Promise<Movable | null> {
   if (kind === "bot") {
     const here = botHere(thing);
     if (!here) return null;
@@ -349,7 +356,9 @@ async function movable(kind: MoveKind, thing: string, signal?: AbortSignal): Pro
     const title = typeof session.title === "string" && session.title.trim() ? `“${session.title.trim()}”` : "This chat";
     const directory = isObject(session.location) ? session.location.directory : session.directory;
     if (!isChatsFolder(directory)) return null;
-    if (await chatGoalRuns(thing, signal)) return { name: title, why: say.onGoal(title), note: note.onGoal };
+    const goal = await chatGoalRuns(thing, signal);
+    if (goal === undefined && strict) return null;
+    if (goal) return { name: title, why: say.onGoal(title), note: note.onGoal };
     const running = runningOf([thing]);
     if (running) return { name: title, why: say.background(title, running), note: note.background };
     return { name: title, root: thing, ...(lane ? { lane: true } : {}), ...(modelOf(session.model) ?? {}) };
@@ -357,8 +366,8 @@ async function movable(kind: MoveKind, thing: string, signal?: AbortSignal): Pro
   let bridge: Target;
   try { bridge = readBridgeFile(); } catch { return null; }
   const listed = await askGroups<{ data?: { group?: { name?: string; members?: unknown } } }>(bridge, "GET", `/${encodeURIComponent(thing)}`, undefined, engineWait(signal)).catch(() => null);
-  if (listed?.status === 503) return { name: "This group chat", why: "This computer couldn’t read the group’s conversation. Restart Kuvo and try again." };
-  if (listed?.status !== 200) return null;
+  if (listed?.status === 503) return { name: "This group chat", unresolved: true, why: "This computer couldn’t read the group’s conversation. Restart Kuvo and try again." };
+  if (listed?.status !== 200 || (strict && !Array.isArray(listed.value?.data?.group?.members))) return null;
   const members = listed.value?.data?.group?.members;
   return {
     name: `“${plainName(listed.value?.data?.group?.name ?? "") || "Group chat"}”`,
@@ -390,13 +399,13 @@ function botsLiveOn(members: string[], peer: Peer): boolean {
 }
 
 /** Where `thing` can go: each of your other computers, and why not one where it can't. */
-export async function placesFor(kind: MoveKind, thing: string, signal?: AbortSignal, details = true): Promise<{ places: MovePlace[]; stays?: MoveStays } | null> {
-  const what = await movable(kind, thing, signal);
-  if (!what) return null;
+export async function placesFor(kind: MoveKind, thing: string, signal?: AbortSignal, details = true): Promise<{ places: MovePlace[]; stays?: MoveStays; restricted?: true } | null> {
+  const what = await movable(kind, thing, signal, !details);
+  if (!what || (!details && what.unresolved)) return null;
   const stays = !details || kind === "group" ? undefined : await staysOf(kind, thing, what, signal);
   const target = what.lane ? bridgeTarget() : engineTarget();
   const busy = details && !what.why && what.root && target ? await activeIn(target, [what.root], signal) : false;
-  return { places: placesOf(kind, thing, what, stays, busy), ...(stays && Object.keys(stays).length ? { stays } : {}) };
+  return { places: placesOf(kind, thing, what, stays, busy), ...(!details && what.why ? { restricted: true } : {}), ...(stays && Object.keys(stays).length ? { stays } : {}) };
 }
 
 /** What of a bot or chat stays here as it moves: none of it goes, and none of it's lost (it's here
@@ -487,12 +496,14 @@ export async function startMove(kind: MoveKind, thing: string, to: string, signa
   return begun.ok ? begun.outcome! : begun;
 }
 
-export async function beginMove(kind: MoveKind, thing: string, to: string, signal?: AbortSignal, wait = false, change?: string): Promise<
+export async function beginMove(kind: MoveKind, thing: string, to: string, signal?: AbortSignal, wait = false, change?: string, removalOperation?: string): Promise<
   { ok: true; move: Move; outcome?: Promise<MoveOutcome> } | Extract<MoveOutcome, { ok: false }>
 > {
   const link = readLink();
   const own = link ? ownKey(link) : null;
   const peer = peersOf(link).find(each => each.key === to);
+  if (link?.removalSource && (!removalOperation || link.removalSource.operation !== removalOperation || link.removalSource.moveTo !== to))
+    return { ok: false, status: 409, message: "Only a move in the accepted removal plan can start." };
   if (!own || !peer || to === own) return { ok: false, status: 404, message: "That computer isn’t one of yours." };
   const unsupported = transferSupport(link);
   if (unsupported) return { ok: false, status: 409, message: unsupported };
@@ -507,6 +518,7 @@ export async function beginMove(kind: MoveKind, thing: string, to: string, signa
   const folder = folderOf(kind, thing);
   const record: MoveRecord = {
     ...(change ? { wipePreparation: true as const } : {}),
+    ...(removalOperation ? { removalOperation } : {}),
     id, kind, thing, name: what.name, from: own, to, role: "from", stage: "holding", sessions: what.root ? [what.root] : [],
     peer: to, wasPaused: false, tries: 0, started: Date.now(), ...(folder && fs.existsSync(folder) ? { folder } : {}), ...(what.lane ? { lane: true } : {}),
     ...(what.model ? { model: what.model } : {}), ...(checksFirst(to) && kind !== "group" ? { step: "check" as const } : {}),
@@ -1811,6 +1823,7 @@ export function keepMoving(now = Date.now(), ticks = performance.now()): void {
   const link = readLink();
   settleTransfers(link, now, id => !allItems().some(item => item.handing?.id === id));
   const peers = new Set(peersOf(link).map(peer => peer.key));
+  const removed = removalsOf(link);
   let names: string[] = [];
   try { names = fs.readdirSync(MOVES).filter(name => name.endsWith(".outcome.json")); } catch {}
   for (const name of names) {
@@ -1842,7 +1855,7 @@ export function keepMoving(now = Date.now(), ticks = performance.now()): void {
     }
   }
   for (const record of records) {
-    const due = retryDue(record, now, ticks);
+    const due = retryDue(record, now, ticks, record.removalOperation ? 3_000 : STEP_AGAIN);
     const sent = outgoing.get(record.id);
     if (record.role === "to" && !record.activation && record.complete && !record.dropping && record.setUpSince === undefined &&
       followedSetup(link)?.checkpointed && transferAccepted(link, record) && !queues.has(record.id)) {
@@ -1874,7 +1887,12 @@ export function keepMoving(now = Date.now(), ticks = performance.now()): void {
       }
       continue;
     }
-    if (!peers.has(record.peer)) {
+    if (record.role === "from" && record.removalOperation && !record.ownershipCommitted && !record.failed &&
+      (link?.removalSource?.operation !== record.removalOperation || link?.removalSource?.moveTo !== record.to)) {
+      if (!queues.has(record.id)) void inTurn(record.id, () => failSource(record, "The removal plan changed.", 409, true, true)).catch(console.error);
+      continue;
+    }
+    if (!peers.has(record.peer) && !removed[record.peer]) {
       // Gone a while, not just left out as your computers are read again.
       const since = missing.get(record.id) ?? ticks;
       missing.set(record.id, since);

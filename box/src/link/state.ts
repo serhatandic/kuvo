@@ -90,6 +90,7 @@ export interface LinkState {
   memberRemovals?: Record<string, MemberRemoval>;
   wipePreparations?: Record<string, WipePreparationClaim>;
   localWipe?: LocalWipe;
+  removalSource?: { setup: string; operation: string; moveTo?: string };
   removalAcks?: Record<string, string>;
   /** A removed peer's saved destination, kept until its machines-list cleanup succeeds. */
   pendingMachineCleanup?: Record<string, string>;

@@ -1,4 +1,4 @@
-import { removalsOf } from "../setup/removal-record";
+import { removalDeliveryPending, removalsOf } from "../setup/removal-record";
 import { leadershipDocuments } from "../setup/checkpoint";
 // This Mac's box's link (PROTOCOL.md, "This Mac's box: the relay"): whether it's wanted, how it's
 // doing, its keys from the app, and the machines told they're let go. mac/relay runs it.
@@ -35,7 +35,7 @@ export type LinkStatusState = "off" | "connecting" | "connected" | "failed";
 export function macNeeded(link: LinkState | null | undefined, now = Date.now()): boolean {
   const config = macLink.config;
   if (!config) return false;
-  if (link?.localWipe || Object.values(removalsOf(link)).some(record => !record.delivered)) return true;
+  if (link?.localWipe || Object.values(removalsOf(link)).some(removalDeliveryPending)) return true;
   if (config.machines || (link?.setup?.managed && peersOf(link).length)) return true;
   const pairing = (["pairing", "appPairing"] as const).some(slot => link?.[slot] && now < link[slot]!.expires);
   return Boolean(config.phones && ((link?.phones ?? []).length || pairing));

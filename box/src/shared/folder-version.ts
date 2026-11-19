@@ -41,6 +41,9 @@ const steps: readonly Step[] = [
   // 11. Drop voucher ownership from stored device grants. Signed records are immutable;
   // the setup membership reader projects those grants without the legacy fields.
   migrateDeviceGrants,
+  // 12. Authorize prepared removals through accepted membership and retain wipe receipts
+  // outside the deleted installation. Existing work and legacy removal records stay in place.
+  () => {},
 ];
 
 function migrateDeviceGrants(folder: string): void {
@@ -143,6 +146,11 @@ export function removalLayoutReady(folder: string): boolean {
 
 export function wipePreparationLayoutReady(folder: string): boolean {
   try { return checkpoint(path.join(folder, FOLDER_VERSION_FILE), steps.length).version >= 9; }
+  catch { return false; }
+}
+
+export function removalOperationsLayoutReady(folder: string): boolean {
+  try { return checkpoint(path.join(folder, FOLDER_VERSION_FILE), steps.length).version >= 12; }
   catch { return false; }
 }
 

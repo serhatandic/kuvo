@@ -143,6 +143,7 @@ export function receiveMail(
   const opened = openMail(body, link);
   if (!opened) return;
   const { sender, payload } = opened;
+  if (link?.removalSource) return;
   if (link?.localWipe || (link && removalsOf(link)[ownKey(link) ?? ""])) {
     if (isObject(payload.workQueue) && isObject(payload.workQueue.acted)) takeActed(sender, payload.workQueue.acted);
     return;

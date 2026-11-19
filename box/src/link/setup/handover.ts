@@ -11,7 +11,7 @@ import { readZoneSetting } from "../zone/setting";
 import { captureMembership } from "./access";
 import { CHECKPOINT_FEATURE, checkpointedTransition } from "./checkpoint";
 import { acceptedMembership, type Membership } from "./membership";
-import { PREPARATION_FEATURE } from "./removal-record";
+import { REMOVAL_OPERATIONS_FEATURE, removalsOf, PREPARATION_FEATURE } from "./removal-record";
 import { MAX_SHARED_BYTES, type SharedValues } from "./shared";
 import { noteDocsChanged } from "../documents/changed";
 import { ownSign, readDoc, signDoc } from "../documents/format";
@@ -90,6 +90,12 @@ export async function proposeLeadership(
     if (Object.keys(acceptedMembership(link)?.wipePreparations ?? {}).length
       && ((target !== current.primary && !takesForwarded(target, PREPARATION_FEATURE))
         || (standby && standby.key !== current.standby?.key && !takesForwarded(standby.key, PREPARATION_FEATURE)))) {
+      unsupportedWipePreparation = true;
+      return null;
+    }
+    if (Object.values(removalsOf(link)).some(record => record.plan && !record.delivered && !record.resolution)
+      && ((target !== current.primary && !takesForwarded(target, REMOVAL_OPERATIONS_FEATURE))
+        || (standby && standby.key !== current.standby?.key && !takesForwarded(standby.key, REMOVAL_OPERATIONS_FEATURE)))) {
       unsupportedWipePreparation = true;
       return null;
     }

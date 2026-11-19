@@ -139,6 +139,17 @@ echo "kuvo version $(cat "$K/bin/box-version" 2>/dev/null | tr -cd '0-9a-z.-')"
 [ -x "$K/engine/${version}/opencode" ] && "$K/engine/${version}/opencode" --version >/dev/null 2>&1 && echo "kuvo engine"
 [ -s "$K/machine-id" ] && echo "kuvo id $(cat "$K/machine-id")"
 ${setup ? computerFingerprint(setup) : ""}
+receipts="$HOME/.kuvo-code-removal-receipts"
+proofs=0
+if [ -d "$receipts" ] && [ ! -L "$receipts" ]; then
+for proof in "$receipts"/*.ack; do
+  [ -f "$proof" ] && [ ! -L "$proof" ] || continue
+  [ "$(wc -c < "$proof")" -le 2048 ] || continue
+  printf 'kuvo removal-ack %s\n' "$(sed -n 1p "$proof")"
+  proofs=$((proofs + 1))
+  [ "$proofs" -lt 16 ] || break
+done
+fi
 ${FOUND}
 A="$HOME/Library/Application Support/run.kuvo.code"
 ${appDataProbe()}

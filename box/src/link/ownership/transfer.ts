@@ -4,6 +4,7 @@ import { KEY, ownKey, peersOf, type MailSender } from "../peers/known";
 import { acceptedMembership } from "../setup/membership";
 import { primaryFenced } from "../setup/lease";
 import { followedSetup } from "../setup/record";
+import { removalMoveID, removalsOf } from "../setup/removal-record";
 import { pendingShared, SharedCapacity, sharedValue, stageShared, waitShared, type Receipt } from "../setup/shared";
 import { readLink, updateLink, type LinkState } from "../state";
 import { forwardAct, takesForwarded, type Act, type Acted } from "../work-queue/forward";
@@ -57,7 +58,7 @@ export function transferAccepted(link: LinkState | null, move: Transfer, { allow
 const committed = { status: 200, value: { committed: true } };
 const refused = (message: string): Acted => ({ status: 422, value: { message, transferRefused: true } });
 
-export async function transferForPeer(sender: MailSender, act: Pick<Act, "body">): Promise<Acted> {
+export async function transferForPeer(sender: MailSender, act: Pick<Act, "body">, removalOperation?: string): Promise<Acted> {
   const move = transferOf(act.body?.transfer);
   const settled = act.body?.settled === true;
   // A move is proposed by its source, a remote handoff by the recipient holding the item.
@@ -70,12 +71,18 @@ export async function transferForPeer(sender: MailSender, act: Pick<Act, "body">
     const roster = acceptedMembership(link);
     if (!link || !roster || setup?.role !== "primary" || setup.id !== act.body?.setup || setup.conflict || primaryFenced(link) ||
       (act.body?.epoch !== undefined && setup.epoch !== act.body.epoch)) return;
+    const removal = removalsOf(link)[move.from];
+    const plan = removal?.operation === removalOperation ? removal?.plan : removalOperation ? removal?.superseded?.[removalOperation] : undefined;
+    const scoped = removalOperation !== undefined && move.kind !== "queue" && plan?.moveTo === move.to
+      && move.id === removalMoveID(removalOperation, move.kind, move.thing);
+    if (removalOperation && !scoped) { result = refused("This move is outside the accepted removal."); return; }
     const refs = references(move);
     const prior = sharedValue(link, "ownershipAssignments");
     const assignments = isObject(prior) ? prior : {};
     const operation = recordKey(settled ? "settle transfer" : "transfer", move.id, move.from, move.to, String(setup.epoch));
     const outcome = link.sharedOutcomes?.[operation];
     if (settled) {
+      if (scoped && removal?.operation === removalOperation && !removal?.resolution && !removal?.generation) return;
       // A newer transfer may already have replaced some or all of these entries.
       const entries = refs.flatMap(ref => {
         const address = authorityAddress(ref);
@@ -115,7 +122,12 @@ export async function transferForPeer(sender: MailSender, act: Pick<Act, "body">
       result = refused("This transfer already finished.");
       return;
     }
-    if (![move.from, move.to].every(key => roster.boxes.some(box => box.key === key)))
+    const pendingRemoval = pendingShared(link, "membershipAndAccess");
+    if (scoped && pendingRemoval) return;
+    if (scoped && (removal?.operation !== removalOperation || removal?.resolution || removal?.delivered || removal?.generation ||
+      !removal?.selection?.some(item => item.id === move.thing && item.kind === move.kind)))
+      return reject("The removal plan changed before ownership was transferred.");
+    if (!(scoped ? [move.to] : [move.from, move.to]).every(key => roster.boxes.some(box => box.key === key)))
       return reject("Both computers must still belong to this setup.");
     if (move.kind === "queue") {
       const owner = acceptedOwner(link, { kind: "queueItems", queue: move.queue });
@@ -154,13 +166,19 @@ export function transferSupport(link: LinkState | null): string | undefined {
   return primary ? `Update ${primary.name}, the primary computer, before transferring ownership.` : undefined;
 }
 
-async function requestTransfer(link: LinkState | null, move: Transfer, settled = false) {
+async function requestTransfer(link: LinkState | null, move: Transfer & { removalOperation?: string }, settled = false) {
   const setup = followedSetup(link);
   if (!setup?.checkpointed) return;
   const { id, from, to, kind, thing } = move;
   const transfer = { id, from, to, kind, thing,
     ...(move.kind === "queue" ? { queue: move.queue, fromQueue: move.fromQueue } : { sessions: move.sessions }),
   };
+  if (move.removalOperation) {
+    const { removalTransfer } = await import("../setup/removal-moves");
+    const scoped = transferOf(transfer);
+    if (scoped) return removalTransfer(link, scoped, move.removalOperation, settled);
+    return;
+  }
   const body = { setup: setup.id, epoch: setup.epoch, transfer, ...(settled ? { settled } : {}) };
   if (setup.role === "primary") {
     const key = link && ownKey(link);
@@ -171,7 +189,7 @@ async function requestTransfer(link: LinkState | null, move: Transfer, settled =
     undefined, link, Date.now(), { backgroundRelay: true }) : undefined;
 }
 
-export async function decideTransfer(link: LinkState | null, move: Transfer): Promise<TransferDecision> {
+export async function decideTransfer(link: LinkState | null, move: Transfer & { removalOperation?: string }): Promise<TransferDecision> {
   const setup = followedSetup(link);
   if (!setup?.checkpointed || (setup.role !== "primary" && transferAccepted(link, move))) return { status: "committed" };
   const unsupported = transferSupport(link);
@@ -186,17 +204,17 @@ export async function decideTransfer(link: LinkState | null, move: Transfer): Pr
   return { status: "pending" };
 }
 
-type Settlement = { setup: string; move: Transfer };
+type Settlement = { setup: string; move: Transfer & { removalOperation?: string } };
 let settling = false;
 let settledAt = 0;
 
 /** Only activation/arrival followed by durable source cleanup can compact a receipt.
  * The owner and the queue still fence older copies and backups. */
-export function noteTransferSettled(link: LinkState | null, move: Transfer): void {
+export function noteTransferSettled(link: LinkState | null, move: Transfer & { removalOperation?: string }): void {
   const setup = followedSetup(link);
   if (!setup?.checkpointed || !ownershipReady()) return;
   const transfer = transferOf(move);
-  if (transfer) keepRecord("transfer-settlements", recordKey(setup.id, move.id), { setup: setup.id, move: transfer });
+  if (transfer) keepRecord("transfer-settlements", recordKey(setup.id, move.id), { setup: setup.id, move: { ...transfer, ...(move.removalOperation ? { removalOperation: move.removalOperation } : {}) } });
 }
 
 export function settleTransfers(link: LinkState | null, now: number, queueSettled: (id: string) => boolean): void {

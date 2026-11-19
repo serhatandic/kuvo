@@ -196,7 +196,7 @@ export function listOfSessions(sessions: EngineSession[], place: ListPlace, know
 }
 
 /** Every session on `target`, subagents' too, page after page; null where its list can't be read. */
-export async function readSessions(target: Target, signal?: AbortSignal): Promise<EngineSession[] | null> {
+export async function readSessions(target: Target, signal?: AbortSignal, strict = false): Promise<EngineSession[] | null> {
   const all: EngineSession[] = [];
   const seen = new Set<string>();
   let query: string | null = "limit=200&order=desc";
@@ -204,15 +204,16 @@ export async function readSessions(target: Target, signal?: AbortSignal): Promis
     if (signal?.aborted) return null;
     const page = await engineGet(target, `api/session?${query}`).catch(() => null) as { data?: unknown; cursor?: { next?: unknown } | null } | null;
     const listed: unknown[] | null = Array.isArray(page?.data) ? page.data : null;
-    if (!listed) return null;
+    if (!listed || (strict && listed.some(each => !isObject(each) || typeof each.id !== "string"))) return null;
     const fresh = listed.filter((each): each is EngineSession => isObject(each) && typeof each.id === "string" && !seen.has(each.id));
     for (const each of fresh) seen.add(each.id);
     all.push(...fresh);
     const next = page?.cursor?.next;
+    if (strict && typeof next === "string" && next && !fresh.length) return null;
     // (On as long as the engine says where the next page starts: a page may be shorter than asked.)
     query = listed.length && fresh.length && typeof next === "string" && next ? `limit=200&cursor=${encodeURIComponent(next)}` : null;
   }
-  return all;
+  return strict && query ? null : all;
 }
 
 /** Those at work on `target`; null where it can't say. */

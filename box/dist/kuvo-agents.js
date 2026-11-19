@@ -40962,7 +40962,8 @@ var init_folder_version = __esm(() => {
     () => {},
     () => {},
     () => {},
-    migrateDeviceGrants
+    migrateDeviceGrants,
+    () => {}
   ];
 });
 
@@ -42566,4 +42567,4 @@ if (!isMainThread && process.argv.includes("--insights-db-worker")) {
 } else {
   await init_main().then(() => ({}));
 }
-// Built from Packages/Box/src/agents 430555c0b12b695a5ea1980d794b972bdaf37eeaaf1e3abf3c0281e6f0d4bab6
+// Built from Packages/Box/src/agents e008bda5bf50de15a0f214c1c5d5f8b34882a527e9cf64f529b90ee4f0433e48

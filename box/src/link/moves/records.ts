@@ -23,6 +23,7 @@ export const MOVED_FOR = 2 * 24 * 3600_000;
  * folder its copy went in, and the parts of the bundle that came. */
 export interface MoveRecord extends Move {
   wipePreparation?: true;
+  removalOperation?: string;
   /** The other box's key. */
   peer: string;
   wasPaused: boolean;

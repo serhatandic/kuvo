@@ -1,5 +1,7 @@
+import type { MoveKind } from "../../shared/routes/moves";
 import { isObject } from "../../shared/json";
-import { cleanPeer, fitsPeer, type Peer } from "../peers/known";
+import { cleanPeer, fitsPeer, KEY, type Peer } from "../peers/known";
+import { recordKey } from "../ownership/store";
 import type { LinkState } from "../state";
 import { acceptedMembership } from "./membership";
 
@@ -19,13 +21,46 @@ export interface ExportReference {
   at: number;
 }
 
+export const REMOVAL_OPERATIONS_FEATURE = "computers.removal-operations";
+
+export interface RemovalPlan {
+  choiceHash: string;
+  moveTo?: string;
+  archive?: true;
+}
+
+export type SelectedMove = { kind: MoveKind; id: string };
+export const MAX_SELECTED_MOVES = 512;
+
+export function selectionOf(value: unknown): SelectedMove[] | undefined {
+  if (!Array.isArray(value) || value.length > MAX_SELECTED_MOVES) return;
+  const selected: SelectedMove[] = [];
+  const seen = new Set<string>();
+  for (const item of value) {
+    if (!isObject(item) || typeof item.id !== "string" || !/^[A-Za-z0-9_-]{1,84}$/.test(item.id) ||
+      (item.kind !== "chat" && item.kind !== "bot" && item.kind !== "group") || seen.has(item.id)) return;
+    selected.push({ id: item.id, kind: item.kind });
+    seen.add(item.id);
+  }
+  return selected;
+}
+
 export interface MemberRemoval {
   peer: Peer;
   operation: string;
   wipe: boolean;
+  local?: true;
   requiresPreparation?: true;
   export?: ExportReference;
   delivered?: true;
+  plan?: RemovalPlan;
+  selection?: SelectedMove[];
+  generation?: string;
+  error?: string;
+  retry?: string;
+  unresolved?: string[];
+  resolution?: "cancelled" | "lost";
+  superseded?: Record<string, RemovalPlan>;
 }
 
 export interface LocalWipe {
@@ -33,13 +68,25 @@ export interface LocalWipe {
   operation: string;
   primary?: Peer;
   prepared?: true;
+  generation?: string;
   requiresPreparation?: true;
+}
+
+export const generationOf = (value: unknown): value is string => typeof value === "string" && /^[\w-]{43}$/.test(value);
+
+function planOf(value: unknown): RemovalPlan | undefined {
+  if (!isObject(value) || !generationOf(value.choiceHash) ||
+    (value.moveTo !== undefined && (typeof value.moveTo !== "string" || !KEY.test(value.moveTo)))) return;
+  return { choiceHash: value.choiceHash, ...(typeof value.moveTo === "string" ? { moveTo: value.moveTo } : {}),
+    ...(value.archive === true ? { archive: true } : {}) };
 }
 
 export function removalRecords(value: unknown, left: Set<string>, current: Set<string>): Record<string, MemberRemoval> {
   if (!isObject(value)) return {};
   return Object.fromEntries(Object.entries(value).flatMap(([key, record]) => {
-    if (!left.has(key) || current.has(key) || !isObject(record) || !fitsPeer(record.peer)
+    if (!isObject(record)) return [];
+    const local = record.local === true && record.wipe === true && current.size === 1 && current.has(key);
+    if ((!local && (!left.has(key) || current.has(key))) || !fitsPeer(record.peer)
       || record.peer.key !== key || typeof record.operation !== "string" || !OPERATION_ID.test(record.operation)
       || typeof record.wipe !== "boolean") return [];
     const point = record.export;
@@ -47,13 +94,43 @@ export function removalRecords(value: unknown, left: Set<string>, current: Set<s
       typeof point.id === "string" && typeof point.at === "number" && Number.isFinite(point.at)
       ? { source: point.source, id: point.id, at: point.at } : undefined;
     const { id: _destination, ...peer } = cleanPeer(record.peer);
-    return [[key, { peer, operation: record.operation, wipe: record.wipe, ...(record.wipe && record.requiresPreparation === true ? { requiresPreparation: true } : {}), ...(archive ? { export: archive } : {}), ...(record.delivered === true ? { delivered: true } : {}) }]];
+    const plan = planOf(record.plan);
+    const selection = plan?.moveTo ? selectionOf(record.selection) : undefined;
+    const superseded = Object.fromEntries(Object.entries(isObject(record.superseded) ? record.superseded : {}).flatMap(([operation, choice]) => {
+      const prior = planOf(choice);
+      return OPERATION_ID.test(operation) && prior ? [[operation, prior]] : [];
+    }));
+    return [[key, { peer, operation: record.operation, wipe: record.wipe, ...(local ? { local: true } : {}),
+      ...(record.wipe && (plan || record.requiresPreparation === true) ? { requiresPreparation: true } : {}),
+      ...(plan ? { plan } : {}), ...(selection ? { selection } : {}), ...(generationOf(record.generation) ? { generation: record.generation } : {}),
+      ...(archive ? { export: archive } : {}), ...(record.delivered === true ? { delivered: true } : {}),
+      ...(record.resolution === "cancelled" || record.resolution === "lost" ? { resolution: record.resolution } : {}),
+      ...(typeof record.retry === "string" && OPERATION_ID.test(record.retry) ? { retry: record.retry } : {}),
+      ...(typeof record.error === "string" ? { error: record.error.slice(0, 500) } : {}),
+      ...(Array.isArray(record.unresolved) ? { unresolved: record.unresolved.filter(id => typeof id === "string").slice(0, 100) } : {}),
+      ...(Object.keys(superseded).length ? { superseded } : {}),
+    }]];
   }));
 }
 
 export const removalsOf = (link: LinkState | null | undefined) => acceptedMembership(link)?.removals ?? {};
 
 export function pendingWipes(link: LinkState | null | undefined) {
-  return Object.values(removalsOf(link)).flatMap(({ peer, operation, wipe, delivered }) =>
-    wipe && !delivered ? [{ key: peer.key, name: peer.name, operation }] : []);
+  return Object.values(removalsOf(link)).flatMap(({ peer, operation, wipe, delivered, resolution, error, unresolved }) =>
+    wipe && !delivered && !resolution ? [{ key: peer.key, name: peer.name, operation, ...(error ? { error } : {}), ...(unresolved?.length ? { unresolved } : {}) }] : []);
 }
+
+export const wipeOutstanding = (record: MemberRemoval | undefined) =>
+  Boolean(record?.wipe && !record.delivered && !record.resolution);
+
+export const localRemovalPending = (link: LinkState | null | undefined) => {
+  const record = link?.setup?.role === "primary" ? removalsOf(link)[link.setup.primary] : undefined;
+  return Boolean(record?.local && wipeOutstanding(record));
+};
+
+export function removalMoveID(operation: string, kind: MoveKind, id: string) {
+  return "mov_" + Buffer.from(recordKey(operation, kind, id), "base64url").toString("hex").slice(0, 32);
+}
+
+export const removalDeliveryPending = (record: MemberRemoval) => !record.delivered && record.resolution !== "lost"
+  && (!record.local || !record.resolution);

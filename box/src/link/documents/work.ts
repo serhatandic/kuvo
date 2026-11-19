@@ -265,7 +265,7 @@ export function primaryPeersBody(link: LinkState): PrimaryPeersBody {
   const accepted = acceptedMembership(link);
   const boxes = accepted ? namedRoster(link, accepted.boxes) : [me, ...peers.map((peer): PeersBox => ({ ...peer, kind: setup?.managed ? peer.kind : "machine" }))];
   const removals = accepted?.removals;
-  return { boxes, ...(removals ? { removalKeys: Object.keys(removals) } : {}), moved: accepted?.moved ?? cleanMoved(link.macMoved), left: accepted?.left.slice(-64) ?? (Array.isArray(link.left) ? link.left : []).filter(key => !current.has(key)),
+  return { boxes, ...(removals ? { removalKeys: Object.keys(removals).filter(key => !removals[key]?.local) } : {}), moved: accepted?.moved ?? cleanMoved(link.macMoved), left: accepted?.left.slice(-64) ?? (Array.isArray(link.left) ? link.left : []).filter(key => !current.has(key)),
     ...(leads && setup ? { setup: { id: setup.id, epoch: setup.epoch, primary: setup.primary }, ...(setup.managed ? { managed: true as const } : {}), ...(setup.checkpointed ? { checkpointed: true as const } : {}), ...(setup.sharedSaves ? { sharedSaves: true as const } : {}), ...(setup.standby ? { standby: setup.standby.key, numberCeiling: setup.numberCeiling } : {}) } : {}) };
 }
 
