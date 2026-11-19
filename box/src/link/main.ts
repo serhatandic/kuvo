@@ -1236,7 +1236,7 @@ if (main) {
     const message = error instanceof Error ? error.message : String(error);
     if (mode === "box" && argument === "route") {
       const reply = { status: 503, routeVersion: ROUTE_VERSION, body: JSON.stringify({ message }) };
-      await new Promise<void>(resolve => process.stdout.write(JSON.stringify(reply) + "\n", resolve));
+      await new Promise<void>(resolve => process.stdout.write(JSON.stringify(reply) + "\n", () => resolve()));
       process.exit(0);
     }
     console.error(message);

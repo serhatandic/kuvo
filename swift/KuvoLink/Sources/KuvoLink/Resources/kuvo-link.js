@@ -74746,7 +74746,7 @@ var init_files4 = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "e357de55cb3e";
+var BRIDGE_VERSION = "64d6bf6afd54";
 
 // box/src/link/rehome/paths.ts
 import { createHash as createHash6 } from "node:crypto";
@@ -94424,7 +94424,7 @@ if (main) {
     if (mode === "box" && argument === "route") {
       const reply = { status: 503, routeVersion: ROUTE_VERSION, body: JSON.stringify({ message }) };
       await new Promise((resolve) => process.stdout.write(JSON.stringify(reply) + `
-`, resolve));
+`, () => resolve()));
       process.exit(0);
     }
     console.error(message);
