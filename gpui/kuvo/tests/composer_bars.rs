@@ -322,3 +322,71 @@ fn a_git_backed_output_labels_the_current_file(cx: &mut TestAppContext) {
     assert!(shown(cx, "activity-current-file"));
     assert_eq!(stand_in.seen_at("GET", "kuvo/file/text").len(), 1);
 }
+
+#[gpui::test]
+fn activity_outputs_media_strip_recent_files_and_see_all_stays_bounded(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    running(&stand_in);
+    // 1x1 PNG bytes so thumbnail decoding succeeds via the existing artifact_bytes route.
+    let png = {
+        let img = image::RgbImage::from_pixel(4, 4, image::Rgb([10, 122, 255]));
+        let mut out = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut out, image::ImageFormat::Png).unwrap();
+        out.into_inner()
+    };
+    for i in 1..=5 {
+        stand_in.add_output("ses_signup", json!({
+            "id": format!("art_img_{i:024}"),
+            "path": format!("/tmp/shot-{i}.png"),
+            "name": format!("shot-{i}.png"),
+            "kind": "image", "type": "image/png",
+            "latest": { "n": 1 },
+        }), &png);
+    }
+    for i in 1..=5 {
+        stand_in.add_output("ses_signup", json!({
+            "id": format!("art_doc_{i:024}"),
+            "path": format!("/tmp/report-{i}.md"),
+            "name": format!("report-{i}.md"),
+            "kind": "document", "type": "text/markdown",
+            "latest": { "n": 1 },
+        }), b"# Report");
+    }
+
+    let (_, cx) = conversation(cx, &stand_in, "ses_signup");
+    click(cx, "conversation-activity-button");
+
+    let trigger = bounds(cx, "conversation-activity-button").unwrap();
+    let popover = bounds(cx, "conversation-activity-popover").unwrap();
+    assert!(popover.top() >= trigger.bottom(), "popover must not cover its own button");
+    assert!(popover.size.height <= px(480.), "popover height must stay bounded, got {:?}", popover.size.height);
+
+    // Media strip: first 3 images + "+N images" tile; remaining images hidden in overview.
+    assert!(shown(cx, "activity-media-strip"));
+    for i in 1..=3 {
+        assert!(shown(cx, &format!("activity-output-art_img_{i:024}")));
+    }
+    assert!(!shown(cx, &format!("activity-output-art_img_{:024}", 4)));
+    assert!(shown(cx, "activity-more-images"));
+
+    // Recent files: first 3 non-image files + "+N more files" row; remaining files hidden in overview.
+    for i in 1..=3 {
+        assert!(shown(cx, &format!("activity-output-art_doc_{i:024}")));
+    }
+    assert!(!shown(cx, &format!("activity-output-art_doc_{:024}", 4)));
+    assert!(shown(cx, "activity-more-files"));
+    assert!(shown(cx, "activity-see-all-outputs"));
+
+    // Only the 3 visible images should have fetched thumbnail bytes.
+    assert_eq!(stand_in.seen_at("GET", &format!("kuvo/artifacts/art_img_{:024}/versions/1", 1)).len(), 1);
+    assert_eq!(stand_in.seen_at("GET", &format!("kuvo/artifacts/art_img_{:024}/versions/1", 4)).len(), 0);
+
+    // Clicking "See all" opens the scrollable all-outputs view showing every item, and Back returns.
+    click(cx, "activity-see-all-outputs");
+    assert!(shown(cx, "activity-all-outputs"));
+    assert!(shown(cx, &format!("activity-output-art_img_{:024}", 5)));
+    assert!(shown(cx, &format!("activity-output-art_doc_{:024}", 5)));
+    click(cx, "activity-outputs-back");
+    assert!(!shown(cx, "activity-all-outputs"));
+    assert!(shown(cx, "activity-media-strip"));
+}

@@ -20,9 +20,9 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use gpui::{prelude::FluentBuilder as _, AnyElement, App, EntityId, Global, InteractiveElement, IntoElement, ParentElement, Pixels, SharedString, StatefulInteractiveElement, Styled, Task, Window, canvas, div, px};
+use gpui::{AnyElement, App, EntityId, Global, Hsla, InteractiveElement, IntoElement, ParentElement, Pixels, SharedString, StatefulInteractiveElement, Styled, Task, Window, canvas, div, px};
 use kuvo_box::areas::{Bot, BotNow, BotState, Look};
-use kuvo_ui::{ActiveTheme, Icon, IconName, IconSize, menu::Tooltip, theme::{Colors, radius}};
+use kuvo_ui::{ActiveTheme, Icon, IconName, IconSize, StyledType, TextRole, menu::Tooltip, theme::{Colors, radius}};
 use kuvo_ui::bot::{Motion, Shape, State, paint_bot, seed_of};
 
 /// The shortest time between two frames a view asks for: 60 a second, with a little slack so a
@@ -46,21 +46,65 @@ pub fn state_of(now: &BotNow) -> State {
     }
 }
 
-/// The status mark shared by the full Bots sidebar and its compact avatar strip.
-#[derive(Debug, PartialEq)]
+/// The status mark shared by the full Bots sidebar (trailing column) and its compact avatar strip
+/// (dedicated gutter under the face). Nothing is ever drawn over a bot's face.
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) enum SidebarMark {
-    AtWork,
     NeedsYou,
-    Wake(String),
+    AtWork,
+    Wake { short: String, tooltip: String },
+    Blocked,
+    Offline,
+}
+
+fn terse_wake(due_ms: f64, now_ms: f64) -> Option<String> {
+    let ahead = due_ms - now_ms;
+    if !ahead.is_finite() || ahead <= 0. {
+        return None;
+    }
+    let minutes = (ahead / 60_000.).ceil() as u64;
+    if minutes < 60 {
+        Some(format!("{}m", minutes.max(1)))
+    } else if minutes < 24 * 60 {
+        Some(format!("{}h", minutes / 60))
+    } else {
+        Some(format!("{}d", minutes / (24 * 60)))
+    }
+}
+
+fn hollow_dot(size: Pixels, color: Hsla) -> AnyElement {
+    div()
+        .flex_none()
+        .size(size)
+        .rounded(radius::PILL)
+        .border_1()
+        .border_color(color)
+        .into_any_element()
+}
+
+fn halo_dot(color: Hsla, inner: Pixels, outer: Pixels) -> AnyElement {
+    div()
+        .flex_none()
+        .size(outer)
+        .rounded(radius::PILL)
+        .bg(color.opacity(0.18))
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(div().size(inner).rounded(radius::PILL).bg(color))
+        .into_any_element()
 }
 
 impl SidebarMark {
     pub(crate) fn of(bot: &Bot, reached: bool, now: f64) -> Option<Self> {
         if !reached {
-            return None;
+            return Some(Self::Offline);
         }
         if bot.now.asking > 0 || bot.now.state == BotState::NeedsYou {
             return Some(Self::NeedsYou);
+        }
+        if bot.now.state == BotState::Blocked {
+            return Some(Self::Blocked);
         }
         if bot.now.working > 0 || matches!(bot.now.state, BotState::Working | BotState::Thinking) {
             return Some(Self::AtWork);
@@ -69,45 +113,131 @@ impl SidebarMark {
             return None;
         }
         let due = bot.wakes? * 1000.;
-        crate::time::next_wake(due, now).map(|when| Self::Wake(format!("Wakes {when}")))
+        let when = crate::time::next_wake(due, now)?;
+        let short = terse_wake(due, now)?;
+        Some(Self::Wake { short, tooltip: format!("Wakes {when}") })
     }
 
     pub(crate) fn tooltip(&self, name: &str) -> String {
         let words = match self {
+            Self::NeedsYou => "Waiting on you",
             Self::AtWork => "At work",
-            Self::NeedsYou => "Needs you",
-            Self::Wake(words) => words,
+            Self::Wake { tooltip, .. } => tooltip.as_str(),
+            Self::Blocked => "Blocked",
+            Self::Offline => "Offline",
         };
         format!("{name} · {words}")
     }
 
-    /// Overlay at the corner of the avatar, relative to the face's own bounds.
-    pub(crate) fn badge(&self, colors: &Colors, dot_size: Pixels) -> AnyElement {
-        let (fill, selector) = match self {
-            Self::AtWork => (colors.success, "bot-avatar-at-work"),
-            Self::NeedsYou => (colors.accent, "bot-avatar-needs-you"),
-            Self::Wake(_) => (colors.surface, "bot-avatar-wake"),
-        };
-        let wake = matches!(self, Self::Wake(_));
-        div().debug_selector(move || selector.into())
-            .absolute().bottom(px(3.)).right(px(3.)).size(if wake { px(14.) } else { dot_size })
-            .flex().items_center().justify_center()
-            .rounded(radius::PILL).border_1().border_color(colors.sidebar).bg(fill)
-            .when(wake, |badge| {
-                badge.child(Icon::new(IconName::Clock).size(IconSize::XSmall).color(colors.text_muted))
-            })
-            .into_any_element()
+    pub(crate) fn detail_color(&self, colors: &Colors) -> Hsla {
+        match self {
+            Self::Blocked => colors.warning,
+            Self::Offline => colors.text_faint,
+            _ => colors.text_muted,
+        }
+    }
+
+    /// Small status mark aligned in the trailing column on the right of a full sidebar row.
+    pub(crate) fn trailing(&self, colors: &Colors) -> AnyElement {
+        match self {
+            Self::NeedsYou => div()
+                .debug_selector(|| "bot-avatar-needs-you".into())
+                .flex_none()
+                .flex()
+                .items_center()
+                .justify_center()
+                .w(px(16.))
+                .child(div().size(px(8.)).rounded(radius::PILL).bg(colors.accent))
+                .into_any_element(),
+            Self::AtWork => div()
+                .debug_selector(|| "bot-avatar-at-work".into())
+                .flex_none()
+                .flex()
+                .items_center()
+                .justify_center()
+                .w(px(16.))
+                .child(halo_dot(colors.success, px(7.), px(14.)))
+                .into_any_element(),
+            Self::Wake { short, .. } => div()
+                .debug_selector(|| "bot-avatar-wake".into())
+                .flex_none()
+                .flex()
+                .items_center()
+                .gap(px(3.))
+                .text_role(TextRole::Meta)
+                .text_color(colors.text_faint)
+                .child(Icon::new(IconName::Clock).size(IconSize::XSmall).color(colors.icon))
+                .child(short.clone())
+                .into_any_element(),
+            Self::Blocked => div()
+                .debug_selector(|| "bot-avatar-blocked".into())
+                .flex_none()
+                .flex()
+                .items_center()
+                .justify_center()
+                .w(px(16.))
+                .child(Icon::new(IconName::Warning).size(IconSize::Nav).color(colors.warning))
+                .into_any_element(),
+            Self::Offline => div()
+                .debug_selector(|| "bot-avatar-offline".into())
+                .flex_none()
+                .flex()
+                .items_center()
+                .justify_center()
+                .w(px(16.))
+                .child(hollow_dot(px(8.), colors.text_faint))
+                .into_any_element(),
+        }
+    }
+
+    /// Small status mark in the dedicated gutter strictly below the face in the compact strip.
+    pub(crate) fn gutter(&self, colors: &Colors) -> AnyElement {
+        match self {
+            Self::NeedsYou => div()
+                .debug_selector(|| "bot-avatar-needs-you".into())
+                .flex_none()
+                .size(px(6.))
+                .rounded(radius::PILL)
+                .bg(colors.accent)
+                .into_any_element(),
+            Self::AtWork => div()
+                .debug_selector(|| "bot-avatar-at-work".into())
+                .flex_none()
+                .child(halo_dot(colors.success, px(5.), px(10.)))
+                .into_any_element(),
+            Self::Wake { .. } => div()
+                .debug_selector(|| "bot-avatar-wake".into())
+                .flex_none()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(Icon::new(IconName::Clock).size(IconSize::Indicator).color(colors.icon))
+                .into_any_element(),
+            Self::Blocked => div()
+                .debug_selector(|| "bot-avatar-blocked".into())
+                .flex_none()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(Icon::new(IconName::Warning).size(IconSize::Indicator).color(colors.warning))
+                .into_any_element(),
+            Self::Offline => div()
+                .debug_selector(|| "bot-avatar-offline".into())
+                .flex_none()
+                .child(hollow_dot(px(6.), colors.text_faint))
+                .into_any_element(),
+        }
     }
 }
 
-pub(crate) fn sidebar_avatar(id: &str, name: &str, face: AnyElement, mark: Option<SidebarMark>, colors: &Colors) -> AnyElement {
-    let tooltip = mark.as_ref().map_or_else(|| name.to_owned(), |mark| mark.tooltip(name));
-    let badge = mark.as_ref().map(|mark| mark.badge(colors, px(14.)));
+/// Untouched bot face for a Bots sidebar row, with tooltip and selector (never overlays a badge).
+pub(crate) fn sidebar_avatar(id: &str, name: &str, face: AnyElement, mark: Option<&SidebarMark>) -> AnyElement {
+    let tooltip = mark.map_or_else(|| name.to_owned(), |mark| mark.tooltip(name));
     let selector = format!("bot-{id}-avatar");
     div().id(SharedString::from(selector.clone())).debug_selector(move || selector)
-        .relative().flex_none()
+        .flex_none()
         .tooltip(move |_, cx| Tooltip::new(tooltip.clone()).build(cx))
-        .child(face).children(badge).into_any_element()
+        .child(face).into_any_element()
 }
 
 /// One bot's creature: its motion, when it was last stepped, and a state waiting for Done's
@@ -409,12 +539,16 @@ mod tests {
             "look": {"color":"sky","shape":"round","face":"calm"}, "wakes": 180,
         })).unwrap();
         let wake = SidebarMark::of(&bot, true, 0.).unwrap();
+        assert_eq!(wake, SidebarMark::Wake { short: "3m".into(), tooltip: "Wakes in 3 min".into() });
         assert_eq!(wake.tooltip(&bot.name), "Mira · Wakes in 3 min");
-        assert_eq!(SidebarMark::of(&bot, false, 0.), None);
+        assert_eq!(SidebarMark::of(&bot, false, 0.), Some(SidebarMark::Offline));
         assert_eq!(SidebarMark::of(&bot, true, 180_000.), None);
         bot.paused = true;
         assert_eq!(SidebarMark::of(&bot, true, 0.), None);
         bot.paused = false;
+        bot.now.state = kuvo_box::areas::BotState::Blocked;
+        assert_eq!(SidebarMark::of(&bot, true, 0.), Some(SidebarMark::Blocked));
+        bot.now.state = kuvo_box::areas::BotState::Idle;
         bot.now.waking = true;
         bot.now.working = 1;
         assert_eq!(SidebarMark::of(&bot, true, 0.), Some(SidebarMark::AtWork));

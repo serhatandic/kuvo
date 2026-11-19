@@ -457,44 +457,11 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "mode-full-access", width: 1280., height: 820., session: Some("ses_recipes"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(full_access_question) },
     Screen { slug: "landing-worktree", width: 1280., height: 820., session: None, typed: Some("Make the footer links work on mobile"), empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(landing_worktree) },
     Screen { slug: "landing-worktree-menu", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(landing_worktree) },
-    // Work Queue #900 design drafts: bot face status indicators and the Outputs popover.
-    Screen { slug: "draft-faces-a", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(draft_faces_a) },
-    Screen { slug: "draft-faces-b", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(draft_faces_b) },
-    Screen { slug: "draft-faces-c", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(draft_faces_c) },
-    Screen { slug: "draft-outputs-a", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(draft_outputs_a) },
-    Screen { slug: "draft-outputs-b", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(draft_outputs_b) },
-    Screen { slug: "draft-outputs-c", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(draft_outputs_c) },
+    // Bot sidebar status marks (trailing column & compact under-face gutter) and the Outputs popover media strip.
+    Screen { slug: "bots-sidebar-states", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bots) },
+    Screen { slug: "bots-compact-states", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bots) },
+    Screen { slug: "outputs-popover-media", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(conversation_activity) },
 ];
-
-fn show_face_draft(draft: kuvo::drafts::FaceDraft, workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
-    workspace.show_area(Area::Bots, window, cx);
-    if let Some(view) = workspace.area_view(Area::Bots).cloned() {
-        view.update(cx, |view, cx| view.set_face_draft(Some(draft), cx));
-    }
-}
-fn draft_faces_a(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
-    show_face_draft(kuvo::drafts::FaceDraft::TrailingColumn, w, window, cx);
-}
-fn draft_faces_b(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
-    show_face_draft(kuvo::drafts::FaceDraft::BreathingHalo, w, window, cx);
-}
-fn draft_faces_c(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
-    show_face_draft(kuvo::drafts::FaceDraft::EdgeBarInline, w, window, cx);
-}
-
-fn show_outputs_draft(draft: kuvo::drafts::OutputsDraft, workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
-    let activity = workspace.conversation().expect("conversation").read(cx).bars().clone();
-    activity.update(cx, |activity, cx| activity.open_outputs_draft(draft, window, cx));
-}
-fn draft_outputs_a(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
-    show_outputs_draft(kuvo::drafts::OutputsDraft::CodexCompact, w, window, cx);
-}
-fn draft_outputs_b(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
-    show_outputs_draft(kuvo::drafts::OutputsDraft::MediaStrip, w, window, cx);
-}
-fn draft_outputs_c(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
-    show_outputs_draft(kuvo::drafts::OutputsDraft::GlanceCards, w, window, cx);
-}
 
 /// An area's row, picked: what its page shows.
 fn pick(workspace: &mut Workspace, area: Area, key: &str, window: &mut Window, cx: &mut Context<Workspace>) {
@@ -1572,7 +1539,7 @@ fn main() -> anyhow::Result<()> {
                 let width = match screen.slug {
                     "sidebar-wide" => 420.,
                     "sidebar-narrow-sessions" => 228.,
-                    "sidebar-narrow-bots" | "sidebar-search-results" | "sidebar-search-empty" => kuvo::sidebar::COMPACT_WIDTH,
+                    "sidebar-narrow-bots" | "bots-compact-states" | "sidebar-search-results" | "sidebar-search-empty" => kuvo::sidebar::COMPACT_WIDTH,
                     _ => kuvo::sidebar::WIDTH,
                 };
                 change(Change::SidebarWidth(width), cx);
@@ -1817,7 +1784,7 @@ fn main() -> anyhow::Result<()> {
                 }), include_bytes!("../../../assets/icons/activity.svg"));
                 stand_in.set_queue("ses_signup", vec![]);
             }
-            if screen.slug.starts_with("draft-faces-") {
+            if matches!(screen.slug, "bots-sidebar-states" | "bots-compact-states") {
                 use serde_json::json;
                 let client = BoxClient::new(stand_in.clone());
                 for (id, color, shape, face) in [
@@ -1841,7 +1808,7 @@ fn main() -> anyhow::Result<()> {
                 stand_in.add_bot("bot_ops", "Ops Watcher", json!({ "color": "orange", "shape": "capsule", "face": "bright" }));
                 stand_in.set_bot_now("bot_ops", json!({ "working": 0, "asking": 0, "blocked": 1, "blockedBy": "limit", "state": "blocked", "since": NOW - 120_000. }));
             }
-            if screen.slug.starts_with("draft-outputs-") {
+            if screen.slug == "outputs-popover-media" {
                 use serde_json::json;
                 let mini_screen = |dark: bool, accent: [u8; 3], bars: bool| -> Vec<u8> {
                     let (w, h) = (240u32, 152u32);

@@ -512,22 +512,10 @@ impl WorkBars {
         self.handle.open(card, window, cx);
         cx.notify();
     }
-
-    #[cfg(feature = "stand-in")]
-    pub fn open_outputs_draft(&mut self, draft: crate::drafts::OutputsDraft, window: &mut Window, cx: &mut Context<Self>) {
-        let bars = cx.entity();
-        let source = self.wake_source();
-        let client = self.client.clone();
-        let sessions = self.active_rows.clone();
-        let card = cx.new(|cx| {
-            let mut card = ActivityCard::with_source(&bars, source, false, false, &sessions, cx);
-            card.set_outputs_draft(draft, &client);
-            card
-        });
-        self.handle.open(card, window, cx);
-        cx.notify();
-    }
 }
+
+const STRIP_IMAGES: usize = 3;
+const RECENT_FILES: usize = 3;
 
 enum Preview {
     Loading,
@@ -543,21 +531,21 @@ struct ActivityCard {
     output: Option<Shown>,
     reading_output: Option<Task<()>>,
     expanded: bool,
+    all_outputs: bool,
     provider_requests: Vec<String>,
     providers: HashMap<String, String>,
     reading_providers: Option<Task<()>>,
     outputs: Option<Outputs>,
     outputs_failed: bool,
+    thumbnails: HashMap<String, (u32, Option<std::sync::Arc<gpui::Image>>)>,
+    thumb_requests: Vec<(String, u32)>,
+    reading_thumbs: Option<Task<()>>,
     preview: Option<(String, Preview)>,
     reading: Option<Task<()>>,
     more: Option<Task<()>>,
     loaded_pages: usize,
     wake_schedule: Option<Entity<WakeSchedule>>,
     force_wakes: bool,
-    #[cfg(feature = "stand-in")]
-    outputs_draft: Option<crate::drafts::OutputsDraft>,
-    #[cfg(feature = "stand-in")]
-    draft_thumbs: HashMap<String, std::sync::Arc<gpui::Image>>,
     _activity_subscription: Subscription,
     _outputs: Option<(Follow<Followed<Outputs>>, Task<()>)>,
 }
@@ -578,25 +566,6 @@ impl ActivityCard {
         Self::with_source(activity, source, show_wakes, force_wakes, &sessions, cx)
     }
 
-    #[cfg(feature = "stand-in")]
-    fn set_outputs_draft(&mut self, draft: crate::drafts::OutputsDraft, client: &BoxClient) {
-        self.outputs_draft = Some(draft);
-        self.draft_thumbs.clear();
-        if let Some(page) = &self.outputs {
-            for artifact in page.artifacts.iter().filter(|a| a.kind == "image") {
-                let media_type = artifact.media_type.split(';').next().unwrap_or_default();
-                if let Some(format) = gpui::ImageFormat::from_mime_type(media_type)
-                    && let Ok(bytes) = client.artifact_bytes(artifact)
-                {
-                    self.draft_thumbs.insert(
-                        artifact.id.clone(),
-                        std::sync::Arc::new(gpui::Image::from_bytes(format, bytes)),
-                    );
-                }
-            }
-        }
-    }
-
     fn with_source(activity: &Entity<WorkBars>, source: wakes::Source, show_wakes: bool, force_wakes: bool, sessions: &[SessionRow], cx: &mut Context<Self>) -> Self {
         let schedule = show_wakes.then(|| cx.new(|cx| WakeSchedule::embedded(source.clone(), cx)));
         let wakes::Source { client, session, live, .. } = source;
@@ -606,21 +575,21 @@ impl ActivityCard {
             output: None,
             reading_output: None,
             expanded: false,
+            all_outputs: false,
             provider_requests: Vec::new(),
             providers: HashMap::new(),
             reading_providers: None,
             outputs: None,
             outputs_failed: false,
+            thumbnails: HashMap::new(),
+            thumb_requests: Vec::new(),
+            reading_thumbs: None,
             preview: None,
             reading: None,
             more: None,
             loaded_pages: 1,
             wake_schedule: schedule,
             force_wakes,
-            #[cfg(feature = "stand-in")]
-            outputs_draft: None,
-            #[cfg(feature = "stand-in")]
-            draft_thumbs: HashMap::new(),
             _activity_subscription: cx.observe(activity, |this: &mut ActivityCard, activity, cx| {
                 let bars = activity.read(cx);
                 let (client, live, sessions) = (bars.client.clone(), bars.live, bars.active_rows.clone());
@@ -651,7 +620,7 @@ impl ActivityCard {
             card._outputs = Some((follow, task));
         } else {
             let outputs = client.session_outputs(&session, None);
-            card.take_outputs(match outputs { Ok(page) => Followed::Now(page), Err(error) => Followed::Failed(error) }, cx);
+            card.take_outputs_with(match outputs { Ok(page) => Followed::Now(page), Err(error) => Followed::Failed(error) }, client, false, cx);
         }
         card
     }
@@ -690,21 +659,102 @@ impl ActivityCard {
         }));
     }
 
+    fn read_thumbnails(&mut self, client: BoxClient, live: bool, cx: &mut Context<Self>) {
+        let Some(page) = &self.outputs else { return };
+        let visible_ids: HashSet<&str> = page
+            .artifacts
+            .iter()
+            .filter(|a| a.kind == "image")
+            .take(STRIP_IMAGES)
+            .map(|a| a.id.as_str())
+            .collect();
+        self.thumbnails.retain(|id, _| visible_ids.contains(id.as_str()));
+
+        let mut pending: Vec<(Artifact, gpui::ImageFormat)> = Vec::new();
+        for artifact in page.artifacts.iter().filter(|a| a.kind == "image").take(STRIP_IMAGES) {
+            if self.thumbnails.get(&artifact.id).is_some_and(|(n, _)| *n == artifact.latest.n) {
+                continue;
+            }
+            let git_backed = artifact.gone.is_none() && artifact.latest.reason.as_deref() == Some("git");
+            let media_type = artifact.media_type.split(';').next().unwrap_or_default();
+            match (!git_backed).then(|| gpui::ImageFormat::from_mime_type(media_type)).flatten() {
+                Some(format) => pending.push((artifact.clone(), format)),
+                None => {
+                    self.thumbnails.insert(artifact.id.clone(), (artifact.latest.n, None));
+                }
+            }
+        }
+        let keys: Vec<(String, u32)> = pending.iter().map(|(a, _)| (a.id.clone(), a.latest.n)).collect();
+        if keys.is_empty() {
+            self.thumb_requests.clear();
+            self.reading_thumbs = None;
+            return;
+        }
+        if self.thumb_requests == keys {
+            return;
+        }
+        self.thumb_requests = keys;
+        let fetch = move || -> Vec<(String, u32, Option<std::sync::Arc<gpui::Image>>)> {
+            pending
+                .into_iter()
+                .map(|(artifact, format)| {
+                    let image = client
+                        .artifact_bytes(&artifact)
+                        .ok()
+                        .map(|bytes| std::sync::Arc::new(gpui::Image::from_bytes(format, bytes)));
+                    (artifact.id, artifact.latest.n, image)
+                })
+                .collect()
+        };
+        if !live {
+            for (id, n, image) in fetch() {
+                self.thumbnails.insert(id, (n, image));
+            }
+            self.thumb_requests.clear();
+            return;
+        }
+        let task = cx.background_executor().spawn(async move { fetch() });
+        self.reading_thumbs = Some(cx.spawn(async move |this, cx| {
+            let loaded = task.await;
+            this.update(cx, |this, cx| {
+                this.reading_thumbs = None;
+                this.thumb_requests.clear();
+                for (id, n, image) in loaded {
+                    this.thumbnails.insert(id, (n, image));
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+    }
+
     fn take_outputs(&mut self, update: Followed<Outputs>, cx: &mut Context<Self>) {
+        let Some(activity) = self.activity.upgrade() else { return };
+        let bars = activity.read(cx);
+        let (client, live) = (bars.client.clone(), bars.live);
+        self.take_outputs_with(update, client, live, cx);
+    }
+
+    fn take_outputs_with(&mut self, update: Followed<Outputs>, client: BoxClient, live: bool, cx: &mut Context<Self>) {
         match update {
             Followed::Now(page) if self.loaded_pages > 1 => {
                 let Some(activity) = self.activity.upgrade() else { return };
                 let bars = activity.read(cx);
-                let (client, session, pages) = (bars.client.clone(), bars.session.clone(), self.loaded_pages);
+                let (session, pages) = (bars.session.clone(), self.loaded_pages);
+                let fetch_client = client.clone();
                 let task = cx.background_executor().spawn(async move {
-                    refresh_outputs(page, pages, |cursor| client.session_outputs(&session, Some(cursor)))
+                    refresh_outputs(page, pages, |cursor| fetch_client.session_outputs(&session, Some(cursor)))
                 });
                 self.more = Some(cx.spawn(async move |this, cx| {
                     let result = task.await;
                     this.update(cx, |this, cx| {
                         this.more = None;
                         match result {
-                            Ok(outputs) => { this.outputs = Some(outputs); this.outputs_failed = false; }
+                            Ok(outputs) => {
+                                this.outputs = Some(outputs);
+                                this.outputs_failed = false;
+                                this.read_thumbnails(client, live, cx);
+                            }
                             Err(_) => this.outputs_failed = true,
                         }
                         cx.notify();
@@ -714,6 +764,7 @@ impl ActivityCard {
             Followed::Now(page) => {
                 self.outputs = Some(page);
                 self.outputs_failed = false;
+                self.read_thumbnails(client, live, cx);
                 // Leave a requested next page running; its cursor is based on a stable record.
             }
             Followed::Failed(_) => self.outputs_failed = true,
@@ -726,9 +777,10 @@ impl ActivityCard {
         let Some(before) = self.outputs.as_ref().and_then(|page| page.next.clone()) else { return };
         let Some(activity) = self.activity.upgrade() else { return };
         let bars = activity.read(cx);
-        let (client, session) = (bars.client.clone(), bars.session.clone());
+        let (client, session, live) = (bars.client.clone(), bars.session.clone(), bars.live);
+        let fetch_client = client.clone();
         self.loaded_pages += 1;
-        let task = cx.background_executor().spawn(async move { client.session_outputs(&session, Some(&before)) });
+        let task = cx.background_executor().spawn(async move { fetch_client.session_outputs(&session, Some(&before)) });
         self.more = Some(cx.spawn(async move |this, cx| {
             let answer = task.await;
             this.update(cx, |this, cx| {
@@ -737,6 +789,7 @@ impl ActivityCard {
                     Ok(page) => if let Some(outputs) = &mut this.outputs {
                         append_outputs(outputs, page);
                         this.outputs_failed = false;
+                        this.read_thumbnails(client, live, cx);
                     },
                     Err(_) => { this.loaded_pages -= 1; this.outputs_failed = true; }
                 }
@@ -835,36 +888,264 @@ impl ActivityCard {
 
     fn outputs(&self, cx: &Context<Self>) -> AnyElement {
         let c = cx.theme().colors.clone();
+        let artifacts = self.outputs.as_ref().map(|page| page.artifacts.as_slice()).unwrap_or(&[]);
+        let has_next = self.outputs.as_ref().is_some_and(|page| page.next.is_some());
         let note = if self.outputs_failed {
             Some("Couldn’t read outputs.")
         } else if self.outputs.is_none() {
             Some("Loading outputs…")
-        } else if self.outputs.as_ref().is_some_and(|page| page.artifacts.is_empty()) {
+        } else if artifacts.is_empty() {
             Some("No outputs yet")
         } else {
             None
         };
-        section("activity-outputs", "Outputs", cx)
-            .children(note.map(|note| div().debug_selector(move || note.into()).px(space::S2).py(space::S1_5).text_color(c.text_muted).child(note)))
-            .children(self.outputs.iter().flat_map(|page| &page.artifacts).map(|artifact| {
-                let selector = format!("activity-output-{}", artifact.id);
-                let icon = match artifact.kind.as_str() {
-                    "image" => IconName::Image,
-                    "page" => IconName::Globe,
-                    "code" => IconName::Terminal,
-                    "download" => IconName::ArrowDown,
-                    _ => IconName::File,
-                };
-                let artifact = artifact.clone();
-                row(selector, cx)
-                    .child(mark(icon, c.icon))
-                    .child(div().min_w_0().truncate().child(artifact.name.clone()))
-                    .on_click(cx.listener(move |this, _, window, cx| this.open_output(&artifact, window, cx)))
+
+        let images: Vec<&Artifact> = artifacts.iter().filter(|a| a.kind == "image").collect();
+        let files: Vec<&Artifact> = artifacts.iter().filter(|a| a.kind != "image").collect();
+        let more_images = images.len().saturating_sub(STRIP_IMAGES);
+        let more_files = files.len().saturating_sub(RECENT_FILES);
+        let can_see_all = more_images > 0 || more_files > 0 || has_next;
+
+        let header = div()
+            .flex()
+            .items_center()
+            .justify_between()
+            .px(space::S2)
+            .pb(space::S1)
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(space::S1_5)
+                    .child(div().text_ui(TypeSize::Small).medium().text_color(c.text_muted).child("Outputs"))
+                    .children((!artifacts.is_empty()).then(|| {
+                        div().text_ui(TypeSize::Caption).text_color(c.text_faint).child(artifacts.len().to_string())
+                    })),
+            )
+            .children(can_see_all.then(|| {
+                let hover = c.hover;
+                div()
+                    .id("activity-see-all-outputs")
+                    .debug_selector(|| "activity-see-all-outputs".into())
+                    .flex()
+                    .items_center()
+                    .gap(px(2.))
+                    .px(px(4.))
+                    .py(px(1.))
+                    .rounded(radius::SMALL)
+                    .cursor_pointer()
+                    .hover(move |d| d.bg(hover))
+                    .text_ui(TypeSize::Caption)
+                    .text_color(c.accent)
+                    .child("See all")
+                    .child(Icon::new(IconName::ChevronRight).size(IconSize::XSmall).color(c.accent))
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.all_outputs = true;
+                        window.focus(&this.focus, cx);
+                        cx.notify();
+                    }))
+            }));
+
+        let media_strip = (!images.is_empty()).then(|| {
+            let hover = c.hover;
+            div()
+                .debug_selector(|| "activity-media-strip".into())
+                .flex()
+                .items_stretch()
+                .gap(space::S1_5)
+                .px(space::S2)
+                .pt(space::S1)
+                .pb(space::S2)
+                .children(images.iter().take(STRIP_IMAGES).map(|artifact| {
+                    let selector = format!("activity-output-{}", artifact.id);
+                    let caption = short_caption(&artifact.name);
+                    let preview = match self.thumbnails.get(&artifact.id).and_then(|(_, img)| img.as_ref()) {
+                        Some(image) => gpui::img(image.clone())
+                            .w(px(78.))
+                            .h(px(50.))
+                            .object_fit(gpui::ObjectFit::Cover)
+                            .into_any_element(),
+                        None => div()
+                            .w(px(78.))
+                            .h(px(50.))
+                            .bg(c.sunken)
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(Icon::new(IconName::Image).size(IconSize::Medium).color(c.icon))
+                            .into_any_element(),
+                    };
+                    let clicked = (*artifact).clone();
+                    div()
+                        .id(SharedString::from(selector.clone()))
+                        .debug_selector(move || selector)
+                        .flex_none()
+                        .w(px(78.))
+                        .flex()
+                        .flex_col()
+                        .gap(px(3.))
+                        .cursor_pointer()
+                        .tab_index(0)
+                        .on_click(cx.listener(move |this, _, window, cx| this.open_output(&clicked, window, cx)))
+                        .child(
+                            div()
+                                .w(px(78.))
+                                .h(px(50.))
+                                .rounded(radius::NAV)
+                                .overflow_hidden()
+                                .border_1()
+                                .border_color(c.border)
+                                .child(preview),
+                        )
+                        .child(
+                            div()
+                                .w(px(78.))
+                                .truncate()
+                                .text_ui(TypeSize::Caption)
+                                .text_color(c.text_muted)
+                                .child(caption),
+                        )
+                }))
+                .children((more_images > 0).then(|| {
+                    div()
+                        .id("activity-more-images")
+                        .debug_selector(|| "activity-more-images".into())
+                        .flex_none()
+                        .w(px(58.))
+                        .h(px(50.))
+                        .rounded(radius::NAV)
+                        .bg(c.sunken)
+                        .border_1()
+                        .border_color(c.border)
+                        .cursor_pointer()
+                        .hover(move |d| d.bg(hover))
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .justify_center()
+                        .child(div().text_ui(TypeSize::Small).medium().text_color(c.text_muted).child(format!("+{more_images}")))
+                        .child(div().text_ui(TypeSize::Caption).text_color(c.text_faint).child(if more_images == 1 { "image" } else { "images" }))
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.all_outputs = true;
+                            window.focus(&this.focus, cx);
+                            cx.notify();
+                        }))
+                }))
+        });
+
+        let more_files_label = if more_files > 0 {
+            Some(format!("+{more_files} more {}", if more_files == 1 { "file" } else { "files" }))
+        } else if has_next && !files.is_empty() {
+            Some("More files…".into())
+        } else {
+            None
+        };
+        let files_block = (!files.is_empty()).then(|| {
+            let muted = c.text_muted;
+            div()
+                .flex()
+                .flex_col()
+                .children(files.iter().take(RECENT_FILES).map(|artifact| {
+                    let selector = format!("activity-output-{}", artifact.id);
+                    let clicked = (*artifact).clone();
+                    row(selector, cx)
+                        .child(Icon::new(output_icon(artifact)).size(IconSize::Nav).color(c.icon))
+                        .child(div().flex_1().min_w_0().truncate().child(middle_trim(&artifact.name, 34)))
+                        .child(div().flex_none().text_mono(TypeSize::Caption).text_color(c.text_faint).child(ext_tag(&artifact.name)))
+                        .on_click(cx.listener(move |this, _, window, cx| this.open_output(&clicked, window, cx)))
+                }))
+                .children(more_files_label.map(|label| {
+                    div()
+                        .id("activity-more-files")
+                        .debug_selector(|| "activity-more-files".into())
+                        .px(space::S2)
+                        .pt(px(2.))
+                        .text_ui(TypeSize::Caption)
+                        .text_color(c.text_faint)
+                        .cursor_pointer()
+                        .hover(move |d| d.text_color(muted))
+                        .child(label)
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.all_outputs = true;
+                            window.focus(&this.focus, cx);
+                            cx.notify();
+                        }))
+                }))
+        });
+
+        div()
+            .debug_selector(|| "activity-outputs".into())
+            .flex()
+            .flex_col()
+            .flex_none()
+            .child(header)
+            .children(note.map(|note| {
+                div().debug_selector(move || note.into()).px(space::S2).py(space::S1_5).text_color(c.text_muted).child(note)
             }))
-            .children(self.outputs.as_ref().is_some_and(|page| page.next.is_some()).then(|| {
-                Button::new("activity-more-outputs", "Show more").ghost().quiet().size(ButtonSize::Small)
-                    .loading(self.more.is_some()).on_click(cx.listener(|this, _, _, cx| this.more_outputs(cx)))
-            }))
+            .children(media_strip)
+            .children(files_block)
+            .into_any_element()
+    }
+
+    fn all_outputs_view(&self, max_h: gpui::Pixels, cx: &Context<Self>) -> AnyElement {
+        let c = cx.theme().colors.clone();
+        let artifacts = self.outputs.as_ref().map(|page| page.artifacts.as_slice()).unwrap_or(&[]);
+        let has_next = self.outputs.as_ref().is_some_and(|page| page.next.is_some());
+        let list_max_h = (max_h - px(64.)).max(px(120.));
+        div()
+            .flex()
+            .flex_col()
+            .debug_selector(|| "activity-all-outputs".into())
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(space::S2)
+                    .px(space::S1)
+                    .pb(space::S2)
+                    .child(
+                        Button::icon_only("activity-outputs-back", IconName::ChevronLeft, "Back to Activity")
+                            .ghost()
+                            .size(ButtonSize::Small)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.all_outputs = false;
+                                window.focus(&this.focus, cx);
+                                cx.notify();
+                            })),
+                    )
+                    .child(div().text_ui(TypeSize::Small).medium().text_color(c.text).child("Outputs"))
+                    .child(div().text_ui(TypeSize::Caption).text_color(c.text_faint).child(artifacts.len().to_string())),
+            )
+            .child(
+                div()
+                    .id("activity-all-outputs-list")
+                    .border_t_1()
+                    .border_color(c.border)
+                    .pt(space::S1_5)
+                    .max_h(list_max_h)
+                    .overflow_y_scroll()
+                    .flex()
+                    .flex_col()
+                    .children(artifacts.iter().map(|artifact| {
+                        let selector = format!("activity-output-{}", artifact.id);
+                        let clicked = artifact.clone();
+                        row(selector, cx)
+                            .child(Icon::new(output_icon(artifact)).size(IconSize::Nav).color(c.icon))
+                            .child(div().flex_1().min_w_0().truncate().child(middle_trim(&artifact.name, 34)))
+                            .child(div().flex_none().text_mono(TypeSize::Caption).text_color(c.text_faint).child(ext_tag(&artifact.name)))
+                            .on_click(cx.listener(move |this, _, window, cx| this.open_output(&clicked, window, cx)))
+                    }))
+                    .children(has_next.then(|| {
+                        div().pt(space::S1).child(
+                            Button::new("activity-more-outputs", "Show more")
+                                .ghost()
+                                .quiet()
+                                .size(ButtonSize::Small)
+                                .loading(self.more.is_some())
+                                .on_click(cx.listener(|this, _, _, cx| this.more_outputs(cx))),
+                        )
+                    })),
+            )
             .into_any_element()
     }
 
@@ -940,6 +1221,7 @@ impl ActivityCard {
                     })),
             )
             .child(div().flex_1().min_w_0().truncate().child(label))
+            .children((asking > 0).then(|| div().flex_none().size(px(6.)).rounded(radius::PILL).bg(c.accent)))
             .child(mark(if self.expanded { IconName::ChevronUp } else { IconName::ChevronDown }, c.text_faint))
             .on_click(cx.listener(|this, _, _, cx| {
                 this.expanded = !this.expanded;
@@ -971,8 +1253,9 @@ impl ActivityCard {
                 let selected = self.output.as_ref().is_some_and(|shown| shown.command.id == id);
                 div().flex().flex_col()
                     .child(row(format!("activity-process-{id}"), cx).when(selected, |d| d.bg(c.hover))
-                        .child(mark(IconName::TerminalWindow, c.icon))
-                        .child(div().min_w_0().truncate().text_mono(TypeSize::Small).child(command.command.lines().next().unwrap_or("").to_owned()))
+                        .child(Icon::new(IconName::TerminalWindow).size(IconSize::Nav).color(c.icon))
+                        .child(div().flex_1().min_w_0().truncate().text_mono(TypeSize::Small).child(command.command.lines().next().unwrap_or("").to_owned()))
+                        .child(div().flex_none().size(px(6.)).rounded(radius::PILL).bg(c.success))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.toggle_output(&toggle, cx);
                         })))
@@ -992,8 +1275,9 @@ impl ActivityCard {
             })).into_any_element())
     }
 
-    fn preview(&self, name: &str, preview: &Preview, window: &Window, cx: &Context<Self>) -> AnyElement {
+    fn preview(&self, name: &str, preview: &Preview, max_h: gpui::Pixels, cx: &Context<Self>) -> AnyElement {
         let c = cx.theme().colors.clone();
+        let body_max_h = (max_h - px(64.)).max(px(120.));
         div().flex().flex_col().debug_selector(|| "activity-output-preview".into())
             .child(div().flex().items_center().gap(space::S2).px(space::S2)
                 .child(Button::icon_only("activity-preview-back", IconName::ChevronLeft, "Back to Activity").ghost().size(ButtonSize::Small)
@@ -1005,13 +1289,13 @@ impl ActivityCard {
                     })))
                 .child(div().min_w_0().truncate().child(name.to_owned())))
             .child(div().id("activity-preview-body").border_t_1().border_color(c.border).p(space::S2)
-                .max_h(window.viewport_size().height / 2.).overflow_y_scroll()
+                .max_h(body_max_h).overflow_y_scroll()
                 .child(match preview {
                     Preview::Text(text) => crate::panel::files::text_preview(name, text, text.lines().count(), cx),
                     Preview::CurrentFile(text) => div().flex().flex_col().gap(space::S2)
                         .child(div().debug_selector(|| "activity-current-file".into()).text_color(c.text_muted).child("Current file"))
                         .child(crate::panel::files::text_preview(name, text, text.lines().count(), cx)).into_any_element(),
-                    Preview::Image(img) => gpui::img(img.clone()).w_full().max_h(window.viewport_size().height / 2. - space::S4)
+                    Preview::Image(img) => gpui::img(img.clone()).w_full().max_h(body_max_h - space::S4)
                         .object_fit(gpui::ObjectFit::Contain).into_any_element(),
                     Preview::Loading => div().text_color(c.text_muted).child("Reading…").into_any_element(),
                     Preview::Message(why) => div().text_color(c.text_muted).child(why.clone()).into_any_element(),
@@ -1024,33 +1308,16 @@ impl Render for ActivityCard {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let Some(activity) = self.activity.upgrade() else { return div().into_any_element() };
         let bars = activity.read(cx);
-        #[cfg(feature = "stand-in")]
-        if let Some(draft) = self.outputs_draft {
-            let outputs = self.outputs.as_ref().map(|page| page.artifacts.as_slice()).unwrap_or(&[]);
-            let sessions: Vec<crate::drafts::DraftSession> = bars
-                .active_rows
-                .iter()
-                .map(|row| crate::drafts::DraftSession {
-                    id: row.id.clone(),
-                    title: row.title.clone(),
-                    state: row.state,
-                    provider: row.provider.clone().or_else(|| self.providers.get(&row.id).cloned()),
-                })
-                .collect();
-            return crate::drafts::render_outputs_popover(
-                draft,
-                outputs,
-                &self.draft_thumbs,
-                &sessions,
-                &bars.background.commands,
-                window,
-                cx,
-            );
-        }
         let theme = cx.theme().clone();
         let c = &theme.colors;
+        // Keep the popover compact and strictly below its header trigger button so `anchor::place`
+        // never clamps upward over the button itself.
+        let cap = if self.preview.is_some() { px(560.) } else { px(480.) };
+        let max_h = cap.min((window.viewport_size().height - px(120.)).max(px(160.)));
         let content = if let Some((name, preview)) = &self.preview {
-            self.preview(name, preview, window, cx)
+            self.preview(name, preview, max_h, cx)
+        } else if self.all_outputs {
+            self.all_outputs_view(max_h, cx)
         } else {
             let wake = bars.wake_label().or_else(|| self.force_wakes.then(|| "Wake-ups & Watches".into()));
             let outputs = self.outputs(cx);
@@ -1088,8 +1355,8 @@ impl Render for ActivityCard {
             .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .tab_group()
             .occlude()
-            .w(px(if self.preview.is_some() { 460. } else { 300. }).min(window.viewport_size().width - px(16.)))
-            .max_h(window.viewport_size().height - px(64.))
+            .w(px(if self.preview.is_some() { 460. } else { 356. }).min(window.viewport_size().width - px(16.)))
+            .max_h(max_h)
             .overflow_y_scroll()
             .p(space::S3)
             .rounded(radius::POPOVER)
@@ -1106,20 +1373,59 @@ impl Render for ActivityCard {
 
 fn section(id: &'static str, title: &'static str, cx: &App) -> gpui::Div {
     div().debug_selector(move || id.into()).flex().flex_col().flex_none()
-        .child(div().px(space::S2).py(space::S1_5).text_color(cx.theme().colors.text_muted).child(title))
+        .child(div().px(space::S2).py(px(2.)).text_color(cx.theme().colors.text_muted).child(title))
 }
 
 fn row(id: impl Into<SharedString>, cx: &App) -> gpui::Stateful<gpui::Div> {
     let id = id.into();
     let c = &cx.theme().colors;
     div().id(id.clone()).debug_selector(move || id.to_string())
-        .flex().flex_none().items_center().gap(space::S2).h(px(30.)).px(space::S2).rounded(radius::NAV)
+        .flex().flex_none().items_center().gap(space::S2).h(px(28.)).px(space::S2).rounded(radius::NAV)
         .tab_index(0).cursor_pointer().hover(|d| d.bg(c.hover))
         .focus_visible(|d| d.bg(c.hover).border_1().border_color(c.accent))
 }
 
 fn mark(icon: IconName, color: gpui::Hsla) -> impl IntoElement {
-    div().flex_none().child(Icon::new(icon).size(IconSize::Medium).color(color))
+    div().flex_none().child(Icon::new(icon).size(IconSize::Nav).color(color))
+}
+
+fn output_icon(artifact: &Artifact) -> IconName {
+    match artifact.kind.as_str() {
+        "image" => IconName::Image,
+        "page" => IconName::Globe,
+        "code" => IconName::Terminal,
+        "download" => IconName::ArrowDown,
+        _ => IconName::File,
+    }
+}
+
+fn ext_tag(name: &str) -> String {
+    name.rsplit('.')
+        .next()
+        .filter(|ext| ext.len() <= 4 && *ext != name)
+        .map(|ext| ext.to_ascii_uppercase())
+        .unwrap_or_else(|| "FILE".into())
+}
+
+/// Middle-truncates long filenames so distinguishing suffixes stay visible.
+fn middle_trim(name: &str, max_chars: usize) -> String {
+    let chars: Vec<char> = name.chars().collect();
+    if chars.len() <= max_chars || max_chars < 10 {
+        return name.to_owned();
+    }
+    let tail = (max_chars / 3).clamp(4, 11);
+    let head = max_chars.saturating_sub(tail + 1);
+    let start: String = chars[..head].iter().collect();
+    let end: String = chars[chars.len() - tail..].iter().collect();
+    format!("{start}…{end}")
+}
+
+fn short_caption(name: &str) -> String {
+    let stem = match name.rsplit_once('.') {
+        Some((stem, ext)) if !stem.is_empty() && ext.len() <= 4 => stem,
+        _ => name,
+    };
+    middle_trim(stem, 13)
 }
 
 fn append_outputs(outputs: &mut Outputs, page: Outputs) {

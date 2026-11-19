@@ -1015,9 +1015,10 @@ fn compact_sidebar_shows_a_scheduled_wake_badge_and_tooltip(cx: &mut TestAppCont
     drag_sidebar(cx, -210.);
 
     let avatar = bounds(cx, "bot-avatar-bot:bot_mira").unwrap();
+    let face = bounds(cx, "bot-avatar-face-bot:bot_mira").unwrap();
     let badge = bounds(cx, "bot-avatar-wake").unwrap();
-    assert_eq!(badge.size, size(px(14.), px(14.)));
     assert!(avatar.contains(&badge.center()));
+    assert!(badge.top() >= face.bottom(), "compact mark should sit in gutter under face");
     cx.simulate_mouse_move(avatar.center(), None, Modifiers::default());
     cx.run_until_parked();
     cx.executor().advance_clock(std::time::Duration::from_secs(1));
@@ -1032,8 +1033,12 @@ fn compact_sidebar_marks_remote_bot_changes(cx: &mut TestAppContext) {
     let (_, cx) = open(cx, stand_in);
     click(cx, "rail-bots");
     drag_sidebar(cx, -210.);
+    let scout_face = bounds(cx, "bot-avatar-face-elsewhere:bot_scout").unwrap();
+    let wren_face = bounds(cx, "bot-avatar-face-elsewhere:bot_wren").unwrap();
+    let waiting = bounds(cx, "bot-avatar-change-waiting").unwrap();
+    let refused = bounds(cx, "bot-avatar-change-refused").unwrap();
     assert!(bounds(cx, "bot-avatar-elsewhere:bot_scout").is_some());
     assert!(bounds(cx, "bot-avatar-elsewhere:bot_wren").is_some());
-    assert!(bounds(cx, "bot-avatar-change-waiting").is_some());
-    assert!(bounds(cx, "bot-avatar-change-refused").is_some());
+    assert!(waiting.top() >= scout_face.bottom(), "remote waiting dot should sit under face");
+    assert!(refused.top() >= wren_face.bottom(), "remote refused dot should sit under face");
 }
