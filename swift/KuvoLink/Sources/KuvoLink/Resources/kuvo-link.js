@@ -55995,7 +55995,7 @@ async function setupAct(sender, act) {
     return answer5(400, "Send the setup and epoch.");
   if (act.method === "POST") {
     if (act.body.standby === true)
-      return standbyHere(act.item, act.body, sender.key, "user choice");
+      return standbyHere(act.item, act.body, { requester: sender.key, pin: true, reason: "user choice" });
     return handoverHere(act.item, act.body, sender.key);
   }
   const link = readLink();
@@ -56016,7 +56016,7 @@ async function selectStandby(given, signal) {
     return { status: 200, value: { primary: setup.primary, epoch: setup.epoch } };
   const position = { setup: setup.id, epoch: setup.epoch };
   if (setup.role === "primary")
-    return standbyHere(given.standby, position, undefined, "user choice");
+    return standbyHere(given.standby, position, { pin: true, reason: "user choice" });
   const primary = peersOf(link).find((peer) => peer.key === setup.primary);
   if (!primary)
     return answer5(503, "This computer can't reach your primary.");
@@ -56045,7 +56045,7 @@ function finishFirstStandbyPin(link) {
   }
   return true;
 }
-async function standbyHere(target, position, requester, reason = "automatic selection", retiring) {
+async function standbyHere(target, position, { requester, reason, retiring, pin }) {
   const link = readLink();
   const setup = followedSetup(link);
   if (setup?.role !== "primary" || setup.id !== position.setup || setup.epoch !== position.epoch)
@@ -56061,7 +56061,7 @@ async function standbyHere(target, position, requester, reason = "automatic sele
     return answer5(ready.status, ready.refused);
   if (ready.status !== 200 || !isObject(ready.value) || ready.value.sign !== peer.sign)
     return answer5(409, "The chosen standby hasn't caught up yet.");
-  if (reason === "user choice" && setup.successorChain && setup.standby && successorRevisionLayoutReady(K)) {
+  if (pin && setup.successorChain && setup.standby && successorRevisionLayoutReady(K)) {
     if (finishFirstStandbyPin(link))
       return answer5(503, LEADERSHIP_WAIT);
     if (requester && !peers.some((member) => member.key === requester))
@@ -56088,10 +56088,10 @@ async function standbyHere(target, position, requester, reason = "automatic sele
     }
     return answer5(503, LEADERSHIP_WAIT);
   }
-  const outcome = await proposeLeadership(position, setup.primary, { key: target, sign: peer.sign }, { requester, retiring, ...reason === "user choice" ? { pin: true } : {} });
+  const outcome = await proposeLeadership(position, setup.primary, { key: target, sign: peer.sign }, { requester, retiring, pin });
   if (outcome.status === 202) {
     const tip = leadershipOf(readLink());
-    if (reason === "user choice" && tip?.body.pinAfterLease === true && tip.body.standby === target) {
+    if (pin && tip?.body.pinAfterLease === true && tip.body.standby === target) {
       const operation = leadershipProposalHash(tip.envelope.s);
       const deadline = Date.now() + 12000;
       while (Date.now() < deadline) {
@@ -56946,7 +56946,7 @@ async function removePeer(key, pendingOnly, removal, setupID) {
     const position = { setup: setup.id, epoch: setup.epoch };
     let outcome = peersOf(link).length === 1 ? await proposeLeadership(position, setup.primary, null, { retire: key }) : answer6(409, { message: STANDBY_UNLINK });
     for (const candidate of candidates) {
-      outcome = await standbyHere(candidate.key, position, undefined, "standby retirement", setup.successorChain ? key : undefined);
+      outcome = await standbyHere(candidate.key, position, { reason: "standby retirement", retiring: setup.successorChain ? key : undefined });
       const current = readLink();
       if (outcome.status === 202)
         break;
@@ -78195,7 +78195,7 @@ var init_files4 = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "b3f9deaf58e5";
+var BRIDGE_VERSION = "4984c341499e";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync17 } from "node:child_process";
@@ -91157,7 +91157,7 @@ function takeoverTick(host) {
     if (!next)
       return;
     selecting = true;
-    standbyHere(next.peer.key, { setup: setup.id, epoch: setup.epoch }, undefined, next.reason).catch((error) => console.warn("Standby selection:", error.message)).finally(() => {
+    standbyHere(next.peer.key, { setup: setup.id, epoch: setup.epoch }, { reason: next.reason }).catch((error) => console.warn("Standby selection:", error.message)).finally(() => {
       selecting = false;
     });
     return;

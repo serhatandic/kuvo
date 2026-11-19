@@ -439,7 +439,7 @@ async function removePeer(key: string, pendingOnly: boolean, removal?: Omit<Memb
       ? await proposeLeadership(position, setup.primary, null, { retire: key })
       : answer(409, { message: STANDBY_UNLINK });
     for (const candidate of candidates) {
-      outcome = await standbyHere(candidate.key, position, undefined, "standby retirement", setup.successorChain ? key : undefined);
+      outcome = await standbyHere(candidate.key, position, { reason: "standby retirement", retiring: setup.successorChain ? key : undefined });
       const current = readLink();
       if (outcome.status === 202) break;
       if (current?.leadershipPending || current?.setup?.id !== setup.id || current.setup.epoch !== setup.epoch) return outcome;

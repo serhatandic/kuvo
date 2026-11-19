@@ -237,7 +237,7 @@ export async function proposeLeadership(
 export async function setupAct(sender: MailSender, act: Act): Promise<Acted> {
   if (!act.body) return answer(400, "Send the setup and epoch.");
   if (act.method === "POST") {
-    if (act.body.standby === true) return standbyHere(act.item, act.body, sender.key, "user choice");
+    if (act.body.standby === true) return standbyHere(act.item, act.body, { requester: sender.key, pin: true, reason: "user choice" });
     return handoverHere(act.item, act.body, sender.key);
   }
   const link = readLink();
@@ -256,7 +256,7 @@ export async function selectStandby(given: unknown, signal?: AbortSignal | null)
   if (!setup || (given.epoch !== undefined && setup.epoch !== given.epoch)) return answer(409, "The setup changed. Refresh it and try again.");
   if (setup.standby?.key === given.standby && (!setup.successorChain || acceptedMembership(link)?.successorPin === given.standby)) return { status: 200, value: { primary: setup.primary, epoch: setup.epoch } };
   const position = { setup: setup.id, epoch: setup.epoch };
-  if (setup.role === "primary") return standbyHere(given.standby, position, undefined, "user choice");
+  if (setup.role === "primary") return standbyHere(given.standby, position, { pin: true, reason: "user choice" });
   const primary = peersOf(link).find(peer => peer.key === setup.primary);
   if (!primary) return answer(503, "This computer can't reach your primary.");
   const result = await forwardAct(primary, "Changing the standby", { area: "setup", method: "POST", item: given.standby, body: { ...position, standby: true } }, signal, link);
@@ -284,7 +284,9 @@ export function finishFirstStandbyPin(link: LinkState): boolean {
   return true;
 }
 
-export async function standbyHere(target: string, position: Record<string, unknown>, requester?: string, reason = "automatic selection", retiring?: string): Promise<Acted> {
+export async function standbyHere(target: string, position: Record<string, unknown>,
+  { requester, reason, retiring, pin }: { requester?: string; reason: string; retiring?: string; pin?: true },
+): Promise<Acted> {
   const link = readLink();
   const setup = followedSetup(link);
   if (setup?.role !== "primary" || setup.id !== position.setup || setup.epoch !== position.epoch) return answer(409, "The setup changed. Refresh it and try again.");
@@ -295,7 +297,7 @@ export async function standbyHere(target: string, position: Record<string, unkno
   const ready = await forwardAct(peer, "Changing the standby", { area: "setup", method: "GET", item: target, body: position }, undefined, link, Date.now(), { backgroundRelay: true });
   if ("refused" in ready) return answer(ready.status, ready.refused);
   if (ready.status !== 200 || !isObject(ready.value) || ready.value.sign !== peer.sign) return answer(409, "The chosen standby hasn't caught up yet.");
-  if (reason === "user choice" && setup.successorChain && setup.standby && successorRevisionLayoutReady(K)) {
+  if (pin && setup.successorChain && setup.standby && successorRevisionLayoutReady(K)) {
     if (finishFirstStandbyPin(link!)) return answer(503, LEADERSHIP_WAIT);
     if (requester && !peers.some(member => member.key === requester)) return answer(403, "Only members can choose the standby.");
     const save = changeShared("membershipAndAccess", (_value, current) => {
@@ -316,10 +318,10 @@ export async function standbyHere(target: string, position: Record<string, unkno
     }
     return answer(503, LEADERSHIP_WAIT);
   }
-  const outcome = await proposeLeadership(position, setup.primary, { key: target, sign: peer.sign }, { requester, retiring, ...(reason === "user choice" ? { pin: true } : {}) });
+  const outcome = await proposeLeadership(position, setup.primary, { key: target, sign: peer.sign }, { requester, retiring, pin });
   if (outcome.status === 202) {
     const tip = leadershipOf(readLink());
-    if (reason === "user choice" && tip?.body.pinAfterLease === true && tip.body.standby === target) {
+    if (pin && tip?.body.pinAfterLease === true && tip.body.standby === target) {
       const operation = leadershipProposalHash(tip.envelope.s);
       const deadline = Date.now() + 12_000;
       while (Date.now() < deadline) {

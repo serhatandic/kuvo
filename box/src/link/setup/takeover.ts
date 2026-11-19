@@ -235,7 +235,7 @@ function takeoverTick(host: LinkHost | null | undefined): void {
     const next = availableStandby(link, now);
     if (!next) return;
     selecting = true;
-    void standbyHere(next.peer.key, { setup: setup.id, epoch: setup.epoch }, undefined, next.reason)
+    void standbyHere(next.peer.key, { setup: setup.id, epoch: setup.epoch }, { reason: next.reason })
       .catch(error => console.warn("Standby selection:", error.message))
       .finally(() => { selecting = false; });
     return;
