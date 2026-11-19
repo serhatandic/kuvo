@@ -45162,12 +45162,16 @@ async function takeOwnerMessage(sender, given, reply) {
   const refused = (message) => ({ status: "interrupted", operation: id, owner: key, message });
   if (accepting.has(id))
     return;
-  const earlier = readRecord2("accepted", id);
-  if (earlier) {
+  const replay = (earlier) => {
     if (earlier.digest !== digest)
       return;
+    if (earlier.receipt.status === "pending" && earlier.claimant && earlier.claimant !== process.pid && alive(earlier.claimant))
+      return;
     return sendReceipt(earlier.receipt.status === "pending" ? refused("The owner restarted before recording acceptance. Check the conversation before sending again.") : earlier.receipt);
-  }
+  };
+  const earlier = readRecord2("accepted", id);
+  if (earlier)
+    return replay(earlier);
   if (frozen().has(record) || awaySessions().includes(record))
     return;
   accepting.add(id);
@@ -45201,8 +45205,21 @@ async function takeOwnerMessage(sender, given, reply) {
     const current = readLink();
     if (followedSetup(current)?.id !== setup.id || !peersOf(current).some((peer) => peer.key === sender.key) || !ownerOf4(messageRecord(record), { link: current, localRecord: true })?.local)
       return;
-    const save = (receipt) => keepRecord("accepted", id, { setup: setup.id, record, digest, receipt });
-    save({ status: "pending", operation: id, owner: key, message: "Checking acceptance." });
+    const save = (receipt) => keepRecord("accepted", id, {
+      setup: setup.id,
+      record,
+      digest,
+      receipt,
+      ...receipt.status === "pending" ? { claimant: process.pid } : {}
+    });
+    const claimed = locked(LOCK14, () => {
+      const previous = readRecord2("accepted", id);
+      if (!previous)
+        save({ status: "pending", operation: id, owner: key, message: "Checking acceptance." });
+      return previous;
+    }, { required: true });
+    if (claimed)
+      return replay(claimed);
     const answer = await collected(group ? groupsRoute(context) : sendRoute(context, request.path.match(SEND_ROUTE)));
     const error = parsed(answer.body);
     const receipt = answer.status >= 200 && answer.status < 300 ? { status: "committed", operation: id, owner: key, acceptedAt: Date.now() } : refused(isObject(error) && typeof error.message === "string" ? error.message : "The owner couldn’t confirm acceptance. Check the conversation before sending again.");
@@ -45219,6 +45236,7 @@ var MAX_BODY, MAX_PENDING = 200, EVERY2 = 5000, LOCK14, sending4, accepting, gro
 }), operationOf = (setup, sender, record, id) => recordKey(setup, sender, record, id);
 var init_messages2 = __esm(() => {
   init_files();
+  init_platform();
   init_queues();
   init_attached();
   init_client();
@@ -70960,7 +70978,7 @@ var init_files4 = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "980830e2d63b";
+var BRIDGE_VERSION = "2adad85f3c6f";
 
 // box/src/link/rehome/paths.ts
 import { createHash as createHash5 } from "node:crypto";

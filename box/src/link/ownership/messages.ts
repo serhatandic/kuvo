@@ -2,6 +2,7 @@ import type { MessageReceipt } from "../../shared/routes/ownership";
 import path from "node:path";
 import { locked } from "../../shared/files";
 import { isObject, parsed } from "../../shared/json";
+import { alive } from "../../shared/platform";
 import { isWaitingID } from "../../shared/queues";
 import { inline } from "../server/attached";
 import { bridgeTarget, readBridgeFile, readEngineFile } from "../engine/client";
@@ -159,6 +160,7 @@ interface Accepted {
   record: string;
   digest: string;
   receipt: MessageReceipt;
+  claimant?: number;
 }
 
 export async function takeOwnerMessage(sender: MailSender, given: Record<string, unknown>, reply: (answer: Record<string, unknown>) => void): Promise<void> {
@@ -177,13 +179,15 @@ export async function takeOwnerMessage(sender: MailSender, given: Record<string,
   const sendReceipt = (receipt: MessageReceipt) => reply({ ownerMessageReceipt: receipt });
   const refused = (message: string): MessageReceipt => ({ status: "interrupted", operation: id, owner: key, message });
   if (accepting.has(id)) return;
-  const earlier = readRecord<Accepted>("accepted", id);
-  if (earlier) {
+  const replay = (earlier: Accepted) => {
     if (earlier.digest !== digest) return;
+    if (earlier.receipt.status === "pending" && earlier.claimant && earlier.claimant !== process.pid && alive(earlier.claimant)) return;
     return sendReceipt(earlier.receipt.status === "pending"
       ? refused("The owner restarted before recording acceptance. Check the conversation before sending again.")
       : earlier.receipt);
-  }
+  };
+  const earlier = readRecord<Accepted>("accepted", id);
+  if (earlier) return replay(earlier);
   if (frozen().has(record) || awaySessions().includes(record)) return;
   accepting.add(id);
   try {
@@ -206,8 +210,15 @@ export async function takeOwnerMessage(sender: MailSender, given: Record<string,
       || !ownerOf(messageRecord(record), { link: current, localRecord: true })?.local) return;
     // A crash after handing the prompt to the engine can leave an unknown outcome. Keep
     // the claim first so retries cannot run it twice, even if the engine discarded its ID.
-    const save = (receipt: MessageReceipt) => keepRecord("accepted", id, { setup: setup.id, record, digest, receipt });
-    save({ status: "pending", operation: id, owner: key, message: "Checking acceptance." });
+    const save = (receipt: MessageReceipt) => keepRecord("accepted", id, {
+      setup: setup.id, record, digest, receipt, ...(receipt.status === "pending" ? { claimant: process.pid } : {}),
+    });
+    const claimed = locked(LOCK, () => {
+      const previous = readRecord<Accepted>("accepted", id);
+      if (!previous) save({ status: "pending", operation: id, owner: key, message: "Checking acceptance." });
+      return previous;
+    }, { required: true });
+    if (claimed) return replay(claimed);
     const answer = await collected(group ? groupsRoute(context) : sendRoute(context, request.path.match(SEND_ROUTE)!));
     const error = parsed(answer.body);
     const receipt: MessageReceipt = answer.status >= 200 && answer.status < 300
