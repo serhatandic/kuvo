@@ -19,7 +19,8 @@ import { usesAcceptedSaves } from "./setup/record";
 
 import { LEADERSHIP_WAIT, primaryFenced } from "./setup/lease";
 import { ROUTE_VERSION, ROUTE_VERSION_HEADER } from "../shared/route-version";
-import { routeRequestHeaders } from "./server/format";
+import { UnsupportedFormatVersion } from "../shared/format-version";
+import { routeRequestHeaders, unsupportedFormatReply } from "./server/format";
 import { takeSeed } from "./add/seed";
 import { spawn } from "node:child_process";
 import crypto from "node:crypto";
@@ -1276,7 +1277,11 @@ if (main) {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (mode === "box" && argument === "route") {
-      const reply = { status: 503, routeVersion: ROUTE_VERSION, body: JSON.stringify({ message }) };
+      const inaccessible = ["EACCES", "EPERM", "ENOENT", "ENOTDIR", "EROFS"].includes((error as NodeJS.ErrnoException)?.code ?? "");
+      const refusal = error instanceof UnsupportedFormatVersion
+        ? unsupportedFormatReply(error)
+        : { status: inaccessible ? 503 : 500, body: JSON.stringify({ message }) };
+      const reply = { status: refusal.status, routeVersion: ROUTE_VERSION, body: refusal.body };
       await new Promise<void>(resolve => process.stdout.write(JSON.stringify(reply) + "\n", () => resolve()));
       process.exit(0);
     }

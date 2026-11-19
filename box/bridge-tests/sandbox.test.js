@@ -251,9 +251,7 @@ test("on, a command writes in its own project, git works there, and Kuvo Code's 
     assert.equal(state.why, "Waiting for the engine to load it.");
     assert.equal(state.agents, true, "the coding agents' own programs run whole in it as they start, the engine's wait or not");
     const kept = path.join(box.home, "run", "engine.json");
-    // The vault's socket (its holder is this box): straight, and as the Mac's \`box route\` asks it
-    // (refused: its holder can't be reached, 503; anything else, even nothing, counts as reached),
-    // with what Kuvo Code's own processes give first (the box's socket key) left to find.
+    // Probe the vault's socket and key directly, then check the reply from the Box CLI.
     const keyFile = path.join(box.home, "run", "socket.key");
     assert.ok(fs.existsSync(keyFile), "the box made its sockets' key");
     const runtime = `BUN_BE_BUN=1 ${JSON.stringify(ownRuntime)}`;
@@ -264,7 +262,6 @@ test("on, a command writes in its own project, git works there, and Kuvo Code's 
       ["read the box's sockets' key", `cat ${JSON.stringify(keyFile)}`],
       ["reach the vault's socket", `${runtime} -e '${straight}'`],
       ["read the link's script", `cat ${JSON.stringify(ownScript)}`],
-      ["reach the vault through the box", `out=$(echo '${fill}' | KUVO_HOME=${JSON.stringify(box.home)} ${runtime} ${JSON.stringify(ownScript)} box route 2>/dev/null); case $out in *'"status":503'*) false ;; *) true ;; esac`],
       ["write in its project", "echo ok > made.txt"],
       ["git in its project", "git add made.txt && git -c user.name=t -c user.email=t@t commit -qm made"],
       ["its temporary files", `echo ok > "$TMPDIR/scratch"`],
@@ -280,10 +277,14 @@ test("on, a command writes in its own project, git works there, and Kuvo Code's 
     assert.equal(seen["run its runtime"], "allowed", ran.out);
     assert.equal(seen["read the box's sockets' key"], "refused", ran.out);
     assert.equal(seen["reach the vault's socket"], "refused", ran.out);
-    // (`box route` below is that script: hidden, the route couldn't start, and its failure would look
-    // like a refusal's opposite, an answer that isn't a 503.)
     assert.equal(seen["read the link's script"], "allowed", ran.out);
-    assert.equal(seen["reach the vault through the box"], "refused", ran.out);
+    const refused = await engineRuns(box, project,
+      `printf '%s\\n' '${fill}' | KUVO_HOME=${JSON.stringify(box.home)} ${runtime} ${JSON.stringify(ownScript)} box route`);
+    assert.equal(refused.status, 0, refused.out);
+    const reply = JSON.parse(refused.out);
+    assert.equal(reply.status, 503, refused.out);
+    assert.equal(reply.routeVersion, "1");
+    assert.match(JSON.parse(reply.body).message, /(?:EPERM|EACCES).*folder-version\.json|vault isn't open/, refused.out);
     assert.equal(seen["read the box's files"], "refused", ran.out);
     // (Linux shows a hidden folder's names, never what's in its files.)
     if (!linux) assert.equal(seen["list the box's files"], "refused", ran.out);

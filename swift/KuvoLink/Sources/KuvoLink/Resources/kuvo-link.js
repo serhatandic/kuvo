@@ -1065,6 +1065,9 @@ function routeRequestHeaders(given) {
   }
   return { headers };
 }
+function unsupportedFormatReply(error) {
+  return { status: 409, body: JSON.stringify({ code: "unsupportedFormatVersion", message: error.message }) };
+}
 function versionedRoutes(handle) {
   return async function* (request, phone, signal) {
     const { headers, error } = routeRequestHeaders(request.headers);
@@ -1082,8 +1085,9 @@ function versionedRoutes(handle) {
     } catch (error) {
       if (started || !(error instanceof UnsupportedFormatVersion))
         throw error;
-      yield { head: { status: 409, headers: routeRefusalHeaders } };
-      yield { body: Buffer.from(JSON.stringify({ code: "unsupportedFormatVersion", message: error.message })) };
+      const { status, body } = unsupportedFormatReply(error);
+      yield { head: { status, headers: routeRefusalHeaders } };
+      yield { body: Buffer.from(body) };
     }
   };
 }
@@ -76596,7 +76600,7 @@ var init_files4 = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "4bad1f2d542a";
+var BRIDGE_VERSION = "c69b435522aa";
 
 // box/src/link/rehome/paths.ts
 import { createHash as createHash7 } from "node:crypto";
@@ -83516,6 +83520,7 @@ var init_computer_backups = __esm(() => {
 init_record();
 init_lease();
 init_route_version();
+init_format_version();
 init_format2();
 init_seed();
 init_text();
@@ -95988,7 +95993,9 @@ if (main) {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (mode === "box" && argument === "route") {
-      const reply = { status: 503, routeVersion: ROUTE_VERSION, body: JSON.stringify({ message }) };
+      const inaccessible = ["EACCES", "EPERM", "ENOENT", "ENOTDIR", "EROFS"].includes(error?.code ?? "");
+      const refusal = error instanceof UnsupportedFormatVersion ? unsupportedFormatReply(error) : { status: inaccessible ? 503 : 500, body: JSON.stringify({ message }) };
+      const reply = { status: refusal.status, routeVersion: ROUTE_VERSION, body: refusal.body };
       await new Promise((resolve) => process.stdout.write(JSON.stringify(reply) + `
 `, () => resolve()));
       process.exit(0);

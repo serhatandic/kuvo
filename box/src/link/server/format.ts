@@ -24,6 +24,10 @@ export function routeRequestHeaders(given: unknown) {
   return { headers };
 }
 
+export function unsupportedFormatReply(error: UnsupportedFormatVersion) {
+  return { status: 409, body: JSON.stringify({ code: "unsupportedFormatVersion", message: error.message }) };
+}
+
 export const routeRefusalHeaders = { ...routeVersionHeaders, "content-type": "application/json" };
 
 /** HTTP, relay requests and SSH all use the same route body contract. Absent means the
@@ -44,8 +48,9 @@ export function versionedRoutes(handle: LinkHandler): LinkHandler {
       }
     } catch (error) {
       if (started || !(error instanceof UnsupportedFormatVersion)) throw error;
-      yield { head: { status: 409, headers: routeRefusalHeaders } };
-      yield { body: Buffer.from(JSON.stringify({ code: "unsupportedFormatVersion", message: error.message })) };
+      const { status, body } = unsupportedFormatReply(error);
+      yield { head: { status, headers: routeRefusalHeaders } };
+      yield { body: Buffer.from(body) };
     }
   };
 }
