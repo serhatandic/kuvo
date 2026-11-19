@@ -8,6 +8,8 @@ use std::path::{Path, PathBuf};
 use kuvo_box::shown_files::{FILE_MOST, ShownFile};
 use kuvo_box::{BoxClient, Error};
 
+mod cache;
+
 #[derive(Debug)]
 pub enum OpenShownError {
     Box(Error),
@@ -45,30 +47,43 @@ impl std::error::Error for OpenShownError {
 }
 
 /// Opens a local file in the default app, or reveals it if opening could run it. For a remote
-/// file, downloads a fresh copy into the session's cache first.
+/// file, reads the current bytes and source mode and materializes that version in the session cache.
 pub fn open_shown_file(client: &BoxClient, shown: &ShownFile) -> Result<(), OpenShownError> {
     if client.here() {
-        return open_path(local_path(shown)?);
+        return open_path(local_path(shown)?, false);
     }
 
-    let session = shown
-        .session
-        .as_deref()
-        .filter(|id| !id.is_empty())
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "Missing session ID"))?;
-    let name = Path::new(&shown.path)
-        .file_name()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "Missing file name"))?;
-    let (bytes, _) = client.file_bytes(&shown.uri, FILE_MOST)?;
-    let folder = cache_root()?.join(format!("session-{}", kuvo_box::paths::segment(session)));
-    fs::create_dir_all(&folder)?;
-    // A unique private directory keeps simultaneous downloads of the same name independent.
-    let downloaded = tempfile::tempdir_in(folder)?;
-    let path = downloaded.path().join(name);
-    write_received(&bytes, &path)?;
-    open_path(&path)?;
-    let _ = downloaded.keep();
-    Ok(())
+    let root = cache_root()?;
+    let (bytes, executable) = client.file_for_open(&shown.uri)?;
+    let (path, reveal) = {
+        let _cache = cache::LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let prepared = materialize_download(&root, shown, &bytes, executable)?;
+        cache::prune(&root, prepared.0.parent());
+        prepared
+    };
+    open_path(&path, reveal)
+}
+
+fn materialize_download(
+    root: &Path,
+    shown: &ShownFile,
+    bytes: &[u8],
+    executable: Option<bool>,
+) -> io::Result<(PathBuf, bool)> {
+    // Older boxes do not report source mode. Treat their downloads conservatively.
+    Ok((cache::put(root, shown, bytes)?, executable != Some(false)))
+}
+
+/// Evict old and excess remote downloads during normal app startup.
+pub fn prune_download_cache() {
+    if let Ok(root) = cache_root() {
+        let _cache = cache::LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        cache::prune(&root, None);
+    }
 }
 
 /// Saves a copy to `dest`, replacing an existing destination only after the copy is complete.
@@ -94,8 +109,14 @@ pub fn save_copy(client: &BoxClient, shown: &ShownFile, dest: &Path) -> Result<(
     if !source.metadata()?.is_file() {
         return Err(Error::NotFound.into());
     }
+    #[cfg(target_os = "macos")]
+    let quarantine = read_quarantine(&source)?;
     let mut copy = copy_at(dest)?;
     io::copy(&mut source, &mut copy)?;
+    #[cfg(target_os = "macos")]
+    if let Some(value) = quarantine {
+        set_quarantine(copy.as_file(), &value)?;
+    }
     copy.persist(dest).map_err(|error| error.error)?;
     Ok(())
 }
@@ -171,7 +192,6 @@ fn write_received(bytes: &[u8], dest: &Path) -> io::Result<()> {
 
 #[cfg(target_os = "macos")]
 fn quarantine(file: &File) -> io::Result<()> {
-    use std::os::fd::AsRawFd;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     let seconds = SystemTime::now()
@@ -179,6 +199,50 @@ fn quarantine(file: &File) -> io::Result<()> {
         .unwrap_or_default()
         .as_secs();
     let value = format!("0081;{seconds:x};Kuvo;");
+    set_quarantine(file, value.as_bytes())
+}
+
+#[cfg(target_os = "macos")]
+fn read_quarantine(file: &File) -> io::Result<Option<Vec<u8>>> {
+    use std::os::fd::AsRawFd;
+
+    let get = |buffer: *mut libc::c_void, size| unsafe {
+        libc::fgetxattr(
+            file.as_raw_fd(),
+            c"com.apple.quarantine".as_ptr(),
+            buffer,
+            size,
+            0,
+            0,
+        )
+    };
+    let size = get(std::ptr::null_mut(), 0);
+    if size < 0 {
+        let error = io::Error::last_os_error();
+        return if matches!(
+            error.raw_os_error(),
+            Some(libc::ENOATTR | libc::ENOTSUP | libc::EOPNOTSUPP)
+        ) {
+            Ok(None)
+        } else {
+            Err(error)
+        };
+    }
+    let mut value = vec![0; size as usize];
+    let read = get(value.as_mut_ptr().cast(), value.len());
+    if read < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if read != size {
+        return Err(io::Error::other("Quarantine changed during copy"));
+    }
+    Ok(Some(value))
+}
+
+#[cfg(target_os = "macos")]
+fn set_quarantine(file: &File, value: &[u8]) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+
     let result = unsafe {
         libc::fsetxattr(
             file.as_raw_fd(),
@@ -196,18 +260,24 @@ fn quarantine(file: &File) -> io::Result<()> {
     }
 }
 
-fn open_path(path: &Path) -> Result<(), OpenShownError> {
+fn open_path(path: &Path, source_requires_reveal: bool) -> Result<(), OpenShownError> {
     let resolved = path.canonicalize().map_err(source_error)?;
     let metadata = resolved.metadata().map_err(source_error)?;
-    let reveal = should_reveal(path, &resolved, &metadata).map_err(source_error)?;
+    let reveal =
+        should_reveal(path, &resolved, &metadata, source_requires_reveal).map_err(source_error)?;
     if !reveal && !metadata.is_file() {
         return Err(Error::NotFound.into());
     }
     open_or_reveal(&resolved, reveal, &metadata)
 }
 
-fn should_reveal(path: &Path, resolved: &Path, metadata: &fs::Metadata) -> io::Result<bool> {
-    if runnable_extension(path) || runnable_extension(resolved) {
+fn should_reveal(
+    path: &Path,
+    resolved: &Path,
+    metadata: &fs::Metadata,
+    source_requires_reveal: bool,
+) -> io::Result<bool> {
+    if source_requires_reveal || runnable_extension(path) || runnable_extension(resolved) {
         return Ok(true);
     }
     #[cfg(unix)]
@@ -260,7 +330,7 @@ mod tests {
 
     fn reveal(path: &Path) -> bool {
         let resolved = path.canonicalize().unwrap();
-        should_reveal(path, &resolved, &resolved.metadata().unwrap()).unwrap()
+        should_reveal(path, &resolved, &resolved.metadata().unwrap(), false).unwrap()
     }
 
     #[test]
@@ -305,6 +375,116 @@ mod tests {
         let link = folder.path().join("report.pdf");
         symlink(script, &link).unwrap();
         assert!(reveal(&link));
+    }
+
+    #[test]
+    fn macos_launchable_data_and_xml_documents_are_revealed() {
+        let folder = tempfile::tempdir().unwrap();
+        for extension in [
+            "term",
+            "terminal",
+            "command",
+            "tool",
+            "scpt",
+            "scptd",
+            "workflow",
+            "wflow",
+            "shortcut",
+            "webloc",
+            "inetloc",
+            "fileloc",
+            "url",
+            "jar",
+            "action",
+            "caction",
+            "definition",
+            "jnlp",
+            "configprofile",
+            "mobileconfig",
+            "dist",
+            "distz",
+            "vncloc",
+            "mailloc",
+            "afploc",
+            "ftploc",
+            "newsloc",
+        ] {
+            let path = folder.path().join(format!("file.{extension}"));
+            fs::write(&path, "<plist/>").unwrap();
+            assert!(reveal(&path), "{extension}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_remote_extensionless_script_uses_the_source_mode() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let folder = tempfile::tempdir().unwrap();
+        let shown = ShownFile {
+            id: "file".into(),
+            uri: "file:///launch".into(),
+            path: "/launch".into(),
+            name: "launch".into(),
+            caption: None,
+            kind: FileKind::Other,
+            computer: Some("remote".into()),
+            session: Some("ses_1".into()),
+        };
+        for (mode, expected) in [(Some(false), false), (Some(true), true), (None, true)] {
+            let (path, source_requires_reveal) =
+                materialize_download(folder.path(), &shown, b"echo launch\n", mode).unwrap();
+            let metadata = path.metadata().unwrap();
+            assert_eq!(metadata.permissions().mode() & 0o111, 0);
+            assert_eq!(
+                should_reveal(&path, &path, &metadata, source_requires_reveal).unwrap(),
+                expected
+            );
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn saving_a_local_copy_preserves_its_quarantine_attribute() {
+        use std::os::fd::AsRawFd;
+
+        let folder = tempfile::tempdir().unwrap();
+        let source = folder.path().join("source.pdf");
+        let dest = folder.path().join("copy.pdf");
+        fs::write(&source, b"%PDF").unwrap();
+        let source_file = File::open(&source).unwrap();
+        set_quarantine(&source_file, b"0083;65abc123;Safari;").unwrap();
+        let attribute = |file: &File| {
+            let mut value = [0u8; 256];
+            let read = unsafe {
+                libc::fgetxattr(
+                    file.as_raw_fd(),
+                    c"com.apple.quarantine".as_ptr(),
+                    value.as_mut_ptr().cast(),
+                    value.len(),
+                    0,
+                    0,
+                )
+            };
+            assert!(read > 0, "{}", io::Error::last_os_error());
+            value[..read as usize].to_vec()
+        };
+        let shown = ShownFile {
+            id: "file".into(),
+            uri: kuvo_box::pictures::file_uri(source.to_str().unwrap()),
+            path: source.to_str().unwrap().into(),
+            name: "source.pdf".into(),
+            caption: None,
+            kind: FileKind::Pdf,
+            computer: None,
+            session: None,
+        };
+        let client = BoxClient::new(StandIn::new(Replies::Never));
+        save_copy(&client, &shown, &dest).unwrap();
+        assert_eq!(
+            attribute(&File::open(dest).unwrap()),
+            attribute(&source_file)
+        );
     }
 
     #[test]
@@ -384,6 +564,7 @@ fn runnable_extension(path: &Path) -> bool {
                 | "mjs"
                 | "cjs"
                 | "scpt"
+                | "scptd"
                 | "applescript"
                 | "bat"
                 | "cmd"
@@ -393,12 +574,28 @@ fn runnable_extension(path: &Path) -> bool {
                 | "wsf"
                 | "jar"
                 | "jnlp"
+                // Terminal, Automator, Shortcuts and CoreTypes declarations include runnable
+                // types that don't inherit from UTTypeExecutable or UTTypeScript.
+                | "term"
                 | "terminal"
                 | "mobileconfig"
+                | "configprofile"
                 | "workflow"
+                | "wflow"
                 | "shortcut"
+                | "action"
+                | "caction"
+                | "definition"
+                | "dist"
+                | "distz"
                 | "webloc"
                 | "inetloc"
+                | "fileloc"
+                | "vncloc"
+                | "mailloc"
+                | "afploc"
+                | "ftploc"
+                | "newsloc"
                 | "url"
                 | "lnk"
                 | "desktop"
@@ -424,7 +621,26 @@ fn mac_runnable_type(path: &Path) -> bool {
     else {
         return false;
     };
-    // Finder aliases and file types installed by other apps can be recognized by the system.
+    // A few launchable types are declared as data, property lists, or plug-ins. Finder aliases
+    // and other script or app types can be recognized by their conformance.
+    if matches!(
+        kind.identifier().to_string().as_str(),
+        "com.apple.terminal.session"
+            | "com.apple.terminal.settings"
+            | "com.apple.automator-workflow"
+            | "com.apple.automator-action"
+            | "com.apple.automator-conversion-action"
+            | "com.apple.automator-type-definition"
+            | "com.apple.shortcut"
+            | "com.apple.shortcuts.workflow-file"
+            | "com.apple.configprofile"
+            | "com.apple.mobileconfig"
+            | "com.apple.installer-distribution-package"
+            | "com.apple.installer-package-archive"
+            | "com.sun.java-web-start"
+    ) {
+        return true;
+    }
     unsafe {
         [
             UTTypeExecutable,

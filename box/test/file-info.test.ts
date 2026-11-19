@@ -93,6 +93,26 @@ test("the file info route is served by the other computer's box route command", 
   expect(JSON.parse(answer.body)).toEqual({ exists: true, name: "remote.txt", size: 19, kind: "text", mime: "text/plain" });
 });
 
+test("remote downloads can opt into the source's execute bits with the bytes", async () => {
+  const file = join(root, "launch");
+  const textFile = join(root, "report.txt");
+  writeFileSync(file, "echo extensionless", { mode: 0o700 });
+  writeFileSync(textFile, "normal text", { mode: 0o600 });
+  const link = fileURLToPath(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url));
+  for (const [source, executable, body] of [[file, "1", "echo extensionless"], [textFile, "0", "normal text"]]) {
+    const result = spawnSync(process.execPath, [link, "box", "route"], {
+      input: JSON.stringify({ method: "GET", path: route(source, "") + "&withMode=1" }),
+      env: { ...process.env, HOME: root, KUVO_HOME: join(root, ".kuvo-code") },
+      encoding: "utf8",
+    });
+    expect(result.status).toBe(0);
+    const answer = JSON.parse(result.stdout);
+    expect(answer.status).toBe(200);
+    expect(answer.type).toBe(`application/vnd.kuvo.file; executable=${executable}`);
+    expect(Buffer.from(answer.bodyBase64, "base64").toString()).toBe(body);
+  }
+});
+
 test("file metadata and bytes both require the box password", async () => {
   const file = join(root, "private.txt");
   writeFileSync(file, "private");

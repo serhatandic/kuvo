@@ -98,7 +98,12 @@ export async function* fileAt(requestPath: string, json: RouteContext["json"], a
       if (read > end) return yield* json(413, { message: "That file is too big to show here." });
       return yield* json(200, textOf(Buffer.concat(pieces)));
     }
-    yield { head: { status: 200, headers: { "content-type": type, "content-length": String(opened.size) } } };
+    // Keep the source's mode on the same response as its bytes. The opt-in binary type also
+    // carries through the SSH command, which encodes binary bodies with their content type.
+    const downloadType = asked.get("withMode") === "1"
+      ? `application/vnd.kuvo.file; executable=${(opened.mode & 0o111) === 0 ? "0" : "1"}`
+      : type;
+    yield { head: { status: 200, headers: { "content-type": downloadType, "content-length": String(opened.size) } } };
     if (opened.size === 0) return;
     // Stream the advertised length even if the file grows, and break the response if it shrinks.
     let read = 0;

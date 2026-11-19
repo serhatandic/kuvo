@@ -1818,6 +1818,7 @@ impl StandIn {
             return match state.files.get(&file) {
                 Some(bytes) if info => answer(200, json!({ "exists": true, "name": name, "size": bytes.len(), "kind": kind, "mime": mime })),
                 None if info => answer(200, json!({ "exists": false, "name": name, "size": null, "kind": null, "mime": null })),
+                Some(bytes) if query(path, "withMode") == Some("1") => Ok(Response { status: 200, content_type: Some("application/vnd.kuvo.file; executable=0".into()), body: bytes.clone() }),
                 Some(bytes) => Ok(Response { status: 200, content_type: Some(mime.into()), body: bytes.clone() }),
                 None => answer(404, json!({ "message": "There's no such file.", "reason": "fileNotFound" })),
             };
