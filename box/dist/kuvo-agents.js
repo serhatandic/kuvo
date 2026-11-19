@@ -2799,7 +2799,13 @@ async function lockedWhile(lock, work, { stale = 1e4, wait = 3000 } = {}) {
       turns.delete(lock);
   }
 }
-var turns;
+var textOf = (file) => {
+  try {
+    return fs2.readFileSync(file, "utf8");
+  } catch {
+    return null;
+  }
+}, turns;
 var init_files = __esm(() => {
   turns = new Map;
 });
@@ -26658,19 +26664,19 @@ function rawUsage(json) {
   const recomputed = input + output + reasoning;
   return { input, cached, output, reasoning, total: reported > 0 || recomputed === 0 ? reported : recomputed };
 }
-function textOf(value) {
+function textOf2(value) {
   if (typeof value !== "string")
     return;
   const text = trimmed3(value);
   return text ? text : undefined;
 }
 function modelName2(json) {
-  return textOf(json.model) ?? textOf(json.model_name) ?? (isObject4(json.metadata) ? textOf(json.metadata.model) : undefined);
+  return textOf2(json.model) ?? textOf2(json.model_name) ?? (isObject4(json.metadata) ? textOf2(json.metadata.model) : undefined);
 }
 function serviceTier(payload) {
   if (!payload)
     return;
-  return (isObject4(payload.thread_settings) ? textOf(payload.thread_settings.service_tier) : undefined) ?? textOf(payload.service_tier);
+  return (isObject4(payload.thread_settings) ? textOf2(payload.thread_settings.service_tier) : undefined) ?? textOf2(payload.service_tier);
 }
 function isChildMeta(payload) {
   if (given(payload.forked_from_id) || given(payload.parent_thread_id))
@@ -26711,7 +26717,7 @@ function codexLine(line, state) {
   }
   if (type === "session_meta" && !state.sawMeta) {
     state.sawMeta = true;
-    state.session = textOf(payload?.id);
+    state.session = textOf2(payload?.id);
     if (payload && isChildMeta(payload)) {
       const created = seconds(object.timestamp);
       state.gate = created !== undefined ? { startedAt: created } : { selfTimed: true };
@@ -41760,8 +41766,68 @@ function checkpoint(file, current) {
   }
   return { version, upgradingTo };
 }
-function upgradeKuvoFolder(folder, importLegacy) {
-  upgradeFolder(folder, steps, importLegacy, (start) => checkTrialRecovery(folder, start, importLegacy !== undefined));
+function upgradeKuvoFolder(folder, importLegacy, checkWriter) {
+  upgradeFolder(folder, steps, importLegacy, (start) => {
+    requireNoRollback(folder);
+    const compatible = checkTrialRecovery(folder, start, importLegacy !== undefined);
+    requireNoRollback(folder);
+    checkWriter?.();
+    return compatible;
+  });
+}
+function installedLinkBuild(folder) {
+  let file;
+  try {
+    file = fs15.openSync(path11.join(folder, "bin", "kuvo-link.js"), "r");
+    const header = Buffer.alloc(96);
+    const count = fs15.readSync(file, header, 0, header.length, 0);
+    const match = /^\/\/ Kuvo folder layout ([1-9][0-9]*) ([0-9a-f]{12})\n/.exec(header.toString("utf8", 0, count));
+    return match ? { layout: Number(match[1]), build: match[2] } : null;
+  } catch (error) {
+    if (error.code !== "ENOENT")
+      throw error;
+    return null;
+  } finally {
+    if (file !== undefined)
+      fs15.closeSync(file);
+  }
+}
+function isInstalledBundle(folder, file, name) {
+  if (path11.basename(file) !== name)
+    return false;
+  const bin = path11.resolve(folder, "bin");
+  if (path11.dirname(path11.resolve(file)) === bin)
+    return true;
+  try {
+    return fs15.realpathSync(path11.dirname(file)) === fs15.realpathSync(bin);
+  } catch {
+    return false;
+  }
+}
+function requireNoRollback(folder) {
+  const run = path11.join(folder, "run");
+  const restore = path11.join(run, ".rolling-back");
+  let active = false;
+  if (fs15.existsSync(restore)) {
+    const pid = Number(textOf(path11.join(restore, "pid")));
+    if (Number.isSafeInteger(pid) && pid > 1) {
+      try {
+        process.kill(pid, 0);
+        active = true;
+      } catch (error) {
+        active = error.code !== "ESRCH";
+      }
+    } else {
+      const started = fs15.statSync(restore, { throwIfNoEntry: false });
+      active = !!started && Date.now() - started.mtimeMs < 60000;
+    }
+  }
+  if (active || trialOpen(folder) && fs15.existsSync(path11.join(run, "update-restore"))) {
+    throw new Error("Kuvo Code is rolling back this Box. Try again after the rollback.");
+  }
+}
+function withFolderLock(folder, work) {
+  locked(path11.join(folder, ".folder-upgrade.lock"), work, { exclusive: true, wait: 60000 });
 }
 function legacyFolderTrial(folder) {
   if (!trialOpen(folder))
@@ -41847,7 +41913,7 @@ function upgradeFolder(folder, ordered, importLegacy, beforeSteps) {
     return;
   const save = (state) => writeDurablePrivate(file, JSON.stringify(state) + `
 `, path11.dirname(folder));
-  locked(path11.join(folder, ".folder-upgrade.lock"), () => {
+  withFolderLock(folder, () => {
     const start = checkpoint(file, current);
     if (start.version < current && beforeSteps?.(start) === false)
       return;
@@ -41858,7 +41924,7 @@ function upgradeFolder(folder, ordered, importLegacy, beforeSteps) {
       ordered[version](folder, importLegacy);
       save({ version: upgradingTo });
     }
-  }, { exclusive: true, wait: 60000 });
+  });
 }
 var FOLDER_VERSION_FILE = "folder-version.json", steps, KUVO_FOLDER_LAYOUT, trialOpen = (folder) => fs15.existsSync(path11.join(folder, "run", "update-trial"));
 var init_folder_version = __esm(() => {
@@ -42896,7 +42962,7 @@ var init_bridge_transfer = __esm(() => {
 });
 
 // box/src/agents/main.ts
-import { mkdirSync as mkdirSync30, readdirSync as readdirSync24, readFileSync as readFileSync44, realpathSync as realpathSync12, rmSync as rmSync22 } from "fs";
+import { existsSync as existsSync22, mkdirSync as mkdirSync30, readdirSync as readdirSync24, readFileSync as readFileSync44, realpathSync as realpathSync12, rmSync as rmSync22 } from "fs";
 import { basename as basename13, dirname as dirname26, join as join45 } from "path";
 import { spawn as spawn8 } from "child_process";
 function engineAgent(providerID) {
@@ -43193,8 +43259,13 @@ var init_main = __esm(async () => {
     process.exit(2);
   }
   if (machineHome) {
+    const folder = machineHome;
     try {
-      upgradeKuvoFolder(machineHome);
+      upgradeKuvoFolder(folder, undefined, () => {
+        if (kept3 && isInstalledBundle(folder, script, "kuvo-agents.js") && existsSync22(join45(folder, "bin", "kuvo-link.js")) && installedLinkBuild(folder)?.layout !== KUVO_FOLDER_LAYOUT) {
+          throw new Error("The installed Box link must open its folder before the agents bridge.");
+        }
+      });
     } catch (error) {
       console.error(error instanceof Error ? error.message : String(error));
       process.exit(1);
@@ -43647,4 +43718,4 @@ if (!isMainThread && process.argv.includes("--insights-db-worker")) {
 } else {
   await init_main().then(() => ({}));
 }
-// Built from Packages/Box/src/agents 42eade13a82a7eba48a50cb6d24a4371ca474a609550db0a08551fb0f0fc3bc4
+// Built from Packages/Box/src/agents 53738a230e15bb76c5b5ed2eb508b99acc857b3f4fc7a03c99cc1289ca2d9fdb

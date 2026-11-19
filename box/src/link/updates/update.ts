@@ -12,7 +12,7 @@
 // checked the same way and taken at the next quiet moment; and it can carry a signed Mac bundle
 // (the box's helper), swapped whole.
 
-import { upgradeKuvoFolder } from "../../shared/folder-version";
+import { beginFolderRollback } from "../../shared/folder-version";
 import { syncDurableFile, writeDurablePrivate } from "../../shared/files";
 import type { SaveEnvelope } from "../../shared/routes/setup-save";
 import { askSetupOutcome, askSetupSave, localSetupValue, type SetupSaveReceipt } from "../../shared/setup-local";
@@ -36,7 +36,7 @@ import { readAsks } from "../areas/asks";
 import { asked, fetchedPatiently, readBridgeFile, readEngineFile } from "../engine/client";
 import type { UncheckedAnswer } from "../engine/client";
 import { listOf, textOf, writePrivate } from "../files";
-import { K, OWN_RUNTIME, REAL_BOX, RUN, SCRIPT, UPDATES, homeFolder } from "../home";
+import { K, OWN_RUNTIME, REAL_BOX, RUN, SCRIPT, UPDATES, homeFolder, upgradeLinkFolder } from "../home";
 import type { AnswerPiece, RouteContext } from "../server/context";
 import { readLink, type LinkState } from "../state";
 import { keeperEngine, SWAP_NOW } from "./engine-swap";
@@ -852,7 +852,12 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
       // (Looked at before restore.sh stops it: a commit it lands in that moment goes unseen. A narrow
       // window, taken as it is: an engine that hasn't answered in two minutes is still starting.)
       if (dataKept !== null && dataNow() === dataKept) fs.rmSync(ENGINE_STARTED, { force: true });
-      ran("sh", [path.join(ROLLBACK, "restore.sh")], { ...keeperEnv, KUVO_UPDATER: String(process.pid) }, 600_000);
+      try {
+        beginFolderRollback(K);
+        ran("sh", [path.join(ROLLBACK, "restore.sh")], { ...keeperEnv, KUVO_UPDATER: String(process.pid) }, 600_000);
+      } catch (restoreError) {
+        console.error("kuvo-link: the keeper still needs to roll back this update", restoreError);
+      }
     } else {
       // Nothing changed: what was kept goes, and the engine starts again if it was stopped.
       if (trial) {
@@ -861,7 +866,7 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
       }
       if (stopped) ran("sh", [path.join(K, "bin", "kuvo-start"), "start"], keeperEnv);
     }
-    if (trial) noteUpdate({ trial: null });
+    if (trial && !updateOnTrial()) noteUpdate({ trial: null });
     noteUpdate({ last: { at: clock(), result: "failed", message, from: before } });
     return releaseResult({ result: "failed", message });
   } finally {
@@ -990,7 +995,7 @@ export function confirmUpdate(clock = Date.now): boolean {
   noteUpdate({ trial: null, last: { at: clock(), result: "updated", from: state.trial.from, to: state.trial.to }, ...(state.offerFailed && !newerVersion(state.offerFailed.version, state.trial.to) ? { offerFailed: null } : {}) });
   fs.rmSync(UPDATE_TRIAL, { force: true });
   syncDurableFile(RUN);
-  upgradeKuvoFolder(K);
+  upgradeLinkFolder();
   fs.rmSync(ROLLBACK, { recursive: true, force: true });
   // (Not the one the coding agents' bridge still runs on, until it moves to the new: its agents'
   // tools run from it.)

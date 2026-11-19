@@ -1805,6 +1805,11 @@ function machineFixture(name, { legacy = true } = {}) {
   const plist = path.join(folder, "Library/LaunchAgents/run.kuvo.code.machine.plist");
   const engine = () => read(path.join(run, "engine.json"));
   const bridge = () => read(path.join(run, "bridge.json"));
+  const helperWorkers = () => {
+    const [, helper] = fs.readFileSync(path.join(run, "machine-keeper"), "utf8").trim().split(/\s+/).map(Number);
+    const owned = (kind, pid) => fs.readFileSync(path.join(run, kind + ".launch"), "utf8").trim() === pid + " " + helper;
+    return helper > 1 && bridge().helper === helper && owned("agents", bridge().pid) && owned("engine", engine().pid);
+  };
   const journal = path.join(run, "machine-helper-job.json");
   const swap = path.join(run, "engine-swap.json");
   const adopted = path.join(run, "machine-helper-adopted");
@@ -1843,20 +1848,20 @@ function machineFixture(name, { legacy = true } = {}) {
     spawnSync(path.join(tools, "launchctl"), ["bootout", "stub/run.kuvo.code.machine.permissions"], { env });
     spawnSync("sh", [start, "off"], { env, timeout: 40_000 });
   };
-  return { folder, root, run, plist, engine, bridge, journal, swap, adopted, until, env, start, installHelper, nextEngine, stop };
+  return { folder, root, run, plist, engine, bridge, helperWorkers, journal, swap, adopted, until, env, start, installHelper, nextEngine, stop };
 }
 
 for (const reinstall of [false, true]) test(`a fresh Darwin installer rolls back when the bridge never answers${reinstall ? " during reinstall" : ""}`, {
   skip: process.platform !== "darwin",
 }, async () => {
-  const { folder, root, plist, engine, bridge, journal, adopted, until, env, installHelper, stop } = machineFixture(reinstall ? "installer-bridge-reinstall" : "installer-bridge", { legacy: false });
+  const { folder, root, plist, bridge, helperWorkers, journal, adopted, until, env, installHelper, stop } = machineFixture(reinstall ? "installer-bridge-reinstall" : "installer-bridge", { legacy: false });
   installHelper();
   if (reinstall) write(adopted, "");
   write(path.join(folder, "fail-helper-bridge"), "");
   const installer = spawn(process.execPath, [path.join(root, "bin/kuvo-link.js"), "helper", "machine-start"], { env, stdio: "ignore" });
   const exited = new Promise(resolve => installer.once("exit", resolve));
   try {
-    await until(() => engine().pid && bridge().pid, "the installer should have started both workers");
+    await until(() => helperWorkers(), "the installer should have started both workers under Helper");
     assert.equal((await fetch(`http://127.0.0.1:${bridge().port}/api/session/active`)).status, 503);
     assert.ok(fs.existsSync(journal), "the startup trial is still recoverable");
     assert.equal(fs.existsSync(adopted), false);
@@ -1915,7 +1920,7 @@ test("a stopped Darwin machine reports a refused legacy launch job", {
 test("an adopted Darwin reinstall reports failure while the bridge returns 503", {
   skip: process.platform !== "darwin",
 }, async () => {
-  const { folder, root, plist, engine, bridge, journal, adopted, env, installHelper, stop } = machineFixture("installer-already-adopted", { legacy: false });
+  const { folder, root, plist, engine, bridge, helperWorkers, journal, adopted, env, installHelper, stop } = machineFixture("installer-already-adopted", { legacy: false });
   installHelper();
   const installer = () => spawnSync(process.execPath, [path.join(root, "bin/kuvo-link.js"), "helper", "machine-start"], { env, encoding: "utf8", timeout: 40_000 });
   try {
@@ -1924,6 +1929,7 @@ test("an adopted Darwin reinstall reports failure while the bridge returns 503",
     const registered = fs.readFileSync(plist, "utf8");
     assert.match(registered, /Kuvo Helper<\/string><string>keep-machine<\/string>/);
     assert.ok(fs.existsSync(adopted));
+    assert.ok(helperWorkers(), "the clean install adopted both Helper-owned workers before the reinstall");
     const workers = [engine().pid, bridge().pid];
 
     write(path.join(folder, "fail-helper-bridge"), "");
@@ -1943,13 +1949,13 @@ test("an adopted Darwin reinstall reports failure while the bridge returns 503",
 test("a Darwin keeper finishes an interrupted fresh install when both services answer", {
   skip: process.platform !== "darwin",
 }, async () => {
-  const { folder, root, engine, bridge, journal, adopted, until, env, installHelper, stop } = machineFixture("installer-interrupted", { legacy: false });
+  const { folder, root, helperWorkers, journal, adopted, until, env, installHelper, stop } = machineFixture("installer-interrupted", { legacy: false });
   installHelper();
   write(path.join(folder, "fail-helper-bridge"), "");
   const installer = spawn(process.execPath, [path.join(root, "bin/kuvo-link.js"), "helper", "machine-start"], { env, stdio: "ignore" });
   const exited = new Promise(resolve => installer.once("exit", resolve));
   try {
-    await until(() => read(journal).phase === "waiting" && engine().pid && bridge().pid, "both workers start during the trial");
+    await until(() => read(journal).phase === "waiting" && helperWorkers(), "both Helper-owned workers start during the trial");
     assert.ok(installer.kill("SIGKILL"));
     await exited;
     fs.rmSync(path.join(folder, "fail-helper-bridge"));

@@ -49,14 +49,21 @@ export const pausedNote = (name?: string): string =>
 // A session here, where it runs: the engine's or the coding agents' bridge's, by asking each, and
 // what it is. Null when each says there's no such session; it throws when one can't be asked (try
 // again later).
-export async function placeOfSession(session: string, targets: Target[], timeout = 10_000): Promise<SessionPlace | null> {
+type ReadSession = (target: Target, url: URL, signal: AbortSignal) => Promise<{ target: Target; response: Response }>;
+
+const readSession: ReadSession = async (target, url, signal) => ({
+  target, response: await fetch(url, { headers: { authorization: "Basic " + Buffer.from("opencode:" + target.password).toString("base64") }, signal }),
+});
+
+export async function placeOfSession(session: string, targets: Target[], timeout = 10_000, read = readSession): Promise<SessionPlace | null> {
   if (!targets.length) throw new Error("Its engine isn't running.");
   let unsure: unknown = null;
   for (const target of targets) {
     try {
-      const response = await fetch(`http://127.0.0.1:${target.port}/api/session/${encodeURIComponent(session)}`, { headers: { authorization: `Basic ${Buffer.from(`opencode:${target.password}`).toString("base64")}` }, signal: AbortSignal.timeout(timeout) });
+      const { response, target: destination } = await read(target, new URL(`http://127.0.0.1:${target.port}/api/session/${encodeURIComponent(session)}`), AbortSignal.timeout(timeout));
       // (As the engine and the agents' bridge answer it: a session they have, whole.)
-      if (response.ok) return { target, data: (await (response.json() as Promise<{ data?: EngineSession } | null>).catch(() => null))?.data ?? {} };
+      if (response.ok) return { target: destination, data: (await (response.json() as Promise<{ data?: EngineSession } | null>).catch(() => null))?.data ?? {} };
+      await response.body?.cancel().catch(() => {});
       if (response.status !== 404) unsure = new Error(`It answered ${response.status}.`);
     } catch (error) {
       // (One that answered late, or wrongly, says more than one where nothing listens.)
@@ -83,11 +90,11 @@ export const isRefused = (error: unknown): boolean => {
 // `placeOfSession`, for a client waiting on it: an engine that doesn't answer in time is asked
 // again, longer, rather than taken for one that isn't running (#443). It throws as that does once
 // every try was unsure, or at once where nothing listens (`isRefused`).
-export async function placeOfSessionPatiently(session: string, targets: Target[]): Promise<SessionPlace | null> {
+export async function placeOfSessionPatiently(session: string, targets: Target[], read?: ReadSession): Promise<SessionPlace | null> {
   let unsure: unknown = null;
   for (const timeout of PLACE_TRIES) {
     try {
-      return await placeOfSession(session, targets, timeout);
+      return await placeOfSession(session, targets, timeout, read);
     } catch (error) {
       unsure = error;
       if (isRefused(error)) break;

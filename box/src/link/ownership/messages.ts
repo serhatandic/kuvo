@@ -171,7 +171,7 @@ async function deliverMessage(context: RouteContext, record: string, setup: stri
   const { sendRoute, SEND_ROUTE } = await import("../areas/messages");
   return runMutation(operationOf(setup, record, body.id), { record, body }, async () => {
     const answer = await collected(groupID.test(record) ? groupsRoute(context) : sendRoute(context, context.route.match(SEND_ROUTE)!));
-    return { status: answer.status, value: parsed(answer.body) ?? {} };
+    return { status: answer.status, value: parsed(answer.body) ?? {}, notAdmitted: answer.notAdmitted };
   });
 }
 
@@ -221,6 +221,7 @@ export async function takeOwnerMessage(sender: MailSender, given: Record<string,
     || !mayActivate(messageRecord(record), { link: current })) return;
   const answer = await deliverMessage(context, record, setup.id, body);
   const value = answer.value;
+  if (answer.notAdmitted) return; // The sender still has this operation and will deliver it again.
   const receipt: MessageReceipt = answer.status >= 200 && answer.status < 300
     ? { status: "committed", operation: id, owner: key, acceptedAt: answer.acceptedAt ?? Date.now() }
     : refused(isObject(value) && typeof value.message === "string" ? value.message : "The owner couldn’t confirm acceptance. Check the conversation before sending again.");

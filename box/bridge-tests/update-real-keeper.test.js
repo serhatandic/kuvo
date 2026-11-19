@@ -5,6 +5,7 @@ import "./test-safety.js";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import crypto from "node:crypto";
+import { once } from "node:events";
 import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
@@ -36,6 +37,15 @@ test("an app-owned box probes the saved baseline as a disposable machine", () =>
   const probed = upgrade();
   assert.equal(probed.status, 0, probed.stderr);
   assert.equal(fs.existsSync(marker), false);
+
+  const rollback = path.join(run, ".rolling-back");
+  fs.mkdirSync(rollback);
+  fs.writeFileSync(path.join(rollback, "pid"), String(process.pid));
+  const rolling = upgrade();
+  assert.equal(rolling.status, 1, rolling.stderr);
+  assert.match(rolling.stderr, /rolling back this Box/);
+  assert.equal(fs.existsSync(marker), false);
+  fs.rmSync(rollback, { recursive: true });
 
   const additive = '{"version":1}\n';
   fs.writeFileSync(marker, additive);
@@ -116,14 +126,15 @@ serve) trap 'kill "$c" 2>/dev/null' TERM INT HUP; BUN_BE_BUN=1 '${process.execPa
 esac
 `;
   // The version before's keeper and engine, stand-ins as in updates.test.js: only its stop is asked.
-  const oldEngine = path.join(scratch, "old-engine.mjs");
-  fs.writeFileSync(oldEngine, `
+  const oldEngine = path.join(home, "engine", "1.0.0", "old-engine.mjs");
+  write(oldEngine, `
 import fs from "node:fs"; import http from "node:http";
 const server = http.createServer((request, response) => { response.writeHead(200, { "content-type": "application/json" }); response.end(JSON.stringify({ data: request.url.startsWith("/api/session/active") ? {} : [] })); });
 const noted = ${JSON.stringify(engineFile)};
 server.listen(0, "127.0.0.1", () => {
   fs.writeFileSync(noted + ".new", JSON.stringify({ pid: process.pid, port: server.address().port, password: "pw", version: "1.0.0", notes: { mac: "mac-1" } }));
   fs.renameSync(noted + ".new", noted);
+  console.log("ready");
 });
 setInterval(() => { if (!fs.existsSync(${JSON.stringify(home)})) process.exit(0); }, 300);
 `);
@@ -194,8 +205,17 @@ esac
   standInTools(path.join(home, "bin"));
   keeping = spawn("sh", ["-c", "while :; do sleep 1; done", "kuvo-start"], { stdio: "ignore" });
   write(path.join(home, "run", "box.pid"), `${keeping.pid}\n`);
-  assert.equal(spawnSync("sh", [path.join(home, "bin", "kuvo-start"), "start"], { env, timeout: 60_000 }).status, 0, "the old engine runs");
+  // Have Node reap the original worker as soon as it stops. The updater checks that its PID
+  // is gone, which can race the OS reaping a worker launched by an already-exited shell.
+  const beforeWorker = spawn(process.execPath, [oldEngine], { env, stdio: ["ignore", "pipe", "ignore"] });
+  const beforeExit = once(beforeWorker, "exit");
+  atEnd(async () => {
+    if (beforeWorker.exitCode === null && beforeWorker.signalCode === null) beforeWorker.kill();
+    await beforeExit;
+  });
+  await once(beforeWorker.stdout, "data", { signal: AbortSignal.timeout(10_000) });
   const before = read(engineFile).pid;
+  assert.equal(before, beforeWorker.pid, "the old engine runs");
   started.add(before);
 
   // The release: this checkout's own keeper, launcher, tools and catalogs, its link as built, for
@@ -271,12 +291,43 @@ fs.renameSync = (from, to) => {
   assert.deepEqual(read(linkFile), grants);
 
   if (interrupted) {
+    // A repair can have loaded the trial's link before rollback, but reach the
+    // folder preflight only after the saved link is in place and the trial is gone.
+    const latch = path.join(scratch, "delay-repair.mjs");
+    const loaded = path.join(scratch, "repair-loaded");
+    const resume = path.join(scratch, "repair-resume");
+    write(latch, `
+import fs from "node:fs";
+import { registerHooks } from "node:module";
+const nap = new Int32Array(new SharedArrayBuffer(4));
+registerHooks({ load(url, context, next) {
+  const code = next(url, context);
+  if (url === ${JSON.stringify(pathToFileURL(fs.realpathSync(installed)).href)}) {
+    fs.writeFileSync(${JSON.stringify(loaded)}, "");
+    while (!fs.existsSync(${JSON.stringify(resume)})) Atomics.wait(nap, 0, 0, 10);
+  }
+  return code;
+} });
+`);
+    const delayed = spawn(process.execPath, ["--import", pathToFileURL(latch).href, installed, "repair"], {
+      env, stdio: ["ignore", "ignore", "pipe"],
+    });
+    let repairError = "";
+    delayed.stderr.on("data", chunk => { repairError += chunk; });
+    const repairExit = new Promise(resolve => delayed.once("close", resolve));
+    atEnd(async () => {
+      if (delayed.exitCode === null && delayed.signalCode === null) delayed.kill();
+      await repairExit;
+    });
+    await waitFor(() => fs.existsSync(loaded), "the repair must have loaded the trial's link");
+
     // The real keeper launches the replacement judge, which sees the incomplete swap and
     // calls the keeper's rollback. Test code never calls rollback or rewrites the marker.
     recovering = spawn("sh", [path.join(home, "bin", "kuvo-start"), "keep"], {
       env: { ...env, KUVO_TEST_KEEP_ROUND: "1" }, stdio: "ignore",
     });
-    await waitFor(() => !fs.existsSync(trial) && fs.existsSync(engineFile), "the keeper should recover the interrupted update");
+    await waitFor(() => !fs.existsSync(trial) && !fs.existsSync(path.join(home, "run", ".rolling-back")) && fs.existsSync(engineFile),
+      "the keeper should recover the interrupted update and release its rollback fence");
     const restarted = read(engineFile);
     started.add(restarted.pid);
     assert.equal(restarted.version, "1.0.0");
@@ -284,6 +335,10 @@ fs.renameSync = (from, to) => {
     assert.equal(fs.readFileSync(path.join(home, "bin", "box-version"), "utf8"), "0.9.0");
     assert.deepEqual(fs.readFileSync(installed), baseline);
     assert.equal(fs.existsSync(marker), false);
+    write(resume, "");
+    assert.equal(await repairExit, 1, repairError);
+    assert.match(repairError, /files changed before it could upgrade this Box/);
+    assert.equal(fs.existsSync(marker), false, "the stale repair must leave the restored folder unmarked");
     assert.equal(fs.readFileSync(ledger, "utf8"), data);
     assert.deepEqual(read(linkFile), grants);
     const restored = spawnSync(process.execPath, [installed, "box", "route"], {

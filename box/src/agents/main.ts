@@ -14,7 +14,7 @@ import { GitHubSignIn } from "./github-sign-in"
 // engine, with KUVO_ENGINE_PORT and OPENCODE_PASSWORD, which it takes until the record says more.)
 
 import { boxZoneIs } from "../shared/zone"
-import { mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs"
 import { basename, dirname, join } from "node:path"
 import { Accounts, parseProvider } from "./accounts"
 import { record as recordArtifacts } from "./artifacts/record"
@@ -49,7 +49,7 @@ import { spawn } from "node:child_process"
 import { buildOf, bundleBuild } from "../shared/bundle"
 import { bridgeRecordFormat, readRendezvous, type BridgeRecord, type RenewalRecord } from "../shared/records"
 import { UnsupportedFormatVersion } from "../shared/format-version"
-import { KUVO_FOLDER_LAYOUT, upgradeKuvoFolder } from "../shared/folder-version"
+import { installedLinkBuild, isInstalledBundle, KUVO_FOLDER_LAYOUT, upgradeKuvoFolder } from "../shared/folder-version"
 import { Sessions } from "./sessions"
 import { adoptHeld, adoptTransfer, canTransfer, type HeldMeta, type TransferHolder } from "./hold/adopt"
 import { controlledHolders, HOLD_PROTO, releaseHolders, stopAllHeld, type Held } from "./hold/client"
@@ -120,8 +120,14 @@ if (!home || !password || (onMachine && (!machineHome || !Number(process.env.KUV
   process.exit(2)
 }
 if (machineHome) {
+  const folder = machineHome
   try {
-    upgradeKuvoFolder(machineHome)
+    upgradeKuvoFolder(folder, undefined, () => {
+      if (kept && isInstalledBundle(folder, script, "kuvo-agents.js")
+        && existsSync(join(folder, "bin", "kuvo-link.js")) && installedLinkBuild(folder)?.layout !== KUVO_FOLDER_LAYOUT) {
+        throw new Error("The installed Box link must open its folder before the agents bridge.")
+      }
+    })
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error))
     process.exit(1)

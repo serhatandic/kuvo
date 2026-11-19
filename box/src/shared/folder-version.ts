@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { locked, writeDurablePrivate } from "./files";
+import { locked, textOf, writeDurablePrivate, writePrivate } from "./files";
 import { UnsupportedFormatVersion } from "./format-version";
 import { isObject } from "./json";
 
@@ -144,11 +144,73 @@ export function checkFolderVersion(folder: string): void {
   checkpoint(path.resolve(folder, FOLDER_VERSION_FILE), steps.length);
 }
 
-export function upgradeKuvoFolder(folder: string, importLegacy?: () => void): void {
-  upgradeFolder(folder, steps, importLegacy, start => checkTrialRecovery(folder, start, importLegacy !== undefined));
+export function upgradeKuvoFolder(folder: string, importLegacy?: () => void, checkWriter?: () => void): void {
+  upgradeFolder(folder, steps, importLegacy, start => {
+    requireNoRollback(folder);
+    const compatible = checkTrialRecovery(folder, start, importLegacy !== undefined);
+    requireNoRollback(folder);
+    checkWriter?.();
+    return compatible;
+  });
 }
 
 const trialOpen = (folder: string) => fs.existsSync(path.join(folder, "run", "update-trial"));
+
+/** The installed bundle's build and maximum layout, also read by the keeper before starting Node. */
+export function installedLinkBuild(folder: string): { layout: number; build: string } | null {
+  let file: number | undefined;
+  try {
+    file = fs.openSync(path.join(folder, "bin", "kuvo-link.js"), "r");
+    const header = Buffer.alloc(96);
+    const count = fs.readSync(file, header, 0, header.length, 0);
+    const match = /^\/\/ Kuvo folder layout ([1-9][0-9]*) ([0-9a-f]{12})\n/.exec(header.toString("utf8", 0, count));
+    return match ? { layout: Number(match[1]), build: match[2] } : null;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    return null;
+  } finally {
+    if (file !== undefined) fs.closeSync(file);
+  }
+}
+
+/** Also recognize the installed path when the Box lives behind a symlink. */
+export function isInstalledBundle(folder: string, file: string, name: string): boolean {
+  if (path.basename(file) !== name) return false;
+  const bin = path.resolve(folder, "bin");
+  if (path.dirname(path.resolve(file)) === bin) return true;
+  try { return fs.realpathSync(path.dirname(file)) === fs.realpathSync(bin); }
+  catch { return false; }
+}
+
+function requireNoRollback(folder: string): void {
+  const run = path.join(folder, "run");
+  const restore = path.join(run, ".rolling-back");
+  let active = false;
+  if (fs.existsSync(restore)) {
+    const pid = Number(textOf(path.join(restore, "pid")));
+    if (Number.isSafeInteger(pid) && pid > 1) {
+      try { process.kill(pid, 0); active = true; }
+      catch (error) { active = (error as NodeJS.ErrnoException).code !== "ESRCH"; }
+    } else {
+      // The keeper creates the directory before it records its PID.
+      const started = fs.statSync(restore, { throwIfNoEntry: false });
+      active = !!started && Date.now() - started.mtimeMs < 60_000;
+    }
+  }
+  if (active || (trialOpen(folder) && fs.existsSync(path.join(run, "update-restore")))) {
+    throw new Error("Kuvo Code is rolling back this Box. Try again after the rollback.");
+  }
+}
+
+/** A failed updater can call its saved restore script directly. Publish its rollback intent
+ * after any folder writer finishes, before the script checks the layout and restores the code. */
+export function beginFolderRollback(folder: string): void {
+  withFolderLock(folder, () => writePrivate(path.join(folder, "run", "update-restore"), "0"));
+}
+
+function withFolderLock(folder: string, work: () => void): void {
+  locked(path.join(folder, ".folder-upgrade.lock"), work, { exclusive: true, wait: 60_000 });
+}
 
 /** A trial on the deployed layout or its additive checkpoint uses the old data contracts. */
 export function legacyFolderTrial(folder: string): boolean {
@@ -286,7 +348,7 @@ export function upgradeFolder(folder: string, ordered: readonly Step[], importLe
   // A future, invalid, or already current marker requires no writes, including to the lock.
   if (checkpoint(file, current).version === current) return;
   const save = (state: Checkpoint) => writeDurablePrivate(file, JSON.stringify(state) + "\n", path.dirname(folder));
-  locked(path.join(folder, ".folder-upgrade.lock"), () => {
+  withFolderLock(folder, () => {
     const start = checkpoint(file, current);
     if (start.version < current && beforeSteps?.(start) === false) return;
     for (let version = start.version; version < current; version++) {
@@ -295,5 +357,5 @@ export function upgradeFolder(folder: string, ordered: readonly Step[], importLe
       ordered[version](folder, importLegacy);
       save({ version: upgradingTo });
     }
-  }, { exclusive: true, wait: 60_000 });
+  });
 }

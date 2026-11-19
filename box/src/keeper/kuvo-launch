@@ -11,7 +11,18 @@ bridge_only=${KUVO_BRIDGE-}; unset KUVO_BRIDGE
 V=${KUVO_VERSION:-@ENGINE@}; unset KUVO_VERSION
 K="$HOME/.kuvo-code"
 [ ! -f "$K/backup/restoring" ] || { echo 'Finish the Kuvo backup restore before starting workers.' >&2; exit 1; }
-if [ -f "$K/bin/kuvo-link.js" ] && [ -x "$K/engine/$V/opencode" ]; then
+# As in kuvo-start, compare the committed checkpoint with the installed link's layout.
+folder_current() {
+  IFS= read -r stamp <"$K/bin/kuvo-link.js" || return 1
+  case "$stamp" in '// Kuvo folder layout '*) stamp=${stamp#'// Kuvo folder layout '} ;; *) return 1 ;; esac
+  layout=${stamp%% *}
+  layout_build=${stamp#* }
+  case "$layout" in ''|0*|*[!0-9]*) return 1 ;; esac
+  case "$layout_build" in *[!0-9a-f]*) return 1 ;; esac
+  [ "${#layout_build}" -eq 12 ] || return 1
+  printf '{"version":%s}\n' "$layout" | cmp -s "$K/folder-version.json" -
+}
+if [ -f "$K/bin/kuvo-link.js" ] && [ -x "$K/engine/$V/opencode" ] && ! folder_current; then
   KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$K/engine/$V/opencode" --config=/dev/null --no-env-file "$K/bin/kuvo-link.js" folder-upgrade </dev/null || exit $?
 fi
 # A Mac's own box (`box/kind` says `mac`): your login shell's environment, as a new Terminal window

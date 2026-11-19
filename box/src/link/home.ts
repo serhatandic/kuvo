@@ -8,7 +8,9 @@ import path from "node:path";
 
 // (Your account, whatever HOME says: shared with the coding agents' bridge.)
 import { accountHome, accountName, homeFolder } from "../shared/account";
+import { installedLinkBuild, isInstalledBundle, upgradeKuvoFolder } from "../shared/folder-version";
 import { boxHomeIs } from "../shared/zone";
+import { BRIDGE_VERSION } from "./version";
 export { accountHome, accountName, homeFolder };
 
 export const K = process.env.KUVO_HOME || path.join(homeFolder(), ".kuvo-code");
@@ -254,3 +256,13 @@ export let SCRIPT = "";
 export const scriptIs = (file: string) => {
   SCRIPT = file;
 };
+
+export function upgradeLinkFolder(): void {
+  upgradeKuvoFolder(K, undefined, () => {
+    // An installed process can have loaded the trial's bundle before the keeper restored
+    // its predecessor. Compare with the code in place after checking the trial, under the lock.
+    if (isInstalledBundle(K, SCRIPT, "kuvo-link.js") && installedLinkBuild(K)?.build !== BRIDGE_VERSION) {
+      throw new Error("Kuvo Code's files changed before it could upgrade this Box. Start it again.");
+    }
+  });
+}

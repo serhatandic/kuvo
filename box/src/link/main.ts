@@ -70,7 +70,7 @@ import { writePrivate } from "./files";
 import { browserStatus, installBrowser, startBrowserInstall } from "./browser/install";
 import { foldHistory } from "./browser/history";
 import { takeInAppBrowserData, thisMacsAppFolder } from "./browser/from-app";
-import { APP_FOLDER, BRIDGE_FILE, IS_MAC, K, KEYS_ON_HOST, MAC_APP_VERSION, NEEDED_FILE, OWN_HOME_MAC, OWN_RUNTIME, PID_FILE, REAL_BOX, RUN, scriptIs, socketKey, takeVaultSecrets, VERSION_FILE } from "./home";
+import { APP_FOLDER, BRIDGE_FILE, IS_MAC, K, KEYS_ON_HOST, MAC_APP_VERSION, NEEDED_FILE, OWN_HOME_MAC, OWN_RUNTIME, PID_FILE, REAL_BOX, RUN, scriptIs, socketKey, takeVaultSecrets, upgradeLinkFolder, VERSION_FILE } from "./home";
 import { installCommand } from "./install/command";
 import { rehomeCommand } from "./rehome/command";
 import { clearKept, SERVED_FILE } from "./rehome/move";
@@ -135,7 +135,7 @@ import { featuresNow, settleUpdate, startSettling } from "./updates/health";
 import { handOverMachine, recoverMachineJob, startMachineInstall, swapEngine } from "./updates/engine-swap";
 import { type UpdateOptions, UPDATING_ALREADY, agentsWorking, dropOldBackups, passingOutcome, updateOnTrial, checkDrift, failedInPassing, offerWaits, isUpdating, noteLauncher, noteOlderMacs, requestUpdateNow, updateStatusHere, installerSteps, noteUpdate, startOfferedUpdate, startUpdate, takeOffer, untilFree, update, UPDATE_KEYS, releaseRound, updatesBlocked, updateState, updateStatus } from "./updates/update";
 import { clearIncoming, followOver, followPeers, watchHeld } from "./updates/fleet";
-import { checkFolderVersion, setupLayoutDeferred, unlinkCleanupLayoutReady, upgradeKuvoFolder } from "../shared/folder-version";
+import { checkFolderVersion, setupLayoutDeferred, unlinkCleanupLayoutReady } from "../shared/folder-version";
 import { BRIDGE_VERSION } from "./version";
 import { ADD_RESERVATION, SETUP_LOCAL_PAIRINGS, SETUP_OCCUPIED } from "./marks";
 import type { AddressInfo } from "node:net";
@@ -1289,8 +1289,11 @@ if (main) {
   const [mode, argument] = process.argv.slice(2);
   try {
     // The installer and move own the destination until placement. A probe must not adopt it.
-    if (["here", "backup-identity", "install", "rehome", "uninstall", "login-path", "login-env"].includes(mode)) checkFolderVersion(K);
-    else if (mode !== "selftest") upgradeKuvoFolder(K);
+    // The judge only advances the folder when it confirms the trial. It must also be able to
+    // resume a rollback whose intent was already saved.
+    if (["here", "backup-identity", "install", "rehome", "uninstall", "login-path", "login-env"].includes(mode)
+      || (mode === "update" && argument === "--settle")) checkFolderVersion(K);
+    else if (mode !== "selftest") upgradeLinkFolder();
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (mode === "box" && argument === "route") {

@@ -53,7 +53,7 @@ export const fromLocalApp = (request: LinkRequest): boolean => request.served ==
 export const fromAPhone = (request: LinkRequest): boolean => request.fromMac !== true && request.fromApp !== true && request.desktop !== true;
 
 /** A piece of an answer: its head (status and headers) first, then its body, in pieces. */
-export type AnswerPiece = { head: { status: number; headers: Record<string, string> } } | { body: Buffer };
+export type AnswerPiece = { head: { status: number; headers: Record<string, string>; notAdmitted?: true } } | { body: Buffer };
 /** An answer, as it comes. */
 export type Answer = AsyncIterable<AnswerPiece> | Iterable<AnswerPiece>;
 /** An answer's piece, read alike whichever it is (its head, its body). */

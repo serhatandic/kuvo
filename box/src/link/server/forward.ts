@@ -67,7 +67,7 @@ export function fromPhone(body: Buffer | undefined): Buffer | undefined {
   return Buffer.from(JSON.stringify({ ...prompt, text: `${prompt.text}\n\n${FROM_PHONE}` }));
 }
 
-class UnsupportedBridgeRouteVersion extends Error {
+export class UnsupportedBridgeRouteVersion extends Error {
   constructor(readonly refusal: NonNullable<ReturnType<typeof routeVersionError>>) {
     super(refusal.message);
   }
@@ -85,6 +85,41 @@ async function fetchRoute(url: URL, options: RequestInit, toAgents: boolean): Pr
     }
   }
   return response;
+}
+
+export const bridgeRefusedBeforeExecution = (reply: Response): boolean =>
+  reply.status === 503 && reply.headers.get("x-kuvo-bridge-handover") === "1";
+
+/** A mutation can follow the bridge only on an explicit pre-execution refusal. Reads may also
+ * follow a lost connection. Return the bridge that answered for actions that follow acceptance. */
+export async function bridgeRequest(target: Target, url: URL, options: RequestInit, current?: () => Target | null, read = false): Promise<{ response: Response; target: Target }> {
+  const send = (destination: Target) => {
+    const address = new URL(url);
+    address.port = String(destination.port);
+    const headers = new Headers(options.headers);
+    headers.set("authorization", "Basic " + Buffer.from("opencode:" + destination.password).toString("base64"));
+    headers.set(ROUTE_VERSION_HEADER, ROUTE_VERSION);
+    return fetchRoute(address, { ...options, headers }, true);
+  };
+  let response: Response | undefined;
+  let failure: unknown;
+  try { response = await send(target); }
+  catch (error) {
+    if (!read || !current || error instanceof UnsupportedBridgeRouteVersion || options.signal?.aborted) throw error;
+    failure = error;
+  }
+  if (current && (!response || bridgeRefusedBeforeExecution(response))) {
+    const next = await bridgeBack(() => {
+      const found = current();
+      return found && (found.port !== target.port || found.password !== target.password) ? found : null;
+    }, options.signal ?? undefined);
+    if (next) {
+      await response?.body?.cancel().catch(() => {});
+      return { response: await send(next), target: next };
+    }
+  }
+  if (!response) throw failure;
+  return { response, target };
 }
 
 // What the model of `session` takes as input, as the engine at `base` says (its own model, or the
@@ -149,7 +184,7 @@ const engineTurn = /^\/?api\/session\/([^/?]+)\/(prompt|command|shell|compact|su
 // Passes `path` to the engine or the agents' bridge on this machine, with its password, and
 // streams back what it answers. What's sent is the path as `canonicalPath` writes it, which is
 // what `allows` checks.
-export async function* forward(target: Target, path: string, request: LinkRequest, signal: AbortSignal | undefined, allows: (path: string, method: string) => boolean, naming: Naming | null = null, down: () => string = engineDown, toAgents = false, currentBridge?: () => Target | null): AsyncGenerator<AnswerPiece> {
+export async function* forward(target: Target | null, path: string, request: LinkRequest, signal: AbortSignal | undefined, allows: (path: string, method: string) => boolean, naming: Naming | null = null, down: () => string = engineDown, toAgents = false, currentBridge?: () => Target | null, returningEngine?: () => Target): AsyncGenerator<AnswerPiece> {
   const method = request.method.toUpperCase();
   const sent = canonicalPath(path);
   if (sent === null || !allows(sent, method)) {
@@ -157,25 +192,26 @@ export async function* forward(target: Target, path: string, request: LinkReques
     yield { body: Buffer.from("That isn't available over the link.") };
     return;
   }
-  const url = new URL(`http://127.0.0.1:${target.port}/${sent}`);
-  const headers: Record<string, string> = { authorization: `Basic ${Buffer.from(`opencode:${target.password}`).toString("base64")}` };
+  const url = new URL("http://127.0.0.1/" + sent);
+  const headers: Record<string, string> = {};
+  if (target) {
+    url.port = String(target.port);
+    headers.authorization = "Basic " + Buffer.from("opencode:" + target.password).toString("base64");
+  }
   const sendTo = async (body: RequestInit["body"], signal?: AbortSignal) => {
     const held = heldSession && toEngine && heldEngineTurn(heldSession, toEngine[2]!, body, target);
     if (held) return Response.json(held.body, { status: held.status });
-    const response = await fetchRoute(url, { method, headers, body, signal }, toAgents);
-    if (!currentBridge || response.headers.get("x-kuvo-bridge-handover") !== "1") return response;
-    // This response comes from the admission fence, before the request ran. It is safe to
-    // forward the same body after publication, including a reply or a write without an ID.
-    const next = await bridgeBack(() => {
-      const found = currentBridge();
-      return found && (found.port !== target.port || found.password !== target.password) ? found : null;
-    }, signal);
-    if (!next) return response;
-    await response.body?.cancel();
-    const destination = new URL(url);
-    destination.port = String(next.port);
-    const authorization = `Basic ${Buffer.from(`opencode:${next.password}`).toString("base64")}`;
-    return fetchRoute(destination, { method, headers: { ...headers, authorization }, body, signal }, toAgents);
+    if (toAgents && target) {
+      const read = (method === "GET" || method === "HEAD") && url.pathname !== "/api/event";
+      return (await bridgeRequest(target, url, { method, headers, body, signal }, currentBridge, read)).response;
+    }
+    if (!target && toEngine && toEngine[2] !== "prompt") throw new Error(down());
+    const live = target ?? returningEngine?.();
+    if (!live) throw new Error(down());
+    const address = new URL(url);
+    address.port = String(live.port);
+    const authorization = "Basic " + Buffer.from("opencode:" + live.password).toString("base64");
+    return fetchRoute(address, { method, headers: { ...headers, authorization }, body, signal }, false);
   };
   const given = Object.fromEntries(Object.entries(request.headers ?? {}).map(([k, v]) => [k.toLowerCase(), v]));
   // (These are single headers, never a list.)
@@ -231,7 +267,17 @@ export async function* forward(target: Target, path: string, request: LinkReques
     }
     if (!sending) return request.body;
     const session = decodeURIComponent(sending[1]!);
-    const body = await attachedIn(request.body, session, modelInput(url, headers, delivering, toAgents), request.fromMac === true, toAgents);
+    if (!target && sending[2] !== "prompt") return request.body;
+    const holding = heldSession && swapHoldsFor(target, heldSession);
+    if (holding && sending[2] === "prompt") {
+      const given = parsed(request.body);
+      if (isObject(given) && given.id !== undefined && !isWaitingID(given.id)) return request.body;
+    }
+    // During a swap the outgoing engine's model is immaterial. Keep the same attachment
+    // fallback whether its record has been removed yet or is still present.
+    const input = target && !holding
+      ? modelInput(url, headers, delivering, toAgents) : async () => null;
+    const body = await attachedIn(request.body, session, input, request.fromMac === true, toAgents);
     if (sending[2] !== "prompt") return body;
     // (The desktop app's over the link: who it names, without the phone's block.)
     const named = prompt ? await namedIn(body, session, naming) : body;
@@ -278,7 +324,7 @@ export async function* forward(target: Target, path: string, request: LinkReques
     // A session's written in its turn, as the box's own writers of it write (`../engine/notes.ts`),
     // so none of theirs lands between what it read and this; held until it's answered (at most as
     // long as one of theirs may take).
-    if (changed) {
+    if (changed && target) {
       const turn: { sent?: Promise<Response> } = {};
       await inTurnOn(target, decodeURIComponent(changed[1]!), async () => {
         await readBefore();
@@ -307,7 +353,7 @@ export async function* forward(target: Target, path: string, request: LinkReques
     if (typeof archived === "boolean" && archived !== wasArchived) {
       try { holdArchived(decodeURIComponent(changed[1]!), archived); } catch {}
       // Archived while it waits on you: it stops, as a Mac's Archive has it.
-      if (archived) await stopIfWaiting(target, decodeURIComponent(changed[1]!));
+      if (archived && target) await stopIfWaiting(target, decodeURIComponent(changed[1]!));
     }
   }
   if (method === "GET" && response.ok && /^\/?api\/session\/[^/]+\/message(?:\/[^/?]+)?(?:\?|$)/.test(path)) {
@@ -355,24 +401,6 @@ export async function* agentsRoute(context: RouteContext): AsyncGenerator<Answer
     return;
   }
   const notAnswering = "The coding agents aren't answering on this computer. Try again in a moment.";
-  // A read that finds the bridge gone as it asks (it made way that moment) is asked again of the
-  // next one, once, while that's restarting; anything else is answered as it came.
-  const method = request.method.toUpperCase();
-  if ((method === "GET" || method === "HEAD") && !/^\/?api\/event(\?|$)/.test(path)) {
-    let failed = false;
-    const first = forward(target, path, request, signal, agentsAllowed, namingHere(readEngine), () => ((failed = true), notAnswering), true, bridge);
-    const head = await first.next();
-    if (failed && !signal?.aborted) {
-      const next = await bridgeBack(() => { const found = bridge(); return found && (found.port !== target.port || found.password !== target.password) ? found : null; }, signal);
-      if (next) {
-        await first.return(undefined);
-        return yield* forward(next, path, request, signal, agentsAllowed, namingHere(readEngine), () => notAnswering, true, bridge);
-      }
-    }
-    if (head.done) return;
-    yield head.value;
-    return yield* first;
-  }
   return yield* forward(target, path, request, signal, agentsAllowed, namingHere(readEngine), () => notAnswering, true, bridge);
 }
 
@@ -389,24 +417,10 @@ export async function* engineRoute(context: RouteContext): AsyncGenerator<Answer
   try {
     engine = readEngine();
   } catch {}
-  if (!engine && !stop && request.method.toUpperCase() === "POST" && swapHolds(RUN)) {
-    const turn = engineTurn.exec(canonicalPath(request.path)?.split("?")[0] ?? "");
-    if (turn) {
-      try {
-        const session = decodeURIComponent(turn[1]!);
-        const body = withPartsIn(turn[2] === "prompt" && !request.fromMac && !request.desktop ? fromPhone(request.body) : request.body);
-        const saved = await admitPrompt(session, async () => heldEngineTurn(session, turn[2]!, body, null));
-        if (saved) return yield* json(saved.status, saved.body);
-        // The restart may have finished while this request reached the queue.
-        try { engine = readEngine(); } catch {}
-      } catch (error) {
-        if (error instanceof MoveAdmissionClosed) return yield* json(409, { message: error.message });
-        return yield* json(503, { message: engineDown() });
-      }
-    }
-  }
+  const holding = !stop && request.method.toUpperCase() === "POST" && swapHolds(RUN)
+    && engineTurn.test(canonicalPath(request.path)?.split("?")[0] ?? "");
   // A coding agent's command stops without the engine.
-  if (!engine && (!stop || !bridge())) return yield* json(503, { message: engineDown() });
+  if (!engine && !holding && (!stop || !bridge())) return yield* json(503, { message: engineDown() });
   if (stop) {
     if (request.method.toUpperCase() !== "POST") return yield* text(405, "Stop it with POST.");
     const headers: Record<string, string> = {};
@@ -416,7 +430,7 @@ export async function* engineRoute(context: RouteContext): AsyncGenerator<Answer
     const runners = [engine, bridge()].filter(Boolean) as Target[];
     return yield* stopShell(decodeURIComponent(stop[1]!), runners, headers, signal);
   }
-  if (request.method === "GET" && route === "api/integration") {
+  if (engine && request.method === "GET" && route === "api/integration") {
     const github = await workQueueAccount(context);
     if (github) {
       try {
@@ -431,6 +445,5 @@ export async function* engineRoute(context: RouteContext): AsyncGenerator<Answer
       }
     }
   }
-  // (Read: without a stop, one that couldn't be read answered 503 above.)
-  return yield* forward(engine!, request.path, request, signal, allowed, namingHere(readEngine));
+  return yield* forward(engine, request.path, request, signal, allowed, namingHere(readEngine), engineDown, false, undefined, readEngine);
 }

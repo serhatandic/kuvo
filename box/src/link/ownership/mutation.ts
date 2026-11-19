@@ -1,11 +1,11 @@
 import path from "node:path";
-import { locked } from "../../shared/files";
+import { locked, syncDurableFile } from "../../shared/files";
 import { isObject } from "../../shared/json";
 import { RUN } from "../home";
 import type { LinkRequest } from "../server/context";
 import type { Acted } from "../work-queue/forward";
 import { fingerprint } from "./merge";
-import { keepRecord, readRecord, recordKey } from "./store";
+import { keepRecord, readRecord, recordKey, removeRecord } from "./store";
 
 export const MUTATION_ID = /^[A-Za-z0-9_-]{1,80}$/;
 export const mutationKey = (setup: string, nonce: string) => recordKey(setup, nonce);
@@ -21,14 +21,15 @@ export function mutationNonce(request: LinkRequest, body: unknown): string | nul
 }
 
 const LOCK = path.join(RUN, "owned-data", ".mutations.lock");
-interface Claim { digest: string; answer?: Acted; at?: number }
+type MutationAnswer = Acted & { notAdmitted?: true };
+interface Claim { digest: string; answer?: MutationAnswer; at?: number }
 const running = new Map<string, Promise<Claim>>();
 
 export const MUTATION_FEATURE = "data.mutation-identity";
 
 /** Native adapters with an external side effect claim it before calling out. Adapters
  * able to commit their result with the data (queue edits, setup saves) use that result. */
-export async function runMutation(key: string, change: unknown, run: () => Promise<Acted>): Promise<Acted & { acceptedAt?: number }> {
+export async function runMutation(key: string, change: unknown, run: () => Promise<MutationAnswer>): Promise<MutationAnswer & { acceptedAt?: number }> {
   const digest = fingerprint(change);
   const earlier = locked(LOCK, () => {
     const known = readRecord<Claim>("mutations", key);
@@ -42,8 +43,20 @@ export async function runMutation(key: string, change: unknown, run: () => Promi
       ? { ...current.answer, acceptedAt: current.at }
       : { status: 409, value: { message: "The owner has claimed this operation. Check the record before trying again." } };
   }
-  const work = Promise.resolve().then(async () => {
+  const work: Promise<Claim & { answer: MutationAnswer }> = Promise.resolve().then(async () => {
     const answer = await run();
+    if (answer.notAdmitted) {
+      // There was no side effect. Release only this pending claim, so the same operation can
+      // be retried. A lost or ambiguous POST reply never takes this path.
+      locked(LOCK, () => {
+        const pending = readRecord<Claim>("mutations", key);
+        if (pending?.digest === digest && !pending.answer) {
+          removeRecord("mutations", key);
+          syncDurableFile(path.join(RUN, "owned-data", "mutations"), RUN);
+        }
+      }, { required: true });
+      return { digest, answer };
+    }
     const done = { digest, answer, at: Date.now() };
     keepRecord("mutations", key, done);
     return done;
@@ -53,6 +66,6 @@ export async function runMutation(key: string, change: unknown, run: () => Promi
     const done = await work;
     return { ...done.answer, acceptedAt: done.at };
   } finally {
-    running.delete(key);
+    if (running.get(key) === work) running.delete(key);
   }
 }

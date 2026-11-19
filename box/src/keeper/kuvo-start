@@ -52,11 +52,23 @@ pick() {
   fi
 }
 pick
+# A committed checkpoint exactly matches the layout declared by the installed link.
+# Anything older, newer or interrupted must go through the folder runner.
+folder_current() {
+  IFS= read -r stamp <"$K/bin/kuvo-link.js" || return 1
+  case "$stamp" in '// Kuvo folder layout '*) stamp=${stamp#'// Kuvo folder layout '} ;; *) return 1 ;; esac
+  layout=${stamp%% *}
+  layout_build=${stamp#* }
+  case "$layout" in ''|0*|*[!0-9]*) return 1 ;; esac
+  case "$layout_build" in *[!0-9a-f]*) return 1 ;; esac
+  [ "${#layout_build}" -eq 12 ] || return 1
+  printf '{"version":%s}\n' "$layout" | cmp -s "$K/folder-version.json" -
+}
 # Stop and rollback must work even when the trial bridge cannot execute.
 case "${1:-keep}" in
 stop|engine-stop|engine-halt|off|pause|rollback|check-rollback-layout) ;;
 *)
-  if [ -f "$K/bin/kuvo-link.js" ] && [ -x "$K/engine/$V/opencode" ]; then
+  if [ -f "$K/bin/kuvo-link.js" ] && [ -x "$K/engine/$V/opencode" ] && ! folder_current; then
     KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$K/engine/$V/opencode" --config=/dev/null --no-env-file "$K/bin/kuvo-link.js" folder-upgrade </dev/null || {
       # A broken trial may be unable to run even the judge. Restore before starting any workers.
       case "${1:-box}" in
@@ -734,11 +746,14 @@ rollback)
   # it kept it (updates/rollback/restore.sh), never the engine's data. Nothing kept: the trial ends.
   [ -f "$R/update-trial" ] || exit 0
   [ -f "$K/updates/rollback/restore.sh" ] || { rm -f "$R/update-trial" "$R/update-restore" "$R/update-settle.tries"; exit 0; }
-  check_rollback_layout || { echo "The saved Kuvo Code cannot open this folder layout." >&2; exit 1; }
   # Giving up: the trial ends, and the box starts as it is, never left stopped (what was put back
   # and what wasn't is told by whoever looks next: `updates/rollback` stays where it wasn't all).
+  rollback_unlock() {
+    [ "$(cat "$R/.rolling-back/pid" 2>/dev/null)" != "$$" ] || rm -rf "$R/.rolling-back"
+  }
   give_up() {
     rm -f "$R/update-trial" "$R/update-restore" "$R/update-settle.tries" "$R/stopped"
+    rollback_unlock
     sh "$K/bin/kuvo-start" start >/dev/null 2>&1
     exit 2
   }
@@ -752,10 +767,24 @@ rollback)
     rm -rf "$R/.rolling-back"; mkdir "$R/.rolling-back" 2>/dev/null || give_up
   fi
   echo $$ >"$R/.rolling-back/pid"
-  trap '[ "$(cat "$R/.rolling-back/pid" 2>/dev/null)" = "$$" ] && rm -rf "$R/.rolling-back"' EXIT
+  trap 'rollback_unlock' EXIT
   [ -f "$R/update-trial" ] || exit 0
   judge=$(cat "$R/update-judge.pid" 2>/dev/null)
   if [ "$judge" != "${KUVO_UPDATER:-}" ] && is "$judge" kuvo-link; then exit 1; fi
+  # New folder writers see our fence inside their lock. Let an existing writer finish
+  # before deciding whether the saved code can open the actual checkpoint.
+  tries=0
+  while :; do
+    for owner in "$K/.folder-upgrade.lock"/owner-*; do break; done
+    [ -f "$owner" ] || break
+    pid=${owner##*/owner-}; pid=${pid%%-*}
+    case "$pid" in ''|*[!0-9]*) exit 1 ;; esac
+    kill -0 "$pid" 2>/dev/null || break
+    [ "$tries" -lt 600 ] || exit 1
+    tries=$((tries + 1))
+    sleep 0.1
+  done
+  check_rollback_layout || { echo "The saved Kuvo Code cannot open this folder layout." >&2; exit 1; }
   # Three tries that couldn't put it all back (a disk full, say), and it gives up. A count that
   # can't be read or written back is taken as the last.
   tries=0

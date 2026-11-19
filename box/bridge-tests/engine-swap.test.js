@@ -96,7 +96,7 @@ http.createServer(async (request, response) => {
       return answer(200, { data: { id: body.id } });
     }
     accepted.add(body.id);
-    fs.appendFileSync(scratch + "/prompts.log", JSON.stringify({ engine: version, id: body.id, text: body.text, delivery: body.delivery }) + "\\n");
+    fs.appendFileSync(scratch + "/prompts.log", JSON.stringify({ engine: version, id: body.id, text: body.text, delivery: body.delivery, files: body.files, metadata: body.metadata }) + "\\n");
     return answer(200, { data: { id: body.id } });
   }
   answer(200, { data: [] });
@@ -268,6 +268,17 @@ test("an engine change waits for the turns on it, holds what's sent meanwhile on
   assert.deepEqual(prompts(), [], "nothing reached the old engine");
   assert.equal(engineNow().pid, old.pid, "its turn isn't cut");
 
+  const inline = { name: "note.txt", uri: "data:text/plain;base64," + Buffer.from("the attached note").toString("base64") };
+  const directPrompt = id => {
+    write(path.join(RUN, "agents.json"), JSON.stringify({ machine: null, agents: [{ session: "ses_mira", name: "Mira" }] }));
+    return served("POST", "api/session/ses_engine/prompt", { id, text: "during restart &Mira", delivery: "steer", files: [inline] });
+  };
+  const withRecordID = "msg_swaprecord00001";
+  const withoutRecordID = "msg_swaprestart0001";
+  const withRecord = await directPrompt(withRecordID);
+  assert.equal(withRecord.status, 200, JSON.stringify(withRecord.json));
+  assert.deepEqual(withRecord.json, { waits: true });
+
   // The new engine answers one prompt without accepting it. The release retries that same ID
   // before it sends the rest.
   write(path.join(scratch, "unconfirmed-prompt"), "");
@@ -285,9 +296,7 @@ test("an engine change waits for the turns on it, holds what's sent meanwhile on
     const refused = await served("POST", "api/session/ses_engine/prompt", { id: futureId, text: "cannot replace this" });
     assert.equal(refused.status, 500, JSON.stringify(refused.json));
     assert.deepEqual(readJSON(future), futurePayload);
-    const during = await served("POST", "api/session/ses_engine/prompt", {
-      id: "msg_swaprestart0001", text: "during restart", delivery: "steer",
-    });
+    const during = await directPrompt(withoutRecordID);
     assert.equal(during.status, 200, JSON.stringify(during.json));
     assert.deepEqual(during.json, { waits: true }, "the direct prompt queues while engine.json is absent");
     const app = await send("msg_swapapprestart01", "app during restart");
@@ -312,20 +321,33 @@ test("an engine change waits for the turns on it, holds what's sent meanwhile on
   }
   const fresh = await until(() => { const now = engineNow(); return now?.version === "1.1.0" ? now : null; }, "the new engine to run");
   assert.ok(!runs(old.pid), "the old engine stopped");
-  await until(() => prompts().length >= 6, "what was held to reach the new engine", 20_000);
+  await until(() => prompts().length >= 7, "what was held to reach the new engine", 20_000);
   assert.equal(fs.readFileSync(path.join(scratch, "unconfirmed-id"), "utf8"), "msg_swapinbox000001");
   await until(() => !fs.existsSync(path.join(RUN, "engine-swap.json")), "the swap to end");
   const said = text => ["first", "second", "during restart", "app during restart", "both records absent"].find(words => text.startsWith(words)) ?? text;
-  assert.deepEqual(prompts().map(each => [each.engine, each.id, said(each.text)]), [["1.1.0", "msg_swapinbox000001", "queued before"], ["1.1.0", "msg_swapfirst000001", "first"], ["1.1.0", "msg_swapsecond00001", "second"], ["1.1.0", "msg_swaprestart0001", "during restart"], ["1.1.0", "msg_swapapprestart01", "app during restart"], ["1.1.0", "msg_swapnorecord001", "both records absent"]],
+  assert.deepEqual(prompts().map(each => [each.engine, each.id, said(each.text)]), [["1.1.0", "msg_swapinbox000001", "queued before"], ["1.1.0", "msg_swapfirst000001", "first"], ["1.1.0", "msg_swapsecond00001", "second"], ["1.1.0", withRecordID, "during restart"], ["1.1.0", withoutRecordID, "during restart"], ["1.1.0", "msg_swapapprestart01", "app during restart"], ["1.1.0", "msg_swapnorecord001", "both records absent"]],
     "the old engine's inbox moved onto the box first, then what was sent during the hold: each once, in order, on the new engine");
+  const attachments = path.join(home, "attachments", "ses_engine");
+  const stored = fs.readdirSync(attachments).map(folder => path.join(attachments, folder, inline.name));
+  assert.equal(stored.length, 2, "each prompt kept its attachment once");
+  const received = [withRecordID, withoutRecordID].map(id => {
+    const { text, files, metadata } = prompts().find(each => each.id === id);
+    assert.match(text, /<named-agents>[\s\S]*&Mira \(ses_mira\)/);
+    assert.deepEqual(files, [inline]);
+    const file = stored.find(each => text.includes(each));
+    assert.ok(file, "the prompt includes the saved attachment path");
+    assert.equal(fs.readFileSync(file, "utf8"), "the attached note");
+    return JSON.stringify({ text, files, metadata }).replaceAll(file, "<saved attachment>");
+  });
+  assert.equal(received[0], received[1], "engine presence did not change the delivered prompt");
   assert.equal(prompts()[0].delivery, "steer", "the first starts a turn");
   assert.equal(readJSON(path.join(RUN, "update.json")).engine?.result, "changed");
   assert.ok(fs.readdirSync(path.join(home, "updates", "backups")).some(name => name.endsWith("1.0.0-to-1.1.0")), "a copy of its data kept");
   assert.ok(fs.existsSync(path.join(home, "engine", "1.0.0", "opencode")), "the engine before kept, to go back to");
   // Sent now, it goes straight to the new engine.
   assert.deepEqual((await send("msg_swapthird000001", "third")).json?.waits ?? false, false);
-  await until(() => prompts().length === 7, "a message sent after to go at once");
-  assert.equal(prompts()[6].engine, "1.1.0");
+  await until(() => prompts().length === 8, "a message sent after to go at once");
+  assert.equal(prompts()[7].engine, "1.1.0");
 
   // The coding agent's turn ran through it, on the bridge it began on, which the swap never ended.
   assert.ok(runs(bridge.pid), "the bridge runs on");
