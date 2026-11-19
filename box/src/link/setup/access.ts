@@ -6,6 +6,7 @@ import { primaryPeersBody } from "../documents/work";
 import type { Peer } from "../peers/known";
 import { ownPhones } from "../phones";
 import { updateLink, type LinkState } from "../state";
+import { computerHistory } from "./computer-history";
 import { acceptedMembership, membershipOf, projectMembership } from "./membership";
 import { requiresStandby } from "./record";
 import { pendingShared, stageShared, type Receipt } from "./shared";
@@ -13,7 +14,7 @@ import { pendingShared, stageShared, type Receipt } from "./shared";
 const localEffects = DATA_DECLARATIONS.membershipAndAccess.shared.localEffects;
 // COMPAT(layout 4): an older standby expects the full projection in its proposal.
 const legacyFields = ["macPeers", "macMoved", "peerNames", "left", "removedHere", "removalRevisions",
-  "phones", "removed", "vouchBlocked", ...localEffects.filter(key => key !== "localWipe"),
+  "phones", "removed", "vouchBlocked", "computerHistory", ...localEffects.filter(key => key !== "localWipe"),
 ] as const satisfies readonly (keyof LinkState)[];
 
 export function captureMembership(link: LinkState, self?: Peer) {
@@ -22,7 +23,7 @@ export function captureMembership(link: LinkState, self?: Peer) {
   const projected = Array.isArray(link.macPeers) ? link.macPeers : [];
   const roster = self ? [self, ...projected] : boxes;
   return membershipOf({
-    boxes: roster, left, moved, devices: ownPhones(link), removalRevisions: link.removalRevisions, removedHere: link.removedHere,
+    boxes: roster, left, moved, computerHistory: computerHistory(link), devices: ownPhones(link), removalRevisions: link.removalRevisions, removedHere: link.removedHere,
     vouchBlocked: link.vouchBlocked, removals: link.memberRemovals, wipePreparations: link.wipePreparations,
   });
 }

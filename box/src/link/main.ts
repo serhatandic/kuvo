@@ -1,3 +1,4 @@
+import { isObject } from "../shared/json";
 import { usesAcceptedSaves } from "./setup/record";
 // (The command line: what each command does is in the modules beside it, box/README.md.)
 // Kuvo Code's link on a machine: lets the phones you've paired reach this machine's engine
@@ -56,7 +57,7 @@ import { IKInitiator, IKResponder, openOneWay, PROLOGUE, sealOneWay } from "./cr
 import { docsNoted, noteDocsChanged, onDocsChanged } from "./documents/changed";
 import { docsChanged, macDocsChanged } from "./documents/exchange";
 import { authorizeDesktopConnection, refreshPhoneTrust } from "./documents/phone-sync";
-import { newSigningSeed, ownSign, SIGN } from "./documents/format";
+import { newSigningSeed, ownSign, readDoc, SIGN } from "./documents/format";
 import { docsWork, ownDocs, pruneDocs } from "./documents/work";
 import { bridgeTarget, peerPlaces, peerTargets, readBridgeFile, readEngineFile } from "./engine/client";
 import { applyCompatibility, engineConfigContent, knowsEngineSettings } from "./engine/compatibility";
@@ -1028,6 +1029,10 @@ interface SetupInput {
   moved?: unknown[];
   /** The Mac's keys before (made anew since), which it no longer is: let go here. */
   replaces?: unknown;
+  /** Only these live key pairs may be carried through this SSH enrollment. */
+  keepMemberships?: unknown;
+  /** Revoked static keys whose wipe still needs to run. */
+  blockedMemberships?: unknown;
 }
 
 // What the Mac sends: the relay, this machine's name, and the phones you've paired with the Mac,
@@ -1050,6 +1055,14 @@ async function setup(): Promise<void> {
     process.exit(2);
   }
   const mac = typeof input.mac === "string" ? input.mac : undefined;
+  // A legacy SSH add supplies only signed documents. Honor its own revocation
+  // even when the client does not send the live roster separately.
+  let offeredRoster: ReturnType<typeof readDoc> = null;
+  if (mac && input.macSign && Array.isArray(input.docs)) for (const envelope of input.docs) {
+    const doc = readDoc(envelope);
+    if (doc?.kind === "peers" && doc.origin === input.macSign && (!offeredRoster || doc.n > offeredRoster.n)) offeredRoster = doc;
+  }
+  const revocations = new Set(Array.isArray(offeredRoster?.body.left) ? offeredRoster.body.left : []);
   const running = runningBridge();
   const old = readLink();
   const before = readPersonalities();
@@ -1058,6 +1071,7 @@ async function setup(): Promise<void> {
   const replaced = mac && Array.isArray(input.replaces) ? input.replaces.filter((key): key is string => typeof key === "string" && KEY.test(key) && key !== mac).slice(0, 8) : [];
   let formerMacs: string[] = [];
   let alreadySetUp = false;
+  let blockedMembership = false;
   updateLink(current => {
     let reserved: string | undefined;
     try { reserved = fs.readlinkSync(path.join(path.dirname(K), ADD_RESERVATION)); } catch {}
@@ -1077,7 +1091,20 @@ async function setup(): Promise<void> {
       alreadySetUp = true;
       return null;
     }
-    const next = current ?? { secret: crypto.randomBytes(32).toString("base64url"), key: newKey().toString("base64url"), phones: [] };
+    const key = current && ownKey(current);
+    if (key && Array.isArray(input.blockedMemberships) && input.blockedMemberships.includes(key)) {
+      blockedMembership = true;
+      return null;
+    }
+    const sign = current && ownSign(current);
+    // SSH authorizes an enrollment. Only a key pair still on the primary's roster
+    // may retain its credentials and link grants across this operation.
+    const fresh = mac && (revocations.has(key) || (Array.isArray(input.keepMemberships)
+      && !input.keepMemberships.some(entry => isObject(entry) && entry.key === key && entry.sign === sign)));
+    const next = (fresh && current ? { name: current.name, startsFromOthers: current.startsFromOthers,
+      phones: [] } as LinkState : current) ?? { secret: crypto.randomBytes(32).toString("base64url"), key: newKey().toString("base64url"), phones: [] };
+    next.secret ??= crypto.randomBytes(32).toString("base64url");
+    next.key ??= newKey().toString("base64url");
     next.sign ??= newSigningSeed();
     if (mac) {
       next.mac = mac;
@@ -1115,6 +1142,10 @@ async function setup(): Promise<void> {
     link = next;
     return next;
   });
+  if (blockedMembership) {
+    console.error("Wait for the pending wipe before adding this computer again.");
+    process.exit(1);
+  }
   if (alreadySetUp) {
     console.error("This OS account already has a Kuvo setup. Connect to your own OS account.");
     process.exit(SETUP_OCCUPIED);
@@ -1136,7 +1167,7 @@ async function setup(): Promise<void> {
   // A new relay or name needs a new connection, and a newer bridge replaces an older one.
   let runningVersion = null;
   try { runningVersion = fs.readFileSync(VERSION_FILE, "utf8").trim(); } catch {}
-  const restart = old?.relay !== link.relay || old?.name !== link.name || runningVersion !== BRIDGE_VERSION;
+  const restart = old?.key !== link.key || old?.relay !== link.relay || old?.name !== link.name || runningVersion !== BRIDGE_VERSION;
   // Not while the box updates itself: the bridge running it would end, and the keeper starts the
   // new one once it's done.
   if (!isUpdating()) {

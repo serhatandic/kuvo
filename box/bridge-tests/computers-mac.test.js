@@ -111,15 +111,15 @@ test("a machine removed from any of your computers stays removed when this Mac's
   assert.equal((await ask("GET", `kuvo/link/setup?key=${attic.pub}`)).status, 200);
   assert.equal((await ask("PUT", "kuvo/link/peers", { peers: [devbox.peer, mini.peer, attic.peer], moved: [] })).status, 200);
   assert.deepEqual(names(), ["devbox", "mini"]);
-  // A stale record on disk is insufficient. Only the completed SSH join restores this peer.
+  // A stale record on disk is insufficient. Re-enrollment needs fresh credentials.
   fs.writeFileSync(path.join(home, "machines.json"), JSON.stringify([{ destination: "devbox" }, { destination: "mini" }, { destination: "attic" }]));
   assert.equal((await ask("PUT", "kuvo/link/peers", { peers: [devbox.peer, mini.peer, attic.peer], moved: [] })).status, 200);
   assert.deepEqual([names(), link.macPeersBody(link.readLink()).left], [["devbox", "mini"], [attic.pub]]);
-  link.updateLink(state => link.setMacPeers(state, { peers: [devbox.peer, mini.peer, attic.peer] }, attic.pub).link);
-  assert.deepEqual(names(), ["devbox", "mini", "attic"]);
-  // Removed again later, and it's removed again.
-  assert.equal((await handed(devbox, { method: "DELETE", item: attic.pub }))[0].status, 200);
-  assert.equal((await ask("PUT", "kuvo/link/peers", { peers: [devbox.peer, mini.peer, attic.peer], moved: [] })).status, 200);
+  const freshAttic = box("machine", "attic");
+  assert.equal((await ask("PUT", "kuvo/link/peers", { peers: [devbox.peer, mini.peer, freshAttic.peer] })).status, 200);
+  assert.deepEqual([names(), link.macPeersBody(link.readLink()).left], [["devbox", "mini", "attic"], [attic.pub]]);
+  assert.equal((await handed(devbox, { method: "DELETE", item: freshAttic.pub }))[0].status, 200);
+  assert.equal((await ask("PUT", "kuvo/link/peers", { peers: [devbox.peer, mini.peer, attic.peer, freshAttic.peer], moved: [] })).status, 200);
   assert.deepEqual(names(), ["devbox", "mini"]);
 
   // Renamed here, and missing from the app's list for a moment (it couldn't be set up just then):

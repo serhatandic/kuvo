@@ -56,6 +56,18 @@ const crontabFile = path.join(fake, "crontab");
 write(path.join(tools, "crontab"), `#!/bin/sh\ncase "$1" in -l) [ -f '${crontabFile}' ] && cat '${crontabFile}' || { echo "no crontab for you" >&2; exit 1; } ;; -) cat >'${crontabFile}' ;; esac\n`, 0o755);
 for (const tool of ["pkill", "caffeinate", "codesign", "open"]) write(path.join(tools, tool), `#!/bin/sh\necho "${tool} $*" >>'${path.join(fake, "reached")}'\n`, 0o755);
 
+// IDs belong to simulated hardware, outside the simulated OS account's Kuvo data.
+write(path.join(tools, "ioreg"), `#!/bin/sh
+[ -f "$HOME/hardware-id" ] && printf '"IOPlatformUUID" = "%s"\\n' "$(/bin/cat "$HOME/hardware-id")"
+`, 0o755);
+write(path.join(tools, "cat"), `#!/bin/sh
+case "$1" in
+  /sys/class/dmi/id/product_uuid) exec /bin/cat "$HOME/hardware-id" ;;
+  /etc/machine-id) exit 1 ;;
+esac
+exec /bin/cat "$@"
+`, 0o755);
+
 // The signed bundle and launchctl are stand-ins. No program in this fixture reaches TCC.
 const helperBundle = "bin/Kuvo Helper.app";
 write(path.join(tools, "launchctl"), `#!/bin/sh
@@ -338,6 +350,11 @@ if [ -f "$F/trace" ]; then
     kill -TERM "$$"
   fi
 fi
+# Exercise a remote bridge that still returns the revoked credentials on SSH Add.
+if [ -f "$F/stale-join-$dest" ]; then
+  text=$(printf %s "$cmd" | sed -n 's/.*printf %s \\([A-Za-z0-9+/=]*\\) | base64 -d.*/\\1/p' | base64 -d 2>/dev/null)
+  case "$text" in *'kuvo-link.js" setup'*) cat >/dev/null; cat "$F/stale-join-$dest"; exit 0 ;; esac
+fi
 if [ -f "$F/track" ] || [ -f "$F/lose-uninstall-reply" ]; then
   text=$(printf %s "$cmd" | sed -n 's/.*printf %s \\([A-Za-z0-9+/=]*\\) | base64 -d.*/\\1/p' | base64 -d 2>/dev/null)
   if [ -f "$F/track" ]; then
@@ -459,7 +476,7 @@ const over = id => until(id, found => !found || found.state === "done" || found.
 const steps = found => found.steps.map(step => `${step.id}:${step.state}`);
 const sshLog = () => (fs.existsSync(path.join(fake, "log")) ? fs.readFileSync(path.join(fake, "log"), "utf8").trim().split("\n") : []);
 // (Two more computers, each a home of its own: a Mac that has Kuvo Code's app, and one with nothing.)
-const homes = Object.fromEntries(["macbook", "mini", "nas", "attic", "race", "claim", "rotate", "interrupted", "network-drop", "release", "add-first", "uninstall-first", "prepare", "old-reservation", "prepare-error", "probe-removal", "stop-uninstall", "primary-member", "late-enrollment", "replacement-standby", "backup-uninstall"].map(name => [name, path.join(base, name)]));
+const homes = Object.fromEntries(["macbook", "mini", "nas", "attic", "race", "claim", "rotate", "interrupted", "network-drop", "release", "add-first", "uninstall-first", "prepare", "old-reservation", "prepare-error", "probe-removal", "stop-uninstall", "primary-member", "late-enrollment", "replacement-standby", "backup-uninstall", "rejoin", "rejoin-neighbor", "rejoin-neighbor-return", "rejoin-clone-name"].map(name => [name, path.join(base, name)]));
 for (const [name, folder] of Object.entries(homes)) {
   fs.mkdirSync(folder, { recursive: true });
   fs.writeFileSync(path.join(fake, `home-${name}`), folder);
@@ -1568,7 +1585,8 @@ test("an alias Add honours only its original pairing and cannot restore a key re
   const fresh = await ask("POST", "kuvo/computers/add", { destination: macbookAlias }, authorized);
   const done = await over(fresh.body.try.id);
   assert.equal(done.state, "done", JSON.stringify(done.failure));
-  assert.equal(done.computer.key, original.key, "a fresh Add can restore the same key");
+  assert.notEqual(done.computer.key, original.key, "a fresh Add must use a new key");
+  assert.ok(link.readLink().removedHere.includes(original.key), "the old key stays revoked");
 });
 
 test("uninstall revokes the paired desktop even when its identity folder cleanup fails", async () => {
@@ -2055,7 +2073,7 @@ for (const scenario of ["grant", "worker failure", "interruption", "bootstrap de
   }
 });
 
-test("failure bench: a Linux primary starts fresh, enrolls over SSH and pairs devices", { timeout: 170_000 }, async t => {
+test("failure bench: a Linux primary starts fresh, enrolls over SSH and pairs devices", { timeout: 240_000 }, async t => {
   const relay = await relayStandIn(link);
   atEnd(() => relay.close());
   const primaryHome = path.join(base, "primary");
@@ -2211,17 +2229,18 @@ test("failure bench: a Linux primary starts fresh, enrolls over SSH and pairs de
     assert.equal(inBox(memberBox, "setup-card.json").app, true);
     assert.equal((await memberApp("GET", "kuvo/setup")).body.you.role, "member");
   });
-  const addOn = async (ask, destination) => {
-    const begun = await ask("POST", "kuvo/computers/add", { destination });
+  const addOn = async (ask, destination, replace) => {
+    const begun = await ask("POST", "kuvo/computers/add", { destination, ...(replace ? { replace } : {}) });
     assert.equal(begun.status, 202, JSON.stringify(begun.body));
     const id = begun.body.try.id;
     const current = async () => (await ask("GET", "kuvo/computers/add")).body.tries.find(attempt => attempt.id === id);
-    const question = await waitFor("SSH asks to trust the replacement", async () => {
+    const checked = await waitFor("SSH checks the host key", async () => {
       const attempt = await current();
-      assert.notEqual(attempt.state, "failed", JSON.stringify(attempt.failure));
-      return attempt.question;
+      return (attempt.question || attempt.state !== "working" || attempt.steps[0].state === "done") && attempt;
     });
-    assert.equal((await ask("POST", `kuvo/computers/add/${id}/answer`, { answer: "trust", at: question.at })).status, 200);
+    if (checked.question) {
+      assert.equal((await ask("POST", `kuvo/computers/add/${id}/answer`, { answer: "trust", at: checked.question.at })).status, 200);
+    }
     return current;
   };
   const selected = await primaryApp("POST", "kuvo/setup/standby", { standby: member, epoch: 1 });
@@ -2251,7 +2270,11 @@ test("failure bench: a Linux primary starts fresh, enrolls over SSH and pairs de
     });
     try {
       const attempt = await addOn(primaryApp, "late-enrollment");
-      await waitFor("the standby accepted enrollment and attempts to reply", () => delayed[0]);
+      await waitFor("the standby accepted enrollment and attempts to reply", async () => {
+        const current = await attempt();
+        assert.equal(current.state, "working", JSON.stringify(current));
+        return delayed[0];
+      });
       const operation = Object.keys(inBox(primaryBox).sharedPending)[0];
       const target = path.join(homes["late-enrollment"], ".kuvo-code");
       await new Promise(resolve => setTimeout(resolve, 3_300));
@@ -2293,6 +2316,101 @@ test("failure bench: a Linux primary starts fresh, enrolls over SSH and pairs de
       const gone = await primaryApp("DELETE", `kuvo/computers/${done.computer.key}`);
       assert.equal(gone.status, 200, JSON.stringify(gone.body));
     } finally { release(); }
+  });
+
+  await t.test("unlink revokes both old keys and reinstall restores the computer’s list position", async () => {
+    const firstID = "aaaaaaaa-abcd-4444-8888-aaaaaaaaaaaa";
+    const otherID = "bbbbbbbb-abcd-4444-8888-bbbbbbbbbbbb";
+    write(path.join(homes.rejoin, "hardware-id"), firstID);
+    write(path.join(homes["rejoin-clone-name"], "hardware-id"), otherID);
+    const add = async (name, replace, failure) => {
+      const current = await addOn(primaryApp, name, replace);
+      let last;
+      const ended = await waitFor(`Add ${name} finishes`, async () => {
+        last = await current();
+        return (last.state === "done" || last.state === "failed") && last;
+      }).catch(error => assert.fail(`${error.message}: ${JSON.stringify(last)}`));
+      if (failure) {
+        assert.equal(ended.state, "failed", JSON.stringify(ended));
+        assert.match(ended.failure.message, failure);
+      } else assert.equal(ended.state, "done", JSON.stringify(ended.failure));
+      return ended.computer;
+    };
+    const target = path.join(homes.rejoin, ".kuvo-code");
+    const first = await add("rejoin");
+    const neighbor = await add("rejoin-neighbor");
+    const old = inBox(target);
+    const oldPeer = { key: first.key, address: k(link.addressOf(Buffer.from(old.secret, "base64url"))), sign: link.ownSign(old) };
+    const membership = box => inBox(box).shared.membershipAndAccess.value;
+    const keys = async () => (await primaryApp("GET", "kuvo/setup")).body.computers.map(each => each.key);
+    const before = await keys();
+    assert.deepEqual(before.slice(-2), [first.key, neighbor.key]);
+    const signed = link.signDoc(old.sign, "personalities", 50, { personalities: [], removed: [] });
+    const targets = [primaryBox, memberBox].map(box => {
+      const current = inBox(box);
+      const to = { address: k(link.addressOf(Buffer.from(current.secret, "base64url"))), key: k(link.publicOf(Buffer.from(current.key, "base64url"))) };
+      const frame = link.mailFor(to, { docs: { give: [signed] } }, old);
+      const { body } = link.readFrame(frame.subarray(17));
+      assert.equal(link.openMail(body, current)?.sender.key, first.key);
+      return { box, body };
+    });
+    const removed = await primaryApp("DELETE", `kuvo/computers/${first.key}`, { wipe: false });
+    assert.equal(removed.status, 200, JSON.stringify(removed.body));
+    for (const { box, body } of targets) {
+      assert.ok(membership(box).left.includes(first.key));
+      const current = inBox(box);
+      assert.equal(link.openMail(body, current), null, "old Noise key");
+      assert.equal(link.takeDoc(current, signed), null, "old document signer");
+    }
+
+    await waitFor("the removed member finishes unlinking", () => inBox(target).setup?.role === "primary");
+    const stale = path.join(fake, "stale-join-rejoin");
+    try {
+      write(stale, JSON.stringify(oldPeer));
+      await add("rejoin", undefined, /presented membership keys that cannot be used/);
+      write(stale, JSON.stringify({ ...oldPeer, key: k(link.publicOf(link.newKey())) }));
+      await add("rejoin", undefined, /presented membership keys that cannot be used/);
+      assert.deepEqual((await keys()).slice(-1), [neighbor.key]);
+    } finally { fs.rmSync(stale, { force: true }); }
+    const returned = await add("rejoin");
+    const rejoined = inBox(target);
+    assert.notEqual(returned.key, first.key);
+    assert.notEqual(link.ownSign(rejoined), oldPeer.sign);
+    assert.notEqual(rejoined.secret, old.secret);
+    assert.equal(inBox(target).setup.id, primary.id);
+    assert.deepEqual((await keys()).slice(-2), [returned.key, neighbor.key]);
+
+    // Put the same host name in front of genuinely different hardware.
+    write(path.join(fake, "home-rejoin"), homes["rejoin-clone-name"]);
+    const distinct = await add("rejoin");
+    assert.equal(distinct.name, returned.name);
+    assert.notEqual(distinct.key, returned.key);
+    assert.deepEqual((await keys()).slice(-3), [returned.key, neighbor.key, distinct.key]);
+
+    // Reinstall under a different host name and without any previous Kuvo files.
+    const oldPath = path.join(homes.rejoin, ".kuvo-code-before-reinstall");
+    spawnSync("sh", [path.join(target, "bin", "kuvo-start"), "off"], { env: { ...process.env, HOME: homes.rejoin }, timeout: 60_000 });
+    fs.renameSync(target, oldPath);
+    write(path.join(fake, "home-rejoin-installed"), homes.rejoin);
+    const installed = await add("rejoin-installed");
+    assert.notEqual(installed.key, returned.key);
+    assert.equal(installed.name, "rejoin-installed");
+    assert.deepEqual((await keys()).slice(-3), [installed.key, neighbor.key, distinct.key]);
+    const kept = membership(primaryBox);
+    assert.ok(kept.left.includes(first.key) && kept.left.includes(returned.key));
+    assert.ok(kept.computerHistory.slots.some(slot => slot.key === installed.key && slot.previous.join() === [first.key, returned.key].join()));
+    assert.equal(JSON.stringify(kept).includes(firstID.replaceAll("-", "")), false);
+    assert.deepEqual(membership(memberBox).computerHistory, kept.computerHistory);
+
+    // Neither installation has a usable platform ID. A deliberate choice still
+    // keeps the selected computer's place and records its previous membership.
+    const chosen = await add("rejoin-neighbor-return", neighbor.key);
+    assert.notEqual(chosen.key, neighbor.key);
+    assert.deepEqual((await keys()).slice(-3), [installed.key, chosen.key, distinct.key]);
+    assert.ok(membership(primaryBox).computerHistory.slots.some(slot => slot.key === chosen.key && slot.previous.includes(neighbor.key)));
+    for (const { key } of [installed, chosen, distinct]) {
+      assert.equal((await primaryApp("DELETE", `kuvo/computers/${key}`)).status, 200);
+    }
   });
 
   await t.test("after losing the primary, the surviving box enrolls and activates a replacement standby", async () => {

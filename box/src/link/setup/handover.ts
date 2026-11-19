@@ -10,7 +10,7 @@ import { labels } from "../work-queue/labels";
 import { readZoneSetting } from "../zone/setting";
 import { captureMembership } from "./access";
 import { CHECKPOINT_FEATURE, checkpointedTransition } from "./checkpoint";
-import { acceptedMembership } from "./membership";
+import { acceptedMembership, type Membership } from "./membership";
 import { PREPARATION_FEATURE } from "./removal-record";
 import { MAX_SHARED_BYTES, type SharedValues } from "./shared";
 import { noteDocsChanged } from "../documents/changed";
@@ -64,8 +64,8 @@ async function handoverHere(target: string, position: Record<string, unknown>, r
 }
 
 /** Recover a delegated setup by adding one previously unknown computer to its accepted replica. */
-export function enrollStandby(setup: SetupRecord, peer: Peer & { sign: string }, prepare: (link: LinkState, enrollment: ReplacementEnrollment) => void): Promise<Acted> {
-  return proposeLeadership({ setup: setup.id, epoch: setup.epoch }, setup.primary, peer, { recovery: { peer, prepare } });
+export function enrollStandby(setup: SetupRecord, peer: Peer & { sign: string }, prepare: (link: LinkState, enrollment: ReplacementEnrollment) => void, record?: (membership: Membership, link: LinkState) => void): Promise<Acted> {
+  return proposeLeadership({ setup: setup.id, epoch: setup.epoch }, setup.primary, peer, { recovery: { peer, prepare, record } });
 }
 
 /** The number ledger and the fenced proposal are frozen together. With a standby, only it
@@ -74,7 +74,7 @@ export async function proposeLeadership(
   position: Record<string, unknown>,
   target: string,
   standby: NonNullable<SetupRecord["standby"]> | null,
-  { requester, targetSign, recovery }: { requester?: string; targetSign?: string; recovery?: { peer: Peer; prepare: (link: LinkState, enrollment: ReplacementEnrollment) => void } } = {},
+  { requester, targetSign, recovery }: { requester?: string; targetSign?: string; recovery?: { peer: Peer; prepare: (link: LinkState, enrollment: ReplacementEnrollment) => void; record?: (membership: Membership, link: LinkState) => void } } = {},
 ): Promise<Acted> {
   if (setupLayoutDeferred(K)) return answer(503, "Wait for the Kuvo Code update to finish before changing the setup.");
   let oversized = false;
@@ -149,6 +149,7 @@ export async function proposeLeadership(
         if (membership.boxes.some(peer => peer.key === recovery.peer.key) || membership.left.includes(recovery.peer.key)) return null;
         const { id: _destination, ...portable } = recovery.peer;
         membership.boxes.push(portable);
+        recovery.record?.(membership, link);
       }
       shared.membershipAndAccess = { sequence: (shared.membershipAndAccess?.sequence ?? (recovery ? 0 : 1)) + (recovery ? 1 : 0), value: membership };
       shared.queueNumberAllocation = { sequence: shared.queueNumberAllocation?.sequence ?? 1, value: ledger };

@@ -64,10 +64,15 @@ export async function* computersAddRoute(context: RouteContext, match: RegExpMat
   if (request.fromMac && !request.served) return yield* json(409, { message: ONCE });
   const can = canAdd();
   if (!can.can) return yield* json(can.status, { message: can.message, ...(can.primary ? { primary: can.primary } : {}) });
-  const destination = cleanAddress((parsed(request.body) as Body<"destination">)?.destination);
+  const given = parsed(request.body) as Body<"destination" | "replace">;
+  const destination = cleanAddress(given?.destination);
+  const replace = given?.replace;
+  if (replace !== undefined && (typeof replace !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(replace))) {
+    return yield* json(400, { message: "Choose the previous membership by its key." });
+  }
   const problem = addressProblem(destination);
   if (problem) return yield* json(400, { message: problem });
-  const begun = beginAdd(destination, context.phone);
+  const begun = beginAdd(destination, context.phone, replace);
   if ("busy" in begun) return yield* json(409, { message: begun.busy });
   return yield* json(202, { try: begun.seen });
 }

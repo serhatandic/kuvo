@@ -276,7 +276,7 @@ test("SSH deposits ciphertext on the chosen member and verifies the readback", (
   }
 });
 
-test("the live primary matches a fresh key and moves the old ownership address", () => {
+test("failure bench: backup restore matches the enrolled replacement and keeps the old key revoked", () => {
   const owner = scratch();
   bunIn(owner, `
     import assert from "node:assert/strict";
@@ -293,13 +293,15 @@ test("the live primary matches a fresh key and moves the old ownership address",
     const id = "set_" + "A".repeat(22);
     writeLink({ key, sign, setup: { id, primary: own, sign: signingKeyOf(sign), role: "primary", managed: true, checkpointed: true, epoch: 1 },
       sharedSetup: id, shared: {
-        membershipAndAccess: { sequence: 1, value: { left: [old], boxes: [own, replacement, other].map(peer) } },
+        membershipAndAccess: { sequence: 1, value: { left: [old], boxes: [own, replacement, other].map(peer),
+          computerHistory: { setup: id, slots: [{ key: replacement, previous: [old] }], retiredSigns: [] } } },
         ownershipAssignments: { sequence: 1, value: { "session computer:ses_a": { computer: old } } },
       } });
     const source = ${JSON.stringify(source)};
     const act = { body: { source, origin: old, setup: id } };
     assert.equal(restoreForPeer(peer(replacement), act).status, 409);
     await assert.rejects(matchReplacement(source, old, old), /new membership/);
+    await assert.rejects(matchReplacement(source, old, other), /conflicts with the setup/);
     assert.equal((await matchReplacement(source, old, replacement)).status, "committed");
     assert.equal(restoreForPeer(peer(replacement), act).status, 200);
     assert.equal(restoreForPeer(peer(other), act).status, 409);

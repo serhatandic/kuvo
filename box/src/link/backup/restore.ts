@@ -1,3 +1,4 @@
+import { permitsReplacement } from "../setup/computer-history";
 import { recoveredQueueDecision } from "../work-queue/recovery";
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -59,6 +60,9 @@ export function matchReplacement(source: string, previous: string, replacement: 
           !acceptedMembership(link)?.left.includes(previous) || live(link, previous) || !live(link, replacement) || ownKey(link) === replacement) {
         throw new Error("On the current primary, remove the old membership and add the replacement with fresh keys first.");
       }
+      if (!permitsReplacement(acceptedMembership(link)?.computerHistory, previous, replacement)) {
+        throw new Error("The selected replacement conflicts with the setup’s computer history.");
+      }
       const kept = replacementEntry(link, previous);
       if (isObject(kept) && kept.source === source && kept.computer === replacement) { committed = true; return; }
       const assignments = sharedValue(link, "ownershipAssignments");
@@ -90,7 +94,7 @@ export function restoreForPeer(sender: MailSender, act: Act): Acted {
   if (setup?.role !== "primary" || setup.conflict || primaryFenced(link) || link?.leadershipPending ||
       pendingShared(link, "ownershipAssignments") || pendingShared(link, "membershipAndAccess") || act.body?.setup !== setup.id ||
       !validKey(old) || !live(link, sender.key) || live(link, old) || !acceptedMembership(link)?.left.includes(old) ||
-      !isObject(match) || match.source !== source || replacementOwner(link, old) !== sender.key) {
+      !permitsReplacement(acceptedMembership(link)?.computerHistory, old, sender.key) || !isObject(match) || match.source !== source || replacementOwner(link, old) !== sender.key) {
     return { status: 409, value: { message: "The primary has no current match for this replacement." } };
   }
   return { status: 200, value: { boundary: ownershipBoundary(link) } };

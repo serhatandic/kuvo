@@ -416,7 +416,7 @@ function prepareRemoval(key: string, pendingOnly: boolean, removal?: Omit<Member
       // One removed before its devices went with it loses them when asked again.
       return !pendingOnly && already && takeOffVouched(link, key) ? link : null;
     }
-    const made = setMacPeers(link, { peers: (Array.isArray(link.macPeers) ? link.macPeers : []).filter(each => each?.key !== key), moved: link.macMoved, removed: [key] }, undefined, Boolean(link.setup?.standby));
+    const made = setMacPeers(link, { peers: (Array.isArray(link.macPeers) ? link.macPeers : []).filter(each => each?.key !== key), moved: link.macMoved, removed: [key] }, { staging: Boolean(link.setup?.standby) });
     if (!made.link) return null;
     gone = made.gone;
     if (made.link.peerNames) delete made.link.peerNames[key];

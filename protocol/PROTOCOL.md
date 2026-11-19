@@ -1994,7 +1994,8 @@ client connected: a client's Computers area and its switcher draw it, and ask no
     document, named among those you removed (`left`, which the machine hears and lets that Mac go),
     and off that Mac's list of machines (`machines.json`); its app listing it again
     (`kuvo/link/peers`), or setting it up as it connects (`kuvo/link/setup?key=`), doesn't bring it
-    back (`removedHere` in link.json). Only a completed SSH add restores that peer. If saving the
+    back (`removedHere` in link.json). Adding it again over SSH creates a new membership with a
+    fresh box key, signing key and relay address. If saving the
     machines list fails, the removal still revokes access and the request reports the incomplete
     change. It keeps running there, as a box of its own, with its sessions.
     **Kuvo Code's app on it goes from your devices with it** (#753): every device that computer's
@@ -2116,12 +2117,17 @@ client connected: a client's Computers area and its switcher draw it, and ask no
     computer's `~/.ssh/config` and the files it includes (names only, never a pattern), 50 at
     most, those not an address of a computer it set up; `tries`, those under way first, then the
     last few that are over. `GET kuvo/computers/add/events` (ndjson) follows it.
-  - `POST kuvo/computers/add {"destination"}` → `202 {try}`. A destination is what `ssh` takes: a
+  - `POST kuvo/computers/add {"destination", "replace"?}` → `202 {try}`. A destination is what `ssh` takes: a
     Host's name, a host's name or `user@host`; one with `:`, `/`, white space or a leading `-`
     (a port, a path, an IPv6 address, an option) is `400 {message}` and never reaches `ssh`. One
     being added or set up at that address already is answered as it is; one being stopped is
     waited for, and the new try runs after it; `409 {message}` while that computer is being
     uninstalled, and through `kuvo-link.js box route`, which can't stay to do it.
+    If an installation matches a saved computer fingerprint, Add updates that computer's
+    position and membership history. The probe hashes the operating system or hardware UUID on
+    the enrolled computer with the setup ID as a salt. The raw ID stays on that computer.
+    When automatic evidence is missing, `replace` explicitly selects the most recent membership
+    of the same computer by its key. A name or SSH address alone does not establish identity.
   - **A try**: `{id, kind, destination, name, state, title, steps, question?, failure?, computer?,
     known?}`. `kind` is `add`, `setup` or `uninstall`; `state` is `working`, `asking`, `stopping`,
     `failed` or `done`; `steps` are `[{id, title, state, detail?, sent?, total?}]`, each

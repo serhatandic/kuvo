@@ -3730,6 +3730,13 @@ function wipePreparationLayoutReady(folder) {
     return false;
   }
 }
+function computerHistoryLayoutReady(folder) {
+  try {
+    return checkpoint(path18.join(folder, FOLDER_VERSION_FILE), steps.length).version >= 10;
+  } catch {
+    return false;
+  }
+}
 function checkTrialRecovery(folder, start) {
   if (!fs20.existsSync(path18.join(folder, "run", "update-trial")))
     return;
@@ -3809,6 +3816,7 @@ var init_folder_version = __esm(() => {
     () => {},
     () => {},
     () => {},
+    () => {},
     () => {}
   ];
 });
@@ -3850,7 +3858,7 @@ var init_data_declarations = __esm(() => {
     setupNames: { backupVia: "accepted setup", shared: { publish: true, checkpointOnly: true }, owner: "primary", conflict: "fields", backup: true, restore: "portable", families: ["Link state", "Signed documents"] },
     setupStandbyLease: { owner: "local computer", conflict: "regenerate", backup: false, restore: "machine-local", families: ["Link state"] },
     setupStandbySettings: { owner: "local computer", conflict: "fields", backup: true, restore: "needs fresh approval", storage: ["home/setup-takeover.json"], families: ["Link state"] },
-    membershipAndAccess: { backupVia: "accepted setup", shared: { publish: true, checkpointOnly: true, localEffects: ["untold", "untoldMembership", "pendingMachineCleanup", "localWipe"] }, owner: "primary", conflict: "owner order", backup: true, restore: "needs fresh approval", families: ["Link state", "Signed documents", "Phone trust and sync"] },
+    membershipAndAccess: { backupVia: "accepted setup", shared: { publish: true, checkpointOnly: true, localEffects: ["untold", "untoldMembership", "pendingMachineCleanup", "localWipe"] }, owner: "primary", conflict: "owner order", backup: true, restore: "needs fresh approval", families: ["Link state", "Signed documents", "Phone trust and sync", "Computer enrollment history"] },
     setupSecurityAndReleaseChoice: { backupVia: "accepted setup", shared: { publish: true, localSave: "release" }, owner: "primary", conflict: "owner order", backup: true, restore: "needs fresh approval", families: ["Local fences and audit", "Installed release"] },
     computerIdentityAndTrust: { owner: "local computer", conflict: "owner order", backup: false, restore: "machine-local", families: ["Link state", "Phone trust and sync", "SSH trust and agent sockets"] },
     clientIdentity: { owner: "client", conflict: "owner order", backup: false, restore: "machine-local", families: ["Desktop settings"] },
@@ -4180,6 +4188,85 @@ var init_state = __esm(() => {
   LOCK = path19.join(RUN, ".link.lock");
 });
 
+// box/src/link/setup/computer-history.ts
+function readComputerHistory(value, keys, retired) {
+  if (!isObject(value) || typeof value.setup !== "string" || !Array.isArray(value.slots))
+    return;
+  const seen = new Set;
+  const slots = value.slots.flatMap((slot) => {
+    if (!isObject(slot) || !keyOf(slot.key) || !keys.has(slot.key) || seen.has(slot.key))
+      return [];
+    seen.add(slot.key);
+    const fingerprint = fingerprintOf(slot.fingerprint);
+    const previous = (Array.isArray(slot.previous) ? slot.previous : []).filter((key) => keyOf(key) && retired.has(key) && !seen.has(key));
+    for (const key of previous)
+      seen.add(key);
+    return [{ key: slot.key, ...fingerprint ? { fingerprint } : {}, ...previous.length ? { previous } : {} }];
+  });
+  const retiredSigns = [...new Set((Array.isArray(value.retiredSigns) ? value.retiredSigns : []).filter((sign) => typeof sign === "string" && SIGN.test(sign)))];
+  return { setup: value.setup, slots, retiredSigns };
+}
+function computerHistory(link) {
+  const history = link?.computerHistory;
+  return history && history.setup === link?.setup?.id ? history : undefined;
+}
+function historyFor(link, roster) {
+  if (!link.setup)
+    return;
+  const history = computerHistory(link) ?? { setup: link.setup.id, slots: [], retiredSigns: [] };
+  const known = new Set(history.slots.map((slot) => slot.key));
+  return { ...history, slots: [...history.slots, ...roster.filter((peer) => !known.has(peer.key)).map(({ key }) => ({ key }))] };
+}
+function rememberEnrollment(history, key, fingerprint, previous) {
+  const index = history.slots.findIndex((slot) => slot.key === (previous ?? key));
+  const slot = history.slots[index];
+  const kept = fingerprint ?? slot?.fingerprint;
+  const prior = previous && previous !== key ? [...slot?.previous ?? [], previous] : slot?.previous;
+  const entry = { key, ...kept ? { fingerprint: kept } : {}, ...prior ? { previous: prior } : {} };
+  if (index < 0)
+    history.slots.push(entry);
+  else
+    history.slots[index] = entry;
+}
+function orderComputers(history, roster) {
+  if (!history)
+    return roster;
+  const order = new Map(history.slots.map(({ key }, index) => [key, index]));
+  return [...roster].sort((a, b) => (order.get(a.key) ?? Infinity) - (order.get(b.key) ?? Infinity));
+}
+function rememberRetiredSigns(link, roster, gone) {
+  if (!gone.length)
+    return;
+  const history = historyFor(link, roster);
+  if (!history)
+    return;
+  history.retiredSigns = [...new Set([...history.retiredSigns, ...gone.flatMap((peer) => peer.sign ? [peer.sign] : [])])];
+  link.computerHistory = history;
+}
+function historySuccessor(history, previous) {
+  return history?.slots.find((slot) => slot.previous?.includes(previous))?.key;
+}
+function enrollmentPredecessor(history, fingerprint, chosen) {
+  const candidates = fingerprint ? history?.slots.filter((slot) => slot.fingerprint === fingerprint) ?? [] : [];
+  if (chosen) {
+    if (historySuccessor(history, chosen) || candidates.some((each) => each.key !== chosen)) {
+      throw new Error("The computer identity conflicts with the selected computer.");
+    }
+    return chosen;
+  }
+  return candidates.length === 1 ? candidates[0]?.key : undefined;
+}
+function permitsReplacement(history, previous, replacement) {
+  const successor = historySuccessor(history, previous);
+  const slot = history?.slots.find((each) => each.key === replacement);
+  return (!successor || successor === replacement) && (!slot?.previous?.length || slot.previous.includes(previous));
+}
+var fingerprintOf = (value) => typeof value === "string" && /^[0-9a-f]{64}$/.test(value) ? value : undefined, keyOf = (value) => typeof value === "string" && KEY.test(value);
+var init_computer_history = __esm(() => {
+  init_format();
+  init_known();
+});
+
 // box/src/link/setup/removal-record.ts
 function removalRecords(value, left, current) {
   if (!isObject(value))
@@ -4219,6 +4306,11 @@ function membershipOf(value) {
   const left = Array.isArray(value.left) ? value.left : [];
   const removed = value.removedHere;
   const tombstones = [...new Set([...Array.isArray(removed) ? removed : [], ...left].filter((key) => typeof key === "string" && KEY.test(key)))];
+  if (boxes.some((box) => tombstones.includes(box.key)))
+    return null;
+  const computerHistory = readComputerHistory(value.computerHistory, new Set([...tombstones, ...boxes.map((box) => box.key)]), new Set(tombstones));
+  if (computerHistory && boxes.some((box) => box.sign && computerHistory.retiredSigns.includes(box.sign)))
+    return null;
   const removals = removalRecords(value.removals, new Set(tombstones), new Set(boxes.map((box) => box.key)));
   const preparation = isObject(value.wipePreparations) ? value.wipePreparations : {};
   const wipePreparations = Object.fromEntries(boxes.flatMap(({ key }) => {
@@ -4227,6 +4319,7 @@ function membershipOf(value) {
   }));
   return {
     boxes,
+    ...computerHistory ? { computerHistory } : {},
     ...Object.keys(wipePreparations).length ? { wipePreparations } : {},
     ...Object.keys(removals).length ? { removals } : {},
     left: tombstones,
@@ -4276,6 +4369,10 @@ function projectMembership(link, membership, keepLocalPairings = false) {
   }));
   link.phones = [...transferred, ...local.filter((phone) => !transferred.some((each) => each.key === phone.key))];
   link.removed = membership.devices.removed;
+  if (membership.computerHistory?.setup === setup.id)
+    link.computerHistory = membership.computerHistory;
+  else
+    delete link.computerHistory;
   if (here) {
     link.macPeers = membership.boxes.filter((peer) => peer.key !== ownKey(link));
     link.macMoved = membership.moved;
@@ -4289,6 +4386,7 @@ function projectMembership(link, membership, keepLocalPairings = false) {
 }
 var init_membership = __esm(() => {
   init_known();
+  init_computer_history();
   init_phones();
   init_removal_record();
 });
@@ -14475,12 +14573,12 @@ function currentNumberAuthority(link, file) {
 }
 function notePrimary(kept, primary, link, now) {
   if ("away" in primary) {
-    kept.primary ??= keyOf(primary, link);
+    kept.primary ??= keyOf2(primary, link);
     return;
   }
   if ("self" in primary)
     installNumberAuthority(kept, link);
-  const key = keyOf(primary, link);
+  const key = keyOf2(primary, link);
   const through = "peer" in primary ? primary.via?.key : undefined;
   if (through)
     kept.through = through;
@@ -14618,7 +14716,7 @@ function notePrimaryNow(link = readLink(), { file = NUMBERS_FILE, now = Date.now
     }, file);
   const primary = primaryOf(link, file, now);
   const kept = readNumbers(file);
-  if (kept.primary === undefined || "away" in primary || kept.primary === keyOf(primary, link) && kept.through === ("peer" in primary ? primary.via?.key : undefined))
+  if (kept.primary === undefined || "away" in primary || kept.primary === keyOf2(primary, link) && kept.through === ("peer" in primary ? primary.via?.key : undefined))
     return;
   changeNumbers((numbers) => notePrimary(numbers, primary, link, now), file);
 }
@@ -14907,7 +15005,7 @@ var NUMBERS_FILE, BLOCK = 50, LOW = 15, ASK_AGAIN = 30000, MOST_GIVEN = 500, MOS
       ranges.push([from, to]);
   }
   return ranges;
-}, rangesOf2 = (numbers) => joined([...numbers].filter((n) => Number.isInteger(n) && n > 0).map((n) => [n, n])), overlap = (ranges, within) => joined(ranges.flatMap(([from, to]) => within.flatMap(([a, b]) => Math.max(from, a) <= Math.min(to, b) ? [[Math.max(from, a), Math.min(to, b)]] : []))), inRanges = (ranges, n) => ranges.some(([from, to]) => n >= from && n <= to), cleanRanges = (value) => Array.isArray(value) ? value.filter(isRange).slice(-MOST_RANGES) : [], numbersFormat, LOST_FOR, FOUND_AWAY_WITHIN = 3600000, earlier = (a, b) => a.kind !== b.kind ? a.kind === "mac" : b.since !== Number.MAX_SAFE_INTEGER && a.since < b.since, rank = (a, b) => (a.kind === b.kind ? 0 : a.kind === "mac" ? -1 : 1) || a.since - b.since || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0), keyOf = (primary, link) => ("self" in primary) ? "self" : ("peer" in primary) ? primary.peer.key : readNumbers().primary ?? (link?.mac || undefined), askID = () => `wqn_${crypto13.randomBytes(12).toString("base64url")}`, leftIn = (leases) => leases.reduce((sum, [from, to]) => sum + to - from + 1, 0), TOP_MOST, cappedTop = (top) => Math.min(top, TOP_MOST), toldTopOf = (key) => {
+}, rangesOf2 = (numbers) => joined([...numbers].filter((n) => Number.isInteger(n) && n > 0).map((n) => [n, n])), overlap = (ranges, within) => joined(ranges.flatMap(([from, to]) => within.flatMap(([a, b]) => Math.max(from, a) <= Math.min(to, b) ? [[Math.max(from, a), Math.min(to, b)]] : []))), inRanges = (ranges, n) => ranges.some(([from, to]) => n >= from && n <= to), cleanRanges = (value) => Array.isArray(value) ? value.filter(isRange).slice(-MOST_RANGES) : [], numbersFormat, LOST_FOR, FOUND_AWAY_WITHIN = 3600000, earlier = (a, b) => a.kind !== b.kind ? a.kind === "mac" : b.since !== Number.MAX_SAFE_INTEGER && a.since < b.since, rank = (a, b) => (a.kind === b.kind ? 0 : a.kind === "mac" ? -1 : 1) || a.since - b.since || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0), keyOf2 = (primary, link) => ("self" in primary) ? "self" : ("peer" in primary) ? primary.peer.key : readNumbers().primary ?? (link?.mac || undefined), askID = () => `wqn_${crypto13.randomBytes(12).toString("base64url")}`, leftIn = (leases) => leases.reduce((sum, [from, to]) => sum + to - from + 1, 0), TOP_MOST, cappedTop = (top) => Math.min(top, TOP_MOST), toldTopOf = (key) => {
   const told = readTold(key);
   return Math.max(told?.top ?? 0, ...(told?.items ?? []).map((item) => item.number ?? 0));
 }, lookedForWaiting = 0;
@@ -15497,6 +15595,7 @@ function captureMembership(link, self) {
     boxes: roster,
     left,
     moved,
+    computerHistory: computerHistory(link),
     devices: ownPhones(link),
     removalRevisions: link.removalRevisions,
     removedHere: link.removedHere,
@@ -15587,6 +15686,7 @@ var init_access = __esm(() => {
   init_work();
   init_phones();
   init_state();
+  init_computer_history();
   init_membership();
   init_record();
   init_shared();
@@ -15601,6 +15701,7 @@ var init_access = __esm(() => {
     "phones",
     "removed",
     "vouchBlocked",
+    "computerHistory",
     ...localEffects.filter((key) => key !== "localWipe")
   ];
 });
@@ -25725,7 +25826,27 @@ if claimed; then
   if [ "$prior" = ${quote(token)} ]; then rm -f "$A"; fi
 fi`), reserved = (token, script) => accountLock(`
 ${owns(token)} || exit ${ACCOUNT_LOST}
-${script}`), D = "$", SUM = `sum_of() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi; }`, engineOf2 = (version) => `E="$K/engine/${version}/opencode"; [ -x "$E" ] || E=$(for d in "$K"/engine/*/; do [ -x "\${d}opencode" ] && printf '%s\\n' "\${d}opencode"; done | tail -n 1)`, link = (args) => `(cd "$K" && KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$E" --config=/dev/null --no-env-file "$K/bin/kuvo-link.js" ${args})`, FOUND, probe2 = (version) => String.raw`${K2}
+${script}`), D = "$", SUM = `sum_of() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi; }`, engineOf2 = (version) => `E="$K/engine/${version}/opencode"; [ -x "$E" ] || E=$(for d in "$K"/engine/*/; do [ -x "\${d}opencode" ] && printf '%s\\n' "\${d}opencode"; done | tail -n 1)`, link = (args) => `(cd "$K" && KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$E" --config=/dev/null --no-env-file "$K/bin/kuvo-link.js" ${args})`, FOUND, computerFingerprint = (setup) => `${SUM}
+system_id=
+if [ "$(uname -s)" = Darwin ]; then
+  source=platform-uuid
+  system_id=$(ioreg -rd1 -c IOPlatformExpertDevice 2>/dev/null | awk -F'"' '/"IOPlatformUUID"/ {print $4; exit}')
+else
+  source=dmi-uuid
+  system_id=$(cat /sys/class/dmi/id/product_uuid 2>/dev/null)
+  if [ -z "$system_id" ]; then
+    source=os-id
+    system_id=$(cat /etc/machine-id 2>/dev/null)
+  fi
+fi
+system_id=$(printf %s "$system_id" | tr 'A-F' 'a-f' | tr -d '-')
+if [ "\${#system_id}" -eq 32 ]; then
+  case "$system_id" in
+    *[!0-9a-f]*|00000000000000000000000000000000|ffffffffffffffffffffffffffffffff) ;;
+    *) printf 'kuvo fingerprint '; printf 'kuvo-computer-v1:%s:%s:%s' ${quote(setup)} "$source" "$system_id" | sum_of - ;;
+  esac
+fi
+unset system_id`, probe2 = (version, setup) => String.raw`${K2}
 uname -sm
 if [ "$(uname -s)" = Darwin ]; then
   if xcode-select -p >/dev/null 2>&1 && /usr/bin/git --version >/dev/null 2>&1; then echo tools; else echo no-tools; fi
@@ -25735,6 +25856,7 @@ echo "kuvo version $(cat "$K/bin/box-version" 2>/dev/null | tr -cd '0-9a-z.-')"
 [ -d "$K/run/.updating" ] && echo "kuvo updating"
 [ -x "$K/engine/${version}/opencode" ] && "$K/engine/${version}/opencode" --version >/dev/null 2>&1 && echo "kuvo engine"
 [ -s "$K/machine-id" ] && echo "kuvo id $(cat "$K/machine-id")"
+${setup ? computerFingerprint(setup) : ""}
 ${FOUND}
 A="$HOME/Library/Application Support/run.kuvo.code"
 ${appDataProbe()}
@@ -26547,12 +26669,12 @@ function appNameGiven(value) {
   return name && !/[/\\\u0000-\u001f]/.test(name) ? name : null;
 }
 function appNamed(name) {
-  const found = readFound().get(keyOf2(name));
+  const found = readFound().get(keyOf3(name));
   return found?.id && appIcon(found.id) ? { name: found.name || name, id: found.id } : { name };
 }
 async function findApps(names, now = Date.now()) {
   const kept = readFound();
-  const wanted = [...new Map(names.map((name) => [keyOf2(name), name])).entries()].slice(0, NAMES_MOST).filter(([key]) => {
+  const wanted = [...new Map(names.map((name) => [keyOf3(name), name])).entries()].slice(0, NAMES_MOST).filter(([key]) => {
     const found = kept.get(key);
     return !found || (found.id ? !appIcon(found.id) || now - found.at >= FOUND_FOR : now - found.at >= MISSED_FOR);
   });
@@ -26644,7 +26766,7 @@ async function findOnMac(name) {
   }
 }
 function macApp(name, folders = macFolders2()) {
-  const wanted = `${keyOf2(name)}.app`;
+  const wanted = `${keyOf3(name)}.app`;
   for (const folder of folders) {
     let entries = [];
     try {
@@ -26716,7 +26838,7 @@ function linuxEntries(env = process.env, home = homeFolder()) {
       const keys = entryKeys(file);
       if ((keys.get("Type") ?? "Application") !== "Application" || keys.get("Hidden") === "true")
         continue;
-      const names = [...keys].filter(([key]) => key === "Name" || /^Name\[[^\]]+\]$/.test(key)).map(([, value]) => keyOf2(value));
+      const names = [...keys].filter(([key]) => key === "Name" || /^Name\[[^\]]+\]$/.test(key)).map(([, value]) => keyOf3(value));
       apps.push({ id, file, name: keys.get("Name"), names, icon: keys.get("Icon") ?? "" });
     }
   }
@@ -26724,7 +26846,7 @@ function linuxEntries(env = process.env, home = homeFolder()) {
 }
 function findOnLinux(name, env = process.env, home = homeFolder(), entries = linuxEntries(env, home)) {
   const folders = linuxDataFolders(env, home);
-  const wanted = keyOf2(name);
+  const wanted = keyOf3(name);
   for (const entry of entries) {
     if (!entry.names.includes(wanted))
       continue;
@@ -26769,7 +26891,7 @@ function linuxIcon(icon, folders, home) {
   const big = sized.filter((each) => each.width >= SIZE).sort((a, b) => a.width - b.width)[0];
   return (big ?? sized.sort((a, b) => b.width - a.width)[0]).file;
 }
-var APPS, FOUND_FILE, LOCK5, DAY = 86400000, MISSED_FOR, FOUND_FOR, MISSES_KEPT, NAMES_MOST = 20, ICON_MOST, SIZE = 64, ID, isAppID = (id) => typeof id === "string" && ID.test(id) && !id.includes(".."), keyOf2 = (name) => name.trim().toLowerCase(), PNG, isPNG = (file) => pngWidth(file) !== null, idOf = (own, where) => isAppID(own) ? own : `app-${crypto25.createHash("sha256").update(where).digest("hex").slice(0, 16)}`, run = (command, args, timeout) => new Promise((resolve) => execFile2(command, args, { encoding: "utf8", timeout, maxBuffer: 1024 * 1024 }, (error, stdout) => resolve(error ? null : String(stdout ?? "")))), macFolders2 = (home = homeFolder()) => ["/Applications", "/System/Applications", path64.join(home, "Applications")].flatMap((folder) => [folder, path64.join(folder, "Utilities")]), MAC_ICON = `ObjC.import("AppKit");
+var APPS, FOUND_FILE, LOCK5, DAY = 86400000, MISSED_FOR, FOUND_FOR, MISSES_KEPT, NAMES_MOST = 20, ICON_MOST, SIZE = 64, ID, isAppID = (id) => typeof id === "string" && ID.test(id) && !id.includes(".."), keyOf3 = (name) => name.trim().toLowerCase(), PNG, isPNG = (file) => pngWidth(file) !== null, idOf = (own, where) => isAppID(own) ? own : `app-${crypto25.createHash("sha256").update(where).digest("hex").slice(0, 16)}`, run = (command, args, timeout) => new Promise((resolve) => execFile2(command, args, { encoding: "utf8", timeout, maxBuffer: 1024 * 1024 }, (error, stdout) => resolve(error ? null : String(stdout ?? "")))), macFolders2 = (home = homeFolder()) => ["/Applications", "/System/Applications", path64.join(home, "Applications")].flatMap((folder) => [folder, path64.join(folder, "Utilities")]), MAC_ICON = `ObjC.import("AppKit");
 function run(argv) {
   const [app, out, px] = argv;
   const size = Number(px);
@@ -27909,7 +28031,7 @@ function noteFailed(model, error, file = UNANSWERING2, now = Date.now()) {
   const at = Math.min(error.at ?? now, now);
   const reset = resetsIn(error.message, at);
   const brief = !reset && (error.type === "provider.rate-limit" || scope === "model" && /\b429\b|rate.?limit|too many requests/i.test(error.message));
-  const held = { key: keyOf3(model, scope), scope, ...scope === "provider" && funds ? { paid: true } : scope === "provider" && freeUsage ? { free: true } : {}, why: error.message || "It's at a usage limit.", at, until: reset ?? at + (brief ? BRIEF_RESET : UNKNOWN_RESET) };
+  const held = { key: keyOf4(model, scope), scope, ...scope === "provider" && funds ? { paid: true } : scope === "provider" && freeUsage ? { free: true } : {}, why: error.message || "It's at a usage limit.", at, until: reset ?? at + (brief ? BRIEF_RESET : UNKNOWN_RESET) };
   if (held.until <= now)
     return null;
   change3(file, now, (all) => [...all.filter((each) => each.key !== held.key || Boolean(each.paid) !== Boolean(held.paid) || Boolean(each.free) !== Boolean(held.free)), held]);
@@ -27955,7 +28077,7 @@ async function followUnanswering(source, event, file = UNANSWERING2, now = Date.
   if (model && typeof model.providerID === "string" && typeof model.id === "string")
     await answeredOn(source, { providerID: model.providerID, id: model.id }, file, now);
 }
-var UNANSWERING2, UNKNOWN_RESET, BRIEF_RESET, FUNDS, FREE_USAGE = "provider.free-limit", ACCOUNT, MODEL_LIMITS, keyOf3 = (model, scope) => scope === "provider" ? model.providerID : `${model.providerID}/${model.id}`, unansweringNow = (file = UNANSWERING2, now = Date.now()) => read(file, now), covers = (held, model) => !(held.paid && model.free) && !(held.free && !model.free), ACCOUNT_CHANGES;
+var UNANSWERING2, UNKNOWN_RESET, BRIEF_RESET, FUNDS, FREE_USAGE = "provider.free-limit", ACCOUNT, MODEL_LIMITS, keyOf4 = (model, scope) => scope === "provider" ? model.providerID : `${model.providerID}/${model.id}`, unansweringNow = (file = UNANSWERING2, now = Date.now()) => read(file, now), covers = (held, model) => !(held.paid && model.free) && !(held.free && !model.free), ACCOUNT_CHANGES;
 var init_unanswering = __esm(() => {
   init_limits();
   init_text();
@@ -34696,7 +34818,7 @@ function keysIn(text) {
       continue;
     if (!/^(ssh-|ecdsa-|sk-)[A-Za-z0-9@.-]+$/.test(words[1]) || !/^[A-Za-z0-9+/]+=*$/.test(words[2]))
       continue;
-    keys.push({ line: words.slice(0, 3).join(" "), kind: words[1], fingerprint: fingerprintOf(words[2]) });
+    keys.push({ line: words.slice(0, 3).join(" "), kind: words[1], fingerprint: fingerprintOf2(words[2]) });
   }
   return keys;
 }
@@ -34848,7 +34970,7 @@ var KNOWN_HOSTS, program = () => {
 }, sharing = () => {
   const folder = socketFolder();
   return folder && Buffer.byteLength(folder) <= 45 ? ["-o", "ControlMaster=auto", "-o", `ControlPath=${folder}/%C`, "-o", "ControlPersist=60"] : ["-o", "ControlMaster=no", "-o", "ControlPath=none"];
-}, signingIn = (way) => way?.agent ? ["-o", `IdentityAgent=${quoted(way.agent)}`, "-o", "IdentitiesOnly=no"] : [], loginSocket = null, commandFor = (script) => `exec sh -c 'kuvo_script=$(printf %s ${Buffer.from(script).toString("base64")} | base64 -d) || exit 127; eval "$kuvo_script"'`, remote2 = (destination, script, options = {}) => run2([...BASE, ...strict(), ...sharing(), ...signingIn(options.way), ...options.options ?? [], "--", destination, commandFor(script)], options), fingerprintOf = (blob) => `SHA256:${crypto33.createHash("sha256").update(Buffer.from(blob, "base64")).digest("base64").replace(/=+$/, "")}`, lastLine = (stderr) => {
+}, signingIn = (way) => way?.agent ? ["-o", `IdentityAgent=${quoted(way.agent)}`, "-o", "IdentitiesOnly=no"] : [], loginSocket = null, commandFor = (script) => `exec sh -c 'kuvo_script=$(printf %s ${Buffer.from(script).toString("base64")} | base64 -d) || exit 127; eval "$kuvo_script"'`, remote2 = (destination, script, options = {}) => run2([...BASE, ...strict(), ...sharing(), ...signingIn(options.way), ...options.options ?? [], "--", destination, commandFor(script)], options), fingerprintOf2 = (blob) => `SHA256:${crypto33.createHash("sha256").update(Buffer.from(blob, "base64")).digest("base64").replace(/=+$/, "")}`, lastLine = (stderr) => {
   const lines = stderr.split(`
 `).map((line) => line.replace(/[\u0000-\u001f\u007f\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, " ").trim()).filter((line) => line && !/^Warning: Permanently added/.test(line));
   const last = lines[lines.length - 1] ?? "";
@@ -50466,8 +50588,8 @@ async function handoverHere(target, position, requester) {
     return answer6(409, "The chosen computer's signing key changed. Refresh your setup and try again.");
   return proposeLeadership(position, target, setup.standby?.key !== target ? setup.standby ?? null : null, { requester, targetSign: next.sign });
 }
-function enrollStandby(setup, peer, prepare) {
-  return proposeLeadership({ setup: setup.id, epoch: setup.epoch }, setup.primary, peer, { recovery: { peer, prepare } });
+function enrollStandby(setup, peer, prepare, record) {
+  return proposeLeadership({ setup: setup.id, epoch: setup.epoch }, setup.primary, peer, { recovery: { peer, prepare, record } });
 }
 async function proposeLeadership(position, target, standby, { requester, targetSign, recovery } = {}) {
   if (setupLayoutDeferred(K))
@@ -50551,6 +50673,7 @@ async function proposeLeadership(position, target, standby, { requester, targetS
           return null;
         const { id: _destination, ...portable } = recovery.peer;
         membership.boxes.push(portable);
+        recovery.record?.(membership, link);
       }
       shared.membershipAndAccess = { sequence: (shared.membershipAndAccess?.sequence ?? (recovery ? 0 : 1)) + (recovery ? 1 : 0), value: membership };
       shared.queueNumberAllocation = { sequence: shared.queueNumberAllocation?.sequence ?? 1, value: ledger };
@@ -50845,20 +50968,23 @@ var init_lead = __esm(() => {
 // box/src/link/mac/routes.ts
 import fs134 from "node:fs";
 import path140 from "node:path";
-function setMacPeers(link, given, rejoined, staging = false) {
+function setMacPeers(link, given, { staging = false } = {}) {
   if (!isObject(given) || !Array.isArray(given.peers))
     return { link: null, gone: [] };
   const removedHere = Array.isArray(link.removedHere) ? link.removedHere : [];
-  const keeps = (key) => key === rejoined || !removedHere.includes(key);
-  const now = given.peers.slice(0, MOST_PEERS).map((peer) => ({ ...peer, kind: link.setup?.managed && peer?.kind === "mac" ? "mac" : "machine" })).filter((peer) => fitsPeer(peer) && typeof peer.sign === "string" && SIGN.test(peer.sign) && keeps(peer.key)).map(cleanPeer);
+  const keeps = (key) => !removedHere.includes(key) && !link.left?.includes(key);
+  const now = given.peers.slice(0, MOST_PEERS).map((peer) => ({ ...peer, kind: link.setup?.managed && peer?.kind === "mac" ? "mac" : "machine" })).filter((peer) => fitsPeer(peer) && typeof peer.sign === "string" && SIGN.test(peer.sign) && keeps(peer.key) && !computerHistory(link)?.retiredSigns.includes(peer.sign)).map(cleanPeer);
   if (!staging && primaryFenced(link) || link.setup?.standby && !now.some((peer) => peer.key === link.setup.standby.key && peer.sign === link.setup.standby.sign))
     return { link: null, gone: [] };
   const skipped = given.peers.slice(0, MOST_PEERS).filter((peer) => !(isObject(peer) && typeof peer.key === "string" && !keeps(peer.key))).length - now.length;
   if (skipped)
     console.error(`${skipped} of this Mac's machines weren't records the box could take, and were left out.`);
   const removed = (Array.isArray(given.removed) ? given.removed : []).filter((key) => typeof key === "string" && KEY.test(key) && !now.some((peer) => peer.key === key));
-  const gone = peersOf(link).filter((peer) => removed.includes(peer.key));
+  const previousPeers = removed.length ? peersOf(link) : [];
+  const gone = previousPeers.filter((peer) => removed.includes(peer.key));
   if (removed.length) {
+    if (computerHistoryLayoutReady(K))
+      rememberRetiredSigns(link, previousPeers, gone);
     link.removedHere = [...new Set([...removedHere, ...removed])];
     link.removalRevisions ??= {};
     for (const key of new Set(removed))
@@ -50878,19 +51004,12 @@ function setMacPeers(link, given, rejoined, staging = false) {
     if (!Object.keys(link.peerNames).length)
       delete link.peerNames;
   }
-  if (link.removedHere && rejoined && now.some((peer) => peer.key === rejoined)) {
-    link.removedHere = link.removedHere.filter((key) => key !== rejoined);
-    if (link.memberRemovals)
-      delete link.memberRemovals[rejoined];
-    if (!link.removedHere.length)
-      delete link.removedHere;
-  }
   link.macPeers = now;
   link.macMoved = cleanMoved(given.moved);
   pruneDocs(link);
   return { link, gone };
 }
-async function setupGift(again) {
+async function setupGift() {
   if (IS_MAC)
     await macKeys({ needed: true });
   const library = readPersonalities();
@@ -50898,8 +51017,6 @@ async function setupGift(again) {
   const link = updateLink((link) => {
     if (!link?.sign)
       return null;
-    if (!link.setup?.checkpointed && again && !link.removedHere?.includes(again) && Array.isArray(link.left))
-      link.left = link.left.filter((key) => key !== again);
     noteKeyNow(link);
     const own = ownDocs({ link, library });
     docs = [...Object.values(own).map((made) => made.envelope), ...publishedShared(link), ...Object.values(link.docs ?? {}).sort((a, b) => a.d < b.d ? -1 : 1)];
@@ -50999,7 +51116,7 @@ async function* macLinkRoute(route, request, signal) {
     case "kuvo/link/setup": {
       if (method !== "GET")
         return yield* json(405, {});
-      const gift = await setupGift(new URLSearchParams(String(request.path ?? "").split("?")[1] ?? "").get("key"));
+      const gift = await setupGift();
       if (!gift)
         return yield* json(503, { message: "This Mac's link has no keys yet." });
       return yield* json(200, gift);
@@ -51112,6 +51229,8 @@ var macPhones = () => {
   };
 };
 var init_routes2 = __esm(() => {
+  init_folder_version();
+  init_computer_history();
   init_shared();
   init_lease();
   init_exchange();
@@ -51473,7 +51592,7 @@ function prepareRemoval(key, pendingOnly, removal, setupID) {
     if (!peer) {
       return !pendingOnly && already && takeOffVouched(link, key) ? link : null;
     }
-    const made = setMacPeers(link, { peers: (Array.isArray(link.macPeers) ? link.macPeers : []).filter((each) => each?.key !== key), moved: link.macMoved, removed: [key] }, undefined, Boolean(link.setup?.standby));
+    const made = setMacPeers(link, { peers: (Array.isArray(link.macPeers) ? link.macPeers : []).filter((each) => each?.key !== key), moved: link.macMoved, removed: [key] }, { staging: Boolean(link.setup?.standby) });
     if (!made.link)
       return null;
     gone = made.gone;
@@ -51705,6 +51824,9 @@ function matchReplacement(source, previous, replacement) {
       if (!link || setup?.role !== "primary" || setup.conflict || primaryFenced(link) || link.leadershipPending || !acceptedMembership(link)?.left.includes(previous) || live(link, previous) || !live(link, replacement) || ownKey(link) === replacement) {
         throw new Error("On the current primary, remove the old membership and add the replacement with fresh keys first.");
       }
+      if (!permitsReplacement(acceptedMembership(link)?.computerHistory, previous, replacement)) {
+        throw new Error("The selected replacement conflicts with the setup’s computer history.");
+      }
       const kept = replacementEntry(link, previous);
       if (isObject(kept) && kept.source === source && kept.computer === replacement) {
         committed = true;
@@ -51737,7 +51859,7 @@ function restoreForPeer(sender, act) {
   const source = act.body?.source;
   const old = act.body?.origin;
   const match = backupSource(source) && validKey(old) ? replacementEntry(link, old) : undefined;
-  if (setup?.role !== "primary" || setup.conflict || primaryFenced(link) || link?.leadershipPending || pendingShared(link, "ownershipAssignments") || pendingShared(link, "membershipAndAccess") || act.body?.setup !== setup.id || !validKey(old) || !live(link, sender.key) || live(link, old) || !acceptedMembership(link)?.left.includes(old) || !isObject(match) || match.source !== source || replacementOwner(link, old) !== sender.key) {
+  if (setup?.role !== "primary" || setup.conflict || primaryFenced(link) || link?.leadershipPending || pendingShared(link, "ownershipAssignments") || pendingShared(link, "membershipAndAccess") || act.body?.setup !== setup.id || !validKey(old) || !live(link, sender.key) || live(link, old) || !acceptedMembership(link)?.left.includes(old) || !permitsReplacement(acceptedMembership(link)?.computerHistory, old, sender.key) || !isObject(match) || match.source !== source || replacementOwner(link, old) !== sender.key) {
     return { status: 409, value: { message: "The primary has no current match for this replacement." } };
   }
   return { status: 200, value: { boundary: ownershipBoundary(link) } };
@@ -52027,6 +52149,7 @@ async function restore(dest, source, id, key, signal) {
 }
 var JOURNAL, RESTORING, validKey = (key) => typeof key === "string" && KEY.test(key), backupSource = (value) => typeof value === "string" && SOURCE.test(value), live = (link, key) => acceptedMembership(link)?.boxes.some((box) => box.key === key) ?? false, restoreStatus = () => json2(JOURNAL);
 var init_restore = __esm(() => {
+  init_computer_history();
   init_recovery();
   init_platform();
   init_engine_swap();
@@ -52815,7 +52938,7 @@ async function readPulls(asks, now = Date.now) {
       found.set(key, read.value);
   return found;
 }
-var GITHUB_FILE, FRESH = 60000, FRESH_OPEN2, FRESH_DONE2, KEPT4, keyOf4 = (ask) => `${ask.host}/${ask.owner}/${ask.repo}` + (ask.number ? `#${ask.number}` : `@${ask.branch ?? ""}`), PASSED, FAILED, FIELDS2 = "number url state isDraft additions deletions headRefName createdAt headRepositoryOwner { login } commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 1) { checkRunCountsByState { state count } statusContextCountsByState { state count } } } } } }", PULLS;
+var GITHUB_FILE, FRESH = 60000, FRESH_OPEN2, FRESH_DONE2, KEPT4, keyOf5 = (ask) => `${ask.host}/${ask.owner}/${ask.repo}` + (ask.number ? `#${ask.number}` : `@${ask.branch ?? ""}`), PASSED, FAILED, FIELDS2 = "number url state isDraft additions deletions headRefName createdAt headRepositoryOwner { login } commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 1) { checkRunCountsByState { state count } statusContextCountsByState { state count } } } } } }", PULLS;
 var init_github2 = __esm(() => {
   init_home();
   init_graphql();
@@ -52828,7 +52951,7 @@ var init_github2 = __esm(() => {
   PULLS = register({
     name: "glance",
     file: GITHUB_FILE,
-    keyOf: keyOf4,
+    keyOf: keyOf5,
     hostOf: (ask) => ask.host,
     query: queryFor,
     valueOf: (found, ask) => pullOf(!isObject(found) ? null : ask.number ? found.pullRequest : isObject(found.pullRequests) && Array.isArray(found.pullRequests.nodes) ? branchPull(found.pullRequests.nodes, ask) : null),
@@ -54148,7 +54271,7 @@ async function glances(ids, targets, signal, now = Date.now) {
     const glance = {};
     const tree = trees.get(data.id);
     const want = wanted.get(data.id);
-    const read = want ? pulls.get(keyOf4(want.ask)) : undefined;
+    const read = want ? pulls.get(keyOf5(want.ask)) : undefined;
     let pull;
     if (read)
       pull = { number: read.number, url: read.url, state: read.state, additions: read.additions, deletions: read.deletions, ...read.checks ? { checks: read.checks } : {} };
@@ -76392,7 +76515,7 @@ var init_files4 = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "0d77c53f95f9";
+var BRIDGE_VERSION = "fe1b15cc1cb2";
 
 // box/src/link/rehome/paths.ts
 import { createHash as createHash6 } from "node:crypto";
@@ -80466,7 +80589,7 @@ function probed(answer) {
   const said = (name) => lines.find((line) => line.startsWith(`kuvo ${name} `))?.slice(name.length + 6) ?? "";
   const version = said("version");
   const id = said("id");
-  return { kind, version: /^\d+\.\d+\.\d+/.test(version) ? version : null, updating: lines.includes("kuvo updating"), engine: lines.includes("kuvo engine"), id: /^[0-9a-f]{32}$/.test(id) ? id : null, lines };
+  return { kind, version: /^\d+\.\d+\.\d+/.test(version) ? version : null, updating: lines.includes("kuvo updating"), engine: lines.includes("kuvo engine"), id: /^[0-9a-f]{32}$/.test(id) ? id : null, fingerprint: fingerprintOf(said("fingerprint")), lines };
 }
 function machineBoxProbed(probe) {
   const has = (word) => () => probe.lines.includes(`kuvo ${word}`);
@@ -80732,7 +80855,7 @@ class AccountReservation {
   }
 }
 function checkAdd(link, grant, name, key) {
-  const removal = key ? removalsOf(link)[key] : undefined;
+  const removal = key ? removalsOf(link)[key] ?? link?.memberRemovals?.[key] : undefined;
   if (removal?.wipe && !removal.delivered)
     throw new Failed(`Wait for the pending wipe on ${name} before adding it again.`);
   if (setupLayoutDeferred(K))
@@ -80751,13 +80874,43 @@ function checkAdd(link, grant, name, key) {
   if (key && (grant.revisions[key] ?? 0) !== (link?.removalRevisions?.[key] ?? 0))
     throw removedDuringAdd(name);
 }
+function revokedKeys(link) {
+  return new Set([...link?.left ?? [], ...link?.removedHere ?? [], ...acceptedMembership(link)?.left ?? []]);
+}
+function checkPredecessor(link, key, name) {
+  if (!key)
+    return;
+  const prior = computerHistory(link)?.slots.find((slot) => slot.key === key)?.previous ?? [];
+  const removals = link?.memberRemovals ?? removalsOf(link);
+  if (prior.some((each) => {
+    const removal = removals[each];
+    return removal?.wipe && !removal.delivered;
+  }))
+    throw new Failed(`Wait for the pending wipe on ${name} before adding it again.`);
+  if (key === link?.setup?.primary)
+    throw new Failed("The primary cannot be replaced through Add.");
+  if (key === link?.setup?.standby?.key || link?.wipePreparations?.[key]) {
+    throw new Failed("Retire this computer as standby or finish its removal before adding it again.");
+  }
+  if (!peersOf(link).some((peer) => peer.key === key) && !revokedKeys(link).has(key))
+    throw removedDuringAdd(name);
+}
+function checkFreshKeys(link, peer, name) {
+  const { sign } = peer;
+  if (revokedKeys(link).has(peer.key) || peer.key === ownKey(link ?? {}) || sign === ownSign(link) || computerHistory(link)?.retiredSigns.includes(sign) || Object.values(removalsOf(link)).some((record) => record.peer.sign === sign) || link?.untold?.some((each) => each.sign === sign) || peersOf(link).some((each) => (each.key === peer.key || each.sign === sign) && (each.key !== peer.key || each.sign !== sign))) {
+    throw new Failed(`${name} presented membership keys that cannot be used. Update Kuvo Code there and add it again.`);
+  }
+}
 async function setUp2(tell, destination, name, kind, expectedKey, grant) {
   tell.step("checking", `Connecting to ${name}`);
   const beforeEnrollment = readLink();
+  const identitySetup = computerHistoryLayoutReady(K) ? followedSetup(beforeEnrollment)?.id : undefined;
+  if (grant?.replace && !identitySetup)
+    throw new Failed("Finish updating the setup before choosing a computer to replace.");
   const pending = pendingShared(beforeEnrollment, "membershipAndAccess");
   const pendingKey = keptHosts()?.[destination]?.key;
   const candidate = pending && membershipOf(pending.body.value)?.boxes.find((peer) => peer.key === pendingKey);
-  if (kind === "add" && beforeEnrollment?.sign && pending && candidate && !peersOf(beforeEnrollment).some((peer) => peer.key === candidate.key)) {
+  if (kind === "add" && !grant?.replace && beforeEnrollment?.sign && pending && candidate && !peersOf(beforeEnrollment).some((peer) => peer.key === candidate.key)) {
     tell.step("joining");
     const save = asSave(pending, beforeEnrollment.sign);
     tell.saving(save, candidate);
@@ -80774,7 +80927,7 @@ async function setUp2(tell, destination, name, kind, expectedKey, grant) {
   const reserved = account.run;
   let finish;
   await account.use(async () => {
-    const answer = await reach.run(probe2(ENGINE_VERSION), { cut: true, most: 120000 });
+    const answer = await reach.run(probe2(ENGINE_VERSION, identitySetup), { cut: true, most: 120000 });
     if (answer.status !== 0)
       throw new Failed(`${name} couldn’t be checked. ${lastLine(answer.stderr)}`.trim());
     const probe = probed(answer.stdout);
@@ -80788,6 +80941,19 @@ async function setUp2(tell, destination, name, kind, expectedKey, grant) {
     if (/^app-(?:07|box)$/m.test(answer.stdout) && !machineBoxProbed(probe))
       throw new Failed(`${name} still has Kuvo Code 0.7’s sessions. Update it to Kuvo first — its sessions move over then — and add it again.`, false);
     const link = readLink();
+    if (identitySetup && followedSetup(link)?.id !== identitySetup)
+      throw new Failed("The setup changed. Start a new add.");
+    const history = computerHistory(link);
+    const selected = enrollmentPredecessor(history, probe.fingerprint, grant?.replace);
+    const predecessor = selected ?? (kind === "add" ? undefined : expectedKey);
+    const foundKey = foundOf(probe.lines).find((box) => !box.app)?.card?.self.key;
+    const oldFingerprint = history?.slots.find((slot) => slot.key === foundKey)?.fingerprint;
+    if (oldFingerprint && probe.fingerprint && oldFingerprint !== probe.fingerprint && grant?.replace !== foundKey) {
+      throw new Failed("This computer presents another computer’s membership. Clear the copied Kuvo link before adding it.");
+    }
+    checkAdd(link, grant, name, predecessor);
+    if (predecessor !== foundKey)
+      checkPredecessor(link, predecessor, name);
     if (link)
       noteKeyNow(link);
     const foundBoxes = foundOf(probe.lines);
@@ -80804,7 +80970,7 @@ async function setUp2(tell, destination, name, kind, expectedKey, grant) {
     const sameID = kind === "add" && probe.id ? saved.find((each) => each.identity === probe.id && each.destination !== destination) : undefined;
     const itsPeer = sameID ? peerAtDestination(link, sameID.destination) : undefined;
     const same = sameID && itsPeer && (!found?.card?.self.key || found.card.self.key === itsPeer.key) ? sameID : undefined;
-    if (same && itsPeer) {
+    if (same && itsPeer && !grant?.replace) {
       const peer = itsPeer;
       updateLink((current) => {
         checkAdd(current, grant, name, peer.key);
@@ -80822,7 +80988,10 @@ async function setUp2(tell, destination, name, kind, expectedKey, grant) {
         tell.came({ key: peer.key, name: peer.name }, true);
       return;
     }
-    if (judged.verdict !== "free" && judged.verdict !== "ours" && !judged.joins) {
+    const returning = foundKey && revokedKeys(link).has(foundKey) && foundBoxes.length === 1 && found?.card?.role === "primary" && found.card.computers === 1 && !found.card.app && !appsOf(probe.lines);
+    if (foundKey && revokedKeys(link).has(foundKey))
+      checkAdd(link, grant, name, foundKey);
+    if (!returning && judged.verdict !== "free" && judged.verdict !== "ours" && !judged.joins) {
       throw new AccountOccupied(name);
     }
     const newer = newerVersion(probe.version, mine);
@@ -80916,7 +81085,7 @@ async function setUp2(tell, destination, name, kind, expectedKey, grant) {
           tell.saving(enrollment, peer);
         tell.commit?.();
         unjoined = false;
-      }, expectedKey, grant);
+      }, expectedKey, grant, { setup: identitySetup, fingerprint: probe.fingerprint, predecessor, selected });
       unjoined = false;
     } catch (error) {
       if (!unjoined || !account.canRollBack || error instanceof AccountOccupied)
@@ -80935,18 +81104,19 @@ async function setUp2(tell, destination, name, kind, expectedKey, grant) {
   if (finish)
     tell.came(await finish());
 }
-async function join3(tell, run, destination, name, identity, token, staged, expectedKey, grant) {
+async function join3(tell, run, destination, name, identity, token, staged, expectedKey, grant, match) {
   const beforeLink = readLink();
   const relay = IS_MAC ? macLink.config?.relay : beforeLink?.relay;
   const removedWhileAdding = (link) => expectedKey && link?.removedHere?.includes(expectedKey);
   checkAdd(beforeLink, grant, name, expectedKey);
   if (removedWhileAdding(beforeLink))
     throw removedDuringAdd(name);
-  const before = peerAtDestination(beforeLink, destination);
-  const gift = await setupGift(before?.key ?? null);
+  const gift = await setupGift();
   if (!relay || !gift?.mac)
     throw new Failed(`${ownName()} isn’t linked to your other computers yet, so it couldn’t add ${name}.`);
-  const input = { relay, name, mac: gift.mac, macSign: gift.macSign, docs: gift.docs, id: destination, tolerates: 1, macID: launcherID(gift.mac), macName: ownName(), replaces: gift.replaces };
+  const keepMemberships = peersOf(beforeLink).flatMap(({ key, sign }) => sign ? [{ key, sign }] : []);
+  const blockedMemberships = Object.values(removalsOf(beforeLink)).filter((record) => record.wipe && !record.delivered).map((record) => record.peer.key);
+  const input = { relay, name, keepMemberships, blockedMemberships, mac: gift.mac, macSign: gift.macSign, docs: gift.docs, id: destination, tolerates: 1, macID: launcherID(gift.mac), macName: ownName(), replaces: gift.replaces };
   const ran = await run(join(ENGINE_VERSION, token), { input: Buffer.from(JSON.stringify(input)), beforeInput: () => checkAdd(readLink(), grant, name, expectedKey), most: 300000 });
   if (ran.status === SETUP_OCCUPIED)
     throw new AccountOccupied(name);
@@ -80959,6 +81129,22 @@ async function join3(tell, run, destination, name, identity, token, staged, expe
     throw new Failed(`Kuvo Code on ${name} couldn’t join your computers. ${lastLine(ran.stderr)}`.trim());
   }
   const peer = { key: said.key, sign: said.sign, address: said.address, name, id: destination };
+  const checkEnrollment = (link) => {
+    checkAdd(link, grant, name, expectedKey);
+    checkAdd(link, grant, name, peer.key);
+    checkAdd(link, grant, name, match.predecessor);
+    if (removedWhileAdding(link))
+      throw removedDuringAdd(name);
+    checkFreshKeys(link, peer, name);
+    if (match.setup && (followedSetup(link)?.id !== match.setup || enrollmentPredecessor(computerHistory(link), match.fingerprint, grant?.replace) !== match.selected)) {
+      throw new Failed("The computer’s record changed. Start a new add.");
+    }
+    if (match.predecessor && match.predecessor !== peer.key)
+      checkPredecessor(link, match.predecessor, name);
+    if (match.predecessor && match.predecessor !== peer.key && peersOf(link).some((each) => each.key === peer.key)) {
+      throw new Failed("This membership already belongs to another computer in the setup.");
+    }
+  };
   const keepRecord = () => {
     const saved = savedMachines();
     if (!saved)
@@ -80966,19 +81152,31 @@ async function join3(tell, run, destination, name, identity, token, staged, expe
     const had = saved.find((each) => each.destination === destination);
     writeDurablePrivate(LIST_FILE, JSON.stringify(had ? saved.map((each) => each === had && identity ? { ...each, identity } : each) : [...saved, { destination, ...identity ? { identity } : {} }], null, 2));
   };
+  checkEnrollment(readLink());
   const setup = followedSetup(readLink());
   if (!expectedKey && setup?.role === "primary" && !setup.standby && requiresStandby(setup)) {
     if (said.standbyAcceptance !== true)
       throw new Failed(`Update Kuvo Code on ${name} before using it as the replacement standby.`);
     let replacement;
     const result = await enrollStandby(setup, { ...peer, kind: "machine" }, (link, enrollment) => {
-      checkAdd(link, grant, name, peer.key);
-      if (removedWhileAdding(link))
-        throw removedDuringAdd(name);
+      checkEnrollment(link);
       keepRecord();
       keepHost(destination, peer);
       staged(peer, enrollment);
       replacement = enrollment;
+    }, (membership, link) => {
+      checkEnrollment(link);
+      if (match.predecessor && !membership.left.includes(match.predecessor)) {
+        throw new Failed("Remove the previous membership before adding this computer as standby.");
+      }
+      if (membership.boxes.length > MOST_PEERS + 1)
+        throw new Failed("The setup already has the maximum number of computers.");
+      if (match.setup) {
+        const history = historyFor(link, membership.boxes.filter((each) => each.key !== peer.key));
+        rememberEnrollment(history, peer.key, match.fingerprint, match.predecessor);
+        membership.computerHistory = history;
+        membership.boxes = orderComputers(history, membership.boxes);
+      }
     });
     if (result.status !== 202 || !replacement)
       throw new Failed(isObject(result.value) ? String(result.value.message) : "The replacement couldn't be saved.");
@@ -80995,20 +81193,46 @@ async function join3(tell, run, destination, name, identity, token, staged, expe
       return finishEnrollment(tell, peer, null);
     };
   }
+  let gone = [];
   const { changed, save, busy } = updateAccess((link) => {
-    checkAdd(link, grant, name, expectedKey);
-    checkAdd(link, grant, name, peer.key);
-    if (removedWhileAdding(link))
-      throw removedDuringAdd(name);
-    keepRecord();
-    const replaced = peerAtDestination(link, destination);
-    keepHost(destination, { name, address: peer.address, key: peer.key, sign: peer.sign });
+    checkEnrollment(link);
     const state = link ?? { phones: [] };
-    const peers = (Array.isArray(state.macPeers) ? state.macPeers : []).filter(isObject);
-    const others = peers.filter((each) => each.key !== peer.key && each.key !== replaced?.key);
-    if (replaced)
+    const peers = peersOf(state);
+    const predecessor = match.predecessor;
+    const replaced = predecessor && predecessor !== peer.key ? peers.find((each) => each.key === predecessor) : undefined;
+    const already = peers.some((each) => each.key === peer.key);
+    if (!already && !replaced && peers.length >= MOST_PEERS)
+      throw new Failed("The setup already has the maximum number of computers.");
+    const keepVouches = replaced && !grant;
+    const index = peers.findIndex((each) => each.key === (replaced?.key ?? peer.key));
+    const roster = [...peers];
+    if (index < 0)
+      roster.push({ ...peer, kind: "machine" });
+    else
+      roster[index] = { ...peer, kind: roster[index].kind };
+    const history = match.setup ? historyFor(state, peers) : undefined;
+    const made = setMacPeers(state, { peers: orderComputers(history, roster), moved: state.macMoved, removed: replaced && !keepVouches ? [replaced.key] : [] });
+    if (!made.link)
+      return null;
+    if (replaced && keepVouches) {
       vouchMoved(state, replaced.key, peer.key);
-    return setMacPeers(state, { peers: [...others, peer], moved: state.macMoved }, expectedKey ? undefined : peer.key).link;
+      state.removedHere = [...new Set([...state.removedHere ?? [], replaced.key])];
+      state.left = [...new Set([...state.left ?? [], replaced.key])].slice(-64);
+      if (replaced.sign && history)
+        history.retiredSigns = [...new Set([...history.retiredSigns, replaced.sign])];
+    }
+    if (history) {
+      const retired = computerHistory(state);
+      if (retired)
+        history.retiredSigns = [...new Set([...history.retiredSigns, ...retired.retiredSigns])];
+      rememberEnrollment(history, peer.key, match.fingerprint, predecessor);
+      state.computerHistory = history;
+      state.macPeers = orderComputers(history, peersOf(state));
+    }
+    gone = replaced ? [replaced] : [];
+    keepRecord();
+    keepHost(destination, peer);
+    return state;
   });
   if (busy)
     throw new Failed("An access change is already waiting to be saved.");
@@ -81019,6 +81243,10 @@ async function join3(tell, run, destination, name, identity, token, staged, expe
   const docs = Array.isArray(said.docs) ? said.docs : [];
   return async () => {
     const computer = await finishEnrollment(tell, peer, save);
+    if (gone.length) {
+      macDocsChanged({ closeRemoved: readLink() });
+      tellGone(gone);
+    }
     if (docs.length)
       await receiveDocs(peer, { give: docs }, liveLink()).catch(() => {});
     return computer;
@@ -81056,14 +81284,14 @@ function begin(kind, destination, name, steps, work) {
   it = made;
   return made;
 }
-function beginAdd(destination, asker) {
+function beginAdd(destination, asker, replace) {
   const now = underWay3(destination);
   const link = readLink();
   const key = asker?.key?.toString("base64url");
   const caller = key && pairedPhone(link, key, asker?.pairing);
   if (key && !caller)
     return { busy: ADD_REVOKED };
-  const grant = { caller: caller ? { key: caller.key, pairing: caller.pairing ?? "" } : undefined, revisions: link?.removalRevisions ?? {} };
+  const grant = { replace, caller: caller ? { key: caller.key, pairing: caller.pairing ?? "" } : undefined, revisions: link?.removalRevisions ?? {} };
   const expected = peerAtDestination(link, destination)?.key;
   return uninstalling(now) ?? now ?? begin("add", destination, destination, SETUP_STEPS, (tell) => setUp2(tell, destination, destination, "add", expected, grant));
 }
@@ -81298,6 +81526,7 @@ var init_flow2 = __esm(() => {
   init_leadership();
   init_handover();
   init_record();
+  init_computer_history();
   init_marks();
   AccountOccupied = class AccountOccupied extends Failed {
     constructor(name) {
@@ -90193,11 +90422,16 @@ async function* computersAddRoute(context, match) {
   const can = canAdd();
   if (!can.can)
     return yield* json(can.status, { message: can.message, ...can.primary ? { primary: can.primary } : {} });
-  const destination = cleanAddress(parsed(request.body)?.destination);
+  const given = parsed(request.body);
+  const destination = cleanAddress(given?.destination);
+  const replace = given?.replace;
+  if (replace !== undefined && (typeof replace !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(replace))) {
+    return yield* json(400, { message: "Choose the previous membership by its key." });
+  }
   const problem = addressProblem(destination);
   if (problem)
     return yield* json(400, { message: problem });
-  const begun = beginAdd(destination, context.phone);
+  const begun = beginAdd(destination, context.phone, replace);
   if ("busy" in begun)
     return yield* json(409, { message: begun.busy });
   return yield* json(202, { try: begun.seen });
@@ -95485,6 +95719,14 @@ async function setup() {
     process.exit(2);
   }
   const mac = typeof input.mac === "string" ? input.mac : undefined;
+  let offeredRoster = null;
+  if (mac && input.macSign && Array.isArray(input.docs))
+    for (const envelope of input.docs) {
+      const doc = readDoc(envelope);
+      if (doc?.kind === "peers" && doc.origin === input.macSign && (!offeredRoster || doc.n > offeredRoster.n))
+        offeredRoster = doc;
+    }
+  const revocations = new Set(Array.isArray(offeredRoster?.body.left) ? offeredRoster.body.left : []);
   const running = runningBridge();
   const old = readLink();
   const before = readPersonalities();
@@ -95492,6 +95734,7 @@ async function setup() {
   const replaced = mac && Array.isArray(input.replaces) ? input.replaces.filter((key) => typeof key === "string" && KEY.test(key) && key !== mac).slice(0, 8) : [];
   let formerMacs = [];
   let alreadySetUp = false;
+  let blockedMembership = false;
   updateLink((current) => {
     let reserved;
     try {
@@ -95509,7 +95752,20 @@ async function setup() {
       alreadySetUp = true;
       return null;
     }
-    const next = current ?? { secret: crypto84.randomBytes(32).toString("base64url"), key: newKey().toString("base64url"), phones: [] };
+    const key = current && ownKey(current);
+    if (key && Array.isArray(input.blockedMemberships) && input.blockedMemberships.includes(key)) {
+      blockedMembership = true;
+      return null;
+    }
+    const sign = current && ownSign(current);
+    const fresh = mac && (revocations.has(key) || Array.isArray(input.keepMemberships) && !input.keepMemberships.some((entry) => isObject(entry) && entry.key === key && entry.sign === sign));
+    const next = (fresh && current ? {
+      name: current.name,
+      startsFromOthers: current.startsFromOthers,
+      phones: []
+    } : current) ?? { secret: crypto84.randomBytes(32).toString("base64url"), key: newKey().toString("base64url"), phones: [] };
+    next.secret ??= crypto84.randomBytes(32).toString("base64url");
+    next.key ??= newKey().toString("base64url");
     next.sign ??= newSigningSeed();
     if (mac) {
       next.mac = mac;
@@ -95542,6 +95798,10 @@ async function setup() {
     link = next;
     return next;
   });
+  if (blockedMembership) {
+    console.error("Wait for the pending wipe before adding this computer again.");
+    process.exit(1);
+  }
   if (alreadySetUp) {
     console.error("This OS account already has a Kuvo setup. Connect to your own OS account.");
     process.exit(SETUP_OCCUPIED);
@@ -95567,7 +95827,7 @@ async function setup() {
   try {
     runningVersion = fs234.readFileSync(VERSION_FILE, "utf8").trim();
   } catch {}
-  const restart = old?.relay !== link.relay || old?.name !== link.name || runningVersion !== BRIDGE_VERSION;
+  const restart = old?.key !== link.key || old?.relay !== link.relay || old?.name !== link.name || runningVersion !== BRIDGE_VERSION;
   if (!isUpdating()) {
     if (running && restart)
       process.kill(running, "SIGTERM");
@@ -96008,7 +96268,7 @@ export {
   engineControl,
   engineHandler,
   findProgram,
-  fingerprintOf,
+  fingerprintOf2 as fingerprintOf,
   finishDeletes,
   firstMessageOf,
   fleetFacts,

@@ -5,7 +5,7 @@
 // of it before (#636). Each step is told as it goes (`tries.ts`); every word a client shows is here.
 // The setup's primary enrolls members and signs the resulting membership list.
 
-import { setupLayoutDeferred } from "../../shared/folder-version";
+import { computerHistoryLayoutReady, setupLayoutDeferred } from "../../shared/folder-version";
 import { updateAccess } from "../setup/access";
 import { asSave, PENDING_SAVE, pendingShared, waitShared, type Receipt } from "../setup/shared";
 import { LEADERSHIP_WAIT, primaryFenced } from "../setup/lease";
@@ -16,14 +16,14 @@ import { isObject, parsed } from "../../shared/json";
 import { plainName } from "../../shared/text";
 import { setupSaveReceipt } from "../../shared/setup-local";
 import { macDocsChanged, receiveDocs } from "../documents/exchange";
-import { SIGN } from "../documents/format";
+import { ownSign, SIGN } from "../documents/format";
 import { writeDurablePrivate, writePrivate } from "../files";
 import { IS_MAC, K } from "../home";
 import { ownName } from "../letters/start";
-import { macLinkCheck } from "../mac/link";
+import { macLinkCheck, tellGone } from "../mac/link";
 import { changeKeptHosts, keptHosts, LIST_FILE, localDestination, peerAtDestination, savedMachines } from "../mac/machines";
 import { setMacPeers, setupGift } from "../mac/routes";
-import { ADDRESS, KEY, ownKey, peersOf } from "../peers/known";
+import { ADDRESS, KEY, MOST_PEERS, ownKey, peersOf, type Peer } from "../peers/known";
 import { readPeerAgents } from "../peers/directory";
 import { pairedPhone, vouchedWords, vouchMoved } from "../phones";
 import { machineBoxIn } from "../install/verdict";
@@ -42,10 +42,11 @@ import { gatherSeed } from "./seed";
 import { type HostKey, type Ran, type Way, hangUp, lastLine, reachedAs, readHostKey, remote, troubleOf, trustHostKeys, vaultAgent } from "./ssh";
 import { Failed, type Running, Stopped, type Telling, startTry, stopTry, underWay } from "./tries";
 import { noteKeyNow } from "../setup/lead";
-import { membershipOf } from "../setup/membership";
+import { acceptedMembership, membershipOf } from "../setup/membership";
 import { replacementOutcome, type ReplacementEnrollment } from "../setup/leadership";
 import { enrollStandby } from "../setup/handover";
 import { followedSetup, requiresStandby } from "../setup/record";
+import { computerHistory, enrollmentPredecessor, fingerprintOf, historyFor, orderComputers, rememberEnrollment } from "../setup/computer-history";
 import { SETUP_OCCUPIED } from "../marks";
 
 class AccountOccupied extends Failed {
@@ -84,6 +85,7 @@ interface Probed {
   updating: boolean;
   engine: boolean;
   id: string | null;
+  fingerprint?: string;
   lines: string[];
 }
 
@@ -104,7 +106,7 @@ function probed(answer: string): Probed {
   const said = (name: string) => lines.find(line => line.startsWith(`kuvo ${name} `))?.slice(name.length + 6) ?? "";
   const version = said("version");
   const id = said("id");
-  return { kind, version: /^\d+\.\d+\.\d+/.test(version) ? version : null, updating: lines.includes("kuvo updating"), engine: lines.includes("kuvo engine"), id: /^[0-9a-f]{32}$/.test(id) ? id : null, lines };
+  return { kind, version: /^\d+\.\d+\.\d+/.test(version) ? version : null, updating: lines.includes("kuvo updating"), engine: lines.includes("kuvo engine"), id: /^[0-9a-f]{32}$/.test(id) ? id : null, fingerprint: fingerprintOf(said("fingerprint")), lines };
 }
 
 /** Whether the computer has a machine's box, by the installer's rule for it (`machineBoxIn`,
@@ -401,6 +403,7 @@ class AccountReservation {
 
 interface AddGrant {
   caller?: { key: string; pairing: string };
+  replace?: string;
   revisions: Record<string, number>;
 }
 
@@ -408,7 +411,7 @@ const ADD_REVOKED = "The device that started this add is no longer paired. Start
 const removedDuringAdd = (name: string) => new Failed(`${name} was removed from your computers. Add it again to restore access.`);
 
 function checkAdd(link: LinkState | null, grant: AddGrant | undefined, name: string, key?: string): void {
-  const removal = key ? removalsOf(link)[key] : undefined;
+  const removal = key ? (removalsOf(link)[key] ?? link?.memberRemovals?.[key]) : undefined;
   if (removal?.wipe && !removal.delivered) throw new Failed(`Wait for the pending wipe on ${name} before adding it again.`);
   if (setupLayoutDeferred(K)) throw new Failed("Wait for the Kuvo Code update to finish before adding a computer.");
   if (primaryFenced(link)) throw new Failed(LEADERSHIP_WAIT, false);
@@ -420,14 +423,46 @@ function checkAdd(link: LinkState | null, grant: AddGrant | undefined, name: str
   if (key && (grant.revisions[key] ?? 0) !== (link?.removalRevisions?.[key] ?? 0)) throw removedDuringAdd(name);
 }
 
+function revokedKeys(link: LinkState | null): Set<string> {
+  return new Set([...(link?.left ?? []), ...(link?.removedHere ?? []), ...(acceptedMembership(link)?.left ?? [])]);
+}
+
+function checkPredecessor(link: LinkState | null, key: string | undefined, name: string): void {
+  if (!key) return;
+  const prior = computerHistory(link)?.slots.find(slot => slot.key === key)?.previous ?? [];
+  const removals = link?.memberRemovals ?? removalsOf(link);
+  if (prior.some(each => {
+    const removal = removals[each];
+    return removal?.wipe && !removal.delivered;
+  })) throw new Failed(`Wait for the pending wipe on ${name} before adding it again.`);
+  if (key === link?.setup?.primary) throw new Failed("The primary cannot be replaced through Add.");
+  if (key === link?.setup?.standby?.key || link?.wipePreparations?.[key]) {
+    throw new Failed("Retire this computer as standby or finish its removal before adding it again.");
+  }
+  if (!peersOf(link).some(peer => peer.key === key) && !revokedKeys(link).has(key)) throw removedDuringAdd(name);
+}
+
+function checkFreshKeys(link: LinkState | null, peer: { key: string; sign: string }, name: string): void {
+  const { sign } = peer;
+  if (revokedKeys(link).has(peer.key) || peer.key === ownKey(link ?? {}) || sign === ownSign(link)
+    || computerHistory(link)?.retiredSigns.includes(sign)
+    || Object.values(removalsOf(link)).some(record => record.peer.sign === sign)
+    || link?.untold?.some(each => each.sign === sign)
+    || peersOf(link).some(each => (each.key === peer.key || each.sign === sign) && (each.key !== peer.key || each.sign !== sign))) {
+    throw new Failed(`${name} presented membership keys that cannot be used. Update Kuvo Code there and add it again.`);
+  }
+}
+
 // Sets a computer up at `destination`, or again: everything to its box running there as one of yours.
 async function setUp(tell: Telling, destination: string, name: string, kind: "add" | "setup" | "update", expectedKey?: string, grant?: AddGrant): Promise<void> {
   tell.step("checking", `Connecting to ${name}`);
   const beforeEnrollment = readLink();
+  const identitySetup = computerHistoryLayoutReady(K) ? followedSetup(beforeEnrollment)?.id : undefined;
+  if (grant?.replace && !identitySetup) throw new Failed("Finish updating the setup before choosing a computer to replace.");
   const pending = pendingShared(beforeEnrollment, "membershipAndAccess");
   const pendingKey = keptHosts()?.[destination]?.key;
   const candidate = pending && membershipOf(pending.body.value)?.boxes.find(peer => peer.key === pendingKey);
-  if (kind === "add" && beforeEnrollment?.sign && pending && candidate && !peersOf(beforeEnrollment).some(peer => peer.key === candidate.key)) {
+  if (kind === "add" && !grant?.replace && beforeEnrollment?.sign && pending && candidate && !peersOf(beforeEnrollment).some(peer => peer.key === candidate.key)) {
     tell.step("joining");
     const save = asSave(pending, beforeEnrollment.sign);
     tell.saving(save, candidate);
@@ -443,7 +478,7 @@ async function setUp(tell: Telling, destination: string, name: string, kind: "ad
   const reserved = account.run;
   let finish: (() => Promise<{ key: string; name: string }>) | undefined;
   await account.use(async () => {
-    const answer = await reach.run(scripts.probe(ENGINE_VERSION), { cut: true, most: 120_000 });
+    const answer = await reach.run(scripts.probe(ENGINE_VERSION, identitySetup), { cut: true, most: 120_000 });
     if (answer.status !== 0) throw new Failed(`${name} couldn’t be checked. ${lastLine(answer.stderr)}`.trim());
     const probe = probed(answer.stdout);
     if (probe.updating) throw new Failed(`${name} is updating Kuvo Code itself right now. Try again in a few minutes.`);
@@ -455,6 +490,17 @@ async function setUp(tell: Telling, destination: string, name: string, kind: "ad
     }
     if (/^app-(?:07|box)$/m.test(answer.stdout) && !machineBoxProbed(probe)) throw new Failed(`${name} still has Kuvo Code 0.7’s sessions. Update it to Kuvo first — its sessions move over then — and add it again.`, false);
     const link = readLink();
+    if (identitySetup && followedSetup(link)?.id !== identitySetup) throw new Failed("The setup changed. Start a new add.");
+    const history = computerHistory(link);
+    const selected = enrollmentPredecessor(history, probe.fingerprint, grant?.replace);
+    const predecessor = selected ?? (kind === "add" ? undefined : expectedKey);
+    const foundKey = foundOf(probe.lines).find(box => !box.app)?.card?.self.key;
+    const oldFingerprint = history?.slots.find(slot => slot.key === foundKey)?.fingerprint;
+    if (oldFingerprint && probe.fingerprint && oldFingerprint !== probe.fingerprint && grant?.replace !== foundKey) {
+      throw new Failed("This computer presents another computer’s membership. Clear the copied Kuvo link before adding it.");
+    }
+    checkAdd(link, grant, name, predecessor);
+    if (predecessor !== foundKey) checkPredecessor(link, predecessor, name);
     if (link) noteKeyNow(link);
     const foundBoxes = foundOf(probe.lines);
     // The same computer, here already under another address: that address is kept as one of its own.
@@ -471,7 +517,7 @@ async function setUp(tell: Telling, destination: string, name: string, kind: "ad
     const sameID = kind === "add" && probe.id ? saved.find(each => each.identity === probe.id && each.destination !== destination) : undefined;
     const itsPeer = sameID ? peerAtDestination(link, sameID.destination) : undefined;
     const same = sameID && itsPeer && (!found?.card?.self.key || found.card.self.key === itsPeer.key) ? sameID : undefined;
-    if (same && itsPeer) {
+    if (same && itsPeer && !grant?.replace) {
       const peer = itsPeer;
       updateLink(current => {
         checkAdd(current, grant, name, peer.key);
@@ -486,7 +532,10 @@ async function setUp(tell: Telling, destination: string, name: string, kind: "ad
       if (peer) tell.came({ key: peer.key, name: peer.name }, true);
       return;
     }
-    if (judged.verdict !== "free" && judged.verdict !== "ours" && !judged.joins) {
+    const returning = foundKey && revokedKeys(link).has(foundKey) && foundBoxes.length === 1
+      && found?.card?.role === "primary" && found.card.computers === 1 && !found.card.app && !appsOf(probe.lines);
+    if (foundKey && revokedKeys(link).has(foundKey)) checkAdd(link, grant, name, foundKey);
+    if (!returning && judged.verdict !== "free" && judged.verdict !== "ours" && !judged.joins) {
       throw new AccountOccupied(name);
     }
 
@@ -575,7 +624,7 @@ async function setUp(tell: Telling, destination: string, name: string, kind: "ad
         else tell.saving(enrollment, peer);
         tell.commit?.();
         unjoined = false;
-      }, expectedKey, grant);
+      }, expectedKey, grant, { setup: identitySetup, fingerprint: probe.fingerprint, predecessor, selected });
       unjoined = false;
     } catch (error) {
       // A competing setup enrolled this account after the probe. Its data belongs to that setup.
@@ -598,16 +647,17 @@ async function setUp(tell: Telling, destination: string, name: string, kind: "ad
 // Signs the computer into your setup: this box's keys and documents given over SSH (the trust
 // between them), its own taken back, and its record written here, for your other computers and
 // phones to take from this box.
-async function join(tell: Telling, run: Reach["run"], destination: string, name: string, identity: string | null, token: string, staged: (peer: { key: string; name: string }, enrollment: Receipt | ReplacementEnrollment) => void, expectedKey?: string, grant?: AddGrant): Promise<() => Promise<{ key: string; name: string }>> {
+async function join(tell: Telling, run: Reach["run"], destination: string, name: string, identity: string | null, token: string, staged: (peer: { key: string; name: string }, enrollment: Receipt | ReplacementEnrollment) => void, expectedKey: string | undefined, grant: AddGrant | undefined, match: { setup?: string; fingerprint?: string; predecessor?: string; selected?: string }): Promise<() => Promise<{ key: string; name: string }>> {
   const beforeLink = readLink();
   const relay = IS_MAC ? macLink.config?.relay : beforeLink?.relay;
   const removedWhileAdding = (link: LinkState | null) => expectedKey && link?.removedHere?.includes(expectedKey);
   checkAdd(beforeLink, grant, name, expectedKey);
   if (removedWhileAdding(beforeLink)) throw removedDuringAdd(name);
-  const before = peerAtDestination(beforeLink, destination);
-  const gift = await setupGift(before?.key ?? null);
+  const gift = await setupGift();
   if (!relay || !gift?.mac) throw new Failed(`${ownName()} isn’t linked to your other computers yet, so it couldn’t add ${name}.`);
-  const input = { relay, name, mac: gift.mac, macSign: gift.macSign, docs: gift.docs, id: destination, tolerates: 1, macID: launcherID(gift.mac), macName: ownName(), replaces: gift.replaces };
+  const keepMemberships = peersOf(beforeLink).flatMap(({ key, sign }) => sign ? [{ key, sign }] : []);
+  const blockedMemberships = Object.values(removalsOf(beforeLink)).filter(record => record.wipe && !record.delivered).map(record => record.peer.key);
+  const input = { relay, name, keepMemberships, blockedMemberships, mac: gift.mac, macSign: gift.macSign, docs: gift.docs, id: destination, tolerates: 1, macID: launcherID(gift.mac), macName: ownName(), replaces: gift.replaces };
   const ran = await run(scripts.join(ENGINE_VERSION, token), { input: Buffer.from(JSON.stringify(input)), beforeInput: () => checkAdd(readLink(), grant, name, expectedKey), most: 300_000 });
   if (ran.status === SETUP_OCCUPIED) throw new AccountOccupied(name);
   let said: unknown = null;
@@ -616,23 +666,50 @@ async function join(tell: Telling, run: Reach["run"], destination: string, name:
     throw new Failed(`Kuvo Code on ${name} couldn’t join your computers. ${lastLine(ran.stderr)}`.trim());
   }
   const peer = { key: said.key, sign: said.sign, address: said.address, name, id: destination };
+  const checkEnrollment = (link: LinkState | null) => {
+    checkAdd(link, grant, name, expectedKey);
+    checkAdd(link, grant, name, peer.key);
+    checkAdd(link, grant, name, match.predecessor);
+    if (removedWhileAdding(link)) throw removedDuringAdd(name);
+    checkFreshKeys(link, peer, name);
+    if (match.setup && (followedSetup(link)?.id !== match.setup
+      || enrollmentPredecessor(computerHistory(link), match.fingerprint, grant?.replace) !== match.selected)) {
+      throw new Failed("The computer’s record changed. Start a new add.");
+    }
+    if (match.predecessor && match.predecessor !== peer.key) checkPredecessor(link, match.predecessor, name);
+    if (match.predecessor && match.predecessor !== peer.key && peersOf(link).some(each => each.key === peer.key)) {
+      throw new Failed("This membership already belongs to another computer in the setup.");
+    }
+  };
   const keepRecord = () => {
     const saved = savedMachines();
     if (!saved) throw new Failed(`${ownName()}’s list of machines can’t be read right now.`);
     const had = saved.find(each => each.destination === destination);
     writeDurablePrivate(LIST_FILE, JSON.stringify(had ? saved.map(each => (each === had && identity ? { ...each, identity } : each)) : [...saved, { destination, ...(identity ? { identity } : {}) }], null, 2));
   };
+  checkEnrollment(readLink());
   const setup = followedSetup(readLink());
   if (!expectedKey && setup?.role === "primary" && !setup.standby && requiresStandby(setup)) {
     if (said.standbyAcceptance !== true) throw new Failed(`Update Kuvo Code on ${name} before using it as the replacement standby.`);
     let replacement: ReplacementEnrollment | undefined;
     const result = await enrollStandby(setup, { ...peer, kind: "machine" }, (link, enrollment) => {
-      checkAdd(link, grant, name, peer.key);
-      if (removedWhileAdding(link)) throw removedDuringAdd(name);
+      checkEnrollment(link);
       keepRecord();
       keepHost(destination, peer);
       staged(peer, enrollment);
       replacement = enrollment;
+    }, (membership, link) => {
+      checkEnrollment(link);
+      if (match.predecessor && !membership.left.includes(match.predecessor)) {
+        throw new Failed("Remove the previous membership before adding this computer as standby.");
+      }
+      if (membership.boxes.length > MOST_PEERS + 1) throw new Failed("The setup already has the maximum number of computers.");
+      if (match.setup) {
+        const history = historyFor(link, membership.boxes.filter(each => each.key !== peer.key))!;
+        rememberEnrollment(history, peer.key, match.fingerprint, match.predecessor);
+        membership.computerHistory = history;
+        membership.boxes = orderComputers(history, membership.boxes);
+      }
     });
     if (result.status !== 202 || !replacement) throw new Failed(isObject(result.value) ? String(result.value.message) : "The replacement couldn't be saved.");
     const enrollment = replacement;
@@ -647,20 +724,42 @@ async function join(tell: Telling, run: Reach["run"], destination: string, name:
       return finishEnrollment(tell, peer, null);
     };
   }
+  let gone: Peer[] = [];
   const { changed, save, busy } = updateAccess(link => {
-    checkAdd(link, grant, name, expectedKey);
-    checkAdd(link, grant, name, peer.key);
-    if (removedWhileAdding(link)) throw removedDuringAdd(name);
-    keepRecord();
-    const replaced = peerAtDestination(link, destination);
-    keepHost(destination, { name, address: peer.address, key: peer.key, sign: peer.sign });
+    checkEnrollment(link);
     const state = link ?? { phones: [] };
-    // (Under its id here, or its key, once: set up again with keys made anew, it's the same machine.)
-    const peers = (Array.isArray(state.macPeers) ? state.macPeers : []).filter(isObject);
-    const others = peers.filter(each => each.key !== peer.key && each.key !== replaced?.key);
-    // (And what's kept by the key it had goes by the one it has now: the devices its box vouched for.)
-    if (replaced) vouchMoved(state, replaced.key, peer.key);
-    return setMacPeers(state, { peers: [...others, peer], moved: state.macMoved }, expectedKey ? undefined : peer.key).link;
+    const peers = peersOf(state);
+    const predecessor = match.predecessor;
+    const replaced = predecessor && predecessor !== peer.key ? peers.find(each => each.key === predecessor) : undefined;
+    const already = peers.some(each => each.key === peer.key);
+    if (!already && !replaced && peers.length >= MOST_PEERS) throw new Failed("The setup already has the maximum number of computers.");
+    // An explicit Set Up/Update of a live machine keeps its vouch provenance.
+    // A fresh Add retires any replaced member and its device grants.
+    const keepVouches = replaced && !grant;
+    const index = peers.findIndex(each => each.key === (replaced?.key ?? peer.key));
+    const roster = [...peers];
+    if (index < 0) roster.push({ ...peer, kind: "machine" });
+    else roster[index] = { ...peer, kind: roster[index]!.kind };
+    const history = match.setup ? historyFor(state, peers) : undefined;
+    const made = setMacPeers(state, { peers: orderComputers(history, roster), moved: state.macMoved, removed: replaced && !keepVouches ? [replaced.key] : [] });
+    if (!made.link) return null;
+    if (replaced && keepVouches) {
+      vouchMoved(state, replaced.key, peer.key);
+      state.removedHere = [...new Set([...state.removedHere ?? [], replaced.key])];
+      state.left = [...new Set([...state.left ?? [], replaced.key])].slice(-64);
+      if (replaced.sign && history) history.retiredSigns = [...new Set([...history.retiredSigns, replaced.sign])];
+    }
+    if (history) {
+      const retired = computerHistory(state);
+      if (retired) history.retiredSigns = [...new Set([...history.retiredSigns, ...retired.retiredSigns])];
+      rememberEnrollment(history, peer.key, match.fingerprint, predecessor);
+      state.computerHistory = history;
+      state.macPeers = orderComputers(history, peersOf(state));
+    }
+    gone = replaced ? [replaced] : [];
+    keepRecord();
+    keepHost(destination, peer);
+    return state;
   });
   if (busy) throw new Failed("An access change is already waiting to be saved.");
   if (save) staged(peer, save);
@@ -668,6 +767,10 @@ async function join(tell: Telling, run: Reach["run"], destination: string, name:
   const docs = Array.isArray(said.docs) ? said.docs : [];
   return async () => {
     const computer = await finishEnrollment(tell, peer, save);
+    if (gone.length) {
+      macDocsChanged({ closeRemoved: readLink() });
+      tellGone(gone);
+    }
     // Its own documents, signed with the key it just gave, taken as if by mail.
     if (docs.length) await receiveDocs(peer, { give: docs }, liveLink()).catch(() => {});
     return computer;
@@ -715,13 +818,13 @@ const uninstalling = (now: Running | undefined): Busy | null => (now?.seen.kind 
 
 /** Begins adding the computer at `destination` (checked first: `addressProblem`, `canAdd`). One
  * being added or set up there already is answered as it is; one being stopped is waited for. */
-export function beginAdd(destination: string, asker?: Asker): Running | Busy {
+export function beginAdd(destination: string, asker?: Asker, replace?: string): Running | Busy {
   const now = underWay(destination);
   const link = readLink();
   const key = asker?.key?.toString("base64url");
   const caller = key && pairedPhone(link, key, asker?.pairing);
   if (key && !caller) return { busy: ADD_REVOKED };
-  const grant: AddGrant = { caller: caller ? { key: caller.key, pairing: caller.pairing ?? "" } : undefined, revisions: link?.removalRevisions ?? {} };
+  const grant: AddGrant = { replace, caller: caller ? { key: caller.key, pairing: caller.pairing ?? "" } : undefined, revisions: link?.removalRevisions ?? {} };
   const expected = peerAtDestination(link, destination)?.key;
   return uninstalling(now) ?? now ?? begin("add", destination, destination, SETUP_STEPS, tell => setUp(tell, destination, destination, "add", expected, grant));
 }

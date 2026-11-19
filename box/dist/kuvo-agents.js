@@ -40910,6 +40910,7 @@ var init_folder_version = __esm(() => {
     () => {},
     () => {},
     () => {},
+    () => {},
     () => {}
   ];
 });
@@ -42514,4 +42515,4 @@ if (!isMainThread && process.argv.includes("--insights-db-worker")) {
 } else {
   await init_main().then(() => ({}));
 }
-// Built from Packages/Box/src/agents 81a23f25c9d86489e9069a9109a91273887b6524449178bfcc165346edb47703
+// Built from Packages/Box/src/agents f3d3fadf1a333a9da928ed6c132bea4ff562e2d42e9f0d0dcaac8534b14fcd28

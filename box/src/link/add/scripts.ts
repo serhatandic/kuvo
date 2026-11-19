@@ -97,6 +97,29 @@ const FOUND = String.raw`for b in "$HOME/.kuvo-code" "$HOME/Library/Application 
 done
 for a in "$HOME/Library/Application Support"/run.kuvo.code*; do [ -d "$a" ] && echo "app ${D}{a#"$HOME"/}"; done`;
 
+// The identifier stays in this shell. Only the setup-scoped digest crosses SSH.
+const computerFingerprint = (setup: string): string => `${SUM}
+system_id=
+if [ "$(uname -s)" = Darwin ]; then
+  source=platform-uuid
+  system_id=$(ioreg -rd1 -c IOPlatformExpertDevice 2>/dev/null | awk -F'"' '/"IOPlatformUUID"/ {print $4; exit}')
+else
+  source=dmi-uuid
+  system_id=$(cat /sys/class/dmi/id/product_uuid 2>/dev/null)
+  if [ -z "$system_id" ]; then
+    source=os-id
+    system_id=$(cat /etc/machine-id 2>/dev/null)
+  fi
+fi
+system_id=$(printf %s "$system_id" | tr 'A-F' 'a-f' | tr -d '-')
+if [ "\${#system_id}" -eq 32 ]; then
+  case "$system_id" in
+    *[!0-9a-f]*|00000000000000000000000000000000|ffffffffffffffffffffffffffffffff) ;;
+    *) printf 'kuvo fingerprint '; printf 'kuvo-computer-v1:%s:%s:%s' ${quote(setup)} "$source" "$system_id" | sum_of - ;;
+  esac
+fi
+unset system_id`;
+
 /** The probe: the computer's kind and what the engine needs of it, what Kuvo Code it has (its
  * version, whether it's updating itself, whether `version`'s engine is there and runs), its id
  * where it has one (`machine-id`, made as it's started: the same computer under another address
@@ -105,7 +128,7 @@ for a in "$HOME/Library/Application Support"/run.kuvo.code*; do [ -d "$a" ] && e
  * `kuvo id <32 hex>`; then the found lines, an earlier Kuvo Code's (`app-07`, `app-box`), and
  * what the installer judges a machine's box from (`kuvo kind <word>`, `kuvo gone`, `kuvo keys`,
  * `kuvo making`, `kuvo running`). */
-export const probe = (version: string): string => String.raw`${K}
+export const probe = (version: string, setup?: string): string => String.raw`${K}
 uname -sm
 if [ "$(uname -s)" = Darwin ]; then
   if xcode-select -p >/dev/null 2>&1 && /usr/bin/git --version >/dev/null 2>&1; then echo tools; else echo no-tools; fi
@@ -115,6 +138,7 @@ echo "kuvo version $(cat "$K/bin/box-version" 2>/dev/null | tr -cd '0-9a-z.-')"
 [ -d "$K/run/.updating" ] && echo "kuvo updating"
 [ -x "$K/engine/${version}/opencode" ] && "$K/engine/${version}/opencode" --version >/dev/null 2>&1 && echo "kuvo engine"
 [ -s "$K/machine-id" ] && echo "kuvo id $(cat "$K/machine-id")"
+${setup ? computerFingerprint(setup) : ""}
 ${FOUND}
 A="$HOME/Library/Application Support/run.kuvo.code"
 ${appDataProbe()}

@@ -4,6 +4,7 @@ import { isObject } from "../../shared/json";
 import type { LinkState, Phone } from "../state";
 import type { Peer } from "../peers/known";
 import { KEY, cleanMoved, cleanPeer, fitsPeer, ownKey, type MovedSession } from "../peers/known";
+import { readComputerHistory, type ComputerHistory } from "./computer-history";
 import { fits } from "../phones";
 
 import { REMOVAL_ID, removalRecords, type MemberRemoval, type WipePreparationClaim } from "./removal-record";
@@ -15,6 +16,7 @@ export interface Membership {
   devices: { phones: Phone[]; removed: { key: string; pairing: string }[] };
   removalRevisions: Record<string, number>;
   vouchBlocked: NonNullable<LinkState["vouchBlocked"]>;
+  computerHistory?: ComputerHistory;
   removals?: Record<string, MemberRemoval>;
   wipePreparations?: Record<string, WipePreparationClaim>;
 }
@@ -32,6 +34,9 @@ export function membershipOf(value: unknown): Membership | null {
   const removed = value.removedHere;
   const tombstones = [...new Set([...(Array.isArray(removed) ? removed : []), ...left]
     .filter((key): key is string => typeof key === "string" && KEY.test(key)))];
+  if (boxes.some(box => tombstones.includes(box.key))) return null;
+  const computerHistory = readComputerHistory(value.computerHistory, new Set([...tombstones, ...boxes.map(box => box.key)]), new Set(tombstones));
+  if (computerHistory && boxes.some(box => box.sign && computerHistory.retiredSigns.includes(box.sign))) return null;
   const removals = removalRecords(value.removals, new Set(tombstones), new Set(boxes.map(box => box.key)));
   const preparation = isObject(value.wipePreparations) ? value.wipePreparations : {};
   const wipePreparations = Object.fromEntries(boxes.flatMap(({ key }) => {
@@ -42,6 +47,7 @@ export function membershipOf(value: unknown): Membership | null {
   }));
   return {
     boxes,
+    ...(computerHistory ? { computerHistory } : {}),
     ...(Object.keys(wipePreparations).length ? { wipePreparations } : {}),
     ...(Object.keys(removals).length ? { removals } : {}),
     left: tombstones,
@@ -98,6 +104,8 @@ export function projectMembership(link: LinkState, membership: Membership, keepL
   }));
   link.phones = [...transferred, ...local.filter(phone => !transferred.some(each => each.key === phone.key))];
   link.removed = membership.devices.removed;
+  if (membership.computerHistory?.setup === setup.id) link.computerHistory = membership.computerHistory;
+  else delete link.computerHistory;
   if (here) {
     link.macPeers = membership.boxes.filter(peer => peer.key !== ownKey(link));
     link.macMoved = membership.moved;
