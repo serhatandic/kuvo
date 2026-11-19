@@ -292,18 +292,78 @@ impl QueueView {
         }, cx);
     }
 
-    pub(super) fn open_picture(&mut self, mut picture: Picture, window: &mut Window, cx: &mut Context<Self>) {
-        self.viewer_return = window.focused(cx);
-        picture.caption = None;
-        self.viewing = Some(picture);
-        window.focus(&self.viewer_focus, cx);
-        cx.notify();
-    }
+    pub(super) fn open_picture(&mut self, picture: Picture, window: &mut Window, cx: &mut Context<Self>) {
+        let mut attachments: Vec<Attachment> = Vec::new();
+        if let Some(whole) = self.whole() {
+            attachments.extend(kept(whole).into_iter().filter(|file| file.image));
+        }
+        attachments.extend(drafts(self.body_composer.read(cx)).into_iter().filter(|file| file.image));
 
-    pub(super) fn close_picture(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.viewing = None;
-        if let Some(focus) = self.viewer_return.take() { window.focus(&focus, cx); }
-        cx.notify();
+        let mut items: Vec<crate::image_viewer::ViewerItem> = attachments
+            .into_iter()
+            .map(|file| {
+                let key = file.key();
+                let read = self.picture_reads.get(&key).cloned().unwrap_or(Read::Reading);
+                let local_path = match &file.origin {
+                    Origin::Draft(_, path) => Some(path.clone()),
+                    Origin::Kept(_, _) => None,
+                };
+                let client = self.client.clone();
+                let origin = file.origin.clone();
+                let name = file.name.clone();
+                let loader: std::sync::Arc<dyn Fn() -> Read + Send + Sync> = std::sync::Arc::new(move || match &origin {
+                    Origin::Draft(_, path) => pictures::read(&client, &Source::Local(path.clone())),
+                    Origin::Kept(item, _) => match client.work_item_file(item, &name) {
+                        Ok(bytes) => pictures::shown(bytes),
+                        Err(_) => Read::Failed {
+                            why: "Couldn’t load the image. Check the computer’s connection and try again.".into(),
+                            again: true,
+                        },
+                    },
+                });
+                crate::image_viewer::ViewerItem {
+                    id: key,
+                    name: file.name,
+                    caption: None,
+                    source_tag: "Work Queue".into(),
+                    local_path,
+                    read,
+                    loader: Some(loader),
+                }
+            })
+            .collect();
+
+        let active = match items.iter().position(|item| item.id == picture.id) {
+            Some(index) => index,
+            None => {
+                let read = self.picture_reads.get(&picture.id).cloned().unwrap_or(Read::Reading);
+                let local_path = match &picture.source {
+                    Source::Local(path) => Some(path.clone()),
+                    _ => None,
+                };
+                items.push(crate::image_viewer::ViewerItem {
+                    id: picture.id.clone(),
+                    name: picture.name.clone().unwrap_or_else(|| "Image".into()),
+                    caption: None,
+                    source_tag: "Work Queue".into(),
+                    local_path,
+                    read,
+                    loader: None,
+                });
+                items.len() - 1
+            }
+        };
+
+        crate::image_viewer::open(
+            crate::image_viewer::OpenRequest {
+                items,
+                active,
+                return_focus: window.focused(cx),
+                on_change: None,
+            },
+            window,
+            cx,
+        );
     }
 
     fn save_attachment(&mut self, file: Attachment, cx: &mut Context<Self>) {

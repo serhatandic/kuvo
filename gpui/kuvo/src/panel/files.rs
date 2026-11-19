@@ -152,7 +152,8 @@ impl FilesView {
         cx.notify();
     }
 
-    /// Opens a file to read, as its box sends it.
+    /// Opens a file to read, as its box sends it. Image files present an option to open in the
+    /// unified Stage viewer.
     pub fn open_file(&mut self, path: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.opened = Some((path.to_owned(), Load::Loading));
         // (Looked up as a file opens: an editor installed or removed since is found.)
@@ -252,13 +253,14 @@ impl FilesView {
             Row::File { path, name, depth } => {
                 let opened = path.clone();
                 let selected = self.opened.as_ref().is_some_and(|(at, _)| at == path);
+                let icon = if crate::image_viewer::is_image_path(name) { IconName::Image } else { IconName::File };
                 line(format!("tree-{path}"))
                     .pl(indent(*depth) + px(18.))
                     .cursor_pointer()
                     .when(selected, |d| d.bg(c.selected))
                     .hover(move |s| s.bg(c.hover))
                     .on_click(cx.listener(move |this, _, window, cx| this.open_file(&opened, window, cx)))
-                    .child(Icon::new(IconName::File).size(IconSize::Nav).color(c.text_faint))
+                    .child(Icon::new(icon).size(IconSize::Nav).color(c.text_faint))
                     .child(div().min_w_0().truncate().child(name.clone()))
                     .into_any_element()
             }
@@ -302,15 +304,101 @@ impl FilesView {
             .into_any_element()
     }
 
+    fn open_image_in_viewer(&self, path: &str, window: &mut Window, cx: &mut Context<Self>) {
+        // Gather sibling image files in the same open folder so the user can step through them.
+        let parent = path.rsplit_once('/').map(|(dir, _)| dir).unwrap_or("");
+        let mut paths: Vec<String> = match self.folders.get(parent) {
+            Some(Read::Listed(folder)) => folder
+                .files
+                .iter()
+                .filter(|name| crate::image_viewer::is_image_path(name))
+                .map(|name| join(parent, name))
+                .collect(),
+            _ => Vec::new(),
+        };
+        if !paths.iter().any(|p| p == path) {
+            paths.push(path.to_owned());
+        }
+        let active = paths.iter().position(|p| p == path).unwrap_or(0);
+        let here = self.client.here();
+        let items: Vec<crate::image_viewer::ViewerItem> = paths
+            .into_iter()
+            .map(|file_path| {
+                let name = file_path.rsplit('/').next().unwrap_or(&file_path).to_owned();
+                let client = self.client.clone();
+                let uri = crate::image_viewer::file_uri(&file_path);
+                crate::image_viewer::ViewerItem {
+                    id: format!("file:{file_path}"),
+                    name,
+                    caption: None,
+                    source_tag: "Files".into(),
+                    local_path: here.then(|| std::path::PathBuf::from(&file_path)),
+                    read: crate::pictures::Read::Reading,
+                    loader: Some(std::sync::Arc::new(move || {
+                        crate::pictures::read(&client, &kuvo_box::pictures::Source::File(uri.clone()))
+                    })),
+                }
+            })
+            .collect();
+        crate::image_viewer::open(
+            crate::image_viewer::OpenRequest {
+                items,
+                active,
+                return_focus: Some(self.focus.clone()),
+                on_change: None,
+            },
+            window,
+            cx,
+        );
+    }
+
     fn viewer(&self, path: &str, shown: &Load<Shown>, cx: &mut Context<Self>) -> AnyElement {
         let c = cx.theme().colors.clone();
         let place = self.place.as_ref().map(|place| place.directory.clone()).unwrap_or_default();
         let relative = path.strip_prefix(&format!("{place}/")).unwrap_or(path).to_owned();
         let name = relative.rsplit('/').next().unwrap_or(&relative).to_owned();
         let folder = relative.rsplit_once('/').map(|(folder, _)| folder.to_owned()).unwrap_or_default();
+        let is_image = crate::image_viewer::is_image_path(path);
         let body: AnyElement = match shown {
             Load::Loading => kuvo_ui::small::LoadingLabel::new("file-loading", "Reading…").fill().into_any_element(),
             Load::Failed(why) => div().p(space::S4).text_color(c.text_faint).child(format!("It couldn’t be read: {why}")).into_any_element(),
+            Load::Ready(Shown::Unshown(_)) if is_image => {
+                let open_path = path.to_owned();
+                div()
+                    .p(space::S5)
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .justify_center()
+                    .gap(space::S3)
+                    .rounded(radius::CARD)
+                    .bg(c.sunken)
+                    .border_1()
+                    .border_color(c.border)
+                    .child(Icon::new(IconName::Image).size(IconSize::Card).color(c.text_muted))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .items_center()
+                            .gap(px(2.))
+                            .child(div().text_ui(TypeSize::Small).medium().text_color(c.text).child(name.clone()))
+                            .child(div().text_ui(TypeSize::Caption).text_color(c.text_faint).child("Open full screen in the image viewer")),
+                    )
+                    .child(
+                        div()
+                            .debug_selector(|| "files-open-image".into())
+                            .child(
+                                Button::new("files-open-image", "View Image")
+                                    .icon(IconName::ExpandEditor)
+                                    .size(ButtonSize::Small)
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.open_image_in_viewer(&open_path, window, cx);
+                                    })),
+                            ),
+                    )
+                    .into_any_element()
+            }
             Load::Ready(Shown::Unshown(why)) => div().p(space::S4).text_color(c.text_faint).child(why.clone()).into_any_element(),
             Load::Ready(Shown::Text { text, lines }) => {
                 text_preview(&name, text, *lines, cx)

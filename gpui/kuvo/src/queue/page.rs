@@ -1249,27 +1249,6 @@ impl Render for QueueView {
                 layer.absolute().inset_0().p(space::S6).when(item, |d| d.pt(px(44.))).into_any_element()
             }
         });
-        let viewer = self.viewing.as_ref().map(|picture| {
-            let layer = div().id("queue-picture-viewer").occlude().track_focus(&self.viewer_focus)
-                .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
-                    if event.keystroke.key == "escape" { this.close_picture(window, cx); cx.stop_propagation(); }
-                }))
-                .on_click(cx.listener(|this, _, window, cx| this.close_picture(window, cx)))
-                .child(crate::pictures::viewer(picture, 0, 1, self.picture_reads.get(&picture.id), window))
-                .child(div().absolute().top(space::S4).right(space::S4)
-                    .child(Button::icon_only("close-queue-picture", IconName::Close, "Close image")
-                        .size(ButtonSize::Small).on_click(cx.listener(|this, _, window, cx| {
-                            cx.stop_propagation();
-                            this.close_picture(window, cx);
-                        }))));
-            if expanded {
-                deferred(anchored().position(point(px(0.), px(0.))).child(
-                    layer.w(viewport.width).h(viewport.height),
-                )).with_priority(3).into_any_element()
-            } else {
-                layer.absolute().inset_0().into_any_element()
-            }
-        });
         div()
             .id("queue-page")
             .debug_selector(|| if listing { "queue-page".into() } else { "item-page".into() })
@@ -1285,6 +1264,5 @@ impl Render for QueueView {
             .children(sheet)
             .children(self.relation_sheet(cx))
             .children(scrim)
-            .children(viewer)
     }
 }

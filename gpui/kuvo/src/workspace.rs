@@ -280,6 +280,7 @@ impl gpui::EventEmitter<Switch> for Workspace {}
 pub struct Workspace {
     client: BoxClient,
     moves: Entity<crate::moves::MovesView>,
+    image_viewer: Entity<crate::image_viewer::ImageViewer>,
     insights: Entity<crate::insights::InsightsView>,
     /// Your computers as this app reaches them, where the window can show another's (none: a
     /// workspace by itself, which shows its one box).
@@ -519,11 +520,14 @@ impl Workspace {
             area_subscriptions.push(cx.observe_in(bots, window, |this: &mut Workspace, _, window, cx| this.bots_changed(window, cx)));
         }
         let rings = cx.new(|cx| Rings::new(client.clone(), live, cx));
+        let image_viewer = cx.new(|cx| crate::image_viewer::ImageViewer::new(live, cx));
+        crate::image_viewer::register(window, &image_viewer, cx);
         area_subscriptions.push(cx.observe_global::<crate::yours::Store>(|_, cx| cx.notify()));
         let mut workspace = Workspace {
             client: client.clone(),
             switching: None,
             moves,
+            image_viewer,
             lister: None,
             own_update: None,
             carries_release: false,
@@ -3922,5 +3926,6 @@ impl Render for Workspace {
             )
             .children(self.render_quick_search(cx))
             .child(self.moves.clone())
+            .child(self.image_viewer.clone())
     }
 }

@@ -1600,18 +1600,66 @@ impl Composer {
         }));
     }
 
-    /// What's attached, above the field: pictures as thumbnails, other files as chips, each with ×.
+    /// What's attached, above the field: pictures as thumbnails (clicking opens the Stage viewer),
+    /// other files as chips, each with ×.
     fn attachments(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         if self.attached.is_empty() {
             return None;
         }
         let c = cx.theme().colors.clone();
+        let picture_paths: Vec<PathBuf> = self.attached.iter().filter(|p| is_picture(p)).cloned().collect();
         let items = self.attached.iter().enumerate().map(|(at, path)| {
             let name = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
-            let remove = cx.listener(move |this, _, _, cx| this.detach(at, cx));
+            let remove = cx.listener(move |this, _, _, cx| {
+                cx.stop_propagation();
+                this.detach(at, cx);
+            });
             if is_picture(path) {
+                let pic_index = picture_paths.iter().position(|p| p == path).unwrap_or(0);
+                let gallery_paths = picture_paths.clone();
+                let open_viewer = cx.listener(move |this, _, window, cx| {
+                    let client = this.client.clone();
+                    let items: Vec<crate::image_viewer::ViewerItem> = gallery_paths
+                        .iter()
+                        .enumerate()
+                        .map(|(i, p)| {
+                            let title = p
+                                .file_name()
+                                .map(|n| n.to_string_lossy().into_owned())
+                                .unwrap_or_else(|| "Attachment".into());
+                            let load_path = p.clone();
+                            let load_client = client.clone();
+                            crate::image_viewer::ViewerItem {
+                                id: format!("attachment-{i}-{}", p.display()),
+                                name: title,
+                                caption: None,
+                                source_tag: "Attachment".into(),
+                                local_path: Some(p.clone()),
+                                read: crate::pictures::Read::Reading,
+                                loader: Some(std::sync::Arc::new(move || {
+                                    crate::pictures::read(
+                                        &load_client,
+                                        &kuvo_box::pictures::Source::Local(load_path.clone()),
+                                    )
+                                })),
+                            }
+                        })
+                        .collect();
+                    crate::image_viewer::open(
+                        crate::image_viewer::OpenRequest {
+                            items,
+                            active: pic_index,
+                            return_focus: Some(this.focus_handle(cx)),
+                            on_change: None,
+                        },
+                        window,
+                        cx,
+                    );
+                });
+                let selector = format!("attached-picture-{at}");
                 div()
                     .id(("attached", at))
+                    .debug_selector(move || selector)
                     .relative()
                     .size(px(52.))
                     .flex_none()
@@ -1620,6 +1668,9 @@ impl Composer {
                     .border_1()
                     .border_color(c.border)
                     .bg(c.sunken)
+                    .cursor_pointer()
+                    .tooltip(move |_, cx| kuvo_ui::menu::Tooltip::new(name.clone()).build(cx))
+                    .on_click(open_viewer)
                     .child(img(path.clone()).size_full().object_fit(ObjectFit::Cover).with_fallback(|| Icon::new(IconName::Image).size(IconSize::Card).into_any_element()))
                     .child(
                         div()

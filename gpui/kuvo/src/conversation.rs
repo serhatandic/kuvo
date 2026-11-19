@@ -158,9 +158,8 @@ pub struct ConversationView {
     /// The pictures of yours sent from here whose copy came without them, by message: drawn from
     /// here until it has them.
     sent_pictures: HashMap<String, Vec<Picture>>,
-    /// The picture opened over it, by its id, and the keyboard for it (← →, Escape).
+    /// The picture opened in the unified Stage viewer, by its id.
     viewing: Option<String>,
-    viewer_focus: FocusHandle,
     /// The conversation's computer key, attached to `ShownFile`s before remote open.
     computer_key: Option<String>,
     /// Previews a shown text file in the workspace side panel.
@@ -237,7 +236,6 @@ impl ConversationView {
             row_pictures: HashMap::new(),
             sent_pictures: HashMap::new(),
             viewing: None,
-            viewer_focus: cx.focus_handle(),
             computer_key: None,
             preview_file: None,
             row_shown_files: HashMap::new(),
@@ -1273,68 +1271,72 @@ impl ConversationView {
         }
     }
 
-    /// Opens picture `id` over the conversation.
+    /// Opens picture `id` in the unified Stage image viewer over the window, with every picture
+    /// in this conversation in the gallery.
     pub fn open_picture(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let all = self.all_pictures();
+        let Some(active) = all.iter().position(|picture| picture.id == id) else {
+            return;
+        };
+        let here = self.client.here();
+        let items: Vec<crate::image_viewer::ViewerItem> = all
+            .into_iter()
+            .map(|picture| {
+                let read = self
+                    .pictures
+                    .get(picture.id.as_str())
+                    .cloned()
+                    .unwrap_or(Read::Reading);
+                let local_path = match &picture.source {
+                    kuvo_box::pictures::Source::Local(path) => Some(path.clone()),
+                    kuvo_box::pictures::Source::File(uri) if here => {
+                        uri.strip_prefix("file://").map(std::path::PathBuf::from)
+                    }
+                    _ => None,
+                };
+                let client = self.client.clone();
+                let source = picture.source.clone();
+                let loader: std::sync::Arc<dyn Fn() -> Read + Send + Sync> =
+                    std::sync::Arc::new(move || pictures::read(&client, &source));
+                crate::image_viewer::ViewerItem {
+                    id: picture.id,
+                    name: picture.name.unwrap_or_else(|| "Picture".into()),
+                    caption: picture.caption,
+                    source_tag: "Conversation".into(),
+                    local_path,
+                    read,
+                    loader: Some(loader),
+                }
+            })
+            .collect();
         self.viewing = Some(id.to_owned());
-        window.focus(&self.viewer_focus, cx);
+        let this = cx.entity().downgrade();
+        let on_change: crate::image_viewer::OnChange = Rc::new(move |next, _, cx| {
+            this.update(cx, |this, cx| {
+                this.viewing = next.map(str::to_owned);
+                cx.notify();
+            })
+            .ok();
+        });
+        let opened = crate::image_viewer::open(
+            crate::image_viewer::OpenRequest {
+                items,
+                active,
+                return_focus: Some(self.composer.focus_handle(cx)),
+                on_change: Some(on_change),
+            },
+            window,
+            cx,
+        );
+        if !opened {
+            self.viewing = None;
+        }
         cx.notify();
     }
 
     /// The picture opened, if any.
     pub fn viewing(&self) -> Option<&str> {
         self.viewing.as_deref()
-    }
-
-    fn close_picture(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.viewing = None;
-        let focus = self.composer.focus_handle(cx);
-        window.focus(&focus, cx);
-        cx.notify();
-    }
-
-    /// The one before (`by` -1) or after (1) the picture opened, among the conversation's.
-    fn step_picture(&mut self, by: isize, cx: &mut Context<Self>) {
-        let all = self.all_pictures();
-        let Some(at) = self.viewing.as_ref().and_then(|id| all.iter().position(|picture| &picture.id == id)) else { return };
-        let to = at as isize + by;
-        if let Some(next) = usize::try_from(to).ok().and_then(|to| all.get(to)) {
-            self.viewing = Some(next.id.clone());
-            cx.notify();
-        }
-    }
-
-    /// The picture opened, over the whole conversation.
-    fn picture_viewer(&self, window: &Window, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let id = self.viewing.as_ref()?;
-        let all = self.all_pictures();
-        let at = all.iter().position(|picture| &picture.id == id)?;
-        let picture = &all[at];
-        Some(
-            div()
-                .id("picture-viewer-layer")
-                .absolute()
-                .top_0()
-                .left_0()
-                .size_full()
-                .track_focus(&self.viewer_focus)
-                .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| match event.keystroke.key.as_str() {
-                    "escape" => this.close_picture(window, cx),
-                    "left" => this.step_picture(-1, cx),
-                    "right" => this.step_picture(1, cx),
-                    _ => {}
-                }))
-                .on_click(cx.listener(|this, _, window, cx| this.close_picture(window, cx)))
-                .child(pictures::viewer(picture, at, all.len(), self.pictures.get(picture.id.as_str()), window))
-                .child(
-                    div()
-                        .absolute()
-                        .top(space::S4)
-                        .right(space::S4)
-                        .debug_selector(|| "picture-close".into())
-                        .child(Button::new("picture-close", "Close").size(ButtonSize::Small).on_click(cx.listener(|this, _, window, cx| this.close_picture(window, cx)))),
-                )
-                .into_any_element(),
-        )
     }
 
     /// Opens or closes a thinking block or a tool step, or folds an output again.
@@ -1829,7 +1831,6 @@ impl Render for ConversationView {
             _ => None,
         };
         let gone = matches!(self.problem, Some(Problem::Gone(_)));
-        let viewer = self.picture_viewer(window, cx);
         div()
             .track_focus(&self.focus)
             .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
@@ -1880,7 +1881,6 @@ impl Render for ConversationView {
                     }),
             )
             .children(self.selection_card(cx))
-            .children(viewer)
     }
 }
 
