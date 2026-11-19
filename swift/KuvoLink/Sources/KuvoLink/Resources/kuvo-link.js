@@ -57593,7 +57593,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "9db37cef02b9";
+var BRIDGE_VERSION = "6cdf34a92f8a";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -63999,7 +63999,8 @@ async function* fileAt(requestPath, json, as = "bytes") {
         return yield* json(413, { message: "That file is too big to show here." });
       return yield* json(200, textOf3(Buffer.concat(pieces)));
     }
-    yield { head: { status: 200, headers: { "content-type": type, "content-length": String(opened.size) } } };
+    const downloadType = asked.get("withMode") === "1" ? `application/vnd.kuvo.file; executable=${(opened.mode & 73) === 0 ? "0" : "1"}` : type;
+    yield { head: { status: 200, headers: { "content-type": downloadType, "content-length": String(opened.size) } } };
     if (opened.size === 0)
       return;
     let read = 0;

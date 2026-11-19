@@ -5719,6 +5719,9 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
   omit `reason`), `403 {"message"}` for one it can't read,
   `413 {"message"}` over 25 MB, or over `max` when it's given (`&max=<bytes>`: all a client would
   show of it), `400 {"message"}` for an address that isn't `file://`. Each box answers for its own files, a machine's with the Mac closed too.
+  For a download to open locally, `&withMode=1` returns the same bytes with
+  `content-type: application/vnd.kuvo.file; executable=0` or `executable=1`, from the execute
+  bits on the opened source file. Older boxes ignore the query option and return the usual MIME.
   `GET kuvo/file/text?uri=<file:// URI>[&max=<bytes>]` (`file.text`, #708): the same file as a
   viewer shows it → `{"text": true, "encoding": "utf-8", "content"}`, its text, or `{"text": false}`
   for one that isn't text (a picture, a program, an encoding other than UTF-8, the only one read:

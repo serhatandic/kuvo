@@ -142,8 +142,29 @@ impl BoxClient {
     /// A file on this box's computer, by its `file://` address: its bytes, at most `max`, and MIME
     /// when the transport provides it.
     pub fn file_bytes(&self, uri: &str, max: usize) -> Result<(Vec<u8>, Option<String>)> {
+        self.download_file(uri, max, "")
+    }
+
+    /// Downloads the bytes and whether the source had execute bits at the time it was opened.
+    /// An older box may send the bytes without the source mode.
+    pub fn file_for_open(&self, uri: &str) -> Result<(Vec<u8>, Option<bool>)> {
+        let (bytes, content_type) = self.download_file(uri, FILE_MOST, "&withMode=1")?;
+        let executable = match content_type.as_deref() {
+            Some("application/vnd.kuvo.file; executable=0") => Some(false),
+            Some("application/vnd.kuvo.file; executable=1") => Some(true),
+            _ => None,
+        };
+        Ok((bytes, executable))
+    }
+
+    fn download_file(
+        &self,
+        uri: &str,
+        max: usize,
+        extra: &str,
+    ) -> Result<(Vec<u8>, Option<String>)> {
         let response = self.send(&Request::get(format!(
-            "kuvo/file?uri={}&max={max}",
+            "kuvo/file?uri={}&max={max}{extra}",
             paths::query_value(uri)
         )))?;
         if !response.is_success() {
@@ -237,6 +258,14 @@ mod tests {
                     .path
                     .contains(&paths::query_value("file:///report.pdf"))
             );
+            if self.0.as_ref().is_ok_and(|response| {
+                response
+                    .content_type
+                    .as_deref()
+                    .is_some_and(|mime| mime.starts_with("application/vnd.kuvo.file;"))
+            }) {
+                assert!(request.path.ends_with("&withMode=1"));
+            }
             self.0.clone()
         }
         fn open(&self, _: &Request, _: &dyn Fn(Closer) -> bool) -> Result<Stream> {
@@ -255,6 +284,24 @@ mod tests {
             status,
             body: serde_json::to_vec(&body).unwrap(),
             content_type: Some("application/json".into()),
+        }
+    }
+
+    #[test]
+    fn downloads_read_the_source_mode_and_distinguish_an_older_box() {
+        const URI: &str = "file:///report.pdf";
+        for (content_type, mode) in [
+            ("application/vnd.kuvo.file; executable=1", Some(true)),
+            ("application/vnd.kuvo.file; executable=0", Some(false)),
+            ("application/pdf", None),
+        ] {
+            let bytes = b"extensionless without a shebang".to_vec();
+            let client = BoxClient::new(BoxAnswer(Ok(Response {
+                status: 200,
+                content_type: Some(content_type.into()),
+                body: bytes.clone(),
+            })));
+            assert_eq!(client.file_for_open(URI).unwrap(), (bytes, mode));
         }
     }
 

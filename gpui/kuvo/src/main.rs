@@ -33,6 +33,9 @@ fn main() {
     if std::env::args().any(|argument| argument == "--updater-status") {
         std::process::exit(updater_status());
     }
+    if !stand_in() {
+        std::thread::spawn(kuvo::open_shown::prune_download_cache);
+    }
     let application = gpui_platform::application().with_assets(Assets);
     // Links opened in the app (`kuvo-code://open`, Kuvo Helper's menu bar item opening a computer or
     // a session in this very app): kept until the window takes them, as one can come as it opens.
