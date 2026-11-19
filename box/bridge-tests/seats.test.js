@@ -28,7 +28,7 @@ const here = box("machine", "devbox"), mac = box("mac"), second = box("machine",
 const fresh = () => {
   fs.rmSync(run, { recursive: true, force: true });
   fs.mkdirSync(run, { recursive: true });
-  link.writeLink({ secret: crypto.randomBytes(32).toString("base64url"), key: k(here.key), relay: "wss://relay.test", name: "devbox", id: "devbox", mac: mac.pub, macs: [mac.pub], phones: [], peersFrom: { [mac.pub]: { at: 1, peers: [mac.peer, second.peer] } } });
+  link.writeLink({ secret: crypto.randomBytes(32).toString("base64url"), key: k(here.key), relay: "wss://relay.test", name: "devbox", id: "devbox", mac: mac.pub, macs: [mac.pub], phones: [], legacy: { [mac.pub]: { at: 1, peers: [mac.peer, second.peer] } } });
 };
 const opened = (bytes, to) => {
   const body = link.readFrame(bytes.subarray(17)).body;
@@ -297,6 +297,7 @@ test("what the bridge sends as it goes (its group chats' mail, followed) keeps c
 
 test("a bridge that answered and then says nothing for a minute is followed anew: what it sends then still goes, and it's told again who your computers are", async () => {
   fresh();
+  assert.ok(link.peersOf(link.readLink()).some(peer => peer.key === second.pub));
   const waiting = [];
   const poke = () => { for (const resolve of waiting.splice(0)) resolve(); };
   const until = async check => { while (!check()) await new Promise(resolve => waiting.push(resolve)); };

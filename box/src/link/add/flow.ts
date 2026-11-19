@@ -617,7 +617,7 @@ async function setUp(tell: Telling, destination: string, name: string, kind: "ad
       }
       tell.step("joining");
       const identity = /^id ([0-9a-f]{32})$/m.exec(started.stdout)?.[1] ?? probe.id;
-      finish = await join(tell, reserved, destination, name, identity, account.token, (peer, enrollment) => {
+      const joined = await join(tell, reserved, destination, name, identity, account.token, (peer, enrollment) => {
         // The winning epoch decides this proposal. A local stop or timeout cannot undo it.
         if (!tell.signal.aborted) tell.step("joining", "Waiting for the standby to save this computer");
         if ("proposalHash" in enrollment) tell.replacing?.(enrollment, peer);
@@ -626,6 +626,10 @@ async function setUp(tell: Telling, destination: string, name: string, kind: "ad
         unjoined = false;
       }, expectedKey, grant, { setup: identitySetup, fingerprint: probe.fingerprint, predecessor, selected });
       unjoined = false;
+      // Record a committed enrollment even if clearing the SSH reservation fails.
+      // Pending enrollments wait outside the reservation so retries can reach the account.
+      if (joined.waitsForStandby) finish = joined.finish;
+      else tell.came(await joined.finish());
     } catch (error) {
       // A competing setup enrolled this account after the probe. Its data belongs to that setup.
       if (!unjoined || !account.canRollBack || error instanceof AccountOccupied) throw error;
@@ -647,7 +651,7 @@ async function setUp(tell: Telling, destination: string, name: string, kind: "ad
 // Signs the computer into your setup: this box's keys and documents given over SSH (the trust
 // between them), its own taken back, and its record written here, for your other computers and
 // phones to take from this box.
-async function join(tell: Telling, run: Reach["run"], destination: string, name: string, identity: string | null, token: string, staged: (peer: { key: string; name: string }, enrollment: Receipt | ReplacementEnrollment) => void, expectedKey: string | undefined, grant: AddGrant | undefined, match: { setup?: string; fingerprint?: string; predecessor?: string; selected?: string }): Promise<() => Promise<{ key: string; name: string }>> {
+async function join(tell: Telling, run: Reach["run"], destination: string, name: string, identity: string | null, token: string, staged: (peer: { key: string; name: string }, enrollment: Receipt | ReplacementEnrollment) => void, expectedKey: string | undefined, grant: AddGrant | undefined, match: { setup?: string; fingerprint?: string; predecessor?: string; selected?: string }): Promise<{ waitsForStandby: boolean; finish: () => Promise<{ key: string; name: string }> }> {
   const beforeLink = readLink();
   const relay = IS_MAC ? macLink.config?.relay : beforeLink?.relay;
   const removedWhileAdding = (link: LinkState | null) => expectedKey && link?.removedHere?.includes(expectedKey);
@@ -714,14 +718,17 @@ async function join(tell: Telling, run: Reach["run"], destination: string, name:
     if (result.status !== 202 || !replacement) throw new Failed(isObject(result.value) ? String(result.value.message) : "The replacement couldn't be saved.");
     const enrollment = replacement;
     macDocsChanged();
-    return async () => {
-      let status = replacementOutcome(readLink(), enrollment);
-      while (status === "pending") {
-        await new Promise(resolve => setTimeout(resolve, 100));
-        status = replacementOutcome(readLink(), enrollment);
-      }
-      if (status !== "committed") throw new Failed(`The setup changed before ${peer.name} was saved. Add it again from the primary.`);
-      return finishEnrollment(tell, peer, null);
+    return {
+      waitsForStandby: true,
+      async finish() {
+        let status = replacementOutcome(readLink(), enrollment);
+        while (status === "pending") {
+          await new Promise(resolve => setTimeout(resolve, 100));
+          status = replacementOutcome(readLink(), enrollment);
+        }
+        if (status !== "committed") throw new Failed(`The setup changed before ${peer.name} was saved. Add it again from the primary.`);
+        return finishEnrollment(tell, peer, null);
+      },
     };
   }
   let gone: Peer[] = [];
@@ -756,15 +763,18 @@ async function join(tell: Telling, run: Reach["run"], destination: string, name:
   if (save) staged(peer, save);
   if (!save && !changed) throw new Failed(`${ownName()} couldn’t keep ${name}’s record.`);
   const docs = Array.isArray(said.docs) ? said.docs : [];
-  return async () => {
-    const computer = await finishEnrollment(tell, peer, save);
-    if (gone.length) {
-      macDocsChanged({ closeRemoved: readLink() });
-      tellGone(gone);
-    }
-    // Its own documents, signed with the key it just gave, taken as if by mail.
-    if (docs.length) await receiveDocs(peer, { give: docs }, liveLink()).catch(() => {});
-    return computer;
+  return {
+    waitsForStandby: save?.status === "pending",
+    async finish() {
+      const computer = await finishEnrollment(tell, peer, save);
+      if (gone.length) {
+        macDocsChanged({ closeRemoved: readLink() });
+        tellGone(gone);
+      }
+      // Its own documents, signed with the key it just gave, taken as if by mail.
+      if (docs.length) await receiveDocs(peer, { give: docs }, liveLink()).catch(() => {});
+      return computer;
+    },
   };
 }
 

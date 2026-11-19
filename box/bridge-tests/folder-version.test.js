@@ -109,6 +109,11 @@ test("failure bench: startup refuses a newer folder without changing it", () => 
     assert.equal(result.status, 1, result.stderr);
     assert.equal(result.stdout, "");
     assert.match(result.stderr, /Kuvo folder at .* format version 12 is unsupported \(this build writes 11\)/);
+    const route = launch(home, process.execPath, [link, "box", "route"], { input: '{"method":"GET","path":"kuvo/info"}' });
+    assert.equal(route.status, 0, route.stderr);
+    assert.deepEqual(JSON.parse(route.stdout), {
+      status: 503, routeVersion: "1", body: JSON.stringify({ message: result.stderr.trim() }),
+    });
     assert.equal(fs.readFileSync(marker, "utf8"), raw);
     assert.deepEqual(fs.readdirSync(folder), ["folder-version.json"]);
   }

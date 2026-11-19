@@ -1,4 +1,4 @@
-import "./safety";
+import "./safety"
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { DATA_DECLARATIONS } from "../src/shared/data-declarations";

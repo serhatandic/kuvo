@@ -138,9 +138,9 @@ const DEFINED = [
   },
   {
     name: "queue_labels",
-    description: "List the labels (kinds of work; one set for every queue), or make one change the user asked for: add, rename (with to), recolor (with color) or remove (off every item). To check a save, pass the returned receipt as save.",
+    description: "List shared labels. On request add, rename, recolor, or remove from all items.",
     inputSchema: { type: "object", properties: {
-      save: { type: "object", description: "The save receipt from an earlier label change." },
+      save: { type: "object", description: "Check a change with its returned save receipt." },
       add: { type: "string" },
       rename: { type: "string" },
       to: { type: "string" },

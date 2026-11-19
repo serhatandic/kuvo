@@ -40,6 +40,19 @@ const opened = (bytes, to) => {
   return { address: relayed.address, payload: JSON.parse(link.openOneWay(body, to.key, link.publicOf(here.key)).payload.toString("utf8")) };
 };
 
+test("an unversioned link file preserves its legacy peer roster on the next write", () => {
+  fresh();
+  const file = path.join(run, "link.json");
+  fs.writeFileSync(file, JSON.stringify({ ...link.readLink(), peersFrom: { [mac.pub]: { at: 1, peers: [mac.peer, second.peer] } } }));
+  const migrated = link.readLink();
+  assert.deepEqual(link.peersOf(migrated).map(peer => peer.key), [mac.pub, second.pub]);
+  link.writeLink(migrated);
+  const kept = JSON.parse(fs.readFileSync(file, "utf8"));
+  assert.equal(kept.formatVersion, 1);
+  assert.equal(kept.peersFrom, undefined);
+  assert.deepEqual(kept.legacy[mac.pub].peers, [mac.peer, second.peer]);
+});
+
 test("a Mac that signs no documents yet (Kuvo Code 0.8.0-beta.1): its peers come in its mail, a newer list by its own clock replacing its last; this box left out, and no one else's list taken", () => {
   fresh();
   link.receiveMail(mailFrom(mac, { at: 10, peers: [mac.peer, second.peer, here.peer, { key: "bad", address: "bad", kind: "machine" }] }));
@@ -357,7 +370,7 @@ test("a letter that can't be delivered yet, tried again and again, leaves its bo
 });
 
 test("this box's letters go to the box their agent is on, again each minute until it says it has them, cut to fit; only that box's word counts; an answer goes to the tool waiting, or as a message once it gave up", async () => {
-  fresh({ peersFrom: { [mac.pub]: { at: 1, peers: [mac.peer, second.peer] } } });
+  fresh({ legacy: { [mac.pub]: { at: 1, peers: [mac.peer, second.peer] } } });
   fs.writeFileSync(path.join(run, "peer-agents.json"), JSON.stringify({ [second.pub]: { at: 1, kind: "machine", list: [{ session: "ses_target", name: "API", kind: "session" }] } }));
   const sending = path.join(run, "outbox", "sending");
   fs.mkdirSync(sending, { recursive: true });
@@ -475,7 +488,8 @@ test("this box's letters go to the box their agent is on, again each minute unti
 });
 
 test("a letter from a conversation made a moment ago goes after the mail telling its box of it, however soon the outbox runs again", async t => {
-  fresh({ peersFrom: { [mac.pub]: { at: 1, peers: [mac.peer, second.peer] } } });
+  fresh({ legacy: { [mac.pub]: { at: 1, peers: [mac.peer, second.peer] } } });
+  assert.ok(link.peersOf(link.readLink()).some(peer => peer.key === second.pub));
   fs.writeFileSync(path.join(run, "peer-agents.json"), JSON.stringify({ [second.pub]: { at: 1, kind: "machine", list: [{ session: "ses_target", name: "API", kind: "session" }] } }));
   // The engine, slow to list this box's conversations.
   let asked, letGo;
@@ -510,7 +524,7 @@ test("a letter from a conversation made a moment ago goes after the mail telling
 });
 
 test("letters an older Kuvo Code left for a Mac to collect over SSH go from the link instead, unless a Mac took one", () => {
-  fresh({ peersFrom: { [mac.pub]: { at: 1, peers: [mac.peer, second.peer] } } });
+  fresh({ legacy: { [mac.pub]: { at: 1, peers: [mac.peer, second.peer] } } });
   const outbox = path.join(run, "outbox");
   fs.mkdirSync(outbox, { recursive: true });
   // As an older kuvo-browser.js left one, and as an older link handed one over without the relay.
@@ -523,7 +537,7 @@ test("letters an older Kuvo Code left for a Mac to collect over SSH go from the 
 });
 
 test("a box tells its peers its agents as they change, and every ten minutes", async t => {
-  fresh({ peersFrom: { [mac.pub]: { at: 1, peers: [mac.peer, second.peer] } } });
+  fresh({ legacy: { [mac.pub]: { at: 1, peers: [mac.peer, second.peer] } } });
   const { target } = await engine(t);
   const sent = [];
   const host = { send: bytes => sent.push(bytes) };
@@ -555,7 +569,7 @@ test("a box tells its peers its agents as they change, and every ten minutes", a
 // Your computers as one list (#711, "Computers"): every box says it alike, from what it is and what
 // its peers told it of themselves with their agents, so a client's Computers area asks any one box.
 test("a box lists your computers: itself, and each peer as it's heard from, with what each runs and how many sessions are at work there", async t => {
-  fresh({ peersFrom: { [mac.pub]: { at: 1, peers: [mac.peer, second.peer] } } });
+  fresh({ legacy: { [mac.pub]: { at: 1, peers: [mac.peer, second.peer] } } });
   const { target } = await engine(t);
   // A peer says what it is; another hasn't been heard from yet.
   link.receiveMail(mailFrom(second, { at: Date.now(), agents: { at: Date.now(), list: [], computer: { version: "1.0.0", engine: "1.19.2", system: "Ubuntu 24.04.1 LTS", working: 2, more: "x".repeat(500), agents: { state: "down", why: "outdated", more: "x" } } } }), undefined, (sender, payload) => link.peerMail(sender, payload, null));
@@ -629,7 +643,7 @@ test("a box lists your computers: itself, and each peer as it's heard from, with
   // A machine two of your Macs set up lists your computers as any box does, and tells each what it
   // runs, never that it's shared.
   const other = box("mac");
-  fresh({ macs: [mac.pub, other.pub], peersFrom: { [mac.pub]: { at: 1, peers: [mac.peer, second.peer] } } });
+  fresh({ macs: [mac.pub, other.pub], legacy: { [mac.pub]: { at: 1, peers: [mac.peer, second.peer] } } });
   ({ body } = await ask());
   assert.deepEqual(body.computers.map(each => each.name), ["devbox", "mac", "second"]);
   const told = [];
@@ -655,11 +669,11 @@ test("a box tells its peers the setup it follows", async t => {
     return { setup: agents.setup, shared: agents.shared };
   };
   // One Mac's machine, in no setup yet: neither.
-  assert.deepEqual(await said({ peersFrom: { [mac.pub]: { at: 1, peers: [mac.peer, second.peer] } } }), { setup: undefined, shared: undefined });
+  assert.deepEqual(await said({ legacy: { [mac.pub]: { at: 1, peers: [mac.peer, second.peer] } } }), { setup: undefined, shared: undefined });
   // In a setup: it says which.
-  assert.deepEqual(await said({ peersFrom: { [mac.pub]: { at: 1, peers: [mac.peer, second.peer] } }, setup: { id: "set_AAAAAAAAAAAAAAAAAAAAAA", epoch: 1, primary: mac.pub, sign: mac.pub, role: "member" } }), { setup: "set_AAAAAAAAAAAAAAAAAAAAAA", shared: undefined });
+  assert.deepEqual(await said({ legacy: { [mac.pub]: { at: 1, peers: [mac.peer, second.peer] } }, setup: { id: "set_AAAAAAAAAAAAAAAAAAAAAA", epoch: 1, primary: mac.pub, sign: mac.pub, role: "member" } }), { setup: "set_AAAAAAAAAAAAAAAAAAAAAA", shared: undefined });
   // Two of your Macs set it up: nothing more to say.
-  assert.deepEqual(await said({ macs: [mac.pub, air.pub], peersFrom: { [mac.pub]: { at: 1, peers: [mac.peer] }, [air.pub]: { at: 1, peers: [air.peer] } } }), { setup: undefined, shared: undefined });
+  assert.deepEqual(await said({ macs: [mac.pub, air.pub], legacy: { [mac.pub]: { at: 1, peers: [mac.peer] }, [air.pub]: { at: 1, peers: [air.peer] } } }), { setup: undefined, shared: undefined });
 });
 
 // Your time zone (PROTOCOL.md, "Your time zone"): one for your own computers in a setup, carried in
@@ -667,7 +681,7 @@ test("a box tells its peers the setup it follows", async t => {
 // Mac app is gone, wakes its bots on your clock. A machine more than one of your Macs set up is one
 // of your computers like any other (#783).
 test("your time zone reaches your other computers: a change on one box reaches the others, a box joining takes theirs, and a machine two of your Macs set up takes and sends it too", async t => {
-  fresh({ peersFrom: { [mac.pub]: { at: 1, peers: [mac.peer, second.peer] } } });
+  fresh({ legacy: { [mac.pub]: { at: 1, peers: [mac.peer, second.peer] } } });
   const zoneFile = path.join(home, "box", "time-zone.json"), bots = path.join(home, "bots");
   fs.rmSync(zoneFile, { force: true });
   fs.rmSync(path.join(home, "wakes"), { recursive: true, force: true });
@@ -737,7 +751,7 @@ test("your time zone reaches your other computers: a change on one box reaches t
 
   // This box a machine two of your Macs set up: it takes your zone, and tells it.
   const other = box("mac");
-  fresh({ macs: [mac.pub, other.pub], peersFrom: { [mac.pub]: { at: 1, peers: [mac.peer, second.peer] } } });
+  fresh({ macs: [mac.pub, other.pub], legacy: { [mac.pub]: { at: 1, peers: [mac.peer, second.peer] } } });
   mail(mac, { zone: "Asia/Tokyo", n: n + 2 });
   assert.deepEqual(zone(), ["Asia/Tokyo", n + 2]);
   assert.deepEqual(await toldTo(), { mac: { zone: "Asia/Tokyo", n: n + 2 }, second: { zone: "Asia/Tokyo", n: n + 2 } });
@@ -774,7 +788,7 @@ test("this box's agents worked out twice at once: the one begun last is kept, so
 
 test("a machine a Mac removed no longer counts that Mac: its peers and lists go, another Mac's stay", () => {
   const other = box("mac");
-  fresh({ macs: [mac.pub, other.pub], peersFrom: { [mac.pub]: { at: 1, peers: [mac.peer, second.peer] }, [other.pub]: { at: 1, peers: [other.peer] } },
+  fresh({ macs: [mac.pub, other.pub], legacy: { [mac.pub]: { at: 1, peers: [mac.peer, second.peer] }, [other.pub]: { at: 1, peers: [other.peer] } },
 
     phones: [{ key: k(crypto.randomBytes(32)), name: "Phone", added: 1, from: "mac", mac: mac.pub }] });
   fs.writeFileSync(path.join(run, "peer-agents.json"), JSON.stringify({ [second.pub]: { at: 1, list: [] }, [other.pub]: { at: 1, list: [] } }));
@@ -945,7 +959,7 @@ test("letters go oldest first; one whose conversation moved goes where it lives 
 });
 
 test("the box's own word for a conversation that moved away goes as a note, so the box it's on now delivers it as this one would have; it all fits, cut where a character ends", () => {
-  fresh({ peersFrom: { [mac.pub]: { at: 1, peers: [mac.peer, second.peer] } } });
+  fresh({ legacy: { [mac.pub]: { at: 1, peers: [mac.peer, second.peer] } } });
   const sending = path.join(run, "outbox", "sending");
   fs.mkdirSync(sending, { recursive: true });
   const now = Date.now();
@@ -1068,7 +1082,7 @@ test("an answer that came just as the tool waiting for it stopped reaches its co
 });
 
 test("an answer left for a conversation the engine doesn't know is kept while the coding agents' bridge isn't running (it may be the bridge's), and dropped once it runs and has none", async t => {
-  fresh({ peersFrom: { [mac.pub]: { at: 1, peers: [mac.peer, second.peer] } } });
+  fresh({ legacy: { [mac.pub]: { at: 1, peers: [mac.peer, second.peer] } } });
   const { prompts, target } = await engine(t);
   const replies = path.join(run, "replies");
   fs.mkdirSync(replies, { recursive: true });
@@ -1083,7 +1097,7 @@ test("an answer left for a conversation the engine doesn't know is kept while th
 });
 
 test("a conversation read by mail whose tool stopped waiting as it came is dropped, never delivered as a message", async () => {
-  fresh({ peersFrom: { [mac.pub]: { at: 1, peers: [mac.peer, second.peer] } } });
+  fresh({ legacy: { [mac.pub]: { at: 1, peers: [mac.peer, second.peer] } } });
   const replies = path.join(run, "replies");
   fs.mkdirSync(replies, { recursive: true });
   // The letter that asked, as the link keeps it once the other computer has it.

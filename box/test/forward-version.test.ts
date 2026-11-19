@@ -1,4 +1,4 @@
-import "./safety";
+import "./safety"
 import { expect, test } from "bun:test";
 import { forward } from "../src/link/server/forward";
 import { versionedRoutes } from "../src/link/server/format";

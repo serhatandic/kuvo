@@ -47195,9 +47195,9 @@ var init_tools5 = __esm(() => {
     },
     {
       name: "queue_labels",
-      description: "List the labels (kinds of work; one set for every queue), or make one change the user asked for: add, rename (with to), recolor (with color) or remove (off every item). To check a save, pass the returned receipt as save.",
+      description: "List shared labels. On request add, rename, recolor, or remove from all items.",
       inputSchema: { type: "object", properties: {
-        save: { type: "object", description: "The save receipt from an earlier label change." },
+        save: { type: "object", description: "Check a change with its returned save receipt." },
         add: { type: "string" },
         rename: { type: "string" },
         to: { type: "string" },
@@ -58633,13 +58633,16 @@ async function* deletesRoute(context) {
     return yield* json(404, { message: "None of them is here." });
   return yield* json(200, await deleteConfirm(deleting, context, signal, { count: ids.length - parts.length, list }));
 }
+function sessionMovedElsewhere(computer, name = "") {
+  return { message: `It’s on ${plainName(name) || "another of your computers"} now. Change it there.`, computer };
+}
 function livesElsewhere(session) {
   const moved = movedAway().find((each) => each.session === session);
   if (!moved)
     return null;
   const peer = peersOf(readLink()).find((each) => each.key === moved.key);
   const name = peer ? computerName2(peer) : "";
-  return { message: `It’s on ${plainName(name) || "another of your computers"} now. Change it there.`, computer: moved.key };
+  return sessionMovedElsewhere(moved.key, name);
 }
 function actionsOf2(session, confirm) {
   if (isArchived3(session)) {
@@ -76553,7 +76556,7 @@ var init_files4 = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "d42b4d49fad1";
+var BRIDGE_VERSION = "d97685032bab";
 
 // box/src/link/rehome/paths.ts
 import { createHash as createHash7 } from "node:crypto";
@@ -81114,7 +81117,7 @@ async function setUp2(tell, destination, name, kind, expectedKey, grant) {
       }
       tell.step("joining");
       const identity = /^id ([0-9a-f]{32})$/m.exec(started.stdout)?.[1] ?? probe.id;
-      finish = await join3(tell, reserved, destination, name, identity, account.token, (peer, enrollment) => {
+      const joined = await join3(tell, reserved, destination, name, identity, account.token, (peer, enrollment) => {
         if (!tell.signal.aborted)
           tell.step("joining", "Waiting for the standby to save this computer");
         if ("proposalHash" in enrollment)
@@ -81125,6 +81128,10 @@ async function setUp2(tell, destination, name, kind, expectedKey, grant) {
         unjoined = false;
       }, expectedKey, grant, { setup: identitySetup, fingerprint: probe.fingerprint, predecessor, selected });
       unjoined = false;
+      if (joined.waitsForStandby)
+        finish = joined.finish;
+      else
+        tell.came(await joined.finish());
     } catch (error) {
       if (!unjoined || !account.canRollBack || error instanceof AccountOccupied)
         throw error;
@@ -81220,15 +81227,18 @@ async function join3(tell, run, destination, name, identity, token, staged, expe
       throw new Failed(isObject(result.value) ? String(result.value.message) : "The replacement couldn't be saved.");
     const enrollment = replacement;
     macDocsChanged();
-    return async () => {
-      let status = replacementOutcome(readLink(), enrollment);
-      while (status === "pending") {
-        await new Promise((resolve) => setTimeout(resolve, 100));
-        status = replacementOutcome(readLink(), enrollment);
+    return {
+      waitsForStandby: true,
+      async finish() {
+        let status = replacementOutcome(readLink(), enrollment);
+        while (status === "pending") {
+          await new Promise((resolve) => setTimeout(resolve, 100));
+          status = replacementOutcome(readLink(), enrollment);
+        }
+        if (status !== "committed")
+          throw new Failed(`The setup changed before ${peer.name} was saved. Add it again from the primary.`);
+        return finishEnrollment(tell, peer, null);
       }
-      if (status !== "committed")
-        throw new Failed(`The setup changed before ${peer.name} was saved. Add it again from the primary.`);
-      return finishEnrollment(tell, peer, null);
     };
   }
   let gone = [];
@@ -81271,15 +81281,18 @@ async function join3(tell, run, destination, name, identity, token, staged, expe
   if (!save && !changed)
     throw new Failed(`${ownName()} couldn’t keep ${name}’s record.`);
   const docs = Array.isArray(said.docs) ? said.docs : [];
-  return async () => {
-    const computer = await finishEnrollment(tell, peer, save);
-    if (gone.length) {
-      macDocsChanged({ closeRemoved: readLink() });
-      tellGone(gone);
+  return {
+    waitsForStandby: save?.status === "pending",
+    async finish() {
+      const computer = await finishEnrollment(tell, peer, save);
+      if (gone.length) {
+        macDocsChanged({ closeRemoved: readLink() });
+        tellGone(gone);
+      }
+      if (docs.length)
+        await receiveDocs(peer, { give: docs }, liveLink()).catch(() => {});
+      return computer;
     }
-    if (docs.length)
-      await receiveDocs(peer, { give: docs }, liveLink()).catch(() => {});
-    return computer;
   };
 }
 async function finishEnrollment(tell, peer, save) {
@@ -93616,6 +93629,8 @@ function engineHandler(readEngine = readEngineFile, info = {}, readBridge = read
             return yield* queueOwnerMessage(context, session, owner);
           if (desktop && request.method.toUpperCase() === "POST" && group && route === `kuvo/groups/${group}`)
             return yield* queueOwnerMessage(context, group, owner);
+          if (session && owner.key && SESSION_ACTION_ROUTE.test(route))
+            return yield* json(409, sessionMovedElsewhere(owner.key, owner.name === owner.key ? "" : owner.name));
           return yield* json(409, { computer: owner.key, message: `Open this record on ${owner.name} to change it.` });
         }
         if (!mayActivate(ref) && owner?.local)
@@ -95924,7 +95939,14 @@ if (main) {
     else if (mode !== "selftest")
       upgradeKuvoFolder(K);
   } catch (error) {
-    console.error(error instanceof Error ? error.message : String(error));
+    const message = error instanceof Error ? error.message : String(error);
+    if (mode === "box" && argument === "route") {
+      const reply = { status: 503, routeVersion: ROUTE_VERSION, body: JSON.stringify({ message }) };
+      await new Promise((resolve) => process.stdout.write(JSON.stringify(reply) + `
+`, () => resolve()));
+      process.exit(0);
+    }
+    console.error(message);
     process.exit(1);
   }
   if (mode === "folder-upgrade")

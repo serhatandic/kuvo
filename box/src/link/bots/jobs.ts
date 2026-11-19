@@ -40,7 +40,7 @@ export function writeJob(here: BotHere, job: Job): void {
   here.described = changeDescription(here.folder, now => {
     if (!now) throw new Error("That bot isn't here any more.");
     projectJob(here.folder, job);
-    // COMPAT(0.7 bot-json-job): the line in the description is what an earlier Mac reads.
+    // COMPAT(0.7 bot-json-job): the line in the description is what an earlier Mac reads. Goes in #717's next part.
     if (now.offlineJob) return { ...now, job: job.line, offlineJob: job };
     return now.job === job.line ? now : { ...now, job: job.line };
   }, Boolean(here.described.offlineEdits));

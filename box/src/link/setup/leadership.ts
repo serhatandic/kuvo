@@ -222,7 +222,7 @@ export function takeLeadership(link: LinkState, doc: Doc, checkpoint?: Doc): boo
   return true;
 }
 
-// COMPAT(layout 4): devices were embedded beside the roster in the certificate.
+// COMPAT(layout.4 setup): devices were embedded beside the roster in the certificate. Goes once supported upgrades and rollbacks no longer use layout 4 setup records.
 function projectLegacyDevices(link: LinkState, value: unknown, primary: string, here: boolean, wasMember: boolean) {
   const snapshot = isObject(value) ? value : {};
   const local = (link.phones ?? []).filter(phone => phone.from === "pair" && (wasMember || phone.local))

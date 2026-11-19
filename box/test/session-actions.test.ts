@@ -3,6 +3,7 @@ import { afterAll, beforeEach, expect, test } from "bun:test"
 import { spawn, spawnSync } from "node:child_process"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
+import { FOLDER_VERSION_FILE, upgradeKuvoFolder } from "../src/shared/folder-version"
 import { ask } from "./route-answer"
 
 // A session's menu done by its box (PROTOCOL.md, "A session's actions"): Pin, Rename, Archive and
@@ -244,6 +245,22 @@ test("one that lives on another computer now is refused with where, for its box 
   const refused = await ask(handler, "POST", "kuvo/sessions/ses_gone/archive", { archived: true })
   expect(refused).toEqual({ status: 409, json: { message: "It’s on another of your computers now. Change it there.", computer: "otherbox" } })
   expect((await ask(handler, "DELETE", "kuvo/sessions/ses_gone")).status).toBe(409)
+})
+
+test("the ownership fence redirects changes even with a stale copy of the moved session", async () => {
+  const marker = join(kuvo, FOLDER_VERSION_FILE)
+  const before = existsSync(marker) ? readFileSync(marker) : null
+  try {
+    upgradeKuvoFolder(kuvo)
+    mkdirSync(join(kuvo, "run", "moves"), { recursive: true })
+    writeFileSync(join(kuvo, "run", "moves", "moved.json"), JSON.stringify([{ session: "ses_plan", key: "otherbox", at: Date.now() }]))
+    const refused = await ask(handler, "POST", "kuvo/sessions/ses_plan/archive", { archived: true })
+    expect(refused).toEqual({ status: 409, json: { message: "It’s on another of your computers now. Change it there.", computer: "otherbox" } })
+    expect(engine.sessions.get("ses_plan")!.metadata!["kuvo.archived"]).toBeUndefined()
+  } finally {
+    if (before) writeFileSync(marker, before)
+    else rmSync(marker, { force: true })
+  }
 })
 
 test("a subagent's session, a group chat's seat and a hidden run are refused in words: they go with what they're part of", async () => {
