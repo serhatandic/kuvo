@@ -31,12 +31,27 @@ atEnd(() => {
 
 // The engine: answers as one does, notes itself as the keeper's start does, runs until stopped.
 const fakeEngine = path.join(scratch, "engine.mjs");
-fs.writeFileSync(fakeEngine, `
+fs.writeFileSync(fakeEngine, String.raw`
 import fs from "node:fs"; import http from "node:http"; import path from "node:path";
 const [version, root] = process.argv.slice(2);
+const sent = new Map();
 const server = http.createServer((request, response) => {
   response.writeHead(200, { "content-type": "application/json" });
-  response.end(JSON.stringify({ data: request.url.startsWith("/api/session/active") ? {} : [] }));
+  const run = path.join(root, "run");
+  if (request.method === "POST" && request.url === "/api/session/ses_race/prompt") {
+    let body = "";
+    request.on("data", chunk => { body += chunk; });
+    request.on("end", () => {
+      const prompt = JSON.parse(body);
+      sent.set(prompt.id, prompt);
+      fs.appendFileSync(path.join(run, "prompt-engines"), version + "\n");
+      response.end(JSON.stringify({ data: {} }));
+    });
+    return;
+  }
+  const id = request.url.split("/message/")[1];
+  const active = fs.existsSync(path.join(run, "engine-busy")) ? { ses_race: { type: "busy" } } : {};
+  response.end(JSON.stringify({ data: request.url.startsWith("/api/session/active") ? active : id ? sent.get(id) : [] }));
 });
 // Noted whole or not at all: a reader never finds it half written.
 const noted = path.join(root, "run", "engine.json");
@@ -274,6 +289,61 @@ test("a box updates to a newer release: its engine and files swapped, started ag
 
   // The same release again: nothing to do.
   assert.equal((await update()).result, "current");
+});
+
+test("a direct incompatible release reports the engine turn blocking it", async () => {
+  machine();
+  release();
+  const busy = path.join(home, "run", "engine-busy");
+  write(busy, "");
+  const outcome = await update({ whileBusy: false });
+  assert.equal(outcome.result, "busy");
+  const own = path.join(scratch, "status-home");
+  fs.mkdirSync(own);
+  const kuvoHome = path.join(own, ".kuvo-code");
+  fs.symlinkSync(home, kuvoHome);
+  const statusHere = () => {
+    const env = { ...process.env, HOME: own, KUVO_HOME: kuvoHome };
+    const result = spawnSync(process.execPath, [script, "box", "update-status"], { env, encoding: "utf8", timeout: 15_000 });
+    assert.equal(result.status, 0, result.stderr);
+    return JSON.parse(result.stdout);
+  };
+  const status = statusHere();
+  assert.equal(status.waiting.version, "0.10.0");
+  assert.equal(status.waiting.reason, "engine");
+  assert.equal(status.waiting.sessionsAtWork, 1);
+  assert.equal(outcome.version, "0.10.0");
+  fs.unlinkSync(busy);
+  assert.equal(statusHere().waiting.reason, "ready");
+});
+
+test("a prompt in the final activity check waits for the replacement engine", async t => {
+  machine();
+  release();
+  const old = read(engineFile);
+  const handler = link.engineHandler(() => old, {}, () => ({}));
+  let samples = 0, forwarded;
+  const bridge = http.createServer(async (_request, response) => {
+    if (++samples === 2) {
+      const parts = [];
+      for await (const part of handler({
+        method: "POST", path: "api/session/ses_race/prompt", fromMac: true,
+        headers: { "content-type": "application/json" },
+        body: Buffer.from(JSON.stringify({ id: "msg_engineswaprace0001", text: "send once after restart", delivery: "steer" })),
+      }, null, null)) parts.push(part);
+      forwarded = { status: parts[0]?.head?.status, body: JSON.parse(Buffer.concat(parts.flatMap(part => part.body ? [part.body] : [])).toString()) };
+    }
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end('{"data":{}}');
+  });
+  await new Promise(resolve => bridge.listen(0, "127.0.0.1", resolve));
+  t.after(() => { bridge.closeAllConnections(); bridge.close(); });
+  write(path.join(home, "run", "bridge.json"), JSON.stringify({ port: bridge.address().port, password: "pw" }));
+  const result = await update({ whileBusy: false });
+  assert.equal(result.result, "updated");
+  assert.equal(samples, 2);
+  assert.deepEqual(forwarded, { status: 200, body: { waits: true } });
+  assert.equal(fs.readFileSync(path.join(home, "run", "prompt-engines"), "utf8"), "1.1.0\n");
 });
 
 test("a well update, with no link running and no relay, is judged well by a judge of its own (as the keeper starts it), on any box", async () => {

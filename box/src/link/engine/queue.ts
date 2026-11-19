@@ -567,24 +567,26 @@ export async function takeBackFromInbox(target: Target, session: string, item: s
  * `orderOf` has them, one in the engine's inbox by steering it (which starts a run) if it's queued,
  * by resuming if it's for the next step; one waiting on the box, sent to go now. */
 export async function drain(target: Target, session: string): Promise<void> {
-  // (Nothing starts on an engine being changed: what waits goes once the new one runs.)
-  if (queueOf(session).paused || swapHoldsFor(target, session) || (await isRunning(target, session))) return;
-  const inbox = await inboxOf(target, session);
-  // Re-read the saved order after the final asynchronous check, so a concurrent move wins.
-  if (await isRunning(target, session)) return;
-  const state = queueOf(session);
-  if (state.paused || swapHoldsFor(target, session)) return;
-  const first = orderOf(inbox, state)[0];
-  if (!first) {
-    if (state.order?.length) changeQueue(session, current => current.order?.every(id => state.order!.includes(id)) ? { ...current, order: [] } : current);
-    return;
-  }
-  const next = inbox.find(item => item.id === first);
-  if (!next) { await sendWaiting(target, session, first); return; }
-  if (queueOf(session).waiting?.some(item => item.id === next.id) && await acceptedWaiting(target, session, next.id)) confirmWaiting(session, next.id);
-  if (next.delivery === "queue") await setDelivery(target, session, next.id, "steer");
-  else await interrupt(target, session, true);
-  changeQueue(session, state => ({ ...withoutOrder(state, next.id), held: state.held.filter(id => id !== next.id) }));
+  return admitPrompt(session, async () => {
+    // (Nothing starts on an engine being changed: what waits goes once the new one runs.)
+    if (queueOf(session).paused || swapHoldsFor(target, session) || (await isRunning(target, session))) return;
+    const inbox = await inboxOf(target, session);
+    // Re-read the saved order after the final asynchronous check, so a concurrent move wins.
+    if (await isRunning(target, session)) return;
+    const state = queueOf(session);
+    if (state.paused || swapHoldsFor(target, session)) return;
+    const first = orderOf(inbox, state)[0];
+    if (!first) {
+      if (state.order?.length) changeQueue(session, current => current.order?.every(id => state.order!.includes(id)) ? { ...current, order: [] } : current);
+      return;
+    }
+    const next = inbox.find(item => item.id === first);
+    if (!next) { await sendWaiting(target, session, first); return; }
+    if (queueOf(session).waiting?.some(item => item.id === next.id) && await acceptedWaiting(target, session, next.id)) confirmWaiting(session, next.id);
+    if (next.delivery === "queue") await setDelivery(target, session, next.id, "steer");
+    else await interrupt(target, session, true);
+    changeQueue(session, state => ({ ...withoutOrder(state, next.id), held: state.held.filter(id => id !== next.id) }));
+  });
 }
 
 // A send can lose its HTTP reply after the engine accepted it. Look in the inbox first (an item
@@ -610,17 +612,18 @@ const waitingSends = new Map<string, { item: string; sent: Promise<boolean> }>()
 
 // Keep the index and payload until acceptance. A process killed before that point can retry with
 // the exact same ID, including when the engine took the prompt but the reply was lost.
-async function sendWaiting(target: Target, session: string, item: string, { whilePaused = false, steer = true } = {}): Promise<boolean> {
+async function sendWaiting(target: Target, session: string, item: string, { whilePaused = false, steer = true, releasingHold = false } = {}): Promise<boolean> {
   const pending = waitingSends.get(session);
   if (pending) {
     if (pending.item === item) return pending.sent;
     await pending.sent.catch(() => false);
-    return sendWaiting(target, session, item, { whilePaused, steer });
+    return sendWaiting(target, session, item, { whilePaused, steer, releasingHold });
   }
-  const sent = (async () => {
+  const sent = admitPrompt(session, async () => {
     if (!await acceptedWaiting(target, session, item)) {
       const state = queueOf(session);
       if ((!whilePaused && state.paused) || !state.waiting?.some(each => each.id === item)) return false;
+      if (!releasingHold && swapHoldsFor(target, session)) return false;
       const message = waitingPayload(item);
       if (!message) throw new Error("A waiting message could not be read");
       await asked(target, "POST", `api/session/${address(session)}/prompt`, { ...message, ...(steer ? { delivery: "steer" } : {}) });
@@ -628,7 +631,7 @@ async function sendWaiting(target: Target, session: string, item: string, { whil
     }
     confirmWaiting(session, item);
     return true;
-  })().finally(() => waitingSends.delete(session));
+  }).finally(() => waitingSends.delete(session));
   waitingSends.set(session, { item, sent });
   return sent;
 }
@@ -684,26 +687,28 @@ export async function resumeQueue(target: Target, session: string): Promise<Queu
 /** Send Now: `item` to the agent right away, the step under way stopped for it (one that runs goes
  * on from there with it), the queue no longer paused. False when it isn't waiting. */
 export async function sendNow(target: Target, session: string, item: string): Promise<boolean> {
-  // While the engine is being changed: no longer paused, and it goes first once the new one runs.
-  if (swapHoldsFor(target, session)) return goesFirst(session, item);
-  if (queueOf(session).waiting?.some(each => each.id === item)) {
-    const running = await isRunning(target, session);
+  return admitPrompt(session, async () => {
+    // While the engine is being changed: no longer paused, and it goes first once the new one runs.
     if (swapHoldsFor(target, session)) return goesFirst(session, item);
-    if (!(await sendWaiting(target, session, item, { whilePaused: true }))) return false;
-    changeQueue(session, state => ({ ...state, paused: false, resumed: Date.now() }), true);
-    if (running) await interrupt(target, session, true);
+    if (queueOf(session).waiting?.some(each => each.id === item)) {
+      const running = await isRunning(target, session);
+      if (swapHoldsFor(target, session)) return goesFirst(session, item);
+      if (!(await sendWaiting(target, session, item, { whilePaused: true }))) return false;
+      changeQueue(session, state => ({ ...state, paused: false, resumed: Date.now() }), true);
+      if (running) await interrupt(target, session, true);
+      return true;
+    }
+    const entry = (await inboxOf(target, session)).find(each => each.id === item);
+    if (swapHoldsFor(target, session)) return goesFirst(session, item);
+    if (!entry) return false;
+    // (What waits on the box stays, to go after it.)
+    changeQueue(session, state => ({ ...state, paused: false, held: state.held.filter(id => id !== item), resumed: Date.now() }));
+    const running = await isRunning(target, session);
+    // Steering wakes an idle session; a running one gets it once the step stops.
+    if (entry.delivery === "queue") await setDelivery(target, session, item, "steer");
+    if (running || entry.delivery === "steer") await interrupt(target, session, true);
     return true;
-  }
-  const entry = (await inboxOf(target, session)).find(each => each.id === item);
-  if (swapHoldsFor(target, session)) return goesFirst(session, item);
-  if (!entry) return false;
-  // (What waits on the box stays, to go after it.)
-  changeQueue(session, state => ({ ...state, paused: false, held: state.held.filter(id => id !== item), resumed: Date.now() }));
-  const running = await isRunning(target, session);
-  // Steering wakes an idle session; a running one gets it once the step stops.
-  if (entry.delivery === "queue") await setDelivery(target, session, item, "steer");
-  if (running || entry.delivery === "steer") await interrupt(target, session, true);
-  return true;
+  });
 }
 
 /** Steer: `item`, queued, to the agent at its next step in the run under way, without stopping it
@@ -712,22 +717,24 @@ export async function sendNow(target: Target, session: string, item: string): Pr
  * with nothing running, goes as Send Now sends it. A queue a Stop holds stays held. `toAgents`:
  * `target` is the bridge. False when it isn't waiting; it throws when the inbox can't be read. */
 export async function steerQueued(target: Target, session: string, item: string, toAgents: boolean): Promise<boolean> {
-  if (swapHoldsFor(target, session)) return goesFirst(session, item);
-  // (The engine's inbox as it is: one that can't be read says so, rather than Send Now stopping
-  // the step you meant to keep going.)
-  const entry = (await inboxOf(target, session)).find(each => each.id === item);
-  if (!entry || !(await isRunning(target, session))) return sendNow(target, session, item);
-  // Only this one is let go of what a Stop held: the rest wait for Resume, as 0.7's Steer left them.
-  changeQueue(session, state => ({ ...withoutOrder(state, item), held: state.held.filter(id => id !== item) }));
-  if (entry.delivery === "steer" && !toAgents) return true;
-  try {
-    await asked(target, "PATCH", `api/session/${address(session)}/inbox/${address(item)}`, { delivery: "steer", ...(toAgents ? { into: true } : {}) });
-  } catch (error) {
-    // (The agent took it meanwhile.)
-    if (/ 404\.$/.test(String((error as Error | null)?.message))) return false;
-    throw error;
-  }
-  return true;
+  return admitPrompt(session, async () => {
+    if (swapHoldsFor(target, session)) return goesFirst(session, item);
+    // (The engine's inbox as it is: one that can't be read says so, rather than Send Now stopping
+    // the step you meant to keep going.)
+    const entry = (await inboxOf(target, session)).find(each => each.id === item);
+    if (!entry || !(await isRunning(target, session))) return sendNow(target, session, item);
+    // Only this one is let go of what a Stop held: the rest wait for Resume, as 0.7's Steer left them.
+    changeQueue(session, state => ({ ...withoutOrder(state, item), held: state.held.filter(id => id !== item) }));
+    if (entry.delivery === "steer" && !toAgents) return true;
+    try {
+      await asked(target, "PATCH", `api/session/${address(session)}/inbox/${address(item)}`, { delivery: "steer", ...(toAgents ? { into: true } : {}) });
+    } catch (error) {
+      // (The agent took it meanwhile.)
+      if (/ 404\.$/.test(String((error as Error | null)?.message))) return false;
+      throw error;
+    }
+    return true;
+  });
 }
 
 // Send Now or Steer while the engine is being changed: `item`, waiting on the box, goes first once
@@ -833,7 +840,7 @@ async function transferInbox(target: Target, session: string): Promise<number> {
  * or let go of (PROTOCOL.md, "A new engine"). One the engine doesn't confirm stays in place,
  * and that conversation's rest waits for the next look. Sessions the
  * engine doesn't have (the coding agents') are left. How many went. */
-export async function releaseWaiting(target: Target): Promise<number> {
+export async function releaseWaiting(target: Target, releasingHold = false): Promise<number> {
   let sent = 0;
   for (const [session, state] of Object.entries(readQueues())) {
     if (state.paused || !state.waiting?.length) continue;
@@ -856,7 +863,7 @@ export async function releaseWaiting(target: Target): Promise<number> {
       const now = queueOf(session);
       const next = orderOf([], now)[0];
       if (now.paused || !next) break;
-      if (!(await sendWaiting(target, session, next, { steer }).catch(() => false))) break;
+      if (!(await sendWaiting(target, session, next, { steer, releasingHold }).catch(() => false))) break;
       steer = false;
       sent++;
     }

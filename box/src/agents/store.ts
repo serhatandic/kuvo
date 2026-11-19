@@ -25,7 +25,9 @@ export class Store {
   private records = new Map<string, Record_>()
   private pending = new Map<string, ReturnType<typeof setTimeout>>()
 
-  constructor(private readonly root: string) {
+  private deferred = new Set<string>()
+
+  constructor(private readonly root: string, private provisional = false) {
     mkdirSync(root, { recursive: true })
     for (const id of readdirSync(root)) {
       try {
@@ -91,6 +93,10 @@ export class Store {
 
   /** Writes a session's files: at once, or a moment after its last change (a reply streams in). */
   save(id: string, now = false) {
+    if (this.provisional) {
+      this.deferred.add(id)
+      return
+    }
     clearTimeout(this.pending.get(id))
     if (now) {
       this.pending.delete(id)
@@ -104,6 +110,12 @@ export class Store {
         this.write(id)
       }, 500),
     )
+  }
+
+  commit() {
+    this.provisional = false
+    for (const id of this.deferred) this.save(id)
+    this.deferred.clear()
   }
 
   /** Everything still waiting to be written, written. */

@@ -949,7 +949,7 @@ export class Sessions {
     held: Map<string, HeldTurn> = new Map(),
     transfer?: Record<string, TransferSession>,
   ) {
-    this.transferred = new Map(Object.entries(transfer ?? {}))
+    this.transferred = new Map()
     if (transfer && [...held].some(([id, turn]) => {
       const message = store.get(id)?.messages.findLast(turnInput)
       return !this.resumable(id, turn) || message?.id !== transfer[id]?.message
@@ -957,7 +957,9 @@ export class Sessions {
     // Those taken up again (`resumeHeld`); the others' agents let go of (their turns end as below).
     for (const [id, turn] of held) {
       if (this.resumable(id, turn)) {
-        turn.state = transfer?.[id]?.agentState
+        const saved = transfer?.[id]
+        if (saved) this.transferred.set(id, saved)
+        turn.state = saved?.agentState
         this.resuming.set(id, turn)
       }
       else turn.gate.drop(turn.thread)
@@ -2275,6 +2277,10 @@ export class Sessions {
     } catch (error) {
       result = { outcome: "failed", error: failure(error) }
     }
+    if (held.gate.preparing) {
+      held.gate.release(held.thread)
+      await held.gate.activated
+    }
     const outcome: Outcome = abort.signal.aborted ? "interrupted" : result.outcome
     // Never taken up by its agent: what was kept of it stays, its tools closed as a crash's are.
     this.transferred.delete(id)
@@ -2474,9 +2480,9 @@ export class Sessions {
         heldTaken = true
         // (Once its agent's lines come: until then, a take-up that fails leaves them as they were.)
         const opened = record.messages.findIndex((message) => message.id === userMessage)
-        const steps = record.messages.slice(opened + 1).filter((message) => message.type === "assistant")
-        const kept = new Set<Message>(steps)
-        if (this.transferred.has(id)) turn.reuseSteps(steps)
+        const previous = record.messages.slice(opened + 1)
+        const kept = new Set<Message>(previous.filter(message => message.type === "assistant"))
+        turn.reuseMessages(this.transferred.has(id) ? previous : previous.filter(message => message.type !== "assistant"))
         const taken = input.held
         let result: RunResult
         try {
@@ -2898,6 +2904,20 @@ export class Sessions {
     const directory = parent.location.directory
     const now = Date.now()
     const model = parentTurn.currentModel
+    const replayed = parentTurn.takeCompletedChild(toolCallID)
+    if (replayed) {
+      // Providers can rebuild their in-memory child lane from the journal. Its visible work
+      // already has a session and transcript, so replay must not append to either.
+      parentTurn.toolProgress(toolCallID, { sessionID: replayed })
+      return {
+        sessionID: replayed,
+        turn: new Turn(this.store, replayed, directory, model, task.agent ?? parent.agent ?? "build", true),
+        end() {},
+        permission: async () => "reject",
+        inBackground() {},
+        messages() {},
+      }
+    }
     const before = task.sessionID ? this.store.get(task.sessionID) : undefined
     const messages = task.messages ?? cantTakeMessages(this.agent(model.providerID)?.name)
     if (before && before.session.parentID === id) {
@@ -3194,9 +3214,12 @@ export class Sessions {
 
   /** A client reconnecting can ask or reply before the agent has replayed its old approval. */
   async permissionsReady(id: string, signal: AbortSignal): Promise<boolean> {
-    const deadline = performance.now() + 10_000
     while (this.transferred.get(id)?.permissions.length) {
-      if (signal.aborted || performance.now() >= deadline) return false
+      if (signal.aborted) return false
+      if (performance.now() >= this.permissionReplayUntil) {
+        this.transferred.get(id)!.permissions.length = 0
+        break
+      }
       await Bun.sleep(20)
     }
     return true
@@ -3355,6 +3378,7 @@ export class Sessions {
       const message = record?.messages.findLast(turnInput)
       if (!record || !message || live.doing.kind !== "idle") {
         held.gate.drop(held.thread)
+        this.transferred.delete(id)
         // (Its turn ends as one a crash cut short.)
         this.repair(id)
         continue
@@ -3395,13 +3419,22 @@ export class Sessions {
   private removing = 0
 
   private transferred: Map<string, TransferSession>
+  private permissionReplayUntil = Infinity
+
+  /** A checkpointed ask may have been withdrawn while the controller was away. */
+  reconcilePermissions() {
+    this.permissionReplayUntil = performance.now() + 10_000
+    setTimeout(() => {
+      for (const session of this.transferred.values()) session.permissions.length = 0
+    }, 10_000).unref?.()
+  }
 
   /** Snapshot only turns our replay path can rebuild without starting a new prompt. */
   transfer(providers: ReadonlyMap<string, string>): Record<string, TransferSession> | undefined {
     if (this.commands || this.sending || this.removing || Object.keys(this.background()).length) return undefined
     const sessions: Record<string, TransferSession> = {}
     for (const [id, live] of this.live) {
-      if (live.own || live.steering.size || live.waiting.length || live.forms.size) return undefined
+      if (live.own || live.steering.size || live.waiting.length || live.forms.size || live.subagents.size) return undefined
       if (live.doing.kind === "idle") continue
       const provider = providers.get(id)
       if (!provider || live.doing.kind !== "running" || live.doing.run.agent?.provider !== provider ||

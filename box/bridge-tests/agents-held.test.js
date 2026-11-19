@@ -94,7 +94,15 @@ process.stdin.on("data", chunk => {
     if (!line.trim()) continue;
     const message = JSON.parse(line);
     if (message.type === "control_request") {
-      if (message.request.subtype === "initialize") log({ initialized: true });
+      if (message.request.subtype === "initialize") {
+        log({ initialized: true });
+        if (fs.existsSync(path.join(folder, "fail-rejoin"))) {
+          fs.unlinkSync(path.join(folder, "fail-rejoin"));
+          log({ rejoinFailed: true });
+          setTimeout(() => send({ type: "control_response", response: { subtype: "error", request_id: message.request_id, error: "Cannot rejoin this client" } }), 750);
+          continue;
+        }
+      }
       const response = message.request.subtype === "initialize" ? { commands: [], models, agents: [], output_style: "default", available_output_styles: ["default"], account: {} } : {};
       send({ type: "control_response", response: { subtype: "success", request_id: message.request_id, response, ...(message.request.subtype === "initialize" ? { pending_permission_requests: open ? [ask] : [] } : {}) } });
     } else if (message.type === "user") {
@@ -143,6 +151,7 @@ process.stdin.on("data", chunk => {
       prompt = message.id;
       const sessionId = message.params.sessionId;
       update(sessionId, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Asking first." } });
+      update(sessionId, { sessionUpdate: "current_mode_update", currentModeId: "review" });
       update(sessionId, { sessionUpdate: "tool_call", toolCallId: "t1", title: "touch held.txt", kind: "execute", status: "pending", rawInput: { command: "touch held.txt" } });
       send({ id: 0, method: "session/request_permission", params: { sessionId, toolCall: { toolCallId: "t1", title: "touch held.txt", kind: "execute", rawInput: { command: "touch held.txt" } }, options: [{ optionId: "allow-once", name: "Allow", kind: "allow_once" }, { optionId: "reject-once", name: "Reject", kind: "reject_once" }] } });
       log({ asked: 0, parent: process.ppid });
@@ -171,6 +180,14 @@ const make = agentId => ({
     fs.appendFileSync(path.join(folder, "cursor.log"), JSON.stringify({ text, pid: process.pid, parent: process.ppid }) + "\n");
     const say = text => onDelta({ update: { type: "text-delta", text } });
     await say("Before.");
+    if (fs.existsSync(path.join(folder, "cursor-task"))) {
+      const callId = "child-1";
+      const toolCall = { type: "task", args: { description: "Read the project", prompt: "Find the entry point" } };
+      await onDelta({ update: { type: "tool-call-started", callId, toolCall } });
+      await onDelta({ update: { type: "tool-call-delta", callId, taskUpdate: { type: "text-delta", text: "Found entry.ts." } } });
+      await onDelta({ update: { type: "tool-call-completed", callId, toolCall: { ...toolCall, result: { status: "success", value: {} } } } });
+      await say("Child finished.");
+    }
     const ending = (async () => {
       while (!fs.existsSync(path.join(folder, "cursor-release"))) await new Promise(resolve => setTimeout(resolve, 20));
       await say(" After.");
@@ -308,7 +325,17 @@ async function machine({ claudeVersion = "2.1.325", liveTransfer = false, cursor
   }, besides ? "the bridge started again to answer" : "the bridge to answer");
   const log = (name = "log") => { try { return fs.readFileSync(path.join(fake, name), "utf8").trim().split("\n").filter(Boolean).map(line => JSON.parse(line)); } catch { return []; } };
   const held = () => (fs.existsSync(holders) ? fs.readdirSync(holders) : []).filter(name => name.endsWith(".json")).map(name => JSON.parse(fs.readFileSync(path.join(holders, name), "utf8")));
-  return { root, home, api, up, log, held, holders };
+  const recover = () => {
+    const run = path.join(home, "run");
+    const debug = fs.openSync(path.join(run, "agents.log"), "a");
+    const recovered = spawn("sh", ["-c", 'echo $$ >"$1"; shift; exec "$@"', "recover", path.join(run, "agents.pid"), bun,
+      "--config=/dev/null", "--no-env-file", path.join(run, "agents", "previous", "kuvo-agents.js"), "handover-recovery"],
+    { cwd: path.join(home, "work"), env, stdio: ["ignore", debug, debug] });
+    fs.closeSync(debug);
+    atEnd(() => { if (recovered.exitCode === null) recovered.kill(); });
+    return recovered;
+  };
+  return { root, home, api, up, log, held, holders, recover };
 }
 
 const textOf = messages => messages.filter(each => each.type === "assistant").flatMap(each => each.content ?? []).filter(block => block.type === "text").map(block => block.text);
@@ -341,6 +368,8 @@ async function continueWhileAsking({ provider, model, log, liveTransfer = false 
   await until(() => Object.values(box.held().find(each => each.pid === holder.pid)?.meta.turns ?? {})[0]?.session === session, "the holder's record to say which session's turn is under way");
   assert.equal(fs.statSync(box.holders).mode & 0o777, 0o700, "only you reach the holders");
 
+  const beforeCut = (await box.api("GET", `api/session/${session}/message?limit=100&order=asc`)).json.data;
+  const notices = page => page.filter(each => each.type === "synthetic" && each.text.endsWith("switched to its review mode.")).map(each => each.id);
   if (liveTransfer) changeBridge(box);
   else process.kill(first, "SIGKILL");
   const second = await box.up(first);
@@ -360,6 +389,10 @@ async function continueWhileAsking({ provider, model, log, liveTransfer = false 
   assert.deepEqual(messages.filter(each => each.type === "user").map(each => each.text), ["run it"]);
   assert.deepEqual(textOf(messages), ["Asking first.", "Ran it."], "what the agent said before the crash and after, once each");
   assert.deepEqual(messages.filter(each => each.type === "idle").map(each => each.outcome), ["succeeded"], "one turn, not cut");
+  if (provider === "grok-cli" && liveTransfer) {
+    assert.equal(notices(beforeCut).length, 1);
+    assert.deepEqual(notices(messages), notices(beforeCut), "ACP's mode notice keeps its original ID and appears once");
+  }
   assert.equal(box.log(log).filter(each => "answered" in each).length, 1, "answered once");
   assert.deepEqual((await box.api("GET", `api/session/${session}/permission`)).json?.data, [], "and nothing is left to ask, with the turn over");
   assert.equal(box.log(log).filter(each => "asked" in each).length, 1, "asked about once: the turn wasn't started again");
@@ -424,6 +457,71 @@ test("Cursor's live worker keeps streaming the same SDK run through a bridge upd
   assert.deepEqual(textOf(messages), ["Before. After."]);
   assert.deepEqual(messages.filter(item => item.type === "idle").map(item => item.outcome), ["succeeded"]);
   assert.deepEqual(box.log("cursor.log"), initial, "the native process received exactly one prompt");
+});
+
+test("a rejected Claude rejoin keeps the checkpoint for the previous bridge", { skip: bun ? false : NO_BUN }, async () => {
+  const box = await machine({ liveTransfer: true });
+  const first = await box.up();
+  const made = await box.api("POST", "api/session", {
+    title: "Rejoin failure", location: { directory: path.join(box.home, "work") },
+    model: { providerID: "claude-code", id: "default" },
+  });
+  assert.equal(made.status, 200);
+  const session = made.json.data.id;
+  assert.equal((await box.api("POST", `api/session/${session}/prompt`, { id: "msg_rejoinfailure00001", delivery: "steer", text: "run it" })).status, 200);
+  const pending = async () => (await box.api("GET", `api/session/${session}/permission`)).json?.data?.[0];
+  const before = await until(pending, "the original approval");
+  const native = box.log("claude.log").find(each => "asked" in each).pid;
+  const run = path.join(box.home, "run");
+  const checkpoint = path.join(run, "agents", "handover.json");
+  const previous = path.join(run, "agents", "previous", "kuvo-agents.js");
+  fs.writeFileSync(path.join(box.home, "fake", "fail-rejoin"), "");
+  changeBridge(box);
+  await until(() => box.log("claude.log").some(each => each.rejoinFailed), "the provisional Claude SDK initialization");
+  assert.ok(fs.existsSync(checkpoint), "recovery is still available while rejoin is pending");
+  assert.ok(fs.existsSync(previous), "the previous build is still available");
+  assert.equal(JSON.parse(fs.readFileSync(path.join(run, "bridge.json"), "utf8")).pid, first, "admission is still closed");
+  const plan = JSON.parse(fs.readFileSync(checkpoint, "utf8"));
+  await until(() => !alive(plan.next), "the rejected candidate to exit", 12_000);
+  assert.ok(alive(native), "the candidate detached without killing Claude");
+  assert.ok(fs.existsSync(checkpoint), "a rejoin failure leaves the checkpoint intact");
+  const recovered = box.recover();
+  assert.equal(await box.up(first), recovered.pid);
+  assert.equal((await pending())?.id, before.id);
+  assert.equal((await box.api("POST", `api/session/${session}/permission/${before.id}/reply`, { decision: "once" })).status, 200);
+  await until(async () => (await box.api("GET", `api/session/${session}/message?limit=100&order=asc`)).json?.data?.at(-1)?.outcome === "succeeded", "the original turn to finish");
+  assert.equal(box.log("claude.log").filter(each => "answered" in each).length, 1);
+});
+
+test("Cursor's completed child keeps its session and tool link through cutover", { skip: bun ? false : NO_BUN }, async () => {
+  const box = await machine({ liveTransfer: true, cursor: true });
+  const first = await box.up();
+  const made = await box.api("POST", "api/session", {
+    title: "Cursor parent", location: { directory: path.join(box.home, "work") },
+    model: { providerID: "cursor", id: "cursor-test" },
+  });
+  assert.equal(made.status, 200);
+  const session = made.json.data.id;
+  fs.writeFileSync(path.join(box.home, "fake", "cursor-task"), "");
+  assert.equal((await box.api("POST", `api/session/${session}/prompt`, { id: "msg_heldcursortask0001", delivery: "steer", text: "run a task" })).status, 200);
+  const page = async id => (await box.api("GET", `api/session/${id}/message?limit=100&order=asc`)).json?.data ?? [];
+  const link = messages => messages.flatMap(each => each.content ?? []).find(each => each.id === "child-1" && each.state?.status === "completed")?.state.metadata?.sessionID;
+  const child = await until(async () => {
+    const messages = await page(session);
+    return textOf(messages).includes("Child finished.") && link(messages);
+  }, "the completed child and later parent output");
+  const childMessages = await page(child);
+  assert.deepEqual(textOf(childMessages), ["Found entry.ts."]);
+  changeBridge(box);
+  await box.up(first);
+  fs.writeFileSync(path.join(box.home, "fake", "cursor-release"), "");
+  const completed = await until(async () => {
+    const messages = await page(session);
+    return messages.at(-1)?.outcome === "succeeded" ? messages : null;
+  }, "the parent to finish");
+  assert.equal(link(completed), child, "the rebuilt tool still links to the original child");
+  assert.deepEqual(await page(child), childMessages, "the child transcript is unchanged");
+  assert.deepEqual((await box.api("GET", `api/session?parentID=${session}`)).json.data.map(each => each.id), [child]);
 });
 
 test("Claude Code older than 2.1.268 (it doesn't ask again what's open, as a new client joins): a crash ends its turn as before, and it's stopped, not left waiting", { skip: bun ? false : NO_BUN }, async () => {

@@ -620,8 +620,10 @@ class CursorThread implements Thread {
           subagent.run.end(failed ? "failed" : "succeeded", failed ? { type: "agent", message: errorWords(result.error) ?? "The subagent failed." } : undefined)
           active.subagents.delete(id)
         }
-        if (failed) turn.toolFailed(id, (typeof output === "string" ? output : "") || errorWords(result.error) || "The tool failed.", metadata)
-        else turn.toolSucceeded(id, output, subagent ? { ...metadata, sessionID: subagent.run.sessionID } : metadata)
+        const child = subagent?.run.sessionID
+        const linked = child ? { ...metadata, sessionID: child } : metadata
+        if (failed) turn.toolFailed(id, (typeof output === "string" ? output : "") || errorWords(result.error) || "The tool failed.", linked)
+        else turn.toolSucceeded(id, output, linked)
         return
       }
       case "tool-call-delta": {

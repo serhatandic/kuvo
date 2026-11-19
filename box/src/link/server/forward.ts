@@ -109,6 +109,8 @@ export async function* forward(target: Target, path: string, request: LinkReques
   const url = new URL(`http://127.0.0.1:${target.port}/${sent}`);
   const headers: Record<string, string> = { authorization: `Basic ${Buffer.from(`opencode:${target.password}`).toString("base64")}` };
   const sendTo = async (body: RequestInit["body"], signal?: AbortSignal) => {
+    const held = await holdEnginePrompt(body);
+    if (held) return held;
     const response = await fetch(url, { method, headers, body, signal });
     if (!currentBridge || response.headers.get("x-kuvo-bridge-handover") !== "1") return response;
     // This response comes from the admission fence, before the request ran. It is safe to
@@ -146,39 +148,25 @@ export async function* forward(target: Target, path: string, request: LinkReques
   const toEngine = method === "POST" && /^\/api\/session\/([^/]+)\/(prompt|command|shell|compact|summarize)$/.exec(url.pathname);
   let heldSession: string | undefined;
   try { if (toEngine && !toAgents) heldSession = decodeURIComponent(toEngine[1]!); } catch { /* let the engine answer an invalid address */ }
-  if (toEngine && heldSession && swapHoldsFor(target, heldSession)) {
-    let body: unknown = null;
-    try { body = JSON.parse(request.body?.toString("utf8") ?? ""); } catch {}
+  const holdEnginePrompt = async (payload: RequestInit["body"]) => {
     const session = heldSession;
-    const text = isObject(body) && typeof body.text === "string" ? body.text : null;
-    if (toEngine[2] === "prompt" && isObject(body) && body.id !== undefined && !isWaitingID(body.id)) {
-      yield { head: { status: 400, headers: { "content-type": "application/json" } } };
-      yield { body: Buffer.from(JSON.stringify({ message: BAD_WAITING_ID })) };
-      return;
+    if (!toEngine || !session || !swapHoldsFor(target, session)) return;
+    const answer = (status: number, body: object) => Response.json(body, { status });
+    let body: unknown = null;
+    try { body = JSON.parse(payload?.toString() ?? ""); } catch {}
+    if (toEngine[2] === "prompt" && isObject(body) && typeof body.text === "string") {
+      if (body.id !== undefined && !isWaitingID(body.id)) return answer(400, { message: BAD_WAITING_ID });
+      const message = {
+        id: isWaitingID(body.id) ? body.id : messageID(),
+        text: body.text,
+        delivery: body.delivery === "queue" ? "queue" as const : "steer" as const,
+        ...(Array.isArray(body.files) ? { files: body.files } : {}),
+        ...(isObject(body.metadata) ? { metadata: body.metadata } : {}),
+      };
+      if (keepWaiting(session, message, {}, undefined, target)) return answer(200, { waits: true });
     }
-    const id = isObject(body) && isWaitingID(body.id) ? body.id : messageID();
-    const message = isObject(body) && text !== null && toEngine[2] === "prompt"
-      ? { id, text, delivery: body.delivery === "queue" ? "queue" as const : "steer" as const, ...(Array.isArray(body.files) ? { files: body.files } : {}), ...(isObject(body.metadata) ? { metadata: body.metadata } : {}) }
-      : null;
-    let kept = false;
-    try {
-      if (message) kept = await admitPrompt(session, async () => keepWaiting(session, message, {}, undefined, target));
-    } catch (error) {
-      const moving = error instanceof MoveAdmissionClosed;
-      if (!moving) console.error("kuvo-link: could not add a waiting message", error);
-      yield { head: { status: moving ? 409 : 500, headers: { "content-type": "application/json" } } };
-      yield { body: Buffer.from(JSON.stringify({ message: moving ? error.message : "This computer couldn’t save the message. Try sending it again." })) };
-      return;
-    }
-    if (kept) {
-      yield { head: { status: 200, headers: { "content-type": "application/json" } } };
-      yield { body: Buffer.from(JSON.stringify({ waits: true })) };
-    } else {
-      yield { head: { status: 503, headers: { "content-type": "application/json" } } };
-      yield { body: Buffer.from(JSON.stringify({ message: swapLine(swapUnderWay(RUN)) ?? "Kuvo is checking the engine’s inbox.", engineChanging: true })) };
-    }
-    return;
-  }
+    return answer(503, { message: swapLine(swapUnderWay(RUN)) ?? "Kuvo is checking the engine’s inbox.", engineChanging: true });
+  };
   // A message taken out of the engine's inbox: sent again under its id (Undo), it goes again.
   const cancelled = method === "DELETE" && /^\/api\/session\/([^/]+)\/inbox\/([^/]+)$/.exec(url.pathname);
   if (cancelled) forgetSent(decodeURIComponent(cancelled[1]!), decodeURIComponent(cancelled[2]!));
@@ -223,8 +211,9 @@ export async function* forward(target: Target, path: string, request: LinkReques
   // a busy engine takes to answer, it's waited for, as one without an id is: a repeat meanwhile
   // waits with it, rather than a "busy" sending its words back to be sent again under a new id
   // the engine would take twice. Not answering (the engine started again), a repeat tries again.
+  const admittedSession = heldSession ?? (sending ? decodeURIComponent(sending[1]!) : undefined);
   const admitted = <T>(write: () => Promise<T>): Promise<T> =>
-    sending ? admitPrompt(decodeURIComponent(sending[1]!), write) : write();
+    admittedSession ? admitPrompt(admittedSession, write) : write();
   const sendingError = (error: unknown): SentAnswer => error instanceof MoveAdmissionClosed
     ? { status: 409, headers: { "content-type": "application/json" }, body: Buffer.from(JSON.stringify({ message: error.message })) }
     : notAnswering();

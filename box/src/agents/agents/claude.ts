@@ -1283,6 +1283,7 @@ class ClaudeThread implements Thread {
       this.held = taken.held
       this.holding = Promise.resolve(taken.held)
       this.open(sdk, input.model.id, input.model.variant, input.plan, opened?.append ?? hooks.instructions(), hooks, opened?.skills, undefined, taken)
+      if (taken.gate.preparing) await this.query.initializationResult()
     } catch (error) {
       // (Not taken up after all: its Claude Code stops, as the bridge before would have stopped it.)
       taken.held.stop()
@@ -1593,9 +1594,14 @@ class ClaudeThread implements Thread {
         // Its subagents' words and thinking too, for their sessions (by default only their tools).
         forwardSubagentText: true,
         permissionMode: plan ? "plan" : "default",
-        canUseTool: (name: string, input: Record<string, unknown>, options: any) => this.canUseTool(name, input, options),
+        canUseTool: (name: string, input: Record<string, unknown>, options: any) => taken?.gate.preparing
+          ? taken.gate.activated.then(() => this.canUseTool(name, input, options))
+          : this.canUseTool(name, input, options),
         // Before any tool runs, even one Claude Code's own settings allow (yours, or a project's).
-        hooks: { PreToolUse: [{ hooks: [async (hookInput: any) => this.preToolUse(hookInput)] }] },
+        hooks: { PreToolUse: [{ hooks: [async (hookInput: any) => {
+          if (taken?.gate.preparing) await taken.gate.activated
+          return this.preToolUse(hookInput)
+        }] }] },
         systemPrompt: { type: "preset", preset: "claude_code", ...(append ? { append } : {}) },
         ...(skills ? { plugins: [{ type: "local" as const, path: skills, skipMcpDiscovery: true }] } : {}),
         // Your subagents, over one of the same name in ~/.claude/agents (as its --agents flag's are).
@@ -1613,7 +1619,7 @@ class ClaudeThread implements Thread {
         stderr: () => {},
       },
     })
-    void this.read(this.query)
+    void this.read(this.query, taken)
   }
 
   /**
@@ -1783,11 +1789,14 @@ class ClaudeThread implements Thread {
     return Boolean(this.query) && this.sandboxedNow === undefined
   }
 
-  private async read(query: any) {
+  private async read(query: any, taken?: HeldTurn) {
     let ended: unknown
     const usage = this.usageGeneration
     try {
-      for await (const message of query) this.handle(message, usage)
+      for await (const message of query) {
+        if (taken?.gate.preparing) await taken.gate.activated
+        this.handle(message, usage)
+      }
     } catch (error) {
       ended = error
     }

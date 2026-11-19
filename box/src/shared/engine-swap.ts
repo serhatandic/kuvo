@@ -6,7 +6,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { processRuns } from "./platform";
+import { alive, processRuns } from "./platform";
 
 /** Where the change stands: `waiting` for a quiet moment (nothing held); `holding` new prompts while
  * the turns under way end; `swapping` (the old engine stopped, the new one starting); `back` (the new
@@ -39,9 +39,11 @@ export const SWAP_MOST = 30 * 60_000;
 
 export const swapFile = (run: string) => path.join(run, "engine-swap.json");
 
-export function readSwap(run: string): EngineSwap | null {
+export const installHoldFile = (run: string) => path.join(run, "update-engine-hold.json");
+
+export function readSwap(run: string, file = swapFile(run)): EngineSwap | null {
   try {
-    const said = JSON.parse(fs.readFileSync(swapFile(run), "utf8"));
+    const said = JSON.parse(fs.readFileSync(file, "utf8"));
     if (typeof said?.from !== "string" || typeof said.to !== "string" || typeof said.pid !== "number" || !["waiting", "holding", "swapping", "back"].includes(said.stage)) return null;
     return said as EngineSwap;
   } catch {
@@ -61,6 +63,12 @@ function machineRecovery(run: string, swap: EngineSwap): boolean {
 
 /** The swap under way, including a machine whose launch replacement still needs recovery. */
 export function swapUnderWay(run: string): EngineSwap | null {
+  const install = readSwap(run, installHoldFile(run));
+  if (install && alive(install.pid)) {
+    try {
+      if (Number(fs.readFileSync(path.join(run, ".updating", "pid"), "utf8")) === install.pid) return install;
+    } catch {}
+  }
   const swap = readSwap(run);
   if (!swap) return null;
   if (processRuns(swap.pid, "kuvo-link")) return swap;

@@ -81,12 +81,27 @@ export class HeldGate {
   private opened = false
   private opener?: (dropped: string[]) => void
   private taken = 0
+  failed = false
+  private settle!: (ready: boolean) => void
+  private activate!: () => void
+  readonly readyToOwn = new Promise<boolean>(resolve => { this.settle = resolve })
+  readonly activated = new Promise<void>(resolve => { this.activate = resolve })
 
   constructor(
     readonly held: Held,
     threads: string[],
+    private provisional = false,
   ) {
     this.waiting = new Set(threads)
+  }
+
+  get preparing() { return this.provisional }
+
+  /** Start replay only after every holder has an adapter ready to consume it. */
+  commit() {
+    this.provisional = false
+    this.held.own()
+    this.check()
   }
 
   /** What opens it (the agent's RPC starting): set once, by the first turn taken up. */
@@ -101,6 +116,7 @@ export class HeldGate {
   }
 
   drop(thread: string) {
+    if (this.provisional) this.fail()
     if (this.waiting.delete(thread)) this.dropped.push(thread)
     this.check()
   }
@@ -111,12 +127,18 @@ export class HeldGate {
    * the same Codex goes on).
    */
   release(thread: string) {
+    if (this.provisional) return this.fail()
     if (this.waiting.has(thread)) return this.drop(thread)
     if (this.released.has(thread)) return
     this.released.add(thread)
     if (this.opened && this.released.size >= this.taken) this.held.stop()
   }
   private released = new Set<string>()
+
+  private fail() {
+    this.failed = true
+    this.settle(false)
+  }
 
   private check() {
     if (this.opened || this.waiting.size) return
@@ -125,7 +147,10 @@ export class HeldGate {
       return this.held.stop()
     }
     if (!this.opener) return
+    this.settle(true)
+    if (this.provisional) return
     this.opened = true
+    this.activate()
     this.opener(this.dropped)
   }
 }
@@ -223,9 +248,9 @@ export async function adoptTransfer(home: string, plan: TransferHolder[], recove
         throw new Error("A holder in the handover is unavailable.")
       }
       const turns = Object.entries(entry.turns)
-      const held = await attach(folder, record, Math.min(...turns.map(([, note]) => note.from)), true)
+      const held = await attach(folder, record, Math.min(...turns.map(([, note]) => note.from)), "provisional")
       attached.push(held)
-      const gate = new HeldGate(held, turns.map(([thread]) => thread))
+      const gate = new HeldGate(held, turns.map(([thread]) => thread), true)
       for (const [thread, note] of turns) found.set(note.session, { held, gate, thread, note, meta: record.meta as HeldMeta })
     }))
     for (const attempt of attempts) if (attempt.status === "rejected") throw attempt.reason

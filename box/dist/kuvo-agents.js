@@ -11414,8 +11414,8 @@ async function attach(folder, record, from, complete = false) {
 }
 async function connect(folder, id, key, generation, holder, from, complete = false) {
   const socket = net.connect(join20(folder, `${id}.sock`));
-  const held = new Held(id, holder, socket);
-  socket.write(JSON.stringify({ hello: HOLD_PROTO, key, generation, complete, ...from !== undefined ? { from } : {} }) + `
+  const held = new Held(id, holder, socket, complete === "provisional");
+  socket.write(JSON.stringify({ hello: HOLD_PROTO, key, generation, complete: Boolean(complete), ...from !== undefined ? { from } : {} }) + `
 `);
   const late = setTimeout(() => socket.destroy(), WITHIN);
   try {
@@ -11452,6 +11452,7 @@ class Held {
   id;
   holder;
   socket;
+  provisional;
   pid;
   generation = 0;
   gap = false;
@@ -11473,10 +11474,11 @@ class Held {
   ackTimer;
   acked = 0;
   preparing;
-  constructor(id, holder, socket) {
+  constructor(id, holder, socket, provisional = false) {
     this.id = id;
     this.holder = holder;
     this.socket = socket;
+    this.provisional = provisional;
     let welcome = () => {};
     let refuse = () => {};
     this.welcomed = new Promise((resolve, reject) => (welcome = resolve, refuse = reject));
@@ -11547,7 +11549,8 @@ class Held {
           this.heardEnd = true;
           exit({ code: frame.x.code ?? null, signal: frame.x.signal ?? null });
           this.send({ ack: this.seen });
-          this.send({ bye: true });
+          if (!this.provisional)
+            this.send({ bye: true });
         } else if (typeof frame.prepared === "boolean") {
           this.preparing?.(frame.prepared);
         } else if (frame.fenced) {
@@ -11557,20 +11560,28 @@ class Held {
     });
   }
   deliver(line, again, seq) {
-    if (!this.lineListeners.length)
+    if (!this.lineListeners.some((reader) => reader.active))
       return void this.early.push({ line, again, seq });
     this.firstCame();
-    for (const each of this.lineListeners)
-      each(line, again, seq);
+    for (const reader of this.lineListeners)
+      if (reader.active)
+        reader.receive(line, again, seq);
+  }
+  prepareReader(receive) {
+    const reader = { active: false, receive };
+    this.lineListeners.push(reader);
+    return () => {
+      reader.active = true;
+      const early = this.early;
+      this.early = [];
+      if (early.length)
+        this.firstCame();
+      for (const { line, again, seq } of early)
+        receive(line, again, seq);
+    };
   }
   onLine(listener) {
-    this.lineListeners.push(listener);
-    const early = this.early;
-    this.early = [];
-    if (early.length)
-      this.firstCame();
-    for (const { line, again, seq } of early)
-      listener(line, again, seq);
+    this.prepareReader(listener)();
   }
   onStderr(listener) {
     this.errorListeners.push(listener);
@@ -11595,6 +11606,14 @@ class Held {
 `);
     return true;
   }
+  get isProvisional() {
+    return this.provisional;
+  }
+  own() {
+    this.provisional = false;
+    if (this.heardEnd)
+      this.send({ bye: true });
+  }
   get isOpen() {
     return !this.ended && !this.fenced;
   }
@@ -11604,15 +11623,15 @@ class Held {
     return this.send({ i: line });
   }
   end() {
-    if (!this.fenced)
+    if (!this.fenced && !this.provisional)
       this.send({ end: true });
   }
   kill(signal = "SIGTERM") {
-    if (!this.fenced)
+    if (!this.fenced && !this.provisional)
       this.send({ signal });
   }
   stop() {
-    if (this.fenced || this.letGo || this.heardEnd)
+    if (this.fenced || this.letGo || this.heardEnd || this.provisional)
       return;
     if (this.ended)
       return this.stopHolder();
@@ -11621,7 +11640,7 @@ class Held {
     } catch {}
   }
   stopHolder() {
-    if (!isHolder(this.holder, this.id))
+    if (this.provisional || !isHolder(this.holder, this.id))
       return;
     try {
       process.kill(this.holder, "SIGTERM");
@@ -11629,7 +11648,7 @@ class Held {
   }
   note(meta) {
     this.meta = { ...this.meta, ...meta };
-    if (!this.fenced)
+    if (!this.fenced && !this.provisional)
       this.send({ meta });
   }
   prepare(from) {
@@ -11801,14 +11820,33 @@ function agentHoldFolder(kind) {
 
 class HeldGate {
   held;
+  provisional;
   waiting;
   dropped = [];
   opened = false;
   opener;
   taken = 0;
-  constructor(held, threads) {
+  failed = false;
+  settle;
+  activate;
+  readyToOwn = new Promise((resolve) => {
+    this.settle = resolve;
+  });
+  activated = new Promise((resolve) => {
+    this.activate = resolve;
+  });
+  constructor(held, threads, provisional = false) {
     this.held = held;
+    this.provisional = provisional;
     this.waiting = new Set(threads);
+  }
+  get preparing() {
+    return this.provisional;
+  }
+  commit() {
+    this.provisional = false;
+    this.held.own();
+    this.check();
   }
   onOpen(open) {
     this.opener ??= open;
@@ -11820,11 +11858,15 @@ class HeldGate {
     this.check();
   }
   drop(thread) {
+    if (this.provisional)
+      this.fail();
     if (this.waiting.delete(thread))
       this.dropped.push(thread);
     this.check();
   }
   release(thread) {
+    if (this.provisional)
+      return this.fail();
     if (this.waiting.has(thread))
       return this.drop(thread);
     if (this.released.has(thread))
@@ -11834,6 +11876,10 @@ class HeldGate {
       this.held.stop();
   }
   released = new Set;
+  fail() {
+    this.failed = true;
+    this.settle(false);
+  }
   check() {
     if (this.opened || this.waiting.size)
       return;
@@ -11843,7 +11889,11 @@ class HeldGate {
     }
     if (!this.opener)
       return;
+    this.settle(true);
+    if (this.provisional)
+      return;
     this.opened = true;
+    this.activate();
     this.opener(this.dropped);
   }
 }
@@ -11905,9 +11955,9 @@ async function adoptTransfer(home, plan, recovering = false) {
         throw new Error("A holder in the handover is unavailable.");
       }
       const turns = Object.entries(entry.turns);
-      const held = await attach(folder, record, Math.min(...turns.map(([, note]) => note.from)), true);
+      const held = await attach(folder, record, Math.min(...turns.map(([, note]) => note.from)), "provisional");
       attached.push(held);
-      const gate = new HeldGate(held, turns.map(([thread]) => thread));
+      const gate = new HeldGate(held, turns.map(([thread]) => thread), true);
       for (const [thread, note] of turns)
         found.set(note.session, { held, gate, thread, note, meta: record.meta });
     }));
@@ -11970,13 +12020,19 @@ class RPC {
     if (!Array.isArray(command)) {
       const held = this.held = command;
       held.onStderr((text) => this.stderr = (this.stderr + text).slice(-8000));
-      this.begin = () => held.onLine((line, _again, seq) => {
+      const read = held.prepareReader((line, _again, seq) => {
         this.lineSeq = seq;
         const trimmed = line.replace(/\r$/, "");
         if (trimmed.trim() && (!this.filter || this.filter(trimmed)))
           this.receive(trimmed);
       });
-      this.exited = held.exited.then((exit) => ended(exit.code ?? (exit.signal === "fenced" || exit.signal === "lost" ? -1 : 1)));
+      const started = Promise.withResolvers();
+      this.begin = () => {
+        read();
+        started.resolve();
+      };
+      const exit = held.isProvisional ? started.promise.then(() => held.exited) : held.exited;
+      this.exited = exit.then((exit) => ended(exit.code ?? (exit.signal === "fenced" || exit.signal === "lost" ? -1 : 1)));
       this.errorsRead = this.exited.then(() => {});
       return;
     }
@@ -18622,6 +18678,8 @@ ${input.text}` } : input, this.copies());
       this.held = taken.held;
       this.holding = Promise.resolve(taken.held);
       this.open(sdk, input.model.id, input.model.variant, input.plan, opened?.append ?? hooks.instructions(), hooks, opened?.skills, undefined, taken);
+      if (taken.gate.preparing)
+        await this.query.initializationResult();
     } catch (error) {
       taken.held.stop();
       this.held = undefined;
@@ -18896,8 +18954,12 @@ ${input.text}` } : input, this.copies());
         includePartialMessages: true,
         forwardSubagentText: true,
         permissionMode: plan ? "plan" : "default",
-        canUseTool: (name, input, options) => this.canUseTool(name, input, options),
-        hooks: { PreToolUse: [{ hooks: [async (hookInput) => this.preToolUse(hookInput)] }] },
+        canUseTool: (name, input, options) => taken?.gate.preparing ? taken.gate.activated.then(() => this.canUseTool(name, input, options)) : this.canUseTool(name, input, options),
+        hooks: { PreToolUse: [{ hooks: [async (hookInput) => {
+          if (taken?.gate.preparing)
+            await taken.gate.activated;
+          return this.preToolUse(hookInput);
+        }] }] },
         systemPrompt: { type: "preset", preset: "claude_code", ...append ? { append } : {} },
         ...skills ? { plugins: [{ type: "local", path: skills, skipMcpDiscovery: true }] } : {},
         ...Object.keys(subagents.agents).length ? { agents: subagents.agents } : {},
@@ -18909,7 +18971,7 @@ ${input.text}` } : input, this.copies());
         stderr: () => {}
       }
     });
-    this.read(this.query);
+    this.read(this.query, taken);
   }
   whole(skills, conversation) {
     this.sandboxedNow = fenceOn() || undefined;
@@ -19034,12 +19096,15 @@ ${input.text}` } : input, this.copies());
   get outside() {
     return Boolean(this.query) && this.sandboxedNow === undefined;
   }
-  async read(query) {
+  async read(query, taken) {
     let ended;
     const usage = this.usageGeneration;
     try {
-      for await (const message of query)
+      for await (const message of query) {
+        if (taken?.gate.preparing)
+          await taken.gate.activated;
         this.handle(message, usage);
+      }
     } catch (error) {
       ended = error;
     }
@@ -24259,10 +24324,12 @@ ${text}`;
           subagent.run.end(failed ? "failed" : "succeeded", failed ? { type: "agent", message: errorWords(result.error) ?? "The subagent failed." } : undefined);
           active.subagents.delete(id);
         }
+        const child = subagent?.run.sessionID;
+        const linked = child ? { ...metadata, sessionID: child } : metadata;
         if (failed)
-          turn.toolFailed(id, (typeof output === "string" ? output : "") || errorWords(result.error) || "The tool failed.", metadata);
+          turn.toolFailed(id, (typeof output === "string" ? output : "") || errorWords(result.error) || "The tool failed.", linked);
         else
-          turn.toolSucceeded(id, output, subagent ? { ...metadata, sessionID: subagent.run.sessionID } : metadata);
+          turn.toolSucceeded(id, output, linked);
         return;
       }
       case "tool-call-delta": {
@@ -29332,20 +29399,22 @@ class Turn {
   block;
   keyed = new Map;
   tools = new Map;
-  ended = false;
+  ended;
   compaction;
   justCompacted = false;
   started = Date.now();
   order = workOrder();
   tokens = noTokens();
   cost = 0;
-  constructor(store, sessionID, directory, model, agent) {
+  constructor(store, sessionID, directory, model, agent, completed = false) {
     this.store = store;
     this.sessionID = sessionID;
     this.directory = directory;
     this.model = model;
     this.agent = agent;
-    emit("session.execution.started", { sessionID }, directory);
+    this.ended = completed;
+    if (!completed)
+      emit("session.execution.started", { sessionID }, directory);
   }
   get isEnded() {
     return this.ended;
@@ -29366,8 +29435,37 @@ class Turn {
     return this.model;
   }
   replayedSteps = [];
-  reuseSteps(steps) {
-    this.replayedSteps = steps.map(({ id, time }) => ({ id, time }));
+  replayedNotices = [];
+  replayedCompactions = [];
+  completedChildren = new Map;
+  reuseMessages(messages) {
+    for (const message of messages) {
+      if (message.type === "assistant") {
+        this.replayedSteps.push(message);
+        for (const tool of message.content) {
+          if (tool.type !== "tool" || tool.state.status !== "completed" && tool.state.status !== "error")
+            continue;
+          const child = tool.state.metadata?.sessionID;
+          if (typeof child === "string")
+            this.completedChildren.set(tool.id, child);
+        }
+      } else if (message.type === "synthetic" && message.metadata?.kuvo?.notice) {
+        this.replayedNotices.push(message);
+      } else if (message.type === "compaction" && message.reason === "auto") {
+        this.replayedCompactions.push(message);
+      }
+    }
+  }
+  takeCompletedChild(toolCallID) {
+    const child = this.completedChildren.get(toolCallID);
+    this.completedChildren.delete(toolCallID);
+    return child;
+  }
+  atReplayPosition(message) {
+    const index = this.messages.indexOf(message);
+    if (index >= 0)
+      this.messages.splice(index, 1);
+    this.messages.push(message);
   }
   startStep(model) {
     if (this.ended)
@@ -29603,12 +29701,18 @@ class Turn {
   notice(text) {
     if (this.ended)
       return;
+    const replayed = this.replayedNotices.findIndex((message) => message.text === text);
     const last = this.messages.at(-1);
-    if (last?.type === "synthetic" && last.text === text)
+    if (replayed < 0 && last?.type === "synthetic" && last.text === text)
       return;
     this.endBlock();
     if (this.step)
       this.endStep();
+    if (replayed >= 0) {
+      this.atReplayPosition(this.replayedNotices.splice(replayed, 1)[0]);
+      this.save();
+      return;
+    }
     const event = emit("session.synthetic", { sessionID: this.sessionID, text, metadata: NOTICE }, this.directory);
     this.messages.push({ type: "synthetic", id: messageID(event.id), time: { created: event.created }, text, metadata: NOTICE });
     this.save();
@@ -29620,10 +29724,17 @@ class Turn {
     this.endBlock();
     if (this.step)
       this.endStep();
-    const event = emit("session.compaction.started", { sessionID: this.sessionID, reason: "auto" }, this.directory);
-    const message = { type: "compaction", id: messageID(event.id), time: { created: event.created }, status: "running", reason: "auto" };
-    this.compaction = message;
-    this.messages.push(message);
+    const replayed = this.replayedCompactions.shift();
+    if (replayed) {
+      this.compaction = { ...replayed, time: { created: replayed.time.created }, status: "running" };
+      const index = this.messages.indexOf(replayed);
+      if (index >= 0)
+        this.messages.splice(index, 1);
+    } else {
+      const event = emit("session.compaction.started", { sessionID: this.sessionID, reason: "auto" }, this.directory);
+      this.compaction = { type: "compaction", id: messageID(event.id), time: { created: event.created }, status: "running", reason: "auto" };
+    }
+    this.messages.push(this.compaction);
     this.store.save(this.sessionID, true);
   }
   compacted(succeeded) {
@@ -30341,7 +30452,7 @@ class Sessions {
     this.agentInfo = agentInfo;
     this.snapshots = snapshots;
     this.titleModel = titleModel;
-    this.transferred = new Map(Object.entries(transfer ?? {}));
+    this.transferred = new Map;
     if (transfer && [...held].some(([id, turn]) => {
       const message = store.get(id)?.messages.findLast(turnInput);
       return !this.resumable(id, turn) || message?.id !== transfer[id]?.message;
@@ -30349,7 +30460,10 @@ class Sessions {
       throw new Error("A session in the handover cannot be resumed.");
     for (const [id, turn] of held) {
       if (this.resumable(id, turn)) {
-        turn.state = transfer?.[id]?.agentState;
+        const saved = transfer?.[id];
+        if (saved)
+          this.transferred.set(id, saved);
+        turn.state = saved?.agentState;
         this.resuming.set(id, turn);
       } else
         turn.gate.drop(turn.thread);
@@ -31582,6 +31696,10 @@ ${text.slice(0, 4000)}
     } catch (error) {
       result = { outcome: "failed", error: failure(error) };
     }
+    if (held.gate.preparing) {
+      held.gate.release(held.thread);
+      await held.gate.activated;
+    }
     const outcome = abort.signal.aborted ? "interrupted" : result.outcome;
     this.transferred.delete(id);
     if (!run.heldTaken)
@@ -31753,10 +31871,9 @@ ${text.slice(0, 4000)}
       if (input.held) {
         heldTaken = true;
         const opened = record.messages.findIndex((message) => message.id === userMessage);
-        const steps = record.messages.slice(opened + 1).filter((message) => message.type === "assistant");
-        const kept = new Set(steps);
-        if (this.transferred.has(id))
-          turn.reuseSteps(steps);
+        const previous = record.messages.slice(opened + 1);
+        const kept = new Set(previous.filter((message) => message.type === "assistant"));
+        turn.reuseMessages(this.transferred.has(id) ? previous : previous.filter((message) => message.type !== "assistant"));
         const taken = input.held;
         let result;
         try {
@@ -32141,6 +32258,18 @@ ${live.agentPrompt}` : ""
     const directory = parent.location.directory;
     const now = Date.now();
     const model = parentTurn.currentModel;
+    const replayed = parentTurn.takeCompletedChild(toolCallID);
+    if (replayed) {
+      parentTurn.toolProgress(toolCallID, { sessionID: replayed });
+      return {
+        sessionID: replayed,
+        turn: new Turn(this.store, replayed, directory, model, task.agent ?? parent.agent ?? "build", true),
+        end() {},
+        permission: async () => "reject",
+        inBackground() {},
+        messages() {}
+      };
+    }
     const before = task.sessionID ? this.store.get(task.sessionID) : undefined;
     const messages = task.messages ?? cantTakeMessages(this.agent(model.providerID)?.name);
     if (before && before.session.parentID === id) {
@@ -32410,10 +32539,13 @@ ${live.agentPrompt}` : ""
     return waiting;
   }
   async permissionsReady(id, signal) {
-    const deadline = performance.now() + 1e4;
     while (this.transferred.get(id)?.permissions.length) {
-      if (signal.aborted || performance.now() >= deadline)
+      if (signal.aborted)
         return false;
+      if (performance.now() >= this.permissionReplayUntil) {
+        this.transferred.get(id).permissions.length = 0;
+        break;
+      }
       await Bun.sleep(20);
     }
     return true;
@@ -32554,6 +32686,7 @@ ${live.agentPrompt}` : ""
       const message = record?.messages.findLast(turnInput);
       if (!record || !message || live.doing.kind !== "idle") {
         held.gate.drop(held.thread);
+        this.transferred.delete(id);
         this.repair(id);
         continue;
       }
@@ -32589,12 +32722,20 @@ ${live.agentPrompt}` : ""
   sending = 0;
   removing = 0;
   transferred;
+  permissionReplayUntil = Infinity;
+  reconcilePermissions() {
+    this.permissionReplayUntil = performance.now() + 1e4;
+    setTimeout(() => {
+      for (const session of this.transferred.values())
+        session.permissions.length = 0;
+    }, 1e4).unref?.();
+  }
   transfer(providers) {
     if (this.commands || this.sending || this.removing || Object.keys(this.background()).length)
       return;
     const sessions = {};
     for (const [id, live] of this.live) {
-      if (live.own || live.steering.size || live.waiting.length || live.forms.size)
+      if (live.own || live.steering.size || live.waiting.length || live.forms.size || live.subagents.size)
         return;
       if (live.doing.kind === "idle")
         continue;
@@ -33111,12 +33252,15 @@ import { join as join40 } from "path";
 
 class Store {
   root;
+  provisional;
   origin;
   usageAccount;
   records = new Map;
   pending = new Map;
-  constructor(root) {
+  deferred = new Set;
+  constructor(root, provisional = false) {
     this.root = root;
+    this.provisional = provisional;
     mkdirSync25(root, { recursive: true });
     for (const id of readdirSync21(root)) {
       try {
@@ -33168,6 +33312,10 @@ class Store {
     rmSync17(join40(this.root, id), { recursive: true, force: true });
   }
   save(id, now = false) {
+    if (this.provisional) {
+      this.deferred.add(id);
+      return;
+    }
     clearTimeout(this.pending.get(id));
     if (now) {
       this.pending.delete(id);
@@ -33178,6 +33326,12 @@ class Store {
       this.pending.delete(id);
       this.write(id);
     }, 500));
+  }
+  commit() {
+    this.provisional = false;
+    for (const id of this.deferred)
+      this.save(id);
+    this.deferred.clear();
   }
   flush() {
     for (const id of [...this.pending.keys()])
@@ -40685,9 +40839,9 @@ var init_updating = __esm(() => {
 // box/src/shared/engine-swap.ts
 import fs12 from "fs";
 import path9 from "path";
-function readSwap(run) {
+function readSwap(run, file = swapFile(run)) {
   try {
-    const said = JSON.parse(fs12.readFileSync(swapFile(run), "utf8"));
+    const said = JSON.parse(fs12.readFileSync(file, "utf8"));
     if (typeof said?.from !== "string" || typeof said.to !== "string" || typeof said.pid !== "number" || !["waiting", "holding", "swapping", "back"].includes(said.stage))
       return null;
     return said;
@@ -40706,6 +40860,13 @@ function machineRecovery(run, swap) {
   }
 }
 function swapUnderWay(run) {
+  const install = readSwap(run, installHoldFile(run));
+  if (install && alive(install.pid)) {
+    try {
+      if (Number(fs12.readFileSync(path9.join(run, ".updating", "pid"), "utf8")) === install.pid)
+        return install;
+    } catch {}
+  }
   const swap = readSwap(run);
   if (!swap)
     return null;
@@ -40725,7 +40886,7 @@ async function untilSwapLets(run, every = 1000) {
   while (swapHolds(run))
     await new Promise((resolve) => setTimeout(resolve, every));
 }
-var HOLD_MOST, SWAP_MOST, swapFile = (run) => path9.join(run, "engine-swap.json");
+var HOLD_MOST, SWAP_MOST, swapFile = (run) => path9.join(run, "engine-swap.json"), installHoldFile = (run) => path9.join(run, "update-engine-hold.json");
 var init_engine_swap = __esm(() => {
   init_platform();
   HOLD_MOST = 30 * 60000;
@@ -41936,7 +42097,7 @@ var version3 = "1", script, build, home3, password, kept3, ownRuntime, bridgeRun
 }, restartOutside = () => {
   restarting = true;
   noteInside();
-}, self, partGiven, groups, groupFolders, groupMemoryKey, post, directory, peers, artifactsFolder, botsFolder, agentsFile, runFolder, places5, goals, sideQuestions, handoffs, reviews, voice, engineAccounts, limits, noPriceFeeds, usageFolder, usageSettings, claudeUsage2, codexUsage, engineData, engineCodexUsage, antigravityUsage, grokUsage, engineHostedUsage, cursorUsage, pricing, usage, localUsageKey, usageComputer = () => directory.own()?.key ?? localUsageKey, artifacts, noted2, carrying, server4, renewal, githubSignIn, answer4, answering = 0, transferring = false, serveRequest = (request) => {
+}, self, partGiven, groups, groupFolders, groupMemoryKey, post, directory, peers, artifactsFolder, botsFolder, agentsFile, runFolder, places5, goals, sideQuestions, handoffs, reviews, voice, engineAccounts, limits, noPriceFeeds, usageFolder, usageSettings, claudeUsage2, codexUsage, engineData, engineCodexUsage, antigravityUsage, grokUsage, engineHostedUsage, cursorUsage, pricing, usage, localUsageKey, usageComputer = () => directory.own()?.key ?? localUsageKey, artifacts, noted2, gates, carrying, server4, renewal, githubSignIn, answer4, answering = 0, transferring = false, serveRequest = (request) => {
   if (transferring)
     return new Response(null, { status: 503, headers: { "retry-after": "1", "x-kuvo-bridge-handover": "1" } });
   if (new URL(request.url).pathname === "/api/event")
@@ -42114,7 +42275,7 @@ var init_main = __esm(async () => {
   rmSync20(join44(home3, "cache", "install"), { recursive: true, force: true });
   context = { home: home3, temporary, deps };
   roster = new Roster(new Accounts(home3), context);
-  store = new Store(join44(home3, "sessions"));
+  store = new Store(join44(home3, "sessions"), Boolean(transfer));
   auto = new Auto(home3);
   link4 = new EngineLink;
   if (machineEngine2)
@@ -42323,6 +42484,29 @@ var init_main = __esm(async () => {
   }
   await untilSandboxDecided();
   sessions.resumeHeld();
+  gates = [...new Set([...heldTurns.values()].map((turn) => turn.gate))];
+  if (transfer) {
+    let deadline;
+    try {
+      const timeout = new Promise((_, reject) => {
+        deadline = setTimeout(() => reject(new Error("Timed out restoring the held sessions.")), 45000);
+      });
+      await Promise.race([timeout, Promise.all(gates.map(async (gate) => {
+        const ready = await Promise.race([gate.readyToOwn, gate.held.closed.then(() => false)]);
+        if (!ready || !gate.held.isOpen)
+          throw new Error("An adapter could not restore its held sessions.");
+      }))]);
+      if (gates.some((gate) => gate.failed || !gate.held.isOpen))
+        throw new Error("A holder disconnected during startup.");
+    } catch (error) {
+      for (const gate of gates)
+        gate.held.detach();
+      console.error("Bridge handover:", error);
+      process.exit(1);
+    } finally {
+      clearTimeout(deadline);
+    }
+  }
   limits.start();
   usage.start();
   usage.insights?.start();
@@ -42371,8 +42555,12 @@ var init_main = __esm(async () => {
     rmSync20(join44(machineHome, "run", "agents-renewing"), { force: true });
   if (transfer) {
     finishTransfer(bridgeRun);
-    for (const held of new Set([...heldTurns.values()].map((turn) => turn.held)))
-      held.unpin();
+    store.commit();
+    for (const gate of gates) {
+      gate.commit();
+      gate.held.unpin();
+    }
+    sessions.reconcilePermissions();
   }
   transferBuilds = new Set;
   renewal = onMachine && build ? new Renewal({
@@ -42470,4 +42658,4 @@ if (!isMainThread && process.argv.includes("--insights-db-worker")) {
 } else {
   await init_main().then(() => ({}));
 }
-// Built from Packages/Box/src/agents 1177bc053670910a70f9ff7f7865643c46f8baf0b352fca3a5913b354d74e23a
+// Built from Packages/Box/src/agents 7936ceb7c8dcf096ae2abd31eba3a3489f5981dfa7d5c82c6e0a77138478372d

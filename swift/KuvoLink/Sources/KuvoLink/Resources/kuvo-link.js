@@ -18533,11 +18533,11 @@ function activeWrites(session) {
       return false;
     throw error;
   }
-  const prefix = prefixOf(session);
+  const prefix = session === undefined ? "" : prefixOf(session);
   return entries.some((name) => {
     if (!name.startsWith(prefix))
       return false;
-    const pid = /^([1-9][0-9]*)-/.exec(name.slice(prefix.length));
+    const pid = /^[a-f0-9]{64}-([1-9][0-9]*)-/.exec(name);
     if (!pid)
       return false;
     try {
@@ -18553,7 +18553,7 @@ function activeWrites(session) {
 }
 async function waitForPromptWrites(sessions) {
   const deadline = performance.now() + 125000;
-  while (sessions.some(activeWrites)) {
+  while (sessions ? sessions.some(activeWrites) : activeWrites()) {
     if (performance.now() >= deadline)
       throw new Error("A prompt write has not finished");
     await sleep(25);
@@ -19150,9 +19150,10 @@ import path20 from "node:path";
 var HOLD_MOST = 30 * 60000;
 var SWAP_MOST = 30 * 60000;
 var swapFile = (run) => path20.join(run, "engine-swap.json");
-function readSwap(run) {
+var installHoldFile = (run) => path20.join(run, "update-engine-hold.json");
+function readSwap(run, file = swapFile(run)) {
   try {
-    const said = JSON.parse(fs22.readFileSync(swapFile(run), "utf8"));
+    const said = JSON.parse(fs22.readFileSync(file, "utf8"));
     if (typeof said?.from !== "string" || typeof said.to !== "string" || typeof said.pid !== "number" || !["waiting", "holding", "swapping", "back"].includes(said.stage))
       return null;
     return said;
@@ -19171,6 +19172,13 @@ function machineRecovery(run, swap) {
   }
 }
 function swapUnderWay(run) {
+  const install = readSwap(run, installHoldFile(run));
+  if (install && alive(install.pid)) {
+    try {
+      if (Number(fs22.readFileSync(path20.join(run, ".updating", "pid"), "utf8")) === install.pid)
+        return install;
+    } catch {}
+  }
   const swap = readSwap(run);
   if (!swap)
     return null;
@@ -20169,32 +20177,34 @@ async function takeBackFromInbox(target, session, item) {
   return { id: item, text, ...files.length ? { files } : {}, delivery: entry.delivery, ...shown.from ? { from: shown.from } : {}, words: shown.words, keyword: shown.keyword, draft: shown.from ? shown.words : draftOf({ words: shown.words, keyword: shown.keyword ?? undefined }), ...before ? { before } : {} };
 }
 async function drain(target, session) {
-  if (queueOf(session).paused || swapHoldsFor(target, session) || await isRunning(target, session))
-    return;
-  const inbox = await inboxOf(target, session);
-  if (await isRunning(target, session))
-    return;
-  const state = queueOf(session);
-  if (state.paused || swapHoldsFor(target, session))
-    return;
-  const first = orderOf(inbox, state)[0];
-  if (!first) {
-    if (state.order?.length)
-      changeQueue2(session, (current) => current.order?.every((id) => state.order.includes(id)) ? { ...current, order: [] } : current);
-    return;
-  }
-  const next = inbox.find((item) => item.id === first);
-  if (!next) {
-    await sendWaiting(target, session, first);
-    return;
-  }
-  if (queueOf(session).waiting?.some((item) => item.id === next.id) && await acceptedWaiting(target, session, next.id))
-    confirmWaiting(session, next.id);
-  if (next.delivery === "queue")
-    await setDelivery(target, session, next.id, "steer");
-  else
-    await interrupt(target, session, true);
-  changeQueue2(session, (state) => ({ ...withoutOrder(state, next.id), held: state.held.filter((id) => id !== next.id) }));
+  return admitPrompt(session, async () => {
+    if (queueOf(session).paused || swapHoldsFor(target, session) || await isRunning(target, session))
+      return;
+    const inbox = await inboxOf(target, session);
+    if (await isRunning(target, session))
+      return;
+    const state = queueOf(session);
+    if (state.paused || swapHoldsFor(target, session))
+      return;
+    const first = orderOf(inbox, state)[0];
+    if (!first) {
+      if (state.order?.length)
+        changeQueue2(session, (current) => current.order?.every((id) => state.order.includes(id)) ? { ...current, order: [] } : current);
+      return;
+    }
+    const next = inbox.find((item) => item.id === first);
+    if (!next) {
+      await sendWaiting(target, session, first);
+      return;
+    }
+    if (queueOf(session).waiting?.some((item) => item.id === next.id) && await acceptedWaiting(target, session, next.id))
+      confirmWaiting(session, next.id);
+    if (next.delivery === "queue")
+      await setDelivery(target, session, next.id, "steer");
+    else
+      await interrupt(target, session, true);
+    changeQueue2(session, (state) => ({ ...withoutOrder(state, next.id), held: state.held.filter((id) => id !== next.id) }));
+  });
 }
 async function acceptedWaiting(target, session, item) {
   let bridge = false;
@@ -20216,18 +20226,20 @@ function confirmWaiting(session, item) {
   fs25.rmSync(waitingFile2(item), { force: true });
 }
 var waitingSends = new Map;
-async function sendWaiting(target, session, item, { whilePaused = false, steer = true } = {}) {
+async function sendWaiting(target, session, item, { whilePaused = false, steer = true, releasingHold = false } = {}) {
   const pending = waitingSends.get(session);
   if (pending) {
     if (pending.item === item)
       return pending.sent;
     await pending.sent.catch(() => false);
-    return sendWaiting(target, session, item, { whilePaused, steer });
+    return sendWaiting(target, session, item, { whilePaused, steer, releasingHold });
   }
-  const sent = (async () => {
+  const sent = admitPrompt(session, async () => {
     if (!await acceptedWaiting(target, session, item)) {
       const state = queueOf(session);
       if (!whilePaused && state.paused || !state.waiting?.some((each) => each.id === item))
+        return false;
+      if (!releasingHold && swapHoldsFor(target, session))
         return false;
       const message = waitingPayload(item);
       if (!message)
@@ -20238,7 +20250,7 @@ async function sendWaiting(target, session, item, { whilePaused = false, steer =
     }
     confirmWaiting(session, item);
     return true;
-  })().finally(() => waitingSends.delete(session));
+  }).finally(() => waitingSends.delete(session));
   waitingSends.set(session, { item, sent });
   return sent;
 }
@@ -20283,49 +20295,53 @@ async function resumeQueue(target, session) {
   return queueOf(session);
 }
 async function sendNow(target, session, item) {
-  if (swapHoldsFor(target, session))
-    return goesFirst(session, item);
-  if (queueOf(session).waiting?.some((each) => each.id === item)) {
-    const running = await isRunning(target, session);
+  return admitPrompt(session, async () => {
     if (swapHoldsFor(target, session))
       return goesFirst(session, item);
-    if (!await sendWaiting(target, session, item, { whilePaused: true }))
+    if (queueOf(session).waiting?.some((each) => each.id === item)) {
+      const running = await isRunning(target, session);
+      if (swapHoldsFor(target, session))
+        return goesFirst(session, item);
+      if (!await sendWaiting(target, session, item, { whilePaused: true }))
+        return false;
+      changeQueue2(session, (state) => ({ ...state, paused: false, resumed: Date.now() }), true);
+      if (running)
+        await interrupt(target, session, true);
+      return true;
+    }
+    const entry = (await inboxOf(target, session)).find((each) => each.id === item);
+    if (swapHoldsFor(target, session))
+      return goesFirst(session, item);
+    if (!entry)
       return false;
-    changeQueue2(session, (state) => ({ ...state, paused: false, resumed: Date.now() }), true);
-    if (running)
+    changeQueue2(session, (state) => ({ ...state, paused: false, held: state.held.filter((id) => id !== item), resumed: Date.now() }));
+    const running = await isRunning(target, session);
+    if (entry.delivery === "queue")
+      await setDelivery(target, session, item, "steer");
+    if (running || entry.delivery === "steer")
       await interrupt(target, session, true);
     return true;
-  }
-  const entry = (await inboxOf(target, session)).find((each) => each.id === item);
-  if (swapHoldsFor(target, session))
-    return goesFirst(session, item);
-  if (!entry)
-    return false;
-  changeQueue2(session, (state) => ({ ...state, paused: false, held: state.held.filter((id) => id !== item), resumed: Date.now() }));
-  const running = await isRunning(target, session);
-  if (entry.delivery === "queue")
-    await setDelivery(target, session, item, "steer");
-  if (running || entry.delivery === "steer")
-    await interrupt(target, session, true);
-  return true;
+  });
 }
 async function steerQueued(target, session, item, toAgents) {
-  if (swapHoldsFor(target, session))
-    return goesFirst(session, item);
-  const entry = (await inboxOf(target, session)).find((each) => each.id === item);
-  if (!entry || !await isRunning(target, session))
-    return sendNow(target, session, item);
-  changeQueue2(session, (state) => ({ ...withoutOrder(state, item), held: state.held.filter((id) => id !== item) }));
-  if (entry.delivery === "steer" && !toAgents)
+  return admitPrompt(session, async () => {
+    if (swapHoldsFor(target, session))
+      return goesFirst(session, item);
+    const entry = (await inboxOf(target, session)).find((each) => each.id === item);
+    if (!entry || !await isRunning(target, session))
+      return sendNow(target, session, item);
+    changeQueue2(session, (state) => ({ ...withoutOrder(state, item), held: state.held.filter((id) => id !== item) }));
+    if (entry.delivery === "steer" && !toAgents)
+      return true;
+    try {
+      await asked(target, "PATCH", `api/session/${address(session)}/inbox/${address(item)}`, { delivery: "steer", ...toAgents ? { into: true } : {} });
+    } catch (error) {
+      if (/ 404\.$/.test(String(error?.message)))
+        return false;
+      throw error;
+    }
     return true;
-  try {
-    await asked(target, "PATCH", `api/session/${address(session)}/inbox/${address(item)}`, { delivery: "steer", ...toAgents ? { into: true } : {} });
-  } catch (error) {
-    if (/ 404\.$/.test(String(error?.message)))
-      return false;
-    throw error;
-  }
-  return true;
+  });
 }
 function goesFirst(session, item) {
   let found = false;
@@ -20426,7 +20442,7 @@ async function transferInbox(target, session) {
   changeQueue2(session, (state) => ({ ...state, inboxMoved: undefined }));
   return moved;
 }
-async function releaseWaiting(target) {
+async function releaseWaiting(target, releasingHold = false) {
   let sent = 0;
   for (const [session, state] of Object.entries(readQueues2())) {
     if (state.paused || !state.waiting?.length)
@@ -20452,7 +20468,7 @@ async function releaseWaiting(target) {
       const next = orderOf([], now)[0];
       if (now.paused || !next)
         break;
-      if (!await sendWaiting(target, session, next, { steer }).catch(() => false))
+      if (!await sendWaiting(target, session, next, { steer, releasingHold }).catch(() => false))
         break;
       steer = false;
       sent++;
@@ -52281,8 +52297,8 @@ async function swapEngine({ clock = Date.now, wait = sleep } = {}) {
       const still = swapDue(now);
       const engine = runningEngine();
       if (!still || still.to !== state.to || !engine) {
-        if (state.stage === "holding" && engine)
-          await releaseWaiting(engine).catch(() => 0);
+        if (state.stage === "holding" && engine && !isUpdating())
+          await releaseWaiting(engine, true).catch(() => 0);
         return "none";
       }
       const busy = await engineBusy(engine);
@@ -52662,7 +52678,7 @@ async function ended2(state, result, message, engine, clock) {
 }
 async function releaseAfterHold(engine) {
   if (engine)
-    await releaseWaiting(engine).catch(() => 0);
+    await releaseWaiting(engine, true).catch(() => 0);
   const record = readSwap(RUN);
   if (record && (record.pid === process.pid || record.machineHelper && !processRuns(record.pid, "kuvo-link"))) {
     fs131.rmSync(swapFile(RUN), { force: true });
@@ -53368,6 +53384,7 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
     return { result: "blocked", message: "This machine's version isn't known: connect to it from Kuvo Code on your Mac once." };
   if (!takeUpdateLock())
     return { result: "busy", message: UPDATING_ALREADY };
+  let engineHold;
   let trial = false, stopped = false, swapped = false, stage = null;
   let dataKept = null;
   let keeperEnv = {};
@@ -53424,8 +53441,13 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
     if (box?.version !== manifest.version || box.engine !== manifest.engine || !isObject(box.files))
       throw new Error("The release's files aren't what it says.");
     const apart = engineChanges && engineApart(box, running);
+    const busy = () => {
+      const message = "Something is running there now.";
+      noteUpdate({ engineBusy: { version: manifest.version, message } });
+      return { result: "busy", version: manifest.version, message };
+    };
     if (!whileBusy && engineChanges && !apart && (await agentsWorking() !== false || readAsks().length > 0))
-      return { result: "busy", message: "Something is running there now." };
+      return busy();
     const files = installOrder(Object.keys(box.files));
     const matches = (file, sha) => fs133.lstatSync(file, { throwIfNoEntry: false })?.isFile() === true && hexSHA256(fs133.readFileSync(file)) === sha;
     for (const file of files) {
@@ -53504,8 +53526,6 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
     }
     if (ran("sh", ["-n", path138.join(stage, "files", "bin", "kuvo-start")]).status !== 0)
       throw new Error("The new keeper doesn't read.");
-    if (!whileBusy && engineChanges && !apart && (await agentsWorking() !== false || readAsks().length > 0))
-      return { result: "busy", message: "Something is running there now." };
     step("installing");
     let previous = {};
     try {
@@ -53515,6 +53535,14 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
     if (home)
       keeperEnv = { HOME: home };
     const otherEngine = previous?.version !== manifest.engine && !apart;
+    if (otherEngine) {
+      const holding = Date.now();
+      engineHold = { from: previous.version ?? running ?? "", to: manifest.engine, since: holding, stage: "holding", holding, pid: process.pid };
+      writePrivate(installHoldFile(RUN), JSON.stringify(engineHold));
+      await waitForPromptWrites();
+      if (!whileBusy && (await agentsWorking() !== false || readAsks().length > 0))
+        return busy();
+    }
     if (otherEngine && !roomForData())
       throw new Error("There isn't room on it to keep its data while it updates.");
     const newerEngine = otherEngine && newerVersion(manifest.engine, previous?.version);
@@ -53523,7 +53551,8 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
     fs133.rmSync(path138.join(RUN, "update-restore"), { force: true });
     fs133.writeFileSync(UPDATE_TRIAL, manifest.version, { mode: 384 });
     trial = true;
-    if (otherEngine) {
+    if (engineHold) {
+      writePrivate(installHoldFile(RUN), JSON.stringify({ ...engineHold, stage: "swapping" }));
       stopped = true;
       noteUpdate({ trial: { from: before, to: manifest.version, at: clock(), engineStopped: true } });
       const halt = /^engine-stop\)/m.test(textOf(path138.join(K, "bin", "kuvo-start")) ?? "") ? "engine-stop" : "stop";
@@ -53567,6 +53596,7 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
     if (apart && now)
       writePrivate(SWAP_NOW, String(clock()));
     noteUpdate({ trial: { from: before, to: manifest.version, at: clock(), swapped: swappedAt, ...features ? { features } : {}, ...dataKept !== null ? { dataKept } : {} } });
+    noteUpdate({ engineBusy: null });
     return { result: "updated", version: manifest.version };
   } catch (error) {
     brokeOff = fetching;
@@ -53596,6 +53626,12 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
     noteUpdate({ last: { at: clock(), result: "failed", message, from: before } });
     return { result: "failed", message };
   } finally {
+    if (engineHold) {
+      fs133.rmSync(installHoldFile(RUN), { force: true });
+      try {
+        await releaseWaiting(readEngineFile());
+      } catch {}
+    }
     clearUpdateStaging();
     fs133.rmSync(UPDATE_LOCK, { recursive: true, force: true });
   }
@@ -53840,7 +53876,7 @@ function updateStatus() {
 async function updateStatusHere(readEngine = readEngineFile, readBridge = readBridgeFile) {
   const status = updateStatus();
   const state = updateState();
-  const available = [status.offered, heldVersion(), status.latest].filter((version) => newerVersion(version, status.version) || version === status.offered && offerWaits()).sort((a, b) => newerVersion(a, b) ? -1 : newerVersion(b, a) ? 1 : 0)[0];
+  const available = [status.offered, heldVersion(), status.latest, state.engineBusy?.version].filter((version) => newerVersion(version, status.version) || version === status.offered && offerWaits()).sort((a, b) => newerVersion(a, b) ? -1 : newerVersion(b, a) ? 1 : 0)[0];
   let bridge = null;
   try {
     bridge = readBridge();
@@ -53851,7 +53887,7 @@ async function updateStatusHere(readEngine = readEngineFile, readBridge = readBr
   const version = available ?? (switching || bridgeBehind || status.engineChange || updateOnTrial() ? status.version : null);
   if (!version)
     return status;
-  const facts = () => {
+  const facts = (sessionsAtWork) => {
     if (status.blocked)
       return { reason: "blocked", detail: status.blocked };
     if (["stopped", "paused", "off"].some((mark) => fs133.existsSync(path138.join(RUN, mark))))
@@ -53860,6 +53896,9 @@ async function updateStatusHere(readEngine = readEngineFile, readBridge = readBr
       return { reason: "installing", detail: "Kuvo is installing the update." };
     if (available && state.offerFailed?.version === available && (offerFailedTwice(available) || offerRests(available, Date.now()))) {
       return { reason: "retry", detail: state.offerFailed.message ?? "The last attempt to install this release failed." };
+    }
+    if (state.engineBusy && available === state.engineBusy.version && (sessionsAtWork !== 0 || readAsks().length > 0)) {
+      return { reason: "engine", detail: state.engineBusy.message };
     }
     if (available && offerChangesEngine() && status.offered === available) {
       return { reason: "engine", detail: "This release needs an engine change before it can install." };
@@ -53893,7 +53932,8 @@ async function updateStatusHere(readEngine = readEngineFile, readBridge = readBr
     const active = (await asked(target, "GET", "api/session/active", undefined, 3000).catch(() => null))?.data;
     return Array.isArray(active) ? active.length : isObject(active) ? Object.keys(active).length : null;
   }));
-  return { ...status, waiting: { version, ...facts(), sessionsAtWork: counts.includes(null) ? null : counts.reduce((sum, count) => sum + (count ?? 0), 0) } };
+  const sessionsAtWork = counts.includes(null) ? null : counts.reduce((sum, count) => sum + (count ?? 0), 0);
+  return { ...status, waiting: { version, ...facts(sessionsAtWork), sessionsAtWork } };
 }
 var updateStarted = null;
 function startUpdate({ now = false, offered = false, round, keys, url, from } = {}) {
@@ -57728,7 +57768,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "71c0cc43de56";
+var BRIDGE_VERSION = "3414ebcb5a66";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -73105,6 +73145,9 @@ async function* forward(target, path, request, signal, allows, naming = null, do
   const url = new URL(`http://127.0.0.1:${target.port}/${sent}`);
   const headers = { authorization: `Basic ${Buffer.from(`opencode:${target.password}`).toString("base64")}` };
   const sendTo = async (body, signal) => {
+    const held = await holdEnginePrompt(body);
+    if (held)
+      return held;
     const response = await fetch(url, { method, headers, body, signal });
     if (!currentBridge || response.headers.get("x-kuvo-bridge-handover") !== "1")
       return response;
@@ -73141,41 +73184,30 @@ async function* forward(target, path, request, signal, allows, naming = null, do
     if (toEngine && !toAgents)
       heldSession = decodeURIComponent(toEngine[1]);
   } catch {}
-  if (toEngine && heldSession && swapHoldsFor(target, heldSession)) {
+  const holdEnginePrompt = async (payload) => {
+    const session = heldSession;
+    if (!toEngine || !session || !swapHoldsFor(target, session))
+      return;
+    const answer = (status, body) => Response.json(body, { status });
     let body = null;
     try {
-      body = JSON.parse(request.body?.toString("utf8") ?? "");
+      body = JSON.parse(payload?.toString() ?? "");
     } catch {}
-    const session = heldSession;
-    const text = isObject(body) && typeof body.text === "string" ? body.text : null;
-    if (toEngine[2] === "prompt" && isObject(body) && body.id !== undefined && !isWaitingID(body.id)) {
-      yield { head: { status: 400, headers: { "content-type": "application/json" } } };
-      yield { body: Buffer.from(JSON.stringify({ message: BAD_WAITING_ID })) };
-      return;
+    if (toEngine[2] === "prompt" && isObject(body) && typeof body.text === "string") {
+      if (body.id !== undefined && !isWaitingID(body.id))
+        return answer(400, { message: BAD_WAITING_ID });
+      const message = {
+        id: isWaitingID(body.id) ? body.id : messageID(),
+        text: body.text,
+        delivery: body.delivery === "queue" ? "queue" : "steer",
+        ...Array.isArray(body.files) ? { files: body.files } : {},
+        ...isObject(body.metadata) ? { metadata: body.metadata } : {}
+      };
+      if (keepWaiting2(session, message, {}, undefined, target))
+        return answer(200, { waits: true });
     }
-    const id = isObject(body) && isWaitingID(body.id) ? body.id : messageID();
-    const message = isObject(body) && text !== null && toEngine[2] === "prompt" ? { id, text, delivery: body.delivery === "queue" ? "queue" : "steer", ...Array.isArray(body.files) ? { files: body.files } : {}, ...isObject(body.metadata) ? { metadata: body.metadata } : {} } : null;
-    let kept = false;
-    try {
-      if (message)
-        kept = await admitPrompt(session, async () => keepWaiting2(session, message, {}, undefined, target));
-    } catch (error) {
-      const moving = error instanceof MoveAdmissionClosed;
-      if (!moving)
-        console.error("kuvo-link: could not add a waiting message", error);
-      yield { head: { status: moving ? 409 : 500, headers: { "content-type": "application/json" } } };
-      yield { body: Buffer.from(JSON.stringify({ message: moving ? error.message : "This computer couldn’t save the message. Try sending it again." })) };
-      return;
-    }
-    if (kept) {
-      yield { head: { status: 200, headers: { "content-type": "application/json" } } };
-      yield { body: Buffer.from(JSON.stringify({ waits: true })) };
-    } else {
-      yield { head: { status: 503, headers: { "content-type": "application/json" } } };
-      yield { body: Buffer.from(JSON.stringify({ message: swapLine(swapUnderWay(RUN)) ?? "Kuvo is checking the engine’s inbox.", engineChanging: true })) };
-    }
-    return;
-  }
+    return answer(503, { message: swapLine(swapUnderWay(RUN)) ?? "Kuvo is checking the engine’s inbox.", engineChanging: true });
+  };
   const cancelled = method === "DELETE" && /^\/api\/session\/([^/]+)\/inbox\/([^/]+)$/.exec(url.pathname);
   if (cancelled)
     forgetSent(decodeURIComponent(cancelled[1]), decodeURIComponent(cancelled[2]));
@@ -73208,7 +73240,8 @@ async function* forward(target, path, request, signal, allows, naming = null, do
     return withPartsIn(prompt && !request.desktop ? fromPhone(named) : named);
   };
   const notAnswering = () => ({ status: 503, headers: { "content-type": "application/json" }, body: Buffer.from(JSON.stringify({ message: down() })) });
-  const admitted = (write) => sending ? admitPrompt(decodeURIComponent(sending[1]), write) : write();
+  const admittedSession = heldSession ?? (sending ? decodeURIComponent(sending[1]) : undefined);
+  const admitted = (write) => admittedSession ? admitPrompt(admittedSession, write) : write();
   const sendingError = (error) => error instanceof MoveAdmissionClosed ? { status: 409, headers: { "content-type": "application/json" }, body: Buffer.from(JSON.stringify({ message: error.message })) } : notAnswering();
   const once = sending && sending[2] === "prompt" ? sentKey(toAgents ? "agents" : "engine", decodeURIComponent(sending[1]), request.body) : null;
   if (once) {

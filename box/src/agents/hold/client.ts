@@ -207,14 +207,14 @@ export async function hold(command: string[], options: HoldOptions): Promise<Hel
 const startingHolders = new Set<number>()
 
 /** Attaches to a holder an earlier bridge started, one generation past the last that attached. */
-export async function attach(folder: string, record: HoldRecord, from?: number, complete = false): Promise<Held> {
+export async function attach(folder: string, record: HoldRecord, from?: number, complete: boolean | "provisional" = false): Promise<Held> {
   return connect(folder, record.id, record.key, record.generation + 1, record.pid, from, complete)
 }
 
-async function connect(folder: string, id: string, key: string, generation: number, holder: number, from?: number, complete = false): Promise<Held> {
+async function connect(folder: string, id: string, key: string, generation: number, holder: number, from?: number, complete: boolean | "provisional" = false): Promise<Held> {
   const socket = net.connect(join(folder, `${id}.sock`))
-  const held = new Held(id, holder, socket)
-  socket.write(JSON.stringify({ hello: HOLD_PROTO, key, generation, complete, ...(from !== undefined ? { from } : {}) }) + "\n")
+  const held = new Held(id, holder, socket, complete === "provisional")
+  socket.write(JSON.stringify({ hello: HOLD_PROTO, key, generation, complete: Boolean(complete), ...(from !== undefined ? { from } : {}) }) + "\n")
   // (A holder that doesn't answer, wedged, is given up on.)
   const late = setTimeout(() => socket.destroy(), WITHIN)
   try {
@@ -285,7 +285,7 @@ export class Held {
   private letGo = false
   /** The last line of the agent's this bridge has taken in: where a turn it starts now begins (`from`). */
   seen = 0
-  private lineListeners: ((line: string, again: boolean, seq: number) => void)[] = []
+  private lineListeners: { active: boolean; receive: (line: string, again: boolean, seq: number) => void }[] = []
   private errorListeners: ((text: string) => void)[] = []
   /** What came before anyone listened (the replay right after the hello), given to the first listener. */
   private early: { line: string; again: boolean; seq: number }[] = []
@@ -299,6 +299,7 @@ export class Held {
     readonly id: string,
     readonly holder: number,
     private readonly socket: net.Socket,
+    private provisional = false,
   ) {
     let welcome: () => void = () => {}
     let refuse: (error: Error) => void = () => {}
@@ -366,7 +367,7 @@ export class Held {
           this.heardEnd = true
           exit({ code: frame.x.code ?? null, signal: frame.x.signal ?? null })
           this.send({ ack: this.seen })
-          this.send({ bye: true })
+          if (!this.provisional) this.send({ bye: true })
         } else if (typeof frame.prepared === "boolean") {
           this.preparing?.(frame.prepared)
         } else if (frame.fenced) {
@@ -377,18 +378,27 @@ export class Held {
   }
 
   private deliver(line: string, again: boolean, seq: number) {
-    if (!this.lineListeners.length) return void this.early.push({ line, again, seq })
+    if (!this.lineListeners.some(reader => reader.active)) return void this.early.push({ line, again, seq })
     this.firstCame()
-    for (const each of this.lineListeners) each(line, again, seq)
+    for (const reader of this.lineListeners) if (reader.active) reader.receive(line, again, seq)
+  }
+
+  /** Install a reader without dispatching journal lines until the adapter enables it. */
+  prepareReader(receive: (line: string, again: boolean, seq: number) => void): () => void {
+    const reader = { active: false, receive }
+    this.lineListeners.push(reader)
+    return () => {
+      reader.active = true
+      const early = this.early
+      this.early = []
+      if (early.length) this.firstCame()
+      for (const { line, again, seq } of early) receive(line, again, seq)
+    }
   }
 
   /** Each line the agent wrote, from the first this bridge hasn't seen, with its number. */
   onLine(listener: (line: string, again: boolean, seq: number) => void) {
-    this.lineListeners.push(listener)
-    const early = this.early
-    this.early = []
-    if (early.length) this.firstCame()
-    for (const { line, again, seq } of early) listener(line, again, seq)
+    this.prepareReader(listener)()
   }
 
   onStderr(listener: (text: string) => void) {
@@ -415,6 +425,13 @@ export class Held {
     return true
   }
 
+  get isProvisional() { return this.provisional }
+
+  own() {
+    this.provisional = false
+    if (this.heardEnd) this.send({ bye: true })
+  }
+
   get isOpen() {
     return !this.ended && !this.fenced
   }
@@ -427,18 +444,18 @@ export class Held {
 
   /** Its stdin closed, as a process the bridge started has it closed. */
   end() {
-    if (!this.fenced) this.send({ end: true })
+    if (!this.fenced && !this.provisional) this.send({ end: true })
   }
 
   kill(signal: NodeJS.Signals = "SIGTERM") {
-    if (!this.fenced) this.send({ signal })
+    if (!this.fenced && !this.provisional) this.send({ signal })
   }
 
   /** Stops the agent as a bridge stops one, through its holder's own process (no frame that a bridge
    * exiting at once could leave unsent): its stdin closed, then told, then made to; the holder goes
    * once it has. Not after a newer bridge took it over. */
   stop() {
-    if (this.fenced || this.letGo || this.heardEnd) return
+    if (this.fenced || this.letGo || this.heardEnd || this.provisional) return
     // (Its socket closed: only once that's still the holder, never a process with its number since.)
     if (this.ended) return this.stopHolder()
     try {
@@ -447,7 +464,7 @@ export class Held {
   }
 
   private stopHolder() {
-    if (!isHolder(this.holder, this.id)) return
+    if (this.provisional || !isHolder(this.holder, this.id)) return
     try {
       process.kill(this.holder, "SIGTERM")
     } catch {}
@@ -456,7 +473,7 @@ export class Held {
   /** More for its record: what a bridge adopting it reads (a thread's id once it's known, say). */
   note(meta: Record<string, unknown>) {
     this.meta = { ...this.meta, ...meta }
-    if (!this.fenced) this.send({ meta })
+    if (!this.fenced && !this.provisional) this.send({ meta })
   }
 
   prepare(from: number): Promise<boolean> {

@@ -28,16 +28,16 @@ export async function admitPrompt<T>(session: string, write: () => Promise<T>): 
   }
 }
 
-function activeWrites(session: string): boolean {
+function activeWrites(session?: string): boolean {
   let entries: string[];
   try { entries = fs.readdirSync(folder); } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
     throw error;
   }
-  const prefix = prefixOf(session);
+  const prefix = session === undefined ? "" : prefixOf(session);
   return entries.some(name => {
     if (!name.startsWith(prefix)) return false;
-    const pid = /^([1-9][0-9]*)-/.exec(name.slice(prefix.length));
+    const pid = /^[a-f0-9]{64}-([1-9][0-9]*)-/.exec(name);
     if (!pid) return false;
     try { process.kill(Number(pid[1]), 0); } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
@@ -49,9 +49,9 @@ function activeWrites(session: string): boolean {
 }
 
 // Called after the durable freeze covers these sessions. No new prompt writes can be admitted.
-export async function waitForPromptWrites(sessions: readonly string[]): Promise<void> {
+export async function waitForPromptWrites(sessions?: readonly string[]): Promise<void> {
   const deadline = performance.now() + 125_000;
-  while (sessions.some(activeWrites)) {
+  while (sessions ? sessions.some(activeWrites) : activeWrites()) {
     if (performance.now() >= deadline) throw new Error("A prompt write has not finished");
     await sleep(25);
   }

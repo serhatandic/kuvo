@@ -228,17 +228,22 @@ cross_to_live_handover() {
   [ ! -e "$R/agents-live-handover" ] && up || return 0
   [ ! -f "$R/stopped" ] && [ ! -f "$R/off" ] && [ ! -f "$R/paused" ] && ! machine_handover || return 0
   is "$(cat "$R/.updating/pid" 2>/dev/null)" kuvo-link && return 0
-  old_bridge=$(sed -n 's/^{"pid":\([0-9][0-9]*\),.*/\1/p' "$R/bridge.json" 2>/dev/null)
+  old_record=$(cat "$R/bridge.json" 2>/dev/null)
+  old_bridge=$(printf '%s\n' "$old_record" | sed -n 's/^{"pid":\([0-9][0-9]*\),.*/\1/p')
   is "$old_bridge" "$K/bin/kuvo-agents.js" || return 0
-  for record in "$R"/agents/hold/*.json; do
-    [ -f "$record" ] && [ -n "$(held_pid "$record")" ] && return 0
-  done
+  old_build=$(printf '%s\n' "$old_record" | sed -n 's/.*"build":"\([0-9a-f]*\)".*/\1/p')
+  # These known bundles precede the first bridge that starts agents under holders.
+  # A record with no known build can still own work and must drain normally.
+  case "$old_build" in
+    2b3fded6f49f21e8b2434216207d63dd8996b579aba9f11bc63a4bd84ae49176|880b2d675db90945ce335237d3572c99850de0baa90cb2d4688fe348294f780d|36df721f8b6034b4f369f11a7815b48aab58dfea24a3fe71e6be07c00f1e5c57) ;;
+    *) return 0 ;;
+  esac
   grep -Fq 'kuvo-live-handover/1' "$K/bin/kuvo-agents.js" 2>/dev/null || return 0
   checked=$(BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$K/engine/$B/opencode" --config=/dev/null --no-env-file "$K/bin/kuvo-agents.js" selftest adopt-check 2>/dev/null) || return 0
   case "$checked" in "ok "*" kuvo-live-handover/1") ;; *) return 0 ;; esac
   # Only the live process from before, still the one answering for this folder after the check.
   [ ! -e "$R/agents-live-handover" ] &&
-    [ "$old_bridge" = "$(sed -n 's/^{"pid":\([0-9][0-9]*\),.*/\1/p' "$R/bridge.json" 2>/dev/null)" ] &&
+    [ "$old_record" = "$(cat "$R/bridge.json" 2>/dev/null)" ] &&
     is "$old_bridge" "$K/bin/kuvo-agents.js" || return 0
   (umask 077; set -C; : >"$R/agents-live-handover") 2>/dev/null || return 0
   kill -TERM "$old_bridge" 2>/dev/null || :

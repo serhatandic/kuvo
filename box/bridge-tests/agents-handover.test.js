@@ -179,17 +179,24 @@ test("a client asking all through a bridge's hand-over to a newer one gets every
       await new Promise(resolve => setTimeout(resolve, 100));
     }
   })();
-  await box.until(() => answers.length >= 3, "the client's first answers");
+  let second;
+  try {
+    await box.until(() => answers.length >= 3, "the client's first answers");
 
-  const file = path.join(box.home, "bin", "kuvo-agents.js");
-  fs.writeFileSync(`${file}.new`, agents);
-  fs.renameSync(`${file}.new`, file);
-  const second = await box.bridgeUp(first);
-  // A few more answers from the new one, then the client stops.
-  const from = answers.length;
-  await box.until(() => answers.slice(from).filter(each => each.pid === second).length >= 3, "answers from the new bridge");
-  asking = false;
-  await client;
+    const file = path.join(box.home, "bin", "kuvo-agents.js");
+    // Give the 100 ms client loop a deterministic opportunity to ask before the standby publishes.
+    const checkpoint = "transfer = standby?.transfer ?? recovered;";
+    assert.ok(agents.includes(checkpoint));
+    const candidate = agents.replace(checkpoint, checkpoint + "\nif (standby) await Bun.sleep(250);");
+    fs.writeFileSync(`${file}.new`, candidate);
+    fs.renameSync(`${file}.new`, file);
+    second = await box.bridgeUp(first);
+    const from = answers.length;
+    await box.until(() => answers.slice(from).filter(each => each.pid === second).length >= 3, "answers from the new bridge");
+  } finally {
+    asking = false;
+    await client;
+  }
 
   assert.ok(!runs(first), "the bridge before made way");
   assert.ok(!fs.existsSync(path.join(box.run, "agents-renewing")), "the new bridge took the hand-over's mark away");

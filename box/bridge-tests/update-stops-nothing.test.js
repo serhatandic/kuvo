@@ -423,10 +423,14 @@ test("Update Now uses the no-cut path even when an engine turn is active", { ski
 });
 
 test("the one-time pre-holder update restarts its bridge cleanly and leaves an engine turn running", { skip: bun ? false : NO_BUN, timeout: 300_000 }, async () => {
+  if (!fs.existsSync(path.join(RUN, "launch.env"))) {
+    box();
+    keep();
+  }
   const first = await bridgeUp();
   const bundle = path.join(home, "bin", "kuvo-agents.js");
   const installed = fs.readFileSync(builtAgents, "utf8");
-  const legacyBuild = "e".repeat(64);
+  const legacyBuild = "2b3fded6f49f21e8b2434216207d63dd8996b579aba9f11bc63a4bd84ae49176";
   // Run the real bridge's normal shutdown path, with pre-holder process ownership and no
   // handover capability or marker as on a pre-holder installation.
   const legacy = installed.replace(build(installed), legacyBuild)
@@ -439,10 +443,11 @@ test("the one-time pre-holder update restarts its bridge cleanly and leaves an e
     write(bundle + ".new", contents);
     fs.renameSync(bundle + ".new", bundle);
   };
-  replace(legacy);
+  const unknownBuild = "e".repeat(64);
+  replace(legacy.replace(legacyBuild, unknownBuild));
   process.kill(first.pid, "SIGTERM");
   const old = await bridgeUp(first.pid);
-  assert.equal(old.build, legacyBuild);
+  assert.equal(old.build, unknownBuild);
   fs.rmSync(crossing);
   const holderRecords = () => {
     try { return fs.readdirSync(path.join(RUN, "agents", "hold")).filter(name => name.endsWith(".json")); }
@@ -461,6 +466,15 @@ test("the one-time pre-holder update restarts its bridge cleanly and leaves an e
   assert.equal(holderRecords().length, 0, "the pre-holder bridge owns this agent directly");
 
   replace(installed);
+  // With no live holders this still has an unidentified generation and a live unheld turn.
+  // Wait for a keeper round before checking the original turn and the exclusive marker.
+  await new Promise(resolve => setTimeout(resolve, 3500));
+  assert.equal(readJSON(path.join(RUN, "bridge.json")).pid, old.pid);
+  assert.ok(!fs.existsSync(crossing));
+
+  // Model a bridge whose running build is known to precede holders.
+  const oldRecord = path.join(RUN, "bridge.json");
+  write(oldRecord, JSON.stringify({ ...readJSON(oldRecord), build: legacyBuild }));
   const after = await bridgeUp(old.pid);
   assert.equal(after.build, build(installed));
   assert.equal(readJSON(path.join(RUN, "engine.json")).pid, engine.pid);

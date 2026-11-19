@@ -195,7 +195,7 @@ if (onMachine) {
 rmSync(join(home, "cache", "install"), { recursive: true, force: true })
 const context = { home, temporary, deps }
 const roster = new Roster(new Accounts(home), context)
-const store = new Store(join(home, "sessions"))
+const store = new Store(join(home, "sessions"), Boolean(transfer))
 const auto = new Auto(home)
 // The engine's own models, run in sessions here (the app says where the engine is).
 const link = new EngineLink()
@@ -506,6 +506,26 @@ if (artifactsFolder) {
 await untilSandboxDecided()
 // The turns it left under way go on here, before anything can be sent to their sessions.
 sessions.resumeHeld()
+const gates = [...new Set([...heldTurns.values()].map(turn => turn.gate))]
+if (transfer) {
+  let deadline: ReturnType<typeof setTimeout> | undefined
+  try {
+    const timeout = new Promise<never>((_, reject) => {
+      deadline = setTimeout(() => reject(new Error("Timed out restoring the held sessions.")), 45_000)
+    })
+    await Promise.race([timeout, Promise.all(gates.map(async gate => {
+      const ready = await Promise.race([gate.readyToOwn, gate.held.closed.then(() => false)])
+      if (!ready || !gate.held.isOpen) throw new Error("An adapter could not restore its held sessions.")
+    }))])
+    if (gates.some(gate => gate.failed || !gate.held.isOpen)) throw new Error("A holder disconnected during startup.")
+  } catch (error) {
+    for (const gate of gates) gate.held.detach()
+    console.error("Bridge handover:", error)
+    process.exit(1)
+  } finally {
+    clearTimeout(deadline)
+  }
+}
 limits.start()
 usage.start()
 usage.insights?.start()
@@ -594,7 +614,12 @@ if (kept && runFolder) {
 if (onMachine) rmSync(join(machineHome!, "run", "agents-renewing"), { force: true })
 if (transfer) {
   finishTransfer(bridgeRun!)
-  for (const held of new Set([...heldTurns.values()].map(turn => turn.held))) held.unpin()
+  store.commit()
+  for (const gate of gates) {
+    gate.commit()
+    gate.held.unpin()
+  }
+  sessions.reconcilePermissions()
 }
 
 
