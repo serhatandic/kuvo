@@ -13,7 +13,7 @@ use kuvo_box::{
     wakes::{Cancel, Schedule},
 };
 use kuvo_ui::{
-    ActiveTheme, Button, ButtonSize, IconName, StyledType, TypeSize,
+    ActiveTheme, Button, ButtonSize, Icon, IconName, IconSize, StyledType, TypeSize,
     theme::{radius, space},
 };
 
@@ -80,6 +80,15 @@ fn relative(seconds: f64, now: f64) -> String {
     }
 }
 
+fn relative_capitalized(seconds: f64, now: f64) -> String {
+    let due = seconds * 1_000.;
+    if due <= now {
+        "Due now".into()
+    } else {
+        format!("In {}", time::until(due, now))
+    }
+}
+
 fn repeat(every: Option<&str>) -> String {
     let Some(every) = every else {
         return "Once".into();
@@ -91,7 +100,7 @@ fn repeat(every: Option<&str>) -> String {
         return "Repeat".into();
     };
     let unit = match last {
-        'm' => "minute",
+        'm' => "min",
         'h' => "hour",
         'd' => "day",
         'w' => "week",
@@ -99,7 +108,13 @@ fn repeat(every: Option<&str>) -> String {
     };
     match every[..every.len() - last.len_utf8()].parse::<u32>() {
         Ok(1) => format!("Every {unit}"),
-        Ok(count) => format!("Every {count} {unit}s"),
+        Ok(count) => {
+            if unit == "min" {
+                format!("Every {count} min")
+            } else {
+                format!("Every {count} {unit}s")
+            }
+        }
         Err(_) => "Repeat".into(),
     }
 }
@@ -179,6 +194,23 @@ impl WakeSchedule {
         schedule
     }
 
+    /// Plain-word count summary for the outer popover header (e.g. "2 wake-ups · 2 watches").
+    pub(crate) fn summary_counts(&self) -> Option<String> {
+        let schedule = self.schedule.as_ref()?;
+        let wakes = schedule.wakes.len();
+        let watches = schedule.watches.len();
+        match (wakes, watches) {
+            (0, 0) => None,
+            (w, 0) => Some(if w == 1 { "1 wake-up".into() } else { format!("{w} wake-ups") }),
+            (0, v) => Some(if v == 1 { "1 watch".into() } else { format!("{v} watches") }),
+            (w, v) => Some(format!(
+                "{} · {}",
+                if w == 1 { "1 wake-up".into() } else { format!("{w} wake-ups") },
+                if v == 1 { "1 watch".into() } else { format!("{v} watches") },
+            )),
+        }
+    }
+
     fn take(&mut self, update: Followed<Schedule>, cx: &mut Context<Self>) {
         match update {
             Followed::Now(schedule) => {
@@ -236,6 +268,7 @@ impl WakeSchedule {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let c = cx.theme().colors.clone();
+        let pad_x = if self.embedded { space::S2 } else { space::S3 };
         div()
             .id(gpui::SharedString::from(key.clone()))
             .debug_selector(move || key)
@@ -243,27 +276,30 @@ impl WakeSchedule {
             .flex_none()
             .items_start()
             .gap(space::S2)
-            .px(space::S3)
-            .py(space::S2)
-            .border_t_1()
-            .border_color(c.border)
+            .px(pad_x)
+            .py(space::S1_5)
+            .rounded(radius::NAV)
+            .hover(move |s| s.bg(c.hover))
             .child(
                 div()
                     .flex_1()
                     .min_w_0()
                     .flex()
                     .flex_col()
-                    .gap(space::S0_5)
+                    .gap(px(1.))
                     .child(
                         div()
+                            .min_w_0()
                             .text_ui(TypeSize::Small)
                             .text_color(c.text)
                             .child(summary.to_owned()),
                     )
                     .child(
                         div()
+                            .min_w_0()
+                            .truncate()
                             .text_ui(TypeSize::Caption)
-                            .text_color(c.text_muted)
+                            .text_color(c.text_faint)
                             .child(detail),
                     ),
             )
@@ -294,24 +330,80 @@ impl WakeSchedule {
             }))
             .into_any_element()
     }
+
+    fn subgroup_header(
+        &self,
+        selector: &'static str,
+        icon: IconName,
+        icon_color: gpui::Hsla,
+        title: &'static str,
+        subtitle: &'static str,
+        count: usize,
+        cx: &App,
+    ) -> AnyElement {
+        let c = &cx.theme().colors;
+        let pad_x = if self.embedded { space::S2 } else { space::S3 };
+        div()
+            .debug_selector(move || selector.into())
+            .px(pad_x)
+            .pt(px(2.))
+            .pb(px(2.))
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap(space::S2)
+            .child(
+                div()
+                    .min_w_0()
+                    .flex()
+                    .items_center()
+                    .gap(space::S1_5)
+                    .child(Icon::new(icon).size(IconSize::XSmall).color(icon_color))
+                    .child(
+                        div()
+                            .flex_none()
+                            .text_ui(TypeSize::Caption)
+                            .medium()
+                            .text_color(c.text)
+                            .child(title),
+                    )
+                    .child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .text_ui(TypeSize::Caption)
+                            .text_color(c.text_faint)
+                            .child(format!("· {subtitle}")),
+                    ),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .text_ui(TypeSize::Caption)
+                    .text_color(c.text_faint)
+                    .child(count.to_string()),
+            )
+            .into_any_element()
+    }
 }
 
 impl Render for WakeSchedule {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let c = cx.theme().colors.clone();
         let now = self.source.now.unwrap_or_else(time::now_ms);
-        let mut rows = Vec::new();
+        let mut wake_rows = Vec::new();
+        let mut watch_rows = Vec::new();
         if let Some(schedule) = &self.schedule {
             for wake in &schedule.wakes {
-                let detail = if schedule.paused {
+                let timing = if schedule.paused {
                     "Paused".into()
                 } else {
-                    format!("Wake-up {}", relative(wake.due, now))
+                    relative_capitalized(wake.due, now)
                 };
-                rows.push(self.row(
+                wake_rows.push(self.row(
                     format!("wake-{}", wake.id),
                     &wake.summary,
-                    format!("{detail} · {}", repeat(wake.every.as_deref())),
+                    format!("{timing} · {}", repeat(wake.every.as_deref())),
                     false,
                     wake.cancel_key.clone().map(Cancel::Wake),
                     cx,
@@ -319,23 +411,30 @@ impl Render for WakeSchedule {
             }
             for watch in &schedule.watches {
                 let detail = if schedule.paused {
-                    "Watch paused".into()
+                    format!("Paused · {}", repeat(Some(&watch.every)))
                 } else {
-                    watch.next.map_or_else(
-                        || "Watch · First check pending".into(),
-                        |next| format!("Next check {}", relative(next, now)),
-                    )
+                    match watch.next {
+                        Some(next) => format!(
+                            "{} · Next {}",
+                            repeat(Some(&watch.every)),
+                            relative(next, now)
+                        ),
+                        None => format!("{} · First check soon", repeat(Some(&watch.every))),
+                    }
                 };
-                rows.push(self.row(
+                watch_rows.push(self.row(
                     format!("watch-{}", watch.letters),
                     &watch.summary,
-                    format!("{detail} · {}", repeat(Some(&watch.every))),
+                    detail,
                     true,
                     Some(Cancel::Watch(watch.letters.clone())),
                     cx,
                 ));
             }
         }
+        let has_wakes = !wake_rows.is_empty();
+        let has_watches = !watch_rows.is_empty();
+        let empty = !has_wakes && !has_watches;
         let note = if self.failed {
             Some(format!(
                 "Couldn’t read wake-ups from Kuvo on {}. Check the connection. We’ll retry.",
@@ -345,7 +444,7 @@ impl Render for WakeSchedule {
             Some("Couldn’t cancel this entry. Check the schedule and try again.".into())
         } else if self.busy {
             Some("Canceling…".into())
-        } else if rows.is_empty() {
+        } else if empty {
             Some(
                 if self.schedule.is_some() {
                     "No wake-ups or watches scheduled."
@@ -371,7 +470,7 @@ impl Render for WakeSchedule {
             div()
                 .border_t_1()
                 .border_color(c.border)
-                .px(space::S3)
+                .px(if self.embedded { space::S2 } else { space::S3 })
                 .py(space::S2)
                 .flex()
                 .flex_col()
@@ -405,44 +504,97 @@ impl Render for WakeSchedule {
                         ),
                 )
         });
+        let pad_x = if self.embedded { space::S2 } else { space::S3 };
         div()
             .id("wake-schedule")
             .debug_selector(|| "wake-schedule".into())
             .flex()
             .flex_col()
-            .when(!self.embedded, |d| d
-                .key_context("WakeSchedule")
-                .track_focus(&self.focus)
-                .on_action(cx.listener(|_, _: &Close, _, cx| cx.emit(DismissEvent)))
-                .on_mouse_down_out(cx.listener(|_, _, _, cx| cx.emit(DismissEvent)))
-                .occlude()
-                .w(px(360.).min(window.viewport_size().width - px(16.)))
-                .overflow_hidden()
-                .rounded(radius::POPOVER)
-                .bg(c.elevated)
-                .border_1()
-                .border_color(c.border)
-                .shadow(cx.theme().elevated_shadow())
-                .child(div().px(space::S3).py(space::S2).text_ui(TypeSize::Small).medium().text_color(c.text).child("Wake-ups & Watches")))
+            .when(!self.embedded, |d| {
+                d.key_context("WakeSchedule")
+                    .track_focus(&self.focus)
+                    .on_action(cx.listener(|_, _: &Close, _, cx| cx.emit(DismissEvent)))
+                    .on_mouse_down_out(cx.listener(|_, _, _, cx| cx.emit(DismissEvent)))
+                    .occlude()
+                    .w(px(360.).min(window.viewport_size().width - px(16.)))
+                    .overflow_hidden()
+                    .rounded(radius::POPOVER)
+                    .bg(c.elevated)
+                    .border_1()
+                    .border_color(c.border)
+                    .shadow(cx.theme().elevated_shadow())
+                    .child(
+                        div()
+                            .px(space::S3)
+                            .py(space::S2)
+                            .text_ui(TypeSize::Small)
+                            .medium()
+                            .text_color(c.text)
+                            .child("Wake-ups & Watches"),
+                    )
+            })
             .children(note.map(|note| {
                 div()
                     .debug_selector(move || note_selector.into())
-                    .px(space::S3)
-                    .pb(space::S2)
+                    .px(pad_x)
+                    .py(space::S1)
                     .text_ui(TypeSize::Caption)
                     .text_color(c.text_muted)
                     .child(note)
             }))
-            .child(
-                div()
-                    .id("wake-entries")
-                    .debug_selector(|| "wake-entries".into())
-                    .flex()
-                    .flex_col()
-                    .max_h(px(288.).min(window.viewport_size().height / 2.))
-                    .overflow_y_scroll()
-                    .children(rows),
-            )
+            .when(!empty, |d| {
+                let wakes_count = wake_rows.len();
+                let watches_count = watch_rows.len();
+                d.child(
+                    div()
+                        .id("wake-entries")
+                        .debug_selector(|| "wake-entries".into())
+                        .flex()
+                        .flex_col()
+                        .gap(space::S1_5)
+                        .max_h(px(288.).min(window.viewport_size().height / 2.))
+                        .overflow_y_scroll()
+                        .when(has_wakes, |d| {
+                            d.child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(2.))
+                                    .child(self.subgroup_header(
+                                        "wake-group-wakeups",
+                                        IconName::Clock,
+                                        c.accent,
+                                        "Wake-ups",
+                                        "Scheduled prompts",
+                                        wakes_count,
+                                        cx,
+                                    ))
+                                    .children(wake_rows),
+                            )
+                        })
+                        .when(has_watches, |d| {
+                            d.child(
+                                div()
+                                    .when(has_wakes, |d| {
+                                        d.pt(space::S1_5).border_t_1().border_color(c.border)
+                                    })
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(2.))
+                                    .child(self.subgroup_header(
+                                        "wake-group-watches",
+                                        IconName::Eye,
+                                        c.success,
+                                        "Watches",
+                                        "Recurring checks",
+                                        watches_count,
+                                        cx,
+                                    ))
+                                    .children(watch_rows),
+                            )
+                        }),
+                )
+            })
             .children(confirmation)
     }
 }
