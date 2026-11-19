@@ -164,6 +164,10 @@ pub struct Line {
     pub gone: Option<Vec<String>>,
     #[serde(default)]
     pub projects: HashMap<String, Project>,
+    #[serde(default, rename = "projectOrder")]
+    pub project_order: Option<Vec<String>>,
+    #[serde(default, rename = "startProject", deserialize_with = "start_project")]
+    pub start_project: Option<Option<String>>,
     /// The sessions waiting on you that the lists show, the one that asked last first: whole in
     /// every line.
     #[serde(default, rename = "needsYou", deserialize_with = "crate::accounts::readable")]
@@ -173,12 +177,29 @@ pub struct Line {
     pub pending: Option<Vec<String>>,
 }
 
+pub const LIST_START: &str = "sessions.list.start";
+
+fn start_project<'de, D: serde::Deserializer<'de>>(decoder: D) -> std::result::Result<Option<Option<String>>, D::Error> {
+    Option::<String>::deserialize(decoder).map(Some)
+}
+
+impl Line {
+    pub(crate) fn check_start(self, required: bool) -> Result<Self, crate::Error> {
+        if required && (self.start_project.is_none() || self.project_order.is_none()) {
+            return Err(crate::Error::BadAnswer("The session list didn’t say its project order or where a new one starts.".into()));
+        }
+        Ok(self)
+    }
+}
+
 /// A box's list as a client keeps it, line after line.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Listing {
     at: Option<String>,
     sessions: HashMap<String, Facts>,
     projects: HashMap<String, Project>,
+    project_order: Option<Vec<String>>,
+    start_project: Option<Option<String>>,
     needs_you: Vec<NeedsYou>,
     archived_groups: Vec<ArchivedGroup>,
     /// What it said of sessions it has let go since (deleted there, or moved away), for a row a
@@ -210,6 +231,11 @@ impl Listing {
         &self.projects
     }
 
+    /// Where a new conversation starts: a project or Chats. None before the list is read or on an older box.
+    pub fn start_project(&self) -> Option<Option<&str>> {
+        self.start_project.as_ref().map(Option::as_deref)
+    }
+
     /// "Needs you": the sessions waiting on you, in the box's order, each with what it asks.
     pub fn archived_groups(&self) -> &[ArchivedGroup] {
         &self.archived_groups
@@ -234,6 +260,10 @@ impl Listing {
         let was_read = self.at.is_some();
         let before = (self.sessions.clone(), self.projects.clone(), std::mem::take(&mut self.pending), std::mem::take(&mut self.needs_you));
         let archived_changed = self.archived_groups != line.archived_groups;
+        let start_changed = self.start_project != line.start_project;
+        let order_changed = self.project_order != line.project_order;
+        self.project_order = line.project_order;
+        self.start_project = line.start_project;
         self.archived_groups = line.archived_groups;
         self.at = Some(line.at);
         if line.full == Some(true) {
@@ -262,12 +292,12 @@ impl Listing {
         self.projects = line.projects;
         self.needs_you = line.needs_you;
         self.pending = line.pending.unwrap_or_default();
-        archived_changed || !was_read || before.0 != self.sessions || before.1 != self.projects || before.2 != self.pending || before.3 != self.needs_you
+        archived_changed || start_changed || order_changed || !was_read || before.0 != self.sessions || before.1 != self.projects || before.2 != self.pending || before.3 != self.needs_you
     }
 
     /// The sidebar a client draws from it ([`sidebar`]).
     pub fn sidebar(&self) -> Sidebar {
-        sidebar(&self.sessions, &self.projects)
+        sidebar_with_order(&self.sessions, &self.projects, self.project_order.as_deref())
     }
 }
 
@@ -313,6 +343,10 @@ pub struct ProjectGroup {
 
 /// The sidebar for `sessions` and `projects` as a box lists them.
 pub fn sidebar(sessions: &HashMap<String, Facts>, projects: &HashMap<String, Project>) -> Sidebar {
+    sidebar_with_order(sessions, projects, None)
+}
+
+fn sidebar_with_order(sessions: &HashMap<String, Facts>, projects: &HashMap<String, Project>, order: Option<&[String]>) -> Sidebar {
     let shown: Vec<(&String, &Facts, Place)> = sessions.iter().filter_map(|(id, facts)| place(Some(facts)).map(|place| (id, facts, place))).collect();
     let newest = |mut rows: Vec<(&String, &Facts)>| -> Vec<String> {
         rows.sort_by(|a, b| b.1.updated.partial_cmp(&a.1.updated).unwrap_or(Ordering::Equal).then_with(|| a.0.cmp(b.0)));
@@ -338,9 +372,14 @@ pub fn sidebar(sessions: &HashMap<String, Facts>, projects: &HashMap<String, Pro
             (top.unwrap_or(0.0), ProjectGroup { name, sessions: newest(rows), directory })
         })
         .collect();
-    groups.sort_by(|(left, a), (right, b)| {
-        right.partial_cmp(left).unwrap_or(Ordering::Equal).then_with(|| finder_order(&a.name, &b.name)).then_with(|| a.directory.cmp(&b.directory))
-    });
+    if let Some(order) = order {
+        let ranks: HashMap<&str, usize> = order.iter().enumerate().map(|(index, id)| (id.as_str(), index)).collect();
+        groups.sort_by_key(|(_, group)| ranks.get(group.directory.as_str()).copied().unwrap_or(usize::MAX));
+    } else {
+        groups.sort_by(|(left, a), (right, b)| {
+            right.partial_cmp(left).unwrap_or(Ordering::Equal).then_with(|| finder_order(&a.name, &b.name)).then_with(|| a.directory.cmp(&b.directory))
+        });
+    }
     Sidebar { pinned, chats, projects: groups.into_iter().map(|(_, group)| group).collect() }
 }
 

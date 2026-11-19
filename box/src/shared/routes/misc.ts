@@ -15,8 +15,9 @@ export const FOLDER_LIST = object({
   path: string,
   home: string,
   parent: nullable(string),
-  folders: list(object({ name: string, "repository?": bool })),
+  folders: list(object({ name: string, "path?": string, "repository?": bool })),
   "files?": list(string),
+  "fileEntries?": list(object({ name: string, path: string })),
 });
 /** Every file under one of this box's folders, by its path there, as a project's file filter and
  * "@" list them: git's list in a repository (`git`), else a walk that skips the usual heavy folders;
@@ -145,6 +146,10 @@ export const MISC_ROUTES: RouteShape[] = [
   { route: "GET kuvo/sign-in/methods", feature: "sign-in.methods", answers: { 200: SIGN_IN_METHODS } },
   { route: "GET kuvo/sign-in/accounts", feature: "sign-in.accounts.state", answers: { 200: SIGN_IN_ACCOUNTS } },
   { route: "GET kuvo/accounts/catalog", feature: "accounts.catalog", answers: { 200: ACCOUNT_CATALOG } },
+  { route: "POST kuvo/sign-in/action", feature: "sign-in.action", body: object({
+    action: words("cancel", "complete", "addKey", "external"),
+    "attempt?": string, "code?": string, "key?": string, "methodID?": string, "answer?": any,
+  }), answers: { 200: any, 400: object({ message: string }) } },
   { route: "GET kuvo/sign-in/status", feature: "sign-in.codes", answers: { 200: SIGN_IN_STATUS } },
   { route: "POST kuvo/sign-in/start", feature: "sign-in.methods", answers: { 200: SIGN_IN_STARTED, 400: object({ message: string }), 409: object({ message: string }), 502: object({ message: string }), 503: object({ message: string }), 504: object({ message: string }) } },
   { route: "GET kuvo/search", feature: "search", answers: { 200: SEARCH_FOUND } },

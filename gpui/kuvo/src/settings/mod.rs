@@ -1235,7 +1235,7 @@ impl SettingsView {
             }
             (Some(Drawn::Own), "models") => {
                 self.run("read-config", |client| client.config(), |this, read, _| this.config = reading(read, &this.config), cx);
-                self.run("read-offered", |client| client.offered_models(None, None), |this, read, _| this.offered = reading(read, &this.offered), cx);
+                self.run("read-offered", |client| client.models_for_defaults(false), |this, read, _| this.offered = reading(read, &this.offered), cx);
             }
             _ => {}
         }

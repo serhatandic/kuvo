@@ -542,8 +542,7 @@ impl SettingsView {
                                 _ => None,
                             })
                             .unwrap_or_default();
-                        // (The engine's models: these are the engine's own settings.)
-                        let catalog = crate::model_picker::Catalog::new(&offered, |model| model.side == kuvo_box::models::Side::Engine).with_unset(unset.clone(), "", current.is_none());
+                        let catalog = crate::model_picker::Catalog::new(&offered, |_| true).with_unset(unset.clone(), "", current.is_none());
                         let (this, kept, client, current, starred, was) = (this.clone(), kept.clone(), client.clone(), current.clone(), offered.starred.clone(), was.clone());
                         cx.new(|cx| {
                             crate::model_picker::ModelPicker::new(
@@ -560,7 +559,7 @@ impl SettingsView {
                                 window,
                                 cx,
                             )
-                            .refresh_when_opened(Some(offered), None, None, Some(kuvo_box::models::Side::Engine), window, cx)
+                            .refresh_when_opened(Some(offered), crate::model_picker::RefreshModels::Defaults, window, cx)
                             .on_starred(std::rc::Rc::new(move |starred, cx| {
                                 kept.update(cx, |this, _| {
                                     if let Reading::Ready(offered) = &mut this.offered {
@@ -979,7 +978,7 @@ impl Render for SettingsView {
                         .iter()
                         .enumerate()
                         .map(|(ix, named)| {
-                            let path = format!("{}/{}", folder.path.trim_end_matches('/'), named.name);
+                            let path = named.path.clone();
                             let last = ix + 1 == count;
                             let selector = format!("settings-folder-{ix}");
                             div()

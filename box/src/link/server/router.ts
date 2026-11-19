@@ -97,6 +97,7 @@ import type { NoticeHold } from "../notices/hold";
 import { versionedRoutes } from "./format";
 import type { Answer, AnswerPiece, Asker, LinkHandler, LinkRequest, RouteContext } from "./context";
 import { ACCOUNT_CATALOG_ROUTE, accountCatalogRoute } from "../areas/account-catalog";
+import { SIGN_IN_ACTION_ROUTE, signInActionRoute } from "../areas/sign-in-action";
 
 /** One of the box's routes: `when(route, request)` says whether it takes the request, and gives
  * what its `answer(context, match)` is given: the route's match for one with a part of its own
@@ -233,6 +234,7 @@ const ROUTES: (Route | Route<RegExpMatchArray>)[] = [
   }, answer: legacySignInRoute },
   { feature: "sign-in.return", when: route => route === "kuvo/sign-in/return", answer: signInReturnRoute },
   { feature: "accounts.catalog", when: route => route === ACCOUNT_CATALOG_ROUTE, answer: accountCatalogRoute },
+  { feature: "sign-in.action", when: route => route === SIGN_IN_ACTION_ROUTE, answer: signInActionRoute },
   { feature: "sign-in.methods", when: route => route === SIGN_IN_METHODS_ROUTE || route === SIGN_IN_STATUS_ROUTE || route === SIGN_IN_ACCOUNTS_ROUTE || route === SIGN_IN_START_ROUTE, answer: signInRoute },
   { feature: "claude-code", when: route => route === "kuvo/claude-code", answer: claudeCodeRoute },
   { feature: "agents", when: (route, request) => request.path.startsWith(AGENTS), answer: agentsRoute },

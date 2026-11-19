@@ -742,7 +742,7 @@ fn models(facts: &Facts) -> Vec<Block> {
     // The engine's settings name an engine model as `provider/model`: its models offered are the
     // ones these can be.
     let offered: Vec<(String, String)> = match facts.offered {
-        Reading::Ready(offered) => offered.models.iter().filter(|model| model.side == kuvo_box::models::Side::Engine && model.is_offered()).map(|model| (format!("{}/{}", model.provider_id, model.id), model.name.clone())).collect(),
+        Reading::Ready(offered) => offered.models.iter().map(|model| (format!("{}/{}", model.provider_id, model.id), model.name.clone())).collect(),
         _ => Vec::new(),
     };
     let ready = matches!(facts.offered, Reading::Ready(_));

@@ -16,8 +16,9 @@ export interface FolderList {
   path: string;
   home: string;
   parent: string | null;
-  folders: { name: string; repository?: boolean }[];
+  folders: { name: string; path: string; repository?: boolean }[];
   files?: string[];
+  fileEntries?: { name: string; path: string }[];
 }
 
 /** Names as Finder orders them: file3 before file29. */
@@ -154,13 +155,16 @@ export function listFolders(requestPath: string): JSONAnswer<FolderList | Folder
   const folders = entries
     // A Files panel's: without version control's own folders, which nobody works in by hand.
     .filter(entry => (hidden || !entry.name.startsWith(".")) && !(panel && VERSION_CONTROL.has(entry.name)) && isFolder(entry))
-    .map(entry => (!asks.has(entry.name) && fs.existsSync(path.join(at, entry.name, ".git")) ? { name: entry.name, repository: true } : { name: entry.name }))
+    .map(entry => {
+      const full = path.join(at, entry.name);
+      return { name: entry.name, path: full, ...(!asks.has(entry.name) && fs.existsSync(path.join(full, ".git")) ? { repository: true } : {}) };
+    })
     .sort((a, b) => byName(a.name, b.name));
   const files = panel
     // (A linked worktree's `.git` is a file naming its repository: left out too.)
     ? entries.filter(entry => (hidden || !entry.name.startsWith(".")) && entry.name !== ".DS_Store" && !VERSION_CONTROL.has(entry.name) && !isFolder(entry)).map(entry => entry.name).sort(byName)
     : undefined;
-  return { status: 200, value: { path: at, home, parent: at === path.dirname(at) ? null : path.dirname(at), folders, ...(files ? { files } : {}) } };
+  return { status: 200, value: { path: at, home, parent: at === path.dirname(at) ? null : path.dirname(at), folders, ...(files ? { files, fileEntries: files.map(name => ({ name, path: path.join(at, name) })) } : {}) } };
 }
 
 /** `POST kuvo/folders {"path"}`: a new folder, in one that's there, as a folder panel's New Folder

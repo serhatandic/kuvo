@@ -231,13 +231,13 @@ test("a Files panel's folder leaves out version control's own folder, and says w
   const top = repository("listed")
   writeFileSync(join(top, ".env"), "X=1\n")
   const { json } = await ask(handler, "GET", `kuvo/folders?path=${encodeURIComponent(top)}&files=1&hidden=1`)
-  expect(json.folders).toEqual([{ name: "app" }])
+  expect(json.folders).toEqual([{ name: "app", path: join(top, "app") }])
   expect(json.files).toEqual([".env", "README.md"])
   // Mercurial's and Subversion's too, as a folder or a file.
   mkdirSync(join(top, ".hg"))
   writeFileSync(join(top, ".svn"), "")
   const others = await ask(handler, "GET", `kuvo/folders?path=${encodeURIComponent(top)}&files=1&hidden=1`)
-  expect([others.json.folders, others.json.files]).toEqual([[{ name: "app" }], [".env", "README.md"]])
+  expect([others.json.folders, others.json.files]).toEqual([[{ name: "app", path: join(top, "app") }], [".env", "README.md"]])
   rmSync(join(top, ".hg"), { recursive: true })
   rmSync(join(top, ".svn"))
   // Asked for folders alone (a folder to choose), `.git` is still there.

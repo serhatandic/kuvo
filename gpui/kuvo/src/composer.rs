@@ -580,7 +580,9 @@ impl Composer {
             return None;
         }
         if self.needs_model() {
-            return Some("Choose a Model".to_owned());
+            let action = self.models.state.as_ref().and_then(|state| state.action.as_ref()).filter(|action| action.kind == "choose");
+            let choice = self.models.offered.as_ref().and_then(|offered| offered.start_choice.as_ref());
+            return Some(action.map(|action| action.label.clone()).or_else(|| choice.map(|choice| choice.label.clone())).unwrap_or_else(|| "Choose a Model".to_owned()));
         }
         let named = self.models.state.as_ref().and_then(|state| state.name.clone());
         let listed = model.as_ref().and_then(|model| self.menu_models().into_iter().find(|offered| offered.is(model))).map(|offered| offered.name);
@@ -974,8 +976,8 @@ impl Composer {
         // a goal's pause don't.)
         if self.needs_model() && !(matches!(self.target, Target::Session { .. }) && typed::asks_box(&text)) {
             self.attached = files;
-            // As its box words it, for a conversation; a new one's box says only that none runs.
-            let words = self.models.state.as_ref().and_then(|state| state.refusal.clone()).unwrap_or_else(|| "Choose a model to send it.".to_owned());
+            let choice = self.models.offered.as_ref().and_then(|offered| offered.start_choice.as_ref());
+            let words = draft.refusal.clone().or_else(|| choice.map(|choice| choice.refusal.clone())).unwrap_or_else(|| "Choose a model to send it.".to_owned());
             self.set_note(Note { text: words.into(), warning: true }, cx);
             cx.notify();
             return;
@@ -1904,7 +1906,7 @@ impl Composer {
                 window,
                 cx,
             )
-            .refresh_when_opened(before, folder, session, side, window, cx)
+            .refresh_when_opened(before, crate::model_picker::RefreshModels::Offered { folder, session, side }, window, cx)
             .notice(notice)
             .note(note)
             .on_starred(Rc::new(move |starred: Vec<Starred>, cx| {

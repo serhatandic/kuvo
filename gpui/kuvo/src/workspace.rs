@@ -1899,7 +1899,12 @@ impl Workspace {
 
     /// Where a new conversation starts before one's picked: the newest project's, else a chat.
     fn default_place(&self) -> StartIn {
-        self.listing.sidebar().projects.first().map_or(StartIn::Chat, |group| StartIn::Project(group.directory.clone()))
+        match self.listing.start_project() {
+            Some(Some(project)) => StartIn::Project(project.to_owned()),
+            Some(None) => StartIn::Chat,
+            None if self.listing.is_read() => self.listing.sidebar().projects.first().map_or(StartIn::Chat, |group| StartIn::Project(group.directory.clone())),
+            None => StartIn::Chat,
+        }
     }
 
     pub fn landing_place(&self) -> StartIn {

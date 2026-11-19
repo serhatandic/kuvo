@@ -377,7 +377,9 @@ fn files_open_a_folder_at_a_time_and_one_that_cant_be_read_says_why(cx: &mut Tes
     let opened = workspace.read_with(cx, |workspace, cx| workspace.panel().read(cx).files().read(cx).opened().cloned()).unwrap();
     assert!(matches!(opened.1, Load::Ready(Shown::Unshown(_))));
     assert!(stand_in.seen_at("GET", "kuvo/file").is_empty());
-    assert!(stand_in.seen_at("GET", "kuvo/file/text").iter().any(|seen| seen.path.contains("favicon.png") && seen.path.contains("&max=")));
+    use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+    let path = URL_SAFE_NO_PAD.encode(format!("{root}/public/favicon.png"));
+    assert!(stand_in.seen_at("GET", "kuvo/file/text").iter().any(|seen| seen.path.starts_with(&format!("kuvo/file/text?path64={path}&max="))));
 }
 
 #[gpui::test]

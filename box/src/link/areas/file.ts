@@ -38,15 +38,23 @@ export async function* fileAt(requestPath: string, json: RouteContext["json"], a
   const query = requestPath.includes("?") ? requestPath.slice(requestPath.indexOf("?") + 1) : "";
   const asked = new URLSearchParams(query);
   const uri = asked.get("uri");
+  const givenPath = as === "text" && !asked.has("uri") ? asked.get("path64") : null;
   const most = as === "text" ? TEXT_LIMIT : FILE_LIMIT;
   // (A whole number of bytes, whatever was sent.)
   const given = Math.floor(Number(asked.get("max") ?? most));
   const max = Number.isFinite(given) ? given : most;
-  let file;
+  let file: string | undefined;
   try {
-    file = uri ? fileURLToPath(uri) : undefined;
+    if (uri) file = fileURLToPath(uri);
+    else if (givenPath && /^[A-Za-z0-9_-]+$/.test(givenPath)) {
+      const bytes = Buffer.from(givenPath, "base64url");
+      if (bytes.toString("base64url") === givenPath) {
+        const decoded = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+        if (path.isAbsolute(decoded) && !decoded.includes("\0")) file = path.resolve(decoded);
+      }
+    }
   } catch {}
-  if (!file) return yield* json(400, { message: "That isn’t a file:// address." });
+  if (!file) return yield* json(400, { message: givenPath === null ? "That isn’t a file:// address." : "Name the file by its full path." });
   const name = path.basename(file);
   const missing = () => as === "info"
     ? json(200, { exists: false, name, size: null, kind: null, mime: null } satisfies FileInfo)

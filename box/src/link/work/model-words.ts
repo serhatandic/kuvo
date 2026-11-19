@@ -8,6 +8,11 @@ import type { ModelAction, SessionModel } from "../../shared/routes/sessions";
 import type { ModelState } from "./model-rule";
 
 export type Readiness = Pick<SessionModel, "refusal" | "choose" | "action">;
+export const CHOOSE_MODEL = {
+  refusal: "Choose a model to send it.",
+  choose: true,
+  action: { do: "choose", label: "Choose a Model", help: "Choose a model" },
+} as const;
 
 /** "an" before a name said starting with a vowel ("an OpenAI key", "an xAI key", said "ex-A-I",
  * "an NVIDIA key" and "an LM Studio key", said letter by letter), else "a" ("a Xiaomi key"). */
@@ -50,6 +55,6 @@ export function readiness(model: { providerID: string; id: string } | null, stat
       };
     default:
       // None to run on (`model`), or (never said) one that can't run with nothing missing.
-      return { refusal: "Choose a model to send it.", choose: true, action: choose("Choose a model") };
+      return CHOOSE_MODEL;
   }
 }

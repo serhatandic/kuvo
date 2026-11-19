@@ -265,6 +265,11 @@ impl BoxClient {
         }
     }
 
+    /// A feature from the negotiation that preceded an already open request.
+    pub(crate) fn advertised(&self, name: &str) -> bool {
+        self.gate.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).features.iter().any(|feature| feature == name)
+    }
+
     /// Sends `request` (behind the gate) and reads its whole answer, whatever its status.
     pub fn send(&self, request: &Request) -> Result<Response> {
         self.check_gate(request)?;
@@ -298,7 +303,8 @@ impl BoxClient {
 
     /// The session list now (`since`: only what changed after where a client was).
     pub fn session_list(&self, since: Option<&str>) -> Result<Line> {
-        self.get(&sessions::route(since))
+        let line: Line = self.get(&sessions::route(since))?;
+        line.check_start(self.advertised(sessions::LIST_START))
     }
 
     // MARK: A conversation

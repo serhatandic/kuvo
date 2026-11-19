@@ -421,6 +421,25 @@ impl Settings {
 
     /// Its answer to `method route` (`query`: a query value by name), if it's one of these routes.
     pub fn answer(&mut self, method: &str, route: &str, query: &dyn Fn(&str) -> Option<String>, body: &Value, name: &str, here: bool) -> Option<(u16, Value)> {
+        if (method, route) == ("POST", "kuvo/sign-in/action") {
+            let account = query("integration")?;
+            let side = if query("agents").as_deref() == Some("1") { "kuvo/agents/api" } else { "api" };
+            let base = format!("{side}/integration/{}/connect", kuvo_box::paths::segment(&account));
+            let attempt = || body["attempt"].as_str().map(kuvo_box::paths::segment);
+            let (method, route) = match body["action"].as_str()? {
+                "addKey" => ("POST", format!("{base}/key")),
+                "external" => ("POST", format!("{base}/external")),
+                "complete" => ("POST", format!("{base}/oauth/{}/complete", attempt()?)),
+                "cancel" => ("DELETE", format!("{base}/oauth/{}", attempt()?)),
+                _ => return Some((400, json!({ "message": "Name the sign-in action and what it needs." }))),
+            };
+            let mut action = body.clone();
+            if let Some(fields) = action.as_object_mut() {
+                fields.remove("action");
+                fields.remove("attempt");
+            }
+            return self.answer(method, &route, query, &action, name, here);
+        }
         let segments: Vec<&str> = route.split('/').collect();
         if let Some(answer) = self.vault_answer(method, &segments, body) {
             return Some(answer);

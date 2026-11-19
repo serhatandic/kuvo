@@ -139,7 +139,7 @@ test("a client goes through this box's folders to choose one: repositories marke
   assert.equal(listed.value.path, code);
   assert.equal(listed.value.parent, home);
   assert.deepEqual(listed.value.folders.map(each => each.name), ["app9", "app10", "drafts", "notes", "shop", "worktrees"]);
-  assert.deepEqual(listed.value.folders.find(each => each.name === "shop"), { name: "shop", repository: true });
+  assert.deepEqual(listed.value.folders.find(each => each.name === "shop"), { name: "shop", path: path.join(code, "shop"), repository: true });
   assert.ok(link.listFolders(`kuvo/folders?path=${encodeURIComponent(code)}&hidden=1`).value.folders.some(each => each.name === ".cache"));
   // None, or ~: the home folder.
   assert.equal(link.listFolders("kuvo/folders").value.path, home);
@@ -159,7 +159,7 @@ test("a Files panel lists a folder's files too, and one this box can't read says
   assert.deepEqual(listed.value.folders.map(each => each.name), ["empty", "src"]);
   assert.deepEqual(listed.value.files, [".env", "b9.txt", "b10.txt"]);
   // An empty folder is empty, not a failure.
-  assert.deepEqual(link.listFolders(`kuvo/folders?path=${encodeURIComponent(path.join(files, "empty"))}&files=1`).value, { path: path.join(files, "empty"), home, parent: files, folders: [], files: [] });
+  assert.deepEqual(link.listFolders(`kuvo/folders?path=${encodeURIComponent(path.join(files, "empty"))}&files=1`).value, { path: path.join(files, "empty"), home, parent: files, folders: [], files: [], fileEntries: [] });
   // Without files=1, as a folder picker asks: no files.
   assert.equal(link.listFolders(`kuvo/folders?path=${encodeURIComponent(files)}`).value.files, undefined);
 

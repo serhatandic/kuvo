@@ -661,8 +661,8 @@ pub fn discard_words(file: &ChangedFile) -> DiscardWords {
             let old = file.old_path.clone().unwrap_or_default();
             (format!("Undo the move to {name}?"), format!("{old} comes back as last committed, and {name} goes to the Trash. A file written at {old} since goes to the Trash first."), "Undo Move")
         }
-        DiscardKind::Changes if to_commit => (format!("Discard every change to {name}?"), "It goes back to the last commit, what’s staged too. This can’t be undone.".to_owned(), "Discard"),
-        DiscardKind::Changes => (format!("Discard the changes to {name}?"), "What isn’t staged is thrown away. This can’t be undone.".to_owned(), "Discard"),
+        DiscardKind::Changes if to_commit => (format!("Discard every change to {name}?"), "It goes back to the last commit, what’s staged too.".to_owned(), "Discard"),
+        DiscardKind::Changes => (format!("Discard the changes to {name}?"), "What isn’t staged is thrown away.".to_owned(), "Discard"),
         // (A kind a newer box says that this app has no words for: asked plainly.)
         DiscardKind::Unknown => (format!("Discard the changes to {name}?"), String::new(), "Discard"),
     };
@@ -670,6 +670,7 @@ pub fn discard_words(file: &ChangedFile) -> DiscardWords {
     let detail = match file.discards.as_ref().and_then(|discards| discards.loses.as_deref()) {
         Some(loses) if detail.is_empty() => loses.to_owned(),
         Some(loses) => format!("{detail} {loses}"),
+        None if kind == DiscardKind::Changes && !undoable => format!("{detail} This can’t be undone."),
         None => detail,
     };
     DiscardWords { title, detail, button, undoable }
@@ -972,6 +973,8 @@ mod tests {
         assert!(!lost.undoable);
         let unstaged = words(r#""status":"modified","discard":"unstaged","discards":{"kind":"changes","undoable":false}"#);
         assert_eq!((unstaged.title.as_str(), unstaged.undoable), ("Discard the changes to Form.tsx?", false));
+        let reversible = words(r#""status":"modified","discard":"unstaged","discards":{"kind":"changes","undoable":true}"#);
+        assert_eq!(reversible.detail, "What isn’t staged is thrown away.");
         // A kind a newer box says: asked plainly, drawn as the box says.
         let newer = words(r#""status":"modified","discard":"head","discards":{"kind":"shelve","undoable":true}"#);
         assert_eq!((newer.title.as_str(), newer.detail.as_str(), newer.button, newer.undoable), ("Discard the changes to Form.tsx?", "", "Discard", true));

@@ -204,15 +204,15 @@ impl FilesView {
                     rows.push(Row::Note { folder: folder.to_owned(), depth, read: Read::Listed(listed.clone()) });
                 }
                 for named in &listed.folders {
-                    let path = join(folder, &named.name);
+                    let path = named.path.clone();
                     let open = self.open.contains(&path);
                     rows.push(Row::Folder { path: path.clone(), name: named.name.clone(), depth, open });
                     if open {
                         self.walk(&path, depth + 1, rows);
                     }
                 }
-                for name in &listed.files {
-                    rows.push(Row::File { path: join(folder, name), name: name.clone(), depth });
+                for file in &listed.files {
+                    rows.push(Row::File { path: file.path.clone(), name: file.name.clone(), depth });
                 }
             }
             Some(read) => rows.push(Row::Note { folder: folder.to_owned(), depth, read: read.clone() }),
@@ -382,11 +382,6 @@ pub(crate) fn text_preview(name: &str, text: &str, lines: usize, cx: &App) -> An
         .child(CodeBlock::new("file-code", cut).language(language).line_numbers(true))
         .when(lines > LINES_MOST, |d| d.child(div().text_ui(TypeSize::Caption).text_color(faint).child(format!("The first {LINES_MOST} of {lines} lines."))))
         .into_any_element()
-}
-
-/// `folder/name`.
-fn join(folder: &str, name: &str) -> String {
-    format!("{}/{name}", folder.trim_end_matches('/'))
 }
 
 /// A file as shown: its text where the box says it's text, else that it isn't.

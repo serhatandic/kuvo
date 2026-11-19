@@ -214,6 +214,46 @@ test("an outside account request uses the display name, never the request info h
   } finally { engine.stop(true) }
 })
 
+test("one sign-in action route forwards to the account's side and keeps the Work Queue attempt owner", async () => {
+  const { signInActionRoute } = await import("../src/link/areas/sign-in-action")
+  const seen: unknown[] = []
+  const side = (name: string) => Bun.serve({ port: 0, async fetch(request) {
+    seen.push({
+      side: name, method: request.method, path: decodeURIComponent(new URL(request.url).pathname),
+      body: request.method === "POST" ? await request.json() : null,
+      owner: request.headers.get("x-kuvo-sign-in-owner"),
+    })
+    return Response.json({ data: {} })
+  } })
+  const engine = side("engine"), agents = side("agents")
+  const target = (server: typeof engine) => ({ port: server.port, password: "pw" })
+  const client = "a".repeat(32)
+  const act = async (query: string, body: object) => {
+    const route = "kuvo/sign-in/action"
+    let status = 0
+    for await (const piece of signInActionRoute({
+      route, readEngine: () => target(engine), bridge: () => target(agents),
+      request: { method: "POST", path: `${route}?${query}`, body: Buffer.from(JSON.stringify(body)), headers: { "content-type": "application/json", "x-kuvo-sign-in-client": client } },
+      json: (status: number, value: unknown) => [{ head: { status, headers: {} } }, { body: Buffer.from(JSON.stringify(value)) }],
+    } as any)) if ("head" in piece) status = piece.head.status
+    return status
+  }
+  try {
+    expect(await act("integration=bedrock?qa", { action: "external", methodID: "aws", answer: { region: "eu-west-1" } })).toBe(200)
+    expect(await act("integration=claude%40work&agents=1", { action: "complete", attempt: "att_1", code: "test-code" })).toBe(200)
+    expect(await act("integration=github-work-queue", { action: "cancel", attempt: "att_2" })).toBe(200)
+    expect(await act("integration=bedrock", { action: "complete", attempt: "att_1" })).toBe(400)
+    expect(seen).toEqual([
+      { side: "engine", method: "POST", path: "/api/integration/bedrock?qa/connect/external", body: { methodID: "aws", answer: { region: "eu-west-1" } }, owner: null },
+      { side: "agents", method: "POST", path: "/api/integration/claude@work/connect/oauth/att_1/complete", body: { code: "test-code" }, owner: null },
+      { side: "agents", method: "DELETE", path: "/api/integration/github-work-queue/connect/oauth/att_2", body: null, owner: `client:${client}` },
+    ])
+  } finally {
+    engine.stop(true)
+    agents.stop(true)
+  }
+})
+
 test("remote provider OAuth offers the callback address field and explains a local-only page", async () => {
   const { engineHandler } = await import("../src/link/server/router")
   const cancelled: string[] = []

@@ -15,6 +15,7 @@ kuvo_box = { path = "../kuvo_box" }
 anyhow = "1"
 # The installer's steps, handed from the thread that runs it to the window.
 async-channel = "2.5"
+base64 = { version = "0.22", optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
@@ -57,7 +58,7 @@ base64 = "0.22"
 
 [features]
 # The made-up box (`--stand-in`), and reading it at once for shots and tests; not in the app shipped.
-stand-in = ["kuvo_box/stand-in"]
+stand-in = ["kuvo_box/stand-in", "dep:base64"]
 # Offscreen rendering for the shots binary; pulls in GPUI's test support.
 shots = ["stand-in", "gpui/test-support", "gpui_platform/test-support"]
 

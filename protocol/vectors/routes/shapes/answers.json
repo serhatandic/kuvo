@@ -8775,10 +8775,16 @@
             "literal": "file.text"
            },
            {
+            "literal": "file.text.path"
+           },
+           {
             "literal": "folders"
            },
            {
             "literal": "folders.files"
+           },
+           {
+            "literal": "folders.paths"
            },
            {
             "literal": "folders.suggested"
@@ -8914,6 +8920,12 @@
            },
            {
             "literal": "models.offered"
+           },
+           {
+            "literal": "models.offered.choice"
+           },
+           {
+            "literal": "models.offered.defaults"
            },
            {
             "literal": "models.offered.folder"
@@ -9072,6 +9084,9 @@
             "literal": "sessions.list"
            },
            {
+            "literal": "sessions.list.start"
+           },
+           {
             "literal": "sessions.mentions"
            },
            {
@@ -9145,6 +9160,9 @@
            },
            {
             "literal": "sign-in.accounts.state"
+           },
+           {
+            "literal": "sign-in.action"
            },
            {
             "literal": "sign-in.codes"
@@ -9597,10 +9615,16 @@
             "literal": "file.text"
            },
            {
+            "literal": "file.text.path"
+           },
+           {
             "literal": "folders"
            },
            {
             "literal": "folders.files"
+           },
+           {
+            "literal": "folders.paths"
            },
            {
             "literal": "folders.suggested"
@@ -9736,6 +9760,12 @@
            },
            {
             "literal": "models.offered"
+           },
+           {
+            "literal": "models.offered.choice"
+           },
+           {
+            "literal": "models.offered.defaults"
            },
            {
             "literal": "models.offered.folder"
@@ -9894,6 +9924,9 @@
             "literal": "sessions.list"
            },
            {
+            "literal": "sessions.list.start"
+           },
+           {
             "literal": "sessions.mentions"
            },
            {
@@ -9967,6 +10000,9 @@
            },
            {
             "literal": "sign-in.accounts.state"
+           },
+           {
+            "literal": "sign-in.action"
            },
            {
             "literal": "sign-in.codes"
@@ -16968,12 +17004,21 @@
        "list": {
         "object": {
          "name": "string",
+         "path?": "string",
          "repository?": "bool"
         }
        }
       },
       "files?": {
        "list": "string"
+      },
+      "fileEntries?": {
+       "list": {
+        "object": {
+         "name": "string",
+         "path": "string"
+        }
+       }
       }
      }
     },
@@ -17707,6 +17752,43 @@
         }
        }
       }
+     }
+    }
+   }
+  },
+  {
+   "route": "POST kuvo/sign-in/action",
+   "feature": "sign-in.action",
+   "body": {
+    "object": {
+     "action": {
+      "oneOf": [
+       {
+        "literal": "cancel"
+       },
+       {
+        "literal": "complete"
+       },
+       {
+        "literal": "addKey"
+       },
+       {
+        "literal": "external"
+       }
+      ]
+     },
+     "attempt?": "string",
+     "code?": "string",
+     "key?": "string",
+     "methodID?": "string",
+     "answer?": "any"
+    }
+   },
+   "answers": {
+    "200": "any",
+    "400": {
+     "object": {
+      "message": "string"
      }
     }
    }
@@ -20413,6 +20495,15 @@
         }
        }
       },
+      "projectOrder?": {
+       "list": "string"
+      },
+      "startProject?": {
+       "oneOf": [
+        "string",
+        "null"
+       ]
+      },
       "archivedGroups": {
        "list": {
         "object": {
@@ -20565,6 +20656,15 @@
          "working": "number"
         }
        }
+      },
+      "projectOrder?": {
+       "list": "string"
+      },
+      "startProject?": {
+       "oneOf": [
+        "string",
+        "null"
+       ]
       },
       "archivedGroups": {
        "list": {
@@ -20855,6 +20955,12 @@
         },
         "null"
        ]
+      },
+      "startChoice?": {
+       "object": {
+        "label": "string",
+        "refusal": "string"
+       }
       }
      }
     },

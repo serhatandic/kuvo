@@ -1,4 +1,4 @@
-// Kuvo folder layout 18 fe449b68262c
+// Kuvo folder layout 18 b08aed072374
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
 var __create = Object.create;
@@ -1139,7 +1139,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "fe449b68262c";
+var BRIDGE_VERSION = "b08aed072374";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -18328,7 +18328,8 @@ var init_sessions = __esm(() => {
     "generations?": map(string),
     "scoped?": bool,
     "note?": string,
-    "starting?": nullable(MODEL_REF)
+    "starting?": nullable(MODEL_REF),
+    "startChoice?": object({ label: string, refusal: string })
   });
   MODELS_STARRED = object({ starred: list(STARRED) });
   SESSION_KINDS = ["project", "chat", "bot", "seat", "hidden", "subagent"];
@@ -18374,6 +18375,8 @@ var init_sessions = __esm(() => {
     sessions: map(SESSION_FACTS),
     "gone?": list(string),
     projects: map(LISTED_PROJECT),
+    "projectOrder?": list(string),
+    "startProject?": nullable(string),
     archivedGroups: list(object({ directory: string, title: string, kind: words("project", "chat", "bot"), sessions: list(string) })),
     needsYou: list(NEEDS_YOU2),
     "pending?": list(string)
@@ -20906,8 +20909,10 @@ var init_features = __esm(() => {
     "file",
     "file.info",
     "file.text",
+    "file.text.path",
     "folders",
     "folders.files",
+    "folders.paths",
     "folders.suggested",
     "folders.tree",
     "git",
@@ -20953,6 +20958,8 @@ var init_features = __esm(() => {
     "messages.tool-titles",
     "messages.wake-cards",
     "models.offered",
+    "models.offered.choice",
+    "models.offered.defaults",
     "models.offered.folder",
     "models.offered.free",
     "models.offered.providers",
@@ -21005,6 +21012,7 @@ var init_features = __esm(() => {
     "sessions.chat",
     "sessions.glance",
     "sessions.list",
+    "sessions.list.start",
     "sessions.mentions",
     "sessions.models",
     "sessions.move",
@@ -21030,6 +21038,7 @@ var init_features = __esm(() => {
     "sign-in.accounts.kinds",
     "sign-in.accounts.plan",
     "sign-in.accounts.state",
+    "sign-in.action",
     "sign-in.codes",
     "sign-in.methods",
     "sign-in.return",
@@ -47179,6 +47188,23 @@ function listedProjects(sessions, place) {
   }
   return projects;
 }
+function projectOrder(projects) {
+  const compare = (left, right) => {
+    const one = left.match(/[0-9]+|[^0-9]/gu) ?? [], two = right.match(/[0-9]+|[^0-9]/gu) ?? [];
+    for (let at = 0;at < Math.min(one.length, two.length); at++) {
+      const a = one[at], b = two[at];
+      const bothNumbers = /^\d/.test(a) && /^\d/.test(b);
+      const x = bothNumbers ? a.replace(/^0+/, "") : a.toLowerCase();
+      const y = bothNumbers ? b.replace(/^0+/, "") : b.toLowerCase();
+      const difference = (bothNumbers ? x.length - y.length : 0) || Buffer.compare(Buffer.from(x), Buffer.from(y));
+      if (difference)
+        return difference;
+    }
+    return one.length - two.length;
+  };
+  const name = (folder) => projects[folder]?.name ?? (path128.basename(folder) || folder);
+  return Object.keys(projects).sort((a, b) => (projects[b]?.updated ?? 0) - (projects[a]?.updated ?? 0) || compare(name(a), name(b)) || Buffer.compare(Buffer.from(a), Buffer.from(b)));
+}
 var folderOf4 = (session) => session.location?.directory ?? session.directory ?? "", kuvoOf = (session) => isObject(session.metadata?.kuvo) ? session.metadata.kuvo : {}, isArchived3 = (session) => Boolean(session.time?.archived) || session.metadata?.["kuvo.archived"] === true || kuvoOf(session).archived === true, isPinned = (session) => session.metadata?.["kuvo.pinned"] === true, inBotsFolder = (folder, botsFolder) => Boolean(botsFolder) && folder.startsWith(botsFolder.endsWith(path128.sep) ? botsFolder : botsFolder + path128.sep), standing = (facts) => facts.asked !== undefined ? "asking" : facts.running ? "working" : null, ASLEEP_AFTER;
 var init_rule = __esm(() => {
   ASLEEP_AFTER = 12 * 3600000;
@@ -47579,11 +47605,13 @@ function answerFrom(list, since) {
   const pending = list.pending?.length ? { pending: list.pending } : {};
   const needs = list.needsYou ?? needsYou(Object.fromEntries(Object.entries(list.sessions).map(([id, entry]) => [id, entry.facts])));
   const projects = Object.fromEntries(Object.entries(list.projects).map(([folder, project]) => [folder, { ...project, asking: project.asking ?? 0, working: project.working ?? 0 }]));
+  const ordered = projectOrder(projects);
   const archived = archivedGroups(Object.fromEntries(Object.entries(list.sessions).map(([id, entry]) => [id, entry.facts])), projects, readProjects());
+  const projectFacts = { projects, projectOrder: ordered, startProject: ordered[0] ?? null };
   if (whole)
-    return { archivedGroups: archived, at: cursorOf(list), full: true, sessions, projects, needsYou: needs, ...pending };
+    return { archivedGroups: archived, at: cursorOf(list), full: true, sessions, ...projectFacts, needsYou: needs, ...pending };
   const gone = Object.entries(list.gone).filter(([, entry]) => entry.seq > from.seq).map(([id]) => id).sort();
-  return { archivedGroups: archived, at: cursorOf(list), sessions, ...gone.length ? { gone } : {}, projects, needsYou: needs, ...pending };
+  return { archivedGroups: archived, at: cursorOf(list), sessions, ...gone.length ? { gone } : {}, ...projectFacts, needsYou: needs, ...pending };
 }
 function keepList() {
   keeping2 = true;
@@ -58569,15 +58597,25 @@ async function* fileAt(requestPath, json, as = "bytes") {
   const query = requestPath.includes("?") ? requestPath.slice(requestPath.indexOf("?") + 1) : "";
   const asked = new URLSearchParams(query);
   const uri = asked.get("uri");
+  const givenPath = as === "text" && !asked.has("uri") ? asked.get("path64") : null;
   const most = as === "text" ? TEXT_LIMIT : FILE_LIMIT;
   const given = Math.floor(Number(asked.get("max") ?? most));
   const max = Number.isFinite(given) ? given : most;
   let file;
   try {
-    file = uri ? fileURLToPath4(uri) : undefined;
+    if (uri)
+      file = fileURLToPath4(uri);
+    else if (givenPath && /^[A-Za-z0-9_-]+$/.test(givenPath)) {
+      const bytes = Buffer.from(givenPath, "base64url");
+      if (bytes.toString("base64url") === givenPath) {
+        const decoded = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+        if (path151.isAbsolute(decoded) && !decoded.includes("\x00"))
+          file = path151.resolve(decoded);
+      }
+    }
   } catch {}
   if (!file)
-    return yield* json(400, { message: "That isn’t a file:// address." });
+    return yield* json(400, { message: givenPath === null ? "That isn’t a file:// address." : "Name the file by its full path." });
   const name = path151.basename(file);
   const missing = () => as === "info" ? json(200, { exists: false, name, size: null, kind: null, mime: null }) : json(404, { message: "That file isn’t there anymore.", reason: "fileNotFound" });
   const inaccessible = (error) => {
@@ -62534,6 +62572,53 @@ var init_models_starred = __esm(() => {
   MODELS_FILE = path159.join(BOX, "models.json");
 });
 
+// box/src/link/work/model-words.ts
+function article(word) {
+  const first = word.toLowerCase()[0];
+  if (/^[A-Z][A-Z]/.test(word))
+    return "AEFHILMNORSX".includes(word[0]) ? "an" : "a";
+  return first && "aeiou".includes(first) || word.startsWith("xA") ? "an" : "a";
+}
+function readiness(model, state, known) {
+  if (state.runs && !state.missing)
+    return {};
+  const name = state.name ?? known ?? model?.id ?? "This model";
+  const account = state.account?.name ?? model?.providerID ?? "its account";
+  const choose = (help) => ({ do: "choose", label: "Choose a Model", help });
+  switch (state.missing) {
+    case "signIn":
+      if (state.connects)
+        return { refusal: `${name} needs ${account} connected: connect it, or choose another model.`, action: { do: "signIn", label: "Connect", help: `Connect ${account}` } };
+      return { refusal: `${name} needs a sign-in to ${account}: sign in, or choose another model.`, action: { do: "signIn", label: "Sign In", help: `Sign in to ${account}` } };
+    case "key": {
+      const plan = state.plan;
+      const key = `${article(account)} ${account} key`;
+      return plan ? {
+        refusal: `${name} needs ${key}: add one, or choose another model (with ${article(plan.name)} ${plan.name} plan, one under ${plan.agent}).`,
+        action: { do: "addKey", label: "Add Key", help: `Add ${key} (with ${article(plan.name)} ${plan.name} plan, choose a model under ${plan.agent} instead)` }
+      } : { refusal: `${name} needs ${key}: add one, or choose another model.`, action: { do: "addKey", label: "Add Key", help: `Add ${key}` } };
+    }
+    case "install":
+      return { refusal: `${name} needs ${account} installed: install it, or choose another model.`, action: { do: "install", label: "Install", help: `Install ${account}` } };
+    case "gone":
+      return {
+        refusal: state.account ? `${name} is no longer among ${state.account.name}’s models: choose another model.` : `${name} is no longer available: choose another model.`,
+        choose: true,
+        action: choose("Choose another model")
+      };
+    default:
+      return CHOOSE_MODEL;
+  }
+}
+var CHOOSE_MODEL;
+var init_model_words = __esm(() => {
+  CHOOSE_MODEL = {
+    refusal: "Choose a model to send it.",
+    choose: true,
+    action: { do: "choose", label: "Choose a Model", help: "Choose a model" }
+  };
+});
+
 // box/src/link/areas/models-offered.ts
 import fs159 from "node:fs";
 import path160 from "node:path";
@@ -62590,6 +62675,10 @@ async function* modelsOfferedRoute(context) {
   }
   const lists = await listsHere(engine, agents, place?.data.location?.directory ?? place?.data.directory ?? folder, false, query.get("refresh") === "1");
   const answer = offeredAnswer(lists, wantedIn(request.path), starredModels());
+  if (query.get("for") === "defaults") {
+    const models = answer.models.filter((model) => model.side === "engine" && !model.hidden && !model.retiring);
+    return yield* json(200, { ...answer, models, scoped: true });
+  }
   if (!place)
     return yield* json(200, answer);
   const bot = typeof place.data.metadata?.kuvo?.bot === "string";
@@ -62627,7 +62716,8 @@ function offeredAnswer(lists, wanted, starred = []) {
     ...lists.bridge?.generations ? { generations: lists.bridge.generations } : {},
     ...lists.bridge?.unavailable?.length ? { unavailable: lists.bridge.unavailable } : {},
     ...listing.length ? { listing } : {},
-    ...starting !== undefined ? { starting: starting?.model ?? null } : {}
+    ...starting !== undefined ? { starting: starting?.model ?? null } : {},
+    ...starting === null ? { startChoice: { label: CHOOSE_MODEL.action.label, refusal: CHOOSE_MODEL.refusal } } : {}
   };
 }
 var MODELS_OFFERED_ROUTE = "kuvo/models/offered";
@@ -62640,6 +62730,7 @@ var init_models_offered = __esm(() => {
   init_model_rule();
   init_models_starred();
   init_holder();
+  init_model_words();
 });
 
 // box/src/link/areas/settings-custom-auto.ts
@@ -93539,9 +93630,12 @@ function listFolders(requestPath) {
     }
   })();
   const panel = query.get("files") === "1";
-  const folders = entries.filter((entry) => (hidden || !entry.name.startsWith(".")) && !(panel && VERSION_CONTROL.has(entry.name)) && isFolder(entry)).map((entry) => !asks.has(entry.name) && fs226.existsSync(path234.join(at, entry.name, ".git")) ? { name: entry.name, repository: true } : { name: entry.name }).sort((a, b) => byName(a.name, b.name));
+  const folders = entries.filter((entry) => (hidden || !entry.name.startsWith(".")) && !(panel && VERSION_CONTROL.has(entry.name)) && isFolder(entry)).map((entry) => {
+    const full = path234.join(at, entry.name);
+    return { name: entry.name, path: full, ...!asks.has(entry.name) && fs226.existsSync(path234.join(full, ".git")) ? { repository: true } : {} };
+  }).sort((a, b) => byName(a.name, b.name));
   const files = panel ? entries.filter((entry) => (hidden || !entry.name.startsWith(".")) && entry.name !== ".DS_Store" && !VERSION_CONTROL.has(entry.name) && !isFolder(entry)).map((entry) => entry.name).sort(byName) : undefined;
-  return { status: 200, value: { path: at, home, parent: at === path234.dirname(at) ? null : path234.dirname(at), folders, ...files ? { files } : {} } };
+  return { status: 200, value: { path: at, home, parent: at === path234.dirname(at) ? null : path234.dirname(at), folders, ...files ? { files, fileEntries: files.map((name) => ({ name, path: path234.join(at, name) })) } : {} } };
 }
 function makeFolder(body) {
   const given = typeof body?.path === "string" ? body.path.trim() : "";
@@ -94152,47 +94246,7 @@ init_computers();
 // box/src/link/areas/session-models.ts
 init_tools2();
 init_model_rule();
-
-// box/src/link/work/model-words.ts
-function article(word) {
-  const first = word.toLowerCase()[0];
-  if (/^[A-Z][A-Z]/.test(word))
-    return "AEFHILMNORSX".includes(word[0]) ? "an" : "a";
-  return first && "aeiou".includes(first) || word.startsWith("xA") ? "an" : "a";
-}
-function readiness(model, state, known) {
-  if (state.runs && !state.missing)
-    return {};
-  const name = state.name ?? known ?? model?.id ?? "This model";
-  const account = state.account?.name ?? model?.providerID ?? "its account";
-  const choose = (help) => ({ do: "choose", label: "Choose a Model", help });
-  switch (state.missing) {
-    case "signIn":
-      if (state.connects)
-        return { refusal: `${name} needs ${account} connected: connect it, or choose another model.`, action: { do: "signIn", label: "Connect", help: `Connect ${account}` } };
-      return { refusal: `${name} needs a sign-in to ${account}: sign in, or choose another model.`, action: { do: "signIn", label: "Sign In", help: `Sign in to ${account}` } };
-    case "key": {
-      const plan = state.plan;
-      const key = `${article(account)} ${account} key`;
-      return plan ? {
-        refusal: `${name} needs ${key}: add one, or choose another model (with ${article(plan.name)} ${plan.name} plan, one under ${plan.agent}).`,
-        action: { do: "addKey", label: "Add Key", help: `Add ${key} (with ${article(plan.name)} ${plan.name} plan, choose a model under ${plan.agent} instead)` }
-      } : { refusal: `${name} needs ${key}: add one, or choose another model.`, action: { do: "addKey", label: "Add Key", help: `Add ${key}` } };
-    }
-    case "install":
-      return { refusal: `${name} needs ${account} installed: install it, or choose another model.`, action: { do: "install", label: "Install", help: `Install ${account}` } };
-    case "gone":
-      return {
-        refusal: state.account ? `${name} is no longer among ${state.account.name}’s models: choose another model.` : `${name} is no longer available: choose another model.`,
-        choose: true,
-        action: choose("Choose another model")
-      };
-    default:
-      return { refusal: "Choose a model to send it.", choose: true, action: choose("Choose a model") };
-  }
-}
-
-// box/src/link/areas/session-models.ts
+init_model_words();
 init_glance();
 var SESSION_MODELS_ROUTE = "kuvo/sessions/models";
 async function sessionModels(ids, engine, bridge, signal) {
@@ -95723,6 +95777,65 @@ async function* accountCatalogRoute(context) {
   });
 }
 
+// box/src/link/areas/sign-in-action.ts
+init_forward();
+init_sign_in();
+var SIGN_IN_ACTION_ROUTE = "kuvo/sign-in/action";
+async function* signInActionRoute(context) {
+  const { request, json } = context;
+  if (request.method.toUpperCase() !== "POST")
+    return yield* json(405, {});
+  const mark = request.path.indexOf("?");
+  const query = new URLSearchParams(mark === -1 ? "" : request.path.slice(mark + 1));
+  const account = query.get("integration");
+  const workQueue = account === GITHUB_WORK_QUEUE;
+  const onBridge = !workQueue && query.get("agents") === "1";
+  const given = parsed(request.body);
+  if (!account || !isObject(given))
+    return yield* json(400, { message: "Name the account and what to do." });
+  const base = `${onBridge ? AGENTS2 : ""}api/integration/${encodeURIComponent(account)}/connect`;
+  const answer = isObject(given.answer) ? { answer: given.answer } : {};
+  const to = (path, method, body) => ({
+    ...context,
+    route: path,
+    request: {
+      ...request,
+      path,
+      method,
+      ...body === undefined ? { body: undefined } : { headers: { ...request.headers, "content-type": "application/json" }, body: Buffer.from(JSON.stringify(body)) }
+    }
+  });
+  const forward = onBridge ? agentsRoute : engineRoute;
+  switch (given.action) {
+    case "cancel":
+    case "complete": {
+      if (typeof given.attempt !== "string" || !given.attempt)
+        break;
+      const attempt = `${base}/oauth/${encodeURIComponent(given.attempt)}`;
+      if (given.action === "cancel") {
+        if (workQueue) {
+          if (!/^att_[a-zA-Z0-9]+$/.test(given.attempt))
+            break;
+          return yield* workQueueSignInRoute(to(attempt, "DELETE"));
+        }
+        return yield* forward(to(attempt, "DELETE"));
+      }
+      if (typeof given.code === "string")
+        return yield* forward(to(`${attempt}/complete`, "POST", { code: given.code }));
+      break;
+    }
+    case "addKey":
+      if (typeof given.key === "string")
+        return yield* forward(to(`${base}/key`, "POST", { key: given.key, ...answer }));
+      break;
+    case "external":
+      if (typeof given.methodID === "string")
+        return yield* forward(to(`${base}/external`, "POST", { methodID: given.methodID, ...answer }));
+      break;
+  }
+  return yield* json(400, { message: "Name the sign-in action and what it needs." });
+}
+
 // box/src/link/server/router.ts
 var WORK_QUEUE_OAUTH = new RegExp(`^api/integration/${GITHUB_WORK_QUEUE}/connect/oauth(?:/att_[a-zA-Z0-9]+)?$`);
 var ROUTES = [
@@ -95820,6 +95933,7 @@ var ROUTES = [
   }, answer: legacySignInRoute },
   { feature: "sign-in.return", when: (route) => route === "kuvo/sign-in/return", answer: signInReturnRoute },
   { feature: "accounts.catalog", when: (route) => route === ACCOUNT_CATALOG_ROUTE, answer: accountCatalogRoute },
+  { feature: "sign-in.action", when: (route) => route === SIGN_IN_ACTION_ROUTE, answer: signInActionRoute },
   { feature: "sign-in.methods", when: (route) => route === SIGN_IN_METHODS_ROUTE || route === SIGN_IN_STATUS_ROUTE || route === SIGN_IN_ACCOUNTS_ROUTE || route === SIGN_IN_START_ROUTE, answer: signInRoute },
   { feature: "claude-code", when: (route) => route === "kuvo/claude-code", answer: claudeCodeRoute },
   { feature: "agents", when: (route, request) => request.path.startsWith(AGENTS2), answer: agentsRoute },

@@ -21,6 +21,7 @@ use crate::error::{Error, Refusal, Result};
 use crate::paths::{query_value, segment};
 
 pub const ACCOUNT_CATALOG: &str = "accounts.catalog";
+pub const SIGN_IN_ACTION: &str = "sign-in.action";
 
 fn sign_in_client(request: Request) -> Request {
     static CLIENT: OnceLock<Option<String>> = OnceLock::new();
@@ -506,7 +507,9 @@ impl BoxClient {
 
     /// Hands the engine the code a sign-in's page gave.
     pub fn complete_sign_in(&self, side: Side, account: &str, attempt: &str, code: &str) -> Result<()> {
-        self.done(&Request::post(format!("{}/integration/{}/connect/oauth/{}/complete", side.api(), segment(account), segment(attempt)), json!({ "code": code })))
+        self.sign_in_action(side, account, "complete", json!({ "attempt": attempt, "code": code }), |_| {
+            Request::post(format!("{}/integration/{}/connect/oauth/{}/complete", side.api(), segment(account), segment(attempt)), json!({ "code": code }))
+        })
     }
 
     pub fn return_sign_in_address(&self, side: Side, account: &str, attempt: &str, address: &str) -> Result<()> {
@@ -515,10 +518,13 @@ impl BoxClient {
 
     /// Gives a sign-in up.
     pub fn cancel_sign_in(&self, side: Side, account: &str, attempt: &str) -> Result<()> {
-        if account == "github-work-queue" {
-            return self.done(&sign_in_client(Request::delete(format!("api/integration/{}/connect/oauth/{}", segment(account), segment(attempt)))));
-        }
-        self.done(&Request::delete(format!("{}/integration/{}/connect/oauth/{}", side.api(), segment(account), segment(attempt))))
+        self.sign_in_action(side, account, "cancel", json!({ "attempt": attempt }), |_| {
+            if account == "github-work-queue" {
+                sign_in_client(Request::delete(format!("api/integration/{}/connect/oauth/{}", segment(account), segment(attempt))))
+            } else {
+                Request::delete(format!("{}/integration/{}/connect/oauth/{}", side.api(), segment(account), segment(attempt)))
+            }
+        })
     }
 
     /// Signs in with a key, and what its form asked. The key goes to the engine and nowhere else.
@@ -527,7 +533,9 @@ impl BoxClient {
         if let Some(answer) = answer.filter(|answer| !answer.is_empty()) {
             body["answer"] = Value::Object(answer.clone());
         }
-        self.done(&Request::post(format!("{}/integration/{}/connect/key", side.api(), segment(account)), body))
+        self.sign_in_action(side, account, "addKey", body, |body| {
+            Request::post(format!("{}/integration/{}/connect/key", side.api(), segment(account)), body)
+        })
     }
 
     /// Signs in with credentials the computer has already (AWS's, gcloud's).
@@ -536,7 +544,18 @@ impl BoxClient {
         if let Some(answer) = answer.filter(|answer| !answer.is_empty()) {
             body["answer"] = Value::Object(answer.clone());
         }
-        self.done(&Request::post(format!("{}/integration/{}/connect/external", side.api(), segment(account)), body))
+        self.sign_in_action(side, account, "external", body, |body| {
+            Request::post(format!("{}/integration/{}/connect/external", side.api(), segment(account)), body)
+        })
+    }
+
+    fn sign_in_action(&self, side: Side, account: &str, action: &str, mut body: Value, legacy: impl FnOnce(Value) -> Request) -> Result<()> {
+        if !self.has_feature(SIGN_IN_ACTION)? {
+            return self.done(&legacy(body));
+        }
+        body["action"] = json!(action);
+        let path = format!("kuvo/sign-in/action?integration={}{}", query_value(account), side.agents_query());
+        self.done(&sign_in_client(Request::post(path, body)))
     }
 
     /// Installs a coding agent's program on this computer, with its maker's installer.

@@ -321,7 +321,10 @@ impl Git {
             ("GET", "kuvo/folders") => {
                 let path = query("path").unwrap_or_default();
                 match self.folders.get(&path) {
-                    Some(Ok((folders, files))) => found(200, json!({ "path": path, "home": HOME, "parent": null, "folders": folders.iter().map(|name| json!({ "name": name })).collect::<Vec<_>>(), "files": files })),
+                    Some(Ok((folders, files))) => {
+                        let entry = |name: &str| json!({ "name": name, "path": format!("{}/{name}", path.trim_end_matches('/')) });
+                        found(200, json!({ "path": path, "home": HOME, "parent": null, "folders": folders.iter().map(|name| entry(name)).collect::<Vec<_>>(), "files": files, "fileEntries": files.iter().map(|name| entry(name)).collect::<Vec<_>>() }))
+                    }
                     Some(Err(reason)) => found(403, json!({ "message": format!("{path} can't be read here."), "reason": reason })),
                     None => found(404, json!({ "message": format!("There's no folder {path} here."), "reason": "No such folder" })),
                 }
@@ -332,8 +335,8 @@ impl Git {
 
     /// A file as `kuvo/file/text` answers for it: its text, or that it isn't text (the fixtures'
     /// only one that isn't is a picture).
-    pub fn text(&self, uri: &str) -> Option<Value> {
-        let bytes = self.contents.get(&super::percent_decode(uri.trim_start_matches("file://")))?;
+    pub fn text(&self, path: &str) -> Option<Value> {
+        let bytes = self.contents.get(path)?;
         Some(match std::str::from_utf8(bytes) {
             Ok(text) if !bytes.contains(&0) => json!({ "text": true, "encoding": "utf-8", "content": text }),
             _ => json!({ "text": false }),

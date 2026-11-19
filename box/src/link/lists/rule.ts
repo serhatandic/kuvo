@@ -265,3 +265,25 @@ export function listedProjects(sessions: Readonly<Record<string, SessionFacts>>,
   }
   return projects;
 }
+
+/** The sidebar's projects by newest session, with name and directory resolving ties. */
+export function projectOrder(projects: Readonly<Record<string, ListedProject>>): string[] {
+  const compare = (left: string, right: string) => {
+    // Compare names as the sidebar does: numeric runs compare by value, other characters by case.
+    const one = left.match(/[0-9]+|[^0-9]/gu) ?? [], two = right.match(/[0-9]+|[^0-9]/gu) ?? [];
+    for (let at = 0; at < Math.min(one.length, two.length); at++) {
+      const a = one[at]!, b = two[at]!;
+      const bothNumbers = /^\d/.test(a) && /^\d/.test(b);
+      const x = bothNumbers ? a.replace(/^0+/, "") : a.toLowerCase();
+      const y = bothNumbers ? b.replace(/^0+/, "") : b.toLowerCase();
+      const difference = (bothNumbers ? x.length - y.length : 0) || Buffer.compare(Buffer.from(x), Buffer.from(y));
+      if (difference) return difference;
+    }
+    return one.length - two.length;
+  };
+  const name = (folder: string) => projects[folder]?.name ?? (path.basename(folder) || folder);
+  return Object.keys(projects).sort((a, b) =>
+    (projects[b]?.updated ?? 0) - (projects[a]?.updated ?? 0)
+    || compare(name(a), name(b))
+    || Buffer.compare(Buffer.from(a), Buffer.from(b)));
+}

@@ -412,9 +412,13 @@ fn follow_sessions(client: BoxClient, timing: Timing, latest: &Latest<ListUpdate
             continue;
         }
         let mut again_now = false;
+        let start_required = client.advertised(sessions::LIST_START);
         loop {
             match lines::next_line(&mut *stream.reader) {
-                Ok(Some(text)) => match serde_json::from_str::<Line>(&text) {
+                Ok(Some(text)) => match serde_json::from_str::<Line>(&text)
+                    .map_err(|error| Error::BadAnswer(format!("A line of the session list couldn't be read: {error}")))
+                    .and_then(|line| line.check_start(start_required))
+                {
                     Ok(line) => {
                         backoff.reset();
                         quiet.came();
@@ -422,7 +426,7 @@ fn follow_sessions(client: BoxClient, timing: Timing, latest: &Latest<ListUpdate
                             latest.put(ListUpdate::Listing(listing.clone()));
                         }
                     }
-                    Err(error) => latest.put(ListUpdate::Failed(Error::BadAnswer(format!("A line of the session list couldn't be read: {error}")))),
+                    Err(error) => latest.put(ListUpdate::Failed(error)),
                 },
                 Ok(None) => break,
                 Err(error) => {
