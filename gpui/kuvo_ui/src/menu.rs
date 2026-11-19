@@ -336,6 +336,8 @@ impl Render for Menu {
                     div()
                         .debug_selector(move || selector)
                         .id(ix)
+                        .w_full()
+                        .min_w_0()
                         .flex()
                         .items_center()
                         .gap(space::S2)
@@ -369,14 +371,14 @@ impl Render for Menu {
                                 .children(leading.filter(|_| !entry.loading)))
                         })
                         .child(div().flex_1().min_w_0().flex().flex_col()
-                            .child(div().when(entry.description.is_none(), |d| d.truncate()).child(entry.label.clone()))
+                            .child(div().min_w_0().when(entry.description.is_none(), |d| d.truncate()).child(entry.label.clone()))
                             .children(entry.description.clone().map(|words| {
-                                div().debug_selector(move || description_selector).text_color(c.text_muted).child(words)
+                                div().min_w_0().debug_selector(move || description_selector).text_color(c.text_muted).child(words)
                             })))
                         // (A long detail gives way too, so neither pushes the other out of the menu.)
                         .children(entry.detail.clone().map(|d| div().min_w_0().max_w(gpui::relative(0.6)).truncate().text_color(c.text_faint).child(d)))
                         .children(entry.shortcut.clone().map(|k| {
-                            div().text_ui(TypeSize::Caption).text_color(c.text_faint).child(k)
+                            div().flex_none().text_ui(TypeSize::Caption).text_color(c.text_faint).child(k)
                         }))
                         .into_any_element()
                 }

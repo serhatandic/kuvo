@@ -424,6 +424,8 @@ impl ChangesView {
             .group(group.clone())
             .flex()
             .w_full()
+            .min_w_0()
+            .overflow_hidden()
             .items_center()
             .gap(space::S2)
             .h(px(28.))
@@ -438,7 +440,7 @@ impl ChangesView {
                 this.open(open.clone(), cx);
             }))
             .child(div().w(px(14.)).flex_none().text_center().text_mono(TypeSize::Caption).text_color(color).child(letter))
-            .child(div().flex_none().max_w(px(220.)).truncate().text_color(c.text).when(file.status == "deleted", |d| d.line_through()).child(file.name().to_owned()))
+            .child(div().min_w_0().max_w(px(220.)).truncate().text_color(c.text).when(file.status == "deleted", |d| d.line_through()).child(file.name().to_owned()))
             .child(div().flex_1().min_w_0().truncate().text_ui(TypeSize::Caption).text_color(c.text_faint).child(file.folder().to_owned()))
             .child(
                 div()

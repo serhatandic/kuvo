@@ -16,7 +16,7 @@ use kuvo_box::bots::{Work, WorkChanged, WorkSession, WorkState};
 use kuvo_box::follow::Followed;
 use kuvo_box::{BoxClient, Follow, Timing};
 use kuvo_ui::{
-    ActiveTheme, Button, ButtonSize, Icon, IconName, IconSize, StyledType, TypeSize,
+    ActiveTheme, Button, ButtonSize, Icon, IconName, IconSize, StyledType, TextRow, TypeSize,
     icon::{Mark, provider_mark, provider_mark_color},
     menu::{PopoverMenu, PopoverMenuHandle, Tooltip},
     small::status_dot,
@@ -1053,11 +1053,14 @@ impl ActivityCard {
                 .children(files.iter().take(RECENT_FILES).map(|artifact| {
                     let selector = format!("activity-output-{}", artifact.id);
                     let clicked = (*artifact).clone();
-                    row(selector, cx)
-                        .child(Icon::new(output_icon(artifact)).size(IconSize::Nav).color(c.icon))
-                        .child(div().flex_1().min_w_0().truncate().child(middle_trim(&artifact.name, 34)))
-                        .child(div().flex_none().text_mono(TypeSize::Caption).text_color(c.text_faint).child(ext_tag(&artifact.name)))
-                        .on_click(cx.listener(move |this, _, window, cx| this.open_output(&clicked, window, cx)))
+                    popover_row(
+                        TextRow::truncated(selector.clone(), middle_trim(&artifact.name, 34))
+                            .debug_selector(selector)
+                            .leading(Icon::new(output_icon(artifact)).size(IconSize::Nav).color(c.icon))
+                            .trailing(div().text_mono(TypeSize::Caption).text_color(c.text_faint).child(ext_tag(&artifact.name))),
+                        cx,
+                    )
+                    .on_click(cx.listener(move |this, _, window, cx| this.open_output(&clicked, window, cx)))
                 }))
                 .children(more_files_label.map(|label| {
                     div()
@@ -1080,6 +1083,8 @@ impl ActivityCard {
 
         div()
             .debug_selector(|| "activity-outputs".into())
+            .w_full()
+            .min_w_0()
             .flex()
             .flex_col()
             .flex_none()
@@ -1098,6 +1103,8 @@ impl ActivityCard {
         let has_next = self.outputs.as_ref().is_some_and(|page| page.next.is_some());
         let list_max_h = (max_h - px(64.)).max(px(120.));
         div()
+            .w_full()
+            .min_w_0()
             .flex()
             .flex_col()
             .debug_selector(|| "activity-all-outputs".into())
@@ -1124,6 +1131,8 @@ impl ActivityCard {
             .child(
                 div()
                     .id("activity-all-outputs-list")
+                    .w_full()
+                    .min_w_0()
                     .border_t_1()
                     .border_color(c.border)
                     .pt(space::S1_5)
@@ -1134,11 +1143,14 @@ impl ActivityCard {
                     .children(artifacts.iter().map(|artifact| {
                         let selector = format!("activity-output-{}", artifact.id);
                         let clicked = artifact.clone();
-                        row(selector, cx)
-                            .child(Icon::new(output_icon(artifact)).size(IconSize::Nav).color(c.icon))
-                            .child(div().flex_1().min_w_0().truncate().child(middle_trim(&artifact.name, 34)))
-                            .child(div().flex_none().text_mono(TypeSize::Caption).text_color(c.text_faint).child(ext_tag(&artifact.name)))
-                            .on_click(cx.listener(move |this, _, window, cx| this.open_output(&clicked, window, cx)))
+                        popover_row(
+                            TextRow::truncated(selector.clone(), middle_trim(&artifact.name, 34))
+                                .debug_selector(selector)
+                                .leading(Icon::new(output_icon(artifact)).size(IconSize::Nav).color(c.icon))
+                                .trailing(div().text_mono(TypeSize::Caption).text_color(c.text_faint).child(ext_tag(&artifact.name))),
+                            cx,
+                        )
+                        .on_click(cx.listener(move |this, _, window, cx| this.open_output(&clicked, window, cx)))
                     }))
                     .children(has_next.then(|| {
                         div().pt(space::S1).child(
@@ -1188,15 +1200,21 @@ impl ActivityCard {
             WorkState::Stopped => "Stopped",
             _ => "",
         };
-        div().flex().items_center().gap(space::S1)
-            .child(row(format!("activity-session-{id}"), cx).flex_1().min_w_0()
-                .child(avatar)
-                .child(div().flex_1().min_w_0().truncate().child(session.title.clone()))
-                .child(div().flex_none().text_ui(TypeSize::Caption).text_color(c.text_muted).child(status))
+        div().w_full().min_w_0().flex().items_center().gap(space::S1)
+            .child(
+                popover_row(
+                    TextRow::truncated(format!("activity-session-{id}"), session.title.clone())
+                        .debug_selector(format!("activity-session-{id}"))
+                        .leading(avatar)
+                        .trailing(div().text_ui(TypeSize::Caption).text_color(c.text_muted).child(status)),
+                    cx,
+                )
+                .flex_1()
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.dismiss(cx);
                     this.activity.update(cx, |bars, cx| bars.open(&id, window, cx)).ok();
-                })))
+                })),
+            )
             .children(active.then(|| Button::icon_only(SharedString::from(format!("activity-stop-{stop}")), IconName::Stop, "Stop session").ghost().quiet()
                 .size(ButtonSize::Small).disabled(bars.stopping_all || bars.stopping.contains(&stop))
                 .on_click(cx.listener(move |this, _, _, cx| {
@@ -1213,27 +1231,34 @@ impl ActivityCard {
         let asking = sessions.iter().filter(|session| session.state == WorkState::Asking).count();
         let label = sessions_label(sessions.len() - asking, asking);
         let can_stop = bars.bot.is_some() && bars.work_fresh && bars.at_work().next().is_some();
-        let fold = (!sessions.is_empty()).then(|| row("activity-toggle-sessions", cx)
-            .child(
-                div().flex().flex_none().items_center()
-                    .children(sessions.iter().take(3).enumerate().map(|(index, session)| {
-                        div().flex_none().when(index > 0, |d| d.ml(px(-6.)))
-                            .child(self.avatar(bars, session, "stack", cx))
-                    }))
-                    .children((sessions.len() > 3).then(|| {
-                        div().debug_selector(|| "activity-avatar-overflow".into()).ml(space::S1)
-                            .text_ui(TypeSize::Caption).text_color(c.text_muted).child(format!("+{}", sessions.len() - 3))
-                    })),
+        let fold = (!sessions.is_empty()).then(|| {
+            let mut row = TextRow::truncated("activity-toggle-sessions", label)
+                .debug_selector("activity-toggle-sessions")
+                .leading(
+                    div().flex().flex_none().items_center()
+                        .children(sessions.iter().take(3).enumerate().map(|(index, session)| {
+                            div().flex_none().when(index > 0, |d| d.ml(px(-6.)))
+                                .child(self.avatar(bars, session, "stack", cx))
+                        }))
+                        .children((sessions.len() > 3).then(|| {
+                            div().debug_selector(|| "activity-avatar-overflow".into()).ml(space::S1)
+                                .text_ui(TypeSize::Caption).text_color(c.text_muted).child(format!("+{}", sessions.len() - 3))
+                        })),
+                );
+            if asking > 0 {
+                row = row.trailing(div().size(px(6.)).rounded(radius::PILL).bg(c.accent));
+            }
+            popover_row(
+                row.trailing(mark(if self.expanded { IconName::ChevronUp } else { IconName::ChevronDown }, c.text_faint)),
+                cx,
             )
-            .child(div().flex_1().min_w_0().truncate().child(label))
-            .children((asking > 0).then(|| div().flex_none().size(px(6.)).rounded(radius::PILL).bg(c.accent)))
-            .child(mark(if self.expanded { IconName::ChevronUp } else { IconName::ChevronDown }, c.text_faint))
             .on_click(cx.listener(|this, _, _, cx| {
                 this.expanded = !this.expanded;
                 cx.notify();
-            })));
+            }))
+        });
         Some(section("activity-sessions", if bars.bot.is_some() { "Sessions" } else { "Subagents" }, cx)
-            .child(div().flex().items_center()
+            .child(div().w_full().min_w_0().flex().items_center()
                 .children(fold.map(|fold| fold.flex_1().min_w_0()))
                 .children(can_stop.then(|| Button::new("activity-stop-all", "Stop All").ghost().quiet()
                     .size(ButtonSize::Small).loading(bars.stopping_all)
@@ -1256,14 +1281,24 @@ impl ActivityCard {
                 let id = command.id.clone();
                 let toggle = id.clone();
                 let selected = self.output.as_ref().is_some_and(|shown| shown.command.id == id);
-                div().flex().flex_col()
-                    .child(row(format!("activity-process-{id}"), cx).when(selected, |d| d.bg(c.hover))
-                        .child(Icon::new(IconName::TerminalWindow).size(IconSize::Nav).color(c.icon))
-                        .child(div().flex_1().min_w_0().truncate().text_mono(TypeSize::Small).child(command.command.lines().next().unwrap_or("").to_owned()))
-                        .child(div().flex_none().size(px(6.)).rounded(radius::PILL).bg(c.success))
+                div().w_full().min_w_0().flex().flex_col()
+                    .child(
+                        popover_row(
+                            TextRow::truncated(
+                                format!("activity-process-{id}"),
+                                command.command.lines().next().unwrap_or("").to_owned(),
+                            )
+                            .debug_selector(format!("activity-process-{id}"))
+                            .mono(true)
+                            .leading(Icon::new(IconName::TerminalWindow).size(IconSize::Nav).color(c.icon))
+                            .trailing(div().size(px(6.)).rounded(radius::PILL).bg(c.success)),
+                            cx,
+                        )
+                        .when(selected, |d| d.bg(c.hover))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.toggle_output(&toggle, cx);
-                        })))
+                        })),
+                    )
                     .children(selected.then(|| {
                         let (words, printed) = self.output_words().unwrap_or_default();
                         let stopping = bars.stopping.contains(&id);
@@ -1283,8 +1318,8 @@ impl ActivityCard {
     fn preview(&self, name: &str, preview: &Preview, max_h: gpui::Pixels, cx: &Context<Self>) -> AnyElement {
         let c = cx.theme().colors.clone();
         let body_max_h = (max_h - px(64.)).max(px(120.));
-        div().flex().flex_col().debug_selector(|| "activity-output-preview".into())
-            .child(div().flex().items_center().gap(space::S2).px(space::S2)
+        div().w_full().min_w_0().flex().flex_col().debug_selector(|| "activity-output-preview".into())
+            .child(div().w_full().min_w_0().flex().items_center().gap(space::S2).px(space::S2)
                 .child(Button::icon_only("activity-preview-back", IconName::ChevronLeft, "Back to Activity").ghost().size(ButtonSize::Small)
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.preview = None;
@@ -1292,7 +1327,7 @@ impl ActivityCard {
                         window.focus(&this.focus, cx);
                         cx.notify();
                     })))
-                .child(div().min_w_0().truncate().child(name.to_owned())))
+                .child(div().flex_1().min_w_0().truncate().child(name.to_owned())))
             .child(div().id("activity-preview-body").border_t_1().border_color(c.border).p(space::S2)
                 .max_h(body_max_h).overflow_y_scroll()
                 .child(match preview {
@@ -1377,16 +1412,20 @@ impl Render for ActivityCard {
 }
 
 fn section(id: &'static str, title: &'static str, cx: &App) -> gpui::Div {
-    div().debug_selector(move || id.into()).flex().flex_col().flex_none()
+    div().debug_selector(move || id.into()).w_full().min_w_0().flex().flex_col().flex_none()
         .child(div().px(space::S2).py(px(2.)).text_color(cx.theme().colors.text_muted).child(title))
 }
 
-fn row(id: impl Into<SharedString>, cx: &App) -> gpui::Stateful<gpui::Div> {
-    let id = id.into();
+fn popover_row(row: TextRow, cx: &App) -> gpui::Stateful<gpui::Div> {
     let c = &cx.theme().colors;
-    div().id(id.clone()).debug_selector(move || id.to_string())
-        .flex().flex_none().items_center().gap(space::S2).h(px(28.)).px(space::S2).rounded(radius::NAV)
-        .tab_index(0).cursor_pointer().hover(|d| d.bg(c.hover))
+    row.into_div(cx)
+        .flex_none()
+        .h(px(28.))
+        .px(space::S2)
+        .rounded(radius::NAV)
+        .tab_index(0)
+        .cursor_pointer()
+        .hover(|d| d.bg(c.hover))
         .focus_visible(|d| d.bg(c.hover).border_1().border_color(c.accent))
 }
 

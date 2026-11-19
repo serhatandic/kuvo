@@ -1506,7 +1506,7 @@ pub(crate) fn two_lines(name: impl Into<SharedString>, detail: impl IntoElement,
         .min_w_0()
         .flex()
         .flex_col()
-        .child(div().truncate().text_role(TextRole::RowTitle).text_color(c.text).child(name.into()))
+        .child(div().min_w_0().truncate().text_role(TextRole::RowTitle).text_color(c.text).child(name.into()))
         .child(detail)
         .into_any_element()
 }

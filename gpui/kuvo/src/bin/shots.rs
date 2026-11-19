@@ -157,6 +157,7 @@ const SCREENS: &[Screen] = &[
     // Unified From / To agent message cards: received message, sent mid-turn outside the step
     // group, sent with waited reply, and a failed send.
     Screen { slug: "agent-messages", width: 1280., height: 820., session: Some("ses_dark"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "text-overflow", width: 1080., height: 820., session: Some("ses_dark"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(text_overflow_open) },
     Screen { slug: "agent-letters", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(agent_letters) },
     // Selecting text (`kuvo_ui/src/selection.rs`): across a paragraph, inside a code block, across
     // messages, the right-click menu over a selection, and a drag in three steps.
@@ -1801,6 +1802,65 @@ fn tool_groups_open(workspace: &mut Workspace, _window: &mut Window, cx: &mut Co
     }
 }
 
+/// Real conversation with a long steps-group summary line and a question card with long options
+/// (reproducing `.feedback/text-overflow.png` and option overflow in light and dark).
+fn stage_text_overflow(stand_in: &StandIn) {
+    use serde_json::json;
+    stand_in.set_facts("ses_dark", |facts| {
+        facts["title"] = json!("Outputs popover rework & image viewer");
+    });
+    stand_in.add_message("ses_dark", json!({
+        "type": "user", "id": "msg_ov_u1", "time": { "created": NOW - 120_000.0 },
+        "text": "Queue the Outputs popover rework, check the image viewer branch, and ask which draft direction to pursue first."
+    }));
+    stand_in.add_message("ses_dark", json!({
+        "type": "assistant", "id": "msg_ov_a1", "time": { "created": NOW - 110_000.0, "completed": NOW - 95_000.0 },
+        "agent": "build", "finish": "stop",
+        "content": [
+            { "type": "tool", "id": "ov_1", "name": "kuvo-browser_queue_list", "title": "Listed the Work Queue", "doing": "Listing the Work Queue", "state": { "status": "completed", "input": { "search": "image viewer" }, "content": [{ "type": "text", "text": "2 items" }] } },
+            { "type": "tool", "id": "ov_2", "name": "shell", "state": { "status": "completed", "input": { "command": "cd ~/Projects/kuvo-ai && git worktree add -q -b kuvo/900d-popover-viewer ~/.kuvo-code/tmp/sol/900d main" }, "content": [{ "type": "text", "text": "" }] } },
+            { "type": "tool", "id": "ov_3", "name": "kuvo-browser_queue_add", "title": "Added \"Outputs popover rework (cluttered, hundreds of sessions, unclear wake-ups)\" to the Work Queue", "doing": "Adding to the Work Queue", "state": { "status": "completed", "input": { "title": "Outputs popover rework (cluttered, hundreds of sessions, unclear wake-ups)" }, "content": [{ "type": "text", "text": "Added #932" }] } },
+            { "type": "tool", "id": "ov_4", "name": "kuvo-browser_start_session", "title": "Started a session", "doing": "Starting a session", "state": { "status": "completed", "input": { "title": "Drafts: one image viewer + a calmer Outputs popover (Gemini Neon)" }, "content": [{ "type": "text", "text": "Started" }] } },
+            { "type": "tool", "id": "ov_5", "name": "shell", "state": { "status": "completed", "input": { "command": "cd ~/.kuvo-code/bots/bot_drisrnywfr/workspace/notes && echo \"- 11-20 00:3x: user OK'd drafts\" >> log.md" }, "content": [{ "type": "text", "text": "" }] } },
+            { "type": "text", "text": "Queued #932 and set up the worktree. Before building the unified image viewer, which behavior do you want for large screenshots and tiny icons?" }
+        ]
+    }));
+    stand_in.set_asks("ses_dark", vec![json!({
+        "id": "frm_ov", "kind": "question", "session": "ses_dark", "title": "Question",
+        "questions": [{
+            "key": "q0",
+            "title": "Unified image viewer direction",
+            "question": "Which viewer layout should replace the lightbox across conversations, the Outputs popover, Work Queue attachments, and the side panel?",
+            "options": [
+                {
+                    "value": "stage",
+                    "label": "Stage (floating dark gallery)",
+                    "description": "Always-dark scrim with edge chevrons, bottom filmstrip for multi-image galleries, and floating zoom + action pills"
+                },
+                {
+                    "value": "sheet",
+                    "label": "Sheet (theme-native Quick Look dialog)",
+                    "description": "Centered elevated card matching Kuvo's light and dark themes with zero chrome overlapping the image canvas"
+                },
+                {
+                    "value": "loupe",
+                    "label": "Loupe (full-bleed inspector with named thumbnail rail)",
+                    "description": "Edge-to-edge toolbar, collapsible left filename rail for 20+ screenshots, and a bottom metadata status bar"
+                }
+            ],
+            "multiple": false, "custom": true, "required": true
+        }]
+    })]);
+}
+
+fn text_overflow_open(workspace: &mut Workspace, _window: &mut Window, cx: &mut Context<Workspace>) {
+    if let Some(view) = workspace.conversation() {
+        view.update(cx, |view, cx| {
+            view.toggle(kuvo::entries::Fold::Group("msg_ov_a1".to_owned()), cx);
+        });
+    }
+}
+
 /// The messages from other agents in view, the longer one opened.
 fn agent_letters(workspace: &mut Workspace, _window: &mut Window, cx: &mut Context<Workspace>) {
     if let Some(view) = workspace.conversation() {
@@ -2452,6 +2512,9 @@ fn main() -> anyhow::Result<()> {
             }
             if screen.slug == "agent-messages" {
                 stage_agent_messages(&stand_in);
+            }
+            if screen.slug == "text-overflow" {
+                stage_text_overflow(&stand_in);
             }
             if screen.slug == "mode-chip-held" {
                 stand_in.set_approvals(false, Some("The sandbox isn’t running on this computer."));
