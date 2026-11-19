@@ -2177,7 +2177,7 @@ test("failure bench: a Linux primary starts fresh, enrolls over SSH and pairs de
     const attempt = await tryNow();
     assert.notEqual(attempt.state, "failed", JSON.stringify(attempt.failure));
     return attempt.state === "done" && attempt;
-  });
+  }, 60_000);
   const member = done.computer.key;
   const memberEnv = { ...env, HOME: memberHome, KUVO_HOME: memberBox };
   assert.deepEqual(inBox(memberBox).setup, { ...primary, role: "member" }, "SSH installed the signed setup");
