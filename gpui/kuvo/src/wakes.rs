@@ -2,9 +2,9 @@
 //! the bot's computer. Relative dates are formatted here like other times in the app.
 
 use gpui::{
-    AnyElement, App, AppContext as _, Context, DismissEvent, ElementId, EventEmitter, FocusHandle,
-    Focusable, InteractiveElement, IntoElement, KeyBinding, ParentElement, Render,
-    StatefulInteractiveElement, Styled, Task, Window, actions, div, prelude::FluentBuilder as _, px,
+    AnyElement, App, Context, DismissEvent, EventEmitter, FocusHandle, Focusable,
+    InteractiveElement, IntoElement, KeyBinding, ParentElement, Render, StatefulInteractiveElement,
+    Styled, Task, Window, actions, div, prelude::FluentBuilder as _, px,
 };
 use kuvo_box::{
     BoxClient, Follow, Timing,
@@ -14,7 +14,6 @@ use kuvo_box::{
 };
 use kuvo_ui::{
     ActiveTheme, Button, ButtonSize, IconName, StyledType, TypeSize,
-    menu::{PopoverMenu, PopoverMenuHandle},
     theme::{radius, space},
 };
 
@@ -112,29 +111,6 @@ pub(crate) struct Source {
     pub computer: String,
     pub live: bool,
     pub now: Option<f64>,
-}
-
-pub(crate) fn chip(
-    id: impl Into<ElementId>,
-    label: String,
-    source: Source,
-    above: bool,
-    handle: PopoverMenuHandle,
-) -> AnyElement {
-    let trigger = Button::new("open-wake-schedule", label)
-        .icon(IconName::Clock)
-        .pill()
-        .size(ButtonSize::Small)
-        .tooltip("Show wake-ups and watches");
-    let popover = PopoverMenu::view(id, trigger, move |_, cx| {
-        cx.new(|cx| WakeSchedule::new(source.clone(), cx))
-    });
-    let popover = popover.with_handle(handle);
-    if above {
-        popover.above().into_any_element()
-    } else {
-        popover.align_right().into_any_element()
-    }
 }
 
 pub(crate) struct WakeSchedule {

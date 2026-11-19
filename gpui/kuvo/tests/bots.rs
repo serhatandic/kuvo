@@ -1078,31 +1078,22 @@ fn moved_bot_wakes_are_followed_before_opening_bots(cx: &mut TestAppContext) {
     click(cx, "rail-bots");
     for _ in 0..400 {
         cx.run_until_parked();
-        if shown(cx, "open-wake-schedule") { break; }
+        if shown(cx, "bot-avatar-wake") { break; }
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
-    assert!(shown(cx, "bot-avatar-wake"), "the destination's schedule also marks its avatar");
-    click(cx, "open-wake-schedule");
-    for _ in 0..400 {
-        cx.run_until_parked();
-        if shown(cx, "cancel-entry") { break; }
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
-    assert!(shown(cx, "cancel-entry"));
-    assert_eq!(peer.seen_at("GET", "kuvo/wakes/ses_mira/events").len(), 1);
-    assert!(stand_in.seen_at("GET", "kuvo/wakes/ses_mira/events").is_empty());
+    assert!(shown(cx, "bot-avatar-wake"), "the destination's schedule marks its avatar with the clock icon");
+    assert!(!shown(cx, "open-wake-schedule"), "the Bots sidebar row must not show a wake-up pill");
 
-    // Once it's away, the list spells out the failed read and offers no cancellation.
-    cx.simulate_keystrokes("escape");
-    cx.run_until_parked();
-    peer.set_down(true);
-    click(cx, "open-wake-schedule");
+    // Even when a remote bot's wake-up is already due, no "Wake-up due" pill is shown in the sidebar.
+    peer.set_bot_wakes("bot_mira", vec![json!({
+        "id": "at-due", "due": NOW / 1000. - 60., "summary": "Overdue check", "cancelKey": "due",
+    })], vec![]);
     for _ in 0..400 {
         cx.run_until_parked();
-        if shown(cx, "wake-schedule-error") && !shown(cx, "cancel-entry") { break; }
+        if !shown(cx, "bot-avatar-wake") { break; }
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
-    assert!(shown(cx, "wake-schedule-error") && !shown(cx, "cancel-entry"));
+    assert!(!shown(cx, "open-wake-schedule"), "a due wake-up must not render a Wake-up due pill in the Bots sidebar");
 }
 
 #[gpui::test]

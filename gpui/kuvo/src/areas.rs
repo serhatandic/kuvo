@@ -35,7 +35,7 @@ use crate::moves::RemoteSource;
 use crate::queue::marks::{label_dot, status_mark};
 use crate::queue::{Act as QueueAct, QueueEvent, QueueView};
 use crate::settings::{AddMachine, Opened, Pick, SettingsView};
-use crate::{time, wakes};
+use crate::time;
 
 
 /// How an area's list stands.
@@ -902,7 +902,7 @@ fn ready<T>(reading: &Reading<T>) -> Option<&T> {
 }
 
 impl Render for AreaView {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if let Some(settings) = self.settings.clone() {
             return div().id("area-settings").size_full().child(settings.update(cx, |settings, cx| settings.sidebar(cx)));
         }
@@ -912,7 +912,7 @@ impl Render for AreaView {
         let compact = self.sidebar_mode != SidebarMode::Full;
         let rows = match self.area {
             Area::Bots if compact => self.bot_avatars(cx),
-            Area::Bots => self.bots_rows(window, cx),
+            Area::Bots => self.bots_rows(cx),
             Area::Queue => self.queue_rows(cx),
             Area::Computers => self.computer_rows(cx),
             Area::Settings | Area::Insights => Vec::new(),
@@ -1055,7 +1055,7 @@ impl AreaView {
         Some((remote, bot, remote.reached && !away))
     }
 
-    fn bots_rows(&self, window: &mut Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
+    fn bots_rows(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let c = cx.theme().colors.clone();
         // The area's name, with New Bot beside it.
         let header = div()
@@ -1135,14 +1135,6 @@ impl AreaView {
                 let computer = there.computer.as_str();
                 // What waits for it or was refused, else where it lives.
                 let remote_bot = self.remote_bot(listed);
-                let wake_chip = remote_bot.and_then(|(remote, bot, reached)| {
-                    let status = wakes::Status::from(bot);
-                    let handle = window.use_keyed_state(SharedString::from(format!("remote-wakes-handle-{}", listed.id)), cx, |_, _| kuvo_ui::menu::PopoverMenuHandle::default()).read(cx).clone();
-                    let label = status.chip_label(self.now()).or_else(|| handle.is_open().then(|| "Wake-ups".into()))?;
-                    let label = if reached { label } else { "Wake-ups".into() };
-                    let source = wakes::Source { client: remote.client.clone(), session: bot.session.clone(), computer: computer.to_owned(), live: self.live, now: self.now };
-                    Some(wakes::chip(SharedString::from(format!("remote-wakes-{}", listed.id)), label, source, false, handle))
-                });
                 let line = if there.waiting {
                     format!("Waiting for {computer}")
                 } else if there.refused {
@@ -1175,8 +1167,7 @@ impl AreaView {
                         .hover(move |s| s.bg(if selected { selected_bg } else { hover }))
                         .on_click(self.row_click(key.clone(), cx))
                         .child(face)
-                        .child(two_lines(there.name.clone(), detail, &c))
-                        .children(wake_chip);
+                        .child(two_lines(there.name.clone(), detail, &c));
                 let row = match RemoteSource::of(listed) {
                     Some(source) => self.move_menu(&key, row, target, Some(source)),
                     None => row.into_any_element(),

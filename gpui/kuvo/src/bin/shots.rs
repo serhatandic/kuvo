@@ -2264,7 +2264,7 @@ fn home_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path::Pat
     // (And #772's: an older machine's page with its one card, waiting with Update Now, failing with
     // Try Again, under way, and offered by the box that lists it; a computer that can't be used,
     // older or out of reach, as the window shows it.)
-    for slug in ["switcher", "elsewhere", "quit-note", "update-waiting", "update-running", "update-setup", "update-ssh", "update-own-waiting", "update-own-running", "page-update-waiting", "page-update-failed", "page-update-running", "page-older-offer", "blocked-held", "blocked-unreached", "computer-pairing-waiting", "computer-pairing-readd", "bots-background-offline", "insights-needs-update"] {
+    for slug in ["switcher", "elsewhere", "quit-note", "update-waiting", "update-running", "update-setup", "update-ssh", "update-own-waiting", "update-own-running", "page-update-waiting", "page-update-failed", "page-update-running", "page-older-offer", "blocked-held", "blocked-unreached", "computer-pairing-waiting", "computer-pairing-readd", "bots-background-offline", "insights-needs-update", "bots-remote-wake"] {
         if !only.is_empty() && !only.iter().any(|only| only == slug) {
             continue;
         }
@@ -2298,6 +2298,13 @@ fn home_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path::Pat
             if slug == "bots-background-offline" {
                 devbox.add_bot("bot_scout", "Scout", serde_json::json!({ "color": "mint", "shape": "round", "face": "calm" }));
                 devbox.set_bot_now("bot_scout", serde_json::json!({ "working": 1, "asking": 0, "state": "working", "since": NOW }));
+            }
+            if slug == "bots-remote-wake" {
+                stand_in.move_bot("bot_mira", "devbox");
+                devbox.add_bot("bot_mira", "VPS Manager", serde_json::json!({ "color": "mint", "shape": "round", "face": "calm" }));
+                devbox.set_bot_wakes("bot_mira", vec![serde_json::json!({
+                    "id": "at-check", "due": NOW / 1000. + 180., "summary": "Check VPS health", "cancelKey": "check",
+                })], vec![]);
             }
             use kuvo_box::boxes::Pairing;
             let pairing = match slug {
@@ -2333,6 +2340,9 @@ fn home_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path::Pat
                         assert!(home.switch_to("key_devbox", window, cx));
                         home.workspace().clone().update(cx, |workspace, cx| workspace.show_area(Area::Bots, window, cx));
                         nearest.update(cx, |workspace, cx| workspace.connected(Err(kuvo_box::Error::NotRunning("offline".into())), cx));
+                    }
+                    if slug == "bots-remote-wake" {
+                        home.workspace().clone().update(cx, |workspace, cx| workspace.show_area(Area::Bots, window, cx));
                     }
                     if slug == "insights-needs-update" {
                         assert!(home.switch_to("key_devbox", window, cx));
