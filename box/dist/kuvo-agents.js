@@ -40831,6 +40831,30 @@ function migrateDeviceGrants(folder) {
 `, path11.dirname(folder));
   }, { exclusive: true, wait: 60000 });
 }
+function migrateRankHistory(folder) {
+  const file = path11.join(folder, "run", "link.json");
+  if (!fs15.existsSync(file))
+    return;
+  locked(path11.join(folder, "run", ".link.lock"), () => {
+    let text;
+    try {
+      text = fs15.readFileSync(file, "utf8");
+    } catch (error) {
+      if (error.code === "ENOENT")
+        return;
+      throw error;
+    }
+    const link = JSON.parse(text);
+    if (!isObject(link) || !isObject(link.shared) || !isObject(link.shared.membershipAndAccess))
+      return;
+    const value = link.shared.membershipAndAccess.value;
+    if (!isObject(value) || !Object.hasOwn(value, "successorRevisions"))
+      return;
+    delete value.successorRevisions;
+    writeDurablePrivate(file, JSON.stringify(link) + `
+`, path11.dirname(folder));
+  }, { exclusive: true, wait: 60000 });
+}
 function checkpoint(file, current) {
   const format = `Kuvo folder at ${path11.dirname(file)}`;
   let text;
@@ -40967,7 +40991,8 @@ var init_folder_version = __esm(() => {
     () => {},
     () => {},
     () => {},
-    () => {}
+    () => {},
+    migrateRankHistory
   ];
 });
 
@@ -42571,4 +42596,4 @@ if (!isMainThread && process.argv.includes("--insights-db-worker")) {
 } else {
   await init_main().then(() => ({}));
 }
-// Built from Packages/Box/src/agents 03adc33f88c14241e5eb3f1a5bfba6473134bfd8cfc6c439dd311d891708cd74
+// Built from Packages/Box/src/agents 2d8e48a32240152879ddb959c0f15386fb8747764124b96ebeca8332887eb769

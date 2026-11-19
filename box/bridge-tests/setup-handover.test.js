@@ -1024,7 +1024,6 @@ test("failure bench: only the old standby can approve a standby replacement and 
   const ranked = c.read().shared.membershipAndAccess.value;
   assert.equal(ranked.successorPin, c.key);
   assert.equal(ranked.successorOrder[0], c.key);
-  assert.equal(ranked.successorRevisions.at(-1).order[0], c.key);
   await until("replacement granted lease", () => a.lease(3, c), t.signal);
   assert.deepEqual(await submit(a, b, 3), { status: 202, value: { primary: b.key, epoch: 4 } });
   await Promise.all([see(b, 4, b), see(c, 4, b)]);
@@ -1569,6 +1568,19 @@ test("failure bench: first standby assignment waits for the candidate to install
   assert.deepEqual(c.read().shared.setupPersonalities.value, b.read().shared.setupPersonalities.value);
   assert.equal(a.read().shared.membershipAndAccess.value.successorPin, undefined);
   await until("replacement grants lease", () => a.lease(2, c), t.signal);
+  const winner = a.read().leadership[2];
+  assert.notDeepEqual(b.read().leadership[2], winner);
+  resumeThird();
+  b.clock(0);
+  b.start();
+  await until("superseded standby joins the winning chain", () =>
+    b.read().setup?.role === "member" && b.read().setup?.standby?.key === c.key, t.signal);
+  for (const box of [a, b, c]) {
+    assert.equal(box.read().setup.epoch, 2);
+    assert.equal(box.read().setup.primary, a.key);
+    assert.deepEqual(box.read().leadership[2], winner);
+  }
+  assert.ok(a.lease(2, c));
 });
 
 test("failure bench: a first standby refuses a legacy library beyond replica capacity", { timeout: 35_000 }, async t => {

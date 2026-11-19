@@ -1,7 +1,7 @@
 // A signed certificate binds an epoch to its predecessor and accepted checkpoint.
 // Install the certificate and local role together before replying.
 
-import { setupLayoutDeferred, successorRankLayoutReady, unlinkCleanupLayoutReady } from "../../shared/folder-version";
+import { setupLayoutDeferred, standbyRevisionLayoutReady, successorRankLayoutReady, unlinkCleanupLayoutReady } from "../../shared/folder-version";
 import crypto from "node:crypto";
 import type { Doc, SignedDoc } from "../../shared/documents";
 import { isObject } from "../../shared/json";
@@ -11,7 +11,7 @@ import { fits, foldPhones } from "../phones";
 import { K } from "../home";
 import type { LinkState, Phone } from "../state";
 import { checksSeal, leadershipDocuments, preserveCheckpoint, resolveCheckpoint, successorPredecessor } from "./checkpoint";
-import { acceptedMembership, membershipRevocations, mergeRevocations, portableDevice, projectMembership } from "./membership";
+import { acceptedMembership, membershipOf, membershipRevocations, mergeRevocations, portableDevice, projectMembership } from "./membership";
 import { committedOperations, installShared, sharedValues } from "./shared";
 import { ledSetup, requiresStandby, setupDoc, setupOf } from "./record";
 
@@ -102,7 +102,14 @@ export function approveLeadership(link: LinkState, proposal: Doc, checkpoint?: D
         || JSON.stringify(next.granted ?? {}) !== JSON.stringify(ledger.granted ?? {})) return null;
       continue;
     }
-    if (JSON.stringify(values[kind as keyof typeof values]) !== JSON.stringify(entry)) return null;
+    const proposed = values[kind as keyof typeof values];
+    if (resolved && kind === "membershipAndAccess" && proposed) {
+      // Older signed checkpoints may still carry rank history. Compare the accepted membership.
+      if (JSON.stringify({ ...proposed, value: membershipOf(proposed.value) }) !==
+        JSON.stringify({ ...entry, value: membershipOf(entry.value) })) return null;
+      continue;
+    }
+    if (JSON.stringify(proposed) !== JSON.stringify(entry)) return null;
   }
   if (resolved) {
     for (const [operation, outcome] of Object.entries(committedOperations(link))) {
@@ -188,6 +195,43 @@ function fillEnrollmentCertificate(link: LinkState, doc: Doc, checkpoint?: Doc):
   return true;
 }
 
+const signature = (value: unknown): value is string => typeof value === "string" && /^[\w-]{86}$/.test(value);
+
+/** First assignments carry the primary's approval of an exact proposal. The same
+ * primary can replace it without changing the epoch or the predecessor. */
+export function firstStandbyRevision(doc: Doc | null) {
+  if (doc?.kind !== "leadership" || doc.body.proposal !== true || doc.body.standbyAcceptance !== true ||
+    doc.body.successorChain !== true || doc.body.replacesStandby !== undefined || doc.body.takeover === true) return undefined;
+  const revision = doc.body.assignmentRevision;
+  if (revision === undefined) return signature(doc.body.supersedes) ? 1 : 0;
+  return typeof revision === "number" && Number.isSafeInteger(revision) && revision > 0 &&
+    signature(doc.body.supersedes) ? revision : undefined;
+}
+
+function supersededFirstStandby(link: LinkState, active: Doc, doc: Doc, checkpoint?: Doc): LinkState | null {
+  if (!standbyRevisionLayoutReady(K) || active.n !== doc.n || active.body.parent !== doc.body.parent ||
+    !signature(active.body.approval) || !signature(doc.body.approval)) return null;
+  const priorRevision = firstStandbyRevision(active);
+  const revision = firstStandbyRevision(doc);
+  if (priorRevision === undefined || revision === undefined ||
+    (revision <= priorRevision && doc.body.supersedes !== active.body.approval)) return null;
+  const current = link.setup!;
+  const next = setupOf(doc.body);
+  if (!next || next.id !== current.id || next.primary !== current.primary || doc.body.previous !== current.primary) return null;
+
+  // The locally accepted first assignment pins the primary's signing key even
+  // when the previous epoch had no checkpoint. Reuse the normal signature and
+  // checkpoint verification from that position.
+  const candidate = structuredClone(link);
+  candidate.setup = { id: current.id, primary: current.primary, epoch: doc.n - 1, sign: current.sign,
+    role: current.role, managed: true, checkpointed: true, sharedSaves: true,
+    ...(typeof active.body.parent === "string" ? { successorChain: true, leadershipHash: active.body.parent } : {}) };
+  candidate.leadership = Object.fromEntries(Object.entries(candidate.leadership ?? {}).filter(([n]) => Number(n) < doc.n));
+  delete candidate.sharedOutcomes;
+  delete candidate.setupRevocations;
+  return installLeadership(candidate, doc, checkpoint, true) ? candidate : null;
+}
+
 /** Only a verified competing chain can replace the accepted tip. */
 export function takeLeadership(link: LinkState, doc: Doc, checkpoint?: Doc, forks: SuccessorForks = new Map()): boolean {
   if (fillEnrollmentCertificate(link, doc, checkpoint)) return true;
@@ -203,20 +247,17 @@ export function takeLeadership(link: LinkState, doc: Doc, checkpoint?: Doc, fork
   const active = leadershipOf(link);
   if (!active || !link.setup?.successorChain || doc.body.successorChain !== true ||
     held(link.leadership?.[doc.n])?.h === doc.h) return false;
-  const staged = stagedFork(link, doc, checkpoint, forks);
+  const replacement = supersededFirstStandby(link, active, doc, checkpoint);
+  const staged = replacement ? { source: replacement, rank: [] } : stagedFork(link, doc, checkpoint, forks);
   const next = setupOf(doc.body);
   if (!staged || !next || next.epoch < link.setup.epoch) return false;
-  const otherRanks = new Set(acceptedMembership(staged.source)?.successorRevisions?.map(revision =>
-    JSON.stringify([revision.authority, revision.operation, revision.order])));
-  const commonRank = old?.successorRevisions?.findLast(revision =>
-    otherRanks.has(JSON.stringify([revision.authority, revision.operation, revision.order])))?.order ?? staged.rank;
   const rank = (key: string) => {
-    const index = commonRank.indexOf(key);
-    return index < 0 ? commonRank.length : index;
+    const index = staged.rank.indexOf(key);
+    return index < 0 ? staged.rank.length : index;
   };
   const compare = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0;
   const difference = rank(next.primary) - rank(link.setup.primary) || compare(next.primary, link.setup.primary) || compare(doc.h, active.h);
-  if (next.epoch === link.setup.epoch && difference >= 0) return false;
+  if (!replacement && next.epoch === link.setup.epoch && difference >= 0) return false;
   const losing = acceptedMembership(link);
   if (losing) mergeRevocations(staged.source, membershipRevocations(next.id, losing));
   const merged = acceptedMembership(staged.source);
@@ -230,6 +271,7 @@ function installLeadership(link: LinkState, doc: Doc, checkpoint?: Doc, discardi
   const current = link.setup;
   const next = setupOf(doc.body);
   const acceptance = doc.body.standbyAcceptance === true;
+  if (doc.body.assignmentRevision !== undefined && (current?.standby || firstStandbyRevision(doc) === undefined)) return false;
   const takeover = doc.body.takeover === true;
   const chained = doc.body.successorChain === true;
   if (current?.successorChain && !chained || chained && !successorRankLayoutReady(K)) return false;

@@ -30,7 +30,7 @@ export function captureMembership(link: LinkState, self?: Peer, previous?: Membe
   const pin = previous?.successorPin;
   return membershipOf({
     boxes: roster, successorOrder: order, successorPin: order?.[0] === pin ? pin : undefined,
-    successorRevisions: previous?.successorRevisions, left, moved, computerHistory: computerHistory(link), devices: ownPhones(link), removalRevisions: link.removalRevisions, removedHere: link.removedHere,
+    left, moved, computerHistory: computerHistory(link), devices: ownPhones(link), removalRevisions: link.removalRevisions, removedHere: link.removedHere,
     removals: link.memberRemovals, wipePreparations: link.wipePreparations,
   });
 }

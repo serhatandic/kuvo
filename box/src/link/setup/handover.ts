@@ -1,7 +1,7 @@
 // The primary checks that the successor is running this protocol, then atomically commits
 // a signed epoch change. Peers deliver the committed record with the regular document exchange.
 
-import { setupLayoutDeferred, successorRankLayoutReady, successorRevisionLayoutReady, standbyIntentLayoutReady, unlinkCleanupLayoutReady } from "../../shared/folder-version";
+import { setupLayoutDeferred, successorRankLayoutReady, successorRevisionLayoutReady, standbyIntentLayoutReady, standbyRevisionLayoutReady, unlinkCleanupLayoutReady } from "../../shared/folder-version";
 import path from "node:path";
 import { UsageSettings } from "../../agents/usage/settings";
 import { isObject } from "../../shared/json";
@@ -14,7 +14,7 @@ import { acceptedMembership, type Membership } from "./membership";
 import { REMOVAL_OPERATIONS_FEATURE, removalsOf, PREPARATION_FEATURE } from "./removal-record";
 import { changeShared, MAX_SHARED_BYTES, operationOutcome, waitShared, type SharedValues } from "./shared";
 import { noteDocsChanged } from "../documents/changed";
-import { ownSign, readDoc, signDoc } from "../documents/format";
+import { held, ownSign, readDoc, signDoc } from "../documents/format";
 import { primaryPeersBody, pruneDocs } from "../documents/work";
 import { APP_FOLDER, K } from "../home";
 import { KEY, ownKey, peersOf, type MailSender, type Peer } from "../peers/known";
@@ -23,7 +23,7 @@ import { readLink, updateLink, type LinkState } from "../state";
 import { forwardAct, takesForwarded, type Act, type Acted } from "../work-queue/forward";
 import { changeNumbers, installNumberAuthority, MOST_NUMBER, topOf } from "../work-queue/numbers";
 import { writeCard } from "./card";
-import { canSupersedeStandby, leadershipOf, leadershipProposalHash, NUMBER_RESERVE, takeLeadership, type ReplacementEnrollment } from "./leadership";
+import { canSupersedeStandby, firstStandbyRevision, leadershipOf, leadershipProposalHash, NUMBER_RESERVE, takeLeadership, type ReplacementEnrollment } from "./leadership";
 import { LEADERSHIP_WAIT, primaryFenced } from "./lease";
 import { rankComputers } from "./reliability";
 import { followedSetup, requiresStandby, type SetupRecord } from "./record";
@@ -156,6 +156,8 @@ export async function proposeLeadership(
         shared.setupPersonalities = { sequence: 1, value: library };
       }
     }
+    const priorAssignment = supersedes && !current.standby && standbyRevisionLayoutReady(K)
+      ? firstStandbyRevision(held(link.leadershipPending)) : undefined;
     const authority = {
       setup: { id: current.id, epoch, primary: target }, previous: current.primary,
       ...(retire ? { retiredStandby: retire } : standby || requiresStandby(current) ? { sharedSaves: true } : {}),
@@ -164,6 +166,7 @@ export async function proposeLeadership(
       ...(acceptance ? { standbyAcceptance: true } : {}),
       ...(successorChain ? { successorChain: true } : {}),
       ...(supersedes ? { supersedes } : {}),
+      ...(priorAssignment !== undefined ? { assignmentRevision: priorAssignment + 1 } : {}),
       ...(pinAfterLease ? { pinAfterLease: true } : {}),
       ...(retiring ? { retiringStandby: retiring } : {}),
       ...(replace ? { replacesStandby: current.standby!.key } : {}),

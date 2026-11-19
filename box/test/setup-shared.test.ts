@@ -17,7 +17,7 @@ import { acceptedMembership } from "../src/link/setup/membership";
 import { publishRevocations } from "../src/link/setup/revocations";
 import { takeLeadership } from "../src/link/setup/leadership";
 import { newSetupID, type SetupRecord } from "../src/link/setup/record";
-import { installShared, MAX_RANK_REVISIONS, MAX_SHARED_BYTES, operationOutcome, pendingShared, queryOperation, sharedValue, stageShared, takeShared } from "../src/link/setup/shared";
+import { installShared, MAX_SHARED_BYTES, operationOutcome, pendingShared, queryOperation, sharedValue, stageShared, takeShared } from "../src/link/setup/shared";
 
 function identity() {
   const secret = newKey();
@@ -59,7 +59,7 @@ test("accepted successor order prefers servers at bootstrap and learns sustained
   expect(rankComputers(boxes, order, now)).toEqual(order);
 });
 
-test("competing successors reconcile conflicting certificates at the same epoch using the common rank", () => {
+test("competing successors reconcile conflicting certificates at the same epoch using the common epoch checkpoint rank", () => {
   upgradeKuvoFolder(K);
   const a = identity(), b = identity(), c = identity(), phone = identity();
   const id = newSetupID();
@@ -67,7 +67,7 @@ test("competing successors reconcile conflicting certificates at the same epoch 
   const setup: SetupRecord = { id, epoch: 1, primary: a.key, sign: a.signer, role: "primary", managed: true, checkpointed: true };
   const source: LinkState = { key: a.seed, sign: a.sign, setup };
   const pairing = "paired";
-  const membership = { boxes, successorOrder: [a.key, b.key, c.key], devices: { phones: [{ key: phone.key, name: "Phone", pairing }], removed: [] } };
+  const membership = { boxes, successorOrder: [b.key, c.key, a.key], devices: { phones: [{ key: phone.key, name: "Phone", pairing }], removed: [] } };
   const values = { membershipAndAccess: { sequence: 1, value: membership } };
   const parent = checkpointedTransition(source, {
     setup: { id, epoch: 2, primary: a.key }, previous: a.key, successorChain: true, standby: b.key, numberCeiling: 2_000,
@@ -75,14 +75,14 @@ test("competing successors reconcile conflicting certificates at the same epoch 
   expect(takeLeadership(source, parent)).toBe(true);
 
   const follower: LinkState = { ...structuredClone(source), key: b.seed, sign: b.sign, setup: { ...source.setup!, role: "member" } };
-  const refresh = stageShared(source, "membershipAndAccess", { ...membership, successorOrder: [b.key, c.key, a.key] })!;
+  const refresh = stageShared(source, "membershipAndAccess", { ...membership, successorOrder: [a.key, c.key, b.key] })!;
   const accepted = pendingShared(source, "membershipAndAccess")!;
   const receipt = readDoc(takeShared(follower, a.key, accepted))!;
   grantLease(source, leaseClock());
   takeShared(source, b.key, receipt);
   expect(operationOutcome(source, id, refresh.operation)?.status).toBe("committed");
   expect(source.setup?.epoch).toBe(2);
-  expect(acceptedMembership(follower)?.successorRevisions?.at(-1)?.operation).toBe(refresh.operation);
+  expect(acceptedMembership(follower)?.successorOrder).toEqual([a.key, c.key, b.key]);
   const agreed = source.shared!;
   const proposal = checkpointedTransition(source, {
     setup: { id, epoch: 3, primary: a.key }, previous: a.key, proposal: true, successorChain: true, standby: b.key, numberCeiling: 4_000,
@@ -97,7 +97,7 @@ test("competing successors reconcile conflicting certificates at the same epoch 
   expect(follower.setup?.role).toBe("primary");
 
   // These were accepted saves made on A's branch after its epoch certificate.
-  source.shared!.membershipAndAccess = { sequence: 2, value: { ...membership, successorRevisions: acceptedMembership(source)?.successorRevisions, boxes: boxes.slice(0, 2),
+  source.shared!.membershipAndAccess = { sequence: 2, value: { ...membership, boxes: boxes.slice(0, 2),
     successorOrder: [b.key, a.key], left: [c.key], devices: { phones: [], removed: [{ key: phone.key, pairing }] } } };
   const revoked = publishRevocations(source)!;
   expect(revoked).toBeTruthy();
@@ -117,7 +117,7 @@ test("competing successors reconcile conflicting certificates at the same epoch 
   expect(follower.setup?.role).toBe("primary");
 });
 
-test("accepted rank revisions stay within the shared limit after many full-roster reorderings", () => {
+test("accepted rank changes keep no history after many full-roster reorderings", () => {
   upgradeKuvoFolder(K);
   const [a, b, ...others] = Array.from({ length: 65 }, identity);
   const boxes = [a!, b!, ...others].map(box => ({ key: box.key, sign: box.signer, address: box.address, name: "Computer", kind: "machine" }));
@@ -138,7 +138,8 @@ test("accepted rank revisions stay within the shared limit after many full-roste
     takeShared(primary, b!.key, receipt!);
     expect(operationOutcome(primary, id, save!.operation)?.status).toBe("committed");
   }
-  expect(acceptedMembership(primary)?.successorRevisions).toHaveLength(MAX_RANK_REVISIONS);
+  expect(primary.shared?.membershipAndAccess?.value).not.toHaveProperty("successorRevisions");
+  expect(standby.shared?.membershipAndAccess?.value).not.toHaveProperty("successorRevisions");
   expect(Buffer.byteLength(JSON.stringify(primary.shared))).toBeLessThan(MAX_SHARED_BYTES);
 });
 

@@ -52,6 +52,8 @@ const steps: readonly Step[] = [
   () => {},
   // 16. Reserve bounded rank history and standby assignment intents.
   () => {},
+  // 17. Reserve first-standby assignment revisions. Strip rank history from the active replica.
+  migrateRankHistory,
 ];
 
 function migrateDeviceGrants(folder: string): void {
@@ -74,6 +76,25 @@ function migrateDeviceGrants(folder: string): void {
       changed = true;
     }
     if (changed) writeDurablePrivate(file, JSON.stringify(link) + "\n", path.dirname(folder));
+  }, { exclusive: true, wait: 60_000 });
+}
+
+function migrateRankHistory(folder: string): void {
+  const file = path.join(folder, "run", "link.json");
+  if (!fs.existsSync(file)) return;
+  locked(path.join(folder, "run", ".link.lock"), () => {
+    let text: string;
+    try { text = fs.readFileSync(file, "utf8"); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw error;
+    }
+    const link: unknown = JSON.parse(text);
+    if (!isObject(link) || !isObject(link.shared) || !isObject(link.shared.membershipAndAccess)) return;
+    const value = link.shared.membershipAndAccess.value;
+    if (!isObject(value) || !Object.hasOwn(value, "successorRevisions")) return;
+    delete value.successorRevisions;
+    writeDurablePrivate(file, JSON.stringify(link) + "\n", path.dirname(folder));
   }, { exclusive: true, wait: 60_000 });
 }
 
@@ -185,6 +206,11 @@ export function successorRevisionLayoutReady(folder: string): boolean {
 
 export function standbyIntentLayoutReady(folder: string): boolean {
   try { return checkpoint(path.join(folder, FOLDER_VERSION_FILE), steps.length).version >= 16; }
+  catch { return false; }
+}
+
+export function standbyRevisionLayoutReady(folder: string): boolean {
+  try { return checkpoint(path.join(folder, FOLDER_VERSION_FILE), steps.length).version >= 17; }
   catch { return false; }
 }
 

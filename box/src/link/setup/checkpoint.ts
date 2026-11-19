@@ -1,6 +1,6 @@
 // The certificate authorizes a content hash. Persist the verified bytes before recording
 // the epoch, so recovery and backups can follow the same reference as replication.
-import { setupLayoutDeferred, successorRankLayoutReady } from "../../shared/folder-version";
+import { setupLayoutDeferred, standbyRevisionLayoutReady, successorRankLayoutReady } from "../../shared/folder-version";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -93,6 +93,10 @@ export function cacheCheckpoint(link: LinkState, cache: Map<string, Doc>, doc: D
     if (candidate.n === setup.epoch && setup.leadershipHash && !held(link.leadership?.[setup.epoch])) {
       const roster = setupDoc(link)?.body.boxes;
       return Array.isArray(roster) && roster.some(peer => fitsPeer(peer) && peer.sign === candidate.origin);
+    }
+    if (candidate.n === setup.epoch && candidate.origin === setup.sign && standbyRevisionLayoutReady(K)) {
+      const active = held(link.leadership?.[setup.epoch]);
+      if (active?.body.standbyAcceptance === true && active.body.replacesStandby === undefined) return true;
     }
     if (candidate.n === setup.epoch + 1 &&
       (candidate.origin === setup.sign || candidate.origin === setup.standby?.sign ||

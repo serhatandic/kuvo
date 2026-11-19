@@ -3717,6 +3717,30 @@ function migrateDeviceGrants(folder) {
 `, path18.dirname(folder));
   }, { exclusive: true, wait: 60000 });
 }
+function migrateRankHistory(folder) {
+  const file = path18.join(folder, "run", "link.json");
+  if (!fs20.existsSync(file))
+    return;
+  locked(path18.join(folder, "run", ".link.lock"), () => {
+    let text;
+    try {
+      text = fs20.readFileSync(file, "utf8");
+    } catch (error) {
+      if (error.code === "ENOENT")
+        return;
+      throw error;
+    }
+    const link = JSON.parse(text);
+    if (!isObject(link) || !isObject(link.shared) || !isObject(link.shared.membershipAndAccess))
+      return;
+    const value = link.shared.membershipAndAccess.value;
+    if (!isObject(value) || !Object.hasOwn(value, "successorRevisions"))
+      return;
+    delete value.successorRevisions;
+    writeDurablePrivate(file, JSON.stringify(link) + `
+`, path18.dirname(folder));
+  }, { exclusive: true, wait: 60000 });
+}
 function checkpoint(file, current) {
   const format = `Kuvo folder at ${path18.dirname(file)}`;
   let text;
@@ -3827,6 +3851,13 @@ function successorRevisionLayoutReady(folder) {
 function standbyIntentLayoutReady(folder) {
   try {
     return checkpoint(path18.join(folder, FOLDER_VERSION_FILE), steps.length).version >= 16;
+  } catch {
+    return false;
+  }
+}
+function standbyRevisionLayoutReady(folder) {
+  try {
+    return checkpoint(path18.join(folder, FOLDER_VERSION_FILE), steps.length).version >= 17;
   } catch {
     return false;
   }
@@ -3942,7 +3973,8 @@ var init_folder_version = __esm(() => {
     () => {},
     () => {},
     () => {},
-    () => {}
+    () => {},
+    migrateRankHistory
   ];
 });
 
@@ -4582,10 +4614,7 @@ function membershipOf(value) {
   if (order !== undefined && (!Array.isArray(order) || order.length !== boxes.length || new Set(order).size !== boxes.length || !order.every((key) => typeof key === "string" && boxKeys.has(key))))
     return null;
   const pin = value.successorPin;
-  const history = value.successorRevisions;
   if (pin !== undefined && (typeof pin !== "string" || order?.[0] !== pin))
-    return null;
-  if (history !== undefined && (!Array.isArray(history) || !history.every((revision) => isObject(revision) && typeof revision.authority === "string" && typeof revision.operation === "string" && /^[\w-]{22,43}$/.test(revision.operation) && Array.isArray(revision.order) && revision.order.every((key) => typeof key === "string" && KEY.test(key)))))
     return null;
   const devices = isObject(value.devices) ? value.devices : {};
   const revisions = value.removalRevisions;
@@ -4610,7 +4639,6 @@ function membershipOf(value) {
     boxes,
     ...order ? { successorOrder: order } : {},
     ...pin ? { successorPin: pin } : {},
-    ...history ? { successorRevisions: history } : {},
     ...computerHistory ? { computerHistory } : {},
     ...Object.keys(wipePreparations).length ? { wipePreparations } : {},
     ...Object.keys(removals).length ? { removals } : {},
@@ -4876,6 +4904,11 @@ function cacheCheckpoint(link, cache, doc, branches = []) {
     if (candidate.n === setup.epoch && setup.leadershipHash && !held(link.leadership?.[setup.epoch])) {
       const roster = setupDoc(link)?.body.boxes;
       return Array.isArray(roster) && roster.some((peer) => fitsPeer(peer) && peer.sign === candidate.origin);
+    }
+    if (candidate.n === setup.epoch && candidate.origin === setup.sign && standbyRevisionLayoutReady(K)) {
+      const active = held(link.leadership?.[setup.epoch]);
+      if (active?.body.standbyAcceptance === true && active.body.replacesStandby === undefined)
+        return true;
     }
     if (candidate.n === setup.epoch + 1 && (candidate.origin === setup.sign || candidate.origin === setup.standby?.sign || setup.successorChain && acceptedMembership(link)?.boxes.some((peer) => peer.sign === candidate.origin)))
       return true;
@@ -16018,7 +16051,6 @@ function captureMembership(link, self, previous) {
     boxes: roster,
     successorOrder: order,
     successorPin: order?.[0] === pin ? pin : undefined,
-    successorRevisions: previous?.successorRevisions,
     left,
     moved,
     computerHistory: computerHistory(link),
@@ -16238,17 +16270,6 @@ function stageShared(link, kind, value, effects, requested, edits, { reportCapac
   if (Object.hasOwn(link.sharedOutcomes ?? {}, operation))
     return null;
   const pending = pendingShared(link, kind);
-  if (kind === "membershipAndAccess" && setup.successorChain && successorRevisionLayoutReady(K)) {
-    const before = acceptedMembership(link);
-    const after = membershipOf(value);
-    if (!before || !after?.successorOrder)
-      return null;
-    const orderChanged = JSON.stringify(before.successorOrder) !== JSON.stringify(after.successorOrder) || before.successorPin !== after.successorPin;
-    const authority = held(link.leadership?.[setup.epoch])?.h ?? setup.leadershipHash ?? setup.sign;
-    const revision = { authority, operation: pending ? identity(pending) ?? operation : operation, order: after.successorOrder };
-    const history = orderChanged ? [...before.successorRevisions ?? [], revision] : before.successorRevisions;
-    value = membershipOf({ ...after, successorRevisions: standbyIntentLayoutReady(K) ? history?.slice(-MAX_RANK_REVISIONS) : history });
-  }
   if (pending) {
     return (!requested || identity(pending) === requested) && JSON.stringify(pending.body.value) === JSON.stringify(value) && JSON.stringify(pending.body.effects) === JSON.stringify(effects) ? asSave(pending, link.sign) : null;
   }
@@ -16534,7 +16555,7 @@ function changeShared(kind, change, operation) {
 function submitShared(kind, value) {
   return changeShared(kind, () => value);
 }
-var entryOf = (sequence, value, offlineEdits) => ({ sequence, value, ...offlineEdits ? { offlineEdits } : {} }), MAX_RANK_REVISIONS = 16, MAX_SHARED_BYTES, SharedCapacity, OPERATION_ID;
+var entryOf = (sequence, value, offlineEdits) => ({ sequence, value, ...offlineEdits ? { offlineEdits } : {} }), MAX_SHARED_BYTES, SharedCapacity, OPERATION_ID;
 var init_shared = __esm(() => {
   init_folder_version();
   init_data_declarations();
@@ -16960,7 +16981,13 @@ function approveLeadership(link, proposal, checkpoint) {
         return null;
       continue;
     }
-    if (JSON.stringify(values[kind]) !== JSON.stringify(entry))
+    const proposed = values[kind];
+    if (resolved && kind === "membershipAndAccess" && proposed) {
+      if (JSON.stringify({ ...proposed, value: membershipOf(proposed.value) }) !== JSON.stringify({ ...entry, value: membershipOf(entry.value) }))
+        return null;
+      continue;
+    }
+    if (JSON.stringify(proposed) !== JSON.stringify(entry))
       return null;
   }
   if (resolved) {
@@ -17058,6 +17085,42 @@ function fillEnrollmentCertificate(link, doc, checkpoint) {
   link.leadership = { ...link.leadership, [doc.n]: doc.envelope };
   return true;
 }
+function firstStandbyRevision(doc) {
+  if (doc?.kind !== "leadership" || doc.body.proposal !== true || doc.body.standbyAcceptance !== true || doc.body.successorChain !== true || doc.body.replacesStandby !== undefined || doc.body.takeover === true)
+    return;
+  const revision = doc.body.assignmentRevision;
+  if (revision === undefined)
+    return signature(doc.body.supersedes) ? 1 : 0;
+  return typeof revision === "number" && Number.isSafeInteger(revision) && revision > 0 && signature(doc.body.supersedes) ? revision : undefined;
+}
+function supersededFirstStandby(link, active, doc, checkpoint) {
+  if (!standbyRevisionLayoutReady(K) || active.n !== doc.n || active.body.parent !== doc.body.parent || !signature(active.body.approval) || !signature(doc.body.approval))
+    return null;
+  const priorRevision = firstStandbyRevision(active);
+  const revision = firstStandbyRevision(doc);
+  if (priorRevision === undefined || revision === undefined || revision <= priorRevision && doc.body.supersedes !== active.body.approval)
+    return null;
+  const current = link.setup;
+  const next = setupOf(doc.body);
+  if (!next || next.id !== current.id || next.primary !== current.primary || doc.body.previous !== current.primary)
+    return null;
+  const candidate = structuredClone(link);
+  candidate.setup = {
+    id: current.id,
+    primary: current.primary,
+    epoch: doc.n - 1,
+    sign: current.sign,
+    role: current.role,
+    managed: true,
+    checkpointed: true,
+    sharedSaves: true,
+    ...typeof active.body.parent === "string" ? { successorChain: true, leadershipHash: active.body.parent } : {}
+  };
+  candidate.leadership = Object.fromEntries(Object.entries(candidate.leadership ?? {}).filter(([n]) => Number(n) < doc.n));
+  delete candidate.sharedOutcomes;
+  delete candidate.setupRevocations;
+  return installLeadership(candidate, doc, checkpoint, true) ? candidate : null;
+}
 function takeLeadership(link, doc, checkpoint, forks = new Map) {
   if (fillEnrollmentCertificate(link, doc, checkpoint))
     return true;
@@ -17074,19 +17137,18 @@ function takeLeadership(link, doc, checkpoint, forks = new Map) {
   const active = leadershipOf(link);
   if (!active || !link.setup?.successorChain || doc.body.successorChain !== true || held(link.leadership?.[doc.n])?.h === doc.h)
     return false;
-  const staged = stagedFork(link, doc, checkpoint, forks);
+  const replacement = supersededFirstStandby(link, active, doc, checkpoint);
+  const staged = replacement ? { source: replacement, rank: [] } : stagedFork(link, doc, checkpoint, forks);
   const next = setupOf(doc.body);
   if (!staged || !next || next.epoch < link.setup.epoch)
     return false;
-  const otherRanks = new Set(acceptedMembership(staged.source)?.successorRevisions?.map((revision) => JSON.stringify([revision.authority, revision.operation, revision.order])));
-  const commonRank = old?.successorRevisions?.findLast((revision) => otherRanks.has(JSON.stringify([revision.authority, revision.operation, revision.order])))?.order ?? staged.rank;
   const rank = (key) => {
-    const index = commonRank.indexOf(key);
-    return index < 0 ? commonRank.length : index;
+    const index = staged.rank.indexOf(key);
+    return index < 0 ? staged.rank.length : index;
   };
   const compare = (a, b) => a < b ? -1 : a > b ? 1 : 0;
   const difference = rank(next.primary) - rank(link.setup.primary) || compare(next.primary, link.setup.primary) || compare(doc.h, active.h);
-  if (next.epoch === link.setup.epoch && difference >= 0)
+  if (!replacement && next.epoch === link.setup.epoch && difference >= 0)
     return false;
   const losing = acceptedMembership(link);
   if (losing)
@@ -17104,6 +17166,8 @@ function installLeadership(link, doc, checkpoint, discardingFork = false) {
   const current = link.setup;
   const next = setupOf(doc.body);
   const acceptance = doc.body.standbyAcceptance === true;
+  if (doc.body.assignmentRevision !== undefined && (current?.standby || firstStandbyRevision(doc) === undefined))
+    return false;
   const takeover = doc.body.takeover === true;
   const chained = doc.body.successorChain === true;
   if (current?.successorChain && !chained || chained && !successorRankLayoutReady(K))
@@ -17263,7 +17327,7 @@ function projectLegacyDevices(link, value, primary, here, wasMember) {
     }
   }
 }
-var NUMBER_RESERVE = 2000, STANDBY_UNLINK = "Choose another standby first.", PRIMARY_UNLINK = "Choose another primary first.", leadershipProposalHash = (signature) => crypto18.createHash("sha256").update(signature).digest("base64url");
+var NUMBER_RESERVE = 2000, STANDBY_UNLINK = "Choose another standby first.", PRIMARY_UNLINK = "Choose another primary first.", leadershipProposalHash = (signature) => crypto18.createHash("sha256").update(signature).digest("base64url"), signature = (value) => typeof value === "string" && /^[\w-]{86}$/.test(value);
 var init_leadership = __esm(() => {
   init_folder_version();
   init_format();
@@ -55896,6 +55960,7 @@ async function proposeLeadership(position, target, standby, { requester, targetS
         shared.setupPersonalities = { sequence: 1, value: library };
       }
     }
+    const priorAssignment = supersedes && !current.standby && standbyRevisionLayoutReady(K) ? firstStandbyRevision(held(link.leadershipPending)) : undefined;
     const authority = {
       setup: { id: current.id, epoch, primary: target },
       previous: current.primary,
@@ -55905,6 +55970,7 @@ async function proposeLeadership(position, target, standby, { requester, targetS
       ...acceptance ? { standbyAcceptance: true } : {},
       ...successorChain ? { successorChain: true } : {},
       ...supersedes ? { supersedes } : {},
+      ...priorAssignment !== undefined ? { assignmentRevision: priorAssignment + 1 } : {},
       ...pinAfterLease ? { pinAfterLease: true } : {},
       ...retiring ? { retiringStandby: retiring } : {},
       ...replace ? { replacesStandby: current.standby.key } : {},
@@ -78195,7 +78261,7 @@ var init_files4 = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "4984c341499e";
+var BRIDGE_VERSION = "09c8af251a22";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync17 } from "node:child_process";

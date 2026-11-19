@@ -15,7 +15,6 @@ export interface Membership {
   boxes: Peer[];
   successorOrder?: string[];
   successorPin?: string;
-  successorRevisions?: { authority: string; operation: string; order: string[] }[];
   left: string[];
   moved: MovedSession[];
   devices: { phones: Phone[]; removed: { key: string; pairing: string }[] };
@@ -89,11 +88,7 @@ export function membershipOf(value: unknown): Membership | null {
   if (order !== undefined && (!Array.isArray(order) || order.length !== boxes.length
     || new Set(order).size !== boxes.length || !order.every(key => typeof key === "string" && boxKeys.has(key)))) return null;
   const pin = value.successorPin;
-  const history = value.successorRevisions;
   if (pin !== undefined && (typeof pin !== "string" || order?.[0] !== pin)) return null;
-  if (history !== undefined && (!Array.isArray(history) || !history.every(revision =>
-    isObject(revision) && typeof revision.authority === "string" && typeof revision.operation === "string" && /^[\w-]{22,43}$/.test(revision.operation)
-    && Array.isArray(revision.order) && revision.order.every(key => typeof key === "string" && KEY.test(key))))) return null;
   const devices = isObject(value.devices) ? value.devices : {};
   const revisions = value.removalRevisions;
   const left = Array.isArray(value.left) ? value.left : [];
@@ -120,7 +115,6 @@ export function membershipOf(value: unknown): Membership | null {
     boxes,
     ...(order ? { successorOrder: order } : {}),
     ...(pin ? { successorPin: pin } : {}),
-    ...(history ? { successorRevisions: history } : {}),
     ...(computerHistory ? { computerHistory } : {}),
     ...(Object.keys(wipePreparations).length ? { wipePreparations } : {}),
     ...(Object.keys(removals).length ? { removals } : {}),
