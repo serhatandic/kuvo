@@ -37782,7 +37782,7 @@ class GroupStore {
     const sessionID = text5(join41(folder, "session"))?.trim();
     if (!described?.name || !sessionID)
       return;
-    const job = read2(join41(folder, "job.json"));
+    const job = described.offlineJob ?? read2(join41(folder, "job.json"));
     const directory = text5(join41(folder, "directory"))?.trim() || join41(folder, "workspace");
     return {
       id,
@@ -40801,7 +40801,7 @@ function checkTrialRecovery(folder, start) {
     if (!accepts(2147483647)) {
       if (accepts(steps.length))
         return;
-      if ((start.version === 4 || start.version === 5) && start.upgradingTo === undefined && accepts(start.version))
+      if ((start.version === 4 || start.version === 5 || start.version === 6) && start.upgradingTo === undefined && accepts(start.version))
         return false;
     }
     refuse();
@@ -40836,6 +40836,7 @@ var init_folder_version = __esm(() => {
   init_format_version();
   steps = [
     (_folder, importLegacy) => importLegacy?.(),
+    () => {},
     () => {},
     () => {},
     () => {},
@@ -42444,4 +42445,4 @@ if (!isMainThread && process.argv.includes("--insights-db-worker")) {
 } else {
   await init_main().then(() => ({}));
 }
-// Built from Packages/Box/src/agents 2f72ea680b0b73d989923db0f3bdf0b5db8c184ad6f65178d86374cb0d78176f
+// Built from Packages/Box/src/agents 1744edf8663eaeeb9f57efefac0703ccba77e27ce7e4abfc00abfd6060ea82af

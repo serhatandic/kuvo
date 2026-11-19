@@ -9,6 +9,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { inline } from "../server/attached";
+import { syncDurableFile } from "../../shared/files";
 import { isObject } from "../../shared/json";
 import { plainName } from "../../shared/text";
 import { accountHome, APP_FOLDER, BOTS, homeFolder, K, OWN_HOME_MAC } from "../home";
@@ -134,7 +135,7 @@ export function stageFile(given: string, places: FilePlaces, staging: string): S
 }
 
 /** A file read for an item, waiting in the staging folder until the change that keeps it. */
-export interface Staged { staged: string; name: string; size: number; clientIndex?: number }
+export interface Staged { id?: string; staged: string; name: string; size: number; clientIndex?: number }
 
 /** The files an agent named, read before the queue's lock is taken: what was read, and a way to
  * clear what's left of it. */
@@ -252,7 +253,7 @@ export function statusFor(given: unknown): string {
 }
 
 /** A priority named for an item (none kept for Normal), or why not. */
-function priorityFor(given: unknown): string | undefined {
+export function priorityFor(given: unknown): string | undefined {
   if (given === null) return undefined;
   const found = priorityNamed(given);
   if (!found) return refuse(`There's no priority ${String(given ?? "")}: it's one of ${PRIORITIES.map(each => each.name).join(", ")}.`);
@@ -260,7 +261,7 @@ function priorityFor(given: unknown): string | undefined {
 }
 
 /** The labels named for an item (by name or id; all of them, in place of those it had), or why not. */
-function labelsFor(given: unknown): string[] {
+export function labelsFor(given: unknown): string[] {
   const named = given === null ? [] : Array.isArray(given) ? given : [given];
   const ids = named.map(each => labelNamed(each)?.id ?? refuse(`There's no label ${String(each ?? "")}: queue_labels lists them, and makes one.`));
   const once = [...new Set(ids)];
@@ -410,7 +411,7 @@ const openIn = (book: Book, owner: string) => book.queue(owner).items.filter(ite
 
 /** A new item in `owner`'s queue: numbered now if there's a number to give, else once one comes;
  * an outside source's (`source`, an issue or a pull request) never. */
-export function addItem(book: Book, owner: string, fields: Fields, acting: Acting, primary: Primary, source?: Source): Item {
+export function addItem(book: Book, owner: string, fields: Fields, acting: Acting, primary: Primary, source?: Source, id = newItemID()): Item {
   const title = plainName(text(fields.title ?? "", MOST_TITLE * 4, "The title")).slice(0, MOST_TITLE);
   if (!title) refuse("Say what it is (title), in a line.");
   if (openIn(book, owner) >= MOST_ITEMS) refuse(`Your queue has ${MOST_ITEMS} open items already: mark some done or remove them first.`);
@@ -418,7 +419,7 @@ export function addItem(book: Book, owner: string, fields: Fields, acting: Actin
   if (source && isClosed(status)) refuseDone(source.ref);
   const { now, who } = acting;
   const item: Item = {
-    id: newItemID(),
+    id,
     owner,
     title,
     body: "",
@@ -590,18 +591,22 @@ export function changeItem(book: Book, item: Item, fields: Fields, acting: Actin
         for (let n = 1; n <= 1_000; n++) {
           const name = n === 1 ? base : `${base.slice(0, base.length - ext.length)} ${n}${ext}`;
           if (used.has(fold(name))) continue;
+          const destination = path.join(folder, name);
           try {
             // Staging lives under the same queue directory. Linking either takes the name or
             // fails without overwriting even on a case-insensitive volume.
-            fs.linkSync(each.staged, path.join(folder, name));
+            fs.linkSync(each.staged, destination);
+            reserved.push(name);
           } catch (error) {
-            if ((error as NodeJS.ErrnoException).code === "EEXIST") continue;
-            return refuse("The attachment couldn’t be saved. Check the available space and try again.");
+            if ((error as NodeJS.ErrnoException).code !== "EEXIST") return refuse("The attachment couldn’t be saved. Check the available space and try again.");
+            // A previous crash may have landed these bytes before the queue file. Reuse the
+            // unlisted file when it has the same contents. Listed files were skipped above.
+            if (!each.id || !fs.lstatSync(destination).isFile() || !fs.readFileSync(destination).equals(fs.readFileSync(each.staged))) continue;
           }
-          reserved.push(name);
+          if (each.id) syncDurableFile(destination, path.dirname(FILES));
           used.add(fold(name));
           const anchor = each.clientIndex === undefined ? undefined : crypto.randomBytes(12).toString("hex");
-          const file: KeptFile = { name, size: each.size, type: typeOf(name), at: now, ...(anchor ? { anchor } : {}) };
+          const file: KeptFile = { ...(each.id ? { id: each.id } : {}), name, size: each.size, type: typeOf(name), at: now, ...(anchor ? { anchor } : {}) };
           if (each.clientIndex !== undefined) anchors.set(each.clientIndex, file);
           item.files.push(file);
           kept = true;

@@ -6769,6 +6769,9 @@
             "literal": "config.apply"
            },
            {
+            "literal": "data.offline-edits"
+           },
+           {
             "literal": "data.ownership"
            },
            {
@@ -7547,6 +7550,9 @@
            },
            {
             "literal": "config.apply"
+           },
+           {
+            "literal": "data.offline-edits"
            },
            {
             "literal": "data.ownership"
@@ -14994,6 +15000,358 @@
         }
        }
       }
+     }
+    }
+   }
+  },
+  {
+   "route": "GET kuvo/data/edits",
+   "feature": "data.offline-edits",
+   "answers": {
+    "200": {
+     "object": {
+      "revision": "string",
+      "fields": "any",
+      "deleted": "bool",
+      "choices": {
+       "list": {
+        "object": {
+         "id": "string",
+         "field": "string",
+         "base": "any",
+         "accepted": "any",
+         "proposed": "any"
+        }
+       }
+      },
+      "owner": "string",
+      "stale": "bool"
+     }
+    },
+    "400": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "403": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "409": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "503": {
+     "object": {
+      "message": "string"
+     }
+    }
+   }
+  },
+  {
+   "route": "POST kuvo/data/edits",
+   "feature": "data.offline-edits",
+   "body": {
+    "object": {
+     "operation": "string",
+     "ref": "any",
+     "baseRevision": {
+      "oneOf": [
+       "string",
+       "null"
+      ]
+     },
+     "fields?": "any",
+     "create?": "bool",
+     "delete?": "bool",
+     "resolve?": {
+      "object": {
+       "id": "string",
+       "use": {
+        "oneOf": [
+         {
+          "literal": "accepted"
+         },
+         {
+          "literal": "proposed"
+         }
+        ]
+       }
+      }
+     },
+     "notes?": {
+      "list": {
+       "object": {
+        "id": "string",
+        "text": "string"
+       }
+      }
+     },
+     "attachments?": {
+      "list": {
+       "object": {
+        "id": "string",
+        "file": "any"
+       }
+      }
+     }
+    }
+   },
+   "answers": {
+    "200": {
+     "object": {
+      "operation": "string",
+      "status": {
+       "oneOf": [
+        {
+         "literal": "committed"
+        },
+        {
+         "literal": "choice"
+        },
+        {
+         "literal": "deleted"
+        },
+        {
+         "literal": "refresh"
+        }
+       ]
+      },
+      "revision": "string",
+      "choices": {
+       "list": "string"
+      }
+     }
+    },
+    "202": {
+     "object": {
+      "operation": "string",
+      "status": {
+       "oneOf": [
+        {
+         "literal": "pending"
+        },
+        {
+         "literal": "interrupted"
+        }
+       ]
+      },
+      "message": "string"
+     }
+    },
+    "400": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "403": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "409": {
+     "oneOf": [
+      {
+       "oneOf": [
+        {
+         "object": {
+          "operation": "string",
+          "status": {
+           "oneOf": [
+            {
+             "literal": "pending"
+            },
+            {
+             "literal": "interrupted"
+            }
+           ]
+          },
+          "message": "string"
+         }
+        },
+        {
+         "object": {
+          "operation": "string",
+          "status": {
+           "oneOf": [
+            {
+             "literal": "committed"
+            },
+            {
+             "literal": "choice"
+            },
+            {
+             "literal": "deleted"
+            },
+            {
+             "literal": "refresh"
+            }
+           ]
+          },
+          "revision": "string",
+          "choices": {
+           "list": "string"
+          }
+         }
+        }
+       ]
+      },
+      {
+       "object": {
+        "message": "string"
+       }
+      }
+     ]
+    },
+    "503": {
+     "object": {
+      "message": "string"
+     }
+    }
+   }
+  },
+  {
+   "route": "GET kuvo/data/edits/outbox",
+   "feature": "data.offline-edits",
+   "answers": {
+    "200": {
+     "object": {
+      "entries": {
+       "list": {
+        "object": {
+         "ref": "any",
+         "owner": "string",
+         "receipt": {
+          "oneOf": [
+           {
+            "object": {
+             "operation": "string",
+             "status": {
+              "oneOf": [
+               {
+                "literal": "pending"
+               },
+               {
+                "literal": "interrupted"
+               }
+              ]
+             },
+             "message": "string"
+            }
+           },
+           {
+            "object": {
+             "operation": "string",
+             "status": {
+              "oneOf": [
+               {
+                "literal": "committed"
+               },
+               {
+                "literal": "choice"
+               },
+               {
+                "literal": "deleted"
+               },
+               {
+                "literal": "refresh"
+               }
+              ]
+             },
+             "revision": "string",
+             "choices": {
+              "list": "string"
+             }
+            }
+           }
+          ]
+         }
+        }
+       }
+      }
+     }
+    },
+    "403": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "503": {
+     "object": {
+      "message": "string"
+     }
+    }
+   }
+  },
+  {
+   "route": "GET kuvo/data/edits/:operation",
+   "feature": "data.offline-edits",
+   "answers": {
+    "200": {
+     "object": {
+      "receipt": {
+       "oneOf": [
+        {
+         "object": {
+          "operation": "string",
+          "status": {
+           "oneOf": [
+            {
+             "literal": "pending"
+            },
+            {
+             "literal": "interrupted"
+            }
+           ]
+          },
+          "message": "string"
+         }
+        },
+        {
+         "object": {
+          "operation": "string",
+          "status": {
+           "oneOf": [
+            {
+             "literal": "committed"
+            },
+            {
+             "literal": "choice"
+            },
+            {
+             "literal": "deleted"
+            },
+            {
+             "literal": "refresh"
+            }
+           ]
+          },
+          "revision": "string",
+          "choices": {
+           "list": "string"
+          }
+         }
+        }
+       ]
+      },
+      "recovery": "any"
+     }
+    },
+    "403": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "404": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "503": {
+     "object": {
+      "message": "string"
      }
     }
    }

@@ -6,12 +6,13 @@
 import fs from "node:fs";
 import path from "node:path";
 import { writeDurablePrivate } from "../../shared/files";
+import { offlineEditsReady } from "../ownership/store";
 import { isObject } from "../../shared/json";
 import { keepLabel, labels } from "./labels";
 import { statusNamed } from "./statuses";
 import { intoTodo } from "./ops";
 import { pruneRelations } from "./relations";
-import { allItems, changeQueues, FILE_NAME, filesOf, itemOf, OWNER, readKeptQueue, readQueueSettingAside, WORK_QUEUE, type Item } from "./store";
+import { allItems, changeQueues, FILE_NAME, filesOf, itemOf, ITEM_ID, deletionFor, keepDeletion, queueDeletions, OWNER, readKeptQueue, readQueueSettingAside, WORK_QUEUE, type Item, type QueueDeletion } from "./store";
 
 /** What a move carries: each owner's items, the labels they have, and which items
  * have files (packed beside `move.json`, in `work-queue/<item>/`). */
@@ -19,6 +20,7 @@ export interface CarriedQueues {
   items: Item[];
   labels: { id: string; name: string; color: string }[];
   withFiles: string[];
+  deletions?: QueueDeletion[];
 }
 
 /** The queues of `owners`, as a move carries them; null for none. */
@@ -29,7 +31,8 @@ export function packWorkQueues(owners: readonly string[]): CarriedQueues | null 
   for (const owner of wanted) if (OWNER.test(owner)) readQueueSettingAside(owner);
   const items = allItems().filter(item => wanted.has(item.owner));
   for (const owner of wanted) if (!OWNER.test(owner)) items.push(...readKeptQueue(owner)?.items ?? []);
-  if (!items.length) return null;
+  const deletions = queueDeletions().filter(deletion => wanted.has(deletion.queue));
+  if (!items.length && !deletions.length) return null;
   const travelling = new Set(items.map(item => item.id));
   const split = new Set(items.flatMap(item => (item.relations ?? []).map(link => link.item)).filter(id => !travelling.has(id)));
   pruneRelations(items, split);
@@ -38,6 +41,7 @@ export function packWorkQueues(owners: readonly string[]): CarriedQueues | null 
     items,
     labels: labels().filter(each => used.has(each.id)),
     withFiles: items.filter(item => item.files.length).map(item => item.id),
+    ...(deletions.length ? { deletions } : {}),
   };
 }
 
@@ -65,7 +69,13 @@ export function placeWorkQueues(carried: unknown, owners: readonly string[], ope
   if (!isObject(carried) || !Array.isArray(carried.items)) return;
   const allowed = new Set(owners);
   const items = carried.items.flatMap(each => (isObject(each) && typeof each.owner === "string" && allowed.has(each.owner) ? [itemOf(each, each.owner)] : [])).filter((each): each is Item => each !== null);
-  if (!items.length) return;
+  const deletions = Array.isArray(carried.deletions) ? carried.deletions.flatMap(each => {
+    if (!isObject(each) || typeof each.id !== "string" || !ITEM_ID.test(each.id) || typeof each.queue !== "string"
+      || !allowed.has(each.queue) || !Number.isSafeInteger(each.at)) throw new Error("A carried deletion record is invalid");
+    return [{ id: each.id, queue: each.queue, at: each.at as number }];
+  }) : [];
+  if (!items.length && !deletions.length) return;
+  if (deletions.length && !offlineEditsReady()) throw new Error("The destination must enable offline Work Queue edits first");
   const carriedLabels = new Set(items.flatMap(item => item.labels));
   for (const each of Array.isArray(carried.labels) ? carried.labels : []) if (isObject(each) && carriedLabels.has(String(each.id))) keepLabel(each);
   const here = new Set(labels().map(each => each.id));
@@ -74,11 +84,14 @@ export function placeWorkQueues(carried: unknown, owners: readonly string[], ope
     if (!statusNamed(item.status)) intoTodo(item, item.status, Date.now());
   }
   changeQueues(book => {
+    if (deletions.some(deletion => book.find({ id: deletion.id }) || items.some(item => item.id === deletion.id)))
+      throw new Error("A carried Work Queue deletion overlaps an item");
+    for (const deletion of deletions) keepDeletion(deletion);
     for (const item of items) {
       // (Into a queue of a kind a newer box keeps here that this one can't read whole: refused, so
       // the move fails and the box it comes from keeps it.)
       const before = book.find({ id: item.id });
-      if (before) throw new Error("A carried Work Queue item is already here");
+      if (before || deletionFor(item.id)) throw new Error("A carried Work Queue item already exists or was deleted here");
       book.queue(item.owner).items.push(item);
       const from = opened ? path.join(opened, "work-queue", item.id) : null;
       for (const file of item.files) {
@@ -114,6 +127,7 @@ export function forgetWorkQueues(owners: readonly string[]): void {
 export function carryWorkQueue(from: string, to: string): void {
   if (!OWNER.test(from) || !OWNER.test(to) || from === to) return;
   changeQueues(book => {
+    for (const deletion of queueDeletions()) if (deletion.queue === from) keepDeletion({ ...deletion, queue: to });
     for (const item of [...book.queue(from).items]) book.give(item, to);
     for (const item of book.items()) {
       for (const link of item.sessions) if (link.session === from) link.session = to;

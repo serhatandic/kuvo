@@ -1,3 +1,4 @@
+import { readEditForPeer, takeOfflineEdit, takeOfflineEditReceipt } from "../ownership/edits";
 import { takeMessageReceipt, takeOwnerMessage } from "../ownership/messages";
 // The Work Queue across your computers (PROTOCOL.md, "The Work Queue", "Across your computers"):
 // one list for everything. Each box tells every other its items (summaries, the owners they name,
@@ -286,12 +287,15 @@ export async function takeWorkQueueMail(sender: MailSender, given: unknown, host
   }
   if (isObject(whole.handed)) handedBack(sender, whole.handed);
   if (isObject(whole.hand)) await handArrived(sender, whole.hand, reply, places).catch(() => {});
+  if (isObject(whole.offlineEditReceipt)) takeOfflineEditReceipt(sender, whole.offlineEditReceipt);
+  if (isObject(whole.offlineEdit)) await takeOfflineEdit(sender, whole.offlineEdit, reply, places()).catch(error => console.error("Offline edit:", error));
   if (isObject(whole.ownerMessageReceipt)) takeMessageReceipt(sender, whole.ownerMessageReceipt);
   if (isObject(whole.ownerMessage)) await takeOwnerMessage(sender, whole.ownerMessage, reply);
   if (isObject(whole.acted)) takeActed(sender, whole.acted);
   if (isObject(whole.act)) await takeAct(sender, whole.act, reply, async act => {
     switch (act.area) {
       case "ownership": {
+        if (act.method === "GET" && act.item === "offline-edit") return readEditForPeer(sender, act, places());
         if (act.method === "GET") return (await import("../ownership/read")).readForPeer(sender, act, places());
         return (await import("../ownership/write")).writeForPeer(sender, act, places());
       }

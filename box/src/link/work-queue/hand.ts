@@ -20,12 +20,13 @@ import { rootOf } from "../letters/tools";
 import { frozen } from "../moves/records";
 import { peersOf, removedBoxes } from "../peers/known";
 import { awaySince } from "../peers/reach";
+import { offlineEditsReady } from "../ownership/store";
 import { readLink } from "../state";
 import { keepLabel, labels } from "./labels";
 import { isClosed, statusNamed } from "./statuses";
 import { intoTodo, linkSession } from "./ops";
 import {
-  allItems, changeQueues, FILE_NAME, filesOf, itemOf, MOST_FILE, MOST_HANDED_FILES, MOST_ITEMS, noteHanded, OWNER, placeIn, Refusal, WORK_QUEUE, whoOf,
+  allItems, changeQueues, deletionFor, FILE_NAME, filesOf, itemOf, MOST_FILE, MOST_HANDED_FILES, MOST_ITEMS, noteDeparture, noteHanded, OWNER, placeIn, Refusal, WORK_QUEUE, whoOf,
   type Book, type Item, type Who,
 } from "./store";
 import { mailsFor } from "./parts";
@@ -224,13 +225,16 @@ export function handedBack(sender: MailSender, given: unknown, now = Date.now())
   sent.delete(given.id);
   changeQueues(book => {
     const found = book.find({ id: item.id });
-    if (!found || found.handing?.id !== given.id) return;
+    const handing = found?.handing;
+    if (!found || !handing || handing.id !== given.id) return;
+    noteDeparture(found.id, { queue: handing.to, computer: sender.key });
     book.queue(found.owner).items = book.queue(found.owner).items.filter(each => each.id !== found.id);
   }, now, { onItsOwn: true });
   if (!allItems().some(each => each.id === item.id)) fs.rmSync(filesOf(item.id), { recursive: true, force: true });
 }
 
-// Hand-offs taken here, by id, remembered 30 days: one sent again is had, never taken twice.
+// Hand-offs taken here, by id. Layout 7 keeps their compact receipts so a late replay
+// cannot restore a copy after this box has handed the item onward.
 function seenHand(id: string, now: number, note = false): boolean {
   try {
     fs.mkdirSync(WORK_QUEUE, { recursive: true, mode: 0o700 });
@@ -240,7 +244,9 @@ function seenHand(id: string, now: number, note = false): boolean {
         if (error instanceof UnsupportedFormatVersion) throw error;
       }
       if (!note) return id in seen;
-      for (const [key, at] of Object.entries(seen)) if (typeof at === "number" && now - at > HAND_LIFE) delete seen[key];
+      if (!offlineEditsReady()) {
+        for (const [key, at] of Object.entries(seen)) if (typeof at === "number" && now - at > HAND_LIFE) delete seen[key];
+      }
       seen[id] = now;
       writePrivate(SEEN, JSON.stringify(handFormat.write(seen)));
       return true;
@@ -294,6 +300,10 @@ export async function handArrived(sender: MailSender, given: unknown, reply: (pa
   const primary = primaryOf();
   changeQueues((book: Book) => {
     let here = book.find({ id: item.id });
+    if (deletionFor(item.id)) {
+      refused = "That Work Queue item has been deleted.";
+      return;
+    }
     // One handed from here that hasn't heard it arrived yet (its receipt lost) and comes back: it
     // waits until that's settled, so it's never lost between the two.
     if (here?.handing) {

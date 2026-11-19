@@ -1,9 +1,10 @@
+import { editRouteAllowed, offlineEditOutbox, offlineEditReceipt, readOfflineEdit, saveOfflineEdit } from "../ownership/edits";
 import { parsed } from "../../shared/json";
 import { ownerWrite, sendOwnerWrite } from "../ownership/write";
 import { ownerOf, DATA_ID } from "../ownership/resolve";
 import { messageReceipt, queueOwnerMessage, sendAddressedMessage } from "../ownership/messages";
 import { readOwned } from "../ownership/read";
-import { ownershipReady } from "../ownership/store";
+import { offlineEditsReady, ownershipReady } from "../ownership/store";
 import { LOCAL_SETUP_SAVE } from "../../shared/setup-local";
 import { GITHUB_WORK_QUEUE } from "../../shared/github";
 // The box's routes
@@ -72,7 +73,7 @@ import { sessionWakesRoute, wakeEventsRoute, wakesRoute } from "../areas/wakes";
 import { worktreeEventsRoute, worktreesRoute } from "../areas/worktrees";
 import { APP_ICON_ROUTE, appIconRoute, newProjectRoute, GOALS_ROUTE, goalsRoute, WORK_ASKS_ROUTE, WORK_ROUTE, workAsksRoute, workRoute } from "../areas/work";
 import { phoneHere } from "../compat/leave-running";
-import { readBridgeFile, readEngineFile } from "../engine/client";
+import { peerPlaces, readBridgeFile, readEngineFile } from "../engine/client";
 import { isMachinesRoute } from "../mac/machines";
 import { ownMacRoute } from "../mac/own-mac";
 import { ownMachinesRoute } from "../mac/own-machines";
@@ -299,6 +300,16 @@ export function engineHandler(readEngine: () => EngineRecord = readEngineFile, i
     const route = request.path.split("?")[0];
     const context: RouteContext = { request, phone, signal, route, readEngine, readBridge, bridge, info, phonesChanged, hold, json, text };
     const desktop = request.desktop || request.fromMac || request.fromApp;
+    if (route === "kuvo/data/edits" || route.startsWith("kuvo/data/edits/")) {
+      if (!editRouteAllowed(context)) return yield* json(403, { message: "Open this from a paired Kuvo Code client." });
+      if (!offlineEditsReady()) return yield* json(503, { message: "Wait for Kuvo Code to finish updating." });
+      const method = request.method.toUpperCase();
+      if (route === "kuvo/data/edits" && method === "POST") return yield* await saveOfflineEdit(context, peerPlaces());
+      if (route === "kuvo/data/edits" && method === "GET") return yield* await readOfflineEdit(context, peerPlaces());
+      if (route === "kuvo/data/edits/outbox" && method === "GET") return yield* offlineEditOutbox(context);
+      if (route !== "kuvo/data/edits" && method === "GET") return yield* offlineEditReceipt(context, route.slice("kuvo/data/edits/".length));
+      return yield* json(405, {});
+    }
     if (route === "kuvo/data/owner" || route === "kuvo/data/messages" || route.startsWith("kuvo/data/messages/")) {
       if (!desktop) return yield* json(403, { message: "Open this from Kuvo Code." });
       if (route === "kuvo/data/messages" && request.method.toUpperCase() === "POST")

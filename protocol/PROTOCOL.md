@@ -612,6 +612,44 @@ determined after an owner interruption, the client should show the interrupted s
 the owner's conversation before offering to resend. Send Now and commands require the owner's
 normal client connection. The peer outbox takes inline attachments up to 128 KiB of message JSON.
 
+### Offline field edits
+
+A paired desktop client uses `data.offline-edits` after the Box enables folder layout 7.
+`GET kuvo/data/edits?kind=<kind>` returns `{owner, stale, revision, fields, choices, deleted}`.
+For `queueItems`, add `queue=<conversation>` and `id=<wqi_id>`. For `botSettings`, supply
+the bot ID. Supply `computer=<key>` as an address hint when the owner has not been
+discovered. A serving box with a previously received owner view can return it as stale.
+
+Submit `POST kuvo/data/edits` with a new client operation ID, `ref` (the same address),
+`baseRevision` (the revision read before editing), and only the `fields` being changed.
+For a new Work Queue item, generate its permanent `wqi_` ID and send `create: true` with
+`baseRevision: null`. Use `delete: true` to delete an existing item at a known revision.
+Queue fields include title, body, status, priority, labels, assignee, due, and order
+(`{before: id}`, `{after: id}`, or `{top: true}`). Add `notes: [{id, text}]` and
+`attachments: [{id, file: {name, uri}}]` with stable IDs. Attachments carry inline data.
+The edit envelope can be up to 512 KiB. Edit the text of an existing note under the
+`note:<id>` field returned by its owner.
+
+Bot settings fields include name, look, personality, jobLine, jobDetails, model, and limits.
+The primary accepts setup time zone, computer names, existing labels and personalities,
+and usage display edits on setups that use accepted saves. Names are keyed by box key,
+labels and personalities by `<id>:<field>`, and usage settings by their existing unit name.
+Changes that grant access use their existing permission and membership routes.
+
+HTTP 202 means the serving box saved the proposal locally. Poll
+`GET kuvo/data/edits/<operation>` there using the operation ID in the reply. A terminal
+receipt names the owner revision. `choice` carries the IDs of outstanding choices created
+by that proposal, alongside any independent changes that committed. Read the owner's
+current view to get the original, accepted, and proposed values. Resolve a choice with a
+new operation ID, the current revision, and `resolve: {id, use: "accepted"|"proposed"}`.
+Ordinary note and description edits merge at the passages written against the original.
+A proposal with a retired base gets `refresh` and needs an owner view before a new edit.
+A deletion defeats late edits. While Recently Deleted still has the item, its receipt is
+`deleted`. After the 30-day window a compact ID fence stays and the receipt asks for a
+fresh copy. Poll replies include separately recoverable pending text for a deletion,
+refresh, or interrupted edit. Read `GET kuvo/data/edits/outbox` for local pending drafts and
+recoverable text after a restart. Recovering that text never restores the item.
+
 ### Peers
 
 Your computers talk to each other over the relay, Mac or not. A Mac connects to

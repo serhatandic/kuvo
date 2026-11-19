@@ -15,8 +15,21 @@ const COMMITTED = object({ status: words("committed"), operation: string, owner:
 const INTERRUPTED = object({ status: words("interrupted"), operation: string, owner: string, message: string });
 const RECEIPT = oneOf(PENDING, COMMITTED, INTERRUPTED);
 
+const CHOICE = object({ id: string, field: string, base: any, accepted: any, proposed: any });
+const EDIT_VIEW = object({ revision: string, fields: any, deleted: bool, choices: list(CHOICE), owner: string, stale: bool });
+const EDIT_WAIT = object({ operation: string, status: words("pending", "interrupted"), message: string });
+const EDIT_DECISION = object({ operation: string, status: words("committed", "choice", "deleted", "refresh"), revision: string, choices: list(string) });
+const EDIT_RECEIPT = oneOf(EDIT_WAIT, EDIT_DECISION);
+const EDIT_BODY = object({ operation: string, ref: any, baseRevision: nullable(string), "fields?": any, "create?": bool,
+  "delete?": bool, "resolve?": object({ id: string, use: words("accepted", "proposed") }),
+  "notes?": list(object({ id: string, text: string })), "attachments?": list(object({ id: string, file: any })) });
+
 export type MessageReceipt = Infer<typeof RECEIPT>;
 export const OWNERSHIP_ROUTES: RouteShape[] = [
+  { route: "GET kuvo/data/edits", feature: "data.offline-edits", answers: { 200: EDIT_VIEW, 400: REFUSED, 403: REFUSED, 409: REFUSED, 503: REFUSED } },
+  { route: "POST kuvo/data/edits", feature: "data.offline-edits", body: EDIT_BODY, answers: { 200: EDIT_DECISION, 202: EDIT_WAIT, 400: REFUSED, 403: REFUSED, 409: oneOf(EDIT_RECEIPT, REFUSED), 503: REFUSED } },
+  { route: "GET kuvo/data/edits/outbox", feature: "data.offline-edits", answers: { 200: object({ entries: list(object({ ref: any, owner: string, receipt: EDIT_RECEIPT })) }), 403: REFUSED, 503: REFUSED } },
+  { route: "GET kuvo/data/edits/:operation", feature: "data.offline-edits", answers: { 200: object({ receipt: EDIT_RECEIPT, recovery: any }), 403: REFUSED, 404: REFUSED, 503: REFUSED } },
   { route: "GET kuvo/data/owner", feature: "data.ownership", answers: { 200: READ, 400: REFUSED, 403: REFUSED, 404: REFUSED, 409: REFUSED } },
   { route: "POST kuvo/data/messages", feature: "data.ownership", answers: { 200: COMMITTED, 202: PENDING, 400: REFUSED, 403: REFUSED, 409: oneOf(INTERRUPTED, REFUSED), 503: REFUSED } },
   { route: "GET kuvo/data/messages/:operation", feature: "data.ownership", answers: { 200: RECEIPT, 403: REFUSED, 404: REFUSED } },

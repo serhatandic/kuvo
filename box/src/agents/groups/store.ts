@@ -324,7 +324,7 @@ export class GroupStore {
     if (!described?.name || !sessionID) return undefined
     // Its job, as its box keeps it (`job.json`: what it does in a few words, and all of it); its
     // description says it in a few words for one the box hasn't kept yet.
-    const job = read(join(folder, "job.json"))
+    const job = described.offlineJob ?? read(join(folder, "job.json"))
     const directory = text(join(folder, "directory"))?.trim() || join(folder, "workspace")
     return {
       id,

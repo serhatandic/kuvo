@@ -1,3 +1,6 @@
+import type { EditHistory } from "../ownership/merge";
+import { keepRecord, offlineEditsReady, readRecord, recordKey, records } from "../ownership/store";
+import { observeQueueItem } from "./offline-fields";
 // The Work Queue's items (PROTOCOL.md, "The Work Queue"): each conversation's queue of work, kept on
 // the box it lives on, the same on a Mac's box and a machine's. A queue is its owner's, by key: a
 // conversation (`ses_…`, a bot's or a session's) or a group chat (`grp_…`). Kept in
@@ -66,12 +69,12 @@ export const whoWords = (who: Who): string => {
 /** Whether it was you. */
 export const byUser = (who: Who): boolean => (who as Record<string, unknown>).user === true;
 
-export interface Note { at: number; by: Who; text: string }
+export interface Note { id?: string; at: number; by: Who; text: string }
 /** Something that happened to an item, for its feed: a session `started` or `stopped` work on it
  * (as its agent said), it `moved` (`from` and `to` its statuses, `top` when it went to the top),
  * it was `done`. A newer box may keep other kinds, kept as they came. */
 export interface ItemEvent { at: number; by: Who; kind: string; from?: string; to?: string; top?: true }
-export interface KeptFile { name: string; size: number; type: string; at: number; anchor?: string }
+export interface KeptFile { id?: string; name: string; size: number; type: string; at: number; anchor?: string }
 /** An outside link; `kind` (`pr`, `mr`, `issue`, `doc`) and `ref` kept for outside sources later. */
 export interface Link { url: string; title?: string; kind?: string; ref?: string }
 /** A session linked to an item; `box` where it runs, when that's another computer (kept as given). */
@@ -148,6 +151,7 @@ export interface Item {
   updated: { at: number; by: Who };
   doneAt?: number;
   removed?: { at: number; by: Who };
+  offlineEdits?: EditHistory;
 }
 
 /** An owner's queue, as its file keeps it. */
@@ -160,6 +164,17 @@ export interface Queue {
 export const queueFollowers = new Set<() => void>();
 
 const fileOf = (owner: string) => path.join(QUEUES, `${owner}.json`);
+
+export interface QueueDeletion { id: string; queue: string; at: number }
+export const deletionFor = (id: string) => readRecord<QueueDeletion>("edit-deletions", recordKey(id));
+export const queueDeletions = () => records("edit-deletions").flatMap(key => readRecord<QueueDeletion>("edit-deletions", key) ?? []);
+export const keepDeletion = (deletion: QueueDeletion) => keepRecord("edit-deletions", recordKey(deletion.id), deletion);
+
+export interface QueueDeparture { queue: string; computer: string }
+export const departureFor = (id: string) => readRecord<QueueDeparture>("edit-departures", recordKey(id));
+export function noteDeparture(id: string, departure: QueueDeparture) {
+  if (offlineEditsReady()) keepRecord("edit-departures", recordKey(id), departure);
+}
 
 export const newItemID = () => `wqi_${crypto.randomBytes(15).toString("base64url")}`;
 
@@ -470,6 +485,7 @@ export class Book {
     const live = new Set(items.map(item => item.id));
     const gone = new Set([...this.mentionsBefore.keys()].filter(id => !live.has(id)));
     pruneRelations(items, gone);
+    if (offlineEditsReady()) for (const item of items) if (item.offlineEdits) observeQueueItem(item);
     syncMentions(items, this.mentionsBefore);
     let any = false;
     const changed = [...this.queues].filter(([owner, queue]) => JSON.stringify(queue.items) !== this.before.get(owner));
@@ -483,7 +499,7 @@ export class Book {
       if (!queue.items.length) fs.rmSync(fileOf(owner), { force: true });
       else {
         const data = JSON.stringify(queueFileFormat.write({ owner, items: queue.items }));
-        if (durable) writeDurablePrivate(fileOf(owner), data, path.dirname(WORK_QUEUE));
+        if (durable || queue.items.some(item => item.offlineEdits)) writeDurablePrivate(fileOf(owner), data, path.dirname(WORK_QUEUE));
         else writePrivate(fileOf(owner), data);
       }
       this.before.set(owner, JSON.stringify(queue.items));
@@ -497,6 +513,7 @@ export class Book {
 export function changeQueues<T>(work: (book: Book) => T, now = Date.now(), { onItsOwn = false, durable = false }: { onItsOwn?: boolean; durable?: boolean } = {}): T {
   fs.mkdirSync(WORK_QUEUE, { recursive: true, mode: 0o700 });
   migratedToChange();
+  const keepDurably = durable || offlineEditsReady();
   const { value, changed } = locked(LOCK, () => {
     let book: Book;
     try {
@@ -514,14 +531,17 @@ export function changeQueues<T>(work: (book: Book) => T, now = Date.now(), { onI
       const gone = queue.items.filter(item => item.removed && now - item.removed.at > KEPT_REMOVED);
       if (!gone.length) continue;
       queue.items = queue.items.filter(item => !gone.includes(item));
-      purged.push(...gone.map(item => item.id));
+      for (const item of gone) {
+        if (offlineEditsReady()) keepDeletion({ id: item.id, queue: item.owner, at: item.removed!.at });
+        purged.push(item.id);
+      }
     }
     const value = work(book);
-    const changed = book.save(durable);
+    const changed = book.save(durable || (purged.length > 0 && keepDurably));
     // (Their files only once the queues no longer list them: a refused change leaves both.)
     for (const id of purged) fs.rmSync(path.join(FILES, id), { recursive: true, force: true });
     return { value, changed };
-  }, { required: durable });
+  }, { required: keepDurably });
   if (changed) noteQueuesChanged();
   return value;
 }

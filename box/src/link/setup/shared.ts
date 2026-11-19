@@ -8,6 +8,7 @@ import { INTERRUPTED_SAVE, PENDING_SAVE, type InterruptedReply, type PendingRepl
 import { isObject } from "../../shared/json";
 import { held, MOST_DOC, ownSign, readDoc, signDoc } from "../documents/format";
 import { K } from "../home";
+import type { EditHistory, EditRecord } from "../ownership/merge";
 import { ownKey } from "../peers/known";
 import { readLink, updateLink, type LinkState } from "../state";
 import { primaryFenced } from "./lease";
@@ -18,7 +19,11 @@ import { sealedPrimary } from "./checkpoint";
 
 export type { Receipt, SharedKind };
 export { PENDING_SAVE, INTERRUPTED_SAVE };
-export type SharedValues = Partial<Record<SharedKind, { sequence: number; value: unknown }>>;
+
+type SharedEntry = { sequence: number; value: unknown; offlineEdits?: EditHistory };
+export type SharedValues = Partial<Record<SharedKind, SharedEntry>>;
+const entryOf = (sequence: number, value: unknown, offlineEdits: unknown): SharedEntry =>
+  ({ sequence, value, ...(offlineEdits ? { offlineEdits: offlineEdits as EditHistory } : {}) });
 export type OperationOutcome = {
   kind: SharedKind;
   epoch: number;
@@ -26,6 +31,7 @@ export type OperationOutcome = {
   baseRevision: number;
   proposal: string;
   status: "committed" | "interrupted";
+  offlineEdit?: EditRecord;
 };
 export type OperationOutcomes = Record<string, OperationOutcome>;
 
@@ -45,7 +51,7 @@ export function publishedShared(link: LinkState): SignedDoc[] {
     if (!setup.checkpointed && sharedPolicy(kind).checkpointOnly) return [];
     const entry = link.shared?.[kind];
     return entry ? [signDoc(link.sign!, "setup-shared", entry.sequence, {
-      id: setup.id, epoch: setup.epoch, kind, value: entry.value, published: true,
+      id: setup.id, epoch: setup.epoch, kind, value: entry.value, offlineEdits: entry.offlineEdits, published: true,
     })] : [];
   });
 }
@@ -107,7 +113,7 @@ export function bindSave(save: Receipt, seed: string, binding: { pairedKey: stri
 }
 
 /** Stage under the link lock. Independent kinds proceed independently; one kind is serialized. */
-export function stageShared(link: LinkState, kind: SharedKind, value: unknown, effects?: object, requested?: string): Receipt | null {
+export function stageShared(link: LinkState, kind: SharedKind, value: unknown, effects?: object, requested?: string, edits?: EditHistory): Receipt | null {
   const setup = followedSetup(link);
   const operation = requested ?? crypto.randomBytes(16).toString("base64url");
   if (setupLayoutDeferred(K) || !link.sign || setup?.role !== "primary" || setup.sign !== ownSign(link) || (!setup.standby && (!setup.checkpointed || requiresStandby(setup)))
@@ -120,16 +126,19 @@ export function stageShared(link: LinkState, kind: SharedKind, value: unknown, e
       && JSON.stringify(pending.body.effects) === JSON.stringify(effects) ? asSave(pending, link.sign) : null;
   }
   if (Object.hasOwn(link.sharedPending ?? {}, operation)) return null;
-  const sequence = (link.shared?.[kind]?.sequence ?? 0) + 1;
+  const previous = link.shared?.[kind];
+  const offlineEdit = edits?.receipts.at(-1);
+  const offlineEdits = edits ? { ...edits, receipts: [] } : previous?.offlineEdits;
+  const sequence = (previous?.sequence ?? 0) + 1;
   if (!Number.isSafeInteger(sequence)) return null;
   const proposed = Object.values(link.sharedPending ?? {}).flatMap(envelope => {
     const doc = held(envelope);
-    return doc ? [[doc.body.kind, { sequence: doc.n, value: doc.body.value }]] : [];
+    return doc ? [[doc.body.kind, entryOf(doc.n, doc.body.value, doc.body.offlineEdits)]] : [];
   });
-  const next = { ...link.shared, ...Object.fromEntries(proposed), [kind]: { sequence, value } };
+  const next = { ...link.shared, ...Object.fromEntries(proposed), [kind]: entryOf(sequence, value, offlineEdits) };
   if (Buffer.byteLength(JSON.stringify(next)) > MAX_SHARED_BYTES) return null;
   const envelope = signDoc(link.sign, "setup-shared", sequence, {
-    id: setup.id, epoch: setup.epoch, kind, value, operation, baseRevision: sequence - 1, ...(effects ? { effects } : {}),
+    id: setup.id, epoch: setup.epoch, kind, value, operation, baseRevision: sequence - 1, ...(offlineEdits ? { offlineEdits } : {}), ...(offlineEdit ? { offlineEdit } : {}), ...(effects ? { effects } : {}),
   });
   if (envelope.d.length > MOST_DOC * 4 / 3) return null;
   const doc = held(envelope)!;
@@ -146,6 +155,7 @@ function remember(link: LinkState, doc: Doc, operation: string, status: Operatio
   link.sharedOutcomes = { ...link.sharedOutcomes, [operation]: {
     kind: doc.body.kind as SharedKind, epoch: doc.body.epoch as number, sequence: doc.n,
     baseRevision: doc.n - 1, proposal: doc.envelope.s, status,
+    ...(status === "committed" && isObject(doc.body.offlineEdit) ? { offlineEdit: doc.body.offlineEdit as EditRecord } : {}),
   } };
 }
 
@@ -183,7 +193,7 @@ export function takeShared(link: LinkState, sender: string, doc: Doc): SignedDoc
       && Object.hasOwn(doc.body, "value")) {
       scopeShared(link, setup.id);
       if (doc.n <= (link.shared?.[kind]?.sequence ?? 0)) return null;
-      link.shared = { ...link.shared, [kind]: { sequence: doc.n, value } };
+      link.shared = { ...link.shared, [kind]: entryOf(doc.n, value, doc.body.offlineEdits) };
       const membership = kind === "membershipAndAccess" && acceptedMembership(link);
       if (membership) projectMembership(link, membership);
     }
@@ -206,7 +216,7 @@ export function takeShared(link: LinkState, sender: string, doc: Doc): SignedDoc
     }
     if (doc.n !== (link.shared?.[kind]?.sequence ?? 0) + 1
       || (setup.checkpointed && kind === "membershipAndAccess" && !matchesMembership(link, value))) return null;
-    const next = { ...link.shared, [kind]: { sequence: doc.n, value } };
+    const next = { ...link.shared, [kind]: entryOf(doc.n, value, doc.body.offlineEdits) };
     if (Buffer.byteLength(JSON.stringify(next)) > MAX_SHARED_BYTES) return null;
     link.shared = next;
     remember(link, doc, operation, "committed");
@@ -220,7 +230,7 @@ export function takeShared(link: LinkState, sender: string, doc: Doc): SignedDoc
   if (pending?.doc.n !== doc.n || pending.doc.envelope.s !== receipt) return null;
   const operation = identity(pending.doc);
   if (!operation) return null;
-  link.shared = { ...link.shared, [kind]: { sequence: doc.n, value: pending.doc.body.value } };
+  link.shared = { ...link.shared, [kind]: entryOf(doc.n, pending.doc.body.value, pending.doc.body.offlineEdits) };
   remember(link, pending.doc, operation, "committed");
   if (kind === "membershipAndAccess") applyAccess(link, pending.doc.body.value, pending.doc.body.effects);
   delete link.sharedPending![pending.key];

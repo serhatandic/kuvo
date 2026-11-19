@@ -1156,3 +1156,202 @@ test("failure bench: number blocks stay unique across a takeover", { timeout: 55
   assert.equal(stillOffline.number, offline.number + 1);
   assert.equal(new Set([firstNumber, offline.number, nextNumber, stillOffline.number]).size, 4);
 });
+
+const editAddress = (owner, id) => ({ kind: "queueItems", queue: "ses_owned", id, computer: owner.key });
+const editPath = ref => `kuvo/data/edits?${new URLSearchParams(ref)}`;
+const editRead = (box, ref) => box.route("GET", editPath(ref), undefined, true);
+const editSubmit = (box, ref, edit) => box.route("POST", "kuvo/data/edits", { ref, ...edit }, true);
+async function acceptedEdit(box, operation, t) {
+  while (!t.signal.aborted) {
+    const result = await box.route("GET", `kuvo/data/edits/${operation}`, undefined, true);
+    assert.equal(result.status, 200);
+    if (result.value.receipt.status !== "pending") return result.value;
+    await delay(100);
+  }
+  assert.fail(`No terminal receipt for ${operation}`);
+}
+const itemID = () => `wqi_${crypto.randomBytes(15).toString("base64url")}`;
+
+test("failure bench: offline fields and notes converge in either reconnect order, and a clash is recorded once", { timeout: 85_000 }, async t => {
+  const { a, b, c, relay } = await network(t, false, undefined, true);
+  for (const [first, second] of [[a, b], [b, a]]) {
+    const ref = editAddress(c, itemID());
+    const create = { operation: `create-${ref.id}`, baseRevision: null, create: true, fields: { title: "Original" },
+      notes: [{ id: "draft", text: "Alpha red. Beta green." }] };
+    const allowCreate = relay.pause(first.address, c.address);
+    const made = await editSubmit(first, ref, create);
+    assert.equal(made.status, 202, JSON.stringify(made));
+    assert.deepEqual((await editRead(c, ref)).value.fields, {});
+    allowCreate();
+    assert.equal((await acceptedEdit(first, made.value.operation, t)).receipt.status, "committed");
+    assert.equal((await editSubmit(first, ref, create)).value.status, "committed");
+    const [left, right] = await Promise.all([editRead(first, ref), editRead(second, ref)]);
+    assert.equal(left.status, 200, JSON.stringify(left));
+    assert.equal(right.status, 200, JSON.stringify(right));
+    const baseRevision = left.value.revision;
+    assert.equal(right.value.revision, baseRevision);
+
+    const reconnectFirst = relay.pause(first.address, c.address);
+    const reconnectSecond = relay.pause(second.address, c.address);
+    const attachment = { id: "same-file", file: { uri: "data:text/plain;base64,cXVldWUgYXR0YWNobWVudA==", name: "queue.txt" } };
+    const one = { operation: `first-${ref.id}`, baseRevision, fields: { title: first.name, "note:draft": "Alpha blue. Beta green." },
+      notes: [{ id: "first-note", text: "First addition" }], attachments: [attachment] };
+    const two = { operation: `second-${ref.id}`, baseRevision, fields: { title: second.name, status: "waiting", "note:draft": "Alpha red. Beta orange." },
+      notes: [{ id: "second-note", text: "Second addition" }], attachments: [attachment] };
+    const [sentOne, sentTwo] = await Promise.all([editSubmit(first, ref, one), editSubmit(second, ref, two)]);
+    assert.equal(sentOne.status, 202, JSON.stringify(sentOne));
+    assert.equal(sentTwo.status, 202, JSON.stringify(sentTwo));
+    assert.equal((await editRead(c, ref)).value.fields.title, "Original");
+    reconnectFirst();
+    assert.equal((await acceptedEdit(first, sentOne.value.operation, t)).receipt.status, "committed");
+    const releaseReceipt = relay.pause(c.address, second.address);
+    reconnectSecond();
+    let owner;
+    while (!t.signal.aborted) {
+      owner = await editRead(c, ref);
+      if (owner.value.choices?.length) break;
+      await delay(100);
+    }
+    assert.equal(owner.status, 200);
+    assert.equal(owner.value.choices.length, 1);
+    assert.equal(owner.value.choices[0].accepted, first.name);
+    assert.equal(owner.value.choices[0].proposed, second.name);
+    assert.equal(owner.value.fields.status, "waiting");
+    assert.equal(owner.value.fields["note:draft"], "Alpha blue. Beta orange.");
+    assert.equal(owner.value.fields["note:first-note"], "First addition");
+    assert.equal(owner.value.fields["note:second-note"], "Second addition");
+
+    await c.stop("SIGTERM");
+    releaseReceipt();
+    c.start();
+    const clash = (await acceptedEdit(second, sentTwo.value.operation, t)).receipt;
+    assert.equal(clash.status, "choice");
+    assert.deepEqual(clash.choices, [owner.value.choices[0].id]);
+    const both = await Promise.all([editRead(first, ref), editRead(second, ref)]);
+    for (const result of both) {
+      assert.equal(result.status, 200, JSON.stringify(result));
+      assert.equal(result.value.stale, false);
+      assert.deepEqual(result.value.choices, owner.value.choices);
+    }
+    const item = await c.route("GET", `kuvo/work-queue/items/${ref.id}`);
+    assert.equal(item.status, 200);
+    assert.deepEqual(item.value.item.files.map(file => file.name), ["queue.txt"]);
+    const resolved = await editSubmit(c, ref, { operation: `resolve-${ref.id}`, baseRevision: owner.value.revision,
+      resolve: { id: clash.choices[0], use: "proposed" } });
+    assert.equal(resolved.value.status, "committed", JSON.stringify(resolved));
+    const current = (await editRead(c, ref)).value;
+    assert.equal(current.fields.title, second.name);
+    assert.deepEqual(current.choices, []);
+  }
+});
+
+test("failure bench: deletion recovers late text and a long-absent copy must refresh", { timeout: 55_000 }, async t => {
+  const { a, b, c, relay } = await network(t, false, undefined, true);
+  const ref = editAddress(c, itemID());
+  const edit = { operation: "creation", create: true, baseRevision: null, fields: { title: "Original" } };
+  const made = await editSubmit(c, ref, edit);
+  assert.equal(made.value.status, "committed", JSON.stringify(made));
+  const baseRevision = (await editRead(b, ref)).value.revision;
+  assert.equal((await editRead(a, ref)).value.revision, baseRevision);
+  const reconnectB = relay.pause(b.address, c.address);
+  const reconnectA = relay.pause(a.address, c.address);
+  const first = await editSubmit(b, ref, { operation: "late", baseRevision, fields: { body: "Text to recover" } });
+  const last = await editSubmit(a, ref, { operation: "months-late", baseRevision, fields: { body: "Text from the old copy" } });
+  assert.equal(first.status, 202);
+  assert.equal(last.status, 202);
+  assert.equal((await editSubmit(c, ref, { operation: "delete", baseRevision, delete: true })).value.status, "committed");
+  reconnectB();
+  const deleted = await acceptedEdit(b, first.value.operation, t);
+  assert.equal(deleted.receipt.status, "deleted");
+  assert.deepEqual(deleted.recovery, { body: "Text to recover" });
+  const outbox = await b.route("GET", "kuvo/data/edits/outbox", undefined, true);
+  assert.equal(outbox.status, 200);
+  assert.ok(outbox.value.entries.some(entry => entry.ref.id === ref.id && entry.receipt.operation === first.value.operation));
+  assert.equal((await editRead(c, ref)).value.deleted, true);
+
+  // Move the owner’s deletion past the supported window without changing any writer's clock.
+  // Stand-in homes are the only files touched.
+  const queue = path.join(c.run, "work-queue", "queues", "ses_owned.json");
+  const kept = JSON.parse(fs.readFileSync(queue, "utf8"));
+  kept.items.find(item => item.id === ref.id).removed.at -= 90 * 86_400_000;
+  fs.writeFileSync(queue + ".bench", JSON.stringify(kept));
+  fs.renameSync(queue + ".bench", queue);
+  const snapshot = await editRead(c, ref);
+  assert.equal(snapshot.value.deleted, true);
+  assert.deepEqual(snapshot.value.fields, {});
+  reconnectA();
+  const old = await acceptedEdit(a, last.value.operation, t);
+  assert.equal(old.receipt.status, "refresh");
+  assert.deepEqual(old.recovery, { body: "Text from the old copy" });
+  const fresh = await editRead(a, ref);
+  assert.equal(fresh.value.stale, false);
+  assert.equal(fresh.value.revision, old.receipt.revision);
+  assert.equal(fresh.value.deleted, true);
+  const resurrect = await editSubmit(c, ref, { ...edit, operation: "create-again" });
+  assert.equal(resurrect.value.status, "refresh");
+  assert.equal((await c.route("GET", `kuvo/work-queue/items/${ref.id}`)).status, 404);
+});
+
+test("failure bench: setup preferences merge at the primary and await the standby receipt", { timeout: 55_000 }, async t => {
+  const { a, b, c, relay } = await standbyNetwork(t);
+  const ref = { kind: "setupUsageDisplay" };
+  const read = await editRead(c, ref);
+  assert.equal(read.status, 200, JSON.stringify(read));
+  const { revision: baseRevision } = read.value;
+  const release = relay.pause(b.address, a.address);
+  const first = await editSubmit(c, ref, { operation: "usage-card", baseRevision, fields: { totalSpend: { show: true } } });
+  assert.equal(first.status, 202);
+  await until("standby accepted the first preference", () => b.read().shared?.setupUsageDisplay?.value?.units?.totalSpend?.value?.show, t.signal);
+  const pending = await c.route("GET", `kuvo/data/edits/${first.value.operation}`, undefined, true);
+  assert.equal(pending.value.receipt.status, "pending");
+  release();
+  assert.equal((await acceptedEdit(c, first.value.operation, t)).receipt.status, "committed");
+  const second = await editSubmit(c, ref, { operation: "usage-model", baseRevision, fields: { codexFallback: "gpt-5.4" } });
+  assert.equal((await acceptedEdit(c, second.value.operation, t)).receipt.status, "committed");
+  const actual = await editRead(a, ref);
+  assert.deepEqual(actual.value.fields, { codexFallback: "gpt-5.4", totalSpend: { show: true } });
+  const third = await editSubmit(c, ref, { operation: "usage-other-model", baseRevision, fields: { codexFallback: "gpt-5.3-codex" } });
+  const conflict = (await acceptedEdit(c, third.value.operation, t)).receipt;
+  assert.equal(conflict.status, "choice");
+  const copies = [a, b, c].map(box => box.read().shared?.setupUsageDisplay?.offlineEdits?.choices);
+  assert.equal(copies[0][0].id, conflict.choices[0]);
+  assert.deepEqual(copies[0], copies[1]);
+  const current = await editRead(c, ref);
+  assert.deepEqual(current.value.choices, copies[0]);
+  await a.stop();
+  b.clock(3 * HOUR + 5_000);
+  await until("standby promoted with accepted preference choices", () => b.read().setup?.role === "primary" && b.read().setup?.epoch === 3, t.signal);
+  const after = await editRead(b, ref);
+  assert.deepEqual(after.value.fields, actual.value.fields);
+  assert.deepEqual(after.value.choices, copies[0]);
+});
+
+test("failure bench: a bot's offline name and instructions are applied only at its home", { timeout: 45_000 }, async t => {
+  const { a, b, c, relay } = await network(t, false, undefined, true);
+  const ref = { kind: "botSettings", id: "bot_Lab", computer: c.key };
+  const home = path.dirname(c.run);
+  const folder = path.join(home, "bots", ref.id);
+  fs.mkdirSync(folder, { recursive: true });
+  fs.mkdirSync(path.join(home, "bin"), { recursive: true });
+  fs.copyFileSync(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/bot-words.json", import.meta.url), path.join(home, "bin", "bot-words.json"));
+  fs.writeFileSync(path.join(folder, "bot.json"), JSON.stringify({ kuvo: 1, id: ref.id, name: "Lab bot" }));
+  fs.writeFileSync(path.join(folder, "session"), "ses_owned\n");
+  fs.writeFileSync(path.join(folder, "job.json"), JSON.stringify({ line: "Report status", details: "Check the queue." }));
+  const { value: before, status } = await editRead(a, ref);
+  assert.equal(status, 200, JSON.stringify(before));
+  const baseRevision = before.revision;
+  const reconnect = relay.pause(a.address, c.address);
+  const name = await editSubmit(a, ref, { operation: "name", baseRevision, fields: { name: "Ready bot" } });
+  const instructions = await editSubmit(b, ref, { operation: "instructions", baseRevision, fields: { jobDetails: "Check the queue and summarize." } });
+  assert.equal(name.status, 202);
+  assert.equal((await acceptedEdit(b, instructions.value.operation, t)).receipt.status, "committed");
+  assert.equal((await editRead(c, ref)).value.fields.name, "Lab bot");
+  reconnect();
+  assert.equal((await acceptedEdit(a, name.value.operation, t)).receipt.status, "committed");
+  const { value: after } = await editRead(b, ref);
+  assert.equal(after.fields.name, "Ready bot");
+  assert.equal(after.fields.jobDetails, "Check the queue and summarize.");
+  assert.deepEqual(after.choices, []);
+  assert.equal(fs.existsSync(path.join(path.dirname(a.run), "bots", ref.id)), false);
+  assert.equal(fs.existsSync(path.join(path.dirname(b.run), "bots", ref.id)), false);
+});

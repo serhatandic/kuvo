@@ -1,3 +1,5 @@
+import { sendOfflineEdits } from "../ownership/edits";
+import { peerPlaces } from "../engine/client";
 import { sendOwnerMessages } from "../ownership/messages";
 // What you do to an item another of your computers keeps, done there (PROTOCOL.md, "The Work
 // Queue", "Across your computers", Done where it's kept): a client sends it to any box, and that box,
@@ -275,6 +277,7 @@ const sent = new Map<string, number>();
  * (this Mac's box): only what this process left. */
 export function sendForwards(host: Pick<LinkHost, "send" | "welcomed"> | null | undefined, link: LinkState | null = readLink(), now = Date.now(), { ownOnly = IS_MAC }: { ownOnly?: boolean } = {}): void {
   sendOwnerMessages(host, link, now);
+  sendOfflineEdits(host, link, now, peerPlaces);
   const names = listOf(FORWARDS);
   const here = new Set<string>();
   for (const name of names) {
