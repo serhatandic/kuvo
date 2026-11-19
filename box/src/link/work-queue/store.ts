@@ -156,6 +156,8 @@ export interface Item {
   restoreReview?: string;
 }
 
+export const isLiveItem = (item: Item): boolean => !item.removed;
+
 /** An owner's queue, as its file keeps it. */
 export interface Queue {
   owner: string;

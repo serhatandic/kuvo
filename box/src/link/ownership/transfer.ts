@@ -173,6 +173,8 @@ async function requestTransfer(link: LinkState | null, move: Transfer, settled =
 export async function decideTransfer(link: LinkState | null, move: Transfer): Promise<TransferDecision> {
   const setup = followedSetup(link);
   if (!setup?.checkpointed || (setup.role !== "primary" && transferAccepted(link, move))) return { status: "committed" };
+  const unsupported = transferSupport(link);
+  if (unsupported) return { status: "refused", message: unsupported };
   const result = await requestTransfer(link, move);
   if (result?.status === 200) return { status: "committed" };
   if (result?.status === 422 && "value" in result && isObject(result.value) && result.value.transferRefused === true && typeof result.value.message === "string") {

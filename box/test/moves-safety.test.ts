@@ -15,7 +15,7 @@ const { forgetMovesInMemory, hold, keepMoving, resumeMoves, sendMovesWith, takeM
 const { MOVES, compactDecisionHints, endedFor, forgetMove, noteEnded, readMove, saveMove, switchedHere } = await import("../src/link/moves/records")
 const { pack, unpack } = await import("../src/link/moves/bundle")
 const { filesOf, WORK_QUEUE } = await import("../src/link/work-queue/store")
-const { forgetWorkQueues, packWorkQueues } = await import("../src/link/work-queue/moves")
+const { carryWorkQueue, forgetWorkQueues, packWorkQueues, placeWorkQueues } = await import("../src/link/work-queue/moves")
 import type { CarriedQueues } from "../src/link/work-queue/moves"
 const { newKey, publicOf, addressOf } = await import("../src/link/crypto/keys")
 const { newSigningSeed, readDoc, signingKeyOf } = await import("../src/link/documents/format")
@@ -25,7 +25,7 @@ const { MAX_SHARED_BYTES, pendingShared, sharedValue, takeShared } = await impor
 const { grantLease, leaseClock } = await import("../src/link/setup/lease")
 const { settleTransfers, transferForPeer } = await import("../src/link/ownership/transfer")
 const { acceptedOwner, mayActivate } = await import("../src/link/ownership/resolve")
-const { handItem } = await import("../src/link/work-queue/ops")
+const { handItem, removeItem } = await import("../src/link/work-queue/ops")
 const { handUpkeep } = await import("../src/link/work-queue/hand")
 const { allItems, changeQueues, itemOf } = await import("../src/link/work-queue/store")
 const { queueOf, unpackQueues, WAITING_DIR } = await import("../src/link/engine/queue")
@@ -695,6 +695,44 @@ for (const reason of ["capacity", "update"]) test(`assignment refusal for ${reas
   } finally { fs.rmSync(LINK_FILE, { force: true }) }
 })
 
+test("a restart in switching releases both holds when the primary needs an update", async () => {
+  const { link, local, remote } = checkpointed(true)
+  const switching = record({ from: local.peer.key, to: remote.peer.key, peer: remote.peer.key, offered: true, ...bundle })
+  writeLink(link)
+  try {
+    saveMove(switching)
+    forgetMovesInMemory()
+    await resumeMoves()
+    expect(fs.existsSync(held)).toBe(true)
+    keepMoving()
+    // A later message for the same move waits for the upkeep step.
+    await takeMoveMail(remote.peer, { op: "decision?", id, ...bundle })
+    expect(await receipt()).toMatchObject({
+      state: "failed", message: "Update Desk, the primary computer, before transferring ownership.",
+    })
+    expect(fs.existsSync(held)).toBe(false)
+    expect(mayActivate({ kind: "conversations", id: session })).toBe(true)
+    expect(deletes).toBe(0)
+    expect(mail.some(each => each.op === "switch")).toBe(false)
+    const drop = mail.find(each => each.op === "drop")!
+    expect(drop).toMatchObject(bundle)
+
+    const failed = readMove(id)!
+    writeLink({ ...link, key: remote.seed, sign: remote.sign, setup: { ...link.setup, role: "primary" } })
+    saveMove({ ...switching, role: "to", peer: local.peer.key, step: undefined, complete: true, createdSessions: [session] })
+    await takeMoveMail(local.peer, drop)
+    expect(readMove(id)).toBeNull()
+    expect(deletes).toBe(1)
+    const dropped = mail.at(-1)!
+    expect(dropped).toMatchObject({ op: "dropped", neverSwitched: true, ...bundle })
+    writeLink(link)
+    saveMove(failed)
+    await takeMoveMail(remote.peer, dropped)
+    expect(readMove(id)).toBeNull()
+    expect(await receipt()).toMatchObject({ state: "failed" })
+  } finally { fs.rmSync(LINK_FILE, { force: true }) }
+})
+
 test("a move waits for the standby acceptance before switching", async () => {
   const { link, local, remote } = checkpointed()
   const standby = { key: remote.peer.key, sign: remote.peer.sign }
@@ -726,6 +764,27 @@ test("a move waits for the standby acceptance before switching", async () => {
     fs.rmSync(LINK_FILE, { force: true })
     fs.rmSync(path.join(RUN, "setup-lease.json"), { force: true })
   }
+})
+
+test("a restart in switching honors accepted ownership even when the primary needs an update", async () => {
+  const { link, local, remote } = checkpointed(true)
+  const switching = record({ from: local.peer.key, to: remote.peer.key, peer: remote.peer.key, offered: true, ...bundle })
+  const primary = { ...link, key: remote.seed, sign: remote.sign, setup: { ...link.setup, role: "primary" as const } }
+  writeLink(primary)
+  try {
+    expect((await transferForPeer(local.peer, { body: { setup: link.sharedSetup, transfer: switching } })).status).toBe(200)
+    writeLink({ ...readLink()!, key: local.seed, sign: local.sign, setup: link.setup })
+    saveMove(switching)
+    forgetMovesInMemory()
+    await resumeMoves()
+    keepMoving()
+    await takeMoveMail(remote.peer, { op: "decision?", id, ...bundle })
+    expect(readMove(id)).toMatchObject({ ownershipCommitted: true })
+    expect(acceptedOwner(readLink(), { kind: "conversations", id: session })).toBe(remote.peer.key)
+    expect(fs.existsSync(held)).toBe(true)
+    expect(mail.some(each => each.op === "drop")).toBe(false)
+    expect(mail.at(-1)).toMatchObject({ op: "switch", ...bundle })
+  } finally { fs.rmSync(LINK_FILE, { force: true }) }
 })
 
 test("startup keeps a group held when accepted ownership points elsewhere", async () => {
@@ -778,6 +837,67 @@ test("a local handoff updates accepted placement before the receiving queue move
     changeQueues(book => {
       for (const queue of ["ses_a", "ses_b"]) book.queue(queue).items = book.queue(queue).items.filter(item => item.id !== id)
     })
+    if (version) fs.writeFileSync(checkpoint, version)
+    else fs.rmSync(checkpoint)
+    fs.rmSync(LINK_FILE, { force: true })
+  }
+})
+
+test("a carried session moves with a previously handed-off tombstone", async () => {
+  const { link, local, remote } = checkpointed()
+  const itemId = "wqi_" + "B".repeat(20)
+  const first = "ses_tombstoneFirst", from = "ses_tombstoneFrom", to = "ses_tombstoneTo"
+  const who = { user: true } as const
+  const checkpoint = path.join(K, "folder-version.json")
+  const version = fs.existsSync(checkpoint) ? fs.readFileSync(checkpoint) : null
+  fs.writeFileSync(checkpoint, '{"version":7}')
+  writeLink(link)
+  try {
+    changeQueues(book => {
+      const item = itemOf({ id: itemId, title: "Hand this before deleting it" }, first)!
+      book.queue(first).items.push(item)
+      handItem(book, item, from, who, Date.now())
+    })
+    expect(() => packWorkQueues([from])).toThrow("A Work Queue handoff is still in progress.")
+    handUpkeep(readLink())
+    for (let attempt = 0; attempt < 30 && allItems().find(item => item.id === itemId)?.owner !== from; attempt++)
+      await Bun.sleep(10)
+    const assignments = sharedValue(readLink(), "ownershipAssignments")
+    expect(assignments).toMatchObject({ ["queue item:" + itemId]: { queue: from, computer: local.peer.key } })
+    const removed = { by: who, at: Date.now() }
+    changeQueues(book => removeItem(book.find({ id: itemId })!, who, removed.at))
+
+    carryWorkQueue(from, to)
+    expect(packWorkQueues([from])).toBeNull()
+    const carried = packWorkQueues([to])!
+    expect(carried.items).toHaveLength(1)
+    expect(carried.items[0]).toMatchObject({ id: itemId, owner: to, removed })
+    expect(carried.items[0]!.handing).toBeUndefined()
+    expect(sharedValue(readLink(), "ownershipAssignments")).toEqual(assignments)
+
+    // A journal written by the previous carry code may still contain this handoff.
+    changeQueues(book => {
+      book.find({ id: itemId })!.handing = {
+        id: "wqh_staleCarry", key: local.peer.key, to: from, name: from, at: removed.at, by: who, carried: true,
+      }
+    })
+    expect(packWorkQueues([from])).toBeNull()
+    const packed = packWorkQueues([to])!
+    expect(packed.items[0]!.handing).toBeUndefined()
+    const transfer = { id, kind: "chat" as const, from: local.peer.key, to: remote.peer.key, thing: to, sessions: [to] }
+    await pack(id, { kind: "chat", thing: to, name: to, exports: [], wasPaused: false, workQueue: packed })
+    const { contents, opened } = await unpack(id)
+    expect((await transferForPeer(local.peer, { body: { setup: link.sharedSetup, transfer } })).status).toBe(200)
+    const ref = { kind: "conversations" as const, id: to }
+    expect(acceptedOwner(readLink(), ref)).toBe(remote.peer.key)
+    expect(mayActivate(ref)).toBe(false)
+    forgetWorkQueues([to])
+    const destination = { ...readLink()!, key: remote.seed }
+    expect(mayActivate(ref, { link: destination })).toBe(true)
+    placeWorkQueues(contents.workQueue, [to], opened)
+    expect(packWorkQueues([to])?.items[0]).toMatchObject({ id: itemId, owner: to, removed })
+  } finally {
+    forgetWorkQueues([first, from, to])
     if (version) fs.writeFileSync(checkpoint, version)
     else fs.rmSync(checkpoint)
     fs.rmSync(LINK_FILE, { force: true })

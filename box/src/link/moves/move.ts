@@ -901,8 +901,6 @@ async function arrived(record: MoveRecord, placed?: unknown): Promise<void> {
   if (!still()) return;
   const link = readLink();
   if (followedSetup(link)?.checkpointed) {
-    const unsupported = transferSupport(link);
-    if (unsupported) return failSource(record, unsupported, 409, record.offered === true, true);
     // Keep retrying this particular operation after a restart or a lost reply.
     // The destination can start as soon as the primary accepts it.
     const assigning = changeMove(record.id, each => { each.assigning = true; each.sentAt = Date.now(); });

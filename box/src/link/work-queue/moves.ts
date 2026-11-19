@@ -15,7 +15,7 @@ import { keepLabel, labels } from "./labels";
 import { statusNamed } from "./statuses";
 import { intoTodo, stageLocalHand } from "./ops";
 import { pruneRelations } from "./relations";
-import { allItems, changeQueues, FILE_NAME, Refusal, filesOf, itemOf, ITEM_ID, deletionFor, keepDeletion, queueDeletions, OWNER, readKeptQueue, readQueueSettingAside, WORK_QUEUE, type Item, type QueueDeletion } from "./store";
+import { allItems, changeQueues, FILE_NAME, Refusal, filesOf, isLiveItem, itemOf, ITEM_ID, deletionFor, keepDeletion, queueDeletions, OWNER, readKeptQueue, readQueueSettingAside, WORK_QUEUE, type Item, type QueueDeletion } from "./store";
 
 /** What a move carries: each owner's items, the labels they have, and which items
  * have files (packed beside `move.json`, in `work-queue/<item>/`). */
@@ -35,10 +35,12 @@ export function packWorkQueues(owners: readonly string[]): CarriedQueues | null 
   const here = readLink();
   const own = here && ownKey(here);
   const all = allItems();
-  if (own && all.some(item => item.handing?.key === own && (wanted.has(item.owner) || wanted.has(item.handing.to))))
+  if (own && all.some(item => isLiveItem(item) && item.handing?.key === own && (wanted.has(item.owner) || wanted.has(item.handing.to))))
     throw new Refusal("A Work Queue handoff is still in progress. Try the move again once it finishes.");
   const items = all.filter(item => wanted.has(item.owner));
   for (const owner of wanted) if (!OWNER.test(owner)) items.push(...readKeptQueue(owner)?.items ?? []);
+  // Older carries could leave a pending handoff on a retained deletion.
+  for (const item of items) if (!isLiveItem(item)) delete item.handing;
   const deletions = queueDeletions().filter(deletion => wanted.has(deletion.queue));
   if (!items.length && !deletions.length) return null;
   const travelling = new Set(items.map(item => item.id));
@@ -137,6 +139,11 @@ export function carryWorkQueue(from: string, to: string): void {
   const link = readLink(), now = Date.now();
   changeQueues(book => {
     for (const item of [...book.queue(from).items]) {
+      if (!isLiveItem(item)) {
+        delete item.handing;
+        book.give(item, to);
+        continue;
+      }
       // The carry route may be called again from the new session's metadata.
       if (item.handing) continue;
       const tracked = assignmentFor(link, { kind: "queueItems", id: item.id, queue: from });

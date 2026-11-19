@@ -29,7 +29,7 @@ import { keepLabel, labels } from "./labels";
 import { isClosed, statusNamed } from "./statuses";
 import { intoTodo, linkSession, placeLocalHand } from "./ops";
 import {
-  allItems, changeQueues, deletionFor, FILE_NAME, filesOf, itemOf, MOST_FILE, MOST_HANDED_FILES, MOST_ITEMS, noteDeparture, noteHanded, OWNER, placeIn, Refusal, WORK_QUEUE, whoOf,
+  allItems, changeQueues, deletionFor, FILE_NAME, filesOf, isLiveItem, itemOf, MOST_FILE, MOST_HANDED_FILES, MOST_ITEMS, noteDeparture, noteHanded, OWNER, placeIn, Refusal, WORK_QUEUE, whoOf,
   type Book, type Item, type Who,
 } from "./store";
 import { mailsFor } from "./parts";
@@ -91,7 +91,7 @@ const queuesMark = (): string => {
 };
 function handingNow(): Item[] {
   const mark = queuesMark();
-  if (!scanned || scanned.mark !== mark || Date.now() - scanned.at > 60_000) scanned = { mark, at: Date.now(), items: allItems().filter(item => item.handing && !item.removed) };
+  if (!scanned || scanned.mark !== mark || Date.now() - scanned.at > 60_000) scanned = { mark, at: Date.now(), items: allItems().filter(item => item.handing && isLiveItem(item)) };
   return scanned.items;
 }
 
