@@ -88,7 +88,8 @@ if [[ -f "$inventory" ]]; then extra+=("$inventory"); fi
 COPYFILE_DISABLE=1 tar --no-xattrs -czf - \
     box/package.json box/bun.lock box/bunfig.toml box/tsconfig.json \
     box/src box/test box/eval \
-    protocol/vectors swift/OpenCodeKit/Sources/OpenCodeKit/OpenCodeKit.swift \
+    protocol/vectors protocol/gate-required.txt gpui/kuvo_box/src/gate/required.rs \
+    swift/OpenCodeKit/Sources/OpenCodeKit/OpenCodeKit.swift \
     swift/OpenCodeKit/Sources/OpenCodeKit/Engine/EngineInstaller.swift \
     box/bridge-tests swift/KuvoClient/Tests/ClientSessionsTests/BoxVectorsTests.swift \
     scripts/route-shapes.sh scripts/route-shapes.ts scripts/real-app-guard.sh \

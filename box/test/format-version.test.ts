@@ -1,3 +1,4 @@
+import "./safety"
 import { expect, test } from "bun:test";
 import { objectFormat, upgradeFormat } from "../src/shared/format-version";
 

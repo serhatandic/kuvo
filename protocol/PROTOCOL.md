@@ -12110,6 +12110,11 @@ it, goes once no box is from before beta.31:
   record, once its command line says it's this box's engine. <!-- compat: beta.30 engine-record -->
 - A Kuvo Helper from before beta.31, which doesn't leave for a new build of itself, is handed over
   once by its `serve` ("This Mac's box: its helper", A helper from before beta.31). <!-- compat: beta.30 helper-handover -->
+
+**Layout 4 setups**: older standby proposals carry the full projection, leadership certificates
+may carry devices alongside the roster, and a standby can be selected before setup checkpoints
+exist. <!-- compat: layout.4 setup -->
+
 ## The browser's live view
 
 Feature `browser.view`, a machine's box's (until a Mac's box has a browser of its own: a Mac's

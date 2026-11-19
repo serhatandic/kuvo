@@ -1,3 +1,4 @@
+import "./safety"
 import { expect, test } from "bun:test";
 import { editView, mergeEdit, mergeText, observe, rememberEdit, replay } from "../src/link/ownership/merge";
 

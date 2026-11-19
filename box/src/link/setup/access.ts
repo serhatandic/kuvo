@@ -11,7 +11,7 @@ import { requiresStandby } from "./record";
 import { pendingShared, stageShared, type Receipt } from "./shared";
 
 const localEffects = DATA_DECLARATIONS.membershipAndAccess.shared.localEffects;
-// COMPAT(layout 4): an older standby expects the full projection in its proposal.
+// COMPAT(layout.4 setup): an older standby expects the full projection in its proposal. Goes once supported upgrades and rollbacks no longer use layout 4 setup records.
 const legacyFields = ["macPeers", "macMoved", "peerNames", "left", "removedHere", "removalRevisions",
   "phones", "removed", "vouchBlocked", ...localEffects,
 ] as const satisfies readonly (keyof LinkState)[];

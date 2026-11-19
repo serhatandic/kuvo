@@ -14,6 +14,7 @@ import { upgradeIntegrations } from "../src/link/areas/integrations"
 import { addressOf, newKey, publicOf } from "../src/link/crypto/keys"
 import { BOX_KEYS, RUN, shownRoot } from "../src/link/home"
 import { keyWork } from "../src/link/keys"
+import { upgradeKuvoFolder } from "../src/shared/folder-version"
 import { watchFolder } from "../src/shared/watch"
 // @ts-expect-error (The bridge tests' stand-in, in plain JavaScript.)
 import { relayStandIn } from "../bridge-tests/relay-stand-in.js"
@@ -221,6 +222,12 @@ function machineFolder(servers: unknown) {
   return { home, settings, env }
 }
 
+/** These integration trials start with an already upgraded folder. */
+function startIntegrationTrial(home: string) {
+  upgradeKuvoFolder(home)
+  writeFileSync(join(home, "run", "update-trial"), "9.9.9")
+}
+
 /** A machine with `servers` in its settings and a phone paired, so it runs a bridge; `before` sets up
  * what else it starts with, and `alsoAtStart` goes along with its start. Answers with its settings once
  * it's on the relay (with `until`, once they're as it says). */
@@ -306,7 +313,7 @@ test("an update on trial, its link welcomed by the relay: still on trial (only i
   const { figmaKept } = await machineStarts(oldServers(MACHINE), {
     before: folder => {
       home = folder
-      writeFileSync(join(folder, "run", "update-trial"), "9.9.9")
+      startIntegrationTrial(folder)
       writeFileSync(join(folder, "bin", "box-version"), "9.9.9")
       writeFileSync(join(folder, "run", "update.json"), JSON.stringify({ trial: { from: "9.9.8", to: "9.9.9", at: Date.now(), healthy: true } }))
     },
@@ -328,7 +335,7 @@ test("a machine's engine about to start, with no bridge and no Mac: its settings
 
 test("that command while an update is on trial: everything but the key, which the version before may need", async () => {
   const { settings, home, env } = machineFolder(oldServers(MACHINE))
-  writeFileSync(join(home, "run", "update-trial"), "9.9.9")
+  startIntegrationTrial(home)
   const start = Bun.spawn([process.execPath, main, "engine-config"], { env, stdout: "pipe", stderr: "pipe" })
   expect(await start.exited).toBe(0)
   expect(JSON.parse(readFileSync(settings, "utf8")).mcp.servers).toEqual({ ...upToDate(MACHINE), figma: oldServers(MACHINE).figma })

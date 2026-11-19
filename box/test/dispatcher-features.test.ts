@@ -1,4 +1,4 @@
-import "./safety";
+import "./safety"
 import { expect, test } from "bun:test";
 import { matchBoxRoute } from "../src/link/server/router";
 import { BOX_ROUTES } from "../src/shared/routes/box";

@@ -190,7 +190,7 @@ function promote(host: LinkHost, position: Position) {
         queueNumberAllocation: { sequence: link.shared!.queueNumberAllocation!.sequence, value: { ...ledger, next: ceiling + 1 } },
       });
     } else {
-      // COMPAT(layout 4): recover a standby selected by a release that did not checkpoint.
+      // COMPAT(layout.4 setup): recover a standby selected by a release that did not checkpoint. Goes once supported upgrades and rollbacks no longer use layout 4 setup records.
       const roster = setupDoc(link);
       const prior = leadershipOf(link);
       if (!roster || !prior) return null;

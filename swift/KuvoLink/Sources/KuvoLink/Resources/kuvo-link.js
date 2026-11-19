@@ -42926,9 +42926,9 @@ var init_tools4 = __esm(() => {
     },
     {
       name: "queue_labels",
-      description: "List the labels (kinds of work; one set for every queue), or make one change the user asked for: add, rename (with to), recolor (with color) or remove (off every item). To check a save, pass the returned receipt as save.",
+      description: "List shared labels. On request add, rename, recolor, or remove from all items.",
       inputSchema: { type: "object", properties: {
-        save: { type: "object", description: "The save receipt from an earlier label change." },
+        save: { type: "object", description: "Check a change with its returned save receipt." },
         add: { type: "string" },
         rename: { type: "string" },
         to: { type: "string" },
@@ -56994,13 +56994,16 @@ async function* deletesRoute(context) {
     return yield* json(404, { message: "None of them is here." });
   return yield* json(200, await deleteConfirm(deleting, context, signal, { count: ids.length - parts.length, list }));
 }
+function sessionMovedElsewhere(computer, name = "") {
+  return { message: `It’s on ${plainName(name) || "another of your computers"} now. Change it there.`, computer };
+}
 function livesElsewhere(session) {
   const moved = movedAway().find((each) => each.session === session);
   if (!moved)
     return null;
   const peer = peersOf(readLink()).find((each) => each.key === moved.key);
   const name = peer ? computerName2(peer) : "";
-  return { message: `It’s on ${plainName(name) || "another of your computers"} now. Change it there.`, computer: moved.key };
+  return sessionMovedElsewhere(moved.key, name);
 }
 function actionsOf2(session, confirm) {
   if (isArchived3(session)) {
@@ -74743,7 +74746,7 @@ var init_files4 = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "5522bbc12718";
+var BRIDGE_VERSION = "214b21c1b99e";
 
 // box/src/link/rehome/paths.ts
 import { createHash as createHash6 } from "node:crypto";
@@ -92143,6 +92146,8 @@ function engineHandler(readEngine = readEngineFile, info = {}, readBridge = read
             return yield* queueOwnerMessage(context, session, owner);
           if (desktop && request.method.toUpperCase() === "POST" && group && route === `kuvo/groups/${group}`)
             return yield* queueOwnerMessage(context, group, owner);
+          if (session && owner.key && SESSION_ACTION_ROUTE.test(route))
+            return yield* json(409, sessionMovedElsewhere(owner.key, owner.name === owner.key ? "" : owner.name));
           return yield* json(409, { computer: owner.key, message: `Open this record on ${owner.name} to change it.` });
         }
         if (!mayActivate(ref) && owner?.local)

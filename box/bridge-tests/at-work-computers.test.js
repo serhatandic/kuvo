@@ -35,7 +35,7 @@ const fresh = () => {
   fs.rmSync(run, { recursive: true, force: true });
   fs.mkdirSync(run, { recursive: true });
   link.writeLink({ secret: crypto.randomBytes(32).toString("base64url"), key: k(here.key), relay: "wss://relay.test", name: "devbox", id: "devbox", mac: mac.pub, macs: [mac.pub], phones: [],
-    peersFrom: { [mac.pub]: { at: 1, peers: [mac.peer, here.peer, second.peer, third.peer] } } });
+    legacy: { [mac.pub]: { at: 1, peers: [mac.peer, here.peer, second.peer, third.peer] } } });
 };
 const mailFrom = (from, payload) => link.sealOneWay(Buffer.from(JSON.stringify(payload)), from.key, link.publicOf(here.key)).message;
 const takeMail = (sender, payload) => link.peerMail(sender, payload, null);

@@ -18,7 +18,7 @@ import { processRuns as runs } from "../../shared/platform";
 import { accountsRoute, credentialsRoute } from "../areas/accounts";
 import { agentToolsRoute, startRoute } from "../areas/agent-tools";
 import { SESSION_FOLDERS_ROUTE, SESSION_MOVE_ROUTE, sessionFoldersRoute, sessionMoveRoute } from "../areas/session-move";
-import { DELETES_ROUTE, deletesRoute, SESSION_ACTION_ROUTE, sessionActionRoute } from "../areas/session-actions";
+import { DELETES_ROUTE, deletesRoute, SESSION_ACTION_ROUTE, sessionActionRoute, sessionMovedElsewhere } from "../areas/session-actions";
 import { foundRoute } from "../areas/found";
 import { searchRoute } from "../areas/search";
 import { memberComputersRoute, saveLocalSetup, setupRoute } from "../areas/setup";
@@ -353,6 +353,8 @@ export function engineHandler(readEngine: () => EngineRecord = readEngineFile, i
             return yield* queueOwnerMessage(context, session, owner);
           if (desktop && request.method.toUpperCase() === "POST" && group && route === `kuvo/groups/${group}`)
             return yield* queueOwnerMessage(context, group, owner);
+          if (session && owner.key && SESSION_ACTION_ROUTE.test(route))
+            return yield* json(409, sessionMovedElsewhere(owner.key, owner.name === owner.key ? "" : owner.name));
           return yield* json(409, { computer: owner.key, message: `Open this record on ${owner.name} to change it.` });
         }
         if (!mayActivate(ref) && owner?.local)
