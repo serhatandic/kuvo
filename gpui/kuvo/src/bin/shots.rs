@@ -2362,7 +2362,36 @@ fn main() -> anyhow::Result<()> {
     }
     first_run_shots(&mut cx, &only, &out)?;
     launch_shots(&mut cx, &only, &out)?;
+    tool_details_draft_shots(&mut cx, &only, &out)?;
     home_shots(&mut cx, &only, &out)
+}
+
+/// Stand-in design drafts for tool call details (`tool-details-inline`, `tool-details-ledger`,
+/// `tool-details-rail`), rendered light and dark for user selection before building for real.
+fn tool_details_draft_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path::Path) -> anyhow::Result<()> {
+    use kuvo::drafts::tool_details::{Draft, ToolDetailsDraft};
+    for draft in Draft::ALL {
+        let slug = draft.slug();
+        if !only.is_empty() && !only.iter().any(|arg| arg == slug || arg == "tool-details") {
+            continue;
+        }
+        let (w, h) = draft.size();
+        for appearance in [Appearance::Light, Appearance::Dark] {
+            cx.update(|cx| Theme::set_appearance(appearance, cx));
+            let window = cx.open_window(size(px(w), px(h)), |_, cx| cx.new(|_| ToolDetailsDraft::new(draft)))?;
+            let any = window.into();
+            cx.run_until_parked();
+            cx.update_window(any, |_, window, _| window.refresh())?;
+            cx.run_until_parked();
+            let image = cx.capture_screenshot(any)?;
+            let name = format!("screens-{slug}-{}.png", if appearance.is_dark() { "dark" } else { "light" });
+            image.save(out.join(&name))?;
+            println!("{name}: {}x{}", image.width(), image.height());
+            cx.update_window(any, |_, window, _| window.remove_window())?;
+            cx.run_until_parked();
+        }
+    }
+    Ok(())
 }
 
 /// The app opening on a computer (`launch-*`: this Mac's row in the Welcome card as it's set up,
