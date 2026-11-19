@@ -3,7 +3,7 @@
 //! (Accounts, Models, Usage). A section the box describes is drawn from its description alone
 //! (`described.rs`). Drawing is in `page.rs`; nothing here reaches the box.
 
-use kuvo_box::accounts::{AccountEntry, Accounts, Action, Confirm, ProgramUpdate, Side, State};
+use kuvo_box::accounts::{AccountEntry, AccountSection, Accounts, Action, Confirm, ProgramUpdate, Side, State};
 use kuvo_box::areas::Level;
 use kuvo_box::models::Offered as OfferedModels;
 use kuvo_box::settings::{Config, UsageSettings};
@@ -668,14 +668,11 @@ fn accounts(facts: &Facts) -> Vec<Block> {
     if let Some(why) = &accounts.engine_down {
         blocks.push(note("note-engine-down", why.message.clone(), false));
     }
-    // By the box's state: those signed in (or once signed in, now ended), then the rest to add,
-    // each in the engine's order.
-    let (connected, others): (Vec<&AccountEntry>, Vec<&AccountEntry>) = accounts.engine.iter().partition(|entry| entry.state != State::SignedOut);
-    if !connected.is_empty() {
-        blocks.push(Block::Group("Providers".into(), String::new(), connected.into_iter().map(|entry| account_row(entry, facts)).collect()));
-    }
-    if !others.is_empty() {
-        blocks.push(Block::Group("Add a Provider".into(), String::new(), others.into_iter().map(|entry| account_row(entry, facts)).collect()));
+    for (section, title) in [(AccountSection::Providers, "Providers"), (AccountSection::AddProvider, "Add a Provider")] {
+        let rows: Vec<_> = accounts.engine.iter().filter(|entry| entry.section == section).map(|entry| account_row(entry, facts)).collect();
+        if !rows.is_empty() {
+            blocks.push(Block::Group(title.into(), String::new(), rows));
+        }
     }
     blocks
 }

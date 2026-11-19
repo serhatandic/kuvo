@@ -8511,6 +8511,9 @@
             "literal": "account-action-sheet-title"
            },
            {
+            "literal": "accounts.catalog"
+           },
+           {
             "literal": "accounts.credentials"
            },
            {
@@ -9325,6 +9328,9 @@
           "oneOf": [
            {
             "literal": "account-action-sheet-title"
+           },
+           {
+            "literal": "accounts.catalog"
            },
            {
             "literal": "accounts.credentials"
@@ -17146,6 +17152,7 @@
              ]
             },
             "label": "string",
+            "sheetTitle?": "string",
             "confirm?": {
              "object": {
               "title": "string",
@@ -17182,6 +17189,372 @@
          },
          "added?": {
           "literal": true
+         }
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "route": "GET kuvo/accounts/catalog",
+   "feature": "accounts.catalog",
+   "answers": {
+    "200": {
+     "object": {
+      "agents": {
+       "list": {
+        "object": {
+         "id": "string",
+         "methods": {
+          "list": {
+           "object": {
+            "type": "string",
+            "id?": "string",
+            "label": "string",
+            "form?": {
+             "list": "any"
+            },
+            "legacy?": "bool"
+           }
+          }
+         },
+         "environment": {
+          "list": "string"
+         },
+         "hint": "string",
+         "kind": {
+          "oneOf": [
+           {
+            "literal": "provider"
+           },
+           {
+            "literal": "search"
+           },
+           {
+            "literal": "mcp"
+           },
+           {
+            "literal": "agentDuplicate"
+           }
+          ]
+         },
+         "listed": "bool",
+         "plan": "bool",
+         "service?": "string",
+         "state": {
+          "oneOf": [
+           {
+            "literal": "signedIn"
+           },
+           {
+            "literal": "signedOut"
+           },
+           {
+            "literal": "ended"
+           },
+           {
+            "literal": "notInstalled"
+           },
+           {
+            "literal": "unchecked"
+           },
+           {
+            "literal": "problem"
+           }
+          ]
+         },
+         "line": "string",
+         "actions": {
+          "list": {
+           "object": {
+            "id": {
+             "oneOf": [
+              {
+               "literal": "signIn"
+              },
+              {
+               "literal": "signInAgain"
+              },
+              {
+               "literal": "addAnother"
+              },
+              {
+               "literal": "disconnect"
+              },
+              {
+               "literal": "install"
+              },
+              {
+               "literal": "update"
+              },
+              {
+               "literal": "signOut"
+              },
+              {
+               "literal": "rename"
+              },
+              {
+               "literal": "remove"
+              }
+             ]
+            },
+            "label": "string",
+            "sheetTitle?": "string",
+            "confirm?": {
+             "object": {
+              "title": "string",
+              "message": "string",
+              "label": "string"
+             }
+            },
+            "here?": {
+             "literal": true
+            }
+           }
+          }
+         },
+         "connections": {
+          "list": {
+           "object": {
+            "id?": "string",
+            "state": {
+             "oneOf": [
+              {
+               "literal": "signedIn"
+              },
+              {
+               "literal": "ended"
+              },
+              {
+               "literal": "problem"
+              }
+             ]
+            },
+            "line": "string"
+           }
+          }
+         },
+         "added?": {
+          "literal": true
+         },
+         "name": "string",
+         "section": {
+          "oneOf": [
+           {
+            "literal": "codingAgents"
+           },
+           {
+            "literal": "providers"
+           },
+           {
+            "literal": "addProvider"
+           }
+          ]
+         },
+         "metadata": {
+          "object": {
+           "accountLabel?": "string",
+           "version?": "string",
+           "programUpdate?": {
+            "object": {
+             "state": "string",
+             "version?": "string",
+             "message?": "string"
+            }
+           }
+          }
+         }
+        }
+       }
+      },
+      "engine": {
+       "list": {
+        "object": {
+         "id": "string",
+         "methods": {
+          "list": {
+           "object": {
+            "type": "string",
+            "id?": "string",
+            "label": "string",
+            "form?": {
+             "list": "any"
+            },
+            "legacy?": "bool"
+           }
+          }
+         },
+         "environment": {
+          "list": "string"
+         },
+         "hint": "string",
+         "kind": {
+          "oneOf": [
+           {
+            "literal": "provider"
+           },
+           {
+            "literal": "search"
+           },
+           {
+            "literal": "mcp"
+           },
+           {
+            "literal": "agentDuplicate"
+           }
+          ]
+         },
+         "listed": "bool",
+         "plan": "bool",
+         "service?": "string",
+         "state": {
+          "oneOf": [
+           {
+            "literal": "signedIn"
+           },
+           {
+            "literal": "signedOut"
+           },
+           {
+            "literal": "ended"
+           },
+           {
+            "literal": "notInstalled"
+           },
+           {
+            "literal": "unchecked"
+           },
+           {
+            "literal": "problem"
+           }
+          ]
+         },
+         "line": "string",
+         "actions": {
+          "list": {
+           "object": {
+            "id": {
+             "oneOf": [
+              {
+               "literal": "signIn"
+              },
+              {
+               "literal": "signInAgain"
+              },
+              {
+               "literal": "addAnother"
+              },
+              {
+               "literal": "disconnect"
+              },
+              {
+               "literal": "install"
+              },
+              {
+               "literal": "update"
+              },
+              {
+               "literal": "signOut"
+              },
+              {
+               "literal": "rename"
+              },
+              {
+               "literal": "remove"
+              }
+             ]
+            },
+            "label": "string",
+            "sheetTitle?": "string",
+            "confirm?": {
+             "object": {
+              "title": "string",
+              "message": "string",
+              "label": "string"
+             }
+            },
+            "here?": {
+             "literal": true
+            }
+           }
+          }
+         },
+         "connections": {
+          "list": {
+           "object": {
+            "id?": "string",
+            "state": {
+             "oneOf": [
+              {
+               "literal": "signedIn"
+              },
+              {
+               "literal": "ended"
+              },
+              {
+               "literal": "problem"
+              }
+             ]
+            },
+            "line": "string"
+           }
+          }
+         },
+         "added?": {
+          "literal": true
+         },
+         "name": "string",
+         "section": {
+          "oneOf": [
+           {
+            "literal": "codingAgents"
+           },
+           {
+            "literal": "providers"
+           },
+           {
+            "literal": "addProvider"
+           }
+          ]
+         },
+         "metadata": {
+          "object": {
+           "accountLabel?": "string",
+           "version?": "string",
+           "programUpdate?": {
+            "object": {
+             "state": "string",
+             "version?": "string",
+             "message?": "string"
+            }
+           }
+          }
+         }
+        }
+       }
+      },
+      "agentsDown?": {
+       "object": {
+        "message": "string",
+        "reason?": "string",
+        "action?": {
+         "object": {
+          "label": "string",
+          "route": "string"
+         }
+        }
+       }
+      },
+      "engineDown?": {
+       "object": {
+        "message": "string",
+        "reason?": "string",
+        "action?": {
+         "object": {
+          "label": "string",
+          "route": "string"
          }
         }
        }

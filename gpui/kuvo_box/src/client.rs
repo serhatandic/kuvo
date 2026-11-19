@@ -43,8 +43,20 @@ fn said(request: &Request) -> std::borrow::Cow<'_, Request> {
 #[derive(Clone)]
 pub struct BoxClient {
     transport: Arc<dyn Transport>,
-    /// The gate, and which of the box's servers it was read from ([`Transport::refresh`]).
-    gate: Arc<Mutex<(Gate, u64)>>,
+    gate: Arc<Mutex<Capabilities>>,
+}
+
+/// The negotiated features and gate, from one of the box's server instances.
+struct Capabilities {
+    gate: Gate,
+    server: u64,
+    features: Vec<String>,
+}
+
+impl Default for Capabilities {
+    fn default() -> Self {
+        Self { gate: Gate::Unknown, server: 0, features: Vec::new() }
+    }
 }
 
 /// What a composer sends: the text as typed, and what goes with it.
@@ -121,12 +133,12 @@ pub struct WorkCounts {
 impl BoxClient {
     /// A box reached through `transport`.
     pub fn new(transport: impl Transport + 'static) -> BoxClient {
-        BoxClient { transport: Arc::new(transport), gate: Arc::new(Mutex::new((Gate::Unknown, 0))) }
+        BoxClient { transport: Arc::new(transport), gate: Arc::default() }
     }
 
     /// A box reached through a transport that's shared already.
     pub fn over(transport: Arc<dyn Transport>) -> BoxClient {
-        BoxClient { transport, gate: Arc::new(Mutex::new((Gate::Unknown, 0))) }
+        BoxClient { transport, gate: Arc::default() }
     }
 
     /// How it's reached.
@@ -153,7 +165,7 @@ impl BoxClient {
             return Some(self.clone());
         }
         let transport = self.transport.peer(&computer.key)?;
-        Some(BoxClient { transport, gate: Arc::new(Mutex::new((Gate::Unknown, 0))) })
+        Some(BoxClient { transport, gate: Arc::default() })
     }
 
     /// Whether a followed route would use the same connection as before.
@@ -174,11 +186,11 @@ impl BoxClient {
 
     /// Where the box stands with this client, as last read.
     pub fn gate(&self) -> Gate {
-        self.gate.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).0.clone()
+        self.gate.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).gate.clone()
     }
 
-    fn set_gate(&self, gate: Gate, server: u64) {
-        *self.gate.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = (gate, server);
+    fn set_gate(&self, gate: Gate, server: u64, features: Vec<String>) {
+        *self.gate.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Capabilities { gate, server, features };
     }
 
     /// The gate for the box's server now: not known yet for one that started again since it was
@@ -186,10 +198,10 @@ impl BoxClient {
     fn current_gate(&self) -> Gate {
         let server = self.transport.refresh();
         let mut gate = self.gate.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        if gate.1 != server {
-            *gate = (Gate::Unknown, server);
+        if gate.server != server {
+            *gate = Capabilities { server, ..Capabilities::default() };
         }
-        gate.0.clone()
+        gate.gate.clone()
     }
 
     /// Reads `kuvo/info` and applies the update gate: a box lacking a name in [`gate::REQUIRED`]
@@ -210,11 +222,11 @@ impl BoxClient {
         }
         let response = self.transport.send(&asked)?;
         if response.status == 404 || response.status == 405 {
-            self.set_gate(Gate::for_features::<String>(None), server);
+            self.set_gate(Gate::for_features::<String>(None), server, Vec::new());
             return Err(Error::NeedsUpdating { missing: gate::REQUIRED.iter().map(|name| (*name).to_owned()).collect() });
         }
         let info: BoxInfo = decode(&response)?;
-        self.set_gate(Gate::for_features(Some(&info.features)), server);
+        self.set_gate(Gate::for_features(Some(&info.features)), server, info.features.clone());
         Ok(info)
     }
 
@@ -223,8 +235,12 @@ impl BoxClient {
         if gate::is_allowed(&request.path) {
             return Ok(());
         }
+        let key = request.headers.iter().find(|(name, value)| name.eq_ignore_ascii_case("idempotency-key") && !value.is_empty()).map(|(_, key)| key.as_str());
+        self.ensure_gate(key)
+    }
+
+    fn ensure_gate(&self, key: Option<&str>) -> Result<()> {
         if self.current_gate() == Gate::Unknown {
-            let key = request.headers.iter().find(|(name, value)| name.eq_ignore_ascii_case("idempotency-key") && !value.is_empty()).map(|(_, key)| key.as_str());
             match self.connect_for(key) {
                 Ok(_) | Err(Error::NeedsUpdating { .. }) => {}
                 Err(error) => return Err(error),
@@ -233,6 +249,19 @@ impl BoxClient {
         match self.gate() {
             Gate::Held { missing } => Err(Error::NeedsUpdating { missing }),
             _ => Ok(()),
+        }
+    }
+
+    /// Whether this box advertises an optional feature, after checking its current gate.
+    pub(crate) fn has_feature(&self, name: &str) -> Result<bool> {
+        loop {
+            self.ensure_gate(None)?;
+            let capabilities = self.gate.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            match &capabilities.gate {
+                Gate::Unknown => continue, // A concurrent request observed a new server.
+                Gate::Held { missing } => return Err(Error::NeedsUpdating { missing: missing.clone() }),
+                _ => return Ok(capabilities.features.iter().any(|feature| feature == name)),
+            }
         }
     }
 

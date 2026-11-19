@@ -165,7 +165,8 @@ fn the_picker_shows_another_computers_settings_and_leaves_the_window(cx: &mut Te
     assert!(stand_in.seen_at("PATCH", "kuvo/settings/permissions").is_empty());
     // Its own pages (Accounts) are that box's too.
     section(&workspace, cx, "Accounts");
-    assert_eq!(devbox.seen_at("GET", "kuvo/sign-in/accounts").len(), 2, "each side's, from devbox");
+    assert_eq!(devbox.seen_at("GET", "kuvo/accounts/catalog").len(), 1, "one catalog from devbox");
+    assert!(devbox.seen_at("GET", "kuvo/sign-in/accounts").is_empty());
     // Back goes to this Mac's settings again.
     section(&workspace, cx, "Permissions");
     click(cx, "settings-computer");
@@ -987,13 +988,31 @@ fn closing_a_sign_in_under_way_gives_it_up_and_reads_accounts_again(cx: &mut Tes
     let (workspace, cx) = open(cx, stand_in.clone());
     section(&workspace, cx, "Accounts");
     click(cx, "account-gitlab-sign-in-again");
-    let reads = stand_in.seen_at("GET", "kuvo/sign-in/accounts").len();
+    let reads = stand_in.seen_at("GET", "kuvo/accounts/catalog").len();
     click(cx, "sign-in-x");
     assert_eq!(stand_in.seen_at("DELETE", "api/integration/gitlab/connect/oauth/att_1").len(), 1);
-    assert!(stand_in.seen_at("GET", "kuvo/sign-in/accounts").len() > reads, "read again however it closed");
+    assert!(stand_in.seen_at("GET", "kuvo/accounts/catalog").len() > reads, "read again however it closed");
     let asked = stand_in.seen_at("GET", "kuvo/sign-in/status").len();
     tick(cx);
     assert_eq!(stand_in.seen_at("GET", "kuvo/sign-in/status").len(), asked, "no more asking");
+}
+
+#[test]
+fn an_older_box_without_the_account_catalog_keeps_its_accounts() {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let client = BoxClient::new(stand_in.clone());
+    let expected = client.sign_in_accounts().unwrap();
+    assert_eq!(client.sign_in_accounts().unwrap(), expected);
+    assert_eq!(stand_in.seen_at("GET", "kuvo/info").len(), 1);
+    stand_in.set_lacks(&[kuvo_box::accounts::ACCOUNT_CATALOG]);
+    let legacy = BoxClient::new(stand_in.clone()).sign_in_accounts().unwrap();
+    assert!(!expected.agents.is_empty() && !expected.engine.is_empty());
+    assert_eq!(
+        legacy.engine.iter().chain(&legacy.agents).map(|row| (&row.integration.id, row.section, row.state)).collect::<Vec<_>>(),
+        expected.engine.iter().chain(&expected.agents).map(|row| (&row.integration.id, row.section, row.state)).collect::<Vec<_>>(),
+    );
+    assert_eq!(stand_in.seen_at("GET", "kuvo/accounts/catalog").len(), 2);
+    assert_eq!(stand_in.seen_at("GET", "kuvo/sign-in/accounts").len(), 2);
 }
 
 #[gpui::test]
@@ -1249,7 +1268,7 @@ mod live {
         advance(cx, 1);
         assert!(!shown(cx, "account-claude-code-busy-label"));
         assert!(view.read_with(cx, |view, _| view.page_words()).contains("Can’t check update progress"));
-        let route = "kuvo/agents/api/integration";
+        let route = "kuvo/accounts/catalog";
         let reads = stand_in.seen_at("GET", route).len();
         advance(cx, 1);
         assert_eq!(stand_in.seen_at("GET", route).len(), reads, "no retry after one second");

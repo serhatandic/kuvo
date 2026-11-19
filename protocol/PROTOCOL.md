@@ -4650,6 +4650,14 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
     the account's card names under its name: its first sign-in that isn't legacy (the engine's
     "Login with" said "Sign in with"; plain "Sign in" where its words only name the account
     again), else "API key" for a key, else "Connect".
+  - `GET kuvo/accounts/catalog` (`accounts.catalog`) → `{agents, engine, agentsDown?, engineDown?}`.
+    Each array contains the accounts shown in Settings, in that source's order. Each row includes
+    the account facts below, its `name`, the display fields `metadata.accountLabel`,
+    `metadata.version` and `metadata.programUpdate` where present, and its Settings `section`
+    (`codingAgents`, `providers` or `addProvider`). A source that returns 503 contributes an
+    empty array and its refusal (`message`, `reason?`, `action?`) in the corresponding
+    `*Down` field. Other failures fail the request. A client uses the separate reads below and
+    the source's integration list only when this box's features lack `accounts.catalog`.
   - `GET kuvo/sign-in/accounts[?agents=1]` → `{"accounts": [{id, methods, environment, hint, kind,
     listed, plan, service?, state, line, connections, actions, added?}]}`:
     every account the engine (or the bridge) lists, each with the same answer. Accounts goes by it
@@ -7839,6 +7847,7 @@ One row a name, in order, so branches that each add one merge cleanly.
 
 | Name | What it answers |
 | --- | --- |
+| `accounts.catalog` | `GET kuvo/accounts/catalog`: one account catalog for Settings and first run, including each row's section and each unavailable source's refusal |
 | `accounts.credentials` | `kuvo/accounts/credentials` |
 | `accounts.ended` | `kuvo/accounts/ended` and `POST kuvo/accounts/<provider>/forget` (a machine from 0.9.61) |
 | `accounts.found` | `kuvo/accounts/found`, `…/found/use` |

@@ -12,6 +12,7 @@
 
 export const FEATURES = [
   "account-action-sheet-title",
+  "accounts.catalog",
   "accounts.credentials",
   "accounts.ended",
   "accounts.found",

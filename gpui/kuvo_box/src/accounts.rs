@@ -20,6 +20,8 @@ use crate::client::BoxClient;
 use crate::error::{Error, Refusal, Result};
 use crate::paths::{query_value, segment};
 
+pub const ACCOUNT_CATALOG: &str = "accounts.catalog";
+
 fn sign_in_client(request: Request) -> Request {
     static CLIENT: OnceLock<Option<String>> = OnceLock::new();
     match CLIENT.get_or_init(|| {
@@ -227,6 +229,7 @@ pub enum ProgramUpdate {
 pub struct AccountEntry {
     pub side: Side,
     pub integration: Integration,
+    pub section: AccountSection,
     /// Its mark, by the plan limits' service ids (`claude`, `copilot`…), as the box says; none for
     /// one with no mark, drawn by its name's first letter.
     pub service: Option<String>,
@@ -243,6 +246,15 @@ pub struct AccountEntry {
     /// An account you added beside its agent's own (`added`): a first run lists each agent once,
     /// by its own.
     pub added: bool,
+}
+
+/// The Accounts section this box puts a row in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AccountSection {
+    CodingAgents,
+    Providers,
+    AddProvider,
 }
 
 impl AccountEntry {
@@ -358,8 +370,65 @@ struct Data<T> {
     data: T,
 }
 
+#[derive(Clone, Deserialize)]
+struct AccountFacts {
+    #[serde(flatten)]
+    ways: Ways,
+    plan: bool,
+    #[serde(default)]
+    service: Option<String>,
+    #[serde(default)]
+    state: State,
+    #[serde(default)]
+    line: String,
+    #[serde(default, deserialize_with = "readable")]
+    actions: Vec<Action>,
+    #[serde(default)]
+    added: bool,
+}
+
+impl AccountFacts {
+    fn entry(self, side: Side, integration: Integration, section: AccountSection) -> AccountEntry {
+        let Self { ways, plan, service, state, line, actions, added } = self;
+        AccountEntry { side, integration, section, service, plan, ways, state, line, actions, added }
+    }
+}
+
+#[derive(Deserialize)]
+struct CatalogRow {
+    #[serde(flatten)]
+    integration: Integration,
+    section: AccountSection,
+    #[serde(flatten)]
+    facts: AccountFacts,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Catalog {
+    #[serde(deserialize_with = "readable")]
+    agents: Vec<CatalogRow>,
+    #[serde(deserialize_with = "readable")]
+    engine: Vec<CatalogRow>,
+    agents_down: Option<Value>,
+    engine_down: Option<Value>,
+}
+
+impl From<Catalog> for Accounts {
+    fn from(catalog: Catalog) -> Self {
+        let entries = |rows: Vec<CatalogRow>, side| rows.into_iter().map(|row| row.facts.entry(side, row.integration, row.section)).collect();
+        let refusal = |value: Value| Refusal::from_answer(503, value.to_string().as_bytes());
+        Self {
+            agents: entries(catalog.agents, Side::Agents),
+            engine: entries(catalog.engine, Side::Engine),
+            agents_down: catalog.agents_down.map(refusal),
+            engine_down: catalog.engine_down.map(refusal),
+        }
+    }
+}
+
 impl BoxClient {
-    /// One side's accounts, with the box's ways in.
+    /// One side's accounts on a box from before the catalog.
     fn side_accounts(&self, side: Side) -> Result<Vec<AccountEntry>> {
         let listed_here: Data<Vec<Value>> = self.get(&format!("{}/integration", side.api()))?;
         let integrations: Vec<Integration> = listed_here.data.into_iter().filter_map(|value| serde_json::from_value(value).ok()).collect();
@@ -367,21 +436,10 @@ impl BoxClient {
         struct Entry {
             id: String,
             #[serde(flatten)]
-            ways: Ways,
+            facts: AccountFacts,
             /// Whether Accounts lists it, as the box decides (whatever `kind` it names).
             #[serde(default)]
             listed: bool,
-            plan: bool,
-            #[serde(default)]
-            service: Option<String>,
-            #[serde(default)]
-            state: State,
-            #[serde(default)]
-            line: String,
-            #[serde(default, deserialize_with = "readable")]
-            actions: Vec<Action>,
-            #[serde(default)]
-            added: bool,
         }
         #[derive(Deserialize)]
         struct Answer {
@@ -392,19 +450,27 @@ impl BoxClient {
             Side::Engine => "kuvo/sign-in/accounts",
             Side::Agents => "kuvo/sign-in/accounts?agents=1",
         };
-        let ways: Vec<Entry> = self.get::<Answer>(route).map(|answer| answer.accounts)?;
+        let ways = self.get::<Answer>(route)?.accounts;
         // Those the box says Accounts lists (`listed`), each as the box says it.
         Ok(integrations
             .into_iter()
             .filter_map(|integration| {
-                let entry = ways.iter().find(|entry| entry.id == integration.id).filter(|entry| entry.listed)?;
-                Some(AccountEntry { side, service: entry.service.clone(), plan: entry.plan, ways: entry.ways.clone(), state: entry.state, line: entry.line.clone(), actions: entry.actions.clone(), added: entry.added, integration })
+                let facts = ways.iter().find(|entry| entry.id == integration.id).filter(|entry| entry.listed)?.facts.clone();
+                let section = match side {
+                    Side::Agents => AccountSection::CodingAgents,
+                    Side::Engine if facts.state == State::SignedOut => AccountSection::AddProvider,
+                    Side::Engine => AccountSection::Providers,
+                };
+                Some(facts.entry(side, integration, section))
             })
             .collect())
     }
 
     /// Every account on this box: the coding agents' (where their bridge runs) and the engine's.
     pub fn sign_in_accounts(&self) -> Result<Accounts> {
+        if self.has_feature(ACCOUNT_CATALOG)? {
+            return self.get::<Catalog>("kuvo/accounts/catalog").map(Accounts::from);
+        }
         // Either side not running (503) leaves its accounts out, saying why; the other's stay.
         let side = |side: Side| match self.side_accounts(side) {
             Ok(accounts) => Ok((accounts, None)),

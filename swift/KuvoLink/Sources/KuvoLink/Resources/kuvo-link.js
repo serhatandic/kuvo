@@ -1,4 +1,4 @@
-// Kuvo folder layout 18 8293f65fb3e8
+// Kuvo folder layout 18 58357fa8c519
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
 var __create = Object.create;
@@ -1139,7 +1139,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "8293f65fb3e8";
+var BRIDGE_VERSION = "58357fa8c519";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -20818,6 +20818,7 @@ var FEATURES;
 var init_features = __esm(() => {
   FEATURES = [
     "account-action-sheet-title",
+    "accounts.catalog",
     "accounts.credentials",
     "accounts.ended",
     "accounts.found",
@@ -30313,6 +30314,18 @@ async function* workQueueSignInRoute(context) {
     return yield* json(status ?? 502, { message: error instanceof Error && error.message === GITHUB_SIGN_IN_BUSY ? GITHUB_SIGN_IN_BUSY : "GitHub sign-in didn’t answer. Try again." });
   }
 }
+function describeAccounts(listed, agents, computer) {
+  const ended = agents ? new Map : readEndedSignIns();
+  return listed.flatMap((value) => {
+    const account = value;
+    if (typeof account?.id !== "string")
+      return [];
+    const service = serviceOf(account, agents);
+    const offered = signInMethods(account);
+    const facts = { id: account.id, ...offered, ...accountKind(account, agents), plan: isPlan(offered), ...service ? { service } : {}, ...accountState(account, offered, { agents, ended: ended.get(account.id), computer }) };
+    return [{ account, facts }];
+  });
+}
 async function* accountsRoute2(context, query) {
   const { signal, json } = context;
   const place = await placeOf2(query, context);
@@ -30320,23 +30333,15 @@ async function* accountsRoute2(context, query) {
     return yield* json(503, place.down);
   const deadline = AbortSignal.timeout(15000);
   try {
+    const agents = query.get("agents") === "1";
     const [listed, github] = await Promise.all([
       call(place.target, "GET", "/api/integration", undefined, signal ? AbortSignal.any([signal, deadline]) : deadline),
-      query.get("agents") === "1" ? null : workQueueAccount(context)
+      agents ? null : workQueueAccount(context)
     ]);
-    const accounts = (Array.isArray(listed) ? listed : []).filter((each) => typeof each?.id === "string");
+    const accounts = Array.isArray(listed) ? [...listed] : [];
     if (github)
       accounts.push(github);
-    const agents = query.get("agents") === "1";
-    const ended = agents ? new Map : readEndedSignIns();
-    const computer = computerInSentence(context.request);
-    return yield* json(200, {
-      accounts: accounts.map((account) => {
-        const service = serviceOf(account, agents);
-        const offered = signInMethods(account);
-        return { id: account.id, ...offered, ...accountKind(account, agents), plan: isPlan(offered), ...service ? { service } : {}, ...accountState(account, offered, { agents, ended: ended.get(account.id), computer }) };
-      })
-    });
+    return yield* json(200, { accounts: describeAccounts(accounts, agents, computerInSentence(context.request)).map(({ facts }) => facts) });
   } catch (error) {
     if (deadline.aborted)
       return yield* json(504, { message: "It didn't answer in time. Try again." });
@@ -95622,6 +95627,67 @@ init_home();
 init_vault2();
 init_forward();
 init_format2();
+
+// box/src/link/areas/account-catalog.ts
+init_computer_name();
+init_forward();
+init_settings_kit();
+init_sign_in();
+var ACCOUNT_CATALOG_ROUTE = "kuvo/accounts/catalog";
+function catalogMetadata(value) {
+  if (!isObject(value))
+    return {};
+  const { accountLabel, version, programUpdate } = value;
+  return {
+    ...typeof accountLabel === "string" ? { accountLabel } : {},
+    ...typeof version === "string" ? { version } : {},
+    ...isObject(programUpdate) && typeof programUpdate.state === "string" ? { programUpdate: {
+      state: programUpdate.state,
+      ...typeof programUpdate.version === "string" ? { version: programUpdate.version } : {},
+      ...typeof programUpdate.message === "string" ? { message: programUpdate.message } : {}
+    } } : {}
+  };
+}
+function unavailable3(value) {
+  const { message, reason, action } = isObject(value) ? value : {};
+  return {
+    message: typeof message === "string" ? message : "It said no (503).",
+    ...typeof reason === "string" ? { reason } : {},
+    ...isObject(action) && typeof action.label === "string" && typeof action.route === "string" ? { action: { label: action.label, route: action.route } } : {}
+  };
+}
+async function* accountCatalogRoute(context) {
+  const { request, json } = context;
+  if (request.method.toUpperCase() !== "GET")
+    return yield* json(405, {});
+  const [engine, agents] = await Promise.all([
+    asked6(context, engineRoute, "GET", "api/integration"),
+    asked6(context, agentsRoute, "GET", "kuvo/agents/api/integration")
+  ]);
+  for (const { status, value } of [engine, agents]) {
+    if (status === 503)
+      continue;
+    if (status !== 200)
+      return yield* json(status, value);
+    if (!Array.isArray(value?.data))
+      return yield* json(502, { message: "The accounts couldn’t be read. Try again." });
+  }
+  const computer = computerInSentence(request);
+  const rows = ({ status, value }, agents) => describeAccounts(status === 200 ? value.data : [], agents, computer).flatMap(({ account, facts }) => {
+    if (!facts.listed || typeof account.name !== "string")
+      return [];
+    const section = agents ? "codingAgents" : facts.state === "signedOut" ? "addProvider" : "providers";
+    return [{ ...facts, name: account.name, metadata: catalogMetadata(account.metadata), section }];
+  });
+  return yield* json(200, {
+    engine: rows(engine, false),
+    agents: rows(agents, true),
+    ...engine.status === 503 ? { engineDown: unavailable3(engine.value) } : {},
+    ...agents.status === 503 ? { agentsDown: unavailable3(agents.value) } : {}
+  });
+}
+
+// box/src/link/server/router.ts
 var WORK_QUEUE_OAUTH = new RegExp(`^api/integration/${GITHUB_WORK_QUEUE}/connect/oauth(?:/att_[a-zA-Z0-9]+)?$`);
 var ROUTES = [
   { feature: "info", when: (route) => route === "kuvo/info", answer: infoRoute },
@@ -95716,6 +95782,7 @@ var ROUTES = [
     return /^(kuvo\/agents\/)?api\/integration\/([^/]+)\/connect\/oauth$/.exec(route);
   }, answer: legacySignInRoute },
   { feature: "sign-in.return", when: (route) => route === "kuvo/sign-in/return", answer: signInReturnRoute },
+  { feature: "accounts.catalog", when: (route) => route === ACCOUNT_CATALOG_ROUTE, answer: accountCatalogRoute },
   { feature: "sign-in.methods", when: (route) => route === SIGN_IN_METHODS_ROUTE || route === SIGN_IN_STATUS_ROUTE || route === SIGN_IN_ACCOUNTS_ROUTE || route === SIGN_IN_START_ROUTE, answer: signInRoute },
   { feature: "claude-code", when: (route) => route === "kuvo/claude-code", answer: claudeCodeRoute },
   { feature: "agents", when: (route, request) => request.path.startsWith(AGENTS2), answer: agentsRoute },

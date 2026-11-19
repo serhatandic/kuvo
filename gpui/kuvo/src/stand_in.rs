@@ -1913,7 +1913,7 @@ impl StandIn {
             }
             ("GET", ["kuvo", "info"]) => {
                 let mut features: Vec<&str> = kuvo_box::gate::REQUIRED.to_vec();
-                features.extend(["queue", "asks", "file.info"]);
+                features.extend(["queue", "asks", "file.info", kuvo_box::accounts::ACCOUNT_CATALOG]);
                 features.extend(state.queue.features());
                 if !state.before_update_here { features.push(crate::home::UPDATES_ITSELF); }
                 features.retain(|name| !state.lacks.iter().any(|lacks| lacks == name));
