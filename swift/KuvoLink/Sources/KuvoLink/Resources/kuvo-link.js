@@ -13663,7 +13663,7 @@ var WORK_QUEUE2, QUEUES2, FILES, KEPT_OWNER, ITEM_ID, SESSION, KEPT_REMOVED, MOS
     return null;
   const day = new Date(`${given.trim()}T00:00:00Z`);
   return Number.isNaN(day.getTime()) || day.toISOString().slice(0, 10) !== given.trim() ? null : given.trim();
-}, queueFollowers, fileOf2 = (owner) => path24.join(QUEUES2, `${owner}.json`), deletionFor = (id) => readRecord("edit-deletions", recordKey(id)), queueDeletions = () => records("edit-deletions").flatMap((key) => readRecord("edit-deletions", key) ?? []), keepDeletion = (deletion) => keepRecord("edit-deletions", recordKey(deletion.id), deletion), departureFor = (id) => readRecord("edit-departures", recordKey(id)), newItemID = () => `wqi_${crypto12.randomBytes(15).toString("base64url")}`, whoOf = (given) => {
+}, isLiveItem = (item) => !item.removed, queueFollowers, fileOf2 = (owner) => path24.join(QUEUES2, `${owner}.json`), deletionFor = (id) => readRecord("edit-deletions", recordKey(id)), queueDeletions = () => records("edit-deletions").flatMap((key) => readRecord("edit-deletions", key) ?? []), keepDeletion = (deletion) => keepRecord("edit-deletions", recordKey(deletion.id), deletion), departureFor = (id) => readRecord("edit-departures", recordKey(id)), newItemID = () => `wqi_${crypto12.randomBytes(15).toString("base64url")}`, whoOf = (given) => {
   if (!isObject(given))
     return null;
   if (given.user === true)
@@ -41950,7 +41950,7 @@ function handPayload(item) {
 function handingNow() {
   const mark = queuesMark();
   if (!scanned || scanned.mark !== mark || Date.now() - scanned.at > 60000)
-    scanned = { mark, at: Date.now(), items: allItems().filter((item) => item.handing && !item.removed) };
+    scanned = { mark, at: Date.now(), items: allItems().filter((item) => item.handing && isLiveItem(item)) };
   return scanned.items;
 }
 function handUpkeep(link, now = Date.now()) {
@@ -44301,6 +44301,9 @@ async function decideTransfer(link, move) {
   const setup = followedSetup(link);
   if (!setup?.checkpointed || setup.role !== "primary" && transferAccepted(link, move))
     return { status: "committed" };
+  const unsupported = transferSupport(link);
+  if (unsupported)
+    return { status: "refused", message: unsupported };
   const result = await requestTransfer(link, move);
   if (result?.status === 200)
     return { status: "committed" };
@@ -45030,12 +45033,15 @@ function packWorkQueues(owners) {
   const here = readLink();
   const own = here && ownKey(here);
   const all = allItems();
-  if (own && all.some((item) => item.handing?.key === own && (wanted.has(item.owner) || wanted.has(item.handing.to))))
+  if (own && all.some((item) => isLiveItem(item) && item.handing?.key === own && (wanted.has(item.owner) || wanted.has(item.handing.to))))
     throw new Refusal("A Work Queue handoff is still in progress. Try the move again once it finishes.");
   const items = all.filter((item) => wanted.has(item.owner));
   for (const owner of wanted)
     if (!OWNER.test(owner))
       items.push(...readKeptQueue(owner)?.items ?? []);
+  for (const item of items)
+    if (!isLiveItem(item))
+      delete item.handing;
   const deletions = queueDeletions().filter((deletion) => wanted.has(deletion.queue));
   if (!items.length && !deletions.length)
     return null;
@@ -45126,6 +45132,11 @@ function carryWorkQueue(from, to) {
   const link = readLink(), now = Date.now();
   changeQueues((book) => {
     for (const item of [...book.queue(from).items]) {
+      if (!isLiveItem(item)) {
+        delete item.handing;
+        book.give(item, to);
+        continue;
+      }
       if (item.handing)
         continue;
       const tracked = assignmentFor(link, { kind: "queueItems", id: item.id, queue: from });
@@ -65422,9 +65433,6 @@ async function arrived(record, placed) {
     return;
   const link = readLink();
   if (followedSetup(link)?.checkpointed) {
-    const unsupported = transferSupport(link);
-    if (unsupported)
-      return failSource(record, unsupported, 409, record.offered === true, true);
     const assigning = changeMove(record.id, (each) => {
       each.assigning = true;
       each.sentAt = Date.now();
@@ -74735,7 +74743,7 @@ var init_files4 = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "e6fb2fbdd8c8";
+var BRIDGE_VERSION = "5522bbc12718";
 
 // box/src/link/rehome/paths.ts
 import { createHash as createHash6 } from "node:crypto";
