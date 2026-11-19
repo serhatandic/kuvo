@@ -1633,10 +1633,25 @@ impl Workspace {
         let bot = self.listing().facts(session).filter(|facts| facts.kind.0 == "bot").and_then(|facts| facts.bot.clone());
         self.wire_bars(&view, bot, cx);
         self.wire_wakes(&view, session, cx);
+        self.wire_shown_files(&view, cx);
         window.focus(&view.focus_handle(cx), cx);
         self.open = Open::Conversation { view, session: session.to_owned() };
         self.place_panel(cx);
         cx.notify();
+    }
+
+    /// Gives a conversation this window's computer key (for remote shown-file downloads) and a
+    /// preview callback that opens text files in the side panel.
+    fn wire_shown_files(&self, view: &Entity<ConversationView>, cx: &mut Context<Self>) {
+        let computer_key = self.place_key.clone();
+        let workspace = cx.entity().downgrade();
+        let preview = std::rc::Rc::new(move |path: &str, window: &mut Window, cx: &mut App| {
+            workspace.update(cx, |workspace, cx| workspace.preview_file(path, window, cx)).ok();
+        });
+        view.update(cx, |view, _| {
+            view.set_computer_key(computer_key);
+            view.set_preview_file(preview);
+        });
     }
 
     /// A conversation's Activity: the bot it is, and how a row
@@ -1698,6 +1713,7 @@ impl Workspace {
             let view = cx.new(|cx| ConversationView::new(client, session.to_owned(), composer.clone(), live, cx));
             self.wire_bars(&view, Some(bot.to_owned()), cx);
             self.wire_wakes(&view, session, cx);
+            self.wire_shown_files(&view, cx);
             #[cfg(feature = "stand-in")]
             if !self.live {
                 self.read_conversation_at_once(&view, session, cx);
@@ -1952,6 +1968,13 @@ impl Workspace {
         if !self.panel_open {
             self.toggle_panel(cx);
         }
+    }
+
+    /// Opens `path` in the side panel's Files view so the user can preview a shown text file.
+    pub fn preview_file(&mut self, path: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.show_panel(Tab::Files, cx);
+        let files = self.panel.read(cx).files().clone();
+        files.update(cx, |files, cx| files.open_file(path, window, cx));
     }
 
     /// The folder the panel shows: the open session's (its worktree's, for one in a worktree), or on

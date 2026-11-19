@@ -147,6 +147,10 @@ const SCREENS: &[Screen] = &[
     // one), the agent's larger; and one opened in the viewer.
     Screen { slug: "pictures-yours", width: 1280., height: 1500., session: Some("ses_recipes"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "pictures-viewer", width: 1280., height: 820., session: Some("ses_recipes"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(open_a_picture) },
+    // Files shown by the agent (`kuvo-browser_show_file`, Flow layout): single picture + 3-picture
+    // strip, then PDF & Markdown cards, missing tombstones, and a still-loading call.
+    Screen { slug: "show-file-pictures", width: 1280., height: 1080., session: Some("ses_dark"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "show-file-cards", width: 1280., height: 1040., session: Some("ses_dark"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "agent-letters", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(agent_letters) },
     // Selecting text (`kuvo_ui/src/selection.rs`): across a paragraph, inside a code block, across
     // messages, the right-click menu over a selection, and a drag in three steps.
@@ -1244,6 +1248,276 @@ fn stage_pictures(stand_in: &StandIn) {
     ] }));
 }
 
+/// Real conversation turns for `show-file-pictures`: one single picture with a caption, and three
+/// pictures in one turn forming the 3-across strip, with no redundant "Showed a file" step lines.
+fn stage_show_file_pictures(stand_in: &StandIn) {
+    use serde_json::json;
+    stand_in.set_facts("ses_dark", |facts| {
+        facts["title"] = json!("Pricing & checkout visual check");
+    });
+    stand_in.put_file("/Users/sam/Projects/website/shots/pricing-hero.png", encode_png(pricing_hero_image()));
+    stand_in.put_file("/Users/sam/Projects/website/shots/checkout-light.png", encode_png(checkout_desktop_image(false)));
+    stand_in.put_file("/Users/sam/Projects/website/shots/checkout-dark.png", encode_png(checkout_desktop_image(true)));
+    stand_in.put_file("/Users/sam/Projects/website/shots/checkout-narrow.png", encode_png(checkout_mobile_image()));
+
+    stand_in.add_message("ses_dark", json!({
+        "type": "user", "id": "msg_sf_u1", "time": { "created": NOW - 240_000.0 },
+        "text": "Can you show me how the new pricing page hero looks?"
+    }));
+    stand_in.add_message("ses_dark", json!({
+        "type": "assistant", "id": "msg_sf_a1", "time": { "created": NOW - 230_000.0, "completed": NOW - 224_000.0 },
+        "agent": "build", "finish": "stop",
+        "content": [
+            { "type": "text", "text": "Here’s the updated hero from the latest build:" },
+            { "type": "tool", "id": "prt_sf_1", "name": "kuvo-browser_show_file", "title": "Showed a file", "doing": "Showing a file",
+              "state": { "status": "completed", "input": { "path": "/Users/sam/Projects/website/shots/pricing-hero.png", "caption": "Pricing hero at 1440 px — tighter headline spacing and the annual toggle." }, "content": [] } }
+        ]
+    }));
+    stand_in.add_message("ses_dark", json!({
+        "type": "user", "id": "msg_sf_u2", "time": { "created": NOW - 160_000.0 },
+        "text": "Compare light, dark, and the narrow checkout state together."
+    }));
+    stand_in.add_message("ses_dark", json!({
+        "type": "assistant", "id": "msg_sf_a2", "time": { "created": NOW - 150_000.0, "completed": NOW - 142_000.0 },
+        "agent": "build", "finish": "stop",
+        "content": [
+            { "type": "text", "text": "All three states side by side:" },
+            { "type": "tool", "id": "prt_sf_2", "name": "kuvo-browser_show_file", "title": "Showed a file", "doing": "Showing a file",
+              "state": { "status": "completed", "input": { "path": "/Users/sam/Projects/website/shots/checkout-light.png", "caption": "Light mode" }, "content": [] } },
+            { "type": "tool", "id": "prt_sf_3", "name": "kuvo-browser_show_file", "title": "Showed a file", "doing": "Showing a file",
+              "state": { "status": "completed", "input": { "path": "/Users/sam/Projects/website/shots/checkout-dark.png", "caption": "Dark mode" }, "content": [] } },
+            { "type": "tool", "id": "prt_sf_4", "name": "kuvo-browser_show_file", "title": "Showed a file", "doing": "Showing a file",
+              "state": { "status": "completed", "input": { "path": "/Users/sam/Projects/website/shots/checkout-narrow.png", "caption": "Narrow (390 px)" }, "content": [] } }
+        ]
+    }));
+}
+
+/// Real conversation turns for `show-file-cards`: PDF + Markdown cards, missing file tombstones
+/// (with no retry), and a still-running `kuvo-browser_show_file` call keeping its quiet step line.
+fn stage_show_file_cards(stand_in: &StandIn) {
+    use serde_json::json;
+    stand_in.set_facts("ses_dark", |facts| {
+        facts["title"] = json!("Release artifacts & notes");
+    });
+    let mut pdf = b"%PDF-1.7\n".to_vec();
+    pdf.resize(2_516_582, b' '); // 2.4 MB
+    stand_in.put_file("/Users/sam/Projects/website/docs/release/Q4-launch-report.pdf", pdf);
+    let mut md = b"# Schema migration plan\n\n1. Backfill new columns\n2. Switch reads\n".to_vec();
+    md.resize(18_432, b' '); // 18 KB
+    stand_in.put_file("/Users/sam/Projects/website/docs/release/migration-plan.md", md);
+    // Intentionally omit `old-wireframe.png` and `draft-notes.pdf` so `file_bytes` / `file_info`
+    // return real `NotFound` and render the calm dashed "Missing" rows without retry.
+
+    stand_in.add_message("ses_dark", json!({
+        "type": "user", "id": "msg_sfc_u1", "time": { "created": NOW - 240_000.0 },
+        "text": "Export the release summary as a PDF and show me the migration notes too."
+    }));
+    stand_in.add_message("ses_dark", json!({
+        "type": "assistant", "id": "msg_sfc_a1", "time": { "created": NOW - 230_000.0, "completed": NOW - 222_000.0 },
+        "agent": "build", "finish": "stop",
+        "content": [
+            { "type": "text", "text": "Both files are ready in `docs/release`:" },
+            { "type": "tool", "id": "prt_sfc_1", "name": "kuvo-browser_show_file", "title": "Showed a file", "doing": "Showing a file",
+              "state": { "status": "completed", "input": { "path": "/Users/sam/Projects/website/docs/release/Q4-launch-report.pdf", "caption": "Executive summary and rollout timeline for Thursday." }, "content": [] } },
+            { "type": "tool", "id": "prt_sfc_2", "name": "kuvo-browser_show_file", "title": "Showed a file", "doing": "Showing a file",
+              "state": { "status": "completed", "input": { "path": "/Users/sam/Projects/website/docs/release/migration-plan.md", "caption": "Step-by-step schema migration checklist." }, "content": [] } }
+        ]
+    }));
+    stand_in.add_message("ses_dark", json!({
+        "type": "user", "id": "msg_sfc_u2", "time": { "created": NOW - 140_000.0 },
+        "text": "Pull up the earlier wireframe and draft notes from Tuesday."
+    }));
+    stand_in.add_message("ses_dark", json!({
+        "type": "assistant", "id": "msg_sfc_a2", "time": { "created": NOW - 130_000.0, "completed": NOW - 124_000.0 },
+        "agent": "build", "finish": "stop",
+        "content": [
+            { "type": "text", "text": "Here are the two files from earlier:" },
+            { "type": "tool", "id": "prt_sfc_3", "name": "kuvo-browser_show_file", "title": "Showed a file", "doing": "Showing a file",
+              "state": { "status": "completed", "input": { "path": "/Users/sam/Projects/website/tmp/old-wireframe.png", "caption": "Initial hero wireframe before the copy pass." }, "content": [] } },
+            { "type": "tool", "id": "prt_sfc_4", "name": "kuvo-browser_show_file", "title": "Showed a file", "doing": "Showing a file",
+              "state": { "status": "completed", "input": { "path": "/Users/sam/Projects/website/tmp/draft-notes.pdf" }, "content": [] } }
+        ]
+    }));
+    stand_in.add_message("ses_dark", json!({
+        "type": "user", "id": "msg_sfc_u3", "time": { "created": NOW - 30_000.0 },
+        "text": "And grab the updated mobile nav screenshot too."
+    }));
+    stand_in.add_message("ses_dark", json!({
+        "type": "assistant", "id": "msg_sfc_a3", "time": { "created": NOW - 20_000.0 },
+        "agent": "build",
+        "content": [
+            { "type": "text", "text": "Capturing the mobile nav now:" },
+            { "type": "tool", "id": "prt_sfc_5", "name": "kuvo-browser_show_file", "title": "Showed a file", "doing": "Showing a file",
+              "state": { "status": "running", "input": { "path": "/Users/sam/Projects/website/shots/mobile-nav.png" } } }
+        ]
+    }));
+}
+
+fn encode_png(img: image::RgbImage) -> Vec<u8> {
+    let mut bytes = std::io::Cursor::new(Vec::new());
+    img.write_to(&mut bytes, image::ImageFormat::Png).expect("encode stand-in PNG");
+    bytes.into_inner()
+}
+
+fn fill_round_rect(img: &mut image::RgbImage, x: i32, y: i32, w: i32, h: i32, r: i32, color: [u8; 3]) {
+    let (iw, ih) = (img.width() as i32, img.height() as i32);
+    let r = r.min(w / 2).min(h / 2).max(0);
+    let (x0, y0, x1, y1) = (x.max(0), y.max(0), (x + w).min(iw), (y + h).min(ih));
+    let rf = r as f32;
+    for py in y0..y1 {
+        for px in x0..x1 {
+            let (lx, ly) = (px - x, py - y);
+            let dx = if lx < r { r - lx } else if lx >= w - r { lx - (w - r - 1) } else { 0 };
+            let dy = if ly < r { r - ly } else if ly >= h - r { ly - (h - r - 1) } else { 0 };
+            if dx == 0 && dy == 0 {
+                img.put_pixel(px as u32, py as u32, image::Rgb(color));
+            } else {
+                let dist = ((dx * dx + dy * dy) as f32).sqrt();
+                if dist <= rf - 0.5 {
+                    img.put_pixel(px as u32, py as u32, image::Rgb(color));
+                } else if dist < rf + 0.5 {
+                    let alpha = (rf + 0.5 - dist).clamp(0.0, 1.0);
+                    let dst = img.get_pixel(px as u32, py as u32).0;
+                    let blended = std::array::from_fn(|i| (dst[i] as f32 * (1.0 - alpha) + color[i] as f32 * alpha).round() as u8);
+                    img.put_pixel(px as u32, py as u32, image::Rgb(blended));
+                }
+            }
+        }
+    }
+}
+
+fn bordered_round_rect(img: &mut image::RgbImage, x: i32, y: i32, w: i32, h: i32, r: i32, bw: i32, border: [u8; 3], fill: [u8; 3]) {
+    fill_round_rect(img, x, y, w, h, r, border);
+    fill_round_rect(img, x + bw, y + bw, w - bw * 2, h - bw * 2, (r - bw).max(0), fill);
+}
+
+fn fill_circle(img: &mut image::RgbImage, cx: i32, cy: i32, r: i32, color: [u8; 3]) {
+    fill_round_rect(img, cx - r, cy - r, r * 2, r * 2, r, color);
+}
+
+fn pricing_hero_image() -> image::RgbImage {
+    let (w, h) = (800, 500);
+    let mut img = image::RgbImage::from_fn(w, h, |x, y| {
+        let (t, s) = (y as f32 / h as f32, x as f32 / w as f32);
+        image::Rgb([(247.0 - t * 6.0 - s * 4.0) as u8, (248.0 - t * 5.0 - s * 2.0) as u8, (252.0 - t * 2.0) as u8])
+    });
+    fill_round_rect(&mut img, 0, 0, 800, 38, 0, [255, 255, 255]);
+    fill_round_rect(&mut img, 0, 38, 800, 1, 0, [232, 234, 240]);
+    fill_circle(&mut img, 22, 19, 5, [238, 106, 95]);
+    fill_circle(&mut img, 39, 19, 5, [244, 191, 79]);
+    fill_circle(&mut img, 56, 19, 5, [97, 197, 84]);
+    fill_round_rect(&mut img, 265, 9, 270, 20, 10, [242, 244, 248]);
+    fill_round_rect(&mut img, 352, 17, 96, 4, 2, [175, 182, 194]);
+    fill_round_rect(&mut img, 56, 56, 22, 22, 6, [25, 28, 36]);
+    fill_round_rect(&mut img, 88, 64, 54, 7, 3, [40, 44, 54]);
+    for (i, nw) in [44, 48, 38].into_iter().enumerate() {
+        fill_round_rect(&mut img, 320 + i as i32 * 64, 65, nw, 5, 2, [150, 156, 168]);
+    }
+    fill_round_rect(&mut img, 676, 56, 68, 24, 12, [25, 28, 36]);
+    fill_round_rect(&mut img, 224, 106, 352, 18, 6, [26, 29, 38]);
+    fill_round_rect(&mut img, 276, 134, 248, 12, 4, [132, 140, 154]);
+    fill_round_rect(&mut img, 324, 154, 152, 8, 4, [166, 173, 186]);
+    bordered_round_rect(&mut img, 304, 178, 192, 32, 16, 1, [224, 228, 236], [255, 255, 255]);
+    fill_round_rect(&mut img, 326, 191, 56, 6, 3, [140, 146, 160]);
+    fill_round_rect(&mut img, 404, 182, 88, 24, 12, [10, 122, 255]);
+    fill_round_rect(&mut img, 424, 191, 48, 6, 3, [255, 255, 255]);
+    for (idx, cx) in [56, 292, 528].into_iter().enumerate() {
+        let featured = idx == 1;
+        bordered_round_rect(&mut img, cx, 230, 216, 236, 14, if featured { 2 } else { 1 }, if featured { [10, 122, 255] } else { [226, 230, 238] }, [255, 255, 255]);
+        if featured {
+            fill_round_rect(&mut img, cx + 18, 248, 64, 18, 9, [231, 242, 255]);
+            fill_round_rect(&mut img, cx + 29, 255, 42, 4, 2, [10, 122, 255]);
+        } else {
+            fill_round_rect(&mut img, cx + 18, 252, 56, 8, 4, [152, 158, 170]);
+        }
+        fill_round_rect(&mut img, cx + 18, 278, 76, 22, 5, [28, 31, 40]);
+        fill_round_rect(&mut img, cx + 102, 289, 34, 7, 3, [170, 176, 188]);
+        fill_round_rect(&mut img, cx + 18, 314, 180, 30, 8, if featured { [10, 122, 255] } else { [242, 244, 248] });
+        fill_round_rect(&mut img, cx + 64, 326, 88, 6, 3, if featured { [255, 255, 255] } else { [54, 58, 68] });
+        fill_round_rect(&mut img, cx + 18, 358, 180, 1, 0, [236, 238, 244]);
+        for row in 0..4 {
+            let ry = 374 + row * 20;
+            fill_circle(&mut img, cx + 24, ry + 4, 4, if featured { [10, 122, 255] } else { [46, 158, 91] });
+            let lw = 112 + ((idx * 17 + row as usize * 23) % 44) as i32;
+            fill_round_rect(&mut img, cx + 38, ry + 1, lw, 6, 3, [142, 148, 162]);
+        }
+    }
+    img
+}
+
+fn checkout_desktop_image(dark: bool) -> image::RgbImage {
+    let (bg, card, well, border, text, muted, accent) = if dark {
+        ([18, 19, 23], [28, 30, 36], [22, 24, 29], [48, 52, 62], [236, 238, 244], [126, 132, 148], [46, 139, 255])
+    } else {
+        ([245, 246, 249], [255, 255, 255], [244, 245, 248], [226, 229, 236], [34, 37, 46], [152, 158, 172], [10, 122, 255])
+    };
+    let mut img = image::RgbImage::from_pixel(720, 500, image::Rgb(bg));
+    fill_round_rect(&mut img, 0, 0, 720, 44, 0, card);
+    fill_round_rect(&mut img, 0, 44, 720, 1, 0, border);
+    fill_round_rect(&mut img, 28, 14, 18, 18, 5, accent);
+    fill_round_rect(&mut img, 56, 19, 92, 8, 4, text);
+    fill_round_rect(&mut img, 616, 16, 76, 14, 7, well);
+    bordered_round_rect(&mut img, 28, 68, 296, 396, 14, 1, border, card);
+    fill_round_rect(&mut img, 50, 92, 118, 10, 4, text);
+    fill_round_rect(&mut img, 50, 112, 164, 6, 3, muted);
+    bordered_round_rect(&mut img, 50, 138, 252, 74, 10, 1, border, well);
+    fill_round_rect(&mut img, 64, 154, 42, 42, 9, accent);
+    fill_round_rect(&mut img, 118, 160, 102, 9, 4, text);
+    fill_round_rect(&mut img, 118, 178, 136, 6, 3, muted);
+    for row in 0..3 {
+        let ry = 236 + row * 34;
+        fill_round_rect(&mut img, 50, ry, 124 - row * 12, 7, 3, muted);
+        fill_round_rect(&mut img, 254, ry, 48, 7, 3, text);
+        fill_round_rect(&mut img, 50, ry + 18, 252, 1, 0, border);
+    }
+    fill_round_rect(&mut img, 50, 356, 76, 11, 4, text);
+    fill_round_rect(&mut img, 222, 352, 80, 18, 5, text);
+    fill_round_rect(&mut img, 50, 404, 252, 36, 9, well);
+    fill_circle(&mut img, 68, 422, 6, [46, 158, 91]);
+    fill_round_rect(&mut img, 84, 419, 178, 6, 3, muted);
+    bordered_round_rect(&mut img, 344, 68, 348, 396, 14, 1, border, card);
+    fill_round_rect(&mut img, 368, 92, 134, 10, 4, text);
+    fill_round_rect(&mut img, 368, 120, 300, 36, 9, text);
+    fill_round_rect(&mut img, 474, 135, 88, 7, 3, card);
+    for (idx, label_w) in [72, 96, 64].into_iter().enumerate() {
+        let fy = 180 + idx as i32 * 64;
+        fill_round_rect(&mut img, 368, fy, label_w, 6, 3, muted);
+        bordered_round_rect(&mut img, 368, fy + 14, 300, 34, 8, 1, border, well);
+        fill_round_rect(&mut img, 382, fy + 28, 132 + idx as i32 * 18, 6, 3, muted);
+    }
+    fill_round_rect(&mut img, 368, 384, 300, 42, 10, accent);
+    fill_round_rect(&mut img, 468, 401, 100, 8, 4, [255, 255, 255]);
+    img
+}
+
+fn checkout_mobile_image() -> image::RgbImage {
+    let (bg, card, well, border, text, muted, accent) = ([245, 246, 249], [255, 255, 255], [243, 244, 248], [226, 229, 236], [34, 37, 46], [150, 156, 170], [10, 122, 255]);
+    let mut img = image::RgbImage::from_pixel(420, 560, image::Rgb(bg));
+    fill_round_rect(&mut img, 0, 0, 420, 54, 0, card);
+    fill_round_rect(&mut img, 0, 54, 420, 1, 0, border);
+    fill_round_rect(&mut img, 170, 10, 80, 6, 3, [215, 218, 226]);
+    fill_round_rect(&mut img, 24, 28, 18, 16, 4, accent);
+    fill_round_rect(&mut img, 52, 32, 118, 8, 4, text);
+    fill_round_rect(&mut img, 344, 30, 52, 12, 6, well);
+    bordered_round_rect(&mut img, 20, 72, 380, 92, 14, 1, border, card);
+    fill_round_rect(&mut img, 36, 90, 48, 48, 10, accent);
+    fill_round_rect(&mut img, 98, 96, 132, 9, 4, text);
+    fill_round_rect(&mut img, 98, 114, 168, 6, 3, muted);
+    fill_round_rect(&mut img, 314, 102, 68, 14, 5, text);
+    bordered_round_rect(&mut img, 20, 180, 380, 356, 14, 1, border, card);
+    fill_round_rect(&mut img, 36, 200, 348, 40, 10, text);
+    fill_round_rect(&mut img, 160, 217, 100, 7, 3, card);
+    for (idx, lw) in [78, 104, 68].into_iter().enumerate() {
+        let fy = 262 + idx as i32 * 64;
+        fill_round_rect(&mut img, 36, fy, lw, 6, 3, muted);
+        bordered_round_rect(&mut img, 36, fy + 14, 348, 36, 9, 1, border, well);
+        fill_round_rect(&mut img, 50, fy + 29, 152 + idx as i32 * 14, 6, 3, muted);
+    }
+    fill_round_rect(&mut img, 36, 472, 348, 44, 11, accent);
+    fill_round_rect(&mut img, 154, 490, 112, 8, 4, [255, 255, 255]);
+    img
+}
+
 /// The pictures staged, with one opened in the viewer.
 fn open_a_picture(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     if let Some(view) = workspace.conversation() {
@@ -1806,6 +2080,12 @@ fn main() -> anyhow::Result<()> {
             if screen.slug.starts_with("pictures-") {
                 stage_pictures(&stand_in);
             }
+            if screen.slug == "show-file-pictures" {
+                stage_show_file_pictures(&stand_in);
+            }
+            if screen.slug == "show-file-cards" {
+                stage_show_file_cards(&stand_in);
+            }
             if screen.slug == "mode-chip-held" {
                 stand_in.set_approvals(false, Some("The sandbox isn’t running on this computer."));
             }
@@ -2082,41 +2362,7 @@ fn main() -> anyhow::Result<()> {
     }
     first_run_shots(&mut cx, &only, &out)?;
     launch_shots(&mut cx, &only, &out)?;
-    home_shots(&mut cx, &only, &out)?;
-    show_file_draft_shots(&mut cx, &only, &out)
-}
-
-/// Renders the `kuvo-browser_show_file` design drafts (`show-file-flow`, `show-file-canvas`,
-/// `show-file-thread`) in light and dark. Pass `show-file` or individual slugs to filter.
-fn show_file_draft_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path::Path) -> anyhow::Result<()> {
-    use kuvo::drafts::{DraftKind, ShowFileDraftView};
-
-    for kind in DraftKind::ALL {
-        let slug = kind.slug();
-        if !only.is_empty() && !only.iter().any(|wanted| wanted == slug || wanted == "show-file") {
-            continue;
-        }
-        for appearance in [Appearance::Light, Appearance::Dark] {
-            cx.update(|cx| {
-                kuvo::yours::init(None, cx);
-                Theme::set_appearance(appearance, cx);
-            });
-            let window = cx.open_window(size(px(1280.), px(kind.height())), |_, cx| {
-                cx.new(|_| ShowFileDraftView::new(kind))
-            })?;
-            let any = window.into();
-            cx.run_until_parked();
-            cx.update_window(any, |_, window, _| window.refresh())?;
-            cx.run_until_parked();
-            let image = cx.capture_screenshot(any)?;
-            let name = format!("screens-{slug}-{}.png", if appearance.is_dark() { "dark" } else { "light" });
-            image.save(out.join(&name))?;
-            println!("{name}: {}x{}", image.width(), image.height());
-            cx.update_window(any, |_, window, _| window.remove_window())?;
-            cx.run_until_parked();
-        }
-    }
-    Ok(())
+    home_shots(&mut cx, &only, &out)
 }
 
 /// The app opening on a computer (`launch-*`: this Mac's row in the Welcome card as it's set up,

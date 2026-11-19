@@ -217,6 +217,7 @@ impl Render for SidePanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let c = cx.theme().colors.clone();
         let body = match (&self.place, self.tab) {
+            (None, Tab::Files) if self.files.read(cx).opened().is_some() => self.files.clone().into_any_element(),
             (None, _) => div()
                 .flex()
                 .flex_col()

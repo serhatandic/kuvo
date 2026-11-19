@@ -17,8 +17,6 @@ pub mod composer;
 pub mod confirm_you;
 pub mod computers;
 pub mod conversation;
-#[cfg(feature = "stand-in")]
-pub mod drafts;
 pub mod entries;
 pub mod first_run;
 pub mod groups;
@@ -41,6 +39,7 @@ pub mod reduce_motion;
 pub mod rail;
 pub mod session_menu;
 pub mod settings;
+pub mod shown_files;
 pub mod sidebar;
 #[cfg(feature = "stand-in")]
 pub mod stand_in;

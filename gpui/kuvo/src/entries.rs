@@ -713,7 +713,19 @@ fn user_message(ix: usize, parts: &Parts, sel: Selectable, cx: &App) -> AnyEleme
 
 fn agent_step(step: &Step, open: &HashSet<Fold>, toggle: impl Fn(Fold, &mut App) + Clone + 'static, sel: &dyn Fn(&[u32]) -> Selectable, looks: &Looks, cx: &App) -> AnyElement {
     let mut blocks: Vec<AnyElement> = Vec::new();
+    let mut pending_files: Vec<crate::shown_files::ViewModel> = Vec::new();
+    let flush_files = |pending: &mut Vec<crate::shown_files::ViewModel>, blocks: &mut Vec<AnyElement>| {
+        if !pending.is_empty() {
+            let batch = std::mem::take(pending);
+            blocks.push(crate::shown_files::render_group(&batch, &looks.file_actions, cx));
+        }
+    };
     for (n, content) in step.content.iter().enumerate() {
+        if let Some(file) = rendered_shown_file(step, n, looks) {
+            pending_files.push(file.clone());
+            continue;
+        }
+        flush_files(&mut pending_files, &mut blocks);
         match content {
             Content::Text(text) if !text.trim().is_empty() => {
                 blocks.push(words_block(step, n, text, sel, looks));
@@ -721,6 +733,7 @@ fn agent_step(step: &Step, open: &HashSet<Fold>, toggle: impl Fn(Fold, &mut App)
             _ => blocks.extend(content_blocks(step, n, n as u32, open, toggle.clone(), false, sel, looks, cx)),
         }
     }
+    flush_files(&mut pending_files, &mut blocks);
     if let Some(error) = &step.error {
         blocks.push(callout(error_words(error), cx));
     }
@@ -761,11 +774,35 @@ fn words_block(step: &Step, n: usize, text: &str, sel: &dyn Fn(&[u32]) -> Select
     div().child(words).into_any_element()
 }
 
-/// What tool step `n` of a step made, showed you, or took of a page to show you: large, in the flow,
-/// shown whether or not its group is opened.
+/// The adapted shown file for tool item `(step, n)`, when it is a completed
+/// `kuvo-browser_show_file` call that renders directly in the conversation flow.
+fn rendered_shown_file<'a>(step: &Step, n: usize, looks: &'a Looks<'a>) -> Option<&'a crate::shown_files::ViewModel> {
+    let Content::Tool { name, .. } = &step.content[n] else { return None };
+    if name != "kuvo-browser_show_file" {
+        return None;
+    }
+    let id = format!("{}:{n}-shown", step.id);
+    looks.files.iter().find(|file| file.id == id)
+}
+
+/// Whether `content` is a completed `kuvo-browser_show_file` call (which renders in the flow
+/// instead of as a step line, matching `kuvo_box::shown_files::of_step`).
+fn is_completed_show_file(content: &Content) -> bool {
+    let Content::Tool { name, state, .. } = content else { return false };
+    name == "kuvo-browser_show_file"
+        && state.get("status").and_then(Value::as_str) == Some("completed")
+        && state
+            .pointer("/input/path")
+            .and_then(Value::as_str)
+            .and_then(|path| path.rsplit('/').next())
+            .is_some_and(|name| !name.is_empty())
+}
+
+/// What tool step `n` of a step made or took of a page to show you: large, in the flow,
+/// shown whether or not its group is opened. (`kuvo-browser_show_file` renders via `shown_files`.)
 fn made_pictures(step: &Step, n: usize, looks: &Looks, cx: &App) -> Option<AnyElement> {
     let Content::Tool { name, state, .. } = &step.content[n] else { return None };
-    if !pictures::is_made(name, state) {
+    if name == "kuvo-browser_show_file" || !pictures::is_made(name, state) {
         return None;
     }
     let prefix = format!("{}:{n}-", step.id);
@@ -883,35 +920,58 @@ fn waiting_at(items: &[(Rc<Step>, usize)]) -> Option<usize> {
     items.iter().rposition(|(step, n)| matches!(&step.content[*n], Content::Tool { state, .. } if call_status(state).0))
 }
 
-/// Whether a group folds to a line: it holds more than one tool step.
+/// Whether a group folds to a line: it holds more than one tool step (excluding completed
+/// `kuvo-browser_show_file` calls, which render directly in the flow without a step line).
 fn folds(items: &[(Rc<Step>, usize)]) -> bool {
-    items.iter().filter(|(step, n)| matches!(step.content[*n], Content::Tool { .. })).count() > 1
+    items
+        .iter()
+        .filter(|(step, n)| matches!(step.content[*n], Content::Tool { .. }) && !is_completed_show_file(&step.content[*n]))
+        .count()
+        > 1
 }
 
 /// What the agent did between its words, as one group: a line summing it up ("Read 4 files, ran 2
 /// commands") that opens to each step, with the step under way on it as it runs. A step that
-/// failed, or that waits on you, shows under it even while it's folded.
+/// failed, or that waits on you, shows under it even while it's folded. Completed
+/// `kuvo-browser_show_file` calls render in the conversation flow without a redundant step line.
 #[allow(clippy::too_many_arguments)]
 fn steps(key: &str, items: &[(Rc<Step>, usize)], open: &HashSet<Fold>, toggle: impl Fn(Fold, &mut App) + Clone + 'static, waiting: bool, sel: &dyn Fn(&[u32]) -> Selectable, looks: &Looks, cx: &App) -> AnyElement {
     let c = &cx.theme().colors;
     // What it waits on you for: its last step under way.
     let waits_at = waiting.then(|| waiting_at(items)).flatten();
-    let lines = |only: &dyn Fn(usize) -> bool| -> Vec<AnyElement> {
-        items
-            .iter()
-            .enumerate()
-            .filter(|(at, _)| only(*at))
-            .flat_map(|(at, (step, n))| content_blocks(step, *n, at as u32, open, toggle.clone(), waits_at == Some(at), sel, looks, cx))
-            .collect()
-    };
-    if !folds(items) {
-        return div().flex().flex_col().gap(GAP).children(lines(&|_| true)).into_any_element();
+    let rendered_files: Vec<Option<&crate::shown_files::ViewModel>> = items.iter().map(|(step, n)| rendered_shown_file(step, *n, looks)).collect();
+    let non_shown_tools = items
+        .iter()
+        .enumerate()
+        .filter(|(at, (step, n))| rendered_files[*at].is_none() && matches!(step.content[*n], Content::Tool { .. }))
+        .count();
+    if non_shown_tools <= 1 {
+        let mut blocks: Vec<AnyElement> = Vec::new();
+        let mut pending_files: Vec<crate::shown_files::ViewModel> = Vec::new();
+        let flush_files = |pending: &mut Vec<crate::shown_files::ViewModel>, blocks: &mut Vec<AnyElement>| {
+            if !pending.is_empty() {
+                let batch = std::mem::take(pending);
+                blocks.push(crate::shown_files::render_group(&batch, &looks.file_actions, cx));
+            }
+        };
+        for (at, (step, n)) in items.iter().enumerate() {
+            if let Some(file) = rendered_files[at] {
+                pending_files.push(file.clone());
+                continue;
+            }
+            flush_files(&mut pending_files, &mut blocks);
+            blocks.extend(content_blocks(step, *n, at as u32, open, toggle.clone(), waits_at == Some(at), sel, looks, cx));
+        }
+        flush_files(&mut pending_files, &mut blocks);
+        return div().flex().flex_col().gap(GAP).children(blocks).into_any_element();
     }
     let fold = Fold::Group(key.to_owned());
     let opened = open.contains(&fold);
     let calls: Vec<Call> = items
         .iter()
-        .filter_map(|(step, n)| match &step.content[*n] {
+        .enumerate()
+        .filter(|(at, _)| rendered_files[*at].is_none())
+        .filter_map(|(_, (step, n))| match &step.content[*n] {
             Content::Tool { name, state, title, doing, .. } => Some(Call { name, title: title.as_deref(), doing: doing.as_deref(), state }),
             _ => None,
         })
@@ -954,12 +1014,21 @@ fn steps(key: &str, items: &[(Rc<Step>, usize)], open: &HashSet<Fold>, toggle: i
         .children(rest.map(|rest| div().min_w_0().truncate().text_color(c.text_faint).child(format!("· {}", lowered(&rest)))))
         .child(Icon::new(if opened { IconName::ChevronDown } else { IconName::ChevronRight }).size(IconSize::Nav).color(c.text_faint));
     let body = if opened {
+        let expanded: Vec<AnyElement> = items
+            .iter()
+            .enumerate()
+            .filter(|(at, _)| rendered_files[*at].is_none())
+            .flat_map(|(at, (step, n))| content_blocks(step, *n, at as u32, open, toggle.clone(), waits_at == Some(at), sel, looks, cx))
+            .collect();
         // Each step, along a line from the group's.
-        Some(div().ml(px(7.)).pl(space::S3).border_l_1().border_color(c.border).flex().flex_col().gap(GAP).children(lines(&|_| true)).into_any_element())
+        (!expanded.is_empty()).then(|| div().ml(px(7.)).pl(space::S3).border_l_1().border_color(c.border).flex().flex_col().gap(GAP).children(expanded).into_any_element())
     } else {
         // What needs you, and what it showed you, in its place.
         let mut needs_you = Vec::new();
         for (at, (step, n)) in items.iter().enumerate() {
+            if rendered_files[at].is_some() {
+                continue;
+            }
             if shown_in_group(key, items, at, open, waiting) {
                 needs_you.extend(content_blocks(step, *n, at as u32, open, toggle.clone(), waits_at == Some(at), sel, looks, cx));
             } else {
@@ -968,7 +1037,9 @@ fn steps(key: &str, items: &[(Rc<Step>, usize)], open: &HashSet<Fold>, toggle: i
         }
         (!needs_you.is_empty()).then(|| div().flex().flex_col().gap(GAP).children(needs_you).into_any_element())
     };
-    div().flex().flex_col().gap(GAP).child(line).children(body).into_any_element()
+    let shown_batch: Vec<crate::shown_files::ViewModel> = rendered_files.into_iter().flatten().cloned().collect();
+    let flow = (!shown_batch.is_empty()).then(|| crate::shown_files::render_group(&shown_batch, &looks.file_actions, cx));
+    div().flex().flex_col().gap(GAP).child(line).children(body).children(flow).into_any_element()
 }
 
 /// A tool step, as a group's line sums it up.
@@ -1426,6 +1497,26 @@ pub fn tool_label(name: &str, state: &Value, busy: bool) -> (IconName, SharedStr
 /// they did and to what ([`tool_label`]); any other (Kuvo Code's own, an MCP server's) by the
 /// plain title its box gives it (`title`, and `doing` while it runs: PROTOCOL.md, "Tool steps").
 pub fn call_label(name: &str, title: Option<&str>, doing: Option<&str>, state: &Value, busy: bool) -> (IconName, SharedString, Option<SharedString>) {
+    if name == "kuvo-browser_show_file" {
+        let path = state.pointer("/input/path").and_then(Value::as_str);
+        let icon = match path.map(kuvo_box::shown_files::guess_type) {
+            Some((kuvo_box::shown_files::FileKind::Picture, _)) => IconName::Image,
+            _ => IconName::File,
+        };
+        let target = path
+            .and_then(|path| path.rsplit('/').next())
+            .filter(|name| !name.is_empty())
+            .map(|name| SharedString::from(name.to_owned()));
+        let (_, failed) = call_status(state);
+        let label = if busy {
+            doing.unwrap_or("Showing a file")
+        } else if failed {
+            "Couldn’t show file"
+        } else {
+            title.unwrap_or("Showed a file")
+        };
+        return (icon, SharedString::from(label.to_owned()), target);
+    }
     let said = if busy { doing.or(title) } else { title };
     match said {
         Some(said) => (IconName::Sliders, SharedString::from(said.to_owned()), None),
@@ -1825,5 +1916,30 @@ mod tests {
         assert!(details("grep", &json!({ "status": "completed", "content": [] })).is_none());
         assert!(details("read", &json!({ "status": "completed", "content": [{ "type": "text", "text": "file" }] })).is_none());
         assert!(details("shell", &json!({ "status": "running", "input": { "command": "npm test" } })).is_none());
+    }
+
+    #[test]
+    fn completed_show_file_does_not_fold_a_group_while_running_and_failed_keep_their_line() {
+        let (rows, _) = entries(conversation(
+            json!([step("a", 1.0, json!([
+                tool_part("s1", "kuvo-browser_show_file", "completed", json!({ "path": "/p/one.png" })),
+                tool_part("s2", "kuvo-browser_show_file", "completed", json!({ "path": "/p/two.png" })),
+                tool_part("s3", "kuvo-browser_show_file", "completed", json!({ "path": "/p/three.png" })),
+            ]))]),
+            false,
+            None,
+        ));
+        let Entry::Steps { items, .. } = &rows[0] else { panic!("steps") };
+        assert!(!folds(items), "three completed show_file calls render directly in the flow without a group header");
+
+        let running = json!({ "status": "running", "input": { "path": "/docs/pricing-hero.png" } });
+        let (icon, label, target) = call_label("kuvo-browser_show_file", Some("Showed a file"), Some("Showing a file"), &running, true);
+        assert_eq!(icon, IconName::Image);
+        assert_eq!((label.as_ref(), target.as_deref()), ("Showing a file", Some("pricing-hero.png")));
+
+        let failed = json!({ "status": "failed", "input": { "path": "/docs/report.pdf" }, "error": "Permission denied" });
+        let (icon, label, target) = call_label("kuvo-browser_show_file", Some("Showed a file"), Some("Showing a file"), &failed, false);
+        assert_eq!(icon, IconName::File);
+        assert_eq!((label.as_ref(), target.as_deref()), ("Couldn’t show file", Some("report.pdf")));
     }
 }
