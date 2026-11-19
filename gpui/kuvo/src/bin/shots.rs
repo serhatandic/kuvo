@@ -192,6 +192,7 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "titlebar-session", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "sidebar-long-computer", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue) },
     Screen { slug: "sidebar-wide", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bots) },
+    Screen { slug: "sidebar-narrow-sessions", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "sidebar-narrow-bots", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bots) },
     Screen { slug: "sidebar-search-results", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(sidebar_search_results) },
     Screen { slug: "sidebar-search-empty", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(sidebar_search_empty) },
@@ -456,6 +457,10 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "mode-full-access", width: 1280., height: 820., session: Some("ses_recipes"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(full_access_question) },
     Screen { slug: "landing-worktree", width: 1280., height: 820., session: None, typed: Some("Make the footer links work on mobile"), empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(landing_worktree) },
     Screen { slug: "landing-worktree-menu", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(landing_worktree) },
+    // Bot sidebar status marks (trailing column & compact under-face gutter) and the Outputs popover media strip.
+    Screen { slug: "bots-sidebar-states", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bots) },
+    Screen { slug: "bots-compact-states", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bots) },
+    Screen { slug: "outputs-popover-media", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(conversation_activity) },
 ];
 
 /// An area's row, picked: what its page shows.
@@ -1533,7 +1538,8 @@ fn main() -> anyhow::Result<()> {
                 change(Change::TextSize(text_size), cx);
                 let width = match screen.slug {
                     "sidebar-wide" => 420.,
-                    "sidebar-narrow-bots" | "sidebar-search-results" | "sidebar-search-empty" => kuvo::sidebar::COMPACT_WIDTH,
+                    "sidebar-narrow-sessions" => 228.,
+                    "sidebar-narrow-bots" | "bots-compact-states" | "sidebar-search-results" | "sidebar-search-empty" => kuvo::sidebar::COMPACT_WIDTH,
                     _ => kuvo::sidebar::WIDTH,
                 };
                 change(Change::SidebarWidth(width), cx);
@@ -1776,6 +1782,101 @@ fn main() -> anyhow::Result<()> {
                     "id": "art_000000000000000000000002", "path": "/tmp/signup-preview.svg", "name": "signup-preview.svg",
                     "kind": "image", "type": "image/svg+xml", "latest": { "n": 1 }
                 }), include_bytes!("../../../assets/icons/activity.svg"));
+                stand_in.set_queue("ses_signup", vec![]);
+            }
+            if matches!(screen.slug, "bots-sidebar-states" | "bots-compact-states") {
+                use serde_json::json;
+                let client = BoxClient::new(stand_in.clone());
+                for (id, color, shape, face) in [
+                    ("bot_mira", "sky", "round", "happy"),
+                    ("bot_inbox", "coral", "squircle", "curious"),
+                    ("bot_release", "lime", "pebble", "wink"),
+                    ("bot_docs", "violet", "gem", "calm"),
+                ] {
+                    let _ = client.change_bot(id, &kuvo_box::bots::BotChange {
+                        look: Some(kuvo_box::areas::Look { color: color.into(), shape: shape.into(), face: face.into() }),
+                        ..Default::default()
+                    });
+                }
+                stand_in.set_bot_now("bot_mira", json!({ "working": 0, "asking": 1, "state": "needsYou", "since": NOW - 60_000. }));
+                stand_in.set_bot_now("bot_inbox", json!({ "working": 1, "asking": 0, "state": "working", "since": NOW - 90_000. }));
+                stand_in.set_bot_now("bot_release", json!({ "working": 0, "asking": 0, "state": "idle", "since": NOW - 3_600_000. }));
+                stand_in.set_bot_wakes("bot_release", vec![json!({
+                    "id": "wake_rel", "due": NOW / 1000. + 3. * 3600., "every": "1d",
+                    "summary": "Check Friday beta readiness", "cancelKey": "wake_rel"
+                })], Vec::new());
+                stand_in.add_bot("bot_ops", "Ops Watcher", json!({ "color": "orange", "shape": "capsule", "face": "bright" }));
+                stand_in.set_bot_now("bot_ops", json!({ "working": 0, "asking": 0, "blocked": 1, "blockedBy": "limit", "state": "blocked", "since": NOW - 120_000. }));
+            }
+            if screen.slug == "outputs-popover-media" {
+                use serde_json::json;
+                let mini_screen = |dark: bool, accent: [u8; 3], bars: bool| -> Vec<u8> {
+                    let (w, h) = (240u32, 152u32);
+                    let bg = if dark { [18u8, 19, 22] } else { [243u8, 243, 245] };
+                    let side = if dark { [24u8, 25, 29] } else { [248u8, 248, 250] };
+                    let card = if dark { [34u8, 36, 42] } else { [255u8, 255, 255] };
+                    let line = if dark { [58u8, 62, 70] } else { [222u8, 224, 228] };
+                    let img = image::RgbImage::from_fn(w, h, |x, y| {
+                        let px = if x < 54 {
+                            if x == 53 { line } else if y > 22 && y < 32 && x > 10 && x < 42 { accent } else if (y == 46 || y == 60 || y == 74) && x > 10 && x < 40 { line } else { side }
+                        } else if y < 18 {
+                            if y == 17 { line } else { side }
+                        } else if x > 66 && x < 228 && y > 28 && y < 86 {
+                            if x == 67 || x == 227 || y == 29 || y == 85 { line }
+                            else if bars && y > 46 && y < 74 && ((x > 80 && x < 98) || (x > 108 && x < 126 && y > 54) || (x > 136 && x < 154 && y > 40) || (x > 164 && x < 182 && y > 58)) { accent }
+                            else if !bars && y > 40 && y < 48 && x > 80 && x < 154 { accent }
+                            else if !bars && (y == 58 || y == 68) && x > 80 && x < 208 { line }
+                            else { card }
+                        } else if x > 66 && x < 228 && y > 96 && y < 140 {
+                            if x == 67 || x == 227 || y == 97 || y == 139 { line }
+                            else if (y == 112 || y == 124) && x > 80 && x < 190 { line }
+                            else { card }
+                        } else {
+                            bg
+                        };
+                        image::Rgb(px)
+                    });
+                    let mut out = std::io::Cursor::new(Vec::new());
+                    img.write_to(&mut out, image::ImageFormat::Png).expect("mini png");
+                    out.into_inner()
+                };
+
+                let commands: Vec<_> = ["npm run dev", "npx vitest --watch", "tail -f logs/signup.log"].iter().enumerate()
+                    .map(|(index, command)| json!({ "id": format!("sh_{index}"), "command": command, "started": NOW })).collect();
+                let subagents = vec![
+                    json!({ "session": "ses_sub0", "title": "Check the signup forms", "since": NOW, "asking": false }),
+                    json!({ "session": "ses_sub1", "title": "Run the browser tests", "since": NOW, "asking": true }),
+                    json!({ "session": "ses_sub2", "title": "Review the report", "since": NOW, "asking": false }),
+                ];
+                stand_in.set_background("ses_signup", json!({ "commands": commands, "subagents": subagents }), &[]);
+                for (index, (provider, model)) in [("codex-cli", "gpt-6"), ("codex-cli", "gpt-6"), ("claude-code", "opus")].iter().enumerate() {
+                    stand_in.set_model_state(&format!("ses_sub{index}"), json!({
+                        "model": { "providerID": provider, "id": model }, "runs": true
+                    }));
+                }
+
+                let items: Vec<(&str, &str, &str, &str, Vec<u8>)> = vec![
+                    ("art_d01", "morning-report-1118.md", "document", "text/markdown", b"# Morning report".to_vec()),
+                    ("art_d02", "screens-insights-overview-light.png", "image", "image/png", mini_screen(false, [10, 122, 255], true)),
+                    ("art_d03", "PLAN.md", "document", "text/markdown", b"# Plan".to_vec()),
+                    ("art_d04", "screens-insights-overview-dark.png", "image", "image/png", mini_screen(true, [79, 156, 245], true)),
+                    ("art_d05", "screens-computer-pairing-waiting-light.png", "image", "image/png", mini_screen(false, [46, 158, 91], false)),
+                    ("art_d06", "screens-computer-pairing-waiting-dark.png", "image", "image/png", mini_screen(true, [94, 199, 184], false)),
+                    ("art_d07", "sysload.csv", "download", "text/csv", b"ts,load\n1,0.42\n".to_vec()),
+                    ("art_d08", "feedback-review-ranking.md", "document", "text/markdown", b"# Ranking".to_vec()),
+                    ("art_d09", "screens-usage-rings-light.png", "image", "image/png", mini_screen(false, [242, 115, 92], true)),
+                    ("art_d10", "screens-usage-rings-dark.png", "image", "image/png", mini_screen(true, [138, 92, 245], true)),
+                    ("art_d11", "machine-scenarios-1118.md", "document", "text/markdown", b"# Scenarios".to_vec()),
+                    ("art_d12", "screens-bots-sidebar-light.png", "image", "image/png", mini_screen(false, [245, 153, 61], false)),
+                    ("art_d13", "brief-template.md", "document", "text/markdown", b"# Brief".to_vec()),
+                    ("art_d14", "slots.json", "code", "application/json", b"{\"slots\":4}".to_vec()),
+                ];
+                for (id, name, kind, mime, bytes) in items {
+                    stand_in.add_output("ses_signup", json!({
+                        "id": id, "path": format!("/tmp/{name}"), "name": name,
+                        "kind": kind, "type": mime, "latest": { "n": 1 }
+                    }), &bytes);
+                }
                 stand_in.set_queue("ses_signup", vec![]);
             }
             if matches!(screen.slug, "composer-queue-two" | "composer-queue-long" | "composer-queue-dragging") {
@@ -2262,7 +2363,7 @@ fn home_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path::Pat
     // (And #772's: an older machine's page with its one card, waiting with Update Now, failing with
     // Try Again, under way, and offered by the box that lists it; a computer that can't be used,
     // older or out of reach, as the window shows it.)
-    for slug in ["switcher", "elsewhere", "quit-note", "update-waiting", "update-running", "update-setup", "update-ssh", "update-own-waiting", "update-own-running", "page-update-waiting", "page-update-failed", "page-update-running", "page-older-offer", "blocked-held", "blocked-unreached", "computer-pairing-waiting", "computer-pairing-readd"] {
+    for slug in ["switcher", "elsewhere", "quit-note", "update-waiting", "update-running", "update-setup", "update-ssh", "update-own-waiting", "update-own-running", "page-update-waiting", "page-update-failed", "page-update-running", "page-older-offer", "blocked-held", "blocked-unreached", "computer-pairing-waiting", "computer-pairing-readd", "bots-background-offline", "insights-needs-update", "bots-remote-wake", "settings-mac-machine"] {
         if !only.is_empty() && !only.iter().any(|only| only == slug) {
             continue;
         }
@@ -2281,6 +2382,11 @@ fn home_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path::Pat
             } else if slug == "blocked-held" {
                 stand_in.peer_box("key_devbox").expect("devbox").set_older(true);
                 stand_in.bring_up_to_date("key_devbox", "waiting", false, 0);
+            } else if slug == "insights-needs-update" {
+                stand_in.peer_box("key_devbox").expect("devbox").set_lacks(&["usage.insights"]);
+                stand_in.bring_up_to_date("key_devbox", "waiting", false, 0);
+            } else if slug == "settings-mac-machine" {
+                stand_in.set_computer_system("key_devbox", Some("macOS 15.1"));
             } else if slug.starts_with("update-") {
                 stand_in.peer_box("key_devbox").expect("devbox").set_older(true);
                 if slug == "update-setup" {
@@ -2290,6 +2396,17 @@ fn home_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path::Pat
                 }
             }
             let devbox = stand_in.peer_box("key_devbox").expect("devbox");
+            if slug == "bots-background-offline" {
+                devbox.add_bot("bot_scout", "Scout", serde_json::json!({ "color": "mint", "shape": "round", "face": "calm" }));
+                devbox.set_bot_now("bot_scout", serde_json::json!({ "working": 1, "asking": 0, "state": "working", "since": NOW }));
+            }
+            if slug == "bots-remote-wake" {
+                stand_in.move_bot("bot_mira", "devbox");
+                devbox.add_bot("bot_mira", "VPS Manager", serde_json::json!({ "color": "mint", "shape": "round", "face": "calm" }));
+                devbox.set_bot_wakes("bot_mira", vec![serde_json::json!({
+                    "id": "at-check", "due": NOW / 1000. + 180., "summary": "Check VPS health", "cancelKey": "check",
+                })], vec![]);
+            }
             use kuvo_box::boxes::Pairing;
             let pairing = match slug {
                 "computer-pairing-waiting" => Some(Pairing::Checking("Checking this app with your other computers…".into())),
@@ -2316,6 +2433,31 @@ fn home_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path::Pat
                             let mut switching = workspace.switching().cloned().expect("stand-in computers were read");
                             switching.pairing = pairing;
                             workspace.set_switching(Some(switching), cx);
+                        });
+                    }
+                    if slug == "bots-background-offline" {
+                        let nearest = home.workspace().clone();
+                        nearest.update(cx, |workspace, cx| workspace.show_area(Area::Bots, window, cx));
+                        assert!(home.switch_to("key_devbox", window, cx));
+                        home.workspace().clone().update(cx, |workspace, cx| workspace.show_area(Area::Bots, window, cx));
+                        nearest.update(cx, |workspace, cx| workspace.connected(Err(kuvo_box::Error::NotRunning("offline".into())), cx));
+                    }
+                    if slug == "bots-remote-wake" {
+                        home.workspace().clone().update(cx, |workspace, cx| workspace.show_area(Area::Bots, window, cx));
+                    }
+                    if slug == "settings-mac-machine" {
+                        home.workspace().clone().update(cx, |workspace, cx| {
+                            workspace.show_setting(&kuvo::settings::box_key("key_devbox", "accounts"), window, cx);
+                        });
+                    }
+                    if slug == "insights-needs-update" {
+                        assert!(home.switch_to("key_devbox", window, cx));
+                        home.workspace().clone().update(cx, |workspace, cx| {
+                            workspace.open_insights(
+                                Some(kuvo::area::UsageFilter { title: "Claude".into(), provider: "claude".into(), account: None }),
+                                window,
+                                cx,
+                            );
                         });
                     }
                     if slug == "elsewhere" {

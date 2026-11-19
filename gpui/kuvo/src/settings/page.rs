@@ -153,7 +153,7 @@ impl SettingsView {
             .hover(|d| d.bg(c.hover))
             .child(Icon::new(IconName::Computer).color(c.icon))
             .child(div().flex_1().min_w_0().truncate().text_role(TextRole::PaneTitle).text_color(c.text).child(name))
-            .child(div().flex_none().text_ui(TypeSize::Small).text_color(c.text_faint).child(kind))
+            .when(!kind.is_empty(), |d| d.child(div().debug_selector(|| "settings-computer-kind".into()).flex_none().text_ui(TypeSize::Small).text_color(c.text_faint).child(kind)))
             .child(Icon::new(IconName::ChevronDown).color(c.icon))
             .into_any_element();
         let build = self.picker_menu(cx);

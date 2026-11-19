@@ -773,6 +773,27 @@ fn resizable_sidebar_switches_to_avatars_below_the_threshold(cx: &mut TestAppCon
 }
 
 #[gpui::test]
+fn resizable_sessions_sidebar_fits_rows_and_times_inside_sidebar_width(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.set_facts("ses_signup", |facts| {
+        facts["title"] = serde_json::json!("Fix the sign-up form wiping on a taken email when the previous invitation has expired");
+    });
+    let (_, cx) = open(cx, stand_in);
+    for (delta, expected) in [(-56., px(216.)), (144., px(360.))] {
+        drag_sidebar(cx, delta);
+        assert_eq!(resizable_sidebar_width(cx), expected);
+        let sidebar = bounds(cx, "area-sidebar").unwrap();
+        let search = bounds(cx, "sidebar-search").unwrap();
+        let row = bounds(cx, "session-project-ses_signup").unwrap();
+        let when = bounds(cx, "session-when-project-ses_signup").unwrap();
+        assert!(search.right() <= sidebar.right(), "search fits in sidebar: {search:?} / {sidebar:?}");
+        assert!(row.right() <= sidebar.right(), "nested project row fits in sidebar: {row:?} / {sidebar:?}");
+        assert!(when.right() <= sidebar.right(), "time label stays inside sidebar: {when:?} / {sidebar:?}");
+        assert!(when.right() >= sidebar.right() - px(24.), "time label stays right-aligned: {when:?} / {sidebar:?}");
+    }
+}
+
+#[gpui::test]
 fn resizable_sidebar_search_opens_bots_and_sessions_without_expanding(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
     stand_in.set_facts("ses_signup", |facts| {
@@ -994,9 +1015,10 @@ fn compact_sidebar_shows_a_scheduled_wake_badge_and_tooltip(cx: &mut TestAppCont
     drag_sidebar(cx, -210.);
 
     let avatar = bounds(cx, "bot-avatar-bot:bot_mira").unwrap();
+    let face = bounds(cx, "bot-avatar-face-bot:bot_mira").unwrap();
     let badge = bounds(cx, "bot-avatar-wake").unwrap();
-    assert_eq!(badge.size, size(px(14.), px(14.)));
     assert!(avatar.contains(&badge.center()));
+    assert!(badge.top() >= face.bottom(), "compact mark should sit in gutter under face");
     cx.simulate_mouse_move(avatar.center(), None, Modifiers::default());
     cx.run_until_parked();
     cx.executor().advance_clock(std::time::Duration::from_secs(1));
@@ -1010,9 +1032,43 @@ fn compact_sidebar_marks_remote_bot_changes(cx: &mut TestAppContext) {
     stand_in.refuse_bot_edit("bot_wren", "lab", "The change was declined.");
     let (_, cx) = open(cx, stand_in);
     click(cx, "rail-bots");
+
+    // Full rows: offline Scout (with a waiting change) shows Offline, online Wren (refused) shows ChangeRefused.
+    let scout_row_face = bounds(cx, "bot-bot_scout-avatar").unwrap();
+    let wren_row_face = bounds(cx, "bot-bot_wren-avatar").unwrap();
+    let row_offline = bounds(cx, "bot-avatar-offline").unwrap();
+    let row_refused = bounds(cx, "bot-avatar-change-refused").unwrap();
+    assert!(row_offline.left() >= scout_row_face.right()
+        && row_offline.center().y >= scout_row_face.top()
+        && row_offline.center().y <= scout_row_face.bottom(),
+        "full row should show offline mark for offline Scout");
+    assert!(row_refused.left() >= wren_row_face.right()
+        && row_refused.center().y >= wren_row_face.top()
+        && row_refused.center().y <= wren_row_face.bottom(),
+        "full row should show refused mark for online Wren");
+    assert!(bounds(cx, "bot-avatar-change-waiting").is_none());
+
+    // Compact strip must show the exact same marks in the gutter under each face (never NeedsYou for Scout).
     drag_sidebar(cx, -210.);
-    assert!(bounds(cx, "bot-avatar-elsewhere:bot_scout").is_some());
-    assert!(bounds(cx, "bot-avatar-elsewhere:bot_wren").is_some());
-    assert!(bounds(cx, "bot-avatar-change-waiting").is_some());
-    assert!(bounds(cx, "bot-avatar-change-refused").is_some());
+    let scout_avatar = bounds(cx, "bot-avatar-elsewhere:bot_scout").unwrap();
+    let scout_face = bounds(cx, "bot-avatar-face-elsewhere:bot_scout").unwrap();
+    let wren_avatar = bounds(cx, "bot-avatar-elsewhere:bot_wren").unwrap();
+    let wren_face = bounds(cx, "bot-avatar-face-elsewhere:bot_wren").unwrap();
+    let compact_offline = bounds(cx, "bot-avatar-offline").unwrap();
+    let compact_refused = bounds(cx, "bot-avatar-change-refused").unwrap();
+    assert!(scout_avatar.contains(&compact_offline.center()));
+    assert!(compact_offline.top() >= scout_face.bottom(), "offline mark should sit under Scout's face");
+    assert!(wren_avatar.contains(&compact_refused.center()));
+    assert!(compact_refused.top() >= wren_face.bottom(), "refused mark should sit under Wren's face");
+    assert!(bounds(cx, "bot-avatar-change-waiting").is_none());
+    // NeedsYou mark must not appear on Scout's tile.
+    let needs_you = bounds(cx, "bot-avatar-needs-you").unwrap();
+    assert!(!scout_avatar.contains(&needs_you.center()), "offline Scout must not reuse the NeedsYou blue dot");
+
+    // Hovering Scout still tells the user it is waiting for studio-mini.
+    cx.simulate_mouse_move(scout_avatar.center(), None, Modifiers::default());
+    cx.run_until_parked();
+    cx.executor().advance_clock(std::time::Duration::from_secs(1));
+    cx.run_until_parked();
+    assert!(bounds(cx, "tooltip-Scout · Waiting for studio-mini").is_some());
 }

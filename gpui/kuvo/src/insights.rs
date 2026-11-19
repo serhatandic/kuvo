@@ -285,6 +285,11 @@ impl InsightsView {
     }
 
     fn load(&mut self, refresh: bool, cx: &mut Context<Self>) {
+        if !self.client.gate().has("usage.insights") {
+            self.reading = false;
+            self.problem = None;
+            return;
+        }
         self.reading = true;
         let client = self.client.clone();
         let query = self.filters.query(&self.zone, 0);
@@ -308,7 +313,7 @@ impl InsightsView {
                         }
                         this.problem = None;
                     }
-                    Err(error) => this.problem = Some(kuvo_box::accounts::said(&error)),
+                    Err(error) => this.problem = Some(Self::error_words(&error, this.filters.ring.as_ref())),
                 }
                 cx.notify();
             }).ok();
@@ -317,6 +322,9 @@ impl InsightsView {
     }
 
     fn page(&mut self, offset: usize, cx: &mut Context<Self>) {
+        if !self.client.gate().has("usage.insights") {
+            return;
+        }
         let query = self.filters.query(&self.zone, offset);
         let client = self.client.clone();
         let selected = self.selected.as_ref().map(|session| session.session.clone());
@@ -340,12 +348,23 @@ impl InsightsView {
                         this.sessions.next = sessions.next;
                     }
                     Ok(_) => {}
-                    Err(error) => this.problem = Some(kuvo_box::accounts::said(&error)),
+                    Err(error) => this.problem = Some(Self::error_words(&error, this.filters.ring.as_ref())),
                 }
                 cx.notify();
             }).ok();
         }));
         cx.notify();
+    }
+
+    fn error_words(error: &kuvo_box::Error, ring: Option<&crate::area::UsageFilter>) -> String {
+        let words = kuvo_box::accounts::said(error);
+        if words == "Not available for this agent." {
+            return match ring {
+                Some(filter) => format!("Usage data isn\u{2019}t available for {} on this computer.", filter.title),
+                None => "Insights isn\u{2019}t available on this computer.".into(),
+            };
+        }
+        words
     }
 
     fn picker(
@@ -512,10 +531,13 @@ impl InsightsView {
             .child(div().mt(space::S2).text_ui(TypeSize::Caption).text_color(c.text_muted).child("Estimates use current API rates."))
             .when(totals.unpriced > 0, |d| d.child(div().text_ui(TypeSize::Caption).text_color(c.text_muted).child(format!("Cost unavailable for {} calls", totals.unpriced))));
         let status = match overview.state.as_str() {
-            "loading" => Some("Reading usage…"),
-            "empty" => Some("No Kuvo activity for these filters."),
-            "partial" => Some("Some usage details are unavailable."),
-            "stale" => Some("Some computers have older readings."),
+            "loading" => Some("Reading usage…".to_owned()),
+            "empty" => Some(match self.filters.ring.as_ref() {
+                Some(filter) => format!("No usage data recorded for {} in the last {} days.", filter.title, self.filters.days),
+                None => "No Kuvo activity for these filters.".to_owned(),
+            }),
+            "partial" => Some("Some usage details are unavailable.".to_owned()),
+            "stale" => Some("Some computers have older readings.".to_owned()),
             _ => None,
         };
         div().flex().flex_col().gap(space::S3)
@@ -922,4 +944,13 @@ mod tests {
         assert_eq!(model_label(&[], Some("claude"), "claude-sonnet-5"), "Claude Sonnet 5");
     }
 
+    #[test]
+    fn insights_error_words_replaces_generic_agent_404_with_specific_copy() {
+        let missing = kuvo_box::Error::Refused(kuvo_box::Refusal::from_answer(404, br#"{"message":"Not available for this agent."}"#));
+        let claude = crate::area::UsageFilter { title: "Claude".into(), provider: "claude".into(), account: None };
+        assert_eq!(InsightsView::error_words(&missing, Some(&claude)), "Usage data isn\u{2019}t available for Claude on this computer.");
+        assert_eq!(InsightsView::error_words(&missing, None), "Insights isn\u{2019}t available on this computer.");
+        let other = kuvo_box::Error::Refused(kuvo_box::Refusal::from_answer(500, br#"{"message":"Usage database is locked."}"#));
+        assert_eq!(InsightsView::error_words(&other, Some(&claude)), "Usage database is locked.");
+    }
 }

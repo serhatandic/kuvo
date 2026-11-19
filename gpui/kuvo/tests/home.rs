@@ -543,3 +543,88 @@ fn first_run_computer_picker_switches_and_returning_keeps_the_app_open(cx: &mut 
     cx.run_until_parked();
     assert!(shown(cx, "rail-settings") && !shown(cx, "first-run"));
 }
+
+#[gpui::test]
+fn a_background_computer_disconnecting_does_not_grey_out_the_shown_computers_bots(cx: &mut TestAppContext) {
+    use kuvo_ui::bot::State;
+
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let devbox = stand_in.peer_box("key_devbox").expect("devbox");
+    devbox.add_bot("bot_scout", "Scout", json!({ "color": "mint", "shape": "round", "face": "calm" }));
+    devbox.set_bot_now("bot_scout", json!({ "working": 1, "asking": 0, "state": "working", "since": NOW }));
+    let (home, cx) = open(cx, stand_in.clone());
+
+    // Open Bots on this computer so NEAREST has loaded bots (with bot_scout listed under elsewhere).
+    let nearest = workspace(&home, cx);
+    click(cx, "rail-bots");
+    assert_eq!(cx.update(|_, cx| kuvo::bot_face::faces(cx).borrow().shown("bot_mira")), Some(State::NeedsYou));
+
+    // Switch to devbox and open Bots there: bot_scout is working on devbox.
+    click(cx, "computer-switcher");
+    click(cx, "menu-item-devbox");
+    click(cx, "rail-bots");
+    assert_eq!(cx.update(|_, cx| kuvo::bot_face::faces(cx).borrow().shown("bot_scout")), Some(State::Working));
+
+    // The background NEAREST workspace loses connection: it must not overwrite global bot_face
+    // states with Offline and grey out the shown devbox workspace's bots.
+    nearest.update_in(cx, |ws, _, cx| ws.connected(Err(kuvo_box::Error::NotRunning("offline".into())), cx));
+    cx.run_until_parked();
+    assert_eq!(
+        cx.update(|_, cx| kuvo::bot_face::faces(cx).borrow().shown("bot_scout")),
+        Some(State::Working),
+        "disconnecting a background computer must not turn the shown computer's bots grey/offline"
+    );
+
+    // Switching back to the disconnected NEAREST workspace shows its bots offline, and switching
+    // back to the connected devbox restores devbox's live bot faces immediately.
+    let here = home.read_with(cx, |home, _| home.boxes().nearest_key().unwrap());
+    home.update_in(cx, |home, window, cx| assert!(home.switch_to(&here, window, cx)));
+    cx.run_until_parked();
+    assert_eq!(cx.update(|_, cx| kuvo::bot_face::faces(cx).borrow().shown("bot_mira")), Some(State::Offline));
+
+    home.update_in(cx, |home, window, cx| assert!(home.switch_to("key_devbox", window, cx)));
+    cx.run_until_parked();
+    assert_eq!(cx.update(|_, cx| kuvo::bot_face::faces(cx).borrow().shown("bot_scout")), Some(State::Working));
+}
+
+#[gpui::test]
+fn insights_on_a_computer_without_usage_insights_shows_the_update_state(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let devbox = stand_in.peer_box("key_devbox").expect("devbox");
+    devbox.set_lacks(&["usage.insights"]);
+    stand_in.bring_up_to_date("key_devbox", "waiting", false, 0);
+    let (home, cx) = open(cx, stand_in.clone());
+
+    click(cx, "computer-switcher");
+    click(cx, "menu-item-devbox");
+    // The computer is behind (not held), so Sessions works normally.
+    assert!(!shown(cx, "blocked-held"));
+    assert!(shown(cx, "session-project-ses_releases"));
+
+    // Opening Insights (e.g. from the rail or clicking a usage ring) shows the update state instead
+    // of calling /api/kuvo/insights and showing "Not available for this agent.".
+    workspace(&home, cx).update_in(cx, |ws, window, cx| {
+        ws.open_insights(
+            Some(kuvo::area::UsageFilter { title: "Claude".into(), provider: "claude".into(), account: None }),
+            window,
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    assert!(shown(cx, "blocked-held"), "Insights on an older computer must show the update state");
+    let blocked = workspace(&home, cx).read_with(cx, |ws, _| ws.blocked()).expect("blocked state");
+    assert_eq!(blocked.title, "Kuvo on devbox needs to update to show Insights");
+    assert_eq!(blocked.action.as_ref().map(|(label, _)| label.as_str()), Some("Update Now"));
+    assert_eq!(blocked.switch_to.as_ref().map(|(_, name)| name.as_str()), Some("Stand-in Mac"));
+    assert!(
+        devbox.seen_at("GET", "kuvo/agents/api/kuvo/insights").is_empty(),
+        "must not request insights from a computer lacking usage.insights"
+    );
+
+    // Update Now triggers the computer's update, and switching goes to a computer that supports Insights.
+    click(cx, "blocked-action");
+    assert_eq!(stand_in.seen_at("POST", "kuvo/computers/key_devbox/update").len(), 1);
+    click(cx, "blocked-switch");
+    assert_eq!(home.read_with(cx, |home, _| home.shown_key()).as_deref(), Some("key_stand_in"));
+    assert!(!shown(cx, "blocked-held"));
+}

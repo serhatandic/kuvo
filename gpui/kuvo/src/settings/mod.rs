@@ -509,12 +509,8 @@ impl SettingsView {
     }
 
     /// What the computer shown runs, in a word, beside its name.
-    pub(crate) fn computer_kind(&self) -> &'static str {
-        match self.shown_computer() {
-            Some(computer) if computer.is_mac() => "macOS",
-            Some(computer) if computer.kind == "machine" => "Linux",
-            _ => "",
-        }
+    pub fn computer_kind(&self) -> &'static str {
+        self.shown_computer().map_or("", kuvo_box::areas::Computer::os_label)
     }
 
     /// The box of the computer shown, where this app reaches it, and how it stands otherwise.

@@ -273,9 +273,7 @@ pub fn render(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<W
         .on_action(cx.listener(|this, _: &WalkLeave, window, cx| this.leave_walk(window, cx)))
         .flex()
         .flex_col()
-        .w(px(WIDTH))
-        .h_full()
-        .flex_none()
+        .size_full()
         .child(
             div()
                 .flex()
@@ -700,7 +698,9 @@ fn session_row(workspace: &mut Workspace, id: &str, section: &str, cursor: bool,
     } else if show_actions {
         row_hover_actions(id, &row_key, &hover_buttons, cx)
     } else {
+        let when_selector = format!("session-when-{section}-{id}");
         div()
+            .debug_selector(move || when_selector)
             .flex_none()
             .text_role(TextRole::Meta)
             .text_color(c.text_faint)

@@ -2233,3 +2233,29 @@ fn added_agent_cancel(cx: &mut TestAppContext, completed: bool) {
     let accounts = BoxClient::new(stand_in).sign_in_accounts().unwrap();
     assert_eq!(accounts.agents.iter().any(|entry| entry.integration.id.starts_with("codex-cli@added")), completed);
 }
+
+#[gpui::test]
+fn a_mac_added_as_a_machine_shows_macos_in_settings(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    // devbox is kind: "machine", but when its box reports macOS in `system`, Settings must show
+    // "macOS", not assume "Linux".
+    stand_in.set_computer_system("key_devbox", Some("macOS 15.1"));
+    let (workspace, cx) = open(cx, stand_in.clone());
+    section(&workspace, cx, "Permissions");
+    click(cx, "settings-computer");
+    click(cx, "menu-item-devbox");
+    let view = settings(&workspace, cx);
+    assert_eq!(view.read_with(cx, |view, _| view.computer_kind()), "macOS");
+    assert!(shown(cx, "settings-computer-kind"));
+
+    // A machine without a reported system omits the OS label instead of guessing Linux.
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.set_computer_system("key_devbox", None);
+    let (workspace, cx) = open(cx, stand_in);
+    section(&workspace, cx, "Permissions");
+    click(cx, "settings-computer");
+    click(cx, "menu-item-devbox");
+    let view = settings(&workspace, cx);
+    assert_eq!(view.read_with(cx, |view, _| view.computer_kind()), "");
+    assert!(!shown(cx, "settings-computer-kind"));
+}

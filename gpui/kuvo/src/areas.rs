@@ -35,7 +35,7 @@ use crate::moves::RemoteSource;
 use crate::queue::marks::{label_dot, status_mark};
 use crate::queue::{Act as QueueAct, QueueEvent, QueueView};
 use crate::settings::{AddMachine, Opened, Pick, SettingsView};
-use crate::{time, wakes};
+use crate::time;
 
 
 /// How an area's list stands.
@@ -149,6 +149,9 @@ pub struct AreaView {
     _bots_follow: Option<(kuvo_box::Follow<kuvo_box::follow::Followed<BotsSaid>>, Task<()>)>,
     /// Whether the box is reached: its bots are drawn offline while it isn't.
     reached: bool,
+    /// Whether this workspace is the one the window currently shows: background computers keep
+    /// their workspaces alive, but only the shown workspace writes to global `bot_face` states.
+    shown: bool,
     fresh_bots: bool,
     /// The bot whose conversation the window shows, and what the box was last told it saw there.
     chat_open: Option<String>,
@@ -307,7 +310,7 @@ impl AreaView {
             });
             (follow, task)
         });
-        AreaView { moves: None, remote_bots: Default::default(), _bots_follow: bots_follow, reached: true, fresh_bots: false, chat_open: None, seen_told: None, followed_meanwhile: None, _groups_follow: groups_follow, groups, _groups: groups_subscriptions, computers_page, _computers_page: computers_subscriptions, queue_page, _queue_page: queue_subscriptions, page, _page: page_subscriptions, area, sidebar_mode: SidebarMode::Full, client, live, bots: Reading::NotYet, queue: Reading::NotYet, computers: Reading::NotYet, this_box: "This Mac".into(), this_kind: String::new(), selected, now: None, reading: None, settings, _settings_picks: picks, _settings_adds: adds, _settings_opens: opens, _settings_changes: changes }
+        AreaView { moves: None, remote_bots: Default::default(), _bots_follow: bots_follow, reached: true, shown: true, fresh_bots: false, chat_open: None, seen_told: None, followed_meanwhile: None, _groups_follow: groups_follow, groups, _groups: groups_subscriptions, computers_page, _computers_page: computers_subscriptions, queue_page, _queue_page: queue_subscriptions, page, _page: page_subscriptions, area, sidebar_mode: SidebarMode::Full, client, live, bots: Reading::NotYet, queue: Reading::NotYet, computers: Reading::NotYet, this_box: "This Mac".into(), this_kind: String::new(), selected, now: None, reading: None, settings, _settings_picks: picks, _settings_adds: adds, _settings_opens: opens, _settings_changes: changes }
     }
 
     /// Settings' view, in the Settings area.
@@ -376,11 +379,20 @@ impl AreaView {
 
     /// What each bot is doing, told to its face (`bot_face`): the box's state, or offline while the
     /// box can't be reached; a bot on another computer is offline while that one is away, and idle
-    /// otherwise (its state is its own box's to say).
+    /// otherwise (its state is its own box's to say). Only the currently shown workspace writes to
+    /// global `bot_face` states, so a background workspace disconnecting never greys out the shown
+    /// computer's bots.
     fn tell_faces(&mut self, cx: &mut Context<Self>) {
+        if !self.shown {
+            return;
+        }
         let Reading::Ready(bots) = &self.bots else { return };
         let mut told: Vec<(String, State)> = bots.bots.iter().map(|bot| (bot.id.clone(), self.bot_state(bot))).collect();
-        told.extend(bots.elsewhere.iter().map(|there| (there.id.clone(), self.elsewhere_state(&there.computer))));
+        for there in &bots.elsewhere {
+            if !bots.bots.iter().any(|bot| bot.id == there.id) {
+                told.push((there.id.clone(), self.elsewhere_state(&there.computer)));
+            }
+        }
         for (id, state) in told {
             crate::bot_face::tell(&id, state, cx);
         }
@@ -401,6 +413,18 @@ impl AreaView {
     /// Whether an active turn is backed by a current bot snapshot.
     pub(crate) fn has_fresh_bots(&self) -> bool {
         self.reached && self.fresh_bots
+    }
+
+    /// Whether this workspace is the one the window currently shows: becoming shown immediately
+    /// restores its bots' live states in `bot_face`.
+    pub fn set_shown(&mut self, shown: bool, cx: &mut Context<Self>) {
+        if self.shown != shown {
+            self.shown = shown;
+            if shown {
+                self.tell_faces(cx);
+                cx.notify();
+            }
+        }
     }
 
     /// Whether the box is reached (the window's own word): its bots are drawn offline while not.
@@ -878,7 +902,7 @@ fn ready<T>(reading: &Reading<T>) -> Option<&T> {
 }
 
 impl Render for AreaView {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if let Some(settings) = self.settings.clone() {
             return div().id("area-settings").size_full().child(settings.update(cx, |settings, cx| settings.sidebar(cx)));
         }
@@ -888,7 +912,7 @@ impl Render for AreaView {
         let compact = self.sidebar_mode != SidebarMode::Full;
         let rows = match self.area {
             Area::Bots if compact => self.bot_avatars(cx),
-            Area::Bots => self.bots_rows(window, cx),
+            Area::Bots => self.bots_rows(cx),
             Area::Queue => self.queue_rows(cx),
             Area::Computers => self.computer_rows(cx),
             Area::Settings | Area::Insights => Vec::new(),
@@ -943,9 +967,9 @@ impl AreaView {
             let state = self.bot_state(bot);
             let mark = SidebarMark::of(bot, self.reached, now);
             let tooltip = mark.as_ref().map_or_else(|| bot.name.clone(), |mark| mark.tooltip(&bot.name));
-            let badge = mark.map(|mark| mark.badge(&c, px(8.)));
+            let gutter = mark.as_ref().map(|mark| mark.gutter(&c));
             let face = crate::bot_face::still_avatar(&bot.id, &bot.look, state, COMPACT_FACE);
-            rows.push(self.avatar_row(format!("bot:{}", bot.id), &bot.id, tooltip, face, badge, None, cx));
+            rows.push(self.avatar_row(format!("bot:{}", bot.id), &bot.id, tooltip, face, gutter, None, cx));
         }
         for listed in &bots.elsewhere {
             let there = There::of(listed);
@@ -954,25 +978,16 @@ impl AreaView {
                 || crate::bot_face::still_avatar(&there.id, &unknown_bot_look(), state, COMPACT_FACE),
                 |look| crate::bot_face::still_avatar(&there.id, look, state, COMPACT_FACE),
             );
-            let change = if there.waiting {
-                Some((format!("Waiting for {}", there.computer), c.accent, "bot-avatar-change-waiting"))
-            } else if there.refused {
-                Some((format!("Change declined on {}", there.computer), c.warning, "bot-avatar-change-refused"))
+            let mark = self.elsewhere_mark(listed, &there, now);
+            let tooltip = if there.waiting && state == State::Offline {
+                format!("{} · Waiting for {}", there.name, there.computer)
+            } else if there.refused && state == State::Offline {
+                format!("{} · Change declined on {}", there.name, there.computer)
             } else {
-                None
+                mark.as_ref().map_or_else(|| there.name.clone(), |mark| mark.tooltip(&there.name))
             };
-            let (tooltip, badge) = if let Some((words, color, selector)) = change {
-                let badge = div().debug_selector(move || selector.into())
-                    .absolute().bottom(px(3.)).right(px(3.)).size(px(8.))
-                    .rounded(radius::PILL).border_1().border_color(c.sidebar).bg(color)
-                    .into_any_element();
-                (format!("{} · {words}", there.name), Some(badge))
-            } else if let Some(mark) = self.remote_bot(listed).and_then(|(_, bot, reached)| SidebarMark::of(bot, reached, now)) {
-                (mark.tooltip(&there.name), Some(mark.badge(&c, px(8.))))
-            } else {
-                (there.name, None)
-            };
-            rows.push(self.avatar_row(format!("elsewhere:{}", there.id), &there.id, tooltip, face, badge, RemoteSource::of(listed), cx));
+            let gutter = mark.as_ref().map(|mark| mark.gutter(&c));
+            rows.push(self.avatar_row(format!("elsewhere:{}", there.id), &there.id, tooltip, face, gutter, RemoteSource::of(listed), cx));
         }
         rows
     }
@@ -983,7 +998,7 @@ impl AreaView {
         bot: &str,
         tooltip: String,
         face: AnyElement,
-        badge: Option<AnyElement>,
+        gutter: Option<AnyElement>,
         source: Option<RemoteSource>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -995,6 +1010,7 @@ impl AreaView {
         let fill = if selected { c.selected } else { c.hover };
         let ring = c.focus_ring;
         let selector = format!("bot-avatar-{key}");
+        let face_selector = format!("bot-avatar-face-{key}");
         let selected_selector = format!("{selector}-selected");
         let target = MoveTarget::new(MoveKind::Bot, bot);
         let tooltip = self.moves.as_ref()
@@ -1005,9 +1021,12 @@ impl AreaView {
             .debug_selector(move || selector)
             .flex()
             .flex_none()
+            .flex_col()
             .items_center()
             .justify_center()
-            .size(px(48.))
+            .gap(px(3.))
+            .w(px(48.))
+            .h(px(54.))
             .rounded(radius::CARD)
             .when(selected, |d| d.bg(fill))
             .hover(move |d| d.bg(fill))
@@ -1016,7 +1035,20 @@ impl AreaView {
             .tab_index(0)
             .tooltip(move |_, cx| Tooltip::new(tooltip.clone()).build(cx))
             .on_click(self.row_click(key.clone(), cx))
-            .child(div().relative().when(selected, |d| d.debug_selector(move || selected_selector)).child(face).children(badge));
+            .child(
+                div()
+                    .flex_none()
+                    .when(selected, |d| d.debug_selector(move || selected_selector))
+                    .child(div().flex_none().debug_selector(move || face_selector).child(face)),
+            )
+            .child(
+                div()
+                    .h(px(10.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .children(gutter),
+            );
         if source.is_some() || key.starts_with("bot:") {
             self.move_menu(&key, row, target, source)
         } else {
@@ -1031,7 +1063,28 @@ impl AreaView {
         Some((remote, bot, remote.reached && !away))
     }
 
-    fn bots_rows(&self, window: &mut Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
+    /// Status mark shared by full rows and the compact avatar strip for a bot on another computer.
+    /// Offline bots always show the Offline hollow circle; pending/refused remote edits never reuse
+    /// the "Waiting on you" blue dot.
+    fn elsewhere_mark(&self, listed: &Elsewhere, there: &There, now: f64) -> Option<SidebarMark> {
+        if self.elsewhere_state(&there.computer) == State::Offline {
+            return Some(SidebarMark::Offline);
+        }
+        if there.refused {
+            return Some(SidebarMark::ChangeRefused(format!("Change declined on {}", there.computer)));
+        }
+        if let Some((_, bot, reached)) = self.remote_bot(listed) {
+            if let Some(mark) = SidebarMark::of(bot, reached, now) {
+                return Some(mark);
+            }
+        }
+        if there.waiting {
+            return Some(SidebarMark::ChangeWaiting(format!("Waiting for {}", there.computer)));
+        }
+        None
+    }
+
+    fn bots_rows(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let c = cx.theme().colors.clone();
         // The area's name, with New Bot beside it.
         let header = div()
@@ -1058,6 +1111,8 @@ impl AreaView {
             let key = format!("bot:{}", bot.id);
             let selected = self.is_selected(&key);
             let now = self.now();
+            let status = SidebarMark::of(bot, self.reached, now);
+            let detail_color = status.as_ref().map_or(c.text_muted, |mark| mark.detail_color(&c));
             let waking = self.has_fresh_bots() && bot.now.waking;
             let detail = if waking && bot.now.asking == 0 && bot.now.state != kuvo_box::areas::BotState::Blocked {
                 div().flex().items_center().gap(space::S1).text_role(TextRole::RowDetail)
@@ -1067,9 +1122,8 @@ impl AreaView {
             } else {
                 let doing = self.reached.then(|| doing_parts(&bot.now, now)).flatten();
                 let (words, waiting) = doing.map(Doing::into_parts).unwrap_or_else(|| (bot.job.clone(), None));
-                div().truncate().text_role(TextRole::RowDetail).text_color(c.text_muted).child(status_words(words, waiting, cx))
+                div().truncate().text_role(TextRole::RowDetail).text_color(detail_color).child(status_words(words, waiting, cx))
             };
-            let status = SidebarMark::of(bot, self.reached, now);
             let (hover, selected_bg) = (c.hover, c.selected);
             let selector = format!("bot-{}", bot.id);
             let target = MoveTarget::new(MoveKind::Bot, &bot.id);
@@ -1079,7 +1133,8 @@ impl AreaView {
             } else {
                 bot_face(&bot.id, &bot.look, px(BOT_FACE))
             };
-            let avatar = crate::bot_face::sidebar_avatar(&bot.id, &bot.name, face, status, &c);
+            let avatar = crate::bot_face::sidebar_avatar(&bot.id, &bot.name, face, status.as_ref());
+            let trailing = status.as_ref().map(|mark| mark.trailing(&c));
             let detail = move_status.unwrap_or_else(|| detail.into_any_element());
             let row = div()
                     .id(SharedString::from(selector.clone()))
@@ -1096,7 +1151,8 @@ impl AreaView {
                     .hover(move |s| s.bg(if selected { selected_bg } else { hover }))
                     .on_click(self.row_click(key.clone(), cx))
                     .child(avatar)
-                    .child(two_lines(bot.name.clone(), detail, &c));
+                    .child(two_lines(bot.name.clone(), detail, &c))
+                    .children(trailing);
             rows.push(self.move_menu(&key, row, target, None));
         }
         // The bots that live on your other computers, as the box says each last told it.
@@ -1110,15 +1166,6 @@ impl AreaView {
                 let selector = format!("elsewhere-{}", there.id);
                 let computer = there.computer.as_str();
                 // What waits for it or was refused, else where it lives.
-                let remote_bot = self.remote_bot(listed);
-                let wake_chip = remote_bot.and_then(|(remote, bot, reached)| {
-                    let status = wakes::Status::from(bot);
-                    let handle = window.use_keyed_state(SharedString::from(format!("remote-wakes-handle-{}", listed.id)), cx, |_, _| kuvo_ui::menu::PopoverMenuHandle::default()).read(cx).clone();
-                    let label = status.chip_label(self.now()).or_else(|| handle.is_open().then(|| "Wake-ups".into()))?;
-                    let label = if reached { label } else { "Wake-ups".into() };
-                    let source = wakes::Source { client: remote.client.clone(), session: bot.session.clone(), computer: computer.to_owned(), live: self.live, now: self.now };
-                    Some(wakes::chip(SharedString::from(format!("remote-wakes-{}", listed.id)), label, source, false, handle))
-                });
                 let line = if there.waiting {
                     format!("Waiting for {computer}")
                 } else if there.refused {
@@ -1133,9 +1180,11 @@ impl AreaView {
                     Some(look) => bot_face(&there.id, look, px(BOT_FACE)),
                     None => div().flex().flex_none().items_center().justify_center().size(px(BOT_FACE)).rounded(radius::PILL).bg(c.sunken).child(Icon::new(kuvo_ui::IconName::Bot).color(c.icon)).into_any_element(),
                 };
-                let mark = remote_bot.and_then(|(_, bot, reached)| SidebarMark::of(bot, reached, self.now()));
-                let face = crate::bot_face::sidebar_avatar(&there.id, &there.name, face, mark, &c);
-                let detail = move_status.unwrap_or_else(|| div().truncate().text_role(TextRole::RowDetail).text_color(c.text_muted).child(line).into_any_element());
+                let mark = self.elsewhere_mark(listed, &there, self.now());
+                let detail_color = mark.as_ref().map_or(c.text_muted, |mark| mark.detail_color(&c));
+                let avatar = crate::bot_face::sidebar_avatar(&there.id, &there.name, face, mark.as_ref());
+                let trailing = mark.as_ref().map(|mark| mark.trailing(&c));
+                let detail = move_status.unwrap_or_else(|| div().truncate().text_role(TextRole::RowDetail).text_color(detail_color).child(line).into_any_element());
                 let row = div()
                         .id(SharedString::from(selector.clone()))
                         .debug_selector(move || selector)
@@ -1150,9 +1199,9 @@ impl AreaView {
                         .when(selected, |r| r.bg(selected_bg))
                         .hover(move |s| s.bg(if selected { selected_bg } else { hover }))
                         .on_click(self.row_click(key.clone(), cx))
-                        .child(face)
+                        .child(avatar)
                         .child(two_lines(there.name.clone(), detail, &c))
-                        .children(wake_chip);
+                        .children(trailing);
                 let row = match RemoteSource::of(listed) {
                     Some(source) => self.move_menu(&key, row, target, Some(source)),
                     None => row.into_any_element(),
@@ -1443,7 +1492,7 @@ pub(crate) fn doing_parts(now: &BotNow, at: f64) -> Option<Doing> {
 /// A bot's face in the Bots sidebar, in points: its rows are this plus even padding above and
 /// below. Other places keep their own sizes (the header's 22, a mention's 16).
 const BOT_FACE: f32 = 40.;
-const COMPACT_FACE: Pixels = px(44.);
+const COMPACT_FACE: Pixels = px(36.);
 
 fn unknown_bot_look() -> Look {
     Look { color: "graphite".into(), shape: "round".into(), face: "calm".into() }

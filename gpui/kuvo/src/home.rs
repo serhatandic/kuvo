@@ -287,6 +287,7 @@ impl Home {
         let shown = if open.computer == NEAREST {
             self.leave_first_run(cx);
             self.shown = NEAREST.to_owned();
+            self.sync_shown(cx);
             self.workspaces.contains_key(NEAREST)
         } else {
             self.switch_to(&open.computer, window, cx)
@@ -342,8 +343,10 @@ impl Home {
     fn make(&mut self, slot: &str, client: BoxClient, window: &mut Window, cx: &mut Context<Self>) {
         let live = self.live;
         let switching = !self.workspaces.is_empty() || slot != NEAREST;
+        let is_shown = slot == self.shown;
         let workspace = cx.new(|cx| {
             let mut workspace = Workspace::new(client, live, window, cx);
+            workspace.set_shown(is_shown, cx);
             workspace.moves().update(cx, |moves, _| moves.set_computers(self.boxes.clone()));
             if switching {
                 workspace.skip_first_run(cx);
@@ -395,6 +398,19 @@ impl Home {
         self.workspaces.insert(slot.to_owned(), (workspace, subscription));
     }
 
+    /// Tells every workspace whether it's the one currently shown: background workspaces first so
+    /// they stop writing to shared `bot_face` states, then the shown one so it restores its bots.
+    fn sync_shown(&self, cx: &mut Context<Self>) {
+        for (slot, (workspace, _)) in &self.workspaces {
+            if slot != &self.shown {
+                workspace.update(cx, |workspace, cx| workspace.set_shown(false, cx));
+            }
+        }
+        if let Some((workspace, _)) = self.workspaces.get(&self.shown) {
+            workspace.update(cx, |workspace, cx| workspace.set_shown(true, cx));
+        }
+    }
+
     /// Selecting work ends this device's onboarding for all cached computers.
     fn leave_first_run(&mut self, cx: &mut Context<Self>) {
         crate::yours::change(crate::yours::Change::Welcomed, cx);
@@ -420,6 +436,7 @@ impl Home {
         }
         self.leave_first_run(cx);
         self.shown = slot;
+        self.sync_shown(cx);
         self.rows_changed(cx);
         let workspace = self.workspace().clone();
         workspace.update(cx, |workspace, cx| {
@@ -474,6 +491,7 @@ impl Home {
         if self.boxes.nearest().is_some() && self.shown != NEAREST {
             self.leave_first_run(cx);
             self.shown = NEAREST.to_owned();
+            self.sync_shown(cx);
             self.rows_changed(cx);
             self.keep_shown(cx);
         }
@@ -656,6 +674,7 @@ impl Home {
         }
         if !self.workspaces.contains_key(&self.shown) {
             self.shown = if self.workspaces.contains_key(NEAREST) { NEAREST.to_owned() } else { self.workspaces.keys().next().cloned().unwrap_or_default() };
+            self.sync_shown(cx);
         }
         if self.live {
             let clients = self.notified();

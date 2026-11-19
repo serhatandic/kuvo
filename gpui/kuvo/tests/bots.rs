@@ -1078,31 +1078,22 @@ fn moved_bot_wakes_are_followed_before_opening_bots(cx: &mut TestAppContext) {
     click(cx, "rail-bots");
     for _ in 0..400 {
         cx.run_until_parked();
-        if shown(cx, "open-wake-schedule") { break; }
+        if shown(cx, "bot-avatar-wake") { break; }
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
-    assert!(shown(cx, "bot-avatar-wake"), "the destination's schedule also marks its avatar");
-    click(cx, "open-wake-schedule");
-    for _ in 0..400 {
-        cx.run_until_parked();
-        if shown(cx, "cancel-entry") { break; }
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
-    assert!(shown(cx, "cancel-entry"));
-    assert_eq!(peer.seen_at("GET", "kuvo/wakes/ses_mira/events").len(), 1);
-    assert!(stand_in.seen_at("GET", "kuvo/wakes/ses_mira/events").is_empty());
+    assert!(shown(cx, "bot-avatar-wake"), "the destination's schedule marks its avatar with the clock icon");
+    assert!(!shown(cx, "open-wake-schedule"), "the Bots sidebar row must not show a wake-up pill");
 
-    // Once it's away, the list spells out the failed read and offers no cancellation.
-    cx.simulate_keystrokes("escape");
-    cx.run_until_parked();
-    peer.set_down(true);
-    click(cx, "open-wake-schedule");
+    // Even when a remote bot's wake-up is already due, no "Wake-up due" pill is shown in the sidebar.
+    peer.set_bot_wakes("bot_mira", vec![json!({
+        "id": "at-due", "due": NOW / 1000. - 60., "summary": "Overdue check", "cancelKey": "due",
+    })], vec![]);
     for _ in 0..400 {
         cx.run_until_parked();
-        if shown(cx, "wake-schedule-error") && !shown(cx, "cancel-entry") { break; }
+        if !shown(cx, "bot-avatar-wake") { break; }
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
-    assert!(shown(cx, "wake-schedule-error") && !shown(cx, "cancel-entry"));
+    assert!(!shown(cx, "open-wake-schedule"), "a due wake-up must not render a Wake-up due pill in the Bots sidebar");
 }
 
 #[gpui::test]
@@ -1126,7 +1117,7 @@ fn wake_list_wraps_a_long_summary_and_bounds_many_entries(cx: &mut TestAppContex
 }
 
 #[gpui::test]
-fn wake_badge_sits_on_the_avatar_and_yields_to_activity(cx: &mut TestAppContext) {
+fn status_marks_sit_in_trailing_column_without_covering_bot_faces(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
     for id in ["bot_mira", "bot_inbox", "bot_docs"] {
         stand_in.set_bot_wakes(id, vec![json!({
@@ -1135,15 +1126,34 @@ fn wake_badge_sits_on_the_avatar_and_yields_to_activity(cx: &mut TestAppContext)
     }
     stand_in.set_bot_now("bot_mira", json!({"working":0,"asking":0,"state":"idle"}));
     stand_in.set_bot_now("bot_docs", json!({"working":1,"asking":0,"state":"working","waking":true}));
+    stand_in.add_bot("bot_ops", "Ops", json!({"color":"orange","shape":"capsule","face":"bright"}));
+    stand_in.set_bot_now("bot_ops", json!({"working":0,"asking":0,"blocked":1,"blockedBy":"limit","state":"blocked"}));
     let (_, cx) = open(cx, stand_in);
     click(cx, "rail-bots");
+
     let wake = bounds(cx, "bot-avatar-wake").unwrap();
-    let avatar = bounds(cx, "bot-bot_mira-avatar").unwrap();
-    assert_eq!(wake.size, size(px(14.), px(14.)));
-    assert_eq!(wake.right(), avatar.right() - px(3.));
-    assert_eq!(wake.bottom(), avatar.bottom() - px(3.));
-    assert_eq!(wake.size, bounds(cx, "bot-avatar-needs-you").unwrap().size);
-    assert_eq!(wake.size, bounds(cx, "bot-avatar-at-work").unwrap().size);
+    let mira = bounds(cx, "bot-bot_mira-avatar").unwrap();
+    assert!(wake.left() >= mira.right(), "wake mark should sit in trailing column, not on face");
+    assert_eq!(mira.size, size(px(40.), px(40.)));
+
+    let needs_you = bounds(cx, "bot-avatar-needs-you").unwrap();
+    let inbox = bounds(cx, "bot-bot_inbox-avatar").unwrap();
+    assert!(needs_you.left() >= inbox.right(), "needs-you mark should sit in trailing column");
+
+    let at_work = bounds(cx, "bot-avatar-at-work").unwrap();
+    let docs = bounds(cx, "bot-bot_docs-avatar").unwrap();
+    assert!(at_work.left() >= docs.right(), "at-work mark should sit in trailing column");
+
+    let blocked = bounds(cx, "bot-avatar-blocked").unwrap();
+    let ops = bounds(cx, "bot-bot_ops-avatar").unwrap();
+    assert!(blocked.left() >= ops.right(), "blocked mark should sit in trailing column");
+
+    let offline = bounds(cx, "bot-avatar-offline").unwrap();
+    let scout = bounds(cx, "bot-bot_scout-avatar").unwrap();
+    assert!(
+        offline.left() >= scout.right() && offline.center().y >= scout.top() && offline.center().y <= scout.bottom(),
+        "offline mark should sit in Scout's trailing column"
+    );
 }
 
 #[gpui::test]
