@@ -8670,6 +8670,9 @@
             "literal": "box.update"
            },
            {
+            "literal": "box.update.no-cut"
+           },
+           {
             "literal": "branch"
            },
            {
@@ -9480,6 +9483,9 @@
             "literal": "box.update"
            },
            {
+            "literal": "box.update.no-cut"
+           },
+           {
             "literal": "branch"
            },
            {
@@ -10144,6 +10150,9 @@
                 },
                 {
                  "literal": "restart"
+                },
+                {
+                 "literal": "handover"
                 }
                ]
               },
@@ -10305,6 +10314,52 @@
        ]
       },
       "offered?": "string",
+      "waiting?": {
+       "object": {
+        "version": "string",
+        "reason": {
+         "oneOf": [
+          {
+           "literal": "ready"
+          },
+          {
+           "literal": "release-age"
+          },
+          {
+           "literal": "blocked"
+          },
+          {
+           "literal": "stopped"
+          },
+          {
+           "literal": "retry"
+          },
+          {
+           "literal": "installing"
+          },
+          {
+           "literal": "trial"
+          },
+          {
+           "literal": "engine"
+          },
+          {
+           "literal": "agents"
+          },
+          {
+           "literal": "handover"
+          }
+         ]
+        },
+        "detail": "string",
+        "sessionsAtWork": {
+         "oneOf": [
+          "number",
+          "null"
+         ]
+        }
+       }
+      },
       "offerFailed?": {
        "object": {
         "version": "string",
@@ -10489,6 +10544,52 @@
        ]
       },
       "offered?": "string",
+      "waiting?": {
+       "object": {
+        "version": "string",
+        "reason": {
+         "oneOf": [
+          {
+           "literal": "ready"
+          },
+          {
+           "literal": "release-age"
+          },
+          {
+           "literal": "blocked"
+          },
+          {
+           "literal": "stopped"
+          },
+          {
+           "literal": "retry"
+          },
+          {
+           "literal": "installing"
+          },
+          {
+           "literal": "trial"
+          },
+          {
+           "literal": "engine"
+          },
+          {
+           "literal": "agents"
+          },
+          {
+           "literal": "handover"
+          }
+         ]
+        },
+        "detail": "string",
+        "sessionsAtWork": {
+         "oneOf": [
+          "number",
+          "null"
+         ]
+        }
+       }
+      },
       "offerFailed?": {
        "object": {
         "version": "string",
@@ -10673,6 +10774,52 @@
        ]
       },
       "offered?": "string",
+      "waiting?": {
+       "object": {
+        "version": "string",
+        "reason": {
+         "oneOf": [
+          {
+           "literal": "ready"
+          },
+          {
+           "literal": "release-age"
+          },
+          {
+           "literal": "blocked"
+          },
+          {
+           "literal": "stopped"
+          },
+          {
+           "literal": "retry"
+          },
+          {
+           "literal": "installing"
+          },
+          {
+           "literal": "trial"
+          },
+          {
+           "literal": "engine"
+          },
+          {
+           "literal": "agents"
+          },
+          {
+           "literal": "handover"
+          }
+         ]
+        },
+        "detail": "string",
+        "sessionsAtWork": {
+         "oneOf": [
+          "number",
+          "null"
+         ]
+        }
+       }
+      },
       "offerFailed?": {
        "object": {
         "version": "string",

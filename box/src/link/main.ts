@@ -133,7 +133,7 @@ import { leaveForNewCode } from "./updates/code-in-place";
 import { sayWhole } from "./once";
 import { featuresNow, settleUpdate, startSettling } from "./updates/health";
 import { handOverMachine, recoverMachineJob, startMachineInstall, swapEngine } from "./updates/engine-swap";
-import { type UpdateOptions, ON_TRIAL, UPDATING_ALREADY, agentsWorking, dropOldBackups, passingOutcome, updateOnTrial, checkDrift, failedInPassing, offerWaits, isUpdating, noteLauncher, noteOlderMacs, installerSteps, noteUpdate, startOfferedUpdate, startUpdate, takeOffer, untilFree, update, UPDATE_KEYS, releaseRound, updatesBlocked, updateState, updateStatus } from "./updates/update";
+import { type UpdateOptions, UPDATING_ALREADY, agentsWorking, dropOldBackups, passingOutcome, updateOnTrial, checkDrift, failedInPassing, offerWaits, isUpdating, noteLauncher, noteOlderMacs, requestUpdateNow, updateStatusHere, installerSteps, noteUpdate, startOfferedUpdate, startUpdate, takeOffer, untilFree, update, UPDATE_KEYS, releaseRound, updatesBlocked, updateState, updateStatus } from "./updates/update";
 import { clearIncoming, followOver, followPeers, watchHeld } from "./updates/fleet";
 import { checkFolderVersion, setupLayoutDeferred, unlinkCleanupLayoutReady, upgradeKuvoFolder } from "../shared/folder-version";
 import { BRIDGE_VERSION } from "./version";
@@ -679,17 +679,10 @@ async function box(command: string): Promise<void> {
       return say(setBoxKey(name, value.length ? value : null));
     }
     case "update-status":
-      return say({ status: 200, ...updateStatus() });
+      return say({ status: 200, ...await updateStatusHere() });
     case "update-now": {
-      // On its own, outliving this command: what it does shows in update-status.
-      if (!UPDATE_KEYS.length) return say({ status: 409, message: "Updates aren't set up for this machine yet." });
-      const blocked = updatesBlocked();
-      if (blocked) return say({ status: 409, message: blocked });
-      if (isUpdating()) return say({ status: 409, message: "It's updating already." });
-      if (updateOnTrial()) return say({ status: 409, message: ON_TRIAL });
-      // (Now whatever its age, but never through work: nobody was asked first here.)
-      spawn(process.execPath, [...OWN_RUNTIME, fileURLToPath(import.meta.url), "update", "--now", "--free"], { detached: true, stdio: "ignore", cwd: K, env: process.env }).unref();
-      return say({ status: 202, ...updateStatus(), updating: "checking" });
+      const started = requestUpdateNow();
+      return say(started.status === 409 ? started : { status: 202, ...updateStatus(), updating: "checking" });
     }
     case "route": {
       // A client's request, answered as the bridge answers a phone's: one that answers once,
@@ -1458,7 +1451,7 @@ if (main) {
         if (process.ppid === 1) process.exit(0);
       }
       outcome = offered
-        ? await takeOffer({ now, step, features: featuresNow(), ...test })
+        ? await takeOffer({ now, whileBusy: now && !args.includes("--free"), step, features: featuresNow(), ...test })
         : from && !path.isAbsolute(from)
           ? { result: "failed" as const, message: "Say which folder the release is in, as a full path." }
           : await update({ now, whileBusy: now && !args.includes("--free"), from, step, features: featuresNow(), swapping: () => { swapped = true; }, ...test });

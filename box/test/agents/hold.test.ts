@@ -14,7 +14,8 @@ import { spawn } from "node:child_process"
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, watch, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { attach, hold, heldIn, heldProcess, holdFolder, HOLDER, type HoldRecord } from "../../src/agents/hold/client"
-import { adoptHeld } from "../../src/agents/hold/adopt"
+import { forgetOldAntigravity } from "../../src/agents/agents/antigravity"
+import { ANTIGRAVITY_ACP, adoptHeld } from "../../src/agents/hold/adopt"
 import { RPC } from "../../src/agents/rpc"
 
 // (In the run's own home: short enough for a socket's path, and never /tmp.)
@@ -289,6 +290,65 @@ describe("an agent under a holder", () => {
     later.end()
     await later.closed
     expect(existsSync(join(folder, `${held.id}.journal`))).toBe(false)
+  })
+
+  test("a managed Antigravity release stays installed through its last holder", async () => {
+    const { dir, folder } = shortFolder()
+    const old = join(dir, "antigravity", "1.2.0")
+    const current = join(dir, "antigravity", ANTIGRAVITY_ACP)
+    mkdirSync(old, { recursive: true })
+    mkdirSync(current, { recursive: true })
+    const agent = join(dir, "old-antigravity.js")
+    writeFileSync(agent, 'process.stdin.on("end", () => process.exit(0)); process.stdin.resume();')
+    const held = await hold([process.execPath, agent], {
+      folder, kind: "raw", env: { BUN_BE_BUN: process.env.BUN_BE_BUN, PATH: process.env.PATH },
+      meta: { kind: "antigravity", version: "1.2.0" },
+    })
+    const complete = join(current, ".complete")
+    writeFileSync(complete, "")
+    forgetOldAntigravity(dir, folder)
+    expect(existsSync(old)).toBe(true)
+    expect(existsSync(current)).toBe(true)
+    rmSync(complete)
+    held.end()
+    await held.closed
+    forgetOldAntigravity(dir, folder)
+    expect(existsSync(old)).toBe(true)
+    writeFileSync(join(current, ".complete"), "")
+    forgetOldAntigravity(dir, folder)
+    expect(existsSync(old)).toBe(false)
+    expect(existsSync(current)).toBe(true)
+  })
+
+  test("a transfer pins replay until the successor releases it", async () => {
+    const { dir, folder } = shortFolder()
+    const agent = join(dir, "pin.js")
+    writeFileSync(agent, 'process.stdin.on("data", () => process.stdout.write(JSON.stringify({ value: "x".repeat(200) }) + "\\n")); process.stdin.on("end", () => process.exit(0));')
+    const first = await hold([process.execPath, agent], { folder, kind: "raw", journalBytes: 64, env: { BUN_BE_BUN: process.env.BUN_BE_BUN, PATH: process.env.PATH } })
+    expect(await first.prepare(0)).toBe(true)
+    const said = new Promise<string>(resolve => first.onLine(resolve))
+    first.write("go")
+    const original = await said
+    const later = await attach(folder, recordOf(folder, first.id), 0, true)
+    expect(await new Promise<string>(resolve => later.onLine(resolve))).toBe(original)
+    later.unpin()
+    later.end()
+    expect((await later.exited).code).toBe(0)
+  })
+
+  test("a missing replay range is refused without fencing the controller", async () => {
+    const { dir, folder } = shortFolder()
+    const agent = join(dir, "gap.js")
+    writeFileSync(agent, 'process.stdin.on("data", () => process.stdout.write("x".repeat(200) + "\\n" + "y".repeat(200) + "\\n")); process.stdin.on("end", () => process.exit(0));')
+    const held = await hold([process.execPath, agent], { folder, kind: "raw", journalBytes: 64, env: { BUN_BE_BUN: process.env.BUN_BE_BUN, PATH: process.env.PATH } })
+    const processed = new Promise<void>(resolve => held.onLine((_line, _again, seq) => { if (seq === 2) resolve() }))
+    held.write("go")
+    await processed
+    expect(await held.prepare(0)).toBe(false)
+    await expect(attach(folder, recordOf(folder, held.id), 0, true)).rejects.toThrow("no longer in the journal")
+    expect(held.isOpen).toBe(true)
+    held.end()
+    expect((await held.exited).code).toBe(0)
   })
 
   test("stopping it stops what its agent started too", async () => {

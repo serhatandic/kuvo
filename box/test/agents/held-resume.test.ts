@@ -112,3 +112,16 @@ test("a take-up that goes through makes the turn again from the agent's lines, o
   taken.held.stop()
   await taken.held.closed
 })
+
+test("a checkpoint without its holder cannot block approvals for the session", async () => {
+  const { dir, id } = await leftUnderWay()
+  const store = new Store(join(dir, "sessions"))
+  const next = agent(async () => ({ outcome: "succeeded" }))
+  const sessions = new Sessions(store, { find: () => next } as unknown as Roster, new Auto(dir), undefined,
+    undefined, undefined, undefined, undefined, new Map(), {
+      [id]: { message: "msg_heldresume00000001", always: [], permissions: [{ id: "per_missing", key: "missing" }] },
+    })
+  sessions.resumeHeld()
+  expect(await sessions.permissionsReady(id, AbortSignal.timeout(200))).toBe(true)
+  expect(sessions.permissions(id)).toEqual([])
+})

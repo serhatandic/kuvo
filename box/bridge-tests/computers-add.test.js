@@ -219,7 +219,11 @@ const root = path.join(base, "sources");
 for (const file of ["box/src/keeper/kuvo-start", "box/src/keeper/kuvo-launch", "box/src/keeper/kuvo-setsid", "box/src/keeper/kuvo-wake", "box/src/keeper/kuvo-npx", "box/src/keeper/runtime/node", "box/src/plugins/kuvo-code.js", "box/src/shared/bot-words.json", "box/src/shared/engine-pin.json", "box/dist/kuvo-browser.js"]) {
   write(path.join(root, file), fs.readFileSync(path.join(checkout, file)));
 }
-write(path.join(root, "swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js"), fs.readFileSync(script));
+const builtLink = fs.readFileSync(script, "utf8");
+// These boxes test SSH updates. A real release check must not take their update lock.
+const offlineLink = builtLink.replace(/^(\s*UPDATE_KEYS = )\[[^\n]*\];$/m, "$1[];");
+assert.notEqual(offlineLink, builtLink);
+write(path.join(root, "swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js"), offlineLink);
 write(path.join(root, "box/dist/kuvo-agents.js"), `
 import fs from "node:fs";
 import http from "node:http";
@@ -940,17 +944,17 @@ test("a phone's Add a Machine (the old Mac app's `POST kuvo/machines`) is this b
 test("uninstalling while it's being set up waits for the start under way, then nothing runs there and nothing starts it again (#603)", async () => {
   const peer = link.macPeersBody(link.readLink()).boxes.find(each => each.kind === "machine");
   const engine = read(path.join(remote, "run", "engine.json")).pid;
-  // Kuvo Code's app there is one of your devices, added by its box (`by`), with the key it keeps
-  // in its own folder there; a phone is another (#753).
+  // The desktop and phone have independent grants. The desktop keeps its key on this machine.
   write(path.join(remote, "desktop", "identity"), "its-device-key", 0o600);
   const appThere = k(link.publicOf(link.newKey()));
   link.updateLink(state => {
-    link.pairDevice(state, { key: appThere, name: "Studio screen", by: peer.key });
+    link.pairDevice(state, { key: appThere, name: "Studio screen" });
     link.pairPhone(state, { key: k(link.publicOf(link.newKey())), name: "My iPhone", added: 1, from: "pair", pairing: "its-own" });
     return state;
   });
   const confirms = (await ask("GET", "kuvo/computers")).body.computers.find(each => each.key === peer.key).actions.find(action => action.id === "uninstall").confirm.message;
-  assert.match(confirms, /The sign-ins and keys it keeps are deleted\. Kuvo Code’s app on studio is taken off your devices\. Its sessions stay/);
+  assert.match(confirms, /The sign-ins and keys it keeps are deleted\. Its sessions stay/);
+  assert.doesNotMatch(confirms, /taken off your devices/);
   // A Set Up Again, held at its start there (the script that can't be cut short).
   fs.writeFileSync(path.join(fake, "hold"), 'bin/kuvo-start" start');
   const setup = await ask("POST", `kuvo/computers/${peer.key}/setup`);
@@ -989,9 +993,10 @@ test("uninstalling while it's being set up waits for the start under way, then n
   assert.deepEqual(read(path.join(home, "machines.json")), []);
   assert.ok(fs.existsSync(path.join(remote, "data")));
   assert.equal((await ask("POST", `kuvo/computers/${peer.key}/uninstall`)).status, 404, "no longer one it set up");
-  // Kuvo Code's app there is no device of yours now: its key deleted there, and taken off here,
-  // removed as any device is (so on every computer). The phone stays.
+  // Uninstall clears the local key. The primary keeps independent device grants until removed.
   assert.equal(fs.existsSync(path.join(remote, "desktop")), false, "the app's key there is deleted");
+  assert.deepEqual((await ask("GET", "kuvo/phones")).body.phones.map(each => each.name).sort(), ["My iPhone", "Studio screen"]);
+  assert.equal((await ask("POST", "kuvo/phones/remove", { phones: [{ key: appThere }] })).status, 200);
   assert.deepEqual((await ask("GET", "kuvo/phones")).body.phones.map(each => each.name), ["My iPhone"]);
   assert.deepEqual(link.ownPhones(link.readLink()).removed.map(each => each.key), [appThere]);
 });
@@ -1069,14 +1074,14 @@ test("a Mac with an existing app folder is added without copying sign-ins or key
   assert.equal((await over(uninstall.body.try.id)).state, "done");
 });
 
-test("a computer set up again with keys made anew is still the one whose app goes with it when it's removed (#753)", async () => {
+test("a computer set up again with keys made anew keeps its independently paired app", async () => {
   // (Its host key is trusted already, from when it was added before: nothing is asked.)
   const done = await over((await ask("POST", "kuvo/computers/add", { destination: "macbook" })).body.try.id);
   assert.equal(done.state, "done", JSON.stringify(done.failure));
-  // Kuvo Code's app there, one of your devices on its box's word.
+  // Kuvo Code's app there has a device grant of its own.
   const appThere = k(link.publicOf(link.newKey()));
   link.updateLink(state => {
-    link.pairDevice(state, { key: appThere, name: "MacBook screen", by: done.computer.key });
+    link.pairDevice(state, { key: appThere, name: "MacBook screen" });
     return state;
   });
   // Its box's keys are lost there (stopped, its link's file gone), and it's set up again: the same
@@ -1094,10 +1099,11 @@ test("a computer set up again with keys made anew is still the one whose app goe
   const now = link.macPeersBody(link.readLink()).boxes.filter(each => each.kind === "machine");
   assert.deepEqual(now.map(each => [each.name, each.key === done.computer.key]), [["macbook", false]], "the one computer, by another key");
   assert.deepEqual((await ask("GET", "kuvo/phones")).body.phones.map(each => each.name), ["My iPhone", "MacBook screen"], "its app is still one of your devices");
-  // Taken off your computers: its app goes with it all the same.
+  // Removing the computer leaves the app's grant until its own removal.
   const uninstall = await ask("POST", `kuvo/computers/${now[0].key}/uninstall`);
   assert.equal((await over(uninstall.body.try.id)).state, "done");
-  assert.deepEqual((await ask("GET", "kuvo/phones")).body.phones.map(each => each.name), ["My iPhone"]);
+  assert.deepEqual((await ask("GET", "kuvo/phones")).body.phones.map(each => each.name), ["My iPhone", "MacBook screen"]);
+  assert.equal((await ask("POST", "kuvo/phones/remove", { phones: [{ key: appThere }] })).status, 200);
 });
 
 test("an add that fails, or is stopped, after Kuvo Code started on a computer that had nothing leaves nothing running there and no key behind", async () => {
@@ -1590,12 +1596,12 @@ test("an alias Add honours only its original pairing and cannot restore a key re
   assert.ok(link.readLink().removedHere.includes(original.key), "the old key stays revoked");
 });
 
-test("uninstall revokes the paired desktop even when its identity folder cleanup fails", async () => {
+test("uninstall revokes the computer even when its desktop identity folder cleanup fails", async () => {
   // The preceding test leaves this box joined through the alias.
   const computer = macbookPeer();
   const appKey = link.publicOf(link.newKey());
   link.updateLink(state => {
-    link.pairDevice(state, { key: k(appKey), name: "MacBook desktop", by: computer.key });
+    link.pairDevice(state, { key: k(appKey), name: "MacBook desktop" });
     return state;
   });
   const pairing = link.readLink().phones.find(each => each.key === k(appKey)).pairing;
@@ -1616,7 +1622,10 @@ test("uninstall revokes the paired desktop even when its identity folder cleanup
   assert.equal(result.state, "failed");
   assert.equal(fs.readFileSync(identity, "utf8"), "paired identity");
   assert.deepEqual(pidsThere(kuvo).filter(alive), [], "the service stopped");
-  assert.equal(link.authorizePhone(appKey, {}), false, "the surviving identity cannot connect");
+  assert.equal(macbookPeer(), undefined, "the computer membership was revoked");
+  assert.equal(link.authorizePhone(appKey, {}), true, "the separate device grant is still valid");
+  assert.equal((await ask("POST", "kuvo/phones/remove", { phones: [{ key: k(appKey), pairing }] })).status, 200);
+  assert.equal(link.authorizePhone(appKey, {}), false, "the device removal revokes the surviving identity");
   assert.ok(link.ownPhones(link.readLink()).removed.some(each => each.key === k(appKey) && each.pairing === pairing));
   assert.match(result.failure.message, /access to your other computers was revoked.*desktop identity folder/i);
 });
@@ -1647,7 +1656,7 @@ test("uninstall revokes access before SSH cleanup and reports a lost reply witho
   assert.equal((await ask("POST", "kuvo/machines", { destination: "macbook" })).status, 200);
   const computer = macbookPeer();
   const key = link.publicOf(link.newKey());
-  link.updateLink(state => { link.pairDevice(state, { key: k(key), name: "MacBook desktop", by: computer.key }); return state; });
+  link.updateLink(state => { link.pairDevice(state, { key: k(key), name: "MacBook desktop" }); return state; });
   const marker = path.join(fake, "lose-uninstall-reply");
   fs.writeFileSync(marker, "");
   let result;
@@ -1663,8 +1672,9 @@ test("uninstall revokes access before SSH cleanup and reports a lost reply witho
     letsIn: link.authorizePhone(key, {}), present: Boolean(macbookPeer()),
   }, {
     state: "failed", message: "macbook’s access to your other computers was revoked. Kuvo Code couldn’t confirm whether cleanup finished on that computer. Run the local uninstall command (kuvo-link.js uninstall) on that computer to finish cleanup.",
-    letsIn: false, present: false,
+    letsIn: true, present: false,
   });
+  assert.equal((await ask("POST", "kuvo/phones/remove", { phones: [{ key: k(key) }] })).status, 200);
   assert.deepEqual(pidsThere(path.join(homes.macbook, ".kuvo-code")).filter(alive), []);
 });
 

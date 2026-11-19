@@ -49,3 +49,27 @@ test("the Box negotiates the bridge version before decoding or forwarding a repl
     bridge.stop(true);
   }
 });
+
+test("the Box checks the replacement bridge's route version after a handover refusal", async () => {
+  const old = Bun.serve({
+    hostname: "127.0.0.1", port: 0,
+    fetch: () => new Response(null, { status: 503, headers: { "x-kuvo-bridge-handover": "1", "x-kuvo-route-version": "1" } }),
+  });
+  const next = Bun.serve({
+    hostname: "127.0.0.1", port: 0,
+    fetch: () => new Response("future response", { headers: { "x-kuvo-route-version": "2" } }),
+  });
+  try {
+    const path = "api/session/ses_handover/prompt";
+    const request = { method: "POST", path, headers: {}, body: Buffer.from('{"id":"msg_handover","text":"Hello"}') };
+    const [head, body] = await Array.fromAsync(forward(
+      { port: old.port!, password: "old" }, path, request, undefined, () => true, null, undefined, true,
+      () => ({ port: next.port!, password: "next" }),
+    ));
+    expect(head).toMatchObject({ head: { status: 502 } });
+    expect(body && "body" in body && JSON.parse(body.body.toString()).code).toBe("unsupportedFormatVersion");
+  } finally {
+    old.stop(true);
+    next.stop(true);
+  }
+});

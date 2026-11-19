@@ -51,7 +51,7 @@ export const INFO = oneOf(
       link: PIECE,
       agents: object({
         running: nullable(string), current: nullable(string), behind: bool, renewal: nullable(object({ since: number, holding: bool })),
-        waits: nullable(words("quiet", "holding", "engine", "restart")),
+        waits: nullable(words("quiet", "holding", "engine", "restart", "handover")),
       }),
       engine: PIECE,
     }),
@@ -82,6 +82,12 @@ export const UPDATE = object({
   updating: nullable(STEP),
   blocked: nullable(string),
   "offered?": string,
+  "waiting?": object({
+    version: string,
+    reason: words("ready", "release-age", "blocked", "stopped", "retry", "installing", "trial", "engine", "agents", "handover"),
+    detail: string,
+    sessionsAtWork: nullable(number),
+  }),
   "offerFailed?": object({ version: string, at: number, takenBack: bool, "message?": string }),
   // A newer engine waiting to take the running one's place, or doing so (PROTOCOL.md, "A new
   // engine"): where that stands and its line for clients; and how the last such change went.

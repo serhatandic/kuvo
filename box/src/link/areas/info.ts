@@ -113,7 +113,7 @@ export function pieces(engine: Partial<EngineRecord>, engineRuns: boolean): Piec
   const renewal = agentsBehind && bridge.renewal && typeof bridge.renewal.since === "number" ? { since: bridge.renewal.since, holding: bridge.renewal.holding === true } : null;
   // What it waits for: one that doesn't say its build doesn't make way by itself.
   const said = bridge.renewal?.waits;
-  const waits = !agentsBehind ? null : !build ? "restart" : said === "holding" || said === "engine" || said === "restart" ? said : "quiet";
+  const waits = !agentsBehind ? null : !build ? "restart" : said === "holding" || said === "engine" || said === "restart" || said === "handover" ? said : "quiet";
   // The engine, against the one its keeper starts (`bin/kuvo-start`'s, while it's there, else the
   // newest there is).
   const running = engineRuns ? engine.version ?? null : null;

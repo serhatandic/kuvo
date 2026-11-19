@@ -208,6 +208,7 @@ export function writeLink(link: LinkState, durable = false) {
   // This Mac's keys and what its app says stay out of the file.
   const kept = IS_MAC ? Object.fromEntries(Object.entries(link).filter(([key]) => !MAC_OVERLAY.includes(key))) : link;
   // (Its keys, on a machine.)
+  readLink();
   const text = JSON.stringify(linkFormat.write(kept), null, 2);
   if (durable || link.shared || link.sharedPending || link.sharedOutcomes || link.sharedInterrupted) {
     privateFolder(path.dirname(LINK_FILE));

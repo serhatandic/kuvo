@@ -102,6 +102,9 @@ function hold(sessionID: string, holder: object): string {
   return key
 }
 
+/** This key and its MCP connections belong to this bridge until the turn finishes. */
+export const usesToolRelay = (sessionID: string): boolean => keys.has(sessionID)
+
 /**
  * Kuvo Code's tools as an agent in the sandbox reaches them for `sessionID`, through the relay,
  * held by `holder` (the agent's thread) until it drops them; none until the app says where they are.

@@ -229,7 +229,12 @@ if [ -n "$bridge_only" ]; then
   try=0
   while :; do
     : >"$R/agents.log"
-    KUVO_AGENTS_REMOTE=1 KUVO_AGENTS_KEPT=1 KUVO_AGENTS_HOME="$K/agents" KUVO_HOME="$K" KUVO_AGENTS_PORT="$aport" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$S" "$K/engine/$V/opencode" --config=/dev/null --no-env-file "$K/bin/kuvo-agents.js" >>"$R/agents.log" 2>&1 </dev/null 9>&- &
+    bridge_script="$K/bin/kuvo-agents.js"; bridge_mode=
+    if [ -f "$R/agents/handover.json" ] && [ -f "$R/agents/previous/kuvo-agents.js" ]; then
+      bridge_script="$R/agents/previous/kuvo-agents.js"
+      bridge_mode=handover-recovery
+    fi
+    KUVO_AGENTS_REMOTE=1 KUVO_AGENTS_KEPT=1 KUVO_AGENTS_HOME="$K/agents" KUVO_HOME="$K" KUVO_AGENTS_PORT="$aport" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$S" "$K/engine/$V/opencode" --config=/dev/null --no-env-file "$bridge_script" ${bridge_mode:+"$bridge_mode"} >>"$R/agents.log" 2>&1 </dev/null 9>&- &
     apid=$!
     echo "$apid" >"$R/agents.pid"
     [ -z "${KUVO_MACHINE_HELPER_PID-}" ] || printf '%s %s\n' "$apid" "$KUVO_MACHINE_HELPER_PID" >"$R/agents.launch"

@@ -65,6 +65,7 @@ export const FEATURES = [
   "box.serve.mac",
   "box.uninstall",
   "box.update",
+  "box.update.no-cut",
   "branch",
   "browser",
   "browser.data",

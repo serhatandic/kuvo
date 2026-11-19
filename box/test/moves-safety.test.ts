@@ -28,7 +28,7 @@ const { acceptedOwner, mayActivate } = await import("../src/link/ownership/resol
 const { handItem, removeItem } = await import("../src/link/work-queue/ops")
 const { handUpkeep } = await import("../src/link/work-queue/hand")
 const { allItems, changeQueues, itemOf } = await import("../src/link/work-queue/store")
-const { queueOf, unpackQueues, WAITING_DIR } = await import("../src/link/engine/queue")
+const { queueOf, resumeQueue, unpackQueues, WAITING_DIR } = await import("../src/link/engine/queue")
 
 const id = "mov_Safety172"
 const route = `kuvo/moves/receipt?id=${id}`
@@ -382,6 +382,17 @@ test.each([null, "Back after lunch\n"])("restart between the pause journal and m
   forgetMovesInMemory()
   await resumeMoves()
   expect(fs.existsSync(held) ? fs.readFileSync(held, "utf8") : null).toBe(paused)
+})
+
+test("a frozen queue refuses Resume before changing its pause", async () => {
+  saveMove(record())
+  unpackQueues({ [session]: { paused: true, held: [], waiting: [{ shown: { id: item, text: "Wait here", at: Date.now() },
+    message: { id: item, text: "Wait here", delivery: "queue" } }] } }, [session])
+  const before = queueOf(session)
+  expect(before.paused).toBe(true)
+  await expect(resumeQueue(target, session)).rejects.toThrow("moving to another computer")
+  expect(queueOf(session)).toEqual(before)
+  expect(prompts).toBe(0)
 })
 
 test.each([false, true])("a killed queue handoff recovers with the engine's acceptance at %j", async engineAccepted => {

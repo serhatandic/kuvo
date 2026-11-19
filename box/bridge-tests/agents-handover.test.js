@@ -161,42 +161,65 @@ test("a client asking all through a bridge's hand-over to a newer one gets every
   const agents = fs.readFileSync(builtAgents, "utf8");
   // The bridge a build before this one, which makes way for this one once it's put in its place.
   // (The keeper looks only every minute: the next bridge comes from the hand-over itself.)
-  const box = machine("kuvo-handover-", { agents: agents.replace(`// Built from Packages/Box/src/agents ${build(agents)}`, `// Built from Packages/Box/src/agents ${"a".repeat(64)}`), round: "60" });
+  const box = machine("kuvo-handover-", {
+    agents: agents.replace(`// Built from Packages/Box/src/agents ${build(agents)}`, `// Built from Packages/Box/src/agents ${"a".repeat(64)}`),
+    round: "60",
+    before(home, run) {
+      const file = path.join(home, "bin", "kuvo-link.js");
+      const link = fs.readFileSync(file, "utf8");
+      const entry = "async function* agentsRoute(context) {";
+      assert.ok(link.includes(entry));
+      const seen = JSON.stringify(path.join(run, "test-cutover-request"));
+      write(file, link.replace(entry, entry + `\nif (context.request.path.endsWith("/api/info?test-cutover=1")) (await import("node:fs")).writeFileSync(${seen}, "");`), 0o600);
+    },
+  });
   await box.serving();
   const first = await box.bridgeUp();
 
   // A client asking again and again, as the rings, Accounts and a conversation do.
   const answers = [];
   let asking = true;
-  let sawHandOver = false;
   const client = (async () => {
     while (asking) {
-      const handingOver = fs.existsSync(path.join(box.run, "agents-renewing")) || !readJSON(path.join(box.run, "bridge.json"));
       const answer = await box.ask("GET", "kuvo/agents/api/info");
-      answers.push({ status: answer.status, pid: answer.json?.pid, message: answer.json?.message, handingOver });
-      if (handingOver) sawHandOver = true;
+      answers.push({ status: answer.status, pid: answer.json?.pid, message: answer.json?.message });
       // (At a client's pace: the rings and a conversation ask every few moments, not without a break.)
       await new Promise(resolve => setTimeout(resolve, 100));
     }
   })();
-  await box.until(() => answers.length >= 3, "the client's first answers");
+  let second;
+  let cutover;
+  const publish = path.join(box.run, "test-publish-bridge");
+  try {
+    await box.until(() => answers.length >= 3, "the client's first answers");
 
-  const file = path.join(box.home, "bin", "kuvo-agents.js");
-  fs.writeFileSync(`${file}.new`, agents);
-  fs.renameSync(`${file}.new`, file);
-  const second = await box.bridgeUp(first);
-  // A few more answers from the new one, then the client stops.
-  const from = answers.length;
-  await box.until(() => answers.slice(from).filter(each => each.pid === second).length >= 3, "answers from the new bridge");
-  asking = false;
-  await client;
+    const file = path.join(box.home, "bin", "kuvo-agents.js");
+    // Keep the standby unpublished until a client has issued a request during the handover.
+    const checkpoint = "transfer = standby?.transfer ?? recovered;";
+    assert.ok(agents.includes(checkpoint));
+    const candidate = agents.replace(checkpoint, checkpoint + `\nif (standby) while (!(await Bun.file(${JSON.stringify(publish)}).exists())) await Bun.sleep(20);`);
+    fs.writeFileSync(`${file}.new`, candidate);
+    fs.renameSync(`${file}.new`, file);
+    await box.until(() => fs.existsSync(path.join(box.run, "agents-renewing")), "the bridge's handover fence");
+    const during = box.ask("GET", "kuvo/agents/api/info?test-cutover=1");
+    await box.until(() => fs.existsSync(path.join(box.run, "test-cutover-request")), "the Box to receive the request before publication");
+    fs.writeFileSync(publish, "");
+    cutover = await during;
+    second = await box.bridgeUp(first);
+    const from = answers.length;
+    await box.until(() => answers.slice(from).filter(each => each.pid === second).length >= 3, "answers from the new bridge");
+  } finally {
+    asking = false;
+    fs.closeSync(fs.openSync(publish, "a"));
+    await client;
+  }
 
   assert.ok(!runs(first), "the bridge before made way");
   assert.ok(!fs.existsSync(path.join(box.run, "agents-renewing")), "the new bridge took the hand-over's mark away");
   const failed = answers.filter(each => each.status !== 200);
   assert.deepEqual(failed, [], "every answer came from a bridge: none said the agents aren't running");
   assert.ok(answers.some(each => each.pid === first) && answers.some(each => each.pid === second), "answered by the bridge before, then by the new one");
-  assert.ok(sawHandOver, "some were asked while the bridge was handing over");
+  assert.deepEqual([cutover.status, cutover.json?.pid], [200, second], "the replacement answers a request issued during the handover");
 });
 
 test("a bridge that keeps stopping is said to in one plain sentence with Try Again; Try Again starts it once it can run", { skip: bun ? false : NO_BUN, timeout: 300_000 }, async () => {

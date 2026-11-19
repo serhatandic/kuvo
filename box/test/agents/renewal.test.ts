@@ -284,3 +284,26 @@ test("a bridge its keeper keeps makes way for the engine its keeper starts now, 
   await new Promise((resolve) => setTimeout(resolve, renewalTiming.grace + 50))
   expect(renewed).toBe(1)
 })
+
+test("a compatible standby that cannot take every turn starts the fallback drain immediately", async () => {
+  const script = join(base, "live-fallback")
+  bundle(script, own)
+  const held = Promise.withResolvers<void>()
+  let renewed = false
+  const renewal = new Renewal({
+    script, build: own,
+    work: () => ({ turns: true, other: false }),
+    hold: on => { if (on) held.resolve() },
+    renew: () => { renewed = true },
+    told: () => {},
+    check: async () => true,
+    transfer: () => undefined,
+    drainNow: () => true,
+    now: () => Date.parse("2026-11-19T12:00:00Z"),
+  })
+  bundle(script, newer)
+  renewal.look()
+  await held.promise
+  expect(renewal.state).toMatchObject({ waits: "holding", holding: true })
+  expect(renewed).toBe(false)
+})

@@ -230,6 +230,7 @@ halt() {
   if is "$a" kuvo-agents; then kill -- "-$a" 2>/dev/null || kill "$a" 2>/dev/null; fi
   rm -f "$R/agents.pid"
   halt_held
+  rm -f "$R/agents/handover.json" "$R/agents/previous/kuvo-agents.js"
   halt_engine
 }
 # A holder's process, as its record names it (run/agents/hold/<id>.json), once it's one.
@@ -271,6 +272,33 @@ halt_engine() {
 word() { od -An -N16 -tx1 /dev/urandom | tr -d ' \n'; }
 number() { echo $(( $(od -An -N2 -tu2 /dev/urandom | tr -d ' ') % 40000 + 20000 )); }
 bridge_runs() { is "$(cat "$R/agents.pid" 2>/dev/null)" kuvo-agents; }
+# The first release with live handover can cleanly restart a pre-holder bridge once. Its normal
+# SIGTERM handler records interrupted turns. Once a handover-capable bridge has started here, all
+# further updates use that bridge's renewal rules, including if a trial puts older files back.
+cross_to_live_handover() {
+  [ ! -e "$R/agents-live-handover" ] && up || return 0
+  [ ! -f "$R/stopped" ] && [ ! -f "$R/off" ] && [ ! -f "$R/paused" ] && ! machine_handover || return 0
+  is "$(cat "$R/.updating/pid" 2>/dev/null)" kuvo-link && return 0
+  old_record=$(cat "$R/bridge.json" 2>/dev/null)
+  old_bridge=$(printf '%s\n' "$old_record" | sed -n 's/^{"pid":\([0-9][0-9]*\),.*/\1/p')
+  is "$old_bridge" "$K/bin/kuvo-agents.js" || return 0
+  old_build=$(printf '%s\n' "$old_record" | sed -n 's/.*"build":"\([0-9a-f]*\)".*/\1/p')
+  # These known bundles precede the first bridge that starts agents under holders.
+  # A record with no known build can still own work and must drain normally.
+  case "$old_build" in
+    2b3fded6f49f21e8b2434216207d63dd8996b579aba9f11bc63a4bd84ae49176|880b2d675db90945ce335237d3572c99850de0baa90cb2d4688fe348294f780d|36df721f8b6034b4f369f11a7815b48aab58dfea24a3fe71e6be07c00f1e5c57) ;;
+    *) return 0 ;;
+  esac
+  grep -Fq 'kuvo-live-handover/1' "$K/bin/kuvo-agents.js" 2>/dev/null || return 0
+  checked=$(BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$K/engine/$B/opencode" --config=/dev/null --no-env-file "$K/bin/kuvo-agents.js" selftest holder-check 2>/dev/null) || return 0
+  case "$checked" in "ok "*" kuvo-live-handover/1") ;; *) return 0 ;; esac
+  # Only the live process from before, still the one answering for this folder after the check.
+  [ ! -e "$R/agents-live-handover" ] &&
+    [ "$old_record" = "$(cat "$R/bridge.json" 2>/dev/null)" ] &&
+    is "$old_bridge" "$K/bin/kuvo-agents.js" || return 0
+  (umask 077; set -C; : >"$R/agents-live-handover") 2>/dev/null || return 0
+  kill -TERM "$old_bridge" 2>/dev/null || :
+}
 case "${1:-box}" in
 box)
   [ -f "$K/bin/kuvo-start" ] || exit 0
@@ -426,6 +454,20 @@ keep)
       sh "$me" bridge-again >/dev/null 2>&1 &
     fi
     if [ -f "$R/agents.now" ]; then rm -f "$R/agents.now"; bfails=0; bnext=0; bstarted=; fi
+    cross_to_live_handover
+    # A standby that never published its bridge record gives way to the previous build. Check
+    # that the pending PID is still the keeper's candidate before signalling it.
+    hand="$R/agents/handover.json"
+    if [ -f "$hand" ]; then
+      candidate=$(sed -n 's/.*"next":\([0-9][0-9]*\),.*/\1/p' "$hand" 2>/dev/null)
+      staged=$(stat -c %Y "$hand" 2>/dev/null || stat -f %m "$hand" 2>/dev/null)
+      if [ -n "$candidate" ] && [ -n "$staged" ] && [ "$((now - staged))" -ge 60 ] &&
+         [ "$candidate" = "$(cat "$R/agents.pid" 2>/dev/null)" ] &&
+         ! grep -q "^.*\"pid\":$candidate," "$R/bridge.json" 2>/dev/null &&
+         is "$candidate" 'kuvo-agents.*handover-standby'; then
+        kill -KILL "$candidate" 2>/dev/null
+      fi
+    fi
     if up && [ -f "$K/bin/kuvo-agents.js" ] && [ "$now" -ge "$bnext" ] && ! bridge_runs && ! machine_handover; then
       if [ -n "$bstarted" ]; then
         if [ $((now - bstarted)) -lt 600 ]; then bfails=$((bfails + 1)); else bfails=0; fi

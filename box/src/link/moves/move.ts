@@ -1398,7 +1398,7 @@ async function switchHere(record: MoveRecord): Promise<void> {
     // Told where it is now, before anything could run it here.
     await tellMoved(record).catch(error => console.error(`kuvo-link: ${record.name} couldn't be told it moved: ${String((error as Error | null)?.message ?? error)}`));
     // A queue that went on where it came from goes on here (one you stopped stays stopped).
-    for (const session of record.queuesGoOn ?? []) await resumeQueue(record.lane ? readBridgeFile() : readEngineFile(), session);
+    for (const session of record.queuesGoOn ?? []) await resumeQueue(record.lane ? readBridgeFile() : readEngineFile(), session, record.id);
     if (record.kind === "bot") await settleBot(record.thing, readEngineFile, () => { try { return readBridgeFile(); } catch { return null; } }).catch(() => {});
     unhold(record, folderOf(record.kind, record.thing) ?? undefined);
   }

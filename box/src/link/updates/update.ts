@@ -22,6 +22,8 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { bundleBuild } from "../../shared/bundle";
+import { UnsupportedFormatVersion } from "../../shared/format-version";
 import { isObject, parsed } from "../../shared/json";
 import { updateUnderWay } from "../../shared/updating";
 import type { Body } from "../../shared/json";
@@ -38,7 +40,9 @@ import { K, OWN_RUNTIME, REAL_BOX, RUN, SCRIPT, UPDATES, homeFolder } from "../h
 import type { AnswerPiece, RouteContext } from "../server/context";
 import { readLink, type LinkState } from "../state";
 import { keeperEngine, SWAP_NOW } from "./engine-swap";
-import { swapLine, swapUnderWay } from "../../shared/engine-swap";
+import { installHoldFile, swapLine, swapUnderWay, type EngineSwap } from "../../shared/engine-swap";
+import { waitForPromptWrites } from "../moves/admission";
+import { releaseWaiting } from "../engine/queue";
 import { HELD, keepRelease } from "./fleet";
 
 // The releases' public keys (scripts/set-box-key.sh, scripts/sign-box.mjs), base64: with none, no
@@ -176,6 +180,7 @@ export interface UpdateTrial {
  * tried, the step under way, how the last went, and the release check's round it last looked in. */
 export interface UpdateState {
   latest?: string;
+  engineBusy?: { version: string; message: string };
   checked?: number;
   trial?: UpdateTrial;
   /** The step under way (shared/routes/box.ts, `STEP`). */
@@ -241,7 +246,9 @@ export async function agentsWorking(readEngine: () => EngineRecord = readEngineF
   let unknown = false;
   for (const [read, program] of [[readEngine, "opencode"], [readBridge, "kuvo-agents"]] as const) {
     let target: Target | null = null;
-    try { target = read(); } catch {}
+    try { target = read(); } catch (error) {
+      if (error instanceof UnsupportedFormatVersion) unknown = true;
+    }
     if (!target?.port || !target?.password) continue;
     // (A record its process left as it went, killed: nothing works there.)
     const pid = (target as { pid?: unknown }).pid;
@@ -541,6 +548,7 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
   const before = boxVersion();
   if (!before) return { result: "blocked", message: "This machine's version isn't known: connect to it from Kuvo Code on your Mac once." };
   if (!takeUpdateLock()) return { result: "busy", message: UPDATING_ALREADY };
+  let engineHold: EngineSwap | undefined;
   let trial = false, stopped = false, swapped = false, stage: string | null = null;
   let releaseSave: SetupSaveReceipt | undefined;
   let recoveredReleaseSave: SetupSaveReceipt | undefined;
@@ -659,7 +667,12 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
     const box: BoxFiles = JSON.parse(fs.readFileSync(path.join(stage, "files", "box.json"), "utf8"));
     if (box?.version !== manifest.version || box.engine !== manifest.engine || !isObject(box.files)) throw new Error("The release's files aren't what it says.");
     const apart = engineChanges && engineApart(box, running);
-    if (!whileBusy && engineChanges && !apart && await boxBusy()) return releaseResult({ result: "busy", message: "Something is running there now." });
+    const busy = (): UpdateOutcome => {
+      const message = "Something is running there now.";
+      noteUpdate({ engineBusy: { version: manifest.version, message } });
+      return releaseResult({ result: "busy", version: manifest.version, message });
+    };
+    if (!whileBusy && engineChanges && !apart && (await agentsWorking() !== false || readAsks().length > 0)) return busy();
     const files = installOrder(Object.keys(box.files));
     // (Each a file, never a link to one elsewhere.)
     const matches = (file: string, sha: unknown): boolean => fs.lstatSync(file, { throwIfNoEntry: false })?.isFile() === true && hexSHA256(fs.readFileSync(file)) === sha;
@@ -732,10 +745,11 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
       if (triedBefore && (triedBefore.status !== 0 || !triedBefore.output.includes("ok"))) throw new Error("The new link doesn't work with the engine at work here.");
     }
     if (ran("sh", ["-n", path.join(stage, "files", "bin", "kuvo-start")]).status !== 0) throw new Error("The new keeper doesn't read.");
-    if (!whileBusy && engineChanges && !apart && await boxBusy()) return releaseResult({ result: "busy", message: "Something is running there now." });
 
     // What's there kept; then the new in its place, one file at a time.
     step("installing");
+    // Finish any remote backup before reading the engine and fencing new turns.
+    await (await import("../backup/engine")).backupBefore("update", { insideUpdate: true });
     let previous: Partial<EngineRecord> = {};
     try { previous = readEngineFile(); } catch {}
     const home = previous?.pid ? engineHome(previous.pid, K) : undefined;
@@ -743,10 +757,16 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
     // (An engine that changes apart from the code isn't stopped here: the swapper changes it later.)
     const otherEngine = previous?.version !== manifest.engine && !apart;
     if (otherEngine && !roomForData()) throw new Error("There isn't room on it to keep its data while it updates.");
+    if (otherEngine) {
+      const holding = Date.now();
+      engineHold = { from: previous.version ?? running ?? "", to: manifest.engine, since: holding, stage: "holding", holding, pid: process.pid };
+      writePrivate(installHoldFile(RUN), JSON.stringify(engineHold));
+      await waitForPromptWrites();
+      if (!whileBusy && (await agentsWorking() !== false || readAsks().length > 0)) return busy();
+    }
     // What's there kept, and how to put it back, before anything changes: a swap the update doesn't
     // get past (the machine going down) is put back too.
     const newerEngine = otherEngine && newerVersion(manifest.engine, previous?.version);
-    await (await import("../backup/engine")).backupBefore("update", { insideUpdate: true });
     keepForRollback(files, newerEngine ? manifest.engine : null, new Set(bundles), path.join(stage, "files", "bin", "kuvo-start"));
     noteUpdate({ trial: { from: before, to: manifest.version, at: clock(), installing: true }, running: null });
     // (A rollback's count from a trial an older Kuvo ended: never this one's.)
@@ -756,7 +776,8 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
     // Nothing at work is stopped: each piece takes the new code as it takes any (PROTOCOL.md,
     // "Updates"). Only another engine than the one running is: that one alone, its coding agents'
     // bridge running on, and only once nothing works there or on your word (above).
-    if (otherEngine) {
+    if (engineHold) {
+      writePrivate(installHoldFile(RUN), JSON.stringify({ ...engineHold, stage: "swapping" }));
       stopped = true;
       noteUpdate({ trial: { from: before, to: manifest.version, at: clock(), installing: true, engineStopped: true } });
       const halt = /^engine-stop\)/m.test(textOf(path.join(K, "bin", "kuvo-start")) ?? "") ? "engine-stop" : "stop";
@@ -811,7 +832,7 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
     if (apart && now) writePrivate(SWAP_NOW, String(clock()));
     // On trial from here: judged by the one health rule (`updates/health.ts`), by this process once
     // it's done here, or by the judge the keeper starts should this one go first.
-    noteUpdate({ trial: { from: before, to: manifest.version, at: clock(), swapped: swappedAt, ...(features ? { features } : {}), ...(dataKept !== null ? { dataKept } : {}) } });
+    noteUpdate({ trial: { from: before, to: manifest.version, at: clock(), swapped: swappedAt, ...(features ? { features } : {}), ...(dataKept !== null ? { dataKept } : {}) }, engineBusy: null });
     return releaseResult({ result: "updated", version: manifest.version });
   } catch (error) {
     brokeOff = fetching;
@@ -844,6 +865,10 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
     noteUpdate({ last: { at: clock(), result: "failed", message, from: before } });
     return releaseResult({ result: "failed", message });
   } finally {
+    if (engineHold) {
+      fs.rmSync(installHoldFile(RUN), { force: true });
+      try { await releaseWaiting(readEngineFile()); } catch {}
+    }
     clearUpdateStaging();
     fs.rmSync(UPDATE_LOCK, { recursive: true, force: true });
   }
@@ -1118,19 +1143,73 @@ export function updateStatus(): UpdateStatus {
   };
 }
 
+/** Waiting facts are read on the target computer, including sessions awaiting an approval. */
+export async function updateStatusHere(readEngine = readEngineFile, readBridge = readBridgeFile): Promise<UpdateStatus> {
+  const status = updateStatus();
+  const state = updateState();
+  const available = [status.offered, heldVersion(), status.latest, state.engineBusy?.version]
+    .filter((version): version is string => newerVersion(version, status.version) || (version === status.offered && offerWaits()))
+    .sort((a, b) => newerVersion(a, b) ? -1 : newerVersion(b, a) ? 1 : 0)[0];
+  let bridge: BridgeRecord | null = null;
+  try { bridge = readBridge(); } catch {}
+  const to = bundleBuild(path.join(K, "bin", "kuvo-agents.js"));
+  const bridgeBehind = bridge?.build && to && bridge.build !== to && (!bridge.pid || runs(bridge.pid, "kuvo-agents"));
+  const switching = fs.existsSync(path.join(RUN, "agents", "handover.json"));
+  const version = available ?? ((switching || bridgeBehind || status.engineChange || updateOnTrial()) ? status.version : null);
+  if (!version) return status;
+
+  type Waiting = NonNullable<UpdateStatus["waiting"]>;
+  const facts = (sessionsAtWork: number | null): Pick<Waiting, "reason" | "detail"> => {
+    if (status.blocked) return { reason: "blocked", detail: status.blocked };
+    if (["stopped", "paused", "off"].some(mark => fs.existsSync(path.join(RUN, mark)))) return { reason: "stopped", detail: "Start this computer’s box to update it." };
+    if (status.updating) return { reason: "installing", detail: "Kuvo is installing the update." };
+    if (available && state.offerFailed?.version === available && (offerFailedTwice(available) || offerRests(available, Date.now()))) {
+      return { reason: "retry", detail: state.offerFailed.message ?? "The last attempt to install this release failed." };
+    }
+    if (state.engineBusy && available === state.engineBusy.version && (sessionsAtWork !== 0 || readAsks().length > 0)) {
+      return { reason: "engine", detail: state.engineBusy.message };
+    }
+    if (available && offerChangesEngine() && status.offered === available) {
+      return { reason: "engine", detail: "This release needs an engine change before it can install." };
+    }
+    if (switching || bridge?.renewal?.waits === "handover") return { reason: "handover", detail: "Kuvo is transferring running sessions." };
+    if (bridgeBehind) {
+      if (bridge?.renewal?.waits === "restart") return { reason: "agents", detail: "The coding agents’ bridge could not start the new build." };
+      return { reason: "agents", detail: "Some work is still using the previous coding agents’ bridge." };
+    }
+    if (status.engineChange) return { reason: "engine", detail: status.engineChange.line };
+    if (updateOnTrial()) return { reason: "trial", detail: "Kuvo is checking that the installed release is healthy." };
+    if (available === state.latest && state.last?.result === "waiting" && state.last.version === available) {
+      return { reason: "release-age", detail: state.last.message ?? "Automatic release checks wait a few days after publication." };
+    }
+    return { reason: "ready", detail: "The update is ready to install." };
+  };
+  const counts = await Promise.all(([[readEngine, "opencode"], [readBridge, "kuvo-agents"]] as const).map(async ([read, program]) => {
+    let target: EngineRecord | BridgeRecord;
+    const missing = program === "kuvo-agents" && switching ? null : 0;
+    try { target = read(); } catch (error) {
+      return error instanceof UnsupportedFormatVersion ? null : missing;
+    }
+    if (!target?.port || !target.password || (target.pid !== undefined && !runs(target.pid, program))) return missing;
+    const active = (await asked(target, "GET", "api/session/active", undefined, 3_000).catch(() => null) as UncheckedAnswer | null)?.data;
+    return Array.isArray(active) ? active.length : isObject(active) ? Object.keys(active).length : null;
+  }));
+  const sessionsAtWork = counts.includes(null) ? null : counts.reduce<number>((sum, count) => sum + (count ?? 0), 0);
+  return { ...status, waiting: { version, ...facts(sessionsAtWork), sessionsAtWork } };
+}
+
 // An update in a process of its own (`kuvo-link.js update [--now] [--offered] [--round <round>]`,
 // as the offered release's is): a phone's or a Mac's Update Now, or the release check's. Never in the
 // process that asks (a client's server, a machine's bridge), which the update restarts, or which may
-// be stopped meanwhile: the update outlives it, and says how it went in `run/update.json`. Once
-// "updated", it stops a machine's bridge for the keeper to start the new one (a Mac's server goes
-// by itself, its files changed). One at a time: false when one runs, or this process just started
+// be stopped meanwhile: the update outlives it, and says how it went in `run/update.json`. Each
+// piece takes the new files in its own time. One at a time: false when one runs, or this process just started
 // one. `round`: the release check's round it's for, noted by it unless something was at work. `keys` and `url`: a
 // test's (a test's folder only).
 let updateStarted: ChildProcess | null = null;
 export function startUpdate({ now = false, offered = false, round, keys, url, from }: { now?: boolean; offered?: boolean; round?: string; keys?: string[]; url?: string; from?: string } = {}): boolean {
   if (updateStarted || isUpdating()) return false;
   const test = !REAL_BOX && keys?.length ? ["--key", keys[0], ...(url ? ["--url", url] : [])] : [];
-  const args = [...OWN_RUNTIME, SCRIPT, "update", ...(now ? ["--now"] : []), ...(offered ? ["--offered"] : []), ...(round ? ["--round", round] : []), ...(from ? ["--from", from] : []), ...test];
+  const args = [...OWN_RUNTIME, SCRIPT, "update", ...(now ? ["--now", "--free"] : []), ...(offered ? ["--offered"] : []), ...(round ? ["--round", round] : []), ...(from ? ["--from", from] : []), ...test];
   const child = spawn(process.execPath, args, { detached: true, stdio: "ignore", cwd: K, env: process.env });
   updateStarted = child;
   const done = () => { if (updateStarted === child) updateStarted = null; };
@@ -1140,26 +1219,27 @@ export function startUpdate({ now = false, offered = false, round, keys, url, fr
   return true;
 }
 
-// This box's updates (PROTOCOL.md, "Updates"): how it stands, Update Now. It always updates
-// by itself: there's no switch.
+/** Check for a signed release immediately, through the same no-cut path as an automatic update. */
+export function requestUpdateNow(): { status: 202 } | { status: 409; message: string } {
+  const blocked = !UPDATE_KEYS.length ? "Updates aren't set up for this machine yet." : updatesBlocked();
+  if (blocked) return { status: 409, message: blocked };
+  if (isUpdating()) return { status: 409, message: UPDATING_ALREADY };
+  const held = offerHeld() ?? (["paused", "off"].some(mark => fs.existsSync(path.join(RUN, mark))) ? "Start this computer’s box to update it." : null);
+  if (held) return { status: 409, message: held };
+  const offered = offerWaits();
+  const kept = !offered && newerVersion(heldVersion(), boxVersion()) ? HELD : undefined;
+  return startUpdate({ now: true, offered, from: kept }) ? { status: 202 } : { status: 409, message: UPDATING_ALREADY };
+}
+
 export async function* updateRoute(context: RouteContext): AsyncGenerator<AnswerPiece> {
-  const { request, json } = context;
+  const { request, json, readEngine, readBridge } = context;
   const method = request.method.toUpperCase();
-  if (method === "GET") return yield* json(200, updateStatus());
+  if (method === "GET") return yield* json(200, await updateStatusHere(readEngine, readBridge));
   if (method === "POST") {
     if ((parsed(request.body) as Body<"now">)?.now !== true) return yield* json(400, { message: "Say to update now (now)." });
-    if (!UPDATE_KEYS.length) return yield* json(409, { message: "Updates aren't set up for this machine yet." });
-    const blocked = updatesBlocked();
-    if (blocked) return yield* json(409, { message: blocked });
-    // A release Kuvo Code here offered, newer than this box, is what Update Now takes, whatever is
-    // at work (the client asked first); else a newer one held here (one that failed here twice,
-    // which nothing takes by itself any more: `updates/fleet.ts`); else the newest from GitHub.
-    const offered = offerWaits();
-    const held = offered ? offerHeld() : updateOnTrial() ? ON_TRIAL : null;
-    if (held) return yield* json(409, { message: held });
-    const kept = !offered && newerVersion(heldVersion(), boxVersion()) ? HELD : undefined;
-    // (Said as under way at once: its own process takes the update's lock a moment later.)
-    return yield* (startUpdate({ now: true, offered, from: kept }) ? json(202, { ...updateStatus(), updating: "checking" }) : json(409, { message: UPDATING_ALREADY }));
+    const started = requestUpdateNow();
+    if (started.status === 409) return yield* json(409, { message: started.message });
+    return yield* json(202, { ...updateStatus(), updating: "checking" });
   }
   return yield* json(405, {});
 }

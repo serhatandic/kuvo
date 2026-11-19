@@ -1,13 +1,13 @@
-// Cursor's agents, run whole in the box's sandbox: its SDK runs its tools in the process that runs
-// it (the bridge's, otherwise), so while the sandbox is on each session's agent runs in a process
-// of its own through the box's launcher (`run/fence/shell/run`), which the bridge asks over its
-// stdin and stdout. The bridge keeps the rest (your sign-in, your account, the models), which runs
-// nothing of the agent's. The worker answers as the SDK's own `Agent` does, so a thread uses either
-// the same way.
+// The Cursor worker owns the SDK's live agent and run objects. On a box it can keep them across
+// a bridge replacement through a holder. Where the sandbox is on, the worker runs through the
+// box's launcher (`run/fence/shell/run`). The bridge handles account, sign-in and model requests.
+// The worker exposes the SDK's Agent interface to the thread.
 
 import { readFileSync, renameSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { RPC, RPCError } from "../rpc"
+import type { Held } from "../hold/client"
+import { noteTurn, type HeldTurn } from "../hold/adopt"
 
 /**
  * The worker, beside Cursor's SDK in its folder (where the SDK looks for its helpers, as beside the
@@ -21,13 +21,24 @@ for (const name of ["BUN_BE_BUN", "BUN_RUNTIME_TRANSPILER_CACHE_PATH"]) delete p
 const sdk = await import(Bun.resolveSync("@cursor/sdk", import.meta.dir))
 const agents = new Map()
 const runs = new Map()
+let warmed = false
 const send = (message) => process.stdout.write(JSON.stringify(message) + "\\n")
 const plain = (error) => ({ message: String(error?.message ?? (typeof error?.error === "string" ? error.error : error)), code: error?.code, name: error?.name, status: error?.status })
 // Its conversations' store, by its folder (\`JsonlLocalAgentStore\`).
 const made = (options) => (options?.local?.store ? { ...options, local: { ...options.local, store: new sdk.JsonlLocalAgentStore(options.local.store.root) } } : options)
 async function answer(method, params) {
   if (method === "create") {
-    const agent = params.resume ? await sdk.Agent.resume(params.resume, made(params.options)).catch(() => undefined) : await sdk.Agent.create(made(params.options))
+    const { workerPrewarm, ...options } = params.options
+    if (workerPrewarm && !warmed) {
+      warmed = true
+      try {
+        const cwd = options.local.cwd
+        const platform = await sdk.createAgentPlatform({ workspaceRef: cwd })
+        const release = await platform.prewarmLocalWorkspace({ apiKey: options.apiKey, local: { cwd, settingSources: [], sandboxOptions: { enabled: true } } })
+        await release?.()
+      } catch {}
+    }
+    const agent = params.resume ? await sdk.Agent.resume(params.resume, made(options)).catch(() => undefined) : await sdk.Agent.create(made(options))
     if (!agent) return { agentId: null }
     agents.set(agent.agentId, agent)
     return { agentId: agent.agentId }
@@ -107,10 +118,13 @@ function revived(error: any): Error {
   })
 }
 
+type Delta = (event: { update: any }) => Promise<void>
+export type CursorRun = { wait: () => Promise<any>; cancel: () => Promise<unknown> }
+
 /** Cursor's SDK's `Agent`, as far as a thread uses it, in a worker run in the sandbox. */
 export class CursorWorker {
   private readonly rpc: RPC
-  private next = 1
+  private next: number
   private readonly runs = new Map<number, { delta: (update: any) => Promise<void>; ended: (params: any) => void }>()
 
   /** Its conversations' store, by its folder (made in the worker), as the SDK's is made (`agentStore`). */
@@ -118,8 +132,10 @@ export class CursorWorker {
     constructor(readonly root: string) {}
   }
 
-  constructor(command: string[], options: { cwd: string; env: Record<string, string | undefined>; ended?: () => void }) {
-    this.rpc = new RPC(command, { cwd: options.cwd, env: options.env })
+  constructor(command: string[] | Held, options: { cwd?: string; env?: Record<string, string | undefined>; ended?: () => void; session?: string; adopting?: boolean } = {}) {
+    const generation = Array.isArray(command) ? 0 : command.generation
+    this.next = generation * 1_000_000 + 1
+    this.rpc = new RPC(command, { cwd: options.cwd, env: options.env, firstID: this.next })
     this.rpc.onNotification = (method, params) => {
       const run = this.runs.get(params?.run)
       if (!run) return
@@ -138,6 +154,43 @@ export class CursorWorker {
       }
       options.ended?.()
     }
+    this.session = options.session
+    if (!options.adopting) this.rpc.start()
+  }
+
+  private readonly session?: string
+
+  private watchRun(run: number, onDelta: Delta, agentId: string): CursorRun {
+    let told = Promise.resolve()
+    const ended = new Promise<any>((resolve, reject) =>
+      this.runs.set(run, {
+        delta: update => (told = told.then(() => onDelta({ update })).catch(() => {})),
+        ended: params => {
+          if (this.rpc.holder) noteTurn(this.rpc.holder, agentId, undefined)
+          void told.then(() => (params.error ? reject(revived(params.error)) : resolve(params.result)))
+        },
+      }),
+    )
+    ended.catch(() => {})
+    return {
+      wait: () => ended,
+      cancel: () => this.rpc.request("cancel", { run }).catch(() => {}),
+    }
+  }
+
+  /** The live SDK run stays in the worker. Subscribe to its old run ID before replay begins. */
+  continue(taken: HeldTurn, onDelta: Delta): CursorRun {
+    const run = Number(taken.note.turn)
+    const active = this.watchRun(run, onDelta, taken.thread)
+    this.rpc.onStray = (id, _result, error) => {
+      if (id !== taken.note.request || !error) return
+      const watching = this.runs.get(run)
+      this.runs.delete(run)
+      watching?.ended({ error })
+    }
+    taken.gate.onOpen(() => this.rpc.start())
+    taken.gate.ready(taken.thread)
+    return active
   }
 
   get isClosed() {
@@ -152,34 +205,24 @@ export class CursorWorker {
   private async agent(options: any, resume?: string) {
     const { agentId } = await this.rpc.request<{ agentId: string | null }>("create", { options, resume }).catch((error) => Promise.reject(revived(error)))
     if (!agentId) return undefined
+    const worker = this
     const rpc = this.rpc
-    const runs = this.runs
-    const next = () => this.next++
     return {
       agentId,
       close: () => void rpc.request("close", { agent: agentId }).catch(() => {}),
-      async send(message: unknown, { onDelta, ...sendOptions }: { onDelta: (event: { update: any }) => Promise<void>; [name: string]: unknown }) {
-        const run = next()
-        // Its updates in the order they came, then how it ended.
-        let told = Promise.resolve()
-        const ended = new Promise<any>((resolve, reject) =>
-          runs.set(run, {
-            delta: (update) => (told = told.then(() => onDelta({ update })).catch(() => {})),
-            ended: (params) => void told.then(() => (params.error ? reject(revived(params.error)) : resolve(params.result))),
-          }),
-        )
-        // (Not left unhandled before it's waited for.)
-        ended.catch(() => {})
+      async send(message: unknown, { onDelta, ...sendOptions }: { onDelta: Delta; [name: string]: unknown }) {
+        const run = worker.next++
+        const held = rpc.holder
+        const active = worker.watchRun(run, onDelta, agentId)
+        if (held && worker.session) noteTurn(held, agentId, { session: worker.session, turn: String(run), from: held.seen, request: rpc.nextID })
         try {
           await rpc.request("send", { agent: agentId, run, message, options: sendOptions })
         } catch (error) {
-          runs.delete(run)
+          worker.runs.delete(run)
+          if (held) noteTurn(held, agentId, undefined)
           throw revived(error)
         }
-        return {
-          wait: () => ended,
-          cancel: () => rpc.request("cancel", { run }).catch(() => {}),
-        }
+        return active
       },
     }
   }

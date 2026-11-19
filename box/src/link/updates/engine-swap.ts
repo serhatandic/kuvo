@@ -198,7 +198,7 @@ export async function swapEngine({ clock = Date.now, wait = sleep }: SwapOptions
       if (!still || still.to !== state.to || !engine) {
         // (Changed by something else meanwhile, a crash or a stop, or an update came: nothing held
         // stays held.)
-        if (state.stage === "holding" && engine) await releaseWaiting(engine).catch(() => 0);
+        if (state.stage === "holding" && engine && !isUpdating()) await releaseWaiting(engine, true).catch(() => 0);
         return "none";
       }
       const busy = await engineBusy(engine);
@@ -565,7 +565,7 @@ async function ended(state: EngineSwap, result: EngineChangeLast["result"], mess
 }
 
 async function releaseAfterHold(engine: Target | null): Promise<void> {
-  if (engine) await releaseWaiting(engine).catch(() => 0);
+  if (engine) await releaseWaiting(engine, true).catch(() => 0);
   // Send anything that arrived during the first drain once the hold is gone.
   const record = readSwap(RUN);
   if (record && (record.pid === process.pid || (record.machineHelper && !processRuns(record.pid, "kuvo-link")))) {

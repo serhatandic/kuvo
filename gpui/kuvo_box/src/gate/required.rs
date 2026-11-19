@@ -26,7 +26,6 @@ pub const REQUIRED: &[&str] = &[
     "computers.reach",
     "computers.reach-words",
     "computers.words",
-    "devices.allow",
     "devices.pair",
     "file.text",
     "folders.suggested",

@@ -1158,8 +1158,11 @@ test("setup keeps the machine's keys and its own phones, takes the Mac's documen
   const folder = fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-link-setup-"));
   fs.mkdirSync(path.join(folder, "workspace"));
   const script = fileURLToPath(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url));
+  const tryingSetup = input =>
+    spawnSync(process.execPath, [script, "setup"], { input: JSON.stringify({ relay: "ws://127.0.0.1:9", name: "test", mac: MAC, macSign: link.signingKeyOf(seed), ...input }), env: { ...process.env, KUVO_HOME: folder }, encoding: "utf8" });
   const setup = input => {
-    const result = spawnSync(process.execPath, [script, "setup"], { input: JSON.stringify({ relay: "ws://127.0.0.1:9", name: "test", mac: MAC, macSign: link.signingKeyOf(seed), ...input }), env: { ...process.env, KUVO_HOME: folder }, encoding: "utf8" });
+    const result = tryingSetup(input);
+    assert.equal(result.status, 0, result.stderr);
     return JSON.parse(result.stdout);
   };
   const pidFile = path.join(folder, "run", "link.pid");
@@ -1177,7 +1180,7 @@ test("setup keeps the machine's keys and its own phones, takes the Mac's documen
     // The file exists briefly before its PID is written; setup also needs its version file.
     let pid = 0;
     let ready = false;
-    for (let i = 0; i < 50; i++) {
+    for (const deadline = Date.now() + 15_000; Date.now() < deadline;) {
       try {
         pid = Number(fs.readFileSync(pidFile, "utf8"));
         ready = Number.isInteger(pid) && pid > 0 && fs.readFileSync(path.join(folder, "run", "link.version"), "utf8").trim() === link.BRIDGE_VERSION;
@@ -1204,10 +1207,16 @@ test("setup keeps the machine's keys and its own phones, takes the Mac's documen
     setup({ docs: [phones([A, B])], macID: "MAC-1", tolerates: 1 });
     assert.deepEqual(JSON.parse(fs.readFileSync(linkFile, "utf8")).tolerantIDs, { "MAC-1": true });
 
-    // A phone paired with the machine itself stays when the Mac's phones change.
+    // A phone paired with the machine stays if its pairing is in the new setup.
+    // An unmatched pairing requires explicit permission to discard it.
     const saved = JSON.parse(fs.readFileSync(linkFile, "utf8"));
-    fs.writeFileSync(linkFile, JSON.stringify({ ...saved, phones: [...saved.phones, { key: C, name: "C", added: 1, from: "pair", pairing: "" }] }));
-    setup({ docs: [phones([B])] });
+    const withOwn = JSON.stringify({ ...saved, phones: [...saved.phones, { key: C, name: "C", added: 1, from: "pair", pairing: "" }] });
+    fs.writeFileSync(linkFile, withOwn);
+    const refused = tryingSetup({ docs: [phones([B])] });
+    assert.notEqual(refused.status, 0);
+    assert.match(refused.stderr, /Confirm discarding unmatched local device pairings/);
+    assert.equal(fs.readFileSync(linkFile, "utf8"), withOwn);
+    setup({ docs: [phones([B, C])] });
     assert.deepEqual(JSON.parse(fs.readFileSync(linkFile, "utf8")).phones.map(p => p.key), [B, C]);
 
     // Nothing left to answer: the bridge stops, and the machine keeps its keys; no phone keeps
@@ -1631,6 +1640,7 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     "box.uninstall": ["GET", "kuvo/info"],
     // (A release from a folder here, which only Kuvo Code offers: a GET is the wrong method.)
     "box.update": ["GET", "kuvo/box/update"],
+    "box.update.no-cut": ["GET", "kuvo/update"],
     branch: ["POST", "kuvo/agents/api/kuvo/branch/ses_none"],
     // (Its browser, set up by the box itself.)
     browser: ["GET", "kuvo/browser"],

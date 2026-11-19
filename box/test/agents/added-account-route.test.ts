@@ -14,7 +14,8 @@ test("POST accounts with provider creates an isolated account and leaves the fir
     const folder = accounts.home(first)!
     writeFileSync(join(folder, "auth.json"), "first-secret")
     const roster = { accounts, sync() {}, all: () => accounts.all().map(record => ({ id: record.kind, instance: record, providerID: providerID(record.kind, record.id) })) }
-    const answer = handler({ roster, password: "pw" } as any)
+    let transferring = true
+    const answer = handler({ roster, password: "pw" } as any, () => transferring)
     const add = (version?: string) => answer(new Request("http://agent/api/kuvo/accounts", {
       method: "POST",
       headers: {
@@ -27,8 +28,14 @@ test("POST accounts with provider creates an isolated account and leaves the fir
     const before = accounts.all().map(record => providerID(record.kind, record.id))
     const refused = await add("2")
     expect(refused.status).toBe(400)
+    expect(refused.headers.get("x-kuvo-route-version")).toBe("1")
     expect((await refused.json() as { code: string }).code).toBe("unsupportedFormatVersion")
+    const fenced = await add("1")
+    expect(fenced.status).toBe(503)
+    expect(fenced.headers.get("x-kuvo-route-version")).toBe("1")
+    expect(fenced.headers.get("x-kuvo-bridge-handover")).toBe("1")
     expect(accounts.all().map(record => providerID(record.kind, record.id))).toEqual(before)
+    transferring = false
     const response = await add()
     expect(response.status).toBe(200)
     expect(response.headers.get("x-kuvo-route-version")).toBe("1")

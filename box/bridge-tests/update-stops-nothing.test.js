@@ -1,8 +1,9 @@
 // An update stops nothing (PROTOCOL.md, "Updates"): a box takes a release while a coding agent's turn
 // and an engine's turn both run, and both finish; the new code is live afterwards in its server for
 // clients (`serve --kept`), its link (`run`) and its coding agents' bridge, each having taken it by
-// itself (the servers and link leave on new code and the keeper starts them again; the bridge makes
-// way once its turn has ended). Then the update is judged well.
+// itself. The bridge switches while the Codex turn still has an open approval. The new bridge
+// shows the same approval, continues that turn once, and accepts a new turn while the engine is
+// still busy. Then the update is judged well.
 //
 // Everything is the real thing: the keeper (`kuvo-start keep`, `kuvo-launch`), the link and the
 // bridge as built, the release packed by scripts/box-release.sh and taken by the link. Stand-ins
@@ -28,7 +29,7 @@ const bun = testBun();
 const checkout = fileURLToPath(new URL("../..", import.meta.url));
 const builtLink = path.join(checkout, "swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");
 const builtAgents = path.join(checkout, "box/dist/kuvo-agents.js");
-const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-stops-nothing-")));
+const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "k774-")));
 const home = path.join(base, ".kuvo-code");
 const scratch = path.join(base, "scratch");
 removeAtEnd(base);
@@ -62,6 +63,21 @@ const freePort = () => new Promise(resolve => {
 /** The bridge's build as its bundle names it, another one for the version before. */
 const build = text => [...text.matchAll(/\/\/ Built from Packages\/Box\/src\/agents ([0-9a-f]{16,64})/g)].at(-1)?.[1];
 const OLD_BUILD = "a".repeat(64);
+
+test("standby capability is advertised only to a bridge with the same recovery layout", { skip: bun ? false : NO_BUN }, () => {
+  const expected = `ok ${build(fs.readFileSync(builtAgents, "utf8"))}`;
+  for (const [layout, capability] of [
+    [[], ""],
+    [["folder-layout=1"], ""],
+    [["folder-layout=18"], " kuvo-live-handover/1 folder-layout=18"],
+  ]) {
+    const result = spawnSync(bunRunsAs(bun), ["--config=/dev/null", "--no-env-file", builtAgents, "selftest", "adopt-check", ...layout], {
+      env: { ...process.env, BUN_BE_BUN: "1" }, encoding: "utf8", timeout: 15_000,
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout.trim(), expected + capability);
+  }
+});
 
 /** A box on 0.9.0, its engine 1.0.0, as a machine's keeper runs it: its link wanted (a phone
  * paired, its relay out of reach) and its server for clients wanted. Its bridge and link a build
@@ -112,7 +128,25 @@ esac
   for (const tool of ["pkill", "caffeinate", "crontab", "launchctl"]) write(path.join(base, "tools", tool), `#!/bin/sh\nexit 0\n`, 0o755);
   // The coding agent, on the PATH its engine starts with.
   const fake = path.join(scratch, "fake");
-  write(path.join(fake, "app-server.js"), CODEX_STAND_IN);
+  // The first turn waits both for an approval and for an independent completion signal.
+  const asking = CODEX_STAND_IN
+    .replace('"t" + ++thread', '"t" + process.pid + "_" + ++thread')
+    .replace('async function turn(', 'let approval;\nasync function turn(')
+    .replace('  if (/hold/.test(text)) {', `  if (text === "hold one" || text === "hold recovery") {
+    const id = 701;
+    send({ method: "item/completed", params: { threadId, turnId, item: { type: "agentMessage", id: "before" + turnId, text: "Before the update." } } });
+    await new Promise(resolve => {
+      approval = resolve;
+      send({ id, method: "item/commandExecution/requestApproval", params: { threadId, turnId, itemId: "approval" + turnId, command: "echo held" } });
+    });
+  }
+  if (/hold/.test(text)) {`)
+    .replace('    if (message.method === "thread/start")', `    if (message.id === 701 && !message.method && approval) {
+      fs.appendFileSync(path.join(folder, "approvals.log"), JSON.stringify({ pid: process.pid, decision: message.result?.decision }) + "\\n");
+      approval();
+      approval = undefined;
+    } else if (message.method === "thread/start")`);
+  write(path.join(fake, "app-server.js"), asking);
   write(path.join(fake, "codex"), `#!/bin/sh\nexport BUN_BE_BUN=1\n[ "$1" = "--version" ] && { echo "codex-cli 0.166.0"; exit 0; }\nexec "${bun}" "${path.join(fake, "app-server.js")}" "${fake}"\n`, 0o755);
   // How its engine starts (the keeper's `run/launch.env`): with a bridge that makes way at once
   // once nothing runs, and processes that look for new code often.
@@ -136,20 +170,24 @@ function keep() {
   });
 }
 
-/** The release this checkout makes, of 0.10.0 for the same engine (1.0.0), signed with a key of the
- * test's, in a folder as an app carries it. */
-function pack() {
+/** Package a release signed by the test, in a folder as an app carries it. */
+function pack(version = "0.10.0", engine = "1.0.0", agentsBuild) {
   const { privateKey, publicKey } = crypto.generateKeyPairSync("ed25519");
   const root = path.join(scratch, "sources");
   for (const file of ["box/src/keeper/kuvo-start", "box/src/keeper/kuvo-launch", "box/src/keeper/kuvo-setsid", "box/src/keeper/kuvo-wake", "box/src/keeper/kuvo-npx", "box/src/keeper/runtime/node", "box/src/plugins/kuvo-code.js", "box/src/shared/bot-words.json", "box/dist/kuvo-browser.js", "box/dist/kuvo-agents.js"]) {
     write(path.join(root, file), fs.readFileSync(path.join(checkout, file)));
   }
+  if (agentsBuild) {
+    const agents = fs.readFileSync(builtAgents, "utf8");
+    write(path.join(root, "box/dist/kuvo-agents.js"), agents.replace(build(agents), agentsBuild));
+  }
   write(path.join(root, "swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js"), fs.readFileSync(builtLink));
   const integrity = "sha512-" + crypto.createHash("sha512").update("unused").digest("base64");
-  const builds = { x86_64: { url: "https://example.invalid/engine-1.0.0.tgz", integrity }, aarch64: { url: "https://example.invalid/engine-1.0.0.tgz", integrity } };
-  write(path.join(root, "box/src/shared/engine-pin.json"), JSON.stringify({ version: "1.0.0", linux: builds, darwin: builds }));
-  const out = path.join(scratch, "release");
-  const packed = spawnSync("sh", [path.join(checkout, "scripts", "box-release.sh"), "0.10.0", "https://example.invalid/releases/download/v0.10.0/box-0.10.0.tar.gz", out], {
+  const url = `https://example.invalid/engine-${engine}.tgz`;
+  const builds = { x86_64: { url, integrity }, aarch64: { url, integrity } };
+  write(path.join(root, "box/src/shared/engine-pin.json"), JSON.stringify({ version: engine, linux: builds, darwin: builds }));
+  const out = path.join(scratch, `release-${version}`);
+  const packed = spawnSync("sh", [path.join(checkout, "scripts", "box-release.sh"), version, `https://example.invalid/releases/download/v${version}/box-${version}.tar.gz`, out], {
     env: { ...process.env, BUN: bun, NODE: process.execPath, BOX_SOURCES: root, KUVO_BOX_SIGNING_KEY: privateKey.export({ type: "pkcs8", format: "pem" }), KUVO_BOX_SPREADS: "1" }, encoding: "utf8",
   });
   assert.equal(packed.status, 0, packed.stderr);
@@ -169,9 +207,9 @@ function bridgeAPI() {
   return { said, api };
 }
 /** The bridge answering, as a process other than `besides`: its pid and build. */
-const bridgeUp = besides => until(async () => {
+const bridgeUp = (besides, wantedBuild) => until(async () => {
   const said = readJSON(path.join(RUN, "bridge.json"));
-  if (!said?.pid || said.pid === besides || !runs(said.pid)) return null;
+  if (!said?.pid || said.pid === besides || (wantedBuild && said.build !== wantedBuild) || !runs(said.pid)) return null;
   const info = await bridgeAPI().api("GET", "api/info");
   return info.status === 200 && info.json.pid === said.pid ? { pid: said.pid, build: info.json.build } : null;
 }, besides ? "a new bridge to answer" : "the bridge to answer");
@@ -191,6 +229,14 @@ const linkUp = besides => until(() => {
 }, besides ? "a new link to run" : "the link to run");
 const turns = fake => { try { return fs.readFileSync(path.join(fake, "turns.log"), "utf8").trim().split("\n").filter(Boolean).map(line => JSON.parse(line)); } catch { return []; } };
 
+function holderFor(session) {
+  const folder = path.join(RUN, "agents", "hold");
+  return fs.readdirSync(folder)
+    .filter(name => name.endsWith(".json"))
+    .map(name => readJSON(path.join(folder, name)))
+    .find(record => record && Object.values(record.meta.turns ?? {}).some(note => note.session === session));
+}
+
 test("an update another of your computers hands over while a coding agent's turn and an engine's turn run stops neither: both finish, and the new code is live in the server, the link and the bridge", { skip: bun ? false : NO_BUN, timeout: 300_000 }, async () => {
   const { fake } = box();
   keep();
@@ -202,11 +248,17 @@ test("an update another of your computers hands over while a coding agent's turn
 
   // A coding agent's turn under way, and the engine's own.
   const { api } = bridgeAPI();
-  const made = await api("POST", "api/session", { title: "Long one", location: { directory: home }, model: { providerID: "codex-cli", id: "gpt-test" } });
+  const made = await api("POST", "api/session", { title: "Long one", permissions: [{ action: "shell", resource: "*", effect: "ask" }], location: { directory: home }, model: { providerID: "codex-cli", id: "gpt-test" } });
   assert.equal(made.status, 200, JSON.stringify(made.json));
   const session = made.json.data.id;
   assert.equal((await api("POST", `api/session/${session}/prompt`, { id: "msg_stopsnothing00001", delivery: "steer", text: "hold one" })).status, 200);
   await until(() => turns(fake).length === 1, "the agent's turn to start");
+  const pending = async () => (await bridgeAPI().api("GET", `api/session/${session}/permission`)).json?.data;
+  const before = await until(async () => (await pending())?.[0], "the permission to appear");
+  const visibleId = (await api("GET", `api/session/${session}/message?limit=100&order=asc`)).json.data.find(message => message.type === "assistant").id;
+  const firstHolder = holderFor(session);
+  assert.ok(firstHolder, "the active turn has a holder");
+  assert.ok(runs(firstHolder.child));
   write(path.join(scratch, "engine-busy"), "");
 
   // The release, held by another of your computers (the mini, whose app updated): its mail says so,
@@ -228,29 +280,46 @@ test("an update another of your computers hands over while a coding agent's turn
   mini.drain(reply => link.takeReleaseMail({ key: miniKey, kind: "mac" }, reply));
   assert.equal(offered, 1, "pulled and offered here in one exchange");
   assert.equal(link.offeredVersion(), "0.10.0");
+  const handle = link.engineHandler(() => engine, {}, () => bridgeAPI().said);
+  const status = [];
+  for await (const part of handle({ method: "GET", path: "kuvo/update", headers: {} }, null, null)) if (part.body) status.push(part.body);
+  const waiting = JSON.parse(Buffer.concat(status)).waiting;
+  assert.equal(waiting.version, "0.10.0");
+  assert.equal(waiting.sessionsAtWork, 2);
+  assert.ok(waiting.detail);
+
   assert.deepEqual(await link.takeOffer({ keys: [pinned], blocked: null }), { result: "updated", version: "0.10.0" }, "taken though both are at work: it stops nothing");
   assert.equal(fs.readFileSync(path.join(home, "bin", "box-version"), "utf8").trim(), "0.10.0");
   assert.equal(readJSON(path.join(RUN, "engine.json")).pid, engine.pid, "the engine never stopped");
-  assert.ok(runs(firstBridge.pid), "nor the bridge running the agent's turn");
-
-  // The server and the link take the new code by themselves.
-  await serveUp(firstServe);
-  await linkUp(firstLink);
-  assert.ok(!runs(firstServe) && !runs(firstLink), "the ones on the code before went");
-  // The bridge waits for its turn: it still runs, the turn on it.
-  assert.equal(readJSON(path.join(RUN, "bridge.json")).pid, firstBridge.pid);
-
-  // The agent's turn ends on the bridge it began on, which then makes way for the new build.
-  write(path.join(fake, "release-one"), "");
+  // The holder stays up as the published bridge changes. Neither turn was given its completion signal.
   const secondBridge = await bridgeUp(firstBridge.pid);
   assert.equal(secondBridge.build, build(fs.readFileSync(builtAgents, "utf8")), "the new bridge runs the release's build");
+  assert.equal(fs.existsSync(path.join(fake, "release-one")), false);
+  assert.equal(holderFor(session).child, firstHolder.child);
+  assert.ok(holderFor(session).generation > firstHolder.generation);
+  assert.ok(runs(firstHolder.child), "the same agent process continued");
+  assert.equal(readJSON(path.join(RUN, "engine.json")).pid, engine.pid);
+  const again = await pending();
+  assert.equal(again.length, 1);
+  assert.equal(again[0].id, before.id, "the open permission retains its original ID");
+  assert.equal((await bridgeAPI().api("POST", `api/session/${session}/permission/${before.id}/reply`, { decision: "once" })).status, 200);
+  write(path.join(fake, "release-one"), "");
   const messages = await until(async () => {
     const page = (await bridgeAPI().api("GET", `api/session/${session}/message?limit=100&order=asc`)).json?.data ?? [];
     return page.at(-1)?.type === "idle" ? page : null;
   }, "the agent's turn to end");
-  assert.deepEqual(messages.filter(each => each.type === "assistant").flatMap(each => each.content ?? []).filter(block => block.type === "text").map(block => block.text), ["Done: hold one"]);
+  assert.deepEqual(messages.filter(each => each.type === "assistant").flatMap(each => each.content ?? []).filter(block => block.type === "text").map(block => block.text), ["Before the update.", "Done: hold one"]);
+  assert.deepEqual(messages.filter(each => each.type === "assistant").map(each => each.id), [visibleId], "the original reply continued in place");
   assert.deepEqual(messages.filter(each => each.type === "idle").map(each => each.outcome), ["succeeded"], "never cut");
   assert.deepEqual(turns(fake), [{ text: "hold one", bridge: firstBridge.pid }]);
+
+  assert.equal(fs.readFileSync(path.join(fake, "approvals.log"), "utf8").trim().split("\n").length, 1, "the original agent accepted one answer");
+  const second = await bridgeAPI().api("POST", "api/session", { title: "New work", location: { directory: home }, model: { providerID: "codex-cli", id: "gpt-test" } });
+  assert.equal(second.status, 200);
+  const another = second.json.data.id;
+  assert.equal((await bridgeAPI().api("POST", `api/session/${another}/prompt`, { id: "msg_stopsnothing00003", delivery: "steer", text: "new work" })).status, 200);
+  await until(() => turns(fake).some(turn => turn.text === "new work"), "the adopted server to accept new work");
+  await until(async () => (await bridgeAPI().api("GET", `api/session/${another}/message?limit=100&order=asc`)).json?.data?.at(-1)?.type === "idle", "the new work to finish");
 
   // The engine's turn ends on the engine it began on.
   assert.equal(readJSON(path.join(RUN, "engine.json")).pid, engine.pid);
@@ -281,6 +350,7 @@ test("the engine started again while a coding agent's turn runs: the turn comple
   const before = turns(fake).length;
   assert.equal((await api("POST", `api/session/${session}/prompt`, { id: "msg_stopsnothing00002", delivery: "steer", text: "hold two" })).status, 200);
   await until(() => turns(fake).length === before + 1, "the agent's turn to start");
+  const holder = await until(() => holderFor(session), "the holder to record the new turn");
 
   // The engine ends (a crash, or a hung one ended): its keeper starts another, on a port and
   // password of its own.
@@ -291,6 +361,9 @@ test("the engine started again while a coding agent's turn runs: the turn comple
   assert.equal(readJSON(path.join(RUN, "bridge.json")).pid, bridge.pid);
   assert.ok(runs(bridge.pid), "the bridge runs on");
   await until(() => fs.existsSync(path.join(scratch, `feed-${restarted.port}`)), "the bridge to follow the new engine");
+  const stillHeld = holderFor(session);
+  assert.equal(stillHeld.child, holder.child, "the native app-server never changed");
+  assert.equal(stillHeld.generation, holder.generation, "the same controller kept the holder");
 
   // The turn ends as it would have: on that bridge, once.
   write(path.join(fake, "release-two"), "");
@@ -300,6 +373,147 @@ test("the engine started again while a coding agent's turn runs: the turn comple
   }, "the agent's turn to end");
   assert.deepEqual(messages.filter(each => each.type === "assistant").flatMap(each => each.content ?? []).filter(block => block.type === "text").map(block => block.text), ["Done: hold two"]);
   assert.deepEqual(messages.filter(each => each.type === "idle").map(each => each.outcome), ["succeeded"], "never cut");
-  assert.deepEqual(turns(fake).slice(before), [{ text: "hold two", bridge: bridge.pid }]);
+  // The fixture logs the process that launched the app-server, which a handover can predate.
+  assert.deepEqual(turns(fake).slice(before), [{ text: "hold two", bridge: holder.bridge }]);
   assert.equal(readJSON(path.join(RUN, "bridge.json")).pid, bridge.pid);
+});
+
+test("if the new bridge exits at the cutover, the keeper resumes the turn on the previous build", { skip: bun ? false : NO_BUN, timeout: 300_000 }, async () => {
+  const first = await bridgeUp();
+  const fake = path.join(scratch, "fake");
+  const { api } = bridgeAPI();
+  const made = await api("POST", "api/session", { title: "Failed take-over", permissions: [{ action: "shell", resource: "*", effect: "ask" }], location: { directory: home }, model: { providerID: "codex-cli", id: "gpt-test" } });
+  assert.equal(made.status, 200, JSON.stringify(made.json));
+  const session = made.json.data.id;
+  assert.equal((await api("POST", `api/session/${session}/prompt`, { id: "msg_stopsnothing00004", delivery: "steer", text: "hold recovery" })).status, 200);
+  const pending = async () => (await bridgeAPI().api("GET", `api/session/${session}/permission`)).json?.data;
+  const ask = await until(async () => (await pending())?.[0], "the permission to appear");
+  const holder = await until(() => holderFor(session), "the holder to record the turn before recovery");
+
+  const bundle = path.join(home, "bin", "kuvo-agents.js");
+  const broken = "b".repeat(64);
+  const failsOnCutover = 'if (process.argv.includes("handover-standby")) process.prependOnceListener("disconnect", () => process.exit(6));\n';
+  write(bundle + ".new", failsOnCutover + fs.readFileSync(builtAgents, "utf8").replace(first.build, broken));
+  fs.renameSync(bundle + ".new", bundle);
+  const recovered = await bridgeUp(first.pid);
+  assert.equal(recovered.build, first.build, "the previous executable answered after the candidate failed");
+  const resumed = holderFor(session);
+  assert.equal(resumed.child, holder.child, "the previous build resumed the original native process");
+  assert.ok(resumed.generation > holder.generation, "the recovery bridge took ownership of the holder");
+  assert.equal((await until(async () => (await pending())?.[0], "the same pending permission")).id, ask.id);
+  assert.equal((await bridgeAPI().api("POST", `api/session/${session}/permission/${ask.id}/reply`, { decision: "once" })).status, 200);
+  write(path.join(fake, "release-recovery"), "");
+  const messages = await until(async () => {
+    const page = (await bridgeAPI().api("GET", `api/session/${session}/message?limit=100&order=asc`)).json?.data ?? [];
+    return page.at(-1)?.type === "idle" ? page : null;
+  }, "the recovered turn to finish");
+  assert.deepEqual(messages.filter(each => each.type === "idle").map(each => each.outcome), ["succeeded"]);
+  assert.deepEqual(turns(fake).filter(turn => turn.text === "hold recovery"), [{ text: "hold recovery", bridge: holder.bridge }]);
+});
+
+
+test("Update Now uses the no-cut path even when an engine turn is active", { skip: bun ? false : NO_BUN, timeout: 300_000 }, async t => {
+  process.env.KUVO_TEST_HEALTH_WINDOW = "1500";
+  process.env.KUVO_TEST_HEALTH_EVERY = "200";
+  t.after(() => {
+    delete process.env.KUVO_TEST_HEALTH_WINDOW;
+    delete process.env.KUVO_TEST_HEALTH_EVERY;
+  });
+  const engine = readJSON(path.join(RUN, "engine.json"));
+  const marker = path.join(scratch, "engine-busy");
+  write(marker, "");
+  const first = await bridgeUp();
+
+  async function requestUpdate(version, engineVersion, bridgeBuild) {
+    const { out, pinned } = pack(version, engineVersion, bridgeBuild);
+    // Only this scratch box's route and detached subprocess trust the fixture's signing key.
+    const testLink = path.join(scratch, `kuvo-link-${version}.js`);
+    write(testLink, fs.readFileSync(builtLink, "utf8").replace(link.UPDATE_KEYS[0], pinned));
+    const own = await import(testLink);
+    assert.equal(own.offerUpdate(out).status, 202);
+    const handle = own.engineHandler(() => engine, {}, () => bridgeAPI().said);
+    const parts = [];
+    for await (const part of handle({ method: "POST", path: "kuvo/update", headers: {}, body: Buffer.from('{"now":true}') }, null, null)) parts.push(part);
+    assert.equal(parts[0].head.status, 202, Buffer.concat(parts.flatMap(part => part.body ? [part.body] : [])).toString());
+    return own;
+  }
+
+  const nextBuild = "c".repeat(64);
+  await requestUpdate("0.11.0", "1.0.0", nextBuild);
+  const next = await bridgeUp(first.pid, nextBuild);
+  assert.equal(next.build, nextBuild);
+  assert.equal(readJSON(path.join(RUN, "engine.json")).pid, engine.pid);
+  await until(() => !fs.existsSync(path.join(RUN, "update-trial")), "the manual update to settle");
+  assert.equal(readJSON(path.join(RUN, "update.json")).last.to, "0.11.0");
+
+  const incompatible = await requestUpdate("0.12.0", "1.1.0");
+  await until(() => readJSON(path.join(RUN, "update.json")).running === "downloading" && !incompatible.isUpdating(), "the manual check to leave the incompatible engine alone");
+  assert.equal(incompatible.offeredVersion(), "0.12.0");
+  assert.equal(incompatible.updateStatus().version, "0.11.0");
+  assert.equal(readJSON(path.join(RUN, "engine.json")).pid, engine.pid);
+  assert.ok(runs(engine.pid));
+  // Leave the incompatible fixture intact while the box is at work. Cleanup stops this box.
+});
+
+test("the one-time pre-holder update restarts its bridge cleanly and leaves an engine turn running", { skip: bun ? false : NO_BUN, timeout: 300_000 }, async () => {
+  if (!fs.existsSync(path.join(RUN, "launch.env"))) {
+    box();
+    keep();
+  }
+  const first = await bridgeUp();
+  const bundle = path.join(home, "bin", "kuvo-agents.js");
+  const installed = fs.readFileSync(builtAgents, "utf8");
+  const legacyBuild = "2b3fded6f49f21e8b2434216207d63dd8996b579aba9f11bc63a4bd84ae49176";
+  // Run the real bridge's normal shutdown path, with pre-holder process ownership and no
+  // handover capability or marker as on a pre-holder installation.
+  const legacy = installed.replace(build(installed), legacyBuild)
+    .replaceAll("kuvo-live-handover/1", "legacy-test-bridge")
+    .replaceAll("agents-live-handover", "agents-legacy-fixture")
+    .replace(/function agentHoldFolder\(kind\) \{\n/, "$&  return undefined;\n");
+  assert.notEqual(legacy, installed);
+  const crossing = path.join(RUN, "agents-live-handover");
+  const replace = contents => {
+    write(bundle + ".new", contents);
+    fs.renameSync(bundle + ".new", bundle);
+  };
+  const unknownBuild = "e".repeat(64);
+  replace(legacy.replace(legacyBuild, unknownBuild));
+  process.kill(first.pid, "SIGTERM");
+  const old = await bridgeUp(first.pid);
+  assert.equal(old.build, unknownBuild);
+  fs.rmSync(crossing);
+  const holderRecords = () => {
+    try { return fs.readdirSync(path.join(RUN, "agents", "hold")).filter(name => name.endsWith(".json")); }
+    catch { return []; }
+  };
+  await until(() => holderRecords().length === 0, "the old fixture to have no holders");
+
+  const engine = readJSON(path.join(RUN, "engine.json"));
+  const { api } = bridgeAPI();
+  const made = await api("POST", "api/session", { title: "Pre-holder turn", location: { directory: home }, model: { providerID: "codex-cli", id: "gpt-test" } });
+  assert.equal(made.status, 200);
+  const session = made.json.data.id;
+  const fake = path.join(scratch, "fake");
+  assert.equal((await api("POST", `api/session/${session}/prompt`, { id: "msg_stopsnothing00005", delivery: "steer", text: "hold legacy" })).status, 200);
+  await until(() => turns(fake).some(turn => turn.text === "hold legacy" && turn.bridge === old.pid), "the unheld turn to start");
+  assert.equal(holderRecords().length, 0, "the pre-holder bridge owns this agent directly");
+
+  replace(installed);
+  // With no live holders this still has an unidentified generation and a live unheld turn.
+  // Wait for a keeper round before checking the original turn and the exclusive marker.
+  await new Promise(resolve => setTimeout(resolve, 3500));
+  assert.equal(readJSON(path.join(RUN, "bridge.json")).pid, old.pid);
+  assert.ok(!fs.existsSync(crossing));
+
+  // Model a bridge whose running build is known to precede holders.
+  const oldRecord = path.join(RUN, "bridge.json");
+  write(oldRecord, JSON.stringify({ ...readJSON(oldRecord), build: legacyBuild }));
+  const after = await bridgeUp(old.pid);
+  assert.equal(after.build, build(installed));
+  assert.equal(readJSON(path.join(RUN, "engine.json")).pid, engine.pid);
+  assert.equal(fs.readFileSync(crossing, "utf8"), "kuvo-live-handover/1");
+  const page = (await bridgeAPI().api("GET", `api/session/${session}/message?limit=100&order=asc`)).json.data;
+  assert.deepEqual(page.filter(each => each.type === "idle").map(each => each.outcome), ["interrupted"]);
+  assert.deepEqual(page.filter(each => each.type === "user").map(each => each.text), ["hold legacy"]);
+  assert.equal(turns(fake).filter(turn => turn.text === "hold legacy").length, 1);
 });

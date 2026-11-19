@@ -26,7 +26,7 @@ import { voiceRoutes, type VoiceWords } from "./voice"
 import { limitsRoutes, type Limits } from "./limits"
 import { usageRoutes, type Usage } from "./usage/usage"
 import { isOutdated, type Maintenance } from "./maintenance"
-import { forgetUpdate, inUpdateAll, programUpdate, updateAll, updateProgram } from "./updates"
+import { forgetUpdate, inUpdateAll, programUpdate, resumeProgramUpdates, updateAll, updateProgram } from "./updates"
 import { refreshLoginPath } from "./proc"
 import { setToolServer } from "./kuvotools"
 import { noteToolServer } from "./fence"
@@ -50,6 +50,8 @@ export interface Context {
   auto: Auto
   link: EngineLink
   password: string
+  /** Where accepted program updates wait across a bridge restart. */
+  programHome?: string
   version: string
   /** The build it runs, as its bundle names it (none run from its sources). */
   build?: string | null
@@ -264,11 +266,13 @@ function bridgeExtension(name: string | undefined): name is keyof typeof BRIDGE_
 
 const PROGRAM_RELEASE_INTERVAL = 60 * 60_000
 
-export function handler(context: Context) {
+export function handler(context: Context, transferring?: () => boolean) {
   const expected = "Basic " + Buffer.from(`opencode:${context.password}`).toString("base64")
   const { sessions, roster, auto, link } = context
   const agentFor = (id: string) => roster.find(id)
   const note = (agent: Agent, value: Maintenance) => maintainedNow(agent, value, roster.all().filter(each => each.id === agent.id))
+  const programs = { home: context.programHome, hold: sessions?.holdProgram?.bind(sessions) }
+  resumeProgramUpdates(() => roster.all(), note, programs)
   const accounts = new AccountRefresh(context.limits)
   const signedIn = (agent: Agent) => void accounts.signedIn(agent).then(() => context.usage?.refresh()).catch(() => {})
   if (context.refreshAccounts) {
@@ -562,6 +566,7 @@ export function handler(context: Context) {
             sessions.selectAgent(id, (await body()).agent)
             return json({})
           case "permission":
+            if (!(await sessions.permissionsReady(id, request.signal))) return json({ message: "Kuvo is restoring this session’s approvals. Try again in a moment." }, 503)
             // What the engine asks for everyone ("global": its MCP servers') isn't asked here.
             if (!c) return json({ data: id === "global" ? [] : sessions.permissions(id) })
             if (d === "reply") {
@@ -636,7 +641,7 @@ export function handler(context: Context) {
       if (extension === "updates" && !c) {
         if (!b) {
           if (method !== "POST") return error(405, "Not allowed.")
-          return json({ data: { updating: await updateAll(roster.all(), () => roster.all(), maintainedNow, (agent) => lastMaintained.get(agent.id)) } })
+          return json({ data: { updating: await updateAll(roster.all(), () => roster.all(), maintainedNow, (agent) => lastMaintained.get(agent.id), programs) } })
         }
         const agent = agentFor(b)
         if (!agent) return error(404, `No agent ${b}.`)
@@ -649,7 +654,7 @@ export function handler(context: Context) {
         }
         if (method !== "POST") return error(405, "Not allowed.")
         if (!agent.update || !agent.maintenance) return error(400, `Update ${agent.name} the way you installed it.`)
-        void updateProgram(agent, () => roster.all(), maintainedNow)
+        void updateProgram(agent, () => roster.all(), maintainedNow, programs)
         return json({ data: { updating: [agent.id] } })
       }
 
@@ -757,7 +762,11 @@ export function handler(context: Context) {
   return async (request: Request): Promise<Response> => {
     if (request.headers.get("authorization") !== expected) return error(401, "Unauthorized")
     const refusal = routeVersionError(request.headers.get(ROUTE_VERSION_HEADER) ?? undefined)
-    const response = refusal ? Response.json(refusal, { status: 400 }) : await answer(request)
+    if (refusal) return Response.json(refusal, { status: 400, headers: { [ROUTE_VERSION_HEADER]: ROUTE_VERSION } })
+    if (transferring?.()) return new Response(null, { status: 503, headers: {
+      [ROUTE_VERSION_HEADER]: ROUTE_VERSION, "retry-after": "1", "x-kuvo-bridge-handover": "1",
+    } })
+    const response = await answer(request)
     const headers = new Headers(response.headers)
     headers.set(ROUTE_VERSION_HEADER, ROUTE_VERSION)
     return new Response(response.body, { status: response.status, statusText: response.statusText, headers })

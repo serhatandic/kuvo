@@ -1,3 +1,4 @@
+import "./safety"
 import { expect, test } from "bun:test";
 import {
   enrollmentPredecessor, readComputerHistory, rememberEnrollment, requiresReplacementConfirmation, type ComputerHistory,

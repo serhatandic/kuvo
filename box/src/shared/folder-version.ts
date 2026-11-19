@@ -54,7 +54,12 @@ const steps: readonly Step[] = [
   () => {},
   // 17. Reserve first-standby assignment revisions. Strip rank history from the active replica.
   migrateRankHistory,
+  // 18. Reserve bridge handover and program/engine drain recovery records.
+  // Existing session files stay in place; the additive stamp is written with the next save.
+  () => {},
 ];
+
+export const KUVO_FOLDER_LAYOUT = steps.length;
 
 function migrateDeviceGrants(folder: string): void {
   const file = path.join(folder, "run", "link.json");
@@ -145,9 +150,15 @@ export function upgradeKuvoFolder(folder: string, importLegacy?: () => void): vo
 
 const trialOpen = (folder: string) => fs.existsSync(path.join(folder, "run", "update-trial"));
 
-/** The pre-marker updater's trial still uses the deployed data contracts. */
+/** A trial on the deployed layout or its additive checkpoint uses the old data contracts. */
 export function legacyFolderTrial(folder: string): boolean {
-  return trialOpen(folder) && !fs.lstatSync(path.join(folder, FOLDER_VERSION_FILE), { throwIfNoEntry: false });
+  if (!trialOpen(folder)) return false;
+  const marker = path.join(folder, FOLDER_VERSION_FILE);
+  if (!fs.lstatSync(marker, { throwIfNoEntry: false })) return true;
+  try {
+    const { version, upgradingTo } = checkpoint(marker, steps.length);
+    return version === 1 && upgradingTo === undefined;
+  } catch { return false; }
 }
 
 /** Setup writers with newer on-disk contracts remain fenced while the upgrade is deferred. */
@@ -258,9 +269,9 @@ function checkTrialRecovery(folder: string, start: Checkpoint, importing: boolea
       // until confirmation, and rollback can reopen the original marker as-is.
       if ((start.version >= 4 && start.version < steps.length) && start.upgradingTo === undefined && accepts(start.version)) return false;
     }
-    // The saved pre-marker bridge can still run this folder. Keep the marker absent
-    // until confirmation so neither a crash nor rollback has to undo a layout step.
-    if (!importing && start.version === 0 && start.upgradingTo === undefined && legacyFolderTrial(folder) && accepts()) return false;
+    // Leave an unmarked or additive layout in place until confirmation, so neither a
+    // crash nor a rollback has to undo a step.
+    if (!importing && legacyFolderTrial(folder) && accepts(start.version || undefined)) return false;
     refuse();
   } finally {
     fs.rmSync(scratch, { recursive: true, force: true });
