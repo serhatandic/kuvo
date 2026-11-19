@@ -11,6 +11,7 @@ export interface OfflineEdit extends Edit {
   notes?: { id: string; text: string }[];
   attachments?: { id: string; file: Fields }[];
 }
-export type EditReceipt = Decision | { operation: string; status: "pending" | "interrupted"; message: string };
+export type EditReceipt = Decision | { operation: string; status: "pending" | "interrupted" | "capacity"; message: string };
 export const editStatus = (receipt: EditReceipt) => receipt.status === "pending" ? 202
+  : receipt.status === "capacity" ? 413
   : receipt.status === "interrupted" || receipt.status === "refresh" || receipt.status === "deleted" ? 409 : 200;

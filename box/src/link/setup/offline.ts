@@ -150,8 +150,7 @@ export function editSetup(edit: OfflineEdit, authorize: (link: LinkState) => boo
       return null;
     }
     const changed = changesOf(kind, link, next, merged.changes);
-    const after = observe(history, `${setup.id}:${kind}`, { ...next.fields, ...merged.changes }, false, 8);
-    after.choices = merged.choices;
+    const after = observe({ ...history, choices: merged.choices }, `${setup.id}:${kind}`, { ...next.fields, ...merged.changes }, false, 8);
     decision = rememberEdit(after, operation, digest, merged.status, merged.added);
     save = stageShared(link, kind, changed, undefined, operation, after);
     if (!save || save.status === "pending") decision = undefined;

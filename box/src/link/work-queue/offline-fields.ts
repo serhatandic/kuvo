@@ -12,5 +12,5 @@ export function observeQueueItem(item: Item) {
     note.id ??= fingerprint([item.id, index, note.at, note.by, note.text]);
     fields[`note:${note.id}`] = note.text;
   }
-  return item.offlineEdits = observe(item.offlineEdits, item.id, fields, Boolean(item.removed));
+  return item.offlineEdits = observe(item.offlineEdits, item.id, fields, Boolean(item.removed), undefined, queuePassage);
 }

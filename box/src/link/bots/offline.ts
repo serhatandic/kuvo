@@ -23,8 +23,10 @@ const botFields = (here: BotHere, job: Job): Fields => ({
   jobDetails: job.details,
 });
 
+const botPassage = (field: string) => field === "jobDetails";
+
 function botHistory(here: BotHere, job: Job) {
-  return observe(here.described.offlineEdits as EditHistory | undefined, here.described.id, botFields(here, job));
+  return observe(here.described.offlineEdits as EditHistory | undefined, here.described.id, botFields(here, job), false, undefined, botPassage);
 }
 
 export function botEditView(ref: EditTarget, owns: (ref: EditTarget) => boolean) {
@@ -74,7 +76,7 @@ export async function editBot(edit: OfflineEdit, owns: (ref: EditTarget) => bool
     if (Object.hasOwn(fields, "personality") && fields.personality !== null
       && !botPersonalities(kit).some(personality => personality.id === fields.personality)) throw new Refusal("That personality is unavailable.");
   }
-  const merged = mergeEdit(history, { ...edit, fields }, field => field === "jobDetails");
+  const merged = mergeEdit(history, { ...edit, fields }, botPassage);
   const changes = { ...merged.changes };
   if ("limits" in changes) {
     changes.work = { limits: changes.limits };
@@ -90,8 +92,8 @@ export async function editBot(edit: OfflineEdit, owns: (ref: EditTarget) => bool
     // Another process, including a legacy writer, may have edited while the engine was checked.
     if (fingerprint(latest) !== fingerprint(history)) throw new Refusal("The bot changed while the edit was being checked.");
     const after = job ? { ...next, offlineJob: job, job: job.line } : next;
-    const observed = observe(latest, ref.id!, botFields({ ...here, described: after }, job ?? currentJob));
-    observed.choices = merged.choices;
+    const observed = observe({ ...latest, choices: merged.choices }, ref.id!,
+      botFields({ ...here, described: after }, job ?? currentJob), false, undefined, botPassage);
     decision = rememberEdit(observed, operation, digest, merged.status, merged.added);
     return { ...after, offlineEdits: observed };
   };

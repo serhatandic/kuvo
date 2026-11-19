@@ -31,7 +31,8 @@ const isPrimaryRead = (kind: DataKind): kind is PrimaryRead => (primaryReads as 
 
 interface Snapshot {
   at: number;
-  value: unknown;
+  value?: unknown;
+  absent?: true;
   files: string[];
   messages: string[];
 }
@@ -95,7 +96,7 @@ async function localRead(ref: ReadRequest, context: RouteContext, places: PeerPl
   }
   if (dataOwner(kind) === undefined) {
     const item = matching(allItems(), { id })[0];
-    if (!item) return { status: 404, value: null };
+    if (!item || item.removed) return { status: 404, value: null };
     if (!ownerOf({ ...ref, queue: item.owner }, { link, localRecord: true })?.local)
       return { status: 409, value: null };
     return actHere({ method: "GET", ref: { id }, targets: places.targets, signal: context.signal });
@@ -197,6 +198,11 @@ export async function readOwned(context: RouteContext) {
     if (!resolved.local) keepRecord("reads", cache, saved);
     return json(200, view(resolved, saved, query, false));
   }
+  if (answer?.status === 404 && !("refused" in answer)) {
+    const absent: Snapshot = { at: Date.now(), absent: true, files: [], messages: [] };
+    if (!resolved.local) keepRecord("reads", cache, absent);
+    return json(200, view(resolved, absent, query, false));
+  }
   const unavailable = !answer || ("refused" in answer && answer.status !== 409);
   const snapshotAllowed = !resolved.local && kind !== "pendingSessionWork" && (unavailable || (answer && answer.status >= 500));
   const last = snapshotAllowed ? readRecord<Snapshot>("reads", cache) : undefined;
@@ -208,9 +214,9 @@ function view(owner: Owner, saved: Snapshot | null, query: URLSearchParams, stal
   const heldMessages = new Set(saved?.messages);
   return {
     owner, stale,
-    state: saved ? "received" : "neverReceived",
+    state: saved && !saved.absent ? "received" : "neverReceived",
     lastReceivedAt: saved?.at ?? null,
-    ...(saved ? { data: saved.value } : {}),
+    ...(saved && !saved.absent ? { data: saved.value } : {}),
     unavailable: {
       files: [...new Set(stale || !owner.local ? [...(saved?.files ?? []), ...requested("file")] : [])],
       messages: [...new Set(requested("message").filter(id => !heldMessages.has(id)))],

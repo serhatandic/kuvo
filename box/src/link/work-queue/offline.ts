@@ -130,9 +130,8 @@ export function editQueue(edit: OfflineEdit, owns: (ref: EditTarget) => boolean)
       item.notes.push(...notes.map(note => ({ ...note, by: YOU, at: now })));
       applyFileOps(acting);
       numberWaiting(book, primary, null);
-      item.offlineEdits = history;
+      item.offlineEdits = { ...history, choices: merged.choices };
       history = observeQueueItem(item);
-      history.choices = edit.delete ? [] : merged.choices;
       history.additions = additions;
       return rememberEdit(history, operation, digest, merged.status, merged.added);
     } finally { files?.clear(); }

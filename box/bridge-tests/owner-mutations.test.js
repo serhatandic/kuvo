@@ -114,3 +114,60 @@ test("a holder retry returns its original setup receipt after a later save", () 
   assert.deepEqual(await save(body), { status: 200, value: first });
   assert.equal((await save({ ...body, value: { ...body.value, imported: false } })).status, 409);
 `));
+
+test("authoritative absence replaces a remote record in the snapshot cache", () => isolated(`
+  import { FORWARDS, forwardsSoon, takeActed } from ${url("work-queue/forward")};
+  const run = path.join(process.env.KUVO_HOME, "run");
+  fs.writeFileSync(path.join(run, "peer-agents.json"), JSON.stringify({ [from]: { features: ["data.ownership"], heard: Date.now(), list: [] } }));
+  const route = "kuvo/data/owner?kind=botSettings&id=bot_a&computer=" + from;
+  let status = 200;
+  forwardsSoon.send = () => {
+    const [file] = fs.readdirSync(FORWARDS);
+    const { act } = JSON.parse(fs.readFileSync(path.join(FORWARDS, file), "utf8"));
+    takeActed(peer(from), { id: act.id, status, value: status === 200 ? { name: "Before deletion" } : null });
+  };
+  const received = (await ask("GET", route, {})).value;
+  assert.equal(received.data.name, "Before deletion");
+  status = 404;
+  const gone = (await ask("GET", route, {})).value;
+  assert.equal(gone.state, "neverReceived");
+  assert.equal(gone.stale, false);
+  assert.ok(gone.lastReceivedAt >= received.lastReceivedAt);
+  status = 503;
+  const offline = (await ask("GET", route, {})).value;
+  assert.equal(offline.state, "neverReceived");
+  assert.equal(offline.lastReceivedAt, gone.lastReceivedAt);
+  assert.equal(offline.data, undefined);
+`));
+
+test("a setup draft above the owner capacity reaches a terminal receipt and stays recoverable", () => isolated(`
+  import { MAX_SHARED_BYTES } from ${url("setup/shared")};
+  import { readRecord } from ${url("ownership/store")};
+  import { writeLink, readLink } from ${url("state")};
+  const link = readLink();
+  link.shared.ownershipAssignments = { sequence: 1, value: "x".repeat(MAX_SHARED_BYTES) };
+  writeLink(link);
+  const ref = { kind: "setupTimeZone" };
+  const revision = (await ask("GET", "kuvo/data/edits?kind=setupTimeZone", {})).value.revision;
+  const edit = { ref, operation: "capacity-test-draft", baseRevision: revision, fields: { zone: "Europe/Istanbul" } };
+  const terminal = await ask("POST", "kuvo/data/edits", edit);
+  assert.equal(terminal.status, 413);
+  assert.equal(terminal.value.status, "capacity");
+  assert.deepEqual(await ask("POST", "kuvo/data/edits", edit), terminal);
+  assert.equal(readRecord("edit-outbox", terminal.value.operation).envelope, undefined);
+  const receipt = await ask("GET", "kuvo/data/edits/" + terminal.value.operation, {});
+  assert.deepEqual(receipt.value.recovery, edit.fields);
+`));
+
+test("an attachment-only edit rejected by the owner stays in the outbox with its original attachment id", () => isolated(`
+  const item = "wqi_" + "B".repeat(20);
+  const ref = { kind: "queueItems", id: item, queue: "usr_you" };
+  const initial = await ask("POST", "kuvo/data/edits", { ref, operation: "create-attachment-fixture", baseRevision: null, create: true, fields: { title: "Original" } });
+  assert.equal(initial.value.status, "committed");
+  const attachments = [{ id: "draft-attachment-id", file: { name: "draft.txt", uri: "data:text/plain;base64,ZHJhZnQ=" } }];
+  const refused = await ask("POST", "kuvo/data/edits", { ref, operation: "refused-attachment-draft", baseRevision: "A".repeat(43), attachments });
+  assert.equal(refused.value.status, "refresh");
+  const outbox = (await ask("GET", "kuvo/data/edits/outbox", {})).value.entries;
+  assert.ok(outbox.some(entry => entry.receipt.operation === refused.value.operation));
+  assert.deepEqual((await ask("GET", "kuvo/data/edits/" + refused.value.operation, {})).value.attachments, attachments);
+`));

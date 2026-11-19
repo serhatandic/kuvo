@@ -37,6 +37,7 @@ export type OperationOutcome = {
 export type OperationOutcomes = Record<string, OperationOutcome>;
 
 export const MAX_SHARED_BYTES = Math.floor(MOST_DOC / 3);
+export class SharedCapacity extends Error {}
 export const OPERATION_ID = /^[A-Za-z0-9_-]{22,43}$/;
 
 export function publishedShared(link: LinkState): SignedDoc[] {
@@ -154,12 +155,20 @@ export function stageShared(link: LinkState, kind: SharedKind, value: unknown, e
     const doc = held(envelope);
     return doc ? [[doc.body.kind, entryOf(doc.n, doc.body.value, doc.body.offlineEdits)]] : [];
   });
-  const next = { ...link.shared, ...Object.fromEntries(proposed), [kind]: entryOf(sequence, value, offlineEdits) };
-  if (Buffer.byteLength(JSON.stringify(next)) > MAX_SHARED_BYTES) return null;
+  const entry = entryOf(sequence, value, offlineEdits);
+  const next = { ...link.shared, ...Object.fromEntries(proposed), [kind]: entry };
+  if (Buffer.byteLength(JSON.stringify(next)) > MAX_SHARED_BYTES) {
+    if (edits && Buffer.byteLength(JSON.stringify({ ...link.shared, [kind]: entry })) > MAX_SHARED_BYTES)
+      throw new SharedCapacity("This edit exceeds the setup’s saved preference capacity.");
+    return null;
+  }
   const envelope = signDoc(link.sign, "setup-shared", sequence, {
     id: setup.id, epoch: setup.epoch, kind, value, operation, baseRevision: sequence - 1, ...(offlineEdits ? { offlineEdits } : {}), ...(offlineEdit ? { offlineEdit } : {}), ...(effects ? { effects } : {}),
   });
-  if (envelope.d.length > MOST_DOC * 4 / 3) return null;
+  if (envelope.d.length > MOST_DOC * 4 / 3) {
+    if (edits) throw new SharedCapacity("This edit exceeds the setup’s proposal capacity.");
+    return null;
+  }
   const doc = held(envelope)!;
   if (setup.standby) link.sharedPending = { ...link.sharedPending, [operation]: envelope };
   else {

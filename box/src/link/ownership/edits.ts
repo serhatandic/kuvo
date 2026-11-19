@@ -15,6 +15,7 @@ import type { LinkHost } from "../relay/host";
 import type { RouteContext } from "../server/context";
 import { editSetup, setupEditView } from "../setup/offline";
 import { followedSetup, usesAcceptedSaves } from "../setup/record";
+import { SharedCapacity } from "../setup/shared";
 import { readLink, type LinkState } from "../state";
 import { itemElsewhere } from "../work-queue/across";
 import { forwardAct, takesForwarded, type Act, type Acted } from "../work-queue/forward";
@@ -42,6 +43,7 @@ interface Outgoing {
   receipt: EditReceipt;
   envelope?: Envelope;
   recovery?: Record<string, string>;
+  attachments?: OfflineEdit["attachments"];
 }
 
 function refOf(value: unknown): EditTarget | undefined {
@@ -160,6 +162,7 @@ async function apply(envelope: Envelope, sender: string, places: PeerPlaces): Pr
       : editSetup(edit, link => member(link, setup, sender));
     return result === false ? interrupted("That operation id is already in use.") : result;
   } catch (error) {
+    if (error instanceof SharedCapacity) return { operation, status: "capacity", message: error.message };
     if (error instanceof Refusal) return interrupted(error.message);
     throw error;
   }
@@ -173,17 +176,20 @@ function finish(outgoing: Outgoing, owner: string, receipt: EditReceipt) {
     if (!kept?.envelope || kept.setup !== outgoing.setup || kept.owner !== owner || kept.digest !== outgoing.digest) return;
     const edit = kept.envelope.edit;
     const recovery: Record<string, string> = {};
-    if (receipt.status === "refresh" || receipt.status === "deleted" || receipt.status === "interrupted") {
+    const rejected = receipt.status === "refresh" || receipt.status === "deleted" || receipt.status === "interrupted" || receipt.status === "capacity";
+    if (rejected) {
       for (const [field, value] of Object.entries(edit.fields ?? {})) if (typeof value === "string") recovery[field] = value;
       for (const note of edit.notes ?? []) recovery[`note:${note.id}`] = note.text;
     }
-    keepRecord("edit-outbox", receipt.operation, { setup: kept.setup, owner, digest: kept.digest, ref: kept.ref, receipt, recovery });
+    keepRecord("edit-outbox", receipt.operation, { setup: kept.setup, owner, digest: kept.digest, ref: kept.ref, receipt, recovery,
+      ...(rejected && edit.attachments?.length ? { attachments: edit.attachments } : {}) });
   }, { required: true });
 }
 
 export async function saveOfflineEdit(context: RouteContext, places: PeerPlaces, proposal: unknown = parsed(context.request.body)) {
   const { request, json } = context;
-  const given = (request.body?.length ?? 0) <= MAX_BYTES ? editOf(proposal) : undefined;
+  if ((request.body?.length ?? 0) > MAX_BYTES) return json(413, { message: "This draft is too large to send to the owner." });
+  const given = editOf(proposal);
   if (!given) return json(400, { message: "Send a supported edit with its operation id, record address and base revision (inline attachments only)." });
   const link = readLink();
   const setup = followedSetup(link);
@@ -247,7 +253,7 @@ export function ordinaryEdit(context: RouteContext, body: Record<string, unknown
 export function offlineEditReceipt(context: RouteContext, operation: string) {
   const kept = KEY.test(operation) && readRecord<Outgoing>("edit-outbox", operation);
   return kept && kept.setup === followedSetup(readLink())?.id
-    ? context.json(200, { receipt: kept.receipt, recovery: kept.recovery ?? {} })
+    ? context.json(200, { receipt: kept.receipt, recovery: kept.recovery ?? {}, ...(kept.attachments?.length ? { attachments: kept.attachments } : {}) })
     : context.json(404, { message: "There is no such edit on this computer." });
 }
 
@@ -255,7 +261,7 @@ export function offlineEditOutbox(context: RouteContext) {
   const setup = followedSetup(readLink());
   const entries = !setup ? [] : records("edit-outbox").flatMap(key => {
     const kept = readRecord<Outgoing>("edit-outbox", key);
-    if (kept?.setup !== setup.id || (!kept.envelope && !Object.keys(kept.recovery ?? {}).length)) return [];
+    if (kept?.setup !== setup.id || (!kept.envelope && !Object.keys(kept.recovery ?? {}).length && !kept.attachments?.length)) return [];
     return [{ ref: kept.ref ?? kept.envelope?.edit.ref, owner: kept.owner, receipt: kept.receipt }];
   });
   return context.json(200, { entries });
@@ -379,7 +385,7 @@ export function takeOfflineEditReceipt(sender: MailSender, given: Record<string,
   const receipt = given.receipt;
   if (!isObject(receipt) || typeof receipt.operation !== "string" || !KEY.test(receipt.operation)
     || typeof given.setup !== "string" || !member(readLink(), given.setup, sender.key)) return;
-  if (receipt.status === "interrupted" ? typeof receipt.message !== "string"
+  if (receipt.status === "interrupted" || receipt.status === "capacity" ? typeof receipt.message !== "string"
     : !["committed", "choice", "deleted", "refresh"].includes(String(receipt.status)) || typeof receipt.revision !== "string" || !KEY.test(receipt.revision)
       || !Array.isArray(receipt.choices) || receipt.choices.some(id => typeof id !== "string" || !KEY.test(id))) return;
   const kept = readRecord<Outgoing>("edit-outbox", receipt.operation);

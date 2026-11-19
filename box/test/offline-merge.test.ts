@@ -92,3 +92,24 @@ test("a former owner cannot recreate a handed-off item from a replayed creation"
   }, () => true);
   expect(result).toMatchObject({ operation: "create", status: "refresh" });
 });
+
+test("a stale choice cannot resolve a later rewrite, and its refreshed option keeps independent passages", () => {
+  const passage = () => true;
+  const base = observe(undefined, "record", { body: "Alpha: red. Beta: green." });
+  const first = observe(base, "record", { body: "Alpha: blue. Beta: green." });
+  const clash = mergeEdit(first, { operation: "second", baseRevision: editView(base).revision,
+    fields: { body: "Alpha: yellow. Beta: green." } }, passage);
+  first.choices = clash.choices;
+  const oldChoice = clash.added[0]!;
+  const third = observe(first, "record", { body: "Alpha: white. Beta: orange." }, false, 32, passage);
+  const view = editView(third);
+  for (const use of ["accepted", "proposed"] as const) {
+    const stale = mergeEdit(third, { operation: use, baseRevision: view.revision, resolve: { id: oldChoice, use } }, passage);
+    expect(stale.status).toBe("refresh");
+    expect(stale.changes).toEqual({});
+  }
+  expect(view.choices[0]).toMatchObject({ accepted: "Alpha: white. Beta: orange.", proposed: "Alpha: yellow. Beta: orange." });
+  const resolved = mergeEdit(third, { operation: "refreshed", baseRevision: view.revision,
+    resolve: { id: view.choices[0]!.id, use: "proposed" } }, passage);
+  expect(resolved.changes).toEqual({ body: "Alpha: yellow. Beta: orange." });
+});

@@ -23,9 +23,12 @@ const current = (history: EditHistory): Snapshot => history.versions.at(-1)!;
 const at = (fields: Fields, key: string): unknown => Object.hasOwn(fields, key) ? fields[key] : null;
 const same = isDeepStrictEqual;
 
-export function observe(history: EditHistory | undefined, record: string, fields: Fields, deleted = false, limit = 32): EditHistory {
+export function observe(history: EditHistory | undefined, record: string, fields: Fields, deleted = false, limit = 32, passage: (field: string) => boolean = () => false): EditHistory {
   const before = history && current(history);
-  if (before && before.deleted === deleted && same(before.fields, fields)) return history!;
+  if (before && before.deleted === deleted && same(before.fields, fields)) {
+    const choices = refreshChoices(history!.choices, before.revision, fields, passage);
+    return choices === history!.choices ? history! : { ...history!, choices };
+  }
   const revision = fingerprint([record, before?.revision, deleted, fields]);
   const versions = [...(history?.versions ?? []), { revision, fields: structuredClone(fields), deleted }].slice(-limit);
   let bytes = 0;
@@ -39,10 +42,25 @@ export function observe(history: EditHistory | undefined, record: string, fields
   }
   return {
     versions,
-    choices: history?.choices ?? [],
+    choices: deleted ? [] : refreshChoices(history?.choices ?? [], revision, fields, passage),
     receipts: history?.receipts ?? [],
     additions: history?.additions ?? {},
   };
+}
+
+function refreshChoices(choices: Choice[], revision: string, fields: Fields, passage: (field: string) => boolean): Choice[] {
+  if (choices.every(choice => same(choice.accepted, at(fields, choice.field)))) return choices;
+  return choices.flatMap(choice => {
+    const accepted = at(fields, choice.field);
+    if (same(choice.accepted, accepted)) return [choice];
+    let proposed = choice.proposed;
+    if (passage(choice.field) && typeof accepted === "string" && typeof choice.accepted === "string" && typeof proposed === "string") {
+      const combined = mergeText(choice.accepted, accepted, proposed);
+      proposed = combined.proposed ?? combined.accepted;
+    }
+    if (same(accepted, proposed)) return [];
+    return [{ id: fingerprint([choice.id, revision]), field: choice.field, base: choice.accepted, accepted, proposed }];
+  });
 }
 
 export function editView(history: EditHistory) {
@@ -64,7 +82,7 @@ function baseline(history: EditHistory, edit: Edit) {
   const base = history.versions[index];
   if (head.deleted) return { status: "deleted" as const };
   if (!base || history.versions.slice(index).some(version => version.deleted)) return { status: "refresh" as const };
-  if (edit.resolve && (base !== head || !history.choices.some(choice => choice.id === edit.resolve!.id)))
+  if (edit.resolve && (base !== head || !history.choices.some(choice => choice.id === edit.resolve!.id && same(choice.accepted, at(head.fields, choice.field)))))
     return { status: "refresh" as const };
   return { status: "committed" as const, base, index };
 }
