@@ -944,7 +944,8 @@ function testSetupClock() {
   return !REAL_BOX && fs6.existsSync(path6.join(RUN, "test-setup-clock.json"));
 }
 function grantLease(link, since) {
-  writePrivate(file, JSON.stringify({ stamp: stamp(link), ...since }));
+  const authority = link.setup?.successorChain ? held(link.leadership?.[link.setup.epoch])?.h : undefined;
+  writePrivate(file, JSON.stringify({ stamp: stamp(link), authority, ...since }));
 }
 function fresh(since, now, duration) {
   const wall = now.wall - since.wall;
@@ -956,13 +957,21 @@ function primaryFenced(link) {
     return false;
   if (link.leadershipPending)
     return true;
+  const revoked = link.setupRevocations;
+  if (link.setup.successorChain && revoked?.setup === link.setup.id) {
+    const standby = link.setup.standby;
+    if (revoked.computers.includes(link.setup.primary) || revoked.signs.includes(link.setup.sign) || standby && (revoked.computers.includes(standby.key) || revoked.signs.includes(standby.sign)))
+      return true;
+  }
   if (!link.setup.standby)
     return false;
   const lease = json(file);
-  return !isObject(lease) || lease.stamp !== stamp(link) || typeof lease.wall !== "number" || typeof lease.uptime !== "number" || !fresh({ wall: lease.wall, uptime: lease.uptime }, leaseClock(), LEASE_MS);
+  const authority = link.setup.successorChain ? held(link.leadership?.[link.setup.epoch])?.h : undefined;
+  return !isObject(lease) || lease.stamp !== stamp(link) || link.setup.successorChain && (!authority || lease.authority !== authority) || typeof lease.wall !== "number" || typeof lease.uptime !== "number" || !fresh({ wall: lease.wall, uptime: lease.uptime }, leaseClock(), LEASE_MS);
 }
 var file, LEASE_MS = 60000, HEARTBEAT_MS = 1e4, MIN_DELAY, DEFAULT_DELAY, stamp = (link) => [link.setup?.id, link.setup?.epoch, link.setup?.standby?.key].join(":"), LEADERSHIP_WAIT = "Your primary is waiting for its standby. Try again when they can reach each other.";
 var init_lease = __esm(() => {
+  init_format();
   init_files2();
   init_home();
   file = path6.join(RUN, "setup-lease.json");
@@ -4500,6 +4509,38 @@ var init_removal_record = __esm(() => {
 });
 
 // box/src/link/setup/membership.ts
+function membershipRevocations(setup, membership) {
+  return { setup, computers: membership.left, signs: membership.computerHistory?.retiredSigns ?? [], devices: membership.devices.removed };
+}
+function mergeRevocations(link, incoming) {
+  if (!link.setup?.successorChain || link.setup.id !== incoming.setup)
+    return;
+  const prior = link.setupRevocations?.setup === incoming.setup ? link.setupRevocations : undefined;
+  const devices = uniqueDeviceRevocations([...prior?.devices ?? [], ...incoming.devices]);
+  const computers = [...new Set([...prior?.computers ?? [], ...incoming.computers])];
+  const signs = [...new Set([...prior?.signs ?? [], ...incoming.signs])];
+  if (computers.length === (prior?.computers.length ?? 0) && signs.length === (prior?.signs.length ?? 0) && devices.length === (prior?.devices.length ?? 0))
+    return false;
+  link.setupRevocations = { setup: incoming.setup, computers, signs, devices };
+  return true;
+}
+function withRevocations(membership, revocations) {
+  const left = [...new Set([
+    ...membership.left,
+    ...revocations.computers,
+    ...membership.boxes.filter((peer) => peer.sign && revocations.signs.includes(peer.sign)).map((peer) => peer.key)
+  ])];
+  const boxes = membership.boxes.filter((peer) => !left.includes(peer.key));
+  const signs = [...new Set([...membership.computerHistory?.retiredSigns ?? [], ...revocations.signs])];
+  return membershipOf({
+    ...membership,
+    left,
+    boxes,
+    ...membership.successorOrder ? { successorOrder: membership.successorOrder.filter((key) => !left.includes(key)) } : {},
+    computerHistory: { ...membership.computerHistory, setup: revocations.setup, slots: membership.computerHistory?.slots ?? [], retiredSigns: signs },
+    devices: { phones: membership.devices.phones, removed: uniqueDeviceRevocations([...membership.devices.removed, ...revocations.devices]) }
+  });
+}
 function portableDevice(phone) {
   return {
     key: phone.key,
@@ -4569,7 +4610,9 @@ function acceptedMembership(link) {
   if (!link?.setup || link.setup.aside || link.sharedSetup !== link.setup.id)
     return null;
   const value = link.shared?.membershipAndAccess?.value;
-  return isObject(value) && !Object.hasOwn(value, "fields") && link.setup.checkpointed ? membershipOf(value) : null;
+  const membership = isObject(value) && !Object.hasOwn(value, "fields") && link.setup.checkpointed ? membershipOf(value) : null;
+  const revocations = link.setupRevocations;
+  return membership && revocations?.setup === link.setup.id ? withRevocations(membership, revocations) : membership;
 }
 function namedRoster(link, boxes) {
   return boxes.map((box) => ({ ...box, name: acceptedName(link, box.key, box.name) }));
@@ -4619,6 +4662,7 @@ function projectMembership(link, membership, keepLocalPairings = false) {
     link.wipePreparations = membership.wipePreparations;
   }
 }
+var uniqueDeviceRevocations = (devices) => [...new Map(devices.map((device) => [JSON.stringify([device.key, device.pairing]), device])).values()];
 var init_membership = __esm(() => {
   init_folder_version();
   init_home();
@@ -4782,21 +4826,49 @@ function archivesOf(doc) {
   }
   return pages;
 }
-function cacheCheckpoint(link, cache, doc) {
+function successorPredecessor(link, epoch) {
+  if (!successorRankLayoutReady(K) || !link.setup?.successorChain)
+    return null;
+  const parent = held(link.leadership?.[epoch]);
+  if (parent?.body.successorChain !== true)
+    return null;
+  const position = setupOf(parent.body);
+  const saved = resolveCheckpoint(parent);
+  if (!position || position.id !== link.setup.id || position.epoch !== epoch || !saved?.membership.successorOrder)
+    return null;
+  const primary = saved.membership.boxes.find((peer) => peer.key === position.primary);
+  const standby = saved.membership.boxes.find((peer) => peer.key === parent.body.standby);
+  const ceiling = parent.body.numberCeiling;
+  if (!primary?.sign)
+    return null;
+  return { parent, position, primary, standby, ceiling, ...saved };
+}
+function cacheCheckpoint(link, cache, doc, branches = []) {
   const setup = link.setup;
   if (setupLayoutDeferred(K) || !setup || doc.kind !== "setup-checkpoint" || doc.body.id !== setup.id)
     return;
+  const allowed = (candidate) => {
+    if (candidate.n === setup.epoch && setup.leadershipHash && !held(link.leadership?.[setup.epoch])) {
+      const roster = setupDoc(link)?.body.boxes;
+      return Array.isArray(roster) && roster.some((peer) => fitsPeer(peer) && peer.sign === candidate.origin);
+    }
+    if (candidate.n === setup.epoch + 1 && (candidate.origin === setup.sign || candidate.origin === setup.standby?.sign || setup.successorChain && acceptedMembership(link)?.boxes.some((peer) => peer.sign === candidate.origin)))
+      return true;
+    if (successorPredecessor(link, candidate.n - 1)?.membership.boxes.some((peer) => peer.sign === candidate.origin))
+      return true;
+    return branches.some((branch) => branch.setup?.id === setup.id && branch.setup.epoch + 1 === candidate.n && acceptedMembership(branch)?.boxes.some((peer) => peer.sign === candidate.origin));
+  };
   const hash = checkpointHash(doc);
   if (doc.body.archive === true) {
     for (const manifest of cache.values()) {
-      if (manifest.n === setup.epoch + 1 && (manifest.origin === setup.sign || manifest.origin === setup.standby?.sign) && archiveRefs(manifest)?.includes(hash) && outcomesOf(doc.body.outcomes, manifest.n)) {
+      if (allowed(manifest) && archiveRefs(manifest)?.includes(hash) && outcomesOf(doc.body.outcomes, manifest.n)) {
         preserveCheckpoint(doc);
         return;
       }
     }
     return;
   }
-  if (doc.n !== setup.epoch + 1 || doc.origin !== setup.sign && doc.origin !== setup.standby?.sign || !archiveRefs(doc))
+  if (!allowed(doc) || !archiveRefs(doc))
     return;
   if (!cache.has(hash) && cache.size >= 8)
     cache.delete(cache.keys().next().value);
@@ -4891,8 +4963,10 @@ function checkpointedTransition(link, authority, shared) {
   const checkpoint = readDoc(signDoc(link.sign, "setup-checkpoint", next.epoch, { id: next.id, shared, archives, sealedPrimaries: seals }));
   if (!checkpoint)
     return null;
+  const parent = prior?.h ?? current.leadershipHash;
   const doc = readDoc(signDoc(link.sign, "leadership", next.epoch, {
     ...authority,
+    ...authority.successorChain === true && parent ? { parent } : {},
     checkpoint: checkpointHash(checkpoint)
   }));
   if (!doc || !resolveCheckpoint(doc, checkpoint))
@@ -4922,6 +4996,55 @@ var init_checkpoint = __esm(() => {
   init_shared();
   init_data_declarations();
   HASH = /^[\w-]{43}$/;
+});
+
+// box/src/link/setup/revocations.ts
+function publishRevocations(link) {
+  const setup = link.setup;
+  if (!setup?.successorChain || setup.role !== "primary" || !link.sign || ownSign(link) !== setup.sign)
+    return null;
+  const tip = held(link.leadership?.[setup.epoch]);
+  const membership = acceptedMembership(link);
+  if (!tip || !membership)
+    return null;
+  const revocations = membershipRevocations(setup.id, membership);
+  if (!revocations.computers.length && !revocations.signs.length && !revocations.devices.length)
+    return null;
+  return signDoc(link.sign, "setup-shared", setup.epoch, { tip: tip.h, forkRevocations: revocations });
+}
+function revocationDocuments(link) {
+  const current = publishRevocations(link);
+  const kept = link.discardedRevocations;
+  const previous = kept && kept.setup === link.setup?.id ? [...kept.certificates.flatMap(leadershipDocuments), kept.proof] : [];
+  return current ? [...previous, current] : previous;
+}
+function takeRevocations(link, doc, forks) {
+  const setup = link.setup;
+  const { tip, forkRevocations: value } = doc.body;
+  if (!setup?.successorChain || !isObject(value) || value.setup !== setup.id || typeof tip !== "string")
+    return;
+  const current = held(link.leadership?.[doc.n]);
+  const branch = forks.get(tip)?.source.setup;
+  const active = current?.h === tip && doc.n === setup.epoch && doc.origin === setup.sign;
+  const historical = current?.h === tip && doc.n < setup.epoch && resolveCheckpoint(current)?.membership.boxes.some((peer) => peer.key === setupOf(current.body)?.primary && peer.sign === doc.origin);
+  const competing = branch?.id === setup.id && branch.epoch === doc.n && branch.sign === doc.origin;
+  if (!active && !historical && !competing)
+    return;
+  const keys = (given, rule) => Array.isArray(given) && given.every((key) => typeof key === "string" && rule.test(key));
+  if (!keys(value.computers, KEY) || !keys(value.signs, SIGN) || !Array.isArray(value.devices) || !value.devices.every((device) => isObject(device) && typeof device.key === "string" && KEY.test(device.key) && typeof device.pairing === "string" && device.pairing.length <= 128))
+    return;
+  if (!mergeRevocations(link, { setup: setup.id, computers: value.computers, signs: value.signs, devices: value.devices }))
+    return;
+  const merged = acceptedMembership(link);
+  if (merged)
+    projectMembership(link, merged);
+}
+var init_revocations = __esm(() => {
+  init_format();
+  init_known();
+  init_record();
+  init_checkpoint();
+  init_membership();
 });
 
 // box/src/link/work-queue/offline-fields.ts
@@ -15275,6 +15398,7 @@ function managedFields(doc) {
   return {
     managed: true,
     ...doc.body.checkpointed === true ? { checkpointed: true } : {},
+    ...doc.body.checkpointed === true && doc.body.successorChain === true && typeof doc.body.leadershipHash === "string" && /^[\w-]{11}$/.test(doc.body.leadershipHash) ? { successorChain: true, leadershipHash: doc.body.leadershipHash } : {},
     ...doc.body.sharedSaves === true ? { sharedSaves: true } : {},
     ...standby?.sign && typeof ceiling === "number" && Number.isSafeInteger(ceiling) && ceiling > 0 ? { standby: { key: standby.key, sign: standby.sign }, numberCeiling: ceiling } : {}
   };
@@ -15365,7 +15489,7 @@ function takeDoc(link, envelope) {
     const setup = setupOf(doc.body);
     if ((kept.managed || doc.body.managed === true) && setup?.id === kept.id && setup.epoch > kept.epoch)
       return null;
-    if (kept.managed && (!setup || setup.id !== kept.id || setup.epoch !== kept.epoch || setup.primary !== kept.primary || doc.origin !== kept.sign || (doc.body.standby ?? null) !== (kept.standby?.key ?? null) || doc.body.numberCeiling !== kept.numberCeiling))
+    if (kept.managed && (!setup || setup.id !== kept.id || setup.epoch !== kept.epoch || setup.primary !== kept.primary || doc.origin !== kept.sign || (doc.body.standby ?? null) !== (kept.standby?.key ?? null) || Boolean(doc.body.successorChain === true) !== Boolean(kept.successorChain) || kept.successorChain && doc.body.leadershipHash !== (leadershipOf(link)?.h ?? kept.leadershipHash) || doc.body.numberCeiling !== kept.numberCeiling))
       return null;
   }
   if (doc.kind === "phones" && link.setup?.managed && doc.origin === link.setup.sign && doc.body.epoch !== link.setup.epoch)
@@ -15466,7 +15590,7 @@ function primaryPeersBody(link) {
     ...removals ? { removalKeys: Object.keys(removals).filter((key) => !removals[key]?.local) } : {},
     moved: accepted?.moved ?? cleanMoved(link.macMoved),
     left: accepted?.left.slice(-64) ?? (Array.isArray(link.left) ? link.left : []).filter((key) => !current.has(key)),
-    ...leads && setup ? { setup: { id: setup.id, epoch: setup.epoch, primary: setup.primary }, ...setup.managed ? { managed: true } : {}, ...setup.checkpointed ? { checkpointed: true } : {}, ...setup.sharedSaves ? { sharedSaves: true } : {}, ...setup.standby ? { standby: setup.standby.key, numberCeiling: setup.numberCeiling } : {} } : {}
+    ...leads && setup ? { setup: { id: setup.id, epoch: setup.epoch, primary: setup.primary }, ...setup.managed ? { managed: true } : {}, ...setup.checkpointed ? { checkpointed: true } : {}, ...setup.sharedSaves ? { sharedSaves: true } : {}, ...setup.successorChain ? { successorChain: true, leadershipHash: leadershipOf(link)?.h } : {}, ...setup.standby ? { standby: setup.standby.key, numberCeiling: setup.numberCeiling } : {} } : {}
   };
 }
 function digestOf(link) {
@@ -15474,6 +15598,8 @@ function digestOf(link) {
   const tip = leadershipPosition(link);
   if (tip)
     have.push([tip.origin, "leadership", tip.epoch, tip.h]);
+  for (const prior of successorHistory(link).filter((doc) => doc.n !== tip?.epoch))
+    have.push([prior.origin, "leadership", prior.n, prior.h]);
   for (const envelope of Object.values(link?.docs ?? {})) {
     const doc = held(envelope);
     if (doc)
@@ -15538,7 +15664,12 @@ function docsWork(state, sender, docs, { stay = null } = {}) {
   }
   const took = [];
   const beforeShared = link.shared;
+  const beforeTip = leadershipOf(link);
+  const beforeLeadership = link.leadership;
+  const beforeRevocations = publishRevocations(link);
   const checkpoints = state.checkpoints ??= new Map;
+  const forks = state.successorForks ??= new Map;
+  let stagedTip;
   for (const envelope of given) {
     const kind = held(envelope)?.kind;
     if (kind !== "setup-checkpoint" && kind !== "leadership")
@@ -15547,7 +15678,7 @@ function docsWork(state, sender, docs, { stay = null } = {}) {
     if (!doc)
       continue;
     if (kind === "setup-checkpoint") {
-      cacheCheckpoint(link, checkpoints, doc);
+      cacheCheckpoint(link, checkpoints, doc, [...forks.values()].map((fork) => fork.source));
       continue;
     }
     const ref = doc.body.checkpoint;
@@ -15557,21 +15688,39 @@ function docsWork(state, sender, docs, { stay = null } = {}) {
     if (committed && committed.body.approval === doc.envelope.s)
       to(sender, (outgoing) => outgoing.give.push(...leadershipDocuments(committed.envelope)));
     const candidate = approved ?? doc;
-    if (takeLeadership(link, candidate, checkpoint)) {
+    const staged = forks.has(candidate.h);
+    if (takeLeadership(link, candidate, checkpoint, forks)) {
       if (checkpoint)
         checkpoints.delete(ref);
       took.push(candidate);
       if (approved)
         to(sender, (outgoing) => outgoing.give.push(...leadershipDocuments(candidate.envelope)));
-    }
+    } else if (!staged && forks.has(candidate.h) && (!stagedTip || candidate.n > stagedTip.n))
+      stagedTip = candidate;
+  }
+  if (stagedTip) {
+    const { origin, n, h } = stagedTip;
+    to(sender, (outgoing) => {
+      outgoing.have = [[origin, "leadership", n, h]];
+      outgoing.reply = true;
+    });
   }
   for (const envelope of given) {
     if (held(envelope)?.kind !== "setup-shared")
       continue;
     const doc = readDoc(envelope);
+    if (doc?.body.forkRevocations !== undefined) {
+      takeRevocations(link, doc, forks);
+      continue;
+    }
     const receipt = doc && doc.body.replica === undefined && takeShared(link, sender.key, doc);
     if (receipt)
       to(sender, (outgoing) => outgoing.give.push(receipt));
+  }
+  if (beforeRevocations && beforeTip && link.setup && leadershipPosition(link)?.h !== beforeTip.h) {
+    const certificates = Object.entries(beforeLeadership ?? {}).filter(([epoch, envelope]) => link.leadership?.[Number(epoch)]?.s !== envelope.s).map(([, envelope]) => envelope);
+    link.discardedRevocations = { setup: link.setup.id, certificates: certificates.length ? certificates : [beforeTip.envelope], proof: beforeRevocations };
+    to(sender, (outgoing) => outgoing.give.push(...revocationDocuments(link)));
   }
   for (const kind of ownDocumentKinds) {
     for (const envelope of given) {
@@ -15618,12 +15767,15 @@ function docsWork(state, sender, docs, { stay = null } = {}) {
   if (Array.isArray(docs?.have)) {
     const theirs = new Map;
     let remoteEpoch = 1;
+    const remote = {};
     for (const entry of docs.have.slice(0, 512)) {
       if (!Array.isArray(entry) || typeof entry[0] !== "string" || !DOC_KINDS.includes(entry[1]) || !Number.isSafeInteger(entry[2]))
         continue;
-      if (entry[1] === "leadership")
+      if (entry[1] === "leadership") {
         remoteEpoch = Math.max(remoteEpoch, entry[2]);
-      else
+        if (typeof entry[3] === "string")
+          remote[entry[2]] = entry[3];
+      } else
         theirs.set(docKey(entry[0], entry[1]), { n: entry[2], h: String(entry[3] ?? "") });
     }
     const self = ownSign(link);
@@ -15639,13 +15791,19 @@ function docsWork(state, sender, docs, { stay = null } = {}) {
     };
     if (docPeers(link).some((peer) => peer.key === sender.key)) {
       const next = link.leadership?.[remoteEpoch + 1];
-      if (next)
+      const chain = successorCertificates(link, remote);
+      if (chain.length)
+        to(sender, (docs) => {
+          docs.give.push(...chain);
+          docs.give.push(...revocationDocuments(link));
+        });
+      else if (next)
         to(sender, (docs) => {
           docs.give.push(...leadershipDocuments(next));
           if (!held(next)?.body.checkpoint && link.setup && link.setup.epoch > remoteEpoch + 1)
             docs.have = digestOf(link);
         });
-      else if (!link.setup?.standby || link.setup.standby.key !== sender.key) {
+      if (!next && (!link.setup?.standby || link.setup.standby.key !== sender.key)) {
         const replica = publishedShared(link);
         if (replica.length)
           to(sender, (docs) => docs.give.push(...replica));
@@ -15771,6 +15929,7 @@ var init_work = __esm(() => {
   init_leadership();
   init_checkpoint();
   init_shared();
+  init_revocations();
   init_lease();
   init_settle();
   init_state();
@@ -16723,16 +16882,17 @@ function pendingStandby(link) {
 }
 function approveLeadership(link, proposal, checkpoint) {
   const current = link.setup;
-  if (setupLayoutDeferred(K) || !current || current.sign !== proposal.origin || proposal.body.proposal !== true || !link.sign)
+  if (setupLayoutDeferred(K) || !current || proposal.n !== current.epoch + 1 || current.sign !== proposal.origin || proposal.body.proposal !== true || !link.sign)
     return null;
   const resolved = resolveCheckpoint(proposal, checkpoint);
   if (resolved && !checksSeal(link, resolved.checkpoint))
     return null;
   if (proposal.body.standbyAcceptance === true) {
-    if (current.standby || !resolved || proposal.body.recovery === true && !requiresStandby(current))
+    const replacement = proposal.body.replacesStandby;
+    if ((current.standby ? !current.successorChain || replacement !== current.standby.key : replacement !== undefined) || !resolved || proposal.body.recovery === true && !requiresStandby(current))
       return null;
-    const replacement = resolved.membership.boxes.find((peer) => peer.key === proposal.body.standby);
-    if (!replacement || replacement.key !== ownKey(link) || replacement.sign !== ownSign(link))
+    const successor = resolved.membership.boxes.find((peer) => peer.key === proposal.body.standby);
+    if (!successor || successor.key !== ownKey(link) || successor.sign !== ownSign(link))
       return null;
     return readDoc(signDoc(link.sign, "leadership", proposal.n, { ...proposal.body, approval: proposal.envelope.s }));
   }
@@ -16762,18 +16922,155 @@ function approveLeadership(link, proposal, checkpoint) {
   }
   return readDoc(signDoc(link.sign, "leadership", proposal.n, { ...proposal.body, approval: proposal.envelope.s }));
 }
-function takeLeadership(link, doc, checkpoint) {
+function successorHistory(link) {
+  const epoch = link.setup?.epoch;
+  if (!epoch || !link.setup?.successorChain)
+    return [];
+  const epochs = Object.keys(link.leadership ?? {}).map(Number).sort((a, b) => b - a);
+  const recent = epochs.slice(0, 15);
+  const activation = epochs.findLast((n) => held(link.leadership?.[n])?.body.successorChain === true);
+  if (activation && !recent.includes(activation))
+    recent.push(activation);
+  return recent.flatMap((n) => {
+    const doc = held(link.leadership?.[n]);
+    return doc ? [doc] : [];
+  });
+}
+function successorCertificates(link, remote) {
+  const local = link.setup?.epoch ?? 0;
+  const epochs = Object.keys(remote).map(Number).filter((n) => Number.isSafeInteger(n) && n > 0);
+  const latest = Math.max(0, ...epochs);
+  if (!link.setup?.successorChain || !latest || local < latest || leadershipOf(link)?.h === remote[local])
+    return [];
+  const agreed = Math.max(0, ...epochs.filter((n) => held(link.leadership?.[n])?.h === remote[n]));
+  const from = agreed || Math.max(1, latest - 1);
+  const docs = [];
+  for (let n = from + 1;n <= local && n <= from + 16; n++) {
+    const envelope = link.leadership?.[n];
+    if (envelope)
+      docs.push(...leadershipDocuments(envelope));
+  }
+  return docs;
+}
+function stagedFork(link, doc, checkpoint, forks) {
+  const next = setupOf(doc.body);
+  const parent = doc.body.parent;
+  if (!next || !link.setup || next.id !== link.setup.id || typeof parent !== "string")
+    return null;
+  let prior = forks.get(parent);
+  if (!prior) {
+    const base = successorPredecessor(link, doc.n - 1);
+    if (!base || parent !== base.parent.h)
+      return null;
+    const { position, primary, standby, ceiling } = base;
+    const previous = structuredClone(link);
+    previous.setup = {
+      ...position,
+      sign: primary.sign,
+      role: ownKey(link) === primary.key ? "primary" : "member",
+      managed: true,
+      checkpointed: true,
+      successorChain: true,
+      sharedSaves: true,
+      ...standby?.sign && ceiling ? { standby: { key: standby.key, sign: standby.sign }, numberCeiling: ceiling } : {}
+    };
+    previous.shared = base.shared;
+    delete previous.sharedOutcomes;
+    delete previous.setupRevocations;
+    previous.leadership = Object.fromEntries(Object.entries(previous.leadership ?? {}).filter(([n]) => Number(n) <= position.epoch));
+    prior = { source: previous, rank: base.membership.successorOrder };
+  }
+  const candidate = structuredClone(link);
+  candidate.setup = prior.source.setup;
+  candidate.leadership = prior.source.leadership;
+  candidate.sharedSetup = prior.source.sharedSetup;
+  candidate.shared = prior.source.shared;
+  candidate.sharedOutcomes = prior.source.sharedOutcomes;
+  delete candidate.setupRevocations;
+  if (!installLeadership(candidate, doc, checkpoint, true))
+    return null;
+  const staged = { source: candidate, rank: prior.rank };
+  if (!forks.has(doc.h) && forks.size >= 16)
+    forks.delete(forks.keys().next().value);
+  forks.set(doc.h, staged);
+  return staged;
+}
+function fillEnrollmentCertificate(link, doc, checkpoint) {
+  const current = link.setup;
+  if (!current?.leadershipHash || current.leadershipHash !== doc.h || doc.kind !== "leadership" || current.epoch !== doc.n || held(link.leadership?.[doc.n]) || doc.body.successorChain !== true)
+    return false;
+  if (!acceptedMembership(link)?.boxes.some((peer) => peer.key === ownKey(link) && peer.sign === ownSign(link)))
+    return false;
+  const position = setupOf(doc.body);
+  const resolved = resolveCheckpoint(doc, checkpoint);
+  if (!position || position.id !== current.id || position.primary !== current.primary || position.epoch !== current.epoch || !resolved)
+    return false;
+  preserveCheckpoint(resolved.checkpoint);
+  link.leadership = { ...link.leadership, [doc.n]: doc.envelope };
+  return true;
+}
+function takeLeadership(link, doc, checkpoint, forks = new Map) {
+  if (fillEnrollmentCertificate(link, doc, checkpoint))
+    return true;
+  const old = link.setup?.successorChain ? acceptedMembership(link) : null;
+  if (installLeadership(link, doc, checkpoint)) {
+    const merged = acceptedMembership(link);
+    if (old && merged && link.setup && mergeRevocations(link, membershipRevocations(link.setup.id, old))) {
+      const membership = acceptedMembership(link);
+      if (membership)
+        projectMembership(link, membership);
+    }
+    return true;
+  }
+  const active = leadershipOf(link);
+  if (!active || !link.setup?.successorChain || doc.body.successorChain !== true || held(link.leadership?.[doc.n])?.h === doc.h)
+    return false;
+  const staged = stagedFork(link, doc, checkpoint, forks);
+  const next = setupOf(doc.body);
+  if (!staged || !next || next.epoch < link.setup.epoch)
+    return false;
+  const rank = (key) => {
+    const index = staged.rank.indexOf(key);
+    return index < 0 ? staged.rank.length : index;
+  };
+  const compare = (a, b) => a < b ? -1 : a > b ? 1 : 0;
+  const difference = rank(next.primary) - rank(link.setup.primary) || compare(next.primary, link.setup.primary) || compare(doc.h, active.h);
+  if (next.epoch === link.setup.epoch && difference >= 0)
+    return false;
+  const losing = acceptedMembership(link);
+  if (losing)
+    mergeRevocations(staged.source, membershipRevocations(next.id, losing));
+  const merged = acceptedMembership(staged.source);
+  if (merged)
+    projectMembership(staged.source, merged);
+  for (const key of Object.keys(link))
+    if (!Object.hasOwn(staged.source, key))
+      delete link[key];
+  Object.assign(link, staged.source);
+  return true;
+}
+function installLeadership(link, doc, checkpoint, discardingFork = false) {
   const current = link.setup;
   const next = setupOf(doc.body);
   const acceptance = doc.body.standbyAcceptance === true;
+  const takeover = doc.body.takeover === true;
+  const chained = doc.body.successorChain === true;
+  if (current?.successorChain && !chained || chained && !successorRankLayoutReady(K))
+    return false;
+  const prior = leadershipOf(link)?.h ?? current?.leadershipHash;
+  if (current?.successorChain && prior && doc.body.parent !== prior)
+    return false;
+  const ranked = takeover && current?.successorChain && acceptedMembership(link)?.boxes.find((peer) => peer.key === next?.primary && peer.sign === doc.origin && peer.key !== current.primary);
   if (doc.body.recovery === true && !acceptance)
     return false;
-  if (setupLayoutDeferred(K) || doc.kind !== "leadership" || !current || current.aside || !next || next.id !== current.id || doc.n !== next.epoch || next.epoch !== current.epoch + 1 || !acceptance && doc.origin !== (current.standby?.sign ?? current.sign) || doc.body.previous !== current.primary)
+  if (setupLayoutDeferred(K) || doc.kind !== "leadership" || !current || current.aside || !next || next.id !== current.id || doc.n !== next.epoch || next.epoch !== current.epoch + 1 || !acceptance && !ranked && doc.origin !== (current.standby?.sign ?? current.sign) || doc.body.previous !== current.primary)
     return false;
   const resolved = resolveCheckpoint(doc, checkpoint);
   if (resolved && !checksSeal(link, resolved.checkpoint))
     return false;
-  if ((current.checkpointed || Object.hasOwn(doc.body, "checkpoint")) && !resolved)
+  if ((chained || current.checkpointed || Object.hasOwn(doc.body, "checkpoint")) && !resolved)
+    return false;
+  if (chained && !resolved?.membership.successorOrder)
     return false;
   const body = resolved?.membership ?? doc.body;
   if (!Array.isArray(body.boxes) || !body.boxes.every(fitsPeer))
@@ -16781,9 +17078,8 @@ function takeLeadership(link, doc, checkpoint) {
   const shared = resolved?.shared ?? sharedValues(doc.body.shared);
   if (doc.body.shared !== undefined && !shared)
     return false;
-  const takeover = doc.body.takeover === true;
   if (takeover) {
-    if (!current.standby || next.primary !== current.standby.key || doc.body.proposal)
+    if (doc.body.proposal || (current.successorChain ? !ranked || resolved?.checkpoint.origin !== doc.origin : next.primary !== current.standby?.key))
       return false;
   } else if (current.standby || acceptance) {
     const { approval, ...proposal } = doc.body;
@@ -16802,9 +17098,12 @@ function takeLeadership(link, doc, checkpoint) {
     return false;
   const primary = peers.find((peer) => peer.key === next.primary);
   const standby = peers.find((peer) => peer.key === doc.body.standby && peer.key !== next.primary && peer.sign !== primary?.sign);
-  if (acceptance && (takeover || !resolved || current.standby || doc.body.recovery === true && !requiresStandby(current) || next.primary !== current.primary || standby?.sign !== doc.origin || current.role === "primary" && held(link.leadershipPending)?.envelope.s !== doc.body.approval))
+  const replacement = doc.body.replacesStandby;
+  if (replacement !== undefined && (!acceptance || !current.successorChain || replacement !== current.standby?.key || standby?.key === replacement))
     return false;
-  if (!primary?.sign || !peers.some((peer) => peer.key === current.primary && peer.sign === current.sign) || takeover && primary.sign !== current.standby?.sign || doc.body.standby != null && !standby?.sign || next.primary === current.primary && (doc.body.standby ?? null) === (current.standby?.key ?? null) && !(resolved && !current.checkpointed) && !(typeof doc.body.numberCeiling === "number" && doc.body.numberCeiling > (current.numberCeiling ?? 0)))
+  if (acceptance && (takeover || !resolved || current.standby && replacement === undefined || doc.body.recovery === true && !requiresStandby(current) || next.primary !== current.primary || standby?.sign !== doc.origin || !discardingFork && current.role === "primary" && held(link.leadershipPending)?.envelope.s !== doc.body.approval))
+    return false;
+  if (!primary?.sign || !peers.some((peer) => peer.key === current.primary && peer.sign === current.sign) && !(ranked && resolved?.membership.left.includes(current.primary)) || takeover && primary.sign !== doc.origin || doc.body.standby != null && !standby?.sign || next.primary === current.primary && (doc.body.standby ?? null) === (current.standby?.key ?? null) && !(resolved && !current.checkpointed) && !(chained && !current.successorChain) && !(typeof doc.body.numberCeiling === "number" && doc.body.numberCeiling > (current.numberCeiling ?? 0)))
     return false;
   const ceiling = doc.body.numberCeiling;
   if (standby && (typeof ceiling !== "number" || !Number.isSafeInteger(ceiling) || ceiling < 1))
@@ -16831,7 +17130,7 @@ function takeLeadership(link, doc, checkpoint) {
   const here = own === primary.key;
   if (here && ownSign(link) !== primary.sign)
     return false;
-  const stillHere = here && current.role === "primary";
+  const stillHere = here && current.role === "primary" && !discardingFork;
   if (resolved)
     preserveCheckpoint(resolved.checkpoint);
   link.setup = {
@@ -16840,6 +17139,7 @@ function takeLeadership(link, doc, checkpoint) {
     sign: primary.sign,
     role: here ? "primary" : "member",
     managed: true,
+    ...chained ? { successorChain: true } : {},
     ...retired === undefined && (requiresStandby(current) || standby || doc.body.sharedSaves === true) ? { sharedSaves: true } : {},
     ...standby?.sign ? { standby: { key: standby.key, sign: standby.sign }, numberCeiling: ceiling } : {}
   };
@@ -16864,7 +17164,7 @@ function takeLeadership(link, doc, checkpoint) {
     link.mac = primary.key;
   if (link.docs)
     delete link.docs[docKey(primary.sign, "phones")];
-  if (takeover) {
+  if (takeover || discardingFork) {
     link.removed = [];
     delete link.untold;
     delete link.untoldMembership;
@@ -20467,6 +20767,7 @@ var init_features = __esm(() => {
     "setup.shared-saves",
     "setup.sole-primary",
     "setup.standby-acceptance",
+    "setup.successor-chain",
     "setup.takeover",
     "setup.welcomed",
     "shell.stop",
@@ -33524,7 +33825,7 @@ async function receiveDocs(sender, docs, host) {
       return null;
     setup = JSON.stringify(link.setup ?? null);
     shared = link.shared;
-    const state = { link, library: before, parts: docParts, checkpoints };
+    const state = { link, library: before, parts: docParts, checkpoints, successorForks };
     work = docsWork(state, sender, docs);
     library = state.library;
     return link;
@@ -33590,7 +33891,7 @@ function macDocsChanged({ closeRemoved } = {}) {
   else if (!IS_MAC)
     noteDocsChanged();
 }
-var docParts, checkpoints;
+var docParts, checkpoints, successorForks;
 var init_exchange = __esm(() => {
   init_changed();
   init_home();
@@ -33606,6 +33907,7 @@ var init_exchange = __esm(() => {
   init_work();
   docParts = new Map;
   checkpoints = new Map;
+  successorForks = new Map;
 });
 
 // box/src/link/engine/chats.ts
@@ -55452,7 +55754,7 @@ async function handoverHere(target, position, requester) {
 function enrollStandby(setup, peer, prepare, record) {
   return proposeLeadership({ setup: setup.id, epoch: setup.epoch }, setup.primary, peer, { recovery: { peer, prepare, record } });
 }
-async function proposeLeadership(position, target, standby, { requester, targetSign, recovery, retire } = {}) {
+async function proposeLeadership(position, target, standby, { requester, targetSign, recovery, retire, replace } = {}) {
   if (setupLayoutDeferred(K))
     return answer5(503, "Wait for the Kuvo Code update to finish before changing the setup.");
   let oversized = false;
@@ -55460,7 +55762,10 @@ async function proposeLeadership(position, target, standby, { requester, targetS
   let unsupportedWipePreparation = false;
   const changed = changeNumbers((numbers) => updateLink((link) => {
     const current = followedSetup(link);
-    if (!link?.sign || current?.role !== "primary" || current.sign !== ownSign(link) || current.id !== position.setup || current.epoch !== position.epoch || link.localWipe || primaryFenced(link) || Object.keys(link.sharedPending ?? {}).length)
+    if (!link?.sign || current?.role !== "primary" || current.sign !== ownSign(link) || current.id !== position.setup || current.epoch !== position.epoch || link.localWipe || link.leadershipPending)
+      return null;
+    const fenced = primaryFenced(link);
+    if (replace ? !fenced || !current.successorChain || !current.standby || !standby || standby.key === current.standby.key || target !== current.primary || acceptedMembership(link)?.left.includes(current.primary) : fenced || Object.keys(link.sharedPending ?? {}).length)
       return null;
     if (recovery && (!standby || current.standby || !requiresStandby(current) || target !== current.primary || recovery.peer.key !== standby.key || recovery.peer.sign !== standby.sign))
       return null;
@@ -55484,8 +55789,9 @@ async function proposeLeadership(position, target, standby, { requester, targetS
     if (standby && !recovery && (!members.some((peer) => peer.key === standby.key && peer.sign === standby.sign) || members.some((peer) => !peer.sign || !takesForwarded(peer.key, "setup.shared-saves"))))
       return null;
     const supportsCheckpoint = members.every((peer) => takesForwarded(peer.key, CHECKPOINT_FEATURE));
-    const acceptance = Boolean(standby && !current.standby && (recovery || members.every((peer) => takesForwarded(peer.key, STANDBY_ACCEPTANCE))));
-    const migrating = Boolean(!current.checkpointed && current.standby && supportsCheckpoint);
+    const acceptance = Boolean(replace || standby && !current.standby && (recovery || members.every((peer) => takesForwarded(peer.key, STANDBY_ACCEPTANCE))));
+    const successorChain = current.successorChain || Boolean(standby && supportsCheckpoint && !recovery && successorRankLayoutReady(K) && (!current.checkpointed || !current.standby || acceptedMembership(link)?.successorOrder) && members.every((peer) => takesForwarded(peer.key, "setup.successor-chain")));
+    const migrating = Boolean(current.standby && (supportsCheckpoint && !current.checkpointed || successorChain && !current.successorChain));
     const renewing = target === current.primary && (standby?.key ?? null) === (current.standby?.key ?? null);
     if (renewing && (!standby || !current.numberCeiling || !migrating && current.numberCeiling >= MOST_NUMBER - 1))
       return null;
@@ -55527,6 +55833,8 @@ async function proposeLeadership(position, target, standby, { requester, targetS
       ...standby ? { standby: standby.key, numberCeiling: renewing && migrating ? current.numberCeiling : Math.min(MOST_NUMBER - 1, next + NUMBER_RESERVE - 1) } : {},
       ...current.standby || acceptance ? { proposal: true } : {},
       ...acceptance ? { standbyAcceptance: true } : {},
+      ...successorChain ? { successorChain: true } : {},
+      ...replace ? { replacesStandby: current.standby.key } : {},
       ...recovery ? { recovery: true } : {}
     };
     const ledger = { next, given: numbers.given, granted };
@@ -55535,6 +55843,8 @@ async function proposeLeadership(position, target, standby, { requester, targetS
       const membership = acceptedMembership(link) ?? captureMembership(link);
       if (!membership)
         return null;
+      if (successorChain && !membership.successorOrder)
+        membership.successorOrder = rankComputers(membership.boxes);
       if (recovery) {
         if (membership.boxes.some((peer) => peer.key === recovery.peer.key) || membership.left.includes(recovery.peer.key))
           return null;
@@ -77741,7 +78051,7 @@ var init_files4 = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "fcbf74b996d1";
+var BRIDGE_VERSION = "3342bbdb91ed";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync17 } from "node:child_process";
@@ -83409,6 +83719,8 @@ var ownList = null, ownMachine = null, refreshes = 0, keptRefresh = 0, ownFeatur
       return offlineEditLayoutReady(K);
     if (feature === "data.ownership" || feature === "data.mutation-identity")
       return ownershipLayoutReady(K);
+    if (feature === "setup.successor-chain")
+      return successorRankLayoutReady(K);
     if (feature === "setup.checkpoints" || feature === "setup.standby-acceptance")
       return !setupLayoutDeferred(K);
     return true;
@@ -90473,6 +90785,7 @@ init_leadership();
 init_lease();
 init_reliability();
 init_shared();
+init_revocations();
 init_record();
 import crypto81 from "node:crypto";
 var nonce2 = () => crypto81.randomBytes(16).toString("base64url");
@@ -90480,6 +90793,7 @@ var signal = (token) => typeof token === "string" && /^[\w-]{22}$/.test(token);
 var position2 = "";
 var since2;
 var lastTick;
+var lastTip;
 var lastRound = 0;
 var selecting = false;
 var loggedDelay;
@@ -90488,21 +90802,33 @@ var pong;
 var lastPrimary;
 var ownPrimarySince;
 var rankCheckedAt = 0;
+var eligibleSince;
+var standbyUnavailable;
+var probes = new Map;
+var reached = new Map;
+function clearProbes() {
+  probes.clear();
+  reached.clear();
+  eligibleSince = undefined;
+}
 function reset(setup, now) {
-  const next = `${setup.id}:${setup.epoch}`;
+  const next = `${setup.id}:${setup.epoch}:${setup.primary}`;
   if (position2 === next)
     return;
   position2 = next;
   since2 = now;
-  ping = pong = lastTick = lastPrimary = ownPrimarySince = undefined;
+  ping = pong = lastTick = lastTip = lastPrimary = ownPrimarySince = undefined;
   resetAvailability();
+  clearProbes();
+  standbyUnavailable = undefined;
   rankCheckedAt = Date.now();
   loggedDelay = undefined;
 }
 function send2(host, link, to, value) {
   const peer = peersOf(link).find((each) => each.key === to);
   const { id, epoch } = link.setup;
-  const bytes = peer && mailFor(peer, { setupAuthority: { id, epoch, ...value }, at: Date.now() }, link);
+  const tip = link.setup.successorChain ? leadershipOf(link)?.h ?? link.setup.leadershipHash : undefined;
+  const bytes = peer && mailFor(peer, { setupAuthority: { id, epoch, tip, ...value }, at: Date.now() }, link);
   if (bytes)
     host.send(bytes);
 }
@@ -90511,7 +90837,20 @@ function receiveAuthority2(sender, given, host) {
     return;
   const link = readLink();
   const setup = followedSetup(link);
-  if (!link || !setup || setup.id !== given.id || setup.epoch !== given.epoch)
+  if (!link || !setup || setup.id !== given.id)
+    return;
+  if (setup.successorChain && given.kind === "tip" && isObject(given.history)) {
+    const peer = peersOf(link).find((peer) => peer.key === sender.key);
+    if (!peer)
+      return;
+    const remote = Object.fromEntries(Object.entries(given.history).slice(0, 16).filter(([epoch, hash]) => /^[1-9][0-9]*$/.test(epoch) && typeof hash === "string"));
+    const give = successorCertificates(link, remote);
+    give.push(...revocationDocuments(link));
+    if (give.length)
+      sendDocs(host, link, [{ to: peer, docs: { give } }]);
+    return;
+  }
+  if (setup.epoch !== given.epoch || setup.successorChain && (given.tip !== (leadershipOf(link)?.h ?? setup.leadershipHash) || link.setupRevocations && acceptedMembership(link)?.left.includes(ownKey(link) ?? "")))
     return;
   const now = leaseClock();
   reset(setup, now);
@@ -90527,7 +90866,23 @@ function receiveAuthority2(sender, given, host) {
       sendDocs(host, link, [{ to: peer, docs: { give } }]);
     return;
   }
-  if (!setup.standby || !signal(given.token))
+  if (!signal(given.token))
+    return;
+  if (setup.successorChain && given.kind === "rank-probe") {
+    send2(host, link, sender.key, { kind: "rank-answer", token: given.token });
+    return;
+  }
+  if (setup.successorChain && given.kind === "rank-answer") {
+    const pending = probes.get(sender.key);
+    if (pending?.token === given.token && fresh(pending.at, now, LEASE_MS / 2)) {
+      probes.delete(sender.key);
+      reached.set(sender.key, now);
+      if (sender.key === setup.primary)
+        lastPrimary = now;
+    }
+    return;
+  }
+  if (!setup.standby)
     return;
   if (setup.role === "primary" && setup.standby.key === sender.key && !link.leadershipPending) {
     if (given.kind === "ping") {
@@ -90536,6 +90891,7 @@ function receiveAuthority2(sender, given, host) {
     } else if (given.kind === "lease" && pong?.token === given.token && pong.reply === given.reply && fresh(pong.at, now, LEASE_MS / 2)) {
       const fenced = primaryFenced(link);
       grantLease(link, pong.at);
+      standbyUnavailable = undefined;
       pong = undefined;
       if (fenced)
         noteDocsChanged();
@@ -90566,13 +90922,23 @@ function takeoverTick(host) {
   const realNow = Date.now();
   if (!host?.welcomed || realNow - lastRound > 3 * HEARTBEAT_MS || realNow < lastRound) {
     lastPrimary = ping = undefined;
+    clearProbes();
     since2 = now;
   }
   lastRound = realNow;
   if (!host?.welcomed)
     return;
+  if (setup.successorChain && (!lastTip || !fresh(lastTip, now, testing ? 1000 : HEARTBEAT_MS))) {
+    lastTip = now;
+    const history = Object.fromEntries(successorHistory(link).map((doc) => [doc.n, doc.h]));
+    const tip = leadershipPosition(link);
+    if (tip && !history[tip.epoch])
+      history[tip.epoch] = tip.h;
+    for (const peer of peersOf(link))
+      send2(host, link, peer.key, { kind: "tip", history });
+  }
   if (setup.role === "primary" && link.leadershipPending) {
-    const standby = peersOf(link).find((peer) => peer.key === setup.standby?.key) ?? pendingStandby(link);
+    const standby = pendingStandby(link) ?? peersOf(link).find((peer) => peer.key === setup.standby?.key);
     if (standby)
       sendDocs(host, link, [{ to: standby, docs: { give: leadershipDocuments(link.leadershipPending) } }]);
     return;
@@ -90596,7 +90962,21 @@ function takeoverTick(host) {
     if (setup.standby) {
       const ledger = sharedValue(link, "queueNumberAllocation");
       const next = Math.max(readNumbers().next ?? 1, isObject(ledger) ? Number(ledger.next) || 1 : 1);
-      const migrating = !setup.checkpointed && peersOf(link).every((peer) => takesForwarded(peer.key, CHECKPOINT_FEATURE));
+      const migrating = !setup.checkpointed && peersOf(link).every((peer) => takesForwarded(peer.key, CHECKPOINT_FEATURE)) || !setup.successorChain && acceptedMembership(link)?.successorOrder && peersOf(link).every((peer) => takesForwarded(peer.key, "setup.successor-chain"));
+      if (!primaryFenced(link))
+        standbyUnavailable = undefined;
+      else if (setup.successorChain) {
+        standbyUnavailable ??= now;
+        if (!selecting && now.wall - standbyUnavailable.wall >= DEFAULT_DELAY - LEASE_MS && now.uptime - standbyUnavailable.uptime >= DEFAULT_DELAY - LEASE_MS) {
+          const next = availableStandby(link, now, setup.standby.key);
+          if (next?.peer.sign) {
+            selecting = true;
+            proposeLeadership({ setup: setup.id, epoch: setup.epoch }, setup.primary, { key: next.peer.key, sign: next.peer.sign }, { replace: true }).catch((error) => console.warn("Standby replacement:", error.message)).finally(() => {
+              selecting = false;
+            });
+          }
+        }
+      }
       if ((migrating || setup.numberCeiling && setup.numberCeiling - next < 400) && !primaryFenced(link)) {
         proposeLeadership({ setup: setup.id, epoch: setup.epoch }, setup.primary, setup.standby).catch((error) => console.warn("Standby number reservation:", error.message));
       }
@@ -90616,29 +90996,61 @@ function takeoverTick(host) {
     return;
   }
   send2(host, link, setup.primary, { kind: "available", preferred: settings.alwaysOn, reason: settings.reason });
-  if (setup.standby?.key !== ownKey(link) || setup.standby.sign !== ownSign(link))
+  const own = ownKey(link);
+  const standby = setup.standby?.key === own && setup.standby?.sign === ownSign(link);
+  const order = acceptedMembership(link)?.successorOrder ?? [];
+  const earlier = setup.successorChain && own ? [
+    setup.primary,
+    ...setup.standby ? [setup.standby.key] : [],
+    ...order.filter((key) => key !== setup.primary && key !== setup.standby?.key)
+  ] : [];
+  const rank = own ? earlier.indexOf(own) : -1;
+  if (!standby && rank < 1)
     return;
   if (loggedDelay !== settings.delay) {
     loggedDelay = settings.delay;
     console.info(`Standby watching epoch ${setup.epoch} with a ${settings.delay / 60000}-minute takeover delay.`);
   }
   const heard = lastPrimary ?? since2;
-  if (now.uptime - heard.uptime >= settings.delay && now.wall - heard.wall >= settings.delay) {
-    promote(host, setup);
-    return;
+  const expired = now.uptime - heard.uptime >= settings.delay && now.wall - heard.wall >= settings.delay;
+  const higher = rank > 1 ? earlier.slice(1, rank) : [];
+  const reachableHigher = higher.some((key) => {
+    const reply = reached.get(key);
+    return reply && fresh(reply, now, testing ? 1500 : 3 * HEARTBEAT_MS);
+  });
+  if (expired && !reachableHigher) {
+    eligibleSince ??= realNow;
+    const grace = Math.max(0, rank - 1) * (testing ? 800 : HEARTBEAT_MS);
+    if (realNow - eligibleSince >= grace) {
+      promote(host, setup);
+      return;
+    }
+  } else
+    eligibleSince = undefined;
+  for (const key of standby ? [] : [setup.primary, ...higher]) {
+    const token = nonce2();
+    probes.set(key, { token, at: now });
+    send2(host, link, key, { kind: "rank-probe", token });
   }
-  ping = { token: nonce2(), at: now };
-  send2(host, link, setup.primary, { kind: "ping", token: ping.token });
+  if (standby) {
+    ping = { token: nonce2(), at: now };
+    send2(host, link, setup.primary, { kind: "ping", token: ping.token });
+  }
 }
-function availableStandby(link, now) {
+function availableStandby(link, now, unavailable) {
   const retiring = leadershipOf(link)?.body.retiredStandby;
   const available = peersOf(link).flatMap((peer) => {
-    if (peer.key === retiring || !peer.sign || !takesForwarded(peer.key, "setup.shared-saves"))
+    if (peer.key === retiring || peer.key === unavailable || !peer.sign || !takesForwarded(peer.key, "setup.shared-saves"))
       return [];
     const candidate = availableComputer(peer.key, now);
     return candidate ? [{ peer, ...candidate }] : [];
   });
-  available.sort((a, b) => observedUptime(b.since, now) - observedUptime(a.since, now) || Number(b.preferred) - Number(a.preferred) || a.peer.key.localeCompare(b.peer.key));
+  const order = link.setup?.successorChain ? acceptedMembership(link)?.successorOrder : undefined;
+  const rank = (key) => {
+    const index = order?.indexOf(key) ?? -1;
+    return index < 0 ? Infinity : index;
+  };
+  available.sort((a, b) => rank(a.peer.key) - rank(b.peer.key) || observedUptime(b.since, now) - observedUptime(a.since, now) || Number(b.preferred) - Number(a.preferred) || a.peer.key.localeCompare(b.peer.key));
   return available[0];
 }
 function refreshRank(position, now) {
@@ -90660,25 +91072,32 @@ function refreshRank(position, now) {
 function promote(host, position) {
   const changed = updateLink((link) => {
     const setup = followedSetup(link);
-    if (!link?.sign || !setup?.standby || setup.id !== position.id || setup.epoch !== position.epoch || ownKey(link) !== setup.standby.key || ownSign(link) !== setup.standby.sign)
+    if (!link?.sign || !setup || setup.id !== position.id || setup.epoch !== position.epoch || setup.primary !== position.primary || setup.role !== "member")
       return null;
-    const ceiling = setup.numberCeiling;
-    if (typeof ceiling !== "number")
+    const own = ownKey(link);
+    const membership = acceptedMembership(link);
+    const allowed = setup.standby?.key === own && setup.standby?.sign === ownSign(link) || setup.successorChain && membership?.boxes.some((peer) => peer.key === own && peer.sign === ownSign(link));
+    if (!own || !allowed)
+      return null;
+    const ledger = sharedValue(link, "queueNumberAllocation");
+    const ceiling = setup.numberCeiling ?? (isObject(ledger) ? Number(ledger.next) - 1 : NaN);
+    if (!Number.isSafeInteger(ceiling))
       return null;
     const epoch = setup.epoch + 1;
     const authority = {
-      setup: { id: setup.id, epoch, primary: setup.standby.key },
+      setup: { id: setup.id, epoch, primary: own },
       previous: setup.primary,
       takeover: true,
-      sharedSaves: true
+      sharedSaves: true,
+      ...setup.successorChain ? { successorChain: true } : {}
     };
-    const ledger = sharedValue(link, "queueNumberAllocation");
     let doc;
     if (setup.checkpointed) {
-      if (!acceptedMembership(link) || !isObject(ledger))
+      if (!membership || !isObject(ledger))
         return null;
       doc = checkpointedTransition(link, authority, {
         ...link.shared,
+        membershipAndAccess: { sequence: link.shared.membershipAndAccess.sequence, value: membership },
         queueNumberAllocation: { sequence: link.shared.queueNumberAllocation.sequence, value: { ...ledger, next: ceiling + 1 } }
       });
     } else {

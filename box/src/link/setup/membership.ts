@@ -23,6 +23,45 @@ export interface Membership {
   wipePreparations?: Record<string, WipePreparationClaim>;
 }
 
+export interface SetupRevocations {
+  setup: string;
+  computers: string[];
+  signs: string[];
+  devices: Membership["devices"]["removed"];
+}
+
+const uniqueDeviceRevocations = (devices: SetupRevocations["devices"]) =>
+  [...new Map(devices.map(device => [JSON.stringify([device.key, device.pairing]), device])).values()];
+
+export function membershipRevocations(setup: string, membership: Membership): SetupRevocations {
+  return { setup, computers: membership.left, signs: membership.computerHistory?.retiredSigns ?? [], devices: membership.devices.removed };
+}
+
+export function mergeRevocations(link: LinkState, incoming: SetupRevocations) {
+  if (!link.setup?.successorChain || link.setup.id !== incoming.setup) return;
+  const prior = link.setupRevocations?.setup === incoming.setup ? link.setupRevocations : undefined;
+  const devices = uniqueDeviceRevocations([...(prior?.devices ?? []), ...incoming.devices]);
+  const computers = [...new Set([...prior?.computers ?? [], ...incoming.computers])];
+  const signs = [...new Set([...prior?.signs ?? [], ...incoming.signs])];
+  if (computers.length === (prior?.computers.length ?? 0) && signs.length === (prior?.signs.length ?? 0) &&
+    devices.length === (prior?.devices.length ?? 0)) return false;
+  link.setupRevocations = { setup: incoming.setup, computers, signs, devices };
+  return true;
+}
+
+function withRevocations(membership: Membership, revocations: SetupRevocations): Membership | null {
+  const left = [...new Set([...membership.left, ...revocations.computers,
+    ...membership.boxes.filter(peer => peer.sign && revocations.signs.includes(peer.sign)).map(peer => peer.key)])];
+  const boxes = membership.boxes.filter(peer => !left.includes(peer.key));
+  const signs = [...new Set([...membership.computerHistory?.retiredSigns ?? [], ...revocations.signs])];
+  return membershipOf({
+    ...membership, left, boxes,
+    ...(membership.successorOrder ? { successorOrder: membership.successorOrder.filter(key => !left.includes(key)) } : {}),
+    computerHistory: { ...membership.computerHistory, setup: revocations.setup, slots: membership.computerHistory?.slots ?? [], retiredSigns: signs },
+    devices: { phones: membership.devices.phones, removed: uniqueDeviceRevocations([...membership.devices.removed, ...revocations.devices]) },
+  });
+}
+
 // Signed snapshots from older boxes still contain the voucher and provenance fields.
 export function portableDevice(phone: PhoneEntry): Phone {
   return {
@@ -99,7 +138,9 @@ export function acceptedMembership(link: LinkState | null | undefined): Membersh
   if (!link?.setup || link.setup.aside || link.sharedSetup !== link.setup.id) return null;
   const value = link.shared?.membershipAndAccess?.value;
   // Before checkpoint negotiation, older peers can still write or receive layout 4 data.
-  return isObject(value) && !Object.hasOwn(value, "fields") && link.setup.checkpointed ? membershipOf(value) : null;
+  const membership = isObject(value) && !Object.hasOwn(value, "fields") && link.setup.checkpointed ? membershipOf(value) : null;
+  const revocations = link.setupRevocations;
+  return membership && revocations?.setup === link.setup.id ? withRevocations(membership, revocations) : membership;
 }
 
 export function namedRoster(link: LinkState, boxes: Peer[]): Peer[] {

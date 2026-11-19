@@ -45,6 +45,8 @@ export interface Pairing {
   issuer?: { key: string; pairing: string } | null;
 }
 
+import type { SetupRevocations } from "./setup/membership";
+
 export interface LinkState {
   relay?: string;
   secret?: string;
@@ -104,6 +106,8 @@ export interface LinkState {
   setup?: SetupRecord;
   /** Verified leadership changes, indexed by setup epoch for offline catch-up. */
   leadership?: Record<number, SignedDoc>;
+  setupRevocations?: SetupRevocations;
+  discardedRevocations?: { setup: string; certificates: SignedDoc[]; proof: SignedDoc };
   /** A fenced primary resends its proposal until the previous standby settles the epoch. */
   leadershipPending?: SignedDoc;
   sharedSetup?: string;

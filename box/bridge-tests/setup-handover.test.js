@@ -61,7 +61,7 @@ async function until(what, read, signal) {
   throw new Error(`Timed out waiting for ${what}`);
 }
 
-async function network(t, takeover = false, releaseKey, owned = false, movingGroup, disposableInstall = false, pairOnly = false) {
+async function network(t, takeover = false, releaseKey, owned = false, movingGroup, disposableInstall = false, pairOnly = false, names) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), disposableInstall ? "kd-" : "kuvo-handover-"));
   const relay = await relayStandIn(link);
   const boxScript = releaseKey ? path.join(root, "kuvo-link.mjs") : script;
@@ -152,7 +152,7 @@ async function network(t, takeover = false, releaseKey, owned = false, movingGro
     fs.rmSync(root, { recursive: true, force: true });
   });
 
-  const boxes = (pairOnly ? ["Studio", "Desk"] : ["Studio", "Desk", "Lab"]).map(name => {
+  const boxes = (names ?? (pairOnly ? ["Studio", "Desk"] : ["Studio", "Desk", "Lab"])).map(name => {
     const account = path.join(root, name);
     const home = disposableInstall ? path.join(account, ".kuvo-code") : account;
     const secret = crypto.randomBytes(32);
@@ -567,6 +567,18 @@ async function standbyNetwork(t, releaseKey) {
   return net;
 }
 
+async function watchingRanks(t, relay, primary, followers) {
+  await until("all successors surveying the accepted epoch", () => {
+    const state = primary.read();
+    return followers.every(box => relay.delivered.some(packet => {
+      if (!packet.from.equals(box.address) || !packet.to.equals(primary.address)) return false;
+      const body = link.readFrame(packet.payload)?.body;
+      const authority = body && link.openMail(body, state)?.payload?.setupAuthority;
+      return authority?.kind === "tip" && authority.epoch === state.setup.epoch;
+    }));
+  }, t.signal);
+}
+
 async function releaseNetwork(t) {
   const { privateKey, publicKey } = crypto.generateKeyPairSync("ed25519");
   const pin = publicKey.export({ type: "spki", format: "der" }).subarray(-32).toString("base64");
@@ -803,6 +815,20 @@ test("failure bench: only the standby takes over across a split and the old prim
   assert.equal((await a.route("GET", `kuvo/work-queue/items/${work.value.item.id}`)).value.item.title, "Work survives the split");
 });
 
+test("failure bench: a two-computer standby takes over and the returning primary steps down", { timeout: 40_000 }, async t => {
+  const { a, b, see } = await network(t, true, undefined, false, undefined, false, true);
+  await Promise.all([see(a, 2, a), see(b, 2, a)]);
+  await until("primary leased", () => a.lease(2, b), t.signal);
+  await until("standby watching", () => b.observing(2), t.signal);
+  await a.stop("SIGTERM");
+  b.clock(TAKEOVER + 5_000);
+  await see(b, 3, b);
+  assert.equal(b.read().leadership[3] ? link.readDoc(b.read().leadership[3])?.origin : undefined, b.sign);
+  a.start();
+  await see(a, 3, b);
+  assert.equal(a.read().setup.role, "member");
+});
+
 test("failure bench: signed membership carries every computer's successor rank", { timeout: 35_000 }, async t => {
   const { a, b, c, see } = await standbyNetwork(t);
   await Promise.all([see(b, 2, a), see(c, 2, a)]);
@@ -813,21 +839,99 @@ test("failure bench: signed membership carries every computer's successor rank",
   for (const box of [a, b, c]) assert.deepEqual(box.read().shared.membershipAndAccess.value.successorOrder, order);
 });
 
-test("failure bench: losing both primary and standby never promotes another member", { timeout: 35_000 }, async t => {
-  const { a, b, c, see } = await standbyNetwork(t);
-  await b.stop("SIGTERM");
-  c.clock(HOUR);
-  await delay(600);
+test("failure bench: losing both primary and standby promotes the next ranked computer", { timeout: 35_000 }, async t => {
+  const { a, b, c, relay, see } = await standbyNetwork(t);
   await see(c, 2, a);
-  assert.equal((await a.route("GET", "kuvo/setup")).value.epoch, 2);
-  // Primary-side authority expires if the standby stays away.
-  a.clock(HOUR);
-  assert.equal((await a.route("POST", "kuvo/phones/pair")).status, 409);
+  await watchingRanks(t, relay, a, [c]);
+  assert.equal(c.read().setup.successorChain, true);
   await a.stop("SIGTERM");
-  c.clock(5 * HOUR);
-  await delay(900);
+  await b.stop("SIGTERM");
+  c.clock(TAKEOVER + 5_000);
+  await see(c, 3, c);
+  const third = link.readDoc(c.read().leadership[3]);
+  assert.equal(third.origin, c.sign);
+  assert.equal(third.body.takeover, true);
+});
+
+test("failure bench: split successors converge to the better rank at the same epoch", { timeout: 40_000 }, async t => {
+  const { a, b, c, relay, see } = await standbyNetwork(t);
+  await Promise.all([see(b, 2, a), see(c, 2, a)]);
+  await watchingRanks(t, relay, a, [b, c]);
+  const resumes = [relay.pause(b.address, c.address), relay.pause(c.address, b.address)];
+  await a.stop("SIGTERM");
+  b.clock(TAKEOVER + 5_000);
+  c.clock(TAKEOVER + 5_000);
+  await Promise.all([see(b, 3, b), see(c, 3, c)]);
+  assert.equal(b.read().setup.role, "primary");
+  assert.equal(c.read().setup.role, "primary");
+  resumes.forEach(resume => resume());
+  await see(c, 3, b);
+  assert.equal(b.read().setup.primary, b.key);
+  assert.deepEqual(c.read().leadership[3], b.read().leadership[3]);
+});
+
+test("failure bench: a newer split epoch wins over an earlier, better-ranked successor", { timeout: 50_000 }, async t => {
+  const { a, b, boxes, relay, see } = await network(t, true, undefined, false, undefined, false, false,
+    ["Studio", "Desk", "Lab", "Office"]);
+  await Promise.all(boxes.map(box => see(box, 2, a)));
+  await until("primary leased", () => a.lease(2, b), t.signal);
+  await watchingRanks(t, relay, a, boxes.slice(1));
+  const order = checkpoint(a, 2).shared.membershipAndAccess.value.successorOrder;
+  const [fallback, partner] = order.filter(key => key !== a.key && key !== b.key).map(key => boxes.find(box => box.key === key));
+  const resumes = [fallback, partner].flatMap(box => [relay.pause(b.address, box.address), relay.pause(box.address, b.address)]);
+  await a.stop("SIGTERM");
+  for (const box of boxes.slice(1)) box.clock(TAKEOVER + 5_000);
+  await Promise.all([see(b, 3, b), see(fallback, 4, fallback)]);
+  resumes.forEach(resume => resume());
+  await see(b, 4, fallback);
+  assert.deepEqual(b.read().leadership[4], fallback.read().leadership[4]);
+});
+
+test("failure bench: a fenced primary replaces an unavailable standby before saving again", { timeout: 45_000 }, async t => {
+  const { a, b, c, see, phone, pairing } = await standbyNetwork(t);
   await see(c, 2, a);
-  assert.equal(c.read().leadership[3], undefined);
+  await b.stop("SIGTERM");
+  a.clock(TAKEOVER + 5_000);
+  c.clock(TAKEOVER + 5_000);
+  await delay(1000);
+  assert.equal((await a.route("POST", "kuvo/phones/pair")).status, 409);
+  a.clock(2 * TAKEOVER);
+  c.clock(2 * TAKEOVER);
+  await Promise.all([see(a, 3, a), see(c, 3, a)]);
+  assert.equal(a.read().setup.standby.key, c.key);
+  await until("new standby renews the lease", () => a.lease(3, c), t.signal);
+  const remove = await a.route("POST", "kuvo/phones/remove", { phones: [{ key: phone, pairing }] }, true);
+  assert.equal(remove.status, 200);
+  await until("replacement acknowledged the save", () => c.read().removed.some(device => device.key === phone && device.pairing === pairing), t.signal);
+});
+
+test("failure bench: a device revoked on a losing branch stays revoked on both sides", { timeout: 70_000 }, async t => {
+  const { a, b, boxes, relay, see, phone, pairing } = await network(t, true, undefined, false, undefined, false, false,
+    ["Studio", "Desk", "Lab", "Office", "Workshop"]);
+  await Promise.all(boxes.map(box => see(box, 2, a)));
+  await until("primary leased", () => a.lease(2, b), t.signal);
+  await watchingRanks(t, relay, a, boxes.slice(1));
+  const order = checkpoint(a, 2).shared.membershipAndAccess.value.successorOrder;
+  const [fallback, partner, remaining] = order.filter(key => key !== a.key && key !== b.key).map(key => boxes.find(box => box.key === key));
+  const resumes = [b, remaining].flatMap(left => [fallback, partner].flatMap(right => [
+    relay.pause(left.address, right.address), relay.pause(right.address, left.address),
+  ]));
+  await a.stop("SIGTERM");
+  for (const box of boxes.slice(1)) box.clock(TAKEOVER + 5_000);
+  await Promise.all([see(b, 4, b), see(fallback, 4, fallback)]);
+  await until("losing branch leased", () => fallback.lease(4, partner), t.signal);
+  assert.ok(b.read().phones.some(device => device.key === phone));
+  const remove = await fallback.route("POST", "kuvo/phones/remove", { phones: [{ key: phone, pairing }] }, true);
+  assert.equal(remove.status, 200);
+  await until("losing branch revocation accepted", () => fallback.read().removed.some(device => device.key === phone && device.pairing === pairing), t.signal);
+  resumes.forEach(resume => resume());
+  await Promise.all([see(fallback, 4, b), see(partner, 4, b)]);
+  const kept = fallback.read().discardedRevocations;
+  assert.deepEqual(kept.certificates.map(envelope => link.readDoc(envelope).n), [3, 4]);
+  for (const box of boxes.slice(1)) {
+    await until(`revocation on ${box.name}`, () => box.read().removed.some(device => device.key === phone && device.pairing === pairing), t.signal);
+    assert.ok(!box.read().phones.some(device => device.key === phone));
+  }
 });
 
 test("failure bench: only the old standby can approve a standby replacement and a handover", { timeout: 45_000 }, async t => {

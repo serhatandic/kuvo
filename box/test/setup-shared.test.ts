@@ -13,6 +13,8 @@ import { cacheCheckpoint, checkpointHash, checkpointedTransition, leadershipDocu
 import { upgradeKuvoFolder } from "../src/shared/folder-version";
 import { membershipOf } from "../src/link/setup/membership";
 import { observeAvailability, rankComputers, RANK_INTERVAL, resetAvailability } from "../src/link/setup/reliability";
+import { acceptedMembership } from "../src/link/setup/membership";
+import { publishRevocations } from "../src/link/setup/revocations";
 import { takeLeadership } from "../src/link/setup/leadership";
 import { newSetupID, type SetupRecord } from "../src/link/setup/record";
 import { installShared, operationOutcome, pendingShared, queryOperation, sharedValue, stageShared, takeShared } from "../src/link/setup/shared";
@@ -46,6 +48,55 @@ test("accepted successor order prefers servers at bootstrap and learns sustained
   expect(membershipOf({ boxes, successorOrder: [laptop!.key, other!.key] })).toBeNull();
   resetAvailability();
   expect(rankComputers(boxes, order, now)).toEqual(order);
+});
+
+test("competing successors reconcile conflicting certificates at the same epoch using the common rank", () => {
+  upgradeKuvoFolder(K);
+  const a = identity(), b = identity(), c = identity(), phone = identity();
+  const id = newSetupID();
+  const boxes = [a, b, c].map(box => ({ key: box.key, sign: box.signer, address: box.address, name: "Computer", kind: "machine" }));
+  const setup: SetupRecord = { id, epoch: 1, primary: a.key, sign: a.signer, role: "primary", managed: true, checkpointed: true };
+  const source: LinkState = { key: a.seed, sign: a.sign, setup };
+  const pairing = "paired";
+  const membership = { boxes, successorOrder: [b.key, c.key, a.key], devices: { phones: [{ key: phone.key, name: "Phone", pairing }], removed: [] } };
+  const values = { membershipAndAccess: { sequence: 1, value: membership } };
+  const parent = checkpointedTransition(source, {
+    setup: { id, epoch: 2, primary: a.key }, previous: a.key, successorChain: true, standby: b.key, numberCeiling: 2_000,
+  }, values)!;
+  expect(takeLeadership(source, parent)).toBe(true);
+
+  const follower: LinkState = { ...structuredClone(source), key: b.seed, sign: b.sign, setup: { ...source.setup!, role: "member" } };
+  const proposal = checkpointedTransition(source, {
+    setup: { id, epoch: 3, primary: a.key }, previous: a.key, proposal: true, successorChain: true, standby: b.key, numberCeiling: 4_000,
+  }, { ...values, setupNames: { sequence: 1, value: { [a.key]: "Discarded" } } })!;
+  const lower = readDoc(signDoc(b.sign, "leadership", 3, { ...proposal.body, approval: proposal.envelope.s }))!;
+  const higher = checkpointedTransition(follower, {
+    setup: { id, epoch: 3, primary: b.key }, previous: a.key, takeover: true, successorChain: true,
+  }, values)!;
+  expect(takeLeadership(source, lower)).toBe(true);
+  expect(takeLeadership(follower, higher)).toBe(true);
+  expect(source.setup?.role).toBe("primary");
+  expect(follower.setup?.role).toBe("primary");
+
+  // These were accepted saves made on A's branch after its epoch certificate.
+  source.shared!.membershipAndAccess = { sequence: 2, value: { ...membership, boxes: boxes.slice(0, 2),
+    successorOrder: [b.key, a.key], left: [c.key], devices: { phones: [], removed: [{ key: phone.key, pairing }] } } };
+  const revoked = publishRevocations(source)!;
+  expect(revoked).toBeTruthy();
+  const library = { personalities: [], removed: [] };
+  const request = docsWork({ link: follower, library }, { key: a.key, sign: a.signer }, { have: digestOf(source) });
+  expect(request.send.some(mail => mail.docs.give?.some(envelope => envelope.s === higher.envelope.s))).toBe(true);
+  docsWork({ link: follower, library }, { key: a.key, sign: a.signer }, { give: [...leadershipDocuments(lower.envelope), revoked] });
+  expect(acceptedMembership(follower)?.left).toEqual([c.key]);
+  expect(acceptedMembership(follower)?.devices.phones).toEqual([]);
+  const received = docsWork({ link: source, library }, { key: b.key, sign: b.signer }, { give: leadershipDocuments(higher.envelope) });
+  expect(received.took.some(doc => doc.kind === "leadership" && doc.h === higher.h)).toBe(true);
+  expect(source.setup).toMatchObject({ epoch: 3, primary: b.key, role: "member" });
+  expect(source.shared?.setupNames).toBeUndefined();
+  expect(acceptedMembership(source)?.left).toEqual([c.key]);
+  expect(acceptedMembership(source)?.devices.removed).toEqual([{ key: phone.key, pairing }]);
+  expect(takeLeadership(follower, lower)).toBe(false);
+  expect(follower.setup?.role).toBe("primary");
 });
 
 test("only the assigned standby receipts the primary's exact save and pending ownership transfers survive takeover", () => {

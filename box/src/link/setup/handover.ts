@@ -1,7 +1,7 @@
 // The primary checks that the successor is running this protocol, then atomically commits
 // a signed epoch change. Peers deliver the committed record with the regular document exchange.
 
-import { setupLayoutDeferred, unlinkCleanupLayoutReady } from "../../shared/folder-version";
+import { setupLayoutDeferred, successorRankLayoutReady, unlinkCleanupLayoutReady } from "../../shared/folder-version";
 import path from "node:path";
 import { UsageSettings } from "../../agents/usage/settings";
 import { isObject } from "../../shared/json";
@@ -76,7 +76,7 @@ export async function proposeLeadership(
   position: Record<string, unknown>,
   target: string,
   standby: NonNullable<SetupRecord["standby"]> | null,
-  { requester, targetSign, recovery, retire }: { retire?: string; requester?: string; targetSign?: string; recovery?: { peer: Peer; prepare: (link: LinkState, enrollment: ReplacementEnrollment) => void; record?: (membership: Membership, link: LinkState) => void } } = {},
+  { requester, targetSign, recovery, retire, replace }: { replace?: true; retire?: string; requester?: string; targetSign?: string; recovery?: { peer: Peer; prepare: (link: LinkState, enrollment: ReplacementEnrollment) => void; record?: (membership: Membership, link: LinkState) => void } } = {},
 ): Promise<Acted> {
   if (setupLayoutDeferred(K)) return answer(503, "Wait for the Kuvo Code update to finish before changing the setup.");
   let oversized = false;
@@ -85,7 +85,10 @@ export async function proposeLeadership(
   const changed = changeNumbers(numbers => updateLink(link => {
     const current = followedSetup(link);
     if (!link?.sign || current?.role !== "primary" || current.sign !== ownSign(link) || current.id !== position.setup || current.epoch !== position.epoch
-      || link.localWipe || primaryFenced(link) || Object.keys(link.sharedPending ?? {}).length) return null;
+      || link.localWipe || link.leadershipPending) return null;
+    const fenced = primaryFenced(link);
+    if (replace ? !fenced || !current.successorChain || !current.standby || !standby ||
+      standby.key === current.standby.key || target !== current.primary || acceptedMembership(link)?.left.includes(current.primary) : fenced || Object.keys(link.sharedPending ?? {}).length) return null;
     if (recovery && (!standby || current.standby || !requiresStandby(current) || target !== current.primary
       || recovery.peer.key !== standby.key || recovery.peer.sign !== standby.sign)) return null;
     const members = peersOf(link);
@@ -112,8 +115,11 @@ export async function proposeLeadership(
     if (standby && !recovery && (!members.some(peer => peer.key === standby.key && peer.sign === standby.sign)
       || members.some(peer => !peer.sign || !takesForwarded(peer.key, "setup.shared-saves")))) return null;
     const supportsCheckpoint = members.every(peer => takesForwarded(peer.key, CHECKPOINT_FEATURE));
-    const acceptance = Boolean(standby && !current.standby && (recovery || members.every(peer => takesForwarded(peer.key, STANDBY_ACCEPTANCE))));
-    const migrating = Boolean(!current.checkpointed && current.standby && supportsCheckpoint);
+    const acceptance = Boolean(replace || standby && !current.standby && (recovery || members.every(peer => takesForwarded(peer.key, STANDBY_ACCEPTANCE))));
+    const successorChain = current.successorChain || Boolean(standby && supportsCheckpoint && !recovery && successorRankLayoutReady(K) &&
+      (!current.checkpointed || !current.standby || acceptedMembership(link)?.successorOrder)
+      && members.every(peer => takesForwarded(peer.key, "setup.successor-chain")));
+    const migrating = Boolean(current.standby && (supportsCheckpoint && !current.checkpointed || successorChain && !current.successorChain));
     const renewing = target === current.primary && (standby?.key ?? null) === (current.standby?.key ?? null);
     if (renewing && (!standby || !current.numberCeiling || (!migrating && current.numberCeiling >= MOST_NUMBER - 1))) return null;
     installNumberAuthority(numbers, link);
@@ -149,6 +155,8 @@ export async function proposeLeadership(
       ...(standby ? { standby: standby.key, numberCeiling: renewing && migrating ? current.numberCeiling : Math.min(MOST_NUMBER - 1, next + NUMBER_RESERVE - 1) } : {}),
       ...(current.standby || acceptance ? { proposal: true } : {}),
       ...(acceptance ? { standbyAcceptance: true } : {}),
+      ...(successorChain ? { successorChain: true } : {}),
+      ...(replace ? { replacesStandby: current.standby!.key } : {}),
       ...(recovery ? { recovery: true } : {}),
     };
     const ledger = { next, given: numbers.given, granted };
@@ -156,6 +164,7 @@ export async function proposeLeadership(
     if (checkpointed) {
       const membership = acceptedMembership(link) ?? captureMembership(link);
       if (!membership) return null;
+      if (successorChain && !membership.successorOrder) membership.successorOrder = rankComputers(membership.boxes);
       if (recovery) {
         if (membership.boxes.some(peer => peer.key === recovery.peer.key) || membership.left.includes(recovery.peer.key)) return null;
         const { id: _destination, ...portable } = recovery.peer;

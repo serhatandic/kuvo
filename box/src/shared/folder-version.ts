@@ -46,7 +46,7 @@ const steps: readonly Step[] = [
   () => {},
   // 13. Reserve durable credential cleanup and signed final-standby retirement.
   () => {},
-  // 14. Reserve the computer reliability order in accepted setup membership.
+  // 14. Reserve signed successor order, branch ancestry and merged access revocations.
   () => {},
 ];
 

@@ -1,17 +1,17 @@
-// A change is authorized by the preceding epoch's sole successor signer. The installed
-// certificate and the local role are written together, before anyone can send the certificate.
+// A signed certificate binds an epoch to its predecessor and accepted checkpoint.
+// Install the certificate and local role together before replying.
 
-import { setupLayoutDeferred, unlinkCleanupLayoutReady } from "../../shared/folder-version";
+import { setupLayoutDeferred, successorRankLayoutReady, unlinkCleanupLayoutReady } from "../../shared/folder-version";
 import crypto from "node:crypto";
-import type { Doc } from "../../shared/documents";
+import type { Doc, SignedDoc } from "../../shared/documents";
 import { isObject } from "../../shared/json";
 import { docBytes, docKey, held, ownSign, readDoc, signDoc } from "../documents/format";
 import { cleanMoved, cleanPeer, fitsPeer, ownKey, KEY } from "../peers/known";
 import { fits, foldPhones } from "../phones";
 import { K } from "../home";
 import type { LinkState, Phone } from "../state";
-import { checksSeal, preserveCheckpoint, resolveCheckpoint } from "./checkpoint";
-import { acceptedMembership, portableDevice, projectMembership } from "./membership";
+import { checksSeal, leadershipDocuments, preserveCheckpoint, resolveCheckpoint, successorPredecessor } from "./checkpoint";
+import { acceptedMembership, membershipRevocations, mergeRevocations, portableDevice, projectMembership } from "./membership";
 import { committedOperations, installShared, sharedValues } from "./shared";
 import { ledSetup, requiresStandby, setupDoc, setupOf } from "./record";
 
@@ -70,13 +70,15 @@ export function pendingStandby(link: LinkState) {
 /** Turn a fenced primary's proposal into a certificate, on the current standby only. */
 export function approveLeadership(link: LinkState, proposal: Doc, checkpoint?: Doc): Doc | null {
   const current = link.setup;
-  if (setupLayoutDeferred(K) || !current || current.sign !== proposal.origin || proposal.body.proposal !== true || !link.sign) return null;
+  if (setupLayoutDeferred(K) || !current || proposal.n !== current.epoch + 1 || current.sign !== proposal.origin || proposal.body.proposal !== true || !link.sign) return null;
   const resolved = resolveCheckpoint(proposal, checkpoint);
   if (resolved && !checksSeal(link, resolved.checkpoint)) return null;
   if (proposal.body.standbyAcceptance === true) {
-    if (current.standby || !resolved || (proposal.body.recovery === true && !requiresStandby(current))) return null;
-    const replacement = resolved.membership.boxes.find(peer => peer.key === proposal.body.standby);
-    if (!replacement || replacement.key !== ownKey(link) || replacement.sign !== ownSign(link)) return null;
+    const replacement = proposal.body.replacesStandby;
+    if ((current.standby ? !current.successorChain || replacement !== current.standby.key : replacement !== undefined) ||
+      !resolved || (proposal.body.recovery === true && !requiresStandby(current))) return null;
+    const successor = resolved.membership.boxes.find(peer => peer.key === proposal.body.standby);
+    if (!successor || successor.key !== ownKey(link) || successor.sign !== ownSign(link)) return null;
     // The caller installs the verified checkpoint and epoch durably before sending this certificate.
     return readDoc(signDoc(link.sign, "leadership", proposal.n, { ...proposal.body, approval: proposal.envelope.s }));
   }
@@ -103,25 +105,142 @@ export function approveLeadership(link: LinkState, proposal: Doc, checkpoint?: D
   return readDoc(signDoc(link.sign, "leadership", proposal.n, { ...proposal.body, approval: proposal.envelope.s }));
 }
 
-/** Install handover, standby assignment/retirement, or takeover under the same epoch check. */
-export function takeLeadership(link: LinkState, doc: Doc, checkpoint?: Doc): boolean {
+export function successorHistory(link: LinkState): Doc[] {
+  const epoch = link.setup?.epoch;
+  if (!epoch || !link.setup?.successorChain) return [];
+  const epochs = Object.keys(link.leadership ?? {}).map(Number).sort((a, b) => b - a);
+  const recent = epochs.slice(0, 15);
+  const activation = epochs.findLast(n => held(link.leadership?.[n])?.body.successorChain === true);
+  if (activation && !recent.includes(activation)) recent.push(activation);
+  return recent.flatMap(n => { const doc = held(link.leadership?.[n]); return doc ? [doc] : []; });
+}
+
+export function successorCertificates(link: LinkState, remote: Record<number, string>): SignedDoc[] {
+  const local = link.setup?.epoch ?? 0;
+  const epochs = Object.keys(remote).map(Number).filter(n => Number.isSafeInteger(n) && n > 0);
+  const latest = Math.max(0, ...epochs);
+  if (!link.setup?.successorChain || !latest || local < latest || leadershipOf(link)?.h === remote[local]) return [];
+  const agreed = Math.max(0, ...epochs.filter(n => held(link.leadership?.[n])?.h === remote[n]));
+  const from = agreed || Math.max(1, latest - 1);
+  const docs: SignedDoc[] = [];
+  for (let n = from + 1; n <= local && n <= from + 16; n++) {
+    const envelope = link.leadership?.[n];
+    if (envelope) docs.push(...leadershipDocuments(envelope));
+  }
+  return docs;
+}
+
+export type SuccessorForks = Map<string, { source: LinkState; rank: string[] }>;
+
+function stagedFork(link: LinkState, doc: Doc, checkpoint: Doc | undefined, forks: SuccessorForks) {
+  const next = setupOf(doc.body);
+  const parent = doc.body.parent;
+  if (!next || !link.setup || next.id !== link.setup.id || typeof parent !== "string") return null;
+  let prior = forks.get(parent);
+  if (!prior) {
+    const base = successorPredecessor(link, doc.n - 1);
+    if (!base || parent !== base.parent.h) return null;
+    const { position, primary, standby, ceiling } = base;
+    const previous = structuredClone(link);
+    previous.setup = { ...position, sign: primary.sign!, role: ownKey(link) === primary.key ? "primary" : "member",
+      managed: true, checkpointed: true, successorChain: true, sharedSaves: true,
+      ...(standby?.sign && ceiling ? { standby: { key: standby.key, sign: standby.sign }, numberCeiling: ceiling } : {}) };
+    previous.shared = base.shared;
+    delete previous.sharedOutcomes;
+    delete previous.setupRevocations;
+    previous.leadership = Object.fromEntries(Object.entries(previous.leadership ?? {}).filter(([n]) => Number(n) <= position.epoch));
+    prior = { source: previous, rank: base.membership.successorOrder! };
+  }
+  // The replay cache supplies only setup authority. Keep local changes made while this fork was arriving.
+  const candidate = structuredClone(link);
+  candidate.setup = prior.source.setup;
+  candidate.leadership = prior.source.leadership;
+  candidate.sharedSetup = prior.source.sharedSetup;
+  candidate.shared = prior.source.shared;
+  candidate.sharedOutcomes = prior.source.sharedOutcomes;
+  delete candidate.setupRevocations;
+  if (!installLeadership(candidate, doc, checkpoint, true)) return null;
+  const staged = { source: candidate, rank: prior.rank };
+  if (!forks.has(doc.h) && forks.size >= 16) forks.delete(forks.keys().next().value!);
+  forks.set(doc.h, staged);
+  return staged;
+}
+
+/** An SSH enrollment pins the current certificate in the signed roster. Fetch its
+ * history without rolling back membership or settings accepted after that certificate. */
+function fillEnrollmentCertificate(link: LinkState, doc: Doc, checkpoint?: Doc): boolean {
+  const current = link.setup;
+  if (!current?.leadershipHash || current.leadershipHash !== doc.h || doc.kind !== "leadership" ||
+    current.epoch !== doc.n || held(link.leadership?.[doc.n]) || doc.body.successorChain !== true) return false;
+  if (!acceptedMembership(link)?.boxes.some(peer => peer.key === ownKey(link) && peer.sign === ownSign(link))) return false;
+  const position = setupOf(doc.body);
+  const resolved = resolveCheckpoint(doc, checkpoint);
+  if (!position || position.id !== current.id || position.primary !== current.primary || position.epoch !== current.epoch || !resolved) return false;
+  preserveCheckpoint(resolved.checkpoint);
+  link.leadership = { ...link.leadership, [doc.n]: doc.envelope };
+  return true;
+}
+
+/** Only a verified competing chain can replace the accepted tip. */
+export function takeLeadership(link: LinkState, doc: Doc, checkpoint?: Doc, forks: SuccessorForks = new Map()): boolean {
+  if (fillEnrollmentCertificate(link, doc, checkpoint)) return true;
+  const old = link.setup?.successorChain ? acceptedMembership(link) : null;
+  if (installLeadership(link, doc, checkpoint)) {
+    const merged = acceptedMembership(link);
+    if (old && merged && link.setup && mergeRevocations(link, membershipRevocations(link.setup.id, old))) {
+      const membership = acceptedMembership(link);
+      if (membership) projectMembership(link, membership);
+    }
+    return true;
+  }
+  const active = leadershipOf(link);
+  if (!active || !link.setup?.successorChain || doc.body.successorChain !== true ||
+    held(link.leadership?.[doc.n])?.h === doc.h) return false;
+  const staged = stagedFork(link, doc, checkpoint, forks);
+  const next = setupOf(doc.body);
+  if (!staged || !next || next.epoch < link.setup.epoch) return false;
+  const rank = (key: string) => {
+    const index = staged.rank.indexOf(key);
+    return index < 0 ? staged.rank.length : index;
+  };
+  const compare = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0;
+  const difference = rank(next.primary) - rank(link.setup.primary) || compare(next.primary, link.setup.primary) || compare(doc.h, active.h);
+  if (next.epoch === link.setup.epoch && difference >= 0) return false;
+  const losing = acceptedMembership(link);
+  if (losing) mergeRevocations(staged.source, membershipRevocations(next.id, losing));
+  const merged = acceptedMembership(staged.source);
+  if (merged) projectMembership(staged.source, merged);
+  for (const key of Object.keys(link) as (keyof LinkState)[]) if (!Object.hasOwn(staged.source, key)) delete link[key];
+  Object.assign(link, staged.source);
+  return true;
+}
+
+function installLeadership(link: LinkState, doc: Doc, checkpoint?: Doc, discardingFork = false): boolean {
   const current = link.setup;
   const next = setupOf(doc.body);
   const acceptance = doc.body.standbyAcceptance === true;
+  const takeover = doc.body.takeover === true;
+  const chained = doc.body.successorChain === true;
+  if (current?.successorChain && !chained || chained && !successorRankLayoutReady(K)) return false;
+  const prior = leadershipOf(link)?.h ?? current?.leadershipHash;
+  if (current?.successorChain && prior && doc.body.parent !== prior) return false;
+  const ranked = takeover && current?.successorChain && acceptedMembership(link)?.boxes.find(peer =>
+    peer.key === next?.primary && peer.sign === doc.origin && peer.key !== current.primary);
   if (doc.body.recovery === true && !acceptance) return false;
   if (setupLayoutDeferred(K) || doc.kind !== "leadership" || !current || current.aside || !next || next.id !== current.id || doc.n !== next.epoch
-    || next.epoch !== current.epoch + 1 || (!acceptance && doc.origin !== (current.standby?.sign ?? current.sign))
+    || next.epoch !== current.epoch + 1 || (!acceptance && !ranked && doc.origin !== (current.standby?.sign ?? current.sign))
     || doc.body.previous !== current.primary) return false;
   const resolved = resolveCheckpoint(doc, checkpoint);
   if (resolved && !checksSeal(link, resolved.checkpoint)) return false;
-  if ((current.checkpointed || Object.hasOwn(doc.body, "checkpoint")) && !resolved) return false;
+  if ((chained || current.checkpointed || Object.hasOwn(doc.body, "checkpoint")) && !resolved) return false;
+  if (chained && !resolved?.membership.successorOrder) return false;
   const body = resolved?.membership ?? doc.body;
   if (!Array.isArray(body.boxes) || !body.boxes.every(fitsPeer)) return false;
   const shared = resolved?.shared ?? sharedValues(doc.body.shared);
   if (doc.body.shared !== undefined && !shared) return false;
-  const takeover = doc.body.takeover === true;
   if (takeover) {
-    if (!current.standby || next.primary !== current.standby.key || doc.body.proposal) return false;
+    if (doc.body.proposal || (current.successorChain ? !ranked || resolved?.checkpoint.origin !== doc.origin :
+      next.primary !== current.standby?.key)) return false;
   } else if (current.standby || acceptance) {
     const { approval, ...proposal } = doc.body;
     if (proposal.proposal !== true || !readDoc({
@@ -136,14 +255,17 @@ export function takeLeadership(link: LinkState, doc: Doc, checkpoint?: Doc): boo
     || peers.length !== 2 || !peers.some(peer => peer.key === retired && peer.sign === current.standby!.sign))) return false;
   const primary = peers.find(peer => peer.key === next.primary);
   const standby = peers.find(peer => peer.key === doc.body.standby && peer.key !== next.primary && peer.sign !== primary?.sign);
-  if (acceptance && (takeover || !resolved || current.standby || (doc.body.recovery === true && !requiresStandby(current))
+  const replacement = doc.body.replacesStandby;
+  if (replacement !== undefined && (!acceptance || !current.successorChain || replacement !== current.standby?.key || standby?.key === replacement)) return false;
+  if (acceptance && (takeover || !resolved || current.standby && replacement === undefined || (doc.body.recovery === true && !requiresStandby(current))
     || next.primary !== current.primary || standby?.sign !== doc.origin
-    || (current.role === "primary" && held(link.leadershipPending)?.envelope.s !== doc.body.approval))) return false;
-  if (!primary?.sign || !peers.some(peer => peer.key === current.primary && peer.sign === current.sign)
-    || (takeover && primary.sign !== current.standby?.sign)
+    || (!discardingFork && current.role === "primary" && held(link.leadershipPending)?.envelope.s !== doc.body.approval))) return false;
+  if (!primary?.sign || !peers.some(peer => peer.key === current.primary && peer.sign === current.sign) && !(ranked && resolved?.membership.left.includes(current.primary))
+    || (takeover && primary.sign !== doc.origin)
     || (doc.body.standby != null && !standby?.sign)
     || (next.primary === current.primary && (doc.body.standby ?? null) === (current.standby?.key ?? null)
       && !(resolved && !current.checkpointed)
+      && !(chained && !current.successorChain)
       && !(typeof doc.body.numberCeiling === "number" && doc.body.numberCeiling > (current.numberCeiling ?? 0)))) return false;
   const ceiling = doc.body.numberCeiling;
   if (standby && (typeof ceiling !== "number" || !Number.isSafeInteger(ceiling) || ceiling < 1)) return false;
@@ -169,9 +291,10 @@ export function takeLeadership(link: LinkState, doc: Doc, checkpoint?: Doc): boo
   const here = own === primary.key;
   if (here && ownSign(link) !== primary.sign) return false;
   // Same-primary transitions leave local effects on the primary.
-  const stillHere = here && current.role === "primary";
+  const stillHere = here && current.role === "primary" && !discardingFork;
   if (resolved) preserveCheckpoint(resolved.checkpoint);
   link.setup = { ...next, ...((resolved || current.checkpointed) ? { checkpointed: true as const } : {}), sign: primary.sign, role: here ? "primary" : "member", managed: true,
+    ...(chained ? { successorChain: true as const } : {}),
     ...(retired === undefined && (requiresStandby(current) || standby || doc.body.sharedSaves === true) ? { sharedSaves: true as const } : {}),
     ...(standby?.sign ? { standby: { key: standby.key, sign: standby.sign }, numberCeiling: ceiling as number } : {}),
   };
@@ -191,9 +314,8 @@ export function takeLeadership(link: LinkState, doc: Doc, checkpoint?: Doc): boo
   if (here) delete link.mac;
   else link.mac = primary.key;
   if (link.docs) delete link.docs[docKey(primary.sign, "phones")];
-  if (takeover) {
-    // All shared device removals come from the winning snapshot. Any disconnected
-    // primary's interim removals must not silently veto grants on the new primary.
+  if (takeover || discardingFork) {
+    // Clear transient losing state. Accepted removals are restored by the checkpoint and revocation union.
     link.removed = [];
     delete link.untold;
     delete link.untoldMembership;

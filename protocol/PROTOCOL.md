@@ -353,8 +353,8 @@ and you can choose another member as primary once both computers are connected.
   its primary role from that certificate and signs subsequent membership and device lists with
   its own key. After the transfer, only the primary publishes setup device grants and removals.
   A receiver takes only the next epoch of its setup. The preceding primary signs when the
-  epoch has no standby. Once there is a standby, only its signing key can certify the next
-  epoch. For a planned transition the primary durably fences itself and saves its signed
+  epoch has no standby. With a standby, planned transitions normally use its signing key.
+  Ranked takeovers and replacing an unreachable standby use the rules below. For a planned transition the primary durably fences itself and saves its signed
   proposal in `leadershipPending` before sending. The standby signs the same body with the
   primary's detached signature in `approval`. It commits once before it replies. An interrupted
   primary resends the proposal and installs the same certificate when it hears it. The
@@ -378,36 +378,35 @@ and you can choose another member as primary once both computers are connected.
   replaced by the primary alone.
 - **Successor rank.** Layout 14 records `successorOrder` in signed, accepted setup
   membership. The list contains each enrolled computer's static key once. Linux and
-  configured always-on computers are preferred at bootstrap, followed by computers
-  enrolled as machines without an availability report. A longer recent stretch of
-  observed availability moves a computer up. Tied observations keep the accepted order.
-  The current epoch certificate still grants takeover authority to its designated standby.
-- **Primary lease.** The standby sends a fresh authenticated challenge every ten seconds.
-  The primary answers with another nonce. The standby returns a lease response only for the
-  outstanding exchange. The primary measures a sixty-second term from when it answered the
-  challenge, using both wall time and system uptime. The local `run/setup-lease.json` is bound
-  to the setup id, epoch and standby. Loss of the lease fences setup roster and device writes
-  and stops allocation of new Work Queue numbers. Existing connections and local work use
-  the grants and numbers already held. A pending leadership proposal also fences the primary.
-- **Takeover.** Only the standby can sign a transition with `takeover: true`. It names itself as
-  primary and uses the membership and device state it holds. The default wait after the last
-  successful round trip is the sixty-second lease plus a two-minute margin, while the standby can
-  reach the relay. Restarting the standby or losing its own relay connection starts a new
-  observation period. It uses both wall time and uptime, and resets on a long gap in observation.
-  `delayMinutes` in `setup-takeover.json` overrides the total wait with a value between 60 and
-  10,080 minutes. The box logs the delay, the takeover and the choice of standby. The old primary
-  installs the higher signed epoch as a member on
-  reconnect and uses the winning membership and device state. Local work stays with its owner.
-  Folder layout 3 reserves these records. Older box builds refuse to open that layout.
-  Extending takeover past the first standby requires a shared fencing rule. With five
-  computers A through E, a partition separating primary A and standby B from C, D,
-  and E allows A to renew its existing two-computer lease while C, D, and E can form a
-  majority for a different primary. If B also loses A's heartbeat, B can sign the next
-  epoch alone. Giving each voter one vote per epoch does not make either old authority
-  intersect the new majority. A quorum-based extension therefore needs quorum leases,
-  quorum elections and quorum saves. A deliberate user recovery with fewer voters can
-  supersede changes on an isolated majority and must surface that consequence before
-  asking for approval.
+  configured always-on computers are preferred at bootstrap, followed by other computers
+  enrolled as machines. A longer recent stretch of observed availability moves a computer
+  up. Tied observations keep the accepted order. A signed epoch enables the successor
+  chain once all current computers advertise `setup.successor-chain`. Older setups
+  keep their existing standby delegation until they can make that transition.
+- **Primary lease and saves.** The current standby sends an authenticated challenge every
+  ten seconds. The primary answers with a fresh nonce and the standby returns a lease
+  response for that exchange. The primary measures sixty seconds from its answer, using
+  wall time and uptime. The lease in `run/setup-lease.json` is bound to the setup, epoch,
+  standby and, in a ranked chain, the active certificate. An expired lease, or an outstanding leadership proposal, fences shared setup
+  changes. Everyday local work continues using the grants it already holds. A shared save
+  is acknowledged by the current standby. If it stays unreachable, the primary can
+  propose the first available successor as replacement. That successor durably accepts
+  the checkpoint and new epoch before the primary can renew its lease and save through it.
+- **Takeover.** A ranked successor probes the primary and every higher-ranked successor
+  (the current standby has first place). After missing the primary for about three minutes
+  (the sixty-second lease plus a two-minute margin), the highest-ranked reachable
+  successor signs the next epoch using its accepted checkpoint. Lower ranks give earlier
+  ranks time to answer before taking over. Restarting or losing the relay resets the
+  observation period. An operator can set `delayMinutes` in `setup-takeover.json` to
+  between 60 and 10,080 minutes. There is no approval prompt.
+- **Reconnecting after a split.** A partition can leave two writable primaries temporarily.
+  On reconnect the higher verified epoch wins. At equal epochs, the common predecessor's
+  signed successor order breaks ties, then stable keys and certificate hashes if needed.
+  The loser installs the winning checkpoint and steps down. Shared setup edits that only
+  existed on the losing branch are discarded. Computer and device removals and credential
+  revocations from either verified branch are carried forward as a union. Local work and
+  its files stay with their owners. A successor may also be missing a save that only the
+  failed primary and standby ever stored.
 - **Number reservations.** A delegated epoch reserves a bounded range above the certified counter.
   Only the standby can certify a new bound. With folder layout 4, the primary saves each grant
   through the standby before issuing it. Takeover retains those grants and skips the outgoing
@@ -7957,6 +7956,7 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `settings.vault` | In `kuvo/settings`: the Vault section ("A box's settings"), and a form's `secret` and `file` fields, a `secret` pairs, Show (`shows`), and checks that never carry a value |
 | `setup` | `kuvo/setup`, `…/events`: your setup and its main computer ("Your setup") |
 | `setup.handover` | a member can ask the primary to transfer the setup to another enrolled computer at the next epoch |
+| `setup.successor-chain` | ranked takeover and deterministic convergence of signed setup epochs |
 | `setup.takeover` | a signed standby can advance the setup epoch, and clients can choose another standby |
 | `setup.mainOnly` | a member refuses pairing and adding with `409 {message, primary}`, and answers `GET kuvo/hosts` from its setup ("Your setup", Only the main computer adds and pairs) |
 | `setup.ready` | `GET kuvo/setup/ready`: whether a first run has anything to ask about your accounts here, decided by the box ("Your setup") |

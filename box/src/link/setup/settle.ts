@@ -65,12 +65,14 @@ export function noteConflict(link: LinkState, doc: Doc): void {
   setup.conflict = { primary: said.primary, epoch: said.epoch };
 }
 
-function managedFields(doc: Doc): Pick<SetupRecord, "managed" | "standby" | "numberCeiling" | "checkpointed" | "sharedSaves"> {
+function managedFields(doc: Doc): Pick<SetupRecord, "managed" | "standby" | "numberCeiling" | "checkpointed" | "sharedSaves" | "successorChain" | "leadershipHash"> {
   if (doc.body.managed !== true || legacyFolderTrial(K)) return {};
   const boxes = Array.isArray(doc.body.boxes) ? doc.body.boxes : [];
   const standby = boxes.filter(fitsPeer).map(cleanPeer).find(peer => peer.key === doc.body.standby && peer.sign !== doc.origin);
   const ceiling = doc.body.numberCeiling;
   return { managed: true, ...(doc.body.checkpointed === true ? { checkpointed: true as const } : {}),
+    ...(doc.body.checkpointed === true && doc.body.successorChain === true && typeof doc.body.leadershipHash === "string" &&
+      /^[\w-]{11}$/.test(doc.body.leadershipHash) ? { successorChain: true as const, leadershipHash: doc.body.leadershipHash } : {}),
     ...(doc.body.sharedSaves === true ? { sharedSaves: true as const } : {}), ...(standby?.sign && typeof ceiling === "number" && Number.isSafeInteger(ceiling) && ceiling > 0
     ? { standby: { key: standby.key, sign: standby.sign }, numberCeiling: ceiling } : {}) };
 }

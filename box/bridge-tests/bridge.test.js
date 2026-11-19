@@ -1652,17 +1652,19 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     // (Where a client reaches each of your own computers itself, in kuvo/computers' answer.)
     "computers.reach": ["GET", "kuvo/computers"],
     "computers.reach-words": ["GET", "kuvo/computers"],
+    "computers.removal": ["POST", "kuvo/computers/none/unlink"],
+    "computers.removal-operations": ["GET", "kuvo/info"],
     // (How a machine this box keeps up to date stands, and this box's own update, in kuvo/computers' answer.)
     "computers.update": ["GET", "kuvo/computers"],
     "computers.update.here": ["GET", "kuvo/computers"],
+    "computers.wipe-preparation": ["POST", "kuvo/computers/none/removal-plan", { served: true, fromApp: true }],
     "computers.words": ["GET", "kuvo/computers"],
     config: ["GET", "kuvo/config"],
     "config.apply": ["GET", "kuvo/config/apply"],
     "data.ownership": ["GET", "kuvo/data/owner", { desktop: true }],
-    // (A computer let add Kuvo Code's app to your devices again, on the main computer: a GET is the wrong method.)
-    "devices.allow": ["GET", "kuvo/computers/none/allow-devices"],
     // (Kuvo Code's desktop app paired as one of your devices, only from the app on this computer: a GET is the wrong method.)
     "devices.pair": ["GET", "kuvo/devices/pair"],
+    "devices.remove.forward": ["GET", "kuvo/info"],
     "engine.restart": ["GET", "kuvo/engine/restart"],
     "engine.start": ["GET", "kuvo/engine/start"],
     file: ["GET", "kuvo/file"],
@@ -1815,13 +1817,15 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     "settings.vault": ["GET", "kuvo/settings/vault"],
     // (Your setup, and who's its main computer.)
     setup: ["GET", "kuvo/setup"],
-    // Checkpoints and standby acceptance are exchanged between peers.
+    // These capabilities are exchanged between peers.
     "setup.checkpoints": ["GET", "kuvo/info"],
     "setup.handover": ["POST", "kuvo/setup/handover"],
     "setup.mainOnly": ["GET", "kuvo/setup"],
     "setup.ready": ["GET", "kuvo/setup/ready"],
     "setup.shared-saves": ["POST", "kuvo/setup/save-local", { fromHolder: true }],
+    "setup.sole-primary": ["GET", "kuvo/info"],
     "setup.standby-acceptance": ["GET", "kuvo/info"],
+    "setup.successor-chain": ["GET", "kuvo/info"],
     "setup.takeover": ["GET", "kuvo/setup/standby"],
     "setup.welcomed": ["GET", "kuvo/setup"],
     "shell.stop": ["POST", "kuvo/shell/sh_none/stop"],

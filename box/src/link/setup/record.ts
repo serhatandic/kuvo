@@ -33,6 +33,8 @@ export interface SetupRecord extends SetupWord {
   managed?: true;
   sharedSaves?: true;
   checkpointed?: true;
+  successorChain?: true;
+  leadershipHash?: string;
   standby?: { key: string; sign: string };
   numberCeiling?: number;
   conflict?: { primary: string; epoch: number };

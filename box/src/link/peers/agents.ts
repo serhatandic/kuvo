@@ -3,7 +3,7 @@
 // changes, and written with what they told into `run/agents.json` (what a Mac that's gone told,
 // forgotten).
 
-import { removalOperationsLayoutReady, removalLayoutReady, offlineEditLayoutReady, ownershipLayoutReady, setupLayoutDeferred } from "../../shared/folder-version";
+import { removalOperationsLayoutReady, removalLayoutReady, offlineEditLayoutReady, ownershipLayoutReady, setupLayoutDeferred, successorRankLayoutReady } from "../../shared/folder-version";
 import fs from "node:fs";
 import path from "node:path";
 import { FEATURES } from "../../shared/features";
@@ -151,6 +151,7 @@ const ownFeatures = (): readonly string[] => {
     if (feature === "computers.removal") return removalLayoutReady(K);
     if (feature === "data.offline-edits") return offlineEditLayoutReady(K);
     if (feature === "data.ownership" || feature === "data.mutation-identity") return ownershipLayoutReady(K);
+    if (feature === "setup.successor-chain") return successorRankLayoutReady(K);
     if (feature === "setup.checkpoints" || feature === "setup.standby-acceptance") return !setupLayoutDeferred(K);
     return true;
   });

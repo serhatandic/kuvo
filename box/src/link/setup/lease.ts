@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { isObject } from "../../shared/json";
+import { held } from "../documents/format";
 import { writePrivate } from "../files";
 import { K, REAL_BOX, RUN } from "../home";
 import type { LinkState } from "../state";
@@ -42,7 +43,8 @@ export function testSetupClock() {
 const stamp = (link: LinkState) => [link.setup?.id, link.setup?.epoch, link.setup?.standby?.key].join(":");
 
 export function grantLease(link: LinkState, since: ReturnType<typeof leaseClock>) {
-  writePrivate(file, JSON.stringify({ stamp: stamp(link), ...since }));
+  const authority = link.setup?.successorChain ? held(link.leadership?.[link.setup.epoch])?.h : undefined;
+  writePrivate(file, JSON.stringify({ stamp: stamp(link), authority, ...since }));
 }
 
 export function fresh(since: { wall: number; uptime: number }, now: ReturnType<typeof leaseClock>, duration: number) {
@@ -54,9 +56,17 @@ export function fresh(since: { wall: number; uptime: number }, now: ReturnType<t
 export function primaryFenced(link: LinkState | null | undefined): boolean {
   if (link?.setup?.role !== "primary") return false;
   if (link.leadershipPending) return true;
+  const revoked = link.setupRevocations;
+  if (link.setup.successorChain && revoked?.setup === link.setup.id) {
+    const standby = link.setup.standby;
+    if (revoked.computers.includes(link.setup.primary) || revoked.signs.includes(link.setup.sign) ||
+      standby && (revoked.computers.includes(standby.key) || revoked.signs.includes(standby.sign))) return true;
+  }
   if (!link.setup.standby) return false;
   const lease = json(file);
-  return !isObject(lease) || lease.stamp !== stamp(link) || typeof lease.wall !== "number"
+  const authority = link.setup.successorChain ? held(link.leadership?.[link.setup.epoch])?.h : undefined;
+  return !isObject(lease) || lease.stamp !== stamp(link) || link.setup.successorChain && (!authority || lease.authority !== authority)
+    || typeof lease.wall !== "number"
     || typeof lease.uptime !== "number" || !fresh({ wall: lease.wall, uptime: lease.uptime }, leaseClock(), LEASE_MS);
 }
 
