@@ -281,8 +281,13 @@ if (transferring) return ${answer}(request).then(async response => {
   const during = send();
   const rawID = "msg_handoverraw0001";
   let raw;
+  let rawFinished = false;
   try {
     await box.until(() => fs.existsSync(marks.lookup), "the app to find the old bridge");
+    // This is an established bridge. Its old PID file cannot stand in for a startup
+    // timer once the bridge has explicitly refused a request for handover.
+    const earlier = new Date(Date.now() - 120_000);
+    fs.utimesSync(path.join(box.run, "agents.pid"), earlier, earlier);
     const responder = /return (answer\d*)\(request\)\.finally\(\(\) => answering--\);/;
     assert.ok(responder.test(agents));
     const next = agents.replace(responder, (_matched, answer) => `return (async () => {
@@ -304,8 +309,10 @@ if (transferring) return ${answer}(request).then(async response => {
     assert.equal(refused.json?.reason, "agentsRestarting");
     assert.deepEqual(fs.readdirSync(path.join(box.run, "owned-data", "mutations")), [], "the owner released the pre-execution refusal");
     assert.equal(fs.existsSync(marks.accepted), false);
-    raw = box.ask("POST", `kuvo/agents/api/session/${made.json.data.id}/prompt`, { id: rawID, text: "follow the replacement" });
+    raw = box.ask("POST", `kuvo/agents/api/session/${made.json.data.id}/prompt`, { id: rawID, text: "follow the replacement" }).finally(() => { rawFinished = true; });
     await box.until(() => rejected(rawID), "the raw prompt to hit the same pre-execution fence");
+    await Promise.race([raw, new Promise(resolve => setTimeout(resolve, 400))]);
+    assert.equal(rawFinished, false, "the fence is expected even though the old bridge's PID record predates this update");
   } finally {
     write(marks.fenced, "");
     write(marks.finish, "");

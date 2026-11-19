@@ -108,11 +108,12 @@ export async function bridgeRequest(target: Target, url: URL, options: RequestIn
     if (!read || !current || error instanceof UnsupportedBridgeRouteVersion || options.signal?.aborted) throw error;
     failure = error;
   }
-  if (current && (!response || bridgeRefusedBeforeExecution(response))) {
+  const transferring = response !== undefined && bridgeRefusedBeforeExecution(response);
+  if (current && (!response || transferring)) {
     const next = await bridgeBack(() => {
       const found = current();
       return found && (found.port !== target.port || found.password !== target.password) ? found : null;
-    }, options.signal ?? undefined);
+    }, options.signal ?? undefined, undefined, { transferring });
     if (next) {
       await response?.body?.cancel().catch(() => {});
       return { response: await send(next), target: next };

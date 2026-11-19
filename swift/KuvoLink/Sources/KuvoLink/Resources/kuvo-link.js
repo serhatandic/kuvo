@@ -1,4 +1,4 @@
-// Kuvo folder layout 18 d53de8ea5221
+// Kuvo folder layout 18 4e9e26bf0afe
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
 var __create = Object.create;
@@ -1139,7 +1139,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "d53de8ea5221";
+var BRIDGE_VERSION = "4e9e26bf0afe";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -18594,10 +18594,9 @@ async function bridgeBack(bridge, signal, within = 30000, place = {}) {
       seenRunning();
       return found;
     }
-    if (signal?.aborted || Date.now() - from >= within || IS_MAC && !OWN_HOME_MAC && place.run === undefined)
+    if (signal?.aborted || Date.now() - from >= within)
       return null;
-    const state = agentsState({ ...place, bridge }).state;
-    if (state === "down")
+    if (!place.transferring && (IS_MAC && !OWN_HOME_MAC && place.run === undefined || agentsState({ ...place, bridge }).state === "down"))
       return null;
     await pause(200, signal);
   }
@@ -54652,11 +54651,12 @@ async function bridgeRequest(target, url, options, current, read = false) {
       throw error;
     failure = error;
   }
-  if (current && (!response || bridgeRefusedBeforeExecution(response))) {
+  const transferring = response !== undefined && bridgeRefusedBeforeExecution(response);
+  if (current && (!response || transferring)) {
     const next = await bridgeBack(() => {
       const found = current();
       return found && (found.port !== target.port || found.password !== target.password) ? found : null;
-    }, options.signal ?? undefined);
+    }, options.signal ?? undefined, undefined, { transferring });
     if (next) {
       await response?.body?.cancel().catch(() => {});
       return { response: await send(next), target: next };
