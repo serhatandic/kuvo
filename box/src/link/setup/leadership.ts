@@ -11,7 +11,7 @@ import { fits, foldPhones } from "../phones";
 import { K } from "../home";
 import type { LinkState, Phone } from "../state";
 import { checksSeal, preserveCheckpoint, resolveCheckpoint } from "./checkpoint";
-import { acceptedMembership, projectMembership } from "./membership";
+import { acceptedMembership, portableDevice, projectMembership } from "./membership";
 import { committedOperations, installShared, sharedValues } from "./shared";
 import { ledSetup, requiresStandby, setupDoc, setupOf } from "./record";
 
@@ -210,7 +210,6 @@ export function takeLeadership(link: LinkState, doc: Doc, checkpoint?: Doc): boo
         .filter(([key, n]) => KEY.test(key) && Number.isSafeInteger(n) && Number(n) > 0)) as Record<string, number>;
     }
     delete link.peerNames;
-    link.vouchBlocked = Array.isArray(doc.body.vouchBlocked) ? doc.body.vouchBlocked : [];
   } else if (!here) {
     // A former primary that is later removed must not start a new setup with an old roster.
     delete link.macPeers;
@@ -218,7 +217,6 @@ export function takeLeadership(link: LinkState, doc: Doc, checkpoint?: Doc): boo
     delete link.left;
     delete link.removedHere;
     delete link.peerNames;
-    delete link.vouchBlocked;
   }
   foldPhones(link);
   return true;
@@ -230,7 +228,7 @@ function projectLegacyDevices(link: LinkState, value: unknown, primary: string, 
   const local = (link.phones ?? []).filter(phone => phone.from === "pair" && (wasMember || phone.local))
     .map((phone): Phone => ({ ...phone, local: true }));
   const transferred = (Array.isArray(snapshot.phones) ? snapshot.phones : []).filter(phone => fits(phone, [primary]))
-    .map((phone): Phone => ({ ...phone, pairing: phone.pairing ?? undefined, from: here ? "pair" : "mac", ...(here ? {} : { mac: primary }) }));
+    .map((phone): Phone => ({ ...portableDevice(phone), from: here ? "pair" : "mac", ...(here ? {} : { mac: primary }) }));
   const transferredKeys = new Set(transferred.map(phone => phone.key));
   link.phones = [...transferred, ...local.filter(phone => !transferredKeys.has(phone.key))];
   for (const entry of Array.isArray(snapshot.removed) ? snapshot.removed : []) {

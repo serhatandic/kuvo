@@ -6140,9 +6140,6 @@
                "literal": "remove"
               },
               {
-               "literal": "allow-devices"
-              },
-              {
                "literal": "setup"
               },
               {
@@ -6169,14 +6166,6 @@
             },
             "why?": "string"
            }
-          }
-         },
-         "vouching?": {
-          "object": {
-           "blocked": {
-            "literal": true
-           },
-           "words": "string"
           }
          },
          "update?": {
@@ -6352,9 +6341,6 @@
                "literal": "remove"
               },
               {
-               "literal": "allow-devices"
-              },
-              {
                "literal": "setup"
               },
               {
@@ -6381,14 +6367,6 @@
             },
             "why?": "string"
            }
-          }
-         },
-         "vouching?": {
-          "object": {
-           "blocked": {
-            "literal": true
-           },
-           "words": "string"
           }
          },
          "update?": {
@@ -8552,36 +8530,6 @@
    }
   },
   {
-   "route": "POST kuvo/computers/:key/allow-devices",
-   "feature": "devices.allow",
-   "answers": {
-    "200": {
-     "object": {}
-    },
-    "403": {
-     "object": {
-      "message": "string"
-     }
-    },
-    "404": {
-     "object": {
-      "message": "string"
-     }
-    },
-    "405": {
-     "object": {
-      "message": "string"
-     }
-    },
-    "409": {
-     "object": {
-      "message": "string",
-      "primary?": "string"
-     }
-    }
-   }
-  },
-  {
    "route": "GET kuvo/info",
    "feature": "info",
    "answers": {
@@ -8833,10 +8781,10 @@
             "literal": "data.ownership"
            },
            {
-            "literal": "devices.allow"
+            "literal": "devices.pair"
            },
            {
-            "literal": "devices.pair"
+            "literal": "devices.remove.forward"
            },
            {
             "literal": "engine.restart"
@@ -9634,10 +9582,10 @@
             "literal": "data.ownership"
            },
            {
-            "literal": "devices.allow"
+            "literal": "devices.pair"
            },
            {
-            "literal": "devices.pair"
+            "literal": "devices.remove.forward"
            },
            {
             "literal": "engine.restart"

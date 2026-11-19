@@ -12,7 +12,7 @@
 
 import crypto from "node:crypto";
 import { removalLayoutReady, wipePreparationLayoutReady } from "../../shared/folder-version";
-import { membershipOf } from "../setup/membership";
+import { acceptedMembership, membershipOf } from "../setup/membership";
 import { REMOVAL_ID, removalsOf, type MemberRemoval } from "../setup/removal-record";
 import { setupSaveReceipt } from "../../shared/setup-local";
 import { beforeMembershipWipe, finishPreparation, forgetFinishedPreparations, pendingPreparations, preparationClaim, preparationOf, removalIntent, removalLock, removalPlanForPeer,
@@ -37,7 +37,6 @@ import { standbyHere } from "../setup/handover";
 import { leadershipOf, PRIMARY_UNLINK, STANDBY_UNLINK } from "../setup/leadership";
 import { followedSetup, requiresStandby } from "../setup/record";
 import { macName, mainElsewhere } from "../setup/main-only";
-import { takeOffVouched, vouchedWords } from "../phones";
 import { macLink, readLink, updateLink } from "../state";
 import { writePrivate } from "../files";
 import { ownName } from "../letters/start";
@@ -74,8 +73,10 @@ export function writerOf(link: LinkState | null | undefined): Writer {
  * which that Mac keeps). */
 function writtenMachines(link: LinkState | null | undefined, writer: Writer): Set<string> {
   if (!writer) return new Set();
-  const boxes = writer.here ? peersOf(link) : namedBoxes(link, writer.key);
-  return new Set(boxes.filter(box => box.kind === "machine" || link?.setup?.managed).map(box => box.key));
+  const boxes = acceptedMembership(link)?.boxes ?? (writer.here ? peersOf(link) : namedBoxes(link, writer.key));
+  const keys = new Set(boxes.filter(box => box.kind === "machine" || link?.setup?.managed).map(box => box.key));
+  if (link?.setup?.managed) keys.add(link.setup.primary);
+  return keys;
 }
 
 /** What this box knows of the writer, worked out once for a whole list: who it is, the machines
@@ -110,7 +111,7 @@ export function writerFacts(link: LinkState | null = readLink()): WriterFacts {
   const told = writer && !writer.here ? readPeerAgents()[writer.key] : undefined;
   return { writer, machines: writtenMachines(link, writer), takes: Boolean(writer && (writer.here || (told?.features ?? []).includes(MANAGE_FEATURE))), reachable,
     // (A writer that's away is said to be away: what it last said of its app may be long over.)
-    oldApp: Boolean(writer && (writer.here ? oldAppAttached() : told?.computer?.oldApp === true && awaySince(writer.key) === null)) };
+    oldApp: Boolean(writer && !link?.setup?.managed && (writer.here ? oldAppAttached() : told?.computer?.oldApp === true && awaySince(writer.key) === null)) };
 }
 
 /** Why `computer` can't be renamed (`rename`) or removed (`remove`) from this box, in words a client
@@ -121,7 +122,7 @@ export function whyNot(computer: Pick<ListedComputer, "key" | "name" | "kind" | 
   if (what === "remove" && computer.key && computer.key === link?.setup?.primary) {
     return lonePrimary(link, computer.key) ? null : PRIMARY_UNLINK;
   }
-  if (computer.kind === "mac" && (what === "rename" || !link?.setup?.managed)) return what === "rename" ? `${name} is a Mac: it goes by the name it has there.` : `A Mac can't be removed from here.`;
+  if (computer.kind === "mac" && !link?.setup?.managed) return what === "rename" ? `${name} is a Mac: it goes by the name it has there.` : `A Mac can't be removed from here.`;
   if (what === "remove" && computer.here && !link?.setup?.managed) return `${here} can't remove itself: remove it from another of your computers.`;
   if (!writer) return macsOf(link).length > 1 ? `${what === "rename" ? "Rename" : "Remove"} ${name} from the Mac that added it.` : `No Mac keeps ${name}'s record, so it can't be ${what === "rename" ? "renamed" : "removed"} from here.`;
   if (!facts.reachable) return `${here} can't reach ${(writer as { name: string }).name}, which keeps your machines' records: ${what} ${name} from there.`;
@@ -155,12 +156,7 @@ export function actionsOf(computer: ListedComputer, here: string, trying: boolea
     const waits = waitsFor(computer, here, facts);
     const last = computer.key && lonePrimary(link, computer.key);
     if (last && wipeSupportedHere()) actions.push({ id: "remove", label: "Wipe", confirm: { title: `Wipe ${name}?`, message: "This is the only computer. Wiping deletes Kuvo Code and its sessions and bots. No setup is left.", label: "Wipe" } });
-    else if (!last) actions.push({ id: "remove", label: link?.setup?.checkpointed ? "Unlink" : "Remove", ...(waits ? { why: waits } : { confirm: { title: `Remove ${name}?`, message: `Your other computers stop reaching ${name}.${vouchedWords(link, computer.key, name)} It keeps running, with its sessions, and you can add it again later.`, label: "Remove" } }) });
-  }
-  // (Kept from adding Kuvo Code's app to your devices, as this box, the main computer, says of it:
-  // `vouching`, areas/computers.ts.)
-  if (computer.vouching?.blocked) {
-    actions.push({ id: "allow-devices", label: "Allow Its App Again", confirm: { title: `Let ${name} add Kuvo Code's app again?`, message: `Kuvo Code on ${name} can add itself to your devices again, and reach every computer of yours. What you removed stays removed.`, label: "Allow" } });
+    else if (!last) actions.push({ id: "remove", label: link?.setup?.checkpointed ? "Unlink" : "Remove", ...(waits ? { why: waits } : { confirm: { title: `Remove ${name}?`, message: `Your other computers stop reaching ${name}. It keeps running, with its sessions, and you can add it again later.`, label: "Remove" } }) });
   }
   return actions;
 }
@@ -183,7 +179,7 @@ export async function renameHere(key: string, name: string): Promise<RenameReply
   let waitingForStandby = false;
   let save: Receipt | null = null;
   const changed = updateLink(link => {
-    if (!link || mainElsewhere(link) || !peersOf(link).some(peer => peer.key === key)) return null;
+    if (!link || mainElsewhere(link) || !writtenMachines(link, { here: true }).has(key)) return null;
     found = true;
     if (requiresStandby(link.setup) && !link.setup?.standby) {
       waitingForStandby = true;
@@ -372,9 +368,7 @@ async function removePeer(key: string, pendingOnly: boolean, removal?: Omit<Memb
 
 /** Removes the machine `key` here, on the box that writes its record: its peers document names it
  * among those you removed (`left`), so it lets this Mac go and your other computers drop it, and
- * this Mac's list of machines no longer has it. Kuvo Code's app on it goes from your devices too:
- * every device its box vouched for (`setMacPeers`; `takeOffVouched`, phones.ts), as this box's
- * phones document then says to your other computers. It keeps running there, as a box of its own. */
+ * this Mac's SSH list no longer has it. It keeps running there, as a box of its own. */
 // Legacy in-process callers can complete immediately. The routed removal waits for a receipt.
 export function removeHere(key: string, pendingOnly = false): RemovalReply {
   const removal = prepareRemoval(key, pendingOnly);
@@ -412,10 +406,7 @@ function prepareRemoval(key: string, pendingOnly: boolean, removal?: Omit<Member
     already = Boolean(link.removedHere?.includes(key));
     const destination = peer && localDestination(link, key);
     needsCleanup = Boolean(destination || link.pendingMachineCleanup?.[key]);
-    if (!peer) {
-      // One removed before its devices went with it loses them when asked again.
-      return !pendingOnly && already && takeOffVouched(link, key) ? link : null;
-    }
+    if (!peer) return null;
     const made = setMacPeers(link, { peers: (Array.isArray(link.macPeers) ? link.macPeers : []).filter(each => each?.key !== key), moved: link.macMoved, removed: [key] }, { staging: Boolean(link.setup?.standby) });
     if (!made.link) return null;
     gone = made.gone;
@@ -502,7 +493,7 @@ export async function writerAct(sender: MailSender, act: Act): Promise<Acted> {
   if (!writer?.here) return answer(409, { message: `${ownName()} doesn't keep your machines' records.` });
   // (The same rules as the asking box's, again here: it may be older, or not say true.)
   const target = peersOf(link).find(peer => peer.key === act.item);
-  if (target && act.method === "DELETE" && oldAppAttached()) return answer(409, { message: oldAppWords(ownName(), target.name) });
+  if (target && act.method === "DELETE" && !link?.setup?.managed && oldAppAttached()) return answer(409, { message: oldAppWords(ownName(), target.name) });
   if (act.method === "PATCH") {
     const name = givenName(act.body?.name);
     if (!name) return answer(400, { message: `Give it a name of up to ${MOST_NAME} characters.` });

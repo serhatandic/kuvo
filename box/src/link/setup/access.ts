@@ -14,7 +14,7 @@ import { pendingShared, stageShared, type Receipt } from "./shared";
 const localEffects = DATA_DECLARATIONS.membershipAndAccess.shared.localEffects;
 // COMPAT(layout 4): an older standby expects the full projection in its proposal.
 const legacyFields = ["macPeers", "macMoved", "peerNames", "left", "removedHere", "removalRevisions",
-  "phones", "removed", "vouchBlocked", "computerHistory", ...localEffects.filter(key => key !== "localWipe"),
+  "phones", "removed", "computerHistory", ...localEffects.filter(key => key !== "localWipe"),
 ] as const satisfies readonly (keyof LinkState)[];
 
 export function captureMembership(link: LinkState, self?: Peer) {
@@ -24,7 +24,7 @@ export function captureMembership(link: LinkState, self?: Peer) {
   const roster = self ? [self, ...projected] : boxes;
   return membershipOf({
     boxes: roster, left, moved, computerHistory: computerHistory(link), devices: ownPhones(link), removalRevisions: link.removalRevisions, removedHere: link.removedHere,
-    vouchBlocked: link.vouchBlocked, removals: link.memberRemovals, wipePreparations: link.wipePreparations,
+    removals: link.memberRemovals, wipePreparations: link.wipePreparations,
   });
 }
 
@@ -60,7 +60,7 @@ export function updateAccess(change: (link: LinkState | null) => LinkState | nul
       const { boxes, left, moved } = primaryPeersBody(modified);
       save = stageShared(link, "membershipAndAccess", {
         epoch: link.setup.epoch, fields, pairing, boxes, left, moved,
-        devices: ownPhones(modified), vouchBlocked: modified.vouchBlocked ?? [],
+        devices: ownPhones(modified),
       }, undefined, operation);
     } else {
       const membership = captureMembership(modified, accepted?.boxes.find(box => box.key === link.setup!.primary));

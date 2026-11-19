@@ -105,10 +105,10 @@ test("the app beside a box that pairs phones is paired at once as a desktop devi
 
   const paired = await ask(APP, "POST", "kuvo/devices/pair", given);
   assert.equal(paired.status, 200);
-  // Only so many desktop apps at once: the list is never filled this way.
-  for (let more = 1; more < 16; more++) assert.equal((await ask(APP, "POST", "kuvo/devices/pair", { ...given, key: device() })).status, 200);
+  // The same capacity applies to paired devices.
+  for (let more = 1; more < 64; more++) assert.equal((await ask(APP, "POST", "kuvo/devices/pair", { ...given, key: device() })).status, 200);
   const full = await ask(APP, "POST", "kuvo/devices/pair", { ...given, key: device() });
-  assert.deepEqual([full.status, /as many desktop apps/.test(full.body.message)], [409, true]);
+  assert.deepEqual([full.status, /as many paired devices/.test(full.body.message)], [409, true]);
   link.updateLink(kept => ({ ...kept, phones: kept.phones.filter(phone => phone.key === key) }));
   assert.deepEqual(paired.body, { paired: true, pairing: paired.body.pairing });
   assert.match(paired.body.pairing, /^[A-Za-z0-9_-]{16}$/);
@@ -135,10 +135,10 @@ test("the app beside a box that pairs phones is paired at once as a desktop devi
   assert.equal(kept.phones[0].by, undefined);
   assert.deepEqual(await ask(RELAY, "POST", "kuvo/phones/remove", { phones: [{ key }] }, { key: phone }), { status: 200, body: {} });
   assert.equal(link.readLink().vouchBlocked, undefined);
-  // And no computer is allowed anything on a box that leads no setup; never by the box's CLI.
-  assert.equal((await ask(CLI, "POST", `kuvo/computers/${here.pub}/allow-devices`)).status, 403);
-  assert.equal((await ask(RELAY, "POST", `kuvo/computers/${here.pub}/allow-devices`, undefined, { key: crypto.randomBytes(32) })).status, 403, "a device that isn't paired here");
-  assert.equal((await ask(APP, "POST", `kuvo/computers/${here.pub}/allow-devices`)).status, 409);
+  // The old voucher route no longer changes access.
+  assert.equal((await ask(CLI, "POST", `kuvo/computers/${here.pub}/allow-devices`)).status, 404);
+  assert.equal((await ask(RELAY, "POST", `kuvo/computers/${here.pub}/allow-devices`, undefined, { key: crypto.randomBytes(32) })).status, 404, "a device that isn't paired here");
+  assert.equal((await ask(APP, "POST", `kuvo/computers/${here.pub}/allow-devices`)).status, 404);
 });
 
 test("an app removed from your devices stays out: this never pairs it again, and Kuvo Code on this computer removes a device as a paired one does, never a Mac", async () => {

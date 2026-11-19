@@ -438,7 +438,7 @@ test("failure bench: an offline member follows two handovers and the former prim
   await Promise.all([see(a, 2, b), see(b, 2, b), see(c, 2, b)]);
   assert.equal(b.read().phones.find(device => device.key === phone)?.pairing, pairing);
   assert.equal(a.read().phones.find(device => device.key === phone)?.mac, b.key);
-  assert.equal(b.read().vouchBlocked[0].key, c.key);
+  assert.equal(b.read().vouchBlocked, undefined);
   const transition = link.readDoc(b.read().leadership[2]);
   assert.equal(checkpoint(b, 2).shared.queueNumberAllocation.value.next, 401);
   const stale = c.read();
@@ -449,7 +449,7 @@ test("failure bench: an offline member follows two handovers and the former prim
   const staleRevoke = link.signDoc(a.seed, "phones", 40, { phones: [], removed: [{ key: phone, pairing }] });
   assert.equal(link.takeDoc(stale, staleRevoke), null);
   assert.deepEqual(await a.route("POST", "kuvo/phones/remove", { phones: [{ key: phone, pairing }] }), {
-    status: 409, value: { message: "Remove devices from Desk.", primary: b.key },
+    status: 400, value: { message: "Only a device paired with your setup can remove devices." },
   });
   assert.deepEqual(await a.route("DELETE", `kuvo/computers/${b.key}`), refused);
 
@@ -780,7 +780,7 @@ test("failure bench: only the standby takes over across a split and the old prim
   await see(c, 4, b);
   assert.equal((await link.askSetupStatus(c.run, { id: stale.setup.id, operation: interrupted })).outcome, "interrupted");
   await until("new primary leased", () => b.lease(4, c), t.signal);
-  assert.equal((await a.route("POST", "kuvo/phones/remove", { phones: [{ key: phone, pairing }] })).status, 409);
+  assert.equal((await a.route("POST", "kuvo/phones/remove", { phones: [{ key: phone, pairing }] }, true)).status, 409);
 
   // Simulate shared state kept only by the old primary, separately from its local item.
   await a.stop("SIGTERM");
@@ -889,8 +889,7 @@ test("failure bench: access routes return receipts with and without a standby ac
   const { a, b, c, relay } = await standbyNetwork(t);
   const device = name => ({ key: link.publicOf(link.newKey()).toString("base64url"), name, kind: "desktop" });
   const pair = (box, asking) => box.route("POST", "kuvo/devices/pair", asking, true);
-  const remove = asking => a.route("POST", "kuvo/phones/remove", { phones: [{ key: asking.key }] }, true);
-  const allow = () => a.route("POST", `kuvo/computers/${c.key}/allow-devices`, undefined, true);
+  const remove = (box, asking) => box.route("POST", "kuvo/phones/remove", { phones: [{ key: asking.key }] }, true);
   const access = async (status, request) => {
     const resume = status === "pending" ? relay.pause(a.address, b.address) : () => {};
     t.after(resume);
@@ -904,16 +903,14 @@ test("failure bench: access routes return receipts with and without a standby ac
     return reply.value;
   };
 
-  // The fixture starts with this voucher blocked. Removing its app blocks it again.
   for (const status of ["pending", "committed"]) {
-    await access(status, allow);
     const local = device(`Local ${status}`);
-    const member = device(`Vouched ${status}`);
+    const member = device(`Member ${status}`);
     await access(status, () => pair(a, local));
     const vouched = await access(status, () => pair(c, member));
     if (status === "committed") assert.equal(vouched.paired, true);
-    await access(status, () => remove(local));
-    await access(status, () => remove(member));
+    await access(status, () => remove(a, local));
+    await access(status, () => remove(c, member));
   }
   await access("committed", () => a.route("DELETE", `kuvo/computers/${c.key}`));
 });
@@ -941,6 +938,130 @@ test("failure bench: forwarded computer changes carry receipts through the membe
       }
     });
   }
+});
+
+// Connect as an ordinary relay device and send normal client routes to a running box.
+async function deviceAt(relay, box, key, hello = {}) {
+  const client = relay.device();
+  const session = crypto.randomInt(1, 2 ** 30);
+  const initiator = new link.IKInitiator(key, Buffer.from(box.key, "base64url"), link.PROLOGUE);
+  client.send(box.address, link.frame(link.Frame.handshake1, session, initiator.writeMessage1(Buffer.from(JSON.stringify({ v: 1, ...hello })))));
+  const frame = link.readFrame(link.readRelay(await client.next(12_000)).payload);
+  if (frame.kind !== link.Frame.handshake2) {
+    client.leave();
+    return { refused: true };
+  }
+  const { payload, transport } = initiator.readMessage2(frame.body);
+  const greeting = JSON.parse(payload);
+  if (greeting.waiting) {
+    client.leave();
+    return { waiting: greeting.waiting };
+  }
+  let id = 0;
+  return {
+    greeting,
+    close: () => client.leave(),
+    async ask(method, path, body) {
+      const h = body === undefined ? {} : { "content-type": "application/json" };
+      const data = body === undefined ? Buffer.alloc(0) : Buffer.from(JSON.stringify(body));
+      for (const part of link.pieces({ t: "req", id: ++id, m: method, p: path, h }, data, true)) {
+        client.send(box.address, link.frame(link.Frame.transport, session, transport.seal(part)));
+      }
+      const chunks = [];
+      let status;
+      for (;;) {
+        const next = link.readFrame(link.readRelay(await client.next(12_000)).payload);
+        if (next.kind !== link.Frame.transport) return { closed: true };
+        const answer = link.decodeMessage(transport.open(next.body));
+        chunks.push(answer.body);
+        status ??= answer.head.s;
+        if (answer.head.end === true) return { status, value: JSON.parse(Buffer.concat(chunks).toString()) };
+      }
+    },
+  };
+}
+
+test("failure bench: clients share machine changes and revocations across three boxes", { timeout: 90_000 }, async t => {
+  const { a, b, c, relay, see } = await standbyNetwork(t);
+  await see(c, 2, a);
+  const open = async (box, key, hello) => {
+    const device = await deviceAt(relay, box, key, hello);
+    if (!device.greeting) return device;
+    t.after(device.close);
+    return device;
+  };
+  async function byClient(label, read) {
+    while (!t.signal.aborted) {
+      const value = await read();
+      if (value) return value;
+      await delay(25);
+    }
+    throw new Error(`Timed out waiting for ${label}`);
+  }
+  const pairedAt = (box, key, hello) => byClient(`the paired device reaches ${box.name}`, async () => {
+    const device = await open(box, key, hello);
+    return device.greeting && device;
+  });
+  const phoneKey = link.newKey();
+  const phonePublic = link.publicOf(phoneKey).toString("base64url");
+  const invite = await a.route("POST", "kuvo/phones/pair");
+  assert.equal(invite.status, 200);
+  const phoneA = await open(a, phoneKey, { pair: new URL(invite.value.link).searchParams.get("token"), name: "Phone" });
+  assert.ok(phoneA.greeting);
+  const phoneB = await pairedAt(b, phoneKey);
+  const phoneC = await pairedAt(c, phoneKey);
+
+  const launchKey = link.newKey();
+  const desktop = { key: link.publicOf(launchKey).toString("base64url"), name: "Desktop", kind: "desktop" };
+  const save = await b.route("POST", "kuvo/devices/pair", desktop, true);
+  assert.equal(save.status, 200, JSON.stringify(save));
+  assertReceipt(a, "membershipAndAccess", "committed", save.value);
+  const deskA = await pairedAt(a, launchKey, { client: "desktop" });
+  const deskB = await pairedAt(b, launchKey, { client: "desktop" });
+  const deskC = await pairedAt(c, launchKey, { client: "desktop" });
+  for (const device of [deskA, deskB, deskC, phoneA, phoneB, phoneC]) {
+    const roster = await device.ask("GET", "kuvo/computers");
+    assert.equal(roster.status, 200);
+    assert.deepEqual(new Set(roster.value.computers.map(peer => peer.key)), new Set([a.key, b.key, c.key]));
+  }
+
+  const renamed = await phoneB.ask("PATCH", `kuvo/computers/${c.key}`, { name: "Shared name" });
+  assert.equal(renamed.status, 200, JSON.stringify(renamed));
+  assertReceipt(a, "setupNames", "committed", renamed.value);
+  for (const device of [deskA, deskB, deskC]) {
+    await byClient("the desktop reads the shared name", async () =>
+      (await device.ask("GET", "kuvo/computers")).value.computers.find(peer => peer.key === c.key)?.name === "Shared name");
+  }
+
+  const reconnect = relay.disconnect(c.address);
+  t.after(reconnect);
+  await until("the third computer goes offline", () => !relay.has(c.address), t.signal);
+  const revoked = await phoneB.ask("POST", "kuvo/phones/remove", { phones: [{ key: desktop.key, pairing: save.value.pairing }] });
+  assert.equal(revoked.status, 200, JSON.stringify(revoked));
+  assertReceipt(a, "membershipAndAccess", "committed", revoked.value);
+  assert.ok(c.read().phones.some(device => device.key === desktop.key));
+  const unpause = relay.pause(a.address, c.address);
+  t.after(unpause);
+  reconnect();
+  await until("the third computer reconnects with cached grants", () => relay.has(c.address), t.signal);
+  assert.equal((await open(c, launchKey, { client: "desktop" })).waiting, "Checking this app with your other computers…");
+  unpause();
+  await until("the third computer installs the tombstone", () => c.read().removed.some(entry => entry.key === desktop.key), t.signal);
+  for (const box of [a, b, c]) {
+    assert.deepEqual(await open(box, launchKey, { client: "desktop" }), { refused: true });
+    assert.ok(box.read().phones.some(device => device.key === phonePublic));
+  }
+
+  const removed = await phoneB.ask("DELETE", `kuvo/computers/${c.key}`);
+  assert.equal(removed.status, 200, JSON.stringify(removed));
+  assertReceipt(a, "membershipAndAccess", "committed", removed.value);
+  for (const device of [phoneA, phoneB]) {
+    await byClient("the removed machine is absent from the roster", async () =>
+      (await device.ask("GET", "kuvo/computers")).value.computers.every(peer => peer.key !== c.key));
+    assert.equal((await device.ask("POST", `kuvo/computers/${c.key}/connect`)).status, 404);
+  }
+  await until("the removed computer received its unlink", () => !c.read().phones.some(device => device.key === phonePublic), t.signal);
+  assert.deepEqual(await open(c, phoneKey), { refused: true });
 });
 
 test("failure bench: a QR handshake carries its durable pairing receipt to the successor", { timeout: 45_000 }, async t => {
@@ -1005,7 +1126,11 @@ test("failure bench: member uninstall keeps its pending revocation and retries t
   await see(c, 2, a);
   const identity = path.join(c.env.HOME, "desktop", "identity");
   fs.mkdirSync(path.dirname(identity));
-  fs.writeFileSync(identity, "keep this identity while pending");
+  const desktopSecret = link.newKey();
+  const desktop = link.publicOf(desktopSecret).toString("base64url");
+  const identityText = `${desktopSecret.toString("base64url")}.${crypto.randomBytes(32).toString("base64url")}`;
+  fs.writeFileSync(identity, identityText);
+  assert.equal((await c.route("POST", "kuvo/devices/pair", { key: desktop, name: "Desktop", kind: "desktop" }, true)).status, 200);
   const restore = relay.pause(a.address, b.address);
   t.after(restore);
   const pending = await c.command(["uninstall"]);
@@ -1016,7 +1141,7 @@ test("failure bench: member uninstall keeps its pending revocation and retries t
   assert.equal(save.operation, pendingOperation(a, "membershipAndAccess"));
   assert.equal(link.readDoc(save.proof).origin, a.sign);
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(c.run, "uninstall-save.json"), "utf8")), save);
-  assert.equal(fs.readFileSync(identity, "utf8"), "keep this identity while pending");
+  assert.equal(fs.readFileSync(identity, "utf8"), identityText);
   assert.equal(c.child.exitCode, null);
   assert.equal(fs.existsSync(path.join(c.run, "off")), false);
   const stillPending = await c.command(["uninstall"]);

@@ -7,7 +7,7 @@ import { serviceTitle } from "../../shared/account-names";
 // services' plan limits it reads, and what can be done with it from here: renamed, removed
 // (`peers/manage.ts`, handed to the box that writes its record) or reached again
 // (`peers/reach-again.ts`); and, on your setup's main computer, which computer is kept from adding
-// Kuvo Code's app to your devices (`vouching`), with letting it again (`…/allow-devices`). Every box answers it alike, a Mac's and a machine's, with no client
+// Every box answers alike, with no client
 // there: each tells its peers its own facts with its agents (`peers/agents.ts`), so none is a hub.
 // Platform: the system's name is read from macOS's own record of its version, or Linux's
 // `os-release`; the rest is the same on both.
@@ -43,14 +43,10 @@ import { sshActions } from "../add/flow";
 import { KEEP_UP_FILE, keepingUp } from "../add/keep-up";
 import { tryFollowers } from "../add/tries";
 import { updateAccess } from "../setup/access";
-import { awaitSharedSave, sharedSaveReply } from "../setup/shared";
-import { allowVouching, vouchBlockOf } from "../phones";
-import { blockedWords } from "../peers/devices";
 import { PRIMARY_UNLINK } from "../setup/leadership";
 import { mainElsewhere } from "../setup/main-only";
 import { acceptedMembership, acceptedName } from "../setup/membership";
-import { followedSetup } from "../setup/record";
-import { fromLocalApp, savedJson } from "../server/context";
+import { fromLocalApp } from "../server/context";
 import { macLink, readLink } from "../state";
 import type { LinkState } from "../state";
 import { boxVersion } from "../updates/update";
@@ -261,15 +257,12 @@ export async function listComputers(name: string, bridge: Target | null, signal?
   };
   const peers = peersOf(link);
   const reach = readReach();
-  const leads = followedSetup(link)?.role === "primary";
   for (const peer of byName(peers)) {
     const said = told[peer.key];
     const { away, reach: standing } = peerReach(peer.key, told, reach, tries, now);
     const mine = said?.computer;
     // What it said it answers, whole (a list longer than peers keep can't say what's missing).
     const features = said?.features && !said.featuresCut ? said.features : undefined;
-    // (Kept from vouching, as only the main computer knows: a device it added was removed.)
-    const blocked = vouchBlockOf(link, peer.key);
     computers.push({
       key: peer.key,
       name: peer.name,
@@ -286,7 +279,6 @@ export async function listComputers(name: string, bridge: Target | null, signal?
       // by one that never said it (an older box).
       ...(mine?.working !== undefined ? (away ? { working: 0, atWork: [] } : { working: mine.working, ...(mine.atWork ? { atWork: mine.atWork } : {}) }) : {}),
       limits: limits.get(peer.key) ?? [],
-      ...(leads && blocked ? { vouching: { blocked: true as const, words: blockedWords(blocked.device, peer.name) } } : {}),
     });
   }
   return withActions();
@@ -307,7 +299,7 @@ async function* manage(context: RouteContext, key: string, action: string | unde
     const plan = await planForComputer(key, isObject(body) ? body.projects : undefined, signal);
     return yield* json(plan.status, plan.value);
   }
-  if (action === "/allow-devices") return yield* allowDevices(context, key);
+  if (action === "/allow-devices") return yield* json(404, { message: "Pair devices with your setup." });
   const connect = action === "/connect";
   const explicit = action === "/unlink" || action === "/unlink-and-wipe";
   const what = explicit ? (method === "POST" ? "remove" : null) : connect ? (method === "POST" ? "connect" : null) : method === "PATCH" ? "rename" : method === "DELETE" ? "remove" : null;
@@ -370,39 +362,6 @@ async function* manage(context: RouteContext, key: string, action: string | unde
     { key: writer.key, name: writer.name, kind: "mac" }, computer.name, { area: "computers", item: key, method: "PATCH", body: { name } }, signal);
   if ("refused" in there) return yield* json(there.status, { message: there.refused });
   return yield* json(there.status, isObject(there.value) ? there.value : {});
-}
-
-/** `POST kuvo/computers/<key>/allow-devices` (`devices.allow`): the computer `key`, kept from adding
- * Kuvo Code's app to your devices since one it added was removed, is let do it again. The main
- * computer's own, and only for its own clients: a device paired with it, over the relay, or Kuvo
- * Code's app beside it, over the box's own server. Never `box route`, which an agent's command
- * could run, never a device the computer `key` itself vouched for, and never handed on from another box (no act carries it, work-queue/forward.ts): the
- * computer that's kept out can't let itself back in. */
-async function* allowDevices(context: RouteContext, key: string): AsyncGenerator<AnswerPiece> {
-  const { request, phone, signal, json, info } = context;
-  if (request.method.toUpperCase() !== "POST") return yield* json(405, { message: "Only POST." });
-  const link = readLink();
-  const asking = phone?.key?.toString("base64url");
-  const device = asking === undefined ? undefined : (link?.phones ?? []).find(each => each.key === asking);
-  // (Nor a device that same computer vouched for: whoever sits there would be allowing themselves.)
-  if ((!device && !fromLocalApp(request)) || (device?.by !== undefined && device.by === key)) return yield* json(403, { message: "Only Kuvo Code on this computer, or one of your devices, allows a computer to add your devices again." });
-  const computers = await listComputers(info.name ?? "", null, signal ?? undefined);
-  const computer = computers.find(each => each.key === key);
-  if (!computer) return yield* json(404, { message: "That isn't one of your computers." });
-  const here = computers[0]!.name;
-  // Only the main computer keeps a computer from it, so only it allows it again.
-  const main = mainElsewhere(link);
-  if (main) return yield* json(409, { message: `Allow it from ${main.name || peersOf(link).find(peer => peer.key === main.key)?.name || "your main computer"}.`, primary: main.key });
-  if (followedSetup(link)?.role !== "primary") return yield* json(409, { message: `${here} isn't your setup's main computer, so no computer adds your devices through it.` });
-  if (computer.here) return yield* json(409, { message: `${here} is the computer you're asking: it adds its own app itself.` });
-  if (computer.via !== "relay") return yield* json(409, { message: `${computer.name} isn't one of ${here}'s own computers, so it adds none of your devices.` });
-  // (Not kept from it: the same answer. What was removed stays removed: its app makes a new key.)
-  const { save, busy } = updateAccess(kept => (kept && followedSetup(kept)?.role === "primary"
-    && allowVouching(kept, key, Boolean(kept.setup?.standby)) ? kept : null));
-  if (busy) return yield* json(409, { message: "An access change is already waiting to be saved." });
-  const receipt = await awaitSharedSave(save);
-  if (!receipt) return yield* json(200, {});
-  return yield* savedJson(json, sharedSaveReply(receipt));
 }
 
 export async function* computersRoute(context: RouteContext, match: RegExpMatchArray): AsyncGenerator<AnswerPiece> {

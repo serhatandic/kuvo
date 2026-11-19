@@ -141,7 +141,7 @@ export function removalReceipt(link: LinkState, operation: string): Receipt | nu
 }
 
 /** Bind a receipt to the authenticated caller of a membership operation. */
-export function bindSave(save: Receipt, seed: string, binding: { pairedKey: string; pairing: string } | { revokedVoucher: string }): Receipt {
+export function bindSave(save: Receipt, seed: string, binding: { pairedKey: string; pairing: string } | { requestingMember: string }): Receipt {
   const ticket = held(save.proof)!;
   return { ...save, proof: signDoc(seed, ticket.kind, ticket.n, { ...ticket.body, ...binding }) };
 }

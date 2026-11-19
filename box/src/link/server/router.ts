@@ -77,6 +77,7 @@ import { phoneHere } from "../compat/leave-running";
 import { peerPlaces, readBridgeFile, readEngineFile } from "../engine/client";
 import { isMachinesRoute } from "../mac/machines";
 import { ownMacRoute } from "../mac/own-mac";
+import { readLink } from "../state";
 import { ownMachinesRoute } from "../mac/own-machines";
 import { linkRoute } from "../mac/routes";
 import { boxUpdateRoute, updateRoute } from "../updates/update";
@@ -164,7 +165,7 @@ const ROUTES: (Route | Route<RegExpMatchArray>)[] = [
   { feature: "computers", when: route => !IS_MAC && isMachinesRoute(route), answer: memberComputersRoute },
   // A Mac's box in a home of its own answers its machines and While Agents Work itself, for a phone
   // as its app did (PROTOCOL.md, "Machines", In a home of its own).
-  { feature: "machines", when: route => OWN_HOME_MAC && isMachinesRoute(route), answer: ownMachinesRoute },
+  { feature: "machines", when: route => isMachinesRoute(route) && (OWN_HOME_MAC || IS_MAC && readLink()?.setup?.checkpointed === true), answer: ownMachinesRoute },
   { feature: "mac", when: route => OWN_HOME_MAC && route === "kuvo/mac", answer: ownMacRoute },
   { feature: "phones", when: route => route === "kuvo/phones", answer: phonesRoute },
   { feature: "phones", when: route => route === "kuvo/phones/remove", answer: phonesRemoveRoute },

@@ -79,10 +79,8 @@ const MOST_REMEMBERED = 2_000;
  * files (`action` `file`, `name`), a delete, a change (`PATCH`, with what it said, `body`), or a
  * bringing back (`action` `restore`). `area` `computers`: one of your machines (`item`, its key)
  * renamed (`PATCH {name}`) or removed (`DELETE`) on the box that writes its record
- * (`peers/manage.ts`); `area` `devices`: Kuvo Code's desktop app on the asking box's computer
- * (`item`, its key; `body`, `{name, kind}`) paired on the setup's main computer, which the asking
- * box vouches for (`POST`), or the asking box revokes its own vouched devices (`DELETE`,
- * `item` is the sender's box key, `peers/devices.ts`); a Work Queue item's otherwise. */
+ * (`peers/manage.ts`); `area` `devices` forwards pairing and revocation to the primary
+ * (`peers/devices.ts`). The default area is the Work Queue. */
 export interface Act {
   id: string;
   area?: "computers" | "devices" | "setup" | "ownership";
@@ -451,8 +449,6 @@ export function forgetActs(): void {
   sent.clear();
 }
 
-// (Nothing else is an act: letting a computer add Kuvo Code's app to your devices again,
-// `kuvo/computers/<key>/allow-devices`, is never one, so the box kept from it can't ask for itself.)
 const actOf = (given: unknown): Act | null => {
   if (!isObject(given) || typeof given.id !== "string" || !ID.test(given.id) || typeof given.item !== "string" || !given.item || given.item.length > 300) return null;
   if (typeof given.at !== "number" || !Number.isFinite(given.at)) return null;

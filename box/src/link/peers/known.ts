@@ -302,7 +302,9 @@ export function openMail(body: Buffer, link: LinkState | null | undefined): Open
   const peers = peersOf(link);
   const named = new Set(peers.map(peer => peer.key));
   const recovery = pendingStandby(link);
-  const senders = [...peers, ...(recovery && !named.has(recovery.key) ? [recovery] : []), ...macsOf(link).filter(key => !named.has(key)).map(key => ({ key, kind: "mac" as const }))];
+  const revoked = new Set(acceptedMembership(link)?.left);
+  const enrollers = macsOf(link).filter(key => !named.has(key) && !revoked.has(key));
+  const senders = [...peers, ...(recovery && !named.has(recovery.key) ? [recovery] : []), ...enrollers.map(key => ({ key, kind: "mac" as const }))];
   for (const sender of senders) {
     try {
       const payload = JSON.parse(openOneWay(body, key, Buffer.from(sender.key, "base64url")).payload.toString("utf8"));

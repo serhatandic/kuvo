@@ -25,9 +25,8 @@ import { APP_FOLDER, IN_TEST_FOLDER, IS_MAC, K, REAL_BOX, RUN, accountHome, home
 import { KEY, ownKey, peersOf } from "./peers/known";
 import { publicOf } from "./crypto/keys";
 import { writeDurablePrivate } from "./files";
-import { noteDocsChanged } from "./documents/changed";
 import { publishDesktopRemoval } from "./documents/phone-sync";
-import { removeAsMac } from "./phones";
+import { DEVICES_REMOVE_FEATURE, removeDevicesHere } from "./peers/devices";
 import { SETUP_CARD } from "./setup/card";
 import { PRIMARY_UNLINK } from "./setup/leadership";
 import { requiresStandby } from "./setup/record";
@@ -36,7 +35,7 @@ import { mainElsewhere } from "./setup/main-only";
 import { LAUNCH_AGENT, MACHINE_WATCH_AGENT, REBOOT_TAG } from "./marks";
 import { SERVE_FILE, SERVE_ROLE } from "./serve-kept";
 import { macLink, readLink, updateLink } from "./state";
-import { forwardAct } from "./work-queue/forward";
+import { forwardAct, takesForwarded } from "./work-queue/forward";
 import type { AnswerPiece, RouteContext } from "./server/context";
 
 /** Where `launchctl`, `crontab` and `open` are, and the folder the launch agent's file is in: the
@@ -257,10 +256,13 @@ function sameSave(receipt: SetupSaveReceipt, expected: SetupSaveReceipt): boolea
 }
 
 async function revokeMemberDesktop(link: ReturnType<typeof readLink>, main: NonNullable<ReturnType<typeof mainElsewhere>>): Promise<DesktopRevocation> {
+  const desktop = desktopKey();
+  if (!desktop) return { status: "revoked" };
   const previous = keptRevocation();
   let save: SetupSaveReceipt | null = previous?.setup === link?.setup?.id && previous?.status === "pending" ? previous : null;
   const requiresConfirmation = Boolean(link?.setup?.checkpointed || requiresStandby(link?.setup));
   const unconfirmed = requiresConfirmation ? "retry" : "unconfirmed";
+  if (!save && !takesForwarded(main.key, DEVICES_REMOVE_FEATURE)) return { status: unconfirmed };
   try {
     let key = link && ownKey(link);
     // A Mac command may have only its public setup card; its running box holds the private keys.
@@ -271,7 +273,7 @@ async function revokeMemberDesktop(link: ReturnType<typeof readLink>, main: NonN
     if (!key || !KEY.test(key)) return save ? { save } : { status: unconfirmed };
     const ask = (destination: typeof main, receipt?: SetupSaveReceipt) => forwardAct(
       { ...destination, name: destination.name || "your main computer", kind: "mac" }, "This computer",
-      { area: "devices", method: receipt ? "GET" : "DELETE", item: key, ...(receipt ? { body: { save: receipt } } : {}) },
+      { area: "devices", method: receipt ? "GET" : "DELETE", item: key, body: receipt ? { save: receipt } : { phones: [{ key: desktop }], actor: null } },
       undefined, readLink(), Date.now(), { backgroundRelay: IS_MAC },
     );
     const queried = Boolean(save);
@@ -310,11 +312,10 @@ async function revokeDesktop(): Promise<DesktopRevocation> {
     const needsPublish = IS_MAC && peersOf(link).length > 0;
     if (key) {
       if (needsPublish && await askLivePrimary(key)) return { status: "revoked" };
-      const changed = updateLink(current => current && current.phones?.some(phone => phone.key === key) && removeAsMac(current, [{ key }]) ? current : null);
-      if (changed) noteDocsChanged();
-      return { status: needsPublish ? "unconfirmed" : "revoked" };
+      const removed = await removeDevicesHere([{ key }], null);
+      return { status: needsPublish || removed.status !== 200 ? "unconfirmed" : "revoked" };
     }
-    const hasDesktop = (link?.phones ?? []).some(phone => phone.from === "pair" && phone.kind === "desktop" && !phone.by);
+    const hasDesktop = (link?.phones ?? []).some(phone => phone.from === "pair" && phone.kind === "desktop");
     return { status: needsPublish && hasDesktop ? "unconfirmed" : "revoked" };
   } catch (error) {
     logCleanup(error);

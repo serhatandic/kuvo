@@ -126,6 +126,7 @@ export async function* memberComputersRoute(context: RouteContext): AsyncGenerat
     if (followedSetup(link)?.role === "primary") return yield* ownMachinesRoute(context);
     return yield* engineRoute(context);
   }
+  if (link?.setup?.checkpointed && (route.startsWith("kuvo/machines") || method === "DELETE" && route.startsWith("kuvo/hosts/"))) return yield* ownMachinesRoute(context);
   if (ADDS_OR_REMOVES(method, route)) return yield* json(409, addElsewhere(main));
   if ((method !== "GET" && method !== "HEAD") || route !== "kuvo/hosts") return yield* engineRoute(context);
   const hosts = setupHosts(link);

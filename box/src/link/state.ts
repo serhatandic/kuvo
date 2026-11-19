@@ -35,9 +35,6 @@ export interface Phone {
   pairing?: string;
   /** What it is, as it said (`clients.kind`): Kuvo Code's desktop app; none for a phone. */
   kind?: "desktop";
-  /** The box that vouched for it (its static key), on the main computer that paired it on that
-   * box's word (`kuvo/devices/pair`), or inherited from the issuer of a pairing link. */
-  by?: string;
 }
 
 /** A pairing link waiting: its token, good until `expires` (ms). */
@@ -71,10 +68,6 @@ export interface LinkState {
   views?: Record<string, { n: number; h: string }>;
   phones?: Phone[];
   removed?: { key: string; pairing: string }[];
-  /** The boxes this main computer takes no vouch from (`devices.allow`): a desktop app each vouched
-   * for was removed from your devices (`device`, its name; `at`, when, ms), until you allow that
-   * computer again (`kuvo/computers/<key>/allow-devices`). One entry a box, the newest 64. */
-  vouchBlocked?: { key: string; device: string; at: number }[];
   /** A phone's pairing link, and (this Mac's) the one Settings › Phone shows. */
   pairing?: Pairing;
   appPairing?: Pairing;

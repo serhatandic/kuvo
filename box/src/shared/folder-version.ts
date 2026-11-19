@@ -38,7 +38,33 @@ const steps: readonly Step[] = [
   () => {},
   // 10. Reserve setup-scoped computer history and permanent enrollment revocations.
   () => {},
+  // 11. Drop voucher ownership from stored device grants. Signed records are immutable;
+  // the setup membership reader projects those grants without the legacy fields.
+  migrateDeviceGrants,
 ];
+
+function migrateDeviceGrants(folder: string): void {
+  const file = path.join(folder, "run", "link.json");
+  if (!fs.existsSync(file)) return;
+  locked(path.join(folder, "run", ".link.lock"), () => {
+    let text: string;
+    try { text = fs.readFileSync(file, "utf8"); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw error;
+    }
+    const link: unknown = JSON.parse(text);
+    if (!isObject(link)) throw new Error("The link state must be an object to migrate device grants.");
+    let changed = Object.hasOwn(link, "vouchBlocked");
+    delete link.vouchBlocked;
+    for (const phone of Array.isArray(link.phones) ? link.phones : []) {
+      if (!isObject(phone) || !Object.hasOwn(phone, "by")) continue;
+      delete phone.by;
+      changed = true;
+    }
+    if (changed) writeDurablePrivate(file, JSON.stringify(link) + "\n", path.dirname(folder));
+  }, { exclusive: true, wait: 60_000 });
+}
 
 interface Checkpoint {
   version: number;

@@ -5,7 +5,7 @@ import type { LinkState, Phone } from "../state";
 import type { Peer } from "../peers/known";
 import { KEY, cleanMoved, cleanPeer, fitsPeer, ownKey, type MovedSession } from "../peers/known";
 import { readComputerHistory, type ComputerHistory } from "./computer-history";
-import { fits } from "../phones";
+import { fits, type PhoneEntry } from "../phones";
 
 import { REMOVAL_ID, removalRecords, type MemberRemoval, type WipePreparationClaim } from "./removal-record";
 
@@ -15,10 +15,20 @@ export interface Membership {
   moved: MovedSession[];
   devices: { phones: Phone[]; removed: { key: string; pairing: string }[] };
   removalRevisions: Record<string, number>;
-  vouchBlocked: NonNullable<LinkState["vouchBlocked"]>;
   computerHistory?: ComputerHistory;
   removals?: Record<string, MemberRemoval>;
   wipePreparations?: Record<string, WipePreparationClaim>;
+}
+
+// Signed snapshots from older boxes still contain the voucher and provenance fields.
+export function portableDevice(phone: PhoneEntry): Phone {
+  return {
+    key: phone.key,
+    name: typeof phone.name === "string" ? phone.name : "",
+    pairing: phone.pairing ?? "",
+    ...(typeof phone.address === "string" ? { address: phone.address } : {}),
+    ...(phone.kind === "desktop" ? { kind: "desktop" as const } : {}),
+  };
 }
 
 export function membershipOf(value: unknown): Membership | null {
@@ -45,6 +55,11 @@ export function membershipOf(value: unknown): Membership | null {
       typeof claim.choiceHash === "string" && /^[A-Za-z0-9_-]{43}$/.test(claim.choiceHash)
       ? [[key, { operation: claim.operation, choiceHash: claim.choiceHash }]] : [];
   }));
+  const boxKeys = boxes.map(box => box.key);
+  const revoked = (Array.isArray(devices.removed) ? devices.removed : [])
+    .filter(entry => fits(entry, boxKeys) && typeof entry.pairing === "string")
+    .map(({ key, pairing }) => ({ key, pairing: pairing as string }));
+  const isRevoked = (phone: Phone) => revoked.some(each => each.key === phone.key && each.pairing === (phone.pairing ?? ""));
   return {
     boxes,
     ...(computerHistory ? { computerHistory } : {}),
@@ -53,12 +68,11 @@ export function membershipOf(value: unknown): Membership | null {
     left: tombstones,
     moved: cleanMoved(value.moved),
     devices: {
-      phones: (Array.isArray(devices.phones) ? devices.phones : []).filter(phone => fits(phone, [])).map(phone => ({ ...phone, pairing: phone.pairing ?? undefined })),
-      removed: (Array.isArray(devices.removed) ? devices.removed : []).filter(entry => fits(entry, []) && typeof entry.pairing === "string"),
+      phones: (Array.isArray(devices.phones) ? devices.phones : []).filter(phone => fits(phone, boxKeys)).map(portableDevice).filter(phone => !isRevoked(phone)),
+      removed: revoked,
     },
     removalRevisions: Object.fromEntries(Object.entries(isObject(revisions) ? revisions : {})
       .filter(([key, n]) => KEY.test(key) && Number.isSafeInteger(n) && Number(n) > 0)) as Record<string, number>,
-    vouchBlocked: Array.isArray(value.vouchBlocked) ? value.vouchBlocked : [],
   };
 }
 
@@ -87,19 +101,20 @@ export function namedRoster(link: LinkState, boxes: Peer[]): Peer[] {
 export function projectMembership(link: LinkState, membership: Membership, keepLocalPairings = false) {
   const setup = link.setup!;
   const here = setup.role === "primary";
-  if (!here && membership.removals?.[ownKey(link) ?? ""]) {
+  if (!here && !membership.boxes.some(peer => peer.key === ownKey(link))) {
     link.phones = [];
     delete link.pairing;
     delete link.appPairing;
     return;
   }
   const old = new Map((link.phones ?? []).map(phone => [phone.key, phone]));
-  const local = (link.phones ?? []).filter(phone => phone.from === "pair" && (phone.local || keepLocalPairings))
+  const local = (link.phones ?? []).filter(phone => phone.from === "pair" && (phone.local || keepLocalPairings)
+    && !membership.devices.removed.some(each => each.key === phone.key && each.pairing === (phone.pairing ?? "")))
     .map((phone): Phone => ({ ...phone, local: true }));
   const transferred = membership.devices.phones.map((phone): Phone => ({
     ...phone, from: here ? "pair" : "mac",
     ...(here ? {} : { mac: setup.primary }),
-    added: old.get(phone.key)?.added,
+    added: old.get(phone.key)?.added ?? Math.floor(Date.now() / 1000),
     address: old.get(phone.key)?.address ?? phone.address,
   }));
   link.phones = [...transferred, ...local.filter(phone => !transferred.some(each => each.key === phone.key))];
@@ -114,6 +129,5 @@ export function projectMembership(link: LinkState, membership: Membership, keepL
     link.removalRevisions = membership.removalRevisions;
     link.memberRemovals = membership.removals;
     link.wipePreparations = membership.wipePreparations;
-    link.vouchBlocked = membership.vouchBlocked;
   }
 }

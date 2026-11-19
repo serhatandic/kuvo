@@ -2209,15 +2209,17 @@ test("failure bench: a Linux primary starts fresh, enrolls over SSH and pairs de
       && state.phones.some(each => each.key === desktop.key && each.pairing === paired.body.pairing);
   });
 
-  await t.test("a member's app is vouched for by the primary", async () => {
+  await t.test("a member forwards pairing to the primary", async () => {
     const device = { ...desktop, key: k(link.publicOf(link.newKey())), name: "Member desktop" };
-    const made = await waitFor("the member can vouch for its app once it hears from the primary", async () => {
+    const made = await waitFor("the member can forward pairing once it hears from the primary", async () => {
       const answer = await memberApp("POST", "kuvo/devices/pair", device);
       assert.ok(answer.status === 200 || answer.status === 503, JSON.stringify(answer));
       return answer.status === 200 && answer.body;
     });
     assert.ok(made.pairing);
-    assert.equal(inBox(primaryBox).phones.find(each => each.key === device.key)?.by, member);
+    const grant = inBox(primaryBox).phones.find(each => each.key === device.key);
+    assert.equal(grant?.pairing, made.pairing);
+    assert.equal(grant.by, undefined);
   });
 
   await t.test("a Mac member's desktop attaches to its existing box as a window", { skip: process.platform !== "darwin" }, async () => {
@@ -2252,10 +2254,10 @@ test("failure bench: a Linux primary starts fresh, enrolls over SSH and pairs de
   const oldAddress = link.addressOf(Buffer.from(first.secret, "base64url"));
   const standbyAddress = link.addressOf(Buffer.from(inBox(memberBox).secret, "base64url"));
 
-  const vouched = await memberApp("POST", "kuvo/devices/pair", { ...desktop, key: k(link.publicOf(link.newKey())), name: "Standby desktop" });
-  assert.equal(vouched.status, 200, JSON.stringify(vouched.body));
-  assert.equal(vouched.body.status, "committed");
-  assert.equal(link.readDoc(vouched.body.proof)?.body.operation, vouched.body.operation);
+  const deviceSave = await memberApp("POST", "kuvo/devices/pair", { ...desktop, key: k(link.publicOf(link.newKey())), name: "Standby desktop" });
+  assert.equal(deviceSave.status, 200, JSON.stringify(deviceSave.body));
+  assert.equal(deviceSave.body.status, "committed");
+  assert.equal(link.readDoc(deviceSave.body.proof)?.body.operation, deviceSave.body.operation);
   let enrollmentReceipt;
 
   await t.test("a delayed membership receipt keeps the fresh SSH installation and the same proposal", async () => {
@@ -2313,6 +2315,13 @@ test("failure bench: a Linux primary starts fresh, enrolls over SSH and pairs de
       assert.equal(done.save?.status, "committed");
       assert.deepEqual(done.save.proof, pending.save.proof);
       enrollmentReceipt = done.save;
+      for (const ask of [primaryApp, memberApp]) {
+        await waitFor("the client's roster includes the new member", async () => {
+          const roster = await ask("GET", "kuvo/computers");
+          assert.equal(roster.status, 200);
+          return roster.body.computers.some(each => each.key === done.computer.key);
+        });
+      }
       const gone = await primaryApp("DELETE", `kuvo/computers/${done.computer.key}`);
       assert.equal(gone.status, 200, JSON.stringify(gone.body));
     } finally { release(); }
@@ -2433,7 +2442,7 @@ test("failure bench: a Linux primary starts fresh, enrolls over SSH and pairs de
       const setup = inBox(memberBox).setup;
       return setup.role === "primary" && setup.epoch === 3 && !setup.standby;
     });
-    for (const save of [vouched.body, enrollmentReceipt]) {
+    for (const save of [deviceSave.body, enrollmentReceipt]) {
       const { setup: id, operation, proof } = save;
       const resolved = await link.askSetupOutcome(path.join(memberBox, "run"), { setup: id, operation, proof });
       assert.equal(resolved.status, 200);

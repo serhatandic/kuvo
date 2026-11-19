@@ -105,8 +105,7 @@ export function docsChanged(host: LinkHost | null | undefined, { greet = false, 
 // goes to your machines now, if it's on the relay; they get it as they meet otherwise.
 export function macDocsChanged({ closeRemoved }: { closeRemoved?: LinkState | null } = {}): void {
   const host = liveLink();
-  // Computer removals close their devices' sessions here as well as on the boxes receiving the
-  // phones document. Direct phone removal sends its answer before closing the session.
+  // A device removal can send its answer before asking this box to close the session.
   if (closeRemoved) host?.keepOnly?.(new Set((closeRemoved.phones ?? []).map(phone => phone.key)));
   if (host?.welcomed) try { docsChanged(host); } catch {}
   else if (!IS_MAC) noteDocsChanged();

@@ -40802,6 +40802,35 @@ import { spawnSync as spawnSync4 } from "child_process";
 import fs15 from "fs";
 import os2 from "os";
 import path11 from "path";
+function migrateDeviceGrants(folder) {
+  const file = path11.join(folder, "run", "link.json");
+  if (!fs15.existsSync(file))
+    return;
+  locked(path11.join(folder, "run", ".link.lock"), () => {
+    let text;
+    try {
+      text = fs15.readFileSync(file, "utf8");
+    } catch (error) {
+      if (error.code === "ENOENT")
+        return;
+      throw error;
+    }
+    const link = JSON.parse(text);
+    if (!isObject(link))
+      throw new Error("The link state must be an object to migrate device grants.");
+    let changed = Object.hasOwn(link, "vouchBlocked");
+    delete link.vouchBlocked;
+    for (const phone of Array.isArray(link.phones) ? link.phones : []) {
+      if (!isObject(phone) || !Object.hasOwn(phone, "by"))
+        continue;
+      delete phone.by;
+      changed = true;
+    }
+    if (changed)
+      writeDurablePrivate(file, JSON.stringify(link) + `
+`, path11.dirname(folder));
+  }, { exclusive: true, wait: 60000 });
+}
 function checkpoint(file, current) {
   const format = `Kuvo folder at ${path11.dirname(file)}`;
   let text;
@@ -40911,7 +40940,8 @@ var init_folder_version = __esm(() => {
     () => {},
     () => {},
     () => {},
-    () => {}
+    () => {},
+    migrateDeviceGrants
   ];
 });
 
@@ -42515,4 +42545,4 @@ if (!isMainThread && process.argv.includes("--insights-db-worker")) {
 } else {
   await init_main().then(() => ({}));
 }
-// Built from Packages/Box/src/agents f3d3fadf1a333a9da928ed6c132bea4ff562e2d42e9f0d0dcaac8534b14fcd28
+// Built from Packages/Box/src/agents 12c0f963ec8a83fab24771b356b2ebb88921fe144ff2adb942022645e289b091

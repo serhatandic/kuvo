@@ -203,7 +203,6 @@ function promote(host: LinkHost, position: Position) {
       doc = readDoc(signDoc(link.sign, "leadership", epoch, {
         ...authority, boxes, left: accepted?.left ?? roster.body.left, moved: accepted?.moved ?? roster.body.moved,
         devices: accepted?.devices ?? (phones?.body.epoch === setup.epoch ? phones!.body : prior.body.devices),
-        vouchBlocked: accepted?.vouchBlocked ?? roster.body.vouchBlocked ?? prior.body.vouchBlocked,
         removalRevisions: isObject(accepted?.fields) ? accepted.fields.removalRevisions : prior.body.removalRevisions,
         shared: link.shared ?? {},
         numbers: { ...(isObject(ledger) ? ledger : isObject(prior.body.numbers) ? prior.body.numbers : {}), next: ceiling + 1 },

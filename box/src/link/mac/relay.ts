@@ -14,7 +14,7 @@ import os from "node:os";
 import type { RouteFeature } from "../../shared/routes/feature";
 import { engineConnect } from "../areas/engine";
 import { docsChanged } from "../documents/exchange";
-import { authorizeDesktopConnection, refreshPhoneTrust } from "../documents/phone-sync";
+import { authorizeDeviceConnection, refreshPhoneTrust } from "../documents/phone-sync";
 import { peerPlaces, readBridgeFile, readEngineFile } from "../engine/client";
 import { announce } from "../peers/agents";
 import { peerMail, receiveMail } from "../peers/mail";
@@ -83,7 +83,7 @@ export function macFront(handle: LinkHandler = engineHandler(readEngineFile, { n
   return versionedRoutes(async function* (request, phone, signal) {
     const route = String(request.path ?? "").split("?")[0];
     if (!macAppAnswers(route) || boxAnswers(route) || answersAlone()) return yield* handle(request, phone, signal);
-    if (isMachinesRoute(route)) return yield* machinesRoute(request, phone, signal, route, timing);
+    if (isMachinesRoute(route)) return readLink()?.setup?.checkpointed ? yield* handle(request, phone, signal) : yield* machinesRoute(request, phone, signal, route, timing);
     yield* toApp(request, phone, signal);
   });
 }
@@ -122,7 +122,7 @@ export async function runMacLink(): Promise<void> {
         key: Buffer.from(link.key, "base64url"),
         hello: { v: 1, kind: "mac", name: config!.name, app: config!.app, engine: engine.version ?? null },
         // Phones only while the phone link's on (the relay can be up for your machines alone).
-        authorize: (key, hello, address, signal) => Boolean(macLink.config?.phones) && !readLink()?.localWipe && authorizeDesktopConnection(host, key, hello, address, signal),
+        authorize: (key, hello, address, signal) => Boolean(macLink.config?.phones) && !readLink()?.localWipe && authorizeDeviceConnection(host, key, hello, address, signal),
         confirmed: confirmPhone,
         // Mail from your machines, taken here as a machine takes it (`peerMail`).
         mail: (from, body) => receiveMail(body, host, (sender, payload) => peerMail(sender, payload, host, peerPlaces), undefined, from),

@@ -11,11 +11,14 @@ import { IS_MAC, RUN } from "../home";
 import { runningBridge } from "../keeper";
 import { macSign, readLink, updateLink } from "../state";
 import type { LinkState } from "../state";
-import { macsOf, mailFor, peersOf } from "../peers/known";
+import { macsOf, mailFor, ownKey, peersOf } from "../peers/known";
 import type { MailSender, Peer } from "../peers/known";
-import { authorizePhonePairing, ownPhones, pairedPhone, removeAsMac } from "../phones";
+import { authorizePhonePairing, ownPhones, pairedPhone } from "../phones";
 import type { LinkHost, PhoneHello } from "../relay/host";
 import { mainElsewhere } from "../setup/main-only";
+import { acceptedMembership } from "../setup/membership";
+import { publishedShared } from "../setup/shared";
+import { removeDevicesHere } from "../peers/devices";
 import { followedSetup } from "../setup/record";
 import { docKey, held, ownSign, readDoc, SIGN } from "./format";
 import { digestOf, docMails, primaryPeersBody, ownDoc } from "./work";
@@ -95,7 +98,7 @@ export function refreshPhoneTrust(host: LinkHost): void {
   if (Date.now() - pending.asked < 2_000) return;
   pending.asked = Date.now();
   const peers = peersOf(link);
-  const origins = new Set([main.key, ...macsOf(link)].map(key => authoritySign(link, key)).filter((sign): sign is string => Boolean(sign)));
+  const origins = new Set((link.setup?.managed ? [main.key] : [main.key, ...macsOf(link)]).map(key => authoritySign(link, key)).filter((sign): sign is string => Boolean(sign)));
   for (const origin of origins) {
     const check = pending.lists.get(origin) ?? { id: challenge(), ready: false };
     if (check.ready) continue;
@@ -126,21 +129,41 @@ const readd = {
   action: { label: "Pair Again…", route: "kuvo/devices/pair" },
 } as const;
 
-/** Accept an inherited desktop pairing once a peer confirms the signed list or the relay
- * reports all peers unreachable. Keep asking while relying on the cached authorization. */
+// The signed compatibility document and the accepted grant snapshot can arrive separately.
+function sameGrants(one: unknown, other: unknown): boolean {
+  const entries = (value: unknown) => Array.isArray(value)
+    ? value.filter(isObject).map(entry => JSON.stringify([entry.key, entry.pairing ?? ""])).sort()
+    : [];
+  return JSON.stringify(entries(one)) === JSON.stringify(entries(other));
+}
+
+/** Refresh relay access before accepting a cached pairing from this setup. */
+
 export function phoneTrustWait(link: LinkState | null, key: string, host?: LinkHost | null): typeof checking | typeof readd | undefined {
   if (!link || !mainElsewhere(link)) return;
   const phone = pairedPhone(link, key);
-  if (phone?.from !== "mac" || (phone.kind !== "desktop" && !phone.by)) return;
-  const origin = phone.mac && authoritySign(link, phone.mac);
+  if (!phone) return;
+  const setup = link.setup;
+  if (setup?.aside) return readd;
+  if (!setup?.checkpointed && (phone.from !== "mac" || (!setup?.managed && phone.kind !== "desktop"))) return;
+  if (setup?.checkpointed && phone.local) return; // Pairings already local to this box before it joined.
+
+  const origin = setup?.checkpointed ? setup.sign : phone.mac && authoritySign(link, phone.mac);
   if (!origin) return readd;
   const pending = host && freshness.get(host);
   const checked = pending ? knownTrust(pending) : host === undefined && !IS_MAC ? savedTrust() : undefined;
-  if (checked && (checked.ready.includes(origin) || peersOf(link).every(peer => checked.offline.includes(peer.address)))) return;
+  if (setup?.checkpointed) {
+    const membership = acceptedMembership(link);
+    const phones = macsOf(link).includes(setup.primary) && held(link.docs?.[docKey(origin, "phones")]);
+    if (checked?.ready.includes(origin) && membership?.boxes.some(peer => peer.key === ownKey(link))
+      && phones && phones.body.epoch === setup.epoch
+      && sameGrants(phones.body.phones, membership.devices.phones)
+      && sameGrants(phones.body.removed, membership.devices.removed)) return;
+  } else if (checked && (checked.ready.includes(origin) || (!setup?.managed && peersOf(link).every(peer => checked.offline.includes(peer.address))))) return;
   return checking;
 }
 
-export function authorizeDesktopConnection(host: LinkHost, key: Buffer, hello: PhoneHello, address: Buffer, signal: AbortSignal) {
+export function authorizeDeviceConnection(host: LinkHost, key: Buffer, hello: PhoneHello, address: Buffer, signal: AbortSignal) {
   const waiting = phoneTrustWait(readLink(), key.toString("base64url"), host);
   return waiting ? { ...waiting, waiting: waiting.message } : authorizePhonePairing(key, hello, address, signal);
 }
@@ -151,7 +174,7 @@ export function confirmPhoneMembership(host: LinkHost, sender: DocSender, link: 
   const pending = freshness.get(host);
   const origin = authoritySign(link, sender.key);
   const check = origin && pending?.lists.get(origin);
-  if (!origin || !pending || !check || check.ready || !check.legacyPhones) return;
+  if (link.setup?.checkpointed || !origin || !pending || !check || check.ready || !check.legacyPhones) return;
   const peers = readDoc(link.docs?.[docKey(origin, "peers")]);
   if (peers?.origin !== origin || peers.kind !== "peers" || !given.some(each => each?.d === peers.envelope.d && each.s === peers.envelope.s)) return;
   const phones = readDoc(link.docs?.[docKey(origin, "phones")]);
@@ -175,6 +198,7 @@ export function takePhoneSync(sender: MailSender, given: unknown, host: LinkHost
     if (!pending) return;
     for (const [origin, check] of pending.lists) {
       if (check.id !== id) continue;
+      if (link.setup?.managed && sender.key !== link.setup.primary) return;
       if (check.ready) return;
       // Both signed documents must match the ones installed here. An older list can't replace
       // the one this box holds, and a phones-only answer can't confirm who's still a peer.
@@ -226,6 +250,7 @@ export function takePhoneSync(sender: MailSender, given: unknown, host: LinkHost
     const word = membership && readDoc(membership);
     if (membership && word?.kind === "peers" && word.origin === origin) giveDoc(host, latest, sender, membership);
     giveDoc(host, latest, sender, envelope);
+    if (origin === self) for (const shared of publishedShared(latest)) giveDoc(host, latest, sender, shared);
     send(host, latest, sender, { phoneSync: { id, list: fingerprint(doc), ...(word ? { peers: fingerprint(word) } : {}), ack: true } });
   }
 }
@@ -233,9 +258,11 @@ export function takePhoneSync(sender: MailSender, given: unknown, host: LinkHost
 /** On the live primary, revoke and close before sending the signed list. An unconfirmed peer
  * (including one that is offline) keeps the uninstall from reporting complete spreading. */
 export async function publishDesktopRemoval(host: LinkHost | null, key: string, signal?: AbortSignal): Promise<boolean> {
+  const removed = await removeDevicesHere([{ key }], null);
+  if (removed.status !== 200) return false;
   let envelope: SignedDoc | undefined;
   const link = updateLink(current => {
-    if (!current || mainElsewhere(current) || !removeAsMac(current, [{ key }])) return null;
+    if (!current || mainElsewhere(current)) return null;
     envelope = ownDoc(current, "phones", ownPhones(current))?.envelope;
     return current;
   });

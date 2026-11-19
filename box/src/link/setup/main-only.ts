@@ -46,7 +46,7 @@ export function setupHosts(link: LinkState | null | undefined): Hosts | null {
   const primary = followedSetup(link)?.role === "primary";
   const setup = setupDoc(link);
   const docs = setup ? [setup] : link.setup.aside ? macsOf(link).map(mac => macDoc(link, mac, "peers")).filter(doc => doc !== null) : [];
-  if (!accepted && !primary && !docs.length) return null;
+  if (!accepted && (link.setup.checkpointed || (!primary && !docs.length))) return null;
   const boxes = accepted ? namedRoster(link, accepted.boxes) : primary ? primaryPeersBody(link).boxes
     : docs.flatMap(doc => Array.isArray(doc.body.boxes) ? doc.body.boxes.slice(0, 65) : []);
   const hosts: Hosts["hosts"][number][] = [];

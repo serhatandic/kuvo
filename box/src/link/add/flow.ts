@@ -25,7 +25,7 @@ import { changeKeptHosts, keptHosts, LIST_FILE, localDestination, peerAtDestinat
 import { setMacPeers, setupGift } from "../mac/routes";
 import { ADDRESS, KEY, MOST_PEERS, ownKey, peersOf, type Peer } from "../peers/known";
 import { readPeerAgents } from "../peers/directory";
-import { pairedPhone, vouchedWords, vouchMoved } from "../phones";
+import { pairedPhone } from "../phones";
 import { machineBoxIn } from "../install/verdict";
 import { removalsOf } from "../setup/removal-record";
 import { oldAppAttached, removeComputerHere } from "../peers/manage";
@@ -733,22 +733,13 @@ async function join(tell: Telling, run: Reach["run"], destination: string, name:
     const replaced = predecessor && predecessor !== peer.key ? peers.find(each => each.key === predecessor) : undefined;
     const already = peers.some(each => each.key === peer.key);
     if (!already && !replaced && peers.length >= MOST_PEERS) throw new Failed("The setup already has the maximum number of computers.");
-    // An explicit Set Up/Update of a live machine keeps its vouch provenance.
-    // A fresh Add retires any replaced member and its device grants.
-    const keepVouches = replaced && !grant;
     const index = peers.findIndex(each => each.key === (replaced?.key ?? peer.key));
     const roster = [...peers];
     if (index < 0) roster.push({ ...peer, kind: "machine" });
     else roster[index] = { ...peer, kind: roster[index]!.kind };
     const history = match.setup ? historyFor(state, peers) : undefined;
-    const made = setMacPeers(state, { peers: orderComputers(history, roster), moved: state.macMoved, removed: replaced && !keepVouches ? [replaced.key] : [] });
+    const made = setMacPeers(state, { peers: orderComputers(history, roster), moved: state.macMoved, removed: replaced ? [replaced.key] : [] });
     if (!made.link) return null;
-    if (replaced && keepVouches) {
-      vouchMoved(state, replaced.key, peer.key);
-      state.removedHere = [...new Set([...state.removedHere ?? [], replaced.key])];
-      state.left = [...new Set([...state.left ?? [], replaced.key])].slice(-64);
-      if (replaced.sign && history) history.retiredSigns = [...new Set([...history.retiredSigns, replaced.sign])];
-    }
     if (history) {
       const retired = computerHistory(state);
       if (retired) history.retiredSigns = [...new Set([...history.retiredSigns, ...retired.retiredSigns])];
@@ -1008,7 +999,7 @@ export function sshActions(computer: Pick<ListedComputer, "key" | "name" | "kind
   const label = wipe ? "Unlink and wipe" : "Uninstall";
   const message = wipe
     ? `${name} leaves this setup immediately. Kuvo Code, its sessions and its bots are deleted when that computer is online and its pre-wipe checks pass.`
-    : `${here} connects to ${name} over SSH and stops Kuvo Code there: its engine and agents, and what starts them after a restart. The sign-ins and keys it keeps are deleted.${vouchedWords(link, computer.key, name)} Its sessions stay in ~/.kuvo-code on ${name}.`;
+    : `${here} connects to ${name} over SSH and stops Kuvo Code there: its engine and agents, and what starts them after a restart. The sign-ins and keys it keeps are deleted. Its sessions stay in ~/.kuvo-code on ${name}.`;
   return [
     { id: "setup", label: "Set Up Again", ...(why ? { why } : {}) },
     { id: "uninstall", label, ...(busy?.seen.kind === "uninstall" ? { why: why! } : { confirm: { title: wipe ? `Unlink and wipe ${name}?` : `Uninstall Kuvo Code from ${name}?`, message, label } }) },

@@ -165,7 +165,7 @@ export async function proposeLeadership(
     const doc = checkpointed
       ? checkpointedTransition(link, authority, shared)
       : readDoc(signDoc(link.sign, "leadership", epoch, {
-        ...authority, boxes, left, moved, devices: ownPhones(link), vouchBlocked: link.vouchBlocked ?? [],
+        ...authority, boxes, left, moved, devices: ownPhones(link),
         shared, removalRevisions: link.removalRevisions, numbers: ledger,
       }));
     if (!doc || !boxes.every(box => box.key && box.sign && box.address)) return null;

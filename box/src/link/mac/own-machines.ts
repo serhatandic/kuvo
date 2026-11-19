@@ -25,6 +25,7 @@ import { forgetSaved, oldAppAttached, oldAppWords } from "../peers/manage";
 import { readTries } from "../peers/reach-again";
 import { PEER_REACH, readReach } from "../peers/reach";
 import type { AnswerPiece, AnyPiece, RouteContext } from "../server/context";
+import { acceptedMembership } from "../setup/membership";
 import { addElsewhere, mainElsewhere, setupHosts } from "../setup/main-only";
 import { readLink } from "../state";
 import { changeKeptHosts, hostsWithoutApp, keptHosts, LIST_FILE, localDestination, peerAtDestination, savedMachines, UNREADABLE } from "./machines";
@@ -39,14 +40,20 @@ const mtime = (file: string): number => { try { return fs.statSync(file).mtimeMs
  * aren't on the list until they've joined; with the hosts in `~/.ssh/config` it could add. Null
  * when the list can't be read, which isn't none. */
 export function ownMachines(now = Date.now()): MacMachines | null {
-  const saved = savedMachines();
-  if (!saved) return null;
   const link = readLink();
+  const membership = acceptedMembership(link);
+  const saved = savedMachines();
+  if (!membership && (!saved || link?.setup?.checkpointed)) return null;
+  const roster = membership
+    ? peersOf(link).filter(peer => peer.kind === "machine").map(peer => {
+      const destination = localDestination(link, peer.key);
+      return { peer, destination: destination ?? peer.key, otherAddresses: saved?.find(each => each.destination === destination)?.otherAddresses };
+    })
+    : saved!.map(machine => ({ ...machine, peer: peerAtDestination(link, machine.destination) }));
   const told = readPeerAgents();
   const reach = readReach();
   const tries = readTries();
-  const machines = saved.map(({ destination, otherAddresses }): Machine => {
-    const peer = peerAtDestination(link, destination);
+  const machines = roster.map(({ destination, otherAddresses, peer }): Machine => {
     const busy = underWay(destination);
     const stands = peer ? peerReach(peer.key, told, reach, tries, now).reach : null;
     const [connection, status] = busy ? ["installing", busy.seen.title]
@@ -55,7 +62,7 @@ export function ownMachines(now = Date.now()): MacMachines | null {
       : stands === "away" ? ["notConnected", "Not heard from lately"] : ["notConnected", "Not connected"];
     return { id: destination, name: peer?.name || destination, otherAddresses: Array.isArray(otherAddresses) ? otherAddresses : [], connection: connection!, status: status! };
   });
-  const listed = new Set(saved.flatMap(each => [each.destination, ...(Array.isArray(each.otherAddresses) ? each.otherAddresses : [])]));
+  const listed = new Set(roster.flatMap(each => [each.destination, ...(Array.isArray(each.otherAddresses) ? each.otherAddresses : [])]));
   for (const seen of allTries().reverse()) {
     if (seen.kind !== "add" || seen.state === "done" || seen.state === "failed" || listed.has(seen.destination)) continue;
     listed.add(seen.destination);
@@ -99,6 +106,11 @@ export async function* ownMachinesRoute(context: RouteContext): AsyncGenerator<A
   // On a member of a setup, only its main computer adds and removes computers (PROTOCOL.md, "Your setup").
   const link = readLink();
   const main = mainElsewhere(link);
+  if (method === "DELETE" && acceptedMembership(link)) {
+    const item = /^kuvo\/(?:machines|hosts)\/([^/]+)$/.exec(route)?.[1];
+    const key = item && peersOf(link).find(peer => peer.key === item || (!main && localDestination(link, peer.key) === item))?.key;
+    if (key) return yield* computersRoute(context, COMPUTERS_ROUTE.exec(`kuvo/computers/${key}`)!);
+  }
   if (main && !read) return yield* json(409, addElsewhere(main));
   if ((main || link?.setup?.managed) && read && route === "kuvo/hosts") {
     const hosts = setupHosts(link);

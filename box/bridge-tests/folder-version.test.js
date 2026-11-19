@@ -29,7 +29,7 @@ function launch(home, program, args, options = {}) {
   });
 }
 
-test("folder layout 10 upgrades layout 9 in place and the current layout opens read-only", () => {
+test("folder layout 11 upgrades layout 9 in place and the current layout opens read-only", () => {
   const home = scratch();
   const folder = path.join(home, ".kuvo-code");
   fs.mkdirSync(folder);
@@ -39,13 +39,37 @@ test("folder layout 10 upgrades layout 9 in place and the current layout opens r
   fs.writeFileSync(marker, '{"version":9}\n');
   const result = launch(home, process.execPath, [link, "folder-upgrade"]);
   assert.equal(result.status, 0, result.stderr);
-  assert.deepEqual(JSON.parse(fs.readFileSync(marker, "utf8")), { version: 10 });
+  assert.deepEqual(JSON.parse(fs.readFileSync(marker, "utf8")), { version: 11 });
   assert.equal(fs.readFileSync(path.join(folder, "machines.json"), "utf8"), raw);
   assert.deepEqual(fs.readdirSync(folder).sort(), ["folder-version.json", "machines.json"]);
   const inode = fs.statSync(marker).ino;
   const reopened = launch(home, process.execPath, [link, "folder-upgrade"]);
   assert.equal(reopened.status, 0, reopened.stderr);
   assert.equal(fs.statSync(marker).ino, inode);
+});
+
+test("layout 11 preserves device keys, pairing IDs, and signed records through migration", () => {
+  const home = scratch();
+  const folder = path.join(home, ".kuvo-code");
+  const run = path.join(folder, "run");
+  fs.mkdirSync(run, { recursive: true });
+  const marker = path.join(folder, "folder-version.json");
+  const file = path.join(run, "link.json");
+  const independent = { key: "phone", pairing: "same-phone-pairing", from: "pair" };
+  const desktop = { key: "app", pairing: "same-desktop-pairing", from: "mac", kind: "desktop", mac: "primary" };
+  const removed = [{ key: "old-device", pairing: "old-pairing" }];
+  const signed = { signed: { d: "original-document", s: "its-original-signature" } };
+  fs.writeFileSync(marker, '{"version":10,"upgradingTo":11}\n');
+  fs.writeFileSync(file, JSON.stringify({
+    formatVersion: 1, phones: [independent, { ...desktop, by: "member" }],
+    removed, docs: signed, vouchBlocked: [{ key: "member", device: "Old" }],
+  }));
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const result = launch(home, process.execPath, [link, "folder-upgrade"]);
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(JSON.parse(fs.readFileSync(marker, "utf8")), { version: 11 });
+    assert.deepEqual(JSON.parse(fs.readFileSync(file, "utf8")), { formatVersion: 1, phones: [independent, desktop], removed, docs: signed });
+  }
 });
 
 test("failure bench: a folder upgrade killed after step 1 resumes from step 2", () => {
@@ -79,12 +103,12 @@ test("failure bench: startup refuses a newer folder without changing it", () => 
   const folder = path.join(home, ".kuvo-code");
   fs.mkdirSync(folder);
   const marker = path.join(folder, "folder-version.json");
-  for (const raw of ['{"version":11}\n', '{"version":10,"upgradingTo":11}\n']) {
+  for (const raw of ['{"version":12}\n', '{"version":11,"upgradingTo":12}\n']) {
     fs.writeFileSync(marker, raw);
     const result = launch(home, process.execPath, [link, "serve"]);
     assert.equal(result.status, 1, result.stderr);
     assert.equal(result.stdout, "");
-    assert.match(result.stderr, /Kuvo folder at .* format version 11 is unsupported \(this build writes 10\)/);
+    assert.match(result.stderr, /Kuvo folder at .* format version 12 is unsupported \(this build writes 11\)/);
     assert.equal(fs.readFileSync(marker, "utf8"), raw);
     assert.deepEqual(fs.readdirSync(folder), ["folder-version.json"]);
   }
@@ -108,13 +132,13 @@ test("the agents bridge refuses the newer layout before initializing its store",
   const home = scratch();
   const folder = path.join(home, ".kuvo-code");
   fs.mkdirSync(folder);
-  fs.writeFileSync(path.join(folder, "folder-version.json"), '{"version":11}');
+  fs.writeFileSync(path.join(folder, "folder-version.json"), '{"version":12}');
   const result = launch(home, bun, [agents], {
     env: { KUVO_AGENTS_HOME: path.join(folder, "agents"), OPENCODE_PASSWORD: "test" },
   });
   assert.equal(result.status, 1, result.stderr);
   assert.equal(result.stdout, "");
-  assert.match(result.stderr, /Kuvo folder at .* format version 11 is unsupported \(this build writes 10\)/);
+  assert.match(result.stderr, /Kuvo folder at .* format version 12 is unsupported \(this build writes 11\)/);
   assert.deepEqual(fs.readdirSync(folder), ["folder-version.json"]);
 });
 
@@ -130,7 +154,7 @@ test("keeper and engine launcher refuse the newer layout before making runtime f
 [ "$4" = folder-upgrade ] || exit 77
 exec ${JSON.stringify(process.execPath)} "$3" "$4"
 `, { mode: 0o700 });
-  fs.writeFileSync(path.join(folder, "folder-version.json"), '{"version":11}');
+  fs.writeFileSync(path.join(folder, "folder-version.json"), '{"version":12}');
   for (const script of ["kuvo-start", "kuvo-launch"]) {
     const source = fs.readFileSync(new URL(`../src/keeper/${script}`, import.meta.url), "utf8");
     const staged = path.join(home, script);
@@ -138,7 +162,7 @@ exec ${JSON.stringify(process.execPath)} "$3" "$4"
     // A failure to guard a startup must still fail fast and leave no detached test process.
     const result = launch(home, "/bin/sh", [staged, "status"], { input: "\n" });
     assert.equal(result.status, 1, result.stderr);
-    assert.match(result.stderr, /Kuvo folder at .* format version 11 is unsupported \(this build writes 10\)/);
+    assert.match(result.stderr, /Kuvo folder at .* format version 12 is unsupported \(this build writes 11\)/);
     assert.deepEqual(fs.readdirSync(folder).sort(), ["bin", "engine", "folder-version.json"]);
   }
 });
@@ -174,7 +198,7 @@ cp "${old}" "${current}" && rm "${folder}/run/update-trial"
   fs.writeFileSync(marker, '{"version":4,"upgradingTo":5}\n');
   const refused = launch(home, process.execPath, [current, "folder-upgrade"]);
   assert.equal(refused.status, 1, refused.stderr);
-  assert.match(refused.stderr, /saved Kuvo Code can't recover folder layout 10/);
+  assert.match(refused.stderr, /saved Kuvo Code can't recover folder layout 11/);
   assert.equal(fs.readFileSync(marker, "utf8"), '{"version":4,"upgradingTo":5}\n');
 
   // An incompatible marker must never let restore put back the older binary.
@@ -244,7 +268,7 @@ test("failure bench: the legacy import seals group files and directory entries b
     assert.ok(synced.slice(metadataSync + 1).includes(group));
     assert.ok(synced.slice(metadataSync + 1).includes(path.dirname(group)));
     assert.ok(synced.slice(metadataSync + 1).includes(staging));
-    assert.equal(JSON.parse(fs.readFileSync(path.join(work, "folder-version.json"))).version, 10);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(work, "folder-version.json"))).version, 11);
   `]);
   assert.equal(child.status, 0, child.stderr);
 });

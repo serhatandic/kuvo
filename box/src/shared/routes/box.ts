@@ -337,12 +337,11 @@ export type Found = Infer<typeof FOUND>;
 /** What can be done with one of your computers from the box that lists it (`computers.manage`):
  * which, its button's words, and where a client asks first, the question, what it comes to and the
  * words of the button that goes ahead, all the box's; `why`, it can't be done now, in words a
- * client shows beside it. `allow-devices` (`devices.allow`): on your setup's main computer, a
- * computer kept from adding Kuvo Code's app to your devices is let do it again. `setup` and
+ * client shows beside it. `setup` and
  * `uninstall` (`computers.add`): on the box that set a machine up over SSH, setting it up again
  * and uninstalling Kuvo Code from it. `update` (`computers.update`): on that box, bringing a machine
  * whose Kuvo is older than its own up to date now (asked first while something is at work there). */
-export const COMPUTER_ACTION = object({ id: words("rename", "connect", "remove", "allow-devices", "setup", "uninstall", "update", "update-here", "add"), label: string, "confirm?": object({ title: string, message: string, label: string }), "why?": string });
+export const COMPUTER_ACTION = object({ id: words("rename", "connect", "remove", "setup", "uninstall", "update", "update-here", "add"), label: string, "confirm?": object({ title: string, message: string, label: string }), "why?": string });
 export type ComputerAction = Infer<typeof COMPUTER_ACTION>;
 
 /** How the box that set a machine up over SSH brings its older Kuvo up to date (`computers.update`):
@@ -361,9 +360,7 @@ export type ComputerUpdate = Infer<typeof COMPUTER_UPDATE>;
  * where a paired device reaches its box
  * itself (`address`, on the relay, and `relay`, its URL: only on your own computers); how many of its sessions are at work and
  * which (the first few, by id and title), where it said; the services whose plan limits it reads;
- * what can be done with it from here (`actions`); and `vouching` (`devices.allow`, on your setup's
- * main computer alone): it's kept from adding Kuvo Code's app to your devices, since one it added
- * was removed, in words a client shows as they are. */
+ * and what can be done with it from here (`actions`). */
 export const LISTED_COMPUTER = object({
   key: string, name: string, kind: words("mac", "machine"), "here?": literal(true), "id?": string,
   title: string, reachTitles: map(string), "detail?": string, "notice?": object({ title: string, detail: string }), "settingsNotice?": object({ title: string, detail: string }), "workingTitle?": string,
@@ -374,7 +371,7 @@ export const LISTED_COMPUTER = object({
   "agents?": object({ state: words("running", "restarting", "down"), "why?": string }),
   via: words("here", "relay"), "address?": string, "relay?": string,
   "working?": number, "atWork?": list(object({ id: string, "title?": string })), limits: list(string), limitServices: list(object({ id: string, title: string })),
-  actions: list(COMPUTER_ACTION), "vouching?": object({ blocked: literal(true), words: string }),
+  actions: list(COMPUTER_ACTION),
   "update?": COMPUTER_UPDATE,
   // (This Mac's own row: Kuvo here runs this version, newer than the desktop app that opened with
   // it, which checks for its own update then.)
@@ -478,7 +475,6 @@ export const BOX_ROUTES: RouteShape[] = [
   { route: "POST kuvo/computers/:key/unlink", feature: "computers.removal", answers: REMOVAL_ANSWERS },
   { route: "POST kuvo/computers/:key/unlink-and-wipe", feature: "computers.removal", answers: REMOVAL_ANSWERS },
   { route: "POST kuvo/computers/:key/connect", feature: "computers.manage", answers: { 202: NOTHING, 404: object({ message: string }), 409: object({ message: string }), 503: object({ message: string }) } },
-  { route: "POST kuvo/computers/:key/allow-devices", feature: "devices.allow", answers: { 200: NOTHING, 403: object({ message: string }), 404: object({ message: string }), 405: object({ message: string }), 409: object({ message: string, "primary?": string }) } },
   { route: "GET kuvo/info", feature: "info", answers: { 200: INFO } },
   { route: "GET kuvo/update", feature: "update", answers: { 200: UPDATE } },
   { route: "POST kuvo/update", feature: "update", answers: { 202: UPDATE } },
