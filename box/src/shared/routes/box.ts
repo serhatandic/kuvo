@@ -4,6 +4,7 @@
 import { FEATURES } from "../features";
 import { bool, BYTES, type Infer, list, literal, map, NOTHING, nullable, number, object, oneOf, type RouteShape, string, words } from "../shape";
 import { MAC_FEATURES } from "./mac";
+import { SAVE_RECEIPT } from "./setup-save";
 
 /** One of a machine's pieces (`kuvo/info`'s `pieces`): the version it runs (null while it doesn't,
  * or doesn't say), the one its files hold now, and whether it runs another than those (`behind`). */
@@ -67,6 +68,7 @@ const LAST_UPDATE = object({
   "message?": string,
   "from?": string,
   "to?": string,
+  "save?": SAVE_RECEIPT,
 });
 /** This box's updates (`kuvo/update`): whether they're set up, its version and its engine's, the
  * latest it knows of, how the last one went, the step under way, why it can't update, and the
@@ -418,6 +420,7 @@ export const ADD_TRY = object({
   "failure?": object({ title: string, message: string, again: bool }),
   "computer?": object({ key: string, name: string }),
   "known?": bool,
+  "save?": SAVE_RECEIPT,
 });
 export type AddTry = Infer<typeof ADD_TRY>;
 /** Adding computers, as this box says it: whether it adds them (`why`, in words, where it

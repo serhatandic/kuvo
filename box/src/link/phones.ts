@@ -50,7 +50,7 @@ function stagePhonePairing(key: Buffer, hello: PhoneHello | null | undefined, ad
     if (isObject(effects) && isObject(effects.pairing) && Object.values(effects.pairing).includes(hash)
       && isObject(devices) && Array.isArray(devices.phones)) {
       const phone = devices.phones.find(phone => isObject(phone) && phone.key === encoded);
-      if (typeof phone?.pairing === "string" && !pairedPhone(before, encoded, phone.pairing)) return { save: asSave(pending), pairing: phone.pairing };
+      if (before?.sign && typeof phone?.pairing === "string" && !pairedPhone(before, encoded, phone.pairing)) return { save: asSave(pending, before.sign), pairing: phone.pairing };
     }
   }
   // Showing the token: a pairing of its own, paired before or not (one removed comes back).

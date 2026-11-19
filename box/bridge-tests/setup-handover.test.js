@@ -10,6 +10,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
+import { NO_BUN, testBun } from "./bun-for-tests.js";
 import { relayStandIn } from "./relay-stand-in.js";
 
 const script = fileURLToPath(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url));
@@ -43,15 +44,26 @@ async function until(what, read, signal) {
   throw new Error(`Timed out waiting for ${what}`);
 }
 
-async function network(t, takeover = false) {
+async function network(t, takeover = false, releaseKey) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-handover-"));
   const relay = await relayStandIn(link);
-  const engine = http.createServer((_request, response) => response.writeHead(200, { "content-type": "application/json" }).end('{"data":[]}'));
+  const boxScript = releaseKey ? path.join(root, "kuvo-link.mjs") : script;
+  if (releaseKey) {
+    const source = fs.readFileSync(script, "utf8");
+    assert.ok(source.includes(link.UPDATE_KEYS[0]));
+    fs.writeFileSync(boxScript, source.replace(link.UPDATE_KEYS[0], releaseKey));
+  }
+  let labelCall;
+  const engine = http.createServer((request, response) => {
+    const call = request.url.startsWith("/api/session/ses_labels/message") && labelCall;
+    const data = call ? [{ content: [{ type: "tool", name: "queue_labels", state: { status: "running", input: call } }] }] : [];
+    response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ data }));
+  });
   engine.listen(0, "127.0.0.1");
   await once(engine, "listening");
   const children = new Set();
-  const start = (env, args, io) => {
-    const child = spawn(process.execPath, [script, ...args], { env, stdio: io });
+  const start = (env, args, io, command = process.execPath) => {
+    const child = spawn(command, args, { env, stdio: io });
     children.add(child);
     child.once("exit", () => children.delete(child));
     return child;
@@ -102,8 +114,9 @@ async function network(t, takeover = false) {
       heard: key => {
         try { return read("peer-agents.json")[key]?.features?.includes("setup.handover"); } catch { return false; }
       },
-      async command(args, input = "") {
-        const child = start(env, args, ["pipe", "pipe", "pipe"]);
+      command(args, input = "") { return this.evaluate(process.execPath, [boxScript, ...args], input); },
+      async evaluate(command, args, input = "") {
+        const child = start(env, args, ["pipe", "pipe", "pipe"], command);
         let out = "", err = "";
         child.stdout.on("data", chunk => { out += chunk; });
         child.stderr.on("data", chunk => { err += chunk; });
@@ -124,7 +137,7 @@ async function network(t, takeover = false) {
             if (part.body) body.push(part.body);
           }
           console.log(JSON.stringify({ status, body: Buffer.concat(body).toString() }));
-        `] : [script, "box", "route"];
+        `] : [boxScript, "box", "route"];
         const child = spawn(process.execPath, args, { env, stdio: ["pipe", "pipe", "pipe"] });
         children.add(child);
         child.once("exit", () => children.delete(child));
@@ -137,9 +150,21 @@ async function network(t, takeover = false) {
         const wire = JSON.parse(out.trim().split("\n").at(-1));
         return { status: wire.status, value: JSON.parse(wire.body) };
       },
+      async labelTool(args) {
+        labelCall = args;
+        return (await this.route("POST", "kuvo/work-queue/tools", { name: "queue_labels", arguments: args, session: "ses_labels" }, true)).value;
+      },
+      async updateFrom(from) {
+        const { status, value, err } = await this.evaluate(process.execPath, ["--input-type=module", "-e", `
+          import { update } from ${JSON.stringify(boxScript)};
+          console.log(JSON.stringify(await update({ now: true, from: ${JSON.stringify(from)}, blocked: null })));
+        `]);
+        assert.equal(status, 0, err);
+        return value;
+      },
       start() {
         this.output = "";
-        const child = this.child = start(env, ["run"], ["ignore", "pipe", "inherit"]);
+        const child = this.child = start(env, [boxScript, "run"], ["ignore", "pipe", "inherit"]);
         child.stdout.on("data", chunk => {
           if (this.child === child) this.output = (this.output + chunk).slice(-16_000);
         });
@@ -304,14 +329,106 @@ test("failure bench: losing the successor before readiness keeps the old primary
 
 const HOUR = 3_600_000;
 
-async function standbyNetwork(t) {
-  const net = await network(t, true);
+async function standbyNetwork(t, releaseKey) {
+  const net = await network(t, true, releaseKey);
   const { a, b, see } = net;
   await see(a, 2, a);
   assert.equal((await a.route("GET", "kuvo/setup")).value.standby, b.key);
   await until("primary leased", () => a.lease(2, b), t.signal);
   return net;
 }
+
+test("failure bench: normal save callers carry proofs to the successor", { timeout: 45_000 }, async t => {
+  const bun = testBun();
+  assert.ok(bun, NO_BUN);
+  const { privateKey, publicKey } = crypto.generateKeyPairSync("ed25519");
+  const pin = publicKey.export({ type: "spki", format: "der" }).subarray(-32).toString("base64");
+  const { a, b, c, relay, see } = await standbyNetwork(t, pin);
+  await see(b, 2, a);
+  const root = path.dirname(a.run);
+  const release = path.join(root, "release");
+  const pack = Buffer.from("The interrupted save must never unpack this.");
+  const manifest = Buffer.from(JSON.stringify({
+    kuvo: "box/1", version: "0.10.0", engine: "1.0.0",
+    pack: { url: "https://example.invalid/pack.tgz", sha256: crypto.createHash("sha256").update(pack).digest("hex") },
+  }));
+  fs.mkdirSync(release);
+  fs.writeFileSync(path.join(release, "pack.tgz"), pack);
+  fs.writeFileSync(path.join(release, "boxes.json"), JSON.stringify({
+    manifest: manifest.toString("base64"), key: pin,
+    signature: crypto.sign(null, Buffer.concat([Buffer.from("kuvo-box v1\n"), manifest]), privateKey).toString("base64"),
+  }));
+  fs.mkdirSync(path.join(root, "bin"), { recursive: true });
+  fs.writeFileSync(path.join(root, "bin", "box-version"), "0.9.0");
+  const settings = fileURLToPath(new URL("../src/agents/usage/settings.ts", import.meta.url));
+  const usage = async (box, method, rest, body) => {
+    const { status, value, err } = await box.evaluate(bun, ["-e", `
+      import { UsageSettings, settingsRoutes } from ${JSON.stringify(settings)};
+      const settings = new UsageSettings(undefined, undefined, undefined, ${JSON.stringify(box.run)});
+      const reply = await settingsRoutes(settings, () => ["gpt-test"], ${JSON.stringify(method)}, ${JSON.stringify(rest)}, async () => (${JSON.stringify(body)}));
+      console.log(JSON.stringify({ status: reply.status, value: await reply.json() }));
+    `]);
+    assert.equal(status, 0, err);
+    return value;
+  };
+
+  const resume = relay.pause(a.address, b.address);
+  t.after(resume);
+  const args = { add: "Outage label" };
+  const document = { personalities: [personality(1)], removed: [] };
+  const clock = await a.route("GET", "kuvo/settings/clock", undefined, true);
+  assert.equal(clock.status, 200);
+  const row = clock.value.groups.flatMap(group => group.rows).find(row => row.id === "time-zone");
+  assert.ok(row);
+  const [display, tool, update, label, name, removal, zone, library, sshLibrary] = await Promise.all([
+    usage(a, "PUT", [], { codexFallback: "gpt-test" }),
+    a.labelTool(args),
+    a.updateFrom(release),
+    a.route("POST", "kuvo/work-queue/labels", args, true),
+    rename(a, c, "Outage name"),
+    a.route("DELETE", `kuvo/computers/${c.key}`),
+    a.route("PATCH", "kuvo/settings/clock", { row: row.id, was: row.revision, value: "Asia/Tokyo" }, true),
+    a.route("POST", "kuvo/personalities/take", { document }, true),
+    a.command(["box", "personalities"], JSON.stringify(document)),
+  ]);
+  assert.equal(display.status, 202);
+  assert.equal(update.result, "waiting", JSON.stringify(update));
+  assert.equal(tool.isError, false);
+  for (const answer of [label, name, removal, zone, library]) assert.equal(answer.status, 202, JSON.stringify(answer));
+  assert.equal(sshLibrary.status, 0, sshLibrary.err);
+  assert.equal(sshLibrary.value.status, 202, JSON.stringify(sshLibrary.value));
+  const repeated = await a.updateFrom(release);
+  assert.deepEqual(repeated.save?.proof, update.save?.proof);
+  assert.equal(repeated.save?.operation, update.save?.operation);
+  await a.stop();
+  b.clock(3 * HOUR + 5_000);
+  await see(b, 3, b);
+
+  const receipts = [
+    ["setupUsageDisplay", display.value], ["queueLabels", tool.save], ["queueLabels", label.value],
+    ["setupSecurityAndReleaseChoice", update.save], ["setupNames", name.value], ["membershipAndAccess", removal.value],
+    ["setupTimeZone", zone.value], ["setupPersonalities", library.value],
+    ["setupPersonalities", sshLibrary.value.save],
+  ];
+  for (const [kind, save] of receipts) {
+    assert.equal(save?.operation, pendingOperation(a, kind), kind);
+    assert.equal(save.status, "pending", kind);
+    assert.equal(link.readDoc(save.proof)?.origin, a.sign, kind);
+    assert.equal((await link.askSetupSave(b.run, { id: save.setup, operation: save.operation })).status, 404, kind);
+  }
+  assert.ok(tool.text.endsWith(JSON.stringify(tool.save)));
+  const queriedUsage = await usage(b, "POST", ["save"], display.value);
+  assert.equal(queriedUsage.value.status, "interrupted");
+  assert.equal(queriedUsage.value.operation, display.value.operation);
+  const queriedTool = await b.labelTool({ save: tool.save });
+  assert.equal(queriedTool.save?.status, "interrupted");
+  assert.deepEqual(queriedTool.save.proof, tool.save.proof);
+  for (const [kind, save] of receipts) {
+    const outcome = await link.askSetupSave(b.run, { id: save.setup, operation: save.operation, proof: save.proof });
+    assert.equal(outcome.status, 200, kind);
+    assert.equal(outcome.outcome, "interrupted", kind);
+  }
+});
 
 test("failure bench: only the standby takes over across a split and the old primary rejoins", { timeout: 45_000 }, async t => {
   const { a, b, c, relay, see, phone, pairing } = await standbyNetwork(t);
@@ -509,6 +626,10 @@ test("failure bench: the SSH personalities command saves through the standby", {
   const saved = await a.command(["box", "personalities"], JSON.stringify(document));
   assert.equal(saved.status, 0, saved.err);
   assert.equal(saved.value.status, 200, JSON.stringify(saved.value));
+  assert.equal(saved.value.save?.status, "committed");
+  const { setup, operation, proof } = saved.value.save;
+  assert.equal(link.readDoc(proof)?.body.operation, operation);
+  assert.equal((await link.askSetupSave(b.run, { id: setup, operation, proof })).outcome, "committed");
   assert.deepEqual((await a.route("GET", "kuvo/personalities")).value.personalities.map(each => each.id), ["custom.personal-1"]);
   assert.deepEqual(b.read().shared.setupPersonalities.value.personalities.map(each => each.id), ["custom.personal-1"]);
   assert.equal(oldBytes(), before, "the SSH save did not write to the legacy file");

@@ -3467,6 +3467,26 @@ var init_github_sign_in = __esm(() => {
 import fs3 from "fs";
 import net from "net";
 import path3 from "path";
+function setupSaveReference(value) {
+  if (!isObject(value) || typeof value.setup !== "string" || typeof value.operation !== "string" || !isObject(value.proof) || typeof value.proof.d !== "string" || typeof value.proof.s !== "string")
+    return null;
+  return { setup: value.setup, operation: value.operation, proof: { d: value.proof.d, s: value.proof.s } };
+}
+function setupSaveReceipt(value) {
+  const reference = setupSaveReference(value);
+  if (!reference || !isObject(value) || !Number.isSafeInteger(value.epoch))
+    return null;
+  const { epoch, status, message } = value;
+  if (status !== "pending" && status !== "committed" && status !== "interrupted")
+    return null;
+  return {
+    ...reference,
+    epoch: Number(epoch),
+    status,
+    ...status === "pending" ? { pending: true } : {},
+    ...typeof message === "string" ? { message } : {}
+  };
+}
 function localSetupValue(run, kind) {
   try {
     const file = path3.join(run, "link.json");
@@ -3496,7 +3516,11 @@ function localSetupValue(run, kind) {
     return null;
   }
 }
-function askSetupSave(run, body) {
+function askSetupOutcome(run, reference, kind) {
+  const { setup, operation, proof } = reference;
+  return askSetupSave(run, { id: setup, operation, proof, kind }, reference);
+}
+function askSetupSave(run, body, reference) {
   const fallback = { status: 503, message: "The box that keeps your setup isn't answering." };
   const socketPath = path3.join(run, "vault.sock");
   let key;
@@ -3553,11 +3577,13 @@ function askSetupSave(run, body) {
           return finish();
         const result = isObject(value) ? value : {};
         const outcome = result.status;
+        const receipt = setupSaveReceipt({ ...reference, ...result });
         finish({
           status: reply.status,
           message: typeof result.message === "string" ? result.message : undefined,
           ...typeof result.operation === "string" ? { operation: result.operation } : {},
           ...isObject(result.proof) && typeof result.proof.d === "string" && typeof result.proof.s === "string" ? { proof: { d: result.proof.d, s: result.proof.s } } : {},
+          ...receipt ? { receipt } : {},
           ...outcome === "pending" || outcome === "committed" || outcome === "interrupted" ? { outcome } : {}
         });
       } catch {
@@ -28103,6 +28129,9 @@ class UsageSettings {
       value: { units: draft.kept(), imported: draft.imported }
     });
   }
+  saveOutcome(reference) {
+    return this.run ? askSetupOutcome(this.run, reference, "setupUsageDisplay") : null;
+  }
   listen(listener) {
     this.listeners.push(listener);
   }
@@ -28247,6 +28276,15 @@ async function settingsRoutes(settings, choices, method, rest, body) {
   settings.followShared();
   if (!rest.length && method === "GET")
     return answer3(settings);
+  if (rest.length === 1 && rest[0] === "save" && method === "POST") {
+    const reference = setupSaveReference(await body().catch(() => {
+      return;
+    }));
+    if (!reference)
+      return json10({ message: "Send the setup save receipt." }, 400);
+    const result = await settings.saveOutcome(reference);
+    return result?.receipt ? json10(result.receipt) : json10({ message: result?.message }, result?.status ?? 503);
+  }
   const shared = settings.shared();
   if (shared && !shared.primary)
     return json10({ message: "Change your setup's usage settings on its primary." }, 409);
@@ -28256,9 +28294,12 @@ async function settingsRoutes(settings, choices, method, rest, body) {
       return answer3(settings, extra);
     const result = await settings.saveDraft(shared, draft);
     if (result.status !== 200)
-      return json10({ message: result.message, ...result.status === 202 ? { pending: true } : {} }, result.status);
+      return json10(result.receipt ?? {
+        message: result.message,
+        ...result.status === 202 ? { pending: true, operation: result.operation, proof: result.proof } : {}
+      }, result.status);
     settings.followShared();
-    return answer3(settings, extra);
+    return answer3(settings, { ...extra, ...result.receipt ? { save: result.receipt } : {} });
   };
   if (!rest.length && method === "PUT") {
     const given = await body().catch(() => {
@@ -28651,14 +28692,17 @@ async function usageRoutes(usage, method, rest, params, body = async () => ({}))
     const model = given && typeof given === "object" ? given.fallback : undefined;
     if (model !== null && typeof model !== "string")
       return json11({ message: "Say {codex: {fallback}}: a model, or null for none." }, 400);
+    let save;
     if (usage.settings?.shared()) {
       const answer = await settingsRoutes(usage.settings, () => usage.codexChoices(), "PUT", [], async () => ({ codexFallback: model === "" ? null : model }));
       if (answer.status !== 200)
         return answer;
+      const reply = await answer.json();
+      save = reply.data.save;
     } else if (!usage.setCodexFallback(model === "" ? null : model))
       return json11({ message: "This model's prices aren't available now. Choose another model or None." }, 400);
     await Promise.race([usage.refresh(), new Promise((resolve) => setTimeout(resolve, 5000).unref?.())]);
-    return json11({ data: usage.view(zone) });
+    return json11({ data: { ...usage.view(zone), ...save ? { save } : {} } });
   }
   if (rest[0] === "settings")
     return usage.settings ? settingsRoutes(usage.settings, () => usage.codexChoices(), method, rest.slice(1), body) : json11({ message: "Usage settings aren't kept on this computer." }, 503);
@@ -42370,4 +42414,4 @@ if (!isMainThread && process.argv.includes("--insights-db-worker")) {
 } else {
   await init_main().then(() => ({}));
 }
-// Built from Packages/Box/src/agents 9211cd7a45408ffff28e97ebba0b69abfc8f45a9a5991c2d3002360b3a0ec711
+// Built from Packages/Box/src/agents c07777dcd1cace801154ffa837be5b58fffde5969e56474c4c2b02363561d0c5

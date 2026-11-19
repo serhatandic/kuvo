@@ -12,7 +12,7 @@
 import { createHash, randomBytes } from "node:crypto"
 import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs"
 import { dirname } from "node:path"
-import { askSetupSave, localSetupValue, type LocalSetupValue } from "../../shared/setup-local"
+import { askSetupOutcome, askSetupSave, localSetupValue, setupSaveReference, type LocalSetupValue, type SetupSaveReference } from "../../shared/setup-local"
 
 import { upgradeFormat, UnsupportedFormatVersion } from "../../shared/format-version"
 import { notificationAvailability } from "./notices"
@@ -362,6 +362,10 @@ export class UsageSettings {
       value: { units: draft.kept(), imported: draft.imported } })
   }
 
+  saveOutcome(reference: SetupSaveReference) {
+    return this.run ? askSetupOutcome(this.run, reference, "setupUsageDisplay") : null
+  }
+
   /** Told each time parts change (here, or from another of your computers). */
   listen(listener: (units: SettingsUnit[]) => void) {
     this.listeners.push(listener)
@@ -543,20 +547,29 @@ const answer = (settings: UsageSettings, extra: Record<string, unknown> = {}) =>
  * whole; `knows: {cards, meters}`, those the client's app knows: what it doesn't is kept; `based:
  * {part: version}`, what each was changed from: one changed since is left, `stale`) answers the same; `POST api/kuvo/usage/settings/import` with what a Mac kept before takes
  * the parts no box has set, once, and answers with `took` (PROTOCOL.md, "Usage settings").
+ * `POST api/kuvo/usage/settings/save` checks a returned setup save receipt on this box.
  * `choices`: the models Codex's fallback model may be now.
  */
 export async function settingsRoutes(settings: UsageSettings, choices: () => string[], method: string, rest: string[], body: () => Promise<any>): Promise<Response> {
   settings.followShared()
   if (!rest.length && method === "GET") return answer(settings)
+  if (rest.length === 1 && rest[0] === "save" && method === "POST") {
+    const reference = setupSaveReference(await body().catch(() => undefined))
+    if (!reference) return json({ message: "Send the setup save receipt." }, 400)
+    const result = await settings.saveOutcome(reference)
+    return result?.receipt ? json(result.receipt) : json({ message: result?.message }, result?.status ?? 503)
+  }
   const shared = settings.shared()
   if (shared && !shared.primary) return json({ message: "Change your setup's usage settings on its primary." }, 409)
   const draft = shared ? settings.draft() : settings
   const saved = async (extra: Record<string, unknown>) => {
     if (!shared) return answer(settings, extra)
     const result = await settings.saveDraft(shared, draft)
-    if (result.status !== 200) return json({ message: result.message, ...(result.status === 202 ? { pending: true } : {}) }, result.status)
+    if (result.status !== 200) return json(result.receipt ?? {
+      message: result.message, ...(result.status === 202 ? { pending: true, operation: result.operation, proof: result.proof } : {}),
+    }, result.status)
     settings.followShared()
-    return answer(settings, extra)
+    return answer(settings, { ...extra, ...(result.receipt ? { save: result.receipt } : {}) })
   }
   if (!rest.length && method === "PUT") {
     const given = await body().catch(() => undefined)

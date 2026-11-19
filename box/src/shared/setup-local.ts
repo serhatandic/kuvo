@@ -1,10 +1,14 @@
-// The local agents bridge asks the Box that owns the setup signing key to save
-// its display settings. This uses the existing authenticated holder socket.
+// The agents bridge and updater use the authenticated holder socket to save setup choices
+// and check the outcome of previous saves.
 import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
 import type { SignedDoc } from "./documents";
+import type { SharedKind } from "./data-declarations";
 import { isObject } from "./json";
+import type { SetupSaveReceipt } from "./routes/setup-save";
+
+export type { SetupSaveReceipt };
 
 export const LOCAL_SETUP_SAVE = "kuvo/setup/save-local";
 
@@ -14,6 +18,27 @@ export interface LocalSetupValue {
   primary: boolean;
   sequence: number;
   value: unknown;
+}
+
+export interface SetupSaveReference {
+  setup: string;
+  operation: string;
+  proof: SignedDoc;
+}
+
+export function setupSaveReference(value: unknown): SetupSaveReference | null {
+  if (!isObject(value) || typeof value.setup !== "string" || typeof value.operation !== "string"
+    || !isObject(value.proof) || typeof value.proof.d !== "string" || typeof value.proof.s !== "string") return null;
+  return { setup: value.setup, operation: value.operation, proof: { d: value.proof.d, s: value.proof.s } };
+}
+
+export function setupSaveReceipt(value: unknown): SetupSaveReceipt | null {
+  const reference = setupSaveReference(value);
+  if (!reference || !isObject(value) || !Number.isSafeInteger(value.epoch)) return null;
+  const { epoch, status, message } = value;
+  if (status !== "pending" && status !== "committed" && status !== "interrupted") return null;
+  return { ...reference, epoch: Number(epoch), status, ...(status === "pending" ? { pending: true } : {}),
+    ...(typeof message === "string" ? { message } : {}) };
 }
 
 const setups = new Map<string, { inode: number; mtime: number; link: Record<string, unknown> }>();
@@ -45,10 +70,16 @@ interface LocalSaveAnswer {
   message?: string;
   operation?: string;
   proof?: SignedDoc;
-  outcome?: "pending" | "committed" | "interrupted";
+  outcome?: SetupSaveReceipt["status"];
+  receipt?: SetupSaveReceipt;
 }
 
-export function askSetupSave(run: string, body: object): Promise<LocalSaveAnswer> {
+export function askSetupOutcome(run: string, reference: SetupSaveReference, kind?: SharedKind): Promise<LocalSaveAnswer> {
+  const { setup, operation, proof } = reference;
+  return askSetupSave(run, { id: setup, operation, proof, kind }, reference);
+}
+
+export function askSetupSave(run: string, body: object, reference?: SetupSaveReference): Promise<LocalSaveAnswer> {
   const fallback = { status: 503, message: "The box that keeps your setup isn't answering." };
   const socketPath = path.join(run, "vault.sock");
   let key: string;
@@ -86,9 +117,11 @@ export function askSetupSave(run: string, body: object): Promise<LocalSaveAnswer
         if (!Number.isInteger(reply.status)) return finish();
         const result = isObject(value) ? value : {};
         const outcome = result.status;
+        const receipt = setupSaveReceipt({ ...reference, ...result });
         finish({ status: reply.status, message: typeof result.message === "string" ? result.message : undefined,
           ...(typeof result.operation === "string" ? { operation: result.operation } : {}),
           ...(isObject(result.proof) && typeof result.proof.d === "string" && typeof result.proof.s === "string" ? { proof: { d: result.proof.d, s: result.proof.s } } : {}),
+          ...(receipt ? { receipt } : {}),
           ...(outcome === "pending" || outcome === "committed" || outcome === "interrupted" ? { outcome } : {}),
         });
       } catch { finish(); }

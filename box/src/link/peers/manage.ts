@@ -280,7 +280,10 @@ function completeRemoval({ changed, blocked, gone, already, needsCleanup, key, b
   macDocsChanged({ closeRemoved: save ? readLink() : changed });
   tellGone(gone);
   // Once the removal is durable, clean up its saved address. Leave a retry if the list fails.
-  if (needsCleanup && !cleanRemovalList(key)) return answer(503, { message: "The computer’s access was removed, but the saved machines list couldn’t be updated." });
+  if (needsCleanup && !cleanRemovalList(key)) return answer(503, {
+    ...(save ? sharedSaveReply(save, "saved").value : {}),
+    message: "The computer’s access was removed, but the saved machines list couldn’t be updated.",
+  });
   return save ? sharedSaveReply(save, "saved") : answer(200, {});
 }
 

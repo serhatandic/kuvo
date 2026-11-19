@@ -138,7 +138,9 @@ export async function* saveLocalSetup(context: RouteContext): AsyncGenerator<Ans
   if (!request.fromHolder || request.method !== "POST") return yield* json(403, {});
   const given = parsed(request.body);
   if (isObject(given) && typeof given.id === "string" && typeof given.operation === "string" && given.value === undefined) {
-    const outcome = queryOperation(given.id, given.operation, given.proof);
+    const expectedKind = given.kind;
+    if (expectedKind !== undefined && !sharedKind(expectedKind)) return yield* json(400, {});
+    const outcome = queryOperation(given.id, given.operation, given.proof, expectedKind);
     if (!outcome) return yield* json(404, {});
     const { kind, epoch, sequence, baseRevision, status } = outcome;
     return yield* json(200, { operation: given.operation, kind, epoch, sequence, baseRevision, status });

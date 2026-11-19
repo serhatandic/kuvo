@@ -3,6 +3,7 @@
 // are milliseconds since 1970.
 
 import { any, bool, BYTES, type Infer, list, map, nullable, number, object, oneOf, type RouteShape, string, words } from "../shape";
+import { SAVE_RECEIPT } from "./setup-save";
 
 // (You, an agent, or another shape kept as it came: an outside tracker's change, later.)
 const WHO = oneOf(object({ user: bool }), object({ session: string, name: string }), map(any));
@@ -121,7 +122,7 @@ export const WORK_QUEUE_ROUTES: RouteShape[] = [
   { route: "GET kuvo/work-queue", feature: "work-queue", answers: { 200: QUEUE_VIEW } },
   { route: "GET kuvo/work-queue/events", feature: "work-queue", answers: { 200: QUEUE_VIEW } },
   { route: "GET kuvo/work-queue/tools", feature: "work-queue", answers: { 200: object({ tools: list(any), instructions: string }) } },
-  { route: "POST kuvo/work-queue/tools", feature: "work-queue", answers: { 200: object({ text: string, isError: bool }) } },
+  { route: "POST kuvo/work-queue/tools", feature: "work-queue", answers: { 200: object({ text: string, isError: bool, "save?": SAVE_RECEIPT }) } },
   { route: "GET kuvo/work-queue/refs", feature: "work-queue", answers: { 200: object({ refs: map(REF) }) } },
   { route: "POST kuvo/work-queue/refs", feature: "work-queue", answers: { 200: object({ refs: map(REF) }) } },
   { route: "GET kuvo/work-queue/labels", feature: "work-queue.edit", answers: { 200: object({ labels: list(QUEUE_LABEL) }) } },

@@ -29,6 +29,7 @@ export type OperationOutcomes = Record<string, OperationOutcome>;
 
 export const MAX_SHARED_BYTES = Math.floor(MOST_DOC / 3);
 export const PENDING_SAVE = "Pending until the standby is back.";
+export const INTERRUPTED_SAVE = "The primary changed before this save committed.";
 export const OPERATION_ID = /^[A-Za-z0-9_-]{22,43}$/;
 
 export function publishedShared(link: LinkState): SignedDoc[] {
@@ -88,17 +89,17 @@ export function pendingShared(link: LinkState | null | undefined, kind: SharedKi
   return link ? pendingEntry(link, kind)?.doc ?? null : null;
 }
 
-export interface SharedSave { id: string; epoch: number; sequence: number; operation: string; proof?: SignedDoc }
+export interface SharedSave { id: string; epoch: number; sequence: number; operation: string; proof: SignedDoc }
 
-export function asSave(doc: Doc, seed?: string): SharedSave {
+export function asSave(doc: Doc, seed: string): SharedSave {
   const id = doc.body.id as string;
   const epoch = doc.body.epoch as number;
   const operation = identity(doc)!;
   // The caller can prove it received an operation without exposing the proposed value or effects.
-  const proof = seed && signDoc(seed, "setup-shared", doc.n, {
+  const proof = signDoc(seed, "setup-shared", doc.n, {
     id, epoch, operation, kind: doc.body.kind, baseRevision: doc.n - 1, proposal: doc.envelope.s,
   });
-  return { id, epoch, sequence: doc.n, operation, ...(proof ? { proof } : {}) };
+  return { id, epoch, sequence: doc.n, operation, proof };
 }
 
 /** Stage under the link lock. Independent kinds proceed independently; one kind is serialized. */
@@ -231,40 +232,44 @@ export function operationOutcome(link: LinkState | null | undefined, id: string,
   return pending ? { status: "pending" as const, sequence: pending.n, baseRevision: pending.n - 1, epoch: pending.body.epoch, kind: pending.body.kind } : null;
 }
 
-/** The signed checkpoint for the next epoch seals the original primary's outstanding operations. */
-export function queryOperation(id: string, operation: string, proof: unknown) {
+/** An accepted epoch transition seals the original primary's outstanding operations. */
+export function queryOperation(id: string, operation: string, proof: unknown, expectedKind?: SharedKind) {
   if (setupLayoutDeferred(K)) return null;
-  if (proof === undefined) return operationOutcome(readLink(), id, operation);
+  const link = readLink();
+  const known = operationOutcome(link, id, operation);
+  if (proof === undefined) return !expectedKind || known?.kind === expectedKind ? known : null;
   const ticket = readDoc(proof);
   if (!ticket || ticket.kind !== "setup-shared" || ticket.body.id !== id || identity(ticket) !== operation) return null;
   const { epoch, kind, proposal } = ticket.body;
-  if (!Number.isSafeInteger(epoch) || Number(epoch) < 1 || !sharedKind(kind)
+  if (!Number.isSafeInteger(epoch) || Number(epoch) < 1 || !sharedKind(kind) || (expectedKind && kind !== expectedKind)
     || typeof proposal !== "string" || !/^[\w-]{86}$/.test(proposal)) return null;
   const same = (outcome: OperationOutcome) => outcome.proposal === proposal && outcome.kind === kind
     && outcome.epoch === epoch && outcome.sequence === ticket.n;
-  const link = readLink();
   const setup = followedSetup(link);
   if (!link || !setup || setup.id !== id) return null;
-  const authoritative = (state: LinkState) => {
+  const authority = (state: LinkState) => {
     const position = followedSetup(state);
-    return position?.id === id && ticket.origin === (epoch === position.epoch ? position.sign : sealedPrimary(state, Number(epoch)));
+    if (position?.id !== id) return undefined;
+    return epoch === position.epoch ? { sign: position.sign } : sealedPrimary(state, Number(epoch));
   };
-  if (!authoritative(link)) return null;
-  const known = operationOutcome(link, id, operation);
   if (known) {
-    if ("proposal" in known) return same(known) ? known : null;
-    const pending = pendingShared(link, kind);
-    return pending?.envelope.s === proposal && pending.n === ticket.n && pending.body.epoch === epoch ? known : null;
+    const pending = "proposal" in known ? null : pendingShared(link, kind);
+    const matches = "proposal" in known ? same(known)
+      : pending?.envelope.s === proposal && pending.n === ticket.n && pending.body.epoch === epoch;
+    return matches && ticket.origin === authority(link)?.sign ? known : null;
   }
   if (Number(epoch) >= setup.epoch) return null;
   let result: OperationOutcome | null = null;
   updateLink(state => {
-    if (!state || !authoritative(state) || Number(epoch) >= state.setup!.epoch) return null;
+    if (!state || state.sharedSetup !== id || Number(epoch) >= (state.setup?.epoch ?? 0)) return null;
+    const seal = authority(state);
+    if (ticket.origin !== seal?.sign) return null;
     const decided = state.sharedOutcomes?.[operation];
     if (decided) {
       result = same(decided) ? decided : null;
       return null;
     }
+    if (seal.legacyWitness && ownSign(state) !== seal.legacyWitness) return null;
     result = { epoch: Number(epoch), kind, sequence: ticket.n, baseRevision: ticket.n - 1, proposal, status: "interrupted" };
     state.sharedOutcomes = { ...state.sharedOutcomes, [operation]: result };
     return state;
@@ -274,10 +279,10 @@ export function queryOperation(id: string, operation: string, proof: unknown) {
 
 export function sharedSaveReply(save: SharedSave, result: Awaited<ReturnType<typeof waitShared>>) {
   const { id, epoch, operation, proof } = save;
-  const receipt = { setup: id, epoch, operation, ...(proof ? { proof } : {}) };
+  const receipt = { setup: id, epoch, operation, proof };
   if (result === "saved") return { status: 200, value: { ...receipt, status: "committed" as const } } as const;
   if (result === "pending") return { status: 202, value: { ...receipt, status: "pending" as const, pending: true, message: PENDING_SAVE } } as const;
-  return { status: 409, value: { ...receipt, status: "interrupted" as const, message: "The primary changed before this save committed." } } as const;
+  return { status: 409, value: { ...receipt, status: "interrupted" as const, message: INTERRUPTED_SAVE } } as const;
 }
 
 export async function awaitSharedSave(save: SharedSave | null | undefined) {
@@ -288,10 +293,13 @@ export async function waitShared(save: SharedSave, timeout = 3_000, signal?: Abo
   const until = Date.now() + timeout;
   while (!signal?.aborted) {
     const link = readLink();
-    const outcome = operationOutcome(link, save.id, save.operation);
+    const sameEpoch = link?.setup?.id === save.id && link.setup.epoch === save.epoch;
+    const outcome = sameEpoch
+      ? operationOutcome(link, save.id, save.operation)
+      : queryOperation(save.id, save.operation, save.proof);
     if (outcome?.status === "committed") return "saved";
     if (outcome?.status === "interrupted") return "interrupted";
-    if (link?.setup?.id !== save.id || link.setup.epoch !== save.epoch) return "interrupted";
+    if (!sameEpoch) return "interrupted";
     if (Date.now() >= until) break;
     await new Promise(resolve => setTimeout(resolve, 50));
   }

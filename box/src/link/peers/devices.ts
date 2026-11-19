@@ -12,6 +12,7 @@
 // Platform: the same on macOS and Linux; only a Mac's box has the switch ("Let my devices connect").
 
 import { updateAccess } from "../setup/access";
+import { setupSaveReceipt } from "../../shared/setup-local";
 import { awaitSharedSave } from "../setup/shared";
 import { isObject } from "../../shared/json";
 import { plainName } from "../../shared/text";
@@ -185,7 +186,7 @@ export async function pairDeviceFromHere(given: unknown, signal?: AbortSignal | 
   if (!takesForwarded(main.key, DEVICES_FEATURE)) return answer(409, { message: `${named} needs a newer Kuvo Code to add this app to your devices. Update it, then try again.` });
   const there = await forwardAct(peer, device.name, { area: "devices", method: "POST", item: device.key, body: { name: device.name, kind: device.kind } }, signal, link);
   if ("refused" in there) return answer(503, waiting);
-  if (there.status === 202) return there;
+  if (there.status === 202 || setupSaveReceipt(there.value)) return there;
   const said = isObject(there.value) ? there.value : {};
   if (there.status === 200 && said.paired === true && typeof said.pairing === "string") return answer(200, { paired: true, pairing: said.pairing });
   const message = typeof said.message === "string" && said.message ? said.message.slice(0, 700) : `${named} didn't add this app to your devices.`;

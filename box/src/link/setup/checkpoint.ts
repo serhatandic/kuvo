@@ -10,6 +10,7 @@ import { held, readDoc, SIGN, signDoc } from "../documents/format";
 import { privateFolder, writeDurablePrivate } from "../files";
 import { K, RUN } from "../home";
 import type { LinkState } from "../state";
+import { fitsPeer } from "../peers/known";
 import { membershipOf } from "./membership";
 import { setupOf } from "./record";
 import { OPERATION_ID, sharedValues, type OperationOutcomes, type SharedValues } from "./shared";
@@ -99,17 +100,22 @@ function sealedPrimaries(checkpoint: Doc): Record<number, string> | null {
   return value as Record<number, string>;
 }
 
-/** The exact predecessor is sufficient for older checkpoints without a cumulative seal. */
-export function sealedPrimary(link: LinkState, epoch: number): string | undefined {
+/** Earlier certificates bind the predecessor's signing key through their accepted roster. */
+export function sealedPrimary(link: LinkState, epoch: number): { sign: string; legacyWitness?: string } | undefined {
   const tip = held(link.leadership?.[link.setup!.epoch]);
   const manifest = checkpointFile(tip?.body.checkpoint);
   const signer = manifest && sealedPrimaries(manifest)?.[epoch];
-  if (signer) return signer;
-  const transition = held(link.leadership?.[epoch + 1]);
-  if (transition && setupOf(transition.body)?.id === link.setup!.id) {
-    return resolveCheckpoint(transition)?.membership.boxes.find(peer => peer.key === transition.body.previous)?.sign;
+  if (signer) return { sign: signer };
+  const transition = readDoc(link.leadership?.[epoch + 1]);
+  if (transition?.kind !== "leadership" || transition.n !== epoch + 1 || setupOf(transition.body)?.id !== link.setup!.id) return undefined;
+  if (Object.hasOwn(transition.body, "checkpoint")) {
+    const peer = resolveCheckpoint(transition)?.membership.boxes.find(peer => peer.key === transition.body.previous);
+    return peer?.sign ? { sign: peer.sign } : undefined;
   }
-  return undefined;
+  const boxes = Array.isArray(transition.body.boxes) ? transition.body.boxes.filter(fitsPeer) : [];
+  const previous = boxes.find(peer => peer.key === transition.body.previous)?.sign;
+  // A legacy roster has no outcome archive. Only its signer can interpret an absent outcome.
+  return typeof previous === "string" && SIGN.test(previous) ? { sign: previous, legacyWitness: transition.origin } : undefined;
 }
 
 export function checksSeal(link: LinkState, checkpoint: Doc): boolean {

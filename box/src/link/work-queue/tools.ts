@@ -1,4 +1,5 @@
-import { awaitSharedSave } from "../setup/shared";
+import { awaitSharedSave, queryOperation } from "../setup/shared";
+import { setupSaveReference, type SetupSaveReceipt } from "../../shared/setup-local";
 import { relationsOf } from "./relations";
 // The Work Queue's tools (PROTOCOL.md, "The Work Queue", "Tools"): how every agent, whatever runs
 // it (the engine, Claude Code, Codex, Cursor, Grok, Antigravity), keeps its work items. The box
@@ -34,10 +35,15 @@ import type { BridgeRecord, EngineRecord, Target } from "../../shared/records";
 import type { Caller } from "../vault/who";
 
 /** What a tool says back to its agent. */
-export interface ToolAnswer { text: string; isError: boolean }
+export interface ToolAnswer { text: string; isError: boolean; save?: SetupSaveReceipt }
 
 const said = (text: string): ToolAnswer => ({ text, isError: false });
 const refused = (text: string): ToolAnswer => ({ text, isError: true });
+const withSave = (answer: ToolAnswer, save: SetupSaveReceipt): ToolAnswer => ({
+  ...answer, save,
+  // Some tool transports only forward the text.
+  text: `${answer.text} Save receipt: ${JSON.stringify(save)}`,
+});
 
 const ITEM = { type: ["string", "integer"], description: "Like #243 or gh:owner/repo#12." };
 const ISSUE = { type: "string", description: "gh:owner/repo#12 or its URL." };
@@ -132,8 +138,9 @@ const DEFINED = [
   },
   {
     name: "queue_labels",
-    description: "List the labels (kinds of work; one set for every queue), or make one change the user asked for: add, rename (with to), recolor (with color) or remove (off every item).",
+    description: "List the labels (kinds of work; one set for every queue), or make one change the user asked for: add, rename (with to), recolor (with color) or remove (off every item). To check a save, pass the returned receipt as save.",
     inputSchema: { type: "object", properties: {
+      save: { type: "object", description: "The save receipt from an earlier label change." },
       add: { type: "string" },
       rename: { type: "string" },
       to: { type: "string" },
@@ -395,6 +402,14 @@ async function run(name: string, args: Record<string, unknown>, caller: QueueCal
       return said(args.undo === true ? `Brought back ${nameOf(item)}.` : `Deleted ${nameOf(item)}. The user can bring it back for 30 days.`);
     }
     case "queue_labels": {
+      if (args.save !== undefined) {
+        const reference = setupSaveReference(args.save);
+        if (!reference) return refused("Send the save receipt from the label change.");
+        const outcome = queryOperation(reference.setup, reference.operation, reference.proof, "queueLabels");
+        if (!outcome) return refused("This computer couldn't find that label save.");
+        const status = outcome.status;
+        return withSave(said(`The label save is ${status}.`), { ...reference, epoch: Number(outcome.epoch), status, ...(status === "pending" ? { pending: true } : {}) });
+      }
       const asked = ["add", "rename", "recolor", "remove"].filter(each => typeof args[each] === "string" && (args[each] as string).trim());
       const listed = () => (labels().length ? labels().map(each => `${each.name} (${each.color})`).join(", ") : "none yet");
       if (!asked.length) return said(`Labels (one set for every queue; an item carries several): ${listed()}. Statuses aren't labels: ${STATUSES.map(each => each.name).join(", ")}. Priorities: ${PRIORITIES.map(each => each.name).join(", ")}.`);
@@ -407,11 +422,12 @@ async function run(name: string, args: Record<string, unknown>, caller: QueueCal
       if ("refused" in outcome) return refused(outcome.refused);
       const receipt = await awaitSharedSave(outcome.save);
       if (receipt && receipt.status !== 200) {
-        const message = `${receipt.value.message} Save operation ${receipt.value.operation}.`;
-        return receipt.status === 202 ? said(message) : refused(message);
+        const message = receipt.value.message;
+        return withSave(receipt.status === 202 ? said(message) : refused(message), receipt.value);
       }
       if (receipt && asked[0] === "remove") stripLabel(outcome.done.id);
-      return said(`${asked[0] === "add" ? "Made" : asked[0] === "remove" ? "Removed (and took off every item here)" : "Changed"} the label ${outcome.done.name}. Labels now: ${listed()}.${receipt ? ` Save operation ${receipt.value.operation} committed.` : ""}`);
+      const answer = said(`${asked[0] === "add" ? "Made" : asked[0] === "remove" ? "Removed (and took off every item here)" : "Changed"} the label ${outcome.done.name}. Labels now: ${listed()}.`);
+      return receipt ? withSave(answer, receipt.value) : answer;
     }
     case "queue_import": {
       const given = givenItems(args.items);

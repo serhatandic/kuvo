@@ -4736,7 +4736,37 @@
            "name": "string"
           }
          },
-         "known?": "bool"
+         "known?": "bool",
+         "save?": {
+          "object": {
+           "setup": "string",
+           "epoch": "number",
+           "operation": "string",
+           "proof": {
+            "object": {
+             "d": "string",
+             "s": "string"
+            }
+           },
+           "status": {
+            "oneOf": [
+             {
+              "literal": "pending"
+             },
+             {
+              "literal": "committed"
+             },
+             {
+              "literal": "interrupted"
+             }
+            ]
+           },
+           "pending?": {
+            "literal": true
+           },
+           "message?": "string"
+          }
+         }
         }
        }
       }
@@ -4905,7 +4935,37 @@
            "name": "string"
           }
          },
-         "known?": "bool"
+         "known?": "bool",
+         "save?": {
+          "object": {
+           "setup": "string",
+           "epoch": "number",
+           "operation": "string",
+           "proof": {
+            "object": {
+             "d": "string",
+             "s": "string"
+            }
+           },
+           "status": {
+            "oneOf": [
+             {
+              "literal": "pending"
+             },
+             {
+              "literal": "committed"
+             },
+             {
+              "literal": "interrupted"
+             }
+            ]
+           },
+           "pending?": {
+            "literal": true
+           },
+           "message?": "string"
+          }
+         }
         }
        }
       }
@@ -5068,7 +5128,37 @@
           "name": "string"
          }
         },
-        "known?": "bool"
+        "known?": "bool",
+        "save?": {
+         "object": {
+          "setup": "string",
+          "epoch": "number",
+          "operation": "string",
+          "proof": {
+           "object": {
+            "d": "string",
+            "s": "string"
+           }
+          },
+          "status": {
+           "oneOf": [
+            {
+             "literal": "pending"
+            },
+            {
+             "literal": "committed"
+            },
+            {
+             "literal": "interrupted"
+            }
+           ]
+          },
+          "pending?": {
+           "literal": true
+          },
+          "message?": "string"
+         }
+        }
        }
       }
      }
@@ -5230,7 +5320,37 @@
           "name": "string"
          }
         },
-        "known?": "bool"
+        "known?": "bool",
+        "save?": {
+         "object": {
+          "setup": "string",
+          "epoch": "number",
+          "operation": "string",
+          "proof": {
+           "object": {
+            "d": "string",
+            "s": "string"
+           }
+          },
+          "status": {
+           "oneOf": [
+            {
+             "literal": "pending"
+            },
+            {
+             "literal": "committed"
+            },
+            {
+             "literal": "interrupted"
+            }
+           ]
+          },
+          "pending?": {
+           "literal": true
+          },
+          "message?": "string"
+         }
+        }
        }
       }
      }
@@ -5431,7 +5551,37 @@
           "name": "string"
          }
         },
-        "known?": "bool"
+        "known?": "bool",
+        "save?": {
+         "object": {
+          "setup": "string",
+          "epoch": "number",
+          "operation": "string",
+          "proof": {
+           "object": {
+            "d": "string",
+            "s": "string"
+           }
+          },
+          "status": {
+           "oneOf": [
+            {
+             "literal": "pending"
+            },
+            {
+             "literal": "committed"
+            },
+            {
+             "literal": "interrupted"
+            }
+           ]
+          },
+          "pending?": {
+           "literal": true
+          },
+          "message?": "string"
+         }
+        }
        }
       }
      }
@@ -5593,7 +5743,37 @@
           "name": "string"
          }
         },
-        "known?": "bool"
+        "known?": "bool",
+        "save?": {
+         "object": {
+          "setup": "string",
+          "epoch": "number",
+          "operation": "string",
+          "proof": {
+           "object": {
+            "d": "string",
+            "s": "string"
+           }
+          },
+          "status": {
+           "oneOf": [
+            {
+             "literal": "pending"
+            },
+            {
+             "literal": "committed"
+            },
+            {
+             "literal": "interrupted"
+            }
+           ]
+          },
+          "pending?": {
+           "literal": true
+          },
+          "message?": "string"
+         }
+        }
        }
       }
      }
@@ -5755,7 +5935,37 @@
           "name": "string"
          }
         },
-        "known?": "bool"
+        "known?": "bool",
+        "save?": {
+         "object": {
+          "setup": "string",
+          "epoch": "number",
+          "operation": "string",
+          "proof": {
+           "object": {
+            "d": "string",
+            "s": "string"
+           }
+          },
+          "status": {
+           "oneOf": [
+            {
+             "literal": "pending"
+            },
+            {
+             "literal": "committed"
+            },
+            {
+             "literal": "interrupted"
+            }
+           ]
+          },
+          "pending?": {
+           "literal": true
+          },
+          "message?": "string"
+         }
+        }
        }
       }
      }
@@ -8004,7 +8214,37 @@
           "version?": "string",
           "message?": "string",
           "from?": "string",
-          "to?": "string"
+          "to?": "string",
+          "save?": {
+           "object": {
+            "setup": "string",
+            "epoch": "number",
+            "operation": "string",
+            "proof": {
+             "object": {
+              "d": "string",
+              "s": "string"
+             }
+            },
+            "status": {
+             "oneOf": [
+              {
+               "literal": "pending"
+              },
+              {
+               "literal": "committed"
+              },
+              {
+               "literal": "interrupted"
+              }
+             ]
+            },
+            "pending?": {
+             "literal": true
+            },
+            "message?": "string"
+           }
+          }
          }
         },
         "null"
@@ -8158,7 +8398,37 @@
           "version?": "string",
           "message?": "string",
           "from?": "string",
-          "to?": "string"
+          "to?": "string",
+          "save?": {
+           "object": {
+            "setup": "string",
+            "epoch": "number",
+            "operation": "string",
+            "proof": {
+             "object": {
+              "d": "string",
+              "s": "string"
+             }
+            },
+            "status": {
+             "oneOf": [
+              {
+               "literal": "pending"
+              },
+              {
+               "literal": "committed"
+              },
+              {
+               "literal": "interrupted"
+              }
+             ]
+            },
+            "pending?": {
+             "literal": true
+            },
+            "message?": "string"
+           }
+          }
          }
         },
         "null"
@@ -8312,7 +8582,37 @@
           "version?": "string",
           "message?": "string",
           "from?": "string",
-          "to?": "string"
+          "to?": "string",
+          "save?": {
+           "object": {
+            "setup": "string",
+            "epoch": "number",
+            "operation": "string",
+            "proof": {
+             "object": {
+              "d": "string",
+              "s": "string"
+             }
+            },
+            "status": {
+             "oneOf": [
+              {
+               "literal": "pending"
+              },
+              {
+               "literal": "committed"
+              },
+              {
+               "literal": "interrupted"
+              }
+             ]
+            },
+            "pending?": {
+             "literal": true
+            },
+            "message?": "string"
+           }
+          }
          }
         },
         "null"
@@ -34216,7 +34516,37 @@
     "200": {
      "object": {
       "text": "string",
-      "isError": "bool"
+      "isError": "bool",
+      "save?": {
+       "object": {
+        "setup": "string",
+        "epoch": "number",
+        "operation": "string",
+        "proof": {
+         "object": {
+          "d": "string",
+          "s": "string"
+         }
+        },
+        "status": {
+         "oneOf": [
+          {
+           "literal": "pending"
+          },
+          {
+           "literal": "committed"
+          },
+          {
+           "literal": "interrupted"
+          }
+         ]
+        },
+        "pending?": {
+         "literal": true
+        },
+        "message?": "string"
+       }
+      }
      }
     }
    }

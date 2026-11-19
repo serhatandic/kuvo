@@ -6,13 +6,13 @@ import path from "node:path";
 import { addressOf, newKey, publicOf } from "../src/link/crypto/keys";
 import { newSigningSeed, readDoc, signDoc, signingKeyOf } from "../src/link/documents/format";
 import { changedWork, digestOf, docsWork } from "../src/link/documents/work";
-import type { LinkState } from "../src/link/state";
+import { readLink, writeLink, type LinkState } from "../src/link/state";
 import { grantLease, leaseClock } from "../src/link/setup/lease";
 import { RUN } from "../src/link/home";
 import { cacheCheckpoint, checkpointHash, checkpointedTransition, leadershipDocuments } from "../src/link/setup/checkpoint";
 import { takeLeadership } from "../src/link/setup/leadership";
 import { newSetupID, type SetupRecord } from "../src/link/setup/record";
-import { installShared, operationOutcome, pendingShared, sharedValue, stageShared, takeShared } from "../src/link/setup/shared";
+import { installShared, operationOutcome, pendingShared, queryOperation, sharedValue, stageShared, takeShared } from "../src/link/setup/shared";
 
 function identity() {
   const secret = newKey();
@@ -159,3 +159,50 @@ test("a checkpoint preserves operation pages and accepts a lost receipt after pr
   expect(update.send[0]?.docs.have?.some(([, kind, epoch]) => kind === "leadership" && epoch === 3)).toBe(true);
   expect(update.send.flatMap(mail => mail.docs.give ?? []).some(envelope => readDoc(envelope)?.kind === "setup-checkpoint")).toBe(false);
 });
+
+for (const accepted of [true, false]) {
+  test(`operation proofs cross a legacy roster takeover (${accepted ? "accepted" : "unreplicated"})`, () => {
+    const a = identity(), b = identity(), c = identity();
+    const id = newSetupID();
+    const setup: SetupRecord = {
+      id, epoch: 2, primary: a.key, sign: a.signer, role: "primary", managed: true, sharedSaves: true,
+      standby: { key: b.key, sign: b.signer }, numberCeiling: 2_000,
+    };
+    const primary: LinkState = { key: a.seed, sign: a.sign, setup };
+    const standby: LinkState = { key: b.seed, sign: b.sign, setup: { ...setup, role: "member" } };
+    const member: LinkState = { key: c.seed, sign: c.sign, setup: { ...setup, role: "member" } };
+    const save = stageShared(primary, "setupNames", { [b.key]: "Renamed" })!;
+    if (accepted) expect(takeShared(standby, a.key, pendingShared(primary, "setupNames")!)).not.toBeNull();
+    const boxes = [a, b, c].map(box => ({ key: box.key, sign: box.signer, address: box.address, name: "Box", kind: "machine" }));
+    const legacy = readDoc(signDoc(b.sign, "leadership", 3, {
+      setup: { id, epoch: 3, primary: b.key }, previous: a.key, takeover: true, sharedSaves: true,
+      boxes, shared: standby.shared ?? {},
+    }))!;
+    const previous = readLink();
+    try {
+      // A member sees the roster but did not accept saves. It cannot infer interruption.
+      expect(takeLeadership(member, legacy)).toBe(true);
+      writeLink(member);
+      expect(queryOperation(id, save.operation, save.proof)).toBeNull();
+
+      expect(takeLeadership(standby, legacy)).toBe(true);
+      writeLink(standby);
+      expect(queryOperation(id, save.operation, undefined)?.status).toBe(accepted ? "committed" : undefined);
+      expect(queryOperation(id, save.operation, save.proof)?.status).toBe(accepted ? "committed" : "interrupted");
+      const ticket = readDoc(save.proof)!;
+      expect(queryOperation(id, save.operation, signDoc(b.sign, ticket.kind, ticket.n, ticket.body))).toBeNull();
+      const decided = readLink()!;
+      expect(decided.sharedOutcomes?.[save.operation]?.status).toBe(accepted ? "committed" : "interrupted");
+
+      const checkpoint = checkpointedTransition(decided, {
+        setup: { id, epoch: 4, primary: b.key }, previous: b.key, standby: c.key, numberCeiling: 4_000,
+      }, { ...decided.shared, membershipAndAccess: { sequence: 1, value: { boxes } } })!;
+      expect(takeLeadership(decided, checkpoint)).toBe(true);
+      writeLink(decided);
+      expect(queryOperation(id, save.operation, save.proof)?.status).toBe(accepted ? "committed" : "interrupted");
+    } finally {
+      if (previous) writeLink(previous);
+      else fs.rmSync(path.join(RUN, "link.json"), { force: true });
+    }
+  });
+}

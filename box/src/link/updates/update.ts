@@ -14,7 +14,8 @@
 
 import { upgradeKuvoFolder } from "../../shared/folder-version";
 import { syncDurableFile, writeDurablePrivate } from "../../shared/files";
-import { askSetupSave, localSetupValue } from "../../shared/setup-local";
+import { askSetupOutcome, askSetupSave, localSetupValue, type SetupSaveReceipt } from "../../shared/setup-local";
+import { INTERRUPTED_SAVE } from "../setup/shared";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -138,6 +139,7 @@ export interface UpdateOutcome {
   result: UpdateResult;
   version?: string;
   message?: string;
+  save?: SetupSaveReceipt;
 }
 
 /** An update being tried (`trial`): from and to which version, since when, when its files were
@@ -170,6 +172,7 @@ export interface UpdateState {
   running?: UpdateStep;
   /** How the last update went, when (shared/routes/box.ts, `LAST_UPDATE`). */
   last?: LastUpdate;
+  releaseSave?: { version: string; sha256: string; save: SetupSaveReceipt };
   /** The release check's round it last looked in (`releaseRound`). */
   round?: string;
   /** A release offered from a folder here that failed as it was taken: its version, when, whether
@@ -529,6 +532,7 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
   if (!before) return { result: "blocked", message: "This machine's version isn't known: connect to it from Kuvo Code on your Mac once." };
   if (!takeUpdateLock()) return { result: "busy", message: UPDATING_ALREADY };
   let trial = false, stopped = false, swapped = false, stage: string | null = null;
+  let releaseSave: SetupSaveReceipt | undefined;
   // The engine's data as it was copied before a newer engine ran (`keepData`): a newer engine that
   // wrote nothing to it by the time a failed swap is put back goes back with the rest.
   let dataKept: string | null = null;
@@ -567,6 +571,17 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
     }
     const manifest = verifyBoxes(released.toString("utf8"), keys);
     const alreadyChosen = choice?.version === manifest.version && choice?.sha256 === manifest.pack.sha256;
+    const kept = updateState().releaseSave;
+    if (kept && kept.save.setup === setup?.id && kept.version === manifest.version && kept.sha256 === manifest.pack.sha256) {
+      const known = await askSetupOutcome(RUN, kept.save, "setupSecurityAndReleaseChoice");
+      const save = known.receipt ?? kept.save;
+      releaseSave = save;
+      if (known.receipt && save.status !== "pending") noteUpdate({ releaseSave: null });
+      if (save.status !== "committed" || !alreadyChosen) {
+        return { result: "waiting", version: manifest.version,
+          message: save.status === "interrupted" ? INTERRUPTED_SAVE : known.message ?? kept.save.message, save };
+      }
+    }
     if (setup && !setup.primary && !alreadyChosen) return { result: "waiting", message: "Your setup's primary has selected a different release." };
     taking(manifest.version);
     // (Only GitHub's says what the newest release is.)
@@ -607,14 +622,16 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
         kind: "setupSecurityAndReleaseChoice", id: setup.id, epoch: setup.epoch, sequence: setup.sequence,
         value: { version: manifest.version, sha256: manifest.pack.sha256, signed: released.toString("base64") },
       });
-      if (response.status !== 200) return { result: "waiting", version: manifest.version, message: response.message };
+      const save = releaseSave = response.receipt;
+      if (save?.status === "pending") noteUpdate({ releaseSave: { version: manifest.version, sha256: manifest.pack.sha256, save } });
+      if (response.status !== 200) return { result: "waiting", version: manifest.version, message: response.message, ...(save ? { save } : {}) };
     }
     fs.writeFileSync(path.join(stage, "pack.tgz"), pack, { mode: 0o600 });
     if (ran("tar", ["xzf", path.join(stage, "pack.tgz"), "-C", path.join(stage, "files")]).status !== 0) throw new Error("The release's files couldn't be unpacked.");
     const box: BoxFiles = JSON.parse(fs.readFileSync(path.join(stage, "files", "box.json"), "utf8"));
     if (box?.version !== manifest.version || box.engine !== manifest.engine || !isObject(box.files)) throw new Error("The release's files aren't what it says.");
     const apart = engineChanges && engineApart(box, running);
-    if (!whileBusy && engineChanges && !apart && await boxBusy()) return { result: "busy", message: "Something is running there now." };
+    if (!whileBusy && engineChanges && !apart && await boxBusy()) return { ...(releaseSave ? { save: releaseSave } : {}), result: "busy", message: "Something is running there now." };
     const files = installOrder(Object.keys(box.files));
     // (Each a file, never a link to one elsewhere.)
     const matches = (file: string, sha: unknown): boolean => fs.lstatSync(file, { throwIfNoEntry: false })?.isFile() === true && hexSHA256(fs.readFileSync(file)) === sha;
@@ -687,7 +704,7 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
       if (triedBefore && (triedBefore.status !== 0 || !triedBefore.output.includes("ok"))) throw new Error("The new link doesn't work with the engine at work here.");
     }
     if (ran("sh", ["-n", path.join(stage, "files", "bin", "kuvo-start")]).status !== 0) throw new Error("The new keeper doesn't read.");
-    if (!whileBusy && engineChanges && !apart && await boxBusy()) return { result: "busy", message: "Something is running there now." };
+    if (!whileBusy && engineChanges && !apart && await boxBusy()) return { ...(releaseSave ? { save: releaseSave } : {}), result: "busy", message: "Something is running there now." };
 
     // What's there kept; then the new in its place, one file at a time.
     step("installing");
@@ -766,7 +783,7 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
     // On trial from here: judged by the one health rule (`updates/health.ts`), by this process once
     // it's done here, or by the judge the keeper starts should this one go first.
     noteUpdate({ trial: { from: before, to: manifest.version, at: clock(), swapped: swappedAt, ...(features ? { features } : {}), ...(dataKept !== null ? { dataKept } : {}) } });
-    return { result: "updated", version: manifest.version };
+    return { ...(releaseSave ? { save: releaseSave } : {}), result: "updated", version: manifest.version };
   } catch (error) {
     brokeOff = fetching;
     const message = String((error as Error | undefined)?.message ?? error).slice(0, 300);
@@ -796,7 +813,7 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
     }
     if (trial) noteUpdate({ trial: null });
     noteUpdate({ last: { at: clock(), result: "failed", message, from: before } });
-    return { result: "failed", message };
+    return { ...(releaseSave ? { save: releaseSave } : {}), result: "failed", message };
   } finally {
     clearUpdateStaging();
     fs.rmSync(UPDATE_LOCK, { recursive: true, force: true });

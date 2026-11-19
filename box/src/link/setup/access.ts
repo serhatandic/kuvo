@@ -67,7 +67,7 @@ export function updateAccess(change: (link: LinkState | null) => LinkState | nul
     busy = save === null;
     return busy ? null : link;
   }, { durable: true });
-  return { changed, save: changed?.setup?.standby ? save : null, busy };
+  return { changed, save: changed ? save : null, busy };
 }
 
 export function applyAccess(link: LinkState, value: unknown, effects: unknown): void {

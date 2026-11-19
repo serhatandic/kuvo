@@ -350,6 +350,26 @@ var init_account = () => {};
 import fs3 from "node:fs";
 import net from "node:net";
 import path3 from "node:path";
+function setupSaveReference(value) {
+  if (!isObject(value) || typeof value.setup !== "string" || typeof value.operation !== "string" || !isObject(value.proof) || typeof value.proof.d !== "string" || typeof value.proof.s !== "string")
+    return null;
+  return { setup: value.setup, operation: value.operation, proof: { d: value.proof.d, s: value.proof.s } };
+}
+function setupSaveReceipt(value) {
+  const reference = setupSaveReference(value);
+  if (!reference || !isObject(value) || !Number.isSafeInteger(value.epoch))
+    return null;
+  const { epoch, status, message } = value;
+  if (status !== "pending" && status !== "committed" && status !== "interrupted")
+    return null;
+  return {
+    ...reference,
+    epoch: Number(epoch),
+    status,
+    ...status === "pending" ? { pending: true } : {},
+    ...typeof message === "string" ? { message } : {}
+  };
+}
 function localSetupValue(run, kind) {
   try {
     const file = path3.join(run, "link.json");
@@ -379,7 +399,11 @@ function localSetupValue(run, kind) {
     return null;
   }
 }
-function askSetupSave(run, body) {
+function askSetupOutcome(run, reference, kind) {
+  const { setup, operation, proof } = reference;
+  return askSetupSave(run, { id: setup, operation, proof, kind }, reference);
+}
+function askSetupSave(run, body, reference) {
   const fallback = { status: 503, message: "The box that keeps your setup isn't answering." };
   const socketPath = path3.join(run, "vault.sock");
   let key;
@@ -436,11 +460,13 @@ function askSetupSave(run, body) {
           return finish();
         const result = isObject(value) ? value : {};
         const outcome = result.status;
+        const receipt = setupSaveReceipt({ ...reference, ...result });
         finish({
           status: reply.status,
           message: typeof result.message === "string" ? result.message : undefined,
           ...typeof result.operation === "string" ? { operation: result.operation } : {},
           ...isObject(result.proof) && typeof result.proof.d === "string" && typeof result.proof.s === "string" ? { proof: { d: result.proof.d, s: result.proof.s } } : {},
+          ...receipt ? { receipt } : {},
           ...outcome === "pending" || outcome === "committed" || outcome === "interrupted" ? { outcome } : {}
         });
       } catch {
@@ -4018,12 +4044,17 @@ function sealedPrimary(link, epoch) {
   const manifest = checkpointFile(tip?.body.checkpoint);
   const signer = manifest && sealedPrimaries(manifest)?.[epoch];
   if (signer)
-    return signer;
-  const transition = held(link.leadership?.[epoch + 1]);
-  if (transition && setupOf(transition.body)?.id === link.setup.id) {
-    return resolveCheckpoint(transition)?.membership.boxes.find((peer) => peer.key === transition.body.previous)?.sign;
+    return { sign: signer };
+  const transition = readDoc(link.leadership?.[epoch + 1]);
+  if (transition?.kind !== "leadership" || transition.n !== epoch + 1 || setupOf(transition.body)?.id !== link.setup.id)
+    return;
+  if (Object.hasOwn(transition.body, "checkpoint")) {
+    const peer = resolveCheckpoint(transition)?.membership.boxes.find((peer) => peer.key === transition.body.previous);
+    return peer?.sign ? { sign: peer.sign } : undefined;
   }
-  return;
+  const boxes = Array.isArray(transition.body.boxes) ? transition.body.boxes.filter(fitsPeer) : [];
+  const previous = boxes.find((peer) => peer.key === transition.body.previous)?.sign;
+  return typeof previous === "string" && SIGN.test(previous) ? { sign: previous, legacyWitness: transition.origin } : undefined;
 }
 function checksSeal(link, checkpoint) {
   const seals = sealedPrimaries(checkpoint);
@@ -4111,6 +4142,7 @@ var init_checkpoint = __esm(() => {
   init_format();
   init_files2();
   init_home();
+  init_known();
   init_membership();
   init_record();
   init_shared();
@@ -14976,7 +15008,7 @@ function updateAccess(change, { localOnly = false } = {}) {
     busy = save === null;
     return busy ? null : link;
   }, { durable: true });
-  return { changed, save: changed?.setup?.standby ? save : null, busy };
+  return { changed, save: changed ? save : null, busy };
 }
 function applyAccess(link, value, effects) {
   const membership = acceptedMembership(link);
@@ -15090,7 +15122,7 @@ function asSave(doc, seed) {
   const id = doc.body.id;
   const epoch = doc.body.epoch;
   const operation = identity(doc);
-  const proof = seed && signDoc(seed, "setup-shared", doc.n, {
+  const proof = signDoc(seed, "setup-shared", doc.n, {
     id,
     epoch,
     operation,
@@ -15098,7 +15130,7 @@ function asSave(doc, seed) {
     baseRevision: doc.n - 1,
     proposal: doc.envelope.s
   });
-  return { id, epoch, sequence: doc.n, operation, ...proof ? { proof } : {} };
+  return { id, epoch, sequence: doc.n, operation, proof };
 }
 function stageShared(link, kind, value, effects, requested) {
   const setup = followedSetup(link);
@@ -15254,46 +15286,50 @@ function operationOutcome(link, id, operation) {
   const pending = Object.values(link.sharedPending ?? {}).map(held).find((doc) => doc && identity(doc) === operation);
   return pending ? { status: "pending", sequence: pending.n, baseRevision: pending.n - 1, epoch: pending.body.epoch, kind: pending.body.kind } : null;
 }
-function queryOperation(id, operation, proof) {
+function queryOperation(id, operation, proof, expectedKind) {
   if (setupLayoutDeferred(K))
     return null;
+  const link = readLink();
+  const known = operationOutcome(link, id, operation);
   if (proof === undefined)
-    return operationOutcome(readLink(), id, operation);
+    return !expectedKind || known?.kind === expectedKind ? known : null;
   const ticket = readDoc(proof);
   if (!ticket || ticket.kind !== "setup-shared" || ticket.body.id !== id || identity(ticket) !== operation)
     return null;
   const { epoch, kind, proposal } = ticket.body;
-  if (!Number.isSafeInteger(epoch) || Number(epoch) < 1 || !sharedKind(kind) || typeof proposal !== "string" || !/^[\w-]{86}$/.test(proposal))
+  if (!Number.isSafeInteger(epoch) || Number(epoch) < 1 || !sharedKind(kind) || expectedKind && kind !== expectedKind || typeof proposal !== "string" || !/^[\w-]{86}$/.test(proposal))
     return null;
   const same = (outcome) => outcome.proposal === proposal && outcome.kind === kind && outcome.epoch === epoch && outcome.sequence === ticket.n;
-  const link = readLink();
   const setup = followedSetup(link);
   if (!link || !setup || setup.id !== id)
     return null;
-  const authoritative = (state) => {
+  const authority = (state) => {
     const position = followedSetup(state);
-    return position?.id === id && ticket.origin === (epoch === position.epoch ? position.sign : sealedPrimary(state, Number(epoch)));
+    if (position?.id !== id)
+      return;
+    return epoch === position.epoch ? { sign: position.sign } : sealedPrimary(state, Number(epoch));
   };
-  if (!authoritative(link))
-    return null;
-  const known = operationOutcome(link, id, operation);
   if (known) {
-    if ("proposal" in known)
-      return same(known) ? known : null;
-    const pending = pendingShared(link, kind);
-    return pending?.envelope.s === proposal && pending.n === ticket.n && pending.body.epoch === epoch ? known : null;
+    const pending = "proposal" in known ? null : pendingShared(link, kind);
+    const matches = "proposal" in known ? same(known) : pending?.envelope.s === proposal && pending.n === ticket.n && pending.body.epoch === epoch;
+    return matches && ticket.origin === authority(link)?.sign ? known : null;
   }
   if (Number(epoch) >= setup.epoch)
     return null;
   let result = null;
   updateLink((state) => {
-    if (!state || !authoritative(state) || Number(epoch) >= state.setup.epoch)
+    if (!state || state.sharedSetup !== id || Number(epoch) >= (state.setup?.epoch ?? 0))
+      return null;
+    const seal = authority(state);
+    if (ticket.origin !== seal?.sign)
       return null;
     const decided = state.sharedOutcomes?.[operation];
     if (decided) {
       result = same(decided) ? decided : null;
       return null;
     }
+    if (seal.legacyWitness && ownSign(state) !== seal.legacyWitness)
+      return null;
     result = { epoch: Number(epoch), kind, sequence: ticket.n, baseRevision: ticket.n - 1, proposal, status: "interrupted" };
     state.sharedOutcomes = { ...state.sharedOutcomes, [operation]: result };
     return state;
@@ -15302,12 +15338,12 @@ function queryOperation(id, operation, proof) {
 }
 function sharedSaveReply(save, result) {
   const { id, epoch, operation, proof } = save;
-  const receipt = { setup: id, epoch, operation, ...proof ? { proof } : {} };
+  const receipt = { setup: id, epoch, operation, proof };
   if (result === "saved")
     return { status: 200, value: { ...receipt, status: "committed" } };
   if (result === "pending")
     return { status: 202, value: { ...receipt, status: "pending", pending: true, message: PENDING_SAVE } };
-  return { status: 409, value: { ...receipt, status: "interrupted", message: "The primary changed before this save committed." } };
+  return { status: 409, value: { ...receipt, status: "interrupted", message: INTERRUPTED_SAVE } };
 }
 async function awaitSharedSave(save) {
   return save ? sharedSaveReply(save, await waitShared(save)) : null;
@@ -15316,12 +15352,13 @@ async function waitShared(save, timeout = 3000, signal) {
   const until = Date.now() + timeout;
   while (!signal?.aborted) {
     const link = readLink();
-    const outcome = operationOutcome(link, save.id, save.operation);
+    const sameEpoch = link?.setup?.id === save.id && link.setup.epoch === save.epoch;
+    const outcome = sameEpoch ? operationOutcome(link, save.id, save.operation) : queryOperation(save.id, save.operation, save.proof);
     if (outcome?.status === "committed")
       return "saved";
     if (outcome?.status === "interrupted")
       return "interrupted";
-    if (link?.setup?.id !== save.id || link.setup.epoch !== save.epoch)
+    if (!sameEpoch)
       return "interrupted";
     if (Date.now() >= until)
       break;
@@ -15369,7 +15406,7 @@ function changeShared(kind, change, operation) {
 function submitShared(kind, value) {
   return changeShared(kind, () => value);
 }
-var MAX_SHARED_BYTES, PENDING_SAVE = "Pending until the standby is back.", OPERATION_ID;
+var MAX_SHARED_BYTES, PENDING_SAVE = "Pending until the standby is back.", INTERRUPTED_SAVE = "The primary changed before this save committed.", OPERATION_ID;
 var init_shared = __esm(() => {
   init_folder_version();
   init_data_declarations();
@@ -15476,8 +15513,8 @@ function stagePhonePairing(key, hello, address) {
     const devices = isObject(pending.body.value) && pending.body.value.devices || pending.body.devices;
     if (isObject(effects) && isObject(effects.pairing) && Object.values(effects.pairing).includes(hash) && isObject(devices) && Array.isArray(devices.phones)) {
       const phone = devices.phones.find((phone) => isObject(phone) && phone.key === encoded);
-      if (typeof phone?.pairing === "string" && !pairedPhone(before, encoded, phone.pairing))
-        return { save: asSave(pending), pairing: phone.pairing };
+      if (before?.sign && typeof phone?.pairing === "string" && !pairedPhone(before, encoded, phone.pairing))
+        return { save: asSave(pending, before.sign), pairing: phone.pairing };
     }
   }
   let paired;
@@ -42630,7 +42667,7 @@ async function pairDeviceFromHere(given, signal) {
   const there = await forwardAct(peer, device.name, { area: "devices", method: "POST", item: device.key, body: { name: device.name, kind: device.kind } }, signal, link);
   if ("refused" in there)
     return answer3(503, waiting);
-  if (there.status === 202)
+  if (there.status === 202 || setupSaveReceipt(there.value))
     return there;
   const said = isObject(there.value) ? there.value : {};
   if (there.status === 200 && said.paired === true && typeof said.pairing === "string")
@@ -42644,6 +42681,7 @@ var DEVICES_FEATURE = "devices.pair", namedDevice = (device) => device || "Kuvo 
 }), blockedWords = (device, computer) => `${namedDevice(device)} was removed from your devices. ${computer} can't add Kuvo Code's app again until you allow it.`, MOST_NAME2 = 100, answer3 = (status, value) => ({ status, value }), REMOVED2, NOT_GIVEN, switchOff = () => IS_MAC && !macLink.config?.phones, switchOffWords = () => ({ message: `“Let my devices connect” is off on ${ownName()}.` }), ownMachines = (link) => new Set(peersOf(link).filter((peer) => (link.setup?.managed || peer.kind === "machine") && peer.sign).map((peer) => peer.key));
 var init_devices = __esm(() => {
   init_access();
+  init_setup_local();
   init_shared();
   init_text();
   init_changed();
@@ -42923,6 +42961,9 @@ class UsageSettings {
       sequence: shared.sequence,
       value: { units: draft.kept(), imported: draft.imported }
     });
+  }
+  saveOutcome(reference) {
+    return this.run ? askSetupOutcome(this.run, reference, "setupUsageDisplay") : null;
   }
   listen(listener) {
     this.listeners.push(listener);
@@ -43890,7 +43931,10 @@ function completeRemoval({ changed, blocked, gone, already, needsCleanup, key, b
   macDocsChanged({ closeRemoved: save ? readLink() : changed });
   tellGone(gone);
   if (needsCleanup && !cleanRemovalList(key))
-    return answer5(503, { message: "The computer’s access was removed, but the saved machines list couldn’t be updated." });
+    return answer5(503, {
+      ...save ? sharedSaveReply(save, "saved").value : {},
+      message: "The computer’s access was removed, but the saved machines list couldn’t be updated."
+    });
   return save ? sharedSaveReply(save, "saved") : answer5(200, {});
 }
 function cleanRemovalList(key) {
@@ -53540,6 +53584,7 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
   if (!takeUpdateLock())
     return { result: "busy", message: UPDATING_ALREADY };
   let trial = false, stopped = false, swapped = false, stage = null;
+  let releaseSave;
   let dataKept = null;
   let keeperEnv = {};
   let checkedEngine = null;
@@ -53572,6 +53617,22 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
       }
     const manifest = verifyBoxes(released.toString("utf8"), keys);
     const alreadyChosen = choice?.version === manifest.version && choice?.sha256 === manifest.pack.sha256;
+    const kept = updateState().releaseSave;
+    if (kept && kept.save.setup === setup?.id && kept.version === manifest.version && kept.sha256 === manifest.pack.sha256) {
+      const known = await askSetupOutcome(RUN, kept.save, "setupSecurityAndReleaseChoice");
+      const save = known.receipt ?? kept.save;
+      releaseSave = save;
+      if (known.receipt && save.status !== "pending")
+        noteUpdate({ releaseSave: null });
+      if (save.status !== "committed" || !alreadyChosen) {
+        return {
+          result: "waiting",
+          version: manifest.version,
+          message: save.status === "interrupted" ? INTERRUPTED_SAVE : known.message ?? kept.save.message,
+          save
+        };
+      }
+    }
     if (setup && !setup.primary && !alreadyChosen)
       return { result: "waiting", message: "Your setup's primary has selected a different release." };
     taking(manifest.version);
@@ -53609,8 +53670,11 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
         sequence: setup.sequence,
         value: { version: manifest.version, sha256: manifest.pack.sha256, signed: released.toString("base64") }
       });
+      const save = releaseSave = response.receipt;
+      if (save?.status === "pending")
+        noteUpdate({ releaseSave: { version: manifest.version, sha256: manifest.pack.sha256, save } });
       if (response.status !== 200)
-        return { result: "waiting", version: manifest.version, message: response.message };
+        return { result: "waiting", version: manifest.version, message: response.message, ...save ? { save } : {} };
     }
     fs138.writeFileSync(path144.join(stage, "pack.tgz"), pack, { mode: 384 });
     if (ran("tar", ["xzf", path144.join(stage, "pack.tgz"), "-C", path144.join(stage, "files")]).status !== 0)
@@ -53620,7 +53684,7 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
       throw new Error("The release's files aren't what it says.");
     const apart = engineChanges && engineApart(box, running);
     if (!whileBusy && engineChanges && !apart && await boxBusy())
-      return { result: "busy", message: "Something is running there now." };
+      return { ...releaseSave ? { save: releaseSave } : {}, result: "busy", message: "Something is running there now." };
     const files = installOrder(Object.keys(box.files));
     const matches = (file, sha) => fs138.lstatSync(file, { throwIfNoEntry: false })?.isFile() === true && hexSHA256(fs138.readFileSync(file)) === sha;
     for (const file of files) {
@@ -53700,7 +53764,7 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
     if (ran("sh", ["-n", path144.join(stage, "files", "bin", "kuvo-start")]).status !== 0)
       throw new Error("The new keeper doesn't read.");
     if (!whileBusy && engineChanges && !apart && await boxBusy())
-      return { result: "busy", message: "Something is running there now." };
+      return { ...releaseSave ? { save: releaseSave } : {}, result: "busy", message: "Something is running there now." };
     step("installing");
     let previous = {};
     try {
@@ -53762,7 +53826,7 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
     if (apart && now)
       writePrivate(SWAP_NOW, String(clock()));
     noteUpdate({ trial: { from: before, to: manifest.version, at: clock(), swapped: swappedAt, ...features ? { features } : {}, ...dataKept !== null ? { dataKept } : {} } });
-    return { result: "updated", version: manifest.version };
+    return { ...releaseSave ? { save: releaseSave } : {}, result: "updated", version: manifest.version };
   } catch (error) {
     brokeOff = fetching;
     const message = String(error?.message ?? error).slice(0, 300);
@@ -53789,7 +53853,7 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
     if (trial)
       noteUpdate({ trial: null });
     noteUpdate({ last: { at: clock(), result: "failed", message, from: before } });
-    return { result: "failed", message };
+    return { ...releaseSave ? { save: releaseSave } : {}, result: "failed", message };
   } finally {
     clearUpdateStaging();
     fs138.rmSync(UPDATE_LOCK, { recursive: true, force: true });
@@ -54300,6 +54364,7 @@ var init_update = __esm(() => {
   init_folder_version();
   init_files();
   init_setup_local();
+  init_shared();
   init_updating();
   init_platform();
   init_text();
@@ -57916,7 +57981,7 @@ var init_files4 = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "3ec7e2e94970";
+var BRIDGE_VERSION = "41fac1a66da9";
 
 // box/src/link/rehome/paths.ts
 import { createHash as createHash4 } from "node:crypto";
@@ -62779,7 +62844,17 @@ function kept6() {
   return finished2;
 }
 function allTries() {
-  return [...[...running4.values()].map((each) => each.seen).reverse(), ...kept6().map(reconcileEnrollment)];
+  const active = [...running4.values()].map((each) => each.seen).reverse();
+  return [...active, ...kept6().map(reconcileEnrollment)].map((attempt) => {
+    const save = attempt.save;
+    if (save?.status !== "pending")
+      return attempt;
+    const outcome = queryOperation(save.setup, save.operation, save.proof);
+    if (!outcome || outcome.status === "pending")
+      return attempt;
+    const { pending, message, ...reference } = save;
+    return { ...attempt, save: { ...reference, status: outcome.status } };
+  });
 }
 function note3(durable = false, required = false) {
   try {
@@ -62798,7 +62873,7 @@ function reconcileEnrollment(seen) {
     return attempt;
   const { peer } = enrollment;
   const link = readLink();
-  const status = "replacement" in enrollment ? replacementOutcome(link, enrollment.replacement) : operationOutcome(link, enrollment.save.id, enrollment.save.operation)?.status ?? (link?.setup?.id === enrollment.save.id && link.setup.epoch === enrollment.save.epoch ? "pending" : "interrupted");
+  const status = "replacement" in enrollment ? replacementOutcome(link, enrollment.replacement) : queryOperation(enrollment.save.id, enrollment.save.operation, enrollment.save.proof)?.status ?? (link?.setup?.id === enrollment.save.id && link.setup.epoch === enrollment.save.epoch ? "pending" : "interrupted");
   if (status === "pending")
     return attempt;
   const computer = status === "committed" && (peersOf(link).find((each) => each.key === peer.key) ?? ("replacement" in enrollment ? peer : null));
@@ -62841,8 +62916,13 @@ function startTry(kind, destination, name, steps, work) {
     saving(save, peer) {
       it.committed = true;
       it.enrollment = { save, peer };
+      it.seen = { ...it.seen, save: sharedSaveReply(save, "pending").value };
       if (it.seen.state === "stopping")
         it.seen = { ...it.seen, state: "working", title: workingTitle(kind, name) };
+      note3(true);
+    },
+    saved(save) {
+      it.seen = { ...it.seen, save };
       note3(true);
     },
     replacing(replacement, peer) {
@@ -63334,12 +63414,13 @@ function checkAdd(link, grant, name, key) {
 }
 async function setUp2(tell, destination, name, kind, expectedKey, grant) {
   tell.step("checking", `Connecting to ${name}`);
-  const pending = pendingShared(readLink(), "membershipAndAccess");
+  const beforeEnrollment = readLink();
+  const pending = pendingShared(beforeEnrollment, "membershipAndAccess");
   const pendingKey = keptHosts()?.[destination]?.key;
   const candidate = pending && membershipOf(pending.body.value)?.boxes.find((peer) => peer.key === pendingKey);
-  if (kind === "add" && pending && candidate && !peersOf(readLink()).some((peer) => peer.key === candidate.key)) {
+  if (kind === "add" && beforeEnrollment?.sign && pending && candidate && !peersOf(beforeEnrollment).some((peer) => peer.key === candidate.key)) {
     tell.step("joining");
-    const save = asSave(pending);
+    const save = asSave(pending, beforeEnrollment.sign);
     tell.saving?.(save, candidate);
     tell.came(await finishEnrollment(candidate, save));
     return;
@@ -63750,8 +63831,11 @@ function beginUninstall(key) {
         console.error("Uninstall local revocation failed:", error);
         throw new Failed("Kuvo Code couldn’t confirm that access was revoked. Try uninstalling again.");
       }
-      if (removed.status === 202)
-        throw new Failed(PENDING_SAVE);
+      const receipt = setupSaveReceipt(removed.value);
+      if (receipt)
+        tell.saved?.(receipt);
+      if (removed.status === 202 || receipt?.status === "interrupted")
+        throw new Failed(receipt?.message ?? PENDING_SAVE);
       const current = readLink();
       const cleanupOnly = removed.status === 503 && current?.removedHere?.includes(key) && !peersOf(current).some((peer) => peer.key === key);
       if (removed.status !== 200 && !cleanupOnly) {
@@ -63811,6 +63895,7 @@ var init_flow2 = __esm(() => {
   init_shared();
   init_lease();
   init_text();
+  init_setup_local();
   init_exchange();
   init_format();
   init_files2();
@@ -76016,6 +76101,7 @@ async function callTool(name, args, caller, signal) {
 
 // box/src/link/work-queue/tools.ts
 init_shared();
+init_setup_local();
 init_relations();
 init_message_words();
 init_home();
@@ -76308,6 +76394,11 @@ init_groups();
 init_view3();
 var said7 = (text) => ({ text, isError: false });
 var refused6 = (text) => ({ text, isError: true });
+var withSave = (answer, save) => ({
+  ...answer,
+  save,
+  text: `${answer.text} Save receipt: ${JSON.stringify(save)}`
+});
 var ITEM = { type: ["string", "integer"], description: "Like #243 or gh:owner/repo#12." };
 var ISSUE = { type: "string", description: "gh:owner/repo#12 or its URL." };
 var TOP = { type: "boolean", description: "At the top of its status." };
@@ -76400,8 +76491,9 @@ var DEFINED4 = [
   },
   {
     name: "queue_labels",
-    description: "List the labels (kinds of work; one set for every queue), or make one change the user asked for: add, rename (with to), recolor (with color) or remove (off every item).",
+    description: "List the labels (kinds of work; one set for every queue), or make one change the user asked for: add, rename (with to), recolor (with color) or remove (off every item). To check a save, pass the returned receipt as save.",
     inputSchema: { type: "object", properties: {
+      save: { type: "object", description: "The save receipt from an earlier label change." },
       add: { type: "string" },
       rename: { type: "string" },
       to: { type: "string" },
@@ -76650,6 +76742,16 @@ async function run6(name, args, caller, targets, signal) {
       return said7(args.undo === true ? `Brought back ${nameOf(item)}.` : `Deleted ${nameOf(item)}. The user can bring it back for 30 days.`);
     }
     case "queue_labels": {
+      if (args.save !== undefined) {
+        const reference = setupSaveReference(args.save);
+        if (!reference)
+          return refused6("Send the save receipt from the label change.");
+        const outcome = queryOperation(reference.setup, reference.operation, reference.proof, "queueLabels");
+        if (!outcome)
+          return refused6("This computer couldn't find that label save.");
+        const status = outcome.status;
+        return withSave(said7(`The label save is ${status}.`), { ...reference, epoch: Number(outcome.epoch), status, ...status === "pending" ? { pending: true } : {} });
+      }
       const asked = ["add", "rename", "recolor", "remove"].filter((each) => typeof args[each] === "string" && args[each].trim());
       const listed = () => labels().length ? labels().map((each) => `${each.name} (${each.color})`).join(", ") : "none yet";
       if (!asked.length)
@@ -76663,12 +76765,13 @@ async function run6(name, args, caller, targets, signal) {
         return refused6(outcome.refused);
       const receipt = await awaitSharedSave(outcome.save);
       if (receipt && receipt.status !== 200) {
-        const message = `${receipt.value.message} Save operation ${receipt.value.operation}.`;
-        return receipt.status === 202 ? said7(message) : refused6(message);
+        const message = receipt.value.message;
+        return withSave(receipt.status === 202 ? said7(message) : refused6(message), receipt.value);
       }
       if (receipt && asked[0] === "remove")
         stripLabel(outcome.done.id);
-      return said7(`${asked[0] === "add" ? "Made" : asked[0] === "remove" ? "Removed (and took off every item here)" : "Changed"} the label ${outcome.done.name}. Labels now: ${listed()}.${receipt ? ` Save operation ${receipt.value.operation} committed.` : ""}`);
+      const answer = said7(`${asked[0] === "add" ? "Made" : asked[0] === "remove" ? "Removed (and took off every item here)" : "Changed"} the label ${outcome.done.name}. Labels now: ${listed()}.`);
+      return receipt ? withSave(answer, receipt.value) : answer;
     }
     case "queue_import": {
       const given = givenItems(args.items);
@@ -77489,7 +77592,10 @@ async function* saveLocalSetup(context) {
     return yield* json(403, {});
   const given = parsed(request.body);
   if (isObject(given) && typeof given.id === "string" && typeof given.operation === "string" && given.value === undefined) {
-    const outcome = queryOperation(given.id, given.operation, given.proof);
+    const expectedKind = given.kind;
+    if (expectedKind !== undefined && !sharedKind(expectedKind))
+      return yield* json(400, {});
+    const outcome = queryOperation(given.id, given.operation, given.proof, expectedKind);
     if (!outcome)
       return yield* json(404, {});
     const { kind, epoch, sequence, baseRevision, status } = outcome;
@@ -88225,6 +88331,7 @@ init_noise();
 init_frames();
 init_mask();
 init_setup_local();
+init_setup_local();
 init_format();
 init_home();
 
@@ -89035,7 +89142,10 @@ async function box(command) {
         return say({ status: 200, ...legacy.library });
       }
       const saved = await savePersonalityLibrary(given);
-      return say(saved.status === 200 ? { ...saved.library, operation: saved.receipt.operation, status: 200 } : { ...saved.value, outcome: "status" in saved.value ? saved.value.status : undefined, status: saved.status });
+      if (saved.status === 200)
+        return say({ ...saved.library, operation: saved.receipt.operation, save: saved.receipt, status: 200 });
+      const receipt = setupSaveReceipt(saved.value);
+      return say({ ...saved.value, ...receipt ? { save: receipt, outcome: receipt.status } : {}, status: saved.status });
     }
     default:
       console.error("Usage: kuvo-link.js box adopt | read | change | key <name> | route | reconnect <server> | personalities | update-status | update-now");

@@ -2216,6 +2216,12 @@ test("failure bench: a Linux primary starts fresh, enrolls over SSH and pairs de
   const oldAddress = link.addressOf(Buffer.from(first.secret, "base64url"));
   const standbyAddress = link.addressOf(Buffer.from(inBox(memberBox).secret, "base64url"));
 
+  const vouched = await memberApp("POST", "kuvo/devices/pair", { ...desktop, key: k(link.publicOf(link.newKey())), name: "Standby desktop" });
+  assert.equal(vouched.status, 200, JSON.stringify(vouched.body));
+  assert.equal(vouched.body.status, "committed");
+  assert.equal(link.readDoc(vouched.body.proof)?.body.operation, vouched.body.operation);
+  let enrollmentReceipt;
+
   await t.test("a delayed membership receipt keeps the fresh SSH installation and the same proposal", async () => {
     const delayed = [];
     const release = relay.intercept(standbyAddress, oldAddress, packet => {
@@ -2241,11 +2247,16 @@ test("failure bench: a Linux primary starts fresh, enrolls over SSH and pairs de
       };
       const pending = await attempt();
       assert.equal(pending.state, "working", JSON.stringify(pending));
+      assert.equal(pending.save?.status, "pending");
+      assert.equal(pending.save.operation, operation);
+      assert.equal(link.readDoc(pending.save.proof)?.body.operation, operation);
       const joined = inBox(target);
       assert.equal(joined.setup.epoch, 2);
       assert.equal(joined.leadership, undefined);
       assert.ok(link.digestOf(joined).some(entry => entry[1] === "leadership" && entry[2] === 2));
-      assert.equal(afterRestart(pending.id).state, "working");
+      const restarted = afterRestart(pending.id);
+      assert.equal(restarted.state, "working");
+      assert.deepEqual(restarted.save, pending.save);
       assert.deepEqual(Object.keys(inBox(primaryBox).sharedPending), [operation]);
       assert.equal(fs.readFileSync(path.join(target, "box", "keys", "KUVO_KEY_NOTION_TOKEN"), "utf8").trim(), "fixture-seeded-key");
       assert.ok(pidsThere(target).some(alive), "the installation is still running");
@@ -2259,6 +2270,9 @@ test("failure bench: a Linux primary starts fresh, enrolls over SSH and pairs de
       });
       assert.equal(inBox(primaryBox).sharedOutcomes[operation].status, "committed");
       assert.equal(afterRestart(done.id).state, "done");
+      assert.equal(done.save?.status, "committed");
+      assert.deepEqual(done.save.proof, pending.save.proof);
+      enrollmentReceipt = done.save;
       const gone = await primaryApp("DELETE", `kuvo/computers/${done.computer.key}`);
       assert.equal(gone.status, 200, JSON.stringify(gone.body));
     } finally { release(); }
@@ -2284,6 +2298,12 @@ test("failure bench: a Linux primary starts fresh, enrolls over SSH and pairs de
       const setup = inBox(memberBox).setup;
       return setup.role === "primary" && setup.epoch === 3 && !setup.standby;
     });
+    for (const save of [vouched.body, enrollmentReceipt]) {
+      const { setup: id, operation, proof } = save;
+      const resolved = await link.askSetupSave(path.join(memberBox, "run"), { id, operation, proof });
+      assert.equal(resolved.status, 200);
+      assert.equal(resolved.outcome, "committed");
+    }
     const before = inBox(memberBox).shared;
     const target = path.join(homes["replacement-standby"], ".kuvo-code");
     const replies = [];

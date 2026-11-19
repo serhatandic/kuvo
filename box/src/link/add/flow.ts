@@ -14,6 +14,7 @@ import fs from "node:fs";
 import type { AddTry, ComputerAction, ListedComputer } from "../../shared/routes/box";
 import { isObject } from "../../shared/json";
 import { plainName } from "../../shared/text";
+import { setupSaveReceipt } from "../../shared/setup-local";
 import { macDocsChanged, receiveDocs } from "../documents/exchange";
 import { SIGN } from "../documents/format";
 import { writeDurablePrivate, writePrivate } from "../files";
@@ -419,12 +420,13 @@ function checkAdd(link: LinkState | null, grant: AddGrant | undefined, name: str
 // Sets a computer up at `destination`, or again: everything to its box running there as one of yours.
 async function setUp(tell: Telling, destination: string, name: string, kind: "add" | "setup" | "update", expectedKey?: string, grant?: AddGrant): Promise<void> {
   tell.step("checking", `Connecting to ${name}`);
-  const pending = pendingShared(readLink(), "membershipAndAccess");
+  const beforeEnrollment = readLink();
+  const pending = pendingShared(beforeEnrollment, "membershipAndAccess");
   const pendingKey = keptHosts()?.[destination]?.key;
   const candidate = pending && membershipOf(pending.body.value)?.boxes.find(peer => peer.key === pendingKey);
-  if (kind === "add" && pending && candidate && !peersOf(readLink()).some(peer => peer.key === candidate.key)) {
+  if (kind === "add" && beforeEnrollment?.sign && pending && candidate && !peersOf(beforeEnrollment).some(peer => peer.key === candidate.key)) {
     tell.step("joining");
-    const save = asSave(pending);
+    const save = asSave(pending, beforeEnrollment.sign);
     tell.saving?.(save, candidate);
     tell.came(await finishEnrollment(candidate, save));
     return;
@@ -820,7 +822,9 @@ export function beginUninstall(key: string): Running | null {
         console.error("Uninstall local revocation failed:", error);
         throw new Failed("Kuvo Code couldn’t confirm that access was revoked. Try uninstalling again.");
       }
-      if (removed.status === 202) throw new Failed(PENDING_SAVE);
+      const receipt = setupSaveReceipt(removed.value);
+      if (receipt) tell.saved?.(receipt);
+      if (removed.status === 202 || receipt?.status === "interrupted") throw new Failed(receipt?.message ?? PENDING_SAVE);
       const current = readLink();
       const cleanupOnly = removed.status === 503 && current?.removedHere?.includes(key)
         && !peersOf(current).some(peer => peer.key === key);

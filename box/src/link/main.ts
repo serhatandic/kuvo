@@ -151,6 +151,7 @@ export { addressOf, newKey, publicOf } from "./crypto/keys";
 export { CipherState, IKInitiator, IKResponder, MAIL_PROLOGUE, openOneWay, PROLOGUE, sealOneWay } from "./crypto/noise";
 export { decodeMessage, encodeMessage, Frame, frame, pieces, readFrame, readRelay, relayHello, relayPush, relaySend } from "./relay/frames";
 export { isSecretName, markingHashes, masked, maskedHexValues, maskedNamed, namesHash, showsAll } from "./notices/mask";
+import { setupSaveReceipt } from "../shared/setup-local";
 export { askSetupSave } from "../shared/setup-local";
 export { docBytes, MOST_DOC, newSigningSeed, ownSign, readDoc, signDoc, signingKeyOf } from "./documents/format";
 export { IS_MAC, LINK_FILE } from "./home";
@@ -761,8 +762,9 @@ async function box(command: string): Promise<void> {
         return say({ status: 200, ...legacy.library });
       }
       const saved = await savePersonalityLibrary(given);
-      return say(saved.status === 200 ? { ...saved.library, operation: saved.receipt.operation, status: 200 }
-        : { ...saved.value, outcome: "status" in saved.value ? saved.value.status : undefined, status: saved.status });
+      if (saved.status === 200) return say({ ...saved.library, operation: saved.receipt.operation, save: saved.receipt, status: 200 });
+      const receipt = setupSaveReceipt(saved.value);
+      return say({ ...saved.value, ...(receipt ? { save: receipt, outcome: receipt.status } : {}), status: saved.status });
     }
     default:
       console.error("Usage: kuvo-link.js box adopt | read | change | key <name> | route | reconnect <server> | personalities | update-status | update-now");
