@@ -12,7 +12,7 @@ const file = path.join(RUN, "setup-lease.json");
 export const LEASE_MS = 60_000;
 export const HEARTBEAT_MS = 10_000;
 export const MIN_DELAY = 60 * 60_000;
-export const DEFAULT_DELAY = 2 * LEASE_MS;
+export const DEFAULT_DELAY = LEASE_MS + 120_000;
 
 function json(file: string): unknown {
   try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return null; }

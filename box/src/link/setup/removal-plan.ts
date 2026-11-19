@@ -21,7 +21,7 @@ type Item = { kind: MoveKind; id: string; name: string };
 type Group = { group: { id: string; name: string; members?: string[] } };
 const stays = ["unselected-project-files", "child-sessions", "native-agent-histories", "credentials-and-vault"] as const;
 
-export async function removalPlan(projects?: unknown, moveTo?: string) {
+export async function removalPlan(projects?: unknown, moveTo?: string, scopedDestination?: string) {
   const selected = selectedProjects(projects);
   const link = readLink();
   const own = ownKey(link ?? {});
@@ -76,7 +76,7 @@ export async function removalPlan(projects?: unknown, moveTo?: string) {
       canExport.push(item);
       continue;
     }
-    const places = mayActivate(ref, { link }) ? await placesFor(item.kind, item.id, signal, false).catch(() => null) : null;
+    const places = mayActivate(ref, { link }) ? await placesFor(item.kind, item.id, signal, false, scopedDestination).catch(() => null) : null;
     if (!places) { unresolved.push(item.id); continue; }
     const destinations = places.places.filter(place => place.ok).map(({ key, name, kind }) => ({ key, name, kind })) ?? [];
     if (moveTo && !destinations.some(place => place.key === moveTo) && !places.restricted) unresolved.push(item.id);

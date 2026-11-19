@@ -21,6 +21,7 @@ import { acceptedMembership, membershipOf } from "./membership";
 import { pendingShared } from "./shared";
 import { followedSetup } from "./record";
 import { removalPlan } from "./removal-plan";
+import { removalDestinationReady } from "./removal-moves";
 import { MAX_SELECTED_MOVES, PREPARATION_FEATURE, removalMoveID, removalsOf, type LocalWipe, type MemberRemoval, type RemovalPlan, type SelectedMove } from "./removal-record";
 import { sourceGeneration } from "./removal-generation";
 import { wipeSupportedHere } from "./wipe";
@@ -161,6 +162,7 @@ async function prepareSource(file: string, journal: Source, scoped = false, sele
     throw new Error(ids.length ? "Some source work could not be verified. Review the removal plan." : "The source changed. Review the removal plan.");
   };
   delete journal.unresolved;
+  let scopedDestination: string | undefined;
   if (choice.moveTo) {
     const to = choice.moveTo;
     const link = readLink();
@@ -168,9 +170,12 @@ async function prepareSource(file: string, journal: Source, scoped = false, sele
       throw new Error("Move all requires a destination in the current accepted setup.");
     }
     const told = readPeerAgents()[to];
-    if (!told?.features?.includes("moves.accepted-ownership") || peerIsAway(to, told.heard, readReach())) return;
+    if (!told?.features?.includes("moves.accepted-ownership") || peerIsAway(to, told.heard, readReach())) {
+      if (!scoped || !link || !removalDestinationReady(link, to, operation)) return;
+      scopedDestination = to;
+    }
     if (!journal.moves) {
-      const plan = await removalPlan(undefined, to);
+      const plan = await removalPlan(undefined, to, scopedDestination);
       if (plan.moving.length) return;
       if (!plan.complete) return problems(plan.unresolved);
       if (plan.movable.length > MAX_SELECTED_MOVES) throw new Error("There are too many items to verify in this removal. Move some work first or choose an export.");
@@ -211,7 +216,7 @@ async function prepareSource(file: string, journal: Source, scoped = false, sele
   const projects = selectedProjects(choice.export?.projects);
   const generation = sourceGeneration(projects);
   if (choice.moveTo) {
-    const plan = await removalPlan(undefined, choice.moveTo);
+    const plan = await removalPlan(undefined, choice.moveTo, scopedDestination);
     if (plan.moving.length) return;
     if (!plan.complete) return problems(plan.unresolved);
     if (plan.movable.length) return problems(plan.movable.map(item => item.id));

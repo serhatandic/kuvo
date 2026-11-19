@@ -2,7 +2,6 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
 import { DATA_DECLARATIONS, type DataKind } from "../../shared/data-declarations";
 import { backupFolderVersion } from "../../shared/folder-version";
 import { isObject } from "../../shared/json";
@@ -10,7 +9,7 @@ import { swapUnderWay } from "../../shared/engine-swap";
 import { updateUnderWay } from "../../shared/updating";
 import { held, ownSign } from "../documents/format";
 import { exclusiveWhile, locked, privateFolder, writeDurablePrivate } from "../files";
-import { K, OWN_RUNTIME, RUN, homeFolder, located } from "../home";
+import { K, RUN, homeFolder, located } from "../home";
 import { QUEUES_LOCK } from "../work-queue/migrate";
 import { portableApproval } from "../work/approval";
 import { mayActivate } from "../ownership/resolve";
@@ -21,7 +20,7 @@ import { readLink, updateLink } from "../state";
 import { authenticate, archiveContext, newRecoveryKey, seal, type Entry } from "./archive";
 import { destinationStore, expiredPoints, separateDisk, verifyBackupComputer, type Destination } from "./destination";
 import { projectEntries } from "./projects";
-import { scrubEngine } from "./sqlite";
+import { scrubEngine, snapshotDatabase } from "./sqlite";
 import { durableFiles, inside, recordReferences, roots, stat } from "./locations";
 
 export const BACKUP = path.join(K, "backup");
@@ -184,16 +183,6 @@ function acceptedBoundary() {
     result = { origin, signer: ownSign(link), setup: setup?.id ?? null, paired: peersOf(link).length > 0 || setup?.role === "member", entries, link };
   });
   return result!;
-}
-
-function snapshotDatabase(file: string, copy: string): void {
-  const query = "VACUUM INTO '" + copy.replaceAll("'", "''") + "'";
-  const result = process.versions.bun
-    ? spawnSync(process.execPath, [...OWN_RUNTIME, "-e",
-      'const db = new (require("bun:sqlite").Database)(process.argv[1], { readonly: true }); db.run("PRAGMA busy_timeout=5000"); db.run(process.argv[2]);',
-      file, query], { env: { ...process.env, BUN_BE_BUN: "1" }, timeout: 60_000 })
-    : spawnSync("sqlite3", ["-readonly", "-cmd", ".timeout 5000", file, query], { timeout: 60_000 });
-  if (result.status !== 0) throw new Error("Could not take a consistent database snapshot.");
 }
 
 export function captureBackup(file: string, key: string, source: string, id: string, now: number,

@@ -399,13 +399,13 @@ function botsLiveOn(members: string[], peer: Peer): boolean {
 }
 
 /** Where `thing` can go: each of your other computers, and why not one where it can't. */
-export async function placesFor(kind: MoveKind, thing: string, signal?: AbortSignal, details = true): Promise<{ places: MovePlace[]; stays?: MoveStays; restricted?: true } | null> {
+export async function placesFor(kind: MoveKind, thing: string, signal?: AbortSignal, details = true, scopedDestination?: string): Promise<{ places: MovePlace[]; stays?: MoveStays; restricted?: true } | null> {
   const what = await movable(kind, thing, signal, !details);
   if (!what || (!details && what.unresolved)) return null;
   const stays = !details || kind === "group" ? undefined : await staysOf(kind, thing, what, signal);
   const target = what.lane ? bridgeTarget() : engineTarget();
   const busy = details && !what.why && what.root && target ? await activeIn(target, [what.root], signal) : false;
-  return { places: placesOf(kind, thing, what, stays, busy), ...(!details && what.why ? { restricted: true } : {}), ...(stays && Object.keys(stays).length ? { stays } : {}) };
+  return { places: placesOf(kind, thing, what, stays, busy, scopedDestination), ...(!details && what.why ? { restricted: true } : {}), ...(stays && Object.keys(stays).length ? { stays } : {}) };
 }
 
 /** What of a bot or chat stays here as it moves: none of it goes, and none of it's lost (it's here
@@ -450,7 +450,7 @@ function question(kind: MoveKind, name: string, peer: Peer, place: string, sourc
   return { title: `Move ${title} to ${place}?`, message: words.join(" "), label: "Move" };
 }
 
-function placesOf(kind: MoveKind, thing: string, what: Movable, stays: MoveStays | undefined, busy: boolean): MovePlace[] {
+function placesOf(kind: MoveKind, thing: string, what: Movable, stays: MoveStays | undefined, busy: boolean, scopedDestination?: string): MovePlace[] {
   const moving = moveOf(thing) !== null;
   const link = readLink();
   const own = ownKey(link ?? {});
@@ -458,11 +458,13 @@ function placesOf(kind: MoveKind, thing: string, what: Movable, stays: MoveStays
   const accepted = followedSetup(link)?.checkpointed;
   const told = readPeerAgents(), reach = readReach();
   const source = ownComputerName();
-  return peersOf(link).filter(peer => peer.key !== own).map(peer => {
+  return peersOf(link).filter(peer => peer.key !== own && (!scopedDestination || peer.key === scopedDestination)).map(peer => {
     const name = plainName(peer.name) || (peer.kind === "mac" ? "Mac" : "Machine");
     // Why not, and the same short: the thing's own reason first, then that computer's.
     const not: [string, string] | null = moving ? [say.moving, note.moving]
       : what.why ? [what.why, what.note ?? what.why]
+      // A scoped destination confirmed the accepted plan. Its move checks use live local data.
+      : scopedDestination ? null
       : unsupported ? [unsupported, note.needsUpdate]
       : olderThanMoves(peer.key) || (accepted && !told[peer.key]?.features?.includes("moves.accepted-ownership")) || (what.lane && olderThanCarrying(peer.key)) ? [say.needsUpdate(name), note.needsUpdate]
       : peerIsAway(peer.key, told[peer.key]?.heard, reach) ? [say.notConnected(name), "Can’t be reached"]
@@ -505,15 +507,15 @@ export async function beginMove(kind: MoveKind, thing: string, to: string, signa
   if (link?.removalSource && (!removalOperation || link.removalSource.operation !== removalOperation || link.removalSource.moveTo !== to))
     return { ok: false, status: 409, message: "Only a move in the accepted removal plan can start." };
   if (!own || !peer || to === own) return { ok: false, status: 404, message: "That computer isn’t one of yours." };
-  const unsupported = transferSupport(link);
+  const unsupported = removalOperation ? undefined : transferSupport(link);
   if (unsupported) return { ok: false, status: 409, message: unsupported };
   if (moveOf(thing)) return { ok: false, status: 409, message: say.moving };
   if (!mayActivate(moveReference(kind, thing), { link })) return { ok: false, status: 409, message: "This record is held while its owner changes." };
-  if (olderThanMoves(to) || (followedSetup(link)?.checkpointed && !readPeerAgents()[to]?.features?.includes("moves.accepted-ownership"))) return { ok: false, status: 409, message: say.needsUpdate(plainName(peer.name) || "That computer") };
+  if (!removalOperation && (olderThanMoves(to) || (followedSetup(link)?.checkpointed && !readPeerAgents()[to]?.features?.includes("moves.accepted-ownership")))) return { ok: false, status: 409, message: say.needsUpdate(plainName(peer.name) || "That computer") };
   const what = await movable(kind, thing, signal);
   if (!what) return { ok: false, status: 404, message: "It isn’t on this computer any more." };
   if (what.why) return { ok: false, status: 409, message: what.why };
-  if (what.lane && olderThanCarrying(to)) return { ok: false, status: 409, message: say.needsUpdate(plainName(peer.name) || "That computer") };
+  if (!removalOperation && what.lane && olderThanCarrying(to)) return { ok: false, status: 409, message: say.needsUpdate(plainName(peer.name) || "That computer") };
   const id = change ?? `mov_${crypto.randomBytes(12).toString("base64url").replace(/[-_]/g, "")}`;
   const folder = folderOf(kind, thing);
   const record: MoveRecord = {
@@ -521,7 +523,7 @@ export async function beginMove(kind: MoveKind, thing: string, to: string, signa
     ...(removalOperation ? { removalOperation } : {}),
     id, kind, thing, name: what.name, from: own, to, role: "from", stage: "holding", sessions: what.root ? [what.root] : [],
     peer: to, wasPaused: false, tries: 0, started: Date.now(), ...(folder && fs.existsSync(folder) ? { folder } : {}), ...(what.lane ? { lane: true } : {}),
-    ...(what.model ? { model: what.model } : {}), ...(checksFirst(to) && kind !== "group" ? { step: "check" as const } : {}),
+    ...(what.model ? { model: what.model } : {}), ...((removalOperation || checksFirst(to)) && kind !== "group" ? { step: "check" as const } : {}),
   };
   try { await (await import("../backup/engine")).backupBefore("move"); }
   catch (error) { return { ok: false, status: 409, message: (error as Error).message }; }

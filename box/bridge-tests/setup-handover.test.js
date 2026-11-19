@@ -17,7 +17,7 @@ import { runningAs } from "./running-as.js";
 
 const script = fileURLToPath(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url));
 const link = await import(script);
-const TAKEOVER = 120_000;
+const TAKEOVER = 180_000;
 const submit = (box, primary, epoch) => box.route("POST", "kuvo/setup/handover", { primary: primary.key, epoch });
 
 function checkpoint(box, epoch) {
@@ -871,14 +871,34 @@ test("removing the final standby requires its durable retirement approval", { ti
   assert.equal((await a.route("POST", "kuvo/phones/pair")).status, 200);
 });
 
-test("unlink retries credential cleanup before acknowledging completion", { timeout: 45_000 }, async t => {
+test("failure bench: takeover waits two minutes after the primary lease expires", { timeout: 30_000 }, async t => {
+  const { a, b, c, relay, see } = await standbyNetwork(t);
+  await Promise.all([see(b, 2, a), see(c, 2, a)]);
+  await until("standby watches", () => b.observing(2), t.signal);
+  await a.stop();
+  await until("primary offline", () => !relay.has(a.address), t.signal);
+  b.clock(155_000);
+  await delay(900);
+  assert.equal(b.read().setup.epoch, 2);
+  b.clock(185_000);
+  await see(b, 3, b);
+});
+
+test("failure bench: unlink retries credential cleanup before acknowledging completion", { timeout: 45_000 }, async t => {
   const { a, b, c, see } = await standbyNetwork(t);
   await see(c, 2, a);
-  const database = path.join(c.home, "data", "opencode", "opencode.db");
+  const folder = path.join(c.home, "data", "opencode");
+  const database = path.join(folder, "opencode.db");
+  const next = path.join(folder, "opencode-next.db");
+  const auth = path.join(folder, "auth.json");
+  const agentAuth = path.join(c.home, "agents", "codex", "accounts", "test-account", "auth.json");
+  const otherFolder = path.join(c.home, "engine-data-fixture");
+  const other = path.join(otherFolder, "opencode-preview.db");
+  c.env.KUVO_ENGINE_DB_FOLDER = otherFolder;
   const keys = path.join(c.home, "box", "keys", "KUVO_KEY_NOTION_TOKEN");
   const bot = path.join(c.home, "bots", "bot_fixture", "bot.json");
   const native = path.join(c.env.HOME, ".codex", "auth.json");
-  for (const file of [database, keys, bot, native]) {
+  for (const file of [database, keys, bot, native, auth, agentAuth]) {
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, "fixture");
   }
@@ -893,17 +913,48 @@ test("unlink retries credential cleanup before acknowledging completion", { time
 
   await c.stop("SIGTERM");
   fs.unlinkSync(database);
-  const db = new DatabaseSync(database);
-  db.exec("CREATE TABLE credential (value TEXT); INSERT INTO credential VALUES ('fixture'); CREATE TABLE session (id TEXT); INSERT INTO session VALUES ('session');");
-  db.close();
+  fs.mkdirSync(otherFolder);
+  for (const file of [database, next, other]) {
+    const db = new DatabaseSync(file);
+    db.exec("CREATE TABLE credential (value TEXT); INSERT INTO credential VALUES ('fixture'); CREATE TABLE session (id TEXT); INSERT INTO session VALUES ('session');");
+    db.close();
+  }
+  const keychain = new Set(["KUVO_KEY_NOTION_TOKEN", "KUVO_KEY_NOTION_TOKEN__BOT_LEGACY"]);
+  const hostPassword = crypto.randomBytes(24).toString("hex");
+  const host = http.createServer(async (request, response) => {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    const given = JSON.parse(Buffer.concat(chunks));
+    if (request.url === "/hello") {
+      const proof = crypto.createHmac("sha256", hostPassword)
+        .update(`kuvo-host-hello\0${given.nonce}\0${request.headers.host}`).digest("hex");
+      return response.end(JSON.stringify({ proof }));
+    }
+    if (request.headers.authorization !== `Bearer ${hostPassword}`) return response.writeHead(401).end();
+    if (request.url === "/keys/names") return response.end(JSON.stringify({ names: [...keychain] }));
+    if (request.url === "/keys/delete") {
+      keychain.delete(given.name);
+      return response.end("{}");
+    }
+    response.writeHead(404).end();
+  });
+  host.listen(0, "127.0.0.1");
+  await once(host, "listening");
+  t.after(() => { host.closeAllConnections(); return new Promise(resolve => host.close(resolve)); });
+  c.env.KUVO_KEYS_ON_HOST = "1";
+  fs.writeFileSync(path.join(c.run, "host.json"), JSON.stringify({ url: `http://127.0.0.1:${host.address().port}`, password: hostPassword }));
   c.start();
   await until("primary receives completed unlink", () => record().delivered === true, t.signal);
   await until("source receives the acknowledgement", () => !c.read().localUnlink, t.signal);
   assert.notEqual(c.read().setup.id, a.read().setup.id);
-  const remaining = new DatabaseSync(database);
-  assert.equal(remaining.prepare("SELECT COUNT(*) AS n FROM credential").get().n, 0);
-  assert.equal(remaining.prepare("SELECT id FROM session").get().id, "session");
-  remaining.close();
+  for (const file of [database, next, other]) {
+    const remaining = new DatabaseSync(file);
+    assert.equal(remaining.prepare("SELECT COUNT(*) AS n FROM credential").get().n, 0, path.basename(file));
+    assert.equal(remaining.prepare("SELECT id FROM session").get().id, "session");
+    remaining.close();
+  }
+  for (const file of [auth, agentAuth]) assert.equal(fs.existsSync(file), false);
+  assert.equal(keychain.size, 0);
   assert.equal(fs.existsSync(keys), false);
   for (const file of [bot, native]) assert.equal(fs.readFileSync(file, "utf8"), "fixture");
 });
@@ -1772,6 +1823,35 @@ test("failure bench: unlinking the only computer wipes its local setup", { timeo
   assert.ok(data.every(file => !fs.existsSync(file)));
 });
 
+test("failure bench: a sole primary can supersede and cancel a prepared removal", { timeout: 35_000 }, async t => {
+  const { a, b } = await network(t, false, undefined, false, undefined, true, true);
+  const data = seedLocalWork(a);
+  assert.equal((await a.route("POST", `kuvo/computers/${b.key}/unlink`)).status, 200);
+  await until("unlink acknowledged", () => removalOf(a, b)?.delivered, t.signal);
+  const prepare = name => ({ export: { destination: { kind: "disk", path: path.join(a.env.TMPDIR, name) },
+    recoveryKey: crypto.randomBytes(32).toString("base64url") } });
+  const operation = operationID();
+  const first = await a.route("POST", wipeRoute(a), { operation, prepare: prepare("missing-original") }, true);
+  assert.equal(first.status, 200, JSON.stringify(first.value));
+  await until("local preparation failed", () => removalOf(a, a)?.error, AbortSignal.timeout(8_000));
+  const revised = operationID();
+  const second = await a.route("POST", wipeRoute(a), { operation: revised, supersedes: operation, prepare: prepare("missing-replacement") }, true);
+  assert.equal(second.status, 200, JSON.stringify(second.value));
+  assert.equal((await a.route("POST", wipeRoute(a), { save: first.value })).value.removal.state, "cancelled");
+  await until("revised preparation failed", () => removalOf(a, a)?.operation === revised && removalOf(a, a)?.error, AbortSignal.timeout(8_000));
+  const cancelled = await a.route("POST", wipeRoute(a), { operation: revised, resolve: "cancel" }, true);
+  assert.equal(cancelled.status, 200, JSON.stringify(cancelled.value));
+  assert.equal(cancelled.value.removal.state, "cancelled");
+  assert.equal(a.read().setup.role, "primary");
+  assert.equal(a.read().localWipe, undefined);
+  assert.ok(data.every(file => fs.existsSync(file)));
+  const fresh = operationID();
+  const started = await a.route("POST", wipeRoute(a), { operation: fresh, prepare: prepare("missing-fresh") }, true);
+  assert.equal(started.status, 200, JSON.stringify(started.value));
+  assert.equal((await a.route("POST", wipeRoute(a), { operation: revised })).value.removal.state, "cancelled");
+  assert.equal(removalOf(a, a).operation, fresh);
+});
+
 test("failure bench: a pending wipe follows the setup through handover", { timeout: 30_000 }, async t => {
   const { a, b, c, see, relay } = await network(t, false, undefined, false, undefined, true);
   seedLocalWork(b);
@@ -1868,6 +1948,42 @@ test("failure bench: move all verifies accepted ownership before wiping the sour
   assert.equal(assignment.computer, a.key);
   assert.equal(groupCopies.get("Studio")?.group.id, group.id);
   assert.equal(groupCopies.get("Studio")?.status, "active");
+  assert.equal(groupCopies.has("Lab"), false);
+});
+
+test("failure bench: an offline source completes its accepted moves on reconnect", { timeout: 55_000 }, async t => {
+  const group = { id: "grp_offlinemove", name: "Offline move", members: [], created: "2026-11-01T00:00:00Z", seats: {}, heard: {} };
+  const { a, b, c, relay, groupCopies } = await network(t, false, undefined, false, group, true);
+  const bridge = JSON.parse(fs.readFileSync(path.join(a.run, "bridge.json"), "utf8"));
+  fs.writeFileSync(path.join(b.run, "bridge.json"), JSON.stringify({ ...bridge, password: b.name }));
+  await until("destination supports accepted moves", () => a.heard(b.key) && c.heard(b.key), t.signal);
+  await c.stop("SIGTERM");
+  await until("move source offline", () => !relay.has(c.address), t.signal);
+  fs.writeFileSync(path.join(c.run, "peer-reach.json"), JSON.stringify({ [b.key]: Date.now() }));
+  // After access is revoked, the destination can't clear the source's stale reachability by ordinary mail.
+  const scoped = [];
+  const seeRemoval = (packet, target, sender) => {
+    const message = removalMessage(packet, target, sender);
+    if (message) scoped.push(message.scopedMove?.op ?? (message.moveProbe ? "probe" : message.moveReady ? "ready for removal" : "other"));
+    return message;
+  };
+  t.after(relay.intercept(b.address, c.address, packet => !seeRemoval(packet, c, b)));
+  t.after(relay.intercept(c.address, b.address, packet => { seeRemoval(packet, b, c); return false; }));
+  const operation = operationID();
+  const start = await a.route("POST", wipeRoute(c), { operation, prepare: { moveTo: b.key } }, true);
+  assert.equal(start.status, 200, JSON.stringify(start.value));
+  assert.ok(a.read().shared.membershipAndAccess.value.left.includes(c.key));
+  c.start();
+  await waitForPreparedRemoval(a, c, operation, AbortSignal.timeout(35_000)).catch(error => {
+    const state = { source: preparation(c, "source", operation), accepted: removalOf(a, c),
+      destination: removalOf(b, c), ownership: b.read().shared?.ownershipAssignments, scoped, groups: [...groupCopies] };
+    throw new Error(`${error.message}: ${JSON.stringify(state)}`, { cause: error });
+  });
+  await waitForWipe(c, t.signal);
+  assert.ok(scoped.includes("probe"));
+  assert.ok(scoped.includes("ready for removal"));
+  assert.equal(a.read().shared.ownershipAssignments.value["group host:" + group.id].computer, b.key);
+  assert.equal(groupCopies.get("Desk")?.status, "active");
   assert.equal(groupCopies.has("Lab"), false);
 });
 
@@ -2048,6 +2164,38 @@ test("failure bench: a revised removal keeps completed moves and replaces a fail
   assert.equal(groupCopies.get("Studio")?.status, "active");
   assert.equal(fs.existsSync(original), false);
   assert.ok(fs.readdirSync(path.join(replacement, "kuvo-backups")).length);
+});
+
+test("failure bench: a WAL checkpoint preserves an accepted wipe generation", { timeout: 40_000 }, async t => {
+  const { a, b, relay } = await network(t, false, undefined, false, undefined, true);
+  const database = path.join(b.home, "data", "opencode", "opencode.db");
+  fs.mkdirSync(path.dirname(database), { recursive: true });
+  const db = new DatabaseSync(database);
+  let closed = false;
+  t.after(() => { if (!closed) db.close(); });
+  db.exec("PRAGMA journal_mode=WAL; CREATE TABLE session (id TEXT); INSERT INTO session VALUES ('session');");
+  const operation = operationID();
+  const destination = { kind: "disk", path: fs.mkdtempSync(path.join(b.env.TMPDIR, "checkpoint-")) };
+  const prepare = { export: { destination, recoveryKey: crypto.randomBytes(32).toString("base64url") } };
+  let grant;
+  const release = relay.intercept(a.address, b.address, packet => {
+    const instruction = link.readDoc(removalMessage(packet, b, a)?.instruction);
+    if (!instruction?.body.generation) return false;
+    grant = packet;
+    return true;
+  });
+  t.after(release);
+  assert.equal((await a.route("POST", wipeRoute(b), { operation, prepare }, true)).status, 200);
+  await until("wipe grant issued", () => grant, t.signal);
+  const generation = removalOf(a, b).generation;
+  assert.ok(generation);
+  assert.equal(db.prepare("PRAGMA wal_checkpoint(TRUNCATE)").get().busy, 0);
+  db.close();
+  closed = true;
+  assert.equal(fs.existsSync(database + "-wal"), false);
+  release();
+  await waitForWipe(b, t.signal);
+  assert.equal(removalOf(a, b).generation, generation);
 });
 
 test("failure bench: source work added after readiness invalidates the wipe grant", { timeout: 45_000 }, async t => {

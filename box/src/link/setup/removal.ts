@@ -6,7 +6,7 @@ import { ownSign, readDoc, signDoc } from "../documents/format";
 import { docMails, type DocsState } from "../documents/work";
 import { noteDocsChanged } from "../documents/changed";
 import { K, KEYS_ON_HOST } from "../home";
-import { deleteKey, keyNames, keyWork } from "../keys";
+import { clearHostKeys } from "../keys";
 import { clearUnlinkCredentials } from "./unlink-credentials";
 import { KEY, mailFor, ownKey, peersOf, type Peer } from "../peers/known";
 import { writeAgents } from "../peers/agents";
@@ -96,11 +96,7 @@ async function finishUnlink(host: Host | null | undefined) {
   const current = readLink();
   const pending = current?.localUnlink;
   if (!current || !pending || !unlinkCleanupLayoutReady(K)) return;
-  if (!pending.completed && KEYS_ON_HOST) {
-    await keyWork(async () => {
-      for (const name of await keyNames()) await deleteKey(name);
-    });
-  }
+  if (!pending.completed && KEYS_ON_HOST) await clearHostKeys();
   const finished = pending.completed ? current : updateLink(link => {
     if (!link?.localUnlink || link.localUnlink.operation !== pending.operation || link.localUnlink.completed) return null;
     clearUnlinkCredentials();

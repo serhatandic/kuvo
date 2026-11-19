@@ -1,5 +1,6 @@
 // Revoked members can finish a prepared move through its change identity. This path
 // never dispatches forwarded routes, ordinary peer mail, or an arbitrary ownership request.
+import crypto from "node:crypto";
 import { isObject } from "../../shared/json";
 import { takeMoveMail } from "../moves/move";
 import { endedFor, readMove } from "../moves/records";
@@ -10,7 +11,7 @@ import { liveLink, type LinkState } from "../state";
 import { primaryFenced } from "./lease";
 import { followedSetup } from "./record";
 import { sendRemoval } from "./removal";
-import { removalMoveID, removalsOf } from "./removal-record";
+import { REMOVAL_ID, removalMoveID, removalsOf } from "./removal-record";
 
 type Host = Pick<LinkHost, "welcomed" | "send" | "keepOnly">;
 type Decision = { status: number; value: unknown };
@@ -32,9 +33,26 @@ export async function removalTransfer(link: LinkState | null, move: Transfer, op
   });
 }
 
+const probeLifetime = 30_000;
+let probe: { setup: string; epoch: number; operation: string; peer: string; nonce: string; sent: number; answered?: number } | undefined;
+
+export function removalDestinationReady(link: LinkState, to: string, operation: string): boolean {
+  const setup = followedSetup(link);
+  const peer = peersOf(link).find(each => each.key === to);
+  if (!setup || !peer || link.removalSource?.operation !== operation || link.removalSource.moveTo !== to) return false;
+  const now = Date.now();
+  if (probe?.setup === setup.id && probe.epoch === setup.epoch && probe.operation === operation && probe.peer === to) {
+    if (probe.answered !== undefined && now >= probe.answered && now - probe.answered < probeLifetime) return true;
+    if (now >= probe.sent && now - probe.sent < 2_000) return false;
+  }
+  probe = { setup: setup.id, epoch: setup.epoch, operation, peer: to, nonce: crypto.randomBytes(16).toString("base64url"), sent: now };
+  sendRemoval(liveLink(), peer, link, { setup: setup.id, epoch: setup.epoch, operation, moveProbe: probe.nonce });
+  return false;
+}
+
 export function receiveRemovalMove(sender: string, message: Record<string, unknown>, host: Host | null | undefined, link: LinkState): boolean {
-  const { scopedMove, transfer, transferResult, operation } = message;
-  if (scopedMove === undefined && transfer === undefined && transferResult === undefined) return false;
+  const { scopedMove, transfer, transferResult, operation, moveProbe, moveReady } = message;
+  if (scopedMove === undefined && transfer === undefined && transferResult === undefined && moveProbe === undefined && moveReady === undefined) return false;
   const setup = followedSetup(link);
   const own = ownKey(link);
   if (!setup?.checkpointed || !own || setup.conflict) return true;
@@ -61,7 +79,17 @@ export function receiveRemovalMove(sender: string, message: Record<string, unkno
     return true;
   }
   if (message.setup !== setup.id || message.epoch !== setup.epoch || typeof operation !== "string") return true;
-  if (isObject(transfer) && setup.role === "primary" && !primaryFenced(link)) {
+  if (typeof moveProbe === "string" && REMOVAL_ID.test(moveProbe)) {
+    const removal = removalsOf(link)[sender];
+    if (removal?.operation === operation && removal.plan?.moveTo === own && !removal.resolution && !removal.delivered && !removal.generation) {
+      sendRemoval(host, removal.peer, link, { setup: setup.id, epoch: setup.epoch, operation, moveReady: moveProbe });
+    }
+  } else if (probe && moveReady === probe.nonce && probe.setup === setup.id && probe.epoch === setup.epoch &&
+    probe.operation === operation && probe.peer === sender && link.removalSource?.operation === operation &&
+    link.removalSource.moveTo === sender) {
+    const now = Date.now();
+    if (now >= probe.sent && now - probe.sent < probeLifetime && probe.answered === undefined) probe.answered = now;
+  } else if (isObject(transfer) && setup.role === "primary" && !primaryFenced(link)) {
     const removal = removalsOf(link)[sender];
     if (!removal || typeof transfer.id !== "string") return true;
     void transferForPeer(removal.peer, { body: { setup: setup.id, epoch: setup.epoch, transfer, settled: message.settled } }, operation).then(result => {

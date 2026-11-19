@@ -384,12 +384,13 @@ and you can choose another member as primary once both computers are connected.
   and stops allocation of new Work Queue numbers. Existing connections and local work use
   the grants and numbers already held. A pending leadership proposal also fences the primary.
 - **Takeover.** Only the standby can sign a transition with `takeover: true`. It names itself as
-  primary and uses the membership and device state it holds. It waits for three hours without
-  a successful round trip while it can reach the relay. Restarting the standby or losing the
-  standby's own relay connection starts a new observation period. It uses both wall time and
-  uptime, and resets on a long gap in observation. `delayMinutes` in `setup-takeover.json`
-  configures the wait between 60 and 10,080 minutes. The box logs the delay and takeover, and
-  the choice of standby. The old primary installs the higher signed epoch as a member on
+  primary and uses the membership and device state it holds. The default wait after the last
+  successful round trip is the sixty-second lease plus a two-minute margin, while the standby can
+  reach the relay. Restarting the standby or losing its own relay connection starts a new
+  observation period. It uses both wall time and uptime, and resets on a long gap in observation.
+  `delayMinutes` in `setup-takeover.json` overrides the total wait with a value between 60 and
+  10,080 minutes. The box logs the delay, the takeover and the choice of standby. The old primary
+  installs the higher signed epoch as a member on
   reconnect and uses the winning membership and device state. Local work stays with its owner.
   Folder layout 3 reserves these records. Older box builds refuse to open that layout.
 - **Number reservations.** A delegated epoch reserves a bounded range above the certified counter.
@@ -1990,7 +1991,9 @@ client connected: a client's Computers area and its switcher draw it, and ask no
     `GET kuvo/computers` and its events include `wipePending: [{key, name, operation}]` while a
     wipe remains unconfirmed. A returning target challenges the current primary and verifies
     its signed instruction for the operation, setup, epoch, and target before acting. This
-    exchange does not restore peer access. The target runs the preparation hook and verifies
+    exchange does not restore peer access. An unlink acknowledgement follows verification that
+    the target's Kuvo engine and agent sign-ins and integration keys have been cleared.
+    A wipe target runs the preparation hook and verifies
     any configured pre-wipe backup before stopping Kuvo Code and deleting its folder. It reports
     completion after deletion. Layout 12 keeps a completion receipt outside the wiped folder.
     Relay retries and the SSH Add probe can deliver the operation-bound acknowledgment. A
@@ -2012,11 +2015,14 @@ client connected: a client's Computers area and its switcher draw it, and ask no
     key before sending an export choice. A disk destination is an existing folder outside Kuvo
     on the source, or select a current backup computer with the existing SSH destination shape.
     In layout 12, revocation commits before preparation. The removed source can transfer the
-    accepted inventory to the selected destination over removal-only mail. Each move has its
+    accepted inventory to the selected destination over removal-only mail. The destination
+    can confirm that operation over the same channel when ordinary peer reachability is stale.
+    Each move has its
     own accepted change identity and a destination receipt. Sessions with attached child
     sessions can be exported. If both choices are made, the archive captures the remaining
     source work after the moves. The source binds readiness to the version of that work and
-    the selected projects. Changes invalidate readiness, including changes detected after the
+    the selected projects. A SQLite checkpoint or close leaves this version unchanged when
+    the committed data is unchanged. Changes invalidate readiness, including changes detected after the
     primary sent its grant. The source verifies the archive again and checks the generation
     after stopping Kuvo before deleting its folder.
     An accepted preparation failure reports `review`, an error, and unresolved IDs when known.

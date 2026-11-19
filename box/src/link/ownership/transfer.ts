@@ -1,5 +1,6 @@
 import { isObject } from "../../shared/json";
 import { OWNER } from "../../shared/work-queue-owner";
+import { noteDocsChanged } from "../documents/changed";
 import { KEY, ownKey, peersOf, type MailSender } from "../peers/known";
 import { acceptedMembership } from "../setup/membership";
 import { primaryFenced } from "../setup/lease";
@@ -152,7 +153,9 @@ export async function transferForPeer(sender: MailSender, act: Pick<Act, "body">
     }
     return save ? link : undefined;
   }, { durable: true });
-  return save && (await waitShared(save)).status === "committed" ? committed : result;
+  if (!save || (await waitShared(save)).status !== "committed") return result;
+  noteDocsChanged();
+  return committed;
 }
 
 export const TRANSFER_FEATURE = "ownership.transfer-decisions";
@@ -192,7 +195,7 @@ async function requestTransfer(link: LinkState | null, move: Transfer & { remova
 export async function decideTransfer(link: LinkState | null, move: Transfer & { removalOperation?: string }): Promise<TransferDecision> {
   const setup = followedSetup(link);
   if (!setup?.checkpointed || (setup.role !== "primary" && transferAccepted(link, move))) return { status: "committed" };
-  const unsupported = transferSupport(link);
+  const unsupported = move.removalOperation ? undefined : transferSupport(link);
   if (unsupported) return { status: "refused", message: unsupported };
   const result = await requestTransfer(link, move);
   if (result?.status === 200) return { status: "committed" };

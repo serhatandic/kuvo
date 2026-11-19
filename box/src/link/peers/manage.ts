@@ -326,7 +326,10 @@ async function settleComputerRemoval(key: string, pendingOnly: boolean, request:
       return answer(409, { message: "Update the source, standby and move destination before preparing this removal." });
     }
   }
-  if (modern && existing && setup) {
+  const restartLocal = last && previous?.local && previous.resolution === "cancelled" && previous.plan &&
+    operation !== previous.operation && !previous.superseded?.[operation] && !request.resolve && !request.supersedes && !request.retryPreparation
+    ? previous : undefined;
+  if (modern && existing && setup && !restartLocal) {
     if (existing.superseded?.[operation]) {
       return removalReply({ operation, wipe: true, resolution: "cancelled" }, removalReceipt(link!, operation));
     }
@@ -399,7 +402,8 @@ async function settleComputerRemoval(key: string, pendingOnly: boolean, request:
       if (current.wipePreparations) delete current.wipePreparations[key];
       if (currentLayout) {
         current.memberRemovals = { ...current.memberRemovals, [key]: { peer: own, operation, wipe: true, local: true,
-          ...(plan ? { plan, requiresPreparation: true } : {}) } };
+          ...(plan ? { plan, requiresPreparation: true } : {}),
+          ...(restartLocal?.plan ? { superseded: { ...restartLocal.superseded, [restartLocal.operation]: restartLocal.plan } } : {}) } };
       }
       if (!plan) current.localWipe = { setup: setup.id, operation };
       current.phones = [];

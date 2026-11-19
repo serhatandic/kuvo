@@ -2,6 +2,24 @@ import fs from "node:fs";
 import { spawnSync } from "node:child_process";
 import { OWN_RUNTIME } from "../home";
 
+const snapshot = `
+const bun = Boolean(process.versions.bun);
+const SQLite = bun ? require("bun:sqlite").Database : require("node:sqlite").DatabaseSync;
+const db = new SQLite(process.argv[1], bun ? { readonly: true } : { readOnly: true });
+try {
+  db.exec("PRAGMA busy_timeout=5000");
+  db.exec(process.argv[2]);
+} finally { db.close(); }
+`;
+
+export function snapshotDatabase(file: string, copy: string): void {
+  const query = "VACUUM INTO '" + copy.replaceAll("'", "''") + "'";
+  const result = spawnSync(process.execPath, [...OWN_RUNTIME, "-e", snapshot, file, query], {
+    env: { ...process.env, BUN_BE_BUN: "1" }, timeout: 60_000,
+  });
+  if (result.status !== 0) throw new Error("Could not take a consistent database snapshot.");
+}
+
 const scrub = `
 const SQLite = process.versions.bun ? require("bun:sqlite").Database : require("node:sqlite").DatabaseSync;
 const db = new SQLite(process.argv[1]);
