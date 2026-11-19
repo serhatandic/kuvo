@@ -9,7 +9,7 @@ import { runsAs } from "../shared/platform"
 import { canTransfer, type TransferHolder } from "./hold/adopt"
 import type { TransferSession } from "./sessions"
 
-export const TRANSFER_PROTOCOL = "handover/1"
+export const TRANSFER_PROTOCOL = "kuvo-live-handover/1"
 const format = objectFormat("Bridge handover", [fields => fields])
 
 export interface Transfer {

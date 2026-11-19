@@ -421,3 +421,52 @@ test("Update Now uses the no-cut path even when an engine turn is active", { ski
   assert.ok(runs(engine.pid));
   // Leave the incompatible fixture intact while the box is at work. Cleanup stops this box.
 });
+
+test("the one-time pre-holder update restarts its bridge cleanly and leaves an engine turn running", { skip: bun ? false : NO_BUN, timeout: 300_000 }, async () => {
+  const first = await bridgeUp();
+  const bundle = path.join(home, "bin", "kuvo-agents.js");
+  const installed = fs.readFileSync(builtAgents, "utf8");
+  const legacyBuild = "e".repeat(64);
+  // Run the real bridge's normal shutdown path, with pre-holder process ownership and no
+  // handover capability or marker as on a pre-holder installation.
+  const legacy = installed.replace(build(installed), legacyBuild)
+    .replaceAll("kuvo-live-handover/1", "legacy-test-bridge")
+    .replaceAll("agents-live-handover", "agents-legacy-fixture")
+    .replace(/function agentHoldFolder\(kind\) \{\n/, "$&  return undefined;\n");
+  assert.notEqual(legacy, installed);
+  const crossing = path.join(RUN, "agents-live-handover");
+  const replace = contents => {
+    write(bundle + ".new", contents);
+    fs.renameSync(bundle + ".new", bundle);
+  };
+  replace(legacy);
+  process.kill(first.pid, "SIGTERM");
+  const old = await bridgeUp(first.pid);
+  assert.equal(old.build, legacyBuild);
+  fs.rmSync(crossing);
+  const holderRecords = () => {
+    try { return fs.readdirSync(path.join(RUN, "agents", "hold")).filter(name => name.endsWith(".json")); }
+    catch { return []; }
+  };
+  await until(() => holderRecords().length === 0, "the old fixture to have no holders");
+
+  const engine = readJSON(path.join(RUN, "engine.json"));
+  const { api } = bridgeAPI();
+  const made = await api("POST", "api/session", { title: "Pre-holder turn", location: { directory: home }, model: { providerID: "codex-cli", id: "gpt-test" } });
+  assert.equal(made.status, 200);
+  const session = made.json.data.id;
+  const fake = path.join(scratch, "fake");
+  assert.equal((await api("POST", `api/session/${session}/prompt`, { id: "msg_stopsnothing00005", delivery: "steer", text: "hold legacy" })).status, 200);
+  await until(() => turns(fake).some(turn => turn.text === "hold legacy" && turn.bridge === old.pid), "the unheld turn to start");
+  assert.equal(holderRecords().length, 0, "the pre-holder bridge owns this agent directly");
+
+  replace(installed);
+  const after = await bridgeUp(old.pid);
+  assert.equal(after.build, build(installed));
+  assert.equal(readJSON(path.join(RUN, "engine.json")).pid, engine.pid);
+  assert.equal(fs.readFileSync(crossing, "utf8"), "kuvo-live-handover/1");
+  const page = (await bridgeAPI().api("GET", `api/session/${session}/message?limit=100&order=asc`)).json.data;
+  assert.deepEqual(page.filter(each => each.type === "idle").map(each => each.outcome), ["interrupted"]);
+  assert.deepEqual(page.filter(each => each.type === "user").map(each => each.text), ["hold legacy"]);
+  assert.equal(turns(fake).filter(turn => turn.text === "hold legacy").length, 1);
+});

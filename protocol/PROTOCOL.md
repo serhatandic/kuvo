@@ -3408,8 +3408,10 @@ new version without cutting a turn:
   Codex, Grok, and Claude Code 2.1.268 or later with the same Agent SDK can transfer if their
   active turns have a complete journal. Open forms, steered turns, shell commands, sandboxed agents
   and turns using the bridge’s MCP relay fall back together to Renewal. A standby-compatible build can
-  start a bounded drain at once. The first update from a bridge without the live protocol uses
-  that bridge's Renewal path.
+  start a bounded drain at once. On the first upgrade from a bridge that predates holders, the
+  keeper checks that the replacement can start and requests one clean bridge restart. That
+  bridge marks its active turns interrupted through its normal shutdown. The engine stays up
+  independently. The keeper marks the transition so future upgrades use live handover or Renewal.
 
   Renewal goes:
   - **At the first quiet moment**: nothing has run for half a minute: no turn (a subagent's, a

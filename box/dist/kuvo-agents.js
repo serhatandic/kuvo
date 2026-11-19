@@ -41654,7 +41654,7 @@ function commitTransfer(run, plan, source) {
 function standbyFailed(plan) {
   return !runsAs(plan.next, /kuvo-agents/);
 }
-var TRANSFER_PROTOCOL = "handover/1", format, transferFile = (run) => join43(run, "agents", "handover.json"), previousBridge = (run) => join43(run, "agents", "previous", "kuvo-agents.js");
+var TRANSFER_PROTOCOL = "kuvo-live-handover/1", format, transferFile = (run) => join43(run, "agents", "handover.json"), previousBridge = (run) => join43(run, "agents", "previous", "kuvo-agents.js");
 var init_bridge_transfer = __esm(() => {
   init_files();
   init_format_version();
@@ -42242,6 +42242,11 @@ var init_main = __esm(async () => {
   record2 = onMachine ? join44(machineHome, "run", "bridge.json") : undefined;
   machineHandover = process.platform === "darwin" && kept3 && onMachine && Boolean(build);
   writeRecord(null, true);
+  if (kept3 && runFolder) {
+    try {
+      writeSecret(join44(runFolder, "agents-live-handover"), TRANSFER_PROTOCOL);
+    } catch {}
+  }
   if (onMachine)
     rmSync20(join44(machineHome, "run", "agents-renewing"), { force: true });
   if (transfer) {
@@ -42345,4 +42350,4 @@ if (!isMainThread && process.argv.includes("--insights-db-worker")) {
 } else {
   await init_main().then(() => ({}));
 }
-// Built from Packages/Box/src/agents 169b6d360f4f002ab1369e09354fd4af886c30754e23ebb1797c813a8d7ff1fc
+// Built from Packages/Box/src/agents dbf7af7cf83b74c7fd95e0acf084794a7d0d6ff5f9d7556552882b9bcdd22daf

@@ -584,6 +584,10 @@ const writeRecord = (renewal: RenewalRecord | null, first = false) => {
   }
 }
 writeRecord(null, true)
+if (kept && runFolder) {
+  // This folder has crossed the one-time restart from pre-holder bridges.
+  try { writeSecret(join(runFolder, "agents-live-handover"), TRANSFER_PROTOCOL) } catch {}
+}
 // Back after a hand-over (a bridge before this one made way on purpose): no longer "restarting".
 if (onMachine) rmSync(join(machineHome!, "run", "agents-renewing"), { force: true })
 if (transfer) {
