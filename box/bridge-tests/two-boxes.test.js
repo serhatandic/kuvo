@@ -261,6 +261,10 @@ test("this Mac's documents reach a machine; a phone the machine lets go reaches 
   assert.equal(link.macPeersBody(link.readLink()).boxes.some(box => box.key === back.key), true);
   assert.ok(link.macPeersBody(link.readLink()).left.includes(lab.key));
   link.macDocsChanged();
+  // Re-enrollment changes the relay address. Wait until the replacement
+  // connects and takes its signed roster before disconnecting the Mac.
+  await arrived(() => relay.has(Buffer.from(back.address, "base64url")));
+  await onTheMachine(() => link.readDoc(machineLink()?.docs?.[`${macSign} peers`])?.body.boxes.some(box => box.key === back.key));
 
   // Removed while this Mac's box is off the relay: the machine hears it once it's back.
   link.stopMacLink();
