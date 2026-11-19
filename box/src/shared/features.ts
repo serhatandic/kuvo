@@ -211,6 +211,7 @@ export const FEATURES = [
   "setup.mainOnly",
   "setup.ready",
   "setup.shared-saves",
+  "setup.sole-primary",
   "setup.standby-acceptance",
   "setup.takeover",
   "setup.welcomed",

@@ -123,7 +123,7 @@ export async function runMacLink(): Promise<void> {
         key: Buffer.from(link.key, "base64url"),
         hello: { v: 1, kind: "mac", name: config!.name, app: config!.app, engine: engine.version ?? null },
         // Phones only while the phone link's on (the relay can be up for your machines alone).
-        authorize: (key, hello, address, signal) => Boolean(macLink.config?.phones) && !readLink()?.localWipe && !readLink()?.removalSource && !localRemovalPending(readLink()) && authorizeDeviceConnection(host, key, hello, address, signal),
+        authorize: (key, hello, address, signal) => Boolean(macLink.config?.phones) && !readLink()?.localWipe && !readLink()?.removalSource && !readLink()?.localUnlink && !localRemovalPending(readLink()) && authorizeDeviceConnection(host, key, hello, address, signal),
         confirmed: confirmPhone,
         // Mail from your machines, taken here as a machine takes it (`peerMail`).
         mail: (from, body) => receiveMail(body, host, (sender, payload) => peerMail(sender, payload, host, peerPlaces), undefined, from),

@@ -3,7 +3,7 @@ import { acceptedMembership, projectMembership } from "./setup/membership";
 import { updateAccess } from "./setup/access";
 import { primaryFenced } from "./setup/lease";
 import crypto from "node:crypto";
-import { deviceGrantsLayoutDeferred } from "../shared/folder-version";
+import { deviceGrantsLayoutDeferred, unlinkCleanupLayoutReady } from "../shared/folder-version";
 import { isObject } from "../shared/json";
 import { addressOf, publicOf } from "./crypto/keys";
 import { noteDocsChanged } from "./documents/changed";
@@ -19,7 +19,8 @@ import type { LinkState, Pairing, Phone } from "./state";
 
 /** The current pairing for a relay session or token issuer. Older pairings use the empty id. */
 export function pairedPhone(link: LinkState | null | undefined, key: string, pairing?: string): Phone | undefined {
-  return (link?.phones ?? []).find(phone => phone.key === key && (pairing === undefined || (phone.pairing ?? "") === pairing));
+  return (link?.phones ?? []).find(phone => phone.key === key && (pairing === undefined || (phone.pairing ?? "") === pairing)
+    && !(phone.local && (link?.setup?.checkpointed || unlinkCleanupLayoutReady(K))));
 }
 
 // Lets in phones in link.json, and a new one showing the pairing token (once, in time), noting
@@ -255,7 +256,7 @@ export const ownPhones = (link: LinkState) => {
   const preserveVoucher = deviceGrantsLayoutDeferred(K);
   return {
     ...(link.setup?.managed && link.setup.role === "primary" ? { epoch: link.setup.epoch } : {}),
-    phones: (link.phones ?? []).filter(phone => phone.from === "pair").map(phone => ({
+    phones: (link.phones ?? []).filter(phone => phone.from === "pair" && !phone.local).map(phone => ({
       key: phone.key, name: phone.name ?? "", ...(phone.address ? { address: phone.address } : {}),
       pairing: phone.pairing ?? "", ...(phone.kind === "desktop" ? { kind: "desktop" as const } : {}),
       ...(preserveVoucher && "by" in phone && typeof phone.by === "string" ? { by: phone.by } : {}),

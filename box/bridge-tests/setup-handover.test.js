@@ -8,6 +8,7 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
+import { DatabaseSync } from "node:sqlite";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { NO_BUN, testBun } from "./bun-for-tests.js";
@@ -16,6 +17,7 @@ import { runningAs } from "./running-as.js";
 
 const script = fileURLToPath(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url));
 const link = await import(script);
+const TAKEOVER = 120_000;
 const submit = (box, primary, epoch) => box.route("POST", "kuvo/setup/handover", { primary: primary.key, epoch });
 
 function checkpoint(box, epoch) {
@@ -59,7 +61,7 @@ async function until(what, read, signal) {
   throw new Error(`Timed out waiting for ${what}`);
 }
 
-async function network(t, takeover = false, releaseKey, owned = false, movingGroup, disposableInstall = false) {
+async function network(t, takeover = false, releaseKey, owned = false, movingGroup, disposableInstall = false, pairOnly = false) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), disposableInstall ? "kd-" : "kuvo-handover-"));
   const relay = await relayStandIn(link);
   const boxScript = releaseKey ? path.join(root, "kuvo-link.mjs") : script;
@@ -150,7 +152,7 @@ async function network(t, takeover = false, releaseKey, owned = false, movingGro
     fs.rmSync(root, { recursive: true, force: true });
   });
 
-  const boxes = ["Studio", "Desk", "Lab"].map(name => {
+  const boxes = (pairOnly ? ["Studio", "Desk"] : ["Studio", "Desk", "Lab"]).map(name => {
     const account = path.join(root, name);
     const home = disposableInstall ? path.join(account, ".kuvo-code") : account;
     const secret = crypto.randomBytes(32);
@@ -196,7 +198,7 @@ async function network(t, takeover = false, releaseKey, owned = false, movingGro
         child.stderr.on("data", chunk => { err += chunk; });
         child.stdin.end(input);
         const [status] = await once(child, "close");
-        return { status, value: JSON.parse(out.trim().split("\n").at(-1)), err };
+        return { status, value: out.trim() ? JSON.parse(out.trim().split("\n").at(-1)) : null, err };
       },
       async route(method, path, body, local = false) {
         const args = local ? ["--input-type=module", "-e", `
@@ -263,8 +265,8 @@ async function network(t, takeover = false, releaseKey, owned = false, movingGro
       setup: { ...setup, ...accepted, role: box === a ? "primary" : "member", sign: a.sign },
       ...(movingGroup ? { sharedSetup: setup.id, shared: { membershipAndAccess: { sequence: 1, value: roster } } } : {}),
       ...(box === a ? {
-        macPeers: [b.entry, c.entry], phones: [{ key: phone, pairing, from: "pair", name: "Device" }],
-        vouchBlocked: [{ key: c.key, device: "Revoked", at: 1 }],
+        macPeers: boxes.slice(1).map(peer => peer.entry), phones: [{ key: phone, pairing, from: "pair", name: "Device" }],
+        vouchBlocked: c ? [{ key: c.key, device: "Revoked", at: 1 }] : [],
       } : { mac: a.key, macs: [a.key], macSigns: { [a.key]: a.sign }, docs: { [`${a.sign} peers`]: book } }),
     }));
   }
@@ -276,8 +278,8 @@ async function network(t, takeover = false, releaseKey, owned = false, movingGro
     fs.writeFileSync(path.join(dir, "session"), "ses_" + bot.slice(4));
   }
   // Start the members first so the primary can immediately hear their feature advertisement.
-  for (const box of [b, c, a]) box.start();
-  await until("connected setup", () => boxes.every(box => relay.has(box.address)) && a.heard(b.key) && a.heard(c.key) && c.heard(a.key) && b.heard(a.key), t.signal);
+  for (const box of [...boxes.slice(1), a]) box.start();
+  await until("connected setup", () => boxes.every(box => relay.has(box.address)) && boxes.slice(1).every(box => a.heard(box.key) && box.heard(a.key)), t.signal);
   const see = (box, epoch, primary) => until(`${box.name} at epoch ${epoch}`, () => {
     const setup = box.read().setup;
     return setup.epoch === epoch && setup.primary === primary.key && setup.role === (box === primary ? "primary" : "member") && setup;
@@ -710,7 +712,7 @@ test("failure bench: normal save callers carry proofs to the successor", { timeo
   assert.equal(automatic.result, "waiting", JSON.stringify(automatic));
   assert.deepEqual(automatic.save, update.save);
   await a.stop();
-  b.clock(3 * HOUR + 5_000);
+  b.clock(TAKEOVER + 5_000);
   await see(b, 3, b);
 
   const receipts = [
@@ -740,7 +742,7 @@ test("failure bench: normal save callers carry proofs to the successor", { timeo
 test("failure bench: only the standby takes over across a split and the old primary rejoins", { timeout: 45_000 }, async t => {
   const { a, b, c, relay, see, phone, pairing } = await standbyNetwork(t);
   const reconnect = [b, c].flatMap(box => [relay.pause(a.address, box.address), relay.pause(box.address, a.address)]);
-  for (const box of [a, b, c]) box.clock(2 * HOUR);
+  for (const box of [a, b, c]) box.clock(90_000);
   await delay(800);
   await see(b, 2, a);
   const blocked = await a.route("DELETE", `kuvo/computers/${c.key}`);
@@ -752,7 +754,7 @@ test("failure bench: only the standby takes over across a split and the old prim
   assert.equal(work.status, 200);
   const stale = a.read();
 
-  for (const box of [a, b, c]) box.clock(3 * HOUR + 5_000);
+  for (const box of [a, b, c]) box.clock(TAKEOVER + 5_000);
   await Promise.all([see(b, 3, b), see(c, 3, b)]);
   assert.equal(a.read().setup.epoch, 2);
   // The primary is still partitioned. Ask the successor using the receipt from the save.
@@ -841,6 +843,95 @@ test("failure bench: a lost primary is replaced after the configured delay", { t
   b.clock(HOUR + 1_000);
   await Promise.all([see(b, 3, b), see(c, 3, b)]);
   assert.equal(a.read().setup.epoch, 2);
+});
+
+test("removing the final standby requires its durable retirement approval", { timeout: 45_000 }, async t => {
+  const { a, b, relay, see } = await network(t, true, undefined, false, undefined, false, true);
+  await see(a, 2, a);
+  await until("primary leased", () => a.lease(2, b), t.signal);
+  const resume = relay.pause(b.address, a.address);
+  try {
+    const removing = a.route("DELETE", `kuvo/computers/${b.key}`, { operation: "final-standby-unlink-test" });
+    await until("standby installed retirement", () => b.read().setup.epoch === 3, t.signal);
+    assert.ok(a.read().leadershipPending);
+    assert.equal(a.read().setup.standby.key, b.key);
+    assert.equal((await a.route("POST", "kuvo/phones/pair")).status, 409);
+    assert.equal((await removing).status, 503);
+  } finally { resume(); }
+
+  await see(a, 3, a);
+  const retired = link.readDoc(a.read().leadership[3]);
+  assert.equal(retired.origin, b.sign);
+  assert.equal(retired.body.retiredStandby, b.key);
+  assert.equal(a.read().setup.sharedSaves, undefined);
+  const removed = await a.route("DELETE", `kuvo/computers/${b.key}`, { operation: "final-standby-unlink-test" });
+  assert.equal(removed.status, 200, JSON.stringify(removed.value));
+  assert.equal(removed.value.operation, "final-standby-unlink-test");
+  await until("only the primary is left", () => a.read().left.includes(b.key), t.signal);
+  assert.equal((await a.route("POST", "kuvo/phones/pair")).status, 200);
+});
+
+test("unlink retries credential cleanup before acknowledging completion", { timeout: 45_000 }, async t => {
+  const { a, b, c, see } = await standbyNetwork(t);
+  await see(c, 2, a);
+  const database = path.join(c.home, "data", "opencode", "opencode.db");
+  const keys = path.join(c.home, "box", "keys", "KUVO_KEY_NOTION_TOKEN");
+  const bot = path.join(c.home, "bots", "bot_fixture", "bot.json");
+  const native = path.join(c.env.HOME, ".codex", "auth.json");
+  for (const file of [database, keys, bot, native]) {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, "fixture");
+  }
+  const operation = "restart-unlink-cleanup-test";
+  const removed = await a.route("DELETE", `kuvo/computers/${c.key}`, { operation });
+  assert.equal(removed.status, 200, JSON.stringify(removed.value));
+  await until("unlink journal persisted", () => c.read().localUnlink?.operation === operation, t.signal);
+  const record = () => a.read().shared.membershipAndAccess.value.removals[c.key];
+  assert.equal(record().delivered, undefined);
+  assert.equal(c.read().setup.id, a.read().setup.id);
+  assert.ok(fs.existsSync(keys));
+
+  await c.stop("SIGTERM");
+  fs.unlinkSync(database);
+  const db = new DatabaseSync(database);
+  db.exec("CREATE TABLE credential (value TEXT); INSERT INTO credential VALUES ('fixture'); CREATE TABLE session (id TEXT); INSERT INTO session VALUES ('session');");
+  db.close();
+  c.start();
+  await until("primary receives completed unlink", () => record().delivered === true, t.signal);
+  await until("source receives the acknowledgement", () => !c.read().localUnlink, t.signal);
+  assert.notEqual(c.read().setup.id, a.read().setup.id);
+  const remaining = new DatabaseSync(database);
+  assert.equal(remaining.prepare("SELECT COUNT(*) AS n FROM credential").get().n, 0);
+  assert.equal(remaining.prepare("SELECT id FROM session").get().id, "session");
+  remaining.close();
+  assert.equal(fs.existsSync(keys), false);
+  for (const file of [bot, native]) assert.equal(fs.readFileSync(file, "utf8"), "fixture");
+});
+
+test("an unmatched pre-join pairing requires an explicit enrollment decision", { timeout: 20_000 }, async t => {
+  const { a, c, phone, relay } = await network(t);
+  await c.stop("SIGTERM");
+  const file = path.join(c.run, "link.json");
+  const local = { ...c.identity, phones: [{ key: phone, pairing: "independent-pairing", from: "pair" }] };
+  fs.writeFileSync(file, JSON.stringify(local));
+  // Keep this CLI fixture from launching a second, untracked bridge.
+  fs.mkdirSync(path.join(c.run, ".updating"));
+  fs.writeFileSync(path.join(c.run, ".updating", "pid"), String(process.pid));
+  const token = "pairing-decision";
+  fs.symlinkSync(token, path.join(path.dirname(c.home), ".kuvo-code-adding"));
+  const signed = link.signDoc(a.seed, "phones", 1, { phones: [{ key: phone, pairing: "different-pairing" }], removed: [] });
+  const refused = await c.command(["setup", token], JSON.stringify({ mac: a.key, macSign: a.sign, docs: [signed] }));
+  assert.equal(refused.status, 5, refused.err);
+  assert.match(refused.err, /Confirm discarding unmatched local device pairings/);
+  assert.deepEqual(c.read(), local);
+
+  const roster = link.signDoc(a.seed, "peers", 2, { setup: { id: a.read().setup.id, epoch: 1, primary: a.key },
+    boxes: [a.entry, c.entry], moved: [], left: [] });
+  const matching = link.signDoc(a.seed, "phones", 2, { phones: [{ key: phone, pairing: "independent-pairing" }], removed: [] });
+  const joined = await c.command(["setup", token], JSON.stringify({ mac: a.key, macSign: a.sign, relay: relay.url, docs: [roster, matching] }));
+  assert.equal(joined.status, 0, joined.err);
+  assert.equal(c.read().phones.find(grant => grant.key === phone)?.pairing, "independent-pairing");
+  assert.equal(c.read().phones.find(grant => grant.key === phone)?.from, "mac");
 });
 
 test("failure bench: standby retirement keeps the live standby until a replacement is ready", { timeout: 45_000 }, async t => {
@@ -1109,7 +1200,7 @@ test("failure bench: a QR handshake carries its durable pairing receipt to the s
   assert.deepEqual(recovered.hello.save, save);
 
   await a.stop();
-  b.clock(3 * HOUR + 5_000);
+  b.clock(TAKEOVER + 5_000);
   await Promise.all([see(b, 3, b), see(c, 3, b)]);
   const forged = await open(b, link.newKey(), { save }, 46);
   assert.equal(forged.frame, link.Frame.close);
@@ -1258,7 +1349,7 @@ test("failure bench: a saved change survives killing the primary before it publi
   b.start();
   await until("restarted standby has begun observing epoch 2", () => b.observing(2), t.signal);
   reconnect.forEach(resume => resume());
-  b.clock(3 * HOUR + 5_000);
+  b.clock(TAKEOVER + 5_000);
   await see(b, 3, b);
   await see(c, 3, b);
   assert.equal(await setupName(b, c.key), "Accepted name");
@@ -1348,14 +1439,14 @@ test("failure bench: number blocks stay unique across a takeover", { timeout: 55
   await a.stop();
   const offline = await make(c, "Uses the existing block offline");
   assert.equal(offline.number, firstNumber + 1);
-  b.clock(3 * HOUR + 5_000);
+  b.clock(TAKEOVER + 5_000);
   await see(b, 3, b);
   assert.deepEqual(checkpoint(b, 3).shared.queueNumberAllocation.value.given, ledger.given);
   const next = await make(b, "Must wait for a new block");
   assert.equal(next.number, undefined);
 
   reconnect.forEach(resume => resume());
-  c.clock(3 * HOUR + 5_000);
+  c.clock(TAKEOVER + 5_000);
   await see(c, 4, b);
   const nextNumber = await numbered(b, next.id);
   assert.ok(nextNumber > block.to);
@@ -1526,7 +1617,7 @@ test("failure bench: setup preferences merge at the primary and await the standb
   const current = await editRead(c, ref);
   assert.deepEqual(current.value.choices, copies[0]);
   await a.stop();
-  b.clock(3 * HOUR + 5_000);
+  b.clock(TAKEOVER + 5_000);
   await until("standby promoted with accepted preference choices", () => b.read().setup?.role === "primary" && b.read().setup?.epoch === 3, t.signal);
   const after = await editRead(b, ref);
   assert.deepEqual(after.value.fields, actual.value.fields);

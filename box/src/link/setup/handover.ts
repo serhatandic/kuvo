@@ -1,7 +1,7 @@
 // The primary checks that the successor is running this protocol, then atomically commits
 // a signed epoch change. Peers deliver the committed record with the regular document exchange.
 
-import { setupLayoutDeferred } from "../../shared/folder-version";
+import { setupLayoutDeferred, unlinkCleanupLayoutReady } from "../../shared/folder-version";
 import path from "node:path";
 import { UsageSettings } from "../../agents/usage/settings";
 import { isObject } from "../../shared/json";
@@ -27,6 +27,7 @@ import { leadershipProposalHash, NUMBER_RESERVE, takeLeadership, type Replacemen
 import { LEADERSHIP_WAIT, primaryFenced } from "./lease";
 import { followedSetup, requiresStandby, type SetupRecord } from "./record";
 
+export const SOLE_PRIMARY_FEATURE = "setup.sole-primary";
 export const STANDBY_ACCEPTANCE = "setup.standby-acceptance";
 export const HANDOVER_FEATURE = "setup.handover";
 const answer = (status: number, message: string): Acted => ({ status, value: { message } });
@@ -74,7 +75,7 @@ export async function proposeLeadership(
   position: Record<string, unknown>,
   target: string,
   standby: NonNullable<SetupRecord["standby"]> | null,
-  { requester, targetSign, recovery }: { requester?: string; targetSign?: string; recovery?: { peer: Peer; prepare: (link: LinkState, enrollment: ReplacementEnrollment) => void; record?: (membership: Membership, link: LinkState) => void } } = {},
+  { requester, targetSign, recovery, retire }: { retire?: string; requester?: string; targetSign?: string; recovery?: { peer: Peer; prepare: (link: LinkState, enrollment: ReplacementEnrollment) => void; record?: (membership: Membership, link: LinkState) => void } } = {},
 ): Promise<Acted> {
   if (setupLayoutDeferred(K)) return answer(503, "Wait for the Kuvo Code update to finish before changing the setup.");
   let oversized = false;
@@ -87,6 +88,9 @@ export async function proposeLeadership(
     if (recovery && (!standby || current.standby || !requiresStandby(current) || target !== current.primary
       || recovery.peer.key !== standby.key || recovery.peer.sign !== standby.sign)) return null;
     const members = peersOf(link);
+    if (retire && (!unlinkCleanupLayoutReady(K) || !current.checkpointed || standby || target !== current.primary
+      || current.standby?.key !== retire || members.length !== 1 || members[0]?.key !== retire
+      || !takesForwarded(retire, SOLE_PRIMARY_FEATURE))) return null;
     if (Object.keys(acceptedMembership(link)?.wipePreparations ?? {}).length
       && ((target !== current.primary && !takesForwarded(target, PREPARATION_FEATURE))
         || (standby && standby.key !== current.standby?.key && !takesForwarded(standby.key, PREPARATION_FEATURE)))) {
@@ -140,7 +144,7 @@ export async function proposeLeadership(
     }
     const authority = {
       setup: { id: current.id, epoch, primary: target }, previous: current.primary,
-      ...(standby || requiresStandby(current) ? { sharedSaves: true } : {}),
+      ...(retire ? { retiredStandby: retire } : standby || requiresStandby(current) ? { sharedSaves: true } : {}),
       ...(standby ? { standby: standby.key, numberCeiling: renewing && migrating ? current.numberCeiling : Math.min(MOST_NUMBER - 1, next + NUMBER_RESERVE - 1) } : {}),
       ...(current.standby || acceptance ? { proposal: true } : {}),
       ...(acceptance ? { standbyAcceptance: true } : {}),
@@ -195,7 +199,7 @@ export async function proposeLeadership(
     while (Date.now() < deadline) {
       const setup = readLink()?.setup;
       if (setup?.id !== position.setup || !setup || setup.epoch !== position.epoch) {
-        if (setup?.id === position.setup && setup?.primary === target && setup.standby?.key === standby?.key && setup.standby?.sign === standby?.sign) {
+        if (setup?.id === position.setup && setup?.primary === target && setup.standby?.key === standby?.key && setup.standby?.sign === standby?.sign && (!retire || !requiresStandby(setup))) {
           return { status: 202, value: { primary: target, epoch: setup.epoch } };
         }
         return answer(409, "The setup changed. Refresh your setup and try again.");

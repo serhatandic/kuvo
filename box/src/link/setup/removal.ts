@@ -1,11 +1,13 @@
 // Delivery is separate from authorization: the accepted roster has already revoked the peer.
 import crypto from "node:crypto";
 import { isObject } from "../../shared/json";
-import { removalLayoutReady, removalOperationsLayoutReady } from "../../shared/folder-version";
+import { removalLayoutReady, removalOperationsLayoutReady, unlinkCleanupLayoutReady } from "../../shared/folder-version";
 import { ownSign, readDoc, signDoc } from "../documents/format";
 import { docMails, type DocsState } from "../documents/work";
 import { noteDocsChanged } from "../documents/changed";
-import { K } from "../home";
+import { K, KEYS_ON_HOST } from "../home";
+import { deleteKey, keyNames, keyWork } from "../keys";
+import { clearUnlinkCredentials } from "./unlink-credentials";
 import { KEY, mailFor, ownKey, peersOf, type Peer } from "../peers/known";
 import { writeAgents } from "../peers/agents";
 import { assemble, type PendingParts } from "../documents/parts";
@@ -81,7 +83,46 @@ export function advanceLocalRemoval(link: LinkState): void {
   scheduleWipe();
 }
 
+let unlinkCleanupRunning = false;
+
+function resumeUnlink(host: Host | null | undefined) {
+  if (unlinkCleanupRunning) return;
+  unlinkCleanupRunning = true;
+  void finishUnlink(host).catch(error => console.warn("Unlink credential cleanup:", (error as Error).message))
+    .finally(() => { unlinkCleanupRunning = false; });
+}
+
+async function finishUnlink(host: Host | null | undefined) {
+  const current = readLink();
+  const pending = current?.localUnlink;
+  if (!current || !pending || !unlinkCleanupLayoutReady(K)) return;
+  if (!pending.completed && KEYS_ON_HOST) {
+    await keyWork(async () => {
+      for (const name of await keyNames()) await deleteKey(name);
+    });
+  }
+  const finished = pending.completed ? current : updateLink(link => {
+    if (!link?.localUnlink || link.localUnlink.operation !== pending.operation || link.localUnlink.completed) return null;
+    clearUnlinkCredentials();
+    const own = ownKey(link);
+    const origin = ownSign(link);
+    if (!own || !origin) return null;
+    const { key, secret, sign, name, relay, startsFromOthers } = link;
+    return { key, secret, sign, name, relay, startsFromOthers, phones: [],
+      localUnlink: { ...link.localUnlink, completed: true },
+      setup: { id: newSetupID(), epoch: 1, primary: own, sign: origin, role: "primary", managed: true } };
+  }, { durable: true });
+  if (!finished) return;
+  if (!pending.completed) {
+    writeAgents(finished);
+    writeCard();
+    noteDocsChanged();
+  }
+  sendRemoval(host, pending.primary, finished, { done: pending.operation, setup: pending.setup, generation: pending.generation });
+}
+
 export function sendRemovalUpdates(host = liveLink()): void {
+  if (readLink()?.localUnlink) resumeUnlink(host);
   if (!removalLayoutReady(K)) return;
   const link = readLink();
   const setup = primary(link);
@@ -173,11 +214,12 @@ function takeInstruction(sender: string, message: Record<string, unknown>, host:
     }, { durable: true });
     return;
   }
+  if (!their.wipe && !unlinkCleanupLayoutReady(K)) return;
   challenge = undefined;
   const changed = updateLink(current => {
     const position = followedSetup(current);
     if (!current || position?.id !== setup.id || position.epoch !== setup.epoch || position.primary !== sender
-      || position.sign !== proof.origin || ownKey(current) !== own || current.localWipe) return null;
+      || position.sign !== proof.origin || ownKey(current) !== own || current.localWipe || current.localUnlink) return null;
     if (their.wipe) {
       current.localWipe = { setup: setup.id, operation, primary: peer, ...(generationOf(their.generation) ? { generation: their.generation } : {}), ...(their.requiresPreparation === true ? { requiresPreparation: true } : {}) };
       current.phones = [];
@@ -185,18 +227,17 @@ function takeInstruction(sender: string, message: Record<string, unknown>, host:
       delete current.appPairing;
       return current;
     }
-    // Drop the old setup's authority and grants. The box's identity and on-disk work stay put.
-    const { key, secret, sign, name, relay, startsFromOthers } = current;
-    return { key, secret, sign, name, relay, startsFromOthers, phones: [],
-      setup: { id: newSetupID(), epoch: 1, primary: own, sign: ownSign(current)!, role: "primary", managed: true } };
+    current.localUnlink = { setup: setup.id, operation, primary: peer,
+      ...(generationOf(their.generation) ? { generation: their.generation } : {}) };
+    current.phones = [];
+    delete current.pairing;
+    delete current.appPairing;
+    return current;
   }, { durable: true });
   if (!changed) return;
   host?.keepOnly(new Set());
   if (their.wipe) { scheduleWipe(); return; }
-  sendRemoval(host, peer, link, { done: operation, setup: setup.id });
-  writeAgents(changed);
-  writeCard();
-  noteDocsChanged();
+  resumeUnlink(host);
 }
 
 function takeOffer(sender: string, message: Record<string, unknown>, host: Host | null | undefined, link: LinkState, from?: Buffer) {
@@ -306,6 +347,16 @@ export function receiveRemovalMail(sender: string, message: Record<string, unkno
     if (!removalLayoutReady(K) || !isObject(message)) return;
     const link = readLink();
     if (!link) return;
+    const unlink = link.localUnlink;
+    if (unlink?.completed && unlink.primary.key === sender && message.setup === unlink.setup && message.recorded === unlink.operation) {
+      updateLink(current => {
+        if (!current?.localUnlink?.completed || current.localUnlink.operation !== unlink.operation) return null;
+        delete current.localUnlink;
+        return current;
+      }, { durable: true });
+      return;
+    }
+    if (unlink && !unlink.completed) return;
     if (receiveRemovalMove(sender, message, host, link)) return;
     const removal = removalsOf(link)[sender];
     if (removal && primary(link)) return deliverToRemoved(sender, message, host, link, removal, from);

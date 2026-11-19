@@ -89,7 +89,9 @@ export interface LinkState {
   computerHistory?: ComputerHistory;
   memberRemovals?: Record<string, MemberRemoval>;
   wipePreparations?: Record<string, WipePreparationClaim>;
+  preJoinPairings?: Phone[];
   localWipe?: LocalWipe;
+  localUnlink?: { setup: string; operation: string; primary: Peer; generation?: string; completed?: true };
   removalSource?: { setup: string; operation: string; moveTo?: string };
   removalAcks?: Record<string, string>;
   /** A removed peer's saved destination, kept until its machines-list cleanup succeeds. */

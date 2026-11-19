@@ -6,12 +6,16 @@ import type { LinkState } from "../state";
 /** A list position follows the computer. Its credentials belong to individual memberships. */
 export interface ComputerHistory {
   setup: string;
-  slots: { key: string; fingerprint?: string; previous?: string[] }[];
+  slots: { key: string; fingerprint?: string; fingerprintSource?: FingerprintSource; previous?: string[] }[];
   retiredSigns: string[];
 }
 
 export const fingerprintOf = (value: unknown) =>
   typeof value === "string" && /^[0-9a-f]{64}$/.test(value) ? value : undefined;
+
+export type FingerprintSource = "platform-uuid" | "dmi-uuid" | "os-id";
+export const fingerprintSourceOf = (value: unknown): FingerprintSource | undefined =>
+  value === "platform-uuid" || value === "dmi-uuid" || value === "os-id" ? value : undefined;
 
 const keyOf = (value: unknown): value is string => typeof value === "string" && KEY.test(value);
 
@@ -22,9 +26,10 @@ export function readComputerHistory(value: unknown, keys: Set<string>, retired: 
     if (!isObject(slot) || !keyOf(slot.key) || !keys.has(slot.key) || seen.has(slot.key)) return [];
     seen.add(slot.key);
     const fingerprint = fingerprintOf(slot.fingerprint);
+    const fingerprintSource = fingerprint && fingerprintSourceOf(slot.fingerprintSource);
     const previous = (Array.isArray(slot.previous) ? slot.previous : []).filter(key => keyOf(key) && retired.has(key) && !seen.has(key));
     for (const key of previous) seen.add(key);
-    return [{ key: slot.key, ...(fingerprint ? { fingerprint } : {}), ...(previous.length ? { previous } : {}) }];
+    return [{ key: slot.key, ...(fingerprint ? { fingerprint } : {}), ...(fingerprintSource ? { fingerprintSource } : {}), ...(previous.length ? { previous } : {}) }];
   });
   const retiredSigns = [...new Set((Array.isArray(value.retiredSigns) ? value.retiredSigns : [])
     .filter((sign): sign is string => typeof sign === "string" && SIGN.test(sign)))];
@@ -43,12 +48,13 @@ export function historyFor(link: LinkState, roster: Peer[]): ComputerHistory | u
   return { ...history, slots: [...history.slots, ...roster.filter(peer => !known.has(peer.key)).map(({ key }) => ({ key }))] };
 }
 
-export function rememberEnrollment(history: ComputerHistory, key: string, fingerprint?: string, previous?: string): void {
+export function rememberEnrollment(history: ComputerHistory, key: string, fingerprint?: string, previous?: string, source?: FingerprintSource): void {
   const index = history.slots.findIndex(slot => slot.key === (previous ?? key));
   const slot = history.slots[index];
   const kept = fingerprint ?? slot?.fingerprint;
   const prior = previous && previous !== key ? [...(slot?.previous ?? []), previous] : slot?.previous;
-  const entry = { key, ...(kept ? { fingerprint: kept } : {}), ...(prior ? { previous: prior } : {}) };
+  const fingerprintSource = source ?? (kept === slot?.fingerprint ? slot?.fingerprintSource : undefined);
+  const entry = { key, ...(kept && fingerprintSource ? { fingerprintSource } : {}), ...(kept ? { fingerprint: kept } : {}), ...(prior ? { previous: prior } : {}) };
   if (index < 0) history.slots.push(entry);
   else history.slots[index] = entry;
 }
@@ -81,6 +87,12 @@ export function enrollmentPredecessor(history: ComputerHistory | undefined, fing
     return chosen;
   }
   return candidates.length === 1 ? candidates[0]?.key : undefined;
+}
+
+/** A cloned OS image is evidence for a suggestion, never authorization to replace a member. */
+export function requiresReplacementConfirmation(history: ComputerHistory | undefined, predecessor: string, source?: FingerprintSource): boolean {
+  const recorded = history?.slots.find(slot => slot.key === predecessor)?.fingerprintSource;
+  return source !== "platform-uuid" && source !== "dmi-uuid" || recorded === "os-id";
 }
 
 /** Restore can approve an unrecorded replacement explicitly, or confirm the same

@@ -47,8 +47,8 @@ import { acceptedMembership, membershipOf } from "../setup/membership";
 import { replacementOutcome, type ReplacementEnrollment } from "../setup/leadership";
 import { enrollStandby } from "../setup/handover";
 import { followedSetup, requiresStandby } from "../setup/record";
-import { computerHistory, enrollmentPredecessor, fingerprintOf, historyFor, orderComputers, rememberEnrollment } from "../setup/computer-history";
-import { SETUP_OCCUPIED } from "../marks";
+import { computerHistory, enrollmentPredecessor, fingerprintOf, fingerprintSourceOf, requiresReplacementConfirmation, type FingerprintSource, historyFor, orderComputers, rememberEnrollment } from "../setup/computer-history";
+import { SETUP_LOCAL_PAIRINGS, SETUP_OCCUPIED } from "../marks";
 
 class AccountOccupied extends Failed {
   constructor(name: string) {
@@ -87,6 +87,7 @@ interface Probed {
   engine: boolean;
   id: string | null;
   fingerprint?: string;
+  fingerprintSource?: FingerprintSource;
   lines: string[];
 }
 
@@ -107,7 +108,7 @@ function probed(answer: string): Probed {
   const said = (name: string) => lines.find(line => line.startsWith(`kuvo ${name} `))?.slice(name.length + 6) ?? "";
   const version = said("version");
   const id = said("id");
-  return { kind, version: /^\d+\.\d+\.\d+/.test(version) ? version : null, updating: lines.includes("kuvo updating"), engine: lines.includes("kuvo engine"), id: /^[0-9a-f]{32}$/.test(id) ? id : null, fingerprint: fingerprintOf(said("fingerprint")), lines };
+  return { kind, version: /^\d+\.\d+\.\d+/.test(version) ? version : null, updating: lines.includes("kuvo updating"), engine: lines.includes("kuvo engine"), id: /^[0-9a-f]{32}$/.test(id) ? id : null, fingerprint: fingerprintOf(said("fingerprint")), fingerprintSource: fingerprintSourceOf(said("fingerprint-source")), lines };
 }
 
 /** Whether the computer has a machine's box, by the installer's rule for it (`machineBoxIn`,
@@ -405,6 +406,7 @@ class AccountReservation {
 interface AddGrant {
   caller?: { key: string; pairing: string };
   replace?: string;
+  discardLocalPairings?: boolean;
   revisions: Record<string, number>;
 }
 
@@ -509,6 +511,7 @@ async function setUp(tell: Telling, destination: string, name: string, kind: "ad
     if (oldFingerprint && probe.fingerprint && oldFingerprint !== probe.fingerprint && grant?.replace !== foundKey) {
       throw new Failed("This computer presents another computer’s membership. Clear the copied Kuvo link before adding it.");
     }
+    checkFingerprintReplacement(link, selected, probe.fingerprintSource, foundKey === expectedKey ? expectedKey : undefined, grant?.replace);
     checkAdd(link, grant, name, predecessor);
     if (predecessor !== foundKey) checkPredecessor(link, predecessor, name);
     if (link) noteKeyNow(link);
@@ -634,7 +637,7 @@ async function setUp(tell: Telling, destination: string, name: string, kind: "ad
         else tell.saving(enrollment, peer);
         tell.commit?.();
         unjoined = false;
-      }, expectedKey, grant, { setup: identitySetup, fingerprint: probe.fingerprint, predecessor, selected });
+      }, expectedKey, grant, { setup: identitySetup, fingerprint: probe.fingerprint, fingerprintSource: probe.fingerprintSource, predecessor, selected });
       unjoined = false;
       // Record a committed enrollment even if clearing the SSH reservation fails.
       // Pending enrollments wait outside the reservation so retries can reach the account.
@@ -658,10 +661,18 @@ async function setUp(tell: Telling, destination: string, name: string, kind: "ad
   if (finish) tell.came(await finish());
 }
 
+function checkFingerprintReplacement(link: LinkState | null, predecessor: string | undefined, source: FingerprintSource | undefined, presented: string | null | undefined, approved: string | undefined) {
+  if (predecessor && predecessor !== presented && predecessor !== approved
+    && peersOf(link).some(peer => peer.key === predecessor)
+    && requiresReplacementConfirmation(computerHistory(link), predecessor, source)) {
+    throw new Failed("This computer has the same system image identity as a setup member. Confirm which computer to replace.", false);
+  }
+}
+
 // Signs the computer into your setup: this box's keys and documents given over SSH (the trust
 // between them), its own taken back, and its record written here, for your other computers and
 // phones to take from this box.
-async function join(tell: Telling, run: Reach["run"], destination: string, name: string, identity: string | null, token: string, staged: (peer: { key: string; name: string }, enrollment: Receipt | ReplacementEnrollment) => void, expectedKey: string | undefined, grant: AddGrant | undefined, match: { setup?: string; fingerprint?: string; predecessor?: string; selected?: string }): Promise<{ waitsForStandby: boolean; finish: () => Promise<{ key: string; name: string }> }> {
+async function join(tell: Telling, run: Reach["run"], destination: string, name: string, identity: string | null, token: string, staged: (peer: { key: string; name: string }, enrollment: Receipt | ReplacementEnrollment) => void, expectedKey: string | undefined, grant: AddGrant | undefined, match: { setup?: string; fingerprint?: string; fingerprintSource?: FingerprintSource; predecessor?: string; selected?: string }): Promise<{ waitsForStandby: boolean; finish: () => Promise<{ key: string; name: string }> }> {
   const beforeLink = readLink();
   const relay = IS_MAC ? macLink.config?.relay : beforeLink?.relay;
   const removedWhileAdding = (link: LinkState | null) => expectedKey && link?.removedHere?.includes(expectedKey);
@@ -669,10 +680,11 @@ async function join(tell: Telling, run: Reach["run"], destination: string, name:
   if (removedWhileAdding(beforeLink)) throw removedDuringAdd(name);
   const gift = await setupGift();
   if (!relay || !gift?.mac) throw new Failed(`${ownName()} isn’t linked to your other computers yet, so it couldn’t add ${name}.`);
-  const keepMemberships = peersOf(beforeLink).flatMap(({ key, sign }) => sign ? [{ key, sign }] : []);
+  const keepMemberships = peersOf(beforeLink).flatMap(({ key, sign }) => sign && key !== grant?.replace ? [{ key, sign }] : []);
   const blockedMemberships = Object.values(removalsOf(beforeLink)).filter(record => record.wipe && !record.delivered).map(record => record.peer.key);
-  const input = { relay, name, keepMemberships, blockedMemberships, mac: gift.mac, macSign: gift.macSign, docs: gift.docs, id: destination, tolerates: 1, macID: launcherID(gift.mac), macName: ownName(), replaces: gift.replaces };
+  const input = { relay, name, keepMemberships, blockedMemberships, discardLocalPairings: grant?.discardLocalPairings, mac: gift.mac, macSign: gift.macSign, docs: gift.docs, id: destination, tolerates: 1, macID: launcherID(gift.mac), macName: ownName(), replaces: gift.replaces };
   const ran = await run(scripts.join(ENGINE_VERSION, token), { input: Buffer.from(JSON.stringify(input)), beforeInput: () => checkAdd(readLink(), grant, name, expectedKey), most: 300_000 });
+  if (ran.status === SETUP_LOCAL_PAIRINGS) throw new Failed(`${name} has locally paired devices that are missing from this setup. Confirm discarding those pairings before adding it.`, false);
   if (ran.status === SETUP_OCCUPIED) throw new AccountOccupied(name);
   let said: unknown = null;
   try { said = JSON.parse(ran.stdout.trim().split("\n").pop() ?? ""); } catch {}
@@ -686,10 +698,12 @@ async function join(tell: Telling, run: Reach["run"], destination: string, name:
     checkAdd(link, grant, name, match.predecessor);
     if (removedWhileAdding(link)) throw removedDuringAdd(name);
     checkFreshKeys(link, peer, name);
+    if (grant?.replace === peer.key) throw new Failed("The replacement must have its own membership keys.");
     if (match.setup && (followedSetup(link)?.id !== match.setup
       || enrollmentPredecessor(computerHistory(link), match.fingerprint, grant?.replace) !== match.selected)) {
       throw new Failed("The computer’s record changed. Start a new add.");
     }
+    checkFingerprintReplacement(link, match.selected, match.fingerprintSource, peer.key === expectedKey ? expectedKey : undefined, grant?.replace);
     if (match.predecessor && match.predecessor !== peer.key) checkPredecessor(link, match.predecessor, name);
     if (match.predecessor && match.predecessor !== peer.key && peersOf(link).some(each => each.key === peer.key)) {
       throw new Failed("This membership already belongs to another computer in the setup.");
@@ -720,7 +734,7 @@ async function join(tell: Telling, run: Reach["run"], destination: string, name:
       if (membership.boxes.length > MOST_PEERS + 1) throw new Failed("The setup already has the maximum number of computers.");
       if (match.setup) {
         const history = historyFor(link, membership.boxes.filter(each => each.key !== peer.key))!;
-        rememberEnrollment(history, peer.key, match.fingerprint, match.predecessor);
+        rememberEnrollment(history, peer.key, match.fingerprint, match.predecessor, match.fingerprintSource);
         membership.computerHistory = history;
         membership.boxes = orderComputers(history, membership.boxes);
       }
@@ -760,7 +774,7 @@ async function join(tell: Telling, run: Reach["run"], destination: string, name:
     if (history) {
       const retired = computerHistory(state);
       if (retired) history.retiredSigns = [...new Set([...history.retiredSigns, ...retired.retiredSigns])];
-      rememberEnrollment(history, peer.key, match.fingerprint, predecessor);
+      rememberEnrollment(history, peer.key, match.fingerprint, predecessor, match.fingerprintSource);
       state.computerHistory = history;
       state.macPeers = orderComputers(history, peersOf(state));
     }
@@ -829,13 +843,13 @@ const uninstalling = (now: Running | undefined): Busy | null => (now?.seen.kind 
 
 /** Begins adding the computer at `destination` (checked first: `addressProblem`, `canAdd`). One
  * being added or set up there already is answered as it is; one being stopped is waited for. */
-export function beginAdd(destination: string, asker?: Asker, replace?: string): Running | Busy {
+export function beginAdd(destination: string, asker?: Asker, replace?: string, discardLocalPairings?: boolean): Running | Busy {
   const now = underWay(destination);
   const link = readLink();
   const key = asker?.key?.toString("base64url");
   const caller = key && pairedPhone(link, key, asker?.pairing);
   if (key && !caller) return { busy: ADD_REVOKED };
-  const grant: AddGrant = { replace, caller: caller ? { key: caller.key, pairing: caller.pairing ?? "" } : undefined, revisions: link?.removalRevisions ?? {} };
+  const grant: AddGrant = { replace, discardLocalPairings, caller: caller ? { key: caller.key, pairing: caller.pairing ?? "" } : undefined, revisions: link?.removalRevisions ?? {} };
   const expected = peerAtDestination(link, destination)?.key;
   return uninstalling(now) ?? now ?? begin("add", destination, destination, SETUP_STEPS, tell => setUp(tell, destination, destination, "add", expected, grant));
 }

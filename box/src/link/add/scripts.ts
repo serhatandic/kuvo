@@ -115,7 +115,7 @@ system_id=$(printf %s "$system_id" | tr 'A-F' 'a-f' | tr -d '-')
 if [ "\${#system_id}" -eq 32 ]; then
   case "$system_id" in
     *[!0-9a-f]*|00000000000000000000000000000000|ffffffffffffffffffffffffffffffff) ;;
-    *) printf 'kuvo fingerprint '; printf 'kuvo-computer-v1:%s:%s:%s' ${quote(setup)} "$source" "$system_id" | sum_of - ;;
+    *) printf 'kuvo fingerprint-source %s\n' "$source"; printf 'kuvo fingerprint '; printf 'kuvo-computer-v1:%s:%s:%s' ${quote(setup)} "$source" "$system_id" | sum_of - ;;
   esac
 fi
 unset system_id`;

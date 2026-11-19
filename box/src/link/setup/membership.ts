@@ -1,6 +1,6 @@
 // Accepted membership is portable. The link fields used by old callers are projections;
 // SSH configuration, the removal delivery queue and local pairing tokens stay on their box.
-import { deviceGrantsLayoutDeferred } from "../../shared/folder-version";
+import { deviceGrantsLayoutDeferred, unlinkCleanupLayoutReady } from "../../shared/folder-version";
 import { isObject } from "../../shared/json";
 import { K } from "../home";
 import type { LinkState, Phone } from "../state";
@@ -106,12 +106,15 @@ export function projectMembership(link: LinkState, membership: Membership, keepL
   const here = setup.role === "primary";
   if (!here && !membership.boxes.some(peer => peer.key === ownKey(link))) {
     link.phones = [];
+    delete link.preJoinPairings;
     delete link.pairing;
     delete link.appPairing;
     return;
   }
   const old = new Map((link.phones ?? []).map(phone => [phone.key, phone]));
-  const local = (link.phones ?? []).filter(phone => phone.from === "pair" && (phone.local || keepLocalPairings)
+  const quarantine = unlinkCleanupLayoutReady(K);
+  const local = [...(link.preJoinPairings ?? []), ...(link.phones ?? [])]
+    .filter(phone => phone.from === "pair" && (phone.local || keepLocalPairings)
     && !membership.devices.removed.some(each => each.key === phone.key && each.pairing === (phone.pairing ?? "")))
     .map((phone): Phone => ({ ...phone, local: true }));
   const transferred = membership.devices.phones.map((phone): Phone => ({
@@ -120,7 +123,15 @@ export function projectMembership(link: LinkState, membership: Membership, keepL
     added: old.get(phone.key)?.added ?? Math.floor(Date.now() / 1000),
     address: old.get(phone.key)?.address ?? phone.address,
   }));
-  link.phones = [...transferred, ...local.filter(phone => !transferred.some(each => each.key === phone.key))];
+  const unmatched = local.filter(phone => !transferred.some(each => each.key === phone.key
+    && (!quarantine || each.pairing === (phone.pairing ?? ""))));
+  if (quarantine) {
+    link.phones = transferred;
+    if (unmatched.length) link.preJoinPairings = unmatched;
+    else delete link.preJoinPairings;
+  } else {
+    link.phones = [...transferred, ...unmatched];
+  }
   link.removed = membership.devices.removed;
   if (membership.computerHistory?.setup === setup.id) link.computerHistory = membership.computerHistory;
   else delete link.computerHistory;

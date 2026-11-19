@@ -9108,6 +9108,9 @@
             "literal": "setup.shared-saves"
            },
            {
+            "literal": "setup.sole-primary"
+           },
+           {
             "literal": "setup.standby-acceptance"
            },
            {
@@ -9910,6 +9913,9 @@
            },
            {
             "literal": "setup.shared-saves"
+           },
+           {
+            "literal": "setup.sole-primary"
            },
            {
             "literal": "setup.standby-acceptance"

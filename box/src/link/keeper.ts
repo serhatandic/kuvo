@@ -20,7 +20,7 @@ export const isBridge = (pid: number) => pid !== process.pid && runs(pid, "kuvo-
 
 // Something to answer: a paired phone, a pairing code waiting, or other boxes of yours to talk to;
 // or a vault, which only this process holds (vault/holder.ts).
-export const needed = (link: LinkState | null | undefined) => Boolean(link && ((link.phones ?? []).length || (link.pairing && Date.now() < link.pairing.expires) || peersOf(link).length || link.localWipe || link.untold?.length || Object.values(removalsOf(link)).some(removalDeliveryPending))) || vaultMade();
+export const needed = (link: LinkState | null | undefined) => Boolean(link && ((link.phones ?? []).length || (link.pairing && Date.now() < link.pairing.expires) || peersOf(link).length || link.localWipe || link.localUnlink || link.untold?.length || Object.values(removalsOf(link)).some(removalDeliveryPending))) || vaultMade();
 
 // Nothing to answer any more (the last phone gone, a pairing run out, no link.json): the keeper
 // starts this bridge no more, unless a pairing began meanwhile.

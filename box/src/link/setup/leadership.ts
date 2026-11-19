@@ -1,7 +1,7 @@
 // A change is authorized by the preceding epoch's sole successor signer. The installed
 // certificate and the local role are written together, before anyone can send the certificate.
 
-import { setupLayoutDeferred } from "../../shared/folder-version";
+import { setupLayoutDeferred, unlinkCleanupLayoutReady } from "../../shared/folder-version";
 import crypto from "node:crypto";
 import type { Doc } from "../../shared/documents";
 import { isObject } from "../../shared/json";
@@ -130,6 +130,10 @@ export function takeLeadership(link: LinkState, doc: Doc, checkpoint?: Doc): boo
   } else if (doc.body.proposal) return false;
   const peers = body.boxes.map(cleanPeer);
   if (new Set(peers.map(peer => peer.key)).size !== peers.length) return false;
+  const retired = doc.body.retiredStandby;
+  if (retired !== undefined && (!unlinkCleanupLayoutReady(K) || takeover || acceptance || !resolved ||
+    !current.standby || retired !== current.standby.key || next.primary !== current.primary || doc.body.standby !== undefined
+    || peers.length !== 2 || !peers.some(peer => peer.key === retired && peer.sign === current.standby!.sign))) return false;
   const primary = peers.find(peer => peer.key === next.primary);
   const standby = peers.find(peer => peer.key === doc.body.standby && peer.key !== next.primary && peer.sign !== primary?.sign);
   if (acceptance && (takeover || !resolved || current.standby || (doc.body.recovery === true && !requiresStandby(current))
@@ -168,7 +172,7 @@ export function takeLeadership(link: LinkState, doc: Doc, checkpoint?: Doc): boo
   const stillHere = here && current.role === "primary";
   if (resolved) preserveCheckpoint(resolved.checkpoint);
   link.setup = { ...next, ...((resolved || current.checkpointed) ? { checkpointed: true as const } : {}), sign: primary.sign, role: here ? "primary" : "member", managed: true,
-    ...(requiresStandby(current) || standby || doc.body.sharedSaves === true ? { sharedSaves: true as const } : {}),
+    ...(retired === undefined && (requiresStandby(current) || standby || doc.body.sharedSaves === true) ? { sharedSaves: true as const } : {}),
     ...(standby?.sign ? { standby: { key: standby.key, sign: standby.sign }, numberCeiling: ceiling as number } : {}),
   };
   link.leadership = { ...link.leadership, [next.epoch]: doc.envelope };

@@ -35,8 +35,8 @@ import { movedFromOldApp } from "../rehome/moved";
 import { tellGone } from "../mac/link";
 import { LIST_FILE, localDestination, peerAtDestination, savedMachines } from "../mac/machines";
 import { setMacPeers } from "../mac/routes";
-import { standbyHere } from "../setup/handover";
-import { leadershipOf, PRIMARY_UNLINK, STANDBY_UNLINK } from "../setup/leadership";
+import { proposeLeadership, standbyHere } from "../setup/handover";
+import { PRIMARY_UNLINK, STANDBY_UNLINK } from "../setup/leadership";
 import { followedSetup, requiresStandby } from "../setup/record";
 import { macName, mainElsewhere } from "../setup/main-only";
 import { macLink, readLink, updateLink } from "../state";
@@ -426,13 +426,14 @@ async function settleComputerRemoval(key: string, pendingOnly: boolean, request:
 async function removePeer(key: string, pendingOnly: boolean, removal?: Omit<MemberRemoval, "peer">, setupID?: string): Promise<Acted> {
   const link = readLink();
   const setup = followedSetup(link);
-  if (!pendingOnly && setup?.role === "primary" && (setup.standby?.key === key
-    || (!setup.standby && leadershipOf(link)?.body.retiredStandby === key))) {
+  if (!pendingOnly && setup?.role === "primary" && setup.standby?.key === key) {
     const candidates = peersOf(link).filter(peer => peer.key !== key && takesForwarded(peer.key, "setup.shared-saves"));
-    if (!candidates.length) return answer(409, { message: STANDBY_UNLINK });
-    let outcome: Acted = answer(409, { message: STANDBY_UNLINK });
+    const position = { setup: setup.id, epoch: setup.epoch };
+    let outcome = peersOf(link).length === 1
+      ? await proposeLeadership(position, setup.primary, null, { retire: key })
+      : answer(409, { message: STANDBY_UNLINK });
     for (const candidate of candidates) {
-      outcome = await standbyHere(candidate.key, { setup: setup.id, epoch: setup.epoch });
+      outcome = await standbyHere(candidate.key, position);
       const current = readLink();
       if (outcome.status === 202) break;
       if (current?.leadershipPending || current?.setup?.id !== setup.id || current.setup.epoch !== setup.epoch) return outcome;

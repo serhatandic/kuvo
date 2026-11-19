@@ -146,7 +146,6 @@ export function phoneTrustWait(link: LinkState | null, key: string, host?: LinkH
   const setup = link.setup;
   if (setup?.aside) return readd;
   if (!setup?.checkpointed && (phone.from !== "mac" || (!setup?.managed && phone.kind !== "desktop"))) return;
-  if (setup?.checkpointed && phone.local) return; // Pairings already local to this box before it joined.
 
   const origin = setup?.checkpointed ? setup.sign : phone.mac && authoritySign(link, phone.mac);
   if (!origin) return readd;

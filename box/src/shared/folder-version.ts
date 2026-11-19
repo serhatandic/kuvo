@@ -44,6 +44,8 @@ const steps: readonly Step[] = [
   // 12. Authorize prepared removals through accepted membership and retain wipe receipts
   // outside the deleted installation. Existing work and legacy removal records stay in place.
   () => {},
+  // 13. Reserve durable credential cleanup and signed final-standby retirement.
+  () => {},
 ];
 
 function migrateDeviceGrants(folder: string): void {
@@ -151,6 +153,11 @@ export function wipePreparationLayoutReady(folder: string): boolean {
 
 export function removalOperationsLayoutReady(folder: string): boolean {
   try { return checkpoint(path.join(folder, FOLDER_VERSION_FILE), steps.length).version >= 12; }
+  catch { return false; }
+}
+
+export function unlinkCleanupLayoutReady(folder: string): boolean {
+  try { return checkpoint(path.join(folder, FOLDER_VERSION_FILE), steps.length).version >= 13; }
   catch { return false; }
 }
 

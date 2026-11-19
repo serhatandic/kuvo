@@ -34,7 +34,7 @@ let ping: { token: string; at: Clock } | undefined;
 let pong: { token: string; reply: string; at: Clock } | undefined;
 let lastPrimary: Clock | undefined;
 let ownPrimarySince: Clock | undefined;
-const candidates = new Map<string, { at: Clock; preferred: boolean; reason: string }>();
+const candidates = new Map<string, { at: Clock; since: Clock; preferred: boolean; reason: string }>();
 
 function reset(setup: Position, now: Clock) {
   const next = `${setup.id}:${setup.epoch}`;
@@ -62,7 +62,9 @@ export function receiveAuthority(sender: MailSender, given: Record<string, unkno
   reset(setup, now);
   if (given.kind === "available" && setup.role === "primary") {
     if (typeof given.preferred !== "boolean" || typeof given.reason !== "string") return;
-    candidates.set(sender.key, { at: now, preferred: given.preferred, reason: given.reason.slice(0, 40) });
+    const last = candidates.get(sender.key);
+    const since = last && fresh(last.at, now, 3 * HEARTBEAT_MS) ? last.since : now;
+    candidates.set(sender.key, { at: now, since, preferred: given.preferred, reason: given.reason.slice(0, 40) });
     const peer = peersOf(link).find(peer => peer.key === sender.key);
     const give = publishedShared(link);
     if (peer && give.length && peer.key !== setup.standby?.key) sendDocs(host, link, [{ to: peer, docs: { give } }]);
@@ -165,7 +167,9 @@ function availableStandby(link: LinkState, now: Clock) {
     const candidate = candidates.get(peer.key);
     return candidate && fresh(candidate.at, now, testSetupClock() ? 10_000 : 3 * HEARTBEAT_MS) ? [{ peer, ...candidate }] : [];
   });
-  available.sort((a, b) => Number(b.preferred) - Number(a.preferred) || (a.peer.key < b.peer.key ? -1 : 1));
+  // Use platform preference during bootstrap, then prefer sustained observed availability.
+  const observed = (since: Clock) => Math.floor((now.uptime - since.uptime) / (6 * HEARTBEAT_MS));
+  available.sort((a, b) => observed(b.since) - observed(a.since) || Number(b.preferred) - Number(a.preferred) || a.peer.key.localeCompare(b.peer.key));
   return available[0];
 }
 

@@ -135,9 +135,9 @@ import { featuresNow, settleUpdate, startSettling } from "./updates/health";
 import { handOverMachine, recoverMachineJob, startMachineInstall, swapEngine } from "./updates/engine-swap";
 import { type UpdateOptions, ON_TRIAL, UPDATING_ALREADY, agentsWorking, dropOldBackups, passingOutcome, updateOnTrial, checkDrift, failedInPassing, offerWaits, isUpdating, noteLauncher, noteOlderMacs, installerSteps, noteUpdate, startOfferedUpdate, startUpdate, takeOffer, untilFree, update, UPDATE_KEYS, releaseRound, updatesBlocked, updateState, updateStatus } from "./updates/update";
 import { clearIncoming, followOver, followPeers, watchHeld } from "./updates/fleet";
-import { checkFolderVersion, setupLayoutDeferred, upgradeKuvoFolder } from "../shared/folder-version";
+import { checkFolderVersion, setupLayoutDeferred, unlinkCleanupLayoutReady, upgradeKuvoFolder } from "../shared/folder-version";
 import { BRIDGE_VERSION } from "./version";
-import { ADD_RESERVATION, SETUP_OCCUPIED } from "./marks";
+import { ADD_RESERVATION, SETUP_LOCAL_PAIRINGS, SETUP_OCCUPIED } from "./marks";
 import type { AddressInfo } from "node:net";
 import type { SignedDoc } from "../shared/documents";
 import type { EngineRecord } from "../shared/records";
@@ -608,7 +608,7 @@ async function run(): Promise<void> {
     const host: LinkHost = new LinkHost({
       key: Buffer.from(link!.key!, "base64url"),
       hello: { v: 1, kind: "machine", name: link!.name || os.hostname(), app: BRIDGE_VERSION, engine: engine.version ?? null },
-      authorize: (key, hello, address, signal) => !readLink()?.localWipe && !readLink()?.removalSource && !localRemovalPending(readLink()) && authorizeDeviceConnection(host, key, hello, address, signal),
+      authorize: (key, hello, address, signal) => !readLink()?.localWipe && !readLink()?.removalSource && !readLink()?.localUnlink && !localRemovalPending(readLink()) && authorizeDeviceConnection(host, key, hello, address, signal),
       confirmed: confirmPhone,
       mail: (from, body) => receiveMail(body, host, (sender, payload) => peerMail(sender, payload, host, peerPlaces), (mac, given, at) => hold.attend(`mac:${mac}`, given, at), from),
       handle: engineHandler(readEngineFile, { name: link!.name || os.hostname() }, readBridgeFile, changed => host.keepOnly(new Set((changed.phones ?? []).map(phone => phone.key))), hold),
@@ -1035,6 +1035,7 @@ interface SetupInput {
   keepMemberships?: unknown;
   /** Revoked static keys whose wipe still needs to run. */
   blockedMemberships?: unknown;
+  discardLocalPairings?: boolean;
 }
 
 // What the Mac sends: the relay, this machine's name, and the phones you've paired with the Mac,
@@ -1060,8 +1061,10 @@ async function setup(): Promise<void> {
   // A legacy SSH add supplies only signed documents. Honor its own revocation
   // even when the client does not send the live roster separately.
   let offeredRoster: ReturnType<typeof readDoc> = null;
+  let offeredPhones: ReturnType<typeof readDoc> = null;
   if (mac && input.macSign && Array.isArray(input.docs)) for (const envelope of input.docs) {
     const doc = readDoc(envelope);
+    if (doc?.kind === "phones" && doc.origin === input.macSign && (!offeredPhones || doc.n > offeredPhones.n)) offeredPhones = doc;
     if (doc?.kind === "peers" && doc.origin === input.macSign && (!offeredRoster || doc.n > offeredRoster.n)) offeredRoster = doc;
   }
   const revocations = new Set(Array.isArray(offeredRoster?.body.left) ? offeredRoster.body.left : []);
@@ -1074,6 +1077,7 @@ async function setup(): Promise<void> {
   let formerMacs: string[] = [];
   let alreadySetUp = false;
   let blockedMembership = false;
+  let blockedPairings = false;
   updateLink(current => {
     let reserved: string | undefined;
     try { reserved = fs.readlinkSync(path.join(path.dirname(K), ADD_RESERVATION)); } catch {}
@@ -1083,7 +1087,7 @@ async function setup(): Promise<void> {
     }
     // Recheck ownership under the same lock used to enroll a peer. A primary that gained
     // members after the SSH probe cannot be enrolled into a different setup.
-    if (current?.localWipe) {
+    if (current?.localWipe || current?.localUnlink) {
       alreadySetUp = true;
       return null;
     }
@@ -1097,6 +1101,21 @@ async function setup(): Promise<void> {
     if (key && Array.isArray(input.blockedMemberships) && input.blockedMemberships.includes(key)) {
       blockedMembership = true;
       return null;
+    }
+    if (mac && current && unlinkCleanupLayoutReady(K)) {
+      const offered = offeredPhones?.body.phones;
+      const revoked = offeredPhones?.body.removed;
+      const matches = (entry: unknown, key: string, pairing: string) => isObject(entry) && entry.key === key && (entry.pairing ?? "") === pairing;
+      const unmatched = [...(current.phones ?? []), ...(current.preJoinPairings ?? [])].some(phone => phone.from === "pair" &&
+        !(Array.isArray(offered) && offered.some(entry => matches(entry, phone.key, phone.pairing ?? "")) &&
+          !(Array.isArray(revoked) && revoked.some(entry => matches(entry, phone.key, phone.pairing ?? "")))));
+      if (unmatched && input.discardLocalPairings !== true) {
+        blockedPairings = true;
+        return null;
+      }
+      // The incoming signed snapshot supplies grants with the same existing pairing IDs.
+      current.phones = current.phones?.filter(phone => phone.from !== "pair");
+      delete current.preJoinPairings;
     }
     const sign = current && ownSign(current);
     // SSH authorizes an enrollment. Only a key pair still on the primary's roster
@@ -1144,6 +1163,10 @@ async function setup(): Promise<void> {
     link = next;
     return next;
   });
+  if (blockedPairings) {
+    console.error("Confirm discarding unmatched local device pairings before joining.");
+    process.exit(SETUP_LOCAL_PAIRINGS);
+  }
   if (blockedMembership) {
     console.error("Wait for the pending wipe before adding this computer again.");
     process.exit(1);

@@ -63,7 +63,7 @@ write(path.join(tools, "ioreg"), `#!/bin/sh
 write(path.join(tools, "cat"), `#!/bin/sh
 case "$1" in
   /sys/class/dmi/id/product_uuid) exec /bin/cat "$HOME/hardware-id" ;;
-  /etc/machine-id) exit 1 ;;
+  /etc/machine-id) exec /bin/cat "$HOME/os-image-id" ;;
 esac
 exec /bin/cat "$@"
 `, 0o755);
@@ -476,7 +476,7 @@ const over = id => until(id, found => !found || found.state === "done" || found.
 const steps = found => found.steps.map(step => `${step.id}:${step.state}`);
 const sshLog = () => (fs.existsSync(path.join(fake, "log")) ? fs.readFileSync(path.join(fake, "log"), "utf8").trim().split("\n") : []);
 // (Two more computers, each a home of its own: a Mac that has Kuvo Code's app, and one with nothing.)
-const homes = Object.fromEntries(["macbook", "mini", "nas", "attic", "race", "claim", "rotate", "interrupted", "network-drop", "release", "add-first", "uninstall-first", "prepare", "old-reservation", "prepare-error", "probe-removal", "stop-uninstall", "primary-member", "late-enrollment", "replacement-standby", "backup-uninstall", "rejoin", "rejoin-neighbor", "rejoin-neighbor-return", "rejoin-clone-name"].map(name => [name, path.join(base, name)]));
+const homes = Object.fromEntries(["macbook", "mini", "nas", "attic", "race", "claim", "rotate", "interrupted", "network-drop", "release", "add-first", "uninstall-first", "prepare", "old-reservation", "prepare-error", "probe-removal", "stop-uninstall", "primary-member", "late-enrollment", "replacement-standby", "backup-uninstall", "rejoin", "rejoin-neighbor", "rejoin-neighbor-return", "rejoin-clone-name", "rejoin-image", "rejoin-image-copy"].map(name => [name, path.join(base, name)]));
 for (const [name, folder] of Object.entries(homes)) {
   fs.mkdirSync(folder, { recursive: true });
   fs.writeFileSync(path.join(fake, `home-${name}`), folder);
@@ -2439,6 +2439,20 @@ test("failure bench: a Linux primary starts fresh, enrolls over SSH and pairs de
     assert.ok(membership(primaryBox).computerHistory.slots.some(slot => slot.key === chosen.key && slot.previous.includes(neighbor.key)));
     for (const { key } of [installed, chosen, distinct]) {
       assert.equal((await primaryApp("DELETE", `kuvo/computers/${key}`)).status, 200);
+    }
+
+    if (process.platform === "linux") {
+      const image = "cccccccc-abcd-4444-8888-cccccccccccc";
+      write(path.join(homes["rejoin-image"], "os-image-id"), image);
+      write(path.join(homes["rejoin-image-copy"], "os-image-id"), image);
+      const original = await add("rejoin-image");
+      await add("rejoin-image-copy", undefined, /Confirm which computer to replace/);
+      assert.ok((await keys()).includes(original.key));
+      const replacement = await add("rejoin-image-copy", original.key);
+      assert.notEqual(replacement.key, original.key);
+      assert.equal(membership(primaryBox).computerHistory.slots.find(slot => slot.key === replacement.key)?.fingerprintSource, "os-id");
+      assert.ok(membership(primaryBox).left.includes(original.key));
+      assert.equal((await primaryApp("DELETE", `kuvo/computers/${replacement.key}`)).status, 200);
     }
   });
 
