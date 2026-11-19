@@ -125,10 +125,10 @@ export class GrokAgent implements Agent {
     return definition ? maintenance(definition, fresh) : {}
   }
 
-  async update() {
+  async update(attempt?: string) {
     const definition = this.definition
     if (!definition) return { updated: false, message: "Grok's CLI isn't installed." }
-    return update(definition, this.context.temporary, { home: this.context.home, program: this.id })
+    return update(definition, this.context.temporary, { home: this.context.home, program: this.id, attempt })
   }
 
   /** Its program, with xAI's installer. */

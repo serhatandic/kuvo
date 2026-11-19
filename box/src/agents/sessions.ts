@@ -8,7 +8,6 @@
 // on its own the next one starts; after Stop, or an error, nothing does until the app says.
 
 import { programInstallation } from "./maintenance"
-import { HOLD_MOST } from "../shared/engine-swap"
 import { pause } from "../shared/wait"
 import { createHash } from "node:crypto"
 import { spawn as spawnProcess } from "node:child_process"
@@ -3492,7 +3491,7 @@ export class Sessions {
   }
 
   /** Fence this program across accounts, then let the turns already admitted finish. */
-  async holdProgram(program: string, confirm: AbortSignal): Promise<() => void> {
+  async holdProgram(program: string, deadline: number): Promise<() => void> {
     const held = Promise.withResolvers<void>()
     this.programHolds.set(program, held.promise)
     const release = () => {
@@ -3508,12 +3507,11 @@ export class Sessions {
       !record.exited && record.meta.kind === program && Object.keys(record.meta.turns ?? {}).length > 0,
     ))
     try {
-      const until = performance.now() + HOLD_MOST
-      while (this.installerRunning(program) || (work() && !confirm.aborted)) {
-        if (performance.now() >= until) throw new Error("This program is still working. Its update can be tried again after the running turns finish.")
-        await pause(100, confirm.aborted ? undefined : confirm)
+      while (Date.now() < deadline) {
+        if (!this.installerRunning(program) && !work()) return release
+        await pause(100)
       }
-      return release
+      throw new Error("The program's update wait expired. Try again after the running turns finish.")
     } catch (error) {
       release()
       throw error

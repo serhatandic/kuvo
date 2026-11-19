@@ -274,17 +274,33 @@ test("an engine change waits for the turns on it, holds what's sent meanwhile on
     });
     assert.equal(during.status, 200, JSON.stringify(during.json));
     assert.deepEqual(during.json, { waits: true }, "the direct prompt queues while engine.json is absent");
+    const app = await send("msg_swapapprestart01", "app during restart");
+    assert.equal(app.status, 200, JSON.stringify(app.json));
+    assert.deepEqual(app.json, { waits: true }, "the app Send route queues while engine.json is absent");
+    const retry = await send("msg_swapapprestart01", "app during restart");
+    assert.equal(retry.status, 200);
+    assert.deepEqual(retry.json, { waits: true });
+    // Keep the coding-agent turn running and hide its record to exercise the no-target path.
+    const bridgeRecord = path.join(RUN, "bridge.json");
+    fs.renameSync(bridgeRecord, bridgeRecord + ".test-hidden");
+    try {
+      const withoutTargets = await send("msg_swapnorecord001", "both records absent");
+      assert.equal(withoutTargets.status, 200, JSON.stringify(withoutTargets.json));
+      assert.deepEqual(withoutTargets.json, { waits: true });
+    } finally {
+      fs.renameSync(bridgeRecord + ".test-hidden", bridgeRecord);
+    }
     assert.deepEqual(prompts(), [], "nothing ran while the engine was down");
   } finally {
     fs.rmSync(pauseStart, { force: true });
   }
   const fresh = await until(() => { const now = engineNow(); return now?.version === "1.1.0" ? now : null; }, "the new engine to run");
   assert.ok(!runs(old.pid), "the old engine stopped");
-  await until(() => prompts().length >= 4, "what was held to reach the new engine", 20_000);
+  await until(() => prompts().length >= 6, "what was held to reach the new engine", 20_000);
   assert.equal(fs.readFileSync(path.join(scratch, "unconfirmed-id"), "utf8"), "msg_swapinbox000001");
   await until(() => !fs.existsSync(path.join(RUN, "engine-swap.json")), "the swap to end");
-  const said = text => ["first", "second", "during restart"].find(words => text.startsWith(words)) ?? text;
-  assert.deepEqual(prompts().map(each => [each.engine, each.id, said(each.text)]), [["1.1.0", "msg_swapinbox000001", "queued before"], ["1.1.0", "msg_swapfirst000001", "first"], ["1.1.0", "msg_swapsecond00001", "second"], ["1.1.0", "msg_swaprestart0001", "during restart"]],
+  const said = text => ["first", "second", "during restart", "app during restart", "both records absent"].find(words => text.startsWith(words)) ?? text;
+  assert.deepEqual(prompts().map(each => [each.engine, each.id, said(each.text)]), [["1.1.0", "msg_swapinbox000001", "queued before"], ["1.1.0", "msg_swapfirst000001", "first"], ["1.1.0", "msg_swapsecond00001", "second"], ["1.1.0", "msg_swaprestart0001", "during restart"], ["1.1.0", "msg_swapapprestart01", "app during restart"], ["1.1.0", "msg_swapnorecord001", "both records absent"]],
     "the old engine's inbox moved onto the box first, then what was sent during the hold: each once, in order, on the new engine");
   assert.equal(prompts()[0].delivery, "steer", "the first starts a turn");
   assert.equal(readJSON(path.join(RUN, "update.json")).engine?.result, "changed");
@@ -292,8 +308,8 @@ test("an engine change waits for the turns on it, holds what's sent meanwhile on
   assert.ok(fs.existsSync(path.join(home, "engine", "1.0.0", "opencode")), "the engine before kept, to go back to");
   // Sent now, it goes straight to the new engine.
   assert.deepEqual((await send("msg_swapthird000001", "third")).json?.waits ?? false, false);
-  await until(() => prompts().length === 5, "a message sent after to go at once");
-  assert.equal(prompts()[4].engine, "1.1.0");
+  await until(() => prompts().length === 7, "a message sent after to go at once");
+  assert.equal(prompts()[6].engine, "1.1.0");
 
   // The coding agent's turn ran through it, on the bridge it began on, which the swap never ended.
   assert.ok(runs(bridge.pid), "the bridge runs on");

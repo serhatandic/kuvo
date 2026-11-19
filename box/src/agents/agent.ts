@@ -475,7 +475,7 @@ export interface Agent {
   /** The version of its program you have, the newest, and how it's updated (an agent you install). */
   maintenance?(fresh?: boolean): Promise<Maintenance>
   /** Updates its program through the installer that owns it. */
-  update?(): Promise<UpdateResult>
+  update?(attempt?: string): Promise<UpdateResult>
   /** Installs its program with its own installer (`install`), where it's yours to install. */
   installProgram?(): Promise<InstallResult>
   /**

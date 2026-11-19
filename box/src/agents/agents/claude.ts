@@ -261,10 +261,10 @@ export class ClaudeAgent implements Agent {
     return definition ? maintenance(definition, fresh) : {}
   }
 
-  async update() {
+  async update(attempt?: string) {
     const definition = this.definition
     if (!definition) return { updated: false, message: "Claude Code isn't installed." }
-    return update(definition, this.context.temporary, { home: this.context.home, program: this.id })
+    return update(definition, this.context.temporary, { home: this.context.home, program: this.id, attempt })
   }
 
   /** Its program, with Anthropic's installer. */

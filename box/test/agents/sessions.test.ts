@@ -268,6 +268,24 @@ describe("what's waiting", () => {
     expect(a.runs.map((run) => run.text)).toEqual(["now", "working", "held", "behind"])
   })
 
+  test("an expired program drain releases queued work and leaves the admitted turn running", async () => {
+    a.script = works
+    const active = create()
+    const waiting = create()
+    send(active, "before the drain")
+    await until(() => a.runs.length === 1)
+
+    const drain = sessions.holdProgram(a.id, Date.now() + 200)
+    const next = send(waiting, "after the deadline")
+    expect(sessions.inbox(waiting).map(item => item.id)).toEqual([next])
+    a.script = replies
+    await expect(drain).rejects.toThrow("update wait expired")
+    await settled(waiting, 1)
+    expect(sessions.active()).toContain(active)
+    expect(a.runs.map(run => run.text)).toEqual(["before the drain", "after the deadline"])
+    await sessions.interrupt(active)
+  })
+
   test("a prompt receipt requires the accepted message ID and a successful disk sync", async () => {
     const id = create()
     a.script = works

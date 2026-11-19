@@ -96,7 +96,7 @@ export function answerHeaders(response: Response): Record<string, string> {
 }
 
 function heldEngineTurn(session: string, kind: string, payload: RequestInit["body"], target: Target | null) {
-  if (!(target ? swapHoldsFor(target, session) : swapHolds(RUN))) return;
+  if (!swapHoldsFor(target, session)) return;
   let body: unknown = null;
   try { body = JSON.parse(payload?.toString() ?? ""); } catch {}
   if (kind === "prompt" && isObject(body) && typeof body.text === "string") {
@@ -109,7 +109,7 @@ function heldEngineTurn(session: string, kind: string, payload: RequestInit["bod
       ...(isObject(body.metadata) ? { metadata: body.metadata } : {}),
     };
     if (keepWaiting(session, message, {}, undefined, target)) return { status: 200, body: { waits: true } };
-    if (target === null && !swapHolds(RUN)) return;
+    if (target === null && !swapHoldsFor(null, session)) return;
   }
   return { status: 503, body: { message: swapLine(swapUnderWay(RUN)) ?? "Kuvo is checking the engine’s inbox.", engineChanging: true } };
 }

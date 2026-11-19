@@ -19720,6 +19720,8 @@ var shownQueue = ({ paused, held, waiting, inboxMoved }) => {
   return { paused, held, ...waiting?.length ? { waiting } : {}, ...line ? { line } : {} };
 };
 function swapHoldsFor(target, session) {
+  if (!target)
+    return swapHolds(RUN);
   if (!swapHolds(RUN) && !(session && queueOf(session).inboxMoved?.length))
     return false;
   try {
@@ -19807,7 +19809,7 @@ var withoutOrder = (state, id) => ({
   ...state.order ? { order: state.order.filter((each) => each !== id) } : {}
 });
 var waitingFile2 = (id) => waitingFile(FILES, id);
-var keepWaiting2 = (session, message, shown = {}, place, target) => keepWaiting(FILES, session, message, shown, tellFollowers, place, target === null ? swapHolds(RUN) : target ? swapHoldsFor(target, session) : false);
+var keepWaiting2 = (session, message, shown = {}, place, target) => keepWaiting(FILES, session, message, shown, tellFollowers, place, target !== undefined && swapHoldsFor(target, session));
 var keepWaitingHeld = (session, message, words) => keepWaiting2(session, message, words === undefined ? {} : { words: words.trim() }, (state, waiting) => {
   const came = (state.cameHeld ?? []).filter((id) => id !== waiting.id);
   const held = state.held.filter((id) => id !== waiting.id);
@@ -57768,7 +57770,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "27f3d7f42893";
+var BRIDGE_VERSION = "e6b6adde5be7";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -73135,7 +73137,7 @@ function answerHeaders(response) {
   return out;
 }
 function heldEngineTurn(session, kind, payload, target) {
-  if (!(target ? swapHoldsFor(target, session) : swapHolds(RUN)))
+  if (!swapHoldsFor(target, session))
     return;
   let body = null;
   try {
@@ -73153,7 +73155,7 @@ function heldEngineTurn(session, kind, payload, target) {
     };
     if (keepWaiting2(session, message, {}, undefined, target))
       return { status: 200, body: { waits: true } };
-    if (target === null && !swapHolds(RUN))
+    if (target === null && !swapHoldsFor(null, session))
       return;
   }
   return { status: 503, body: { message: swapLine(swapUnderWay(RUN)) ?? "Kuvo is checking the engine’s inbox.", engineChanging: true } };
@@ -74588,10 +74590,15 @@ init_home();
 var SEND_ROUTE = /^kuvo\/sessions\/([^/]+)\/send$/;
 var PARTS_ROUTE = "kuvo/messages/parts";
 var PARTS_MOST = 500;
-async function composed(fields, files, session, target, toAgents, request, readEngine, signal, metadata, command = false) {
+function messageFiles(target, signal) {
+  if (!target)
+    return async () => null;
   const base = new URL(`http://127.0.0.1:${target.port}/`);
   const headers = { authorization: `Basic ${Buffer.from(`opencode:${target.password}`).toString("base64")}` };
-  const kept = await keptFiles(files, session, modelInput(base, headers, signal), toAgents);
+  return modelInput(base, headers, signal);
+}
+async function composed(fields, files, session, target, toAgents, request, readEngine, signal, metadata, command = false) {
+  const kept = await keptFiles(files, session, messageFiles(target, signal), toAgents);
   if (command)
     return { text: composeArguments(fields.words, fields.notes, kept ?? {}), files: kept?.files ?? files, metadata: {} };
   const everyone = fields.words.includes("&") ? await everyoneFor(fields.words, readEngine, fields.named ?? []) : listedAgents();
@@ -74603,9 +74610,7 @@ async function composed(fields, files, session, target, toAgents, request, readE
   return { text, files: kept?.files ?? files, metadata: withParts(metadata, parts) };
 }
 async function sentAgain(text, files, session, target, toAgents, signal, metadata) {
-  const base = new URL(`http://127.0.0.1:${target.port}/`);
-  const headers = { authorization: `Basic ${Buffer.from(`opencode:${target.password}`).toString("base64")}` };
-  const kept = await keptFiles(files, session, modelInput(base, headers, signal), toAgents);
+  const kept = await keptFiles(files, session, messageFiles(target, signal), toAgents);
   const written = kept ? withAttachedNote(text, kept.included, kept.paths, true) : text;
   return { text: written, files: kept?.files ?? files, metadata: withParts(metadata, partsOf(written)) };
 }
@@ -74633,7 +74638,7 @@ async function* sendRoute(context, match) {
     finished();
   }
 }
-async function* sending3(context, session) {
+async function* sending3(context, session, retry = true) {
   const { request, readEngine, bridge, signal, json } = context;
   const given = parsed(request.body);
   const again = isObject(given) && typeof given.text === "string" ? given.text : null;
@@ -74646,20 +74651,42 @@ async function* sending3(context, session) {
     return yield* json(400, { message: "There's nothing to send." });
   if (frozen().has(session))
     return yield* json(409, { message: MOVING });
-  const targets = targetsOf2({ readEngine, bridge });
-  if (!targets.length)
-    return yield* json(503, { message: "The engine isn't running." });
-  let place;
+  const engineHere = () => {
+    try {
+      return readEngine();
+    } catch {
+      return null;
+    }
+  };
+  const engine = engineHere();
+  const agents = bridge();
+  const targets = [engine, agents].filter((target) => Boolean(target));
+  let place = null;
   try {
-    place = await placeOfSessionPatiently(session, targets);
+    if (targets.length)
+      place = await placeOfSessionPatiently(session, targets);
   } catch (error) {
-    return yield* json(503, { message: isRefused(error) ? "The engine isn't running." : BUSY });
+    if (retry && engine && !engineHere() && swapHoldsFor(null, session))
+      return yield* sending3(context, session, false);
+    if (!(isRefused(error) && !engineHere() && swapHoldsFor(null, session))) {
+      return yield* json(503, { message: isRefused(error) ? "The engine isn't running." : BUSY });
+    }
   }
-  if (!place)
-    return yield* json(404, { message: "There's no such conversation here." });
-  const target = place.target;
-  const toAgents = bridge()?.port === target.port;
-  const headers = { authorization: `Basic ${Buffer.from(`opencode:${target.password}`).toString("base64")}`, "content-type": "application/json" };
+  if (!place) {
+    const current = engineHere();
+    if (retry && current && current.port !== engine?.port)
+      return yield* sending3(context, session, false);
+    if (current || !swapHoldsFor(null, session)) {
+      if (!targets.length)
+        return yield* json(503, { message: "The engine isn't running." });
+      return yield* json(404, { message: "There's no such conversation here." });
+    }
+  }
+  const target = place?.target ?? null;
+  const toAgents = target !== null && agents?.port === target.port;
+  const headers = { "content-type": "application/json" };
+  if (target)
+    headers.authorization = `Basic ${Buffer.from(`opencode:${target.password}`).toString("base64")}`;
   const asked = Object.fromEntries(Object.entries(request.headers ?? {}).map(([name, value]) => [name.toLowerCase(), value]));
   for (const name of REQUEST_HEADERS)
     if (typeof asked[name] === "string")
@@ -74668,10 +74695,10 @@ async function* sending3(context, session) {
     return yield* json(400, { message: BAD_WAITING_ID });
   const id = !command && isWaitingID(given.id) ? given.id : undefined;
   const typed = command && fields ? commandParts(command, fields.words) : null;
-  const at = `http://127.0.0.1:${target.port}/api/session/${encodeURIComponent(session)}/${command ? "command" : "prompt"}`;
+  const at = target && `http://127.0.0.1:${target.port}/api/session/${encodeURIComponent(session)}/${command ? "command" : "prompt"}`;
   const send = async () => {
     try {
-      const template = typed && !toAgents ? commandTemplate(target, folderOf4(place.data), command, signal) : null;
+      const template = typed && !toAgents && place ? commandTemplate(place.target, folderOf4(place.data), command, signal) : null;
       const message = fields ? await composed(fields, files, session, target, toAgents, request, readEngine, command ? signal : undefined, undefined, command !== null) : await sentAgain(again, files, session, target, toAgents);
       return await admitPrompt(session, async () => {
         const held = heldAsItComes(session, id);
@@ -74687,6 +74714,8 @@ async function* sending3(context, session) {
         if (!command && (delivery === "queue" || holding) && keepWaiting2(session, body, { words: (typeof given.words === "string" ? given.words : fields?.words ?? message.text).trim() }, undefined, target)) {
           return { status: 200, headers: { "content-type": "application/json" }, body: Buffer.from(JSON.stringify({ waits: true })) };
         }
+        if (!target || !at)
+          return { status: 503, headers: { "content-type": "application/json" }, body: Buffer.from(JSON.stringify({ message: "The engine isn't running." })) };
         const post = async () => {
           const response = await fetch(at, { method: "POST", headers, body: JSON.stringify(body), signal: command ? signal : undefined });
           return { status: response.status, headers: answerHeaders(response), body: Buffer.from(await response.arrayBuffer()) };
@@ -74708,7 +74737,10 @@ async function* sending3(context, session) {
     }
   };
   const once = command ? null : sentKey(toAgents ? "agents" : "engine", session, request.body);
-  return yield* answering2(once ? await sentOnce(once, send) : await send());
+  const answer = once ? await sentOnce(once, send) : await send();
+  if (!target && retry && answer.status === 503 && engineHere())
+    return yield* sending3(context, session, false);
+  return yield* answering2(answer);
 }
 async function* partsRoute(context) {
   const { request, json } = context;

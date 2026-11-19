@@ -23,7 +23,7 @@ import { voiceRoutes, type VoiceWords } from "./voice"
 import { limitsRoutes, type Limits } from "./limits"
 import { usageRoutes, type Usage } from "./usage/usage"
 import { isOutdated, type Maintenance } from "./maintenance"
-import { forgetUpdate, inUpdateAll, programUpdate, updateAll, updateProgram } from "./updates"
+import { forgetUpdate, inUpdateAll, programUpdate, resumeProgramUpdates, updateAll, updateProgram } from "./updates"
 import { refreshLoginPath } from "./proc"
 import { setToolServer } from "./kuvotools"
 import { noteToolServer } from "./fence"
@@ -47,6 +47,8 @@ export interface Context {
   auto: Auto
   link: EngineLink
   password: string
+  /** Where accepted program updates wait across a bridge restart. */
+  programHome?: string
   version: string
   /** The build it runs, as its bundle names it (none run from its sources). */
   build?: string | null
@@ -236,6 +238,8 @@ export function handler(context: Context) {
   const { sessions, roster, auto, link } = context
   const agentFor = (id: string) => roster.find(id)
   const note = (agent: Agent, value: Maintenance) => maintainedNow(agent, value, roster.all().filter(each => each.id === agent.id))
+  const programs = { home: context.programHome, hold: sessions?.holdProgram.bind(sessions) }
+  resumeProgramUpdates(() => roster.all(), note, programs)
   const accounts = new AccountRefresh(context.limits)
   const signedIn = (agent: Agent) => void accounts.signedIn(agent).then(() => context.usage?.refresh()).catch(() => {})
   if (context.refreshAccounts) {
@@ -601,10 +605,9 @@ export function handler(context: Context) {
       // picks (`metadata.updateAll`); `POST kuvo/updates/<provider>`: that account's program;
       // `DELETE kuvo/updates/<provider>?at=…`: how that one went, seen, for every client.
       if (area === "kuvo" && a === "updates" && !c) {
-        const hold = sessions?.holdProgram.bind(sessions)
         if (!b) {
           if (method !== "POST") return error(405, "Not allowed.")
-          return json({ data: { updating: await updateAll(roster.all(), () => roster.all(), maintainedNow, (agent) => lastMaintained.get(agent.id), hold) } })
+          return json({ data: { updating: await updateAll(roster.all(), () => roster.all(), maintainedNow, (agent) => lastMaintained.get(agent.id), programs) } })
         }
         const agent = agentFor(b)
         if (!agent) return error(404, `No agent ${b}.`)
@@ -617,8 +620,7 @@ export function handler(context: Context) {
         }
         if (method !== "POST") return error(405, "Not allowed.")
         if (!agent.update || !agent.maintenance) return error(400, `Update ${agent.name} the way you installed it.`)
-        const confirmed = (await body())?.confirmed === true
-        void updateProgram(agent, () => roster.all(), maintainedNow, hold, confirmed)
+        void updateProgram(agent, () => roster.all(), maintainedNow, programs)
         return json({ data: { updating: [agent.id] } })
       }
 

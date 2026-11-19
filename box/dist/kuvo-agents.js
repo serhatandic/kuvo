@@ -17754,6 +17754,25 @@ async function maintenance(definition, fresh = false) {
 function isOutdated(maintenance) {
   return Boolean(maintenance.installed && maintenance.latest && compareVersions(maintenance.installed, maintenance.latest) < 0);
 }
+function programInstallerStarted(home, program, attempt) {
+  try {
+    const [pid, , owner] = readFileSync25(installFile(home, program), "utf8").split(" ");
+    return owner === attempt && Number(pid) > 0;
+  } catch {
+    return false;
+  }
+}
+function finishProgramInstallation(home, program, attempt) {
+  const marker = installFile(home, program);
+  let owner;
+  try {
+    owner = readFileSync25(marker, "utf8").split(" ")[2];
+  } catch {
+    return;
+  }
+  if (owner === attempt)
+    rmSync13(marker, { force: true });
+}
 function programInstallation(home, program) {
   if (!/^[a-z][a-z0-9-]*$/.test(program))
     return;
@@ -17781,7 +17800,7 @@ function update(definition, temporary, install) {
     const marker = install && installFile(install.home, install.program);
     if (marker) {
       mkdirSync17(dirname14(marker), { recursive: true, mode: 448 });
-      writeSecret(marker, `0 ${Date.now() + INSTALL_TIMEOUT + 3000}`);
+      writeSecret(marker, `0 ${Date.now() + INSTALL_TIMEOUT + 3000} ${install?.attempt ?? ""}`);
     }
     const ran = await runGroup(before.command[0], before.command.slice(1), {
       cwd: temporary,
@@ -17789,13 +17808,13 @@ function update(definition, temporary, install) {
       timeout: INSTALL_TIMEOUT,
       started: marker ? (pid) => {
         try {
-          writeSecret(marker, `${pid} 0`);
+          writeSecret(marker, `${pid} 0 ${install?.attempt ?? ""}`);
         } catch (error) {
           console.error("Couldn't record the installer process group:", error);
         }
       } : undefined
     }).finally(() => {
-      if (marker)
+      if (marker && !install?.attempt)
         rmSync13(marker, { force: true });
     });
     const after = await maintenance(definition, true);
@@ -20284,11 +20303,11 @@ var init_claude = __esm(() => {
       const definition = this.definition;
       return definition ? maintenance(definition, fresh) : {};
     }
-    async update() {
+    async update(attempt) {
       const definition = this.definition;
       if (!definition)
         return { updated: false, message: "Claude Code isn't installed." };
-      return update(definition, this.context.temporary, { home: this.context.home, program: this.id });
+      return update(definition, this.context.temporary, { home: this.context.home, program: this.id, attempt });
     }
     async installProgram() {
       return install("Claude Code", this.install, this.context.temporary, () => this.executable());
@@ -21285,11 +21304,11 @@ class CodexAgent {
     const definition = this.definition;
     return definition ? maintenance(definition, fresh) : {};
   }
-  async update() {
+  async update(attempt) {
     const definition = this.definition;
     if (!definition)
       return { updated: false, message: "Codex isn't installed." };
-    return update(definition, this.context.temporary, { home: this.context.home, program: this.id });
+    return update(definition, this.context.temporary, { home: this.context.home, program: this.id, attempt });
   }
   async installProgram() {
     return install("Codex", this.install, this.context.temporary, () => this.executable());
@@ -25174,11 +25193,11 @@ class GrokAgent {
     const definition = this.definition;
     return definition ? maintenance(definition, fresh) : {};
   }
-  async update() {
+  async update(attempt) {
     const definition = this.definition;
     if (!definition)
       return { updated: false, message: "Grok's CLI isn't installed." };
-    return update(definition, this.context.temporary, { home: this.context.home, program: this.id });
+    return update(definition, this.context.temporary, { home: this.context.home, program: this.id, attempt });
   }
   async installProgram() {
     return install("Grok's CLI", this.install, this.context.temporary, () => this.executable());
@@ -29210,135 +29229,6 @@ var init_usage = __esm(() => {
   SCAN_EVERY2 = 5 * MINUTE3;
 });
 
-// box/src/agents/updates.ts
-function isUpdating(program) {
-  return underWay2.has(program);
-}
-function updatesUnderWay() {
-  return underWay2.size > 0;
-}
-function programUpdate(program, installed, now = Date.now()) {
-  const update = kept2.get(program);
-  if (!update || update.state === "updating")
-    return update;
-  const movedOn = installed !== undefined && update.version !== undefined && compareVersions(installed, update.version) > 0;
-  const old = update.state !== "failed" && now - update.at > NEWS_KEPT;
-  if (!movedOn && !old)
-    return update;
-  kept2.delete(program);
-  return;
-}
-function forgetUpdate(program, at) {
-  const update = kept2.get(program);
-  if (!update || update.state === "updating" || at !== undefined && update.at !== at)
-    return false;
-  kept2.delete(program);
-  return true;
-}
-function inUpdateAll(agent, maintained) {
-  return Boolean(agent.update && maintained?.command && isOutdated(maintained) && !isUpdating(agent.id));
-}
-function told3(agent, accounts) {
-  for (const each of accounts)
-    if (each.id === agent.id)
-      emit("integration.updated", { integrationID: each.providerID });
-}
-function outcome(result) {
-  const at = Date.now();
-  if (result.message && !result.updated)
-    return { state: "failed", message: result.message, version: result.version, at };
-  if (result.version)
-    return { state: result.updated ? "updated" : "current", version: result.version, at };
-  return { state: "failed", message: "The update finished without saying which version it left.", at };
-}
-function updateProgram(agent, accounts, noted, hold, confirmed = false) {
-  const program = agent.id;
-  const running = underWay2.get(program);
-  if (running) {
-    if (confirmed)
-      running.confirm.abort();
-    return running.done;
-  }
-  const confirm = new AbortController;
-  if (confirmed)
-    confirm.abort();
-  kept2.set(program, { state: "updating", at: Date.now() });
-  const done = (async () => {
-    let result = { updated: false, message: "The update stopped without saying how it went." };
-    await null;
-    let release;
-    try {
-      release = await hold?.(program, confirm.signal);
-      result = agent.update ? await agent.update() : { updated: false, message: `Update ${agent.name} the way you installed it.` };
-      const maintained = await agent.maintenance?.().catch(() => {
-        return;
-      });
-      if (maintained)
-        noted(agent, maintained);
-      if (result.updated) {
-        for (const each of accounts())
-          if (each.id === program)
-            each.programUpdated?.();
-      }
-    } catch (error) {
-      if (!result.updated)
-        result = { updated: false, message: String(error?.message ?? error) };
-    } finally {
-      kept2.set(program, outcome(result));
-      underWay2.delete(program);
-      told3(agent, accounts());
-      if (result.updated)
-        emit("model.updated", { program });
-      release?.();
-    }
-    return result;
-  })();
-  underWay2.set(program, { done, confirm });
-  told3(agent, accounts());
-  return done;
-}
-async function updateAll(agents, accounts, noted, known, hold) {
-  const byProgram = new Map;
-  const ordered = [...agents.filter((agent) => agent.instance.id === "default"), ...agents.filter((agent) => agent.instance.id !== "default")];
-  for (const agent of ordered) {
-    if (!agent.update || !agent.maintenance)
-      continue;
-    byProgram.set(agent.id, [...byProgram.get(agent.id) ?? [], agent]);
-  }
-  const picked = await Promise.all([...byProgram.values()].map(async (candidates) => {
-    if (isUpdating(candidates[0].id))
-      return;
-    for (const agent of candidates) {
-      let maintained = known(agent);
-      if (!maintained)
-        maintained = await agent.maintenance().catch(() => {
-          return;
-        });
-      if (maintained && noted(agent, maintained))
-        emit("integration.updated", { integrationID: agent.providerID });
-      if (inUpdateAll(agent, maintained))
-        return agent;
-    }
-    return;
-  }));
-  const started = [];
-  for (const agent of picked) {
-    if (!agent || isUpdating(agent.id))
-      continue;
-    updateProgram(agent, accounts, noted, hold);
-    started.push(agent.id);
-  }
-  return started;
-}
-var NEWS_KEPT, kept2, underWay2;
-var init_updates = __esm(() => {
-  init_events();
-  init_maintenance();
-  NEWS_KEPT = 60 * 60000;
-  kept2 = new Map;
-  underWay2 = new Map;
-});
-
 // box/src/shared/engine-swap.ts
 import fs6 from "fs";
 import path5 from "path";
@@ -29394,6 +29284,183 @@ var init_engine_swap = __esm(() => {
   init_platform();
   HOLD_MOST = 30 * 60000;
   SWAP_MOST = 30 * 60000;
+});
+
+// box/src/agents/updates.ts
+import { randomUUID as randomUUID4 } from "crypto";
+import { readdirSync as readdirSync21, readFileSync as readFileSync35, rmSync as rmSync18 } from "fs";
+import { join as join39 } from "path";
+function isUpdating(program) {
+  return underWay2.has(program);
+}
+function updatesUnderWay() {
+  return underWay2.size > 0;
+}
+function programUpdate(program, installed, now = Date.now()) {
+  const update = kept2.get(program);
+  if (!update || update.state === "updating")
+    return update;
+  const movedOn = installed !== undefined && update.version !== undefined && compareVersions(installed, update.version) > 0;
+  const old = update.state !== "failed" && now - update.at > NEWS_KEPT;
+  if (!movedOn && !old)
+    return update;
+  kept2.delete(program);
+  return;
+}
+function forgetUpdate(program, at) {
+  const update = kept2.get(program);
+  if (!update || update.state === "updating" || at !== undefined && update.at !== at)
+    return false;
+  kept2.delete(program);
+  return true;
+}
+function inUpdateAll(agent, maintained) {
+  return Boolean(agent.update && maintained?.command && isOutdated(maintained) && !isUpdating(agent.id));
+}
+function told3(agent, accounts) {
+  for (const each of accounts)
+    if (each.id === agent.id)
+      emit("integration.updated", { integrationID: each.providerID });
+}
+function outcome(result) {
+  const at = Date.now();
+  if (result.message && !result.updated)
+    return { state: "failed", message: result.message, version: result.version, at };
+  if (result.version)
+    return { state: result.updated ? "updated" : "current", version: result.version, at };
+  return { state: "failed", message: "The update finished without saying which version it left.", at };
+}
+function resumeProgramUpdates(accounts, noted, control) {
+  const home = control.home;
+  if (!home)
+    return;
+  let names;
+  try {
+    names = readdirSync21(drainsIn(home));
+  } catch {
+    return;
+  }
+  for (const name of names) {
+    const program = /^([a-z][a-z0-9-]*)\.json$/.exec(name)?.[1];
+    if (!program)
+      continue;
+    const file = drainFile(home, program);
+    try {
+      const drain = JSON.parse(readFileSync35(file, "utf8"));
+      if (typeof drain.provider !== "string" || !Number.isFinite(drain.deadline) || typeof drain.attempt !== "string" || !/^[a-f0-9-]{36}$/.test(drain.attempt))
+        continue;
+      if (programInstallerStarted(home, program, drain.attempt)) {
+        rmSync18(file, { force: true });
+        continue;
+      }
+      const candidates = accounts().filter((agent) => agent.id === program && agent.update);
+      const agent = candidates.find((agent) => agent.providerID === drain.provider) ?? candidates[0];
+      if (agent)
+        updateProgram(agent, accounts, noted, control, drain);
+      else {
+        kept2.set(program, outcome({ updated: false, message: "This program can no longer be updated here." }));
+        rmSync18(file, { force: true });
+      }
+    } catch (error) {
+      console.error("Couldn't restore a program update:", error);
+    }
+  }
+}
+function updateProgram(agent, accounts, noted, control = {}, saved) {
+  const program = agent.id;
+  const running = underWay2.get(program);
+  if (running)
+    return running;
+  const drain = saved ?? { attempt: randomUUID4(), provider: agent.providerID, deadline: Date.now() + HOLD_MOST };
+  const home = control.home;
+  const file = home && drainFile(home, program);
+  if (file && !saved)
+    writeDurablePrivate(file, JSON.stringify(drain), home);
+  kept2.set(program, { state: "updating", at: drain.deadline - HOLD_MOST });
+  const done = (async () => {
+    let result = { updated: false, message: "The update stopped without saying how it went." };
+    let release;
+    try {
+      release = await (async () => control.hold?.(program, drain.deadline))();
+      result = agent.update ? await agent.update(home ? drain.attempt : undefined) : { updated: false, message: `Update ${agent.name} the way you installed it.` };
+      const maintained = await agent.maintenance?.().catch(() => {
+        return;
+      });
+      if (maintained)
+        noted(agent, maintained);
+      if (result.updated) {
+        for (const each of accounts())
+          if (each.id === program)
+            each.programUpdated?.();
+      }
+    } catch (error) {
+      if (!result.updated)
+        result = { updated: false, message: String(error?.message ?? error) };
+    } finally {
+      kept2.set(program, outcome(result));
+      underWay2.delete(program);
+      told3(agent, accounts());
+      if (result.updated)
+        emit("model.updated", { program });
+      try {
+        if (home && file) {
+          rmSync18(file, { force: true });
+          finishProgramInstallation(home, program, drain.attempt);
+        }
+      } catch (error) {
+        console.error("Couldn't retire a program update:", error);
+      } finally {
+        release?.();
+      }
+    }
+    return result;
+  })();
+  underWay2.set(program, done);
+  told3(agent, accounts());
+  return done;
+}
+async function updateAll(agents, accounts, noted, known, control) {
+  const byProgram = new Map;
+  const ordered = [...agents.filter((agent) => agent.instance.id === "default"), ...agents.filter((agent) => agent.instance.id !== "default")];
+  for (const agent of ordered) {
+    if (!agent.update || !agent.maintenance)
+      continue;
+    byProgram.set(agent.id, [...byProgram.get(agent.id) ?? [], agent]);
+  }
+  const picked = await Promise.all([...byProgram.values()].map(async (candidates) => {
+    if (isUpdating(candidates[0].id))
+      return;
+    for (const agent of candidates) {
+      let maintained = known(agent);
+      if (!maintained)
+        maintained = await agent.maintenance().catch(() => {
+          return;
+        });
+      if (maintained && noted(agent, maintained))
+        emit("integration.updated", { integrationID: agent.providerID });
+      if (inUpdateAll(agent, maintained))
+        return agent;
+    }
+    return;
+  }));
+  const started = [];
+  for (const agent of picked) {
+    if (!agent || isUpdating(agent.id))
+      continue;
+    updateProgram(agent, accounts, noted, control);
+    started.push(agent.id);
+  }
+  return started;
+}
+var NEWS_KEPT, kept2, underWay2, drainsIn = (home) => join39(home, "program-draining"), drainFile = (home, program) => join39(drainsIn(home), program + ".json");
+var init_updates = __esm(() => {
+  init_engine_swap();
+  init_files();
+  init_events();
+  init_maintenance();
+  NEWS_KEPT = 60 * 60000;
+  kept2 = new Map;
+  underWay2 = new Map;
 });
 
 // box/src/agents/handover.ts
@@ -29988,9 +30055,9 @@ var init_text = () => {};
 // box/src/agents/sessions.ts
 import { createHash as createHash18 } from "crypto";
 import { spawn as spawnProcess } from "child_process";
-import { readFileSync as readFileSync35, realpathSync as realpathSync11, statSync as statSync16 } from "fs";
+import { readFileSync as readFileSync36, realpathSync as realpathSync11, statSync as statSync16 } from "fs";
 import { homedir as homedir6 } from "os";
-import { dirname as dirname20, join as join39, resolve as resolve8 } from "path";
+import { dirname as dirname20, join as join40, resolve as resolve8 } from "path";
 import { fileURLToPath as fileURLToPath2 } from "url";
 function turnInput(message) {
   return message.type === "user" || message.type === "synthetic" && !message.metadata?.kuvo?.notice;
@@ -30479,15 +30546,15 @@ function hidesFromBlocks(blocks, ask) {
   return ask.resources.some((line) => !parseCommands(line.trim()).sure);
 }
 function ownPlaces() {
-  const places = [process.env.KUVO_AGENTS_HOME, process.env.TMPDIR?.replace(/\/$/, ""), join39(homedir6(), ".claude", "plans")].filter((place) => Boolean(place));
+  const places = [process.env.KUVO_AGENTS_HOME, process.env.TMPDIR?.replace(/\/$/, ""), join40(homedir6(), ".claude", "plans")].filter((place) => Boolean(place));
   if (process.env.KUVO_AGENTS_HOME && !onMachine)
-    places.push(join39(dirname20(process.env.KUVO_AGENTS_HOME), "Attachments"));
+    places.push(join40(dirname20(process.env.KUVO_AGENTS_HOME), "Attachments"));
   return [...places, ...skillFolders()];
 }
 function outsidePaths(ask, directory, attached, own = ownPlaces(), owns) {
   if (!fileActions.has(ask.action))
     return [];
-  const paths = ask.resources.filter((resource) => resource && resource !== "*" && (resource.startsWith("/") || resource.startsWith("~/") || !/[*?[]/.test(resource))).map((resource) => resolve8(directory, resource.startsWith("~/") ? join39(homedir6(), resource.slice(2)) : resource));
+  const paths = ask.resources.filter((resource) => resource && resource !== "*" && (resource.startsWith("/") || resource.startsWith("~/") || !/[*?[]/.test(resource))).map((resource) => resolve8(directory, resource.startsWith("~/") ? join40(homedir6(), resource.slice(2)) : resource));
   const places = [directory, realFolder(directory), ...own];
   return paths.filter((path) => !within2(path, places) && !attached.has(path) && !owns?.(path));
 }
@@ -30499,7 +30566,7 @@ function realFolder(folder) {
   }
 }
 function outsideFolders(ask, paths) {
-  return [...new Set(paths.map((path) => join39(isFolder2(path, ask.action) ? path : dirname20(path), "*")))];
+  return [...new Set(paths.map((path) => join40(isFolder2(path, ask.action) ? path : dirname20(path), "*")))];
 }
 function outsideRefusable(ask, paths, folders) {
   return [...paths.filter((path) => !isFolder2(path, ask.action)), ...folders];
@@ -32951,7 +33018,7 @@ ${live.agentPrompt}` : ""
         this.programUses.delete(program);
     }
   }
-  async holdProgram(program, confirm) {
+  async holdProgram(program, deadline) {
     const held = Promise.withResolvers();
     this.programHolds.set(program, held.promise);
     const release = () => {
@@ -32962,13 +33029,12 @@ ${live.agentPrompt}` : ""
     const holders = program === "claude" || program === "codex" || program === "grok" ? agentHoldFolder(program) : undefined;
     const work = () => this.programUses.has(program) || [...this.live.values()].some((live) => this.agent(live.own?.adopt?.providerID ?? "")?.id === program || [...live.threads].some(([provider, thread]) => thread.keepsWorking && this.agent(provider)?.id === program)) || holders !== undefined && heldIn(holders).some((record) => !record.exited && record.meta.kind === program && Object.keys(record.meta.turns ?? {}).length > 0);
     try {
-      const until = performance.now() + HOLD_MOST;
-      while (this.installerRunning(program) || work() && !confirm.aborted) {
-        if (performance.now() >= until)
-          throw new Error("This program is still working. Its update can be tried again after the running turns finish.");
-        await pause(100, confirm.aborted ? undefined : confirm);
+      while (Date.now() < deadline) {
+        if (!this.installerRunning(program) && !work())
+          return release;
+        await pause(100);
       }
-      return release;
+      throw new Error("The program's update wait expired. Try again after the running turns finish.");
     } catch (error) {
       release();
       throw error;
@@ -33090,7 +33156,7 @@ function withTextFiles(text, files) {
     let contents;
     if (!file.mime.startsWith("image/") && file.mime !== "application/pdf") {
       try {
-        const bytes = file.data ? Buffer.from(file.data, "base64") : file.path && statSync16(file.path).isFile() && statSync16(file.path).size <= textFileLimit ? readFileSync35(file.path) : undefined;
+        const bytes = file.data ? Buffer.from(file.data, "base64") : file.path && statSync16(file.path).isFile() && statSync16(file.path).size <= textFileLimit ? readFileSync36(file.path) : undefined;
         if (bytes && !bytes.includes(0))
           contents = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
       } catch {}
@@ -33149,7 +33215,6 @@ async function signedOut(agent) {
 var legacyKeys, carryOn = "Carry on with my last message from where you left off: you're on another model now.", timing, changes2, shellProcesses, shellTimeout, shellOutputLimit = 50000, engineDefaults, shellKeywords, wrappers, fileActions, madeForAuto = (session) => session.metadata?.kuvo?.applied === "auto", EDITS, sameKind = (saved, asked) => saved === asked || EDITS.has(saved) && EDITS.has(asked), KIND_WORDS, RUNS_ANOTHER, agentActions, looks2, NotFound, BadRequest, textFileLimit;
 var init_sessions = __esm(() => {
   init_maintenance();
-  init_engine_swap();
   init_agent();
   init_accounts();
   init_codex_citations();
@@ -33508,8 +33573,8 @@ var init_format_version = __esm(() => {
 });
 
 // box/src/agents/store.ts
-import { mkdirSync as mkdirSync26, readdirSync as readdirSync21, readFileSync as readFileSync36, renameSync as renameSync21, rmSync as rmSync18, statSync as statSync17, writeFileSync as writeFileSync26 } from "fs";
-import { join as join40 } from "path";
+import { mkdirSync as mkdirSync26, readdirSync as readdirSync22, readFileSync as readFileSync37, renameSync as renameSync21, rmSync as rmSync19, statSync as statSync17, writeFileSync as writeFileSync26 } from "fs";
+import { join as join41 } from "path";
 
 class Store {
   root;
@@ -33523,17 +33588,17 @@ class Store {
     this.root = root;
     this.provisional = provisional;
     mkdirSync26(root, { recursive: true });
-    for (const id of readdirSync21(root)) {
+    for (const id of readdirSync22(root)) {
       try {
-        const folder = join40(root, id);
-        const session = readSession(JSON.parse(readFileSync36(join40(folder, "session.json"), "utf8")));
+        const folder = join41(root, id);
+        const session = readSession(JSON.parse(readFileSync37(join41(folder, "session.json"), "utf8")));
         let messages = [];
         try {
-          messages = JSON.parse(readFileSync36(join40(folder, "messages.json"), "utf8"));
+          messages = JSON.parse(readFileSync37(join41(folder, "messages.json"), "utf8"));
         } catch {}
         let agent = {};
         try {
-          agent = JSON.parse(readFileSync36(join40(folder, "agent.json"), "utf8"));
+          agent = JSON.parse(readFileSync37(join41(folder, "agent.json"), "utf8"));
         } catch {}
         this.records.set(session.id, { session, messages, agent });
       } catch {}
@@ -33546,7 +33611,7 @@ class Store {
     return this.records.get(id);
   }
   fileOf(id, name) {
-    return join40(this.root, id, name);
+    return join41(this.root, id, name);
   }
   addWhole(record) {
     this.checkWritable(record.session.id);
@@ -33555,7 +33620,7 @@ class Store {
   }
   writtenAt(id) {
     try {
-      return statSync17(join40(this.root, id, "messages.json")).mtimeMs;
+      return statSync17(join41(this.root, id, "messages.json")).mtimeMs;
     } catch {
       return;
     }
@@ -33570,7 +33635,7 @@ class Store {
     this.records.delete(id);
     clearTimeout(this.pending.get(id));
     this.pending.delete(id);
-    rmSync18(join40(this.root, id), { recursive: true, force: true });
+    rmSync19(join41(this.root, id), { recursive: true, force: true });
   }
   save(id, now = false) {
     if (this.provisional) {
@@ -33612,7 +33677,7 @@ class Store {
   }
   checkWritable(id) {
     try {
-      readSession(JSON.parse(readFileSync36(this.fileOf(id, "session.json"), "utf8")));
+      readSession(JSON.parse(readFileSync37(this.fileOf(id, "session.json"), "utf8")));
     } catch (error) {
       if (error instanceof UnsupportedFormatVersion)
         throw error;
@@ -33620,10 +33685,10 @@ class Store {
   }
   writeRecord(id, record, durable = false) {
     this.checkWritable(id);
-    const folder = join40(this.root, id);
+    const folder = join41(this.root, id);
     mkdirSync26(folder, { recursive: true });
     for (const [name, value] of [["session.json", sessionFormat.write(record.session)], ["messages.json", record.messages], ["agent.json", record.agent]]) {
-      const file = join40(folder, name);
+      const file = join41(folder, name);
       const text = JSON.stringify(value);
       if (durable)
         writeDurablePrivate(file, text, this.root);
@@ -33660,7 +33725,7 @@ var init_store2 = __esm(() => {
 import { createHash as createHash19 } from "crypto";
 import { createReadStream } from "fs";
 import { copyFile, lstat as lstat2, mkdir, readFile as readFile4, readdir as readdir2, rename, rm, stat as stat3, writeFile } from "fs/promises";
-import { basename as basename12, dirname as dirname21, isAbsolute as isAbsolute5, join as join41, normalize, sep as sep13 } from "path";
+import { basename as basename12, dirname as dirname21, isAbsolute as isAbsolute5, join as join42, normalize, sep as sep13 } from "path";
 async function hashOf(file) {
   const hash = createHash19("sha256");
   for await (const chunk of createReadStream(file))
@@ -33668,7 +33733,7 @@ async function hashOf(file) {
   return hash.digest("hex");
 }
 async function plainFiles(from, link, at = "") {
-  const whole = at ? join41(from, at) : from;
+  const whole = at ? join42(from, at) : from;
   const kind = await lstat2(whole);
   if (kind.isFile())
     return [{ path: at, size: kind.size }];
@@ -33676,7 +33741,7 @@ async function plainFiles(from, link, at = "") {
     throw link(whole);
   const files = [];
   for (const name of (await readdir2(whole)).sort())
-    files.push(...await plainFiles(from, link, at ? join41(at, name) : name));
+    files.push(...await plainFiles(from, link, at ? join42(at, name) : name));
   return files;
 }
 
@@ -33725,14 +33790,14 @@ class Carrying {
     const out = [];
     const take = async (from, into) => {
       for (const { path, size } of await plainFiles(from, link)) {
-        const whole = path ? join41(from, path) : from;
-        out.push({ from: whole, file: { path: path ? join41(into, path) : into, size, sha256: await hashOf(whole) } });
+        const whole = path ? join42(from, path) : from;
+        out.push({ from: whole, file: { path: path ? join42(into, path) : into, size, sha256: await hashOf(whole) } });
       }
     };
     for (const item of files.items)
-      await take(item.path, join41("lanes", String(at), "conversation", item.name));
+      await take(item.path, join42("lanes", String(at), "conversation", item.name));
     if (files.memory)
-      await take(files.memory, join41("lanes", String(at), "memory"));
+      await take(files.memory, join42("lanes", String(at), "memory"));
     return out;
   }
   async read(root, conversation, into) {
@@ -33757,12 +33822,12 @@ class Carrying {
       said.push(JSON.stringify([id, record.session.title ?? null, record.session.model ?? null, archived]));
       for (const name of ["session.json", "messages.json", "agent.json"]) {
         const file = this.store.fileOf(id, name);
-        const path = join41("sessions", id, name);
+        const path = join42("sessions", id, name);
         if (name === "messages.json")
           records.push({ path, size: (await stat3(file)).size, sha256: await hashOf(file) });
         if (into) {
-          await mkdir(dirname21(join41(into, path)), { recursive: true });
-          await copyFile(file, join41(into, path));
+          await mkdir(dirname21(join42(into, path)), { recursive: true });
+          await copyFile(file, join42(into, path));
         }
       }
       const slots = this.sessions.slotsOf(id);
@@ -33789,8 +33854,8 @@ class Carrying {
           left.push({ provider, paths: files.items.map((item) => item.path), ...files.memory && !files.memoryShared ? { memory: files.memory } : {}, directory: record.session.location.directory });
         if (into) {
           for (const { from, file } of list) {
-            await mkdir(dirname21(join41(into, file.path)), { recursive: true });
-            await copyFile(from, join41(into, file.path));
+            await mkdir(dirname21(join42(into, file.path)), { recursive: true });
+            await copyFile(from, join42(into, file.path));
           }
         }
         at++;
@@ -33850,7 +33915,7 @@ class Carrying {
       if (concrete)
         each.model = concrete;
     }
-    await writeFile(join41(into, "carry.json"), JSON.stringify(manifest), { mode: 384 });
+    await writeFile(join42(into, "carry.json"), JSON.stringify(manifest), { mode: 384 });
     return { sessions: manifest.sessions, lanes: manifest.lanes.map(({ list: _, ...lane }) => lane), digest: manifest.digest, left };
   }
   async concreteOf(model) {
@@ -33868,10 +33933,10 @@ class Carrying {
   async keep(root, into) {
     for (const { session } of this.family(root)) {
       this.store.save(session.id, true);
-      const folder = join41(into, session.id);
+      const folder = join42(into, session.id);
       await mkdir(folder, { recursive: true });
       for (const name of ["session.json", "messages.json"])
-        await copyFile(this.store.fileOf(session.id, name), join41(folder, name));
+        await copyFile(this.store.fileOf(session.id, name), join42(folder, name));
     }
   }
   async hostOf(provider) {
@@ -33940,7 +34005,7 @@ class Carrying {
         stillOn();
         const read = async (name, or) => {
           try {
-            return JSON.parse(await readFile4(join41(from, "sessions", id, name), "utf8"));
+            return JSON.parse(await readFile4(join42(from, "sessions", id, name), "utf8"));
           } catch (error) {
             if (or !== undefined)
               return or;
@@ -33973,15 +34038,15 @@ class Carrying {
             kept[here] = slot;
             const where = host.conversationPlace(slot.state, session);
             for (const file of lane.list) {
-              const conversation = join41("lanes", String(manifest.lanes.indexOf(lane)), "conversation") + sep13;
-              const memory = join41("lanes", String(manifest.lanes.indexOf(lane)), "memory");
-              const dest = file.path.startsWith(conversation) ? where.item(file.path.slice(conversation.length)) : file.path === memory ? where.memory ?? null : file.path.startsWith(memory + sep13) && where.memory ? join41(where.memory, file.path.slice(memory.length + 1)) : null;
+              const conversation = join42("lanes", String(manifest.lanes.indexOf(lane)), "conversation") + sep13;
+              const memory = join42("lanes", String(manifest.lanes.indexOf(lane)), "memory");
+              const dest = file.path.startsWith(conversation) ? where.item(file.path.slice(conversation.length)) : file.path === memory ? where.memory ?? null : file.path.startsWith(memory + sep13) && where.memory ? join42(where.memory, file.path.slice(memory.length + 1)) : null;
               if (!dest)
                 throw new CantCarry("its conversation didn't come whole");
               if (inUse.some((path) => dest === path || dest.startsWith(path + sep13)))
                 throw new CantCarry("its conversation is one here already");
               stillOn();
-              await undo.put(join41(from, file.path), dest, file, Boolean(where.memoryMerges && !file.path.startsWith(conversation)));
+              await undo.put(join42(from, file.path), dest, file, Boolean(where.memoryMerges && !file.path.startsWith(conversation)));
             }
             placed.push(lane);
           } else {
@@ -34015,7 +34080,7 @@ class Carrying {
   async readManifest(from) {
     let manifest;
     try {
-      manifest = JSON.parse(await readFile4(join41(from, "carry.json"), "utf8"));
+      manifest = JSON.parse(await readFile4(join42(from, "carry.json"), "utf8"));
     } catch {
       throw new CantCarry("its conversation didn't come whole");
     }
@@ -34033,11 +34098,11 @@ class Carrying {
   async checked(from, file) {
     let found;
     try {
-      found = await lstat2(join41(from, file.path));
+      found = await lstat2(join42(from, file.path));
     } catch {
       throw new CantCarry("a file of its conversation didn't come with it");
     }
-    if (!found.isFile() || found.size !== file.size || await hashOf(join41(from, file.path)) !== file.sha256)
+    if (!found.isFile() || found.size !== file.size || await hashOf(join42(from, file.path)) !== file.sha256)
       throw new CantCarry("a file of its conversation didn't come whole");
   }
   async undo(keep) {
@@ -34096,7 +34161,7 @@ class Undo {
     this.keep = keep;
   }
   get file() {
-    return join41(this.keep, "placed.json");
+    return join42(this.keep, "placed.json");
   }
   async read() {
     try {
@@ -34121,14 +34186,14 @@ class Undo {
     if (there && merges) {
       if (await hashOf(dest).catch(() => "") === file.sha256)
         return;
-      dest = join41(dirname21(dest), `moved-${file.sha256.slice(0, 8)}-${basename12(dest)}`);
+      dest = join42(dirname21(dest), `moved-${file.sha256.slice(0, 8)}-${basename12(dest)}`);
       there = await lstat2(dest).then(() => true, () => false);
       if (there)
         return;
     }
     const placed = merges ? { dest, sha256: file.sha256 } : { dest };
     if (there)
-      placed.replaced = join41(this.keep, "replaced", String(this.count++));
+      placed.replaced = join42(this.keep, "replaced", String(this.count++));
     this.list.placed.push(placed);
     this.write();
     if (placed.replaced) {
@@ -38092,8 +38157,8 @@ function moveHold(value) {
 
 // box/src/agents/groups/store.ts
 import fs8 from "fs";
-import { existsSync as existsSync19, mkdirSync as mkdirSync27, readdirSync as readdirSync22, readFileSync as readFileSync37, renameSync as renameSync22, rmSync as rmSync19, writeFileSync as writeFileSync27 } from "fs";
-import { dirname as dirname22, join as join42 } from "path";
+import { existsSync as existsSync19, mkdirSync as mkdirSync27, readdirSync as readdirSync23, readFileSync as readFileSync38, renameSync as renameSync22, rmSync as rmSync20, writeFileSync as writeFileSync27 } from "fs";
+import { dirname as dirname22, join as join43 } from "path";
 function isTurning(value) {
   return value && typeof value.bot === "string" && typeof value.seat === "string" && typeof value.agents === "boolean" && typeof value.prompt === "string" && typeof value.sent === "number" && (value.wrapUp === undefined || typeof value.wrapUp === "boolean");
 }
@@ -38146,13 +38211,13 @@ class GroupStore {
     mkdirSync27(root, { recursive: true, mode: 448 });
   }
   folder(id) {
-    return join42(this.root, id);
+    return join43(this.root, id);
   }
   load() {
     const all = new Map;
     let names = [];
     try {
-      names = readdirSync22(this.root);
+      names = readdirSync23(this.root);
     } catch {}
     for (const id of names) {
       if (!/^grp_[a-z0-9]+$/.test(id))
@@ -38170,41 +38235,41 @@ class GroupStore {
     return all;
   }
   read(id) {
-    const record = read2(join42(this.folder(id), "group.json"));
+    const record = read2(join43(this.folder(id), "group.json"));
     if (!record || typeof record.kuvo !== "number" || record.kuvo > version2 || !isGroup(record.group, id))
       return;
-    const messages = JSON.parse(fs8.readFileSync(join42(this.folder(id), "messages.json"), "utf8"));
+    const messages = JSON.parse(fs8.readFileSync(join43(this.folder(id), "messages.json"), "utf8"));
     if (!isMessages(messages))
       throw new Error("The group transcript could not be read");
     return { group: record.group, ...typeof record.moveImport === "string" ? { moveImport: record.moveImport } : {}, status: record.status === "held" ? "held" : "active", talking: record.talking === true, paused: record.paused === true, ...isTurning(record.turning) ? { turning: record.turning } : {}, messages };
   }
   saveGroup(kept) {
-    writeDurablePrivate(join42(this.folder(kept.group.id), "group.json"), JSON.stringify({ kuvo: version2, status: kept.status, ...kept.moveImport ? { moveImport: kept.moveImport } : {}, ...kept.talking ? { talking: true } : {}, ...kept.paused ? { paused: true } : {}, ...kept.turning ? { turning: kept.turning } : {}, group: kept.group }, null, 2), dirname22(this.root));
+    writeDurablePrivate(join43(this.folder(kept.group.id), "group.json"), JSON.stringify({ kuvo: version2, status: kept.status, ...kept.moveImport ? { moveImport: kept.moveImport } : {}, ...kept.talking ? { talking: true } : {}, ...kept.paused ? { paused: true } : {}, ...kept.turning ? { turning: kept.turning } : {}, group: kept.group }, null, 2), dirname22(this.root));
   }
   saveMessages(kept) {
-    writeDurablePrivate(join42(this.folder(kept.group.id), "messages.json"), JSON.stringify(kept.messages, null, 2), dirname22(this.root));
+    writeDurablePrivate(join43(this.folder(kept.group.id), "messages.json"), JSON.stringify(kept.messages, null, 2), dirname22(this.root));
   }
   setAwake(id, awake) {
-    const file = join42(this.folder(id), "awake");
+    const file = join43(this.folder(id), "awake");
     if (awake && !existsSync19(file) && existsSync19(this.folder(id)))
       writeFileSync27(file, "");
     if (!awake)
-      rmSync19(file, { force: true });
+      rmSync20(file, { force: true });
   }
   trash(id, trash) {
     if (!existsSync19(this.folder(id))) {
       syncDurableFile(this.root, dirname22(this.root));
       return;
     }
-    const into = join42(trash, `${new Date().toISOString().replace(/[-:]/g, "").replace(/\..*/, "")}-group-${id}`);
+    const into = join43(trash, `${new Date().toISOString().replace(/[-:]/g, "").replace(/\..*/, "")}-group-${id}`);
     mkdirSync27(into, { recursive: true, mode: 448 });
-    renameSync22(this.folder(id), join42(into, id));
+    renameSync22(this.folder(id), join43(into, id));
     syncDurableFile(into, dirname22(trash));
     syncDurableFile(this.root, dirname22(this.root));
     emit("kuvo.group.trashed", { id, path: into });
   }
   settings() {
-    const value = read2(join42(this.root, "settings.json"));
+    const value = read2(join43(this.root, "settings.json"));
     if (!value || typeof value !== "object")
       return;
     return {
@@ -38218,41 +38283,41 @@ class GroupStore {
     };
   }
   writeSettings(settings) {
-    const kept = read2(join42(this.root, "settings.json"));
-    write(join42(this.root, "settings.json"), { ...kept && typeof kept === "object" ? kept : {}, kuvo: version2, ...settings });
+    const kept = read2(join43(this.root, "settings.json"));
+    write(join43(this.root, "settings.json"), { ...kept && typeof kept === "object" ? kept : {}, kuvo: version2, ...settings });
   }
   allBots() {
     let names = [];
     try {
-      names = readdirSync22(this.bots);
+      names = readdirSync23(this.bots);
     } catch {}
     return names.flatMap((name) => this.bot(name) ?? []);
   }
   bot(id) {
     if (!/^bot_[A-Za-z0-9]+$/.test(id))
       return;
-    const folder = join42(this.bots, id);
-    const described = read2(join42(folder, "bot.json"));
-    const sessionID = text5(join42(folder, "session"))?.trim();
+    const folder = join43(this.bots, id);
+    const described = read2(join43(folder, "bot.json"));
+    const sessionID = text5(join43(folder, "session"))?.trim();
     if (!described?.name || !sessionID)
       return;
-    const job = read2(join42(folder, "job.json"));
-    const directory = text5(join42(folder, "directory"))?.trim() || join42(folder, "workspace");
+    const job = read2(join43(folder, "job.json"));
+    const directory = text5(join43(folder, "directory"))?.trim() || join43(folder, "workspace");
     return {
       id,
       name: String(described.name),
       job: typeof job?.line === "string" ? job.line : String(described.job ?? ""),
       instructions: typeof job?.details === "string" ? job.details : "",
-      memoryFile: join42(folder, "MEMORY.md"),
+      memoryFile: join43(folder, "MEMORY.md"),
       folder,
       sessionID,
       directory,
       model: described.model?.id && described.model?.providerID ? described.model : undefined,
       personality: typeof described.personality === "string" ? described.personality : undefined,
-      agents: text5(join42(folder, "via"))?.trim() === "bridge",
+      agents: text5(join43(folder, "via"))?.trim() === "bridge",
       ...described.look !== undefined ? { look: described.look } : {},
       ...typeof described.created === "string" ? { created: described.created } : {},
-      ...moveHold(text5(join42(folder, "paused"))) ? { moving: true } : {}
+      ...moveHold(text5(join43(folder, "paused"))) ? { moving: true } : {}
     };
   }
   peerMemory(bot) {
@@ -38264,7 +38329,7 @@ class GroupStore {
     return typeof at === "number" ? at : 0;
   }
   peerEntries(bot) {
-    const all = read2(join42(this.root, "peer-memory.json"));
+    const all = read2(join43(this.root, "peer-memory.json"));
     const entries = all && typeof all === "object" ? all[bot] : undefined;
     return entries && typeof entries === "object" ? entries : {};
   }
@@ -38280,7 +38345,7 @@ class GroupStore {
     });
   }
   changePeerMemory(bot, change) {
-    const all = read2(join42(this.root, "peer-memory.json")) ?? {};
+    const all = read2(join43(this.root, "peer-memory.json")) ?? {};
     const entries = { ...all[bot] ?? {} };
     change(entries);
     for (const [key, entry] of Object.entries(entries))
@@ -38290,10 +38355,10 @@ class GroupStore {
       delete all[bot];
     else
       all[bot] = entries;
-    write(join42(this.root, "peer-memory.json"), all);
+    write(join43(this.root, "peer-memory.json"), all);
   }
   peerWork() {
-    const all = read2(join42(this.root, "peer-work.json"));
+    const all = read2(join43(this.root, "peer-work.json"));
     return all && typeof all === "object" ? all : {};
   }
   keepPeerWork(task, work) {
@@ -38307,45 +38372,45 @@ class GroupStore {
   changePeerWork(change) {
     const all = this.peerWork();
     change(all);
-    write(join42(this.root, "peer-work.json"), all);
+    write(join43(this.root, "peer-work.json"), all);
   }
   pendingMemory() {
-    const value = read2(join42(this.root, "pending-memory.json"));
+    const value = read2(join43(this.root, "pending-memory.json"));
     if (!value || typeof value !== "object" || Array.isArray(value))
       return {};
     return Object.fromEntries(Object.entries(value).filter(([bot, chats]) => /^bot_[A-Za-z0-9]+$/.test(bot) && strings2(chats)));
   }
   setPendingMemory(pending) {
     if (Object.keys(pending).length === 0)
-      rmSync19(join42(this.root, "pending-memory.json"), { force: true });
+      rmSync20(join43(this.root, "pending-memory.json"), { force: true });
     else
-      write(join42(this.root, "pending-memory.json"), pending);
+      write(join43(this.root, "pending-memory.json"), pending);
   }
   peerTurns() {
-    const all = read2(join42(this.root, "peer-turns.json"));
+    const all = read2(join43(this.root, "peer-turns.json"));
     return all && typeof all === "object" ? all : {};
   }
   keepPeerTurns(turns) {
-    write(join42(this.root, "peer-turns.json"), turns);
+    write(join43(this.root, "peer-turns.json"), turns);
   }
   writeFile(path, contents) {
-    mkdirSync27(join42(path, ".."), { recursive: true });
+    mkdirSync27(join43(path, ".."), { recursive: true });
     writeFileSync27(path + ".new", contents, { mode: 384 });
     renameSync22(path + ".new", path);
   }
   removeFile(path) {
-    rmSync19(path, { force: true });
+    rmSync20(path, { force: true });
   }
 }
 var version2 = 1, strings2 = (value) => Array.isArray(value) && value.every((item) => typeof item === "string"), stringMap = (value) => value !== null && typeof value === "object" && !Array.isArray(value) && Object.values(value).every((item) => typeof item === "string"), isDate = (value) => typeof value === "string" && !Number.isNaN(Date.parse(value)), kinds3, states, forgottenFor, read2 = (file) => {
   try {
-    return JSON.parse(readFileSync37(file, "utf8"));
+    return JSON.parse(readFileSync38(file, "utf8"));
   } catch {
     return;
   }
 }, text5 = (file) => {
   try {
-    return readFileSync37(file, "utf8");
+    return readFileSync38(file, "utf8");
   } catch {
     return;
   }
@@ -38359,12 +38424,12 @@ var init_store3 = __esm(() => {
 });
 
 // box/src/agents/groups/named.ts
-import { readFileSync as readFileSync38 } from "fs";
+import { readFileSync as readFileSync39 } from "fs";
 function readDirectory(file) {
   if (!file)
     return { machine: null, agents: [] };
   try {
-    const value = JSON.parse(readFileSync38(file, "utf8"));
+    const value = JSON.parse(readFileSync39(file, "utf8"));
     const agents = Array.isArray(value?.agents) ? value.agents.filter((agent) => agent && typeof agent.session === "string" && agent.session.startsWith("ses_") && typeof agent.name === "string" && agent.name) : [];
     return { machine: typeof value?.machine === "string" ? value.machine : null, agents };
   } catch {
@@ -38852,7 +38917,7 @@ var init_seats = __esm(() => {
 
 // box/src/agents/usage/usage-peers.ts
 import { createHash as createHash20 } from "crypto";
-import { mkdirSync as mkdirSync28, readFileSync as readFileSync39, renameSync as renameSync23, writeFileSync as writeFileSync28 } from "fs";
+import { mkdirSync as mkdirSync28, readFileSync as readFileSync40, renameSync as renameSync23, writeFileSync as writeFileSync28 } from "fs";
 import { dirname as dirname23 } from "path";
 
 class UsagePeers {
@@ -39076,7 +39141,7 @@ class UsagePeers {
     if (!this.file)
       return;
     try {
-      const saved = JSON.parse(readFileSync39(this.file, "utf8"));
+      const saved = JSON.parse(readFileSync40(this.file, "utf8"));
       for (const [key, kept] of Object.entries(saved.peers ?? {})) {
         if (!kept || typeof kept.heard !== "number" || !Array.isArray(kept.accounts))
           continue;
@@ -39759,7 +39824,7 @@ var init_peer = __esm(() => {
 });
 
 // box/src/agents/groups/post.ts
-import { existsSync as existsSync20, readFileSync as readFileSync40, renameSync as renameSync24, writeFileSync as writeFileSync29 } from "fs";
+import { existsSync as existsSync20, readFileSync as readFileSync41, renameSync as renameSync24, writeFileSync as writeFileSync29 } from "fs";
 
 class PeerPost {
   file;
@@ -39772,7 +39837,7 @@ class PeerPost {
     let kept = [];
     try {
       if (file && existsSync20(file))
-        kept = JSON.parse(readFileSync40(file, "utf8"));
+        kept = JSON.parse(readFileSync41(file, "utf8"));
     } catch {}
     this.kept = Array.isArray(kept) ? kept.filter((line) => line && typeof line.id === "string" && typeof line.to === "string" && isSeatMail(line.mail)) : [];
   }
@@ -40139,6 +40204,8 @@ function handler(context) {
   const { sessions, roster, auto, link } = context;
   const agentFor = (id) => roster.find(id);
   const note = (agent, value) => maintainedNow(agent, value, roster.all().filter((each) => each.id === agent.id));
+  const programs = { home: context.programHome, hold: sessions?.holdProgram.bind(sessions) };
+  resumeProgramUpdates(() => roster.all(), note, programs);
   const accounts = new AccountRefresh(context.limits);
   const signedIn = (agent) => void accounts.signedIn(agent).then(() => context.usage?.refresh()).catch(() => {});
   if (context.refreshAccounts) {
@@ -40532,11 +40599,10 @@ function handler(context) {
         }
       }
       if (area === "kuvo" && a === "updates" && !c) {
-        const hold = sessions?.holdProgram.bind(sessions);
         if (!b) {
           if (method !== "POST")
             return error2(405, "Not allowed.");
-          return json16({ data: { updating: await updateAll(roster.all(), () => roster.all(), maintainedNow, (agent) => lastMaintained.get(agent.id), hold) } });
+          return json16({ data: { updating: await updateAll(roster.all(), () => roster.all(), maintainedNow, (agent) => lastMaintained.get(agent.id), programs) } });
         }
         const agent = agentFor(b);
         if (!agent)
@@ -40554,8 +40620,7 @@ function handler(context) {
           return error2(405, "Not allowed.");
         if (!agent.update || !agent.maintenance)
           return error2(400, `Update ${agent.name} the way you installed it.`);
-        const confirmed = (await body())?.confirmed === true;
-        updateProgram(agent, () => roster.all(), maintainedNow, hold, confirmed);
+        updateProgram(agent, () => roster.all(), maintainedNow, programs);
         return json16({ data: { updating: [agent.id] } });
       }
       if (area === "kuvo" && a === "sandbox" && b === "restart" && !c && method === "POST") {
@@ -41303,7 +41368,7 @@ var init_hang = __esm(() => {
 });
 
 // box/src/agents/limits-peers.ts
-import { mkdirSync as mkdirSync29, readFileSync as readFileSync41, renameSync as renameSync25, writeFileSync as writeFileSync30 } from "fs";
+import { mkdirSync as mkdirSync29, readFileSync as readFileSync42, renameSync as renameSync25, writeFileSync as writeFileSync30 } from "fs";
 import { dirname as dirname25 } from "path";
 
 class LimitsPeers {
@@ -41563,7 +41628,7 @@ class LimitsPeers {
     if (!this.file)
       return;
     try {
-      const saved = JSON.parse(readFileSync41(this.file, "utf8"));
+      const saved = JSON.parse(readFileSync42(this.file, "utf8"));
       for (const [key, kept] of Object.entries(saved.peers ?? {})) {
         if (!kept || typeof kept.heard !== "number" || !Array.isArray(kept.accounts))
           continue;
@@ -42048,18 +42113,18 @@ var init_insights_scan = __esm(() => {
 
 // box/src/agents/bridge-transfer.ts
 import { spawn as spawn7 } from "child_process";
-import { existsSync as existsSync21, readFileSync as readFileSync42, rmSync as rmSync20 } from "fs";
-import { join as join43 } from "path";
+import { existsSync as existsSync21, readFileSync as readFileSync43, rmSync as rmSync21 } from "fs";
+import { join as join44 } from "path";
 function readTransfer(run) {
-  const plan = JSON.parse(readFileSync42(transferFile(run), "utf8"));
+  const plan = JSON.parse(readFileSync43(transferFile(run), "utf8"));
   if (plan.formatVersion !== format.version)
     throw new Error("Unsupported bridge handover format.");
   format.read(plan);
   return plan;
 }
 function finishTransfer(run) {
-  rmSync20(transferFile(run), { force: true });
-  rmSync20(previousBridge(run), { force: true });
+  rmSync21(transferFile(run), { force: true });
+  rmSync21(previousBridge(run), { force: true });
 }
 async function standBy(run, build) {
   if (!process.send)
@@ -42076,7 +42141,7 @@ async function standBy(run, build) {
       clearTimeout(timer);
       try {
         const plan = readTransfer(run);
-        if (!approved || plan.to !== build || plan.next !== process.pid || Number(readFileSync42(join43(run, "agents.pid"), "utf8")) !== process.pid || ["stopped", "off", "paused"].some((mark) => existsSync21(join43(run, mark))))
+        if (!approved || plan.to !== build || plan.next !== process.pid || Number(readFileSync43(join44(run, "agents.pid"), "utf8")) !== process.pid || ["stopped", "off", "paused"].some((mark) => existsSync21(join44(run, mark))))
           throw new Error("The bridge transfer was cancelled.");
         resolve(plan);
       } catch (error) {
@@ -42120,26 +42185,26 @@ async function prepareStandby(runtime, script, env, plan) {
   child.kill();
 }
 function commitTransfer(run, plan, source) {
-  const pid = join43(run, "agents.pid");
-  if (Number(readFileSync42(pid, "utf8")) !== process.pid || ["stopped", "off", "paused"].some((mark) => existsSync21(join43(run, mark))))
+  const pid = join44(run, "agents.pid");
+  if (Number(readFileSync43(pid, "utf8")) !== process.pid || ["stopped", "off", "paused"].some((mark) => existsSync21(join44(run, mark))))
     throw new Error("The keeper stopped this bridge.");
   if (existsSync21(transferFile(run)))
     throw new Error("Another bridge handover is pending.");
   writeDurablePrivate(previousBridge(run), source, run);
   writeDurablePrivate(transferFile(run), JSON.stringify(format.write(plan)), run);
   try {
-    writeSecret(join43(run, "agents-renewing"), JSON.stringify({ at: Date.now(), pid: process.pid }));
+    writeSecret(join44(run, "agents-renewing"), JSON.stringify({ at: Date.now(), pid: process.pid }));
     writeSecret(pid, String(plan.next));
   } catch (error) {
     finishTransfer(run);
-    rmSync20(join43(run, "agents-renewing"), { force: true });
+    rmSync21(join44(run, "agents-renewing"), { force: true });
     throw error;
   }
 }
 function standbyFailed(plan) {
   return !runsAs(plan.next, /kuvo-agents/);
 }
-var TRANSFER_PROTOCOL = "kuvo-live-handover/1", format, transferFile = (run) => join43(run, "agents", "handover.json"), previousBridge = (run) => join43(run, "agents", "previous", "kuvo-agents.js");
+var TRANSFER_PROTOCOL = "kuvo-live-handover/1", format, transferFile = (run) => join44(run, "agents", "handover.json"), previousBridge = (run) => join44(run, "agents", "previous", "kuvo-agents.js");
 var init_bridge_transfer = __esm(() => {
   init_files();
   init_format_version();
@@ -42149,8 +42214,8 @@ var init_bridge_transfer = __esm(() => {
 });
 
 // box/src/agents/main.ts
-import { mkdirSync as mkdirSync30, readdirSync as readdirSync23, readFileSync as readFileSync43, realpathSync as realpathSync12, rmSync as rmSync21 } from "fs";
-import { basename as basename13, dirname as dirname26, join as join44 } from "path";
+import { mkdirSync as mkdirSync30, readdirSync as readdirSync24, readFileSync as readFileSync44, realpathSync as realpathSync12, rmSync as rmSync22 } from "fs";
+import { basename as basename13, dirname as dirname26, join as join45 } from "path";
 import { spawn as spawn8 } from "child_process";
 function engineAgent(providerID) {
   if (!link4.ready || parseProvider(providerID))
@@ -42205,7 +42270,7 @@ function liveTransfer(newer) {
     return;
   return (async () => {
     const engine = keeperEngine(machineHome);
-    const runtime = engine ? join44(machineHome, "engine", engine, "opencode") : process.execPath;
+    const runtime = engine ? join45(machineHome, "engine", engine, "opencode") : process.execPath;
     const candidate = await prepareStandby(runtime, watchingScript, launchEnv, first);
     if (!candidate) {
       retryTransfer = Date.now() + 60000;
@@ -42259,10 +42324,10 @@ function stop(handOver = false, startReplacement = true) {
   if (stopping)
     return;
   stopping = true;
-  const run = onMachine ? join44(machineHome, "run") : undefined;
+  const run = onMachine ? join45(machineHome, "run") : undefined;
   if (handOver && run) {
     try {
-      writeSecret(join44(run, "agents-renewing"), JSON.stringify({ at: Date.now(), pid: process.pid }));
+      writeSecret(join45(run, "agents-renewing"), JSON.stringify({ at: Date.now(), pid: process.pid }));
     } catch {}
   }
   goals.stopAll();
@@ -42271,8 +42336,8 @@ function stop(handOver = false, startReplacement = true) {
   cancelSignIns();
   githubSignIn.cancel();
   try {
-    if (record2 && JSON.parse(readFileSync43(record2, "utf8")).pid === process.pid)
-      rmSync21(record2, { force: true });
+    if (record2 && JSON.parse(readFileSync44(record2, "utf8")).pid === process.pid)
+      rmSync22(record2, { force: true });
   } catch {}
   sessions.closeAll();
   stopAllHeld();
@@ -42286,10 +42351,10 @@ function startNext(run) {
   try {
     if (basename13(machineHome) !== ".kuvo-code")
       return;
-    if (Number(readFileSync43(join44(run, "agents.pid"), "utf8").trim()) !== process.pid)
+    if (Number(readFileSync44(join45(run, "agents.pid"), "utf8").trim()) !== process.pid)
       return;
-    rmSync21(join44(run, "agents.pid"), { force: true });
-    const start = join44(machineHome, "bin", "kuvo-start");
+    rmSync22(join45(run, "agents.pid"), { force: true });
+    const start = join45(machineHome, "bin", "kuvo-start");
     const env = { HOME: dirname26(machineHome), PATH: process.env.PATH ?? "/usr/bin:/bin" };
     spawn8("sh", [start, "bridge"], { detached: true, stdio: "ignore", env, cwd: machineHome }).unref();
   } catch (error) {
@@ -42319,7 +42384,7 @@ var version3 = "1", script, build, home3, password, kept3, ownRuntime, bridgeRun
   if (swap?.machineHelper !== true || swap.stage !== "swapping")
     return false;
   try {
-    return Number(readFileSync43(join44(runFolder, ".machine-handover.pid"), "utf8")) === swap.pid;
+    return Number(readFileSync44(join45(runFolder, ".machine-handover.pid"), "utf8")) === swap.pid;
   } catch {
     return false;
   }
@@ -42422,7 +42487,7 @@ var init_main = __esm(async () => {
   kept3 = process.env.KUVO_AGENTS_KEPT === "1";
   ownRuntime = (() => {
     try {
-      return !!machineHome && realpathSync12(dirname26(dirname26(process.execPath))) === realpathSync12(join44(machineHome, "engine"));
+      return !!machineHome && realpathSync12(dirname26(dirname26(process.execPath))) === realpathSync12(join45(machineHome, "engine"));
     } catch {
       return false;
     }
@@ -42433,15 +42498,15 @@ var init_main = __esm(async () => {
   }
   if (onMachine && machineHome)
     checkFolderVersion(machineHome);
-  bridgeRun = machineHome ? join44(machineHome, "run") : undefined;
-  watchingScript = kept3 && machineHome ? join44(machineHome, "bin", "kuvo-agents.js") : script;
+  bridgeRun = machineHome ? join45(machineHome, "run") : undefined;
+  watchingScript = kept3 && machineHome ? join45(machineHome, "bin", "kuvo-agents.js") : script;
   standby = kept3 && bridgeRun && process.argv.includes("handover-standby") ? await standBy(bridgeRun, build) : undefined;
   recovered = kept3 && bridgeRun && process.argv.includes("handover-recovery") ? readTransfer(bridgeRun) : undefined;
   if (recovered && (recovered.from !== build || !standbyFailed(recovered)))
     process.exit(1);
   transfer = standby?.transfer ?? recovered;
   launchEnv = kept3 ? { ...process.env } : undefined;
-  original = kept3 && build ? readFileSync43(script) : undefined;
+  original = kept3 && build ? readFileSync44(script) : undefined;
   hasOriginal = original && buildOf(original.toString("utf8")) === build;
   machineEngine2 = onMachine ? machineEngine() ?? (process.env.KUVO_ENGINE_PORT ? { url: `http://127.0.0.1:${process.env.KUVO_ENGINE_PORT}`, password: process.env.OPENCODE_PASSWORD } : undefined) : undefined;
   port2 = onMachine ? Number(process.env.KUVO_AGENTS_PORT) : 0;
@@ -42450,9 +42515,9 @@ var init_main = __esm(async () => {
     takeOwnFolders();
     if (home3)
       dropCarriedSignIns(home3);
-    process.env.KUVO_BIN = join44(machineHome, "bin");
-    process.env.KUVO_BOTS ??= join44(machineHome, "bots");
-    process.env.KUVO_WAKES ??= join44(machineHome, "wakes");
+    process.env.KUVO_BIN = join45(machineHome, "bin");
+    process.env.KUVO_BOTS ??= join45(machineHome, "bots");
+    process.env.KUVO_WAKES ??= join45(machineHome, "wakes");
     for (const name of ["OPENCODE_CONFIG_CONTENT", "OPENCODE_CONFIG", "OPENCODE_CLIENT", "OPENCODE_PASSWORD", "KUVO_AGENTS_PASSWORD", "KUVO_AGENTS_PORT", "KUVO_ENGINE_PORT", "KUVO_ENGINE_PID", "KUVO_AGENTS_KEPT"])
       delete process.env[name];
   }
@@ -42461,16 +42526,16 @@ var init_main = __esm(async () => {
   renewUptime = process.env.KUVO_TEST_RENEW_UPTIME ? Number(process.env.KUVO_TEST_RENEW_UPTIME) : undefined;
   for (const name of ["KUVO_TEST_RENEW_HOLD", "KUVO_TEST_RENEW_SETTLE", "KUVO_TEST_RENEW_UPTIME"])
     delete process.env[name];
-  temporary = process.env.TMPDIR?.replace(/\/$/, "") || join44(home3, "tmp");
+  temporary = process.env.TMPDIR?.replace(/\/$/, "") || join45(home3, "tmp");
   mkdirSync30(temporary, { recursive: true });
   if (!transfer?.holders.some((holder) => holder.kind === "antigravity")) {
-    rmSync21(join44(temporary, "antigravity"), { recursive: true, force: true });
+    rmSync22(join45(temporary, "antigravity"), { recursive: true, force: true });
   }
   leftSignIns(temporary);
   try {
-    for (const name of readdirSync23(join44(home3, "antigravity")))
+    for (const name of readdirSync24(join45(home3, "antigravity")))
       if (name.startsWith(".install-"))
-        rmSync21(join44(home3, "antigravity", name), { recursive: true, force: true });
+        rmSync22(join45(home3, "antigravity", name), { recursive: true, force: true });
   } catch {}
   delete process.env.BUN_BE_BUN;
   process.env.KUVO_WAKE_VIA = "bridge";
@@ -42480,15 +42545,15 @@ var init_main = __esm(async () => {
     console.error("uncaught:", error);
     process.exit(1);
   });
-  deps = new Deps(join44(home3, "runtime"), join44(home3, "cache"));
+  deps = new Deps(join45(home3, "runtime"), join45(home3, "cache"));
   if (onMachine) {
-    dropOwnPrograms(join44(home3, "runtime"));
+    dropOwnPrograms(join45(home3, "runtime"));
     useSavedLoginPath();
   }
-  rmSync21(join44(home3, "cache", "install"), { recursive: true, force: true });
+  rmSync22(join45(home3, "cache", "install"), { recursive: true, force: true });
   context = { home: home3, temporary, deps };
   roster = new Roster(new Accounts(home3), context);
-  store = new Store(join44(home3, "sessions"), Boolean(transfer));
+  store = new Store(join45(home3, "sessions"), Boolean(transfer));
   auto = new Auto(home3);
   link4 = new EngineLink;
   if (machineEngine2)
@@ -42506,7 +42571,7 @@ var init_main = __esm(async () => {
   engineAgents = new Map;
   otherBridge = (() => {
     try {
-      const pid = JSON.parse(readFileSync43(join44(machineHome, "run", "bridge.json"), "utf8"))?.pid;
+      const pid = JSON.parse(readFileSync44(join45(machineHome, "run", "bridge.json"), "utf8"))?.pid;
       return pid !== process.pid && runsAs(pid, /kuvo-agents/);
     } catch {
       return false;
@@ -42515,18 +42580,18 @@ var init_main = __esm(async () => {
   heldTurns = transfer ? await adoptTransfer(machineHome, transfer.holders, Boolean(recovered)) : onMachine && !otherBridge ? await adoptHeld() : new Map;
   if (standby && Object.keys(standby.transfer.sessions).some((id) => !heldTurns.has(id)))
     throw new Error("A session is missing from the handover.");
-  sessions = new Sessions(store, roster, auto, engineAgent, (directory) => link4.policies(directory), (name, directory) => link4.agent(name, directory), new Snapshots(join44(home3, "snapshots")), (directory) => link4.titleModel(directory), heldTurns, transfer?.sessions, home3);
+  sessions = new Sessions(store, roster, auto, engineAgent, (directory) => link4.policies(directory), (name, directory) => link4.agent(name, directory), new Snapshots(join45(home3, "snapshots")), (directory) => link4.titleModel(directory), heldTurns, transfer?.sessions, home3);
   noteInside();
   setInterval(noteInside, 5000).unref?.();
-  groupFolders = onMachine ? { root: join44(machineHome, "groups"), bots: process.env.KUVO_BOTS ?? join44(machineHome, "bots"), trash: join44(machineHome, "trash") } : process.env.KUVO_GROUPS && process.env.KUVO_BOTS && process.env.KUVO_TRASH ? { root: process.env.KUVO_GROUPS, bots: process.env.KUVO_BOTS, trash: process.env.KUVO_TRASH } : undefined;
+  groupFolders = onMachine ? { root: join45(machineHome, "groups"), bots: process.env.KUVO_BOTS ?? join45(machineHome, "bots"), trash: join45(machineHome, "trash") } : process.env.KUVO_GROUPS && process.env.KUVO_BOTS && process.env.KUVO_TRASH ? { root: process.env.KUVO_GROUPS, bots: process.env.KUVO_BOTS, trash: process.env.KUVO_TRASH } : undefined;
   groupMemoryKey = groupsMemoryKey;
-  post = new PeerPost(groupFolders ? join44(groupFolders.root, "peer-outbox.json") : undefined);
+  post = new PeerPost(groupFolders ? join45(groupFolders.root, "peer-outbox.json") : undefined);
   directory = new LinkDirectory(post);
   peers = { post, directory };
-  artifactsFolder = onMachine ? join44(machineHome, "artifacts") : process.env.KUVO_ARTIFACTS || undefined;
-  botsFolder = groupFolders?.bots ?? (onMachine ? join44(machineHome, "bots") : process.env.KUVO_BOTS || undefined);
-  agentsFile = onMachine ? join44(machineHome, "run", "agents.json") : process.env.KUVO_AGENTS_FILE || undefined;
-  runFolder = onMachine ? join44(machineHome, "run") : process.env.KUVO_RUN || undefined;
+  artifactsFolder = onMachine ? join45(machineHome, "artifacts") : process.env.KUVO_ARTIFACTS || undefined;
+  botsFolder = groupFolders?.bots ?? (onMachine ? join45(machineHome, "bots") : process.env.KUVO_BOTS || undefined);
+  agentsFile = onMachine ? join45(machineHome, "run", "agents.json") : process.env.KUVO_AGENTS_FILE || undefined;
+  runFolder = onMachine ? join45(machineHome, "run") : process.env.KUVO_RUN || undefined;
   notesBeside(runFolder);
   if (runFolder)
     link4.beforeTurn = () => untilSwapLets(runFolder);
@@ -42582,14 +42647,14 @@ var init_main = __esm(async () => {
       }
     }
   };
-  goals = new Goals(join44(home3, "goals.json"), places5);
+  goals = new Goals(join45(home3, "goals.json"), places5);
   setInterval(() => goals.resumeDue(), 60000).unref?.();
-  sideQuestions = new SideQuestions(join44(home3, "side-questions.json"), places5);
+  sideQuestions = new SideQuestions(join45(home3, "side-questions.json"), places5);
   handoffs = new Handoffs(places5);
-  reviews = new Reviews(join44(home3, "reviews.json"), places5);
+  reviews = new Reviews(join45(home3, "reviews.json"), places5);
   voice = new VoiceWords(places5);
   engineAccounts = new EngineAccounts(() => link4.request("GET", "/api/credential"));
-  limits = new Limits(() => [...agentAccounts(signedInAgents(roster.all())), ...engineAccounts.accounts()], join44(home3, "limits.json"), Date.now, async () => void await Promise.all([engineAccounts.refresh(), signIns.round(roster.all())]), () => engineAccounts.answered && signIns.allSaid(roster.all()));
+  limits = new Limits(() => [...agentAccounts(signedInAgents(roster.all())), ...engineAccounts.accounts()], join45(home3, "limits.json"), Date.now, async () => void await Promise.all([engineAccounts.refresh(), signIns.round(roster.all())]), () => engineAccounts.answered && signIns.allSaid(roster.all()));
   signIns.changed = (provider) => {
     if (signIns.signedIn(provider))
       return void limits.readAgain(provider).catch(() => {});
@@ -42607,17 +42672,17 @@ var init_main = __esm(async () => {
   });
   limits.covers = () => agentAccounts(roster.all()).map((account) => account.service);
   limits.alsoServices = [...ENGINE_SERVICES, ...BOX_ONLY_SERVICES];
-  peers.limits = new LimitsPeers(limits, post, directory, join44(home3, "limits-peers.json"));
-  peers.resets = new LimitResets(limits, join44(home3, "limits-resets.json"), Date.now, post, directory);
+  peers.limits = new LimitsPeers(limits, post, directory, join45(home3, "limits-peers.json"));
+  peers.resets = new LimitResets(limits, join45(home3, "limits-resets.json"), Date.now, post, directory);
   noPriceFeeds = process.env.KUVO_TEST_PRICE_FEEDS === "off" || !isRealBridgeFolder(home3);
   delete process.env.KUVO_TEST_PRICE_FEEDS;
-  usageFolder = join44(home3, "usage");
-  usageSettings = new UsageSettings(join44(usageFolder, "settings.json"));
+  usageFolder = join45(home3, "usage");
+  usageSettings = new UsageSettings(join45(usageFolder, "settings.json"));
   limits.settings = usageSettings;
   limits.ownKey = () => directory.own()?.key ?? "";
   claudeUsage2 = claudeSources(usageFolder);
   codexUsage = codexSources(usageFolder, () => usageSettings.codexFallback);
-  engineData = process.env.KUVO_ENGINE_DB_FOLDER || (onMachine && machineHome ? process.env.KUVO_ENGINE_DATA || join44(machineHome, "data", "opencode") : undefined);
+  engineData = process.env.KUVO_ENGINE_DB_FOLDER || (onMachine && machineHome ? process.env.KUVO_ENGINE_DATA || join45(machineHome, "data", "opencode") : undefined);
   engineCodexUsage = engineCodexSource(engineData, () => engineAccounts.answered ? engineAccounts.accounts().some((account) => account.provider === "openai") : undefined, () => usage.has("openai"));
   antigravityUsage = antigravitySources(usageFolder);
   grokUsage = grokSources(usageFolder);
@@ -42625,8 +42690,8 @@ var init_main = __esm(async () => {
   cursorEndpoints.live = !noPriceFeeds;
   antigravityTransport.live = !noPriceFeeds;
   cursorUsage = cursorSources(usageFolder, (provider, identity) => limits.held(provider) || identity !== undefined && !!usage.peers?.readsWhole("cursor", identity));
-  pricing = new PricingStore(join44(usageFolder, "pricing"), noPriceFeeds ? null : undefined);
-  usage = new Usage(() => [...claudeUsage2(roster.all()), ...codexUsage(roster.all()), ...grokUsage(roster.all()), ...engineCodexUsage(), ...engineHostedUsage(), ...cursorUsage(roster.all()), ...antigravityUsage(roster.all())], pricing, (provider) => limits.identity(provider), join44(usageFolder, "usage.json"));
+  pricing = new PricingStore(join45(usageFolder, "pricing"), noPriceFeeds ? null : undefined);
+  usage = new Usage(() => [...claudeUsage2(roster.all()), ...codexUsage(roster.all()), ...grokUsage(roster.all()), ...engineCodexUsage(), ...engineHostedUsage(), ...cursorUsage(roster.all()), ...antigravityUsage(roster.all())], pricing, (provider) => limits.identity(provider), join45(usageFolder, "usage.json"));
   usage.settings = usageSettings;
   localUsageKey = insightKey("kuvo insight computer", ownComputer()).slice(0, 32);
   store.origin = usageComputer;
@@ -42639,14 +42704,14 @@ var init_main = __esm(async () => {
     };
     const scanner = new InsightsScan({
       root: home3,
-      cache: join44(usageFolder, "insights-logs"),
+      cache: join45(usageFolder, "insights-logs"),
       agents: () => roster.all(),
       store,
       bots: () => groups?.store.allBots() ?? [],
       computer: usageComputer,
       engine: engineData
     });
-    const insights = new Insights(new InsightsDB(join44(usageFolder, "insights.sqlite"), build ? script : undefined), scanner, pricing, directory, post, localUsageKey);
+    const insights = new Insights(new InsightsDB(join45(usageFolder, "insights.sqlite"), build ? script : undefined), scanner, pricing, directory, post, localUsageKey);
     peers.insights = usage.insights = insights;
   } catch (error) {
     console.error("Insights index:", error instanceof Error ? error.message : error);
@@ -42654,7 +42719,7 @@ var init_main = __esm(async () => {
   engineAccounts.onAnswered = () => void usage.tick();
   if (!engineData)
     usage.services = USAGE_SERVICES.filter((service) => service !== "opencode");
-  peers.usage = new UsagePeers(usage, post, directory, join44(usageFolder, "peers.json"));
+  peers.usage = new UsagePeers(usage, post, directory, join45(usageFolder, "peers.json"));
   peers.settings = new SettingsPeers(usageSettings, post, directory);
   setInterval(() => peers.settings?.tell(), 60000).unref?.();
   if (artifactsFolder) {
@@ -42725,7 +42790,7 @@ var init_main = __esm(async () => {
   usage.insights?.start();
   carrying = new Carrying(sessions, store, (provider) => sessions.agent(provider), (kind) => roster.all().filter((agent) => parseProvider(agent.providerID)?.kind === kind));
   githubSignIn = new GitHubSignIn(context);
-  answer4 = handler({ roster, sessions, auto, link: link4, password, version: version3, build, groups, peers, goals, sideQuestions, handoffs, places: places5, reviews, voice, artifacts, noted: noted2, restartOutside, carrying, limits, usage, refreshAccounts: true, githubSignIn });
+  answer4 = handler({ roster, sessions, auto, link: link4, password, programHome: home3, version: version3, build, groups, peers, goals, sideQuestions, handoffs, places: places5, reviews, voice, artifacts, noted: noted2, restartOutside, carrying, limits, usage, refreshAccounts: true, githubSignIn });
   try {
     if (standby) {
       server4 = standby.server;
@@ -42756,16 +42821,16 @@ var init_main = __esm(async () => {
       console.error("group chats:", error);
     }
   });
-  record2 = onMachine ? join44(machineHome, "run", "bridge.json") : undefined;
+  record2 = onMachine ? join45(machineHome, "run", "bridge.json") : undefined;
   machineHandover = process.platform === "darwin" && kept3 && onMachine && Boolean(build);
   writeRecord(null, true);
   if (kept3 && runFolder) {
     try {
-      writeSecret(join44(runFolder, "agents-live-handover"), TRANSFER_PROTOCOL);
+      writeSecret(join45(runFolder, "agents-live-handover"), TRANSFER_PROTOCOL);
     } catch {}
   }
   if (onMachine)
-    rmSync21(join44(machineHome, "run", "agents-renewing"), { force: true });
+    rmSync22(join45(machineHome, "run", "agents-renewing"), { force: true });
   if (transfer) {
     finishTransfer(bridgeRun);
     store.commit();
@@ -42792,7 +42857,7 @@ var init_main = __esm(async () => {
     },
     told: (state) => writeRecord(state),
     keeperHandover,
-    paused: () => updateUnderWay(join44(machineHome, "run")),
+    paused: () => updateUnderWay(join45(machineHome, "run")),
     ready: () => {
       if (kept3)
         return true;
@@ -42807,7 +42872,7 @@ var init_main = __esm(async () => {
         return launchSaid.lets;
       const lets = launchLets(commandLineOf(process.ppid), () => {
         try {
-          return readFileSync43(join44(machineHome, "run", "agents.log"), "utf8");
+          return readFileSync44(join45(machineHome, "run", "agents.log"), "utf8");
         } catch {
           return;
         }
@@ -42820,7 +42885,7 @@ var init_main = __esm(async () => {
     check: (newer) => new Promise((done) => {
       const env = { BUN_BE_BUN: "1", BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0", PATH: process.env.PATH ?? "/usr/bin:/bin" };
       const engine = kept3 ? keeperEngine(machineHome) : null;
-      const runtime = engine ? join44(machineHome, "engine", engine, "opencode") : process.execPath;
+      const runtime = engine ? join45(machineHome, "engine", engine, "opencode") : process.execPath;
       const checking = spawn8(runtime, ["--config=/dev/null", "--no-env-file", watchingScript, "selftest", "adopt-check"], { env, stdio: ["ignore", "pipe", "ignore"] });
       let said = "";
       checking.stdout.on("data", (chunk) => said += chunk);
@@ -42855,7 +42920,7 @@ var init_main = __esm(async () => {
       renewing.look();
     });
   if (runFolder)
-    new HangWatch({ name: "engine", run: runFolder, record: join44(runFolder, "engine.json"), isIt: isEngine }).start();
+    new HangWatch({ name: "engine", run: runFolder, record: join45(runFolder, "engine.json"), isIt: isEngine }).start();
   if (!onMachine) {
     process.stdin.on("end", () => stop());
     process.stdin.on("close", () => stop());
@@ -42873,4 +42938,4 @@ if (!isMainThread && process.argv.includes("--insights-db-worker")) {
 } else {
   await init_main().then(() => ({}));
 }
-// Built from Packages/Box/src/agents 262d9e9e0d88c6830efdf1dc809b30ca20c7c586f06dd75ba9b595b6cc438b98
+// Built from Packages/Box/src/agents c0966a399381068bd22dbe323caa5badbfcf96a958e6efbea6dc258bd725e75c

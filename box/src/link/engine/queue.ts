@@ -61,7 +61,8 @@ export const shownQueue = ({ paused, held, waiting, inboxMoved }: QueueState): Q
 /** Whether what's sent to `target` waits on the box now: it's the engine (not the coding agents'
  * bridge, whose turns an engine change never touches) and its change holds (PROTOCOL.md, "A new
  * engine"). */
-export function swapHoldsFor(target: Target, session?: string): boolean {
+export function swapHoldsFor(target: Target | null, session?: string): boolean {
+  if (!target) return swapHolds(RUN);
   if (!swapHolds(RUN) && !(session && queueOf(session).inboxMoved?.length)) return false;
   try { return readBridgeFile()?.port !== target.port; } catch { return true; }
 }
@@ -172,7 +173,7 @@ const waitingFile = (id: string) => files.waitingFile(FILES, id);
  * engine, is being changed (`swapHoldsFor`): true. Neither, false: it isn't kept. `place`: where it goes
  * (last, else). */
 export const keepWaiting = (session: string, message: Outgoing & { id: string }, shown: Shown = {}, place?: files.Place, target?: Target | null): boolean =>
-  files.keepWaiting(FILES, session, message, shown, tellFollowers, place, target === null ? swapHolds(RUN) : target ? swapHoldsFor(target, session) : false);
+  files.keepWaiting(FILES, session, message, shown, tellFollowers, place, target !== undefined && swapHoldsFor(target, session));
 
 /** A message of yours a Stop named as still on its way, as it comes (`kuvo/sessions/<id>/stop
  * {items}`): kept on the box while the queue is paused (as what arrives then is) and held, after

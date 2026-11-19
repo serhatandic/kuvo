@@ -59,7 +59,7 @@ process.stdin.on("data", chunk => {
       send({ method: "item/agentMessage/delta", params: { threadId, turnId, itemId: "m" + turnId, delta: "Ran it." } });
       send({ method: "item/completed", params: { threadId, turnId, item: { type: "agentMessage", id: "m" + turnId, text: "Ran it." } } });
       send({ method: "turn/completed", params: { threadId, turn: { id: turnId, status: "completed" } } });
-    } else if (message.method === "thread/start") send({ id: message.id, result: { thread: { id: "t" + ++threads } } });
+    } else if (message.method === "thread/start") send({ id: message.id, result: { thread: { id: "t" + process.pid + "_" + ++threads } } });
     else if (message.method === "thread/resume") send({ id: message.id, result: { thread: { id: message.params.threadId } } });
     else if (message.method === "thread/backgroundTerminals/list") send({ id: message.id, result: { data: [] } });
     else if (message.method === "turn/start") {
@@ -484,6 +484,57 @@ test("a native program update waits for its held turn and queues the next prompt
   assert.equal(seen[1].startedWith, "0.170.0");
   assert.notEqual(seen[1].pid, old.pid);
   assert.equal((await reply(next, later.id)).status, 200);
+});
+
+test("a bridge crash during the program drain preserves the pending update and hold", { skip: bun ? false : NO_BUN }, async () => {
+  const box = await machine({ programUpdate: true });
+  const first = await box.up();
+  const make = async title => {
+    const made = await box.api("POST", "api/session", {
+      title, location: { directory: path.join(box.home, "work") },
+      model: { providerID: "codex-cli", id: "gpt-test" },
+    });
+    assert.equal(made.status, 200);
+    return made.json.data.id;
+  };
+  const active = await make("Drain before the crash");
+  const waiting = await make("Hold after the crash");
+  const pending = async session => (await box.api("GET", `api/session/${session}/permission`)).json?.data?.[0];
+  const send = (session, id) => box.api("POST", `api/session/${session}/prompt`, { id, text: "run it", delivery: "steer" });
+  const reply = (session, id) => box.api("POST", `api/session/${session}/permission/${id}/reply`, { decision: "once" });
+  const inbox = async session => (await box.api("GET", `api/session/${session}/inbox`)).json?.data.map(item => item.id);
+  assert.equal((await send(active, "msg_programdrain0001")).status, 200);
+  await until(() => pending(active), "the old turn to wait for approval");
+  const native = box.log().find(item => "asked" in item).pid;
+  assert.equal((await box.api("POST", "api/kuvo/updates/codex-cli", {})).status, 200);
+  const installer = path.join(box.home, "fake", "installer-started");
+  assert.equal((await send(waiting, "msg_programdrain0002")).status, 200);
+  assert.deepEqual(await inbox(waiting), ["msg_programdrain0002"]);
+  assert.equal(fs.existsSync(installer), false);
+
+  const journal = path.join(box.home, "agents", "program-draining", "codex.json");
+  const originalDrain = JSON.parse(fs.readFileSync(journal, "utf8"));
+  process.kill(first, "SIGKILL");
+  await box.up(first);
+  assert.deepEqual(JSON.parse(fs.readFileSync(journal, "utf8")), originalDrain, "the restart preserves the attempt and original deadline");
+  const ask = await until(() => pending(active), "the original turn to resume");
+  assert.ok(alive(native));
+  assert.equal((await send(waiting, "msg_programdrain0003")).status, 200);
+  assert.deepEqual(await inbox(waiting), ["msg_programdrain0002", "msg_programdrain0003"]);
+  assert.equal(fs.existsSync(installer), false, "the installer is still waiting on the original turn");
+  assert.equal((await reply(active, ask.id)).status, 200);
+  await until(() => fs.existsSync(installer), "the recovered update to start its installer");
+  assert.deepEqual(await inbox(waiting), ["msg_programdrain0002", "msg_programdrain0003"]);
+  fs.writeFileSync(path.join(box.home, "fake", "finish-install"), "");
+  const next = await until(() => pending(waiting), "the first queued prompt to start");
+  assert.equal((await reply(waiting, next.id)).status, 200);
+  const last = await until(async () => {
+    const found = await pending(waiting);
+    return found && found.id !== next.id ? found : null;
+  }, "the second queued prompt to start");
+  assert.equal((await reply(waiting, last.id)).status, 200);
+  assert.equal(fs.existsSync(journal), false, "a finished update retires its drain");
+  assert.deepEqual(box.log().filter(item => "asked" in item).map(item => item.startedWith), ["0.169.0", "0.170.0", "0.170.0"]);
 });
 
 test("a replacement bridge keeps prompts queued until a detached program installer exits", { skip: bun ? false : NO_BUN }, async () => {

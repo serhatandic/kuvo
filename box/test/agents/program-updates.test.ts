@@ -60,7 +60,7 @@ class Program {
 }
 
 /** The bridge's routes, for these agents alone; each ask is as a client of its own makes it. */
-function bridge(agents: Agent[], holdProgram?: (program: string, confirm: AbortSignal) => Promise<() => void>) {
+function bridge(agents: Agent[], holdProgram?: (program: string, deadline: number) => Promise<() => void>) {
   const answer = handler({ roster: { all: () => agents, find: (id: string) => agents.find((agent) => agent.providerID === id) }, password: "pw", ...(holdProgram ? { sessions: { holdProgram } } : {}) } as any)
   const ask = async (route: string, method = "GET", body?: unknown) => {
     const headers: Record<string, string> = { authorization: "Basic " + Buffer.from("opencode:pw").toString("base64") }
@@ -138,23 +138,23 @@ describe("updating the agents' programs", () => {
     expect((await box.accounts())["claude-all-cli"].programUpdate).toMatchObject({ state: "updated", version: "2.0.0" })
   })
 
-  test("an explicit confirmation releases a pending program update's drain", async () => {
+  test("a confirmation body cannot bypass a live program's drain", async () => {
     const codex = new Program("codex-confirm", "1.0.0", "2.0.0")
     const waiting = Promise.withResolvers<void>()
-    const installing = Promise.withResolvers<void>()
-    const box = bridge([codex.account()], async (_program, confirm) => {
+    const quiet = Promise.withResolvers<void>()
+    const box = bridge([codex.account()], async () => {
       waiting.resolve()
-      if (!confirm.aborted) await new Promise<void>(resolve => confirm.addEventListener("abort", () => resolve(), { once: true }))
-      installing.resolve()
+      await quiet.promise
       return () => {}
     })
     await box.ask("kuvo/updates/codex-confirm-cli", "POST", {})
     await waiting.promise
     expect(codex.updates).toBe(0)
-    const ended = told("codex-confirm-cli")
     await box.ask("kuvo/updates/codex-confirm-cli", "POST", { confirmed: true })
-    await installing.promise
-    await Promise.resolve()
+    expect(codex.updates).toBe(0)
+    const ended = told("codex-confirm-cli")
+    quiet.resolve()
+    await Bun.sleep(0)
     expect(codex.updates).toBe(1)
     codex.end({ updated: true, version: "2.0.0" })
     await ended

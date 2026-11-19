@@ -536,7 +536,7 @@ let server: ReturnType<typeof Bun.serve>
 /** Making way for a newer bridge in its place, on a machine (below). */
 let renewal: Renewal | undefined
 const githubSignIn = new GitHubSignIn(context)
-const answer = handler({ roster, sessions, auto, link, password, version, build, groups, peers, goals, sideQuestions, handoffs, places, reviews, voice, artifacts, noted, restartOutside, carrying, limits, usage, refreshAccounts: true, githubSignIn })
+const answer = handler({ roster, sessions, auto, link, password, programHome: home, version, build, groups, peers, goals, sideQuestions, handoffs, places, reviews, voice, artifacts, noted, restartOutside, carrying, limits, usage, refreshAccounts: true, githubSignIn })
 /** Requests being answered now (but the event feed's, which stays open): a newer bridge waits for them. */
 let answering = 0
 let transferring = false

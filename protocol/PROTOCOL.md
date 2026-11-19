@@ -4195,10 +4195,9 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
     for each account with the program as it starts and as it ends (and `model.updated` once it
     updated). For an in-place update, the box holds new turns on that program across its accounts
     while running turns finish and the installer runs. Other programs keep taking turns. If work
-    still runs after 30 minutes, the update ends and the held messages go ahead. After explicit
-    confirmation, a client may send `{"confirmed":true}` to the single-program route to bypass the
-    wait for running turns, including for a pending update. The new turns still wait for the
-    installer. A client draws the outcomes, says each once and then that it was seen. Update All on
+    still runs after 30 minutes, the update ends and the held messages go ahead. A replacement
+    bridge restores the pending update and its original deadline before admitting queued turns.
+    A client draws the outcomes, says each once and then that it was seen. Update All on
     the phone asks each computer. Installing done,
     `integration.updated` and `model.updated` follow, and how an update went before is gone.
   - Signing in to an agent: `POST kuvo/agents/api/integration/<provider>/connect/oauth {methodID,

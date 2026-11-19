@@ -5,9 +5,14 @@
 // way, and so does the one that asked once it's opened again. Update All is the box's to pick too:
 // each program a newer version is out for that its installer can update, once.
 
+import { randomUUID } from "node:crypto"
+import { readdirSync, readFileSync, rmSync } from "node:fs"
+import { join } from "node:path"
+import { HOLD_MOST } from "../shared/engine-swap"
+import { writeDurablePrivate } from "../shared/files"
 import type { Agent } from "./agent"
 import { emit } from "./events"
-import { compareVersions, isOutdated, type Maintenance, type UpdateResult } from "./maintenance"
+import { compareVersions, finishProgramInstallation, isOutdated, programInstallerStarted, type Maintenance, type UpdateResult } from "./maintenance"
 
 /** How a program's update stands, by when it last changed (`at`, its id for a client's "seen"). */
 export type ProgramUpdate =
@@ -22,9 +27,21 @@ export type ProgramUpdate =
 const NEWS_KEPT = 60 * 60_000
 
 const kept = new Map<string, ProgramUpdate>()
-const underWay = new Map<string, { done: Promise<UpdateResult>; confirm: AbortController }>()
+const underWay = new Map<string, Promise<UpdateResult>>()
 
-type HoldProgram = (program: string, confirm: AbortSignal) => Promise<() => void>
+interface Drain {
+  attempt: string
+  provider: string
+  deadline: number
+}
+
+interface ProgramUpdates {
+  home?: string
+  hold?: (program: string, deadline: number) => Promise<() => void>
+}
+
+const drainsIn = (home: string) => join(home, "program-draining")
+const drainFile = (home: string, program: string) => join(drainsIn(home), program + ".json")
 
 /** Whether its program is updating now (`agent.id`: one program serves every account with it). */
 export function isUpdating(program: string): boolean {
@@ -83,31 +100,61 @@ function outcome(result: UpdateResult): ProgramUpdate {
 /** Keeps what an agent's program is now, as just read (its version, the newest): whether that's news. */
 export type Noted = (agent: Agent, maintained: Maintenance) => boolean
 
+/** Restore admission holds before waking inboxes or accepting requests. */
+export function resumeProgramUpdates(accounts: () => Agent[], noted: Noted, control: ProgramUpdates) {
+  const home = control.home
+  if (!home) return
+  let names: string[]
+  try { names = readdirSync(drainsIn(home)) } catch { return }
+  for (const name of names) {
+    const program = /^([a-z][a-z0-9-]*)\.json$/.exec(name)?.[1]
+    if (!program) continue
+    const file = drainFile(home, program)
+    try {
+      const drain: Drain = JSON.parse(readFileSync(file, "utf8"))
+      if (typeof drain.provider !== "string" || !Number.isFinite(drain.deadline) ||
+          typeof drain.attempt !== "string" || !/^[a-f0-9-]{36}$/.test(drain.attempt)) continue
+      // The installer already took over. Its process-group record holds turns until it exits.
+      if (programInstallerStarted(home, program, drain.attempt)) {
+        rmSync(file, { force: true })
+        continue
+      }
+      const candidates = accounts().filter(agent => agent.id === program && agent.update)
+      const agent = candidates.find(agent => agent.providerID === drain.provider) ?? candidates[0]
+      if (agent) void updateProgram(agent, accounts, noted, control, drain)
+      else {
+        kept.set(program, outcome({ updated: false, message: "This program can no longer be updated here." }))
+        rmSync(file, { force: true })
+      }
+    } catch (error) {
+      console.error("Couldn't restore a program update:", error)
+    }
+  }
+}
+
 /**
  * Updates `agent`'s program through the installer that owns it, or the update of it under way:
  * every account with it says it's updating until it's done, then how it went. Done, what the
  * program is now (its version) is `noted` before anyone is told; each account with it runs the
  * new one (`programUpdated`). Never fails: what went wrong is its outcome.
  */
-export function updateProgram(agent: Agent, accounts: () => Agent[], noted: Noted, hold?: HoldProgram, confirmed = false): Promise<UpdateResult> {
+export function updateProgram(agent: Agent, accounts: () => Agent[], noted: Noted, control: ProgramUpdates = {}, saved?: Drain): Promise<UpdateResult> {
   const program = agent.id
   const running = underWay.get(program)
-  if (running) {
-    if (confirmed) running.confirm.abort()
-    return running.done
-  }
-  const confirm = new AbortController()
-  if (confirmed) confirm.abort()
-  kept.set(program, { state: "updating", at: Date.now() })
+  if (running) return running
+  const drain = saved ?? { attempt: randomUUID(), provider: agent.providerID, deadline: Date.now() + HOLD_MOST }
+  const home = control.home
+  const file = home && drainFile(home, program)
+  if (file && !saved) writeDurablePrivate(file, JSON.stringify(drain), home)
+  kept.set(program, { state: "updating", at: drain.deadline - HOLD_MOST })
   const done = (async (): Promise<UpdateResult> => {
     let result: UpdateResult = { updated: false, message: "The update stopped without saying how it went." }
-    // Under way before the agent is asked: an update that throws as it's asked still ends (and
-    // isn't left under way for good, holding a newer bridge back).
-    await null
     let release: (() => void) | undefined
     try {
-      release = await hold?.(program, confirm.signal)
-      result = agent.update ? await agent.update() : { updated: false, message: `Update ${agent.name} the way you installed it.` }
+      // Install the fence synchronously. Even if the callback throws, settle the attempt
+      // after it has been registered in underWay.
+      release = await (async () => control.hold?.(program, drain.deadline))()
+      result = agent.update ? await agent.update(home ? drain.attempt : undefined) : { updated: false, message: `Update ${agent.name} the way you installed it.` }
       // Its version as it is now (the update read it afresh): what its accounts list from here.
       const maintained = await agent.maintenance?.().catch(() => undefined)
       if (maintained) noted(agent, maintained)
@@ -120,11 +167,20 @@ export function updateProgram(agent: Agent, accounts: () => Agent[], noted: Note
       underWay.delete(program)
       told(agent, accounts())
       if (result.updated) emit("model.updated", { program })
-      release?.()
+      try {
+        if (home && file) {
+          rmSync(file, { force: true })
+          finishProgramInstallation(home, program, drain.attempt)
+        }
+      } catch (error) {
+        console.error("Couldn't retire a program update:", error)
+      } finally {
+        release?.()
+      }
     }
     return result
   })()
-  underWay.set(program, { done, confirm })
+  underWay.set(program, done)
   told(agent, accounts())
   return done
 }
@@ -135,7 +191,7 @@ export function updateProgram(agent: Agent, accounts: () => Agent[], noted: Note
  * sign-in first, then of the accounts added to it, by what's `known` of it (what Accounts showed),
  * read only where nothing is. Started, not waited for: the programs it started, by `agent.id`.
  */
-export async function updateAll(agents: Agent[], accounts: () => Agent[], noted: Noted, known: (agent: Agent) => Maintenance | undefined, hold?: HoldProgram): Promise<string[]> {
+export async function updateAll(agents: Agent[], accounts: () => Agent[], noted: Noted, known: (agent: Agent) => Maintenance | undefined, control?: ProgramUpdates): Promise<string[]> {
   const byProgram = new Map<string, Agent[]>()
   // An agent's own sign-in ahead of the accounts added to it.
   const ordered = [...agents.filter((agent) => agent.instance.id === "default"), ...agents.filter((agent) => agent.instance.id !== "default")]
@@ -159,7 +215,7 @@ export async function updateAll(agents: Agent[], accounts: () => Agent[], noted:
   const started: string[] = []
   for (const agent of picked) {
     if (!agent || isUpdating(agent.id)) continue
-    void updateProgram(agent, accounts, noted, hold)
+    void updateProgram(agent, accounts, noted, control)
     started.push(agent.id)
   }
   return started
