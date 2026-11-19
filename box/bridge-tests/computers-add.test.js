@@ -1388,6 +1388,7 @@ test("a failed final release is reported and an abandoned reservation can be cle
     const result = await added("release");
     assert.equal(result.state, "failed");
     assert.match(result.failure.message, /finished the change but couldn’t clear the account/);
+    assert.ok(result.computer?.key, "the failed release reports the committed computer");
     const original = fs.readlinkSync(reservationAt(folder));
     fs.rmSync(fail);
     const question = await retryAdd("release");

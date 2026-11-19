@@ -74746,7 +74746,7 @@ var init_files4 = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "214b21c1b99e";
+var BRIDGE_VERSION = "f053ff7c5dd7";
 
 // box/src/link/rehome/paths.ts
 import { createHash as createHash6 } from "node:crypto";
@@ -79258,7 +79258,7 @@ async function setUp2(tell, destination, name, kind, expectedKey, grant) {
       }
       tell.step("joining");
       const identity = /^id ([0-9a-f]{32})$/m.exec(started.stdout)?.[1] ?? probe.id;
-      finish = await join3(tell, reserved, destination, name, identity, account.token, (peer, enrollment) => {
+      const joined = await join3(tell, reserved, destination, name, identity, account.token, (peer, enrollment) => {
         if (!tell.signal.aborted)
           tell.step("joining", "Waiting for the standby to save this computer");
         if ("proposalHash" in enrollment)
@@ -79269,6 +79269,10 @@ async function setUp2(tell, destination, name, kind, expectedKey, grant) {
         unjoined = false;
       }, expectedKey, grant);
       unjoined = false;
+      if (joined.waitsForStandby)
+        finish = joined.finish;
+      else
+        tell.came(await joined.finish());
     } catch (error) {
       if (!unjoined || !account.canRollBack || error instanceof AccountOccupied)
         throw error;
@@ -79335,15 +79339,18 @@ async function join3(tell, run, destination, name, identity, token, staged, expe
       throw new Failed(isObject(result.value) ? String(result.value.message) : "The replacement couldn't be saved.");
     const enrollment = replacement;
     macDocsChanged();
-    return async () => {
-      let status = replacementOutcome(readLink(), enrollment);
-      while (status === "pending") {
-        await new Promise((resolve) => setTimeout(resolve, 100));
-        status = replacementOutcome(readLink(), enrollment);
+    return {
+      waitsForStandby: true,
+      async finish() {
+        let status = replacementOutcome(readLink(), enrollment);
+        while (status === "pending") {
+          await new Promise((resolve) => setTimeout(resolve, 100));
+          status = replacementOutcome(readLink(), enrollment);
+        }
+        if (status !== "committed")
+          throw new Failed(`The setup changed before ${peer.name} was saved. Add it again from the primary.`);
+        return finishEnrollment(tell, peer, null);
       }
-      if (status !== "committed")
-        throw new Failed(`The setup changed before ${peer.name} was saved. Add it again from the primary.`);
-      return finishEnrollment(tell, peer, null);
     };
   }
   const { changed, save, busy } = updateAccess((link) => {
@@ -79368,11 +79375,14 @@ async function join3(tell, run, destination, name, identity, token, staged, expe
   if (!save && !changed)
     throw new Failed(`${ownName()} couldn’t keep ${name}’s record.`);
   const docs = Array.isArray(said.docs) ? said.docs : [];
-  return async () => {
-    const computer = await finishEnrollment(tell, peer, save);
-    if (docs.length)
-      await receiveDocs(peer, { give: docs }, liveLink()).catch(() => {});
-    return computer;
+  return {
+    waitsForStandby: save?.status === "pending",
+    async finish() {
+      const computer = await finishEnrollment(tell, peer, save);
+      if (docs.length)
+        await receiveDocs(peer, { give: docs }, liveLink()).catch(() => {});
+      return computer;
+    }
   };
 }
 async function finishEnrollment(tell, peer, save) {

@@ -933,7 +933,7 @@ link.askToSend();
   }
 });
 
-test("local uninstall on the primary confirms the removal on a member holding an open session", { timeout: 25_000 }, async t => {
+test("local uninstall refuses to clear a primary while a member holds an open session", { timeout: 25_000 }, async t => {
   signal = t.signal;
   const member = { key: Buffer.from(lab.key, "base64url"), address: Buffer.from(lab.address, "base64url") };
   const key = link.newKey();
@@ -947,7 +947,8 @@ test("local uninstall on the primary confirms the removal on a member holding an
   write(path.join(macHome, "run", "serve.json"), { port, password: "local-uninstall" });
   write(path.join(macHome, "box", "kind"), "mac\n");
   const identity = path.join(macHome, "desktop", "identity");
-  write(identity, `${key.toString("base64url")}.${crypto.randomBytes(32).toString("base64url")}`);
+  const identityBefore = `${key.toString("base64url")}.${crypto.randomBytes(32).toString("base64url")}`;
+  write(identity, identityBefore);
   try {
     const result = await new Promise(resolve => {
       const child = spawn(process.execPath, [script, "uninstall"], { env: { ...machineEnv, KUVO_HOME: macHome }, stdio: ["ignore", "pipe", "pipe"] });
@@ -956,14 +957,15 @@ test("local uninstall on the primary confirms the removal on a member holding an
       child.stderr.on("data", bytes => { stderr += bytes; });
       child.on("close", status => resolve({ status, stdout, stderr }));
     });
-    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
-    assert.deepEqual(await desktop.request("GET", "kuvo/computers"), { closed: true });
-    assert.deepEqual(await desktop.open(member), { refused: true });
-    assert.ok(labLink()?.removed?.some(each => each.key === desktop.public));
-    assert.equal(fs.existsSync(identity), false);
+    assert.equal(result.status, 1, `${result.stdout}\n${result.stderr}`);
+    assert.deepEqual(JSON.parse(result.stdout), { result: "refused", message: "Choose another primary first." });
+    assert.equal((await desktop.request("GET", "kuvo/computers")).status, 200);
+    assert.equal(labLink()?.removed?.some(each => each.key === desktop.public) ?? false, false);
+    assert.equal(fs.readFileSync(identity, "utf8"), identityBefore);
   } finally {
     server.closeAllConnections();
     server.close();
+    fs.rmSync(identity, { force: true });
     fs.rmSync(path.join(macHome, "run", "off"), { force: true });
     fs.rmSync(path.join(macHome, "run", "serve.json"), { force: true });
   }
