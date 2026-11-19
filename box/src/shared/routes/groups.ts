@@ -73,6 +73,7 @@ export const GROUP = object({
   "speaking?": string,
   discussing: bool,
   paused: bool,
+  "restoreReview?": literal(true),
   unread: bool,
   "last?": MESSAGE,
   "meeting?": MEETING,
@@ -98,6 +99,7 @@ export const CHAT = object({
   "speaking?": string,
   discussing: bool,
   paused: bool,
+  "restoreReview?": literal(true),
   "activity?": list(ACTIVITY),
   "stopped?": list(string),
 });

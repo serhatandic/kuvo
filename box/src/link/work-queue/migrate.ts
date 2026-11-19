@@ -23,7 +23,7 @@ const QUEUES = path.join(WORK_QUEUE, "queues");
 const CATEGORIES_FILE = path.join(WORK_QUEUE, "categories.json");
 const LABELS_FILE = path.join(WORK_QUEUE, "labels.json");
 export const LABELS_LOCK = path.join(WORK_QUEUE, ".labels.lock");
-const LOCK = path.join(WORK_QUEUE, ".lock");
+export const QUEUES_LOCK = path.join(WORK_QUEUE, ".lock");
 // What says a process is moving the items over now (a folder: made by one alone).
 const MOVING = path.join(WORK_QUEUE, ".moving-to-statuses");
 /** What says which way this box keeps its items: `{model: 2}` once they have statuses. */
@@ -256,10 +256,10 @@ export function migrateOnce(): void {
     fs.mkdirSync(MOVING);
   }
   try {
-    locked(LOCK, () => {
+    locked(QUEUES_LOCK, () => {
       const again = modelRecord();
       if (again?.model !== MODEL) locked(LABELS_LOCK, migrate, { required: true });
-    }, { stale: 60_000, wait: 10_000 });
+    }, { exclusive: true, wait: 10_000 });
   } finally {
     fs.rmSync(MOVING, { recursive: true, force: true });
   }

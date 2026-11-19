@@ -1,8 +1,9 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { isObject } from "../../shared/json";
 import { remote } from "../add/ssh";
-import { privateFolder, syncDurableFile } from "../files";
+import { exclusiveWhile, syncDurableFile } from "../files";
 import { K, located } from "../home";
 import { KEY } from "../peers/known";
 import { inside } from "./locations";
@@ -45,7 +46,6 @@ function disk(folder: string, source: string): DestinationStore {
       }
     }
     if (!fs.lstatSync(part).isDirectory() || fs.realpathSync(part) !== part) throw new Error("The backup folder contains a link.");
-    privateFolder(part);
   }
   const at = (id: string) => {
     if (!POINT.test(id)) throw new Error("Choose a dated backup.");
@@ -55,13 +55,16 @@ function disk(folder: string, source: string): DestinationStore {
     async list() { return pointNames(fs.readdirSync(root)); },
     async put(id, archive) {
       const file = at(id);
-      const temporary = file + ".partial";
-      try {
-        fs.copyFileSync(archive, temporary, fs.constants.COPYFILE_EXCL);
-        syncDurableFile(temporary);
-        fs.linkSync(temporary, file);
-        syncDurableFile(file);
-      } finally { fs.rmSync(temporary, { force: true }); }
+      await exclusiveWhile(file + ".publishing", async () => {
+        if (fs.lstatSync(file, { throwIfNoEntry: false })) throw new Error("That backup point already exists.");
+        const temporary = file + "." + crypto.randomBytes(8).toString("hex") + ".partial";
+        try {
+          fs.copyFileSync(archive, temporary, fs.constants.COPYFILE_EXCL);
+          syncDurableFile(temporary);
+          fs.renameSync(temporary, file);
+          syncDurableFile(root, root);
+        } finally { fs.rmSync(temporary, { force: true }); }
+      });
     },
     async get(id) { return at(id); },
     async erase(id) {

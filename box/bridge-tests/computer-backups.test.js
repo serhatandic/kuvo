@@ -81,6 +81,8 @@ test("failure bench: restore verified data after the old disk is erased", () => 
   put(box, "folder-version.json", '{"version":6}');
   put(box, "bots/bot_a/MEMORY.md", "durable memory");
   put(box, "bots/bot_a/notes.md", "bot note");
+  put(box, "bots/bot_a/groups/grp_a.md", "private group memory");
+  put(box, "box/approval.json", '{"fullAccess":true,"last":"acceptEdits","since":123}');
   put(box, "groups/grp_a/messages.json", '["group history"]');
   put(box, "run/work-queue/queues/usr_you.json", '{"items":[{"id":"wqi_item","title":"owned item"}]}');
   put(box, "run/work-queue/files/wqi_item/file.bin", Buffer.of(0, 4, 255));
@@ -105,12 +107,22 @@ test("failure bench: restore verified data after the old disk is erased", () => 
   assert.throws(() => recover(replacement, dest, Buffer.alloc(32, 8).toString("base64url")), /authenticate/);
   const currentBox = home(replacement);
   assert.equal(fs.existsSync(path.join(currentBox, "bots")), false);
+  bunIn(replacement, `
+    import fs from "node:fs";
+    import { Database } from "bun:sqlite";
+    const folder = process.env.KUVO_HOME + "/data/opencode";
+    fs.mkdirSync(folder, { recursive: true });
+    const db = new Database(folder + "/opencode.db");
+    db.exec("PRAGMA journal_mode=WAL; CREATE TABLE session(id TEXT PRIMARY KEY); CREATE TABLE migration(id TEXT); INSERT INTO migration VALUES ('bootstrap');");
+    db.close();
+  `);
   const restored = recover(replacement, dest);
   assert.deepEqual(restored.unavailable, []);
   assert.equal(restored.savedAfterPoint, "unavailable unless verified elsewhere");
   assert.equal(restored.credentials, "sign-in required");
   for (const [file, value] of [
     ["bots/bot_a/MEMORY.md", "durable memory"], ["bots/bot_a/notes.md", "bot note"],
+    ["bots/bot_a/groups/grp_a.md", "private group memory"],
     ["groups/grp_a/messages.json", '["group history"]'], ["agents/sessions/ses_a/messages.json", '["conversation"]'],
     ["agents/usage/usage.json", '{"requests":12}'], ["run/moves/decisions/mov_one.json", '{"decision":"switched"}'],
   ]) assert.equal(fs.readFileSync(path.join(currentBox, file), "utf8"), value);
@@ -124,6 +136,10 @@ test("failure bench: restore verified data after the old disk is erased", () => 
     const db = new Database(process.env.KUVO_HOME + "/data/opencode/opencode.db");
     console.log(JSON.stringify(["session", "credential", "session_inbox"].map(name => db.query("SELECT count(*) AS count FROM " + name).get().count)));
   `), "[1,0,0]");
+  assert.equal(bunIn(replacement, `
+    import { fullAccessAllowed, defaultApproval } from ${JSON.stringify(new URL("../src/link/work/approval.ts", import.meta.url).href)};
+    console.log(JSON.stringify([fullAccessAllowed(), defaultApproval()]));
+  `), '[false,"acceptEdits"]');
   assert.deepEqual(recover(replacement, dest), restored);
 });
 
@@ -310,12 +326,31 @@ test("vault export needs its separate key and imports without inherited grants",
     import assert from "node:assert/strict";
     import { makeVault, readGrants, readItems, valuesOf } from ${JSON.stringify(new URL("../src/link/vault/store.ts", import.meta.url).href)};
     import { importVault } from ${url("vault")};
+    import { BACKUP } from ${url("engine")};
+    import fs from "node:fs";
+    import path from "node:path";
     ${install(dest)}
     const point = ${JSON.stringify(exported)};
     makeVault();
+    const leftover = path.join(BACKUP, ".scratch-interrupted");
+    fs.mkdirSync(leftover, { recursive: true });
+    fs.writeFileSync(path.join(leftover, "plain"), "test-secret-849");
+    const write = fs.writeSync;
+    let inspected = false;
+    fs.writeSync = (fd, data, ...args) => {
+      if (Buffer.isBuffer(data) && data.includes("test-secret-849")) {
+        inspected = true;
+        for (const dir of fs.readdirSync(BACKUP).filter(name => name.startsWith(".scratch-"))) {
+          assert.deepEqual(fs.readdirSync(path.join(BACKUP, dir)), []);
+        }
+      }
+      return write(fd, data, ...args);
+    };
     await assert.rejects(importVault(destination, a.source, point.id, a.key), /authenticate/);
     assert.equal(readItems().length, 0);
     assert.equal((await importVault(destination, a.source, point.id, point.recoveryKey)).imported, 1);
+    assert.equal(inspected, true);
+    assert.equal(fs.existsSync(leftover), false);
     assert.equal((await valuesOf(readItems()[0].id)).password, "test-secret-849");
     assert.deepEqual(readGrants(), []);
   `);
@@ -423,7 +458,7 @@ test("restore inventories the upgraded home and external roots", () => {
   `);
 });
 
-test("a paired backup cannot reactivate an item handed off after that backup", () => {
+test("failure bench: a paired backup cannot reactivate an item handed off after that backup", () => {
   const old = scratch(), primary = scratch(), replacement = scratch(), dest = scratch();
   const oldBox = home(old), item = "wqi_" + "B".repeat(20);
   put(oldBox, "folder-version.json", '{"version":7}');
@@ -484,4 +519,206 @@ test("a paired backup cannot reactivate an item handed off after that backup", (
   `));
   assert.ok(result.held.some(entry => entry.startsWith("work-queue-items/")));
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(home(replacement), "run/work-queue/queues/usr_you.json"), "utf8")).items, []);
+});
+
+test("failure bench: the replacement group runner holds meetings, resumed turns and waiting work for review", () => {
+  const owner = scratch(), dest = scratch(), replacement = scratch();
+  const box = home(owner);
+  const time = "2026-11-01T00:00:00.000Z";
+  const group = { id: "grp_a", name: "Fixture", members: ["bot_a", "bot_b"], created: time, seats: {}, heard: {},
+    meeting: { next: time, topic: "Overdue meeting" } };
+  const turning = { bot: "bot_a", seat: "ses_a", agents: false, prompt: "msg_a", sent: 123 };
+  const messages = [{ id: "gm_wrap", kind: "wrapUp", text: "Decisions", time, tasks: [
+    { id: "tsk_sent", bot: "bot_a", task: "Already sent", state: "working", prompt: "peer:old" },
+    { id: "tsk_wait", bot: "bot_b", task: "Still waiting", state: "waiting" },
+  ] }];
+  put(box, "groups/grp_a/group.json", JSON.stringify({ kuvo: 1, status: "active", group, turning }));
+  put(box, "groups/grp_a/messages.json", JSON.stringify(messages));
+  put(box, "groups/peer-work.json", '{"unsure":{"task":"remote part"}}');
+  put(box, "groups/peer-turns.json", '{"unsure":{"turn":"remote turn"}}');
+  take(owner, dest);
+  const restored = recover(replacement, dest);
+  assert.ok(restored.held.includes("groups/grp_a/group.json"));
+  assert.ok(restored.held.includes("groups/peer-work.json"));
+  assert.ok(restored.held.includes("groups/peer-turns.json"));
+  const groups = new URL("../src/agents/groups/", import.meta.url);
+  bunIn(replacement, `
+    import assert from "node:assert/strict";
+    import fs from "node:fs";
+    import { GroupRunner } from ${JSON.stringify(new URL("runner.ts", groups).href)};
+    import { GroupStore } from ${JSON.stringify(new URL("store.ts", groups).href)};
+    import { linkRoutes } from ${JSON.stringify(new URL("link.ts", groups).href)};
+    const root = process.env.KUVO_HOME;
+    const store = new GroupStore(root + "/groups", root + "/bots");
+    const runner = new GroupRunner({ store, engine: () => undefined, bridge: () => undefined, trash: root + "/trash",
+      peers: { bots: () => [], home: () => { throw new Error("Resubmitted a peer task"); } } });
+    runner.meet = () => { throw new Error("Held an overdue meeting"); };
+    runner.startReady = () => { throw new Error("Started waiting work"); };
+    runner.start();
+    runner.meetDue(${epoch});
+    assert.equal(runner.activate("grp_a"), false);
+    assert.equal(runner.get("grp_a").restoreReview, true);
+    assert.deepEqual(store.read("grp_a").turning, ${JSON.stringify(turning)});
+    assert.deepEqual(runner.get("grp_a").messages, ${JSON.stringify(messages)});
+    assert.deepEqual(runner.get("grp_a").group.meeting, ${JSON.stringify(group.meeting)});
+    assert.equal(fs.existsSync(root + "/groups/grp_a/awake"), false);
+    assert.deepEqual(store.peerWork(), {});
+    const list = await (await linkRoutes(runner, store, "GET", [], async () => {})).json();
+    assert.equal(list.groups[0].restoreReview, true);
+    const detail = await (await linkRoutes(runner, store, "GET", ["grp_a"], async () => {})).json();
+    assert.equal(detail.messages[0].text, "Decisions");
+    assert.equal((await linkRoutes(runner, store, "POST", ["grp_a", "keep-going"], async () => {})).status, 409);
+  `);
+});
+
+test("group memory restores its peer recaps and points to the replacement's transcript", () => {
+  const owner = scratch(), dest = scratch(), replacement = scratch();
+  const box = home(owner);
+  const leaf = "prefix-grp_a.md";
+  const transcript = put(box, "bots/bot_a/groups/" + leaf, "Private transcript");
+  const memory = { name: "Elsewhere", with: ["Other bot"], recap: "Decision", file: transcript, time: "2026-11-01T00:00:00.000Z", at: 1 };
+  put(box, "groups/peer-memory.json", JSON.stringify({ bot_a: { "peer/grp_a": memory, "peer/grp_b": { forgotten: true, at: 2 } } }));
+  take(owner, dest);
+  recover(replacement, dest);
+  const target = home(replacement);
+  const file = path.join(target, "bots/bot_a/groups", leaf);
+  assert.equal(fs.readFileSync(file, "utf8"), "Private transcript");
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(target, "groups/peer-memory.json"), "utf8")), {
+    bot_a: { "peer/grp_a": { ...memory, file }, "peer/grp_b": { forgotten: true, at: 2 } },
+  });
+});
+
+test("a legacy archive never installs the old Full Access grant", () => {
+  const dest = scratch(), owner = scratch(), replacement = scratch();
+  bunIn(owner, `
+    import { archiveContext, seal } from ${url("archive")};
+    import { bytes } from ${url("engine")};
+    import { destinationStore } from ${url("destination")};
+    ${install(dest)}
+    const file = process.env.HOME + "/archive";
+    seal(file, a.key, [
+      bytes("meta/manifest.json", { format: 1, version: 7, id: a.id, at: a.epoch, source: a.source, origin: null, signer: null, setup: null, paired: false, projects: [] }),
+      bytes("home/box/approval.json", { fullAccess: true, last: "fullAccess", since: 123 }),
+    ], archiveContext(a.source, a.id));
+    await destinationStore(destination, a.source).put(a.id, file);
+  `);
+  recover(replacement, dest);
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(home(replacement), "box/approval.json"), "utf8")), { last: "fullAccess", since: 123 });
+});
+
+test("a populated replacement database is retained and its recovered snapshot held", () => {
+  const owner = scratch(), dest = scratch(), replacement = scratch();
+  for (const [root, row] of [[owner, "ses_archived"], [replacement, "ses_current"]]) bunIn(root, `
+    import fs from "node:fs";
+    import { Database } from "bun:sqlite";
+    const dir = process.env.KUVO_HOME + "/data/opencode";
+    fs.mkdirSync(dir, { recursive: true });
+    const db = new Database(dir + "/opencode.db");
+    db.exec("PRAGMA journal_mode=WAL; CREATE TABLE session_v2(id TEXT PRIMARY KEY)");
+    db.query("INSERT INTO session_v2 VALUES (?)").run(${JSON.stringify(row)});
+    db.close();
+  `);
+  take(owner, dest);
+  const result = recover(replacement, dest);
+  assert.ok(result.unavailable.some(item => item.entry === "engine/opencode.db"));
+  bunIn(replacement, `
+    import assert from "node:assert/strict";
+    import { Database } from "bun:sqlite";
+    for (const [folder, row] of [["data/opencode", "ses_current"], ["backup/recovered/" + ${JSON.stringify(id)} + "/engine", "ses_archived"]]) {
+      const db = new Database(process.env.KUVO_HOME + "/" + folder + "/opencode.db", { readonly: true });
+      assert.deepEqual(db.query("SELECT id FROM session_v2").all(), [{ id: row }]);
+      db.close();
+    }
+  `);
+});
+
+test("failure bench: a Work Queue handoff cannot land between the two queue reads", () => {
+  const owner = scratch();
+  for (const [queue, items] of [["ses_a", []], ["usr_you", [{ id: "wqi_fixture", title: "Move me" }]]]) {
+    put(home(owner), "run/work-queue/queues/" + queue + ".json", JSON.stringify({ owner: queue, items }));
+  }
+  bunIn(owner, `
+    import assert from "node:assert/strict";
+    import fs from "node:fs";
+    import path from "node:path";
+    import { captureBackup, scratchFolder } from ${url("engine")};
+    import { archiveContext, openArchive } from ${url("archive")};
+    import { locked } from ${JSON.stringify(new URL("../src/shared/files.ts", import.meta.url).href)};
+    ${install(owner)}
+    const folder = process.env.KUVO_HOME + "/run/work-queue";
+    const to = folder + "/queues/ses_a.json", from = folder + "/queues/usr_you.json";
+    const handoff = () => locked(folder + "/.lock", () => {
+      const item = { id: "wqi_fixture", title: "Move me" };
+      fs.writeFileSync(to, JSON.stringify({ owner: "ses_a", items: [item] }));
+      fs.writeFileSync(from, JSON.stringify({ owner: "usr_you", items: [] }));
+    }, { exclusive: true, wait: 30 });
+    const copy = fs.cpSync, open = fs.openSync;
+    let tried = false, held = false;
+    const tryHandoff = file => {
+      if (file !== from || tried) return;
+      tried = true;
+      try { handoff(); }
+      catch (error) {
+        if (!String(error).includes("updating its link")) throw error;
+        held = true;
+      }
+    };
+    fs.cpSync = (file, ...args) => { tryHandoff(file); return copy(file, ...args); };
+    fs.openSync = (file, ...args) => { tryHandoff(file); return open(file, ...args); };
+    const scratch = scratchFolder(), file = path.join(scratch, "archive");
+    captureBackup(file, a.key, a.source, a.id, a.epoch, [], scratch);
+    const entries = openArchive(file, a.key, archiveContext(a.source, a.id), scratch);
+    const queues = entries.filter(entry => entry.name.startsWith("home/run/work-queue/queues/"));
+    const items = queues.flatMap(entry => JSON.parse(fs.readFileSync(entry.file, "utf8")).items);
+    assert.deepEqual(items.map(item => item.id), ["wqi_fixture"]);
+    assert.ok(tried && held);
+    handoff();
+    assert.equal(JSON.parse(fs.readFileSync(to)).items.length, 1);
+  `);
+});
+
+test("a disk that rejects hard links can publish a point without overwriting it on retry", () => {
+  const owner = scratch(), dest = scratch();
+  bunIn(owner, `
+    import assert from "node:assert/strict";
+    import fs from "node:fs";
+    import { destinationStore } from ${url("destination")};
+    ${install(dest)}
+    fs.linkSync = () => { throw Object.assign(new Error("Hard links unavailable on this filesystem"), { code: "ENOTSUP" }); };
+    const file = process.env.HOME + "/ciphertext";
+    fs.writeFileSync(file, "first ciphertext");
+    const store = destinationStore(destination, a.source);
+    await store.put(a.id, file);
+    fs.writeFileSync(file, "different ciphertext");
+    await assert.rejects(store.put(a.id, file), /already exists/);
+    assert.deepEqual(await store.list(), [a.id]);
+    assert.equal(fs.readFileSync(await store.get(a.id, ""), "utf8"), "first ciphertext");
+  `);
+});
+
+test("opted-in projects recover executable modes, empty directories and safe links", () => {
+  const owner = scratch(), dest = scratch(), replacement = scratch();
+  const project = path.join(owner, "project");
+  const script = put(project, "bin/check", "#!/bin/sh\n");
+  fs.chmodSync(script, 0o755);
+  fs.mkdirSync(path.join(project, "empty"), { mode: 0o750 });
+  fs.symlinkSync("./bin/check", path.join(project, "check"));
+  fs.symlinkSync("../elsewhere", path.join(project, "escape"));
+  bunIn(owner, `
+    import path from "node:path";
+    import { captureBackup, scratchFolder } from ${url("engine")};
+    import { destinationStore } from ${url("destination")};
+    ${install(dest)}
+    const scratch = scratchFolder(), file = path.join(scratch, "archive");
+    captureBackup(file, a.key, a.source, a.id, a.epoch, [${JSON.stringify(project)}], scratch);
+    await destinationStore(destination, a.source).put(a.id, file);
+  `);
+  const result = recover(replacement, dest);
+  assert.ok(result.unavailable.some(entry => entry.entry === "projects/0/escape" && entry.reason === "unsafe symbolic link"));
+  const tree = path.join(home(replacement), "backup/recovered", id, "projects/0");
+  assert.equal(fs.statSync(path.join(tree, "bin/check")).mode & 0o777, 0o755);
+  assert.deepEqual(fs.readdirSync(path.join(tree, "empty")), []);
+  assert.equal(fs.statSync(path.join(tree, "empty")).mode & 0o777, 0o750);
+  assert.equal(fs.readlinkSync(path.join(tree, "check")), "./bin/check");
+  assert.equal(fs.lstatSync(path.join(tree, "escape"), { throwIfNoEntry: false }), undefined);
 });

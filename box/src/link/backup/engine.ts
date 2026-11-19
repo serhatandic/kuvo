@@ -3,14 +3,16 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
-import { DATA_DECLARATIONS } from "../../shared/data-declarations";
+import { DATA_DECLARATIONS, type DataKind } from "../../shared/data-declarations";
 import { backupFolderVersion } from "../../shared/folder-version";
 import { isObject } from "../../shared/json";
 import { swapUnderWay } from "../../shared/engine-swap";
 import { updateUnderWay } from "../../shared/updating";
 import { held, ownSign } from "../documents/format";
-import { exclusiveWhile, privateFolder, writeDurablePrivate } from "../files";
+import { exclusiveWhile, locked, privateFolder, writeDurablePrivate } from "../files";
 import { K, OWN_RUNTIME, RUN, homeFolder, located } from "../home";
+import { QUEUES_LOCK } from "../work-queue/migrate";
+import { portableApproval } from "../work/approval";
 import { mayActivate } from "../ownership/resolve";
 import { ownKey, peersOf } from "../peers/known";
 import { leadershipDocuments, resolveCheckpoint } from "../setup/checkpoint";
@@ -18,8 +20,9 @@ import { followedSetup } from "../setup/record";
 import { readLink, updateLink } from "../state";
 import { authenticate, archiveContext, newRecoveryKey, seal, type Entry } from "./archive";
 import { destinationStore, expiredPoints, separateDisk, verifyBackupComputer, type Destination } from "./destination";
+import { projectEntries } from "./projects";
 import { scrubEngine } from "./sqlite";
-import { durableFiles, inside, recordReferences, roots, stat, tree } from "./locations";
+import { durableFiles, inside, recordReferences, roots, stat } from "./locations";
 
 export const BACKUP = path.join(K, "backup");
 const CONFIG = path.join(BACKUP, "configuration.json");
@@ -55,7 +58,12 @@ export interface Manifest extends RestorePoint {
 }
 
 export const bytes = (name: string, value: unknown): Entry => ({ name, bytes: Buffer.from(JSON.stringify(value)) });
-export const backupLock = <T>(work: () => Promise<T>) => exclusiveWhile(path.join(BACKUP, ".operation"), work);
+export const backupLock = <T>(work: () => Promise<T>) => exclusiveWhile(path.join(BACKUP, ".operation"), async () => {
+  for (const name of fs.readdirSync(privateFolder(BACKUP))) {
+    if (name.startsWith(".scratch-")) fs.rmSync(path.join(BACKUP, name), { recursive: true, force: true });
+  }
+  return work();
+});
 export const scratchFolder = () => fs.mkdtempSync(path.join(privateFolder(BACKUP), ".scratch-"));
 
 export function config(): Config | null {
@@ -200,11 +208,19 @@ export function captureBackup(file: string, key: string, source: string, id: str
     const file = base && path.join(base, id, "session");
     return file && stat(file)?.isFile() ? fs.readFileSync(file, "utf8").trim() : id;
   };
+  const queueKind = (kind: DataKind) => kind === "queueDepartureFences" || kind === "queueDeletionFences" ||
+    (kind.startsWith("queue") && kind !== "queueNumberAllocation");
+  const queue = locked(QUEUES_LOCK, () => [...durableFiles(roots, queueKind)].map((entry, index) => {
+    const file = path.join(scratch, `queue-${index}`);
+    fs.cpSync(entry.file, file, { dereference: false, force: false, errorOnExist: true });
+    return { ...entry, file };
+  }), { exclusive: true });
   function* entries(): Generator<Entry> {
     yield bytes("meta/manifest.json", manifest);
     yield* boundary.entries;
     let db = 0;
-    for (const item of durableFiles()) {
+    yield* queue;
+    for (const item of durableFiles(roots, kind => !queueKind(kind))) {
       const [root] = item.name.split("/");
       if (!recordReferences(item.name, sessionFor).every(ref => mayActivate(ref, { link }))) continue;
       if (item.name.startsWith("engine/") && item.name.endsWith(".db") || item.name === "agents/usage/insights.sqlite") {
@@ -213,12 +229,11 @@ export function captureBackup(file: string, key: string, source: string, id: str
         if (root === "engine") scrubEngine(copy, [], false);
         yield { name: item.name, file: copy };
         fs.rmSync(copy);
+      } else if (item.name === "home/box/approval.json") {
+        yield bytes(item.name, portableApproval(JSON.parse(fs.readFileSync(item.file, "utf8"))));
       } else yield item;
     }
-    for (const [i, project] of projects.entries()) {
-      if (fs.realpathSync(project) !== project || !fs.statSync(project).isDirectory()) throw new Error("A selected project folder is unavailable.");
-      yield* tree(project, `projects/${i}`, () => true);
-    }
+    yield* projectEntries(projects);
   }
   seal(file, key, entries(), archiveContext(source, id));
   if (layout(insideUpdate) !== version) throw new Error("The folder layout changed during backup. Try again.");

@@ -24,7 +24,10 @@ export type DataConflict =
 // Vaults have a separate, optional encrypted export. External project files can be opted in.
 export type RestorePolicy = "portable" | "machine-local" | "needs fresh approval";
 
-export interface DataDeclaration {
+type BackupStorage = readonly (string | { pattern: string; restore: RestorePolicy })[];
+type BackupVia = "accepted setup" | "queue items" | "owner message receipts";
+
+export type DataDeclaration = {
   readonly shared?: { readonly publish?: true; readonly localSave?: "usage" | "release"; readonly checkpointOnly?: true; readonly localEffects?: readonly string[] };
   readonly owner: DataOwner | typeof workQueueOwner;
   readonly conflict: DataConflict;
@@ -32,26 +35,33 @@ export interface DataDeclaration {
   readonly restore: RestorePolicy;
   /** Kuvo-owned locations, relative to logical roots (which may live beside the box on a Mac).
    * A component may use *, and a trailing slash includes the tree. */
-  readonly storage?: readonly (string | { pattern: string; restore: RestorePolicy })[];
+  readonly storage?: BackupStorage;
+  readonly backupVia?: BackupVia;
+  readonly backupExclusion?: string;
   readonly families: readonly [string, ...string[]];
-}
+} & (
+  | { readonly backup: false }
+  | { readonly backup: true; readonly storage: readonly [BackupStorage[number], ...BackupStorage[number][]] }
+  | { readonly backup: true; readonly backupVia: BackupVia }
+  | { readonly backup: true; readonly backupExclusion: string }
+);
 
 export const DATA_DECLARATIONS = {
   // The primary owns membership on every platform. SSH destinations stay local.
-  setupLeadership: { owner: "primary", conflict: "owner order", backup: true, restore: "needs fresh approval", families: ["Link state", "Signed documents"] },
-  setupReplica: { owner: "primary", conflict: "owner order", backup: true, restore: "needs fresh approval", families: ["Link state", "Signed documents"] },
+  setupLeadership: { backupVia: "accepted setup", owner: "primary", conflict: "owner order", backup: true, restore: "needs fresh approval", families: ["Link state", "Signed documents"] },
+  setupReplica: { backupVia: "accepted setup", owner: "primary", conflict: "owner order", backup: true, restore: "needs fresh approval", families: ["Link state", "Signed documents"] },
   setupSaveOutbox: { owner: "local computer", conflict: "owner order", backup: false, restore: "machine-local", families: ["Link state"] },
-  setupNames: { shared: { publish: true, checkpointOnly: true }, owner: "primary", conflict: "fields", backup: true, restore: "portable", families: ["Link state", "Signed documents"] },
+  setupNames: { backupVia: "accepted setup", shared: { publish: true, checkpointOnly: true }, owner: "primary", conflict: "fields", backup: true, restore: "portable", families: ["Link state", "Signed documents"] },
   setupStandbyLease: { owner: "local computer", conflict: "regenerate", backup: false, restore: "machine-local", families: ["Link state"] },
   setupStandbySettings: { owner: "local computer", conflict: "fields", backup: true, restore: "needs fresh approval", storage: ["home/setup-takeover.json"], families: ["Link state"] },
-  membershipAndAccess: { shared: { publish: true, checkpointOnly: true, localEffects: ["untold", "untoldMembership", "pendingMachineCleanup"] }, owner: "primary", conflict: "owner order", backup: true, restore: "needs fresh approval", families: ["Link state", "Signed documents", "Phone trust and sync"] },
-  setupSecurityAndReleaseChoice: { shared: { publish: true, localSave: "release" }, owner: "primary", conflict: "owner order", backup: true, restore: "needs fresh approval", families: ["Local fences and audit", "Installed release"] },
+  membershipAndAccess: { backupVia: "accepted setup", shared: { publish: true, checkpointOnly: true, localEffects: ["untold", "untoldMembership", "pendingMachineCleanup"] }, owner: "primary", conflict: "owner order", backup: true, restore: "needs fresh approval", families: ["Link state", "Signed documents", "Phone trust and sync"] },
+  setupSecurityAndReleaseChoice: { backupVia: "accepted setup", shared: { publish: true, localSave: "release" }, owner: "primary", conflict: "owner order", backup: true, restore: "needs fresh approval", families: ["Local fences and audit", "Installed release"] },
   computerIdentityAndTrust: { owner: "local computer", conflict: "owner order", backup: false, restore: "machine-local", families: ["Link state", "Phone trust and sync", "SSH trust and agent sockets"] },
   clientIdentity: { owner: "client", conflict: "owner order", backup: false, restore: "machine-local", families: ["Desktop settings"] },
-  setupCard: { owner: "local computer", conflict: "fields", backup: true, restore: "machine-local", families: ["Setup discovery and welcome"] },
+  setupCard: { backupExclusion: "The replacement rebuilds discovery through enrollment.", owner: "local computer", conflict: "fields", backup: true, restore: "machine-local", families: ["Setup discovery and welcome"] },
   welcomeProgress: { owner: "local computer", conflict: "regenerate", backup: false, restore: "machine-local", families: ["Setup discovery and welcome"] },
-  boxMacLinkSettings: { owner: "local computer", conflict: "fields", backup: true, restore: "machine-local", families: ["Mac link and remembered machines"] },
-  clientDisplayAndConnections: { owner: "client", conflict: "fields", backup: true, restore: "machine-local", families: ["Desktop settings", "Mac link and remembered machines", "Legacy Mac source"] },
+  boxMacLinkSettings: { backupExclusion: "The replacement creates its own Mac link.", owner: "local computer", conflict: "fields", backup: true, restore: "machine-local", families: ["Mac link and remembered machines"] },
+  clientDisplayAndConnections: { backupExclusion: "Client settings reside outside the computer backup.", owner: "client", conflict: "fields", backup: true, restore: "machine-local", families: ["Desktop settings", "Mac link and remembered machines", "Legacy Mac source"] },
   peerDirectoryAndReach: { owner: "local computer", conflict: "regenerate", backup: false, restore: "machine-local", families: ["Peer directory and reach"] },
   installAndSeedProgress: { owner: "local computer", conflict: "owner order", backup: false, restore: "machine-local", families: ["Add, reinstall and seed", "Repair and update state", "Installed release"] },
 
@@ -69,7 +79,7 @@ export const DATA_DECLARATIONS = {
   queueDeletionFences: { owner: workQueueOwner, conflict: "owner order", backup: true, restore: "portable", storage: ["home/run/owned-data/edit-deletions/*.json"], families: ["Work Queue items and history", "Offline edit proposals and recovery"] },
   ownerReadSnapshots: { owner: "local computer", conflict: "regenerate", backup: false, restore: "machine-local", families: ["Peer directory and reach"] },
   ownerMessageOutbox: { owner: "local computer", conflict: "owner order", backup: false, restore: "machine-local", families: ["Letters, receipts and calls"] },
-  ownerGroupMessageReceipts: { owner: "group host", conflict: "owner order", backup: true, restore: "portable", families: ["Group chats and bridge delivery", "Letters, receipts and calls"] },
+  ownerGroupMessageReceipts: { backupVia: "owner message receipts", owner: "group host", conflict: "owner order", backup: true, restore: "portable", families: ["Group chats and bridge delivery", "Letters, receipts and calls"] },
   ownerMessageReceipts: { owner: "session computer", conflict: "owner order", backup: true, restore: "portable", storage: ["home/run/owned-data/accepted/*.json", "home/run/owned-data/mutations/*.json"], families: ["Letters, receipts and calls"] },
   sessionLettersAndDelivery: { owner: "session computer", conflict: "owner order", backup: true, restore: "portable", storage: ["home/run/letters-seen.json", "home/run/typed-sent.json", "home/run/work/sent.json", "home/run/work/told.json", { pattern: "home/run/outbox/sending/*.json", restore: "needs fresh approval" }], families: ["Letters, receipts and calls", "Legacy Mac source"] },
   searchIndex: { owner: "local computer", conflict: "regenerate", backup: false, restore: "machine-local", families: ["Search database"] },
@@ -80,18 +90,18 @@ export const DATA_DECLARATIONS = {
   botSchedules: { owner: "bot home", conflict: "fields", backup: true, restore: "portable", storage: ["bots/*/paused", "bots/*/wakes/", "bots/*/watches/", "bots/*/summaries/"], families: ["Bot metadata and edits", "Wake-ups and watches"] },
   groupTranscript: { owner: "group host", conflict: "owner order", backup: true, restore: "portable", storage: ["groups/*/messages.json"], families: ["Group chats and bridge delivery", "Legacy Mac source"] },
   groupSettings: { owner: "group host", conflict: "fields", backup: true, restore: "portable", storage: ["groups/*/group.json", "groups/settings.json"], families: ["Group chats and bridge delivery"] },
-  privateGroupSeats: { owner: "bot home", conflict: "owner order", backup: true, restore: "portable", families: ["Group chats and bridge delivery", "Coding agent native storage"] },
+  privateGroupSeats: { owner: "bot home", conflict: "owner order", backup: true, restore: "portable", storage: ["bots/*/groups/*.md", "groups/peer-memory.json", { pattern: "groups/peer-work.json", restore: "needs fresh approval" }, { pattern: "groups/peer-turns.json", restore: "needs fresh approval" }], families: ["Group chats and bridge delivery", "Coding agent native storage"] },
 
   queueItems: { owner: workQueueOwner, conflict: "fields", backup: true, restore: "portable", storage: ["home/run/work-queue/queues/*.json"], families: ["Work Queue items and history"] },
-  queueNotes: { owner: workQueueOwner, conflict: "keep both notes", backup: true, restore: "portable", families: ["Work Queue items and history"] },
+  queueNotes: { backupVia: "queue items", owner: workQueueOwner, conflict: "keep both notes", backup: true, restore: "portable", families: ["Work Queue items and history"] },
   queueFiles: { owner: workQueueOwner, conflict: "owner order", backup: true, restore: "portable", storage: ["home/run/work-queue/files/"], families: ["Managed attachment files"] },
   queueHistoryAndDelivery: { owner: workQueueOwner, conflict: "owner order", backup: true, restore: "portable", storage: ["home/run/work-queue/acted.json", "home/run/work-queue/seen.json", "home/run/work-queue/queues-carried.json", "home/run/work-queue/handed.json"], families: ["Work Queue items and history", "Work Queue labels, delivery and receipts"] },
-  queueNumberAllocation: { shared: {}, owner: "primary", conflict: "owner order", backup: true, restore: "portable", families: ["Work Queue ledger"] },
+  queueNumberAllocation: { backupVia: "accepted setup", shared: {}, owner: "primary", conflict: "owner order", backup: true, restore: "portable", families: ["Work Queue ledger"] },
   queueNumberUse: { owner: "local computer", conflict: "owner order", backup: true, restore: "needs fresh approval", storage: ["home/run/work-queue/numbers.json"], families: ["Work Queue ledger"] },
   queueLabels: { shared: { publish: true }, owner: "primary", conflict: "fields", backup: true, restore: "portable", storage: ["home/run/work-queue/labels.json"], families: ["Work Queue labels, delivery and receipts", "Work Queue categories/status migration"] },
   queueMigration: { owner: "local computer", conflict: "owner order", backup: true, restore: "portable", storage: ["home/run/work-queue/model.json", "home/run/work-queue/categories.json"], families: ["Work Queue categories/status migration"] },
 
-  ownershipAssignments: { shared: { publish: true, checkpointOnly: true }, owner: "primary", conflict: "owner order", backup: true, restore: "needs fresh approval", families: ["Signed documents", "Moves and handoffs"] },
+  ownershipAssignments: { backupVia: "accepted setup", shared: { publish: true, checkpointOnly: true }, owner: "primary", conflict: "owner order", backup: true, restore: "needs fresh approval", families: ["Signed documents", "Moves and handoffs"] },
   transferReceipts: { owner: "local computer", conflict: "owner order", backup: true, restore: "portable", storage: ["home/run/moves/decisions/*.json", "home/run/moves/decision-hints/*.json", "home/run/moves/ended.json", "home/run/moves/moved.json"], families: ["Moves and handoffs", "Rehome journal and staged trees"] },
   stagedTransferCopies: { owner: "local computer", conflict: "regenerate", backup: false, restore: "machine-local", families: ["Moves and handoffs", "Rehome journal and staged trees"] },
   projectPathsAndWorktrees: { owner: "local computer", conflict: "fields", backup: true, restore: "machine-local", storage: ["home/box/projects.json", "home/box/worktrees.json", "home/box/folders.json", "home/box/found-folders.json"], families: ["Projects and worktrees", "Rehome journal and staged trees"] },
@@ -106,7 +116,7 @@ export const DATA_DECLARATIONS = {
   setupUsageDisplay: { shared: { publish: true, localSave: "usage" }, owner: "primary", conflict: "fields", backup: true, restore: "portable", storage: ["agents/usage/settings.json"], families: ["Usage settings"] },
   localSettingsAndPermissions: { owner: "local computer", conflict: "fields", backup: true, restore: "portable", storage: ["home/box/settings.json", "home/box/settings-flows.json", "home/box/work.json", "home/box/auto.json", "home/box/approval.json", "home/box/commands.json", { pattern: "home/box/permissions.json", restore: "needs fresh approval" }, { pattern: "home/box/permissions-later.json", restore: "needs fresh approval" }], families: ["Computer settings and local tools", "Local fences and audit"] },
   modelsAndReusableTools: { owner: "local computer", conflict: "fields", backup: true, restore: "portable", storage: ["home/box/models.json", "home/box/model-names.json", "home/box/kuvo-models.json"], families: ["Computer settings and local tools", "Engine/plugin/MCP configuration"] },
-  engineAndIntegrationSettings: { owner: "local computer", conflict: "fields", backup: true, restore: "needs fresh approval", families: ["Engine/plugin/MCP configuration"] },
+  engineAndIntegrationSettings: { backupExclusion: "Native settings can embed credentials and absolute paths.", owner: "local computer", conflict: "fields", backup: true, restore: "needs fresh approval", families: ["Engine/plugin/MCP configuration"] },
   installedProgramsAndCatalogs: { owner: "local computer", conflict: "regenerate", backup: false, restore: "machine-local", families: ["Engine/plugin/MCP configuration", "Installed release"] },
   localSignInsAndKeys: { owner: "local computer", conflict: "owner order", backup: false, restore: "machine-local", families: ["Sign-ins and integration credentials", "Coding agent native storage", "Engine/plugin/MCP configuration", "Add, reinstall and seed"] },
   vaultKeys: { owner: "local computer", conflict: "owner order", backup: false, restore: "machine-local", families: ["Vault key wrapper"] },

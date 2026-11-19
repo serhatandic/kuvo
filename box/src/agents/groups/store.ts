@@ -26,6 +26,7 @@ export interface Kept {
   status: Status
   /** The incoming move that created this record, for guarded rollback. */
   moveImport?: string
+  restoreReview?: true
   /** Talking when the runner last stopped: it says so, and waits for Keep Going. */
   talking?: boolean
   /** Paused at its limit of turns: it waits for Keep Going, however often the runner starts over. */
@@ -251,11 +252,11 @@ export class GroupStore {
     if (!record || typeof record.kuvo !== "number" || record.kuvo > version || !isGroup(record.group, id)) return undefined
     const messages: unknown = JSON.parse(fs.readFileSync(join(this.folder(id), "messages.json"), "utf8"))
     if (!isMessages(messages)) throw new Error("The group transcript could not be read")
-    return { group: record.group, ...(typeof record.moveImport === "string" ? { moveImport: record.moveImport } : {}), status: record.status === "held" ? "held" : "active", talking: record.talking === true, paused: record.paused === true, ...(isTurning(record.turning) ? { turning: record.turning } : {}), messages }
+    return { group: record.group, ...(typeof record.moveImport === "string" ? { moveImport: record.moveImport } : {}), status: record.restoreReview === true || record.status === "held" ? "held" : "active", ...(record.restoreReview === true ? { restoreReview: true } : {}), talking: record.talking === true, paused: record.paused === true, ...(isTurning(record.turning) ? { turning: record.turning } : {}), messages }
   }
 
   saveGroup(kept: Kept) {
-    writeDurablePrivate(join(this.folder(kept.group.id), "group.json"), JSON.stringify({ kuvo: version, status: kept.status, ...(kept.moveImport ? { moveImport: kept.moveImport } : {}), ...(kept.talking ? { talking: true } : {}), ...(kept.paused ? { paused: true } : {}), ...(kept.turning ? { turning: kept.turning } : {}), group: kept.group }, null, 2), dirname(this.root))
+    writeDurablePrivate(join(this.folder(kept.group.id), "group.json"), JSON.stringify({ kuvo: version, status: kept.status, ...(kept.restoreReview ? { restoreReview: true } : {}), ...(kept.moveImport ? { moveImport: kept.moveImport } : {}), ...(kept.talking ? { talking: true } : {}), ...(kept.paused ? { paused: true } : {}), ...(kept.turning ? { turning: kept.turning } : {}), group: kept.group }, null, 2), dirname(this.root))
   }
 
   saveMessages(kept: Kept) {

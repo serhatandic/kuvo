@@ -111,40 +111,65 @@ export function authenticate(file: string, key: string, context: Buffer, out?: n
   } finally { fs.closeSync(fd); }
 }
 
-/** Authenticate before parsing the plaintext. Callers remove the private scratch folder on failure. */
-export function openArchive(file: string, key: string, context: Buffer, scratch: string): { name: string; file: string }[] {
+/** Unlink before decrypting, so a process death cannot leave the decoded stream on disk. */
+function withArchive<T>(file: string, key: string, context: Buffer, scratch: string, work: (out: number, limit: number) => T): T {
   const plain = path.join(scratch, "plain");
   const out = fs.openSync(plain, "wx+", 0o600);
   try {
-    const limit = authenticate(file, key, context, out);
+    fs.unlinkSync(plain);
+    return work(out, authenticate(file, key, context, out));
+  } finally { fs.closeSync(out); }
+}
+
+function readEntries(out: number, limit: number, entry: (name: string, size: number, at: number) => void) {
+  const block = Buffer.allocUnsafe(MAX_HEADER);
+  const seen = new Set<string>();
+  let at = 0;
+  for (;;) {
+    const size = read(out, block, at, 4).readUInt32BE();
+    at += 4;
+    if (!size && at === limit) return;
+    if (!size || size > MAX_HEADER || size > limit - at) throw new Error("Invalid backup header.");
+    const item = JSON.parse(read(out, block, at, size).toString("utf8"));
+    at += size;
+    if (typeof item?.name !== "string" || !archivePath(item.name) || seen.has(item.name) ||
+      !Number.isSafeInteger(item.size) || item.size < 0 || item.size > limit - at - 4) throw new Error("Invalid backup entry.");
+    seen.add(item.name);
+    entry(item.name, item.size, at);
+    at += item.size;
+  }
+}
+
+/** Authenticate before parsing. Computer recovery needs staged files for folder upgrades. */
+export function openArchive(file: string, key: string, context: Buffer, scratch: string): { name: string; file: string }[] {
+  return withArchive(file, key, context, scratch, (out, limit) => {
     const block = Buffer.allocUnsafe(BLOCK);
     const entries: { name: string; file: string }[] = [];
-    const seen = new Set<string>();
-    let at = 0;
-    for (;;) {
-      const size = read(out, block, at, 4).readUInt32BE();
-      at += 4;
-      if (!size && at === limit) return entries;
-      if (!size || size > MAX_HEADER || size > limit - at) throw new Error("Invalid backup header.");
-      const item = JSON.parse(read(out, block, at, size).toString("utf8"));
-      at += size;
-      if (typeof item?.name !== "string" || !archivePath(item.name) || seen.has(item.name) ||
-        !Number.isSafeInteger(item.size) || item.size < 0 || item.size > limit - at - 4) throw new Error("Invalid backup entry.");
-      seen.add(item.name);
+    readEntries(out, limit, (name, size, at) => {
       const file = path.join(scratch, String(entries.length));
       const entry = fs.openSync(file, "wx", 0o600);
       try {
-        for (let left = item.size; left > 0;) {
+        for (let left = size; left > 0;) {
           const piece = read(out, block, at, Math.min(BLOCK, left));
           write(entry, piece);
           at += piece.length;
           left -= piece.length;
         }
       } finally { fs.closeSync(entry); }
-      entries.push({ name: item.name, file });
-    }
-  } finally {
-    fs.closeSync(out);
-    fs.rmSync(plain, { force: true });
-  }
+      entries.push({ name, file });
+    });
+    return entries;
+  });
+}
+
+export function openSingleEntry(file: string, key: string, context: Buffer, scratch: string, expected: string): Buffer {
+  return withArchive(file, key, context, scratch, (out, limit) => {
+    let value: Buffer | undefined;
+    readEntries(out, limit, (name, size, at) => {
+      if (name !== expected || value) throw new Error("Unexpected entry in the backup.");
+      value = read(out, Buffer.alloc(size), at, size);
+    });
+    if (!value) throw new Error("The backup entry is missing.");
+    return value;
+  });
 }

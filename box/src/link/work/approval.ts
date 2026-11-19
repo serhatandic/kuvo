@@ -44,6 +44,15 @@ export function fullAccessAllowed(file = APPROVAL_FILE): boolean {
   }
 }
 
+/** Only preferences travel with a backup. Legacy approval records mix them with a local grant. */
+export function portableApproval(value: unknown): { last?: Approval; since?: number } {
+  if (!isObject(value)) return {};
+  return {
+    ...(isApproval(value.last) ? { last: value.last } : {}),
+    ...(typeof value.since === "number" && Number.isFinite(value.since) ? { since: value.since } : {}),
+  };
+}
+
 const keptHere = (file: string): Record<string, unknown> => {
   try {
     const read = JSON.parse(textOf(file) ?? "");

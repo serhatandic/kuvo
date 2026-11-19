@@ -283,6 +283,7 @@ export class GroupRunner {
       return {
         group: kept.group,
         status: kept.status,
+        ...(kept.restoreReview ? { restoreReview: true } : {}),
         state: this.talk(kept.group.id),
         last: kept.messages.at(-1),
         said: said.at(-1),
@@ -293,7 +294,7 @@ export class GroupRunner {
 
   get(id: string) {
     const kept = this.chats.get(id)
-    return kept && { group: kept.group, status: kept.status, state: this.talk(id), messages: kept.messages }
+    return kept && { group: kept.group, status: kept.status, ...(kept.restoreReview ? { restoreReview: true } : {}), state: this.talk(id), messages: kept.messages }
   }
 
   private chat(id: string): Kept | undefined {
@@ -374,7 +375,7 @@ export class GroupRunner {
 
   activate(id: string): boolean {
     const kept = this.chats.get(id)
-    if (!kept) return false
+    if (!kept || kept.restoreReview) return false
     if (kept.status === "active") {
       // A bridge restart can read a rename whose directory sync failed in the previous process.
       this.context.store.saveGroup(kept)
@@ -633,7 +634,7 @@ export class GroupRunner {
     if (under) return under.done
     const kept = this.chats.get(id)
     const turning = kept?.turning
-    if (!kept || !turning) return Promise.resolve()
+    if (!kept || kept.restoreReview || !turning) return Promise.resolve()
     const bot = this.member(turning.bot)
     if (!bot || bot.box || kept.status !== "active" || !kept.group.members.includes(turning.bot)) {
       this.setTurning(id, undefined)

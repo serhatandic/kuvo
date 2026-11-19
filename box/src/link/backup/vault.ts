@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { isObject } from "../../shared/json";
 import { addItem, generations, isLocked, isMade, readItems, valuesOf, vaultState } from "../vault/store";
-import { archiveContext, authenticate, newRecoveryKey, openArchive, seal } from "./archive";
+import { archiveContext, authenticate, newRecoveryKey, openSingleEntry, seal } from "./archive";
 import { destinationStore, POINT, type Destination } from "./destination";
 import { backupLock, bytes, pointId, scratchFolder } from "./engine";
 
@@ -40,9 +40,8 @@ export function importVault(dest: Destination, source: string, id: string, key: 
     if (!POINT.test(id) || !id.includes("-vault-")) throw new Error("Choose a vault export.");
     const scratch = scratchFolder();
     try {
-      const entries = openArchive(await destinationStore(dest, source).get(id, scratch), key, archiveContext(source, id), scratch);
-      if (entries.length !== 1 || entries[0]!.name !== "vault.json") throw new Error("Choose a vault export.");
-      const value: unknown = JSON.parse(fs.readFileSync(entries[0]!.file, "utf8"));
+      const opened = openSingleEntry(await destinationStore(dest, source).get(id, scratch), key, archiveContext(source, id), scratch, "vault.json");
+      const value: unknown = JSON.parse(opened.toString("utf8"));
       if (!isObject(value) || value.version !== 1 || value.id !== id || value.source !== source || !Array.isArray(value.items) ||
         !value.items.every(item => isObject(item) && typeof item.name === "string" && isObject(item.values))) throw new Error("The export does not match that vault.");
       const existing = new Set(readItems().map(item => item.name.toLowerCase()));

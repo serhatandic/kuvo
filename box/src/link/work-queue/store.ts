@@ -22,13 +22,12 @@ import { isObject } from "../../shared/json";
 import { listOf, locked, textOf, writePrivate } from "../files";
 import { RUN } from "../home";
 import { sourceKeyOf } from "./sources";
-import { migrateOnce, queueFileFormat } from "./migrate";
+import { QUEUES_LOCK, migrateOnce, queueFileFormat } from "./migrate";
 import { fromCategory, PRIORITY_ID } from "./statuses";
 
 export const WORK_QUEUE = path.join(RUN, "work-queue");
 const QUEUES = path.join(WORK_QUEUE, "queues");
 export const FILES = path.join(WORK_QUEUE, "files");
-const LOCK = path.join(WORK_QUEUE, ".lock");
 
 export { OWNER, YOURS } from "../../shared/work-queue-owner";
 /** A queue file's owner as a newer box may name one (another kind than this box knows): its queue is
@@ -523,7 +522,7 @@ export function changeQueues<T>(work: (book: Book) => T, now = Date.now(), { onI
   fs.mkdirSync(WORK_QUEUE, { recursive: true, mode: 0o700 });
   migratedToChange();
   const keepDurably = durable || offlineEditsReady();
-  const { value, changed } = locked(LOCK, () => {
+  const { value, changed } = locked(QUEUES_LOCK, () => {
     let book: Book;
     try {
       book = new Book();
@@ -550,7 +549,7 @@ export function changeQueues<T>(work: (book: Book) => T, now = Date.now(), { onI
     // (Their files only once the queues no longer list them: a refused change leaves both.)
     for (const id of purged) fs.rmSync(path.join(FILES, id), { recursive: true, force: true });
     return { value, changed };
-  }, { required: keepDurably });
+  }, { exclusive: true });
   if (changed) noteQueuesChanged();
   return value;
 }

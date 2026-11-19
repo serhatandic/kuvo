@@ -20,9 +20,11 @@ import { K, RUN } from "../home";
 import { archiveContext, openArchive } from "./archive";
 import { destinationStore, POINT, SOURCE, type Destination } from "./destination";
 import { BACKUP, backupLock, scratchFolder, type Manifest } from "./engine";
-import { scrubEngine } from "./sqlite";
+import { prepareEngineBootstrap, scrubEngine } from "./sqlite";
 import { outputPath, recordReferences, roots, stat, storageOf } from "./locations";
+import { restoreProjects } from "./projects";
 import { stageRestore } from "./stage";
+import { portableApproval } from "../work/approval";
 import { restoredQueueItem } from "../work-queue/recovery";
 
 const JOURNAL = path.join(BACKUP, "restore.json");
@@ -162,13 +164,16 @@ function sameFile(a: string, b: string) {
   return stat(a)?.isFile() && fs.statSync(a).size === fs.statSync(b).size && stamp(a) === stamp(b);
 }
 
-function place(file: string, target: string) {
+function place(file: string, target: string, replaceBootstrap = false) {
   fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
   const partial = target + ".restore-" + crypto.randomBytes(8).toString("hex");
   try {
     fs.copyFileSync(file, partial, fs.constants.COPYFILE_EXCL);
     syncDurableFile(partial);
-    try { fs.linkSync(partial, target); }
+    try {
+      if (replaceBootstrap) fs.renameSync(partial, target);
+      else fs.linkSync(partial, target);
+    }
     catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST" || !sameFile(target, file)) throw error;
     }
@@ -215,7 +220,7 @@ export async function restore(dest: Destination, source: string, id: string, key
       const removedItems = new Set<string>();
       const add = (file: string, target: string, name: string) => placements.push({ file, target, name });
       for (const [name, file] of byName) {
-        if (name === "meta/manifest.json") continue;
+        if (name === "meta/manifest.json" || name === "meta/projects.json") continue;
         const [root, ...parts] = name.split("/");
         const storage = storageOf(name);
         const kind = storage?.kind;
@@ -275,6 +280,38 @@ export async function restore(dest: Destination, source: string, id: string, key
           writeDurablePrivate(file, JSON.stringify(saved));
         }
 
+        if (name === "home/box/approval.json") writeDurablePrivate(file, JSON.stringify(portableApproval(json(file))));
+        if (root === "groups" && parts[1] === "group.json") {
+          const record = json(file);
+          const messages = archivedJSON(`groups/${id}/messages.json`);
+          if (isObject(record) && (record.talking || record.paused || record.turning ||
+              (isObject(record.group) && record.group.meeting) ||
+              (Array.isArray(messages) && messages.some(message => isObject(message) && Array.isArray(message.tasks) &&
+                message.tasks.some(task => isObject(task) && (task.state === "waiting" || task.state === "working")))))) {
+            writeDurablePrivate(file, JSON.stringify({ ...record, status: "held", restoreReview: true }));
+            result.held.push(name);
+          }
+        }
+        if (name === "groups/peer-memory.json") {
+          const memory = json(file);
+          if (!isObject(memory) || !roots.bots) throw new Error("The backup contains unreadable group memory.");
+          const bots: Record<string, unknown> = {};
+          for (const [bot, entries] of Object.entries(memory)) {
+            if (!/^bot_[A-Za-z0-9]+$/.test(bot) || !isObject(entries) ||
+                !mayActivate({ kind: "privateGroupSeats", id: bot }, authority) ||
+                !mayActivate({ kind: "conversations", id: sessionFor("bots", bot) }, authority)) continue;
+            bots[bot] = Object.fromEntries(Object.entries(entries).flatMap(([address, entry]) => {
+              if (!isObject(entry)) return [];
+              if (entry.forgotten === true) return [[address, entry]];
+              if (typeof entry.file !== "string") return [];
+              const leaf = path.basename(entry.file);
+              const parts = [bot, "groups", leaf];
+              if (!byName.has(`bots/${parts.join("/")}`)) return [];
+              return [[address, { ...entry, file: outputPath(roots.bots!, parts) }]];
+            }));
+          }
+          writeDurablePrivate(file, JSON.stringify(bots));
+        }
         if (root === "engine" && name.endsWith(".db")) scrubEngine(file, sessionsFencedHere(authority), true);
         if (kind === "botSchedules" || kind === "sessionSchedules") {
           if (parts.length === 2 && parts[1] === "paused") continue;
@@ -303,17 +340,27 @@ export async function restore(dest: Destination, source: string, id: string, key
           }
           continue;
         }
-        if (stat(target) && !sameFile(target, file)) {
-          addConflict(name, file);
-          continue;
+        let replaceBootstrap = false;
+        if (stat(target)) {
+          if (sameFile(target, file)) {
+            syncDurableFile(target);
+            result.installed++;
+            continue;
+          }
+          replaceBootstrap = name.startsWith("engine/") && name.endsWith(".db") && prepareEngineBootstrap(target);
+          if (!replaceBootstrap) {
+            addConflict(name, file);
+            continue;
+          }
         }
-        place(file, target);
+        place(file, target, replaceBootstrap);
         result.installed++;
       }
       function addConflict(name: string, file: string) {
         place(file, outputPath(recovery, name.split("/")));
         result.unavailable.push({ entry: name, reason: "existing local record; recovered copy held for review" });
       }
+      result.unavailable.push(...restoreProjects(byName, recovery));
       writeDurablePrivate(JOURNAL, JSON.stringify({ state: "restored", id, source, result }), K);
       fs.rmSync(RESTORING, { force: true });
       syncDurableFile(BACKUP, K);

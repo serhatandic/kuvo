@@ -65,9 +65,10 @@ export function* tree(file: string, name: string, include: (name: string) => boo
   }
 }
 
-export function* durableFiles(layout: Readonly<Record<string, string | null>> = roots): Generator<{ name: string; file: string; kind: DataKind }> {
+export function* durableFiles(layout: Readonly<Record<string, string | null>> = roots, include: (kind: DataKind) => boolean = () => true): Generator<{ name: string; file: string; kind: DataKind }> {
   const seen = new Set<string>();
-  for (const { root, parts, tree: recursive } of selectors) {
+  for (const { kind, root, parts, tree: recursive } of selectors) {
+    if (!include(kind)) continue;
     const base = layout[root];
     if (!base) continue;
     function* walk(file: string, name: string, at: number): Generator<{ file: string; name: string }> {
