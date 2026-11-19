@@ -5,7 +5,7 @@
 // of it before (#636). Each step is told as it goes (`tries.ts`); every word a client shows is here.
 // The setup's primary enrolls members and signs the resulting membership list.
 
-import { addComputersLayoutReady, computerHistoryLayoutReady, setupLayoutDeferred } from "../../shared/folder-version";
+import { addComputersLayoutReady, computerHistoryLayoutReady, credentialSelectionLayoutReady, setupLayoutDeferred } from "../../shared/folder-version";
 import { updateAccess } from "../setup/access";
 import { asSave, PENDING_SAVE, pendingShared, waitShared, type Receipt } from "../setup/shared";
 import { LEADERSHIP_WAIT, primaryFenced } from "../setup/lease";
@@ -39,7 +39,7 @@ import { boxVersion, newerVersion } from "../updates/update";
 import { addressProblem } from "./address";
 import { ENGINE_VERSION, RELEASE_FILES, engineFor, machineHelperPack, ownFiles, tarOf, type Kind } from "./files";
 import * as scripts from "./scripts";
-import { gatherSeed } from "./seed";
+import { gatherSeed, sshCopyScope, sshCopySelection } from "./seed";
 import { type HostKey, type Ran, type Way, hangUp, lastLine, reachedAs, readHostKey, remote, troubleOf, trustHostKeys, vaultAgent } from "./ssh";
 import { Failed, type Running, Stopped, type Telling, startTry, stopTry, underWay } from "./tries";
 import { noteKeyNow } from "../setup/lead";
@@ -87,6 +87,7 @@ interface Probed {
   engine: boolean;
   id: string | null;
   fingerprint?: string;
+  freshAdd?: string;
   fingerprintSource?: FingerprintSource;
   lines: string[];
 }
@@ -108,7 +109,7 @@ function probed(answer: string): Probed {
   const said = (name: string) => lines.find(line => line.startsWith(`kuvo ${name} `))?.slice(name.length + 6) ?? "";
   const version = said("version");
   const id = said("id");
-  return { kind, version: /^\d+\.\d+\.\d+/.test(version) ? version : null, updating: lines.includes("kuvo updating"), engine: lines.includes("kuvo engine"), id: /^[0-9a-f]{32}$/.test(id) ? id : null, fingerprint: fingerprintOf(said("fingerprint")), fingerprintSource: fingerprintSourceOf(said("fingerprint-source")), lines };
+  return { kind, version: /^\d+\.\d+\.\d+/.test(version) ? version : null, updating: lines.includes("kuvo updating"), engine: lines.includes("kuvo engine"), id: /^[0-9a-f]{32}$/.test(id) ? id : null, freshAdd: /^v1 [a-f0-9]{64} [a-f0-9]{64} (?:prepared|copying)$/.test(said("fresh-add")) ? said("fresh-add") : undefined, fingerprint: fingerprintOf(said("fingerprint")), fingerprintSource: fingerprintSourceOf(said("fingerprint-source")), lines };
 }
 
 /** Whether the computer has a machine's box, by the installer's rule for it (`machineBoxIn`,
@@ -294,6 +295,7 @@ const activeReservations = new Set<string>();
 class AccountReservation {
   readonly token = scripts.RESERVATION_PREFIX + crypto.randomBytes(24).toString("hex");
   private finished = true;
+  clearFresh = false;
   get canRollBack(): boolean { return this.finished; }
 
   constructor(private reach: Reach, private name: string, private tell: Telling) {}
@@ -394,7 +396,7 @@ class AccountReservation {
   }
 
   private async release(failure: unknown): Promise<void> {
-    const released = await this.reach.run(scripts.release(this.token), { anyway: true, most: 15_000 }).catch(() => null);
+    const released = await this.reach.run(scripts.release(this.token, this.clearFresh), { anyway: true, most: 15_000 }).catch(() => null);
     if (released?.status === 0) return;
     console.error(`Kuvo couldn't clear the SSH reservation on ${this.name} (status ${released?.status}): ${lastLine(released?.stderr ?? "")}`);
     const message = failure instanceof Error && !(failure instanceof Stopped) ? `${failure.message} ` : "";
@@ -407,6 +409,7 @@ interface AddGrant {
   caller?: { key: string; pairing: string };
   replace?: string;
   discardLocalPairings?: boolean;
+  credentials?: string[];
   revisions: Record<string, number>;
 }
 
@@ -552,6 +555,35 @@ async function setUp(tell: Telling, destination: string, name: string, kind: "ad
       throw new AccountOccupied(name);
     }
 
+    // Only a fresh account can take selected credentials. Resolve the choice before writing
+    // anything to it, so an unavailable selection can be retried against the same fresh account.
+    const selection = grant?.credentials ?? [];
+    const issuer = link && ownKey(link);
+    const recoveryScope = issuer && credentialSelectionLayoutReady(K) ? sshCopyScope(identitySetup, issuer) : undefined;
+    const record = recoveryScope && recoveryScope + sshCopySelection(selection);
+    const knownMember = foundKey && peersOf(link).some(peer => peer.key === foundKey);
+    const recoveringFresh = kind === "add" && !knownMember && recoveryScope && probe.freshAdd?.startsWith(recoveryScope)
+      && appsOf(probe.lines) === 0 && (judged.verdict === "ours" || judged.verdict === "free");
+    if (kind === "add" && !knownMember && probe.freshAdd && !recoveringFresh) {
+      throw new Failed("This OS account still has an interrupted add. Finish that attempt or remove the interrupted installation first.");
+    }
+    if (recoveringFresh && probe.freshAdd?.endsWith(" copying") && `${record} copying` !== probe.freshAdd) {
+      throw new Failed("The interrupted add had a different choice of sign-ins and keys. Resume with that choice or remove the interrupted installation first.");
+    }
+    const fresh = Boolean(recoveringFresh) || (kind === "add" && judged.verdict === "free" && foundBoxes.length === 0 && appsOf(probe.lines) === 0 && !probe.id && !probe.version);
+    checkGrant();
+    const given = fresh ? await gatherSeed(selection) : null;
+    checkGrant();
+    if (given && Object.keys(given.keys).length + given.credentials.length < selection.length) {
+      throw new Failed("Some selected sign-ins or keys are no longer available. Open the checklist again and retry.");
+    }
+    if (fresh && record) tell.choseCredentials(selection);
+
+    if (fresh && record && !recoveringFresh) {
+      const saved = await reserved(scripts.rememberFresh(`${record} prepared`), { beforeInput: checkGrant });
+      if (saved.status !== 0) throw new Failed(`Kuvo couldn’t save the installation choice on ${name}.`);
+    }
+
     // Its files, unless it has a newer Kuvo Code (which keeps its own) or has these already.
     const newer = newerVersion(probe.version, mine);
     if (newer) {
@@ -585,23 +617,11 @@ async function setUp(tell: Telling, destination: string, name: string, kind: "ad
     tell.step("starting");
     const own = link ? ownKey(link) : null;
     const notes = JSON.stringify({ mac: own ? launcherID(own) : "", macName: ownName().replace(/[{}"\\]/g, ""), box: mine });
-    // A computer with nothing of Kuvo Code on it: no box found there, no Kuvo Code app's folder
-    // either, judged free, and being added (never set up again). Only such a one is given a copy
-    // of this box's keys and sign-ins, and only such a one is taken off again if this doesn't end
-    // with it one of your computers: a Mac with Kuvo Code's app, or any box, is someone's already.
-    // (Nor one that ever had Kuvo Code: its id or its version there says so, though its box is off
-    // or was uninstalled there, which keeps its sign-ins and keys. Those are never ours to delete.)
-    const fresh = kind === "add" && judged.verdict === "free" && foundOf(probe.lines).length === 0 && appsOf(probe.lines) === 0 && !probe.id && !probe.version;
-    // (What it starts with goes with its start, on its standard input: this box's settings and
-    // integrations' keys.)
-    checkGrant();
-    const given = fresh ? await gatherSeed() : null;
-    checkGrant();
     // Started there, on a computer that had nothing, and not one of yours yet: whatever ends this
     // before it is (stopped, or failed), it's stopped there and what was copied is deleted.
     let unjoined = false;
     try {
-      const started = await reserved(scripts.start(ENGINE_VERSION, name, notes), {
+      const started = await reserved(scripts.start(ENGINE_VERSION, name, notes, fresh && record && selection.length ? `${record} copying` : undefined), {
         most: 600_000,
         beforeInput: () => { checkGrant(); unjoined = fresh; },
         ...(given ? { input: Buffer.from(JSON.stringify({ settings: given.settings, keys: given.keys })) } : {}),
@@ -616,15 +636,23 @@ async function setUp(tell: Telling, destination: string, name: string, kind: "ad
       else {
         tell.step("seeding");
         const settings = /^seeded$/m.test(started.stdout);
+        const pendingKeys = !settings && recoveringFresh ? given.keys : {};
+        if (!settings && !recoveringFresh && Object.keys(given.keys).length) throw new Failed(`The selected keys couldn’t be saved on ${name}.`);
         let taken = 0;
-        if (given.credentials.length) {
-          const ran = await reserved(scripts.seed(ENGINE_VERSION), { input: Buffer.from(JSON.stringify({ credentials: given.credentials })), beforeInput: checkGrant, most: 300_000 });
+        let keys = settings ? Object.keys(given.keys).length : 0;
+        if (given.credentials.length || Object.keys(pendingKeys).length) {
+          const ran = await reserved(scripts.seed(ENGINE_VERSION), { input: Buffer.from(JSON.stringify({
+            credentials: given.credentials, ...(Object.keys(pendingKeys).length ? { keys: pendingKeys, integrations: given.integrations } : {}),
+          })), beforeInput: checkGrant, most: 300_000 });
           checkGrant();
           let said: unknown = null;
           try { said = JSON.parse(ran.stdout.trim().split("\n").pop() ?? ""); } catch {}
-          taken = isObject(said) && typeof said.taken === "number" ? said.taken : 0;
+          if (ran.status !== 0 || !isObject(said) || said.status !== 200 || typeof said.taken !== "number") {
+            throw new Failed(`The selected sign-ins couldn’t be saved on ${name}.`);
+          }
+          taken = said.taken;
+          if (typeof said.keys === "number") keys = said.keys;
         }
-        const keys = settings ? Object.keys(given.keys).length : 0;
         const copied = [keys ? `${keys} ${keys === 1 ? "key" : "keys"}` : "", taken ? `${taken} ${taken === 1 ? "account" : "accounts"}` : ""].filter(Boolean).join(" and ");
         tell.skip("seeding", `${copied ? `Copied ${copied}.` : settings ? "Copied your settings." : "Nothing to copy."}${renewing}`);
       }
@@ -642,13 +670,17 @@ async function setUp(tell: Telling, destination: string, name: string, kind: "ad
       // Record a committed enrollment even if clearing the SSH reservation fails.
       // Pending enrollments wait outside the reservation so retries can reach the account.
       if (joined.waitsForStandby) finish = joined.finish;
-      else tell.came(await joined.finish());
+      else {
+        tell.came(await joined.finish());
+        account.clearFresh = fresh || Boolean(knownMember && recoveryScope && probe.freshAdd?.startsWith(recoveryScope));
+      }
     } catch (error) {
       // A competing setup enrolled this account after the probe. Its data belongs to that setup.
       if (!unjoined || !account.canRollBack || error instanceof AccountOccupied) throw error;
       // (Run though the try was stopped: this is its own tidying up.)
       // (With no key of this box's to let go there, as when its link has none: undone all the same.)
       const undone = await reserved(scripts.uninstall(ENGINE_VERSION, own ?? "", true), { most: 600_000, anyway: true }).catch(() => null);
+      if (undone?.status === 0) account.clearFresh = true;
       const still = `Kuvo Code may still be running on ${name}, with the keys and sign-ins copied there. Add ${name} again, then uninstall it from its page.`;
       if (error instanceof Stopped || tell.signal.aborted) {
         if (undone?.status !== 0) throw new Failed(`This was stopped after Kuvo Code had started on ${name}, and it couldn’t be stopped there again. ${still}`, true, `${name} is still running Kuvo Code`);
@@ -847,12 +879,12 @@ async function finishEnrollment(tell: Telling, peer: { key: string; name: string
   return { key: enrolled.key, name: enrolled.name };
 }
 
-function begin(kind: AddTry["kind"], destination: string, name: string, steps: readonly (readonly [string, string])[], work: (tell: Telling) => Promise<void>): Running {
+function begin(kind: AddTry["kind"], destination: string, name: string, steps: readonly (readonly [string, string])[], work: (tell: Telling) => Promise<void>, credentials?: string[]): Running {
   let it: Running | null = null;
   const made = startTry(kind, destination, name, steps, tell => {
     stoppers.set(tell, () => { if (it) stopTry(it); });
     return work(tell);
-  });
+  }, credentials);
   it = made;
   return made;
 }
@@ -867,15 +899,18 @@ const uninstalling = (now: Running | undefined): Busy | null => (now?.seen.kind 
 
 /** Begins adding the computer at `destination` (checked first: `addressProblem`, `canAdd`). One
  * being added or set up there already is answered as it is; one being stopped is waited for. */
-export function beginAdd(destination: string, asker?: Asker, replace?: string, discardLocalPairings?: boolean): Running | Busy {
+export function beginAdd(destination: string, asker?: Asker, replace?: string, discardLocalPairings?: boolean, credentials?: string[]): Running | Busy {
   const now = underWay(destination);
   const link = readLink();
   const key = asker?.key?.toString("base64url");
   const caller = key && pairedPhone(link, key, asker?.pairing);
   if (key && !caller) return { busy: ADD_REVOKED };
-  const grant: AddGrant = { replace, discardLocalPairings, caller: caller ? { key: caller.key, pairing: caller.pairing ?? "" } : undefined, revisions: link?.removalRevisions ?? {} };
+  if (now?.seen.kind === "add" && sshCopySelection(now.selectedCredentials ?? []) !== sshCopySelection(credentials ?? [])) {
+    return { busy: "An add with a different choice of sign-ins and keys is already in progress for this computer." };
+  }
+  const grant: AddGrant = { replace, discardLocalPairings, credentials, caller: caller ? { key: caller.key, pairing: caller.pairing ?? "" } : undefined, revisions: link?.removalRevisions ?? {} };
   const expected = peerAtDestination(link, destination)?.key;
-  return uninstalling(now) ?? now ?? begin("add", destination, destination, SETUP_STEPS, tell => setUp(tell, destination, destination, "add", expected, grant));
+  return uninstalling(now) ?? now ?? begin("add", destination, destination, SETUP_STEPS, tell => setUp(tell, destination, destination, "add", expected, grant), credentials);
 }
 
 /** The address this box set the computer `key` up at, and its name: null for one it didn't. */
@@ -907,7 +942,7 @@ export async function lookAtWork(key: string): Promise<{ version: string | null;
   const quiet: Telling = {
     signal: stop.signal,
     check() { if (stop.signal.aborted) throw new Stopped(); },
-    step() {}, sent() {}, skip() {}, came() {}, rename() {}, saving() {}, saved() {},
+    step() {}, sent() {}, skip() {}, came() {}, rename() {}, saving() {}, saved() {}, choseCredentials() {},
     ask: async () => { throw new Failed(`${at.name}’s host key isn’t one ${ownName()} knows.`); },
   };
   const reach = new Reach(at.destination, at.name, quiet, otherAddressesOf(at.destination));

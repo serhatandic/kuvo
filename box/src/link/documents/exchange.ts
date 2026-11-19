@@ -1,6 +1,7 @@
 // Documents, between this box and the others
 // What other boxes send taken, and what changed here sent, as documents/work says.
 
+import { finishSshCredentialCopy } from "../add/seed";
 import { noteDocsChanged } from "./changed";
 import { IS_MAC } from "../home";
 import { forgetMacsAgents, writeAgents } from "../peers/agents";
@@ -58,6 +59,7 @@ export async function receiveDocs(sender: DocSender, docs: DocsMail, host: LinkH
     return link;
   });
   if (!work || !link) return;
+  finishSshCredentialCopy(link);
   if (host?.welcomed && work.given.length) confirmPhoneMembership(host, sender, link, work.given);
   // Its setup changed with them (taken, or set aside): its card says so now.
   if (JSON.stringify(link.setup ?? null) !== setup) try { writeCard(); } catch {}

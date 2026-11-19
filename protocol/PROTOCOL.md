@@ -503,6 +503,24 @@ and you can choose another member as primary once both computers are connected.
   standalone box without members or pairings can join. Code enrollment leaves SSH
   configuration on each computer as it was.
 
+  **Choose sign-ins and keys** (`computers.add.credentials`, folder layout 20).
+  `GET kuvo/computers/add/credentials` asks the current primary for
+  `{items: [{id, kind: "key" | "sign-in", label, integration?, checked: true}], renewing, unavailable}`.
+  The checklist carries names and IDs. Its default ticks are suggestions. The client sends the
+  IDs the user chose as `credentials` on that add. Both `POST kuvo/computers/add` and
+  `POST kuvo/computers/add/code` accept this array. An omitted or empty array copies no
+  sign-ins or keys. Existing destination sign-ins and keys stay. Renewing sign-ins and
+  sign-ins for integration servers stay on the source.
+  A member refuses to forward an add to an older primary until the primary supports this choice.
+  SSH records the selection's digest and original eligibility before writing to a fresh account.
+  Before copying starts, a retry can change the selection. Once copying starts, the retry must
+  use the same selection or clear the interrupted installation first. The installer receives the selection as encrypted mail
+  after the primary has accepted the membership. The joining box can retry the same code
+  after an interrupted copy. If a selected source credential disappeared, the installer reports
+  the number missing. A configured catalog integration is carried as its trusted configuration
+  when all its keys were selected. Unlink waits for that copy to stop before clearing the
+  credentials. Wipe removes the installation.
+
   Known gap until setups can be joined (#183's phase 7): a member set aside refuses all this in its
   main computer's name, but it still takes what each Mac that set it up gives over SSH, as before
   setups (a second Mac's app sets it up as one of its own): that Mac's phones reach it, and that Mac's `kuvo-link.js setup`
@@ -2205,25 +2223,16 @@ client connected: a client's Computers area and its switcher draw it, and ask no
     launch agent. The keeper starts the engine with a port and passwords that never leave it; then `kuvo-link.js setup` there with this box's keys and documents, its answer
     written as the box's own record of it (its peers document, `machines.json`, and
     `phone-link.json` for `kuvo/hosts`).
-  - **What a new computer starts with** (`seeding`), once, as it's added, and only one that had
-    nothing of Kuvo Code (no box found there, no Kuvo Code app's folder, no `machine-id` and
-    no `box-version`, judged `free`: a Mac with Kuvo Code's app is someone's already, and one
-    whose box is off or was uninstalled there still has its own sign-ins and keys, which are
-    never written over or deleted from here): a copy of the box's engine settings (not its shell or worktrees' folder, nor
-    the integrations that use a Mac's own apps) and of its integrations' keys (not a bot's own),
-    which go with its start on the script's standard input and are taken by `box adopt` there
-    ("Settings per box"); and of its accounts' sign-ins in use that stay the same (a provider's
-    API key, GitHub Copilot's sign-in), taken by `kuvo-link.js box seed` there (`{credentials:
-    [{integrationID, label, value}]}` on its standard input; it answers `{status, taken}`, how
-    many and never what), which stores each in its engine unless it has one for that account,
-    and notes it took them (`run/seeded.json`: never twice). A sign-in that renews itself (one
-    with a refresh token, but GitHub Copilot's: ChatGPT's, GitLab's) is never given, nor an
-    integration's server's own sign-in: each computer signs in to those itself, and the step
-    says how many weren't copied. None of it is in a script's arguments, a try's words,
-    `run/adding.json` or a log; there it's in files and an engine only you can read. A part the
-    box can't read now (its engine not answering, its Keychain not reachable) is left out, and
-    the computer is added all the same. One that had Kuvo Code keeps its own ("It keeps its
-    own"), and so does every computer set up again.
+  - **What a new computer starts with** (`seeding`), once as it is added. A fresh SSH
+    installation can take the source's model choice and simple local integration definitions
+    that use only the selected key files. Settings with inline secrets stay on the source.
+    Selected keys go with the private input to `box adopt`. Selected stable engine sign-ins
+    go to `kuvo-link.js box seed` on standard input as `{credentials: [{integrationID, label, value}]}`
+    and are stored unless the destination already has a sign-in for that account. The command
+    answers with the count, and records a completed copy in `run/seeded.json`. A restarted
+    copy skips credentials already written. A computer with an existing installation, and
+    every computer set up again, keeps its sign-ins and keys. The source values stay out of
+    commands, logs, and saved attempt or forwarding receipts.
   - `POST kuvo/computers/<key>/setup` → `202 {try}`: the same at the address it was added under
     (Set Up Again), which brings an older Kuvo Code there up to this box's. `POST
     kuvo/computers/<key>/uninstall` → `202 {try}`: over SSH the computer lets this box go
@@ -4535,7 +4544,7 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
 - Plan accounts (Copilot, OpenCode, GitLab, Poe, a provider's API key), on a Mac and a machine,
   as Settings › Accounts has them: the phone sees, reads and signs in to them as the app does.
   Each computer keeps its own: a new
-  machine starts with a copy of its Mac's keys and of a sign-in that stays the same (Copilot's),
+  machine can start with keys and stable sign-ins (such as Copilot's) chosen when it was added,
   once, and from then on what's changed on the machine (its Accounts page, or a phone there) is
   the machine's. A sign-in that renews itself (ChatGPT's, GitLab's) is never copied: each machine
   signs in itself.

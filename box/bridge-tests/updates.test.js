@@ -22,6 +22,8 @@ const home = path.join(boxHome, ".kuvo-code");
 process.env.KUVO_HOME = home;
 const link = await import("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");
 const script = fileURLToPath(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url));
+const currentLayout = Number(/^\/\/ Kuvo folder layout ([1-9][0-9]*) /.exec(fs.readFileSync(script, "utf8"))?.[1]);
+assert.ok(Number.isSafeInteger(currentLayout));
 const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-link-release-"));
 const engines = new Set();
 removeAtEnd(boxHome);
@@ -120,7 +122,7 @@ function machine() {
   fs.rmSync(home, { recursive: true, force: true });
   fs.mkdirSync(path.join(home, "run"), { recursive: true });
   // The stand-in release changes code within the same layout. Layout changes use real builds in folder-version.test.js.
-  write(path.join(home, "folder-version.json"), '{"version":18}\n');
+  write(path.join(home, "folder-version.json"), JSON.stringify({ version: currentLayout }) + "\n");
   write(path.join(home, "bin", "box-version"), "0.9.0");
   write(path.join(home, "bin", "kuvo-start"), keeper("1.0.0"), 0o700);
   write(path.join(home, "bin", "kuvo-link.js"), "// the old link\n", 0o600);
@@ -563,7 +565,7 @@ test("failure bench: a layout 4 update runs the real keeper preflight and confir
   assert.deepEqual(read(marker), { version: 4 }, "the saved bridge can still open the trial folder");
   fs.unlinkSync(off);
   assert.equal(await settle(), "well");
-  assert.deepEqual(read(marker), { version: 19 });
+  assert.deepEqual(read(marker), { version: 20 });
   assert.equal(fs.existsSync(path.join(home, "updates", "rollback")), false);
   assert.equal(fs.readFileSync(data, "utf8"), "the old engine's data");
   assert.deepEqual(fs.readFileSync(current), fs.readFileSync(script));

@@ -3,7 +3,9 @@ import { afterAll, expect, test } from "bun:test"
 import { rmSync } from "node:fs"
 import { createServer } from "node:http"
 import type { AddressInfo } from "node:net"
-import { SEEDED_FILE, renewsItself, seedCredentials, seedSettings, takeSeed } from "../src/link/add/seed"
+import { SEEDED_FILE, credentialSelection, gatherSeed, safeStartingSettings, renewsItself, seedCredentials, seedSettings, takeSeed } from "../src/link/add/seed"
+import { readSettings, valueAt } from "../src/link/areas/config"
+import { readKey } from "../src/link/keys"
 
 // What a computer newly added starts with (PROTOCOL.md, "Computers", Adding one): which of a box's
 // sign-ins are given, and how the computer added takes them. The engine is a stand-in that keeps
@@ -68,4 +70,57 @@ test("the computer added takes them once: its own sign-in for an account stays, 
   } finally {
     rmSync(SEEDED_FILE, { force: true })
   }
+})
+
+
+test("no selection copies no sign-ins or keys and settings do not carry inline secrets", async () => {
+  expect(credentialSelection(undefined)).toEqual([])
+  expect(credentialSelection([])).toEqual([])
+  expect(credentialSelection(["*"])).toBeNull()
+  let engineReads = 0
+  expect(await gatherSeed([], () => {
+    engineReads++
+    throw new Error("omitted selection must not read engine credentials")
+  })).toMatchObject({ keys: {}, credentials: [] })
+  expect(engineReads).toBe(0)
+  const settings = {
+    model: "test/model",
+    headers: { Authorization: "Bearer secret" },
+    mcp: {
+      inline: { type: "remote", url: "https://example.invalid", headers: { Authorization: "Bearer secret" } },
+      mixed: { type: "local", command: ["test", "--secret=token"], environment: { TOKEN: "secret" } },
+      key: { type: "local", command: ["test"], environment: { TOKEN: "{file:/somewhere/KUVO_KEY_TEST_TOKEN}" } },
+    },
+  }
+  expect(safeStartingSettings(settings, new Set())).toEqual({ model: "test/model" })
+  expect(safeStartingSettings(settings, new Set(["KUVO_KEY_TEST_TOKEN"]))).toEqual({
+    model: "test/model",
+    mcp: { key: { type: "local", command: ["test"], environment: { TOKEN: "{file:~/.kuvo-code/box/keys/KUVO_KEY_TEST_TOKEN}" } } },
+  })
+})
+
+
+test("a selected catalog key uses the trusted integration configuration", () => {
+  const source = { mcp: { github: { type: "remote", disabled: true, url: "https://custom.invalid", headers: { Authorization: "secret" } } } }
+  expect(safeStartingSettings(source, new Set())).toEqual({})
+  expect(safeStartingSettings(source, new Set(["KUVO_KEY_GITHUB_TOKEN"]))).toEqual({
+    mcp: { github: {
+      type: "remote",
+      url: "https://api.githubcopilot.com/mcp/",
+      oauth: false,
+      headers: { Authorization: "Bearer {file:~/.kuvo-code/box/keys/KUVO_KEY_GITHUB_TOKEN}" },
+      codemode: false,
+      disabled: true,
+    } },
+  })
+})
+
+test("an SSH seed retry can configure its selected integration after adoption already saved settings", async () => {
+  const given = { credentials: [], keys: { KUVO_KEY_GITHUB_TOKEN: "test-token" }, integrations: [{ id: "github", disabled: true }] }
+  const target = () => { throw new Error("key-only retry must not call the engine") }
+  expect(await takeSeed(JSON.stringify(given), target)).toEqual({ status: 200, taken: 0, keys: 1 })
+  expect(valueAt(readSettings().settings, ["mcp", "github"])).toMatchObject({ disabled: true, url: "https://api.githubcopilot.com/mcp/" })
+  given.keys.KUVO_KEY_GITHUB_TOKEN = "other-test-token"
+  expect(await takeSeed(JSON.stringify(given), target)).toEqual({ status: 200, taken: 0, keys: 1 })
+  expect(await readKey("KUVO_KEY_GITHUB_TOKEN")).toBe("test-token")
 })

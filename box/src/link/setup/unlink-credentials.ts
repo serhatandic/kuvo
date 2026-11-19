@@ -2,7 +2,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
-import { APP_FOLDER, APP_KEY_FILES, BOT_KEYS, BOX_KEYS, ENGINE_DATA, INTEGRATION_DATA, K, OWN_RUNTIME, REAL_BOX } from "../home";
+import { APP_FOLDER, APP_KEY_FILES, BOT_KEYS, BOX_KEYS, ENGINE_DATA, INTEGRATION_DATA, K, OWN_RUNTIME, REAL_BOX, RUN } from "../home";
+import { SSH_FRESH_ADD } from "../marks";
+import { SEEDED_FILE } from "../add/seed";
 import { claudeKeychainService } from "../rehome/paths";
 
 const clearCredentialTable = `
@@ -116,4 +118,6 @@ export function clearUnlinkCredentials(): void {
   for (const folder of new Set([INTEGRATION_DATA, path.join(K, "keys"), BOX_KEYS, BOT_KEYS, APP_KEY_FILES])) {
     if (folder) clear(folder, true);
   }
+  clear(SEEDED_FILE);
+  clear(path.join(RUN, SSH_FRESH_ADD));
 }

@@ -13,6 +13,13 @@ export interface DocPart {
   s: string;
 }
 
+/** Split a base64url payload to fit relay mail. */
+export function splitParts(d: string, s = ""): DocPart[] {
+  const whole = crypto.createHash("sha256").update(d).digest("base64url");
+  const of = Math.ceil(d.length / DOC_PART);
+  return Array.from({ length: of }, (_, i) => ({ whole, i, of, d: d.slice(i * DOC_PART, (i + 1) * DOC_PART), s }));
+}
+
 /** A document's parts on their way from one box: how many it comes in, its `s`, and the pieces so far by number. */
 export interface PendingParts {
   of: number;

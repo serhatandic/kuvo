@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { removalLayoutReady, removalOperationsLayoutReady } from "../../shared/folder-version";
 import { exclusiveWhile, writeDurablePrivate } from "../../shared/files";
+import { withCredentialCopyLock } from "../add/seed";
 import { APP_FOLDER, homeFolder, K, OWN_RUNTIME, RUN, SCRIPT } from "../home";
 import { LinkHost } from "../relay/host";
 import { connectOnce } from "../relay/connection";
@@ -114,7 +115,7 @@ async function reportCompletion(value: Completion, file?: string): Promise<boole
 export async function wipeCommand(): Promise<number> {
   if (!removalLayoutReady(K) || !wipeSupportedHere() || !confirmedWipe(readLink())) return 1;
   try {
-    return await exclusiveWhile(path.resolve(K) + "-wipe.lock", async () => {
+    return await exclusiveWhile(path.resolve(K) + "-wipe.lock", () => withCredentialCopyLock(async () => {
       const link = readLink();
       const wipe = confirmedWipe(link);
       if (!link || !wipe) return 1;
@@ -164,7 +165,7 @@ export async function wipeCommand(): Promise<number> {
         }
       } else if (completion) await reportCompletion(completion);
       return 0;
-    });
+    }));
   } catch (error) {
     if (fs.existsSync(RUN)) logCleanup(error);
     return 1;

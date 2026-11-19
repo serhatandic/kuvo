@@ -427,6 +427,7 @@ export const ADD_TRY = object({
   id: string, kind: words("add", "setup", "uninstall", "update"), destination: string, name: string,
   state: words("working", "asking", "stopping", "failed", "done"), title: string,
   steps: list(ADD_STEP),
+  "credentials?": list(string),
   "question?": ADD_QUESTION,
   "failure?": object({ title: string, message: string, again: bool }),
   "computer?": object({ key: string, name: string }),
@@ -440,6 +441,10 @@ export type AddTry = Infer<typeof ADD_TRY>;
 export const ADDING = object({ can: bool, "why?": string, hosts: list(string), tries: list(ADD_TRY) });
 export type Adding = Infer<typeof ADDING>;
 const ADD_REFUSED = object({ message: string, "primary?": string });
+const CREDENTIAL_CHECKLIST = object({
+  items: list(object({ id: string, kind: words("sign-in", "key"), label: string, "integration?": string, checked: bool })),
+  renewing: number, unavailable: list(words("keys", "sign-ins")),
+});
 const ADD_ANSWERS = { 400: ADD_REFUSED, 404: ADD_REFUSED, 405: ADD_REFUSED, 409: ADD_REFUSED, 503: ADD_REFUSED };
 
 const NOTICE = object({
@@ -470,6 +475,7 @@ const REMOVAL_ANSWERS = { 200: COMPUTER_REMOVAL_REPLY, 202: COMPUTER_REMOVAL_REP
   503: oneOf(object({ message: string }), COMPUTER_REMOVAL_REPLY) };
 
 export const BOX_ROUTES: RouteShape[] = [
+  { route: "GET kuvo/computers/add/credentials", feature: "computers.add.credentials", answers: { 200: CREDENTIAL_CHECKLIST, 403: ADD_REFUSED, ...ADD_ANSWERS } },
   { route: "POST kuvo/computers/add/code", feature: "computers.add.from-any-client", answers: { 201: object({ code: string, expires: number }), 403: ADD_REFUSED, ...ADD_ANSWERS } },
   { route: "GET kuvo/computers/add", feature: "computers.add", answers: { 200: ADDING, ...ADD_ANSWERS } },
   { route: "GET kuvo/computers/add/events", feature: "computers.add", answers: { 200: ADDING, ...ADD_ANSWERS } },

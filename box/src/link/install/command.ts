@@ -13,7 +13,7 @@
 // on Linux it's a machine's, in `~/.kuvo-code`, started as a computer that's added is (the one
 // start script, `add/scripts.ts`), with its `@reboot` line and no helper.
 
-import { joinWithInstallerCode } from "../add/invite";
+import { joinWithInstallerCode, type InstallerMembership } from "../add/invite";
 import { spawn, spawnSync } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -176,19 +176,22 @@ export async function installerCode(): Promise<string> {
   return text.split("\n")[0]!;
 }
 
-function joinInstalledBox(home: string, code: string): { setup: string; primary: string } {
+function joinInstalledBox(home: string, code: string): InstallerMembership {
   // A fresh Mac has just written box/kind. Its installed process must read the new kind before
   // obtaining its identity from its helper. The installer’s staging engine can already be gone.
   const version = keeperEngine();
   if (!version) throw new Said("The installed computer's engine is unavailable. Restart Kuvo and try again.");
   const runtime = path.join(home, "engine", version, "opencode");
   const joined = spawnSync(runtime, ["--config=/dev/null", "--no-env-file", path.join(home, "bin", "kuvo-link.js"), "join"], {
-    cwd: home, input: `${code}\n`, encoding: "utf8", timeout: 80_000, env: { ...process.env, BUN_BE_BUN: "1", BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0" },
+    cwd: home, input: `${code}\n`, encoding: "utf8", timeout: 180_000, env: { ...process.env, BUN_BE_BUN: "1", BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0" },
   });
   if (joined.status !== 0) throw new Said((joined.stderr ?? "").trim().split("\n").at(-1) || "Kuvo couldn’t finish joining your setup. Retry with the same installer code.");
   try {
     const value: unknown = JSON.parse((joined.stdout ?? "").trim().split("\n").at(-1) ?? "");
-    if (isObject(value) && typeof value.setup === "string" && typeof value.primary === "string") return { setup: value.setup, primary: value.primary };
+    if (isObject(value) && typeof value.setup === "string" && typeof value.primary === "string") {
+      const missing = isObject(value.credentials) && typeof value.credentials.missing === "number" ? value.credentials.missing : 0;
+      return { setup: value.setup, primary: value.primary, ...(missing > 0 ? { credentials: { missing } } : {}) };
+    }
   } catch {}
   throw new Said("Kuvo couldn’t read the membership from this computer. Retry with the same installer code.");
 }

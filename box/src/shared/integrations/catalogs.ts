@@ -79,6 +79,17 @@ function entry(service: Service): Record<string, unknown> {
   return listed;
 }
 
+/** Trusted configuration for portable keyed integrations. Only complete selections are offered. */
+export function portableKeyedIntegrations(selected: ReadonlySet<string>): Record<string, Record<string, unknown>> {
+  return Object.fromEntries(SERVICES.flatMap(service => {
+    const keys = keysOf(service);
+    if (!keys.length || MAC_ONLY_INTEGRATIONS.includes(service.id)
+      || !keys.every(key => selected.has(keyVariable(service.id, key.name)))) return [];
+    const configuration = settings(service);
+    return configuration ? [[service.id, configuration]] : [];
+  }));
+}
+
 /** As JSON with each object's keys in order, on one line: the same bytes whatever order the
  * tables are written in. */
 function ordered(value: unknown): string {

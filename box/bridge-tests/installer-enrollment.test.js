@@ -77,29 +77,57 @@ function box(name, relay) {
 test("failure bench: installer retries a saved join after a lost answer and rejects code reuse by a different computer", { timeout: 55_000 }, async () => {
   const relay = await relayStandIn(link);
   atEnd(() => relay.close());
-  const engine = http.createServer((_request, response) => response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ data: [] })));
+  const sourceSecret = "fake-source-account-secret";
+  const notSelected = "fake-source-unchecked-secret";
+  const accounts = [{ id: "one", integrationID: "demo", label: "Work", active: true, value: { type: "api", key: sourceSecret } }];
+  const installed = [];
+  let failInstall = true;
+  const engine = http.createServer(async (request, response) => {
+    const source = request.headers.authorization === "Basic " + Buffer.from("opencode:source").toString("base64");
+    const send = (data, status = 200) => response.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify({ data }));
+    if (request.url === "/api/integration") return send(source ? [{ id: "demo" }] : []);
+    if (request.url === "/api/credential" && request.method === "GET") return send(source ? accounts : installed);
+    if (request.url === "/api/credential" && request.method === "POST" && !source) {
+      const chunks = [];
+      for await (const chunk of request) chunks.push(chunk);
+      if (failInstall) return send({}, 503);
+      installed.push(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+      return send({});
+    }
+    return send([]);
+  });
   await new Promise(resolve => engine.listen(0, "127.0.0.1", resolve));
   atEnd(() => { engine.closeAllConnections(); engine.close(); });
-  const attachEngine = target => fs.writeFileSync(target.file("engine.json"), JSON.stringify({ port: engine.address().port, password: "fake" }));
+  const attachEngine = (target, password) => fs.writeFileSync(target.file("engine.json"), JSON.stringify({ port: engine.address().port, password }));
   const primary = box("primary", relay);
   const first = primary.state();
   // A pending pairing keeps the normal keeper bridge online before the first computer joins.
   fs.writeFileSync(primary.file("link.json"), JSON.stringify({ ...first, pairing: { token: "test", expires: Date.now() + 120_000 } }));
-  attachEngine(primary);
+  attachEngine(primary, "source");
+  const keys = path.join(primary.folder, "box/keys");
+  fs.mkdirSync(keys, { recursive: true });
+  fs.writeFileSync(path.join(keys, "KUVO_KEY_DEMO_SELECTED"), "fake-source-selected-key");
+  fs.writeFileSync(path.join(keys, "KUVO_KEY_DEMO_UNCHECKED"), notSelected);
   primary.release();
   primary.startServer();
   primary.start(["run"]);
   const address = link.addressOf(Buffer.from(first.secret, "base64url"));
   await until("primary is on the relay", () => relay.has(address));
 
-  const created = await primary.request("POST", "kuvo/computers/add/code");
+  const checklist = await primary.request("GET", "kuvo/computers/add/credentials");
+  assert.equal(checklist.status, 200);
+  assert.ok(checklist.value.items.every(item => item.checked === true));
+  assert.deepEqual(checklist.value.items.map(item => item.label).sort(), ["KUVO_KEY_DEMO_SELECTED", "KUVO_KEY_DEMO_UNCHECKED", "Work"]);
+  assert.doesNotMatch(JSON.stringify(checklist.value), /fake-source-/);
+  const selected = checklist.value.items.filter(item => item.label !== "KUVO_KEY_DEMO_UNCHECKED").map(item => item.id);
+  const created = await primary.request("POST", "kuvo/computers/add/code", { credentials: selected });
   assert.equal(created.status, 201, JSON.stringify(created.value));
   const { code } = created.value;
   assert.ok(created.value.expires > Date.now());
   const token = JSON.parse(Buffer.from(code.slice("kuvo-add-1.".length), "base64url")).token;
   assert.ok(!JSON.stringify(primary.state()).includes(token), "the primary stores the hash of the invitation");
   const joining = box("joining", relay);
-  attachEngine(joining);
+  attachEngine(joining, "destination");
   const identity = joining.state();
   const key = keyOf(identity);
   const committed = () => primary.state().shared?.membershipAndAccess?.value?.boxes?.some(peer => peer.key === key);
@@ -123,12 +151,26 @@ test("failure bench: installer retries a saved join after a lost answer and reje
   fs.writeFileSync(joining.file("link.json"), JSON.stringify({ ...joining.state(), pairing: { token: "test", expires: Date.now() + 120_000 } }));
   joining.start(["run"]);
   await until("the applicant's bridge is running", () => relay.has(link.addressOf(Buffer.from(identity.secret, "base64url"))));
+  const incomplete = await joining.start(["join"], code + "\n").done;
+  assert.equal(incomplete.status, 1, incomplete.err);
+  assert.match(incomplete.err, /complete the selected sign-ins and keys/);
+  assert.equal(joining.state().setup.role, "member");
+  assert.equal(joining.state().installerClaim.credentialsPending, true);
+  assert.equal(installed.length, 0);
+  failInstall = false;
   const retry = await joining.start(["join"], code + "\n").done;
   assert.equal(retry.status, 0, retry.err);
   assert.deepEqual(JSON.parse(retry.out), { setup: first.setup.id, primary: first.setup.primary });
   assert.equal(joining.state().setup.role, "member");
   assert.equal(joining.state().setup.id, first.setup.id);
   assert.equal(keyOf(joining.state()), key);
+  assert.equal(joining.state().installerClaim.credentialsPending, undefined);
+  assert.equal(JSON.stringify(joining.state()).includes(sourceSecret), false);
+  const gotKeys = path.join(joining.folder, "box/keys");
+  assert.deepEqual(fs.readdirSync(gotKeys), ["KUVO_KEY_DEMO_SELECTED"]);
+  assert.equal(fs.readFileSync(path.join(gotKeys, "KUVO_KEY_DEMO_SELECTED"), "utf8"), "fake-source-selected-key");
+  assert.equal(installed.length, 1);
+  assert.equal(installed[0].value.key, sourceSecret);
   assert.ok(link.readDoc(joining.state().docs[`${first.setup.sign} peers`]));
   assert.equal(primary.state().shared.membershipAndAccess.value.boxes.filter(peer => peer.key === key).length, 1);
 
@@ -162,12 +204,29 @@ test("failure bench: installer retries a saved join after a lost answer and reje
     const result = await joining.request("GET", "kuvo/computers/add");
     return result.value.can;
   });
+  const peerFile = joining.file("peer-agents.json");
+  const primaryFeatures = fs.readFileSync(peerFile, "utf8");
+  const older = JSON.parse(primaryFeatures);
+  older[first.setup.primary].features = older[first.setup.primary].features.filter(feature => feature !== "computers.add.credentials");
+  const resumeUpdates = relay.pause(address, link.addressOf(Buffer.from(identity.secret, "base64url")));
+  try {
+    fs.writeFileSync(peerFile, JSON.stringify(older));
+    for (const credentials of [undefined, []]) {
+      const refused = await joining.request("POST", "kuvo/computers/add", { destination: "from-member.invalid", credentials });
+      assert.equal(refused.status, 409, JSON.stringify(refused.value));
+      assert.match(refused.value.message, /Update your primary/);
+    }
+    assert.equal(fs.existsSync(path.join(primary.home, "ssh-called")), false);
+  } finally {
+    fs.writeFileSync(peerFile, primaryFeatures);
+    resumeUpdates();
+  }
   const forwardedCode = await joining.request("POST", "kuvo/computers/add/code");
   assert.equal(forwardedCode.status, 201, JSON.stringify(forwardedCode.value));
   const privateCode = forwardedCode.value.code;
   const privateToken = JSON.parse(Buffer.from(privateCode.slice(prefix.length), "base64url")).token;
   const receipts = fs.readFileSync(primary.file("work-queue/acted.json"), "utf8");
-  assert.ok(!receipts.includes(privateCode) && !receipts.includes(privateToken), "portable receipts do not contain a bearer code");
+  assert.ok(!receipts.includes(privateCode) && !receipts.includes(privateToken) && !receipts.includes(sourceSecret), "portable receipts do not contain a bearer code");
   const command = await joining.start(["box", "route"], JSON.stringify({ method: "POST", path: "kuvo/computers/add", body: { destination: "--non-host" } })).done;
   assert.equal(command.status, 0, command.err);
   const forwarded = JSON.parse(command.out);

@@ -25,6 +25,7 @@ removeAtEnd(base);
 const home = path.join(base, "here", ".kuvo-code");
 const there = path.join(base, "there");
 const remote = path.join(there, ".kuvo-code");
+const primaryHome = path.join(base, "primary");
 const fake = path.join(base, "fake");
 const tools = path.join(base, "tools");
 for (const folder of [home, there, fake, tools, path.join(base, "here", ".ssh")]) fs.mkdirSync(folder, { recursive: true });
@@ -333,7 +334,7 @@ if [ -f "$F/trace" ]; then
     *'kuvo-link.js" box seed'*) action=seed ;;
     *'kuvo-link.js" setup'*) action=join ;;
     *'kuvo-link.js" uninstall'*) action=uninstall ;;
-    *'then rm -f "$R"; fi'*|*'then rm -f "$A"; fi'*) action=release ;;
+    *'then rm -f "$R"; fi'*|*'if [ "$prior" = '*'rm -f "$A"'*) action=release ;;
     *) action=other ;;
   esac
   echo "$dest $action" >>"$F/trace"
@@ -439,6 +440,8 @@ write(path.join(home, "config", "opencode", "opencode.json"), JSON.stringify({
 }));
 const secrets = ["secret-notion-token", "sk-ant-secret-key", "gho_stays_the_same", "rt-renews-itself", "a-bots-own", "this-macs-own", "mcp-sign-in"];
 
+const migrated = spawnSync(process.execPath, [script, "folder-upgrade"], { env: process.env, encoding: "utf8", timeout: 15_000 });
+assert.equal(migrated.status, 0, migrated.stderr);
 const link = await import("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");
 const k = key => key.toString("base64url");
 const mac = link.newKey();
@@ -452,6 +455,11 @@ const ask = async (method, route, body, phone) => {
   for await (const piece of handle({ method, path: route, headers: {}, fromApp: !phone, ...(body ? { body: Buffer.from(JSON.stringify(body)) } : {}) }, phone)) pieces.push(piece);
   return { status: pieces.find(each => each.head).head.status, body: JSON.parse(Buffer.concat(pieces.filter(each => each.body).map(each => each.body)).toString() || "{}") };
 };
+async function checkedCredentials(request = ask) {
+  const result = await request("GET", "kuvo/computers/add/credentials");
+  assert.equal(result.status, 200, JSON.stringify(result.body));
+  return result.body.items.filter(item => item.checked).map(item => item.id);
+}
 // What a client follows (`kuvo/computers/add/events`), until the try `id` is as `wanted` says: its
 // line then. (Gone from the list: `null` is what `wanted` gets.)
 const until = async (id, wanted) => {
@@ -499,7 +507,7 @@ atEnd(async () => {
   fs.rmSync(path.join(fake, "hold"), { force: true });
   // Off (as a box removed), by its own keeper, then only what's still the test's own by its command.
   fs.rmSync(path.join(fake, "fail"), { force: true });
-  for (const folder of [there, ...Object.values(homes)]) {
+  for (const folder of [primaryHome, there, ...Object.values(homes)]) {
     const kuvo = path.join(folder, ".kuvo-code");
     const pids = pidsThere(kuvo);
     if (fs.existsSync(path.join(kuvo, "bin", "kuvo-start"))) spawnSync("sh", [path.join(kuvo, "bin", "kuvo-start"), "off"], { env: { ...process.env, HOME: folder }, timeout: 120_000 });
@@ -521,7 +529,7 @@ test("a box says whether it adds computers, and suggests the hosts in ~/.ssh/con
 });
 
 test("adding a computer: the box shows a host key it doesn't know, and on Trust copies itself there, starts it and signs it in", async () => {
-  const begun = await ask("POST", "kuvo/computers/add", { destination: "studio" });
+  const begun = await ask("POST", "kuvo/computers/add", { destination: "studio", credentials: await checkedCredentials() });
   assert.equal(begun.status, 202);
   const id = begun.body.try.id;
   assert.equal(begun.body.try.title, "Adding studio…");
@@ -1004,7 +1012,7 @@ test("uninstalling while it's being set up waits for the start under way, then n
 
 // Adds `destination`, trusting its key: the try as it ended (or as `wanted` says).
 const added = async (destination, wanted) => {
-  const begun = await ask("POST", "kuvo/computers/add", { destination });
+  const begun = await ask("POST", "kuvo/computers/add", { destination, credentials: await checkedCredentials() });
   const asking = await until(begun.body.try.id, found => found?.state === "asking");
   assert.equal(asking.question.id, "hostKey");
   await ask("POST", `kuvo/computers/add/${begun.body.try.id}/answer`, { answer: "trust", at: asking.question.at });
@@ -1349,7 +1357,7 @@ test("a saved offline computer reconnects over SSH after its Mac rotates keys", 
 const traceFile = path.join(fake, "trace");
 const remoteCalls = () => fs.readFileSync(traceFile, "utf8").trim().split("\n");
 const reservationAt = folder => path.join(folder, ".kuvo-code-adding");
-const retryAdd = async destination => over((await ask("POST", "kuvo/computers/add", { destination })).body.try.id);
+const retryAdd = async destination => over((await ask("POST", "kuvo/computers/add", { destination, credentials: await checkedCredentials() })).body.try.id);
 const answerRecovery = (attempt, answer) => ask("POST", `kuvo/computers/add/${attempt.id}/answer`, { answer, at: attempt.question.at });
 const waitFor = async found => {
   for (let i = 0; i < 200; i++) {
@@ -1360,7 +1368,7 @@ const waitFor = async found => {
 };
 
 for (const [destination, disconnected] of [["interrupted", "SIGTERM"], ["network-drop", "255"]]) {
-  test(`a credential write interrupted by SSH ${disconnected} stops Add and recovery waits for the remote writer`, async () => {
+  test(`failure bench: a credential write interrupted by SSH ${disconnected} stops Add and recovery waits for the remote writer`, async () => {
     const folder = homes[destination];
     const alias = `${destination}-alias`;
     const hold = path.join(folder, "hold-seed");
@@ -1384,20 +1392,32 @@ for (const [destination, disconnected] of [["interrupted", "SIGTERM"], ["network
 
       fs.rmSync(hold);
       await waitFor(() => fs.existsSync(path.join(folder, "writer-ended")));
-      const recovery = await retryAdd(destination);
+      fs.rmSync(drop);
+      const mismatched = disconnected === "255";
+      const recovery = mismatched
+        ? await over((await ask("POST", "kuvo/computers/add", { destination, credentials: [] })).body.try.id)
+        : await retryAdd(destination);
       assert.equal(recovery.question?.id, "recoverAccount");
       assert.equal(recovery.question.title, `Continue adding ${destination}?`);
       assert.equal(recovery.question.message, `An earlier attempt to add ${destination} didn't finish, and it's no longer running. Kuvo can clear it and start again.`);
       assert.deepEqual(recovery.question.answers.map(answer => answer.label), ["Cancel", "Clear and Continue"]);
       assert.equal(fs.readlinkSync(reservationAt(folder)), original, "recovery requires an answer");
       assert.equal((await answerRecovery(recovery, "recover")).status, 200);
-      const recovered = await over(recovery.id);
+      let recovered = await over(recovery.id);
+      if (mismatched) {
+        assert.equal(recovered.state, "failed");
+        assert.match(recovered.failure.message, /different choice of sign-ins and keys/);
+        assert.deepEqual(recovered.credentials, stopped.credentials);
+        recovered = await retryAdd(destination);
+      }
       assert.equal(recovered.state, "done", JSON.stringify(recovered.failure));
       assert.equal(fs.lstatSync(reservationAt(folder), { throwIfNoEntry: false }), undefined);
       assert.equal(read(path.join(folder, "engine-credentials.json")).length, 2);
+      assert.equal(remoteCalls().filter(call => call === `${destination} seed`).length, 2, "the resumed add completes the selected seed step");
+      assert.ok(!fs.existsSync(path.join(folder, ".kuvo-code/run/.ssh-fresh-add")));
     } finally {
       fs.rmSync(hold, { force: true });
-      fs.rmSync(drop);
+      fs.rmSync(drop, { force: true });
       fs.rmSync(traceFile);
     }
   });
@@ -1698,7 +1718,7 @@ for (const [destination, heldScript, step, expected] of [
     fs.writeFileSync(hold, heldScript);
     let id;
     try {
-      const started = await ask("POST", "kuvo/computers/add", { destination }, { key, pairing: "caller" });
+      const started = await ask("POST", "kuvo/computers/add", { destination, credentials: await checkedCredentials() }, { key, pairing: "caller" });
       assert.equal(started.status, 202, JSON.stringify(started.body));
       id = started.body.try.id;
       await until(id, found => found?.steps.find(each => each.id === step)?.state === "now");
@@ -2103,7 +2123,6 @@ for (const scenario of ["grant", "worker failure", "interruption", "bootstrap de
 test("failure bench: a Linux primary starts fresh, enrolls over SSH and pairs devices", { timeout: 300_000 }, async t => {
   const relay = await relayStandIn(link);
   atEnd(() => relay.close());
-  const primaryHome = path.join(base, "primary");
   const primaryBox = path.join(primaryHome, ".kuvo-code");
   const memberHome = homes["primary-member"];
   const memberBox = path.join(memberHome, ".kuvo-code");
@@ -2261,7 +2280,7 @@ test("failure bench: a Linux primary starts fresh, enrolls over SSH and pairs de
     assert.equal((await memberApp("GET", "kuvo/setup")).body.you.role, "member");
   });
   const addOn = async (ask, destination, replace) => {
-    const begun = await ask("POST", "kuvo/computers/add", { destination, ...(replace ? { replace } : {}) });
+    const begun = await ask("POST", "kuvo/computers/add", { destination, ...(replace ? { replace } : {}), credentials: await checkedCredentials(ask) });
     assert.equal(begun.status, 202, JSON.stringify(begun.body));
     const id = begun.body.try.id;
     const current = async () => (await ask("GET", "kuvo/computers/add")).body.tries.find(attempt => attempt.id === id);
@@ -2402,6 +2421,7 @@ test("failure bench: a Linux primary starts fresh, enrolls over SSH and pairs de
     }
 
     await waitFor("the removed member finishes unlinking", () => inBox(target).setup?.role === "primary");
+    assert.equal(fs.existsSync(path.join(target, "run", ".ssh-fresh-add")), false);
     const stale = path.join(fake, "stale-join-rejoin");
     try {
       write(stale, JSON.stringify(oldPeer));

@@ -1,6 +1,6 @@
 // The client asks any box. The primary keeps the attempts and runs SSH there.
 
-import { addComputersLayoutReady } from "../../shared/folder-version";
+import { addComputersLayoutReady, credentialSelectionLayoutReady } from "../../shared/folder-version";
 import { isObject, parsed } from "../../shared/json";
 import type { Adding } from "../../shared/routes/box";
 import { sleep } from "../../shared/wait";
@@ -8,6 +8,7 @@ import { addressProblem, cleanAddress, suggestedHosts } from "../add/address";
 import { beginAdd, beginSetup, beginUninstall, canAdd, sshAddressOf, takenAddresses } from "../add/flow";
 import { createInstallerInvite, installerCodeFrom } from "../add/invite";
 import { bringUp } from "../add/keep-up";
+import { credentialChecklist, credentialSelection } from "../add/seed";
 import { allTries, answerTry, endTry, tryFollowers } from "../add/tries";
 import { followed } from "../follow";
 import { writePrivate } from "../files";
@@ -19,10 +20,10 @@ import { runningServe, SERVE_NEEDED } from "../serve-kept";
 import { followedSetup } from "../setup/record";
 import { readLink } from "../state";
 import type { AnswerPiece, Asker, RouteContext } from "../server/context";
-import { forwardAct, type Act, type Acted } from "../work-queue/forward";
+import { forwardAct, takesForwarded, type Act, type Acted } from "../work-queue/forward";
 
 export const LOCAL_COMPUTER_ADD = "kuvo/internal/computers/add";
-export const COMPUTERS_ADD_ROUTE = /^kuvo\/computers\/(?:add(?:(\/events|\/code)|\/(add_[a-z0-9]{1,40})(\/answer)?)?|([A-Za-z0-9_-]{43})\/(setup|uninstall|update))$/;
+export const COMPUTERS_ADD_ROUTE = /^kuvo\/computers\/(?:add(?:(\/events|\/code|\/credentials)|\/(add_[a-z0-9]{1,40})(\/answer)?)?|([A-Za-z0-9_-]{43})\/(setup|uninstall|update))$/;
 const KEY_ACTION = /^(setup|uninstall|update|autoUpdate)\/([A-Za-z0-9_-]{43})$/;
 const TRY_ID = /^add_[a-z0-9]{1,40}$/;
 const refused = (status: number, message: string): Acted => ({ status, value: { message } });
@@ -50,8 +51,18 @@ async function addHere(method: string, item: string, body: unknown, asker?: Aske
     if (!begun) return refused(404, "That isn’t a computer this one set up over SSH.");
     return "busy" in begun ? refused(409, begun.busy) : { status: 202, value: { try: begun.seen } };
   }
+  if (item === "credentials") {
+    if (method !== "GET") return refused(405, "Only GET.");
+    if (!credentialSelectionLayoutReady(K)) return refused(503, "Wait for the Kuvo Code update to finish before choosing sign-ins and keys.");
+    return { status: 200, value: await credentialChecklist() };
+  }
   if (item === "code") {
-    return method === "POST" ? createInstallerInvite(isObject(body) ? body.invite : undefined, asker) : refused(405, "Only POST.");
+    if (method !== "POST") return refused(405, "Only POST.");
+    const input = isObject(body) ? body : {};
+    const selected = credentialSelection(input.credentials);
+    if (!selected) return refused(400, "Choose sign-ins and keys by their checklist IDs.");
+    if (selected.length && !credentialSelectionLayoutReady(K)) return refused(503, "Wait for the Kuvo Code update to finish before choosing sign-ins and keys.");
+    return createInstallerInvite(input.invite, asker, selected);
   }
   const given = isObject(body) ? body : {};
   if (item.startsWith("answer/") && TRY_ID.test(item.slice(7))) {
@@ -74,7 +85,10 @@ async function addHere(method: string, item: string, body: unknown, asker?: Aske
   if (discardLocalPairings !== undefined && typeof discardLocalPairings !== "boolean") return refused(400, "Choose whether to discard local pairings.");
   const problem = addressProblem(destination);
   if (problem) return refused(400, problem);
-  const begun = beginAdd(destination, asker, replace, discardLocalPairings);
+  const selected = credentialSelection(given.credentials);
+  if (!selected) return refused(400, "Choose sign-ins and keys by their checklist IDs.");
+  if (selected.length && !credentialSelectionLayoutReady(K)) return refused(503, "Wait for the Kuvo Code update to finish before choosing sign-ins and keys.");
+  const begun = beginAdd(destination, asker, replace, discardLocalPairings, selected);
   return "busy" in begun ? refused(409, begun.busy) : { status: 202, value: { try: begun.seen } };
 }
 
@@ -101,7 +115,7 @@ function addForActor(method: string, item: string, input: unknown, actor: unknow
 /** The machine's kept local server owns SSH attempts even if a relay session starts one.
  * Code issuance has no in-process attempt and can run on any process of the primary. */
 async function addOnPrimary(method: string, item: string, input: unknown, actor: unknown, served = false, signal?: AbortSignal, oneShot = false): Promise<Acted> {
-  if (served || IS_MAC && !oneShot || !IS_MAC && item === "code") return addForActor(method, item, input, actor);
+  if (served || IS_MAC && !oneShot || !IS_MAC && (item === "code" || item === "credentials")) return addForActor(method, item, input, actor);
   try {
     let server = runningServe();
     if (!server) {
@@ -154,12 +168,16 @@ async function addFrom(context: RouteContext, method: Act["method"], item: strin
   if (KEY_ACTION.test(item) || setup?.role !== "member") return addOnPrimary(method, item, input, actor, context.request.served, context.signal);
   const primary = peersOf(link).find(peer => peer.key === setup.primary);
   if (!primary) return refused(503, "This computer can't reach your primary.");
+  if ((item === "credentials" || method === "POST" && (item === "add" || item === "code"))
+    && !takesForwarded(primary.key, "computers.add.credentials")) {
+    return refused(409, "Update your primary to choose sign-ins and keys before adding a computer.");
+  }
   const result = await forwardAct(primary, "Adding computers", {
     area: "addComputer", method, item,
     body: { setup: setup.id, epoch: setup.epoch, actor, input },
   }, context.signal, link, Date.now(), { backgroundRelay: true });
   if ("refused" in result) {
-    return method === "GET" ? { status: 200, value: { can: false, why: result.refused, hosts: [], tries: [] } } : refused(result.status, result.refused);
+    return method === "GET" && item === "add" ? { status: 200, value: { can: false, why: result.refused, hosts: [], tries: [] } } : refused(result.status, result.refused);
   }
   return result;
 }
@@ -202,8 +220,10 @@ export async function* computersAddRoute(context: RouteContext, match: RegExpMat
     return yield* json(result.status, result.value);
   }
   if (method !== "GET" && method !== "POST" && method !== "DELETE") return yield* json(405, { message: "Only GET, POST or DELETE." });
-  const result = suffix === "/code" && method === "POST"
-    ? await installerCodeFrom(invite => addFrom(context, method, "code", { invite }))
-    : await addFrom(context, method, suffix === "/code" ? "code" : id ? answering ? `answer/${id}` : id : "add", parsed(request.body));
+  const input = parsed(request.body);
+  const item = suffix === "/credentials" ? "credentials" : suffix === "/code" ? "code" : id ? answering ? `answer/${id}` : id : "add";
+  const result = item === "code" && method === "POST"
+    ? await installerCodeFrom(invite => addFrom(context, method, item, { invite, credentials: isObject(input) ? input.credentials : undefined }))
+    : await addFrom(context, method, item, input);
   return yield* json(result.status, result.value);
 }

@@ -1,4 +1,4 @@
-// Kuvo folder layout 19 8899bdee7bd1
+// Kuvo folder layout 20 04af3e34a51a
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
 var __create = Object.create;
@@ -866,6 +866,13 @@ function addComputersLayoutReady(folder) {
     return false;
   }
 }
+function credentialSelectionLayoutReady(folder) {
+  try {
+    return checkpoint(path3.join(folder, FOLDER_VERSION_FILE), steps.length).version >= 20;
+  } catch {
+    return false;
+  }
+}
 var FOLDER_VERSION_FILE = "folder-version.json", steps, KUVO_FOLDER_LAYOUT, trialOpen = (folder) => fs3.existsSync(path3.join(folder, "run", "update-trial"));
 var init_folder_version = __esm(() => {
   init_files();
@@ -888,6 +895,7 @@ var init_folder_version = __esm(() => {
     () => {},
     () => {},
     migrateRankHistory,
+    () => {},
     () => {},
     () => {}
   ];
@@ -1147,7 +1155,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "8899bdee7bd1";
+var BRIDGE_VERSION = "04af3e34a51a";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -1509,8 +1517,24 @@ var init_format2 = __esm(() => {
 });
 
 // box/src/shared/integrations/table.ts
-var APART = "KUVO_NPX_APART", LAUNCHER = "kuvo-npx", SERVICES;
+function keysOf(service) {
+  switch (service.way) {
+    case "token":
+      return [service.key];
+    case "app":
+      return appKeys;
+    case "package":
+      return service.keys;
+    default:
+      return [];
+  }
+}
+var APART = "KUVO_NPX_APART", LAUNCHER = "kuvo-npx", appKeys, SERVICES;
 var init_table = __esm(() => {
+  appKeys = [
+    { name: "CLIENT_ID", label: "Client ID", prompt: "From your app" },
+    { name: "CLIENT_SECRET", label: "Client secret", prompt: "From your app" }
+  ];
   SERVICES = [
     {
       id: "apple-calendar",
@@ -1752,7 +1776,36 @@ var init_servers = __esm(() => {
 });
 
 // box/src/shared/integrations/catalogs.ts
-var keyVariable = (integration, name) => "KUVO_KEY_" + `${integration}_${name}`.toUpperCase().replace(/[^A-Z0-9]/g, "_"), MAC_ONLY_INTEGRATIONS;
+function settings(service) {
+  const key = (name) => keyReference(keyVariable(service.id, name));
+  switch (service.way) {
+    case "official":
+      return { type: "remote", url: service.url, codemode: false };
+    case "token":
+      return { type: "remote", url: service.url, oauth: false, headers: { Authorization: `Bearer ${key(service.key.name)}` }, codemode: false };
+    case "app":
+      return { type: "remote", url: service.url, oauth: { clientId: key("CLIENT_ID"), clientSecret: key("CLIENT_SECRET") }, codemode: false };
+    case "package": {
+      const environment = { ...service.environment };
+      for (const each of service.keys)
+        environment[each.name] = key(each.name);
+      environment[APART] = "1";
+      return { type: "local", command: [LAUNCHER, ...service.command], environment, codemode: false };
+    }
+    case "browser":
+      return;
+  }
+}
+function portableKeyedIntegrations(selected) {
+  return Object.fromEntries(SERVICES.flatMap((service) => {
+    const keys = keysOf(service);
+    if (!keys.length || MAC_ONLY_INTEGRATIONS.includes(service.id) || !keys.every((key) => selected.has(keyVariable(service.id, key.name))))
+      return [];
+    const configuration = settings(service);
+    return configuration ? [[service.id, configuration]] : [];
+  }));
+}
+var keyVariable = (integration, name) => "KUVO_KEY_" + `${integration}_${name}`.toUpperCase().replace(/[^A-Z0-9]/g, "_"), keyReference = (variable) => `{file:~/.kuvo-code/box/keys/${variable}}`, MAC_ONLY_INTEGRATIONS;
 var init_catalogs = __esm(() => {
   init_table();
   init_servers();
@@ -2345,1747 +2398,10 @@ var init_client = __esm(() => {
   FETCH_WAITS = [5000, 20000];
 });
 
-// box/src/shared/text.ts
-import crypto7 from "node:crypto";
-function prefixBytes(text, bytes) {
-  let out = "", count = 0;
-  for (const character of text) {
-    count += Buffer.byteLength(character);
-    if (count > bytes)
-      break;
-    out += character;
-  }
-  return out;
-}
-function outsideShown(pattern, home) {
-  let path = pattern.trim();
-  if (path === "*" || path === "**")
-    return "Any folder";
-  for (const glob of ["/**", "/*"])
-    if (path.endsWith(glob)) {
-      path = path.slice(0, -glob.length) || "/";
-      break;
-    }
-  while (path.length > 1 && path.endsWith("/"))
-    path = path.slice(0, -1);
-  const own = home?.replace(/(?<=.)\/+$/, "");
-  const rest = path === "~" ? "" : path.startsWith("~/") ? path.slice(2) : own && path === own ? "" : own && path.startsWith(own + "/") ? path.slice(own.length + 1) : null;
-  return rest === null ? path : rest ? `~/${rest}` : "~";
-}
-function outsideSpoken(pattern, home) {
-  const shown = outsideShown(pattern, home);
-  if (shown === "Any folder")
-    return shown;
-  if (shown === "/")
-    return "The whole disk";
-  const parts = (path) => path.split("/").filter(Boolean);
-  if (shown === "~")
-    return "Home";
-  if (shown.startsWith("~/"))
-    return ["Home", ...parts(shown.slice(2))].join(", ");
-  return parts(shown).join(", ");
-}
-var AGENTS_TEXT_BYTES = 200000, oneLine = (text, limit) => Array.from(String(text).replace(/[\t\r\n]/g, " ")).slice(0, limit).join(""), stamp2 = () => new Date().toISOString().replace(/\.\d{3}Z$/, "Z"), newID = (prefix) => prefix + Array.from(crypto7.randomBytes(10), (byte) => "abcdefghijklmnopqrstuvwxyz0123456789"[byte % 36]).join(""), plainName = (text) => String(text ?? "").replace(/[\u0000-\u001f\u007f\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, " ").split(/\s+/).filter(Boolean).join(" "), cut = (text, count) => text.length <= count ? text : text.slice(0, count - 1) + "…", quote = (text) => `'${String(text).replace(/'/g, `'\\''`)}'`;
-var init_text = () => {};
-
-// box/src/link/host-interface.ts
-import crypto8 from "node:crypto";
-import fs12 from "node:fs";
-import path10 from "node:path";
-function appHost() {
-  if (!KEYS_ON_HOST)
-    return null;
-  try {
-    const text = fs12.readFileSync(HOST_FILE, "utf8");
-    const said = JSON.parse(text);
-    if (typeof said?.url === "string" && said.url && typeof said?.password === "string" && said.password) {
-      return { url: said.url.replace(/\/+$/, ""), password: said.password, said: text };
-    }
-  } catch {}
-  return LAUNCH_HOST && { ...LAUNCH_HOST, said: "launch" };
-}
-function openAppHost() {
-  if (!OWN_HOME_MAC)
-    return appHost();
-  try {
-    const host = JSON.parse(fs12.readFileSync(path10.join(RUN, "app.json"), "utf8"))?.host;
-    if (typeof host?.url === "string" && host.url && typeof host?.password === "string" && host.password) {
-      return { url: host.url.replace(/\/+$/, ""), password: host.password, said: `app ${host.url} ${host.password}` };
-    }
-  } catch {}
-  return null;
-}
-function helloProof(password, nonce, url) {
-  const reached = new URL(url);
-  return crypto8.createHmac("sha256", password).update(`kuvo-host-hello\x00${nonce}\x00${reached.hostname}:${reached.port || 80}`).digest("hex");
-}
-function forgetHostProof() {
-  provenBy = null;
-  vaultProvenBy = null;
-}
-async function proveHost(host, signal) {
-  if (provenBy === host.said)
-    return;
-  const nonce = crypto8.randomBytes(32).toString("hex");
-  let proof = null;
-  try {
-    const response = await fetch(`${host.url}/hello`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ nonce }),
-      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(15000)]) : AbortSignal.timeout(15000)
-    });
-    const answer = await response.json().catch(() => null);
-    if (response.ok && typeof answer?.proof === "string")
-      proof = Buffer.from(answer.proof);
-  } catch {}
-  const expected = Buffer.from(helloProof(host.password, nonce, host.url));
-  if (!proof || proof.length !== expected.length || !crypto8.timingSafeEqual(proof, expected))
-    throw new KeysUnavailable(NOT_ANSWERING);
-  if (host.said.startsWith("app "))
-    return;
-  provenBy = host.said;
-}
-async function proveVaultHost(host) {
-  if (!HOST_VAULT_SECRET) {
-    throw new KeysUnavailable(OWN_HOME_MAC ? "This Mac's vault can only be reached by Kuvo running on this Mac, not by a one-off command." : "Kuvo Code on this Mac didn't give its vault its secret. Quit Kuvo Code and open it again.");
-  }
-  if (vaultProvenBy === host.said)
-    return;
-  const nonce = crypto8.randomBytes(32).toString("hex");
-  let proof = null;
-  try {
-    const response = await fetch(`${host.url}/hello`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ nonce, vault: true }),
-      signal: AbortSignal.timeout(15000)
-    });
-    const answer = await response.json().catch(() => null);
-    if (response.ok && typeof answer?.vaultProof === "string")
-      proof = Buffer.from(answer.vaultProof);
-  } catch {}
-  const reached = new URL(host.url);
-  const expected = Buffer.from(crypto8.createHmac("sha256", HOST_VAULT_SECRET).update(`kuvo-host-vault\x00${nonce}\x00${reached.hostname}:${reached.port || 80}`).digest("hex"));
-  if (!proof || proof.length !== expected.length || !crypto8.timingSafeEqual(proof, expected))
-    throw new KeysUnavailable(NOT_ANSWERING);
-  vaultProvenBy = host.said;
-}
-async function hostTrash(folder) {
-  const host = appHost();
-  if (!host)
-    return;
-  await proveHost(host);
-  const response = await fetch(`${host.url}/trash`, {
-    method: "POST",
-    headers: { authorization: `Bearer ${host.password}`, "content-type": "application/json" },
-    body: JSON.stringify({ path: folder }),
-    signal: AbortSignal.timeout(15000)
-  });
-  await response.body?.cancel().catch(() => {});
-}
-async function askHost(host, call, body, missing = false) {
-  await proveHost(host);
-  const sent = JSON.stringify(body);
-  const vault = call.startsWith("vault/");
-  if (vault)
-    await proveVaultHost(host);
-  const at = Date.now();
-  let response;
-  try {
-    response = await fetch(`${host.url}/${call}`, {
-      method: "POST",
-      headers: { authorization: `Bearer ${host.password}`, "content-type": "application/json", ...vault ? { "x-kuvo-vault-auth": vaultAuth(call, sent, at), "x-kuvo-vault-at": String(at) } : {} },
-      body: sent,
-      signal: AbortSignal.timeout(["keys/get", "keys/set", "link/identity", "vault/get", "vault/set"].includes(call) ? 120000 : 15000)
-    });
-  } catch {
-    forgetHostProof();
-    throw new KeysUnavailable(NOT_ANSWERING);
-  }
-  if (missing && response.status === 404) {
-    await response.body?.cancel().catch(() => {});
-    return null;
-  }
-  let answer = null;
-  try {
-    answer = await response.json();
-  } catch {}
-  if (response.status < 200 || response.status > 299) {
-    const said = typeof answer?.message === "string" && answer.message.trim() ? ` ${oneLine(answer.message, 300)}` : "";
-    throw new KeysUnavailable(`This Mac's keys couldn't be reached (${response.status}).${said}`);
-  }
-  return answer ?? {};
-}
-async function siteSignIns() {
-  const host = openAppHost();
-  if (!host)
-    return null;
-  try {
-    const answer = await askHost(host, "sites/signed-in", {});
-    return isObject(answer?.sites) ? answer.sites : null;
-  } catch {
-    return null;
-  }
-}
-async function linkHost(call, body) {
-  const host = appHost();
-  if (!host)
-    return null;
-  try {
-    return await askHost(host, call, body ?? {});
-  } catch {
-    return null;
-  }
-}
-var KeysUnavailable, HOST_FILE, NOT_ANSWERING = "Kuvo Code isn't answering for this Mac's keys. Try again in a moment.", provenBy = null, vaultProvenBy = null, vaultAuth = (call, body, at) => crypto8.createHmac("sha256", HOST_VAULT_SECRET ?? "").update(`kuvo-host-vault-call\x00${call}\x00${crypto8.createHash("sha256").update(body).digest("hex")}\x00${at}`).digest("hex");
-var init_host_interface = __esm(() => {
-  init_text();
-  init_home();
-  KeysUnavailable = class KeysUnavailable extends Error {
-  };
-  HOST_FILE = path10.join(RUN, "host.json");
-});
-
-// box/src/link/keys.ts
-import fs13 from "node:fs";
-import path11 from "node:path";
-function keyHost() {
-  const host = appHost();
-  if (KEYS_ON_HOST && !host)
-    throw new KeysUnavailable(NOT_ANSWERING);
-  return host;
-}
-function keyWork(work) {
-  const run = keyQueue.then(work, work);
-  keyQueue = run.catch(() => {});
-  return run;
-}
-async function keyNames({ prefix = "", suffix = "" } = {}) {
-  if (typeof prefix !== "string" || typeof suffix !== "string" || prefix && !/^KUVO_KEY_[A-Z0-9_]*$/.test(prefix) || suffix && !/^[A-Z0-9_]+$/.test(suffix)) {
-    throw new KeysUnavailable("That isn't a part of a key's name.");
-  }
-  const host = keyHost();
-  let names;
-  if (host) {
-    const answer = await askHost(host, "keys/names", { ...prefix ? { prefix } : {}, ...suffix ? { suffix } : {} });
-    if (!Array.isArray(answer.names))
-      throw new KeysUnavailable("This Mac's keys couldn't be read.");
-    names = answer.names;
-  } else {
-    names = listOf(BOX_KEYS);
-  }
-  return [...new Set(names.filter((name) => typeof name === "string" && STORED_KEY.test(name) && !BOT_KEY.test(name) && name.startsWith(prefix) && name.endsWith(suffix)))].sort();
-}
-async function clearHostKeys() {
-  await keyWork(async () => {
-    const host = keyHost();
-    if (!host)
-      return;
-    const names = async () => {
-      const answer = await askHost(host, "keys/names", {});
-      if (!Array.isArray(answer.names) || !answer.names.every((name) => typeof name === "string" && STORED_KEY.test(name))) {
-        throw new KeysUnavailable("This Mac's keys couldn't be read.");
-      }
-      return answer.names;
-    };
-    for (const name of new Set(await names()))
-      await askHost(host, "keys/delete", { name });
-    if ((await names()).length)
-      throw new KeysUnavailable("The host still holds Kuvo integration keys.");
-  });
-}
-async function readKey(name) {
-  checkedKeyName(name);
-  const host = keyHost();
-  if (!host)
-    return textOf(keyFile(name));
-  const answer = await askHost(host, "keys/get", { name }, true);
-  return typeof answer?.value === "string" ? answer.value : null;
-}
-async function writeKey(name, value) {
-  checkedKeyName(name);
-  if (typeof value !== "string")
-    throw new KeysUnavailable("A key is text.");
-  const host = keyHost();
-  if (!host)
-    return writeKeyFile(name, value);
-  if (!writesKeyFiles())
-    return void await askHost(host, "keys/set", { name, value });
-  await keyFileWork(async () => {
-    await askHost(host, "keys/set", { name, value });
-    writeKeyFile(name, value);
-  });
-}
-async function deleteKey(name) {
-  checkedKeyName(name);
-  const host = keyHost();
-  if (!host)
-    return removeKeyFile(name);
-  if (!writesKeyFiles())
-    return void await askHost(host, "keys/delete", { name });
-  await keyFileWork(async () => {
-    await askHost(host, "keys/delete", { name });
-    removeKeyFile(name);
-  });
-}
-function writeKeyFile(name, value) {
-  locked(CONFIG_LOCK, () => writeSecret(keyFile(name), value));
-}
-function removeKeyFile(name) {
-  locked(CONFIG_LOCK, () => fs13.rmSync(keyFile(name), { force: true }));
-}
-async function dropBotKeys(keep = []) {
-  const kept = (name) => keep.some((end) => name.endsWith(end));
-  const host = keyHost();
-  if (host) {
-    const answer = await askHost(host, "keys/names", {});
-    if (!Array.isArray(answer.names))
-      throw new KeysUnavailable("This Mac's keys couldn't be read.");
-    for (const name of answer.names)
-      if (typeof name === "string" && BOT_KEY.test(name) && !kept(name))
-        await askHost(host, "keys/delete", { name });
-  }
-  for (const folder of [BOT_KEYS, BOX_KEYS, LEGACY_KEYS]) {
-    for (const name of listOf(folder))
-      if (BOT_KEY.test(name) && !kept(name))
-        fs13.rmSync(path11.join(folder, name), { force: true });
-  }
-  if (!listOf(BOT_KEYS).some(kept))
-    fs13.rmSync(BOT_KEYS, { recursive: true, force: true });
-}
-async function syncKeyFiles() {
-  if (!writesKeyFiles())
-    return false;
-  let names;
-  try {
-    names = await keyNames();
-  } catch {
-    return false;
-  }
-  const files = listOf(BOX_KEYS).filter((name) => STORED_KEY.test(name) && !BOT_KEY.test(name));
-  let all = true;
-  for (const name of [...new Set([...names, ...files])]) {
-    await keyFileWork(async () => {
-      let value;
-      try {
-        value = await readKey(name);
-      } catch {
-        all = false;
-        return;
-      }
-      if (value !== null) {
-        if (textOf(keyFile(name)) !== value)
-          writeKeyFile(name, value);
-      } else if (names.includes(name)) {
-        all = false;
-      } else {
-        removeKeyFile(name);
-      }
-    });
-  }
-  return all;
-}
-function keepKeyFiles(every = 12 * 3600000, retry = 60000) {
-  if (!writesKeyFiles() || keeping)
-    return;
-  let failed = 0;
-  const round = async () => {
-    failed = await syncKeyFiles().catch(() => false) ? 0 : failed + 1;
-    keeping = setTimeout(() => void round(), keyFilesWait(failed, every, retry));
-    keeping.unref?.();
-  };
-  keeping = setTimeout(() => void round(), 0);
-  keeping.unref?.();
-}
-var LEGACY_KEYS, STORED_KEY, BOT_KEY, keyQueue, checkedKeyName = (name) => {
-  if (typeof name !== "string" || !STORED_KEY.test(name) || BOT_KEY.test(name))
-    throw new KeysUnavailable("That isn't a key's name.");
-  return name;
-}, keyFile = (name) => path11.join(BOX_KEYS, checkedKeyName(name)), KEY_FILES_LOCK, keyFileWork = (work) => lockedWhile(KEY_FILES_LOCK, work, { stale: 150000, wait: 150000 }), keeping = null, keyFilesWait = (failed, every = 12 * 3600000, retry = 60000) => failed ? Math.min(every, retry * 2 ** (failed - 1)) : every;
-var init_keys2 = __esm(() => {
-  init_files();
-  init_files2();
-  init_home();
-  init_host_interface();
-  LEGACY_KEYS = path11.join(K, "keys");
-  STORED_KEY = /^KUVO_KEY_[A-Z0-9_]+$/;
-  BOT_KEY = /^KUVO_KEY_[A-Z0-9_]+__BOT_[A-Z0-9]+$/;
-  keyQueue = Promise.resolve();
-  KEY_FILES_LOCK = path11.join(RUN, ".key-files.lock");
-});
-
-// box/src/link/add/seed.ts
-import fs14 from "node:fs";
-import path12 from "node:path";
-function seedSettings(settings) {
-  if (!isObject(settings))
-    return {};
-  const { $schema: _schema, shell: _shell, worktree: _worktree, ...rest } = settings;
-  if (isObject(rest.mcp)) {
-    const without = (servers) => Object.fromEntries(Object.entries(servers).filter(([id]) => !MAC_ONLY.includes(id)));
-    rest.mcp = isObject(rest.mcp.servers) ? { ...rest.mcp, servers: without(rest.mcp.servers) } : without(rest.mcp);
-  }
-  return theirKeyPaths(rest);
-}
-function seedCredentials(credentials, accounts) {
-  const inUse = credentials.filter((each) => each.active === true && typeof each.integrationID === "string" && accounts.has(each.integrationID) && isObject(each.value));
-  return {
-    credentials: inUse.filter((each) => !renewsItself(each)).slice(0, 100).map((each) => ({ integrationID: each.integrationID, label: typeof each.label === "string" ? each.label : "", value: each.value })),
-    renewing: inUse.filter(renewsItself).length
-  };
-}
-async function gatherSeed(engine = readEngineFile) {
-  const seed = { settings: {}, keys: {}, credentials: [], renewing: 0 };
-  try {
-    const read = readSettings();
-    if (!read.problem)
-      seed.settings = seedSettings(read.settings);
-  } catch {}
-  try {
-    const mine = MAC_ONLY.map(variablePrefix);
-    for (const name of (await keyNames()).slice(0, 200)) {
-      if (!STORED_KEY.test(name) || BOT_KEY.test(name) || mine.some((prefix) => name.startsWith(prefix)))
-        continue;
-      const value = await readKey(name);
-      if (value)
-        seed.keys[name] = value;
-    }
-  } catch {}
-  try {
-    const target = engine();
-    const [integrations, credentials] = await Promise.all([asked(target, "GET", "api/integration", undefined, 15000), asked(target, "GET", "api/credential", undefined, 15000)]);
-    const accounts = new Set(listed(integrations).filter((each) => isObject(each) && typeof each.id === "string" && !(isObject(each.metadata) && each.metadata.source === "mcp")).map((each) => each.id));
-    Object.assign(seed, seedCredentials(listed(credentials), accounts));
-  } catch {}
-  return seed;
-}
-async function takeSeed(input, engine = readEngineFile) {
-  if (fs14.existsSync(SEEDED_FILE))
-    return { status: 200, taken: 0 };
-  let given = null;
-  try {
-    given = JSON.parse(input);
-  } catch {}
-  const credentials = isObject(given) && Array.isArray(given.credentials) ? given.credentials.slice(0, 100) : null;
-  if (!credentials)
-    return { status: 400, message: "box seed takes JSON on its standard input: {credentials: [{integrationID, label, value}]}." };
-  let target;
-  let has;
-  try {
-    target = engine();
-    has = new Set(listed(await asked(target, "GET", "api/credential", undefined, 15000)).map((each) => isObject(each) ? each.integrationID : undefined));
-  } catch {
-    return { status: 503, message: "Its engine isn't answering yet." };
-  }
-  let taken = 0;
-  for (const each of credentials) {
-    if (!isObject(each) || typeof each.integrationID !== "string" || !/^[A-Za-z0-9._-]{1,100}$/.test(each.integrationID) || !isObject(each.value) || has.has(each.integrationID) || renewsItself(each))
-      continue;
-    try {
-      await asked(target, "POST", "api/credential", { integrationID: each.integrationID, label: typeof each.label === "string" ? each.label.slice(0, 200) : "", value: each.value, activate: true }, 15000);
-      has.add(each.integrationID);
-      taken++;
-    } catch {}
-  }
-  try {
-    writePrivate(SEEDED_FILE, JSON.stringify({ at: Date.now(), taken }));
-  } catch {}
-  return { status: 200, taken };
-}
-var renewsItself = (credential) => isObject(credential.value) && typeof credential.value.refresh === "string" && credential.value.refresh.length > 0 && credential.integrationID !== "github-copilot", MAC_ONLY, variablePrefix = (integration) => keyVariable(integration, ""), theirKeyPaths = (value) => {
-  if (typeof value === "string")
-    return value.replace(/\{file:[^{}]*\/(KUVO_KEY_[A-Za-z0-9_]+)\}/g, "{file:~/.kuvo-code/box/keys/$1}");
-  if (Array.isArray(value))
-    return value.map(theirKeyPaths);
-  if (isObject(value))
-    return Object.fromEntries(Object.entries(value).map(([key, inner]) => [key, theirKeyPaths(inner)]));
-  return value;
-}, listed = (answer) => isObject(answer) && Array.isArray(answer.data) ? answer.data : Array.isArray(answer) ? answer : [], SEEDED_FILE;
-var init_seed = __esm(() => {
-  init_catalogs();
-  init_servers();
-  init_config();
-  init_client();
-  init_files2();
-  init_home();
-  init_keys2();
-  MAC_ONLY = [...MAC_ONLY_INTEGRATIONS, ...MAC_ONLY_SERVERS];
-  SEEDED_FILE = path12.join(RUN, "seeded.json");
-});
-
-// box/src/link/run-command.ts
-import { spawn as spawn2 } from "node:child_process";
-import fs16 from "node:fs";
-function commandEnv(from = process.env) {
-  const env = {};
-  for (const [name, value] of Object.entries(from)) {
-    if (value === undefined || PRIVATE.includes(name) || name.startsWith("KUVO_") || name.startsWith("OPENCODE_"))
-      continue;
-    env[name] = value;
-  }
-  for (const [name, value] of Object.entries(from)) {
-    if (!name.startsWith("KUVO_OWN_") || value === undefined)
-      continue;
-    const own = name.slice("KUVO_OWN_".length);
-    if (!own)
-      continue;
-    if (value)
-      env[own] = value;
-    else
-      delete env[own];
-  }
-  return env;
-}
-function launchFromLogin(found) {
-  return Object.entries(found).filter(([name, value]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) && (name === "BUN_INSTALL" || !NOT_FROM_LOGIN.test(name)) && !SHELLS_OWN.test(name) && !/[\r\n\0]/.test(value)).map(([name, value]) => `${name}=${value}
-`).join("");
-}
-async function askedEnv(from = process.env, platform = process.platform, now = Date.now(), wait = 1000) {
-  const env = commandEnv(from);
-  if (platform !== "darwin" || !from.HOME || from.KUVO_TEST_LOGIN_ENV === "off")
-    return env;
-  if (!loginReading && (!loginRead || now - loginRead.at > LOGIN_READ_FOR)) {
-    const at = now;
-    loginReading = loginEnvironment(from).then((found) => {
-      loginRead = { at, env: found ?? loginRead?.env };
-    }, () => {}).finally(() => {
-      loginReading = null;
-    });
-  }
-  if (loginReading) {
-    let timer;
-    await (loginRead ? Promise.race([loginReading, new Promise((resolve) => timer = setTimeout(resolve, wait))]) : loginReading);
-    clearTimeout(timer);
-  }
-  for (const [name, value] of Object.entries(loginRead?.env ?? {}))
-    if (!NOT_FROM_LOGIN.test(name))
-      env[name] = value;
-  return env;
-}
-function runCommand(command, folder, env, timeout, signal, name = String(Math.random()), ended) {
-  return new Promise((resolve) => {
-    const shell = env.SHELL && fs16.existsSync(env.SHELL) ? env.SHELL : "/bin/sh";
-    const child = spawn2(shell, ["-lc", command], { cwd: folder, env, stdio: ["ignore", "pipe", "pipe"], detached: process.platform !== "win32" });
-    if (child.pid)
-      running.set(name, { pid: child.pid, ended });
-    let output = Buffer.alloc(0);
-    const take = (chunk) => {
-      output = Buffer.concat([output, chunk]);
-      if (output.length > MOST_KEPT)
-        output = output.subarray(output.length - MOST_KEPT);
-    };
-    child.stdout.on("data", take);
-    child.stderr.on("data", take);
-    let timedOut = false;
-    const stop = () => {
-      try {
-        process.kill(-child.pid, "SIGTERM");
-      } catch {
-        try {
-          child.kill("SIGTERM");
-        } catch {}
-      }
-      setTimeout(() => {
-        try {
-          process.kill(-child.pid, "SIGKILL");
-        } catch {}
-      }, 3000).unref();
-    };
-    const timer = setTimeout(() => {
-      timedOut = true;
-      stop();
-    }, timeout);
-    signal?.addEventListener("abort", stop, { once: true });
-    let done = false;
-    const end = (code) => {
-      if (done)
-        return;
-      done = true;
-      clearTimeout(timer);
-      signal?.removeEventListener("abort", stop);
-      running.delete(name);
-      resolve({ output: output.toString("utf8"), code, timedOut });
-    };
-    child.on("error", (error) => {
-      take(Buffer.from(String(error.message)));
-      end(null);
-    });
-    child.on("close", end);
-    child.on("exit", (code) => setTimeout(() => end(code), 1000).unref());
-  });
-}
-var PRIVATE, MOST_KEPT, NOT_FROM_LOGIN, SHELLS_OWN, LOGIN_READ_FOR = 60000, loginRead = null, loginReading = null, running;
-var init_run_command = __esm(() => {
-  init_platform();
-  PRIVATE = ["BUN_BE_BUN", "BUN_RUNTIME_TRANSPILER_CACHE_PATH"];
-  MOST_KEPT = 4 * 1024 * 1024;
-  NOT_FROM_LOGIN = /^(DYLD_|BUN_|KUVO_|OPENCODE_)|^(NODE_OPTIONS|PWD|OLDPWD|SHLVL|_)$/;
-  SHELLS_OWN = /^(BASH|BASHOPTS|BASHPID|BASH_[A-Z_]+|SHELLOPTS|POSIXLY_CORRECT|ENV|IFS|CDPATH|UID|EUID|PPID|PS[1-4]|OPTIND|OPTARG|LINENO|RANDOM|SECONDS|FUNCNAME|GROUPS|HOME)$/;
-  running = new Map;
-  process.once("exit", () => {
-    for (const { pid, ended } of running.values()) {
-      try {
-        process.kill(-pid, "SIGKILL");
-      } catch {}
-      try {
-        ended?.();
-      } catch {}
-    }
-  });
-});
-
-// box/src/link/notices/sentence.ts
-function firstOf(words) {
-  const ending = /[.!?…]+["”’)\]]*(?=\s|$)/g;
-  for (let found = ending.exec(words);found; found = ending.exec(words)) {
-    const end = found.index + found[0].length;
-    if (ABBREVIATIONS.test(words.slice(0, found.index + 1)))
-      continue;
-    return words.slice(0, end);
-  }
-  return words;
-}
-function cutAtWord(text, longest) {
-  const characters = Array.from(text);
-  if (characters.length <= longest)
-    return text;
-  const room = characters.slice(0, longest - 1).join("");
-  const space = room.lastIndexOf(" ");
-  return (space > longest / 2 ? room.slice(0, space) : room).replace(/[\s,;:–—-]+$/, "") + "…";
-}
-function oneSentence(text, longest = SENTENCE_LONGEST) {
-  const lines = plainAddresses(String(text ?? "")).replace(/```[\s\S]*?(?:```|$)/g, `
-
-`).split(`
-`);
-  const paragraphs = [];
-  let current = [];
-  let heading = "";
-  const close = () => {
-    if (current.length)
-      paragraphs.push(plain(current.join(" ")));
-    current = [];
-  };
-  for (const raw of lines) {
-    const line = raw.trim();
-    if (!line || /^#{1,6}\s/.test(line) || line.startsWith("|") || /^([-*_])(\s*\1){2,}$/.test(line) || /^(\*\*|__)[^*_]+\1:?$/.test(line) || /^<\/?[a-z][^>]*>$/i.test(line)) {
-      close();
-      if (!heading && /^(#{1,6}\s|\*\*|__)/.test(line))
-        heading = plain(line.replace(/^#{1,6}\s+/, ""));
-      continue;
-    }
-    const item = /^(?:[-*+]|\d+[.)])\s+(.*)$/.exec(line);
-    if (item) {
-      close();
-      current.push(item[1]);
-      close();
-      continue;
-    }
-    current.push(line);
-  }
-  close();
-  const found = paragraphs.filter(Boolean);
-  if (!found.length)
-    return heading ? cutAtWord(firstOf(heading), longest) : "";
-  let sentence = firstOf(found[0]);
-  if (sentence === found[0] && sentence.endsWith(":") && found[1])
-    sentence = `${sentence} ${firstOf(found[1])}`;
-  return cutAtWord(sentence, longest);
-}
-var plain = (text) => String(text ?? "").replace(/^[ \t]{0,3}(#{1,6}|>+)[ \t]+/gm, "").replace(/!?\[([^\]]*)\]\([^)\s]*\)/g, "$1").replace(/(?<![\w*_])[*_]{1,3}(?=\S)|(?<=\S)[*_]{1,3}(?![\w*_])/g, "").replace(/`/g, "").replace(/\s+/g, " ").trim(), SENTENCE_LONGEST = 100, LINE_LONGEST = 60, ABBREVIATIONS, lastName = (address) => address.replace(/\/+$/, "").split("/").pop() || address, plainAddresses = (text) => text.replace(/\bhttps?:\/\/(?:www\.)?([^\s/?#)\]>"']+)[^\s)\]>"']*/gi, "$1").replace(/(?<![\w.:/~@-])(?:~|\.{1,2})?\/(?:[\w.@+-]+\/)+[\w.@+-]*|(?<![\w.:/~@-])[\w.@+-]+(?:\/[\w.@+-]+){2,}(?<=[A-Za-z][\w.@+-]*)/g, lastName);
-var init_sentence = __esm(() => {
-  init_text();
-  ABBREVIATIONS = /(?:^|\s)(?:e\.g|i\.e|vs|cf|approx|incl|Mr|Mrs|Ms|Dr|Fig)\.$/i;
-});
-
-// box/src/link/notices/plain.ts
-function commandWords(lines) {
-  const specific = lines.map((line) => String(line)).filter((line) => line.trim() && line.trim() !== "*");
-  const names = programsRun(specific);
-  if (!names.length)
-    return { words: "a command", whole: specific.length === 0 };
-  return { words: named(names), whole: names.length <= 2 && specific.every((line) => PROGRAM.test(line.trim())) };
-}
-function permissionLine(request) {
-  const resources = (Array.isArray(request.resources) ? request.resources : []).map(String).filter((each) => each !== "*");
-  const none = resources.length === 0;
-  const say = (words, whole = none) => ({ line: cutAtWord(`Wants to ${words}.`, LINE_LONGEST), whole });
-  const files = (verb, one, many) => {
-    const only = resources.length === 1 ? fileName(resources[0]) : null;
-    return say(none ? one : only ? `${verb} ${only}` : resources.length > 1 ? `${verb} ${resources.length} ${many}` : one);
-  };
-  switch (request.action) {
-    case "edit":
-    case "write":
-    case "patch":
-      return files("edit", "edit files", "files");
-    case "read":
-      return files("read", "read a file", "files");
-    case "shell":
-    case "bash": {
-      const { words, whole } = commandWords(resources);
-      return say(`run ${words}`, whole);
-    }
-    case "external_directory":
-      return say("work outside the project");
-    case "webfetch": {
-      const hosts = [...new Set(resources.map(hostOf))];
-      return say(hosts.length === 1 && hosts[0] ? `open ${hosts[0]}` : "open a web page");
-    }
-    default:
-      return say(OTHER[request.action] ?? "use a tool");
-  }
-}
-function reasonWords(reason) {
-  const first = String(reason ?? "").split(`
-`).map((each) => each.trim()).find(Boolean) ?? "";
-  const sentence = /[/\\]/.test(first) ? "" : oneSentence(first, 60);
-  if (!sentence || sentence.split(/\s+/).length < 3)
-    return "";
-  const code = /[{}[\]<>/\\]|\b[A-Z][A-Z0-9_]{3,}\b|\b\w*\d{3,}\w*\b|\w+_\w+|\b\w+\.\w+\(|0x[0-9a-fA-F]+/;
-  if (code.test(sentence))
-    return "";
-  return sentence;
-}
-function shortNotice(notice) {
-  const short = { ...notice };
-  if (short.title)
-    short.title = cutAtWord(short.title.replace(/\s+/g, " ").trim(), 60);
-  if (short.subtitle)
-    short.subtitle = cutAtWord(short.subtitle.replace(/\s+/g, " ").trim(), 60);
-  if (short.body && (short.body.length > SENTENCE_LONGEST || short.body.includes(`
-`)))
-    short.body = oneSentence(short.body) || cutAtWord(short.body.replace(/\s+/g, " ").trim(), SENTENCE_LONGEST);
-  return short;
-}
-var PROGRAM, programsOf = (line) => line.split(/\s*(?:&&|\|\||;)\s*/).flatMap((part) => {
-  const words = part.trim().split(/\s+/);
-  while (words.length && /^[A-Za-z_]\w*=/.test(words[0]))
-    words.shift();
-  const name = words[0]?.replace(/^.*\//, "") ?? "";
-  return PROGRAM.test(name) && name !== "cd" ? [name] : [];
-}), programsRun = (lines) => [...new Set(lines.flatMap((line) => programsOf(String(line))))], named = (names) => names.length <= 2 ? names.join(" and ") : `${names[0]}, ${names[1]} and ${names.length - 2} more`, fileName = (resource) => {
-  const name = resource.replace(/\/+$/, "").split("/").pop() ?? "";
-  return /^[\w][\w .+@()-]{0,38}$/.test(name) ? name : null;
-}, hostOf = (resource) => /^https?:\/\/(?:www\.)?([^\s/?#:]+)/i.exec(resource)?.[1] ?? null, OTHER, shortWords = (text, longest = SENTENCE_LONGEST) => cutAtWord(plain(plainAddresses(String(text ?? ""))), longest);
-var init_plain = __esm(() => {
-  init_sentence();
-  PROGRAM = /^[A-Za-z][\w.+-]{0,24}$/;
-  OTHER = { task: "start a helper", skill: "use a skill", websearch: "search the web", codesearch: "search code", glob: "look through files", grep: "look through files", list: "look at a folder" };
-});
-
-// box/src/link/areas/asks.ts
-import fs17 from "node:fs";
-import net3 from "node:net";
-import os4 from "node:os";
-import path14 from "node:path";
-function readAsks(browserRuns = () => processRuns(Number(fs17.readFileSync(BROWSER_PID, "utf8")), "kuvo-browser")) {
-  try {
-    if (!browserRuns())
-      return [];
-    const asks = JSON.parse(fs17.readFileSync(ASKS_FILE, "utf8")).asks;
-    return Array.isArray(asks) ? asks.filter((ask) => typeof ask?.id === "string" && ["signIn", "code", "action"].includes(ask.kind)) : [];
-  } catch {
-    return [];
-  }
-}
-function listedAsk(ask, machine, asker) {
-  const listed = { id: ask.id, kind: ask.kind, host: String(ask.host ?? ""), machine };
-  if (typeof ask.session === "string")
-    listed.session = ask.session;
-  if (asker)
-    listed.asker = asker;
-  if (ask.kind === "signIn")
-    Object.assign(listed, { username: Boolean(ask.username), password: Boolean(ask.password), saved: [], offersToSave: false });
-  if (ask.kind === "code")
-    listed.prompt = String(ask.prompt ?? "");
-  if (ask.kind === "action")
-    listed.instruction = String(ask.instruction ?? "");
-  if (ask.passkey === true)
-    listed.passkey = true;
-  return listed;
-}
-function askAnswer(ask, given) {
-  const text = (value) => typeof value === "string" && value !== "" ? value : undefined;
-  switch (given?.answer) {
-    case "signIn": {
-      if (ask.kind !== "signIn" || given.saved != null)
-        return null;
-      const username = text(given.username), password = text(given.password);
-      return username || password ? { type: "signIn", username, password } : null;
-    }
-    case "code": {
-      const code = typeof given.code === "string" ? given.code.trim() : "";
-      return ask.kind === "code" && code ? { type: "code", code } : null;
-    }
-    case "done":
-      return ask.kind === "action" ? { type: "done" } : null;
-    case "declined":
-      return { type: "declined" };
-    default:
-      return null;
-  }
-}
-function answerAsk(id, answer, socketPath = BROWSER_SOCKET) {
-  return new Promise((resolve) => {
-    let key;
-    try {
-      key = socketKey();
-    } catch {
-      return resolve(false);
-    }
-    const socket = net3.createConnection(socketPath);
-    let buffer = "";
-    const done = (ok) => {
-      clearTimeout(timer);
-      socket.destroy();
-      resolve(ok);
-    };
-    const timer = setTimeout(() => done(false), 5000);
-    socket.on("error", () => done(false));
-    socket.on("connect", () => socket.write(JSON.stringify({ method: "Kuvo.key", params: { key } }) + `
-` + JSON.stringify({ id: 1, method: "Kuvo.answer", params: { id, answer } }) + `
-`));
-    socket.on("data", (chunk) => {
-      buffer += chunk;
-      let end;
-      while ((end = buffer.indexOf(`
-`)) >= 0) {
-        const line = buffer.slice(0, end);
-        buffer = buffer.slice(end + 1);
-        try {
-          if (JSON.parse(line).id === 1)
-            return done(true);
-        } catch {}
-      }
-    });
-  });
-}
-function askNotice(ask, asker) {
-  const host = String(ask.host ?? "");
-  const title = { signIn: `Sign in to ${host}`, code: `Code for ${host}`, action: `Your turn on ${host}` }[ask.kind];
-  const body = ask.kind === "signIn" ? "The agent needs your sign-in to go on." : ask.kind === "code" ? shortWords(ask.prompt) || "The agent needs a code to go on." : shortWords(ask.instruction);
-  const session = typeof ask.session === "string" ? ask.session : undefined;
-  return { title, subtitle: asker || undefined, body, category: "ask", thread: session ?? ask.id, data: { ...session ? { session } : {}, ask: ask.id } };
-}
-async function conversationOf(session, readEngine = readEngineFile) {
-  if (!session)
-    return null;
-  if (conversations.has(session))
-    return conversations.get(session);
-  try {
-    const engine = readEngine();
-    let current = (await engineGet(engine, `api/session/${encodeURIComponent(session)}`)).data;
-    for (let step = 0;step < 5 && current?.parentID; step++)
-      current = (await engineGet(engine, `api/session/${encodeURIComponent(current.parentID)}`)).data;
-    const found = { id: current?.id ?? session, name: current?.title || null };
-    if (conversations.size > 200)
-      conversations.clear();
-    conversations.set(session, found);
-    return found;
-  } catch {
-    return { id: session, name: null };
-  }
-}
-async function inConversation(ask, readEngine) {
-  const conversation = await conversationOf(ask.session, readEngine);
-  return { ask: conversation ? { ...ask, session: conversation.id } : ask, asker: conversation?.name ?? null };
-}
-async function watchAsks(tell, { signal, every = 2000, read = readAsks, answered = () => {} } = {}) {
-  const told = new Set;
-  let seen = new Set;
-  while (!signal?.aborted) {
-    try {
-      const asks = read();
-      const open = new Set(asks.map((ask) => ask.id));
-      for (const id of told) {
-        if (open.has(id))
-          continue;
-        told.delete(id);
-        answered(id);
-      }
-      for (const ask of asks) {
-        if (told.has(ask.id) || !seen.has(ask.id))
-          continue;
-        const { ask: shown, asker } = await inConversation(ask);
-        if (tell(askNotice(shown, asker)))
-          told.add(ask.id);
-      }
-      seen = open;
-    } catch {}
-    await pause(every, signal);
-  }
-}
-async function* asksRoute(context) {
-  const { request, signal, route, readEngine, info, json } = context;
-  const method = request.method.toUpperCase();
-  if (method !== "GET" && !(method === "HEAD" && route === "kuvo/asks"))
-    return yield* json(405, {});
-  const read = async () => ({
-    asks: await Promise.all(readAsks().map(async (ask) => {
-      const { ask: shown, asker } = await inConversation(ask, readEngine);
-      return listedAsk(shown, info.name ?? os4.hostname(), asker);
-    }))
-  });
-  if (route === "kuvo/asks")
-    return yield* json(200, await read());
-  yield { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };
-  let last = "";
-  while (!signal?.aborted) {
-    const line = JSON.stringify(await read());
-    if (line !== last) {
-      yield { body: Buffer.from(line + `
-`) };
-      last = line;
-    }
-    await new Promise((done) => setTimeout(done, 1000));
-  }
-  return;
-}
-async function* askAnswerRoute(context, answering) {
-  const { request, json } = context;
-  if (request.method.toUpperCase() !== "POST")
-    return yield* json(405, {});
-  const ask = readAsks().find((each) => each.id === decodeURIComponent(answering[1]));
-  if (!ask)
-    return yield* json(404, {});
-  const given = parsed(request.body);
-  const answer = askAnswer(ask, given);
-  if (!answer)
-    return yield* json(400, given?.saved != null ? { message: "Saved passwords are on your Mac: type this one." } : {});
-  return yield* json(await answerAsk(ask.id, answer) ? 200 : 503, {});
-}
-var ASKS_FILE, BROWSER_SOCKET, BROWSER_PID, conversations;
-var init_asks = __esm(() => {
-  init_platform();
-  init_client();
-  init_plain();
-  init_home();
-  ASKS_FILE = path14.join(RUN, "browser-asks.json");
-  BROWSER_SOCKET = path14.join(RUN, "browser.sock");
-  BROWSER_PID = path14.join(RUN, "browser.pid");
-  conversations = new Map;
-});
-
-// box/src/shared/move-hold.ts
-function moveHold(value) {
-  const marker = value?.trim();
-  if (marker === "moving")
-    return marker;
-  return /^moving:mov_[A-Za-z0-9]{1,40}$/.test(marker ?? "") ? marker.slice("moving:".length) : null;
-}
-var moveMarker = (id) => `moving:${id}`;
-
-// box/src/link/bots/here.ts
-import fs18 from "node:fs";
-import path15 from "node:path";
-function botHere(id) {
-  if (typeof id !== "string" || !/^bot_[A-Za-z0-9]+$/.test(id))
-    return null;
-  const folder = path15.join(BOTS, id);
-  let described;
-  try {
-    described = JSON.parse(textOf(path15.join(folder, "bot.json")) ?? "");
-  } catch {
-    return null;
-  }
-  const session = (textOf(path15.join(folder, "session")) ?? "").trim();
-  if (described?.kuvo !== DESCRIPTION || described.id !== id || typeof described.name !== "string" || !session)
-    return null;
-  return { folder, described, session, agents: (textOf(path15.join(folder, "via")) ?? "").trim() === "bridge" };
-}
-function changeDescription(folder, change, durable = false) {
-  return locked(path15.join(folder, ".bot.lock"), () => {
-    let now = null;
-    try {
-      now = JSON.parse(textOf(path15.join(folder, "bot.json")) ?? "");
-    } catch {}
-    const next = change(now);
-    if (next === now)
-      return next;
-    const file = path15.join(folder, "bot.json");
-    if (durable || now?.offlineEdits)
-      writeDurablePrivate(file, JSON.stringify(next, null, 2), folder);
-    else {
-      fs18.writeFileSync(`${file}.new`, JSON.stringify(next, null, 2));
-      fs18.renameSync(`${file}.new`, file);
-    }
-    return next;
-  }, { required: durable });
-}
-var DESCRIPTION = 1, isMoving = (folder) => moveHold(textOf(path15.join(folder, "paused"))) !== null, MOVING = "It’s moving to another computer. Try again once it’s there.", BOT_STEP = 30000, isModel = (model) => Boolean(model) && typeof model.id === "string" && typeof model.providerID === "string", botLook = (look) => ({ color: look.color, shape: look.shape, face: look.face }), botModel = (model) => ({ id: model.id, providerID: model.providerID, ...typeof model.variant === "string" ? { variant: model.variant } : {} }), sameModel = (a, b) => (a?.id ?? null) === (b?.id ?? null) && (a?.providerID ?? null) === (b?.providerID ?? null) && (a?.variant ?? null) === (b?.variant ?? null), botFollowers, noteBotsChanged = () => {
-  for (const tell of botFollowers)
-    tell();
-};
-var init_here = __esm(() => {
-  init_files2();
-  init_files();
-  init_home();
-  botFollowers = new Set;
-});
-
-// box/src/shared/limits.ts
-function resetsIn(text, now = Date.now()) {
-  const found = text?.match(/(?:resets?|try again|available again)\s+in\s+((?:\d+(?:\.\d+)?\s*(?:days?|d|hours?|hrs?|h|minutes?|mins?|m|seconds?|secs?|s)(?![a-z])[\s,]*(?:and\s+)?)+)/i);
-  if (!found)
-    return;
-  const units = { d: 86400000, h: 3600000, m: 60000, s: 1000 };
-  let total = 0;
-  for (const part of found[1].matchAll(/(\d+(?:\.\d+)?)\s*([dhms])/gi))
-    total += Number(part[1]) * (units[part[2].toLowerCase()] ?? 0);
-  return total > 0 ? now + Math.min(total, 31 * 86400000) : undefined;
-}
-function resetTime(at) {
-  const timeZone = yourZone();
-  const day = (date) => date.toLocaleDateString("en-US", { timeZone });
-  const date = new Date(at);
-  const time = date.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone });
-  if (day(date) === day(new Date))
-    return time;
-  return `${date.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone })}, ${time}`;
-}
-function isLimit(text) {
-  return Boolean(text && /\b429\b|rate.?limit|usage limit|limit (?:was |has been )?reached|reached (?:its|your|the) (?:usage )?limit|quota|too many requests|resets? in|try again in|overloaded|capacity/i.test(text));
-}
-var ENGINE_SERVICES;
-var init_limits = __esm(() => {
-  init_zone();
-  ENGINE_SERVICES = {
-    anthropic: "claude",
-    "claude-agent": "claude",
-    "github-copilot": "copilot",
-    ollama: "ollama",
-    "ollama-cloud": "ollama",
-    openai: "codex",
-    opencode: "opencode",
-    "opencode-go": "opencode",
-    openrouter: "openrouter",
-    xai: "grok",
-    zai: "zai",
-    "zai-coding-plan": "zai"
-  };
-});
-
-// box/src/link/work/plan-limits.ts
-function amount(value, unit) {
-  return unit === "usd" ? `$${value.toFixed(2)}` : `${Math.round(value)} ${unit === "requests" ? "requests" : "credits"}`;
-}
-function until(at, now) {
-  const minutes = Math.max(1, Math.round((at - now) / 60000));
-  if (minutes < 60)
-    return `in ${minutes}m`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 48)
-    return `in ${hours}h${minutes % 60 ? ` ${minutes % 60}m` : ""}`;
-  return `in ${Math.round(hours / 24)} days`;
-}
-function since(at, now) {
-  const minutes = Math.max(0, Math.round((now - at) / 60000));
-  if (minutes < 1)
-    return "just now";
-  if (minutes < 60)
-    return `${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  return hours < 48 ? `${hours}h ago` : `${Math.round(hours / 24)} days ago`;
-}
-function windowName(window2) {
-  const minutes = typeof window2.minutes === "number" ? window2.minutes : undefined;
-  const length = minutes === 300 ? "5-hour window" : minutes === 10080 ? "weekly limit" : minutes && minutes >= 40000 && minutes <= 45000 ? "monthly limit" : minutes ? `${minutes >= 1440 ? `${Math.round(minutes / 1440)}-day` : `${Math.round(minutes / 60)}-hour`} window` : "limit";
-  if (typeof window2.name === "string" && window2.name)
-    return window2.name;
-  return typeof window2.model === "string" && window2.model ? `${window2.model} ${length}` : length;
-}
-function rowTitle(account) {
-  const service = typeof account.agent === "string" ? AGENT_NAMES[account.agent] ?? account.agent : ENGINE_NAMES[String(account.service)] ?? String(account.service);
-  return `${service}${typeof account.label === "string" && account.label ? ` (${account.label})` : ""}`;
-}
-function extraLines(account, now) {
-  const lines = [];
-  for (const extra of Array.isArray(account.extras) ? account.extras.filter(isObject) : []) {
-    const name = typeof extra.name === "string" ? extra.name : String(extra.id);
-    if (typeof extra.resetsAt === "number" && extra.resetsAt <= now)
-      continue;
-    const resets = typeof extra.resetsAt === "number" ? `, starts over ${until(extra.resetsAt, now)}` : "";
-    if (extra.kind === "spent" && typeof extra.amount === "number")
-      lines.push(`  - ${name}: ${amount(extra.amount, extra.unit)} spent${resets}`);
-    else if (extra.kind === "capped" && typeof extra.amount === "number" && typeof extra.limit === "number")
-      lines.push(`  - ${name}: ${amount(extra.amount, extra.unit)} of ${amount(extra.limit, extra.unit)} used${resets}`);
-    else if (extra.kind === "left" && typeof extra.amount === "number")
-      lines.push(`  - ${name}: ${amount(extra.amount, extra.unit)} left`);
-    else if (extra.kind === "resets") {
-      const count = Number(extra.count) || 0;
-      const where = isObject(extra.on) && extra.on.here !== true && typeof extra.on.name === "string" ? ` (used on ${extra.on.name}, which has its sign-in)` : "";
-      const use = count > 0 && extra.usable === true ? `; use_limit_reset with account "${String(account.id ?? account.provider)}" uses one${where}${extra.agents === true ? " (the user allows it without asking)" : " (the user approves each)"}` : count > 0 ? "; none can be used from your computers now" : "";
-      lines.push(`  - rate-limit resets: ${count} available${use}`);
-    } else if (extra.kind === "unreadable" && typeof extra.message === "string")
-      lines.push(`  - ${extra.message}`);
-  }
-  return lines;
-}
-function describePlanLimits(data, now = Date.now()) {
-  const rows = isObject(data) && Array.isArray(data.rows) ? data.rows.filter(isObject) : null;
-  const accounts = rows ?? (isObject(data) && Array.isArray(data.accounts) ? data.accounts.filter(isObject) : []);
-  if (!accounts.length)
-    return `No plan limits are known on ${HERE}: no coding agent here is signed in to a plan whose limits can be read.`;
-  const lines = [rows ? `Plan limits of your accounts (signed in on ${HERE} unless it says where; used is how much of the window is gone):` : `Plan limits on ${HERE} (each account's own; used is how much of the window is gone):`];
-  for (const account of accounts) {
-    const service = typeof account.agent === "string" ? AGENT_NAMES[account.agent] ?? account.agent : ENGINE_NAMES[String(account.service)] ?? String(account.service);
-    const boxes = Array.isArray(account.boxes) ? account.boxes.filter(isObject) : [];
-    const elsewhere = rows && !boxes.some((box) => box.here === true) ? boxes.map((box) => String(box.name || "another computer")) : [];
-    const where = elsewhere.length ? `, signed in on ${elsewhere.join(", ")}${account.away === true ? " (not heard from lately: as last told)" : ""}` : "";
-    const provider = rows ? boxes.find((box) => box.here === true)?.provider ?? account.provider : account.provider;
-    const name = `${service}${typeof account.label === "string" && account.label ? ` (${account.label})` : ""}${typeof account.plan === "string" && account.plan ? `, ${account.plan}` : ""}${elsewhere.length ? "" : `, provider ${String(provider)}`}${where}`;
-    lines.push(`- ${name}:`);
-    if (account.ended === true) {
-      lines.push("  - its plan has ended (not active now): nothing to use on it");
-      continue;
-    }
-    const windows = Array.isArray(account.windows) ? account.windows.filter(isObject) : [];
-    for (const window2 of windows) {
-      const resetsAt = typeof window2.resetsAt === "number" ? window2.resetsAt : undefined;
-      if (window2.expired === true) {
-        lines.push(`  - ${windowName(window2)}: started over, not read since`);
-        continue;
-      }
-      if (resetsAt && resetsAt <= now) {
-        lines.push(`  - ${windowName(window2)}: started over at ${resetTime(resetsAt)}, not read since`);
-        continue;
-      }
-      const used = Math.round(Number(window2.used) * 100);
-      const read = typeof window2.read === "number" ? `, as of ${since(window2.read, now)}` : "";
-      const counted = isObject(window2.amount) ? ` (${amount(Number(window2.amount.used), window2.amount.unit)} of ${amount(Number(window2.amount.limit), window2.amount.unit)})` : "";
-      lines.push(`  - ${windowName(window2)}: ${used}% used${counted}${resetsAt ? `, resets ${until(resetsAt, now)} (${resetTime(resetsAt)})` : ""}${read}`);
-    }
-    const balance = isObject(account.balance) ? account.balance : undefined;
-    if (balance)
-      lines.push(`  - credits: ${amount(Number(balance.left), balance.unit)} left${typeof balance.limit === "number" ? ` of ${amount(balance.limit, balance.unit)}` : ""}`);
-    lines.push(...extraLines(account, now));
-    if (!windows.length && !balance && !Array.isArray(account.extras))
-      lines.push("  - none read yet");
-    const problem = isObject(account.problem) ? account.problem : undefined;
-    if (problem && typeof problem.message === "string") {
-      const next = typeof problem.until === "number" && problem.until > now ? ` Read again ${until(problem.until, now)}.` : "";
-      lines.push(`  - Not read just now: ${problem.message}${next}`);
-    }
-  }
-  return lines.join(`
-`);
-}
-async function planLimitsTool(bridge, signal) {
-  if (!bridge)
-    return { text: `The coding agents aren't running on ${HERE} now, so their plan limits can't be read. Try again in a moment.`, isError: true };
-  try {
-    return { text: describePlanLimits(await call(bridge, "GET", "/api/kuvo/limits", undefined, signal)), isError: false };
-  } catch (error) {
-    return { text: `Couldn't read the plan limits on ${HERE}: ${String(error?.message ?? error)}`, isError: true };
-  }
-}
-var AGENT_NAMES, ENGINE_NAMES;
-var init_plan_limits = __esm(() => {
-  init_limits();
-  init_client();
-  init_home();
-  AGENT_NAMES = { claude: "Claude Code", codex: "Codex", cursor: "Cursor", grok: "Grok", antigravity: "Antigravity" };
-  ENGINE_NAMES = { codex: "ChatGPT", grok: "SuperGrok", copilot: "GitHub Copilot", openrouter: "OpenRouter", zai: "Z.ai", ollama: "Ollama", opencode: "OpenCode Go" };
-});
-
-// box/src/link/work/plan-reset.ts
-async function rowsOf(bridge, signal) {
-  const data = await call(bridge, "GET", "/api/kuvo/limits", undefined, signal);
-  return isObject(data) && Array.isArray(data.rows) ? data.rows.filter(isObject) : [];
-}
-async function resetRow(bridge, wanted, signal) {
-  const rows = await rowsOf(bridge, signal);
-  const name = wanted.trim().toLowerCase();
-  const withResets = rows.filter((row) => resetsOf(row));
-  const found = rows.find((row) => row.id === wanted.trim()) ?? withResets.filter((row) => rowTitle(row).toLowerCase() === name || rowTitle(row).toLowerCase().startsWith(name + " ")).at(0);
-  if (!found) {
-    const listed = withResets.map((row) => `- ${rowTitle(row)}: account "${String(row.id)}"`).join(`
-`);
-    return { refused: listed ? `No account of the user's is called ${wanted}. Those with resets:
-${listed}` : "None of the user's accounts has rate-limit resets." };
-  }
-  return { row: found };
-}
-function resetGiven(row, offer) {
-  const on = isObject(offer.on) && offer.on.here !== true && typeof offer.on.name === "string" && offer.on.name ? offer.on.name : undefined;
-  return {
-    row: String(row.id),
-    account: rowTitle(row),
-    service: String(row.service ?? ""),
-    count: Number(offer.count) || 0,
-    ...Array.isArray(offer.refills) && offer.refills.length ? { refills: offer.refills.filter((each) => typeof each === "string").slice(0, 10) } : {},
-    ...on ? { on } : {}
-  };
-}
-async function spendReset(bridge, row, by, { always = false, unasked = false, signal } = {}) {
-  try {
-    if (always)
-      await call(bridge, "PUT", "/api/kuvo/limits/reset/always", { row, always: true }, signal);
-    let offer;
-    try {
-      offer = await call(bridge, "POST", "/api/kuvo/limits/reset", { row }, signal);
-    } catch (error) {
-      if (always && error?.status === 503)
-        return refused(`Always Allow is kept for this account. ${why(error)} So no reset was used now: ask again once it's back.`);
-      throw error;
-    }
-    if (!isObject(offer) || typeof offer.confirm !== "string")
-      return refused("The reset couldn't be asked for.");
-    const done = await call(bridge, "POST", "/api/kuvo/limits/reset", { row, confirm: offer.confirm, by, ...unasked ? { unasked: true } : {} }, signal);
-    if (!isObject(done))
-      return refused("The reset's answer didn't come.");
-    const limits = isObject(done.row) ? `
-
-${describePlanLimits({ rows: [done.row] })}` : "";
-    const name = isObject(done.row) ? rowTitle(done.row) : "the account";
-    switch (done.outcome) {
-      case "reset":
-        console.error(`kuvo-link: ${by} used a reset of ${name}.`);
-        return said(`Used one of ${name}'s rate-limit resets: its limits started over.${limits}`);
-      case "unconfirmed":
-        return said(`The reset of ${name} may still be going through: read plan_limits again in a minute.${limits}`);
-      default:
-        return refused(`${typeof done.message === "string" ? done.message : "The reset didn't go through. Nothing was used."}${limits}`);
-    }
-  } catch (error) {
-    return refused(`The reset didn't go through: ${why(error)}`);
-  }
-}
-function resetAskWords(name, given) {
-  return { title: `${name} asks to use a reset`, body: `${given.account}: 1 of ${given.count}${given.on ? `, on ${given.on}` : ""}` };
-}
-async function useResetTool(bridge, args, asker, ask, signal) {
-  if (!bridge)
-    return refused(`The coding agents aren't running on ${HERE} now, so no reset can be used. Try again in a moment.`);
-  if (!asker)
-    return refused("Only a conversation on this computer can use a reset from here.");
-  const wanted = typeof args.account === "string" ? args.account.trim() : "";
-  if (!wanted)
-    return refused("Say which account (account), as plan_limits lists it.");
-  try {
-    const found = await resetRow(bridge, wanted, signal);
-    if ("refused" in found)
-      return refused(found.refused);
-    const id = String(found.row.id);
-    let offer;
-    try {
-      offer = await call(bridge, "POST", "/api/kuvo/limits/reset", { row: id }, signal);
-    } catch (error) {
-      return refused(`${rowTitle(found.row)}'s resets can't be used now: ${why(error)}`);
-    }
-    if (!isObject(offer))
-      return refused("The reset couldn't be asked for.");
-    if (offer.always === true)
-      return spendReset(bridge, id, asker.name, { unasked: true, signal });
-    return ask(resetGiven(found.row, offer));
-  } catch (error) {
-    return refused(`Couldn't read the plan limits on ${HERE}: ${why(error)}`);
-  }
-}
-var said = (text) => ({ text, isError: false }), refused = (text) => ({ text, isError: true }), why = (error) => String(error?.message ?? error), resetsOf = (row) => (Array.isArray(row.extras) ? row.extras.filter(isObject) : []).find((extra) => extra.kind === "resets");
-var init_plan_reset = __esm(() => {
-  init_client();
-  init_home();
-  init_plan_limits();
-});
-
-// box/src/link/moves/records.ts
-import fs19 from "node:fs";
-import path16 from "node:path";
-function readMoves(strict = false) {
-  let names = [];
-  try {
-    names = fs19.readdirSync(MOVES).filter((name) => /^mov_[A-Za-z0-9]+\.json$/.test(name));
-  } catch (error) {
-    if (strict && error.code !== "ENOENT")
-      throw error;
-  }
-  const records = [];
-  for (const name of names) {
-    try {
-      const value = JSON.parse(fs19.readFileSync(path16.join(MOVES, name), "utf8"));
-      const record = isObject(value) ? journalFormat.read(value) : null;
-      if (fits(record))
-        records.push(record);
-      else if (strict)
-        throw new Error("An ownership record could not be read");
-    } catch (error) {
-      if (error instanceof UnsupportedFormatVersion || strict && error.code !== "ENOENT")
-        throw error;
-    }
-  }
-  return records.sort((one, other) => one.started - other.started);
-}
-function movesChanged() {
-  for (const follower of [...moveFollowers])
-    try {
-      follower();
-    } catch {}
-}
-function checkJournal(id) {
-  const value = jsonIfPresent(fileOf(id));
-  if (isObject(value))
-    journalFormat.read(value);
-}
-function saveMove(record) {
-  checkJournal(record.id);
-  writeDurablePrivate(fileOf(record.id), JSON.stringify(journalFormat.write(record)), RUN);
-  movesChanged();
-}
-function forgetMove(id) {
-  checkJournal(id);
-  try {
-    fs19.rmSync(fileOf(id), { force: true });
-  } catch {}
-  try {
-    fs19.rmSync(bundleOf(id), { recursive: true, force: true });
-  } catch {}
-  movesChanged();
-}
-function changeMove(id, change) {
-  const record = readMove(id);
-  if (!record)
-    return null;
-  change(record);
-  saveMove(record);
-  return record;
-}
-function shownMove(record) {
-  const { id, kind, thing, name, from, to, role, stage, sessions, sent, size } = record;
-  return { id, kind, thing, name, from, to, role, stage, sessions, ...sent !== undefined ? { sent } : {}, ...size !== undefined ? { size } : {}, ...waitingFor.has(id) ? { waiting: true } : {} };
-}
-function awaySessions(records = liveMoves()) {
-  const away = new Set;
-  for (const record of records) {
-    const switched = record.stage === "switching" || record.stage === "finishing";
-    if (record.role === "to" && !switched || record.role === "from" && switched)
-      for (const session of record.sessions)
-        away.add(session);
-  }
-  return [...away];
-}
-function frozen(records = liveMoves()) {
-  return new Set(records.filter((record) => record.step !== "check").flatMap((record) => [record.thing, ...record.sessions]));
-}
-function switchedTo(session, records = liveMoves()) {
-  return switchedMove(session, records)?.peer ?? null;
-}
-function switchedMove(session, records = liveMoves()) {
-  return records.find((each) => each.role === "from" && (each.stage === "switching" || each.stage === "finishing") && each.sessions.includes(session)) ?? null;
-}
-function committedDepartures() {
-  try {
-    const kept = JSON.parse(fs19.readFileSync(MOVED_FILE, "utf8"));
-    if (!Array.isArray(kept))
-      return [];
-    return kept.flatMap((value) => {
-      if (!isObject(value))
-        return [];
-      const { session, key, at } = movedAwayFormat.read(value);
-      return typeof session === "string" && typeof key === "string" && typeof at === "number" ? [{ session, key, at }] : [];
-    });
-  } catch (error) {
-    if (error instanceof UnsupportedFormatVersion)
-      throw error;
-    return [];
-  }
-}
-function movedAway(now = Date.now()) {
-  return committedDepartures().filter((each) => each.session.startsWith("ses_") && now - each.at < MOVED_FOR);
-}
-function noteMovedAway(sessions, key, now = Date.now()) {
-  const updated = locked(DEPARTURE_LOCK, () => {
-    const current = committedDepartures();
-    const changed = new Set(sessions.filter((session) => !current.some((each) => each.session === session && each.key === key)));
-    if (!changed.size)
-      return false;
-    const kept = current.filter((each) => !changed.has(each.session));
-    for (const session of changed)
-      kept.push({ session, key, at: now });
-    writeDurablePrivate(MOVED_FILE, JSON.stringify(kept.map(movedAwayFormat.write)), RUN);
-    return true;
-  }, { required: true });
-  if (updated)
-    movesChanged();
-}
-function forgetMovedAway(sessions) {
-  const updated = locked(DEPARTURE_LOCK, () => {
-    const kept = committedDepartures();
-    if (!kept.some((each) => sessions.includes(each.session)))
-      return false;
-    writeDurablePrivate(MOVED_FILE, JSON.stringify(kept.filter((each) => !sessions.includes(each.session)).map(movedAwayFormat.write)), RUN);
-    return true;
-  }, { required: true });
-  if (updated)
-    movesChanged();
-}
-function jsonIfPresent(file) {
-  try {
-    return JSON.parse(fs19.readFileSync(file, "utf8"));
-  } catch (error) {
-    if (error.code === "ENOENT")
-      return;
-    throw error;
-  }
-}
-function decision(id) {
-  if (!DECISION_ID.test(id))
-    return null;
-  const file = fileForDecision(id);
-  const value = jsonIfPresent(file);
-  if (value !== undefined) {
-    const one = decisionFormat.read(value);
-    if (!isDecision(one))
-      throw new Error("A move’s ownership receipt could not be read");
-    return { value: one, file };
-  }
-  const legacy = jsonIfPresent(LEGACY_DECISIONS);
-  if (legacy !== undefined && !isObject(legacy))
-    throw new Error("Legacy move decisions could not be read");
-  const valueBefore = legacy?.[id];
-  if (valueBefore === undefined)
-    return null;
-  const old = decisionFormat.read(valueBefore);
-  if (!isDecision(old))
-    throw new Error("A legacy move decision could not be read");
-  return { value: old, file: LEGACY_DECISIONS };
-}
-function endedFor(id, peer) {
-  const one = decision(id)?.value;
-  return one && (one.peer === undefined || one.peer === peer) ? one : null;
-}
-function noteEnded(id, as, now = Date.now(), sessions = [], last, peer, bundle) {
-  if (!DECISION_ID.test(id))
-    throw new Error("That isn’t a move ID");
-  const before = decision(id);
-  if (before) {
-    if (before.value.as !== as || before.value.generation !== bundle?.generation || before.value.hash !== bundle?.hash) {
-      throw new Error("A move’s ownership decision cannot change");
-    }
-    syncDurableFile(before.file, RUN);
-    return;
-  }
-  const hintFile = path16.join(HINTS, `${id}.json`);
-  if (sessions.length) {
-    const hint = jsonIfPresent(hintFile);
-    if (hint !== undefined)
-      hintFormat.read(hint);
-    writeDurablePrivate(hintFile, JSON.stringify(hintFormat.write({ as, at: now, sessions })), RUN);
-  }
-  writeDurablePrivate(fileForDecision(id), JSON.stringify(decisionFormat.write({ as, at: now, ...bundle, ...last ? { last } : {}, ...peer ? { peer } : {} })), RUN);
-}
-function sealDecision(id) {
-  const receipt = decision(id);
-  if (!receipt)
-    throw new Error("A move’s ownership receipt went missing");
-  syncDurableFile(receipt.file, RUN);
-}
-function hintFiles() {
-  try {
-    return fs19.readdirSync(HINTS).filter((name) => name.endsWith(".json") && DECISION_ID.test(name.slice(0, -5)));
-  } catch {
-    return [];
-  }
-}
-function compactDecisionHints(now = Date.now()) {
-  for (const name of hintFiles()) {
-    const file = path16.join(HINTS, name);
-    try {
-      const value = jsonIfPresent(file);
-      const hint = value === undefined ? null : hintFormat.read(value);
-      if (isDecision(hint) && now - hint.at >= MOVED_FOR)
-        fs19.rmSync(file, { force: true });
-    } catch (error) {
-      if (error instanceof UnsupportedFormatVersion)
-        throw error;
-    }
-  }
-}
-function sessionsFrom(hint, as, now) {
-  if (!isDecision(hint) || hint.as !== as || now - hint.at >= MOVED_FOR)
-    return [];
-  const { sessions } = hint;
-  return Array.isArray(sessions) ? sessions.filter((each) => typeof each === "string") : [];
-}
-function sessionsDecided(as, now) {
-  const sessions = [];
-  for (const name of hintFiles()) {
-    try {
-      const value = jsonIfPresent(path16.join(HINTS, name));
-      const hinted = value === undefined ? [] : sessionsFrom(hintFormat.read(value), as, now);
-      if (hinted.length && decision(name.slice(0, -5))?.value.as === as)
-        sessions.push(...hinted);
-    } catch (error) {
-      if (error instanceof UnsupportedFormatVersion)
-        throw error;
-    }
-  }
-  try {
-    const legacy = jsonIfPresent(LEGACY_DECISIONS);
-    if (isObject(legacy))
-      for (const hint of Object.values(legacy))
-        sessions.push(...sessionsFrom(decisionFormat.read(hint), as, now));
-  } catch (error) {
-    if (error instanceof UnsupportedFormatVersion)
-      throw error;
-  }
-  return sessions;
-}
-var MOVES, MOVED_FILE, DEPARTURE_LOCK, MOVED_FOR, journalFormat, decisionFormat, hintFormat, movedAwayFormat, fileOf = (id) => path16.join(MOVES, `${id}.json`), bundleOf = (id) => path16.join(MOVES, id), fits = (record) => isObject(record) && typeof record.id === "string" && typeof record.thing === "string" && typeof record.peer === "string" && (record.role === "from" || record.role === "to") && Array.isArray(record.sessions), readMove = (id) => readMoves().find((record) => record.id === id) ?? null, liveMoves = (records = readMoves()) => records.filter((record) => !record.failed), listedMoves = (records = liveMoves()) => records.filter((record) => !(record.role === "to" && record.dropping) && !(record.role === "from" && record.stage === "finishing")), moveOf = (thing) => liveMoves().find((record) => record.thing === thing) ?? null, moveFollowers, waitingFor, LEGACY_DECISIONS, DECISIONS, HINTS, DECISION_ID, isDecision = (one) => isObject(one) && typeof one.at === "number" && (one.as === "switched" || one.as === "dropped"), fileForDecision = (id) => path16.join(DECISIONS, `${id}.json`), endedAs = (id) => decision(id)?.value.as ?? null, endedAt = (id) => decision(id)?.value.at ?? null, endedLast = (id) => decision(id)?.value.last, droppedHere = (now = Date.now()) => sessionsDecided("dropped", now), switchedHere = (now = Date.now()) => new Set(sessionsDecided("switched", now));
-var init_records2 = __esm(() => {
-  init_format_version();
-  init_files2();
-  init_files();
-  init_home();
-  MOVES = path16.join(RUN, "moves");
-  MOVED_FILE = path16.join(MOVES, "moved.json");
-  DEPARTURE_LOCK = path16.join(MOVES, ".departures.lock");
-  MOVED_FOR = 2 * 24 * 3600000;
-  journalFormat = additiveObjectFormat("Move journal");
-  decisionFormat = additiveObjectFormat("Move ownership receipt");
-  hintFormat = additiveObjectFormat("Move routing hint");
-  movedAwayFormat = additiveObjectFormat("Moved conversation");
-  moveFollowers = new Set;
-  waitingFor = new Set;
-  LEGACY_DECISIONS = path16.join(MOVES, "ended.json");
-  DECISIONS = path16.join(MOVES, "decisions");
-  HINTS = path16.join(MOVES, "decision-hints");
-  DECISION_ID = /^mov_[A-Za-z0-9]{1,40}$/;
-});
-
-// box/src/link/moves/admission.ts
-import crypto9 from "node:crypto";
-import fs20 from "node:fs";
-import path17 from "node:path";
-function frozenHere(session, activating) {
-  const moves = liveMoves(readMoves(true));
-  const otherMoves = activating === undefined ? moves : moves.filter((move) => move.id !== activating || move.role !== "to" || !move.activation || !move.sessions.includes(session));
-  return frozen(otherMoves).has(session) || movedAway().some((move) => move.session === session);
-}
-async function admitPrompt(session, write, activating) {
-  fs20.mkdirSync(folder, { recursive: true, mode: 448 });
-  const marker = path17.join(folder, `${prefixOf(session)}${process.pid}-${crypto9.randomUUID()}`);
-  fs20.closeSync(fs20.openSync(marker, "wx", 384));
-  try {
-    if (frozenHere(session, activating))
-      throw new MoveAdmissionClosed;
-    return await write();
-  } finally {
-    fs20.rmSync(marker, { force: true });
-  }
-}
-function activeWrites(session) {
-  let entries;
-  try {
-    entries = fs20.readdirSync(folder);
-  } catch (error) {
-    if (error.code === "ENOENT")
-      return false;
-    throw error;
-  }
-  const prefix = session === undefined ? "" : prefixOf(session);
-  return entries.some((name) => {
-    if (!name.startsWith(prefix))
-      return false;
-    const pid = /^[a-f0-9]{64}-([1-9][0-9]*)-/.exec(name);
-    if (!pid)
-      return false;
-    try {
-      process.kill(Number(pid[1]), 0);
-    } catch (error) {
-      if (error.code !== "ESRCH")
-        throw error;
-      fs20.rmSync(path17.join(folder, name), { force: true });
-      return false;
-    }
-    return true;
-  });
-}
-async function waitForPromptWrites(sessions) {
-  const deadline = performance.now() + 125000;
-  while (sessions ? sessions.some(activeWrites) : activeWrites()) {
-    if (performance.now() >= deadline)
-      throw new Error("A prompt write has not finished");
-    await sleep(25);
-  }
-}
-var folder, prefixOf = (session) => crypto9.createHash("sha256").update(session).digest("hex") + "-", MoveAdmissionClosed;
-var init_admission = __esm(() => {
-  init_here();
-  init_home();
-  init_records2();
-  folder = path17.join(RUN, "move-prompt-writes");
-  MoveAdmissionClosed = class MoveAdmissionClosed extends Error {
-    constructor() {
-      super(MOVING);
-    }
-  };
-});
-
-// box/src/link/messages/commands.ts
-import path18 from "node:path";
-function readKept() {
-  if (kept)
-    return kept;
-  kept = new Map;
-  try {
-    const read = JSON.parse(textOf(FILE) ?? "{}");
-    if (isObject(read)) {
-      for (const [id, parts] of Object.entries(read))
-        if (isObject(parts) && typeof parts.words === "string")
-          kept.set(id, parts);
-    }
-  } catch {}
-  return kept;
-}
-function keptCommand(id) {
-  return readKept().get(id) ?? null;
-}
-function keep(id, parts) {
-  const all = readKept();
-  all.delete(id);
-  all.set(id, parts);
-  for (const old of [...all.keys()].slice(0, Math.max(0, all.size - KEPT)))
-    all.delete(old);
-  writePrivate(FILE, JSON.stringify(Object.fromEntries(all)));
-}
-async function templateOf(engine, folder, name, signal) {
-  const within = AbortSignal.timeout(SETTINGS_WITHIN);
-  const answer = await fetch(`http://127.0.0.1:${engine.port}/api/config`, {
-    headers: { authorization: `Basic ${Buffer.from(`opencode:${engine.password}`).toString("base64")}`, ...folder ? { "x-opencode-directory": encodeURIComponent(folder) } : {} },
-    signal: signal ? AbortSignal.any([signal, within]) : within
-  }).then((response) => response.ok ? response.json() : undefined).catch(() => {
-    return;
-  });
-  if (answer === undefined)
-    return;
-  const sources = Array.isArray(answer) ? answer : isObject(answer) && Array.isArray(answer.data) ? answer.data : [{ info: isObject(answer) ? answer.data ?? answer : answer }];
-  let template;
-  for (const source of sources) {
-    if (!isObject(source))
-      continue;
-    const info = isObject(source.info) ? source.info : {};
-    for (const list of [info.commands, info.command]) {
-      const own = isObject(list) && isObject(list[name]) ? list[name].template : undefined;
-      if (typeof own === "string" && own.trim())
-        template = own;
-    }
-    if (source.type === "directory" && typeof source.path === "string" && /^[\w.-]+(\/[\w.-]+)*$/.test(name) && !name.split("/").includes("..")) {
-      for (const kept of ["command", "commands"]) {
-        const text = textOf(path18.join(source.path, kept, `${name}.md`));
-        const body = text?.replace(/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n)?/, "").trim();
-        if (body)
-          template = body;
-      }
-    }
-  }
-  return template;
-}
-function filledIn(template, text) {
-  const words = (text.match(WORD) ?? []).map((word) => word.replace(/^["']|["']$/g, ""));
-  const numbered = template.match(/\$([1-9]\d*)/g) ?? [];
-  const highest = Math.max(0, ...numbered.map((each) => Number(each.slice(1))));
-  const filled = template.replace(NAMED, (whole, index) => {
-    if (whole === "$ARGUMENTS")
-      return text;
-    const at = Number(index) - 1;
-    if (at >= words.length)
-      return "";
-    return Number(index) === highest ? words.slice(at).join(" ") : words[at];
-  });
-  return numbered.length === 0 && !template.includes("$ARGUMENTS") && text.trim() ? `${filled}
-${text}`.trim() : filled.trim();
-}
-function madeText(template, text) {
-  const made = template ? filledIn(template, text) : null;
-  return made && !SHELL_STEP.test(made) ? made : null;
-}
-function heardCommand(event) {
-  if (event.type !== "session.inbox.enqueued" || event.data?.item?.type !== "user")
-    return;
-  const { sessionID: session, inboxID: id } = event.data;
-  if (!session || !id)
-    return;
-  const payload = event.data.item.payload;
-  if (isObject(payload?.metadata) && payload.metadata.kuvo !== undefined)
-    return;
-  const text = typeof payload?.text === "string" ? payload.text : "";
-  if (!writtenByYou(text, payload?.metadata))
-    return;
-  const at = typeof event.created === "number" ? event.created : Date.now();
-  const which = expected.findIndex((each) => each.session === session && isMadeBy(each, text, at));
-  if (which < 0)
-    return;
-  const [found] = expected.splice(which, 1);
-  found.heard(id);
-}
-async function sendingCommand(session, parts, made, send, sent, within = HEARD_WITHIN) {
-  let heard = () => {};
-  const message = new Promise((resolve) => {
-    heard = resolve;
-  });
-  const entry = { session, parts, made: made?.trim() ?? null, sentAt: Date.now(), heard };
-  expected.push(entry);
-  const drop = () => {
-    const at = expected.indexOf(entry);
-    if (at >= 0)
-      expected.splice(at, 1);
-    heard(null);
-  };
-  const settled = message.then((id) => {
-    if (id)
-      keep(id, parts);
-  });
-  const waits = pending.get(session) ?? new Set;
-  pending.set(session, waits);
-  waits.add(settled);
-  settled.finally(() => {
-    waits.delete(settled);
-    if (!waits.size && pending.get(session) === waits)
-      pending.delete(session);
-  });
-  let answer;
-  try {
-    answer = await send();
-  } catch (error) {
-    drop();
-    throw error;
-  }
-  entry.answeredAt = Date.now();
-  if (!sent(answer)) {
-    drop();
-    return answer;
-  }
-  const timer = setTimeout(drop, within);
-  settled.finally(() => clearTimeout(timer));
-  return answer;
-}
-async function commandsSettled(session, within = SETTLED_WITHIN) {
-  const waits = [...pending.get(session) ?? []];
-  if (!waits.length)
-    return;
-  let timer;
-  await Promise.race([Promise.all(waits), new Promise((resolve) => {
-    timer = setTimeout(resolve, within);
-  })]);
-  clearTimeout(timer);
-}
-var FILE, KEPT = 2000, HEARD_WITHIN = 3000, WORDS_MOST = 4000, commandParts = (command, words) => ({ words: words.trim().slice(0, WORDS_MOST), keyword: `/${command}`, command: true }), draftOf = ({ words, keyword }) => keyword && !/^\/loop(?:\s|$)/i.test(keyword) ? `${keyword} ${words}`.trim() : words, kept = null, NAMED, WORD, commandTemplate = (engine, folder, command, signal) => templateOf(engine, folder, command, signal), SHELL_STEP, SETTINGS_WITHIN = 2000, expected, pending, madeOf = (text, words) => {
-  const each = words.split(/\s+/).map((word) => word.replace(/^["']+|["']+$/g, "")).filter(Boolean);
-  return each.length > 0 && each.every((word) => text.includes(word));
-}, isMadeBy = (command, text, at) => at >= command.sentAt && (command.answeredAt === undefined || at <= command.answeredAt) && (command.made !== null ? text.trim() === command.made : madeOf(text, command.parts.words)), SETTLED_WITHIN = 2000;
-var init_commands = __esm(() => {
-  init_files2();
-  init_home();
-  init_queue();
-  FILE = path18.join(RUN, "commands.json");
-  NAMED = /\$(?:ARGUMENTS|([1-9]\d*))/g;
-  WORD = /(?:\[Image\s+\d+\]|"[^"]*"|'[^']*'|[^\s"']+)/gi;
-  SHELL_STEP = /!`[^`]+`/;
-  expected = [];
-  pending = new Map;
+// box/src/link/marks.ts
+var LAUNCH_AGENT = "run.kuvo.code.machine", MACHINE_WATCH_AGENT, REBOOT_TAG = "# kuvo-code: starts its engine again after a restart", SETUP_OCCUPIED = 4, SETUP_LOCAL_PAIRINGS = 5, ADD_RESERVATION = ".kuvo-code-adding", SSH_FRESH_ADD = ".ssh-fresh-add";
+var init_marks = __esm(() => {
+  MACHINE_WATCH_AGENT = `${LAUNCH_AGENT}.permissions`;
 });
 
 // box/src/shared/work-queue-owner.ts
@@ -4388,8 +2704,8 @@ var init_merge = __esm(() => {
 });
 
 // box/src/link/state.ts
-import fs21 from "node:fs";
-import path19 from "node:path";
+import fs12 from "node:fs";
+import path10 from "node:path";
 function migratedLink(link) {
   if (!(link.peersFrom || link.vouched || link.macAts))
     return link;
@@ -4407,7 +2723,7 @@ function migratedLink(link) {
 function readLink() {
   let link = null;
   try {
-    link = linkFormat.read(JSON.parse(fs21.readFileSync(LINK_FILE, "utf8")));
+    link = linkFormat.read(JSON.parse(fs12.readFileSync(LINK_FILE, "utf8")));
   } catch (error) {
     if (error instanceof UnsupportedFormatVersion)
       throw error;
@@ -4421,7 +2737,7 @@ function writeLink(link, durable = false) {
   readLink();
   const text = JSON.stringify(linkFormat.write(kept), null, 2);
   if (durable || link.shared || link.sharedPending || link.sharedOutcomes || link.sharedInterrupted) {
-    privateFolder(path19.dirname(LINK_FILE));
+    privateFolder(path10.dirname(LINK_FILE));
     writeDurablePrivate(LINK_FILE, text);
   } else
     writeSecret(LINK_FILE, text);
@@ -4453,7 +2769,7 @@ var init_state = __esm(() => {
   machineLink = { host: null };
   written = [];
   linkFormat = objectFormat("Link state", 1, (fields, from) => from === 0 ? migratedLink(fields) : fields);
-  LOCK = path19.join(RUN, ".link.lock");
+  LOCK = path10.join(RUN, ".link.lock");
 });
 
 // box/src/link/setup/computer-history.ts
@@ -4542,8 +2858,8 @@ var init_computer_history = __esm(() => {
 });
 
 // box/src/link/ownership/store.ts
-import fs22 from "node:fs";
-import path20 from "node:path";
+import fs13 from "node:fs";
+import path11 from "node:path";
 import { createHash as createHash2 } from "node:crypto";
 function recordKey(...parts) {
   return createHash2("sha256").update(JSON.stringify(parts)).digest("base64url");
@@ -4552,7 +2868,7 @@ function records(family) {
   if (!ready(family))
     return [];
   try {
-    return fs22.readdirSync(path20.join(root, family)).filter((name) => /^[A-Za-z0-9_-]{43}\.json$/.test(name)).map((name) => name.slice(0, -5));
+    return fs13.readdirSync(path11.join(root, family)).filter((name) => /^[A-Za-z0-9_-]{43}\.json$/.test(name)).map((name) => name.slice(0, -5));
   } catch (error) {
     if (error.code !== "ENOENT")
       throw error;
@@ -4563,7 +2879,7 @@ function readRecord(family, key) {
   if (!ready(family))
     return;
   try {
-    return format.read(JSON.parse(fs22.readFileSync(path20.join(root, family, key + ".json"), "utf8")));
+    return format.read(JSON.parse(fs13.readFileSync(path11.join(root, family, key + ".json"), "utf8")));
   } catch (error) {
     if (error.code !== "ENOENT")
       throw error;
@@ -4573,11 +2889,11 @@ function readRecord(family, key) {
 function keepRecord(family, key, value) {
   if (!ready(family))
     throw new Error("Wait for Kuvo Code to finish updating.");
-  writeDurablePrivate(path20.join(root, family, key + ".json"), JSON.stringify(format.write(value)), K);
+  writeDurablePrivate(path11.join(root, family, key + ".json"), JSON.stringify(format.write(value)), K);
 }
 function removeRecord(family, key) {
   if (ready(family))
-    fs22.rmSync(path20.join(root, family, key + ".json"), { force: true });
+    fs13.rmSync(path11.join(root, family, key + ".json"), { force: true });
 }
 var root, format, offlineEditsReady = () => offlineEditLayoutReady(K), ready = (family) => family.startsWith("edit-") ? offlineEditsReady() : ownershipReady(), ownershipReady = () => ownershipLayoutReady(K);
 var init_store = __esm(() => {
@@ -4585,7 +2901,7 @@ var init_store = __esm(() => {
   init_folder_version();
   init_files();
   init_home();
-  root = path20.join(RUN, "owned-data");
+  root = path11.join(RUN, "owned-data");
   format = additiveObjectFormat("Owned data");
 });
 
@@ -4744,7 +3060,7 @@ function membershipOf(value) {
     return isObject(claim) && typeof claim.operation === "string" && OPERATION_ID.test(claim.operation) && typeof claim.choiceHash === "string" && /^[A-Za-z0-9_-]{43}$/.test(claim.choiceHash) ? [[key, { operation: claim.operation, choiceHash: claim.choiceHash }]] : [];
   }));
   const keys = [...boxKeys];
-  const revoked = (Array.isArray(devices.removed) ? devices.removed : []).filter((entry) => fits2(entry, keys) && typeof entry.pairing === "string").map(({ key, pairing }) => ({ key, pairing }));
+  const revoked = (Array.isArray(devices.removed) ? devices.removed : []).filter((entry) => fits(entry, keys) && typeof entry.pairing === "string").map(({ key, pairing }) => ({ key, pairing }));
   const isRevoked = (phone) => revoked.some((each) => each.key === phone.key && each.pairing === (phone.pairing ?? ""));
   return {
     boxes,
@@ -4756,7 +3072,7 @@ function membershipOf(value) {
     left: tombstones,
     moved: cleanMoved(value.moved),
     devices: {
-      phones: (Array.isArray(devices.phones) ? devices.phones : []).filter((phone) => fits2(phone, keys)).map(portableDevice).filter((phone) => !isRevoked(phone)),
+      phones: (Array.isArray(devices.phones) ? devices.phones : []).filter((phone) => fits(phone, keys)).map(portableDevice).filter((phone) => !isRevoked(phone)),
       removed: revoked
     },
     removalRevisions: Object.fromEntries(Object.entries(isObject(revisions) ? revisions : {}).filter(([key, n]) => KEY.test(key) && Number.isSafeInteger(n) && Number(n) > 0))
@@ -4836,9 +3152,52 @@ var init_membership = __esm(() => {
   init_removal_record();
 });
 
+// box/src/shared/text.ts
+import crypto7 from "node:crypto";
+function prefixBytes(text, bytes) {
+  let out = "", count = 0;
+  for (const character of text) {
+    count += Buffer.byteLength(character);
+    if (count > bytes)
+      break;
+    out += character;
+  }
+  return out;
+}
+function outsideShown(pattern, home) {
+  let path = pattern.trim();
+  if (path === "*" || path === "**")
+    return "Any folder";
+  for (const glob of ["/**", "/*"])
+    if (path.endsWith(glob)) {
+      path = path.slice(0, -glob.length) || "/";
+      break;
+    }
+  while (path.length > 1 && path.endsWith("/"))
+    path = path.slice(0, -1);
+  const own = home?.replace(/(?<=.)\/+$/, "");
+  const rest = path === "~" ? "" : path.startsWith("~/") ? path.slice(2) : own && path === own ? "" : own && path.startsWith(own + "/") ? path.slice(own.length + 1) : null;
+  return rest === null ? path : rest ? `~/${rest}` : "~";
+}
+function outsideSpoken(pattern, home) {
+  const shown = outsideShown(pattern, home);
+  if (shown === "Any folder")
+    return shown;
+  if (shown === "/")
+    return "The whole disk";
+  const parts = (path) => path.split("/").filter(Boolean);
+  if (shown === "~")
+    return "Home";
+  if (shown.startsWith("~/"))
+    return ["Home", ...parts(shown.slice(2))].join(", ");
+  return parts(shown).join(", ");
+}
+var AGENTS_TEXT_BYTES = 200000, oneLine = (text, limit) => Array.from(String(text).replace(/[\t\r\n]/g, " ")).slice(0, limit).join(""), stamp2 = () => new Date().toISOString().replace(/\.\d{3}Z$/, "Z"), newID = (prefix) => prefix + Array.from(crypto7.randomBytes(10), (byte) => "abcdefghijklmnopqrstuvwxyz0123456789"[byte % 36]).join(""), plainName = (text) => String(text ?? "").replace(/[\u0000-\u001f\u007f\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, " ").split(/\s+/).filter(Boolean).join(" "), cut = (text, count) => text.length <= count ? text : text.slice(0, count - 1) + "…", quote = (text) => `'${String(text).replace(/'/g, `'\\''`)}'`;
+var init_text = () => {};
+
 // box/src/link/personalities/library.ts
-import fs23 from "node:fs";
-import path21 from "node:path";
+import fs14 from "node:fs";
+import path12 from "node:path";
 function keptPersonality(entry) {
   if (!isObject(entry) || typeof entry.id !== "string" || !PERSONALITY_ID.test(entry.id) || changedAt(entry) > MOST_COUNT)
     return null;
@@ -4884,7 +3243,7 @@ function readPersonalities(file = PERSONALITIES_FILE) {
       return mergePersonalities(shared);
   }
   try {
-    const kept = JSON.parse(fs23.readFileSync(file, "utf8"));
+    const kept = JSON.parse(fs14.readFileSync(file, "utf8"));
     return mergePersonalities(upgradeFormat("Personality library", kept?.kuvo, kept, personalitySteps));
   } catch (error) {
     if (error instanceof UnsupportedFormatVersion)
@@ -4933,8 +3292,8 @@ var init_library = __esm(() => {
   init_shared();
   init_state();
   init_home();
-  PERSONALITIES_FILE = path21.join(BOTS, "personalities.json");
-  PERSONALITIES_LOCK = path21.join(RUN, ".personalities.lock");
+  PERSONALITIES_FILE = path12.join(BOTS, "personalities.json");
+  PERSONALITIES_LOCK = path12.join(RUN, ".personalities.lock");
   personalityFollowers = new Set;
   PERSONALITY_ID = /^custom\.[A-Za-z0-9._-]{1,80}$/;
   MOST_COUNT = 2 ** 52;
@@ -4943,14 +3302,14 @@ var init_library = __esm(() => {
 });
 
 // box/src/link/setup/checkpoint.ts
-import crypto10 from "node:crypto";
-import fs24 from "node:fs";
-import path22 from "node:path";
+import crypto8 from "node:crypto";
+import fs15 from "node:fs";
+import path13 from "node:path";
 function checkpointFile(hash) {
   if (typeof hash !== "string" || !HASH.test(hash))
     return null;
   try {
-    const doc = readDoc(JSON.parse(fs24.readFileSync(location(hash), "utf8")));
+    const doc = readDoc(JSON.parse(fs15.readFileSync(location(hash), "utf8")));
     return doc?.kind === "setup-checkpoint" && checkpointHash(doc) === hash ? doc : null;
   } catch {
     return null;
@@ -4961,7 +3320,7 @@ function preserveCheckpoint(doc) {
   if (checkpointFile(hash))
     return;
   const file = location(hash);
-  privateFolder(path22.dirname(file));
+  privateFolder(path13.dirname(file));
   writeDurablePrivate(file, JSON.stringify(doc.envelope), RUN);
 }
 function outcomesOf(value, epoch) {
@@ -5153,7 +3512,7 @@ function leadershipDocuments(envelope) {
   const pages = checkpoint && archivesOf(checkpoint);
   return checkpoint && pages ? [checkpoint.envelope, ...pages.map((page) => page.envelope), envelope] : [];
 }
-var CHECKPOINT_FEATURE = "setup.checkpoints", HASH, OPERATIONS_PER_PAGE = 256, checkpointHash = (doc) => crypto10.createHash("sha256").update(doc.body.archive === true ? "outcomes\x00" + JSON.stringify(doc.body) : doc.envelope.d).digest("base64url"), location = (hash) => path22.join(RUN, "setup-checkpoints", hash + ".json");
+var CHECKPOINT_FEATURE = "setup.checkpoints", HASH, OPERATIONS_PER_PAGE = 256, checkpointHash = (doc) => crypto8.createHash("sha256").update(doc.body.archive === true ? "outcomes\x00" + JSON.stringify(doc.body) : doc.envelope.d).digest("base64url"), location = (hash) => path13.join(RUN, "setup-checkpoints", hash + ".json");
 var init_checkpoint = __esm(() => {
   init_folder_version();
   init_format();
@@ -13773,9 +12132,9 @@ var init_statuses = __esm(() => {
 });
 
 // box/src/link/work-queue/migrate.ts
-import crypto11 from "node:crypto";
-import fs25 from "node:fs";
-import path23 from "node:path";
+import crypto9 from "node:crypto";
+import fs16 from "node:fs";
+import path14 from "node:path";
 function modelRecord() {
   const value = jsonOf(MODEL_FILE);
   if (!isObject(value))
@@ -13816,9 +12175,9 @@ function migrateItem(item, name) {
   return working;
 }
 function migrate() {
-  fs25.mkdirSync(WORK_QUEUE, { recursive: true, mode: 448 });
+  fs16.mkdirSync(WORK_QUEUE, { recursive: true, mode: 448 });
   for (const name of queueFiles(QUEUES)) {
-    const queue = jsonOf(path23.join(QUEUES, name));
+    const queue = jsonOf(path14.join(QUEUES, name));
     if (isObject(queue))
       queueFileFormat.read(queue);
   }
@@ -13827,44 +12186,44 @@ function migrate() {
   const categories = jsonOf(CATEGORIES_FILE);
   if (isObject(categories))
     categoriesFormat.read(categories);
-  const nothing = !queueFiles(QUEUES).length && !fs25.existsSync(CATEGORIES_FILE);
-  if (nothing && !fs25.existsSync(BEFORE))
+  const nothing = !queueFiles(QUEUES).length && !fs16.existsSync(CATEGORIES_FILE);
+  if (nothing && !fs16.existsSync(BEFORE))
     return void writePrivate(MODEL_FILE, JSON.stringify(modelFormat.write({ model: MODEL, at: Date.now() })));
-  if (!fs25.existsSync(BEFORE)) {
-    for (const name of fs25.readdirSync(WORK_QUEUE))
+  if (!fs16.existsSync(BEFORE)) {
+    for (const name of fs16.readdirSync(WORK_QUEUE))
       if (name.startsWith("before-statuses."))
-        fs25.rmSync(path23.join(WORK_QUEUE, name), { recursive: true, force: true });
-    const making = path23.join(WORK_QUEUE, `before-statuses.${crypto11.randomBytes(6).toString("hex")}`);
-    fs25.mkdirSync(path23.join(making, "queues"), { recursive: true, mode: 448 });
+        fs16.rmSync(path14.join(WORK_QUEUE, name), { recursive: true, force: true });
+    const making = path14.join(WORK_QUEUE, `before-statuses.${crypto9.randomBytes(6).toString("hex")}`);
+    fs16.mkdirSync(path14.join(making, "queues"), { recursive: true, mode: 448 });
     const copy = (from, to) => {
-      fs25.copyFileSync(from, to);
-      const handle = fs25.openSync(to, "r");
+      fs16.copyFileSync(from, to);
+      const handle = fs16.openSync(to, "r");
       try {
-        fs25.fsyncSync(handle);
+        fs16.fsyncSync(handle);
       } finally {
-        fs25.closeSync(handle);
+        fs16.closeSync(handle);
       }
     };
     for (const name of queueFiles(QUEUES))
-      copy(path23.join(QUEUES, name), path23.join(making, "queues", name));
-    if (fs25.existsSync(CATEGORIES_FILE))
-      copy(CATEGORIES_FILE, path23.join(making, "categories.json"));
-    onDisk(path23.join(making, "queues"));
+      copy(path14.join(QUEUES, name), path14.join(making, "queues", name));
+    if (fs16.existsSync(CATEGORIES_FILE))
+      copy(CATEGORIES_FILE, path14.join(making, "categories.json"));
+    onDisk(path14.join(making, "queues"));
     onDisk(making);
-    fs25.renameSync(making, BEFORE);
+    fs16.renameSync(making, BEFORE);
     onDisk(WORK_QUEUE);
   }
-  if (!fs25.statSync(path23.join(BEFORE, "queues"), { throwIfNoEntry: false })?.isDirectory())
+  if (!fs16.statSync(path14.join(BEFORE, "queues"), { throwIfNoEntry: false })?.isDirectory())
     throw new Error(`${BEFORE} isn't the copy of what was kept`);
-  const copied = jsonOf(path23.join(BEFORE, "categories.json"));
+  const copied = jsonOf(path14.join(BEFORE, "categories.json"));
   const kept = isObject(copied) ? categoriesFormat.read(copied) : null;
   const custom = (isObject(kept) && Array.isArray(kept.custom) ? kept.custom : []).filter((each) => isObject(each) && typeof each.id === "string" && /^cat_[a-z0-9-]{1,40}$/.test(each.id) && typeof each.name === "string");
   const names = new Map(custom.map((each) => [each.id, each.name]));
   const customIDs = custom.map((each) => each.id);
   const was = [];
   const started = [];
-  for (const name of queueFiles(path23.join(BEFORE, "queues"))) {
-    const queue = jsonOf(path23.join(BEFORE, "queues", name));
+  for (const name of queueFiles(path14.join(BEFORE, "queues"))) {
+    const queue = jsonOf(path14.join(BEFORE, "queues", name));
     if (!isObject(queue) || !Array.isArray(queue.items))
       continue;
     for (const each of queue.items) {
@@ -13896,7 +12255,7 @@ function migrate() {
     const there = isObject(kept) && Array.isArray(kept.labels) ? kept.labels : [];
     const has = new Set(there.flatMap((each) => isObject(each) && typeof each.id === "string" ? [each.id] : []));
     const needed = new Set(queueFiles(QUEUES).flatMap((name) => {
-      const queue = jsonOf(path23.join(QUEUES, name));
+      const queue = jsonOf(path14.join(QUEUES, name));
       return isObject(queue) && Array.isArray(queue.items) ? queue.items.flatMap((each) => isObject(each) && typeof each.status !== "string" ? fromCategory(each.category, typeof each.category === "string" ? names.get(each.category) : undefined).label ?? [] : []) : [];
     }));
     const more = made.filter((each) => !has.has(each.id) && (kept === null || needed.has(each.id)));
@@ -13904,7 +12263,7 @@ function migrate() {
       writePrivate(LABELS_FILE, JSON.stringify(labelsFormat.write({ ...kept, labels: [...there, ...more] })));
   }
   for (const name of queueFiles(QUEUES)) {
-    const file = path23.join(QUEUES, name);
+    const file = path14.join(QUEUES, name);
     const queue = jsonOf(file);
     if (!isObject(queue) || !Array.isArray(queue.items))
       continue;
@@ -13922,7 +12281,7 @@ function migrate() {
     if (changed)
       writePrivate(file, JSON.stringify(queueFileFormat.write(queue)));
   }
-  fs25.rmSync(CATEGORIES_FILE, { force: true });
+  fs16.rmSync(CATEGORIES_FILE, { force: true });
   writePrivate(MODEL_FILE, JSON.stringify(modelFormat.write({ model: MODEL, at: Date.now(), ...started.length ? { started } : {} })));
 }
 function startedThen() {
@@ -13944,19 +12303,19 @@ function migrateOnce() {
     done = true;
     return;
   }
-  if (!fs25.existsSync(WORK_QUEUE))
+  if (!fs16.existsSync(WORK_QUEUE))
     return;
-  fs25.accessSync(WORK_QUEUE, fs25.constants.W_OK);
+  fs16.accessSync(WORK_QUEUE, fs16.constants.W_OK);
   try {
-    fs25.mkdirSync(MOVING2);
+    fs16.mkdirSync(MOVING);
   } catch (error) {
     if (error.code !== "EEXIST")
       throw error;
-    const since = fs25.statSync(MOVING2, { throwIfNoEntry: false })?.mtimeMs ?? 0;
+    const since = fs16.statSync(MOVING, { throwIfNoEntry: false })?.mtimeMs ?? 0;
     if (Date.now() - since < 120000)
       throw new Error("another process is moving them over now");
-    fs25.rmSync(MOVING2, { recursive: true, force: true });
-    fs25.mkdirSync(MOVING2);
+    fs16.rmSync(MOVING, { recursive: true, force: true });
+    fs16.mkdirSync(MOVING);
   }
   try {
     locked(QUEUES_LOCK, () => {
@@ -13965,29 +12324,29 @@ function migrateOnce() {
         locked(LABELS_LOCK, migrate, { required: true });
     }, { exclusive: true, wait: 1e4 });
   } finally {
-    fs25.rmSync(MOVING2, { recursive: true, force: true });
+    fs16.rmSync(MOVING, { recursive: true, force: true });
   }
   done = true;
 }
-var WORK_QUEUE, QUEUES, CATEGORIES_FILE, LABELS_FILE, LABELS_LOCK, QUEUES_LOCK, MOVING2, MODEL_FILE, BEFORE, MODEL = 2, queueFileFormat, labelsFormat, modelFormat, categoriesFormat, done = false, jsonOf = (file) => {
+var WORK_QUEUE, QUEUES, CATEGORIES_FILE, LABELS_FILE, LABELS_LOCK, QUEUES_LOCK, MOVING, MODEL_FILE, BEFORE, MODEL = 2, queueFileFormat, labelsFormat, modelFormat, categoriesFormat, done = false, jsonOf = (file) => {
   try {
-    return JSON.parse(fs25.readFileSync(file, "utf8"));
+    return JSON.parse(fs16.readFileSync(file, "utf8"));
   } catch {
     return null;
   }
 }, queueFiles = (folder) => {
   try {
-    return fs25.readdirSync(folder).filter((name) => name.endsWith(".json")).sort();
+    return fs16.readdirSync(folder).filter((name) => name.endsWith(".json")).sort();
   } catch {
     return [];
   }
 }, placeOf = (category, custom) => category === "next" ? 0 : category === "later" ? 1 : category === "parked" ? custom.length + 2 : category === "done" ? custom.length + 3 : typeof category === "string" && custom.includes(category) ? custom.indexOf(category) + 2 : custom.length + 2, onDisk = (folder) => {
   try {
-    const handle = fs25.openSync(folder, "r");
+    const handle = fs16.openSync(folder, "r");
     try {
-      fs25.fsyncSync(handle);
+      fs16.fsyncSync(handle);
     } finally {
-      fs25.closeSync(handle);
+      fs16.closeSync(handle);
     }
   } catch {}
 };
@@ -13997,15 +12356,15 @@ var init_migrate = __esm(() => {
   init_files2();
   init_home();
   init_statuses();
-  WORK_QUEUE = path23.join(RUN, "work-queue");
-  QUEUES = path23.join(WORK_QUEUE, "queues");
-  CATEGORIES_FILE = path23.join(WORK_QUEUE, "categories.json");
-  LABELS_FILE = path23.join(WORK_QUEUE, "labels.json");
-  LABELS_LOCK = path23.join(WORK_QUEUE, ".labels.lock");
-  QUEUES_LOCK = path23.join(WORK_QUEUE, ".lock");
-  MOVING2 = path23.join(WORK_QUEUE, ".moving-to-statuses");
-  MODEL_FILE = path23.join(WORK_QUEUE, "model.json");
-  BEFORE = path23.join(WORK_QUEUE, "before-statuses");
+  WORK_QUEUE = path14.join(RUN, "work-queue");
+  QUEUES = path14.join(WORK_QUEUE, "queues");
+  CATEGORIES_FILE = path14.join(WORK_QUEUE, "categories.json");
+  LABELS_FILE = path14.join(WORK_QUEUE, "labels.json");
+  LABELS_LOCK = path14.join(WORK_QUEUE, ".labels.lock");
+  QUEUES_LOCK = path14.join(WORK_QUEUE, ".lock");
+  MOVING = path14.join(WORK_QUEUE, ".moving-to-statuses");
+  MODEL_FILE = path14.join(WORK_QUEUE, "model.json");
+  BEFORE = path14.join(WORK_QUEUE, "before-statuses");
   queueFileFormat = additiveObjectFormat("Work Queue owner file");
   labelsFormat = additiveObjectFormat("Work Queue labels");
   modelFormat = additiveObjectFormat("Work Queue status model");
@@ -14013,9 +12372,9 @@ var init_migrate = __esm(() => {
 });
 
 // box/src/link/work-queue/store.ts
-import crypto12 from "node:crypto";
-import fs26 from "node:fs";
-import path24 from "node:path";
+import crypto10 from "node:crypto";
+import fs17 from "node:fs";
+import path15 from "node:path";
 function noteDeparture(id, departure) {
   if (offlineEditsReady())
     keepRecord("edit-departures", recordKey(id), departure);
@@ -14093,10 +12452,10 @@ function migratedToChange() {
 }
 function readQueue(owner) {
   migratedToRead();
-  const file = fileOf2(owner);
+  const file = fileOf(owner);
   let text;
   try {
-    text = fs26.readFileSync(file, "utf8");
+    text = fs17.readFileSync(file, "utf8");
   } catch (error) {
     if (error.code === "ENOENT")
       return { owner, items: [] };
@@ -14118,10 +12477,10 @@ function readQueue(owner) {
   return { owner, items };
 }
 function setAside(owner, now = Date.now()) {
-  const aside = path24.join(QUEUES2, "aside", `${owner}-${now}.json`);
+  const aside = path15.join(QUEUES2, "aside", `${owner}-${now}.json`);
   try {
-    fs26.mkdirSync(path24.dirname(aside), { recursive: true, mode: 448 });
-    fs26.renameSync(fileOf2(owner), aside);
+    fs17.mkdirSync(path15.dirname(aside), { recursive: true, mode: 448 });
+    fs17.renameSync(fileOf(owner), aside);
     return aside;
   } catch {
     return null;
@@ -14131,7 +12490,7 @@ function refusedOver(error, now) {
   if (!error.aside)
     return new QueueSetAside(`${error.message} just now, so nothing was changed: try again.`);
   const aside = setAside(error.owner, now);
-  return new QueueSetAside(aside ? `${error.message}, so nothing was changed. It's kept at ${aside} for you to look at; try again to carry on with an empty queue for ${error.owner}.` : `${error.message}, so nothing was changed, and it couldn't be moved aside: look at ${fileOf2(error.owner)}.`);
+  return new QueueSetAside(aside ? `${error.message}, so nothing was changed. It's kept at ${aside} for you to look at; try again to carry on with an empty queue for ${error.owner}.` : `${error.message}, so nothing was changed, and it couldn't be moved aside: look at ${fileOf(error.owner)}.`);
 }
 function readQueueSettingAside(owner, now = Date.now()) {
   try {
@@ -14151,7 +12510,7 @@ function readKeptQueue(owner) {
     return null;
   let kept;
   try {
-    kept = JSON.parse(fs26.readFileSync(fileOf2(owner), "utf8"));
+    kept = JSON.parse(fs17.readFileSync(fileOf(owner), "utf8"));
   } catch {
     return null;
   }
@@ -14213,7 +12572,7 @@ class Book {
   }
   queue(owner) {
     if (!OWNER.test(owner) && !this.queues.has(owner)) {
-      const kept = fs26.existsSync(fileOf2(owner)) ? readKeptQueue(owner) : { owner, items: [] };
+      const kept = fs17.existsSync(fileOf(owner)) ? readKeptQueue(owner) : { owner, items: [] };
       if (!kept)
         throw new Refusal(`${owner}'s Work Queue was kept by a newer Kuvo Code, in a way this one can't read: it's left as it is.`);
       this.queues.set(owner, kept);
@@ -14259,15 +12618,15 @@ class Book {
     for (const [owner, queue] of changed) {
       any = true;
       if (!queue.items.length) {
-        fs26.rmSync(fileOf2(owner), { force: true });
+        fs17.rmSync(fileOf(owner), { force: true });
         if (durable)
           syncDurableFile(QUEUES2, WORK_QUEUE2);
       } else {
         const data = JSON.stringify(queueFileFormat.write({ owner, items: queue.items }));
         if (durable || queue.items.some((item) => item.offlineEdits || item.handing))
-          writeDurablePrivate(fileOf2(owner), data, path24.dirname(WORK_QUEUE2));
+          writeDurablePrivate(fileOf(owner), data, path15.dirname(WORK_QUEUE2));
         else
-          writePrivate(fileOf2(owner), data);
+          writePrivate(fileOf(owner), data);
       }
       this.before.set(owner, JSON.stringify(queue.items));
     }
@@ -14275,7 +12634,7 @@ class Book {
   }
 }
 function changeQueues(work, now = Date.now(), { onItsOwn = false, durable = false } = {}) {
-  fs26.mkdirSync(WORK_QUEUE2, { recursive: true, mode: 448 });
+  fs17.mkdirSync(WORK_QUEUE2, { recursive: true, mode: 448 });
   migratedToChange();
   const keepDurably = durable || offlineEditsReady();
   const { value, changed } = locked(QUEUES_LOCK, () => {
@@ -14306,7 +12665,7 @@ function changeQueues(work, now = Date.now(), { onItsOwn = false, durable = fals
     const value = work(book);
     const changed = book.save(durable || purged.length > 0 && keepDurably);
     for (const id of purged)
-      fs26.rmSync(path24.join(FILES, id), { recursive: true, force: true });
+      fs17.rmSync(path15.join(FILES, id), { recursive: true, force: true });
     return { value, changed };
   }, { exclusive: true });
   if (changed)
@@ -14351,7 +12710,7 @@ var WORK_QUEUE2, QUEUES2, FILES, KEPT_OWNER, ITEM_ID, SESSION, KEPT_REMOVED, MOS
     return null;
   const day = new Date(`${given.trim()}T00:00:00Z`);
   return Number.isNaN(day.getTime()) || day.toISOString().slice(0, 10) !== given.trim() ? null : given.trim();
-}, isLiveItem = (item) => !item.removed, queueFollowers, fileOf2 = (owner) => path24.join(QUEUES2, `${owner}.json`), deletionFor = (id) => readRecord("edit-deletions", recordKey(id)), queueDeletions = () => records("edit-deletions").flatMap((key) => readRecord("edit-deletions", key) ?? []), keepDeletion = (deletion) => keepRecord("edit-deletions", recordKey(deletion.id), deletion), departureFor = (id) => readRecord("edit-departures", recordKey(id)), newItemID = () => `wqi_${crypto12.randomBytes(15).toString("base64url")}`, whoOf = (given) => {
+}, isLiveItem = (item) => !item.removed, queueFollowers, fileOf = (owner) => path15.join(QUEUES2, `${owner}.json`), deletionFor = (id) => readRecord("edit-deletions", recordKey(id)), queueDeletions = () => records("edit-deletions").flatMap((key) => readRecord("edit-deletions", key) ?? []), keepDeletion = (deletion) => keepRecord("edit-deletions", recordKey(deletion.id), deletion), departureFor = (id) => readRecord("edit-departures", recordKey(id)), newItemID = () => `wqi_${crypto10.randomBytes(15).toString("base64url")}`, whoOf = (given) => {
   if (!isObject(given))
     return null;
   if (given.user === true)
@@ -14372,7 +12731,7 @@ var WORK_QUEUE2, QUEUES2, FILES, KEPT_OWNER, ITEM_ID, SESSION, KEPT_REMOVED, MOS
       return { owner, items: [] };
     throw error;
   }
-}, readAll = () => onceEach(owners().map(readQueueOrNone)), Refusal, QueueSetAside, matching = (items, ref) => items.filter((item) => refNames(ref, item)).sort((a, b) => Number(Boolean(a.removed)) - Number(Boolean(b.removed))), refNames = (ref, item) => ("id" in ref) ? item.id === ref.id : ("number" in ref) ? item.number === ref.number : Boolean(item.source) && sourceKeyOf(item.source) === ref.source, filesOf = (item) => path24.join(FILES, item);
+}, readAll = () => onceEach(owners().map(readQueueOrNone)), Refusal, QueueSetAside, matching = (items, ref) => items.filter((item) => refNames(ref, item)).sort((a, b) => Number(Boolean(a.removed)) - Number(Boolean(b.removed))), refNames = (ref, item) => ("id" in ref) ? item.id === ref.id : ("number" in ref) ? item.number === ref.number : Boolean(item.source) && sourceKeyOf(item.source) === ref.source, filesOf = (item) => path15.join(FILES, item);
 var init_store2 = __esm(() => {
   init_store();
   init_offline_fields();
@@ -14386,9 +12745,9 @@ var init_store2 = __esm(() => {
   init_migrate();
   init_statuses();
   init_work_queue_owner();
-  WORK_QUEUE2 = path24.join(RUN, "work-queue");
-  QUEUES2 = path24.join(WORK_QUEUE2, "queues");
-  FILES = path24.join(WORK_QUEUE2, "files");
+  WORK_QUEUE2 = path15.join(RUN, "work-queue");
+  QUEUES2 = path15.join(WORK_QUEUE2, "queues");
+  FILES = path15.join(WORK_QUEUE2, "files");
   KEPT_OWNER = /^[a-z]{2,10}_[A-Za-z0-9_-]{1,80}$/;
   ITEM_ID = /^wqi_[A-Za-z0-9_-]{20}$/;
   SESSION = /^ses_[A-Za-z0-9]{1,60}$/;
@@ -14412,7 +12771,7 @@ var init_store2 = __esm(() => {
 });
 
 // box/src/link/work-queue/labels.ts
-import path25 from "node:path";
+import path16 from "node:path";
 function labelOf(given) {
   if (!isObject(given) || typeof given.id !== "string" || !LABEL_ID.test(given.id) || typeof given.name !== "string")
     return null;
@@ -14422,7 +12781,7 @@ function labelOf(given) {
 function followsBy(says) {
   follows = says;
 }
-function readKept2() {
+function readKept() {
   try {
     const value = JSON.parse(textOf(LABELS_FILE2) ?? "null");
     const kept = isObject(value) ? labelsFormat.read(value) : {};
@@ -14467,7 +12826,7 @@ function editLabels(work) {
   migratedToChange();
   const result = { outcome: { refused: "A label change is already waiting to be saved." } };
   const save = changeShared("queueLabels", (value) => {
-    const before = setupLabels(value) ?? { labels: readKept2().labels, removed: [] };
+    const before = setupLabels(value) ?? { labels: readKept().labels, removed: [] };
     result.outcome = work({ labels: before.labels, fromPrimary: [] }, before.removed);
     return "done" in result.outcome ? before : undefined;
   });
@@ -14540,7 +12899,7 @@ function removeLabel(which, strip) {
       removed.push(found.id);
       return { done: found };
     });
-  if (readKept2().fromPrimary.includes(found.id) && follows())
+  if (readKept().fromPrimary.includes(found.id) && follows())
     return { refused: thePrimarys(found.name, "Remove") };
   try {
     strip(found.id);
@@ -14587,7 +12946,7 @@ function takePrimaryLabels(given, used, strip, key) {
     return { labels: all, fromPrimary: theirs.map((each) => each.id), primary: key };
   };
   const same = (a, b) => JSON.stringify([a.labels, a.fromPrimary, a.primary]) === JSON.stringify([b.labels, b.fromPrimary, b.primary]);
-  const before = readKept2();
+  const before = readKept();
   if (same(worked(before), before))
     return;
   try {
@@ -14608,7 +12967,7 @@ function takePrimaryLabels(given, used, strip, key) {
     return { done: now.labels[0] ?? { id: "lbl_none", name: "", color: "graphite" } };
   });
 }
-var LABELS_FILE2, MOST_LABELS = 60, MOST_LABELS_EACH = 10, MOST_NAME = 40, LABEL_COLORS, COLOR, LABEL_ID, follows = () => true, labels = () => setupLabels(sharedValue(readLink(), "queueLabels"))?.labels ?? readKept2().labels, slugOf = (name) => name.toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40), change = (work) => {
+var LABELS_FILE2, MOST_LABELS = 60, MOST_LABELS_EACH = 10, MOST_NAME = 40, LABEL_COLORS, COLOR, LABEL_ID, follows = () => true, labels = () => setupLabels(sharedValue(readLink(), "queueLabels"))?.labels ?? readKept().labels, slugOf = (name) => name.toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40), change = (work) => {
   try {
     migratedToChange();
   } catch (error) {
@@ -14617,7 +12976,7 @@ var LABELS_FILE2, MOST_LABELS = 60, MOST_LABELS_EACH = 10, MOST_NAME = 40, LABEL
     throw error;
   }
   const outcome = locked(LABELS_LOCK, () => {
-    const kept = readKept2();
+    const kept = readKept();
     const outcome = work(kept);
     const fromPrimary = kept.fromPrimary.filter((id) => kept.labels.some((each) => each.id === id));
     if ("done" in outcome)
@@ -14637,15 +12996,15 @@ var init_labels = __esm(() => {
   init_state();
   init_migrate();
   init_store2();
-  LABELS_FILE2 = path25.join(WORK_QUEUE2, "labels.json");
+  LABELS_FILE2 = path16.join(WORK_QUEUE2, "labels.json");
   LABEL_COLORS = ["coral", "orange", "amber", "lime", "mint", "sky", "indigo", "violet", "pink", "graphite"];
   COLOR = new Set(LABEL_COLORS);
   LABEL_ID = /^(?:lbl|cat)_[a-z0-9-]{1,40}$/;
 });
 
 // box/src/link/work-queue/told.ts
-import fs27 from "node:fs";
-import path26 from "node:path";
+import fs18 from "node:fs";
+import path17 from "node:path";
 function toldItemOf(given, latest = Infinity) {
   if (!isObject(given) || typeof given.id !== "string" || !ITEM_ID.test(given.id) || typeof given.owner !== "string" || !OWNER.test(given.owner))
     return null;
@@ -14712,7 +13071,7 @@ function readTold(key) {
   if (!KEY.test(key))
     return null;
   try {
-    const kept = toldFormat.read(JSON.parse(fs27.readFileSync(fileOf3(key), "utf8")));
+    const kept = toldFormat.read(JSON.parse(fs18.readFileSync(fileOf2(key), "utf8")));
     if (typeof kept.at !== "number" || !Array.isArray(kept.items))
       return null;
     if (!Array.isArray(kept.labels))
@@ -14727,12 +13086,12 @@ function readTold(key) {
 function keepTold(key, told, now = Date.now()) {
   if (!KEY.test(key))
     return false;
-  fs27.mkdirSync(TOLD, { recursive: true, mode: 448 });
+  fs18.mkdirSync(TOLD, { recursive: true, mode: 448 });
   return locked(LOCK2, () => {
     const kept = readTold(key);
     if (kept && kept.at > told.at && kept.at - told.at < 600000 && kept.id !== told.id)
       return false;
-    writePrivate(fileOf3(key), JSON.stringify(toldFormat.write({ ...told, heard: now })));
+    writePrivate(fileOf2(key), JSON.stringify(toldFormat.write({ ...told, heard: now })));
     return true;
   }, { required: true });
 }
@@ -14754,14 +13113,14 @@ function patchTold(key, id, item, deleted) {
         return;
       const others = kept.items.filter((each) => each.id !== id);
       const items = deleted ? others : [...others, before ? { ...before, ...fresh, sessions: before.sessions, ...before.progress ? { progress: before.progress } : {}, ...before.handedFrom ? { handedFrom: before.handedFrom } : {} } : fresh];
-      writePrivate(fileOf3(key), JSON.stringify(toldFormat.write({ ...kept, items })));
+      writePrivate(fileOf2(key), JSON.stringify(toldFormat.write({ ...kept, items })));
     }, { required: true });
   } catch (error) {
     if (error instanceof UnsupportedFormatVersion)
       console.error(error.message);
   }
 }
-var TOLD, MOST_TOLD = 1500, MOST_TOLD_DONE = 100, fileOf3 = (key) => path26.join(TOLD, `${key}.json`), SESSION2, KIND = (value) => value === "mac" || value === "machine" ? value : null, count = (value) => typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : 0, time = (value) => typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0, whole = (value, most = 999999) => typeof value === "number" && Number.isInteger(value) && value > 0 && value <= most ? value : undefined, words2 = (value, most) => typeof value === "string" ? cut(plainName(value), most) : "", whoOf2 = (value) => whoOf(value) ?? { name: "someone else" }, stamp3 = (value) => isObject(value) ? { at: time(value.at), by: whoOf2(value.by) } : { at: 0, by: whoOf2(null) }, ownerOf = (given) => {
+var TOLD, MOST_TOLD = 1500, MOST_TOLD_DONE = 100, fileOf2 = (key) => path17.join(TOLD, `${key}.json`), SESSION2, KIND = (value) => value === "mac" || value === "machine" ? value : null, count = (value) => typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : 0, time = (value) => typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0, whole = (value, most = 999999) => typeof value === "number" && Number.isInteger(value) && value > 0 && value <= most ? value : undefined, words2 = (value, most) => typeof value === "string" ? cut(plainName(value), most) : "", whoOf2 = (value) => whoOf(value) ?? { name: "someone else" }, stamp3 = (value) => isObject(value) ? { at: time(value.at), by: whoOf2(value.by) } : { at: 0, by: whoOf2(null) }, ownerOf = (given) => {
   if (!isObject(given) || typeof given.owner !== "string" || !OWNER.test(given.owner))
     return null;
   const kind = given.kind === "bot" || given.kind === "group" || given.kind === "you" ? given.kind : "session";
@@ -14772,7 +13131,7 @@ var TOLD, MOST_TOLD = 1500, MOST_TOLD_DONE = 100, fileOf3 = (key) => path26.join
     return;
   locked(LOCK2, () => {
     readTold(key);
-    fs27.rmSync(fileOf3(key), { force: true });
+    fs18.rmSync(fileOf2(key), { force: true });
   }, { required: true });
 };
 var init_told = __esm(() => {
@@ -14783,18 +13142,18 @@ var init_told = __esm(() => {
   init_store2();
   init_statuses();
   init_labels();
-  TOLD = path26.join(WORK_QUEUE2, "peers");
+  TOLD = path17.join(WORK_QUEUE2, "peers");
   SESSION2 = /^ses_[A-Za-z0-9]{1,60}$/;
   toldFormat = additiveObjectFormat("Work Queue peer summary");
-  LOCK2 = path26.join(WORK_QUEUE2, ".told.lock");
+  LOCK2 = path17.join(WORK_QUEUE2, ".told.lock");
 });
 
 // box/src/link/peers/reach.ts
-import fs28 from "node:fs";
-import path27 from "node:path";
+import fs19 from "node:fs";
+import path18 from "node:path";
 function readReach(file = PEER_REACH) {
   try {
-    const kept = JSON.parse(fs28.readFileSync(file, "utf8"));
+    const kept = JSON.parse(fs19.readFileSync(file, "utf8"));
     return isObject(kept) ? Object.fromEntries(Object.entries(kept).filter(([, at]) => typeof at === "number")) : {};
   } catch {
     return {};
@@ -14838,7 +13197,7 @@ function peerIsAway(key, heard, reach = readReach(), now = Date.now()) {
 }
 var PEER_REACH, LOCK3, change2 = (edit, file = PEER_REACH) => {
   try {
-    fs28.mkdirSync(RUN, { recursive: true, mode: 448 });
+    fs19.mkdirSync(RUN, { recursive: true, mode: 448 });
     locked(LOCK3, () => {
       const reach = readReach(file);
       if (edit(reach))
@@ -14851,19 +13210,19 @@ var init_reach = __esm(() => {
   init_home();
   init_state();
   init_known();
-  PEER_REACH = path27.join(RUN, "peer-reach.json");
-  LOCK3 = path27.join(RUN, ".peer-reach.lock");
-  PEER_CHECKED = path27.join(RUN, "peer-reach-checked.json");
+  PEER_REACH = path18.join(RUN, "peer-reach.json");
+  LOCK3 = path18.join(RUN, ".peer-reach.lock");
+  PEER_CHECKED = path18.join(RUN, "peer-reach-checked.json");
 });
 
 // box/src/link/work-queue/numbers.ts
-import crypto13 from "node:crypto";
-import fs29 from "node:fs";
-import path28 from "node:path";
+import crypto11 from "node:crypto";
+import fs20 from "node:fs";
+import path19 from "node:path";
 function openNumbers(file) {
   let text;
   try {
-    text = fs29.readFileSync(file, "utf8");
+    text = fs20.readFileSync(file, "utf8");
   } catch (error) {
     if (error.code === "ENOENT")
       return null;
@@ -14982,7 +13341,7 @@ function ownSince(now = Date.now(), file = NUMBERS_FILE) {
     return kept;
   let since = now;
   try {
-    const made = fs29.statSync(RUN).birthtimeMs;
+    const made = fs20.statSync(RUN).birthtimeMs;
     if (made > 0 && made < since)
       since = made;
   } catch {}
@@ -14999,8 +13358,8 @@ function topOf(kept = readNumbers()) {
   return Math.max(0, (kept.next ?? 1) - 1, ...kept.leases.map(([, to]) => to), ...allItems().map((item) => item.number ?? 0));
 }
 function changeNumbers(work, file = NUMBERS_FILE) {
-  fs29.mkdirSync(path28.dirname(file), { recursive: true, mode: 448 });
-  return locked(`${path28.join(path28.dirname(file), "." + path28.basename(file))}.lock`, () => {
+  fs20.mkdirSync(path19.dirname(file), { recursive: true, mode: 448 });
+  return locked(`${path19.join(path19.dirname(file), "." + path19.basename(file))}.lock`, () => {
     const stored = openNumbers(file);
     const kept = numbersOf(stored?.fields ?? {});
     const before = JSON.parse(JSON.stringify(kept));
@@ -15486,7 +13845,7 @@ var NUMBERS_FILE, BLOCK = 50, LOW = 15, ASK_AGAIN = 30000, MOST_GIVEN = 500, MOS
       ranges.push([from, to]);
   }
   return ranges;
-}, rangesOf2 = (numbers) => joined([...numbers].filter((n) => Number.isInteger(n) && n > 0).map((n) => [n, n])), overlap = (ranges, within) => joined(ranges.flatMap(([from, to]) => within.flatMap(([a, b]) => Math.max(from, a) <= Math.min(to, b) ? [[Math.max(from, a), Math.min(to, b)]] : []))), inRanges = (ranges, n) => ranges.some(([from, to]) => n >= from && n <= to), cleanRanges = (value) => Array.isArray(value) ? value.filter(isRange).slice(-MOST_RANGES) : [], numbersFormat, LOST_FOR, FOUND_AWAY_WITHIN = 3600000, earlier = (a, b) => a.kind !== b.kind ? a.kind === "mac" : b.since !== Number.MAX_SAFE_INTEGER && a.since < b.since, rank = (a, b) => (a.kind === b.kind ? 0 : a.kind === "mac" ? -1 : 1) || a.since - b.since || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0), keyOf2 = (primary, link) => ("self" in primary) ? "self" : ("peer" in primary) ? primary.peer.key : readNumbers().primary ?? (link?.mac || undefined), askID = () => `wqn_${crypto13.randomBytes(12).toString("base64url")}`, leftIn = (leases) => leases.reduce((sum, [from, to]) => sum + to - from + 1, 0), TOP_MOST, cappedTop = (top) => Math.min(top, TOP_MOST), toldTopOf = (key) => {
+}, rangesOf2 = (numbers) => joined([...numbers].filter((n) => Number.isInteger(n) && n > 0).map((n) => [n, n])), overlap = (ranges, within) => joined(ranges.flatMap(([from, to]) => within.flatMap(([a, b]) => Math.max(from, a) <= Math.min(to, b) ? [[Math.max(from, a), Math.min(to, b)]] : []))), inRanges = (ranges, n) => ranges.some(([from, to]) => n >= from && n <= to), cleanRanges = (value) => Array.isArray(value) ? value.filter(isRange).slice(-MOST_RANGES) : [], numbersFormat, LOST_FOR, FOUND_AWAY_WITHIN = 3600000, earlier = (a, b) => a.kind !== b.kind ? a.kind === "mac" : b.since !== Number.MAX_SAFE_INTEGER && a.since < b.since, rank = (a, b) => (a.kind === b.kind ? 0 : a.kind === "mac" ? -1 : 1) || a.since - b.since || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0), keyOf2 = (primary, link) => ("self" in primary) ? "self" : ("peer" in primary) ? primary.peer.key : readNumbers().primary ?? (link?.mac || undefined), askID = () => `wqn_${crypto11.randomBytes(12).toString("base64url")}`, leftIn = (leases) => leases.reduce((sum, [from, to]) => sum + to - from + 1, 0), TOP_MOST, cappedTop = (top) => Math.min(top, TOP_MOST), toldTopOf = (key) => {
   const told = readTold(key);
   return Math.max(told?.top ?? 0, ...(told?.items ?? []).map((item) => item.number ?? 0));
 }, lookedForWaiting = 0;
@@ -15504,7 +13863,7 @@ var init_numbers = __esm(() => {
   init_shared();
   init_state();
   init_store2();
-  NUMBERS_FILE = path28.join(WORK_QUEUE2, "numbers.json");
+  NUMBERS_FILE = path19.join(WORK_QUEUE2, "numbers.json");
   ASK_ID = /^wqn_[A-Za-z0-9_-]{8,40}$/;
   numbersFormat = objectFormat("Work Queue number ledger", 1);
   LOST_FOR = 3 * 86400000;
@@ -15582,7 +13941,12 @@ var init_settle = __esm(() => {
 });
 
 // box/src/link/documents/parts.ts
-import crypto14 from "node:crypto";
+import crypto12 from "node:crypto";
+function splitParts(d, s = "") {
+  const whole = crypto12.createHash("sha256").update(d).digest("base64url");
+  const of = Math.ceil(d.length / DOC_PART);
+  return Array.from({ length: of }, (_, i) => ({ whole, i, of, d: d.slice(i * DOC_PART, (i + 1) * DOC_PART), s }));
+}
 function assemble(parts, from, part, most = MOST_PARTS) {
   if (!fitsPart(part, most))
     return null;
@@ -15600,7 +13964,7 @@ function assemble(parts, from, part, most = MOST_PARTS) {
     return null;
   parts.delete(key);
   const d = Array.from({ length: part.of }, (_, i) => pending.pieces.get(i)).join("");
-  if (crypto14.createHash("sha256").update(d).digest("base64url") !== part.whole)
+  if (crypto12.createHash("sha256").update(d).digest("base64url") !== part.whole)
     return null;
   return { d, s: pending.s };
 }
@@ -15610,7 +13974,6 @@ var init_parts = __esm(() => {
 });
 
 // box/src/link/documents/work.ts
-import crypto15 from "node:crypto";
 function takesFrom(link, origin, kind) {
   if (kind === "leadership")
     return Boolean(link.setup);
@@ -15795,10 +14158,8 @@ function docMails(docs) {
         give = [];
         size = 0;
       }
-      const whole = crypto15.createHash("sha256").update(envelope.d).digest("base64url");
-      const of = Math.ceil(envelope.d.length / DOC_PART);
-      for (let i = 0;i < of; i++)
-        mails.push({ part: { whole, i, of, d: envelope.d.slice(i * DOC_PART, (i + 1) * DOC_PART), s: envelope.s } });
+      for (const part of splitParts(envelope.d, envelope.s))
+        mails.push({ part });
       continue;
     }
     if (size + length > 48000 && give.length || give.length === 64) {
@@ -16274,7 +14635,7 @@ var init_access = __esm(() => {
 });
 
 // box/src/link/setup/shared.ts
-import crypto16 from "node:crypto";
+import crypto13 from "node:crypto";
 function publishedShared(link) {
   const setup = followedSetup(link);
   if (!setup || setup.role !== "primary" || setup.id !== link.sharedSetup || !link.sign || primaryFenced(link))
@@ -16321,7 +14682,7 @@ function scopeShared(link, id) {
 function identity(doc) {
   const { operation, baseRevision } = doc.body;
   if (operation === undefined && baseRevision === undefined)
-    return crypto16.createHash("sha256").update(doc.envelope.s).digest("base64url");
+    return crypto13.createHash("sha256").update(doc.envelope.s).digest("base64url");
   return typeof operation === "string" && OPERATION_ID.test(operation) && baseRevision === doc.n - 1 ? operation : null;
 }
 function pendingEntry(link, kind) {
@@ -16374,7 +14735,7 @@ function bindSave(save, seed, binding) {
 }
 function stageShared(link, kind, value, effects, requested, edits, { reportCapacity = false } = {}) {
   const setup = followedSetup(link);
-  const operation = requested ?? crypto16.randomBytes(16).toString("base64url");
+  const operation = requested ?? crypto13.randomBytes(16).toString("base64url");
   if (setupLayoutDeferred(K) || !link.sign || setup?.role !== "primary" || setup.sign !== ownSign(link) || !setup.standby && (!setup.checkpointed || requiresStandby(setup)) || link.leadershipPending || !sharedKind(kind) || value === undefined || !OPERATION_ID.test(operation))
     return null;
   scopeShared(link, setup.id);
@@ -16688,19 +15049,19 @@ var init_shared = __esm(() => {
 });
 
 // box/src/link/documents/changed.ts
-import fs30 from "node:fs";
-import path29 from "node:path";
+import fs21 from "node:fs";
+import path20 from "node:path";
 function noteDocsChanged() {
   if (IS_MAC)
     return changedHere();
   try {
-    fs30.mkdirSync(RUN, { recursive: true, mode: 448 });
-    fs30.writeFileSync(DOCS_CHANGED, "", { mode: 384 });
+    fs21.mkdirSync(RUN, { recursive: true, mode: 448 });
+    fs21.writeFileSync(DOCS_CHANGED, "", { mode: 384 });
   } catch {}
 }
 function docsNoted() {
   try {
-    fs30.rmSync(DOCS_CHANGED);
+    fs21.rmSync(DOCS_CHANGED);
     return true;
   } catch {
     return false;
@@ -16711,7 +15072,7 @@ var DOCS_CHANGED, changedHere = () => {}, onDocsChanged = (then) => {
 };
 var init_changed = __esm(() => {
   init_home();
-  DOCS_CHANGED = path29.join(RUN, "docs.changed");
+  DOCS_CHANGED = path20.join(RUN, "docs.changed");
 });
 
 // box/src/link/setup/main-only.ts
@@ -16748,7 +15109,7 @@ function setupHosts(link) {
   }
   return { hosts: hosts.sort((one, other) => one.name < other.name ? -1 : one.name > other.name ? 1 : 0) };
 }
-var named2 = (main) => main.name || "your main computer", pairElsewhere = (main) => ({ message: `Pair new phones from ${named2(main)}.`, primary: main.key }), addElsewhere = (main) => ({ message: `Add and remove computers from ${named2(main)}.`, primary: main.key });
+var named = (main) => main.name || "your main computer", pairElsewhere = (main) => ({ message: `Pair new phones from ${named(main)}.`, primary: main.key }), addElsewhere = (main) => ({ message: `Add and remove computers from ${named(main)}.`, primary: main.key });
 var init_main_only = __esm(() => {
   init_membership();
   init_work();
@@ -16757,7 +15118,7 @@ var init_main_only = __esm(() => {
 });
 
 // box/src/link/phones.ts
-import crypto17 from "node:crypto";
+import crypto14 from "node:crypto";
 function pairedPhone(link, key, pairing) {
   return (link?.phones ?? []).find((phone) => phone.key === key && (pairing === undefined || (phone.pairing ?? "") === pairing) && !(phone.local && (link?.setup?.checkpointed || unlinkCleanupLayoutReady(K))));
 }
@@ -16792,7 +15153,7 @@ function stagePhonePairing(key, hello, address) {
       if (!pairing || Date.now() > pairing.expires || name === "pairing" && pairing.issuer === undefined)
         return false;
       const expected = Buffer.from(pairing.token, "base64url");
-      return given.length === expected.length && crypto17.timingSafeEqual(given, expected);
+      return given.length === expected.length && crypto14.timingSafeEqual(given, expected);
     });
     if (!slot)
       return null;
@@ -16802,7 +15163,7 @@ function stagePhonePairing(key, hello, address) {
       delete link[slot];
       return link;
     }
-    if (!fits2({ key: encoded }, deviceBoxKeys(link)))
+    if (!fits({ key: encoded }, deviceBoxKeys(link)))
       return null;
     if ((link.phones ?? []).length >= MOST_DEVICES && !pairedPhone(link, encoded))
       return null;
@@ -16856,7 +15217,7 @@ function noteRemoved(link, key, pairing) {
     return;
   link.removed = [...link.removed, { key, pairing }];
   if (!link.setup?.managed)
-    link.removed = link.removed.slice(-MOST_KEPT2);
+    link.removed = link.removed.slice(-MOST_KEPT);
 }
 function takeOff(link, key, pairing) {
   const current = (link.phones ?? []).find((phone) => phone.key === key);
@@ -16885,7 +15246,7 @@ function removeAsMac(link, entries, staging = false) {
   if (!staging && primaryFenced(link))
     return false;
   const macs = deviceBoxKeys(link);
-  if (!Array.isArray(entries) || !entries.length || entries.length > MOST_KEPT2 || !entries.every((entry) => fits2(entry, macs)))
+  if (!Array.isArray(entries) || !entries.length || entries.length > MOST_KEPT || !entries.every((entry) => fits(entry, macs)))
     return false;
   for (const entry of entries)
     takeOff(link, entry.key, entry.pairing);
@@ -16898,7 +15259,7 @@ function removePhones(link, by, entries, staging = false) {
   const allowed = new Set([...(link.phones ?? []).map((phone) => phone.key), ...macs]);
   if (!allowed.has(by) || !Array.isArray(entries) || !entries.length || entries.length > MOST_AT_ONCE)
     return false;
-  if (!entries.every((entry) => fits2(entry, deviceBoxKeys(link))))
+  if (!entries.every((entry) => fits(entry, deviceBoxKeys(link))))
     return false;
   for (const entry of entries)
     takeOff(link, entry.key, entry.pairing);
@@ -16912,8 +15273,8 @@ function foldPhones(link, now = Date.now()) {
     return;
   }
   for (const doc of phoneDocs(link)) {
-    for (const entry of Array.isArray(doc.body.removed) ? doc.body.removed.slice(0, MOST_KEPT2) : []) {
-      if (fits2(entry, macs) && typeof entry.pairing === "string")
+    for (const entry of Array.isArray(doc.body.removed) ? doc.body.removed.slice(0, MOST_KEPT) : []) {
+      if (fits(entry, macs) && typeof entry.pairing === "string")
         noteRemoved(link, entry.key, entry.pairing);
     }
   }
@@ -16922,7 +15283,7 @@ function foldPhones(link, now = Date.now()) {
   const signed = macs.filter((mac) => macDoc(link, mac, "phones"));
   const listed = [];
   const add = (phone) => {
-    if (!fits2(phone, macs) || removedAlready(link, phone.key, phone.pairing ?? "") || listed.some((each) => each.key === phone.key))
+    if (!fits(phone, macs) || removedAlready(link, phone.key, phone.pairing ?? "") || listed.some((each) => each.key === phone.key))
       return;
     listed.push(phone);
   };
@@ -16984,7 +15345,7 @@ function pairingLink(link) {
   });
   return `kuvo-link://pair?${query}`;
 }
-var PAIRING, MOST_AT_ONCE = 16, MOST_DEVICES = 64, MOST_KEPT2 = 256, removedAlready = (link, key, pairing) => (link.removed ?? []).some((r) => r.key === key && r.pairing === pairing), fits2 = (entry, macs) => typeof entry?.key === "string" && KEY.test(entry.key) && !macs.includes(entry.key) && (entry.pairing == null || typeof entry.pairing === "string" && PAIRING.test(entry.pairing)), newPairing = () => crypto17.randomBytes(12).toString("base64url"), deviceBoxKeys = (link) => [...macsOf(link), ...peersOf(link).map((peer) => peer.key), ownKey(link) ?? ""], ownPhones = (link) => {
+var PAIRING, MOST_AT_ONCE = 16, MOST_DEVICES = 64, MOST_KEPT = 256, removedAlready = (link, key, pairing) => (link.removed ?? []).some((r) => r.key === key && r.pairing === pairing), fits = (entry, macs) => typeof entry?.key === "string" && KEY.test(entry.key) && !macs.includes(entry.key) && (entry.pairing == null || typeof entry.pairing === "string" && PAIRING.test(entry.pairing)), newPairing = () => crypto14.randomBytes(12).toString("base64url"), deviceBoxKeys = (link) => [...macsOf(link), ...peersOf(link).map((peer) => peer.key), ownKey(link) ?? ""], ownPhones = (link) => {
   const preserveVoucher = deviceGrantsLayoutDeferred(K);
   return {
     ...link.setup?.managed && link.setup.role === "primary" ? { epoch: link.setup.epoch } : {},
@@ -16999,7 +15360,7 @@ var PAIRING, MOST_AT_ONCE = 16, MOST_DEVICES = 64, MOST_KEPT2 = 256, removedAlre
     removed: (link.removed ?? []).map(({ key, pairing }) => ({ key, pairing })),
     ...acceptedMembership(link)?.devices
   };
-}, PAIRING_MINUTES = 10, newPairingToken = (issuer = null) => ({ token: crypto17.randomBytes(16).toString("base64url"), expires: Date.now() + PAIRING_MINUTES * 60000, issuer }), phoneDocs = (link) => Object.values(link?.docs ?? {}).map(held).filter((doc) => doc?.kind === "phones");
+}, PAIRING_MINUTES = 10, newPairingToken = (issuer = null) => ({ token: crypto14.randomBytes(16).toString("base64url"), expires: Date.now() + PAIRING_MINUTES * 60000, issuer }), phoneDocs = (link) => Object.values(link?.docs ?? {}).map(held).filter((doc) => doc?.kind === "phones");
 var init_phones = __esm(() => {
   init_shared();
   init_membership();
@@ -17018,7 +15379,7 @@ var init_phones = __esm(() => {
 });
 
 // box/src/link/setup/leadership.ts
-import crypto18 from "node:crypto";
+import crypto15 from "node:crypto";
 function leadershipOf(link) {
   const setup = link?.setup;
   return setup?.managed ? held(link?.leadership?.[setup.epoch]) : null;
@@ -17440,16 +15801,16 @@ function installLeadership(link, doc, checkpoint, discardingFork = false) {
 function projectLegacyDevices(link, value, primary, here, wasMember) {
   const snapshot = isObject(value) ? value : {};
   const local = (link.phones ?? []).filter((phone) => phone.from === "pair" && (wasMember || phone.local)).map((phone) => ({ ...phone, local: true }));
-  const transferred = (Array.isArray(snapshot.phones) ? snapshot.phones : []).filter((phone) => fits2(phone, [primary])).map((phone) => ({ ...portableDevice(phone), from: here ? "pair" : "mac", ...here ? {} : { mac: primary } }));
+  const transferred = (Array.isArray(snapshot.phones) ? snapshot.phones : []).filter((phone) => fits(phone, [primary])).map((phone) => ({ ...portableDevice(phone), from: here ? "pair" : "mac", ...here ? {} : { mac: primary } }));
   const transferredKeys = new Set(transferred.map((phone) => phone.key));
   link.phones = [...transferred, ...local.filter((phone) => !transferredKeys.has(phone.key))];
   for (const entry of Array.isArray(snapshot.removed) ? snapshot.removed : []) {
-    if (fits2(entry, []) && typeof entry.pairing === "string" && !link.removed?.some((each) => each.key === entry.key && each.pairing === entry.pairing)) {
+    if (fits(entry, []) && typeof entry.pairing === "string" && !link.removed?.some((each) => each.key === entry.key && each.pairing === entry.pairing)) {
       (link.removed ??= []).push({ key: entry.key, pairing: entry.pairing });
     }
   }
 }
-var NUMBER_RESERVE = 2000, STANDBY_UNLINK = "Choose another standby first.", PRIMARY_UNLINK = "Choose another primary first.", leadershipProposalHash = (signature) => crypto18.createHash("sha256").update(signature).digest("base64url"), signature = (value) => typeof value === "string" && /^[\w-]{86}$/.test(value);
+var NUMBER_RESERVE = 2000, STANDBY_UNLINK = "Choose another standby first.", PRIMARY_UNLINK = "Choose another primary first.", leadershipProposalHash = (signature) => crypto15.createHash("sha256").update(signature).digest("base64url"), signature = (value) => typeof value === "string" && /^[\w-]{86}$/.test(value);
 var init_leadership = __esm(() => {
   init_folder_version();
   init_format();
@@ -17463,7 +15824,7 @@ var init_leadership = __esm(() => {
 });
 
 // box/src/link/crypto/noise.ts
-import crypto19 from "node:crypto";
+import crypto16 from "node:crypto";
 function hkdf(chainingKey, input) {
   const temp = hmac(chainingKey, input);
   const first = hmac(temp, Buffer.from([1]));
@@ -17483,7 +15844,7 @@ class CipherState {
   encrypt(ad, plaintext) {
     if (!this.key)
       return plaintext;
-    const cipher = crypto19.createCipheriv("aes-256-gcm", this.key, this.nonce());
+    const cipher = crypto16.createCipheriv("aes-256-gcm", this.key, this.nonce());
     cipher.setAAD(ad);
     const sealed = Buffer.concat([cipher.update(plaintext), cipher.final(), cipher.getAuthTag()]);
     this.n += 1n;
@@ -17494,7 +15855,7 @@ class CipherState {
       return ciphertext;
     if (ciphertext.length < 16)
       throw new Error("decrypt");
-    const decipher = crypto19.createDecipheriv("aes-256-gcm", this.key, this.nonce());
+    const decipher = crypto16.createDecipheriv("aes-256-gcm", this.key, this.nonce());
     decipher.setAAD(ad);
     decipher.setAuthTag(ciphertext.subarray(-16));
     let plaintext;
@@ -17617,7 +15978,7 @@ function openOneWay(message, s, rs, prologue = MAIL_PROLOGUE) {
   state.mixKey(dh(s, rs));
   return { payload: state.decryptAndHash(message.subarray(32)), following: state.split()[0] };
 }
-var sha256 = (data) => crypto19.createHash("sha256").update(data).digest(), hmac = (key, data) => crypto19.createHmac("sha256", key).update(data).digest(), IK = "Noise_IK_25519_AESGCM_SHA256", ONE_WAY = "Noise_K_25519_AESGCM_SHA256", PROLOGUE, MAIL_PROLOGUE, transport = (sending, receiving, hash) => ({
+var sha256 = (data) => crypto16.createHash("sha256").update(data).digest(), hmac = (key, data) => crypto16.createHmac("sha256", key).update(data).digest(), IK = "Noise_IK_25519_AESGCM_SHA256", ONE_WAY = "Noise_K_25519_AESGCM_SHA256", PROLOGUE, MAIL_PROLOGUE, transport = (sending, receiving, hash) => ({
   hash,
   seal: (plaintext) => sending.encrypt(EMPTY, plaintext),
   open: (ciphertext) => receiving.decrypt(EMPTY, ciphertext)
@@ -17628,9 +15989,273 @@ var init_noise = __esm(() => {
   MAIL_PROLOGUE = Buffer.from("kuvo-link mail v1");
 });
 
+// box/src/link/moves/records.ts
+import fs22 from "node:fs";
+import path21 from "node:path";
+function readMoves(strict = false) {
+  let names = [];
+  try {
+    names = fs22.readdirSync(MOVES).filter((name) => /^mov_[A-Za-z0-9]+\.json$/.test(name));
+  } catch (error) {
+    if (strict && error.code !== "ENOENT")
+      throw error;
+  }
+  const records = [];
+  for (const name of names) {
+    try {
+      const value = JSON.parse(fs22.readFileSync(path21.join(MOVES, name), "utf8"));
+      const record = isObject(value) ? journalFormat.read(value) : null;
+      if (fits2(record))
+        records.push(record);
+      else if (strict)
+        throw new Error("An ownership record could not be read");
+    } catch (error) {
+      if (error instanceof UnsupportedFormatVersion || strict && error.code !== "ENOENT")
+        throw error;
+    }
+  }
+  return records.sort((one, other) => one.started - other.started);
+}
+function movesChanged() {
+  for (const follower of [...moveFollowers])
+    try {
+      follower();
+    } catch {}
+}
+function checkJournal(id) {
+  const value = jsonIfPresent(fileOf3(id));
+  if (isObject(value))
+    journalFormat.read(value);
+}
+function saveMove(record) {
+  checkJournal(record.id);
+  writeDurablePrivate(fileOf3(record.id), JSON.stringify(journalFormat.write(record)), RUN);
+  movesChanged();
+}
+function forgetMove(id) {
+  checkJournal(id);
+  try {
+    fs22.rmSync(fileOf3(id), { force: true });
+  } catch {}
+  try {
+    fs22.rmSync(bundleOf(id), { recursive: true, force: true });
+  } catch {}
+  movesChanged();
+}
+function changeMove(id, change) {
+  const record = readMove(id);
+  if (!record)
+    return null;
+  change(record);
+  saveMove(record);
+  return record;
+}
+function shownMove(record) {
+  const { id, kind, thing, name, from, to, role, stage, sessions, sent, size } = record;
+  return { id, kind, thing, name, from, to, role, stage, sessions, ...sent !== undefined ? { sent } : {}, ...size !== undefined ? { size } : {}, ...waitingFor.has(id) ? { waiting: true } : {} };
+}
+function awaySessions(records = liveMoves()) {
+  const away = new Set;
+  for (const record of records) {
+    const switched = record.stage === "switching" || record.stage === "finishing";
+    if (record.role === "to" && !switched || record.role === "from" && switched)
+      for (const session of record.sessions)
+        away.add(session);
+  }
+  return [...away];
+}
+function frozen(records = liveMoves()) {
+  return new Set(records.filter((record) => record.step !== "check").flatMap((record) => [record.thing, ...record.sessions]));
+}
+function switchedTo(session, records = liveMoves()) {
+  return switchedMove(session, records)?.peer ?? null;
+}
+function switchedMove(session, records = liveMoves()) {
+  return records.find((each) => each.role === "from" && (each.stage === "switching" || each.stage === "finishing") && each.sessions.includes(session)) ?? null;
+}
+function committedDepartures() {
+  try {
+    const kept = JSON.parse(fs22.readFileSync(MOVED_FILE, "utf8"));
+    if (!Array.isArray(kept))
+      return [];
+    return kept.flatMap((value) => {
+      if (!isObject(value))
+        return [];
+      const { session, key, at } = movedAwayFormat.read(value);
+      return typeof session === "string" && typeof key === "string" && typeof at === "number" ? [{ session, key, at }] : [];
+    });
+  } catch (error) {
+    if (error instanceof UnsupportedFormatVersion)
+      throw error;
+    return [];
+  }
+}
+function movedAway(now = Date.now()) {
+  return committedDepartures().filter((each) => each.session.startsWith("ses_") && now - each.at < MOVED_FOR);
+}
+function noteMovedAway(sessions, key, now = Date.now()) {
+  const updated = locked(DEPARTURE_LOCK, () => {
+    const current = committedDepartures();
+    const changed = new Set(sessions.filter((session) => !current.some((each) => each.session === session && each.key === key)));
+    if (!changed.size)
+      return false;
+    const kept = current.filter((each) => !changed.has(each.session));
+    for (const session of changed)
+      kept.push({ session, key, at: now });
+    writeDurablePrivate(MOVED_FILE, JSON.stringify(kept.map(movedAwayFormat.write)), RUN);
+    return true;
+  }, { required: true });
+  if (updated)
+    movesChanged();
+}
+function forgetMovedAway(sessions) {
+  const updated = locked(DEPARTURE_LOCK, () => {
+    const kept = committedDepartures();
+    if (!kept.some((each) => sessions.includes(each.session)))
+      return false;
+    writeDurablePrivate(MOVED_FILE, JSON.stringify(kept.filter((each) => !sessions.includes(each.session)).map(movedAwayFormat.write)), RUN);
+    return true;
+  }, { required: true });
+  if (updated)
+    movesChanged();
+}
+function jsonIfPresent(file) {
+  try {
+    return JSON.parse(fs22.readFileSync(file, "utf8"));
+  } catch (error) {
+    if (error.code === "ENOENT")
+      return;
+    throw error;
+  }
+}
+function decision(id) {
+  if (!DECISION_ID.test(id))
+    return null;
+  const file = fileForDecision(id);
+  const value = jsonIfPresent(file);
+  if (value !== undefined) {
+    const one = decisionFormat.read(value);
+    if (!isDecision(one))
+      throw new Error("A move’s ownership receipt could not be read");
+    return { value: one, file };
+  }
+  const legacy = jsonIfPresent(LEGACY_DECISIONS);
+  if (legacy !== undefined && !isObject(legacy))
+    throw new Error("Legacy move decisions could not be read");
+  const valueBefore = legacy?.[id];
+  if (valueBefore === undefined)
+    return null;
+  const old = decisionFormat.read(valueBefore);
+  if (!isDecision(old))
+    throw new Error("A legacy move decision could not be read");
+  return { value: old, file: LEGACY_DECISIONS };
+}
+function endedFor(id, peer) {
+  const one = decision(id)?.value;
+  return one && (one.peer === undefined || one.peer === peer) ? one : null;
+}
+function noteEnded(id, as, now = Date.now(), sessions = [], last, peer, bundle) {
+  if (!DECISION_ID.test(id))
+    throw new Error("That isn’t a move ID");
+  const before = decision(id);
+  if (before) {
+    if (before.value.as !== as || before.value.generation !== bundle?.generation || before.value.hash !== bundle?.hash) {
+      throw new Error("A move’s ownership decision cannot change");
+    }
+    syncDurableFile(before.file, RUN);
+    return;
+  }
+  const hintFile = path21.join(HINTS, `${id}.json`);
+  if (sessions.length) {
+    const hint = jsonIfPresent(hintFile);
+    if (hint !== undefined)
+      hintFormat.read(hint);
+    writeDurablePrivate(hintFile, JSON.stringify(hintFormat.write({ as, at: now, sessions })), RUN);
+  }
+  writeDurablePrivate(fileForDecision(id), JSON.stringify(decisionFormat.write({ as, at: now, ...bundle, ...last ? { last } : {}, ...peer ? { peer } : {} })), RUN);
+}
+function sealDecision(id) {
+  const receipt = decision(id);
+  if (!receipt)
+    throw new Error("A move’s ownership receipt went missing");
+  syncDurableFile(receipt.file, RUN);
+}
+function hintFiles() {
+  try {
+    return fs22.readdirSync(HINTS).filter((name) => name.endsWith(".json") && DECISION_ID.test(name.slice(0, -5)));
+  } catch {
+    return [];
+  }
+}
+function compactDecisionHints(now = Date.now()) {
+  for (const name of hintFiles()) {
+    const file = path21.join(HINTS, name);
+    try {
+      const value = jsonIfPresent(file);
+      const hint = value === undefined ? null : hintFormat.read(value);
+      if (isDecision(hint) && now - hint.at >= MOVED_FOR)
+        fs22.rmSync(file, { force: true });
+    } catch (error) {
+      if (error instanceof UnsupportedFormatVersion)
+        throw error;
+    }
+  }
+}
+function sessionsFrom(hint, as, now) {
+  if (!isDecision(hint) || hint.as !== as || now - hint.at >= MOVED_FOR)
+    return [];
+  const { sessions } = hint;
+  return Array.isArray(sessions) ? sessions.filter((each) => typeof each === "string") : [];
+}
+function sessionsDecided(as, now) {
+  const sessions = [];
+  for (const name of hintFiles()) {
+    try {
+      const value = jsonIfPresent(path21.join(HINTS, name));
+      const hinted = value === undefined ? [] : sessionsFrom(hintFormat.read(value), as, now);
+      if (hinted.length && decision(name.slice(0, -5))?.value.as === as)
+        sessions.push(...hinted);
+    } catch (error) {
+      if (error instanceof UnsupportedFormatVersion)
+        throw error;
+    }
+  }
+  try {
+    const legacy = jsonIfPresent(LEGACY_DECISIONS);
+    if (isObject(legacy))
+      for (const hint of Object.values(legacy))
+        sessions.push(...sessionsFrom(decisionFormat.read(hint), as, now));
+  } catch (error) {
+    if (error instanceof UnsupportedFormatVersion)
+      throw error;
+  }
+  return sessions;
+}
+var MOVES, MOVED_FILE, DEPARTURE_LOCK, MOVED_FOR, journalFormat, decisionFormat, hintFormat, movedAwayFormat, fileOf3 = (id) => path21.join(MOVES, `${id}.json`), bundleOf = (id) => path21.join(MOVES, id), fits2 = (record) => isObject(record) && typeof record.id === "string" && typeof record.thing === "string" && typeof record.peer === "string" && (record.role === "from" || record.role === "to") && Array.isArray(record.sessions), readMove = (id) => readMoves().find((record) => record.id === id) ?? null, liveMoves = (records = readMoves()) => records.filter((record) => !record.failed), listedMoves = (records = liveMoves()) => records.filter((record) => !(record.role === "to" && record.dropping) && !(record.role === "from" && record.stage === "finishing")), moveOf = (thing) => liveMoves().find((record) => record.thing === thing) ?? null, moveFollowers, waitingFor, LEGACY_DECISIONS, DECISIONS, HINTS, DECISION_ID, isDecision = (one) => isObject(one) && typeof one.at === "number" && (one.as === "switched" || one.as === "dropped"), fileForDecision = (id) => path21.join(DECISIONS, `${id}.json`), endedAs = (id) => decision(id)?.value.as ?? null, endedAt = (id) => decision(id)?.value.at ?? null, endedLast = (id) => decision(id)?.value.last, droppedHere = (now = Date.now()) => sessionsDecided("dropped", now), switchedHere = (now = Date.now()) => new Set(sessionsDecided("switched", now));
+var init_records2 = __esm(() => {
+  init_format_version();
+  init_files2();
+  init_files();
+  init_home();
+  MOVES = path21.join(RUN, "moves");
+  MOVED_FILE = path21.join(MOVES, "moved.json");
+  DEPARTURE_LOCK = path21.join(MOVES, ".departures.lock");
+  MOVED_FOR = 2 * 24 * 3600000;
+  journalFormat = additiveObjectFormat("Move journal");
+  decisionFormat = additiveObjectFormat("Move ownership receipt");
+  hintFormat = additiveObjectFormat("Move routing hint");
+  movedAwayFormat = additiveObjectFormat("Moved conversation");
+  moveFollowers = new Set;
+  waitingFor = new Set;
+  LEGACY_DECISIONS = path21.join(MOVES, "ended.json");
+  DECISIONS = path21.join(MOVES, "decisions");
+  HINTS = path21.join(MOVES, "decision-hints");
+  DECISION_ID = /^mov_[A-Za-z0-9]{1,40}$/;
+});
+
 // box/src/link/relay/dropped.ts
 import { randomBytes } from "node:crypto";
-import fs31 from "node:fs";
+import fs23 from "node:fs";
 function connectionStarted(address) {
   watched.clear();
   self = address;
@@ -17666,7 +16291,7 @@ function noteDropped(to) {
   if (!call?.back)
     return;
   watched.delete(key);
-  if (fs31.existsSync(call.file))
+  if (fs23.existsSync(call.file))
     try {
       writePrivate(droppedMark(call.file), "{}");
     } catch {}
@@ -17750,8 +16375,8 @@ var init_frames = __esm(() => {
 });
 
 // box/src/link/peers/known.ts
-import fs32 from "node:fs";
-import path30 from "node:path";
+import fs24 from "node:fs";
+import path22 from "node:path";
 function countAway(link, now) {
   const seen = Object.values(link.macSeen ?? {});
   const last = notedOnline() ?? (seen.length ? Math.max(...seen) : undefined);
@@ -17847,7 +16472,7 @@ function movesTold(link, now = Date.now()) {
   const peers = new Set(peersOf(link).map((peer) => peer.key));
   const own = new Set(ownListed().map((agent) => agent.session));
   try {
-    const told = JSON.parse(fs32.readFileSync(path30.join(RUN, "peer-agents.json"), "utf8"));
+    const told = JSON.parse(fs24.readFileSync(path22.join(RUN, "peer-agents.json"), "utf8"));
     for (const [peer, each] of Object.entries(told ?? {})) {
       if (!peers.has(peer) || !Array.isArray(each?.moved))
         continue;
@@ -17871,7 +16496,7 @@ function removedBoxes(link) {
 }
 function ownListed() {
   try {
-    const listed = JSON.parse(fs32.readFileSync(path30.join(RUN, "agents.json"), "utf8"));
+    const listed = JSON.parse(fs24.readFileSync(path22.join(RUN, "agents.json"), "utf8"));
     return (listed?.agents ?? []).filter((agent) => (agent?.machine ?? null) === (listed?.machine ?? null)).map((agent) => ({ session: String(agent?.session), name: typeof agent?.name === "string" ? agent.name : null }));
   } catch {
     return [];
@@ -17967,16 +16592,16 @@ function mailFor(peer, payload, link, removalOnly = false) {
 }
 var KEY, ADDRESS, macsOf = (link) => [...new Set([...Array.isArray(link?.macs) ? link.macs : [], ...typeof link?.mac === "string" ? [link.mac] : []])], ONLINE_FILE, AWAY_AFTER, notedOnline = () => {
   try {
-    const at = Number(fs32.readFileSync(ONLINE_FILE, "utf8"));
+    const at = Number(fs24.readFileSync(ONLINE_FILE, "utf8"));
     return Number.isFinite(at) && at > 0 ? at : undefined;
   } catch {
     return;
   }
 }, writeOnline = (now) => {
   try {
-    fs32.mkdirSync(RUN, { recursive: true, mode: 448 });
-    fs32.writeFileSync(`${ONLINE_FILE}.${process.pid}.tmp`, String(now), { mode: 384 });
-    fs32.renameSync(`${ONLINE_FILE}.${process.pid}.tmp`, ONLINE_FILE);
+    fs24.mkdirSync(RUN, { recursive: true, mode: 448 });
+    fs24.writeFileSync(`${ONLINE_FILE}.${process.pid}.tmp`, String(now), { mode: 384 });
+    fs24.renameSync(`${ONLINE_FILE}.${process.pid}.tmp`, ONLINE_FILE);
   } catch {}
 }, MAC_GONE_AFTER, MOST_PEERS = 64, fitsPeer = (peer) => isObject(peer) && typeof peer.key === "string" && KEY.test(peer.key) && typeof peer.address === "string" && ADDRESS.test(peer.address) && (peer.kind === "mac" || peer.kind === "machine"), cleanPeer = ({ key, address, name, kind, id, sign }) => ({ key, address, kind, name: plainName(name).slice(0, 100), ...typeof id === "string" ? { id: id.slice(0, 200) } : {}, ...typeof sign === "string" && SIGN.test(sign) ? { sign } : {} }), cleanMoved = (moved) => (Array.isArray(moved) ? moved : []).filter((each) => isObject(each) && typeof each.session === "string" && /^ses_[A-Za-z0-9]{1,60}$/.test(each.session) && typeof each.key === "string" && KEY.test(each.key)).slice(0, 500).map(({ session, key }) => ({ session, key })), writesOwnPeers = (link) => IS_MAC && !link?.setup?.managed || followedSetup(link)?.role === "primary", renamed = (link, peer) => ({ ...peer, name: acceptedName(link, peer.key, peer.name) }), mailFormat, REMOVAL_MAIL, MAX_MAIL;
 var init_known = __esm(() => {
@@ -17994,12 +16619,1579 @@ var init_known = __esm(() => {
   init_state();
   KEY = /^[A-Za-z0-9_-]{43}$/;
   ADDRESS = /^[A-Za-z0-9_-]{22}$/;
-  ONLINE_FILE = path30.join(RUN, "online");
+  ONLINE_FILE = path22.join(RUN, "online");
   AWAY_AFTER = 5 * 60000;
   MAC_GONE_AFTER = 30 * 24 * 3600 * 1000;
   mailFormat = objectFormat("Peer mail", 1);
   REMOVAL_MAIL = Buffer.from("kuvo-removal-v1\x00");
   MAX_MAIL = 65600 - 17;
+});
+
+// box/src/link/host-interface.ts
+import crypto17 from "node:crypto";
+import fs25 from "node:fs";
+import path23 from "node:path";
+function appHost() {
+  if (!KEYS_ON_HOST)
+    return null;
+  try {
+    const text = fs25.readFileSync(HOST_FILE, "utf8");
+    const said = JSON.parse(text);
+    if (typeof said?.url === "string" && said.url && typeof said?.password === "string" && said.password) {
+      return { url: said.url.replace(/\/+$/, ""), password: said.password, said: text };
+    }
+  } catch {}
+  return LAUNCH_HOST && { ...LAUNCH_HOST, said: "launch" };
+}
+function openAppHost() {
+  if (!OWN_HOME_MAC)
+    return appHost();
+  try {
+    const host = JSON.parse(fs25.readFileSync(path23.join(RUN, "app.json"), "utf8"))?.host;
+    if (typeof host?.url === "string" && host.url && typeof host?.password === "string" && host.password) {
+      return { url: host.url.replace(/\/+$/, ""), password: host.password, said: `app ${host.url} ${host.password}` };
+    }
+  } catch {}
+  return null;
+}
+function helloProof(password, nonce, url) {
+  const reached = new URL(url);
+  return crypto17.createHmac("sha256", password).update(`kuvo-host-hello\x00${nonce}\x00${reached.hostname}:${reached.port || 80}`).digest("hex");
+}
+function forgetHostProof() {
+  provenBy = null;
+  vaultProvenBy = null;
+}
+async function proveHost(host, signal) {
+  if (provenBy === host.said)
+    return;
+  const nonce = crypto17.randomBytes(32).toString("hex");
+  let proof = null;
+  try {
+    const response = await fetch(`${host.url}/hello`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ nonce }),
+      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(15000)]) : AbortSignal.timeout(15000)
+    });
+    const answer = await response.json().catch(() => null);
+    if (response.ok && typeof answer?.proof === "string")
+      proof = Buffer.from(answer.proof);
+  } catch {}
+  const expected = Buffer.from(helloProof(host.password, nonce, host.url));
+  if (!proof || proof.length !== expected.length || !crypto17.timingSafeEqual(proof, expected))
+    throw new KeysUnavailable(NOT_ANSWERING);
+  if (host.said.startsWith("app "))
+    return;
+  provenBy = host.said;
+}
+async function proveVaultHost(host) {
+  if (!HOST_VAULT_SECRET) {
+    throw new KeysUnavailable(OWN_HOME_MAC ? "This Mac's vault can only be reached by Kuvo running on this Mac, not by a one-off command." : "Kuvo Code on this Mac didn't give its vault its secret. Quit Kuvo Code and open it again.");
+  }
+  if (vaultProvenBy === host.said)
+    return;
+  const nonce = crypto17.randomBytes(32).toString("hex");
+  let proof = null;
+  try {
+    const response = await fetch(`${host.url}/hello`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ nonce, vault: true }),
+      signal: AbortSignal.timeout(15000)
+    });
+    const answer = await response.json().catch(() => null);
+    if (response.ok && typeof answer?.vaultProof === "string")
+      proof = Buffer.from(answer.vaultProof);
+  } catch {}
+  const reached = new URL(host.url);
+  const expected = Buffer.from(crypto17.createHmac("sha256", HOST_VAULT_SECRET).update(`kuvo-host-vault\x00${nonce}\x00${reached.hostname}:${reached.port || 80}`).digest("hex"));
+  if (!proof || proof.length !== expected.length || !crypto17.timingSafeEqual(proof, expected))
+    throw new KeysUnavailable(NOT_ANSWERING);
+  vaultProvenBy = host.said;
+}
+async function hostTrash(folder) {
+  const host = appHost();
+  if (!host)
+    return;
+  await proveHost(host);
+  const response = await fetch(`${host.url}/trash`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${host.password}`, "content-type": "application/json" },
+    body: JSON.stringify({ path: folder }),
+    signal: AbortSignal.timeout(15000)
+  });
+  await response.body?.cancel().catch(() => {});
+}
+async function askHost(host, call, body, missing = false) {
+  await proveHost(host);
+  const sent = JSON.stringify(body);
+  const vault = call.startsWith("vault/");
+  if (vault)
+    await proveVaultHost(host);
+  const at = Date.now();
+  let response;
+  try {
+    response = await fetch(`${host.url}/${call}`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${host.password}`, "content-type": "application/json", ...vault ? { "x-kuvo-vault-auth": vaultAuth(call, sent, at), "x-kuvo-vault-at": String(at) } : {} },
+      body: sent,
+      signal: AbortSignal.timeout(["keys/get", "keys/set", "link/identity", "vault/get", "vault/set"].includes(call) ? 120000 : 15000)
+    });
+  } catch {
+    forgetHostProof();
+    throw new KeysUnavailable(NOT_ANSWERING);
+  }
+  if (missing && response.status === 404) {
+    await response.body?.cancel().catch(() => {});
+    return null;
+  }
+  let answer = null;
+  try {
+    answer = await response.json();
+  } catch {}
+  if (response.status < 200 || response.status > 299) {
+    const said = typeof answer?.message === "string" && answer.message.trim() ? ` ${oneLine(answer.message, 300)}` : "";
+    throw new KeysUnavailable(`This Mac's keys couldn't be reached (${response.status}).${said}`);
+  }
+  return answer ?? {};
+}
+async function siteSignIns() {
+  const host = openAppHost();
+  if (!host)
+    return null;
+  try {
+    const answer = await askHost(host, "sites/signed-in", {});
+    return isObject(answer?.sites) ? answer.sites : null;
+  } catch {
+    return null;
+  }
+}
+async function linkHost(call, body) {
+  const host = appHost();
+  if (!host)
+    return null;
+  try {
+    return await askHost(host, call, body ?? {});
+  } catch {
+    return null;
+  }
+}
+var KeysUnavailable, HOST_FILE, NOT_ANSWERING = "Kuvo Code isn't answering for this Mac's keys. Try again in a moment.", provenBy = null, vaultProvenBy = null, vaultAuth = (call, body, at) => crypto17.createHmac("sha256", HOST_VAULT_SECRET ?? "").update(`kuvo-host-vault-call\x00${call}\x00${crypto17.createHash("sha256").update(body).digest("hex")}\x00${at}`).digest("hex");
+var init_host_interface = __esm(() => {
+  init_text();
+  init_home();
+  KeysUnavailable = class KeysUnavailable extends Error {
+  };
+  HOST_FILE = path23.join(RUN, "host.json");
+});
+
+// box/src/link/keys.ts
+import fs26 from "node:fs";
+import path24 from "node:path";
+function keyHost() {
+  const host = appHost();
+  if (KEYS_ON_HOST && !host)
+    throw new KeysUnavailable(NOT_ANSWERING);
+  return host;
+}
+function keyWork(work) {
+  const run = keyQueue.then(work, work);
+  keyQueue = run.catch(() => {});
+  return run;
+}
+async function keyNames({ prefix = "", suffix = "" } = {}) {
+  if (typeof prefix !== "string" || typeof suffix !== "string" || prefix && !/^KUVO_KEY_[A-Z0-9_]*$/.test(prefix) || suffix && !/^[A-Z0-9_]+$/.test(suffix)) {
+    throw new KeysUnavailable("That isn't a part of a key's name.");
+  }
+  const host = keyHost();
+  let names;
+  if (host) {
+    const answer = await askHost(host, "keys/names", { ...prefix ? { prefix } : {}, ...suffix ? { suffix } : {} });
+    if (!Array.isArray(answer.names))
+      throw new KeysUnavailable("This Mac's keys couldn't be read.");
+    names = answer.names;
+  } else {
+    names = listOf(BOX_KEYS);
+  }
+  return [...new Set(names.filter((name) => typeof name === "string" && STORED_KEY.test(name) && !BOT_KEY.test(name) && name.startsWith(prefix) && name.endsWith(suffix)))].sort();
+}
+async function clearHostKeys() {
+  await keyWork(async () => {
+    const host = keyHost();
+    if (!host)
+      return;
+    const names = async () => {
+      const answer = await askHost(host, "keys/names", {});
+      if (!Array.isArray(answer.names) || !answer.names.every((name) => typeof name === "string" && STORED_KEY.test(name))) {
+        throw new KeysUnavailable("This Mac's keys couldn't be read.");
+      }
+      return answer.names;
+    };
+    for (const name of new Set(await names()))
+      await askHost(host, "keys/delete", { name });
+    if ((await names()).length)
+      throw new KeysUnavailable("The host still holds Kuvo integration keys.");
+  });
+}
+async function readKey(name) {
+  checkedKeyName(name);
+  const host = keyHost();
+  if (!host)
+    return textOf(keyFile(name));
+  const answer = await askHost(host, "keys/get", { name }, true);
+  return typeof answer?.value === "string" ? answer.value : null;
+}
+async function writeKey(name, value) {
+  checkedKeyName(name);
+  if (typeof value !== "string")
+    throw new KeysUnavailable("A key is text.");
+  const host = keyHost();
+  if (!host)
+    return writeKeyFile(name, value);
+  if (!writesKeyFiles())
+    return void await askHost(host, "keys/set", { name, value });
+  await keyFileWork(async () => {
+    await askHost(host, "keys/set", { name, value });
+    writeKeyFile(name, value);
+  });
+}
+async function deleteKey(name) {
+  checkedKeyName(name);
+  const host = keyHost();
+  if (!host)
+    return removeKeyFile(name);
+  if (!writesKeyFiles())
+    return void await askHost(host, "keys/delete", { name });
+  await keyFileWork(async () => {
+    await askHost(host, "keys/delete", { name });
+    removeKeyFile(name);
+  });
+}
+function writeKeyFile(name, value) {
+  locked(CONFIG_LOCK, () => writeSecret(keyFile(name), value));
+}
+function removeKeyFile(name) {
+  locked(CONFIG_LOCK, () => fs26.rmSync(keyFile(name), { force: true }));
+}
+async function dropBotKeys(keep = []) {
+  const kept = (name) => keep.some((end) => name.endsWith(end));
+  const host = keyHost();
+  if (host) {
+    const answer = await askHost(host, "keys/names", {});
+    if (!Array.isArray(answer.names))
+      throw new KeysUnavailable("This Mac's keys couldn't be read.");
+    for (const name of answer.names)
+      if (typeof name === "string" && BOT_KEY.test(name) && !kept(name))
+        await askHost(host, "keys/delete", { name });
+  }
+  for (const folder of [BOT_KEYS, BOX_KEYS, LEGACY_KEYS]) {
+    for (const name of listOf(folder))
+      if (BOT_KEY.test(name) && !kept(name))
+        fs26.rmSync(path24.join(folder, name), { force: true });
+  }
+  if (!listOf(BOT_KEYS).some(kept))
+    fs26.rmSync(BOT_KEYS, { recursive: true, force: true });
+}
+async function syncKeyFiles() {
+  if (!writesKeyFiles())
+    return false;
+  let names;
+  try {
+    names = await keyNames();
+  } catch {
+    return false;
+  }
+  const files = listOf(BOX_KEYS).filter((name) => STORED_KEY.test(name) && !BOT_KEY.test(name));
+  let all = true;
+  for (const name of [...new Set([...names, ...files])]) {
+    await keyFileWork(async () => {
+      let value;
+      try {
+        value = await readKey(name);
+      } catch {
+        all = false;
+        return;
+      }
+      if (value !== null) {
+        if (textOf(keyFile(name)) !== value)
+          writeKeyFile(name, value);
+      } else if (names.includes(name)) {
+        all = false;
+      } else {
+        removeKeyFile(name);
+      }
+    });
+  }
+  return all;
+}
+function keepKeyFiles(every = 12 * 3600000, retry = 60000) {
+  if (!writesKeyFiles() || keeping)
+    return;
+  let failed = 0;
+  const round = async () => {
+    failed = await syncKeyFiles().catch(() => false) ? 0 : failed + 1;
+    keeping = setTimeout(() => void round(), keyFilesWait(failed, every, retry));
+    keeping.unref?.();
+  };
+  keeping = setTimeout(() => void round(), 0);
+  keeping.unref?.();
+}
+var LEGACY_KEYS, STORED_KEY, BOT_KEY, keyQueue, checkedKeyName = (name) => {
+  if (typeof name !== "string" || !STORED_KEY.test(name) || BOT_KEY.test(name))
+    throw new KeysUnavailable("That isn't a key's name.");
+  return name;
+}, keyFile = (name) => path24.join(BOX_KEYS, checkedKeyName(name)), KEY_FILES_LOCK, keyFileWork = (work) => lockedWhile(KEY_FILES_LOCK, work, { stale: 150000, wait: 150000 }), keeping = null, keyFilesWait = (failed, every = 12 * 3600000, retry = 60000) => failed ? Math.min(every, retry * 2 ** (failed - 1)) : every;
+var init_keys2 = __esm(() => {
+  init_files();
+  init_files2();
+  init_home();
+  init_host_interface();
+  LEGACY_KEYS = path24.join(K, "keys");
+  STORED_KEY = /^KUVO_KEY_[A-Z0-9_]+$/;
+  BOT_KEY = /^KUVO_KEY_[A-Z0-9_]+__BOT_[A-Z0-9]+$/;
+  keyQueue = Promise.resolve();
+  KEY_FILES_LOCK = path24.join(RUN, ".key-files.lock");
+});
+
+// box/src/link/add/seed.ts
+import crypto18 from "node:crypto";
+import fs27 from "node:fs";
+import path25 from "node:path";
+function seedSettings(settings) {
+  if (!isObject(settings))
+    return {};
+  const { $schema: _schema, shell: _shell, worktree: _worktree, ...rest } = settings;
+  if (isObject(rest.mcp)) {
+    const without = (servers) => Object.fromEntries(Object.entries(servers).filter(([id]) => !MAC_ONLY.includes(id)));
+    rest.mcp = isObject(rest.mcp.servers) ? { ...rest.mcp, servers: without(rest.mcp.servers) } : without(rest.mcp);
+  }
+  return theirKeyPaths(rest);
+}
+function seedCredentials(credentials, accounts) {
+  const inUse = credentials.filter((each) => each.active === true && typeof each.integrationID === "string" && accounts.has(each.integrationID) && isObject(each.value));
+  return {
+    credentials: inUse.filter((each) => !renewsItself(each)).slice(0, 100).map((each) => ({ ...typeof each.id === "string" ? { sourceID: each.id } : {}, integrationID: each.integrationID, label: typeof each.label === "string" ? each.label : "", value: each.value })),
+    renewing: inUse.filter(renewsItself).length
+  };
+}
+function credentialSelection(value) {
+  if (value === undefined)
+    return [];
+  if (!Array.isArray(value) || value.length > 300 || !value.every((id) => typeof id === "string" && SELECTION_ID.test(id)))
+    return null;
+  return [...new Set(value)];
+}
+async function engineSignIns(engine) {
+  const target = engine();
+  const [integrations, credentials] = await Promise.all([asked(target, "GET", "api/integration", undefined, 15000), asked(target, "GET", "api/credential", undefined, 15000)]);
+  const accounts = new Set(listed(integrations).filter((each) => isObject(each) && typeof each.id === "string" && !(isObject(each.metadata) && each.metadata.source === "mcp")).map((each) => each.id));
+  return seedCredentials(listed(credentials).filter(isObject), accounts);
+}
+async function credentialChecklist(engine = readEngineFile) {
+  const [available, accounts] = await Promise.allSettled([keyNames(), engineSignIns(engine)]);
+  const keys = available.status === "fulfilled" ? available.value.filter(isPortableKey).slice(0, 200) : [];
+  const signIns = accounts.status === "fulfilled" ? accounts.value.credentials : [];
+  return {
+    items: [
+      ...signIns.map((each) => ({ id: accountID(each), kind: "sign-in", label: each.label || each.integrationID, integration: each.integrationID, checked: true })),
+      ...keys.map((name) => ({ id: keyID(name), kind: "key", label: name, checked: true }))
+    ],
+    renewing: accounts.status === "fulfilled" ? accounts.value.renewing : 0,
+    unavailable: [...available.status === "rejected" ? ["keys"] : [], ...accounts.status === "rejected" ? ["sign-ins"] : []]
+  };
+}
+function safeStartingSettings(settings, keys) {
+  const source = seedSettings(settings);
+  const result = {};
+  if (typeof source.model === "string" && /^[\w.-]+\/[\w.:-]{1,150}$/.test(source.model))
+    result.model = source.model;
+  const servers = isObject(source.mcp) && (isObject(source.mcp.servers) ? source.mcp.servers : source.mcp);
+  if (!servers)
+    return result;
+  const kept = Object.fromEntries(Object.entries(servers).flatMap(([name, value]) => {
+    if (!isObject(value) || value.type !== "local" || !Array.isArray(value.command) || value.command.length !== 1 || typeof value.command[0] !== "string" || !/^[\w.-]{1,100}$/.test(value.command[0]) || !isObject(value.environment))
+      return [];
+    const environment = Object.entries(value.environment);
+    if (!environment.length || !environment.every(([variable, text]) => /^[A-Z][A-Z0-9_]{0,99}$/.test(variable) && typeof text === "string" && keys.has(KEY_REFERENCE.exec(text)?.[1] ?? "")))
+      return [];
+    return [[name, { type: "local", command: value.command, environment: value.environment, ...value.disabled === true ? { disabled: true } : {} }]];
+  }));
+  for (const [id, configuration] of Object.entries(portableKeyedIntegrations(keys))) {
+    const original = servers[id];
+    if (isObject(original) && !Object.hasOwn(kept, id))
+      kept[id] = { ...configuration, ...original.disabled === true ? { disabled: true } : {} };
+  }
+  if (Object.keys(kept).length)
+    result.mcp = kept;
+  return result;
+}
+async function gatherSeed(selection, engine = readEngineFile) {
+  const selected = new Set(selection);
+  const seed = { settings: {}, keys: {}, credentials: [], renewing: 0, integrations: [], unavailable: false };
+  if (selected.size) {
+    const [available, accounts] = await Promise.allSettled([keyNames(), engineSignIns(engine)]);
+    seed.unavailable = available.status === "rejected" || accounts.status === "rejected";
+    if (available.status === "fulfilled")
+      for (const name of available.value.filter(isPortableKey).slice(0, 200)) {
+        if (!selected.has(keyID(name)))
+          continue;
+        try {
+          const value = await readKey(name);
+          if (value)
+            seed.keys[name] = value;
+        } catch {
+          seed.unavailable = true;
+        }
+      }
+    if (accounts.status === "fulfilled") {
+      seed.credentials = accounts.value.credentials.filter((each) => selected.has(accountID(each))).map(({ sourceID: _sourceID, ...credential }) => credential);
+      seed.renewing = accounts.value.renewing;
+    }
+  }
+  try {
+    const read = readSettings();
+    if (!read.problem) {
+      const keys = new Set(Object.keys(seed.keys));
+      seed.settings = safeStartingSettings(read.settings, keys);
+      const configured = isObject(seed.settings.mcp) ? seed.settings.mcp : {};
+      seed.integrations = Object.keys(portableKeyedIntegrations(keys)).flatMap((id) => {
+        const value = configured[id];
+        return isObject(value) ? [{ id, ...value.disabled === true ? { disabled: true } : {} }] : [];
+      });
+    }
+  } catch {}
+  return seed;
+}
+function finishSshCredentialCopy(link) {
+  if (link.setup?.role !== "member")
+    return;
+  const file = path25.join(RUN, SSH_FRESH_ADD);
+  try {
+    if (!fs27.lstatSync(file).isFile() || !fs27.readFileSync(file, "utf8").startsWith(sshCopyScope(link.setup.id, link.setup.primary)))
+      return;
+    const key = ownKey(link);
+    if (acceptedMembership(link)?.boxes.some((box) => box.key === key))
+      fs27.unlinkSync(file);
+  } catch {}
+}
+function withCredentialCopyLock(work) {
+  return exclusiveWhile(path25.resolve(K) + "-credential-copy.lock", work);
+}
+async function takeKeys(given) {
+  let kept = 0;
+  for (const [name, value] of Object.entries(given).slice(0, 200)) {
+    if (!isPortableKey(name) || typeof value !== "string")
+      throw new Error("That key could not be copied.");
+    if (await readKey(name) === null)
+      await writeKey(name, value);
+    kept++;
+  }
+  return kept;
+}
+function takeIntegrations(integrations, keys) {
+  if (!Array.isArray(integrations) || !integrations.length)
+    return true;
+  const selected = new Map(integrations.filter(isObject).map((item) => [item.id, item.disabled === true]));
+  const catalog = portableKeyedIntegrations(new Set(Object.keys(keys)));
+  const current = readSettings();
+  if (current.problem)
+    return false;
+  const root = isObject(valueAt(current.settings, ["mcp", "servers"])) ? ["mcp", "servers"] : ["mcp"];
+  const changes = Object.entries(catalog).flatMap(([id, value]) => {
+    const path = [...root, id];
+    return selected.has(id) && valueAt(current.settings, path) === undefined ? [{ path, value: { ...value, ...selected.get(id) ? { disabled: true } : {} }, was: null }] : [];
+  });
+  return !changes.length || changeSettings(changes).status === 200;
+}
+async function applyInstallerSeed(given) {
+  return isObject(given) && isObject(given.keys) && Array.isArray(given.credentials) && (await takeSelected(given, readEngineFile, false)).status === 200;
+}
+async function takeSeed(input, engine = readEngineFile) {
+  let given = null;
+  try {
+    given = JSON.parse(input);
+  } catch {}
+  return takeSelected(given, engine, true);
+}
+async function takeSelected(given, engine, once) {
+  if (!isObject(given) || !Array.isArray(given.credentials))
+    return { status: 400, message: "box seed takes JSON on its standard input: {credentials: [{integrationID, label, value}]}." };
+  const credentials = given.credentials.slice(0, 100);
+  let keys;
+  if (isObject(given.keys)) {
+    try {
+      keys = await takeKeys(given.keys);
+      if (!takeIntegrations(given.integrations, given.keys))
+        return { status: 503, message: "The selected integrations could not be saved." };
+    } catch {
+      return { status: 503, message: "The selected keys could not be saved." };
+    }
+  }
+  const keyCount = keys === undefined ? {} : { keys };
+  if (!credentials.length || once && fs27.existsSync(SEEDED_FILE))
+    return { status: 200, taken: 0, ...keyCount };
+  let target;
+  let has;
+  try {
+    target = engine();
+    has = new Set(listed(await asked(target, "GET", "api/credential", undefined, 15000)).map((each) => isObject(each) ? each.integrationID : undefined));
+  } catch {
+    return { status: 503, message: "Its engine isn't answering yet." };
+  }
+  let taken = 0;
+  for (const each of credentials) {
+    if (!isObject(each) || typeof each.integrationID !== "string" || !/^[A-Za-z0-9._-]{1,100}$/.test(each.integrationID) || !isObject(each.value) || has.has(each.integrationID) || renewsItself(each))
+      continue;
+    try {
+      await asked(target, "POST", "api/credential", { integrationID: each.integrationID, label: typeof each.label === "string" ? each.label.slice(0, 200) : "", value: each.value, activate: true }, 15000);
+      has.add(each.integrationID);
+      taken++;
+    } catch {
+      return { status: 503, taken, message: "Some sign-ins could not be saved. Try again." };
+    }
+  }
+  if (once)
+    try {
+      writePrivate(SEEDED_FILE, JSON.stringify({ at: Date.now(), taken }));
+    } catch {}
+  return { status: 200, taken, ...keyCount };
+}
+var renewsItself = (credential) => isObject(credential.value) && typeof credential.value.refresh === "string" && credential.value.refresh.length > 0 && credential.integrationID !== "github-copilot", MAC_ONLY, variablePrefix = (integration) => keyVariable(integration, ""), theirKeyPaths = (value) => {
+  if (typeof value === "string")
+    return value.replace(/\{file:[^{}]*\/(KUVO_KEY_[A-Za-z0-9_]+)\}/g, "{file:~/.kuvo-code/box/keys/$1}");
+  if (Array.isArray(value))
+    return value.map(theirKeyPaths);
+  if (isObject(value))
+    return Object.fromEntries(Object.entries(value).map(([key, inner]) => [key, theirKeyPaths(inner)]));
+  return value;
+}, listed = (answer) => isObject(answer) && Array.isArray(answer.data) ? answer.data : Array.isArray(answer) ? answer : [], KEY_REFERENCE, SELECTION_ID, itemID = (kind, ...name) => crypto18.createHash("sha256").update(JSON.stringify([kind, ...name])).digest("base64url"), accountID = (item) => itemID("sign-in", item.integrationID, item.sourceID ?? item.label), keyID = (name) => itemID("key", name), isPortableKey = (name) => STORED_KEY.test(name) && !BOT_KEY.test(name) && !MAC_ONLY.some((id) => name.startsWith(variablePrefix(id))), sha2562 = (value) => crypto18.createHash("sha256").update(JSON.stringify(value)).digest("hex"), sshCopyScope = (setup, issuer) => `v1 ${sha2562([setup, issuer])} `, sshCopySelection = (selection) => sha2562([...selection].sort()), SEEDED_FILE;
+var init_seed = __esm(() => {
+  init_files();
+  init_catalogs();
+  init_servers();
+  init_config();
+  init_client();
+  init_files2();
+  init_home();
+  init_marks();
+  init_known();
+  init_membership();
+  init_keys2();
+  MAC_ONLY = [...MAC_ONLY_INTEGRATIONS, ...MAC_ONLY_SERVERS];
+  KEY_REFERENCE = /^\{file:~\/\.kuvo-code\/box\/keys\/(KUVO_KEY_[A-Z0-9_]+)\}$/;
+  SELECTION_ID = /^[A-Za-z0-9_-]{43}$/;
+  SEEDED_FILE = path25.join(RUN, "seeded.json");
+});
+
+// box/src/link/run-command.ts
+import { spawn as spawn2 } from "node:child_process";
+import fs29 from "node:fs";
+function commandEnv(from = process.env) {
+  const env = {};
+  for (const [name, value] of Object.entries(from)) {
+    if (value === undefined || PRIVATE.includes(name) || name.startsWith("KUVO_") || name.startsWith("OPENCODE_"))
+      continue;
+    env[name] = value;
+  }
+  for (const [name, value] of Object.entries(from)) {
+    if (!name.startsWith("KUVO_OWN_") || value === undefined)
+      continue;
+    const own = name.slice("KUVO_OWN_".length);
+    if (!own)
+      continue;
+    if (value)
+      env[own] = value;
+    else
+      delete env[own];
+  }
+  return env;
+}
+function launchFromLogin(found) {
+  return Object.entries(found).filter(([name, value]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) && (name === "BUN_INSTALL" || !NOT_FROM_LOGIN.test(name)) && !SHELLS_OWN.test(name) && !/[\r\n\0]/.test(value)).map(([name, value]) => `${name}=${value}
+`).join("");
+}
+async function askedEnv(from = process.env, platform = process.platform, now = Date.now(), wait = 1000) {
+  const env = commandEnv(from);
+  if (platform !== "darwin" || !from.HOME || from.KUVO_TEST_LOGIN_ENV === "off")
+    return env;
+  if (!loginReading && (!loginRead || now - loginRead.at > LOGIN_READ_FOR)) {
+    const at = now;
+    loginReading = loginEnvironment(from).then((found) => {
+      loginRead = { at, env: found ?? loginRead?.env };
+    }, () => {}).finally(() => {
+      loginReading = null;
+    });
+  }
+  if (loginReading) {
+    let timer;
+    await (loginRead ? Promise.race([loginReading, new Promise((resolve) => timer = setTimeout(resolve, wait))]) : loginReading);
+    clearTimeout(timer);
+  }
+  for (const [name, value] of Object.entries(loginRead?.env ?? {}))
+    if (!NOT_FROM_LOGIN.test(name))
+      env[name] = value;
+  return env;
+}
+function runCommand(command, folder, env, timeout, signal, name = String(Math.random()), ended) {
+  return new Promise((resolve) => {
+    const shell = env.SHELL && fs29.existsSync(env.SHELL) ? env.SHELL : "/bin/sh";
+    const child = spawn2(shell, ["-lc", command], { cwd: folder, env, stdio: ["ignore", "pipe", "pipe"], detached: process.platform !== "win32" });
+    if (child.pid)
+      running.set(name, { pid: child.pid, ended });
+    let output = Buffer.alloc(0);
+    const take = (chunk) => {
+      output = Buffer.concat([output, chunk]);
+      if (output.length > MOST_KEPT2)
+        output = output.subarray(output.length - MOST_KEPT2);
+    };
+    child.stdout.on("data", take);
+    child.stderr.on("data", take);
+    let timedOut = false;
+    const stop = () => {
+      try {
+        process.kill(-child.pid, "SIGTERM");
+      } catch {
+        try {
+          child.kill("SIGTERM");
+        } catch {}
+      }
+      setTimeout(() => {
+        try {
+          process.kill(-child.pid, "SIGKILL");
+        } catch {}
+      }, 3000).unref();
+    };
+    const timer = setTimeout(() => {
+      timedOut = true;
+      stop();
+    }, timeout);
+    signal?.addEventListener("abort", stop, { once: true });
+    let done = false;
+    const end = (code) => {
+      if (done)
+        return;
+      done = true;
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", stop);
+      running.delete(name);
+      resolve({ output: output.toString("utf8"), code, timedOut });
+    };
+    child.on("error", (error) => {
+      take(Buffer.from(String(error.message)));
+      end(null);
+    });
+    child.on("close", end);
+    child.on("exit", (code) => setTimeout(() => end(code), 1000).unref());
+  });
+}
+var PRIVATE, MOST_KEPT2, NOT_FROM_LOGIN, SHELLS_OWN, LOGIN_READ_FOR = 60000, loginRead = null, loginReading = null, running;
+var init_run_command = __esm(() => {
+  init_platform();
+  PRIVATE = ["BUN_BE_BUN", "BUN_RUNTIME_TRANSPILER_CACHE_PATH"];
+  MOST_KEPT2 = 4 * 1024 * 1024;
+  NOT_FROM_LOGIN = /^(DYLD_|BUN_|KUVO_|OPENCODE_)|^(NODE_OPTIONS|PWD|OLDPWD|SHLVL|_)$/;
+  SHELLS_OWN = /^(BASH|BASHOPTS|BASHPID|BASH_[A-Z_]+|SHELLOPTS|POSIXLY_CORRECT|ENV|IFS|CDPATH|UID|EUID|PPID|PS[1-4]|OPTIND|OPTARG|LINENO|RANDOM|SECONDS|FUNCNAME|GROUPS|HOME)$/;
+  running = new Map;
+  process.once("exit", () => {
+    for (const { pid, ended } of running.values()) {
+      try {
+        process.kill(-pid, "SIGKILL");
+      } catch {}
+      try {
+        ended?.();
+      } catch {}
+    }
+  });
+});
+
+// box/src/link/notices/sentence.ts
+function firstOf(words) {
+  const ending = /[.!?…]+["”’)\]]*(?=\s|$)/g;
+  for (let found = ending.exec(words);found; found = ending.exec(words)) {
+    const end = found.index + found[0].length;
+    if (ABBREVIATIONS.test(words.slice(0, found.index + 1)))
+      continue;
+    return words.slice(0, end);
+  }
+  return words;
+}
+function cutAtWord(text, longest) {
+  const characters = Array.from(text);
+  if (characters.length <= longest)
+    return text;
+  const room = characters.slice(0, longest - 1).join("");
+  const space = room.lastIndexOf(" ");
+  return (space > longest / 2 ? room.slice(0, space) : room).replace(/[\s,;:–—-]+$/, "") + "…";
+}
+function oneSentence(text, longest = SENTENCE_LONGEST) {
+  const lines = plainAddresses(String(text ?? "")).replace(/```[\s\S]*?(?:```|$)/g, `
+
+`).split(`
+`);
+  const paragraphs = [];
+  let current = [];
+  let heading = "";
+  const close = () => {
+    if (current.length)
+      paragraphs.push(plain(current.join(" ")));
+    current = [];
+  };
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!line || /^#{1,6}\s/.test(line) || line.startsWith("|") || /^([-*_])(\s*\1){2,}$/.test(line) || /^(\*\*|__)[^*_]+\1:?$/.test(line) || /^<\/?[a-z][^>]*>$/i.test(line)) {
+      close();
+      if (!heading && /^(#{1,6}\s|\*\*|__)/.test(line))
+        heading = plain(line.replace(/^#{1,6}\s+/, ""));
+      continue;
+    }
+    const item = /^(?:[-*+]|\d+[.)])\s+(.*)$/.exec(line);
+    if (item) {
+      close();
+      current.push(item[1]);
+      close();
+      continue;
+    }
+    current.push(line);
+  }
+  close();
+  const found = paragraphs.filter(Boolean);
+  if (!found.length)
+    return heading ? cutAtWord(firstOf(heading), longest) : "";
+  let sentence = firstOf(found[0]);
+  if (sentence === found[0] && sentence.endsWith(":") && found[1])
+    sentence = `${sentence} ${firstOf(found[1])}`;
+  return cutAtWord(sentence, longest);
+}
+var plain = (text) => String(text ?? "").replace(/^[ \t]{0,3}(#{1,6}|>+)[ \t]+/gm, "").replace(/!?\[([^\]]*)\]\([^)\s]*\)/g, "$1").replace(/(?<![\w*_])[*_]{1,3}(?=\S)|(?<=\S)[*_]{1,3}(?![\w*_])/g, "").replace(/`/g, "").replace(/\s+/g, " ").trim(), SENTENCE_LONGEST = 100, LINE_LONGEST = 60, ABBREVIATIONS, lastName = (address) => address.replace(/\/+$/, "").split("/").pop() || address, plainAddresses = (text) => text.replace(/\bhttps?:\/\/(?:www\.)?([^\s/?#)\]>"']+)[^\s)\]>"']*/gi, "$1").replace(/(?<![\w.:/~@-])(?:~|\.{1,2})?\/(?:[\w.@+-]+\/)+[\w.@+-]*|(?<![\w.:/~@-])[\w.@+-]+(?:\/[\w.@+-]+){2,}(?<=[A-Za-z][\w.@+-]*)/g, lastName);
+var init_sentence = __esm(() => {
+  init_text();
+  ABBREVIATIONS = /(?:^|\s)(?:e\.g|i\.e|vs|cf|approx|incl|Mr|Mrs|Ms|Dr|Fig)\.$/i;
+});
+
+// box/src/link/notices/plain.ts
+function commandWords(lines) {
+  const specific = lines.map((line) => String(line)).filter((line) => line.trim() && line.trim() !== "*");
+  const names = programsRun(specific);
+  if (!names.length)
+    return { words: "a command", whole: specific.length === 0 };
+  return { words: named2(names), whole: names.length <= 2 && specific.every((line) => PROGRAM.test(line.trim())) };
+}
+function permissionLine(request) {
+  const resources = (Array.isArray(request.resources) ? request.resources : []).map(String).filter((each) => each !== "*");
+  const none = resources.length === 0;
+  const say = (words, whole = none) => ({ line: cutAtWord(`Wants to ${words}.`, LINE_LONGEST), whole });
+  const files = (verb, one, many) => {
+    const only = resources.length === 1 ? fileName(resources[0]) : null;
+    return say(none ? one : only ? `${verb} ${only}` : resources.length > 1 ? `${verb} ${resources.length} ${many}` : one);
+  };
+  switch (request.action) {
+    case "edit":
+    case "write":
+    case "patch":
+      return files("edit", "edit files", "files");
+    case "read":
+      return files("read", "read a file", "files");
+    case "shell":
+    case "bash": {
+      const { words, whole } = commandWords(resources);
+      return say(`run ${words}`, whole);
+    }
+    case "external_directory":
+      return say("work outside the project");
+    case "webfetch": {
+      const hosts = [...new Set(resources.map(hostOf))];
+      return say(hosts.length === 1 && hosts[0] ? `open ${hosts[0]}` : "open a web page");
+    }
+    default:
+      return say(OTHER[request.action] ?? "use a tool");
+  }
+}
+function reasonWords(reason) {
+  const first = String(reason ?? "").split(`
+`).map((each) => each.trim()).find(Boolean) ?? "";
+  const sentence = /[/\\]/.test(first) ? "" : oneSentence(first, 60);
+  if (!sentence || sentence.split(/\s+/).length < 3)
+    return "";
+  const code = /[{}[\]<>/\\]|\b[A-Z][A-Z0-9_]{3,}\b|\b\w*\d{3,}\w*\b|\w+_\w+|\b\w+\.\w+\(|0x[0-9a-fA-F]+/;
+  if (code.test(sentence))
+    return "";
+  return sentence;
+}
+function shortNotice(notice) {
+  const short = { ...notice };
+  if (short.title)
+    short.title = cutAtWord(short.title.replace(/\s+/g, " ").trim(), 60);
+  if (short.subtitle)
+    short.subtitle = cutAtWord(short.subtitle.replace(/\s+/g, " ").trim(), 60);
+  if (short.body && (short.body.length > SENTENCE_LONGEST || short.body.includes(`
+`)))
+    short.body = oneSentence(short.body) || cutAtWord(short.body.replace(/\s+/g, " ").trim(), SENTENCE_LONGEST);
+  return short;
+}
+var PROGRAM, programsOf = (line) => line.split(/\s*(?:&&|\|\||;)\s*/).flatMap((part) => {
+  const words = part.trim().split(/\s+/);
+  while (words.length && /^[A-Za-z_]\w*=/.test(words[0]))
+    words.shift();
+  const name = words[0]?.replace(/^.*\//, "") ?? "";
+  return PROGRAM.test(name) && name !== "cd" ? [name] : [];
+}), programsRun = (lines) => [...new Set(lines.flatMap((line) => programsOf(String(line))))], named2 = (names) => names.length <= 2 ? names.join(" and ") : `${names[0]}, ${names[1]} and ${names.length - 2} more`, fileName = (resource) => {
+  const name = resource.replace(/\/+$/, "").split("/").pop() ?? "";
+  return /^[\w][\w .+@()-]{0,38}$/.test(name) ? name : null;
+}, hostOf = (resource) => /^https?:\/\/(?:www\.)?([^\s/?#:]+)/i.exec(resource)?.[1] ?? null, OTHER, shortWords = (text, longest = SENTENCE_LONGEST) => cutAtWord(plain(plainAddresses(String(text ?? ""))), longest);
+var init_plain = __esm(() => {
+  init_sentence();
+  PROGRAM = /^[A-Za-z][\w.+-]{0,24}$/;
+  OTHER = { task: "start a helper", skill: "use a skill", websearch: "search the web", codesearch: "search code", glob: "look through files", grep: "look through files", list: "look at a folder" };
+});
+
+// box/src/link/areas/asks.ts
+import fs30 from "node:fs";
+import net3 from "node:net";
+import os4 from "node:os";
+import path27 from "node:path";
+function readAsks(browserRuns = () => processRuns(Number(fs30.readFileSync(BROWSER_PID, "utf8")), "kuvo-browser")) {
+  try {
+    if (!browserRuns())
+      return [];
+    const asks = JSON.parse(fs30.readFileSync(ASKS_FILE, "utf8")).asks;
+    return Array.isArray(asks) ? asks.filter((ask) => typeof ask?.id === "string" && ["signIn", "code", "action"].includes(ask.kind)) : [];
+  } catch {
+    return [];
+  }
+}
+function listedAsk(ask, machine, asker) {
+  const listed = { id: ask.id, kind: ask.kind, host: String(ask.host ?? ""), machine };
+  if (typeof ask.session === "string")
+    listed.session = ask.session;
+  if (asker)
+    listed.asker = asker;
+  if (ask.kind === "signIn")
+    Object.assign(listed, { username: Boolean(ask.username), password: Boolean(ask.password), saved: [], offersToSave: false });
+  if (ask.kind === "code")
+    listed.prompt = String(ask.prompt ?? "");
+  if (ask.kind === "action")
+    listed.instruction = String(ask.instruction ?? "");
+  if (ask.passkey === true)
+    listed.passkey = true;
+  return listed;
+}
+function askAnswer(ask, given) {
+  const text = (value) => typeof value === "string" && value !== "" ? value : undefined;
+  switch (given?.answer) {
+    case "signIn": {
+      if (ask.kind !== "signIn" || given.saved != null)
+        return null;
+      const username = text(given.username), password = text(given.password);
+      return username || password ? { type: "signIn", username, password } : null;
+    }
+    case "code": {
+      const code = typeof given.code === "string" ? given.code.trim() : "";
+      return ask.kind === "code" && code ? { type: "code", code } : null;
+    }
+    case "done":
+      return ask.kind === "action" ? { type: "done" } : null;
+    case "declined":
+      return { type: "declined" };
+    default:
+      return null;
+  }
+}
+function answerAsk(id, answer, socketPath = BROWSER_SOCKET) {
+  return new Promise((resolve) => {
+    let key;
+    try {
+      key = socketKey();
+    } catch {
+      return resolve(false);
+    }
+    const socket = net3.createConnection(socketPath);
+    let buffer = "";
+    const done = (ok) => {
+      clearTimeout(timer);
+      socket.destroy();
+      resolve(ok);
+    };
+    const timer = setTimeout(() => done(false), 5000);
+    socket.on("error", () => done(false));
+    socket.on("connect", () => socket.write(JSON.stringify({ method: "Kuvo.key", params: { key } }) + `
+` + JSON.stringify({ id: 1, method: "Kuvo.answer", params: { id, answer } }) + `
+`));
+    socket.on("data", (chunk) => {
+      buffer += chunk;
+      let end;
+      while ((end = buffer.indexOf(`
+`)) >= 0) {
+        const line = buffer.slice(0, end);
+        buffer = buffer.slice(end + 1);
+        try {
+          if (JSON.parse(line).id === 1)
+            return done(true);
+        } catch {}
+      }
+    });
+  });
+}
+function askNotice(ask, asker) {
+  const host = String(ask.host ?? "");
+  const title = { signIn: `Sign in to ${host}`, code: `Code for ${host}`, action: `Your turn on ${host}` }[ask.kind];
+  const body = ask.kind === "signIn" ? "The agent needs your sign-in to go on." : ask.kind === "code" ? shortWords(ask.prompt) || "The agent needs a code to go on." : shortWords(ask.instruction);
+  const session = typeof ask.session === "string" ? ask.session : undefined;
+  return { title, subtitle: asker || undefined, body, category: "ask", thread: session ?? ask.id, data: { ...session ? { session } : {}, ask: ask.id } };
+}
+async function conversationOf(session, readEngine = readEngineFile) {
+  if (!session)
+    return null;
+  if (conversations.has(session))
+    return conversations.get(session);
+  try {
+    const engine = readEngine();
+    let current = (await engineGet(engine, `api/session/${encodeURIComponent(session)}`)).data;
+    for (let step = 0;step < 5 && current?.parentID; step++)
+      current = (await engineGet(engine, `api/session/${encodeURIComponent(current.parentID)}`)).data;
+    const found = { id: current?.id ?? session, name: current?.title || null };
+    if (conversations.size > 200)
+      conversations.clear();
+    conversations.set(session, found);
+    return found;
+  } catch {
+    return { id: session, name: null };
+  }
+}
+async function inConversation(ask, readEngine) {
+  const conversation = await conversationOf(ask.session, readEngine);
+  return { ask: conversation ? { ...ask, session: conversation.id } : ask, asker: conversation?.name ?? null };
+}
+async function watchAsks(tell, { signal, every = 2000, read = readAsks, answered = () => {} } = {}) {
+  const told = new Set;
+  let seen = new Set;
+  while (!signal?.aborted) {
+    try {
+      const asks = read();
+      const open = new Set(asks.map((ask) => ask.id));
+      for (const id of told) {
+        if (open.has(id))
+          continue;
+        told.delete(id);
+        answered(id);
+      }
+      for (const ask of asks) {
+        if (told.has(ask.id) || !seen.has(ask.id))
+          continue;
+        const { ask: shown, asker } = await inConversation(ask);
+        if (tell(askNotice(shown, asker)))
+          told.add(ask.id);
+      }
+      seen = open;
+    } catch {}
+    await pause(every, signal);
+  }
+}
+async function* asksRoute(context) {
+  const { request, signal, route, readEngine, info, json } = context;
+  const method = request.method.toUpperCase();
+  if (method !== "GET" && !(method === "HEAD" && route === "kuvo/asks"))
+    return yield* json(405, {});
+  const read = async () => ({
+    asks: await Promise.all(readAsks().map(async (ask) => {
+      const { ask: shown, asker } = await inConversation(ask, readEngine);
+      return listedAsk(shown, info.name ?? os4.hostname(), asker);
+    }))
+  });
+  if (route === "kuvo/asks")
+    return yield* json(200, await read());
+  yield { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };
+  let last = "";
+  while (!signal?.aborted) {
+    const line = JSON.stringify(await read());
+    if (line !== last) {
+      yield { body: Buffer.from(line + `
+`) };
+      last = line;
+    }
+    await new Promise((done) => setTimeout(done, 1000));
+  }
+  return;
+}
+async function* askAnswerRoute(context, answering) {
+  const { request, json } = context;
+  if (request.method.toUpperCase() !== "POST")
+    return yield* json(405, {});
+  const ask = readAsks().find((each) => each.id === decodeURIComponent(answering[1]));
+  if (!ask)
+    return yield* json(404, {});
+  const given = parsed(request.body);
+  const answer = askAnswer(ask, given);
+  if (!answer)
+    return yield* json(400, given?.saved != null ? { message: "Saved passwords are on your Mac: type this one." } : {});
+  return yield* json(await answerAsk(ask.id, answer) ? 200 : 503, {});
+}
+var ASKS_FILE, BROWSER_SOCKET, BROWSER_PID, conversations;
+var init_asks = __esm(() => {
+  init_platform();
+  init_client();
+  init_plain();
+  init_home();
+  ASKS_FILE = path27.join(RUN, "browser-asks.json");
+  BROWSER_SOCKET = path27.join(RUN, "browser.sock");
+  BROWSER_PID = path27.join(RUN, "browser.pid");
+  conversations = new Map;
+});
+
+// box/src/shared/move-hold.ts
+function moveHold(value) {
+  const marker = value?.trim();
+  if (marker === "moving")
+    return marker;
+  return /^moving:mov_[A-Za-z0-9]{1,40}$/.test(marker ?? "") ? marker.slice("moving:".length) : null;
+}
+var moveMarker = (id) => `moving:${id}`;
+
+// box/src/link/bots/here.ts
+import fs31 from "node:fs";
+import path28 from "node:path";
+function botHere(id) {
+  if (typeof id !== "string" || !/^bot_[A-Za-z0-9]+$/.test(id))
+    return null;
+  const folder = path28.join(BOTS, id);
+  let described;
+  try {
+    described = JSON.parse(textOf(path28.join(folder, "bot.json")) ?? "");
+  } catch {
+    return null;
+  }
+  const session = (textOf(path28.join(folder, "session")) ?? "").trim();
+  if (described?.kuvo !== DESCRIPTION || described.id !== id || typeof described.name !== "string" || !session)
+    return null;
+  return { folder, described, session, agents: (textOf(path28.join(folder, "via")) ?? "").trim() === "bridge" };
+}
+function changeDescription(folder, change, durable = false) {
+  return locked(path28.join(folder, ".bot.lock"), () => {
+    let now = null;
+    try {
+      now = JSON.parse(textOf(path28.join(folder, "bot.json")) ?? "");
+    } catch {}
+    const next = change(now);
+    if (next === now)
+      return next;
+    const file = path28.join(folder, "bot.json");
+    if (durable || now?.offlineEdits)
+      writeDurablePrivate(file, JSON.stringify(next, null, 2), folder);
+    else {
+      fs31.writeFileSync(`${file}.new`, JSON.stringify(next, null, 2));
+      fs31.renameSync(`${file}.new`, file);
+    }
+    return next;
+  }, { required: durable });
+}
+var DESCRIPTION = 1, isMoving = (folder) => moveHold(textOf(path28.join(folder, "paused"))) !== null, MOVING2 = "It’s moving to another computer. Try again once it’s there.", BOT_STEP = 30000, isModel = (model) => Boolean(model) && typeof model.id === "string" && typeof model.providerID === "string", botLook = (look) => ({ color: look.color, shape: look.shape, face: look.face }), botModel = (model) => ({ id: model.id, providerID: model.providerID, ...typeof model.variant === "string" ? { variant: model.variant } : {} }), sameModel = (a, b) => (a?.id ?? null) === (b?.id ?? null) && (a?.providerID ?? null) === (b?.providerID ?? null) && (a?.variant ?? null) === (b?.variant ?? null), botFollowers, noteBotsChanged = () => {
+  for (const tell of botFollowers)
+    tell();
+};
+var init_here = __esm(() => {
+  init_files2();
+  init_files();
+  init_home();
+  botFollowers = new Set;
+});
+
+// box/src/shared/limits.ts
+function resetsIn(text, now = Date.now()) {
+  const found = text?.match(/(?:resets?|try again|available again)\s+in\s+((?:\d+(?:\.\d+)?\s*(?:days?|d|hours?|hrs?|h|minutes?|mins?|m|seconds?|secs?|s)(?![a-z])[\s,]*(?:and\s+)?)+)/i);
+  if (!found)
+    return;
+  const units = { d: 86400000, h: 3600000, m: 60000, s: 1000 };
+  let total = 0;
+  for (const part of found[1].matchAll(/(\d+(?:\.\d+)?)\s*([dhms])/gi))
+    total += Number(part[1]) * (units[part[2].toLowerCase()] ?? 0);
+  return total > 0 ? now + Math.min(total, 31 * 86400000) : undefined;
+}
+function resetTime(at) {
+  const timeZone = yourZone();
+  const day = (date) => date.toLocaleDateString("en-US", { timeZone });
+  const date = new Date(at);
+  const time = date.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone });
+  if (day(date) === day(new Date))
+    return time;
+  return `${date.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone })}, ${time}`;
+}
+function isLimit(text) {
+  return Boolean(text && /\b429\b|rate.?limit|usage limit|limit (?:was |has been )?reached|reached (?:its|your|the) (?:usage )?limit|quota|too many requests|resets? in|try again in|overloaded|capacity/i.test(text));
+}
+var ENGINE_SERVICES;
+var init_limits = __esm(() => {
+  init_zone();
+  ENGINE_SERVICES = {
+    anthropic: "claude",
+    "claude-agent": "claude",
+    "github-copilot": "copilot",
+    ollama: "ollama",
+    "ollama-cloud": "ollama",
+    openai: "codex",
+    opencode: "opencode",
+    "opencode-go": "opencode",
+    openrouter: "openrouter",
+    xai: "grok",
+    zai: "zai",
+    "zai-coding-plan": "zai"
+  };
+});
+
+// box/src/link/work/plan-limits.ts
+function amount(value, unit) {
+  return unit === "usd" ? `$${value.toFixed(2)}` : `${Math.round(value)} ${unit === "requests" ? "requests" : "credits"}`;
+}
+function until(at, now) {
+  const minutes = Math.max(1, Math.round((at - now) / 60000));
+  if (minutes < 60)
+    return `in ${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 48)
+    return `in ${hours}h${minutes % 60 ? ` ${minutes % 60}m` : ""}`;
+  return `in ${Math.round(hours / 24)} days`;
+}
+function since(at, now) {
+  const minutes = Math.max(0, Math.round((now - at) / 60000));
+  if (minutes < 1)
+    return "just now";
+  if (minutes < 60)
+    return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  return hours < 48 ? `${hours}h ago` : `${Math.round(hours / 24)} days ago`;
+}
+function windowName(window2) {
+  const minutes = typeof window2.minutes === "number" ? window2.minutes : undefined;
+  const length = minutes === 300 ? "5-hour window" : minutes === 10080 ? "weekly limit" : minutes && minutes >= 40000 && minutes <= 45000 ? "monthly limit" : minutes ? `${minutes >= 1440 ? `${Math.round(minutes / 1440)}-day` : `${Math.round(minutes / 60)}-hour`} window` : "limit";
+  if (typeof window2.name === "string" && window2.name)
+    return window2.name;
+  return typeof window2.model === "string" && window2.model ? `${window2.model} ${length}` : length;
+}
+function rowTitle(account) {
+  const service = typeof account.agent === "string" ? AGENT_NAMES[account.agent] ?? account.agent : ENGINE_NAMES[String(account.service)] ?? String(account.service);
+  return `${service}${typeof account.label === "string" && account.label ? ` (${account.label})` : ""}`;
+}
+function extraLines(account, now) {
+  const lines = [];
+  for (const extra of Array.isArray(account.extras) ? account.extras.filter(isObject) : []) {
+    const name = typeof extra.name === "string" ? extra.name : String(extra.id);
+    if (typeof extra.resetsAt === "number" && extra.resetsAt <= now)
+      continue;
+    const resets = typeof extra.resetsAt === "number" ? `, starts over ${until(extra.resetsAt, now)}` : "";
+    if (extra.kind === "spent" && typeof extra.amount === "number")
+      lines.push(`  - ${name}: ${amount(extra.amount, extra.unit)} spent${resets}`);
+    else if (extra.kind === "capped" && typeof extra.amount === "number" && typeof extra.limit === "number")
+      lines.push(`  - ${name}: ${amount(extra.amount, extra.unit)} of ${amount(extra.limit, extra.unit)} used${resets}`);
+    else if (extra.kind === "left" && typeof extra.amount === "number")
+      lines.push(`  - ${name}: ${amount(extra.amount, extra.unit)} left`);
+    else if (extra.kind === "resets") {
+      const count = Number(extra.count) || 0;
+      const where = isObject(extra.on) && extra.on.here !== true && typeof extra.on.name === "string" ? ` (used on ${extra.on.name}, which has its sign-in)` : "";
+      const use = count > 0 && extra.usable === true ? `; use_limit_reset with account "${String(account.id ?? account.provider)}" uses one${where}${extra.agents === true ? " (the user allows it without asking)" : " (the user approves each)"}` : count > 0 ? "; none can be used from your computers now" : "";
+      lines.push(`  - rate-limit resets: ${count} available${use}`);
+    } else if (extra.kind === "unreadable" && typeof extra.message === "string")
+      lines.push(`  - ${extra.message}`);
+  }
+  return lines;
+}
+function describePlanLimits(data, now = Date.now()) {
+  const rows = isObject(data) && Array.isArray(data.rows) ? data.rows.filter(isObject) : null;
+  const accounts = rows ?? (isObject(data) && Array.isArray(data.accounts) ? data.accounts.filter(isObject) : []);
+  if (!accounts.length)
+    return `No plan limits are known on ${HERE}: no coding agent here is signed in to a plan whose limits can be read.`;
+  const lines = [rows ? `Plan limits of your accounts (signed in on ${HERE} unless it says where; used is how much of the window is gone):` : `Plan limits on ${HERE} (each account's own; used is how much of the window is gone):`];
+  for (const account of accounts) {
+    const service = typeof account.agent === "string" ? AGENT_NAMES[account.agent] ?? account.agent : ENGINE_NAMES[String(account.service)] ?? String(account.service);
+    const boxes = Array.isArray(account.boxes) ? account.boxes.filter(isObject) : [];
+    const elsewhere = rows && !boxes.some((box) => box.here === true) ? boxes.map((box) => String(box.name || "another computer")) : [];
+    const where = elsewhere.length ? `, signed in on ${elsewhere.join(", ")}${account.away === true ? " (not heard from lately: as last told)" : ""}` : "";
+    const provider = rows ? boxes.find((box) => box.here === true)?.provider ?? account.provider : account.provider;
+    const name = `${service}${typeof account.label === "string" && account.label ? ` (${account.label})` : ""}${typeof account.plan === "string" && account.plan ? `, ${account.plan}` : ""}${elsewhere.length ? "" : `, provider ${String(provider)}`}${where}`;
+    lines.push(`- ${name}:`);
+    if (account.ended === true) {
+      lines.push("  - its plan has ended (not active now): nothing to use on it");
+      continue;
+    }
+    const windows = Array.isArray(account.windows) ? account.windows.filter(isObject) : [];
+    for (const window2 of windows) {
+      const resetsAt = typeof window2.resetsAt === "number" ? window2.resetsAt : undefined;
+      if (window2.expired === true) {
+        lines.push(`  - ${windowName(window2)}: started over, not read since`);
+        continue;
+      }
+      if (resetsAt && resetsAt <= now) {
+        lines.push(`  - ${windowName(window2)}: started over at ${resetTime(resetsAt)}, not read since`);
+        continue;
+      }
+      const used = Math.round(Number(window2.used) * 100);
+      const read = typeof window2.read === "number" ? `, as of ${since(window2.read, now)}` : "";
+      const counted = isObject(window2.amount) ? ` (${amount(Number(window2.amount.used), window2.amount.unit)} of ${amount(Number(window2.amount.limit), window2.amount.unit)})` : "";
+      lines.push(`  - ${windowName(window2)}: ${used}% used${counted}${resetsAt ? `, resets ${until(resetsAt, now)} (${resetTime(resetsAt)})` : ""}${read}`);
+    }
+    const balance = isObject(account.balance) ? account.balance : undefined;
+    if (balance)
+      lines.push(`  - credits: ${amount(Number(balance.left), balance.unit)} left${typeof balance.limit === "number" ? ` of ${amount(balance.limit, balance.unit)}` : ""}`);
+    lines.push(...extraLines(account, now));
+    if (!windows.length && !balance && !Array.isArray(account.extras))
+      lines.push("  - none read yet");
+    const problem = isObject(account.problem) ? account.problem : undefined;
+    if (problem && typeof problem.message === "string") {
+      const next = typeof problem.until === "number" && problem.until > now ? ` Read again ${until(problem.until, now)}.` : "";
+      lines.push(`  - Not read just now: ${problem.message}${next}`);
+    }
+  }
+  return lines.join(`
+`);
+}
+async function planLimitsTool(bridge, signal) {
+  if (!bridge)
+    return { text: `The coding agents aren't running on ${HERE} now, so their plan limits can't be read. Try again in a moment.`, isError: true };
+  try {
+    return { text: describePlanLimits(await call(bridge, "GET", "/api/kuvo/limits", undefined, signal)), isError: false };
+  } catch (error) {
+    return { text: `Couldn't read the plan limits on ${HERE}: ${String(error?.message ?? error)}`, isError: true };
+  }
+}
+var AGENT_NAMES, ENGINE_NAMES;
+var init_plan_limits = __esm(() => {
+  init_limits();
+  init_client();
+  init_home();
+  AGENT_NAMES = { claude: "Claude Code", codex: "Codex", cursor: "Cursor", grok: "Grok", antigravity: "Antigravity" };
+  ENGINE_NAMES = { codex: "ChatGPT", grok: "SuperGrok", copilot: "GitHub Copilot", openrouter: "OpenRouter", zai: "Z.ai", ollama: "Ollama", opencode: "OpenCode Go" };
+});
+
+// box/src/link/work/plan-reset.ts
+async function rowsOf(bridge, signal) {
+  const data = await call(bridge, "GET", "/api/kuvo/limits", undefined, signal);
+  return isObject(data) && Array.isArray(data.rows) ? data.rows.filter(isObject) : [];
+}
+async function resetRow(bridge, wanted, signal) {
+  const rows = await rowsOf(bridge, signal);
+  const name = wanted.trim().toLowerCase();
+  const withResets = rows.filter((row) => resetsOf(row));
+  const found = rows.find((row) => row.id === wanted.trim()) ?? withResets.filter((row) => rowTitle(row).toLowerCase() === name || rowTitle(row).toLowerCase().startsWith(name + " ")).at(0);
+  if (!found) {
+    const listed = withResets.map((row) => `- ${rowTitle(row)}: account "${String(row.id)}"`).join(`
+`);
+    return { refused: listed ? `No account of the user's is called ${wanted}. Those with resets:
+${listed}` : "None of the user's accounts has rate-limit resets." };
+  }
+  return { row: found };
+}
+function resetGiven(row, offer) {
+  const on = isObject(offer.on) && offer.on.here !== true && typeof offer.on.name === "string" && offer.on.name ? offer.on.name : undefined;
+  return {
+    row: String(row.id),
+    account: rowTitle(row),
+    service: String(row.service ?? ""),
+    count: Number(offer.count) || 0,
+    ...Array.isArray(offer.refills) && offer.refills.length ? { refills: offer.refills.filter((each) => typeof each === "string").slice(0, 10) } : {},
+    ...on ? { on } : {}
+  };
+}
+async function spendReset(bridge, row, by, { always = false, unasked = false, signal } = {}) {
+  try {
+    if (always)
+      await call(bridge, "PUT", "/api/kuvo/limits/reset/always", { row, always: true }, signal);
+    let offer;
+    try {
+      offer = await call(bridge, "POST", "/api/kuvo/limits/reset", { row }, signal);
+    } catch (error) {
+      if (always && error?.status === 503)
+        return refused(`Always Allow is kept for this account. ${why(error)} So no reset was used now: ask again once it's back.`);
+      throw error;
+    }
+    if (!isObject(offer) || typeof offer.confirm !== "string")
+      return refused("The reset couldn't be asked for.");
+    const done = await call(bridge, "POST", "/api/kuvo/limits/reset", { row, confirm: offer.confirm, by, ...unasked ? { unasked: true } : {} }, signal);
+    if (!isObject(done))
+      return refused("The reset's answer didn't come.");
+    const limits = isObject(done.row) ? `
+
+${describePlanLimits({ rows: [done.row] })}` : "";
+    const name = isObject(done.row) ? rowTitle(done.row) : "the account";
+    switch (done.outcome) {
+      case "reset":
+        console.error(`kuvo-link: ${by} used a reset of ${name}.`);
+        return said(`Used one of ${name}'s rate-limit resets: its limits started over.${limits}`);
+      case "unconfirmed":
+        return said(`The reset of ${name} may still be going through: read plan_limits again in a minute.${limits}`);
+      default:
+        return refused(`${typeof done.message === "string" ? done.message : "The reset didn't go through. Nothing was used."}${limits}`);
+    }
+  } catch (error) {
+    return refused(`The reset didn't go through: ${why(error)}`);
+  }
+}
+function resetAskWords(name, given) {
+  return { title: `${name} asks to use a reset`, body: `${given.account}: 1 of ${given.count}${given.on ? `, on ${given.on}` : ""}` };
+}
+async function useResetTool(bridge, args, asker, ask, signal) {
+  if (!bridge)
+    return refused(`The coding agents aren't running on ${HERE} now, so no reset can be used. Try again in a moment.`);
+  if (!asker)
+    return refused("Only a conversation on this computer can use a reset from here.");
+  const wanted = typeof args.account === "string" ? args.account.trim() : "";
+  if (!wanted)
+    return refused("Say which account (account), as plan_limits lists it.");
+  try {
+    const found = await resetRow(bridge, wanted, signal);
+    if ("refused" in found)
+      return refused(found.refused);
+    const id = String(found.row.id);
+    let offer;
+    try {
+      offer = await call(bridge, "POST", "/api/kuvo/limits/reset", { row: id }, signal);
+    } catch (error) {
+      return refused(`${rowTitle(found.row)}'s resets can't be used now: ${why(error)}`);
+    }
+    if (!isObject(offer))
+      return refused("The reset couldn't be asked for.");
+    if (offer.always === true)
+      return spendReset(bridge, id, asker.name, { unasked: true, signal });
+    return ask(resetGiven(found.row, offer));
+  } catch (error) {
+    return refused(`Couldn't read the plan limits on ${HERE}: ${why(error)}`);
+  }
+}
+var said = (text) => ({ text, isError: false }), refused = (text) => ({ text, isError: true }), why = (error) => String(error?.message ?? error), resetsOf = (row) => (Array.isArray(row.extras) ? row.extras.filter(isObject) : []).find((extra) => extra.kind === "resets");
+var init_plan_reset = __esm(() => {
+  init_client();
+  init_home();
+  init_plan_limits();
+});
+
+// box/src/link/moves/admission.ts
+import crypto19 from "node:crypto";
+import fs32 from "node:fs";
+import path29 from "node:path";
+function frozenHere(session, activating) {
+  const moves = liveMoves(readMoves(true));
+  const otherMoves = activating === undefined ? moves : moves.filter((move) => move.id !== activating || move.role !== "to" || !move.activation || !move.sessions.includes(session));
+  return frozen(otherMoves).has(session) || movedAway().some((move) => move.session === session);
+}
+async function admitPrompt(session, write, activating) {
+  fs32.mkdirSync(folder, { recursive: true, mode: 448 });
+  const marker = path29.join(folder, `${prefixOf(session)}${process.pid}-${crypto19.randomUUID()}`);
+  fs32.closeSync(fs32.openSync(marker, "wx", 384));
+  try {
+    if (frozenHere(session, activating))
+      throw new MoveAdmissionClosed;
+    return await write();
+  } finally {
+    fs32.rmSync(marker, { force: true });
+  }
+}
+function activeWrites(session) {
+  let entries;
+  try {
+    entries = fs32.readdirSync(folder);
+  } catch (error) {
+    if (error.code === "ENOENT")
+      return false;
+    throw error;
+  }
+  const prefix = session === undefined ? "" : prefixOf(session);
+  return entries.some((name) => {
+    if (!name.startsWith(prefix))
+      return false;
+    const pid = /^[a-f0-9]{64}-([1-9][0-9]*)-/.exec(name);
+    if (!pid)
+      return false;
+    try {
+      process.kill(Number(pid[1]), 0);
+    } catch (error) {
+      if (error.code !== "ESRCH")
+        throw error;
+      fs32.rmSync(path29.join(folder, name), { force: true });
+      return false;
+    }
+    return true;
+  });
+}
+async function waitForPromptWrites(sessions) {
+  const deadline = performance.now() + 125000;
+  while (sessions ? sessions.some(activeWrites) : activeWrites()) {
+    if (performance.now() >= deadline)
+      throw new Error("A prompt write has not finished");
+    await sleep(25);
+  }
+}
+var folder, prefixOf = (session) => crypto19.createHash("sha256").update(session).digest("hex") + "-", MoveAdmissionClosed;
+var init_admission = __esm(() => {
+  init_here();
+  init_home();
+  init_records2();
+  folder = path29.join(RUN, "move-prompt-writes");
+  MoveAdmissionClosed = class MoveAdmissionClosed extends Error {
+    constructor() {
+      super(MOVING2);
+    }
+  };
+});
+
+// box/src/link/messages/commands.ts
+import path30 from "node:path";
+function readKept2() {
+  if (kept)
+    return kept;
+  kept = new Map;
+  try {
+    const read = JSON.parse(textOf(FILE) ?? "{}");
+    if (isObject(read)) {
+      for (const [id, parts] of Object.entries(read))
+        if (isObject(parts) && typeof parts.words === "string")
+          kept.set(id, parts);
+    }
+  } catch {}
+  return kept;
+}
+function keptCommand(id) {
+  return readKept2().get(id) ?? null;
+}
+function keep(id, parts) {
+  const all = readKept2();
+  all.delete(id);
+  all.set(id, parts);
+  for (const old of [...all.keys()].slice(0, Math.max(0, all.size - KEPT)))
+    all.delete(old);
+  writePrivate(FILE, JSON.stringify(Object.fromEntries(all)));
+}
+async function templateOf(engine, folder, name, signal) {
+  const within = AbortSignal.timeout(SETTINGS_WITHIN);
+  const answer = await fetch(`http://127.0.0.1:${engine.port}/api/config`, {
+    headers: { authorization: `Basic ${Buffer.from(`opencode:${engine.password}`).toString("base64")}`, ...folder ? { "x-opencode-directory": encodeURIComponent(folder) } : {} },
+    signal: signal ? AbortSignal.any([signal, within]) : within
+  }).then((response) => response.ok ? response.json() : undefined).catch(() => {
+    return;
+  });
+  if (answer === undefined)
+    return;
+  const sources = Array.isArray(answer) ? answer : isObject(answer) && Array.isArray(answer.data) ? answer.data : [{ info: isObject(answer) ? answer.data ?? answer : answer }];
+  let template;
+  for (const source of sources) {
+    if (!isObject(source))
+      continue;
+    const info = isObject(source.info) ? source.info : {};
+    for (const list of [info.commands, info.command]) {
+      const own = isObject(list) && isObject(list[name]) ? list[name].template : undefined;
+      if (typeof own === "string" && own.trim())
+        template = own;
+    }
+    if (source.type === "directory" && typeof source.path === "string" && /^[\w.-]+(\/[\w.-]+)*$/.test(name) && !name.split("/").includes("..")) {
+      for (const kept of ["command", "commands"]) {
+        const text = textOf(path30.join(source.path, kept, `${name}.md`));
+        const body = text?.replace(/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n)?/, "").trim();
+        if (body)
+          template = body;
+      }
+    }
+  }
+  return template;
+}
+function filledIn(template, text) {
+  const words = (text.match(WORD) ?? []).map((word) => word.replace(/^["']|["']$/g, ""));
+  const numbered = template.match(/\$([1-9]\d*)/g) ?? [];
+  const highest = Math.max(0, ...numbered.map((each) => Number(each.slice(1))));
+  const filled = template.replace(NAMED, (whole, index) => {
+    if (whole === "$ARGUMENTS")
+      return text;
+    const at = Number(index) - 1;
+    if (at >= words.length)
+      return "";
+    return Number(index) === highest ? words.slice(at).join(" ") : words[at];
+  });
+  return numbered.length === 0 && !template.includes("$ARGUMENTS") && text.trim() ? `${filled}
+${text}`.trim() : filled.trim();
+}
+function madeText(template, text) {
+  const made = template ? filledIn(template, text) : null;
+  return made && !SHELL_STEP.test(made) ? made : null;
+}
+function heardCommand(event) {
+  if (event.type !== "session.inbox.enqueued" || event.data?.item?.type !== "user")
+    return;
+  const { sessionID: session, inboxID: id } = event.data;
+  if (!session || !id)
+    return;
+  const payload = event.data.item.payload;
+  if (isObject(payload?.metadata) && payload.metadata.kuvo !== undefined)
+    return;
+  const text = typeof payload?.text === "string" ? payload.text : "";
+  if (!writtenByYou(text, payload?.metadata))
+    return;
+  const at = typeof event.created === "number" ? event.created : Date.now();
+  const which = expected.findIndex((each) => each.session === session && isMadeBy(each, text, at));
+  if (which < 0)
+    return;
+  const [found] = expected.splice(which, 1);
+  found.heard(id);
+}
+async function sendingCommand(session, parts, made, send, sent, within = HEARD_WITHIN) {
+  let heard = () => {};
+  const message = new Promise((resolve) => {
+    heard = resolve;
+  });
+  const entry = { session, parts, made: made?.trim() ?? null, sentAt: Date.now(), heard };
+  expected.push(entry);
+  const drop = () => {
+    const at = expected.indexOf(entry);
+    if (at >= 0)
+      expected.splice(at, 1);
+    heard(null);
+  };
+  const settled = message.then((id) => {
+    if (id)
+      keep(id, parts);
+  });
+  const waits = pending.get(session) ?? new Set;
+  pending.set(session, waits);
+  waits.add(settled);
+  settled.finally(() => {
+    waits.delete(settled);
+    if (!waits.size && pending.get(session) === waits)
+      pending.delete(session);
+  });
+  let answer;
+  try {
+    answer = await send();
+  } catch (error) {
+    drop();
+    throw error;
+  }
+  entry.answeredAt = Date.now();
+  if (!sent(answer)) {
+    drop();
+    return answer;
+  }
+  const timer = setTimeout(drop, within);
+  settled.finally(() => clearTimeout(timer));
+  return answer;
+}
+async function commandsSettled(session, within = SETTLED_WITHIN) {
+  const waits = [...pending.get(session) ?? []];
+  if (!waits.length)
+    return;
+  let timer;
+  await Promise.race([Promise.all(waits), new Promise((resolve) => {
+    timer = setTimeout(resolve, within);
+  })]);
+  clearTimeout(timer);
+}
+var FILE, KEPT = 2000, HEARD_WITHIN = 3000, WORDS_MOST = 4000, commandParts = (command, words) => ({ words: words.trim().slice(0, WORDS_MOST), keyword: `/${command}`, command: true }), draftOf = ({ words, keyword }) => keyword && !/^\/loop(?:\s|$)/i.test(keyword) ? `${keyword} ${words}`.trim() : words, kept = null, NAMED, WORD, commandTemplate = (engine, folder, command, signal) => templateOf(engine, folder, command, signal), SHELL_STEP, SETTINGS_WITHIN = 2000, expected, pending, madeOf = (text, words) => {
+  const each = words.split(/\s+/).map((word) => word.replace(/^["']+|["']+$/g, "")).filter(Boolean);
+  return each.length > 0 && each.every((word) => text.includes(word));
+}, isMadeBy = (command, text, at) => at >= command.sentAt && (command.answeredAt === undefined || at <= command.answeredAt) && (command.made !== null ? text.trim() === command.made : madeOf(text, command.parts.words)), SETTLED_WITHIN = 2000;
+var init_commands = __esm(() => {
+  init_files2();
+  init_home();
+  init_queue();
+  FILE = path30.join(RUN, "commands.json");
+  NAMED = /\$(?:ARGUMENTS|([1-9]\d*))/g;
+  WORD = /(?:\[Image\s+\d+\]|"[^"]*"|'[^']*'|[^\s"']+)/gi;
+  SHELL_STEP = /!`[^`]+`/;
+  expected = [];
+  pending = new Map;
 });
 
 // box/src/shared/routes/projects.ts
@@ -20900,6 +21092,7 @@ var init_features = __esm(() => {
     "clients.kind",
     "computers",
     "computers.add",
+    "computers.add.credentials",
     "computers.add.from-any-client",
     "computers.facts",
     "computers.manage",
@@ -25973,12 +26166,6 @@ var init_models = __esm(() => {
   pendingSettlements = new Map;
 });
 
-// box/src/link/marks.ts
-var LAUNCH_AGENT = "run.kuvo.code.machine", MACHINE_WATCH_AGENT, REBOOT_TAG = "# kuvo-code: starts its engine again after a restart", SETUP_OCCUPIED = 4, SETUP_LOCAL_PAIRINGS = 5, ADD_RESERVATION = ".kuvo-code-adding";
-var init_marks = __esm(() => {
-  MACHINE_WATCH_AGENT = `${LAUNCH_AGENT}.permissions`;
-});
-
 // box/src/link/rehome/state.ts
 import fs56 from "node:fs";
 import path57 from "node:path";
@@ -26637,11 +26824,16 @@ if claimed; then
 ${previous ? `else
   exit ${ACCOUNT_LOST}` : ""}
 fi
-ln -s ${quote(token)} "$A" || exit ${ACCOUNT_ERROR}`, 0), release = (token) => accountLock(`
+ln -s ${quote(token)} "$A" || exit ${ACCOUNT_ERROR}`, 0), FRESH_ADD, release = (token, clearFresh = false) => accountLock(`
 if claimed; then
   prior=$(readlink "$A") || exit ${ACCOUNT_ERROR}
-  if [ "$prior" = ${quote(token)} ]; then rm -f "$A"; fi
-fi`), reserved = (token, script) => accountLock(`
+  if [ "$prior" = ${quote(token)} ]; then
+    ${clearFresh ? `rm -f ${FRESH_ADD} || exit ${ACCOUNT_ERROR}` : ":"}
+    rm -f "$A"
+  fi
+fi`), rememberFresh = (record) => `${K2}
+(umask 077; mkdir -p "$K/run" && printf '%s\\n' ${quote(record)} >"$K/run/${SSH_FRESH_ADD}.$$" &&
+  mv -f "$K/run/${SSH_FRESH_ADD}.$$" ${FRESH_ADD}) || exit ${ACCOUNT_ERROR}`, reserved = (token, script) => accountLock(`
 ${owns(token)} || exit ${ACCOUNT_LOST}
 ${script}`), D = "$", SUM = `sum_of() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi; }`, engineOf2 = (version) => `E="$K/engine/${version}/opencode"; [ -x "$E" ] || E=$(for d in "$K"/engine/*/; do [ -x "\${d}opencode" ] && printf '%s\\n' "\${d}opencode"; done | tail -n 1)`, link = (args) => `(cd "$K" && KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$E" --config=/dev/null --no-env-file "$K/bin/kuvo-link.js" ${args})`, FOUND, computerFingerprint = (setup) => `${SUM}
 system_id=
@@ -26671,6 +26863,9 @@ if [ "$(uname -s)" = Darwin ]; then
   echo "macos $(sw_vers -productVersion 2>/dev/null)"
 elif ldd --version 2>&1 | grep -qi musl; then echo musl; else echo glibc; fi
 echo "kuvo version $(cat "$K/bin/box-version" 2>/dev/null | tr -cd '0-9a-z.-')"
+if [ -f ${FRESH_ADD} ] && [ ! -L ${FRESH_ADD} ] && [ "$(wc -c < ${FRESH_ADD})" -le 150 ]; then
+  printf 'kuvo fresh-add %s\n' "$(sed -n 1p ${FRESH_ADD})"
+fi
 [ -d "$K/run/.updating" ] && echo "kuvo updating"
 [ -x "$K/engine/${version}/opencode" ] && "$K/engine/${version}/opencode" --version >/dev/null 2>&1 && echo "kuvo engine"
 [ -s "$K/machine-id" ] && echo "kuvo id $(cat "$K/machine-id")"
@@ -26766,8 +26961,9 @@ chmod 755 "$S/opencode"
 "$S/opencode" --version >/dev/null 2>&1 || { echo "The engine doesn't run on this computer." >&2; exit 8; }
 mkdir -p "$K/engine/${version}"
 mv -f "$S/opencode" "$K/engine/${version}/opencode"
-echo placed`, REBOOT_LINE, START_AT_BOOT, start = (version, name, notes) => `${K2}; R="$K/run"
+echo placed`, REBOOT_LINE, START_AT_BOOT, start = (version, name, notes, credentialRecord) => `${K2}; R="$K/run"
 mkdir -p "$R" && chmod 700 "$R"
+${credentialRecord ? rememberFresh(credentialRecord) : ""}
 ${engineOf2(version)}
 [ -x "$E" ] || { echo "It has no engine yet." >&2; exit 3; }
 adopted=$( ${link("box adopt")} 2>"$R/.adopt.err") || { tail -n 2 "$R/.adopt.err" >&2; rm -f "$R/.adopt.err"; exit 6; }
@@ -26874,6 +27070,7 @@ var init_scripts = __esm(() => {
   init_app_data();
   init_text();
   init_marks();
+  FRESH_ADD = `"$HOME/.kuvo-code/run/${SSH_FRESH_ADD}"`;
   FOUND = String.raw`for b in "$HOME/.kuvo-code" "$HOME/Library/Application Support"/run.kuvo.code*/box; do
   [ -f "$b/run/link.json" ] || [ -f "$b/run/setup-card.json" ] || [ -f "$b/run/serve.json" ] || [ -f "$b/run/keeper.json" ] || continue
   if [ "$b" = "$HOME/.kuvo-code" ]; then { [ -f "$b/bin/kuvo-start" ] && [ ! -f "$b/run/off" ]; } || continue; fi
@@ -26919,6 +27116,7 @@ if [ -d "$K/agents" ]; then
 fi
 if [ "$desktop_failed" -ne 0 ]; then exit 81; fi
 if [ "$cleanup_failed" -ne 0 ]; then exit 82; fi
+rm -f "$K/run/${SSH_FRESH_ADD}" "$K/run/seeded.json" || exit 82
 `;
 });
 
@@ -34136,6 +34334,7 @@ async function receiveDocs(sender, docs, host) {
   });
   if (!work || !link)
     return;
+  finishSshCredentialCopy(link);
   if (host?.welcomed && work.given.length)
     confirmPhoneMembership(host, sender, link, work.given);
   if (JSON.stringify(link.setup ?? null) !== setup)
@@ -34197,6 +34396,7 @@ function macDocsChanged({ closeRemoved } = {}) {
 }
 var docParts, checkpoints, successorForks;
 var init_exchange = __esm(() => {
+  init_seed();
   init_changed();
   init_home();
   init_agents();
@@ -46141,7 +46341,7 @@ var init_move = __esm(() => {
     botsNotThere: (chat, place) => `${chat}’s bots don’t all live on ${place}. Move them there first, then the chat can follow.`,
     slow: (name) => `${name} took too long to get ready to move on ${HERE}, so it stayed here. Try again in a moment.`,
     oldCopy: (name, place) => `An earlier copy of ${name} on ${place} couldn’t be let go of yet. Try again in a moment.`,
-    moving: MOVING
+    moving: MOVING2
   };
   note2 = {
     inProject: "Works in a project",
@@ -46410,6 +46610,8 @@ function clearUnlinkCredentials() {
     if (folder)
       clear(folder, true);
   }
+  clear(SEEDED_FILE);
+  clear(path125.join(RUN, SSH_FRESH_ADD));
 }
 var clearCredentialTable = `
 const SQLite = process.versions.bun ? require("bun:sqlite").Database : require("node:sqlite").DatabaseSync;
@@ -46430,6 +46632,8 @@ try {
 `;
 var init_unlink_credentials = __esm(() => {
   init_home();
+  init_marks();
+  init_seed();
   init_paths2();
 });
 
@@ -48784,7 +48988,10 @@ function resumeUnlink(host) {
     unlinkCleanupRunning = false;
   });
 }
-async function finishUnlink(host) {
+function finishUnlink(host) {
+  return withCredentialCopyLock(() => finishUnlinkLocked(host));
+}
+async function finishUnlinkLocked(host) {
   const current = readLink();
   const pending = current?.localUnlink;
   if (!current || !pending || !unlinkCleanupLayoutReady(K))
@@ -49127,6 +49334,7 @@ function receiveRemovalMail(sender, message, host, from) {
 }
 var challengeLifetime = 30000, challenge, parts, checkpoints2, unlinkCleanupRunning = false;
 var init_removal = __esm(() => {
+  init_seed();
   init_folder_version();
   init_format();
   init_work();
@@ -50380,7 +50588,7 @@ async function carryToAgents(id, model, readEngine, agents) {
     return no(409, "It’s with the coding agents already.");
   const bot = listOf(BOTS).map(botHere).find((here) => here?.session === id) ?? null;
   if (isMoving(bot?.folder ?? path134.join(SESSION_WAKES, id)))
-    return no(409, MOVING);
+    return no(409, MOVING2);
   if (model.providerID !== "auto") {
     const integration = (await engineGet(agents, `api/integration/${encodeURIComponent(model.providerID)}`).catch(() => null))?.data;
     const name = integration?.name ?? model.providerID;
@@ -50669,7 +50877,7 @@ async function changeBot(id, given, readEngine, readBridge, machine, signal, at 
   if (!here)
     return no(404, "That bot isn’t there any more.");
   if (isMoving(here.folder))
-    return no(409, MOVING);
+    return no(409, MOVING2);
   const kit = readKit();
   if (!kit)
     return no(409, NO_KIT);
@@ -50958,7 +51166,7 @@ async function deleteBot(id, readEngine, readBridge) {
   if (!here)
     return no(404, "That bot isn’t there any more.");
   if (isMoving(here.folder))
-    return no(409, MOVING);
+    return no(409, MOVING2);
   let trashed;
   try {
     if (!IS_MAC)
@@ -51081,7 +51289,7 @@ async function wakeTool(name, args, calling, bridge) {
   if (!exists && name === "cancel_wake_up")
     return refused4(`No wake-up "${given("id")}". See list_wake_ups.`);
   if (exists && isMoving(folder))
-    return refused4(MOVING);
+    return refused4(MOVING2);
   const directory = root?.place.data.location?.directory ?? root?.place.data.directory;
   const cwd = directory && fs135.existsSync(directory) ? directory : os16.homedir();
   const env = { ...process.env, PWD: cwd, KUVO_BOTS: BOTS, KUVO_WAKES: SESSION_WAKES, KUVO_WAKE_TOOL: "1" };
@@ -54790,7 +54998,7 @@ async function* forward(target, path, request, signal, allows, naming = null, do
   } catch {}
   if (moving) {
     yield { head: { status: 409, headers: { "content-type": "application/json" } } };
-    yield { body: Buffer.from(JSON.stringify({ message: MOVING })) };
+    yield { body: Buffer.from(JSON.stringify({ message: MOVING2 })) };
     return;
   }
   const toEngine = method === "POST" && engineTurn.exec(url.pathname);
@@ -55079,7 +55287,7 @@ async function* sending3(context, session, retry = true) {
   if (!command && (fields ? isEmpty(fields, files) : !again.trim() && !files.length))
     return yield* json(400, { message: "There's nothing to send." });
   if (frozen().has(session))
-    return yield* json(409, { message: MOVING });
+    return yield* json(409, { message: MOVING2 });
   const engineHere = () => {
     try {
       return readEngine();
@@ -58025,7 +58233,7 @@ async function* queueRoute(context, match) {
   const stopping = action === "stop" || step === "hold";
   const settling = () => liveMoves().some((move) => move.role === "from" && move.stage === "holding" && (move.thing === session || move.sessions.includes(session)));
   if (frozen().has(session) && !(stopping && settling()))
-    return yield* json(409, { message: MOVING });
+    return yield* json(409, { message: MOVING2 });
   if (item && !now) {
     if (method !== "DELETE")
       return yield* json(405, {});
@@ -60954,7 +61162,7 @@ async function* sessionActionRoute(context, match) {
     return yield* json(400, { message: "Give it a name." });
   const moving = frozen().has(id);
   if (moving && action !== "actions")
-    return yield* json(409, { message: MOVING });
+    return yield* json(409, { message: MOVING2 });
   const targets = targetsOf2(context);
   if (!targets.length)
     return yield* json(503, { message: "The engine isn't running." });
@@ -60991,7 +61199,7 @@ async function* sessionActionRoute(context, match) {
     const deleting = { id, directory: session.location?.directory ?? session.directory ?? "", title: session.title };
     const answer = { session: id, actions: actionsOf2(session, await deleteConfirm([deleting], context, signal)) };
     if (moving)
-      answer.held = MOVING;
+      answer.held = MOVING2;
     return yield* json(200, answer);
   }
   if (action === null) {
@@ -61020,7 +61228,7 @@ async function* sessionActionRoute(context, match) {
       if (error instanceof Stale)
         return yield* json(409, { message: CHANGED_SINCE });
       if (error instanceof Moving)
-        return yield* json(409, { message: MOVING });
+        return yield* json(409, { message: MOVING2 });
       return yield* json(502, { message: `It couldn't be deleted: ${String(error?.message ?? error)}` });
     }
     forgetWakes2(id);
@@ -61036,7 +61244,7 @@ async function* sessionActionRoute(context, match) {
       }, signal);
     } catch (error) {
       if (error instanceof Moving)
-        return yield* json(409, { message: MOVING });
+        return yield* json(409, { message: MOVING2 });
       return yield* json(502, { message: `It couldn't be renamed: ${String(error?.message ?? error)}` });
     }
     return yield* json(200, { session: id, info: isObject(renamed) ? renamed : { ...session, title } });
@@ -61061,7 +61269,7 @@ async function* sessionActionRoute(context, match) {
     if (error instanceof Stale)
       return yield* json(409, { message: CHANGED_SINCE });
     if (error instanceof Moving)
-      return yield* json(409, { message: MOVING });
+      return yield* json(409, { message: MOVING2 });
     return yield* json(502, { message: `It couldn't be changed: ${String(error?.message ?? error)}` });
   }
   if (!done)
@@ -67057,7 +67265,7 @@ function ownFiles(home = K) {
       if (!seen.isFile() || seen.size > 60000000)
         return null;
       const data = fs168.readFileSync(file);
-      files.push({ path: name, mode, data, sum: sha2562(data) });
+      files.push({ path: name, mode, data, sum: sha2563(data) });
     } catch {
       return null;
     }
@@ -67072,7 +67280,7 @@ function machineHelperPack() {
       timeout: 30000,
       env: { ...process.env, COPYFILE_DISABLE: "1" }
     });
-    return packed.status === 0 ? { bytes: packed.stdout, sum: sha2562(packed.stdout) } : null;
+    return packed.status === 0 ? { bytes: packed.stdout, sum: sha2563(packed.stdout) } : null;
   };
   const bin = path173.join(K, "bin");
   if (fs168.existsSync(path173.join(bin, name)))
@@ -67153,7 +67361,7 @@ async function engineFor(kind, fetching = () => {}, home = K) {
     fs168.writeFileSync(`${file}.new`, data, { mode: 384 });
     fs168.renameSync(`${file}.new`, file);
   }
-  return { file, packed: true, sum: sha2562(data), size: data.length };
+  return { file, packed: true, sum: sha2563(data), size: data.length };
 }
 function sumOfFile(file) {
   return new Promise((resolve, reject) => {
@@ -67161,7 +67369,7 @@ function sumOfFile(file) {
     fs168.createReadStream(file).on("data", (chunk) => hash.update(chunk)).on("error", reject).on("end", () => resolve(hash.digest("hex")));
   });
 }
-var RELEASE_FILES, ENGINE_VERSION, sha2562 = (data) => crypto62.createHash("sha256").update(data).digest("hex");
+var RELEASE_FILES, ENGINE_VERSION, sha2563 = (data) => crypto62.createHash("sha256").update(data).digest("hex");
 var init_files4 = __esm(() => {
   init_engine_pin();
   init_client();
@@ -70823,10 +71031,12 @@ function enrollmentOutcome(link, save) {
   const setup = "setup" in save ? save.setup : save.id;
   return queryOperation(setup, save.operation, save.proof)?.status ?? (link?.setup?.id === setup && link.setup.epoch === save.epoch ? "pending" : "interrupted");
 }
-function startTry(kind, destination, name, steps, work) {
-  const seen = { id: newID("add_"), kind, destination, name, state: "working", title: workingTitle(kind, name), steps: steps.map(([id, title]) => ({ id, title, state: "waiting" })) };
+function startTry(kind, destination, name, steps, work, credentials) {
+  const previousChoice = kind === "add" ? kept5().find((each) => each.kind === kind && each.destination === destination && each.state === "failed")?.credentials : undefined;
+  const choice = previousChoice ?? credentials;
+  const seen = { ...choice ? { credentials: choice } : {}, id: newID("add_"), kind, destination, name, state: "working", title: workingTitle(kind, name), steps: steps.map(([id, title]) => ({ id, title, state: "waiting" })) };
   const stop = new AbortController;
-  const it = { seen, stop, answer: null, over: Promise.resolve() };
+  const it = { seen, stop, selectedCredentials: credentials, answer: null, over: Promise.resolve() };
   const change = (next) => {
     it.seen = { ...it.seen, ...next };
     note3();
@@ -70863,6 +71073,10 @@ function startTry(kind, destination, name, steps, work) {
         throw error;
       }
       it.committed = true;
+    },
+    choseCredentials(selection) {
+      it.seen = { ...it.seen, credentials: selection };
+      note3(true, true);
     },
     step(id, detail) {
       tell.check();
@@ -71059,7 +71273,7 @@ function probed(answer) {
   const said = (name) => lines.find((line) => line.startsWith(`kuvo ${name} `))?.slice(name.length + 6) ?? "";
   const version = said("version");
   const id = said("id");
-  return { kind, version: /^\d+\.\d+\.\d+/.test(version) ? version : null, updating: lines.includes("kuvo updating"), engine: lines.includes("kuvo engine"), id: /^[0-9a-f]{32}$/.test(id) ? id : null, fingerprint: fingerprintOf(said("fingerprint")), fingerprintSource: fingerprintSourceOf(said("fingerprint-source")), lines };
+  return { kind, version: /^\d+\.\d+\.\d+/.test(version) ? version : null, updating: lines.includes("kuvo updating"), engine: lines.includes("kuvo engine"), id: /^[0-9a-f]{32}$/.test(id) ? id : null, freshAdd: /^v1 [a-f0-9]{64} [a-f0-9]{64} (?:prepared|copying)$/.test(said("fresh-add")) ? said("fresh-add") : undefined, fingerprint: fingerprintOf(said("fingerprint")), fingerprintSource: fingerprintSourceOf(said("fingerprint-source")), lines };
 }
 function machineBoxProbed(probe) {
   const has = (word) => () => probe.lines.includes(`kuvo ${word}`);
@@ -71203,6 +71417,7 @@ class AccountReservation {
   tell;
   token = RESERVATION_PREFIX + crypto65.randomBytes(24).toString("hex");
   finished = true;
+  clearFresh = false;
   get canRollBack() {
     return this.finished;
   }
@@ -71315,7 +71530,7 @@ class AccountReservation {
     }
   }
   async release(failure) {
-    const released = await this.reach.run(release(this.token), { anyway: true, most: 15000 }).catch(() => null);
+    const released = await this.reach.run(release(this.token, this.clearFresh), { anyway: true, most: 15000 }).catch(() => null);
     if (released?.status === 0)
       return;
     console.error(`Kuvo couldn't clear the SSH reservation on ${this.name} (status ${released?.status}): ${lastLine(released?.stderr ?? "")}`);
@@ -71480,6 +71695,32 @@ async function setUp2(tell, destination, name, kind, expectedKey, grant) {
     if (!returning && judged.verdict !== "free" && judged.verdict !== "ours" && !judged.joins) {
       throw new AccountOccupied(name);
     }
+    const selection = grant?.credentials ?? [];
+    const issuer = link && ownKey(link);
+    const recoveryScope = issuer && credentialSelectionLayoutReady(K) ? sshCopyScope(identitySetup, issuer) : undefined;
+    const record = recoveryScope && recoveryScope + sshCopySelection(selection);
+    const knownMember = foundKey && peersOf(link).some((peer) => peer.key === foundKey);
+    const recoveringFresh = kind === "add" && !knownMember && recoveryScope && probe.freshAdd?.startsWith(recoveryScope) && appsOf(probe.lines) === 0 && (judged.verdict === "ours" || judged.verdict === "free");
+    if (kind === "add" && !knownMember && probe.freshAdd && !recoveringFresh) {
+      throw new Failed("This OS account still has an interrupted add. Finish that attempt or remove the interrupted installation first.");
+    }
+    if (recoveringFresh && probe.freshAdd?.endsWith(" copying") && `${record} copying` !== probe.freshAdd) {
+      throw new Failed("The interrupted add had a different choice of sign-ins and keys. Resume with that choice or remove the interrupted installation first.");
+    }
+    const fresh = Boolean(recoveringFresh) || kind === "add" && judged.verdict === "free" && foundBoxes.length === 0 && appsOf(probe.lines) === 0 && !probe.id && !probe.version;
+    checkGrant();
+    const given = fresh ? await gatherSeed(selection) : null;
+    checkGrant();
+    if (given && Object.keys(given.keys).length + given.credentials.length < selection.length) {
+      throw new Failed("Some selected sign-ins or keys are no longer available. Open the checklist again and retry.");
+    }
+    if (fresh && record)
+      tell.choseCredentials(selection);
+    if (fresh && record && !recoveringFresh) {
+      const saved = await reserved(rememberFresh(`${record} prepared`), { beforeInput: checkGrant });
+      if (saved.status !== 0)
+        throw new Failed(`Kuvo couldn’t save the installation choice on ${name}.`);
+    }
     const newer = newerVersion(probe.version, mine);
     if (newer) {
       tell.skip("files", `It has a newer Kuvo Code (${probe.version}), left as it is`);
@@ -71518,13 +71759,9 @@ async function setUp2(tell, destination, name, kind, expectedKey, grant) {
     tell.step("starting");
     const own = link ? ownKey(link) : null;
     const notes = JSON.stringify({ mac: own ? launcherID(own) : "", macName: ownName().replace(/[{}"\\]/g, ""), box: mine });
-    const fresh = kind === "add" && judged.verdict === "free" && foundOf(probe.lines).length === 0 && appsOf(probe.lines) === 0 && !probe.id && !probe.version;
-    checkGrant();
-    const given = fresh ? await gatherSeed() : null;
-    checkGrant();
     let unjoined = false;
     try {
-      const started = await reserved(start(ENGINE_VERSION, name, notes), {
+      const started = await reserved(start(ENGINE_VERSION, name, notes, fresh && record && selection.length ? `${record} copying` : undefined), {
         most: 600000,
         beforeInput: () => {
           checkGrant();
@@ -71545,18 +71782,29 @@ async function setUp2(tell, destination, name, kind, expectedKey, grant) {
       else {
         tell.step("seeding");
         const settings = /^seeded$/m.test(started.stdout);
+        const pendingKeys = !settings && recoveringFresh ? given.keys : {};
+        if (!settings && !recoveringFresh && Object.keys(given.keys).length)
+          throw new Failed(`The selected keys couldn’t be saved on ${name}.`);
         let taken = 0;
-        if (given.credentials.length) {
-          const ran = await reserved(seed(ENGINE_VERSION), { input: Buffer.from(JSON.stringify({ credentials: given.credentials })), beforeInput: checkGrant, most: 300000 });
+        let keys = settings ? Object.keys(given.keys).length : 0;
+        if (given.credentials.length || Object.keys(pendingKeys).length) {
+          const ran = await reserved(seed(ENGINE_VERSION), { input: Buffer.from(JSON.stringify({
+            credentials: given.credentials,
+            ...Object.keys(pendingKeys).length ? { keys: pendingKeys, integrations: given.integrations } : {}
+          })), beforeInput: checkGrant, most: 300000 });
           checkGrant();
           let said = null;
           try {
             said = JSON.parse(ran.stdout.trim().split(`
 `).pop() ?? "");
           } catch {}
-          taken = isObject(said) && typeof said.taken === "number" ? said.taken : 0;
+          if (ran.status !== 0 || !isObject(said) || said.status !== 200 || typeof said.taken !== "number") {
+            throw new Failed(`The selected sign-ins couldn’t be saved on ${name}.`);
+          }
+          taken = said.taken;
+          if (typeof said.keys === "number")
+            keys = said.keys;
         }
-        const keys = settings ? Object.keys(given.keys).length : 0;
         const copied = [keys ? `${keys} ${keys === 1 ? "key" : "keys"}` : "", taken ? `${taken} ${taken === 1 ? "account" : "accounts"}` : ""].filter(Boolean).join(" and ");
         tell.skip("seeding", `${copied ? `Copied ${copied}.` : settings ? "Copied your settings." : "Nothing to copy."}${renewing}`);
       }
@@ -71575,12 +71823,16 @@ async function setUp2(tell, destination, name, kind, expectedKey, grant) {
       unjoined = false;
       if (joined.waitsForStandby)
         finish = joined.finish;
-      else
+      else {
         tell.came(await joined.finish());
+        account.clearFresh = fresh || Boolean(knownMember && recoveryScope && probe.freshAdd?.startsWith(recoveryScope));
+      }
     } catch (error) {
       if (!unjoined || !account.canRollBack || error instanceof AccountOccupied)
         throw error;
       const undone = await reserved(uninstall(ENGINE_VERSION, own ?? "", true), { most: 600000, anyway: true }).catch(() => null);
+      if (undone?.status === 0)
+        account.clearFresh = true;
       const still = `Kuvo Code may still be running on ${name}, with the keys and sign-ins copied there. Add ${name} again, then uninstall it from its page.`;
       if (error instanceof Stopped || tell.signal.aborted) {
         if (undone?.status !== 0)
@@ -71787,7 +72039,7 @@ async function finishEnrollment(tell, peer, save) {
   macDocsChanged();
   return { key: enrolled.key, name: enrolled.name };
 }
-function begin(kind, destination, name, steps, work) {
+function begin(kind, destination, name, steps, work, credentials) {
   let it = null;
   const made = startTry(kind, destination, name, steps, (tell) => {
     stoppers.set(tell, () => {
@@ -71795,20 +72047,23 @@ function begin(kind, destination, name, steps, work) {
         stopTry(it);
     });
     return work(tell);
-  });
+  }, credentials);
   it = made;
   return made;
 }
-function beginAdd(destination, asker, replace, discardLocalPairings) {
+function beginAdd(destination, asker, replace, discardLocalPairings, credentials) {
   const now = underWay3(destination);
   const link = readLink();
   const key = asker?.key?.toString("base64url");
   const caller = key && pairedPhone(link, key, asker?.pairing);
   if (key && !caller)
     return { busy: ADD_REVOKED };
-  const grant = { replace, discardLocalPairings, caller: caller ? { key: caller.key, pairing: caller.pairing ?? "" } : undefined, revisions: link?.removalRevisions ?? {} };
+  if (now?.seen.kind === "add" && sshCopySelection(now.selectedCredentials ?? []) !== sshCopySelection(credentials ?? [])) {
+    return { busy: "An add with a different choice of sign-ins and keys is already in progress for this computer." };
+  }
+  const grant = { replace, discardLocalPairings, credentials, caller: caller ? { key: caller.key, pairing: caller.pairing ?? "" } : undefined, revisions: link?.removalRevisions ?? {} };
   const expected = peerAtDestination(link, destination)?.key;
-  return uninstalling(now) ?? now ?? begin("add", destination, destination, SETUP_STEPS, (tell) => setUp2(tell, destination, destination, "add", expected, grant));
+  return uninstalling(now) ?? now ?? begin("add", destination, destination, SETUP_STEPS, (tell) => setUp2(tell, destination, destination, "add", expected, grant), credentials);
 }
 function sshAddressOf(key) {
   const link = readLink();
@@ -71843,6 +72098,7 @@ async function lookAtWork2(key) {
     rename() {},
     saving() {},
     saved() {},
+    choseCredentials() {},
     ask: async () => {
       throw new Failed(`${at.name}’s host key isn’t one ${ownName()} knows.`);
     }
@@ -72092,11 +72348,18 @@ async function installerCodeFrom(issue) {
   const { expires } = reply.value;
   return { status: 201, value: { code: CODE + Buffer.from(JSON.stringify({ ...reply.value, token })).toString("base64url"), expires } };
 }
-async function createInstallerInvite(id, asker) {
+async function createInstallerInvite(id, asker, credentials = []) {
   if (!addComputersLayoutReady(K))
     return refusal4(503, "Wait for the Kuvo Code update to finish before adding a computer.");
   if (IS_MAC)
     await macKeys({ needed: true });
+  if (credentials.length) {
+    const current = await credentialChecklist();
+    const available = new Set(current.items.map((item) => item.id));
+    if (credentials.some((id) => !available.has(id))) {
+      return refusal4(current.unavailable.length ? 503 : 409, "Some selected sign-ins or keys are no longer available. Open the checklist again.");
+    }
+  }
   if (typeof id !== "string" || !TOKEN_HASH.test(id))
     return refusal4(400, "Send the installer invitation hash.");
   const actor = asker?.key && { key: asker.key.toString("base64url"), pairing: asker.pairing ?? "" };
@@ -72126,7 +72389,7 @@ async function createInstallerInvite(id, asker) {
     }
     const now = Date.now();
     const prior = link.installerInvites?.[id];
-    if (prior && (prior.actor?.key !== actor?.key || prior.actor?.pairing !== actor?.pairing || prior.setup !== setup.id || prior.epoch !== setup.epoch || !isLive(prior, now))) {
+    if (prior && (prior.actor?.key !== actor?.key || prior.actor?.pairing !== actor?.pairing || prior.setup !== setup.id || prior.epoch !== setup.epoch || !isLive(prior, now) || JSON.stringify(prior.credentials ?? []) !== JSON.stringify(credentials))) {
       reply = refusal4(409, "This installer invitation is no longer available.");
       return null;
     }
@@ -72137,7 +72400,7 @@ async function createInstallerInvite(id, asker) {
       return null;
     }
     link.installerInvites = Object.fromEntries(invites);
-    link.installerInvites[id] = prior ?? { setup: setup.id, epoch: setup.epoch, expires, actor };
+    link.installerInvites[id] = prior ?? { setup: setup.id, epoch: setup.epoch, expires, actor, ...credentials.length ? { credentials } : {} };
     const content = { expires, setup: setup.id, relay: link.relay, address: relayAddress(link.secret), primary: setup.primary };
     reply = { status: 201, value: content };
     return link;
@@ -72149,6 +72412,30 @@ async function createInstallerInvite(id, asker) {
       startBridge();
   }
   return reply;
+}
+function sendInstallerCredentials(id, selection, send, stillAccepted) {
+  let work = collecting.get(id);
+  if (!work) {
+    work = gatherSeed(selection);
+    collecting.set(id, work);
+    work.finally(() => collecting.delete(id)).catch(() => {});
+  }
+  work.then(({ keys, credentials, integrations, unavailable }) => {
+    if (!stillAccepted())
+      return;
+    const payload = { keys, credentials, integrations, unavailable, missing: Math.max(0, selection.length - Object.keys(keys).length - credentials.length) };
+    const packed = Buffer.from(JSON.stringify(payload));
+    if (packed.length > MOST_DOC) {
+      send({ credentialProblem: "The selected sign-ins and keys are too large to copy." });
+      return;
+    }
+    if (packed.length < 34000) {
+      send({ seed: payload });
+      return;
+    }
+    for (const seedPart of splitParts(packed.toString("base64url")))
+      send({ seedPart });
+  }).catch(() => {});
 }
 function seal2(key, to, address, value) {
   const privateKey = bytes2(key);
@@ -72184,17 +72471,22 @@ function receiveInstallerClaim(body, link, host, from) {
   const send = (reply) => host.send(seal2(link.key, sender, from, { nonce, ...reply }));
   const position = followedSetup(link);
   const now = Date.now();
-  if (position?.role !== "primary" || position.id !== invite.setup || position.epoch !== invite.epoch) {
+  const enrolled = (current) => peersOf(current).some((each) => each.key === peer.key && each.sign === peer.sign && each.address === peer.address);
+  const claimedBy = (entry) => entry?.claim?.key === peer.key && entry.claim.sign === peer.sign && entry.claim.address === peer.address;
+  if (position?.role !== "primary" || position.id !== invite.setup || position.epoch !== invite.epoch && !(claimedBy(invite) && enrolled(link))) {
     send({ message: "Your setup’s primary changed. Get a new installer code from the same setup.", retrySameSetup: true });
     return true;
   }
-  const claimedBy = (entry) => entry?.claim?.key === peer.key && entry.claim.sign === peer.sign && entry.claim.address === peer.address;
   const allowed = (current, entry, saved = false) => {
     const setup = followedSetup(current);
-    return Boolean(current && entry && isLive(entry, Date.now()) && setup?.role === "primary" && setup.id === entry.setup && setup.epoch === entry.epoch && !current.localWipe && !current.localUnlink && !localRemovalPending(current) && (saved || !entry.actor || pairedPhone(current, entry.actor.key, entry.actor.pairing)) && (!entry.claim || claimedBy(entry)));
+    return Boolean(current && entry && isLive(entry, Date.now()) && setup?.role === "primary" && setup.id === entry.setup && (setup.epoch === entry.epoch || saved && claimedBy(entry) && enrolled(current)) && !current.localWipe && !current.localUnlink && !localRemovalPending(current) && (saved || !entry.actor || pairedPhone(current, entry.actor.key, entry.actor.pairing)) && (!entry.claim || claimedBy(entry)));
   };
   if (!allowed(link, invite, Boolean(invite.claim))) {
     send({ message: "This installer code is no longer available. Get a new code from your setup." });
+    return true;
+  }
+  if (invite.credentials?.length && value.credentialCopy !== true) {
+    send({ message: "Update this computer’s installer to copy the sign-ins and keys selected for this code.", retrySameSetup: true });
     return true;
   }
   if (value.confirmed !== true) {
@@ -72218,8 +72510,7 @@ function receiveInstallerClaim(body, link, host, from) {
   const committed = updateLink((current) => {
     if (!current || !allowed(current, current.installerInvites?.[id], true) || primaryFenced(current))
       return null;
-    const present = peersOf(current).find((each) => each.key === peer.key && each.sign === peer.sign && each.address === peer.address);
-    if (!present)
+    if (!enrolled(current))
       return null;
     const doc = ownDoc(current, "peers", primaryPeersBody(current));
     if (doc)
@@ -72227,8 +72518,14 @@ function receiveInstallerClaim(body, link, host, from) {
     return doc?.changed ? current : null;
   });
   if (response.doc) {
+    const selection = credentialSelectionLayoutReady(K) ? invite.credentials ?? [] : [];
     for (const docs of docMails({ give: [response.doc.envelope] }))
-      send({ docs });
+      send({ docs, copyCredentials: selection.length > 0 });
+    if (selection.length)
+      sendInstallerCredentials(id, selection, send, () => {
+        const current = readLink();
+        return allowed(current, current?.installerInvites?.[id], true) && !primaryFenced(current) && enrolled(current);
+      });
     if (committed)
       macDocsChanged();
     return true;
@@ -72262,14 +72559,19 @@ function exchange(code, key, peer, reserve) {
     const nonce = crypto66.randomBytes(24).toString("base64url");
     const secret = crypto66.randomBytes(32);
     const address = bytes2(code.address);
-    const payload = { ...peer, nonce, token: code.token };
+    const payload = { ...peer, nonce, token: code.token, credentialCopy: credentialSelectionLayoutReady(K) };
     let request = seal2(key, code.primary, address, payload);
     const socket = new WebSocket(code.relay);
     const parts = new Map;
+    const seedParts = new Map;
+    let doc = null;
+    let seed;
+    let copyCredentials = false;
+    let credentialProblem;
     socket.binaryType = "arraybuffer";
     let again;
-    const deadline = setTimeout(() => finish(null, new Error("Your primary didn't finish adding this computer. Check that it’s online and run the installer again with the same code.")), 60000);
-    function finish(doc, error) {
+    const deadline = setTimeout(() => finish(new Error("Your primary didn't finish adding this computer. Check that it’s online and run the installer again with the same code.")), 60000);
+    function finish(error) {
       clearTimeout(deadline);
       clearInterval(again);
       try {
@@ -72277,8 +72579,8 @@ function exchange(code, key, peer, reserve) {
       } catch {}
       if (error)
         reject(error);
-      else
-        resolve(doc);
+      else if (doc)
+        resolve({ doc, seed, credentialProblem });
     }
     const send = () => {
       if (socket.readyState === WebSocket.OPEN)
@@ -72286,7 +72588,7 @@ function exchange(code, key, peer, reserve) {
     };
     let confirmed = false;
     socket.onopen = () => socket.send(relayHello(secret));
-    socket.onerror = socket.onclose = () => finish(null, new Error("Couldn't connect to your setup's relay. Run the installer again with the same code."));
+    socket.onerror = socket.onclose = () => finish(new Error("Couldn't connect to your setup's relay. Run the installer again with the same code."));
     socket.onmessage = (event) => {
       const message = readRelay(Buffer.from(event.data));
       if (message?.kind === "welcome" && message.address.equals(addressOf(secret)) && !again) {
@@ -72309,19 +72611,35 @@ function exchange(code, key, peer, reserve) {
           confirmed = true;
           send();
         } catch (error) {
-          finish(null, error instanceof Error ? error : new Error("This computer couldn't reserve its enrollment."));
+          finish(error instanceof Error ? error : new Error("This computer couldn't reserve its enrollment."));
         }
         return;
       }
       const { docs } = response.value;
       if (typeof response.value.message === "string") {
-        return finish(null, response.value.retrySameSetup === true ? new Error(response.value.message) : new ClaimRefused(response.value.message));
+        return finish(response.value.retrySameSetup === true ? new Error(response.value.message) : new ClaimRefused(response.value.message));
       }
-      if (!confirmed || !isObject(docs))
+      if (!confirmed)
         return;
-      const doc = readDoc(Array.isArray(docs.give) ? docs.give[0] : assemble(parts, code.primary, docs.part));
-      if (doc)
-        finish(doc);
+      if (isObject(docs)) {
+        const received = readDoc(Array.isArray(docs.give) ? docs.give[0] : assemble(parts, code.primary, docs.part));
+        if (received) {
+          doc = received;
+          copyCredentials = response.value.copyCredentials === true;
+        }
+      }
+      if (isObject(response.value.seed))
+        seed = response.value.seed;
+      if (typeof response.value.credentialProblem === "string")
+        credentialProblem = response.value.credentialProblem;
+      const assembled = assemble(seedParts, code.primary, response.value.seedPart);
+      if (assembled) {
+        try {
+          seed = JSON.parse(bytes2(assembled.d).toString("utf8"));
+        } catch {}
+      }
+      if (doc && (!copyCredentials || seed !== undefined || credentialProblem))
+        finish();
     };
   });
 }
@@ -72368,19 +72686,27 @@ async function joinWithInstallerCode(input) {
       throw new Error("This computer is already your primary.");
     return link;
   }, { durable: true });
-  if (local.setup?.role === "member")
-    return { setup: local.setup.id, primary: local.setup.primary };
+  const copyReady = credentialSelectionLayoutReady(K);
+  if (local.setup?.role === "member" && !local.installerClaim?.credentialsPending) {
+    const missing = local.installerClaim?.credentialsMissing ?? 0;
+    return { setup: local.setup.id, primary: local.setup.primary, ...missing > 0 ? { credentials: { missing } } : {} };
+  }
   const key = ownKey(local);
   const sign = ownSign(local);
   const address = relayAddress(local.secret);
-  let doc;
+  let result;
   try {
-    doc = await exchange(code, local.key, { address, sign, name: local.name, kind: IS_MAC ? "mac" : "machine" }, () => {
+    result = await exchange(code, local.key, { address, sign, name: local.name, kind: IS_MAC ? "mac" : "machine" }, () => {
       const reserved = updateLink((current) => {
         if (!current || ownKey(current) !== key || ownSign(current) !== sign || relayAddress(current.secret ?? "") !== address)
           return null;
         canJoin(current);
-        current.installerClaim = { setup: code.setup, invite: claimKey, until: Date.now() + CLAIM_LIFETIME };
+        current.installerClaim = {
+          setup: code.setup,
+          invite: claimKey,
+          until: Date.now() + CLAIM_LIFETIME,
+          ...current.installerClaim?.invite === claimKey && current.installerClaim.credentialsPending ? { credentialsPending: true } : {}
+        };
         return current;
       }, { durable: true });
       if (!reserved)
@@ -72396,18 +72722,27 @@ async function joinWithInstallerCode(input) {
       }, { durable: true });
     throw error;
   }
+  const { doc, seed, credentialProblem } = result;
   const setup = ledSetup(doc);
   if (!doc || !setup || setup.id !== code.setup || setup.primary !== code.primary || !Array.isArray(doc.body.boxes) || !doc.body.boxes.some((peer) => isObject(peer) && peer.key === key && peer.sign === sign && peer.address === address)) {
     throw new Error("The primary didn’t send this computer's accepted membership.");
   }
+  const copyPending = copyReady && (seed !== undefined || credentialProblem !== undefined);
   const changed = updateLink((current) => {
     if (!current || current.installerClaim?.invite !== claimKey || ownKey(current) !== key || ownSign(current) !== sign)
       return null;
     canJoin(current);
+    if (current.setup?.role === "member") {
+      if (current.setup.id !== setup.id || current.setup.primary !== setup.primary || current.setup.sign !== doc.origin)
+        return null;
+      return current;
+    }
     current.mac = setup.primary;
     current.macs = [setup.primary];
     current.macSigns = { [setup.primary]: doc.origin };
     current.setup = { ...setup, sign: doc.origin, role: "member", ...managedFields(doc), managed: true };
+    if (copyPending)
+      current.installerClaim.credentialsPending = true;
     current.relay = code.relay;
     delete current.pairing;
     delete current.appPairing;
@@ -72420,9 +72755,33 @@ async function joinWithInstallerCode(input) {
   noteDocsChanged();
   if (!IS_MAC && !runningBridge())
     startBridge();
-  return { setup: setup.id, primary: setup.primary };
+  let missing = 0;
+  if (copyPending) {
+    if (credentialProblem)
+      throw new Error(`This computer joined. ${credentialProblem}`);
+    missing = isObject(seed) && typeof seed.missing === "number" ? seed.missing : 0;
+    const sameMember = (current) => current?.installerClaim?.invite === claimKey && current.setup?.role === "member" && current.setup.id === setup.id && ownKey(current) === key && !current.localWipe && !current.localUnlink && !current.removalSource;
+    await withCredentialCopyLock(async () => {
+      if (!sameMember(readLink()))
+        throw new Error("This computer’s enrollment changed before the selected credentials could be saved.");
+      if (!await applyInstallerSeed(seed).catch(() => false) || missing > 0 && isObject(seed) && seed.unavailable === true) {
+        throw new Error("This computer joined. Run the installer again with the same code to complete the selected sign-ins and keys.");
+      }
+      const completed = updateLink((current) => {
+        if (!current?.installerClaim || !sameMember(current))
+          return null;
+        delete current.installerClaim.credentialsPending;
+        if (missing > 0)
+          current.installerClaim.credentialsMissing = missing;
+        return current;
+      }, { durable: true });
+      if (!completed)
+        throw new Error("This computer’s enrollment changed while the selected credentials were being saved.");
+    });
+  }
+  return { setup: setup.id, primary: setup.primary, ...missing > 0 ? { credentials: { missing } } : {} };
 }
-var ClaimRefused, INVITE_LIFETIME, CLAIM_LIFETIME, PREFIX, CODE = "kuvo-add-1.", TOKEN, TOKEN_HASH, hash = (value) => crypto66.createHash("sha256").update(value).digest("base64url"), bytes2 = (text) => Buffer.from(text, "base64url"), relayAddress = (secret) => addressOf(bytes2(secret)).toString("base64url"), refusal4 = (status, message) => ({ status, value: { message } }), isLive = (invite, now) => (invite.claim?.until ?? invite.expires) > now;
+var ClaimRefused, INVITE_LIFETIME, CLAIM_LIFETIME, PREFIX, CODE = "kuvo-add-1.", TOKEN, TOKEN_HASH, hash = (value) => crypto66.createHash("sha256").update(value).digest("base64url"), bytes2 = (text) => Buffer.from(text, "base64url"), relayAddress = (secret) => addressOf(bytes2(secret)).toString("base64url"), refusal4 = (status, message) => ({ status, value: { message } }), isLive = (invite, now) => (invite.claim?.until ?? invite.expires) > now, collecting;
 var init_invite = __esm(() => {
   init_folder_version();
   init_text();
@@ -72451,6 +72810,7 @@ var init_invite = __esm(() => {
   init_state();
   init_store2();
   init_flow2();
+  init_seed();
   init_tries();
   ClaimRefused = class ClaimRefused extends Error {
   };
@@ -72459,6 +72819,7 @@ var init_invite = __esm(() => {
   PREFIX = Buffer.from("kuvo installer v1\x00");
   TOKEN = /^[A-Za-z0-9_-]{32}$/;
   TOKEN_HASH = /^[A-Za-z0-9_-]{43}$/;
+  collecting = new Map;
 });
 
 // box/src/link/mac/app.ts
@@ -73453,8 +73814,23 @@ async function addHere2(method, item, body, asker) {
       return refused8(404, "That isn’t a computer this one set up over SSH.");
     return "busy" in begun ? refused8(409, begun.busy) : { status: 202, value: { try: begun.seen } };
   }
+  if (item === "credentials") {
+    if (method !== "GET")
+      return refused8(405, "Only GET.");
+    if (!credentialSelectionLayoutReady(K))
+      return refused8(503, "Wait for the Kuvo Code update to finish before choosing sign-ins and keys.");
+    return { status: 200, value: await credentialChecklist() };
+  }
   if (item === "code") {
-    return method === "POST" ? createInstallerInvite(isObject(body) ? body.invite : undefined, asker) : refused8(405, "Only POST.");
+    if (method !== "POST")
+      return refused8(405, "Only POST.");
+    const input = isObject(body) ? body : {};
+    const selected = credentialSelection(input.credentials);
+    if (!selected)
+      return refused8(400, "Choose sign-ins and keys by their checklist IDs.");
+    if (selected.length && !credentialSelectionLayoutReady(K))
+      return refused8(503, "Wait for the Kuvo Code update to finish before choosing sign-ins and keys.");
+    return createInstallerInvite(input.invite, asker, selected);
   }
   const given = isObject(body) ? body : {};
   if (item.startsWith("answer/") && TRY_ID.test(item.slice(7))) {
@@ -73486,7 +73862,12 @@ async function addHere2(method, item, body, asker) {
   const problem = addressProblem(destination);
   if (problem)
     return refused8(400, problem);
-  const begun = beginAdd(destination, asker, replace, discardLocalPairings);
+  const selected = credentialSelection(given.credentials);
+  if (!selected)
+    return refused8(400, "Choose sign-ins and keys by their checklist IDs.");
+  if (selected.length && !credentialSelectionLayoutReady(K))
+    return refused8(503, "Wait for the Kuvo Code update to finish before choosing sign-ins and keys.");
+  const begun = beginAdd(destination, asker, replace, discardLocalPairings, selected);
   return "busy" in begun ? refused8(409, begun.busy) : { status: 202, value: { try: begun.seen } };
 }
 async function addComputerAct(sender, act) {
@@ -73509,7 +73890,7 @@ function addForActor(method, item, input, actor) {
   return addHere2(method, item, input, { key: Buffer.from(actor.key, "base64url"), pairing: actor.pairing });
 }
 async function addOnPrimary(method, item, input, actor, served = false, signal, oneShot = false) {
-  if (served || IS_MAC && !oneShot || !IS_MAC && item === "code")
+  if (served || IS_MAC && !oneShot || !IS_MAC && (item === "code" || item === "credentials"))
     return addForActor(method, item, input, actor);
   try {
     let server = runningServe();
@@ -73570,6 +73951,9 @@ async function addFrom(context, method, item, input, actor = actorOf(context.pho
   const primary = peersOf(link).find((peer) => peer.key === setup.primary);
   if (!primary)
     return refused8(503, "This computer can't reach your primary.");
+  if ((item === "credentials" || method === "POST" && (item === "add" || item === "code")) && !takesForwarded(primary.key, "computers.add.credentials")) {
+    return refused8(409, "Update your primary to choose sign-ins and keys before adding a computer.");
+  }
   const result = await forwardAct(primary, "Adding computers", {
     area: "addComputer",
     method,
@@ -73577,7 +73961,7 @@ async function addFrom(context, method, item, input, actor = actorOf(context.pho
     body: { setup: setup.id, epoch: setup.epoch, actor, input }
   }, context.signal, link, Date.now(), { backgroundRelay: true });
   if ("refused" in result) {
-    return method === "GET" ? { status: 200, value: { can: false, why: result.refused, hosts: [], tries: [] } } : refused8(result.status, result.refused);
+    return method === "GET" && item === "add" ? { status: 200, value: { can: false, why: result.refused, hosts: [], tries: [] } } : refused8(result.status, result.refused);
   }
   return result;
 }
@@ -73631,7 +74015,9 @@ async function* computersAddRoute(context, match) {
   }
   if (method !== "GET" && method !== "POST" && method !== "DELETE")
     return yield* json(405, { message: "Only GET, POST or DELETE." });
-  const result = suffix === "/code" && method === "POST" ? await installerCodeFrom((invite) => addFrom(context, method, "code", { invite })) : await addFrom(context, method, suffix === "/code" ? "code" : id ? answering ? `answer/${id}` : id : "add", parsed(request.body));
+  const input = parsed(request.body);
+  const item = suffix === "/credentials" ? "credentials" : suffix === "/code" ? "code" : id ? answering ? `answer/${id}` : id : "add";
+  const result = item === "code" && method === "POST" ? await installerCodeFrom((invite) => addFrom(context, method, item, { invite, credentials: isObject(input) ? input.credentials : undefined })) : await addFrom(context, method, item, input);
   return yield* json(result.status, result.value);
 }
 var LOCAL_COMPUTER_ADD = "kuvo/internal/computers/add", COMPUTERS_ADD_ROUTE, KEY_ACTION, TRY_ID, refused8 = (status, message) => ({ status, value: { message } }), ONCE = "Ask this through Kuvo running on this computer: a single request can’t stay to do it.";
@@ -73641,6 +74027,7 @@ var init_computers_add = __esm(() => {
   init_flow2();
   init_invite();
   init_keep_up();
+  init_seed();
   init_tries();
   init_follow();
   init_files2();
@@ -73652,7 +74039,7 @@ var init_computers_add = __esm(() => {
   init_record();
   init_state();
   init_forward2();
-  COMPUTERS_ADD_ROUTE = /^kuvo\/computers\/(?:add(?:(\/events|\/code)|\/(add_[a-z0-9]{1,40})(\/answer)?)?|([A-Za-z0-9_-]{43})\/(setup|uninstall|update))$/;
+  COMPUTERS_ADD_ROUTE = /^kuvo\/computers\/(?:add(?:(\/events|\/code|\/credentials)|\/(add_[a-z0-9]{1,40})(\/answer)?)?|([A-Za-z0-9_-]{43})\/(setup|uninstall|update))$/;
   KEY_ACTION = /^(setup|uninstall|update|autoUpdate)\/([A-Za-z0-9_-]{43})$/;
   TRY_ID = /^add_[a-z0-9]{1,40}$/;
 });
@@ -75766,7 +76153,7 @@ function givenDevice(given, link = readLink()) {
   if (!isObject(given) || given.kind !== "desktop" || typeof given.name !== "string" || given.name.length > MOST_NAME3)
     return null;
   const boxes = link ? [...macsOf(link), ...peersOf(link).map((peer) => peer.key), ownKey(link) ?? ""] : [];
-  if (!fits2({ key: given.key }, boxes))
+  if (!fits({ key: given.key }, boxes))
     return null;
   return { key: given.key, name: plainName(given.name).slice(0, MOST_NAME3), kind: "desktop" };
 }
@@ -75869,7 +76256,7 @@ async function deviceAct(sender, act) {
   }
   if (act.item === sender.key && act.method === "DELETE") {
     const actor = act.body?.actor;
-    if (actor !== null && (!isObject(actor) || !fits2(actor, []) || typeof actor.pairing !== "string")) {
+    if (actor !== null && (!isObject(actor) || !fits(actor, []) || typeof actor.pairing !== "string")) {
       return answer7(400, { message: "Send the requesting device and its pairing." });
     }
     const operation = createHash8("sha256").update(JSON.stringify([sender.key, act.id])).digest("base64url");
@@ -76717,7 +77104,7 @@ async function wipeCommand() {
   if (!removalLayoutReady(K) || !wipeSupportedHere() || !confirmedWipe(readLink()))
     return 1;
   try {
-    return await exclusiveWhile(path197.resolve(K) + "-wipe.lock", async () => {
+    return await exclusiveWhile(path197.resolve(K) + "-wipe.lock", () => withCredentialCopyLock(async () => {
       const link = readLink();
       const wipe = confirmedWipe(link);
       if (!link || !wipe)
@@ -76781,7 +77168,7 @@ async function wipeCommand() {
       } else if (completion)
         await reportCompletion(completion);
       return 0;
-    });
+    }));
   } catch (error) {
     if (fs191.existsSync(RUN))
       logCleanup(error);
@@ -76792,6 +77179,7 @@ var working3 = false, retryAfter = 0, receiptFolder = () => path197.join(path197
 var init_wipe = __esm(() => {
   init_folder_version();
   init_files();
+  init_seed();
   init_home();
   init_host();
   init_connection();
@@ -78726,7 +79114,7 @@ async function answerGoal(id, given, targets, file = GOALS_FILE) {
   if (!before || !botHere(before.bot))
     return { refused: { status: 404, message: "There's no such goal here." } };
   if (action === "start" && frozen().has(before.bot))
-    return { refused: { status: 409, message: MOVING } };
+    return { refused: { status: 409, message: MOVING2 } };
   const ends = action === "start" ? endGiven(given.ends) : undefined;
   if (ends === null)
     return { refused: { status: 400, message: "The end (ends) is a date and time to come." } };
@@ -79034,7 +79422,7 @@ async function askGoal(session, words, targets) {
   if (!said)
     return { refused: { status: 400, message: "Say the goal (goal)." } };
   if (frozen().has(session))
-    return { refused: { status: 409, message: MOVING } };
+    return { refused: { status: 409, message: MOVING2 } };
   const place = await placeOfSession(session, targets()).catch(() => null);
   if (!place)
     return { refused: { status: 404, message: "There's no such conversation here." } };
@@ -80766,7 +81154,7 @@ async function* answerWakes(session, action, request, readEngine, bridge, signal
   const method = request.method.toUpperCase();
   let folder = wakeFolder(session);
   if (method === "POST" && awaySessions().includes(session))
-    return yield* json(409, { message: MOVING });
+    return yield* json(409, { message: MOVING2 });
   const listed = () => listedWakes(folder);
   if (!action && (method === "GET" || method === "HEAD"))
     return yield* json(200, listed());
@@ -80791,7 +81179,7 @@ async function* answerWakes(session, action, request, readEngine, bridge, signal
       folder = made;
     }
     if (isMoving(folder))
-      return yield* json(409, { message: MOVING });
+      return yield* json(409, { message: MOVING2 });
     const failed = await kuvoWake(["watch", every, check, note]);
     if (failed)
       return yield* unavailable(failed, "The watch");
@@ -80813,7 +81201,7 @@ async function* answerWakes(session, action, request, readEngine, bridge, signal
       folder = made;
     }
     if (isMoving(folder))
-      return yield* json(409, { message: MOVING });
+      return yield* json(409, { message: MOVING2 });
     if (readWakes(folder).wakes.length >= WAKE_LIMIT)
       return yield* json(409, { message: `There are ${WAKE_LIMIT} wake-ups waiting already. Cancel some first.` });
     const failed = await kuvoWake(["add", String(Math.floor(due)), ...every ? ["--every", every] : [], note]);
@@ -80823,7 +81211,7 @@ async function* answerWakes(session, action, request, readEngine, bridge, signal
   }
   if (action === "pause" && typeof given.archived === "boolean") {
     if (folder && isMoving(folder))
-      return yield* json(409, { message: MOVING });
+      return yield* json(409, { message: MOVING2 });
     holdArchived(session, given.archived);
     const where = given.archived && given.stop !== false ? await whereIs(session, readEngine, bridge) : null;
     if (where?.found.metadata?.["kuvo.archived"] === true)
@@ -80835,7 +81223,7 @@ async function* answerWakes(session, action, request, readEngine, bridge, signal
   if (!folder)
     return yield* json(action === "pause" ? 200 : 404, action === "pause" ? listed() : {});
   if (isMoving(folder))
-    return yield* json(409, { message: MOVING });
+    return yield* json(409, { message: MOVING2 });
   if ((action === "now" || action === "pause" && given.paused === false) && textOf(path205.join(folder, "paused")) === "restore-review" && given.confirmRestoreRetry !== true) {
     return yield* json(409, { message: "Check whether this restored work already ran before retrying.", confirmRestoreRetry: true });
   }
@@ -80873,7 +81261,7 @@ async function* answerWakes(session, action, request, readEngine, bridge, signal
         fs197.rmdirSync(lock);
       }
       if (moved)
-        return yield* json(409, { message: MOVING });
+        return yield* json(409, { message: MOVING2 });
       return yield* changed(200, {});
     }
     const watch = typeof given.watch === "string" ? watches.find((each) => each.letters === given.watch) : undefined;
@@ -86233,9 +86621,9 @@ import { fileURLToPath as fileURLToPath5 } from "node:url";
 
 // box/src/shared/hang.ts
 init_platform();
-import fs15 from "node:fs";
+import fs28 from "node:fs";
 import net2 from "node:net";
-import path13 from "node:path";
+import path26 from "node:path";
 var LOOK_EVERY = 30000;
 var ANSWER_WITHIN = 20000;
 var HUNG_AFTER = 600000;
@@ -86341,21 +86729,21 @@ class HangWatch {
   }
   server() {
     try {
-      const { pid, port } = JSON.parse(fs15.readFileSync(this.options.record, "utf8"));
+      const { pid, port } = JSON.parse(fs28.readFileSync(this.options.record, "utf8"));
       return Number.isInteger(pid) && pid > 1 && Number.isInteger(port) && port > 0 ? { pid, port } : null;
     } catch {
       return null;
     }
   }
   stoppedOnPurpose() {
-    return ["stopped", ".launching", ".updating", ".system-asking"].some((name) => fs15.existsSync(path13.join(this.options.run, name)));
+    return ["stopped", ".launching", ".updating", ".system-asking"].some((name) => fs28.existsSync(path26.join(this.options.run, name)));
   }
   endedLately() {
-    const file = path13.join(this.options.run, `hung-${this.options.name}.json`);
-    if (!fs15.existsSync(file))
+    const file = path26.join(this.options.run, `hung-${this.options.name}.json`);
+    if (!fs28.existsSync(file))
       return [];
     try {
-      const times = JSON.parse(fs15.readFileSync(file, "utf8"));
+      const times = JSON.parse(fs28.readFileSync(file, "utf8"));
       return Array.isArray(times) ? times.filter((time) => typeof time === "number" && this.now() - time < ENDED_WHILE && time <= this.now()) : null;
     } catch {
       return null;
@@ -86369,10 +86757,10 @@ class HangWatch {
       console.error(`The ${this.options.name} has said nothing for ${minutes} minutes, and it's been ended too often lately, or there's no telling how often: it's left as it is, for you to restart.`);
       return;
     }
-    const file = path13.join(this.options.run, `hung-${this.options.name}.json`);
+    const file = path26.join(this.options.run, `hung-${this.options.name}.json`);
     try {
-      fs15.writeFileSync(`${file}.new`, JSON.stringify([...lately, this.now()]), { mode: 384 });
-      fs15.renameSync(`${file}.new`, file);
+      fs28.writeFileSync(`${file}.new`, JSON.stringify([...lately, this.now()]), { mode: 384 });
+      fs28.renameSync(`${file}.new`, file);
     } catch {
       console.error(`The ${this.options.name} has said nothing for ${minutes} minutes, but that can't be noted in ${file}: it's left as it is, for you to restart.`);
       return;
@@ -90882,7 +91270,7 @@ function bundleID(bundle) {
     return null;
   }
 }
-var sha2563 = (file) => crypto81.createHash("sha256").update(fs217.readFileSync(file)).digest("hex");
+var sha2564 = (file) => crypto81.createHash("sha256").update(fs217.readFileSync(file)).digest("hex");
 function checkedRelease(release) {
   const damaged = new Said("This copy of Kuvo is damaged. Download it again, then try again.");
   let box;
@@ -90895,7 +91283,7 @@ function checkedRelease(release) {
     throw damaged;
   for (const [name, sum] of Object.entries(box.files)) {
     const file = path227.join(release, name);
-    if (name.split("/").includes("..") || path227.isAbsolute(name) || fs217.lstatSync(file, { throwIfNoEntry: false })?.isFile() !== true || sha2563(file) !== sum)
+    if (name.split("/").includes("..") || path227.isAbsolute(name) || fs217.lstatSync(file, { throwIfNoEntry: false })?.isFile() !== true || sha2564(file) !== sum)
       throw damaged;
   }
   for (const [name] of RELEASE_FILES)
@@ -90992,7 +91380,7 @@ function joinInstalledBox(home, code) {
     input: `${code}
 `,
     encoding: "utf8",
-    timeout: 80000,
+    timeout: 180000,
     env: { ...process.env, BUN_BE_BUN: "1", BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0" }
   });
   if (joined.status !== 0)
@@ -91001,8 +91389,10 @@ function joinInstalledBox(home, code) {
   try {
     const value = JSON.parse((joined.stdout ?? "").trim().split(`
 `).at(-1) ?? "");
-    if (isObject(value) && typeof value.setup === "string" && typeof value.primary === "string")
-      return { setup: value.setup, primary: value.primary };
+    if (isObject(value) && typeof value.setup === "string" && typeof value.primary === "string") {
+      const missing = isObject(value.credentials) && typeof value.credentials.missing === "number" ? value.credentials.missing : 0;
+      return { setup: value.setup, primary: value.primary, ...missing > 0 ? { credentials: { missing } } : {} };
+    }
   } catch {}
   throw new Said("Kuvo couldn’t read the membership from this computer. Retry with the same installer code.");
 }
@@ -96352,6 +96742,7 @@ var ROUTES = [
   { feature: "sessions.glance", when: (route) => route.match(GLANCE_ROUTE), answer: glanceRoute },
   { feature: "sessions.list", when: (route) => route.match(LIST_ROUTE), answer: listRoute },
   { feature: "waiting", when: (route) => route.match(WAITING_ROUTE), answer: waitingRoute },
+  { feature: "computers.add.credentials", when: (route) => route === "kuvo/computers/add/credentials" ? route.match(COMPUTERS_ADD_ROUTE) : null, answer: computersAddRoute },
   { feature: "computers.add.from-any-client", when: (route) => route === "kuvo/computers/add/code" ? route.match(COMPUTERS_ADD_ROUTE) : null, answer: computersAddRoute },
   { feature: "computers.add", when: (route) => route.match(COMPUTERS_ADD_ROUTE), answer: computersAddRoute },
   { feature: "computers", when: (route) => route.match(COMPUTERS_ROUTE), answer: computersRoute },

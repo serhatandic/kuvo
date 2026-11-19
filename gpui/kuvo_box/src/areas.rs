@@ -300,6 +300,23 @@ pub struct Adding {
     pub tries: Vec<AddTry>,
 }
 
+/// The portable sign-ins and keys offered by the primary for this add.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ComputerCredentialChecklist {
+    pub items: Vec<ComputerCredential>,
+    pub renewing: u64,
+    pub unavailable: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ComputerCredential {
+    pub id: String,
+    pub kind: String,
+    pub label: String,
+    pub integration: Option<String>,
+    pub checked: bool,
+}
+
 /// A private installer code and its expiration in Unix milliseconds.
 #[derive(Clone, Deserialize)]
 pub struct ComputerInstallerCode {
@@ -326,6 +343,8 @@ pub struct AddTry {
     pub title: String,
     #[serde(default)]
     pub steps: Vec<AddStep>,
+    #[serde(default)]
+    pub credentials: Vec<String>,
     #[serde(default)]
     pub question: Option<AddQuestion>,
     #[serde(default)]
@@ -768,9 +787,24 @@ impl BoxClient {
         Ok(self.value::<Tried>(&Request::post("kuvo/computers/add", serde_json::json!({ "destination": destination })))?.tried)
     }
 
+    /// Lists the sign-ins and keys that may be chosen for this add.
+    pub fn computer_credential_checklist(&self) -> Result<ComputerCredentialChecklist> {
+        self.get("kuvo/computers/add/credentials")
+    }
+
+    /// Starts an SSH add with the IDs explicitly chosen from the checklist.
+    pub fn add_computer_with_credentials(&self, destination: &str, credentials: &[String]) -> Result<AddTry> {
+        Ok(self.value::<Tried>(&Request::post("kuvo/computers/add", serde_json::json!({ "destination": destination, "credentials": credentials })))?.tried)
+    }
+
     /// Creates a single-use installer code through the current primary.
     pub fn computer_installer_code(&self) -> Result<ComputerInstallerCode> {
-        self.value(&Request::post("kuvo/computers/add/code", serde_json::json!({})))
+        self.computer_installer_code_with_credentials(&[])
+    }
+
+    /// Creates a code that can copy the explicitly chosen sign-ins and keys.
+    pub fn computer_installer_code_with_credentials(&self, credentials: &[String]) -> Result<ComputerInstallerCode> {
+        self.value(&Request::post("kuvo/computers/add/code", serde_json::json!({ "credentials": credentials })))
     }
 
     /// Answers what the try `id` asks (its ask numbered `at`), with one of its answers' ids.

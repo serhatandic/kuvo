@@ -7,7 +7,7 @@
 
 import { appDataProbe } from "../install/app-data";
 import { quote } from "../../shared/text";
-import { ADD_RESERVATION, REBOOT_TAG } from "../marks";
+import { ADD_RESERVATION, REBOOT_TAG, SSH_FRESH_ADD } from "../marks";
 
 const K = 'K="$HOME/.kuvo-code"';
 export const ACCOUNT_BUSY = 8;
@@ -57,11 +57,21 @@ ${previous ? `else
 fi
 ln -s ${quote(token)} "$A" || exit ${ACCOUNT_ERROR}`, 0);
 
-export const release = (token: string): string => accountLock(`
+const FRESH_ADD = `"$HOME/.kuvo-code/run/${SSH_FRESH_ADD}"`;
+
+export const release = (token: string, clearFresh = false): string => accountLock(`
 if claimed; then
   prior=$(readlink "$A") || exit ${ACCOUNT_ERROR}
-  if [ "$prior" = ${quote(token)} ]; then rm -f "$A"; fi
+  if [ "$prior" = ${quote(token)} ]; then
+    ${clearFresh ? `rm -f ${FRESH_ADD} || exit ${ACCOUNT_ERROR}` : ":"}
+    rm -f "$A"
+  fi
 fi`);
+
+/** Private recovery metadata for an account the probe proved was fresh before any installation. */
+export const rememberFresh = (record: string): string => `${K}
+(umask 077; mkdir -p "$K/run" && printf '%s\\n' ${quote(record)} >"$K/run/${SSH_FRESH_ADD}.$$" &&
+  mv -f "$K/run/${SSH_FRESH_ADD}.$$" ${FRESH_ADD}) || exit ${ACCOUNT_ERROR}`;
 
 export const reserved = (token: string, script: string): string => accountLock(`
 ${owns(token)} || exit ${ACCOUNT_LOST}
@@ -135,6 +145,9 @@ if [ "$(uname -s)" = Darwin ]; then
   echo "macos $(sw_vers -productVersion 2>/dev/null)"
 elif ldd --version 2>&1 | grep -qi musl; then echo musl; else echo glibc; fi
 echo "kuvo version $(cat "$K/bin/box-version" 2>/dev/null | tr -cd '0-9a-z.-')"
+if [ -f ${FRESH_ADD} ] && [ ! -L ${FRESH_ADD} ] && [ "$(wc -c < ${FRESH_ADD})" -le 150 ]; then
+  printf 'kuvo fresh-add %s\n' "$(sed -n 1p ${FRESH_ADD})"
+fi
 [ -d "$K/run/.updating" ] && echo "kuvo updating"
 [ -x "$K/engine/${version}/opencode" ] && "$K/engine/${version}/opencode" --version >/dev/null 2>&1 && echo "kuvo engine"
 [ -s "$K/machine-id" ] && echo "kuvo id $(cat "$K/machine-id")"
@@ -269,8 +282,9 @@ fi`;
  * once) then `started`, or exit 3 with its
  * engine's last words; 6 when its settings couldn't be made its own; 7 when it was removed
  * meanwhile. `notes`: who started it, as its keeper notes each start (`{…}`, JSON on one line). */
-export const start = (version: string, name: string, notes: string): string => `${K}; R="$K/run"
+export const start = (version: string, name: string, notes: string, credentialRecord?: string): string => `${K}; R="$K/run"
 mkdir -p "$R" && chmod 700 "$R"
+${credentialRecord ? rememberFresh(credentialRecord) : ""}
 ${engineOf(version)}
 [ -x "$E" ] || { echo "It has no engine yet." >&2; exit 3; }
 adopted=$( ${link("box adopt")} 2>"$R/.adopt.err") || { tail -n 2 "$R/.adopt.err" >&2; rm -f "$R/.adopt.err"; exit 6; }
@@ -392,6 +406,7 @@ if [ -d "$K/agents" ]; then
 fi
 if [ "$desktop_failed" -ne 0 ]; then exit 81; fi
 if [ "$cleanup_failed" -ne 0 ]; then exit 82; fi
+rm -f "$K/run/${SSH_FRESH_ADD}" "$K/run/seeded.json" || exit 82
 `;
 
 /** The remote must finish verifying its backup while it can still reach its destination.

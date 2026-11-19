@@ -6,6 +6,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- Adding a computer can copy the sign-ins and keys you choose each time. An unconfirmed choice leaves credentials on the computer that already holds them.
+
 - Kuvo’s box can add a computer from any connected client. Your main computer can set it up over SSH, or you can run the installer on the new computer and enter a private code from a connected client.
 
 - Settings › Usage now shows plan limits in compact account cards. See how much you’ve used, when each limit resets, and which computer supplied the reading. Old readings are marked, and failed readings say what you can do.

@@ -37,6 +37,7 @@ export class Failed extends Error {
 export interface Running {
   seen: AddTry;
   stop: AbortController;
+  selectedCredentials?: string[];
   committed?: boolean;
   enrollment?: Enrollment;
   /** The answer its question waits for. */
@@ -139,6 +140,7 @@ export interface Telling {
   saving(save: Receipt, peer: EnrollmentPeer): void;
   saved(receipt: SetupSaveReceipt): void;
   replacing?(replacement: ReplacementEnrollment, peer: EnrollmentPeer): void;
+  choseCredentials(selection: string[]): void;
   /** The step under way now (those before it done), with what it says beside it. */
   step(id: string, detail?: string): void;
   /** How far the step under way has got, in bytes. */
@@ -159,10 +161,12 @@ export const underWay = (destination: string): Running | undefined => [...runnin
 /** Starts a try: after whatever's under way for that computer has ended, `work` runs, telling how
  * it goes; it ends done, failed (`Failed`'s words, or anything else's as they are) or stopped
  * (gone from the list). */
-export function startTry(kind: AddTry["kind"], destination: string, name: string, steps: readonly (readonly [id: string, title: string])[], work: (tell: Telling) => Promise<void>): Running {
-  const seen: AddTry = { id: newID("add_"), kind, destination, name, state: "working", title: workingTitle(kind, name), steps: steps.map(([id, title]) => ({ id, title, state: "waiting" as const })) };
+export function startTry(kind: AddTry["kind"], destination: string, name: string, steps: readonly (readonly [id: string, title: string])[], work: (tell: Telling) => Promise<void>, credentials?: string[]): Running {
+  const previousChoice = kind === "add" ? kept().find(each => each.kind === kind && each.destination === destination && each.state === "failed")?.credentials : undefined;
+  const choice = previousChoice ?? credentials;
+  const seen: AddTry = { ...(choice ? { credentials: choice } : {}), id: newID("add_"), kind, destination, name, state: "working", title: workingTitle(kind, name), steps: steps.map(([id, title]) => ({ id, title, state: "waiting" as const })) };
   const stop = new AbortController();
-  const it: Running = { seen, stop, answer: null, over: Promise.resolve() };
+  const it: Running = { seen, stop, selectedCredentials: credentials, answer: null, over: Promise.resolve() };
   const change = (next: Partial<AddTry>) => {
     it.seen = { ...it.seen, ...next };
     note();
@@ -192,6 +196,10 @@ export function startTry(kind: AddTry["kind"], destination: string, name: string
         throw error;
       }
       it.committed = true;
+    },
+    choseCredentials(selection) {
+      it.seen = { ...it.seen, credentials: selection };
+      note(true, true);
     },
     step(id, detail) {
       tell.check();

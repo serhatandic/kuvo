@@ -4,11 +4,12 @@ export interface InstallerInvite {
   setup: string;
   epoch: number;
   expires: number;
+  credentials?: string[];
   actor?: { key: string; pairing: string };
   claim?: { key: string; sign: string; address: string; until: number };
 }
 
-export interface InstallerClaim { setup: string; invite: string; until: number }
+export interface InstallerClaim { setup: string; invite: string; until: number; credentialsPending?: true; credentialsMissing?: number }
 
 export function installerInvitesLive(link: LinkState | null | undefined, now = Date.now()): boolean {
   return Object.values(link?.installerInvites ?? {}).some(invite => (invite.claim?.until ?? invite.expires) > now);

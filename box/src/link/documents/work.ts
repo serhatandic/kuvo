@@ -10,7 +10,6 @@ import { acceptedMembership, acceptedName, namedRoster } from "../setup/membersh
 // (`have`), what changed as it changes (`give`), and what they have again with their agents.
 // Here, what taking and giving them does to link.json; documents/exchange sends it.
 
-import crypto from "node:crypto";
 import { type Doc, DOC_KINDS, type DocKind, type SignedDoc } from "../../shared/documents";
 import { legacyFolderTrial } from "../../shared/folder-version";
 import { isObject } from "../../shared/json";
@@ -27,8 +26,8 @@ import { publishRevocations, revocationDocuments, takeRevocations } from "../set
 import { primaryFenced } from "../setup/lease";
 import { noteConflict, settleSetup } from "../setup/settle";
 import { macSign, updateLink } from "../state";
-import { bodyHash, DOC_PART, docKey, held, MOST_DOC, ownSign, readDoc, shortHash, signDoc } from "./format";
-import { assemble, type DocPart, type PendingParts } from "./parts";
+import { bodyHash, docKey, held, MOST_DOC, ownSign, readDoc, shortHash, signDoc } from "./format";
+import { assemble, splitParts, type PendingParts } from "./parts";
 import type { MovedSession, Peer } from "../peers/known";
 import type { PersonalityLibrary } from "../personalities/library";
 import type { LinkState } from "../state";
@@ -305,9 +304,7 @@ export function docMails(docs: DocsMail): DocsMail[] {
         give = [];
         size = 0;
       }
-      const whole = crypto.createHash("sha256").update(envelope.d).digest("base64url");
-      const of = Math.ceil(envelope.d.length / DOC_PART);
-      for (let i = 0; i < of; i++) mails.push({ part: { whole, i, of, d: envelope.d.slice(i * DOC_PART, (i + 1) * DOC_PART), s: envelope.s } satisfies DocPart });
+      for (const part of splitParts(envelope.d, envelope.s)) mails.push({ part });
       continue;
     }
     if ((size + length > 48_000 && give.length) || give.length === 64) {

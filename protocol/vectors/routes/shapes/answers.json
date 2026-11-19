@@ -4606,6 +4606,85 @@
    }
   },
   {
+   "route": "GET kuvo/computers/add/credentials",
+   "feature": "computers.add.credentials",
+   "answers": {
+    "200": {
+     "object": {
+      "items": {
+       "list": {
+        "object": {
+         "id": "string",
+         "kind": {
+          "oneOf": [
+           {
+            "literal": "sign-in"
+           },
+           {
+            "literal": "key"
+           }
+          ]
+         },
+         "label": "string",
+         "integration?": "string",
+         "checked": "bool"
+        }
+       }
+      },
+      "renewing": "number",
+      "unavailable": {
+       "list": {
+        "oneOf": [
+         {
+          "literal": "keys"
+         },
+         {
+          "literal": "sign-ins"
+         }
+        ]
+       }
+      }
+     }
+    },
+    "400": {
+     "object": {
+      "message": "string",
+      "primary?": "string"
+     }
+    },
+    "403": {
+     "object": {
+      "message": "string",
+      "primary?": "string"
+     }
+    },
+    "404": {
+     "object": {
+      "message": "string",
+      "primary?": "string"
+     }
+    },
+    "405": {
+     "object": {
+      "message": "string",
+      "primary?": "string"
+     }
+    },
+    "409": {
+     "object": {
+      "message": "string",
+      "primary?": "string"
+     }
+    },
+    "503": {
+     "object": {
+      "message": "string",
+      "primary?": "string"
+     }
+    }
+   }
+  },
+  {
    "route": "POST kuvo/computers/add/code",
    "feature": "computers.add.from-any-client",
    "answers": {
@@ -4732,6 +4811,9 @@
             "total?": "number"
            }
           }
+         },
+         "credentials?": {
+          "list": "string"
          },
          "question?": {
           "object": {
@@ -4932,6 +5014,9 @@
            }
           }
          },
+         "credentials?": {
+          "list": "string"
+         },
          "question?": {
           "object": {
            "id": "string",
@@ -5125,6 +5210,9 @@
           }
          }
         },
+        "credentials?": {
+         "list": "string"
+        },
         "question?": {
          "object": {
           "id": "string",
@@ -5316,6 +5404,9 @@
            "total?": "number"
           }
          }
+        },
+        "credentials?": {
+         "list": "string"
         },
         "question?": {
          "object": {
@@ -5548,6 +5639,9 @@
           }
          }
         },
+        "credentials?": {
+         "list": "string"
+        },
         "question?": {
          "object": {
           "id": "string",
@@ -5740,6 +5834,9 @@
           }
          }
         },
+        "credentials?": {
+         "list": "string"
+        },
         "question?": {
          "object": {
           "id": "string",
@@ -5931,6 +6028,9 @@
            "total?": "number"
           }
          }
+        },
+        "credentials?": {
+         "list": "string"
         },
         "question?": {
          "object": {
@@ -8751,6 +8851,9 @@
             "literal": "computers.add"
            },
            {
+            "literal": "computers.add.credentials"
+           },
+           {
             "literal": "computers.add.from-any-client"
            },
            {
@@ -9568,6 +9671,9 @@
            },
            {
             "literal": "computers.add"
+           },
+           {
+            "literal": "computers.add.credentials"
            },
            {
             "literal": "computers.add.from-any-client"

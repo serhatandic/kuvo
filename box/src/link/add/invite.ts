@@ -3,15 +3,15 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { addComputersLayoutReady } from "../../shared/folder-version";
+import { addComputersLayoutReady, credentialSelectionLayoutReady } from "../../shared/folder-version";
 import { isObject } from "../../shared/json";
 import { plainName } from "../../shared/text";
 import { addressOf, newKey, publicOf } from "../crypto/keys";
 import { openOneWay, sealOneWay } from "../crypto/noise";
 import { noteDocsChanged } from "../documents/changed";
 import { macDocsChanged } from "../documents/exchange";
-import { newSigningSeed, ownSign, readDoc, SIGN } from "../documents/format";
-import { assemble, type PendingParts } from "../documents/parts";
+import { MOST_DOC, newSigningSeed, ownSign, readDoc, SIGN } from "../documents/format";
+import { assemble, splitParts, type PendingParts } from "../documents/parts";
 import { docMails, docsWork, ownDoc, primaryPeersBody, type OwnDoc } from "../documents/work";
 import { IS_MAC, K, REAL_BOX } from "../home";
 import { runningBridge, startBridge } from "../keeper";
@@ -35,7 +35,9 @@ import { allItems } from "../work-queue/store";
 import type { Acted } from "../work-queue/forward";
 import { type InstallerInvite } from "./invite-state";
 import { stageInstallerEnrollment } from "./flow";
+import { applyInstallerSeed, credentialChecklist, gatherSeed, withCredentialCopyLock } from "./seed";
 import { Failed } from "./tries";
+import type { Doc } from "../../shared/documents";
 
 class ClaimRefused extends Error {}
 
@@ -80,9 +82,16 @@ export async function installerCodeFrom(issue: (id: string) => Promise<Acted>): 
   return { status: 201, value: { code: CODE + Buffer.from(JSON.stringify({ ...reply.value, token })).toString("base64url"), expires } };
 }
 
-export async function createInstallerInvite(id: unknown, asker?: Asker): Promise<Acted> {
+export async function createInstallerInvite(id: unknown, asker?: Asker, credentials: string[] = []): Promise<Acted> {
   if (!addComputersLayoutReady(K)) return refusal(503, "Wait for the Kuvo Code update to finish before adding a computer.");
   if (IS_MAC) await macKeys({ needed: true });
+  if (credentials.length) {
+    const current = await credentialChecklist();
+    const available = new Set(current.items.map(item => item.id));
+    if (credentials.some(id => !available.has(id))) {
+      return refusal(current.unavailable.length ? 503 : 409, "Some selected sign-ins or keys are no longer available. Open the checklist again.");
+    }
+  }
   if (typeof id !== "string" || !TOKEN_HASH.test(id)) return refusal(400, "Send the installer invitation hash.");
   const actor = asker?.key && { key: asker.key.toString("base64url"), pairing: asker.pairing ?? "" };
   let reply = refusal(409, "Only the current primary can issue an installer code.");
@@ -109,7 +118,7 @@ export async function createInstallerInvite(id: unknown, asker?: Asker): Promise
     }
     const now = Date.now();
     const prior = link.installerInvites?.[id];
-    if (prior && (prior.actor?.key !== actor?.key || prior.actor?.pairing !== actor?.pairing || prior.setup !== setup.id || prior.epoch !== setup.epoch || !isLive(prior, now))) {
+    if (prior && (prior.actor?.key !== actor?.key || prior.actor?.pairing !== actor?.pairing || prior.setup !== setup.id || prior.epoch !== setup.epoch || !isLive(prior, now) || JSON.stringify(prior.credentials ?? []) !== JSON.stringify(credentials))) {
       reply = refusal(409, "This installer invitation is no longer available.");
       return null;
     }
@@ -120,7 +129,7 @@ export async function createInstallerInvite(id: unknown, asker?: Asker): Promise
       return null;
     }
     link.installerInvites = Object.fromEntries(invites);
-    link.installerInvites[id] = prior ?? { setup: setup.id, epoch: setup.epoch, expires, actor };
+    link.installerInvites[id] = prior ?? { setup: setup.id, epoch: setup.epoch, expires, actor, ...(credentials.length ? { credentials } : {}) };
     const content: Omit<Code, "token"> = { expires, setup: setup.id, relay: link.relay, address: relayAddress(link.secret), primary: setup.primary };
     reply = { status: 201, value: content };
     return link;
@@ -130,6 +139,31 @@ export async function createInstallerInvite(id: unknown, asker?: Asker): Promise
     else if (!runningBridge() && !machineLink.host) startBridge();
   }
   return reply;
+}
+
+// At most one read of the selected credentials for the same invitation at a time.
+const collecting = new Map<string, ReturnType<typeof gatherSeed>>();
+function sendInstallerCredentials(id: string, selection: string[], send: (value: object) => unknown, stillAccepted: () => boolean) {
+  let work = collecting.get(id);
+  if (!work) {
+    work = gatherSeed(selection);
+    collecting.set(id, work);
+    void work.finally(() => collecting.delete(id)).catch(() => {});
+  }
+  void work.then(({ keys, credentials, integrations, unavailable }) => {
+    if (!stillAccepted()) return;
+    const payload = { keys, credentials, integrations, unavailable, missing: Math.max(0, selection.length - Object.keys(keys).length - credentials.length) };
+    const packed = Buffer.from(JSON.stringify(payload));
+    if (packed.length > MOST_DOC) {
+      send({ credentialProblem: "The selected sign-ins and keys are too large to copy." });
+      return;
+    }
+    if (packed.length < 34_000) {
+      send({ seed: payload });
+      return;
+    }
+    for (const seedPart of splitParts(packed.toString("base64url"))) send({ seedPart });
+  }).catch(() => {});
 }
 
 function seal(key: string, to: string, address: Buffer, value: object): Buffer {
@@ -163,19 +197,24 @@ export function receiveInstallerClaim(body: Buffer, link: LinkState | null, host
   const send = (reply: object) => host.send(seal(link.key!, sender, from, { nonce, ...reply }));
   const position = followedSetup(link);
   const now = Date.now();
-  if (position?.role !== "primary" || position.id !== invite.setup || position.epoch !== invite.epoch) {
+  const enrolled = (current: LinkState | null) => peersOf(current).some(each => each.key === peer.key && each.sign === peer.sign && each.address === peer.address);
+  const claimedBy = (entry: InstallerInvite | undefined) => entry?.claim?.key === peer.key && entry.claim.sign === peer.sign && entry.claim.address === peer.address;
+  if (position?.role !== "primary" || position.id !== invite.setup || (position.epoch !== invite.epoch && !(claimedBy(invite) && enrolled(link)))) {
     send({ message: "Your setup’s primary changed. Get a new installer code from the same setup.", retrySameSetup: true });
     return true;
   }
-  const claimedBy = (entry: InstallerInvite | undefined) => entry?.claim?.key === peer.key && entry.claim.sign === peer.sign && entry.claim.address === peer.address;
   const allowed = (current: LinkState | null, entry: InstallerInvite | undefined, saved = false) => {
     const setup = followedSetup(current);
     return Boolean(current && entry && isLive(entry, Date.now()) && setup?.role === "primary" && setup.id === entry.setup
-      && setup.epoch === entry.epoch && !current.localWipe && !current.localUnlink && !localRemovalPending(current)
+      && (setup.epoch === entry.epoch || saved && claimedBy(entry) && enrolled(current)) && !current.localWipe && !current.localUnlink && !localRemovalPending(current)
       && (saved || !entry.actor || pairedPhone(current, entry.actor.key, entry.actor.pairing)) && (!entry.claim || claimedBy(entry)));
   };
   if (!allowed(link, invite, Boolean(invite.claim))) {
     send({ message: "This installer code is no longer available. Get a new code from your setup." });
+    return true;
+  }
+  if (invite.credentials?.length && value.credentialCopy !== true) {
+    send({ message: "Update this computer’s installer to copy the sign-ins and keys selected for this code.", retrySameSetup: true });
     return true;
   }
   if (value.confirmed !== true) {
@@ -196,14 +235,19 @@ export function receiveInstallerClaim(body: Buffer, link: LinkState | null, host
   const response: { doc?: OwnDoc } = {};
   const committed = updateLink(current => {
     if (!current || !allowed(current, current.installerInvites?.[id], true) || primaryFenced(current)) return null;
-    const present = peersOf(current).find(each => each.key === peer.key && each.sign === peer.sign && each.address === peer.address);
-    if (!present) return null;
+    if (!enrolled(current)) return null;
     const doc = ownDoc(current, "peers", primaryPeersBody(current));
     if (doc) response.doc = doc;
     return doc?.changed ? current : null;
   });
   if (response.doc) {
-    for (const docs of docMails({ give: [response.doc.envelope] })) send({ docs });
+    const selection = credentialSelectionLayoutReady(K) ? invite.credentials ?? [] : [];
+    for (const docs of docMails({ give: [response.doc.envelope] })) send({ docs, copyCredentials: selection.length > 0 });
+    if (selection.length) sendInstallerCredentials(id, selection, send, () => {
+      const current = readLink();
+      return allowed(current, current?.installerInvites?.[id], true) && !primaryFenced(current)
+        && enrolled(current);
+    });
     if (committed) macDocsChanged();
     return true;
   }
@@ -232,29 +276,34 @@ export function receiveInstallerClaim(body: Buffer, link: LinkState | null, host
 function exchange(
   code: Code, key: string, peer: { address: string; sign: string; name: string; kind: Peer["kind"] },
   reserve: () => void,
-): Promise<ReturnType<typeof readDoc>> {
+): Promise<{ doc: Doc; seed?: unknown; credentialProblem?: string }> {
   return new Promise((resolve, reject) => {
     const nonce = crypto.randomBytes(24).toString("base64url");
     const secret = crypto.randomBytes(32);
     const address = bytes(code.address);
-    const payload = { ...peer, nonce, token: code.token };
+    const payload = { ...peer, nonce, token: code.token, credentialCopy: credentialSelectionLayoutReady(K) };
     let request = seal(key, code.primary, address, payload);
     const socket = new WebSocket(code.relay);
     const parts = new Map<string, PendingParts>();
+    const seedParts = new Map<string, PendingParts>();
+    let doc: Doc | null = null;
+    let seed: unknown;
+    let copyCredentials = false;
+    let credentialProblem: string | undefined;
     socket.binaryType = "arraybuffer";
     let again: ReturnType<typeof setInterval> | undefined;
-    const deadline = setTimeout(() => finish(null, new Error("Your primary didn't finish adding this computer. Check that it’s online and run the installer again with the same code.")), 60_000);
-    function finish(doc: ReturnType<typeof readDoc>, error?: Error) {
+    const deadline = setTimeout(() => finish(new Error("Your primary didn't finish adding this computer. Check that it’s online and run the installer again with the same code.")), 60_000);
+    function finish(error?: Error) {
       clearTimeout(deadline);
       clearInterval(again);
       try { socket.close(); } catch {}
       if (error) reject(error);
-      else resolve(doc);
+      else if (doc) resolve({ doc, seed, credentialProblem });
     }
     const send = () => { if (socket.readyState === WebSocket.OPEN) socket.send(request); };
     let confirmed = false;
     socket.onopen = () => socket.send(relayHello(secret));
-    socket.onerror = socket.onclose = () => finish(null, new Error("Couldn't connect to your setup's relay. Run the installer again with the same code."));
+    socket.onerror = socket.onclose = () => finish(new Error("Couldn't connect to your setup's relay. Run the installer again with the same code."));
     socket.onmessage = event => {
       const message = readRelay(Buffer.from(event.data));
       if (message?.kind === "welcome" && message.address.equals(addressOf(secret)) && !again) {
@@ -274,22 +323,40 @@ function exchange(
           confirmed = true;
           send();
         } catch (error) {
-          finish(null, error instanceof Error ? error : new Error("This computer couldn't reserve its enrollment."));
+          finish(error instanceof Error ? error : new Error("This computer couldn't reserve its enrollment."));
         }
         return;
       }
       const { docs } = response.value;
       if (typeof response.value.message === "string") {
-        return finish(null, response.value.retrySameSetup === true ? new Error(response.value.message) : new ClaimRefused(response.value.message));
+        return finish(response.value.retrySameSetup === true ? new Error(response.value.message) : new ClaimRefused(response.value.message));
       }
-      if (!confirmed || !isObject(docs)) return;
-      const doc = readDoc(Array.isArray(docs.give) ? docs.give[0] : assemble(parts, code.primary, docs.part));
-      if (doc) finish(doc);
+      if (!confirmed) return;
+      if (isObject(docs)) {
+        const received = readDoc(Array.isArray(docs.give) ? docs.give[0] : assemble(parts, code.primary, docs.part));
+        if (received) {
+          doc = received;
+          copyCredentials = response.value.copyCredentials === true;
+        }
+      }
+      if (isObject(response.value.seed)) seed = response.value.seed;
+      if (typeof response.value.credentialProblem === "string") credentialProblem = response.value.credentialProblem;
+      const assembled = assemble(seedParts, code.primary, response.value.seedPart);
+      if (assembled) {
+        try { seed = JSON.parse(bytes(assembled.d).toString("utf8")); } catch {}
+      }
+      if (doc && (!copyCredentials || seed !== undefined || credentialProblem)) finish();
     };
   });
 }
 
-export async function joinWithInstallerCode(input: string): Promise<{ setup: string; primary: string }> {
+export interface InstallerMembership {
+  setup: string;
+  primary: string;
+  credentials?: { missing: number };
+}
+
+export async function joinWithInstallerCode(input: string): Promise<InstallerMembership> {
   const code = readCode(input.trim());
   if (!code) throw new Error("Enter the installer code shown on your device.");
   if (!addComputersLayoutReady(K)) throw new Error("Wait for the Kuvo Code update to finish before adding a computer.");
@@ -327,17 +394,22 @@ export async function joinWithInstallerCode(input: string): Promise<{ setup: str
     if (ownKey(link) === code.primary) throw new Error("This computer is already your primary.");
     return link;
   }, { durable: true })!;
-  if (local.setup?.role === "member") return { setup: local.setup.id, primary: local.setup.primary };
+  const copyReady = credentialSelectionLayoutReady(K);
+  if (local.setup?.role === "member" && !local.installerClaim?.credentialsPending) {
+    const missing = local.installerClaim?.credentialsMissing ?? 0;
+    return { setup: local.setup.id, primary: local.setup.primary, ...(missing > 0 ? { credentials: { missing } } : {}) };
+  }
   const key = ownKey(local)!;
   const sign = ownSign(local)!;
   const address = relayAddress(local.secret!);
-  let doc;
+  let result;
   try {
-    doc = await exchange(code, local.key!, { address, sign, name: local.name!, kind: IS_MAC ? "mac" : "machine" }, () => {
+    result = await exchange(code, local.key!, { address, sign, name: local.name!, kind: IS_MAC ? "mac" : "machine" }, () => {
       const reserved = updateLink(current => {
         if (!current || ownKey(current) !== key || ownSign(current) !== sign || relayAddress(current.secret ?? "") !== address) return null;
         canJoin(current);
-        current.installerClaim = { setup: code.setup, invite: claimKey, until: Date.now() + CLAIM_LIFETIME };
+        current.installerClaim = { setup: code.setup, invite: claimKey, until: Date.now() + CLAIM_LIFETIME,
+          ...(current.installerClaim?.invite === claimKey && current.installerClaim.credentialsPending ? { credentialsPending: true } : {}) };
         return current;
       }, { durable: true });
       if (!reserved) throw new Error("This computer’s identity changed. Run the installer again.");
@@ -350,18 +422,25 @@ export async function joinWithInstallerCode(input: string): Promise<{ setup: str
     }, { durable: true });
     throw error;
   }
+  const { doc, seed, credentialProblem } = result;
   const setup = ledSetup(doc);
   if (!doc || !setup || setup.id !== code.setup || setup.primary !== code.primary || !Array.isArray(doc.body.boxes)
     || !doc.body.boxes.some(peer => isObject(peer) && peer.key === key && peer.sign === sign && peer.address === address)) {
     throw new Error("The primary didn’t send this computer's accepted membership.");
   }
+  const copyPending = copyReady && (seed !== undefined || credentialProblem !== undefined);
   const changed = updateLink(current => {
     if (!current || current.installerClaim?.invite !== claimKey || ownKey(current) !== key || ownSign(current) !== sign) return null;
     canJoin(current);
+    if (current.setup?.role === "member") {
+      if (current.setup.id !== setup.id || current.setup.primary !== setup.primary || current.setup.sign !== doc.origin) return null;
+      return current;
+    }
     current.mac = setup.primary;
     current.macs = [setup.primary];
     current.macSigns = { [setup.primary]: doc.origin };
     current.setup = { ...setup, sign: doc.origin, role: "member", ...managedFields(doc), managed: true };
+    if (copyPending) current.installerClaim.credentialsPending = true;
     current.relay = code.relay;
     delete current.pairing;
     delete current.appPairing;
@@ -372,5 +451,26 @@ export async function joinWithInstallerCode(input: string): Promise<{ setup: str
   writeCard();
   noteDocsChanged();
   if (!IS_MAC && !runningBridge()) startBridge();
-  return { setup: setup.id, primary: setup.primary };
+  let missing = 0;
+  if (copyPending) {
+    if (credentialProblem) throw new Error(`This computer joined. ${credentialProblem}`);
+    missing = isObject(seed) && typeof seed.missing === "number" ? seed.missing : 0;
+    const sameMember = (current: LinkState | null) => current?.installerClaim?.invite === claimKey
+      && current.setup?.role === "member" && current.setup.id === setup.id && ownKey(current) === key
+      && !current.localWipe && !current.localUnlink && !current.removalSource;
+    await withCredentialCopyLock(async () => {
+      if (!sameMember(readLink())) throw new Error("This computer’s enrollment changed before the selected credentials could be saved.");
+      if (!await applyInstallerSeed(seed).catch(() => false) || missing > 0 && isObject(seed) && seed.unavailable === true) {
+        throw new Error("This computer joined. Run the installer again with the same code to complete the selected sign-ins and keys.");
+      }
+      const completed = updateLink(current => {
+        if (!current?.installerClaim || !sameMember(current)) return null;
+        delete current.installerClaim.credentialsPending;
+        if (missing > 0) current.installerClaim.credentialsMissing = missing;
+        return current;
+      }, { durable: true });
+      if (!completed) throw new Error("This computer’s enrollment changed while the selected credentials were being saved.");
+    });
+  }
+  return { setup: setup.id, primary: setup.primary, ...(missing > 0 ? { credentials: { missing } } : {}) };
 }

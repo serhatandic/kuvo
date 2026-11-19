@@ -203,6 +203,7 @@ const ROUTES: (Route | Route<RegExpMatchArray>)[] = [
   { feature: "sessions.list", when: route => route.match(LIST_ROUTE), answer: listRoute },
   { feature: "waiting", when: route => route.match(WAITING_ROUTE), answer: waitingRoute },
   // Adding one over SSH, before a computer's own routes, which it starts like (PROTOCOL.md, "Computers", Adding one).
+  { feature: "computers.add.credentials", when: route => route === "kuvo/computers/add/credentials" ? route.match(COMPUTERS_ADD_ROUTE) : null, answer: computersAddRoute },
   { feature: "computers.add.from-any-client", when: route => route === "kuvo/computers/add/code" ? route.match(COMPUTERS_ADD_ROUTE) : null, answer: computersAddRoute },
   { feature: "computers.add", when: route => route.match(COMPUTERS_ADD_ROUTE), answer: computersAddRoute },
   { feature: "computers", when: route => route.match(COMPUTERS_ROUTE), answer: computersRoute },

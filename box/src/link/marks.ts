@@ -13,3 +13,5 @@ export const SETUP_OCCUPIED = 4;
 export const SETUP_LOCAL_PAIRINGS = 5;
 
 export const ADD_RESERVATION = ".kuvo-code-adding";
+
+export const SSH_FRESH_ADD = ".ssh-fresh-add";

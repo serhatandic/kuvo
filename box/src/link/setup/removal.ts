@@ -1,6 +1,7 @@
 // Delivery is separate from authorization: the accepted roster has already revoked the peer.
 import crypto from "node:crypto";
 import { isObject } from "../../shared/json";
+import { withCredentialCopyLock } from "../add/seed";
 import { removalLayoutReady, removalOperationsLayoutReady, unlinkCleanupLayoutReady } from "../../shared/folder-version";
 import { ownSign, readDoc, signDoc } from "../documents/format";
 import { docMails, type DocsState } from "../documents/work";
@@ -92,7 +93,11 @@ function resumeUnlink(host: Host | null | undefined) {
     .finally(() => { unlinkCleanupRunning = false; });
 }
 
-async function finishUnlink(host: Host | null | undefined) {
+function finishUnlink(host: Host | null | undefined) {
+  return withCredentialCopyLock(() => finishUnlinkLocked(host));
+}
+
+async function finishUnlinkLocked(host: Host | null | undefined) {
   const current = readLink();
   const pending = current?.localUnlink;
   if (!current || !pending || !unlinkCleanupLayoutReady(K)) return;
