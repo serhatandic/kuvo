@@ -36322,6 +36322,7 @@ class GroupRunner {
       return {
         group: kept.group,
         status: kept.status,
+        ...kept.restoreReview ? { restoreReview: true } : {},
         state: this.talk(kept.group.id),
         last: kept.messages.at(-1),
         said: said.at(-1),
@@ -36331,7 +36332,7 @@ class GroupRunner {
   }
   get(id) {
     const kept = this.chats.get(id);
-    return kept && { group: kept.group, status: kept.status, state: this.talk(id), messages: kept.messages };
+    return kept && { group: kept.group, status: kept.status, ...kept.restoreReview ? { restoreReview: true } : {}, state: this.talk(id), messages: kept.messages };
   }
   chat(id) {
     const kept = this.chats.get(id);
@@ -36398,7 +36399,7 @@ class GroupRunner {
   }
   activate(id) {
     const kept = this.chats.get(id);
-    if (!kept)
+    if (!kept || kept.restoreReview)
       return false;
     if (kept.status === "active") {
       this.context.store.saveGroup(kept);
@@ -36647,7 +36648,7 @@ class GroupRunner {
       return under.done;
     const kept = this.chats.get(id);
     const turning = kept?.turning;
-    if (!kept || !turning)
+    if (!kept || kept.restoreReview || !turning)
       return Promise.resolve();
     const bot = this.member(turning.bot);
     if (!bot || bot.box || kept.status !== "active" || !kept.group.members.includes(turning.bot)) {
@@ -37722,10 +37723,10 @@ class GroupStore {
     const messages = JSON.parse(fs8.readFileSync(join41(this.folder(id), "messages.json"), "utf8"));
     if (!isMessages(messages))
       throw new Error("The group transcript could not be read");
-    return { group: record.group, ...typeof record.moveImport === "string" ? { moveImport: record.moveImport } : {}, status: record.status === "held" ? "held" : "active", talking: record.talking === true, paused: record.paused === true, ...isTurning(record.turning) ? { turning: record.turning } : {}, messages };
+    return { group: record.group, ...typeof record.moveImport === "string" ? { moveImport: record.moveImport } : {}, status: record.restoreReview === true || record.status === "held" ? "held" : "active", ...record.restoreReview === true ? { restoreReview: true } : {}, talking: record.talking === true, paused: record.paused === true, ...isTurning(record.turning) ? { turning: record.turning } : {}, messages };
   }
   saveGroup(kept) {
-    writeDurablePrivate(join41(this.folder(kept.group.id), "group.json"), JSON.stringify({ kuvo: version2, status: kept.status, ...kept.moveImport ? { moveImport: kept.moveImport } : {}, ...kept.talking ? { talking: true } : {}, ...kept.paused ? { paused: true } : {}, ...kept.turning ? { turning: kept.turning } : {}, group: kept.group }, null, 2), dirname21(this.root));
+    writeDurablePrivate(join41(this.folder(kept.group.id), "group.json"), JSON.stringify({ kuvo: version2, status: kept.status, ...kept.restoreReview ? { restoreReview: true } : {}, ...kept.moveImport ? { moveImport: kept.moveImport } : {}, ...kept.talking ? { talking: true } : {}, ...kept.paused ? { paused: true } : {}, ...kept.turning ? { turning: kept.turning } : {}, group: kept.group }, null, 2), dirname21(this.root));
   }
   saveMessages(kept) {
     writeDurablePrivate(join41(this.folder(kept.group.id), "messages.json"), JSON.stringify(kept.messages, null, 2), dirname21(this.root));
@@ -38010,6 +38011,8 @@ async function groupRoutes(runner, store, method, parts, body) {
       const chat = runner.get(id);
       return chat ? json13({ version: version2, data: chat }) : error(404, "No such chat.");
     }
+    if (runner.get(id)?.restoreReview)
+      return error(409, "Review the recovered group work before starting this chat.");
     if (method === "PUT") {
       const { group, messages, status, replace, moveImport } = await body();
       if (!isGroup(group, id) || !isMessages(messages ?? []))
@@ -38051,6 +38054,8 @@ async function groupRoutes(runner, store, method, parts, body) {
   const found = runner.get(id);
   if (!found)
     return error(404, "No such chat.");
+  if (found.restoreReview)
+    return error(409, "Review the recovered group work before starting this chat.");
   switch (action) {
     case "activate":
       runner.activate(id);
@@ -38146,14 +38151,15 @@ function anyMember(id, runner, store) {
   return there ? memberThere(there, runner) : undefined;
 }
 function list2(runner, store) {
-  const groups = runner.list().filter((chat) => chat.status === "active").map(({ group, state, said, fromBot }) => ({
+  const groups = runner.list().filter((chat) => chat.status === "active" || chat.restoreReview).map(({ group, state, said, fromBot, restoreReview }) => ({
     id: group.id,
     name: group.name,
     ...group.purpose ? { purpose: group.purpose } : {},
     members: group.members.flatMap((id) => anyMember(id, runner, store) ?? []),
     speaking: state.speaking,
     discussing: Boolean(state.discussing),
-    paused: Boolean(state.paused),
+    paused: Boolean(state.paused || restoreReview),
+    ...restoreReview ? { restoreReview } : {},
     unread: Boolean(fromBot && (!group.viewed || Date.parse(fromBot.time) > Date.parse(group.viewed))),
     last: clientMessage(said, false, state.stopped, (id) => anyMember(id, runner, store)?.name ?? "A bot"),
     meeting: group.meeting ? present({ ...group.meeting, next: seconds3(group.meeting.next) }) : undefined
@@ -38162,14 +38168,15 @@ function list2(runner, store) {
 }
 function chat(runner, store, id, withMessages = true) {
   const found = runner.get(id);
-  if (!found || found.status !== "active")
+  if (!found || found.status !== "active" && !found.restoreReview)
     return;
-  const { messages, state } = found;
+  const { messages, state, restoreReview } = found;
   return {
     ...withMessages ? { messages: messages.slice(-300).map((each) => clientMessage(each, true, state.stopped, (id) => anyMember(id, runner, store)?.name ?? "A bot")) } : {},
     speaking: state.speaking,
     discussing: Boolean(state.discussing),
-    paused: Boolean(state.paused),
+    paused: Boolean(state.paused || restoreReview),
+    ...restoreReview ? { restoreReview } : {},
     ...state.activity?.length ? { activity: state.activity } : {},
     ...state.stopped?.length ? { stopped: state.stopped } : {}
   };
@@ -38264,6 +38271,8 @@ async function linkRoutes(runner, store, method, parts, body, signal) {
       return json14({}, 404);
     return action ? following((withMessages) => chat(runner, store, id, withMessages), id, signal) : json14(chat(runner, store, id));
   }
+  if (runner.get(id)?.restoreReview)
+    return message2(409, "Review the recovered group work before starting this chat.");
   if (method === "PATCH" && !action) {
     const given = await body().catch(() => {
       return;
@@ -42445,4 +42454,4 @@ if (!isMainThread && process.argv.includes("--insights-db-worker")) {
 } else {
   await init_main().then(() => ({}));
 }
-// Built from Packages/Box/src/agents e06e84ae2ae33f70008779718ea3a2aa180ee5d5a6f576d6feb6876cfc1d10e2
+// Built from Packages/Box/src/agents 3f70367e95b426a4cbaf74b2cb5088c0494b5dafae42abafee16205342b0ba1b

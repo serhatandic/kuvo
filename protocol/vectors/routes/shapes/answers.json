@@ -13117,6 +13117,9 @@
          "speaking?": "string",
          "discussing": "bool",
          "paused": "bool",
+         "restoreReview?": {
+          "literal": true
+         },
          "unread": "bool",
          "last?": {
           "object": {
@@ -13312,6 +13315,9 @@
          "speaking?": "string",
          "discussing": "bool",
          "paused": "bool",
+         "restoreReview?": {
+          "literal": true
+         },
          "unread": "bool",
          "last?": {
           "object": {
@@ -13508,6 +13514,9 @@
           "speaking?": "string",
           "discussing": "bool",
           "paused": "bool",
+          "restoreReview?": {
+           "literal": true
+          },
           "unread": "bool",
           "last?": {
            "object": {
@@ -13774,6 +13783,9 @@
       "speaking?": "string",
       "discussing": "bool",
       "paused": "bool",
+      "restoreReview?": {
+       "literal": true
+      },
       "activity?": {
        "list": {
         "oneOf": [
@@ -13884,6 +13896,9 @@
       "speaking?": "string",
       "discussing": "bool",
       "paused": "bool",
+      "restoreReview?": {
+       "literal": true
+      },
       "activity?": {
        "list": {
         "oneOf": [
@@ -14131,6 +14146,9 @@
           "speaking?": "string",
           "discussing": "bool",
           "paused": "bool",
+          "restoreReview?": {
+           "literal": true
+          },
           "unread": "bool",
           "last?": {
            "object": {
@@ -15207,8 +15225,43 @@
            "list": "string"
           }
          }
+        },
+        {
+         "object": {
+          "operation": "string",
+          "status": {
+           "oneOf": [
+            {
+             "literal": "capacity"
+            }
+           ]
+          },
+          "message": "string"
+         }
         }
        ]
+      },
+      {
+       "object": {
+        "message": "string"
+       }
+      }
+     ]
+    },
+    "413": {
+     "oneOf": [
+      {
+       "object": {
+        "operation": "string",
+        "status": {
+         "oneOf": [
+          {
+           "literal": "capacity"
+          }
+         ]
+        },
+        "message": "string"
+       }
       },
       {
        "object": {
@@ -15276,6 +15329,19 @@
              "choices": {
               "list": "string"
              }
+            }
+           },
+           {
+            "object": {
+             "operation": "string",
+             "status": {
+              "oneOf": [
+               {
+                "literal": "capacity"
+               }
+              ]
+             },
+             "message": "string"
             }
            }
           ]
@@ -15345,10 +15411,31 @@
            "list": "string"
           }
          }
+        },
+        {
+         "object": {
+          "operation": "string",
+          "status": {
+           "oneOf": [
+            {
+             "literal": "capacity"
+            }
+           ]
+          },
+          "message": "string"
+         }
         }
        ]
       },
-      "recovery": "any"
+      "recovery": "any",
+      "attachments?": {
+       "list": {
+        "object": {
+         "id": "string",
+         "file": "any"
+        }
+       }
+      }
      }
     },
     "403": {
