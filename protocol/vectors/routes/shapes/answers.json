@@ -6772,6 +6772,9 @@
             "literal": "config.apply"
            },
            {
+            "literal": "data.mutation-identity"
+           },
+           {
             "literal": "data.offline-edits"
            },
            {
@@ -7556,6 +7559,9 @@
            },
            {
             "literal": "config.apply"
+           },
+           {
+            "literal": "data.mutation-identity"
            },
            {
             "literal": "data.offline-edits"
