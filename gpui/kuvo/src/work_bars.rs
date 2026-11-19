@@ -512,6 +512,21 @@ impl WorkBars {
         self.handle.open(card, window, cx);
         cx.notify();
     }
+
+    #[cfg(feature = "stand-in")]
+    pub fn open_outputs_draft(&mut self, draft: crate::drafts::OutputsDraft, window: &mut Window, cx: &mut Context<Self>) {
+        let bars = cx.entity();
+        let source = self.wake_source();
+        let client = self.client.clone();
+        let sessions = self.active_rows.clone();
+        let card = cx.new(|cx| {
+            let mut card = ActivityCard::with_source(&bars, source, false, false, &sessions, cx);
+            card.set_outputs_draft(draft, &client);
+            card
+        });
+        self.handle.open(card, window, cx);
+        cx.notify();
+    }
 }
 
 enum Preview {
@@ -539,6 +554,10 @@ struct ActivityCard {
     loaded_pages: usize,
     wake_schedule: Option<Entity<WakeSchedule>>,
     force_wakes: bool,
+    #[cfg(feature = "stand-in")]
+    outputs_draft: Option<crate::drafts::OutputsDraft>,
+    #[cfg(feature = "stand-in")]
+    draft_thumbs: HashMap<String, std::sync::Arc<gpui::Image>>,
     _activity_subscription: Subscription,
     _outputs: Option<(Follow<Followed<Outputs>>, Task<()>)>,
 }
@@ -557,6 +576,25 @@ impl ActivityCard {
         let show_wakes = force_wakes || bars.wake_label().is_some();
         let (source, sessions) = (bars.wake_source(), bars.active_rows.clone());
         Self::with_source(activity, source, show_wakes, force_wakes, &sessions, cx)
+    }
+
+    #[cfg(feature = "stand-in")]
+    fn set_outputs_draft(&mut self, draft: crate::drafts::OutputsDraft, client: &BoxClient) {
+        self.outputs_draft = Some(draft);
+        self.draft_thumbs.clear();
+        if let Some(page) = &self.outputs {
+            for artifact in page.artifacts.iter().filter(|a| a.kind == "image") {
+                let media_type = artifact.media_type.split(';').next().unwrap_or_default();
+                if let Some(format) = gpui::ImageFormat::from_mime_type(media_type)
+                    && let Ok(bytes) = client.artifact_bytes(artifact)
+                {
+                    self.draft_thumbs.insert(
+                        artifact.id.clone(),
+                        std::sync::Arc::new(gpui::Image::from_bytes(format, bytes)),
+                    );
+                }
+            }
+        }
     }
 
     fn with_source(activity: &Entity<WorkBars>, source: wakes::Source, show_wakes: bool, force_wakes: bool, sessions: &[SessionRow], cx: &mut Context<Self>) -> Self {
@@ -579,6 +617,10 @@ impl ActivityCard {
             loaded_pages: 1,
             wake_schedule: schedule,
             force_wakes,
+            #[cfg(feature = "stand-in")]
+            outputs_draft: None,
+            #[cfg(feature = "stand-in")]
+            draft_thumbs: HashMap::new(),
             _activity_subscription: cx.observe(activity, |this: &mut ActivityCard, activity, cx| {
                 let bars = activity.read(cx);
                 let (client, live, sessions) = (bars.client.clone(), bars.live, bars.active_rows.clone());
@@ -982,6 +1024,29 @@ impl Render for ActivityCard {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let Some(activity) = self.activity.upgrade() else { return div().into_any_element() };
         let bars = activity.read(cx);
+        #[cfg(feature = "stand-in")]
+        if let Some(draft) = self.outputs_draft {
+            let outputs = self.outputs.as_ref().map(|page| page.artifacts.as_slice()).unwrap_or(&[]);
+            let sessions: Vec<crate::drafts::DraftSession> = bars
+                .active_rows
+                .iter()
+                .map(|row| crate::drafts::DraftSession {
+                    id: row.id.clone(),
+                    title: row.title.clone(),
+                    state: row.state,
+                    provider: row.provider.clone().or_else(|| self.providers.get(&row.id).cloned()),
+                })
+                .collect();
+            return crate::drafts::render_outputs_popover(
+                draft,
+                outputs,
+                &self.draft_thumbs,
+                &sessions,
+                &bars.background.commands,
+                window,
+                cx,
+            );
+        }
         let theme = cx.theme().clone();
         let c = &theme.colors;
         let content = if let Some((name, preview)) = &self.preview {

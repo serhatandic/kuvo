@@ -457,7 +457,44 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "mode-full-access", width: 1280., height: 820., session: Some("ses_recipes"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(full_access_question) },
     Screen { slug: "landing-worktree", width: 1280., height: 820., session: None, typed: Some("Make the footer links work on mobile"), empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(landing_worktree) },
     Screen { slug: "landing-worktree-menu", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(landing_worktree) },
+    // Work Queue #900 design drafts: bot face status indicators and the Outputs popover.
+    Screen { slug: "draft-faces-a", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(draft_faces_a) },
+    Screen { slug: "draft-faces-b", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(draft_faces_b) },
+    Screen { slug: "draft-faces-c", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(draft_faces_c) },
+    Screen { slug: "draft-outputs-a", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(draft_outputs_a) },
+    Screen { slug: "draft-outputs-b", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(draft_outputs_b) },
+    Screen { slug: "draft-outputs-c", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(draft_outputs_c) },
 ];
+
+fn show_face_draft(draft: kuvo::drafts::FaceDraft, workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    workspace.show_area(Area::Bots, window, cx);
+    if let Some(view) = workspace.area_view(Area::Bots).cloned() {
+        view.update(cx, |view, cx| view.set_face_draft(Some(draft), cx));
+    }
+}
+fn draft_faces_a(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    show_face_draft(kuvo::drafts::FaceDraft::TrailingColumn, w, window, cx);
+}
+fn draft_faces_b(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    show_face_draft(kuvo::drafts::FaceDraft::BreathingHalo, w, window, cx);
+}
+fn draft_faces_c(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    show_face_draft(kuvo::drafts::FaceDraft::EdgeBarInline, w, window, cx);
+}
+
+fn show_outputs_draft(draft: kuvo::drafts::OutputsDraft, workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    let activity = workspace.conversation().expect("conversation").read(cx).bars().clone();
+    activity.update(cx, |activity, cx| activity.open_outputs_draft(draft, window, cx));
+}
+fn draft_outputs_a(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    show_outputs_draft(kuvo::drafts::OutputsDraft::CodexCompact, w, window, cx);
+}
+fn draft_outputs_b(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    show_outputs_draft(kuvo::drafts::OutputsDraft::MediaStrip, w, window, cx);
+}
+fn draft_outputs_c(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    show_outputs_draft(kuvo::drafts::OutputsDraft::GlanceCards, w, window, cx);
+}
 
 /// An area's row, picked: what its page shows.
 fn pick(workspace: &mut Workspace, area: Area, key: &str, window: &mut Window, cx: &mut Context<Workspace>) {
@@ -1778,6 +1815,101 @@ fn main() -> anyhow::Result<()> {
                     "id": "art_000000000000000000000002", "path": "/tmp/signup-preview.svg", "name": "signup-preview.svg",
                     "kind": "image", "type": "image/svg+xml", "latest": { "n": 1 }
                 }), include_bytes!("../../../assets/icons/activity.svg"));
+                stand_in.set_queue("ses_signup", vec![]);
+            }
+            if screen.slug.starts_with("draft-faces-") {
+                use serde_json::json;
+                let client = BoxClient::new(stand_in.clone());
+                for (id, color, shape, face) in [
+                    ("bot_mira", "sky", "round", "happy"),
+                    ("bot_inbox", "coral", "squircle", "curious"),
+                    ("bot_release", "lime", "pebble", "wink"),
+                    ("bot_docs", "violet", "gem", "calm"),
+                ] {
+                    let _ = client.change_bot(id, &kuvo_box::bots::BotChange {
+                        look: Some(kuvo_box::areas::Look { color: color.into(), shape: shape.into(), face: face.into() }),
+                        ..Default::default()
+                    });
+                }
+                stand_in.set_bot_now("bot_mira", json!({ "working": 0, "asking": 1, "state": "needsYou", "since": NOW - 60_000. }));
+                stand_in.set_bot_now("bot_inbox", json!({ "working": 1, "asking": 0, "state": "working", "since": NOW - 90_000. }));
+                stand_in.set_bot_now("bot_release", json!({ "working": 0, "asking": 0, "state": "idle", "since": NOW - 3_600_000. }));
+                stand_in.set_bot_wakes("bot_release", vec![json!({
+                    "id": "wake_rel", "due": NOW / 1000. + 3. * 3600., "every": "1d",
+                    "summary": "Check Friday beta readiness", "cancelKey": "wake_rel"
+                })], Vec::new());
+                stand_in.add_bot("bot_ops", "Ops Watcher", json!({ "color": "orange", "shape": "capsule", "face": "bright" }));
+                stand_in.set_bot_now("bot_ops", json!({ "working": 0, "asking": 0, "blocked": 1, "blockedBy": "limit", "state": "blocked", "since": NOW - 120_000. }));
+            }
+            if screen.slug.starts_with("draft-outputs-") {
+                use serde_json::json;
+                let mini_screen = |dark: bool, accent: [u8; 3], bars: bool| -> Vec<u8> {
+                    let (w, h) = (240u32, 152u32);
+                    let bg = if dark { [18u8, 19, 22] } else { [243u8, 243, 245] };
+                    let side = if dark { [24u8, 25, 29] } else { [248u8, 248, 250] };
+                    let card = if dark { [34u8, 36, 42] } else { [255u8, 255, 255] };
+                    let line = if dark { [58u8, 62, 70] } else { [222u8, 224, 228] };
+                    let img = image::RgbImage::from_fn(w, h, |x, y| {
+                        let px = if x < 54 {
+                            if x == 53 { line } else if y > 22 && y < 32 && x > 10 && x < 42 { accent } else if (y == 46 || y == 60 || y == 74) && x > 10 && x < 40 { line } else { side }
+                        } else if y < 18 {
+                            if y == 17 { line } else { side }
+                        } else if x > 66 && x < 228 && y > 28 && y < 86 {
+                            if x == 67 || x == 227 || y == 29 || y == 85 { line }
+                            else if bars && y > 46 && y < 74 && ((x > 80 && x < 98) || (x > 108 && x < 126 && y > 54) || (x > 136 && x < 154 && y > 40) || (x > 164 && x < 182 && y > 58)) { accent }
+                            else if !bars && y > 40 && y < 48 && x > 80 && x < 154 { accent }
+                            else if !bars && (y == 58 || y == 68) && x > 80 && x < 208 { line }
+                            else { card }
+                        } else if x > 66 && x < 228 && y > 96 && y < 140 {
+                            if x == 67 || x == 227 || y == 97 || y == 139 { line }
+                            else if (y == 112 || y == 124) && x > 80 && x < 190 { line }
+                            else { card }
+                        } else {
+                            bg
+                        };
+                        image::Rgb(px)
+                    });
+                    let mut out = std::io::Cursor::new(Vec::new());
+                    img.write_to(&mut out, image::ImageFormat::Png).expect("mini png");
+                    out.into_inner()
+                };
+
+                let commands: Vec<_> = ["npm run dev", "npx vitest --watch", "tail -f logs/signup.log"].iter().enumerate()
+                    .map(|(index, command)| json!({ "id": format!("sh_{index}"), "command": command, "started": NOW })).collect();
+                let subagents = vec![
+                    json!({ "session": "ses_sub0", "title": "Check the signup forms", "since": NOW, "asking": false }),
+                    json!({ "session": "ses_sub1", "title": "Run the browser tests", "since": NOW, "asking": true }),
+                    json!({ "session": "ses_sub2", "title": "Review the report", "since": NOW, "asking": false }),
+                ];
+                stand_in.set_background("ses_signup", json!({ "commands": commands, "subagents": subagents }), &[]);
+                for (index, (provider, model)) in [("codex-cli", "gpt-6"), ("codex-cli", "gpt-6"), ("claude-code", "opus")].iter().enumerate() {
+                    stand_in.set_model_state(&format!("ses_sub{index}"), json!({
+                        "model": { "providerID": provider, "id": model }, "runs": true
+                    }));
+                }
+
+                let items: Vec<(&str, &str, &str, &str, Vec<u8>)> = vec![
+                    ("art_d01", "morning-report-1118.md", "document", "text/markdown", b"# Morning report".to_vec()),
+                    ("art_d02", "screens-insights-overview-light.png", "image", "image/png", mini_screen(false, [10, 122, 255], true)),
+                    ("art_d03", "PLAN.md", "document", "text/markdown", b"# Plan".to_vec()),
+                    ("art_d04", "screens-insights-overview-dark.png", "image", "image/png", mini_screen(true, [79, 156, 245], true)),
+                    ("art_d05", "screens-computer-pairing-waiting-light.png", "image", "image/png", mini_screen(false, [46, 158, 91], false)),
+                    ("art_d06", "screens-computer-pairing-waiting-dark.png", "image", "image/png", mini_screen(true, [94, 199, 184], false)),
+                    ("art_d07", "sysload.csv", "download", "text/csv", b"ts,load\n1,0.42\n".to_vec()),
+                    ("art_d08", "feedback-review-ranking.md", "document", "text/markdown", b"# Ranking".to_vec()),
+                    ("art_d09", "screens-usage-rings-light.png", "image", "image/png", mini_screen(false, [242, 115, 92], true)),
+                    ("art_d10", "screens-usage-rings-dark.png", "image", "image/png", mini_screen(true, [138, 92, 245], true)),
+                    ("art_d11", "machine-scenarios-1118.md", "document", "text/markdown", b"# Scenarios".to_vec()),
+                    ("art_d12", "screens-bots-sidebar-light.png", "image", "image/png", mini_screen(false, [245, 153, 61], false)),
+                    ("art_d13", "brief-template.md", "document", "text/markdown", b"# Brief".to_vec()),
+                    ("art_d14", "slots.json", "code", "application/json", b"{\"slots\":4}".to_vec()),
+                ];
+                for (id, name, kind, mime, bytes) in items {
+                    stand_in.add_output("ses_signup", json!({
+                        "id": id, "path": format!("/tmp/{name}"), "name": name,
+                        "kind": kind, "type": mime, "latest": { "n": 1 }
+                    }), &bytes);
+                }
                 stand_in.set_queue("ses_signup", vec![]);
             }
             if matches!(screen.slug, "composer-queue-two" | "composer-queue-long" | "composer-queue-dragging") {

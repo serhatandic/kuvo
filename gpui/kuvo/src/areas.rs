@@ -159,6 +159,10 @@ pub struct AreaView {
     /// The bots' latest followed line, heard while their list was being read: it's newer than
     /// that read, so it's taken after it.
     followed_meanwhile: Option<BotsSaid>,
+    #[cfg(feature = "stand-in")]
+    face_draft: Option<crate::drafts::FaceDraft>,
+    #[cfg(feature = "stand-in")]
+    face_showcase: Option<gpui::Entity<crate::drafts::FaceDraftShowcase>>,
 }
 
 struct RemoteBots {
@@ -310,7 +314,21 @@ impl AreaView {
             });
             (follow, task)
         });
-        AreaView { moves: None, remote_bots: Default::default(), _bots_follow: bots_follow, reached: true, shown: true, fresh_bots: false, chat_open: None, seen_told: None, followed_meanwhile: None, _groups_follow: groups_follow, groups, _groups: groups_subscriptions, computers_page, _computers_page: computers_subscriptions, queue_page, _queue_page: queue_subscriptions, page, _page: page_subscriptions, area, sidebar_mode: SidebarMode::Full, client, live, bots: Reading::NotYet, queue: Reading::NotYet, computers: Reading::NotYet, this_box: "This Mac".into(), this_kind: String::new(), selected, now: None, reading: None, settings, _settings_picks: picks, _settings_adds: adds, _settings_opens: opens, _settings_changes: changes }
+        AreaView {
+            moves: None, remote_bots: Default::default(), _bots_follow: bots_follow, reached: true, shown: true, fresh_bots: false, chat_open: None, seen_told: None, followed_meanwhile: None,
+            #[cfg(feature = "stand-in")]
+            face_draft: None,
+            #[cfg(feature = "stand-in")]
+            face_showcase: None,
+            _groups_follow: groups_follow, groups, _groups: groups_subscriptions, computers_page, _computers_page: computers_subscriptions, queue_page, _queue_page: queue_subscriptions, page, _page: page_subscriptions, area, sidebar_mode: SidebarMode::Full, client, live, bots: Reading::NotYet, queue: Reading::NotYet, computers: Reading::NotYet, this_box: "This Mac".into(), this_kind: String::new(), selected, now: None, reading: None, settings, _settings_picks: picks, _settings_adds: adds, _settings_opens: opens, _settings_changes: changes,
+        }
+    }
+
+    #[cfg(feature = "stand-in")]
+    pub fn set_face_draft(&mut self, draft: Option<crate::drafts::FaceDraft>, cx: &mut Context<Self>) {
+        self.face_draft = draft;
+        self.face_showcase = draft.map(|d| cx.new(|_| crate::drafts::FaceDraftShowcase::new(d)));
+        cx.notify();
     }
 
     /// Settings' view, in the Settings area.
@@ -509,6 +527,10 @@ impl AreaView {
     /// The area's own main view, for what's picked: a bot's page or New Bot, a group chat, its
     /// editor or New Group, the Work Queue or one of its items, your computers or one of them.
     pub fn main(&self) -> Option<gpui::AnyView> {
+        #[cfg(feature = "stand-in")]
+        if let Some(showcase) = &self.face_showcase {
+            return Some(showcase.clone().into());
+        }
         if let Some(page) = &self.computers_page {
             return Some(page.clone().into());
         }
@@ -1082,6 +1104,13 @@ impl AreaView {
             let key = format!("bot:{}", bot.id);
             let selected = self.is_selected(&key);
             let now = self.now();
+            #[cfg(feature = "stand-in")]
+            if let Some(draft) = self.face_draft {
+                let status = crate::drafts::FaceStatus::of_bot(bot, self.reached, now);
+                let (words, waiting) = crate::drafts::bot_detail_parts(bot, self.reached, now);
+                rows.push(crate::drafts::bot_sidebar_row(draft, &bot.id, &bot.name, &bot.look, &status, words, waiting, selected, cx));
+                continue;
+            }
             let waking = self.has_fresh_bots() && bot.now.waking;
             let detail = if waking && bot.now.asking == 0 && bot.now.state != kuvo_box::areas::BotState::Blocked {
                 div().flex().items_center().gap(space::S1).text_role(TextRole::RowDetail)
@@ -1130,6 +1159,19 @@ impl AreaView {
                 let there = There::of(listed);
                 let key = format!("elsewhere:{}", there.id);
                 let selected = self.is_selected(&key);
+                #[cfg(feature = "stand-in")]
+                if let Some(draft) = self.face_draft {
+                    let offline = self.elsewhere_state(&there.computer) == State::Offline;
+                    let status = if offline { crate::drafts::FaceStatus::Offline } else { crate::drafts::FaceStatus::Idle };
+                    let look = there.look.clone().unwrap_or_else(unknown_bot_look);
+                    let line = if offline {
+                        format!("{} · Offline", there.computer)
+                    } else {
+                        format!("On {}", there.computer)
+                    };
+                    rows.push(crate::drafts::bot_sidebar_row(draft, &there.id, &there.name, &look, &status, line, None, selected, cx));
+                    continue;
+                }
                 let (hover, selected_bg) = (c.hover, c.selected);
                 let selector = format!("elsewhere-{}", there.id);
                 let computer = there.computer.as_str();
