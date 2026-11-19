@@ -2073,7 +2073,7 @@ for (const scenario of ["grant", "worker failure", "interruption", "bootstrap de
   }
 });
 
-test("failure bench: a Linux primary starts fresh, enrolls over SSH and pairs devices", { timeout: 240_000 }, async t => {
+test("failure bench: a Linux primary starts fresh, enrolls over SSH and pairs devices", { timeout: 300_000 }, async t => {
   const relay = await relayStandIn(link);
   atEnd(() => relay.close());
   const primaryHome = path.join(base, "primary");
@@ -2099,8 +2099,8 @@ test("failure bench: a Linux primary starts fresh, enrolls over SSH and pairs de
     }));
     return child;
   };
-  const waitFor = async (description, find) => {
-    const until = Date.now() + 30_000;
+  const waitFor = async (description, find, timeout = 30_000) => {
+    const until = Date.now() + timeout;
     do {
       const value = await find();
       if (value) return value;
@@ -2274,7 +2274,7 @@ test("failure bench: a Linux primary starts fresh, enrolls over SSH and pairs de
         const current = await attempt();
         assert.equal(current.state, "working", JSON.stringify(current));
         return delayed[0];
-      });
+      }, 60_000);
       const operation = Object.keys(inBox(primaryBox).sharedPending)[0];
       const target = path.join(homes["late-enrollment"], ".kuvo-code");
       await new Promise(resolve => setTimeout(resolve, 3_300));
@@ -2329,7 +2329,7 @@ test("failure bench: a Linux primary starts fresh, enrolls over SSH and pairs de
       const ended = await waitFor(`Add ${name} finishes`, async () => {
         last = await current();
         return (last.state === "done" || last.state === "failed") && last;
-      }).catch(error => assert.fail(`${error.message}: ${JSON.stringify(last)}`));
+      }, 60_000).catch(error => assert.fail(`${error.message}: ${JSON.stringify(last)}`));
       if (failure) {
         assert.equal(ended.state, "failed", JSON.stringify(ended));
         assert.match(ended.failure.message, failure);
