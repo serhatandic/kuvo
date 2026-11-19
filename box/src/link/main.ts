@@ -1359,6 +1359,7 @@ if (main) {
       if (installer && !told && running !== "checking") { told = true; console.log(JSON.stringify(installerSteps.updating)); }
     };
     let outcome: Awaited<ReturnType<typeof update>> | null;
+    let releaseSave: Receipt | undefined;
     // (A try the app's installer asked for whose download broke off, or whose engine couldn't be
     // stopped, before anything changed, tried again once a little later: what's passing goes by
     // then. Only one that fails again is said, with Try Again. A check that would fail again, or
@@ -1378,6 +1379,7 @@ if (main) {
         : from && !path.isAbsolute(from)
           ? { result: "failed" as const, message: "Say which folder the release is in, as a full path." }
           : await update({ now, whileBusy: now && !args.includes("--free"), from, step, features: featuresNow(), swapping: () => { swapped = true; }, ...test });
+      releaseSave = outcome?.save ?? releaseSave;
       // (Waiting: something began at work just as it went to update, and nothing changed. Waited for again.)
       if (installer && !now && outcome?.result === "busy") continue;
       if (againOnce && outcome?.result === "failed" && !swapped && failedInPassing()) {
@@ -1394,7 +1396,8 @@ if (main) {
     // or the last update is still on trial, when it's tried again in that round.)
     const round = option("--round");
     if (round && outcome && !passingOutcome(outcome)) noteUpdate({ round });
-    console.log(JSON.stringify(outcome ?? { result: "current", message: "No offered release is due." }));
+    const reply = outcome ?? { result: "current", message: "No offered release is due." };
+    console.log(JSON.stringify(releaseSave ? { ...reply, save: releaseSave } satisfies typeof reply & SaveEnvelope : reply));
     if (installer && outcome && outcome.result !== "updated" && outcome.result !== "current") process.exitCode = 1;
     // Judged here, by the one health rule (updates/health.ts), this process staying until it's well
     // or put back; the installer's, which an app waits on, has a judge of its own do it.

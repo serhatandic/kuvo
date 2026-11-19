@@ -51867,8 +51867,9 @@ async function uninstallCommand(args) {
   const needsHandover = (link) => {
     return link?.setup?.role === "primary" && (peersOf(link).some((peer) => peer.key !== link.setup.primary) || Boolean(link.leadershipPending || pendingShared(link, "membershipAndAccess")));
   };
-  const refuse = (message = PRIMARY_UNLINK) => {
-    console.log(JSON.stringify({ result: "refused", message }));
+  const refuse = (message = PRIMARY_UNLINK, save) => {
+    const reply = { result: "refused", message };
+    console.log(JSON.stringify(save ? { ...reply, save } : reply));
     console.error(message);
     return 1;
   };
@@ -51920,7 +51921,7 @@ ${uninstallCleanup}`, "kuvo-cleanup", K, process.execPath]);
     logCleanup(error);
   }
   if (refusal)
-    return refuse(refusal);
+    return refuse(refusal, save);
   const result = cleared.cleanup;
   const credentialsCleared = result === null || result.status === 0;
   if (result && !credentialsCleared)
@@ -58147,7 +58148,7 @@ var init_files4 = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "b1a11362d55b";
+var BRIDGE_VERSION = "f04cba18c133";
 
 // box/src/link/rehome/paths.ts
 import { createHash as createHash4 } from "node:crypto";
@@ -89854,6 +89855,7 @@ if (main) {
       }
     };
     let outcome;
+    let releaseSave;
     let againOnce = installer, swapped = false;
     for (;; ) {
       told = false;
@@ -89868,6 +89870,7 @@ if (main) {
       outcome = offered ? await takeOffer2({ now, step, features: featuresNow(), ...test }) : from && !path230.isAbsolute(from) ? { result: "failed", message: "Say which folder the release is in, as a full path." } : await update({ now, whileBusy: now && !args.includes("--free"), from, step, features: featuresNow(), swapping: () => {
         swapped = true;
       }, ...test });
+      releaseSave = outcome?.save ?? releaseSave;
       if (installer && !now && outcome?.result === "busy")
         continue;
       if (againOnce && outcome?.result === "failed" && !swapped && failedInPassing()) {
@@ -89882,7 +89885,8 @@ if (main) {
     const round = option("--round");
     if (round && outcome && !passingOutcome(outcome))
       noteUpdate({ round });
-    console.log(JSON.stringify(outcome ?? { result: "current", message: "No offered release is due." }));
+    const reply = outcome ?? { result: "current", message: "No offered release is due." };
+    console.log(JSON.stringify(releaseSave ? { ...reply, save: releaseSave } : reply));
     if (installer && outcome && outcome.result !== "updated" && outcome.result !== "current")
       process.exitCode = 1;
     if (outcome?.result === "updated") {

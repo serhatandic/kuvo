@@ -169,11 +169,9 @@ async function network(t, takeover = false, releaseKey) {
         return (await this.route("POST", "kuvo/work-queue/tools", { name: "queue_labels", arguments: args, session: "ses_labels" }, true)).value;
       },
       async updateFrom(from) {
-        const { status, value, err } = await this.evaluate(process.execPath, ["--input-type=module", "-e", `
-          import { update } from ${JSON.stringify(boxScript)};
-          console.log(JSON.stringify(await update({ now: true, from: ${JSON.stringify(from)}, blocked: null,
-            url: ${JSON.stringify(`http://127.0.0.1:${engine.address().port}/no-release`)} })));
-        `]);
+        assert.ok(releaseKey);
+        const args = ["update", "--now", "--key", releaseKey, "--url", `http://127.0.0.1:${engine.address().port}/no-release`];
+        const { status, value, err } = await this.command(from ? [...args, "--from", from] : args);
         assert.equal(status, 0, err);
         return value;
       },

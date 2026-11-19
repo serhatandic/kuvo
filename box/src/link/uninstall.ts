@@ -14,7 +14,7 @@
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import type { SaveEnvelope } from "../shared/routes/setup-save";
+import type { CommittedReceipt, SaveEnvelope } from "../shared/routes/setup-save";
 import { setupSaveReceipt, type SetupSaveReceipt } from "../shared/setup-local";
 import { isObject, parsed } from "../shared/json";
 import { engineRole, runsAs } from "../shared/platform";
@@ -394,8 +394,9 @@ export async function uninstallCommand(args: string[]): Promise<number> {
     return link?.setup?.role === "primary" && (peersOf(link).some(peer => peer.key !== link.setup!.primary)
       || Boolean(link.leadershipPending || pendingShared(link, "membershipAndAccess")));
   };
-  const refuse = (message = PRIMARY_UNLINK) => {
-    console.log(JSON.stringify({ result: "refused", message }));
+  const refuse = (message = PRIMARY_UNLINK, save?: CommittedReceipt) => {
+    const reply = { result: "refused", message };
+    console.log(JSON.stringify(save ? { ...reply, save } satisfies typeof reply & SaveEnvelope<CommittedReceipt> : reply));
     console.error(message);
     return 1;
   };
@@ -435,7 +436,7 @@ export async function uninstallCommand(args: string[]): Promise<number> {
       return null;
     });
   } catch (error) { logCleanup(error); }
-  if (refusal) return refuse(refusal);
+  if (refusal) return refuse(refusal, save);
   const result = cleared.cleanup;
   const credentialsCleared = result === null || result.status === 0;
   if (result && !credentialsCleared) logCleanup(result.error ?? result.stderr);
