@@ -2082,7 +2082,41 @@ fn main() -> anyhow::Result<()> {
     }
     first_run_shots(&mut cx, &only, &out)?;
     launch_shots(&mut cx, &only, &out)?;
-    home_shots(&mut cx, &only, &out)
+    home_shots(&mut cx, &only, &out)?;
+    show_file_draft_shots(&mut cx, &only, &out)
+}
+
+/// Renders the `kuvo-browser_show_file` design drafts (`show-file-flow`, `show-file-canvas`,
+/// `show-file-thread`) in light and dark. Pass `show-file` or individual slugs to filter.
+fn show_file_draft_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path::Path) -> anyhow::Result<()> {
+    use kuvo::drafts::{DraftKind, ShowFileDraftView};
+
+    for kind in DraftKind::ALL {
+        let slug = kind.slug();
+        if !only.is_empty() && !only.iter().any(|wanted| wanted == slug || wanted == "show-file") {
+            continue;
+        }
+        for appearance in [Appearance::Light, Appearance::Dark] {
+            cx.update(|cx| {
+                kuvo::yours::init(None, cx);
+                Theme::set_appearance(appearance, cx);
+            });
+            let window = cx.open_window(size(px(1280.), px(kind.height())), |_, cx| {
+                cx.new(|_| ShowFileDraftView::new(kind))
+            })?;
+            let any = window.into();
+            cx.run_until_parked();
+            cx.update_window(any, |_, window, _| window.refresh())?;
+            cx.run_until_parked();
+            let image = cx.capture_screenshot(any)?;
+            let name = format!("screens-{slug}-{}.png", if appearance.is_dark() { "dark" } else { "light" });
+            image.save(out.join(&name))?;
+            println!("{name}: {}x{}", image.width(), image.height());
+            cx.update_window(any, |_, window, _| window.remove_window())?;
+            cx.run_until_parked();
+        }
+    }
+    Ok(())
 }
 
 /// The app opening on a computer (`launch-*`: this Mac's row in the Welcome card as it's set up,
