@@ -388,7 +388,15 @@ export const FILE_TEXT = oneOf(
   object({ text: literal(true), encoding: literal("utf-8"), content: string }),
 );
 export type FileText = Infer<typeof FILE_TEXT>;
+const FILE_KIND = words("picture", "pdf", "text", "other");
+export type FileKind = Infer<typeof FILE_KIND>;
+export const FILE_INFO = oneOf(
+  object({ exists: literal(true), name: string, size: number, kind: FILE_KIND, mime: string }),
+  object({ exists: literal(false), name: string, size: "null", kind: "null", mime: "null" }),
+);
+export type FileInfo = Infer<typeof FILE_INFO>;
 const FILE_REFUSED = object({ message: string });
+const FILE_MISSING = object({ message: string, "reason?": literal("fileNotFound") });
 
 /** A step of a try at adding a computer (`computers.add`): its title, in the box's words; whether
  * it waits, is under way, is done or failed; what it says beside it; and how far a copy has got,
@@ -460,8 +468,9 @@ export const BOX_ROUTES: RouteShape[] = [
   { route: "POST kuvo/box/serve", answers: { 200: BOX_SERVE } },
   { route: "GET kuvo/browser", answers: { 200: BROWSER } },
   { route: "POST kuvo/browser", answers: { 202: BROWSER } },
-  { route: "GET kuvo/file", answers: { 200: BYTES } },
-  { route: "GET kuvo/file/text", answers: { 200: FILE_TEXT, 400: FILE_REFUSED, 403: FILE_REFUSED, 404: FILE_REFUSED, 413: FILE_REFUSED } },
+  { route: "GET kuvo/file", answers: { 200: BYTES, 400: FILE_REFUSED, 403: FILE_REFUSED, 404: FILE_MISSING, 413: FILE_REFUSED } },
+  { route: "GET kuvo/file/info", answers: { 200: FILE_INFO, 400: FILE_REFUSED, 403: FILE_REFUSED, 405: object({}) } },
+  { route: "GET kuvo/file/text", answers: { 200: FILE_TEXT, 400: FILE_REFUSED, 403: FILE_REFUSED, 404: FILE_MISSING, 413: FILE_REFUSED } },
   { route: "GET kuvo/phones", answers: { 200: PHONES } },
   { route: "POST kuvo/phones/remove", answers: { 200: NOTHING } },
   { route: "POST kuvo/phones/pair", answers: { 200: PAIRING } },

@@ -32,6 +32,7 @@ pub mod launch;
 pub mod notifications;
 pub mod panel;
 pub mod pasted;
+pub mod open_shown;
 pub mod pictures;
 pub mod permissions;
 pub mod queue;

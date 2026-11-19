@@ -50,6 +50,7 @@ pub mod sessions;
 pub mod settings;
 pub mod settings_pages;
 pub mod setup;
+pub mod shown_files;
 pub mod ssh;
 pub mod transport;
 pub mod typed;

@@ -5933,6 +5933,9 @@
             "literal": "file"
            },
            {
+            "literal": "file.info"
+           },
+           {
             "literal": "file.text"
            },
            {
@@ -6672,6 +6675,9 @@
            },
            {
             "literal": "file"
+           },
+           {
+            "literal": "file.info"
            },
            {
             "literal": "file.text"
@@ -9108,7 +9114,89 @@
   {
    "route": "GET kuvo/file",
    "answers": {
-    "200": "bytes"
+    "200": "bytes",
+    "400": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "403": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "404": {
+     "object": {
+      "message": "string",
+      "reason?": {
+       "literal": "fileNotFound"
+      }
+     }
+    },
+    "413": {
+     "object": {
+      "message": "string"
+     }
+    }
+   }
+  },
+  {
+   "route": "GET kuvo/file/info",
+   "answers": {
+    "200": {
+     "oneOf": [
+      {
+       "object": {
+        "exists": {
+         "literal": true
+        },
+        "name": "string",
+        "size": "number",
+        "kind": {
+         "oneOf": [
+          {
+           "literal": "picture"
+          },
+          {
+           "literal": "pdf"
+          },
+          {
+           "literal": "text"
+          },
+          {
+           "literal": "other"
+          }
+         ]
+        },
+        "mime": "string"
+       }
+      },
+      {
+       "object": {
+        "exists": {
+         "literal": false
+        },
+        "name": "string",
+        "size": "null",
+        "kind": "null",
+        "mime": "null"
+       }
+      }
+     ]
+    },
+    "400": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "403": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "405": {
+     "object": {}
+    }
    }
   },
   {
@@ -9148,7 +9236,10 @@
     },
     "404": {
      "object": {
-      "message": "string"
+      "message": "string",
+      "reason?": {
+       "literal": "fileNotFound"
+      }
      }
     },
     "413": {

@@ -5715,7 +5715,8 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
   as a query value. Any file there its user can read, wherever it is: only your own clients reach
   it (never a peer), and they have that computer's terminals anyway. It answers `200` with its
   bytes and `content-type` (from its extension; `application/octet-stream` when unknown), `404
-  {"message"}` for one that isn't there or isn't a file, `403 {"message"}` for one it can't read,
+  {"message","reason":"fileNotFound"}` for one that isn't there or isn't a file (older boxes
+  omit `reason`), `403 {"message"}` for one it can't read,
   `413 {"message"}` over 25 MB, or over `max` when it's given (`&max=<bytes>`: all a client would
   show of it), `400 {"message"}` for an address that isn't `file://`. Each box answers for its own files, a machine's with the Mac closed too.
   `GET kuvo/file/text?uri=<file:// URI>[&max=<bytes>]` (`file.text`, #708): the same file as a
@@ -5725,6 +5726,14 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
   viewer says instead of showing. So no client looks through a file's bytes to tell. Refused as
   `kuvo/file` refuses (`400`, `403`, `404`, `413`), but `413` already over 4 MB, with or without
   `max`: its text comes as one answer. `GET` only (`405 {}` otherwise).
+  `GET kuvo/file/info?uri=<file:// URI>` (`file.info`): the same access checks on the computer
+  that owns the file. Opens it for reading to check access without reading its contents or applying
+  the download size limit. Answers `200 {"exists":true,"name","size","kind","mime"}`, with the base
+  name, size in bytes, and kind (`picture`, `pdf`, `text` or `other`) and MIME guessed from its
+  extension. A missing path or a path that isn't a regular file answers `200` with `exists:false`,
+  the requested base name and `size`, `kind` and `mime` all null. An invalid address is `400`,
+  an inaccessible file is `403`, and other methods answer `405 {}`. Clients can opt in using
+  `file.info`; boxes without it still serve `kuvo/file`.
 
 ### Custom Auto lists changed by id (`auto.lists`)
 
@@ -7613,6 +7622,7 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `engine.restart` | `POST kuvo/engine/restart` |
 | `engine.start` | a machine only: `POST kuvo/engine/start` |
 | `file` | `kuvo/file` |
+| `file.info` | `GET kuvo/file/info`: metadata of a named file, or that it is missing |
 | `file.text` | `GET kuvo/file/text`: a file's text, or that it isn't text, for a viewer (#708) |
 | `folders` | `kuvo/folders` |
 | `folders.files` | `kuvo/folders?files=1`: a folder's files too, and `reason` on a refusal |

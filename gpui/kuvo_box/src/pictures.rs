@@ -9,11 +9,9 @@
 use base64::Engine as _;
 use serde_json::Value;
 
-use crate::client::BoxClient;
-use crate::error::{Error, Refusal, Result};
 use crate::messages::UserMessage;
 use crate::paths;
-use crate::transport::Request;
+use crate::shown_files::{self, FileKind};
 
 /// One picture in a conversation.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,13 +57,9 @@ pub fn of_sending(message: &str, files: &[std::path::PathBuf]) -> Vec<Picture> {
         .collect()
 }
 
-/// The extensions read as pictures.
-const PICTURES: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "bmp", "tif", "tiff", "heic", "heif", "ico", "svg"];
-
 /// Whether a file is a picture, by its name.
 pub fn is_picture_path(path: &str) -> bool {
-    let name = path.rsplit('/').next().unwrap_or(path);
-    name.rsplit_once('.').is_some_and(|(stem, extension)| !stem.is_empty() && PICTURES.contains(&extension.to_ascii_lowercase().as_str()))
+    shown_files::guess_type(path).0 == FileKind::Picture
 }
 
 /// A file's `file://` address, each part of its path escaped.
@@ -127,11 +121,14 @@ pub fn of_step(step: &str, name: &str, state: &Value) -> Vec<Picture> {
     if !is_made(name, state) || state.get("status").and_then(Value::as_str) != Some("completed") {
         return Vec::new();
     }
-    let caption = state.pointer("/input/caption").and_then(Value::as_str).filter(|caption| !caption.is_empty()).map(str::to_owned);
     if name == "kuvo-browser_show_file" {
-        let Some(path) = state.pointer("/input/path").and_then(Value::as_str).filter(|path| is_picture_path(path)) else { return Vec::new() };
-        return vec![Picture { id: format!("{step}-shown"), source: Source::File(file_uri(path)), name: path.rsplit('/').next().map(str::to_owned), caption }];
+        return shown_files::of_tool(step, name, state)
+            .filter(|file| file.kind == FileKind::Picture)
+            .map(|file| Picture { id: file.id, source: Source::File(file.uri), name: Some(file.name), caption: file.caption })
+            .into_iter()
+            .collect();
     }
+    let caption = state.pointer("/input/caption").and_then(Value::as_str).filter(|caption| !caption.is_empty()).map(str::to_owned);
     outputs(step, state, caption)
 }
 
@@ -222,19 +219,7 @@ fn percent_decoded(path: &str) -> String {
 }
 
 /// The most of a picture a conversation reads.
-pub const PICTURE_MOST: usize = 25 * 1024 * 1024;
-
-impl BoxClient {
-    /// A file on this box's computer (`kuvo/file`), by its `file://` address: its bytes, at most
-    /// `max`, and its type.
-    pub fn file_bytes(&self, uri: &str, max: usize) -> Result<(Vec<u8>, Option<String>)> {
-        let response = self.send(&Request::get(format!("kuvo/file?uri={}&max={max}", paths::query_value(uri))))?;
-        if !response.is_success() {
-            return Err(Error::Refused(Refusal::from_answer(response.status, &response.body)));
-        }
-        Ok((response.body, response.content_type))
-    }
-}
+pub const PICTURE_MOST: usize = shown_files::FILE_MOST;
 
 #[cfg(test)]
 mod tests {
