@@ -13,6 +13,9 @@
 K="$HOME/.kuvo-code"
 if [ "${1:-}" = check-rollback-layout ] && [ -n "${2:-}" ]; then K=$2; fi
 R="$K/run"
+if [ -f "$K/backup/restoring" ]; then
+  case "${1:-box}" in box|keep|start|engine|bridge|bridge-again) echo 'Finish the Kuvo backup restore before starting workers.' >&2; exit 1 ;; esac
+fi
 # Whether process $1 runs and is $2 (in its command line), with any run of slashes in either taken
 # as one: a HOME written with a slash at its end ("/Users/you/", as Kuvo Helper gave it) started its
 # engine as ".../you//.kuvo-code/engine/...", which a start or stop with HOME written without must

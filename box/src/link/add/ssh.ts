@@ -95,6 +95,8 @@ export interface Ran {
 export interface RunOptions {
   /** What its standard input gets: bytes, or a file's. */
   input?: Buffer | { file: string };
+  /** Stream binary output to an already opened private file. */
+  output?: number;
   /** Recheck permission after waits and before starting a command or sending its buffered input. */
   beforeInput?: () => void;
   /** Told as the input goes, in bytes. */
@@ -119,11 +121,13 @@ function run(args: string[], options: RunOptions): Promise<Ran> {
     void environment(options.way).then(env => {
       if (options.signal?.aborted) return resolve({ status: null, stdout: "", stderr: "" });
       options.beforeInput?.();
-      const child = spawn(program(), args, { env: env as NodeJS.ProcessEnv, stdio: ["pipe", "pipe", "pipe"] });
+      const child = spawn(program(), args, { env: env as NodeJS.ProcessEnv, stdio: ["pipe", options.output ?? "pipe", "pipe"] });
+      const stdin = child.stdin!;
+      const stderr = child.stderr!;
       const out: Buffer[] = [], err: Buffer[] = [];
       let kept = 0;
-      child.stdout.on("data", (chunk: Buffer) => { if ((kept += chunk.length) < 4_000_000) out.push(chunk); });
-      child.stderr.on("data", (chunk: Buffer) => { if ((kept += chunk.length) < 4_000_000) err.push(chunk); });
+      child.stdout?.on("data", (chunk: Buffer) => { if ((kept += chunk.length) < 4_000_000) out.push(chunk); });
+      stderr.on("data", (chunk: Buffer) => { if ((kept += chunk.length) < 4_000_000) err.push(chunk); });
       const stop = () => { try { child.kill("SIGTERM"); } catch {} };
       const timer = setTimeout(stop, options.most ?? 300_000);
       options.signal?.addEventListener("abort", stop, { once: true });
@@ -134,9 +138,9 @@ function run(args: string[], options: RunOptions): Promise<Ran> {
       };
       child.on("error", error => { err.push(Buffer.from(String(error.message))); done(127); });
       child.on("close", status => done(status));
-      child.stdin.on("error", () => {});
+      stdin.on("error", () => {});
       const input = options.input;
-      if (!input) return void child.stdin.end();
+      if (!input) return void stdin.end();
       if (Buffer.isBuffer(input)) {
         // In pieces, so how far it's got can be said.
         let at = 0;
@@ -145,11 +149,11 @@ function run(args: string[], options: RunOptions): Promise<Ran> {
             try { options.beforeInput?.(); } catch (error) { stop(); reject(error); return; }
             const piece = input.subarray(at, at + 262_144);
             at += piece.length;
-            const room = child.stdin.write(piece);
+            const room = stdin.write(piece);
             options.sent?.(at, input.length);
-            if (!room) return void child.stdin.once("drain", more);
+            if (!room) return void stdin.once("drain", more);
           }
-          child.stdin.end();
+          stdin.end();
         };
         return more();
       }
@@ -159,7 +163,7 @@ function run(args: string[], options: RunOptions): Promise<Ran> {
       const stream = fs.createReadStream(input.file);
       stream.on("data", chunk => { at += chunk.length; options.sent?.(at, total); });
       stream.on("error", stop);
-      stream.pipe(child.stdin);
+      stream.pipe(stdin);
     }).catch(reject);
   });
 }

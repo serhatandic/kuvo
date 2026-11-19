@@ -63,6 +63,13 @@ function checkpoint(file: string, current: number): Checkpoint {
   return { version, upgradingTo };
 }
 
+/** A backup can only describe a committed layout. */
+export function backupFolderVersion(folder: string): number {
+  const state = checkpoint(path.resolve(folder, FOLDER_VERSION_FILE), steps.length);
+  if (state.upgradingTo !== undefined) throw new Error("Wait for the folder upgrade before backing up.");
+  return state.version;
+}
+
 /** Check a move's source or destination without changing it. */
 export function checkFolderVersion(folder: string): void {
   checkpoint(path.resolve(folder, FOLDER_VERSION_FILE), steps.length);

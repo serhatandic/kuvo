@@ -592,6 +592,8 @@ if [ "$1" = fire ]; then
     command -v curl >/dev/null 2>&1 || return 1
     printf 'user = "opencode:%s"\n' "$password" | curl -q -sf -m 5 --noproxy '*' -K - "http://127.0.0.1:$port/api/session/$session/inbox" | grep -qF "\"$(json "[Wake-up] $1")\""
   }
+  # An interrupted restore must finish before its records can fire.
+  [ ! -f "${3%/run/*}/backup/restoring" ] || exit 0
   # The bots' folders, then the sessions' beside them, each on its own.
   for bots in "$2" "${2%/*}/wakes"; do
   [ -d "$bots" ] || continue

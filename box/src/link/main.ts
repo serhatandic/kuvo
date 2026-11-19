@@ -359,6 +359,7 @@ async function updateIsWell(): Promise<void> {
 }
 
 async function run(): Promise<void> {
+  (await import("./backup/engine")).keepDailyBackups();
   // One bridge at a time: a newer one (the engine restarted) takes over.
   let old: number | null = null;
   try {
@@ -853,6 +854,7 @@ async function keptServe(): Promise<void> {
 }
 
 async function serve(): Promise<void> {
+  (await import("./backup/engine")).keepDailyBackups();
   if (process.argv.includes("--kept")) return keptServe();
   // Its password, and this Mac's vault's secrets, from the app on stdin (never its environment,
   // which any of your processes can read); a test's box, in OPENCODE_PASSWORD.
@@ -1228,7 +1230,7 @@ if (main) {
   const [mode, argument] = process.argv.slice(2);
   try {
     // The installer and move own the destination until placement. A probe must not adopt it.
-    if (["here", "install", "rehome", "uninstall", "login-path", "login-env"].includes(mode)) checkFolderVersion(K);
+    if (["here", "backup-identity", "install", "rehome", "uninstall", "login-path", "login-env"].includes(mode)) checkFolderVersion(K);
     else if (mode !== "selftest") upgradeKuvoFolder(K);
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
@@ -1264,6 +1266,11 @@ if (main) {
   // setup?"): whether it uses its own box, or the one already on this Mac, in place. `here <root>`,
   // root the machines' folder's name in the home folder (`.kuvo-code`, or a test's own), with
   // KUVO_HOME the app's own box's folder: both said, never guessed.
+  else if (mode === "backup-identity") {
+    const key = ownKey(readLink() ?? {});
+    if (key) console.log(key);
+    else process.exitCode = 1;
+  }
   else if (mode === "here") {
     try {
       console.log(JSON.stringify(hereNow(argument)));

@@ -746,6 +746,7 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
     // What's there kept, and how to put it back, before anything changes: a swap the update doesn't
     // get past (the machine going down) is put back too.
     const newerEngine = otherEngine && newerVersion(manifest.engine, previous?.version);
+    await (await import("../backup/engine")).backupBefore("update", { insideUpdate: true });
     keepForRollback(files, newerEngine ? manifest.engine : null, new Set(bundles), path.join(stage, "files", "bin", "kuvo-start"));
     noteUpdate({ trial: { from: before, to: manifest.version, at: clock(), installing: true }, running: null });
     // (A rollback's count from a trial an older Kuvo ended: never this one's.)

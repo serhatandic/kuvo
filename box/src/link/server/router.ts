@@ -118,6 +118,8 @@ const ROUTES: (Route | Route<RegExpMatchArray>)[] = [
   { feature: "file.text", when: route => route === "kuvo/file/text", answer: ({ request, json }: RouteContext) => (request.method.toUpperCase() === "GET" ? fileAt(request.path, json, true) : json(405, {})) },
   { feature: "update", when: route => route === "kuvo/update", answer: updateRoute },
   // A release from a folder here, offered by Kuvo Code (PROTOCOL.md, "Updates").
+  { feature: "box.backups", when: route => route === "kuvo/box/backups" || route.startsWith("kuvo/box/backups/"),
+    answer: async function* (context: RouteContext) { yield* (await import("../areas/computer-backups")).computerBackupsRoute(context); } },
   { feature: "box.update", when: route => route === "kuvo/box/update", answer: boxUpdateRoute },
   // Moving this Mac's box into a home of its own (PROTOCOL.md, "Moving this Mac's box").
   { feature: "box.rehome", when: route => route === "kuvo/box/rehome", answer: rehomeRoute },

@@ -10,6 +10,7 @@ replace=${KUVO_REPLACE-}; starting=${KUVO_START-}; unset KUVO_REPLACE KUVO_START
 bridge_only=${KUVO_BRIDGE-}; unset KUVO_BRIDGE
 V=${KUVO_VERSION:-@ENGINE@}; unset KUVO_VERSION
 K="$HOME/.kuvo-code"
+[ ! -f "$K/backup/restoring" ] || { echo 'Finish the Kuvo backup restore before starting workers.' >&2; exit 1; }
 if [ -f "$K/bin/kuvo-link.js" ] && [ -x "$K/engine/$V/opencode" ]; then
   KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$K/engine/$V/opencode" --config=/dev/null --no-env-file "$K/bin/kuvo-link.js" folder-upgrade </dev/null || exit $?
 fi

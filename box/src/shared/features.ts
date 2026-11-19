@@ -53,6 +53,7 @@ export const FEATURES = [
   "box.app.host",
   "box.appKeys",
   "box.atWork",
+  "box.backups",
   "box.helper",
   "box.ownHome",
   "box.permissions",

@@ -6679,6 +6679,9 @@
             "literal": "box.atWork"
            },
            {
+            "literal": "box.backups"
+           },
+           {
             "literal": "box.helper"
            },
            {
@@ -7460,6 +7463,9 @@
            },
            {
             "literal": "box.atWork"
+           },
+           {
+            "literal": "box.backups"
            },
            {
             "literal": "box.helper"

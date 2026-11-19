@@ -401,6 +401,8 @@ export async function uninstallCommand(args: string[]): Promise<number> {
     return 1;
   };
   if (needsHandover(readLink())) return refuse();
+  try { await (await import("./backup/engine")).backupBefore("wipe"); }
+  catch (error) { return refuse((error as Error).message); }
   // The SSH controller has already revoked access before asking its remote to stop.
   const overSSH = process.env.KUVO_UNINSTALL_FROM_SSH === "1";
   const publishing = IS_MAC && !mainElsewhere(readLink());

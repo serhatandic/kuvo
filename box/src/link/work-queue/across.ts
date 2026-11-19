@@ -295,6 +295,7 @@ export async function takeWorkQueueMail(sender: MailSender, given: unknown, host
   if (isObject(whole.act)) await takeAct(sender, whole.act, reply, async act => {
     switch (act.area) {
       case "ownership": {
+        if (act.method === "GET" && act.item === "backup-restore") return (await import("../backup/restore")).restoreForPeer(sender, act);
         if (act.method === "GET" && act.item === "offline-edit") return readEditForPeer(sender, act, places());
         if (act.method === "GET") return (await import("../ownership/read")).readForPeer(sender, act, places());
         return (await import("../ownership/write")).writeForPeer(sender, act, places());
