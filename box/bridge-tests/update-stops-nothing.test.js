@@ -214,6 +214,14 @@ const linkUp = besides => until(() => {
 }, besides ? "a new link to run" : "the link to run");
 const turns = fake => { try { return fs.readFileSync(path.join(fake, "turns.log"), "utf8").trim().split("\n").filter(Boolean).map(line => JSON.parse(line)); } catch { return []; } };
 
+function holderFor(session) {
+  const folder = path.join(RUN, "agents", "hold");
+  return fs.readdirSync(folder)
+    .filter(name => name.endsWith(".json"))
+    .map(name => readJSON(path.join(folder, name)))
+    .find(record => record && Object.values(record.meta.turns ?? {}).some(note => note.session === session));
+}
+
 test("an update another of your computers hands over while a coding agent's turn and an engine's turn run stops neither: both finish, and the new code is live in the server, the link and the bridge", { skip: bun ? false : NO_BUN, timeout: 300_000 }, async () => {
   const { fake } = box();
   keep();
@@ -233,11 +241,7 @@ test("an update another of your computers hands over while a coding agent's turn
   const pending = async () => (await bridgeAPI().api("GET", `api/session/${session}/permission`)).json?.data;
   const before = await until(async () => (await pending())?.[0], "the permission to appear");
   const visibleId = (await api("GET", `api/session/${session}/message?limit=100&order=asc`)).json.data.find(message => message.type === "assistant").id;
-  const holder = () => {
-    const folder = path.join(RUN, "agents", "hold");
-    return fs.readdirSync(folder).filter(name => name.endsWith(".json")).map(name => readJSON(path.join(folder, name))).find(record => record && Object.values(record.meta.turns ?? {}).some(note => note.session === session));
-  };
-  const firstHolder = holder();
+  const firstHolder = holderFor(session);
   assert.ok(firstHolder, "the active turn has a holder");
   assert.ok(runs(firstHolder.child));
   write(path.join(scratch, "engine-busy"), "");
@@ -271,8 +275,8 @@ test("an update another of your computers hands over while a coding agent's turn
   const secondBridge = await bridgeUp(firstBridge.pid);
   assert.equal(secondBridge.build, build(fs.readFileSync(builtAgents, "utf8")), "the new bridge runs the release's build");
   assert.equal(fs.existsSync(path.join(fake, "release-one")), false);
-  assert.equal(holder().child, firstHolder.child);
-  assert.ok(holder().generation > firstHolder.generation);
+  assert.equal(holderFor(session).child, firstHolder.child);
+  assert.ok(holderFor(session).generation > firstHolder.generation);
   assert.ok(runs(firstHolder.child), "the same agent process continued");
   assert.equal(readJSON(path.join(RUN, "engine.json")).pid, engine.pid);
   const again = await pending();
@@ -326,6 +330,7 @@ test("the engine started again while a coding agent's turn runs: the turn comple
   const before = turns(fake).length;
   assert.equal((await api("POST", `api/session/${session}/prompt`, { id: "msg_stopsnothing00002", delivery: "steer", text: "hold two" })).status, 200);
   await until(() => turns(fake).length === before + 1, "the agent's turn to start");
+  const holder = await until(() => holderFor(session), "the holder to record the new turn");
 
   // The engine ends (a crash, or a hung one ended): its keeper starts another, on a port and
   // password of its own.
@@ -336,6 +341,9 @@ test("the engine started again while a coding agent's turn runs: the turn comple
   assert.equal(readJSON(path.join(RUN, "bridge.json")).pid, bridge.pid);
   assert.ok(runs(bridge.pid), "the bridge runs on");
   await until(() => fs.existsSync(path.join(scratch, `feed-${restarted.port}`)), "the bridge to follow the new engine");
+  const stillHeld = holderFor(session);
+  assert.equal(stillHeld.child, holder.child, "the native app-server never changed");
+  assert.equal(stillHeld.generation, holder.generation, "the same controller kept the holder");
 
   // The turn ends as it would have: on that bridge, once.
   write(path.join(fake, "release-two"), "");
@@ -345,7 +353,8 @@ test("the engine started again while a coding agent's turn runs: the turn comple
   }, "the agent's turn to end");
   assert.deepEqual(messages.filter(each => each.type === "assistant").flatMap(each => each.content ?? []).filter(block => block.type === "text").map(block => block.text), ["Done: hold two"]);
   assert.deepEqual(messages.filter(each => each.type === "idle").map(each => each.outcome), ["succeeded"], "never cut");
-  assert.deepEqual(turns(fake).slice(before), [{ text: "hold two", bridge: bridge.pid }]);
+  // The fixture logs the process that launched the app-server, which a handover can predate.
+  assert.deepEqual(turns(fake).slice(before), [{ text: "hold two", bridge: holder.bridge }]);
   assert.equal(readJSON(path.join(RUN, "bridge.json")).pid, bridge.pid);
 });
 
@@ -359,6 +368,7 @@ test("if the new bridge exits at the cutover, the keeper resumes the turn on the
   assert.equal((await api("POST", `api/session/${session}/prompt`, { id: "msg_stopsnothing00004", delivery: "steer", text: "hold recovery" })).status, 200);
   const pending = async () => (await bridgeAPI().api("GET", `api/session/${session}/permission`)).json?.data;
   const ask = await until(async () => (await pending())?.[0], "the permission to appear");
+  const holder = await until(() => holderFor(session), "the holder to record the turn before recovery");
 
   const bundle = path.join(home, "bin", "kuvo-agents.js");
   const broken = "b".repeat(64);
@@ -367,6 +377,9 @@ test("if the new bridge exits at the cutover, the keeper resumes the turn on the
   fs.renameSync(bundle + ".new", bundle);
   const recovered = await bridgeUp(first.pid);
   assert.equal(recovered.build, first.build, "the previous executable answered after the candidate failed");
+  const resumed = holderFor(session);
+  assert.equal(resumed.child, holder.child, "the previous build resumed the original native process");
+  assert.ok(resumed.generation > holder.generation, "the recovery bridge took ownership of the holder");
   assert.equal((await until(async () => (await pending())?.[0], "the same pending permission")).id, ask.id);
   assert.equal((await bridgeAPI().api("POST", `api/session/${session}/permission/${ask.id}/reply`, { decision: "once" })).status, 200);
   write(path.join(fake, "release-recovery"), "");
@@ -375,7 +388,7 @@ test("if the new bridge exits at the cutover, the keeper resumes the turn on the
     return page.at(-1)?.type === "idle" ? page : null;
   }, "the recovered turn to finish");
   assert.deepEqual(messages.filter(each => each.type === "idle").map(each => each.outcome), ["succeeded"]);
-  assert.deepEqual(turns(fake).filter(turn => turn.text === "hold recovery"), [{ text: "hold recovery", bridge: first.pid }]);
+  assert.deepEqual(turns(fake).filter(turn => turn.text === "hold recovery"), [{ text: "hold recovery", bridge: holder.bridge }]);
 });
 
 
