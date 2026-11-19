@@ -16,17 +16,6 @@ pub(crate) fn check_route_version(given: Option<&str>) -> Result<()> {
     }
 }
 
-/// Stable across processes of the same local installation. Relay clients use the paired key.
-pub(crate) fn client_installation_id() -> Option<&'static str> {
-    use sha2::{Digest, Sha256};
-    static ID: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
-    ID.get_or_init(|| {
-        let executable = std::env::current_exe().ok()?;
-        let hash = format!("{:x}", Sha256::digest(executable.to_string_lossy().as_bytes()));
-        Some(hash[..32].to_owned())
-    }).as_deref()
-}
-
 /// A request for one of a box's routes (PROTOCOL.md, "Messages in a session"): its method, its
 /// path without a leading slash (`kuvo/info`, `api/session/ses_1/message?limit=50`), the headers
 /// a box reads (`x-opencode-directory`, `idempotency-key`) and a JSON body.

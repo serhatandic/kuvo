@@ -14,6 +14,7 @@
 //!
 //! No GPUI here: any client reuses all of it.
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
@@ -229,13 +230,29 @@ struct Via {
     boxes: Weak<Inner>,
 }
 
+impl Via {
+    fn fleet_request<'a>(&self, request: &'a Request) -> Cow<'a, Request> {
+        if !matches!(request.path.split('?').next(), Some("kuvo/computers" | "kuvo/computers/events" | "kuvo/update/dismiss"))
+            || request.headers.iter().any(|(name, _)| name.eq_ignore_ascii_case("x-kuvo-client-id"))
+        {
+            return Cow::Borrowed(request);
+        }
+        let Some(inner) = self.boxes.upgrade() else { return Cow::Borrowed(request) };
+        let boxes = Boxes { inner };
+        let Some(identity) = boxes.identity(&mut boxes.state()) else { return Cow::Borrowed(request) };
+        use sha2::{Digest, Sha256};
+        let id = format!("{:x}", Sha256::digest(identity.public()));
+        Cow::Owned(request.clone().header("x-kuvo-client-id", &id[..32]))
+    }
+}
+
 impl Transport for Via {
     fn send(&self, request: &Request) -> Result<Response> {
-        self.inner.send(request)
+        self.inner.send(&self.fleet_request(request))
     }
 
     fn open(&self, request: &Request, hold: &dyn Fn(Closer) -> bool) -> Result<Stream> {
-        self.inner.open(request, hold)
+        self.inner.open(&self.fleet_request(request), hold)
     }
 
     fn refresh(&self) -> u64 {

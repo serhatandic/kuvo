@@ -120,7 +120,8 @@ export function fleetClient(context: RouteContext): string | null {
   if (context.phone?.key) return context.phone.key.toString("base64url");
   if (!context.request.served && !context.request.fromMac) return null;
   const given = context.request.headers["x-kuvo-client-id"];
-  return typeof given === "string" && /^[a-f0-9]{32}$/.test(given) ? `local-${given}` : "local";
+  if (typeof given === "string" && /^[a-f0-9]{32}$/.test(given)) return `local-${given}`;
+  return context.request.served ? "local" : null;
 }
 
 export function fleetSummary(rows: readonly UpdateRow[], target: string | undefined, client: string | null): FleetSummary | undefined {

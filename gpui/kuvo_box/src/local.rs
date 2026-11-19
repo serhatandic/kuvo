@@ -130,9 +130,6 @@ impl LocalServer {
         let mut head = format!("{} /{} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\n", request.method.to_ascii_uppercase(), path, port);
         let token = base64::engine::general_purpose::STANDARD.encode(format!("opencode:{password}"));
         head.push_str(&format!("Authorization: Basic {token}\r\nx-kuvo-from: {}\r\n", self.speaker.header()));
-        if let Some(id) = crate::transport::client_installation_id() {
-            head.push_str(&format!("x-kuvo-client-id: {id}\r\n"));
-        }
         if let Some(version) = option_env!("KUVO_APP_VERSION") {
             head.push_str(&format!("x-kuvo-client-version: {version}\r\n"));
         }

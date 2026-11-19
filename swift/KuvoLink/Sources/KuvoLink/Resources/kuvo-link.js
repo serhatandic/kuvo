@@ -1,4 +1,4 @@
-// Kuvo folder layout 18 480be89b524e
+// Kuvo folder layout 18 caeb961ed6cd
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
 var __create = Object.create;
@@ -1139,7 +1139,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "480be89b524e";
+var BRIDGE_VERSION = "caeb961ed6cd";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -76666,7 +76666,9 @@ function fleetClient(context) {
   if (!context.request.served && !context.request.fromMac)
     return null;
   const given = context.request.headers["x-kuvo-client-id"];
-  return typeof given === "string" && /^[a-f0-9]{32}$/.test(given) ? `local-${given}` : "local";
+  if (typeof given === "string" && /^[a-f0-9]{32}$/.test(given))
+    return `local-${given}`;
+  return context.request.served ? "local" : null;
 }
 function fleetSummary(rows, target, client) {
   if (!target)

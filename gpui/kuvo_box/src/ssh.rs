@@ -192,12 +192,9 @@ impl SshBox {
         // password's and the link's own, which `box route` adds itself.
         let mut headers: serde_json::Map<String, serde_json::Value> = request
             .wire_headers()
-            .filter(|(name, _)| matches!(*name, "x-opencode-directory" | "x-kuvo-sign-in-client" | ROUTE_VERSION_HEADER))
+            .filter(|(name, _)| matches!(*name, "x-opencode-directory" | "x-kuvo-sign-in-client" | "x-kuvo-client-id" | ROUTE_VERSION_HEADER))
             .map(|(name, value)| (name.to_owned(), serde_json::Value::String(value.to_owned())))
             .collect();
-        if let Some(id) = crate::transport::client_installation_id() {
-            headers.insert("x-kuvo-client-id".into(), id.into());
-        }
         if let Some(version) = option_env!("KUVO_APP_VERSION") {
             headers.insert("x-kuvo-client-version".into(), version.into());
         }

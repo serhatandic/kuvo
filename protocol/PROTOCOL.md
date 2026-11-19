@@ -3400,8 +3400,9 @@ did: the box keeps working as itself ("For released Macs").
     the folder migration steps. Every member must be able to read the layout. Computers advertise
     their reader ceiling in `computer.layout`. The known beta.35 release supports layout 18.
     A future higher layout needs a reader-capability rollout before it can become writable.
-    Pre-layout beta.34 boxes must first be brought to beta.35 through the existing compatibility
-    installer. A box still running the old updater can still have its legacy visit hold.
+    A beta.34 machine with the legacy visit hold needs a bootstrap before the primary moves to J.
+    Use **Set Up Again** from the beta.35 primary over its saved SSH connection when the machine
+    is quiet. On a Mac without that hold, the beta.35 desktop app can offer its local release.
   - **Transfer attempts**: the relay owner records manifest request, pack download, offer and
     installation, including interruptions and rejection reasons. Transfer retries back off from
     30 seconds up to an hour per source. Install failures use the offered update’s one-hour or
