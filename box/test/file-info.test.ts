@@ -56,6 +56,34 @@ test("missing and non-file paths give a normal info reply and 404 for bytes", as
   expect(await ask(route(root), "POST")).toEqual({ status: 405, body: {} });
 });
 
+test("the folder and text routes use paths from the box, including literal URI characters", async () => {
+  const folder = join(root, "..é");
+  const name = "a%20 #ş\\.txt";
+  const path = join(folder, name);
+  mkdirSync(folder);
+  writeFileSync(path, "the document");
+  const rootList = await ask(`kuvo/folders?path=${encodeURIComponent(root)}&files=1&hidden=1`);
+  expect(rootList.body.folders).toEqual([{ name: "..é", path: folder }]);
+  const listed = await ask(`kuvo/folders?path=${encodeURIComponent(folder)}&files=1`);
+  expect(listed.body.files).toEqual([name]);
+  expect(listed.body.fileEntries).toEqual([{ name, path }]);
+  const path64 = Buffer.from(path).toString("base64url");
+  const server = serveBox("password", handle);
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Expected a TCP address");
+    const url = `http://127.0.0.1:${address.port}/kuvo/file/text?path64=${path64}`;
+    const reply = await fetch(url, { headers: { authorization: "Basic " + btoa("opencode:password") } });
+    expect(reply.status).toBe(200);
+    expect(await reply.json()).toEqual({ text: true, encoding: "utf-8", content: "the document" });
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>(resolve => server.close(() => resolve()));
+  }
+  expect((await ask("kuvo/file/text?path64=cmVsYXRpdmU")).status).toBe(400);
+});
+
 test("byte downloads honor the announced size when a file changes", async () => {
   const file = join(root, "changing.txt");
   const path = route(file, "") + "&max=3";

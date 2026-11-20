@@ -40,6 +40,12 @@ test("a side that can't say has none of its models, and says so", () => {
   expect(answer.known).toEqual({ engine: true, agents: false })
 })
 
+test("when none runs an offered answer carries the box's words for choosing one", () => {
+  const answer = offeredAnswer({ engine: { ...lists.engine!, ready: new Set(), models: [] }, bridge: null }, null)
+  expect(answer.starting).toBeNull()
+  expect(answer.startChoice).toEqual({ label: "Choose a Model", refusal: "Choose a model to send it." })
+})
+
 // Which models need no account (#733), so a client says "free models" without knowing OpenCode's
 // provider: OpenCode Zen's free ones (signed out); never one that costs nothing only with its
 // account (Copilot's), one of your own listing no prices (perhaps a paid gateway), a paid one, or a
@@ -167,11 +173,11 @@ test("bridge bots offer provider models too; engine bots explain choosing a codi
   } })
   const engine = serve(false), agents = serve(true)
   const target = (server: typeof engine) => ({ port: server.port!, password: "test", pid: process.pid })
-  const read = async (onBridge: boolean) => {
+  const read = async (onBridge: boolean, query = "session=bot-session") => {
     sessionOnBridge = onBridge
     let answer: any
     const context = {
-      request: { method: "GET", path: "kuvo/models/offered?session=bot-session", headers: {} },
+      request: { method: "GET", path: `kuvo/models/offered?${query}`, headers: {} },
       readEngine: () => target(engine),
       bridge: () => target(agents),
       json: (status: number, value: unknown) => { expect(status).toBe(200); answer = value; return [] },
@@ -184,6 +190,9 @@ test("bridge bots offer provider models too; engine bots explain choosing a codi
     const bridge = await read(true)
     expect(bridge.models.map((model: any) => model.providerID)).toEqual(["opencode-go", "claude-code"])
     expect(bridge.note).toBeUndefined()
+    const defaults = await read(true, "for=defaults")
+    expect(defaults.scoped).toBe(true)
+    expect(defaults.models.map((model: any) => model.providerID)).toEqual(["opencode-go"])
     const answer = await read(false)
     expect(answer.models.map((model: any) => model.providerID)).toEqual(["opencode-go"])
     expect(answer.note).toBe("To use a coding agent in this bot, change its model in Edit Bot.")

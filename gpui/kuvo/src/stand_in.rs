@@ -1345,7 +1345,10 @@ impl State {
                 groups.push(json!({"directory": directory, "title": if kind == "chat" { "Chats" } else { projects.get(directory).and_then(|p| p["name"].as_str()).unwrap_or(directory) }, "kind": kind, "sessions": [id]}));
             }
         }
-        json!({ "at": self.at.to_string(), "full": full, "sessions": self.sessions, "projects": projects, "needsYou": self.needs_you(), "archivedGroups": groups })
+        let sessions = serde_json::from_value(json!(self.sessions)).unwrap_or_default();
+        let listed_projects = serde_json::from_value(json!(projects)).unwrap_or_default();
+        let order: Vec<String> = kuvo_box::sessions::sidebar(&sessions, &listed_projects).projects.into_iter().map(|group| group.directory).collect();
+        json!({ "at": self.at.to_string(), "full": full, "sessions": self.sessions, "projects": projects, "projectOrder": order, "startProject": order.first(), "needsYou": self.needs_you(), "archivedGroups": groups })
     }
 
     /// The computer's name, as its `kuvo/info` says it.
@@ -1786,8 +1789,12 @@ impl StandIn {
         }
         if let Some(git) = state.git.as_mut() {
             if (method, route) == ("GET", "kuvo/file/text") {
-                let uri = query(path, "uri").map(decoded).unwrap_or_default();
-                return match git.text(&uri) {
+                use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+                let file = query(path, "path64").and_then(|path| URL_SAFE_NO_PAD.decode(path).ok()).and_then(|bytes| String::from_utf8(bytes).ok()).unwrap_or_else(|| {
+                    let uri = query(path, "uri").map(decoded).unwrap_or_default();
+                    percent_decode(uri.trim_start_matches("file://"))
+                });
+                return match git.text(&file) {
                     Some(said) => answer(200, said),
                     None => answer(404, json!({ "message": "That file isn’t there anymore." })),
                 };
@@ -1913,7 +1920,11 @@ impl StandIn {
             }
             ("GET", ["kuvo", "info"]) => {
                 let mut features: Vec<&str> = kuvo_box::gate::REQUIRED.to_vec();
-                features.extend(["queue", "asks", "file.info"]);
+                features.extend([
+                    "queue", "asks", "file.info", kuvo_box::accounts::ACCOUNT_CATALOG,
+                    kuvo_box::accounts::SIGN_IN_ACTION, kuvo_box::folders::FOLDER_PATHS, kuvo_box::folders::FILE_TEXT_PATH,
+                    kuvo_box::sessions::LIST_START, kuvo_box::models::MODEL_DEFAULTS, kuvo_box::models::MODEL_START_CHOICE,
+                ]);
                 features.extend(state.queue.features());
                 if !state.before_update_here { features.push(crate::home::UPDATES_ITSELF); }
                 features.retain(|name| !state.lacks.iter().any(|lacks| lacks == name));
@@ -1964,8 +1975,9 @@ impl StandIn {
                 answer(200, json!({ "sessions": told }))
             }
             ("GET", ["kuvo", "models", "offered"]) => {
+                let defaults = query(path, "for") == Some("defaults");
                 if state.nothing_runs {
-                    return answer(200, json!({ "models": [], "known": { "engine": true, "agents": true }, "starting": null }));
+                    return answer(200, json!({ "models": [], "known": { "engine": true, "agents": true }, "starting": null, "scoped": defaults, "startChoice": { "label": "Choose a Model", "refusal": "Choose a model to send it." } }));
                 }
                 // Each with its side and its efforts, as the box says them.
                 let with = |side: &'static str, (mut model, efforts): (Value, Vec<&str>)| -> Value {
@@ -1980,7 +1992,7 @@ impl StandIn {
                 // starts on one of them.)
                 if state.first_run.only_free {
                     let listed: Vec<Value> = first_run::free_models().into_iter().map(|model| with("engine", model)).collect();
-                    return answer(200, json!({ "models": listed, "known": { "engine": true, "agents": true }, "starting": first_run::free_start() }));
+                    return answer(200, json!({ "models": listed, "known": { "engine": true, "agents": true }, "starting": first_run::free_start(), "scoped": defaults }));
                 }
                 let mut listed: Vec<Value> = models().into_iter().map(|model| with("engine", model)).collect();
                 if state.first_run.free {
@@ -1995,6 +2007,10 @@ impl StandIn {
                     said["scoped"] = json!(true);
                     said["models"].as_array_mut().unwrap().retain(|model| model["side"] == "engine");
                     said["note"] = json!("To use a coding agent in this bot, change its model in Edit Bot.");
+                }
+                if defaults {
+                    said["scoped"] = json!(true);
+                    said["models"].as_array_mut().unwrap().retain(|model| model["side"] == "engine" && model["hidden"] != true && model["retiring"] != true);
                 }
                 if !state.no_stars {
                     said["starred"] = json!(state.starred);

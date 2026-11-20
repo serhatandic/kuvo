@@ -1890,13 +1890,18 @@ by the gate ("Updating…"), and one that answers `503` leaves a client's lists 
 sessions").
 
 - `GET kuvo/sessions/list[?since=<at>]` → `{at, full?, sessions: {<id>: facts}, gone?: [<id>],
-  projects: {<folder>: {name?, updated?, asking, working}}, needsYou: [{session, asks}],
+  projects: {<folder>: {name?, updated?, asking, working}}, projectOrder?, startProject?, needsYou: [{session, asks}],
   archivedGroups: [{directory, title, kind, sessions: [id]}], pending?: ["bridge"]}`. `…/events[?since=<at>]` (ndjson) sends that now, then
   a line as anything in it changes; through `box route` (a machine reached over SSH) it answers its
   first line, and a client reads it again as that machine's sessions change and every half minute.
   `503 {"message"}` while the engine can't be read; `405` for anything but `GET`. `pending`: the
   coding agents' bridge runs but couldn't be read yet, so its sessions are as last read (none are
   said gone for it).
+- `projectOrder` and `startProject` (`sessions.list.start`) are whole on every line. The box
+  orders projects by the latest session, then by project name in sidebar order, then by directory.
+  The initial project for a new conversation is the first in that order, or null for Chats.
+  An explicit project or Chats pick takes precedence. The starting place stays put while the
+  user writes.
 - `archivedGroups` (`sessions.archived-groups`) is whole on every line, including deltas.
   Both Settings › Archived Sessions and the desktop archived sidebar draw these groups and
   session ids in the supplied order. The box includes archived project, chat and bot sessions,
@@ -2628,6 +2633,11 @@ start on a model by the same rule.
   "starred": [{providerID, id}], "known": {"engine", "agents"}, "listing"?: [<account id>],
   "starting"?: {providerID, id, variant?} | null}`. `405` for anything but `GET`; `503` with
   neither the engine nor the coding agents' bridge running.
+- `for=defaults` (`models.offered.defaults`) returns the catalog for the default-model settings,
+  with `scoped: true` and only eligible engine models in `models`. The ordinary catalog stays
+  available for the conversation and bot pickers.
+- With `starting: null`, `startChoice: {label, refusal}` (`models.offered.choice`) supplies the
+  model chip and send refusal's words when a new conversation needs a model pick.
 - `folder` (`models.offered.folder`): a project's folder, or a conversation's, as a full path: the
   engine's lists are read there, where a project's own settings may add providers and models or
   set its default, so a picker there offers them (with their efforts) and `starting` is that
@@ -4153,9 +4163,13 @@ no client shows yet.
     close an hour after their last use; whether the browser offers to save a password you sign in
     with, and the sites you said Never to (hosts).
   - `PATCH kuvo/browser/settings` with any of `searchEngine`, `tidiesAgentTabs`, `offersToSave` and
-    `never` (the whole list) → the settings, or `400 {"message"}` for one that isn't right. The
+    `never` (the whole list, for older callers) → the settings, or `400 {"message"}` for one that isn't right. The
     agents' tools search with the box's engine once it has one (before, the one its Mac names,
     `KUVO_SEARCH`); `kuvo-browser.js` is built with the engines' addresses.
+  - `PUT kuvo/browser/settings/never/<host>` adds one host, and `DELETE` on the same path takes
+    it out (`browser.data.never`). Use the host as a percent-encoded path segment, including its
+    port if present. Both return the settings after the edit and can be sent again. The box
+    keeps other hosts and settings as they stand when it applies the edit.
 - **Taken in once, on this Mac's box**: as its own browser's keeper first starts (`kuvo-link.js
   browser take-in`; on a machine it only notes there's nothing to take), what its app's panel kept
   before (Kuvo Code 0.5–0.7), so nothing the app keeps meanwhile is left behind: its history (`Browser/history.json` in the app's folder,
@@ -4789,6 +4803,14 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
     the account's card names under its name: its first sign-in that isn't legacy (the engine's
     "Login with" said "Sign in with"; plain "Sign in" where its words only name the account
     again), else "API key" for a key, else "Connect".
+  - `GET kuvo/accounts/catalog` (`accounts.catalog`) → `{agents, engine, agentsDown?, engineDown?}`.
+    Each array contains the accounts shown in Settings, in that source's order. Each row includes
+    the account facts below, its `name`, the display fields `metadata.accountLabel`,
+    `metadata.version` and `metadata.programUpdate` where present, and its Settings `section`
+    (`codingAgents`, `providers` or `addProvider`). A source that returns 503 contributes an
+    empty array and its refusal (`message`, `reason?`, `action?`) in the corresponding
+    `*Down` field. Other failures fail the request. A client uses the separate reads below and
+    the source's integration list only when this box's features lack `accounts.catalog`.
   - `GET kuvo/sign-in/accounts[?agents=1]` → `{"accounts": [{id, methods, environment, hint, kind,
     listed, plan, service?, state, line, connections, actions, added?}]}`:
     every account the engine (or the bridge) lists, each with the same answer. Accounts goes by it
@@ -4874,6 +4896,12 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
     plan comes through Codex; DeepSeek's; Amazon Bedrock's). A first run lists plans and keeps
     keys apart by it, so no client works it out from `methods`. It means something for a
     `provider` alone: an MCP server's sign-in has a sign-in page too, and isn't listed.
+  - `POST kuvo/sign-in/action?integration=<id>[&agents=1]` (`sign-in.action`) completes or
+    cancels a sign-in, adds a key, or connects credentials on the same box. The body is
+    `{action: "complete", attempt, code}`, `{action: "cancel", attempt}`,
+    `{action: "addKey", key, answer?}`, or `{action: "external", methodID, answer?}`.
+    The box dispatches to the account's engine or bridge and returns that operation's answer.
+    GitHub for Work Queue uses its existing attempt owner when canceled.
   - `POST kuvo/sign-in/start?integration=<id>[&agents=1]` `{methodID, answer?}`
     (`sign-in.codes`, #711): starts a sign-in in the browser as the engine's (or the bridge's) own
     `api/integration/<id>/connect/oauth` does, and answers what that answered (`attemptID`, `url`,
@@ -5526,7 +5554,7 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
     `500 {"message"}` with git's words (a repository made again is taken away again then).
 - `GET kuvo/folders[?path=<folder>&hidden=1]` (`folders`): the folders in one of this box's folders,
   for a client to choose one (Settings › Worktrees' folder) as a folder panel does → `{"path",
-  "home", "parent", "folders": [{name, repository?}]}`, ordered as Finder orders names, without
+  "home", "parent", "folders": [{name, path?, repository?}]}`, ordered as Finder orders names, without
   hidden ones unless `hidden=1`. No `path`, or `~`: the home folder; `~/` starts there. `parent` is
   null at `/`; `repository`, a git repository's own checkout. `404 {"message"}` for no folder there,
   `403` for one it can't read, `400` for a path that isn't a full one; each refusal with `reason`,
@@ -5536,6 +5564,8 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
   ones too; `.DS_Store` left out), without version control's own (`.git`, `.hg`, `.svn`, a folder
   or, in a linked worktree, a file), which nobody works in by hand: the box leaves them out, so a
   client lists what it's sent and filters nothing itself.
+  With `folders.paths`, every child folder includes its full `path` and a `files=1` answer also
+  includes `fileEntries: [{name, path}]`, in the order of `files`. Clients use those paths directly.
   `POST kuvo/folders {"path"}` makes a new folder in one that's there, as a folder panel's New
   Folder does → `{"path"}`; `409 {"message"}` for something there already, `404` when the folder
   it's in isn't there, `403` when one can't be made there, `400` for a path that isn't a full one.
@@ -6142,6 +6172,8 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
   viewer says instead of showing. So no client looks through a file's bytes to tell. Refused as
   `kuvo/file` refuses (`400`, `403`, `404`, `413`), but `413` already over 4 MB, with or without
   `max`: its text comes as one answer. `GET` only (`405 {}` otherwise).
+  Boxes with `file.text.path` also accept `?path64=<full path as unpadded base64url UTF-8>` in
+  place of `uri` so the file name stays intact through the request path parser.
   `GET kuvo/file/info?uri=<file:// URI>` (`file.info`): the same access checks on the computer
   that owns the file. Opens it for reading to check access without reading its contents or applying
   the download size limit. Answers `200 {"exists":true,"name","size","kind","mime"}`, with the base
@@ -7978,6 +8010,7 @@ One row a name, in order, so branches that each add one merge cleanly.
 
 | Name | What it answers |
 | --- | --- |
+| `accounts.catalog` | `GET kuvo/accounts/catalog`: one account catalog for Settings and first run, including each row's section and each unavailable source's refusal |
 | `accounts.credentials` | `kuvo/accounts/credentials` |
 | `accounts.ended` | `kuvo/accounts/ended` and `POST kuvo/accounts/<provider>/forget` (a machine from 0.9.61) |
 | `accounts.found` | `kuvo/accounts/found`, `…/found/use` |
@@ -8031,6 +8064,7 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `branch` | `kuvo/agents/api/kuvo/branch/<session>`: Branch from here, marked |
 | `browser` | a machine only: `kuvo/browser`, its browser set up by the box itself ("The browser on a machine") |
 | `browser.data` | `kuvo/browser/history`, `…/icons/<host>`, `…/sites` and `…/settings`: the browser's data, every box's own ("The browser's data") |
+| `browser.data.never` | `PUT` and `DELETE kuvo/browser/settings/never/<host>`: add or remove one Never Offered host |
 | `browser.view` | `kuvo/browser/view`: authenticated live view socket (“The browser’s live view”) |
 | `btw` | `kuvo/agents/api/kuvo/btw…`: side questions ("Side questions, handoffs and reviews") |
 | `btw.threads` | a side question's `thread`, follow-ups and a thread's removal (bridge 0.9.98) |
@@ -8054,8 +8088,10 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `file` | `kuvo/file` |
 | `file.info` | `GET kuvo/file/info`: metadata of a named file, or that it is missing |
 | `file.text` | `GET kuvo/file/text`: a file's text, or that it isn't text, for a viewer (#708) |
+| `file.text.path` | `kuvo/file/text?path64=<full path as unpadded base64url UTF-8>` can read a named file directly |
 | `folders` | `kuvo/folders` |
 | `folders.files` | `kuvo/folders?files=1`: a folder's files too, and `reason` on a refusal |
+| `folders.paths` | `kuvo/folders` includes the full path of each folder and file entry |
 | `folders.suggested` | `GET kuvo/folders/suggested`: folders worth starting in, where agents worked lately and the repositories in ~/Projects and ~/Developer (#733) |
 | `folders.tree` | `GET kuvo/folders/tree`: every file under a folder, for a file filter and "@" (#660) |
 | `git` | `kuvo/git/…`: Changes (bridge 0.9.94) |
@@ -8102,6 +8138,8 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `messages.tool-titles` | `title` and `doing` on every tool step that isn't the engine's own, in every message page ("Tool steps") |
 | `messages.wake-cards` | `metadata.kuvo.wake` `{summary, note}` on every wake-up's (and watch's) message, in every message page ("Wake-ups"); a lead isn't told again what a session sent it, nor of a turn you had with it (#768, "Work") |
 | `models.offered` | `GET kuvo/models/offered`: which models a session can use here, and the one a new session starts on, by the box's rule ("The models offered", #341) |
+| `models.offered.choice` | `kuvo/models/offered` supplies the chip label and refusal when a new conversation needs a model pick |
+| `models.offered.defaults` | `kuvo/models/offered?for=defaults`: the models eligible for the default-model settings |
 | `models.offered.folder` | `kuvo/models/offered?folder=<path>`: what's offered in a project's folder, its own settings' models too ("The models offered") |
 | `models.offered.free` | `free` on each model in `kuvo/models/offered` that needs no account ("The models offered", #733) |
 | `models.offered.sides` | `kuvo/models/offered` says each model's `side`, `efforts` and `aliases` ("The models offered") |
@@ -8149,6 +8187,7 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `sessions.glance` | `kuvo/sessions/glance`, `…/events`, and `session` in `POST kuvo/git/pull-request` ("A session at a glance") |
 | `sessions.archived-groups` | Required `archivedGroups` in every session-list answer, the archived list shared by Settings and the desktop sidebar |
 | `sessions.list` | `kuvo/sessions/list` and `…/events`: what each session is, the project it's filed under, and the projects the lists show ("Session lists") |
+| `sessions.list.start` | `kuvo/sessions/list` and `…/events` include the sidebar's project order and the starting project for a new conversation, or null for Chats |
 | `sessions.mentions` | `GET kuvo/sessions/<id>/mentions` ("Mentions") |
 | `sessions.models` | `GET kuvo/sessions/models` ("A session's model") |
 | `sessions.move` | `POST kuvo/sessions/<id>/move`: a conversation moved into a project, given its folders ("Projects", #341) |
@@ -8171,6 +8210,7 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `sign-in.accounts.plan` | `plan` on each account in `GET kuvo/sign-in/accounts`: a plan you sign in to, or an account you enter a key or credentials for; and a key-only account's buttons say Add Key ("Signing in", #733) |
 | `account-action-sheet-title` | `sheetTitle` on account actions that open a sign-in sheet; clients draw the supplied title verbatim (#734) |
 | `sign-in.accounts.state` | `state`, `line`, `connections` and `actions` on each account in `GET kuvo/sign-in/accounts`: how it stands, the line under its name, each of its sign-ins' own line, and what can be done with it, each with its button's words and its confirm's ("Signing in", #668), and `added` on one you added |
+| `sign-in.action` | `POST kuvo/sign-in/action`: complete or cancel an attempt, add a key, or connect external credentials on the requested box |
 | `sign-in.codes` | `POST kuvo/sign-in/start`, and `userCode` wherever a sign-in has a device code, the engine's own plans too ("Signing in", #711) |
 | `sign-in.methods` | `GET kuvo/sign-in/methods`, `GET kuvo/sign-in/accounts` and `GET kuvo/sign-in/status`: the ways to sign in, in the box's order and words, and what to say when a sign-in didn't work ("Signing in") |
 | `sign-in.return` | `POST kuvo/sign-in/return` |

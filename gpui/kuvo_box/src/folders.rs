@@ -2,6 +2,7 @@
 //! folder at a time, its folders and its files in the order the box gives, and why one can't be
 //! read; and a file as a viewer shows it: its text, or that it isn't text (`kuvo/file/text`).
 
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::Deserialize;
 
 use crate::client::BoxClient;
@@ -10,26 +11,41 @@ use crate::parts::File;
 use crate::paths;
 use crate::transport::Request;
 
+pub const FOLDER_PATHS: &str = "folders.paths";
+pub const FILE_TEXT_PATH: &str = "file.text.path";
+
 /// One folder, as a Files panel lists it: its folders (version control's own left out) and its
 /// files, hidden ones too, in the order the box gives.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Folder {
     pub path: String,
     /// The folder it's in, as the box says; none for the top one.
-    #[serde(default)]
     pub parent: Option<String>,
-    #[serde(default)]
     pub folders: Vec<Named>,
-    #[serde(default)]
-    pub files: Vec<String>,
+    pub files: Vec<Named>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Named {
     pub name: String,
+    #[serde(default)]
+    pub path: String,
     /// A git repository's own checkout.
     #[serde(default)]
     pub repository: bool,
+}
+
+#[derive(Deserialize)]
+struct ListedFolder {
+    path: String,
+    #[serde(default)]
+    parent: Option<String>,
+    #[serde(default)]
+    folders: Vec<Named>,
+    #[serde(default)]
+    files: Vec<String>,
+    #[serde(rename = "fileEntries")]
+    file_entries: Option<Vec<Named>>,
 }
 
 /// A folder worth starting in, as the box suggests it (`kuvo/folders/suggested`,
@@ -88,19 +104,34 @@ impl BoxClient {
     /// The folders in the folder at `path` (`~`: the home folder), as a folder chooser lists them:
     /// no files, and none of the hidden ones. Refused as [`BoxClient::folder`] is.
     pub fn folders_in(&self, path: &str) -> std::result::Result<Folder, std::result::Result<Unreadable, Error>> {
-        self.read_folder(format!("kuvo/folders?path={}", paths::query_value(path)))
+        self.read_folder(format!("kuvo/folders?path={}", paths::query_value(path)), false)
     }
 
     /// The folder at `path` (a full one, on the box), as a Files panel lists it. A folder the box
     /// can't read is `Err(Ok(why))`; one it couldn't be asked about, `Err(Err(error))`.
     pub fn folder(&self, path: &str) -> std::result::Result<Folder, std::result::Result<Unreadable, Error>> {
-        self.read_folder(format!("kuvo/folders?path={}&files=1&hidden=1", paths::query_value(path)))
+        self.read_folder(format!("kuvo/folders?path={}&files=1&hidden=1", paths::query_value(path)), true)
     }
 
-    fn read_folder(&self, route: String) -> std::result::Result<Folder, std::result::Result<Unreadable, Error>> {
+    fn read_folder(&self, route: String, with_files: bool) -> std::result::Result<Folder, std::result::Result<Unreadable, Error>> {
+        let has_paths = self.has_feature(FOLDER_PATHS).map_err(Err)?;
         let response = self.send(&Request::get(route)).map_err(Err)?;
         if response.is_success() {
-            return serde_json::from_slice(&response.body).map_err(|error| Err(Error::BadAnswer(format!("The answer couldn't be read: {error}"))));
+            let ListedFolder { path, parent, mut folders, files, file_entries } = serde_json::from_slice(&response.body)
+                .map_err(|error| Err(Error::BadAnswer(format!("The answer couldn't be read: {error}"))))?;
+            let files = if has_paths {
+                if (with_files && file_entries.is_none()) || folders.iter().chain(file_entries.iter().flatten()).any(|entry| entry.path.is_empty()) {
+                    return Err(Err(Error::BadAnswer("The box didn’t give a path for each entry.".into())));
+                }
+                file_entries.unwrap_or_default()
+            } else {
+                let inside = |name: &str| format!("{}/{name}", path.trim_end_matches('/'));
+                for entry in &mut folders {
+                    entry.path = inside(&entry.name);
+                }
+                files.into_iter().map(|name| Named { path: inside(&name), name, repository: false }).collect()
+            };
+            return Ok(Folder { path, parent, folders, files });
         }
         let refusal = Refusal::from_answer(response.status, &response.body);
         if matches!(response.status, 403 | 404 | 500) && !refusal.older_box {
@@ -111,6 +142,9 @@ impl BoxClient {
 
     /// A file as a viewer shows it, at most [`SHOWN_MOST`] of it (a `413` refusal past it).
     pub fn read_text(&self, path: &str) -> Result<FileText> {
+        if self.has_feature(FILE_TEXT_PATH)? {
+            return self.get(&format!("kuvo/file/text?path64={}&max={SHOWN_MOST}", URL_SAFE_NO_PAD.encode(path)));
+        }
         let uri = File::at(std::path::Path::new(path)).uri;
         self.get(&format!("kuvo/file/text?uri={}&max={SHOWN_MOST}", paths::query_value(&uri)))
     }

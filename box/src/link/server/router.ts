@@ -88,7 +88,7 @@ import { appOpenRoute, appRoute } from "../mac/app";
 import { proofRoute } from "../mac/app-keys";
 import { serveRoute } from "../serve-kept";
 import { browserRoute } from "../browser/install";
-import { browserViewRoute, BROWSER_DATA_ROUTE, browserDataRoute } from "../browser/routes";
+import { browserViewRoute, BROWSER_DATA_ROUTE, BROWSER_NEVER_ROUTE, browserDataRoute, browserNeverRoute } from "../browser/routes";
 import { IS_MAC, OWN_HOME_MAC } from "../home";
 import { vaultRoute } from "../areas/vault";
 import { AGENTS, agentsRoute, engineRoute } from "./forward";
@@ -99,6 +99,8 @@ import type { Answer, AnswerPiece, Asker, LinkHandler, LinkRequest, RouteContext
 import { clientUpdateRequired, computerUpdateRequired } from "../updates/client";
 import { retryFleetRoute } from "../updates/progress";
 import { dismissFleetRoute } from "../areas/computers";
+import { ACCOUNT_CATALOG_ROUTE, accountCatalogRoute } from "../areas/account-catalog";
+import { SIGN_IN_ACTION_ROUTE, signInActionRoute } from "../areas/sign-in-action";
 
 /** One of the box's routes: `when(route, request)` says whether it takes the request, and gives
  * what its `answer(context, match)` is given: the route's match for one with a part of its own
@@ -152,6 +154,7 @@ const ROUTES: (Route | Route<RegExpMatchArray>)[] = [
   { feature: "browser.view", when: route => route === "kuvo/browser/view", answer: browserViewRoute },
   // Its browser's history, sites with data, and settings: every box's own (PROTOCOL.md, "The browser's data").
   { feature: "browser.data", when: route => route.match(BROWSER_DATA_ROUTE), answer: browserDataRoute },
+  { feature: "browser.data.never", when: route => route.match(BROWSER_NEVER_ROUTE), answer: browserNeverRoute },
   { feature: "integrations", when: (route, request) => /^kuvo\/integrations(\/|\?|$)/.test(request.path), answer: integrationsRoute },
   { feature: "folders", when: route => route === "kuvo/folders", answer: foldersRoute },
   { feature: "folders.tree", when: route => route === "kuvo/folders/tree", answer: folderTreeRoute },
@@ -239,6 +242,8 @@ const ROUTES: (Route | Route<RegExpMatchArray>)[] = [
     return /^(kuvo\/agents\/)?api\/integration\/([^/]+)\/connect\/oauth$/.exec(route);
   }, answer: legacySignInRoute },
   { feature: "sign-in.return", when: route => route === "kuvo/sign-in/return", answer: signInReturnRoute },
+  { feature: "accounts.catalog", when: route => route === ACCOUNT_CATALOG_ROUTE, answer: accountCatalogRoute },
+  { feature: "sign-in.action", when: route => route === SIGN_IN_ACTION_ROUTE, answer: signInActionRoute },
   { feature: "sign-in.methods", when: route => route === SIGN_IN_METHODS_ROUTE || route === SIGN_IN_STATUS_ROUTE || route === SIGN_IN_ACCOUNTS_ROUTE || route === SIGN_IN_START_ROUTE, answer: signInRoute },
   { feature: "claude-code", when: route => route === "kuvo/claude-code", answer: claudeCodeRoute },
   { feature: "agents", when: (route, request) => request.path.startsWith(AGENTS), answer: agentsRoute },

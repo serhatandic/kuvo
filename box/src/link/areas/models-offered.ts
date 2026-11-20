@@ -15,6 +15,7 @@ import { listsHere, needsNoAccount, offeredHere, startingModel, stillListing, ty
 import type { AnswerPiece, RouteContext } from "../server/context";
 import { starredModels, type Starred } from "./models-starred";
 import { heldRead } from "../vault/holder";
+import { CHOOSE_MODEL } from "../work/model-words";
 
 export const MODELS_OFFERED_ROUTE = "kuvo/models/offered";
 
@@ -73,6 +74,10 @@ export async function* modelsOfferedRoute(context: RouteContext): AsyncGenerator
   }
   const lists = await listsHere(engine, agents, place?.data.location?.directory ?? place?.data.directory ?? folder, false, query.get("refresh") === "1");
   const answer = offeredAnswer(lists, wantedIn(request.path), starredModels());
+  if (query.get("for") === "defaults") {
+    const models = answer.models.filter(model => model.side === "engine" && !model.hidden && !model.retiring);
+    return yield* json(200, { ...answer, models, scoped: true });
+  }
   if (!place) return yield* json(200, answer);
   const bot = typeof place.data.metadata?.kuvo?.bot === "string";
   const side = agents && place.target.port === agents.port ? "agents" : "engine";
@@ -123,5 +128,6 @@ export function offeredAnswer(lists: Lists, wanted: Ref | null, starred: Starred
     ...(lists.bridge?.unavailable?.length ? { unavailable: lists.bridge.unavailable } : {}),
     ...(listing.length ? { listing } : {}),
     ...(starting !== undefined ? { starting: starting?.model ?? null } : {}),
+    ...(starting === null ? { startChoice: { label: CHOOSE_MODEL.action.label, refusal: CHOOSE_MODEL.refusal } } : {}),
   };
 }

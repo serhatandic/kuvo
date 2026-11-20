@@ -249,6 +249,7 @@ export const MODELS_OFFERED = object({
   "scoped?": bool,
   "note?": string,
   "starting?": nullable(MODEL_REF),
+  "startChoice?": object({ label: string, refusal: string }),
 });
 /** Your starred models, as `kuvo/models/starred` keeps them (`models.starred`). */
 export const MODELS_STARRED = object({ starred: list(STARRED) });
@@ -324,6 +325,8 @@ export const SESSION_LIST = object({
   sessions: map(SESSION_FACTS),
   "gone?": list(string),
   projects: map(LISTED_PROJECT),
+  "projectOrder?": list(string),
+  "startProject?": nullable(string),
   archivedGroups: list(object({ directory: string, title: string, kind: words("project", "chat", "bot"), sessions: list(string) })),
   needsYou: list(NEEDS_YOU),
   "pending?": list(string),

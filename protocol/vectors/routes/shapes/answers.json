@@ -9231,6 +9231,9 @@
             "literal": "account-action-sheet-title"
            },
            {
+            "literal": "accounts.catalog"
+           },
+           {
             "literal": "accounts.credentials"
            },
            {
@@ -9402,6 +9405,9 @@
             "literal": "browser.data"
            },
            {
+            "literal": "browser.data.never"
+           },
+           {
             "literal": "browser.view"
            },
            {
@@ -9495,10 +9501,16 @@
             "literal": "file.text"
            },
            {
+            "literal": "file.text.path"
+           },
+           {
             "literal": "folders"
            },
            {
             "literal": "folders.files"
+           },
+           {
+            "literal": "folders.paths"
            },
            {
             "literal": "folders.suggested"
@@ -9634,6 +9646,12 @@
            },
            {
             "literal": "models.offered"
+           },
+           {
+            "literal": "models.offered.choice"
+           },
+           {
+            "literal": "models.offered.defaults"
            },
            {
             "literal": "models.offered.folder"
@@ -9792,6 +9810,9 @@
             "literal": "sessions.list"
            },
            {
+            "literal": "sessions.list.start"
+           },
+           {
             "literal": "sessions.mentions"
            },
            {
@@ -9868,6 +9889,9 @@
            },
            {
             "literal": "sign-in.accounts.state"
+           },
+           {
+            "literal": "sign-in.action"
            },
            {
             "literal": "sign-in.codes"
@@ -10059,6 +10083,9 @@
             "literal": "account-action-sheet-title"
            },
            {
+            "literal": "accounts.catalog"
+           },
+           {
             "literal": "accounts.credentials"
            },
            {
@@ -10230,6 +10257,9 @@
             "literal": "browser.data"
            },
            {
+            "literal": "browser.data.never"
+           },
+           {
             "literal": "browser.view"
            },
            {
@@ -10323,10 +10353,16 @@
             "literal": "file.text"
            },
            {
+            "literal": "file.text.path"
+           },
+           {
             "literal": "folders"
            },
            {
             "literal": "folders.files"
+           },
+           {
+            "literal": "folders.paths"
            },
            {
             "literal": "folders.suggested"
@@ -10462,6 +10498,12 @@
            },
            {
             "literal": "models.offered"
+           },
+           {
+            "literal": "models.offered.choice"
+           },
+           {
+            "literal": "models.offered.defaults"
            },
            {
             "literal": "models.offered.folder"
@@ -10620,6 +10662,9 @@
             "literal": "sessions.list"
            },
            {
+            "literal": "sessions.list.start"
+           },
+           {
             "literal": "sessions.mentions"
            },
            {
@@ -10696,6 +10741,9 @@
            },
            {
             "literal": "sign-in.accounts.state"
+           },
+           {
+            "literal": "sign-in.action"
            },
            {
             "literal": "sign-in.codes"
@@ -14520,6 +14568,148 @@
    }
   },
   {
+   "route": "PUT kuvo/browser/settings/never/:host",
+   "feature": "browser.data.never",
+   "answers": {
+    "200": {
+     "object": {
+      "searchEngine": {
+       "oneOf": [
+        {
+         "literal": "google"
+        },
+        {
+         "literal": "duckDuckGo"
+        },
+        {
+         "literal": "bing"
+        },
+        {
+         "literal": "brave"
+        },
+        {
+         "literal": "kagi"
+        },
+        {
+         "literal": "ecosia"
+        }
+       ]
+      },
+      "searchEngines": {
+       "list": {
+        "object": {
+         "id": {
+          "oneOf": [
+           {
+            "literal": "google"
+           },
+           {
+            "literal": "duckDuckGo"
+           },
+           {
+            "literal": "bing"
+           },
+           {
+            "literal": "brave"
+           },
+           {
+            "literal": "kagi"
+           },
+           {
+            "literal": "ecosia"
+           }
+          ]
+         },
+         "title": "string"
+        }
+       }
+      },
+      "tidiesAgentTabs": "bool",
+      "offersToSave": "bool",
+      "never": {
+       "list": "string"
+      }
+     }
+    },
+    "400": {
+     "object": {
+      "message": "string"
+     }
+    }
+   }
+  },
+  {
+   "route": "DELETE kuvo/browser/settings/never/:host",
+   "feature": "browser.data.never",
+   "answers": {
+    "200": {
+     "object": {
+      "searchEngine": {
+       "oneOf": [
+        {
+         "literal": "google"
+        },
+        {
+         "literal": "duckDuckGo"
+        },
+        {
+         "literal": "bing"
+        },
+        {
+         "literal": "brave"
+        },
+        {
+         "literal": "kagi"
+        },
+        {
+         "literal": "ecosia"
+        }
+       ]
+      },
+      "searchEngines": {
+       "list": {
+        "object": {
+         "id": {
+          "oneOf": [
+           {
+            "literal": "google"
+           },
+           {
+            "literal": "duckDuckGo"
+           },
+           {
+            "literal": "bing"
+           },
+           {
+            "literal": "brave"
+           },
+           {
+            "literal": "kagi"
+           },
+           {
+            "literal": "ecosia"
+           }
+          ]
+         },
+         "title": "string"
+        }
+       }
+      },
+      "tidiesAgentTabs": "bool",
+      "offersToSave": "bool",
+      "never": {
+       "list": "string"
+      }
+     }
+    },
+    "400": {
+     "object": {
+      "message": "string"
+     }
+    }
+   }
+  },
+  {
    "route": "POST kuvo/git/changes",
    "feature": "git",
    "answers": {
@@ -17575,12 +17765,21 @@
        "list": {
         "object": {
          "name": "string",
+         "path?": "string",
          "repository?": "bool"
         }
        }
       },
       "files?": {
        "list": "string"
+      },
+      "fileEntries?": {
+       "list": {
+        "object": {
+         "name": "string",
+         "path": "string"
+        }
+       }
       }
      }
     },
@@ -17907,6 +18106,7 @@
              ]
             },
             "label": "string",
+            "sheetTitle?": "string",
             "confirm?": {
              "object": {
               "title": "string",
@@ -17947,6 +18147,409 @@
         }
        }
       }
+     }
+    }
+   }
+  },
+  {
+   "route": "GET kuvo/accounts/catalog",
+   "feature": "accounts.catalog",
+   "answers": {
+    "200": {
+     "object": {
+      "agents": {
+       "list": {
+        "object": {
+         "id": "string",
+         "methods": {
+          "list": {
+           "object": {
+            "type": "string",
+            "id?": "string",
+            "label": "string",
+            "form?": {
+             "list": "any"
+            },
+            "legacy?": "bool"
+           }
+          }
+         },
+         "environment": {
+          "list": "string"
+         },
+         "hint": "string",
+         "kind": {
+          "oneOf": [
+           {
+            "literal": "provider"
+           },
+           {
+            "literal": "search"
+           },
+           {
+            "literal": "mcp"
+           },
+           {
+            "literal": "agentDuplicate"
+           }
+          ]
+         },
+         "listed": "bool",
+         "plan": "bool",
+         "service?": "string",
+         "state": {
+          "oneOf": [
+           {
+            "literal": "signedIn"
+           },
+           {
+            "literal": "signedOut"
+           },
+           {
+            "literal": "ended"
+           },
+           {
+            "literal": "notInstalled"
+           },
+           {
+            "literal": "unchecked"
+           },
+           {
+            "literal": "problem"
+           }
+          ]
+         },
+         "line": "string",
+         "actions": {
+          "list": {
+           "object": {
+            "id": {
+             "oneOf": [
+              {
+               "literal": "signIn"
+              },
+              {
+               "literal": "signInAgain"
+              },
+              {
+               "literal": "addAnother"
+              },
+              {
+               "literal": "disconnect"
+              },
+              {
+               "literal": "install"
+              },
+              {
+               "literal": "update"
+              },
+              {
+               "literal": "signOut"
+              },
+              {
+               "literal": "rename"
+              },
+              {
+               "literal": "remove"
+              }
+             ]
+            },
+            "label": "string",
+            "sheetTitle?": "string",
+            "confirm?": {
+             "object": {
+              "title": "string",
+              "message": "string",
+              "label": "string"
+             }
+            },
+            "here?": {
+             "literal": true
+            }
+           }
+          }
+         },
+         "connections": {
+          "list": {
+           "object": {
+            "id?": "string",
+            "state": {
+             "oneOf": [
+              {
+               "literal": "signedIn"
+              },
+              {
+               "literal": "ended"
+              },
+              {
+               "literal": "problem"
+              }
+             ]
+            },
+            "line": "string"
+           }
+          }
+         },
+         "added?": {
+          "literal": true
+         },
+         "name": "string",
+         "section": {
+          "oneOf": [
+           {
+            "literal": "codingAgents"
+           },
+           {
+            "literal": "providers"
+           },
+           {
+            "literal": "addProvider"
+           }
+          ]
+         },
+         "metadata": {
+          "object": {
+           "accountLabel?": "string",
+           "version?": "string",
+           "programUpdate?": {
+            "object": {
+             "state": "string",
+             "version?": "string",
+             "message?": "string"
+            }
+           }
+          }
+         }
+        }
+       }
+      },
+      "engine": {
+       "list": {
+        "object": {
+         "id": "string",
+         "methods": {
+          "list": {
+           "object": {
+            "type": "string",
+            "id?": "string",
+            "label": "string",
+            "form?": {
+             "list": "any"
+            },
+            "legacy?": "bool"
+           }
+          }
+         },
+         "environment": {
+          "list": "string"
+         },
+         "hint": "string",
+         "kind": {
+          "oneOf": [
+           {
+            "literal": "provider"
+           },
+           {
+            "literal": "search"
+           },
+           {
+            "literal": "mcp"
+           },
+           {
+            "literal": "agentDuplicate"
+           }
+          ]
+         },
+         "listed": "bool",
+         "plan": "bool",
+         "service?": "string",
+         "state": {
+          "oneOf": [
+           {
+            "literal": "signedIn"
+           },
+           {
+            "literal": "signedOut"
+           },
+           {
+            "literal": "ended"
+           },
+           {
+            "literal": "notInstalled"
+           },
+           {
+            "literal": "unchecked"
+           },
+           {
+            "literal": "problem"
+           }
+          ]
+         },
+         "line": "string",
+         "actions": {
+          "list": {
+           "object": {
+            "id": {
+             "oneOf": [
+              {
+               "literal": "signIn"
+              },
+              {
+               "literal": "signInAgain"
+              },
+              {
+               "literal": "addAnother"
+              },
+              {
+               "literal": "disconnect"
+              },
+              {
+               "literal": "install"
+              },
+              {
+               "literal": "update"
+              },
+              {
+               "literal": "signOut"
+              },
+              {
+               "literal": "rename"
+              },
+              {
+               "literal": "remove"
+              }
+             ]
+            },
+            "label": "string",
+            "sheetTitle?": "string",
+            "confirm?": {
+             "object": {
+              "title": "string",
+              "message": "string",
+              "label": "string"
+             }
+            },
+            "here?": {
+             "literal": true
+            }
+           }
+          }
+         },
+         "connections": {
+          "list": {
+           "object": {
+            "id?": "string",
+            "state": {
+             "oneOf": [
+              {
+               "literal": "signedIn"
+              },
+              {
+               "literal": "ended"
+              },
+              {
+               "literal": "problem"
+              }
+             ]
+            },
+            "line": "string"
+           }
+          }
+         },
+         "added?": {
+          "literal": true
+         },
+         "name": "string",
+         "section": {
+          "oneOf": [
+           {
+            "literal": "codingAgents"
+           },
+           {
+            "literal": "providers"
+           },
+           {
+            "literal": "addProvider"
+           }
+          ]
+         },
+         "metadata": {
+          "object": {
+           "accountLabel?": "string",
+           "version?": "string",
+           "programUpdate?": {
+            "object": {
+             "state": "string",
+             "version?": "string",
+             "message?": "string"
+            }
+           }
+          }
+         }
+        }
+       }
+      },
+      "agentsDown?": {
+       "object": {
+        "message": "string",
+        "reason?": "string",
+        "action?": {
+         "object": {
+          "label": "string",
+          "route": "string"
+         }
+        }
+       }
+      },
+      "engineDown?": {
+       "object": {
+        "message": "string",
+        "reason?": "string",
+        "action?": {
+         "object": {
+          "label": "string",
+          "route": "string"
+         }
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "route": "POST kuvo/sign-in/action",
+   "feature": "sign-in.action",
+   "body": {
+    "object": {
+     "action": {
+      "oneOf": [
+       {
+        "literal": "cancel"
+       },
+       {
+        "literal": "complete"
+       },
+       {
+        "literal": "addKey"
+       },
+       {
+        "literal": "external"
+       }
+      ]
+     },
+     "attempt?": "string",
+     "code?": "string",
+     "key?": "string",
+     "methodID?": "string",
+     "answer?": "any"
+    }
+   },
+   "answers": {
+    "200": "any",
+    "400": {
+     "object": {
+      "message": "string"
      }
     }
    }
@@ -20653,6 +21256,15 @@
         }
        }
       },
+      "projectOrder?": {
+       "list": "string"
+      },
+      "startProject?": {
+       "oneOf": [
+        "string",
+        "null"
+       ]
+      },
       "archivedGroups": {
        "list": {
         "object": {
@@ -20805,6 +21417,15 @@
          "working": "number"
         }
        }
+      },
+      "projectOrder?": {
+       "list": "string"
+      },
+      "startProject?": {
+       "oneOf": [
+        "string",
+        "null"
+       ]
       },
       "archivedGroups": {
        "list": {
@@ -21095,6 +21716,12 @@
         },
         "null"
        ]
+      },
+      "startChoice?": {
+       "object": {
+        "label": "string",
+        "refusal": "string"
+       }
       }
      }
     },

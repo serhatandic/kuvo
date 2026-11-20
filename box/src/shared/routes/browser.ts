@@ -62,4 +62,6 @@ export const BROWSER_ROUTES: RouteShape[] = [
   { route: "DELETE kuvo/browser/sites/:site", feature: "browser.data", answers: { 200: BROWSER_SITES } },
   { route: "GET kuvo/browser/settings", feature: "browser.data", answers: { 200: BROWSER_SETTINGS } },
   { route: "PATCH kuvo/browser/settings", feature: "browser.data", answers: { 200: BROWSER_SETTINGS } },
+  { route: "PUT kuvo/browser/settings/never/:host", feature: "browser.data.never", answers: { 200: BROWSER_SETTINGS, 400: object({ message: string }) } },
+  { route: "DELETE kuvo/browser/settings/never/:host", feature: "browser.data.never", answers: { 200: BROWSER_SETTINGS, 400: object({ message: string }) } },
 ];

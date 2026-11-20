@@ -6,6 +6,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { locked } from "../../shared/files";
 import { isObject } from "../../shared/json";
 import { type BrowserSettings, SEARCH_ENGINES, type SearchEngine } from "../../shared/routes/browser";
 import { writePrivate } from "../files";
@@ -13,6 +14,8 @@ import { BROWSER_FOLDER } from "./history";
 
 const settingsFile = (folder: string) => path.join(folder, "settings.json");
 const keepsTabsFile = (folder: string) => path.join(folder, "keeps-agent-tabs");
+const editSettings = <T>(folder: string, edit: () => T): T => locked(path.join(folder, ".settings.lock"), edit, { exclusive: true });
+const MAX_NEVER_SITES = 1000;
 /** The files the settings are kept in: a client follows them changing (`kuvo/settings`). */
 export const browserSettingsFiles = (folder = BROWSER_FOLDER): string[] => [settingsFile(folder), keepsTabsFile(folder)];
 
@@ -57,9 +60,14 @@ function neverSite(value: unknown): string | null {
   return /^[a-z0-9.:[\]-]{1,260}$/.test(host) ? host : null;
 }
 
+function canOfferToHost(host: string): boolean {
+  if (host.endsWith(":")) return false;
+  try { return Boolean(new URL(`http://${host}`).hostname); } catch { return false; }
+}
+
 /** A change to the settings (any of `searchEngine`, `tidiesAgentTabs`, `offersToSave`, `never`, the
  * whole list), checked first: why not, or null once it's kept. */
-export function changeBrowserSettings(change: unknown, folder = BROWSER_FOLDER): string | null {
+export function changeBrowserSettings(change: unknown, folder = BROWSER_FOLDER, { onlyIfUnset = false } = {}): string | null {
   if (!isObject(change)) return "Send the settings to change, as an object.";
   const known = ["searchEngine", "tidiesAgentTabs", "offersToSave", "never"];
   const unknown = Object.keys(change).find(key => !known.includes(key));
@@ -68,28 +76,40 @@ export function changeBrowserSettings(change: unknown, folder = BROWSER_FOLDER):
   for (const key of ["tidiesAgentTabs", "offersToSave"]) if (key in change && typeof change[key] !== "boolean") return `${key} is true or false.`;
   let never: string[] | undefined;
   if ("never" in change) {
-    if (!Array.isArray(change.never) || change.never.length > 1000) return "never is a list of sites.";
+    if (!Array.isArray(change.never) || change.never.length > MAX_NEVER_SITES) return "never is a list of sites.";
     const sites = change.never.map(neverSite);
     if (sites.some(each => each === null)) return "never is a list of sites, each a host (example.com).";
     never = [...new Set(sites as string[])].sort();
   }
-  const kept = readKept(folder);
-  if (isEngine(change.searchEngine)) kept.searchEngine = change.searchEngine;
-  if (typeof change.offersToSave === "boolean") kept.offersToSave = change.offersToSave;
-  if (never) kept.never = never;
-  writePrivate(settingsFile(folder), JSON.stringify(kept));
-  if (change.tidiesAgentTabs === true) fs.rmSync(keepsTabsFile(folder), { force: true });
-  if (change.tidiesAgentTabs === false) writePrivate(keepsTabsFile(folder), "");
-  return null;
+  return editSettings(folder, () => {
+    // The keeper may have read the old app's preferences while a client made the first edit.
+    if (onlyIfUnset && hasSettings(folder)) return "The browser already has settings.";
+    const kept = readKept(folder);
+    if (isEngine(change.searchEngine)) kept.searchEngine = change.searchEngine;
+    if (typeof change.offersToSave === "boolean") kept.offersToSave = change.offersToSave;
+    if (never) kept.never = never;
+    writePrivate(settingsFile(folder), JSON.stringify(kept));
+    if (change.tidiesAgentTabs === true) fs.rmSync(keepsTabsFile(folder), { force: true });
+    if (change.tidiesAgentTabs === false) writePrivate(keepsTabsFile(folder), "");
+    return null;
+  });
 }
 
-/** A site you said Never to offered again: that one taken out of the list, the rest as they are
- * now (read and written at once). False where it wasn't there. */
-export function offerAgain(site: string, folder = BROWSER_FOLDER): boolean {
-  const kept = readKept(folder);
-  const never = Array.isArray(kept.never) ? kept.never : [];
-  if (!never.includes(site)) return false;
-  kept.never = never.filter(each => each !== site);
-  writePrivate(settingsFile(folder), JSON.stringify(kept));
-  return true;
+/** Changes one host's preference, keeping the other entries and settings as they stand now. */
+export function changeNeverSite(site: unknown, neverOffer: boolean, folder = BROWSER_FOLDER): string | null {
+  const host = neverSite(site);
+  const badHost = "Name a site by its host (example.com).";
+  if (neverOffer && (!host || !canOfferToHost(host))) return badHost;
+  return editSettings(folder, () => {
+    const kept = readKept(folder);
+    const never = Array.isArray(kept.never) ? kept.never : [];
+    // Older whole-list writes could leave entries that the add route would refuse today.
+    const id = !neverOffer && typeof site === "string" && never.includes(site) ? site : host;
+    if (!id) return badHost;
+    if (never.includes(id) === neverOffer) return null;
+    if (neverOffer && never.length >= MAX_NEVER_SITES) return `No more than ${MAX_NEVER_SITES} sites can be listed.`;
+    kept.never = neverOffer ? [...never, id].sort() : never.filter(each => each !== id);
+    writePrivate(settingsFile(folder), JSON.stringify(kept));
+    return null;
+  });
 }

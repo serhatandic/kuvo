@@ -8,11 +8,21 @@ import { dirname, join } from "node:path"
 // (protocol/vectors/session-lists.json, which KuvoClient's tests hold the drawing to); kept
 // as the engine's events come, and resumed from where a client was after its stream dropped.
 
-const { botsNow, factsOf, listedProjects, needsYou } = await import("../src/link/lists/rule")
+const { botsNow, factsOf, listedProjects, needsYou, projectOrder } = await import("../src/link/lists/rule")
 const { archivedGroups, commit, keepList, keptList, listFollowers, listPlaceHeard, listRoute, noteListEvent, readList, workOut, LIST_FILE } = await import("../src/link/lists/sessions")
 const { engineHandler } = await import("../src/link/server/router")
 
 const vectors = JSON.parse(readFileSync(new URL("../../protocol/vectors/session-lists.json", import.meta.url), "utf8"))
+
+test("a new conversation starts in the newest project, with sidebar order for ties, or in Chats", () => {
+  const project = (name: string, updated: number) => ({ name, updated, asking: 0, working: 0 })
+  expect(projectOrder({})).toEqual([])
+  expect(projectOrder({
+    "/old": project("First by name", 1),
+    "/later": project("Project 10", 42),
+    "/earlier": project("project 002", 42),
+  })).toEqual(["/earlier", "/later", "/old"])
+})
 
 const placeOf = (box: any) => ({
   isChatsFolder: (folder: string) => folder === box.chats,
@@ -175,10 +185,12 @@ test("a route answered in a process of its own reads the engine itself, and resu
   expect(lines[0].sessions.ses_a).toEqual({ kind: "project", project: work, directory: work, created: 100, updated: 100 })
   expect(lines[0].sessions.ses_chat.kind).toBe("chat")
   expect(lines[0].projects).toEqual({ [work]: { name: "Work", updated: 100, asking: 0, working: 0 } })
+  expect(lines[0].startProject).toBe(work)
+  expect(lines[0].projectOrder).toEqual([work])
   expect(lines[0].needsYou).toEqual([])
   // Kept for the next read, whichever process makes it: nothing changed since.
   const again = (await ask(`kuvo/sessions/list?since=${lines[0].at}`)).lines[0]
-  expect(again).toEqual({ at: lines[0].at, sessions: {}, projects: lines[0].projects, needsYou: [], archivedGroups: lines[0].archivedGroups })
+  expect(again).toEqual({ at: lines[0].at, sessions: {}, projects: lines[0].projects, projectOrder: [work], startProject: work, needsYou: [], archivedGroups: lines[0].archivedGroups })
   for (const n of [1, 2, 3]) sessions.delete(`ses_page${n}`)
 })
 
@@ -309,7 +321,7 @@ test("kept as events come: a client resumes from where it was, and one from befo
     expect(after.projects[work].updated).toBe(100)
     // Nothing changed since: nothing but where it's at.
     const same = (await ask(`kuvo/sessions/list?since=${after.at}`)).lines[0]
-    expect(same).toEqual({ at: after.at, sessions: {}, projects: after.projects, needsYou: [], archivedGroups: after.archivedGroups })
+    expect(same).toEqual({ at: after.at, sessions: {}, projects: after.projects, projectOrder: [work], startProject: work, needsYou: [], archivedGroups: after.archivedGroups })
 
     // A cursor of another list's (its file went), or from ahead of it: all of it, said so.
     for (const since of ["zz-1.3", `${after.at.split(".")[0]}.999`, "nonsense"]) {

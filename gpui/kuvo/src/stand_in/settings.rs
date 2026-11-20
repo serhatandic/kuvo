@@ -421,6 +421,25 @@ impl Settings {
 
     /// Its answer to `method route` (`query`: a query value by name), if it's one of these routes.
     pub fn answer(&mut self, method: &str, route: &str, query: &dyn Fn(&str) -> Option<String>, body: &Value, name: &str, here: bool) -> Option<(u16, Value)> {
+        if (method, route) == ("POST", "kuvo/sign-in/action") {
+            let account = query("integration")?;
+            let side = if query("agents").as_deref() == Some("1") { "kuvo/agents/api" } else { "api" };
+            let base = format!("{side}/integration/{}/connect", kuvo_box::paths::segment(&account));
+            let attempt = || body["attempt"].as_str().map(kuvo_box::paths::segment);
+            let (method, route) = match body["action"].as_str()? {
+                "addKey" => ("POST", format!("{base}/key")),
+                "external" => ("POST", format!("{base}/external")),
+                "complete" => ("POST", format!("{base}/oauth/{}/complete", attempt()?)),
+                "cancel" => ("DELETE", format!("{base}/oauth/{}", attempt()?)),
+                _ => return Some((400, json!({ "message": "Name the sign-in action and what it needs." }))),
+            };
+            let mut action = body.clone();
+            if let Some(fields) = action.as_object_mut() {
+                fields.remove("action");
+                fields.remove("attempt");
+            }
+            return self.answer(method, &route, query, &action, name, here);
+        }
         let segments: Vec<&str> = route.split('/').collect();
         if let Some(answer) = self.vault_answer(method, &segments, body) {
             return Some(answer);
@@ -482,6 +501,29 @@ impl Settings {
             return Some(answer);
         }
         let answer = match (method, segments.as_slice()) {
+            ("GET", ["kuvo", "accounts", "catalog"]) => {
+                let mut catalog = json!({});
+                for (agents, key, down) in [(true, "agents", "agentsDown"), (false, "engine", "engineDown")] {
+                    let query = |name: &str| (agents && name == "agents").then(|| "1".to_owned());
+                    let (status, said) = self.answer("GET", "kuvo/sign-in/accounts", &query, body, name, here)?;
+                    if status == 503 {
+                        catalog[key] = json!([]);
+                        catalog[down] = said;
+                        continue;
+                    }
+                    let raw = if agents { &self.agents } else { &self.engine };
+                    let rows: Vec<Value> = said["accounts"].as_array()?.iter().filter(|row| row["listed"] == true).filter_map(|row| {
+                        let account = raw.iter().find(|each| each["id"] == row["id"])?;
+                        let mut row = row.clone();
+                        row["name"] = account["name"].clone();
+                        row["metadata"] = account["metadata"].clone();
+                        row["section"] = json!(if agents { "codingAgents" } else if row["state"] == "signedOut" { "addProvider" } else { "providers" });
+                        Some(row)
+                    }).collect();
+                    catalog[key] = json!(rows);
+                }
+                (200, catalog)
+            }
             ("GET", ["kuvo", "sign-in", "accounts"]) => {
                 let agents = query("agents").is_some();
                 if agents && let Some(away) = &self.agents_away {

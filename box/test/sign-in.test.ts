@@ -116,6 +116,88 @@ test.each(["claude", "codex", "cursor", "grok", "antigravity"])("%s offers anoth
   expect(accountState({ ...account, id: agent + "@work" }, offered, { agents: true, computer: "Studio" }).actions.some(action => action.id === "addAnother")).toBe(false)
 })
 
+test("one Accounts catalog lists both sources in order and keeps the other when a source is unavailable", async () => {
+  const { accountCatalogRoute } = await import("../src/link/areas/account-catalog")
+  const { GITHUB_WORK_QUEUE } = await import("../src/shared/github")
+  let engineAvailable = true
+  let engineMalformed = false
+  let bridgeMoved = false
+  let bridgeUnavailable = false
+  let engineReads = 0
+  let agentReads = 0
+  const engine = Bun.serve({ port: 0, fetch() {
+    engineReads++
+    if (engineMalformed) return Response.json({ data: {} })
+    return Response.json({ data: [
+      { id: "openai", name: "OpenAI", methods: [{ type: "key" }] },
+      { id: "exa", name: "Exa", methods: [{ type: "key" }] },
+      { id: "deepseek", name: "DeepSeek", methods: [{ type: "key" }], connections: [{ type: "credential", id: "cred_a", method: "key" }] },
+    ] })
+  } })
+  const oldBridge = Bun.serve({ port: 0, fetch(request) {
+    if (new URL(request.url).pathname === "/api/integration") {
+      bridgeMoved = true
+      return Response.json({ message: "Moving" }, { status: 503, headers: { "x-kuvo-bridge-handover": "1" } })
+    }
+    return Response.json({ data: { id: GITHUB_WORK_QUEUE, name: "GitHub for Work Queue", methods: [{ type: "oauth" }] } })
+  } })
+  const bridge = Bun.serve({ port: 0, fetch(request) {
+    if (new URL(request.url).pathname === `/api/integration/${GITHUB_WORK_QUEUE}`) {
+      return Response.json({ data: { id: GITHUB_WORK_QUEUE, name: "GitHub for Work Queue", methods: [{ type: "oauth" }] } })
+    }
+    agentReads++
+    if (bridgeUnavailable) return Response.json(null, { status: 503 })
+    return Response.json({ data: [
+      { id: "codex-cli", name: "Codex", metadata: { accountLabel: "Work", version: "2", programUpdate: { state: "updating", extra: "internal" }, extra: "internal" } },
+      { id: "claude-code", name: "Claude Code" },
+    ] })
+  } })
+  async function catalog(method = "GET") {
+    let reply: { status: number; body: any } = { status: 0, body: null }
+    const route = "kuvo/accounts/catalog"
+    const readEngine = () => {
+      if (!engineAvailable) throw new Error("Engine unavailable")
+      return { port: engine.port, password: "pw" } as any
+    }
+    for await (const _ of accountCatalogRoute({
+      route, readEngine, request: { method, path: route, headers: {}, fromApp: true, served: true },
+      bridge: () => ({ port: (bridgeMoved ? bridge : oldBridge).port, password: "pw" }),
+      json: function* (status: number, body: unknown) {
+        reply = { status, body }
+        yield { head: { status, headers: { "content-type": "application/json" } } }
+        yield { body: Buffer.from(JSON.stringify(body)) }
+      },
+    } as any)) {}
+    return reply
+  }
+  try {
+    const { status, body } = await catalog()
+    expect(status).toBe(200)
+    expect(body.agents.map((row: any) => [row.id, row.section])).toEqual([["codex-cli", "codingAgents"], ["claude-code", "codingAgents"]])
+    expect(body.agents[0].metadata).toEqual({ accountLabel: "Work", version: "2", programUpdate: { state: "updating" } })
+    expect(body.engine.map((row: any) => [row.id, row.section])).toEqual([["openai", "addProvider"], ["deepseek", "providers"], [GITHUB_WORK_QUEUE, "addProvider"]])
+    expect(body.engine[0].actions[0]).toMatchObject({ id: "signIn", sheetTitle: "Add Key · OpenAI" })
+    expect(bridgeMoved).toBe(true)
+    expect([engineReads, agentReads]).toEqual([1, 1])
+    engineAvailable = false
+    const partial = await catalog()
+    expect(partial.status).toBe(200)
+    expect(partial.body).toEqual({ agents: body.agents, engine: [], engineDown: { message: expect.any(String) } })
+    expect([engineReads, agentReads]).toEqual([1, 2])
+    engineAvailable = true
+    bridgeUnavailable = true
+    const withoutBridge = await catalog()
+    expect(withoutBridge).toEqual({ status: 200, body: { agents: [], engine: body.engine, agentsDown: { message: "It said no (503)." } } })
+    engineMalformed = true
+    expect((await catalog()).status).toBe(502)
+    expect((await catalog("POST")).status).toBe(405)
+  } finally {
+    engine.stop(true)
+    oldBridge.stop(true)
+    bridge.stop(true)
+  }
+})
+
 test("an outside account request uses the display name, never the request info hostname", async () => {
   const { signInRoute } = await import("../src/link/areas/sign-in")
   const { ownComputerName } = await import("../src/link/computer-name")
@@ -130,6 +212,46 @@ test("an outside account request uses the display name, never the request info h
     expect(result.accounts[0].line).toBe(`Not installed on ${ownComputerName()}`)
     expect(result.accounts[0].line).not.toContain("RAW-HOSTNAME")
   } finally { engine.stop(true) }
+})
+
+test("one sign-in action route forwards to the account's side and keeps the Work Queue attempt owner", async () => {
+  const { signInActionRoute } = await import("../src/link/areas/sign-in-action")
+  const seen: unknown[] = []
+  const side = (name: string) => Bun.serve({ port: 0, async fetch(request) {
+    seen.push({
+      side: name, method: request.method, path: decodeURIComponent(new URL(request.url).pathname),
+      body: request.method === "POST" ? await request.json() : null,
+      owner: request.headers.get("x-kuvo-sign-in-owner"),
+    })
+    return Response.json({ data: {} })
+  } })
+  const engine = side("engine"), agents = side("agents")
+  const target = (server: typeof engine) => ({ port: server.port, password: "pw" })
+  const client = "a".repeat(32)
+  const act = async (query: string, body: object) => {
+    const route = "kuvo/sign-in/action"
+    let status = 0
+    for await (const piece of signInActionRoute({
+      route, readEngine: () => target(engine), bridge: () => target(agents),
+      request: { method: "POST", path: `${route}?${query}`, body: Buffer.from(JSON.stringify(body)), headers: { "content-type": "application/json", "x-kuvo-sign-in-client": client } },
+      json: (status: number, value: unknown) => [{ head: { status, headers: {} } }, { body: Buffer.from(JSON.stringify(value)) }],
+    } as any)) if ("head" in piece) status = piece.head.status
+    return status
+  }
+  try {
+    expect(await act("integration=bedrock?qa", { action: "external", methodID: "aws", answer: { region: "eu-west-1" } })).toBe(200)
+    expect(await act("integration=claude%40work&agents=1", { action: "complete", attempt: "att_1", code: "test-code" })).toBe(200)
+    expect(await act("integration=github-work-queue", { action: "cancel", attempt: "att_2" })).toBe(200)
+    expect(await act("integration=bedrock", { action: "complete", attempt: "att_1" })).toBe(400)
+    expect(seen).toEqual([
+      { side: "engine", method: "POST", path: "/api/integration/bedrock?qa/connect/external", body: { methodID: "aws", answer: { region: "eu-west-1" } }, owner: null },
+      { side: "agents", method: "POST", path: "/api/integration/claude@work/connect/oauth/att_1/complete", body: { code: "test-code" }, owner: null },
+      { side: "agents", method: "DELETE", path: "/api/integration/github-work-queue/connect/oauth/att_2", body: null, owner: `client:${client}` },
+    ])
+  } finally {
+    engine.stop(true)
+    agents.stop(true)
+  }
 })
 
 test("remote provider OAuth offers the callback address field and explains a local-only page", async () => {

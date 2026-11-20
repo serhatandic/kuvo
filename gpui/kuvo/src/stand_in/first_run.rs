@@ -129,7 +129,7 @@ impl FirstRun {
                 let path = query("path").unwrap_or_default();
                 let full = if path == "~" || path == "~/" { HOME.to_owned() } else { path.trim_end_matches('/').to_owned() };
                 match folder(&path)? {
-                    Ok(folders) => (200, json!({ "path": full, "home": HOME, "parent": full.rsplit_once('/').map(|(parent, _)| if parent.is_empty() { "/" } else { parent }), "folders": folders.iter().map(|(name, repository)| json!({ "name": name, "repository": repository })).collect::<Vec<_>>(), "files": [] })),
+                    Ok(folders) => (200, json!({ "path": full, "home": HOME, "parent": full.rsplit_once('/').map(|(parent, _)| if parent.is_empty() { "/" } else { parent }), "folders": folders.iter().map(|(name, repository)| json!({ "name": name, "path": format!("{}/{name}", full.trim_end_matches('/')), "repository": repository })).collect::<Vec<_>>(), "files": [], "fileEntries": [] })),
                     Err(reason) => (403, json!({ "message": format!("{full} can’t be read here."), "reason": reason })),
                 }
             }

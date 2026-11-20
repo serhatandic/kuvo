@@ -222,7 +222,18 @@ pub struct Offered {
     /// nothing runs there).
     #[serde(default, deserialize_with = "present")]
     pub starting: Option<Option<ModelRef>>,
+    #[serde(default, rename = "startChoice")]
+    pub start_choice: Option<StartChoice>,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct StartChoice {
+    pub label: String,
+    pub refusal: String,
+}
+
+pub const MODEL_START_CHOICE: &str = "models.offered.choice";
+pub const MODEL_DEFAULTS: &str = "models.offered.defaults";
 
 impl Offered {
     /// `provider`'s name, as its side names it (its id where the box names none).
@@ -331,6 +342,21 @@ impl BoxClient {
         self.read_offered_models(wanted, folder, session, true)
     }
 
+    /// Models the box offers for its default and subagent settings.
+    pub fn models_for_defaults(&self, refresh: bool) -> Result<Offered> {
+        if self.has_feature(MODEL_DEFAULTS)? {
+            let route = if refresh { "kuvo/models/offered?for=defaults&refresh=1" } else { "kuvo/models/offered?for=defaults" };
+            let catalog = self.offered_answer(route)?;
+            if !catalog.scoped {
+                return Err(crate::Error::BadAnswer("The box didn't list the models it offers as defaults.".into()));
+            }
+            return Ok(catalog);
+        }
+        let mut legacy = self.read_offered_models(None, None, None, refresh)?;
+        legacy.models.retain(|model| model.side == Side::Engine && model.is_offered());
+        Ok(legacy)
+    }
+
     fn read_offered_models(&self, wanted: Option<&ModelRef>, folder: Option<&str>, session: Option<&str>, refresh: bool) -> Result<Offered> {
         let mut query = Vec::new();
         if refresh {
@@ -349,7 +375,15 @@ impl BoxClient {
             }
         }
         let path = if query.is_empty() { "kuvo/models/offered".to_owned() } else { format!("kuvo/models/offered?{}", query.join("&")) };
-        self.get(&path)
+        self.offered_answer(&path)
+    }
+
+    fn offered_answer(&self, path: &str) -> Result<Offered> {
+        let answer: Offered = self.get(path)?;
+        if answer.starting == Some(None) && answer.start_choice.is_none() && self.advertised(MODEL_START_CHOICE) {
+            return Err(crate::Error::BadAnswer("The box didn't say why a model must be chosen.".into()));
+        }
+        Ok(answer)
     }
 
     /// Stars `model` or takes its star away (`kuvo/models/starred`): your starred models now.

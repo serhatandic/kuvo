@@ -15,8 +15,9 @@ export const FOLDER_LIST = object({
   path: string,
   home: string,
   parent: nullable(string),
-  folders: list(object({ name: string, "repository?": bool })),
+  folders: list(object({ name: string, "path?": string, "repository?": bool })),
   "files?": list(string),
+  "fileEntries?": list(object({ name: string, path: string })),
 });
 /** Every file under one of this box's folders, by its path there, as a project's file filter and
  * "@" list them: git's list in a repository (`git`), else a walk that skips the usual heavy folders;
@@ -76,13 +77,24 @@ const SIGN_IN_STATE = {
   actions: list(object({
     id: words("signIn", "signInAgain", "addAnother", "disconnect", "install", "update", "signOut", "rename", "remove"),
     label: string,
+    "sheetTitle?": string,
     "confirm?": object({ title: string, message: string, label: string }),
     "here?": literal(true),
   })),
   connections: list(object({ "id?": string, state: words("signedIn", "ended", "problem"), line: string })),
   "added?": literal(true),
 } as const;
-export const SIGN_IN_ACCOUNTS = object({ accounts: list(object({ id: string, ...SIGN_IN_WAYS, kind: words("provider", "search", "mcp", "agentDuplicate"), listed: bool, plan: bool, "service?": string, ...SIGN_IN_STATE })) });
+const SIGN_IN_ACCOUNT = { id: string, ...SIGN_IN_WAYS, kind: words("provider", "search", "mcp", "agentDuplicate"), listed: bool, plan: bool, "service?": string, ...SIGN_IN_STATE } as const;
+export const SIGN_IN_ACCOUNTS = object({ accounts: list(object(SIGN_IN_ACCOUNT)) });
+
+const CATALOG_ACCOUNT = object({
+  ...SIGN_IN_ACCOUNT,
+  name: string,
+  section: words("codingAgents", "providers", "addProvider"),
+  metadata: object({ "accountLabel?": string, "version?": string, "programUpdate?": object({ state: string, "version?": string, "message?": string }) }),
+});
+const CATALOG_UNAVAILABLE = object({ message: string, "reason?": string, "action?": object({ label: string, route: string }) });
+const ACCOUNT_CATALOG = object({ agents: list(CATALOG_ACCOUNT), engine: list(CATALOG_ACCOUNT), "agentsDown?": CATALOG_UNAVAILABLE, "engineDown?": CATALOG_UNAVAILABLE });
 
 /** A sign-in started in the browser (`POST kuvo/sign-in/start`): what the engine (or the coding
  * agents' bridge) answered (`attemptID`, its page's `url`, `instructions`, how it ends: `mode`), and
@@ -133,6 +145,11 @@ export const MISC_ROUTES: RouteShape[] = [
   { route: "POST kuvo/sign-in/return", feature: "sign-in.return", body: object({ url: string, "integration?": string, "attempt?": string, "agents?": bool }), answers: { 200: SIGN_IN_RETURNED, 400: object({ message: string }), 502: object({ message: string }) } },
   { route: "GET kuvo/sign-in/methods", feature: "sign-in.methods", answers: { 200: SIGN_IN_METHODS } },
   { route: "GET kuvo/sign-in/accounts", feature: "sign-in.accounts.state", answers: { 200: SIGN_IN_ACCOUNTS } },
+  { route: "GET kuvo/accounts/catalog", feature: "accounts.catalog", answers: { 200: ACCOUNT_CATALOG } },
+  { route: "POST kuvo/sign-in/action", feature: "sign-in.action", body: object({
+    action: words("cancel", "complete", "addKey", "external"),
+    "attempt?": string, "code?": string, "key?": string, "methodID?": string, "answer?": any,
+  }), answers: { 200: any, 400: object({ message: string }) } },
   { route: "GET kuvo/sign-in/status", feature: "sign-in.codes", answers: { 200: SIGN_IN_STATUS } },
   { route: "POST kuvo/sign-in/start", feature: "sign-in.methods", answers: { 200: SIGN_IN_STARTED, 400: object({ message: string }), 409: object({ message: string }), 502: object({ message: string }), 503: object({ message: string }), 504: object({ message: string }) } },
   { route: "GET kuvo/search", feature: "search", answers: { 200: SEARCH_FOUND } },

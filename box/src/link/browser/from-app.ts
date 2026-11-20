@@ -93,7 +93,7 @@ export function takeInAppBrowserData(appFolder: string | null, folder = BROWSER_
       if (read.tidiesAgentTabs !== undefined) change.tidiesAgentTabs = read.tidiesAgentTabs;
       if (read.offersToSave !== undefined) change.offersToSave = read.offersToSave;
       if (read.never) change.never = read.never.filter(site => /^[a-z0-9.:[\]-]{1,260}$/i.test(site.trim()));
-      if (Object.keys(change).length && changeBrowserSettings(change, folder) === null) took.settings = Object.keys(change).sort();
+      if (Object.keys(change).length && changeBrowserSettings(change, folder, { onlyIfUnset: true }) === null) took.settings = Object.keys(change).sort();
     }
   }
   writePrivate(markFile(folder), JSON.stringify(took));

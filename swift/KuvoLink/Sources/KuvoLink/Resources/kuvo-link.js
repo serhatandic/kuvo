@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 4c87d26c2f9a
+// Kuvo folder layout 23 3cdc7b23b5e9
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
 var __create = Object.create;
@@ -1564,7 +1564,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "4c87d26c2f9a";
+var BRIDGE_VERSION = "3cdc7b23b5e9";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -15108,7 +15108,8 @@ var init_sessions = __esm(() => {
     "generations?": map(string),
     "scoped?": bool,
     "note?": string,
-    "starting?": nullable(MODEL_REF)
+    "starting?": nullable(MODEL_REF),
+    "startChoice?": object({ label: string, refusal: string })
   });
   MODELS_STARRED = object({ starred: list(STARRED) });
   SESSION_KINDS = ["project", "chat", "bot", "seat", "hidden", "subagent"];
@@ -15154,6 +15155,8 @@ var init_sessions = __esm(() => {
     sessions: map(SESSION_FACTS),
     "gone?": list(string),
     projects: map(LISTED_PROJECT),
+    "projectOrder?": list(string),
+    "startProject?": nullable(string),
     archivedGroups: list(object({ directory: string, title: string, kind: words("project", "chat", "bot"), sessions: list(string) })),
     needsYou: list(NEEDS_YOU2),
     "pending?": list(string)
@@ -15444,6 +15447,7 @@ var FEATURES;
 var init_features = __esm(() => {
   FEATURES = [
     "account-action-sheet-title",
+    "accounts.catalog",
     "accounts.credentials",
     "accounts.ended",
     "accounts.found",
@@ -15501,6 +15505,7 @@ var init_features = __esm(() => {
     "branch",
     "browser",
     "browser.data",
+    "browser.data.never",
     "browser.view",
     "btw",
     "btw.threads",
@@ -15532,8 +15537,10 @@ var init_features = __esm(() => {
     "file",
     "file.info",
     "file.text",
+    "file.text.path",
     "folders",
     "folders.files",
+    "folders.paths",
     "folders.suggested",
     "folders.tree",
     "git",
@@ -15579,6 +15586,8 @@ var init_features = __esm(() => {
     "messages.tool-titles",
     "messages.wake-cards",
     "models.offered",
+    "models.offered.choice",
+    "models.offered.defaults",
     "models.offered.folder",
     "models.offered.free",
     "models.offered.providers",
@@ -15631,6 +15640,7 @@ var init_features = __esm(() => {
     "sessions.chat",
     "sessions.glance",
     "sessions.list",
+    "sessions.list.start",
     "sessions.mentions",
     "sessions.models",
     "sessions.move",
@@ -15657,6 +15667,7 @@ var init_features = __esm(() => {
     "sign-in.accounts.kinds",
     "sign-in.accounts.plan",
     "sign-in.accounts.state",
+    "sign-in.action",
     "sign-in.codes",
     "sign-in.methods",
     "sign-in.return",
@@ -29585,7 +29596,9 @@ var init_browser = __esm(() => {
     { route: "DELETE kuvo/browser/sites", feature: "browser.data", answers: { 200: BROWSER_SITES } },
     { route: "DELETE kuvo/browser/sites/:site", feature: "browser.data", answers: { 200: BROWSER_SITES } },
     { route: "GET kuvo/browser/settings", feature: "browser.data", answers: { 200: BROWSER_SETTINGS } },
-    { route: "PATCH kuvo/browser/settings", feature: "browser.data", answers: { 200: BROWSER_SETTINGS } }
+    { route: "PATCH kuvo/browser/settings", feature: "browser.data", answers: { 200: BROWSER_SETTINGS } },
+    { route: "PUT kuvo/browser/settings/never/:host", feature: "browser.data.never", answers: { 200: BROWSER_SETTINGS, 400: object({ message: string }) } },
+    { route: "DELETE kuvo/browser/settings/never/:host", feature: "browser.data.never", answers: { 200: BROWSER_SETTINGS, 400: object({ message: string }) } }
   ];
 });
 
@@ -29622,7 +29635,16 @@ function neverSite(value) {
   }
   return /^[a-z0-9.:[\]-]{1,260}$/.test(host) ? host : null;
 }
-function changeBrowserSettings(change, folder = BROWSER_FOLDER) {
+function canOfferToHost(host) {
+  if (host.endsWith(":"))
+    return false;
+  try {
+    return Boolean(new URL(`http://${host}`).hostname);
+  } catch {
+    return false;
+  }
+}
+function changeBrowserSettings(change, folder = BROWSER_FOLDER, { onlyIfUnset = false } = {}) {
   if (!isObject(change))
     return "Send the settings to change, as an object.";
   const known = ["searchEngine", "tidiesAgentTabs", "offersToSave", "never"];
@@ -29636,38 +29658,54 @@ function changeBrowserSettings(change, folder = BROWSER_FOLDER) {
       return `${key} is true or false.`;
   let never;
   if ("never" in change) {
-    if (!Array.isArray(change.never) || change.never.length > 1000)
+    if (!Array.isArray(change.never) || change.never.length > MAX_NEVER_SITES)
       return "never is a list of sites.";
     const sites = change.never.map(neverSite);
     if (sites.some((each) => each === null))
       return "never is a list of sites, each a host (example.com).";
     never = [...new Set(sites)].sort();
   }
-  const kept = readKept5(folder);
-  if (isEngine2(change.searchEngine))
-    kept.searchEngine = change.searchEngine;
-  if (typeof change.offersToSave === "boolean")
-    kept.offersToSave = change.offersToSave;
-  if (never)
-    kept.never = never;
-  writePrivate(settingsFile(folder), JSON.stringify(kept));
-  if (change.tidiesAgentTabs === true)
-    fs68.rmSync(keepsTabsFile(folder), { force: true });
-  if (change.tidiesAgentTabs === false)
-    writePrivate(keepsTabsFile(folder), "");
-  return null;
+  return editSettings(folder, () => {
+    if (onlyIfUnset && hasSettings(folder))
+      return "The browser already has settings.";
+    const kept = readKept5(folder);
+    if (isEngine2(change.searchEngine))
+      kept.searchEngine = change.searchEngine;
+    if (typeof change.offersToSave === "boolean")
+      kept.offersToSave = change.offersToSave;
+    if (never)
+      kept.never = never;
+    writePrivate(settingsFile(folder), JSON.stringify(kept));
+    if (change.tidiesAgentTabs === true)
+      fs68.rmSync(keepsTabsFile(folder), { force: true });
+    if (change.tidiesAgentTabs === false)
+      writePrivate(keepsTabsFile(folder), "");
+    return null;
+  });
 }
-function offerAgain(site, folder = BROWSER_FOLDER) {
-  const kept = readKept5(folder);
-  const never = Array.isArray(kept.never) ? kept.never : [];
-  if (!never.includes(site))
-    return false;
-  kept.never = never.filter((each) => each !== site);
-  writePrivate(settingsFile(folder), JSON.stringify(kept));
-  return true;
+function changeNeverSite(site, neverOffer, folder = BROWSER_FOLDER) {
+  const host = neverSite(site);
+  const badHost = "Name a site by its host (example.com).";
+  if (neverOffer && (!host || !canOfferToHost(host)))
+    return badHost;
+  return editSettings(folder, () => {
+    const kept = readKept5(folder);
+    const never = Array.isArray(kept.never) ? kept.never : [];
+    const id = !neverOffer && typeof site === "string" && never.includes(site) ? site : host;
+    if (!id)
+      return badHost;
+    if (never.includes(id) === neverOffer)
+      return null;
+    if (neverOffer && never.length >= MAX_NEVER_SITES)
+      return `No more than ${MAX_NEVER_SITES} sites can be listed.`;
+    kept.never = neverOffer ? [...never, id].sort() : never.filter((each) => each !== id);
+    writePrivate(settingsFile(folder), JSON.stringify(kept));
+    return null;
+  });
 }
-var settingsFile = (folder) => path68.join(folder, "settings.json"), keepsTabsFile = (folder) => path68.join(folder, "keeps-agent-tabs"), browserSettingsFiles = (folder = BROWSER_FOLDER) => [settingsFile(folder), keepsTabsFile(folder)], isEngine2 = (value) => SEARCH_ENGINES.some((engine) => engine.id === value), hasSettings = (folder = BROWSER_FOLDER) => fs68.existsSync(settingsFile(folder));
+var settingsFile = (folder) => path68.join(folder, "settings.json"), keepsTabsFile = (folder) => path68.join(folder, "keeps-agent-tabs"), editSettings = (folder, edit) => locked(path68.join(folder, ".settings.lock"), edit, { exclusive: true }), MAX_NEVER_SITES = 1000, browserSettingsFiles = (folder = BROWSER_FOLDER) => [settingsFile(folder), keepsTabsFile(folder)], isEngine2 = (value) => SEARCH_ENGINES.some((engine) => engine.id === value), hasSettings = (folder = BROWSER_FOLDER) => fs68.existsSync(settingsFile(folder));
 var init_settings2 = __esm(() => {
+  init_files();
   init_browser();
   init_files2();
   init_history();
@@ -29680,6 +29718,13 @@ function part(text) {
   } catch {
     return null;
   }
+}
+async function* browserNeverRoute({ request, json }, match) {
+  const method = request.method.toUpperCase();
+  if (method !== "PUT" && method !== "DELETE")
+    return yield* json(405, {});
+  const problem = changeNeverSite(part(match[1]), method === "PUT");
+  return yield* problem ? json(400, { message: problem }) : json(200, readBrowserSettings());
 }
 async function* browserDataRoute(context, match) {
   const { request, json } = context;
@@ -29731,13 +29776,14 @@ async function* browserViewRoute({ json }) {
     return yield* json(404, { message: NO_VIEW_ON_MAC });
   yield* json(426, { message: "Open this route as a WebSocket." });
 }
-var BROWSER_DATA_ROUTE, NO_VIEW_ON_MAC = "Kuvo on a Mac has no browser of its own yet: its agents browse in Kuvo Code's panel on that Mac.";
+var BROWSER_DATA_ROUTE, BROWSER_NEVER_ROUTE, NO_VIEW_ON_MAC = "Kuvo on a Mac has no browser of its own yet: its agents browse in Kuvo Code's panel on that Mac.";
 var init_routes = __esm(() => {
   init_home();
   init_history();
   init_settings2();
   init_sites();
   BROWSER_DATA_ROUTE = /^kuvo\/browser\/(?:(history|sites)(?:\/([^/]+))?|(icons)\/([^/]+)|(settings))$/;
+  BROWSER_NEVER_ROUTE = /^kuvo\/browser\/settings\/never\/([^/]+)$/;
 });
 
 // box/src/link/server/paths.ts
@@ -31379,6 +31425,18 @@ async function* workQueueSignInRoute(context) {
     return yield* json(status ?? 502, { message: error instanceof Error && error.message === GITHUB_SIGN_IN_BUSY ? GITHUB_SIGN_IN_BUSY : "GitHub sign-in didn’t answer. Try again." });
   }
 }
+function describeAccounts(listed, agents, computer) {
+  const ended = agents ? new Map : readEndedSignIns();
+  return listed.flatMap((value) => {
+    const account = value;
+    if (typeof account?.id !== "string")
+      return [];
+    const service = serviceOf(account, agents);
+    const offered = signInMethods(account);
+    const facts = { id: account.id, ...offered, ...accountKind(account, agents), plan: isPlan(offered), ...service ? { service } : {}, ...accountState(account, offered, { agents, ended: ended.get(account.id), computer }) };
+    return [{ account, facts }];
+  });
+}
 async function* accountsRoute2(context, query) {
   const { signal, json } = context;
   const place = await placeOf2(query, context);
@@ -31386,23 +31444,15 @@ async function* accountsRoute2(context, query) {
     return yield* json(503, place.down);
   const deadline = AbortSignal.timeout(15000);
   try {
+    const agents = query.get("agents") === "1";
     const [listed, github] = await Promise.all([
       call(place.target, "GET", "/api/integration", undefined, signal ? AbortSignal.any([signal, deadline]) : deadline),
-      query.get("agents") === "1" ? null : workQueueAccount(context)
+      agents ? null : workQueueAccount(context)
     ]);
-    const accounts = (Array.isArray(listed) ? listed : []).filter((each) => typeof each?.id === "string");
+    const accounts = Array.isArray(listed) ? [...listed] : [];
     if (github)
       accounts.push(github);
-    const agents = query.get("agents") === "1";
-    const ended = agents ? new Map : readEndedSignIns();
-    const computer = computerInSentence(context.request);
-    return yield* json(200, {
-      accounts: accounts.map((account) => {
-        const service = serviceOf(account, agents);
-        const offered = signInMethods(account);
-        return { id: account.id, ...offered, ...accountKind(account, agents), plan: isPlan(offered), ...service ? { service } : {}, ...accountState(account, offered, { agents, ended: ended.get(account.id), computer }) };
-      })
-    });
+    return yield* json(200, { accounts: describeAccounts(accounts, agents, computerInSentence(context.request)).map(({ facts }) => facts) });
   } catch (error) {
     if (deadline.aborted)
       return yield* json(504, { message: "It didn't answer in time. Try again." });
@@ -49447,6 +49497,23 @@ function listedProjects(sessions, place) {
   }
   return projects;
 }
+function projectOrder(projects) {
+  const compare = (left, right) => {
+    const one = left.match(/[0-9]+|[^0-9]/gu) ?? [], two = right.match(/[0-9]+|[^0-9]/gu) ?? [];
+    for (let at = 0;at < Math.min(one.length, two.length); at++) {
+      const a = one[at], b = two[at];
+      const bothNumbers = /^\d/.test(a) && /^\d/.test(b);
+      const x = bothNumbers ? a.replace(/^0+/, "") : a.toLowerCase();
+      const y = bothNumbers ? b.replace(/^0+/, "") : b.toLowerCase();
+      const difference = (bothNumbers ? x.length - y.length : 0) || Buffer.compare(Buffer.from(x), Buffer.from(y));
+      if (difference)
+        return difference;
+    }
+    return one.length - two.length;
+  };
+  const name = (folder) => projects[folder]?.name ?? (path130.basename(folder) || folder);
+  return Object.keys(projects).sort((a, b) => (projects[b]?.updated ?? 0) - (projects[a]?.updated ?? 0) || compare(name(a), name(b)) || Buffer.compare(Buffer.from(a), Buffer.from(b)));
+}
 var folderOf4 = (session) => session.location?.directory ?? session.directory ?? "", kuvoOf = (session) => isObject(session.metadata?.kuvo) ? session.metadata.kuvo : {}, isArchived3 = (session) => Boolean(session.time?.archived) || session.metadata?.["kuvo.archived"] === true || kuvoOf(session).archived === true, isPinned = (session) => session.metadata?.["kuvo.pinned"] === true, inBotsFolder = (folder, botsFolder) => Boolean(botsFolder) && folder.startsWith(botsFolder.endsWith(path130.sep) ? botsFolder : botsFolder + path130.sep), standing = (facts) => facts.asked !== undefined ? "asking" : facts.running ? "working" : null, ASLEEP_AFTER;
 var init_rule = __esm(() => {
   ASLEEP_AFTER = 12 * 3600000;
@@ -49847,11 +49914,13 @@ function answerFrom(list, since) {
   const pending = list.pending?.length ? { pending: list.pending } : {};
   const needs = list.needsYou ?? needsYou(Object.fromEntries(Object.entries(list.sessions).map(([id, entry]) => [id, entry.facts])));
   const projects = Object.fromEntries(Object.entries(list.projects).map(([folder, project]) => [folder, { ...project, asking: project.asking ?? 0, working: project.working ?? 0 }]));
+  const ordered = projectOrder(projects);
   const archived = archivedGroups(Object.fromEntries(Object.entries(list.sessions).map(([id, entry]) => [id, entry.facts])), projects, readProjects());
+  const projectFacts = { projects, projectOrder: ordered, startProject: ordered[0] ?? null };
   if (whole)
-    return { archivedGroups: archived, at: cursorOf(list), full: true, sessions, projects, needsYou: needs, ...pending };
+    return { archivedGroups: archived, at: cursorOf(list), full: true, sessions, ...projectFacts, needsYou: needs, ...pending };
   const gone = Object.entries(list.gone).filter(([, entry]) => entry.seq > from.seq).map(([id]) => id).sort();
-  return { archivedGroups: archived, at: cursorOf(list), sessions, ...gone.length ? { gone } : {}, projects, needsYou: needs, ...pending };
+  return { archivedGroups: archived, at: cursorOf(list), sessions, ...gone.length ? { gone } : {}, ...projectFacts, needsYou: needs, ...pending };
 }
 function keepList() {
   keeping3 = true;
@@ -60555,15 +60624,25 @@ async function* fileAt(requestPath, json, as = "bytes") {
   const query = requestPath.includes("?") ? requestPath.slice(requestPath.indexOf("?") + 1) : "";
   const asked = new URLSearchParams(query);
   const uri = asked.get("uri");
+  const givenPath = as === "text" && !asked.has("uri") ? asked.get("path64") : null;
   const most = as === "text" ? TEXT_LIMIT : FILE_LIMIT;
   const given = Math.floor(Number(asked.get("max") ?? most));
   const max = Number.isFinite(given) ? given : most;
   let file;
   try {
-    file = uri ? fileURLToPath4(uri) : undefined;
+    if (uri)
+      file = fileURLToPath4(uri);
+    else if (givenPath && /^[A-Za-z0-9_-]+$/.test(givenPath)) {
+      const bytes = Buffer.from(givenPath, "base64url");
+      if (bytes.toString("base64url") === givenPath) {
+        const decoded = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+        if (path154.isAbsolute(decoded) && !decoded.includes("\x00"))
+          file = path154.resolve(decoded);
+      }
+    }
   } catch {}
   if (!file)
-    return yield* json(400, { message: "That isn’t a file:// address." });
+    return yield* json(400, { message: givenPath === null ? "That isn’t a file:// address." : "Name the file by its full path." });
   const name = path154.basename(file);
   const missing = () => as === "info" ? json(200, { exists: false, name, size: null, kind: null, mime: null }) : json(404, { message: "That file isn’t there anymore.", reason: "fileNotFound" });
   const inaccessible = (error) => {
@@ -64521,6 +64600,53 @@ var init_models_starred = __esm(() => {
   MODELS_FILE = path162.join(BOX, "models.json");
 });
 
+// box/src/link/work/model-words.ts
+function article(word) {
+  const first = word.toLowerCase()[0];
+  if (/^[A-Z][A-Z]/.test(word))
+    return "AEFHILMNORSX".includes(word[0]) ? "an" : "a";
+  return first && "aeiou".includes(first) || word.startsWith("xA") ? "an" : "a";
+}
+function readiness(model, state, known) {
+  if (state.runs && !state.missing)
+    return {};
+  const name = state.name ?? known ?? model?.id ?? "This model";
+  const account = state.account?.name ?? model?.providerID ?? "its account";
+  const choose = (help) => ({ do: "choose", label: "Choose a Model", help });
+  switch (state.missing) {
+    case "signIn":
+      if (state.connects)
+        return { refusal: `${name} needs ${account} connected: connect it, or choose another model.`, action: { do: "signIn", label: "Connect", help: `Connect ${account}` } };
+      return { refusal: `${name} needs a sign-in to ${account}: sign in, or choose another model.`, action: { do: "signIn", label: "Sign In", help: `Sign in to ${account}` } };
+    case "key": {
+      const plan = state.plan;
+      const key = `${article(account)} ${account} key`;
+      return plan ? {
+        refusal: `${name} needs ${key}: add one, or choose another model (with ${article(plan.name)} ${plan.name} plan, one under ${plan.agent}).`,
+        action: { do: "addKey", label: "Add Key", help: `Add ${key} (with ${article(plan.name)} ${plan.name} plan, choose a model under ${plan.agent} instead)` }
+      } : { refusal: `${name} needs ${key}: add one, or choose another model.`, action: { do: "addKey", label: "Add Key", help: `Add ${key}` } };
+    }
+    case "install":
+      return { refusal: `${name} needs ${account} installed: install it, or choose another model.`, action: { do: "install", label: "Install", help: `Install ${account}` } };
+    case "gone":
+      return {
+        refusal: state.account ? `${name} is no longer among ${state.account.name}’s models: choose another model.` : `${name} is no longer available: choose another model.`,
+        choose: true,
+        action: choose("Choose another model")
+      };
+    default:
+      return CHOOSE_MODEL;
+  }
+}
+var CHOOSE_MODEL;
+var init_model_words = __esm(() => {
+  CHOOSE_MODEL = {
+    refusal: "Choose a model to send it.",
+    choose: true,
+    action: { do: "choose", label: "Choose a Model", help: "Choose a model" }
+  };
+});
+
 // box/src/link/areas/models-offered.ts
 import fs162 from "node:fs";
 import path163 from "node:path";
@@ -64577,6 +64703,10 @@ async function* modelsOfferedRoute(context) {
   }
   const lists = await listsHere(engine, agents, place?.data.location?.directory ?? place?.data.directory ?? folder, false, query.get("refresh") === "1");
   const answer = offeredAnswer(lists, wantedIn(request.path), starredModels());
+  if (query.get("for") === "defaults") {
+    const models = answer.models.filter((model) => model.side === "engine" && !model.hidden && !model.retiring);
+    return yield* json(200, { ...answer, models, scoped: true });
+  }
   if (!place)
     return yield* json(200, answer);
   const bot = typeof place.data.metadata?.kuvo?.bot === "string";
@@ -64614,7 +64744,8 @@ function offeredAnswer(lists, wanted, starred = []) {
     ...lists.bridge?.generations ? { generations: lists.bridge.generations } : {},
     ...lists.bridge?.unavailable?.length ? { unavailable: lists.bridge.unavailable } : {},
     ...listing.length ? { listing } : {},
-    ...starting !== undefined ? { starting: starting?.model ?? null } : {}
+    ...starting !== undefined ? { starting: starting?.model ?? null } : {},
+    ...starting === null ? { startChoice: { label: CHOOSE_MODEL.action.label, refusal: CHOOSE_MODEL.refusal } } : {}
   };
 }
 var MODELS_OFFERED_ROUTE = "kuvo/models/offered";
@@ -64627,6 +64758,7 @@ var init_models_offered = __esm(() => {
   init_model_rule();
   init_models_starred();
   init_holder();
+  init_model_words();
 });
 
 // box/src/link/areas/settings-custom-auto.ts
@@ -67677,8 +67809,8 @@ async function browserChange(context, at, value) {
 async function browserAct(context, at, action) {
   if (!at.id.startsWith("never-") || action.id !== "offer-again")
     return { status: 404, message: "That isn't something it does." };
-  offerAgain(at.id.slice(6));
-  return null;
+  const problem = changeNeverSite(at.id.slice(6), false);
+  return problem ? { status: 400, message: problem } : null;
 }
 async function gitPage(context) {
   const read = await asked6(context, settingsRoute, "GET", "kuvo/config");
@@ -108635,7 +108767,7 @@ function takeInAppBrowserData(appFolder, folder = BROWSER_FOLDER) {
         change.offersToSave = read.offersToSave;
       if (read.never)
         change.never = read.never.filter((site) => /^[a-z0-9.:[\]-]{1,260}$/i.test(site.trim()));
-      if (Object.keys(change).length && changeBrowserSettings(change, folder) === null)
+      if (Object.keys(change).length && changeBrowserSettings(change, folder, { onlyIfUnset: true }) === null)
         took.settings = Object.keys(change).sort();
     }
   }
@@ -112191,9 +112323,12 @@ function listFolders(requestPath) {
     }
   })();
   const panel = query.get("files") === "1";
-  const folders = entries.filter((entry) => (hidden || !entry.name.startsWith(".")) && !(panel && VERSION_CONTROL.has(entry.name)) && isFolder(entry)).map((entry) => !asks.has(entry.name) && fs232.existsSync(path242.join(at, entry.name, ".git")) ? { name: entry.name, repository: true } : { name: entry.name }).sort((a, b) => byName(a.name, b.name));
+  const folders = entries.filter((entry) => (hidden || !entry.name.startsWith(".")) && !(panel && VERSION_CONTROL.has(entry.name)) && isFolder(entry)).map((entry) => {
+    const full = path242.join(at, entry.name);
+    return { name: entry.name, path: full, ...!asks.has(entry.name) && fs232.existsSync(path242.join(full, ".git")) ? { repository: true } : {} };
+  }).sort((a, b) => byName(a.name, b.name));
   const files = panel ? entries.filter((entry) => (hidden || !entry.name.startsWith(".")) && entry.name !== ".DS_Store" && !VERSION_CONTROL.has(entry.name) && !isFolder(entry)).map((entry) => entry.name).sort(byName) : undefined;
-  return { status: 200, value: { path: at, home, parent: at === path242.dirname(at) ? null : path242.dirname(at), folders, ...files ? { files } : {} } };
+  return { status: 200, value: { path: at, home, parent: at === path242.dirname(at) ? null : path242.dirname(at), folders, ...files ? { files, fileEntries: files.map((name) => ({ name, path: path242.join(at, name) })) } : {} } };
 }
 function makeFolder(body) {
   const given = typeof body?.path === "string" ? body.path.trim() : "";
@@ -112805,47 +112940,7 @@ init_computers_add();
 // box/src/link/areas/session-models.ts
 init_tools2();
 init_model_rule();
-
-// box/src/link/work/model-words.ts
-function article(word) {
-  const first = word.toLowerCase()[0];
-  if (/^[A-Z][A-Z]/.test(word))
-    return "AEFHILMNORSX".includes(word[0]) ? "an" : "a";
-  return first && "aeiou".includes(first) || word.startsWith("xA") ? "an" : "a";
-}
-function readiness(model, state, known) {
-  if (state.runs && !state.missing)
-    return {};
-  const name = state.name ?? known ?? model?.id ?? "This model";
-  const account = state.account?.name ?? model?.providerID ?? "its account";
-  const choose = (help) => ({ do: "choose", label: "Choose a Model", help });
-  switch (state.missing) {
-    case "signIn":
-      if (state.connects)
-        return { refusal: `${name} needs ${account} connected: connect it, or choose another model.`, action: { do: "signIn", label: "Connect", help: `Connect ${account}` } };
-      return { refusal: `${name} needs a sign-in to ${account}: sign in, or choose another model.`, action: { do: "signIn", label: "Sign In", help: `Sign in to ${account}` } };
-    case "key": {
-      const plan = state.plan;
-      const key = `${article(account)} ${account} key`;
-      return plan ? {
-        refusal: `${name} needs ${key}: add one, or choose another model (with ${article(plan.name)} ${plan.name} plan, one under ${plan.agent}).`,
-        action: { do: "addKey", label: "Add Key", help: `Add ${key} (with ${article(plan.name)} ${plan.name} plan, choose a model under ${plan.agent} instead)` }
-      } : { refusal: `${name} needs ${key}: add one, or choose another model.`, action: { do: "addKey", label: "Add Key", help: `Add ${key}` } };
-    }
-    case "install":
-      return { refusal: `${name} needs ${account} installed: install it, or choose another model.`, action: { do: "install", label: "Install", help: `Install ${account}` } };
-    case "gone":
-      return {
-        refusal: state.account ? `${name} is no longer among ${state.account.name}’s models: choose another model.` : `${name} is no longer available: choose another model.`,
-        choose: true,
-        action: choose("Choose another model")
-      };
-    default:
-      return { refusal: "Choose a model to send it.", choose: true, action: choose("Choose a model") };
-  }
-}
-
-// box/src/link/areas/session-models.ts
+init_model_words();
 init_glance();
 var SESSION_MODELS_ROUTE = "kuvo/sessions/models";
 async function sessionModels(ids, engine, bridge, signal) {
@@ -114319,6 +114414,126 @@ init_format2();
 init_client2();
 init_progress();
 init_computers();
+
+// box/src/link/areas/account-catalog.ts
+init_computer_name();
+init_forward();
+init_settings_kit();
+init_sign_in();
+var ACCOUNT_CATALOG_ROUTE = "kuvo/accounts/catalog";
+function catalogMetadata(value) {
+  if (!isObject(value))
+    return {};
+  const { accountLabel, version, programUpdate } = value;
+  return {
+    ...typeof accountLabel === "string" ? { accountLabel } : {},
+    ...typeof version === "string" ? { version } : {},
+    ...isObject(programUpdate) && typeof programUpdate.state === "string" ? { programUpdate: {
+      state: programUpdate.state,
+      ...typeof programUpdate.version === "string" ? { version: programUpdate.version } : {},
+      ...typeof programUpdate.message === "string" ? { message: programUpdate.message } : {}
+    } } : {}
+  };
+}
+function unavailable3(value) {
+  const { message, reason, action } = isObject(value) ? value : {};
+  return {
+    message: typeof message === "string" ? message : "It said no (503).",
+    ...typeof reason === "string" ? { reason } : {},
+    ...isObject(action) && typeof action.label === "string" && typeof action.route === "string" ? { action: { label: action.label, route: action.route } } : {}
+  };
+}
+async function* accountCatalogRoute(context) {
+  const { request, json } = context;
+  if (request.method.toUpperCase() !== "GET")
+    return yield* json(405, {});
+  const [engine, agents] = await Promise.all([
+    asked6(context, engineRoute, "GET", "api/integration"),
+    asked6(context, agentsRoute, "GET", "kuvo/agents/api/integration")
+  ]);
+  for (const { status, value } of [engine, agents]) {
+    if (status === 503)
+      continue;
+    if (status !== 200)
+      return yield* json(status, value);
+    if (!Array.isArray(value?.data))
+      return yield* json(502, { message: "The accounts couldn’t be read. Try again." });
+  }
+  const computer = computerInSentence(request);
+  const rows = ({ status, value }, agents) => describeAccounts(status === 200 ? value.data : [], agents, computer).flatMap(({ account, facts }) => {
+    if (!facts.listed || typeof account.name !== "string")
+      return [];
+    const section = agents ? "codingAgents" : facts.state === "signedOut" ? "addProvider" : "providers";
+    return [{ ...facts, name: account.name, metadata: catalogMetadata(account.metadata), section }];
+  });
+  return yield* json(200, {
+    engine: rows(engine, false),
+    agents: rows(agents, true),
+    ...engine.status === 503 ? { engineDown: unavailable3(engine.value) } : {},
+    ...agents.status === 503 ? { agentsDown: unavailable3(agents.value) } : {}
+  });
+}
+
+// box/src/link/areas/sign-in-action.ts
+init_forward();
+init_sign_in();
+var SIGN_IN_ACTION_ROUTE = "kuvo/sign-in/action";
+async function* signInActionRoute(context) {
+  const { request, json } = context;
+  if (request.method.toUpperCase() !== "POST")
+    return yield* json(405, {});
+  const mark = request.path.indexOf("?");
+  const query = new URLSearchParams(mark === -1 ? "" : request.path.slice(mark + 1));
+  const account = query.get("integration");
+  const workQueue = account === GITHUB_WORK_QUEUE;
+  const onBridge = !workQueue && query.get("agents") === "1";
+  const given = parsed(request.body);
+  if (!account || !isObject(given))
+    return yield* json(400, { message: "Name the account and what to do." });
+  const base = `${onBridge ? AGENTS2 : ""}api/integration/${encodeURIComponent(account)}/connect`;
+  const answer = isObject(given.answer) ? { answer: given.answer } : {};
+  const to = (path, method, body) => ({
+    ...context,
+    route: path,
+    request: {
+      ...request,
+      path,
+      method,
+      ...body === undefined ? { body: undefined } : { headers: { ...request.headers, "content-type": "application/json" }, body: Buffer.from(JSON.stringify(body)) }
+    }
+  });
+  const forward = onBridge ? agentsRoute : engineRoute;
+  switch (given.action) {
+    case "cancel":
+    case "complete": {
+      if (typeof given.attempt !== "string" || !given.attempt)
+        break;
+      const attempt = `${base}/oauth/${encodeURIComponent(given.attempt)}`;
+      if (given.action === "cancel") {
+        if (workQueue) {
+          if (!/^att_[a-zA-Z0-9]+$/.test(given.attempt))
+            break;
+          return yield* workQueueSignInRoute(to(attempt, "DELETE"));
+        }
+        return yield* forward(to(attempt, "DELETE"));
+      }
+      if (typeof given.code === "string")
+        return yield* forward(to(`${attempt}/complete`, "POST", { code: given.code }));
+      break;
+    }
+    case "addKey":
+      if (typeof given.key === "string")
+        return yield* forward(to(`${base}/key`, "POST", { key: given.key, ...answer }));
+      break;
+    case "external":
+      if (typeof given.methodID === "string")
+        return yield* forward(to(`${base}/external`, "POST", { methodID: given.methodID, ...answer }));
+      break;
+  }
+  return yield* json(400, { message: "Name the sign-in action and what it needs." });
+}
+
+// box/src/link/server/router.ts
 var WORK_QUEUE_OAUTH = new RegExp(`^api/integration/${GITHUB_WORK_QUEUE}/connect/oauth(?:/att_[a-zA-Z0-9]+)?$`);
 var ROUTES = [
   { feature: "info", when: (route) => route === "kuvo/info", answer: infoRoute },
@@ -114350,6 +114565,7 @@ var ROUTES = [
   { feature: "browser", when: (route) => !IS_MAC && route === "kuvo/browser", answer: browserRoute },
   { feature: "browser.view", when: (route) => route === "kuvo/browser/view", answer: browserViewRoute },
   { feature: "browser.data", when: (route) => route.match(BROWSER_DATA_ROUTE), answer: browserDataRoute },
+  { feature: "browser.data.never", when: (route) => route.match(BROWSER_NEVER_ROUTE), answer: browserNeverRoute },
   { feature: "integrations", when: (route, request) => /^kuvo\/integrations(\/|\?|$)/.test(request.path), answer: integrationsRoute },
   { feature: "folders", when: (route) => route === "kuvo/folders", answer: foldersRoute },
   { feature: "folders.tree", when: (route) => route === "kuvo/folders/tree", answer: folderTreeRoute },
@@ -114419,6 +114635,8 @@ var ROUTES = [
     return /^(kuvo\/agents\/)?api\/integration\/([^/]+)\/connect\/oauth$/.exec(route);
   }, answer: legacySignInRoute },
   { feature: "sign-in.return", when: (route) => route === "kuvo/sign-in/return", answer: signInReturnRoute },
+  { feature: "accounts.catalog", when: (route) => route === ACCOUNT_CATALOG_ROUTE, answer: accountCatalogRoute },
+  { feature: "sign-in.action", when: (route) => route === SIGN_IN_ACTION_ROUTE, answer: signInActionRoute },
   { feature: "sign-in.methods", when: (route) => route === SIGN_IN_METHODS_ROUTE || route === SIGN_IN_STATUS_ROUTE || route === SIGN_IN_ACCOUNTS_ROUTE || route === SIGN_IN_START_ROUTE, answer: signInRoute },
   { feature: "claude-code", when: (route) => route === "kuvo/claude-code", answer: claudeCodeRoute },
   { feature: "agents", when: (route, request) => request.path.startsWith(AGENTS2), answer: agentsRoute },

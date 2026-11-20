@@ -75,6 +75,11 @@ const NUMBERED: usize = 9;
 
 // MARK: What it offers
 
+pub enum RefreshModels {
+    Offered { folder: Option<String>, session: Option<String>, side: Option<Side> },
+    Defaults,
+}
+
 /// A model as the picker draws it, worked out once per list.
 #[derive(Clone, Debug)]
 pub struct Entry {
@@ -424,11 +429,15 @@ impl ModelPicker {
     }
 
     /// Keep the last catalog visible while the host reads it again.
-    pub fn refresh_when_opened(self, before: Option<Offered>, folder: Option<String>, session: Option<String>, side: Option<Side>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn refresh_when_opened(self, before: Option<Offered>, scope: RefreshModels, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let Some(client) = self.client.clone() else { return self };
         let wanted = self.current.clone();
+        let side = match &scope { RefreshModels::Offered { side, .. } => *side, RefreshModels::Defaults => None };
         let read = cx.background_executor().spawn(async move {
-            client.refresh_offered_models(wanted.as_ref(), folder.as_deref(), session.as_deref())
+            match scope {
+                RefreshModels::Offered { folder, session, .. } => client.refresh_offered_models(wanted.as_ref(), folder.as_deref(), session.as_deref()),
+                RefreshModels::Defaults => client.models_for_defaults(true),
+            }
                 .map(|offered| offered.keeping(before.as_ref()))
                 .ok()
                 .filter(|offered| Some(offered) != before.as_ref())

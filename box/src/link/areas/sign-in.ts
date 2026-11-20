@@ -368,6 +368,19 @@ export async function* workQueueSignInRoute(context: RouteContext): AsyncGenerat
 /** The longest a status ask waits for a change (`wait`), in seconds. */
 const MOST_WAIT = 25;
 
+export function describeAccounts(listed: unknown[], agents: boolean, computer: string) {
+  // The engine's plans whose saved sign-in runs were refused with, as the box keeps them.
+  const ended = agents ? new Map<string, string>() : readEndedSignIns();
+  return listed.flatMap(value => {
+    const account = value as ListedAccount | null;
+    if (typeof account?.id !== "string") return [];
+    const service = serviceOf(account, agents);
+    const offered = signInMethods(account);
+    const facts = { id: account.id, ...offered, ...accountKind(account, agents), plan: isPlan(offered), ...(service ? { service } : {}), ...accountState(account, offered, { agents, ended: ended.get(account.id), computer }) };
+    return [{ account, facts }];
+  });
+}
+
 /** `GET kuvo/sign-in/accounts[?agents=1]`: every account the engine (or the bridge) lists, with its
  * ways in, how it stands and what can be done with it (sign-in-state.ts). */
 async function* accountsRoute(context: RouteContext, query: URLSearchParams): AsyncGenerator<AnswerPiece> {
@@ -376,23 +389,14 @@ async function* accountsRoute(context: RouteContext, query: URLSearchParams): As
   if ("down" in place) return yield* json(503, place.down);
   const deadline = AbortSignal.timeout(15_000);
   try {
+    const agents = query.get("agents") === "1";
     const [listed, github] = await Promise.all([
       call(place.target, "GET", "/api/integration", undefined, signal ? AbortSignal.any([signal, deadline]) : deadline),
-      query.get("agents") === "1" ? null : workQueueAccount(context),
+      agents ? null : workQueueAccount(context),
     ]);
-    const accounts = (Array.isArray(listed) ? listed : []).filter((each): each is ListedAccount => typeof (each as ListedAccount | null)?.id === "string");
+    const accounts = Array.isArray(listed) ? [...listed] : [];
     if (github) accounts.push(github);
-    const agents = query.get("agents") === "1";
-    // The engine's plans whose saved sign-in runs were refused with, as the box keeps them.
-    const ended = agents ? new Map<string, string>() : readEndedSignIns();
-    const computer = computerInSentence(context.request);
-    return yield* json(200, {
-      accounts: accounts.map(account => {
-        const service = serviceOf(account, agents);
-        const offered = signInMethods(account);
-        return { id: account.id as string, ...offered, ...accountKind(account, agents), plan: isPlan(offered), ...(service ? { service } : {}), ...accountState(account, offered, { agents, ended: ended.get(account.id as string), computer }) };
-      }),
-    });
+    return yield* json(200, { accounts: describeAccounts(accounts, agents, computerInSentence(context.request)).map(({ facts }) => facts) });
   } catch (error) {
     if (deadline.aborted) return yield* json(504, { message: "It didn't answer in time. Try again." });
     const status = (error as { status?: unknown } | null)?.status;

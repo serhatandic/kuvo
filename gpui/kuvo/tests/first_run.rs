@@ -198,7 +198,9 @@ fn with_several_agents_each_has_one_row_saying_what_the_box_says(cx: &mut TestAp
     cx.simulate_keystrokes("enter");
     cx.run_until_parked();
     assert!(shown(cx, "first-run-account-openai-signed-in") && !shown(cx, "sign-in-key"));
-    assert_eq!(stand_in.seen_at("POST", "api/integration/openai/connect/key").len(), 2);
+    let actions = stand_in.seen_at("POST", "kuvo/sign-in/action");
+    assert_eq!(actions.len(), 2);
+    assert!(actions.iter().all(|seen| seen.path == "kuvo/sign-in/action?integration=openai" && seen.body.as_ref().is_some_and(|body| body["action"] == "addKey")));
     // Nothing left the flow: Settings never opened.
     assert!(workspace.read_with(cx, |workspace, _| workspace.first_run().is_some() && workspace.area() == Area::Sessions));
     click(cx, "first-run-next");
@@ -221,14 +223,15 @@ fn a_sign_in_that_fails_says_why_in_place_and_cancel_gives_one_up(cx: &mut TestA
     assert!(shown(cx, "sign-in-waiting"));
     click(cx, "first-run-agent-antigravity-cancel");
     assert!(!shown(cx, "sign-in"));
-    assert_eq!(stand_in.seen().iter().filter(|seen| seen.method == "DELETE" && seen.path.contains("/integration/antigravity/connect/oauth/")).count(), 1);
+    let cancelled = || stand_in.seen_at("POST", "kuvo/sign-in/action").into_iter().filter(|seen| seen.path == "kuvo/sign-in/action?integration=antigravity&agents=1" && seen.body.as_ref().is_some_and(|body| body["action"] == "cancel")).count();
+    assert_eq!(cancelled(), 1);
     assert!(shown(cx, "first-run-agent-antigravity-act"), "still to sign in again");
     assert_eq!(step(&workspace, cx), Step::Agents);
     // Going on with one open gives it up too.
     click(cx, "first-run-agent-antigravity-act");
     click(cx, "first-run-next");
     assert_eq!(step(&workspace, cx), Step::Where);
-    assert_eq!(stand_in.seen().iter().filter(|seen| seen.method == "DELETE" && seen.path.contains("/integration/antigravity/connect/oauth/")).count(), 2);
+    assert_eq!(cancelled(), 2);
 }
 
 #[gpui::test]

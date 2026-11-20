@@ -1565,6 +1565,7 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
   const routes = {
     // One a line, in order (as `FEATURES` are), so branches that each add one merge cleanly.
     "account-action-sheet-title": ["GET", "kuvo/sign-in/accounts"],
+    "accounts.catalog": ["POST", "kuvo/accounts/catalog"],
     "accounts.credentials": ["GET", "kuvo/accounts/credentials"],
     "accounts.ended": ["GET", "kuvo/accounts/ended"],
     "accounts.found": ["GET", "kuvo/accounts/found"],
@@ -1645,6 +1646,7 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     // (Its browser, set up by the box itself.)
     browser: ["GET", "kuvo/browser"],
     "browser.data": ["GET", "kuvo/browser/settings"],
+    "browser.data.never": ["GET", "kuvo/browser/settings/never/example.com"],
     "browser.view": ["GET", "kuvo/browser/view"],
     btw: ["GET", "kuvo/agents/api/kuvo/btw"],
     // (What a side question's routes take besides, on the coding agents' bridge.)
@@ -1682,8 +1684,10 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     file: ["GET", "kuvo/file"],
     "file.info": ["GET", "kuvo/file/info"],
     "file.text": ["GET", "kuvo/file/text"],
+    "file.text.path": ["GET", "kuvo/file/text?path64=cmVsYXRpdmU"],
     folders: ["DELETE", "kuvo/folders"],
     "folders.files": ["GET", "kuvo/folders?files=1"],
+    "folders.paths": ["GET", "kuvo/folders?files=1"],
     "folders.suggested": ["GET", "kuvo/folders/suggested"],
     "folders.tree": ["GET", "kuvo/folders/tree?path=/kuvo-none"],
     git: ["POST", "kuvo/git/changes"],
@@ -1747,6 +1751,8 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     "messages.wake-cards": ["GET", "api/session/none/message"],
     "models.offered": ["GET", "kuvo/models/offered"],
     // (A project's own, its folder asked; each model's side, efforts and aliases; on the same route.)
+    "models.offered.choice": ["GET", "kuvo/models/offered"],
+    "models.offered.defaults": ["GET", "kuvo/models/offered?for=defaults"],
     "models.offered.folder": ["GET", "kuvo/models/offered?folder=%2F"],
     "models.offered.free": ["GET", "kuvo/models/offered"],
     "models.offered.providers": ["GET", "kuvo/models/offered"],
@@ -1815,6 +1821,7 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     "sessions.chat": ["GET", "kuvo/info"],
     "sessions.glance": ["POST", "kuvo/sessions/glance"],
     "sessions.list": ["POST", "kuvo/sessions/list"],
+    "sessions.list.start": ["POST", "kuvo/sessions/list"],
     "sessions.mentions": ["GET", "kuvo/sessions/ses_none/mentions?for=files"],
     "sessions.models": ["POST", "kuvo/sessions/models"],
     "sessions.move": ["POST", "kuvo/sessions/ses_none/move"],
@@ -1846,6 +1853,7 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     "sign-in.accounts.kinds": ["GET", "kuvo/sign-in/accounts"],
     "sign-in.accounts.plan": ["GET", "kuvo/sign-in/accounts"],
     "sign-in.accounts.state": ["GET", "kuvo/sign-in/accounts"],
+    "sign-in.action": ["GET", "kuvo/sign-in/action"],
     "sign-in.codes": ["GET", "kuvo/sign-in/start?integration=openai"],
     "sign-in.methods": ["GET", "kuvo/sign-in/methods?integration=openai"],
     "sign-in.return": ["GET", "kuvo/sign-in/return"],

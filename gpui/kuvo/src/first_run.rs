@@ -1303,7 +1303,7 @@ impl FirstRun {
                     .iter()
                     .enumerate()
                     .map(|(ix, named)| {
-                        let inside = format!("{}/{}", folder.path.trim_end_matches('/'), named.name);
+                        let inside = named.path.clone();
                         let selector = format!("first-run-browse-{}", named.name);
                         div()
                             .id(("first-run-browse", ix))

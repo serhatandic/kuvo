@@ -23,7 +23,7 @@ import { filedProjects, projectFollowers, readProjects } from "../areas/projects
 import { botFollowers, botHere } from "../bots/here";
 import { awaySessions, moveFollowers, MOVES } from "../moves/records";
 import { askFollowers, readAsks, type AskWords } from "../glance/asked";
-import { factsOf, listedProjects, needsYou, type ListPlace, type Stopped } from "./rule";
+import { factsOf, listedProjects, needsYou, projectOrder, type ListPlace, type Stopped } from "./rule";
 import { isJudged, judgingFollowers } from "../work/tree";
 import { wakeTurnIsOpen } from "../work/wakes";
 import { Moments } from "./moments";
@@ -357,10 +357,12 @@ export function answerFrom(list: Kept, since: string | null): SessionList {
   const needs = list.needsYou ?? needsYou(Object.fromEntries(Object.entries(list.sessions).map(([id, entry]) => [id, entry.facts])));
   // (And its projects' sums as none, where that file had none.)
   const projects = Object.fromEntries(Object.entries(list.projects).map(([folder, project]) => [folder, { ...project, asking: project.asking ?? 0, working: project.working ?? 0 }]));
+  const ordered = projectOrder(projects);
   const archived = archivedGroups(Object.fromEntries(Object.entries(list.sessions).map(([id, entry]) => [id, entry.facts])), projects, readProjects());
-  if (whole) return { archivedGroups: archived, at: cursorOf(list), full: true, sessions, projects, needsYou: needs, ...pending };
+  const projectFacts = { projects, projectOrder: ordered, startProject: ordered[0] ?? null };
+  if (whole) return { archivedGroups: archived, at: cursorOf(list), full: true, sessions, ...projectFacts, needsYou: needs, ...pending };
   const gone = Object.entries(list.gone).filter(([, entry]) => entry.seq > from!.seq).map(([id]) => id).sort();
-  return { archivedGroups: archived, at: cursorOf(list), sessions, ...(gone.length ? { gone } : {}), projects, needsYou: needs, ...pending };
+  return { archivedGroups: archived, at: cursorOf(list), sessions, ...(gone.length ? { gone } : {}), ...projectFacts, needsYou: needs, ...pending };
 }
 
 // MARK: The long-running process's list
