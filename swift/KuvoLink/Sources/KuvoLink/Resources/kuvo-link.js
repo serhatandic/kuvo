@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 66aa5b35ce89
+// Kuvo folder layout 23 2262a8b87f57
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
 var __create = Object.create;
@@ -1693,7 +1693,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "66aa5b35ce89";
+var BRIDGE_VERSION = "2262a8b87f57";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -83264,9 +83264,9 @@ var init_calls = __esm(() => {
 
 // box/src/link/work/stop.ts
 async function stopBotWork(bot, targets, signal, { tell = true } = {}) {
-  const own = botHere(bot)?.session;
-  if (own && tell)
-    pauseForUser(own, { ifLimited: true });
+  const startingOwner = tell ? botHere(bot)?.session : undefined;
+  if (startingOwner)
+    pauseForUser(startingOwner, { ifLimited: true });
   const work = ofBot(bot, await workSessions(targets, signal));
   const [working, turns] = await Promise.all([atWorkNow(targets, signal), workingNow(targets, signal)]);
   let stopped = 0;
@@ -83282,6 +83282,7 @@ async function stopBotWork(bot, targets, signal, { tell = true } = {}) {
     if (lead && tell)
       told.push({ starter: lead, line: stoppedLine(each.data) });
   }
+  const own = botHere(bot)?.session;
   if (own) {
     if (told.some((each) => each.starter === own))
       pauseForUser(own);

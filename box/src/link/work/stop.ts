@@ -19,9 +19,9 @@ import type { Target } from "../../shared/records";
 /** How many of `bot`'s sessions were stopped. `tell`: their leads hear it (not for a goal whose end
  * came, which the bot was told of). */
 export async function stopBotWork(bot: string, targets: Target[], signal?: AbortSignal, { tell = true }: { tell?: boolean } = {}): Promise<number> {
-  const own = botHere(bot)?.session;
   // A due reset must not start the owner while we're still stopping its children.
-  if (own && tell) pauseForUser(own, { ifLimited: true });
+  const startingOwner = tell ? botHere(bot)?.session : undefined;
+  if (startingOwner) pauseForUser(startingOwner, { ifLimited: true });
   const work = ofBot(bot, await workSessions(targets, signal));
   const [working, turns] = await Promise.all([atWorkNow(targets, signal), workingNow(targets, signal)]);
   // Those working (what they left running too), those waiting on an answer (which may not count as
@@ -38,6 +38,7 @@ export async function stopBotWork(bot: string, targets: Target[], signal?: Abort
     stopped += 1;
     if (lead && tell) told.push({ starter: lead, line: stoppedLine(each.data) });
   }
+  const own = botHere(bot)?.session;
   if (own) {
     if (told.some(each => each.starter === own)) pauseForUser(own);
     forgetWakes(own);
