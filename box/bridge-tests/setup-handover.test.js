@@ -1737,11 +1737,12 @@ test("box labels restore recovers 344 items' original labels through a two-compu
       fs.writeFileSync(queue, JSON.stringify({ owner, items }));
     },
   });
-  const macRequest = async (method, route, body) => {
+  const version = "0.10.0", sha256 = "e".repeat(64);
+  const macRequest = async (method, route, body, clientVersion = version) => {
     const { port, password } = JSON.parse(fs.readFileSync(path.join(a.run, "serve.json"), "utf8"));
     const response = await fetch(`http://127.0.0.1:${port}/${route}`, {
       method,
-      headers: { authorization: `Basic ${Buffer.from(`opencode:${password}`).toString("base64")}`, "x-kuvo-from": "app" },
+      headers: { authorization: `Basic ${Buffer.from(`opencode:${password}`).toString("base64")}`, "x-kuvo-from": "app", "x-kuvo-client-version": clientVersion },
       ...(body ? { body: JSON.stringify(body) } : {}),
       signal: t.signal,
     });
@@ -1749,6 +1750,22 @@ test("box labels restore recovers 344 items' original labels through a two-compu
   };
   await Promise.all([see(a, 2, a), see(b, 2, a)]);
   await until("primary leased", () => a.lease(2, b), t.signal);
+  const signed = Buffer.from(JSON.stringify({ manifest: Buffer.from(JSON.stringify({ clientProtocol: 1 })).toString("base64") })).toString("base64");
+  for (const box of [a, b]) {
+    fs.mkdirSync(path.join(box.home, "bin"), { recursive: true });
+    fs.mkdirSync(path.join(box.home, "updates"), { recursive: true });
+    fs.writeFileSync(path.join(box.home, "bin", "box-version"), version);
+    fs.writeFileSync(path.join(box.home, "updates", "installed.json"), JSON.stringify({ version, sha256 }));
+    const state = box.read();
+    state.shared.setupSecurityAndReleaseChoice = { sequence: 1, value: { version, sha256, signed } };
+    const file = path.join(box.run, "link.json");
+    fs.writeFileSync(file + ".fleet", JSON.stringify(state));
+    fs.renameSync(file + ".fleet", file);
+  }
+  const oldDesktop = await macRequest("GET", "kuvo/info", undefined, "0.8.0-beta.35");
+  assert.equal(oldDesktop.status, 426, JSON.stringify(oldDesktop.value));
+  assert.equal(oldDesktop.value.reason, "client-update-required");
+  assert.equal(oldDesktop.value.target, version);
   const emptyLabels = { labels: [], removed: [] };
   const seedRevision = crypto.createHash("sha256").update(JSON.stringify(emptyLabels)).digest("base64url");
   const empty = { sequence: 1, value: emptyLabels, offlineEdits: {
@@ -1770,6 +1787,17 @@ test("box labels restore recovers 344 items' original labels through a two-compu
     return answer.out;
   };
   fs.writeFileSync(file, JSON.stringify(library));
+  const versionFile = path.join(a.home, "bin", "box-version");
+  try {
+    fs.writeFileSync(versionFile, "0.8.0-beta.35");
+    const outdated = await restore(a);
+    assert.equal(outdated.status, 1);
+    assert.equal(outdated.out, "");
+    assert.match(outdated.err, /This computer needs to update to 0\.10\.0 before it can be used\./);
+    assert.deepEqual(shared(a), empty);
+  } finally {
+    fs.writeFileSync(versionFile, version);
+  }
 
   const queue = queueOf(a);
   const readView = async () => {
@@ -1789,7 +1817,7 @@ test("box labels restore recovers 344 items' original labels through a two-compu
 
   for (const box of [a, b]) {
     const response = box === a ? await macRequest("POST", "kuvo/work-queue/labels/restore", { library })
-      : await b.route("POST", "kuvo/work-queue/labels/restore", { library }, true);
+      : await b.route("POST", "kuvo/work-queue/labels/restore", { library }, true, { "x-kuvo-client-version": version });
     assert.equal(response.status, 403);
   }
   const snapshot = box => Object.fromEntries(fs.readdirSync(box.home, { recursive: true, withFileTypes: true })

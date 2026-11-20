@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 3c9741a25766
+// Kuvo folder layout 23 dfa97569d0f1
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
 var __create = Object.create;
@@ -1692,7 +1692,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "3c9741a25766";
+var BRIDGE_VERSION = "dfa97569d0f1";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -116342,17 +116342,19 @@ function engineHandler(readEngine = readEngineFile, info = {}, readBridge = read
     const text = (status, words) => [{ head: { status, headers: { "content-type": "text/plain" } } }, { body: Buffer.from(words) }];
     const json = (status, value) => [{ head: { status, headers: { "content-type": "application/json" } } }, { body: Buffer.from(JSON.stringify(value)) }];
     const route = request.path.split("?")[0];
-    if (!request.fromApp && !(request.fromHolder && route === LABEL_RESTORE_ROUTE))
+    const holderLabelRestore = request.fromHolder && route === LABEL_RESTORE_ROUTE;
+    if (!request.fromApp && !holderLabelRestore)
       phoneHere();
     if (phone?.kind === "desktop")
       request = { ...request, desktop: true };
-    if (!request.internal && (request.fromApp || request.fromMac) && (request.served || route !== "kuvo/info" || request.headers["x-kuvo-client-version"]) && !["kuvo/box/app", "kuvo/box/update", "kuvo/box/proof"].includes(route)) {
+    if (!request.internal && !holderLabelRestore && (request.fromApp || request.fromMac) && (request.served || route !== "kuvo/info" || request.headers["x-kuvo-client-version"]) && !["kuvo/box/app", "kuvo/box/update", "kuvo/box/proof"].includes(route)) {
       const refusal = clientUpdateRequired({ app: request.headers["x-kuvo-client-version"], client: "desktop" });
       if (refusal)
         return yield* json(426, refusal);
     }
-    if ((phone?.key || request.fromApp || request.fromMac) && !request.fromHolder && !request.internal) {
-      const behind = computerUpdateRequired(route, request.method.toUpperCase());
+    const method = request.method.toUpperCase();
+    if (!request.internal && (!request.fromHolder && (phone?.key || request.fromApp || request.fromMac) || holderLabelRestore && method === "POST")) {
+      const behind = computerUpdateRequired(route, method);
       if (behind)
         return yield* json(503, behind);
     }
