@@ -8,6 +8,8 @@ use kuvo_ui::{ActiveTheme, Button, ButtonSize, Icon, IconName, IconSize, StyledT
     icon::{Mark, provider_mark as mark_asset}, menu::{Menu, MenuEntry, PopoverMenu, Tooltip}, theme::{radius, space}};
 use serde::Deserialize;
 
+use crate::areas::Reachability;
+
 const ROUTE: &str = "kuvo/agents/api/kuvo/insights";
 
 #[derive(Clone, Default, PartialEq, Eq)]
@@ -176,6 +178,7 @@ pub struct InsightsView {
     selected: Option<Session>,
     calls: Calls,
     problem: Option<String>,
+    reachability: Reachability,
     visible: bool,
     reading: bool,
     task: Option<Task<()>>,
@@ -199,7 +202,7 @@ impl InsightsView {
             client, filters: Filters { days: 30, ..Filters::default() },
             metric: Metric::Cost, breakdown: Breakdown::Model, zone: iana_time_zone::get_timezone().unwrap_or_else(|_| "UTC".into()),
             overview: None, sessions: Sessions::default(), catalog: Vec::new(), catalog_task: None, selected: None, calls: Calls::default(), problem: None,
-            visible: false, reading: false, task: None, pages: None, survey: None, chart_focus, chart_day: None, scroll: ScrollHandle::new(), session_list_offset: gpui::point(px(0.), px(0.)), _focus: focus,
+            reachability: Reachability::Unanswered, visible: false, reading: false, task: None, pages: None, survey: None, chart_focus, chart_day: None, scroll: ScrollHandle::new(), session_list_offset: gpui::point(px(0.), px(0.)), _focus: focus,
         }
     }
 
@@ -217,7 +220,9 @@ impl InsightsView {
         }
         self.catalog = self.client.offered_models(None, None).map(|offered| offered.models).unwrap_or_default();
         let query = self.filters.query(&self.zone, 0);
-        self.overview = self.client.get::<Answer<Overview>>(&format!("{ROUTE}{query}")).ok().map(|answer| answer.data);
+        let overview = self.client.get::<Answer<Overview>>(&format!("{ROUTE}{query}"));
+        self.reachability = Reachability::of(&overview);
+        self.overview = overview.ok().map(|answer| answer.data);
         self.sessions = self.client.get::<Answer<Sessions>>(&format!("{ROUTE}/sessions{query}")).map(|answer| answer.data).unwrap_or_default();
         if slug == "insights-session-drilldown" {
             self.selected = self.sessions.sessions.first().cloned();
@@ -227,6 +232,14 @@ impl InsightsView {
             }
         }
         cx.notify();
+    }
+
+    pub(crate) fn reachability(&self) -> Reachability {
+        self.reachability
+    }
+
+    pub(crate) fn read_again(&mut self, cx: &mut Context<Self>) {
+        self.load(false, cx);
     }
 
     pub fn shown(&mut self, visible: bool, cx: &mut Context<Self>) {
@@ -305,6 +318,7 @@ impl InsightsView {
             let result = read.await;
             this.update(cx, |this, cx| {
                 this.reading = false;
+                this.reachability = Reachability::of(&result);
                 match result {
                     Ok((overview, sessions)) => {
                         this.overview = Some(overview);

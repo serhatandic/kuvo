@@ -371,6 +371,8 @@ impl BoxClient {
 
 fn follow_sessions(client: BoxClient, timing: Timing, latest: &Latest<ListUpdate>, stop: Arc<Stop>) {
     let mut listing = Listing::new();
+    // After a reported failure, send the first valid listing even if only its cursor changed.
+    let mut needs_listing = true;
     let mut backoff = Backoff::new(timing);
     let mut quiet = Quiet::default();
     while !stop.is_stopped() {
@@ -379,6 +381,7 @@ fn follow_sessions(client: BoxClient, timing: Timing, latest: &Latest<ListUpdate
         let mut stream = match client.open(&Request::get(path), &|closer| stop.hold(closer)) {
             Ok(stream) => stream,
             Err(Error::NeedsUpdating { missing }) => {
+                needs_listing = true;
                 latest.put(ListUpdate::Held { missing });
                 if stop.wait(timing.held_again) {
                     return;
@@ -395,6 +398,7 @@ fn follow_sessions(client: BoxClient, timing: Timing, latest: &Latest<ListUpdate
                 if quiet.takes(&error) {
                     continue;
                 }
+                needs_listing = true;
                 latest.put(ListUpdate::Failed(error));
                 if backoff.wait(&stop) {
                     return;
@@ -405,6 +409,7 @@ fn follow_sessions(client: BoxClient, timing: Timing, latest: &Latest<ListUpdate
         if !(200..300).contains(&stream.status) {
             let refusal = refusal(&mut stream);
             stop.release();
+            needs_listing = true;
             latest.put(if stream.status == 503 { ListUpdate::Waiting(refusal.message) } else { ListUpdate::Failed(Error::Refused(refusal)) });
             if backoff.wait(&stop) {
                 return;
@@ -418,11 +423,15 @@ fn follow_sessions(client: BoxClient, timing: Timing, latest: &Latest<ListUpdate
                     Ok(line) => {
                         backoff.reset();
                         quiet.came();
-                        if listing.take(line) {
+                        if listing.take(line) || needs_listing {
+                            needs_listing = false;
                             latest.put(ListUpdate::Listing(listing.clone()));
                         }
                     }
-                    Err(error) => latest.put(ListUpdate::Failed(Error::BadAnswer(format!("A line of the session list couldn't be read: {error}")))),
+                    Err(error) => {
+                        needs_listing = true;
+                        latest.put(ListUpdate::Failed(Error::BadAnswer(format!("A line of the session list couldn't be read: {error}"))));
+                    }
                 },
                 Ok(None) => break,
                 Err(error) => {
@@ -430,6 +439,7 @@ fn follow_sessions(client: BoxClient, timing: Timing, latest: &Latest<ListUpdate
                     if !stop.is_stopped() {
                         again_now = quiet.takes(&error);
                         if !again_now {
+                            needs_listing = true;
                             latest.put(ListUpdate::Failed(error));
                         }
                     }
@@ -735,19 +745,20 @@ pub enum Followed<T> {
 /// Follows `events` (ndjson: the state now, then a line as it changes); over SSH, `once` (the same
 /// answered once) is read again every few seconds.
 pub(crate) fn follow_lines<T: serde::de::DeserializeOwned + Send + 'static>(client: &BoxClient, name: &str, events: String, once: String, timing: Timing) -> Follow<Followed<T>> {
-    follow_lines_filled(client, name, events, once, timing, |now| now)
+    follow_lines_filled(client, name, events, once, timing, false, |now| now)
 }
 
 /// The same, each line passed through `fill` on the follow's own thread before it's handed on: a
 /// line that leaves out what's as it was gets it there, so one dropped for a later line (only the
 /// latest waits to be taken) loses nothing.
-pub(crate) fn follow_lines_filled<T: serde::de::DeserializeOwned + Send + 'static>(client: &BoxClient, name: &str, events: String, once: String, timing: Timing, mut fill: impl FnMut(T) -> T + Send + 'static) -> Follow<Followed<T>> {
+pub(crate) fn follow_lines_filled<T: serde::de::DeserializeOwned + Send + 'static>(client: &BoxClient, name: &str, events: String, once: String, timing: Timing, poll_if_missing: bool, mut fill: impl FnMut(T) -> T + Send + 'static) -> Follow<Followed<T>> {
     let client = client.clone();
     spawn(name, move |latest, stop| {
         let mut backoff = Backoff::new(timing);
         let mut quiet = Quiet::default();
+        let mut poll_once = false;
         while !stop.is_stopped() {
-            let streams = client.streams();
+            let streams = client.streams() && !std::mem::take(&mut poll_once);
             let path = if streams { events.clone() } else { once.clone() };
             let mut stream = match client.open(&Request::get(path), &|closer| stop.hold(closer)) {
                 Ok(stream) => stream,
@@ -767,6 +778,11 @@ pub(crate) fn follow_lines_filled<T: serde::de::DeserializeOwned + Send + 'stati
                 }
             };
             if !(200..300).contains(&stream.status) {
+                if streams && poll_if_missing && matches!(stream.status, 404 | 405) {
+                    stop.release();
+                    poll_once = true;
+                    continue;
+                }
                 let refusal = refusal(&mut stream);
                 stop.release();
                 latest.put(Followed::Failed(Error::Refused(refusal)));

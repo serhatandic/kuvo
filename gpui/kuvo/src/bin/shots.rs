@@ -469,6 +469,7 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "landing-worktree-menu", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(landing_worktree) },
     // Bot sidebar status marks (trailing column & compact under-face gutter) and the Outputs popover media strip.
     Screen { slug: "bots-sidebar-states", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bots) },
+    Screen { slug: "bots-sessions-unreachable", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bots) },
     Screen { slug: "bots-compact-states", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bots) },
     Screen { slug: "outputs-popover-media", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(conversation_activity) },
 ];
@@ -2319,6 +2320,13 @@ fn main() -> anyhow::Result<()> {
                     "kind": "image", "type": "image/svg+xml", "latest": { "n": 1 }
                 }), include_bytes!("../../../assets/icons/activity.svg"));
                 stand_in.set_queue("ses_signup", vec![]);
+            }
+            if screen.slug == "bots-sessions-unreachable" {
+                stand_in.sessions_readable(false);
+                stand_in.set_bot_now("bot_mira", serde_json::json!({ "working": 0, "asking": 0, "state": "idle", "since": NOW }));
+                stand_in.set_bot_now("bot_inbox", serde_json::json!({ "working": 1, "asking": 0, "state": "working", "since": NOW }));
+                stand_in.add_bot("bot_build", "Build Runner", serde_json::json!({ "color": "mint", "shape": "round", "face": "calm" }));
+                stand_in.add_bot("bot_review", "Review Helper", serde_json::json!({ "color": "orange", "shape": "capsule", "face": "bright" }));
             }
             if matches!(screen.slug, "bots-sidebar-states" | "bots-compact-states") {
                 use serde_json::json;

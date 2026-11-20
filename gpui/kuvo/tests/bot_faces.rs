@@ -207,11 +207,13 @@ fn nothing_replays_on_a_later_copy_or_a_reconnect(cx: &mut TestAppContext) {
     // The box can't be reached, then is again: every bot is offline, then back as it is, still.
     let view = workspace.read_with(cx, |workspace, _| workspace.area_view(Area::Bots).cloned()).unwrap();
     assert!(bounds(cx, "bot-bot_docs").is_some(), "Docs Keeper's row on screen");
-    view.update(cx, |view, cx| view.set_reached(false, cx));
+    stand_in.bots_readable(false);
+    view.update(cx, |view, cx| view.shown(cx));
     cx.run_until_parked();
     assert_eq!(drawn(cx, "bot_docs"), Some(State::Offline));
     run_for(cx, 2.);
-    view.update(cx, |view, cx| view.set_reached(true, cx));
+    stand_in.bots_readable(true);
+    view.update(cx, |view, cx| view.shown(cx));
     cx.run_until_parked();
     assert_eq!(drawn(cx, "bot_docs"), Some(State::Done));
     for _ in 0..90 {
@@ -245,8 +247,51 @@ fn the_faces_follow_the_box_live(cx: &mut TestAppContext) {
     assert!(bounds(cx, "bot-bot_release").is_some());
 }
 
+#[gpui::test]
+fn a_failed_sessions_list_leaves_each_bots_source_independent(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        Theme::init(Appearance::Light, cx);
+        kuvo::bind_keys(cx);
+    });
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.sessions_readable(false);
+    stand_in.bots_readable(false);
+    let peer = stand_in.peer_box("key_devbox").expect("devbox");
+    stand_in.move_bot("bot_release", "devbox");
+    peer.add_bot("bot_release", "Release Captain", json!({ "color": "lime", "shape": "pebble", "face": "calm" }));
+    peer.set_bot_now("bot_release", json!({ "working": 1, "asking": 0, "state": "working", "since": NOW }));
+
+    let client = BoxClient::new(stand_in.clone());
+    let window = cx.add_window(move |window, cx| Workspace::new(client, true, window, cx));
+    let workspace = window.root(cx).unwrap();
+    let cx = VisualTestContext::from_window(window.into(), cx).into_mut();
+    cx.simulate_resize(size(px(1280.), px(900.)));
+    workspace.update_in(cx, |workspace, window, cx| workspace.show_area(Area::Bots, window, cx));
+    until(cx, &workspace, |cx| {
+        workspace.read_with(cx, |workspace, _| matches!(workspace.lists(), kuvo::workspace::Lists::Failed(_)))
+    });
+    stand_in.bots_readable(true);
+    until(cx, &workspace, |cx| bounds(cx, "bot-bot_docs").is_some());
+    assert_eq!(drawn(cx, "bot_docs"), Some(State::Done));
+    until(cx, &workspace, |cx| drawn(cx, "bot_release") == Some(State::Working));
+    assert_eq!(drawn(cx, "bot_scout"), Some(State::Offline), "Computers lists Studio as away");
+    assert!(bounds(cx, "bot-bot_docs").is_some());
+    assert!(bounds(cx, "elsewhere-bot_release").is_some());
+
+    // Only devbox's Bots feed fails. The local bot keeps its state.
+    peer.bots_readable(false);
+    until(cx, &workspace, |cx| drawn(cx, "bot_release") == Some(State::Offline));
+    assert_eq!(drawn(cx, "bot_docs"), Some(State::Done));
+
+    // The same peer snapshot restores its face while Sessions still fails.
+    peer.bots_readable(true);
+    until(cx, &workspace, |cx| drawn(cx, "bot_release") == Some(State::Working));
+    assert_eq!(drawn(cx, "bot_scout"), Some(State::Offline));
+    assert!(workspace.read_with(cx, |workspace, _| matches!(workspace.lists(), kuvo::workspace::Lists::Failed(_))));
+}
+
 /// Waits, as the live follows hand on what they read, until `done`.
-fn until(cx: &mut VisualTestContext, view: &Entity<kuvo::areas::AreaView>, mut done: impl FnMut(&mut VisualTestContext) -> bool) {
+fn until<T: 'static>(cx: &mut VisualTestContext, view: &Entity<T>, mut done: impl FnMut(&mut VisualTestContext) -> bool) {
     use futures::StreamExt as _;
     cx.executor().allow_parking();
     let mut told = cx.notifications(view);

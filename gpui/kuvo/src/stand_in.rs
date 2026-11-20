@@ -88,6 +88,7 @@ struct State {
     /// It's from before it took the release its app carries the moment its work ended, saying how
     /// that stands itself (no `computers.update.here`): the app brings it up with its installer.
     before_update_here: bool,
+    sessions_down: bool,
     sessions: BTreeMap<String, Value>,
     projects: BTreeMap<String, Value>,
     /// Each conversation's engine messages, oldest first.
@@ -411,6 +412,15 @@ impl StandIn {
         self.state().down = down;
     }
 
+    /// Whether Sessions can be read (else 500), independently of the other areas.
+    pub fn sessions_readable(&self, readable: bool) {
+        let mut state = self.state();
+        state.sessions_down = !readable;
+        if !readable {
+            state.lists.clear();
+        }
+    }
+
     /// Whether its Work Queue can be read (else 503).
     pub fn queue_readable(&self, readable: bool) {
         self.state().queue.down = !readable;
@@ -672,7 +682,11 @@ impl StandIn {
 
     /// Whether its bots can be read (`kuvo/bots` answers `503` while not).
     pub fn bots_readable(&self, readable: bool) {
-        self.state().bots.down = !readable;
+        let mut state = self.state();
+        state.bots.down = !readable;
+        if !readable {
+            state.bots_followers.clear();
+        }
     }
 
     /// Whether it can say what it holds for other computers (`held` and `refused` are left out of
@@ -1929,6 +1943,7 @@ impl StandIn {
                 }
                 None => answer(409, json!({ "message": "It has the newest Kuvo already." })),
             },
+            ("GET", ["kuvo", "sessions", "list"]) if state.sessions_down => answer(500, json!({ "message": "Sessions couldn’t be read." })),
             ("GET", ["kuvo", "sessions", "list"]) => answer(200, state.line(true)),
             ("GET", ["kuvo", "search"]) => {
                 let Some(query) = query(path, "q").map(decoded).map(|q| q.replace('+', " ")).filter(|q| !q.trim().is_empty()) else {
@@ -2664,6 +2679,10 @@ impl Transport for StandIn {
             let id = {
                 let mut state = self.state();
                 state.seen.push(Seen { method: request.method.clone(), path: request.path.clone(), body: None });
+                if state.bots.down {
+                    drop(state);
+                    return self.open(&Request::get("kuvo/bots"), hold);
+                }
                 if let Some((200, list)) = state.bots.answer("GET", "kuvo/bots", &|_| None, &Value::Null, &[], 0.) {
                     let _ = sender.send(list.to_string());
                 }
@@ -2821,6 +2840,10 @@ impl Transport for StandIn {
             let id = state.next;
             state.next += 1;
             if lists {
+                if state.sessions_down {
+                    drop(state);
+                    return self.open(&Request::get("kuvo/sessions/list"), hold);
+                }
                 // The list now, then a line for each change.
                 let _ = sender.send(state.line(true).to_string());
                 state.lists.insert(id, sender);
