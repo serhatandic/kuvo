@@ -5,7 +5,7 @@
 // tells it), so none waits on them; the bot itself as it goes on (your next message, or Resume), its
 // queue held until then, so this doesn't set it going.
 
-import { changeQueue } from "../engine/queue";
+import { pauseForUser } from "../engine/queue";
 import { botHere } from "../bots/here";
 import { noteWorkChanged } from "./changes";
 import { atWorkNow, hasWakeUps, readStopped, stopWork } from "./background";
@@ -19,6 +19,9 @@ import type { Target } from "../../shared/records";
 /** How many of `bot`'s sessions were stopped. `tell`: their leads hear it (not for a goal whose end
  * came, which the bot was told of). */
 export async function stopBotWork(bot: string, targets: Target[], signal?: AbortSignal, { tell = true }: { tell?: boolean } = {}): Promise<number> {
+  const own = botHere(bot)?.session;
+  // A due reset must not start the owner while we're still stopping its children.
+  if (own && tell) pauseForUser(own, { ifLimited: true });
   const work = ofBot(bot, await workSessions(targets, signal));
   const [working, turns] = await Promise.all([atWorkNow(targets, signal), workingNow(targets, signal)]);
   // Those working (what they left running too), those waiting on an answer (which may not count as
@@ -35,11 +38,8 @@ export async function stopBotWork(bot: string, targets: Target[], signal?: Abort
     stopped += 1;
     if (lead && tell) told.push({ starter: lead, line: stoppedLine(each.data) });
   }
-  const own = botHere(bot)?.session;
   if (own) {
-    if (told.some(each => each.starter === own)) {
-      changeQueue(own, state => ({ ...state, paused: true, userPaused: true, limitStop: undefined }));
-    }
+    if (told.some(each => each.starter === own)) pauseForUser(own);
     forgetWakes(own);
     if (working.has(own)) {
       for (const target of targets) if (await stopWork(target, own, turns.has(own)).then(() => true, () => false)) break;

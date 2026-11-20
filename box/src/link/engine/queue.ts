@@ -1040,12 +1040,17 @@ export async function holdQueue(target: Target, session: string, since?: number,
   return state;
 }
 
+/** A user pause supersedes an automatic usage-limit release. */
+export function pauseForUser(session: string, { ifLimited = false } = {}): QueueState {
+  return changeQueue(session, state => ifLimited && !state.limitStop ? state : { ...state, paused: true, userPaused: true, limitStop: undefined });
+}
+
 /** Stop: what waits held, the queue paused whether anything waits or not (what arrives later waits
  * on the box), then the run stopped. `holds` false (a bot stopping a session of its work, which it
  * may write to again): paused only when something waits, as a failed run's. `items`: messages a
  * client sent as Stop came, held first, in that order. */
 export async function stopSession(target: Target, session: string, holds = true, items: string[] = []): Promise<QueueState> {
-  if (holds) changeQueue(session, current => ({ ...current, paused: true, userPaused: true, limitStop: undefined }));
+  if (holds) pauseForUser(session);
   const held = await holdQueue(target, session, undefined, items);
   await interrupt(target, session);
   return held;

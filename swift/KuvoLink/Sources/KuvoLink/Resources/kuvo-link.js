@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 1558976b1c79
+// Kuvo folder layout 23 66aa5b35ce89
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
 var __create = Object.create;
@@ -1693,7 +1693,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "1558976b1c79";
+var BRIDGE_VERSION = "66aa5b35ce89";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -22530,9 +22530,12 @@ async function holdQueue(target, session, since, items = [], limitStop) {
   });
   return state;
 }
+function pauseForUser(session, { ifLimited = false } = {}) {
+  return changeQueue2(session, (state) => ifLimited && !state.limitStop ? state : { ...state, paused: true, userPaused: true, limitStop: undefined });
+}
 async function stopSession(target, session, holds = true, items = []) {
   if (holds)
-    changeQueue2(session, (current) => ({ ...current, paused: true, userPaused: true, limitStop: undefined }));
+    pauseForUser(session);
   const held = await holdQueue(target, session, undefined, items);
   await interrupt(target, session);
   return held;
@@ -83261,6 +83264,9 @@ var init_calls = __esm(() => {
 
 // box/src/link/work/stop.ts
 async function stopBotWork(bot, targets, signal, { tell = true } = {}) {
+  const own = botHere(bot)?.session;
+  if (own && tell)
+    pauseForUser(own, { ifLimited: true });
   const work = ofBot(bot, await workSessions(targets, signal));
   const [working, turns] = await Promise.all([atWorkNow(targets, signal), workingNow(targets, signal)]);
   let stopped = 0;
@@ -83276,11 +83282,9 @@ async function stopBotWork(bot, targets, signal, { tell = true } = {}) {
     if (lead && tell)
       told.push({ starter: lead, line: stoppedLine(each.data) });
   }
-  const own = botHere(bot)?.session;
   if (own) {
-    if (told.some((each) => each.starter === own)) {
-      changeQueue2(own, (state) => ({ ...state, paused: true, userPaused: true, limitStop: undefined }));
-    }
+    if (told.some((each) => each.starter === own))
+      pauseForUser(own);
     forgetWakes(own);
     if (working.has(own)) {
       for (const target of targets)

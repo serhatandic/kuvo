@@ -48,7 +48,7 @@ function setBots({ pixelWork } = {}) {
 
 // The engine: the bots' conversations, a session of the user's own, the models there are accounts
 // for; the sessions made, what each was sent, what each asks, and how each ask was answered.
-let sessions, prompts, made, asked, replied, interrupted, active, busy, restarts;
+let sessions, prompts, made, asked, replied, interrupted, active, busy, restarts, beforeInterrupt;
 // A session's latest messages where a test says, newest first; what's asked of `/compact`, and how each answers.
 let kept, compacted, compacting;
 // The questions sessions ask (a form each), and how each was answered.
@@ -73,6 +73,7 @@ function resetEngine() {
   asked = new Map();
   replied = [];
   interrupted = [];
+  beforeInterrupt = undefined;
   kept = new Map();
   forms = new Map();
   answeredForms = [];
@@ -205,6 +206,7 @@ const standIn = onBridge => (request, response) => {
     }
     if (one?.[2] === "/inbox") return reply({ data: [] });
     if (one?.[2] === "/interrupt") {
+      beforeInterrupt?.(id);
       interrupted.push(id);
       return reply({});
     }
@@ -800,9 +802,15 @@ test("Stop All holds an idle bot's child notices past a usage-limit reset", asyn
     for (const file of [queues, wakes, stoppedWork]) fs.rmSync(file, { force: true });
   });
   write(queues, JSON.stringify({ ses_pixel: { paused: true, held: [], limitStop: { message: "Usage limit", resetsAt: Date.now() + 60_000 } } }));
+  let ownerAsChildStopped;
+  beforeInterrupt = id => {
+    if (id === child) ownerAsChildStopped = JSON.parse(fs.readFileSync(queues, "utf8")).ses_pixel;
+  };
   const stopped = await route("POST", "kuvo/bots/bot_pixel00001/stop-all");
   assert.deepEqual(stopped, { status: 200, body: { stopped: 1 } });
   assert.deepEqual(interrupted, [child]);
+  assert.equal(ownerAsChildStopped?.userPaused, true, "a reset cannot start the owner during a child stop");
+  assert.equal(ownerAsChildStopped?.limitStop, undefined);
   const owner = JSON.parse(fs.readFileSync(queues, "utf8")).ses_pixel;
   assert.equal(owner.paused, true);
   assert.equal(owner.userPaused, true);
